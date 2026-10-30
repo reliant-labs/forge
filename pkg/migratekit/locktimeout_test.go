@@ -117,14 +117,55 @@ func TestLockTimeoutErrorSaysWhatToDo(t *testing.T) {
 	}
 }
 
-func TestNamesIdent(t *testing.T) {
-	body := []byte("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS \"Items_V\" ON items (v);")
-	for name, want := range map[string]bool{"Items_V": true, "items_v": true, "items": true, "Items_V2": false, "tems_v": false} {
-		if got := namesIdent(body, name); got != want {
-			t.Errorf("namesIdent(%q) = %v, want %v", name, got, want)
+func TestPlanFileProvesAtomicity(t *testing.T) {
+	for name, c := range map[string]struct {
+		sql       string
+		retryable bool
+	}{
+		"plain ddl":                {"ALTER TABLE t ADD COLUMN c INT;", true},
+		"no terminator":            {"ALTER TABLE t ADD COLUMN c INT", true},
+		"commit on its own line":   {"UPDATE t SET a=1;\nCOMMIT;\nALTER TABLE t ADD c INT;", false},
+		"same-line begin..commit":  {"BEGIN; INSERT INTO audit VALUES (1); COMMIT; ALTER TABLE t ADD c INT;", false},
+		"comment before commit":    {"UPDATE t SET a=1; /* done */ COMMIT; ALTER TABLE t ADD c INT;", false},
+		"line comment then commit": {"UPDATE t SET a=1;\n-- finish\nCOMMIT;", false},
+		"end work":                 {"UPDATE t SET a=1; END WORK;", false},
+		"start transaction":        {"START TRANSACTION; SELECT 1;", false},
+		"rollback":                 {"SAVEPOINT s; ROLLBACK TO s;", false},
+		"prepare transaction":      {"PREPARE TRANSACTION 'x';", false},
+		"commit in a string":       {"INSERT INTO t VALUES ('x; COMMIT; y');", true},
+		"commit in a comment":      {"-- COMMIT;\n/* COMMIT; */ ALTER TABLE t ADD c INT;", true},
+		"commit in a function":     {"CREATE FUNCTION f() RETURNS void AS $$ BEGIN PERFORM 1; END; $$ LANGUAGE plpgsql;", true},
+		"commit in a tagged body":  {"CREATE FUNCTION f() RETURNS void AS $f$ COMMIT; $f$ LANGUAGE plpgsql;", true},
+		"commit as an identifier":  {"ALTER TABLE t RENAME COLUMN \"commit\" TO x; ALTER TABLE t ADD commit_at INT;", true},
+		"create index":             {"CREATE INDEX CONCURRENTLY ix ON t (a);", true},
+		"drop index":               {"DROP INDEX CONCURRENTLY IF EXISTS ix;", true},
+		"reindex concurrently":     {"REINDEX INDEX CONCURRENTLY ix;", false},
+		"detach concurrently":      {"ALTER TABLE p DETACH PARTITION c CONCURRENTLY;", false},
+		"unnamed concurrent index": {"CREATE INDEX CONCURRENTLY ON t (a);", false},
+	} {
+		if got := planFile([]byte(c.sql)).retryable(); got != c.retryable {
+			t.Errorf("%s: retryable = %v, want %v", name, got, c.retryable)
 		}
 	}
-	if !commitRe.Match([]byte("UPDATE t SET a=1;\nCOMMIT;\n")) || commitRe.Match([]byte("SELECT 'commit;'")) {
-		t.Error("commitRe misreads an explicit COMMIT")
+}
+
+func TestPlanFileReadsTheIndexTarget(t *testing.T) {
+	for name, c := range map[string]struct {
+		sql          string
+		index, table string
+	}{
+		"plain":            {"CREATE INDEX CONCURRENTLY items_v ON items (v);", "items_v", `"items"`},
+		"unique, if not":   {"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS items_v ON ONLY items (v)", "items_v", `"items"`},
+		"qualified table":  {"CREATE INDEX CONCURRENTLY items_v ON tenant_a.items (v);", "items_v", `"tenant_a"."items"`},
+		"quoted":           {`CREATE INDEX CONCURRENTLY "Items V" ON "Tenant A"."Items" (v);`, "Items V", `"Tenant A"."Items"`},
+		"name in a string": {"COMMENT ON TABLE items IS 'CREATE INDEX CONCURRENTLY x ON y'; CREATE INDEX CONCURRENTLY real ON items (v);", "real", `"items"`},
+	} {
+		plan := planFile([]byte(c.sql))
+		if len(plan.creates) != 1 || plan.creates[0].index != c.index || plan.creates[0].table != c.table {
+			t.Errorf("%s: creates = %+v, want %s on %s", name, plan.creates, c.index, c.table)
+		}
+	}
+	if p := planFile([]byte("-- CREATE INDEX CONCURRENTLY x ON y (z);\nSELECT 1;")); len(p.creates) != 0 {
+		t.Errorf("a comment was read as a statement: %+v", p.creates)
 	}
 }

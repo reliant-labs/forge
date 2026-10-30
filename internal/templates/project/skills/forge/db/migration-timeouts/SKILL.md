@@ -51,11 +51,31 @@ transaction older than itself to end, so an idle-in-transaction session stalls
 it and it times out like any DDL. A timed-out build leaves its index `INVALID`;
 the migrator **drops it before each retry** (`DROP INDEX CONCURRENTLY`), so a
 retry never meets "already exists" and a `CREATE INDEX CONCURRENTLY IF NOT EXISTS`
-never quietly keeps a broken index. Only indexes the attempts created, or that
-the file names, are dropped — another invalid index in the database is left
-alone. If the blocker also stops the drop, the `LockTimeoutError` lists the
-index (`Leftover`) and the next run drops it first.
+never quietly keeps a broken index. It drops exactly the index each
+`CREATE INDEX CONCURRENTLY` in the file names, in the schema of the table it is
+`ON` (resolved by postgres, so `tenant_a.items_v` never touches
+`tenant_b.items_v`); every other invalid index is left alone. If the blocker also
+stops the drop, the error lists it (`Leftover`) and the next run drops it first.
 
-The limits are set on the migration's session and **reset when it ends**,
-including on failure, because `AutoMigrate` borrows a connection from the
-application's pool.
+**When a migration is NOT retried.** A retry is safe only if a failed attempt
+rolled back completely, and the migrator proves that from the file (it lexes the
+SQL: comments, strings and function bodies do not count) instead of assuming it.
+A file is **not** retried, and its first lock timeout fails the run with the
+schema left dirty at that version, when it has its own `BEGIN` / `COMMIT` /
+`END` / `ROLLBACK` / `SAVEPOINT` / `PREPARE TRANSACTION` (part of it may already
+be committed), runs statement by statement (`x-multi-statement`), has a
+`CREATE INDEX CONCURRENTLY` with no name, or has a `REINDEX … CONCURRENTLY` /
+`DETACH PARTITION … CONCURRENTLY`. Keep a migration to plain DDL, or give a
+`CONCURRENTLY` statement a file of its own, to get the retry.
+
+Grants (`db/grants/*_gen.sql`, applied after the migrations) take locks too, so
+they run under the same limits and the same retry. They are one statement, so a
+retry is always safe; if every attempt times out the run fails with a
+`LockTimeoutError` (`Grants` set), the migrations stay committed, and the next
+run applies the grants.
+
+The limits are set on the migration's session and the connection gets back
+**the exact values it had** when the run ends, including on failure (not
+`RESET`, which would drop a pool's own `SET statement_timeout`), because
+`AutoMigrate` borrows a connection from the application's pool. A connection
+that cannot be restored is discarded, not returned.

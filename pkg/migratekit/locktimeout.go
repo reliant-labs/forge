@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
-	"regexp"
 	"strings"
 	"time"
 
@@ -187,9 +187,15 @@ type LockTimeoutError struct {
 	// Grants is true when the statement that timed out was a grants script
 	// (grants.go) and not a migration. The run's migrations are committed by
 	// then, and the next run applies the grants again.
-	Grants   bool
-	Attempts int
-	Timeout  time.Duration
+	Grants bool
+	// PartlyApplied is true when the migration could not be proven
+	// all-or-nothing (it controls its own transaction, runs statement by
+	// statement, or builds something concurrently the migrator cannot clean
+	// up). It was not retried, and part of it may be committed: the schema is
+	// left dirty at Version for a human to inspect.
+	PartlyApplied bool
+	Attempts      int
+	Timeout       time.Duration
 	// Leftover names the INVALID indexes a CONCURRENTLY attempt left behind
 	// and that could not be dropped while the blocker still ran (dropping
 	// one waits for the same sessions the build did). They do no harm beyond
@@ -210,7 +216,11 @@ func (e *LockTimeoutError) Error() string {
 	}
 	fmt.Fprintf(&b, "migration %s could not get its lock in %d attempt(s) of %s each: another session holds a conflicting lock — an open transaction or a long query on a table it changes",
 		e.Name, e.Attempts, e.Timeout)
-	b.WriteString(". Nothing was applied and the schema is unchanged, so running again retries it")
+	if e.PartlyApplied {
+		fmt.Fprintf(&b, ". This migration was not retried: it is not provably all-or-nothing (it controls its own transaction, or runs outside one), so part of it may be committed and the schema is left dirty at version %d — inspect it, finish or undo the partial migration, then clear the dirty flag with `db migrate force`", e.Version)
+	} else {
+		b.WriteString(". Nothing was applied and the schema is unchanged, so running again retries it")
+	}
 	if len(e.Leftover) > 0 {
 		fmt.Fprintf(&b, " (the attempt left INVALID index(es) %s that could not be dropped while the blocker ran; the retry drops them first)",
 			strings.Join(e.Leftover, ", "))
@@ -272,6 +282,7 @@ type lockGuard struct {
 	version int
 	prev    int
 	lock    time.Duration
+	session sessionSettings
 }
 
 func newLockGuard(conn *sql.Conn, drv database.Driver, source sourceSet, run RunOptions, atomic bool) *lockGuard {
@@ -291,24 +302,56 @@ func (g *lockGuard) file(version int) (compat.Migration, bool) {
 	return compat.Migration{}, false
 }
 
+// sessionSettings is the lock_timeout and statement_timeout a connection had
+// before the run overrode them, to give back exactly. RESET would not: it
+// restores the server's startup defaults, and a pooled connection that had a
+// session-level SET of its own (an application's statement_timeout guard)
+// would come back from the run without it.
+type sessionSettings struct {
+	lock, statement string
+	saved           bool
+}
+
+// override saves conn's current settings and puts it under lock and statement.
+func (p *sessionSettings) override(ctx context.Context, conn *sql.Conn, lock, statement time.Duration) error {
+	if !p.saved {
+		if err := conn.QueryRowContext(ctx, "SELECT current_setting('lock_timeout'), current_setting('statement_timeout')").Scan(&p.lock, &p.statement); err != nil {
+			return fmt.Errorf("read the session's lock_timeout and statement_timeout: %w", err)
+		}
+		p.saved = true
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT set_config('lock_timeout', $1, false), set_config('statement_timeout', $2, false)",
+		timeoutSetting(lock), timeoutSetting(statement)); err != nil {
+		return fmt.Errorf("set the lock_timeout and statement_timeout: %w", err)
+	}
+	return nil
+}
+
+// restore gives conn the settings override saved. A connection that cannot be
+// restored is discarded, not returned to the pool carrying the run's limits.
+func (p *sessionSettings) restore(conn *sql.Conn) {
+	if !p.saved {
+		return
+	}
+	p.saved = false
+	if _, err := conn.ExecContext(context.Background(), "SELECT set_config('lock_timeout', $1, false), set_config('statement_timeout', $2, false)",
+		p.lock, p.statement); err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+}
+
 // set puts the session under the limits of the migration at version.
 func (g *lockGuard) set(ctx context.Context, version int) error {
 	f, _ := g.file(version)
 	lock, statement := g.limits.forFile(f.Timeouts)
 	g.lock = lock
-	if _, err := g.conn.ExecContext(ctx, "SELECT set_config('lock_timeout', $1, false), set_config('statement_timeout', $2, false)",
-		timeoutSetting(lock), timeoutSetting(statement)); err != nil {
-		return fmt.Errorf("set the migration's lock_timeout and statement_timeout: %w", err)
-	}
-	return nil
+	return g.session.override(ctx, g.conn, lock, statement)
 }
 
-// reset gives the session its own timeouts back. Called on every path out of
-// a migration; a failure here means the connection is gone, which resets it
-// just as well.
+// reset gives the session the settings it had before the migration.
 func (g *lockGuard) reset() {
 	g.active = false
-	_, _ = g.conn.ExecContext(context.Background(), "RESET lock_timeout; RESET statement_timeout")
+	g.session.restore(g.conn)
 }
 
 func (g *lockGuard) SetVersion(version int, dirty bool) error {
@@ -344,77 +387,50 @@ func (g *lockGuard) Run(migration io.Reader) error {
 	return err
 }
 
-// invalidIndex is an index that is not valid: a CONCURRENTLY build that did
-// not finish, or one still running in another session.
-type invalidIndex struct {
-	oid          int64
-	schema, name string
-}
-
-func (i invalidIndex) String() string { return i.schema + "." + i.name }
-
-// invalidIndexes lists the invalid indexes no session is building right now.
-// An index another session is in the middle of building is invalid too, and
-// is not ours to drop.
-func (g *lockGuard) invalidIndexes(ctx context.Context) ([]invalidIndex, error) {
-	rows, err := g.conn.QueryContext(ctx, `SELECT i.indexrelid::bigint, n.nspname, c.relname
+// ownedInvalidIndexes are the INVALID indexes a migration's CONCURRENTLY
+// builds are responsible for, and no one else: for each CREATE INDEX
+// CONCURRENTLY in the file, the index of that name that sits in its table's
+// schema, is on that table, and is invalid with no build in progress.
+//
+// The table is resolved by postgres (to_regclass, so search_path and schema
+// qualification mean what they mean to the file itself) and an index lives in
+// its table's schema, so `tenant_a.items_v` never selects `tenant_b.items_v`.
+// An invalid index of any other name, schema or table was not built by this
+// file and stays, whatever else is failing in the database. One of the file's
+// own name that predates the run is a leftover of an earlier failed run of it,
+// which the file would otherwise trip over (or, with IF NOT EXISTS, keep).
+func (g *lockGuard) ownedInvalidIndexes(ctx context.Context, creates []createIndexTarget) ([]string, error) {
+	var out []string
+	for _, c := range creates {
+		var qualified sql.NullString
+		err := g.conn.QueryRowContext(ctx, `SELECT quote_ident(n.nspname) || '.' || quote_ident(ic.relname)
 FROM pg_index i
-JOIN pg_class c ON c.oid = i.indexrelid
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE NOT i.indisvalid AND c.relkind = 'i'
-  AND NOT EXISTS (SELECT 1 FROM pg_stat_progress_create_index p WHERE p.index_relid = i.indexrelid)`)
-	if err != nil {
-		return nil, fmt.Errorf("list invalid indexes: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []invalidIndex
-	for rows.Next() {
-		var ix invalidIndex
-		if err := rows.Scan(&ix.oid, &ix.schema, &ix.name); err != nil {
-			return nil, err
+JOIN pg_class ic ON ic.oid = i.indexrelid
+JOIN pg_namespace n ON n.oid = ic.relnamespace
+WHERE i.indrelid = to_regclass($1) AND ic.relname = $2 AND NOT i.indisvalid
+  AND NOT EXISTS (SELECT 1 FROM pg_stat_progress_create_index p WHERE p.index_relid = i.indexrelid)`,
+			c.table, c.index).Scan(&qualified)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
 		}
-		out = append(out, ix)
-	}
-	return out, rows.Err()
-}
-
-// leftovers is the invalid indexes a CONCURRENTLY migration is responsible
-// for: those that were not there before its first attempt (what the attempts
-// built), and those its file names (what an earlier, failed run built — the
-// file builds that name again, and a leftover would fail it with "already
-// exists", or with IF NOT EXISTS keep the invalid index and report success).
-// Any other invalid index predates the run and is someone's, and stays.
-func (g *lockGuard) leftovers(ctx context.Context, body []byte, before map[int64]bool) ([]invalidIndex, error) {
-	now, err := g.invalidIndexes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []invalidIndex
-	for _, ix := range now {
-		if !before[ix.oid] || namesIdent(body, ix.name) {
-			out = append(out, ix)
+		if err != nil {
+			return nil, fmt.Errorf("look for the invalid index %s a failed attempt left: %w", c.index, err)
 		}
+		out = append(out, qualified.String)
 	}
 	return out, nil
 }
 
-// namesIdent reports whether body mentions name as a whole identifier,
-// quoted or not, in any case.
-func namesIdent(body []byte, name string) bool {
-	re, err := regexp.Compile(`(?i)(^|[^A-Za-z0-9_$])"?` + regexp.QuoteMeta(name) + `"?($|[^A-Za-z0-9_$])`)
-	return err == nil && re.Match(body)
-}
-
-// dropLeftovers drops what leftovers finds. DROP INDEX CONCURRENTLY waits for
-// the same sessions the build did, so it can time out for the same reason.
-func (g *lockGuard) dropLeftovers(ctx context.Context, body []byte, before map[int64]bool) error {
-	stale, err := g.leftovers(ctx, body, before)
+// dropOwned drops what ownedInvalidIndexes finds. DROP INDEX CONCURRENTLY
+// waits for the same sessions the build did, so it can time out for the same
+// reason.
+func (g *lockGuard) dropOwned(ctx context.Context, creates []createIndexTarget) error {
+	stale, err := g.ownedInvalidIndexes(ctx, creates)
 	if err != nil {
 		return err
 	}
 	for _, ix := range stale {
-		q := fmt.Sprintf("DROP INDEX CONCURRENTLY IF EXISTS %s.%s", quoteIdent(ix.schema), quoteIdent(ix.name))
-		if _, err := g.conn.ExecContext(ctx, q); err != nil {
+		if _, err := g.conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+ix); err != nil {
 			return fmt.Errorf("drop the invalid index %s a failed attempt left: %w", ix, err)
 		}
 	}
@@ -430,36 +446,21 @@ func (g *lockGuard) rollback(ctx context.Context) {
 
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
-// commitRe finds an explicit COMMIT / END statement at the start of a line. A
-// file that commits part of itself is not all-or-nothing, so a failure after
-// the commit cannot be retried by running it again.
-var commitRe = regexp.MustCompile(`(?im)^\s*(commit|end)\s*(work|transaction)?\s*;`)
-
 func (g *lockGuard) runWithRetry(body []byte) error {
 	ctx := context.Background()
 	name := fmt.Sprintf("%d", g.version)
 	if f, ok := g.file(g.version); ok {
 		name = f.Name
 	}
-	// Retrying is safe only when a failed attempt rolled back completely: one
-	// implicit transaction, with no COMMIT of its own.
-	retryable := g.atomic && !commitRe.Match(body)
+	// Retrying is safe only when a failed attempt rolled back completely, and
+	// that is proven from the file, not assumed (sqlscan.go): one implicit
+	// transaction, no transaction control of its own, and nothing concurrent
+	// the migrator cannot clean up after.
+	plan := planFile(body)
+	retryable := g.atomic && plan.retryable()
 	attempts := g.limits.LockAttempts
 	if !retryable {
 		attempts = 1
-	}
-
-	concurrently := strings.Contains(strings.ToLower(string(body)), "concurrently")
-	var before map[int64]bool
-	if concurrently {
-		known, err := g.invalidIndexes(ctx)
-		if err != nil {
-			return err
-		}
-		before = make(map[int64]bool, len(known))
-		for _, ix := range known {
-			before[ix.oid] = true
-		}
 	}
 
 	backoff := g.limits.RetryBackoff
@@ -471,8 +472,8 @@ func (g *lockGuard) runWithRetry(body []byte) error {
 		// transactions the build did, so it can time out for the same reason:
 		// that is a failed attempt like any other.
 		var err error
-		if concurrently {
-			err = g.dropLeftovers(ctx, body, before)
+		if len(plan.creates) > 0 {
+			err = g.dropOwned(ctx, plan.creates)
 		}
 		if err == nil {
 			err = g.Driver.Run(bytes.NewReader(body))
@@ -487,7 +488,7 @@ func (g *lockGuard) runWithRetry(body []byte) error {
 			return err
 		}
 		if attempt >= attempts {
-			return g.exhausted(ctx, name, attempt, err, body, concurrently, retryable, before)
+			return g.exhausted(ctx, name, attempt, err, plan, retryable)
 		}
 		wait := jitter(backoff)
 		g.log.Warn("migration lock wait timed out; retrying",
@@ -500,24 +501,24 @@ func (g *lockGuard) runWithRetry(body []byte) error {
 
 // exhausted is the end of a migration whose lock timed out every time.
 //
-// The file ran as one transaction (or one statement) and every attempt rolled
+// When the file is proven all-or-nothing (retryable), every attempt rolled
 // back, so the version golang-migrate recorded as dirty — written before the
 // first attempt — is a lie: nothing of the migration is applied. It is put
 // back to the version before, clean, so the next run retries instead of
-// refusing a "dirty" schema nobody has to repair.
-func (g *lockGuard) exhausted(ctx context.Context, name string, attempts int, cause error, body []byte, concurrently, retryable bool, before map[int64]bool) error {
-	lerr := &LockTimeoutError{Version: uint(g.version), Name: name, Attempts: attempts, Timeout: g.lock, Err: lockTimeoutCause(cause)}
-	if concurrently {
+// refusing a "dirty" schema nobody has to repair. A file that is not proven
+// stays dirty at its version: part of it may have committed, and a human
+// decides.
+func (g *lockGuard) exhausted(ctx context.Context, name string, attempts int, cause error, plan filePlan, retryable bool) error {
+	lerr := &LockTimeoutError{Version: uint(g.version), Name: name, Attempts: attempts, Timeout: g.lock, Err: lockTimeoutCause(cause), PartlyApplied: !retryable}
+	if len(plan.creates) > 0 {
 		// One more try to drop the last attempt's index: the blocker may have
 		// ended since, and a leftover that is gone should not be reported.
-		_ = g.dropLeftovers(ctx, body, before)
-		stale, err := g.leftovers(ctx, body, before)
+		_ = g.dropOwned(ctx, plan.creates)
+		stale, err := g.ownedInvalidIndexes(ctx, plan.creates)
 		if err != nil {
 			return errors.Join(lerr, err)
 		}
-		for _, ix := range stale {
-			lerr.Leftover = append(lerr.Leftover, ix.String())
-		}
+		lerr.Leftover = stale
 	}
 	if !retryable {
 		return lerr
@@ -554,13 +555,11 @@ func guardedStatement(ctx context.Context, conn *sql.Conn, run RunOptions, name 
 	if log == nil {
 		log = slog.Default()
 	}
-	if _, serr := conn.ExecContext(ctx, "SELECT set_config('lock_timeout', $1, false), set_config('statement_timeout', $2, false)",
-		timeoutSetting(limits.LockTimeout), timeoutSetting(limits.StatementTimeout)); serr != nil {
-		return fmt.Errorf("set the lock_timeout and statement_timeout for %s: %w", name, serr)
+	var session sessionSettings
+	if serr := session.override(ctx, conn, limits.LockTimeout, limits.StatementTimeout); serr != nil {
+		return fmt.Errorf("%s: %w", name, serr)
 	}
-	defer func() {
-		_, _ = conn.ExecContext(context.Background(), "RESET lock_timeout; RESET statement_timeout")
-	}()
+	defer session.restore(conn)
 
 	backoff := limits.RetryBackoff
 	for attempt := 1; ; attempt++ {

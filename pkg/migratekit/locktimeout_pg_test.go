@@ -658,3 +658,108 @@ func TestGrantsRunUnderTheDefaultLimitsAndLeaveNoneBehind(t *testing.T) {
 		t.Errorf("a failed grants run left lock_timeout=%s on the connection, was %s", got, was)
 	}
 }
+
+// TestAMigrationThatCommitsPartOfItselfIsNotRetried: `BEGIN; INSERT …; COMMIT;
+// ALTER TABLE …` commits the INSERT before the ALTER can time out. Retrying
+// would insert twice, and "clean at the previous version" would be a lie. The
+// terminator is on the same line as other statements, where a line-anchored
+// pattern misses it. The migration fails on its first attempt and the schema
+// is dirty at its version, for a human.
+func TestAMigrationThatCommitsPartOfItselfIsNotRetried(t *testing.T) {
+	dsn := baseSchema(t)
+	holdReader(t, dsn)
+	file := "CREATE TABLE audit (n INT);\nBEGIN; INSERT INTO audit VALUES (1); COMMIT; ALTER TABLE items ADD COLUMN note TEXT;"
+	var logs bytes.Buffer
+	_, err := upWith(release(merged(lockBase, map[string]string{"2_audit.up.sql": file})), dsn,
+		RunOptions{Logger: logTo(&logs), Limits: Limits{LockTimeout: 200 * time.Millisecond, LockAttempts: 5, RetryBackoff: 10 * time.Millisecond}})
+	var lerr *LockTimeoutError
+	if !errors.As(err, &lerr) || lerr.Attempts != 1 || !lerr.PartlyApplied {
+		t.Fatalf("Up returned %v, want a *LockTimeoutError after ONE attempt, marked partly applied", err)
+	}
+	if strings.Contains(logs.String(), "retrying") {
+		t.Errorf("a migration that commits part of itself was retried:\n%s", logs.String())
+	}
+	var n int
+	if err := openRecordDB(t, dsn).QueryRow("SELECT count(*) FROM audit").Scan(&n); err != nil || n != 1 {
+		t.Errorf("audit has %d rows (err %v), want the one the committed half wrote", n, err)
+	}
+	if st := stateAt(t, dsn); !st.Dirty || st.Version != 2 {
+		t.Errorf("schema is %+v, want dirty at 2: part of the file is committed", st)
+	}
+}
+
+// TestConcurrentlyCleanupStaysInItsOwnSchema: two schemas each hold an invalid
+// items_v. A migration building tenant_a.items_v drops tenant_a's and leaves
+// tenant_b's, which it did not build and its file does not name.
+func TestConcurrentlyCleanupStaysInItsOwnSchema(t *testing.T) {
+	dsn := requirePG(t)
+	files := map[string]string{
+		"1_tenants.up.sql": "CREATE SCHEMA tenant_a; CREATE SCHEMA tenant_b;\n" +
+			"CREATE TABLE tenant_a.items (id INT, v TEXT); CREATE TABLE tenant_b.items (id INT, v TEXT);",
+	}
+	mustUp(t, release(files), dsn)
+	db := openRecordDB(t, dsn)
+	for _, s := range []string{"tenant_a", "tenant_b"} {
+		for _, q := range []string{
+			"CREATE INDEX items_v ON " + s + ".items (v)",
+			"UPDATE pg_index SET indisvalid = false WHERE indexrelid = '" + s + ".items_v'::regclass",
+		} {
+			if _, err := db.Exec(q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+	}
+	files["2_a.up.sql"] = "CREATE INDEX CONCURRENTLY items_v ON tenant_a.items (v);"
+	if _, err := upWith(release(files), dsn, RunOptions{}); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	for schema, want := range map[string]bool{"tenant_a": true, "tenant_b": false} {
+		var valid bool
+		if err := db.QueryRow(`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+			JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = 'items_v' AND n.nspname = $1`, schema).Scan(&valid); err != nil {
+			t.Fatalf("%s.items_v: %v (it must still exist)", schema, err)
+		}
+		if valid != want {
+			t.Errorf("%s.items_v valid = %v, want %v", schema, valid, want)
+		}
+	}
+}
+
+// TestSessionSettingsOfAPooledConnectionAreRestoredExactly: the application's
+// connection had its own session-level statement_timeout before the run
+// borrowed it. RESET would hand it back unlimited; the run restores the value
+// it found — after success, after a failed migration, and after a grants
+// script.
+func TestSessionSettingsOfAPooledConnectionAreRestoredExactly(t *testing.T) {
+	dsn, grantsFS := grantsFixture(t)
+	pool := openRecordDB(t, dsn)
+	pool.SetMaxOpenConns(1)
+	if _, err := pool.Exec("SET statement_timeout = '2s'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec("SET lock_timeout = '1500ms'"); err != nil {
+		t.Fatal(err)
+	}
+	check := func(when string) {
+		t.Helper()
+		var lock, statement string
+		if err := pool.QueryRow("SELECT current_setting('lock_timeout'), current_setting('statement_timeout')").Scan(&lock, &statement); err != nil {
+			t.Fatal(err)
+		}
+		if lock != "1500ms" || statement != "2s" {
+			t.Errorf("%s: the connection has lock_timeout=%s statement_timeout=%s, want 1500ms and 2s", when, lock, statement)
+		}
+	}
+	limits := RunOptions{Limits: Limits{LockTimeout: 7 * time.Second, StatementTimeout: 9 * time.Minute}}
+
+	if _, err := ApplyWith(context.Background(), pool, grantsFS, "migrations", limits); err != nil {
+		t.Fatal(err)
+	}
+	check("after migrations and grants")
+
+	failing := release(merged(lockBase, map[string]string{"2_bad.up.sql": "SELECT * FROM nowhere;"}))
+	if _, err := ApplyWith(context.Background(), pool, failing, "migrations", limits); err == nil {
+		t.Fatal("a migration selecting from a missing table succeeded")
+	}
+	check("after a failed migration")
+}

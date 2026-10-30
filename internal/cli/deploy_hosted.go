@@ -247,6 +247,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		Client:        client,
 		Rollout:       opts.rollout,
 		PollInterval:  hostedPollInterval,
+		ApplyBudget:   deploytarget.HostedApplyBudget,
 		OnRollout:     report.rolloutObserver(),
 		OnEnvironment: func(id string) { report.setHostedTarget(ep.URL, id) },
 	})

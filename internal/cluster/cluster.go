@@ -1679,6 +1679,9 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullS
 		}
 		g.records = append(g.records, w)
 	}
+	if err := checkDatabaseIdentityNames(items, groups); err != nil {
+		return nil, err
+	}
 	rendered := map[workloadGroupKey][]any{}
 	for _, key := range order {
 		g := groups[key]
@@ -1744,6 +1747,40 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullS
 		out = append(out, objs...)
 	}
 	return out, nil
+}
+
+// checkDatabaseIdentityNames refuses a ManagedDatabase record that shares its
+// name with a Workload record in the same cluster and namespace: both would
+// run as one ServiceAccount (deploy.CheckDatabaseIdentityNames).
+func checkDatabaseIdentityNames(items []any, groups map[workloadGroupKey]*workloadGroup) error {
+	databases := map[workloadGroupKey][]string{}
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok || m["apiVersion"] != deployv1alpha1.GroupVersion.String() || m["kind"] != "ManagedDatabase" {
+			continue
+		}
+		md, _ := m["metadata"].(map[string]any)
+		name, _ := md["name"].(string)
+		namespace, _ := md["namespace"].(string)
+		labels, _ := md["labels"].(map[string]any)
+		cluster, _ := labels[ClusterRoutingLabel].(string)
+		key := workloadGroupKey{cluster: cluster, namespace: namespace}
+		databases[key] = append(databases[key], name)
+	}
+	for key, names := range databases {
+		g, ok := groups[key]
+		if !ok {
+			continue
+		}
+		workloads := make([]string, 0, len(g.records))
+		for _, w := range g.records {
+			workloads = append(workloads, w.Name)
+		}
+		if err := deploy.CheckDatabaseIdentityNames(workloads, names); err != nil {
+			return fmt.Errorf("namespace %s (cluster %q): %w", key.namespace, key.cluster, err)
+		}
+	}
+	return nil
 }
 
 // expandTierRecord renders one ManagedDatabase / StaticSite record in place,

@@ -4,8 +4,6 @@ import (
 	"sort"
 
 	rbacv1 "k8s.io/api/rbac/v1"
-
-	"github.com/reliant-labs/forge/pkg/dbgrants"
 )
 
 // PolicyRules are the namespaced Kubernetes Role rules an identity needs to use this
@@ -18,6 +16,7 @@ import (
 //	                               Kubernetes 1.35, also checks create; SPDY is a POST
 //	endpointslices    get, list    discovery.k8s.io: find the ready pods
 //	secrets           get          only <db>-forge-ro and <db>-ca, by name
+//	                               (<db>-forge-dash for [PolicyRulesFor] [RoleDashboard])
 //
 // pods/portforward is not restrictable by port or pod: whoever holds it can
 // reach any port of any pod in the namespace. Bind these rules to an identity
@@ -27,6 +26,17 @@ import (
 // resourceNames would grant every Secret): an identity that gets no secret
 // access cannot call [Client.Credentials].
 func PolicyRules(databases ...string) []rbacv1.PolicyRule {
+	return PolicyRulesFor(RoleReadOnly, databases...)
+}
+
+// PolicyRulesFor is [PolicyRules] for an identity that connects as role: the
+// secrets rule names that role's Secret (<db>-forge-ro or <db>-forge-dash)
+// and the CA, never the other role's. An identity that runs dashboard panels
+// therefore cannot read forge_ro's password, and one that runs `forge db
+// query` cannot read forge_dash's. Give an identity that needs both the union
+// of the two calls' rules.
+func PolicyRulesFor(role Role, databases ...string) []rbacv1.PolicyRule {
+	secretName := role.spec().secretName
 	rules := []rbacv1.PolicyRule{
 		{
 			APIGroups: []string{""},
@@ -45,7 +55,7 @@ func PolicyRules(databases ...string) []rbacv1.PolicyRule {
 	seen := map[string]bool{}
 	var names []string
 	for _, db := range databases {
-		for _, n := range []string{dbgrants.SecretName(db), CASecretName(db)} {
+		for _, n := range []string{secretName(db), CASecretName(db)} {
 			if !seen[n] {
 				seen[n] = true
 				names = append(names, n)

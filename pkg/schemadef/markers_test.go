@@ -225,3 +225,73 @@ func TestCheckMarkers_ReadableNeedsAReason(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardMarkersCoexistWithOtherMarkers(t *testing.T) {
+	table := func(c string) bool { return Table{Comment: c}.Dashboard() }
+	for comment, want := range map[string]bool{
+		"forge:dashboard":                     true,
+		"forge:dashboard — usage rollups":     true,
+		"forge:append-only forge:dashboard":   true,
+		"forge:dashboard forge:no-entity":     true,
+		"forge:no-entity, forge:dashboard.":   true,
+		"ledger of payments. forge:dashboard": true,
+		"":                                    false,
+		"a dashboard table":                   false,
+		"forge:dashboard-ish":                 false,
+		"xforge:dashboard":                    false,
+		"forge:dashboards":                    false,
+		"see docs/forge:dashboard":            false,
+		"forge:no-dashboard":                  false,
+		"forge:append-only":                   false,
+	} {
+		if got := table(comment); got != want {
+			t.Errorf("Table.Dashboard(%q) = %v, want %v", comment, got, want)
+		}
+	}
+
+	col := func(c string) bool { return Column{Comment: c}.DeclaresNoDashboard() }
+	for comment, want := range map[string]bool{
+		"forge:no-dashboard":                         true,
+		"forge:no-dashboard — an email":              true,
+		"forge:readable — a hash forge:no-dashboard": true,
+		"forge:secret forge:no-dashboard":            true,
+		"forge:no-dashboard-ish":                     false,
+		"":                                           false,
+		"forge:dashboard":                            false,
+		"forge:readable — not for forge:no-dashboards": false,
+	} {
+		if got := col(comment); got != want {
+			t.Errorf("Column.DeclaresNoDashboard(%q) = %v, want %v", comment, got, want)
+		}
+	}
+
+	// Another marker's reading is unaffected by the dashboard one sharing its
+	// comment.
+	if !(Table{Comment: "forge:dashboard forge:no-entity"}).NoEntity() || !(Table{Comment: "forge:append-only forge:dashboard"}).AppendOnly() {
+		t.Error("forge:dashboard in a comment hides a neighbouring table marker")
+	}
+	if c := (Column{Comment: "forge:secret forge:no-dashboard"}); !c.DeclaresSecret() {
+		t.Error("forge:no-dashboard hides forge:secret")
+	}
+}
+
+func TestCheckMarkers_DashboardPlacement(t *testing.T) {
+	ok := []Table{{Name: "usage_events", Comment: "forge:dashboard", Columns: []Column{{Name: "email", Comment: "forge:no-dashboard"}}}}
+	if err := CheckMarkers(ok); err != nil {
+		t.Errorf("a correctly placed pair is rejected: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		tables []Table
+		want   string
+	}{
+		"no-dashboard on a table": {[]Table{{Name: "t", Comment: "forge:no-dashboard"}}, "forge:no-dashboard is a column marker"},
+		"dashboard on a column":   {[]Table{{Name: "t", Columns: []Column{{Name: "c", Comment: "forge:dashboard"}}}}, "forge:dashboard is a table marker"},
+		"dashboard on a view":     {[]Table{{Name: "v", IsView: true, Comment: "forge:dashboard"}}, "forge:dashboard is a table marker"},
+		"misspelled":              {[]Table{{Name: "t", Comment: "forge:dashbord"}}, "did you mean forge:dashboard"},
+	} {
+		err := CheckMarkers(tc.tables)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+}

@@ -1105,7 +1105,7 @@ func TestRenderManagedDatabase(t *testing.T) {
 		"enableSuperuserAccess": false,
 		"bootstrap":             map[string]any{"initdb": map[string]any{"database": "order_db", "owner": "order_db_app"}},
 		"storage":               map[string]any{"size": "50Gi"},
-		"managed":               map[string]any{"roles": []any{wantReadOnlyRole("order-db")}},
+		"managed":               map[string]any{"roles": []any{wantReadOnlyRole("order-db"), wantOffDashboardRole()}},
 	}
 	if !reflect.DeepEqual(c["spec"], want) {
 		t.Errorf("Cluster spec = %#v\nwant %#v", c["spec"], want)
@@ -1947,8 +1947,8 @@ func TestRenderManagedDatabaseDeclaresTheReadOnlyRole(t *testing.T) {
 		}
 		c := objects(t, objs)["Cluster/"+name]
 		roles, _ := get(c, "spec", "managed", "roles").([]any)
-		if len(roles) != 1 {
-			t.Fatalf("%s: managed.roles = %v, want exactly the read-only role", name, roles)
+		if len(roles) != 2 {
+			t.Fatalf("%s: managed.roles = %v, want the read-only role and the absent dashboard role", name, roles)
 		}
 		if !reflect.DeepEqual(roles[0], wantReadOnlyRole(name)) {
 			t.Errorf("%s: managed role = %#v\nwant %#v", name, roles[0], wantReadOnlyRole(name))
@@ -1974,8 +1974,145 @@ func TestRenderManagedDatabaseRestoreKeepsTheReadOnlyRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := objects(t, objs)["Cluster/order-db-restored"]
-	if roles, _ := get(c, "spec", "managed", "roles").([]any); len(roles) != 1 {
-		t.Errorf("restored Cluster managed.roles = %v, want the read-only role", roles)
+	roles, _ := get(c, "spec", "managed", "roles").([]any)
+	if len(roles) != 2 || !reflect.DeepEqual(roles[0], wantReadOnlyRole("order-db-restored")) {
+		t.Errorf("restored Cluster managed.roles = %v, want the read-only role first", roles)
+	}
+}
+
+// wantOffDashboardRole is what a database that declares no dashboards carries:
+// the role present but unable to log in and without a password. It is NOT
+// `ensure: absent`: CNPG drops an absent role with a plain DROP ROLE, which
+// Postgres refuses once the role holds a grant, so the role would keep its
+// login and password.
+func wantOffDashboardRole() map[string]any {
+	return map[string]any{
+		"name":            "forge_dash",
+		"ensure":          "present",
+		"comment":         "forge dashboard role: OFF (cannot log in, no password); dashboards are not enabled on this database",
+		"login":           false,
+		"disablePassword": true,
+		"superuser":       false,
+		"createdb":        false,
+		"createrole":      false,
+		"replication":     false,
+		"bypassrls":       false,
+		"inherit":         false,
+	}
+}
+
+// wantDashboardRole is the enabled role, written out in full like the
+// read-only one so a change to any attribute is a visible diff.
+func wantDashboardRole(database string, connectionLimit float64) map[string]any {
+	return map[string]any{
+		"name":            "forge_dash",
+		"ensure":          "present",
+		"comment":         "forge dashboard role: column grants on forge:dashboard tables only, no write privilege",
+		"login":           true,
+		"superuser":       false,
+		"createdb":        false,
+		"createrole":      false,
+		"replication":     false,
+		"bypassrls":       false,
+		"inherit":         false,
+		"connectionLimit": connectionLimit,
+		"passwordSecret":  map[string]any{"name": database + "-forge-dash"},
+	}
+}
+
+func dashboardRolesOf(t *testing.T, name string, spec v1alpha1.ManagedDatabaseSpec) []any {
+	t.Helper()
+	objs, err := RenderManagedDatabase(name, spec, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles, _ := get(objects(t, objs)["Cluster/"+name], "spec", "managed", "roles").([]any)
+	return roles
+}
+
+// TestRenderManagedDatabaseDashboardRole: disabled (nil, or declared but not
+// enabled) renders the role NOLOGIN with no password, never absent; enabled renders a login role with no
+// membership, a connection limit of max_concurrency+1 and a password Secret
+// named like forge_ro's.
+func TestRenderManagedDatabaseDashboardRole(t *testing.T) {
+	for name, spec := range map[string]v1alpha1.ManagedDatabaseSpec{
+		"undeclared":      {},
+		"declared-off":    {Dashboards: &v1alpha1.DatabaseDashboards{Enabled: false, MaxConcurrency: 4}},
+		"declared-no-use": {Dashboards: &v1alpha1.DatabaseDashboards{}},
+	} {
+		roles := dashboardRolesOf(t, "order-db", spec)
+		if len(roles) != 2 || !reflect.DeepEqual(roles[1], wantOffDashboardRole()) {
+			t.Errorf("%s: managed.roles = %#v, want forge_ro then forge_dash off", name, roles)
+		}
+	}
+
+	if r := wantOffDashboardRole(); r["ensure"] == "absent" || r["login"] != false || r["disablePassword"] != true {
+		t.Error("the off role must be present, NOLOGIN and passwordless")
+	} else if _, ok := r["passwordSecret"]; ok {
+		t.Error("CNPG refuses a role that both sets and disables a password")
+	}
+
+	for name, tc := range map[string]struct {
+		d     v1alpha1.DatabaseDashboards
+		limit float64
+	}{
+		"defaults":    {v1alpha1.DatabaseDashboards{Enabled: true}, 3},
+		"one":         {v1alpha1.DatabaseDashboards{Enabled: true, MaxConcurrency: 1}, 2},
+		"max":         {v1alpha1.DatabaseDashboards{Enabled: true, MaxConcurrency: 4}, 5},
+		"limits-only": {v1alpha1.DatabaseDashboards{Enabled: true, RowCap: 10, TimeoutMs: 100}, 3},
+	} {
+		roles := dashboardRolesOf(t, "order-db", v1alpha1.ManagedDatabaseSpec{Dashboards: &tc.d})
+		if len(roles) != 2 || !reflect.DeepEqual(roles[0], wantReadOnlyRole("order-db")) {
+			t.Fatalf("%s: managed.roles = %#v, want forge_ro first and unchanged", name, roles)
+		}
+		if !reflect.DeepEqual(roles[1], wantDashboardRole("order-db", tc.limit)) {
+			t.Errorf("%s: dashboard role = %#v\nwant %#v", name, roles[1], wantDashboardRole("order-db", tc.limit))
+		}
+		if _, ok := roles[1].(map[string]any)["inRoles"]; ok {
+			t.Errorf("%s: forge_dash is a member of a role: it must hold none", name)
+		}
+	}
+}
+
+// TestRenderManagedDatabaseRejectsOutOfRangeDashboards: a limit outside its
+// range is refused, never clamped.
+func TestRenderManagedDatabaseRejectsOutOfRangeDashboards(t *testing.T) {
+	for name, d := range map[string]v1alpha1.DatabaseDashboards{
+		"row cap too big":     {Enabled: true, RowCap: 10001},
+		"timeout too long":    {Enabled: true, TimeoutMs: 10001},
+		"timeout too short":   {Enabled: true, TimeoutMs: 99},
+		"concurrency too big": {Enabled: true, MaxConcurrency: 5},
+		"negative row cap":    {Enabled: true, RowCap: -1},
+	} {
+		if _, err := RenderManagedDatabase("order-db", v1alpha1.ManagedDatabaseSpec{Dashboards: &d}, ctx); err == nil {
+			t.Errorf("%s: rendered, want a refusal", name)
+		}
+	}
+}
+
+// TestDashboardRoleSecret: the Secret the dashboard role's passwordSecret
+// names, minted like forge_ro's.
+func TestDashboardRoleSecret(t *testing.T) {
+	sec, err := DashboardRoleSecret("order-db", "s3cret", ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := objects(t, []*unstructured.Unstructured{sec})["Secret/order-db-forge-dash"]
+	if m == nil {
+		t.Fatalf("no Secret/order-db-forge-dash in %v", sec.Object)
+	}
+	if m["type"] != "kubernetes.io/basic-auth" {
+		t.Errorf("type = %v", m["type"])
+	}
+	sd, _ := m["stringData"].(map[string]any)
+	if sd["username"] != "forge_dash" || sd["password"] != "s3cret" {
+		t.Errorf("stringData = %v", sd)
+	}
+	if get(m, "metadata", "labels", "cnpg.io/reload") != "true" {
+		t.Errorf("labels = %v, want cnpg.io/reload", get(m, "metadata", "labels"))
+	}
+	if _, err := DashboardRoleSecret("order-db", "", ctx); err == nil {
+		t.Error("a role with no password rendered")
 	}
 }
 

@@ -30,3 +30,19 @@ INSERT INTO otel_logs SELECT now() - INTERVAL 30 MINUTE + INTERVAL 80 SECOND, ma
 -- the same pods' own events carry the bare forge name (the node agent reads the pod's app.kubernetes.io/name label first)
 -- and must not count as runs either
 INSERT INTO otel_logs SELECT now() - INTERVAL 30 MINUTE, map('reliant.env.id','prod','k8s.workload.name','indexer','k8s.object.kind','Pod','k8s.pod.name','indexer-eeeeeeeeee-x7k2p'), map('k8s.event.reason','SuccessfulCreate'), '';
+-- A standalone Job is named from its pod-spec hash alone, so deleting and recreating an unchanged Job reuses the name.
+-- "reindex" ran twice under ONE name in prod, with two distinct Job UIDs (the event's involved-object UID):
+-- the first run failed after 2 minutes, the second succeeded after 50 seconds. Two executions, never one run that
+-- both failed and succeeded with a duration spanning both.
+INSERT INTO otel_logs SELECT now() - INTERVAL 50 MINUTE, map('reliant.env.id','prod','k8s.workload.name','reindex-ffffffffff','k8s.object.kind','Job','k8s.object.uid','uid-reindex-1'), map('k8s.event.reason','SuccessfulCreate'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 50 MINUTE + INTERVAL 120 SECOND, map('reliant.env.id','prod','k8s.workload.name','reindex-ffffffffff','k8s.object.kind','Job','k8s.object.uid','uid-reindex-1'), map('k8s.event.reason','BackoffLimitExceeded'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 40 MINUTE, map('reliant.env.id','prod','k8s.workload.name','reindex-ffffffffff','k8s.object.kind','Job','k8s.object.uid','uid-reindex-2'), map('k8s.event.reason','SuccessfulCreate'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 40 MINUTE + INTERVAL 50 SECOND, map('reliant.env.id','prod','k8s.workload.name','reindex-ffffffffff','k8s.object.kind','Job','k8s.object.uid','uid-reindex-2'), map('k8s.event.reason','Completed'), '';
+-- The same recreate WITHOUT a UID, which is what the node agent stores today (it drops k8s.object.uid): the create
+-- that follows a terminal event begins the next execution. "rebuild" failed (1 minute), was recreated, and its second
+-- execution used two pods (two creates) and completed in 70 seconds.
+INSERT INTO otel_logs SELECT now() - INTERVAL 70 MINUTE, map('reliant.env.id','prod','k8s.workload.name','rebuild-9999999999','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 70 MINUTE + INTERVAL 60 SECOND, map('reliant.env.id','prod','k8s.workload.name','rebuild-9999999999','k8s.object.kind','Job'), map('k8s.event.reason','DeadlineExceeded'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 65 MINUTE, map('reliant.env.id','prod','k8s.workload.name','rebuild-9999999999','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), 'pod 1';
+INSERT INTO otel_logs SELECT now() - INTERVAL 65 MINUTE + INTERVAL 5 SECOND, map('reliant.env.id','prod','k8s.workload.name','rebuild-9999999999','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), 'pod 2';
+INSERT INTO otel_logs SELECT now() - INTERVAL 65 MINUTE + INTERVAL 70 SECOND, map('reliant.env.id','prod','k8s.workload.name','rebuild-9999999999','k8s.object.kind','Job'), map('k8s.event.reason','Completed'), '';

@@ -150,7 +150,7 @@ func TestJobsDashboardContents(t *testing.T) {
 	// environment), not events: they are SQL panels over the grouped runs.
 	for _, id := range []string{"runs-totals", "runs-by-job", "failures-by-job"} {
 		p, _ := findPanel(jobs, id)
-		if p.Kind != KindSQL || !strings.Contains(p.SQL, "GROUP BY env, run") {
+		if p.Kind != KindSQL || !strings.Contains(p.SQL, "GROUP BY env, run, uid, generation") {
 			t.Errorf("%s must count distinct (env, Job) executions, got kind %q:\n%s", id, p.Kind, p.SQL)
 		}
 	}
@@ -184,7 +184,7 @@ func TestJobsDashboardNeverCountsCreateEventsAsRuns(t *testing.T) {
 		}
 	}
 	started, ok := findPanel(jobs, "runs-totals")
-	if !ok || !strings.Contains(started.SQL, "GROUP BY env, run") || strings.Contains(started.SQL, "count() AS runs_started") {
+	if !ok || !strings.Contains(started.SQL, "GROUP BY env, run, uid, generation") || strings.Contains(started.SQL, "count() AS runs_started") {
 		t.Errorf("runs started must count executions:\n%s", started.SQL)
 	}
 }
@@ -538,10 +538,29 @@ func TestJobsDashboardReplacesTheOldPerJobDashboards(t *testing.T) {
 // two environments share a hashed Job name, and must not collapse into one run.
 func TestJobsSummaryGroupsRunsByEnvironmentAndJob(t *testing.T) {
 	sql := jobsSummarySQL([]string{"db-migrate-up"})
-	if !strings.Contains(sql, "GROUP BY env, run") || !strings.Contains(sql, "ResourceAttributes['reliant.env.id'] AS env") {
-		t.Errorf("the per-run grouping must carry the environment:\n%s", sql)
+	if !strings.Contains(sql, "GROUP BY env, run, uid, generation") || !strings.Contains(sql, "ResourceAttributes['reliant.env.id'] AS env") {
+		t.Errorf("the per-run grouping must carry the environment, the Job UID and the generation:\n%s", sql)
+	}
+	if !strings.Contains(sql, "ResourceAttributes['k8s.object.uid'] AS uid") {
+		t.Errorf("the Job UID must come from the involved object's UID:\n%s", sql)
 	}
 	if !strings.Contains(sql, "has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id'])") {
 		t.Errorf("the summary must honour the dashboard's environments:\n%s", sql)
+	}
+}
+
+// A standalone Job's name is its pod-spec hash alone, so recreating an
+// unchanged Job reuses it. Every run count is built on the same executions
+// subquery, so none of them can drift from the summary.
+func TestEveryRunCountSharesTheExecutionGrouping(t *testing.T) {
+	jobs := dashboardByID(t, Build(fleet()), "jobs")
+	for _, id := range []string{"jobs-summary", "runs-totals", "runs-by-job", "failures-by-job"} {
+		p, ok := findPanel(jobs, id)
+		if !ok {
+			t.Fatalf("no panel %s: %v", id, panelIDs(jobs))
+		}
+		if !strings.Contains(p.SQL, "GROUP BY env, run, uid, generation") {
+			t.Errorf("%s does not count distinct executions (env, name, UID, generation):\n%s", id, p.SQL)
+		}
 	}
 }

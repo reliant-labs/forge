@@ -249,7 +249,7 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 	// keeps the seeded offsets exact.
 	anchor := fmt.Sprintf("toDateTime64(%d, 9, 'UTC')", time.Now().Unix())
 	run(strings.ReplaceAll(string(seed), "now()", anchor))
-	jobs := []string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant", "indexer", "nightly"}
+	jobs := []string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant", "indexer", "nightly", "reindex", "rebuild"}
 	bindSQL := func(q, envs string) string {
 		q = strings.ReplaceAll(q, "{from:DateTime64(9)}", "now() - INTERVAL 1 DAY")
 		q = strings.ReplaceAll(q, "{to:DateTime64(9)}", "now() + INTERVAL 1 DAY")
@@ -296,11 +296,22 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 	if r := row(all, "indexer"); r == nil || r[1] != "1" || r[2] != "1" || r[3] != "0" || r[5] != "80" {
 		t.Errorf("indexer = %v, want 1 run (4 SuccessfulCreate events), 1 succeeded, 80s:\n%s", r, all)
 	}
+	// A Job recreated under the same hashed name is two executions, told apart
+	// by the Job UID when the telemetry carries it...
+	if r := row(all, "reindex"); r == nil || r[1] != "2" || r[2] != "1" || r[3] != "1" || r[5] != "50" || r[6] != "50" || r[7] != "50" {
+		t.Errorf("reindex (two UIDs, one name) = %v, want 2 runs, 1 succeeded, 1 failed, last/avg/max duration 50s:\n%s", r, all)
+	}
+	// ...and by the create that follows a terminal event when it does not (the
+	// node agent drops k8s.object.uid today). The second execution used two pods.
+	if r := row(all, "rebuild"); r == nil || r[1] != "2" || r[2] != "1" || r[3] != "1" || r[5] != "70" || r[6] != "70" {
+		t.Errorf("rebuild (recreated, no UID) = %v, want 2 runs, 1 succeeded, 1 failed, last duration 70s:\n%s", r, all)
+	}
 	// The totals count the same executions: db-migrate-up 2 (prod, stg),
-	// cloudsql-backup-prune 1, dbrole-provision-reliant 2, indexer 1, nightly 2
-	// = 8 started; succeeded 1+1+1+1+1 = 5; failed 1+1 = 2.
-	if out := run(bindSQL(jobsTotalsSQL(jobs), "[]")); out != "8\t5\t2" {
-		t.Errorf("totals = %q, want 8 started, 5 succeeded, 2 failed (one per execution, not per event)", out)
+	// cloudsql-backup-prune 1, dbrole-provision-reliant 2, indexer 1, nightly 2,
+	// reindex 2, rebuild 2 = 12 started; succeeded 1+1+1+1+1+1+1 = 7; failed
+	// 1+1+1+1 = 4.
+	if out := run(bindSQL(jobsTotalsSQL(jobs), "[]")); out != "12\t7\t4" {
+		t.Errorf("totals = %q, want 12 started, 7 succeeded, 4 failed (one per execution, not per event)", out)
 	}
 	// Per job over time: each execution is one point, so indexer sums to 1.
 	byJob := run(bindSQL(jobsByJobSQL(jobs, "started", "started > 0"), "[]"))
@@ -315,7 +326,7 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 		t.Errorf("runs-by-job counts indexer %d times, want 1:\n%s", idx, byJob)
 	}
 	failedBy := run(bindSQL(jobsByJobSQL(jobs, "failed_at", "failed"), "[]"))
-	if n := strings.Count(failedBy, "\n") + 1; strings.TrimSpace(failedBy) == "" || n != 2 {
-		t.Errorf("failures-by-job rows = %d, want 2 (db-migrate-up in stg, dbrole-provision-reliant):\n%s", n, failedBy)
+	if n := strings.Count(failedBy, "\n") + 1; strings.TrimSpace(failedBy) == "" || n != 4 {
+		t.Errorf("failures-by-job rows = %d, want 4 (db-migrate-up in stg, dbrole-provision-reliant, reindex, rebuild):\n%s", n, failedBy)
 	}
 }

@@ -51,10 +51,16 @@ func dashboardSpecForEntities(projectDir string, entities *KCLEntities) (*obsdas
 }
 
 // frontendIdentities are the frontends a set of rendered frontends serve and
-// the service.name each reports. An in-repo frontend reports
-// naming.FrontendServiceName (its otel_gen.ts); one built from another
-// repository (Source set) bakes that repository's name, which forge cannot
-// read, so its declared name is accepted too.
+// the service.name each reports.
+//
+// An in-repo frontend reports naming.FrontendServiceName(project, name) (its
+// otel_gen.ts). A frontend built from another repository (Source set) reports
+// the name THAT repository's generate baked, naming.FrontendServiceName of the
+// source project and the source frontend: neither this project's name nor the
+// name this environment deploys it under. forge cannot read it from here, so
+// the frontend declares it (telemetry.service_name), and that exact name is
+// used. One that declares none is guessed: its deployed name and the project
+// derivation, which match only when the source repository happens to agree.
 func frontendIdentities(project string, frontends []FrontendEntity) (names, services []string) {
 	seen := map[string]bool{}
 	for _, fe := range frontends {
@@ -63,11 +69,13 @@ func frontendIdentities(project string, frontends []FrontendEntity) (names, serv
 		}
 		seen[fe.Name] = true
 		names = append(names, fe.Name)
-		services = append(services, naming.FrontendServiceName(project, fe.Name))
-		if fe.Source != nil {
-			// Built from another repository, whose own generate baked its
-			// SERVICE_NAME; its declared name is the best statement of it.
-			services = append(services, fe.Name)
+		switch {
+		case fe.Source == nil:
+			services = append(services, naming.FrontendServiceName(project, fe.Name))
+		case fe.Telemetry != nil && fe.Telemetry.ServiceName != "":
+			services = append(services, fe.Telemetry.ServiceName)
+		default:
+			services = append(services, naming.FrontendServiceName(project, fe.Name), fe.Name)
 		}
 	}
 	return names, services

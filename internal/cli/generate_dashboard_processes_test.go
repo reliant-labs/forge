@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/reliant-labs/forge/internal/naming"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -284,8 +285,8 @@ func TestFrontendIdentitiesFollowWhatTheEnvironmentServes(t *testing.T) {
 	if !reflect.DeepEqual(names, []string{"reliant-web", "site"}) {
 		t.Errorf("names = %v", names)
 	}
-	// An in-repo frontend reports <project>-<name>; one built elsewhere also
-	// reports under its own declared name.
+	// An in-repo frontend reports <project>-<name>; a sourced one that declares
+	// no telemetry.service_name is guessed under both candidate names.
 	if want := []string{"control-plane-reliant-web", "reliant-web", "control-plane-site"}; !reflect.DeepEqual(services, want) {
 		t.Errorf("services = %v, want %v", services, want)
 	}
@@ -394,6 +395,59 @@ func TestJobsAndLongRunningWorkloadsOfOneCommandStaySeparateInEitherOrder(t *tes
 		}
 		if w := []string{"api", "api-worker"}; !reflect.DeepEqual(ids.Workloads, w) {
 			t.Errorf("%s: long-running workloads = %v, want %v (a job never leaks in, a service never drops out)", name, ids.Workloads, w)
+		}
+	}
+}
+
+// A frontend built from another repository reports the service.name THAT
+// repository baked (naming.FrontendServiceName of its project and frontend),
+// which differs from the deploying project's name and from the name the
+// environment deploys it under. Here the source project is "shop", its
+// frontend "web", the deploying project "platform" and the deployment "store":
+// the SDK reports "shop-web", and neither "platform-store" nor "store" is it.
+func TestSourcedFrontendReportsTheSourceRepositorysTelemetryName(t *testing.T) {
+	src := &config.GitSource{Repo: "github.com/acme/shop", Ref: "v1.0.0", Subdir: "web"}
+	baked := naming.FrontendServiceName("shop", "web")
+	names, services := frontendIdentities("platform", []FrontendEntity{
+		{Name: "store", Type: "vite-spa", Source: src, Telemetry: &FrontendTelemetryEntity{ServiceName: baked}},
+		{Name: "admin", Type: "vite-spa"},
+	})
+	if !reflect.DeepEqual(names, []string{"store", "admin"}) {
+		t.Errorf("names = %v", names)
+	}
+	if want := []string{"shop-web", "platform-admin"}; !reflect.DeepEqual(services, want) {
+		t.Fatalf("services = %v, want %v: a declared telemetry name is used exactly, never the deployment's", services, want)
+	}
+
+	// And it reaches the dashboard and the alerts that filter on it.
+	dir := t.TempDir()
+	for rel, body := range map[string]string{
+		"forge.yaml": "name: platform\nmodule_path: example.com/platform\n",
+		"go.mod":     "module example.com/platform\n\ngo 1.25\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := obsdash.Write(dir, obsdash.Input{Project: "platform", Frontends: []string{"store"}}, &checksums.FileChecksums{}); err != nil {
+		t.Fatal(err)
+	}
+	site := &KCLEntities{Frontends: []FrontendEntity{{Name: "store", Type: "vite-spa", Source: src,
+		Runtime: FrontendRuntime{Type: FrontendRuntimeHosted}, Telemetry: &FrontendTelemetryEntity{ServiceName: baked}}}}
+	sp, err := dashboardSpecForEntities(dir, site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"shop-web"`) {
+		t.Errorf("the frontend dashboard is not scoped to the baked telemetry name shop-web:\n%s", b)
+	}
+	for _, wrong := range []string{`"platform-store"`, `"store"`} {
+		if strings.Contains(string(b), wrong) {
+			t.Errorf("the frontend dashboard is scoped to %s, which the SDK never reports", wrong)
 		}
 	}
 }

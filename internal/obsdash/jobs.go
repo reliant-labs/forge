@@ -177,14 +177,35 @@ func BuildJobs(project string, jobs []Process) Dashboard {
 }
 
 // jobExecutionsSQL is the subquery every run count is built on: one row per
-// EXECUTION, which is one Kubernetes Job in one environment. It groups by
-// (reliant.env.id, Job name) rather than counting events, because the Job
-// controller emits SuccessfulCreate once per POD (a parallel Job, or a pod
-// replaced after a failure, emits several for one run), and because identical
-// specs deployed to two environments share a hashed Job name, as can a cron's
-// scheduled-time stamp. Counting events would report one run as several;
-// grouping by name alone would report one run that both succeeded and failed,
-// with a duration assembled across environments.
+// EXECUTION of a Job. It groups events into executions instead of counting
+// them, because
+//
+//   - the Job controller emits SuccessfulCreate once per POD (a parallel Job,
+//     or a pod replaced after a failure, repeats it for one run);
+//   - identical specs deployed to two environments share a hashed Job name, as
+//     can a cron's scheduled-time stamp, so the environment is part of the key;
+//   - forge names a standalone Job from its pod-spec hash alone, so deleting
+//     and recreating an unchanged Job (or re-adding a pruned version) reuses
+//     the name, and two executions share (environment, name).
+//
+// An execution is (environment, Job name, Job UID, generation):
+//
+//	uid         the involved object's UID (k8s.object.uid), which the k8s_events
+//	            receiver emits as a resource attribute. The node agent drops it
+//	            today (control-plane otel_agent.k, INFRA_EVENT_DROP_RES_ATTRS),
+//	            so it is '' and this key is inert until the agent keeps it for
+//	            Job events; when stored, it separates executions exactly, even
+//	            one deleted while running that never emitted a terminal event.
+//	generation  how many executions of this (environment, name, uid) began before
+//	            this event: a SuccessfulCreate that directly follows a terminal
+//	            event (Completed, or a failure) begins the next one. The Job
+//	            controller never creates a pod after it has finished a Job, so a
+//	            create after a terminal event is always a new Job. Events are
+//	            ordered by time, creates before terminals on a tie (event times
+//	            have one-second resolution).
+//
+// Only the events that bound a run are read (creates, Completed, the failure
+// reasons), so a Job that only shows other events in the range is no run.
 //
 // Columns: env, run (the Job's name), job (the forge name it maps back to, ”
 // for a Job that is not one of the project's), started, finished, failed_at
@@ -194,22 +215,32 @@ func BuildJobs(project string, jobs []Process) Dashboard {
 func jobExecutionsSQL(names []string) string {
 	list := "['" + strings.Join(names, "', '") + "']"
 	fail := strings.Join(jobFailureReasons, "', '")
+	terminal := "'" + jobEventCompleted + "', '" + fail + "'"
 	return fmt.Sprintf(`SELECT env, run,
-         arrayFirst(n -> match(run, concat('^', n, '%s$')), %s) AS job,
-         minIf(Timestamp, reason = '%s') AS started,
-         maxIf(Timestamp, reason = '%s') AS finished,
-         maxIf(Timestamp, reason IN ('%s')) AS failed_at,
-         countIf(reason IN ('%s')) > 0 AS failed
+         arrayFirst(n -> match(run, concat('^', n, '%[1]s$')), %[2]s) AS job,
+         minIf(Timestamp, reason = '%[3]s') AS started,
+         maxIf(Timestamp, reason = '%[4]s') AS finished,
+         maxIf(Timestamp, reason IN ('%[5]s')) AS failed_at,
+         countIf(reason IN ('%[5]s')) > 0 AS failed
   FROM (
-    SELECT Timestamp, ResourceAttributes['reliant.env.id'] AS env,
-           ResourceAttributes['k8s.workload.name'] AS run, LogAttributes['k8s.event.reason'] AS reason
-    FROM otel_logs
-    WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)}
-      AND LogAttributes['k8s.event.reason'] != ''
-      AND if(mapContains(LogAttributes, 'k8s.object.kind'), LogAttributes['k8s.object.kind'], ResourceAttributes['k8s.object.kind']) = 'Job'
-      AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))
+    SELECT Timestamp, env, run, uid, reason,
+           sum(reason = '%[3]s' AND prev IN (%[6]s)) OVER (PARTITION BY env, run, uid ORDER BY Timestamp, ended ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS generation
+    FROM (
+      SELECT Timestamp, env, run, uid, reason, reason IN (%[6]s) AS ended,
+             lagInFrame(reason, 1, '') OVER (PARTITION BY env, run, uid ORDER BY Timestamp, ended ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS prev
+      FROM (
+        SELECT Timestamp, ResourceAttributes['reliant.env.id'] AS env,
+               ResourceAttributes['k8s.workload.name'] AS run, ResourceAttributes['k8s.object.uid'] AS uid,
+               LogAttributes['k8s.event.reason'] AS reason
+        FROM otel_logs
+        WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)}
+          AND LogAttributes['k8s.event.reason'] IN ('%[3]s', %[6]s)
+          AND if(mapContains(LogAttributes, 'k8s.object.kind'), LogAttributes['k8s.object.kind'], ResourceAttributes['k8s.object.kind']) = 'Job'
+          AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))
+      )
+    )
   )
-  GROUP BY env, run`, jobRunSuffix, list, jobEventCreated, jobEventCompleted, fail, fail)
+  GROUP BY env, run, uid, generation`, jobRunSuffix, list, jobEventCreated, jobEventCompleted, fail, terminal)
 }
 
 // jobsSummarySQL is the per-job table: one row per forge job.

@@ -93,3 +93,15 @@ type AlertReader interface {
 type DeliveryReader interface {
 	TelemetryDeliveries(ctx context.Context) (DeliveriesResult, error)
 }
+
+// DashboardReader replays the console's dashboards: the index it lists for an
+// env, a dashboard's spec, and one panel run the way the console runs it, read
+// back as counts (`forge obs dashboards audit`). Only the cloud backend
+// implements it: a local ClickStack stores no dashboards.
+//
+//forge:contract
+type DashboardReader interface {
+	ListDashboards(ctx context.Context, project string) ([]DashboardInfo, error)
+	GetDashboard(ctx context.Context, ref DashboardRef) (DashboardDocument, error)
+	QueryPanelReadout(ctx context.Context, req PanelReadoutRequest) (PanelReadout, error)
+}

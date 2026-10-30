@@ -2,6 +2,7 @@ package obsbackend
 
 import (
 	"context"
+	"encoding/json"
 	"hash/fnv"
 	"math"
 	"sort"
@@ -249,6 +250,13 @@ type wirePanel struct {
 	Limit    int               `json:"limit,omitempty"`
 	SQL      string            `json:"sql,omitempty"`
 	HasError bool              `json:"hasError,omitempty"`
+	Funnel   *wireFunnel       `json:"funnel,omitempty"`
+}
+
+type wireFunnel struct {
+	Steps  []string `json:"steps"`
+	Window string   `json:"window,omitempty"`
+	By     string   `json:"by,omitempty"`
 }
 
 func wirePreds(ps []obsquery.PanelPredicate) []wirePredicate {
@@ -259,13 +267,22 @@ func wirePreds(ps []obsquery.PanelPredicate) []wirePredicate {
 	return out
 }
 
-// panelWire is p as the control plane's Panel message.
+// panelWire is p as the control plane's Panel message, for the verbs that
+// print a table: a funnel has no table form yet, so they refuse it.
 func panelWire(p obsquery.Panel) (wirePanel, error) {
 	if p.Funnel != nil {
 		return wirePanel{}, Wrong("a funnel panel cannot be sent from the CLI yet; run it in the console")
 	}
+	return panelWireAny(p)
+}
+
+// panelWireAny is p as the control plane's Panel message, a funnel included.
+func panelWireAny(p obsquery.Panel) (wirePanel, error) {
 	w := wirePanel{ID: p.ID, Kind: p.Kind, Signal: p.Signal, Ratio: p.Ratio, Where: wirePreds(p.Where),
 		GroupBy: p.GroupBy, Formula: p.Formula, Limit: p.Limit, SQL: p.SQL, HasError: p.HasError}
+	if f := p.Funnel; f != nil {
+		w.Funnel = &wireFunnel{Steps: f.Steps, Window: f.Window, By: f.By}
+	}
 	for _, s := range p.Series {
 		w.Series = append(w.Series, wirePanelSeries{Label: s.Label, Agg: s.Agg, Quantile: s.Quantile,
 			Field: s.Field, MetricType: s.MetricType, Where: wirePreds(s.Where)})
@@ -303,10 +320,19 @@ type wireSeriesMeta struct {
 type wirePanelResponse struct {
 	Columns []string `json:"columns"`
 	Rows    []struct {
-		Group  map[string]string `json:"group"`
-		Values []float64         `json:"values"`
+		Group               map[string]string `json:"group"`
+		Values              []float64         `json:"values"`
+		MissingValueIndexes []int             `json:"missingValueIndexes"`
 	} `json:"rows"`
-	Series     []wirePanelSeriesResult `json:"series"`
+	Series []wirePanelSeriesResult `json:"series"`
+	// The console kinds and the heatmap are read as counts only: the audit asks
+	// whether there is anything to draw, not what.
+	FunnelSteps []struct {
+		Count jsonInt `json:"count"`
+	} `json:"funnelSteps"`
+	Issues     []json.RawMessage `json:"issues"`
+	Sessions   []json.RawMessage `json:"sessions"`
+	Heatmap    []json.RawMessage `json:"heatmap"`
 	SQLColumns []struct {
 		Name    string `json:"name"`
 		Type    string `json:"type"`
@@ -322,6 +348,10 @@ type wirePanelResponse struct {
 	SeriesMeta  []wireSeriesMeta `json:"seriesMeta"`
 	SeriesTotal int              `json:"seriesTotal"`
 	Warnings    []string         `json:"warnings"`
+	// Sent by control planes that report a sql panel's bucket; absent on older
+	// ones, and never required.
+	BucketSeconds  jsonInt `json:"bucketSeconds"`
+	BucketTimezone string  `json:"bucketTimezone"`
 }
 
 func (c Cloud) queryPanel(ctx context.Context, n Narrow, p obsquery.Panel, step int64) (wirePanelResponse, error) {
@@ -329,14 +359,18 @@ func (c Cloud) queryPanel(ctx context.Context, n Narrow, p obsquery.Panel, step 
 	if err != nil {
 		return wirePanelResponse{}, err
 	}
+	return c.queryPanelScoped(ctx, c.scope(n), panel, step, n.Explain)
+}
+
+func (c Cloud) queryPanelScoped(ctx context.Context, scope wireScope, panel wirePanel, step int64, explain bool) (wirePanelResponse, error) {
 	in := struct {
 		Scope       wireScope `json:"scope"`
 		Panel       wirePanel `json:"panel"`
 		StepSeconds int64     `json:"stepSeconds,omitempty"`
 		Explain     bool      `json:"explain,omitempty"`
-	}{c.scope(n), panel, step, n.Explain}
+	}{scope, panel, step, explain}
 	var out wirePanelResponse
-	err = c.call(ctx, procQueryPanel, in, &out)
+	err := c.call(ctx, procQueryPanel, in, &out)
 	return out, err
 }
 

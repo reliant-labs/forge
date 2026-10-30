@@ -334,8 +334,8 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 	switch {
 	case relPath != "" && !checksums.Stampable(relPath):
 		// A comment-incapable output (JSON) is certified by
-		// .forge/hashes.json, which keeps THIS side's hash where both sides
-		// re-rendered (MergeStateFile). A merged body — clean or not —
+		// its certificate under .forge/hashes/, which keeps THIS side's hash
+		// where both sides re-rendered it (MergeStateFile). A merged body — clean or not —
 		// would match no recorded hash, and generate would refuse it as a
 		// hand edit. So when this side is forge's verified render, keep it.
 		if unstampableRenderOfOurs(relPath, ours) {

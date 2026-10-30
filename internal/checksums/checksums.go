@@ -872,7 +872,7 @@ func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 				// Formatter-equivalent to the CURRENT render: overwriting
 				// loses nothing user-authored and heals both the formatting
 				// and the stale stamp. Fall through to the write.
-			case canonOK && canonBody == embedded && embedded != UnverifiedMarkerValue:
+			case canonOK && goFormatterEquivalent(root, relPath, onDisk, embedded):
 				// Formatter-equivalent to the certified OLDER render — the
 				// clean-file analogue of Pristine-but-stale, so the same
 				// non-destructive default applies: skip loudly unless the
@@ -882,7 +882,7 @@ func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 					return WriteOutcome{}, nil
 				}
 				if _, pending := pendingHeals[relPath]; !pending && !derived {
-					pendingHeals[relPath] = pendingHeal{oldBody: embedded, trigger: healTriggerFor(relPath, force)}
+					pendingHeals[relPath] = pendingHeal{oldBody: canonBody, trigger: healTriggerFor(relPath, force)}
 				}
 			case !forceApplies(relPath, force):
 				// Hand-edited after forge stamped it: the stomp guard's

@@ -217,15 +217,32 @@ func splitLines(content []byte) [][]byte {
 	return lines
 }
 
-// stripMarkerLines removes every line containing markerKey from
-// LF-normalized content.
+// stripMarkerLines removes every marker line from LF-normalized content:
+// each line containing markerKey, and each section line (sections.go),
+// stamped or not, so a render and its stamped form hash alike.
 func stripMarkerLines(content []byte) []byte {
+	if !bytes.Contains(content, []byte(markerKey)) && !bytes.Contains(content, []byte(sectionKey)) {
+		return content
+	}
+	var out []byte
+	for _, line := range splitLines(content) {
+		if bytes.Contains(line, []byte(markerKey)) || isSectionLine(line) {
+			continue
+		}
+		out = append(out, line...)
+	}
+	return out
+}
+
+// stripHeadMarkerLines removes the marker lines that are NOT section
+// lines: what Stamp replaces, leaving the section boundaries in place.
+func stripHeadMarkerLines(content []byte) []byte {
 	if !bytes.Contains(content, []byte(markerKey)) {
 		return content
 	}
 	var out []byte
 	for _, line := range splitLines(content) {
-		if bytes.Contains(line, []byte(markerKey)) {
+		if bytes.Contains(line, []byte(markerKey)) && !isSectionLine(line) {
 			continue
 		}
 		out = append(out, line...)
@@ -370,7 +387,7 @@ func Verify(content []byte) VerifyStatus {
 	if !found {
 		return NoMarker
 	}
-	if embedded == BodyHash(content) {
+	if selfCertifies(content, embedded) {
 		return Pristine
 	}
 	return Modified
@@ -391,7 +408,7 @@ func markerLine(relPath, hash string) ([]byte, bool) {
 // existing marker lines are removed first. Returns ok=false for
 // unstampable formats.
 func StampWithValue(relPath string, content []byte, value string) ([]byte, bool) {
-	body := stripMarkerLines(content)
+	body := stripHeadMarkerLines(content)
 	line, ok := markerLine(relPath, value)
 	if !ok {
 		return nil, false
@@ -410,8 +427,14 @@ func StampWithValue(relPath string, content []byte, value string) ([]byte, bool)
 // Stamp(Stamp(x)) == Stamp(x) — because the hash excludes the marker
 // line. Returns ok=false for unstampable formats.
 func Stamp(relPath string, content []byte) ([]byte, bool) {
-	if !Stampable(relPath) {
+	style, ok := styleFor(relPath)
+	if !ok {
 		return nil, false
+	}
+	if hasSectionLines(content) {
+		content = normalizeNewlines(content)
+		content = stampSections(style, content)
+		return StampWithValue(relPath, content, BodyHash(preambleOf(content)))
 	}
 	return StampWithValue(relPath, content, BodyHash(content))
 }

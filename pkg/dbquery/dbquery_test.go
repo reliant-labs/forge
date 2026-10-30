@@ -170,7 +170,7 @@ func TestRun_SetsTransactionLimitsAndReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := mustJSON(t, res.Rows[0]); got != `["on","repeatable read","7s","1s"]` {
+	if got := mustJSON(t, res.Rows[0]); got != `["on","read committed","7s","1s"]` {
 		t.Errorf("settings = %s", got)
 	}
 	// And nothing leaked onto the connection.
@@ -614,5 +614,150 @@ func TestRun_AuditRunsEvenWhenTheCallerCanceled(t *testing.T) {
 	_, _ = Run(ctx, conn, `SELECT pg_sleep(30)`, Options{Auditor: aud})
 	if !sawLive {
 		t.Error("the audit context died with the caller's: a canceled query would go unrecorded")
+	}
+}
+
+// --- isolation, lock timeout, arguments ------------------------------------
+
+func TestRun_IsReadCommittedAndReadOnly(t *testing.T) {
+	conn := newConn(t)
+	res, err := Run(context.Background(), conn, `SHOW transaction_isolation`, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(t, res.Rows); got != `[["read committed"]]` {
+		t.Errorf("transaction_isolation = %s", got)
+	}
+	res, err = Run(context.Background(), conn, `SHOW transaction_read_only`, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(t, res.Rows); got != `[["on"]]` {
+		t.Errorf("transaction_read_only = %s", got)
+	}
+}
+
+// A writer holding ACCESS EXCLUSIVE must cost a query its lock timeout and no
+// more: the query gives up instead of queueing behind the writer.
+func TestRun_LockTimeoutFiresBehindAnAccessExclusiveLock(t *testing.T) {
+	conn := newConn(t)
+	ctx := context.Background()
+	holder, err := pgx.ConnectConfig(ctx, conn.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Close(ctx) })
+	tx, err := holder.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	if _, err := tx.Exec(ctx, `LOCK TABLE people IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	_, err = Run(ctx, conn, `SELECT count(*) FROM people`, Options{LockTimeout: 150 * time.Millisecond, Timeout: 20 * time.Second})
+	e := wantKind(t, err, KindTimeout)
+	if e.Reason != "lock_timeout" {
+		t.Errorf("reason = %q, want lock_timeout", e.Reason)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("took %s: the lock timeout did not fire", took)
+	}
+
+	// The lock timeout is what the transaction runs under.
+	res, err := Run(ctx, conn, `SELECT current_setting('lock_timeout'), current_setting('idle_in_transaction_session_timeout')`,
+		Options{LockTimeout: 3 * time.Second, IdleTimeout: 4 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(t, res.Rows[0]); got != `["3s","4s"]` {
+		t.Errorf("timeouts = %s", got)
+	}
+}
+
+func TestRun_ArgsBind(t *testing.T) {
+	conn := newConn(t)
+	ctx := context.Background()
+	from := time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC)
+	res, err := Run(ctx, conn,
+		`SELECT name, $3::int4 AS step FROM people WHERE seen >= $1::timestamptz AND seen < $2::timestamptz OR name = $4 ORDER BY id`,
+		Options{Args: []any{from, from.Add(24 * time.Hour), 60, "grace"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(t, res.Rows); got != `[["ada",60],["grace",60]]` {
+		t.Errorf("rows = %s", got)
+	}
+
+	// Values are bound, never spliced.
+	res, err = Run(ctx, conn, `SELECT count(*) FROM people WHERE name = $1`, Options{Args: []any{"x' OR true --"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(t, res.Rows); got != `[[0]]` {
+		t.Errorf("injection-shaped arg matched rows: %s", got)
+	}
+}
+
+// Only the parameters the statement references are bound, so a caller may
+// hand every parameter it has to a statement that uses a few.
+func TestRun_BindsOnlyWhatTheStatementReferences(t *testing.T) {
+	conn := newConn(t)
+	rec := &recorder{}
+	args := []any{time.Now(), time.Now(), 60}
+	for _, sql := range []string{`SELECT 1`, `SELECT $1::timestamptz IS NOT NULL`, `SELECT $1::timestamptz IS NOT NULL, $2::timestamptz IS NOT NULL, $3::int4`} {
+		if _, err := Run(context.Background(), conn, sql, Options{Args: args, Auditor: rec}); err != nil {
+			t.Errorf("%s: %v", sql, err)
+		}
+	}
+	for i, want := range []int{0, 1, 3} {
+		if got := len(rec.events[i].Args); got != want {
+			t.Errorf("event %d carries %d args, want %d", i, got, want)
+		}
+	}
+	// A statement that skips $1 cannot be typed by Postgres: that is its error.
+	_, err := Run(context.Background(), conn, `SELECT $2::int4`, Options{Args: args})
+	wantKind(t, err, KindSQL)
+}
+
+func TestRun_RefusesAReferenceBeyondTheArgs(t *testing.T) {
+	conn := newConn(t)
+	rec := &recorder{}
+	_, err := Run(context.Background(), conn, `SELECT $1::int4, $2::int4, $4::int4`, Options{Args: []any{1, 2, 3}, Auditor: rec})
+	if e := wantKind(t, err, KindRefused); e.Reason != "missing_args" {
+		t.Errorf("reason = %q", e.Reason)
+	}
+	if len(rec.events) != 1 || rec.events[0].Outcome != string(KindRefused) {
+		t.Errorf("the refused attempt must be audited: %+v", rec.events)
+	}
+	// A $4 that only appears inside a string is not a reference.
+	if _, err := Run(context.Background(), conn, `SELECT '$4', $1::int4`, Options{Args: []any{1}}); err != nil {
+		t.Errorf("a $4 in a string refused: %v", err)
+	}
+}
+
+func TestRun_MaxBytesCapsBelowTheResponseCap(t *testing.T) {
+	conn := newConn(t)
+	res, err := Run(context.Background(), conn, `SELECT repeat('x', 100) FROM generate_series(1, 50)`, Options{MaxBytes: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Truncated || res.TruncatedBy != "bytes" || res.Bytes > 1000 || res.RowCount == 0 || res.RowCount >= 50 {
+		t.Errorf("result = rows %d bytes %d truncated %v by %q", res.RowCount, res.Bytes, res.Truncated, res.TruncatedBy)
+	}
+}
+
+func TestRun_AuditEventCarriesTheArgsAsValues(t *testing.T) {
+	conn := newConn(t)
+	rec := &recorder{}
+	sql := `SELECT $1::text`
+	if _, err := Run(context.Background(), conn, sql, Options{Args: []any{"v"}, Auditor: rec}); err != nil {
+		t.Fatal(err)
+	}
+	ev := rec.events[0]
+	if ev.SQL != sql || len(ev.Args) != 1 || ev.Args[0] != "v" {
+		t.Errorf("event = %+v", ev)
 	}
 }

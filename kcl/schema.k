@@ -3243,7 +3243,8 @@ schema BrowserTelemetry:
     replay_sample_rate: float = 1.0
     # What happens to the build's source maps. "publish" moves them out of the
     # served tree and keeps them for symbolicating errors; "public" serves
-    # them (an open-source app that wants that); "off" drops them.
+    # them too (an open-source app that wants that) and still keeps them for
+    # symbolicating; "off" drops them, and errors stay minified.
     sourcemaps: str = "publish"
     # Errors that are not issues.
     errors: FrontendErrors = FrontendErrors {}
@@ -4759,7 +4760,10 @@ schema ESOAdmission:
     bounds where the operator may dial on 443 and 6443 (the API server and
     the store). Narrow it to your API server and store addresses when they are
     stable. `egress_ports` lists those ports (the API server, and the store:
-    8200 is OpenBao's default listener). `store_service_account` is the one
+    8200 is OpenBao's default listener). An ipBlock never matches a pod
+    address under Cilium (GKE Dataplane V2), so the Bundle's own in-cluster
+    forge.OpenBao is admitted by a separate selector rule (its namespace and
+    pods, its TLS port) whatever these say. `store_service_account` is the one
     service account a SecretStore may ask a token for."""
     writers: [str] = []
     writer_groups: [str] = ["system:masters"]

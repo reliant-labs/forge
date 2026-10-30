@@ -3,6 +3,7 @@ package deploytarget
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -86,7 +87,7 @@ func deployApplied(t *testing.T, cp *appliedCP, timeout time.Duration) (string, 
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
-	p := HostedProvider{Client: cp, PollInterval: time.Millisecond,
+	p := HostedProvider{Client: cp, PollInterval: time.Millisecond, ApplyBudget: timeout,
 		Rollout:      cluster.RolloutPolicy{Mode: cluster.RolloutWait, Timeout: timeout},
 		RecordBundle: func(context.Context, string) (string, error) { return newBundle, nil }}
 	err := p.Deploy(context.Background(), hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}))
@@ -120,8 +121,58 @@ func TestHostedWaitTimeoutNamesTheMissingApplyNotTheOldRevisionsErrors(t *testin
 	if err == nil {
 		t.Fatal("deploy succeeded though the platform never applied the bundle")
 	}
-	if strings.Contains(err.Error(), "ImageRejected") || !strings.Contains(err.Error(), "has not applied this release yet") {
-		t.Errorf("err = %v, want the missing apply named, not the old revision's errors", err)
+	var pending *ApplyPendingError
+	if strings.Contains(err.Error(), "ImageRejected") || !errors.As(err, &pending) || !strings.Contains(err.Error(), "still applying") {
+		t.Errorf("err = %v, want a still-applying outcome, not the old revision's errors", err)
+	}
+}
+
+// A deploy that waited on a promotion and ran out of apply budget hands back
+// a watch command pinned to THAT promotion: a newer deploy moving the env in
+// the meantime must not let `env status --wait` succeed on its release.
+func TestHostedWaitStillApplyingPinsTheWatchToThisPromotion(t *testing.T) {
+	cp := &appliedCP{revisions: []string{oldBundle}, staleStatus: imageRejectedStatus}
+	p := HostedProvider{Client: cp, PollInterval: time.Millisecond, ApplyBudget: 100 * time.Millisecond,
+		Rollout:      cluster.RolloutPolicy{Mode: cluster.RolloutWait, Timeout: 100 * time.Millisecond},
+		RecordBundle: func(context.Context, string) (string, error) { return newBundle, nil }}
+	group := hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})
+	group.Hosted.PromotionID = "promo-1"
+	var err error
+	_ = captureStdout(t, func() { err = p.Deploy(context.Background(), group) })
+	var pending *ApplyPendingError
+	if !errors.As(err, &pending) {
+		t.Fatalf("err = %v, want still applying", err)
+	}
+	if pending.PromotionID != "promo-1" || !strings.Contains(err.Error(), "forge env status prod --wait --promotion promo-1") {
+		t.Errorf("err = %q (promotion %q), want the watch pinned to promo-1", err, pending.PromotionID)
+	}
+}
+
+// The apply wait is at least ApplyBudget even when the readiness timeout is
+// shorter: a platform that applies after the readiness budget, but inside the
+// apply budget, is a successful deploy.
+func TestHostedWaitApplyBudgetOutlastsAShortReadinessTimeout(t *testing.T) {
+	// Twenty unapplied polls at 10ms land the bundle about 200ms in, well
+	// past the 30ms readiness timeout.
+	revisions := make([]string, 20, 21)
+	for i := range revisions {
+		revisions[i] = oldBundle
+	}
+	cp := &appliedCP{
+		revisions:        append(revisions, newBundle),
+		staleStatus:      imageRejectedStatus,
+		statusAfterApply: readyStatus(digestA)(0),
+	}
+	cp.fakeCP.status = readyStatus(digestA)
+	p := HostedProvider{Client: cp, PollInterval: 10 * time.Millisecond, ApplyBudget: 5 * time.Second,
+		Rollout:      cluster.RolloutPolicy{Mode: cluster.RolloutWait, Timeout: 30 * time.Millisecond},
+		RecordBundle: func(context.Context, string) (string, error) { return newBundle, nil }}
+	var err error
+	out := captureStdout(t, func() {
+		err = p.Deploy(context.Background(), hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{}))
+	})
+	if err != nil {
+		t.Fatalf("deploy: %v\n%s", err, out)
 	}
 }
 

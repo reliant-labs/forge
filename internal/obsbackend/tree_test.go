@@ -249,3 +249,70 @@ func TestCmdQuoting(t *testing.T) {
 		t.Errorf("got %s", got)
 	}
 }
+
+// A handler whose children cover a sliver of it says where the rest went: the
+// largest stretch no child covers, here after the last child, as in trace
+// 5546d32c35e0aede4eb48417a8cb43c2 (10s, 15ms of children).
+func TestTreeReportsUninstrumentedTime(t *testing.T) {
+	spans := []Span{
+		sp("r", "", "admin", "GetServiceSignals", 0, 10_000, "unset"),
+		sp("a", "r", "admin", "SELECT users", 1, 3, "unset"),
+		sp("b", "r", "admin", "SELECT envs", 2, 5, "unset"), // overlaps a
+		sp("c", "r", "admin", "ConnFor", 11, 3, "unset"),
+	}
+	spans[0].Kind = "server"
+	root := BuildTree(spans, false).Roots[0]
+	if root.Uninstrumented != 10_000*time.Millisecond-9*time.Millisecond {
+		t.Errorf("uninstrumented = %v, want 9.991s (children cover 1-7ms and 11-14ms)", root.Uninstrumented)
+	}
+	if root.Gap != [2]time.Duration{14 * time.Millisecond, 10 * time.Second} {
+		t.Errorf("largest gap = %v, want 14ms → 10s", root.Gap)
+	}
+	for _, c := range root.Children {
+		if c.Uninstrumented != 0 {
+			t.Errorf("%s: a client leaf's time is its peer's, not a gap: %v", c.Span.Name, c.Uninstrumented)
+		}
+	}
+}
+
+func TestTreeIgnoresSmallOrCoveredGaps(t *testing.T) {
+	covered := []Span{sp("r", "", "api", "GET /x", 0, 1000, "unset"), sp("a", "r", "api", "SELECT a", 0, 900, "unset")}
+	if g := BuildTree(covered, false).Roots[0].Uninstrumented; g != 0 {
+		t.Errorf("90%% covered reported a gap of %v", g)
+	}
+	tiny := []Span{sp("r", "", "api", "GET /x", 0, 40, "unset")}
+	tiny[0].Kind = "server"
+	if g := BuildTree(tiny, false).Roots[0].Uninstrumented; g != 0 {
+		t.Errorf("a 40ms leaf reported a gap of %v (below GapMinDuration)", g)
+	}
+	leaf := []Span{sp("r", "", "worker", "Run", 0, 2000, "unset")}
+	leaf[0].Kind = "internal"
+	if n := BuildTree(leaf, false).Roots[0]; n.Uninstrumented != 2*time.Second || n.Gap != [2]time.Duration{0, 2 * time.Second} {
+		t.Errorf("a 2s internal leaf: %v %v, want all of it", n.Uninstrumented, n.Gap)
+	}
+	// A child that starts before or ends after its parent (clock skew across
+	// services) is clipped, never counted twice.
+	skew := []Span{sp("r", "", "api", "GET /x", 100, 1000, "unset"), sp("a", "r", "db", "q", 0, 2000, "unset")}
+	if g := BuildTree(skew, false).Roots[0].Uninstrumented; g != 0 {
+		t.Errorf("a skewed child covering the parent left a gap of %v", g)
+	}
+	// One that starts before its parent and ends inside it covers only the
+	// overlap: parent 100ms-1100ms, child 0-200ms covers 100-200ms.
+	early := []Span{sp("r", "", "api", "GET /x", 100, 1000, "unset"), sp("a", "r", "db", "q", 0, 200, "unset")}
+	if n := BuildTree(early, false).Roots[0]; n.Uninstrumented != 900*time.Millisecond || n.Gap != [2]time.Duration{100 * time.Millisecond, time.Second} {
+		t.Errorf("a child overlapping the parent's first 100ms: %v %v, want 900ms in 100ms → 1s", n.Uninstrumented, n.Gap)
+	}
+}
+
+// The control plane spells status codes "Error"; the local store "error".
+func TestErrorSpansAnySpelling(t *testing.T) {
+	for _, st := range []string{"error", "Error", "STATUS_CODE_ERROR"} {
+		s := sp("a", "", "api", "x", 0, 1, st)
+		if !isErrorSpan(&s) {
+			t.Errorf("status %q is not an error", st)
+		}
+	}
+	if s := sp("a", "", "api", "x", 0, 1, "Unset"); isErrorSpan(&s) {
+		t.Error("Unset is an error")
+	}
+}

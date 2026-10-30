@@ -742,12 +742,16 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 			"  fix: declare `control_plane = forge.ControlPlane {...}` on the Bundle, or bind them to another runtime",
 			envName, strings.Join(names, ", "))
 	}
-	return &deploytarget.ServiceGroup{
+	group := &deploytarget.ServiceGroup{
 		Env:        envName,
 		ProviderID: deploytarget.HostedProviderID,
 		Services:   services,
 		HostedPlan: hostedPlanOf(entities),
-	}, nil
+	}
+	if group.HostedPlan == deploy.HostedPlanClaimable {
+		group.ClaimableLimits = claimableLimitsFor(envName, entities).limits
+	}
+	return group, nil
 }
 
 // hostedStaticSpec projects a frontend on forge.OnHosted onto the DEPLOYED

@@ -10,7 +10,11 @@ and alert inputs without claiming process ownership. It scopes the overview to
 the service.names and workloads every environment that renders declares (the
 same derivation a bundle uses), so the local stack's overview draws your
 processes; an environment that does not render is skipped, so a newly scaffolded
-operator can still generate while prod's cluster is unbound.
+operator can still generate while prod's cluster is unbound. The local overview
+(`<project>-overview.json`) is yours once written, but while it is still the
+untouched render of "nothing deployed" (every panel on
+`__forge_no_deployed_process__`) the next generate that finds workloads
+replaces it; an edited one is never touched.
 
 `forge env render <env>` validates, and `forge env build <env>` assembles the
 process dashboards from the selected environment's already-rendered
@@ -50,6 +54,16 @@ original global behavior; every non-empty target and section must be declared.
 Sections are presentation groups, not authorization or implicit filter scope.
 HyperDX cannot target a filter to a subset of tiles, so it omits those dropdowns
 rather than silently applying them globally.
+
+Optional viewer defaults: `defaultRange` on a dashboard (`"7d"`: a number and
+a unit of s, m, h or d, at most 30d) is the range it opens on when the viewer
+picked none. A `sql` panel whose statement groups by a fixed bucket
+(`toDate`, `toStartOfWeek`) rather than by `{step}` declares `minStep` (`"1d"`):
+a range shorter than two such buckets draws one point, so the console widens
+that panel's range to hold two and says so. Prefer `{step}` in the statement
+when the panel can follow the range.
+
+`scope` on a dashboard is one of `"project"` (the default), `"org"` or `"platform"`. `project` reads the environments selected within the route's project. `org` reads every project of the organization, still narrowed to the selected environments. `platform` says the signals are platform or infrastructure telemetry that belongs to no environment (a database, a message bus, a collector): it carries no `reliant.env.id`, so an environment filter would match nothing, and a reader drops that one predicate and nothing else. The scope is a statement about the data, not an access grant; who may read it, and from which organization's data, stays the reader's decision. Most projects never set it.
 
 ## What the panels match
 

@@ -54,3 +54,13 @@ assert_mount = "['jwt-hub']" in _expr
 assert_openbao_audience = "'https://openbao.openbao.svc:8200/c/hub'" in _expr
 assert_hosted_audience = "'https://secrets.reliantapi.com/c/hub'" in _expr
 assert_gcp_project = "['acme-gsm']" in _expr
+
+# The in-cluster store is reached by a selector peer, not only the 0.0.0.0/0
+# ipBlock: Cilium (GKE Dataplane V2) never matches a pod address against an
+# ipBlock, so without this rule the operator's dial to the store is dropped.
+_egress = output.helm_charts[0].values.networkPolicy.egress
+_peer = [r for r in _egress if r.to and r.to[0].podSelector][0]
+assert_store_peer_namespace = _peer.to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "openbao"
+assert_store_peer_pod = _peer.to[0].podSelector.matchLabels["app.kubernetes.io/name"] == "openbao"
+assert_store_peer_port = _peer.ports == [{"protocol": "TCP", "port": 8200}]
+assert_cidr_rule_kept = len(_egress) == 3

@@ -40,12 +40,15 @@ live URL and a claim link for a human, who signs up by opening it. The
 control plane says so (`claimable = True` below), so every check judges the
 env under the claimable plan — one service with its migration job, one
 database, one static site — and `_hosted` sizes each service and job to the
-plan's cap (`_claimable_resources`: 250m / 256 MiB, request and limit, no
-burst) instead of the billed plan's 4 GiB-per-vCPU shape band.
+plan's cap (`_claimable_resources`: {{.ClaimableShape}}, request and limit,
+no burst) instead of the billed plan's 4 GiB-per-vCPU shape band, and the
+database to {{.ClaimableDatabaseStorageGiB}} GiB. The control plane publishes the caps
+(GetClaimableAvailability) and every check reads them from it.
 
 Once the deploy is claimed and you deploy it to your organization, delete
-`claimable = True` and the `resources` line in `_hosted` (the default 250m /
-1 GiB is on the band), then `forge env deploy {{.EnvName}}`.
+`claimable = True`, the `resources` line in `_hosted` (the default 250m /
+1 GiB is on the band) and the database's `spec`, then
+`forge env deploy {{.EnvName}}`.
 {{- else}}
 `forge env deploy {{.EnvName}}`.
 {{- end}}
@@ -73,6 +76,11 @@ import .config as appcfg
 {{if not .DatabaseDisabled}}_db = forge.ManagedDatabase {
     name = "{{.ProjectName}}"
     runtime = forge.OnHosted {}
+{{- if .Claimable}}
+    # The claimable plan's database (the platform sizes its server and
+    # provisions its volume; a declaration over this is refused).
+    spec = {storageGiB = {{.ClaimableDatabaseStorageGiB}}}
+{{- end}}
 }{{end}}
 
 # This env's layer over a workload: the typed config projected into its env
@@ -98,8 +106,11 @@ _configured = lambda w: fw.Workload -> fw.Workload {
 # cookie /auth/login sets: the site and the API are different origins, so
 # without it sign-in answers 200 and every call after it 401s{{end}}.
 {{- if .Claimable}}
-# The claimable plan's largest shape (pkg/deploy.ClaimableResources): what
-# an anonymous service or job may ask for, request and limit, no burst.
+# The claimable plan's largest shape (the control plane's published caps): what
+# an anonymous service or job may ask for, request and limit, no burst.{{if not .DatabaseDisabled}}
+# Its database allows {{.ClaimableDBConnections}} connections, three of them reserved for the
+# platform, so `_hosted` caps each workload's pool at {{.ClaimableDBPool}} (the default 25
+# fails requests with "too many clients" under load).{{end}}
 _claimable_resources = fw.Resources {
 {{.ClaimableResources}}
 }
@@ -111,7 +122,8 @@ _hosted = lambda w: fw.Workload -> fw.Workload {
         env = _c.env \
             | ({{if .DatabaseDisabled}}{}{{else}}{DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {}{{end}}){{if .HasFrontend}} \
             | ({CORS_ORIGINS = forge.WorkloadURL {workload = "{{.FrontendName}}"}, CORS_ALLOW_CREDENTIALS = "true"} if w.kind == "service" else {}){{end}}
-{{- if .Claimable}}
+{{- if .Claimable}}{{if not .DatabaseDisabled}} \
+            | ({DB_MAX_OPEN_CONNS = "{{.ClaimableDBPool}}", DB_MAX_IDLE_CONNS = "2"} if "DATABASE_URL" in w.config_secrets else {}){{end}}
         if w.kind in ["service", "job"]:
             resources = _claimable_resources
 {{- end}}
@@ -175,6 +187,16 @@ _build_only = lambda w: fw.Workload -> fw.Workload {
 # service would leave the frontend reaching one of them, signed in to none
 # of the others.
 #
+{{- if .Roots}}
+# `server` runs every service and worker (dev runs the same `_api`, under
+# air), so `forge scaffold service|worker` declares no workload and adds no
+# line below for one. The binary has no command per service: splitting one
+# out — a service no browser calls, a worker that needs its own capacity —
+# is a root of its own (a `//forge:root` struct in internal/app, then a
+# workload bound with `config_gen.root_of("<root>")`, see workloads.k) and
+# its own line here. (`server` runs no operator here — with no Kubernetes
+# API it logs that operators are disabled and serves on.)
+{{- else}}
 # workloads.k still declares each service and worker; here `server` runs
 # them (dev runs the same `_api`, under air). So `forge scaffold
 # service|worker` adds no line below for one. Splitting one out — a service
@@ -182,6 +204,7 @@ _build_only = lambda w: fw.Workload -> fw.Workload {
 # `_hosted(wl.<name>)`, and taking it out of `server`'s mount or worker list:
 # cmd/{{.ProjectName}}/cmd/server.go. (`server` runs no operator here — with
 # no Kubernetes API it logs that operators are disabled and serves on.)
+{{- end}}
 {{.APIWorkload}}
 
 # Every workload this env runs, one binding each. `forge scaffold` appends

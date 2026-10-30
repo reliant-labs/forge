@@ -557,3 +557,91 @@ func TestObsTraceStampsTheLiveRelease(t *testing.T) {
 		t.Errorf("stdout %s stderr %s", out, errOut)
 	}
 }
+
+// richTraceBackend answers Trace with the shape of trace
+// 5546d32c35e0aede4eb48417a8cb43c2: a 10s handler, canceled, whose children
+// cover 14ms, and an INFO "rpc failed" log whose attributes say why.
+type richTraceBackend struct {
+	obsbackend.Backend
+	start time.Time
+}
+
+func (b richTraceBackend) Info() obsbackend.Info {
+	return obsbackend.Info{Env: "dev", Backend: obsbackend.BackendLocal}
+}
+
+func (b richTraceBackend) Trace(_ context.Context, req obsbackend.TraceRequest) (obsbackend.TraceResult, error) {
+	at := func(ms int) time.Time { return b.start.Add(time.Duration(ms) * time.Millisecond) }
+	return obsbackend.TraceResult{TraceID: req.TraceID,
+		Spans: []obsbackend.Span{
+			{SpanID: "r", Name: "a.v1.Obs/GetServiceSignals", Kind: "server", Service: "admin", Start: at(0), DurationNs: 10_000 * 1e6, StatusCode: "unset",
+				Attributes: map[string]string{"rpc.method": "a.v1.Obs/GetServiceSignals", "rpc.response.status_code": "CANCELED", "error.type": "CANCELED"}},
+			{SpanID: "c", ParentID: "r", Name: "SELECT accounts", Kind: "client", Service: "admin", Start: at(11), DurationNs: 3e6, StatusCode: "unset"},
+			{SpanID: "q", ParentID: "r", Name: "SELECT t.otel_logs", Kind: "client", Service: "admin", Start: at(1), DurationNs: 2e6, StatusCode: "error",
+				StatusMessage: "context canceled", Attributes: map[string]string{"db.query.summary": "SELECT t.otel_logs", "db.clickhouse.query_id": "q-1", "db.clickhouse.read_rows": "2500000"}},
+		},
+		Logs: []obsbackend.LogRecord{{Time: at(10_000), Severity: "INFO", Service: "admin", Body: "rpc failed", SpanID: "r",
+			Attributes: map[string]string{"error": "canceled: the request was canceled", "cause": "context canceled", "log.file.path": "/var/log/x"}}},
+	}, nil
+}
+
+// The tree answers "why" without a second command: the rpc outcome and the
+// failed statement inline, the failing log's error and cause under its span,
+// and the 9.99s no child covers called out as uninstrumented.
+func TestObsTraceShowsWhyAndWhereTheTimeWent(t *testing.T) {
+	start := obsNow.Add(-10 * time.Minute)
+	run := func(args ...string) string {
+		var out, errb bytes.Buffer
+		old := obsDepsOverride
+		t.Cleanup(func() { obsDepsOverride = old })
+		obsDepsOverride = &obsDeps{
+			Facts:   func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return devFacts(), nil },
+			Local:   func(string) obsbackend.Backend { return richTraceBackend{start: start} },
+			Now:     func() time.Time { return obsNow },
+			Release: func(context.Context, string, time.Time) (*liveRelease, error) { return nil, nil },
+		}
+		cmd := newTestRootCmd(t)
+		cmd.SetOut(&out)
+		cmd.SetErr(&errb)
+		cmd.SetArgs(append([]string{"obs", "trace", "0af7651916cd43dd8448eb211c80319c", "dev"}, args...))
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("%v\n%s", err, errb.String())
+		}
+		return out.String()
+	}
+	text := run()
+	for _, want := range []string{
+		"a.v1.Obs/GetServiceSignals  10.00s  rpc=CANCELED",
+		`↳ log INFO rpc failed: error="canceled: the request was canceled" cause="context canceled"`,
+		"SELECT t.otel_logs  2.0ms  read_rows=2.5M query_id=q-1  ERROR context canceled",
+		"⋯ uninstrumented 9.99s of 10.00s (100%): largest gap +14ms → +10.00s, after the last child",
+		`rpc failed  error="canceled: the request was canceled" cause="context canceled"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text output lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "/var/log/x") {
+		t.Errorf("the log shipper's file path reached the output:\n%s", text)
+	}
+
+	doc := decode(t, run("--json"))
+	root := doc["tree"].([]any)[0].(map[string]any)
+	if root["key_attributes"].(map[string]any)["rpc"] != "CANCELED" || root["uninstrumented_ms"].(float64) < 9980 || root["gap_from_ms"].(float64) != 14 {
+		t.Errorf("root node = %v", root)
+	}
+	var failed map[string]any
+	for _, c := range root["children"].([]any) {
+		if m := c.(map[string]any); m["name"] == "SELECT t.otel_logs" {
+			failed = m
+		}
+	}
+	if failed["message"] != "context canceled" || failed["key_attributes"].(map[string]any)["query_id"] != "q-1" {
+		t.Errorf("failed statement node = %v", failed)
+	}
+	log := doc["logs"].([]any)[0].(map[string]any)
+	attrs := log["attributes"].(map[string]any)
+	if attrs["cause"] != "context canceled" || attrs["log.file.path"] != nil {
+		t.Errorf("log attributes = %v", attrs)
+	}
+}

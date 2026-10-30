@@ -184,8 +184,9 @@ HOSTED RESOURCES ARE JUDGED BY THE PLAN THE ENV DEPLOYS UNDER. An
 organization's own deploy is held to the hosted shape band (4 GiB per vCPU,
 exactly). An anonymous deploy (` + "`" + Name() + ` env deploy <env> --claimable` + "`" + `) is not
 billed, so the band does not apply; it is held to the claimable plan's caps
-instead: one service of at most 250m / 256 MiB (request and limit) with its
-migration job, one database, one static site. --claimable judges the env that
+instead: one service (at most the CPU and memory its control plane publishes in
+GetClaimableAvailability, request and limit; ` + deploy.ClaimableLimitsFallback().WorkloadShape() + ` as of this forge,
+the copy used offline) with its migration job, one database, one static site. --claimable judges the env that
 way, and so does an env that declares
 ` + "`" + `control_plane = forge.ControlPlane {claimable = True}` + "`" + `.`,
 		SilenceUsage: true,
@@ -193,6 +194,9 @@ way, and so does an env that declares
 			if claimable {
 				defer useClaimablePreview()()
 			}
+			// A claimable env (by flag or by declaration) is judged by the
+			// caps its control plane publishes, asked for once it is rendered.
+			defer resolveClaimableLimitsOnDemand()()
 			return runEnvShape(cmd, args[0], asJSON)
 		},
 	}
@@ -220,8 +224,10 @@ func runEnvShape(cmd *cobra.Command, envName string, asJSON bool) error {
 	// beyond resources (one service, one database, ...). The resource rule
 	// itself already ran in the projection's hosted plan.
 	if doc.entities != nil && hostedPlanOf(doc.entities) == deploy.HostedPlanClaimable {
-		if reasons := claimableIneligibility(doc.entities); len(reasons) > 0 {
-			return claimableIneligibleError(envName, reasons)
+		limits := claimableLimitsFor(envName, doc.entities)
+		fmt.Fprintln(cmd.ErrOrStderr(), limits.note())
+		if reasons := claimableIneligibility(doc.entities, limits.limits); len(reasons) > 0 {
+			return claimableIneligibleError(envName, limits.limits, reasons)
 		}
 	}
 	if asJSON {

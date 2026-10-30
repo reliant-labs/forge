@@ -50,6 +50,9 @@ func dispatchHostedDeploy(ctx context.Context, projectDir, envName string, opts 
 		}
 		return false, nil
 	}
+	if err := preflightPlacementDeploy(ctx, projectDir, envName, entities); err != nil {
+		return true, err
+	}
 	if !opts.dryRun {
 		if _, err := bindHostedProject(ctx, envName, declarationFromEntities(entities), opts.organization); err != nil {
 			return true, err
@@ -244,6 +247,7 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 		Client:        client,
 		Rollout:       opts.rollout,
 		PollInterval:  hostedPollInterval,
+		ApplyBudget:   deploytarget.HostedApplyBudget,
 		OnRollout:     report.rolloutObserver(),
 		OnEnvironment: func(id string) { report.setHostedTarget(ep.URL, id) },
 	})

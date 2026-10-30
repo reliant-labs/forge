@@ -9,16 +9,40 @@ import (
 // always a generated multi-row VALUES list, whose tail says nothing new.
 const maxQueryText = 2048
 
-// SanitizeSQL returns query with every literal replaced by ?, so the text can
+// Dialect is the set of lexical rules a statement is read by: where its
+// string literals, quoted identifiers and comments start and end. It matters
+// for more than accuracy. Read by another dialect's rules, a literal can end
+// early, and the rest of it is recorded as SQL text: Postgres ends
+// 'a\'secret' at the backslash-quote, ClickHouse does not.
+type Dialect int
+
+const (
+	// Postgres: a backslash escapes only inside E'…'; "…" quotes an
+	// identifier; $tag$…$tag$ is a literal and $1 a placeholder.
+	Postgres Dialect = iota
+	// ClickHouse: a backslash escapes inside every quoted string and
+	// identifier; `…` and “…” also quote an identifier and ‘…’ is a literal;
+	// //, "# " and #! also start a line comment; $tag$…$tag$ is a heredoc.
+	ClickHouse
+)
+
+// SanitizeSQL is Postgres.Sanitize.
+func SanitizeSQL(query string) string { return Postgres.Sanitize(query) }
+
+// Summarize is Postgres.Summarize.
+func Summarize(query string) (operation, table string) { return Postgres.Summarize(query) }
+
+// Sanitize returns query with every literal replaced by ?, so the text can
 // be recorded on a span without carrying the data it names: string literals
-// ('…', E'…', $tag$…$tag$) and numeric literals become ?. Placeholders ($1),
-// identifiers (including quoted ones and digits inside names) and keywords are
-// kept. Comments are dropped, runs of whitespace collapse to one space, and
-// the result is capped at maxQueryText bytes.
+// ('…', E'…', $tag$…$tag$, and the dialect's own forms) and numeric literals
+// become ?. Placeholders ($1, {name:Type}), identifiers (including quoted ones
+// and digits inside names) and keywords are kept. Comments are dropped, runs
+// of whitespace collapse to one space, and the result is capped at
+// maxQueryText bytes.
 //
 // It is a lexer, not a parser: it does not need to understand the statement,
-// only where literals start and end, which postgres's lexical rules fix.
-func SanitizeSQL(query string) string {
+// only where literals start and end, which the dialect's lexical rules fix.
+func (d Dialect) Sanitize(query string) string {
 	var b strings.Builder
 	b.Grow(min(len(query), maxQueryText))
 	space := false
@@ -30,35 +54,24 @@ func SanitizeSQL(query string) string {
 		b.WriteString(s)
 	}
 	for i := 0; i < len(query) && b.Len() < maxQueryText; {
+		if kind, j := d.quotedOrComment(query, i); kind != plain {
+			switch kind {
+			case commentTok:
+				space = true
+			case literalTok:
+				emit("?")
+			case quotedIdentTok:
+				emit(query[i:j])
+			}
+			i = j
+			continue
+		}
 		c := query[i]
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f':
 			space = true
 			i++
-		case c == '-' && i+1 < len(query) && query[i+1] == '-':
-			for i < len(query) && query[i] != '\n' {
-				i++
-			}
-			space = true
-		case c == '/' && i+1 < len(query) && query[i+1] == '*':
-			i = skipBlockComment(query, i)
-			space = true
-		case c == '\'':
-			i = skipString(query, i, false)
-			emit("?")
-		case (c == 'E' || c == 'e') && i+1 < len(query) && query[i+1] == '\'' && !identBefore(query, i):
-			i = skipString(query, i+1, true)
-			emit("?")
-		case c == '"':
-			j := skipQuotedIdent(query, i)
-			emit(query[i:j])
-			i = j
 		case c == '$':
-			if j, ok := dollarQuoteEnd(query, i); ok {
-				i = j
-				emit("?")
-				continue
-			}
 			j := i + 1
 			for j < len(query) && isDigit(query[j]) {
 				j++
@@ -69,10 +82,7 @@ func SanitizeSQL(query string) string {
 			i = skipNumber(query, i)
 			emit("?")
 		case isIdentStart(c):
-			j := i + 1
-			for j < len(query) && isIdentPart(query[j]) {
-				j++
-			}
+			j := d.identEnd(query, i)
 			emit(query[i:j])
 			i = j
 		default:
@@ -90,8 +100,8 @@ func SanitizeSQL(query string) string {
 // Summarize names a statement for a span: its operation (SELECT, INSERT, …,
 // upper-cased) and the table it targets, when that is a plain name. A WITH
 // statement is named for the statement its CTEs feed. Either may be empty.
-func Summarize(query string) (operation, table string) {
-	toks := topLevelTokens(query, 64)
+func (d Dialect) Summarize(query string) (operation, table string) {
+	toks := d.topLevelTokens(query, 64)
 	if len(toks) == 0 {
 		return "", ""
 	}
@@ -142,27 +152,18 @@ func Summarize(query string) (operation, table string) {
 
 // topLevelTokens returns up to limit words and punctuation at parenthesis
 // depth zero, skipping literals and comments. A parenthesised group is one
-// "(" token.
-func topLevelTokens(query string, limit int) []string {
+// "(" token; a qualified name (schema.table, quoted parts included) is one
+// token.
+func (d Dialect) topLevelTokens(query string, limit int) []string {
 	var toks []string
 	depth := 0
 	for i := 0; i < len(query) && len(toks) < limit; {
+		if kind, j := d.quotedOrComment(query, i); kind == commentTok || kind == literalTok {
+			i = j
+			continue
+		}
 		c := query[i]
 		switch {
-		case c == '-' && i+1 < len(query) && query[i+1] == '-':
-			for i < len(query) && query[i] != '\n' {
-				i++
-			}
-		case c == '/' && i+1 < len(query) && query[i+1] == '*':
-			i = skipBlockComment(query, i)
-		case c == '\'':
-			i = skipString(query, i, false)
-		case c == '$':
-			if j, ok := dollarQuoteEnd(query, i); ok {
-				i = j
-			} else {
-				i++
-			}
 		case c == '(':
 			if depth == 0 {
 				toks = append(toks, "(")
@@ -174,21 +175,8 @@ func topLevelTokens(query string, limit int) []string {
 				depth--
 			}
 			i++
-		case c == '"':
-			j := skipQuotedIdent(query, i)
-			if depth == 0 {
-				toks = append(toks, query[i:j])
-			}
-			i = j
-		case isIdentStart(c):
-			j := i + 1
-			for j < len(query) && (isIdentPart(query[j]) || query[j] == '.' || query[j] == '"') {
-				if query[j] == '"' {
-					j = skipQuotedIdent(query, j)
-					continue
-				}
-				j++
-			}
+		case isIdentStart(c) || d.opensQuotedIdent(query, i):
+			j := d.skipName(query, i)
 			if depth == 0 {
 				toks = append(toks, query[i:j])
 			}
@@ -200,10 +188,106 @@ func topLevelTokens(query string, limit int) []string {
 	return toks
 }
 
+// skipName returns the index past the (optionally qualified) name at i: words
+// and quoted identifiers joined by dots.
+func (d Dialect) skipName(q string, i int) int {
+	for i < len(q) {
+		switch {
+		case d.opensQuotedIdent(q, i):
+			_, i = d.quotedOrComment(q, i)
+		case isIdentStart(q[i]):
+			i = d.identEnd(q, i)
+		default:
+			return i
+		}
+		if i >= len(q) || q[i] != '.' {
+			return i
+		}
+		i++
+	}
+	return i
+}
+
+// identEnd returns the index past the unquoted identifier starting at i.
+// Every byte of a multi-byte character continues one, except that in
+// ClickHouse a ‘ or “ opens a quote even directly after a name (x‘…’).
+func (d Dialect) identEnd(q string, i int) int {
+	j := i + 1
+	for j < len(q) && isIdentPart(q[j]) {
+		if d == ClickHouse && (strings.HasPrefix(q[j:], leftSingleQuote) || strings.HasPrefix(q[j:], leftDoubleQuote)) {
+			break
+		}
+		j++
+	}
+	return j
+}
+
+// tokKind is what quotedOrComment found.
+type tokKind int
+
+const (
+	plain tokKind = iota
+	commentTok
+	literalTok
+	quotedIdentTok
+)
+
+const (
+	leftSingleQuote  = "\u2018" // ‘
+	rightSingleQuote = "\u2019" // ’
+	leftDoubleQuote  = "\u201c" // “
+	rightDoubleQuote = "\u201d" // ”
+)
+
+// quotedOrComment reports whether a comment, a string literal or a quoted
+// identifier starts at q[i], and if so the index just past it. An
+// unterminated one runs to the end of the statement, so its text is never
+// read as SQL.
+func (d Dialect) quotedOrComment(q string, i int) (tokKind, int) {
+	c := q[i]
+	var next byte
+	if i+1 < len(q) {
+		next = q[i+1]
+	}
+	ch := d == ClickHouse
+	switch {
+	case c == '-' && next == '-',
+		ch && c == '/' && next == '/',
+		ch && c == '#' && (next == ' ' || next == '!'):
+		if j := strings.IndexByte(q[i:], '\n'); j >= 0 {
+			return commentTok, i + j
+		}
+		return commentTok, len(q)
+	case c == '/' && next == '*':
+		return commentTok, skipBlockComment(q, i)
+	case c == '\'':
+		return literalTok, skipQuoted(q, i, ch)
+	case !ch && (c == 'E' || c == 'e') && next == '\'' && !identBefore(q, i):
+		return literalTok, skipQuoted(q, i+1, true)
+	case c == '"' || (ch && c == '`'):
+		return quotedIdentTok, skipQuoted(q, i, ch)
+	case ch && strings.HasPrefix(q[i:], leftSingleQuote):
+		return literalTok, skipPast(q, i+len(leftSingleQuote), rightSingleQuote)
+	case ch && strings.HasPrefix(q[i:], leftDoubleQuote):
+		return quotedIdentTok, skipPast(q, i+len(leftDoubleQuote), rightDoubleQuote)
+	case c == '$':
+		if j, ok := d.dollarQuoteEnd(q, i); ok {
+			return literalTok, j
+		}
+	}
+	return plain, i
+}
+
+// opensQuotedIdent reports whether a quoted identifier starts at q[i].
+func (d Dialect) opensQuotedIdent(q string, i int) bool {
+	kind, _ := d.quotedOrComment(q, i)
+	return kind == quotedIdentTok
+}
+
 // tableName returns tok as a table name — quotes removed, schema kept — or ""
 // when it is not a plain (optionally qualified) identifier.
 func tableName(tok string) string {
-	name := strings.ReplaceAll(tok, `"`, "")
+	name := strings.NewReplacer(`"`, "", "`", "", leftDoubleQuote, "", rightDoubleQuote, "").Replace(tok)
 	if name == "" || !isIdentStart(name[0]) {
 		return ""
 	}
@@ -225,7 +309,7 @@ func isWord(s string) bool {
 }
 
 func skipBlockComment(q string, i int) int {
-	// postgres block comments nest.
+	// Block comments nest, in postgres and in ClickHouse.
 	depth := 0
 	for i < len(q) {
 		switch {
@@ -245,17 +329,19 @@ func skipBlockComment(q string, i int) int {
 	return i
 }
 
-// skipString returns the index just past the string literal opening at i.
-// A doubled quote is an escaped quote; with backslashes (an E-string) so is
-// a backslash-quote.
-func skipString(q string, i int, backslashes bool) int {
+// skipQuoted returns the index just past the quoted string or identifier
+// opening at i, whose quote character is q[i]. A doubled quote is an escaped
+// quote; with backslashes (a Postgres E-string, anything ClickHouse quotes)
+// so is a backslash-quote.
+func skipQuoted(q string, i int, backslashes bool) int {
+	quote := q[i]
 	i++ // opening quote
 	for i < len(q) {
 		switch {
 		case backslashes && q[i] == '\\':
 			i += 2
-		case q[i] == '\'':
-			if i+1 < len(q) && q[i+1] == '\'' {
+		case q[i] == quote:
+			if i+1 < len(q) && q[i+1] == quote {
 				i += 2
 				continue
 			}
@@ -267,28 +353,24 @@ func skipString(q string, i int, backslashes bool) int {
 	return len(q)
 }
 
-func skipQuotedIdent(q string, i int) int {
-	i++
-	for i < len(q) {
-		if q[i] == '"' {
-			if i+1 < len(q) && q[i+1] == '"' {
-				i += 2
-				continue
-			}
-			return i + 1
-		}
-		i++
+// skipPast returns the index just past the first end at or after i, or the
+// end of q.
+func skipPast(q string, i int, end string) int {
+	if j := strings.Index(q[i:], end); j >= 0 {
+		return i + j + len(end)
 	}
 	return len(q)
 }
 
 // dollarQuoteEnd reports the index past a $tag$…$tag$ literal opening at i.
-func dollarQuoteEnd(q string, i int) (int, bool) {
+// In Postgres a tag cannot start with a digit ($1 is a placeholder); a
+// ClickHouse heredoc tag is any run of word characters.
+func (d Dialect) dollarQuoteEnd(q string, i int) (int, bool) {
 	j := i + 1
-	if j < len(q) && isDigit(q[j]) {
-		return 0, false // $1 is a placeholder
+	if d == Postgres && j < len(q) && isDigit(q[j]) {
+		return 0, false
 	}
-	for j < len(q) && (isIdentStart(q[j]) || isDigit(q[j])) { // a tag has no $
+	for j < len(q) && d.dollarTagPart(q[j]) {
 		j++
 	}
 	if j >= len(q) || q[j] != '$' {
@@ -302,18 +384,53 @@ func dollarQuoteEnd(q string, i int) (int, bool) {
 	return j + 1 + end + len(tag), true
 }
 
+func (d Dialect) dollarTagPart(c byte) bool {
+	if d == ClickHouse {
+		return c == '_' || isDigit(c) || (c|0x20 >= 'a' && c|0x20 <= 'z')
+	}
+	return isIdentStart(c) || isDigit(c) // a tag has no $
+}
+
+// skipNumber returns the index past the numeric literal at i: decimal, with
+// a fraction and exponent, or 0x hex (with a p exponent), 0b binary or 0o
+// octal, any of them with _ separators.
 func skipNumber(q string, i int) int {
+	if q[i] == '0' && i+2 < len(q) {
+		switch q[i+1] | 0x20 {
+		case 'x':
+			if isHexDigit(q[i+2]) {
+				i += 2
+				for i < len(q) && (isHexDigit(q[i]) || q[i] == '.' || q[i] == '_') {
+					i++
+				}
+				return skipExponent(q, i, 'p')
+			}
+		case 'b', 'o':
+			if isDigit(q[i+2]) {
+				i += 2
+				for i < len(q) && (isDigit(q[i]) || q[i] == '_') {
+					i++
+				}
+				return i
+			}
+		}
+	}
 	for i < len(q) && (isDigit(q[i]) || q[i] == '.' || q[i] == '_') {
 		i++
 	}
-	if i < len(q) && (q[i] == 'e' || q[i] == 'E') {
+	return skipExponent(q, i, 'e')
+}
+
+// skipExponent consumes an exponent marked by e (or its upper case) at i.
+func skipExponent(q string, i int, e byte) int {
+	if i < len(q) && q[i]|0x20 == e {
 		j := i + 1
 		if j < len(q) && (q[j] == '+' || q[j] == '-') {
 			j++
 		}
 		if j < len(q) && isDigit(q[j]) {
 			i = j
-			for i < len(q) && isDigit(q[i]) {
+			for i < len(q) && (isDigit(q[i]) || q[i] == '_') {
 				i++
 			}
 		}
@@ -324,5 +441,6 @@ func skipNumber(q string, i int) int {
 func identBefore(q string, i int) bool { return i > 0 && isIdentPart(q[i-1]) }
 
 func isDigit(c byte) bool      { return c >= '0' && c <= '9' }
+func isHexDigit(c byte) bool   { return isDigit(c) || (c|0x20 >= 'a' && c|0x20 <= 'f') }
 func isIdentStart(c byte) bool { return c == '_' || c >= 0x80 || unicode.IsLetter(rune(c)) }
 func isIdentPart(c byte) bool  { return isIdentStart(c) || isDigit(c) || c == '$' }

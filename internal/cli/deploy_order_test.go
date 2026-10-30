@@ -81,7 +81,7 @@ func TestDeployStageOrder(t *testing.T) {
 				t.Fatalf("deployStageOrder: %v", err)
 			}
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("order = %v, want %v (edges %+v)", got, tc.want, deployStageEdges(tc.e))
+				t.Errorf("order = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -114,8 +114,11 @@ func TestDeployStageEdges_FrontendDefaults(t *testing.T) {
 		Workloads: []WorkloadEntity{orderClusterWorkload("api", nil), orderHostedWorkload("edge", nil), {Name: "cli", Runtime: RuntimeEntity{Type: RuntimeBuildOnly}}},
 		Frontends: []FrontendEntity{orderFrontend("web", FrontendRuntimeHosted, nil)},
 	}
-	got := deployStageEdges(e)
-	want := []stageEdge{{Dependency: "api", Dependent: "web", From: stageLocal, To: stageHosted}}
+	got, err := deployStageEdges(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []stageEdge{{Dependency: "api", Dependent: "web", From: stageLocal, To: stageHosted}, {Dependency: "edge", Dependent: "web", From: stageHosted, To: stageHosted}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("edges = %+v, want %+v (build-only and same-stage peers add none)", got, want)
 	}

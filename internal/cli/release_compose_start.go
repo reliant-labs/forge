@@ -47,6 +47,11 @@ func prepareComposition(ctx context.Context, opts *buildOptions, base string, bo
 	if err := requireSnapshotCapabilities(lookup, store.client); err != nil {
 		return err
 	}
+	// Required mixed evidence cannot be dropped by generic feature limiting.
+	// Negotiate before any build, release cut, artifact push or seal.
+	if err := requirePlacementReader(lookup, projectDirForKCL(), opts.env, e, ledger); err != nil {
+		return err
+	}
 	current, err := captureCompositionBase(lookup, ledger, opts.env, base, bootstrap)
 	if err != nil {
 		return err

@@ -74,7 +74,11 @@ func Resolve(f Facts, override string) (Decision, error) {
 		return Decision{Backend: BackendCloud, Reason: "--backend cloud"}, nil
 	}
 
-	if !f.Declared || !f.Enabled {
+	// Hosted observability is opt-out: the platform collects a hosted env's
+	// telemetry unless the env declares `forge.Observability {enabled =
+	// False}`, and a scaffolded prod/staging declares no block at all. So an
+	// undeclared block means off only for an env nothing hosted runs in.
+	if f.Declared && !f.Enabled || !f.Declared && !f.HasHosted {
 		return Decision{}, Undetermined("telemetry is off for %s: its observability is %s", f.Env, offWhy(f)).
 			With("forge skill load observability")
 	}

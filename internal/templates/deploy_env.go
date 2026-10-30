@@ -64,9 +64,17 @@ type EnvTemplateData struct {
 	// The cloud template only.
 	Claimable bool
 	// ClaimableResources is the body of that plan's largest shape as a KCL
-	// fw.Resources block (deploy.ClaimableResources), filled by withDefaults
+	// fw.Resources block (deploy.ClaimableLimitsFallback), filled by withDefaults
 	// so the template states no number of its own.
 	ClaimableResources string
+	// ClaimableShape is that shape for prose ("125m / 128 MiB"), and
+	// ClaimableDatabaseStorageGiB the database storage it declares.
+	ClaimableShape              string
+	ClaimableDatabaseStorageGiB int32
+	// ClaimableDBConnections is that database's max_connections, and
+	// ClaimableDBPool the pool each workload is held to inside it.
+	ClaimableDBConnections int
+	ClaimableDBPool        int
 	// Capacity floor of the cloud envs' (unused as scaffolded) `_on_cluster`
 	// binder.
 	Replicas         int
@@ -93,7 +101,14 @@ func (d EnvTemplateData) withDefaults() interface{} {
 		d.FrontendPublicDir = "out"
 	}
 	if d.Claimable && d.ClaimableResources == "" {
-		r := deploy.ClaimableResources()
+		// The compiled-in copy of the control plane's caps: a scaffold is
+		// written offline, and every deploy check re-reads the published ones.
+		caps := deploy.ClaimableLimitsFallback()
+		r := caps.Resources()
+		d.ClaimableShape = fmt.Sprintf("%dm / %d MiB", r.CPURequestMillicores, r.MemoryRequestBytes>>20)
+		d.ClaimableDatabaseStorageGiB = caps.DatabaseDeclaredStorageGiB
+		d.ClaimableDBConnections = caps.DatabaseMaxConnections
+		d.ClaimableDBPool = claimableDBPool(caps.DatabaseMaxConnections)
 		d.ClaimableResources = fmt.Sprintf("    cpuRequestMillicores = %d\n    cpuLimitMillicores = %d\n"+
 			"    memoryRequestBytes = forge.mib(%d)\n    memoryLimitBytes = forge.mib(%d)",
 			r.CPURequestMillicores, r.CPULimitMillicores, r.MemoryRequestBytes>>20, r.MemoryLimitBytes>>20)
@@ -105,4 +120,14 @@ func (d EnvTemplateData) withDefaults() interface{} {
 		}
 	}
 	return d
+}
+
+// claimableDBPool is the pool a workload of an anonymous deploy may hold
+// against its database's max_connections: half of them, since Postgres
+// reserves three for the superuser (the platform's instance manager) and the
+// migration job needs its own. Measured on the claimable plan (10
+// connections): the default pool of 25 failed 2% of creates under 40-way
+// load with "too many clients"; 5 failed none.
+func claimableDBPool(maxConnections int) int {
+	return max(1, maxConnections/2)
 }

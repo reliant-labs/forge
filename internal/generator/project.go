@@ -63,7 +63,7 @@ type ProjectGenerator struct {
 	// Claimable scaffolds the prod env for an ANONYMOUS deploy (`forge env
 	// deploy prod --claimable`, `forge project new --claimable`): its
 	// control plane declares `claimable = True`, and its hosted binder sizes
-	// every service and job to the claimable plan (deploy.ClaimableResources)
+	// every service and job to the claimable plan (deploy.ClaimableLimitsFallback().Resources())
 	// instead of the band-conformant entry shape, so the default full-stack
 	// scaffold deploys with no account and no edits.
 	Claimable bool

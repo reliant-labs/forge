@@ -2,6 +2,9 @@ package codegen
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -138,6 +141,59 @@ func kclBlockBody(src string, open int) (string, bool) {
 	}
 	return "", false
 }
+
+// RunByGraphRoot reports whether component c runs only inside a root of the
+// project binary's composition graph, so it has no subcommand of its own and
+// no workload of its own to declare.
+//
+// A project that composes with the graph (GraphComposition) generates ONE
+// command per root (cmd/<bin>/cmd/roots_gen.go) and none per component: the
+// default `server` root mounts every service and supervises every worker. A
+// workload declared `args = ["<service>"]` there names a command the binary
+// does not have, and its pod crash-loops on "unknown command". Splitting a
+// component into a process of its own is a new `//forge:root` in
+// internal/app, whose workload binds it with `config_gen.root_of("<root>")`.
+//
+// Operators, jobs, tools and secondary binaries are not covered: they deploy
+// as workloads of their own.
+func RunByGraphRoot(projectDir string, c config.ComponentConfig) bool {
+	if c.EffectiveKind() == config.ComponentKindBinary || !RunsInServer(WorkloadKindFor(c.EffectiveKind())) {
+		return false
+	}
+	return GraphComposition(projectDir)
+}
+
+// BinaryCommandWords is every command name the project binary's cmd tree
+// (cmd/<projectName>/...) declares with a literal cobra `Use:` — the first
+// word of each, at any depth: the generated root commands, the built-ins,
+// and the project's own (commands.go). Empty when the tree is not on disk.
+//
+// It is read from source, like DeclaredWorkloads, so `forge lint` judges a
+// checkout that has never been built. A command whose Use is not a string
+// literal is invisible to it.
+func BinaryCommandWords(projectDir, projectName string) map[string]bool {
+	words := map[string]bool{}
+	_ = filepath.WalkDir(filepath.Join(projectDir, "cmd", projectName), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		for _, m := range cobraUseLiteral.FindAllStringSubmatch(string(src), -1) {
+			if f := strings.Fields(m[1]); len(f) > 0 {
+				words[f[0]] = true
+			}
+		}
+		return nil
+	})
+	return words
+}
+
+// cobraUseLiteral matches a cobra command's `Use: "<word> ..."` field on a
+// line of its own (so a commented-out example does not count).
+var cobraUseLiteral = regexp.MustCompile(`(?m)^\s*Use:\s*"([^"]*)"`)
 
 // ServingWorkload names the declared workload whose process ALREADY runs
 // component c, when that workload is not c's own declaration. Two cases, and

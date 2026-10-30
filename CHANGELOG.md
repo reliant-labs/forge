@@ -7,11 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.5] - 2026-10-29
+
+### Added
+
+- **release:** placement prerequisite wire contract and validation ([#1504](https://github.com/reliant-labs/forge/pull/1504))
+- **env:** forge env delete removes the env's data too, and --keep-data retains it ([#1505](https://github.com/reliant-labs/forge/pull/1505))
+
+### Fixed
+
+- **obs:** a scaffolded overview no longer freezes the no-deployed-process sentinel ([#1495](https://github.com/reliant-labs/forge/pull/1495))
+- **deploy:** a graph-composed project declares no per-service workload — its binary has no such command ([#1501](https://github.com/reliant-labs/forge/pull/1501))
+- **observe:** seconds histograms get seconds bucket boundaries ([#1506](https://github.com/reliant-labs/forge/pull/1506))
+
+## [v1.0.4] - 2026-10-29
+
+### Fixed
+
+- **deploy:** a static build installs with the frontend's own package manager ([#1493](https://github.com/reliant-labs/forge/pull/1493))
+- **obs:** a hosted env with no observability block is queried, not refused ([#1494](https://github.com/reliant-labs/forge/pull/1494))
+- **site:** site starters declare the web runtime's connect, protobuf and otel peers so the production build resolves ([#1497](https://github.com/reliant-labs/forge/pull/1497))
+- **obs:** 'delivery reconciler is off' only for an env that declared an external delivery ([#1500](https://github.com/reliant-labs/forge/pull/1500))
+- **cloud:** content-scanned control-plane calls get a 12m timeout, not 30s ([#1502](https://github.com/reliant-labs/forge/pull/1502))
+
+## [v1.0.3] - 2026-10-29
+
+### Fixed
+
+- **bundle:** the service catalog is withheld unless a control plane names it — default deny, on every path ([#1492](https://github.com/reliant-labs/forge/pull/1492))
+
+## [v1.0.2] - 2026-10-29
+
+### Added
+
+- **obs:** forge obs workloads — restarts, crash loops, last exit reason and failed jobs per workload ([#1478](https://github.com/reliant-labs/forge/pull/1478))
+- **claimable:** tell an agent that an unclaimed backend has no outbound internet ([#1481](https://github.com/reliant-labs/forge/pull/1481))
+- **serverkit:** SpareConns keeps connections dialled ahead of need ([#1474](https://github.com/reliant-labs/forge/pull/1474))
+- **obs:** obs trace says why a span ended and where untraced time went; ClickHouse statement spans ([#1472](https://github.com/reliant-labs/forge/pull/1472))
+
+### Fixed
+
+- **release:** check-release-tests.sh judges the three full Test jobs even while the run's CI gate waits for a runner ([#1483](https://github.com/reliant-labs/forge/pull/1483))
+- **serverkit:** closing a pool does not wait on a spare dial it cannot cancel ([#1482](https://github.com/reliant-labs/forge/pull/1482))
+- **obs:** check is not a PASS while critical alerts fire, and streaming RPCs are not latency ([#1477](https://github.com/reliant-labs/forge/pull/1477))
+- **claimable:** the anonymous plan's help and preview state its real limits, derived from the fallback constants ([#1487](https://github.com/reliant-labs/forge/pull/1487))
+- **pgtest:** retry a throttled postgres download with Retry-After and jitter; CI caches every archive it fetches ([#1486](https://github.com/reliant-labs/forge/pull/1486))
+- **kcl:** the version-skew refusal says to pin the imported project first ([#1489](https://github.com/reliant-labs/forge/pull/1489))
+- **tests:** repair release CI fixture and removed-feature guard ([#1490](https://github.com/reliant-labs/forge/pull/1490))
+- **bundle:** the service catalog has no 1 MiB cap, and reaches only a control plane that accepts it ([#1488](https://github.com/reliant-labs/forge/pull/1488))
+
+## [v1.0.1] - 2026-10-29
+
+### Added
+
+- **claimable:** one hosted resource policy that knows the anonymous plan; --claimable --plan-only preview; project new --claimable; named unavailability preflight ([#1454](https://github.com/reliant-labs/forge/pull/1454))
+- **claimable:** read the anonymous plan's caps from the control plane; project new --claimable writes 125m / 128 MiB, a 1 GiB database and a pool that fits it ([#1470](https://github.com/reliant-labs/forge/pull/1470))
+
+### Changed
+
+- **merge-queue:** a merge group lands only if pr-review passed every PR's current head ([#1467](https://github.com/reliant-labs/forge/pull/1467))
+- **obsquery:** prefilter candidate traces so wide-window trace lists finish ([#1479](https://github.com/reliant-labs/forge/pull/1479))
+
+### Fixed
+
+- **scaffold:** a new project's first commit passes its scaffolded hooks, and an unrunnable pinned pnpm is repaired once, never retried ([#1457](https://github.com/reliant-labs/forge/pull/1457))
+- **cloud:** a helper credential lacking obs:read asks the helper for it instead of an exchange that cannot widen ([#1466](https://github.com/reliant-labs/forge/pull/1466))
+- **frontenddeps:** satisfy quoted diagnostic lint for release ([#1468](https://github.com/reliant-labs/forge/pull/1468))
+- **obs:** --page-token resumes the listing it came from, even with a relative --since ([#1471](https://github.com/reliant-labs/forge/pull/1471))
+- **kcl:** ESO reaches an in-cluster OpenBao on Cilium (selector egress rule) ([#1473](https://github.com/reliant-labs/forge/pull/1473))
+- **obs:** status finds the newest log and span in a 15m probe before the 24h lookback ([#1476](https://github.com/reliant-labs/forge/pull/1476))
+- **release:** removalguard skips the release history, and #1470's claimable-limits playbook moves to migrations/v1.0.1 ([#1480](https://github.com/reliant-labs/forge/pull/1480))
+
+## [v1.0.0] - 2026-10-29
+
+### Breaking changes
+
+- **feat(web-runtime):** 0.7.0 — ConnectClientError extends ConnectError (F9-5) ([#1182](https://github.com/reliant-labs/forge/pull/1182))
+- **feat(activity):** the activity and audit caller is never guessed — activity.Deps.Principal is required, serverkit.Authenticator names its Caller (AuthFor reads authn's, AuthWithCaller a project's), and NewChain refuses a default Audit/Activity it cannot attribute (P7b §7) ([#1197](https://github.com/reliant-labs/forge/pull/1197))
+- **feat(lint):** lint.rules grades every lane through one mechanism — the outcome engine renders every mode, advisory lanes gate when dialled to error, and a key forge cannot honour is a lint error (P7b F1) ([#1200](https://github.com/reliant-labs/forge/pull/1200))
+- **feat(hooks):** an rpc marked NO_SIDE_EFFECTS generates a useQuery hook; mutation hooks infer TContext from onMutate ([#1239](https://github.com/reliant-labs/forge/pull/1239))
+- **feat(components):** a modern library Button — xs-xl, icon slots, icon-only, width-stable loading, forced-colors focus outline, href ([#1244](https://github.com/reliant-labs/forge/pull/1244))
+- **feat(cluster):** connect has one auth — an uploaded scoped ServiceAccount token; gcp workload identity removed ([#1255](https://github.com/reliant-labs/forge/pull/1255))
+- **feat(observe):** sparse continuous-profiling defaults — 5s CPU every 5m, heap every 2h (~7.6x fewer stored profile bytes) ([#1398](https://github.com/reliant-labs/forge/pull/1398))
+- **refactor(build):** project images build only with docker; remove the in-process Dockerfile interpreter ([#1441](https://github.com/reliant-labs/forge/pull/1441))
+
 ### Added
 
 - **An identity line in `forge env status` and `forge env deploy` (FI7).** A
   hosted env that declares `forge.ManagedIdentity` shows `identity: ready /
-  provisioning / degraded / failed: <reason>`, read from its control plane's
+provisioning / degraded / failed: <reason>`, read from its control plane's
   `IdentityService/GetIdentityStatus` (status and `--json`; it never changes
   `env status`'s exit code). The deploy readiness wait (and `env status --wait`)
   waits on it: a release whose rollout succeeded is `waiting_on_identity` until
@@ -63,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which the lane reads. Waive one finding with `# forge:lint-disable-next-line <rule>: <why>` or
   dial it in `lint.rules`.
 - **Alerts fire locally: `forge env up` closes the alerting loop.**
+
   - Beside the local ClickStack, a scaffolded dev env now runs two new pieces:
     - an `alerts` host workload, `forge observe alerts run`, which evaluates the env's `forge.Alerts` continuously with `for` applied;
     - a compose `alertmanager` (the v0.28.1 digest the control plane runs).
@@ -72,552 +157,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `forge.Alerts.receivers` (`forge.AlertReceiver`: webhook, slack, pagerduty, autopilot), the receivers of an env forge delivers itself. Their secrets are secret-store keys, written as files.
     - `forge.Observability.alertmanager_port` / `alerts_port`.
   - A host workload's `command` that starts with `forge` runs the forge that launched the env. Migration: `migrations/v0.1.47/local-alerting`.
-
-### Fixed
-
-- **A mock role may embed a role another file of its package declares.** The
-  mock generator read only the file it generates from (`contract.go`, or a
-  marked `deps.go`), so `type Repo interface { Reader; ... }` with `Reader` in
-  `roles.go` produced a `MockRepo` without `Reader`'s methods, and generate's
-  build validation failed with "does not implement". The embed is now resolved
-  from the type-checked package, the way #1109 resolves another package's,
-  with the package's own types unqualified and the sibling file's imports
-  carried over.
-- **`forge fix connect-errors` sees an As-style helper as a `*connect.Error` reader.**
-  - It recognised `errors.As` itself, but not testify's `require.ErrorAs(t, err, &ce)` / `assert.ErrorAs`, a suite's `ErrorAs` method, or a project's own helper: each takes the target as `interface{}`. A handler package whose only reader was one of those got bare kinds, and its tests failed (reliant's `internal/handlers/approval`: four tests).
-  - Any call handed a `**connect.Error` is now a reader, so that package keeps `svcerr.ToConnect(…)` and the report names the call.
-- **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
-  - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
-- **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**
-
-  - Bringing up `otel-profiles` (which depends on `clickstack`) with only its own variables recreated `clickstack` on the file's default ports. On a machine running a second stack, the bind failed.
-
-- **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
-  Moved verbatim from the control plane, which renders every org's routing
-  with it, so a local stack can render with the SAME code: one route per org
-  matched strictly on `reliant_org_id` with a blackhole default, per-org
-  receiver names, secrets as `*_file` references only, autopilot receivers as
-  continue:true observers. `TestNoRouteDeliversAcrossOrgs` runs over
-  Alertmanager's real routing tree. New: `Settings.AllowHTTPWebhooks` (false
-  by default) lets a local stack, whose receivers are the developer's own
-  machine, use plain-http webhooks; a renderer serving several orgs never sets it.
-
-- **`forge.OpenBao` renders (SF6).** `Bundle.openbao = forge.OpenBao {}` now
-  lowers to a `forge.dev/v1alpha1 OpenBao` record that `pkg/deploy/openbao`
-  expands into the secret store and what converges it. Defaults run: Raft x3 on
-  PVCs with `retry_join` auto-join, TLS from a namespaced self-signed
-  cert-manager CA, a static seal, audit to stdout and a file, a PDB and zone
-  spread. `OpenBaoPostgres` renders a Deployment with the cloud-sql-proxy
-  sidecar over Workload Identity. Two content-addressed Jobs run one embedded
-  `converge.sh`: a pre-rollout **widen** (the union of the applied and new
-  access document) and a post-rollout **converge** (initialise, write the
-  recovery Secret before converging anything, apply the document from
-  `pkg/secretaccess`, narrow what it no longer contains, revoke root).
-  `consumers` become exact-grant roles; `delegated` gets the access-admin policy
-  and no KV capability. A plaintext listener needs a `transitional_reason`, a
-  glob `read` needs a `wildcard_read_reason`, and both are listed in the
-  render's `openbao.warnings`. The release shape now records the store-backed
-  secrets, generated names, pins and both components (`forge env shape`).
-  Left for later: the bootstrap source and recovery escrow (hook seams are in
-  the Job), the `public` endpoint, the Raft snapshot CronJob (refused if
-  declared), and the OIDC writer.
-
-- **`forge secret` writes and lists store-sourced secrets, and `forge env secrets
-verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
-  `forge.ExternalSecret` (`forge.StoreSource`) reads or generates now lives in that
-  ExternalSecret's store, whatever the env's `secret_provider` is:
-
-  - `forge secret set` / `list` reach a `HostedStore` through the control plane's
-    write-only API, a `GCPSecretManagerStore` with Application Default
-    Credentials, and a self-run `OpenBaoStore` by signing in as the
-    `forge-secret-writer` service account with a ten-minute token minted from
-    your own kube context (design N2): no credential is stored, and cluster
-    access is all it needs. `--store` picks one when two stores declare a name.
-  - `forge secret import` copies existing values in, create-only (check-and-set
-    0; for Secret Manager, "no usable version yet"), so a re-run can never
-    overwrite a value that was rotated since. `--from <ns>/<secret> --map
-key=NAME` reads a cluster Secret with your kube context; a NAME with a value
-    on stdin or `--from-file` imports one. `--to-bootstrap [--project]` writes a
-    `BootstrapSecret`'s Secret Manager container. `--dry-run` reads and reports.
-  - `forge env secrets verify <env> [<secret>]` compares a live Secret with the
-    store's copy per key, and prints `match` / `no-match` and which side is
-    missing: by default against `<name>-eso-shadow` (a source with `shadow =
-True`), or `--against gsm:<project>` for the Secret Manager parity check.
-  - `forge env secrets adopt <env> <ns>/<secret>` strips the stale
-    `kubectl.kubernetes.io/last-applied-configuration` annotation (a full copy of
-    the applied values) and asserts nothing owns the Secret by ownerReference.
-
-  No command prints a secret value or any digest of one, and none takes a value
-  as an argument: values come from stdin, `--from-file`, or a store or cluster
-  Secret you already hold. Both are pinned by tests that sweep every command's
-  output and error for a canary in raw, encoded and hashed form, on success and
-  on failure paths where the remote echoes the request.
-
-- **A config message's `buf.validate` rules are checked as it loads.** Field
-  rules (a port's range, a positive duration) and message-level CEL
-  (`BILLING_PROVIDER=stripe` needs `STRIPE_SECRET_KEY`) on a `proto/config`
-  message now fail `config.Load*`, so a root's command refuses a bad value in
-  its `RunE`, before `runRoot` binds a port or applies a migration; and
-  `config.Root.Validate` reports every violation over a rendered environment.
-  Each names the field's path, its variable and flag, and its value unless the
-  field is sensitive. `config.Validate` runs them too. A config that declares
-  no rules loads exactly as before.
-
-- **A store-backed `forge.ExternalSecret` now renders the External Secrets Operator
-  objects that sync it (SF5).** For each (cluster, namespace) holding one:
-  a `reliant-secrets` ServiceAccount, a Role + RoleBinding letting ESO mint that
-  service account's token and no other (`resourceNames`, matching ESO's
-  `rbac.serviceAccountTokenCreate: false`), one namespaced `SecretStore` per store
-  (the `vault` provider with JWT auth over a projected token for `HostedStore` and
-  `OpenBaoStore`; `gcpsm` over ESO's own Workload Identity for `GCPSecretManagerStore`),
-  and the `ExternalSecret`: one `remoteRef` per store name, `source.pin` as the KV-v2
-  `version` (rotation is a reviewed pin bump), `source.templates` as an ESO v2
-  template, `creationPolicy` Orphan or Merge with `deletionPolicy: Retain` so a store
-  outage or a Flux prune never removes a synced Secret. `shadow = True` syncs to
-  `<name>-eso-shadow` for the migration compare. The login role is the one
-  `pkg/secretaccess` derives, pinned by a test. `StoreSource` gains `cluster` (the
-  context it lands on; default the primary cluster); `HostedStore` gains `org` and
-  `env_id`, the control plane's ids that address its values. Refused at render, each
-  naming its escape: a HostedStore without ids, an OpenBao no other cluster can reach,
-  a GSM store with no ESO Google identity, a template calling a function ESO lacks or
-  that changes every sync, and one namespace configuring one store kind two ways.
-  Nothing renders for a Bundle with no `source`.
-
-- **A drained Connect stream parked in `Receive` actually ends, and handlers can
-  stop their own readers: `serverkit.AbortReceive(ctx)`.** A server-side
-  `Receive` reads the request body and no context wakes it; Connect closes the
-  body only after the handler returns. So the drain, which ended streams by
-  cancelling their contexts, never ended a bidi handler blocked in `Receive` (it
-  held the shutdown to the end of the budget), and a handler that read on a
-  goroutine of its own could not stop it before returning — leaving it in
-  `Receive` after the handler returned, which Connect forbids and which races
-  otelconnect's span bookkeeping. `Streams.Install` (every `NewHTTPServer` /
-  `NewListener`) now serves each request with an abortable body; a stream the
-  drain ends has its reads aborted right after its context is cancelled (the
-  read fails with `svcerr.ErrServerDraining`, so the client contract is
-  unchanged), and `serverkit.AbortReceive(ctx)` / `CanAbortReceive(ctx)` let a
-  handler end its own reads (`ErrReceiveAborted`). HTTP/2 closes the body;
-  HTTP/1.1 sets a read deadline, because its `Close` waits for a pending read.
-  The response is untouched, and unary routes are unaffected. Skill:
-  `services/shutdown`.
-
-- **`svcerr.WrapOr(err, fallback)`: keep a verdict if there is one, otherwise
-  say what failed.** A classified `err` (`svcerr.IsClassified`: an svcerr kind,
-  a context cancellation or deadline, or a `*connect.Error`) is `Wrap(err)`;
-  anything else is `Wrap(WithCause(fallback, err))` — the client reads the
-  fallback's code, message, reason and class, and `err` is the logged cause.
-  It is the one spelling for a collaborator's error, replacing
-  `connect.NewError(connect.CodeInternal, err)` (publishes `err.Error()`,
-  flattens a NotFound) and `svcerr.Internal("…")` with `err` dropped (a deadline
-  becomes a server fault, the cause never logs). `pkg/crud` uses it in place of
-  its private copy, with no change to what it returns. A remote Connect
-  client's error is a `*connect.Error` and would pass through, so never
-  `WrapOr` one: wrap it in your own verdict with `WithCause`.
-
-- **Boot `/readyz` names the graph node boot is waiting on.** A composition
-  root's boot probes used to answer `503 {"status":"not_ready"}` with no checks
-  for the whole of graph construction, so a constructor that blocked — a
-  provider waiting on another role's migrations, a dial that retries — left a
-  stuck pod with no signal. `graphkit.Builder` now reports each node's
-  construction to a `graphkit.Progress` (`ReportTo`; one method,
-  `Constructing(node) (done func(error))`), which `*serverkit.BootProbes`
-  satisfies, and the generated graph's `build` reports to the boot probes on
-  `Graph.Ctx`. During boot `/readyz` lists every node already built
-  (`{"name":"pool","ok":true}`, completion order), then each under
-  construction (`{"name":"db_repo","ok":false,"detail":"building"}`, outermost
-  first), then the dependencies serverkit waits on (`schema`, the database).
-  Check names are graph node names. A node constructing for more than 10s is
-  logged (`boot: still constructing a graph node`, naming the innermost node
-  and the path that reached it) every 10s, and again when it finishes.
-  Post-build readiness is unchanged. Existing projects: `forge generate`.
-
-- **`forgeconv-handler-connect-error`: every `connect.NewError` in a handler
-  package is a warning.** A `*connect.Error` is never redacted — svcerr's
-  interceptor passes it through as built — so `connect.NewError(code, err)`
-  publishes `err.Error()` and overrides any code `err` already carried. Each
-  finding says which kind it is: a fixed message (`forge fix connect-errors`
-  rewrites it with the same code and message), an error value (use
-  `svcerr.WrapOr`), or `nil`. Generated and test files are skipped. It warns
-  by default so no project goes red on the bump; set
-  `lint.rules: {forgeconv-handler-connect-error: error}` once migrated.
-  **Changed with it:** `forgeconv-no-handler-error-mapping` no longer skips a
-  file that imports svcerr. One `svcerr.Wrap` in a file — or a codemod adding
-  the import — used to silence every mapper beside it without fixing one; a
-  project whose mappers were hidden that way sees them as warnings now.
-
-- **The release shape records store-backed secrets (`pkg/release`, SF3).** A shape
-  gains four optional fields a control plane reads to serve a store-backed
-  `forge.ExternalSecret`: `store_secrets` (per cluster, namespace and store, the
-  names the namespace reads, their version pins and `immutable` marks),
-  `generated_secrets` (the values to mint when the store has none, carrying
-  `pkg/secretgen.Spec`'s parameters; `ShapeGeneratedSecret.Spec()` converts),
-  `openbao` and `external_secrets_operators` (which clusters declare the
-  components). `Shape.StoreBindings(store)` returns the `secretaccess.Binding`s of
-  one store, so `secretaccess.Derive` gets exact-path policies from a shape alone.
-  `release.ProjectStoreSecrets` projects the render's records (`required_secrets[]`
-  with a `source`, `openbao`, `external_secrets_operators[]`) into them,
-  deterministically and refusing ambiguity (a Secret that reaches no cluster, two
-  sources that disagree on a pin or a generation); `bundle.ShapeInput.Store` carries
-  the result into the one shape projection. A shape never carries a value: a
-  generated secret is a recipe and a pin is a version. The fields are a bundle-document
-  feature (`shape-store-secrets`, `BundleFeatureStoreSecrets`), withheld from a control
-  plane that does not name it, and omitted when empty, so every shape recorded before
-  them encodes and hashes exactly as it did.
-
-- **`forge fix connect-errors`: hand-built Connect errors onto svcerr, without
-  changing a code or a message.** It rewrites every `connect.NewError` whose
-  client-visible code and message an svcerr spelling reproduces exactly —
-  `errors.New("chat not found")` under `CodeNotFound` → `svcerr.NotFound("chat")`,
-  other NotFound prose → `svcerr.WithMessage(svcerr.ErrNotFound, …)`,
-  `fmt.Errorf(f, args…)` without `%w` or an error argument →
-  `svcerr.<Kind>(fmt.Sprintf(f, args…))` — and, in the tests of a package that
-  now returns bare kinds and of its importers, `connect.CodeOf` →
-  `svcerr.Code`. A bare kind is written only in a handler package, where the
-  context is `error` and nothing reads a `*connect.Error` in process in the
-  package, its tests or an importer's code; everywhere else (interceptors, `*connect.Error`
-  results, a package such a reader sees) it is `svcerr.ToConnect(…)`, and a
-  re-run drops the wrapper once the reader reads `svcerr.Code`. Every site it
-  cannot rewrite exactly — an error value (`svcerr.WrapOr` is the reviewed
-  fix), nil, a computed message or code — is listed with its reason. It is
-  type-checked (`go/packages`), idempotent, `--dry-run` prints each rewrite as
-  `file:line: old → new`, and its proof is a corpus whose real-client wire
-  output is identical before and after. Over reliant: 902 sites rewritten (334
-  to bare kinds, 568 kept a `*connect.Error`), 71 test assertions, 341 sites
-  listed, and its build, vet and handler tests pass unchanged. On request
-  only (`forge project upgrade` does not run it); the playbook is
-  `forge skill load migrations/v0.1.47/connect-errors`.
-
-- **The schema for platform secrets: `forge.OpenBao`, `forge.ExternalSecretsOperator`
-  and store-backed `forge.ExternalSecret`s (declarations only, nothing renders yet).**
-  Two opt-in components on the Bundle, like `observability` and `identity`:
-  `openbao = forge.OpenBao {}` (Raft x3 by default, TLS listeners, a generated
-  static seal key escrowed through `bootstrap_source`, audit on, a service-account
-  writer) and `external_secrets_operators = [forge.ExternalSecretsOperator {cluster}]`
-  (one hardened, cluster-wide ESO per cluster; a second for one cluster is refused).
-  A `forge.ExternalSecret` gains `source = forge.StoreSource {store, data, templates,
-generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
-  `OpenBaoStore` or `GCPSecretManagerStore`, and `out_of_band_reason` for the ones
-  that stay out of band once any is store-backed. `forge.BootstrapSecret` and
-  `bootstrap_source = forge.GCPSecretManager {project} | forge.OutOfBand {}` name the
-  values the store needs before it can serve a read. `forge.GeneratedSecret` gains
-  kinds `password`, `ec_p256_pkcs8`, `rsa_2048` and `ec_p256_selfsigned` (the closed
-  set `pkg/secretgen` implements); `FileSecrets.generate` stays `random` only.
-  Every refusal names its escape: a plaintext listener needs `transitional_reason`, a
-  glob `read` grant needs `wildcard_read_reason`, a pin above 1 on an `immutable`
-  name is refused. A Bundle that declares none of this renders byte-for-byte as before.
-
-- **What the owned `runRoot` reads is every root's config reach.** `generate`
-  reads `cmd/<bin>/cmd/serve.go` the way it reads compose.go: `cfg` from
-  `config.LoadReach`, `root.Configs.<Msg>`, and each config value handed to a
-  function of the command tree, by the same selector rules. A setting the
-  process policy reads under its own name (an `observability` block's
-  `OTEL_*`, `PROMETHEUS_ENABLED`, a `health_port`) is now in `ROOTS`, in
-  `pkg/config` `Roots()` (so `Validate` no longer calls it unreached) and in
-  what `LoadReach` demands; before, only forge's own serve-field names counted.
-  A database field still counts only for a root that opens the database, and
-  a tree with no runRoot keeps the scaffolded serve fields.
-- **`//forge:group <path>` declares a group command's help.** A comment of its
-  own in `internal/app`, read by the root doc's rule (first paragraph the
-  Short, the rest the Long), replaces roots_gen.go's generic "The server roots"
-  on the group command above `server api` / `server gateway`. A path no root
-  runs beneath, or a root's own command, is a generate error.
-- **`forge cloud identity invite|reset --return-code`** hands the one-time
-  password-set code back (with the env's `/auth/reset` link filled in) for you
-  to deliver, the only way to invite or reset where the environment declares no
-  `smtp`: the control plane refuses both there rather than send nothing.
-  `status` prints `Mail: none|smtp` (`mailDelivery` in `--json`). `reset` now
-  says it emailed a link, and `invite` no longer claims an unsent email
-  succeeded. The `deploy/managed-identity` skill describes every verb, the
-  `identity:read` / `identity:manage` scopes (machine credentials carrying them
-  are accepted; a Reliant session is elevated on demand) and the code flow; it
-  had said machine credentials were refused and that an invitation's code could
-  not be redeemed by `/auth/reset`.
-- **`pkg/secretaccess` and `pkg/secretgen`: the pure halves of store-backed
-  secrets.** `secretaccess.Derive` maps `{scope, clusters, per-namespace secret
-names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
-  and namespace, bound to the namespace's `reliant-secrets` service account and
-  the cluster's audience, issuing 10 minute batch tokens) and ACL policies that
-  grant `read` on exact paths only: no globs, no list, no metadata, unless a
-  `WildcardRead` carries a reason. Output is deterministic, so forge's converge
-  Job and a hosted control plane derive identical documents; `Widen` and
-  `Removed` implement widen-then-narrow around a promotion. `secretgen`
-  generates the declared kinds (`random`, `password` with one character of every
-  class, `ec_p256_pkcs8`, `rsa_2048`, `ec_p256_selfsigned`) and `Mint` writes
-  them create-only, refusing to complete a half-written key pair. A docker smoke
-  against OpenBao 2.6.2 (skipped under `-short`) proves JWT roles accept
-  `token_type=batch` and that the derived policy reads exactly the declared
-  names.
-
-- **`forge cloud identity` administers users, not just reads them.** New verbs,
-  each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
-<id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,
-  `delete` (asks first; `--yes` skips the question; a closed stdin refuses) and
-  `revoke-sessions`. `--user` takes a user id, or an email matched exactly
-  (case-insensitively) through `users`; no match, or two, is a refusal. The
-  scopes are `identity:read` for reads and `identity:manage` for every verb that
-  changes a user. forge presents neither up front: a Reliant session or `forge
-login` credential is traded for the scope the control plane's 403 names, for
-  an hour, exactly as `deploy:read` and `secret:write` are. An explicit
-  each one rpc of `controlplane.v1.IdentityService`:
-  `set-roles <env> --user <id|email> --role a --role b` (or `--none`), `reset`,
-  `lock`, `unlock`, `delete` (asks first; `--yes` skips the question; a closed
-  stdin refuses) and `revoke-sessions`. `--user` takes a user id, or an email
-  matched exactly (case-insensitively) through `users`; no match, or two, is a
-  refusal. The scopes are `identity:read` for reads and `identity:manage` for
-  every verb that changes a user. forge presents neither up front: a Reliant
-  session or `forge login` credential is traded for the scope the control
-  plane's 403 names, for an hour, exactly as `deploy:read` and `secret:write`
-  are. An explicit
-  `--token` is used as given. `invite` is unchanged.
-- **`forge project new --verify`** keeps the compile check at the end of the
-  bootstrap generate (see Changed).
-- **A CHECK that mirrors a Go set declares it, and `forge lint` keeps the two
-  equal.** In a migration, write
-  `COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set accesstoken.AllScopes'`.
-  The new closed-sets lane, which runs by default (`--closed-sets` runs it
-  alone), finds the CHECK the migrations last defined. It reads
-  `col <@ ARRAY[…]`, `col = ANY (ARRAY[…])` or `col IN (…)`, with or without
-  casts, and compares the values with the named set. A mismatch fails the
-  lane, naming the missing and extra values and printing the forward
-  migration. `forge db migration new --closed-set <constraint>` writes that
-  migration. The lane reads migration text, so it
-  needs no database and runs on the `-short` tier. That is the tier where a
-  forge bump adding `identity:read`/`identity:manage` went unnoticed until it
-  turned a project's main red.
-  - forge exports `accesstoken.AllScopes` and `accesstoken.AllResourceKinds`.
-    A project names its own set as `<import path>.<Var>`; forge type-checks
-    that package and executes none of it.
-  - postgres drops a constraint's comment along with the constraint, so the
-    lane also reports a CHECK that was replaced without re-issuing its
-    declaration.
-  - `forge:closed-set` is part of the catalog-marker vocabulary, so
-    `forge generate` and `--column-markers` reject a misspelled marker or one
-    on the wrong constraint kind. `schemadef.CheckConstraint` gains `Comment`.
-- **A project's own transaction openers are judged by
-  `forgeconv-tx-lock-under-serializable`.** A wrapper that takes an
-  `orm.TxPolicy` and runs the transaction itself (reliant's `Repo.RunTx`,
-  which keeps its own retry ladder) declares itself with
-  `//forge:tx-opener level-arg=<n> [body-arg=<n>]` on its func declaration;
-  the lint then finds a lock under SERIALIZABLE in its calls exactly as in
-  `RunTx`'s, matched by name and arity across the project, detached when it
-  takes no body. A marker that does not parse, or sits anywhere but on a func
-  declaration, is an error. The marker is in the `--go-markers` registry.
-  `orm.ResolveTxPolicy` / `orm.ResolveDetachedTxPolicy` validate such an
-  opener's policy as `RunTx` / `BeginDetached` do and return the full
-  options (level, access mode, attempt budget), the error naming the line
-  that called the opener.
-- **The scaffolded sign-up says what a password needs.** Sign-up used to answer
-  "That password does not meet the requirements." and never name one. The
-  login broker now serves the identity provider's own complexity policy at the
-  unauthenticated `GET /auth/password-policy`
-  (`{min_length, has_uppercase, has_lowercase, has_number, has_symbol}`, read
-  from Zitadel's `GET /v2/settings/password/complexity` with the broker's
-  token, cached for a minute), and a rejected password comes back
-  `400 {error, code: "password_policy", unmet:[...]}` naming **every** rule it
-  breaks (the provider reports only the first). The sign-up and reset forms show the
-  checklist up front and tick it as the person types; the server stays the
-  authority. New in `pkg/devidp`: `Client.PasswordPolicy`,
-  `PasswordPolicy.Unmet/Describe`, and `PasswordPolicyError.Rule`; `Register` now returns a
-  `*PasswordPolicyError` for a weak password. Existing projects keep their
-  owned `internal/app/login_broker.go` and screens; copy the new handlers from
-  a fresh scaffold.
-- **Self-serve password reset in the scaffold.** The broker mounts
-  `POST /auth/forgot` and `POST /auth/reset`, and the Next.js and Vite frontends get
-  static-export-safe `/auth/forgot` and `/auth/reset?userID=&code=&orgID=`
-  pages, so the reset links the control plane produces have somewhere to land.
-  `/auth/forgot` never reveals whether an address has an account and is limited
-  per address and per client IP. The forgot screen says plainly that the email
-  is sent only if the app's identity declares `smtp`. `pkg/devidp` gains
-  `SendPasswordResetLink`, `MintPasswordResetCode` and `FindUserByID`. There is
-  deliberately no scaffolded invite flow.
-- **ERROR log records carry the inputs an issue is grouped by.** Every record at
-  ERROR or above that goes through `observe.NewLogHandler` (the stdout line and
-  the OTLP logs bridge alike) now has `code.function.name`, `code.file.path` and
-  `code.line.number` from the record's PC, and, when it carries an error,
-  `exception.type` (`%T`) and `exception.message` (1 KiB bound) of the
-  _innermost_ error: svcerr's withheld cause first, then `Unwrap` to the end,
-  the first branch of a multi-error. Below ERROR nothing is added and nothing is
-  allocated. The PC is the logger's, so a call into `Handler().Handle` with a
-  caller-built record (Temporal's slog adapter, Sentry ELECTRON-CM) names that
-  caller instead of a frame inside the handler chain.
-- **`observe.LogPanic`** logs a recovered panic with `exception.stacktrace`,
-  `exception.type`/`message` and the PANICKING frame as its call site, not the
-  recover site. `RecoveryInterceptor` (unary and stream), `RecoverMiddleware`
-  and `middleware.HTTPStack`'s recovery use it; the old `stack` attribute is
-  now `exception.stacktrace`.
-- **`observe.ErrorGroup(ctx, name)`** returns the opt-in `error.group`
-  attribute, the escape hatch for pinning a record to a named issue.
-
-### Changed
-
-- **`forge project new` applies the feature graph itself.** The scaffold now
-  resolves its feature set with the loader's own rule
-  (`FeaturesConfig.FollowingRequirements`, the `followPinnedRequirements` the
-  loader runs on every load): a `--disable`d feature takes every unpinned
-  feature that requires it with it, so nothing is written that the project
-  would derive away. This replaces the hand-copied codegen → orm/migrations
-  cascade; `--disable codegen` now also turns off frontend codegen, and
-  `--disable build` deploy, exactly as their first load always did. A named
-  frontend's app is scaffolded whether or not frontend codegen is on (the
-  frontend-only shape), and `HasFrontend` (the dev IdP in docker-compose) and
-  rescaffold ask the same question as the upgrade lane: is a frontend declared?
-- **`forge project new` exits non-zero when the project's own first generate
-  fails.** It printed "initial code generation failed", then "✅ Project created
-  successfully!" and exited 0, so a script, a CI step or an agent carried on
-  over a project that did not generate (the `--disable codegen` shape stayed
-  broken that way). The rest of the scaffold still finishes (git init,
-  `go mod tidy`) and the files stay; the error says the project is incomplete,
-  what is missing, and the `forge generate` that completes it.
-- **`tdd.AssertConnectError` (and `TableRPC`'s `WantErr`) read `svcerr.Code`**,
-  the code `svcerr.Interceptor` sends, instead of `connect.CodeOf`. A handler
-  test calls the `*Service` method directly, so a handler returning a bare
-  `svcerr.NotFound("x")` — the documented shape — read as `unknown`. For a
-  `*connect.Error` the two agree; the one difference is an unclassified error,
-  which now asserts as `internal` (what the client reads) rather than `unknown`.
-- **`testkit.NewConnectClient` serves behind `svcerr.Interceptor`**, innermost,
-  as production's chain builders do — so the generated `NewTest<Svc>Server`
-  answers a handler's bare `svcerr.InvalidArgument("…")` with
-  `invalid_argument`, unary and streaming, where it answered `unknown`; and an
-  unrecognised error reads `internal server error` there as it does in
-  production, instead of its raw text. A test asserting either old answer was
-  asserting what no client in production sees.
-- **Generated proto mocks return
-  `svcerr.Wrap(svcerr.Unimplemented("handler for X not yet implemented"))`**
-  for an unprogrammed rpc, instead of a hand-built `connect.NewError`. The code and message are unchanged, the value
-  is still a `*connect.Error`, and `errors.Is(err, svcerr.ErrUnimplemented)` now
-  holds. Existing projects: `forge generate`.
-- **svcerr's `*connect.Error` policy is documented and pinned**: a hand-built
-  `*connect.Error` reaches the client exactly as built, wrapped text included —
-  redaction applies to what svcerr classifies. The interceptor cannot tell a
-  DSN from text meant for the user (a daemon's git rejection), and rewriting
-  it would change every project's wire on a forge bump; the fix for
-  `connect.NewError(code, err)` is at the call site (`svcerr.WrapOr`). The
-  `api` skill says so.
-
-- **`forge lint` fails when a gating lane could NOT run.** A frontend with no
-  `node_modules` (or whose install failed), a typecheck with no compiler, a
-  `buf.yaml` with no `buf` on PATH, or no golangci-lint that can analyze the
-  module now exits non-zero by default. The last line names the lane, the
-  reason and the command that fixes it (`npm ci` in the frontend's install
-  root, `forge tools install buf`, ...). Before, such a run printed `⚠️ N gating
-linter(s) passed; M could NOT run (...)` and exited 0 unless you passed
-  `--strict`. That flag also turned every advisory finding into an error, so a
-  gate that only wanted "fail when a lane did not run" had to grep the verdict
-  text. The same applies to `--quiet`, `--scope`, `--json` (`"ok": false`) and
-  `--gate-json`.
-  - **Accept a skip by name, with a reason.** Use
-    `forge lint --allow-skip 'frontend-typecheck=typechecked in the web job'`
-    (repeatable; `lane,lane=reason` names several) or, in forge.yaml:
-    ```yaml
-    lint:
-      allow_skip:
-        - lane: frontend-typecheck
-          reason: typechecked in the web job
-    ```
-    A lane is named as the verdict prints it (`frontend typecheck`) or with
-    dashes (`frontend-typecheck`). An accepted lane that could not run is listed
-    as `SKIPPED (allowed): <lane> — <reason>` and does not fail the run. An
-    unknown lane or an empty reason is refused, and a lane that ran and found
-    problems still fails. `--skip-frontends` still drops the whole frontend
-    lane for a backend-only run.
-  - **`--strict` has one meaning: advisory findings become errors.** It no
-    longer has any effect on a gating lane that could not run. The one
-    could-not-run case it still escalates is the advisory typed-config
-    guardrail's, because that report is itself an advisory finding. The same
-    holds for a frontend typecheck dialled to `lint.frontend.typecheck: warn`:
-    it is advisory, so when it cannot run it warns instead of failing.
-  - A lane that `--scope` does not select (frontend lint, graph, and the other
-    whole-project lanes) is still reported as `not scoped, so not run` and does
-    not fail. The same goes for a frontend outside the scope that could not be
-    checked.
-  - New `-unavailable` rule ids in `--json`: `buf-lint-unavailable` (it used to
-    be `buf`) and `golangci-lint-unavailable` (it used to be `external`).
-  - **Migration:** a CI job that passed only because a lane silently did not
-    run now fails. You can fix the cause (install the tool, run `npm ci`). Or,
-    if the job is meant not to run that lane, opt it out with `--allow-skip
-'<lane>=<why>'` or `lint.allow_skip`. A gate that grepped the verdict for
-    `could NOT run` to get this failure can drop the grep and trust the exit
-    code.
-- **A handler's `svcerr` error reaches the client with its Connect code,
-  wrapped or not.** `return nil, svcerr.PermissionDenied("…")` used to arrive as
-  `code = unknown`, because the constructors build sentinels and connect-go maps
-  anything that is not a `*connect.Error` to unknown; only
-  `svcerr.Wrap(svcerr.PermissionDenied(…))` worked. `serverkit.NewChain` now
-  ends every chain with `svcerr.Interceptor()` (new, in `pkg/svcerr`), which
-  applies `svcerr.Wrap` to whatever the handler returned: a typed error gets its
-  code, an error already wrapped or a `*connect.Error` passes through unchanged,
-  and an error nothing recognises becomes `internal` with
-  `svcerr.InternalMessage`. It sits innermost, so audit, logging and metrics see
-  the wire error. Writing `svcerr.Wrap` in a handler stays correct. A project
-  that assembles its own interceptor list instead of `serverkit.NewChain` adds
-  `svcerr.Interceptor()` itself.
-- **`observe.Chain` and `observe.DefaultMiddlewares` install the svcerr
-  interceptor too.** A project that built its chain with `observe.Chain` (not
-  `serverkit.NewChain`) silently kept the old `code = unknown` for
-  `return nil, svcerr.PermissionDenied(…)`; nothing failed, and only this file
-  mentioned the fix. Both builders now end the chain with `svcerr.Interceptor()`,
-  innermost, and `serverkit.NewChain` gets it through `observe.Chain`. Installing
-  it yourself as well is harmless: an `svcerr.Interceptor()` passed in `Extras` is
-  moved to the innermost position, never run twice (`svcerr.IsInterceptor`,
-  `svcerr.WithInterceptor`). The chain is one longer than before, so code that
-  indexes into it by position past the extras should account for the new tail.
-- **`forge project new` no longer compiles the scaffold before returning.** The
-  bootstrap generate skips its final `go build` and deploy-KCL render unless you
-  pass `--verify`. That tail was the one CPU-saturating step (40s of the
-  pipeline's 63s on a cold build cache), and it re-proved output that forge's
-  own e2e corpus compiles on every change; your first `go build` or `forge
-generate` runs the same check. `project new` never took a heavy slot and still
-  does not: pinned by `TestRunNew_TakesNoHeavySlot`.
-  own e2e corpus compiles on every change; your first `go build` or
-  `forge generate` runs the same check. `project new` never took a heavy slot
-  and still does not: pinned by `TestRunNew_TakesNoHeavySlot`.
-- **Transaction isolation has no default; every writable transaction names
-  its level.** pkg/orm had two opposite defaults: `RunTx`,
-  `RunTxWithOptions` and `BeginDetached` with an unset level began
-  SERIALIZABLE (RunTx retrying 40001/40P01 up to seven times), while
-  `Client.BeginTx` and `RunTransaction` with nil options began at the
-  database's READ COMMITTED, once. Two reliant ports changed isolation
-  silently through that gap — `MergeWorktreeCleanupMetadata` relied on a
-  `FOR UPDATE` lock, moved from READ COMMITTED to SERIALIZABLE and dropped
-  updates under contention. Now `RunTx(ctx, opts, fn)`,
-  `RunTransaction(ctx, opts, fn)` and `BeginDetached(ctx, opts)` take an
-  `orm.TxPolicy` naming its isolation, which carries its attempt budget —
-  the constants `orm.Serializable` (7 attempts), `orm.ReadCommitted` (1
-  attempt) and `orm.RepeatableRead`, refined with `WithMaxAttempts` /
-  `WithReadOnly` into an `orm.TxOptions` — and an unset level (or budget) is
-  rejected with `orm.ErrInvalidTxOptions` naming the call site. One primitive
-  rather than `RunTxSerializable` / `RunTxReadCommitted`: the level is a
-  value, so it composes with every opener (RunTx, RunTransaction,
-  BeginDetached) and passes through a wrapper unchanged instead of
-  multiplying method names, and the retry budget is visible beside the level
-  it belongs to. A required argument is as close to a compile error as Go
-  allows; the zero value is the runtime error. `RunTxWithOptions`,
-  `RunTransactionWithOptions`, `Client.BeginTx` and `orm.IsolationDefault`
-  are removed, and `orm.IsolationSerializable` / `IsolationReadCommitted` /
-  `IsolationRepeatableRead` are renamed `orm.Serializable` / `ReadCommitted`
-  / `RepeatableRead`; `RunTxReadOnly(ctx, fn)` keeps its
-  shape (SERIALIZABLE READ ONLY DEFERRABLE — a transaction that cannot write
-  has one right level). `RunTransaction` honours the attempt budget like
-  `RunTx` and reports an exhausted 40001/40P01 as `svcerr.Aborted`;
-  `BeginDetached` cannot retry and requires `MaxAttempts == 1`. A `*Tx`
-  someone else began is joined with `tx.Join(ctx, fn)`, which takes no
-  level: one spelled at a join would claim an isolation the transaction may
-  not have (`Tx.RunTx` remains, for `orm.Context`).
-- **Rendered pods set `enableServiceLinks: false`. Behavior change.**
-  Kubernetes injects `<SERVICE>_PORT=tcp://ip:port`, `<SERVICE>_SERVICE_HOST`
-  and `<SERVICE>_SERVICE_PORT` into every pod for every Service in its
-  namespace, and those names collide with typed config: a Service `temporal`
-  made `TEMPORAL_PORT` unparseable as an int and CrashLooped a prod gateway
-  (`ZITADEL_PORT` was the first outage of the class). Every pod template forge
-  renders (Deployment, Job, CronJob, the observability node agent's DaemonSet,
-  `forge.TestJWKS`'s Deployment) now opts out. `fw.Workload` gains
-  `enableServiceLinks` (default off) to opt one workload back in, Full profile
-  only (refused on hosted, the host runtime and on a job with `before`). The
-  next deploy rolls every forge-rendered pod once, and a standalone Job gets a
-  new spec-hash name. A workload that reads `*_SERVICE_HOST` / `*_SERVICE_PORT`
-  must move to DNS or explicit env, or opt in: `migrations/v0.1.47`, section 4.
-
-### Added
 
 - **`forge fix tx-isolation`** (run by `forge project upgrade` on crossing
   v0.1.47): rewrites every pkg/orm transaction call to the explicit form that
@@ -637,209 +176,6 @@ generate` runs the same check. `project new` never took a heavy slot and still
   `BeginDetached`. The snapshot predates the lock wait, so the waiter wakes
   into stale data and fails 40001; the fix is `orm.ReadCommitted` (keep the
   lock) or dropping the lock. A warning; an error under `--strict`.
-
-### Fixed
-
-- **A bridged project no longer rebuilds forge for a file no build reads.**
-  forge's bridge-skew check counted every dirty path in the linked forge
-  checkout as "uncommitted changes the binary was not built from" and handed
-  each command to a forge rebuilt from the checkout, keyed on the newest
-  edit's mtime. A file that cannot reach a build — the e2e shard's test2json
-  log, growing in the checkout's root for the whole run — so rebuilt forge on
-  every command, and a re-run of `forge generate` ran a different binary and
-  never recorded its fixed point (`TestE2EFixtureCorpusCRUDLifecycle`,
-  `CPForgeShaped`, `ZeroService` red on main). Now only a source edit counts:
-  a Go build file, or any file beneath a directory holding a non-test Go
-  package (where `//go:embed` reaches: templates, KCL, skills). A cached
-  bridge build is also keyed on its Go settings (`GOFLAGS`, `CGO_ENABLED`,
-  `GOOS`/`GOARCH`, …) and is never replaced once published, so a process can
-  no longer have the binary it runs swapped for a differently-built one. The
-  e2e shard writes its files under `$RUNNER_TEMP`, outside the checkout.
-- **A project without codegen works straight after `project new`.**
-  `forge project new --disable codegen` (the frontend-only shape) printed "initial
-  code generation failed", and `forge generate`, `go build` and `forge lint` all
-  failed on it. Its go.mod required and replaced a `<mod>/gen` module that only
-  codegen writes; it got no go.work, so `--link-forge` had nothing to bridge;
-  and `cmd/<bin>/cmd/root.go` called `rootCommands`, which only the codegen
-  lane defines. Now gen's require, replace, `gen/go.mod` and go.work's
-  `use gen` follow one predicate, every kind that imports forge gets a go.work,
-  and the scaffold (then `forge generate`) writes a `roots_gen.go` whose
-  `rootCommands` returns no roots, plus the `metrics schema` command every
-  other service has, so root.go is the same file in every shape. The other
-  `--disable` values were already green; `TestE2EProjectNewDisableShapes` now
-  scaffolds, generates, builds and lints every one. `--service` with
-  `--disable codegen`, and `--frontend` with `--disable frontend`, are refused
-  up front: they used to drop the component without a word (the latter left an
-  empty `frontends/<name>/`).
-- **Every `forge scaffold <noun>` leaves the project lint-green, with no
-  `forge generate` after it.** `scaffold frontend` wrote
-  `proto/config/v1/<fe>_config.proto` and stopped, so `gen/forge_descriptor.json`
-  was stale and `forge lint`'s convention and graph lanes refused it until the
-  user ran `forge generate`; `scaffold adapter` did the same to `config.proto`
-  (and `config.<Name>Config` did not exist yet), and `scaffold package` left
-  `observe_chain.go` unreferenced until generate wrote `middleware_gen.go`.
-  All three, and `forge package new`, now end with a full generate run, as
-  `scaffold service` and `scaffold rpc` already did; `--no-generate` skips it
-  for a round that stages several scaffolds. A failed run keeps what the
-  scaffold wrote and exits non-zero. Three templates were red on their own:
-  the operator's `doc.go` and the binary's `Run` doc carried space-indented
-  doc-comment code blocks gofmt rewrites, and every CRD declared
-  `addKnownTypes_<Type>` (revive `var-naming`, now `addKnown<Type>Types`),
-  left a doubled blank line in its config and composite types (gofmt), and
-  tested the deprecated `ctrl.Result.Requeue` (staticcheck SA1019). New
-  guards: `TestE2EScaffoldNounsLeaveLintGreen` scaffolds each noun into a fresh
-  project and runs `forge lint` straight after it, and the `-short`
-  `TestComponentScaffolds_GoIsFormattedAndNamedForLint` checks what the
-  operator, crd, binary, worker and webhook scaffolds write.
-- **A fresh vite-spa frontend has zero eslint warnings.** It opened with nine
-  `react-refresh/only-export-components` warnings: files that exported a hook,
-  a context or a helper beside their component, which defeats Fast Refresh.
-  The non-components moved to modules of their own — `useAuth` to
-  `src/lib/auth/use-auth.ts`, `useEvent`/`useEventBus` to `src/lib/use-event.ts`,
-  `usePasswordPolicy` to `src/lib/auth/use-password-policy.ts`,
-  `brandThemeToCssVars` to `src/lib/theme/brand-theme.ts`, `FormFieldContext`
-  to the new `form_field_context` library component, and the provider stack
-  out of `main.tsx` into `src/providers.tsx`; `isExternalHref` and
-  `monoLength` are no longer exported. The rule is unchanged. The frontend
-  lint e2e tests now fail on any eslint warning, not only on errors.
-- **A fresh `forge project new` passes its own `forge lint` again.** The login
-  broker (`internal/app/login_broker.go`) took `ctx` second in
-  `writePasswordRejection`, which revive's `context-as-argument` rejects; the
-  sign-in page and reset form imported out of `import/order`; the password
-  test missed an import-group blank line and, on vite-spa, declared two unused
-  parameters; vite-spa's eslint linted the generated `public/config.js`
-  (`no-undef` on `window`); and the cli kind's `cmd/<name>/version.go` carried
-  a doc-comment code block gofmt rewrites. A new `-short` tripwire
-  (`TestFreshScaffold_GoIsFormattedAndTakesContextFirst`) checks every Go file
-  the service, cli and library kinds write for both Go rules, and
-  `TestE2EFreshScaffoldLintExitsZeroForEveryKind` runs the real `forge lint`
-  on fresh cli and library projects.
-- **The E2E Suite runs on main again.** Since #1056 its shards skipped on every
-  push and nightly call: a job with no `if:` inherits the skip of the
-  pull-request-only `changes` job two hops up, though `prepare` succeeded. The
-  shards now say when they run, and `internal/ciguard`'s
-  `TestNoJobInheritsAnUpstreamSkip` rejects that shape in every workflow.
-- **`forge tools install` replaces a GOBIN binary on Windows while something
-  has it open.** The atomic install (#1062) renamed the staged binary over the
-  old one with a bare `os.Rename`, which Windows refuses while any handle, such
-  as a virus scanner or a parallel forge, has the target open. It now retries
-  for a moment, as every `atomicfile` write already does (new
-  `atomicfile.Replace`).
-- **The main-red override judges main's latest run that has a verdict.**
-  `scripts/ci-main-red.sh` compared against main's newest completed run, which
-  is often one a later push cancelled, and refused #1071 because that run
-  (25283f30) had no failed job. It now skips cancelled and unfinished runs. It
-  also drops the CRs a native `jq.exe` writes, which made `TestMainRedOverride`
-  fail on Windows since #1057.
-- **A scaffolded Next.js frontend builds again against `@opentelemetry/api`
-  1.10.** That release ships only `.d.mts`/`.d.cts` declarations, the tsconfig
-  peer pin was aimed at `dist/index.d.mts`, and Next's webpack read it as
-  JavaScript (`Module parse failed: Unexpected token`). Only a `.d.ts` is pinned
-  now; a package with none is pinned by its directory.
-- **Docs no longer promise mail that is never sent.** The `deploy/managed-
-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
-- **Docs no longer promise mail that is never sent.** The
-  `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
-  mail through a platform relay and that an invitation emails a link. Neither is
-  true: with no `smtp`, an instance sends no mail at all. The skill now says so,
-  sketches building invites by hand (`InviteUser` + `MintPasswordResetCode` +
-  `/auth/reset`), and explains that public `/auth/register` is on by default and
-  how to turn it off for an invite-only app.
-- **`forge tools install` replaces a GOBIN binary atomically.** It ran
-  `go install` straight into GOBIN. When cmd/go cannot rename its build into
-  place (a setgid GOBIN, or a `$WORK` on another filesystem), it removes
-  the file and rewrites it in place. A parallel generate starting `buf` or
-  `protoc-gen-go` at that moment could find nothing, or run a half-written
-  binary. The install now builds into a temp directory inside GOBIN and
-  renames the result into place.
-- **Tracing remediation says `--fix`.** Lint became report-only by default,
-  but every tracing finding's remediation, the auto-fix hint, the generated
-  `NewInstrumented` comment and the observability skills still said
-  `forge lint --tracing` rewrites the code. Run as told, it reported the same
-  findings and rewrote nothing (control-plane's 46 contract constructions).
-  They now say `forge lint --tracing --fix`.
-- **A primary key is server-allocated only when the schema says so.** The ORM
-  tagged every integer key `,autoincrement`, so reliant's
-  `legacy_credential_copy` (`id integer PRIMARY KEY`, no default, no sequence)
-  had its caller-set id left out of the generated `Create` and the insert
-  failed NOT NULL; each integer member of a composite key got the same guess.
-  The tag now follows the applied schema — `serial`/`bigserial`, an identity
-  column (schemadef reads `is_identity`; the catalog reports no default for
-  one), or any `DEFAULT` — so a `uuid DEFAULT gen_random_uuid()` key is the
-  database's too, where `Create` used to ULID-fill it and fail 22P02. `Create`
-  now leaves only a ZERO server-allocated key to the database; a key the
-  caller set is inserted as set.
-- **No lint rewrite path touches `testdata`.** The Go format pass and its
-  report-only diff skip any path with a `testdata` segment (not only a pruned
-  directory), the frontend prettier walk now skips it too, and the structured
-  driver (`--quiet`, `--scope`) no longer hands golangci-lint `--fix` under
-  `forge lint --fix` — the rewrite #1041 removed from the text driver only.
-  The reported rewrite of `internal/linter/slowtest/testdata/src/a/a_test.go`
-  came from the forge embedded in reliant, pinned before #1018.
-- **pgtest's shared server survives a slow moment and a long run.** An
-  attaching process probed the cross-process shared embedded server with a
-  2s connect and 3s ping and, on a miss, `pg_ctl stop -m fast`ed it — under
-  every other process using it, which failed mid-test with 57P01
-  "terminating connection due to administrator command" and 57P03 "the
-  database system is shutting down". A loaded or just-woken machine misses
-  that probe routinely (control-plane's integration lane failed that way in
-  four runs in a row). A live postmaster is now retried for 30s on the
-  monotonic clock; if it still does not answer and other processes use it,
-  the newcomer runs on a standalone server of its own and the shared one is
-  left alone. `reapStaleInstances` no longer SIGKILLs (and deletes the data
-  directory of) the pool's server while it has a live user, or a standalone
-  server while its owner lives, however old its pid file looks: a fan-out
-  outlives the 30-minute stale age, and a sleep ages every file by the wall
-  clock.
-- **`forge lint` skips `node_modules` Go packages in a project reached
-  through a symlink.** `go list` reports package directories under the
-  caller's `$PWD` spelling (macOS's `/var`, a symlinked home or worktree),
-  and the filter compared them with the resolved project path. So nothing
-  matched, and golangci-lint and the contract linter linted third-party Go
-  under `node_modules` again. A project directory that was itself a symlink
-  also skipped the search for `node_modules`. Both sides are now resolved.
-
-### Changed
-
-- **A Go cache budget no trim can reach is reported, not passed over.** The
-  trim never deletes an entry used in the last 2h (a running build may need
-  it), so a cache that takes in more than its budget in that window cannot be
-  held to it — and every pass used to report itself finished while a 20 GiB
-  budget held a 152 GiB cache. The pass now prints a `no trim can reach it`
-  warning with the size written inside the floor and the fill rate, and
-  records it in the GC record's new `over_budget` list (not a failure);
-  `forge storage status` shows the same split.
-- **Child go commands that set their own GOFLAGS keep `-trimpath`.** Tool
-  installs (`forge ci` tools, golangci-lint) and the test suite's builds of
-  scaffolded projects replaced GOFLAGS (`GOFLAGS=-mod=mod`, `GOFLAGS=`), which
-  dropped the `-trimpath` default and gave every `t.TempDir()` project fresh
-  cache keys each run. They now merge through `goexec.WithTrimpath`, and
-  `TestGOFLAGSOverridesKeepTrimpath` fails on any new site that does not.
-
-- **Checks build with `-trimpath`, so worktrees and scratch copies share one
-  build and test cache.** Without it Go hashes every main-module package's
-  absolute directory into its cache key: a fresh worktree of the same commit
-  compiled the whole module again (267 packages, 0 of 73 test packages cached,
-  in control-plane), and `forge ci verify-generated` — which regenerates in a
-  fresh scratch directory every run — recompiled everything in its validate
-  step every time (10.8s against 2.6s with the flag). `forge generate`'s
-  compile check, `forge lint`'s golangci-lint and every `forge ci gate` check
-  now merge `-trimpath` into the effective GOFLAGS (`goexec.CheckEnv` /
-  `WithTrimpath`), and the scaffolded Taskfiles do the same for every task in
-  a top-level `env:` block. A GOFLAGS that already says `-trimpath` or
-  `-trimpath=false` is left alone; debug builds keep absolute paths. Measured
-  with control-plane's own gate: four concurrent `task ci` runs in fresh
-  worktrees went from 182–258s wall (802s summed slot wait) to 103–139s (304s).
-- **Heavy slots default to min(CPUs / 2, memory GiB / 8), not CPUs / 4.**
-  Memory is what protects the machine (the reclaim collapse the old constant
-  was measured against), and it still decides on a 16 vCPU / 32 GiB VM. CPU
-  sharing degrades gracefully instead — four CPU-bound test lanes at once took
-  the same total time as running them in turn — and a heavy job is rarely
-  CPU-bound throughout: four concurrent merge gates on a 16-CPU / 128 GiB Mac
-  left the CPU ~33% idle at 4 slots while 304s of slot wait piled up, and at 8
-  slots the worst gate's wall fell 139s → 116s (164s → 122s on a rerun).
-
-### Added
 
 - **`ShellBuild.built_images`: one image built FROM another.**
   `built_images = {BASE = "runtime"}` declares that this ShellBuild needs the
@@ -1243,197 +579,6 @@ identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   `command`). New projects deploy `_api` with `root = "server"`. Only a root
   `AppConfig` is projected; per-binary configs (`binary_config`) get no
   `ROOTS`.
-
-### Fixed
-
-- **Parallel generates no longer fail pinning a codegen tool.** When the
-  protoc plugin on PATH does not match go.mod, forge installs the pinned one
-  into its cache. Two forge processes doing so at once (every fresh project's
-  first generate pins) could read a binary the other was still writing, and
-  failed with "installed binary reports unknown". The install now writes into
-  a private directory and renames the finished binary into place.
-- **`forge generate` composes correctly when go.mod is behind the tree.** The
-  composition graph types every node with one package load, and that load
-  fails outright on a go.mod that needs updating: a fresh clone, a
-  just-added `replace`, a dependency bump. The graph then fell back to names
-  alone. The server root held no nodes, `graph_gen.go` lost every node's
-  lifecycle, and `config_gen.k` refused the scaffold's own
-  `config_secrets = ["DATABASE_URL"]`. The tidy that ran after composition
-  repaired go.mod, so only the next run was right. A
-  `go mod tidy (pre-composition)` step now runs first on any project generate
-  has composed before.
-- **`forge lint --tracing` says what each rewrite did.** Its fix report
-  called every rewrite a log call, so a run that only renamed contract
-  constructions to `NewInstrumented` printed "34 log call(s) rewritten to pass
-  the request context" across 23 files. Each file now reports in the words of
-  the rule that rewrote it (`describeTracingFix`), the summary counts
-  rewrites, and the "can be rewritten automatically" hint counts
-  contract-uninstrumented warnings as well as log ones.
-- **A fresh project's first `forge lint` under CI passes.** `forge lint`'s
-  format lane skips a scaffold file nobody has touched, judged by the birth
-  hash in `.forge/scaffolded.json`. Of a frontend's scaffold, only `nav.tsx`
-  and `dashboard.tsx` were recorded. Every other file read as edited from
-  birth, so under CI, where lint is report-only, a new project failed on 31
-  template files prettier would re-wrap. Every scaffold-once file a frontend
-  scaffold writes, the core UI components and the seeded mock scenario
-  included, is now born with its hash.
-- **A generated store reports a missing row one way.** `Get<E>ByID`,
-  `Get<E>ByPK` and a view's `Get<E>ByID` returned `svcerr.NotFound`, while
-  `Update<E>`, `Update<E>Masked`, `Delete<E>` and `Delete<E>ByPK` returned
-  `orm.ErrNoRows`, so a caller touching both checked both. `crud.Repo` now
-  answers every by-key miss (and `crud.ScopedGet`'s) with
-  `svcerr.NotFound("<entity>")` carrying `orm.ErrNoRows` as its cause:
-  `svcerr.IsNotFound(err)` and `errors.Is(err, orm.ErrNoRows)` (=
-  `sql.ErrNoRows`) are both true. `svcerr.NotFound` is the answer because it
-  is the domain category `svcerr.Wrap` maps to CodeNotFound and a service can
-  return as-is; the sentinel stays reachable so a Persist closure that
-  swallows it (absent-is-success) and every existing check keep working. The
-  generated delegates now only forward, and no longer import `errors` or
-  `pkg/svcerr`. **Migration note:** nothing that checked either error breaks;
-  `ignoreNotFound`-style helpers that test both can test one. Two checks
-  that never fired now do: `errors.Is(err, sql.ErrNoRows)` after a `Get…`,
-  and `svcerr.IsNotFound(err)` after an Update or Delete. A caller that
-  compared the error with `==` (never correct: it was wrapped) or matched its
-  text sees `"<entity> not found"` in place of `"sql: no rows in result set"`.
-- **`Create<E>` and `Upsert<E>` keep a caller-set `updated_at`.** Managed
-  timestamps follow explicit-beats-default, the rule a `NOT NULL DEFAULT`
-  column follows: `created_at` and `updated_at` get now only when unset (zero
-  time, `nil`, `""`), and a value the caller set is kept — Create overwrote
-  `updated_at` unconditionally, so rows that carry their own times (reliant's
-  drafts and scenarios) had to bypass it. `Upsert` writes the same
-  `updated_at` on either branch. `Update`/`UpdateMasked` still always
-  re-stamp `updated_at`. **Migration note:** a Create of a struct that still
-  holds a stale non-zero `updated_at` (copied from another row) now stores
-  that value; zero it, or set it to now, to stamp.
-- **`List<E>` with no limit returns every row instead of the first 10,000.**
-  A limit-less `crud.Repo.List` was capped at 10,000 rows with no error and
-  no flag, so a table that outgrew it silently returned a wrong answer. The
-  cap is gone: no `orm.WithLimit` means all matching rows, as `ListAll`
-  already did. Bound a read with `orm.WithLimit`, or walk a growing table a
-  page at a time (`WhereGt` on the key + `WithOrderBy` + `WithLimit`). The
-  paged List rpcs are unchanged: they clamp `page_size` to `MaxPageSize` and
-  always pass their own limit. **Migration note:** a direct caller that
-  relied on the cap to bound memory must now pass `orm.WithLimit`.
-
-- **Every ORM statement is sent with its values as bind parameters, not just
-  the by-key ones.** bun formats values into the SQL text, so under pgx's
-  default statement cache each new id, timestamp or body was a new statement
-  to Parse, Describe and plan, and churned the connection's 512-entry cache;
-  F12.8 bound only `Get`/`Update`/`UpdateMasked`/`Delete`. Measured in
-  reliant: a message save through `NewRaw` was 35–80% slower than the same
-  statement with `$N`, and an append through the builder cost 16x the bytes
-  and 3x the allocations. Now the connection an `orm.Client` hands bun (pool,
-  `RunTx` ctx, or `Tx.Bun()`) re-renders each statement with a binding
-  dialect and sends one text per statement shape: generated
-  `Create`/`Upsert`/`List`/`ListAll`/`Count`, every bun builder query and
-  `NewRaw`. Bound: every model column value (numbers included), every
-  string, time, `[]byte` and JSON `?` argument, the values of
-  `orm.WhereEq`/`WhereIn`/… , and anything wrapped in the new `orm.Arg(v)` /
-  `orm.ArgList(slice)` — the way to bind an integer `?` argument, which bun
-  formats without consulting the dialect. A value stays a literal where a
-  parameter would change its meaning (positional `ORDER BY`, typed literals,
-  bare arguments of `"any"` functions such as `jsonb_build_object`,
-  `? IS NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
-  equal to bun's text, or that is not DML, runs as bun rendered it.
-  `orm.Literal(v)` keeps one value in the text (a constant a partial index's
-  predicate is proved from); `orm.InlineValues(ctx)` turns binding off for a
-  ctx. `BenchmarkBoundStatements` (pkg/crud): statements prepared per call
-  1.0 → 0.0005 for Create, List, Count and `NewRaw`.
-
-  **Migration note.** A `?` value the planner needs at plan time — the
-  constant of a partial-index predicate — must now be written into the SQL
-  or passed as `orm.Literal(v)`: a generic plan cannot prove a predicate from
-  a parameter. Text written into the SQL itself is never bound. `Tx.Bun()`
-  now returns a wrapper over `bun.Tx`, not the `bun.Tx` itself, and the
-  Client's bun handle runs on a pgdialect wrapper (`db.Dialect()` is no
-  longer a `*pgdialect.Dialect`).
-
-- **`api.rest` runs on vanguard v0.5, and no longer hides the mux's other
-  routes.** vanguard v0.5 serves REST from a connect-go v2 `*connect.Server`
-  (`vanguard.Mount`) and removed `Service` / `NewService` / `NewTranscoder`.
-  `serverkit.RESTHandler` keeps its signature: each mounted service is
-  registered as `vanguard.ForwardService` over a Connect client whose
-  transport serves the call with the mux in process, so a REST request is
-  answered by the same handler and interceptor chain as its Connect URL, and
-  that handler sees the REST caller's address, TLS state and Host. A request
-  the mux has a route for now always goes to the mux: under v0.4's transcoder
-  every non-Connect route on it (the login broker's `/auth/*`) answered 404
-  once REST was on. Two v0.5 behaviors to know about. A streaming rpc maps to
-  REST only when its streamed side is a `google.api.HttpBody` (v0.4 sent
-  JSON lines). Annotating any other streaming rpc fails the REST routes at
-  startup, and the server then serves Connect only.
-- **The tracing rules flag only code a trace can reach.** Three constructions
-  were reported that cut no trace, and are no longer: in a project whose
-  observability is off (derived off with no server: a CLI or a library), the
-  top-level `internal/` and `cmd/` trees and every `package main`, which run
-  only in its own untraced binaries — its importable packages are still
-  linted, since they run inside the traced servers that import them; a pool
-  opened only to look its driver up (every use `.Driver()` or `.Close()`,
-  how `dbtrace.Open` builds a traced pool from a driver name); and an
-  `*http.Client` in a file that exports telemetry over OTLP, which is
-  untraced on purpose (a traced exporter traces its own exports). forge's
-  own `forge lint` is green again: its library code now logs with the
-  request context, and opens its HTTP clients and pools traced
-  (`pkg/oauth2`, `pkg/identity`, `pkg/orm`, `pkg/migratekit`, `pkg/pgtest`,
-  `pkg/testkit`, …). `pkg/pgtest` handles are pgx under dbtrace, as
-  production's pool is.
-- **`forge lint`'s format pre-pass never rewrites a `testdata` fixture.** The
-  go tool and the gate never read one, and an analyzer fixture's want lines
-  depend on its exact layout.
-- **A freshly scaffolded operator passes `forge lint --contract`.** An
-  `internal/operators/<name>` package declaring `SetupWithManager` is exempt
-  from `requirecontract` structurally, as a worker is.
-- **`serverkit.Run` serves pprof through the `Pprof` component** instead of
-  its own copy.
-- **A legacy-composition `internal/app/lifecycle.go` with no worker compiles.**
-  The template imported `forge/pkg/lifecyclekit` unconditionally, but since
-  its operator re-exports moved to `operatorkit` (#918) only a `Worker<X>()`
-  accessor names it, so a project without workers failed its first generate
-  with `"…/pkg/lifecyclekit" imported and not used` (every
-  `forge project new` from #918 until the composition graph, #923, made new
-  projects skip lifecycle.go). The import is rendered with the first worker,
-  and the reconciler adds it when it injects one into an existing file.
-- **`gen/forge_descriptor.json` stamps one entry per proto, and a merge keeps
-  it current.** The `source_hash` digest of every `.proto` is replaced by
-  `sources` (path → sha256 per file). A single digest of the tree matched no
-  merge: two branches editing different protos each stamped a different
-  value, so every merge that brought in a proto change staled every open
-  branch's descriptor, and main went stale when two landed without a
-  regenerate. Per-file entries change only where their proto changes, and the
-  `forge-generated` merge driver merges them key by key, so the merged stamp
-  is the stamp of the merged tree. forge's vendored annotation protos
-  (`forge/v1/forge.proto`, `buf/validate/validate.proto`) are not stamped:
-  they are grammar, not descriptor input, and only `forge generate` changes
-  them. A stale descriptor is now refused with the protos that drifted
-  (`proto/x.proto (edited)`). The next `forge generate` rewrites the field.
-- **A new service project's `docs/runbook.md` points at what forge ships.** It
-  said "Check for traffic spike (Grafana dashboard)" and "Grafana: TODO
-  (link)", and asked for Loki, Jaeger and PagerDuty links. It now names the
-  Observability tab under Apps in Reliant, the local HyperDX UI, the generated
-  dashboards in `deploy/observability/dashboards/`, the generated alert
-  defaults (`alert-defaults_gen.json`) and how `forge.Alerts.defaults` tunes
-  them, and explains each built-in alert.
-- **`forge generate --help` describes the pipeline it runs.** It described
-  entity protos in `proto/db/` and a `pkg/app/bootstrap.go`, both retired. The
-  no-`forge.yaml` path no longer looks for `proto/api/` and `proto/db/`, and
-  the seed step is gated on services rather than on a `proto/db/` directory.
-
-### Removed
-
-- **New service projects no longer get `deploy/observability/prometheus-rules.yaml`
-  or `docs/slo.md`.** Nothing in forge loaded the rules (alerts are
-  `forge.AlertRule` / `forge.AlertDefault` in KCL, evaluated as ClickHouse
-  SQL) and nothing measured the SLO doc's targets. An existing project can
-  delete both files.
-
-- **Graph-mode projects no longer scaffold `cmd/<bin>/cmd/server.go`**, and
-  `cmd/<bin>/main.go` / `root.go` take no command-group constructors
-  (`Execute()`, `newRootCmd(deps)`). The per-service, per-worker and
-  per-operator subcommands and `Serve` / `ServeSpec` / `MountFunc` /
-  `MountNone` stay only in projects on the legacy `Infra` / `NewComponents`
-  composition, which generate exactly as before.
-
-### Added
 
 - **`fw.Workload.profiling` (`forge.Profiling`): a typed per-workload
   profiling override.** `wl.worker | {profiling = fw.Profiling {alloc = True, heap_interval = "1m"}}`
@@ -1856,479 +1001,6 @@ identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
   `internal/obsdash`'s HyperDX renderer refuses a field through `CheckField`,
   and a test holds the two to the same vocabulary.
 
-### Removed
-
-- **The `enforce-component-observe` lint and `config.enforce_component_observe`.**
-  It failed a package that had made no observability decision. Being
-  instrumented is now the default decision, so there is nothing left for it
-  to enforce. Delete the key if your forge.yaml sets it.
-
-### Fixed
-
-- **forge rides out a k3s server that crashes while a k3d cluster boots.**
-  k3d waits for a server's "k3s is up and running" log line and gives up the
-  moment the container restarts (`stopped returning log lines: … status=restarting`),
-  although Docker's restart policy brings k3s back. forge now keeps a new
-  cluster's nodes on failure (`--no-rollback`, only for a name that did not
-  exist), and when a server restarted it deletes the half-made cluster and
-  creates it once more, printing the server's exit and last log lines. Any
-  other failure is rolled back and returned as before; a second crash fails
-  with both reasons.
-- **`forge lint ./internal/x/...` no longer reformats packages you did not name.**
-  The auto-fix pre-pass (`gofmt`/`goimports`, then `golangci-lint --fix` and the
-  frontend formatter) honoured `--scope`, but ignored the positional package
-  paths of `forge lint [paths...]`: naming one package still rewrote every Go
-  file in the project, including ones another agent was editing in the same
-  checkout. The Go format pre-pass now touches only files under the named
-  paths (a whole-module pattern such as `./...` is still the whole tree), and
-  the frontend formatter, which cannot be confined to Go paths, does not run
-  when paths are named. A bare `forge lint` still auto-fixes the whole project,
-  `--scope` still confines it to the scope, and `--no-fix` and `--json` still
-  write nothing.
-- The `wireRelease.Commits` comment in `internal/cli/hosted_ledger.go` named
-  `DeployRelease.commits` as tag 13; the control plane's proto declares it as tag 14.
-- **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`
-  finding, not only `forgeconv-frontend-process-env`.** The dial was applied to
-  that one rule's findings and ignored for every other, so
-  `lint.rules: {forgeconv-activity-declared: warn}` was accepted by the config
-  loader and then did nothing: the rule stayed an error, and there was no way
-  to adopt it incrementally. `off`, `warn`, `error` and the `*` wildcard now
-  behave the same for every proto and Go-tree convention rule, after
-  `forge:lint-disable` suppression.
-
-- **Parallel `forge cluster up`s no longer lose each other's kubectl
-  context.** `k3d cluster create`, `k3d kubeconfig merge`,
-  `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default
-  kubeconfig with no lock, so two forge processes creating clusters at once
-  dropped one context, and the loser failed on `context "k3d-<name>" does not
-exist` for a running cluster. forge now creates with
-  `--kubeconfig-update-default=false --kubeconfig-switch-context=false` and
-  makes every kubeconfig write under one cross-process flock beside the file
-  (`<kubeconfig>.forge.lock`). The declarative cluster path also stops
-  silently switching your current context to the cluster it created.
-- **A graph-composed project's scaffolded e2e harness starts `<bin> server`.**
-  It ran `<bin> <svc>`, a per-service command that only legacy Components
-  projects have, so every new project's e2e suite failed with `unknown
-command`.
-- **`forge generate` drops a removed Deps key from a compose.go construction
-  of a package that is no longer a graph node** (marked
-  `//forge:external-component` or `//forge:not-a-component`). The graph
-  reconcile only measured node constructions, so the dead key failed every
-  generate's validate build (#747, again in graph mode); the construction is
-  kept and reported with the graph's remedy.
-- **`forge ci verify-generated` and `forge generate --check` never write the
-  checkout.** Both regenerated the caller's own tree and then read
-  `git status`, so a concurrent gate held every reader of the tree back for
-  30-50s, and a run that found drift, crashed or was killed left the
-  regenerated files behind. They now regenerate a scratch copy made beside
-  the repository (`.<repo>.forge-verify-<pid>-*`: its own git repository
-  borrowing the checkout's objects, holding the checkout's index and working
-  tree byte for byte, plus the gitignored files generate reads) and diff the
-  copy against itself; output and exit codes are unchanged. They judge the
-  working tree as `git add -A` would commit it — HEAD on a clean checkout — so
-  a dirty tree now gets a verdict instead of a refusal, and every change
-  reported is generate's. The generate cache is shared both ways: the
-  checkout's record is copied in, and a fixed point the scratch run verifies
-  is copied back to `.forge/generate-cache.json`. The cache key also stops
-  including `FORGE_SLOT_HELD`, a fresh token per slot holder, which made every
-  run inside the gate a miss. `forge ci gate` no longer runs verify-generated
-  alone, skips it on a dirty tree, or resets the tree after it fails.
-- **`forge slot run` and read-only commands no longer edit `.git/config`.**
-  Every forge command pointed the generated-file merge driver at itself
-  (`.git/config`, `info/attributes`) and activated forge's hooks
-  (`core.hooksPath`) as a side effect, so `forge slot run`, `env status`,
-  `env render` and `env deploy --dry-run` rewrote the config every linked
-  worktree shares. Only commands that write generated or state files do it
-  now (`generate` without `--check`/`--plan`, `scaffold`, `project disown`,
-  `project delete service`, `package new`). And two copies of the pinned forge
-  at different paths (each worktree's tool-cache install, a `go install`ed one)
-  no longer take the driver from each other on every run: the copy already
-  registered keeps it while it exists.
-- **`forge env deploy <env> <version> --frontends-only` no longer renders or
-  compares the env's bundle.** It applies no bundle object, yet it rendered
-  the whole env and refused when a newer checkout's workloads differed from
-  the release's bundle of record — so a release's frontend could not ship
-  after its backend had (control-plane prod, 2026-10-19). It now records no
-  bundle and computes no k8s plan; its promotion is still confirmed and
-  scoped, and the frontend still builds from the release's recorded sources.
-  A `--target` naming only frontends shipped to Firebase or a bucket is
-  treated the same; any target that renders cluster objects keeps the check.
-- **A release's bundle reproduces from its own commit and forge.** A
-  hand-composed `forge.image_ref_for(<repo>, image_tag)` rendered
-  `<repo>:<release>@<digest>` at the cut, whose build state held a digest
-  under `<repo>:<release>`, and `<repo>@<digest>` on any later redeploy,
-  whose build state did not — so the versioned deploy refused its own
-  release's bundle. A named release now pins its images under the release
-  tag from the release alone (`releaseVersionTag`, the one rule the build's
-  push tag, the render's `image_tag` and the pins share).
-- **A Firebase or bucket frontend that fails before its upload reports
-  nothing shipped.** A failed `npm run build` (or assemble, source-map
-  filing, asset retention, config write) was reported as
-  `PARTLY … failed part-way; some of it may be live`, although the host was
-  never written. Those failures now carry `cluster.ErrNothingApplied`, which
-  the deploy's ship log reads, unless an earlier frontend of the same group
-  already shipped.
-- **`lifecyclekit.Supervise` no longer reports a node as stuck because an
-  earlier node spent the shutdown budget.** Nothing waited for a node's `Run`
-  after its cancel once the budget was gone, so every node behind a slow one
-  logged `node did not stop within the shutdown budget` at ERROR (and
-  `run_still_running`) even when it returned instantly. Each `Run` now gets
-  250ms to return after its cancel; only one that really ignores its context
-  is reported. The walk overruns the budget by at most 250ms per truly stuck
-  node.
-- **`forge storage` worktree reaping no longer holds a worktree for forge's
-  own scratch, a project's pinned tools or its `tmp/`.** The rebuildable
-  allow-list gains `.forge/tmp`, `.forge/generate-cache.json`, `/.tools` and
-  `/tmp`; a leading `/` anchors an entry to the worktree root (`web/tmp` is
-  still unrecognized data), and the never-list still wins (`tmp/data`,
-  `tmp/.env`, `*.db`). A git-ignored repository that is a direct child of
-  `<worktree>/.tools/pre-commit/` (pre-commit's hook clones, which
-  control-plane's gate creates) no longer makes the worktree a
-  `nested-repository`; every other nested repository, including one inside
-  `tmp/`, still holds. Mirrors reliant's `worktreereclaim` list.
-
-- **`serverkit.Listener` loads its TLS certificate in `Listen`, not `Run`.**
-  `ServeTLS` read the pair only once `Run` started serving, so a missing,
-  malformed or mismatched certificate failed after `Listen` had bound and
-  `Ready` had reported the listener up — `lifecyclekit.Supervise` had already
-  started the next node. `Listen` now loads and validates the pair before it
-  binds and returns an error naming both paths; `Run` serves the loaded
-  certificate. `serverkit.Run` gets the same boot-time failure.
-- **`pkg/lease`: a slow reply no longer drops every lease on a healthy session.**
-  Every query on the lease session (the heartbeat, each standby poll, the
-  connect) ran under a deadline of `HeartbeatInterval`, and a query that misses
-  its deadline makes pgx close the connection, so the server drops the session
-  and every advisory lock on it. A round trip longer than one heartbeat interval
-  (a CPU-starved process, a throttled pod, a busy database) therefore dropped
-  every lease the Locker held and forced a failover. It flaked
-  `TestManyLeasesOnOneLockerSurviveConcurrentPollingAndHeartbeats` on loaded CI
-  runners (`leader holds 0 of 20 leases`), and with control-plane-workers' 5s/5s
-  timing a 5s stall did the same to its ~15 leases. The new
-  `lease.Options.QueryTimeout` (default `DefaultQueryTimeout`, 10s) bounds each
-  query separately from how often the heartbeat runs. Overlap after a partition
-  is now bounded by `HeartbeatInterval + QueryTimeout`.
-- **A hosted bundle carries only the document fields its control plane
-  decodes.** forge#850 added `provenance.commit_subject`/`commit_author` and the
-  per-object `objects` summaries to the bundle document, and a control plane
-  strict-decodes that document: every control plane built before #850 refused
-  every bundle
-  (`RecordBundle: bundle document: json: unknown field "commit_subject"`), so no release could be recorded — including the one that
-  would ship the control plane that understands them. An optional document
-  field is now a FEATURE (`release.BundleDocFeatures`): `forge env deploy` /
-  `env build` ask `DeployService/GetCapabilities` (`bundleDocumentFeatures`)
-  before building a hosted bundle and leave out every part the server did not
-  name; a server without the RPC or the field gets the document its decoder
-  knew. A control plane advertises `release.BundleDocFeatures()` from the same
-  forge it decodes with. `TestEveryBundleDocAdditionIsAFeature` fails on a new
-  document field until it is mapped to a feature.
-- **`forge env config` reports missing secrets instead of failing.** forge#859
-  routed it through `env exec`'s resolver, and with it the fail-closed secret
-  check: reading back an env whose secret store lacked one declared key printed
-  nothing and exited 1. It now prints everything that resolves, leaves the
-  missing variables out, lists them on stderr and under `missing_secrets` in
-  `--json`, and exits 0. `forge env exec` and `env up` still refuse, since
-  running without a declared secret is the real error; `env config --strict`
-  restores the refusal for a caller that wants it.
-
-- **A dependency outage no longer floods the logs at probe frequency.**
-  `Drainer.ReadinessHandler` (and so `serverkit.Run`'s `/readyz`) logged every
-  failing check at ERROR on every probe — every few seconds, on every replica,
-  for the length of the outage, into the log pipeline and the error tracker.
-  A check is now logged once at WARN when it starts failing and once at INFO
-  when it recovers (with `failed_for`); probes in between log at DEBUG. Never
-  ERROR: readiness failing is the probe doing its job.
-- **The dev Zitadel moves to v4.19.5** (was v4.19.4) in host-infra, the compose
-  `idp` service and its per-platform checksums (taken from the release's
-  `checksums.txt` and re-computed from the downloaded archives). 4.0.0–4.19.4
-  carry three high advisories: GHSA-mchc-246r-6m76, GHSA-84fg-x5h4-w8xv and
-  GHSA-qj3q-235g-qr6w (Login V2 link-host poisoning, a forgeable Login V2
-  verification proof, and device-code approval without consent). The dev IdP
-  serves no Login V2 and registers no device-code app, but a dev pin that lags
-  the deployed one is drift. No config or steps changes are needed. Upgrade
-  notes worth knowing: list endpoints now enforce `DefaultQueryLimit` (100,
-  v2) and `MaxQueryLimit` (1000, v1 and v2), and a malformed
-  `x-zitadel-public-host` is now rejected instead of ignored.
-
-- **Adapter scaffolds use typed configuration from birth (#748).**
-  `forge scaffold adapter <name>` (and `scaffold package --type adapter`)
-  appends a `<Name>Config` message with a `<NAME>_BASE_URL` leaf to the config
-  proto and composes it on `AppConfig` using a free field number. The adapter
-  takes the generated config block; compose.go fills it from the loaded config
-  by type instead of emitting `BaseURL: ""` with a TODO. Its httptest fixture
-  sets the block's base URL to the stub. Re-running is a no-op; reserved tags
-  and existing fields are preserved. Missing `AppConfig` is an actionable
-  refusal before any adapter files are written, not a scalar fallback that
-  violates `forge-config-deps`.
-
-- **Go initialisms are replaced only as whole PascalCase words (#795).**
-  `ToPascalCase` matched initialisms by prefix, so `forge scaffold service
-identity` produced `IDentityService` and an `id-entity` file that `generate`
-  then rejected; `Slack`, `Uint`, `Ramp`, `Idle` and `Ion` were mangled the
-  same way. An initialism now applies only when followed by an upper-case
-  letter, a digit or the end of the name (`identity` -> `Identity`, `user_id` ->
-  `UserID`, `http_url` -> `HTTPURL`). Plurals are not initialisms: `ids` ->
-  `Ids`, as in staticcheck ST1003 and protoc-gen-go. A proto service that
-  spells an initialism as a word (`ApiKeyService`) now matches its directory
-  (`api_key`): the check compares logical names, the Connect selectors in an
-  existing `service.go` follow the proto spelling, and the fix hint never names
-  the current state. Generated identifiers that contained a mangled prefix or
-  an `...IDs`/`...URLs` plural change on the next regenerate.
-
-- **Frontend-only scaffolds need no database or cluster (#401).** Disabled
-  migrations no longer declare a migration job. Database-free frontend projects
-  get host dev servers and hosted static staging/prod, with no database, IdP or
-  unused cluster. `project new --frontend` accepts `--output` and `--routes`;
-  frontends added later use the same named declaration and rebindable line.
-  `env new --bind` validates the entire copy before writing, including under
-  `--force`. Offline static admission uses explicit preflight addresses without
-  relaxing live deployment's requirement for a pullable release artifact.
-
-- **`project upgrade` synchronizes Forge requirements in every project module
-  (#762).** Root, `gen/` and other discovered Go modules upgrade before template
-  changes; `--check` reports pin drift without running Go. Failed `go get` or
-  `tidy` commands return an error, restore module files and print exact recovery
-  commands instead of advancing `forge.yaml`. Workspace files and replacements
-  are preserved.
-
-- **A fresh project with a Next.js frontend passes its own npm vulnerability
-  gate (#754).** Scaffolds require Vitest `^5.0.4`; Vitest 3 brought critical
-  tinypool advisories and Vitest 4 crashes npm 10's installer. Next.js, Vite SPA,
-  the dev web-runtime workspace root and web-runtime's own install now override
-  only HyperDX recorder's exact `fflate` 0.7.4 pin to patched `^0.7.5`; npm does
-  not apply overrides from a published dependency, so no web-runtime release is
-  needed for scaffolds. `ci.vuln_scan.exemptions` now accepts npm GHSA ids with
-  the same required reason and expiry, scope, stale and expired-entry rules as
-  Go ids. The npm gate still fails on high/critical findings, reads npm's JSON
-  report rather than its exit code, and fails closed on malformed output. A new
-  Next.js frontend records a visible 90-day reviewed acceptance for the dev-only
-  braces advisory, which has no fixed release.
-
-- **Shipped skills fit Reliant's rendered delivery budget (#808).** The guard
-  measures the production renderer with the longest shipped `reliant forge`
-  prefix and reserves space for collapsed navigation and the completion footer
-  inside the unchanged 24,000-byte limit. Start-here, deploy, DB, proto, CI and
-  two migration guides now link to discoverable subskills for detailed teaching,
-  leaving real room for growth without dropping their rules.
-
-- **Cross-repo build sources no longer require sibling checkouts (#107).**
-  `ShellBuild.source` and named Docker `build_contexts` accept `GitSource`
-  pins through the frontend source cache and explicit local overrides. Shell
-  source/cwd ambiguity and malformed pins fail rather than running in the
-  project root; `forge doctor --verbose` distinguishes pins from filesystem
-  references. The release-source check includes shell pins, and cache metadata
-  no longer makes fetched checkouts appear dirty.
-
-### Changed
-
-- **Least-knowledge lint: the design's severities by default, and the two K3
-  checks.** `forgeconv-deps-surface` (a foreign interface of more than ten
-  methods with unused ones), `forgeconv-no-container-deps` and
-  `forgeconv-deps-no-downcast` are now errors without `--strict`, as
-  composition graph §7 planned one release after they landed as warnings; a
-  fresh scaffold has none. New: `forgeconv-no-getenv` (a component package
-  reading `os.Getenv` / `LookupEnv` / `Environ` — configuration its root's
-  config reach cannot see) is a warning, an error under `--strict`; and
-  `forgeconv-deps-root-config` (a Deps field holding the root
-  `*config.Config`) is reported only under `--strict`, as a warning, because
-  the scaffold still hands every component the root config. `--strict` makes
-  every other least-knowledge finding an error.
-
-- **The entity struct's types are idiomatic and lossless.** Field names spell
-  Go initialisms in capitals (`ID`, `OrgID`, `APIKey`; the `<E>Field*` and
-  `<E>Constraint*` constants follow); an integer column is as wide as it is
-  declared (`INTEGER` → `int32`, `SMALLINT` → `int16`, `BIGINT` → `int64` —
-  it was always `int64`); a `jsonb`/`json` column is `json.RawMessage` (nil
-  for NULL), not `string`.
-  `COMMENT ON COLUMN t.c IS 'forge:go-type=<type>'` declares the Go type of
-  one column — a named enum
-  over an integer, `map[string]any` over json, `<path>[;<pkg>].<Type>` —
-  with no generated wire conversion (a CRUD rpc carrying it fails generate
-  by name). The CRUD conversions follow: the wire's int32 enum number is
-  stored at the column's width, json pairs through `[]byte`/`string`.
-  **Upgrading:** regenerate; then rename references to the projected fields in
-  hand-written code — `.Id` → `.ID`, `.UserId` → `.UserID`,
-  `TaskFieldId` → `TaskFieldID` (`gopls rename`, or `gofmt -r` per name) — and
-  adjust code that read an `integer` column as `int64` or a json column as
-  `string` (`string(row.Payload)`, `json.RawMessage(s)`).
-- **A `NOT NULL` column's `DEFAULT` applies when the field is unset — and an
-  explicit zero is still stored.** The generated store wrote the Go zero for
-  every defaulted column a caller left unset, so the DEFAULT never fired:
-  `threads.status INTEGER NOT NULL DEFAULT 2` was stored as 0 by
-  `CreateThread`, and `jsonb NOT NULL DEFAULT '{}'` failed the insert with
-  `""` (reliant P5b). Bun's `default:` tag was never the answer — it reads
-  every zero as unset and would turn an explicit `false` into a
-  `DEFAULT true`. The entity type now carries the distinction
-  (`codegen.ColumnInsertDefault`): a scalar whose DEFAULT is not its Go zero
-  is a **pointer** field (`nil` = unset), and a column whose zero it can never
-  hold keeps its type with `,nullzero` (a json document; an array with a
-  non-empty DEFAULT; a scalar a CHECK keeps from its zero, which is every born
-  enum column). `pkg/crud` gives unset one meaning on every write: `Create`
-  omits the column, a full-replace `Update` and `Upsert`'s conflict branch
-  keep the stored value; a `,nullzero` slice is no longer normalized to `{}`.
-  The CRUD create op stops pasting the DEFAULT's literal into Go
-  (`schemaDefaultAssigns` is gone): it leaves the field unset and the
-  database applies its own DEFAULT, whatever expression it is. **Upgrading:**
-  regenerate; a NOT NULL column whose DEFAULT is a non-zero scalar becomes a
-  pointer field, so hand-written code that reads or writes it changes from
-  `row.Status` / `row.Status = 2` to `*row.Status` / `row.Status = ptr(2)`;
-  born enum (TEXT + CHECK) and json columns keep their types.
-- **`database.orm.package` places the generated data layer.** The ORM always
-  projected into `internal/db` (`package db`) and refused any name the
-  project already declared there — so a project with its own data layer in
-  `internal/db` (reliant: 30 of 55 names, `type Chat = core.Chat`, `Repo`,
-  `Daemon`) could not have the store at all without renaming thousands of
-  references first. `database: {orm: {package: internal/store}}` in
-  forge.yaml puts every `<entity>_orm_gen.go`, `store_gen.go` and
-  `_repo_ext.go` seam in that directory, declaring its package; the
-  collision refusal and `//forge:no-orm` read that package. Every consumer
-  follows it: CRUD wiring and test factories import it (as `db`), compose.go
-  provides `<pkg>.Store` / `<pkg>.<Entity>Store` Deps fields,
-  `forge project shapes --kind store`, and the drift guard and its hints.
-  Moving the key reclaims forge's previous projection from the old directory (the
-  `_repo_ext.go` seams are yours and stay). Default unchanged: `internal/db`.
-  The collision refusal now offers the key. `generator.GeneratePlanORM` takes
-  a `config.ORMConfig` in place of its two unused module/service arguments.
-- **A view can be a read-only entity.** forge projected BASE TABLEs only, so
-  a view's row type was hand-written (reliant: `chats_with_activity`, the one
-  definition of a chat's activity). `COMMENT ON VIEW v IS 'forge:entity'`
-  (regular or materialized; `key=<column>` names the key, else `id`) projects
-  it: the row struct, `List<E>` / `Count<E>`, `Get<E>ByID` when it has a key,
-  and the matching read-only store — no write is generated. Non-key columns
-  are pointers (the catalog cannot say a view column is NOT NULL). Views
-  without the marker are not projected. `schemadef.IntrospectViews` and
-  `shadowdb.Views` read them from the same shadow apply as the tables.
-- **The merge driver is set up per worktree, and forge says what it changed.**
-  Any forge command run in a project (`forge db migration rebase` was the one
-  noticed) pointed the repository's `merge.forge-generated.driver` at a forge
-  binary and routed forge's generated and state files to it in
-  `info/attributes`, silently, in the repository's common git directory that
-  every linked worktree reads. The command names one forge binary, and
-  worktrees are on different branches with different pins, so the last forge to
-  run decided how every other agent's rebase merged. The command now goes in
-  the worktree's own `config.worktree` (forge enables `extensions.worktreeConfig`
-  once, which git has honoured since 2.20 and go-git accepts; it declines for a
-  bare repository or an explicit `core.worktree`, and
-  `FORGE_MERGE_DRIVER_SHARED=1` keeps the old shared placement), so a worktree
-  merges with the forge its own commands run. The routes are no longer copied
-  into the shared `info/attributes` when the project's committed
-  `.gitattributes` already declares them, as every scaffolded project's does.
-  What is still written is reported: each setting with its scope and old value,
-  the git directory, how many worktrees share it, and the undo. A run that
-  changes nothing stays silent, and `FORGE_NO_MERGE_DRIVER=1` still opts out.
-- **A composite-primary-key table gets a store.** It used to get no entity at
-  all, only an info line, so counters and join tables (reliant:
-  `message_order_counters`, `project_daemons`, `connection_secrets`, …) were
-  hand SQL. The entity struct and store now project, addressed by the WHOLE
-  key: `Get<E>ByPK(ctx, db, k1, k2)` and `Delete<E>ByPK` take one parameter
-  per key column, `Upsert<E>` resolves a conflict on every key column, and
-  Create/List/Count/Update/UpdateMasked address the row by the struct's key
-  fields. `pkg/crud.Repo` gains `GetByPK` / `DeleteByPK` (a key entity), and
-  its Update, UpdateMasked, Upsert and zero-row classification address a
-  composite key by every column (Bun's `WherePK`); PK columns stay out of the
-  SET list. CRUD wiring still needs a single-column key, and there is no ULID
-  fill or cursor pagination for a composite key.
-- **Entities are named from their table, and a CRUD rpc that matches no table
-  is refused.** A CRUD rpc's entity found its table only as
-  `Pluralize(snake(<E>))`, so a singular-named table (`daemon_attachment`,
-  `provider_backoff`) matched nothing and its `Get<E>` silently became a
-  pb-through stub. The join now matches a table by its own entity name (its
-  singular, camel-cased), then the plural and the singular of `<E>`; a table
-  whose name derives to the wrong thing declares what it holds with
-  `COMMENT ON TABLE t IS 'forge:entity-name=<Name>'`, which also names its
-  store. A unary, unmarked CRUD-named rpc whose entity has a wire message but
-  matches no table, and that no handler implements by hand (its only method
-  is forge's unwired stub, or none), now fails `forge generate` (under the
-  CRUD step's gate), naming the rpc and the tables it looked for. The seed scope and the
-  ownership audit look for the singular too. **Upgrading:** a project with
-  such an rpc gets the refusal on its next generate: write the migration,
-  declare `forge:entity-name`, or mark the rpc `// forge:custom` (what it
-  already was in effect).
-- **Continuous profiling captures CPU and the live heap by default; allocation,
-  goroutine, mutex and block profiles are opt-in (`forge/pkg/observe`).** The
-  profiler still takes a 10s CPU profile every minute, but now snapshots the
-  heap every 15 minutes and exports only `inuse_space` / `inuse_objects`. Go's
-  `alloc_space` / `alloc_objects` are cumulative since process start, so each
-  snapshot repeated every allocation site the process ever had and grew with
-  uptime: in a production deployment they were 97.7% of stored profile rows (99.2%
-  of bytes), and one service's grew from 11k to 39k rows per snapshot over 8
-  hours. The new defaults keep about 0.3% of that deployment's rows (PROFILES.md
-  has the measurements). Choose the set with `observe.Config.Profiles`
-  (`ProfilesConfig{Types, HeapInterval}`), or per deploy with `FORGE_PROFILES`
-  (`cpu,heap,alloc,goroutine,mutex,block`, or `none`) and
-  `FORGE_PROFILES_HEAP_INTERVAL`, which win over the config; invalid values
-  are logged and ignored. Mutex and block profiles set the runtime's sampling
-  rates only while selected and restore them on shutdown. Opted-in allocation
-  counters stay cumulative, at the heap cadence. A live-heap snapshot also no
-  longer carries the locations and functions of allocation-only stacks.
-- **The ORM projects every applied table, whatever its rpcs.** The store
-  (`<entity>_orm_gen.go`, `<Entity>Store`, delegates, the `_repo_ext.go` seam)
-  used to exist only for a table some managed service declared a CRUD rpc
-  for, so a project whose CRUD-named rpcs are all `// forge:custom` — or whose
-  tables have no rpc at all — got no data layer from `forge generate` (reliant:
-  zero of 55 tables). The store now follows the schema: every BASE TABLE with a
-  single-column primary key is projected, a table no rpc names under the
-  singular of its name (`message_content_blocks` → `MessageContentBlock`).
-  CRUD wiring, pages and seed roots still key on CRUD rpcs.
-  `COMMENT ON TABLE t IS 'forge:no-entity'` keeps one table off the store (and
-  off CRUD wiring);
-  `//forge:no-orm` still opts out the whole data layer. The ORM step no longer
-  needs a service, only an entrypoint, and a name collision's advice now names
-  the table opt-out (`// forge:custom` no longer takes a table off the store).
-  **Upgrading:** the next `forge generate` writes a store for each table that
-  had none. If one of them redeclares a name your `internal/db` already
-  declares, generate refuses and names it: rename yours, or add
-  `COMMENT ON TABLE <t> IS 'forge:no-entity'` in a migration.
-- **`lifecyclekit` no longer re-exports `operatorkit.Run`, `Controller` and
-  `Options`, so importing it never links controller-runtime.** Every binary
-  that imported lifecyclekit for `Supervise`, `WrapWorker` or `Singleton`
-  linked `sigs.k8s.io/controller-runtime` and its Kubernetes tree (~1.8 MB),
-  operators or not. The three names live only in
-  `forge/pkg/appkit/operatorkit`; the scaffolded `lifecycle.go` names it
-  directly, and a `go list -deps` guard pins that lifecyclekit reaches no
-  `k8s.io` package. An owned `lifecycle.go` that names the removed symbols:
-  `forge skill load migrations/v0.1.46/operatorkit-bridge`.
-- **`PRE_STOP_DELAY` and `SHUTDOWN_TIMEOUT` follow one rule: zero is the
-  default, negative is none** — the rule every `serverkit.Config` duration
-  already used. `ShutdownTimeout <= 0` always became the 30s default, so "no
-  shutdown window" could not be said, while "no pre-stop pause" had to be
-  written negative. A negative `ShutdownTimeout` (config, env, or
-  `serverkit.Drainer`) is now a window over as it opens; "none" is never
-  "unbounded", since the kubelet ends the shutdown at the grace period anyway.
-  The rendered `terminationGracePeriodSeconds` reads both the same way: `0s`
-  used to add 0 while the server spent its default (a SIGKILL mid-drain), a
-  negative adds nothing, and any Go duration (`1m30s`, `500ms`, rounded up)
-  is read instead of falling back to the default.
-- **`forge generate` refreshes a stale vendored `proto/forge/v1/forge.proto`
-  (and `proto/buf/validate/validate.proto`).** It vendored them only when
-  missing, so a project kept the forge.proto of the forge it was scaffolded
-  on: reliant could not write `(forge.v1.service).audience` until it
-  hand-synced the file. A copy that differs from the running forge's (after
-  the go_package/CRLF normalization `forge lint --vendored-protos` uses — now
-  one shared `assets.NormalizeVendoredProto`) is re-copied and reported as
-  `🔄 Refreshed <path>`. A disowned copy (`forge project disown <path>`) is
-  kept, and so is forge's own source copy in forge's repository.
-- **`forge env up` converges a host-run managed identity with `pkg/identity`
-  (FI4).** An env whose `identity` runtime is `forge.IdentityOnHost {infra}` is
-  converged against its host Zitadel after the infra is up and before any host
-  service starts, with the same library the control plane runs for hosted
-  envs, authenticated by the bootstrap PAT (`idp_pat_path`), in the server's
-  default instance. Non-secret outputs go to `.forge/identity/<name>.json`;
-  the broker token, client secrets and machine keys go to the env's secret
-  store under the env var each `forge.IdentityRef` resolves to, so a host-run
-  API gets `jwt_issuer`, `jwt_audience`, `oidc_*`, `idp_base` and
-  `idp_broker_token` with nothing copied. The launch pre-flight no longer asks
-  for those store keys beforehand.
-- **Removed: the `auth idp-provision` command, the `idp-provision` workload and
-  its env binding, `deploy/kcl/<env>/idp_identity_gen.k`, and the
-  `pkg/devidp` provisioning half** (`Reconcile`, `Spec`, `Identity`, the
-  publishers, `EnsureProject`/`EnsureSPAApplication`, `ProvisionLoginBroker`,
-  `SecretFile`, `RedirectGlob`/`LogoutGlob`). `pkg/devidp` keeps the sign-in
-  broker's client (flow, login, password reset, token file). A project that
-  has the old job migrates by declaring `identity = forge.ManagedIdentity
-{runtime = forge.IdentityOnHost {infra = "idp"}}` on its dev Bundle.
-
-### Added
-
 - **`forge env exec <env> --workload <name> -- <argv...>` (#758)** runs a
   local command with the selected workload's resolved configuration, inherited
   stdio/cwd, literal argv, signal forwarding and the child's exit status. The
@@ -2714,8 +1386,6 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   `progressDeadlineSeconds` (rollout) or `activeDeadlineSeconds` (Jobs) among the
   objects the tree is judged on, plus 120 s.
 
-### Added
-
 - **Bundle layout v2: one tree per cluster × delivery unit × phase.** A bundle
   used to publish one flat tree per cluster, so a Flux Kustomization per cluster
   applied the whole env in a single batch and could not express what direct apply
@@ -2736,7 +1406,1642 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   `--acknowledge-destructive tree_moved`; the one-time move from the flat layout
   is a single warning per cluster.
 
+- **`flux_chart(placement = flux_placement_delivery_v1())`** places the
+  controllers on a dedicated tainted node pool, with `runtime_class_name =
+FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
+- **`HelmChart.patches`** merge-patches the objects a chart renders, keyed
+  `Kind/name` (the `Bundle.overrides` engine), for fields the chart's values do not
+  template, such as a pod's `runtimeClassName`. A key that matches nothing fails
+  the render.
+- **`forge ci gate` runs checks concurrently, caches verdicts by tree, and
+  tests only what a branch changed.** The gate ran its checks one after another
+  (one project measured a p50 of 35 min, up to 3 h, on a shared machine). Now a
+  check starts as soon as its `after` dependencies have finished; a check that
+  rewrites the tree (`verify-generated`, an extra with `mutates_tree`) runs alone
+  before the checks that read it; heavy checks each hold a host heavy slot and
+  light ones run under `--jobs`. Every check still runs after a failure, and the
+  table keeps plan order, with the wall time and a `head:` line. Each check
+  logs to `tmp/ci/<lane>/<check>.log`. On a committed tree a check that already
+  passed on that tree (any worktree, same forge and pins) is not run again:
+  `PASS (cached <sha>)` (`CI_NO_CACHE=1` / `--no-cache` to bypass; a dirty tree
+  turns it off). On a branch, `unit-tests` runs only the Go packages whose test
+  binaries contain a changed package, and falls back to the whole suite when
+  anything but Go source changed, on the default branch, or with `CI_FULL=1` /
+  `--full`. New: `CI_ONLY` (checks or groups), `CI_REPORT`, `CI_LOG_DIR`, and
+  `ci.gate.env` / `path` / `affected_ignore`; extra checks gained `lane`,
+  `group`, `after`, `heavy`, `mutates_tree`, `cache`, `probe`, `skip_exit_code`,
+  `env` and `replaces`, enough to express a hand-written ~26-step gate script.
+  See `ci/gate` and `migrations/v0.1.46`.
+
+- **Host-wide heavy slots: `pkg/hostslot` and `forge slot`.** On a shared
+  machine every heavy job slows the others down — on a 16 vCPU / 32 GiB VM
+  `go build ./...` went from 36–50 s beside 0–3 other heavy jobs to 101–155 s
+  beside 8 or more, from memory-cgroup reclaim — so heavy work now queues for
+  one of N host slots instead of piling up. A slot is an OS file lock (a
+  crashed holder releases it); N defaults to min(CPUs / 4, memory GiB / 8),
+  read from the cgroup v2 limit when there is one, and `FORGE_HEAVY_SLOTS`
+  overrides it (`off` disables). `forge slot run --class heavy -- <cmd>` runs a
+  command in a slot and `forge slot status` names the holders and the queue.
+  `forge generate` and `forge lint` take a slot on their own, and the
+  scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix.
+  Anything already inside a slot (`FORGE_SLOT_HELD`, or an ancestor holding
+  one) never waits again, so nested heavy commands cannot deadlock. See
+  `migrations/v0.1.46`.
+- **A no-op `forge generate` skips its steps.** A full run that changes
+  nothing records the tree as a verified fixed point in
+  `.forge/generate-cache.json` (gitignored, per checkout). The next run that
+  finds every input byte-identical prints one "nothing to do" line and
+  stops: on control-plane, about half a second instead of about three minutes
+  at moderate load (2–5 s instead of 8+ minutes on a heavily loaded box). The
+  key covers the work tree as git sees it, the gitignored files generate
+  reads or writes (go.work, installed
+  node_modules, dotenvs, secrets, `.forge/` state, every other ignored file
+  outside a wholly ignored directory), the outputs the verifying run wrote,
+  local `replace`/`go.work` source outside the project, the forge executable
+  by content, every tool it runs (go, buf and the plugins the buf templates
+  name, goimports, node, generate hooks), the environment that steers them,
+  and which postgres hosts the shadow schema. Any difference runs every step
+  and names what changed. A run that WROTE files never records — the run
+  after a change is the one that proves the tree converged — and neither does
+  a narrowed or weakened run (`--steps`, `--force`, `--skip-validate`, …).
+  `--no-cache` (or `FORGE_GENERATE_NO_CACHE=1`) runs every step;
+  `forge ci verify-generated --no-cache` passes it through. `--check` and
+  verify-generated consult the record (a recorded fixed point cannot drift)
+  but never write one. The check runs before `forge generate` queues for a
+  heavy slot, so a no-op never waits behind other agents' builds.
+- **`forge generate --timings`** (or `FORGE_GENERATE_TIMINGS=1`) prints each
+  step's wall time, slowest first, when the run ends — including runs that
+  failed, and runs nobody typed (verify-generated's).
+
+- **`//forge:resolves-caller` declares a project's own caller resolver.** The
+  `unscoped_auth` audit counted a handler as resolving the caller only when it
+  reached forge's scaffolded seam, `middleware.GetUser` / `ClaimsFromContext`.
+  A project whose auth package predates forge (reliant's
+  `auth.GetUserIDFromContext`) had no way to say so, and every authenticated
+  rpc it moved onto forge's handler model was reported as never resolving the
+  caller (P3b friction F18). Put the marker in a package-level function's doc
+  comment, beside the code it describes. The audit then counts a handler that
+  calls it as resolving the caller, whether through the import that binds the
+  declaring package in that file (aliased, plain or dot) or through a helper
+  in the handler's own package, and its hint names the declared resolvers.
+  The match goes by import path, so a same-named function in an undeclared
+  package still does not count. A marker on a method is reported as ignored,
+  because a call site does not name a method's receiver type. The
+  declarations come from `codegen.DeclaredCallerResolvers`, so other tools
+  can read the same declaration. `forge project audit --json` lists them under
+  `caller_resolvers`, and `forge project annotations --kind go` documents the
+  marker.
+- **`forge.HelmChart.namespace_labels` / `namespace_annotations`.** Labels and
+  annotations on the Namespace forge creates for a chart, so Pod Security
+  Admission (`pod-security.kubernetes.io/enforce=restricted`) can be declared on
+  `flux-system`. They converge under server-side apply: a changed value is
+  updated, a key you stop declaring is removed, and a key another manager set
+  is left alone. `forge.dev/*` and `kubernetes.io/metadata.name` are refused.
+  Not available on a `delivery = "bundle"` chart, which has no forge-created
+  Namespace.
+- **`forge.KubeconfigPolicyRule.resource_names`.** Limits a minted rule to named
+  objects (`resourceNames`): `bind` on exactly two ClusterRoles, `get` on
+  one Secret. It replaces a hand-written ClusterRole beside the mint.
+
+- **Built-in alerts for workloads and the platform (A6).** Five new
+  `forge.Alerts.defaults` ids over the node agent's customer metadata:
+  `crash-loop` (restarts grew by 3 in 10m, or a BackOff event), `oom-killed`
+  (a restart whose last exit was `OOMKilled`, or an `OOMKilling` event),
+  `memory-near-limit` (memory limit utilization above 0.9 for 10m),
+  `image-pull-failed` and `evicted` (Kubernetes events). Each is tuned or
+  disabled by id like the rest. Their SQL scopes by `reliant.env.id`, which the
+  node agent stamps and forge cannot know, so it carries the placeholder
+  `{reliant_env_id:String}` for the evaluator to bind (the local check binds
+  the env name). An env with `signals.metadata = False` records none of the
+  five: there is nothing for them to read. Two more ids,
+  `deploy-failed` and `observability-quota`, are raised by the control plane
+  from its own events; forge records them as marker rules so your tuning and
+  `enabled = False` travel with the release. Tested against ClickHouse 26.8
+  with the exporter's real tables.
+- **Dashboards ship in the release.** A release bundle now carries every
+  dashboard the project declares at `observability/dashboards/`, beside the
+  metrics schema at `observability/metrics-schema.json`, inside the same
+  manifests layer (a Flux `layerSelector` still selects exactly one layer, and
+  nothing a Kustomization `spec.path` reaches is touched). Generated dashboards
+  come from `dashboard-spec_gen.json` plus the Custom metrics dashboard drawn
+  from the built binary's schema; a renderer-neutral file you own in
+  `deploy/observability/dashboards/` (a `"panels"` array) ships as is, and one
+  named like a generated dashboard (`shop-overview.json` for
+  `shop-overview_gen.json`) replaces it. A HyperDX-format file (`"tiles"`)
+  stays local. Every file is validated when the release is cut: a bad file fails
+  `forge env build <env> --release` with `file:line:col: path: message`
+  errors before a release is left behind without its bundle; a deploy that
+  builds nothing only warns. `forge observe dashboards check` runs the same
+  validation and lists what would ship.
+- **Two best-practice dashboards.** _Workloads_ draws the customer metadata the
+  node agent delivers (CPU and memory against requests and limits, restarts and
+  the last exit reason, CPU and memory by image tag, Kubernetes events and
+  container terminations). _Releases_ splits requests, error rate and latency
+  by `service.version` and adds a per-version comparison table. Neither has a
+  heatmap. They draw nothing on a local `forge env up` (no node agent, no
+  releases).
+- **`annotations` on a dashboard spec.** `{"source": "releases"}` declares that
+  a dashboard's time-series panels carry deploy markers, drawn by the console
+  from the release ledger. Every generated dashboard with a line panel declares
+  it. HyperDX has no such concept and the HyperDX renderer ignores it. A `"s"`
+  (seconds) unit joins the display units.
+
+- **A squashed forge history is adopted, not refused: `-- forge:adopts forge
+<versions>`.** After `forge db squash` replaced a forge history with one
+  baseline, every database that history built was refused, and misleadingly:
+  "schema at 20260101000002, AHEAD of the newest migration this binary embeds
+  (20260201000000)" for a baseline numbered above the history, and "MISSING …
+  give it a NEWER version" for one below it. A baseline can now declare the
+  forge versions it replaces, the shape of goose's adoption (#649), and
+  `forge db squash` writes the list (plus `-- forge:backward-compatible`: the
+  baseline builds exactly the schema the release before the squash runs on).
+  `migratekit` adopts a database whose schema version is one the baseline
+  lists when every listed version has a `schema_migrations_applied` row (a
+  database older than that record is judged by its `schema_migrations`
+  version, which golang-migrate never applies below): the baseline gets its
+  applied row and becomes the schema's version, none of its SQL runs, and the
+  migrations after it apply on the same run. One behind the squash (a listed
+  version not applied) or past it (a schema version the list lacks) is a
+  `*migratekit.AdoptionError` with forge's remedies, and nothing changes. The
+  history's rows stay, so the release before the squash, rolled back to,
+  still finds its migrations recorded and reads the baseline as a compatible
+  schema ahead of it. Adoption runs under the run lock and `appliedLockKey`
+  on the run's one session (#706), and finishes an adoption a crash
+  interrupted. The migrator refuses, at `Open` and at boot, a forge baseline
+  listing a version it still carries (its own number, or a squashed file left
+  beside it); `forge lint`'s `invalid-adopts-directive` reports the same, and
+  `forge db squash` refuses a `--to` inside the history. Without the
+  declaration, a database built by a history the binary does not carry is now
+  a `*migratekit.ForeignHistoryError` that says so and names the fix, instead
+  of AHEAD or MISSING, and `forge db migrate status` previews both cases
+  rather than calling them AHEAD. `Adopted.String()` is the adoption line
+  every command prints; the scaffolded `db.go` uses it. Skills:
+  db/deploy-migrations ("Squashing a forge history"), db/versioning. On
+  re-pin, nothing changes for a project that has not squashed a forge
+  history; one that has can re-run `forge db squash` (or add the
+  `-- forge:adopts forge` lines by hand) and drop any rebuild-every-database
+  plan.
+- **`forge db squash --from-dsn`: squash a database another tool migrated.**
+  `forge db squash` replays only forge's `*.up.sql`, so a goose history could
+  not be squashed: reliant pg_dumped a goose-built database by hand, stripped
+  pg_dump's prelude by hand, and typed the `-- forge:adopts goose …` list.
+  `--from-dsn <postgres URL>` dumps an existing database instead, whatever
+  tool built it, through the same `squashBaseline` lexing that drops pg_dump's
+  session prelude and psql meta-commands (#678). pg_dump runs in a
+  `postgres:<server major>-alpine` container (`--image` overrides), and the
+  password reaches it through the environment, never the command line. When
+  the database has `goose_db_version`, the baseline's header declares every
+  version goose applied there (`-- forge:adopts goose …`, eight per line), read
+  as migratekit's adoption reads the table, and the command checks the file
+  parses back to that list. Point it at a throwaway database the complete
+  history built (`goose up` on an empty database): its rows become INSERTs in
+  every fresh database, so the command lists them per table, and it names any
+  table that looks like another tool's history (`--exclude-table` leaves one
+  out; `goose_db_version`, an older goose's `goose_db_version_id_seq`, and
+  forge's bookkeeping always are). The header names only the history (count
+  and version range), so a re-cut writes the same bytes. Rehearsed on reliant's 152 goose migrations: the goose-built database
+  is ADOPTED (152 versions verified), a fresh database applies the baseline,
+  and their `pg_dump --schema-only` are identical. The db/deploy-migrations
+  skill's hand recipe is replaced by the command. On re-pin, reliant can
+  re-cut its P5a baseline with it and drop the hand-made dump.
+- **`migratekit.Apply(ctx, db, fsys, dir) (Result, error)`: the boot path's run,
+  returning what it did.** `AutoMigrate` is now `Apply` plus a log line per
+  fact. A command that wants the boot path's policy (a binary embedding no
+  migrations is `Result.NothingEmbedded`, not an error; a dirty schema is
+  refused before anything runs) can report adoption, a schema ahead, and the
+  versions applied without switching to a `Migrator`. It runs on one
+  connection borrowed from `db`. `AutoMigrate`'s boot log no longer has the
+  separate `migration status` line; `no pending migrations` now carries the
+  version.
+- **`// forge:custom`: declare an rpc custom whatever its name.** An rpc was
+  CRUD whenever it was unary, named `Create<E>`/`Get<E>`/`Update<E>`/
+  `Delete<E>`/`List<Es>` and `<E>` had a table and a wire message, and the
+  framework guide forbids the only way out (renaming it). reliant has 52 such
+  rpcs whose semantics are its own. Put `// forge:custom` on its own line
+  above the rpc and it is custom on both sides of the wire: a pb-through stub
+  and a scaffold test row, no CRUD shim or op, no entity page, a hook that
+  invalidates at service scope, no list-filter lint. It makes no entity, so
+  marking every CRUD-named rpc of a table is the per-entity opt-out: the table
+  stays plain schema, with no ORM struct in `internal/db` (no `Task
+redeclared` against a project's own `Task`), page or seed root. A comment
+  marker, like `forge:unmanaged`, because who implements a handler is not a
+  fact about the API contract and must not cost the `forge.proto` import.
+  Generate refuses a near-miss spelling, the marker on a service or message,
+  a trailing marker (protobuf hands a comment under one rpc to that rpc even
+  when it was written for the next), a marker the source shows but the
+  compiled descriptor lost, and a newly custom rpc whose shim or lifecycle
+  test still uses its `crud<Rpc>Op` or create-request factory, naming the
+  file and line. `forge project audit` marks each in
+  `shape.services[].rpcs[].custom`.
+- **`forge project audit` reports rpcs with no handler method
+  (`unhandled_rpcs`).** A Service embeds `Unimplemented<Svc>Handler`, so an
+  rpc of a managed service with no `*Service` method compiles and serves
+  `CodeUnimplemented` with no stub saying so, invisible to `orphan_stubs` and
+  `shapes`. The category names each one (warn), and lists a service whose
+  struct embeds another type, which may promote the method, as unresolved
+  rather than accusing it.
+
+- **`forge lint --show-suppressed`: every suppression the project declares, in
+  one list.** The `contracts/package-markers` skill told users their
+  allowances were "reported by `--show-suppressed`", and `forge lint` answered
+  `unknown flag`. It now lists, with file:line, what each covers and its stated
+  reason: `forge.yaml` `lint.rules` entries set to off or warn and
+  `contracts.exclude` paths, `//forge:exclude-contract` markers,
+  `forge:lint-disable-file` / `-next-line` / block and `//nolint:` directives,
+  `-- forge:allow-destructive` / `-- forge:allow-unsafe-not-null` migration
+  pragmas, and `// forge:optional-checked`. Each source is read by the code
+  that honours it (`suppress.Declarations`, `migrationlint.Allowances`,
+  `codegen.FindExcludeContractMarker`, the optional-deps guard's own matcher),
+  so the list cannot disagree with the linters. Hand-written files only;
+  generated files, `testdata`, `node_modules` and `vendor` are skipped.
+  Read-only: it runs no linter and exits 0. `--json` and `--scope` combine
+  with it; a lane flag, `--quiet`, `--gate-json` or package paths are refused.
+- **`alerting.RuleSpec.KeepFiringFor` (`keep_firing_for`)**: holds a firing alert open that long after its series stops returning, like Prometheus's rule field of the same name. The shape's `alerts[]` (#684) declares it, so the evaluator now honours it instead of silently ignoring it. The one-evaluation flap damping every rule already had is the floor.
+- **`(forge.v1.config).env_var_aliases`: a config field read from fallback env
+  var names.** A field reads `env_var`, then each alias in order, and the first
+  one set wins. This replaces hand-written chains such as
+  `RELIANT_CONTROL_PLANE_URL`, else `CONTROL_PLANE_API_URL`, else
+  `CONTROL_PLANE_BASE_URL`. Each alias is
+  `{name: "...", deprecated: bool}`. A permanent alias (`NODE_ENV`) is read
+  silently. A deprecated one prints a stderr line at load whenever it is set,
+  naming `env_var`, whether it supplied the value or was shadowed. Aliases sit
+  in the env layer (below the flag) and follow its rules: `""` is unset, and a
+  malformed value in the winning name is an error, never a fall-through.
+  forge's own setters keep to `env_var`: the KCL env map and the secret store
+  key name it alone. Flag help now lists the env vars that set a flag,
+  permanent aliases included (`--environment string   … [env: RELIANT_ENV,
+NODE_ENV]`). A required-field error names every alias. `forge generate`
+  refuses an alias that repeats any env var or alias another field of the same
+  process reads (a command config counts its binary's root config), repeats
+  the field's own `env_var`, has no `env_var` beside it, is not a variable
+  name, or sits on a frontend config field. New proto message
+  `forge.v1.EnvVarAlias`; `ConfigField.EnvVarAliases` joins
+  `gen/forge_descriptor.json` (omitted when empty). The typed-config guardrail
+  is name-agnostic, so a raw `os.Getenv` of an alias is flagged like any other.
+- **`alerting.QueryOptions.Limits` and `chquery.Scan`**: the per-query limits without `readonly`, and the row reader behind `chquery.Run`, for a `Querier` that runs as an impersonated ClickHouse user (`EXECUTE AS`). Such a Querier cannot send `readonly` (a readonly session refuses the `EXECUTE AS` statement itself); the target user's profile contains the query instead. `Settings()` is now `Limits()` plus `readonly = 2`.
+
+- **Alert rules, declared per env: `forge.AlertRule`, `forge.AlertRoute`,
+  `forge.AlertDefault`.** On `forge.Observability.alerts = forge.Alerts {rules,
+defaults, routes}`. A rule is the Prometheus shape with the condition inside
+  `expr`, a single native ClickHouse SELECT over the OpenTelemetry tables whose
+  every row is a firing instance (non-`value` columns are labels, `value` the
+  sample); `severity` is a label (critical | warning | info, default warning).
+  Render refuses: missing fields, a non-duration `for`/`interval`, an interval
+  under 1m, an `expr` that is not one SELECT, reserved labels (`alertname`,
+  `reliant_*`), duplicate names, a route receiver that is a URL or a token, and
+  routes with no default (empty-`match`) route. Routes name receivers; secrets
+  live in the control plane.
+  `forge generate` writes `deploy/observability/alert-defaults_gen.json` and
+  `forge env shape` resolves four **generated defaults** per env from it (error
+  rate and p95 latency from the unsampled `rpc.server.*` metrics, service silent
+  only for services with steady traffic over the previous 24h, frontend JS error
+  spike against the 1h baseline), each tunable or disabled with
+  `Alerts.defaults`. They route to in-app + Slack, never a pager. The release
+  shape gains optional `alerts` (rules from the user and the enabled defaults,
+  `source: user|default`, `pkg/alerting`'s RuleSpec JSON) and `alert_routes`, for
+  the control plane to evaluate; a shape that declares none encodes and hashes as
+  before. `output.observability.alerts` is a new optional render-contract key.
+  See `observability/alerts` and `migrations/v0.1.45` section 9.
+- **Observability opt-out: `enabled = False`, or per category.** Hosted
+  observability is on by default; `forge.ObservabilitySignals` gains `metadata`
+  (customer metadata: pod CPU/memory against limits, restarts and last exit
+  reason, events, image and version, collected by the platform's node agent) and
+  `browser` (the frontend SDK) beside `traces`, `metrics`, `logs` and `profiles`.
+  A disabled signal renders `OTEL_<SIGNAL>_EXPORTER=none`; `enabled = False`
+  renders `OTEL_SDK_DISABLED=true`; `browser` (or everything) off renders
+  `OTEL_ENDPOINT=off` into every frontend's runtime config and build variable.
+  The resolved policy is recorded in the release shape as `observability_policy`
+  (`{enabled, disabled[]}`, omitted when nothing is opted out), so the platform
+  enforces it at the source. Disabled data is never collected, stored or billed.
+  **`signals.replay` is the one opt-IN category** (default `False`): the platform
+  drops browser session-replay events unless the env opts in (`opt_in` in the
+  policy).
+
+- **`pkg/alerting`: a SQL alert-rule evaluator in the Prometheus shape.** A
+  rule's `expr` is one ClickHouse SELECT; every row it returns is a firing
+  instance, its non-value columns the labels and its `value` column the sample.
+  The package owns the server-side guard (single SELECT, no table functions
+  that read outside the owner's database, `readonly=2`, `max_execution_time`,
+  `max_result_rows`), label protection (`reliant_*` is stripped from rules and
+  columns; the `RuleSource` supplies identity labels, applied last), the
+  inactive → pending → firing → resolved state machine with one-evaluation flap
+  damping, a jittered scheduler sharded over `pkg/lease`, and an Alertmanager v2
+  client. It knows nothing of orgs, billing or any particular database: the
+  owner key (whose data a rule queries) is an opaque string, and `Querier`,
+  `RuleSource`, `Notifier` and
+  `StateStore` are interfaces declared in the package. Ships `RuleSpec` (the
+  rule model), `FileRuleSource` (hot-reloaded rules file, keeps the last good
+  rules), `chquery` (a ClickHouse `Querier` for one owner), `pgstore` (Postgres
+  `StateStore` and its schema) and `MemoryStore`.
+
+- **`Bundle.applier = "forge"`: a declared self-applied platform env.** A real
+  environment forge applies on purpose and permanently, for an env whose own
+  control plane must not apply it (control-plane's `prod`: a hub applying the
+  env that runs the hub is circular). It is exempt from the planned
+  F-REFUSE-DIRECT, is **never recorded hub-converged** however fully its
+  clusters are bound to connected clusters, and is recorded in the shape
+  (`shape.applier`). Setting it beside `lifecycle` is refused: they answer one
+  question opposite ways. `output.applier` is a new render-contract key (null
+  when undeclared); every `render_contract` golden gains `"applier": null`.
+  See `deploy/shape` and `migrations/v0.1.45` section 8.
+
+- **Telemetry credentials rotate with no restart.** `forge/pkg/observe`
+  honours `OTEL_EXPORTER_OTLP_HEADERS_FILE` (and
+  `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS_FILE`): a file in the
+  `OTEL_EXPORTER_OTLP_HEADERS` format, attached per request on all four signals
+  (traces, metrics, logs, profiles; HTTP via a RoundTripper, gRPC via per-RPC
+  credentials) and re-read when its mtime changes (stat at most every 5s, no
+  goroutine). Headers in `OTEL_EXPORTER_OTLP_HEADERS` win over the file. A
+  missing or unreadable file exports without its headers and logs one WARN per
+  minute; it never fails or blocks the app.
+  On a cluster, `forge.ObservabilityDestination.token_secret` mounts the
+  node agent's bearer token as a file (Secret volume, no `subPath`) read by
+  `bearertokenauth{filename}`, which re-reads it on change; it is exclusive with
+  `headers_secret`, which is still read once at start. Verified against
+  opentelemetry-collector-contrib 0.162 with a kubelet-style symlink swap
+  (`RUN_HEADERS_FILE_SMOKE=1 go test -tags integration -run TestHeadersFileSmoke ./pkg/observe/`).
+  Rendering the file mount for a workload's own volume waits on
+  `forge.ControlPlaneSecret`.
+
+- **`forge cluster connect --delivery-secret <ns>/<name>` grants the control
+  plane least-privilege write access to declared Secrets.** Per namespace, a
+  Role with name-pinned `get/update/patch/delete` plus `create`, and a
+  fail-closed ValidatingAdmissionPolicy that admits only the declared
+  namespace/name pairs, only as `Opaque`, for the delivery identities only.
+  `--delivery-subject` binds an optional dedicated identity. Off unless named;
+  re-running is an idempotent upsert; `--dry-run` prints every object;
+  `disconnect` removes the grant.
+
+- **`pkg/lease` and `lifecyclekit.Singleton`: run a background worker on any
+  number of replicas and have exactly one do the work.** A Postgres
+  advisory-lock lease (`lease.New(db, opts).Run(ctx, name, fn)`): one replica
+  leads, the others stand by and take over within `RetryInterval` of the holder
+  exiting, or at once when its database session dies, with a heartbeat that
+  cancels a leader whose session was swapped or dropped (overlap after a
+  partition is bounded by `HeartbeatInterval`). `lifecyclekit.Singleton(l, w)`
+  wraps a `serverkit.Worker` in a named lease. It needs no schema, no
+  Kubernetes RBAC and no new infrastructure, and behaves the same under
+  `forge env up`, compose and a cluster. The `workers` skill says which workers
+  need one (and which must not take one). Tested against real Postgres,
+  including backend termination.
+
+- **Lean scaffolded CI over a local gate: `task ci`, `task ci:checks`,
+  `forge ci gate`.** The scaffolded `ci.yml` was nine jobs (lint, test, build,
+  verify-generated, deployability, vuln-scan, license-check, docker-build, e2e),
+  each repeating checkout, setup-go, cache restore and the forge install, and
+  GitHub rounds every job up to the whole minute: the one project generated from
+  it cost about $850/month at its October pace. It is now `changes`, `checks`
+  (one setup, then `task ci:checks`), `test` (`task test`) and `integration-test`
+  (`task test:integration`, PRs only, only when the repo has `//go:build
+  integration` files), plus `docker-build` and `e2e` where the project has them;
+  `changes` skips the heavy jobs for a docs-only change, every job (in every
+  scaffolded workflow) has `timeout-minutes`, and the workflow is a thin wrapper:
+  run `task ci` locally for the same verdict. `forge ci gate [checks|test|
+  integration|all]` is the runner, and forge owns the check list and the tool
+  pins (golangci-lint, buf, govulncheck, go-licenses, built into forge's tool
+  cache; a copy on PATH at another version, or a golangci-lint built with an
+  older Go than `go.mod`, is not used). Every check runs even after one fails,
+  a summary table is printed and appended to `$GITHUB_STEP_SUMMARY`, and the
+exit status is non-zero if anything failed. A check that could not run is
+`SKIPPED`, not a pass, and fails the gate unless named in `CI_SKIP`. Add your
+own checks under `ci.gate.extra_checks`in forge.yaml.`ci.yml`is scaffold-once,
+so existing projects adopt this through the new section in`migrations/v0.1.45` (`forge project upgrade list`).
+- **A database that is not up yet no longer crash-loops the server.** The
+  startup connect (`serverkit.AutoMigrateContext`, the scaffolded
+  `openDatabase` via `serverkit.OpenDB`) retries with capped exponential
+  backoff and jitter for `DB_CONNECT_TIMEOUT` (new config field, default 5m)
+  instead of failing on the first refused dial, logging one WARN per 15s
+  bucket with the error class and INFO with elapsed time on success. The
+  scaffolded `Serve` binds the listener first (`serverkit.StartBootProbes`):
+  `/healthz` passes and `/readyz` returns 503 naming `database` until `Run`
+  takes the address over. Only a database still unreachable at the deadline
+  exits non-zero (`*serverkit.ConnectTimeoutError`). The rendered default
+  startup probe is now `/readyz` with a 360s window, covering the 5m wait;
+  a prod rollout restarted three services over a PgBouncer that was seconds
+  late. `serverkit.AutoMigrate` keeps its signature (no boot probes).
+  Existing projects own `serve.go`/`providers.go`: see the PR for the edits.
+- **A typed observability destination: `forge.Observability` on the Bundle.**
+  An environment declares where its telemetry goes (an OTLP endpoint, the
+  protocol, and a `headers_secret` reference, never an inline secret), which
+  signals ship, trace sampling (errors always kept) and retention hints. Forge
+  renders the plumbing per runtime; apps keep exporting OTLP to a local endpoint
+  and never learn the backend. Unset means telemetry off with no dangling
+  endpoint. Host and compose: the local ClickStack stores by default, and a
+  destination swaps it for an `otel-forwarder` service rendered from the
+  declaration. Clusters (k3d or any `ClusterTarget`): a node-agent DaemonSet
+  (OTLP receiver, filelog of container stdout, kubeletstats, k8sattributes for
+  enrichment only, the pinned contrib 0.162 image) with a node-local Service
+  (`internalTrafficPolicy: Local`); client-supplied `k8s.*`/`reliant.*` resource
+  attributes are deleted before enrichment. `forge.OnHosted`:
+  forge renders no agent and emits only the `OTEL_*` contract. A headers secret
+  nothing supplies, a workload that also exports OTLP logs, and a host process
+  with no local port are refused at render. `forge.OTEL_ENV` no longer points at
+  `otel-collector.observability:4317`, which nothing deployed. See
+  `observability/destination` and `migrations/v0.1.45`.
+- **Changed:** the OTLP endpoint/protocol pair `forge env up` gave host
+  processes is now derived by that declaration (`ObservabilityEntity`) instead
+  of the removed `clickstackHostOTLPEnv`.
+- **`forge.yaml` `generate.hooks`: run your own commands as part of `forge generate`.**
+  The escape hatch for a generator forge does not own, such as a query
+  generator kept while porting onto the ORM, a project codegen tool, or a docs
+  dump. Each hook is an argv (`command: [sqlc, generate]`; no shell, so
+  quoting is the same on every platform), an optional project-relative `dir:`,
+  and the `writes:` paths it produces. Hooks run in declaration order after
+  forge's codegen and before `go mod tidy` and the validation build, so their
+  output is tidied and compiled in the same run. A non-zero exit fails the
+  generate. Declared `writes:` join the rollback journal, so a failed generate
+  restores them like forge's own output. See `architecture`, "The Generate
+  Pipeline".
+- **migratekit adopts a database goose already migrated.** A project leaving
+  goose squashes goose's history into one first-migration baseline and lists
+  every goose version in the baseline's header:
+  `-- forge:adopts goose <version> …` (the line repeats to wrap).
+- **Continuous profiles go to ClickHouse, pushed by the app (owner decision: push by default, no Pyroscope).**
+  `pkg/observe` now profiles every process that has an OTLP endpoint: a 10s CPU
+  profile plus heap and goroutine snapshots about once a minute (jittered),
+  converted to OTLP profiles and POSTed to `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT`
+  (a full URL; unset, the base endpoint gains `/v1development/profiles`). On by
+  default whenever an endpoint is set; off with `OTEL_PROFILES_EXPORTER=none` or
+  `observe.Config{ProfilesDisabled: true}`. The loop never blocks or crashes the
+  app: own goroutine, panics recovered, a TCP probe before each cycle, exponential
+  backoff to 15 min, and the CPU profile is skipped when another is running.
+  Measured: ~90 ms CPU and 1.5 MB per conversion (~0.15% of a core), ~8.5 MB/day
+  of ClickHouse per instance. The redundant `samples` sample type is dropped, a
+  profile ID is set, and the `trace_id`/`span_id` pprof labels that
+  `TracingInterceptor` (and the new `observe.ProfileLabelsMiddleware`) put on
+  request goroutines become OTLP links. **Pre-release pin:** the profiles format
+  is `v1development`, so contrib `pkg/translator/pprof` and collector
+  `pdata/pprofile` are pinned together at **v0.162.0**, the same version as the
+  local `otel-profiles` collector; bump all three in one change.
+- **`otel-profiles` in the scaffolded `docker-compose.yml`** fills the seam left
+  for it: stock contrib collector 0.162.0 (digest-pinned) with
+  `--feature-gates=+service.profilesSupport`, OTLP in, the `clickhouseexporter`
+  out to the ClickStack ClickHouse with its existing credentials. Compose
+  services get `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT`; for host processes the
+  typed declaration derives it (`forge.Observability.profiles_port`, the port
+  `dev/main.k` publishes) unless you chose an OTLP endpoint, protocol or
+  profiles endpoint yourself. **Profiles are on by default with the local
+  ClickStack and governed by `signals.profiles` elsewhere:** `signals.profiles`
+  is now unset by default, meaning on when there is no destination and a
+  `profiles_port`, off otherwise (rendered as `OTEL_PROFILES_EXPORTER=none`);
+  an explicit value wins. `True` with the local ClickStack but no
+  `profiles_port` is refused at render. The compose `otel-forwarder` gained the
+  `service.profilesSupport` gate so `signals.profiles = True` with a
+  destination starts. See `observability/profiles` and `migrations/v0.1.45`.
+  `deploy/observability/profiles-schema.sql` (yours) creates the raw
+  `otel_profiles` table (72h TTL) and two materialized views, deduplicated
+  stacks and per-minute totals (30d TTL), idempotently, on every up.
+- **`forge observe profile`** exports an aggregated profile (a service over a
+  time range, or one trace) as pprof (`go tool pprof -http`), speedscope JSON, or
+  collapsed stacks; `--sql` prints the query. The query and the writers are in
+  the new `pkg/profilequery` for reuse by other tools.
+
+  On the normal `db migrate up` and `AutoMigrate` paths, a database with a
+  `goose_db_version` table and nothing yet in `schema_migrations` is checked
+  against that list:
+
+  - **Exactly the listed set:** the baseline is recorded as applied without
+    running its SQL, and later migrations apply on the same run.
+    `Result.Adopted` is set and `AutoMigrate` logs `ADOPTED`.
+  - **A listed version missing, or a version applied that the list lacks:**
+    the run refuses with `*migratekit.AdoptionError`. It names the versions,
+    says how to fix each case, and changes nothing.
+
+  The check is set membership, never "the newest version matches", because
+  goose applies out of order. A version counts as applied when its latest row
+  says so, which is how goose reads its own table. goose's table is never
+  modified, so the last goose release remains a safe rollback target. After
+  adoption, goose's table is never read again.
+
+  A malformed declaration, or one on any migration but the first, is refused
+  at `Open` and at boot on every database. `forge lint` reports the same at
+  review time as the new `invalid-adopts-directive` rule. The scaffolded
+  `db migrate up` prints the adoption. `forge project migrate import --from
+goose` now warns that renumbering re-runs history on a database goose
+  already migrated. See the `db/deploy-migrations` skill, "Adopting a database
+  another tool migrated".
+
+- **Adopt forge one service at a time: `// forge:unmanaged`.** A full-line
+  comment above `service X {` takes that service out of forge's service model.
+  buf still generates its code and it stays in the descriptor, but `forge
+generate` scaffolds nothing service-scoped for it: no `internal/handlers/<svc>/`
+  or rpc stubs, no mocks, CRUD wiring or entities, no mount, compose entry or
+  subcommand, no frontend hooks or pages. `forge scaffold` skips it and refuses
+  `scaffold service|rpc|entity --from-proto` on it, `forge lint`'s
+  list-filter-optional rule and `forge project shapes` treat its rpcs as not
+  forge's, and `forge project audit` lists every one under
+  `unmanaged_services`. Its rpcs' `auth_required` still projects into
+  `pkg/middleware/procedures_gen.go`, because whether an rpc is public is part
+  of the contract whoever serves it. Before this, the first `generate` on an
+  existing server stubbed every rpc of every service at once — 307 stubs on
+  reliant. Delete the line to adopt the service. A near-miss spelling, or the
+  marker on an rpc or message, fails generate. `codegen.ParseServicesFromProtos`
+  now returns managed services only; `ParseDeclaredServices` returns all.
+  See the `migration` skill, "Adopting in place".
+- **`//forge:not-a-component: <why>` takes a contract package out of the server
+  composition and keeps its contract.** Every `internal/<pkg>/contract.go`
+  package used to be treated as a server component, so a package only the CLI
+  or a daemon uses (a browser login flow whose `Deps` are a credentials
+  directory, an `OpenURL func(string) error` and an HTTP doer) failed
+  `forge generate` with `Cliauth.Deps.Dirs (credentials.Dirs) has no provider`
+  until its collaborators were wired onto the server's `Infra`. A marked
+  package keeps `contract.go`, the contract lint, `mock_gen.go` and (with
+  `// forge:constructor`) its decorator; `compose.go` never constructs it,
+  never resolves its `Deps` and gives it no `Infra` field, and it gets no
+  `NewTest<Pkg>` factory. A server component that requires it by type fails
+  generate naming the marker, and `forge lint` refuses a bare marker
+  (`forge-not-a-component-reason`) or one where composition does not read it
+  (`forge-not-a-component-scope`: a handler, worker or operator, beside
+  `//forge:external-component`, or a package with no `contract.go`). When an
+  unmarked package's `Deps` have no provider and no service, worker or
+  operator reaches it, the missing-provider error names the marker as a
+  second remedy. `forge project audit --json` reports `uncomposed_packages`
+  and `forge project graph` a per-package `composition`. See the `contracts`
+  skill, "Packages the server does not have".
+- **Config scoped to one subcommand of a binary:
+  `(forge.v1.binary_config).command`.** A binary whose subcommands run as
+  separate processes (`reliant server api`, `reliant server worker`) can now
+  give each process its own config instead of one surface every role links:
+  `{binary: "reliant", command: ["server", "api"]}`. The binding is keyed on
+  `(binary, command)`. The binary's root config (no `command`) stays the
+  binary-wide surface every process loads; a command config's leaves register
+  as LOCAL flags on that subcommand (`Register<Msg>Flags(cmd)`), and
+  `Load<Msg>(cmd)` refuses to load from any other command
+  (`config.CheckCommandPath`), which is where a mistyped path surfaces: a
+  cobra tree is assembled at runtime, so generate checks the path's shape
+  only. Generate refuses two messages for one `(binary, command)`, a
+  malformed path, and a root and command config of one binary declaring the
+  same env var or flag. In KCL each config keeps its own `<msg>EnvMap`, and a
+  binary with command configs also gets a `<Bin>Process` bundle and
+  `config_gen.<bin>ProcessEnvMap(cfgs, argv, config_secrets)`, which projects
+  one workload's env from its own `command + args` (root config plus the
+  longest matching command config) and routes each `config_secrets` name to
+  the config that declares it. New projects' `config.k` scaffolds the bundle as
+  `<bin>_process`. See the `binaries` skill, "One binary, several processes".
+- **Generated HyperDX dashboards.** `forge generate` now derives dashboards
+  from the project's services and writes them to
+  `deploy/observability/dashboards/*_gen.json`, where the local ClickStack
+  already loads them: an overview (request rate, error rate, p50/p95/p99 per
+  service, top errors, error logs), one dashboard per service (a
+  requests/error-rate/latency row for every rpc, DB calls, Go runtime, logs), a
+  frontend dashboard (JS errors, sessions, web vitals, page load, browser API
+  calls) and a saved error-log search per service. Everything filters on
+  `service.name` and `deployment.environment.name`. A hand-written
+  `<name>.json` beside a `<name>_gen.json` takes it over; forge never writes a
+  file there that does not end in `_gen.json`. The model is a renderer-neutral
+  `Spec` (`internal/obsdash`, also written to
+  `deploy/observability/dashboard-spec_gen.json`) that HyperDX JSON is rendered
+  from, so another renderer can draw the same dashboards. Tiles name their
+  source (`Logs`/`Traces`/`Metrics`); the compose entrypoint binds the names to
+  this database's source ids. Alert definitions (error rate, p99, no data) are recorded in the spec's
+  `alerts` as `pending`, because HyperDX 2.40 never evaluates an
+  alert declared in a provisioned file (hyperdx PR #3233). See skill
+  `observability/dashboards`.
+- **Frontend builds are told what they were built from.** Every frontend build
+  forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
+  (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the
+  deploy's bound release), always present and empty when unknown. A GitSource
+  is fetched shallow with no tags, so a tag-pinned build could not name its own
+  version and the release name never reached a build at all; reliant-web
+  shipped "version unknown" to prod. A local source override reports no source.
+  See `docs/cross-repo-sources.md`, "What the build is told about itself".
+- **`forge storage gc` reclaims dangling images and anonymous Docker volumes.**
+  Dangling images (untagged, used by no container, built over an hour ago) are
+  removed by every pass, the automatic ones included. Anonymous volumes (the
+  daemon's `com.docker.volume.anonymous` label AND a 64-hex name, plain `local`
+  driver, mounted by no container, seen unused for `anonymous_volume_unused`,
+  default 14 days) are removed only by an explicit `forge storage gc --apply`;
+  automatic passes only record when each was first seen unused. Named volumes
+  are never removed. Every removal goes through the pass's delete governor and
+  the new `max_docker_removals_per_pass` cap (default 100), and a daemon error
+  reporting EMFILE/EIO/ENOTCONN backs the pass off. `storage.Runner.ReapWorktrees`
+  is renamed `Explicit`. See `docs/runbooks/storage-lifecycle.md`.
+- **`pkg/observe` merges the standard `OTEL_RESOURCE_ATTRIBUTES` and
+  `OTEL_SERVICE_NAME` into the OpenTelemetry resource** (`resource.WithFromEnv`).
+  The deployment environment is the forge env name, delivered by the platform as
+  `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=<env>`; it is not derived
+  from the CORS/HSTS `environment` mode field, which cannot tell staging from prod.
+
+- **BREAKING: `pkg/observe` honours the standard OTLP environment.**
+  `OTEL_EXPORTER_OTLP_{ENDPOINT,PROTOCOL,HEADERS}` and the per-signal variants
+  now configure the exporters: `http/protobuf` is the default, `grpc` is
+  supported, and headers reach the wire (previously gRPC only, no headers).
+  The default protocol flips from gRPC to `http/protobuf`: an existing
+  `:4317` endpoint with no `OTEL_EXPORTER_OTLP_PROTOCOL` must now set
+  `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`.
+  `OTEL_SERVICE_NAME` now overrides the compiled-in service name, and
+  `OTEL_SDK_DISABLED=true` turns export off. `Config.OTLPEndpoint` still
+  overrides the endpoint; with no endpoint nothing is exported.
+- **The W3C TraceContext+Baggage propagator is always installed**, not only when
+  an OTLP endpoint is set, so `traceparent` is honoured with export off.
+- **Server logs carry `trace_id` and `span_id`** when the logging context holds a
+  span (`observe.NewLogHandler`, used by `serverkit`).
+- **Opt-in OTLP logs exporter** (`OTEL_LOGS_EXPORTER=otlp` / `Config.OTLPLogs`),
+  off by default and mutually exclusive with stdout/file collection.
+- **Go runtime metrics** are recorded when metrics export is on.
+
+- **`forgeconv-list-filter-optional`: `forge lint --conventions` now rejects a
+  List-request filter field without `optional`.** The rule ("List request
+  filter fields must be optional") was documented in every project's
+  CLAUDE.md and the proto skill and checked by nothing. A scalar or enum field
+  on a `List<X>Request` (or the request of a `List<X>` rpc) with no presence
+  is an error: unset and the zero value are the same on the wire, so the
+  generated List op either can never filter on the zero value or — for a
+  bool/enum — always applies it and returns only the `false`/UNSPECIFIED rows.
+  Pagination/ordering controls and message-typed fields are exempt, enums
+  resolve across the proto tree, and a required parameter can say so with
+  `[(buf.validate.field).required = true]` instead.
+
+- **Signed in to Reliant means signed in to the control plane — no `forge
+login`.** forge has a credential-helper protocol (`pkg/cloudcred`, the model
+  of kubectl exec plugins and git credential helpers): when
+  `$FORGE_CREDENTIAL_HELPER` names a command, forge writes
+  `{"version":1,"endpoint":…,"scopes":[…]}` to its stdin and reads a token (or a
+  structured refusal: `no_session`, `denied`, `unavailable`) from its stdout.
+  The value is a JSON argv array, or a single executable path. Reliant sets it
+  for `reliant forge …` and for every shell its agents run, and answers with a
+  short-lived token minted from the user's Reliant session for exactly the
+  endpoint the env declares. Hosted commands (`env deploy`, `secret`,
+  `domain`, `cloud`, `release`, `env promote|verify|start|stop`, `registry
+login`, …) resolve a credential in this order: `--token`, the env's declared
+  token variable (CI), the stored `forge login`, then the helper — and an
+  EXPIRED `forge login` falls through to the helper instead of failing. A
+  helper's token is reused within one process until a minute before it
+  expires; caching across processes is the helper's job. When the helper
+  refuses, forge prints the host's own advice (Reliant: "sign in to Reliant
+  (`reliant auth login` / the app)") and the CI variable — never `forge login`
+  — and a 401/403 on a helper-minted token says to sign in again there. Helper
+  stdout never reaches an error message or a log. `forge cloud status <env>`
+  shows the source and expiry; `forge login` notes when a helper is already
+  set. `forge login` and the token variable are unchanged for standalone forge
+  and CI.
+
+- **`forge lint --static-export`, and a `static-export lint` lane in every
+  `forge lint`.** It judges each Next.js frontend that must build to a static
+  export: forge.yaml declares `output: static` for it, or any env binds it to
+  `forge.OnHosted`, `forge.OnBucket` or `forge.OnFirebase` (learned from each
+  env's real render, not a text scan). It reports with file:line and a fix:
+
+  - **errors**, which `next build` refuses for an export: a dynamic segment
+    (`[x]`, `[...x]`, `[[...x]]`) with no `generateStaticParams`, a GET route
+    handler not declared `force-static`, `'use server'`, `next/headers`,
+    `dynamic = "force-dynamic"` / `revalidate = 0`, and next/image without
+    `images.unoptimized` or a custom loader. Also a frontend whose build is not
+    an export at all, and forge.yaml and next.config disagreeing about it.
+  - **warnings**, for what the export accepts and then drops: `middleware.ts` /
+    `proxy.ts`, non-GET route handlers that are not dev-only, next.config
+    `rewrites` / `redirects` / `headers` not gated to development,
+    `revalidate = N`, and an export bound to `forge.OnBucket` without
+    `trailingSlash: true` (a bucket resolves no `.html`, so every route but
+    `/` 404s; the hosted origin tries `<path>.html` itself).
+
+  CI's `NODE_ENV=production npm run build`, `forge build` and
+  `forge env deploy` run the real export, which stays authoritative. This lane
+  reports the same failures earlier and offline. A `[id]` page born from
+  forge's CRUD templates names the `migrations/v0.1.44` route migration. It is
+  a text scan with no TypeScript AST, so it stays silent rather than guess: a
+  re-exported `generateStaticParams` or a next.config built by a function is
+  not followed. Honours `--quiet`, `--scope` (by file) and `--json`, and the
+  shared `// forge:lint-disable-next-line <rule>: <reason>` directive.
+
+- **Queued hosted deploys: exit 7, the block, and `--wait`.** A control plane
+  that ACCEPTS a deploy but holds it on a person — today, billing for the
+  hosted workloads or managed database it runs, or for static sites past the
+  free tier — no longer makes `forge env deploy` fail or sit out a
+  fifteen-minute wait on a promotion nothing is moving. The release, bundle
+  and promotion are recorded as usual; forge reads the hold off the Promote
+  response (rollout phase `HELD` as the fallback) and prints ONE block — what
+  it waits on, why, what to do, and the action URL — then exits **7
+  (queued)**, a code nothing else uses.
+  The deploy goes live by itself once billing is set up; nothing is re-run, and
+  a newer deploy replaces a queued one. `--json` carries the same facts as
+  `.queued` (`waiting_on`, `holds[].action_url`). `forge env deploy --wait`
+  blocks through the queue until the release is live (or `--timeout`; still
+  queued then is 7), and is mutually exclusive with `--no-wait`.
+  `forge env status <env>` on a queued env exits 7 with the block instead of
+  reporting drift, and `forge env status <env> --wait` waits through it. The
+  capacity pre-flight now continues past a "would be queued" answer
+  (`CheckDeployCapacity` holds) instead of refusing before the build; an older
+  control plane that sends no holds is refused exactly as before. See the
+  `deploy/hosted-capacity` skill.
+- **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
+  barrel now exports `formatMinorUnits`, `parseMinorUnits`,
+  `minorUnitsToInput`, `currencyMinorDigits`, `formatBasisPoints`,
+  `parseBasisPoints` and `basisPointsToInput`. They are the web counterpart of
+  `pkg/money`: an amount is an integer count of minor units, as a `bigint` or
+  an integer `number`, plus an ISO 4217 code. Currency defaults to USD and
+  locale to en-US. Each currency's minor digits come from Intl (JPY 0, KWD 3),
+  and formatting stays exact past 2^53 because Intl receives a decimal string,
+  never a float. Parsing returns `null` instead of rounding or guessing. That
+  covers too many decimals, a negative without `allowNegative`, a misplaced
+  group separator (`"12,50"` in en-US), another currency's symbol, and values
+  outside int64. The input helpers round-trip through the parsers. Rate parsing
+  caps at 100% unless you pass `max`. Plain library functions: codegen does not
+  infer money from field names. A forge app (roofers) hand-wrote these, along
+  with a per-page `bpsToPercentInput`.
+- **`// forge:generated <expr>` births a GENERATED column.** The db skill says a
+  value derived from the same row should be `GENERATED ALWAYS AS (…) STORED`,
+  but birth could only emit `BIGINT NOT NULL DEFAULT 0`, so the owned
+  migration was hand-edited straight after every birth (`line_total_cents`,
+  `tax_cents`, `balance_cents` in the roofers run). Write the expression on the
+  field instead: `int64 line_total_cents = 9; // forge:generated
+round(quantity * unit_price_cents)::BIGINT`. The rest of the comment line is
+  copied verbatim into `<col> <type> NOT NULL GENERATED ALWAYS AS (<expr>)
+STORED`. NOT NULL follows the presence rule every born column follows:
+  dropped for an `optional` field and for a Timestamp, so an expression that
+  yields NULL for a plain field fails the write rather than storing a value
+  the wire cannot carry. There is no DEFAULT; an enum keeps its CHECK and
+  protovalidate rules still project. The marker implies `forge:read-only`: the
+  field leaves the born Create request, and the generated Update refuses an
+  `update_mask` naming it. Before writing anything, birth applies the rendered
+  migration to the shadow database inside a rolled-back transaction. An
+  expression postgres rejects refuses the birth, naming the marker's file and
+  line with postgres's message, and leaves the proto untouched: an unknown
+  column, a non-`IMMUTABLE` function such as `now()`, or one generated column
+  reading another (both are named). So does a marker with no expression, two
+  markers on one field, or a repeated/map/oneof/JSONB field. Supported fields
+  are single-valued scalars, enums and Timestamps. The descriptor carries the
+  expression too (`SchemaFieldDef.Generated`), so `forge scaffold entity
+--from-proto <svc>.<Message>` births the same column as bare `forge
+scaffold`. `forge project annotations` lists the marker and the mapping row.
+  `pkg/schemadef` gains `OpenShadowAt` and `(*Shadow).TryApply` for asking
+  postgres whether SQL would apply without changing the shadow.
+- **Version-skew warning for a bridged forge checkout.** When a project's
+  go.work (or a directory `replace`) bridges a local forge checkout,
+  `forge generate` and `forge lint` print one line — and `forge doctor`
+  reports a `Forge Bridge` warning — whenever the running binary was not built
+  from that checkout as it is now: a different commit, uncommitted changes on
+  either side, or (forge embedded in a host through a workspace, which records
+  no forge commit) a checkout that moved after the binary was written. The
+  line names both sides and the fix:
+  `⚠️  forge skew: reliant (built 2026-10-01 01:31) records no forge commit, and go.work bridges /src/forge, which changed after it was built (now 750833054b78) — generated code and library differ. Fix: rebuild reliant from that checkout, or unbridge: go work edit -dropuse=/src/forge`.
+- **A decision table for column write markers** in `db/write-policy`. It picks
+  `forge:read-only`, `forge:computed`, `forge:generated`, `forge:guards` or
+  `forge:immutable` by who writes the value. It reflects the Update enforcement
+  below: guards adds no protection to a read-only column, only the disabled edit
+  row naming the rpc that owns it. `forge`, `proto` and the project memory point
+  to it.
+- **The rule for CRUD vs custom rpcs, stated once and the same everywhere.** An
+  rpc is CRUD only when it is unary and named exactly
+  `Create|Get|Update|Delete<E>` or `List<Es>`, where `<E>` has a table and a
+  same-name proto message. `UpdateJobStatus`, `CreateInvoiceFromEstimate` and
+  `ListJobsByCrew` are custom, so there is no need to rename them defensively
+  (an agent did in the roofers run). This is in the project memory and in the
+  `forge`, `proto` and `api` skills.
+- **A retired-claims registry over all shipped guidance**
+  (`internal/templates/retired_claims_test.go`). It covers every project and
+  service template (skills, `reliant.md.tmpl` and `reliant-reliant.md.tmpl`,
+  which render as reliant.md / CLAUDE.md / AGENTS.md / .cursorrules /
+  copilot-instructions.md), plus the README and `docs/`. Each row is a claim
+  forge retired, with the truth that replaced it, the skill that carries that
+  truth (checked to exist), and a bad and a good sample the pattern must catch
+  and spare. Against the previous main it reports 16 stale lines.
+- **`db/seeds/vocab.yaml` describes timestamps, booleans and NULL.** A time
+  column takes instants relative to the day the seed runs:
+  `{from: -90d, to: +30d}` (optional `step: 1d`), or a list of `now` / `-3d` /
+  `+2w` offsets and absolute ISO dates. A boolean column takes
+  `[true, true, false]`, and `null` is a list value for a nullable column
+  (`[null, "x"]`). Repeating an entry weights the draw for every kind. A `null`
+  on a NOT NULL column refuses the seed and names the column. Before this,
+  YAML dropped a null from the list (`[null]` failed with "has no values"), and
+  boolean and time columns were ignored with a warning. `seedplan.Config.Now`
+  is the anchor: the seed CLI passes the start of the current UTC day. The zero
+  value is a fixed instant, so generated mocks, factories and fixtures stay
+  byte-stable.
+- **`forge db seed apply|reset --dsn` accepts any loopback database**
+  (localhost, 127.0.0.0/8, ::1, a unix socket; any port, any name), so a
+  throwaway postgres can be seeded. A non-loopback `--dsn` must still be the
+  env's declared database unless `--allow-remote-dsn` is passed. The env must
+  be dev either way. An ambient `$DATABASE_URL` gets no relaxation, and
+  `forge db reset` (DROP DATABASE) keeps the strict check.
+- **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
+  `RunTxWithOptions` and `AfterCommit`.**
+  `s.deps.DB.RunTx(ctx, func(ctx context.Context) error)` runs fn in a
+  transaction carried by the ctx it receives. Every query made with that ctx
+  against the same database joins it:
+  generated delegates (`db.GetJobByID(ctx, s.deps.DB, id)`), stores,
+  `pkg/crud.Repo`, `db.Bun()` builders and raw `Exec`/`Query`/`QueryRow`, with
+  no handle threaded through signatures. It is SERIALIZABLE by default and
+  retries serialization failures and deadlocks (SQLSTATE 40001/40P01) with
+  jittered backoff, up to `orm.DefaultTxMaxAttempts` (7). Still conflicting
+  after that, it returns `svcerr.Aborted`. A ctx that already carries a
+  transaction on the same database is joined, and the inner call's options are
+  ignored. `orm.AfterCommit(ctx, fn)` runs fn once, after the outermost commit;
+  rolled-back and retried attempts discard it. fn may run more than once, so it
+  must have no side effects outside the database. Read-check-write state
+  transitions therefore need no `SELECT … FOR UPDATE` lock helpers. The new
+  `service-layer/transactions` skill covers RunTx, AfterCommit, a lock-free
+  state-transition recipe and migrating lock helpers, and `service-layer`,
+  `db`, `db/crud-overrides` and `interactor` point to it. Executor resolution is
+  guarded by identity: a transaction carried for one `*sql.DB` never runs a
+  statement sent to another.
+- **`crud.Preserve(columns...)`, a per-call write policy for a full-replace
+  Update.** The generated `db.Update<Entity>` delegate takes
+  `opts ...crud.UpdateOption`; existing calls compile unchanged. `Preserve`
+  keeps the named columns out of that one write and reads their stored values
+  back. Use it when the caller, not the column, decides what may be written.
+  `forge:immutable` (`,skipupdate`) remains the answer when no full replace
+  should ever rewrite the column. Naming a column that does not exist is an
+  error, not a no-op, so a typo cannot silently disable the protection.
+- **`crud.UpdateOp.ReadOnly`**: the columns `HandleUpdate` refuses in a client
+  `update_mask`. Generated from the entity's `forge:read-only` /
+  `forge:computed` fields.
+- **`forge lint --quiet` (`-q`).** Prints only what failed — a one-line summary
+  per failing linter, its error findings with fix hints, and the verdict as
+  the last line; a clean run is one line. Auto-fix still applies, so the
+  verdict matches the default run. Combines with any targeted flag
+  (`forge lint --read-only-fields --quiet`), with `--scope` and with
+  `--gate-json`. Agents were piping full lint through `head` and losing the
+  result.
+- **`forge lint --scope <path>`** (repeatable or comma-separated). Reports only
+  findings in files under the given project-relative paths, so an agent
+  sharing a checkout can lint its slice. golangci-lint, the typed-config
+  guardrail and the contract linter run on the scope's Go packages only;
+  file-anchored linters run project-wide and report what is under the scope
+  (a finding with no file is never hidden); the whole-project linters —
+  frontend lint, component-drift and `--config-reach` — cannot be scoped, are
+  skipped, and are named in the verdict ("run an unscoped `forge lint` before
+  merging"). Auto-fix touches only files under the scope. Works with `--json`
+  and `--quiet`; refused with positional package paths and with `--gate-json`
+  (a gate records whole-project evidence). Every pipeline lane must declare
+  its scope mode, pinned by a test.
+- **`seedplan.Config.Minimal`** — plan the smallest row the schema accepts
+  instead of the fullest: only keys, NOT NULL columns without a usable
+  DEFAULT, NOT NULL references, UNIQUE/ordered NOT NULL columns and columns a
+  child references are written; discriminated-union and status-guard CHECKs
+  take the branch closest to the column DEFAULTs, the same branch on every
+  row. `Plan.Writes(table, column)`, `Plan.NaturalValue(...)` and
+  `MinimalUnionPlacement` expose the decision; `UnionCell.Present` reports a
+  branch's IS NOT NULL requirement. `forge db seed` is unchanged (full plans).
+- **Windows support.** Native windows/amd64 and windows/arm64, no C toolchain:
+  - process lifecycle (tree kill, liveness, parent/port/start-time lookup,
+    reading another process's argv and environment for stale-stack reclaim);
+  - an in-process POSIX shell for ShellBuild and migration detection;
+  - a delve JSON-RPC client that builds on windows/arm64;
+  - `[build.windows]` sections in the scaffolded air configs, `.exe` host
+    binaries from `forge build` and the `binary`/`delve` runners;
+  - zitadel's Windows binary for the host IdP;
+  - in-use file detection via the Restart Manager, so reclaimers work;
+  - a directory-junction fallback when symlinks need privileges;
+  - portable scaffolded Taskfiles (guarded by a test), and a `.gitattributes`
+    keeping generated files LF;
+  - `forge doctor` floors for Windows: air >= 1.65.3, Task >= 3.45.5;
+  - `forge storage schedule` registers a daily Task Scheduler task;
+  - a `windows-latest` CI job that builds, tests and renders a scaffold.
+- **`forge doctor` checks air** (any OS, >= 1.63.2) for projects with an
+  `.air.toml`: the scaffolded config names its binary with `entrypoint`, which
+  older air does not read, so it would have nothing to run.
+- **`cli.RenderSkill` — a skill exactly as `skill load` prints it, for
+  harnesses.** `cli.LoadSkill` returns the raw body, so a harness injecting a
+  skill into an agent's context handed it `forge generate` while
+  `reliant forge skill load` (and the project memory) said
+  `reliant forge generate` — a command the agent may not have, or a different
+  forge build than the one that generated its project. `RenderSkill` applies
+  the same resolution, version-skew advisory, audience filter and command-name
+  rewrite as the CLI; `skill load` and `forge start` now call the same
+  renderer, so the two cannot drift. `RenderSkillOptions.CLIName` defaults to
+  the name this process reports, the same one `cli.RenderProjectMemory`
+  renders.
+
+- **Scaffolded CI for hosted environments** (ADR `docs/adr/env-verbs.md`,
+  task V6). A project with at least one hosted env (an env whose KCL declares
+  `forge.ControlPlane` and something the platform runs) now gets two new
+  files. The first is `.github/workflows/release.yml`. On a `v*` tag it runs
+  checks once (`forge lint --gate-json`, plus `task test -- -json` fed to
+  `forge ci verify-test-run --gate-json`). It then builds, pushes and records
+  the release in ONE command (`forge env build <env> --release "$VERSION"`;
+  `--release` implies `--push`). Finally it deploys the release through the
+  hosted envs in promotion order, one job per env, each under its GitHub
+  Environment. Each stage after the first deploys `--from` the stage before
+  it, pinned with `--from-promotion`. It asserts `--expect-current`, which the
+  previous job captured before this stage's approval wait. A hotfix that lands
+  while an approval is pending therefore turns the run red (exit 3) instead of
+  being overwritten. The second file is
+  `.github/actions/forge-deploy/action.yml`, a composite action vendored into
+  the repo so that it versions with the project's forge pin. It is one
+  `forge env deploy` — which records, applies and waits for health itself — and
+  then records that outcome as rollout evidence on the promotion the deploy
+  wrote and summarizes it into the job summary. Because the verb decides who
+  applies from what the env DECLARES, the action carries no promote step, no
+  "does this env converge its own promotions" probe, no separate wait and no
+  `deploy:` input.
+  Existing projects get both via
+  `forge project rescaffold .github/workflows/release.yml`.
+  Neither file uses curl or environment ids, and no token appears in a URL.
+  The only secret is `FORGE_CONTROL_PLANE_TOKEN`.
+- **`forge cloud token create|list|revoke`** mints and manages the org
+  automation token that CI deploys with. An org token has no acting user, so
+  it outlives any one person. Scopes are validated before the round trip.
+  `--json` carries the one-time secret, so
+  `… --json | jq -r .secret | gh secret set FORGE_CONTROL_PLANE_TOKEN` never
+  echoes it to a terminal.
+- **`forge ci summarize <doc.json>...`** renders forge `--json` documents as
+  Markdown for `$GITHUB_STEP_SUMMARY`. It renders the verdict from the
+  envelope, a field table and row tables. It decides nothing: it exits 0
+  whatever the documents say, and 1 only when an input cannot be read.
+- **`forge env deploy` applies a MIXED env's cluster half.** An env that keeps
+  its ledger on a control plane AND declares workloads that control plane does
+  not run — a cluster Deployment, a compose service, host infra, a shipped
+  frontend — now gets both halves of the deploy: the client-side apply for what
+  forge owns, then the wait on the rollout the control plane computes. Before,
+  the follow-through branched on "is this env hosted" alone, so a mixed env
+  recorded its promotion and waited on the hosted rollout while its cluster
+  workloads silently stayed on the previous release — a green deploy that
+  shipped half a release. The apply runs first and a failure short-circuits the
+  wait. Nothing is configured: the shape comes from the env's own render.
+- **Status verbs for hosted deploys** (hosted-deploy-primitives §3.5):
+  - `forge env rollout <env>`: where the current (or `--promotion`)
+    rollout has got to, read once. It is `forge env wait --timeout 0`, with
+    the same exit codes (0 succeeded, 1 degraded, 2 undetermined, 5 still
+    rolling out, 6 superseded).
+  - `forge env history <env> [--limit] [--before] [--release]`: the
+    promotion ledger, newest first, with from-env, actor, note, evidence
+    counts and the CI run. It pages with a keyset cursor (`next_before`;
+    empty means the last page), and both ledger backends page identically.
+  - `forge release where <version>`: which environments are currently bound
+    to a release. Exit 1 when none are.
+  - **`forge env verify` works for hosted envs.** forge cannot read a hosted
+    env's cluster, so it reads the control plane's observer through
+    GetRollout and reports the same five states with
+    `source: control-plane observer`. A stale observation is UNREACHABLE
+    (exit 2), never MATCH. Cluster envs are unchanged.
+  - `forge env topology --json` gains `promotion_id`, `from_env`,
+    `gates_summary` and, for hosted envs, `rollout_phase`.
+- **`forge ci run <run-id> [--env <env>] [--json]`**: one CI run's timeline
+  from the hosted control plane. It shows the release cut, the recorded
+  checks, every promotion and each promotion's rollout, with a verdict.
+  Exit codes: 0 every stage passed, 1 a stage failed or errored, 5 still
+  running, 2 could not read the control plane. A run id nothing has written
+  under exits 5, never 0. `--env` picks which control plane to ask;
+  without it, the project's single declared control plane is used. The
+  design spec named this `forge run show`; that would have collided with the
+  dev-server `forge run`, which takes its own positional arguments.
+- **`forge env verify` refuses to judge against a stale file ledger.** A
+  self-managed env's promotions live in `.forge/promotions/<env>.jsonl`,
+  committed to git, so a checkout that has not pulled the latest release
+  record compares the cluster against an OLDER promotion. A fine deploy then
+  reads as DRIFT, and a deploy that never happened can read as MATCH. verify
+  now compares the env's log with origin's default branch (as of the last
+  fetch; it never fetches). When this copy is `behind` or `diverged`, every
+  image is still reported, but the command exits **2** (could not determine)
+  with the fix. `ahead` (recorded here, not yet merged) is shown, not failed.
+  `--json` carries `ledger: {state, ref, local_entries, upstream_entries,
+detail}`. A control-plane ledger has no copy to be behind and is unaffected.
+- **`forge env promote` always compare-and-sets.** The write asserts that the
+  env is still on the promotion the plan read, and is refused if someone else
+  moved it since. A hotfix that lands while a pipeline waits for approval now
+  turns that pipeline red (exit 3, `promotion_conflict`) instead of being
+  overwritten. No flag is needed. `--expect-current <id>` replaces the planned
+  value with one captured earlier; `--expect-current unbound` /
+  `--expect-unbound` asserts the env was never promoted. Re-promoting the
+  release an env already runs is still a no-op whatever the expectation says,
+  so a retried success is never a conflict. `--supersede` admits a promote
+  while the current rollout is in flight and is recorded on the new entry.
+  Exit 4 is `rollout_in_flight` / `environment_pinned`. `--plan --json` now
+  shows `current.promotion_id` (the value to capture) and `expected`; a
+  refused `--json` document carries `applied: false` and
+  `refusal: {reason, expected…, actual_current, actual_phase}`, and its
+  `ok`/`exit_code` match the process status. The file ledger applies the same
+  check against the history it reads. Hosted CAS needs a control plane with
+  the P0 contract — an older one ignores the fields.
+- `forge env promote --run-id / --run-url / --no-run`: the promotion records
+  the CI run, defaulted from `GITHUB_*` / `CI_PIPELINE_*`. `--wait`,
+  `--deploy`, `--timeout`, `--fail-fast`, `--gate`, `--from` and
+  `--from-promotion` are declared and refuse with "not supported by this
+  forge build" until they are wired.
+- `service_account_annotations: {str:str}` on `forge.K8sOverrides`,
+  `forge.RenderedWorkload` and `forge.workloads.Workload`: annotations stamped
+  on the ServiceAccount forge GENERATES for the workload, and on no other
+  object. It is how a workload gets cloud workload identity (GKE
+  `iam.gke.io/gcp-service-account`, EKS `eks.amazonaws.com/role-arn`) without
+  renaming its identity — the SA keeps the workload's name, so Roles, bindings
+  and policy that name it keep working. Keys are validated as Kubernetes
+  annotation keys at render time, and combining it with `service_account`
+  (where forge generates no SA) is refused rather than silently dropped.
+- `forge env render` now includes every declared `forge.HelmChart`'s objects.
+  They used to be missing entirely (flux, cert-manager and envoy-gateway each
+  rendered 0 objects while `env deploy` applied them), so render was not a
+  preview of deploy. Charts are templated through the deploy's own chart
+  render (`helm template` with the declared values, the pinned CRD bundle,
+  the chart's own CRDs, the post-hook drop), each document is marked
+  `# source: helm chart <name>` and attributed to the cluster deploy applies it
+  to, and `--target` selects charts the same way deploy does. Templating needs
+  `helm` and registry access; `--no-charts` skips it, and the summary names the
+  charts it left out.
+- `cluster:manage` access-token scope (`accesstoken.ScopeClusterManage`):
+  registers, rotates and removes an org's BYO clusters. Its own authority —
+  `deploy:write` neither implies it nor is implied by it.
+
+- **activity:** typed activity stream — declared on the rpc, one interceptor writes it (D3, 1/2) ([#911](https://github.com/reliant-labs/forge/pull/911))
+- **serverkit:** a Deadline slot ahead of Auth, fed by (forge.v1.method).timeout ([#945](https://github.com/reliant-labs/forge/pull/945))
+- **testing:** fast/slow test tiers — testkit.Slow, forge lint --slow-tests, forge ci test-budget ([#925](https://github.com/reliant-labs/forge/pull/925))
+- **orm:** project every applied table, whatever its rpcs (F12.1) ([#953](https://github.com/reliant-labs/forge/pull/953))
+- **config:** subtree configs — one config several commands load, and no other process ([#957](https://github.com/reliant-labs/forge/pull/957))
+- **lint:** forgeconv-activity-declared — every mutating rpc declares its activity event (D3, 2/2) ([#936](https://github.com/reliant-labs/forge/pull/936))
+- **observe:** CPU + live heap by default; alloc/goroutine/mutex/block profiles opt-in; typed per-workload profiling override ([#943](https://github.com/reliant-labs/forge/pull/943))
+- **composition:** one command per root — roots_gen.go, runRoot process policy, probe listener (composition graph PR 4) ([#959](https://github.com/reliant-labs/forge/pull/959))
+- **config:** a build-time defaults layer, stamped with -ldflags ([#961](https://github.com/reliant-labs/forge/pull/961))
+- **orm:** entities are named from their table; refuse a CRUD rpc that matches no table (F12.4) ([#962](https://github.com/reliant-labs/forge/pull/962))
+- **config:** value-mapped env aliases — a foreign convention that implies a field's value ([#965](https://github.com/reliant-labs/forge/pull/965))
+- **lint,fix:** forge lint --graph, least-knowledge Deps rules, forge fix narrow-deps (composition graph PR 5) ([#968](https://github.com/reliant-labs/forge/pull/968))
+- **orm:** a composite-primary-key table gets a store (F12.3) ([#969](https://github.com/reliant-labs/forge/pull/969))
+- **observe:** WARN/ERROR log lines become span events; observetest.AssertLogCorrelation ([#944](https://github.com/reliant-labs/forge/pull/944))
+- **config:** env families — a map loaded from every <PREFIX><KEY><SUFFIX> variable ([#971](https://github.com/reliant-labs/forge/pull/971))
+- **observe:** trace every SQL statement at the driver (tracing F1) ([#942](https://github.com/reliant-labs/forge/pull/942))
+- **orm:** a view can be a read-only entity (F12.7) ([#975](https://github.com/reliant-labs/forge/pull/975))
+- **activity:** hierarchical scopes, Filter.Envs, and Skip ([#964](https://github.com/reliant-labs/forge/pull/964))
+- Forge-Via — forge's control-plane client sends it; the default CORS list admits it ([#966](https://github.com/reliant-labs/forge/pull/966))
+- **observe:** NewHTTPClient — traced client for plain outbound HTTP (tracing F3) ([#979](https://github.com/reliant-labs/forge/pull/979))
+- **orm:** database.orm.package places the generated data layer (F12.2) ([#985](https://github.com/reliant-labs/forge/pull/985))
+- **config,deploy:** each root's config is its reach — LoadReach, ROOTS, Workload.root (composition graph PR 6) ([#988](https://github.com/reliant-labs/forge/pull/988))
+- **observe:** TrustRemoteFrom — adopt the caller's trace only for authenticated internal services ([#980](https://github.com/reliant-labs/forge/pull/980))
+- **orm:** a NOT NULL column's DEFAULT applies when the field is unset (F12.5) ([#990](https://github.com/reliant-labs/forge/pull/990))
+- **orm:** idiomatic, lossless entity field types (F12.6) ([#991](https://github.com/reliant-labs/forge/pull/991))
+- **cli:** hand a command to the project's pinned forge instead of refusing on version skew ([#908](https://github.com/reliant-labs/forge/pull/908))
+- **upgrade:** release codemods keyed by version; forge fix operatorkit (composition graph PR 7a) ([#994](https://github.com/reliant-labs/forge/pull/994))
+- **config,deploy:** root reach for binary-config projects — each root loads and reaches the configs its command loads ([#995](https://github.com/reliant-labs/forge/pull/995))
+- **lint:** least-knowledge rules at the design's severities; forgeconv-no-getenv, forgeconv-deps-root-config (composition graph PR 7c) ([#996](https://github.com/reliant-labs/forge/pull/996))
+- **observe:** temporalotel and natsotel — trace context through Temporal and NATS (tracing F5) ([#986](https://github.com/reliant-labs/forge/pull/986))
+- **observe,lifecyclekit,controller:** root span per loop iteration and per reconcile ([#987](https://github.com/reliant-labs/forge/pull/987))
+- **lint:** forge lint --tracing — the places a request's trace is cut ([#993](https://github.com/reliant-labs/forge/pull/993))
+- **upgrade:** forge fix composition-graph and the v0.1.47 playbook (composition graph PR 7b) ([#998](https://github.com/reliant-labs/forge/pull/998))
+- **orm:** Client.DBTX, SQLConn and InTx — sqlc and database/sql join the ORM's transaction ([#1002](https://github.com/reliant-labs/forge/pull/1002))
+- **lint:** --slow-tests does not count git against a repo the test built in a temp dir ([#950](https://github.com/reliant-labs/forge/pull/950))
+- **codegen:** decorate every contract package by default ([#992](https://github.com/reliant-labs/forge/pull/992))
+- **observe,web-runtime:** traceresponse — a failed request names its server trace in the browser ([#1001](https://github.com/reliant-labs/forge/pull/1001))
+- **graph:** resolution follows reach — roots one at a time; lint --graph answers to lint.rules (F3+F4) ([#1017](https://github.com/reliant-labs/forge/pull/1017))
+- **serverkit:** configurable probe paths — the deploy's probe reads the process's config (F5) ([#1023](https://github.com/reliant-labs/forge/pull/1023))
+- **serverkit:** adopt vanguard v0.5 — REST via vanguard.Mount over the mounted Connect handlers ([#1012](https://github.com/reliant-labs/forge/pull/1012))
+- **roots:** runRoot reads each role's own config; //forge:root migrate=apply|wait|none (roots plan F1, F2, F6) ([#1025](https://github.com/reliant-labs/forge/pull/1025))
+- **graph:** Plan<Root>() — each root's start and stop order as data (roots plan F7) ([#1026](https://github.com/reliant-labs/forge/pull/1026))
+- **config:** each root's config reach as importable Go — Roots, ValidateRootEnv (roots plan F9) ([#1028](https://github.com/reliant-labs/forge/pull/1028))
+- **contract,lint:** NewInstrumented — every construction of a contract is one rename from traced ([#1031](https://github.com/reliant-labs/forge/pull/1031))
+- **scaffold:** decline a scaffold with `forge project disown --absent`; a failed generate never half-records a birth ([#1038](https://github.com/reliant-labs/forge/pull/1038))
+- **lint:** forge lint --go-markers — a //forge: comment forge does not read is an error, not a silent no-op ([#1039](https://github.com/reliant-labs/forge/pull/1039))
+- **build:** ShellBuild.built_images — build one image FROM another's built digest ([#1035](https://github.com/reliant-labs/forge/pull/1035))
+- **schemadef:** forge:no-soft-delete for archive-stamp deleted_at; catalog-comment markers fail loudly; generated updates take crud.UpdateOption ([#1042](https://github.com/reliant-labs/forge/pull/1042))
+- **orm:** orm.Arg binds a slice as a postgres array; orm.Detached runs outside the caller's transaction ([#1048](https://github.com/reliant-labs/forge/pull/1048))
+- **accesstoken:** identity:read and identity:manage scopes ([#1060](https://github.com/reliant-labs/forge/pull/1060))
+- **deploy:** hosted StaticSite publishes assetDir; status records recentDigests ([#1061](https://github.com/reliant-labs/forge/pull/1061))
+- **observe:** ERROR records carry call site, exception type/message and panic frame (F3 SDK half) ([#1064](https://github.com/reliant-labs/forge/pull/1064))
+- **orm:** transaction isolation is an explicit choice — no default level; forge fix tx-isolation; forgeconv-tx-lock-under-serializable ([#1069](https://github.com/reliant-labs/forge/pull/1069))
+- **auth scaffold:** password requirements up front, self-serve password reset, truthful mail docs ([#1073](https://github.com/reliant-labs/forge/pull/1073))
+- **site:** adopt an existing static frontend in place — `forge project new --in-place --kind site` ([#1079](https://github.com/reliant-labs/forge/pull/1079))
+- **lint:** a project declares its own transaction openers — //forge:tx-opener; orm.ResolveTxPolicy ([#1080](https://github.com/reliant-labs/forge/pull/1080))
+- **deploy:** converge a raised StatefulSet volume with a pre-rollout resize Job (works under Flux) ([#1076](https://github.com/reliant-labs/forge/pull/1076))
+- **secretaccess,secretgen:** derive OpenBao JWT mounts, roles and exact-path policies; generate secret kinds (SF2) ([#1097](https://github.com/reliant-labs/forge/pull/1097))
+- **graph:** //forge:root-only scopes a root-specific variant to its roots ([#1095](https://github.com/reliant-labs/forge/pull/1095))
+- **kcl:** schema for platform secrets — forge.OpenBao, forge.ExternalSecretsOperator, store kinds, StoreSource, BootstrapSecret (SF1) ([#1102](https://github.com/reliant-labs/forge/pull/1102))
+- **graphkit,serverkit:** boot /readyz names the graph node under construction ([#1100](https://github.com/reliant-labs/forge/pull/1100))
+- **release:** the shape records store-backed secrets: store_secrets, generated_secrets, pins, component records (SF3) ([#1104](https://github.com/reliant-labs/forge/pull/1104))
+- **serverkit:** AbortReceive — the drain ends a stream parked in Receive ([#1106](https://github.com/reliant-labs/forge/pull/1106))
+- **kcl:** a store-backed ExternalSecret renders its ESO SecretStore, token Role and ExternalSecret (SF5) ([#1111](https://github.com/reliant-labs/forge/pull/1111))
+- **config:** a config message's buf.validate rules are checked as it loads ([#1103](https://github.com/reliant-labs/forge/pull/1103))
+- **svcerr:** WrapOr; tdd reads svcerr.Code; proto mocks use svcerr (P7a F-1) ([#1108](https://github.com/reliant-labs/forge/pull/1108))
+- **lint:** forgeconv-handler-connect-error; no-handler-error-mapping not silenced by an svcerr import (P7a F-2) ([#1112](https://github.com/reliant-labs/forge/pull/1112))
+- **fix:** forge fix connect-errors — hand-built Connect errors onto svcerr, wire-identically ([#1114](https://github.com/reliant-labs/forge/pull/1114))
+- **cli:** forge secret set/list/import, env secrets verify/adopt for store-sourced secrets (SF10) ([#1119](https://github.com/reliant-labs/forge/pull/1119))
+- **openbao:** the forge.OpenBao component core — render, converge Job, access document (SF6) ([#1123](https://github.com/reliant-labs/forge/pull/1123))
+- **alerting:** pkg/alerting/amconfig — the Alertmanager config renderer, moved from the control plane ([#1117](https://github.com/reliant-labs/forge/pull/1117))
+- **kcl:** the hardened External Secrets Operator component (SF4) ([#1126](https://github.com/reliant-labs/forge/pull/1126))
+- **accesstoken,dbquery:** obs:read, obs:triage, db:query scopes; pkg/dbquery read-only execution core ([#1121](https://github.com/reliant-labs/forge/pull/1121))
+- **obsdash:** issue alerts are NewIssue / IssueRegressed / IssueSpike for every env that can raise an issue ([#1118](https://github.com/reliant-labs/forge/pull/1118))
+- **env up:** alerts fire locally — an Alertmanager rendered by the control plane's renderer, and a continuous evaluator ([#1122](https://github.com/reliant-labs/forge/pull/1122))
+- **lint:** forge lint --secrets — the platform-secrets lane (SF12) ([#1131](https://github.com/reliant-labs/forge/pull/1131))
+- **obsquery:** move the observability query compiler from the control plane to pkg/obsquery (F1) ([#1127](https://github.com/reliant-labs/forge/pull/1127))
+- **obsquery:** sfp1 server error fingerprint, ServerFingerprintSQL + Go reference + ClickHouse corpus (F3) ([#1129](https://github.com/reliant-labs/forge/pull/1129))
+- **release:** CHANGELOG.md is written at release time from PR titles, never in PRs ([#1133](https://github.com/reliant-labs/forge/pull/1133))
+- **cli:** forge db query <env>, read-only SQL against an env's app database, local transport (F5b) ([#1136](https://github.com/reliant-labs/forge/pull/1136))
+- **kcl:** forge.ControlPlaneSecret delivered through the store via a floating ExternalSecret (SF14) ([#1147](https://github.com/reliant-labs/forge/pull/1147))
+- **cli:** forge secret reaches a self-run OpenBao over a port-forward and verifies its certificate against the published CA (SF10) ([#1149](https://github.com/reliant-labs/forge/pull/1149))
+- **accesstoken:** ResourceEnvironment, env-bound obs:read / obs:triage / db:query tokens (F0b) ([#1142](https://github.com/reliant-labs/forge/pull/1142))
+- **kcl,release:** forge.ReleaseHealth thresholds recorded in the release shape (F4a) ([#1139](https://github.com/reliant-labs/forge/pull/1139))
+- **kcl:** ExternalSecretsOperator.admission lists default from the render (SF4 follow-up) ([#1146](https://github.com/reliant-labs/forge/pull/1146))
+- **cli:** deploy and env status print each hosted workload's platform URL ([#1124](https://github.com/reliant-labs/forge/pull/1124))
+- **releasetimeline:** the release timeline library behind forge env releases (F9, pure part) ([#1140](https://github.com/reliant-labs/forge/pull/1140))
+- **db:** the read-only forge_ro role and its generated column grants (F5c) ([#1143](https://github.com/reliant-labs/forge/pull/1143))
+- **cli:** forge db query port-forward transport for scratch cluster envs, as forge_ro (F5e) ([#1145](https://github.com/reliant-labs/forge/pull/1145))
+- **deploy:** preflight and supply for store-backed Secrets (SF9) ([#1157](https://github.com/reliant-labs/forge/pull/1157))
+- **config:** project-unique config proto package (proto/<project>/config/v1) + forge fix config-proto-package ([#1154](https://github.com/reliant-labs/forge/pull/1154))
+- **obs:** forge obs foundation + local backend (F2) ([#1135](https://github.com/reliant-labs/forge/pull/1135))
+- **openbao:** the public endpoint — Gateway listener, allowlisted route, re-encrypt, limits, trusted XFF (SF8) ([#1161](https://github.com/reliant-labs/forge/pull/1161))
+- **openbao:** bootstrap source delivery and recovery escrow (SF7) ([#1162](https://github.com/reliant-labs/forge/pull/1162))
+- **codemod:** forge fix connect-errors takes --scope, names every reader keeping a package wrapped (and how it reaches it), ignores Connect-client reads, and reports on-disk lines ([#1160](https://github.com/reliant-labs/forge/pull/1160))
+- **cluster:** apply a store-backed secret ahead of the workloads that read it, and roll a pin bump's consumers only after it syncs (SF11) ([#1165](https://github.com/reliant-labs/forge/pull/1165))
+- **cli:** forge env releases list|show|at; delete forge cloud releases (F9, CLI half) ([#1153](https://github.com/reliant-labs/forge/pull/1153))
+- **obs:** the cloud backend, forge obs verbs read the control plane (F4 part 1) ([#1156](https://github.com/reliant-labs/forge/pull/1156))
+- **obs:** forge obs issues, issue and issue resolve|ignore|unresolve (F4-issues) ([#1166](https://github.com/reliant-labs/forge/pull/1166))
+- **obsquery:** TraceQuery.Order — slowest-first ListTraces with a duration keyset cursor ([#1170](https://github.com/reliant-labs/forge/pull/1170))
+- **harness:** one test double per interface — NewTest<Svc> installs forge's Mock<Role> where one exists (Stub<Field> only where forge mocks nothing; unset methods answer MockNotSet); forge fix harness-mocks renames your tests' stubs ([#1171](https://github.com/reliant-labs/forge/pull/1171))
+- **env:** an identity line in env status/deploy, waiting on identity in the readiness wait (FI7); cloud identity export ([#1174](https://github.com/reliant-labs/forge/pull/1174))
+- **obs:** forge obs check and forge obs changes; pkg/releasehealth (F4-check) ([#1169](https://github.com/reliant-labs/forge/pull/1169))
+- **cli:** forge db query and forge obs trace stamp the live release (F9b) ([#1158](https://github.com/reliant-labs/forge/pull/1158))
+- **lint:** forgeconv-deps-surface counts the interfaces a Deps field is passed on as, instead of exempting it; narrow-deps embeds them (F-P6a) ([#1173](https://github.com/reliant-labs/forge/pull/1173))
+- **obs:** forge obs status — services, open issues, alerts, telemetry freshness and the release in force (F4-status) ([#1176](https://github.com/reliant-labs/forge/pull/1176))
+- **pgtest:** tests run on the project's Postgres major — database.postgres_version in forge.yaml (or FORGE_TEST_POSTGRES_VERSION) selects the embedded server's version, and is checked against a FORGE_TEST_POSTGRES_URL server ([#1180](https://github.com/reliant-labs/forge/pull/1180))
+- **obs:** forge obs issue stamps the release live when the issue was last seen (F9b, obs part) ([#1181](https://github.com/reliant-labs/forge/pull/1181))
+- **taskfile:** the scaffolded Taskfile runs the PINNED forge, discovers frontends from forge's inventory, and generates through forge — never bare forge, a frontends/\* glob, or a bare buf generate ([#1184](https://github.com/reliant-labs/forge/pull/1184))
+- **toolpin:** one buf pin per project — go.mod's buf tool directive (else forge's pin) is the buf forge generate, forge ci gate, tools install/pins and the scaffolded ci.yml all run ([#1187](https://github.com/reliant-labs/forge/pull/1187))
+- **pin:** forge lint and the CI gate's checks run under the project's pinned forge — a skewed forge hands them over instead of judging with its own analyzers ([#1189](https://github.com/reliant-labs/forge/pull/1189))
+- **frontend:** runtime_config keys are checked against the frontend's own config schema at render, across repos (F9-10) ([#1186](https://github.com/reliant-labs/forge/pull/1186))
+- **frontend:** web-runtime 0.8.0 — a frontend outside the project gets its runtime config from .forge/runtime-config/<fe>/config.js, served by forgeRuntimeConfig() (F9-9) ([#1190](https://github.com/reliant-labs/forge/pull/1190))
+- **credentials:** DirsFromEnv — the one lookup of where the shared credentials file lives (FORGE_HOME, XDG_CONFIG_HOME, home), so consumers stop re-reading the environment (P7b F2) ([#1194](https://github.com/reliant-labs/forge/pull/1194))
+- **frontend:** forge generate adopts an existing frontend — Tier-1 codegen + missing seams only, one writer per src/gen, no hand-written barrel or case-colliding component clobbered, package.json "forge" block (routes/hooks/components_dir) ([#1192](https://github.com/reliant-labs/forge/pull/1192))
+- **hostinfra:** nats + temporal engines on a shared supervised-binary core; postgres major + optional-ref generate fixes ([#1199](https://github.com/reliant-labs/forge/pull/1199))
+- **dbtrace:** NewPgxTracer — pgx/pgxpool query spans; forge-tracing-raw-sql-open points at it ([#1206](https://github.com/reliant-labs/forge/pull/1206))
+- **pgtest:** NewFromTemplate returns the clone's DSN; scratch databases a crashed run left are reaped ([#1209](https://github.com/reliant-labs/forge/pull/1209))
+- **dbquery:** kubedial — kube-API port-forward dialer for CNPG databases (cp C5 network path, option b) ([#1207](https://github.com/reliant-labs/forge/pull/1207))
+- **cluster:** connect registers the cluster's service-account issuer and JWKS with the control plane (SF13) ([#1213](https://github.com/reliant-labs/forge/pull/1213))
+- **cli:** forge db query reaches a hosted env's database through the control plane's QueryDatabase (F5d) ([#1211](https://github.com/reliant-labs/forge/pull/1211))
+- **cluster:** forge-created k3d clusters sign service-account tokens with https://kubernetes.default.svc ([#1219](https://github.com/reliant-labs/forge/pull/1219))
+- **components:** alert_banner's root takes a ref and every <div> attribute ([#1217](https://github.com/reliant-labs/forge/pull/1217))
+- **observability:** product events — observe.Track, web-runtime 0.9.0 attribution, 400-day retention cap ([#1221](https://github.com/reliant-labs/forge/pull/1221))
+- **svcerr,cli:** WithMetadata, scope_missing scopes header, error_reason in --json documents (P9 R3s) ([#1222](https://github.com/reliant-labs/forge/pull/1222))
+- **config:** required_when — a frontend config's schema says which keys a document must carry, and the render refuses one without them (P9 R2c) ([#1228](https://github.com/reliant-labs/forge/pull/1228))
+- **components:** sidebar_layout becomes an off-canvas drawer on phones ([#1230](https://github.com/reliant-labs/forge/pull/1230))
+- **components:** modal is a dialog you cannot get lost in — portal, stacking, counted scroll lock, initial focus off the close button ([#1227](https://github.com/reliant-labs/forge/pull/1227))
+- **obsquery:** Workloads.Readiness, a continuous per-workload readiness and restart series ([#1234](https://github.com/reliant-labs/forge/pull/1234))
+- **accesstoken:** obs:write scope; org-administration scopes may ride a daemon binding ([#1238](https://github.com/reliant-labs/forge/pull/1238))
+- **obsquery:** metric catalog over all five kinds, attribute stats and exemplars compile (MX-F2) ([#1240](https://github.com/reliant-labs/forge/pull/1240))
+- **db:** forge db query --addr dials a database you route to yourself ([#1242](https://github.com/reliant-labs/forge/pull/1242))
+- **obsquery:** time-weighted metric semantics and one shared evaluator (MX-F1) ([#1246](https://github.com/reliant-labs/forge/pull/1246))
+- **obs:** forge obs dashboards add-panel appends a validated panel to a dashboard you own ([#1248](https://github.com/reliant-labs/forge/pull/1248))
+- **obsquery:** exponential histograms and summaries in the metric evaluator (MX-F3) ([#1258](https://github.com/reliant-labs/forge/pull/1258))
+- **obsquery:** session list, summary, timeline and replay page compilers (RP1) ([#1259](https://github.com/reliant-labs/forge/pull/1259))
+- **obs:** metrics explorer CLI and backend parity — one evaluator, panel flags, describe and exemplars (MX-F4) ([#1256](https://github.com/reliant-labs/forge/pull/1256))
+- **netguard:** shared destination predicate and dial-time guard for user-chosen addresses ([#1262](https://github.com/reliant-labs/forge/pull/1262))
+- **components:** textarea, popover; dropdown_menu a real menu button; toggle_switch named/visible; install writes sibling imports ([#1226](https://github.com/reliant-labs/forge/pull/1226))
+- **obs:** issue sources — observe.IssueSource and forge obs issues --source ([#1267](https://github.com/reliant-labs/forge/pull/1267))
+- **config:** project env families into config_gen.k — a sensitive family as {str: ConfigSecretRef}, one SecretRef per KEY ([#1266](https://github.com/reliant-labs/forge/pull/1266))
+- **kcl:** import another forge project's KCL at the version go.mod pins ([forge_projects], F6) ([#1268](https://github.com/reliant-labs/forge/pull/1268))
+- **alerting:** ReleaseRegressed platform default and the shared why-fired payload ([#1270](https://github.com/reliant-labs/forge/pull/1270))
+- **lint:** new and tightened rules warn for one release before they gate (introduced_in / gates_from) ([#1272](https://github.com/reliant-labs/forge/pull/1272))
+- **templates:** a calmer, crisper neutral scaffold palette — cool low-chroma neutrals, tighter radii, every label and focus pair held to WCAG in the contract ([#1274](https://github.com/reliant-labs/forge/pull/1274))
+- **flux:** flux_chart declares per-controller egress and an optional connected-cluster shard ([#1273](https://github.com/reliant-labs/forge/pull/1273))
+- **obsquery:** ServiceAnomaly, a seasonal RED baseline over the rpc.server metrics, and its warning-severity platform default (W11) ([#1275](https://github.com/reliant-labs/forge/pull/1275))
+- **cluster:** add forge cluster list and show to read back connected clusters ([#1276](https://github.com/reliant-labs/forge/pull/1276))
+- **svcerr:** bounded stack for server faults, emitted as exception.stacktrace ([#1279](https://github.com/reliant-labs/forge/pull/1279))
+- **uptime:** forge.UptimeCheck, the checks recorded in the release shape, and UptimeCheckFailing / CertificateExpiring defaults (W13) ([#1285](https://github.com/reliant-labs/forge/pull/1285))
+- **release:** a release records its migrations; cut and deploy refuse one the env's schema already passed ([#1288](https://github.com/reliant-labs/forge/pull/1288))
+- **hooks:** query hooks type data by select; paged reads get use<Rpc>Infinite; mockTransport builds full messages ([#1294](https://github.com/reliant-labs/forge/pull/1294))
+- **web-runtime:** a Node / Electron-main telemetry entry, @reliantlabs/forge-web-runtime/node, that ships logs, errors and spans to the keyed ingest ([#1293](https://github.com/reliant-labs/forge/pull/1293))
+- **obs:** forge obs sessions and forge obs session — an agent-readable text timeline of a user's session (RP4) ([#1297](https://github.com/reliant-labs/forge/pull/1297))
+- **scaffold:** adapters get a base_url config leaf only with --base-url, and package scaffolds take --dry-run ([#1305](https://github.com/reliant-labs/forge/pull/1305))
+- **domain:** forge domain ls/show and forge env status report each hostname's serving path (CDN edge or ingress) from the control plane ([#1314](https://github.com/reliant-labs/forge/pull/1314))
+- **hooks:** <svc>Queries.<rpc>(req) query options for code outside React; generated hooks are built over them (web-runtime 0.11.0) ([#1318](https://github.com/reliant-labs/forge/pull/1318))
+- **components:** tooltip — a WAI-ARIA hint that is always in the DOM, reachable from the keyboard and on disabled controls, hoverable and Escape-dismissable ([#1319](https://github.com/reliant-labs/forge/pull/1319))
+- **hooks:** <svc>Keys.<rpc>.all — one prefix for every cached request of a read, plain and infinite, with or without a query-scope (web-runtime 0.12.0) ([#1320](https://github.com/reliant-labs/forge/pull/1320))
+- **components:** context_menu — a right-click menu at the pointer (dropdown_menu anchored to a point); popover opens at a point and hands focus back without a trigger ([#1322](https://github.com/reliant-labs/forge/pull/1322))
+- **components:** combobox — a searchable select, single or multiple (WAI-ARIA combobox + listbox) ([#1323](https://github.com/reliant-labs/forge/pull/1323))
+- **openbao:** an HA store's node spread is required by default; relax it only with a stated reason ([#1326](https://github.com/reliant-labs/forge/pull/1326))
+- **deploy:** prune inert objects a release stopped rendering, scoped to forge-owned ones, and list them in the plan ([#1327](https://github.com/reliant-labs/forge/pull/1327))
+- **openbao:** warn when a deploy adopts a live store (ship the clients' JWT flips in the same release); add the deploy/openbao skill ([#1328](https://github.com/reliant-labs/forge/pull/1328))
+- **observe:** every JSON log line carries the workload's resource (service.version and the rest), and forge's collectors lift it into the record's resource ([#1339](https://github.com/reliant-labs/forge/pull/1339))
+- **obs:** forge obs dashboards check --against <env> checks metrics panels against the env's telemetry ([#1343](https://github.com/reliant-labs/forge/pull/1343))
+- **accesstoken:** add explicit billing read authority ([#1342](https://github.com/reliant-labs/forge/pull/1342))
+- **deploy:** stamp the release as app.kubernetes.io/version on workload pod templates ([#1345](https://github.com/reliant-labs/forge/pull/1345))
+- **observability:** generate dashboards per deployed process and role ([#1346](https://github.com/reliant-labs/forge/pull/1346))
+- **obs:** issues' affected counts users, else chats/threads/workflows, and names the unit ([#1350](https://github.com/reliant-labs/forge/pull/1350))
+- **obs:** sfp2 splits one message by its cause; issues that share a cause mark an incident ([#1352](https://github.com/reliant-labs/forge/pull/1352))
+- **storage:** bound the Go module cache and the source cache with forge storage gc ([#1356](https://github.com/reliant-labs/forge/pull/1356))
+- **ci:** consumer canary and pkg/ API-break gate (D2) ([#1359](https://github.com/reliant-labs/forge/pull/1359))
+- **upgrade:** forge project upgrade applies every mechanical fix for the range, regenerates, and reports what is left ([#1362](https://github.com/reliant-labs/forge/pull/1362))
+- **project:** always write AGENTS.md, auto-detect the agent harness, add thin pointer skills, name Reliant Forge on agent surfaces ([#1365](https://github.com/reliant-labs/forge/pull/1365))
+- **install:** one-line installers — curl|sh, PowerShell, npx shim, Homebrew formula, prebuilt release binaries ([#1366](https://github.com/reliant-labs/forge/pull/1366))
+- **deploy:** placement is per workload — one env mixes hosted and cluster parts, ordered by release_dependencies ([#1367](https://github.com/reliant-labs/forge/pull/1367))
+- **deploy:** record every env deploy invocation as a deploy attempt on its control plane ([#1369](https://github.com/reliant-labs/forge/pull/1369))
+- **deploy:** --claimable deploys with no account, with a claim block and a throttle block ([#1372](https://github.com/reliant-labs/forge/pull/1372))
+- **env:** env up skips optional compose services, with one warning, when no Docker daemon answers ([#1373](https://github.com/reliant-labs/forge/pull/1373))
+- **mcp:** forge mcp, a stdio MCP server for any agent harness ([#1371](https://github.com/reliant-labs/forge/pull/1371))
+- **report-bug:** forge report-bug files a forge defect with the Reliant team ([#1381](https://github.com/reliant-labs/forge/pull/1381))
+- **obs:** issue assignee, incident and timeline in obs issue/issues; obs issue comment and assign ([#1379](https://github.com/reliant-labs/forge/pull/1379))
+- **svcerr:** classify runtime wire codes without hand-built Connect errors ([#1400](https://github.com/reliant-labs/forge/pull/1400))
+- **build:** build and push the project image without a Docker daemon ([#1380](https://github.com/reliant-labs/forge/pull/1380))
+- **openbao:** retired_auth_mounts declares removal of legacy auth mounts ([#1387](https://github.com/reliant-labs/forge/pull/1387))
+- **site:** forge project new --kind site starts a frontend-only static site; kind-aware framework memory ([#1233](https://github.com/reliant-labs/forge/pull/1233))
+- **tools:** one shared, locked, garbage-collected cache for every tool forge installs ([#1391](https://github.com/reliant-labs/forge/pull/1391))
+- **mcp:** report_bug tool files a forge defect via forge report-bug ([#1385](https://github.com/reliant-labs/forge/pull/1385))
+- **release:** one forge release at a time, cut by the release train ([#1384](https://github.com/reliant-labs/forge/pull/1384))
+- **scaffold:** default new frontends to pnpm with local runtime bridges and an adoption playbook ([#1403](https://github.com/reliant-labs/forge/pull/1403))
+- **obs:** support issue assignee me and unassigned filters ([#1412](https://github.com/reliant-labs/forge/pull/1412))
+- **catalog:** generate browse-only RPC and typed code inventory ([#1417](https://github.com/reliant-labs/forge/pull/1417))
+- **hosting:** use human identity login and server-owned project targets ([#1415](https://github.com/reliant-labs/forge/pull/1415))
+- **accesstoken:** a daemon binding admits every scope not reserved for another binding kind ([#1455](https://github.com/reliant-labs/forge/pull/1455))
+- **accesstoken:** daemon:manage, a person-only scope for managing one's own machines from the CLI ([#1461](https://github.com/reliant-labs/forge/pull/1461))
+
 ### Changed
+
+- **`forge project new` applies the feature graph itself.** The scaffold now
+  resolves its feature set with the loader's own rule
+  (`FeaturesConfig.FollowingRequirements`, the `followPinnedRequirements` the
+  loader runs on every load): a `--disable`d feature takes every unpinned
+  feature that requires it with it, so nothing is written that the project
+  would derive away. This replaces the hand-copied codegen → orm/migrations
+  cascade; `--disable codegen` now also turns off frontend codegen, and
+  `--disable build` deploy, exactly as their first load always did. A named
+  frontend's app is scaffolded whether or not frontend codegen is on (the
+  frontend-only shape), and `HasFrontend` (the dev IdP in docker-compose) and
+  rescaffold ask the same question as the upgrade lane: is a frontend declared?
+- **`forge project new` exits non-zero when the project's own first generate
+  fails.** It printed "initial code generation failed", then "✅ Project created
+  successfully!" and exited 0, so a script, a CI step or an agent carried on
+  over a project that did not generate (the `--disable codegen` shape stayed
+  broken that way). The rest of the scaffold still finishes (git init,
+  `go mod tidy`) and the files stay; the error says the project is incomplete,
+  what is missing, and the `forge generate` that completes it.
+- **`tdd.AssertConnectError` (and `TableRPC`'s `WantErr`) read `svcerr.Code`**,
+  the code `svcerr.Interceptor` sends, instead of `connect.CodeOf`. A handler
+  test calls the `*Service` method directly, so a handler returning a bare
+  `svcerr.NotFound("x")` — the documented shape — read as `unknown`. For a
+  `*connect.Error` the two agree; the one difference is an unclassified error,
+  which now asserts as `internal` (what the client reads) rather than `unknown`.
+- **`testkit.NewConnectClient` serves behind `svcerr.Interceptor`**, innermost,
+  as production's chain builders do — so the generated `NewTest<Svc>Server`
+  answers a handler's bare `svcerr.InvalidArgument("…")` with
+  `invalid_argument`, unary and streaming, where it answered `unknown`; and an
+  unrecognised error reads `internal server error` there as it does in
+  production, instead of its raw text. A test asserting either old answer was
+  asserting what no client in production sees.
+- **Generated proto mocks return
+  `svcerr.Wrap(svcerr.Unimplemented("handler for X not yet implemented"))`**
+  for an unprogrammed rpc, instead of a hand-built `connect.NewError`. The code and message are unchanged, the value
+  is still a `*connect.Error`, and `errors.Is(err, svcerr.ErrUnimplemented)` now
+  holds. Existing projects: `forge generate`.
+- **svcerr's `*connect.Error` policy is documented and pinned**: a hand-built
+  `*connect.Error` reaches the client exactly as built, wrapped text included —
+  redaction applies to what svcerr classifies. The interceptor cannot tell a
+  DSN from text meant for the user (a daemon's git rejection), and rewriting
+  it would change every project's wire on a forge bump; the fix for
+  `connect.NewError(code, err)` is at the call site (`svcerr.WrapOr`). The
+  `api` skill says so.
+
+- **`forge lint` fails when a gating lane could NOT run.** A frontend with no
+  `node_modules` (or whose install failed), a typecheck with no compiler, a
+  `buf.yaml` with no `buf` on PATH, or no golangci-lint that can analyze the
+  module now exits non-zero by default. The last line names the lane, the
+  reason and the command that fixes it (`npm ci` in the frontend's install
+  root, `forge tools install buf`, ...). Before, such a run printed `⚠️ N gating
+linter(s) passed; M could NOT run (...)` and exited 0 unless you passed
+  `--strict`. That flag also turned every advisory finding into an error, so a
+  gate that only wanted "fail when a lane did not run" had to grep the verdict
+  text. The same applies to `--quiet`, `--scope`, `--json` (`"ok": false`) and
+  `--gate-json`.
+  - **Accept a skip by name, with a reason.** Use
+    `forge lint --allow-skip 'frontend-typecheck=typechecked in the web job'`
+    (repeatable; `lane,lane=reason` names several) or, in forge.yaml:
+    ```yaml
+    lint:
+      allow_skip:
+        - lane: frontend-typecheck
+          reason: typechecked in the web job
+    ```
+    A lane is named as the verdict prints it (`frontend typecheck`) or with
+    dashes (`frontend-typecheck`). An accepted lane that could not run is listed
+    as `SKIPPED (allowed): <lane> — <reason>` and does not fail the run. An
+    unknown lane or an empty reason is refused, and a lane that ran and found
+    problems still fails. `--skip-frontends` still drops the whole frontend
+    lane for a backend-only run.
+  - **`--strict` has one meaning: advisory findings become errors.** It no
+    longer has any effect on a gating lane that could not run. The one
+    could-not-run case it still escalates is the advisory typed-config
+    guardrail's, because that report is itself an advisory finding. The same
+    holds for a frontend typecheck dialled to `lint.frontend.typecheck: warn`:
+    it is advisory, so when it cannot run it warns instead of failing.
+  - A lane that `--scope` does not select (frontend lint, graph, and the other
+    whole-project lanes) is still reported as `not scoped, so not run` and does
+    not fail. The same goes for a frontend outside the scope that could not be
+    checked.
+  - New `-unavailable` rule ids in `--json`: `buf-lint-unavailable` (it used to
+    be `buf`) and `golangci-lint-unavailable` (it used to be `external`).
+  - **Migration:** a CI job that passed only because a lane silently did not
+    run now fails. You can fix the cause (install the tool, run `npm ci`). Or,
+    if the job is meant not to run that lane, opt it out with `--allow-skip
+'<lane>=<why>'` or `lint.allow_skip`. A gate that grepped the verdict for
+    `could NOT run` to get this failure can drop the grep and trust the exit
+    code.
+- **A handler's `svcerr` error reaches the client with its Connect code,
+  wrapped or not.** `return nil, svcerr.PermissionDenied("…")` used to arrive as
+  `code = unknown`, because the constructors build sentinels and connect-go maps
+  anything that is not a `*connect.Error` to unknown; only
+  `svcerr.Wrap(svcerr.PermissionDenied(…))` worked. `serverkit.NewChain` now
+  ends every chain with `svcerr.Interceptor()` (new, in `pkg/svcerr`), which
+  applies `svcerr.Wrap` to whatever the handler returned: a typed error gets its
+  code, an error already wrapped or a `*connect.Error` passes through unchanged,
+  and an error nothing recognises becomes `internal` with
+  `svcerr.InternalMessage`. It sits innermost, so audit, logging and metrics see
+  the wire error. Writing `svcerr.Wrap` in a handler stays correct. A project
+  that assembles its own interceptor list instead of `serverkit.NewChain` adds
+  `svcerr.Interceptor()` itself.
+- **`observe.Chain` and `observe.DefaultMiddlewares` install the svcerr
+  interceptor too.** A project that built its chain with `observe.Chain` (not
+  `serverkit.NewChain`) silently kept the old `code = unknown` for
+  `return nil, svcerr.PermissionDenied(…)`; nothing failed, and only this file
+  mentioned the fix. Both builders now end the chain with `svcerr.Interceptor()`,
+  innermost, and `serverkit.NewChain` gets it through `observe.Chain`. Installing
+  it yourself as well is harmless: an `svcerr.Interceptor()` passed in `Extras` is
+  moved to the innermost position, never run twice (`svcerr.IsInterceptor`,
+  `svcerr.WithInterceptor`). The chain is one longer than before, so code that
+  indexes into it by position past the extras should account for the new tail.
+- **`forge project new` no longer compiles the scaffold before returning.** The
+  bootstrap generate skips its final `go build` and deploy-KCL render unless you
+  pass `--verify`. That tail was the one CPU-saturating step (40s of the
+  pipeline's 63s on a cold build cache), and it re-proved output that forge's
+  own e2e corpus compiles on every change; your first `go build` or `forge
+generate` runs the same check. `project new` never took a heavy slot and still
+  does not: pinned by `TestRunNew_TakesNoHeavySlot`.
+  own e2e corpus compiles on every change; your first `go build` or
+  `forge generate` runs the same check. `project new` never took a heavy slot
+  and still does not: pinned by `TestRunNew_TakesNoHeavySlot`.
+- **Transaction isolation has no default; every writable transaction names
+  its level.** pkg/orm had two opposite defaults: `RunTx`,
+  `RunTxWithOptions` and `BeginDetached` with an unset level began
+  SERIALIZABLE (RunTx retrying 40001/40P01 up to seven times), while
+  `Client.BeginTx` and `RunTransaction` with nil options began at the
+  database's READ COMMITTED, once. Two reliant ports changed isolation
+  silently through that gap — `MergeWorktreeCleanupMetadata` relied on a
+  `FOR UPDATE` lock, moved from READ COMMITTED to SERIALIZABLE and dropped
+  updates under contention. Now `RunTx(ctx, opts, fn)`,
+  `RunTransaction(ctx, opts, fn)` and `BeginDetached(ctx, opts)` take an
+  `orm.TxPolicy` naming its isolation, which carries its attempt budget —
+  the constants `orm.Serializable` (7 attempts), `orm.ReadCommitted` (1
+  attempt) and `orm.RepeatableRead`, refined with `WithMaxAttempts` /
+  `WithReadOnly` into an `orm.TxOptions` — and an unset level (or budget) is
+  rejected with `orm.ErrInvalidTxOptions` naming the call site. One primitive
+  rather than `RunTxSerializable` / `RunTxReadCommitted`: the level is a
+  value, so it composes with every opener (RunTx, RunTransaction,
+  BeginDetached) and passes through a wrapper unchanged instead of
+  multiplying method names, and the retry budget is visible beside the level
+  it belongs to. A required argument is as close to a compile error as Go
+  allows; the zero value is the runtime error. `RunTxWithOptions`,
+  `RunTransactionWithOptions`, `Client.BeginTx` and `orm.IsolationDefault`
+  are removed, and `orm.IsolationSerializable` / `IsolationReadCommitted` /
+  `IsolationRepeatableRead` are renamed `orm.Serializable` / `ReadCommitted`
+  / `RepeatableRead`; `RunTxReadOnly(ctx, fn)` keeps its
+  shape (SERIALIZABLE READ ONLY DEFERRABLE — a transaction that cannot write
+  has one right level). `RunTransaction` honours the attempt budget like
+  `RunTx` and reports an exhausted 40001/40P01 as `svcerr.Aborted`;
+  `BeginDetached` cannot retry and requires `MaxAttempts == 1`. A `*Tx`
+  someone else began is joined with `tx.Join(ctx, fn)`, which takes no
+  level: one spelled at a join would claim an isolation the transaction may
+  not have (`Tx.RunTx` remains, for `orm.Context`).
+- **Rendered pods set `enableServiceLinks: false`. Behavior change.**
+  Kubernetes injects `<SERVICE>_PORT=tcp://ip:port`, `<SERVICE>_SERVICE_HOST`
+  and `<SERVICE>_SERVICE_PORT` into every pod for every Service in its
+  namespace, and those names collide with typed config: a Service `temporal`
+  made `TEMPORAL_PORT` unparseable as an int and CrashLooped a prod gateway
+  (`ZITADEL_PORT` was the first outage of the class). Every pod template forge
+  renders (Deployment, Job, CronJob, the observability node agent's DaemonSet,
+  `forge.TestJWKS`'s Deployment) now opts out. `fw.Workload` gains
+  `enableServiceLinks` (default off) to opt one workload back in, Full profile
+  only (refused on hosted, the host runtime and on a job with `before`). The
+  next deploy rolls every forge-rendered pod once, and a standalone Job gets a
+  new spec-hash name. A workload that reads `*_SERVICE_HOST` / `*_SERVICE_PORT`
+  must move to DNS or explicit env, or opt in: `migrations/v0.1.47`, section 4.
+
+- **A Go cache budget no trim can reach is reported, not passed over.** The
+  trim never deletes an entry used in the last 2h (a running build may need
+  it), so a cache that takes in more than its budget in that window cannot be
+  held to it — and every pass used to report itself finished while a 20 GiB
+  budget held a 152 GiB cache. The pass now prints a `no trim can reach it`
+  warning with the size written inside the floor and the fill rate, and
+  records it in the GC record's new `over_budget` list (not a failure);
+  `forge storage status` shows the same split.
+- **Child go commands that set their own GOFLAGS keep `-trimpath`.** Tool
+  installs (`forge ci` tools, golangci-lint) and the test suite's builds of
+  scaffolded projects replaced GOFLAGS (`GOFLAGS=-mod=mod`, `GOFLAGS=`), which
+  dropped the `-trimpath` default and gave every `t.TempDir()` project fresh
+  cache keys each run. They now merge through `goexec.WithTrimpath`, and
+  `TestGOFLAGSOverridesKeepTrimpath` fails on any new site that does not.
+
+- **Checks build with `-trimpath`, so worktrees and scratch copies share one
+  build and test cache.** Without it Go hashes every main-module package's
+  absolute directory into its cache key: a fresh worktree of the same commit
+  compiled the whole module again (267 packages, 0 of 73 test packages cached,
+  in control-plane), and `forge ci verify-generated` — which regenerates in a
+  fresh scratch directory every run — recompiled everything in its validate
+  step every time (10.8s against 2.6s with the flag). `forge generate`'s
+  compile check, `forge lint`'s golangci-lint and every `forge ci gate` check
+  now merge `-trimpath` into the effective GOFLAGS (`goexec.CheckEnv` /
+  `WithTrimpath`), and the scaffolded Taskfiles do the same for every task in
+  a top-level `env:` block. A GOFLAGS that already says `-trimpath` or
+  `-trimpath=false` is left alone; debug builds keep absolute paths. Measured
+  with control-plane's own gate: four concurrent `task ci` runs in fresh
+  worktrees went from 182–258s wall (802s summed slot wait) to 103–139s (304s).
+- **Heavy slots default to min(CPUs / 2, memory GiB / 8), not CPUs / 4.**
+  Memory is what protects the machine (the reclaim collapse the old constant
+  was measured against), and it still decides on a 16 vCPU / 32 GiB VM. CPU
+  sharing degrades gracefully instead — four CPU-bound test lanes at once took
+  the same total time as running them in turn — and a heavy job is rarely
+  CPU-bound throughout: four concurrent merge gates on a 16-CPU / 128 GiB Mac
+  left the CPU ~33% idle at 4 slots while 304s of slot wait piled up, and at 8
+  slots the worst gate's wall fell 139s → 116s (164s → 122s on a rerun).
+
+- **Least-knowledge lint: the design's severities by default, and the two K3
+  checks.** `forgeconv-deps-surface` (a foreign interface of more than ten
+  methods with unused ones), `forgeconv-no-container-deps` and
+  `forgeconv-deps-no-downcast` are now errors without `--strict`, as
+  composition graph §7 planned one release after they landed as warnings; a
+  fresh scaffold has none. New: `forgeconv-no-getenv` (a component package
+  reading `os.Getenv` / `LookupEnv` / `Environ` — configuration its root's
+  config reach cannot see) is a warning, an error under `--strict`; and
+  `forgeconv-deps-root-config` (a Deps field holding the root
+  `*config.Config`) is reported only under `--strict`, as a warning, because
+  the scaffold still hands every component the root config. `--strict` makes
+  every other least-knowledge finding an error.
+
+- **The entity struct's types are idiomatic and lossless.** Field names spell
+  Go initialisms in capitals (`ID`, `OrgID`, `APIKey`; the `<E>Field*` and
+  `<E>Constraint*` constants follow); an integer column is as wide as it is
+  declared (`INTEGER` → `int32`, `SMALLINT` → `int16`, `BIGINT` → `int64` —
+  it was always `int64`); a `jsonb`/`json` column is `json.RawMessage` (nil
+  for NULL), not `string`.
+  `COMMENT ON COLUMN t.c IS 'forge:go-type=<type>'` declares the Go type of
+  one column — a named enum
+  over an integer, `map[string]any` over json, `<path>[;<pkg>].<Type>` —
+  with no generated wire conversion (a CRUD rpc carrying it fails generate
+  by name). The CRUD conversions follow: the wire's int32 enum number is
+  stored at the column's width, json pairs through `[]byte`/`string`.
+  **Upgrading:** regenerate; then rename references to the projected fields in
+  hand-written code — `.Id` → `.ID`, `.UserId` → `.UserID`,
+  `TaskFieldId` → `TaskFieldID` (`gopls rename`, or `gofmt -r` per name) — and
+  adjust code that read an `integer` column as `int64` or a json column as
+  `string` (`string(row.Payload)`, `json.RawMessage(s)`).
+- **A `NOT NULL` column's `DEFAULT` applies when the field is unset — and an
+  explicit zero is still stored.** The generated store wrote the Go zero for
+  every defaulted column a caller left unset, so the DEFAULT never fired:
+  `threads.status INTEGER NOT NULL DEFAULT 2` was stored as 0 by
+  `CreateThread`, and `jsonb NOT NULL DEFAULT '{}'` failed the insert with
+  `""` (reliant P5b). Bun's `default:` tag was never the answer — it reads
+  every zero as unset and would turn an explicit `false` into a
+  `DEFAULT true`. The entity type now carries the distinction
+  (`codegen.ColumnInsertDefault`): a scalar whose DEFAULT is not its Go zero
+  is a **pointer** field (`nil` = unset), and a column whose zero it can never
+  hold keeps its type with `,nullzero` (a json document; an array with a
+  non-empty DEFAULT; a scalar a CHECK keeps from its zero, which is every born
+  enum column). `pkg/crud` gives unset one meaning on every write: `Create`
+  omits the column, a full-replace `Update` and `Upsert`'s conflict branch
+  keep the stored value; a `,nullzero` slice is no longer normalized to `{}`.
+  The CRUD create op stops pasting the DEFAULT's literal into Go
+  (`schemaDefaultAssigns` is gone): it leaves the field unset and the
+  database applies its own DEFAULT, whatever expression it is. **Upgrading:**
+  regenerate; a NOT NULL column whose DEFAULT is a non-zero scalar becomes a
+  pointer field, so hand-written code that reads or writes it changes from
+  `row.Status` / `row.Status = 2` to `*row.Status` / `row.Status = ptr(2)`;
+  born enum (TEXT + CHECK) and json columns keep their types.
+- **`database.orm.package` places the generated data layer.** The ORM always
+  projected into `internal/db` (`package db`) and refused any name the
+  project already declared there — so a project with its own data layer in
+  `internal/db` (reliant: 30 of 55 names, `type Chat = core.Chat`, `Repo`,
+  `Daemon`) could not have the store at all without renaming thousands of
+  references first. `database: {orm: {package: internal/store}}` in
+  forge.yaml puts every `<entity>_orm_gen.go`, `store_gen.go` and
+  `_repo_ext.go` seam in that directory, declaring its package; the
+  collision refusal and `//forge:no-orm` read that package. Every consumer
+  follows it: CRUD wiring and test factories import it (as `db`), compose.go
+  provides `<pkg>.Store` / `<pkg>.<Entity>Store` Deps fields,
+  `forge project shapes --kind store`, and the drift guard and its hints.
+  Moving the key reclaims forge's previous projection from the old directory (the
+  `_repo_ext.go` seams are yours and stay). Default unchanged: `internal/db`.
+  The collision refusal now offers the key. `generator.GeneratePlanORM` takes
+  a `config.ORMConfig` in place of its two unused module/service arguments.
+- **A view can be a read-only entity.** forge projected BASE TABLEs only, so
+  a view's row type was hand-written (reliant: `chats_with_activity`, the one
+  definition of a chat's activity). `COMMENT ON VIEW v IS 'forge:entity'`
+  (regular or materialized; `key=<column>` names the key, else `id`) projects
+  it: the row struct, `List<E>` / `Count<E>`, `Get<E>ByID` when it has a key,
+  and the matching read-only store — no write is generated. Non-key columns
+  are pointers (the catalog cannot say a view column is NOT NULL). Views
+  without the marker are not projected. `schemadef.IntrospectViews` and
+  `shadowdb.Views` read them from the same shadow apply as the tables.
+- **The merge driver is set up per worktree, and forge says what it changed.**
+  Any forge command run in a project (`forge db migration rebase` was the one
+  noticed) pointed the repository's `merge.forge-generated.driver` at a forge
+  binary and routed forge's generated and state files to it in
+  `info/attributes`, silently, in the repository's common git directory that
+  every linked worktree reads. The command names one forge binary, and
+  worktrees are on different branches with different pins, so the last forge to
+  run decided how every other agent's rebase merged. The command now goes in
+  the worktree's own `config.worktree` (forge enables `extensions.worktreeConfig`
+  once, which git has honoured since 2.20 and go-git accepts; it declines for a
+  bare repository or an explicit `core.worktree`, and
+  `FORGE_MERGE_DRIVER_SHARED=1` keeps the old shared placement), so a worktree
+  merges with the forge its own commands run. The routes are no longer copied
+  into the shared `info/attributes` when the project's committed
+  `.gitattributes` already declares them, as every scaffolded project's does.
+  What is still written is reported: each setting with its scope and old value,
+  the git directory, how many worktrees share it, and the undo. A run that
+  changes nothing stays silent, and `FORGE_NO_MERGE_DRIVER=1` still opts out.
+- **A composite-primary-key table gets a store.** It used to get no entity at
+  all, only an info line, so counters and join tables (reliant:
+  `message_order_counters`, `project_daemons`, `connection_secrets`, …) were
+  hand SQL. The entity struct and store now project, addressed by the WHOLE
+  key: `Get<E>ByPK(ctx, db, k1, k2)` and `Delete<E>ByPK` take one parameter
+  per key column, `Upsert<E>` resolves a conflict on every key column, and
+  Create/List/Count/Update/UpdateMasked address the row by the struct's key
+  fields. `pkg/crud.Repo` gains `GetByPK` / `DeleteByPK` (a key entity), and
+  its Update, UpdateMasked, Upsert and zero-row classification address a
+  composite key by every column (Bun's `WherePK`); PK columns stay out of the
+  SET list. CRUD wiring still needs a single-column key, and there is no ULID
+  fill or cursor pagination for a composite key.
+- **Entities are named from their table, and a CRUD rpc that matches no table
+  is refused.** A CRUD rpc's entity found its table only as
+  `Pluralize(snake(<E>))`, so a singular-named table (`daemon_attachment`,
+  `provider_backoff`) matched nothing and its `Get<E>` silently became a
+  pb-through stub. The join now matches a table by its own entity name (its
+  singular, camel-cased), then the plural and the singular of `<E>`; a table
+  whose name derives to the wrong thing declares what it holds with
+  `COMMENT ON TABLE t IS 'forge:entity-name=<Name>'`, which also names its
+  store. A unary, unmarked CRUD-named rpc whose entity has a wire message but
+  matches no table, and that no handler implements by hand (its only method
+  is forge's unwired stub, or none), now fails `forge generate` (under the
+  CRUD step's gate), naming the rpc and the tables it looked for. The seed scope and the
+  ownership audit look for the singular too. **Upgrading:** a project with
+  such an rpc gets the refusal on its next generate: write the migration,
+  declare `forge:entity-name`, or mark the rpc `// forge:custom` (what it
+  already was in effect).
+- **Continuous profiling captures CPU and the live heap by default; allocation,
+  goroutine, mutex and block profiles are opt-in (`forge/pkg/observe`).** The
+  profiler still takes a 10s CPU profile every minute, but now snapshots the
+  heap every 15 minutes and exports only `inuse_space` / `inuse_objects`. Go's
+  `alloc_space` / `alloc_objects` are cumulative since process start, so each
+  snapshot repeated every allocation site the process ever had and grew with
+  uptime: in a production deployment they were 97.7% of stored profile rows (99.2%
+  of bytes), and one service's grew from 11k to 39k rows per snapshot over 8
+  hours. The new defaults keep about 0.3% of that deployment's rows (PROFILES.md
+  has the measurements). Choose the set with `observe.Config.Profiles`
+  (`ProfilesConfig{Types, HeapInterval}`), or per deploy with `FORGE_PROFILES`
+  (`cpu,heap,alloc,goroutine,mutex,block`, or `none`) and
+  `FORGE_PROFILES_HEAP_INTERVAL`, which win over the config; invalid values
+  are logged and ignored. Mutex and block profiles set the runtime's sampling
+  rates only while selected and restore them on shutdown. Opted-in allocation
+  counters stay cumulative, at the heap cadence. A live-heap snapshot also no
+  longer carries the locations and functions of allocation-only stacks.
+- **The ORM projects every applied table, whatever its rpcs.** The store
+  (`<entity>_orm_gen.go`, `<Entity>Store`, delegates, the `_repo_ext.go` seam)
+  used to exist only for a table some managed service declared a CRUD rpc
+  for, so a project whose CRUD-named rpcs are all `// forge:custom` — or whose
+  tables have no rpc at all — got no data layer from `forge generate` (reliant:
+  zero of 55 tables). The store now follows the schema: every BASE TABLE with a
+  single-column primary key is projected, a table no rpc names under the
+  singular of its name (`message_content_blocks` → `MessageContentBlock`).
+  CRUD wiring, pages and seed roots still key on CRUD rpcs.
+  `COMMENT ON TABLE t IS 'forge:no-entity'` keeps one table off the store (and
+  off CRUD wiring);
+  `//forge:no-orm` still opts out the whole data layer. The ORM step no longer
+  needs a service, only an entrypoint, and a name collision's advice now names
+  the table opt-out (`// forge:custom` no longer takes a table off the store).
+  **Upgrading:** the next `forge generate` writes a store for each table that
+  had none. If one of them redeclares a name your `internal/db` already
+  declares, generate refuses and names it: rename yours, or add
+  `COMMENT ON TABLE <t> IS 'forge:no-entity'` in a migration.
+- **`lifecyclekit` no longer re-exports `operatorkit.Run`, `Controller` and
+  `Options`, so importing it never links controller-runtime.** Every binary
+  that imported lifecyclekit for `Supervise`, `WrapWorker` or `Singleton`
+  linked `sigs.k8s.io/controller-runtime` and its Kubernetes tree (~1.8 MB),
+  operators or not. The three names live only in
+  `forge/pkg/appkit/operatorkit`; the scaffolded `lifecycle.go` names it
+  directly, and a `go list -deps` guard pins that lifecyclekit reaches no
+  `k8s.io` package. An owned `lifecycle.go` that names the removed symbols:
+  `forge skill load migrations/v0.1.46/operatorkit-bridge`.
+- **`PRE_STOP_DELAY` and `SHUTDOWN_TIMEOUT` follow one rule: zero is the
+  default, negative is none** — the rule every `serverkit.Config` duration
+  already used. `ShutdownTimeout <= 0` always became the 30s default, so "no
+  shutdown window" could not be said, while "no pre-stop pause" had to be
+  written negative. A negative `ShutdownTimeout` (config, env, or
+  `serverkit.Drainer`) is now a window over as it opens; "none" is never
+  "unbounded", since the kubelet ends the shutdown at the grace period anyway.
+  The rendered `terminationGracePeriodSeconds` reads both the same way: `0s`
+  used to add 0 while the server spent its default (a SIGKILL mid-drain), a
+  negative adds nothing, and any Go duration (`1m30s`, `500ms`, rounded up)
+  is read instead of falling back to the default.
+- **`forge generate` refreshes a stale vendored `proto/forge/v1/forge.proto`
+  (and `proto/buf/validate/validate.proto`).** It vendored them only when
+  missing, so a project kept the forge.proto of the forge it was scaffolded
+  on: reliant could not write `(forge.v1.service).audience` until it
+  hand-synced the file. A copy that differs from the running forge's (after
+  the go_package/CRLF normalization `forge lint --vendored-protos` uses — now
+  one shared `assets.NormalizeVendoredProto`) is re-copied and reported as
+  `🔄 Refreshed <path>`. A disowned copy (`forge project disown <path>`) is
+  kept, and so is forge's own source copy in forge's repository.
+- **`forge env up` converges a host-run managed identity with `pkg/identity`
+  (FI4).** An env whose `identity` runtime is `forge.IdentityOnHost {infra}` is
+  converged against its host Zitadel after the infra is up and before any host
+  service starts, with the same library the control plane runs for hosted
+  envs, authenticated by the bootstrap PAT (`idp_pat_path`), in the server's
+  default instance. Non-secret outputs go to `.forge/identity/<name>.json`;
+  the broker token, client secrets and machine keys go to the env's secret
+  store under the env var each `forge.IdentityRef` resolves to, so a host-run
+  API gets `jwt_issuer`, `jwt_audience`, `oidc_*`, `idp_base` and
+  `idp_broker_token` with nothing copied. The launch pre-flight no longer asks
+  for those store keys beforehand.
+- **Removed: the `auth idp-provision` command, the `idp-provision` workload and
+  its env binding, `deploy/kcl/<env>/idp_identity_gen.k`, and the
+  `pkg/devidp` provisioning half** (`Reconcile`, `Spec`, `Identity`, the
+  publishers, `EnsureProject`/`EnsureSPAApplication`, `ProvisionLoginBroker`,
+  `SecretFile`, `RedirectGlob`/`LogoutGlob`). `pkg/devidp` keeps the sign-in
+  broker's client (flow, login, password reset, token file). A project that
+  has the old job migrates by declaring `identity = forge.ManagedIdentity
+{runtime = forge.IdentityOnHost {infra = "idp"}}` on its dev Bundle.
 
 - **`applier = "forge"` is a transitional state, not a permanent one.** Every real
   env, the platform's own included, moves onto build → OCI bundle → ledger → Flux,
@@ -2887,149 +3192,1980 @@ identity` produced `IDentityService` and an `id-entity` file that `generate`
   of something else renders no chart and prunes nothing. See
   `migrations/v0.1.45/helm-chart-prune`.
 
-### Added
+- **`pkg/alerting` keys its partitions by `Owner`.** The package's opaque
+  partition key now uses the word forge already uses for whose a row is
+  (`forge:owner`), instead of a vocabulary forge removed: `RuleKey.Owner`,
+  `EventQuery.Owner`, `Limits.MaxRulesPerOwner`, `FileRuleSource.Owner`,
+  `RuleSource.Owners`, `StateStore.Owners` and `StateStore.LoadOwner`. In the
+  `pgstore` schema, `alert_instances` and `alert_events` are keyed on an
+  `owner` column and their indexes are named for it. A consumer that copied
+  `pgstore.SchemaSQL` into its own migrations renames that column in both
+  tables in a new migration.
 
-- **`flux_chart(placement = flux_placement_delivery_v1())`** places the
-  controllers on a dedicated tainted node pool, with `runtime_class_name =
-FLUX_RUNTIME_CLASS_GVISOR` for a target that has a sandbox. Never defaulted on.
-- **`HelmChart.patches`** merge-patches the objects a chart renders, keyed
-  `Kind/name` (the `Bundle.overrides` engine), for fields the chart's values do not
-  template, such as a pod's `runtimeClassName`. A key that matches nothing fails
-  the render.
-- **`forge ci gate` runs checks concurrently, caches verdicts by tree, and
-  tests only what a branch changed.** The gate ran its checks one after another
-  (one project measured a p50 of 35 min, up to 3 h, on a shared machine). Now a
-  check starts as soon as its `after` dependencies have finished; a check that
-  rewrites the tree (`verify-generated`, an extra with `mutates_tree`) runs alone
-  before the checks that read it; heavy checks each hold a host heavy slot and
-  light ones run under `--jobs`. Every check still runs after a failure, and the
-  table keeps plan order, with the wall time and a `head:` line. Each check
-  logs to `tmp/ci/<lane>/<check>.log`. On a committed tree a check that already
-  passed on that tree (any worktree, same forge and pins) is not run again:
-  `PASS (cached <sha>)` (`CI_NO_CACHE=1` / `--no-cache` to bypass; a dirty tree
-  turns it off). On a branch, `unit-tests` runs only the Go packages whose test
-  binaries contain a changed package, and falls back to the whole suite when
-  anything but Go source changed, on the default branch, or with `CI_FULL=1` /
-  `--full`. New: `CI_ONLY` (checks or groups), `CI_REPORT`, `CI_LOG_DIR`, and
-  `ci.gate.env` / `path` / `affected_ignore`; extra checks gained `lane`,
-  `group`, `after`, `heavy`, `mutates_tree`, `cache`, `probe`, `skip_exit_code`,
-  `env` and `replaces`, enough to express a hand-written ~26-step gate script.
-  See `ci/gate` and `migrations/v0.1.46`.
+- **`forge generate` validates without linking, and loads the tree once.**
+  The validate step ran `go build -o /dev/null ./...`, which links every main
+  package and throws the binary away, then loaded the whole tree again through
+  go/packages to typecheck `_test.go` files, type-checking every dependency
+  from source. On reliant (19 main packages, cgo, so each link is an external
+  gcc/ld run) that was 217s of a 258s run. It is now one
+  `go list -e -export -test -deps ./...`: go list runs the real compiler on
+  every package and every test variant (it reports their export data) through
+  the shared build cache, and never links. A main package's compile error
+  still fails validation; the one linker-only error a generator can cause, a
+  main package without `func main`, is checked directly. Errors are read from
+  go list's per-package JSON, so a broken library is reported once, not once
+  per importer. Ownership rules are unchanged: a non-test compile error or a
+  forge-owned `_test.go` fails the run, a user-owned `_test.go` warns. The
+  test variants it compiles are the ones `go test` builds next, which then
+  finds them cached. The post-rollback "does the restored tree compile?"
+  check uses the same no-link compile. If go list itself cannot run, both
+  fall back to `go build`. Measured on reliant (load average 60-110 on 16
+  cores): a `forge generate` that changes nothing went from 274s to 51s
+  (validate 206s to 14s); one that rewrote two files from 236s to 142s
+  (validate 218s to 97s, most of it compiling their dependents' test
+  variants, which `go test` then reuses); and from an empty build cache the
+  validate commands went from 872s (`go build` 814s, typecheck 58s) to 617s.
+  On re-pin, the first generate in a checkout compiles every package's test
+  variant once (about 200s on reliant when the non-test build is already
+  cached); every later run, and the next `go test`, reuses them.
+- **`FORGE_NO_GIT_HOOKS` is the name for opting out of forge's git hooks, and
+  `forge generate` says which hooks it ran.** `FORGE_NO_HOOKS=1` stops forge
+  setting `core.hooksPath=.githooks` and its merge driver in a clone. Agents
+  kept setting it expecting `forge generate` to skip forge.yaml's
+  `generate.hooks` (reliant's `make sqlc`), and it never did. It is now
+  spelled `FORGE_NO_GIT_HOOKS`; `FORGE_NO_HOOKS` is still honoured as the same
+  git-only opt-out, so a clone opted out under it stays opted out. Generate
+  hooks still always run: a skipped hook leaves output that still compiles but
+  is stale, and `make sqlc` measured 3s of reliant's generate, so there is no
+  skip flag. The generate output names every hook before they run and confirms
+  each one (`✓ generate hook "sqlc" ran (3.2s)`); with either git-hooks
+  variable set, the step says that it does not skip these. A run narrowed with
+  `--steps` or `--templates-only` that leaves the hooks out now prints
+  `⏩ generate hooks NOT run (...)` naming them and the paths they write.
+  `forge generate --help` has a Hooks section saying all of this, and so do
+  the forge-managed `.githooks/pre-commit` comment and the `architecture`
+  skill. On re-pin, `forge generate` rewrites `.githooks/pre-commit` (the
+  comment only); rename `FORGE_NO_HOOKS` to `FORGE_NO_GIT_HOOKS` where you set
+  it.
+- **A config env var set to `""` is unset, for every field type.**
+  `pkg/config`'s env layer read an empty variable as a value for strings, bytes
+  and lists, and as unset for numbers, bools and durations. So `TEMPORAL_HOST=`
+  (what compose's `X: ${X}`, a template rendered from a missing key, or
+  `export X=` produce) replaced a `localhost` default or a config file's value
+  with `""`, and `ALLOWED_REGISTRIES=` cleared a defaulted list. Every kind now
+  reads it as unset and the file or default value stands. An explicitly empty
+  value is a flag's to set: `--pprof-addr=` turns pprof off,
+  `--allowed-registries=` clears a list. A required field whose variable is set
+  but empty fails with an error that says so. The generated KCL config schema
+  gains a `check:` refusing `field = ""` for a non-sensitive string field with a
+  non-empty default: it would render an env value the process ignores, so the
+  render fails and names the flag instead. On re-pin, `PPROF_ADDR=` no longer
+  disables pprof (pass `--pprof-addr=`), and `forge generate` rewrites
+  `deploy/kcl/config_gen.k` with the checks.
 
-- **Host-wide heavy slots: `pkg/hostslot` and `forge slot`.** On a shared
-  machine every heavy job slows the others down — on a 16 vCPU / 32 GiB VM
-  `go build ./...` went from 36–50 s beside 0–3 other heavy jobs to 101–155 s
-  beside 8 or more, from memory-cgroup reclaim — so heavy work now queues for
-  one of N host slots instead of piling up. A slot is an OS file lock (a
-  crashed holder releases it); N defaults to min(CPUs / 4, memory GiB / 8),
-  read from the cgroup v2 limit when there is one, and `FORGE_HEAVY_SLOTS`
-  overrides it (`off` disables). `forge slot run --class heavy -- <cmd>` runs a
-  command in a slot and `forge slot status` names the holders and the queue.
-  `forge generate` and `forge lint` take a slot on their own, and the
-  scaffolded Taskfile runs `test` and `test:integration` under a `SLOT` prefix.
-  Anything already inside a slot (`FORGE_SLOT_HELD`, or an ancestor holding
-  one) never waits again, so nested heavy commands cannot deadlock. See
-  `migrations/v0.1.46`.
-- **A no-op `forge generate` skips its steps.** A full run that changes
-  nothing records the tree as a verified fixed point in
-  `.forge/generate-cache.json` (gitignored, per checkout). The next run that
-  finds every input byte-identical prints one "nothing to do" line and
-  stops: on control-plane, about half a second instead of about three minutes
-  at moderate load (2–5 s instead of 8+ minutes on a heavily loaded box). The
-  key covers the work tree as git sees it, the gitignored files generate
-  reads or writes (go.work, installed
-  node_modules, dotenvs, secrets, `.forge/` state, every other ignored file
-  outside a wholly ignored directory), the outputs the verifying run wrote,
-  local `replace`/`go.work` source outside the project, the forge executable
-  by content, every tool it runs (go, buf and the plugins the buf templates
-  name, goimports, node, generate hooks), the environment that steers them,
-  and which postgres hosts the shadow schema. Any difference runs every step
-  and names what changed. A run that WROTE files never records — the run
-  after a change is the one that proves the tree converged — and neither does
-  a narrowed or weakened run (`--steps`, `--force`, `--skip-validate`, …).
-  `--no-cache` (or `FORGE_GENERATE_NO_CACHE=1`) runs every step;
-  `forge ci verify-generated --no-cache` passes it through. `--check` and
-  verify-generated consult the record (a recorded fixed point cannot drift)
-  but never write one. The check runs before `forge generate` queues for a
-  heavy slot, so a no-op never waits behind other agents' builds.
-- **`forge generate --timings`** (or `FORGE_GENERATE_TIMINGS=1`) prints each
-  step's wall time, slowest first, when the run ends — including runs that
-  failed, and runs nobody typed (verify-generated's).
+- **`serverkit.RequireComplete` checks exactly the inventory's services.** It
+  used to register each inventory service's whole proto FILE and demand every
+  service in it, so a file declaring a forge-managed service beside an
+  unmanaged one refused to boot a complete server. `serverkit.ProjectServiceFiles`,
+  which built that file-scoped registry, is removed; `RequireMounted` with a
+  descriptor source you build is unchanged.
+- **BREAKING: a binary's root config registers every leaf as a persistent
+  flag, and `Register<Msg>SharedFlags` is gone.** The generated
+  `Register<Msg>Flags(cmd)` for a `(forge.v1.binary_config)` message with no
+  `command` now registers all of its leaves, composed blocks included, as
+  PERSISTENT flags on the command it is given (the binary's root), via the new
+  `config.RegisterPersistentFlags`; it used to register only the message's own
+  leaves, as LOCAL flags, beside a separate `Register<Msg>SharedFlags` for the
+  composed blocks. That split modelled binaries as subcommands of one root,
+  which `command` now expresses directly, and it left a root config's own
+  flags invisible to the binary's subcommands. Replace
+  `Register<Msg>SharedFlags(root)` + `Register<Msg>Flags(root)` with one
+  `Register<Msg>Flags(root)`. `config.RegisterSharedFlags` /
+  `RegisterOwnFlags` remain as library primitives.
+- **ClickStack is the local observability stack, and it is ON by default.**
+  `forge env up` now runs ONE container, HyperDX's no-auth _local mode_ image
+  (ClickHouse, the HyperDX UI and an OTLP collector), in place of the opt-in
+  Grafana LGTM stack. Host processes are handed
+  `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>` and
+  `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, as a pair and only when the shell,
+  `config.k` and the workload's `env` set neither (a user's gRPC endpoint is
+  never paired with our protocol), so traces and metrics reach HyperDX with
+  nothing to register and no key to copy. Frontend dev servers get this
+  project's collector base URL (the port compose actually published, so their
+  `/_otel` proxy cannot reach another project's ClickStack) and the env name
+  (`NEXT_PUBLIC_ENVIRONMENT` / `VITE_ENVIRONMENT`), which the browser reports as
+  `deployment.environment.name`. The frontends' `frontend_<name>.log` console
+  mirror is not tailed, because the HyperDX browser SDK already ships the same
+  console and the two would store every line twice. The collector tails the per-service
+  files `forge env up` already writes under `.forge/logs/<env>/`, parsing the
+  JSON lines the runtime emits (`trace_id`/`span_id` become the log's trace
+  link), and that is the one local log path. Every port is published on
+  `127.0.0.1`; ClickHouse is not published, and its passwordless `default` user
+  is replaced by a dev-only credential. State persists in named volumes. The
+  HyperDX sources (Logs, Traces, Metrics) are pre-created, and HyperDX dashboard
+  JSON dropped into `deploy/observability/dashboards/` is loaded within seconds
+  by HyperDX's file provisioner. Turn it all off with `_observability = False` in
+  `deploy/kcl/dev/main.k`. `forge env status` now reads traces, metrics (gauge,
+  sum and histogram) and logs back from ClickHouse, by service name.
 
-- **`//forge:resolves-caller` declares a project's own caller resolver.** The
-  `unscoped_auth` audit counted a handler as resolving the caller only when it
-  reached forge's scaffolded seam, `middleware.GetUser` / `ClaimsFromContext`.
-  A project whose auth package predates forge (reliant's
-  `auth.GetUserIDFromContext`) had no way to say so, and every authenticated
-  rpc it moved onto forge's handler model was reported as never resolving the
-  caller (P3b friction F18). Put the marker in a package-level function's doc
-  comment, beside the code it describes. The audit then counts a handler that
-  calls it as resolving the caller, whether through the import that binds the
-  declaring package in that file (aliased, plain or dot) or through a helper
-  in the handler's own package, and its hint names the declared resolvers.
-  The match goes by import path, so a same-named function in an undeclared
-  package still does not count. A marker on a method is reported as ignored,
-  because a call site does not name a method's receiver type. The
-  declarations come from `codegen.DeclaredCallerResolvers`, so other tools
-  can read the same declaration. `forge project audit --json` lists them under
-  `caller_resolvers`, and `forge project annotations --kind go` documents the
-  marker.
-- **`forge.HelmChart.namespace_labels` / `namespace_annotations`.** Labels and
-  annotations on the Namespace forge creates for a chart, so Pod Security
-  Admission (`pod-security.kubernetes.io/enforce=restricted`) can be declared on
-  `flux-system`. They converge under server-side apply: a changed value is
-  updated, a key you stop declaring is removed, and a key another manager set
-  is left alone. `forge.dev/*` and `kubernetes.io/metadata.name` are refused.
-  Not available on a `delivery = "bundle"` chart, which has no forge-created
-  Namespace.
-- **`forge.KubeconfigPolicyRule.resource_names`.** Limits a minted rule to named
-  objects (`resourceNames`): `bind` on exactly two ClusterRoles, `get` on
-  one Secret. It replaces a hand-written ClusterRole beside the mint.
+  Gone with it: the `lgtm` and `alloy` compose services,
+  `deploy/alloy-config.alloy`, the generated Grafana dashboards under
+  `deploy/observability/grafana/`, and the Grafana MCP example. Profiles are not
+  collected locally yet. An existing project keeps its own `docker-compose.yml`
+  and `deploy/kcl/dev/main.k` (both are yours); load `migrations/v0.1.44` to move
+  it over.
 
-- **Built-in alerts for workloads and the platform (A6).** Five new
-  `forge.Alerts.defaults` ids over the node agent's customer metadata:
-  `crash-loop` (restarts grew by 3 in 10m, or a BackOff event), `oom-killed`
-  (a restart whose last exit was `OOMKilled`, or an `OOMKilling` event),
-  `memory-near-limit` (memory limit utilization above 0.9 for 10m),
-  `image-pull-failed` and `evicted` (Kubernetes events). Each is tuned or
-  disabled by id like the rest. Their SQL scopes by `reliant.env.id`, which the
-  node agent stamps and forge cannot know, so it carries the placeholder
-  `{reliant_env_id:String}` for the evaluator to bind (the local check binds
-  the env name). An env with `signals.metadata = False` records none of the
-  five: there is nothing for them to read. Two more ids,
-  `deploy-failed` and `observability-quota`, are raised by the control plane
-  from its own events; forge records them as marker rules so your tuning and
-  `enabled = False` travel with the release. Tested against ClickHouse 26.8
-  with the exporter's real tables.
-- **Dashboards ship in the release.** A release bundle now carries every
-  dashboard the project declares at `observability/dashboards/`, beside the
-  metrics schema at `observability/metrics-schema.json`, inside the same
-  manifests layer (a Flux `layerSelector` still selects exactly one layer, and
-  nothing a Kustomization `spec.path` reaches is touched). Generated dashboards
-  come from `dashboard-spec_gen.json` plus the Custom metrics dashboard drawn
-  from the built binary's schema; a renderer-neutral file you own in
-  `deploy/observability/dashboards/` (a `"panels"` array) ships as is, and one
-  named like a generated dashboard (`shop-overview.json` for
-  `shop-overview_gen.json`) replaces it. A HyperDX-format file (`"tiles"`)
-  stays local. Every file is validated when the release is cut: a bad file fails
-  `forge env build <env> --release` with `file:line:col: path: message`
-  errors before a release is left behind without its bundle; a deploy that
-  builds nothing only warns. `forge observe dashboards check` runs the same
-  validation and lists what would ship.
-- **Two best-practice dashboards.** _Workloads_ draws the customer metadata the
-  node agent delivers (CPU and memory against requests and limits, restarts and
-  the last exit reason, CPU and memory by image tag, Kubernetes events and
-  container terminations). _Releases_ splits requests, error rate and latency
-  by `service.version` and adds a per-version comparison table. Neither has a
-  heatmap. They draw nothing on a local `forge env up` (no node agent, no
-  releases).
-- **`annotations` on a dashboard spec.** `{"source": "releases"}` declares that
-  a dashboard's time-series panels carry deploy markers, drawn by the console
-  from the release ledger. Every generated dashboard with a line panel declares
-  it. HyperDX has no such concept and the HyperDX renderer ignores it. A `"s"`
-  (seconds) unit joins the display units.
+- **Frontends ship the HyperDX browser SDK, initialised, with a same-origin
+  `/_otel` route.** Next.js and Vite scaffolds now install
+  `@hyperdx/browser` (exact-pinned `0.26.0`) and start it from the generated
+  `src/lib/otel_gen.ts`. It captures uncaught errors, unhandled rejections,
+  `console.*`, fetch/XHR spans, document load, long tasks and web vitals, and
+  sends them as OTLP to `<basePath>/_otel/v1/{traces,logs}` on the page's own
+  origin, so the bundle holds no collector address and no secret (the SDK's
+  required `apiKey` is a public placeholder; a collector that enforces ingestion
+  auth has its proxy strip or replace it). `next dev` rewrites and `vite`
+  `server.proxy` forward `/_otel` to `OTEL_EXPORTER_OTLP_ENDPOINT` (default
+  `http://127.0.0.1:4318`). A static export has no server, so a deployed
+  environment routes `/_otel` at its ingress; the production default is
+  therefore off until the frontend's `otel_endpoint` is set. `forge lint
+--static-export` stays green because the rewrite is gated to development.
+  Session replay is shipped but **off**, and when enabled
+  (`NEXT_PUBLIC_OTEL_REPLAY` / `VITE_OTEL_REPLAY`) forces all text and inputs
+  masked. Network bodies are not captured. `traceparent` on every RPC is
+  unchanged and still always on. No Sentry SDK is scaffolded.
+
+  **Breaking, web-runtime 0.4.0.** The `@reliantlabs/forge-web-runtime/otel`
+  subpath and its eight `@opentelemetry/*` SDK peers are gone: HyperDX registers
+  the page's one global tracer provider, and a second registration silently
+  loses. `initClientTelemetry` is gone too; the new `/telemetry` subpath's
+  `initBrowserTelemetry` replaces both. `reportException()` (barrel) records an
+  error a React/Next boundary caught, and `RuntimeErrorBoundary`, `error.tsx`
+  and `global-error.tsx` call it.
+
+  **Browser and API spans share one trace.** The serve scaffold builds
+  `otelconnect.NewInterceptor(otelconnect.WithTrustRemote())`. By default
+  otelconnect only _links_ to an inbound `traceparent`, so a page and the API
+  call it made were two traces even though the header arrived intact. Found by
+  running the stack: ClickHouse held them under different trace ids. `serve.go`
+  is scaffold-once, so an existing project adds the option by hand.
+
+  **The browser reports `deployment.environment.name`**, the key the backend
+  uses, so a browser span and a server span of one trace carry the same
+  environment. The forge env name is rendered into the runtime config document
+  (`config.js`) as `ENVIRONMENT` for every env forge writes it for, and
+  `forge env up` also hands it to the dev server (`NEXT_PUBLIC_ENVIRONMENT` /
+  `VITE_ENVIRONMENT`). A declared `config.environment` wins. A hosted frontend's
+  `config.js` is written by the control plane from its `runtime_config`, which
+  this change leaves as published; declare `ENVIRONMENT` there when you turn
+  hosted browser telemetry on.
+
+  **Existing projects** (load `migrations/v0.1.44`): `forge generate` rewrites
+  `src/lib/otel_gen.ts`, raises the web-runtime range to `^0.4.0` and adds
+  `@hyperdx/browser` at the runtime's pin to each web frontend's
+  `package.json`. A scaffold-once `providers.tsx` (Next.js) or `main.tsx`
+  (Vite) that still calls `initClientTelemetry()` must drop that call and its
+  import, and `next.config.ts` / `vite.config.ts` need the `/_otel` proxy block.
+  **Requires `@reliantlabs/forge-web-runtime@0.4.0` on npm** before a released
+  forge scaffolds or regenerates a frontend.
+
+- **Forge is open source: Apache License 2.0, replacing the Business Source
+  License 1.1.** The license covers the whole module (the CLI, every
+  `forge/pkg` library, the KCL modules) and `@reliantlabs/forge-web-runtime`,
+  which is published as 0.4.1 under `Apache-2.0`. Every version published
+  before this change is also licensed under Apache-2.0, alongside BSL. Code
+  forge generates, scaffolds or copies into a project belongs to that project
+  and carries no attribution obligation (README, "License"). `NOTICE` is new.
+  The npm package ships `LICENSE` and `NOTICE`; `TestWebRuntimeShipsTheRepoLicense`
+  keeps its copies identical to the root, and the release workflow refuses a
+  tarball without them. Contributions are signed off under the Developer
+  Certificate of Origin rather than a CLA (CONTRIBUTING, "License of
+  contributions").
+
+- **Every successful call is logged again by default; sampling is a
+  per-environment setting in typed config.** `observe.LoggingInterceptor`
+  (`rpc completed`) and `observe.LogMiddleware` (component calls) sampled
+  successes out of the box — one per procedure per minute. They now write
+  every success unless their caller passes `observe.WithSuccessSampling(d)`.
+  Failures and successes over 1s are always logged. The scaffolded
+  `proto/config/v1/config.proto` declares `log_success_sample_window`
+  (default `0s`; env `LOG_SUCCESS_SAMPLE_WINDOW`, flag
+  `--log-success-sample-window`), so a deployment sets it per env in
+  `deploy/kcl/<env>/config.k`, and the scaffolded `serve.go` passes the
+  loaded value to `observe.Chain` as `LogOptions`. `forge/pkg/observe` reads
+  no environment: an existing project adds the field to its AppConfig and
+  `LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())}`
+  to the `observe.Deps` in its owned `serve.go`.
+  `observe.DefaultSuccessSampleWindow` is removed (there is no default
+  window).
+- **One prettier release formats a scaffolded project, everywhere.** Frontends
+  now pin `prettier` exactly (`3.5.3`, was the range `^3.5.0`), and the
+  scaffolded `.pre-commit-config.yaml` runs that same release as a local hook
+  instead of `pre-commit/mirrors-prettier` (archived at `v3.1.0`). The two
+  disagreed about the component library forge installs, so a fresh project's
+  hook rewrote files its own `npm run format` had just written, and the range
+  drifted to whatever `npm install` resolved. Existing projects: replace the
+  mirrors-prettier repo in `.pre-commit-config.yaml` with a `repo: local`
+  hook (`language: node`, `entry: prettier --write --ignore-unknown`,
+  `additional_dependencies: ["prettier@3.5.3"]`), and pin
+  `"prettier": "3.5.3"` in each frontend's `package.json`.
+- **Skills and project memory now lead with shipping.** The start-here `forge`
+  skill gains a "Ship it" section (hosting is the default, `forge env deploy`,
+  the free static tier, queued-on-billing exit 7, no `forge login` under
+  Reliant); `deploy/hosting` holds the gates table and the provides/refuses
+  table; `frontend/serving`, `deploy/static-site`, `db/deploy-migrations` and
+  `secrets` state what hosting accepts and gates on. The project memory template
+  gets a one-line Shipping note.
+
+- **The dev loop runs the API as ONE process — `_api`, the binary's
+  `server`, under air (hot reload) — so the frontend reaches every service.**
+  Dev ran each service as its own `go run ./cmd/<p> <service>` host process on
+  its own port, and the frontend's dev config (`api_url`, the
+  `<project>-dev-api` port key) named the first: a 3-service project's
+  frontend could call one service in dev — the defect #527 fixed for hosted
+  envs, and it strands the sign-in cookie the same way. `deploy/kcl/dev/main.k`
+  now declares the same `_api` the hosted envs do, `_port_of` gives it the
+  `-api` key, and it binds `_on_host(_api)` instead of the services and
+  workers (`server` mounts every service and supervises every worker). This
+  is what the docs already said — "one binary serves every service on one
+  mux", "Go services (hot reload)" — and what `.air.toml` (`entrypoint =
+["./tmp/<p>", "server"]`) and `task dev` already ran; `forge env up dev`
+  did neither. `_on_host` now runs `server` under air (anything else still
+  `go run`), so a .go edit rebuilds and restarts the API; air must be
+  installed (`go install github.com/air-verse/air@latest`, which `forge
+doctor` already required), and `forge env up` refuses to start without it,
+  naming the workload and the `runner = "go-run"` way out, instead of failing
+  in the host phase on `exec: "air": executable file not found`. It no longer
+  prints "the workload's args [server] are not passed" when the air config's
+  entrypoint passes exactly those args. `forge scaffold service|worker` adds
+  no dev line (`_on_host(_api)` is bound with the first service);
+  `forge env up dev --target api` restarts the API. **Existing projects:**
+  copy `_api` and the `_on_host` binder from a fresh `forge project new`'s
+  `deploy/kcl/dev/main.k`, change `_port_of`'s `-api` owner to `"api"`, and
+  replace the service/worker lines with `_on_host(_api)`.
+- **New projects deploy to Reliant hosting by default.** `forge project new`
+  scaffolds `staging` and `prod` hosted on the forge control plane: the API
+  (every service and worker, as one workload — below) and the migrate job
+  bound `_hosted` (its image's registry host dropped,
+  since the platform pulls only from its own registry), a
+  `forge.ManagedDatabase` each workload reads through `forge.DatabaseRef`,
+  `forge.HostedSecrets`, the frontend on platform static hosting with
+  `API_URL` and `CORS_ORIGINS` wired by reference, and `control_plane =
+forge.ControlPlane {}`. A fresh scaffold renders every env with no
+  placeholder. Before, staging and prod bound everything to a cluster the
+  author had to name (`forge env deploy prod --explain`: `REFUSE (declared
+context not in kubeconfig)`) and the frontend to `REPLACE_ME_BUCKET`. The
+  scaffolded CI is the hosted pipeline (`release.yml`, no registry login)
+  instead of `deploy.yml`. `dev` is unchanged. Hosted workloads and the
+  managed database need billing; a static site alone is free.
+  - **The hosted API is ONE workload, `_api`: the binary's `server`.** A
+    browser reaches the API at one origin — the frontend's Connect transport
+    has one base URL (`/<package>.<Service>/<Method>`, so one origin serves
+    every service), and sign-in answers with an HttpOnly session cookie the
+    browser returns to that origin only. The platform gives each workload its
+    own hostname and routes no paths between them, so hosting each service as
+    its own workload (as first shipped) left a 3-service project's frontend
+    able to call one service: `API_URL` named the first. Per-service URLs in
+    the browser cannot fix that — the session cookie would still be stranded
+    on one host — so each hosted env declares `_api` (`args = ["server"]`:
+    every service on one Connect mux, every worker supervised beside it) and
+    binds it instead of its services and workers; the frontend's `API_URL`
+    names it. One workload is also one bill, not one per service. It is bound
+    once there is something for it to run (a project born with no service
+    pays for no idle workload; `forge scaffold service` binds it with the
+    first). `forge scaffold service|worker` then adds no hosted line — `server`
+    already runs it (dev too, below); a job,
+    an operator (which `server` skips without a Kubernetes API) and a tool
+    bind as before. `forge env new X --from prod --bind api=cluster` rebinds
+    the API; `--bind <service>=…` is refused, naming `_api`. Splitting a
+    service or worker out is its own `_hosted(wl.<name>)` line plus taking it
+    out of `server` (cmd/<bin>/cmd/server.go). The binary mode
+    (`--binary per-service|shared`) never reached the deploy files and does
+    not now: both modes ship one binary with a subcommand per component and
+    the all-in-one `server`.
+  - **Hosting elsewhere stays a one-line rebind.** Each env declares
+    `_on_cluster` and `_on_bucket` beside the hosted binders, unused, with
+    the `forge.ClusterTarget` / `forge.OnBucket` to fill shown in a comment
+    (`_cluster = None`, `_bucket = None`). A binding to either before it is
+    declared fails the render, naming the workload and the fix.
+  - **Kinds hosting refuses.** `forge scaffold operator` binds the operator
+    `_on_cluster` in every deployed env — the one binding that can run it —
+    and warns that those envs refuse to render until `_cluster` is declared
+    (or the line is dropped); a hand-declared `kind = "cron"` binds the same
+    way. forge's cron component (`forge scaffold worker --kind cron`) is a
+    worker with its own scheduler and is hosted like any worker. Every other
+    new workload binds where the env's `migrate` job runs, so an env
+    scaffolded on a cluster keeps binding there.
+    `forge scaffold frontend` binds a new frontend through a hosted env's
+    `_hosted_frontend`, and still to a bucket in an env without one.
+  - **Existing projects are not rewritten** (env files are scaffolded once).
+    To adopt hosting, add `control_plane`, `secret_provider =
+forge.HostedSecrets {}` and a hosted `forge.ManagedDatabase` to the env's
+    Bundle, give `_hosted` the bare image and `DATABASE_URL =
+forge.DatabaseRef {...}`, and rebind each line `_hosted(...)` — or try it
+    beside prod with `forge env new cloud --from prod --bind <name>=hosted`
+    first. The `deploy` skill has the exact edits. A project scaffolded
+    between the hosting default and the one-workload API binds each service
+    `_hosted(wl.<name>)` and its frontend calls only the first: replace those
+    service and worker lines with `_api` (copy the declaration and the
+    `_api_config` / `_hosted_frontend` lines from a fresh `forge project new`'s
+    `deploy/kcl/prod/main.k`; the `deploy/hosting` skill shows them).
+- **Next.js frontends are scaffolded as static exports, and the generated CRUD
+  pages are static routes.** Before, the default was `output: standalone`, a
+  Node server that hosted static hosting (`forge.OnHosted {}`) cannot run. The
+  generated detail and edit pages were dynamic `src/app/<slug>/[id]/` routes,
+  so switching to `output: static` failed `npm run build` on the first entity
+  with `Page "/<slug>/[id]" is missing "generateStaticParams()"`. Now:
+  - `forge project new --frontend` and `forge scaffold frontend` write
+    `output: static` into `forge.yaml`. `npm run build` exports into `out/`,
+    and the Dockerfile serves `out/` from nginx. `--output standalone` is the
+    explicit opt-in for a Node server. `next dev` is unchanged. A `forge.yaml`
+    entry with no `output:` still means standalone, because every frontend
+    scaffolded before this change has a standalone `next.config.ts`.
+  - Detail and edit are `src/app/<slug>/view/page.tsx` and
+    `src/app/<slug>/edit/page.tsx`, served at `/<slug>/view?id=…` and
+    `/<slug>/edit?id=…`. Each reads the id with `useSearchParams` under a
+    Suspense boundary, and renders a "which row?" state when `?id=` is
+    missing. List row clicks, create-then-redirect, the Edit action, edit's
+    Cancel, breadcrumb and save redirect all build the new URLs through
+    `src/lib/entity-routes.ts` (`entityViewHref`, `entityEditHref`,
+    `useEntityIdParam`). That file is a new scaffold-once helper with its
+    own vitest suite. `forge generate` backfills it into an older frontend
+    the first time it writes a page that imports it.
+  - The id is in the query string, not the path, because an export can only
+    hold pages it enumerates at build time. `trailingSlash` stays off, so
+    the export writes `out/<slug>/view.html`. Hosted static hosting and the
+    scaffolded nginx image both resolve `/<slug>/view` to that file by
+    trying `.html`. No CDN rewrite is involved.
+  - The static `next.config.ts` sets `images: { unoptimized: true }`, since
+    next/image's optimizer is a server route. The dev-only browser-log
+    route (`app/%5F_forge/log`) answers POST only, so the export leaves it
+    out.
+  - The sign-in guard keeps the query string in `returnTo`, so a visitor
+    bounced off `/<slug>/view?id=…` comes back to the same row.
+  - **Existing projects are not rewritten.** Their pages are scaffold-once.
+    While `src/app/<slug>/[id]/` exists, `forge generate` keeps it as that
+    entity's detail/edit route and writes no view/edit pair beside it. If
+    the frontend is `output: static`, generate warns that `next build` will
+    refuse those routes. `forge project upgrade list` offers the new
+    `migrations/v0.1.44` playbook to any project with a `[id]` route. The
+    playbook covers rescaffolding untouched pages, moving edited ones, and
+    switching `output:` with `forge project upgrade --force next.config.ts
+Dockerfile`.
+  - `forge lint --guarded-fields` reads the new `<slug>/edit/page.tsx` as
+    well as the old `[id]/edit` path. The stale-route report recognizes both
+    page shapes.
+- **The render refuses a Next.js server build bound to a static runtime.**
+  `forge.OnHosted` for a frontend, `forge.OnBucket` and `forge.OnFirebase`
+  serve files and run nothing. A frontend whose forge.yaml `output` is
+  `standalone` or `server` used to render, deploy and build green, then fail
+  at publish on an `out/` nothing wrote. The roofers scaffold bound one this
+  way. `forge env render` / `deploy` / `up` and `forge build` now refuse it
+  at render. The refusal names the frontend, the env and both fixes: set
+  `output: static` and migrate (`forge lint --static-export` lists what), or
+  bind it elsewhere, since a Next.js server ships as a workload with a
+  `forge.DockerBuild`. forge.yaml stays the one declaration of the build
+  shape. forge binds it into every render it drives as the reserved
+  `-D frontend_outputs` option, and the KCL never restates it. An env with no
+  forge.yaml frontend of that name, or a plain `kcl run`, is not judged.
+  **Adoption:** a project whose forge.yaml frontend has no `output:` reads as
+  `standalone` (what its scaffold-once next.config says). If such a frontend
+  is bound to a static runtime, set `output: static` and follow
+  `forge skill load migrations/v0.1.44`.
+- **Concurrent `forge generate` / `forge scaffold` runs in one project now
+  queue instead of failing.** Every run takes the project's lock
+  (`.forge/forge.lock`). A second run prints one line,
+  `⏳ forge: waiting for pid N (<command>) …`, and starts when the first
+  finishes. Previously the lock was an O_EXCL marker file: every concurrent
+  run failed at once with "another forge process is running … remove it with:
+  rm .forge/forge.lock". Agents that followed that advice ran two pipelines
+  in one tree, and their revert-on-failure rollbacks restored each other's
+  writes. The lock is now an OS file lock (flock; LockFileEx on Windows) that
+  dies with its process, so a killed run cannot leave a stale lock and there
+  is no 10-minute reclaim window. `forge scaffold` and all its nouns hold it
+  for the whole command, not only for the generate pass at the end, so another
+  run never sees a half-scaffolded tree: protos with the CRUD quintet injected
+  and a migration written, but no ORM or handlers. Build's auto-generate,
+  `generate --watch`, `--check`, `project rescaffold` and `project new` take
+  the same lock. The file stays on disk between runs and is already
+  gitignored (`.forge/*`); do not delete it.
+- **`orm.Context` gains `RunTx`, `RunTxReadOnly` and `RunTxWithOptions`.**
+  They are on the interface so `s.deps.DB.RunTx(…)` compiles against the
+  injected `DB orm.Context`. A hand-written `orm.Context` implementation, such
+  as a test fake, must add the three methods. `orm.Client.Bun()` now returns a
+  thin wrapper around the `*bun.DB`, so `ExecContext`/`QueryContext`/
+  `QueryRowContext` can join a ctx transaction. Use `BunDB()` when you need the
+  concrete type. `RunTransaction` keeps its semantics: database-default
+  isolation, one attempt, handle-passing. It now joins a transaction already
+  carried in ctx, and `Tx.Commit` runs after-commit callbacks registered
+  through `tx.RunTx`.
+- **Scaffolded CRUD lifecycle tests carry no fixtures; their rows come from
+  regenerated factories.** `handlers_crud_test.go` (scaffold-once) used to
+  embed a literal `INSERT` seed block and literal create-request values,
+  frozen against the birth schema. Editing the birth migration afterwards —
+  the db skill's own advice: a `GENERATED` column, a one-way status `CHECK` —
+  broke it (`cannot insert a non-DEFAULT value into column …`,
+  `violates check constraint …`). It now calls
+  `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
+  rendered into the forge-owned `factories_gen_test.go` from the applied schema
+  on every `forge generate`: it seeds the FK parents and returns a request the
+  current constraints accept (enums the column DEFAULT supplies, nullable
+  timestamps and GENERATED columns are left unset). A factory forge cannot
+  derive a valid request or row for is still emitted, with a body that fails
+  the calling test naming postgres's verdict, and `forge generate` prints it
+  as a warning — it no longer fails the generate.
+- **`New<Entity>` factories insert minimal, lifecycle-consistent rows.** Every
+  NOT NULL column without a DEFAULT and every FK parent is filled; every other
+  column is left to its DEFAULT or NULL; GENERATED columns are skipped; CHECKs
+  are satisfied, including length/range/vocabulary checks, a DEFAULT the
+  column's own CHECK rejects, and one-way status implications (the
+  union/guard branch closest to the DEFAULTs). A jobs factory that used to
+  insert a LEAD job with a crew, a schedule, `completed_at` and `lost_reason`
+  now inserts a bare LEAD. Each factory is executed against the shadow schema
+  at generate time; if the minimal row is rejected the full row is tried.
+- **`forge lint --fixture-drift` executes literal fixtures instead of
+  pattern-matching them.** Every fixture statement in a scaffolded
+  `handlers_crud_test.go` runs against the shadow schema in a rolled-back
+  transaction (grouped per test function, one savepoint per statement), and
+  postgres's own error is reported per statement — GENERATED columns, UNIQUE
+  collisions, dangling foreign keys and the CHECK violations the old matchers
+  missed. A project with no literal fixtures opens no database; an unreachable
+  shadow is reported as `forge-fixture-unverified`, never as clean. The rule id
+  is now `forge-fixture-rejected` (was `forge-fixture-generated-column` /
+  `forge-fixture-duplicate-unique`). `--crud-fixtures` (the dangling-FK
+  matcher, rule `forge-crud-fixtures`) is folded in and kept as a hidden,
+  deprecated alias.
+  **Existing projects:** run `forge generate` (factories gain the
+  `New<CreateRequest>` functions), then `forge lint --fixture-drift`. Your
+  `handlers_crud_test.go` is yours and is not rewritten; to adopt the new shape,
+  delete its seed block and replace each literal `&pb.Create<Entity>Request{…}`
+  with `<svc>.NewCreate<Entity>Request(t, db, 0)` / `(t, db, 1)`. Tests that
+  relied on `New<Entity>` populating optional columns now get DEFAULT/NULL
+  there — set them with an override.
+- **`forge doctor`'s `forge: kcl-plugin` check is now a real probe.** It
+  evaluates a one-line KCL program through `kcl_plugin.forge` instead of
+  reading a build flag, so it fails for what can actually break now: KCL's
+  native library failing to extract or load (antivirus, read-only temp dir,
+  bad `KCL_LIB_HOME`). Same name and pass/fail/skip meaning as before.
+- **A KCL runtime that cannot load is an error, not a crash.** kcl-lang.io/lib
+  panics when it cannot extract libkcl; forge used to crash with a stack trace
+  (`forge doctor` exited 2). It now reports `load the KCL runtime: …` from
+  every render.
+- **Scaffolded `.air.toml` sets no env inline.** `ENVIRONMENT=development` is
+  set by `forge env up` on the air process (and by `task dev`), so the config
+  uses `entrypoint` and works under air's PowerShell on Windows.
+- **`task db:restore` shows pg_restore's warnings.** The `grep -v` filter that
+  hid them is gone, because `grep` does not exist on Windows.
+- **An unwritten `forge:computed` field fails `forge lint`, like an unwritten
+  `forge:read-only` one.** It used to only warn while read-only failed —
+  backwards, since computed is the stronger promise ("my app derives this").
+  `computed-fields lint` now gates; `--computed-fields --json` reports
+  `ok: false`.
+- **Pending-stub mode for both unwritten-column rules.** Right after
+  `forge scaffold`, the rpc that will write a read-only/computed column is
+  still forge's own `// forge:gen unwired-stub` placeholder, and failing the
+  gate on forge's fresh output taught agents to ignore the rule. While the
+  declaring service's handler package still holds those stubs, the finding is
+  a warning naming them — `pending: implement ChangeJobStatus, ScheduleJob` —
+  and once none remain it is an error again. Deterministic: the service comes
+  from the entity's proto directory and the handler package from the same
+  resolver `forge generate` uses; forge does not guess which rpc writes which
+  column.
+- **A failing `forge lint` names the failed linters on its last line**
+  (`forge lint: 2 gating linter(s) failed: computed-fields lint, read-only-fields lint`),
+  instead of "one or more linters reported errors".
+  The verdict is the last line in every mode.
+- **`frontend lint` no longer "passes" on a project with no frontend.** With no
+  declared frontend and no `frontends/` directory it is a silent no-op, as the
+  frontend typecheck lane already was, instead of counting as a gating linter
+  that ran.
+- **Bridging a project to a local forge checkout is opt-in: `forge project new
+--link-forge`.** It used to happen on its own for every dev build of forge —
+  including a host binary that embeds forge through a workspace (`reliant
+forge project new`), which bridged every project it created to whatever
+  checkout that host compiled from. On a shared machine that is the main
+  checkout everyone pulls into, so the library under those projects moved with
+  each merge while the binary generating their code did not. Now nothing is
+  written unless asked for; a service scaffold from an unreleased build is
+  refused with the flag named, and `--link-forge` on a binary that cannot
+  locate its checkout is refused before anything is written.
+  `FORGE_LINK_FORGE=1` is the same opt-in for harnesses (forge's e2e corpus
+  sets it). The web-runtime twin (`.forge-link/` + root `package.json`) now
+  follows the project's go.work bridge and links that same checkout, instead
+  of being laid down by any dev build for its own checkout. **Adopting:**
+  existing bridged projects are untouched; a contributor scaffolding with a
+  dev forge adds `--link-forge`.
+- **The scaffolded `handlers_crud.go` says each thing once.** Every delegating
+  method used to carry the same eight-to-ten-line comment (what pkg/crud does,
+  where the wiring lives, and the full AUTHENTICATED / PUBLIC / SCOPED
+  explanation). Now each method has a summary line and one `Auth:` line that
+  still names `middleware.GetUser` (an author editing `DeleteOrder` reads
+  `DeleteOrder`'s comment, not the header). The file header explains each tag
+  once, and only the tags the file contains. Update methods keep a line on mask
+  handling, which now mentions that `op.ReadOnly` columns are refused and kept.
+  The file is yours, so existing projects keep their comments; methods appended
+  later get the short form.
+
+- **`forge project new` with frontends and no services leads with the
+  frontend.** The next-steps block told a frontend-only project to
+  `forge scaffold service item`, which is how a static site ends up with a CRUD
+  backend nobody asked for. It now points at the frontend and
+  `deploy/static-site`, and keeps `scaffold service` as the line for a project
+  that does need an API. It does not print a bare `forge env up dev`, because a
+  frontend-only scaffold's dev env still fails that way until #401 lands.
+- **The README stopped advertising `forge.External`.** It was removed with the
+  one workload model (#284), but the README still offered it for Fly.io, Cloud
+  Run, ECS, Vercel and Railway, and described deploy as `forge.Service` plus a
+  `host` block. Both now describe the per-workload runtimes, and a
+  platform-CLI runtime is tracked in #400.
+
+- **`forge env status` is the ONE read view of an environment.** Reading an env
+  used to take six verbs — `env status`, `env verify`, `env wait`,
+  `env rollout`, `env topology`, `env history` — and they were views of a
+  single question, split by which half of the answer each happened to own. A
+  reader had to know, before they could ask, that the bound release lived in
+  `verify`, the rollout phase in `rollout`, the runtime ports in `status`, and
+  the promotion that caused all of it in `history`. Two were literal
+  duplicates: `env rollout` WAS `env wait --timeout 0`.
+
+  They are modes of one command now:
+
+  ```bash
+  forge env status                  # every environment, and how far behind each is
+  forge env status prod             # prod right now: runtime AND release
+  forge env status prod --wait      # block until the rollout settles
+  forge env status prod --history   # prod's promotion ledger, newest first
+  ```
+
+  One env's report carries the bound release, verify (running digests vs the
+  binding, in all five states, through the control plane's observer for a
+  hosted env), the rollout phase per workload, runtime health, gates, and
+  ledger freshness. The two halves are deliberately asymmetric about failure:
+  runtime health REPORTS (a down stack is a state this command must be able to
+  print), while the release half makes a claim and so owns the exit code.
+
+  **Every exit code is unchanged**, because every mode reaches the same code
+  the old verb called: 0/1/2 for the read, plus 5 (timed out, still
+  progressing) and 6 (superseded) under `--wait`. `--timeout` serves two modes
+  with different budgets — 60s for a cluster read, 15m for a wait — so its
+  declared default is an unset sentinel resolved per mode; `--wait --timeout 0`
+  still means one read, never blocking.
+
+  `--json` emits one document carrying the standard envelope. Its release
+  fields stay FLAT (`bound`, `images`, `release`) because `forge gate record
+--from` recognises the document by them.
+
+- **Scaffolded CI: the build-once release pipeline owns hosted envs, and the
+  broken pieces are gone.**
+  - `deploy.yml` no longer rebuilds per env for a hosted env. If it did,
+    staging and prod would run different digests, and `release.yml` builds
+    once instead. A mixed env, one with both hosted and cluster parts, also
+    moves wholly to `release.yml`. Its ledger is the control plane, so once
+    it has been promoted, `forge env deploy` pins both halves to the
+    release. A `deploy.yml` rebuild of its cluster half would then deploy
+    the old digests and still report success. A mixed stage writes the
+    kubeconfig, because `forge env deploy` applies that half from CI itself.
+    When every env is hosted, `deploy.yml` is not emitted at all.
+  - `build-images.yml`'s opt-in `cut-release` job is deleted. It cut and
+    promoted by raw curl, read `DEPLOY_TOKEN` instead of
+    `FORGE_CONTROL_PLANE_TOKEN`, and was broken against the server because
+    it sent no artifact kind or mode.
+  - `reconcile.yml` runs `forge env status <env> --json`. It used to call
+    `forge reconcile`, which was never a verb, and its matrix expressions
+    were missing their `$`.
+  - Every rendered workflow is now checked by `actionlint`, when it is on
+    PATH.
+- **BREAKING (one require line): `github.com/reliant-labs/forge/pkg` is no
+  longer a module.** forge is now a single module,
+  `github.com/reliant-labs/forge`, carrying both the CLI and the `pkg/*`
+  runtime libraries. **Import paths did not change** — a module at
+  `github.com/reliant-labs/forge` with a `pkg/testkit` directory serves
+  `github.com/reliant-labs/forge/pkg/testkit`, byte-identical to what the
+  submodule served. Consumers change one require line and no source:
+
+  ```sh
+  go get github.com/reliant-labs/forge@vX.Y.Z
+  go mod edit -droprequire=github.com/reliant-labs/forge/pkg
+  go mod tidy
+  ```
+
+  Dropping the retired requirement is not optional, and it does not degrade
+  gracefully: both modules can serve `forge/pkg/*` import paths, so a graph
+  holding both answers every such import with `ambiguous import: found package
+... in multiple modules`. `forge generate` now detects this before codegen
+  and distinguishes a requirement you own from one a dependency drags in.
+  A dependency's must be fixed in that dependency — a `replace` only hides it.
+
+  The two modules were always released in lockstep, at the same commit, with
+  the same version. Keeping that true took three hand-maintained syncs, and
+  two failed in production: the root module's `require forge/pkg` went stale
+  and made `go install .../cmd/forge@main` uninstallable, and a hand-listed
+  registry of "forge/pkg symbols the generator emits" went stale when
+  `testkit.StubNotConfigured` was added, so `forge generate` rewrote a project
+  tree and then failed its own validate. One module makes both
+  unrepresentable.
+
+- **A dev build no longer pins a version it is not.** The scaffold's forge
+  requirement comes from the binary's own build info: a release tag, or the
+  pseudo-version `go install ...@main` records. A local or dirty build — whose
+  bytes no module proxy can serve — now pins **nothing** and requires a
+  `go.work` source bridge, which `forge generate` names in its refusal. It
+  used to fall back to a hand-maintained "last published tag" constant,
+  telling projects to require a release that could not satisfy the code being
+  generated.
+
+- **`forge generate`'s compatibility gate is a version comparison.** The
+  project's forge must be `>=` the generating binary's. This replaces a probe
+  that compiled a throwaway program against a hand-listed symbol set; the
+  inequality covers every symbol ever added, cannot rot, and costs one
+  `go list` instead of a `go build`. A project resolving a NEWER forge still
+  passes — that is the ordinary upgrade order.
+
+- **`task release:forge` is one tag, one commit.** The two-tag atomic push, the
+  `go.sum` bare-clone resolution dance, and the `defaultPublishedForgePkgVersion`
+  bump all existed only because the root module required an unpushed submodule
+  version. `scripts/release-pkg.sh` and `task release:pkg` are removed.
+
+- match v0.1.46 and point at the Forge user guide ([#937](https://github.com/reliant-labs/forge/pull/937))
+- **config:** sensitive does not imply required at runtime — say so, and pin it ([#947](https://github.com/reliant-labs/forge/pull/947))
+- lease failover partitions the leader; verify-generated checkout check names changed paths ([#949](https://github.com/reliant-labs/forge/pull/949))
+- **generate:** the config loader runs before every step that type-checks Go ([#954](https://github.com/reliant-labs/forge/pull/954))
+- **changelog:** keep the forge:no-entity COMMENT ON TABLE code span on one line ([#956](https://github.com/reliant-labs/forge/pull/956))
+- **ci:** name what verify-generated changed; isolateGit disables detached git auto-maintenance (proven on git 2.55) ([#940](https://github.com/reliant-labs/forge/pull/940))
+- **cli:** fix stale tag number for DeployRelease.commits in hosted_ledger.go ([#902](https://github.com/reliant-labs/forge/pull/902))
+- **cli:** expect the merge-driver notice's attributes path as git reports it ([#983](https://github.com/reliant-labs/forge/pull/983))
+- **merge-driver:** a real rebase keeps gen/forge_descriptor.json stamped for the merged protos ([#932](https://github.com/reliant-labs/forge/pull/932))
+- **deps:** bump the go-minor-patch group across 1 directory with 23 updates ([#997](https://github.com/reliant-labs/forge/pull/997))
+- **lint:** the frontend format-pending test skips on Windows, like its siblings ([#1006](https://github.com/reliant-labs/forge/pull/1006))
+- 8 jobs per pull request instead of 13, and caches trimmed to fit the 10 GB budget ([#1008](https://github.com/reliant-labs/forge/pull/1008))
+- **e2e:** TestE2ETraceDepth — one request is one deep trace, and its logs carry the trace_id (tracing F9) ([#1005](https://github.com/reliant-labs/forge/pull/1005))
+- **web-runtime:** 0.6.0 — traceresponse join; scaffolds move to ^0.6.0
+- **e2e-scaffold:** cache the embedded-postgres archive ([#1020](https://github.com/reliant-labs/forge/pull/1020))
+- **orm:** bind every statement's values, not just the by-key ones (P5b L1a) ([#1027](https://github.com/reliant-labs/forge/pull/1027))
+- trim the Go build cache against the moment it was restored, not the event payload's mtime ([#1030](https://github.com/reliant-labs/forge/pull/1030))
+- **slots:** checks build with -trimpath; heavy slots default to CPUs/2 ([#1014](https://github.com/reliant-labs/forge/pull/1014))
+- **cli:** the dev API's default probe targets its own PORT (#1023) ([#1037](https://github.com/reliant-labs/forge/pull/1037))
+- **cli:** scrub the host's pin-skew override and delegation marker in TestMain ([#1047](https://github.com/reliant-labs/forge/pull/1047))
+- CI gate required via a merge queue; main-red override; proto drift hook; dependabot by ecosystem ([#1057](https://github.com/reliant-labs/forge/pull/1057))
+- the guards run in full mode on every pull request; the E2E Suite auto-runs (informational) on scaffold/codegen changes ([#1056](https://github.com/reliant-labs/forge/pull/1056))
+- **lint:** drop golangci-lint's machine lock inside a heavy slot of our own ([#1066](https://github.com/reliant-labs/forge/pull/1066))
+- worktree/fm w22 forge closed set 1792599500 ([#1082](https://github.com/reliant-labs/forge/pull/1082))
+- project new skips its compile check; svcerr.Interceptor; cloud identity user verbs; peer pin .d.ts fix ([#1083](https://github.com/reliant-labs/forge/pull/1083))
+- a five-job pull-request tier (from nine); test results replay from main's cache ([#1065](https://github.com/reliant-labs/forge/pull/1065))
+- **cli:** helper processes reuse the suite's host-tool tripwire; stale ones are reaped, never a live one ([#1090](https://github.com/reliant-labs/forge/pull/1090))
+- **cli:** every test that builds the root command restores the recorded mount route ([#1155](https://github.com/reliant-labs/forge/pull/1155))
+- **cli:** the hosted CLI fixtures evaluate each distinct KCL render once, not fifteen times ([#1159](https://github.com/reliant-labs/forge/pull/1159))
+- **skills:** connect-errors migration example cites providers.go, a file forge scaffolds ([#1177](https://github.com/reliant-labs/forge/pull/1177))
+- **skills:** observability/query — the forge obs feedback loop (F6) ([#1185](https://github.com/reliant-labs/forge/pull/1185))
+- .forge/state and .forge/.forge-tmp-\* are rebuildable (mirrors reliant's worktreereclaim policy) ([#1196](https://github.com/reliant-labs/forge/pull/1196))
+- **e2e:** the equivalent-service-naming lint proof reads the engine's ✓ golangci-lint line ([#1201](https://github.com/reliant-labs/forge/pull/1201))
+- merge driver: fall back to a forge-free merge when the named forge binary is gone ([#1203](https://github.com/reliant-labs/forge/pull/1203))
+- **narrow-deps:** run the project's golangci-lint over what narrow-deps writes ([#1212](https://github.com/reliant-labs/forge/pull/1212))
+- **cli:** SF13's issuer tests stop tripping removalguard (tenant fixture path, 'authorizer' in comments) ([#1220](https://github.com/reliant-labs/forge/pull/1220))
+- **skills:** front-load static sites, SPAs and landing pages in forge's LLM-facing copy ([#1229](https://github.com/reliant-labs/forge/pull/1229))
+- **cli:** cut internal/cli full-mode time — memoize KCL in rescaffold/hosted-static fixtures, one ledger write per scaffold, no fsync in staging ([#1236](https://github.com/reliant-labs/forge/pull/1236))
+- **ci:** keep premerge tests short; require full release proof ([#1235](https://github.com/reliant-labs/forge/pull/1235))
+- **eso:** the GeneratorState CRD stays because the controller registers its reconciler unconditionally (SC7 D6) ([#1252](https://github.com/reliant-labs/forge/pull/1252))
+- **flux:** move the Flux names to a public forge/pkg/flux ([#1295](https://github.com/reliant-labs/forge/pull/1295))
+- **components:** tooltip writes its description to the DOM only when its target moves ([#1324](https://github.com/reliant-labs/forge/pull/1324))
+- **generate:** a cached no-op skip does not repeat a full run's notes; pin that disowns and frontend manifests invalidate the cache ([#1329](https://github.com/reliant-labs/forge/pull/1329))
+- **frontend:** tsc must type-check the tests; pin it for the web scaffolds and say how an adopted app with Vite's split opts in ([#1334](https://github.com/reliant-labs/forge/pull/1334))
+- **cli:** gate internal/cli's -short tests that ran over ~2s under heavy-slot contention ([#1337](https://github.com/reliant-labs/forge/pull/1337))
+- **storage:** prettier-format storage-lifecycle runbook (#1356) ([#1358](https://github.com/reliant-labs/forge/pull/1358))
+- **frontend/adopt:** an adopted app's tsconfig.test.json holds only the tests and references the app project, so tsc -b checks each file once ([#1360](https://github.com/reliant-labs/forge/pull/1360))
+- **design:** per-workload placement — one env holds any mix of hosted and self-applied parts ([#1364](https://github.com/reliant-labs/forge/pull/1364))
+- **dev:** agent sandbox first-run audit ([#1363](https://github.com/reliant-labs/forge/pull/1363))
+- **readme:** Forge works in any agent harness — it's just a CLI; install and deploy up front ([#1378](https://github.com/reliant-labs/forge/pull/1378))
+- **deps:** bump the go-patch group across 1 directory with 4 updates ([#1254](https://github.com/reliant-labs/forge/pull/1254))
+- **merge:** agents label merge:queue; the merge steward feeds GitHub's merge queue ([#1388](https://github.com/reliant-labs/forge/pull/1388))
+- **deps:** bump kcl-lang.io/kpm from 0.13.1 to 0.13.2 ([#1407](https://github.com/reliant-labs/forge/pull/1407))
+- **deps:** bump the go-patch group across 1 directory with 2 updates ([#1404](https://github.com/reliant-labs/forge/pull/1404))
+- five-minute pre-merge tier — keep the PR tier's caches warm, e2e label-only on PRs, `task ci` for the steward, four flakes fixed ([#1389](https://github.com/reliant-labs/forge/pull/1389))
+- **deps:** bump the go-minor group across 1 directory with 5 updates ([#1409](https://github.com/reliant-labs/forge/pull/1409))
+- bound lint, apply, upgrade and cache eviction functions ([#1422](https://github.com/reliant-labs/forge/pull/1422))
+- **cli:** bound deployment helpers and retain lint-safe assertions ([#1424](https://github.com/reliant-labs/forge/pull/1424))
+- **merge:** respect owned overview while certifying generated outputs ([#1425](https://github.com/reliant-labs/forge/pull/1425))
+- **debug:** guide scoped observability and guarded database investigations ([#1427](https://github.com/reliant-labs/forge/pull/1427))
+- describe the event-driven PR pipeline (pr-review, native merge queue, release) ([#1432](https://github.com/reliant-labs/forge/pull/1432))
+- **release:** delete the machine-wide release lock ([#1435](https://github.com/reliant-labs/forge/pull/1435))
+- **storage:** forge stops managing its tool cache and the Go module cache; the Go build-cache trim stays, minus its /proc scans ([#1439](https://github.com/reliant-labs/forge/pull/1439))
+- **report-bug:** make the JSON example's actual text say what is wrong ([#1443](https://github.com/reliant-labs/forge/pull/1443))
+- **release:** the next forge release is v1.0.0 ([#1446](https://github.com/reliant-labs/forge/pull/1446))
+- **deploy,install:** env deploy --help names hosted static hosting, buckets and Firebase instead of only Firebase; install examples pin v1.0.0 ([#1456](https://github.com/reliant-labs/forge/pull/1456))
+- **lint:** split service-catalog codegen, generate's failed-step cleanup and kcl eval's flag plumbing so golangci-lint passes on main ([#1460](https://github.com/reliant-labs/forge/pull/1460))
+- **release:** every main commit gets a CI verdict, and release-forge.sh --commit tags a green commit while main keeps merging ([#1464](https://github.com/reliant-labs/forge/pull/1464))
+
+### Removed
+
+- **New service projects no longer get `deploy/observability/prometheus-rules.yaml`
+  or `docs/slo.md`.** Nothing in forge loaded the rules (alerts are
+  `forge.AlertRule` / `forge.AlertDefault` in KCL, evaluated as ClickHouse
+  SQL) and nothing measured the SLO doc's targets. An existing project can
+  delete both files.
+
+- **Graph-mode projects no longer scaffold `cmd/<bin>/cmd/server.go`**, and
+  `cmd/<bin>/main.go` / `root.go` take no command-group constructors
+  (`Execute()`, `newRootCmd(deps)`). The per-service, per-worker and
+  per-operator subcommands and `Serve` / `ServeSpec` / `MountFunc` /
+  `MountNone` stay only in projects on the legacy `Infra` / `NewComponents`
+  composition, which generate exactly as before.
+
+- **The `enforce-component-observe` lint and `config.enforce_component_observe`.**
+  It failed a package that had made no observability decision. Being
+  instrumented is now the default decision, so there is nothing left for it
+  to enforce. Delete the key if your forge.yaml sets it.
+
+- **The pending alert definitions in `dashboard-spec_gen.json`** (#644): the
+  `alerts` array (`status: pending`) and `obsdash.Alert`. The three definitions
+  became the `error-rate`, `p95-latency` and `service-silent` defaults.
+
+- **The dead in-cluster Flux pointer path.** #461 made `reconcilesThroughFlux()`
+  unconditionally false and asked for the follow-up that deletes the rest. Gone:
+  forge's own Flux install in `forge cluster up`, the OCIRepository/Kustomization
+  pointer `forge env deploy` wrote, its convergence wait, the Flux-secret sync,
+  the Flux plan-live reader, `forge env status`'s in-cluster convergence, and
+  the `internal/flux` pointer/observe code (net about 4,000 lines removed). What
+  stays is `forge.flux_chart()` and the declared bootstrap-chart install. The
+  direct-apply notice no longer claims the env "will be reconciled from its
+  bundle".
+
+- **Project-mutating commands refuse to run under a forge other than the
+  project's `forge_version` pin.** `forge generate`, `forge scaffold` (and every
+  noun under it), `forge package new`, `forge component install`,
+  `forge env new`, `forge project rescaffold|delete|migrate`, and the
+  auto-generate that `forge build` / `forge env up` run when generated code is
+  stale, now stop with a runbook: running vs pinned version, a `go run
+github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
+  install, and the `GOPRIVATE=... go install ...@<pin>` form. Previously only
+  `build` / `env build` / `env deploy` refused; an agent running `forge generate`
+  with a stale forge on PATH silently rewrote unrelated generated files (otel,
+  frontend, descriptor). Read-only runs are never blocked (`--dry-run`,
+  `--check`, `lint`, `audit`, `shapes`, `skill`, `env status`, `--help`).
+  Escape hatch: `--allow-version-skew` or `FORGE_ALLOW_VERSION_SKEW=1`; builds
+  without a version identity (`(devel)` with no commit), forge's own repo, and a
+  project bridged by go.work to the checkout the binary was built from are
+  exempt. Under `reliant forge` the comparison uses the embedded forge's
+  module version, not reliant's.
+- **`forge.ControlPlaneSecret`: a Secret the env's declared control plane
+  supplies and renews.** `Bundle.control_plane_secrets` declares one (`name`,
+  `cluster`, `namespace`, `kind = "telemetry_token"`). It is recorded in the
+  env shape (`shape.control_plane_secrets`: name, namespace, cluster,
+  connected cluster, kind, keys; never a value), **never blocks a first deploy**
+  (the preflight neither requires it nor reads its absence as a missing
+  dependency, and it counts as supply for the undeclared-mount gate), and is
+  **refused at render without a connected-cluster binding** or without
+  `control_plane`. There is no k3d exemption: delivery is the control plane
+  dialing the cluster. A cluster workload in the same cluster and namespace
+  gets an optional whole-directory Secret volume `forge-otlp-auth` at
+  `/var/run/secrets/forge/otlp` and `OTEL_EXPORTER_OTLP_HEADERS_FILE`, so a
+  renewal needs no restart. `ObservabilityDestination.token_from_control_plane
+= True` derives the node agent's Secret (`forge-otlp-token`, key `token`) on
+  every cluster running the agent. `v1alpha1.SecretVolumeSource` gained
+  `optional`. `output.control_plane_secrets` is a new render-contract key
+  (every `render_contract` golden gains `"control_plane_secrets": []`). See
+  `deploy/control-plane-secret` and `migrations/v0.1.45` section 7.
+
+- **`forge env deploy <env> --offline-ledger --to <release|previous>`: roll back
+  with the control plane unreachable.** The realistic outage is a bad release
+  that takes the control plane down, where redeploying the current release
+  does not help. The offline copy of a hosted env's ledger now keeps its last N
+  promotions (default 5, `FORGE_OFFLINE_LEDGER_WINDOW`, max 50) with each
+  release's recorded digests, refreshed on every successful ledger read or
+  write. `--to previous` (or a cached release version or promotion id) deploys
+  one of them by digest behind the usual confirmation gate; a release not in the
+  copy is refused with the list of what is. The rollback is queued and replayed
+  on the next ledger contact with the existing moved-env refusal; several
+  offline deploys in one outage chain and replay in order. `forge env status`
+  lists the releases the copy can deploy (`offline_cache` in `--json`), so the
+  break-glass options are visible before the outage; each operator machine needs
+  one successful `forge env status` to warm its copy.
+- **`forge env deploy <env> --offline-ledger`: a break-glass for a hosted ledger
+  whose control plane is down.** With the control plane unreachable, a
+  `forge.ControlPlane` env could not resolve its current release, and
+  `FORGE_LEDGER=machine` hit the unimported-ledger refusal without the live
+  release; the only fallback was an unrehearsed fresh cut that rebuilds every
+  image. forge now keeps a read-through copy of each hosted env's current
+  promotion and release (per project and env, under `$FORGE_LEDGER_HOME`),
+  refreshed by every successful ledger read or write. `--offline-ledger`
+  deploys that release by its recorded digests with no build and no contact
+  with the control plane, prints the copy's age and what it will replay, and
+  queues the promotion (with the apply's verdict). The next successful ledger
+  read replays the queue idempotently, as a compare-and-set against the
+  promotion the copy named: if the env moved meanwhile the record is refused
+  and stays queued rather than overwriting it. It redeploys the cached release
+  only, refuses envs whose hosted tiers or hub-converged clusters the control
+  plane applies, and is the only bypass of the unimported-ledger refusal.
+
+- **BREAKING: forge no longer runs or scaffolds sqlc.** The data-access path is
+  the ORM projected from the applied migrations: the generated `<Entity>Store`,
+  plus the owned `internal/db/<entity>_repo_ext.go` seam for anything it cannot
+  express (bun, CTEs, `FOR UPDATE SKIP LOCKED`, raw SQL), tested against a real
+  migrated database. The `sqlc generate` step is gone from `forge generate`, so
+  a root `sqlc.yaml` is no longer run implicitly: keep it running while
+  you port off it by declaring it as a `generate.hooks` entry (see Added). A root
+  `sqlc.yaml` with no hook running it gets a forge.yaml load warning that
+  spells out the hook. `forge project new` no longer writes `db/sqlc.yaml` or
+  `db/queries/`. That stub was dead on arrival anyway: generate only looked for
+  a ROOT `sqlc.yaml`, its paths were root-relative inside a file sqlc resolves
+  relative to `db/`, and it targeted the `internal/db` package the ORM generates
+  into. `db/README.md` now documents migrations, seeds and the query seam. The
+  `db`, `contracts`, `testing/integration` and `migration-service` skills say to
+  port sqlc queries onto the store, not to keep writing them.
+- **The host-application credential DEPOSIT is gone (`pkg/cloudcred.Save`,
+  `Delete`, `HostClientID`, `Location`, `Credential`).** A host used to copy its
+  own session token into `credentials.json` under client `host-app`, and forge
+  presented it to the control plane's deploy API. That token was a permanent,
+  multi-purpose session credential (Reliant's daemon or CLI login) which mostly
+  did NOT hold deploy authority, so deploys 403'd and users ran `forge login`
+  anyway — and where it did work, the deploy API, the registry login and every
+  subprocess saw a credential that could also connect as the user's daemon.
+  forge no longer reads `host-app` entries at all; `cloudcred.RemoveLegacyHostDeposits`
+  lets a host purge what it wrote. Replaced by the credential helper below.
+- **forge no longer requires cgo.** `kcl_plugin.forge` is bridged through a
+  purego callback, so `go install` works with any `CGO_ENABLED` setting,
+  including Windows without a C toolchain. `env diff`'s `unsupported` status is
+  gone, as are the `CGO_ENABLED=1` prefixes and "CGO is required" notes in the
+  Taskfile, Makefile, scaffolded CI install step, version-skew install hints
+  and skills.
+
+- **BREAKING: `forge env verify|wait|rollout|topology|history` are deleted**,
+  with no alias and no hidden name — they are modes of `forge env status` (see
+  Changed, above). `forge release where` and `forge release verify` are
+  untouched: both answer a question about a RELEASE rather than an
+  environment. A removalguard entry pins all five spellings on every surface.
+
+- **BREAKING: `forge env promote` is gone — `forge env deploy <env> [vX | --from
+<src-env>]` does the whole job.** No alias and no hidden name; the old
+  spelling dies on "unknown command".
+
+  ```bash
+  forge env deploy prod v1.4.0          # was: forge env promote v1.4.0 --to prod && forge env deploy prod
+  forge env deploy prod --from staging  # exactly what staging runs
+  forge env deploy prod                 # unchanged: re-apply prod's current binding
+  ```
+
+  **The verb now means record + apply + wait, and the wait is not a flag.**
+  Recording a binding ships nothing, so a pipeline step that only promoted
+  reported success before any byte had moved and the release's real failure
+  surfaced minutes later with nothing connecting the two. Every pipeline
+  therefore spelled it `promote --deploy --wait`, and the spellings that
+  omitted either half were bugs waiting for an incident. So the health gate is
+  ON by default; `--no-wait` opts out and names
+  `forge env status <env> --wait` as the way to gate later.
+
+  **Who applies it is read off the environment's ledger, not a flag** — the
+  same declarative fact as where the promotion is recorded, so the two cannot
+  disagree. An env whose KCL declares `forge.ControlPlane` is converged by
+  that control plane and forge waits on the rollout it computes, pinned to the
+  promotion just written. Every other env is self-managed: the same command
+  renders the new binding and applies it from this machine, and that apply's
+  per-resource rollout wait IS the health gate.
+
+  `promote --wait` and `promote --deploy` are removed with the verb rather than
+  renamed: both are now what the command does.
+
+  Everything else is unchanged and moved with the code — the compare-and-set
+  (`--expect-current` / `--expect-unbound` / `--supersede`), `--gate`,
+  `--from` / `--from-promotion`, `--plan`, the run flags, every exit code and
+  the JSON envelope. A deploy that names no version keeps today's spec-change
+  behaviour, and a release-only flag passed without a version is now refused
+  rather than silently ignored.
+
+- **BREAKING: an environment no longer has an image registry — a WORKLOAD has
+  one, as part of its image.** `forge.ClusterTarget.registry`,
+  `forge.ControlPlane.registry` and `forge.DockerBuild.registry` are all gone.
+  The author writes the full reference on the workload and forge contributes
+  only what it alone knows:
+
+  ```kcl
+  # deploy/kcl/workloads.k
+  api = fw.Workload {
+      name = "api"
+      image = "ghcr.io/acme/api"        # the registry IS the image
+      build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
+  }
+  ```
+
+  forge appends the resolved tag and, after a push, the digest. It never
+  invents, prefixes or rewrites the host. So the reference you read in the KCL
+  is the reference the build pushes and the cluster pulls — they cannot
+  disagree, which is the whole point: a build aimed at one registry while the
+  spec named another was an `ErrImagePull` that surfaced only at rollout.
+
+  Two workloads in one env may now name two different registries, which an
+  env-wide field could not express at all.
+
+  **Migration is automatic.** `forge generate` removes `registry = …` from every
+  ClusterTarget / ControlPlane and prefixes the removed value onto a workload's
+  bare `image`, judging ambiguity ONLY over the envs where that workload is
+  bound to a runtime that pulls an image (cluster or hosted). A registry on an
+  env where the workload runs `OnHost`, or is not bound at all, is simply
+  dropped — it was never that workload's. If the same workload genuinely pulls
+  from two different registries, forge REFUSES and prints the exact per-env KCL
+  rather than picking one. Your binder expressions are never edited.
+
+  **A bare image is refused at render**, naming the workload: it would render as
+  `api:<tag>`, which the kubelet resolves against Docker Hub and fails to pull.
+  A third-party image must name its host too (`docker.io/library/nats:2.10`).
+
+  A hosted env is no different, and gets its own runbook: a hosted env may one
+  day inherit a default from the control plane's advertised image push base, but
+  that base is not pushable yet (control-plane ADR 0003 / #334), so forge does
+  not invent one. Hosted FRONTENDS follow the same rule with the same field
+  name (`forge.Frontend.image`), and forge appends the platform's own
+  `static.v1` layout segment itself, so that segment never appears in your KCL.
+
+  A local env states the image IT runs, because a k3d node can only pull from a
+  host-local registry. That is a plain KCL string on the workload — the
+  scaffolded dev env declares one `_LOCAL_IMAGE` constant and its `_on_k3d`
+  binder sets it. forge ships no helper for composing an image reference and
+  prescribes no pattern: a project that wants one source of truth writes its
+  own constant, which is what KCL is for.
+
+  **`forge registry login <env>` logs in to every distinct host the env's images
+  name** — no host argument and no flag that takes one. The credential is the
+  only input: `--username` with `--password-stdin`, or `--password-env` naming
+  the variable that holds it (the `forge.ControlPlane.token_env` convention, so
+  CI states a NAME in git and never the value). `forge registry ref <env>` now
+  prints one `<image>@<digest>` per built image, labelled by the workload that
+  declared it.
+
+  **RELEASES MUST BE RE-CUT.** The release ledger now keys an OCI artifact by
+  its declared repository, host included, so the key IS the address and
+  `release.Artifact.URI` is no longer recorded for images. Ledgers cut before
+  this change are keyed by bare name, which no longer resolves to an address:
+  `forge release verify` reports such an entry as UNVERIFIABLE rather than
+  guessing Docker Hub. Re-cut and re-promote any release you still rely on.
+  Keying by bare name could not survive per-workload registries — two envs
+  building the same app to two registries collapsed onto one entry, so a prod
+  promotion could read a digest that only ever existed in the dev registry.
+
+  Also removed: `BuildState.Registry` and `buildtarget.State.Registry` (Image
+  now holds the full repository), `forge env new`'s `REPLACE_ME_REGISTRY` knob
+  (an env has no registry to get wrong), and the `registry` field the render
+  projected onto each cluster runtime.
+
+- **BREAKING: a `forge.ShellBuild` `cmd` is plain KCL, run verbatim — the
+  `${TOKEN}` substitution is gone.** Forge used to rewrite a fixed vocabulary
+  into the command before running it — `${IMAGE}`, `${TAG}`, `${CODE_VERSION}`,
+  `${SERVICE}`, `${TARGETARCH}`, `${REGISTRY}`, `${PROJECT_DIR}`, `${ENV}` and
+  `${BUILD_CWD}`. It no
+  longer substitutes anything and exports no variables of its own: the rendered
+  string is handed to `sh -c` byte-for-byte, from the declared `cwd`, with the
+  declared `env` merged onto the process environment. Every `$VAR` in a command
+  is now the shell's, so `$PWD` and `$HOME` work.
+
+  Write the values in KCL, where the command is composed and the value already
+  lives: `forge.target_arch()` (new, and the reason `target_arch` is now a
+  reserved render input), `forge.image_tag("<env>")`, `forge.env()`,
+  `file.workdir()`, the image reference itself, or a literal. To keep a
+  `${NAME}` spelling, declare `NAME` in that build's `env` map and the shell
+  resolves it.
+
+  `forge lint` (`shellbuild-tokens`) and `forge generate` both REFUSE a leftover
+  token. That is a gate rather than a warning because one of them fails
+  silently: `GOARCH=${TARGETARCH}` reaching the shell unset becomes `GOARCH=`,
+  which Go reads as "unset" and builds for the host — so an amd64 cluster gets
+  an arm64 binary whose only symptom is an `exec format error` crash-loop. The
+  rest (`docker push /:`) fail loudly.
+
+  Forge now resolves the build's tag BEFORE the render and binds it as the
+  existing `image_tag` input, so a rendered `cmd` already names the tag the build
+  records and pushes (`--release` > `--tag` > the image's own pin > the env's
+  `image_tag` > `git describe`, unchanged). Two casualties of the old pass are
+  also gone: `forge project audit`'s `conflict_tokens` / `conflict_count` (with no
+  built-in tokens there is nothing for a declared env key to collide with) and
+  `forge doctor`'s substituted-command preview, which now prints the exact string
+  forge will run instead of one built from `<registry>`/`<tag>` stand-ins.
+
+  Escaping, worth knowing before you write one: braced-dollar is KCL's own
+  interpolation, so backslash-escape a shell `${HOME}` or use a raw `r"..."`
+  string. A DOUBLED dollar is not an escape — KCL reads it as an undefined name
+  and refuses to compile.
+
+- **BREAKING: every rollback surface is gone — recovery is roll forward.**
+  `forge env deploy --rollback`, `forge env promote --rollback`, the KCL
+  `forge.External.rollback_cmd` field, and every provider's rollback path
+  (`kubectl rollout undo`, compose override pinning, the static-site
+  re-sync, the hosted `DeployService/Rollback` call) are removed, along with
+  the deploy's skip-the-migration-on-a-rollback machinery. A rollback claims to
+  undo a release it cannot undo: the release already ran its migrations and
+  wrote data. Fix forward instead — cut a release and promote it. Binding an
+  env to an OLDER release is still an ordinary `forge env promote`; the plan
+  labels it `direction BEHIND` and warns that it undoes nothing. Existing
+  ledgers keep working: a `"kind":"rollback"` entry reads as the promote of
+  its release. Delete `rollback_cmd` from any `forge.External` block.
+
+- `database.migration_safety.down_files_allowed_until` and the
+  `forge project upgrade` step that stamped it. Every down migration is now a
+  `no-down-migration` lint error, with no grandfathered history: forge never
+  runs one, so deleting it is always safe. A forge.yaml still carrying the key
+  loads with a warning naming the fix.
+- `go.work` from forge's own repo. It existed to stitch `pkg` to the root
+  module, and it was also what hid the stale-require bug: every in-repo build
+  resolved `./pkg` locally and stayed green while `@main` was uninstallable.
+- `buildinfo.PkgVersion`/`SetPkgVersion`, `PkgModuleVersion` (already dead),
+  `Build.PkgPath` and the `forge/pkg` line in `forge version` — a second
+  version axis with nothing left to describe.
+- `docs/pkg-versioning.md`, replaced by `docs/versioning.md`.
 
 ### Fixed
+
+- **A mock role may embed a role another file of its package declares.** The
+  mock generator read only the file it generates from (`contract.go`, or a
+  marked `deps.go`), so `type Repo interface { Reader; ... }` with `Reader` in
+  `roles.go` produced a `MockRepo` without `Reader`'s methods, and generate's
+  build validation failed with "does not implement". The embed is now resolved
+  from the type-checked package, the way #1109 resolves another package's,
+  with the package's own types unqualified and the sibling file's imports
+  carried over.
+- **`forge fix connect-errors` sees an As-style helper as a `*connect.Error` reader.**
+  - It recognised `errors.As` itself, but not testify's `require.ErrorAs(t, err, &ce)` / `assert.ErrorAs`, a suite's `ErrorAs` method, or a project's own helper: each takes the target as `interface{}`. A handler package whose only reader was one of those got bare kinds, and its tests failed (reliant's `internal/handlers/approval`: four tests).
+  - Any call handed a `**connect.Error` is now a reader, so that package keeps `svcerr.ToConnect(…)` and the report names the call.
+- **`forge observe alerts check` and `forge observe profile` reach the ClickStack `forge env up` started.**
+  - env up runs each env's compose services in their own project (`forge-<id>-<env>`). Both commands exec'd into the default project, so they reported a running ClickStack as not running.
+- **`docker compose up <service>` interpolates the whole compose file with every workload's declared env.**
+
+  - Bringing up `otel-profiles` (which depends on `clickstack`) with only its own variables recreated `clickstack` on the file's default ports. On a machine running a second stack, the bind failed.
+
+- **`forge/pkg/alerting/amconfig`: the Alertmanager configuration renderer.**
+  Moved verbatim from the control plane, which renders every org's routing
+  with it, so a local stack can render with the SAME code: one route per org
+  matched strictly on `reliant_org_id` with a blackhole default, per-org
+  receiver names, secrets as `*_file` references only, autopilot receivers as
+  continue:true observers. `TestNoRouteDeliversAcrossOrgs` runs over
+  Alertmanager's real routing tree. New: `Settings.AllowHTTPWebhooks` (false
+  by default) lets a local stack, whose receivers are the developer's own
+  machine, use plain-http webhooks; a renderer serving several orgs never sets it.
+
+- **`forge.OpenBao` renders (SF6).** `Bundle.openbao = forge.OpenBao {}` now
+  lowers to a `forge.dev/v1alpha1 OpenBao` record that `pkg/deploy/openbao`
+  expands into the secret store and what converges it. Defaults run: Raft x3 on
+  PVCs with `retry_join` auto-join, TLS from a namespaced self-signed
+  cert-manager CA, a static seal, audit to stdout and a file, a PDB and zone
+  spread. `OpenBaoPostgres` renders a Deployment with the cloud-sql-proxy
+  sidecar over Workload Identity. Two content-addressed Jobs run one embedded
+  `converge.sh`: a pre-rollout **widen** (the union of the applied and new
+  access document) and a post-rollout **converge** (initialise, write the
+  recovery Secret before converging anything, apply the document from
+  `pkg/secretaccess`, narrow what it no longer contains, revoke root).
+  `consumers` become exact-grant roles; `delegated` gets the access-admin policy
+  and no KV capability. A plaintext listener needs a `transitional_reason`, a
+  glob `read` needs a `wildcard_read_reason`, and both are listed in the
+  render's `openbao.warnings`. The release shape now records the store-backed
+  secrets, generated names, pins and both components (`forge env shape`).
+  Left for later: the bootstrap source and recovery escrow (hook seams are in
+  the Job), the `public` endpoint, the Raft snapshot CronJob (refused if
+  declared), and the OIDC writer.
+
+- **`forge secret` writes and lists store-sourced secrets, and `forge env secrets
+verify|adopt` migrate a Secret onto ESO (SF10).** A name a store-backed
+  `forge.ExternalSecret` (`forge.StoreSource`) reads or generates now lives in that
+  ExternalSecret's store, whatever the env's `secret_provider` is:
+
+  - `forge secret set` / `list` reach a `HostedStore` through the control plane's
+    write-only API, a `GCPSecretManagerStore` with Application Default
+    Credentials, and a self-run `OpenBaoStore` by signing in as the
+    `forge-secret-writer` service account with a ten-minute token minted from
+    your own kube context (design N2): no credential is stored, and cluster
+    access is all it needs. `--store` picks one when two stores declare a name.
+  - `forge secret import` copies existing values in, create-only (check-and-set
+    0; for Secret Manager, "no usable version yet"), so a re-run can never
+    overwrite a value that was rotated since. `--from <ns>/<secret> --map
+key=NAME` reads a cluster Secret with your kube context; a NAME with a value
+    on stdin or `--from-file` imports one. `--to-bootstrap [--project]` writes a
+    `BootstrapSecret`'s Secret Manager container. `--dry-run` reads and reports.
+  - `forge env secrets verify <env> [<secret>]` compares a live Secret with the
+    store's copy per key, and prints `match` / `no-match` and which side is
+    missing: by default against `<name>-eso-shadow` (a source with `shadow =
+True`), or `--against gsm:<project>` for the Secret Manager parity check.
+  - `forge env secrets adopt <env> <ns>/<secret>` strips the stale
+    `kubectl.kubernetes.io/last-applied-configuration` annotation (a full copy of
+    the applied values) and asserts nothing owns the Secret by ownerReference.
+
+  No command prints a secret value or any digest of one, and none takes a value
+  as an argument: values come from stdin, `--from-file`, or a store or cluster
+  Secret you already hold. Both are pinned by tests that sweep every command's
+  output and error for a canary in raw, encoded and hashed form, on success and
+  on failure paths where the remote echoes the request.
+
+- **A config message's `buf.validate` rules are checked as it loads.** Field
+  rules (a port's range, a positive duration) and message-level CEL
+  (`BILLING_PROVIDER=stripe` needs `STRIPE_SECRET_KEY`) on a `proto/config`
+  message now fail `config.Load*`, so a root's command refuses a bad value in
+  its `RunE`, before `runRoot` binds a port or applies a migration; and
+  `config.Root.Validate` reports every violation over a rendered environment.
+  Each names the field's path, its variable and flag, and its value unless the
+  field is sensitive. `config.Validate` runs them too. A config that declares
+  no rules loads exactly as before.
+
+- **A store-backed `forge.ExternalSecret` now renders the External Secrets Operator
+  objects that sync it (SF5).** For each (cluster, namespace) holding one:
+  a `reliant-secrets` ServiceAccount, a Role + RoleBinding letting ESO mint that
+  service account's token and no other (`resourceNames`, matching ESO's
+  `rbac.serviceAccountTokenCreate: false`), one namespaced `SecretStore` per store
+  (the `vault` provider with JWT auth over a projected token for `HostedStore` and
+  `OpenBaoStore`; `gcpsm` over ESO's own Workload Identity for `GCPSecretManagerStore`),
+  and the `ExternalSecret`: one `remoteRef` per store name, `source.pin` as the KV-v2
+  `version` (rotation is a reviewed pin bump), `source.templates` as an ESO v2
+  template, `creationPolicy` Orphan or Merge with `deletionPolicy: Retain` so a store
+  outage or a Flux prune never removes a synced Secret. `shadow = True` syncs to
+  `<name>-eso-shadow` for the migration compare. The login role is the one
+  `pkg/secretaccess` derives, pinned by a test. `StoreSource` gains `cluster` (the
+  context it lands on; default the primary cluster); `HostedStore` gains `org` and
+  `env_id`, the control plane's ids that address its values. Refused at render, each
+  naming its escape: a HostedStore without ids, an OpenBao no other cluster can reach,
+  a GSM store with no ESO Google identity, a template calling a function ESO lacks or
+  that changes every sync, and one namespace configuring one store kind two ways.
+  Nothing renders for a Bundle with no `source`.
+
+- **A drained Connect stream parked in `Receive` actually ends, and handlers can
+  stop their own readers: `serverkit.AbortReceive(ctx)`.** A server-side
+  `Receive` reads the request body and no context wakes it; Connect closes the
+  body only after the handler returns. So the drain, which ended streams by
+  cancelling their contexts, never ended a bidi handler blocked in `Receive` (it
+  held the shutdown to the end of the budget), and a handler that read on a
+  goroutine of its own could not stop it before returning — leaving it in
+  `Receive` after the handler returned, which Connect forbids and which races
+  otelconnect's span bookkeeping. `Streams.Install` (every `NewHTTPServer` /
+  `NewListener`) now serves each request with an abortable body; a stream the
+  drain ends has its reads aborted right after its context is cancelled (the
+  read fails with `svcerr.ErrServerDraining`, so the client contract is
+  unchanged), and `serverkit.AbortReceive(ctx)` / `CanAbortReceive(ctx)` let a
+  handler end its own reads (`ErrReceiveAborted`). HTTP/2 closes the body;
+  HTTP/1.1 sets a read deadline, because its `Close` waits for a pending read.
+  The response is untouched, and unary routes are unaffected. Skill:
+  `services/shutdown`.
+
+- **`svcerr.WrapOr(err, fallback)`: keep a verdict if there is one, otherwise
+  say what failed.** A classified `err` (`svcerr.IsClassified`: an svcerr kind,
+  a context cancellation or deadline, or a `*connect.Error`) is `Wrap(err)`;
+  anything else is `Wrap(WithCause(fallback, err))` — the client reads the
+  fallback's code, message, reason and class, and `err` is the logged cause.
+  It is the one spelling for a collaborator's error, replacing
+  `connect.NewError(connect.CodeInternal, err)` (publishes `err.Error()`,
+  flattens a NotFound) and `svcerr.Internal("…")` with `err` dropped (a deadline
+  becomes a server fault, the cause never logs). `pkg/crud` uses it in place of
+  its private copy, with no change to what it returns. A remote Connect
+  client's error is a `*connect.Error` and would pass through, so never
+  `WrapOr` one: wrap it in your own verdict with `WithCause`.
+
+- **Boot `/readyz` names the graph node boot is waiting on.** A composition
+  root's boot probes used to answer `503 {"status":"not_ready"}` with no checks
+  for the whole of graph construction, so a constructor that blocked — a
+  provider waiting on another role's migrations, a dial that retries — left a
+  stuck pod with no signal. `graphkit.Builder` now reports each node's
+  construction to a `graphkit.Progress` (`ReportTo`; one method,
+  `Constructing(node) (done func(error))`), which `*serverkit.BootProbes`
+  satisfies, and the generated graph's `build` reports to the boot probes on
+  `Graph.Ctx`. During boot `/readyz` lists every node already built
+  (`{"name":"pool","ok":true}`, completion order), then each under
+  construction (`{"name":"db_repo","ok":false,"detail":"building"}`, outermost
+  first), then the dependencies serverkit waits on (`schema`, the database).
+  Check names are graph node names. A node constructing for more than 10s is
+  logged (`boot: still constructing a graph node`, naming the innermost node
+  and the path that reached it) every 10s, and again when it finishes.
+  Post-build readiness is unchanged. Existing projects: `forge generate`.
+
+- **`forgeconv-handler-connect-error`: every `connect.NewError` in a handler
+  package is a warning.** A `*connect.Error` is never redacted — svcerr's
+  interceptor passes it through as built — so `connect.NewError(code, err)`
+  publishes `err.Error()` and overrides any code `err` already carried. Each
+  finding says which kind it is: a fixed message (`forge fix connect-errors`
+  rewrites it with the same code and message), an error value (use
+  `svcerr.WrapOr`), or `nil`. Generated and test files are skipped. It warns
+  by default so no project goes red on the bump; set
+  `lint.rules: {forgeconv-handler-connect-error: error}` once migrated.
+  **Changed with it:** `forgeconv-no-handler-error-mapping` no longer skips a
+  file that imports svcerr. One `svcerr.Wrap` in a file — or a codemod adding
+  the import — used to silence every mapper beside it without fixing one; a
+  project whose mappers were hidden that way sees them as warnings now.
+
+- **The release shape records store-backed secrets (`pkg/release`, SF3).** A shape
+  gains four optional fields a control plane reads to serve a store-backed
+  `forge.ExternalSecret`: `store_secrets` (per cluster, namespace and store, the
+  names the namespace reads, their version pins and `immutable` marks),
+  `generated_secrets` (the values to mint when the store has none, carrying
+  `pkg/secretgen.Spec`'s parameters; `ShapeGeneratedSecret.Spec()` converts),
+  `openbao` and `external_secrets_operators` (which clusters declare the
+  components). `Shape.StoreBindings(store)` returns the `secretaccess.Binding`s of
+  one store, so `secretaccess.Derive` gets exact-path policies from a shape alone.
+  `release.ProjectStoreSecrets` projects the render's records (`required_secrets[]`
+  with a `source`, `openbao`, `external_secrets_operators[]`) into them,
+  deterministically and refusing ambiguity (a Secret that reaches no cluster, two
+  sources that disagree on a pin or a generation); `bundle.ShapeInput.Store` carries
+  the result into the one shape projection. A shape never carries a value: a
+  generated secret is a recipe and a pin is a version. The fields are a bundle-document
+  feature (`shape-store-secrets`, `BundleFeatureStoreSecrets`), withheld from a control
+  plane that does not name it, and omitted when empty, so every shape recorded before
+  them encodes and hashes exactly as it did.
+
+- **`forge fix connect-errors`: hand-built Connect errors onto svcerr, without
+  changing a code or a message.** It rewrites every `connect.NewError` whose
+  client-visible code and message an svcerr spelling reproduces exactly —
+  `errors.New("chat not found")` under `CodeNotFound` → `svcerr.NotFound("chat")`,
+  other NotFound prose → `svcerr.WithMessage(svcerr.ErrNotFound, …)`,
+  `fmt.Errorf(f, args…)` without `%w` or an error argument →
+  `svcerr.<Kind>(fmt.Sprintf(f, args…))` — and, in the tests of a package that
+  now returns bare kinds and of its importers, `connect.CodeOf` →
+  `svcerr.Code`. A bare kind is written only in a handler package, where the
+  context is `error` and nothing reads a `*connect.Error` in process in the
+  package, its tests or an importer's code; everywhere else (interceptors, `*connect.Error`
+  results, a package such a reader sees) it is `svcerr.ToConnect(…)`, and a
+  re-run drops the wrapper once the reader reads `svcerr.Code`. Every site it
+  cannot rewrite exactly — an error value (`svcerr.WrapOr` is the reviewed
+  fix), nil, a computed message or code — is listed with its reason. It is
+  type-checked (`go/packages`), idempotent, `--dry-run` prints each rewrite as
+  `file:line: old → new`, and its proof is a corpus whose real-client wire
+  output is identical before and after. Over reliant: 902 sites rewritten (334
+  to bare kinds, 568 kept a `*connect.Error`), 71 test assertions, 341 sites
+  listed, and its build, vet and handler tests pass unchanged. On request
+  only (`forge project upgrade` does not run it); the playbook is
+  `forge skill load migrations/v0.1.47/connect-errors`.
+
+- **The schema for platform secrets: `forge.OpenBao`, `forge.ExternalSecretsOperator`
+  and store-backed `forge.ExternalSecret`s (declarations only, nothing renders yet).**
+  Two opt-in components on the Bundle, like `observability` and `identity`:
+  `openbao = forge.OpenBao {}` (Raft x3 by default, TLS listeners, a generated
+  static seal key escrowed through `bootstrap_source`, audit on, a service-account
+  writer) and `external_secrets_operators = [forge.ExternalSecretsOperator {cluster}]`
+  (one hardened, cluster-wide ESO per cluster; a second for one cluster is refused).
+  A `forge.ExternalSecret` gains `source = forge.StoreSource {store, data, templates,
+generate, pin, immutable, refresh, creation_policy, shadow}` over a `HostedStore`,
+  `OpenBaoStore` or `GCPSecretManagerStore`, and `out_of_band_reason` for the ones
+  that stay out of band once any is store-backed. `forge.BootstrapSecret` and
+  `bootstrap_source = forge.GCPSecretManager {project} | forge.OutOfBand {}` name the
+  values the store needs before it can serve a read. `forge.GeneratedSecret` gains
+  kinds `password`, `ec_p256_pkcs8`, `rsa_2048` and `ec_p256_selfsigned` (the closed
+  set `pkg/secretgen` implements); `FileSecrets.generate` stays `random` only.
+  Every refusal names its escape: a plaintext listener needs `transitional_reason`, a
+  glob `read` grant needs `wildcard_read_reason`, a pin above 1 on an `immutable`
+  name is refused. A Bundle that declares none of this renders byte-for-byte as before.
+
+- **What the owned `runRoot` reads is every root's config reach.** `generate`
+  reads `cmd/<bin>/cmd/serve.go` the way it reads compose.go: `cfg` from
+  `config.LoadReach`, `root.Configs.<Msg>`, and each config value handed to a
+  function of the command tree, by the same selector rules. A setting the
+  process policy reads under its own name (an `observability` block's
+  `OTEL_*`, `PROMETHEUS_ENABLED`, a `health_port`) is now in `ROOTS`, in
+  `pkg/config` `Roots()` (so `Validate` no longer calls it unreached) and in
+  what `LoadReach` demands; before, only forge's own serve-field names counted.
+  A database field still counts only for a root that opens the database, and
+  a tree with no runRoot keeps the scaffolded serve fields.
+- **`//forge:group <path>` declares a group command's help.** A comment of its
+  own in `internal/app`, read by the root doc's rule (first paragraph the
+  Short, the rest the Long), replaces roots_gen.go's generic "The server roots"
+  on the group command above `server api` / `server gateway`. A path no root
+  runs beneath, or a root's own command, is a generate error.
+- **`forge cloud identity invite|reset --return-code`** hands the one-time
+  password-set code back (with the env's `/auth/reset` link filled in) for you
+  to deliver, the only way to invite or reset where the environment declares no
+  `smtp`: the control plane refuses both there rather than send nothing.
+  `status` prints `Mail: none|smtp` (`mailDelivery` in `--json`). `reset` now
+  says it emailed a link, and `invite` no longer claims an unsent email
+  succeeded. The `deploy/managed-identity` skill describes every verb, the
+  `identity:read` / `identity:manage` scopes (machine credentials carrying them
+  are accepted; a Reliant session is elevated on demand) and the code flow; it
+  had said machine credentials were refused and that an invitation's code could
+  not be redeemed by `/auth/reset`.
+- **`pkg/secretaccess` and `pkg/secretgen`: the pure halves of store-backed
+  secrets.** `secretaccess.Derive` maps `{scope, clusters, per-namespace secret
+names}` to OpenBao JWT auth mounts (`jwt-<cluster>`), roles (one per cluster
+  and namespace, bound to the namespace's `reliant-secrets` service account and
+  the cluster's audience, issuing 10 minute batch tokens) and ACL policies that
+  grant `read` on exact paths only: no globs, no list, no metadata, unless a
+  `WildcardRead` carries a reason. Output is deterministic, so forge's converge
+  Job and a hosted control plane derive identical documents; `Widen` and
+  `Removed` implement widen-then-narrow around a promotion. `secretgen`
+  generates the declared kinds (`random`, `password` with one character of every
+  class, `ec_p256_pkcs8`, `rsa_2048`, `ec_p256_selfsigned`) and `Mint` writes
+  them create-only, refusing to complete a half-written key pair. A docker smoke
+  against OpenBao 2.6.2 (skipped under `-short`) proves JWT roles accept
+  `token_type=batch` and that the derived policy reads exactly the declared
+  names.
+
+- **`forge cloud identity` administers users, not just reads them.** New verbs,
+  each one rpc of `controlplane.v1.IdentityService`: `set-roles <env> --user
+<id|email> --role a --role b` (or `--none`), `reset`, `lock`, `unlock`,
+  `delete` (asks first; `--yes` skips the question; a closed stdin refuses) and
+  `revoke-sessions`. `--user` takes a user id, or an email matched exactly
+  (case-insensitively) through `users`; no match, or two, is a refusal. The
+  scopes are `identity:read` for reads and `identity:manage` for every verb that
+  changes a user. forge presents neither up front: a Reliant session or `forge
+login` credential is traded for the scope the control plane's 403 names, for
+  an hour, exactly as `deploy:read` and `secret:write` are. An explicit
+  each one rpc of `controlplane.v1.IdentityService`:
+  `set-roles <env> --user <id|email> --role a --role b` (or `--none`), `reset`,
+  `lock`, `unlock`, `delete` (asks first; `--yes` skips the question; a closed
+  stdin refuses) and `revoke-sessions`. `--user` takes a user id, or an email
+  matched exactly (case-insensitively) through `users`; no match, or two, is a
+  refusal. The scopes are `identity:read` for reads and `identity:manage` for
+  every verb that changes a user. forge presents neither up front: a Reliant
+  session or `forge login` credential is traded for the scope the control
+  plane's 403 names, for an hour, exactly as `deploy:read` and `secret:write`
+  are. An explicit
+  `--token` is used as given. `invite` is unchanged.
+- **`forge project new --verify`** keeps the compile check at the end of the
+  bootstrap generate (see Changed).
+- **A CHECK that mirrors a Go set declares it, and `forge lint` keeps the two
+  equal.** In a migration, write
+  `COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set accesstoken.AllScopes'`.
+  The new closed-sets lane, which runs by default (`--closed-sets` runs it
+  alone), finds the CHECK the migrations last defined. It reads
+  `col <@ ARRAY[…]`, `col = ANY (ARRAY[…])` or `col IN (…)`, with or without
+  casts, and compares the values with the named set. A mismatch fails the
+  lane, naming the missing and extra values and printing the forward
+  migration. `forge db migration new --closed-set <constraint>` writes that
+  migration. The lane reads migration text, so it
+  needs no database and runs on the `-short` tier. That is the tier where a
+  forge bump adding `identity:read`/`identity:manage` went unnoticed until it
+  turned a project's main red.
+  - forge exports `accesstoken.AllScopes` and `accesstoken.AllResourceKinds`.
+    A project names its own set as `<import path>.<Var>`; forge type-checks
+    that package and executes none of it.
+  - postgres drops a constraint's comment along with the constraint, so the
+    lane also reports a CHECK that was replaced without re-issuing its
+    declaration.
+  - `forge:closed-set` is part of the catalog-marker vocabulary, so
+    `forge generate` and `--column-markers` reject a misspelled marker or one
+    on the wrong constraint kind. `schemadef.CheckConstraint` gains `Comment`.
+- **A project's own transaction openers are judged by
+  `forgeconv-tx-lock-under-serializable`.** A wrapper that takes an
+  `orm.TxPolicy` and runs the transaction itself (reliant's `Repo.RunTx`,
+  which keeps its own retry ladder) declares itself with
+  `//forge:tx-opener level-arg=<n> [body-arg=<n>]` on its func declaration;
+  the lint then finds a lock under SERIALIZABLE in its calls exactly as in
+  `RunTx`'s, matched by name and arity across the project, detached when it
+  takes no body. A marker that does not parse, or sits anywhere but on a func
+  declaration, is an error. The marker is in the `--go-markers` registry.
+  `orm.ResolveTxPolicy` / `orm.ResolveDetachedTxPolicy` validate such an
+  opener's policy as `RunTx` / `BeginDetached` do and return the full
+  options (level, access mode, attempt budget), the error naming the line
+  that called the opener.
+- **The scaffolded sign-up says what a password needs.** Sign-up used to answer
+  "That password does not meet the requirements." and never name one. The
+  login broker now serves the identity provider's own complexity policy at the
+  unauthenticated `GET /auth/password-policy`
+  (`{min_length, has_uppercase, has_lowercase, has_number, has_symbol}`, read
+  from Zitadel's `GET /v2/settings/password/complexity` with the broker's
+  token, cached for a minute), and a rejected password comes back
+  `400 {error, code: "password_policy", unmet:[...]}` naming **every** rule it
+  breaks (the provider reports only the first). The sign-up and reset forms show the
+  checklist up front and tick it as the person types; the server stays the
+  authority. New in `pkg/devidp`: `Client.PasswordPolicy`,
+  `PasswordPolicy.Unmet/Describe`, and `PasswordPolicyError.Rule`; `Register` now returns a
+  `*PasswordPolicyError` for a weak password. Existing projects keep their
+  owned `internal/app/login_broker.go` and screens; copy the new handlers from
+  a fresh scaffold.
+- **Self-serve password reset in the scaffold.** The broker mounts
+  `POST /auth/forgot` and `POST /auth/reset`, and the Next.js and Vite frontends get
+  static-export-safe `/auth/forgot` and `/auth/reset?userID=&code=&orgID=`
+  pages, so the reset links the control plane produces have somewhere to land.
+  `/auth/forgot` never reveals whether an address has an account and is limited
+  per address and per client IP. The forgot screen says plainly that the email
+  is sent only if the app's identity declares `smtp`. `pkg/devidp` gains
+  `SendPasswordResetLink`, `MintPasswordResetCode` and `FindUserByID`. There is
+  deliberately no scaffolded invite flow.
+- **ERROR log records carry the inputs an issue is grouped by.** Every record at
+  ERROR or above that goes through `observe.NewLogHandler` (the stdout line and
+  the OTLP logs bridge alike) now has `code.function.name`, `code.file.path` and
+  `code.line.number` from the record's PC, and, when it carries an error,
+  `exception.type` (`%T`) and `exception.message` (1 KiB bound) of the
+  _innermost_ error: svcerr's withheld cause first, then `Unwrap` to the end,
+  the first branch of a multi-error. Below ERROR nothing is added and nothing is
+  allocated. The PC is the logger's, so a call into `Handler().Handle` with a
+  caller-built record (Temporal's slog adapter, Sentry ELECTRON-CM) names that
+  caller instead of a frame inside the handler chain.
+- **`observe.LogPanic`** logs a recovered panic with `exception.stacktrace`,
+  `exception.type`/`message` and the PANICKING frame as its call site, not the
+  recover site. `RecoveryInterceptor` (unary and stream), `RecoverMiddleware`
+  and `middleware.HTTPStack`'s recovery use it; the old `stack` attribute is
+  now `exception.stacktrace`.
+- **`observe.ErrorGroup(ctx, name)`** returns the opt-in `error.group`
+  attribute, the escape hatch for pinning a record to a named issue.
+
+- **A bridged project no longer rebuilds forge for a file no build reads.**
+  forge's bridge-skew check counted every dirty path in the linked forge
+  checkout as "uncommitted changes the binary was not built from" and handed
+  each command to a forge rebuilt from the checkout, keyed on the newest
+  edit's mtime. A file that cannot reach a build — the e2e shard's test2json
+  log, growing in the checkout's root for the whole run — so rebuilt forge on
+  every command, and a re-run of `forge generate` ran a different binary and
+  never recorded its fixed point (`TestE2EFixtureCorpusCRUDLifecycle`,
+  `CPForgeShaped`, `ZeroService` red on main). Now only a source edit counts:
+  a Go build file, or any file beneath a directory holding a non-test Go
+  package (where `//go:embed` reaches: templates, KCL, skills). A cached
+  bridge build is also keyed on its Go settings (`GOFLAGS`, `CGO_ENABLED`,
+  `GOOS`/`GOARCH`, …) and is never replaced once published, so a process can
+  no longer have the binary it runs swapped for a differently-built one. The
+  e2e shard writes its files under `$RUNNER_TEMP`, outside the checkout.
+- **A project without codegen works straight after `project new`.**
+  `forge project new --disable codegen` (the frontend-only shape) printed "initial
+  code generation failed", and `forge generate`, `go build` and `forge lint` all
+  failed on it. Its go.mod required and replaced a `<mod>/gen` module that only
+  codegen writes; it got no go.work, so `--link-forge` had nothing to bridge;
+  and `cmd/<bin>/cmd/root.go` called `rootCommands`, which only the codegen
+  lane defines. Now gen's require, replace, `gen/go.mod` and go.work's
+  `use gen` follow one predicate, every kind that imports forge gets a go.work,
+  and the scaffold (then `forge generate`) writes a `roots_gen.go` whose
+  `rootCommands` returns no roots, plus the `metrics schema` command every
+  other service has, so root.go is the same file in every shape. The other
+  `--disable` values were already green; `TestE2EProjectNewDisableShapes` now
+  scaffolds, generates, builds and lints every one. `--service` with
+  `--disable codegen`, and `--frontend` with `--disable frontend`, are refused
+  up front: they used to drop the component without a word (the latter left an
+  empty `frontends/<name>/`).
+- **Every `forge scaffold <noun>` leaves the project lint-green, with no
+  `forge generate` after it.** `scaffold frontend` wrote
+  `proto/config/v1/<fe>_config.proto` and stopped, so `gen/forge_descriptor.json`
+  was stale and `forge lint`'s convention and graph lanes refused it until the
+  user ran `forge generate`; `scaffold adapter` did the same to `config.proto`
+  (and `config.<Name>Config` did not exist yet), and `scaffold package` left
+  `observe_chain.go` unreferenced until generate wrote `middleware_gen.go`.
+  All three, and `forge package new`, now end with a full generate run, as
+  `scaffold service` and `scaffold rpc` already did; `--no-generate` skips it
+  for a round that stages several scaffolds. A failed run keeps what the
+  scaffold wrote and exits non-zero. Three templates were red on their own:
+  the operator's `doc.go` and the binary's `Run` doc carried space-indented
+  doc-comment code blocks gofmt rewrites, and every CRD declared
+  `addKnownTypes_<Type>` (revive `var-naming`, now `addKnown<Type>Types`),
+  left a doubled blank line in its config and composite types (gofmt), and
+  tested the deprecated `ctrl.Result.Requeue` (staticcheck SA1019). New
+  guards: `TestE2EScaffoldNounsLeaveLintGreen` scaffolds each noun into a fresh
+  project and runs `forge lint` straight after it, and the `-short`
+  `TestComponentScaffolds_GoIsFormattedAndNamedForLint` checks what the
+  operator, crd, binary, worker and webhook scaffolds write.
+- **A fresh vite-spa frontend has zero eslint warnings.** It opened with nine
+  `react-refresh/only-export-components` warnings: files that exported a hook,
+  a context or a helper beside their component, which defeats Fast Refresh.
+  The non-components moved to modules of their own — `useAuth` to
+  `src/lib/auth/use-auth.ts`, `useEvent`/`useEventBus` to `src/lib/use-event.ts`,
+  `usePasswordPolicy` to `src/lib/auth/use-password-policy.ts`,
+  `brandThemeToCssVars` to `src/lib/theme/brand-theme.ts`, `FormFieldContext`
+  to the new `form_field_context` library component, and the provider stack
+  out of `main.tsx` into `src/providers.tsx`; `isExternalHref` and
+  `monoLength` are no longer exported. The rule is unchanged. The frontend
+  lint e2e tests now fail on any eslint warning, not only on errors.
+- **A fresh `forge project new` passes its own `forge lint` again.** The login
+  broker (`internal/app/login_broker.go`) took `ctx` second in
+  `writePasswordRejection`, which revive's `context-as-argument` rejects; the
+  sign-in page and reset form imported out of `import/order`; the password
+  test missed an import-group blank line and, on vite-spa, declared two unused
+  parameters; vite-spa's eslint linted the generated `public/config.js`
+  (`no-undef` on `window`); and the cli kind's `cmd/<name>/version.go` carried
+  a doc-comment code block gofmt rewrites. A new `-short` tripwire
+  (`TestFreshScaffold_GoIsFormattedAndTakesContextFirst`) checks every Go file
+  the service, cli and library kinds write for both Go rules, and
+  `TestE2EFreshScaffoldLintExitsZeroForEveryKind` runs the real `forge lint`
+  on fresh cli and library projects.
+- **The E2E Suite runs on main again.** Since #1056 its shards skipped on every
+  push and nightly call: a job with no `if:` inherits the skip of the
+  pull-request-only `changes` job two hops up, though `prepare` succeeded. The
+  shards now say when they run, and `internal/ciguard`'s
+  `TestNoJobInheritsAnUpstreamSkip` rejects that shape in every workflow.
+- **`forge tools install` replaces a GOBIN binary on Windows while something
+  has it open.** The atomic install (#1062) renamed the staged binary over the
+  old one with a bare `os.Rename`, which Windows refuses while any handle, such
+  as a virus scanner or a parallel forge, has the target open. It now retries
+  for a moment, as every `atomicfile` write already does (new
+  `atomicfile.Replace`).
+- **The main-red override judges main's latest run that has a verdict.**
+  `scripts/ci-main-red.sh` compared against main's newest completed run, which
+  is often one a later push cancelled, and refused #1071 because that run
+  (25283f30) had no failed job. It now skips cancelled and unfinished runs. It
+  also drops the CRs a native `jq.exe` writes, which made `TestMainRedOverride`
+  fail on Windows since #1057.
+- **A scaffolded Next.js frontend builds again against `@opentelemetry/api`
+  1.10.** That release ships only `.d.mts`/`.d.cts` declarations, the tsconfig
+  peer pin was aimed at `dist/index.d.mts`, and Next's webpack read it as
+  JavaScript (`Module parse failed: Unexpected token`). Only a `.d.ts` is pinned
+  now; a package with none is pinned by its directory.
+- **Docs no longer promise mail that is never sent.** The `deploy/managed-
+identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
+- **Docs no longer promise mail that is never sent.** The
+  `deploy/managed-identity` skill and the `IdentitySMTP` schema said that omitting `smtp` routes
+  mail through a platform relay and that an invitation emails a link. Neither is
+  true: with no `smtp`, an instance sends no mail at all. The skill now says so,
+  sketches building invites by hand (`InviteUser` + `MintPasswordResetCode` +
+  `/auth/reset`), and explains that public `/auth/register` is on by default and
+  how to turn it off for an invite-only app.
+- **`forge tools install` replaces a GOBIN binary atomically.** It ran
+  `go install` straight into GOBIN. When cmd/go cannot rename its build into
+  place (a setgid GOBIN, or a `$WORK` on another filesystem), it removes
+  the file and rewrites it in place. A parallel generate starting `buf` or
+  `protoc-gen-go` at that moment could find nothing, or run a half-written
+  binary. The install now builds into a temp directory inside GOBIN and
+  renames the result into place.
+- **Tracing remediation says `--fix`.** Lint became report-only by default,
+  but every tracing finding's remediation, the auto-fix hint, the generated
+  `NewInstrumented` comment and the observability skills still said
+  `forge lint --tracing` rewrites the code. Run as told, it reported the same
+  findings and rewrote nothing (control-plane's 46 contract constructions).
+  They now say `forge lint --tracing --fix`.
+- **A primary key is server-allocated only when the schema says so.** The ORM
+  tagged every integer key `,autoincrement`, so reliant's
+  `legacy_credential_copy` (`id integer PRIMARY KEY`, no default, no sequence)
+  had its caller-set id left out of the generated `Create` and the insert
+  failed NOT NULL; each integer member of a composite key got the same guess.
+  The tag now follows the applied schema — `serial`/`bigserial`, an identity
+  column (schemadef reads `is_identity`; the catalog reports no default for
+  one), or any `DEFAULT` — so a `uuid DEFAULT gen_random_uuid()` key is the
+  database's too, where `Create` used to ULID-fill it and fail 22P02. `Create`
+  now leaves only a ZERO server-allocated key to the database; a key the
+  caller set is inserted as set.
+- **No lint rewrite path touches `testdata`.** The Go format pass and its
+  report-only diff skip any path with a `testdata` segment (not only a pruned
+  directory), the frontend prettier walk now skips it too, and the structured
+  driver (`--quiet`, `--scope`) no longer hands golangci-lint `--fix` under
+  `forge lint --fix` — the rewrite #1041 removed from the text driver only.
+  The reported rewrite of `internal/linter/slowtest/testdata/src/a/a_test.go`
+  came from the forge embedded in reliant, pinned before #1018.
+- **pgtest's shared server survives a slow moment and a long run.** An
+  attaching process probed the cross-process shared embedded server with a
+  2s connect and 3s ping and, on a miss, `pg_ctl stop -m fast`ed it — under
+  every other process using it, which failed mid-test with 57P01
+  "terminating connection due to administrator command" and 57P03 "the
+  database system is shutting down". A loaded or just-woken machine misses
+  that probe routinely (control-plane's integration lane failed that way in
+  four runs in a row). A live postmaster is now retried for 30s on the
+  monotonic clock; if it still does not answer and other processes use it,
+  the newcomer runs on a standalone server of its own and the shared one is
+  left alone. `reapStaleInstances` no longer SIGKILLs (and deletes the data
+  directory of) the pool's server while it has a live user, or a standalone
+  server while its owner lives, however old its pid file looks: a fan-out
+  outlives the 30-minute stale age, and a sleep ages every file by the wall
+  clock.
+- **`forge lint` skips `node_modules` Go packages in a project reached
+  through a symlink.** `go list` reports package directories under the
+  caller's `$PWD` spelling (macOS's `/var`, a symlinked home or worktree),
+  and the filter compared them with the resolved project path. So nothing
+  matched, and golangci-lint and the contract linter linted third-party Go
+  under `node_modules` again. A project directory that was itself a symlink
+  also skipped the search for `node_modules`. Both sides are now resolved.
+
+- **Parallel generates no longer fail pinning a codegen tool.** When the
+  protoc plugin on PATH does not match go.mod, forge installs the pinned one
+  into its cache. Two forge processes doing so at once (every fresh project's
+  first generate pins) could read a binary the other was still writing, and
+  failed with "installed binary reports unknown". The install now writes into
+  a private directory and renames the finished binary into place.
+- **`forge generate` composes correctly when go.mod is behind the tree.** The
+  composition graph types every node with one package load, and that load
+  fails outright on a go.mod that needs updating: a fresh clone, a
+  just-added `replace`, a dependency bump. The graph then fell back to names
+  alone. The server root held no nodes, `graph_gen.go` lost every node's
+  lifecycle, and `config_gen.k` refused the scaffold's own
+  `config_secrets = ["DATABASE_URL"]`. The tidy that ran after composition
+  repaired go.mod, so only the next run was right. A
+  `go mod tidy (pre-composition)` step now runs first on any project generate
+  has composed before.
+- **`forge lint --tracing` says what each rewrite did.** Its fix report
+  called every rewrite a log call, so a run that only renamed contract
+  constructions to `NewInstrumented` printed "34 log call(s) rewritten to pass
+  the request context" across 23 files. Each file now reports in the words of
+  the rule that rewrote it (`describeTracingFix`), the summary counts
+  rewrites, and the "can be rewritten automatically" hint counts
+  contract-uninstrumented warnings as well as log ones.
+- **A fresh project's first `forge lint` under CI passes.** `forge lint`'s
+  format lane skips a scaffold file nobody has touched, judged by the birth
+  hash in `.forge/scaffolded.json`. Of a frontend's scaffold, only `nav.tsx`
+  and `dashboard.tsx` were recorded. Every other file read as edited from
+  birth, so under CI, where lint is report-only, a new project failed on 31
+  template files prettier would re-wrap. Every scaffold-once file a frontend
+  scaffold writes, the core UI components and the seeded mock scenario
+  included, is now born with its hash.
+- **A generated store reports a missing row one way.** `Get<E>ByID`,
+  `Get<E>ByPK` and a view's `Get<E>ByID` returned `svcerr.NotFound`, while
+  `Update<E>`, `Update<E>Masked`, `Delete<E>` and `Delete<E>ByPK` returned
+  `orm.ErrNoRows`, so a caller touching both checked both. `crud.Repo` now
+  answers every by-key miss (and `crud.ScopedGet`'s) with
+  `svcerr.NotFound("<entity>")` carrying `orm.ErrNoRows` as its cause:
+  `svcerr.IsNotFound(err)` and `errors.Is(err, orm.ErrNoRows)` (=
+  `sql.ErrNoRows`) are both true. `svcerr.NotFound` is the answer because it
+  is the domain category `svcerr.Wrap` maps to CodeNotFound and a service can
+  return as-is; the sentinel stays reachable so a Persist closure that
+  swallows it (absent-is-success) and every existing check keep working. The
+  generated delegates now only forward, and no longer import `errors` or
+  `pkg/svcerr`. **Migration note:** nothing that checked either error breaks;
+  `ignoreNotFound`-style helpers that test both can test one. Two checks
+  that never fired now do: `errors.Is(err, sql.ErrNoRows)` after a `Get…`,
+  and `svcerr.IsNotFound(err)` after an Update or Delete. A caller that
+  compared the error with `==` (never correct: it was wrapped) or matched its
+  text sees `"<entity> not found"` in place of `"sql: no rows in result set"`.
+- **`Create<E>` and `Upsert<E>` keep a caller-set `updated_at`.** Managed
+  timestamps follow explicit-beats-default, the rule a `NOT NULL DEFAULT`
+  column follows: `created_at` and `updated_at` get now only when unset (zero
+  time, `nil`, `""`), and a value the caller set is kept — Create overwrote
+  `updated_at` unconditionally, so rows that carry their own times (reliant's
+  drafts and scenarios) had to bypass it. `Upsert` writes the same
+  `updated_at` on either branch. `Update`/`UpdateMasked` still always
+  re-stamp `updated_at`. **Migration note:** a Create of a struct that still
+  holds a stale non-zero `updated_at` (copied from another row) now stores
+  that value; zero it, or set it to now, to stamp.
+- **`List<E>` with no limit returns every row instead of the first 10,000.**
+  A limit-less `crud.Repo.List` was capped at 10,000 rows with no error and
+  no flag, so a table that outgrew it silently returned a wrong answer. The
+  cap is gone: no `orm.WithLimit` means all matching rows, as `ListAll`
+  already did. Bound a read with `orm.WithLimit`, or walk a growing table a
+  page at a time (`WhereGt` on the key + `WithOrderBy` + `WithLimit`). The
+  paged List rpcs are unchanged: they clamp `page_size` to `MaxPageSize` and
+  always pass their own limit. **Migration note:** a direct caller that
+  relied on the cap to bound memory must now pass `orm.WithLimit`.
+
+- **Every ORM statement is sent with its values as bind parameters, not just
+  the by-key ones.** bun formats values into the SQL text, so under pgx's
+  default statement cache each new id, timestamp or body was a new statement
+  to Parse, Describe and plan, and churned the connection's 512-entry cache;
+  F12.8 bound only `Get`/`Update`/`UpdateMasked`/`Delete`. Measured in
+  reliant: a message save through `NewRaw` was 35–80% slower than the same
+  statement with `$N`, and an append through the builder cost 16x the bytes
+  and 3x the allocations. Now the connection an `orm.Client` hands bun (pool,
+  `RunTx` ctx, or `Tx.Bun()`) re-renders each statement with a binding
+  dialect and sends one text per statement shape: generated
+  `Create`/`Upsert`/`List`/`ListAll`/`Count`, every bun builder query and
+  `NewRaw`. Bound: every model column value (numbers included), every
+  string, time, `[]byte` and JSON `?` argument, the values of
+  `orm.WhereEq`/`WhereIn`/… , and anything wrapped in the new `orm.Arg(v)` /
+  `orm.ArgList(slice)` — the way to bind an integer `?` argument, which bun
+  formats without consulting the dialect. A value stays a literal where a
+  parameter would change its meaning (positional `ORDER BY`, typed literals,
+  bare arguments of `"any"` functions such as `jsonb_build_object`,
+  `? IS NULL`, `ON CONFLICT … DO` targets), and a statement forge cannot prove
+  equal to bun's text, or that is not DML, runs as bun rendered it.
+  `orm.Literal(v)` keeps one value in the text (a constant a partial index's
+  predicate is proved from); `orm.InlineValues(ctx)` turns binding off for a
+  ctx. `BenchmarkBoundStatements` (pkg/crud): statements prepared per call
+  1.0 → 0.0005 for Create, List, Count and `NewRaw`.
+
+  **Migration note.** A `?` value the planner needs at plan time — the
+  constant of a partial-index predicate — must now be written into the SQL
+  or passed as `orm.Literal(v)`: a generic plan cannot prove a predicate from
+  a parameter. Text written into the SQL itself is never bound. `Tx.Bun()`
+  now returns a wrapper over `bun.Tx`, not the `bun.Tx` itself, and the
+  Client's bun handle runs on a pgdialect wrapper (`db.Dialect()` is no
+  longer a `*pgdialect.Dialect`).
+
+- **`api.rest` runs on vanguard v0.5, and no longer hides the mux's other
+  routes.** vanguard v0.5 serves REST from a connect-go v2 `*connect.Server`
+  (`vanguard.Mount`) and removed `Service` / `NewService` / `NewTranscoder`.
+  `serverkit.RESTHandler` keeps its signature: each mounted service is
+  registered as `vanguard.ForwardService` over a Connect client whose
+  transport serves the call with the mux in process, so a REST request is
+  answered by the same handler and interceptor chain as its Connect URL, and
+  that handler sees the REST caller's address, TLS state and Host. A request
+  the mux has a route for now always goes to the mux: under v0.4's transcoder
+  every non-Connect route on it (the login broker's `/auth/*`) answered 404
+  once REST was on. Two v0.5 behaviors to know about. A streaming rpc maps to
+  REST only when its streamed side is a `google.api.HttpBody` (v0.4 sent
+  JSON lines). Annotating any other streaming rpc fails the REST routes at
+  startup, and the server then serves Connect only.
+- **The tracing rules flag only code a trace can reach.** Three constructions
+  were reported that cut no trace, and are no longer: in a project whose
+  observability is off (derived off with no server: a CLI or a library), the
+  top-level `internal/` and `cmd/` trees and every `package main`, which run
+  only in its own untraced binaries — its importable packages are still
+  linted, since they run inside the traced servers that import them; a pool
+  opened only to look its driver up (every use `.Driver()` or `.Close()`,
+  how `dbtrace.Open` builds a traced pool from a driver name); and an
+  `*http.Client` in a file that exports telemetry over OTLP, which is
+  untraced on purpose (a traced exporter traces its own exports). forge's
+  own `forge lint` is green again: its library code now logs with the
+  request context, and opens its HTTP clients and pools traced
+  (`pkg/oauth2`, `pkg/identity`, `pkg/orm`, `pkg/migratekit`, `pkg/pgtest`,
+  `pkg/testkit`, …). `pkg/pgtest` handles are pgx under dbtrace, as
+  production's pool is.
+- **`forge lint`'s format pre-pass never rewrites a `testdata` fixture.** The
+  go tool and the gate never read one, and an analyzer fixture's want lines
+  depend on its exact layout.
+- **A freshly scaffolded operator passes `forge lint --contract`.** An
+  `internal/operators/<name>` package declaring `SetupWithManager` is exempt
+  from `requirecontract` structurally, as a worker is.
+- **`serverkit.Run` serves pprof through the `Pprof` component** instead of
+  its own copy.
+- **A legacy-composition `internal/app/lifecycle.go` with no worker compiles.**
+  The template imported `forge/pkg/lifecyclekit` unconditionally, but since
+  its operator re-exports moved to `operatorkit` (#918) only a `Worker<X>()`
+  accessor names it, so a project without workers failed its first generate
+  with `"…/pkg/lifecyclekit" imported and not used` (every
+  `forge project new` from #918 until the composition graph, #923, made new
+  projects skip lifecycle.go). The import is rendered with the first worker,
+  and the reconciler adds it when it injects one into an existing file.
+- **`gen/forge_descriptor.json` stamps one entry per proto, and a merge keeps
+  it current.** The `source_hash` digest of every `.proto` is replaced by
+  `sources` (path → sha256 per file). A single digest of the tree matched no
+  merge: two branches editing different protos each stamped a different
+  value, so every merge that brought in a proto change staled every open
+  branch's descriptor, and main went stale when two landed without a
+  regenerate. Per-file entries change only where their proto changes, and the
+  `forge-generated` merge driver merges them key by key, so the merged stamp
+  is the stamp of the merged tree. forge's vendored annotation protos
+  (`forge/v1/forge.proto`, `buf/validate/validate.proto`) are not stamped:
+  they are grammar, not descriptor input, and only `forge generate` changes
+  them. A stale descriptor is now refused with the protos that drifted
+  (`proto/x.proto (edited)`). The next `forge generate` rewrites the field.
+- **A new service project's `docs/runbook.md` points at what forge ships.** It
+  said "Check for traffic spike (Grafana dashboard)" and "Grafana: TODO
+  (link)", and asked for Loki, Jaeger and PagerDuty links. It now names the
+  Observability tab under Apps in Reliant, the local HyperDX UI, the generated
+  dashboards in `deploy/observability/dashboards/`, the generated alert
+  defaults (`alert-defaults_gen.json`) and how `forge.Alerts.defaults` tunes
+  them, and explains each built-in alert.
+- **`forge generate --help` describes the pipeline it runs.** It described
+  entity protos in `proto/db/` and a `pkg/app/bootstrap.go`, both retired. The
+  no-`forge.yaml` path no longer looks for `proto/api/` and `proto/db/`, and
+  the seed step is gated on services rather than on a `proto/db/` directory.
+
+- **forge rides out a k3s server that crashes while a k3d cluster boots.**
+  k3d waits for a server's "k3s is up and running" log line and gives up the
+  moment the container restarts (`stopped returning log lines: … status=restarting`),
+  although Docker's restart policy brings k3s back. forge now keeps a new
+  cluster's nodes on failure (`--no-rollback`, only for a name that did not
+  exist), and when a server restarted it deletes the half-made cluster and
+  creates it once more, printing the server's exit and last log lines. Any
+  other failure is rolled back and returned as before; a second crash fails
+  with both reasons.
+- **`forge lint ./internal/x/...` no longer reformats packages you did not name.**
+  The auto-fix pre-pass (`gofmt`/`goimports`, then `golangci-lint --fix` and the
+  frontend formatter) honoured `--scope`, but ignored the positional package
+  paths of `forge lint [paths...]`: naming one package still rewrote every Go
+  file in the project, including ones another agent was editing in the same
+  checkout. The Go format pre-pass now touches only files under the named
+  paths (a whole-module pattern such as `./...` is still the whole tree), and
+  the frontend formatter, which cannot be confined to Go paths, does not run
+  when paths are named. A bare `forge lint` still auto-fixes the whole project,
+  `--scope` still confines it to the scope, and `--no-fix` and `--json` still
+  write nothing.
+- The `wireRelease.Commits` comment in `internal/cli/hosted_ledger.go` named
+  `DeployRelease.commits` as tag 13; the control plane's proto declares it as tag 14.
+- **`lint.rules` in `forge.yaml` now re-grades every `forge lint --conventions`
+  finding, not only `forgeconv-frontend-process-env`.** The dial was applied to
+  that one rule's findings and ignored for every other, so
+  `lint.rules: {forgeconv-activity-declared: warn}` was accepted by the config
+  loader and then did nothing: the rule stayed an error, and there was no way
+  to adopt it incrementally. `off`, `warn`, `error` and the `*` wildcard now
+  behave the same for every proto and Go-tree convention rule, after
+  `forge:lint-disable` suppression.
+
+- **Parallel `forge cluster up`s no longer lose each other's kubectl
+  context.** `k3d cluster create`, `k3d kubeconfig merge`,
+  `k3d cluster delete` and `kubectl config use-context` each rewrite the whole default
+  kubeconfig with no lock, so two forge processes creating clusters at once
+  dropped one context, and the loser failed on `context "k3d-<name>" does not
+exist` for a running cluster. forge now creates with
+  `--kubeconfig-update-default=false --kubeconfig-switch-context=false` and
+  makes every kubeconfig write under one cross-process flock beside the file
+  (`<kubeconfig>.forge.lock`). The declarative cluster path also stops
+  silently switching your current context to the cluster it created.
+- **A graph-composed project's scaffolded e2e harness starts `<bin> server`.**
+  It ran `<bin> <svc>`, a per-service command that only legacy Components
+  projects have, so every new project's e2e suite failed with `unknown
+command`.
+- **`forge generate` drops a removed Deps key from a compose.go construction
+  of a package that is no longer a graph node** (marked
+  `//forge:external-component` or `//forge:not-a-component`). The graph
+  reconcile only measured node constructions, so the dead key failed every
+  generate's validate build (#747, again in graph mode); the construction is
+  kept and reported with the graph's remedy.
+- **`forge ci verify-generated` and `forge generate --check` never write the
+  checkout.** Both regenerated the caller's own tree and then read
+  `git status`, so a concurrent gate held every reader of the tree back for
+  30-50s, and a run that found drift, crashed or was killed left the
+  regenerated files behind. They now regenerate a scratch copy made beside
+  the repository (`.<repo>.forge-verify-<pid>-*`: its own git repository
+  borrowing the checkout's objects, holding the checkout's index and working
+  tree byte for byte, plus the gitignored files generate reads) and diff the
+  copy against itself; output and exit codes are unchanged. They judge the
+  working tree as `git add -A` would commit it — HEAD on a clean checkout — so
+  a dirty tree now gets a verdict instead of a refusal, and every change
+  reported is generate's. The generate cache is shared both ways: the
+  checkout's record is copied in, and a fixed point the scratch run verifies
+  is copied back to `.forge/generate-cache.json`. The cache key also stops
+  including `FORGE_SLOT_HELD`, a fresh token per slot holder, which made every
+  run inside the gate a miss. `forge ci gate` no longer runs verify-generated
+  alone, skips it on a dirty tree, or resets the tree after it fails.
+- **`forge slot run` and read-only commands no longer edit `.git/config`.**
+  Every forge command pointed the generated-file merge driver at itself
+  (`.git/config`, `info/attributes`) and activated forge's hooks
+  (`core.hooksPath`) as a side effect, so `forge slot run`, `env status`,
+  `env render` and `env deploy --dry-run` rewrote the config every linked
+  worktree shares. Only commands that write generated or state files do it
+  now (`generate` without `--check`/`--plan`, `scaffold`, `project disown`,
+  `project delete service`, `package new`). And two copies of the pinned forge
+  at different paths (each worktree's tool-cache install, a `go install`ed one)
+  no longer take the driver from each other on every run: the copy already
+  registered keeps it while it exists.
+- **`forge env deploy <env> <version> --frontends-only` no longer renders or
+  compares the env's bundle.** It applies no bundle object, yet it rendered
+  the whole env and refused when a newer checkout's workloads differed from
+  the release's bundle of record — so a release's frontend could not ship
+  after its backend had (control-plane prod, 2026-10-19). It now records no
+  bundle and computes no k8s plan; its promotion is still confirmed and
+  scoped, and the frontend still builds from the release's recorded sources.
+  A `--target` naming only frontends shipped to Firebase or a bucket is
+  treated the same; any target that renders cluster objects keeps the check.
+- **A release's bundle reproduces from its own commit and forge.** A
+  hand-composed `forge.image_ref_for(<repo>, image_tag)` rendered
+  `<repo>:<release>@<digest>` at the cut, whose build state held a digest
+  under `<repo>:<release>`, and `<repo>@<digest>` on any later redeploy,
+  whose build state did not — so the versioned deploy refused its own
+  release's bundle. A named release now pins its images under the release
+  tag from the release alone (`releaseVersionTag`, the one rule the build's
+  push tag, the render's `image_tag` and the pins share).
+- **A Firebase or bucket frontend that fails before its upload reports
+  nothing shipped.** A failed `npm run build` (or assemble, source-map
+  filing, asset retention, config write) was reported as
+  `PARTLY … failed part-way; some of it may be live`, although the host was
+  never written. Those failures now carry `cluster.ErrNothingApplied`, which
+  the deploy's ship log reads, unless an earlier frontend of the same group
+  already shipped.
+- **`lifecyclekit.Supervise` no longer reports a node as stuck because an
+  earlier node spent the shutdown budget.** Nothing waited for a node's `Run`
+  after its cancel once the budget was gone, so every node behind a slow one
+  logged `node did not stop within the shutdown budget` at ERROR (and
+  `run_still_running`) even when it returned instantly. Each `Run` now gets
+  250ms to return after its cancel; only one that really ignores its context
+  is reported. The walk overruns the budget by at most 250ms per truly stuck
+  node.
+- **`forge storage` worktree reaping no longer holds a worktree for forge's
+  own scratch, a project's pinned tools or its `tmp/`.** The rebuildable
+  allow-list gains `.forge/tmp`, `.forge/generate-cache.json`, `/.tools` and
+  `/tmp`; a leading `/` anchors an entry to the worktree root (`web/tmp` is
+  still unrecognized data), and the never-list still wins (`tmp/data`,
+  `tmp/.env`, `*.db`). A git-ignored repository that is a direct child of
+  `<worktree>/.tools/pre-commit/` (pre-commit's hook clones, which
+  control-plane's gate creates) no longer makes the worktree a
+  `nested-repository`; every other nested repository, including one inside
+  `tmp/`, still holds. Mirrors reliant's `worktreereclaim` list.
+
+- **`serverkit.Listener` loads its TLS certificate in `Listen`, not `Run`.**
+  `ServeTLS` read the pair only once `Run` started serving, so a missing,
+  malformed or mismatched certificate failed after `Listen` had bound and
+  `Ready` had reported the listener up — `lifecyclekit.Supervise` had already
+  started the next node. `Listen` now loads and validates the pair before it
+  binds and returns an error naming both paths; `Run` serves the loaded
+  certificate. `serverkit.Run` gets the same boot-time failure.
+- **`pkg/lease`: a slow reply no longer drops every lease on a healthy session.**
+  Every query on the lease session (the heartbeat, each standby poll, the
+  connect) ran under a deadline of `HeartbeatInterval`, and a query that misses
+  its deadline makes pgx close the connection, so the server drops the session
+  and every advisory lock on it. A round trip longer than one heartbeat interval
+  (a CPU-starved process, a throttled pod, a busy database) therefore dropped
+  every lease the Locker held and forced a failover. It flaked
+  `TestManyLeasesOnOneLockerSurviveConcurrentPollingAndHeartbeats` on loaded CI
+  runners (`leader holds 0 of 20 leases`), and with control-plane-workers' 5s/5s
+  timing a 5s stall did the same to its ~15 leases. The new
+  `lease.Options.QueryTimeout` (default `DefaultQueryTimeout`, 10s) bounds each
+  query separately from how often the heartbeat runs. Overlap after a partition
+  is now bounded by `HeartbeatInterval + QueryTimeout`.
+- **A hosted bundle carries only the document fields its control plane
+  decodes.** forge#850 added `provenance.commit_subject`/`commit_author` and the
+  per-object `objects` summaries to the bundle document, and a control plane
+  strict-decodes that document: every control plane built before #850 refused
+  every bundle
+  (`RecordBundle: bundle document: json: unknown field "commit_subject"`), so no release could be recorded — including the one that
+  would ship the control plane that understands them. An optional document
+  field is now a FEATURE (`release.BundleDocFeatures`): `forge env deploy` /
+  `env build` ask `DeployService/GetCapabilities` (`bundleDocumentFeatures`)
+  before building a hosted bundle and leave out every part the server did not
+  name; a server without the RPC or the field gets the document its decoder
+  knew. A control plane advertises `release.BundleDocFeatures()` from the same
+  forge it decodes with. `TestEveryBundleDocAdditionIsAFeature` fails on a new
+  document field until it is mapped to a feature.
+- **`forge env config` reports missing secrets instead of failing.** forge#859
+  routed it through `env exec`'s resolver, and with it the fail-closed secret
+  check: reading back an env whose secret store lacked one declared key printed
+  nothing and exited 1. It now prints everything that resolves, leaves the
+  missing variables out, lists them on stderr and under `missing_secrets` in
+  `--json`, and exits 0. `forge env exec` and `env up` still refuse, since
+  running without a declared secret is the real error; `env config --strict`
+  restores the refusal for a caller that wants it.
+
+- **A dependency outage no longer floods the logs at probe frequency.**
+  `Drainer.ReadinessHandler` (and so `serverkit.Run`'s `/readyz`) logged every
+  failing check at ERROR on every probe — every few seconds, on every replica,
+  for the length of the outage, into the log pipeline and the error tracker.
+  A check is now logged once at WARN when it starts failing and once at INFO
+  when it recovers (with `failed_for`); probes in between log at DEBUG. Never
+  ERROR: readiness failing is the probe doing its job.
+- **The dev Zitadel moves to v4.19.5** (was v4.19.4) in host-infra, the compose
+  `idp` service and its per-platform checksums (taken from the release's
+  `checksums.txt` and re-computed from the downloaded archives). 4.0.0–4.19.4
+  carry three high advisories: GHSA-mchc-246r-6m76, GHSA-84fg-x5h4-w8xv and
+  GHSA-qj3q-235g-qr6w (Login V2 link-host poisoning, a forgeable Login V2
+  verification proof, and device-code approval without consent). The dev IdP
+  serves no Login V2 and registers no device-code app, but a dev pin that lags
+  the deployed one is drift. No config or steps changes are needed. Upgrade
+  notes worth knowing: list endpoints now enforce `DefaultQueryLimit` (100,
+  v2) and `MaxQueryLimit` (1000, v1 and v2), and a malformed
+  `x-zitadel-public-host` is now rejected instead of ignored.
+
+- **Adapter scaffolds use typed configuration from birth (#748).**
+  `forge scaffold adapter <name>` (and `scaffold package --type adapter`)
+  appends a `<Name>Config` message with a `<NAME>_BASE_URL` leaf to the config
+  proto and composes it on `AppConfig` using a free field number. The adapter
+  takes the generated config block; compose.go fills it from the loaded config
+  by type instead of emitting `BaseURL: ""` with a TODO. Its httptest fixture
+  sets the block's base URL to the stub. Re-running is a no-op; reserved tags
+  and existing fields are preserved. Missing `AppConfig` is an actionable
+  refusal before any adapter files are written, not a scalar fallback that
+  violates `forge-config-deps`.
+
+- **Go initialisms are replaced only as whole PascalCase words (#795).**
+  `ToPascalCase` matched initialisms by prefix, so `forge scaffold service
+identity` produced `IDentityService` and an `id-entity` file that `generate`
+  then rejected; `Slack`, `Uint`, `Ramp`, `Idle` and `Ion` were mangled the
+  same way. An initialism now applies only when followed by an upper-case
+  letter, a digit or the end of the name (`identity` -> `Identity`, `user_id` ->
+  `UserID`, `http_url` -> `HTTPURL`). Plurals are not initialisms: `ids` ->
+  `Ids`, as in staticcheck ST1003 and protoc-gen-go. A proto service that
+  spells an initialism as a word (`ApiKeyService`) now matches its directory
+  (`api_key`): the check compares logical names, the Connect selectors in an
+  existing `service.go` follow the proto spelling, and the fix hint never names
+  the current state. Generated identifiers that contained a mangled prefix or
+  an `...IDs`/`...URLs` plural change on the next regenerate.
+
+- **Frontend-only scaffolds need no database or cluster (#401).** Disabled
+  migrations no longer declare a migration job. Database-free frontend projects
+  get host dev servers and hosted static staging/prod, with no database, IdP or
+  unused cluster. `project new --frontend` accepts `--output` and `--routes`;
+  frontends added later use the same named declaration and rebindable line.
+  `env new --bind` validates the entire copy before writing, including under
+  `--force`. Offline static admission uses explicit preflight addresses without
+  relaxing live deployment's requirement for a pullable release artifact.
+
+- **`project upgrade` synchronizes Forge requirements in every project module
+  (#762).** Root, `gen/` and other discovered Go modules upgrade before template
+  changes; `--check` reports pin drift without running Go. Failed `go get` or
+  `tidy` commands return an error, restore module files and print exact recovery
+  commands instead of advancing `forge.yaml`. Workspace files and replacements
+  are preserved.
+
+- **A fresh project with a Next.js frontend passes its own npm vulnerability
+  gate (#754).** Scaffolds require Vitest `^5.0.4`; Vitest 3 brought critical
+  tinypool advisories and Vitest 4 crashes npm 10's installer. Next.js, Vite SPA,
+  the dev web-runtime workspace root and web-runtime's own install now override
+  only HyperDX recorder's exact `fflate` 0.7.4 pin to patched `^0.7.5`; npm does
+  not apply overrides from a published dependency, so no web-runtime release is
+  needed for scaffolds. `ci.vuln_scan.exemptions` now accepts npm GHSA ids with
+  the same required reason and expiry, scope, stale and expired-entry rules as
+  Go ids. The npm gate still fails on high/critical findings, reads npm's JSON
+  report rather than its exit code, and fails closed on malformed output. A new
+  Next.js frontend records a visible 90-day reviewed acceptance for the dev-only
+  braces advisory, which has no fixed release.
+
+- **Shipped skills fit Reliant's rendered delivery budget (#808).** The guard
+  measures the production renderer with the longest shipped `reliant forge`
+  prefix and reserves space for collapsed navigation and the completion footer
+  inside the unchanged 24,000-byte limit. Start-here, deploy, DB, proto, CI and
+  two migration guides now link to discoverable subskills for detailed teaching,
+  leaving real room for growth without dropping their rules.
+
+- **Cross-repo build sources no longer require sibling checkouts (#107).**
+  `ShellBuild.source` and named Docker `build_contexts` accept `GitSource`
+  pins through the frontend source cache and explicit local overrides. Shell
+  source/cwd ambiguity and malformed pins fail rather than running in the
+  project root; `forge doctor --verbose` distinguishes pins from filesystem
+  references. The release-source check includes shell pins, and cache metadata
+  no longer makes fetched checkouts appear dirty.
 
 - **forge refuses to run npm in a frontend on a Node below its
   `engines.node`, and says which Node it needs.** The scaffolded frontends
@@ -4058,407 +6194,6 @@ migrate force N` where it has one. The `db` and `db/deploy-migrations`
   is shown under the new `project new --verbose` (`-v`). Other git failures
   still show git's output (#750).
 
-### Changed
-
-- **`pkg/alerting` keys its partitions by `Owner`.** The package's opaque
-  partition key now uses the word forge already uses for whose a row is
-  (`forge:owner`), instead of a vocabulary forge removed: `RuleKey.Owner`,
-  `EventQuery.Owner`, `Limits.MaxRulesPerOwner`, `FileRuleSource.Owner`,
-  `RuleSource.Owners`, `StateStore.Owners` and `StateStore.LoadOwner`. In the
-  `pgstore` schema, `alert_instances` and `alert_events` are keyed on an
-  `owner` column and their indexes are named for it. A consumer that copied
-  `pgstore.SchemaSQL` into its own migrations renames that column in both
-  tables in a new migration.
-
-- **`forge generate` validates without linking, and loads the tree once.**
-  The validate step ran `go build -o /dev/null ./...`, which links every main
-  package and throws the binary away, then loaded the whole tree again through
-  go/packages to typecheck `_test.go` files, type-checking every dependency
-  from source. On reliant (19 main packages, cgo, so each link is an external
-  gcc/ld run) that was 217s of a 258s run. It is now one
-  `go list -e -export -test -deps ./...`: go list runs the real compiler on
-  every package and every test variant (it reports their export data) through
-  the shared build cache, and never links. A main package's compile error
-  still fails validation; the one linker-only error a generator can cause, a
-  main package without `func main`, is checked directly. Errors are read from
-  go list's per-package JSON, so a broken library is reported once, not once
-  per importer. Ownership rules are unchanged: a non-test compile error or a
-  forge-owned `_test.go` fails the run, a user-owned `_test.go` warns. The
-  test variants it compiles are the ones `go test` builds next, which then
-  finds them cached. The post-rollback "does the restored tree compile?"
-  check uses the same no-link compile. If go list itself cannot run, both
-  fall back to `go build`. Measured on reliant (load average 60-110 on 16
-  cores): a `forge generate` that changes nothing went from 274s to 51s
-  (validate 206s to 14s); one that rewrote two files from 236s to 142s
-  (validate 218s to 97s, most of it compiling their dependents' test
-  variants, which `go test` then reuses); and from an empty build cache the
-  validate commands went from 872s (`go build` 814s, typecheck 58s) to 617s.
-  On re-pin, the first generate in a checkout compiles every package's test
-  variant once (about 200s on reliant when the non-test build is already
-  cached); every later run, and the next `go test`, reuses them.
-- **`FORGE_NO_GIT_HOOKS` is the name for opting out of forge's git hooks, and
-  `forge generate` says which hooks it ran.** `FORGE_NO_HOOKS=1` stops forge
-  setting `core.hooksPath=.githooks` and its merge driver in a clone. Agents
-  kept setting it expecting `forge generate` to skip forge.yaml's
-  `generate.hooks` (reliant's `make sqlc`), and it never did. It is now
-  spelled `FORGE_NO_GIT_HOOKS`; `FORGE_NO_HOOKS` is still honoured as the same
-  git-only opt-out, so a clone opted out under it stays opted out. Generate
-  hooks still always run: a skipped hook leaves output that still compiles but
-  is stale, and `make sqlc` measured 3s of reliant's generate, so there is no
-  skip flag. The generate output names every hook before they run and confirms
-  each one (`✓ generate hook "sqlc" ran (3.2s)`); with either git-hooks
-  variable set, the step says that it does not skip these. A run narrowed with
-  `--steps` or `--templates-only` that leaves the hooks out now prints
-  `⏩ generate hooks NOT run (...)` naming them and the paths they write.
-  `forge generate --help` has a Hooks section saying all of this, and so do
-  the forge-managed `.githooks/pre-commit` comment and the `architecture`
-  skill. On re-pin, `forge generate` rewrites `.githooks/pre-commit` (the
-  comment only); rename `FORGE_NO_HOOKS` to `FORGE_NO_GIT_HOOKS` where you set
-  it.
-- **A config env var set to `""` is unset, for every field type.**
-  `pkg/config`'s env layer read an empty variable as a value for strings, bytes
-  and lists, and as unset for numbers, bools and durations. So `TEMPORAL_HOST=`
-  (what compose's `X: ${X}`, a template rendered from a missing key, or
-  `export X=` produce) replaced a `localhost` default or a config file's value
-  with `""`, and `ALLOWED_REGISTRIES=` cleared a defaulted list. Every kind now
-  reads it as unset and the file or default value stands. An explicitly empty
-  value is a flag's to set: `--pprof-addr=` turns pprof off,
-  `--allowed-registries=` clears a list. A required field whose variable is set
-  but empty fails with an error that says so. The generated KCL config schema
-  gains a `check:` refusing `field = ""` for a non-sensitive string field with a
-  non-empty default: it would render an env value the process ignores, so the
-  render fails and names the flag instead. On re-pin, `PPROF_ADDR=` no longer
-  disables pprof (pass `--pprof-addr=`), and `forge generate` rewrites
-  `deploy/kcl/config_gen.k` with the checks.
-
-### Added
-
-- **A squashed forge history is adopted, not refused: `-- forge:adopts forge
-<versions>`.** After `forge db squash` replaced a forge history with one
-  baseline, every database that history built was refused, and misleadingly:
-  "schema at 20260101000002, AHEAD of the newest migration this binary embeds
-  (20260201000000)" for a baseline numbered above the history, and "MISSING …
-  give it a NEWER version" for one below it. A baseline can now declare the
-  forge versions it replaces, the shape of goose's adoption (#649), and
-  `forge db squash` writes the list (plus `-- forge:backward-compatible`: the
-  baseline builds exactly the schema the release before the squash runs on).
-  `migratekit` adopts a database whose schema version is one the baseline
-  lists when every listed version has a `schema_migrations_applied` row (a
-  database older than that record is judged by its `schema_migrations`
-  version, which golang-migrate never applies below): the baseline gets its
-  applied row and becomes the schema's version, none of its SQL runs, and the
-  migrations after it apply on the same run. One behind the squash (a listed
-  version not applied) or past it (a schema version the list lacks) is a
-  `*migratekit.AdoptionError` with forge's remedies, and nothing changes. The
-  history's rows stay, so the release before the squash, rolled back to,
-  still finds its migrations recorded and reads the baseline as a compatible
-  schema ahead of it. Adoption runs under the run lock and `appliedLockKey`
-  on the run's one session (#706), and finishes an adoption a crash
-  interrupted. The migrator refuses, at `Open` and at boot, a forge baseline
-  listing a version it still carries (its own number, or a squashed file left
-  beside it); `forge lint`'s `invalid-adopts-directive` reports the same, and
-  `forge db squash` refuses a `--to` inside the history. Without the
-  declaration, a database built by a history the binary does not carry is now
-  a `*migratekit.ForeignHistoryError` that says so and names the fix, instead
-  of AHEAD or MISSING, and `forge db migrate status` previews both cases
-  rather than calling them AHEAD. `Adopted.String()` is the adoption line
-  every command prints; the scaffolded `db.go` uses it. Skills:
-  db/deploy-migrations ("Squashing a forge history"), db/versioning. On
-  re-pin, nothing changes for a project that has not squashed a forge
-  history; one that has can re-run `forge db squash` (or add the
-  `-- forge:adopts forge` lines by hand) and drop any rebuild-every-database
-  plan.
-- **`forge db squash --from-dsn`: squash a database another tool migrated.**
-  `forge db squash` replays only forge's `*.up.sql`, so a goose history could
-  not be squashed: reliant pg_dumped a goose-built database by hand, stripped
-  pg_dump's prelude by hand, and typed the `-- forge:adopts goose …` list.
-  `--from-dsn <postgres URL>` dumps an existing database instead, whatever
-  tool built it, through the same `squashBaseline` lexing that drops pg_dump's
-  session prelude and psql meta-commands (#678). pg_dump runs in a
-  `postgres:<server major>-alpine` container (`--image` overrides), and the
-  password reaches it through the environment, never the command line. When
-  the database has `goose_db_version`, the baseline's header declares every
-  version goose applied there (`-- forge:adopts goose …`, eight per line), read
-  as migratekit's adoption reads the table, and the command checks the file
-  parses back to that list. Point it at a throwaway database the complete
-  history built (`goose up` on an empty database): its rows become INSERTs in
-  every fresh database, so the command lists them per table, and it names any
-  table that looks like another tool's history (`--exclude-table` leaves one
-  out; `goose_db_version`, an older goose's `goose_db_version_id_seq`, and
-  forge's bookkeeping always are). The header names only the history (count
-  and version range), so a re-cut writes the same bytes. Rehearsed on reliant's 152 goose migrations: the goose-built database
-  is ADOPTED (152 versions verified), a fresh database applies the baseline,
-  and their `pg_dump --schema-only` are identical. The db/deploy-migrations
-  skill's hand recipe is replaced by the command. On re-pin, reliant can
-  re-cut its P5a baseline with it and drop the hand-made dump.
-- **`migratekit.Apply(ctx, db, fsys, dir) (Result, error)`: the boot path's run,
-  returning what it did.** `AutoMigrate` is now `Apply` plus a log line per
-  fact. A command that wants the boot path's policy (a binary embedding no
-  migrations is `Result.NothingEmbedded`, not an error; a dirty schema is
-  refused before anything runs) can report adoption, a schema ahead, and the
-  versions applied without switching to a `Migrator`. It runs on one
-  connection borrowed from `db`. `AutoMigrate`'s boot log no longer has the
-  separate `migration status` line; `no pending migrations` now carries the
-  version.
-- **`// forge:custom`: declare an rpc custom whatever its name.** An rpc was
-  CRUD whenever it was unary, named `Create<E>`/`Get<E>`/`Update<E>`/
-  `Delete<E>`/`List<Es>` and `<E>` had a table and a wire message, and the
-  framework guide forbids the only way out (renaming it). reliant has 52 such
-  rpcs whose semantics are its own. Put `// forge:custom` on its own line
-  above the rpc and it is custom on both sides of the wire: a pb-through stub
-  and a scaffold test row, no CRUD shim or op, no entity page, a hook that
-  invalidates at service scope, no list-filter lint. It makes no entity, so
-  marking every CRUD-named rpc of a table is the per-entity opt-out: the table
-  stays plain schema, with no ORM struct in `internal/db` (no `Task
-redeclared` against a project's own `Task`), page or seed root. A comment
-  marker, like `forge:unmanaged`, because who implements a handler is not a
-  fact about the API contract and must not cost the `forge.proto` import.
-  Generate refuses a near-miss spelling, the marker on a service or message,
-  a trailing marker (protobuf hands a comment under one rpc to that rpc even
-  when it was written for the next), a marker the source shows but the
-  compiled descriptor lost, and a newly custom rpc whose shim or lifecycle
-  test still uses its `crud<Rpc>Op` or create-request factory, naming the
-  file and line. `forge project audit` marks each in
-  `shape.services[].rpcs[].custom`.
-- **`forge project audit` reports rpcs with no handler method
-  (`unhandled_rpcs`).** A Service embeds `Unimplemented<Svc>Handler`, so an
-  rpc of a managed service with no `*Service` method compiles and serves
-  `CodeUnimplemented` with no stub saying so, invisible to `orphan_stubs` and
-  `shapes`. The category names each one (warn), and lists a service whose
-  struct embeds another type, which may promote the method, as unresolved
-  rather than accusing it.
-
-- **`forge lint --show-suppressed`: every suppression the project declares, in
-  one list.** The `contracts/package-markers` skill told users their
-  allowances were "reported by `--show-suppressed`", and `forge lint` answered
-  `unknown flag`. It now lists, with file:line, what each covers and its stated
-  reason: `forge.yaml` `lint.rules` entries set to off or warn and
-  `contracts.exclude` paths, `//forge:exclude-contract` markers,
-  `forge:lint-disable-file` / `-next-line` / block and `//nolint:` directives,
-  `-- forge:allow-destructive` / `-- forge:allow-unsafe-not-null` migration
-  pragmas, and `// forge:optional-checked`. Each source is read by the code
-  that honours it (`suppress.Declarations`, `migrationlint.Allowances`,
-  `codegen.FindExcludeContractMarker`, the optional-deps guard's own matcher),
-  so the list cannot disagree with the linters. Hand-written files only;
-  generated files, `testdata`, `node_modules` and `vendor` are skipped.
-  Read-only: it runs no linter and exits 0. `--json` and `--scope` combine
-  with it; a lane flag, `--quiet`, `--gate-json` or package paths are refused.
-- **`alerting.RuleSpec.KeepFiringFor` (`keep_firing_for`)**: holds a firing alert open that long after its series stops returning, like Prometheus's rule field of the same name. The shape's `alerts[]` (#684) declares it, so the evaluator now honours it instead of silently ignoring it. The one-evaluation flap damping every rule already had is the floor.
-- **`(forge.v1.config).env_var_aliases`: a config field read from fallback env
-  var names.** A field reads `env_var`, then each alias in order, and the first
-  one set wins. This replaces hand-written chains such as
-  `RELIANT_CONTROL_PLANE_URL`, else `CONTROL_PLANE_API_URL`, else
-  `CONTROL_PLANE_BASE_URL`. Each alias is
-  `{name: "...", deprecated: bool}`. A permanent alias (`NODE_ENV`) is read
-  silently. A deprecated one prints a stderr line at load whenever it is set,
-  naming `env_var`, whether it supplied the value or was shadowed. Aliases sit
-  in the env layer (below the flag) and follow its rules: `""` is unset, and a
-  malformed value in the winning name is an error, never a fall-through.
-  forge's own setters keep to `env_var`: the KCL env map and the secret store
-  key name it alone. Flag help now lists the env vars that set a flag,
-  permanent aliases included (`--environment string   … [env: RELIANT_ENV,
-NODE_ENV]`). A required-field error names every alias. `forge generate`
-  refuses an alias that repeats any env var or alias another field of the same
-  process reads (a command config counts its binary's root config), repeats
-  the field's own `env_var`, has no `env_var` beside it, is not a variable
-  name, or sits on a frontend config field. New proto message
-  `forge.v1.EnvVarAlias`; `ConfigField.EnvVarAliases` joins
-  `gen/forge_descriptor.json` (omitted when empty). The typed-config guardrail
-  is name-agnostic, so a raw `os.Getenv` of an alias is flagged like any other.
-- **`alerting.QueryOptions.Limits` and `chquery.Scan`**: the per-query limits without `readonly`, and the row reader behind `chquery.Run`, for a `Querier` that runs as an impersonated ClickHouse user (`EXECUTE AS`). Such a Querier cannot send `readonly` (a readonly session refuses the `EXECUTE AS` statement itself); the target user's profile contains the query instead. `Settings()` is now `Limits()` plus `readonly = 2`.
-
-- **Alert rules, declared per env: `forge.AlertRule`, `forge.AlertRoute`,
-  `forge.AlertDefault`.** On `forge.Observability.alerts = forge.Alerts {rules,
-defaults, routes}`. A rule is the Prometheus shape with the condition inside
-  `expr`, a single native ClickHouse SELECT over the OpenTelemetry tables whose
-  every row is a firing instance (non-`value` columns are labels, `value` the
-  sample); `severity` is a label (critical | warning | info, default warning).
-  Render refuses: missing fields, a non-duration `for`/`interval`, an interval
-  under 1m, an `expr` that is not one SELECT, reserved labels (`alertname`,
-  `reliant_*`), duplicate names, a route receiver that is a URL or a token, and
-  routes with no default (empty-`match`) route. Routes name receivers; secrets
-  live in the control plane.
-  `forge generate` writes `deploy/observability/alert-defaults_gen.json` and
-  `forge env shape` resolves four **generated defaults** per env from it (error
-  rate and p95 latency from the unsampled `rpc.server.*` metrics, service silent
-  only for services with steady traffic over the previous 24h, frontend JS error
-  spike against the 1h baseline), each tunable or disabled with
-  `Alerts.defaults`. They route to in-app + Slack, never a pager. The release
-  shape gains optional `alerts` (rules from the user and the enabled defaults,
-  `source: user|default`, `pkg/alerting`'s RuleSpec JSON) and `alert_routes`, for
-  the control plane to evaluate; a shape that declares none encodes and hashes as
-  before. `output.observability.alerts` is a new optional render-contract key.
-  See `observability/alerts` and `migrations/v0.1.45` section 9.
-- **Observability opt-out: `enabled = False`, or per category.** Hosted
-  observability is on by default; `forge.ObservabilitySignals` gains `metadata`
-  (customer metadata: pod CPU/memory against limits, restarts and last exit
-  reason, events, image and version, collected by the platform's node agent) and
-  `browser` (the frontend SDK) beside `traces`, `metrics`, `logs` and `profiles`.
-  A disabled signal renders `OTEL_<SIGNAL>_EXPORTER=none`; `enabled = False`
-  renders `OTEL_SDK_DISABLED=true`; `browser` (or everything) off renders
-  `OTEL_ENDPOINT=off` into every frontend's runtime config and build variable.
-  The resolved policy is recorded in the release shape as `observability_policy`
-  (`{enabled, disabled[]}`, omitted when nothing is opted out), so the platform
-  enforces it at the source. Disabled data is never collected, stored or billed.
-  **`signals.replay` is the one opt-IN category** (default `False`): the platform
-  drops browser session-replay events unless the env opts in (`opt_in` in the
-  policy).
-
-- **`pkg/alerting`: a SQL alert-rule evaluator in the Prometheus shape.** A
-  rule's `expr` is one ClickHouse SELECT; every row it returns is a firing
-  instance, its non-value columns the labels and its `value` column the sample.
-  The package owns the server-side guard (single SELECT, no table functions
-  that read outside the owner's database, `readonly=2`, `max_execution_time`,
-  `max_result_rows`), label protection (`reliant_*` is stripped from rules and
-  columns; the `RuleSource` supplies identity labels, applied last), the
-  inactive → pending → firing → resolved state machine with one-evaluation flap
-  damping, a jittered scheduler sharded over `pkg/lease`, and an Alertmanager v2
-  client. It knows nothing of orgs, billing or any particular database: the
-  owner key (whose data a rule queries) is an opaque string, and `Querier`,
-  `RuleSource`, `Notifier` and
-  `StateStore` are interfaces declared in the package. Ships `RuleSpec` (the
-  rule model), `FileRuleSource` (hot-reloaded rules file, keeps the last good
-  rules), `chquery` (a ClickHouse `Querier` for one owner), `pgstore` (Postgres
-  `StateStore` and its schema) and `MemoryStore`.
-
-- **`Bundle.applier = "forge"`: a declared self-applied platform env.** A real
-  environment forge applies on purpose and permanently, for an env whose own
-  control plane must not apply it (control-plane's `prod`: a hub applying the
-  env that runs the hub is circular). It is exempt from the planned
-  F-REFUSE-DIRECT, is **never recorded hub-converged** however fully its
-  clusters are bound to connected clusters, and is recorded in the shape
-  (`shape.applier`). Setting it beside `lifecycle` is refused: they answer one
-  question opposite ways. `output.applier` is a new render-contract key (null
-  when undeclared); every `render_contract` golden gains `"applier": null`.
-  See `deploy/shape` and `migrations/v0.1.45` section 8.
-
-### Removed
-
-- **The pending alert definitions in `dashboard-spec_gen.json`** (#644): the
-  `alerts` array (`status: pending`) and `obsdash.Alert`. The three definitions
-  became the `error-rate`, `p95-latency` and `service-silent` defaults.
-
-- **The dead in-cluster Flux pointer path.** #461 made `reconcilesThroughFlux()`
-  unconditionally false and asked for the follow-up that deletes the rest. Gone:
-  forge's own Flux install in `forge cluster up`, the OCIRepository/Kustomization
-  pointer `forge env deploy` wrote, its convergence wait, the Flux-secret sync,
-  the Flux plan-live reader, `forge env status`'s in-cluster convergence, and
-  the `internal/flux` pointer/observe code (net about 4,000 lines removed). What
-  stays is `forge.flux_chart()` and the declared bootstrap-chart install. The
-  direct-apply notice no longer claims the env "will be reconciled from its
-  bundle".
-
-- **Project-mutating commands refuse to run under a forge other than the
-  project's `forge_version` pin.** `forge generate`, `forge scaffold` (and every
-  noun under it), `forge package new`, `forge component install`,
-  `forge env new`, `forge project rescaffold|delete|migrate`, and the
-  auto-generate that `forge build` / `forge env up` run when generated code is
-  stale, now stop with a runbook: running vs pinned version, a `go run
-github.com/reliant-labs/forge/cmd/forge@<pin> <same args>` that needs no
-  install, and the `GOPRIVATE=... go install ...@<pin>` form. Previously only
-  `build` / `env build` / `env deploy` refused; an agent running `forge generate`
-  with a stale forge on PATH silently rewrote unrelated generated files (otel,
-  frontend, descriptor). Read-only runs are never blocked (`--dry-run`,
-  `--check`, `lint`, `audit`, `shapes`, `skill`, `env status`, `--help`).
-  Escape hatch: `--allow-version-skew` or `FORGE_ALLOW_VERSION_SKEW=1`; builds
-  without a version identity (`(devel)` with no commit), forge's own repo, and a
-  project bridged by go.work to the checkout the binary was built from are
-  exempt. Under `reliant forge` the comparison uses the embedded forge's
-  module version, not reliant's.
-- **`forge.ControlPlaneSecret`: a Secret the env's declared control plane
-  supplies and renews.** `Bundle.control_plane_secrets` declares one (`name`,
-  `cluster`, `namespace`, `kind = "telemetry_token"`). It is recorded in the
-  env shape (`shape.control_plane_secrets`: name, namespace, cluster,
-  connected cluster, kind, keys; never a value), **never blocks a first deploy**
-  (the preflight neither requires it nor reads its absence as a missing
-  dependency, and it counts as supply for the undeclared-mount gate), and is
-  **refused at render without a connected-cluster binding** or without
-  `control_plane`. There is no k3d exemption: delivery is the control plane
-  dialing the cluster. A cluster workload in the same cluster and namespace
-  gets an optional whole-directory Secret volume `forge-otlp-auth` at
-  `/var/run/secrets/forge/otlp` and `OTEL_EXPORTER_OTLP_HEADERS_FILE`, so a
-  renewal needs no restart. `ObservabilityDestination.token_from_control_plane
-= True` derives the node agent's Secret (`forge-otlp-token`, key `token`) on
-  every cluster running the agent. `v1alpha1.SecretVolumeSource` gained
-  `optional`. `output.control_plane_secrets` is a new render-contract key
-  (every `render_contract` golden gains `"control_plane_secrets": []`). See
-  `deploy/control-plane-secret` and `migrations/v0.1.45` section 7.
-
-- **`forge env deploy <env> --offline-ledger --to <release|previous>`: roll back
-  with the control plane unreachable.** The realistic outage is a bad release
-  that takes the control plane down, where redeploying the current release
-  does not help. The offline copy of a hosted env's ledger now keeps its last N
-  promotions (default 5, `FORGE_OFFLINE_LEDGER_WINDOW`, max 50) with each
-  release's recorded digests, refreshed on every successful ledger read or
-  write. `--to previous` (or a cached release version or promotion id) deploys
-  one of them by digest behind the usual confirmation gate; a release not in the
-  copy is refused with the list of what is. The rollback is queued and replayed
-  on the next ledger contact with the existing moved-env refusal; several
-  offline deploys in one outage chain and replay in order. `forge env status`
-  lists the releases the copy can deploy (`offline_cache` in `--json`), so the
-  break-glass options are visible before the outage; each operator machine needs
-  one successful `forge env status` to warm its copy.
-- **`forge env deploy <env> --offline-ledger`: a break-glass for a hosted ledger
-  whose control plane is down.** With the control plane unreachable, a
-  `forge.ControlPlane` env could not resolve its current release, and
-  `FORGE_LEDGER=machine` hit the unimported-ledger refusal without the live
-  release; the only fallback was an unrehearsed fresh cut that rebuilds every
-  image. forge now keeps a read-through copy of each hosted env's current
-  promotion and release (per project and env, under `$FORGE_LEDGER_HOME`),
-  refreshed by every successful ledger read or write. `--offline-ledger`
-  deploys that release by its recorded digests with no build and no contact
-  with the control plane, prints the copy's age and what it will replay, and
-  queues the promotion (with the apply's verdict). The next successful ledger
-  read replays the queue idempotently, as a compare-and-set against the
-  promotion the copy named: if the env moved meanwhile the record is refused
-  and stays queued rather than overwriting it. It redeploys the cached release
-  only, refuses envs whose hosted tiers or hub-converged clusters the control
-  plane applies, and is the only bypass of the unimported-ledger refusal.
-
-### Added
-
-- **Telemetry credentials rotate with no restart.** `forge/pkg/observe`
-  honours `OTEL_EXPORTER_OTLP_HEADERS_FILE` (and
-  `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS_FILE`): a file in the
-  `OTEL_EXPORTER_OTLP_HEADERS` format, attached per request on all four signals
-  (traces, metrics, logs, profiles; HTTP via a RoundTripper, gRPC via per-RPC
-  credentials) and re-read when its mtime changes (stat at most every 5s, no
-  goroutine). Headers in `OTEL_EXPORTER_OTLP_HEADERS` win over the file. A
-  missing or unreadable file exports without its headers and logs one WARN per
-  minute; it never fails or blocks the app.
-  On a cluster, `forge.ObservabilityDestination.token_secret` mounts the
-  node agent's bearer token as a file (Secret volume, no `subPath`) read by
-  `bearertokenauth{filename}`, which re-reads it on change; it is exclusive with
-  `headers_secret`, which is still read once at start. Verified against
-  opentelemetry-collector-contrib 0.162 with a kubelet-style symlink swap
-  (`RUN_HEADERS_FILE_SMOKE=1 go test -tags integration -run TestHeadersFileSmoke ./pkg/observe/`).
-  Rendering the file mount for a workload's own volume waits on
-  `forge.ControlPlaneSecret`.
-
-- **`forge cluster connect --delivery-secret <ns>/<name>` grants the control
-  plane least-privilege write access to declared Secrets.** Per namespace, a
-  Role with name-pinned `get/update/patch/delete` plus `create`, and a
-  fail-closed ValidatingAdmissionPolicy that admits only the declared
-  namespace/name pairs, only as `Opaque`, for the delivery identities only.
-  `--delivery-subject` binds an optional dedicated identity. Off unless named;
-  re-running is an idempotent upsert; `--dry-run` prints every object;
-  `disconnect` removes the grant.
-
-- **`pkg/lease` and `lifecyclekit.Singleton`: run a background worker on any
-  number of replicas and have exactly one do the work.** A Postgres
-  advisory-lock lease (`lease.New(db, opts).Run(ctx, name, fn)`): one replica
-  leads, the others stand by and take over within `RetryInterval` of the holder
-  exiting, or at once when its database session dies, with a heartbeat that
-  cancels a leader whose session was swapped or dropped (overlap after a
-  partition is bounded by `HeartbeatInterval`). `lifecyclekit.Singleton(l, w)`
-  wraps a `serverkit.Worker` in a named lease. It needs no schema, no
-  Kubernetes RBAC and no new infrastructure, and behaves the same under
-  `forge env up`, compose and a cluster. The `workers` skill says which workers
-  need one (and which must not take one). Tested against real Postgres,
-  including backend termination.
-
-### Fixed
-
 - **`forge generate` no longer composes a package it cannot construct, and no
   longer calls `compose.go` hand-written.** The pre-codegen contract check
   stays silent on a `contract.go` with no interface and on an interface
@@ -4652,372 +6387,6 @@ tag resolution: exit status 128`; it tags images `uncommitted`.
   a test no longer buys an ordinary `internal/workers/` package the worker
   exemption. The skip is per file: the package's own source stays strict. No
   rule read tests on purpose; the exclusion gate already skipped them.
-
-### Added
-
-- **Lean scaffolded CI over a local gate: `task ci`, `task ci:checks`,
-  `forge ci gate`.** The scaffolded `ci.yml` was nine jobs (lint, test, build,
-  verify-generated, deployability, vuln-scan, license-check, docker-build, e2e),
-  each repeating checkout, setup-go, cache restore and the forge install, and
-  GitHub rounds every job up to the whole minute: the one project generated from
-  it cost about $850/month at its October pace. It is now `changes`, `checks`
-  (one setup, then `task ci:checks`), `test` (`task test`) and `integration-test`
-  (`task test:integration`, PRs only, only when the repo has `//go:build
-  integration` files), plus `docker-build` and `e2e` where the project has them;
-  `changes` skips the heavy jobs for a docs-only change, every job (in every
-  scaffolded workflow) has `timeout-minutes`, and the workflow is a thin wrapper:
-  run `task ci` locally for the same verdict. `forge ci gate [checks|test|
-  integration|all]` is the runner, and forge owns the check list and the tool
-  pins (golangci-lint, buf, govulncheck, go-licenses, built into forge's tool
-  cache; a copy on PATH at another version, or a golangci-lint built with an
-  older Go than `go.mod`, is not used). Every check runs even after one fails,
-  a summary table is printed and appended to `$GITHUB_STEP_SUMMARY`, and the
-exit status is non-zero if anything failed. A check that could not run is
-`SKIPPED`, not a pass, and fails the gate unless named in `CI_SKIP`. Add your
-own checks under `ci.gate.extra_checks`in forge.yaml.`ci.yml`is scaffold-once,
-so existing projects adopt this through the new section in`migrations/v0.1.45` (`forge project upgrade list`).
-- **A database that is not up yet no longer crash-loops the server.** The
-  startup connect (`serverkit.AutoMigrateContext`, the scaffolded
-  `openDatabase` via `serverkit.OpenDB`) retries with capped exponential
-  backoff and jitter for `DB_CONNECT_TIMEOUT` (new config field, default 5m)
-  instead of failing on the first refused dial, logging one WARN per 15s
-  bucket with the error class and INFO with elapsed time on success. The
-  scaffolded `Serve` binds the listener first (`serverkit.StartBootProbes`):
-  `/healthz` passes and `/readyz` returns 503 naming `database` until `Run`
-  takes the address over. Only a database still unreachable at the deadline
-  exits non-zero (`*serverkit.ConnectTimeoutError`). The rendered default
-  startup probe is now `/readyz` with a 360s window, covering the 5m wait;
-  a prod rollout restarted three services over a PgBouncer that was seconds
-  late. `serverkit.AutoMigrate` keeps its signature (no boot probes).
-  Existing projects own `serve.go`/`providers.go`: see the PR for the edits.
-- **A typed observability destination: `forge.Observability` on the Bundle.**
-  An environment declares where its telemetry goes (an OTLP endpoint, the
-  protocol, and a `headers_secret` reference, never an inline secret), which
-  signals ship, trace sampling (errors always kept) and retention hints. Forge
-  renders the plumbing per runtime; apps keep exporting OTLP to a local endpoint
-  and never learn the backend. Unset means telemetry off with no dangling
-  endpoint. Host and compose: the local ClickStack stores by default, and a
-  destination swaps it for an `otel-forwarder` service rendered from the
-  declaration. Clusters (k3d or any `ClusterTarget`): a node-agent DaemonSet
-  (OTLP receiver, filelog of container stdout, kubeletstats, k8sattributes for
-  enrichment only, the pinned contrib 0.162 image) with a node-local Service
-  (`internalTrafficPolicy: Local`); client-supplied `k8s.*`/`reliant.*` resource
-  attributes are deleted before enrichment. `forge.OnHosted`:
-  forge renders no agent and emits only the `OTEL_*` contract. A headers secret
-  nothing supplies, a workload that also exports OTLP logs, and a host process
-  with no local port are refused at render. `forge.OTEL_ENV` no longer points at
-  `otel-collector.observability:4317`, which nothing deployed. See
-  `observability/destination` and `migrations/v0.1.45`.
-- **Changed:** the OTLP endpoint/protocol pair `forge env up` gave host
-  processes is now derived by that declaration (`ObservabilityEntity`) instead
-  of the removed `clickstackHostOTLPEnv`.
-- **`forge.yaml` `generate.hooks`: run your own commands as part of `forge generate`.**
-  The escape hatch for a generator forge does not own, such as a query
-  generator kept while porting onto the ORM, a project codegen tool, or a docs
-  dump. Each hook is an argv (`command: [sqlc, generate]`; no shell, so
-  quoting is the same on every platform), an optional project-relative `dir:`,
-  and the `writes:` paths it produces. Hooks run in declaration order after
-  forge's codegen and before `go mod tidy` and the validation build, so their
-  output is tidied and compiled in the same run. A non-zero exit fails the
-  generate. Declared `writes:` join the rollback journal, so a failed generate
-  restores them like forge's own output. See `architecture`, "The Generate
-  Pipeline".
-- **migratekit adopts a database goose already migrated.** A project leaving
-  goose squashes goose's history into one first-migration baseline and lists
-  every goose version in the baseline's header:
-  `-- forge:adopts goose <version> …` (the line repeats to wrap).
-- **Continuous profiles go to ClickHouse, pushed by the app (owner decision: push by default, no Pyroscope).**
-  `pkg/observe` now profiles every process that has an OTLP endpoint: a 10s CPU
-  profile plus heap and goroutine snapshots about once a minute (jittered),
-  converted to OTLP profiles and POSTed to `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT`
-  (a full URL; unset, the base endpoint gains `/v1development/profiles`). On by
-  default whenever an endpoint is set; off with `OTEL_PROFILES_EXPORTER=none` or
-  `observe.Config{ProfilesDisabled: true}`. The loop never blocks or crashes the
-  app: own goroutine, panics recovered, a TCP probe before each cycle, exponential
-  backoff to 15 min, and the CPU profile is skipped when another is running.
-  Measured: ~90 ms CPU and 1.5 MB per conversion (~0.15% of a core), ~8.5 MB/day
-  of ClickHouse per instance. The redundant `samples` sample type is dropped, a
-  profile ID is set, and the `trace_id`/`span_id` pprof labels that
-  `TracingInterceptor` (and the new `observe.ProfileLabelsMiddleware`) put on
-  request goroutines become OTLP links. **Pre-release pin:** the profiles format
-  is `v1development`, so contrib `pkg/translator/pprof` and collector
-  `pdata/pprofile` are pinned together at **v0.162.0**, the same version as the
-  local `otel-profiles` collector; bump all three in one change.
-- **`otel-profiles` in the scaffolded `docker-compose.yml`** fills the seam left
-  for it: stock contrib collector 0.162.0 (digest-pinned) with
-  `--feature-gates=+service.profilesSupport`, OTLP in, the `clickhouseexporter`
-  out to the ClickStack ClickHouse with its existing credentials. Compose
-  services get `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT`; for host processes the
-  typed declaration derives it (`forge.Observability.profiles_port`, the port
-  `dev/main.k` publishes) unless you chose an OTLP endpoint, protocol or
-  profiles endpoint yourself. **Profiles are on by default with the local
-  ClickStack and governed by `signals.profiles` elsewhere:** `signals.profiles`
-  is now unset by default, meaning on when there is no destination and a
-  `profiles_port`, off otherwise (rendered as `OTEL_PROFILES_EXPORTER=none`);
-  an explicit value wins. `True` with the local ClickStack but no
-  `profiles_port` is refused at render. The compose `otel-forwarder` gained the
-  `service.profilesSupport` gate so `signals.profiles = True` with a
-  destination starts. See `observability/profiles` and `migrations/v0.1.45`.
-  `deploy/observability/profiles-schema.sql` (yours) creates the raw
-  `otel_profiles` table (72h TTL) and two materialized views, deduplicated
-  stacks and per-minute totals (30d TTL), idempotently, on every up.
-- **`forge observe profile`** exports an aggregated profile (a service over a
-  time range, or one trace) as pprof (`go tool pprof -http`), speedscope JSON, or
-  collapsed stacks; `--sql` prints the query. The query and the writers are in
-  the new `pkg/profilequery` for reuse by other tools.
-
-  On the normal `db migrate up` and `AutoMigrate` paths, a database with a
-  `goose_db_version` table and nothing yet in `schema_migrations` is checked
-  against that list:
-
-  - **Exactly the listed set:** the baseline is recorded as applied without
-    running its SQL, and later migrations apply on the same run.
-    `Result.Adopted` is set and `AutoMigrate` logs `ADOPTED`.
-  - **A listed version missing, or a version applied that the list lacks:**
-    the run refuses with `*migratekit.AdoptionError`. It names the versions,
-    says how to fix each case, and changes nothing.
-
-  The check is set membership, never "the newest version matches", because
-  goose applies out of order. A version counts as applied when its latest row
-  says so, which is how goose reads its own table. goose's table is never
-  modified, so the last goose release remains a safe rollback target. After
-  adoption, goose's table is never read again.
-
-  A malformed declaration, or one on any migration but the first, is refused
-  at `Open` and at boot on every database. `forge lint` reports the same at
-  review time as the new `invalid-adopts-directive` rule. The scaffolded
-  `db migrate up` prints the adoption. `forge project migrate import --from
-goose` now warns that renumbering re-runs history on a database goose
-  already migrated. See the `db/deploy-migrations` skill, "Adopting a database
-  another tool migrated".
-
-- **Adopt forge one service at a time: `// forge:unmanaged`.** A full-line
-  comment above `service X {` takes that service out of forge's service model.
-  buf still generates its code and it stays in the descriptor, but `forge
-generate` scaffolds nothing service-scoped for it: no `internal/handlers/<svc>/`
-  or rpc stubs, no mocks, CRUD wiring or entities, no mount, compose entry or
-  subcommand, no frontend hooks or pages. `forge scaffold` skips it and refuses
-  `scaffold service|rpc|entity --from-proto` on it, `forge lint`'s
-  list-filter-optional rule and `forge project shapes` treat its rpcs as not
-  forge's, and `forge project audit` lists every one under
-  `unmanaged_services`. Its rpcs' `auth_required` still projects into
-  `pkg/middleware/procedures_gen.go`, because whether an rpc is public is part
-  of the contract whoever serves it. Before this, the first `generate` on an
-  existing server stubbed every rpc of every service at once — 307 stubs on
-  reliant. Delete the line to adopt the service. A near-miss spelling, or the
-  marker on an rpc or message, fails generate. `codegen.ParseServicesFromProtos`
-  now returns managed services only; `ParseDeclaredServices` returns all.
-  See the `migration` skill, "Adopting in place".
-- **`//forge:not-a-component: <why>` takes a contract package out of the server
-  composition and keeps its contract.** Every `internal/<pkg>/contract.go`
-  package used to be treated as a server component, so a package only the CLI
-  or a daemon uses (a browser login flow whose `Deps` are a credentials
-  directory, an `OpenURL func(string) error` and an HTTP doer) failed
-  `forge generate` with `Cliauth.Deps.Dirs (credentials.Dirs) has no provider`
-  until its collaborators were wired onto the server's `Infra`. A marked
-  package keeps `contract.go`, the contract lint, `mock_gen.go` and (with
-  `// forge:constructor`) its decorator; `compose.go` never constructs it,
-  never resolves its `Deps` and gives it no `Infra` field, and it gets no
-  `NewTest<Pkg>` factory. A server component that requires it by type fails
-  generate naming the marker, and `forge lint` refuses a bare marker
-  (`forge-not-a-component-reason`) or one where composition does not read it
-  (`forge-not-a-component-scope`: a handler, worker or operator, beside
-  `//forge:external-component`, or a package with no `contract.go`). When an
-  unmarked package's `Deps` have no provider and no service, worker or
-  operator reaches it, the missing-provider error names the marker as a
-  second remedy. `forge project audit --json` reports `uncomposed_packages`
-  and `forge project graph` a per-package `composition`. See the `contracts`
-  skill, "Packages the server does not have".
-- **Config scoped to one subcommand of a binary:
-  `(forge.v1.binary_config).command`.** A binary whose subcommands run as
-  separate processes (`reliant server api`, `reliant server worker`) can now
-  give each process its own config instead of one surface every role links:
-  `{binary: "reliant", command: ["server", "api"]}`. The binding is keyed on
-  `(binary, command)`. The binary's root config (no `command`) stays the
-  binary-wide surface every process loads; a command config's leaves register
-  as LOCAL flags on that subcommand (`Register<Msg>Flags(cmd)`), and
-  `Load<Msg>(cmd)` refuses to load from any other command
-  (`config.CheckCommandPath`), which is where a mistyped path surfaces: a
-  cobra tree is assembled at runtime, so generate checks the path's shape
-  only. Generate refuses two messages for one `(binary, command)`, a
-  malformed path, and a root and command config of one binary declaring the
-  same env var or flag. In KCL each config keeps its own `<msg>EnvMap`, and a
-  binary with command configs also gets a `<Bin>Process` bundle and
-  `config_gen.<bin>ProcessEnvMap(cfgs, argv, config_secrets)`, which projects
-  one workload's env from its own `command + args` (root config plus the
-  longest matching command config) and routes each `config_secrets` name to
-  the config that declares it. New projects' `config.k` scaffolds the bundle as
-  `<bin>_process`. See the `binaries` skill, "One binary, several processes".
-- **Generated HyperDX dashboards.** `forge generate` now derives dashboards
-  from the project's services and writes them to
-  `deploy/observability/dashboards/*_gen.json`, where the local ClickStack
-  already loads them: an overview (request rate, error rate, p50/p95/p99 per
-  service, top errors, error logs), one dashboard per service (a
-  requests/error-rate/latency row for every rpc, DB calls, Go runtime, logs), a
-  frontend dashboard (JS errors, sessions, web vitals, page load, browser API
-  calls) and a saved error-log search per service. Everything filters on
-  `service.name` and `deployment.environment.name`. A hand-written
-  `<name>.json` beside a `<name>_gen.json` takes it over; forge never writes a
-  file there that does not end in `_gen.json`. The model is a renderer-neutral
-  `Spec` (`internal/obsdash`, also written to
-  `deploy/observability/dashboard-spec_gen.json`) that HyperDX JSON is rendered
-  from, so another renderer can draw the same dashboards. Tiles name their
-  source (`Logs`/`Traces`/`Metrics`); the compose entrypoint binds the names to
-  this database's source ids. Alert definitions (error rate, p99, no data) are recorded in the spec's
-  `alerts` as `pending`, because HyperDX 2.40 never evaluates an
-  alert declared in a provisioned file (hyperdx PR #3233). See skill
-  `observability/dashboards`.
-- **Frontend builds are told what they were built from.** Every frontend build
-  forge runs gets `FORGE_SOURCE_REPO`, `FORGE_SOURCE_REF`, `FORGE_SOURCE_COMMIT`
-  (the GitSource pin and the sha it resolved to) and `FORGE_RELEASE` (the
-  deploy's bound release), always present and empty when unknown. A GitSource
-  is fetched shallow with no tags, so a tag-pinned build could not name its own
-  version and the release name never reached a build at all; reliant-web
-  shipped "version unknown" to prod. A local source override reports no source.
-  See `docs/cross-repo-sources.md`, "What the build is told about itself".
-- **`forge storage gc` reclaims dangling images and anonymous Docker volumes.**
-  Dangling images (untagged, used by no container, built over an hour ago) are
-  removed by every pass, the automatic ones included. Anonymous volumes (the
-  daemon's `com.docker.volume.anonymous` label AND a 64-hex name, plain `local`
-  driver, mounted by no container, seen unused for `anonymous_volume_unused`,
-  default 14 days) are removed only by an explicit `forge storage gc --apply`;
-  automatic passes only record when each was first seen unused. Named volumes
-  are never removed. Every removal goes through the pass's delete governor and
-  the new `max_docker_removals_per_pass` cap (default 100), and a daemon error
-  reporting EMFILE/EIO/ENOTCONN backs the pass off. `storage.Runner.ReapWorktrees`
-  is renamed `Explicit`. See `docs/runbooks/storage-lifecycle.md`.
-- **`pkg/observe` merges the standard `OTEL_RESOURCE_ATTRIBUTES` and
-  `OTEL_SERVICE_NAME` into the OpenTelemetry resource** (`resource.WithFromEnv`).
-  The deployment environment is the forge env name, delivered by the platform as
-  `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=<env>`; it is not derived
-  from the CORS/HSTS `environment` mode field, which cannot tell staging from prod.
-
-- **BREAKING: `pkg/observe` honours the standard OTLP environment.**
-  `OTEL_EXPORTER_OTLP_{ENDPOINT,PROTOCOL,HEADERS}` and the per-signal variants
-  now configure the exporters: `http/protobuf` is the default, `grpc` is
-  supported, and headers reach the wire (previously gRPC only, no headers).
-  The default protocol flips from gRPC to `http/protobuf`: an existing
-  `:4317` endpoint with no `OTEL_EXPORTER_OTLP_PROTOCOL` must now set
-  `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`.
-  `OTEL_SERVICE_NAME` now overrides the compiled-in service name, and
-  `OTEL_SDK_DISABLED=true` turns export off. `Config.OTLPEndpoint` still
-  overrides the endpoint; with no endpoint nothing is exported.
-- **The W3C TraceContext+Baggage propagator is always installed**, not only when
-  an OTLP endpoint is set, so `traceparent` is honoured with export off.
-- **Server logs carry `trace_id` and `span_id`** when the logging context holds a
-  span (`observe.NewLogHandler`, used by `serverkit`).
-- **Opt-in OTLP logs exporter** (`OTEL_LOGS_EXPORTER=otlp` / `Config.OTLPLogs`),
-  off by default and mutually exclusive with stdout/file collection.
-- **Go runtime metrics** are recorded when metrics export is on.
-
-### Changed
-
-- **`serverkit.RequireComplete` checks exactly the inventory's services.** It
-  used to register each inventory service's whole proto FILE and demand every
-  service in it, so a file declaring a forge-managed service beside an
-  unmanaged one refused to boot a complete server. `serverkit.ProjectServiceFiles`,
-  which built that file-scoped registry, is removed; `RequireMounted` with a
-  descriptor source you build is unchanged.
-- **BREAKING: a binary's root config registers every leaf as a persistent
-  flag, and `Register<Msg>SharedFlags` is gone.** The generated
-  `Register<Msg>Flags(cmd)` for a `(forge.v1.binary_config)` message with no
-  `command` now registers all of its leaves, composed blocks included, as
-  PERSISTENT flags on the command it is given (the binary's root), via the new
-  `config.RegisterPersistentFlags`; it used to register only the message's own
-  leaves, as LOCAL flags, beside a separate `Register<Msg>SharedFlags` for the
-  composed blocks. That split modelled binaries as subcommands of one root,
-  which `command` now expresses directly, and it left a root config's own
-  flags invisible to the binary's subcommands. Replace
-  `Register<Msg>SharedFlags(root)` + `Register<Msg>Flags(root)` with one
-  `Register<Msg>Flags(root)`. `config.RegisterSharedFlags` /
-  `RegisterOwnFlags` remain as library primitives.
-- **ClickStack is the local observability stack, and it is ON by default.**
-  `forge env up` now runs ONE container, HyperDX's no-auth _local mode_ image
-  (ClickHouse, the HyperDX UI and an OTLP collector), in place of the opt-in
-  Grafana LGTM stack. Host processes are handed
-  `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>` and
-  `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, as a pair and only when the shell,
-  `config.k` and the workload's `env` set neither (a user's gRPC endpoint is
-  never paired with our protocol), so traces and metrics reach HyperDX with
-  nothing to register and no key to copy. Frontend dev servers get this
-  project's collector base URL (the port compose actually published, so their
-  `/_otel` proxy cannot reach another project's ClickStack) and the env name
-  (`NEXT_PUBLIC_ENVIRONMENT` / `VITE_ENVIRONMENT`), which the browser reports as
-  `deployment.environment.name`. The frontends' `frontend_<name>.log` console
-  mirror is not tailed, because the HyperDX browser SDK already ships the same
-  console and the two would store every line twice. The collector tails the per-service
-  files `forge env up` already writes under `.forge/logs/<env>/`, parsing the
-  JSON lines the runtime emits (`trace_id`/`span_id` become the log's trace
-  link), and that is the one local log path. Every port is published on
-  `127.0.0.1`; ClickHouse is not published, and its passwordless `default` user
-  is replaced by a dev-only credential. State persists in named volumes. The
-  HyperDX sources (Logs, Traces, Metrics) are pre-created, and HyperDX dashboard
-  JSON dropped into `deploy/observability/dashboards/` is loaded within seconds
-  by HyperDX's file provisioner. Turn it all off with `_observability = False` in
-  `deploy/kcl/dev/main.k`. `forge env status` now reads traces, metrics (gauge,
-  sum and histogram) and logs back from ClickHouse, by service name.
-
-  Gone with it: the `lgtm` and `alloy` compose services,
-  `deploy/alloy-config.alloy`, the generated Grafana dashboards under
-  `deploy/observability/grafana/`, and the Grafana MCP example. Profiles are not
-  collected locally yet. An existing project keeps its own `docker-compose.yml`
-  and `deploy/kcl/dev/main.k` (both are yours); load `migrations/v0.1.44` to move
-  it over.
-
-- **Frontends ship the HyperDX browser SDK, initialised, with a same-origin
-  `/_otel` route.** Next.js and Vite scaffolds now install
-  `@hyperdx/browser` (exact-pinned `0.26.0`) and start it from the generated
-  `src/lib/otel_gen.ts`. It captures uncaught errors, unhandled rejections,
-  `console.*`, fetch/XHR spans, document load, long tasks and web vitals, and
-  sends them as OTLP to `<basePath>/_otel/v1/{traces,logs}` on the page's own
-  origin, so the bundle holds no collector address and no secret (the SDK's
-  required `apiKey` is a public placeholder; a collector that enforces ingestion
-  auth has its proxy strip or replace it). `next dev` rewrites and `vite`
-  `server.proxy` forward `/_otel` to `OTEL_EXPORTER_OTLP_ENDPOINT` (default
-  `http://127.0.0.1:4318`). A static export has no server, so a deployed
-  environment routes `/_otel` at its ingress; the production default is
-  therefore off until the frontend's `otel_endpoint` is set. `forge lint
---static-export` stays green because the rewrite is gated to development.
-  Session replay is shipped but **off**, and when enabled
-  (`NEXT_PUBLIC_OTEL_REPLAY` / `VITE_OTEL_REPLAY`) forces all text and inputs
-  masked. Network bodies are not captured. `traceparent` on every RPC is
-  unchanged and still always on. No Sentry SDK is scaffolded.
-
-  **Breaking, web-runtime 0.4.0.** The `@reliantlabs/forge-web-runtime/otel`
-  subpath and its eight `@opentelemetry/*` SDK peers are gone: HyperDX registers
-  the page's one global tracer provider, and a second registration silently
-  loses. `initClientTelemetry` is gone too; the new `/telemetry` subpath's
-  `initBrowserTelemetry` replaces both. `reportException()` (barrel) records an
-  error a React/Next boundary caught, and `RuntimeErrorBoundary`, `error.tsx`
-  and `global-error.tsx` call it.
-
-  **Browser and API spans share one trace.** The serve scaffold builds
-  `otelconnect.NewInterceptor(otelconnect.WithTrustRemote())`. By default
-  otelconnect only _links_ to an inbound `traceparent`, so a page and the API
-  call it made were two traces even though the header arrived intact. Found by
-  running the stack: ClickHouse held them under different trace ids. `serve.go`
-  is scaffold-once, so an existing project adds the option by hand.
-
-  **The browser reports `deployment.environment.name`**, the key the backend
-  uses, so a browser span and a server span of one trace carry the same
-  environment. The forge env name is rendered into the runtime config document
-  (`config.js`) as `ENVIRONMENT` for every env forge writes it for, and
-  `forge env up` also hands it to the dev server (`NEXT_PUBLIC_ENVIRONMENT` /
-  `VITE_ENVIRONMENT`). A declared `config.environment` wins. A hosted frontend's
-  `config.js` is written by the control plane from its `runtime_config`, which
-  this change leaves as published; declare `ENVIRONMENT` there when you turn
-  hosted browser telemetry on.
-
-  **Existing projects** (load `migrations/v0.1.44`): `forge generate` rewrites
-  `src/lib/otel_gen.ts`, raises the web-runtime range to `^0.4.0` and adds
-  `@hyperdx/browser` at the runtime's pin to each web frontend's
-  `package.json`. A scaffold-once `providers.tsx` (Next.js) or `main.tsx`
-  (Vite) that still calls `initClientTelemetry()` must drop that call and its
-  import, and `next.config.ts` / `vite.config.ts` need the `/_otel` proxy block.
-  **Requires `@reliantlabs/forge-web-runtime@0.4.0` on npm** before a released
-  forge scaffolds or regenerates a frontend.
-
-### Fixed
 
 - **`db migrate up` and `AutoMigrate` no longer race each other.** Both rely
   on golang-migrate's advisory lock, but golang-migrate names the database
@@ -5532,648 +6901,6 @@ export data version 5 is greater than maximum supported version 4)`, in a
   findings in one file); it now says "2 findings in 1 migration file (2
   migration files checked)".
 
-### Changed
-
-- **Forge is open source: Apache License 2.0, replacing the Business Source
-  License 1.1.** The license covers the whole module (the CLI, every
-  `forge/pkg` library, the KCL modules) and `@reliantlabs/forge-web-runtime`,
-  which is published as 0.4.1 under `Apache-2.0`. Every version published
-  before this change is also licensed under Apache-2.0, alongside BSL. Code
-  forge generates, scaffolds or copies into a project belongs to that project
-  and carries no attribution obligation (README, "License"). `NOTICE` is new.
-  The npm package ships `LICENSE` and `NOTICE`; `TestWebRuntimeShipsTheRepoLicense`
-  keeps its copies identical to the root, and the release workflow refuses a
-  tarball without them. Contributions are signed off under the Developer
-  Certificate of Origin rather than a CLA (CONTRIBUTING, "License of
-  contributions").
-
-- **Every successful call is logged again by default; sampling is a
-  per-environment setting in typed config.** `observe.LoggingInterceptor`
-  (`rpc completed`) and `observe.LogMiddleware` (component calls) sampled
-  successes out of the box — one per procedure per minute. They now write
-  every success unless their caller passes `observe.WithSuccessSampling(d)`.
-  Failures and successes over 1s are always logged. The scaffolded
-  `proto/config/v1/config.proto` declares `log_success_sample_window`
-  (default `0s`; env `LOG_SUCCESS_SAMPLE_WINDOW`, flag
-  `--log-success-sample-window`), so a deployment sets it per env in
-  `deploy/kcl/<env>/config.k`, and the scaffolded `serve.go` passes the
-  loaded value to `observe.Chain` as `LogOptions`. `forge/pkg/observe` reads
-  no environment: an existing project adds the field to its AppConfig and
-  `LogOptions: []observe.LogOption{observe.WithSuccessSampling(cfg.LogSuccessSampleWindow.AsDuration())}`
-  to the `observe.Deps` in its owned `serve.go`.
-  `observe.DefaultSuccessSampleWindow` is removed (there is no default
-  window).
-- **One prettier release formats a scaffolded project, everywhere.** Frontends
-  now pin `prettier` exactly (`3.5.3`, was the range `^3.5.0`), and the
-  scaffolded `.pre-commit-config.yaml` runs that same release as a local hook
-  instead of `pre-commit/mirrors-prettier` (archived at `v3.1.0`). The two
-  disagreed about the component library forge installs, so a fresh project's
-  hook rewrote files its own `npm run format` had just written, and the range
-  drifted to whatever `npm install` resolved. Existing projects: replace the
-  mirrors-prettier repo in `.pre-commit-config.yaml` with a `repo: local`
-  hook (`language: node`, `entry: prettier --write --ignore-unknown`,
-  `additional_dependencies: ["prettier@3.5.3"]`), and pin
-  `"prettier": "3.5.3"` in each frontend's `package.json`.
-- **Skills and project memory now lead with shipping.** The start-here `forge`
-  skill gains a "Ship it" section (hosting is the default, `forge env deploy`,
-  the free static tier, queued-on-billing exit 7, no `forge login` under
-  Reliant); `deploy/hosting` holds the gates table and the provides/refuses
-  table; `frontend/serving`, `deploy/static-site`, `db/deploy-migrations` and
-  `secrets` state what hosting accepts and gates on. The project memory template
-  gets a one-line Shipping note.
-
-### Removed
-
-- **BREAKING: forge no longer runs or scaffolds sqlc.** The data-access path is
-  the ORM projected from the applied migrations: the generated `<Entity>Store`,
-  plus the owned `internal/db/<entity>_repo_ext.go` seam for anything it cannot
-  express (bun, CTEs, `FOR UPDATE SKIP LOCKED`, raw SQL), tested against a real
-  migrated database. The `sqlc generate` step is gone from `forge generate`, so
-  a root `sqlc.yaml` is no longer run implicitly: keep it running while
-  you port off it by declaring it as a `generate.hooks` entry (see Added). A root
-  `sqlc.yaml` with no hook running it gets a forge.yaml load warning that
-  spells out the hook. `forge project new` no longer writes `db/sqlc.yaml` or
-  `db/queries/`. That stub was dead on arrival anyway: generate only looked for
-  a ROOT `sqlc.yaml`, its paths were root-relative inside a file sqlc resolves
-  relative to `db/`, and it targeted the `internal/db` package the ORM generates
-  into. `db/README.md` now documents migrations, seeds and the query seam. The
-  `db`, `contracts`, `testing/integration` and `migration-service` skills say to
-  port sqlc queries onto the store, not to keep writing them.
-- **The host-application credential DEPOSIT is gone (`pkg/cloudcred.Save`,
-  `Delete`, `HostClientID`, `Location`, `Credential`).** A host used to copy its
-  own session token into `credentials.json` under client `host-app`, and forge
-  presented it to the control plane's deploy API. That token was a permanent,
-  multi-purpose session credential (Reliant's daemon or CLI login) which mostly
-  did NOT hold deploy authority, so deploys 403'd and users ran `forge login`
-  anyway — and where it did work, the deploy API, the registry login and every
-  subprocess saw a credential that could also connect as the user's daemon.
-  forge no longer reads `host-app` entries at all; `cloudcred.RemoveLegacyHostDeposits`
-  lets a host purge what it wrote. Replaced by the credential helper below.
-- **forge no longer requires cgo.** `kcl_plugin.forge` is bridged through a
-  purego callback, so `go install` works with any `CGO_ENABLED` setting,
-  including Windows without a C toolchain. `env diff`'s `unsupported` status is
-  gone, as are the `CGO_ENABLED=1` prefixes and "CGO is required" notes in the
-  Taskfile, Makefile, scaffolded CI install step, version-skew install hints
-  and skills.
-
-### Changed
-
-- **The dev loop runs the API as ONE process — `_api`, the binary's
-  `server`, under air (hot reload) — so the frontend reaches every service.**
-  Dev ran each service as its own `go run ./cmd/<p> <service>` host process on
-  its own port, and the frontend's dev config (`api_url`, the
-  `<project>-dev-api` port key) named the first: a 3-service project's
-  frontend could call one service in dev — the defect #527 fixed for hosted
-  envs, and it strands the sign-in cookie the same way. `deploy/kcl/dev/main.k`
-  now declares the same `_api` the hosted envs do, `_port_of` gives it the
-  `-api` key, and it binds `_on_host(_api)` instead of the services and
-  workers (`server` mounts every service and supervises every worker). This
-  is what the docs already said — "one binary serves every service on one
-  mux", "Go services (hot reload)" — and what `.air.toml` (`entrypoint =
-["./tmp/<p>", "server"]`) and `task dev` already ran; `forge env up dev`
-  did neither. `_on_host` now runs `server` under air (anything else still
-  `go run`), so a .go edit rebuilds and restarts the API; air must be
-  installed (`go install github.com/air-verse/air@latest`, which `forge
-doctor` already required), and `forge env up` refuses to start without it,
-  naming the workload and the `runner = "go-run"` way out, instead of failing
-  in the host phase on `exec: "air": executable file not found`. It no longer
-  prints "the workload's args [server] are not passed" when the air config's
-  entrypoint passes exactly those args. `forge scaffold service|worker` adds
-  no dev line (`_on_host(_api)` is bound with the first service);
-  `forge env up dev --target api` restarts the API. **Existing projects:**
-  copy `_api` and the `_on_host` binder from a fresh `forge project new`'s
-  `deploy/kcl/dev/main.k`, change `_port_of`'s `-api` owner to `"api"`, and
-  replace the service/worker lines with `_on_host(_api)`.
-- **New projects deploy to Reliant hosting by default.** `forge project new`
-  scaffolds `staging` and `prod` hosted on the forge control plane: the API
-  (every service and worker, as one workload — below) and the migrate job
-  bound `_hosted` (its image's registry host dropped,
-  since the platform pulls only from its own registry), a
-  `forge.ManagedDatabase` each workload reads through `forge.DatabaseRef`,
-  `forge.HostedSecrets`, the frontend on platform static hosting with
-  `API_URL` and `CORS_ORIGINS` wired by reference, and `control_plane =
-forge.ControlPlane {}`. A fresh scaffold renders every env with no
-  placeholder. Before, staging and prod bound everything to a cluster the
-  author had to name (`forge env deploy prod --explain`: `REFUSE (declared
-context not in kubeconfig)`) and the frontend to `REPLACE_ME_BUCKET`. The
-  scaffolded CI is the hosted pipeline (`release.yml`, no registry login)
-  instead of `deploy.yml`. `dev` is unchanged. Hosted workloads and the
-  managed database need billing; a static site alone is free.
-  - **The hosted API is ONE workload, `_api`: the binary's `server`.** A
-    browser reaches the API at one origin — the frontend's Connect transport
-    has one base URL (`/<package>.<Service>/<Method>`, so one origin serves
-    every service), and sign-in answers with an HttpOnly session cookie the
-    browser returns to that origin only. The platform gives each workload its
-    own hostname and routes no paths between them, so hosting each service as
-    its own workload (as first shipped) left a 3-service project's frontend
-    able to call one service: `API_URL` named the first. Per-service URLs in
-    the browser cannot fix that — the session cookie would still be stranded
-    on one host — so each hosted env declares `_api` (`args = ["server"]`:
-    every service on one Connect mux, every worker supervised beside it) and
-    binds it instead of its services and workers; the frontend's `API_URL`
-    names it. One workload is also one bill, not one per service. It is bound
-    once there is something for it to run (a project born with no service
-    pays for no idle workload; `forge scaffold service` binds it with the
-    first). `forge scaffold service|worker` then adds no hosted line — `server`
-    already runs it (dev too, below); a job,
-    an operator (which `server` skips without a Kubernetes API) and a tool
-    bind as before. `forge env new X --from prod --bind api=cluster` rebinds
-    the API; `--bind <service>=…` is refused, naming `_api`. Splitting a
-    service or worker out is its own `_hosted(wl.<name>)` line plus taking it
-    out of `server` (cmd/<bin>/cmd/server.go). The binary mode
-    (`--binary per-service|shared`) never reached the deploy files and does
-    not now: both modes ship one binary with a subcommand per component and
-    the all-in-one `server`.
-  - **Hosting elsewhere stays a one-line rebind.** Each env declares
-    `_on_cluster` and `_on_bucket` beside the hosted binders, unused, with
-    the `forge.ClusterTarget` / `forge.OnBucket` to fill shown in a comment
-    (`_cluster = None`, `_bucket = None`). A binding to either before it is
-    declared fails the render, naming the workload and the fix.
-  - **Kinds hosting refuses.** `forge scaffold operator` binds the operator
-    `_on_cluster` in every deployed env — the one binding that can run it —
-    and warns that those envs refuse to render until `_cluster` is declared
-    (or the line is dropped); a hand-declared `kind = "cron"` binds the same
-    way. forge's cron component (`forge scaffold worker --kind cron`) is a
-    worker with its own scheduler and is hosted like any worker. Every other
-    new workload binds where the env's `migrate` job runs, so an env
-    scaffolded on a cluster keeps binding there.
-    `forge scaffold frontend` binds a new frontend through a hosted env's
-    `_hosted_frontend`, and still to a bucket in an env without one.
-  - **Existing projects are not rewritten** (env files are scaffolded once).
-    To adopt hosting, add `control_plane`, `secret_provider =
-forge.HostedSecrets {}` and a hosted `forge.ManagedDatabase` to the env's
-    Bundle, give `_hosted` the bare image and `DATABASE_URL =
-forge.DatabaseRef {...}`, and rebind each line `_hosted(...)` — or try it
-    beside prod with `forge env new cloud --from prod --bind <name>=hosted`
-    first. The `deploy` skill has the exact edits. A project scaffolded
-    between the hosting default and the one-workload API binds each service
-    `_hosted(wl.<name>)` and its frontend calls only the first: replace those
-    service and worker lines with `_api` (copy the declaration and the
-    `_api_config` / `_hosted_frontend` lines from a fresh `forge project new`'s
-    `deploy/kcl/prod/main.k`; the `deploy/hosting` skill shows them).
-- **Next.js frontends are scaffolded as static exports, and the generated CRUD
-  pages are static routes.** Before, the default was `output: standalone`, a
-  Node server that hosted static hosting (`forge.OnHosted {}`) cannot run. The
-  generated detail and edit pages were dynamic `src/app/<slug>/[id]/` routes,
-  so switching to `output: static` failed `npm run build` on the first entity
-  with `Page "/<slug>/[id]" is missing "generateStaticParams()"`. Now:
-  - `forge project new --frontend` and `forge scaffold frontend` write
-    `output: static` into `forge.yaml`. `npm run build` exports into `out/`,
-    and the Dockerfile serves `out/` from nginx. `--output standalone` is the
-    explicit opt-in for a Node server. `next dev` is unchanged. A `forge.yaml`
-    entry with no `output:` still means standalone, because every frontend
-    scaffolded before this change has a standalone `next.config.ts`.
-  - Detail and edit are `src/app/<slug>/view/page.tsx` and
-    `src/app/<slug>/edit/page.tsx`, served at `/<slug>/view?id=…` and
-    `/<slug>/edit?id=…`. Each reads the id with `useSearchParams` under a
-    Suspense boundary, and renders a "which row?" state when `?id=` is
-    missing. List row clicks, create-then-redirect, the Edit action, edit's
-    Cancel, breadcrumb and save redirect all build the new URLs through
-    `src/lib/entity-routes.ts` (`entityViewHref`, `entityEditHref`,
-    `useEntityIdParam`). That file is a new scaffold-once helper with its
-    own vitest suite. `forge generate` backfills it into an older frontend
-    the first time it writes a page that imports it.
-  - The id is in the query string, not the path, because an export can only
-    hold pages it enumerates at build time. `trailingSlash` stays off, so
-    the export writes `out/<slug>/view.html`. Hosted static hosting and the
-    scaffolded nginx image both resolve `/<slug>/view` to that file by
-    trying `.html`. No CDN rewrite is involved.
-  - The static `next.config.ts` sets `images: { unoptimized: true }`, since
-    next/image's optimizer is a server route. The dev-only browser-log
-    route (`app/%5F_forge/log`) answers POST only, so the export leaves it
-    out.
-  - The sign-in guard keeps the query string in `returnTo`, so a visitor
-    bounced off `/<slug>/view?id=…` comes back to the same row.
-  - **Existing projects are not rewritten.** Their pages are scaffold-once.
-    While `src/app/<slug>/[id]/` exists, `forge generate` keeps it as that
-    entity's detail/edit route and writes no view/edit pair beside it. If
-    the frontend is `output: static`, generate warns that `next build` will
-    refuse those routes. `forge project upgrade list` offers the new
-    `migrations/v0.1.44` playbook to any project with a `[id]` route. The
-    playbook covers rescaffolding untouched pages, moving edited ones, and
-    switching `output:` with `forge project upgrade --force next.config.ts
-Dockerfile`.
-  - `forge lint --guarded-fields` reads the new `<slug>/edit/page.tsx` as
-    well as the old `[id]/edit` path. The stale-route report recognizes both
-    page shapes.
-- **The render refuses a Next.js server build bound to a static runtime.**
-  `forge.OnHosted` for a frontend, `forge.OnBucket` and `forge.OnFirebase`
-  serve files and run nothing. A frontend whose forge.yaml `output` is
-  `standalone` or `server` used to render, deploy and build green, then fail
-  at publish on an `out/` nothing wrote. The roofers scaffold bound one this
-  way. `forge env render` / `deploy` / `up` and `forge build` now refuse it
-  at render. The refusal names the frontend, the env and both fixes: set
-  `output: static` and migrate (`forge lint --static-export` lists what), or
-  bind it elsewhere, since a Next.js server ships as a workload with a
-  `forge.DockerBuild`. forge.yaml stays the one declaration of the build
-  shape. forge binds it into every render it drives as the reserved
-  `-D frontend_outputs` option, and the KCL never restates it. An env with no
-  forge.yaml frontend of that name, or a plain `kcl run`, is not judged.
-  **Adoption:** a project whose forge.yaml frontend has no `output:` reads as
-  `standalone` (what its scaffold-once next.config says). If such a frontend
-  is bound to a static runtime, set `output: static` and follow
-  `forge skill load migrations/v0.1.44`.
-- **Concurrent `forge generate` / `forge scaffold` runs in one project now
-  queue instead of failing.** Every run takes the project's lock
-  (`.forge/forge.lock`). A second run prints one line,
-  `⏳ forge: waiting for pid N (<command>) …`, and starts when the first
-  finishes. Previously the lock was an O_EXCL marker file: every concurrent
-  run failed at once with "another forge process is running … remove it with:
-  rm .forge/forge.lock". Agents that followed that advice ran two pipelines
-  in one tree, and their revert-on-failure rollbacks restored each other's
-  writes. The lock is now an OS file lock (flock; LockFileEx on Windows) that
-  dies with its process, so a killed run cannot leave a stale lock and there
-  is no 10-minute reclaim window. `forge scaffold` and all its nouns hold it
-  for the whole command, not only for the generate pass at the end, so another
-  run never sees a half-scaffolded tree: protos with the CRUD quintet injected
-  and a migration written, but no ORM or handlers. Build's auto-generate,
-  `generate --watch`, `--check`, `project rescaffold` and `project new` take
-  the same lock. The file stays on disk between runs and is already
-  gitignored (`.forge/*`); do not delete it.
-- **`orm.Context` gains `RunTx`, `RunTxReadOnly` and `RunTxWithOptions`.**
-  They are on the interface so `s.deps.DB.RunTx(…)` compiles against the
-  injected `DB orm.Context`. A hand-written `orm.Context` implementation, such
-  as a test fake, must add the three methods. `orm.Client.Bun()` now returns a
-  thin wrapper around the `*bun.DB`, so `ExecContext`/`QueryContext`/
-  `QueryRowContext` can join a ctx transaction. Use `BunDB()` when you need the
-  concrete type. `RunTransaction` keeps its semantics: database-default
-  isolation, one attempt, handle-passing. It now joins a transaction already
-  carried in ctx, and `Tx.Commit` runs after-commit callbacks registered
-  through `tx.RunTx`.
-- **Scaffolded CRUD lifecycle tests carry no fixtures; their rows come from
-  regenerated factories.** `handlers_crud_test.go` (scaffold-once) used to
-  embed a literal `INSERT` seed block and literal create-request values,
-  frozen against the birth schema. Editing the birth migration afterwards —
-  the db skill's own advice: a `GENERATED` column, a one-way status `CHECK` —
-  broke it (`cannot insert a non-DEFAULT value into column …`,
-  `violates check constraint …`). It now calls
-  `<svc>.NewCreate<Entity>Request(t, db, 0|1)`,
-  rendered into the forge-owned `factories_gen_test.go` from the applied schema
-  on every `forge generate`: it seeds the FK parents and returns a request the
-  current constraints accept (enums the column DEFAULT supplies, nullable
-  timestamps and GENERATED columns are left unset). A factory forge cannot
-  derive a valid request or row for is still emitted, with a body that fails
-  the calling test naming postgres's verdict, and `forge generate` prints it
-  as a warning — it no longer fails the generate.
-- **`New<Entity>` factories insert minimal, lifecycle-consistent rows.** Every
-  NOT NULL column without a DEFAULT and every FK parent is filled; every other
-  column is left to its DEFAULT or NULL; GENERATED columns are skipped; CHECKs
-  are satisfied, including length/range/vocabulary checks, a DEFAULT the
-  column's own CHECK rejects, and one-way status implications (the
-  union/guard branch closest to the DEFAULTs). A jobs factory that used to
-  insert a LEAD job with a crew, a schedule, `completed_at` and `lost_reason`
-  now inserts a bare LEAD. Each factory is executed against the shadow schema
-  at generate time; if the minimal row is rejected the full row is tried.
-- **`forge lint --fixture-drift` executes literal fixtures instead of
-  pattern-matching them.** Every fixture statement in a scaffolded
-  `handlers_crud_test.go` runs against the shadow schema in a rolled-back
-  transaction (grouped per test function, one savepoint per statement), and
-  postgres's own error is reported per statement — GENERATED columns, UNIQUE
-  collisions, dangling foreign keys and the CHECK violations the old matchers
-  missed. A project with no literal fixtures opens no database; an unreachable
-  shadow is reported as `forge-fixture-unverified`, never as clean. The rule id
-  is now `forge-fixture-rejected` (was `forge-fixture-generated-column` /
-  `forge-fixture-duplicate-unique`). `--crud-fixtures` (the dangling-FK
-  matcher, rule `forge-crud-fixtures`) is folded in and kept as a hidden,
-  deprecated alias.
-  **Existing projects:** run `forge generate` (factories gain the
-  `New<CreateRequest>` functions), then `forge lint --fixture-drift`. Your
-  `handlers_crud_test.go` is yours and is not rewritten; to adopt the new shape,
-  delete its seed block and replace each literal `&pb.Create<Entity>Request{…}`
-  with `<svc>.NewCreate<Entity>Request(t, db, 0)` / `(t, db, 1)`. Tests that
-  relied on `New<Entity>` populating optional columns now get DEFAULT/NULL
-  there — set them with an override.
-- **`forge doctor`'s `forge: kcl-plugin` check is now a real probe.** It
-  evaluates a one-line KCL program through `kcl_plugin.forge` instead of
-  reading a build flag, so it fails for what can actually break now: KCL's
-  native library failing to extract or load (antivirus, read-only temp dir,
-  bad `KCL_LIB_HOME`). Same name and pass/fail/skip meaning as before.
-- **A KCL runtime that cannot load is an error, not a crash.** kcl-lang.io/lib
-  panics when it cannot extract libkcl; forge used to crash with a stack trace
-  (`forge doctor` exited 2). It now reports `load the KCL runtime: …` from
-  every render.
-- **Scaffolded `.air.toml` sets no env inline.** `ENVIRONMENT=development` is
-  set by `forge env up` on the air process (and by `task dev`), so the config
-  uses `entrypoint` and works under air's PowerShell on Windows.
-- **`task db:restore` shows pg_restore's warnings.** The `grep -v` filter that
-  hid them is gone, because `grep` does not exist on Windows.
-- **An unwritten `forge:computed` field fails `forge lint`, like an unwritten
-  `forge:read-only` one.** It used to only warn while read-only failed —
-  backwards, since computed is the stronger promise ("my app derives this").
-  `computed-fields lint` now gates; `--computed-fields --json` reports
-  `ok: false`.
-- **Pending-stub mode for both unwritten-column rules.** Right after
-  `forge scaffold`, the rpc that will write a read-only/computed column is
-  still forge's own `// forge:gen unwired-stub` placeholder, and failing the
-  gate on forge's fresh output taught agents to ignore the rule. While the
-  declaring service's handler package still holds those stubs, the finding is
-  a warning naming them — `pending: implement ChangeJobStatus, ScheduleJob` —
-  and once none remain it is an error again. Deterministic: the service comes
-  from the entity's proto directory and the handler package from the same
-  resolver `forge generate` uses; forge does not guess which rpc writes which
-  column.
-- **A failing `forge lint` names the failed linters on its last line**
-  (`forge lint: 2 gating linter(s) failed: computed-fields lint, read-only-fields lint`),
-  instead of "one or more linters reported errors".
-  The verdict is the last line in every mode.
-- **`frontend lint` no longer "passes" on a project with no frontend.** With no
-  declared frontend and no `frontends/` directory it is a silent no-op, as the
-  frontend typecheck lane already was, instead of counting as a gating linter
-  that ran.
-- **Bridging a project to a local forge checkout is opt-in: `forge project new
---link-forge`.** It used to happen on its own for every dev build of forge —
-  including a host binary that embeds forge through a workspace (`reliant
-forge project new`), which bridged every project it created to whatever
-  checkout that host compiled from. On a shared machine that is the main
-  checkout everyone pulls into, so the library under those projects moved with
-  each merge while the binary generating their code did not. Now nothing is
-  written unless asked for; a service scaffold from an unreleased build is
-  refused with the flag named, and `--link-forge` on a binary that cannot
-  locate its checkout is refused before anything is written.
-  `FORGE_LINK_FORGE=1` is the same opt-in for harnesses (forge's e2e corpus
-  sets it). The web-runtime twin (`.forge-link/` + root `package.json`) now
-  follows the project's go.work bridge and links that same checkout, instead
-  of being laid down by any dev build for its own checkout. **Adopting:**
-  existing bridged projects are untouched; a contributor scaffolding with a
-  dev forge adds `--link-forge`.
-- **The scaffolded `handlers_crud.go` says each thing once.** Every delegating
-  method used to carry the same eight-to-ten-line comment (what pkg/crud does,
-  where the wiring lives, and the full AUTHENTICATED / PUBLIC / SCOPED
-  explanation). Now each method has a summary line and one `Auth:` line that
-  still names `middleware.GetUser` (an author editing `DeleteOrder` reads
-  `DeleteOrder`'s comment, not the header). The file header explains each tag
-  once, and only the tags the file contains. Update methods keep a line on mask
-  handling, which now mentions that `op.ReadOnly` columns are refused and kept.
-  The file is yours, so existing projects keep their comments; methods appended
-  later get the short form.
-
-### Added
-
-- **`forgeconv-list-filter-optional`: `forge lint --conventions` now rejects a
-  List-request filter field without `optional`.** The rule ("List request
-  filter fields must be optional") was documented in every project's
-  CLAUDE.md and the proto skill and checked by nothing. A scalar or enum field
-  on a `List<X>Request` (or the request of a `List<X>` rpc) with no presence
-  is an error: unset and the zero value are the same on the wire, so the
-  generated List op either can never filter on the zero value or — for a
-  bool/enum — always applies it and returns only the `false`/UNSPECIFIED rows.
-  Pagination/ordering controls and message-typed fields are exempt, enums
-  resolve across the proto tree, and a required parameter can say so with
-  `[(buf.validate.field).required = true]` instead.
-
-- **Signed in to Reliant means signed in to the control plane — no `forge
-login`.** forge has a credential-helper protocol (`pkg/cloudcred`, the model
-  of kubectl exec plugins and git credential helpers): when
-  `$FORGE_CREDENTIAL_HELPER` names a command, forge writes
-  `{"version":1,"endpoint":…,"scopes":[…]}` to its stdin and reads a token (or a
-  structured refusal: `no_session`, `denied`, `unavailable`) from its stdout.
-  The value is a JSON argv array, or a single executable path. Reliant sets it
-  for `reliant forge …` and for every shell its agents run, and answers with a
-  short-lived token minted from the user's Reliant session for exactly the
-  endpoint the env declares. Hosted commands (`env deploy`, `secret`,
-  `domain`, `cloud`, `release`, `env promote|verify|start|stop`, `registry
-login`, …) resolve a credential in this order: `--token`, the env's declared
-  token variable (CI), the stored `forge login`, then the helper — and an
-  EXPIRED `forge login` falls through to the helper instead of failing. A
-  helper's token is reused within one process until a minute before it
-  expires; caching across processes is the helper's job. When the helper
-  refuses, forge prints the host's own advice (Reliant: "sign in to Reliant
-  (`reliant auth login` / the app)") and the CI variable — never `forge login`
-  — and a 401/403 on a helper-minted token says to sign in again there. Helper
-  stdout never reaches an error message or a log. `forge cloud status <env>`
-  shows the source and expiry; `forge login` notes when a helper is already
-  set. `forge login` and the token variable are unchanged for standalone forge
-  and CI.
-
-- **`forge lint --static-export`, and a `static-export lint` lane in every
-  `forge lint`.** It judges each Next.js frontend that must build to a static
-  export: forge.yaml declares `output: static` for it, or any env binds it to
-  `forge.OnHosted`, `forge.OnBucket` or `forge.OnFirebase` (learned from each
-  env's real render, not a text scan). It reports with file:line and a fix:
-
-  - **errors**, which `next build` refuses for an export: a dynamic segment
-    (`[x]`, `[...x]`, `[[...x]]`) with no `generateStaticParams`, a GET route
-    handler not declared `force-static`, `'use server'`, `next/headers`,
-    `dynamic = "force-dynamic"` / `revalidate = 0`, and next/image without
-    `images.unoptimized` or a custom loader. Also a frontend whose build is not
-    an export at all, and forge.yaml and next.config disagreeing about it.
-  - **warnings**, for what the export accepts and then drops: `middleware.ts` /
-    `proxy.ts`, non-GET route handlers that are not dev-only, next.config
-    `rewrites` / `redirects` / `headers` not gated to development,
-    `revalidate = N`, and an export bound to `forge.OnBucket` without
-    `trailingSlash: true` (a bucket resolves no `.html`, so every route but
-    `/` 404s; the hosted origin tries `<path>.html` itself).
-
-  CI's `NODE_ENV=production npm run build`, `forge build` and
-  `forge env deploy` run the real export, which stays authoritative. This lane
-  reports the same failures earlier and offline. A `[id]` page born from
-  forge's CRUD templates names the `migrations/v0.1.44` route migration. It is
-  a text scan with no TypeScript AST, so it stays silent rather than guess: a
-  re-exported `generateStaticParams` or a next.config built by a function is
-  not followed. Honours `--quiet`, `--scope` (by file) and `--json`, and the
-  shared `// forge:lint-disable-next-line <rule>: <reason>` directive.
-
-- **Queued hosted deploys: exit 7, the block, and `--wait`.** A control plane
-  that ACCEPTS a deploy but holds it on a person — today, billing for the
-  hosted workloads or managed database it runs, or for static sites past the
-  free tier — no longer makes `forge env deploy` fail or sit out a
-  fifteen-minute wait on a promotion nothing is moving. The release, bundle
-  and promotion are recorded as usual; forge reads the hold off the Promote
-  response (rollout phase `HELD` as the fallback) and prints ONE block — what
-  it waits on, why, what to do, and the action URL — then exits **7
-  (queued)**, a code nothing else uses.
-  The deploy goes live by itself once billing is set up; nothing is re-run, and
-  a newer deploy replaces a queued one. `--json` carries the same facts as
-  `.queued` (`waiting_on`, `holds[].action_url`). `forge env deploy --wait`
-  blocks through the queue until the release is live (or `--timeout`; still
-  queued then is 7), and is mutually exclusive with `--no-wait`.
-  `forge env status <env>` on a queued env exits 7 with the block instead of
-  reporting drift, and `forge env status <env> --wait` waits through it. The
-  capacity pre-flight now continues past a "would be queued" answer
-  (`CheckDeployCapacity` holds) instead of refusing before the build; an older
-  control plane that sends no holds is refused exactly as before. See the
-  `deploy/hosted-capacity` skill.
-- **Money and basis-point helpers in `@reliantlabs/forge-web-runtime`.** The
-  barrel now exports `formatMinorUnits`, `parseMinorUnits`,
-  `minorUnitsToInput`, `currencyMinorDigits`, `formatBasisPoints`,
-  `parseBasisPoints` and `basisPointsToInput`. They are the web counterpart of
-  `pkg/money`: an amount is an integer count of minor units, as a `bigint` or
-  an integer `number`, plus an ISO 4217 code. Currency defaults to USD and
-  locale to en-US. Each currency's minor digits come from Intl (JPY 0, KWD 3),
-  and formatting stays exact past 2^53 because Intl receives a decimal string,
-  never a float. Parsing returns `null` instead of rounding or guessing. That
-  covers too many decimals, a negative without `allowNegative`, a misplaced
-  group separator (`"12,50"` in en-US), another currency's symbol, and values
-  outside int64. The input helpers round-trip through the parsers. Rate parsing
-  caps at 100% unless you pass `max`. Plain library functions: codegen does not
-  infer money from field names. A forge app (roofers) hand-wrote these, along
-  with a per-page `bpsToPercentInput`.
-- **`// forge:generated <expr>` births a GENERATED column.** The db skill says a
-  value derived from the same row should be `GENERATED ALWAYS AS (…) STORED`,
-  but birth could only emit `BIGINT NOT NULL DEFAULT 0`, so the owned
-  migration was hand-edited straight after every birth (`line_total_cents`,
-  `tax_cents`, `balance_cents` in the roofers run). Write the expression on the
-  field instead: `int64 line_total_cents = 9; // forge:generated
-round(quantity * unit_price_cents)::BIGINT`. The rest of the comment line is
-  copied verbatim into `<col> <type> NOT NULL GENERATED ALWAYS AS (<expr>)
-STORED`. NOT NULL follows the presence rule every born column follows:
-  dropped for an `optional` field and for a Timestamp, so an expression that
-  yields NULL for a plain field fails the write rather than storing a value
-  the wire cannot carry. There is no DEFAULT; an enum keeps its CHECK and
-  protovalidate rules still project. The marker implies `forge:read-only`: the
-  field leaves the born Create request, and the generated Update refuses an
-  `update_mask` naming it. Before writing anything, birth applies the rendered
-  migration to the shadow database inside a rolled-back transaction. An
-  expression postgres rejects refuses the birth, naming the marker's file and
-  line with postgres's message, and leaves the proto untouched: an unknown
-  column, a non-`IMMUTABLE` function such as `now()`, or one generated column
-  reading another (both are named). So does a marker with no expression, two
-  markers on one field, or a repeated/map/oneof/JSONB field. Supported fields
-  are single-valued scalars, enums and Timestamps. The descriptor carries the
-  expression too (`SchemaFieldDef.Generated`), so `forge scaffold entity
---from-proto <svc>.<Message>` births the same column as bare `forge
-scaffold`. `forge project annotations` lists the marker and the mapping row.
-  `pkg/schemadef` gains `OpenShadowAt` and `(*Shadow).TryApply` for asking
-  postgres whether SQL would apply without changing the shadow.
-- **Version-skew warning for a bridged forge checkout.** When a project's
-  go.work (or a directory `replace`) bridges a local forge checkout,
-  `forge generate` and `forge lint` print one line — and `forge doctor`
-  reports a `Forge Bridge` warning — whenever the running binary was not built
-  from that checkout as it is now: a different commit, uncommitted changes on
-  either side, or (forge embedded in a host through a workspace, which records
-  no forge commit) a checkout that moved after the binary was written. The
-  line names both sides and the fix:
-  `⚠️  forge skew: reliant (built 2026-10-01 01:31) records no forge commit, and go.work bridges /src/forge, which changed after it was built (now 750833054b78) — generated code and library differ. Fix: rebuild reliant from that checkout, or unbridge: go work edit -dropuse=/src/forge`.
-- **A decision table for column write markers** in `db/write-policy`. It picks
-  `forge:read-only`, `forge:computed`, `forge:generated`, `forge:guards` or
-  `forge:immutable` by who writes the value. It reflects the Update enforcement
-  below: guards adds no protection to a read-only column, only the disabled edit
-  row naming the rpc that owns it. `forge`, `proto` and the project memory point
-  to it.
-- **The rule for CRUD vs custom rpcs, stated once and the same everywhere.** An
-  rpc is CRUD only when it is unary and named exactly
-  `Create|Get|Update|Delete<E>` or `List<Es>`, where `<E>` has a table and a
-  same-name proto message. `UpdateJobStatus`, `CreateInvoiceFromEstimate` and
-  `ListJobsByCrew` are custom, so there is no need to rename them defensively
-  (an agent did in the roofers run). This is in the project memory and in the
-  `forge`, `proto` and `api` skills.
-- **A retired-claims registry over all shipped guidance**
-  (`internal/templates/retired_claims_test.go`). It covers every project and
-  service template (skills, `reliant.md.tmpl` and `reliant-reliant.md.tmpl`,
-  which render as reliant.md / CLAUDE.md / AGENTS.md / .cursorrules /
-  copilot-instructions.md), plus the README and `docs/`. Each row is a claim
-  forge retired, with the truth that replaced it, the skill that carries that
-  truth (checked to exist), and a bad and a good sample the pattern must catch
-  and spare. Against the previous main it reports 16 stale lines.
-- **`db/seeds/vocab.yaml` describes timestamps, booleans and NULL.** A time
-  column takes instants relative to the day the seed runs:
-  `{from: -90d, to: +30d}` (optional `step: 1d`), or a list of `now` / `-3d` /
-  `+2w` offsets and absolute ISO dates. A boolean column takes
-  `[true, true, false]`, and `null` is a list value for a nullable column
-  (`[null, "x"]`). Repeating an entry weights the draw for every kind. A `null`
-  on a NOT NULL column refuses the seed and names the column. Before this,
-  YAML dropped a null from the list (`[null]` failed with "has no values"), and
-  boolean and time columns were ignored with a warning. `seedplan.Config.Now`
-  is the anchor: the seed CLI passes the start of the current UTC day. The zero
-  value is a fixed instant, so generated mocks, factories and fixtures stay
-  byte-stable.
-- **`forge db seed apply|reset --dsn` accepts any loopback database**
-  (localhost, 127.0.0.0/8, ::1, a unix socket; any port, any name), so a
-  throwaway postgres can be seeded. A non-loopback `--dsn` must still be the
-  env's declared database unless `--allow-remote-dsn` is passed. The env must
-  be dev either way. An ambient `$DATABASE_URL` gets no relaxation, and
-  `forge db reset` (DROP DATABASE) keeps the strict check.
-- **Context-carried transactions in `pkg/orm`: `RunTx`, `RunTxReadOnly`,
-  `RunTxWithOptions` and `AfterCommit`.**
-  `s.deps.DB.RunTx(ctx, func(ctx context.Context) error)` runs fn in a
-  transaction carried by the ctx it receives. Every query made with that ctx
-  against the same database joins it:
-  generated delegates (`db.GetJobByID(ctx, s.deps.DB, id)`), stores,
-  `pkg/crud.Repo`, `db.Bun()` builders and raw `Exec`/`Query`/`QueryRow`, with
-  no handle threaded through signatures. It is SERIALIZABLE by default and
-  retries serialization failures and deadlocks (SQLSTATE 40001/40P01) with
-  jittered backoff, up to `orm.DefaultTxMaxAttempts` (7). Still conflicting
-  after that, it returns `svcerr.Aborted`. A ctx that already carries a
-  transaction on the same database is joined, and the inner call's options are
-  ignored. `orm.AfterCommit(ctx, fn)` runs fn once, after the outermost commit;
-  rolled-back and retried attempts discard it. fn may run more than once, so it
-  must have no side effects outside the database. Read-check-write state
-  transitions therefore need no `SELECT … FOR UPDATE` lock helpers. The new
-  `service-layer/transactions` skill covers RunTx, AfterCommit, a lock-free
-  state-transition recipe and migrating lock helpers, and `service-layer`,
-  `db`, `db/crud-overrides` and `interactor` point to it. Executor resolution is
-  guarded by identity: a transaction carried for one `*sql.DB` never runs a
-  statement sent to another.
-- **`crud.Preserve(columns...)`, a per-call write policy for a full-replace
-  Update.** The generated `db.Update<Entity>` delegate takes
-  `opts ...crud.UpdateOption`; existing calls compile unchanged. `Preserve`
-  keeps the named columns out of that one write and reads their stored values
-  back. Use it when the caller, not the column, decides what may be written.
-  `forge:immutable` (`,skipupdate`) remains the answer when no full replace
-  should ever rewrite the column. Naming a column that does not exist is an
-  error, not a no-op, so a typo cannot silently disable the protection.
-- **`crud.UpdateOp.ReadOnly`**: the columns `HandleUpdate` refuses in a client
-  `update_mask`. Generated from the entity's `forge:read-only` /
-  `forge:computed` fields.
-- **`forge lint --quiet` (`-q`).** Prints only what failed — a one-line summary
-  per failing linter, its error findings with fix hints, and the verdict as
-  the last line; a clean run is one line. Auto-fix still applies, so the
-  verdict matches the default run. Combines with any targeted flag
-  (`forge lint --read-only-fields --quiet`), with `--scope` and with
-  `--gate-json`. Agents were piping full lint through `head` and losing the
-  result.
-- **`forge lint --scope <path>`** (repeatable or comma-separated). Reports only
-  findings in files under the given project-relative paths, so an agent
-  sharing a checkout can lint its slice. golangci-lint, the typed-config
-  guardrail and the contract linter run on the scope's Go packages only;
-  file-anchored linters run project-wide and report what is under the scope
-  (a finding with no file is never hidden); the whole-project linters —
-  frontend lint, component-drift and `--config-reach` — cannot be scoped, are
-  skipped, and are named in the verdict ("run an unscoped `forge lint` before
-  merging"). Auto-fix touches only files under the scope. Works with `--json`
-  and `--quiet`; refused with positional package paths and with `--gate-json`
-  (a gate records whole-project evidence). Every pipeline lane must declare
-  its scope mode, pinned by a test.
-- **`seedplan.Config.Minimal`** — plan the smallest row the schema accepts
-  instead of the fullest: only keys, NOT NULL columns without a usable
-  DEFAULT, NOT NULL references, UNIQUE/ordered NOT NULL columns and columns a
-  child references are written; discriminated-union and status-guard CHECKs
-  take the branch closest to the column DEFAULTs, the same branch on every
-  row. `Plan.Writes(table, column)`, `Plan.NaturalValue(...)` and
-  `MinimalUnionPlacement` expose the decision; `UnionCell.Present` reports a
-  branch's IS NOT NULL requirement. `forge db seed` is unchanged (full plans).
-- **Windows support.** Native windows/amd64 and windows/arm64, no C toolchain:
-  - process lifecycle (tree kill, liveness, parent/port/start-time lookup,
-    reading another process's argv and environment for stale-stack reclaim);
-  - an in-process POSIX shell for ShellBuild and migration detection;
-  - a delve JSON-RPC client that builds on windows/arm64;
-  - `[build.windows]` sections in the scaffolded air configs, `.exe` host
-    binaries from `forge build` and the `binary`/`delve` runners;
-  - zitadel's Windows binary for the host IdP;
-  - in-use file detection via the Restart Manager, so reclaimers work;
-  - a directory-junction fallback when symlinks need privileges;
-  - portable scaffolded Taskfiles (guarded by a test), and a `.gitattributes`
-    keeping generated files LF;
-  - `forge doctor` floors for Windows: air >= 1.65.3, Task >= 3.45.5;
-  - `forge storage schedule` registers a daily Task Scheduler task;
-  - a `windows-latest` CI job that builds, tests and renders a scaffold.
-- **`forge doctor` checks air** (any OS, >= 1.63.2) for projects with an
-  `.air.toml`: the scaffolded config names its binary with `entrypoint`, which
-  older air does not read, so it would have nothing to run.
-- **`cli.RenderSkill` — a skill exactly as `skill load` prints it, for
-  harnesses.** `cli.LoadSkill` returns the raw body, so a harness injecting a
-  skill into an agent's context handed it `forge generate` while
-  `reliant forge skill load` (and the project memory) said
-  `reliant forge generate` — a command the agent may not have, or a different
-  forge build than the one that generated its project. `RenderSkill` applies
-  the same resolution, version-skew advisory, audience filter and command-name
-  rewrite as the CLI; `skill load` and `forge start` now call the same
-  renderer, so the two cannot drift. `RenderSkillOptions.CLIName` defaults to
-  the name this process reports, the same one `cli.RenderProjectMemory`
-  renders.
-
-### Fixed
-
 - **`schemadef.OpenShadowAt` returns no shadow when it fails.** It used to
   return the live scratch database beside a migration-replay error, so the
   only correct call shape was `defer shadow.Close()` BEFORE checking `err` —
@@ -6598,433 +7325,6 @@ apply`/`seed reset`/`db reset` fail when the database has tables the
   `frontend` and the README now route to it. The scaffold gaps it works around
   are tracked in #401.
 
-### Changed
-
-- **`forge project new` with frontends and no services leads with the
-  frontend.** The next-steps block told a frontend-only project to
-  `forge scaffold service item`, which is how a static site ends up with a CRUD
-  backend nobody asked for. It now points at the frontend and
-  `deploy/static-site`, and keeps `scaffold service` as the line for a project
-  that does need an API. It does not print a bare `forge env up dev`, because a
-  frontend-only scaffold's dev env still fails that way until #401 lands.
-- **The README stopped advertising `forge.External`.** It was removed with the
-  one workload model (#284), but the README still offered it for Fly.io, Cloud
-  Run, ECS, Vercel and Railway, and described deploy as `forge.Service` plus a
-  `host` block. Both now describe the per-workload runtimes, and a
-  platform-CLI runtime is tracked in #400.
-
-- **`forge env status` is the ONE read view of an environment.** Reading an env
-  used to take six verbs — `env status`, `env verify`, `env wait`,
-  `env rollout`, `env topology`, `env history` — and they were views of a
-  single question, split by which half of the answer each happened to own. A
-  reader had to know, before they could ask, that the bound release lived in
-  `verify`, the rollout phase in `rollout`, the runtime ports in `status`, and
-  the promotion that caused all of it in `history`. Two were literal
-  duplicates: `env rollout` WAS `env wait --timeout 0`.
-
-  They are modes of one command now:
-
-  ```bash
-  forge env status                  # every environment, and how far behind each is
-  forge env status prod             # prod right now: runtime AND release
-  forge env status prod --wait      # block until the rollout settles
-  forge env status prod --history   # prod's promotion ledger, newest first
-  ```
-
-  One env's report carries the bound release, verify (running digests vs the
-  binding, in all five states, through the control plane's observer for a
-  hosted env), the rollout phase per workload, runtime health, gates, and
-  ledger freshness. The two halves are deliberately asymmetric about failure:
-  runtime health REPORTS (a down stack is a state this command must be able to
-  print), while the release half makes a claim and so owns the exit code.
-
-  **Every exit code is unchanged**, because every mode reaches the same code
-  the old verb called: 0/1/2 for the read, plus 5 (timed out, still
-  progressing) and 6 (superseded) under `--wait`. `--timeout` serves two modes
-  with different budgets — 60s for a cluster read, 15m for a wait — so its
-  declared default is an unset sentinel resolved per mode; `--wait --timeout 0`
-  still means one read, never blocking.
-
-  `--json` emits one document carrying the standard envelope. Its release
-  fields stay FLAT (`bound`, `images`, `release`) because `forge gate record
---from` recognises the document by them.
-
-### Removed
-
-- **BREAKING: `forge env verify|wait|rollout|topology|history` are deleted**,
-  with no alias and no hidden name — they are modes of `forge env status` (see
-  Changed, above). `forge release where` and `forge release verify` are
-  untouched: both answer a question about a RELEASE rather than an
-  environment. A removalguard entry pins all five spellings on every surface.
-
-- **BREAKING: `forge env promote` is gone — `forge env deploy <env> [vX | --from
-<src-env>]` does the whole job.** No alias and no hidden name; the old
-  spelling dies on "unknown command".
-
-  ```bash
-  forge env deploy prod v1.4.0          # was: forge env promote v1.4.0 --to prod && forge env deploy prod
-  forge env deploy prod --from staging  # exactly what staging runs
-  forge env deploy prod                 # unchanged: re-apply prod's current binding
-  ```
-
-  **The verb now means record + apply + wait, and the wait is not a flag.**
-  Recording a binding ships nothing, so a pipeline step that only promoted
-  reported success before any byte had moved and the release's real failure
-  surfaced minutes later with nothing connecting the two. Every pipeline
-  therefore spelled it `promote --deploy --wait`, and the spellings that
-  omitted either half were bugs waiting for an incident. So the health gate is
-  ON by default; `--no-wait` opts out and names
-  `forge env status <env> --wait` as the way to gate later.
-
-  **Who applies it is read off the environment's ledger, not a flag** — the
-  same declarative fact as where the promotion is recorded, so the two cannot
-  disagree. An env whose KCL declares `forge.ControlPlane` is converged by
-  that control plane and forge waits on the rollout it computes, pinned to the
-  promotion just written. Every other env is self-managed: the same command
-  renders the new binding and applies it from this machine, and that apply's
-  per-resource rollout wait IS the health gate.
-
-  `promote --wait` and `promote --deploy` are removed with the verb rather than
-  renamed: both are now what the command does.
-
-  Everything else is unchanged and moved with the code — the compare-and-set
-  (`--expect-current` / `--expect-unbound` / `--supersede`), `--gate`,
-  `--from` / `--from-promotion`, `--plan`, the run flags, every exit code and
-  the JSON envelope. A deploy that names no version keeps today's spec-change
-  behaviour, and a release-only flag passed without a version is now refused
-  rather than silently ignored.
-
-- **BREAKING: an environment no longer has an image registry — a WORKLOAD has
-  one, as part of its image.** `forge.ClusterTarget.registry`,
-  `forge.ControlPlane.registry` and `forge.DockerBuild.registry` are all gone.
-  The author writes the full reference on the workload and forge contributes
-  only what it alone knows:
-
-  ```kcl
-  # deploy/kcl/workloads.k
-  api = fw.Workload {
-      name = "api"
-      image = "ghcr.io/acme/api"        # the registry IS the image
-      build = forge.GoBuild {cmd = "./cmd/acme", output_name = "acme"}
-  }
-  ```
-
-  forge appends the resolved tag and, after a push, the digest. It never
-  invents, prefixes or rewrites the host. So the reference you read in the KCL
-  is the reference the build pushes and the cluster pulls — they cannot
-  disagree, which is the whole point: a build aimed at one registry while the
-  spec named another was an `ErrImagePull` that surfaced only at rollout.
-
-  Two workloads in one env may now name two different registries, which an
-  env-wide field could not express at all.
-
-  **Migration is automatic.** `forge generate` removes `registry = …` from every
-  ClusterTarget / ControlPlane and prefixes the removed value onto a workload's
-  bare `image`, judging ambiguity ONLY over the envs where that workload is
-  bound to a runtime that pulls an image (cluster or hosted). A registry on an
-  env where the workload runs `OnHost`, or is not bound at all, is simply
-  dropped — it was never that workload's. If the same workload genuinely pulls
-  from two different registries, forge REFUSES and prints the exact per-env KCL
-  rather than picking one. Your binder expressions are never edited.
-
-  **A bare image is refused at render**, naming the workload: it would render as
-  `api:<tag>`, which the kubelet resolves against Docker Hub and fails to pull.
-  A third-party image must name its host too (`docker.io/library/nats:2.10`).
-
-  A hosted env is no different, and gets its own runbook: a hosted env may one
-  day inherit a default from the control plane's advertised image push base, but
-  that base is not pushable yet (control-plane ADR 0003 / #334), so forge does
-  not invent one. Hosted FRONTENDS follow the same rule with the same field
-  name (`forge.Frontend.image`), and forge appends the platform's own
-  `static.v1` layout segment itself, so that segment never appears in your KCL.
-
-  A local env states the image IT runs, because a k3d node can only pull from a
-  host-local registry. That is a plain KCL string on the workload — the
-  scaffolded dev env declares one `_LOCAL_IMAGE` constant and its `_on_k3d`
-  binder sets it. forge ships no helper for composing an image reference and
-  prescribes no pattern: a project that wants one source of truth writes its
-  own constant, which is what KCL is for.
-
-  **`forge registry login <env>` logs in to every distinct host the env's images
-  name** — no host argument and no flag that takes one. The credential is the
-  only input: `--username` with `--password-stdin`, or `--password-env` naming
-  the variable that holds it (the `forge.ControlPlane.token_env` convention, so
-  CI states a NAME in git and never the value). `forge registry ref <env>` now
-  prints one `<image>@<digest>` per built image, labelled by the workload that
-  declared it.
-
-  **RELEASES MUST BE RE-CUT.** The release ledger now keys an OCI artifact by
-  its declared repository, host included, so the key IS the address and
-  `release.Artifact.URI` is no longer recorded for images. Ledgers cut before
-  this change are keyed by bare name, which no longer resolves to an address:
-  `forge release verify` reports such an entry as UNVERIFIABLE rather than
-  guessing Docker Hub. Re-cut and re-promote any release you still rely on.
-  Keying by bare name could not survive per-workload registries — two envs
-  building the same app to two registries collapsed onto one entry, so a prod
-  promotion could read a digest that only ever existed in the dev registry.
-
-  Also removed: `BuildState.Registry` and `buildtarget.State.Registry` (Image
-  now holds the full repository), `forge env new`'s `REPLACE_ME_REGISTRY` knob
-  (an env has no registry to get wrong), and the `registry` field the render
-  projected onto each cluster runtime.
-
-- **BREAKING: a `forge.ShellBuild` `cmd` is plain KCL, run verbatim — the
-  `${TOKEN}` substitution is gone.** Forge used to rewrite a fixed vocabulary
-  into the command before running it — `${IMAGE}`, `${TAG}`, `${CODE_VERSION}`,
-  `${SERVICE}`, `${TARGETARCH}`, `${REGISTRY}`, `${PROJECT_DIR}`, `${ENV}` and
-  `${BUILD_CWD}`. It no
-  longer substitutes anything and exports no variables of its own: the rendered
-  string is handed to `sh -c` byte-for-byte, from the declared `cwd`, with the
-  declared `env` merged onto the process environment. Every `$VAR` in a command
-  is now the shell's, so `$PWD` and `$HOME` work.
-
-  Write the values in KCL, where the command is composed and the value already
-  lives: `forge.target_arch()` (new, and the reason `target_arch` is now a
-  reserved render input), `forge.image_tag("<env>")`, `forge.env()`,
-  `file.workdir()`, the image reference itself, or a literal. To keep a
-  `${NAME}` spelling, declare `NAME` in that build's `env` map and the shell
-  resolves it.
-
-  `forge lint` (`shellbuild-tokens`) and `forge generate` both REFUSE a leftover
-  token. That is a gate rather than a warning because one of them fails
-  silently: `GOARCH=${TARGETARCH}` reaching the shell unset becomes `GOARCH=`,
-  which Go reads as "unset" and builds for the host — so an amd64 cluster gets
-  an arm64 binary whose only symptom is an `exec format error` crash-loop. The
-  rest (`docker push /:`) fail loudly.
-
-  Forge now resolves the build's tag BEFORE the render and binds it as the
-  existing `image_tag` input, so a rendered `cmd` already names the tag the build
-  records and pushes (`--release` > `--tag` > the image's own pin > the env's
-  `image_tag` > `git describe`, unchanged). Two casualties of the old pass are
-  also gone: `forge project audit`'s `conflict_tokens` / `conflict_count` (with no
-  built-in tokens there is nothing for a declared env key to collide with) and
-  `forge doctor`'s substituted-command preview, which now prints the exact string
-  forge will run instead of one built from `<registry>`/`<tag>` stand-ins.
-
-  Escaping, worth knowing before you write one: braced-dollar is KCL's own
-  interpolation, so backslash-escape a shell `${HOME}` or use a raw `r"..."`
-  string. A DOUBLED dollar is not an escape — KCL reads it as an undefined name
-  and refuses to compile.
-
-- **BREAKING: every rollback surface is gone — recovery is roll forward.**
-  `forge env deploy --rollback`, `forge env promote --rollback`, the KCL
-  `forge.External.rollback_cmd` field, and every provider's rollback path
-  (`kubectl rollout undo`, compose override pinning, the static-site
-  re-sync, the hosted `DeployService/Rollback` call) are removed, along with
-  the deploy's skip-the-migration-on-a-rollback machinery. A rollback claims to
-  undo a release it cannot undo: the release already ran its migrations and
-  wrote data. Fix forward instead — cut a release and promote it. Binding an
-  env to an OLDER release is still an ordinary `forge env promote`; the plan
-  labels it `direction BEHIND` and warns that it undoes nothing. Existing
-  ledgers keep working: a `"kind":"rollback"` entry reads as the promote of
-  its release. Delete `rollback_cmd` from any `forge.External` block.
-
-### Added
-
-- **Scaffolded CI for hosted environments** (ADR `docs/adr/env-verbs.md`,
-  task V6). A project with at least one hosted env (an env whose KCL declares
-  `forge.ControlPlane` and something the platform runs) now gets two new
-  files. The first is `.github/workflows/release.yml`. On a `v*` tag it runs
-  checks once (`forge lint --gate-json`, plus `task test -- -json` fed to
-  `forge ci verify-test-run --gate-json`). It then builds, pushes and records
-  the release in ONE command (`forge env build <env> --release "$VERSION"`;
-  `--release` implies `--push`). Finally it deploys the release through the
-  hosted envs in promotion order, one job per env, each under its GitHub
-  Environment. Each stage after the first deploys `--from` the stage before
-  it, pinned with `--from-promotion`. It asserts `--expect-current`, which the
-  previous job captured before this stage's approval wait. A hotfix that lands
-  while an approval is pending therefore turns the run red (exit 3) instead of
-  being overwritten. The second file is
-  `.github/actions/forge-deploy/action.yml`, a composite action vendored into
-  the repo so that it versions with the project's forge pin. It is one
-  `forge env deploy` — which records, applies and waits for health itself — and
-  then records that outcome as rollout evidence on the promotion the deploy
-  wrote and summarizes it into the job summary. Because the verb decides who
-  applies from what the env DECLARES, the action carries no promote step, no
-  "does this env converge its own promotions" probe, no separate wait and no
-  `deploy:` input.
-  Existing projects get both via
-  `forge project rescaffold .github/workflows/release.yml`.
-  Neither file uses curl or environment ids, and no token appears in a URL.
-  The only secret is `FORGE_CONTROL_PLANE_TOKEN`.
-- **`forge cloud token create|list|revoke`** mints and manages the org
-  automation token that CI deploys with. An org token has no acting user, so
-  it outlives any one person. Scopes are validated before the round trip.
-  `--json` carries the one-time secret, so
-  `… --json | jq -r .secret | gh secret set FORGE_CONTROL_PLANE_TOKEN` never
-  echoes it to a terminal.
-- **`forge ci summarize <doc.json>...`** renders forge `--json` documents as
-  Markdown for `$GITHUB_STEP_SUMMARY`. It renders the verdict from the
-  envelope, a field table and row tables. It decides nothing: it exits 0
-  whatever the documents say, and 1 only when an input cannot be read.
-- **`forge env deploy` applies a MIXED env's cluster half.** An env that keeps
-  its ledger on a control plane AND declares workloads that control plane does
-  not run — a cluster Deployment, a compose service, host infra, a shipped
-  frontend — now gets both halves of the deploy: the client-side apply for what
-  forge owns, then the wait on the rollout the control plane computes. Before,
-  the follow-through branched on "is this env hosted" alone, so a mixed env
-  recorded its promotion and waited on the hosted rollout while its cluster
-  workloads silently stayed on the previous release — a green deploy that
-  shipped half a release. The apply runs first and a failure short-circuits the
-  wait. Nothing is configured: the shape comes from the env's own render.
-- **Status verbs for hosted deploys** (hosted-deploy-primitives §3.5):
-  - `forge env rollout <env>`: where the current (or `--promotion`)
-    rollout has got to, read once. It is `forge env wait --timeout 0`, with
-    the same exit codes (0 succeeded, 1 degraded, 2 undetermined, 5 still
-    rolling out, 6 superseded).
-  - `forge env history <env> [--limit] [--before] [--release]`: the
-    promotion ledger, newest first, with from-env, actor, note, evidence
-    counts and the CI run. It pages with a keyset cursor (`next_before`;
-    empty means the last page), and both ledger backends page identically.
-  - `forge release where <version>`: which environments are currently bound
-    to a release. Exit 1 when none are.
-  - **`forge env verify` works for hosted envs.** forge cannot read a hosted
-    env's cluster, so it reads the control plane's observer through
-    GetRollout and reports the same five states with
-    `source: control-plane observer`. A stale observation is UNREACHABLE
-    (exit 2), never MATCH. Cluster envs are unchanged.
-  - `forge env topology --json` gains `promotion_id`, `from_env`,
-    `gates_summary` and, for hosted envs, `rollout_phase`.
-- **`forge ci run <run-id> [--env <env>] [--json]`**: one CI run's timeline
-  from the hosted control plane. It shows the release cut, the recorded
-  checks, every promotion and each promotion's rollout, with a verdict.
-  Exit codes: 0 every stage passed, 1 a stage failed or errored, 5 still
-  running, 2 could not read the control plane. A run id nothing has written
-  under exits 5, never 0. `--env` picks which control plane to ask;
-  without it, the project's single declared control plane is used. The
-  design spec named this `forge run show`; that would have collided with the
-  dev-server `forge run`, which takes its own positional arguments.
-- **`forge env verify` refuses to judge against a stale file ledger.** A
-  self-managed env's promotions live in `.forge/promotions/<env>.jsonl`,
-  committed to git, so a checkout that has not pulled the latest release
-  record compares the cluster against an OLDER promotion. A fine deploy then
-  reads as DRIFT, and a deploy that never happened can read as MATCH. verify
-  now compares the env's log with origin's default branch (as of the last
-  fetch; it never fetches). When this copy is `behind` or `diverged`, every
-  image is still reported, but the command exits **2** (could not determine)
-  with the fix. `ahead` (recorded here, not yet merged) is shown, not failed.
-  `--json` carries `ledger: {state, ref, local_entries, upstream_entries,
-detail}`. A control-plane ledger has no copy to be behind and is unaffected.
-- **`forge env promote` always compare-and-sets.** The write asserts that the
-  env is still on the promotion the plan read, and is refused if someone else
-  moved it since. A hotfix that lands while a pipeline waits for approval now
-  turns that pipeline red (exit 3, `promotion_conflict`) instead of being
-  overwritten. No flag is needed. `--expect-current <id>` replaces the planned
-  value with one captured earlier; `--expect-current unbound` /
-  `--expect-unbound` asserts the env was never promoted. Re-promoting the
-  release an env already runs is still a no-op whatever the expectation says,
-  so a retried success is never a conflict. `--supersede` admits a promote
-  while the current rollout is in flight and is recorded on the new entry.
-  Exit 4 is `rollout_in_flight` / `environment_pinned`. `--plan --json` now
-  shows `current.promotion_id` (the value to capture) and `expected`; a
-  refused `--json` document carries `applied: false` and
-  `refusal: {reason, expected…, actual_current, actual_phase}`, and its
-  `ok`/`exit_code` match the process status. The file ledger applies the same
-  check against the history it reads. Hosted CAS needs a control plane with
-  the P0 contract — an older one ignores the fields.
-- `forge env promote --run-id / --run-url / --no-run`: the promotion records
-  the CI run, defaulted from `GITHUB_*` / `CI_PIPELINE_*`. `--wait`,
-  `--deploy`, `--timeout`, `--fail-fast`, `--gate`, `--from` and
-  `--from-promotion` are declared and refuse with "not supported by this
-  forge build" until they are wired.
-- `service_account_annotations: {str:str}` on `forge.K8sOverrides`,
-  `forge.RenderedWorkload` and `forge.workloads.Workload`: annotations stamped
-  on the ServiceAccount forge GENERATES for the workload, and on no other
-  object. It is how a workload gets cloud workload identity (GKE
-  `iam.gke.io/gcp-service-account`, EKS `eks.amazonaws.com/role-arn`) without
-  renaming its identity — the SA keeps the workload's name, so Roles, bindings
-  and policy that name it keep working. Keys are validated as Kubernetes
-  annotation keys at render time, and combining it with `service_account`
-  (where forge generates no SA) is refused rather than silently dropped.
-- `forge env render` now includes every declared `forge.HelmChart`'s objects.
-  They used to be missing entirely (flux, cert-manager and envoy-gateway each
-  rendered 0 objects while `env deploy` applied them), so render was not a
-  preview of deploy. Charts are templated through the deploy's own chart
-  render (`helm template` with the declared values, the pinned CRD bundle,
-  the chart's own CRDs, the post-hook drop), each document is marked
-  `# source: helm chart <name>` and attributed to the cluster deploy applies it
-  to, and `--target` selects charts the same way deploy does. Templating needs
-  `helm` and registry access; `--no-charts` skips it, and the summary names the
-  charts it left out.
-- `cluster:manage` access-token scope (`accesstoken.ScopeClusterManage`):
-  registers, rotates and removes an org's BYO clusters. Its own authority —
-  `deploy:write` neither implies it nor is implied by it.
-
-### Changed
-
-- **Scaffolded CI: the build-once release pipeline owns hosted envs, and the
-  broken pieces are gone.**
-  - `deploy.yml` no longer rebuilds per env for a hosted env. If it did,
-    staging and prod would run different digests, and `release.yml` builds
-    once instead. A mixed env, one with both hosted and cluster parts, also
-    moves wholly to `release.yml`. Its ledger is the control plane, so once
-    it has been promoted, `forge env deploy` pins both halves to the
-    release. A `deploy.yml` rebuild of its cluster half would then deploy
-    the old digests and still report success. A mixed stage writes the
-    kubeconfig, because `forge env deploy` applies that half from CI itself.
-    When every env is hosted, `deploy.yml` is not emitted at all.
-  - `build-images.yml`'s opt-in `cut-release` job is deleted. It cut and
-    promoted by raw curl, read `DEPLOY_TOKEN` instead of
-    `FORGE_CONTROL_PLANE_TOKEN`, and was broken against the server because
-    it sent no artifact kind or mode.
-  - `reconcile.yml` runs `forge env status <env> --json`. It used to call
-    `forge reconcile`, which was never a verb, and its matrix expressions
-    were missing their `$`.
-  - Every rendered workflow is now checked by `actionlint`, when it is on
-    PATH.
-- **BREAKING (one require line): `github.com/reliant-labs/forge/pkg` is no
-  longer a module.** forge is now a single module,
-  `github.com/reliant-labs/forge`, carrying both the CLI and the `pkg/*`
-  runtime libraries. **Import paths did not change** — a module at
-  `github.com/reliant-labs/forge` with a `pkg/testkit` directory serves
-  `github.com/reliant-labs/forge/pkg/testkit`, byte-identical to what the
-  submodule served. Consumers change one require line and no source:
-
-  ```sh
-  go get github.com/reliant-labs/forge@vX.Y.Z
-  go mod edit -droprequire=github.com/reliant-labs/forge/pkg
-  go mod tidy
-  ```
-
-  Dropping the retired requirement is not optional, and it does not degrade
-  gracefully: both modules can serve `forge/pkg/*` import paths, so a graph
-  holding both answers every such import with `ambiguous import: found package
-... in multiple modules`. `forge generate` now detects this before codegen
-  and distinguishes a requirement you own from one a dependency drags in.
-  A dependency's must be fixed in that dependency — a `replace` only hides it.
-
-  The two modules were always released in lockstep, at the same commit, with
-  the same version. Keeping that true took three hand-maintained syncs, and
-  two failed in production: the root module's `require forge/pkg` went stale
-  and made `go install .../cmd/forge@main` uninstallable, and a hand-listed
-  registry of "forge/pkg symbols the generator emits" went stale when
-  `testkit.StubNotConfigured` was added, so `forge generate` rewrote a project
-  tree and then failed its own validate. One module makes both
-  unrepresentable.
-
-- **A dev build no longer pins a version it is not.** The scaffold's forge
-  requirement comes from the binary's own build info: a release tag, or the
-  pseudo-version `go install ...@main` records. A local or dirty build — whose
-  bytes no module proxy can serve — now pins **nothing** and requires a
-  `go.work` source bridge, which `forge generate` names in its refusal. It
-  used to fall back to a hand-maintained "last published tag" constant,
-  telling projects to require a release that could not satisfy the code being
-  generated.
-
-- **`forge generate`'s compatibility gate is a version comparison.** The
-  project's forge must be `>=` the generating binary's. This replaces a probe
-  that compiled a throwaway program against a hand-listed symbol set; the
-  inequality covers every symbol ever added, cannot rot, and costs one
-  `go list` instead of a `go build`. A project resolving a NEWER forge still
-  passes — that is the ordinary upgrade order.
-
-- **`task release:forge` is one tag, one commit.** The two-tag atomic push, the
-  `go.sum` bare-clone resolution dance, and the `defaultPublishedForgePkgVersion`
-  bump all existed only because the root module required an unpushed submodule
-  version. `scripts/release-pkg.sh` and `task release:pkg` are removed.
-
-### Fixed
-
 - **The host disk reserve no longer refuses builds on a CI runner.** v0.1.43's
   admission check refused every build lane below a fixed 20 GiB of free disk,
   and a stock GitHub runner starts with ~14 GiB — so `forge env build` failed
@@ -7179,20 +7479,232 @@ QueryClientProvider to set one`. Every pin now names the package's
   directory. The Dockerfile is scaffold-once: `forge project upgrade --check`
   reports the new one to existing projects.
 
-### Removed
-
-- `database.migration_safety.down_files_allowed_until` and the
-  `forge project upgrade` step that stamped it. Every down migration is now a
-  `no-down-migration` lint error, with no grandfathered history: forge never
-  runs one, so deleting it is always safe. A forge.yaml still carrying the key
-  loads with a warning naming the fix.
-- `go.work` from forge's own repo. It existed to stitch `pkg` to the root
-  module, and it was also what hid the stale-require bug: every in-repo build
-  resolved `./pkg` locally and stayed green while `@main` was uninstallable.
-- `buildinfo.PkgVersion`/`SetPkgVersion`, `PkgModuleVersion` (already dead),
-  `Build.PkgPath` and the `forge/pkg` line in `forge version` — a second
-  version axis with nothing left to describe.
-- `docs/pkg-versioning.md`, replaced by `docs/versioning.md`.
+- **ci:** verify-generated never writes the checkout; read-only commands leave .git/config alone ([#930](https://github.com/reliant-labs/forge/pull/930))
+- **config:** loading validates — Load<Msg> enforces allowed_values and the role invariants ([#946](https://github.com/reliant-labs/forge/pull/946))
+- **e2e:** judge forge against forge/pkg from the same commit; un-skip 17 e2e tests and fix what they hid ([#934](https://github.com/reliant-labs/forge/pull/934))
+- **drainbudget:** drain knobs are Go durations, as the config loader reads them ([#951](https://github.com/reliant-labs/forge/pull/951))
+- **generate:** name a legacy service the same way in compose.go, its mount and its subcommand ([#963](https://github.com/reliant-labs/forge/pull/963))
+- **ci:** verify-generated's scratch copies a file listed twice once ([#955](https://github.com/reliant-labs/forge/pull/955))
+- **lint:** lint.rules re-grades every convention finding, not only frontend-process-env ([#967](https://github.com/reliant-labs/forge/pull/967))
+- **cli:** keep the merge driver command per worktree and report what forge wrote to shared git settings ([#931](https://github.com/reliant-labs/forge/pull/931))
+- **cli:** pin-skew warning gives the refusal's remedy (embedded forge) ([#958](https://github.com/reliant-labs/forge/pull/958))
+- **e2e:** stamp DevForgeRoot on the forge binary the e2e corpus tests ([#978](https://github.com/reliant-labs/forge/pull/978))
+- **codegen:** lifecycle.go imports lifecyclekit only with a worker to wrap ([#977](https://github.com/reliant-labs/forge/pull/977))
+- **cli:** find the forge checkout for --link-forge without a build-time path; add --forge-root ([#933](https://github.com/reliant-labs/forge/pull/933))
+- **descriptor:** stamp gen/forge_descriptor.json per proto, so a merge keeps it current ([#984](https://github.com/reliant-labs/forge/pull/984))
+- **serverkit:** retry the boot-probe takeover on Winsock's address-in-use code ([#976](https://github.com/reliant-labs/forge/pull/976))
+- **lint:** an internal package nothing consumes yet is a pending graph warning ([#989](https://github.com/reliant-labs/forge/pull/989))
+- **scaffold,generate:** drop the Prometheus/SLO/Grafana leftovers; generate --help describes today's pipeline ([#981](https://github.com/reliant-labs/forge/pull/981))
+- **cluster:** repair k3d node-IP drift that a stale Ready status or unreadable docker logs hid ([#999](https://github.com/reliant-labs/forge/pull/999))
+- **lint:** the format pre-pass honours the positional package paths instead of rewriting the whole project ([#935](https://github.com/reliant-labs/forge/pull/935))
+- main builds again — vanguard back to v0.4.0, go1.27.3 (GO-2026-6809), e2e vet skips testdata ([#1000](https://github.com/reliant-labs/forge/pull/1000))
+- **orm:** store_gen.go carries Go's generated-code banner ([#1007](https://github.com/reliant-labs/forge/pull/1007))
+- k3d boot-crash recreate, hostslot ticket race; deterministic guard for the verify flake ([#960](https://github.com/reliant-labs/forge/pull/960))
+- **skills:** the v0.1.47 playbook names no file forge does not scaffold ([#1003](https://github.com/reliant-labs/forge/pull/1003))
+- **config:** re-deriving a loaded config no longer wipes its sections ([#1009](https://github.com/reliant-labs/forge/pull/1009))
+- **observe:** trust_remote's threat model no longer names the removed tenancy feature ([#1004](https://github.com/reliant-labs/forge/pull/1004))
+- **forgedelegate:** the pinned-forge cache moves by env, and the hand-off tests stand in the OS's exe ([#1010](https://github.com/reliant-labs/forge/pull/1010))
+- **lint:** forge's own forge lint is green — tracing fixes in pkg/, rule precision for code no trace reaches ([#1018](https://github.com/reliant-labs/forge/pull/1018))
+- **observe:** observe.Chain defaults the Deadline slot like serverkit.NewChain — nil is forge's 30s budget, NoDeadline opts out ([#1019](https://github.com/reliant-labs/forge/pull/1019))
+- **scaffold:** hosted envs allow credentialed CORS so native sign-in works ([#1022](https://github.com/reliant-labs/forge/pull/1022))
+- **skills:** the architecture skill fits its load budget — graph checks move to architecture/graph-checks ([#1021](https://github.com/reliant-labs/forge/pull/1021))
+- **codegen:** before the first compose a graph's reach is unknown, so config_gen.k projects the default root ([#1016](https://github.com/reliant-labs/forge/pull/1016))
+- **orm:** one not-found answer, caller-set timestamps kept, no silent List cap ([#1029](https://github.com/reliant-labs/forge/pull/1029))
+- **config:** roots_gen.go is emitted with or without deploy/kcl envs (F9 follow-up) ([#1032](https://github.com/reliant-labs/forge/pull/1032))
+- **lint:** forge lint is report-only by default; --fix never applies golangci-lint fixes, and a Go fix that breaks its package is taken back ([#1041](https://github.com/reliant-labs/forge/pull/1041))
+- **frontenddeps:** pick npm ci vs install from the root npm installs at ([#1034](https://github.com/reliant-labs/forge/pull/1034))
+- **contractcheck:** a forge:not-a-component package needs no Service/Deps/New shape ([#1040](https://github.com/reliant-labs/forge/pull/1040))
+- **scaffold:** every frontend scaffold file is born with its hash, so forge lint skips it until edited ([#1036](https://github.com/reliant-labs/forge/pull/1036))
+- **lint:** forge lint --tracing reports each rewrite in its rule's words ([#1044](https://github.com/reliant-labs/forge/pull/1044))
+- **storage:** report a Go cache budget no trim can reach; child GOFLAGS keep -trimpath ([#1043](https://github.com/reliant-labs/forge/pull/1043))
+- **lint:** --go-markers usage names no backticked value (TestFlagValueNamesAreOneWord, red on main) ([#1045](https://github.com/reliant-labs/forge/pull/1045))
+- **pgtest:** never stop a shared server that is alive and in use; reaper spares servers still in use ([#1046](https://github.com/reliant-labs/forge/pull/1046))
+- e2e suite reds — tidy before the composition type-load; e2e expectations follow #936/#962/#988/#990/#991 ([#1033](https://github.com/reliant-labs/forge/pull/1033))
+- **lint:** tracing remediation and docs say --fix — lint no longer rewrites by default ([#1049](https://github.com/reliant-labs/forge/pull/1049))
+- **orm:** a primary key is server-allocated only when the applied schema says so ([#1050](https://github.com/reliant-labs/forge/pull/1050))
+- **lint:** no lint rewrite path touches testdata; the structured driver never hands golangci-lint --fix ([#1051](https://github.com/reliant-labs/forge/pull/1051))
+- **lint:** exclude node_modules packages from golangci-lint and contract linter ([#1052](https://github.com/reliant-labs/forge/pull/1052))
+- **deploy:** the release pin check skips build-only images nothing pulls ([#1054](https://github.com/reliant-labs/forge/pull/1054))
+- **deploy:** render enableServiceLinks: false on every pod; enableServiceLinks opt-in (#1053) ([#1058](https://github.com/reliant-labs/forge/pull/1058))
+- **tools:** forge tools install replaces a GOBIN binary atomically ([#1062](https://github.com/reliant-labs/forge/pull/1062))
+- three main reds — codemod test keeps -trimpath; orm callSite stops keeping runtime.Caller's file; CHANGELOG passes prettier ([#1070](https://github.com/reliant-labs/forge/pull/1070))
+- **pin:** read forge_version before validating forge.yaml, so an older forge still delegates ([#1081](https://github.com/reliant-labs/forge/pull/1081))
+- main reds after #1070 — main-red override skips cancelled main runs + CRLF jq; codemod test stops offline tidy; GOBIN replace retries on Windows ([#1084](https://github.com/reliant-labs/forge/pull/1084))
+- **goexec:** ExcludeNodeModules compares resolved paths on both sides ([#1072](https://github.com/reliant-labs/forge/pull/1072))
+- **roots:** root help from the root's doc, root-config flags homed once, optional placeholders re-resolve, nil-guarded probes ([#1067](https://github.com/reliant-labs/forge/pull/1067))
+- **storage:** worktree reaper: generated files and copies of the main checkout are not data (port of reliant#1208) ([#1071](https://github.com/reliant-labs/forge/pull/1071))
+- **ci:** the main-red override matches a subtest however go test indents it ([#1089](https://github.com/reliant-labs/forge/pull/1089))
+- **lint:** a gating lane that could NOT run fails forge lint; --allow-skip / lint.allow_skip accept one by name ([#1092](https://github.com/reliant-labs/forge/pull/1092))
+- **observe:** observe.Chain and DefaultMiddlewares install svcerr.Interceptor innermost, idempotently ([#1091](https://github.com/reliant-labs/forge/pull/1091))
+- **scaffold:** a fresh project passes its own forge lint again; the E2E Suite runs on main again ([#1094](https://github.com/reliant-labs/forge/pull/1094))
+- **cloud identity:** --return-code for invite/reset, Mail: in status; managed-identity skill tells the scope truth ([#1087](https://github.com/reliant-labs/forge/pull/1087))
+- **roots:** what runRoot reads is every root's reach; //forge:group declares a group command's help ([#1096](https://github.com/reliant-labs/forge/pull/1096))
+- **cloud:** act on why the control plane refused the credential ([#1098](https://github.com/reliant-labs/forge/pull/1098))
+- **scaffold:** every scaffold noun leaves the project lint-green; vite-spa has zero eslint warnings ([#1099](https://github.com/reliant-labs/forge/pull/1099))
+- **generate:** resolve foreign embeds in deps.go roles, not only contract.go ([#1109](https://github.com/reliant-labs/forge/pull/1109))
+- **scaffold:** a service in a project that composes its processes gets no workload of its own ([#1088](https://github.com/reliant-labs/forge/pull/1088))
+- main's reds — bridge skew counts only source edits; e2e shard writes outside the checkout; kalshi fixture; pre-commit; Windows postgres cache ([#1113](https://github.com/reliant-labs/forge/pull/1113))
+- **lint:** optional-deps-guard follows guards through same-package helpers ([#1086](https://github.com/reliant-labs/forge/pull/1086))
+- **scaffold:** every --disable shape generates, builds and lints after project new ([#1105](https://github.com/reliant-labs/forge/pull/1105))
+- **removalguard:** allow SF10's store-source tests the tenants/ KV path; reword an RBAC comment ([#1125](https://github.com/reliant-labs/forge/pull/1125))
+- **cluster:** the ESO envtest test is !windows, like controllertest; deadcodeguard's windows load is sound again ([#1128](https://github.com/reliant-labs/forge/pull/1128))
+- **removalguard:** allow SF4's vendored ESO CRD, chart rbac values and skill; reword a comment ([#1132](https://github.com/reliant-labs/forge/pull/1132))
+- **codemod:** connect-errors sees an As-style helper as a \*connect.Error reader ([#1137](https://github.com/reliant-labs/forge/pull/1137))
+- **ci:** prettier-format CHANGELOG.md so Quick checks is green on main ([#1134](https://github.com/reliant-labs/forge/pull/1134))
+- **project new:** exit non-zero when the project's own first generate fails ([#1130](https://github.com/reliant-labs/forge/pull/1130))
+- **mocks:** resolve a role embedded from another file of the same package ([#1144](https://github.com/reliant-labs/forge/pull/1144))
+- **project new:** the scaffold applies the feature graph, the loader's own rule ([#1138](https://github.com/reliant-labs/forge/pull/1138))
+- **changelog:** drop a doubled blank line so pre-commit prettier passes on main
+- **ci:** CHANGELOG.md is formatted only by the release, its only writer ([#1152](https://github.com/reliant-labs/forge/pull/1152))
+- **graph:** node names split on words — GitHubAccessLoop is github_access_loop ([#1141](https://github.com/reliant-labs/forge/pull/1141))
+- **env down:** remove every owned compose container when one recorded container is already gone ([#1150](https://github.com/reliant-labs/forge/pull/1150))
+- **templates:** the scaffolded dev stack pulls nothing from Docker Hub ([#1148](https://github.com/reliant-labs/forge/pull/1148))
+- **removalguard:** allow the public OpenBao edge's tenants/ path layout (SF8) ([#1163](https://github.com/reliant-labs/forge/pull/1163))
+- **contract:** mock_gen.go's header names the file it was read from (deps.go, not always contract.go) ([#1164](https://github.com/reliant-labs/forge/pull/1164))
+- **tierguard:** the render child runs this forge, not a delegated twin, and owns its git identity ([#1167](https://github.com/reliant-labs/forge/pull/1167))
+- **lint:** funlen in HostedProvider.wait and runConfigProtoPackage, nestif in the latter ([#1168](https://github.com/reliant-labs/forge/pull/1168))
+- **codemod:** config-proto-package rewrites the old proto package as a Go string literal ([#1179](https://github.com/reliant-labs/forge/pull/1179))
+- **secrets:** import --dry-run checks GSM for existing values; verify --against gsm: --map needs no declared ExternalSecret ([#1183](https://github.com/reliant-labs/forge/pull/1183))
+- **db:** forge_ro is safe by construction — SQL forge:secret / forge:readable, fail-closed credential columns, lint --db-grants ([#1172](https://github.com/reliant-labs/forge/pull/1172))
+- **frontend:** declare warning-hover in both themes; every library token must be declared by each theme (F9-7) ([#1178](https://github.com/reliant-labs/forge/pull/1178))
+- **rescaffold:** re-creating CI workflows runs the CI step alone, not a full forge generate that needed every codegen toolchain ([#1188](https://github.com/reliant-labs/forge/pull/1188))
+- **storage:** record a Go-cache trim its deadline stopped; forge storage gocache runs the Go caches alone ([#1175](https://github.com/reliant-labs/forge/pull/1175))
+- **storage:** hold the Go build cache budget on a busy machine; skip containers removed mid-gc ([#1191](https://github.com/reliant-labs/forge/pull/1191))
+- **generate:** generate hooks run with the go.mod-pinned codegen tools on PATH, like forge's own buf step ([#1193](https://github.com/reliant-labs/forge/pull/1193))
+- **narrow-deps:** goimports-clean output and interfacebloat warning ([#1198](https://github.com/reliant-labs/forge/pull/1198))
+- **codemod:** narrow-deps names a Service-collision after the field; config-proto-package moves the proto/config tree path ([#1195](https://github.com/reliant-labs/forge/pull/1195))
+- **env:** write the config probes in a private subdirectory, never into the env's KCL package ([#1204](https://github.com/reliant-labs/forge/pull/1204))
+- **disown:** a hand-written hooks barrel is disownable — the advice generate prints for it no longer dead-ends ([#1202](https://github.com/reliant-labs/forge/pull/1202))
+- **pin:** version-skew messages name the project's pinned .tools/bin/forge, with the exact args, before the go run form ([#1208](https://github.com/reliant-labs/forge/pull/1208))
+- **lint:** forge lint's golangci-lint lane also lints files behind project build tags ([#1205](https://github.com/reliant-labs/forge/pull/1205))
+- **generate:** a source-derived file (mock_gen.go, decorator, test harness) is refreshed even when the heal guard would leave it, so a stale one never blocks its own regeneration ([#1210](https://github.com/reliant-labs/forge/pull/1210))
+- **lint:** split generateFrontendNav per frontend kind, check submatch length, register .forge/runtime-config in the skills validator ([#1218](https://github.com/reliant-labs/forge/pull/1218))
+- main green — internal/cli golangci findings; skills validator knows .forge/runtime-config ([#1214](https://github.com/reliant-labs/forge/pull/1214))
+- **obs:** the process exit code is the document's exit_code on every path; skill list <group> expands sub-skills ([#1223](https://github.com/reliant-labs/forge/pull/1223))
+- **lint:** the build-tag passes skip the tools tag and tool-pin files ([#1224](https://github.com/reliant-labs/forge/pull/1224))
+- **config:** a frontend config bool reads "false" as false, not true ([#1216](https://github.com/reliant-labs/forge/pull/1216))
+- **web-runtime:** 0.9.1 — attribution waits for its own consent; first-touch option ([#1225](https://github.com/reliant-labs/forge/pull/1225))
+- **storage:** the Go build cache trim never deletes an entry inside the 2h floor, even over budget ([#1231](https://github.com/reliant-labs/forge/pull/1231))
+- **observe:** OTLP/HTTP exporters retire idle connections before the collector does ([#1232](https://github.com/reliant-labs/forge/pull/1232))
+- **obsdash:** frontend dashboards and alerts filter on the service.name the runtime reports ([#1241](https://github.com/reliant-labs/forge/pull/1241))
+- **storage:** hold the Go build cache cutoff back to the start of the oldest running Go build ([#1243](https://github.com/reliant-labs/forge/pull/1243))
+- **storage:** the Go cache trim re-checks an entry's mtime before unlinking it, and removes least recently used first ([#1245](https://github.com/reliant-labs/forge/pull/1245))
+- **cluster:** hold the secret stages until the API server admits the SecretStores (SC7 D1) ([#1249](https://github.com/reliant-labs/forge/pull/1249))
+- **openbao:** the pre-rollout widen Job skips a store that still answers in plaintext (SC7 D2) ([#1250](https://github.com/reliant-labs/forge/pull/1250))
+- **cli:** refuse a release that can only come out empty before building anything (SC7 D3) ([#1251](https://github.com/reliant-labs/forge/pull/1251))
+- **cli:** forge env deploy refuses -D instead of silently ignoring it (SC7 D4) ([#1253](https://github.com/reliant-labs/forge/pull/1253))
+- **openbao:** the widen test builds the child's environment instead of reading the ambient one ([#1257](https://github.com/reliant-labs/forge/pull/1257))
+- **obsquery:** removalguard is green again — the hosted observability database is not 'tenant' in forge's own names ([#1263](https://github.com/reliant-labs/forge/pull/1263))
+- **frontenddeps:** the declared dev_runner's own lockfile wins beside another manager's ([#1215](https://github.com/reliant-labs/forge/pull/1215))
+- **deploy:** OnBucket uploads entrypoints no-cache and assets immutable by default ([#1260](https://github.com/reliant-labs/forge/pull/1260))
+- **frontend:** the mock fixture freshness guard is emitted only beside mock fixtures ([#1265](https://github.com/reliant-labs/forge/pull/1265))
+- **release:** start remote composition deadline after local rendering
+- **deadcodeguard:** test-support packages and promoted fields judged soundly; obs metrics exemplars --group; fresh scaffolds lint-clean again ([#1271](https://github.com/reliant-labs/forge/pull/1271))
+- **disown:** a disowned hooks barrel is not retired as obsolete ([#1277](https://github.com/reliant-labs/forge/pull/1277))
+- **kcl:** forge kcl eval keeps KCL's declared key order and number text ([#1278](https://github.com/reliant-labs/forge/pull/1278))
+- **cluster:** run the fake kubectl un-instrumented under -race ([#1280](https://github.com/reliant-labs/forge/pull/1280))
+- **release:** bind native image outputs to their compiled consumers
+- **lint:** a --scope holding only build-tagged Go files is linted under its tag instead of failing golangci-lint's default pass ([#1282](https://github.com/reliant-labs/forge/pull/1282))
+- **cli:** --allow-version-skew is accepted by every command the pin hand-off takes ([#1283](https://github.com/reliant-labs/forge/pull/1283))
+- **migratekit:** a migration the schema already passed names the fix for a MERGED file, not only a rename ([#1284](https://github.com/reliant-labs/forge/pull/1284))
+- **db:** every migration allocator clears the default branch's tip, not just the directory ([#1286](https://github.com/reliant-labs/forge/pull/1286))
+- **lint:** a --scope with no compiled Go skips the Go lanes instead of failing golangci-lint ([#1287](https://github.com/reliant-labs/forge/pull/1287))
+- **release:** bind auxiliary inputs to verified producer outputs
+- **release:** canonicalize OCI references carrying tag and digest
+- **release:** backfill-migrations --dry-run counts the manifests it would record ([#1291](https://github.com/reliant-labs/forge/pull/1291))
+- **obsdash:** ServiceAnomaly's summary quotes no signal label; the alert is one per service and release ([#1292](https://github.com/reliant-labs/forge/pull/1292))
+- **release:** declare generated resize ownership and native init slots
+- **deploy:** ask the control plane's features before declaring any optional shape part, not only frontend telemetry ([#1298](https://github.com/reliant-labs/forge/pull/1298))
+- **web-runtime:** a /node-only consumer no longer installs react, Connect or protobuf — they are optional peers (0.10.2) ([#1299](https://github.com/reliant-labs/forge/pull/1299))
+- **lint:** main green — argument-limit in the release migration guards, kcleval needs no contract, removalguard-clean flux envtest and OTLP stringValue ([#1300](https://github.com/reliant-labs/forge/pull/1300))
+- **lint:** e2e-tagged test files lint clean — ctx first, ID initialism, dead helpers removed ([#1301](https://github.com/reliant-labs/forge/pull/1301))
+- **lint:** forgeconv-deps-are-interfaces passes a slice or map of data structs, as it passes the bare struct ([#1302](https://github.com/reliant-labs/forge/pull/1302))
+- **identity:** a member the pass just created gets its sign-in code without reading its credentials ([#1303](https://github.com/reliant-labs/forge/pull/1303))
+- **frontend:** keep package-lock in step when generate edits dependency ranges ([#1237](https://github.com/reliant-labs/forge/pull/1237))
+- **deploy:** an optional Secret reference is pinned and key-checked once its Secret is present ([#1304](https://github.com/reliant-labs/forge/pull/1304))
+- **scaffold:** a worker or operator subcommand compiles on a project that owns its composition ([#1306](https://github.com/reliant-labs/forge/pull/1306))
+- **frontend-config:** a cross-repo runtime_config must state its mode selector ([#1307](https://github.com/reliant-labs/forge/pull/1307))
+- **storage:** preserve retention settings owned by other Forge versions ([#1308](https://github.com/reliant-labs/forge/pull/1308))
+- **deploy:** the live preflight counts a Secret a cert-manager Certificate or ExternalSecret in the same release issues; env render binds the env's release ([#1310](https://github.com/reliant-labs/forge/pull/1310))
+- **release:** a release-bound build refuses a version already cut from another source, before building — not only one already promoted ([#1311](https://github.com/reliant-labs/forge/pull/1311))
+- **lint:** --frontend-stores reads every frontend's src/store/ and flags clients, not enums ([#1312](https://github.com/reliant-labs/forge/pull/1312))
+- **removalguard:** main green — a secret-pin fixture and a comment no longer name removed tenancy and AUTH_MODE ([#1315](https://github.com/reliant-labs/forge/pull/1315))
+- **hooks:** a hook-kind flip names its stale starter test rows (generate + lint --conventions); forge:query-scope keys a custom read under its entity ([#1316](https://github.com/reliant-labs/forge/pull/1316))
+- **generate:** an adopted frontend's package.json is raised to the web-runtime floor with its lockfile, unless the project disowned it ([#1321](https://github.com/reliant-labs/forge/pull/1321))
+- **openbao:** converge retries connection-level failures and quotes the real response ([#1325](https://github.com/reliant-labs/forge/pull/1325))
+- **skills:** deploy/plan SKILL.md ends in one newline (main's pre-commit end-of-file hook is red) ([#1332](https://github.com/reliant-labs/forge/pull/1332))
+- **cloud:** name a credential by its display prefix everywhere, never by value ([#1335](https://github.com/reliant-labs/forge/pull/1335))
+- **build:** docker builds are reproducible — SOURCE_DATE_EPOCH from the inputs' last commit, no provenance ([#1336](https://github.com/reliant-labs/forge/pull/1336))
+- **tooling:** task fmt:web runs the pre-commit hook's pinned prettier over the files the hook formats ([#1330](https://github.com/reliant-labs/forge/pull/1330))
+- **e2e:** e2e and the scaffold smoke install this checkout's web-runtime through a local npm overlay registry ([#1333](https://github.com/reliant-labs/forge/pull/1333))
+- **hooks:** the generated hooks header no longer claims every app has a MutationCache in src/lib/query-client.ts ([#1331](https://github.com/reliant-labs/forge/pull/1331))
+- **e2e:** main's E2E Suite green — entity seams accept the generic query hooks; graph tests gate the warn-first rules they pin ([#1309](https://github.com/reliant-labs/forge/pull/1309))
+- **cluster:** k3d clusters boot on hosts without /dev/kmsg ([#1338](https://github.com/reliant-labs/forge/pull/1338))
+- **obsquery:** a metric with no data in scope is an empty series with a metric_absent warning, not an error ([#1340](https://github.com/reliant-labs/forge/pull/1340))
+- **obs:** forge obs sessions leads with the app and start time, not the session id ([#1341](https://github.com/reliant-labs/forge/pull/1341))
+- **obs:** a cluster-only env is never answered from the local ClickStack; a stale forge login names forge logout; a timed-out shutdown flush is WARN ([#1344](https://github.com/reliant-labs/forge/pull/1344))
+- **generate:** a cached no-op's skip line never mentions disowned files ([#1347](https://github.com/reliant-labs/forge/pull/1347))
+- **obs:** cloud obs commands read the env's control plane from a stamped target, not a KCL render before the first RPC ([#1349](https://github.com/reliant-labs/forge/pull/1349))
+- **obs:** strip terminal escapes from forge obs output; escape Slack mrkdwn in alert templates ([#1351](https://github.com/reliant-labs/forge/pull/1351))
+- **frontenddeps:** a lockfile refresh no longer leaves node_modules claiming a version it never installed ([#1348](https://github.com/reliant-labs/forge/pull/1348))
+- **cluster:** forge cluster connect stops sending the auth key the control plane reserved ([#1353](https://github.com/reliant-labs/forge/pull/1353))
+- **release:** compile native OpenBao provider snapshot ownership
+- **observability:** assemble dashboards from rendered workloads ([#1355](https://github.com/reliant-labs/forge/pull/1355))
+- **render:** chart objects in forge env render carry the namespace they deploy into ([#1357](https://github.com/reliant-labs/forge/pull/1357))
+- **generate:** install a missing frontend's buf TS plugins instead of refusing ([#1361](https://github.com/reliant-labs/forge/pull/1361))
+- **pgtest:** own the embedded-postgres temp log instead of deleting whatever appeared during Start ([#1368](https://github.com/reliant-labs/forge/pull/1368))
+- **secrets:** a template-only ExternalSecret renders deletionPolicy Merge, so ESO creates its Secret ([#1370](https://github.com/reliant-labs/forge/pull/1370))
+- **project:** a fresh scaffold's task test works, project new prints the runnable --link-forge command, and long first-run steps report progress ([#1374](https://github.com/reliant-labs/forge/pull/1374))
+- **release:** prepare archived ledger before remote lookup deadline ([#1375](https://github.com/reliant-labs/forge/pull/1375))
+- **lint:** forge-config-deps skips forge:not-a-component packages ([#1376](https://github.com/reliant-labs/forge/pull/1376))
+- **alerting:** cap rules per env and make an over-cap env loud ([#1377](https://github.com/reliant-labs/forge/pull/1377))
+- **cli:** forge no longer re-opens its own go-run executable by path from the Go build cache ([#1393](https://github.com/reliant-labs/forge/pull/1393))
+- **upgrade:** format every codemod's output to the project's linters in one shared step; make --skip codemods work and name what it leaves ([#1397](https://github.com/reliant-labs/forge/pull/1397))
+- **kcl:** pin kcl-lang.io/lib back to v0.13.1 so KCL pins agree ([#1396](https://github.com/reliant-labs/forge/pull/1396))
+- **deploy:** --claimable skips the hosted shape band and checks the claimable caps instead ([#1382](https://github.com/reliant-labs/forge/pull/1382))
+- **frontenddeps:** drive pnpm frontends correctly — gate rows, audit, installs, and pnpm 12 lockfiles ([#1395](https://github.com/reliant-labs/forge/pull/1395))
+- **k3d:** the boot-crash test kills only the cluster it means to; a boot crash shows k3d's entrypoint log ([#1063](https://github.com/reliant-labs/forge/pull/1063))
+- **storage:** size Go cache entries by the disk they occupy, and give the golangci-lint cache its own budget ([#1386](https://github.com/reliant-labs/forge/pull/1386))
+- **upgrade:** never re-create a scaffold-once file the ledger records as deleted, declined or disowned ([#1392](https://github.com/reliant-labs/forge/pull/1392))
+- **storage:** Go cache trims spare the executables of live processes; storage is never handed to a pinned forge ([#1394](https://github.com/reliant-labs/forge/pull/1394))
+- **alerting:** schedule rules at a fixed rate, not interval-after-finish ([#1399](https://github.com/reliant-labs/forge/pull/1399))
+- **release:** a snapshot binding keeps the tag its consumer declared, so sealing a pinned image rolls nothing ([#1390](https://github.com/reliant-labs/forge/pull/1390))
+- **obsdash:** keep service inventory out of shared project fragments ([#1402](https://github.com/reliant-labs/forge/pull/1402))
+- **merge-driver:** a merge forge did not do fails loudly, and a vanished driver reinstalls itself ([#1383](https://github.com/reliant-labs/forge/pull/1383))
+- **gate:** align KCL 0.13.2 pins and classify svcerr.New ([#1410](https://github.com/reliant-labs/forge/pull/1410))
+- **generate:** the mid-run guard judges the forge that ran, not whatever sits at its path afterwards ([#1055](https://github.com/reliant-labs/forge/pull/1055))
+- **secrets:** judge shadow targets and disjoint Merge owners correctly ([#1413](https://github.com/reliant-labs/forge/pull/1413))
+- **guards:** distinguish supported external protocols from removed features ([#1418](https://github.com/reliant-labs/forge/pull/1418))
+- **openbao:** share smoke API state across runner UIDs ([#1419](https://github.com/reliant-labs/forge/pull/1419))
+- **ci:** provision Task for full CLI fixtures and model executable merge drivers ([#1420](https://github.com/reliant-labs/forge/pull/1420))
+- **lint:** correct scoped cleanup, Unicode and cache fixture diagnostics ([#1423](https://github.com/reliant-labs/forge/pull/1423))
+- **obsdash:** make the constant local overview a user-owned scaffold ([#1421](https://github.com/reliant-labs/forge/pull/1421))
+- **storage:** compile cache safety tests on Windows and Darwin ([#1416](https://github.com/reliant-labs/forge/pull/1416))
+- **hosting:** secure first deployment and concurrent human logout ([#1426](https://github.com/reliant-labs/forge/pull/1426))
+- **obs:** resolve query location from the selected environment ([#1429](https://github.com/reliant-labs/forge/pull/1429))
+- **telemetry:** keep mouse events in replay and preserve action-to-RPC context ([#1428](https://github.com/reliant-labs/forge/pull/1428))
+- **kcl:** isolate project-root renders through kcl eval ([#1430](https://github.com/reliant-labs/forge/pull/1430))
+- **contract:** recognize wrapped worker lifecycle consistently ([#1431](https://github.com/reliant-labs/forge/pull/1431))
+- **bundle:** gate Flux rollout trees on awaited ExternalSecret health ([#1414](https://github.com/reliant-labs/forge/pull/1414))
+- **redact:** redact env-style secret names, --flag values, AWS secrets and PEM private keys ([#1433](https://github.com/reliant-labs/forge/pull/1433))
+- **deploy:** preflight counts a CRD the bundle installs as served ([#1434](https://github.com/reliant-labs/forge/pull/1434))
+- **guards:** allow the live forge mcp server in the debug skill and OTLP stringValue in the telemetry smoke ([#1438](https://github.com/reliant-labs/forge/pull/1438))
+- **release:** raise the shape bound to 512 KiB ([#1436](https://github.com/reliant-labs/forge/pull/1436))
+- **obs,generate:** RPC metrics always recorded, hardened browser trace adoption, deployed-scoped overview, generate hooks on the final tree ([#1440](https://github.com/reliant-labs/forge/pull/1440))
+- **hosting:** delegated capabilities skip hosted project binding ([#1442](https://github.com/reliant-labs/forge/pull/1442))
+- **generate:** buf never times out compiling its plugins ([#1444](https://github.com/reliant-labs/forge/pull/1444))
+- **hostinfra:** host postgres initdb names its locale (C, UTF8) instead of reading LANG/LC\_\* ([#1445](https://github.com/reliant-labs/forge/pull/1445))
+- **login:** an org-bound control plane's browser login takes the delegated path instead of failing ([#1447](https://github.com/reliant-labs/forge/pull/1447))
+- **generate:** forge project new works on a machine with no buf installed ([#1448](https://github.com/reliant-labs/forge/pull/1448))
+- **generate:** the dev bridge builds the linked forge-web-runtime when its dist/ is missing or older than src/ ([#1449](https://github.com/reliant-labs/forge/pull/1449))
+- **cli:** --dry-run writes nothing, forge never configures a repository it is merely inside, and env shape waits out a concurrent generate ([#1450](https://github.com/reliant-labs/forge/pull/1450))
+- **lint:** the buf lint lane runs the pinned buf from forge's tool cache when PATH has none ([#1451](https://github.com/reliant-labs/forge/pull/1451))
+- **env up:** --target starts only the optional infra a target names or requires, and the plan lists the shared infra it starts ([#1452](https://github.com/reliant-labs/forge/pull/1452))
+- **project:** project new links an unreleased forge to its checkout itself; a linked project's forge_version follows the checkout ([#1453](https://github.com/reliant-labs/forge/pull/1453))
+- **skills:** TestSkillsPathReferencesExist accepts .forge/generate-hooks logs; project memory names `forge project upgrade list` ([#1458](https://github.com/reliant-labs/forge/pull/1458))
+- **guards:** main's tierguard and removalguard pass again ([#1459](https://github.com/reliant-labs/forge/pull/1459))
+- **windows:** slash-form lint paths, case-folding component collisions and PATHEXT-aware test fakes so the Windows -short tier passes ([#1462](https://github.com/reliant-labs/forge/pull/1462))
+- **merge-driver:** find forge.exe and treat any regular file as runnable on Windows, so the driver delegates to the pinned forge there ([#1463](https://github.com/reliant-labs/forge/pull/1463))
 
 ## [0.1.11] - 2026-09-01
 
@@ -7734,5 +8246,11 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.5...HEAD
+[v1.0.5]: https://github.com/reliant-labs/forge/compare/v1.0.4...v1.0.5
+[v1.0.4]: https://github.com/reliant-labs/forge/compare/v1.0.3...v1.0.4
+[v1.0.3]: https://github.com/reliant-labs/forge/compare/v1.0.2...v1.0.3
+[v1.0.2]: https://github.com/reliant-labs/forge/compare/v1.0.1...v1.0.2
+[v1.0.1]: https://github.com/reliant-labs/forge/compare/v1.0.0...v1.0.1
+[v1.0.0]: https://github.com/reliant-labs/forge/compare/v0.1.46...v1.0.0
 [0.1.0]: https://github.com/reliant-labs/forge/compare/v0.0.8...v0.1.0

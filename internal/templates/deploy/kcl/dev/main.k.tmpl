@@ -299,12 +299,21 @@ _build_only = lambda w: fw.Workload -> fw.Workload {
 # `{{.ProjectName}}-{{.EnvName}}-api` port, which `_port_of` gives `_api`.
 # A process per service would leave the frontend reaching one of them.
 #
+{{- if .Roots}}
+# `server` runs every service and worker, so `forge scaffold service|worker`
+# declares no workload and adds no line below for one, and `forge env up
+# {{.EnvName}} --target api` restarts the whole API. The binary has no
+# command per service: running one on its own — to debug it alone, say — is
+# a root of its own (a `//forge:root` struct in internal/app, then a
+# workload bound with `config_gen.root_of("<root>")`, see workloads.k).
+{{- else}}
 # workloads.k still declares each service and worker; here `server` runs
 # them, so `forge scaffold service|worker` adds no line below for one, and
 # `forge env up {{.EnvName}} --target api` restarts the whole API. Running one
 # on its own — to debug it alone, say — is its own line, `_on_host(wl.<name>)`,
 # and taking it out of `server`'s mount or worker list
 # (cmd/{{.ProjectName}}/cmd/server.go), or it runs twice.
+{{- end}}
 {{.APIWorkload}}
 
 # Every workload this env runs, one binding each. `forge scaffold` appends

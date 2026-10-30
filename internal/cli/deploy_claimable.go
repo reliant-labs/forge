@@ -45,8 +45,9 @@ const (
 	reasonClaimableIneligible = "claimable_ineligible"
 )
 
-// The claimable plan's caps are pkg/deploy's (deploy.Claimable*), the one
-// definition the hosted plan's resource rule reads too.
+// The claimable plan's caps are the control plane's, read from its public
+// GetClaimableAvailability answer (claimable_limits.go): the one value the
+// hosted plan's resource rule and these checks both judge by.
 
 // claimablePreview is set while a credential-less preview judges an env under
 // the claimable plan (`forge env shape --claimable`, `forge env deploy
@@ -129,7 +130,20 @@ type deployClaimJSON struct {
 	PurgeAfter time.Time `json:"purge_after"`
 	// AgentInstructions is what the agent must do with the above.
 	AgentInstructions string `json:"agent_instructions"`
+	// NoOutboundInternet is true when the deploy runs a service: an unclaimed
+	// backend can serve requests and use its own database but cannot open a
+	// connection to, or resolve a name on, the internet until it is claimed.
+	// Absent for a static site, which makes no outbound calls.
+	NoOutboundInternet bool `json:"no_outbound_internet,omitempty"`
 }
+
+// noOutboundNote is the one explanation of why an unclaimed backend's calls to
+// the internet fail. It is the same sentence in every surface that carries it
+// (the claim block, the --json instructions, the preview, the skills).
+const noOutboundNote = "An unclaimed backend has no outbound internet: it serves requests and uses its own " +
+	"database, but any call out of it (a payment, an LLM, a webhook, a package or DNS lookup of an outside name) " +
+	"fails with a connection error or a name that does not resolve. That is the platform, not a bug in the app. " +
+	"It ends the moment the deploy is claimed."
 
 // claimableRefusal is a refusal this path raises itself (or a throttle it
 // translated): an error that carries its exit code and the machine-readable
@@ -206,14 +220,20 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err != nil {
 			return err
 		}
+		// One availability answer serves the caps every check below judges
+		// by, the preview and the preflight.
+		answer := askClaimableAvailability(ctx, ep)
+		limits := claimableLimitsFrom(ep, answer.av, answer.ok, answer.err)
+		defer useClaimableLimits(limits)()
 		if f.promote.planOnly {
-			return previewClaimable(ctx, envName, entities, ep, f.jsonOut)
+			return previewClaimable(envName, entities, ep, answer, limits, f.jsonOut)
 		}
+		fmt.Fprintf(out, "  %s\n", limits.note())
 		if err := refuseClaimableWhenSignedIn(ep); err != nil {
 			return err
 		}
-		if reasons := claimableAdmission(envName, entities); len(reasons) > 0 {
-			return claimableIneligibleError(envName, reasons)
+		if reasons := claimableAdmission(envName, entities, limits.limits); len(reasons) > 0 {
+			return claimableIneligibleError(envName, limits.limits, reasons)
 		}
 		project := hostedProjectName()
 		if project == "" {
@@ -222,7 +242,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		// Before any proof of work, any account and any build: can the
 		// platform take this env anonymously at all right now?
 		_, storedErr := cloud.LoadClaimable(ep, project, envName, claimableNow())
-		if err := requireClaimableAvailable(ctx, ep, envName, entities, storedErr != nil); err != nil {
+		if err := requireClaimableAvailable(answer, ep, envName, entities, storedErr != nil); err != nil {
 			return err
 		}
 		session, err := obtainClaimable(ctx, out, ep, project, envName)
@@ -231,6 +251,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		}
 		restore := cloud.UseClaimableCredential(ep, session.cred.Token, session.cred.ExpiresAt)
 		defer restore()
+		compute := needsCompute(entities)
 
 		// Everything the ordinary no-version deploy does, as the anonymous user.
 		// --yes is implied: there is no human at this keyboard to approve a
@@ -239,13 +260,13 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		inner.promote.yes = true
 		inner.claim = func() *deployClaimJSON {
 			session.refreshURL(ctx)
-			return session.document()
+			return session.document(compute)
 		}
 		if err := runDeployEverything(ctx, envName, inner); err != nil {
 			return claimableDeployError(envName, err)
 		}
 		if !f.jsonOut {
-			printClaimBlock(os.Stdout, envName, session.document())
+			printClaimBlock(os.Stdout, envName, session.document(compute))
 		}
 		return nil
 	}()
@@ -276,11 +297,47 @@ type claimablePreviewJSON struct {
 	Availability *cloud.ClaimableAvailability `json:"availability,omitempty"`
 	// AvailabilityError is why the question could not be answered.
 	AvailabilityError string `json:"availability_error,omitempty"`
+	// NoOutboundInternet is true when the env runs a service: unclaimed, it has
+	// no outbound internet (see noOutboundNote). Absent for a static site.
+	NoOutboundInternet bool `json:"no_outbound_internet,omitempty"`
 	// BlockingCauses are the availability causes that would refuse THIS env.
 	BlockingCauses []cloud.ClaimableCause `json:"blocking_causes,omitempty"`
 	// SignedIn is true when a real credential resolves for the endpoint, in
 	// which case `--claimable` itself is refused from this machine.
 	SignedIn bool `json:"signed_in"`
+	// Limits are the caps the env was judged by; LimitsPublished says whether
+	// the control plane published them (false: forge's compiled-in copy,
+	// with LimitsNote saying why).
+	Limits          claimableLimitsJSON `json:"limits"`
+	LimitsPublished bool                `json:"limits_published"`
+	LimitsNote      string              `json:"limits_note"`
+}
+
+// claimableLimitsJSON is the caps in the preview document.
+type claimableLimitsJSON struct {
+	WorkloadCPUMillicores      int64 `json:"workload_cpu_millicores"`
+	WorkloadMemoryMiB          int64 `json:"workload_memory_mib"`
+	MaxServices                int   `json:"max_services"`
+	MaxReplicas                int   `json:"max_replicas"`
+	MaxMigrationJobs           int   `json:"max_migration_jobs"`
+	MaxDatabases               int   `json:"max_databases"`
+	DatabaseCPUMillicores      int64 `json:"database_cpu_millicores"`
+	DatabaseMemoryMiB          int64 `json:"database_memory_mib"`
+	DatabaseStorageMiB         int64 `json:"database_storage_mib"`
+	DatabaseDeclaredStorageGiB int32 `json:"database_declared_storage_gib"`
+	DatabaseMaxConnections     int   `json:"database_max_connections"`
+	MaxStaticSites             int   `json:"max_static_sites"`
+}
+
+func limitsJSON(l deploy.ClaimableLimits) claimableLimitsJSON {
+	return claimableLimitsJSON{
+		WorkloadCPUMillicores: l.WorkloadCPUMillicores, WorkloadMemoryMiB: l.WorkloadMemoryBytes >> 20,
+		MaxServices: l.MaxServices, MaxReplicas: l.MaxReplicas, MaxMigrationJobs: l.MaxMigrationJobs,
+		MaxDatabases: l.MaxDatabases, DatabaseCPUMillicores: l.DatabaseCPUMillicores,
+		DatabaseMemoryMiB: l.DatabaseMemoryBytes >> 20, DatabaseStorageMiB: l.DatabaseStorageBytes >> 20,
+		DatabaseDeclaredStorageGiB: l.DatabaseDeclaredStorageGiB, DatabaseMaxConnections: l.DatabaseMaxConnections,
+		MaxStaticSites: l.MaxStaticSites,
+	}
 }
 
 // previewClaimable is `forge env deploy <env> --claimable --plan-only`: the
@@ -290,14 +347,16 @@ type claimablePreviewJSON struct {
 // no proof of work, builds nothing and creates nothing. The verdict (and the
 // exit code) is the project's eligibility; availability describes the
 // platform and is reported beside it.
-func previewClaimable(ctx context.Context, env string, e *KCLEntities, ep cloud.Endpoint, jsonOut bool) error {
+func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer claimableAnswer, limits claimableLimitsSource, jsonOut bool) error {
 	doc := claimablePreviewJSON{Env: env, Endpoint: ep.URL}
-	doc.Reasons = claimableAdmission(env, e)
+	doc.Limits, doc.LimitsPublished, doc.LimitsNote = limitsJSON(limits.limits), limits.published, limits.note()
+	doc.Reasons = claimableAdmission(env, e, limits.limits)
 	doc.Eligible = len(doc.Reasons) == 0
+	doc.NoOutboundInternet = needsCompute(e)
 	if _, err := cloud.ResolveCredential("", ep); err == nil {
 		doc.SignedIn = true
 	}
-	av, ok, err := claimableAvailabilityOf(ctx, ep)
+	av, ok, err := answer.av, answer.ok, answer.err
 	switch {
 	case err != nil:
 		doc.AvailabilityError = err.Error()
@@ -308,7 +367,7 @@ func previewClaimable(ctx context.Context, env string, e *KCLEntities, ep cloud.
 		doc.BlockingCauses = availabilityCauses(av, true, needsCompute(e))
 	}
 	if !doc.Eligible {
-		err := claimableIneligibleError(env, doc.Reasons)
+		err := claimableIneligibleError(env, limits.limits, doc.Reasons)
 		if jsonOut {
 			doc.stamp(err)
 			if eerr := emitJSONDocument(doc); eerr != nil {
@@ -326,8 +385,12 @@ func previewClaimable(ctx context.Context, env string, e *KCLEntities, ep cloud.
 		return emitJSONDocument(doc)
 	}
 	fmt.Printf("Anonymous deploy preview of env %s at %s (checked locally; no identity used, nothing created)\n", env, ep.URL)
-	fmt.Printf("  ✓ fits the claimable plan: one service (at most %dm / %d MiB) with its migration job, one database, one static site\n",
-		deploy.ClaimableCPUMillicores, deploy.ClaimableMemoryBytes>>20)
+	fmt.Printf("  %s\n", limits.note())
+	fmt.Printf("  ✓ fits the claimable plan: one service (at most %s) with its migration job, one database, one static site\n",
+		limits.limits.WorkloadShape())
+	if needsCompute(e) {
+		fmt.Printf("  ! no outbound internet until claimed: the service serves requests and uses its database, but calls out of it fail (payments, LLMs, webhooks, outside DNS)\n")
+	}
 	switch {
 	case doc.Availability == nil:
 		fmt.Printf("  ? platform availability unknown: %s\n", doc.AvailabilityError)
@@ -368,7 +431,7 @@ func refuseClaimableWhenSignedIn(ep cloud.Endpoint) error {
 // here saves a build and says it in the author's own vocabulary, with the KCL
 // edit that fixes it where there is one. The resource rule is the claimable
 // plan's (deploy.CheckHostedResources), the one the hosted plan applies too.
-func claimableIneligibility(e *KCLEntities) []string {
+func claimableIneligibility(e *KCLEntities, caps deploy.ClaimableLimits) []string {
 	var out []string
 	var services, jobs int
 	for _, w := range e.Workloads {
@@ -388,12 +451,12 @@ func claimableIneligibility(e *KCLEntities) []string {
 		default:
 			out = append(out, fmt.Sprintf("%s %q (only one service may run)", w.Spec.EffectiveKind(), w.Name))
 		}
-		if replicas := w.Spec.Replicas; replicas > deploy.ClaimableMaxReplicas && w.Spec.EffectiveKind() == v1alpha1.KindService {
-			out = append(out, fmt.Sprintf("workload %q asks for %d replicas (%d is allowed)", w.Name, replicas, deploy.ClaimableMaxReplicas))
+		if replicas := w.Spec.Replicas; int(replicas) > caps.MaxReplicas && w.Spec.EffectiveKind() == v1alpha1.KindService {
+			out = append(out, fmt.Sprintf("workload %q asks for %d replicas (%d is allowed)", w.Name, replicas, caps.MaxReplicas))
 		}
 		if w.Spec.EffectiveKind() == v1alpha1.KindService || w.Spec.EffectiveKind() == v1alpha1.KindJob {
 			// The hosted shape band does not apply to this plan; these caps do.
-			if err := deploy.CheckHostedResources(deploy.HostedPlanClaimable, w.Spec.Resources); err != nil {
+			if err := deploy.CheckHostedResourcesWithin(deploy.HostedPlanClaimable, caps, w.Spec.Resources); err != nil {
 				var r *deploy.ResourcesRefusal
 				if errors.As(err, &r) {
 					out = append(out, fmt.Sprintf("workload %q %s\n      fix: give it, in its binding (deploy/kcl/<env>/main.k): %s",
@@ -416,16 +479,29 @@ func claimableIneligibility(e *KCLEntities) []string {
 			}
 		}
 	}
-	if services > deploy.ClaimableMaxServices {
-		out = append(out, fmt.Sprintf("%d services (%d is allowed)", services, deploy.ClaimableMaxServices))
+	if services > caps.MaxServices {
+		out = append(out, fmt.Sprintf("%d services (%d is allowed)", services, caps.MaxServices))
 	}
-	if jobs > deploy.ClaimableMaxMigrationJobs || (jobs == 1 && services == 0) {
+	if jobs > caps.MaxMigrationJobs || (jobs > 0 && services == 0) {
 		out = append(out, "a job that gates no service (only a service's own migration job is allowed)")
 	}
 	var dbs, sites int
 	for _, d := range e.Databases {
-		if d.Hosted() {
-			dbs++
+		if !d.Hosted() {
+			continue
+		}
+		dbs++
+		spec := d.Spec.WithDefaults()
+		if int(spec.Instances) > caps.DatabaseInstances {
+			out = append(out, fmt.Sprintf("database %q asks for %d instances (%d is allowed)", d.Name, spec.Instances, caps.DatabaseInstances))
+		}
+		if spec.StorageGiB > caps.DatabaseDeclaredStorageGiB {
+			out = append(out, fmt.Sprintf("database %q asks for %d GiB of storage (at most %d GiB); the platform provisions %s\n"+
+				"      fix: give it, in deploy/kcl/<env>/main.k: spec = {storageGiB = %d}",
+				d.Name, spec.StorageGiB, caps.DatabaseDeclaredStorageGiB, caps.DatabaseStorage(), caps.DatabaseDeclaredStorageGiB))
+		}
+		if spec.Restore != nil {
+			out = append(out, fmt.Sprintf("database %q restores from a backup (an anonymous database has none)", d.Name))
 		}
 	}
 	for _, fe := range e.Frontends {
@@ -433,11 +509,11 @@ func claimableIneligibility(e *KCLEntities) []string {
 			sites++
 		}
 	}
-	if dbs > deploy.ClaimableMaxDatabases {
-		out = append(out, fmt.Sprintf("%d databases (%d is allowed)", dbs, deploy.ClaimableMaxDatabases))
+	if dbs > caps.MaxDatabases {
+		out = append(out, fmt.Sprintf("%d databases (%d is allowed)", dbs, caps.MaxDatabases))
 	}
-	if sites > deploy.ClaimableMaxStaticSites {
-		out = append(out, fmt.Sprintf("%d static sites (%d is allowed)", sites, deploy.ClaimableMaxStaticSites))
+	if sites > caps.MaxStaticSites {
+		out = append(out, fmt.Sprintf("%d static sites (%d is allowed)", sites, caps.MaxStaticSites))
 	}
 	sort.Strings(out)
 	return out
@@ -447,8 +523,8 @@ func claimableIneligibility(e *KCLEntities) []string {
 // structural caps (claimableIneligibility), then, if those pass, the hosted
 // plan the deploy itself will run under the claimable plan (restricted
 // profile, resources, references), so a refusal there also costs no build.
-func claimableAdmission(env string, e *KCLEntities) []string {
-	if reasons := claimableIneligibility(e); len(reasons) > 0 {
+func claimableAdmission(env string, e *KCLEntities, caps deploy.ClaimableLimits) []string {
+	if reasons := claimableIneligibility(e, caps); len(reasons) > 0 {
 		return reasons
 	}
 	restore := useClaimablePreview()
@@ -466,11 +542,11 @@ func claimableAdmission(env string, e *KCLEntities) []string {
 	return nil
 }
 
-func claimableIneligibleError(env string, reasons []string) error {
+func claimableIneligibleError(env string, caps deploy.ClaimableLimits, reasons []string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "env %q does not fit an anonymous deploy. An unclaimed deploy is one static site, or one service "+
-		"(at most %dm / %d MiB, request and limit) with its migration job and one database; it cannot have:",
-		env, deploy.ClaimableCPUMillicores, deploy.ClaimableMemoryBytes>>20)
+		"(at most %s, request and limit) with its migration job and one database (at most %d GiB declared); it cannot have:",
+		env, caps.WorkloadShape(), caps.DatabaseDeclaredStorageGiB)
 	for _, r := range reasons {
 		fmt.Fprintf(&b, "\n  - %s", strings.ReplaceAll(r, "<env>", env))
 	}
@@ -492,6 +568,18 @@ func needsCompute(e *KCLEntities) bool {
 		}
 	}
 	return false
+}
+
+// claimableAnswer is one GetClaimableAvailability answer (claimableAvailabilityOf).
+type claimableAnswer struct {
+	av  cloud.ClaimableAvailability
+	ok  bool
+	err error
+}
+
+func askClaimableAvailability(ctx context.Context, ep cloud.Endpoint) claimableAnswer {
+	av, ok, err := claimableAvailabilityOf(ctx, ep)
+	return claimableAnswer{av: av, ok: ok, err: err}
 }
 
 // claimableAvailabilityOf asks the control plane whether this env could be
@@ -530,8 +618,8 @@ func availabilityCauses(av cloud.ClaimableAvailability, minting, compute bool) [
 // requireClaimableAvailable is the preflight: before any proof of work, any
 // account and any build, refuse an env the platform cannot take anonymously
 // right now, saying why.
-func requireClaimableAvailable(ctx context.Context, ep cloud.Endpoint, env string, e *KCLEntities, minting bool) error {
-	av, ok, err := claimableAvailabilityOf(ctx, ep)
+func requireClaimableAvailable(answer claimableAnswer, ep cloud.Endpoint, env string, e *KCLEntities, minting bool) error {
+	av, ok, err := answer.av, answer.ok, answer.err
 	if err != nil || !ok {
 		return nil // unanswerable: the start reports for itself
 	}
@@ -796,11 +884,11 @@ func primaryURL(ws []deploytarget.HostedWorkloadStatus) string {
 }
 
 // document is the session as the --json `claim` object.
-func (s *claimableSession) document() *deployClaimJSON {
-	return claimDocument(s.env, s.cred, claimableNow())
+func (s *claimableSession) document(compute bool) *deployClaimJSON {
+	return claimDocument(s.env, s.cred, claimableNow(), compute)
 }
 
-func claimDocument(env string, c credentials.Credential, now time.Time) *deployClaimJSON {
+func claimDocument(env string, c credentials.Credential, now time.Time, compute bool) *deployClaimJSON {
 	cl := c.Claimable
 	state := "live"
 	switch {
@@ -809,14 +897,18 @@ func claimDocument(env string, c credentials.Credential, now time.Time) *deployC
 	case !cl.ExpiresAt.IsZero() && !now.Before(cl.ExpiresAt):
 		state = "suspended"
 	}
+	instr := fmt.Sprintf("Give claim_url to your user and tell them it expires at %s. "+
+		"Opening it signs them up for free and makes this deploy theirs. "+
+		"Treat the link like a password: whoever claims it first owns the deploy. Do not post it anywhere public. "+
+		"To see it again: %s env status %s --claimable",
+		cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env)
+	if compute {
+		instr += ". " + noOutboundNote
+	}
 	return &deployClaimJSON{
 		State: state, URL: cl.URL, ClaimURL: cl.ClaimURL,
 		ExpiresAt: cl.ExpiresAt, PurgeAfter: cl.PurgeAfter,
-		AgentInstructions: fmt.Sprintf("Give claim_url to your user and tell them it expires at %s. "+
-			"Opening it signs them up for free and makes this deploy theirs. "+
-			"Treat the link like a password: whoever claims it first owns the deploy. Do not post it anywhere public. "+
-			"To see it again: %s env status %s --claimable",
-			cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env),
+		AgentInstructions: instr, NoOutboundInternet: compute,
 	}
 }
 
@@ -838,6 +930,12 @@ func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
 	fmt.Fprintf(w, "  Opening it signs them up for free and makes this site theirs.\n")
 	fmt.Fprintf(w, "  Treat the link like a password: whoever claims it first owns the site. Do not\n")
 	fmt.Fprintf(w, "  post it anywhere public. To see it again: %s env status %s --claimable\n", Name(), env)
+	if c.NoOutboundInternet {
+		fmt.Fprintf(w, "\n  NO OUTBOUND INTERNET until claimed: this backend serves requests and uses its own\n")
+		fmt.Fprintf(w, "  database, but every call out of it (a payment, an LLM, a webhook, an outside DNS\n")
+		fmt.Fprintf(w, "  name) fails with a connection error or an unresolvable name. That is the platform,\n")
+		fmt.Fprintf(w, "  not a bug in the app. It ends the moment the deploy is claimed.\n")
+	}
 }
 
 // formatLifetime renders a span as hours (72h, 41h) up to three days, days
@@ -880,7 +978,7 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 		}
 		return err
 	}
-	doc := claimDocument(env, stored, now)
+	doc := claimDocument(env, stored, now, needsCompute(entities))
 	if perr := probeClaimableToken(ctx, ep, stored.Token); isClaimedError(perr) {
 		doc.State = "claimed"
 	}

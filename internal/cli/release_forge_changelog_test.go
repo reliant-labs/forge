@@ -231,7 +231,7 @@ func fakeGH(t *testing.T, breakingPRs string, failRelease bool) (bin, log string
 	}
 	script := `#!/usr/bin/env bash
 echo "ARGS: $*" >> "` + log + `"
-if [ "$1 $2" = "run list" ]; then printf '123 completed success %s\n' "$(git rev-parse HEAD)"; exit 0; fi
+if [ "$1 $2" = "run list" ]; then printf '123|completed|success|%s\n' "$(git rev-parse HEAD)"; exit 0; fi
 if [ "$1 $2" = "run view" ]; then echo success; exit 0; fi
 if [ "$1 $2" = "pr list" ]; then printf '%s\n' ` + breakingPRs + `; exit 0; fi
 if [ "$1 $2" = "release create" ]; then
@@ -388,6 +388,34 @@ func TestReleaseForgeScript_GitHubReleaseFailureStillLeavesTheTagPushed(t *testi
 	}
 	if tags := gitOut(t, origin, "tag", "-l"); !strings.Contains(tags, "v0.2.0") {
 		t.Errorf("the tag must be pushed regardless of the GitHub release; remote tags:\n%s", tags)
+	}
+}
+
+// A cutter that loses the tag race must not leave its own tag object behind:
+// every worktree of a checkout shares refs/tags/, so a stale local tag breaks
+// every later `git fetch --tags` there with "would clobber existing tag"
+// (forge#1524).
+func TestReleaseForgeScript_RefusedPushDeletesTheLocalTag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a build and a git push")
+	}
+	repo, _ := githubFixtureRepo(t)
+	// Another cut won: origin's main moved to a release commit this checkout
+	// lacks, so the atomic push of branch + tag is refused as non-fast-forward.
+	won := gitOut(t, repo, "-c", "user.name=other", "-c", "user.email=other@example.com",
+		"commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "chore: release v0.2.0 (the other cut)")
+	gitIn(t, repo, "push", "-q", "origin", won+":refs/heads/main")
+	gh, _ := fakeGH(t, "", false)
+
+	out, err := runForgeScriptEnv(t, repo, []string{"FORGE_RELEASE_GH=" + gh}, "v0.2.0")
+	if err == nil {
+		t.Fatalf("a refused push must fail the script:\n%s", out)
+	}
+	if !strings.Contains(out, "deleted the local tag v0.2.0") {
+		t.Errorf("the failure must say the local tag was removed:\n%s", out)
+	}
+	if tags := gitOut(t, repo, "tag", "-l", "v0.2.0"); tags != "" {
+		t.Errorf("the losing cut left its local tag behind: %q", tags)
 	}
 }
 

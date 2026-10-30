@@ -303,10 +303,27 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	if err != nil {
 		return err
 	}
+	// A snapshot carries its assets inline, base64, in the bundle's config
+	// blob, which both ends bound at bundle.MaxManifestBytes (1 MiB): a
+	// catalog grows with its project and does not belong there. Until it
+	// travels by layer reference, a composition bundle ships without it.
+	var withheld bool
+	if assets, withheld = dropServiceCatalog(assets); withheld {
+		fmt.Fprintf(os.Stderr, "[bundle] Note: the service catalog was not uploaded: a composition bundle does not carry it yet, "+
+			"so the RPC explorer will lack env %s's declared routes. The deploy is unaffected.\n", opts.env)
+	}
 	if doc.Provenance.Commit != candidate.Source.Commit || doc.Provenance.Dirty {
 		return fmt.Errorf("composition source changed during build")
 	}
-	input := bundle.BuildInput{Project: cfg.Name, Env: opts.env, Release: opts.release, Provenance: doc.Provenance, Shape: bundleShapeInputOf(doc), CreatedAt: now, Units: doc.units, Reconciled: doc.reconciled(), ReconciledUnits: doc.reconciledUnits(), Observability: assets}
+	placements, err := bundlePlacementDeclarations(doc.entities)
+	if err != nil {
+		return err
+	}
+	reader, err := bundleReaderFor(ctx, projectDirForKCL(), opts.env, run.Ledger)
+	if err != nil {
+		return err
+	}
+	input := bundle.BuildInput{Project: cfg.Name, Env: opts.env, Release: opts.release, Provenance: doc.Provenance, Shape: bundleShapeInputOf(doc), CreatedAt: now, Units: doc.units, Reconciled: doc.reconciled(), ReconciledUnits: doc.reconciledUnits(), Observability: assets, Placements: placements, Reader: reader}
 	candidate, err = bundle.SnapshotInventory(pinned, input, candidate)
 	if err != nil {
 		return err

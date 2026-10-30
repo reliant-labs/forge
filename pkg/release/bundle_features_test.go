@@ -13,13 +13,17 @@ import (
 
 // bundleFeatureKeys is the document key paths each optional feature adds.
 var bundleFeatureKeys = map[string][]string{
-	BundleFeatureCommitIdentity:    {"provenance.commit_subject", "provenance.commit_author"},
-	BundleFeatureObjectSummaries:   {"objects"},
-	BundleFeatureFrontendTelemetry: {"shape.frontend_telemetry", "shape.observability_policy.retention"},
-	BundleFeatureStoreSecrets:      {"shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery"},
-	BundleFeatureReleaseHealth:     {"shape.release_health"},
-	BundleFeatureUptimeChecks:      {"shape.uptime_checks"},
-	BundleFeatureDataAccess:        {"shape.data_access"},
+	BundleFeaturePlacementPrerequisites: {"placement_prerequisites"},
+	BundleFeatureCommitIdentity:         {"provenance.commit_subject", "provenance.commit_author"},
+	BundleFeatureObjectSummaries:        {"objects"},
+	BundleFeatureFrontendTelemetry:      {"shape.frontend_telemetry", "shape.observability_policy.retention"},
+	BundleFeatureStoreSecrets:           {"shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery"},
+	BundleFeatureReleaseHealth:          {"shape.release_health"},
+	BundleFeatureUptimeChecks:           {"shape.uptime_checks"},
+	BundleFeatureDataAccess:             {"shape.data_access"},
+	// A layer feature: it adds BundleServiceCatalogPath to the manifests
+	// layer and no document key.
+	BundleFeatureServiceCatalog: {},
 }
 
 // snapshotKeys are not features: a snapshot bundle is its own schema, gated

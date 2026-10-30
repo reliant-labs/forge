@@ -1,5 +1,7 @@
 package dashspec
 
+import "time"
+
 // SpecVersion identifies the serialized shape of Spec. Bump it on a breaking
 // change so a consumer can refuse a spec it does not understand.
 const SpecVersion = "forge.dashboards/v1"
@@ -240,6 +242,13 @@ type Panel struct {
 	// telemetry tables, which may use the SQLParam* query parameters. Only
 	// that kind takes it.
 	SQL string `json:"sql,omitempty"`
+	// MinStep is the narrowest bucket a KindSQL panel's statement produces,
+	// in the same form as DefaultRange ("1d"): set it when the statement
+	// groups by a fixed bucket (toDate, toStartOfWeek) rather than by the
+	// {step} parameter. A range shorter than two buckets can draw only one
+	// point, so a renderer widens such a panel's range to hold two, and says
+	// so. Only a sql panel takes it.
+	MinStep string `json:"minStep,omitempty"`
 	// Where narrows every series of the panel.
 	Where   []Predicate `json:"where,omitempty"`
 	GroupBy []string    `json:"groupBy,omitempty"`
@@ -295,13 +304,49 @@ type Section struct {
 	Title string `json:"title"`
 }
 
+// Scope says which telemetry a dashboard's panels read. It is one enum: the
+// default and the two wider reads.
+type Scope string
+
+// The dashboard scopes.
+const (
+	// ScopeProject is the default (the empty value): panels read the
+	// environments the viewer has selected within the route's project, and the
+	// reader narrows every query to them.
+	ScopeProject Scope = "project"
+	// ScopeOrg reads across every project of the organization: all of the
+	// org's environments, still narrowed to the environments the viewer
+	// selected. The reader names no project, and a console lists the
+	// environments as project/env.
+	ScopeOrg Scope = "org"
+	// ScopePlatform marks a dashboard whose signals are platform or
+	// infrastructure telemetry that belongs to no environment (a database, a
+	// message bus, a collector, a GitOps controller). That telemetry carries
+	// no reliant.env.id, so an environment filter would match nothing. A
+	// reader drops only that environment predicate: who may read, and from
+	// which organization's data, is still the reader's decision.
+	ScopePlatform Scope = "platform"
+)
+
 // Dashboard is an ordered list of panels under a shared set of filters.
 type Dashboard struct {
+	// Scope is empty for ScopeProject.
+	Scope       Scope        `json:"scope,omitempty"`
 	Sections    []Section    `json:"sections,omitempty"`
 	ID          string       `json:"id"`
 	Title       string       `json:"title"`
 	Description string       `json:"description,omitempty"`
 	Filters     []Filter     `json:"filters,omitempty"`
 	Annotations []Annotation `json:"annotations,omitempty"`
-	Panels      []Panel      `json:"panels"`
+	// DefaultRange is the time range the dashboard opens on when the viewer
+	// picked none: a number and a unit of s, m, h or d ("24h", "7d"), at most
+	// MaxDefaultRange. A dashboard whose panels bucket by day declares "7d";
+	// without it a renderer opens on its own default (an hour, in the console).
+	// A renderer with fixed presets rounds up to the nearest one.
+	DefaultRange string  `json:"defaultRange,omitempty"`
+	Panels       []Panel `json:"panels"`
 }
+
+// MaxDefaultRange bounds Dashboard.DefaultRange: the longest range a
+// dashboard's panels may be read over.
+const MaxDefaultRange = 30 * 24 * time.Hour

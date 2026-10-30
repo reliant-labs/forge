@@ -607,3 +607,44 @@ func TestTraceNewestCursorFingerprintIsUnchangedByOrder(t *testing.T) {
 		t.Errorf("newest-first fingerprint changed: %q != %q", got, want)
 	}
 }
+
+// An errors-only or root-name filter narrows the traces before the per-trace
+// aggregation, so a wide window does not group every span in it; with neither
+// filter there is nothing to narrow by.
+func TestTraceQueryPrefiltersCandidateTraces(t *testing.T) {
+	q := TraceQuery{Scope: scope(), ErrorsOnly: true, RootSpanName: "ListProcesses", Limit: 10}
+	for name, compile := range map[string]func() (Stmt, error){"page": q.Compile, "red": q.CompileRED} {
+		st, err := compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(st.SQL, "TraceId IN (SELECT TraceId FROM t_org_a.otel_traces"); n != 2 {
+			t.Errorf("%s: %d candidate prefilters, want 2:\n%s", name, n, st.SQL)
+		}
+		if !strings.Contains(st.SQL, "HAVING error_count > 0") || !strings.Contains(st.SQL, "positionCaseInsensitive(root_name, ") {
+			t.Errorf("%s: the exact per-trace predicates must stay:\n%s", name, st.SQL)
+		}
+	}
+	st, err := TraceQuery{Scope: scope(), Limit: 10}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(st.SQL, "TraceId IN (") {
+		t.Errorf("an unfiltered page has nothing to prefilter by:\n%s", st.SQL)
+	}
+}
+
+// A streaming RPC's server span lasts as long as the stream, so the RED
+// latency quantiles are over unary spans only, while requests count both.
+func TestREDLatencyExcludesStreams(t *testing.T) {
+	st, err := Overview{Scope: scope()}.RED()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st.SQL, "quantilesExactWeightedIf(0.5, 0.95, 0.99)(Duration / 1000000, ") || !strings.Contains(st.SQL, "NOT "+spanStreamExpr) {
+		t.Errorf("latency is not limited to unary spans:\n%s", st.SQL)
+	}
+	if !strings.Contains(spanStreamExpr, "'"+StreamTypeAttr+"'") {
+		t.Errorf("stream predicate does not read %s", StreamTypeAttr)
+	}
+}

@@ -12,7 +12,6 @@ const (
 	Schema        = "forge.dev/service-catalog/v1"
 	GeneratedPath = "gen/forge_service_catalog.json"
 	BundlePath    = "forge/service-catalog.json"
-	MaxBytes      = 1 << 20
 )
 
 // Catalog is generated from the same typed composition model and wire descriptor
@@ -28,9 +27,37 @@ type Catalog struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
+// Source locates a declaration, in one of two forms.
+//
+// The committed gen/ catalog names it: Path plus Symbol, and no line. A line
+// number moves whenever unrelated code above it does, so a committed catalog
+// that recorded one went stale on every merge that touched a handler file.
+//
+// The bundle copy carries Path plus Line: Locate resolves each Symbol against
+// the source being built, and the bundle's readers have always required a
+// line with a path. The zero Source means the location is unknown.
 type Source struct {
 	Path string `json:"path"` // module-relative, never absolute
-	Line int    `json:"line"`
+	// Symbol is the declaration's name in Path: "NewOrders" (a func), "Orders"
+	// (a type), or "Orders.Get" (a method, or a method of an interface type).
+	// Only the committed form carries it.
+	Symbol string `json:"symbol,omitempty"`
+	Line   int    `json:"line"`
+}
+
+// MarshalJSON writes the committed form ({path, symbol}) when s is symbolic,
+// and the located form ({path, line}) otherwise.
+func (s Source) MarshalJSON() ([]byte, error) {
+	if s.Symbol != "" {
+		return json.Marshal(struct {
+			Path   string `json:"path"`
+			Symbol string `json:"symbol"`
+		}{s.Path, s.Symbol})
+	}
+	return json.Marshal(struct {
+		Path string `json:"path"`
+		Line int    `json:"line"`
+	}{s.Path, s.Line})
 }
 
 type Process struct {

@@ -364,6 +364,18 @@ eso_chart = lambda e: any, owner: str, derived: any -> {str: any} {
                     "to": [{"ipBlock": {"cidr": c}} for c in _adm.egress_cidrs]
                     "ports": [{"protocol": "TCP", "port": p} for p in _adm.egress_ports]
                 }
+            ] + [
+                # The in-cluster store, by selector: an ipBlock never matches a
+                # pod address under Cilium (GKE Dataplane V2), so the CIDR rule
+                # above does not reach it there.
+                {
+                    "to": [{
+                        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": p.namespace}}
+                        "podSelector": {"matchLabels": {"app.kubernetes.io/name": p.name}}
+                    }]
+                    "ports": [{"protocol": "TCP", "port": p.port}]
+                }
+                for p in derived?.store_peers or []
             ]
         }
     } | ({"priorityClassName": e.priority_class} if e.priority_class else {})

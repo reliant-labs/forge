@@ -154,6 +154,9 @@ type BuildInput struct {
 	// declares waits for the default unit. Every real cluster is split into
 	// trees by it; see release.PlanTrees.
 	Units []release.DeliveryUnit
+	// Placements is the complete logical dependency declaration for mixed bundles.
+	// Nil is unknown, not an assertion of independence.
+	Placements []PlacementDeclaration
 	// Observability is the dashboards and the metrics schema the bundle
 	// carries beside its manifests (see [release.BundleObservabilityPrefix]).
 	// Nothing applies them, so they neither enter the shape nor the config
@@ -168,13 +171,13 @@ type ObservabilityFile struct {
 	Data []byte
 }
 
-const (
-	// maxObservabilityFileBytes and maxObservabilityBytes bound what a project
-	// can put in a bundle. They sit far under the control plane's 8 MiB layer
-	// bound so a bundle forge builds is one the platform records.
-	maxObservabilityFileBytes = 1 << 20
-	maxObservabilityBytes     = 4 << 20
-)
+// maxObservabilityBytes bounds the observability files together, and so any
+// one of them: the shared layer contract, [release.ManifestsLayerMaxBytes],
+// the bound [release.ValidateManifestsLayer] holds every artifact to. A
+// service catalog grows with the project it describes, so a per-file bound
+// below the layer's refuses a large project for nothing. (The control
+// plane's 8 MiB bound is on the COMPRESSED layer, and these files are JSON.)
+const maxObservabilityBytes = release.ManifestsLayerMaxBytes
 
 // observabilityEntries validates the files and turns them into layer entries.
 func observabilityEntries(files []ObservabilityFile) ([]tarEntry, error) {
@@ -190,8 +193,6 @@ func observabilityEntries(files []ObservabilityFile) ([]tarEntry, error) {
 			return nil, fmt.Errorf("%w: observability path %q is not under %s/", release.ErrInvalid, f.Path, release.BundleObservabilityPrefix)
 		case seen[clean]:
 			return nil, fmt.Errorf("%w: observability path %q appears twice", release.ErrInvalid, f.Path)
-		case len(f.Data) > maxObservabilityFileBytes:
-			return nil, fmt.Errorf("%w: %s is %d bytes, over the %d-byte bound for one observability file", release.ErrInvalid, f.Path, len(f.Data), maxObservabilityFileBytes)
 		}
 		seen[clean] = true
 		total += len(f.Data)
@@ -343,6 +344,11 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: pack manifests: %w", in.Project, in.Env, err)
 	}
+	// From the same parse and the sealed trees, so unit order is PlanTrees'.
+	prerequisites, err := placementPrerequisites(in, docs, shape.Objects, trees)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
+	}
 	// THE INGEST GATE, run at build so forge refuses to cut a bundle the
 	// control plane would refuse to record. It is the same function, over the
 	// final layer bytes — what the shared controller would be handed.
@@ -355,14 +361,15 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	}
 
 	doc := release.BundleDoc{
-		Schema:       release.BundleSchema,
-		Project:      in.Project,
-		Env:          in.Env,
-		Release:      in.Release,
-		ConfigDigest: configDigest,
-		Pins:         in.Pins,
-		Provenance:   in.Provenance,
-		Shape:        shape,
+		Schema:                 release.BundleSchema,
+		Project:                in.Project,
+		Env:                    in.Env,
+		Release:                in.Release,
+		ConfigDigest:           configDigest,
+		Pins:                   in.Pins,
+		Provenance:             in.Provenance,
+		Shape:                  shape,
+		PlacementPrerequisites: prerequisites,
 		// From the SAME parsed, guarded bodies the shape hashed, so a
 		// summary describes exactly the bytes its object's Hash names.
 		Objects:      objectSummaries(docs, shape),

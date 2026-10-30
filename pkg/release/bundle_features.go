@@ -36,6 +36,9 @@ import (
 // TestEveryBundleDocAdditionIsAFeature (bundle_features_test.go) fails until
 // it is mapped.
 const (
+	// BundleFeaturePlacementPrerequisites gates required mixed dependency evidence.
+	// Unlike browse-only additions, Limit must NEVER discard this safety contract.
+	BundleFeaturePlacementPrerequisites = "placement-prerequisites-v1"
 	// BundleFeatureCommitIdentity is Provenance.CommitSubject and
 	// Provenance.CommitAuthor (forge#850).
 	BundleFeatureCommitIdentity = "provenance-commit-identity"
@@ -70,13 +73,21 @@ const (
 	// the control plane's prober runs. A control plane that predates it
 	// probes nothing for the env.
 	BundleFeatureUptimeChecks = "shape-uptime-checks"
+	// BundleFeatureServiceCatalog is the manifests layer's
+	// [BundleServiceCatalogPath] artifact, of any size up to the layer's
+	// bound. It is a layer feature, not a document one: a control plane whose
+	// [ValidateManifestsLayer] predates it refuses the whole layer ("only the
+	// dedicated frozen frontend declaration asset is permitted under forge/"),
+	// so forge uploads the catalog only to one that names it.
+	BundleFeatureServiceCatalog = "layer-service-catalog"
 )
 
-// BundleDocFeatures is every optional bundle-document feature this version's
-// [DecodeBundleDoc] accepts. A control plane advertises exactly this list, so
-// what it claims to decode and what its decoder accepts are one fact.
+// BundleDocFeatures is every optional bundle feature this version's
+// [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
+// advertises exactly this list, so what it claims to decode and what its
+// decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -92,9 +103,10 @@ func (r *BundleReader) Supports(feature string) bool {
 	return r == nil || slices.Contains(r.Features, feature)
 }
 
-// Limit returns d without every optional part the reader does not decode.
-// The parts are omitted entirely (their fields are `omitempty`), never sent
-// empty: an empty key is still an unknown key to a decoder that predates it.
+// Limit removes optional browse-only parts the reader does not decode.
+// PlacementPrerequisites is a safety contract and is NEVER removed: producers
+// must refuse unsupported readers before effects rather than drop dependencies.
+// Omitted browse-only fields use omitempty; empty unknown fields still fail.
 func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 	if !r.Supports(BundleFeatureCommitIdentity) {
 		d.Provenance.CommitSubject = ""

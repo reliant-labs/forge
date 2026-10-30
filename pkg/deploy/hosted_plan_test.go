@@ -33,16 +33,18 @@ func TestCheckHostedResources(t *testing.T) {
 			"resources = fw.Resources {cpuRequestMillicores = 125, memoryRequestBytes = forge.mib(512)}"},
 		{"standard: a limit under the new request is raised", HostedPlanStandard, r(100, 256*mib, 100, 256*mib),
 			"resources = fw.Resources {cpuRequestMillicores = 125, cpuLimitMillicores = 125, memoryRequestBytes = forge.mib(512), memoryLimitBytes = forge.mib(512)}"},
-		{"claimable: 125m / 256Mi is admitted (no band)", HostedPlanClaimable, r(125, 256*mib, 0, 0), ""},
-		{"claimable: 100m / 128Mi is admitted (no granularity)", HostedPlanClaimable, r(100, 128*mib, 0, 0), ""},
-		{"claimable: the cap itself, no burst", HostedPlanClaimable, ClaimableResources(), ""},
-		{"claimable: the entry shape is over the memory cap", HostedPlanClaimable, v1alpha1.Resources{},
-			"resources = fw.Resources {cpuRequestMillicores = 250, cpuLimitMillicores = 250, memoryRequestBytes = forge.mib(256), memoryLimitBytes = forge.mib(256)}"},
-		{"claimable: a burst limit is over the cap", HostedPlanClaimable, r(125, 256*mib, 500, 0),
-			"resources = fw.Resources {cpuRequestMillicores = 125, cpuLimitMillicores = 125, memoryRequestBytes = forge.mib(256), memoryLimitBytes = forge.mib(256)}"},
+		{"claimable: 125m / 128Mi is admitted (no band)", HostedPlanClaimable, r(125, 128*mib, 0, 0), ""},
+		{"claimable: 100m / 64Mi is admitted (no granularity)", HostedPlanClaimable, r(100, 64*mib, 0, 0), ""},
+		{"claimable: the cap itself, no burst", HostedPlanClaimable, ClaimableLimitsFallback().Resources(), ""},
+		{"claimable: the entry shape is over the cap", HostedPlanClaimable, v1alpha1.Resources{},
+			"resources = fw.Resources {cpuRequestMillicores = 125, cpuLimitMillicores = 125, memoryRequestBytes = forge.mib(128), memoryLimitBytes = forge.mib(128)}"},
+		{"claimable: 125m / 256Mi is over the memory cap", HostedPlanClaimable, r(125, 256*mib, 0, 0),
+			"resources = fw.Resources {cpuRequestMillicores = 125, cpuLimitMillicores = 125, memoryRequestBytes = forge.mib(128), memoryLimitBytes = forge.mib(128)}"},
+		{"claimable: a burst limit is over the cap", HostedPlanClaimable, r(125, 128*mib, 500, 0),
+			"resources = fw.Resources {cpuRequestMillicores = 125, cpuLimitMillicores = 125, memoryRequestBytes = forge.mib(128), memoryLimitBytes = forge.mib(128)}"},
 	}
 	for _, c := range cases {
-		err := CheckHostedResources(c.plan, c.in)
+		err := CheckHostedResourcesWithin(c.plan, ClaimableLimitsFallback(), c.in)
 		if c.wantFix == "" {
 			if err != nil {
 				t.Errorf("%s: refused: %v", c.name, err)
@@ -61,7 +63,7 @@ func TestCheckHostedResources(t *testing.T) {
 			t.Errorf("%s: %q does not name the plan", c.name, err)
 		}
 		// The suggested fix is itself admitted: following it converges.
-		if again := CheckHostedResources(c.plan, rr.Want); again != nil {
+		if again := CheckHostedResourcesWithin(c.plan, ClaimableLimitsFallback(), rr.Want); again != nil {
 			t.Errorf("%s: the suggested fix is refused too: %v", c.name, again)
 		}
 	}
@@ -88,5 +90,23 @@ func TestRunsBeforeRollout(t *testing.T) {
 		if got := RunsBeforeRollout(c.spec); got != c.want {
 			t.Errorf("%s: RunsBeforeRollout = %v, want %v", name, got, c.want)
 		}
+	}
+}
+
+// The caps are the control plane's, not forge's: a published answer is
+// judged by, whatever the compiled-in copy says.
+func TestClaimableLimitsArePublishedNotCompiled(t *testing.T) {
+	t.Parallel()
+	published := ClaimableLimitsFallback()
+	published.WorkloadCPUMillicores, published.WorkloadMemoryBytes = 250, 256*mib
+	in := v1alpha1.Resources{CPURequestMillicores: 250, CPULimitMillicores: 250, MemoryRequestBytes: 256 * mib, MemoryLimitBytes: 256 * mib}
+	if err := CheckHostedResourcesWithin(HostedPlanClaimable, published, in); err != nil {
+		t.Errorf("a shape at the published cap is refused: %v", err)
+	}
+	if err := CheckHostedResourcesWithin(HostedPlanClaimable, ClaimableLimitsFallback(), in); err == nil {
+		t.Error("the compiled-in fallback admitted a shape over its own cap")
+	}
+	if (ClaimableLimits{}).Valid() || !ClaimableLimitsFallback().Valid() {
+		t.Error("Valid must refuse an empty answer and accept the fallback")
 	}
 }

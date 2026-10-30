@@ -71,6 +71,13 @@ const (
 	// statusFreshnessLookback is how far back the newest log and span are
 	// looked for, at least: a quiet hour is not "telemetry stopped".
 	statusFreshnessLookback = 24 * time.Hour
+	// statusFreshnessProbe is the first, cheap window the newest log and span
+	// are looked for in. Telemetry that is arriving answers from it; only a
+	// signal with nothing that recent pays for the whole lookback. Asking a
+	// hosted backend for "the newest span of the last 24h" outright sorted a
+	// day of spans and timed out (HTTP 504) on prod, which made every status
+	// partial.
+	statusFreshnessProbe = 15 * time.Minute
 	// statusChangesLookback bounds the change feed; the release in force is
 	// found whatever its age.
 	statusChangesLookback = 7 * 24 * time.Hour
@@ -86,7 +93,8 @@ type obsStatusTelemetry struct {
 	LastSpanAt time.Time `json:"last_span_at,omitzero"`
 	Lookback   string    `json:"lookback"`
 	// DeliveriesEnabled and Deliveries are the control plane's telemetry
-	// token deliveries (hosted envs).
+	// token deliveries: the env's declared forge.ControlPlaneSecrets on
+	// connected clusters. A hosted env's own token is not one of them.
 	DeliveriesEnabled *bool                          `json:"deliveries_enabled,omitempty"`
 	Deliveries        []obsbackend.TelemetryDelivery `json:"deliveries,omitzero"`
 }
@@ -349,14 +357,21 @@ func statusFreshness(ctx context.Context, b obsbackend.Backend, n obsbackend.Nar
 	look := max(statusFreshnessLookback, n.Range.To.Sub(n.Range.From))
 	fn := obsbackend.Narrow{Range: obsbackend.Range{From: n.Range.To.Add(-look), To: n.Range.To}, Services: n.Services}
 	t := &obsStatusTelemetry{Lookback: look.String()}
-	logs, lerr := b.Logs(ctx, obsbackend.LogsRequest{Narrow: fn, Limit: 1})
-	if lerr == nil && len(logs.Logs) > 0 {
-		t.LastLogAt = logs.Logs[0].Time
-	}
-	traces, terr := b.Traces(ctx, obsbackend.TracesRequest{Narrow: fn, Limit: 1})
-	if terr == nil && len(traces.Traces) > 0 {
-		t.LastSpanAt = traces.Traces[0].Start
-	}
+	var lerr, terr error
+	t.LastLogAt, lerr = newestWithin(fn, func(n obsbackend.Narrow) (time.Time, bool, error) {
+		logs, err := b.Logs(ctx, obsbackend.LogsRequest{Narrow: n, Limit: 1})
+		if err != nil || len(logs.Logs) == 0 {
+			return time.Time{}, false, err
+		}
+		return logs.Logs[0].Time, true, nil
+	})
+	t.LastSpanAt, terr = newestWithin(fn, func(n obsbackend.Narrow) (time.Time, bool, error) {
+		traces, err := b.Traces(ctx, obsbackend.TracesRequest{Narrow: n, Limit: 1})
+		if err != nil || len(traces.Traces) == 0 {
+			return time.Time{}, false, err
+		}
+		return traces.Traces[0].Start, true, nil
+	})
 	switch {
 	case lerr != nil && terr != nil:
 		return nil, nil, lerr
@@ -366,6 +381,21 @@ func statusFreshness(ctx context.Context, b obsbackend.Backend, n obsbackend.Nar
 		return t, []string{fmt.Sprintf("%s: the newest span is unknown: %v", statusTelemetry, terr)}, nil
 	}
 	return t, nil, nil
+}
+
+// newestWithin asks read for the newest record over the last
+// statusFreshnessProbe of fn first, and over all of fn only when that probe
+// found nothing (or failed: a failing probe says nothing about the wider read).
+func newestWithin(fn obsbackend.Narrow, read func(obsbackend.Narrow) (time.Time, bool, error)) (time.Time, error) {
+	if fn.Range.To.Sub(fn.Range.From) > statusFreshnessProbe {
+		probe := fn
+		probe.Range.From = fn.Range.To.Add(-statusFreshnessProbe)
+		if at, ok, err := read(probe); err == nil && ok {
+			return at, nil
+		}
+	}
+	at, _, err := read(fn)
+	return at, err
 }
 
 // mergeStatusPart copies what one section read into doc. Sections fill
@@ -416,6 +446,17 @@ func statusSuggestions(env string, doc obsStatusDoc) []string {
 	}
 	if r := doc.CurrentRelease; r != nil && r.PromotionID != "" {
 		cmds = append(cmds, obsout.Command("forge", "obs", "check", env, "--promotion", r.PromotionID))
+	}
+	// The logs behind the longest-firing alert, narrowed to its subject, and
+	// the workloads view (restarts, crash loops, failed jobs).
+	for _, a := range doc.Alerts {
+		if a.State == obsbackend.AlertFiring {
+			if ns := a.Labels["namespace"]; ns != "" {
+				cmds = append(cmds, workloadLogsCommand(env, "1h", ns, firstNonEmptyString(a.Labels["workload"], a.Labels["job"], a.Labels["deployment"])))
+			}
+			cmds = append(cmds, obsout.Command("forge", "obs", "workloads", env))
+			break
+		}
 	}
 	return obsout.Suggest(cmds...)
 }
@@ -516,8 +557,16 @@ func writeStatusTelemetry(w io.Writer, now time.Time, t *obsStatusTelemetry) {
 			fmt.Fprintf(w, "telemetry: %s\n", strings.Join(parts, ", "))
 		}
 	}
-	if t.DeliveriesEnabled != nil && !*t.DeliveriesEnabled {
-		fmt.Fprintln(w, "telemetry token: the control plane's delivery reconciler is off; nothing keeps the token valid")
+	// THE DELIVERY RECONCILER ONLY SERVES DECLARED SECRETS. It writes the
+	// token into a forge.ControlPlaneSecret on a cluster the env CONNECTED.
+	// A hosted env's own token is minted and renewed by the platform's
+	// workload operator and is not a delivery. So the reconciler being off
+	// is news only to an env that declared one; for any other env it says
+	// nothing about the token. Saying "nothing keeps the token valid" there
+	// was false, and alarming.
+	if t.DeliveriesEnabled != nil && !*t.DeliveriesEnabled && len(t.Deliveries) > 0 {
+		fmt.Fprintf(w, "telemetry token: %d declared Secret(s) on connected clusters are not delivered: "+
+			"the control plane's external delivery reconciler is off, so nothing writes or renews them\n", len(t.Deliveries))
 	}
 	for _, dl := range t.Deliveries {
 		if dl.State == obsbackend.DeliveryDelivered || dl.State == obsbackend.DeliveryWithdrawn {

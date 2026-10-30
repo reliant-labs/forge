@@ -130,6 +130,24 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 cd "$REPO_ROOT"
 
+# ── 2a. --commit: release a green commit of main, not its tip ──────
+if [ -n "$COMMIT" ]; then
+  git fetch -q origin "$BRANCH"
+  COMMIT="$(git rev-parse --verify "$COMMIT^{commit}")"
+  if ! git merge-base --is-ancestor "$COMMIT" "origin/$BRANCH"; then
+    echo "error: --commit $COMMIT is not on origin/$BRANCH" >&2
+    exit 1
+  fi
+  # A private detached worktree, never `git checkout` here: this script is
+  # being read by bash as it runs, and checking out an older commit would
+  # swap the file under it mid-run.
+  REPO_ROOT="$(mktemp -d)/forge-$COMMIT"
+  git worktree add -q --detach "$REPO_ROOT" "$COMMIT"
+  cd "$REPO_ROOT"
+  echo "→ releasing $COMMIT in $REPO_ROOT (origin/$BRANCH is $(git rev-parse --short "origin/$BRANCH"))"
+fi
+
+
 if [ ! -f go.mod ]; then
   echo "error: $REPO_ROOT/go.mod not found — not a forge repo checkout?" >&2
   exit 1
@@ -198,18 +216,6 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "error: working tree is not clean; commit or set aside your changes before releasing" >&2
   git status --short >&2
   exit 1
-fi
-
-# ── 3b. --commit: release a green commit of main, not its tip ──────
-if [ -n "$COMMIT" ]; then
-  git fetch -q origin "$BRANCH"
-  COMMIT="$(git rev-parse --verify "$COMMIT^{commit}")"
-  if ! git merge-base --is-ancestor "$COMMIT" "origin/$BRANCH"; then
-    echo "error: --commit $COMMIT is not on origin/$BRANCH" >&2
-    exit 1
-  fi
-  git checkout -q --detach "$COMMIT"
-  echo "→ releasing $COMMIT (origin/$BRANCH is $(git rev-parse --short "origin/$BRANCH"))"
 fi
 
 # ── 4. The tag may not already exist ────────────────────────────────
@@ -523,7 +529,11 @@ if [ "$DRY_RUN" = "1" ]; then
   fi
   echo "DRY RUN: would attach: $(for f in "${ASSET_FILES[@]}"; do basename "$f"; done | tr '\n' ' ')"
   echo "DRY RUN: would tag $RELEASE_TAG at that commit"
-  echo "DRY RUN: would push:   git push --atomic origin <release commit>:refs/heads/$BRANCH refs/tags/$RELEASE_TAG"
+  if [ -n "$COMMIT" ]; then
+    echo "DRY RUN: would push:   git push --atomic origin refs/tags/$RELEASE_TAG (at $COMMIT) <release commit>:refs/heads/release/$VERSION, then open + auto-merge that PR"
+  else
+    echo "DRY RUN: would push:   git push --atomic origin <release commit>:refs/heads/$BRANCH refs/tags/$RELEASE_TAG"
+  fi
   echo ""
   echo "DRY RUN: restoring the working tree; no commit, tag or push was created."
   exit 0
@@ -558,8 +568,9 @@ if [ -n "$COMMIT" ]; then
   # The tag names the green commit; the release commit becomes a PR.
   RELEASE_SHA="$COMMIT"
   git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
-  # Publish only while this release provably still holds the lock (release-lock.sh).
-  release_lock_assert || exit 1
+  # Publish only while this release provably still holds the lock (release-lock.sh);
+  # a refusal leaves no local tag behind (see the push below).
+  release_lock_assert || { git tag -d "$RELEASE_TAG" >/dev/null; exit 1; }
   git push --atomic origin "refs/tags/$RELEASE_TAG" "HEAD:refs/heads/release/$VERSION"
   "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "release/$VERSION" \
     --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT." &&
@@ -582,9 +593,24 @@ echo "→ pushing atomically (branch + tag, all-or-nothing)"
 # checkout whose `main` lags origin, it pushed a stale tip; the remote rejected
 # it as non-fast-forward and the atomic push dropped the tag with it (v0.1.18
 # hit exactly this).
+#
+# A refused push deletes the local tag this run just made (step 4 proved it did
+# not exist before). Otherwise a cutter that lost a race leaves its own tag
+# object under refs/tags/, and every git worktree of a checkout shares that
+# namespace. On the release machine a losing v1.0.5 cut left a second v1.0.5 tag
+# in the shared forge checkout, so every later `git fetch --tags` there failed
+# with "would clobber existing tag" and the next release could not start (forge#1524).
 # Publish only while this release provably still holds the lock (release-lock.sh).
-release_lock_assert || exit 1
-git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"
+if ! release_lock_assert; then
+  git tag -d "$RELEASE_TAG" >/dev/null
+  exit 1
+fi
+if ! git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"; then
+  git tag -d "$RELEASE_TAG" >/dev/null
+  echo "error: the push was refused, so nothing was released; deleted the local tag $RELEASE_TAG" >&2
+  echo "       (if origin now has $RELEASE_TAG, another cut won the race: fetch it, don't re-cut)" >&2
+  exit 1
+fi
 fi
 
 echo ""

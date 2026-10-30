@@ -48,7 +48,7 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 	// A source-built frontend has its own immutable source slot. Containerized
 	// frontends already appear as workloads, never infer them from repository.
 	for _, fe := range e.Frontends {
-		c := release.Consumer{Key: release.ConsumerKey{Cluster: "frontend", Workload: fe.Name}, Slots: []string{"frontend"}, DependenciesDeclared: fe.ReleaseDependencies != nil}
+		c := release.Consumer{Key: compositionFrontendKey(fe), Slots: []string{"frontend"}, DependenciesDeclared: fe.ReleaseDependencies != nil}
 		out = append(out, c)
 	}
 	for _, m := range e.ReleaseManifestConsumers {
@@ -111,6 +111,23 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 		}
 	}
 	return out, nil
+}
+
+// snapshotFrontendCluster keys a frontend forge publishes itself (Firebase,
+// bucket, build-only): its output is outside the bundle, so it has no sealed
+// destination.
+const snapshotFrontendCluster = "frontend"
+
+// compositionFrontendKey is a frontend's consumer identity, and the one rule
+// every composition reader keys frontends by. A hosted frontend's sealed
+// record (its StaticSite) is in the hosted tree (hostedBundleObjects), so it
+// is keyed there, as a hosted workload is; the snapshot inventory then finds
+// that record's destination declared.
+func compositionFrontendKey(fe FrontendEntity) release.ConsumerKey {
+	if frontendIsHosted(fe) {
+		return release.ConsumerKey{Cluster: release.BundleHostedCluster, Workload: fe.Name}
+	}
+	return release.ConsumerKey{Cluster: snapshotFrontendCluster, Workload: fe.Name}
 }
 
 // compositionDependencyKeys retains every matching runtime slot: callers must

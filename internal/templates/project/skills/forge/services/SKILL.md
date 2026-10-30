@@ -87,9 +87,12 @@ Follow this sequence every time you scaffold a new component:
 
 ## Deploying it: declared once, bound per env
 
-`forge scaffold service|worker|operator|binary` appends the workload to
-`deploy/kcl/workloads.k` — build, the component's subcommand in `args`, the
-`http` port for a service. Every env — dev (a host process under air, hot
+`forge scaffold operator|binary` appends the workload to
+`deploy/kcl/workloads.k` — build, the component's subcommand in `args`. A
+service or worker on the composition graph gets NO workload of its own: the
+binary has no command per service or worker (see "Commands are roots" below),
+so a stanza with `args = ["<service>"]` would crash-loop on "unknown command",
+and `forge lint` warns about one (`component-drift/no-such-command`). Every env — dev (a host process under air, hot
 reload) and staging/prod (hosted on Reliant as scaffolded) — runs every
 service and worker in ONE workload, `_api`: the binary's `server`, every
 service on one Connect mux, so the browser reaches them all at one origin. A

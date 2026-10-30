@@ -176,6 +176,8 @@ type BundleDoc struct {
 	Pins         BundlePins `json:"pins"`
 	Provenance   Provenance `json:"provenance"`
 	Shape        Shape      `json:"shape"`
+	// PlacementPrerequisites is sealed dependency evidence; absent is unknown.
+	PlacementPrerequisites *PlacementPrerequisites `json:"placement_prerequisites,omitempty"`
 	// Objects describes Shape.Objects for reading — a summary line and a
 	// digest per section of each ([ObjectSummary]) — so two bundles can say
 	// what changed between them without either's manifests. Beside the shape
@@ -287,6 +289,9 @@ func (d BundleDoc) Validate() error {
 		return fmt.Errorf("bundle: %w", err)
 	}
 	if err := d.Shape.Validate(); err != nil {
+		return fmt.Errorf("bundle: %w", err)
+	}
+	if err := d.PlacementPrerequisites.Validate(); err != nil {
 		return fmt.Errorf("bundle: %w", err)
 	}
 	if err := ValidateObjectSummaries(d.Shape, d.Objects); err != nil {

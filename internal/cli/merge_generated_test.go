@@ -671,11 +671,10 @@ func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T
 // lines, and a line both changed takes this side for the next generate to
 // render over — never a conflict a person resolves.
 func TestMergeGenerated_ServiceCatalogMergesWithoutConflict(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: app\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if testing.Short() {
+		t.Skip("-short: builds a real git merge in progress; runs in task test")
 	}
-	t.Chdir(dir)
+	catalogMergeRepo(t, false)
 	const rel = "gen/forge_service_catalog.json"
 	lines := func(a, b string) []byte {
 		return []byte("{\n  \"services\": [\n    \"" + a + "\",\n    \"x1\",\n    \"x2\",\n    \"x3\",\n    \"" + b + "\"\n  ]\n}\n")
@@ -706,5 +705,67 @@ func TestMergeGenerated_DescriptorConflictKeepsThisSide(t *testing.T) {
 	merged, clean, note, err := mergeGeneratedPath(context.Background(), "gen/forge_descriptor.json", body("base"), ours, body("theirs"), 7)
 	if err != nil || !clean || string(merged) != string(ours) || note == "" {
 		t.Fatalf("descriptor conflict: clean=%v err=%v note=%q\n%s", clean, err, note, merged)
+	}
+}
+
+// catalogMergeRepo is a repository with a merge in progress (MERGE_HEAD set),
+// so the driver can read both sides' ownership records; theirsDisowns makes
+// the incoming side record gen/forge_service_catalog.json as disowned.
+func catalogMergeRepo(t *testing.T, theirsDisowns bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	write("forge.yaml", "name: app\n")
+	write("a.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-qm", "base")
+	git("checkout", "-qb", "theirs")
+	write("b.txt", "theirs\n")
+	if theirsDisowns {
+		write(".forge/disowned.json", `{"files":{"gen/forge_service_catalog.json":{"reason":"ours now"}}}`+"\n")
+	}
+	git("add", "-A")
+	git("commit", "-qm", "theirs")
+	git("checkout", "-q", "main")
+	write("c.txt", "ours\n")
+	git("add", "-A")
+	git("commit", "-qm", "ours")
+	git("merge", "--no-commit", "--no-ff", "theirs")
+	t.Chdir(dir)
+	return dir
+}
+
+// A catalog the incoming side disowned holds a person's content: a conflict
+// with this side's render is left for a person, never resolved to ours.
+func TestMergeGenerated_DisownedCatalogKeepsTheConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short: builds a real git merge in progress; runs in task test")
+	}
+	catalogMergeRepo(t, true)
+	base := []byte("{\n  \"v\": \"base\"\n}\n")
+	merged, clean, _, err := mergeGeneratedPath(context.Background(), "gen/forge_service_catalog.json", base,
+		[]byte("{\n  \"v\": \"regenerated\"\n}\n"), []byte("{\n  \"v\": \"customized\"\n}\n"), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean || !strings.Contains(string(merged), "customized") {
+		t.Fatalf("a disowned catalog's conflict was resolved away: clean=%v\n%s", clean, merged)
 	}
 }

@@ -343,7 +343,12 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 		// rewritten whole on every generate and certified by nothing
 		// (checksums.Uncertified): a clean merge stands, a conflict takes
 		// this side, and the next generate renders both sides' inputs.
-		if rel, ok := projectRelative(relPath); ok && (checksums.Uncertified(rel) || rel == "gen/forge_descriptor.json") && !clean {
+		//
+		// Only while forge owns it on both sides: a side that disowned the
+		// catalog (the descriptor is never disownable) holds a person's
+		// content, so the conflict stays for a person.
+		if rel, ok := projectRelative(relPath); ok && !clean &&
+			(rel == "gen/forge_descriptor.json" || (checksums.Uncertified(rel) && forgeOwnsOnBothSides(relPath, rel))) {
 			return ours, true, keep, nil
 		}
 	case !clean && checksums.Verify(ours) == checksums.Pristine && checksums.Verify(theirs) == checksums.Pristine:
@@ -378,6 +383,54 @@ func unstampableRenderOfOurs(relPath string, ours []byte) bool {
 	}
 	recorded, ok := h.Files[rel]
 	return ok && recorded == checksums.BodyHash(ours)
+}
+
+// forgeOwnsOnBothSides reports whether neither side of the merge in progress
+// records rel (project-relative) in .forge/disowned.json. This side is HEAD;
+// the other is the commit git is merging, rebasing, cherry-picking or
+// reverting. When the other side cannot be named, or a side's record cannot be
+// read, ownership is unknown and the answer is false: the conflict stays.
+func forgeOwnsOnBothSides(relPath, rel string) bool {
+	prefix := strings.TrimSuffix(filepath.ToSlash(relPath), rel)
+	other := ""
+	for _, ref := range []string{"MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"} {
+		if exec.CommandContext(context.Background(), "git", "rev-parse", "-q", "--verify", ref+"^{commit}").Run() == nil {
+			other = ref
+			break
+		}
+	}
+	if other == "" {
+		return false
+	}
+	for _, side := range []string{"HEAD", other} {
+		owned, ok := disownedAt(side, prefix, rel)
+		if !ok || owned {
+			return false
+		}
+	}
+	return true
+}
+
+// disownedAt reports whether rel is disowned in commit's
+// <prefix>.forge/disowned.json. A commit with no such file disowns nothing;
+// ok is false when the record exists but cannot be read.
+func disownedAt(commit, prefix, rel string) (owned, ok bool) {
+	spec := commit + ":" + prefix + checksums.DisownedFile
+	if exec.CommandContext(context.Background(), "git", "cat-file", "-e", spec).Run() != nil {
+		return false, true
+	}
+	data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", spec).Output()
+	if err != nil {
+		return false, false
+	}
+	var d struct {
+		Files map[string]json.RawMessage `json:"files"`
+	}
+	if json.Unmarshal(data, &d) != nil {
+		return false, false
+	}
+	_, owned = d.Files[rel]
+	return owned, true
 }
 
 // projectRelative is relPath (relative to the top of the work tree, where git

@@ -225,8 +225,16 @@ type Process struct {
 	Root         string   `json:"root,omitempty"`
 	ServiceNames []string `json:"serviceNames"`
 	Workloads    []string `json:"workloads"`
-	RPCServices  []string `json:"rpcServices,omitempty"`
-	HasDatabase  bool     `json:"hasDatabase,omitempty"`
+	// WorkloadServices maps each workload of a JOB or cron to every service.name
+	// it reports (its OTEL_SERVICE_NAME, else its own name; one workload name
+	// can report a different one in each environment). ServiceNames and
+	// Workloads are unordered unions over every workload the process groups, so
+	// which name belongs to which workload is only here. Empty for other kinds
+	// and when not known; the Jobs dashboard then treats every service name as
+	// every workload's.
+	WorkloadServices map[string][]string `json:"workloadServices,omitempty"`
+	RPCServices      []string            `json:"rpcServices,omitempty"`
+	HasDatabase      bool                `json:"hasDatabase,omitempty"`
 	// CPULimit and MemoryLimit say the workload declares that resource limit,
 	// the only case the node agent's *_limit_utilization series exist.
 	CPULimit    bool `json:"cpuLimit,omitempty"`

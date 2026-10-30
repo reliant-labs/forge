@@ -287,7 +287,7 @@ func TestFrontendIdentitiesFollowWhatTheEnvironmentServes(t *testing.T) {
 	}
 	// An in-repo frontend reports <project>-<name>; a sourced one that declares
 	// no telemetry.service_name is guessed under both candidate names.
-	if want := []string{"control-plane-reliant-web", "reliant-web", "control-plane-site"}; !reflect.DeepEqual(services, want) {
+	if want := []string{"control-plane-reliant-web", "control-plane-site", "reliant-web"}; !reflect.DeepEqual(services, want) {
 		t.Errorf("services = %v, want %v", services, want)
 	}
 	n, s := frontendIdentities("p", nil)
@@ -415,7 +415,7 @@ func TestSourcedFrontendReportsTheSourceRepositorysTelemetryName(t *testing.T) {
 	if !reflect.DeepEqual(names, []string{"store", "admin"}) {
 		t.Errorf("names = %v", names)
 	}
-	if want := []string{"shop-web", "platform-admin"}; !reflect.DeepEqual(services, want) {
+	if want := []string{"platform-admin", "shop-web"}; !reflect.DeepEqual(services, want) {
 		t.Fatalf("services = %v, want %v: a declared telemetry name is used exactly, never the deployment's", services, want)
 	}
 
@@ -449,5 +449,95 @@ func TestSourcedFrontendReportsTheSourceRepositorysTelemetryName(t *testing.T) {
 		if strings.Contains(string(b), wrong) {
 			t.Errorf("the frontend dashboard is scoped to %s, which the SDK never reports", wrong)
 		}
+	}
+}
+
+// One frontend name can report a different service.name in each environment:
+// in-repo in dev (<project>-<name>), built from another repository in prod
+// (that repository's baked name). The persisted alert input unions every
+// environment's service names; the first environment must not win by having
+// claimed the deployment name, in either order.
+func TestFrontendIdentitiesUnionServiceNamesAcrossEnvironments(t *testing.T) {
+	inRepo := FrontendEntity{Name: "web", Type: "vite-spa"}
+	sourced := FrontendEntity{
+		Name: "web", Type: "vite-spa", Source: &config.GitSource{Repo: "github.com/acme/shop", Ref: "v1.0.0"},
+		Telemetry: &FrontendTelemetryEntity{ServiceName: "shop-web"},
+	}
+	for _, tc := range []struct {
+		order string
+		in    []FrontendEntity
+		want  []string
+	}{
+		{"dev then prod", []FrontendEntity{inRepo, sourced}, []string{"platform-web", "shop-web"}},
+		{"prod then dev", []FrontendEntity{sourced, inRepo}, []string{"platform-web", "shop-web"}},
+	} {
+		names, services := frontendIdentities("platform", tc.in)
+		if !reflect.DeepEqual(names, []string{"web"}) {
+			t.Errorf("%s: names = %v, want one display name", tc.order, names)
+		}
+		if !reflect.DeepEqual(services, tc.want) {
+			t.Errorf("%s: services = %v, want %v: every environment's browser service must be kept", tc.order, services, tc.want)
+		}
+	}
+	// Identical identities across environments collapse.
+	if _, services := frontendIdentities("platform", []FrontendEntity{inRepo, inRepo, sourced, sourced}); !reflect.DeepEqual(services, []string{"platform-web", "shop-web"}) {
+		t.Errorf("repeated identities = %v", services)
+	}
+	// And the alert input derived from them covers both.
+	got := obsdash.AlertInputOf(obsdash.Input{Project: "platform", Frontends: []string{"web"}, FrontendServices: []string{"platform-web", "shop-web"}})
+	if !reflect.DeepEqual(got.FrontendServices, []string{"platform-web", "shop-web"}) {
+		t.Errorf("alert input services = %v", got.FrontendServices)
+	}
+}
+
+// A limit is declared per WORKLOAD, and a process groups one command under
+// different workload names in different environments. The cross-environment
+// identities must keep each workload's own declaration, not the OR over the
+// process: prod's CPU limit says nothing about dev's. A job's workloads keep
+// their own service.names too (one reports a custom OTEL_SERVICE_NAME).
+func TestDeployedIdentitiesKeepPerWorkloadFacts(t *testing.T) {
+	dir := t.TempDir()
+	workload := func(name, kind string, cpuLimit int64, env ...deployv1.EnvVar) WorkloadEntity {
+		w := WorkloadEntity{Name: name, Kind: kind, Build: BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/app"}},
+			Spec: deployv1.WorkloadSpec{Args: []string{"server"}, Env: env}, Runtime: RuntimeEntity{Type: RuntimeCluster}}
+		w.Spec.Resources.CPULimitMillicores = cpuLimit
+		return w
+	}
+	prod, dev := workload("app", "service", 500), workload("app-dev", "service", 0)
+	procs, err := processesForWorkloads("app", nil, []WorkloadEntity{prod, dev})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(procs) != 1 || !procs[0].CPULimit {
+		t.Fatalf("app and app-dev run one command and are one process whose limit is the OR: %+v", procs)
+	}
+	ctx := &pipelineContext{AbsPath: dir, ProjectDir: dir, Cfg: &config.ProjectConfig{Name: "app"}, graphRootsSet: true}
+	id, err := deployedIdentities(ctx, []WorkloadEntity{prod, dev})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(id.CPULimitWorkloads, []string{"app"}) {
+		t.Errorf("CPU-limited workloads = %v, want only app: app-dev declares none", id.CPULimitWorkloads)
+	}
+	if !reflect.DeepEqual(id.Workloads, []string{"app", "app-dev"}) {
+		t.Errorf("workloads = %v", id.Workloads)
+	}
+
+	migrate := workload("migrate", "job", 0, deployv1.EnvVar{Name: "OTEL_SERVICE_NAME", Value: "db-migrator"})
+	migrateDev := workload("migrate-dev", "job", 0)
+	procs, err = processesForWorkloads("app", nil, []WorkloadEntity{migrate, migrateDev})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(procs) != 1 {
+		t.Fatalf("one command, one process: %+v", procs)
+	}
+	want := map[string][]string{"migrate": {"db-migrator"}, "migrate-dev": {"migrate-dev"}}
+	if got := procs[0].WorkloadServices; !reflect.DeepEqual(got, want) {
+		t.Errorf("per-workload services = %v, want %v", got, want)
+	}
+	// A long-running process records none: only the Jobs dashboard needs the pairing.
+	if procs, _ = processesForWorkloads("app", nil, []WorkloadEntity{prod}); procs[0].WorkloadServices != nil {
+		t.Errorf("a service records no per-workload services: %v", procs[0].WorkloadServices)
 	}
 }

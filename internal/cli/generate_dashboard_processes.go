@@ -51,7 +51,7 @@ func dashboardSpecForEntities(projectDir string, entities *KCLEntities) (*obsdas
 }
 
 // frontendIdentities are the frontends a set of rendered frontends serve and
-// the service.name each reports.
+// the service.names they report.
 //
 // An in-repo frontend reports naming.FrontendServiceName(project, name) (its
 // otel_gen.ts). A frontend built from another repository (Source set) reports
@@ -61,23 +61,41 @@ func dashboardSpecForEntities(projectDir string, entities *KCLEntities) (*obsdas
 // the frontend declares it (telemetry.service_name), and that exact name is
 // used. One that declares none is guessed: its deployed name and the project
 // derivation, which match only when the source repository happens to agree.
+//
+// frontends may come from several environments, and one deployment name can
+// report a different service.name in each (in-repo in dev, sourced in prod).
+// The two lists are therefore independent: names are the deployment names,
+// deduplicated for display in first-seen order, and services are the sorted
+// union of every entry's resolved names, so no environment's browser service
+// is dropped because another environment already declared the same frontend
+// name, and the result does not depend on the order environments are read in.
 func frontendIdentities(project string, frontends []FrontendEntity) (names, services []string) {
-	seen := map[string]bool{}
+	seenName, seenService := map[string]bool{}, map[string]bool{}
 	for _, fe := range frontends {
-		if fe.Type == "react-native" || seen[fe.Name] {
+		if fe.Type == "react-native" {
 			continue
 		}
-		seen[fe.Name] = true
-		names = append(names, fe.Name)
+		if !seenName[fe.Name] {
+			seenName[fe.Name] = true
+			names = append(names, fe.Name)
+		}
+		var resolved []string
 		switch {
 		case fe.Source == nil:
-			services = append(services, naming.FrontendServiceName(project, fe.Name))
+			resolved = []string{naming.FrontendServiceName(project, fe.Name)}
 		case fe.Telemetry != nil && fe.Telemetry.ServiceName != "":
-			services = append(services, fe.Telemetry.ServiceName)
+			resolved = []string{fe.Telemetry.ServiceName}
 		default:
-			services = append(services, naming.FrontendServiceName(project, fe.Name), fe.Name)
+			resolved = []string{naming.FrontendServiceName(project, fe.Name), fe.Name}
+		}
+		for _, svc := range resolved {
+			if !seenService[svc] {
+				seenService[svc] = true
+				services = append(services, svc)
+			}
 		}
 	}
+	sort.Strings(services)
 	return names, services
 }
 
@@ -150,6 +168,7 @@ func deployedIdentities(ctx *pipelineContext, workloads []WorkloadEntity) (obsda
 		}
 	}
 	var id obsdash.Identities
+	longRunning := map[string]bool{}
 	for _, p := range processes {
 		if p.IsJob() {
 			continue
@@ -159,11 +178,23 @@ func deployedIdentities(ctx *pipelineContext, workloads []WorkloadEntity) (obsda
 		if p.ServesRPC() {
 			id.RPCServiceNames = append(id.RPCServiceNames, p.ServiceNames...)
 		}
-		if p.CPULimit {
-			id.CPULimitWorkloads = append(id.CPULimitWorkloads, p.Workloads...)
+		for _, w := range p.Workloads {
+			longRunning[w] = true
 		}
-		if p.MemoryLimit {
-			id.MemoryLimitWorkloads = append(id.MemoryLimitWorkloads, p.Workloads...)
+	}
+	// A limit is declared per WORKLOAD, and a process groups the same command
+	// under different workload names in different environments (a limit in prod
+	// says nothing about dev's). Read each workload's own declaration instead of
+	// the group's OR.
+	for _, w := range workloads {
+		if !longRunning[w.Name] {
+			continue
+		}
+		if w.Spec.Resources.CPULimitMillicores > 0 {
+			id.CPULimitWorkloads = append(id.CPULimitWorkloads, w.Name)
+		}
+		if w.Spec.Resources.MemoryLimitBytes > 0 {
+			id.MemoryLimitWorkloads = append(id.MemoryLimitWorkloads, w.Name)
 		}
 	}
 	id.ServiceNames, id.Workloads = uniqueSorted(id.ServiceNames), uniqueSorted(id.Workloads)
@@ -273,6 +304,12 @@ func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads 
 		}
 		p.ServiceNames = append(p.ServiceNames, service)
 		p.Workloads = append(p.Workloads, w.Name)
+		if p.IsJob() {
+			if p.WorkloadServices == nil {
+				p.WorkloadServices = map[string][]string{}
+			}
+			p.WorkloadServices[w.Name] = append(p.WorkloadServices[w.Name], service)
+		}
 	}
 	var out []obsdash.Process
 	for _, key := range order {
@@ -280,6 +317,9 @@ func processesForWorkloads(primary string, roots []codegen.GraphRoot, workloads 
 		p := g.p
 		p.ServiceNames = uniqueSorted(p.ServiceNames)
 		p.Workloads = uniqueSorted(p.Workloads)
+		for w, svcs := range p.WorkloadServices {
+			p.WorkloadServices[w] = uniqueSorted(svcs)
+		}
 		p.Name = p.Workloads[0]
 		for old := range g.legacy {
 			if old != p.Name {

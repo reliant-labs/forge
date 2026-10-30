@@ -27,24 +27,8 @@ var jobFailureReasons = []string{"BackoffLimitExceeded", "DeadlineExceeded", "Po
 // "app" does not claim the runs of a job named "app-worker".
 const jobRunSuffix = `-[0-9a-f]{6,12}`
 
-// fieldObjectKind is the kind of the object a Kubernetes event is about.
-const fieldObjectKind = "resource.attr.k8s.object.kind"
-
 // maxPredicateRegex is the longest regex the spec accepts.
 const maxPredicateRegex = 256
-
-// jobRunScope selects the events of the named jobs' runs: Job objects whose
-// name is a forge job name plus a run suffix. When the joined names would be
-// longer than a spec regex may be, it selects every Job object of the
-// environment instead (a project's namespace holds only its own jobs).
-func jobRunScope(names []string) []Predicate {
-	scope := []Predicate{{Field: fieldObjectKind, Op: OpEq, Value: "Job"}}
-	re := "^(" + strings.Join(quoted(names), "|") + ")" + jobRunSuffix + "$"
-	if len(re) <= maxPredicateRegex {
-		scope = append(scope, Predicate{Field: fieldWorkload, Op: OpMatch, Value: re})
-	}
-	return scope
-}
 
 // jobIdentityRegexes are the regexes that select the telemetry of the named
 // jobs, as many as keep each within a spec regex's length.
@@ -117,34 +101,35 @@ func BuildJobs(project string, jobs []Process) Dashboard {
 	d.Sections = []Section{{ID: "runs", Title: "Runs"}, {ID: "health", Title: "Health"}, {ID: "logs", Title: "Logs"}}
 	d.Replaces = jobReplaces(jobs)
 
-	runScope := jobRunScope(names)
-	reasonIs := func(reasons ...string) Predicate {
-		return Predicate{Field: fieldEventWhy, Op: OpIn, Values: reasons}
-	}
-	allReasons := append([]string{jobEventCreated, jobEventCompleted}, jobFailureReasons...)
-
 	const perRun = " A run is one Kubernetes Job in one environment, however many pods it created."
+	const selection = " The service selector narrows it to that job."
 	d.Panels = append(d.Panels,
 		Panel{ID: "jobs-summary", Section: "runs", Title: "Runs per job",
-			Description: "Per job over the selected range: runs seen, succeeded and failed, the latest run's start, and run durations (seconds, start to completion). One row per forge job." + perRun,
-			Kind:        KindSQL, SQL: jobsSummarySQL(names), Width: 24, Height: 8},
+			Description: "Per job over the selected range: runs seen, succeeded and failed, the latest run's start, and run durations (seconds, start to completion). One row per forge job." + perRun + selection,
+			Kind:        KindSQL, SQL: jobsSummarySQL(jobs), Width: 24, Height: 8},
 		Panel{ID: "runs-totals", Section: "runs", Title: "Runs in range",
-			Description: "Runs started in the selected range, and how many of the runs seen in it succeeded and failed, across every job." + perRun,
-			Kind:        KindSQL, SQL: jobsTotalsSQL(names), Width: 24, Height: 4},
+			Description: "Runs started in the selected range, and how many of the runs seen in it succeeded and failed, across every job." + perRun + selection,
+			Kind:        KindSQL, SQL: jobsTotalsSQL(jobs), Width: 24, Height: 4},
 		Panel{ID: "runs-by-job", Section: "runs", Title: "Runs started by job",
-			Description: "Runs started over time, one line per job." + perRun,
-			Kind:        KindSQL, SQL: jobsByJobSQL(names, "started", "started > 0"), Width: 12, Height: 7},
+			Description: "Runs started over time, one line per job." + perRun + selection,
+			Kind:        KindSQL, SQL: jobsByJobSQL(jobs, "started", "started > 0"), Width: 12, Height: 7},
 		Panel{ID: "failures-by-job", Section: "runs", Title: "Failed runs by job",
-			Description: "Runs that ended in failure over time, one line per job, at the time of the failure." + perRun,
-			Kind:        KindSQL, SQL: jobsByJobSQL(names, "failed_at", "failed"), Width: 12, Height: 7},
-		Panel{ID: "run-events", Section: "runs", Title: "Run events", Description: "Job create, completion and failure events, newest first.",
-			Kind: KindSearch, Signal: Logs, Where: scoped(runScope, reasonIs(allReasons...)),
-			Columns: []string{"timestamp", fieldWorkload, fieldEventWhy, "log.body"}, Width: 24, Height: 8},
+			Description: "Runs that ended in failure over time, one line per job, at the time of the failure." + perRun + selection,
+			Kind:        KindSQL, SQL: jobsByJobSQL(jobs, "failed_at", "failed"), Width: 12, Height: 7},
+		Panel{ID: "recent-runs", Section: "runs", Title: "Recent runs",
+			Description: "The newest runs, one row each: job, Kubernetes Job, environment, outcome (Completed, Running, or the failure reason such as BackoffLimitExceeded), start and duration in seconds." + perRun + selection,
+			Kind:        KindSQL, SQL: jobsRecentRunsSQL(jobs), Width: 24, Height: 8},
+		Panel{ID: "warning-events", Section: "health", Title: "Warning events by job",
+			Description: "Warning-type Kubernetes events of the jobs, over time, one line per job: the Job's own (a run that hit its backoff limit or deadline) and its pods' (failed image pulls, evictions, failed scheduling, back-offs)." + selection,
+			Kind:        KindSQL, SQL: jobsWarningsSQL(jobs), Width: 24, Height: 7},
 	)
 
-	// Restarts and warning events are read by the job's identity in every form
-	// it takes (see jobIdentityRegexes); a project with more jobs than one regex
-	// holds gets a panel per group.
+	// Container restarts are a metric keyed by the pod's workload name, which
+	// is the forge name forge puts in the app.kubernetes.io/name label (a
+	// label-less pod is named for its Job, so the run suffix is optional). The
+	// console narrows it by the selected service.name, which for a pod is that
+	// same workload name. A project with more jobs than one regex holds gets a
+	// panel per group.
 	var restarts Panel
 	for _, p := range BuildWorkloads(project).Panels {
 		if p.ID == "restarts" {
@@ -153,27 +138,76 @@ func BuildJobs(project string, jobs []Process) Dashboard {
 	}
 	identities := jobIdentityRegexes(names)
 	for i, re := range identities {
-		identity := Predicate{Field: fieldWorkload, Op: OpMatch, Value: re}
 		r := restarts
 		r.Section = "health"
-		r.Where = scoped([]Predicate{identity}, restarts.Where...)
-		w := Panel{ID: "warning-events", Section: "health", Title: "Warning events by job",
-			Description: "Warning-type Kubernetes events of the jobs and their pods: failed image pulls, evictions, failed scheduling, back-offs, and a run that hit its backoff limit or deadline.",
-			Kind:        KindLine, Signal: Logs,
-			Where:   []Predicate{identity, {Field: fieldEventType, Op: OpEq, Value: "Warning"}},
-			Series:  []Series{{Label: "warnings", Agg: AggCount}},
-			GroupBy: []string{fieldWorkload}, Unit: UnitCount, Width: 24, Height: 7}
+		r.Where = scoped([]Predicate{{Field: fieldWorkload, Op: OpMatch, Value: re}}, restarts.Where...)
 		if len(identities) > 1 {
 			r.ID, r.Title = fmt.Sprintf("%s-%d", r.ID, i+1), fmt.Sprintf("%s (%d of %d)", r.Title, i+1, len(identities))
-			w.ID, w.Title = fmt.Sprintf("%s-%d", w.ID, i+1), fmt.Sprintf("%s (%d of %d)", w.Title, i+1, len(identities))
 		}
-		d.Panels = append(d.Panels, r, w)
+		d.Panels = append(d.Panels, r)
 	}
 	d.Panels = append(d.Panels,
 		Panel{ID: "error-logs", Section: "logs", Title: "Error logs", Kind: KindSearch, Signal: Logs,
 			Where: scoped(identityScope(FieldService, jobServiceNames(jobs)), errorLogs), Columns: logColumns, Width: 24, Height: 8},
 	)
 	return d
+}
+
+// jobSQLScope is what the SQL panels share about the project's jobs: the
+// literal list of forge job names, and the predicate that applies the
+// dashboard's service selector ({services:Array(String)}, empty = every job).
+//
+// The selector holds service.names from the console's dropdown. For a job that
+// is its OTEL_SERVICE_NAME or, by default, its workload name, but the telemetry
+// that names a run differs per source: a pod's events and metrics carry the
+// bare forge name, a Job OBJECT's events carry the Job's own name (forge name
+// plus run suffix). The console would narrow a declarative panel by that
+// ServiceName and so show a different subset on each. The SQL panels therefore
+// resolve every row to its forge job first and select on that: a job is
+// selected by its forge name, by any service.name its workloads declare, or by
+// the name of the run itself.
+//
+// Literals are quoted: a service name comes from an environment variable.
+func jobSQLScope(jobs []Process) (list, selected string) {
+	names := jobNames(jobs)
+	q := make([]string, len(names))
+	for i, n := range names {
+		q[i] = sqlQuote(n)
+	}
+	list = "[" + strings.Join(q, ", ") + "]"
+	var aliases []string
+	seen := map[string]bool{}
+	add := func(workload, service string) {
+		pair := "(" + sqlQuote(workload) + ", " + sqlQuote(service) + ")"
+		if service != workload && !seen[pair] {
+			seen[pair] = true
+			aliases = append(aliases, pair)
+		}
+	}
+	for _, p := range jobs {
+		if len(p.WorkloadServices) > 0 {
+			for w, svcs := range p.WorkloadServices {
+				for _, svc := range svcs {
+					add(w, svc)
+				}
+			}
+			continue
+		}
+		// Pairing unknown: every service name of the process stands for each of
+		// its workloads.
+		for _, w := range p.Workloads {
+			for _, svc := range p.ServiceNames {
+				add(w, svc)
+			}
+		}
+	}
+	sort.Strings(aliases)
+	const sel = "{services:Array(String)}"
+	selected = "(empty(" + sel + ") OR has(" + sel + ", job) OR has(" + sel + ", run)"
+	if len(aliases) > 0 {
+		selected += " OR arrayExists(a -> a.1 = job AND has(" + sel + ", a.2), [" + strings.Join(aliases, ", ") + "])"
+	}
+	return list, selected + ")"
 }
 
 // jobExecutionsSQL is the subquery every run count is built on: one row per
@@ -205,22 +239,26 @@ func BuildJobs(project string, jobs []Process) Dashboard {
 //	            have one-second resolution).
 //
 // Only the events that bound a run are read (creates, Completed, the failure
-// reasons), so a Job that only shows other events in the range is no run.
+// reasons), so a Job that only shows other events in the range is no run. Rows
+// of other projects' Jobs are dropped, and the service selector is applied
+// (jobSQLScope).
 //
-// Columns: env, run (the Job's name), job (the forge name it maps back to, ”
-// for a Job that is not one of the project's), started, finished, failed_at
-// (DateTime64; the epoch when the event was not seen) and failed (UInt8). The
-// names are forge workload names (DNS labels), embedded as literals; the time
+// Columns: env, run (the Job's name), job (the forge name it maps back to),
+// started, finished, failed_at (DateTime64; the epoch when the event was not
+// seen), failure (the failure reason, ” if none) and failed (UInt8). The time
 // range and environments are the dashboard's own query parameters.
-func jobExecutionsSQL(names []string) string {
-	list := "['" + strings.Join(names, "', '") + "']"
+func jobExecutionsSQL(jobs []Process) string {
+	list, selected := jobSQLScope(jobs)
 	fail := strings.Join(jobFailureReasons, "', '")
 	terminal := "'" + jobEventCompleted + "', '" + fail + "'"
-	return fmt.Sprintf(`SELECT env, run,
+	return fmt.Sprintf(`SELECT env, run, job, started, finished, failed_at, failure, failed
+  FROM (
+  SELECT env, run,
          arrayFirst(n -> match(run, concat('^', n, '%[1]s$')), %[2]s) AS job,
          minIf(Timestamp, reason = '%[3]s') AS started,
          maxIf(Timestamp, reason = '%[4]s') AS finished,
          maxIf(Timestamp, reason IN ('%[5]s')) AS failed_at,
+         argMaxIf(reason, Timestamp, reason IN ('%[5]s')) AS failure,
          countIf(reason IN ('%[5]s')) > 0 AS failed
   FROM (
     SELECT Timestamp, env, run, uid, reason,
@@ -240,7 +278,9 @@ func jobExecutionsSQL(names []string) string {
       )
     )
   )
-  GROUP BY env, run, uid, generation`, jobRunSuffix, list, jobEventCreated, jobEventCompleted, fail, terminal)
+  GROUP BY env, run, uid, generation
+  )
+  WHERE job != '' AND %[7]s`, jobRunSuffix, list, jobEventCreated, jobEventCompleted, fail, terminal, selected)
 }
 
 // jobsSummarySQL is the per-job table: one row per forge job.
@@ -249,7 +289,7 @@ func jobExecutionsSQL(names []string) string {
 // after it failed. argMax skips rows whose argument is NULL and would return the
 // previous successful run's duration beside the newest run's start, so the
 // nullable value travels in a tuple (a tuple is never NULL).
-func jobsSummarySQL(names []string) string {
+func jobsSummarySQL(jobs []Process) string {
 	return `SELECT job,
        count() AS runs,
        countIf(finished > 0) AS succeeded,
@@ -259,9 +299,8 @@ func jobsSummarySQL(names []string) string {
        if(countIf(finished > 0 AND started > 0) = 0, NULL, round(avgIf(dateDiff('second', started, finished), finished > 0 AND started > 0), 1)) AS avg_duration_s,
        if(countIf(finished > 0 AND started > 0) = 0, NULL, maxIf(dateDiff('second', started, finished), finished > 0 AND started > 0)) AS max_duration_s
 FROM (
-  ` + jobExecutionsSQL(names) + `
+  ` + jobExecutionsSQL(jobs) + `
 )
-WHERE job != ''
 GROUP BY job
 ORDER BY last_started DESC, job
 `
@@ -269,29 +308,68 @@ ORDER BY last_started DESC, job
 
 // jobsTotalsSQL is one row for the whole project: executions created in the
 // range, and executions seen in it that completed and that failed.
-func jobsTotalsSQL(names []string) string {
+func jobsTotalsSQL(jobs []Process) string {
 	return `SELECT countIf(started > 0) AS runs_started,
        countIf(finished > 0) AS runs_succeeded,
        countIf(failed) AS runs_failed
 FROM (
-  ` + jobExecutionsSQL(names) + `
+  ` + jobExecutionsSQL(jobs) + `
 )
-WHERE job != ''
 `
 }
 
 // jobsByJobSQL is a time series of executions, one series per job: each
 // execution counts once, in the bucket of at (its creation, or its failure),
 // for the executions where cond holds.
-func jobsByJobSQL(names []string, at, cond string) string {
+func jobsByJobSQL(jobs []Process, at, cond string) string {
 	return `SELECT toStartOfInterval(` + at + `, toIntervalSecond({step:UInt32})) AS t, job, count() AS runs
 FROM (
-  ` + jobExecutionsSQL(names) + `
+  ` + jobExecutionsSQL(jobs) + `
 )
-WHERE job != '' AND ` + cond + `
+WHERE ` + cond + `
 GROUP BY t, job
 ORDER BY t, job
 `
+}
+
+// jobsRecentRunsSQL lists the newest executions, one row each. Its first
+// column is the job (a leading time column would make the console draw a time
+// series); the rest are group columns, and duration_s is the one value.
+func jobsRecentRunsSQL(jobs []Process) string {
+	return `SELECT job, run, env,
+       if(failed, failure, if(finished > 0, '` + jobEventCompleted + `', 'Running')) AS outcome,
+       if(started > 0, toString(started), '') AS started_at,
+       if(finished > 0 AND started > 0, dateDiff('second', started, finished), NULL) AS duration_s
+FROM (
+  ` + jobExecutionsSQL(jobs) + `
+)
+ORDER BY greatest(started, finished, failed_at) DESC, job, run
+LIMIT 50
+`
+}
+
+// jobsWarningsSQL is a time series of Warning-type Kubernetes events, one
+// series per job. A job's Warning events come from two kinds of object: the
+// Job itself (BackoffLimitExceeded and DeadlineExceeded are Warnings on the Job)
+// and its pods, whose events carry the bare forge name. The panel resolves
+// both to the forge job so the service selector (jobSQLScope) applies to them
+// alike.
+func jobsWarningsSQL(jobs []Process) string {
+	list, selected := jobSQLScope(jobs)
+	return fmt.Sprintf(`SELECT toStartOfInterval(Timestamp, toIntervalSecond({step:UInt32})) AS t, job, count() AS warnings
+FROM (
+  SELECT Timestamp, ResourceAttributes['k8s.workload.name'] AS run,
+         arrayFirst(n -> match(run, concat('^', n, '(%[1]s)?$')), %[2]s) AS job
+  FROM otel_logs
+  WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)}
+    AND LogAttributes['k8s.event.reason'] != ''
+    AND LogAttributes['k8s.event.type'] = 'Warning'
+    AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, ResourceAttributes['reliant.env.id']))
+)
+WHERE job != '' AND %[3]s
+GROUP BY t, job
+ORDER BY t, job
+`, jobRunSuffix, list, selected)
 }
 
 func jobNames(jobs []Process) []string {

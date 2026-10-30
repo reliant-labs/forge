@@ -6,24 +6,9 @@
   ],
   "tiles": [
     {
-      "id": "t-run-events",
-      "x": 0,
-      "y": 0,
-      "w": 24,
-      "h": 8,
-      "config": {
-        "name": "Run events",
-        "source": "Logs",
-        "displayType": "search",
-        "select": "Timestamp, ResourceAttributes['k8s.workload.name'], LogAttributes['k8s.event.reason'], Body",
-        "where": "ResourceAttributes['k8s.object.kind'] = 'Job' AND match(ResourceAttributes['k8s.workload.name'], '^(shop-migrate|shop-prune)-[0-9a-f]{6,12}$') AND LogAttributes['k8s.event.reason'] IN ('SuccessfulCreate', 'Completed', 'BackoffLimitExceeded', 'DeadlineExceeded', 'PodFailurePolicy')",
-        "whereLanguage": "sql"
-      }
-    },
-    {
       "id": "t-restarts",
       "x": 0,
-      "y": 8,
+      "y": 0,
       "w": 12,
       "h": 7,
       "config": {
@@ -51,37 +36,9 @@
       }
     },
     {
-      "id": "t-warning-events",
-      "x": 0,
-      "y": 15,
-      "w": 24,
-      "h": 7,
-      "config": {
-        "name": "Warning events by job",
-        "source": "Logs",
-        "displayType": "line",
-        "select": [
-          {
-            "aggFn": "count",
-            "valueExpression": "",
-            "alias": "warnings"
-          }
-        ],
-        "where": "match(ResourceAttributes['k8s.workload.name'], '^(shop-migrate|shop-prune)(-[0-9a-f]{6,12})?$') AND LogAttributes['k8s.event.type'] = 'Warning'",
-        "whereLanguage": "sql",
-        "groupBy": "ResourceAttributes['k8s.workload.name']",
-        "granularity": "auto",
-        "numberFormat": {
-          "output": "number",
-          "mantissa": 0,
-          "thousandSeparated": true
-        }
-      }
-    },
-    {
       "id": "t-error-logs",
       "x": 0,
-      "y": 22,
+      "y": 7,
       "w": 24,
       "h": 8,
       "config": {

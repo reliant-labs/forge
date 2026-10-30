@@ -46,3 +46,10 @@ INSERT INTO otel_logs SELECT now() - INTERVAL 70 MINUTE + INTERVAL 60 SECOND, ma
 INSERT INTO otel_logs SELECT now() - INTERVAL 65 MINUTE, map('reliant.env.id','prod','k8s.workload.name','rebuild-9999999999','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), 'pod 1';
 INSERT INTO otel_logs SELECT now() - INTERVAL 65 MINUTE + INTERVAL 5 SECOND, map('reliant.env.id','prod','k8s.workload.name','rebuild-9999999999','k8s.object.kind','Job'), map('k8s.event.reason','SuccessfulCreate'), 'pod 2';
 INSERT INTO otel_logs SELECT now() - INTERVAL 65 MINUTE + INTERVAL 70 SECOND, map('reliant.env.id','prod','k8s.workload.name','rebuild-9999999999','k8s.object.kind','Job'), map('k8s.event.reason','Completed'), '';
+-- Warning events, which come from two kinds of object: the Job itself (named for the Job) and its pods (named for the
+-- forge job, because the node agent reads the pod's app.kubernetes.io/name label first).
+INSERT INTO otel_logs SELECT now() - INTERVAL 49 MINUTE, map('reliant.env.id','prod','k8s.workload.name','reindex-ffffffffff','k8s.object.kind','Job','k8s.object.uid','uid-reindex-1'), map('k8s.event.reason','BackoffLimitExceeded','k8s.event.type','Warning'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 49 MINUTE, map('reliant.env.id','prod','k8s.workload.name','indexer','k8s.object.kind','Pod'), map('k8s.event.reason','FailedScheduling','k8s.event.type','Warning'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 48 MINUTE, map('reliant.env.id','prod','k8s.workload.name','indexer','k8s.object.kind','Pod'), map('k8s.event.reason','BackOff','k8s.event.type','Warning'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 48 MINUTE, map('reliant.env.id','prod','k8s.workload.name','other-thing-0123456789','k8s.object.kind','Job'), map('k8s.event.reason','BackoffLimitExceeded','k8s.event.type','Warning'), '';
+INSERT INTO otel_logs SELECT now() - INTERVAL 48 MINUTE, map('reliant.env.id','prod','k8s.workload.name','indexer','k8s.object.kind','Pod'), map('k8s.event.reason','Pulled','k8s.event.type','Normal'), '';

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -249,13 +251,24 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 	// keeps the seeded offsets exact.
 	anchor := fmt.Sprintf("toDateTime64(%d, 9, 'UTC')", time.Now().Unix())
 	run(strings.ReplaceAll(string(seed), "now()", anchor))
-	jobs := []string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant", "indexer", "nightly", "reindex", "rebuild"}
-	bindSQL := func(q, envs string) string {
+	// "indexer" reports under a service.name of its own (OTEL_SERVICE_NAME), as
+	// a real workload can: the service selector must still find it.
+	var jobs []Process
+	for _, n := range []string{"cloudsql-backup-prune", "db-migrate-up", "dbrole-provision-reliant", "indexer", "nightly", "reindex", "rebuild"} {
+		p := Process{Name: n, Kind: "job", ServiceNames: []string{n}, Workloads: []string{n}}
+		if n == "indexer" {
+			p.ServiceNames = []string{"search-indexer"}
+		}
+		jobs = append(jobs, p)
+	}
+	bindWith := func(q, envs, services string) string {
 		q = strings.ReplaceAll(q, "{from:DateTime64(9)}", "now() - INTERVAL 1 DAY")
 		q = strings.ReplaceAll(q, "{to:DateTime64(9)}", "now() + INTERVAL 1 DAY")
 		q = strings.ReplaceAll(q, "{step:UInt32}", "3600")
+		q = strings.ReplaceAll(q, "{services:Array(String)}", services)
 		return strings.ReplaceAll(q, "{env_ids:Array(String)}", envs)
 	}
+	bindSQL := func(q, envs string) string { return bindWith(q, envs, "[]") }
 	bind := func(envs string) string { return bindSQL(jobsSummarySQL(jobs), envs) }
 	row := func(out, job string) []string {
 		for _, l := range strings.Split(out, "\n") {
@@ -328,5 +341,103 @@ func TestJobsSummarySQLOnClickHouse(t *testing.T) {
 	failedBy := run(bindSQL(jobsByJobSQL(jobs, "failed_at", "failed"), "[]"))
 	if n := strings.Count(failedBy, "\n") + 1; strings.TrimSpace(failedBy) == "" || n != 4 {
 		t.Errorf("failures-by-job rows = %d, want 4 (db-migrate-up in stg, dbrole-provision-reliant, reindex, rebuild):\n%s", n, failedBy)
+	}
+
+	// The service selector narrows EVERY panel of the dashboard alike, the SQL
+	// ones included. A job is selected by its forge name, by a service.name its
+	// workload declares (indexer reports as search-indexer), or by the name of
+	// one of its runs (what a Job object's events are named).
+	rowsOf := func(out string) int {
+		if strings.TrimSpace(out) == "" {
+			return 0
+		}
+		return strings.Count(out, "\n") + 1
+	}
+	jobCol := func(out string) []string {
+		var got []string
+		for _, l := range strings.Split(out, "\n") {
+			if l != "" {
+				got = append(got, strings.Split(l, "\t")[0])
+			}
+		}
+		sort.Strings(got)
+		return got
+	}
+	for _, tc := range []struct {
+		pick string
+		jobs []string
+		runs string // runs_started, runs_succeeded, runs_failed
+	}{
+		{"['reindex']", []string{"reindex"}, "2\t1\t1"},
+		{"['search-indexer']", []string{"indexer"}, "1\t1\t0"},
+		{"['db-migrate-up-0123456789']", []string{"db-migrate-up"}, "2\t1\t1"},
+		{"['reindex', 'nightly']", []string{"nightly", "reindex"}, "4\t2\t1"},
+		{"['no-such-service']", nil, "0\t0\t0"},
+	} {
+		// One round trip per selection: the six panels' statements run as one
+		// multi-query script, each result separated by a marker line.
+		queries := []string{
+			jobsSummarySQL(jobs), jobsTotalsSQL(jobs),
+			jobsByJobSQL(jobs, "started", "started > 0"), jobsByJobSQL(jobs, "failed_at", "failed"),
+			jobsWarningsSQL(jobs), jobsRecentRunsSQL(jobs),
+		}
+		var script strings.Builder
+		for _, q := range queries {
+			script.WriteString(strings.TrimSpace(bindWith(q, "[]", tc.pick)) + ";\nSELECT '--end--';\n")
+		}
+		parts := strings.Split(run(script.String()), "--end--")
+		if len(parts) != len(queries)+1 {
+			t.Fatalf("service %s: got %d result sets, want %d:\n%v", tc.pick, len(parts)-1, len(queries), parts)
+		}
+		rows := func(i int) []string {
+			var out []string
+			for _, l := range strings.Split(strings.TrimSpace(parts[i]), "\n") {
+				if l != "" {
+					out = append(out, l)
+				}
+			}
+			return out
+		}
+		if got := jobCol(strings.Join(rows(0), "\n")); !reflect.DeepEqual(got, tc.jobs) {
+			t.Errorf("summary for service %s lists %v, want %v", tc.pick, got, tc.jobs)
+		}
+		if got := strings.Join(rows(1), "\n"); got != tc.runs {
+			t.Errorf("totals for service %s = %q, want %q", tc.pick, got, tc.runs)
+		}
+		for i, name := range map[int]string{2: "runs-by-job", 3: "failures-by-job", 4: "warning-events"} {
+			for _, l := range rows(i) {
+				if j := strings.Split(l, "\t")[1]; !contains(tc.jobs, j) {
+					t.Errorf("%s for service %s draws job %q, want only %v", name, tc.pick, j, tc.jobs)
+				}
+			}
+		}
+		for _, l := range rows(5) {
+			if j := strings.Split(l, "\t")[0]; !contains(tc.jobs, j) {
+				t.Errorf("recent-runs for service %s lists job %q, want only %v", tc.pick, j, tc.jobs)
+			}
+		}
+	}
+	// Unselected, every panel covers every job.
+	if n := rowsOf(run(bindSQL(jobsRecentRunsSQL(jobs), "[]"))); n != 12 {
+		t.Errorf("recent runs unfiltered = %d rows, want 12 (every execution)", n)
+	}
+	if r := row(run(bindSQL(jobsRecentRunsSQL(jobs), "[]")), "reindex"); r == nil || r[2] != "prod" {
+		t.Errorf("recent runs lack reindex: %v", r)
+	}
+
+	// Warning events: the Job's own (BackoffLimitExceeded) and its pods', both
+	// resolved to the forge job; another project's Job and Normal events are not.
+	warnings := map[string]int{}
+	for _, l := range strings.Split(run(bindSQL(jobsWarningsSQL(jobs), "[]")), "\n") {
+		if f := strings.Split(l, "\t"); len(f) == 3 {
+			n, _ := strconv.Atoi(f[2])
+			warnings[f[1]] += n
+		}
+	}
+	if want := map[string]int{"reindex": 1, "indexer": 2}; !reflect.DeepEqual(warnings, want) {
+		t.Errorf("warning events per job = %v, want %v (a Job's own and its pods', not another project's, not Normal ones)", warnings, want)
+	}
+	if got := run(bindWith(jobsWarningsSQL(jobs), "[]", "['search-indexer']")); !strings.Contains(got, "indexer") || strings.Contains(got, "reindex") {
+		t.Errorf("warnings for service search-indexer = %q, want only indexer's", got)
 	}
 }

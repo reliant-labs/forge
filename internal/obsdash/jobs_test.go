@@ -116,7 +116,7 @@ func TestNoJobsMeansNoJobsDashboard(t *testing.T) {
 
 func TestJobsDashboardContents(t *testing.T) {
 	jobs := dashboardByID(t, Build(fleet()), "jobs")
-	for _, id := range []string{"jobs-summary", "runs-totals", "runs-by-job", "failures-by-job", "run-events", "restarts", "warning-events", "error-logs"} {
+	for _, id := range []string{"jobs-summary", "runs-totals", "runs-by-job", "failures-by-job", "recent-runs", "restarts", "warning-events", "error-logs"} {
 		if !hasPanel(jobs, id) {
 			t.Errorf("Jobs dashboard lacks panel %q; has %v", id, panelIDs(jobs))
 		}
@@ -154,16 +154,10 @@ func TestJobsDashboardContents(t *testing.T) {
 			t.Errorf("%s must count distinct (env, Job) executions, got kind %q:\n%s", id, p.Kind, p.SQL)
 		}
 	}
-	// The run events are Job events: a pod's own events would count twice.
-	events, _ := findPanel(jobs, "run-events")
-	var kind bool
-	for _, w := range events.Where {
-		if w.Field == "resource.attr.k8s.object.kind" && w.Value == "Job" {
-			kind = true
-		}
-	}
-	if !kind {
-		t.Errorf("run-events is not restricted to Job objects: %+v", events.Where)
+	// The run list reads Job events only: a pod's own events would count twice.
+	recent, _ := findPanel(jobs, "recent-runs")
+	if recent.Kind != KindSQL || !strings.Contains(recent.SQL, "= 'Job'") {
+		t.Errorf("recent-runs is not restricted to Job objects:\n%s", recent.SQL)
 	}
 }
 
@@ -193,8 +187,9 @@ func TestJobsDashboardNeverCountsCreateEventsAsRuns(t *testing.T) {
 // agent takes the pod's app.kubernetes.io/name label first (forge renders it as
 // the bare forge name on every Job and CronJob pod), then the owner chain; an
 // event about a Job OBJECT is named for the object (forge name + run suffix).
-// The restarts and warning panels must select every one of these, and nothing
-// that merely starts with a job's name.
+// The restarts panel must select every one of these, and nothing that merely
+// starts with a job's name. The Warning-event panel resolves the same names in
+// SQL (see TestJobsWarningsSQLResolvesBothObjectKinds).
 func TestJobsHealthPanelsMatchRealRunIdentities(t *testing.T) {
 	jobs := dashboardByID(t, Build(fleet()), "jobs")
 	type identity struct {
@@ -218,7 +213,7 @@ func TestJobsHealthPanelsMatchRealRunIdentities(t *testing.T) {
 		{"an unresolved pod name", "db-migrate-up-0123456789-x7k2p", false},
 		{"a prefix of a job name", "db-migrate", false},
 	} {
-		for _, panelID := range []string{"restarts-1", "warning-events-1", "restarts", "warning-events"} {
+		for _, panelID := range []string{"restarts-1", "restarts"} {
 			p, ok := findPanel(jobs, panelID)
 			if !ok {
 				continue
@@ -303,7 +298,7 @@ func TestEveryGeneratedDashboardValidates(t *testing.T) {
 	if _, err := ParseDashboard("jobs", b); err != nil {
 		t.Fatalf("a Jobs dashboard with many jobs must still validate: %v", err)
 	}
-	for _, id := range []string{"runs-by-job", "failures-by-job", "restarts-2", "warning-events-2"} {
+	for _, id := range []string{"runs-by-job", "failures-by-job", "restarts-2", "warning-events", "recent-runs"} {
 		if !hasPanel(d, id) {
 			t.Errorf("26 jobs: Jobs dashboard lacks %q: %v", id, panelIDs(d))
 		}
@@ -537,7 +532,7 @@ func TestJobsDashboardReplacesTheOldPerJobDashboards(t *testing.T) {
 // A run is one Kubernetes Job in one ENVIRONMENT: identical specs deployed to
 // two environments share a hashed Job name, and must not collapse into one run.
 func TestJobsSummaryGroupsRunsByEnvironmentAndJob(t *testing.T) {
-	sql := jobsSummarySQL([]string{"db-migrate-up"})
+	sql := jobsSummarySQL([]Process{{Name: "db-migrate-up", Kind: "job", ServiceNames: []string{"db-migrate-up"}, Workloads: []string{"db-migrate-up"}}})
 	if !strings.Contains(sql, "GROUP BY env, run, uid, generation") || !strings.Contains(sql, "ResourceAttributes['reliant.env.id'] AS env") {
 		t.Errorf("the per-run grouping must carry the environment, the Job UID and the generation:\n%s", sql)
 	}
@@ -554,13 +549,72 @@ func TestJobsSummaryGroupsRunsByEnvironmentAndJob(t *testing.T) {
 // subquery, so none of them can drift from the summary.
 func TestEveryRunCountSharesTheExecutionGrouping(t *testing.T) {
 	jobs := dashboardByID(t, Build(fleet()), "jobs")
-	for _, id := range []string{"jobs-summary", "runs-totals", "runs-by-job", "failures-by-job"} {
+	for _, id := range []string{"jobs-summary", "runs-totals", "runs-by-job", "failures-by-job", "recent-runs"} {
 		p, ok := findPanel(jobs, id)
 		if !ok {
 			t.Fatalf("no panel %s: %v", id, panelIDs(jobs))
 		}
 		if !strings.Contains(p.SQL, "GROUP BY env, run, uid, generation") {
 			t.Errorf("%s does not count distinct executions (env, name, UID, generation):\n%s", id, p.SQL)
+		}
+	}
+}
+
+// The dashboard declares a service.name filter, and the console applies a
+// selection to every panel. A declarative panel is narrowed by the console; a
+// SQL panel only by a statement that binds {services:Array(String)}. Every SQL
+// panel must bind it, or a selection narrows some panels and not others.
+func TestEveryJobsPanelHonoursTheServiceFilter(t *testing.T) {
+	jobs := dashboardByID(t, Build(fleet()), "jobs")
+	hasFilter := false
+	for _, f := range jobs.Filters {
+		hasFilter = hasFilter || f.Field == FieldService
+	}
+	if !hasFilter {
+		t.Fatalf("the Jobs dashboard has no service.name filter: %+v", jobs.Filters)
+	}
+	sqlPanels := 0
+	for _, p := range jobs.Panels {
+		if p.Kind != KindSQL {
+			continue
+		}
+		sqlPanels++
+		if !strings.Contains(p.SQL, "{services:Array(String)}") {
+			t.Errorf("SQL panel %s ignores the service filter (never binds {services:Array(String)}):\n%s", p.ID, p.SQL)
+		}
+		if !strings.Contains(p.SQL, "empty({services:Array(String)})") {
+			t.Errorf("SQL panel %s must treat an empty selection as every job:\n%s", p.ID, p.SQL)
+		}
+		if strings.Contains(p.SQL, "k8s.object.kind") == false && p.ID != "warning-events" {
+			t.Errorf("SQL panel %s does not read Job events:\n%s", p.ID, p.SQL)
+		}
+	}
+	if sqlPanels != 6 {
+		t.Errorf("Jobs dashboard has %d SQL panels, want the 6 run and warning panels: %v", sqlPanels, panelIDs(jobs))
+	}
+	// The selector resolves a service.name a workload declares for itself.
+	in := Process{Name: "indexer", Kind: "job", ServiceNames: []string{"search-indexer"}, Workloads: []string{"indexer"}}
+	sql := jobsSummarySQL([]Process{in})
+	for _, want := range []string{"('indexer', 'search-indexer')", "arrayExists(", "has({services:Array(String)}, run)"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("the selector does not resolve a declared service.name (%q missing):\n%s", want, sql)
+		}
+	}
+	// A name with a quote cannot break out of its literal.
+	evil := Process{Name: "x", Kind: "job", ServiceNames: []string{"o'brien"}, Workloads: []string{"x"}}
+	if sql := jobsSummarySQL([]Process{evil}); !strings.Contains(sql, `'o\'brien'`) {
+		t.Errorf("a service name must be quoted:\n%s", sql)
+	}
+}
+
+// The Warning-event panel counts events of the Job itself (named for the Job:
+// forge name + run suffix) and of its pods (named for the forge job), and
+// nothing else.
+func TestJobsWarningsSQLResolvesBothObjectKinds(t *testing.T) {
+	sql := jobsWarningsSQL([]Process{{Name: "db-migrate-up", Kind: "job", ServiceNames: []string{"db-migrate-up"}, Workloads: []string{"db-migrate-up"}}})
+	for _, want := range []string{"k8s.event.type'] = 'Warning'", "'(" + jobRunSuffix + ")?$'", "['db-migrate-up']"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("warnings SQL lacks %q:\n%s", want, sql)
 		}
 	}
 }

@@ -93,6 +93,10 @@ type Input struct {
 	Services  []Service
 	Processes []Process
 	Frontends []string
+	// FrontendServices, when set, are the service.names those frontends report
+	// (a frontend built from another repository bakes its own); empty derives
+	// each from the project and frontend name (naming.FrontendServiceName).
+	FrontendServices []string
 	// HasDatabase adds the database panels: true once the project has a
 	// migration, since the panels read spans the ORM's query hook emits.
 	HasDatabase bool
@@ -113,6 +117,14 @@ type Input struct {
 type Identities struct {
 	ServiceNames []string
 	Workloads    []string
+	// RPCServiceNames are the service.names of the processes that serve RPCs:
+	// the only ones an rpc.server.* panel can have data for.
+	RPCServiceNames []string
+	// CPULimitWorkloads and MemoryLimitWorkloads are the workloads that
+	// declare that limit: the only ones a *_limit_utilization panel can have
+	// data for.
+	CPULimitWorkloads    []string
+	MemoryLimitWorkloads []string
 }
 
 // FrontendFunnel is one declared funnel (forge.Funnel in KCL).
@@ -131,6 +143,29 @@ func frontendServices(project string, frontends []string) []string {
 		out = append(out, naming.FrontendServiceName(project, fe))
 	}
 	return out
+}
+
+// frontendServiceNames are the service.names the frontends report.
+func (in Input) frontendServiceNames() []string {
+	if len(in.FrontendServices) > 0 {
+		return in.FrontendServices
+	}
+	return frontendServices(in.Project, in.Frontends)
+}
+
+// WithoutProcessDashboards is sp for an environment that deploys no process: a
+// static site has nothing for the overview, workloads and releases dashboards
+// to measure (the overview would filter on the no-deployed-process sentinel),
+// so only the dashboards that do not need a process remain.
+func WithoutProcessDashboards(sp Spec) Spec {
+	kept := sp.Dashboards[:0:0]
+	for _, d := range sp.Dashboards {
+		if d.ID == "frontend" {
+			kept = append(kept, d)
+		}
+	}
+	sp.Dashboards = kept
+	return sp
 }
 
 // Build derives the project's Spec.
@@ -157,9 +192,10 @@ type ProjectPart struct {
 // here would make independent service additions change the same shared JSON;
 // the merge driver keeps one side's certified render, losing the other addition.
 type Fragments struct {
-	Frontends   []string
-	HasDatabase bool
-	Funnels     []FrontendFunnel
+	Frontends        []string
+	FrontendServices []string `json:",omitempty"`
+	HasDatabase      bool
+	Funnels          []FrontendFunnel
 }
 
 // ProcessPart holds one deployed executable/role's dashboard and saved searches.
@@ -176,7 +212,14 @@ type ProcessPart struct {
 // and workload identities it owns across environments. No RPC ownership is
 // inferred from a package name, a workload name, or handler reach alone.
 type Process struct {
-	Name         string   `json:"name"`
+	// Name is the forge workload name (the first, when several workloads run
+	// the same executable and command): "admin-api", never the rendered
+	// Kubernetes object name, the command line or a hash. It names the
+	// process's dashboard ("process-<name>").
+	Name string `json:"name"`
+	// Kind is the forge workload kind: service, worker, operator, job or
+	// cron. Empty is a service. Jobs and crons share one Jobs dashboard.
+	Kind         string   `json:"kind,omitempty"`
 	Binary       string   `json:"binary"`
 	Args         []string `json:"args,omitempty"`
 	Root         string   `json:"root,omitempty"`
@@ -184,12 +227,51 @@ type Process struct {
 	Workloads    []string `json:"workloads"`
 	RPCServices  []string `json:"rpcServices,omitempty"`
 	HasDatabase  bool     `json:"hasDatabase,omitempty"`
+	// CPULimit and MemoryLimit say the workload declares that resource limit,
+	// the only case the node agent's *_limit_utilization series exist.
+	CPULimit    bool `json:"cpuLimit,omitempty"`
+	MemoryLimit bool `json:"memoryLimit,omitempty"`
+	// NodeMetadata says the process runs where the node agent delivers
+	// per-container metadata (a cluster or hosted runtime); a host or compose
+	// process has no saturation or restart series.
+	NodeMetadata bool `json:"nodeMetadata,omitempty"`
+	// ServesRPCDeclared is set for a Go process forge does not build (a sibling
+	// repository's, built by a ShellBuild): a service with a port is taken to
+	// serve RPCs, since forge cannot read its mounts.
+	ServesRPCDeclared bool `json:"servesRpcDeclared,omitempty"`
+	// NonGo is set for a process forge can tell is not a Go program of this
+	// project or its siblings (a third-party or Docker-built image): it has no
+	// Go runtime metrics and no RPC metrics to draw.
+	NonGo bool `json:"nonGo,omitempty"`
+	// Replaces are the names (dashboard ids minus "process-") this process
+	// was known by before dashboards were named for the workload.
+	Replaces []string `json:"replaces,omitempty"`
 }
+
+// ServesRPC reports whether p serves RPCs, the only processes an
+// rpc.server.* panel has data for.
+func (p Process) ServesRPC() bool { return len(p.RPCServices) > 0 || p.ServesRPCDeclared }
+
+// Kinds a Process can have (the forge workload kinds that run something).
+const (
+	KindServiceProc  = "service"
+	KindWorkerProc   = "worker"
+	KindOperatorProc = "operator"
+	KindJobProc      = "job"
+	KindCronProc     = "cron"
+)
+
+// IsJob reports whether p runs to completion (a job or a cron), and so is
+// drawn on the Jobs dashboard rather than on a dashboard of its own.
+func (p Process) IsJob() bool { return p.Kind == KindJobProc || p.Kind == KindCronProc }
+
+// runsWork reports whether p runs worker loops (worker.<name>.run root spans).
+func (p Process) runsWork() bool { return p.Kind == KindWorkerProc || p.Kind == KindOperatorProc }
 
 // BuildParts derives the project's Spec as process parts, sorted by process
 // identity. RPC-free workers and gateways retain their runtime/workload panels.
 func BuildParts(in Input) (ProjectPart, []ProcessPart) {
-	fragments := Fragments{Frontends: in.Frontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels}
+	fragments := Fragments{Frontends: in.Frontends, FrontendServices: in.FrontendServices, HasDatabase: in.HasDatabase, Funnels: in.Funnels}
 	project := ProjectPart{
 		Input:    &fragments,
 		Version:  PartsVersion,
@@ -200,7 +282,12 @@ func BuildParts(in Input) (ProjectPart, []ProcessPart) {
 	processes := append([]Process(nil), in.Processes...)
 	sort.Slice(processes, func(i, j int) bool { return processes[i].Name < processes[j].Name })
 	var parts []ProcessPart
+	var jobs []Process
 	for _, p := range processes {
+		if p.IsJob() {
+			jobs = append(jobs, p)
+			continue
+		}
 		parts = append(parts, ProcessPart{
 			Version:   PartsVersion,
 			Process:   p,
@@ -216,7 +303,10 @@ func BuildParts(in Input) (ProjectPart, []ProcessPart) {
 	}
 
 	project.Dashboards = append(project.Dashboards, BuildWorkloads(in.Project), BuildReleases(in.Project))
-	if len(in.Frontends) > 0 {
+	if len(jobs) > 0 {
+		project.Dashboards = append(project.Dashboards, BuildJobs(in.Project, jobs))
+	}
+	if len(in.Frontends) > 0 || len(in.FrontendServices) > 0 {
 		project.Dashboards = append(project.Dashboards, buildFrontend(in))
 	}
 	for i := range project.Dashboards {
@@ -289,32 +379,54 @@ func buildOverview(in Input) Dashboard {
 		ID:          "overview",
 		Title:       in.Project + ": overview",
 		Description: "Metric-backed request, server-fault and duration health across deployed processes; saturation, errors and releases. Counters are unsampled; trace drilldowns may be sampled.",
+		Group:       GroupOverview,
 		Filters:     commonFilters(),
 	}
-	d.Panels = rpcHealthPanels()
-	for i := range d.Panels {
-		if d.Panels[i].Kind == KindLine {
-			d.Panels[i].GroupBy = []string{FieldService}
-		}
-	}
-	d.Panels = append(d.Panels,
-		Panel{ID: "top-errors", Title: "Top server faults", Kind: KindTable, Signal: Traces, Where: scoped(rpcServer, errorSpans), Series: []Series{{Label: "sampled faults", Agg: AggCount}}, GroupBy: []string{FieldService, "span.name", "span.status_message"}, Limit: 20, Width: 24, Height: 7})
+	// Jobs and crons have their own dashboard; the overview is the long-running
+	// processes. Each panel is scoped to the processes it can have data for: RPC
+	// panels to those that serve RPCs, a limit panel to those that declare it.
 	services := append([]string(nil), in.Deployed.ServiceNames...)
 	workloads := append([]string(nil), in.Deployed.Workloads...)
+	rpcServices := append([]string(nil), in.Deployed.RPCServiceNames...)
+	cpuLimited := append([]string(nil), in.Deployed.CPULimitWorkloads...)
+	memLimited := append([]string(nil), in.Deployed.MemoryLimitWorkloads...)
 	for _, p := range in.Processes {
+		if p.IsJob() {
+			continue
+		}
 		services = append(services, p.ServiceNames...)
 		workloads = append(workloads, p.Workloads...)
+		if p.ServesRPC() {
+			rpcServices = append(rpcServices, p.ServiceNames...)
+		}
+		if p.CPULimit {
+			cpuLimited = append(cpuLimited, p.Workloads...)
+		}
+		if p.MemoryLimit {
+			memLimited = append(memLimited, p.Workloads...)
+		}
 	}
-	services = sortedIdentities(services)
-	workloads = sortedIdentities(workloads)
-	for i := range d.Panels {
-		d.Panels[i].Where = scoped(identityScope(FieldService, services), d.Panels[i].Where...)
+	services, workloads, rpcServices = sortedIdentities(services), sortedIdentities(workloads), sortedIdentities(rpcServices)
+	cpuLimited, memLimited = sortedIdentities(cpuLimited), sortedIdentities(memLimited)
+
+	if len(rpcServices) > 0 {
+		rpc := rpcHealthPanels()
+		rpc = append(rpc, Panel{ID: "top-errors", Title: "Top server faults", Kind: KindTable, Signal: Traces, Where: scoped(rpcServer, errorSpans), Series: []Series{{Label: "sampled faults", Agg: AggCount}}, GroupBy: []string{FieldService, "span.name", "span.status_message"}, Limit: 20, Width: 24, Height: 7})
+		for i := range rpc {
+			if rpc[i].Kind == KindLine {
+				rpc[i].GroupBy = []string{FieldService}
+			}
+			rpc[i].Where = scoped(identityScope(FieldService, rpcServices), rpc[i].Where...)
+		}
+		d.Panels = append(d.Panels, rpc...)
 	}
+	limits := map[string][]string{"cpu-vs-limit": cpuLimited, "memory-vs-limit": memLimited, "restarts": workloads}
+	var nodePanels []string
 	for _, p := range BuildWorkloads(in.Project).Panels {
-		switch p.ID {
-		case "cpu-vs-limit", "memory-vs-limit", "restarts":
-			p.Where = scoped(identityScope(fieldWorkload, workloads), p.Where...)
+		if scope, ok := limits[p.ID]; ok && (p.ID == "restarts" || len(scope) > 0) {
+			p.Where = scoped(identityScope(fieldWorkload, scope), p.Where...)
 			d.Panels = append(d.Panels, p)
+			nodePanels = append(nodePanels, p.ID)
 		}
 	}
 	for _, p := range BuildReleases(in.Project).Panels {
@@ -326,6 +438,7 @@ func buildOverview(in Input) Dashboard {
 	d.Panels = append(d.Panels,
 		Panel{ID: "error-logs", Title: "Recent error logs", Kind: KindSearch, Signal: Logs, Where: scoped(identityScope(FieldService, services), errorLogs), Columns: logColumns, Width: 24, Height: 9},
 	)
+	splitServiceFilter(&d, nodePanels, services, workloads)
 	return d
 }
 
@@ -346,10 +459,19 @@ func dbPanels(width int) []Panel {
 }
 
 func buildProcess(in Input, p Process) Dashboard {
-	d := Dashboard{ID: "process-" + p.Name, Title: in.Project + ": " + p.Name,
-		Description: "Deployed process " + p.Binary + " " + strings.Join(p.Args, " ") + ". Runtime and workload panels appear once, independent of RPC breakdowns.", Filters: commonFilters()}
+	d := Dashboard{ID: ProcessDashboardID(p.Name), Title: in.Project + ": " + p.Name,
+		Description: "The " + processKind(p) + " " + p.Name + ". Panels are chosen by what it does: RPC health if it serves RPCs, worker runs if it runs workers, saturation against the limits it declares; runtime and logs always.",
+		Group:       GroupServices, Tags: []string{processKind(p)}, Filters: commonFilters()}
+	for _, old := range p.Replaces {
+		if id := ProcessDashboardID(old); id != d.ID {
+			d.Replaces = append(d.Replaces, id)
+		}
+	}
 	d.Sections = []Section{{ID: "runtime", Title: "Runtime"}, {ID: "workload", Title: "Workload saturation"}, {ID: "logs", Title: "Logs"}}
-	if len(p.RPCServices) > 0 {
+	if p.runsWork() {
+		d.Sections = append([]Section{{ID: "runs", Title: "Worker runs"}}, d.Sections...)
+	}
+	if p.ServesRPC() {
 		d.Sections = append([]Section{{ID: "rpc", Title: "RPC health"}}, d.Sections...)
 		d.Panels = rpcHealthPanels()
 		d.Panels = append(d.Panels,
@@ -358,6 +480,12 @@ func buildProcess(in Input, p Process) Dashboard {
 	for i := range d.Panels {
 		d.Panels[i].Section = "rpc"
 	}
+	if p.runsWork() {
+		for _, panel := range workerPanels() {
+			panel.Section = "runs"
+			d.Panels = append(d.Panels, panel)
+		}
+	}
 	if p.HasDatabase {
 		d.Sections = append(d.Sections, Section{ID: "database", Title: "Database"})
 		for _, panel := range dbPanels(24) {
@@ -365,9 +493,11 @@ func buildProcess(in Input, p Process) Dashboard {
 			d.Panels = append(d.Panels, panel)
 		}
 	}
-	for _, panel := range runtimePanels() {
-		panel.Section = "runtime"
-		d.Panels = append(d.Panels, panel)
+	if !p.NonGo {
+		for _, panel := range runtimePanels() {
+			panel.Section = "runtime"
+			d.Panels = append(d.Panels, panel)
+		}
 	}
 	d.Panels = append(d.Panels,
 		Panel{ID: "error-logs", Section: "logs", Title: "Error logs", Kind: KindSearch, Signal: Logs, Where: []Predicate{errorLogs}, Columns: logColumns, Width: 24, Height: 8},
@@ -377,15 +507,32 @@ func buildProcess(in Input, p Process) Dashboard {
 	}
 	// Node-derived metadata is keyed by workload, not the application's
 	// service.name. A renamed OTEL_SERVICE_NAME must not blank saturation.
-	for _, panel := range BuildWorkloads(in.Project).Panels {
-		switch panel.ID {
-		case "cpu-vs-limit", "memory-vs-limit", "restarts":
+	// Only where the node agent reports at all, and a limit panel only for a
+	// declared limit: a request-only workload is drawn against its request.
+	var nodePanels []string
+	if p.NodeMetadata {
+		want := map[string]bool{"restarts": true}
+		if p.CPULimit {
+			want["cpu-vs-limit"] = true
+		} else {
+			want["cpu-vs-request"] = true
+		}
+		if p.MemoryLimit {
+			want["memory-vs-limit"] = true
+		} else {
+			want["memory-vs-request"] = true
+		}
+		for _, panel := range BuildWorkloads(in.Project).Panels {
+			if !want[panel.ID] {
+				continue
+			}
 			panel.Section = "workload"
 			panel.Where = scoped(identityScope(fieldWorkload, p.Workloads), panel.Where...)
 			d.Panels = append(d.Panels, panel)
+			nodePanels = append(nodePanels, panel.ID)
 		}
 	}
-	if len(p.RPCServices) > 0 {
+	if p.ServesRPC() {
 		var metricPanels []string
 		for _, panel := range d.Panels {
 			if panel.Section == "rpc" && panel.Signal == Metrics {
@@ -397,7 +544,30 @@ func buildProcess(in Input, p Process) Dashboard {
 			Filter{ID: "rpc-service", Label: "RPC service (traces)", Field: "span.attr.rpc.service", Signal: Traces, PanelIDs: []string{"red-by-rpc"}},
 			Filter{ID: "rpc-method", Label: "RPC method (traces)", Field: "span.attr.rpc.method", Signal: Traces, PanelIDs: []string{"red-by-rpc"}})
 	}
+	splitServiceFilter(&d, nodePanels, p.ServiceNames, p.Workloads)
 	return d
+}
+
+// ProcessDashboardID is the dashboard id of the process named name.
+func ProcessDashboardID(name string) string { return "process-" + name }
+
+func processKind(p Process) string {
+	if p.Kind == "" {
+		return KindServiceProc
+	}
+	return p.Kind
+}
+
+// workerPanels are the runs of the process's worker loops: every
+// lifecyclekit.Every / observe.RunRoot tick is a root span named
+// "worker.<name>.<what>".
+func workerPanels() []Panel {
+	runs := Predicate{Field: "span.name", Op: OpPrefix, Value: "worker."}
+	return []Panel{
+		{ID: "worker-runs", Title: "Worker runs", Description: "Root spans of the process's worker loops (worker.<name>.*), one line per loop.", Kind: KindLine, Signal: Traces, Where: []Predicate{runs}, Series: []Series{{Label: "runs", Agg: AggCount}}, GroupBy: []string{"span.name"}, Unit: UnitCount, Width: 12, Height: 7},
+		{ID: "worker-failures", Title: "Worker run failures", Description: "Runs that ended with an error, one line per loop.", Kind: KindLine, Signal: Traces, Where: []Predicate{runs, errorSpans}, Series: []Series{{Label: "failed", Agg: AggCount}}, GroupBy: []string{"span.name"}, Unit: UnitCount, Width: 12, Height: 7},
+		{ID: "worker-duration", Title: "Worker run duration", Kind: KindTable, Signal: Traces, Where: []Predicate{runs}, Series: append([]Series{{Label: "runs", Agg: AggCount}, {Label: "failed", Agg: AggCount, Where: []Predicate{errorSpans}}}, latencySeries()...), GroupBy: []string{"span.name"}, Limit: 50, Width: 24, Height: 8},
+	}
 }
 
 func processScope(p Process) []Predicate {
@@ -423,11 +593,13 @@ var (
 )
 
 func buildFrontend(in Input) Dashboard {
-	services := frontendServices(in.Project, in.Frontends)
+	services := in.frontendServiceNames()
 	d := Dashboard{
 		ID:          "frontend",
 		Title:       in.Project + ": frontend",
 		Description: fmt.Sprintf("Browser errors, page loads, web vitals and API calls from the HyperDX browser SDK (service.name %s). Panels follow HyperDX's Browser RUM template: a browser span carries the rum.sessionId resource attribute.", strings.Join(services, ", ")),
+		Group:       GroupProduct,
+		Tags:        []string{"browser"},
 		Filters:     commonFilters(),
 	}
 	// A browser span is one of THIS project's frontends' (service.name, the

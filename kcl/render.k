@@ -2605,6 +2605,7 @@ _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
         "console_capture": t.console_capture
         "replay_sample_rate": t.replay_sample_rate
         "sourcemaps": t.sourcemaps
+        "service_name": t.service_name if t.service_name else None
         "errors": {"ignore": t.errors.ignore}
         "funnels": [{
             "id": f.id

@@ -140,7 +140,7 @@ func TestBuildAddsTheWorkloadsAndReleasesDashboards(t *testing.T) {
 	for _, d := range Build(fixture()).Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,frontend"; got != want {
+	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}
 }

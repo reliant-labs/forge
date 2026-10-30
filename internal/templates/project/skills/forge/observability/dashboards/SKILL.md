@@ -5,6 +5,8 @@ description: Process/role dashboards derived from deployed executable and compos
 
 # Observability: generated dashboards
 
+Every dashboard declares a `group` (overview, services, jobs, product, platform, releases or custom) and optional `tags`, which only a list view reads; `replaces` lists the ids a renamed generated dashboard supersedes, so a reader can carry stars and copies over. A process dashboard is named for the forge workload (`admin-api`), never the rendered Job/command/hash. An env that deploys no process (a static site) gets only its frontend dashboard, and the frontend dashboard follows the frontends that env serves.
+
 `forge generate` writes reusable RPC, frontend and metric dashboard fragments
 and alert inputs without claiming process ownership. It scopes the overview to
 the service.names and workloads every environment that renders declares (the
@@ -33,10 +35,11 @@ stable ID/filename. Old disk-generated process parts never contaminate that set.
 | File                                                          | What                                                                                                                                                                                             |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `deploy/observability/dashboards/<project>-overview_gen.json` | Compact unsampled request/error counters and duration histogram health; process comparison, saturation, errors and releases |
-| `.../<project>-process-<binary>-<role>_gen.json` | Bounded RPC health/drilldown, database (when reached), Go runtime once, process logs and workload saturation |
-| `.../<project>-frontend_gen.json`                             | with a web frontend: JS errors, sessions, page views, failed API calls, LCP/INP/CLS p75, page-load percentiles, browser API latency and calls by URL — scoped to the web frontends' `service.name`s (`<project>-<frontend>`, otel_gen.ts's `SERVICE_NAME`) |
-| `.../<project>-process-<binary>-<role>_gen.ndjson` | Process error-log saved search |
-| `deploy/observability/spec/*_gen.json` | `project_gen.json`, one `process-<binary>-<role>_gen.json` per process and independent `alert-service-<svc>_gen.json` inputs |
+| `.../<project>-process-<workload>_gen.json` | One long-running service, worker or operator, named for its forge workload. Panels follow what it does: RPC health only if it serves RPCs, worker runs for workers and operators, database when reached, a `*_limit_utilization` panel only for a declared limit, runtime and logs always |
+| `.../<project>-frontend_gen.json`                             | with a web frontend: JS errors, sessions, page views, failed API calls, LCP/INP/CLS p75, page-load percentiles, browser API latency and calls by URL — scoped to the web frontends' `service.name`s (`<project>-<frontend>`, otel_gen.ts's `SERVICE_NAME`; a frontend built from another repository (`source`) bakes that repository's name, so declare it: `telemetry = forge.BrowserTelemetry {service_name = "shop-web"}`) |
+| `.../<project>-process-<workload>_gen.ndjson` | Process error-log saved search |
+| `.../<project>-jobs_gen.json` (bundle only) | ONE dashboard for every job and cron job: runs (one per Kubernetes Job execution, however many pods it created; a Job recreated under the same name counts again), failures, duration and last run per job from the Kubernetes Job events, restarts, warnings, error logs. Jobs get no dashboard of their own |
+| `deploy/observability/spec/*_gen.json` | `project_gen.json`, one `process-<workload>_gen.json` per long-running process and independent `alert-service-<svc>_gen.json` inputs |
 
 A process's aliases across environments share a dashboard. Obsolete generated
 service dashboards, spec parts and saved searches retire only when their bytes
@@ -323,7 +326,7 @@ exists forge stops writing (and removes a pristine) `x_gen.json`. Any other
 
 They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so nothing is applied from them.
 
-A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/process-<binary>-<role>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
+A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/process-<workload>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
 
 Every file is validated at the cut, and `forge obs dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel, postgres`.
 

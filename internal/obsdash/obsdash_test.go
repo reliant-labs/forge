@@ -21,8 +21,10 @@ func fixture() Input {
 			{Name: "billing", Package: "billing.v1", ProtoService: "BillingService", Methods: []Method{{Name: "Charge"}}},
 		},
 		Processes: []Process{
-			{Name: "shop-api", Binary: "shop", Args: []string{"api"}, Root: "api", ServiceNames: []string{"shop-api"}, Workloads: []string{"shop-api"}, RPCServices: []string{"billing.v1.BillingService", "orders.v1.OrdersService"}, HasDatabase: true},
-			{Name: "shop-worker", Binary: "shop", Args: []string{"worker"}, Root: "worker", ServiceNames: []string{"shop-worker"}, Workloads: []string{"shop-worker"}},
+			{Name: "shop-api", Binary: "shop", Args: []string{"api"}, Root: "api", ServiceNames: []string{"shop-api"}, Workloads: []string{"shop-api"}, RPCServices: []string{"billing.v1.BillingService", "orders.v1.OrdersService"}, HasDatabase: true, Kind: "service", CPULimit: true, MemoryLimit: true, NodeMetadata: true},
+			{Name: "shop-worker", Binary: "shop", Args: []string{"worker"}, Root: "worker", ServiceNames: []string{"shop-worker"}, Workloads: []string{"shop-worker"}, Kind: "worker", NodeMetadata: true},
+			{Name: "shop-migrate", Binary: "shop", Args: []string{"db", "migrate", "up"}, ServiceNames: []string{"shop-migrate"}, Workloads: []string{"shop-migrate"}, Kind: "job", NodeMetadata: true},
+			{Name: "shop-prune", Binary: "shop", Args: []string{"prune"}, ServiceNames: []string{"shop-prune"}, Workloads: []string{"shop-prune"}, Kind: "cron", NodeMetadata: true},
 		},
 		Frontends:   []string{"web"},
 		HasDatabase: true,
@@ -66,7 +68,7 @@ func TestDashboardSetFollowsTheProject(t *testing.T) {
 	for _, d := range sp.Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,frontend"; got != want {
+	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}
 
@@ -137,6 +139,16 @@ func TestEveryDashboardFiltersOnServiceAndEnvironment(t *testing.T) {
 		got := map[string]bool{}
 		for _, f := range d.Filters {
 			got[f.Field] = true
+		}
+		// The Jobs dashboard is all SQL panels, which take the selection only
+		// through the service resolver and the console's own environment scope
+		// ({env_ids}). A deployment.environment.name filter would be pushed onto
+		// each SQL panel as a predicate, which a SQL panel refuses.
+		if d.ID == JobsID {
+			if !got[FieldService] || got[FieldEnv] {
+				t.Errorf("jobs: filters %v, want only service.name", d.Filters)
+			}
+			continue
 		}
 		if !got[FieldService] || !got[FieldEnv] {
 			t.Errorf("%s: filters %v lack service.name and deployment.environment.name", d.ID, d.Filters)

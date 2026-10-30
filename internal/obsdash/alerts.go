@@ -70,7 +70,7 @@ func AlertInputOf(in Input) AlertInput {
 		out.Services = append(out.Services, AlertService{Name: s.Name, RPCService: s.Package + "." + s.ProtoService})
 	}
 	sort.Slice(out.Services, func(i, j int) bool { return out.Services[i].Name < out.Services[j].Name })
-	out.FrontendServices = frontendServices(in.Project, in.Frontends)
+	out.FrontendServices = in.frontendServiceNames()
 	return out
 }
 

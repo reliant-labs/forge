@@ -76,11 +76,8 @@ func TestServiceCatalogTypedMultiRoleFixture(t *testing.T) {
 	if dynamic.Resolution != "unresolved" || len(dynamic.Providers) != 0 || len(dynamic.Candidates) != 2 {
 		t.Fatalf("dynamic must not guess: %+v", dynamic)
 	}
-	if bound.Methods[0].Source != (servicecatalog.Source{Path: "internal/app/providers.go", Symbol: "Port.Get"}) || !strings.Contains(bound.Methods[0].Signature, "string") {
-		t.Fatalf("source/signature: %+v", bound.Methods)
-	}
-	if bound.Methods[0].ID != servicecatalog.MethodID("example.com/shop/internal/app", "Port", "Get") {
-		t.Fatal("identity mismatch")
+	if bound.Interface == "" || bound.Methods == nil || len(bound.Methods) != 0 {
+		t.Fatalf("a binding names its interface and records no code method set: %+v", bound)
 	}
 	meth := c.Services[0].Methods[0]
 	if !meth.ServerStreaming || meth.Idempotency != "NO_SIDE_EFFECTS" || meth.Input != "shop.v1.Request" {

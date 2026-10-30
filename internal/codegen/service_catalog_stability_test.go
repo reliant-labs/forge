@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -21,8 +22,8 @@ import (
 
 // The committed catalog is merged by a queue: any pull request ahead of yours
 // that moves a line in a handler file must not make yours stale. So moving
-// declarations around, or editing unrelated code above them, leaves the bytes
-// identical; adding an rpc (proto or Go) changes them.
+// declarations around, editing unrelated code above them, or adding a Go
+// method leaves the bytes identical; adding an rpc changes them.
 
 const stableCatalogBase = `package app
 
@@ -205,7 +206,7 @@ func TestServiceCatalogIsStableAcrossMovedCode(t *testing.T) {
 	if len(c.Components) != 2 || len(c.Clients) != 1 || len(c.Bindings) != 1 || len(c.Processes) != 1 || len(c.Components[0].ImplementationCandidates) != 1 {
 		t.Fatalf("fixture lost a source kind:\n%s", base)
 	}
-	for _, s := range []servicecatalog.Source{c.Processes[0].Source, c.Components[0].Source, c.Components[0].Methods[0].Source,
+	for _, s := range []servicecatalog.Source{c.Processes[0].Source, c.Components[0].Source,
 		c.Components[0].ImplementationCandidates[0].Source, c.Components[1].Source, c.Clients[0].Source} {
 		if s.Path == "" || s.Symbol == "" || s.Line != 0 {
 			t.Fatalf("source %+v is not named by symbol:\n%s", s, base)
@@ -228,8 +229,23 @@ func TestServiceCatalogIsStableAcrossMovedCode(t *testing.T) {
 	}
 	goMethod := strings.Replace(stableCatalogBase, "Get(id string) (string, error)\n}", "Get(id string) (string, error)\n\tList() ([]string, error)\n}", 1)
 	goMethod += "\nfunc (*Impl) List() ([]string, error) { return nil, nil }\n"
-	if added, _ := stableCatalog(t, goMethod, stableCatalogServices); bytes.Equal(base, added) {
-		t.Fatal("adding a method to a component's interface left the committed catalog unchanged")
+	if added, _ := stableCatalog(t, goMethod, stableCatalogServices); !bytes.Equal(base, added) {
+		t.Fatalf("adding a Go method changed the committed catalog: it must depend on declarations "+
+			"(rpcs, components, bindings), not on Go method sets no forge input sees:\n--- base\n%s\n--- added\n%s", base, added)
+	}
+	unexported := stableCatalogBase + "\nfunc (*Impl) normalize(id string) string { return id }\n"
+	if added, _ := stableCatalog(t, unexported, stableCatalogServices); !bytes.Equal(base, added) {
+		t.Fatal("adding an unexported helper method changed the committed catalog")
+	}
+	for _, comp := range c.Components {
+		if len(comp.Methods) != 0 {
+			t.Fatalf("component %s records a code method set: %+v", comp.ID, comp.Methods)
+		}
+	}
+	if !slices.ContainsFunc(c.Diagnostics, func(d servicecatalog.Diagnostic) bool {
+		return d.Code == servicecatalog.DiagnosticBundleMethodSetsOmitted
+	}) {
+		t.Fatalf("the catalog does not say its method sets are not recorded: %+v", c.Diagnostics)
 	}
 }
 
@@ -261,9 +277,7 @@ func TestServiceCatalogBundleLocatesTheBuiltSource(t *testing.T) {
 	}
 	at(c.Processes[0].Source, "type API struct")
 	at(c.Components[0].Source, "func NewConsumer(")
-	at(c.Components[0].Methods[0].Source, "Get(id string) (string, error)")
 	at(c.Components[0].ImplementationCandidates[0].Source, "type Impl struct")
-	at(c.Components[0].ImplementationCandidates[0].Methods[0].Source, "func (*Impl) Get(")
 	at(c.Components[1].Source, "func NewOrders(")
 	at(c.Clients[0].Source, "func NewOrders(")
 }
@@ -290,11 +304,10 @@ func TestServiceCatalogUnicodeSymbolsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &packages.Package{Types: pkg, Fset: fset}
-	u := &graphUniverse{app: p}
 	iface := pkg.Scope().Lookup("Café").Type()
 	c := servicecatalog.Catalog{Schema: servicecatalog.Schema, Module: "example.com/shop", Components: []servicecatalog.Component{{
 		ID: "Café", Name: "Café", Kind: "component", Source: catalogSource(dir, fset, pkg.Scope().Lookup("Café")),
-		Methods: catalogMethods(dir, u, iface), ImplementationCandidates: catalogImplementations(dir, u, p, iface)}}}
+		ImplementationCandidates: catalogImplementations(dir, p, iface)}}}
 	raw, err := json.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
@@ -304,17 +317,62 @@ func TestServiceCatalogUnicodeSymbolsRoundTrip(t *testing.T) {
 		t.Fatalf("a Unicode symbol does not decode: %v\n%s", err, raw)
 	}
 	comp := decoded.Components[0]
-	if comp.Source.Symbol != "Café" || comp.Methods[0].Source.Symbol != "Café.Größe" || len(comp.ImplementationCandidates) != 1 || comp.ImplementationCandidates[0].Methods[0].Source.Symbol != "Ünit.Größe" {
+	if comp.Source.Symbol != "Café" || len(comp.ImplementationCandidates) != 1 || comp.ImplementationCandidates[0].Source.Symbol != "Ünit" {
 		t.Fatalf("symbols: %s", raw)
 	}
 	servicecatalog.Locate(&decoded, func(rel string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, rel)) })
 	comp = decoded.Components[0]
-	got := []int{comp.Source.Line, comp.Methods[0].Source.Line, comp.ImplementationCandidates[0].Source.Line, comp.ImplementationCandidates[0].Methods[0].Source.Line}
-	if want := []int{3, 4, 7, 9}; !slices.Equal(got, want) {
+	got := []int{comp.Source.Line, comp.ImplementationCandidates[0].Source.Line}
+	if want := []int{3, 7}; !slices.Equal(got, want) {
 		t.Fatalf("located lines %v, want %v", got, want)
 	}
 	located, _ := json.Marshal(decoded)
 	if _, err := servicecatalog.DecodeLocated(located); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Two pull requests that each change a different service change disjoint
+// lines of the committed catalog, so git's plain three-way merge — the one a
+// merge queue or GitHub's "update branch" runs, with no merge driver — merges
+// them cleanly into exactly what forge generate renders for the merged
+// inputs. Nothing else in the file (no fingerprint, no certificate in
+// .forge/hashes.json) changes with them.
+func TestServiceCatalogIndependentChangesMergeToTheRender(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	svc := func(name, pkg string, rpcs ...string) ServiceDef {
+		s := ServiceDef{Name: name, Package: pkg, ProtoFile: pkg + "/" + strings.ToLower(name) + ".proto"}
+		for _, r := range rpcs {
+			s.Methods = append(s.Methods, Method{Name: r, InputTypeFQ: pkg + "." + r + "Request", OutputTypeFQ: pkg + "." + r + "Response", AuthRequired: true})
+		}
+		return s
+	}
+	render := func(billing, users []string) []byte {
+		raw, _ := stableCatalog(t, stableCatalogBase, []ServiceDef{
+			svc("BillingService", "billing.v1", billing...),
+			svc("OrdersService", "shop.v1", "GetOrder"),
+			svc("UsersService", "users.v1", users...),
+		})
+		return raw
+	}
+	base := render([]string{"GetInvoice"}, []string{"GetUser"})
+	ours := render([]string{"GetInvoice", "ListInvoices"}, []string{"GetUser"})
+	theirs := render([]string{"GetInvoice"}, []string{"GetUser", "ListUsers"})
+	both := render([]string{"GetInvoice", "ListInvoices"}, []string{"GetUser", "ListUsers"})
+
+	dir := t.TempDir()
+	for name, body := range map[string][]byte{"base": base, "ours": ours, "theirs": theirs} {
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	merged, err := exec.Command("git", "merge-file", "-p", filepath.Join(dir, "ours"), filepath.Join(dir, "base"), filepath.Join(dir, "theirs")).Output()
+	if err != nil {
+		t.Fatalf("two independent service changes conflict in the catalog (%v):\n%s", err, merged)
+	}
+	if !bytes.Equal(merged, both) {
+		t.Fatalf("the plain merge of two independent changes is not forge's render of the merged inputs:\n--- merged\n%s\n--- render\n%s", merged, both)
 	}
 }

@@ -339,9 +339,11 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 		if unstampableRenderOfOurs(relPath, ours) {
 			return ours, true, keep, nil
 		}
-		// The descriptor is rewritten whole on every generate and certified
-		// by nothing: a clean merge stands, a conflict takes this side.
-		if path.Base(relPath) == "forge_descriptor.json" && !clean {
+		// gen/'s aggregates (the descriptor, the service catalog) are
+		// rewritten whole on every generate and certified by nothing
+		// (checksums.Uncertified): a clean merge stands, a conflict takes
+		// this side, and the next generate renders both sides' inputs.
+		if rel, ok := projectRelative(relPath); ok && checksums.Uncertified(rel) && !clean {
 			return ours, true, keep, nil
 		}
 	case !clean && checksums.Verify(ours) == checksums.Pristine && checksums.Verify(theirs) == checksums.Pristine:
@@ -359,6 +361,29 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 // the work tree, and relPath is relative to it); this side's hashes come
 // from HEAD, which is this side in a merge, a rebase and a cherry-pick alike.
 func unstampableRenderOfOurs(relPath string, ours []byte) bool {
+	rel, ok := projectRelative(relPath)
+	if !ok {
+		return false
+	}
+	prefix := strings.TrimSuffix(filepath.ToSlash(relPath), rel)
+	data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.HashesFile).Output()
+	if err != nil {
+		return false
+	}
+	var h struct {
+		Files map[string]string `json:"files"`
+	}
+	if json.Unmarshal(data, &h) != nil {
+		return false
+	}
+	recorded, ok := h.Files[rel]
+	return ok && recorded == checksums.BodyHash(ours)
+}
+
+// projectRelative is relPath (relative to the top of the work tree, where git
+// runs the driver) made relative to the forge project holding it: the nearest
+// directory above it with a forge.yaml. ok is false outside any project.
+func projectRelative(relPath string) (string, bool) {
 	rel := filepath.ToSlash(relPath)
 	for dir := path.Dir(rel); ; dir = path.Dir(dir) {
 		prefix := ""
@@ -366,21 +391,10 @@ func unstampableRenderOfOurs(relPath string, ours []byte) bool {
 			prefix = dir + "/"
 		}
 		if _, err := os.Stat(filepath.FromSlash(prefix + "forge.yaml")); err == nil {
-			data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.HashesFile).Output()
-			if err != nil {
-				return false
-			}
-			var h struct {
-				Files map[string]string `json:"files"`
-			}
-			if json.Unmarshal(data, &h) != nil {
-				return false
-			}
-			recorded, ok := h.Files[strings.TrimPrefix(rel, prefix)]
-			return ok && recorded == checksums.BodyHash(ours)
+			return strings.TrimPrefix(rel, prefix), true
 		}
 		if dir == "." || dir == "/" {
-			return false
+			return "", false
 		}
 	}
 }
@@ -976,7 +990,7 @@ const (
 // the project root: forge's generated outputs and its committed state.
 var generatedMergePatterns = []string{
 	"*_gen.go", "*_gen.ts", "*_gen.test.ts", "*_gen.json", "*_gen.ndjson",
-	"forge_descriptor.json",
+	"forge_descriptor.json", "forge_service_catalog.json",
 	".forge/scaffolded.json", ".forge/hashes.json", ".forge/disowned.json",
 }
 

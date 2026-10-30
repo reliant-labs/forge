@@ -294,3 +294,49 @@ func TestVerify_VintageClassification(t *testing.T) {
 		})
 	}
 }
+
+// gen/'s comment-incapable aggregates are certified by nothing: a write
+// records no hash (and drops one an earlier forge kept), a leftover record is
+// dropped at Load, and a changed copy is regenerated rather than refused as a
+// hand edit. Every other JSON output keeps its .forge/hashes.json record.
+func TestUncertifiedGenOutputsRecordNoHash(t *testing.T) {
+	root := t.TempDir()
+	const catalog, spec = "gen/forge_service_catalog.json", "deploy/observability/spec/x_gen.json"
+	if !Uncertified(catalog) || Uncertified(spec) || Uncertified("gen/foo_gen.go") {
+		t.Fatal("Uncertified: only gen/'s comment-incapable files")
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".forge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, HashesFile), []byte(`{"files":{"`+catalog+`":"stale"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cs.Unstampable[catalog]; ok {
+		t.Fatal("Load kept an earlier forge's certificate of a gen/ aggregate")
+	}
+	for _, p := range []string{catalog, spec} {
+		if _, err := WriteGeneratedFile(root, p, []byte("{\"v\":1}\n"), cs, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok := cs.Unstampable[catalog]; ok {
+		t.Fatal("a gen/ aggregate was certified in hashes.json")
+	}
+	if _, ok := cs.Unstampable[spec]; !ok {
+		t.Fatal("a JSON output outside gen/ lost its hashes.json record")
+	}
+	// A merged (changed) catalog is regenerated, not refused as a hand edit.
+	if err := os.WriteFile(filepath.Join(root, catalog), []byte("{\"v\":\"merged\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := WriteGeneratedFileOutcome(root, catalog, []byte("{\"v\":2}\n"), cs, false); err != nil || !out.Wrote || !out.Changed {
+		t.Fatalf("catalog write: %+v %v", out, err)
+	}
+	if drift := ScanTier1Drift(root, cs); len(drift) != 0 {
+		t.Fatalf("stomp guard flags gen/: %+v", drift)
+	}
+}

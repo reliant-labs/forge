@@ -5,9 +5,13 @@ import (
 	"sort"
 )
 
-// DiagnosticBundleMethodSetsOmitted marks a bundle copy whose code method sets
-// were left out (ForBundle): an empty Methods list there means "not carried",
-// never "has no methods". gen/ always has them.
+// DiagnosticBundleMethodSetsOmitted marks a catalog whose code method sets (of
+// components, implementation candidates and bindings) were left out: an empty
+// Methods list there means "not recorded", never "has no methods". A bundle
+// copy always carries it (ForBundle strips the sets from a catalog an earlier
+// forge committed), and since v1.0.8 so does the committed gen/ catalog, which
+// records none: a method set is a function of arbitrary Go in its package, so
+// recording it made gen/ stale on Go changes no forge input saw.
 const DiagnosticBundleMethodSetsOmitted = "bundle_method_sets_omitted"
 
 // ForBundle reduces c to the copy a bundle carries: what a hosted reader
@@ -20,7 +24,8 @@ const DiagnosticBundleMethodSetsOmitted = "bundle_method_sets_omitted"
 //     large project's catalog.
 //   - The code method sets of components, implementation candidates and
 //     bindings are dropped, and the DiagnosticBundleMethodSetsOmitted
-//     diagnostic says so. The topology stays: every component, binding,
+//     diagnostic says so (gen/ has carried none since v1.0.8; a catalog an
+//     earlier forge committed still does). The topology stays: every component, binding,
 //     candidate, provider and client. Method sets are one entry per Go method
 //     reachable through the composition graph (reliant: ~3,000 entries,
 //     1.2 MB), and no hosted reader uses them.

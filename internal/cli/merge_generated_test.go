@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -210,15 +211,20 @@ func TestMergeGenerated_HandEditedSideStaysModified(t *testing.T) {
 	}
 }
 
-// The scaffold declares the driver for forge's generated files.
+// The scaffold declares the driver for every file the driver is wired for
+// (generatedMergePatterns): a scaffolded project's committed .gitattributes
+// is what makes committedRoutesCover skip the per-clone copy, so a pattern
+// missing from it would route that file nowhere in a scaffolded project.
 func TestGitattributesTemplateDeclaresTheDriver(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "templates", "project", ".gitattributes"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"*_gen.ts merge=forge-generated", "forge_descriptor.json merge=forge-generated",
-		"*_gen.json merge=forge-generated", ".forge/scaffolded.json merge=forge-generated", ".forge/hashes.json merge=forge-generated"} {
-		if !strings.Contains(string(b), want) {
+	if !slices.Contains(generatedMergePatterns, "forge_service_catalog.json") {
+		t.Fatal("gen/forge_service_catalog.json is not routed to the driver")
+	}
+	for _, p := range generatedMergePatterns {
+		if want := p + " merge=forge-generated"; !strings.Contains(string(b), want) {
 			t.Errorf(".gitattributes template lacks %q", want)
 		}
 	}
@@ -657,5 +663,31 @@ func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T
 	ensureGeneratedMergeDriverTo(io.Discard, repo2)
 	if data, _ := os.ReadFile(filepath.Join(repo2, ".git", "info", "attributes")); !strings.Contains(string(data), mergeAttributesBegin) {
 		t.Errorf("a project with no committed routes lost them:\n%s", data)
+	}
+}
+
+// gen/forge_service_catalog.json is routed to the driver and, like the
+// descriptor, certified by nothing: two branches' disjoint changes merge as
+// lines, and a line both changed takes this side for the next generate to
+// render over — never a conflict a person resolves.
+func TestMergeGenerated_ServiceCatalogMergesWithoutConflict(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	const rel = "gen/forge_service_catalog.json"
+	lines := func(a, b string) []byte {
+		return []byte("{\n  \"services\": [\n    \"" + a + "\",\n    \"x1\",\n    \"x2\",\n    \"x3\",\n    \"" + b + "\"\n  ]\n}\n")
+	}
+	base := lines("billing", "users")
+	merged, clean, _, err := mergeGeneratedPath(context.Background(), rel, base, lines("billing+list", "users"), lines("billing", "users+list"), 7)
+	if err != nil || !clean || string(merged) != string(lines("billing+list", "users+list")) {
+		t.Fatalf("disjoint catalog changes: clean=%v err=%v\n%s", clean, err, merged)
+	}
+	ours := lines("billing+a", "users")
+	merged, clean, note, err := mergeGeneratedPath(context.Background(), rel, base, ours, lines("billing+b", "users"), 7)
+	if err != nil || !clean || string(merged) != string(ours) || note == "" {
+		t.Fatalf("a catalog line both sides changed must take this side for forge generate to refresh: clean=%v err=%v note=%q\n%s", clean, err, note, merged)
 	}
 }

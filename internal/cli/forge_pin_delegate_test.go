@@ -122,10 +122,10 @@ func TestDelegation_RewritingCommandRunsUnderThePinnedForge(t *testing.T) {
 	}
 	hasMarker := false
 	for _, kv := range h.env {
-		hasMarker = hasMarker || kv == forgedelegate.MarkerEnv+"=1"
+		hasMarker = hasMarker || kv == forgedelegate.MarkerEntry(os.Getpid(), "forge_version "+skewTestPin)
 	}
 	if !hasMarker {
-		t.Error("the delegated forge is not told it is one")
+		t.Errorf("the delegated forge is not told it is one: %v", h.env)
 	}
 	if n := strings.Count(out, "running "); n != 1 || !strings.Contains(out, skewTestPin) || !strings.Contains(out, "--allow-version-skew") {
 		t.Errorf("want exactly one notice naming the pin and the escape hatch:\n%s", out)
@@ -194,7 +194,7 @@ func TestDelegation_EscapeHatchesAndNoLoop(t *testing.T) {
 		}
 	})
 	t.Run("already delegated", func(t *testing.T) {
-		t.Setenv(forgedelegate.MarkerEnv, "1")
+		actAsDelegate(t)
 		h, _ := armDelegation(t)
 		if out, err := runCheck(t, "generate"); err != nil || h.path != "" || out != "" {
 			t.Errorf("a delegated forge handed off again or complained: err %v, %q, %q", err, h.path, out)

@@ -34,6 +34,21 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 	return internalcli.HandOffToPinned(ctx, args, stderr)
 }
 
+// PinnedForge is the forge a project pins, resolved and ready to run: its
+// executable, a Key naming exactly which forge it is (for caching what it
+// prints), and Want, which forge the project asked for.
+type PinnedForge = internalcli.PinnedForge
+
+// ResolvePinnedForge makes HandOffToPinned's decision for the forge command
+// command ("skill load", "skill list") in projectRoot, and resolves the forge
+// without running it, for a host that runs the project's forge itself. ok is
+// false when this forge is the one to run command there; err, with the reason,
+// when the project's forge is wanted and cannot be obtained — a host must then
+// not substitute this forge's answer. log receives the one-time build notice.
+func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io.Writer) (PinnedForge, bool, error) {
+	return internalcli.ResolvePinnedForge(ctx, projectRoot, command, log)
+}
+
 // SetVersion sets the version, build date, and git commit for the Forge CLI.
 func SetVersion(version, buildDate, gitCommit string) {
 	internalcli.SetVersion(version, buildDate, gitCommit)

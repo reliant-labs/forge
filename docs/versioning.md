@@ -179,9 +179,13 @@ reliant, v1.0.5`), since nothing else on screen names it.
 The explicit "run THIS forge" is `--allow-version-skew` or
 `FORGE_ALLOW_VERSION_SKEW=1`: no hand-off, and the warn/refuse rules apply (a
 rewriting command under the wrong forge is refused with the exact
-`go run …@<pin>` line). A delegated forge sets `FORGE_VERSION_DELEGATED=1` and
-never hands off again, so the two cannot loop. On Windows, which has no `exec`,
-the old process stays as the parent and relays the exit status.
+`go run …@<pin>` line). The hand-off sets `FORGE_VERSION_DELEGATED=<pid>:<target>`
+for the forge it starts, which then never hands off again, so the two cannot
+loop. The marker is good for that one process: it names the pid it is for (the
+exec'd process on Unix, whose parent is the relaying forge on Windows, which has
+no `exec`), and the delegate removes it from its environment as it starts. So
+nothing the delegate runs — `forge env up`'s services, a daemon, a `reliant
+forge` in another project — inherits a pass on the pin check.
 
 ## The compatibility gate
 

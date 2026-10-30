@@ -1,0 +1,201 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/forgedelegate"
+)
+
+// actAsDelegate makes this process the forge a hand-off exec'd.
+func actAsDelegate(t *testing.T) {
+	t.Helper()
+	prev := isDelegate
+	t.Cleanup(func() { isDelegate = prev })
+	isDelegate = func() bool { return true }
+}
+
+// Review of #1536: an embedder runs many invocations in one process, and the
+// root's PersistentPreRun leaves the last one's -C installed. A later
+// invocation without -C must resolve ITS project (the working directory),
+// not the previous one's — or it execs the previous project's pinned forge
+// against this one.
+func TestHandOffToPinned_ResolvesThisInvocationsProjectNotThePreviousOnes(t *testing.T) {
+	prevVersion, prevCommit := buildinfo.Version(), buildinfo.GitCommit()
+	buildinfo.Set(skewTestBinary, "", "6c0c3edb1322")
+	t.Cleanup(func() { buildinfo.Set(prevVersion, "", prevCommit) })
+	const pinA = "v0.1.40-0.20261001000000-aaaaaaaaaaaa"
+	projectA, projectB := t.TempDir(), t.TempDir()
+	writeForgeYAML(t, projectA, "name: a\nmodule_path: example.com/a\nforge_version: "+pinA+"\n")
+	writeForgeYAML(t, projectB, "name: b\nmodule_path: example.com/b\nforge_version: "+skewTestPin+"\n")
+	t.Chdir(projectB)
+
+	// An earlier invocation in this process, with -C A.
+	root := newTestRootCmd(t)
+	root.SetArgs([]string{"version", "-C", projectA})
+	root.SetOut(io.Discard)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("forge version -C A: %v", err)
+	}
+	if dir, ok := cmdutil.ProjectDirOverride(); !ok || dir != projectA {
+		t.Fatalf("precondition: the earlier invocation left -C %q installed, want %s", dir, projectA)
+	}
+
+	h, installs := armDelegation(t)
+	handed, _, err := handOffForTest(t, "generate")
+	if err != nil || !handed || h.path == "" {
+		t.Fatalf("handed %v, err %v", handed, err)
+	}
+	if len(*installs) != 1 || !strings.HasSuffix((*installs)[0], "@"+skewTestPin) {
+		t.Errorf("built %v, want project B's pin %s — the previous invocation's -C chose the forge", *installs, skewTestPin)
+	}
+}
+
+// Stages of the process tree TestDelegateMarkerDoesNotReachGrandchildren
+// builds out of this test binary.
+const (
+	markerStageEnv   = "FORGE_TEST_MARKER_STAGE"
+	markerProjectEnv = "FORGE_TEST_MARKER_PROJECT"
+)
+
+// The marker a hand-off sets is good for the forge it exec'd and nothing
+// below it. A delegate that starts another forge — `forge env up` starting a
+// daemon whose shell runs `reliant forge` in a project pinned to something
+// else — must leave that forge to make its own decision, and it delegates.
+// So must a grandchild handed a COPY of the delegate's marker by a program
+// that captured its environment.
+func TestDelegateMarkerDoesNotReachGrandchildren(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the delegate is exec'd in place, which Windows cannot do")
+	}
+	if testing.Short() {
+		// The marker's own process-tree proof (forgedelegate's
+		// TestMarker_ProcessTree) runs under -short.
+		t.Skip("re-executes this test binary three times (~5s); runs in task test")
+	}
+	project := t.TempDir()
+	writeForgeYAML(t, project, "name: other\nmodule_path: example.com/other\nforge_version: "+skewTestPin+"\n")
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDelegateMarkerHelperProcess$")
+	cmd.Env = append(os.Environ(), markerStageEnv+"=exec", markerProjectEnv+"="+project)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the process tree failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"delegate: delegated=true marker-in-env=false",
+		"grandchild(inherited): delegated=false handed=true",
+		"grandchild(copied): delegated=false handed=true",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// TestDelegateMarkerHelperProcess is not a test: re-executed by the test
+// above, it plays one process of the tree.
+func TestDelegateMarkerHelperProcess(t *testing.T) {
+	switch os.Getenv(markerStageEnv) {
+	case "exec":
+		// A forge handing its command over: exec in place, as the hand-off does.
+		// exec(2) does not de-duplicate: the first stage entry would win.
+		var env []string
+		for _, kv := range forgedelegate.Env("forge_version " + skewTestPin) {
+			if !strings.HasPrefix(kv, markerStageEnv+"=") {
+				env = append(env, kv)
+			}
+		}
+		env = append(env, markerStageEnv+"=delegate")
+		err := forgedelegate.Exec(os.Args[0], os.Args[1:], env)
+		fmt.Printf("exec: %v\n", err)
+		os.Exit(1)
+	case "delegate":
+		_, inEnv := os.LookupEnv(forgedelegate.MarkerEnv)
+		fmt.Printf("delegate: delegated=%v marker-in-env=%v\n", forgedelegate.Delegated(), inEnv)
+		copied := forgedelegate.MarkerEntry(os.Getpid(), "forge_version "+skewTestPin)
+		for name, extra := range map[string][]string{"inherited": nil, "copied": {copied}} {
+			cmd := exec.Command(os.Args[0], os.Args[1:]...)
+			cmd.Dir = os.Getenv(markerProjectEnv)
+			cmd.Env = append(append(os.Environ(), extra...), markerStageEnv+"=grandchild:"+name)
+			out, err := cmd.CombinedOutput()
+			fmt.Printf("%s", out)
+			if err != nil {
+				fmt.Printf("grandchild(%s) failed: %v\n", name, err)
+			}
+		}
+		os.Exit(0)
+	}
+	if name, ok := strings.CutPrefix(os.Getenv(markerStageEnv), "grandchild:"); ok {
+		// A forge in a project pinned to another forge, started by the
+		// delegate: it decides for itself.
+		buildinfo.Set(skewTestBinary, "", "6c0c3edb1322")
+		h, _ := armDelegation(t)
+		handed, err := HandOffToPinned(context.Background(), []string{"generate"}, io.Discard)
+		fmt.Printf("grandchild(%s): delegated=%v handed=%v err=%v exec=%q\n",
+			name, forgedelegate.Delegated(), handed, err, filepath.Base(h.path))
+		os.Exit(0)
+	}
+}
+
+// An embedder runs invocation after invocation in one process. Each one's
+// hand-off is decided by its own arguments and working directory: never by
+// the -C an earlier one left installed, and without installing one itself.
+func TestHandOffToPinned_ConsecutiveEmbeddedInvocationsEachResolveTheirOwnProject(t *testing.T) {
+	prevVersion, prevCommit := buildinfo.Version(), buildinfo.GitCommit()
+	buildinfo.Set(skewTestBinary, "", "6c0c3edb1322")
+	t.Cleanup(func() { buildinfo.Set(prevVersion, "", prevCommit) })
+	const pinA = "v0.1.40-0.20261001000000-aaaaaaaaaaaa"
+	projectA, projectB := t.TempDir(), t.TempDir()
+	writeForgeYAML(t, projectA, "name: a\nmodule_path: example.com/a\nforge_version: "+pinA+"\n")
+	writeForgeYAML(t, projectB, "name: b\nmodule_path: example.com/b\nforge_version: "+skewTestPin+"\n")
+	nested := filepath.Join(projectB, "internal", "x")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmdutil.SetProjectDir("") })
+
+	for i, step := range []struct {
+		cwd     string
+		args    []string
+		wantPin string
+	}{
+		{projectB, []string{"generate", "-C", projectA}, pinA},
+		{projectB, []string{"generate"}, skewTestPin},
+		{projectA, []string{"generate"}, pinA},
+		{projectA, []string{"--project-dir=" + projectB, "lint"}, skewTestPin},
+		{nested, []string{"generate"}, skewTestPin},
+		{projectA, []string{"-C", nested, "generate"}, skewTestPin},
+		{projectA, []string{"generate"}, pinA},
+	} {
+		t.Chdir(step.cwd)
+		// What an earlier in-process run of the tree leaves behind.
+		stale := projectA
+		if step.wantPin == pinA {
+			stale = projectB
+		}
+		if err := cmdutil.SetProjectDir(stale); err != nil {
+			t.Fatal(err)
+		}
+		h, installs := armDelegation(t)
+		handed, _, err := handOffForTest(t, step.args...)
+		if err != nil || !handed || h.path == "" {
+			t.Fatalf("step %d %v in %s: handed %v, err %v", i, step.args, step.cwd, handed, err)
+		}
+		if len(*installs) != 1 || !strings.HasSuffix((*installs)[0], "@"+step.wantPin) {
+			t.Errorf("step %d %v in %s: built %v, want %s", i, step.args, step.cwd, *installs, step.wantPin)
+		}
+		if got, _ := cmdutil.ProjectDirOverride(); got != stale {
+			t.Errorf("step %d: the hand-off changed the process-wide project dir to %q", i, got)
+		}
+	}
+}

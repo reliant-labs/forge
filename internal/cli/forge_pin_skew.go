@@ -39,7 +39,6 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/forgecompat"
-	"github.com/reliant-labs/forge/internal/forgedelegate"
 )
 
 // pinGatedCommands are the commands, relative to forge's root, that refuse
@@ -271,7 +270,7 @@ func pinSkewRefusal(projectRoot, pin, binary, what string) error {
 // development forge against a tag pin, an in-process run with the hand-off
 // disabled — warns on w, and a pin-gated command is refused unless allowed.
 func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error {
-	if forgedelegate.Delegated() {
+	if isDelegate() {
 		return nil
 	}
 	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))

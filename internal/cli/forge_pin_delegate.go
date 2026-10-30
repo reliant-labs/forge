@@ -34,7 +34,9 @@ package cli
 // PersistentPreRun makes the same decision for a host that did not call it.
 //
 // The hand-off is an exec: same arguments, same environment (plus
-// FORGE_VERSION_DELEGATED, which stops the pinned forge handing off again),
+// FORGE_VERSION_DELEGATED, which stops the pinned forge handing off again —
+// that forge alone: it is addressed to the exec'd pid and consumed at start-up,
+// so nothing the delegate starts inherits it; see forgedelegate.MarkerEnv),
 // stdio and exit status. One line on stderr says it happened.
 //
 // It is skipped when --allow-version-skew or FORGE_ALLOW_VERSION_SKEW is set
@@ -50,6 +52,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -57,7 +60,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
-	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
 )
@@ -108,6 +110,10 @@ var (
 		}
 	}
 	pinDelegateExec = forgedelegate.Exec
+	// isDelegate: this process is the forge a hand-off exec'd. Decided once,
+	// at start-up (forgedelegate consumes the marker before main), so the
+	// tests that play a delegate swap this instead of the environment.
+	isDelegate = forgedelegate.Delegated
 	// forgeIsLocalBuild: only a forge built from a local tree is "a
 	// development forge" a rewriting command tolerates against a tag pin.
 	forgeIsLocalBuild = buildinfo.LocalBuild
@@ -149,7 +155,7 @@ var handOffDecided bool
 // notices.
 func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (handed bool, err error) {
 	handOffDecided = true
-	if forgedelegate.Delegated() || pinDelegationDisabled {
+	if isDelegate() || pinDelegationDisabled {
 		return false, nil
 	}
 	inv := parseInvocation(args)
@@ -231,18 +237,41 @@ func scanProjectDir(args []string) string {
 	return ""
 }
 
-// projectRootFrom is the project root the command will resolve, from dir
-// (-C) or the working directory; "" outside any project.
+// projectRootFrom is the project root THIS invocation names: the nearest
+// forge.yaml at or above dir (-C), or above the working directory when dir is
+// ""; "" outside any project.
+//
+// It reads no process-global state and installs none. An in-process embedder
+// (reliant) runs many invocations in one process, and the root's
+// PersistentPreRun leaves the last one's -C installed in cmdutil; resolving
+// through that override handed a command to the PREVIOUS invocation's
+// project's pinned forge, and the delegate's marker then disabled the
+// receiver's own check. The answer is a function of this invocation's
+// arguments and working directory alone.
 func projectRootFrom(dir string) (string, error) {
-	if dir != "" {
-		if err := cmdutil.SetProjectDir(dir); err != nil {
+	start := dir
+	if start == "" {
+		wd, err := os.Getwd()
+		if err != nil {
 			return "", err
 		}
-		defer func() { _ = cmdutil.SetProjectDir("") }()
+		start = wd
 	}
-	// No project is an answer, not a failure.
-	root, _ := cmdutil.FindProjectRoot()
-	return root, nil
+	abs, err := filepath.Abs(start)
+	if err != nil {
+		return "", err
+	}
+	if st, err := os.Stat(abs); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("project dir %q is not a directory", dir)
+	}
+	for d := abs; ; d = filepath.Dir(d) {
+		if st, err := os.Stat(filepath.Join(d, defaultProjectConfigFile)); err == nil && !st.IsDir() {
+			return d, nil
+		}
+		if filepath.Dir(d) == d {
+			return "", nil // no project is an answer, not a failure
+		}
+	}
 }
 
 // handOff is the decision both entry points share: hand the command at rel to
@@ -252,20 +281,11 @@ func handOff(ctx context.Context, w io.Writer, rel string, allow bool, projectRo
 	if !handOffWanted(rel) {
 		return false, nil
 	}
-	if projectRoot == "" {
-		noteUnpinned(w, "not inside a forge project")
-		return false, nil
+	t, ok, unpinned := pinTarget(rel, allow, projectRoot)
+	if unpinned != "" {
+		noteUnpinned(w, unpinned)
 	}
-	if cfg, ok := readPinFields(projectRoot); ok && strings.TrimSpace(cfg.ForgeVersion) == "" && !forgecompat.InspectBridge(projectRoot).Bridged {
-		noteUnpinned(w, filepath.Join(projectRoot, defaultProjectConfigFile)+" pins no forge_version")
-		return false, nil
-	}
-	t, ok := delegateTargetFor(projectRoot)
 	if !ok {
-		return false, nil
-	}
-	if allow || forgecompat.SkewOverridden() || t.devAgainstTag(rel) {
-		// Run this forge; checkForgePinSkew warns, or refuses.
 		return false, nil
 	}
 	if ctx == nil {
@@ -276,6 +296,61 @@ func handOff(ctx context.Context, w io.Writer, rel string, allow bool, projectRo
 		return false, handOffFailure(projectRoot, t, rel, err)
 	}
 	return handed, nil
+}
+
+// pinTarget is the forge the command at rel must run under in projectRoot,
+// when that is not this forge (ok). ok is false when this forge runs it: no
+// project or no pin (unpinned says which, for the notice), no skew, the user
+// overrode the check (allow, or the environment), or a local development forge
+// against a tag pin for a command that tolerates it.
+func pinTarget(rel string, allow bool, projectRoot string) (t delegateTarget, ok bool, unpinned string) {
+	if projectRoot == "" {
+		return delegateTarget{}, false, "not inside a forge project"
+	}
+	if cfg, ok := readPinFields(projectRoot); ok && strings.TrimSpace(cfg.ForgeVersion) == "" && !forgecompat.InspectBridge(projectRoot).Bridged {
+		return delegateTarget{}, false, filepath.Join(projectRoot, defaultProjectConfigFile) + " pins no forge_version"
+	}
+	t, ok = delegateTargetFor(projectRoot)
+	if !ok {
+		return delegateTarget{}, false, ""
+	}
+	if allow || forgecompat.SkewOverridden() || t.devAgainstTag(rel) {
+		// Run this forge; checkForgePinSkew warns, or refuses.
+		return delegateTarget{}, false, ""
+	}
+	return t, true, ""
+}
+
+// PinnedForge is the forge a project pins, resolved and ready to run.
+type PinnedForge struct {
+	// Path is the executable.
+	Path string
+	// Key identifies exactly which forge it is, for a cache of what it
+	// prints: the pinned version, or a linked checkout and its contents.
+	Key string
+	// Want says which forge the project wants, for a message.
+	Want string
+}
+
+// ResolvePinnedForge is the hand-off's decision and resolution without the
+// exec, for a host that runs the project's forge itself (reliant reading the
+// pinned forge's skills). command is the forge command it will run ("skill
+// load"), which the decision depends on. ok is false when this forge is the
+// one to run it; err, when the pinned forge is wanted and cannot be obtained.
+// log receives the one-time "building forge" notice.
+func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io.Writer) (PinnedForge, bool, error) {
+	if isDelegate() || !handOffWanted(command) {
+		return PinnedForge{}, false, nil
+	}
+	t, ok, _ := pinTarget(command, false, projectRoot)
+	if !ok {
+		return PinnedForge{}, false, nil
+	}
+	res, err := resolveTarget(ctx, log, projectRoot, t)
+	if err != nil {
+		return PinnedForge{}, false, handOffFailure(projectRoot, t, command, err)
+	}
+	return PinnedForge{Path: res.Path, Key: t.key(), Want: t.String()}, true, nil
 }
 
 // noteUnpinned says which forge runs when no project pin decides it. Only an
@@ -327,6 +402,15 @@ func (t delegateTarget) devAgainstTag(rel string) bool {
 	return t.devTag && !pinBuildCommands[rel]
 }
 
+// key identifies exactly the forge t names: a pin names one module version,
+// a checkout's stamp its current contents.
+func (t delegateTarget) key() string {
+	if t.checkout != "" {
+		return "checkout:" + t.checkout + "@" + t.stamp
+	}
+	return "pin:" + t.pin
+}
+
 func (t delegateTarget) String() string {
 	if t.checkout != "" {
 		return "the checkout " + t.checkout + " this project is linked to"
@@ -363,22 +447,25 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 // returns instead of replacing the process). args are the forge arguments of
 // this invocation.
 func delegateToPinned(ctx context.Context, w io.Writer, projectRoot string, t delegateTarget, args []string) (handed bool, err error) {
-	r := pinDelegateResolver(w)
-	var res forgedelegate.Result
-	if t.checkout != "" {
-		res, err = r.Bridge(ctx, t.checkout, t.stamp)
-	} else {
-		res, err = r.Pinned(ctx, projectRoot, t.pin)
-	}
+	res, err := resolveTarget(ctx, w, projectRoot, t)
 	if err != nil {
 		return false, err
 	}
 	_, _ = fmt.Fprintf(w, "forge: this forge is %s, but the project wants %s — running %s instead (%s, or %s=1, to run this one)\n",
 		t.binary, t, res.Source, "--"+allowVersionSkewFlag, allowVersionSkewEnv)
-	if err := pinDelegateExec(res.Path, args, forgedelegate.Env()); err != nil {
+	if err := pinDelegateExec(res.Path, args, forgedelegate.Env(t.String())); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// resolveTarget finds, or builds, the forge t names.
+func resolveTarget(ctx context.Context, w io.Writer, projectRoot string, t delegateTarget) (forgedelegate.Result, error) {
+	r := pinDelegateResolver(w)
+	if t.checkout != "" {
+		return r.Bridge(ctx, t.checkout, t.stamp)
+	}
+	return r.Pinned(ctx, projectRoot, t.pin)
 }
 
 // pinnedRunLine is the command that runs args under the forge the project

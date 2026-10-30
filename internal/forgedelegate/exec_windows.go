@@ -9,6 +9,12 @@ import (
 	"os/exec"
 )
 
+// markerOwner is the pid a marker addressed to this process names: Windows
+// has no exec(2), so the forge that wrote it stays alive as this process's
+// parent, relaying its exit status. A child of this process has this
+// process, not that one, as its parent.
+func markerOwner() int { return os.Getppid() }
+
 // Exec runs the forge at path with args and exits with its status: Windows has
 // no exec(2), so this process stays alive as the parent and relays the exit
 // code. Stdio is inherited, and a console interrupt reaches both processes.

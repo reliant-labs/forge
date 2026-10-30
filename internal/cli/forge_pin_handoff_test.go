@@ -227,3 +227,35 @@ func TestHandOffToPinned_TheRootCheckDoesNotDecideAgain(t *testing.T) {
 		t.Errorf("the root check handed over after the entrypoint decided (built %v)", *installs)
 	}
 }
+
+// A host that runs the project's forge itself (reliant reading its skills)
+// gets the same decision, resolved and not exec'd — and the same refusal to
+// substitute this forge when the pin cannot be had.
+func TestResolvePinnedForge(t *testing.T) {
+	skewedProject(t)
+	root, _ := os.Getwd()
+	h, installs := armDelegation(t)
+
+	got, ok, err := ResolvePinnedForge(context.Background(), root, "skill load", io.Discard)
+	if err != nil || !ok || got.Path == "" {
+		t.Fatalf("got %+v, ok %v, err %v", got, ok, err)
+	}
+	if got.Key != "pin:"+skewTestPin || !strings.Contains(got.Want, skewTestPin) {
+		t.Errorf("key %q, want %q", got.Key, got.Want)
+	}
+	if len(*installs) != 1 || h.path != "" {
+		t.Errorf("built %v, exec'd %q: resolve must build, never exec", *installs, h.path)
+	}
+
+	if _, ok, err := ResolvePinnedForge(context.Background(), t.TempDir(), "skill load", io.Discard); ok || err != nil {
+		t.Errorf("outside a project: ok %v, err %v", ok, err)
+	}
+	if _, ok, _ := ResolvePinnedForge(context.Background(), root, "version", io.Discard); ok {
+		t.Error("an exempt command resolved a pinned forge")
+	}
+	unobtainablePin(t)
+	t.Setenv(forgedelegate.CacheDirEnv, t.TempDir())
+	if _, ok, err := ResolvePinnedForge(context.Background(), root, "skill load", io.Discard); ok || err == nil || !strings.Contains(err.Error(), "could not be obtained") {
+		t.Errorf("unobtainable pin: ok %v, err %v", ok, err)
+	}
+}

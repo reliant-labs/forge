@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -181,6 +182,58 @@ func TestHistogramBuckets(t *testing.T) {
 	h := collect(t, reader)["latency"].Data.(metricdata.Histogram[float64])
 	if got := h.DataPoints[0].Bounds; len(got) != 2 || got[0] != 0.1 || got[1] != 1 {
 		t.Errorf("bounds = %v, want [0.1 1]", got)
+	}
+}
+
+// A histogram declared in seconds with no Buckets gets SecondsBuckets, through
+// both registry constructors, as callers normally declare it (Type and Buckets
+// omitted). The SDK default boundaries are sized for milliseconds: against
+// seconds they put 5ms..5s in one bucket and every quantile reads 4.75s.
+func TestSecondsHistogramsGetSecondsBuckets(t *testing.T) {
+	reg, reader := newTestRegistry(t)
+	ctx := context.Background()
+	reg.Float64Histogram(Spec{Name: "f_seconds", Unit: "s", Description: "x", Since: "v1.0.0"}).Record(ctx, 0.06)
+	reg.Int64Histogram(Spec{Name: "i_seconds", Unit: "s", Description: "x", Since: "v1.0.0"}).Record(ctx, 3)
+	reg.Float64Histogram(Spec{Name: "f_millis", Unit: "ms", Description: "x", Since: "v1.0.0"}).Record(ctx, 60)
+	got := collect(t, reader)
+
+	f := got["f_seconds"].Data.(metricdata.Histogram[float64]).DataPoints[0]
+	if !slices.Equal(f.Bounds, SecondsBuckets()) {
+		t.Fatalf("Float64Histogram bounds = %v, want SecondsBuckets %v", f.Bounds, SecondsBuckets())
+	}
+	// 0.06s lands in (0.05, 0.075]: a bucket 25ms wide, not [0, 5].
+	if i := slices.Index(f.Bounds, 0.075); f.BucketCounts[i] != 1 {
+		t.Errorf("0.06s is not in the (0.05, 0.075] bucket: counts %v", f.BucketCounts)
+	}
+	if b := got["i_seconds"].Data.(metricdata.Histogram[int64]).DataPoints[0].Bounds; !slices.Equal(b, SecondsBuckets()) {
+		t.Errorf("Int64Histogram bounds = %v, want SecondsBuckets", b)
+	}
+	if b := got["f_millis"].Data.(metricdata.Histogram[float64]).DataPoints[0].Bounds; slices.Equal(b, SecondsBuckets()) {
+		t.Errorf("a millisecond histogram got the seconds boundaries %v", b)
+	}
+}
+
+// An explicit Buckets on the constructor wins, even when the same metric was
+// declared earlier without any (Describe, or a built-in): buckets are not part
+// of a metric's identity, so the earlier declaration must not substitute
+// SecondsBuckets for the caller's override.
+func TestExplicitBucketsWinOverAnEarlierDeclaration(t *testing.T) {
+	reg, reader := newTestRegistry(t)
+	ctx := context.Background()
+	custom := []float64{0.1, 1}
+	for _, name := range []string{"f_custom", "i_custom"} {
+		if err := reg.Describe(Spec{Name: name, Type: Histogram, Unit: "s", Description: "x", Since: "v1.0.0"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg.Float64Histogram(Spec{Name: "f_custom", Unit: "s", Description: "x", Since: "v1.0.0", Buckets: custom}).Record(ctx, 0.5)
+	reg.Int64Histogram(Spec{Name: "i_custom", Unit: "s", Description: "x", Since: "v1.0.0", Buckets: custom}).Record(ctx, 3)
+	got := collect(t, reader)
+	if b := got["f_custom"].Data.(metricdata.Histogram[float64]).DataPoints[0].Bounds; !slices.Equal(b, custom) {
+		t.Errorf("Float64Histogram bounds = %v, want the explicit %v", b, custom)
+	}
+	if b := got["i_custom"].Data.(metricdata.Histogram[int64]).DataPoints[0].Bounds; !slices.Equal(b, custom) {
+		t.Errorf("Int64Histogram bounds = %v, want the explicit %v", b, custom)
 	}
 }
 

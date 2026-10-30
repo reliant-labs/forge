@@ -286,3 +286,67 @@ func TestPlacementPrerequisitesIndependentAndPure(t *testing.T) {
 		t.Fatal("pure bundle changed")
 	}
 }
+
+// ownedDoc is a cluster object owned only through forge.dev/release-owners,
+// as a raw manifest consumer's and a native provider's (OpenBao's) are.
+func ownedDoc(owner, apiVersion, kind, name, body string) string {
+	return "---\n# cluster: prod\napiVersion: " + apiVersion + "\nkind: " + kind + "\nmetadata:\n  name: " + name +
+		"\n  namespace: app\n  labels:\n    app.kubernetes.io/name: " + name + "\n  annotations:\n    forge.dev/release-owners: '[\"" + owner + "\"]'\n" + body
+}
+
+// A raw manifest consumer and a native provider are owned only by the
+// release-owners annotation (the rule SnapshotInventory reads). Their
+// controllers are ordinary items, their Jobs and config bind to them, the
+// passive objects they render are inventory, and the hosted frontend waits
+// for both.
+func TestPlacementPrerequisitesAnnotationOwnedConsumers(t *testing.T) {
+	in := placementBuildInput()
+	const bao = "openbao-app-store"
+	in.Placements = []PlacementDeclaration{
+		{Workload: "api", Runtime: "cluster", Actuator: "forge"},
+		{Workload: "nats", Runtime: "cluster", Actuator: "forge"},
+		{Workload: bao, Runtime: "cluster", Actuator: "forge"},
+		{Workload: "web", Runtime: "hosted", Actuator: "platform", Dependencies: []string{"api", "nats", bao}},
+	}
+	in.Shape.Manifests += ownedDoc("nats", "apps/v1", "StatefulSet", "nats", "spec: {}\n") +
+		ownedDoc(bao, "apps/v1", "Deployment", "store", "spec: {}\n") +
+		ownedDoc(bao, "batch/v1", "Job", "store-converge-abcd1234", "spec: {}\n") +
+		ownedDoc(bao, "v1", "ConfigMap", "store-config", "data: {config.hcl: x}\n") +
+		ownedDoc(bao, "external-secrets.io/v1", "ExternalSecret", "store-bootstrap", "spec: {}\n") +
+		ownedDoc(bao, "cert-manager.io/v1", "Issuer", "store-ca", "spec: {}\n")
+	b, err := Build(t.Context(), in)
+	if err != nil {
+		t.Fatalf("annotation-owned consumers must place: %v", err)
+	}
+	p := b.Doc.PlacementPrerequisites
+	item := map[string]release.PlacementKey{}
+	for _, it := range p.Items {
+		if it.Key.Kind == "StatefulSet" || it.Key.Kind == "Deployment" || it.Key.Kind == "StaticSite" {
+			item[it.Workload] = it.Key
+		}
+	}
+	if item["nats"].Name != "nats" || item[bao].Name != "store" {
+		t.Fatalf("controller items = %+v", p.Items)
+	}
+	waits := map[string]bool{}
+	for _, e := range p.Edges {
+		if e.Dependent == item["web"] {
+			waits[e.Predecessor.Name] = true
+		}
+	}
+	if !waits["nats"] || !waits["store"] {
+		t.Fatalf("the hosted frontend does not wait for both: %+v", p.Edges)
+	}
+	bound := map[string]string{}
+	for _, bd := range p.Bindings {
+		if bd.Item == item[bao] {
+			bound[bd.Object.Kind] = bd.JobContract
+		}
+	}
+	if _, ok := bound["ConfigMap"]; !ok || bound["Job"] != release.KubernetesJobCompleteV1 {
+		t.Fatalf("provider bindings = %+v", bound)
+	}
+	if _, ok := bound["ExternalSecret"]; ok {
+		t.Fatal("an ESO object is applied inventory, never a readiness binding")
+	}
+}

@@ -419,6 +419,14 @@ of the tree it publishes into `<staging>.sourcemaps/` (same relative paths, plus
 a deploy whose served tree still holds one. Firebase asset retention never
 carries a `.map` forward.
 
+The sidecar is filed in the platform registry
+(`<org>/<project>/<frontend>-sourcemaps:<build id>`), where the issues worker
+symbolicates errors from. `telemetry = forge.BrowserTelemetry {sourcemaps =
+"public"}` is the escape hatch for an app that wants its maps served: the tree
+keeps its maps and trailers, and the maps are still copied to the sidecar and
+filed, so its errors symbolicate too. `"off"` keeps maps nowhere, and its errors
+stay minified.
+
 ### Replay is shipped, off, and always masked
 
 The SDK bundles an rrweb recorder. It stays disabled unless the replay knob is

@@ -13,7 +13,6 @@ package cli
 // because a dashboard that fails in the console is found by a customer.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -139,17 +138,28 @@ func bundleObservabilityFiles(projectDir string, in bundleBuildInputs, entities 
 	}
 	raw, readErr := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(servicecatalog.GeneratedPath)))
 	if readErr == nil {
-		if _, err := servicecatalog.Decode(raw); err != nil {
+		catalog, err := servicecatalog.Decode(raw)
+		if err != nil {
 			return nil, err
 		}
+		// The bundle copy is what a control plane serves to a browser: only
+		// what its readers use, so it does not grow past their bounds with
+		// the project (reliant's: 2.1 MB compact in full, ~0.4 MB reduced).
+		servicecatalog.ForBundle(&catalog)
+		// gen/ names each declaration by symbol, so unrelated edits never
+		// make it stale; the bundle carries the line, resolved here against
+		// the very source being built.
+		servicecatalog.Locate(&catalog, func(rel string) ([]byte, error) {
+			return os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(rel)))
+		})
 		// gen/ keeps the indented form for reviewable diffs; the bundle, which
 		// the control plane serves to a browser, carries the compact one (a
 		// third smaller for a large project).
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, raw); err != nil {
+		located, err := json.Marshal(catalog)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, bundle.ObservabilityFile{Path: servicecatalog.BundlePath, Data: compact.Bytes()})
+		out = append(out, bundle.ObservabilityFile{Path: servicecatalog.BundlePath, Data: located})
 	} else if !os.IsNotExist(readErr) {
 		return nil, readErr
 	}

@@ -284,11 +284,45 @@ func TestPublicModeServesMapsAndKeepsTrailers(t *testing.T) {
 	if served["app/assets/index-abc.js.map"] != testMapJSON || served["app/assets/index-abc.js"] != files["assets/index-abc.js"] {
 		t.Error("public mode must leave maps and trailers alone")
 	}
-	if res.SourcemapsDir != "" {
-		t.Errorf("public mode made a sidecar: %q", res.SourcemapsDir)
+	// Served AND filed: public mode keeps the same sidecar publish does, so its
+	// errors symbolicate too. Without it, picking `public` silently turned
+	// symbolication off.
+	if res.SourcemapsDir != SourcemapsDir(plan.StagingDir) || res.Sourcemaps != 3 {
+		t.Fatalf("public mode filed nothing: dir %q, %d maps", res.SourcemapsDir, res.Sourcemaps)
 	}
-	if _, err := os.Stat(SourcemapsDir(plan.StagingDir)); !os.IsNotExist(err) {
-		t.Error("public mode created the sidecar directory")
+	sidecar := readTree(t, res.SourcemapsDir)
+	for _, rel := range []string{"app/assets/index-abc.js.map", "app/assets/chunk-def.mjs.map", "app/assets/style-123.css.map"} {
+		if sidecar[rel] != testMapJSON {
+			t.Errorf("sidecar is missing %s", rel)
+		}
+	}
+	if _, ok := sidecar["app/assets/level.map"]; ok {
+		t.Error("a .map that is not a source map was filed")
+	}
+	if _, ok := sidecar[SourcemapManifestName]; !ok {
+		t.Error("public mode wrote no sidecar manifest")
+	}
+}
+
+func TestPublicModeFilesAnInlineMapAndKeepsItServed(t *testing.T) {
+	projectDir := t.TempDir()
+	inline := "console.log(2);\n//# sourceMappingURL=data:application/json;base64," +
+		base64.StdEncoding.EncodeToString([]byte(testMapJSON)) + "\n"
+	writeTree(t, filepath.Join(projectDir, "web", "dist"), map[string]string{
+		"index.html":       "<html></html>",
+		"assets/inline.js": inline,
+	})
+	plan := fixturePlan(t, projectDir, SourcemapsPublic)
+
+	res, err := runStagePlan(context.Background(), &fakeRunner{}, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readTree(t, plan.StagingDir)["app/assets/inline.js"]; got != inline {
+		t.Errorf("public mode rewrote an inline-mapped bundle: %q", got)
+	}
+	if got := readTree(t, res.SourcemapsDir)["app/assets/inline.js.map"]; got != testMapJSON {
+		t.Errorf("inline map not filed: %q", got)
 	}
 }
 

@@ -141,7 +141,16 @@ func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) {
 
 // bundlePlacementDeclarations is used at the bundle boundary, before any cut,
 // push or record. Pure deployments retain their historical bytes and behavior.
+// Native providers are placed like any cluster component: the bundle reads
+// their forge.dev/release-owners ownership (internal/bundle placementOwners).
 func bundlePlacementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration, error) {
+	return placementDeclarations(e)
+}
+
+// placementDeclarations is the complete runtime inventory of a mixed env:
+// every release consumer compositionConsumers lists that runs somewhere,
+// native providers included, plus hosted databases.
+func placementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration, error) {
 	if e == nil {
 		return nil, nil
 	}
@@ -293,9 +302,9 @@ func requirePlacementReader(ctx context.Context, projectDir, env string, e *KCLE
 
 // nativeProvider is a forge-rendered component that is a release consumer
 // without being a Workload: compositionConsumers keys it by Owner, and every
-// object it renders carries forge.dev/release-owners [Owner], which is how
-// the bundle finds its controller. The one native provider today is
-// Bundle.openbao; a new one is added here and in compositionConsumers.
+// object it renders carries forge.dev/release-owners [Owner]. The one native
+// provider today is Bundle.openbao; a new one is added here and in
+// compositionConsumers (TestPlacementInventoryIsCompositionConsumers).
 type nativeProvider struct{ Owner string }
 
 func nativeProviders(e *KCLEntities) ([]nativeProvider, error) {

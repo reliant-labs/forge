@@ -383,20 +383,26 @@ An env that is not hosted is refused.`)
 }
 
 func newEnvDeleteCmd() *cobra.Command {
-	var yes bool
+	var yes, keepData bool
 	var token string
 	cmd := &cobra.Command{
 		Use:   "delete <environment>",
 		Short: "Tear down a HOSTED environment on the control plane (destructive)",
-		Long: `Delete a hosted environment: its deployments, Flux objects, custom resources
-and namespaces on the control plane.
+		Long: `Delete a hosted environment and everything it runs on the control plane: its
+deployments, workloads, URLs, Flux objects, custom resources, namespaces AND
+its managed databases' data (Postgres clusters and volumes). IRREVERSIBLE.
 
   forge env delete preview             prompts: type the env name to confirm
   forge env delete preview --yes       no prompt (required with no TTY or CI=1)
+  forge env delete preview --keep-data keep the databases (still billed as storage)
 
-DATA RETENTION: a ManagedDatabase's data is RETAINED but orphaned. A later
-deploy of the same name creates a NEW environment and does NOT reattach that
-data; recovering it is a support operation.
+--keep-data RETAINS each managed database: it keeps running and billing as
+storage, is listed by the control plane as a retained database, and stays
+until purged (DeleteRetainedDatabase). A later deploy of the same name creates
+a NEW environment and does NOT reattach it.
+
+KEPT EITHER WAY: the project's release images in the registry. They belong to
+the project, not the environment, and other environments promote them.
 
 Only hosted environments: for a local stack use ` + "`forge env down`" + `, which never
 deletes anything on a control plane and which this command never uses.`,
@@ -413,24 +419,42 @@ deletes anything on a control plane and which this command never uses.`,
 			if err != nil {
 				return err
 			}
-			return runEnvDelete(cmd.Context(), t.Client, t.EnvironmentID, env, yes, lifecycleStdin, cmd.OutOrStdout())
+			return runEnvDelete(cmd.Context(), t.Client, t.EnvironmentID, env,
+				envDeleteOptions{Yes: yes, KeepData: keepData}, lifecycleStdin, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm the deletion without the typed-name prompt (required when non-interactive)")
+	cmd.Flags().BoolVar(&keepData, "keep-data", false, "Keep the environment's managed databases (retained, still billed as storage) instead of destroying them")
 	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
 	return cmd
 }
 
-func runEnvDelete(ctx context.Context, c cloudCaller, envID, env string, yes bool, in io.Reader, out io.Writer) error {
+// envDeleteOptions are the caller's decisions about one `forge env delete`.
+type envDeleteOptions struct {
+	// Yes skips the typed-name confirmation.
+	Yes bool
+	// KeepData retains the environment's managed databases. Off, the control
+	// plane destroys them with everything else.
+	KeepData bool
+}
+
+func runEnvDelete(ctx context.Context, c cloudCaller, envID, env string, opts envDeleteOptions, in io.Reader, out io.Writer) error {
 	ds, err := listLifecycleDeployments(ctx, c, envID)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "This will delete hosted env %q from the control plane:\n", env)
 	writeDeploymentStates(out, ds)
-	fmt.Fprintln(out, "\nRemoved: the environment, its deployments, their Flux objects, custom resources and namespaces.")
-	fmt.Fprintln(out, "Retained: ManagedDatabase data — orphaned, and NOT reattached by a later deploy (a re-deploy creates a new environment).")
-	if !yes {
+	if opts.KeepData {
+		fmt.Fprintln(out, "\nRemoved: the environment, its deployments, workloads, URLs, Flux objects, custom resources and namespaces.")
+		fmt.Fprintln(out, "Kept (--keep-data): its managed databases — still running and billed as storage, listed as retained")
+		fmt.Fprintln(out, "  databases until purged, and NOT reattached by a later deploy (a re-deploy creates a new environment).")
+	} else {
+		fmt.Fprintln(out, "\nRemoved: the environment, its deployments, workloads, URLs, Flux objects, custom resources, namespaces")
+		fmt.Fprintln(out, "  AND its managed databases' data. IRREVERSIBLE (pass --keep-data to retain the databases).")
+	}
+	fmt.Fprintln(out, "Kept: the project's release images in the registry (they belong to the project, not this environment).")
+	if !opts.Yes {
 		fmt.Fprintf(out, "\nType the environment name (%s) to confirm: ", env)
 		var typed string
 		_, _ = fmt.Fscanln(in, &typed)
@@ -438,9 +462,19 @@ func runEnvDelete(ctx context.Context, c cloudCaller, envID, env string, yes boo
 			return fmt.Errorf("confirmation did not match %q; nothing was deleted", env)
 		}
 	}
-	if err := c.Call(ctx, procDeleteEnvironment, map[string]any{"environmentId": envID, "force": true}, &struct{}{}); err != nil {
+	req := map[string]any{"environmentId": envID, "force": true}
+	if opts.KeepData {
+		req["keepData"] = true
+	}
+	if err := c.Call(ctx, procDeleteEnvironment, req, &struct{}{}); err != nil {
 		return fmt.Errorf("forge env delete %s: %w", env, err)
 	}
-	fmt.Fprintf(out, "\nDeleted env %s. Its databases' data was retained and is not reattached by a re-deploy.\n", env)
+	// The control plane records the teardown and its converger performs it,
+	// so the delete returns before the clusters have converged.
+	if opts.KeepData {
+		fmt.Fprintf(out, "\nDeleted env %s; the platform is tearing it down. Its databases were kept and are not reattached by a re-deploy.\n", env)
+	} else {
+		fmt.Fprintf(out, "\nDeleted env %s; the platform is tearing it down, its databases included.\n", env)
+	}
 	return nil
 }

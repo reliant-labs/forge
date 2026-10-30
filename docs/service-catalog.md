@@ -15,12 +15,13 @@ RPC execution endpoint, endpoint registry or new database is involved.
   proto services/audiences. This is a declared route-set capability, **not proof
   a live listener mounted it**. Custom/dynamic mounting is not inferred.
 - Service methods retain fully qualified input/output names, both streaming
-  flags, auth declaration and protobuf idempotency (`IDEMPOTENCY_UNKNOWN`,
-  `IDEMPOTENT`, `NO_SIDE_EFFECTS`; older descriptor fallback is `UNKNOWN`).
+  flags, auth declaration and protobuf idempotency as the closed set `UNKNOWN`,
+  `IDEMPOTENT`, `NO_SIDE_EFFECTS` (protobuf's `IDEMPOTENCY_UNKNOWN` is `UNKNOWN`).
   Each service's `descriptor` is the existing `forge_descriptor.json` ServiceDef:
   `Schemas`, `SchemaFiles`, `Enums`, `validate` and `validate_options` are reused
   verbatim. There is no second validation/form dialect or invocation handle.
-- Components expose typed method signatures and module-relative source locations.
+- Components expose typed method signatures and module-relative source locations
+  (see "Source locations" below).
   Consumed interfaces expose their method sets. Assignable producers and local
   concrete `implementation_candidates` are **candidates**, not proof a constructor
   selected that concrete type. `bindings.providers` lists graph accessors in that
@@ -30,6 +31,26 @@ RPC execution endpoint, endpoint registry or new database is involved.
   one candidate happens to exist. Missing types carry diagnostics, not guesses.
 - Client reach means **can-call a service**, never “called every method”. Observed
   calls still come from telemetry. No static per-method call edges are fabricated.
+
+## Source locations
+
+The committed `gen/` file names each declaration by **path and symbol**, never by
+line: `{"path": "internal/handlers/orders/service.go", "symbol": "Service.Get"}`.
+A symbol is `Name` (a func or type) or `Type.Name` (a method of a concrete type,
+or of the named interface that declares it). A line number moves whenever code
+above it does, so a committed catalog that recorded one went stale on every
+merge ahead of yours that touched a handler file, and failed `verify-generated`
+in the merge group. Moving, reordering or editing around declarations now
+leaves the file byte-identical; only a change to what is declared (an rpc, a
+method, a signature, a binding) changes it.
+
+The bundle copy (`forge/service-catalog.json`) carries the line its readers
+expect, `{"path": ..., "line": N}`: the build resolves each symbol against the
+source being built (`servicecatalog.Locate`) and drops the symbol. A symbol the
+build cannot find becomes the unknown source `{"path": "", "line": 0}`. The
+bundle's layer gate (`servicecatalog.DecodeLocated`) refuses a symbolic source.
+A client registration is located at the provider func that makes it, and its
+id is `<provider>:<func>#<n>`, the n-th registration in that func.
 
 Generation is deterministic for the same source/build inputs. External-module
 source locations are omitted; no machine paths, URL values, config defaults,
@@ -81,8 +102,26 @@ Build/cut collects the generated catalog into **the existing manifest layer** at
 of `forge/frontend-declarations.json`, outside every reconciler-applied
 `manifests/` tree. It affects the existing OCI bundle digest, not config digest,
 shape, workload images or version assignments. The ingest layer gate validates
-its schema and relative sources with `servicecatalog.Decode`. The catalog obeys
-the existing 1 MiB per-file bound; oversize generation fails explicitly.
+its schema and relative, located sources with `servicecatalog.DecodeLocated`. The
+catalog has no per-file bound of its own; the layer total
+(`release.ManifestsLayerMaxBytes`) bounds it.
+
+### The bundle copy is reduced
+
+The bundle does not carry `gen/`'s catalog whole. It carries what a hosted reader
+serves to a browser (`servicecatalog.ForBundle`), so its size follows the RPC
+surface rather than the code graph:
+
+- each service's `descriptor` keeps only `Schemas`, the request/response shapes
+  the RPC explorer renders;
+- the code method sets of components, implementation candidates and bindings
+  are empty, and the `bundle_method_sets_omitted` diagnostic says so: an empty
+  list there means "not carried", not "no methods". Every component, binding,
+  candidate, provider, client and process stays;
+- `idempotency` is the closed set `UNKNOWN`, `IDEMPOTENT`, `NO_SIDE_EFFECTS`.
+
+It is still schema v1. For reliant this is 2.1 MB → 0.38 MB compact. The full
+code graph (signatures, method ids, scopes) stays in `gen/forge_service_catalog.json`.
 
 A hosted consumer verifies the existing bundle's digest/layer using existing
 artifact admission, authorizes project/environment access, and then reads that
@@ -102,6 +141,9 @@ names, tracer scopes and metric `method` dimensions stay unchanged. When IDs are
 absent (older/disowned/custom instrumentation), use the catalog's `scope` and
 `legacy_name` as fallback evidence; ambiguity remains unknown. Concrete candidate
 methods have their own receiver IDs and are not silently equated to interfaces.
+The method sets that carry these ids are in `gen/`'s catalog; the bundle copy
+omits them (see "The bundle copy is reduced"), so a hosted join that needs them
+must ship them in their own artifact rather than re-grow this one.
 
 ## Adoption remaining
 

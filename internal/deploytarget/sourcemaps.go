@@ -35,14 +35,18 @@ import (
 //  3. a guard refuses to publish a tree that still holds a map.
 //
 // The sidecar is what a later step pushes to the platform registry so errors
-// can be symbolicated; this file only produces it.
+// can be symbolicated; this file only produces it. `public` produces it too:
+// the maps are served AND filed, so symbolication does not depend on which of
+// the two a project picked.
 
 // Sourcemap publishing modes (the frontend's `sourcemaps` setting).
 const (
 	// SourcemapsPublish extracts maps to the sidecar and serves none. Default.
 	SourcemapsPublish = "publish"
-	// SourcemapsPublic leaves maps in the served tree, for an open-source app
-	// that wants them public. The explicit opt-out of the guard.
+	// SourcemapsPublic leaves maps (and their trailers) in the served tree, for
+	// an open-source app that wants them public, and ALSO copies them into the
+	// sidecar so they are filed for symbolication like publish's. The explicit
+	// opt-out of the guard.
 	SourcemapsPublic = "public"
 	// SourcemapsOff drops maps: stripped from the tree, kept nowhere.
 	SourcemapsOff = "off"
@@ -198,12 +202,11 @@ func sourceTreeDigest(dir string) (string, error) {
 
 // extractSourcemaps moves every source map out of the staged tree into the
 // sidecar and strips the sourceMappingURL trailers. It returns how many maps
-// it extracted. SourcemapsPublic is a no-op; SourcemapsOff extracts and then
-// discards the sidecar, so the tree ends up identical to publish.
+// it extracted. SourcemapsPublic COPIES them instead and leaves the served tree
+// untouched (maps and trailers stay); SourcemapsOff extracts and then discards
+// the sidecar, so the tree ends up identical to publish.
 func extractSourcemaps(plan StagePlan) (int, error) {
-	if plan.Sourcemaps == SourcemapsPublic {
-		return 0, nil
-	}
+	public := plan.Sourcemaps == SourcemapsPublic
 	sidecar := SourcemapsDir(plan.StagingDir)
 	if err := os.MkdirAll(sidecar, 0o755); err != nil {
 		return 0, fmt.Errorf("create sourcemap sidecar: %w", err)
@@ -235,12 +238,28 @@ func extractSourcemaps(plan StagePlan) (int, error) {
 		if !isSourceMap(src) {
 			continue
 		}
-		if err := moveFile(src, filepath.Join(sidecar, filepath.FromSlash(rel))); err != nil {
+		dst := filepath.Join(sidecar, filepath.FromSlash(rel))
+		if public {
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return 0, err
+			}
+			if err := copyFile(src, dst, 0o644); err != nil {
+				return 0, fmt.Errorf("copy source map %s: %w", rel, err)
+			}
+			continue
+		}
+		if err := moveFile(src, dst); err != nil {
 			return 0, fmt.Errorf("move source map %s: %w", rel, err)
 		}
 	}
 	for _, rel := range files {
 		if !hasTrailerExt(rel) {
+			continue
+		}
+		if public {
+			if err := copyInlineMap(plan.StagingDir, sidecar, rel); err != nil {
+				return 0, err
+			}
 			continue
 		}
 		if err := stripTrailer(plan.StagingDir, sidecar, rel); err != nil {
@@ -395,6 +414,20 @@ func stripTrailer(stagingDir, sidecar, rel string) error {
 		return fmt.Errorf("strip source map trailer from %s: %w", rel, err)
 	}
 	return nil
+}
+
+// copyInlineMap files a bundle's inline (data:) map in the sidecar and leaves the
+// bundle as it is: public mode serves it with its trailer.
+func copyInlineMap(stagingDir, sidecar, rel string) error {
+	b, err := os.ReadFile(filepath.Join(stagingDir, filepath.FromSlash(rel)))
+	if err != nil {
+		return fmt.Errorf("read %s: %w", rel, err)
+	}
+	_, ref, ok := splitSourceMapTrailer(string(b))
+	if !ok || !strings.HasPrefix(ref, "data:") {
+		return nil
+	}
+	return extractInlineMap(sidecar, rel, ref)
 }
 
 // extractInlineMap writes a bundle's inline (data:) map into the sidecar as if

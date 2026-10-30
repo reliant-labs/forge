@@ -83,8 +83,15 @@ func TestServiceCatalogJoinsGeneratedEmbeddedMethodIdentity(t *testing.T) {
 	if m.ID != servicecatalog.MethodID("example.com/shop/internal/order-port", "Service", "Get") || m.LegacyName != "orders.Get" {
 		t.Fatalf("exposed interface/package identity: %+v", m)
 	}
-	if m.Source.Path != "internal/order-port/contract.go" || m.Source.Line != 2 {
+	// The embedded method is named by the interface that DECLARES it, which
+	// is where a bundle build finds its line.
+	if m.Source != (servicecatalog.Source{Path: "internal/order-port/contract.go", Symbol: "Reader.Get"}) {
 		t.Fatalf("declaration location lost: %+v", m.Source)
+	}
+	located := servicecatalog.Catalog{Components: []servicecatalog.Component{{Methods: methods}}}
+	servicecatalog.Locate(&located, func(rel string) ([]byte, error) { return os.ReadFile(filepath.Join(root, rel)) })
+	if got := located.Components[0].Methods[0].Source; got != (servicecatalog.Source{Path: "internal/order-port/contract.go", Line: 2}) {
+		t.Fatalf("declaration not located: %+v", got)
 	}
 	// Extract the ACTUAL generated map rather than reconstructing it in a test.
 	path := filepath.Join(root, "internal/order-port/middleware_gen.go")

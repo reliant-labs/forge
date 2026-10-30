@@ -3,6 +3,7 @@ package dashspec
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── validation ──────────────────────────────────────────────────────────────
@@ -245,6 +246,63 @@ func TestMetricSeriesAcceptsEveryStoredKind(t *testing.T) {
 		_, err := ParseDashboard("f.json", []byte(panel(c.series)))
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err = %v, want %q", name, err, c.want)
+		}
+	}
+}
+
+func TestDefaultRangeAndMinStep(t *testing.T) {
+	sqlPanel := `{"id":"p","title":"P","kind":"sql","sql":"SELECT toDate(Timestamp) AS day, count() AS n FROM product_events GROUP BY day"%s}`
+	dash := func(top, panel string) string {
+		return `{"id":"x","title":"X"` + top + `,"panels":[` + panel + `]}`
+	}
+	ok := []struct{ name, src string }{
+		{"defaultRange 7d", dash(`,"defaultRange":"7d"`, strings.Replace(sqlPanel, "%s", "", 1))},
+		{"defaultRange 30d", dash(`,"defaultRange":"30d"`, strings.Replace(sqlPanel, "%s", "", 1))},
+		{"minStep 1d", dash(``, strings.Replace(sqlPanel, "%s", `,"minStep":"1d"`, 1))},
+		{"both", dash(`,"defaultRange":"24h"`, strings.Replace(sqlPanel, "%s", `,"minStep":"1h"`, 1))},
+	}
+	for _, tc := range ok {
+		t.Run("accepts "+tc.name, func(t *testing.T) {
+			d, err := ParseDashboard("f.json", []byte(tc.src))
+			if err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if tc.name == "defaultRange 7d" && d.DefaultRange != "7d" {
+				t.Errorf("DefaultRange = %q", d.DefaultRange)
+			}
+			if tc.name == "minStep 1d" && d.Panels[0].MinStep != "1d" {
+				t.Errorf("MinStep = %q", d.Panels[0].MinStep)
+			}
+		})
+	}
+	bad := []struct{ name, src, want string }{
+		{"defaultRange not a duration", dash(`,"defaultRange":"week"`, strings.Replace(sqlPanel, "%s", "", 1)), "defaultRange: \"week\" is not a duration"},
+		{"defaultRange zero", dash(`,"defaultRange":"0d"`, strings.Replace(sqlPanel, "%s", "", 1)), "is not a duration"},
+		{"defaultRange too long", dash(`,"defaultRange":"31d"`, strings.Replace(sqlPanel, "%s", "", 1)), "is longer than"},
+		{"defaultRange wrong type", dash(`,"defaultRange":7`, strings.Replace(sqlPanel, "%s", "", 1)), "defaultRange"},
+		{"minStep not a duration", dash(``, strings.Replace(sqlPanel, "%s", `,"minStep":"daily"`, 1)), "panels[0].minStep"},
+		{"minStep on a line panel", dash(``, `{"id":"p","title":"P","kind":"line","signal":"traces","minStep":"1d","series":[{"label":"a","agg":"count"}]}`), "only a sql panel takes \"minStep\""},
+		{"minStep on a console panel", dash(``, `{"id":"p","title":"P","kind":"issues","signal":"traces","minStep":"1d"}`), "only a sql panel takes \"minStep\""},
+	}
+	for _, tc := range bad {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			_, err := ParseDashboard("f.json", []byte(tc.src))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseSpan(t *testing.T) {
+	for in, want := range map[string]time.Duration{"90s": 90 * time.Second, "15m": 15 * time.Minute, "6h": 6 * time.Hour, "7d": 7 * 24 * time.Hour} {
+		if got, err := ParseSpan(in); err != nil || got != want {
+			t.Errorf("ParseSpan(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "7", "d", "-1d", "1.5d", "1w", "0m", "99999d", "31d"} {
+		if _, err := ParseSpan(in); err == nil {
+			t.Errorf("ParseSpan(%q) succeeded", in)
 		}
 	}
 }

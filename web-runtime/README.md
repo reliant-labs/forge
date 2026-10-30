@@ -175,6 +175,22 @@ on the server, and calls made while the SDK chunk is still loading are held
   and the visitor id key; `getAttribution()` is the captured record, for a site
   that stamps campaign values on its own events.
 
+- Benign browser errors (`classifyBenignError`, `forge.errors_filtered`): an
+  `AbortError` (a cancelled request, an unmounted component, a navigation) and
+  the browser's generic fetch failure (a `TypeError` reading exactly `Failed to
+fetch`, `Load failed` or `NetworkError when attempting to fetch resource.`)
+  are kept out of the error pipeline, whether they arrive as an unhandled
+  rejection, an uncaught error, `console.error` or `reportException`. A
+  `ConnectError` is never filtered. Each filtered error is counted, and the
+  counts go out as `forge.errors_filtered` actions (`kind`, `source`, `count`)
+  at most once a minute and when the page is hidden, so a real wave of network
+  failures still shows. The filter acts on what the SDK RECORDS, never on what
+  the app sees: `window.onerror`, `onunhandledrejection`, every `error` /
+  `unhandledrejection` listener and the console receive every event exactly as
+  without telemetry. `classifyBenignError: () => null` records everything; any
+  `(error) => kind | null` replaces the default (for an unhandled rejection or
+  uncaught error it is handed `{ name, message }` as the SDK recorded them).
+
 Privacy is forced, not configurable: when replay records, all text and inputs
 are masked, canvas is never recorded, `img, picture, video, audio, iframe,
 object, embed` are blocked, images are not inlined and fonts are not collected.

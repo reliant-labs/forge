@@ -28,14 +28,13 @@ package cli
 //     whatever its placement. Explicit {} means independent. A workload with
 //     it absent gets no edge, which is the order forge always had.
 //
-// Edges inside one stage are that stage's business (the platform's converger
-// orders the hosted parts, Flux the delivery units). With no edge at all, the
-// order is local → hosted → frontends: what forge always did. A cycle between
-// stages is refused, naming one edge each way, before anything ships.
+// The complete item graph, including same-stage edges, is validated first.
+// With no edge at all the order is local → hosted → frontends. An acyclic
+// item graph requiring stage interleaving is explicitly unsupported; a cycle
+// in its stage projection must not be reported as an actual dependency cycle.
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -89,65 +88,22 @@ func stageOfDatabase(d DatabaseEntity) deployStage {
 
 // deployStageEdges lists every declared dependency that crosses stages. Pure;
 // sorted, so a refusal names the same edge on every run.
-func deployStageEdges(e *KCLEntities) []stageEdge {
-	if e == nil {
-		return nil
-	}
-	stageOf := map[string]deployStage{}
-	var servers []string
-	for _, w := range e.Workloads {
-		if s := stageOfWorkload(w); s != "" {
-			stageOf[w.Name] = s
-			servers = append(servers, w.Name)
-		}
-	}
-	for _, d := range e.Databases {
-		if _, taken := stageOf[d.Name]; !taken {
-			stageOf[d.Name] = stageOfDatabase(d)
-		}
-	}
-	var edges []stageEdge
-	add := func(dependent string, to deployStage, peers []string) {
-		for _, peer := range peers {
-			from, ok := stageOf[peer]
-			if !ok || from == to || peer == dependent {
-				continue
-			}
-			edges = append(edges, stageEdge{Dependency: peer, Dependent: dependent, From: from, To: to})
-		}
-	}
-	for _, w := range e.Workloads {
-		if s := stageOfWorkload(w); s != "" {
-			add(w.Name, s, sortedKeys(w.ReleaseDependencies))
-		}
-	}
-	for _, f := range e.Frontends {
-		s := stageOfFrontend(f)
-		if s == "" {
-			continue
-		}
-		if f.ReleaseDependencies == nil {
-			add(f.Name, s, servers)
-		} else {
-			add(f.Name, s, sortedKeys(f.ReleaseDependencies))
-		}
-	}
-	sort.Slice(edges, func(i, j int) bool {
-		a, b := edges[i], edges[j]
-		if a.Dependent != b.Dependent {
-			return a.Dependent < b.Dependent
-		}
-		return a.Dependency < b.Dependency
-	})
-	return edges
+func deployStageEdges(e *KCLEntities) ([]stageEdge, error) {
+	return declaredPlacementEdges(e)
 }
 
 // deployStageOrder is the order the stages run in: a topological order of the
 // cross-stage edges, ties broken by defaultStageOrder.
 func deployStageOrder(e *KCLEntities) ([]deployStage, error) {
-	edges := deployStageEdges(e)
+	edges, err := deployStageEdges(e)
+	if err != nil {
+		return nil, err
+	}
 	after := map[deployStage]map[deployStage]stageEdge{} // to -> from -> a witness
 	for _, ed := range edges {
+		if ed.From == ed.To {
+			continue // retained and cycle-checked in the item graph above
+		}
 		if after[ed.To] == nil {
 			after[ed.To] = map[deployStage]stageEdge{}
 		}
@@ -195,7 +151,7 @@ func stageCycleError(after map[deployStage]map[deployStage]stageEdge, done map[d
 			}
 		}
 	}
-	return fmt.Errorf("the env's declared release_dependencies order its placements in a cycle: %s.\n"+
+	return fmt.Errorf("unsupported placement stage interleaving (the item dependency graph is acyclic): %s.\n"+
 		"One deploy applies the parts forge applies, then the hosted parts, then the frontends forge ships, in whatever order "+
 		"those dependencies give, so a hosted part and a cluster part cannot each wait for the other.\n"+
 		"fix: drop one of those dependencies, or move one part to the other's placement",

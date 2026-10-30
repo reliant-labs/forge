@@ -273,11 +273,21 @@ var ErrMachinePolicyUnderTest = errors.New("storage: refusing to write the machi
 // sources.go), closed the same way: the default is unreachable from a test, so
 // a silent write becomes a message naming what to set.
 //
-// FORGE_STORAGE_POLICY set explicitly is a deliberate scope and is honoured —
-// DefaultPath returns it, so it is never "the default" here. Reads are not
-// guarded: loading the policy cannot change the machine.
+// FORGE_STORAGE_POLICY set explicitly by a test is a deliberate scope and is
+// honoured — DefaultPath returns it, so it is never "the default" here. The
+// value the process INHERITED is not: a Reliant agent's shell exports the
+// machine's real policy there, and honouring it let `task test` on such a host
+// write fake pins into it and queue every release-cut test behind the host's
+// own maintenance pass for minutes. Reads are not guarded: loading the policy
+// cannot change the machine.
 func guardMachinePolicy(path string) error {
-	if !testing.Testing() || os.Getenv("FORGE_STORAGE_POLICY") != "" {
+	if !testing.Testing() {
+		return nil
+	}
+	if inheritedPolicyPath != "" && samePath(path, inheritedPolicyPath) {
+		return ErrMachinePolicyUnderTest
+	}
+	if os.Getenv("FORGE_STORAGE_POLICY") != "" {
 		return nil
 	}
 	dir, err := os.UserConfigDir()
@@ -285,11 +295,21 @@ func guardMachinePolicy(path string) error {
 		// No resolvable machine policy location means path cannot be it.
 		return nil
 	}
-	machine := filepath.Join(dir, "forge", "storage.json")
-	if absolute, err := filepath.Abs(path); err == nil && filepath.Clean(absolute) == filepath.Clean(machine) {
+	if samePath(path, filepath.Join(dir, "forge", "storage.json")) {
 		return ErrMachinePolicyUnderTest
 	}
 	return nil
+}
+
+// inheritedPolicyPath is FORGE_STORAGE_POLICY as the process started with it,
+// read before any test can t.Setenv it: under `go test` that is the host's
+// policy, never a fixture (guardMachinePolicy).
+var inheritedPolicyPath = os.Getenv("FORGE_STORAGE_POLICY")
+
+func samePath(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && filepath.Clean(absA) == filepath.Clean(absB)
 }
 
 // marshalPolicyPreservingUnknown keeps settings owned by other Forge versions.

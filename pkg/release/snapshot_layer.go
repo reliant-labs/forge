@@ -234,6 +234,29 @@ func ValidateSnapshotBindings(s Snapshot) error {
 			seen[owner][slot] = true
 			continue
 		}
+		if api == "forge.dev/v1alpha1" && kind == "StaticSite" {
+			// A hosted site serves `releaseRepository@liveDigest`. It must be
+			// EXACTLY its frontend consumer's bound site release: the record
+			// the platform applies and the binding a reader audits cannot
+			// name different bytes. The owner is the frontend of the same
+			// name in the record's own tree.
+			owner := ConsumerKey{Cluster: r.Key.Cluster, Workload: name}
+			owned := false
+			for _, o := range r.Owners {
+				owned = owned || o == owner
+			}
+			a, exists := bindings[owner]["frontend"]
+			repository, _ := spec["releaseRepository"].(string)
+			digest, _ := spec["liveDigest"].(string)
+			if !owned || !exists || a.artifact.Kind != KindOCI || repository != a.artifact.Location || digest != a.artifact.Content {
+				return snapshotBad("StaticSite %s does not serve its frontend's bound site release", name)
+			}
+			if seen[owner] == nil {
+				seen[owner] = map[string]bool{}
+			}
+			seen[owner]["frontend"] = true
+			continue
+		}
 		if kind == "CronJob" {
 			jt, _ := spec["jobTemplate"].(map[string]any)
 			spec, _ = jt["spec"].(map[string]any)
@@ -276,6 +299,10 @@ func ValidateSnapshotBindings(s Snapshot) error {
 		for slot := range slots {
 			if (strings.HasPrefix(slot, "container:") || strings.HasPrefix(slot, "init:")) && !seen[key][slot] {
 				return fmt.Errorf("%w: consumer %v slot %s has no runtime resource", ErrInvalid, key, slot)
+			}
+			// A hosted frontend's site release is served only by its record.
+			if slot == "frontend" && key.Cluster == BundleHostedCluster && !seen[key][slot] {
+				return fmt.Errorf("%w: hosted frontend %v has no StaticSite record", ErrInvalid, key)
 			}
 		}
 	}

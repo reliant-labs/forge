@@ -1839,7 +1839,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		return releaseCutOutcome{}, err
 	}
 	rel.Migrations = migrations
-	if err := pinStorageRelease(rel); err != nil {
+	if err := pinStorageRelease(rel, os.Stderr); err != nil {
 		return releaseCutOutcome{}, err
 	}
 	// The source history this release adds, while the checkout is at its

@@ -418,7 +418,7 @@ func RenderManagedDatabase(name string, spec v1alpha1.ManagedDatabaseSpec, ctx C
 
 	objs := []*unstructured.Unstructured{}
 	if b := ctx.DatabaseBackup; b != nil {
-		store, err := renderObjectStore(name, spec, ctx, *b)
+		store, err := renderObjectStore(name, ctx, *b)
 		if err != nil {
 			return nil, err
 		}
@@ -452,12 +452,27 @@ func RenderManagedDatabase(name string, spec v1alpha1.ManagedDatabaseSpec, ctx C
 		// REPLACES initdb. A Cluster bootstraps one way or the other, and
 		// declaring both is how you get an empty database that reports success.
 		clusterSpec["bootstrap"] = map[string]any{"recovery": recovery}
+
+		// Recovery reads the SOURCE's location. This database's own store
+		// points at <bucket>/<name>/, which is the source's location only
+		// when the restore is in place. Under a new name it is empty — the
+		// source's backups are at <bucket>/<source>/ — so a cross-name
+		// restore reads through a store of its own aimed there.
+		sourceStore := name
+		if r.SourceDatabase != name {
+			read, err := renderRestoreSourceStore(name, r.SourceDatabase, ctx, *ctx.DatabaseBackup)
+			if err != nil {
+				return nil, err
+			}
+			objs = append(objs, read)
+			sourceStore = read.GetName()
+		}
 		clusterSpec["externalClusters"] = []any{map[string]any{
 			"name": restoreSourceName,
 			"plugin": map[string]any{
 				"name": barmanPluginName,
 				"parameters": map[string]any{
-					"barmanObjectName": name,
+					"barmanObjectName": sourceStore,
 					// The SOURCE's stream, which is what makes this a restore.
 					"serverName": r.SourceDatabase,
 				},
@@ -511,18 +526,70 @@ func databaseServerName(name string, restore *v1alpha1.DatabaseRestore, override
 	return name + "-restored"
 }
 
+// databaseDestinationPath is where a database's backups live: the
+// environment's bucket prefix plus the database's own segment. Its WAL stream
+// (serverName) is a further segment below it.
+//
+// A restore must read its SOURCE's path, not its own: a database restored
+// under a new name archives to <bucket>/<new>/, while the backups it recovers
+// from were written to <bucket>/<source>/.
+func databaseDestinationPath(b DatabaseBackup, database string) string {
+	return strings.TrimSuffix(b.Bucket, "/") + "/" + database
+}
+
 // renderObjectStore renders the plugin's ObjectStore: one per database, in the
 // database's own namespace, under its own prefix.
 //
 // THE PREFIX IS THE ISOLATION BOUNDARY. It is composed from the environment's
 // bucket and the database's name, both of which the platform controls — a
 // hosted user cannot name a path, so they cannot name anyone else's.
-func renderObjectStore(name string, spec v1alpha1.ManagedDatabaseSpec, ctx Context, b DatabaseBackup) (*unstructured.Unstructured, error) {
+func renderObjectStore(name string, ctx Context, b DatabaseBackup) (*unstructured.Unstructured, error) {
+	store, err := objectStore(name, name, name, ctx, b)
+	if err != nil {
+		return nil, err
+	}
+	if b.RetentionPolicy != "" {
+		if err := unstructured.SetNestedField(store.Object, b.RetentionPolicy, "spec", "retentionPolicy"); err != nil {
+			return nil, err
+		}
+	}
+	return store, nil
+}
+
+// restoreSourceStoreName names the ObjectStore a restore reads its SOURCE
+// database's backups through, when the source is a different database.
+//
+// THE DOT IS WHAT MAKES IT COLLISION-FREE. A database name is an RFC-1123
+// label (ValidateDatabaseName), which cannot contain one, so no database's
+// own ObjectStore can ever carry this name. "<name>-restore-source" would be
+// the archive store of a database someone happened to call that, and the two
+// renders would fight over one object — one of them archiving into the other's
+// prefix. ObjectStore names are DNS subdomains, which do allow dots.
+func restoreSourceStoreName(name string) string {
+	return name + ".restore-source"
+}
+
+// renderRestoreSourceStore renders the read side of a cross-name restore:
+// an ObjectStore at the SOURCE database's prefix, owned (labelled) by the
+// restoring database.
+//
+// It carries NO retention policy. Retention is enforced by whoever archives to
+// a store; this one is only read, and a window on it would be a second,
+// conflicting opinion about how long the source's backups live.
+func renderRestoreSourceStore(name, source string, ctx Context, b DatabaseBackup) (*unstructured.Unstructured, error) {
+	return objectStore(restoreSourceStoreName(name), name, source, ctx, b)
+}
+
+// objectStore is the ObjectStore shape shared by the archive store and the
+// restore-source store: storeName is the object's name, owner the database
+// whose labels it carries, and prefixDatabase the database whose backups live
+// at the destination path.
+func objectStore(storeName, owner, prefixDatabase string, ctx Context, b DatabaseBackup) (*unstructured.Unstructured, error) {
 	if b.Bucket == "" {
-		return nil, fmt.Errorf("manageddatabase %s: backup bucket is empty; an object store with no destination archives nothing", name)
+		return nil, fmt.Errorf("manageddatabase %s: backup bucket is empty; an object store with no destination archives nothing", owner)
 	}
 	configuration := map[string]any{
-		"destinationPath": strings.TrimSuffix(b.Bucket, "/") + "/" + name,
+		"destinationPath": databaseDestinationPath(b, prefixDatabase),
 		"wal":             map[string]any{"compression": "gzip"},
 		"data":            map[string]any{"compression": "gzip"},
 	}
@@ -541,19 +608,16 @@ func renderObjectStore(name string, spec v1alpha1.ManagedDatabaseSpec, ctx Conte
 	}
 
 	storeSpec := map[string]any{"configuration": configuration}
-	if b.RetentionPolicy != "" {
-		storeSpec["retentionPolicy"] = b.RetentionPolicy
-	}
 
 	labels := map[string]any{}
-	for k, v := range managedLabels(name, ctx.PartOf) {
+	for k, v := range managedLabels(owner, ctx.PartOf) {
 		labels[k] = v
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "barmancloud.cnpg.io/v1",
 		"kind":       "ObjectStore",
 		"metadata": map[string]any{
-			"name":      name,
+			"name":      storeName,
 			"namespace": ctx.Namespace,
 			"labels":    labels,
 		},

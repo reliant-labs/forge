@@ -494,6 +494,31 @@ func TestEverythingIsAnchoredAtItsDeclaration(t *testing.T) {
 	}
 }
 
+// Another env's KCL is not part of this env's render: a line there naming the
+// same Secret must not anchor this env's finding (nor host its suppression).
+func TestAnotherEnvsKCLIsNeverAnAnchor(t *testing.T) {
+	files := []SourceFile{
+		{Path: "deploy/kcl/prod/main.k", Text: "import forge\n"},
+		{Path: "deploy/kcl/dev/main.k", Text: "import forge\n"},
+		{Path: "deploy/kcl/dev/config.k", Text: "vault = {name = \"nats\", key = \"k\"}\n"},
+		{Path: "deploy/kcl/e2e/main.k", Text: "forge.RenderedSecret {\n    name = \"nats\"\n}\n"},
+	}
+	e := env(adopted)
+	e.Demands = []Demand{{Workload: "Deployment/x", Namespace: "ns", Secret: "nats", Whole: true}}
+
+	g := wantOne(t, Check(e, NewLocator(files)), RuleKeyCoverage, finding.SeverityError)
+	if g.File != envFile || g.Line != 1 {
+		t.Errorf("anchored at %s:%d, in another env's KCL; want %s:1", g.File, g.Line, envFile)
+	}
+
+	// A shared lib that names it is still found.
+	files = append(files, SourceFile{Path: "deploy/kcl/lib/env.k", Text: "x = 1\nref = {secret_ref = \"nats\"}\n"})
+	g = wantOne(t, Check(e, NewLocator(files)), RuleKeyCoverage, finding.SeverityError)
+	if g.File != "deploy/kcl/lib/env.k" || g.Line != 2 {
+		t.Errorf("anchored at %s:%d, want the shared lib deploy/kcl/lib/env.k:2", g.File, g.Line)
+	}
+}
+
 func TestMentionsPlatformSecrets(t *testing.T) {
 	yes := []SourceFile{{Path: "a.k", Text: "source = forge.StoreSource {}"}}
 	no := []SourceFile{{Path: "a.k", Text: "# forge.StoreSource would go here\nrequired_secrets = [forge.ExternalSecret {name = \"x\"}]"}}

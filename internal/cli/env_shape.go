@@ -1049,6 +1049,30 @@ func hostedBundleObjects(ctx context.Context, projectDir, envName string, entiti
 	if group == nil {
 		return nil, false, nil
 	}
+	// A COMPOSITION'S RECORDS COME FROM ITS SNAPSHOT. The ledger and the
+	// env's current promotion name what is live, not what the candidate
+	// binds: reading pins there sealed the previous SPA (or a placeholder)
+	// into a bundle whose snapshot named the new one. No placeholder either:
+	// a snapshot that binds no release for a hosted part does not seal.
+	if snapshot := compositionSnapshotFrom(ctx); snapshot != nil {
+		digests, bound, err := snapshotHostedPins(*snapshot, *group)
+		if err != nil {
+			return nil, false, err
+		}
+		version := hostedPinReleaseFrom(ctx)
+		if version == "" {
+			return nil, false, fmt.Errorf("a composition's hosted records need the release it seals; none was named")
+		}
+		group.Hosted = &deploytarget.HostedTarget{Release: version, Digests: digests, PushBase: platformPushBase(entities)}
+		records, err := deploytarget.HostedRecords(*group)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := checkHostedRecordsMatchSnapshot(records, bound); err != nil {
+			return nil, false, err
+		}
+		return hostedRenderedObjects(records), false, nil
+	}
 	var pins hostedPins
 	if ledger, lerr := ledgerFor(ctx, projectDir, envName); lerr == nil {
 		if version := hostedPinReleaseFrom(ctx); version != "" {
@@ -1073,11 +1097,16 @@ func hostedBundleObjects(ctx context.Context, projectDir, envName string, entiti
 		}
 		placeholder = true
 	}
+	return hostedRenderedObjects(records), placeholder, nil
+}
+
+func hostedRenderedObjects(records []deploytarget.HostedRecord) []renderedObject {
+	var objs []renderedObject
 	for _, r := range records {
 		objs = append(objs, renderedObject{
 			Doc: strings.TrimSpace(string(r.YAML)), Kind: r.Kind, Name: r.Name,
 			Clusters: []string{release.BundleHostedCluster},
 		})
 	}
-	return objs, placeholder, nil
+	return objs
 }

@@ -119,18 +119,26 @@ func snapshotFrontendEntries(s release.Snapshot) (snapshotFrontendDeclarations, 
 		}
 	}
 	for _, b := range s.Bindings {
-		if b.Slot == "frontend" && !seen[b.Consumer] {
+		if b.Slot == "frontend" && !seen[b.Consumer] && !platformPublishedFrontend(b.Consumer) {
 			return doc, fmt.Errorf("snapshot lacks frozen frontend %s", b.Consumer.Workload)
 		}
 	}
 	for _, c := range s.Consumers {
 		for _, slot := range c.Slots {
-			if slot == "frontend" && !seen[c.Key] {
+			if slot == "frontend" && !seen[c.Key] && !platformPublishedFrontend(c.Key) {
 				return doc, fmt.Errorf("frontend consumer has no frozen declaration")
 			}
 		}
 	}
 	return doc, nil
+}
+
+// platformPublishedFrontend reports a frontend keyed at the hosted tree
+// (compositionFrontendKey). Its publication is its sealed StaticSite record,
+// which the platform applies from the snapshot's exact resource bytes, so it
+// has no frozen forge publication recipe and is never published by forge.
+func platformPublishedFrontend(k release.ConsumerKey) bool {
+	return k.Cluster == release.BundleHostedCluster
 }
 
 func snapshotFrontendSource(s release.Snapshot, k release.ConsumerKey) (release.Source, string, error) {
@@ -163,7 +171,7 @@ func validateSnapshotFrontend(s release.Snapshot, f snapshotFrontend) error {
 		return err
 	}
 	e := FrontendEntity(f.Entity)
-	if f.Consumer.Cluster != "frontend" || e.Name != f.Consumer.Workload || f.Source != src || f.Release != version || e.Path != "" || e.SourceOverridden || !snapshotSafeSubdir(src.Subdir) || !snapshotSafeSubdir(f.CodeSubdir) || !snapshotSafeSubdir(e.PublicDir) || !snapshotSafeSubdir(e.AssetDir) || e.EnvFile != "" {
+	if f.Consumer != compositionFrontendKey(e) || platformPublishedFrontend(f.Consumer) || e.Name != f.Consumer.Workload || f.Source != src || f.Release != version || e.Path != "" || e.SourceOverridden || !snapshotSafeSubdir(src.Subdir) || !snapshotSafeSubdir(f.CodeSubdir) || !snapshotSafeSubdir(e.PublicDir) || !snapshotSafeSubdir(e.AssetDir) || e.EnvFile != "" {
 		return fmt.Errorf("frozen frontend %s does not match source binding", f.Consumer.Workload)
 	}
 	if u, err := url.Parse(src.Repo); err == nil {
@@ -242,7 +250,7 @@ func captureSnapshotFrontendsWith(_ context.Context, s *release.Snapshot, base *
 	var docs map[string]string
 	doc := snapshotFrontendDeclarations{Schema: snapshotFrontendSchema}
 	for _, b := range s.Bindings {
-		if b.Slot != "frontend" {
+		if b.Slot != "frontend" || platformPublishedFrontend(b.Consumer) {
 			continue
 		}
 		if !selected[b.Consumer] {

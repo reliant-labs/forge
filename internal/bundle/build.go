@@ -154,6 +154,9 @@ type BuildInput struct {
 	// declares waits for the default unit. Every real cluster is split into
 	// trees by it; see release.PlanTrees.
 	Units []release.DeliveryUnit
+	// Placements is the complete logical dependency declaration for mixed bundles.
+	// Nil is unknown, not an assertion of independence.
+	Placements []PlacementDeclaration
 	// Observability is the dashboards and the metrics schema the bundle
 	// carries beside its manifests (see [release.BundleObservabilityPrefix]).
 	// Nothing applies them, so they neither enter the shape nor the config
@@ -341,6 +344,11 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: pack manifests: %w", in.Project, in.Env, err)
 	}
+	// From the same parse and the sealed trees, so unit order is PlanTrees'.
+	prerequisites, err := placementPrerequisites(in, docs, shape.Objects, trees)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
+	}
 	// THE INGEST GATE, run at build so forge refuses to cut a bundle the
 	// control plane would refuse to record. It is the same function, over the
 	// final layer bytes — what the shared controller would be handed.
@@ -353,14 +361,15 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	}
 
 	doc := release.BundleDoc{
-		Schema:       release.BundleSchema,
-		Project:      in.Project,
-		Env:          in.Env,
-		Release:      in.Release,
-		ConfigDigest: configDigest,
-		Pins:         in.Pins,
-		Provenance:   in.Provenance,
-		Shape:        shape,
+		Schema:                 release.BundleSchema,
+		Project:                in.Project,
+		Env:                    in.Env,
+		Release:                in.Release,
+		ConfigDigest:           configDigest,
+		Pins:                   in.Pins,
+		Provenance:             in.Provenance,
+		Shape:                  shape,
+		PlacementPrerequisites: prerequisites,
 		// From the SAME parsed, guarded bodies the shape hashed, so a
 		// summary describes exactly the bytes its object's Hash names.
 		Objects:      objectSummaries(docs, shape),

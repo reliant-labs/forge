@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -142,5 +143,56 @@ func TestClient_Call_SendsForgeVia(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("CI=%v: %s = %q, want %q", tc.ci, activity.ViaHeader, got, tc.want)
 		}
+	}
+}
+
+// Every call names this forge's release in Forge-Version, which a control
+// plane compares with the oldest release it serves.
+func TestClient_Call_SendsForgeVersion(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get(VersionHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	ep, err := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := NewClient(ep, Credential{Token: "t"}).Call(context.Background(), "controlplane.v1.DeployService/ListReleases", map[string]any{}, nil); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if want := buildinfo.Version(); got != want || got == "" {
+		t.Errorf("%s = %q, want %q", VersionHeader, got, want)
+	}
+}
+
+// A control plane that no longer serves this forge answers FailedPrecondition
+// with reason client_upgrade_required. The error is the server's upgrade
+// instruction, typed by its reason, with none of the procedure/HTTP noise of a
+// failed call.
+func TestClient_Call_UpgradeRequiredIsPrintedCleanly(t *testing.T) {
+	const instruction = "forge v1.0.4 is too old for this control plane: the oldest forge served is v1.0.7; " +
+		"install a newer forge and, in a project that pins forge, raise its pin with `forge upgrade`, then retry"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(ReasonHeader, ReasonClientUpgradeRequired)
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": "failed_precondition", "message": instruction})
+	}))
+	defer srv.Close()
+	ep, _ := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL})
+	err := NewClient(ep, Credential{Token: "t"}).Call(context.Background(), "controlplane.v1.DeployService/DeleteEnvironment", map[string]any{}, nil)
+
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || !apiErr.HasReason(ReasonClientUpgradeRequired) || !apiErr.HasCode(CodeFailedPrecondition) {
+		t.Fatalf("want a typed client_upgrade_required error; got %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, instruction) || !strings.Contains(msg, srv.URL) {
+		t.Errorf("error must carry the server's instruction and name the control plane; got:\n%s", msg)
+	}
+	if strings.Contains(msg, "DeleteEnvironment") || strings.Contains(msg, "HTTP 400") {
+		t.Errorf("error should not read as a failed call; got:\n%s", msg)
 	}
 }

@@ -136,6 +136,17 @@ func TestCaptureProvenanceTellsAnUnbornHeadFromAnUnreadableCommit(t *testing.T) 
 			t.Fatalf("an unborn HEAD is an empty capture, not an error: %+v %v", p, err)
 		}
 	})
+	t.Run("orphan branch", func(t *testing.T) {
+		t.Parallel()
+		// Unborn beside a branch that exists: only HEAD's own target is
+		// absent.
+		dir, _ := initRepo(t)
+		gitRun(t, dir, "checkout", "-q", "--orphan", "fresh")
+		p, err := CaptureProvenance(ctx, dir, opts)
+		if err != nil || p.Commit != "" || p.Tree != "" {
+			t.Fatalf("an orphan branch is an empty capture, not an error: %+v %v", p, err)
+		}
+	})
 
 	// headObject is the loose object file of the fixture's HEAD commit.
 	headObject := func(t *testing.T, dir string) string {
@@ -165,8 +176,26 @@ func TestCaptureProvenanceTellsAnUnbornHeadFromAnUnreadableCommit(t *testing.T) 
 				t.Fatal(err)
 			}
 		}},
-		{"broken branch ref", func(t *testing.T, dir string) {
+		// Malformed loose refs. Git 2.43's symbolic-ref happens to refuse
+		// the first two; it ACCEPTS the third (HEAD is a valid symbolic ref
+		// to refs/heads/main) while `rev-parse --verify` fails exactly as
+		// for an absent ref — the case only a store lookup tells apart.
+		{"garbage branch ref", func(t *testing.T, dir string) {
 			if err := os.WriteFile(filepath.Join(dir, ".git", "refs", "heads", "main"), []byte("garbage\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"empty branch ref", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, ".git", "refs", "heads", "main"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"branch ref is a directory", func(t *testing.T, dir string) {
+			ref := filepath.Join(dir, ".git", "refs", "heads", "main")
+			if err := os.Remove(ref); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(ref, "x"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -176,8 +205,8 @@ func TestCaptureProvenanceTellsAnUnbornHeadFromAnUnreadableCommit(t *testing.T) 
 			dir, _ := initRepo(t)
 			tc.damage(t, dir)
 			p, err := CaptureProvenance(ctx, dir, opts)
-			if err == nil || errors.Is(err, ErrUnhashed) {
-				t.Fatalf("an unreadable HEAD commit must be an error, got %+v %v", p, err)
+			if err == nil || errors.Is(err, ErrUnhashed) || !strings.Contains(err.Error(), "read HEAD commit") {
+				t.Fatalf("an unreadable HEAD commit must be readHead's error, got %+v %v", p, err)
 			}
 			if p.Commit != "" || p.Tree != "" {
 				t.Fatalf("no commit may be recorded from an unreadable HEAD: %+v", p)
@@ -258,42 +287,136 @@ func TestCaptureReadsASignedHistoryWithShowSignatureOn(t *testing.T) {
 	}
 }
 
-// The log parsers read only what is inside their record markers, so text git
-// prints around a record — a signature check, colored — cannot shift a field,
-// and a record that never closes is an error rather than a dropped commit.
+// rec frames fields as `git log --format=logFormat(...)` prints one commit:
+// a NUL, each field followed by a NUL, then git's newline.
+func rec(fields ...string) string { return "\x00" + strings.Join(fields, "\x00") + "\x00\n" }
+
+// The log parsers frame records by NUL alone, the one byte git keeps out of
+// every field: text git prints between records — a signature check, colored
+// — cannot shift a field, every other control byte in a subject is content,
+// and output that does not divide into whole records is an error rather
+// than a dropped commit.
 func TestLogParsersIgnoreTextOutsideRecords(t *testing.T) {
 	commit, tree := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	sig := "\x1b[32mGood \"git\" signature for t with ED25519 key SHA256:abc\x1b[m\n"
+	subject := "fix: a\x1db\x1ec\x1fd"
 
-	f, err := parseHead([]byte(sig + "\x1e" + commit + "\x1f" + tree + "\x1f1700000000\x1fbob\x1ffix: a\x1fb\x1d\n"))
+	f, err := parseHead([]byte(sig + rec(commit, tree, "1700000000", "bob", subject)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.commit != commit || f.tree != tree || f.author != "bob" || f.subject != "fix: a\x1fb" || f.time == nil || f.time.Unix() != 1700000000 {
+	if f.commit != commit || f.tree != tree || f.author != "bob" || f.subject != subject || f.time == nil || f.time.Unix() != 1700000000 {
 		t.Fatalf("parseHead = %+v", f)
 	}
 
-	cs, err := parseCommits([]byte(sig + "\x1e" + commit + "\x1f1700000060\x1fbob\x1fc2\x1d\n" + sig + "\x1e" + tree + "\x1f1700000000\x1falice\x1fc1\x1d\n"))
+	cs, err := parseCommits([]byte(sig + rec(commit, "1700000060", "bob", subject) + sig + rec(tree, "1700000000", "alice", "c1")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cs) != 2 || cs[0].SHA != commit || cs[0].Subject != "c2" || cs[1].SHA != tree || cs[1].Author != "alice" {
+	if len(cs) != 2 || cs[0].SHA != commit || cs[0].Subject != CommitText(subject, MaxCommitSubjectBytes) || cs[1].SHA != tree || cs[1].Author != "alice" {
 		t.Fatalf("parseCommits = %+v", cs)
 	}
+	if none, err := parseCommits(nil); err != nil || len(none) != 0 {
+		t.Fatalf("an empty range = %v %v, want no commits", none, err)
+	}
 
+	whole := rec(commit, tree, "1", "a", "s")
 	for name, out := range map[string]string{
-		"unterminated": "\x1e" + commit + "\x1f" + tree + "\x1f1\x1fbob\x1fs",
-		"no record":    sig,
-		"two records":  "\x1e" + commit + "\x1f" + tree + "\x1f1\x1fa\x1fs\x1d\x1e" + commit + "\x1f" + tree + "\x1f1\x1fa\x1fs\x1d",
+		"truncated":     strings.TrimSuffix(whole, "\x00\n"),
+		"a field short": rec(commit, tree, "1", "a"),
+		"no record":     sig,
+		"two records":   whole + whole,
 	} {
 		if _, err := parseHead([]byte(out)); err == nil {
 			t.Errorf("parseHead(%s) = nil error", name)
 		}
 	}
-	if _, err := parseCommits([]byte("\x1e" + commit + "\x1f1\x1fbob\x1fc2")); err == nil {
-		t.Error("parseCommits of an unterminated record = nil error")
+	if _, err := parseCommits([]byte(rec(commit, "1", "bob", "c2") + rec(tree, "1", "bob"))); err == nil {
+		t.Error("parseCommits of a record a field short = nil error")
 	}
 }
+
+// Every C0 separator byte is legal in a commit subject, so none may frame a
+// record: a real commit whose subject holds them is captured whole, both as
+// HEAD and in a commit range.
+func TestCaptureReadsSeparatorBytesInARealSubject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	t.Parallel()
+	ctx := context.Background()
+	dir, _ := initRepo(t)
+	subject := "one\x1dtwo\x1ethree\x1ffour"
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", subject)
+	want := CommitText(subject, MaxCommitSubjectBytes)
+	if want != "one two three four" {
+		t.Fatalf("CommitText(%q) = %q: the expectation below is wrong", subject, want)
+	}
+
+	p, err := CaptureProvenance(ctx, dir, CaptureOptions{treeBudget: testTreeBudget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CommitSubject != want || p.CommitAuthor != "t" {
+		t.Fatalf("HEAD subject = %q author %q, want %q", p.CommitSubject, p.CommitAuthor, want)
+	}
+	r, err := CaptureCommitRange(ctx, dir, p.Commit, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(subjects(r.Commits), "|"); got != want+"|init" || r.Commits[0].SHA != p.Commit {
+		t.Fatalf("range subjects = %q, want %q", got, want+"|init")
+	}
+}
+
+// Git before 2.43 has no `show-ref --exists`, so unbornHead reads the files
+// ref store itself. Absent is a positive finding only: a loose path in any
+// form, a packed line for the ref, or a packed-refs it cannot vouch for is
+// not absent.
+func TestRefFileAbsent(t *testing.T) {
+	const ref = "refs/heads/main"
+	sha := strings.Repeat("c", 40)
+	for _, tc := range []struct {
+		name          string
+		loose, packed *string // nil: the file does not exist
+		looseDir      bool
+		want          bool
+	}{
+		{name: "nothing at all", want: true},
+		{name: "other refs packed", packed: ptr("# pack-refs with: peeled\n" + sha + " refs/heads/other\n^" + sha + "\n"), want: true},
+		{name: "loose file", loose: ptr(sha + "\n")},
+		{name: "garbage loose file", loose: ptr("garbage\n")},
+		{name: "loose directory", looseDir: true},
+		{name: "packed", packed: ptr(sha + " " + ref + "\n")},
+		{name: "garbage packed-refs", packed: ptr("zzzz " + ref + "\n")},
+		{name: "unparseable packed line", packed: ptr(sha + "\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			loose, packed := filepath.Join(dir, "loose"), filepath.Join(dir, "packed-refs")
+			if tc.loose != nil {
+				if err := os.WriteFile(loose, []byte(*tc.loose), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.looseDir {
+				if err := os.Mkdir(loose, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.packed != nil {
+				if err := os.WriteFile(packed, []byte(*tc.packed), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := refFileAbsent(loose, packed, ref); got != tc.want {
+				t.Fatalf("refFileAbsent = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }
 
 // A dirty tree the budget stopped from hashing is an ERROR naming
 // ErrUnhashed, never an empty tree reported as success: under load the

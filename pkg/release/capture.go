@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,12 +184,11 @@ type headFacts struct {
 // should never produce: a commit recorded without its tree would be an
 // unhashed record that no bound explains.
 //
-// Read as one marked record (logRecords) split on a unit separator, the
-// subject LAST, so a subject's content can never shift another field. The
-// committer date is a unix timestamp so the result does not depend on git's
-// date configuration.
+// Read as one NUL-framed record (logRecords), so no byte of a subject or a
+// name can shift another field. The committer date is a unix timestamp so
+// the result does not depend on git's date configuration.
 func readHead(ctx context.Context, top string) (f headFacts, born bool, err error) {
-	out, err := gitRaw(ctx, top, nil, "log", "-1", "--no-show-signature", "--format="+logRecordFormat("%H%x1f%T%x1f%ct%x1f%an%x1f%s"), "HEAD")
+	out, err := gitRaw(ctx, top, nil, "log", "-1", "--no-show-signature", "--format="+logFormat(headFields...), "HEAD")
 	if err != nil {
 		if ctx.Err() == nil && unbornHead(ctx, top) {
 			return headFacts{}, false, nil
@@ -202,17 +202,20 @@ func readHead(ctx context.Context, top string) (f headFacts, born bool, err erro
 	return f, true, nil
 }
 
+// headFields are readHead's `git log` placeholders, in parseHead's order.
+var headFields = []string{"%H", "%T", "%ct", "%an", "%s"}
+
 // parseHead is readHead's parse of `git log -1` output.
 func parseHead(out []byte) (headFacts, error) {
-	recs, err := logRecords(out)
+	recs, err := logRecords(out, len(headFields))
 	if err != nil {
 		return headFacts{}, err
 	}
 	if len(recs) != 1 {
-		return headFacts{}, fmt.Errorf("git log -1 HEAD: unexpected output %q", out)
+		return headFacts{}, fmt.Errorf("git log -1 HEAD: %d records, want 1: %q", len(recs), out)
 	}
-	fields := strings.SplitN(recs[0], "\x1f", 5)
-	if len(fields) != 5 || !ValidObjectID(fields[0]) || !ValidObjectID(fields[1]) {
+	fields := recs[0]
+	if !ValidObjectID(fields[0]) || !ValidObjectID(fields[1]) {
 		return headFacts{}, fmt.Errorf("git log -1 HEAD: unexpected output %q", out)
 	}
 	f := headFacts{commit: fields[0], tree: fields[1], author: fields[3], subject: fields[4]}
@@ -223,50 +226,117 @@ func parseHead(out []byte) (headFacts, error) {
 	return f, nil
 }
 
-// logRecordFormat wraps a `git log --format` body in the markers logRecords
-// reads: a record separator before it and a group separator after.
-func logRecordFormat(body string) string { return "%x1e" + body + "%x1d" }
+// logFormat is a `git log --format` that frames every commit as a NUL, then
+// each placeholder followed by a NUL. NUL is the one byte no field can hold:
+// git refuses it in a commit message and in an identity, and hashes and
+// timestamps are hex and digits. Any other separator is a byte a subject may
+// legally contain.
+func logFormat(placeholders ...string) string {
+	return "%x00" + strings.Join(placeholders, "%x00") + "%x00"
+}
 
-// logRecords is every record of `git log --format=logRecordFormat(...)`
-// output, in order. Whatever git prints OUTSIDE the markers is ignored: the
-// signature verification log.showSignature adds before each commit, and the
-// newline after each one. machineReadConfig and --no-show-signature already
-// turn the known sources off; this keeps an unforeseen one from shifting a
-// field. A record that opens and never closes is an error, not a commit
-// quietly dropped.
-func logRecords(out []byte) ([]string, error) {
-	var recs []string
-	rest := string(out)
-	for {
-		start := strings.IndexByte(rest, '\x1e')
-		if start < 0 {
-			return recs, nil
-		}
-		rest = rest[start+1:]
-		end := strings.IndexByte(rest, '\x1d')
-		if end < 0 {
-			return nil, fmt.Errorf("git log: unterminated record %q", rest)
-		}
-		recs = append(recs, rest[:end])
-		rest = rest[end+1:]
+// logRecords splits the output of `git log --format=logFormat(n placeholders)`
+// into its records of exactly n fields, in order.
+//
+// Split on NUL, the output is the text before the first record, then for
+// each record its n fields and the text after it (git's newline between
+// commits, and anything else git prints between them, such as the signature
+// verification log.showSignature adds ahead of a commit). The text outside
+// the records is ignored — machineReadConfig and --no-show-signature already
+// turn the known sources off, and this keeps an unforeseen one from shifting
+// a field — so the field count is fixed by the framing alone. Output that
+// does not divide into whole records is an error, never a dropped or a
+// shifted commit.
+func logRecords(out []byte, n int) ([][]string, error) {
+	tokens := strings.Split(string(out), "\x00")
+	if (len(tokens)-1)%(n+1) != 0 {
+		return nil, fmt.Errorf("git log: output does not frame records of %d fields: %q", n, out)
 	}
+	recs := make([][]string, 0, (len(tokens)-1)/(n+1))
+	for i := 1; i < len(tokens); i += n + 1 {
+		recs = append(recs, tokens[i:i+n])
+	}
+	return recs, nil
 }
 
 // unbornHead reports whether HEAD names a branch that does not exist yet: it
-// is a symbolic ref, and resolving it finds no ref (`rev-parse --verify -q`
-// exits 1, its "no such object name" status). It runs only after a HEAD read
-// failed, so a capture of a repository with commits never pays for it.
+// is a symbolic ref, and its target ref is ABSENT. It runs only after a HEAD
+// read failed, so a capture of a repository with commits never pays for it.
 //
-// Not unborn: a HEAD that resolves to a commit object that is missing or
-// corrupt (rev-parse resolves the name without reading the object), and a
-// broken ref file (symbolic-ref refuses it).
+// Absent is asked of git's ref store, never inferred from a failed
+// resolution: `rev-parse --verify` fails alike for a missing ref and for one
+// that exists but is malformed (a garbage loose file, a directory where the
+// file should be), and only the first is unborn. `show-ref --exists` reports
+// the two apart — exit 2 is "does not exist", 1 a failed lookup. Git before
+// 2.43 has no --exists (exit 129), and also no ref store but the files one,
+// so there the loose and packed ref files are read directly.
+//
+// Not unborn, so the failed read is the caller's error: a target that exists
+// but is malformed, a HEAD that resolves to a missing or corrupt commit, and
+// a HEAD symbolic-ref cannot read.
 func unbornHead(ctx context.Context, top string) bool {
-	if _, err := gitOut(ctx, top, "symbolic-ref", "-q", "HEAD"); err != nil {
+	target, err := gitOut(ctx, top, "symbolic-ref", "-q", "HEAD")
+	if err != nil || target == "" {
 		return false
 	}
-	_, err := gitOut(ctx, top, "rev-parse", "--verify", "-q", "HEAD")
+	_, err = gitOut(ctx, top, "show-ref", "--exists", target)
 	var exit *exec.ExitError
-	return errors.As(err, &exit) && exit.ExitCode() == 1
+	if !errors.As(err, &exit) {
+		return false // the ref exists (or git did not run at all)
+	}
+	switch exit.ExitCode() {
+	case 2:
+		return true
+	case 129:
+		return refAbsentFromFiles(ctx, top, target)
+	}
+	return false
+}
+
+// refAbsentFromFiles is unbornHead's check on a git without `show-ref
+// --exists`: the ref has no loose file and no packed-refs line.
+func refAbsentFromFiles(ctx context.Context, top, ref string) bool {
+	out, err := gitOut(ctx, top, "rev-parse", "--git-path", ref, "--git-path", "packed-refs")
+	if err != nil {
+		return false
+	}
+	paths := strings.Split(out, "\n")
+	if len(paths) != 2 {
+		return false
+	}
+	for i, p := range paths {
+		if !filepath.IsAbs(p) {
+			paths[i] = filepath.Join(top, p)
+		}
+	}
+	return refFileAbsent(paths[0], paths[1], ref)
+}
+
+// refFileAbsent reports whether ref is in neither its loose file nor the
+// packed-refs file. Anything it cannot vouch for — a loose path that exists
+// in any form or cannot be stat'ed, a packed-refs it cannot read or parse —
+// is not absent: unborn is only ever a positive finding.
+func refFileAbsent(loose, packed, ref string) bool {
+	if _, err := os.Lstat(loose); !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	data, err := os.ReadFile(packed)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "^") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) != 2 || !ValidObjectID(f[0]) || f[1] == ref {
+			return false
+		}
+	}
+	return true
 }
 
 // dirtyTree hashes exactly what is in the working tree — tracked changes and

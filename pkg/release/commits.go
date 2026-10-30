@@ -301,13 +301,15 @@ func boundaryWithin(boundary map[string]bool, commits []string) bool {
 	return false
 }
 
-// logCommits reads up to max commits of spec, newest first. Fields are split
-// on unit separators and records are read between logRecords' markers, which
-// no subject or name can contain once git has formatted it, so a signature
-// shown before a commit cannot shift its fields.
+// commitFields are logCommits' `git log` placeholders, in parseCommits' order.
+var commitFields = []string{"%H", "%ct", "%an", "%s"}
+
+// logCommits reads up to max commits of spec, newest first. Each commit is a
+// NUL-framed record (logRecords), so no byte of a subject or a name, and no
+// signature shown before a commit, can shift a field.
 func logCommits(ctx context.Context, top, spec string, max int) ([]Commit, error) {
 	raw, err := gitRaw(ctx, top, nil, "log", "--no-show-signature", "--max-count="+strconv.Itoa(max),
-		"--format="+logRecordFormat("%H%x1f%ct%x1f%an%x1f%s"), spec)
+		"--format="+logFormat(commitFields...), spec)
 	if err != nil {
 		return nil, err
 	}
@@ -316,15 +318,14 @@ func logCommits(ctx context.Context, top, spec string, max int) ([]Commit, error
 
 // parseCommits is logCommits' parse of `git log` output.
 func parseCommits(raw []byte) ([]Commit, error) {
-	recs, err := logRecords(raw)
+	recs, err := logRecords(raw, len(commitFields))
 	if err != nil {
 		return nil, err
 	}
 	out := []Commit{}
-	for _, rec := range recs {
-		f := strings.SplitN(rec, "\x1f", 4)
-		if len(f) != 4 || !ValidObjectID(f[0]) {
-			return nil, fmt.Errorf("unexpected git log record %q", rec)
+	for _, f := range recs {
+		if !ValidObjectID(f[0]) {
+			return nil, fmt.Errorf("unexpected git log record %q", f)
 		}
 		secs, err := strconv.ParseInt(f[1], 10, 64)
 		if err != nil {

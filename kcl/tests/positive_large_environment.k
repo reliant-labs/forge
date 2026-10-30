@@ -14,5 +14,5 @@ sidecar = tiers.Container {
     image = "example/helper:v1"
     env = _env
 }
-assert len(workload.env) == 300
-assert len(sidecar.env) == 300
+assert_workload_env_not_capped = len(workload.env) == 300
+assert_container_env_not_capped = len(sidecar.env) == 300

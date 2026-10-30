@@ -7,22 +7,37 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
 // Capture budget for the dirty-tree hash (F-16). Past either bound the tree is
-// recorded as unhashed rather than making a developer wait: a clean tree's
-// hash is HEAD^{tree} and costs nothing, so the bound only ever applies to a
-// dirty checkout, which no protected path relies on.
+// left unhashed rather than making a developer wait, and CaptureProvenance
+// says so with [ErrUnhashed]: a clean tree's hash is HEAD^{tree} and costs
+// nothing, so the bound only ever applies to a dirty checkout, which no
+// protected path relies on.
 const (
 	CaptureTreeTimeout  = 5 * time.Second
 	CaptureMaxDirtySize = 2 << 30 // bytes of untracked-unignored + modified content
 )
+
+// ErrUnhashed is returned by CaptureProvenance, alongside the provenance it
+// did capture, when the checkout names a commit but the built tree was not
+// hashed: the dirty content exceeded [CaptureMaxDirtySize], or hashing it
+// exceeded [CaptureTreeTimeout]. The provenance is still usable — its commit,
+// branch and dirty flag are recorded and [Provenance.Unhashed] is true — so a
+// best-effort caller tests for this with errors.Is and carries on. It is an
+// error rather than a quiet empty Tree so that no caller mistakes "not
+// hashed" for a hash: an empty tree is never a silent success.
+var ErrUnhashed = errors.New("working tree not hashed")
 
 // CaptureOptions are the facts CaptureProvenance cannot learn from git.
 type CaptureOptions struct {
@@ -35,6 +50,11 @@ type CaptureOptions struct {
 	Host string
 	// Attestation is the CI identity, when there is one.
 	Attestation *Attest
+
+	// treeBudget overrides CaptureTreeTimeout (0 = the default). Unexported:
+	// it exists so this package's tests can pin the budget path without
+	// depending on how fast the machine runs git.
+	treeBudget time.Duration
 }
 
 // CaptureProvenance records where the content in dir came from. It is
@@ -42,6 +62,11 @@ type CaptureOptions struct {
 // yields a Provenance with no commit (and an error only when git itself is
 // broken in a way the caller should hear about). It NEVER touches the user's
 // index: the tree hash is computed through a temporary one.
+//
+// A checkout with a commit always comes back with its Tree hashed or with an
+// error: [ErrUnhashed] when a capture bound stopped the hash (the returned
+// provenance is still complete otherwise), any other error when git failed or
+// ctx ended. An empty Tree with a nil error is never returned for a commit.
 //
 // Exported so the daemon and CI capture provenance with the same code forge
 // does — the field set is ledger vocabulary every backend must agree on.
@@ -53,6 +78,9 @@ func CaptureProvenance(ctx context.Context, dir string, opts CaptureOptions) (Pr
 	}
 	top, err := gitOut(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
+		if ctx.Err() != nil {
+			return p, fmt.Errorf("capture provenance: %w", ctx.Err())
+		}
 		// Not a git checkout: nothing more to record, and not an error.
 		p.Worktree.Label = filepath.Base(dir)
 		p.Worktree.Path = dir
@@ -60,81 +88,277 @@ func CaptureProvenance(ctx context.Context, dir string, opts CaptureOptions) (Pr
 	}
 	p.Worktree.Path = top
 
-	commit, err := gitOut(ctx, top, "rev-parse", "HEAD")
-	if err != nil {
+	// Every remaining read is independent and read-only, so they run at
+	// once. A capture is a handful of git process starts, and on a loaded
+	// machine it is the process start, not git's work, that costs: run one
+	// after another they took seconds, long enough for a build to wait on.
+	var (
+		head                headFacts
+		born                bool
+		headErr, changesErr error
+		branch, tag, repo   string
+		changes             Changes
+		wg                  sync.WaitGroup
+	)
+	wg.Go(func() { head, born, headErr = readHead(ctx, top) })
+	wg.Go(func() {
+		if b, err := gitOut(ctx, top, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+			branch = b
+		}
+	})
+	wg.Go(func() {
+		if t, err := gitOut(ctx, top, "describe", "--tags", "--exact-match", "HEAD"); err == nil {
+			tag = t
+		}
+	})
+	wg.Go(func() { repo = canonicalRemote(ctx, top) })
+	wg.Go(func() { changes, changesErr = InspectCheckout(ctx, top) })
+	wg.Wait()
+
+	if ctx.Err() != nil {
+		return p, fmt.Errorf("capture provenance: %w", ctx.Err())
+	}
+	if headErr != nil {
+		return p, fmt.Errorf("capture provenance: %w", headErr)
+	}
+	if !born {
 		// A repository with no commits yet.
 		p.Worktree.Label = filepath.Base(top)
 		return p, nil
 	}
-	p.Commit = commit
-	p.CommitSubject, p.CommitAuthor = commitIdentity(ctx, top, commit)
-	if b, err := gitOut(ctx, top, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
-		p.Branch = b
-	}
-	if t, err := gitOut(ctx, top, "describe", "--tags", "--exact-match", "HEAD"); err == nil {
-		p.Tag = t
-	}
+	p.Commit = head.commit
+	p.CommitSubject = CommitText(head.subject, MaxCommitSubjectBytes)
+	p.CommitAuthor = CommitText(head.author, MaxCommitAuthorBytes)
+	p.Branch, p.Tag, p.Repo = branch, tag, repo
 	p.Worktree.Label = p.Branch
 	if p.Worktree.Label == "" {
 		p.Worktree.Label = filepath.Base(top)
 	}
-	p.Repo = canonicalRemote(ctx, top)
 
-	changes, err := InspectCheckout(ctx, top)
-	if err != nil {
-		return p, fmt.Errorf("capture provenance: %w", err)
+	if changesErr != nil {
+		return p, fmt.Errorf("capture provenance: %w", changesErr)
 	}
 	p.Dirty = changes.Dirty()
 	if !p.Dirty {
-		p.CommitTime = commitTime(ctx, top)
-		tree, err := gitOut(ctx, top, "rev-parse", "HEAD^{tree}")
-		if err != nil {
-			return p, fmt.Errorf("capture provenance: resolve HEAD tree: %w", err)
-		}
-		p.Tree = tree
+		p.CommitTime = head.time
+		p.Tree = head.tree
 		return p, nil
 	}
 	if dirtySize(top, changes.Paths) > CaptureMaxDirtySize {
-		return p, nil // unhashed: Provenance.Unhashed reports it
+		return p, fmt.Errorf("capture provenance: %w: the uncommitted content exceeds the %d-byte hashing bound", ErrUnhashed, int64(CaptureMaxDirtySize))
 	}
-	tree, err := dirtyTree(ctx, top, changes.Nested)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return p, nil // unhashed, by budget
-		}
+	budget := opts.treeBudget
+	if budget <= 0 {
+		budget = CaptureTreeTimeout
+	}
+	tctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	tree, err := dirtyTree(tctx, top, changes.Nested)
+	switch {
+	case err == nil:
+		p.Tree = tree
+		return p, nil
+	case ctx.Err() != nil:
+		return p, fmt.Errorf("capture provenance: hash working tree: %w", ctx.Err())
+	case tctx.Err() != nil:
+		// The capture's own budget, not the caller's context: git was
+		// killed mid-hash, so its error says only "signal: killed".
+		return p, fmt.Errorf("capture provenance: %w: hashing the uncommitted content took longer than %s: %w", ErrUnhashed, budget, tctx.Err())
+	default:
 		return p, fmt.Errorf("capture provenance: hash working tree: %w", err)
 	}
-	p.Tree = tree
-	return p, nil
 }
 
-// commitTime is HEAD's committer date in UTC, or nil when git cannot say. A
-// unix timestamp is read rather than a formatted date so the result does not
-// depend on git's date configuration.
-func commitTime(ctx context.Context, top string) *time.Time {
-	out, err := gitOut(ctx, top, "log", "-1", "--format=%ct", "HEAD")
-	if err != nil {
-		return nil
-	}
-	secs, err := strconv.ParseInt(out, 10, 64)
-	if err != nil || secs <= 0 {
-		return nil
-	}
-	t := time.Unix(secs, 0).UTC()
-	return &t
+// headFacts is HEAD's commit as one `git log` reports it.
+type headFacts struct {
+	commit, tree    string
+	author, subject string // raw; CaptureProvenance bounds them
+	// time is the committer date in UTC, or nil when git gave none.
+	time *time.Time
 }
 
-// commitIdentity is commit's subject line and author name, each made safe to
-// record (one line, bounded), or empty strings when git cannot say. Read as
-// raw bytes with a unit separator between the two, so neither field's content
-// can shift the other.
-func commitIdentity(ctx context.Context, top, commit string) (subject, author string) {
-	out, err := gitRaw(ctx, top, nil, "log", "-1", "--format=%s%x1f%an", commit)
+// readHead reads HEAD's commit, tree, committer date, author and subject in
+// one git process. born is false, with no error, only when HEAD is unborn — a
+// repository (or orphan branch) with no commits yet. Every other failed read
+// is an error: a HEAD that resolves to a missing or corrupt commit, or a
+// broken ref, must not pass for an empty repository. So must output git
+// should never produce: a commit recorded without its tree would be an
+// unhashed record that no bound explains.
+//
+// Read as one NUL-framed record (logRecords), so no byte of a subject or a
+// name can shift another field. The committer date is a unix timestamp so
+// the result does not depend on git's date configuration.
+func readHead(ctx context.Context, top string) (f headFacts, born bool, err error) {
+	out, err := gitRaw(ctx, top, nil, "log", "-1", "--no-show-signature", "--format="+logFormat(headFields...), "HEAD")
 	if err != nil {
-		return "", ""
+		if ctx.Err() == nil && unbornHead(ctx, top) {
+			return headFacts{}, false, nil
+		}
+		return headFacts{}, false, fmt.Errorf("read HEAD commit: %w", err)
 	}
-	s, a, _ := strings.Cut(strings.TrimRight(string(out), "\n"), "\x1f")
-	return CommitText(s, MaxCommitSubjectBytes), CommitText(a, MaxCommitAuthorBytes)
+	f, err = parseHead(out)
+	if err != nil {
+		return headFacts{}, false, err
+	}
+	return f, true, nil
+}
+
+// headFields are readHead's `git log` placeholders, in parseHead's order.
+var headFields = []string{"%H", "%T", "%ct", "%an", "%s"}
+
+// parseHead is readHead's parse of `git log -1` output.
+func parseHead(out []byte) (headFacts, error) {
+	recs, err := logRecords(out, len(headFields))
+	if err != nil {
+		return headFacts{}, err
+	}
+	if len(recs) != 1 {
+		return headFacts{}, fmt.Errorf("git log -1 HEAD: %d records, want 1: %q", len(recs), out)
+	}
+	fields := recs[0]
+	if !ValidObjectID(fields[0]) || !ValidObjectID(fields[1]) {
+		return headFacts{}, fmt.Errorf("git log -1 HEAD: unexpected output %q", out)
+	}
+	f := headFacts{commit: fields[0], tree: fields[1], author: fields[3], subject: fields[4]}
+	if secs, err := strconv.ParseInt(fields[2], 10, 64); err == nil && secs > 0 {
+		t := time.Unix(secs, 0).UTC()
+		f.time = &t
+	}
+	return f, nil
+}
+
+// logFormat is a `git log --format` that frames every commit as a NUL, then
+// each placeholder followed by a NUL. NUL is the one byte no field can hold:
+// git refuses it in a commit message and in an identity, and hashes and
+// timestamps are hex and digits. Any other separator is a byte a subject may
+// legally contain.
+func logFormat(placeholders ...string) string {
+	return "%x00" + strings.Join(placeholders, "%x00") + "%x00"
+}
+
+// logRecords splits the output of `git log --format=logFormat(n placeholders)`
+// into its records of exactly n fields, in order.
+//
+// Split on NUL, the output is the text before the first record, then for
+// each record its n fields and the text after it (git's newline between
+// commits, and anything else git prints between them, such as the signature
+// verification log.showSignature adds ahead of a commit). The text outside
+// the records is ignored — machineReadConfig and --no-show-signature already
+// turn the known sources off, and this keeps an unforeseen one from shifting
+// a field — so the field count is fixed by the framing alone. Output that
+// does not divide into whole records is an error, never a dropped or a
+// shifted commit.
+func logRecords(out []byte, n int) ([][]string, error) {
+	tokens := strings.Split(string(out), "\x00")
+	if (len(tokens)-1)%(n+1) != 0 {
+		return nil, fmt.Errorf("git log: output does not frame records of %d fields: %q", n, out)
+	}
+	recs := make([][]string, 0, (len(tokens)-1)/(n+1))
+	for i := 1; i < len(tokens); i += n + 1 {
+		recs = append(recs, tokens[i:i+n])
+	}
+	return recs, nil
+}
+
+// unbornHead reports whether HEAD names a branch that does not exist yet: it
+// is a symbolic ref, and its target ref is ABSENT. It runs only after a HEAD
+// read failed, so a capture of a repository with commits never pays for it.
+//
+// Absent is asked of git's ref store, never inferred from a failed
+// resolution: `rev-parse --verify` fails alike for a missing ref and for one
+// that exists but is malformed (a garbage loose file, a directory where the
+// file should be), and only the first is unborn. `show-ref --exists` reports
+// the two apart — exit 2 is "does not exist", 1 a failed lookup. Git before
+// 2.43 has no --exists (exit 129), and also no ref store but the files one,
+// so there the loose and packed ref files are read directly.
+//
+// Not unborn, so the failed read is the caller's error: a target that exists
+// but is malformed, a HEAD that resolves to a missing or corrupt commit, and
+// a HEAD symbolic-ref cannot read.
+func unbornHead(ctx context.Context, top string) bool {
+	target, err := gitOut(ctx, top, "symbolic-ref", "-q", "HEAD")
+	if err != nil || target == "" {
+		return false
+	}
+	_, err = gitOut(ctx, top, "show-ref", "--exists", target)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false // the ref exists (or git did not run at all)
+	}
+	switch exit.ExitCode() {
+	case 2:
+		// Newer git's files backend reports a loose ref path that is a
+		// DIRECTORY as "does not exist" (exit 2) where 2.43 fails the lookup
+		// (exit 1). That is damage, not an unborn branch, so the exit is
+		// confirmed against the loose path. A path git cannot name (a
+		// non-files store) leaves git's answer standing.
+		return !loosePathPresent(ctx, top, target)
+	case 129:
+		return refAbsentFromFiles(ctx, top, target)
+	}
+	return false
+}
+
+// loosePathPresent reports whether ref's loose path exists on disk in any
+// form (a file, a directory, a symlink). A missing path, or a parent that is
+// not a directory (reftable's stub `refs/heads` file), is not present; a path
+// it cannot stat is, since unborn is only ever a positive finding.
+func loosePathPresent(ctx context.Context, top, ref string) bool {
+	p, err := gitOut(ctx, top, "rev-parse", "--git-path", ref)
+	if err != nil || p == "" {
+		return false
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(top, p)
+	}
+	_, err = os.Lstat(p)
+	return !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR)
+}
+
+// refAbsentFromFiles is unbornHead's check on a git without `show-ref
+// --exists`: the ref has no loose file and no packed-refs line.
+func refAbsentFromFiles(ctx context.Context, top, ref string) bool {
+	out, err := gitOut(ctx, top, "rev-parse", "--git-path", ref, "--git-path", "packed-refs")
+	if err != nil {
+		return false
+	}
+	paths := strings.Split(out, "\n")
+	if len(paths) != 2 {
+		return false
+	}
+	for i, p := range paths {
+		if !filepath.IsAbs(p) {
+			paths[i] = filepath.Join(top, p)
+		}
+	}
+	return refFileAbsent(paths[0], paths[1], ref)
+}
+
+// refFileAbsent reports whether ref is in neither its loose file nor the
+// packed-refs file. Anything it cannot vouch for — a loose path that exists
+// in any form or cannot be stat'ed, a packed-refs it cannot read or parse —
+// is not absent: unborn is only ever a positive finding.
+func refFileAbsent(loose, packed, ref string) bool {
+	if _, err := os.Lstat(loose); !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	data, err := os.ReadFile(packed)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "^") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) != 2 || !ValidObjectID(f[0]) || f[1] == ref {
+			return false
+		}
+	}
+	return true
 }
 
 // dirtyTree hashes exactly what is in the working tree — tracked changes and
@@ -145,9 +369,10 @@ func commitIdentity(ctx context.Context, top, commit string) (subject, author st
 // Nested git checkouts are left out of the hash, as InspectCheckout leaves
 // them out of the dirty verdict: they are another checkout's content, and
 // `git add -A` would otherwise record each as an embedded-repo gitlink.
+//
+// The caller bounds it through ctx; a result that is not a git object id is
+// an error, never an empty hash.
 func dirtyTree(ctx context.Context, top string, nested []string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, CaptureTreeTimeout)
-	defer cancel()
 	tmp, err := os.CreateTemp("", "forge-provenance-index-*")
 	if err != nil {
 		return "", err
@@ -164,17 +389,17 @@ func dirtyTree(ctx context.Context, top string, nested []string) (string, error)
 	}
 	for _, args := range [][]string{{"read-tree", "HEAD"}, addArgs} {
 		if _, err := gitOutEnv(ctx, top, env, args...); err != nil {
-			if ctx.Err() != nil {
-				return "", ctx.Err()
-			}
 			return "", err
 		}
 	}
 	out, err := gitOutEnv(ctx, top, env, "write-tree")
-	if err != nil && ctx.Err() != nil {
-		return "", ctx.Err()
+	if err != nil {
+		return "", err
 	}
-	return out, err
+	if !ValidObjectID(out) {
+		return "", fmt.Errorf("git write-tree: reported %q, not a tree hash", out)
+	}
+	return out, nil
 }
 
 // dirtySize estimates the bytes `git add -A` would hash: the sizes of the
@@ -317,10 +542,23 @@ func gitOutEnv(ctx context.Context, dir string, env []string, args ...string) (s
 	return strings.TrimSpace(string(out)), err
 }
 
+// machineReadConfig overrides the user configuration that changes what git
+// prints, for every call this package parses. log.showSignature=true makes
+// `git log` print a signed commit's verification text on stdout ahead of the
+// --format record; color.ui=always colors that text; i18n.logOutputEncoding
+// re-encodes subjects and names away from the UTF-8 the ledger records.
+// (log.mailmap needs no override: %an is the raw author, %aN the mapped one.)
+var machineReadConfig = []string{
+	"-c", "log.showSignature=false",
+	"-c", "color.ui=never",
+	"-c", "i18n.logOutputEncoding=UTF-8",
+}
+
 // gitRaw is git's stdout untouched: a leading space is meaningful in
-// `status --porcelain` and trimming it shifts every field.
+// `status --porcelain` and trimming it shifts every field. It runs git under
+// machineReadConfig.
 func gitRaw(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", append(slices.Clone(machineReadConfig), args...)...)
 	cmd.Dir = dir
 	if env != nil {
 		cmd.Env = env

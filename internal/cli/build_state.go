@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -226,11 +227,11 @@ func captureBuildProvenance(ctx context.Context, projectDir string) release.Prov
 		WorktreeKey:  devstack.Worktree(projectDir),
 		Host:         release.HostID(),
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, release.ErrUnhashed):
+		fmt.Fprintf(os.Stderr, "[build]   note: %v; provenance records the commit and dirty flag only\n", err)
+	case err != nil:
 		fmt.Fprintf(os.Stderr, "[build]   warning: source provenance is incomplete: %v\n", err)
-	}
-	if p.Unhashed() {
-		fmt.Fprintf(os.Stderr, "[build]   note: the working tree was too large to hash within %s; provenance records the commit and dirty flag only\n", release.CaptureTreeTimeout)
 	}
 	return p
 }

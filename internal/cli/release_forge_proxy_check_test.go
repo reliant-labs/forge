@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -48,12 +49,40 @@ func runForgeScriptWithProxy(t *testing.T, repo, proxyBase string, args ...strin
 	return string(out), err
 }
 
-// fixtureProxy serves .info responses from a per-path table. A path with no
-// entry 404s, which is the proxy's own answer for an unpublished version.
+// fixtureProxy is a proxy whose CACHE holds the versions in a per-path table
+// of .info bodies (keyed by the plain proxy path). /cached-only/<path> answers
+// from that table alone, as proxy.golang.org's cached-only endpoint does; a
+// version with no entry 404s, the proxy's answer for one it never served.
 func fixtureProxy(t *testing.T, infoByPath map[string]string) string {
 	t.Helper()
+	url, _ := recordingFixtureProxy(t, infoByPath, true)
+	return url
+}
+
+// recordingFixtureProxy is fixtureProxy plus the request paths it has served,
+// so a test can assert which endpoints the release script touched. listCached
+// makes @v/list name every cached version; false serves an empty list, the
+// stale or tag-deleted list that must not be read as "unpublished".
+func recordingFixtureProxy(t *testing.T, infoByPath map[string]string, listCached bool) (string, func() []string) {
+	t.Helper()
+	var (
+		mu       sync.Mutex
+		requests []string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, ok := infoByPath[r.URL.Path]
+		mu.Lock()
+		requests = append(requests, r.URL.Path)
+		mu.Unlock()
+		path := strings.TrimPrefix(r.URL.Path, "/cached-only")
+		if mod, ok := strings.CutSuffix(path, "/@v/list"); ok {
+			for p := range infoByPath {
+				if v, ok := strings.CutSuffix(strings.TrimPrefix(p, mod+"/@v/"), ".info"); listCached && ok && strings.HasPrefix(p, mod+"/@v/") {
+					fmt.Fprintln(w, v)
+				}
+			}
+			return
+		}
+		body, ok := infoByPath[path]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprintf(w, "not found: %s", r.URL.Path)
@@ -62,7 +91,11 @@ func fixtureProxy(t *testing.T, infoByPath map[string]string) string {
 		fmt.Fprint(w, body)
 	}))
 	t.Cleanup(srv.Close)
-	return srv.URL
+	return srv.URL, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), requests...)
+	}
 }
 
 func infoJSON(version, hash string) string {
@@ -136,13 +169,13 @@ func TestReleaseForgeScript_AllowsRepublishAtSameCommit(t *testing.T) {
 }
 
 // TestReleaseForgeScript_UnpublishedVersionPassesGate pins the ordinary path:
-// a 404 from the proxy is an authoritative "this version is free".
+// a 404 from the proxy's cache is an authoritative "this version is free".
 func TestReleaseForgeScript_UnpublishedVersionPassesGate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("proceeds past the gate into a real go mod download")
 	}
 	repo := newForgeFixtureRepo(t)
-	proxy := fixtureProxy(t, nil) // every path 404s
+	proxy := fixtureProxy(t, nil) // an empty cache: every .info 404s
 
 	out, err := runForgeScriptWithProxy(t, repo, proxy, "--dry-run", "v0.2.0")
 	if err != nil {
@@ -155,6 +188,64 @@ func TestReleaseForgeScript_UnpublishedVersionPassesGate(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestReleaseForgeScript_UnpublishedVersionIsAskedOnlyOfTheCache pins why the
+// gate goes through /cached-only: proxy.golang.org caches a 404 for a version
+// nobody has requested for up to 30 minutes, and the gate runs BEFORE the tag is
+// pushed. A fetching request for the new version's .info would plant that entry
+// and make the release uninstallable for half an hour (v1.0.4).
+func TestReleaseForgeScript_UnpublishedVersionIsAskedOnlyOfTheCache(t *testing.T) {
+	if testing.Short() {
+		t.Skip("proceeds past the gate into a real go mod download")
+	}
+	repo := newForgeFixtureRepo(t)
+	proxy, requests := recordingFixtureProxy(t, map[string]string{
+		"/github.com/reliant-labs/forge/@v/v0.1.0.info": infoJSON("v0.1.0", "19dbc05d0000000000000000000000000000dead"),
+	}, true)
+
+	out, err := runForgeScriptWithProxy(t, repo, proxy, "--dry-run", "v0.2.0")
+	if err != nil {
+		t.Fatalf("unpublished version should pass the gate: %v\n%s", err, out)
+	}
+	var asked bool
+	for _, p := range requests() {
+		if !strings.Contains(p, "v0.2.0") {
+			continue
+		}
+		asked = true
+		if !strings.HasPrefix(p, "/cached-only/") {
+			t.Errorf("the gate requested %s, which makes the proxy fetch and plants a 30-minute negative cache entry", p)
+		}
+	}
+	if !asked {
+		t.Errorf("the gate never asked the proxy's cache about v0.2.0; requests: %v", requests())
+	}
+}
+
+// TestReleaseForgeScript_RefusesAPublishedVersionMissingFromTheList: @v/list
+// is not proof of non-publication. It can be stale, and a version whose tag was
+// deleted upstream can drop out of it while the proxy still serves its .info —
+// the deleted-and-recut case the gate exists for. The cache's .info decides.
+func TestReleaseForgeScript_RefusesAPublishedVersionMissingFromTheList(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	repo := newForgeFixtureRepo(t)
+	const publishedHash = "19dbc05d0000000000000000000000000000dead"
+	proxy, _ := recordingFixtureProxy(t, map[string]string{
+		"/github.com/reliant-labs/forge/@v/v0.2.0.info": infoJSON("v0.2.0", publishedHash),
+	}, false)
+
+	out, err := runForgeScriptWithProxy(t, repo, proxy, "--dry-run", "v0.2.0")
+	if err == nil {
+		t.Fatalf("a version the proxy serves must be refused even when @v/list omits it:\n%s", out)
+	}
+	for _, want := range []string{"ALREADY PUBLISHED AT A DIFFERENT COMMIT", publishedHash} {
+		if !strings.Contains(out, want) {
+			t.Errorf("refusal message missing %q:\n%s", want, out)
 		}
 	}
 }

@@ -76,6 +76,8 @@
 # See docs/releasing.md.
 set -euo pipefail
 RELEASE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/release-lock.sh
+. "$RELEASE_SCRIPT_DIR/release-lock.sh"
 
 DRY_RUN=0
 REPO_ROOT=""
@@ -215,6 +217,7 @@ if [ -n "$(git status --porcelain)" ]; then
   git status --short >&2
   exit 1
 fi
+START_HEAD="$(git rev-parse HEAD)"
 
 # ── 4. The tag may not already exist ────────────────────────────────
 if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
@@ -241,18 +244,36 @@ fi
 # could not reach the proxy" are the same empty output and must never be
 # conflated, so curl's exit status is inspected before its body: unreachable
 # is a hard error, and --skip-proxy-check is the only way past it.
+#
+# THE QUESTION IS ASKED OF THE PROXY'S CACHE, NOT OF THE PROXY.
+# proxy.golang.org caches a 404 for a version nobody has requested yet for up
+# to 30 minutes ("if someone requested the version before the tag was pushed, it
+# may take up to 30 minutes for the mirror's cache to expire"). This check runs
+# BEFORE the tag is pushed, so asking for <version>.info planted exactly that
+# negative entry: v1.0.4 was pushed at 17:48Z and `go install ...@v1.0.4` failed
+# for everyone while /@v/list already named it. Every release was uninstallable
+# for half an hour, by our own hand.
+#
+# So the .info is requested through /cached-only (proxy.golang.org: "return only
+# cached content"): the proxy answers from what it already holds and never
+# fetches, so the request plants nothing. And what it holds is exactly the
+# question: a version the proxy has ever served is in its cache, immutable, even
+# after its tag was deleted upstream — the deleted-and-recut case this gate
+# exists for. @v/list is NOT a substitute: it can be stale and need not name a
+# version whose tag is gone while its .info is still served, so a version absent
+# from it is not proof of anything.
 proxy_published_commit() {
   # Echoes the published commit hash, or nothing if the version is unpublished.
   # Exits 1 (with a diagnosis on stderr) if the proxy could not be consulted.
-  local module="$1" version="$2" body http_code curl_status hash
+  local module="$1" version="$2" body http_code curl_status hash url
+  url="$PROXY_BASE/cached-only/$module/@v/$version.info"
   # -sS keeps the progress meter off but lets curl's own diagnosis reach
   # stderr, which is worth more than the exit code alone when this fails.
-  body="$(curl -sS -w '\n%{http_code}' --max-time 30 \
-    "$PROXY_BASE/$module/@v/$version.info")" && curl_status=0 || curl_status=$?
+  body="$(curl -sS -w '\n%{http_code}' --max-time 30 "$url")" && curl_status=0 || curl_status=$?
 
   if [ "$curl_status" -ne 0 ]; then
     echo "error: could not reach the Go module proxy to check whether $version is already published" >&2
-    echo "       (curl exited $curl_status for $PROXY_BASE/$module/@v/$version.info)" >&2
+    echo "       (curl exited $curl_status for $url)" >&2
     echo "hint: this check is NOT optional — publishing over an existing version is" >&2
     echo "      unrecoverable, so a proxy it cannot read is a hard stop. Fix the" >&2
     echo "      network, or pass --skip-proxy-check if you have verified BY HAND" >&2
@@ -265,12 +286,13 @@ proxy_published_commit() {
 
   case "$http_code" in
     404|410)
-      # The proxy is authoritative that this version does not exist. Free.
+      # The proxy has never served this version: it is free. (Asked of the
+      # cache, so this answer did not plant a 404 for the version.)
       return 0 ;;
     200)
       ;;
     *)
-      echo "error: the Go module proxy returned HTTP $http_code for $module@$version" >&2
+      echo "error: the Go module proxy returned HTTP $http_code for $url" >&2
       echo "       $body" >&2
       echo "hint: this check cannot be answered, and publishing over an existing" >&2
       echo "      version is unrecoverable. Retry, or pass --skip-proxy-check if" >&2
@@ -356,12 +378,49 @@ fi
 # than usual here: the tree is shared with other agents, and the alternative
 # cleanup (`git checkout -- <path>`) is exactly the destructive verb that is
 # forbidden in this repo.
+#
+# Two locks are taken BEFORE anything is backed up or edited, with the cleanup
+# that drops them registered first:
+#   - the checkout lock: one run of this script edits this working tree at a
+#     time, dry runs included. Without it two runs in one shared checkout both
+#     pass the clean-tree gate, both rewrite the release files, and the loser's
+#     restore clobbers the winner's edits while the winner commits them.
+#   - the release lock (release-lock.sh, real runs only): one release of this
+#     repository at a time, across machines and pipelines; the release workflow
+#     coalesces into a live one.
+# Until the backups exist there is nothing to restore: RESTORE_ON_EXIT stays 0,
+# so a run refused a lock never touches a file.
 BACKUP_DIR="$(mktemp -d)"
-RESTORE_ON_EXIT=1
+RESTORE_ON_EXIT=0
 CHANGELOG_FILE="CHANGELOG.md"
 NPM_MANIFEST="npm/package.json"
 TOUCHED=("${VERSION_FILES[@]}" "$NEXT_FILE" "$CHANGELOG_FILE")
 [ -f "$NPM_MANIFEST" ] && TOUCHED+=("$NPM_MANIFEST")
+
+# The checkout lock is flock(1) on a file in this worktree's git dir: the kernel
+# arbitrates it, and drops it when its holder dies, however it dies. There is no
+# fallback: a pid-file or mkdir lock must decide when a dead holder's lock may be
+# taken over, and two runs that judge the same dead holder can both take it —
+# exactly the concurrent edit this lock exists to prevent. So no flock, no
+# release (Linux has it in util-linux; macOS: `brew install flock`).
+CHECKOUT_LOCK="$(git rev-parse --absolute-git-dir)/release-forge.lock"
+checkout_lock_acquire() {
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "error: flock(1) is not installed, and this script will not edit a shared checkout without it" >&2
+    echo "hint: install it (Linux: util-linux; macOS: brew install flock), then re-run" >&2
+    return 1
+  fi
+  # fd 9 is held for the rest of the run; the lock goes with the process.
+  exec 9>>"$CHECKOUT_LOCK"
+  flock -n 9 && return 0
+  echo "error: another release-forge.sh run is editing this checkout ($CHECKOUT_LOCK); wait for it to finish" >&2
+  return 1
+}
+checkout_lock_release() {
+  # Dropped before the EXIT trap ends, not left to the processes this run
+  # started that still hold fd 9.
+  flock -u 9 2>/dev/null || true
+}
 
 restore_tree() {
   if [ "$RESTORE_ON_EXIT" = "1" ]; then
@@ -379,12 +438,41 @@ restore_tree() {
     done
   fi
   rm -rf "$BACKUP_DIR" "${CLONE_DIR:-}"
+  release_lock_release
+  checkout_lock_release
 }
 trap restore_tree EXIT
+
+checkout_lock_acquire || exit 1
+# Re-judge under the lock what was judged before it: a run that held it until just
+# now may have committed (HEAD moved) or tagged.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "error: working tree is not clean; commit or set aside your changes before releasing" >&2
+  git status --short >&2
+  exit 1
+fi
+if [ "$(git rev-parse HEAD)" != "$START_HEAD" ]; then
+  echo "error: HEAD moved while this release was validating ($START_HEAD -> $(git rev-parse HEAD)); re-run it" >&2
+  exit 1
+fi
+if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+  echo "error: tag $RELEASE_TAG already exists (another cut made it)" >&2
+  exit 1
+fi
+if [ "$DRY_RUN" != "1" ]; then
+  # One release of this repository at a time (see above). Then re-check origin, since
+  # a holder that just finished has released the lock and pushed the tag.
+  release_lock_acquire "$VERSION" || exit 1
+  if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+    echo "error: $RELEASE_TAG is already on origin (another cut released it)" >&2
+    exit 1
+  fi
+fi
 
 for f in "${TOUCHED[@]}"; do
   [ -f "$f" ] && cp "$f" "$BACKUP_DIR/$(echo "$f" | tr '/' '_')"
 done
+RESTORE_ON_EXIT=1
 
 echo "→ syncing version files to $VERSION"
 for f in "${VERSION_FILES[@]}"; do
@@ -555,6 +643,9 @@ if [ -n "$COMMIT" ]; then
   # The tag names the green commit; the release commit becomes a PR.
   RELEASE_SHA="$COMMIT"
   git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
+  # Publish only while this release provably still holds the lock (release-lock.sh);
+  # a refusal leaves no local tag behind (see the push below).
+  release_lock_assert || { git tag -d "$RELEASE_TAG" >/dev/null; exit 1; }
   git push --atomic origin "refs/tags/$RELEASE_TAG" "HEAD:refs/heads/release/$VERSION"
   "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "release/$VERSION" \
     --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT." &&
@@ -584,6 +675,11 @@ echo "→ pushing atomically (branch + tag, all-or-nothing)"
 # namespace. On the release machine a losing v1.0.5 cut left a second v1.0.5 tag
 # in the shared forge checkout, so every later `git fetch --tags` there failed
 # with "would clobber existing tag" and the next release could not start (forge#1524).
+# Publish only while this release provably still holds the lock (release-lock.sh).
+if ! release_lock_assert; then
+  git tag -d "$RELEASE_TAG" >/dev/null
+  exit 1
+fi
 if ! git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"; then
   git tag -d "$RELEASE_TAG" >/dev/null
   echo "error: the push was refused, so nothing was released; deleted the local tag $RELEASE_TAG" >&2
@@ -678,9 +774,12 @@ NPM_FAILED="${NPM_FAILED:-0}"
 # release is a lane nobody believes, which is how a genuinely broken tag
 # ships unnoticed.
 #
-# Step 5 makes the window longer than ingestion alone: it asked the proxy for
-# this very version before the tag existed, and proxy.golang.org caches that
-# 404 for up to 30 minutes. wait-for-go-proxy.sh's default window covers it.
+# Step 5 used to make the window far longer than ingestion alone: it asked the
+# proxy for <version>.info before the tag existed, and proxy.golang.org cached
+# that 404 for up to 30 minutes. It now asks the proxy's cache (/cached-only),
+# which never fetches and so plants no entry for the new version: what is left
+# is ingestion itself (about a minute), and wait-for-go-proxy.sh's default
+# window is sized for that.
 #
 # So the release does not report DONE until the version is actually
 # resolvable. Everything downstream — the consumer bump in docs/releasing.md

@@ -89,3 +89,60 @@ func TestCommitOfVersion(t *testing.T) {
 		}
 	}
 }
+
+// Forge report 86c6fd64: `reliant forge generate` in a project pinned to v1.0.4 ran the
+// forge reliant embeds (v0.1.47-0.20261027041513-dd9a973c5fbf) and rewrote
+// hundreds of generated lines. The pin check took the embedded pseudo-version
+// for "a development forge" and tolerated it. A pseudo-version is not a local
+// build: only the bytes' origin says that.
+func TestLocalBuildFrom(t *testing.T) {
+	const pseudo = "v0.1.47-0.20261027041513-dd9a973c5fbf"
+	tests := []struct {
+		name string
+		info *debug.BuildInfo
+		want bool
+	}{
+		{"no build info", nil, false},
+		{"standalone checkout build: vcs.revision recorded", &debug.BuildInfo{
+			Main:     debug.Module{Path: forgeModulePath, Version: pseudo},
+			Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "dd9a973c5fbf0000"}},
+		}, true},
+		{"standalone checkout build with -buildvcs=false", &debug.BuildInfo{
+			Main: debug.Module{Path: forgeModulePath, Version: "(devel)"},
+		}, true},
+		{"standalone `go install @pseudo`", &debug.BuildInfo{
+			Main: debug.Module{Path: forgeModulePath, Version: pseudo},
+		}, false},
+		{"standalone `go install @tag`", &debug.BuildInfo{
+			Main: debug.Module{Path: forgeModulePath, Version: "v1.0.4"},
+		}, false},
+		{"embedded at a pseudo-version (reliant v1.8.7)", &debug.BuildInfo{
+			Main: debug.Module{Path: "github.com/reliant-labs/reliant", Version: "(devel)"},
+			Deps: []*debug.Module{{Path: forgeModulePath, Version: pseudo}},
+		}, false},
+		{"embedded at a tag", &debug.BuildInfo{
+			Main: debug.Module{Path: "github.com/reliant-labs/reliant", Version: "v1.9.0"},
+			Deps: []*debug.Module{{Path: forgeModulePath, Version: "v1.0.5"}},
+		}, false},
+		{"embedded through go.work", &debug.BuildInfo{
+			Main: debug.Module{Path: "github.com/reliant-labs/reliant", Version: "(devel)"},
+			Deps: []*debug.Module{{Path: forgeModulePath, Version: "(devel)"}},
+		}, true},
+		{"embedded through a directory replace", &debug.BuildInfo{
+			Main: debug.Module{Path: "github.com/reliant-labs/reliant", Version: "(devel)"},
+			Deps: []*debug.Module{{Path: forgeModulePath, Version: "v1.0.5", Replace: &debug.Module{Path: "../forge"}}},
+		}, true},
+		{"embedded through a version replace", &debug.BuildInfo{
+			Main: debug.Module{Path: "github.com/reliant-labs/reliant", Version: "(devel)"},
+			Deps: []*debug.Module{{Path: forgeModulePath, Version: "v1.0.5", Replace: &debug.Module{Path: "github.com/fork/forge", Version: pseudo}}},
+		}, false},
+		{"forge is not in this binary", &debug.BuildInfo{
+			Main: debug.Module{Path: "example.com/other", Version: "(devel)"},
+		}, false},
+	}
+	for _, tc := range tests {
+		if got := localBuildFrom(tc.info); got != tc.want {
+			t.Errorf("%s: localBuildFrom = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

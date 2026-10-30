@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -188,23 +189,57 @@ func TestBridge_BuildsCheckoutPerStamp(t *testing.T) {
 	}
 }
 
-func TestEnv_CarriesMarker(t *testing.T) {
-	t.Setenv(MarkerEnv, "")
-	if Delegated() {
-		t.Fatal("delegated with the marker unset")
-	}
-	found := false
-	for _, kv := range Env() {
-		if kv == MarkerEnv+"=1" {
-			found = true
+// The marker the hand-off sets names the process it is for, once: a marker
+// inherited from an earlier hand-off is replaced, not passed on beside it.
+func TestEnv_CarriesAMarkerForTheExecdForgeAlone(t *testing.T) {
+	t.Setenv(MarkerEnv, "4242:v0.0.1")
+	var markers []string
+	for _, kv := range Env("forge_version v1.0.4") {
+		if strings.HasPrefix(kv, MarkerEnv+"=") {
+			markers = append(markers, kv)
 		}
 	}
-	if !found {
-		t.Error("Env() lacks the marker")
+	want := MarkerEnv + "=" + strconv.Itoa(os.Getpid()) + ":forge_version v1.0.4"
+	if len(markers) != 1 || markers[0] != want {
+		t.Errorf("Env() markers %q, want [%s]", markers, want)
+	}
+}
+
+// Only a marker addressed to this very process is believed: a bare "1" (what
+// every descendant used to inherit), a copy carried to another process, and
+// garbage are not.
+func TestMarkerFor(t *testing.T) {
+	for v, want := range map[string]bool{
+		"77:forge_version v1.0.4": true,
+		"77:":                     true,
+		" 77:x ":                  true,
+		"78:forge_version v1.0.4": false,
+		"1":                       false,
+		"":                        false,
+		"x:77":                    false,
+		"0:x":                     false,
+	} {
+		if got := markerFor(v, 77); got != want {
+			t.Errorf("markerFor(%q, 77) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+// Reading the marker clears it: nothing this process starts inherits it.
+func TestConsumeMarker_ClearsTheEnvironment(t *testing.T) {
+	t.Setenv(MarkerEnv, strconv.Itoa(markerOwner())+":forge_version v1.0.4")
+	if !consumeMarker() {
+		t.Error("a marker addressed to this process was not believed")
+	}
+	if _, ok := os.LookupEnv(MarkerEnv); ok {
+		t.Error("the marker is still in the environment, for every child to inherit")
 	}
 	t.Setenv(MarkerEnv, "1")
-	if !Delegated() {
-		t.Error("not delegated with the marker set")
+	if consumeMarker() {
+		t.Error("an inherited bare marker was believed")
+	}
+	if _, ok := os.LookupEnv(MarkerEnv); ok {
+		t.Error("an untrusted marker was left for children to inherit")
 	}
 }
 
@@ -221,6 +256,57 @@ func TestRunVersion(t *testing.T) {
 		if err != nil || got != pin {
 			t.Errorf("%q: got %q, %v", line, got, err)
 		}
+	}
+}
+
+// A stale .tools/bin/forge inside a project pinned to another forge: run in
+// the project, that forge's skew warning resolves its remedy by probing
+// .tools/bin/forge — itself — through RunVersion, which launched the next
+// probe, and so on. The stand-in below does exactly that whenever it can find
+// the project's forge.yaml from its working directory. Probed through
+// LocalPinned it must run once and stop, its answer simply not the pin.
+func TestLocalPinned_ProbesAStaleLocalForgeOnceWithoutRecursing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script stand-in")
+	}
+	project := t.TempDir()
+	if err := atomicfile.WriteFile(filepath.Join(project, "forge.yaml"), []byte("forge_version: "+pin+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	launches := filepath.Join(t.TempDir(), "launches")
+	local := filepath.Join(project, ".tools", "bin", exeName())
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Recurses (bounded, so a regression fails instead of forking forever)
+	// while a forge.yaml is visible from its working directory, as the real
+	// skew check's remedy does.
+	script := `#!/bin/sh
+echo x >> "` + launches + `"
+[ "$(wc -l < "` + launches + `")" -lt 5 ] || exit 3
+d="$PWD"
+while :; do
+  if [ -f "$d/forge.yaml" ]; then "$0" version >/dev/null 2>&1; break; fi
+  [ "$d" = / ] && break
+  d="$(dirname "$d")"
+done
+echo 'forge version v0.0.1-stale'
+`
+	if err := atomicfile.WriteFile(local, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+
+	r := &Resolver{Version: RunVersion, Same: func(a, b string) bool { return a == b }}
+	if got, ok := r.LocalPinned(context.Background(), project, pin); ok {
+		t.Errorf("a stale local forge was taken for the pin: %q", got)
+	}
+	data, err := os.ReadFile(launches)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), "\n"); n != 1 {
+		t.Errorf("probing the local forge launched it %d times, want 1 (it recursed through its own skew remedy)", n)
 	}
 }
 

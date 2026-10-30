@@ -45,6 +45,7 @@ func newProjectCmd() *cobra.Command {
 	// `env`, because a checkout is not scoped to an environment — the
 	// picker chooses a checkout first and the envs come from rendering it.
 	cmd.AddCommand(newProjectCheckoutsCmd())
+	cmd.AddCommand(newProjectMemoryCmd())
 	// cmdutil.StrictGroup, not a bare group: cobra's default for a
 	// non-runnable parent is to print help and exit 0 for ANY unrecognised
 	// subcommand, which reports SUCCESS while doing nothing. Every group in

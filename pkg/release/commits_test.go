@@ -2,39 +2,11 @@ package release
 
 import (
 	"context"
-	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
-
-// gitHistory builds a repository whose main is n commits ("c1" … "cn", by
-// alice then bob alternately) in one fast-import, and returns it with the
-// shas oldest first.
-func gitHistory(t *testing.T, n int) (string, []string) {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	dir := t.TempDir()
-	var stream strings.Builder
-	for i := 1; i <= n; i++ {
-		author := "alice"
-		if i%2 == 0 {
-			author = "bob"
-		}
-		msg := fmt.Sprintf("c%d\n\nbody line that is not the subject\n", i)
-		content := fmt.Sprintf("%d\n", i)
-		fmt.Fprintf(&stream, "commit refs/heads/main\nauthor %s <%s@example.com> %d +0000\ncommitter %s <%s@example.com> %d +0000\ndata %d\n%sM 644 inline f.txt\ndata %d\n%s\n",
-			author, author, 1700000000+i*60, author, author, 1700000000+i*60, len(msg), msg, len(content), content)
-	}
-	gitDo(t, dir, "", "init", "-q", "-b", "main")
-	gitDo(t, dir, stream.String(), "fast-import", "--quiet")
-	gitDo(t, dir, "", "reset", "-q", "--hard", "main")
-	out := gitDo(t, dir, "", "rev-list", "--reverse", "main")
-	return dir, strings.Fields(out)
-}
 
 func gitDo(t *testing.T, dir, stdin string, args ...string) string {
 	t.Helper()

@@ -58,8 +58,9 @@ type Provenance struct {
 	// Tree is the git tree hash of the BUILT content, dirty changes
 	// included, computed through a temporary index (the user's index is
 	// never touched). Empty means it was not hashed — no git, or the
-	// working tree was too large to hash within the capture budget. A
-	// clean checkout's Tree equals HEAD^{tree}.
+	// working tree was too large to hash within the capture budget, which
+	// CaptureProvenance reports as [ErrUnhashed]. A clean checkout's Tree
+	// equals HEAD^{tree}.
 	Tree string `json:"tree"`
 	// Worktree identifies the checkout on its machine.
 	Worktree Worktree `json:"worktree"`
@@ -147,6 +148,6 @@ func (p Provenance) ForHosted() Provenance {
 }
 
 // Unhashed reports whether this provenance names a commit but could not hash
-// what was built (F-16). Such a record is honest about the gap rather than
-// pretending the tree is HEAD's.
+// what was built (F-16; CaptureProvenance returned [ErrUnhashed]). Such a
+// record is honest about the gap rather than pretending the tree is HEAD's.
 func (p Provenance) Unhashed() bool { return p.Commit != "" && p.Tree == "" }

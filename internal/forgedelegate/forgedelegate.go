@@ -40,6 +40,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,10 +51,48 @@ import (
 // ends the hand-off: the parent has already decided this is the right forge,
 // and a child that second-guessed it (its own version string can differ in
 // spelling from the pin) would delegate again, forever.
+//
+// The marker is good for ONE process: the forge the hand-off exec'd. It used
+// to be a bare `=1` that every descendant inherited, so a `reliant forge` run
+// anywhere under a delegated `forge env up` (its services, a daemon, an agent
+// shell that daemon spawned) skipped the pin check for good and ran whatever
+// forge it embedded. Now:
+//
+//   - its value names the process it is for, `<pid>:<target>` (markerOwner:
+//     the pid exec(2) keeps on Unix, the relaying parent on Windows), so a
+//     copy that reaches any other process is not believed;
+//   - it is consumed when this package initialises — before main, so before
+//     anything can spawn — and removed from this process's environment, so no
+//     child inherits it at all.
 const MarkerEnv = "FORGE_VERSION_DELEGATED"
 
-// Delegated reports whether this process was started by a delegation.
-func Delegated() bool { return strings.TrimSpace(os.Getenv(MarkerEnv)) != "" }
+// delegated is the marker's verdict for this process, decided once at init.
+var delegated = consumeMarker()
+
+// consumeMarker reads the marker, clears it from the environment, and reports
+// whether it was addressed to this process.
+func consumeMarker() bool {
+	v, ok := os.LookupEnv(MarkerEnv)
+	if !ok {
+		return false
+	}
+	_ = os.Unsetenv(MarkerEnv)
+	return markerFor(v, markerOwner())
+}
+
+// markerFor reports whether marker value v was written for owner: the forge a
+// hand-off started, and no other process.
+func markerFor(v string, owner int) bool {
+	pid, _, ok := strings.Cut(strings.TrimSpace(v), ":")
+	if !ok {
+		return false
+	}
+	n, err := strconv.Atoi(pid)
+	return err == nil && n > 0 && n == owner
+}
+
+// Delegated reports whether this process is the forge a hand-off started.
+func Delegated() bool { return delegated }
 
 // modulePath is forge's module; cmdPackage its command.
 const (
@@ -389,8 +428,24 @@ func tail(s string, n int) string {
 func RunVersion(ctx context.Context, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	// A path (not a bare name looked up on PATH) is made absolute first: the
+	// probe runs in another directory (below).
+	if filepath.Base(path) != path {
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+	}
+	// No marker: `version` runs as the forge it is in every forge that has
+	// the hand-off, and a marker is good only for a process exec'd in place.
 	cmd := exec.CommandContext(ctx, path, "version")
-	cmd.Env = Env()
+	// Probed from OUTSIDE every project. A forge run inside a project whose
+	// pin it does not match checks that skew even for `version`, and its
+	// warning's remedy probes the project's .tools/bin/forge — this very
+	// binary, when it is the stale one — through RunVersion again: each probe
+	// launched the next until timeouts or process limits stopped them. With no
+	// forge.yaml up the tree there is no pin, so no skew check, no hand-off
+	// and no remedy, in this forge and in every older one.
+	cmd.Dir = outsideAnyProject()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -405,5 +460,29 @@ func RunVersion(ctx context.Context, path string) (string, error) {
 	return "", fmt.Errorf("unrecognised version output %q", first)
 }
 
+// outsideAnyProject is a directory no project lookup can resolve from: the
+// root of the temp directory's volume, which holds no forge.yaml. (The temp
+// directory itself may sit inside a project, when TMPDIR points into one.)
+func outsideAnyProject() string {
+	return filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+}
+
 // Env is the environment to give the delegated forge: ours, plus the marker.
-func Env() []string { return append(os.Environ(), MarkerEnv+"=1") }
+// target names the forge it is handed to, for whoever reads the environment;
+// the pid is what makes the marker good for that forge alone. Any marker
+// already in the environment is replaced, never doubled.
+func Env(target string) []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, MarkerEnv+"=") {
+			env = append(env, kv)
+		}
+	}
+	return append(env, MarkerEntry(os.Getpid(), target))
+}
+
+// MarkerEntry is the MarkerEnv=… entry a process with pid writes for the forge
+// it hands target to.
+func MarkerEntry(pid int, target string) string {
+	return MarkerEnv + "=" + strconv.Itoa(pid) + ":" + target
+}

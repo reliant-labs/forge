@@ -362,7 +362,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "section", "minStep")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "postgres", "section", "minStep")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -374,8 +374,8 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	v.str(path, o, "title", true)
 	v.str(path, o, "description", false)
-	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel))
-	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL), string(Traces), string(Metrics), string(Logs))
+	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres))
+	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL) && kind != string(KindPostgres), string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)
 	if _, has := o["minStep"]; has && kind != string(KindSQL) {
 		v.add(childPath(path, "minStep"), "only a sql panel takes \"minStep\"")
@@ -402,11 +402,15 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	v.stringList(path, o, "groupBy", sig)
 
+	if kind == string(KindPostgres) {
+		v.postgresPanel(path, o)
+		return
+	}
 	if IsConsoleKind(PanelKind(kind)) {
 		v.consolePanel(path, o, PanelKind(kind), sig)
 		return
 	}
-	for _, only := range []string{"funnel", "hasError"} {
+	for _, only := range []string{"funnel", "hasError", "postgres"} {
 		if _, has := o[only]; has {
 			v.add(childPath(path, only), "only a %s panel takes %q", consoleKindFor(only), only)
 		}
@@ -561,8 +565,11 @@ func (v *validator) heatmapSeries(path string, series []any) {
 }
 
 func consoleKindFor(field string) PanelKind {
-	if field == "funnel" {
+	switch field {
+	case "funnel":
 		return KindFunnel
+	case "postgres":
+		return KindPostgres
 	}
 	return KindSessions
 }
@@ -571,7 +578,7 @@ func consoleKindFor(field string) PanelKind {
 // (issues, sessions, funnel). They carry no query: a series, a ratio, columns
 // or a group-by would be silently ignored, so each is refused.
 func (v *validator) consolePanel(path string, o map[string]any, kind PanelKind, sig Signal) {
-	for _, no := range []string{"series", "ratio", "formula", "limit", "columns", "groupBy", "unit", "sql"} {
+	for _, no := range []string{"series", "ratio", "formula", "limit", "columns", "groupBy", "unit", "sql", "postgres"} {
 		if _, has := o[no]; has {
 			v.add(childPath(path, no), "a %s panel is drawn by the console and takes no %q", kind, no)
 		}
@@ -602,6 +609,89 @@ func (v *validator) consolePanel(path string, o map[string]any, kind PanelKind, 
 		return
 	}
 	v.funnel(childPath(path, "funnel"), f)
+}
+
+// postgresPanel validates a KindPostgres panel: its postgres block is all it
+// carries, besides the common presentation fields and a unit.
+func (v *validator) postgresPanel(path string, o map[string]any) {
+	v.refuse(path, o, KindPostgres, "signal", "series", "sql", "ratio", "formula", "limit", "where", "groupBy", "columns", "funnel", "hasError")
+	raw, present := o["postgres"]
+	if !present {
+		v.add(path, "a postgres panel needs a \"postgres\" block: {\"database\", \"sql\"}")
+		return
+	}
+	pp := childPath(path, "postgres")
+	q, ok := v.object(pp, raw)
+	if !ok {
+		return
+	}
+	v.known(pp, q, "database", "sql", "draw", "time", "values", "group")
+
+	if db := v.str(pp, q, "database", true); db != "" {
+		if len(db) > MaxPostgresDatabaseLen || !postgresDatabasePattern.MatchString(db) {
+			v.add(childPath(pp, "database"), "%q is not a database name: lowercase letters, digits, '-' and '_', starting and ending with a letter or digit, at most %d characters", db, MaxPostgresDatabaseLen)
+		}
+	}
+
+	if sraw, has := q["sql"]; !has {
+		v.add(pp, "a postgres panel needs \"sql\": one read-only statement")
+	} else if s, ok := sraw.(string); !ok {
+		v.add(childPath(pp, "sql"), "must be a string")
+	} else if err := CheckPostgresSQL(s); err != nil {
+		v.add(childPath(pp, "sql"), "%v", err)
+	}
+
+	draw := v.str(pp, q, "draw", false)
+	if !isPostgresDraw(draw) {
+		v.add(childPath(pp, "draw"), "%q is not one of: %s, %s, %s, %s, %s", draw, PostgresDrawAuto, PostgresDrawLine, PostgresDrawNumber, PostgresDrawTable, PostgresDrawBar)
+	}
+	timeCol := v.postgresColumn(pp, q, "time")
+	if draw == PostgresDrawLine && timeCol == "" {
+		v.add(pp, "a line draw needs \"time\": the column holding each row's timestamp")
+	}
+	values := v.postgresColumns(pp, q, "values", maxPostgresValues)
+	if draw == PostgresDrawNumber && len(values) > 1 {
+		v.add(childPath(pp, "values"), "a number draw shows one value, has %d", len(values))
+	}
+	v.postgresColumns(pp, q, "group", maxPostgresGroup)
+}
+
+// postgresColumn validates an optional single column name.
+func (v *validator) postgresColumn(path string, obj map[string]any, key string) string {
+	s := v.str(path, obj, key, false)
+	if _, has := obj[key]; has {
+		v.columnName(childPath(path, key), s)
+	}
+	return s
+}
+
+// postgresColumns validates an optional list of column names.
+func (v *validator) postgresColumns(path string, obj map[string]any, key string, max int) []string {
+	l, ok := v.list(path, obj, key)
+	if !ok {
+		return nil
+	}
+	if len(l) > max {
+		v.add(childPath(path, key), "has %d columns, over the %d allowed", len(l), max)
+	}
+	var out []string
+	for i, raw := range l {
+		p := indexPath(childPath(path, key), i)
+		s, ok := raw.(string)
+		if !ok {
+			v.add(p, "must be a string")
+			continue
+		}
+		v.columnName(p, s)
+		out = append(out, s)
+	}
+	return out
+}
+
+func (v *validator) columnName(path, name string) {
+	if len(name) < 1 || len(name) > MaxPostgresColumnLen {
+		v.add(path, "a column name is 1 to %d bytes, has %d", MaxPostgresColumnLen, len(name))
+	}
 }
 
 var funnelWindowPattern = regexp.MustCompile(`^[1-9][0-9]{0,3}[smhd]$`)

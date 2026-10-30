@@ -76,7 +76,7 @@
 # See docs/releasing.md.
 set -euo pipefail
 RELEASE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=release-lock.sh
+# shellcheck source=scripts/release-lock.sh
 . "$RELEASE_SCRIPT_DIR/release-lock.sh"
 
 DRY_RUN=0

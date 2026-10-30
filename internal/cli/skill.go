@@ -223,7 +223,7 @@ apply to this project's pinned forge_version.`,
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output JSON instead of a tab-separated table")
 	cmd.Flags().BoolVar(&all, "all", false, "Print the exhaustive flat table (every sub-skill, full descriptions) instead of the grouped view")
 	cmd.Flags().BoolVar(&includeMigrations, "include-migrations", false, "Include one-time migration skills (relevance: migration) in the listing")
-	cmd.Flags().BoolVar(&withBodies, "with-bodies", false, "With --json: carry each skill's body, exactly as `skill load <path>` prints it (one call for a whole catalog)")
+	cmd.Flags().BoolVar(&withBodies, "with-bodies", false, "With --json: carry each skill's body, exactly as skill load prints it (one call for a whole catalog)")
 	return cmd
 }
 

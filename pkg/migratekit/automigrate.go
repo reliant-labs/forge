@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -144,7 +145,7 @@ func ApplyWith(ctx context.Context, db *sql.DB, fsys fs.FS, dir string, run RunO
 	// openSession binds golang-migrate to a connection it checks out itself,
 	// and Close then closes only that connection, which returns it to the
 	// pool.
-	grants, _, err := grantsScript(fsys, dir)
+	grants, err := grantsScripts(fsys, dir)
 	if err != nil {
 		_ = src.Close()
 		return Result{}, err
@@ -221,6 +222,16 @@ func logRun(logger *slog.Logger, res Result, err error) {
 			logf(logger, "read-only role not provisioned in this database: read-only grants not applied", "role", dbgrants.RoleName)
 		case g.Applied:
 			logf(logger, "read-only grants applied", "role", dbgrants.RoleName)
+		}
+		if g.DashboardApplied {
+			logf(logger, "dashboard grants applied", "role", dbgrants.DashboardRoleName)
+		}
+		if g.DashboardRoleDisabled {
+			logf(logger, "dashboards are off: the dashboard role cannot log in, its grants were revoked and none applied", "role", dbgrants.DashboardRoleName)
+		}
+		if len(g.SecurityDefiner) > 0 {
+			warnf(logger, "SECURITY DEFINER functions are executable by a grants role: each runs as its owner and can return columns the role has no SELECT on; revoke EXECUTE from PUBLIC on them, or do not write one over a table with a secret column",
+				"functions", strings.Join(g.SecurityDefiner, ", "))
 		}
 	}
 }

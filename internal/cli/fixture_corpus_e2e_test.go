@@ -126,7 +126,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1327,43 +1326,38 @@ func vendorCorpusForgeModule(t *testing.T, repoRoot, projectDir string) {
 		}
 	}
 
-	// pkg/ is copied, plus the internal/ packages pkg/ imports (and theirs),
-	// not the whole repo: pkg/* is all a scaffold imports, and copying all of
+	// pkg/ is copied whole: pkg/* is all a scaffold imports. Copying all of
 	// internal/ and cmd/ would multiply every e2e fixture by forge's entire
-	// source tree for no added coverage. The internal closure is not
-	// optional: pkg/pgtest imports internal/openfiles, and a .forge-pkg
-	// without it failed every scaffold's `go mod tidy` with "module ...
-	// replaced by ./.forge-pkg, but does not contain package
-	// .../internal/openfiles" (main's e2e suite, 2026-10-30).
-	if err := copyForgeTree(filepath.Join(repoRoot, "pkg"), filepath.Join(dst, "pkg")); err != nil {
+	// source tree for no added coverage, but pkg/ may import forge's own
+	// internal packages (pkg/pgtest -> internal/openfiles, pkg/hostslot ->
+	// internal/procguard), and a module missing one fails `go mod tidy` with
+	// "does not contain package". So copy pkg/ plus the internal packages its
+	// non-test files reach, transitively — exactly what the project compiles.
+	if err := copyForgePackageTree(repoRoot, "pkg", dst, true); err != nil {
 		t.Fatalf("vendor the forge module into %s: %v", dst, err)
 	}
-	internalDeps, err := forgeInternalImportClosure(repoRoot, filepath.Join(repoRoot, "pkg"))
-	if err != nil {
-		t.Fatalf("resolve the internal packages forge/pkg imports: %v", err)
-	}
-	for _, rel := range internalDeps {
-		if err := copyForgeDir(filepath.Join(repoRoot, rel), filepath.Join(dst, rel)); err != nil {
-			t.Fatalf("vendor %s into %s: %v", rel, dst, err)
+	for _, rel := range forgeInternalClosure(t, repoRoot, "pkg") {
+		if err := copyForgePackageTree(repoRoot, rel, dst, false); err != nil {
+			t.Fatalf("vendor forge's %s into %s: %v", rel, dst, err)
 		}
 	}
 }
 
-const forgeInternalImportPrefix = "github.com/reliant-labs/forge/internal/"
-
-// forgeInternalImportClosure returns, relative to repoRoot, every
-// internal/ package directory the non-test Go files under root import,
-// directly or through another internal package.
-func forgeInternalImportClosure(repoRoot, root string) ([]string, error) {
+// forgeInternalClosure returns, as repo-relative directories, every forge
+// internal/ package reachable from the non-test Go files under root (itself
+// repo-relative), following internal -> internal imports too. Test files are
+// skipped: a consumer compiles pkg/'s non-test files only.
+func forgeInternalClosure(t *testing.T, repoRoot, root string) []string {
+	t.Helper()
 	seen := map[string]bool{}
 	var queue []string
-	collect := func(dir string, recursive bool) error {
-		return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	enqueueImports := func(dir string, recurse bool) {
+		err := filepath.WalkDir(filepath.Join(repoRoot, dir), func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if d.IsDir() {
-				if path != dir && (!recursive || d.Name() == "testdata" || d.Name() == ".git") {
+				if path != filepath.Join(repoRoot, dir) && (!recurse || d.Name() == "testdata" || d.Name() == ".git") {
 					return filepath.SkipDir
 				}
 				return nil
@@ -1376,52 +1370,52 @@ func forgeInternalImportClosure(repoRoot, root string) ([]string, error) {
 				return perr
 			}
 			for _, imp := range f.Imports {
-				p, _ := strconv.Unquote(imp.Path.Value)
-				if !strings.HasPrefix(p, forgeInternalImportPrefix) {
+				p := strings.Trim(imp.Path.Value, `"`)
+				rel, ok := strings.CutPrefix(p, forgeModulePath+"/")
+				if !ok || !strings.HasPrefix(rel, "internal/") || seen[rel] {
 					continue
 				}
-				rel := filepath.Join("internal", filepath.FromSlash(strings.TrimPrefix(p, forgeInternalImportPrefix)))
-				if !seen[rel] {
-					seen[rel] = true
-					queue = append(queue, rel)
-				}
+				seen[rel] = true
+				queue = append(queue, rel)
 			}
 			return nil
 		})
-	}
-	if err := collect(root, true); err != nil {
-		return nil, err
-	}
-	for len(queue) > 0 {
-		rel := queue[0]
-		queue = queue[1:]
-		if err := collect(filepath.Join(repoRoot, rel), false); err != nil {
-			return nil, err
+		if err != nil {
+			t.Fatalf("scan forge imports under %s: %v", dir, err)
 		}
+	}
+	enqueueImports(root, true)
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		enqueueImports(next, false)
 	}
 	out := make([]string, 0, len(seen))
 	for rel := range seen {
 		out = append(out, rel)
 	}
 	sort.Strings(out)
-	return out, nil
+	return out
 }
 
-// copyForgeTree copies src to dst recursively, skipping .git/ and testdata/.
-func copyForgeTree(src, dst string) error {
+// copyForgePackageTree copies repoRoot/rel into dst/rel, skipping .git/ and
+// testdata/. With recurse false it copies only the directory's own files —
+// one package, not the packages nested under it.
+func copyForgePackageTree(repoRoot, rel, dst string, recurse bool) error {
+	src := filepath.Join(repoRoot, rel)
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, rerr := filepath.Rel(src, path)
+		sub, rerr := filepath.Rel(src, path)
 		if rerr != nil {
 			return rerr
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == "testdata" {
+			if d.Name() == ".git" || d.Name() == "testdata" || (!recurse && path != src) {
 				return filepath.SkipDir
 			}
-			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+			return os.MkdirAll(filepath.Join(dst, rel, sub), 0o755)
 		}
 		if !d.Type().IsRegular() {
 			return nil
@@ -1430,33 +1424,8 @@ func copyForgeTree(src, dst string) error {
 		if rerr != nil {
 			return rerr
 		}
-		return os.WriteFile(filepath.Join(dst, rel), data, 0o644)
+		return os.WriteFile(filepath.Join(dst, rel, sub), data, 0o644)
 	})
-}
-
-// copyForgeDir copies one package directory's regular non-test files (not
-// its subdirectories: each is its own package, copied when imported).
-func copyForgeDir(src, dst string) error {
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if !e.Type().IsRegular() || strings.HasSuffix(e.Name(), "_test.go") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(src, e.Name()))
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // generateTwiceIdempotent runs `forge generate` twice and asserts the

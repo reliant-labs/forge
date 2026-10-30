@@ -530,6 +530,16 @@ type Shape struct {
 	// Omitted when the env declares none, so every shape recorded before the
 	// field encodes and hashes exactly as it did.
 	Identity *ShapeIdentity `json:"identity,omitempty"`
+	// Databases is what the env declares about its managed databases beyond
+	// their workload entries: today whether live dashboard panels may query
+	// each one, and under which limits (ManagedDatabase.dashboards). One entry
+	// per database that ENABLES something, sorted by name. Omitted when none
+	// does, so every shape recorded before the field encodes and hashes exactly
+	// as it did; a reader treats a database with no entry as dashboards
+	// DISABLED, never open ([Shape.DashboardsFor]). A control plane that
+	// predates it refuses the whole shape, so it is a bundle-document feature
+	// ([BundleFeatureDatabaseDashboards]).
+	Databases []ShapeDatabase `json:"databases,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment none of whose delivery units has moved onto the hub yet. It
 	// is a transitional state (see [ApplierForge]). Empty means undeclared, and
@@ -1116,6 +1126,9 @@ func (s Shape) Validate() error {
 	if err := validateUptimeChecks(s.UptimeChecks); err != nil {
 		return err
 	}
+	if err := validateShapeDatabases(s.Databases); err != nil {
+		return err
+	}
 	delivered := map[string]bool{}
 	for _, c := range s.ControlPlaneSecrets {
 		if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Namespace) == "" || strings.TrimSpace(c.Cluster) == "" {
@@ -1298,6 +1311,7 @@ func (s Shape) Canonical() Shape {
 		}
 	}
 	out.UptimeChecks = canonicalUptimeChecks(s.UptimeChecks)
+	out.Databases = canonicalShapeDatabases(s.Databases)
 	if s.Identity != nil {
 		id := s.Identity.canonical()
 		out.Identity = &id

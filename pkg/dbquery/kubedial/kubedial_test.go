@@ -16,6 +16,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -888,4 +890,67 @@ func TestConnConfigForAddrVerifiesTheServiceName(t *testing.T) {
 	if err := handshake(t, newCA(t).serverCert(t, "ledger-rw.env-1.svc")); err == nil {
 		t.Error("a certificate from another CA must fail verify-full")
 	}
+}
+
+func dashSecrets(ns, db string, ca []byte) []runtime.Object {
+	return append(secrets(ns, db, ca),
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: dbgrants.DashboardSecretName(db)}, Type: corev1.SecretTypeBasicAuth,
+			Data: map[string][]byte{"username": []byte("forge_dash"), "password": []byte("dash-pw")}})
+}
+
+func TestCredentialsForDashboardRole(t *testing.T) {
+	ctx := context.Background()
+	ca := newCA(t)
+	db := Database{Namespace: "env-1", Name: "ledger", Instances: 2}
+
+	cs := fake.NewClientset(dashSecrets("env-1", "ledger", ca.caPEM)...)
+	creds, err := NewWithClientset(cs, nil).CredentialsFor(ctx, db, RoleDashboard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.Username != "forge_dash" || creds.Password != "dash-pw" || string(creds.CAPEM) != string(ca.caPEM) {
+		t.Errorf("creds %+v", creds)
+	}
+	// Reads the dashboard role's Secret and the CA, and never forge_ro's.
+	var got []string
+	for _, a := range cs.Actions() {
+		if g, ok := a.(clienttesting.GetAction); ok {
+			got = append(got, g.GetName())
+		}
+	}
+	sort.Strings(got)
+	if want := []string{"ledger-ca", "ledger-forge-dash"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("secrets read = %v, want exactly %v", got, want)
+	}
+
+	// The default role is unchanged.
+	ro, err := NewWithClientset(fake.NewClientset(dashSecrets("env-1", "ledger", ca.caPEM)...), nil).Credentials(ctx, db)
+	if err != nil || ro.Username != "forge_ro" {
+		t.Errorf("Credentials = %+v, %v; want forge_ro", ro, err)
+	}
+
+	t.Run("a database that never enabled dashboards", func(t *testing.T) {
+		_, err := NewWithClientset(fake.NewClientset(secrets("env-1", "ledger", ca.caPEM)...), nil).CredentialsFor(ctx, db, RoleDashboard)
+		if !errors.Is(err, ErrNoDashboardCredentials) || errors.Is(err, ErrNoReadOnlyCredentials) {
+			t.Fatalf("err = %v, want ErrNoDashboardCredentials only", err)
+		}
+		if !strings.Contains(err.Error(), "ledger-forge-dash") || !strings.Contains(err.Error(), "dashboards") {
+			t.Errorf("err does not name the Secret and the declaration: %v", err)
+		}
+	})
+	t.Run("no password", func(t *testing.T) {
+		objs := dashSecrets("env-1", "ledger", ca.caPEM)
+		objs[2].(*corev1.Secret).Data["password"] = nil
+		if _, err := NewWithClientset(fake.NewClientset(objs...), nil).CredentialsFor(ctx, db, RoleDashboard); !errors.Is(err, ErrNoDashboardCredentials) {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("a username-less secret falls back to the dashboard role", func(t *testing.T) {
+		objs := dashSecrets("env-1", "ledger", ca.caPEM)
+		delete(objs[2].(*corev1.Secret).Data, "username")
+		c, err := NewWithClientset(fake.NewClientset(objs...), nil).CredentialsFor(ctx, db, RoleDashboard)
+		if err != nil || c.Username != dbgrants.DashboardRoleName {
+			t.Errorf("%+v %v", c, err)
+		}
+	})
 }

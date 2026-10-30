@@ -39,14 +39,39 @@ const (
 
 	procGetMetric           = "controlplane.v1.ObservabilityService/GetMetric"
 	procListMetricExemplars = "controlplane.v1.ObservabilityService/ListMetricExemplars"
+
+	procResolveHostedProject = "controlplane.v1.DeployService/ResolveHostedProject"
 )
 
 // Cloud reads one env's telemetry from the control plane.
 type Cloud struct {
-	Env    string
-	EnvID  string
-	OrgID  string
-	Caller Caller
+	Env   string
+	EnvID string
+	OrgID string
+	// ProjectID is the control plane's own id for the project, when the
+	// checkout is bound to it; "" leaves ResolveProjectID to ask.
+	ProjectID string
+	Caller    Caller
+}
+
+// ResolveProjectID is the control plane's id for the forge project named
+// name, which a dashboard listing and a panel's scope name (the project's
+// local name need not be its id): the bound id when there is one, else the
+// control plane's answer for the name.
+func (c Cloud) ResolveProjectID(ctx context.Context, name string) (string, error) {
+	if c.ProjectID != "" {
+		return c.ProjectID, nil
+	}
+	var out struct {
+		ProjectID string `json:"projectId"`
+	}
+	if err := c.call(ctx, procResolveHostedProject, map[string]any{"name": name}, &out); err != nil {
+		return "", err
+	}
+	if out.ProjectID == "" {
+		return "", Undetermined("the control plane returned no id for project %s", name)
+	}
+	return out.ProjectID, nil
 }
 
 // Info implements Backend.
@@ -111,6 +136,7 @@ type wireAttrFilter struct {
 
 type wireScope struct {
 	OrgID     string           `json:"orgId"`
+	ProjectID string           `json:"projectId,omitempty"`
 	EnvIDs    []string         `json:"envIds,omitempty"`
 	Services  []string         `json:"services,omitempty"`
 	TimeRange wireTimeRange    `json:"timeRange"`

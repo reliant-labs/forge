@@ -16,7 +16,7 @@ import (
 
 var canaryWorkflow = filepath.Join("..", "..", ".github", "workflows", "consumer-canary.yml")
 
-func TestAPIGateRunsOnPullRequestsInTheChecksJob(t *testing.T) {
+func TestAPIGateRunsOnPullRequestsInThePRChecksJob(t *testing.T) {
 	raw, err := os.ReadFile(ciWorkflow)
 	if err != nil {
 		t.Fatal(err)
@@ -25,9 +25,9 @@ func TestAPIGateRunsOnPullRequestsInTheChecksJob(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &wf); err != nil {
 		t.Fatal(err)
 	}
-	checks, ok := wf.Jobs["checks"]
+	checks, ok := wf.Jobs["pr-checks"]
 	if !ok {
-		t.Fatal("ci.yml has no checks job")
+		t.Fatal("ci.yml has no pr-checks job")
 	}
 	found := false
 	for _, s := range checks.Steps {
@@ -36,7 +36,7 @@ func TestAPIGateRunsOnPullRequestsInTheChecksJob(t *testing.T) {
 		}
 		found = true
 		if strings.TrimSpace(s.If) != "${{ github.event_name == 'pull_request' }}" {
-			t.Errorf("the API gate step has if: %q; it must run on pull_request only (a queue entry was judged when its PR opened; a push is already merged)", s.If)
+			t.Errorf("the API gate step has if: %q; it must run on pull_request only (it reads the pull request's labels and body; a push is already merged)", s.If)
 		}
 		for _, want := range []string{"-base HEAD^1", "-pr"} {
 			if !strings.Contains(s.Run, want) {
@@ -45,17 +45,17 @@ func TestAPIGateRunsOnPullRequestsInTheChecksJob(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("ci.yml's checks job does not run internal/apigate: an undeclared break of forge/pkg could merge")
+		t.Error("ci.yml's pr-checks job does not run internal/apigate: an undeclared break of forge/pkg could merge")
 	}
 }
 
 func TestAPIGateHasNoJobOfItsOwn(t *testing.T) {
 	// Every job a pull request adds is another runner to queue for (ci.yml,
-	// "FEWER JOBS"); the gate reuses the checks job's forge build.
+	// "FEWER JOBS"); the gate shares pr-checks with the CHANGELOG guard.
 	wf := readWorkflow(t)
 	for name := range wf.Jobs {
 		if strings.Contains(name, "apigate") || strings.Contains(name, "api-gate") {
-			t.Errorf("job %q: the API gate is a step of `checks`, not a job", name)
+			t.Errorf("job %q: the API gate is a step of `pr-checks`, not a job", name)
 		}
 	}
 }

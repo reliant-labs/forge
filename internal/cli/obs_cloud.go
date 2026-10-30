@@ -44,5 +44,5 @@ func openObsCloud(ctx context.Context, env string) (obsbackend.Cloud, error) {
 	if err != nil {
 		return obsbackend.Cloud{}, obsbackend.MapCloudError(err)
 	}
-	return obsbackend.Cloud{Env: env, EnvID: id, OrgID: org, Caller: client}, nil
+	return obsbackend.Cloud{Env: env, EnvID: id, OrgID: org, ProjectID: ep.ProjectID, Caller: client}, nil
 }

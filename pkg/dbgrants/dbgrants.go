@@ -5,7 +5,13 @@
 // control plane's QueryDatabase — can look at data without being able to change
 // it or to read what the application marked secret. The boundary is POSTGRES,
 // not a redactor: a redactor cannot follow `upper(secret_col)`, but a column the
-// role has no SELECT privilege on cannot be read through any expression.
+// role has no SELECT privilege on cannot be read through any expression the
+// ROLE evaluates. A SECURITY DEFINER function is the exception: it evaluates
+// its body as its owner, so one the role may execute (PUBLIC holds EXECUTE on
+// every new function by default) returns whatever its body selects, secret
+// columns included. forge generates none; [SecurityDefinerExposure] finds them
+// and the migrator logs a warning. Revoke PUBLIC's EXECUTE on such a function,
+// or do not write one over a table with a secret column.
 //
 // # The three pieces
 //
@@ -25,7 +31,30 @@
 // the role holds on tables and sequences, then grants exactly the declared
 // columns, in one transaction. A delta would leave a table dropped from the
 // declaration, or a column that became secret, readable until someone noticed.
-// Revoking a table's privileges also revokes its column-level ones.
+//
+// "Everything the role holds" is read from the catalog, not from the
+// declaration, so a privilege the declaration never named converges too:
+//
+//   - schema, table, view, sequence and routine privileges in every declared
+//     schema, and column privileges column by column (a table-level REVOKE
+//     cascades to them in Postgres, but the script does not rely on that);
+//   - ALTER DEFAULT PRIVILEGES entries that name the role, in any schema, which
+//     would otherwise hand it every object created later;
+//   - a leftover verification: a privilege the migrating role cannot revoke (it
+//     was granted by another role, or sits on an object the migrator does not
+//     own) fails the run instead of standing behind a converged-looking script.
+//
+// What a script about ONE role cannot converge, and does not try to:
+//
+//   - privileges PUBLIC holds, which every role inherits (Postgres grants
+//     EXECUTE on new functions to PUBLIC by default, which is how a SECURITY
+//     DEFINER function becomes a way around the column grants, above);
+//   - the role's memberships in other roles (pg_read_all_data, an application
+//     role): revoking one needs ADMIN OPTION on it, and the ManagedDatabase
+//     render declares none (pkg/deploy);
+//   - database-level privileges (CONNECT, TEMP, CREATE) and row-level
+//     security policies that name the role;
+//   - objects in a schema the declaration does not name.
 //
 // What the role is never given: INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES,
 // TRIGGER, any sequence privilege, any view (a view can expose a secret column
@@ -37,6 +66,7 @@ package dbgrants
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -51,6 +81,17 @@ const (
 	SecretSuffix = "-forge-ro"
 	// GrantsPath is the generated grants file, relative to the project root.
 	GrantsPath = "db/grants/readonly_gen.sql"
+
+	// DashboardRoleName is the dashboard Postgres role: the opt-in role live
+	// dashboard panels query as (ManagedDatabase.dashboards in KCL). It reads
+	// a strict subset of what [RoleName] reads; see [DashboardTables].
+	DashboardRoleName = "forge_dash"
+	// DashboardSecretSuffix is appended to a cluster name to name the Secret
+	// that holds [DashboardRoleName]'s password.
+	DashboardSecretSuffix = "-forge-dash"
+	// DashboardGrantsPath is the generated dashboard grants file, relative to
+	// the project root.
+	DashboardGrantsPath = "db/grants/dashboard_gen.sql"
 )
 
 // SecretName is the kubernetes.io/basic-auth Secret holding the role's
@@ -59,11 +100,18 @@ const (
 // passwordSecret) and with whoever connects as the role.
 func SecretName(cluster string) string { return cluster + SecretSuffix }
 
+// DashboardSecretName is the kubernetes.io/basic-auth Secret holding the
+// dashboard role's credentials for the ManagedDatabase called cluster, in the
+// cluster's namespace. Same contract as [SecretName], for [DashboardRoleName].
+func DashboardSecretName(cluster string) string { return cluster + DashboardSecretSuffix }
+
 // Table is one table the role may read.
 type Table struct {
 	Schema  string
 	Name    string
 	Columns []Column
+	// Dashboard: declared forge:dashboard. Only [DashboardTables] reads it.
+	Dashboard bool
 }
 
 // Column is one column of a Table, with the declarations that decide whether
@@ -78,6 +126,9 @@ type Column struct {
 	// Kind is the column's type class. The zero value, [KindText], is the
 	// stricter reading.
 	Kind ColumnKind
+	// NoDashboard: declared forge:no-dashboard. Only [DashboardTables] reads
+	// it; the read-only role is unaffected.
+	NoDashboard bool
 }
 
 // dollarTag delimits the script's single DO block. An identifier containing it
@@ -105,7 +156,12 @@ func Render(tables []Table) (string, error) { return RenderFor(RoleName, tables)
 // RenderFor is Render for a named role. Production has exactly one role,
 // [RoleName]; the parameter exists because roles are cluster-wide, so tests
 // that share a Postgres server cannot all create forge_ro.
-func RenderFor(role string, tables []Table) (string, error) {
+func RenderFor(role string, tables []Table) (string, error) { return renderFor(role, tables, false) }
+
+// renderFor is [RenderFor]. gateOnLogin makes the script serve the role only
+// while it can log in: a role with rolcanlogin = false gets every privilege
+// revoked and nothing granted (see [RenderDashboardFor]).
+func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 	if err := checkIdent(role); err != nil {
 		return "", err
 	}
@@ -134,11 +190,23 @@ func RenderFor(role string, tables []Table) (string, error) {
 	sort.Strings(schemas)
 
 	var b strings.Builder
-	b.WriteString("-- The read-only role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
+	label := "read-only"
+	if role == DashboardRoleName {
+		label = "dashboard"
+	}
+	b.WriteString("-- The " + label + " role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
 	b.WriteString("DO " + dollarTag + "\n")
-	b.WriteString("DECLARE\n  r record;\n  readable text;\nBEGIN\n")
+	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\n  role_login boolean;\nBEGIN\n")
 	fmt.Fprintf(&b, "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN\n", quoteLiteral(role))
-	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: read-only grants not applied"))
+	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: "+label+" grants not applied"))
+
+	fmt.Fprintf(&b, "  SELECT oid, rolcanlogin INTO role_oid, role_login FROM pg_roles WHERE rolname = %s;\n", quoteLiteral(role))
+	if gateOnLogin {
+		fmt.Fprintf(&b, "  IF NOT role_login THEN\n    RAISE NOTICE %s;\n  END IF;\n", quoteLiteral("role "+role+" cannot log in: "+label+" access revoked, nothing granted"))
+	} else {
+		b.WriteString("  role_login := true;\n")
+	}
+	b.WriteString("\n")
 
 	// Everything the role holds, in every declared schema, goes first. A column
 	// that became secret, a table that was dropped from the declaration and a
@@ -157,10 +225,102 @@ func RenderFor(role string, tables []Table) (string, error) {
 		b.WriteString("    (NULL::text)\n")
 	}
 	b.WriteString("  ) AS s(nspname) WHERE s.nspname IS NOT NULL AND EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = s.nspname) LOOP\n")
-	fmt.Fprintf(&b, "    EXECUTE format('GRANT USAGE ON SCHEMA %%I TO %%I', r.schema, %s);\n", quoteLiteral(role))
+	b.WriteString("    declared := declared || r.schema;\n")
+	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
+	b.WriteString("    IF role_login THEN\n")
+	fmt.Fprintf(&b, "      EXECUTE format('GRANT USAGE ON SCHEMA %%I TO %%I', r.schema, %s);\n", quoteLiteral(role))
+	b.WriteString("    END IF;\n")
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	b.WriteString("  END LOOP;\n\n")
+
+	// Routines are revoked from the catalog's own list rather than with ALL
+	// FUNCTIONS IN SCHEMA, which also visits functions the migrating role does
+	// not own and holds nothing on (an extension's), and fails on those.
+	b.WriteString("  -- routines: every function, procedure and aggregate the role was granted EXECUTE on\n")
+	b.WriteString("  FOR r IN SELECT n.nspname AS schema, p.oid::regprocedure::text AS proc, p.prokind AS kind\n")
+	b.WriteString("             FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace\n")
+	b.WriteString("            WHERE n.nspname = ANY (declared) AND p.proacl IS NOT NULL\n")
+	b.WriteString("              AND EXISTS (SELECT 1 FROM aclexplode(p.proacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("            ORDER BY 1, 2 LOOP\n")
+	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON %%s %%s FROM %%I', CASE r.kind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END, r.proc, %s);\n", quoteLiteral(role))
+	b.WriteString("  END LOOP;\n\n")
+
+	// A table-level REVOKE already removes the column privileges recorded on
+	// the table's columns (Postgres documents it), so this sweep is not what
+	// makes the columns converge. It makes that independent of the cascade: it
+	// reads the privileges the catalog actually records, column by column, and
+	// revokes each one, so the result cannot depend on which tables the
+	// statement above reached or on how a server version cascades.
+	b.WriteString("  -- columns: every column privilege the catalog records for the role, in the declared schemas\n")
+	b.WriteString("  FOR r IN SELECT n.nspname AS schema, c.relname AS tbl, a.attname AS col\n")
+	b.WriteString("             FROM pg_attribute a\n")
+	b.WriteString("             JOIN pg_class c ON c.oid = a.attrelid\n")
+	b.WriteString("             JOIN pg_namespace n ON n.oid = c.relnamespace\n")
+	b.WriteString("            WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL\n")
+	b.WriteString("              AND n.nspname = ANY (declared)\n")
+	b.WriteString("              AND EXISTS (SELECT 1 FROM aclexplode(a.attacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("            ORDER BY 1, 2, 3 LOOP\n")
+	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL (%%I) ON TABLE %%I.%%I FROM %%I', r.col, r.schema, r.tbl, %s);\n", quoteLiteral(role))
+	b.WriteString("  END LOOP;\n\n")
+
+	// Default privileges name the role for objects that do not exist yet, so a
+	// table created after this run would be readable the moment it appears.
+	// They are per creating role and per schema (or global), and none of the
+	// statements above touches them. Every entry that names the role goes, in
+	// any schema, because a default is not scoped to the declared schemas.
+	// Changing another role's defaults needs membership in that role; when the
+	// migrating role has none the run fails rather than leaving the boundary
+	// open.
+	b.WriteString("  -- default privileges: what the role would be given on objects created later\n")
+	b.WriteString("  FOR r IN SELECT pg_get_userbyid(d.defaclrole) AS creator, n.nspname AS schema, d.defaclobjtype AS kind\n")
+	b.WriteString("             FROM pg_default_acl d\n")
+	b.WriteString("             LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace\n")
+	b.WriteString("            WHERE EXISTS (SELECT 1 FROM aclexplode(d.defaclacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("            ORDER BY 1, 2, 3 LOOP\n")
+	b.WriteString("    BEGIN\n")
+	fmt.Fprintf(&b, "      EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %%I %%s REVOKE ALL ON %%s FROM %%I',\n")
+	b.WriteString("                     r.creator,\n")
+	b.WriteString("                     CASE WHEN r.schema IS NULL THEN '' ELSE format('IN SCHEMA %I', r.schema) END,\n")
+	b.WriteString("                     CASE r.kind WHEN 'r' THEN 'TABLES' WHEN 'S' THEN 'SEQUENCES' WHEN 'f' THEN 'FUNCTIONS' WHEN 'T' THEN 'TYPES' WHEN 'n' THEN 'SCHEMAS' WHEN 'L' THEN 'LARGE OBJECTS' END,\n")
+	fmt.Fprintf(&b, "                     %s);\n", quoteLiteral(role))
+	b.WriteString("    EXCEPTION WHEN insufficient_privilege THEN\n")
+	fmt.Fprintf(&b, "      RAISE EXCEPTION 'cannot revoke the default privileges of role %% (schema %%) that name %%: the migrating role is not a member of it', r.creator, coalesce(r.schema, '<all>'), %s\n", quoteLiteral(role))
+	b.WriteString("        USING ERRCODE = 'insufficient_privilege';\n")
+	b.WriteString("    END;\n")
+	b.WriteString("  END LOOP;\n\n")
+
+	// A REVOKE issued by the migrating role removes only the privileges
+	// recorded as granted by it (or by a role it is a member of). One recorded
+	// under another grantor (a role holding a grant option), or on an object
+	// the migrating role does not own, survives with at most a WARNING. The
+	// boundary must not look converged while such a privilege stands, so what
+	// is left fails the run, naming the object.
+	b.WriteString("  -- verify: nothing the role was given before this run may still stand\n")
+	b.WriteString("  SELECT string_agg(o.what, ', ' ORDER BY o.what) INTO leftover FROM (\n")
+	b.WriteString("    SELECT format('schema %s (%s)', n.nspname, x.privilege_type) AS what\n")
+	b.WriteString("      FROM pg_namespace n, aclexplode(n.nspacl) x\n")
+	b.WriteString("     WHERE n.nspname = ANY (declared) AND x.grantee = role_oid AND x.privilege_type <> 'USAGE'\n")
+	b.WriteString("    UNION ALL\n")
+	b.WriteString("    SELECT format('%s.%s', n.nspname, c.relname)\n")
+	b.WriteString("      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n")
+	b.WriteString("     WHERE n.nspname = ANY (declared) AND c.relkind IN ('r','p','v','m','f','S') AND c.relacl IS NOT NULL\n")
+	b.WriteString("       AND EXISTS (SELECT 1 FROM aclexplode(c.relacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("    UNION ALL\n")
+	b.WriteString("    SELECT format('%s.%s.%s', n.nspname, c.relname, a.attname)\n")
+	b.WriteString("      FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace\n")
+	b.WriteString("     WHERE n.nspname = ANY (declared) AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL\n")
+	b.WriteString("       AND EXISTS (SELECT 1 FROM aclexplode(a.attacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("    UNION ALL\n")
+	b.WriteString("    SELECT format('%s.%s()', n.nspname, p.proname)\n")
+	b.WriteString("      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace\n")
+	b.WriteString("     WHERE n.nspname = ANY (declared) AND p.proacl IS NOT NULL\n")
+	b.WriteString("       AND EXISTS (SELECT 1 FROM aclexplode(p.proacl) x WHERE x.grantee = role_oid)\n")
+	b.WriteString("  ) o;\n")
+	b.WriteString("  IF leftover IS NOT NULL THEN\n")
+	fmt.Fprintf(&b, "    RAISE EXCEPTION 'privileges of role %% could not be revoked (granted by another role, or on an object the migrating role does not own): %%', %s, leftover\n", quoteLiteral(role))
+	b.WriteString("      USING ERRCODE = 'insufficient_privilege';\n")
+	b.WriteString("  END IF;\n\n")
 
 	b.WriteString("  -- tables: the columns the role may read. A forge:secret column, and a credential-shaped one nobody decided, is not listed.\n")
 	b.WriteString("  FOR r IN SELECT g.* FROM (VALUES\n")
@@ -205,7 +365,7 @@ func RenderFor(role string, tables []Table) (string, error) {
 		rows = []string{"    (NULL::text, NULL::text, ARRAY[]::text[])"}
 	}
 	b.WriteString(strings.Join(rows, ",\n") + "\n")
-	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL LOOP\n")
+	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL AND role_login LOOP\n")
 	b.WriteString("    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attname) INTO readable\n")
 	b.WriteString("      FROM pg_attribute a\n")
 	b.WriteString("     WHERE a.attrelid = to_regclass(format('%I.%I', r.schema, r.tbl))\n")
@@ -267,11 +427,62 @@ func RoleExists(ctx context.Context, c Conn, name string) (bool, error) {
 	return exists, nil
 }
 
+// RoleLogin reports whether the cluster has a role called name and whether it
+// can log in. The dashboard role is rendered NOLOGIN while dashboards are off
+// (pkg/deploy), which is how the migrator, which never sees the KCL, learns the
+// role is switched off.
+func RoleLogin(ctx context.Context, c Conn, name string) (exists, canLogin bool, err error) {
+	err = c.QueryRowContext(ctx, `SELECT rolcanlogin FROM pg_roles WHERE rolname = $1`, name).Scan(&canLogin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("dbgrants: look up role %s: %w", name, err)
+	}
+	return true, canLogin, nil
+}
+
+// SecurityDefinerExposure lists the SECURITY DEFINER functions role can execute
+// in a schema it can see: the one way a column the role has no SELECT on is
+// still readable, because the function runs as its owner. It is a WARNING for
+// the caller to log, not a failure: forge generates no such function, and
+// revoking PUBLIC's default EXECUTE would change the application's own
+// semantics. Names come back as regprocedure text, already quoted.
+func SecurityDefinerExposure(ctx context.Context, c Conn, role string) ([]string, error) {
+	var raw []byte
+	err := c.QueryRowContext(ctx, `
+SELECT coalesce(json_agg(f.name ORDER BY f.name), '[]'::json) FROM (
+  SELECT p.oid::regprocedure::text AS name
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE p.prosecdef
+     AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_toast%'
+     AND has_schema_privilege($1::name, n.oid, 'USAGE')
+     AND has_function_privilege($1::name, p.oid, 'EXECUTE')
+) f`, role).Scan(&raw)
+	if err != nil {
+		return nil, fmt.Errorf("dbgrants: look up security definer functions for %s: %w", role, err)
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("dbgrants: decode security definer functions: %w", err)
+	}
+	return out, nil
+}
+
 // Apply runs script, a [Render] result, on c. The script is one statement, so
 // it is atomic: a failure leaves the previous grants in place.
 func Apply(ctx context.Context, c Conn, script string) error {
 	if _, err := c.ExecContext(ctx, script); err != nil {
 		return fmt.Errorf("dbgrants: apply read-only grants: %w", err)
+	}
+	return nil
+}
+
+// ApplyDashboard is [Apply] for a [RenderDashboard] script, so a failure names
+// the role it was converging.
+func ApplyDashboard(ctx context.Context, c Conn, script string) error {
+	if _, err := c.ExecContext(ctx, script); err != nil {
+		return fmt.Errorf("dbgrants: apply dashboard grants: %w", err)
 	}
 	return nil
 }

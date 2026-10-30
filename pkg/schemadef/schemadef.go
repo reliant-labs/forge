@@ -311,11 +311,18 @@ const TableMarkerNoEntity = "forge:no-entity"
 // rpc over it are named for what the table holds.
 const TableMarkerEntityName = "forge:entity-name"
 
+// TableMarkerDashboard opts one table into the dashboard role's reach:
+// `COMMENT ON TABLE usage_events IS 'forge:dashboard'`. The dashboard role
+// (pkg/dbgrants.DashboardRoleName) reads a table only when it carries this
+// marker; an unmarked table is invisible to it. The marker reads nothing else:
+// the table keeps its entity, store and forge_ro access exactly as before.
+const TableMarkerDashboard = "forge:dashboard"
+
 // KnownTableMarkers is the complete set of `forge:*` marker NAMES a
 // COMMENT ON TABLE may carry — the table-level twin of
 // KnownColumnMarkers, and registered for the same reason: a vocabulary
 // nothing enumerates is a vocabulary a typo silently leaves inert.
-var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity}
+var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, TableMarkerDashboard, ViewMarkerEntity}
 
 // DeclaredEntityName returns the name a TableMarkerEntityName declaration
 // gives the table's entity, "" when it declares none.
@@ -353,6 +360,14 @@ var viewEntityMarkerRE = regexp.MustCompile(regexp.QuoteMeta(ViewMarkerEntity) +
 func (t Table) NoEntity() bool { return noEntityTableMarkerRE.MatchString(t.Comment) }
 
 var noEntityTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerNoEntity) + `(?:[^\w:-]|$)`)
+
+// Dashboard reports whether the table declares TableMarkerDashboard in its
+// catalog comment, matched as a whole token so it coexists with any other
+// marker in the same comment and a longer name (`forge:dashboard-x`) is not
+// mistaken for it.
+func (t Table) Dashboard() bool { return dashboardTableMarkerRE.MatchString(t.Comment) }
+
+var dashboardTableMarkerRE = regexp.MustCompile(`(?:^|[^\w/.:-])` + regexp.QuoteMeta(TableMarkerDashboard) + `(?:[^\w:-]|$)`)
 
 // AppendOnly reports whether the table is an append-only ledger: INSERT and
 // SELECT only, no UPDATE and no DELETE.
@@ -424,7 +439,7 @@ var appendOnlyTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerApp
 // maintaining its own copy, which is exactly the discoverability gap
 // forge:ref fell into (undiscoverable outside two skill files) that this
 // registry exists to close.
-var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerClosedSet, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete, ColumnMarkerSecret, ColumnMarkerReadable}
+var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerClosedSet, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete, ColumnMarkerSecret, ColumnMarkerReadable, ColumnMarkerNoDashboard}
 
 // ColumnMarkerSecret declares a column the database's read-only role (pkg/dbgrants)
 // must never read: `COMMENT ON COLUMN git_credentials.access_token IS
@@ -433,6 +448,21 @@ var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, Column
 // tables have none. Either spelling withholds the column from the role; only
 // the proto one also strips it from read responses.
 const ColumnMarkerSecret = "forge:secret"
+
+// ColumnMarkerNoDashboard withholds a column from the dashboard role
+// (pkg/dbgrants.DashboardRoleName) on a table marked TableMarkerDashboard:
+// `COMMENT ON COLUMN usage_events.prompt_preview IS 'forge:no-dashboard'`.
+// The dashboard role reads a subset of what forge_ro reads, so a column
+// forge:secret already withholds is never granted either way; this marker is
+// for a column that is fine for `forge db query` but not for a panel (an
+// email, a free-text field).
+const ColumnMarkerNoDashboard = "forge:no-dashboard"
+
+// DeclaresNoDashboard reports whether the column's catalog comment carries
+// ColumnMarkerNoDashboard, matched as a whole token.
+func (c Column) DeclaresNoDashboard() bool { return noDashboardMarkerRE.MatchString(c.Comment) }
+
+var noDashboardMarkerRE = regexp.MustCompile(`(?:^|[^\w/.:-])` + regexp.QuoteMeta(ColumnMarkerNoDashboard) + `(?:[^\w:-]|$)`)
 
 // ColumnMarkerReadable declares a column whose name looks like a credential but
 // is not one, so the read-only role may read it: `COMMENT ON COLUMN

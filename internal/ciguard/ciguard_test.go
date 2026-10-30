@@ -190,12 +190,25 @@ func TestGateNeedsEveryJob(t *testing.T) {
 // would leave every pull request waiting on a check nothing reports.
 const requiredCheck = "CI gate"
 
-// The two tiers a job may select (ci.yml's header). A job with no `if:` runs
-// in both.
+// When a job may run (ci.yml's header, "REVIEW FIRST"). A job with no `if:`
+// runs always.
 const (
-	prTier   = "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"
+	// The merge tier: the merge queue, and a pull request labelled ci:run.
+	queueTier = "${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}"
+	// The slow tier: a push to main, and a manual dispatch.
 	mainTier = "${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}"
+	// Everywhere but an unlabelled pull request: the merge tier plus main.
+	notReviewFirst = "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') }}"
+	// The checks that read the pull request itself.
+	prOnly = "${{ github.event_name == 'pull_request' }}"
+	// The review marker: a notice on the pull request, enforced in the queue.
+	prAndQueue = "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"
 )
+
+// The jobs an unlabelled pull request runs before its review (REVIEW FIRST).
+// Anything else there spends CI minutes on a head nobody has reviewed, and
+// could hold a reviewed pull request out of the queue.
+var reviewFirstJobs = []string{"pr-checks", "review-marker", "gate"}
 
 // TestRequiredGateReportsOnEveryPullRequestAndQueueEntry proves `CI gate`
 // reports on every event the main ruleset judges a merge by.
@@ -205,10 +218,12 @@ const (
 //     forever.
 //   - merge_group is a trigger: without it the merge queue waits forever for
 //     a check that never starts, and every merge blocks.
-//   - every job selects a tier by one of the two spellings in ci.yml's header.
-//     A job gated on `!= 'pull_request'` (the old spelling) would also run in
-//     the merge queue, holding every merge behind the slow tier; one gated on
+//   - every job selects when it runs by one of the spellings in ci.yml's
+//     header. A job gated on `!= 'pull_request'` alone would also run in the
+//     merge queue, holding every merge behind the slow tier; one gated on
 //     `== 'pull_request'` alone would silently not run there.
+//   - an unlabelled pull request runs only the review-first jobs; the merge
+//     tier (test-short, checks) runs in the merge queue.
 func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 	wf := readWorkflow(t)
 	if gate := wf.Jobs["gate"]; gate.Name != requiredCheck {
@@ -228,13 +243,27 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 			}
 		}
 	}
+	allowed := []string{queueTier, mainTier, notReviewFirst, prOnly, prAndQueue}
 	for name, j := range wf.Jobs {
-		switch strings.TrimSpace(j.If) {
-		case "", prTier, mainTier:
-		default:
-			if name != "gate" {
-				t.Errorf("job %q has if: %q; select a tier with exactly %q or %q (or no if: to run in both)", name, j.If, prTier, mainTier)
-			}
+		cond := strings.TrimSpace(j.If)
+		if name == "gate" {
+			continue
+		}
+		if !slices.Contains(allowed, cond) {
+			t.Errorf("job %q has if: %q; select when it runs with exactly one of %q", name, j.If, allowed)
+			continue
+		}
+		// Runs on an unlabelled pull request: no if:, or a spelling that
+		// admits one.
+		onPR := cond == "" || cond == prOnly || cond == prAndQueue
+		if onPR && !slices.Contains(reviewFirstJobs, name) {
+			t.Errorf("job %q runs on every pull request push, before review; only %v may (REVIEW FIRST): gate it with %q", name, reviewFirstJobs, queueTier)
+		}
+	}
+	for _, name := range []string{"test-short", "checks"} {
+		cond := strings.TrimSpace(wf.Jobs[name].If)
+		if cond != queueTier && cond != notReviewFirst {
+			t.Errorf("job %q has if: %q; the merge tier must run in the merge queue (%q)", name, cond, queueTier)
 		}
 	}
 }

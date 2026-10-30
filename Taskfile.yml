@@ -181,7 +181,7 @@ tasks:
 
   ci:
     # THE PRE-MERGE GATE, locally: what the merge steward runs to gate a forge
-    # pull request, in about five minutes. ci.yml's pull-request tier on this
+    # pull request, in about five minutes. ci.yml's merge tier on this
     # machine — the whole -short tier (cached, no -race, no -count), the
     # flake gate over the tests the branch adds or edits, and the checks job
     # (generated code, KCL, pre-commit over the changed files, licenses, the
@@ -197,7 +197,7 @@ tasks:
     # It is a heavy command: run it in a host slot (`reliant forge slot run --
     # task ci`, or the harness's heavy flag). Contributors verify with
     # `task test:short -- <their packages>` instead.
-    desc: "The pre-merge gate (ci.yml's pull-request tier, locally, ~5 min): task ci [-- BASE]"
+    desc: "The pre-merge gate (ci.yml's merge tier, locally, ~5 min): task ci [-- BASE]"
     cmds:
       - scripts/ci-premerge.sh {{.CLI_ARGS}}
 

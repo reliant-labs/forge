@@ -20,6 +20,7 @@ import (
 const (
 	cpListDashboards = "controlplane.v1.DashboardService/ListDashboards"
 	cpGetDashboard   = "controlplane.v1.DashboardService/GetDashboard"
+	cpResolveProject = "controlplane.v1.DeployService/ResolveHostedProject"
 )
 
 // auditCP is a fake control plane for the audit: it answers by procedure, and
@@ -37,6 +38,9 @@ type auditCP struct {
 	metricsFor func(window time.Duration) string
 	errs       map[string]error
 	calls      []auditQuery
+	// serverProject is the control plane's id for the project ("proj", the
+	// project's name, when unset).
+	serverProject string
 }
 
 type auditQuery struct {
@@ -63,8 +67,17 @@ func (c *auditCP) Call(_ context.Context, procedure string, req, out any) error 
 	}
 	reply := ""
 	switch procedure {
+	case cpResolveProject:
+		id := c.serverProject
+		if id == "" {
+			id = "proj"
+		}
+		reply = fmt.Sprintf(`{"projectId":%q,"orgId":"org-1"}`, id)
 	case cpListDashboards:
 		reply = c.dashboards
+		project, _ := in["projectId"].(string)
+		c.calls = append(c.calls, auditQuery{Proc: procedure, Project: project})
+		return json.Unmarshal([]byte(reply), out)
 	case cpGetDashboard:
 		key := in["ref"].(map[string]any)["key"].(string)
 		reply = c.specs[key]
@@ -1364,5 +1377,35 @@ func TestAuditTruncatedAnswerIsPartial(t *testing.T) {
 	text, _, _ := mxRun(t, mxCloud(cp), "dashboards", "audit", "prod")
 	if !strings.Contains(text, "cut") || !strings.Contains(text, "truncated") {
 		t.Errorf("a truncated panel is missing from the default text output:\n%s", text)
+	}
+}
+
+// The project is named by the control plane's id, not its local name: the
+// dashboard listing and every panel scope carry the resolved id.
+func TestAuditNamesTheProjectByItsServerID(t *testing.T) {
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(linePanel("p"))},
+		serverProject: "8f2c-srv",
+		panel:         func(auditQuery) (string, error) { return respEmpty, nil }}
+	if _, _, err := auditRun(t, cp); exitcode.Of(err) != 2 {
+		t.Fatalf("exit = %d, want 2", exitcode.Of(err))
+	}
+	for _, q := range cp.calls {
+		if (q.Proc == cpListDashboards || q.Proc == cpQueryPanel) && q.Project != "8f2c-srv" {
+			t.Errorf("%s named project %q, want the server id 8f2c-srv", q.Proc, q.Project)
+		}
+	}
+	if n := cp.count(func(q auditQuery) bool { return q.Proc == cpListDashboards }); n != 1 {
+		t.Errorf("ListDashboards calls = %d", n)
+	}
+}
+
+// A dashboard whose read was skipped after the allowance ran out reports a
+// quota failure, never an unreachable control plane.
+func TestAuditDashboardSkippedForQuotaSaysQuota(t *testing.T) {
+	a := &dashAudit{ctx: context.Background(), sem: make(chan struct{}, 1),
+		quota: &obsbackend.Failure{Class: obsbackend.ClassQuota, Message: "the hourly allowance is spent"}}
+	ad := a.dashboard(obsbackend.DashboardInfo{Ref: obsbackend.DashboardRef{Key: "d1"}, Title: "A"})
+	if ad.Status != "error" || ad.Error == nil || ad.Error.Class != string(obsbackend.ClassQuota) {
+		t.Errorf("status %q error %+v, want a quota error", ad.Status, ad.Error)
 	}
 }

@@ -414,7 +414,16 @@ func runObsDashboardsAudit(ctx context.Context, d obsDeps, env string, o obsDash
 			With(obsbackend.Cmd("forge", "obs", "dashboards", "check", "--against", env)))
 	}
 
+	// Dashboards and panel scopes name the project by the control plane's id,
+	// which need not be its local name.
 	project := hostedProjectName()
+	if r, ok := b.(projectIDResolver); ok {
+		id, err := r.ResolveProjectID(ctx, project)
+		if err != nil {
+			return fail(err)
+		}
+		project = id
+	}
 	narrow := obsbackend.Narrow{Range: rng}
 	doc := obsDashboardsAuditDoc{
 		Scope: obsScope(b.Info(), narrow), QueryMode: QueryModeStructured, Project: project,
@@ -531,6 +540,12 @@ func (a *dashAudit) run(picked []obsbackend.DashboardInfo) []auditDashboard {
 	return out
 }
 
+// projectIDResolver is the backend that knows the control plane's id for a
+// project name.
+type projectIDResolver interface {
+	ResolveProjectID(ctx context.Context, name string) (string, error)
+}
+
 func (a *dashAudit) dashboard(di obsbackend.DashboardInfo) auditDashboard {
 	ad := auditDashboard{ID: di.Ref.Key, Title: di.Title, Source: di.Source, ReleaseVersion: di.ReleaseVersion, Panels: []auditPanel{}}
 	if di.Typed || di.Source == "builtin" {
@@ -544,7 +559,9 @@ func (a *dashAudit) dashboard(di obsbackend.DashboardInfo) auditDashboard {
 		return err
 	})
 	if err != nil {
-		ad.Error = auditFailureOf(obsbackend.FailureOf(err))
+		// a.failureOf: a read skipped once the allowance ran out is a quota
+		// failure, not an unreachable control plane.
+		ad.Error = auditFailureOf(a.failureOf(err))
 		ad.Status = auditError
 		return ad
 	}

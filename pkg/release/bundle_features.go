@@ -38,7 +38,15 @@ import (
 const (
 	// BundleFeaturePlacementPrerequisites gates required mixed dependency evidence.
 	// Unlike browse-only additions, Limit must NEVER discard this safety contract.
-	BundleFeaturePlacementPrerequisites = "placement-prerequisites-v1"
+	//
+	// v2 (graph version 2) is v1 with the shared passive rule
+	// (PlacementPassiveKind): every kind but the runtime kinds, ConfigMap and
+	// Secret is applied inventory, where a v1 reader refused any kind outside
+	// a closed list. v1 was never advertised by a control
+	// plane and no v1 graph was ever recorded, so it is retired rather than
+	// kept: a reader that names only v1 is refused before composition, never
+	// handed a graph it would reject or under-check.
+	BundleFeaturePlacementPrerequisites = "placement-prerequisites-v2"
 	// BundleFeatureCommitIdentity is Provenance.CommitSubject and
 	// Provenance.CommitAuthor (forge#850).
 	BundleFeatureCommitIdentity = "provenance-commit-identity"

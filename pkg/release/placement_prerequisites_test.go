@@ -10,12 +10,12 @@ import (
 func placementFixture() *PlacementPrerequisites {
 	a := PlacementKey{Runtime: "cluster", Actuator: "forge", Cluster: "prod", Namespace: "app", Kind: "Deployment", Name: "api"}
 	b := PlacementKey{Runtime: "hosted", Actuator: "platform", Cluster: "hosted", Namespace: "app", Kind: "StaticSite", Name: "web"}
-	return &PlacementPrerequisites{Version: 1, Items: []PlacementItem{{a, "api"}, {b, "web"}}, Edges: []PlacementEdge{{a, b}}, Bindings: []PlacementBinding{{Item: a, Object: PlacementObject{Cluster: "prod", APIVersion: "apps/v1", Kind: "Deployment", Namespace: "app", Name: "api"}, ManifestHash: "sha256:" + strings.Repeat("a", 64)}}}
+	return &PlacementPrerequisites{Version: PlacementPrerequisitesVersion, Items: []PlacementItem{{a, "api"}, {b, "web"}}, Edges: []PlacementEdge{{a, b}}, Bindings: []PlacementBinding{{Item: a, Object: PlacementObject{Cluster: "prod", APIVersion: "apps/v1", Kind: "Deployment", Namespace: "app", Name: "api"}, ManifestHash: "sha256:" + strings.Repeat("a", 64)}}}
 }
 
 func TestPlacementPrerequisitesValidation(t *testing.T) {
 	tests := map[string]func(*PlacementPrerequisites){
-		"version":             func(p *PlacementPrerequisites) { p.Version = 2 },
+		"version":             func(p *PlacementPrerequisites) { p.Version = 1 }, // retired with placement-prerequisites-v1
 		"runtime":             func(p *PlacementPrerequisites) { p.Items[0].Key.Runtime = "unknown" },
 		"actuator":            func(p *PlacementPrerequisites) { p.Items[0].Key.Actuator = "hub" },
 		"namespace traversal": func(p *PlacementPrerequisites) { p.Items[0].Key.Namespace = "../app" },
@@ -50,7 +50,7 @@ func TestPlacementPrerequisitesValidation(t *testing.T) {
 	if err := hosted.Validate(); err != nil {
 		t.Fatalf("sealed hosted tree has no invented namespace: %v", err)
 	}
-	if err := (&PlacementPrerequisites{Version: 1}).Validate(); err != nil {
+	if err := (&PlacementPrerequisites{Version: PlacementPrerequisitesVersion}).Validate(); err != nil {
 		t.Fatal(err)
 	}
 	for name, mutate := range tests {
@@ -101,8 +101,25 @@ func TestPlacementPrerequisitesWireAndHistoricalBytes(t *testing.T) {
 	if decoded.PlacementPrerequisites == nil {
 		t.Fatal("wire graph lost")
 	}
-	raw = []byte(strings.Replace(string(raw), `"version":1`, `"version":1,"unknown":true`, 1))
+	graphStart := `"placement_prerequisites":{"version":2`
+	if !strings.Contains(string(raw), graphStart) {
+		t.Fatalf("wire graph is not version 2: %s", raw)
+	}
+	raw = []byte(strings.Replace(string(raw), graphStart, graphStart+`,"unknown":true`, 1))
 	if _, err := DecodeBundleDoc(raw); err == nil {
 		t.Fatal("unknown graph field accepted")
+	}
+}
+
+func TestPlacementPassiveKindIsEverythingButRuntimeConfigMapAndSecret(t *testing.T) {
+	for _, k := range []string{"Service", "CronJob", "CustomResourceDefinition", "PriorityClass", "MutatingWebhookConfiguration", "GRPCRoute", "DaemonRollout", "Widget"} {
+		if !PlacementPassiveKind(k) {
+			t.Errorf("%s is not applied inventory", k)
+		}
+	}
+	for _, k := range []string{"Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "Pod", "Job", "ConfigMap", "Secret"} {
+		if PlacementPassiveKind(k) {
+			t.Errorf("%s has readiness or binding of its own, never passive", k)
+		}
 	}
 }

@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// PlacementPrerequisitesVersion is the graph version BundleFeaturePlacementPrerequisites
+// names (placement-prerequisites-v2).
+const PlacementPrerequisitesVersion = 2
+
 // PlacementPrerequisites is sealed dependency evidence, not an assertion of readiness.
 // Absence is unknown; a present empty graph declares independence.
 type PlacementPrerequisites struct {
@@ -151,7 +155,7 @@ func (p *PlacementPrerequisites) Validate() error {
 	if p == nil {
 		return nil
 	}
-	if p.Version != 1 {
+	if p.Version != PlacementPrerequisitesVersion {
 		return fmt.Errorf("%w: placement prerequisites version %d", ErrInvalid, p.Version)
 	}
 	items := make(map[PlacementKey]bool, len(p.Items))

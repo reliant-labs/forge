@@ -40,7 +40,7 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 	if in.Placements == nil {
 		return nil, fmt.Errorf("mixed placements require complete placement dependency declarations")
 	}
-	p := &release.PlacementPrerequisites{Version: 1, Items: []release.PlacementItem{}, Edges: []release.PlacementEdge{}, Bindings: []release.PlacementBinding{}}
+	p := &release.PlacementPrerequisites{Version: release.PlacementPrerequisitesVersion, Items: []release.PlacementItem{}, Edges: []release.PlacementEdge{}, Bindings: []release.PlacementBinding{}}
 	if in.Snapshot != nil {
 		var err error
 		in.Placements, err = snapshotPlacements(*in.Snapshot, in.Placements)
@@ -125,15 +125,39 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 			p.Edges = append(p.Edges, e)
 		}
 	}
+	// A dependency on an inventory-only component resolves THROUGH it to the
+	// nearest components with items: web -> routes (no controller) -> api
+	// still makes web wait for api. A cycle that closes on an item surfaces
+	// as a self or cyclic edge, which Validate refuses.
+	var declaredPredecessors func(peer string, seen map[string]bool) ([]release.PlacementKey, error)
+	declaredPredecessors = func(peer string, seen map[string]bool) ([]release.PlacementKey, error) {
+		if !inventoryOnly[peer] {
+			if len(keys[peer]) == 0 {
+				return nil, fmt.Errorf("missing predecessor %q", peer)
+			}
+			return keys[peer], nil
+		}
+		if seen[peer] {
+			return nil, nil
+		}
+		seen[peer] = true
+		var out []release.PlacementKey
+		for _, next := range decl[peer].Dependencies {
+			ks, err := declaredPredecessors(next, seen)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, ks...)
+		}
+		return out, nil
+	}
 	for _, d := range in.Placements {
 		for _, peer := range d.Dependencies {
-			if inventoryOnly[peer] {
-				continue
+			resolved, err := declaredPredecessors(peer, map[string]bool{})
+			if err != nil {
+				return nil, fmt.Errorf("placement %s has %w", d.Workload, err)
 			}
-			if len(keys[peer]) == 0 {
-				return nil, fmt.Errorf("placement %s has missing predecessor %q", d.Workload, peer)
-			}
-			for _, a := range keys[peer] {
+			for _, a := range resolved {
 				for _, b := range keys[d.Workload] {
 					add(a, b)
 				}

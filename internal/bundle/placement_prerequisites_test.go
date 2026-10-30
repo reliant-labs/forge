@@ -496,3 +496,44 @@ func TestPlacementPrerequisitesRefusesAnUnboundConfigMap(t *testing.T) {
 		t.Fatalf("got %v, want the unbound ConfigMap refused", err)
 	}
 }
+
+// web -> routes (no controller) -> api: the dependency resolves THROUGH the
+// inventory-only component, so web still waits for api.
+func TestPlacementPrerequisitesDependencyThroughInventoryOnly(t *testing.T) {
+	in := placementBuildInput()
+	in.Placements = []PlacementDeclaration{
+		{Workload: "api", Runtime: "cluster", Actuator: "forge"},
+		{Workload: "routes", Runtime: "cluster", Actuator: "forge", Dependencies: []string{"api"}},
+		{Workload: "web", Runtime: "hosted", Actuator: "platform", Dependencies: []string{"routes"}},
+	}
+	in.Shape.Manifests += ownedDoc("routes", "gateway.networking.k8s.io/v1", "HTTPRoute", "api-route", "spec: {}\n")
+	b, err := Build(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits := false
+	for _, e := range b.Doc.PlacementPrerequisites.Edges {
+		waits = waits || (e.Predecessor.Name == "api" && e.Dependent.Name == "web")
+	}
+	if !waits {
+		t.Fatalf("web no longer waits for api through routes: %+v", b.Doc.PlacementPrerequisites.Edges)
+	}
+
+	// A cycle that closes on an item through the inventory-only component is
+	// refused, never dropped.
+	in.Placements[0].Dependencies = []string{"routes"}
+	if _, err := Build(t.Context(), in); err == nil {
+		t.Fatal("api -> routes -> api accepted")
+	}
+}
+
+// A control plane that advertises only the retired placement-prerequisites-v1
+// (its decoder predates the shared passive set and Passive) is refused before
+// composition: it is never handed a graph it would reject or under-check.
+func TestPlacementPrerequisitesRefusesAV1OnlyReader(t *testing.T) {
+	in := placementBuildInput()
+	in.Reader = &release.BundleReader{Features: []string{"placement-prerequisites-v1"}}
+	if _, err := Build(t.Context(), in); err == nil || !strings.Contains(err.Error(), release.BundleFeaturePlacementPrerequisites) {
+		t.Fatalf("a v1-only reader: got %v, want a refusal naming %s", err, release.BundleFeaturePlacementPrerequisites)
+	}
+}

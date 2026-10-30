@@ -9,71 +9,89 @@ package cli
 // declaration is enough to act on, and making every agent type
 // `go run …@<pin>` by hand was a wall with a door a program could open.
 //
+// WHICH COMMANDS: every command run inside a project that pins another forge,
+// except the few that are about THIS forge or this machine rather than the
+// project (handOffExempt). Reads included: `skill load`, `project shapes` and
+// a `generate --dry-run` plan are all functions of the binary, and an answer
+// from the wrong forge is a wrong answer that looks right. 2026-10-27: an
+// agent's `reliant forge generate` in a project pinned to v1.0.4 ran the forge
+// reliant embedded (a v0.1.47 pseudo-version) and rewrote hundreds of
+// generated lines, because that pairing was tolerated as "a development forge".
+//
 // WHICH forge, in order:
 //   - a project linked to a local forge checkout (go.work use, directory
 //     replace) compiles against that checkout, so the forge it runs is a build
 //     of that checkout — when this binary was not built from it;
 //   - otherwise the forge_version pin: the project's .tools/bin/forge when it
 //     is that version, else a build of the pinned module version kept in a
-//     content-addressed cache.
+//     content-addressed cache (internal/forgedelegate).
+//
+// WHEN the decision is made: before the command tree parses anything, when
+// the entrypoint calls HandOffToPinned (cmd/forge through Execute, and a host
+// that embeds forge, such as `reliant forge`, through cli.HandOffToPinned).
+// That is the only place a command THIS forge does not have — one the pinned
+// forge added — can still reach the forge that has it. The root's
+// PersistentPreRun makes the same decision for a host that did not call it.
 //
 // The hand-off is an exec: same arguments, same environment (plus
 // FORGE_VERSION_DELEGATED, which stops the pinned forge handing off again),
 // stdio and exit status. One line on stderr says it happened.
 //
-// It is skipped, and the old warn/refuse behaviour applies, when
-// --allow-version-skew or FORGE_ALLOW_VERSION_SKEW is set (the explicit "run
-// THIS forge"), when this forge is already a delegate, and when the pinned
-// forge cannot be had (offline, an unpublished version, a checkout that does
-// not build): the refusal then carries the reason.
+// It is skipped when --allow-version-skew or FORGE_ALLOW_VERSION_SKEW is set
+// (the explicit "run THIS forge"; the skew warning and refusals then apply),
+// when this forge is already a delegate, and when this forge is a local build
+// of forge being run against a published-tag pin (devAgainstTag). When the
+// pinned forge cannot be had — offline, an unpublished version, a checkout
+// that does not build — the command FAILS with the reason. It never falls back
+// to running this forge: that fallback is how a stale forge rewrote a project.
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
 )
 
-// pinDelegateOnlyExcluded are the `env` subcommands that read no KCL.
-var pinDelegateOnlyExcluded = map[string]bool{
-	"env list": true, "env ps": true, "env down": true, "env devstack": true,
-	"env delete": true, "env start": true, "env stop": true,
+// handOffExempt are the commands that run as THIS forge in any project: they
+// describe or operate this binary or this machine, not the project.
+//
+//   - version, help, completion: about this binary and this shell.
+//   - project upgrade: moves the pin, so it is run by the forge being moved
+//     TO, and must work when the old pin cannot be built.
+//   - project new: the project it writes is not the one around the cwd.
+//   - report-bug: reports a defect in this forge, and must work offline.
+//   - storage, slot: bound this machine's caches and heavy slots under THIS
+//     forge's rules. A pinned forge older than the 2h floor and the
+//     live-build lease (#1231, #1243, #1245) would trim the Go build cache
+//     down to now-20m, under running builds.
+//   - env ps, env down, env devstack: they list, stop and allocate ports for
+//     the stacks on this machine, across projects, and stopping one must not
+//     need the network.
+var handOffExempt = []string{
+	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
+	"project upgrade", "project new", "report-bug", "storage", "slot",
+	"env ps", "env down", "env devstack",
 }
 
-// pinDelegateJudges are the commands that JUDGE the project — the local CI
-// gate and its checks, and the linters — whose verdict is a function of the
-// forge that ran it: the analyzers, the gate's step list and tool pins, and
-// the forge.yaml schema they validate first are all embedded in the binary.
-// An older forge failed reliant's `forge ci gate --list` outright
-// (`unknown key "lint.tracing"`) and would otherwise judge with rules the
-// project did not pin.
-var pinDelegateJudges = map[string]bool{
-	"lint": true, "ci gate": true, "ci verify-generated": true, "ci validate-kcl": true,
-	"ci migration-safety": true, "ci vuln-scan": true,
-}
-
-// pinDelegateOnlyFor reports whether rel is a command that is not pin-gated
-// (it refuses nothing) but whose output is a function of the forge that ran
-// it: it renders the project's KCL, and forge's KCL schemas are embedded in
-// the binary (an older forge evaluates a newer project's KCL against schemas
-// missing fields the project is entitled to, and KCL blames the project's
-// line: `Cannot add member 'release_dependencies' to schema ...`), or it is
-// one of pinDelegateJudges. These are handed to the pinned forge instead of
-// failing, or judging, that way.
-func pinDelegateOnlyFor(rel string) bool {
-	switch {
-	case rel == "kcl" || strings.HasPrefix(rel, "kcl "), rel == "doctor", rel == "project frontends", pinDelegateJudges[rel]:
-		return true
-	case strings.HasPrefix(rel, "env "):
-		sub := strings.Join(strings.Fields(rel)[:2], " ")
-		return !pinDelegateOnlyExcluded[sub]
+// handOffWanted reports whether the command at rel (relative to forge's root)
+// is handed to the forge a project pins. rel "" is the root itself.
+func handOffWanted(rel string) bool {
+	for _, ex := range handOffExempt {
+		if rel == ex || (ex != "" && strings.HasPrefix(rel, ex+" ")) {
+			return false
+		}
 	}
-	return false
+	return true
 }
 
 // Seams: the real hand-off builds forge and replaces the process, which no
@@ -90,12 +108,202 @@ var (
 		}
 	}
 	pinDelegateExec = forgedelegate.Exec
+	// forgeIsLocalBuild: only a forge built from a local tree is "a
+	// development forge" a rewriting command tolerates against a tag pin.
+	forgeIsLocalBuild = buildinfo.LocalBuild
+	// forgeEmbedding names the host binary forge is compiled into ("" when
+	// forge is its own executable), for the no-pin notice.
+	forgeEmbedding = func() (host, version string) {
+		cur := buildinfo.Current()
+		if !cur.Embedded {
+			return "", ""
+		}
+		host = cur.Embedder
+		if i := strings.LastIndex(host, "/"); i >= 0 {
+			host = host[i+1:]
+		}
+		if host == "" {
+			host = "its host binary"
+		}
+		return host, cur.Version
+	}
 )
 
 // pinDelegationDisabled is set by main_test.go's TestMain: a real hand-off
 // builds forge and replaces the process, neither of which a unit test may do.
 // The tests of the hand-off itself clear it and swap the two seams above.
 var pinDelegationDisabled bool
+
+// handOffDecided is set by HandOffToPinned: the entrypoint made the decision
+// before the command tree ran, so the root's PersistentPreRun does not make it
+// (and print its notices) a second time.
+var handOffDecided bool
+
+// HandOffToPinned runs args — forge's own arguments, after any host route
+// such as `reliant forge` — under the forge the project in scope pins, when
+// that is not this forge. It is called before the command tree parses args.
+//
+// With the real exec it returns only when nothing was handed over (handed
+// false, err nil: run this forge) or on failure (err: the pinned forge is
+// wanted and could not be had; nothing may run). stderr receives the one-line
+// notices.
+func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (handed bool, err error) {
+	handOffDecided = true
+	if forgedelegate.Delegated() || pinDelegationDisabled {
+		return false, nil
+	}
+	inv := parseInvocation(args)
+	if !handOffWanted(inv.rel) {
+		return false, nil
+	}
+	root, err := projectRootFrom(inv.projectDir)
+	if err != nil {
+		// The tree reports a bad -C itself, with its own message.
+		return false, nil
+	}
+	return handOff(ctx, stderr, inv.rel, inv.allow, root, args)
+}
+
+// invocation is what the hand-off needs from a command line it has not run.
+type invocation struct {
+	// rel is the command path relative to forge's root; for a command this
+	// forge does not know, the path up to and including the unknown word.
+	rel string
+	// allow is --allow-version-skew.
+	allow bool
+	// projectDir is -C / --project-dir.
+	projectDir string
+}
+
+// parseInvocation resolves args against a throwaway copy of this forge's
+// command tree, the way cobra will, without running anything. Unknown flags
+// are skipped rather than fatal: a flag the pinned forge added is exactly the
+// case the hand-off exists for.
+func parseInvocation(args []string) invocation {
+	root := NewRootCmd()
+	cmd, rest, err := root.Find(args)
+	if err != nil || cmd == nil {
+		// An unknown top-level command: this forge cannot run it, the
+		// pinned one may.
+		return invocation{rel: firstWord(args), projectDir: scanProjectDir(args)}
+	}
+	cmd.FParseErrWhitelist.UnknownFlags = true
+	_ = cmd.ParseFlags(rest)
+	inv := invocation{rel: strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))}
+	inv.allow, _ = cmd.Flags().GetBool(allowVersionSkewFlag)
+	inv.projectDir, _ = cmd.Flags().GetString("project-dir")
+	if cmd.HasSubCommands() {
+		// `forge project <a subcommand this forge lacks>`.
+		if w := firstWord(cmd.Flags().Args()); w != "" {
+			inv.rel = strings.TrimSpace(inv.rel + " " + w)
+		}
+	}
+	return inv
+}
+
+// firstWord is the first argument that is not a flag.
+func firstWord(args []string) string {
+	for _, a := range args {
+		if a == "--" {
+			return ""
+		}
+		if !strings.HasPrefix(a, "-") {
+			return a
+		}
+	}
+	return ""
+}
+
+// scanProjectDir finds -C / --project-dir in args the tree could not parse.
+func scanProjectDir(args []string) string {
+	for i, a := range args {
+		switch {
+		case a == "--":
+			return ""
+		case (a == "-C" || a == "--project-dir") && i+1 < len(args):
+			return args[i+1]
+		case strings.HasPrefix(a, "--project-dir="):
+			return strings.TrimPrefix(a, "--project-dir=")
+		case strings.HasPrefix(a, "-C") && len(a) > 2:
+			return strings.TrimPrefix(strings.TrimPrefix(a, "-C"), "=")
+		}
+	}
+	return ""
+}
+
+// projectRootFrom is the project root the command will resolve, from dir
+// (-C) or the working directory; "" outside any project.
+func projectRootFrom(dir string) (string, error) {
+	if dir != "" {
+		if err := cmdutil.SetProjectDir(dir); err != nil {
+			return "", err
+		}
+		defer func() { _ = cmdutil.SetProjectDir("") }()
+	}
+	// No project is an answer, not a failure.
+	root, _ := cmdutil.FindProjectRoot()
+	return root, nil
+}
+
+// handOff is the decision both entry points share: hand the command at rel to
+// the forge projectRoot wants, run this forge, or fail. args are the forge
+// arguments of this invocation.
+func handOff(ctx context.Context, w io.Writer, rel string, allow bool, projectRoot string, args []string) (handed bool, err error) {
+	if !handOffWanted(rel) {
+		return false, nil
+	}
+	if projectRoot == "" {
+		noteUnpinned(w, "not inside a forge project")
+		return false, nil
+	}
+	if cfg, ok := readPinFields(projectRoot); ok && strings.TrimSpace(cfg.ForgeVersion) == "" && !forgecompat.InspectBridge(projectRoot).Bridged {
+		noteUnpinned(w, filepath.Join(projectRoot, defaultProjectConfigFile)+" pins no forge_version")
+		return false, nil
+	}
+	t, ok := delegateTargetFor(projectRoot)
+	if !ok {
+		return false, nil
+	}
+	if allow || forgecompat.SkewOverridden() || t.devAgainstTag(rel) {
+		// Run this forge; checkForgePinSkew warns, or refuses.
+		return false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	handed, err = delegateToPinned(ctx, w, projectRoot, t, args)
+	if err != nil {
+		return false, handOffFailure(projectRoot, t, rel, err)
+	}
+	return handed, nil
+}
+
+// noteUnpinned says which forge runs when no project pin decides it. Only an
+// embedded forge says it: a standalone forge is the binary the user chose,
+// while the forge inside `reliant forge` is whatever that host was built
+// with, and nothing else on screen names it.
+func noteUnpinned(w io.Writer, why string) {
+	host, version := forgeEmbedding()
+	if host == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "%s: %s — running the forge built into %s, %s\n", Name(), why, host, version)
+}
+
+// handOffFailure is the error when the project's forge is wanted and cannot
+// be had. Nothing runs: running this forge instead is the silent rewrite the
+// hand-off exists to prevent.
+func handOffFailure(projectRoot string, t delegateTarget, rel string, cause error) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "this forge is %s, but %s/forge.yaml wants %s, and that forge could not be obtained:\n", t.binary, projectRoot, t)
+	for _, line := range strings.Split(strings.TrimSpace(cause.Error()), "\n") {
+		fmt.Fprintf(&b, "    %s\n", line)
+	}
+	fmt.Fprintf(&b, "  Nothing ran: `%s` runs only under the forge the project pins, never silently under another.\n", strings.TrimSpace(Name()+" "+rel))
+	fmt.Fprintf(&b, "  Fix what stopped it (offline? a pin nobody published?), move the pin deliberately with `%s project upgrade`,\n", Name())
+	fmt.Fprintf(&b, "  or run THIS forge knowingly: --%s, or %s=1", allowVersionSkewFlag, allowVersionSkewEnv)
+	return errors.New(b.String())
+}
 
 // delegateTarget is what the project says its forge is.
 type delegateTarget struct {
@@ -106,14 +314,14 @@ type delegateTarget struct {
 	// checkout, when set, is the local forge checkout the project is linked
 	// to, and stamp identifies its current contents.
 	checkout, stamp string
-	// devTag: the running forge is a development build and the pin a
+	// devTag: the running forge is a local development build and the pin a
 	// published tag (see pinSkewFor).
 	devTag bool
 }
 
 // devAgainstTag reports whether the pairing is one the rewriting commands
 // tolerate (forge's own e2e lanes and every forge developer): a binary built
-// from the checkout, a project on the published floor. Only the commands
+// from a local checkout, a project on the published floor. Only the commands
 // that produce artifacts are strict about it.
 func (t delegateTarget) devAgainstTag(rel string) bool {
 	return t.devTag && !pinBuildCommands[rel]
@@ -185,30 +393,4 @@ func pinnedRunLine(projectRoot, pin string, args []string) string {
 		return forgecompat.RunBinaryCommand(local, args)
 	}
 	return forgecompat.RunPinnedCommand(pin, args)
-}
-
-// delegationWanted reports whether the command at rel should be handed over:
-// every pin-gated command that writes, and the render readers. A read-only
-// run of a gated command (a plan, a --check) is left to warn, as before.
-func delegationWanted(rel string, readOnly bool) bool {
-	// Never the storage commands: they bound this machine's caches under THIS
-	// forge's rules. A pinned forge older than the 2h floor and the
-	// live-build lease (#1231, #1243, #1245) would trim the Go build cache
-	// down to now-20m, under running builds.
-	if rel == "storage" || strings.HasPrefix(rel, "storage ") {
-		return false
-	}
-	if _, gated := pinGateFor(rel); gated {
-		return !readOnly
-	}
-	return pinDelegateOnlyFor(rel)
-}
-
-// delegationFailure formats why delegation did not happen, for the refusal or
-// the warning that follows it.
-func delegationFailure(err error) string {
-	if err == nil {
-		return ""
-	}
-	return "  The pinned forge could not be used, so nothing was handed over: " + strings.TrimSpace(err.Error()) + "\n"
 }

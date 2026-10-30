@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,8 +30,14 @@ var (
 // HERE, before main()'s os.Exit, so a failed
 // command still releases its share and the last process out tears the shared
 // server down cleanly instead of leaking its data dir and SysV IPC.
+//
+// Before the tree runs, a project that pins another forge gets its command
+// handed to that forge (HandOffToPinned, forge_pin_delegate.go).
 func Execute() error {
 	defer pgtest.Shutdown()
+	if handed, err := HandOffToPinned(context.Background(), os.Args[1:], os.Stderr); err != nil || handed {
+		return err
+	}
 	return NewRootCmd().Execute()
 }
 

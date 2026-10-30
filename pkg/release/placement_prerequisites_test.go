@@ -40,25 +40,6 @@ func TestPlacementPrerequisitesValidation(t *testing.T) {
 		},
 		"nonjob contract": func(p *PlacementPrerequisites) { p.Bindings[0].JobContract = KubernetesJobCompleteV1 },
 		"secret":          func(p *PlacementPrerequisites) { p.Bindings[0].Object.Kind = "Secret" },
-		"passive runtime": func(p *PlacementPrerequisites) { p.Passive[0].Kind = "Deployment" },
-		"passive configmap": func(p *PlacementPrerequisites) {
-			p.Passive[0].Kind, p.Passive[0].APIVersion = "ConfigMap", "v1"
-		},
-		"passive builtin":   func(p *PlacementPrerequisites) { p.Passive[0].Kind = "Service" },
-		"passive hosted":    func(p *PlacementPrerequisites) { p.Passive[0].Cluster = BundleHostedCluster },
-		"passive duplicate": func(p *PlacementPrerequisites) { p.Passive = append(p.Passive, p.Passive[0]) },
-		"passive bound": func(p *PlacementPrerequisites) {
-			p.Passive[0] = p.Bindings[0].Object
-		},
-		"passive name": func(p *PlacementPrerequisites) { p.Passive[0].Name = "Bad_Name" },
-	}
-	passiveFixture := func() *PlacementPrerequisites {
-		p := placementFixture()
-		p.Passive = []PlacementObject{{Cluster: "prod", APIVersion: "reliant.dev/v1alpha1", Kind: "DaemonRollout", Namespace: "app", Name: "daemon-rollout"}}
-		return p
-	}
-	if err := passiveFixture().Validate(); err != nil {
-		t.Fatalf("a declared-passive custom resource: %v", err)
 	}
 	if err := placementFixture().Validate(); err != nil {
 		t.Fatal(err)
@@ -74,7 +55,7 @@ func TestPlacementPrerequisitesValidation(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			p := passiveFixture()
+			p := placementFixture()
 			mutate(p)
 			if err := p.Validate(); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("got %v", err)
@@ -127,5 +108,18 @@ func TestPlacementPrerequisitesWireAndHistoricalBytes(t *testing.T) {
 	raw = []byte(strings.Replace(string(raw), graphStart, graphStart+`,"unknown":true`, 1))
 	if _, err := DecodeBundleDoc(raw); err == nil {
 		t.Fatal("unknown graph field accepted")
+	}
+}
+
+func TestPlacementPassiveKindIsEverythingButRuntimeConfigMapAndSecret(t *testing.T) {
+	for _, k := range []string{"Service", "CronJob", "CustomResourceDefinition", "PriorityClass", "MutatingWebhookConfiguration", "GRPCRoute", "DaemonRollout", "Widget"} {
+		if !PlacementPassiveKind(k) {
+			t.Errorf("%s is not applied inventory", k)
+		}
+	}
+	for _, k := range []string{"Deployment", "ReplicaSet", "StatefulSet", "DaemonSet", "Pod", "Job", "ConfigMap", "Secret"} {
+		if PlacementPassiveKind(k) {
+			t.Errorf("%s has readiness or binding of its own, never passive", k)
+		}
 	}
 }

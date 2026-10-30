@@ -113,10 +113,6 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 			inventoryOnly[d.Workload] = true
 		}
 	}
-	declaredPassive, err := placementDeclaredPassive(docs)
-	if err != nil {
-		return nil, err
-	}
 	edgeSet := map[release.PlacementEdge]bool{}
 	add := func(a, b release.PlacementKey) {
 		e := release.PlacementEdge{Predecessor: a, Dependent: b}
@@ -253,14 +249,6 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 			return nil, fmt.Errorf("unsupported/unbound hosted sealed record %s/%s", o.Kind, o.Name)
 		}
 		if o.Cluster != release.BundleHostedCluster && !placementPrimary(o.Kind, false) && o.Kind != "ConfigMap" {
-			switch {
-			case release.PlacementPassiveKind(o.Kind):
-			case declaredPassive[o.Key()]:
-				p.Passive = append(p.Passive, release.PlacementObject{Cluster: o.Cluster, APIVersion: o.APIVersion, Kind: o.Kind, Namespace: o.Namespace, Name: o.Name})
-			default:
-				return nil, fmt.Errorf("unsupported mixed prerequisite resource kind %s (%s): annotate it %s: passive if it has no readiness of its own",
-					o.Kind, o.Name, release.PlacementReadinessAnnotation)
-			}
 			continue // applied inventory, not an invented readiness status
 		}
 		for _, k := range targets {
@@ -306,7 +294,6 @@ func placementPrerequisites(in BuildInput, docs []parsedDoc, objects []release.S
 		a, b := p.Edges[i], p.Edges[j]
 		return placementKeyOrder(a.Predecessor)+"|"+placementKeyOrder(a.Dependent) < placementKeyOrder(b.Predecessor)+"|"+placementKeyOrder(b.Dependent)
 	})
-	sort.Slice(p.Passive, func(i, j int) bool { return fmt.Sprint(p.Passive[i]) < fmt.Sprint(p.Passive[j]) })
 	sort.Slice(p.Bindings, func(i, j int) bool {
 		a, b := p.Bindings[i], p.Bindings[j]
 		return placementKeyOrder(a.Item)+fmt.Sprint(a.Object) < placementKeyOrder(b.Item)+fmt.Sprint(b.Object)
@@ -353,33 +340,6 @@ func snapshotPlacements(s release.Snapshot, declarations []PlacementDeclaration)
 			}
 		}
 		out = append(out, d)
-	}
-	return out, nil
-}
-
-// placementDeclaredPassive is every cluster object the declaration marks as
-// applied inventory (release.PlacementReadinessAnnotation = "passive"). Any
-// other value, or the mark on a kind that has readiness of its own, is refused
-// rather than ignored.
-func placementDeclaredPassive(docs []parsedDoc) (map[release.ObjectKey]bool, error) {
-	out := map[release.ObjectKey]bool{}
-	for _, doc := range docs {
-		body, _ := doc.body.(map[string]any)
-		ann, _ := mapAt(body, "metadata")["annotations"].(map[string]any)
-		raw, ok := ann[release.PlacementReadinessAnnotation]
-		if !ok {
-			continue
-		}
-		if v, _ := raw.(string); v != "passive" {
-			return nil, fmt.Errorf("%s %s: %s must be \"passive\", got %v", doc.meta.kind, doc.meta.name, release.PlacementReadinessAnnotation, raw)
-		}
-		kind := doc.meta.kind
-		if placementPrimary(kind, false) || release.PlacementPassiveKind(kind) || kind == "ConfigMap" || kind == "Secret" {
-			return nil, fmt.Errorf("%s %s: %s: passive is only for a kind with no readiness of its own and none built in", kind, doc.meta.name, release.PlacementReadinessAnnotation)
-		}
-		for _, c := range doc.clusters {
-			out[release.ObjectKey{Cluster: c, Kind: kind, Namespace: doc.meta.namespace, Name: doc.meta.name}] = true
-		}
 	}
 	return out, nil
 }

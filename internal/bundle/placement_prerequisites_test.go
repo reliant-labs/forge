@@ -362,9 +362,10 @@ func clusterDoc(apiVersion, kind, name string, namespaced bool, meta string) str
 }
 
 // What a real two-cluster env renders beside its controllers: scheduled work,
-// the cluster's API and scheduling vocabulary, admission, and every route and
-// policy attachment. Each is applied inventory: the bundle composes, and none
-// of them becomes an item or a binding.
+// the cluster's API and scheduling vocabulary, admission, every route and
+// policy attachment, and custom resources. No kind is refused for being
+// unknown: each is applied inventory, the bundle composes, and none of them
+// becomes an item or a binding.
 func TestPlacementPrerequisitesPassiveKinds(t *testing.T) {
 	in := placementBuildInput()
 	for _, d := range []struct {
@@ -383,6 +384,8 @@ func TestPlacementPrerequisitesPassiveKinds(t *testing.T) {
 		{"gateway.networking.k8s.io/v1", "GRPCRoute", true},
 		{"gateway.envoyproxy.io/v1alpha1", "EnvoyProxy", true},
 		{"networking.gke.io/v1", "HealthCheckPolicy", true},
+		// A custom resource: its controller is an item of its own.
+		{"reliant.dev/v1alpha1", "DaemonRollout", true},
 	} {
 		in.Shape.Manifests += clusterDoc(d.apiVersion, d.kind, strings.ToLower(d.kind), d.namespaced, "")
 	}
@@ -397,50 +400,9 @@ func TestPlacementPrerequisitesPassiveKinds(t *testing.T) {
 		}
 	}
 	for _, bd := range p.Bindings {
-		if release.PlacementPassiveKind(bd.Object.Kind) {
+		if bd.Object.Cluster != release.BundleHostedCluster && release.PlacementPassiveKind(bd.Object.Kind) {
 			t.Errorf("applied inventory became a readiness binding: %+v", bd.Object)
 		}
-	}
-	if len(p.Passive) != 0 {
-		t.Fatalf("built-in passive kinds are not declared passive objects: %+v", p.Passive)
-	}
-}
-
-// A custom resource's kind is on no closed list. It is refused, naming the
-// annotation that declares it passive; once declared it is sealed by exact
-// identity, and the annotation is refused where it would hide readiness.
-func TestPlacementPrerequisitesDeclaredPassive(t *testing.T) {
-	const cr = "reliant.dev/v1alpha1"
-	in := placementBuildInput()
-	in.Shape.Manifests += clusterDoc(cr, "DaemonRollout", "daemon-rollout", true, "")
-	if _, err := Build(t.Context(), in); err == nil || !strings.Contains(err.Error(), release.PlacementReadinessAnnotation) {
-		t.Fatalf("an undeclared custom resource: got %v, want a refusal naming %s", err, release.PlacementReadinessAnnotation)
-	}
-
-	in = placementBuildInput()
-	in.Shape.Manifests += clusterDoc(cr, "DaemonRollout", "daemon-rollout", true, "  annotations:\n    forge.dev/placement-readiness: passive\n")
-	b, err := Build(t.Context(), in)
-	if err != nil {
-		t.Fatalf("a declared-passive custom resource must compose: %v", err)
-	}
-	want := []release.PlacementObject{{Cluster: "prod", APIVersion: cr, Kind: "DaemonRollout", Namespace: "app", Name: "daemon-rollout"}}
-	if got := b.Doc.PlacementPrerequisites.Passive; !slices.Equal(got, want) {
-		t.Fatalf("passive = %+v, want %+v", got, want)
-	}
-
-	for name, doc := range map[string]string{
-		"runtime kind": clusterDoc("apps/v1", "Deployment", "sidecar", true, "  annotations:\n    forge.dev/placement-readiness: passive\n"),
-		"configmap":    clusterDoc("v1", "ConfigMap", "flags", true, "  annotations:\n    forge.dev/placement-readiness: passive\n"),
-		"built-in":     clusterDoc("v1", "Service", "svc", true, "  annotations:\n    forge.dev/placement-readiness: passive\n"),
-		"bad value":    clusterDoc(cr, "DaemonRollout", "daemon-rollout", true, "  annotations:\n    forge.dev/placement-readiness: ignore\n"),
-	} {
-		t.Run(name, func(t *testing.T) {
-			in := placementBuildInput()
-			in.Shape.Manifests += doc
-			if _, err := Build(t.Context(), in); err == nil || !strings.Contains(err.Error(), release.PlacementReadinessAnnotation) {
-				t.Fatalf("got %v, want a refusal naming %s", err, release.PlacementReadinessAnnotation)
-			}
-		})
 	}
 }
 

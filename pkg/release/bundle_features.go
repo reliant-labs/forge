@@ -39,9 +39,10 @@ const (
 	// BundleFeaturePlacementPrerequisites gates required mixed dependency evidence.
 	// Unlike browse-only additions, Limit must NEVER discard this safety contract.
 	//
-	// v2 (graph version 2) is v1 plus the shared passive-kind set
-	// (PlacementPassiveKind) and declared-passive objects
-	// (PlacementPrerequisites.Passive). v1 was never advertised by a control
+	// v2 (graph version 2) is v1 with the shared passive rule
+	// (PlacementPassiveKind): every kind but the runtime kinds, ConfigMap and
+	// Secret is applied inventory, where a v1 reader refused any kind outside
+	// a closed list. v1 was never advertised by a control
 	// plane and no v1 graph was ever recorded, so it is retired rather than
 	// kept: a reader that names only v1 is refused before composition, never
 	// handed a graph it would reject or under-check.

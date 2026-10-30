@@ -96,6 +96,9 @@ against the Deployments at all.
   proceeds. The versions a failed run applied before the one that failed are
   recorded as it fails. A binary scaffolded before `force` existed lacks the
   subcommand; copy it from a fresh scaffold's `cmd/<binary>/cmd/db.go`.
+- **A migration's lock is busy.** It fails fast, is retried, and if the blocker
+  outlasts the attempts the run fails with the schema unchanged. See
+  `db/migration-timeouts`.
 - **Every pod start re-runs it** (scale-up, node eviction). Intended, and
   cheap: a no-op is one connection, one lock, one version read.
 - **The schema is AHEAD of the binary** — the previous release, mid-deploy.

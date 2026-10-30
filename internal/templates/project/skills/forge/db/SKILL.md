@@ -19,6 +19,7 @@ emit: both
 - **Roll forward only — never write a down migration.** Recover with a new forward (hotfix) migration; write changes expand-then-contract. `forge lint` (`no-down-migration`) fails on a new down file — see `db/deploy-migrations`.
 - **Keep seed data out of migrations.**
 - **A destructive change is allowed per file, in the file** — `-- forge:allow-destructive` on a line of that migration; there is no forge.yaml allowlist. See `db/orm-and-safety`.
+- **A migration never waits forever for a lock.** Every migration runs under `lock_timeout` (5s) and `statement_timeout` (30m), and a migration whose lock times out is rolled back and retried (5 attempts, growing wait). Override per file with `-- forge:lock-timeout 30s` / `-- forge:statement-timeout 2h` at the top of the file — a long backfill needs the second. See `db/migration-timeouts`.
 - **A migration file runs as one transaction.** So `CREATE INDEX CONCURRENTLY` (and the like) must be its file's only statement, and an enum value a file adds cannot be used in that file. `forge lint` refuses both; see `db/orm-and-safety`.
 
 <!-- @forge-only:start -->

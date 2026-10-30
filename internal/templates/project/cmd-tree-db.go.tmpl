@@ -50,6 +50,7 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 
@@ -91,7 +92,7 @@ func newDBCmd(deps Deps) *cobra.Command {
 	}
 	config.RegisterFlags(migrateCmd)
 
-	migrateCmd.AddCommand(&cobra.Command{
+	upCmd := &cobra.Command{
 		Use:   "up",
 		Short: "Apply all pending migrations",
 		Long: "Apply every pending migration, then exit 0. Safe to run concurrently, " +
@@ -164,7 +165,16 @@ func newDBCmd(deps Deps) *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "migrations applied: %d -> %d\n", res.Before.Version, res.After.Version)
 			return nil
 		}),
-	})
+	}
+	// EVERY MIGRATION RUNS UNDER A lock_timeout, so one that cannot get its
+	// lock fails fast and is retried instead of queueing every query on the
+	// table behind it (pkg/migratekit/locktimeout.go). These flags set the
+	// run's values; a migration's own `-- forge:lock-timeout` and
+	// `-- forge:statement-timeout` header lines win for that file.
+	upCmd.Flags().String("lock-timeout", "", "how long one attempt at a migration waits for a lock, e.g. 5s, 30s, off (default 5s)")
+	upCmd.Flags().String("statement-timeout", "", "longest one statement may run, e.g. 30m, 2h, off (default 30m)")
+	upCmd.Flags().Int("lock-attempts", 0, "attempts at a migration whose lock times out, the first included (default 5; 1 never retries)")
+	migrateCmd.AddCommand(upCmd)
 
 	migrateCmd.AddCommand(&cobra.Command{
 		Use:          "status",
@@ -311,11 +321,25 @@ func openMigrator(cmd *cobra.Command) (*migratekit.Migrator, error) {
 	if err != nil {
 		return nil, err
 	}
+	limits, err := migratorLimits(cmd)
+	if err != nil {
+		return nil, err
+	}
 	return migratekit.Open(migratekit.Options{
 		FS:  forgedb.Source(),
 		Dir: forgedb.SourceDir,
 		DSN: dsn,
+		Run: migratekit.RunOptions{Limits: limits, Logger: slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), nil))},
 	})
+}
+
+// migratorLimits reads the lock and statement timeout flags `migrate up`
+// declares; the other subcommands declare none, and get the defaults.
+func migratorLimits(cmd *cobra.Command) (migratekit.Limits, error) {
+	lock, _ := cmd.Flags().GetString("lock-timeout")
+	statement, _ := cmd.Flags().GetString("statement-timeout")
+	attempts, _ := cmd.Flags().GetInt("lock-attempts")
+	return migratekit.ParseLimits(lock, statement, attempts)
 }
 
 // migratorDSN resolves the migration DSN from --database-url, else

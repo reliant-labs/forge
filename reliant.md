@@ -233,8 +233,8 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
 - **GitHub identity (owner, 2026-10-30): implement as the user, review and merge as the
   bot.** Commits, pushes and opening a PR are the user's (plain `git`/`gh`). Every review,
   label, enqueue and merge is `reliant-labs[bot]`'s: `reliant github gh --repo
-  reliant-labs/forge -- <gh args>` (or `reliant github token --as app --repo
-  reliant-labs/forge`; reliant #1923). Never review, label or merge as `reliant-01`: its
+reliant-labs/forge -- <gh args>` (or `reliant github token --as app --repo
+reliant-labs/forge`; reliant #1923). Never review, label or merge as `reliant-01`: its
   ruleset bypass is the owner's alone.
 
 **Push to main** (and `workflow_dispatch` on any branch) adds:

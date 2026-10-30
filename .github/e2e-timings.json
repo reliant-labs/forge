@@ -50,7 +50,7 @@
   "TestE2EParallelServiceBranchesMerge": 38,
   "TestE2EPbThroughCrudPlusCustomRpc": 97,
   "TestE2EPbThroughStubToCrudTransition": 63,
-  "TestE2ERouteToOnHostWorkloadReachesHostProcess": 130,
+  "TestE2ERouteToOnHostWorkloadResolves": 130,
   "TestE2ERouteTrafficHealthCheckExpects401": 143,
   "TestE2EScaffoldAddService": 35,
   "TestE2EScaffoldBasicProject": 90,

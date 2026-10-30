@@ -133,9 +133,9 @@ type Migrator struct {
 	// run is the limits every statement the run issues is guarded by
 	// (locktimeout.go): its migrations, through bindMigrate, and its grants.
 	run RunOptions
-	// grants is the read-only grants script this binary embeds beside its
-	// migrations, "" when it embeds none (grants.go).
-	grants string
+	// grants are the grants scripts this binary embeds beside its
+	// migrations (grants.go).
+	grants grantScripts
 }
 
 // Open builds a Migrator over the embedded migration set in opts.FS, on one
@@ -173,7 +173,7 @@ func Open(opts Options) (*Migrator, error) {
 		_ = src.Close()
 		return nil, fmt.Errorf("open embedded migrations (%s): %w", dir, err)
 	}
-	grants, _, err := grantsScript(opts.FS, dir)
+	grants, err := grantsScripts(opts.FS, dir)
 	if err != nil {
 		_ = src.Close()
 		return nil, fmt.Errorf("open migrator: %w", err)

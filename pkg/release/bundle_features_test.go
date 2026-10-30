@@ -21,6 +21,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureReleaseHealth:          {"shape.release_health"},
 	BundleFeatureUptimeChecks:           {"shape.uptime_checks"},
 	BundleFeatureDataAccess:             {"shape.data_access"},
+	BundleFeatureDatabaseDashboards:     {"shape.databases"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -115,6 +116,7 @@ func fullBundleDoc() BundleDoc {
 			DataAccess:               &ShapeDataAccess{DBQuery: DBQueryDeny},
 			ReleaseHealth:            &ShapeReleaseHealth{WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2, NewIssueMinEvents: 5, FailOn: []string{HealthErrorRate}},
 			UptimeChecks:             []ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: UptimeSourceDefault}},
+			Databases:                []ShapeDatabase{{Name: "orders", Dashboards: &ShapeDatabaseDashboards{Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1}}},
 		},
 		Objects:   []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		CreatedAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC),
@@ -142,7 +144,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	for _, p := range strays {
 		strayRoots[p] = true
 	}
-	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks"} {
+	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.databases"} {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
@@ -180,6 +182,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.ReleaseHealth = nil
 	wantShape.UptimeChecks = nil
 	wantShape.DataAccess = nil
+	wantShape.Databases = nil
 	wantShape.ControlPlaneSecrets = []ShapeControlPlaneSecret{full.Shape.ControlPlaneSecrets[0]}
 	wantShape.ControlPlaneSecrets[0].Delivery = ""
 	pol := *wantShape.ObservabilityPolicy
@@ -220,6 +223,10 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	uptime := (&BundleReader{Features: []string{BundleFeatureUptimeChecks}}).Limit(full)
 	if len(uptime.Shape.UptimeChecks) != 1 || uptime.Shape.ReleaseHealth != nil || uptime.Shape.StoreSecrets != nil || uptime.Shape.FrontendTelemetry != nil {
 		t.Errorf("a reader of uptime checks only: %+v", uptime)
+	}
+	dashboards := (&BundleReader{Features: []string{BundleFeatureDatabaseDashboards}}).Limit(full)
+	if len(dashboards.Shape.Databases) != 1 || dashboards.Shape.UptimeChecks != nil || dashboards.Shape.StoreSecrets != nil || dashboards.Shape.DataAccess != nil {
+		t.Errorf("a reader of database dashboards only: %+v", dashboards)
 	}
 	health := (&BundleReader{Features: []string{BundleFeatureReleaseHealth}}).Limit(full)
 	if health.Shape.ReleaseHealth == nil || health.Shape.StoreSecrets != nil || health.Shape.FrontendTelemetry != nil {

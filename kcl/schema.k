@@ -941,6 +941,64 @@ schema ClusterTarget:
         # and the "image names a registry" guard is in the workload lowering
         # (it must name the workload and its runtime).
 
+# The longest DatabaseDashboards.timeout, in seconds. The timeout is written in
+# the alert duration grammar ("5s", "1m"), so "500ms" and "5 seconds" are refused.
+_DASHBOARD_TIMEOUT_MAX_SECS: int = 10
+
+schema DatabaseDashboards:
+    """Live dashboard panels over a ManagedDatabase's own data. Set on
+    `ManagedDatabase.dashboards`; OFF unless `enabled = True`.
+
+        forge.ManagedDatabase {
+            name = "orders"
+            dashboards = forge.DatabaseDashboards {enabled = True}
+        }
+
+    Enabling it adds a second read-only Postgres role, `forge_dash`, whose
+    password is a Secret named `<database>-forge-dash` (minted the way
+    `<database>-forge-ro` is). That role reads ONLY the tables a migration
+    marked `COMMENT ON TABLE t IS 'forge:dashboard'`, and on them only the
+    columns `forge_ro` may read, minus any `forge:no-dashboard` column. The
+    allowlist is Postgres privileges, not a parser, so no panel query can read
+    past it. Disabled, the role is rendered present but `login: false` with
+    its password disabled (never `ensure: absent`: CNPG's DROP ROLE is refused
+    once the role holds a grant), and the migrator revokes everything it held
+    and grants nothing until the role can log in again.
+
+    The limits are enforced by whatever queries as the role:
+
+      * `row_cap`: most rows one panel query returns (1-10000, default 1000).
+      * `timeout`: statement timeout of one panel query, "5s" by default and at
+        most "10s".
+      * `max_concurrency`: panel queries at once (1-4, default 2). The role's
+        connection limit is this plus one.
+    """
+    enabled: bool = False
+    row_cap: int = 1000
+    timeout: str = "5s"
+    max_concurrency: int = 2
+
+    check:
+        1 <= row_cap <= 10000, \
+            "DatabaseDashboards.row_cap ${row_cap} must be between 1 and 10000: a panel renders a handful of series, and an uncapped result is a table scan shipped to a browser"
+        regex.match(timeout, _ALERT_DURATION_RE), \
+            "DatabaseDashboards.timeout '${timeout}' must be a duration in whole seconds such as \"5s\" (digits followed by s, m or h)"
+        not regex.match(timeout, _ALERT_DURATION_RE) or 1 <= _alert_secs(timeout) <= _DASHBOARD_TIMEOUT_MAX_SECS, \
+            "DatabaseDashboards.timeout '${timeout}' must be between \"1s\" and \"10s\": a panel query that needs longer is a report, not a dashboard, and it would hold one of the database's few connections"
+        1 <= max_concurrency <= 4, \
+            "DatabaseDashboards.max_concurrency ${max_concurrency} must be between 1 and 4: each query holds a connection on the database the application serves from"
+
+# The ManagedDatabase spec's `dashboards` field for a wrapper's declaration:
+# Undefined (so the record carries none) when it declares none.
+_dashboards_spec = lambda dashboards: DatabaseDashboards -> any {
+    {
+        "enabled": dashboards.enabled
+        "rowCap": dashboards.row_cap
+        "timeoutMs": _alert_secs(dashboards.timeout) * 1000
+        "maxConcurrency": dashboards.max_concurrency
+    } if dashboards else Undefined
+}
+
 schema ManagedDatabase:
     """A dedicated Postgres: the managed-database tier, as a Bundle entry.
 
@@ -980,8 +1038,13 @@ schema ManagedDatabase:
     # in a check falls through to the module's `namespace` lambda.
     namespace: str = ""
     spec: tiers.ManagedDatabase = tiers.ManagedDatabase {}
+    # Live dashboard panels over this database's data (DatabaseDashboards).
+    # Absent means disabled.
+    dashboards?: DatabaseDashboards
 
     check:
+        not (dashboards and spec.dashboards), \
+            "ManagedDatabase '${name}' declares dashboards twice: set `dashboards = forge.DatabaseDashboards {...}` on the ManagedDatabase, not on `spec`"
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 40, \
             "ManagedDatabase.name '${name}' must be an RFC-1123 label of at most 40 characters: it becomes the Cluster name and, hyphens folded, the Postgres database name, which Postgres would silently truncate past 63 bytes"
         not (runtime and runtime.type == "hosted" and namespace), \

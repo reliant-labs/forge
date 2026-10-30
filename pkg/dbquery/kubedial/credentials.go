@@ -23,10 +23,46 @@ import (
 // reconciled it yet.
 var ErrNoReadOnlyCredentials = errors.New("no read-only credentials")
 
-// Credentials are what a connection as the read-only role needs, read through
+// ErrNoDashboardCredentials means the dashboard role's Secret is missing or
+// holds no password: the database never opted into dashboards
+// (ManagedDatabase.dashboards), or the deploy that enables them has not run.
+// A distinct error from [ErrNoReadOnlyCredentials] because the remedies
+// differ: this one is usually the declaration, not a stale deploy.
+var ErrNoDashboardCredentials = errors.New("no dashboard credentials")
+
+// Role is which Postgres role a connection is made as. The zero value is the
+// read-only role.
+type Role int
+
+const (
+	// RoleReadOnly is dbgrants.RoleName (forge_ro), secret <db>-forge-ro.
+	RoleReadOnly Role = iota
+	// RoleDashboard is dbgrants.DashboardRoleName (forge_dash), secret
+	// <db>-forge-dash. It reads only forge:dashboard tables.
+	RoleDashboard
+)
+
+// roleSpec is what differs between the roles' credentials.
+type roleSpec struct {
+	name       string // the Postgres role
+	secretName func(database string) string
+	missing    error
+	remedy     string
+}
+
+func (r Role) spec() roleSpec {
+	if r == RoleDashboard {
+		return roleSpec{dbgrants.DashboardRoleName, dbgrants.DashboardSecretName, ErrNoDashboardCredentials,
+			"is the database declared with dashboards = forge.DatabaseDashboards {enabled = True}, and deployed?"}
+	}
+	return roleSpec{dbgrants.RoleName, dbgrants.SecretName, ErrNoReadOnlyCredentials,
+		"does the database predate forge's read-only role? redeploy"}
+}
+
+// Credentials are what a connection as one of the roles needs, read through
 // the same API server the tunnel runs over.
 type Credentials struct {
-	// Username is dbgrants.RoleName unless the Secret says otherwise.
+	// Username is the role's name unless the Secret says otherwise.
 	Username string
 	Password string
 	// CAPEM is the cluster CA certificate (ca.crt of <db>-ca).
@@ -37,20 +73,30 @@ type Credentials struct {
 // (dbgrants.SecretName) and the cluster CA (CASecretName, key ca.crt) of db.
 // Only those two Secrets are read, and only those two keys are kept.
 func (c *Client) Credentials(ctx context.Context, db Database) (*Credentials, error) {
-	secretName := dbgrants.SecretName(db.Name)
+	return c.CredentialsFor(ctx, db, RoleReadOnly)
+}
+
+// CredentialsFor is [Client.Credentials] for the named role: the Secret read is
+// the role's own (<db>-forge-ro or <db>-forge-dash) and nothing else of the
+// roles', so a caller that may reach only dashboards never holds forge_ro's
+// password. A missing or empty Secret wraps the role's own error
+// ([ErrNoReadOnlyCredentials], [ErrNoDashboardCredentials]).
+func (c *Client) CredentialsFor(ctx context.Context, db Database, role Role) (*Credentials, error) {
+	rs := role.spec()
+	secretName := rs.secretName(db.Name)
 	sec, err := c.cs.CoreV1().Secrets(db.Namespace).Get(ctx, secretName, metav1.GetOptions{})
 	switch {
 	case apierrors.IsNotFound(err):
-		return nil, fmt.Errorf("kubedial: secret %s/%s: %w (does the database predate forge's read-only role? redeploy)", db.Namespace, secretName, ErrNoReadOnlyCredentials)
+		return nil, fmt.Errorf("kubedial: secret %s/%s: %w (%s)", db.Namespace, secretName, rs.missing, rs.remedy)
 	case err != nil:
 		return nil, fmt.Errorf("kubedial: read secret %s/%s: %w%s", db.Namespace, secretName, err, forbiddenHint(err, db.Namespace))
 	}
 	creds := &Credentials{Username: string(sec.Data["username"]), Password: string(sec.Data["password"])}
 	if creds.Username == "" {
-		creds.Username = dbgrants.RoleName
+		creds.Username = rs.name
 	}
 	if creds.Password == "" {
-		return nil, fmt.Errorf("kubedial: secret %s/%s has no password: %w", db.Namespace, secretName, ErrNoReadOnlyCredentials)
+		return nil, fmt.Errorf("kubedial: secret %s/%s has no password: %w", db.Namespace, secretName, rs.missing)
 	}
 
 	caName := CASecretName(db.Name)

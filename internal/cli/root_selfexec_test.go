@@ -27,9 +27,25 @@ func resetCmdRoute(t *testing.T) {
 // becomes "cli.test generate"); a test that forgot to restore it broke
 // whichever test happened to run next. The route is cleared before the root is
 // built and again when the test ends.
+//
+// The --project-dir / -C override is the same kind of state: the root's
+// PersistentPreRun installs it (cmdutil.SetProjectDir), and nothing clears it
+// until the NEXT root runs. A test that ran `forge ... -C <dir>` left every
+// later test that resolves a project WITHOUT the root (runDisown, the pin
+// guard) reading <dir> instead of its own cwd. It went unnoticed while
+// internal/cli ran in one process in file order; sharding its tests across
+// jobs (scripts/ci-test-full-shard.sh) put two such tests side by side.
 func newTestRootCmd(t *testing.T) *cobra.Command {
 	t.Helper()
 	resetCmdRoute(t)
+	prev, _ := cmdutil.ProjectDirOverride()
+	t.Cleanup(func() {
+		// prev may be an earlier test's TempDir, gone by now: SetProjectDir
+		// refuses a missing directory, so fall back to no override.
+		if cmdutil.SetProjectDir(prev) != nil {
+			_ = cmdutil.SetProjectDir("")
+		}
+	})
 	return NewRootCmd()
 }
 

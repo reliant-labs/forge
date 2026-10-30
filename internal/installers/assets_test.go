@@ -20,6 +20,17 @@ import (
 // exercises the real script without compiling forge itself.
 func buildFixtureAssets(t *testing.T, version string, targets string) string {
 	t.Helper()
+	out, b, err := runFixtureAssets(t, version, targets)
+	if err != nil {
+		t.Fatalf("build-release-assets.sh: %v\n%s", err, b)
+	}
+	return out
+}
+
+// runFixtureAssets is buildFixtureAssets returning the script's result; extra
+// is prepended to the script's environment.
+func runFixtureAssets(t *testing.T, version string, targets string, extra ...string) (string, []byte, error) {
+	t.Helper()
 	for _, bin := range []string{"bash", "git", "go"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			t.Skipf("%s not on PATH", bin)
@@ -62,11 +73,33 @@ func main() { fmt.Printf("forge version %s (commit %s, built %s)\n", Version, Gi
 	out := filepath.Join(t.TempDir(), "dist")
 	cmd := exec.CommandContext(context.Background(), "bash", script, version, out)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "FORGE_RELEASE_TARGETS="+targets, "FORGE_RELEASE_DATE=2026-01-02")
-	if b, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build-release-assets.sh: %v\n%s", err, b)
+	cmd.Env = append(append(os.Environ(), "FORGE_RELEASE_TARGETS="+targets, "FORGE_RELEASE_DATE=2026-01-02"), extra...)
+	b, err := cmd.CombinedOutput()
+	return out, b, err
+}
+
+// A build step that writes its output and then fails must fail the release:
+// build_one runs as the left operand of `&&`, where bash suspends `set -e`, so
+// only explicit propagation stops a failed go build whose tar still succeeds
+// from being certified and checksummed.
+func TestReleaseAssets_AFailedBuildStepFailsTheRelease(t *testing.T) {
+	shim := t.TempDir()
+	// go: write the -o output, then exit non-zero (a build tool that leaves an
+	// executable behind and still fails).
+	goShim := "#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && { printf x >\"$2\"; shift; }; shift; done\necho 'go build: link failed' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(shim, "go"), []byte(goShim), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	return out
+	out, b, err := runFixtureAssets(t, "v1.2.3", "linux/amd64", "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err == nil {
+		t.Fatalf("a failed go build was accepted:\n%s", b)
+	}
+	if !strings.Contains(string(b), "link failed") {
+		t.Errorf("the failure does not show the build's log:\n%s", b)
+	}
+	if _, serr := os.Stat(filepath.Join(out, "checksums.txt")); serr == nil {
+		t.Errorf("checksums.txt was written for a failed build")
+	}
 }
 
 func tarMembers(t *testing.T, path string) map[string][]byte {

@@ -9,9 +9,9 @@ import (
 )
 
 // TestE2EComponentsKCLDeclaredFromSources pins that a scaffolded project's
-// deploy/kcl/workloads.k ends up declaring every service the project has,
-// and that the envs render from the tracked tree with NOTHING generated
-// first.
+// deploy/kcl/workloads.k declares what the project runs (its services ride
+// the one `_api` process, not a workload each), and that the envs render
+// from the tracked tree with NOTHING generated first.
 //
 // The second half is the whole point of workloads.k being a tracked, scaffolded
 // file rather than a generated one: this test deletes every gitignored
@@ -40,24 +40,19 @@ func TestE2EComponentsKCLDeclaredFromSources(t *testing.T) {
 	// not only the one-shot scaffold path.
 	runCmd(t, projectDir, forgeBin, "generate")
 
+	// workloads.k declares what the project RUNS, once: here the migrate job.
+	// Services are not workloads of their own (#529): every env runs them all
+	// in its one `_api` process, the binary's `server`, so a per-service
+	// declaration would be a second process nothing should start. The fresh-
+	// clone render below proves `_api` and the migrate job lower from it.
 	assertWorkloadsKCL := func(stage string) {
 		raw := readFileE2E(t, filepath.Join(projectDir, "deploy", "kcl", "workloads.k"))
+		if !strings.Contains(raw, "ALL: [fw.Workload] = [migrate]") {
+			t.Fatalf("[%s] workloads.k must name the migrate job in ALL:\n%s", stage, raw)
+		}
 		for _, svc := range []string{"order", "intake"} {
-			if !strings.Contains(raw, `name = "`+svc+`"`) {
-				t.Fatalf("[%s] workloads.k does not declare the %q service:\n%s", stage, svc, raw)
-			}
-		}
-		// Declared as kind="service" specifically: the kind is what selects
-		// the expansion, so a service landing as anything else renders the
-		// wrong resources (no Service object, in particular).
-		if got := strings.Count(raw, `kind = "service"`); got < 2 {
-			t.Fatalf("[%s] workloads.k should declare both services as kind=\"service\"; got %d:\n%s", stage, got, raw)
-		}
-		// ...and both are named in the aggregation list, or they exist as
-		// declarations nothing deploys.
-		for _, ident := range []string{"order", "intake"} {
-			if !strings.Contains(raw, "ALL: [fw.Workload] = [") || !strings.Contains(raw, ident) {
-				t.Fatalf("[%s] workloads.k must name %q in ALL:\n%s", stage, ident, raw)
+			if strings.Contains(raw, `name = "`+svc+`"`) {
+				t.Fatalf("[%s] workloads.k declares the %q service as a workload of its own; every service belongs in the one `server` process:\n%s", stage, svc, raw)
 			}
 		}
 	}

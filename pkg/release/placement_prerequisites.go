@@ -34,7 +34,7 @@ func PlacementRuntimeKind(kind string) bool {
 // PlacementPassiveKind reports whether a cluster object of kind is applied
 // inventory in a mixed bundle (a hosted record is always an item): it has no readiness item of its own. That is every kind
 // except the runtime kinds, ConfigMap (bound to the items of its namespace)
-// and Secret (never in the bundle). A Service, an RBAC object, a route or a
+// and Secret (never in the bundle). A Service, a Role or RoleBinding, a route or a
 // policy attachment affects ordinary rollout readiness only through the
 // healthy Pods of the component that uses it; a CRD, an admission policy or a
 // scheduling class changes the cluster's API; a CronJob's spec is applied and

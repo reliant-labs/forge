@@ -63,8 +63,8 @@ What it does, in order:
 2. confirms against the module proxy that the version was never published at a
    **different** commit (see below), then requires the latest full `ci.yml` run
    at the exact source `HEAD` to have succeeded. PR/merge-queue runs do not
-   count: `Test`, `Test (internal/cli)`, and
-   `Test (-short whole tier, then guards)` must each succeed, even if `CI gate`
+   count: every shard of `Test (unit I/N)` and `Test (internal/cli I/N)`, and
+   `Test (-short whole tier, then guards)`, must each succeed, even if `CI gate`
    waived an existing red. Missing, queued, failed, or unreadable proof blocks
    the release before files change; wait for main or dispatch full CI at that
    commit. `gh` authentication is required for GitHub publication;

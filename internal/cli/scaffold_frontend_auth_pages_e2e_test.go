@@ -51,7 +51,7 @@ func TestE2EFrontendAuthPagesBuildAndTest(t *testing.T) {
 
 	prebuildWebRuntimeE2E(t)
 	for _, d := range []string{webDir, spaDir} {
-		runCmdTimeout(t, d, 5*time.Minute, "npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+		runCmdTimeout(t, d, 5*time.Minute, "pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")
 	}
 
 	for _, d := range []string{webDir, spaDir} {

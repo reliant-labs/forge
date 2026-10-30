@@ -5,6 +5,31 @@ import (
 	"testing"
 )
 
+// An identity that runs dashboard panels may read forge_dash's Secret and the
+// CA, and not forge_ro's: a leaked panel runner credential reaches only the
+// narrower role.
+func TestPolicyRulesForDashboardNamesOnlyTheDashboardSecret(t *testing.T) {
+	rules := PolicyRulesFor(RoleDashboard, "ledger", "billing")
+	sec := rules[len(rules)-1]
+	want := []string{"billing-ca", "billing-forge-dash", "ledger-ca", "ledger-forge-dash"}
+	if sec.Resources[0] != "secrets" || !reflect.DeepEqual(sec.ResourceNames, want) {
+		t.Errorf("secrets rule %+v, want names %v", sec, want)
+	}
+	for _, n := range sec.ResourceNames {
+		if n == "ledger-forge-ro" || n == "billing-forge-ro" {
+			t.Errorf("a dashboard identity may read %s", n)
+		}
+	}
+	if !reflect.DeepEqual(PolicyRulesFor(RoleReadOnly, "ledger"), PolicyRules("ledger")) {
+		t.Error("PolicyRules is not the read-only role's rules")
+	}
+	for _, r := range PolicyRulesFor(RoleDashboard) {
+		if r.Resources[0] == "secrets" {
+			t.Errorf("secrets rule without names: %+v", r)
+		}
+	}
+}
+
 func TestPolicyRules(t *testing.T) {
 	rules := PolicyRules("ledger", "billing", "ledger")
 	if len(rules) != 3 {

@@ -53,11 +53,12 @@ const (
 	e2eEnvoyGatewayVersion = "v1.9.2"
 )
 
-// TestE2ERouteToOnHostWorkloadReachesHostProcess renders a real forge env
+// TestE2ERouteToOnHostWorkloadResolves renders a real forge env
 // whose HTTPRoute targets an OnHost workload, applies it to a throwaway
-// k3d cluster running Envoy Gateway, and curls the gateway listener to
-// reach a host http.Server.
-func TestE2ERouteToOnHostWorkloadReachesHostProcess(t *testing.T) {
+// k3d cluster running Envoy Gateway, and requires Envoy Gateway to accept
+// and resolve the route (the assertion the ExternalName Service and a
+// disabled Backend API both fail).
+func TestE2ERouteToOnHostWorkloadResolves(t *testing.T) {
 	t.Parallel() // own k3d cluster, own temp dir, kernel-allocated ports
 
 	requireE2EBinaries(t, "k3d", "kubectl", "helm")
@@ -90,7 +91,7 @@ func TestE2ERouteToOnHostWorkloadReachesHostProcess(t *testing.T) {
 	// ── Throwaway cluster, named and deleted by name ───────────────────
 	cluster := e2eClusterName(t)
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
-	gatewayHostPort := createK3dClusterF2(ctx, t, cluster, listenerPort, kubeconfig)
+	_ = createK3dClusterF2(ctx, t, cluster, listenerPort, kubeconfig)
 
 	installEnvoyGateway(ctx, t, kubeconfig)
 
@@ -101,13 +102,12 @@ func TestE2ERouteToOnHostWorkloadReachesHostProcess(t *testing.T) {
 	// and the one the Backend-API prerequisite fails.
 	waitForRouteResolved(ctx, t, kubeconfig, "adr3-f2", "host-route")
 
-	// ── The actual proof: traffic reaches the host process ─────────────
-	url := fmt.Sprintf("http://127.0.0.1:%d/probe", gatewayHostPort)
-	body := getWithRetryF2(ctx, t, url, 90*time.Second)
-	if !strings.Contains(body, wantBody) {
-		t.Fatalf("gateway did not reach the host process.\nGET %s\nbody: %q\nwant it to contain %q",
-			url, body, wantBody)
-	}
+	// The traffic proof (GET the gateway listener until the host process
+	// answers) was removed as flaky: on CI runners the gateway intermittently
+	// answered 503 "no healthy upstream" for the whole 90s window (11 failed
+	// runs in 7 days, main and pull requests). Owner policy: a flaky
+	// assertion is removed, not retried. Restoring it is tracked by the
+	// flake:removed issue reliant-labs/forge#1554.
 }
 
 // TestE2ERouteTrafficHealthCheckExpects401 pins the trap from ADR-0003 S1
@@ -830,24 +830,6 @@ func requireE2EBinaries(t *testing.T, names ...string) {
 			t.Skipf("%s not on PATH; this e2e needs a local cluster toolchain", n)
 		}
 	}
-}
-
-func getWithRetryF2(ctx context.Context, t *testing.T, url string, within time.Duration) string {
-	t.Helper()
-
-	deadline := time.Now().Add(within)
-	var lastErr error
-	var lastBody string
-	for time.Now().Before(deadline) {
-		body, err := httpGet(ctx, url)
-		if err == nil {
-			return body
-		}
-		lastErr, lastBody = err, body
-		time.Sleep(3 * time.Second)
-	}
-	t.Fatalf("GET %s never succeeded within %s: %v (last body %q)", url, within, lastErr, lastBody)
-	return ""
 }
 
 func httpGet(ctx context.Context, url string) (string, error) {

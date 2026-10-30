@@ -163,6 +163,38 @@ func populateCompositionBindings(ctx context.Context, candidate *release.Snapsho
 	return nil
 }
 
+// selectedFrontendArtifact is the artifact a selected frontend consumer binds:
+// its resolved source commit, or, for a platform-published frontend, the site
+// this invocation pushed (the platform serves those bytes, not the source).
+func selectedFrontendArtifact(candidate *release.Snapshot, entities *KCLEntities, opts buildOptions, results []buildResult, key release.ConsumerKey) (release.SnapshotArtifact, error) {
+	var artifact release.SnapshotArtifact
+	found := false
+	for _, fe := range entities.Frontends {
+		if fe.Name != key.Workload {
+			continue
+		}
+		s := candidate.Source
+		if fe.Source != nil {
+			if fe.SourceOverridden || !release.ValidObjectID(fe.SourceCommit) {
+				return artifact, fmt.Errorf("frontend %s source is unresolved or overridden", fe.Name)
+			}
+			s = release.Source{Repo: fe.Source.Repo, Ref: fe.Source.Ref, Subdir: fe.Source.Subdir, Commit: fe.SourceCommit}
+		}
+		artifact = release.SnapshotArtifact{Kind: release.KindGit, Location: s.Repo, Content: s.Commit, Origin: release.ArtifactOrigin{Release: opts.release, Source: &s}}
+		if platformPublishedFrontend(key) {
+			var err error
+			if artifact, err = hostedSiteArtifact(fe.Name, results, s, opts.release); err != nil {
+				return artifact, err
+			}
+		}
+		found = true
+	}
+	if !found {
+		return artifact, fmt.Errorf("selected frontend %s has no resolved source output", key.Workload)
+	}
+	return artifact, nil
+}
+
 func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snapshot, run *compositionRun, entities *KCLEntities, opts buildOptions, results []buildResult, key release.ConsumerKey, slot string) error {
 	c := release.Consumer{Key: key}
 	var ref string
@@ -199,32 +231,9 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 		}
 	}
 	if slot == "frontend" {
-		var artifact release.SnapshotArtifact
-		found := false
-		for _, fe := range entities.Frontends {
-			if fe.Name != c.Key.Workload {
-				continue
-			}
-			s := candidate.Source
-			if fe.Source != nil {
-				if fe.SourceOverridden || !release.ValidObjectID(fe.SourceCommit) {
-					return fmt.Errorf("frontend %s source is unresolved or overridden", fe.Name)
-				}
-				s = release.Source{Repo: fe.Source.Repo, Ref: fe.Source.Ref, Subdir: fe.Source.Subdir, Commit: fe.SourceCommit}
-			}
-			artifact = release.SnapshotArtifact{Kind: release.KindGit, Location: s.Repo, Content: s.Commit, Origin: release.ArtifactOrigin{Release: opts.release, Source: &s}}
-			// A hosted frontend's release is the site this invocation
-			// pushed, not its source: the platform serves those bytes.
-			if platformPublishedFrontend(c.Key) {
-				var err error
-				if artifact, err = hostedSiteArtifact(fe.Name, results, s, opts.release); err != nil {
-					return err
-				}
-			}
-			found = true
-		}
-		if !found {
-			return fmt.Errorf("selected frontend %s has no resolved source output", c.Key.Workload)
+		artifact, err := selectedFrontendArtifact(candidate, entities, opts, results, c.Key)
+		if err != nil {
+			return err
 		}
 		id, err := release.ArtifactIdentity(artifact)
 		if err != nil {

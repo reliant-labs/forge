@@ -50,7 +50,7 @@ func TestTaskfileFrontendTestsHaveTaskInCI(t *testing.T) {
 					}
 					installed = true
 				}
-				if strings.Contains(step.Run, "ci-test-shard.sh") || strings.Contains(step.Run, "ci-changed-tests.sh") || strings.Contains(step.Run, "ci-test-packages.sh cli") {
+				if strings.Contains(step.Run, "ci-test-shard.sh") || strings.Contains(step.Run, "ci-changed-tests.sh") || strings.Contains(step.Run, "ci-test-packages.sh cli") || strings.Contains(step.Run, "ci-test-full-shard.sh") {
 					tested = true
 					if !installed {
 						t.Errorf("Task is not installed before %s", step.Run)

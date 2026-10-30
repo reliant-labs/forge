@@ -175,6 +175,7 @@ static_site_json = lambda v: StaticSite -> {str:} {
 
 schema ManagedDatabase:
     """ManagedDatabaseSpec is a dedicated Postgres, rendered as a CloudNativePG Cluster in the workload's own namespace."""
+    dashboards?: DatabaseDashboards
     deletionPolicy: str = "retain"
     engine: str = "postgres"
     instances: int = 1
@@ -191,6 +192,7 @@ schema ManagedDatabase:
 
 managed_database_json = lambda v: ManagedDatabase -> {str:} {
     _d = {
+        "dashboards": database_dashboards_json(v.dashboards) if v.dashboards else Undefined
         "deletionPolicy": v.deletionPolicy
         "engine": v.engine
         "instances": v.instances
@@ -272,6 +274,31 @@ container_json = lambda v: Container -> {str:} {
         "ports": [port_json(_i) for _i in v.ports] if v.ports else Undefined
         "probes": probes_json(v.probes) if v.probes else Undefined
         "resources": resources_json(v.resources) if v.resources else Undefined
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
+schema DatabaseDashboards:
+    """DatabaseDashboards is the opt-in dashboard role and the limits its queries run under. The limits are enforced by whoever queries as the role (the control plane, pkg/dbquery); the role itself is bounded by Postgres: column-level SELECT on forge:dashboard tables, a connection limit, and a read-only default transaction. See pkg/dbgrants."""
+    enabled?: bool
+    maxConcurrency: int = 2
+    rowCap: int = 1000
+    timeoutMs: int = 5000
+
+    check:
+        maxConcurrency >= 1, "DatabaseDashboards.maxConcurrency must be at least 1"
+        maxConcurrency <= 4, "DatabaseDashboards.maxConcurrency must be at most 4"
+        rowCap >= 1, "DatabaseDashboards.rowCap must be at least 1"
+        rowCap <= 10000, "DatabaseDashboards.rowCap must be at most 10000"
+        timeoutMs >= 100, "DatabaseDashboards.timeoutMs must be at least 100"
+        timeoutMs <= 10000, "DatabaseDashboards.timeoutMs must be at most 10000"
+
+database_dashboards_json = lambda v: DatabaseDashboards -> {str:} {
+    _d = {
+        "enabled": v.enabled
+        "maxConcurrency": v.maxConcurrency
+        "rowCap": v.rowCap
+        "timeoutMs": v.timeoutMs
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

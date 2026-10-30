@@ -8,6 +8,10 @@
 #   scripts/ci-test-packages.sh check        prove the three sets partition `go list ./...`
 #
 #   scripts/ci-test-packages.sh short I N    the pull-request tier's package shard I of N (0-based)
+#   scripts/ci-test-packages.sh unit-shard I N
+#                                            main's full unit lane, shard I of N, balanced
+#                                            by .github/full-test-timings.json
+#                                            (scripts/ci-test-full-shard.sh runs it)
 #
 # Taskfile.yml's `task test` runs the same three sets with the same flags, so
 # the local full tier and CI cannot disagree about what runs where.
@@ -89,8 +93,37 @@ short_set() {
   all | awk -v i="$i" -v n="$n" '(NR - 1) % n == i'
 }
 
+# unit_shard_set I N: the unit set split into N shards of about equal
+# recorded duration (longest-processing-time first: each package, heaviest
+# first, goes to the shard with the least time so far). Durations are the
+# `go test -race` package times from a main run, in
+# .github/full-test-timings.json; a package with no entry (new since the file
+# was recorded) weighs the median. Ties break on the package path, so the
+# split is deterministic and every shard computes the same one.
+unit_shard_set() {
+  local i=$1 n=$2 timings
+  if ! [[ "$i" =~ ^[0-9]+$ && "$n" =~ ^[1-9][0-9]*$ ]] || ((i >= n)); then
+    echo "usage: $0 unit-shard I N   (0 <= I < N)" >&2
+    exit 2
+  fi
+  timings="$(dirname "$0")/../.github/full-test-timings.json"
+  [[ -f "$timings" ]] || timings=/dev/null
+  unit_set | jq -rRn --slurpfile t <(cat "$timings" 2>/dev/null || echo '{}') --argjson i "$i" --argjson n "$n" '
+    ($t[0] // {}) as $w
+    | [inputs | select(length > 0)] as $pkgs
+    | ([$w[]] | sort) as $known
+    | (if ($known | length) > 0 then $known[($known | length) / 2 | floor] else 1 end) as $median
+    | [$pkgs[] | {p: ., s: ($w[.] // $median)}]
+    | sort_by(-.s, .p)
+    | reduce .[] as $x ({load: [range($n) | 0], of: {}};
+        (.load | to_entries | min_by(.value) | .key) as $k
+        | .load[$k] += $x.s
+        | .of[$x.p] = $k)
+    | .of | to_entries[] | select(.value == $i) | .key'
+}
+
 usage() {
-  echo "usage: $0 unit|cli|guards [unit|cli|guards ...] | check | short I N" >&2
+  echo "usage: $0 unit|cli|guards [unit|cli|guards ...] | check | short I N | unit-shard I N" >&2
   exit 2
 }
 
@@ -141,6 +174,10 @@ case "${1:-}" in
   short)
     [[ $# -eq 3 ]] || usage
     short_set "$2" "$3"
+    ;;
+  unit-shard)
+    [[ $# -eq 3 ]] || usage
+    unit_shard_set "$2" "$3"
     ;;
   "")
     usage

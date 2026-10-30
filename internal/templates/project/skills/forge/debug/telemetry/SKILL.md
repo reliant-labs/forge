@@ -29,4 +29,3 @@ kubectl port-forward <pod> 6060:6060                    # in a cluster, then the
 Reach for the heap profile the moment a process is being OOMKilled: the cgroup's `memory.stat` tells you HOW MUCH it holds and never WHAT, and the answer only exists while the process is still alive.
 
 Change the address with `PPROF_ADDR` / `--pprof-addr`; the scaffolded `docker-compose.yml` sets `0.0.0.0:6060` for the container's own network namespace (nothing publishes it). Pass `--pprof-addr=` to switch pprof off: an empty `PPROF_ADDR` counts as unset, like every empty config env var, so it keeps the default.
-

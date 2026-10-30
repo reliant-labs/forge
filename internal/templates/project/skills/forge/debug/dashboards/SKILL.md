@@ -63,4 +63,3 @@ control plane refused). Exit 0 means every panel is `ok`, **2** that some panel 
 empty or partial (or the audit could not look), **1** that a panel or dashboard
 could not be read. A local env has no dashboards to replay: use
 `forge obs dashboards check --against <env>` for its metric names.
-

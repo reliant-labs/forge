@@ -151,6 +151,7 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 	// get their own, and a block message name can never shadow a root schema.
 	for _, blk := range blocks {
 		name := blk.schemaName(schemaName)
+		b.WriteString(kclSectionLine)
 		fmt.Fprintf(&b, "# %s is the %s block (%s) — author its values in config.k as `%s.<field> = ...`.\n", name, blk.Field, blk.Type, blk.Field)
 		b.WriteString("schema " + name + ":\n")
 		blockBody, emitted := renderConfigSchemaFields(blk.Fields, projectName)
@@ -163,6 +164,7 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 		b.WriteString("\n")
 	}
 
+	b.WriteString(kclSectionLine)
 	b.WriteString("schema " + schemaName + ":\n")
 
 	rootBody, emitted := renderConfigSchemaFields(root, projectName)
@@ -189,6 +191,16 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 	b.WriteString(renderSchemaChecks(root))
 	return b.String(), nil
 }
+
+// kclSectionLine begins one independent part of a generated KCL config
+// module: each config block's schema, each root schema, each env-projection
+// lambda and each process selector. forge stamps each part with its own hash
+// (forge's checksums package, "sectioned self-certification"), so two
+// branches that change different config blocks merge with plain git instead
+// of conflicting on the module's one header hash. Every part ends with a
+// blank line, which keeps the end of one part and the next part's section
+// line from being adjacent changes.
+const kclSectionLine = "# forge:section\n"
 
 // renderSchemaChecks emits the schema `check:` block refusing an empty
 // string for each field that has a non-empty default, and an unusable entry

@@ -196,6 +196,7 @@ func TestRenderConfigSchema_HappyPathUnchangedByTheDuplicateCheck(t *testing.T) 
     name: str
     key: str
 
+# forge:section
 schema AppConfig:
     # Log level (debug, info, warn, error)
     log_level: str = "info"

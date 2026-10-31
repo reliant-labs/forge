@@ -12,6 +12,7 @@ import (
 	"text/template"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/mergeproperty"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -805,8 +806,8 @@ func TestScenarioRpcsTemplate_TypedHandlerMap(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		`"demo.v1.TaskService/GetTask"?: (req: GetTaskRequest) => UnaryReturn<MessageInitShape<typeof GetTaskResponseSchema>>;`,
-		`import type { GetTaskRequest, GetTaskResponseSchema } from "@/gen/services/tasks/v1/tasks_pb";`,
+		`"demo.v1.TaskService/GetTask"?: (req: import("@/gen/services/tasks/v1/tasks_pb").GetTaskRequest) => UnaryReturn<MessageInitShape<typeof import("@/gen/services/tasks/v1/tasks_pb").GetTaskResponseSchema>>;`,
+		`import type { MessageInitShape } from "@bufbuild/protobuf";`,
 		"[key: string]: ((req: never) => unknown) | undefined;",
 	} {
 		if !strings.Contains(out, want) {
@@ -944,11 +945,11 @@ func TestScenarioRpcsTemplate_SameMessageNameInTwoServices(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`import type { GetAlphaRequest, GetAlphaResponseSchema, PingRequest as services_alpha_v1_alpha_pb_PingRequest, PingResponseSchema as services_alpha_v1_alpha_pb_PingResponseSchema } from "@/gen/services/alpha/v1/alpha_pb";`,
-		`"services.alpha.v1.AlphaService/Ping"?: (req: services_alpha_v1_alpha_pb_PingRequest) => UnaryReturn<MessageInitShape<typeof services_alpha_v1_alpha_pb_PingResponseSchema>>;`,
-		`"services.beta.v1.BetaService/Ping"?: (req: services_beta_v1_beta_pb_PingRequest) => UnaryReturn<MessageInitShape<typeof services_beta_v1_beta_pb_PingResponseSchema>>;`,
-		// Unique names keep their own.
-		`"services.beta.v1.BetaService/GetBeta"?: (req: GetBetaRequest) => UnaryReturn<MessageInitShape<typeof GetBetaResponseSchema>>;`,
+		// Every reference names its module inline, so a message name two
+		// services share never meets itself in one scope.
+		`"services.alpha.v1.AlphaService/Ping"?: (req: import("@/gen/services/alpha/v1/alpha_pb").PingRequest) => UnaryReturn<MessageInitShape<typeof import("@/gen/services/alpha/v1/alpha_pb").PingResponseSchema>>;`,
+		`"services.beta.v1.BetaService/Ping"?: (req: import("@/gen/services/beta/v1/beta_pb").PingRequest) => UnaryReturn<MessageInitShape<typeof import("@/gen/services/beta/v1/beta_pb").PingResponseSchema>>;`,
+		`"services.beta.v1.BetaService/GetBeta"?: (req: import("@/gen/services/beta/v1/beta_pb").GetBetaRequest) => UnaryReturn<MessageInitShape<typeof import("@/gen/services/beta/v1/beta_pb").GetBetaResponseSchema>>;`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("scenario-rpcs missing %q:\n%s", want, out)
@@ -1059,4 +1060,29 @@ func TestMockTransportTemplate_EntityServedByTwoServices(t *testing.T) {
 	if n := strings.Count(out, "fixtures: thingsMocks.things,"); n != 2 {
 		t.Errorf("want both rows seeded from the one fixture module, got %d:\n%s", n, out)
 	}
+}
+
+// The merge invariant (internal/mergeproperty) for scenario-rpcs_gen.ts: one
+// branch adds an rpc to AlphaService, the other to GammaService, with
+// BetaService between them untouched. Each service is its own section and
+// every type is imported inline, so no shared import block or type literal
+// changes on both sides.
+func TestMergeProperty_ScenarioRpcs(t *testing.T) {
+	svc := func(name string, rpcs ...string) codegen.ServiceDef {
+		lower := strings.ToLower(strings.TrimSuffix(name, "Service"))
+		d := codegen.ServiceDef{Name: name, Package: "services." + lower + ".v1", ProtoFile: "proto/services/" + lower + "/v1/" + lower + ".proto"}
+		for _, r := range rpcs {
+			d.Methods = append(d.Methods, codegen.Method{Name: r, InputType: r + "Request", OutputType: r + "Response"})
+		}
+		return d
+	}
+	variants := map[string][]codegen.ServiceDef{
+		"base":   {svc("AlphaService", "Get"), svc("BetaService", "Get"), svc("GammaService", "Get")},
+		"ours":   {svc("AlphaService", "Get", "Put"), svc("BetaService", "Get"), svc("GammaService", "Get")},
+		"theirs": {svc("AlphaService", "Get"), svc("BetaService", "Get"), svc("GammaService", "Get", "Delete")},
+		"merged": {svc("AlphaService", "Get", "Put"), svc("BetaService", "Get"), svc("GammaService", "Get", "Delete")},
+	}
+	mergeproperty.AssertPlainMergeIsRender(t, "frontends/web/src/mocks/scenario-rpcs_gen.ts", func(v string) []byte {
+		return []byte(renderFrontendTemplate(t, "mocks/scenarios/scenario-rpcs.ts.tmpl", codegen.BuildScenarioRPCData(variants[v])))
+	})
 }

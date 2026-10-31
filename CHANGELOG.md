@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.10] - 2026-10-31
+
+### Added
+
+- **generate:** generated files merge with plain git — per-output JSON certificates under .forge/hashes/, per-interface mock certification ([#1568](https://github.com/reliant-labs/forge/pull/1568))
+
+### Changed
+
+- **review:** `Reliant review`, a GitHub Actions check that passes only when pr-review passed the exact head ([#1565](https://github.com/reliant-labs/forge/pull/1565))
+
+### Fixed
+
+- **descriptor:** gen/forge_descriptor is derived on demand and never committed ([#1572](https://github.com/reliant-labs/forge/pull/1572))
+- **lint:** combine the service catalog's diagnostic appends (gocritic appendCombine) ([#1571](https://github.com/reliant-labs/forge/pull/1571))
+- **test:** pull-request-only workflows may cancel in progress; they have no main run to starve ([#1573](https://github.com/reliant-labs/forge/pull/1573))
+- **release:** key #1568/#1572 to v1.0.10, the release they ship in; .forge/hashes/ is a known path ([#1576](https://github.com/reliant-labs/forge/pull/1576))
+
 ## [v1.0.9] - 2026-10-31
 
 ### Added
@@ -8321,7 +8338,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.9...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.10...HEAD
+[v1.0.10]: https://github.com/reliant-labs/forge/compare/v1.0.9...v1.0.10
 [v1.0.9]: https://github.com/reliant-labs/forge/compare/v1.0.8...v1.0.9
 [v1.0.8]: https://github.com/reliant-labs/forge/compare/v1.0.7...v1.0.8
 [v1.0.7]: https://github.com/reliant-labs/forge/compare/v1.0.6...v1.0.7

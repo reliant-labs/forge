@@ -61,12 +61,13 @@ type thingReader interface {
 
 The rule above is about interfaces you own. **Do not apply it by hand-writing a
 Store interface plus a passthrough adapter over the ORM** — forge generates
-both, per entity and in aggregate, in `internal/db/store_gen.go`:
+both: one `<entity>_store_gen.go` per entity in `internal/db/`, plus the
+aggregate in `store_gen.go`:
 
 ```go
 type Deps struct {
     Estimates db.EstimateStore   // one entity
-    DB        db.Store           // or the aggregate, when a service spans tables
+    DB        db.Store           // or the aggregate, for code that spans tables against a real database
 }
 
 est, err := s.deps.Estimates.GetEstimateByID(ctx, id)   // no handle to thread
@@ -74,7 +75,11 @@ est, err := s.deps.Estimates.GetEstimateByID(ctx, id)   // no handle to thread
 
 `forge generate` resolves each by type from the ORM client it already owns — **no Infra field, no constructor, nothing to wire.** Just declare the field. The store
 holds the database handle, so a method takes only your arguments. Prefer the
-narrowest that works — a smaller dep is a smaller fake.
+narrowest that works — a smaller dep is a smaller fake. Each `<Entity>Store` is
+an interface forge mocks; the aggregate `db.Store` is a struct (each entity's
+accessor, `s.deps.DB.Estimates()`, lives in that entity's file so entities born
+on different branches merge), so a package that fakes persistence in a test
+depends on the per-entity stores.
 
 To see the methods available on one, ask your own package — `go doc
 ./internal/db EstimateStore`, or `forge project shapes --kind store` for the

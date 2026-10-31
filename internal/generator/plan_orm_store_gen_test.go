@@ -32,13 +32,32 @@ func storeTestEntities() []config.PlanEntity {
 	}
 }
 
+// readStoreFiles is every generated store file of the default ORM package,
+// the aggregate first, concatenated: the stores as one text.
+func readStoreFiles(root string) ([]byte, error) {
+	dir := filepath.Join(root, "internal", "db")
+	out, err := os.ReadFile(filepath.Join(dir, storeGenFile))
+	if err != nil {
+		return nil, err
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*_store_gen.go"))
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b...)
+	}
+	return out, nil
+}
+
 func storeGenSource(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	if err := GeneratePlanORM(root, config.ORMConfig{}, storeTestEntities(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
-	b, err := os.ReadFile(filepath.Join(root, "internal", "db", storeGenFile))
+	b, err := readStoreFiles(root)
 	if err != nil {
 		t.Fatalf("store file was not generated: %v", err)
 	}
@@ -92,7 +111,6 @@ func TestStoreInterfaces_AssertAdaptersSatisfyThem(t *testing.T) {
 	for _, want := range []string{
 		"var _ EstimateStore = estimateStore{}",
 		"var _ CounterStore = counterStore{}",
-		"var _ Store = store{}",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("missing compile-time assertion %q — without it a delegate/interface drift is invisible until a user hits it", want)
@@ -102,25 +120,39 @@ func TestStoreInterfaces_AssertAdaptersSatisfyThem(t *testing.T) {
 
 // Two real shapes, not one forced default: a package touching one entity
 // wants a narrow store; one genuinely spanning tables (a reporting service)
-// wants the aggregate rather than eight Deps fields. The aggregate EMBEDS
-// the per-entity interfaces so the two views cannot drift apart.
-func TestStoreInterfaces_AggregateEmbedsEveryEntityStore(t *testing.T) {
-	src := storeGenSource(t)
-
-	idx := strings.Index(src, "type Store interface {")
-	if idx < 0 {
-		t.Fatal("the aggregate Store interface must exist for services that span entities")
+// wants the aggregate rather than eight Deps fields. The aggregate is a
+// constant struct and each entity's file adds its accessor, so entities born
+// on different branches never edit one shared list (TestE2EMergeProperty).
+func TestStoreInterfaces_AggregateHasAnAccessorPerEntityInThatEntitysFile(t *testing.T) {
+	root := t.TempDir()
+	if err := GeneratePlanORM(root, config.ORMConfig{}, storeTestEntities(), nil); err != nil {
+		t.Fatal(err)
 	}
-	end := strings.Index(src[idx:], "}")
-	body := src[idx : idx+end]
-
-	for _, want := range []string{"EstimateStore", "CounterStore"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("aggregate Store must embed %s; restating methods would let the two views drift", want)
+	agg, err := os.ReadFile(filepath.Join(root, "internal", "db", storeGenFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"type Store struct{ db orm.Context }", "func NewStore(db orm.Context) Store"} {
+		if !strings.Contains(string(agg), want) {
+			t.Errorf("store_gen.go lacks %q:\n%s", want, agg)
 		}
 	}
-	if !strings.Contains(src, "func NewStore(db orm.Context) Store") {
-		t.Error("the aggregate needs a constructor to bind into Infra")
+	for _, ent := range []string{"Estimate", "Counter"} {
+		if strings.Contains(string(agg), ent) {
+			t.Errorf("store_gen.go names %s: the aggregate must name no entity, or two entities born apart conflict in it", ent)
+		}
+	}
+	for file, want := range map[string]string{
+		"estimate_store_gen.go": "func (s Store) Estimates() EstimateStore {",
+		"counter_store_gen.go":  "func (s Store) Counters() CounterStore {",
+	} {
+		b, err := os.ReadFile(filepath.Join(root, "internal", "db", file))
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		if !strings.Contains(string(b), want) {
+			t.Errorf("%s lacks the aggregate's accessor %q", file, want)
+		}
 	}
 }
 
@@ -167,12 +199,8 @@ func TestStoreInterfaces_AreCallableWithoutAHandle(t *testing.T) {
 // Binding a handle is only safe if a multi-table use case can still commit
 // atomically, which is what the aggregate's rebinder is for.
 //
-// The aggregate exposes ACCESSORS rather than embedding the per-entity
-// interfaces. That is not a style choice: each per-entity store declares its
-// own WithTx, so embedding N of them makes the selector ambiguous and the
-// aggregate cannot satisfy its own interface. `forge generate` rejected
-// exactly that render with "ambiguous selector store.WithTx", which is how
-// the accessor shape was arrived at.
+// The aggregate exposes ACCESSORS, one per entity, each declared in its
+// entity's store file.
 func TestStoreInterfaces_AggregateRebindsEveryStoreToOneTx(t *testing.T) {
 	src := storeGenSource(t)
 
@@ -184,7 +212,7 @@ func TestStoreInterfaces_AggregateRebindsEveryStoreToOneTx(t *testing.T) {
 		"Counters() CounterStore",
 	} {
 		if !strings.Contains(src, want) {
-			t.Errorf("aggregate must expose %q as an accessor; embedding the interfaces makes WithTx ambiguous and will not compile", want)
+			t.Errorf("aggregate must expose %q as an accessor", want)
 		}
 	}
 }

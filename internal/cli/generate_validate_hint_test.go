@@ -68,6 +68,23 @@ gen/db/v1/cycle_run.pb.orm.go:55:18: undefined: orm.TypeDoublePrecision`,
 			},
 		},
 		{
+			// Code written when the aggregate store was an interface.
+			name:         "aggregate-store-used-as-an-interface",
+			errOutput:    `internal/report/fake.go:12:22: cannot use &fakeStore{} (value of type *fakeStore) as db.Store value in variable declaration`,
+			wantContains: []string{"db.Store", "is a struct since forge v1.0.12", "db.<Entity>Store", "db.NewStore(handle)"},
+		},
+		{
+			// Another package's Store is not the generated aggregate.
+			name:         "other-store-not-claimed",
+			errOutput:    `internal/report/fake.go:12:22: cannot use x (value of type int) as activity.Store value in assignment`,
+			wantContains: []string{"is hand-written"},
+		},
+		{
+			name:         "aggregate-mock-gone",
+			errOutput:    `internal/report/service_test.go:30:9: undefined: report.MockStore`,
+			wantContains: []string{"no generated MockStore", "per-entity stores"},
+		},
+		{
 			name:      "empty-stderr",
 			errOutput: "",
 			wantContains: []string{

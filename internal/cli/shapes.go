@@ -486,8 +486,9 @@ func scanHandlers(projectDir string, rpcs []shape) []shape {
 }
 
 // scanStores reports the generated persistence interfaces in internal/db —
-// one `<Entity>Store` per entity plus the aggregate `Store` — which are
-// what a service names as a Deps field.
+// one `<Entity>Store` per entity, each in its `<entity>_store_gen.go` — which
+// are what a service names as a Deps field. (The aggregate `Store` is a
+// struct and is not listed.)
 //
 // It is here because the alternative was measured: a run spent 11 turns
 // reading forge's OWN generator source (internal/generator/plan_orm_store_gen.go,

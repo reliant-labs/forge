@@ -52,7 +52,7 @@ database:
     package: internal/store   # default internal/db
 ```
 
-Every projected file — `<entity>_orm_gen.go`, `store_gen.go`, the scaffold-once
+Every projected file — `<entity>_orm_gen.go`, `<entity>_store_gen.go`, `store_gen.go`, the scaffold-once
 `<entity>_repo_ext.go` seams — lands in that directory and declares its package
 (`package store`). Everything compiled against the ORM follows it: the CRUD
 wiring imports it (as `db`, the qualifier every generated CRUD file uses),

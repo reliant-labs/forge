@@ -173,7 +173,7 @@ func (e *ORMCollisionError) Error() string {
 func ormOwnsFile(name string, body []byte) bool {
 	switch {
 	case strings.HasSuffix(name, "_orm_gen.go"), strings.HasSuffix(name, "_orm.go"),
-		name == storeGenFile, name == "orm_shared.go", name == "orm_shared_gen.go":
+		strings.HasSuffix(name, "_store_gen.go"), name == storeGenFile, name == "orm_shared.go", name == "orm_shared_gen.go":
 		return true
 	case name == "types.go":
 		return forgeWroteFile(body)

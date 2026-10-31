@@ -119,7 +119,7 @@ func TestAppendOnlyUpgrade_PreCommentTableStillGeneratesAnImmutableStore(t *test
 	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
-	b, err := os.ReadFile(filepath.Join(root, "internal", "db", storeGenFile))
+	b, err := readStoreFiles(root)
 	if err != nil {
 		t.Fatalf("store file was not generated: %v", err)
 	}

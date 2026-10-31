@@ -1,6 +1,6 @@
 ---
 name: dashboards
-description: Dashboards over your database — the opt-in forge_dash role (ManagedDatabase.dashboards in KCL), the forge:dashboard table marker and forge:no-dashboard column marker, db/grants/dashboard_gen.sql, the recorded limits (row cap, timeout, concurrency), kubedial credentials by role, and why the allowlist is Postgres privileges rather than an SQL parser.
+description: Dashboards over your database — the opt-in forge_dash role (ManagedDatabase.dashboards in KCL), the forge:dashboard table marker and forge:no-dashboard column marker, db/grants/dashboard_gen.sql and its per-table rows, the recorded limits (row cap, timeout, concurrency), kubedial credentials by role, and why the allowlist is Postgres privileges rather than an SQL parser.
 ---
 
 # Dashboards over your database
@@ -30,7 +30,7 @@ COMMENT ON TABLE usage_events IS 'forge:dashboard';
 COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
 ```
 
-`forge:dashboard` is a **table** marker and `forge:no-dashboard` a **column** marker, read the way `forge:no-entity` and `forge:secret` are: by whole token, so either coexists with other markers in the same comment (`'forge:append-only forge:dashboard'`). Declared on the wrong object, or misspelled, they fail `forge generate` and `forge lint --column-markers`. `forge generate` writes `db/grants/dashboard_gen.sql`, and the migrator applies it right after `readonly_gen.sql` on every run once `forge_dash` exists (a database without the role skips it silently; a script that fails fails the run). Commit it; `forge lint --db-grants` reports it stale or missing when the markers and the file disagree.
+`forge:dashboard` is a **table** marker and `forge:no-dashboard` a **column** marker, read the way `forge:no-entity` and `forge:secret` are: by whole token, so either coexists with other markers in the same comment (`'forge:append-only forge:dashboard'`). Declared on the wrong object, or misspelled, they fail `forge generate` and `forge lint --column-markers`. `forge generate` writes `db/grants/dashboard_gen.sql` plus one row per table under `db/grants/dashboard/` (`<schema>.<table>_gen.sql`), and the migrator splices the rows into the script and applies it right after the read-only grants on every run once `forge_dash` exists (a database without the role skips it silently; a script that fails fails the run). Commit them; `forge lint --db-grants` reports a file stale or missing when the markers and the files disagree.
 
 What `forge_dash` can read is a strict subset of what `forge_ro` can:
 

@@ -69,6 +69,14 @@ const GrantsFile = "grants/readonly_gen.sql"
 // DashboardGrantsFile is [GrantsFile] for the dashboard role's script.
 const DashboardGrantsFile = "grants/dashboard_gen.sql"
 
+// GrantsRowsDir and DashboardGrantsRowsDir hold each script's per-table rows,
+// relative to the same directory as [GrantsFile]: one file per table
+// (pkg/dbgrants.Files), spliced into the script in file-name order.
+const (
+	GrantsRowsDir          = "grants/readonly"
+	DashboardGrantsRowsDir = "grants/dashboard"
+)
+
 // grantScripts are the scripts one binary embeds, "" for one it does not.
 type grantScripts struct{ readOnly, dashboard string }
 
@@ -106,9 +114,9 @@ func grantsScripts(fsys fs.FS, dir string) (grantScripts, error) {
 		return out, nil
 	}
 	for _, f := range []struct {
-		file string
-		into *string
-	}{{GrantsFile, &out.readOnly}, {DashboardGrantsFile, &out.dashboard}} {
+		file, rows string
+		into       *string
+	}{{GrantsFile, GrantsRowsDir, &out.readOnly}, {DashboardGrantsFile, DashboardGrantsRowsDir, &out.dashboard}} {
 		p := path.Join(path.Dir(dir), f.file)
 		b, err := fs.ReadFile(fsys, p)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -117,7 +125,24 @@ func grantsScripts(fsys fs.FS, dir string) (grantScripts, error) {
 		if err != nil {
 			return grantScripts{}, fmt.Errorf("read embedded grants (%s): %w", p, err)
 		}
-		*f.into = string(b)
+		// fs.Glob returns the names sorted: the order dbgrants.Render uses.
+		names, err := fs.Glob(fsys, path.Join(path.Dir(dir), f.rows, "*_gen.sql"))
+		if err != nil {
+			return grantScripts{}, fmt.Errorf("list embedded grants rows (%s): %w", f.rows, err)
+		}
+		rows := make([]string, 0, len(names))
+		for _, name := range names {
+			row, err := fs.ReadFile(fsys, name)
+			if err != nil {
+				return grantScripts{}, fmt.Errorf("read embedded grants row (%s): %w", name, err)
+			}
+			rows = append(rows, string(row))
+		}
+		script, err := dbgrants.Assemble(string(b), rows)
+		if err != nil {
+			return grantScripts{}, fmt.Errorf("embedded grants (%s): %w", p, err)
+		}
+		*f.into = script
 	}
 	return out, nil
 }

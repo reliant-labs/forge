@@ -204,7 +204,7 @@ func TestGenerateMigrateEmbedsTheGrantsOnlyWhenTheyExist(t *testing.T) {
 	if err := GenerateMigrate(dir, "example.com/proj", true, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(dir); !strings.Contains(got, "//go:embed migrations/*.sql grants/*.sql") {
+	if got := read(dir); !strings.Contains(got, "//go:embed migrations/*.sql grants\n") {
 		t.Errorf("embed does not include the grants:\n%s", got)
 	}
 }

@@ -167,20 +167,22 @@ COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
 func writeDashboardGrants(t *testing.T, root string, edit func(string) string) {
 	t.Helper()
 	tables := dashboardProjection(t, root)
-	script, err := dbgrants.RenderDashboard(tables)
+	files, err := codegen.DashboardGrantsFileSet(tables)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := string(codegen.DashboardGrantsFile(script))
-	if edit != nil {
-		body = edit(body)
-	}
-	path := filepath.Join(root, filepath.FromSlash(dbgrants.DashboardGrantsPath))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
+	for rel, b := range files {
+		body := string(b)
+		if edit != nil {
+			body = edit(body)
+		}
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -217,17 +219,21 @@ func TestDBGrants_DashboardGrantsCurrentIsClean(t *testing.T) {
 }
 
 // A marker added in a migration without `forge generate`, a marker removed, a
-// no-dashboard column added: each leaves the committed file disagreeing with
-// the schema, and the lane names it.
+// no-dashboard column added, a table born or dropped: each leaves a committed
+// file disagreeing with the schema (the table's row file, or one no table
+// accounts for), and the lane names it.
 func TestDBGrants_DashboardGrantsDriftIsReported(t *testing.T) {
+	rows := dbgrants.DashboardGrantsRowsDir + "/"
 	for name, tc := range map[string]struct {
-		migration string
+		migration, want string
 	}{
-		"a new table marked":               {`COMMENT ON TABLE users IS 'forge:dashboard';`},
-		"a marker removed":                 {`COMMENT ON TABLE usage_events IS NULL;`},
-		"a column withheld":                {`COMMENT ON COLUMN usage_events.model IS 'forge:no-dashboard';`},
-		"a column un-withheld":             {`COMMENT ON COLUMN usage_events.user_email IS NULL;`},
-		"a column added to a marked table": {`ALTER TABLE usage_events ADD COLUMN cost BIGINT NOT NULL DEFAULT 0;`},
+		"a new table marked":               {`COMMENT ON TABLE users IS 'forge:dashboard';`, rows + dbgrants.FileName("public", "users")},
+		"a marker removed":                 {`COMMENT ON TABLE usage_events IS NULL;`, rows + dbgrants.FileName("public", "usage_events")},
+		"a column withheld":                {`COMMENT ON COLUMN usage_events.model IS 'forge:no-dashboard';`, rows + dbgrants.FileName("public", "usage_events")},
+		"a column un-withheld":             {`COMMENT ON COLUMN usage_events.user_email IS NULL;`, rows + dbgrants.FileName("public", "usage_events")},
+		"a column added to a marked table": {`ALTER TABLE usage_events ADD COLUMN cost BIGINT NOT NULL DEFAULT 0;`, rows + dbgrants.FileName("public", "usage_events")},
+		"a table born":                     {`CREATE TABLE notes (id TEXT PRIMARY KEY);`, rows + dbgrants.FileName("public", "notes") + " (missing)"},
+		"a table dropped":                  {`DROP TABLE users;`, rows + dbgrants.FileName("public", "users")},
 	} {
 		root := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": dashboardBirthSQL})
 		grantsReport(t, root) // skips under -short
@@ -236,8 +242,8 @@ func TestDBGrants_DashboardGrantsDriftIsReported(t *testing.T) {
 			t.Fatal(err)
 		}
 		rep := grantsReport(t, root)
-		if got := staleFiles(rep); len(got) != 1 || got[0] != dbgrants.DashboardGrantsPath {
-			t.Errorf("%s: stale = %v, want %s", name, got, dbgrants.DashboardGrantsPath)
+		if got := staleFiles(rep); len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s: stale = %v, want %s", name, got, tc.want)
 		}
 	}
 }

@@ -1,9 +1,12 @@
 package codegen
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/mergeproperty"
 	"github.com/reliant-labs/forge/pkg/dbgrants"
 )
@@ -71,58 +74,73 @@ func TestMergeProperty_ConfigKCL(t *testing.T) {
 	}
 }
 
+// The grants are one constant script per role and one row file per table
+// (pkg/dbgrants.Files), so every shape of independent table changes merges as
+// files: tables apart, neighbours, a table born beside a changed one, TWO
+// tables born between the same neighbours (orders and profiles after
+// accounts: the shape no single file can merge, measured by
+// TestE2EMergeProperty), and a table dropped beside one born.
 func TestMergeProperty_ReadOnlyGrants(t *testing.T) {
 	table := func(name string, cols ...string) dbgrants.Table {
-		tb := dbgrants.Table{Schema: "public", Name: name}
+		tb := dbgrants.Table{Schema: "public", Name: name, Dashboard: true}
 		for _, c := range cols {
 			tb.Columns = append(tb.Columns, dbgrants.Column{Name: c})
 		}
 		return tb
 	}
 	cases := map[string]map[string][]dbgrants.Table{
-		// ours changes accounts; theirs changes users and adds widgets.
-		// Orders sits between them, unchanged.
 		"apart": {
 			"base":   {table("accounts", "id"), table("orders", "id"), table("users", "id", "email")},
 			"ours":   {table("accounts", "id", "balance"), table("orders", "id"), table("users", "id", "email")},
 			"theirs": {table("accounts", "id"), table("orders", "id"), table("users", "id", "email", "name"), table("widgets", "id")},
 			"merged": {table("accounts", "id", "balance"), table("orders", "id"), table("users", "id", "email", "name"), table("widgets", "id")},
 		},
-		// ours changes orders; theirs changes accounts, its neighbour, and
-		// adds events directly before orders.
-		"neighbours": {
+		"neighbours, and a table born beside a changed one": {
 			"base":   {table("accounts", "id"), table("orders", "id")},
 			"ours":   {table("accounts", "id"), table("orders", "id", "total")},
 			"theirs": {table("accounts", "id", "name"), table("events", "id"), table("orders", "id")},
 			"merged": {table("accounts", "id", "name"), table("events", "id"), table("orders", "id", "total")},
 		},
+		"two tables born between the same neighbours": {
+			"base":   {table("accounts", "id", "name")},
+			"ours":   {table("accounts", "id", "name"), table("profiles", "id", "bio")},
+			"theirs": {table("accounts", "id", "name"), table("orders", "id", "sku")},
+			"merged": {table("accounts", "id", "name"), table("orders", "id", "sku"), table("profiles", "id", "bio")},
+		},
+		"a table dropped beside one born": {
+			"base":   {table("accounts", "id"), table("orders", "id")},
+			"ours":   {table("orders", "id")},
+			"theirs": {table("accounts", "id"), table("events", "id"), table("orders", "id")},
+			"merged": {table("events", "id"), table("orders", "id")},
+		},
 	}
-	for _, tc := range []struct {
-		rel    string
-		render func([]dbgrants.Table) (string, error)
-		file   func(string) []byte
-	}{
-		{dbgrants.GrantsPath, dbgrants.Render, ReadOnlyGrantsFile},
-		{dbgrants.DashboardGrantsPath, func(ts []dbgrants.Table) (string, error) {
-			// Every table marked forge:dashboard, so the dashboard role sees them.
-			marked := make([]dbgrants.Table, len(ts))
-			for i, tb := range ts {
-				tb.Dashboard = true
-				marked[i] = tb
-			}
-			return dbgrants.RenderDashboard(marked)
-		}, DashboardGrantsFile},
-	} {
-		for name, tables := range cases {
-			t.Run(tc.rel+"/"+name, func(t *testing.T) {
-				mergeproperty.AssertPlainMergeIsRender(t, tc.rel, func(v string) []byte {
-					script, err := tc.render(tables[v])
-					if err != nil {
+	for name, tables := range cases {
+		t.Run(name, func(t *testing.T) {
+			mergeproperty.AssertPlainMergeIsRenderTree(t, "db/grants", func(dir, v string) {
+				// Through forge's own writer, as generate runs it: the stale
+				// row of a dropped table is swept by GenerateReadOnlyGrants,
+				// here by writing the whole set afresh.
+				if err := os.RemoveAll(filepath.Join(dir, "db", "grants")); err != nil {
+					t.Fatal(err)
+				}
+				files, err := GrantsFileSet(tables[v])
+				if err != nil {
+					t.Fatal(err)
+				}
+				for rel, b := range files {
+					stamped, ok := checksums.Stamp(rel, b)
+					if !ok {
+						t.Fatalf("%s is not stampable", rel)
+					}
+					p := filepath.Join(dir, filepath.FromSlash(rel))
+					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 						t.Fatal(err)
 					}
-					return tc.file(script)
-				})
+					if err := os.WriteFile(p, stamped, 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
 			})
-		}
+		})
 	}
 }

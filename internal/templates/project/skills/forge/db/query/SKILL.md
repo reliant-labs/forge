@@ -64,11 +64,11 @@ There is no per-env config key: the address belongs to your machine and your rou
 
 ## The read-only role
 
-Every ManagedDatabase carries `forge_ro`, a role forge declares on the CNPG Cluster. Its password is in the `<name>-forge-ro` Secret. `forge generate` projects its grants from the applied schema into `db/grants/readonly_gen.sql`, and the migrator applies them after every run. The role may SELECT the columns somebody **decided** it may read, and nothing else: no writes, no sequences, no views.
+Every ManagedDatabase carries `forge_ro`, a role forge declares on the CNPG Cluster. Its password is in the `<name>-forge-ro` Secret. `forge generate` projects its grants from the applied schema into `db/grants/readonly_gen.sql` and one row file per table under `db/grants/readonly/`, and the migrator applies them after every run. The role may SELECT the columns somebody **decided** it may read, and nothing else: no writes, no sequences, no views.
 
 The boundary is Postgres, not a redactor. `select upper(api_key) from …` is refused (`permission_denied`, exit 1) just like `select api_key`. A column added later is unreadable until a migration converges the grants. Don't grant the role more by hand; the next migration revokes it.
 
-`// forge:secret` on a proto field keeps the column settable on Create/Update and drops only the read path (`<entity>ToProto`). Its second effect is the one Postgres enforces, below: `forge generate` leaves the column out of `db/grants/readonly_gen.sql`, and the migrator applies that file after every `db migrate up`, so `forge_ro` is refused it through any expression. The role holds column-level `SELECT` only: no write privilege, no table-level `SELECT`, so a column added later is unreadable until `forge generate` has seen whether it is secret.
+`// forge:secret` on a proto field keeps the column settable on Create/Update and drops only the read path (`<entity>ToProto`). Its second effect is the one Postgres enforces, below: `forge generate` leaves the column out of its table's row in `db/grants/readonly/`, and the migrator applies the grants after every `db migrate up`, so `forge_ro` is refused it through any expression. The role holds column-level `SELECT` only: no write privilege, no table-level `SELECT`, so a column added later is unreadable until `forge generate` has seen whether it is secret.
 
 ### Safe by construction: who decides a column
 

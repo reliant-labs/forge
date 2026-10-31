@@ -75,7 +75,7 @@ the cleanup resolves names in the session as it was before the file ran, so it
 only runs for a lone `CREATE INDEX CONCURRENTLY`. Keep a migration to plain DDL,
 or give a `CREATE INDEX CONCURRENTLY` a file of its own, to get the retry.
 
-Grants (`db/grants/*_gen.sql`, applied after the migrations) take locks too, so
+Grants (`db/grants/`, applied after the migrations) take locks too, so
 they run under the same limits and the same retry. They are one statement, so a
 retry is always safe; if every attempt times out the run fails with a
 `LockTimeoutError` (`Grants` set), the migrations stay committed, and the next

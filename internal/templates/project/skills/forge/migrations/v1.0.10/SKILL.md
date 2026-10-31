@@ -1,13 +1,13 @@
 ---
-name: v1.0.9
-description: Upgrade a project to forge v1.0.9. .forge/hashes.json becomes one certificate file per JSON output under .forge/hashes/, and contract mocks (mock_gen.go) certify each mock separately, so pull requests that change different outputs or interfaces no longer conflict in generated files. Use when the project commits .forge/hashes.json.
-version: v1.0.9
+name: v1.0.10
+description: Upgrade a project to forge v1.0.10. .forge/hashes.json becomes one certificate file per JSON output under .forge/hashes/, and contract mocks (mock_gen.go) certify each mock separately, so pull requests that change different outputs or interfaces no longer conflict in generated files. Use when the project commits .forge/hashes.json.
+version: v1.0.10
 detection: test -f .forge/hashes.json && exit 0; exit 1
 ---
 
-# Upgrading to v1.0.9
+# Upgrading to v1.0.10
 
-The first `forge generate` on v1.0.9 migrates everything below. Commit what it writes in one change.
+The first `forge generate` on v1.0.10 migrates everything below. Commit what it writes in one change.
 
 ## 1. `.forge/hashes.json` becomes `.forge/hashes/`
 

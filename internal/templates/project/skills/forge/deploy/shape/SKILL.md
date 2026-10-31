@@ -74,10 +74,22 @@ with its placement (`hosted`, `cluster`, `bucket`, `firebase`, `compose`,
 
 One `forge env deploy` runs the parts forge applies, the hosted parts and the
 frontends forge ships in the order their declared `release_dependencies`
-give: `{peer: contract}` on a part means `peer` goes first. A frontend that
-declares no `release_dependencies` waits for every server workload; `{}`
-means independent. A cycle between placements is refused before anything
-ships.
+give. `{peer: contract}` on a part says "I consume `peer`'s `contract`". That
+claim decides which parts must ship in one release, and it orders the deploy
+only when the two parts run in different placements, where `peer`'s placement
+goes first:
+
+| `peer` is… | Ordering effect |
+|---|---|
+| in another placement (a cluster API, a hosted SPA) | `peer`'s placement deploys first |
+| in the same placement | none: a compatibility claim, so two parts may name each other (an API and a gateway sharing a NATS contract) |
+| a `build-only` artifact (an image the release carries, such as a daemon base image) | none: it is never deployed, and the cut already carries it |
+| no component at all | refused before anything ships |
+
+A frontend that declares no `release_dependencies` waits for every server
+workload in another placement; `{}` means independent. A cycle through
+different placements (a hosted part and a cluster part each waiting for the
+other) is refused before anything ships.
 
 `kind` is still recorded, as a summary the control plane is retiring:
 

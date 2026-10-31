@@ -87,7 +87,7 @@ func TestStampSections_VerifyAndTamper(t *testing.T) {
 	}
 }
 
-// A file stamped by forge before v1.0.11 carries each section's hash on its
+// A file stamped by forge before v1.0.12 carries each section's hash on its
 // header line. It must still verify (so the next generate refreshes it as a
 // pristine render rather than refusing it as a hand edit), and restamping it
 // writes the named form.
@@ -274,7 +274,7 @@ func TestStampSections_EveryIndependentPairMergesWithPlainGit(t *testing.T) {
 	}
 }
 
-// The control: the pre-v1.0.11 one-line form, whose header carried the hash,
+// The control: the pre-v1.0.12 one-line form, whose header carried the hash,
 // conflicts on the neighbour shape the named form merges (a part inserted
 // directly before one the other branch changed). If this ever merges, the
 // matrix above is no longer testing what it claims to.

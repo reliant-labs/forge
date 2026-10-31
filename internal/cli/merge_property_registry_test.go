@@ -141,7 +141,7 @@ var mergeCases = map[string]mergeCase{
 	"ingress k3d ports fragment":        perInput("a function of the env's ports"),
 	"CRD KCL manifests (api/ Go types)": perInput("one manifest per CRD"),
 	"entity-aware seed data":            perInput("one seed file per table"),
-	"frontend mocks + transport": knownGap("scenario-rpcs_gen.ts is one named section per service (#1582, named headers in v1.0.11), proved by TestMergeProperty_ScenarioRpcs; fixture fingerprint out of git (#1585) and one fixture per entity; but lib/mock-transport_gen.ts aggregates every entity's descriptor and schema imports, unsectioned",
+	"frontend mocks + transport": knownGap("scenario-rpcs_gen.ts is one named section per service (#1582, named headers in v1.0.12), proved by TestMergeProperty_ScenarioRpcs; fixture fingerprint out of git (#1585) and one fixture per entity; but lib/mock-transport_gen.ts aggregates every entity's descriptor and schema imports, unsectioned",
 		"frontends/*/src/lib/mock-transport_gen.ts"),
 	"repoint renamed *_gen frontend imports":                    perInput("rewrites import lines in the files that name a renamed module"),
 	"retire delivered agent skills":                             noOutput("removes retired files"),

@@ -92,10 +92,10 @@ type Policy struct {
 	// worktrees. Off, the layer only reports. No automatic pass ever removes
 	// one, whatever this says (Runner.Explicit).
 	WorktreeReap bool `json:"worktree_reap,omitempty"`
-	// WorktreeReapReliantManaged extends worktree_reap to worktrees under
-	// Reliant's worktree root (~/.reliant/worktrees). Reliant owns those: it
-	// knows which chat each one is bound to, and reclaims them itself. Off,
-	// they are held like a locked worktree.
+	// WorktreeReapReliantManaged is ignored. It once extended worktree_reap to
+	// worktrees under Reliant's worktree root, which were held by location;
+	// they are now held only when Reliant has locked them (HoldManaged), so
+	// nothing is left for it to widen. Kept so a policy that sets it loads.
 	WorktreeReapReliantManaged bool `json:"worktree_reap_reliant_managed,omitempty"`
 
 	// MaxDeletesPerPass bounds how many filesystem entries one maintenance

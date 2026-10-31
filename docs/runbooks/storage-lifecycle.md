@@ -414,10 +414,12 @@ A non-main worktree is **removable** only if all hold:
   directory, and its `.git` is a gitdir file naming one of the repository's
   `worktrees/` admin directories — a stale registration whose directory now
   holds a clone of its own is held;
-- not under Reliant's worktree root, `~/.reliant/worktrees` (or
-  `$RELIANT_USER_CONFIG_DIR/worktrees`), unless the policy sets
-  `"worktree_reap_reliant_managed": true` (`managed by reliant`). Reliant knows
-  which chat each of those is bound to and reclaims them itself;
+- not locked by Reliant (`managed by reliant`: a lock whose reason starts
+  `reliant: worktree `). Reliant knows which chat each of those is bound to
+  and reclaims them itself. Where a worktree lives does not matter: an
+  unlocked worktree under `~/.reliant/worktrees`, made with a plain
+  `git worktree add`, is judged like any other
+  (`worktree_reap_reliant_managed` is ignored);
 - idle at least 24h: the newest of the directory mtime and the admin
   directory's `index`, `HEAD` and `logs/HEAD` (activity, not commit age), AND
   nothing anywhere in the tree modified within 24h — a build writing an

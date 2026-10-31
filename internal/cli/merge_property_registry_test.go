@@ -49,8 +49,11 @@ const (
 	// goimports, buf), merged as that tool's files always are.
 	mergeExternalTool
 	// mergeKnownGap: the step's output does NOT yet keep the invariant.
-	// why names what conflicts and the tracking issue. Allowed, so the table
-	// tells the truth; never the default for a new step.
+	// why names what conflicts and gapPaths where
+	// (mergeCase{kind: mergeKnownGap, why: …, gapPaths: …}). Allowed, so the
+	// table tells the truth; never the default for a new step. None is
+	// declared today: TestE2EMergeProperty merges every case without a
+	// conflict.
 	mergeKnownGap
 )
 
@@ -74,9 +77,6 @@ func perInput(why string) mergeCase     { return mergeCase{kind: mergePerInput, 
 func noOutput(why string) mergeCase     { return mergeCase{kind: mergeNoCommittedOutput, why: why} }
 func scaffoldOnce(why string) mergeCase { return mergeCase{kind: mergeScaffoldOnce, why: why} }
 func external(why string) mergeCase     { return mergeCase{kind: mergeExternalTool, why: why} }
-func knownGap(why string, paths ...string) mergeCase {
-	return mergeCase{kind: mergeKnownGap, why: why, gapPaths: paths}
-}
 
 // mergeCases is the registry: every generateSteps() name, and how it merges.
 var mergeCases = map[string]mergeCase{
@@ -106,9 +106,8 @@ var mergeCases = map[string]mergeCase{
 	"frontend hooks":                             perInput("one <service>-hooks.ts per service"),
 	"ensure frontend components":                 scaffoldOnce("component library copied once"),
 	"frontend CRUD pages":                        scaffoldOnce("pages are the user's from birth"),
-	"frontend nav + dashboard": knownGap("nav.tsx and dashboard.tsx are refreshed until the user's first edit, so two branches that each add an entity both rewrite them (dashboard's hook import lines collide; nav's route rows merge) and both restamp their .forge/scaffolded/ birth_hash",
-		"frontends/*/src/app/dashboard.tsx",
-		".forge/scaffolded/frontends/*/src/app/dashboard.tsx.json", ".forge/scaffolded/frontends/*/src/components/nav.tsx.json"),
+	"frontend nav + dashboard": proved("nav.tsx and dashboard.tsx are the user's and render the same for every entity set (their birth hash with them); each entity's route and tile is its own generated module (src/lib/nav-routes/, src/components/dashboard-tiles/), gathered by the bundler",
+		"TestE2EMergeProperty"),
 	"service stubs": perInput("one rpc_<name>.go per rpc, in its service's directory"),
 	"internal/db/ ORM (entity-driven)": perInput("one <entity>_orm_gen.go and one <entity>_store_gen.go per table; the aggregate store_gen.go names no entity (each accessor is a method in its entity's store file), proved at project scale by TestE2EMergeProperty"),
 	"CRUD handlers": perInput("one ops file per service"),

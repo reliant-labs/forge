@@ -541,9 +541,16 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render dashboard: %v", err)
 	}
-	out := string(rendered)
+	// The tile is the entity's own generated module, which the dashboard
+	// renders through DASHBOARD_TILES.
+	tile, err := templates.FrontendTemplates().Render("nav/dashboard-tile.tsx.tmpl", data.Pages[0])
+	if err != nil {
+		t.Fatalf("render tile: %v", err)
+	}
+	out := string(rendered) + string(tile)
 
 	for _, want := range []string{
+		"DASHBOARD_TILES.map(({ slug, Tile }) => (",
 		`import { useListTasks } from "@/hooks/task-service-hooks";`,
 		"const { data } = useListTasks({});",
 		"const count = data?.tasks?.length;",
@@ -582,14 +589,22 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 		}
 	}
 
-	// nav carries hasCreate so the dashboard can gate.
+	// The entity's route carries hasCreate so the dashboard can gate, and
+	// the nav spreads every entity's route.
 	navRendered, err := templates.FrontendTemplates().Render(
 		"nextjs/src/components/nav.tsx.tmpl", data)
 	if err != nil {
 		t.Fatalf("render nav: %v", err)
 	}
-	if !strings.Contains(string(navRendered), "slug: \"tasks\",\n    labelSingular: \"Task\",\n    hasCreate: true,") {
-		t.Errorf("nav missing hasCreate/labelSingular route fields:\n%s", navRendered)
+	if !strings.Contains(string(navRendered), "...ENTITY_ROUTES,") {
+		t.Errorf("nav does not spread ENTITY_ROUTES:\n%s", navRendered)
+	}
+	route, err := templates.FrontendTemplates().Render("nav/nav-route.ts.tmpl", data.Pages[0])
+	if err != nil {
+		t.Fatalf("render route: %v", err)
+	}
+	if !strings.Contains(string(route), "slug: \"tasks\",\n  labelSingular: \"Task\",\n  hasCreate: true,") {
+		t.Errorf("route missing hasCreate/labelSingular fields:\n%s", route)
 	}
 }
 
@@ -607,17 +622,10 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 func TestDashboardGenTemplate_CountsTotalCountNotPageLength(t *testing.T) {
 	render := func(t *testing.T, page templates.NavPageData) string {
 		t.Helper()
-		rendered, err := templates.FrontendTemplates().Render(
-			"nextjs/src/app/dashboard.tsx.tmpl", templates.FrontendTemplateData{
-				FrontendName: "web",
-				ProjectName:  "demo",
-				Pages:        []templates.NavPageData{page},
-				NavHookImports: []templates.NavHookImport{{
-					Module: "@/hooks/task-service-hooks", Symbols: []string{"useListTasks"},
-				}},
-			})
+		// The tile is the entity's own generated module.
+		rendered, err := templates.FrontendTemplates().Render("nav/dashboard-tile.tsx.tmpl", page)
 		if err != nil {
-			t.Fatalf("render dashboard: %v", err)
+			t.Fatalf("render tile: %v", err)
 		}
 		return string(rendered)
 	}

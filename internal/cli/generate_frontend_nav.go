@@ -35,10 +35,12 @@ import (
 // regenerating them would mean forge holding an opinion about someone
 // else's product and enforcing it with a hash guard.
 //
-// The cost is explicit and small: adding an entity scaffolds its pages but
-// does not touch the nav, so its link is a one-line hand edit — the same
-// edit a route with no entity behind it already required. The benefit is
-// that these files can be rewritten, which for starter code is the point.
+// The entity SET is a projection, though, so it is generated beside them:
+// each entity's sidebar route and dashboard tile is its own module, gathered
+// into ENTITY_ROUTES and DASHBOARD_TILES (emitNavRegistries), which the owned
+// files import. Adding an entity therefore links it without editing the
+// nav, and these files can still be rewritten, which for starter code is
+// the point.
 func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, entities []codegen.EntityDef, cs *checksums.FileChecksums) error {
 	// CRITICAL: nav/dashboard routes derive from the SAME entity set that
 	// gates CRUD page emission (generateFrontendPages skips RPC-name-derived
@@ -189,6 +191,9 @@ func generateNextjsFrontend(cfg *config.ProjectConfig, projectDir string, fe con
 	if fe.Adopted {
 		return nil
 	}
+	if err := emitNavRegistries(projectDir, feDir, data, cs); err != nil {
+		return err
+	}
 	navRel := filepath.Join(feDir, "src", "components", "nav.tsx")
 	if err := emitScaffoldUntilTouched(projectDir, navRel, "nextjs/src/components/nav.tsx.tmpl", data, cs); err != nil {
 		return err
@@ -213,6 +218,51 @@ func generateNextjsFrontend(cfg *config.ProjectConfig, projectDir string, fe con
 
 	if len(fePages) > 0 {
 		fmt.Printf("  ✅ Scaffolded nav.tsx + dashboard.tsx with %d page(s) for frontend %s (yours to edit)\n", len(fePages), fe.Name)
+	}
+	return nil
+}
+
+// emitNavRegistries writes what the owned nav.tsx and dashboard.tsx read the
+// entity set from: one generated module per entity with pages — its sidebar
+// route (src/lib/nav-routes/<slug>_gen.ts) and its dashboard tile
+// (src/components/dashboard-tiles/<slug>_gen.tsx) — and the two registries
+// that gather those directories with the bundler's own glob.
+//
+// The entity set is a projection; how it is laid out is the user's. So the
+// projection is generated, one file per entity (two branches that each add one
+// merge as files), and the layout imports it and is never edited for an
+// entity: nav.tsx and dashboard.tsx render the same for every entity set, so
+// they no longer churn while pristine, and an edited one still gains new
+// entities. A dropped entity's modules are reclaimed by the stale-file sweep.
+func emitNavRegistries(projectDir, feDir string, data templates.FrontendTemplateData, cs *checksums.FileChecksums) error {
+	for _, f := range []struct{ tmpl, rel string }{
+		{"nextjs/src/lib/nav-routes_gen.ts.tmpl", filepath.Join(feDir, "src", "lib", "nav-routes_gen.ts")},
+		{"nextjs/src/components/dashboard-tiles_gen.ts.tmpl", filepath.Join(feDir, "src", "components", "dashboard-tiles_gen.ts")},
+	} {
+		content, err := templates.FrontendTemplates().Render(f.tmpl, data)
+		if err != nil {
+			return fmt.Errorf("render %s: %w", f.tmpl, err)
+		}
+		if _, err := checksums.WriteGeneratedFileTier1(projectDir, f.rel, content, cs, true); err != nil {
+			return fmt.Errorf("write %s: %w", f.rel, err)
+		}
+	}
+	for _, p := range data.Pages {
+		for _, f := range []struct{ tmpl, rel string }{
+			{"nav/nav-route.ts.tmpl", filepath.Join(feDir, "src", "lib", "nav-routes", p.Slug+"_gen.ts")},
+			{"nav/dashboard-tile.tsx.tmpl", filepath.Join(feDir, "src", "components", "dashboard-tiles", p.Slug+"_gen.tsx")},
+		} {
+			content, err := templates.FrontendTemplates().Render(f.tmpl, p)
+			if err != nil {
+				return fmt.Errorf("render %s for %s: %w", f.tmpl, p.Slug, err)
+			}
+			if err := os.MkdirAll(filepath.Join(projectDir, filepath.Dir(f.rel)), 0o755); err != nil {
+				return fmt.Errorf("mkdir for %s: %w", f.rel, err)
+			}
+			if _, err := checksums.WriteGeneratedFileTier1(projectDir, f.rel, content, cs, true); err != nil {
+				return fmt.Errorf("write %s: %w", f.rel, err)
+			}
+		}
 	}
 	return nil
 }
@@ -718,6 +768,11 @@ func missingNavRoutes(projectDir, navRel string, pages []templates.NavPageData) 
 		return nil // deliberately deleted, or unreadable
 	}
 	nav := string(src)
+	// A nav that spreads the generated registry links every entity, now
+	// and later.
+	if strings.Contains(nav, "ENTITY_ROUTES") {
+		return nil
+	}
 
 	// src/app, derived from the nav's own path: navRel is
 	// <feDir>/src/components/nav.tsx, so its grandparent is <feDir>/src.

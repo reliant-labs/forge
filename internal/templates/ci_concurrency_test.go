@@ -75,6 +75,54 @@ func concurrencyCancelViolations(t *testing.T, name string, content []byte) []st
 	return bad
 }
 
+// pullRequestEvents are the triggers whose runs belong to one pull request or
+// one merge group, never to main, a tag, a schedule or a dispatch.
+var pullRequestEvents = map[string]bool{
+	"pull_request":                true,
+	"pull_request_target":         true,
+	"pull_request_review":         true,
+	"pull_request_review_comment": true,
+	"merge_group":                 true,
+}
+
+// pullRequestOnly reports whether a workflow triggers on nothing but
+// pullRequestEvents. Such a workflow has no main or tag run for a
+// cancel-in-progress to starve, so it may cancel on every event it has — the
+// review gate (reliant-review.yml) does, so a pull_request_review run that
+// turns the check green supersedes the red pull_request run before it.
+func pullRequestOnly(t *testing.T, name string, content []byte) bool {
+	t.Helper()
+	var doc struct {
+		On any `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		t.Fatalf("%s does not parse as YAML: %v", name, err)
+	}
+	var events []string
+	switch on := doc.On.(type) {
+	case string:
+		events = []string{on}
+	case []any:
+		for _, e := range on {
+			s, _ := e.(string)
+			events = append(events, s)
+		}
+	case map[string]any:
+		for e := range on {
+			events = append(events, e)
+		}
+	}
+	if len(events) == 0 {
+		return false
+	}
+	for _, e := range events {
+		if !pullRequestEvents[e] {
+			return false
+		}
+	}
+	return true
+}
+
 // workflowConcurrency returns a workflow's top-level concurrency block.
 func workflowConcurrency(t *testing.T, name string, content []byte) map[string]any {
 	t.Helper()
@@ -159,6 +207,8 @@ func TestForgeOwnWorkflows_EveryMainCommitGetsAVerdict(t *testing.T) {
 // TestForgeOwnWorkflows_CancelInProgressOnlyOnPullRequests holds forge's own
 // CI to the policy it scaffolds. Every one of these runs on push to main, and
 // the files are read by this process, so the test cache sees an edit to them.
+// A workflow that runs only for pull requests and merge groups is exempt
+// (pullRequestOnly): it has no main run to cancel.
 func TestForgeOwnWorkflows_CancelInProgressOnlyOnPullRequests(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("..", "..", ".github", "workflows", "*.yml"))
 	if err != nil {
@@ -171,6 +221,9 @@ func TestForgeOwnWorkflows_CancelInProgressOnlyOnPullRequests(t *testing.T) {
 		content, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if pullRequestOnly(t, filepath.Base(p), content) {
+			continue
 		}
 		for _, v := range concurrencyCancelViolations(t, filepath.Base(p), content) {
 			t.Errorf("%s — cancels runs on main/tags; want false or %s", v, prOnlyCancel)

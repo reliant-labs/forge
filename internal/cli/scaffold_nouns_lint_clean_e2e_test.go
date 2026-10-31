@@ -19,7 +19,7 @@ import (
 // The matrix was born red on five nouns:
 //
 //	frontend  wrote proto/config/v1/<fe>_config.proto and stopped, so
-//	          gen/forge_descriptor.json was stale and the convention and
+//	          gen/forge_descriptor/ was stale and the convention and
 //	          graph lanes refused it ("run `forge generate`")
 //	adapter   same stale descriptor, and config.<Name>Config undefined until
 //	          generate compiled the block it composed onto AppConfig

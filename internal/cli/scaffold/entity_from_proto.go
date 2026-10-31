@@ -3,7 +3,7 @@
 // `forge scaffold entity ... --from-proto <svc>[.<Message>]` — the
 // wire→schema birth affordance. The message is ALREADY authored in the
 // service proto; this command reads its shape from the compiled
-// descriptor (gen/forge_descriptor.json) and emits the create-table
+// descriptor (gen/forge_descriptor/) and emits the create-table
 // migration, once. The migration is user-owned at birth and never
 // re-read: after this moment, forge never writes or modifies a migration
 // from proto state ("the line is the filesystem" —
@@ -89,7 +89,7 @@ func runEntityFromProto(args []string, fromProto string, opts entityOpts) error 
 	services, err := codegen.ParseServicesFromProtos("", root)
 	if err != nil || len(services) == 0 {
 		return cliutil.UserErr(ctxLabel,
-			"gen/forge_descriptor.json is missing or empty — the affordance reads the message shape recorded there", "",
+			"gen/forge_descriptor/ is missing or empty — the affordance reads the message shape recorded there", "",
 			"run `forge generate` first (it compiles the descriptor), then re-run")
 	}
 	sd, ok := descriptorServiceByName(services, svcArg)

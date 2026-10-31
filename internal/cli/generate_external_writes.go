@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/assets"
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // Declared outputs of the pipeline steps that run EXTERNAL tools.
@@ -58,7 +59,7 @@ func writesBufGo(ctx *pipelineContext) []string {
 }
 
 func writesDescriptor(*pipelineContext) []string {
-	return append([]string{"gen/forge_descriptor.json", "gen/" + descriptorStageDir}, vendoredProtoDirs()...)
+	return append([]string{codegen.DescriptorDir, codegen.LegacyDescriptorFile, "gen/" + descriptorStageDir, ".gitignore"}, vendoredProtoDirs()...)
 }
 
 func writesOpenAPI(*pipelineContext) []string { return []string{"openapi"} }

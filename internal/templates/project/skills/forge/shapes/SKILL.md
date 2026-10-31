@@ -40,7 +40,7 @@ Reach for it when you would otherwise:
 - ask "does a hook exist for this?" — `--kind hook`
 
 It parses the protos, migrations and source **live on every call** (~2s on a
-15-entity project). It deliberately does NOT read `gen/forge_descriptor.json`:
+15-entity project). It deliberately does NOT read `gen/forge_descriptor/`:
 that file is a derived cache, and a recon answer that is confidently wrong is
 worse than no answer.
 

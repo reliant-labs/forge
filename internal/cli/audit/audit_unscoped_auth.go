@@ -25,7 +25,7 @@
 // Both sides of the comparison are computed by the producer, never
 // grepped out of rendered prose:
 //
-//   - The AUTHENTICATED set comes from gen/forge_descriptor.json —
+//   - The AUTHENTICATED set comes from gen/forge_descriptor/ —
 //     protoc-gen-forge's own projection of (forge.v1.method).auth_required,
 //     the same field that drives pkg/middleware/procedures_gen.go and the
 //     interceptor's fail-closed set. Reading it through
@@ -241,7 +241,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		return audittype.Category{
 			Status:  audittype.StatusWarn,
 			Summary: fmt.Sprintf("could not read the forge descriptor: %v", err),
-			Details: map[string]any{"hint": fmt.Sprintf("run `%s generate` to produce gen/forge_descriptor.json", cmdutil.Name())},
+			Details: map[string]any{"hint": fmt.Sprintf("run `%s generate` to produce gen/forge_descriptor/", cmdutil.Name())},
 		}
 	}
 	if len(services) == 0 {
@@ -283,7 +283,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 	// The DECLARATION half of the gate, read straight from the
 	// migrations — the applied schema's own source of truth, and the
 	// same text `forge lint --column-markers` reads its vocabulary out
-	// of. Deliberately NOT read from gen/forge_descriptor.json's entity
+	// of. Deliberately NOT read from gen/forge_descriptor/'s entity
 	// columns: this must answer correctly on a project whose descriptor
 	// is absent or stale, which is exactly the state a security gate is
 	// least entitled to be silent in.

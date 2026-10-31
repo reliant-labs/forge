@@ -8,7 +8,7 @@
 //
 // Implementation choice: rather than instrument every individual generator
 // (mock_gen, middleware_gen, crud_gen, …) with a callback, we read the
-// post-generate state from forge_descriptor.json, the project filesystem,
+// post-generate state from gen/forge_descriptor/, the project filesystem,
 // and the embedded forge:hash markers. The derived provenance is "approximate but
 // useful" — exactly what the LLM caller wants. We can tighten it later by
 // threading a callback through the codegen package, but we don't need to
@@ -16,10 +16,7 @@
 package cli
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -127,33 +124,15 @@ func printExplainLog(projectDir string, preChecksums map[string]string) error {
 	return nil
 }
 
-// loadForgeDescriptor reads gen/forge_descriptor.json into a typed value.
-// Returns (nil, nil) when the descriptor doesn't exist — caller treats
-// that as "no proto data, skip proto-driven explain".
+// loadForgeDescriptor reads gen/forge_descriptor/ into a typed value through
+// codegen.LoadDescriptor, which refuses a descriptor that does not match the
+// protos on disk. Returns (nil, nil) when the descriptor doesn't exist —
+// caller treats that as "no proto data, skip proto-driven explain".
+//
+// The refusal matters here too: this is the loader `forge project graph` /
+// `introspect` use, the inspection commands an agent actually reads.
 func loadForgeDescriptor(projectDir string) (*ForgeDescriptor, error) {
-	path := filepath.Join(projectDir, "gen", "forge_descriptor.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var desc ForgeDescriptor
-	if err := json.Unmarshal(data, &desc); err != nil {
-		return nil, err
-	}
-
-	// Same refusal as codegen.loadDescriptor, and it must live here too: this
-	// is the loader `forge project graph` / `introspect` use, so a guard on
-	// only one of the two loaders leaves the inspection commands — the ones an
-	// agent actually reads — answering from a cache that can lie.
-	if drift := codegen.DescriptorDrift(projectDir, desc.Sources); drift != "" {
-		return nil, fmt.Errorf(
-			"gen/forge_descriptor.json is stale: extracted from different .proto files than the ones on disk (%s). "+
-				"It is a derived cache — the protos are the source of truth. Fix: reliant forge generate", drift)
-	}
-	return &desc, nil
+	return codegen.LoadDescriptor(projectDir)
 }
 
 // classifyGeneratedFile returns (kind, sources, notes) for one tracked

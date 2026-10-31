@@ -18,8 +18,7 @@
 
 # forge-generated files merge through forge's driver: git's normal three-way
 # merge for everything except the lines that FINGERPRINT other files (the
-# forge:hash header, the mock fixtures' SEED_FINGERPRINT, the descriptor's
-# source_hash). Those would otherwise conflict between any two branches that
+# forge:hash header, the mock fixtures' SEED_FINGERPRINT). Those would otherwise conflict between any two branches that
 # change a migration, a proto, or a generated body; the driver keeps this
 # side's value and the next `forge generate` refreshes it. Two branches that
 # each add a service also both change forge's state files under .forge/
@@ -33,7 +32,6 @@
 *_gen.test.ts merge=forge-generated
 *_gen.json merge=forge-generated
 *_gen.ndjson merge=forge-generated
-forge_descriptor.json merge=forge-generated
 forge_service_catalog.json merge=forge-generated
 .forge/scaffolded.json merge=forge-generated
 .forge/hashes/** merge=forge-generated

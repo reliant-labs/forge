@@ -37,7 +37,7 @@ const (
 	payloadForgeYAML = "name: app\nmodule_path: github.com/acme/app\n"
 
 	// payloadDescriptorWithService / payloadDescriptorEmpty are the two
-	// authoritative answers gen/forge_descriptor.json can give. Neither
+	// authoritative answers gen/forge_descriptor/ can give. Neither
 	// carries sources: an unstamped descriptor skips the staleness
 	// guard, which is what a hand-built fixture wants.
 	payloadDescriptorWithService = `{"services":[{"Name":"BillingService","Package":"acme.billing.v1"}]}`
@@ -210,10 +210,10 @@ func Serve() {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := payloadProject(t, map[string]string{
-				"cmd/app/cmd/serve.go":       tt.serve,
-				"forge.yaml":                 payloadForgeYAML,
-				"gen/forge_descriptor.json":  payloadDescriptorWithService,
-				"internal/handlers/svc/s.go": "package svc\n",
+				"cmd/app/cmd/serve.go":              tt.serve,
+				"forge.yaml":                        payloadForgeYAML,
+				"gen/forge_descriptor/fixture.json": payloadDescriptorWithService,
+				"internal/handlers/svc/s.go":        "package svc\n",
 			})
 			env := &Environment{ProjectName: "test", ProjectDir: dir}
 			got := CheckPayloadLimits(context.Background(), env)
@@ -266,9 +266,9 @@ func TestCheckPayloadLimitsMountingVerdict(t *testing.T) {
 			// through the descriptor rather than a text match.
 			name: "handlers in the conventional place with no caps fails",
 			files: map[string]string{
-				"cmd/app/cmd/serve.go":      noConnect,
-				"forge.yaml":                payloadForgeYAML,
-				"gen/forge_descriptor.json": payloadDescriptorWithService,
+				"cmd/app/cmd/serve.go":              noConnect,
+				"forge.yaml":                        payloadForgeYAML,
+				"gen/forge_descriptor/fixture.json": payloadDescriptorWithService,
 				"internal/handlers/billing/service.go": "package billing\n\n" +
 					"import \"connectrpc.com/connect\"\n\n" +
 					"func Mount(opts ...connect.HandlerOption) {}\n",
@@ -283,15 +283,15 @@ func TestCheckPayloadLimitsMountingVerdict(t *testing.T) {
 			// a project with unbounded payloads.
 			name: "handlers mounted outside internal/handlers are not a silent skip",
 			files: map[string]string{
-				"cmd/app/cmd/serve.go":      noConnect,
-				"forge.yaml":                payloadForgeYAML,
-				"gen/forge_descriptor.json": payloadDescriptorWithService,
+				"cmd/app/cmd/serve.go":              noConnect,
+				"forge.yaml":                        payloadForgeYAML,
+				"gen/forge_descriptor/fixture.json": payloadDescriptorWithService,
 				"internal/server/mount.go": "package server\n\n" +
 					"import \"connectrpc.com/connect\"\n\n" +
 					"func Mount(opts ...connect.HandlerOption) {}\n",
 			},
 			want:     StatusFail,
-			evidence: "gen/forge_descriptor.json declares 1 Connect service(s)",
+			evidence: "gen/forge_descriptor/ declares 1 Connect service(s)",
 		},
 		{
 			// The other half of the same blind spot: the composition root
@@ -326,10 +326,10 @@ func TestCheckPayloadLimitsMountingVerdict(t *testing.T) {
 			// nothing. A comment produces no AST node, so it cannot.
 			name: "a comment mentioning connect.HandlerOption is not proof",
 			files: map[string]string{
-				"cmd/app/cmd/serve.go":      noConnect,
-				"cmd/app/main.go":           "package main\n\nfunc main() {}\n",
-				"forge.yaml":                payloadForgeYAML,
-				"gen/forge_descriptor.json": payloadDescriptorEmpty,
+				"cmd/app/cmd/serve.go":              noConnect,
+				"cmd/app/main.go":                   "package main\n\nfunc main() {}\n",
+				"forge.yaml":                        payloadForgeYAML,
+				"gen/forge_descriptor/fixture.json": payloadDescriptorEmpty,
 				"internal/handlers/doc.go": "package handlers\n\n" +
 					"// Handlers here are mounted with connect.HandlerOption values\n" +
 					"// supplied by the composition root. Nothing is mounted yet.\n",
@@ -366,9 +366,9 @@ func TestCheckPayloadLimitsMountingVerdict(t *testing.T) {
 			// forge has neither list nor fallback.
 			name: "an unreadable descriptor is undetermined",
 			files: map[string]string{
-				"cmd/app/cmd/serve.go":      noConnect,
-				"forge.yaml":                payloadForgeYAML,
-				"gen/forge_descriptor.json": "{not json",
+				"cmd/app/cmd/serve.go":              noConnect,
+				"forge.yaml":                        payloadForgeYAML,
+				"gen/forge_descriptor/fixture.json": "{not json",
 			},
 			want:     StatusUnknown,
 			evidence: "could not be read",
@@ -412,10 +412,10 @@ func TestCheckPayloadLimitsSkipsWithoutCmd(t *testing.T) {
 // exercise a zero cap.
 func TestCheckPayloadLimitsIgnoresTestFiles(t *testing.T) {
 	dir := payloadProject(t, map[string]string{
-		"cmd/app/cmd/serve.go":      "package cmd\n",
-		"cmd/app/cmd/serve_test.go": "package cmd\n\nimport \"connectrpc.com/connect\"\n\nfunc x() { connect.WithReadMaxBytes(0) }\n",
-		"forge.yaml":                payloadForgeYAML,
-		"gen/forge_descriptor.json": payloadDescriptorWithService,
+		"cmd/app/cmd/serve.go":              "package cmd\n",
+		"cmd/app/cmd/serve_test.go":         "package cmd\n\nimport \"connectrpc.com/connect\"\n\nfunc x() { connect.WithReadMaxBytes(0) }\n",
+		"forge.yaml":                        payloadForgeYAML,
+		"gen/forge_descriptor/fixture.json": payloadDescriptorWithService,
 	})
 	got := CheckPayloadLimits(context.Background(), &Environment{ProjectDir: dir})
 	if strings.Contains(got.Evidence, "serve_test.go") {

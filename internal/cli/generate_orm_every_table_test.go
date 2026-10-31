@@ -53,7 +53,10 @@ COMMENT ON TABLE legacy_audit IS 'written by the old pipeline — forge:no-entit
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), b, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 

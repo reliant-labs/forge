@@ -25,7 +25,7 @@ func TestGenerateHelp_DescribesTheCurrentPipeline(t *testing.T) {
 	}
 	for _, current := range []string{
 		"db/migrations",
-		"gen/forge_descriptor.json",
+		"gen/forge_descriptor/",
 		"internal/handlers/",
 		"internal/db/",
 		"internal/app/",

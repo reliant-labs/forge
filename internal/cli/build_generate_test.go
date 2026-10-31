@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,7 +136,10 @@ func TestGeneratedCodeNeedsRefresh(t *testing.T) {
 		}
 	})
 
-	t.Run("proto newer than gen is stale", func(t *testing.T) {
+	t.Run("a checkout that never generated is not stale, whatever the mtimes", func(t *testing.T) {
+		// A fresh clone: git writes gen/ before proto/, so the protos are
+		// always the newer files. Its committed gen/ is current by the merge
+		// gate; with no generate stamp, nothing here may call it stale.
 		dir := t.TempDir()
 		writeFileAt(t, dir, "go.work", "go 1.26.2\n\nuse (\n\t.\n\tgen\n)\n")
 		writeFileAt(t, dir, "go.mod", "module example.com/x\n\ngo 1.26.2\n")
@@ -151,44 +153,38 @@ func TestGeneratedCodeNeedsRefresh(t *testing.T) {
 		if err := os.Chtimes(proto, future, future); err != nil {
 			t.Fatal(err)
 		}
-		reason, needs := generatedCodeNeedsRefresh(dir)
-		if !needs {
-			t.Fatal("want needs=true when proto newer than gen")
-		}
-		if reason == "" {
-			t.Fatal("want a non-empty reason")
+		if reason, needs := generatedCodeNeedsRefresh(dir); needs {
+			t.Fatalf("a fresh checkout was judged stale by mtime: %q", reason)
 		}
 	})
 
-	// A fresh git checkout writes gen/ before proto/ (index order), so the
-	// protos are always the newer files. A stamped descriptor must win over
-	// that: content decides, in both directions.
+	// After a generate in this checkout, its stamp of the protos decides, by
+	// content, in both directions.
 	stamped := func(t *testing.T, protoBody string) string {
 		t.Helper()
 		dir := t.TempDir()
 		writeFileAt(t, dir, "go.mod", "module example.com/x\n\ngo 1.26.2\n")
 		writeFileAt(t, dir, "proto/v1/a.proto", protoBody)
-		sources, err := json.Marshal(codegen.DescriptorSources(dir))
-		if err != nil {
+		if err := codegen.WriteGeneratedFrom(dir); err != nil {
 			t.Fatal(err)
 		}
-		gen := writeFileAt(t, dir, "gen/forge_descriptor.json", `{"services": [], "sources": `+string(sources)+`}`)
+		gen := filepath.Join(dir, filepath.FromSlash(codegen.GeneratedFromFile))
 		past := time.Now().Add(-time.Hour)
 		if err := os.Chtimes(gen, past, past); err != nil {
 			t.Fatal(err)
 		}
 		return dir
 	}
-	t.Run("stamped descriptor matching the protos is fresh even when proto is newer", func(t *testing.T) {
+	t.Run("generate stamp matching the protos is fresh even when proto is newer", func(t *testing.T) {
 		dir := stamped(t, "syntax = \"proto3\";\n")
 		if reason, needs := generatedCodeNeedsRefresh(dir); needs {
 			t.Fatalf("a committed, current gen/ was judged stale by mtime: %q", reason)
 		}
 	})
-	t.Run("stamped descriptor not matching the protos is stale even when gen is newer", func(t *testing.T) {
+	t.Run("generate stamp not matching the protos is stale even when gen is newer", func(t *testing.T) {
 		dir := stamped(t, "syntax = \"proto3\";\n")
 		proto := writeFileAt(t, dir, "proto/v1/a.proto", "syntax = \"proto3\";\nmessage Edited {}\n")
-		gen := filepath.Join(dir, "gen", "forge_descriptor.json")
+		gen := filepath.Join(dir, filepath.FromSlash(codegen.GeneratedFromFile))
 		past, future := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
 		if err := os.Chtimes(proto, past, past); err != nil {
 			t.Fatal(err)

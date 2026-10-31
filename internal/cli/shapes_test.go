@@ -80,7 +80,7 @@ func (s *Service) ListWidgets(ctx context.Context) error { return nil }
 	}
 }
 
-// The command must not answer from gen/forge_descriptor.json: that file is a
+// The command must not answer from gen/forge_descriptor/: that file is a
 // cache which can be stale, and recon output that is confidently wrong is
 // worse than none. A planted lie in the cache must not appear in the output.
 func TestCollectShapes_IgnoresTheDescriptorCache(t *testing.T) {
@@ -95,7 +95,10 @@ func TestCollectShapes_IgnoresTheDescriptorCache(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"),
+	if err := os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"),
 		[]byte(`{"services":[{"Name":"S","Methods":[{"Name":"GhostRpc"}]}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}

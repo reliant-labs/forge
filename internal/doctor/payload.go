@@ -55,7 +55,7 @@ package doctor
 //     direct proof, resolved through the file's IMPORTS so a local
 //     identifier that merely happens to be spelled `connect` cannot fake it
 //     and a comment cannot produce it at all.
-//  2. The proto descriptor (gen/forge_descriptor.json, read through
+//  2. The proto descriptor (gen/forge_descriptor/, read through
 //     codegen.ParseServicesFromProtos — "the single authoritative,
 //     non-brittle source" per IntrospectComponents). A declared Connect
 //     service IS a mounted one: forge generates the mount for every service
@@ -417,14 +417,11 @@ type mountingVerdict struct {
 	reason string
 }
 
-// descriptorFile is the generated proto descriptor's project-relative
-// path. Read directly (rather than through codegen) only to tell an ABSENT
-// descriptor from an unreadable one: codegen.ParseServicesFromProtos
-// collapses both into (nil, nil), and that difference is exactly the
-// difference between Skip and Unknown here. It also keeps the "run forge
-// generate" info line codegen prints for a missing descriptor out of
-// doctor's output.
-var descriptorFile = filepath.Join("gen", "forge_descriptor.json")
+// descriptorFile names the generated proto descriptor in findings. It is
+// read through codegen.LoadDescriptor, which extracts it from proto/ when this
+// checkout has none (it is never committed), so an ABSENT descriptor means the
+// project has no protos to describe, and an unreadable one is Unknown.
+var descriptorFile = codegen.DescriptorDir + "/"
 
 // determineConnectMounting answers whether the project serves Connect
 // handlers, from the artefacts that DECLARE the answer. See the file
@@ -447,8 +444,15 @@ func determineConnectMounting(projectDir string, cmdEvidence []string) mountingV
 	// — forge generates the mount for every service in the descriptor and
 	// serverkit.RequireMounted refuses to boot a binary that left one
 	// unmounted — so the descriptor answers both directions.
-	descPath := filepath.Join(projectDir, descriptorFile)
-	if _, statErr := os.Stat(descPath); statErr == nil {
+	desc, err := codegen.LoadDescriptor(projectDir)
+	if err != nil {
+		return mountingVerdict{
+			state: mountingUndetermined,
+			reason: fmt.Sprintf("%s could not be read, so the project's Connect services "+
+				"cannot be enumerated: %v", descriptorFile, err),
+		}
+	}
+	if desc != nil {
 		defs, err := codegen.ParseServicesFromProtos("", projectDir)
 		if err != nil {
 			return mountingVerdict{

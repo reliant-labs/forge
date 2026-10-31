@@ -142,7 +142,7 @@ Short form works when the service name is unique across all proto packages:
 forge api curl UserService.GetUser
 ```
 
-The helper reads `gen/forge_descriptor.json` for the proto data — run `forge generate` first if you've just added an RPC.
+The helper reads `gen/forge_descriptor/` for the proto data — run `forge generate` first if you've just added an RPC.
 
 ## Common pitfalls
 

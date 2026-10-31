@@ -88,77 +88,93 @@ func TestDescriptorParsesTimeout(t *testing.T) {
 	}
 }
 
-// Regression: per-invocation fragments under gen/.descriptor.d/ must be
-// merged into a single forge_descriptor.json with all sections preserved
-// and a deterministic ordering. This is the load-bearing fix for the
-// parallel-buf-plugin race where two plugin processes overwrote each
-// other's read-modify-write through the prior in-process flock.
-func TestMergeDescriptorFragments_CombinesAllFragments(t *testing.T) {
-	dir := t.TempDir()
-	stage := filepath.Join(dir, descriptorStageDir)
+// Plugin fragments under gen/.descriptor.d/ are written out as one
+// descriptor file per proto under gen/forge_descriptor/, each stamped with its
+// own proto's fingerprint; a proto with nothing to extract still gets its
+// stamp; the staging dir and the pre-split aggregate file are removed.
+func TestMergeDescriptorFragments_WritesOneFilePerProto(t *testing.T) {
+	project := t.TempDir()
+	work := t.TempDir()
+	stage := filepath.Join(work, descriptorStageDir)
 	if err := os.MkdirAll(stage, 0o755); err != nil {
 		t.Fatalf("mkdir stage: %v", err)
 	}
-
-	frags := []ForgeDescriptor{
-		{
-			// "services" fragment — what the admin_server proto plugin
-			// invocation would emit.
-			Services: []codegen.ServiceDef{{Name: "AdminServerService"}},
-		},
-		{
-			// A second services fragment from another plugin invocation.
-			Services: []codegen.ServiceDef{{Name: "WorkspaceService"}},
-		},
-		{
-			// "configs" fragment — what the proto/config plugin invocation
-			// would emit.
-			Configs: []codegen.ConfigMessage{{Name: "Config"}},
-		},
+	for rel, body := range map[string]string{
+		"services/admin/v1/admin.proto": "service AdminServerService {}\n",
+		"services/ws/v1/ws.proto":       "service WorkspaceService {}\n",
+		"config/v1/config.proto":        "message Config {}\n",
+		"shared/v1/types.proto":         "message Shared {}\n",
+	} {
+		writeTreeFileT(t, filepath.Join(project, "proto", rel), body)
 	}
-	for i, f := range frags {
-		data, err := json.Marshal(f)
-		if err != nil {
-			t.Fatalf("marshal fragment %d: %v", i, err)
-		}
-		// Names chosen so sort.Strings produces a known order; the merge
-		// step itself is order-independent for correctness, but
-		// deterministic ordering matters for repeatable codegen output.
-		name := []string{"a.json", "b.json", "c.json"}[i]
-		if err := os.WriteFile(filepath.Join(stage, name), data, 0o644); err != nil {
-			t.Fatalf("write fragment %d: %v", i, err)
+	writeTreeFileT(t, filepath.Join(project, codegen.LegacyDescriptorFile), "{}\n")
+
+	for i, frag := range []descriptorFragment{
+		{File: "services/admin/v1/admin.proto", Services: []codegen.ServiceDef{{Name: "AdminServerService"}}},
+		{File: "services/ws/v1/ws.proto", Services: []codegen.ServiceDef{{Name: "WorkspaceService"}}},
+		{File: "config/v1/config.proto", Configs: []codegen.ConfigMessage{{Name: "Config"}}},
+	} {
+		if err := stageDescriptorFragment(stage, frag); err != nil {
+			t.Fatalf("stage fragment %d: %v", i, err)
 		}
 	}
 
-	if err := MergeDescriptorFragments(dir); err != nil {
+	if err := MergeDescriptorFragments(work, project); err != nil {
 		t.Fatalf("MergeDescriptorFragments: %v", err)
 	}
 
-	out, err := os.ReadFile(filepath.Join(dir, "forge_descriptor.json"))
-	if err != nil {
-		t.Fatalf("read merged descriptor: %v", err)
-	}
-	var got ForgeDescriptor
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("parse merged descriptor: %v", err)
-	}
-	// A text file ends in a newline. Without one, every end-of-file fixer
-	// (forge's own pre-commit hook included) rewrites the generated file,
-	// and the next generate rewrites it back.
-	if !strings.HasSuffix(string(out), "}\n") {
-		t.Errorf("forge_descriptor.json does not end in a newline: %q", out[max(0, len(out)-20):])
+	sources := codegen.DescriptorSources(project)
+	for rel, wantService := range map[string]string{
+		"services/admin/v1/admin.proto": "AdminServerService",
+		"services/ws/v1/ws.proto":       "WorkspaceService",
+		"config/v1/config.proto":        "",
+		"shared/v1/types.proto":         "",
+	} {
+		out, err := os.ReadFile(filepath.Join(project, codegen.DescriptorFileFor(rel)))
+		if err != nil {
+			t.Fatalf("descriptor file for %s: %v", rel, err)
+		}
+		// A text file ends in a newline. Without one, every end-of-file
+		// fixer rewrites the generated file, and the next generate rewrites
+		// it back.
+		if !strings.HasSuffix(string(out), "}\n") {
+			t.Errorf("%s does not end in a newline", rel)
+		}
+		var got ForgeDescriptor
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("parse %s: %v", rel, err)
+		}
+		if len(got.Sources) != 1 || got.Sources[rel] != sources[rel] {
+			t.Errorf("%s: sources = %v, want only its own proto's stamp", rel, got.Sources)
+		}
+		if wantService != "" && (len(got.Services) != 1 || got.Services[0].Name != wantService) {
+			t.Errorf("%s: services = %+v, want %s", rel, got.Services, wantService)
+		}
 	}
 
-	if len(got.Services) != 2 || got.Services[0].Name != "AdminServerService" || got.Services[1].Name != "WorkspaceService" {
-		t.Errorf("services not merged correctly: %+v", got.Services)
+	all, err := codegen.LoadDescriptor(project)
+	if err != nil || all == nil {
+		t.Fatalf("LoadDescriptor: %v", err)
 	}
-	if len(got.Configs) != 1 || got.Configs[0].Name != "Config" {
-		t.Errorf("configs not merged correctly: %+v", got.Configs)
+	if len(all.Services) != 2 || len(all.Configs) != 1 {
+		t.Errorf("aggregate: %d services, %d configs; want 2 and 1", len(all.Services), len(all.Configs))
 	}
-
-	// Stage dir should be cleaned up after a successful merge.
 	if _, err := os.Stat(stage); !os.IsNotExist(err) {
 		t.Errorf("stage dir should be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(project, codegen.LegacyDescriptorFile)); !os.IsNotExist(err) {
+		t.Errorf("the pre-split %s must be deleted (the migration), stat err = %v", codegen.LegacyDescriptorFile, err)
+	}
+
+	// A deleted proto's file is pruned on the next write.
+	if err := os.Remove(filepath.Join(project, "proto", "shared", "v1", "types.proto")); err != nil {
+		t.Fatal(err)
+	}
+	if err := codegen.WriteDescriptor(project, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(project, "gen", "forge_descriptor", "shared")); !os.IsNotExist(err) {
+		t.Errorf("a deleted proto's descriptor file (and its empty directory) must be pruned, stat err = %v", err)
 	}
 }
 
@@ -166,7 +182,7 @@ func TestMergeDescriptorFragments_CombinesAllFragments(t *testing.T) {
 // (clean projects with no services / entities / configs).
 func TestMergeDescriptorFragments_NoStageDir_NoError(t *testing.T) {
 	dir := t.TempDir()
-	if err := MergeDescriptorFragments(dir); err != nil {
+	if err := MergeDescriptorFragments(dir, dir); err != nil {
 		t.Fatalf("MergeDescriptorFragments on empty dir: %v", err)
 	}
 }

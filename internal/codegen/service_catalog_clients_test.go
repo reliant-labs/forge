@@ -76,7 +76,10 @@ func TestServiceCatalogClientTypedMarkerFixture(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gen/forge_descriptor.json"), b, 0644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen/forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen/forge_descriptor/fixture.json"), b, 0644); err != nil {
 		t.Fatal(err)
 	}
 	m := &graphModel{u: &graphUniverse{app: p}, byName: map[string]*graphNode{"Orders": {}, "Dynamic": {}, "Secret": {}}}

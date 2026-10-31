@@ -79,7 +79,7 @@ func discoverProtoSubdirs(projectDir string) []string {
 //
 // Source-of-truth order:
 //
-//  1. gen/forge_descriptor.json — the protoc-gen-forge descriptor. It
+//  1. gen/forge_descriptor/ — the protoc-gen-forge descriptor. It
 //     enumerates every Connect service the buf pipeline saw, in any proto
 //     package, so once it exists it is the authoritative answer. (This is
 //     also exactly the set ParseServicesFromProtos returns, so HasServices

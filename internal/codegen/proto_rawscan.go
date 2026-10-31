@@ -10,7 +10,7 @@
 //   - the `// forge:entity` birth marker — the author's explicit
 //     tablizing decision, written in the proto file they are already
 //     editing. A marked message may be brand new (not yet reachable from
-//     any RPC), so gen/forge_descriptor.json cannot carry it; the raw
+//     any RPC), so gen/forge_descriptor/ cannot carry it; the raw
 //     file is the only truth that has it.
 //   - staleness detection (`forge scaffold` / `scaffold rpc`
 //     self-heal): an RPC declared in the raw proto but absent from the

@@ -1,9 +1,16 @@
 // Package commitpolicy checks a forge project's git state against forge's
 // commit policy:
 //
-//   - Generated code is COMMITTED. gen/, every forge-generated file and every
-//     buf-generated stub must be tracked, so a checkout builds as-cloned and
-//     `forge ci verify-generated` can see drift in it.
+//   - Generated code a COMPILER needs is COMMITTED. gen/, every
+//     forge-generated source file and every buf-generated stub must be
+//     tracked, so a checkout builds (`go build`, `go install`, a frontend
+//     build) as-cloned and `forge ci verify-generated` can see drift in it.
+//   - Generated files only forge or tooling reads are NEVER committed
+//     (IsToolDerived): forge derives each one on demand, in any checkout, so
+//     a committed copy buys nothing and costs a merge conflict between every
+//     two branches whose inputs differ. The proto descriptor,
+//     gen/forge_descriptor/, is one: committed as one aggregate file, it
+//     conflicted between any two pull requests that touched any proto.
 //   - Machine-local materializations are NEVER committed: the legacy
 //     .forge-kcl/ module copy, and a web frontend's dev runtime document
 //     public/config.js, whose values resolve per machine.
@@ -49,7 +56,40 @@ const (
 	RuleGeneratedIgnored = "generated-code-ignored"
 	// RuleLocalStateTracked: a machine-local materialization in git.
 	RuleLocalStateTracked = "machine-local-state-tracked"
+	// RuleToolDerivedTracked: a generated file only tooling reads, in git.
+	RuleToolDerivedTracked = "tool-derived-file-tracked"
 )
+
+// toolDerivedDirs and toolDerivedFiles name, project-relative, the generated
+// outputs no compiler reads: forge derives them on demand wherever a command
+// needs them, so they are never committed (see the package doc). A new
+// tool-only output joins this list, its reader learns to derive it when it is
+// missing, and the scaffold's .gitignore ignores it.
+var (
+	toolDerivedDirs = []string{
+		"gen/forge_descriptor/", // codegen.DescriptorDir: services and rpcs extracted from proto/
+	}
+	toolDerivedFiles = []string{
+		"gen/forge_descriptor.json", // codegen.LegacyDescriptorFile: the pre-split aggregate
+	}
+)
+
+// IsToolDerived reports whether rel (project-relative, slash-separated) is a
+// generated output only forge or tooling reads, which this policy keeps out
+// of git.
+func IsToolDerived(rel string) bool {
+	for _, d := range toolDerivedDirs {
+		if strings.HasPrefix(rel, d) {
+			return true
+		}
+	}
+	for _, f := range toolDerivedFiles {
+		if rel == f {
+			return true
+		}
+	}
+	return false
+}
 
 // Violation is one breach of the policy.
 type Violation struct {
@@ -153,6 +193,12 @@ func Check(projectDir string) ([]Violation, error) {
 		return nil, err
 	}
 	out = append(out, tracked...)
+
+	derived, err := trackedToolDerived(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, derived...)
 
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Rule != out[j].Rule {
@@ -286,13 +332,13 @@ const DeliveredRenderMarker = "project-specific guidance belongs in your own ski
 
 // isGenerated reports whether the file is generated code this policy
 // requires to be committed: forge's own output (the DO-NOT-EDIT banner or an
-// embedded forge:hash marker), buf's stubs (Go and TypeScript), and the
-// descriptor forge extracts into gen/. Harness-delivered agent skills are
-// excluded — see DeliveredRenderMarker.
+// embedded forge:hash marker) and buf's stubs (Go and TypeScript).
+// Harness-delivered agent skills (see DeliveredRenderMarker) and tool-derived
+// outputs (IsToolDerived) are excluded.
 func isGenerated(abs, rel string) bool {
 	switch {
-	case rel == "gen/forge_descriptor.json":
-		return true
+	case IsToolDerived(rel):
+		return false
 	case strings.HasSuffix(rel, ".pb.go"), strings.HasSuffix(rel, ".connect.go"), strings.HasSuffix(rel, "_pb.ts"), strings.HasSuffix(rel, "_connect.ts"):
 		return true
 	}
@@ -415,6 +461,48 @@ func trackedLocalState(projectDir string) ([]Violation, error) {
 			Why: "a copy of the forge KCL module, which forge now supplies from the binary that renders — a committed copy pins one " +
 				"forge build's schemas into every clone and CI checkout, and fights every other build",
 			Fix: fmt.Sprintf("forge generate && git rm -r --cached %s && echo %s/ >> .gitignore", legacyKCLDir, legacyKCLDir),
+		})
+	}
+	return vs, nil
+}
+
+// trackedToolDerived reports tool-derived outputs (IsToolDerived) that are in
+// git and still in the work tree. A tracked file `forge generate` already
+// deleted (the legacy aggregate descriptor) is a pending deletion that `git
+// status` shows; it needs no finding of its own.
+func trackedToolDerived(projectDir string) ([]Violation, error) {
+	args := []string{"-C", projectDir, "ls-files", "-z", "--"}
+	args = append(args, toolDerivedDirs...)
+	args = append(args, toolDerivedFiles...)
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
+	reported := map[string]bool{}
+	var vs []Violation
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p == "" || !IsToolDerived(p) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(p))); err != nil {
+			continue
+		}
+		path := p
+		for _, d := range toolDerivedDirs {
+			if strings.HasPrefix(p, d) {
+				path = d
+			}
+		}
+		if reported[path] {
+			continue
+		}
+		reported[path] = true
+		vs = append(vs, Violation{
+			Rule: RuleToolDerivedTracked,
+			Path: path,
+			Why: "generated for forge and tooling only — no compiler reads it, and forge derives it on demand in any checkout — " +
+				"so a committed copy is a merge conflict between every two branches whose inputs differ",
+			Fix: fmt.Sprintf("forge generate && git rm -r --cached --ignore-unmatch %s (forge generate also adds the ignore rule)", strings.TrimSuffix(path, "/")),
 		})
 	}
 	return vs, nil

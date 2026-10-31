@@ -436,7 +436,7 @@ func generateReason(birthsWrote bool, staleRPCs []string, noDescriptor, prevFail
 		parts = append(parts, "entity births changed the protos")
 	}
 	if len(staleRPCs) > 0 {
-		parts = append(parts, fmt.Sprintf("descriptor stale: %s not in gen/forge_descriptor.json", strings.Join(staleRPCs, ", ")))
+		parts = append(parts, fmt.Sprintf("descriptor stale: %s not in gen/forge_descriptor/", strings.Join(staleRPCs, ", ")))
 	}
 	if noDescriptor {
 		parts = append(parts, "no compiled descriptor yet")

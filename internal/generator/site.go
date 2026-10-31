@@ -114,7 +114,7 @@ const siteGitignore = `# forge: machine-local state (never committed)
 secrets/
 .forge/*
 !.forge/disowned.json
-!.forge/hashes.json
+!.forge/hashes/
 !.forge/scaffolded.json
 !.forge/releases/
 !.forge/releases/*.json

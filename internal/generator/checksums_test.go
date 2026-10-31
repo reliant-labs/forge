@@ -105,8 +105,8 @@ func TestLoadSaveChecksums(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, checksums.DisownedFile)); err != nil {
 		t.Fatalf("disowned state file should exist: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, checksums.HashesFile)); err != nil {
-		t.Fatalf("hashes state file should exist: %v", err)
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(checksums.HashCertPath("b.json")))); err != nil {
+		t.Fatalf("b.json's certificate file should exist: %v", err)
 	}
 
 	cs2, err := LoadChecksums(root)
@@ -127,7 +127,7 @@ func TestLoadSaveChecksums(t *testing.T) {
 	if err := SaveChecksums(root, cs2); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{checksums.DisownedFile, checksums.HashesFile} {
+	for _, f := range []string{checksums.DisownedFile, checksums.HashesDir} {
 		if _, err := os.Stat(filepath.Join(root, f)); !os.IsNotExist(err) {
 			t.Errorf("%s should be deleted when its map empties (stat err=%v)", f, err)
 		}

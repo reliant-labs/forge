@@ -39,7 +39,7 @@
 //
 //   - .forge/disowned.json records a DIFFERENT, opposite decision ("forge
 //     owns this path but I am taking it") and is keyed to Tier-1 paths.
-//   - .forge/hashes.json holds render hashes for comment-incapable Tier-1
+//   - .forge/hashes/ holds render hashes for comment-incapable Tier-1
 //     outputs only; scaffold-once files carry no marker and no hash by
 //     design, so there is nothing to look them up by.
 //   - the forge:hash marker scan reads certification out of the FILE, and
@@ -81,7 +81,7 @@ import (
 )
 
 // ScaffoldedFile is the birth ledger's project-relative location. Committed
-// (see the .gitignore negation beside disowned.json / hashes.json): the
+// (see the .gitignore negation beside disowned.json / hashes/): the
 // decision to delete a scaffold belongs to the repository, not to one
 // developer's working copy.
 const ScaffoldedFile = ".forge/scaffolded.json"
@@ -278,7 +278,7 @@ func saveScaffoldLedgerLocked(root string) {
 	reported := scaffoldAbsentReported[abs]
 	full := filepath.Join(abs, ScaffoldedFile)
 	// The ledger is a committed state file and a write the run made, like
-	// hashes.json (saveStateFile): journal it, so a failed generate restores
+	// the disown record (saveStateFile): journal it, so a failed generate restores
 	// it with everything else instead of leaving the run's births recorded
 	// for files the rollback deleted.
 	RecordPreWriteAbs(full)

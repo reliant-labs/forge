@@ -8,8 +8,8 @@
 //   - disowned.json — one-way ownership transfers (`forge project disown`);
 //     travels with the repo so forge never regenerates a disowned file
 //     in any clone or worktree
-//   - hashes.json — scoped render hashes for comment-incapable
-//     generated formats (JSON outputs)
+//   - hashes/ — one render-hash certificate per comment-incapable
+//     generated output (JSON), so no shared manifest conflicts
 //   - scaffolded.json — the scaffold-once BIRTH LEDGER: every "yours"
 //     file forge has ever scaffolded here. It is what makes DELETING a
 //     scaffold stick, so it must travel with the repo — a teammate's
@@ -73,7 +73,7 @@ func TestProjectGitignore_ForgeStateNegations(t *testing.T) {
 	// test exists to catch, and a hand-copied list cannot notice it.
 	committedState := []string{
 		"!" + checksums.DisownedFile,
-		"!" + checksums.HashesFile,
+		"!" + checksums.HashesDir + "/",
 		"!" + checksums.ScaffoldedFile,
 	}
 	for _, neg := range committedState {

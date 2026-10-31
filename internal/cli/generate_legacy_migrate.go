@@ -56,7 +56,7 @@ func stepMigrateLegacyManifest(ctx *pipelineContext) error {
 		fmt.Printf("   ✓ %d pristine file(s) stamped with their embedded content hash\n", n)
 	}
 	if n := len(outcome.Fallback); n > 0 {
-		fmt.Printf("   ✓ %d comment-incapable file(s) recorded in %s\n", n, checksums.HashesFile)
+		fmt.Printf("   ✓ %d comment-incapable file(s) certified under %s/\n", n, checksums.HashesDir)
 	}
 	if n := len(outcome.DisownedConverted); n > 0 {
 		fmt.Printf("   ✓ %d disowned file(s) converted to %s\n", n, checksums.DisownedFile)

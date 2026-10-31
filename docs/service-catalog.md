@@ -57,7 +57,7 @@ no-op" in the merge queue. Nothing read them (the bundle copy never carried
 them); `go doc` answers the question for a person.
 
 The file is also certified by nothing, like `gen/forge_descriptor.json`
-(`checksums.Uncertified`): no `forge:hash`, no `.forge/hashes.json` entry. A
+(`checksums.Uncertified`): no `forge:hash`, no certificate under `.forge/hashes/`. A
 certificate of a whole-project aggregate changes on every branch that changes
 any input, so two branches whose catalog changes are disjoint lines still
 conflicted on its hashes.json line, and git's server-side merge runs no merge

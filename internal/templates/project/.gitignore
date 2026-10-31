@@ -155,9 +155,11 @@ tmp/
 #                     path + reason + timestamp. Travels with the repo
 #                     so forge never regenerates a disowned file in any
 #                     clone or worktree.
-#   hashes.json     — scoped render hashes for the few generated files
+#   hashes/         — one render-hash certificate per generated file
 #                     whose format cannot carry an embedded marker
-#                     (JSON outputs only).
+#                     (JSON outputs only), at the file's path + .sha256.
+#                     One file each, so parallel branches never conflict
+#                     in a shared manifest.
 #   scaffolded.json — the scaffold-once BIRTH LEDGER: every "yours" file
 #                     forge has ever scaffolded here. It is what makes
 #                     DELETING a scaffold stick — without it, an absent
@@ -184,7 +186,7 @@ tmp/
 # its .gitignore fork note.)
 .forge/*
 !.forge/disowned.json
-!.forge/hashes.json
+!.forge/hashes/
 !.forge/scaffolded.json
 !.forge/releases/
 !.forge/releases/*.json

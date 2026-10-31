@@ -98,11 +98,12 @@ func TestGenerate_ChangeCountIncludesOwnershipState(t *testing.T) {
 	}
 	withPipelineSteps(t, []GenStep{productionStep(t, "load checksums"), jsonWriter})
 	out := runPipelineOK(t, dir)
-	if _, err := os.Stat(filepath.Join(dir, checksums.HashesFile)); err != nil {
-		t.Fatalf("precondition: the run must write %s: %v\n%s", checksums.HashesFile, err, out)
+	cert := checksums.HashCertPath("deploy/spec_gen.json")
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(cert))); err != nil {
+		t.Fatalf("precondition: the run must write %s: %v\n%s", cert, err, out)
 	}
 	if !strings.Contains(out, "2 changed (2 new, 0 updated)") {
-		t.Errorf("want the JSON output and %s both counted as new:\n%s", checksums.HashesFile, out)
+		t.Errorf("want the JSON output and %s both counted as new:\n%s", cert, out)
 	}
 
 	// And the second run is a true fixed point.

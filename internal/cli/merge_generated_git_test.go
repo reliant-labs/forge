@@ -137,7 +137,7 @@ func observabilityFiles(t *testing.T, dir string) map[string]string {
 // single file as a hand edit.
 func assertConvergesToBothServices(t *testing.T, dir string) {
 	t.Helper()
-	for _, rel := range []string{".forge/hashes.json", ".forge/scaffolded.json", "internal/app/mounts_gen.go"} {
+	for _, rel := range []string{".forge/scaffolded.json", "internal/app/mounts_gen.go"} {
 		data, err := os.ReadFile(filepath.Join(dir, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -190,7 +190,7 @@ func assertConvergesToBothServices(t *testing.T, dir string) {
 			continue
 		}
 		if cs.Unstampable[rel] != checksums.BodyHash([]byte(body)) {
-			t.Errorf("%s is not certified by the merged hashes.json: generate would refuse it as a hand edit", rel)
+			t.Errorf("%s is not certified by its merged certificate under %s: generate would refuse it as a hand edit", rel, checksums.HashesDir)
 		}
 	}
 	if drift := checksums.ScanTier1Drift(dir, cs); len(drift) != 0 {
@@ -238,6 +238,105 @@ func TestMergeGenerated_TwoServiceBranchesMergeClean(t *testing.T) {
 
 	gitT(t, dir, "merge", "--no-edit", "run")
 	assertConvergesToBothServices(t, dir)
+}
+
+// TestPlainGitMerge_ObservabilityOutputsAndCertificates is the merge
+// invariant for the JSON outputs and their certificates, with NO driver —
+// GitHub's server-side merge runs none. Each output and each certificate is
+// its own file, so two branches that each add a service merge into exactly
+// what a generate over both services writes, and every merged output is
+// certified. (Before .forge/hashes/, both branches rewrote neighbouring
+// lines of one .forge/hashes.json and this merge conflicted.)
+func TestPlainGitMerge_ObservabilityOutputsAndCertificates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("-short: runs real git merges (~3s); runs in task test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	render := func(dir string, services ...string) {
+		t.Helper()
+		checksums.ResetScaffoldLedgerCache()
+		cs, err := checksums.Load(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := obsdash.Input{Project: "app"}
+		for _, s := range services {
+			in.Services = append(in.Services, obsdash.Service{
+				Name: s, Package: "app.v1", ProtoService: strings.ToUpper(s[:1]) + s[1:] + "Service",
+				Methods: []obsdash.Method{{Name: "Ping"}},
+			})
+		}
+		if _, err := obsdash.Write(dir, in, cs); err != nil {
+			t.Fatal(err)
+		}
+		if err := checksums.Save(dir, cs); err != nil {
+			t.Fatal(err)
+		}
+		checksums.ResetScaffoldLedgerCache()
+	}
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	dir := t.TempDir()
+	writeTreeFileT(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.24\n")
+	git(dir, "init", "-q", "-b", "main")
+	render(dir, "system")
+	git(dir, "add", "-A")
+	git(dir, "commit", "-qm", "base")
+	git(dir, "checkout", "-qb", "run")
+	render(dir, "run", "system")
+	git(dir, "add", "-A")
+	git(dir, "commit", "-qm", "run")
+	git(dir, "checkout", "-q", "main")
+	render(dir, "question", "system")
+	git(dir, "add", "-A")
+	git(dir, "commit", "-qm", "question")
+	git(dir, "merge", "--no-edit", "run")
+
+	fresh := t.TempDir()
+	writeTreeFileT(t, filepath.Join(fresh, "go.mod"), "module example.com/app\n\ngo 1.24\n")
+	render(fresh, "question", "run", "system")
+
+	merged, want := observabilityFiles(t, dir), observabilityFiles(t, fresh)
+	for rel, body := range want {
+		if merged[rel] != body {
+			t.Errorf("%s after a plain git merge differs from a generate over both services", rel)
+		}
+	}
+	for rel := range merged {
+		if _, ok := want[rel]; !ok {
+			t.Errorf("%s survives the merge but a generate over both services does not write it", rel)
+		}
+	}
+	mergedCS, err := checksums.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshCS, err := checksums.Load(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mergedCS.Unstampable) != len(freshCS.Unstampable) {
+		t.Errorf("merged certificates %d, fresh %d", len(mergedCS.Unstampable), len(freshCS.Unstampable))
+	}
+	for rel, h := range freshCS.Unstampable {
+		if mergedCS.Unstampable[rel] != h {
+			t.Errorf("%s: merged certificate %q, generate writes %q", rel, mergedCS.Unstampable[rel], h)
+		}
+	}
+	if drift := checksums.ScanTier1Drift(dir, mergedCS); len(drift) != 0 {
+		t.Fatalf("the stomp guard sees drift after a plain merge: %v", drift)
+	}
 }
 
 func TestMergeGenerated_TwoServiceBranchesRebaseClean(t *testing.T) {

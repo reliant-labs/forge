@@ -298,7 +298,7 @@ func TestVerify_VintageClassification(t *testing.T) {
 // gen/'s comment-incapable aggregates are certified by nothing: a write
 // records no hash (and drops one an earlier forge kept), a leftover record is
 // dropped at Load, and a changed copy is regenerated rather than refused as a
-// hand edit. Every other JSON output keeps its .forge/hashes.json record.
+// hand edit. Every other JSON output keeps its certificate under .forge/hashes/.
 func TestUncertifiedGenOutputsRecordNoHash(t *testing.T) {
 	root := t.TempDir()
 	const catalog, spec = "gen/forge_service_catalog.json", "deploy/observability/spec/x_gen.json"
@@ -308,7 +308,7 @@ func TestUncertifiedGenOutputsRecordNoHash(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".forge"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, HashesFile), []byte(`{"files":{"`+catalog+`":"stale"}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, LegacyHashesFile), []byte(`{"files":{"`+catalog+`":"stale"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cs, err := Load(root)
@@ -324,10 +324,10 @@ func TestUncertifiedGenOutputsRecordNoHash(t *testing.T) {
 		}
 	}
 	if _, ok := cs.Unstampable[catalog]; ok {
-		t.Fatal("a gen/ aggregate was certified in hashes.json")
+		t.Fatal("a gen/ aggregate was certified under .forge/hashes/")
 	}
 	if _, ok := cs.Unstampable[spec]; !ok {
-		t.Fatal("a JSON output outside gen/ lost its hashes.json record")
+		t.Fatal("a JSON output outside gen/ lost its certificate")
 	}
 	// A merged (changed) catalog is regenerated, not refused as a hand edit.
 	if err := os.WriteFile(filepath.Join(root, catalog), []byte("{\"v\":\"merged\"}\n"), 0o644); err != nil {

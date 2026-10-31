@@ -36,5 +36,5 @@
 forge_descriptor.json merge=forge-generated
 forge_service_catalog.json merge=forge-generated
 .forge/scaffolded.json merge=forge-generated
-.forge/hashes.json merge=forge-generated
+.forge/hashes/** merge=forge-generated
 .forge/disowned.json merge=forge-generated

@@ -8,7 +8,7 @@
 //   - on-disk bytes match the entry's recorded hash OR any hash in its
 //     render history → the file is a pristine forge render of some
 //     vintage: stamp the forge:hash marker into it (comment-incapable
-//     formats get a scoped .forge/hashes.json entry instead);
+//     formats get a scoped .forge/hashes/ certificate instead);
 //   - bytes match NOTHING the manifest recorded → provenance unknown.
 //     This is kalshi's exact mess (fr-9a54388f0b): a manifest committed
 //     from a different work lane than the committed bytes. The entry is
@@ -295,7 +295,7 @@ func migrateGitignoreNegation(root string) {
 	if !strings.Contains(content, "!"+LegacyChecksumFile) {
 		return
 	}
-	replacement := "!" + DisownedFile + "\n!" + HashesFile
+	replacement := "!" + DisownedFile + "\n!" + HashesDir + "/"
 	content = strings.Replace(content, "!"+LegacyChecksumFile, replacement, 1)
 	// Drop any duplicate negations a previous partial migration left.
 	content = strings.ReplaceAll(content, "!"+LegacyChecksumFile+"\n", "")

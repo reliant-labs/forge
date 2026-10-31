@@ -68,7 +68,7 @@ const ForgeProtoVendorRelPath = "proto/forge/v1/forge.proto"
 // It is a declared list because these copies are otherwise UNTRACKED:
 // they are not templates, not Tier-1 (a forge:hash marker is a comment,
 // and a comment here would be vendored into every project along with the
-// file), and absent from .forge/hashes.json — so forge's upgrade path is
+// file), and absent from .forge/hashes/ — so forge's upgrade path is
 // blind to them and a stale copy diverges silently. Two features depend
 // on knowing exactly which files those are, and MUST agree:
 //

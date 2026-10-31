@@ -330,7 +330,7 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"svc/**/*_gen.json merge=forge-generated", "svc/.forge/hashes.json merge=forge-generated", "svc/.forge/scaffolded.json merge=forge-generated"} {
+	for _, want := range []string{"svc/**/*_gen.json merge=forge-generated", "svc/.forge/hashes/** merge=forge-generated", "svc/.forge/scaffolded.json merge=forge-generated"} {
 		if !strings.Contains(string(attrs), want) {
 			t.Errorf("info/attributes lacks %q:\n%s", want, attrs)
 		}

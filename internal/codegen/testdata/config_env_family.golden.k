@@ -8,7 +8,7 @@ schema ConfigSecretRef:
     name: str
     key: str
 
-# forge:section
+# forge:section schema AppConfigIntegrations
 # AppConfigIntegrations is the integrations block (IntegrationsConfig) — author its values in config.k as `integrations.<field> = ...`.
 schema AppConfigIntegrations:
     webhook_secret: ConfigSecretRef = ConfigSecretRef { name = "reliant-secrets", key = "reliant_github_webhook_secret" }
@@ -27,26 +27,39 @@ schema AppConfigIntegrations:
         all _k in oauth_client_secrets { regex.match(_k, r"^[A-Za-z0-9_]+$") }, "oauth_client_secrets: ${[_k for _k in oauth_client_secrets if not regex.match(_k, r'^[A-Za-z0-9_]+$')]} cannot be a KEY of RELIANT_OAUTH_<KEY>_CLIENT_SECRET — a KEY is letters, digits and underscores"
         all _k in features { regex.match(_k, r"^[A-Za-z0-9_]+$") }, "features: ${[_k for _k in features if not regex.match(_k, r'^[A-Za-z0-9_]+$')]} cannot be a KEY of RELIANT_FEATURE_<KEY> — a KEY is letters, digits and underscores"
 
-# forge:section
+# forge:section schema AppConfig
 schema AppConfig:
     port: int = 8080
     # integrations config block (IntegrationsConfig). Set its fields as `integrations.<field> = ...`.
     integrations: AppConfigIntegrations = AppConfigIntegrations {}
 
-# forge:section
+# forge:section env-map appConfigEnvMap
 # Every ENV_VAR AppConfig declares `sensitive: true` for. Used by forge's
 # host-mode config probe, which resolves the whole config for `forge env up`
 # and the parity report. A WORKLOAD must not use it: naming every
 # credential is the broadcast that put one feature's secretKeyRef on
 # every pod. Declare what a workload reads in its `config_secrets` instead.
-APP_CONFIG_SENSITIVE_ENV: [str] = ["RELIANT_GITHUB_WEBHOOK_SECRET", "RELIANT_OAUTH_<KEY>_CLIENT_SECRET"]
+APP_CONFIG_SENSITIVE_ENV: [str] = [
+    # forge:section APP_CONFIG_SENSITIVE_ENV integrations
+    "RELIANT_GITHUB_WEBHOOK_SECRET"
+
+    # forge:section APP_CONFIG_SENSITIVE_ENV (root)
+    "RELIANT_OAUTH_<KEY>_CLIENT_SECRET"
+
+    # forge:section APP_CONFIG_SENSITIVE_ENV (end)
+]
 
 # Every ENV_VAR AppConfig declares BOTH `sensitive: true` and
 # `optional: true` for. The secret pre-flight skips these: a declared
 # secret with no value is an error by default, and this is the author
 # stating that THIS one's absence is intended (a tier's off-switch, a
 # credential only some environments own).
-APP_CONFIG_OPTIONAL_SECRET_ENV: [str] = ["RELIANT_GITHUB_WEBHOOK_SECRET"]
+APP_CONFIG_OPTIONAL_SECRET_ENV: [str] = [
+    # forge:section APP_CONFIG_OPTIONAL_SECRET_ENV integrations
+    "RELIANT_GITHUB_WEBHOOK_SECRET"
+
+    # forge:section APP_CONFIG_OPTIONAL_SECRET_ENV (end)
+]
 
 # appConfigEnvMap projects a typed AppConfig into a workload's env MAP (fw.Workload.env):
 # one entry per field that declares an env_var, keyed by ENV_VAR name — a
@@ -64,9 +77,10 @@ APP_CONFIG_OPTIONAL_SECRET_ENV: [str] = ["RELIANT_GITHUB_WEBHOOK_SECRET"]
 #     env = appConfigEnvMap(cfg, config_secrets) | {EXTRA = "value"}
 appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {
     _sensitive: {str: forge.SecretRef} = {
-        # forge:section
+        # forge:section appConfigEnvMap secrets integrations
         "RELIANT_GITHUB_WEBHOOK_SECRET" = forge.SecretRef {name = c.integrations.webhook_secret.name, key = c.integrations.webhook_secret.key, store_key = "RELIANT_GITHUB_WEBHOOK_SECRET", optional = True}
 
+        # forge:section appConfigEnvMap secrets (end)
     }
     _families: {str: {str: forge.SecretRef}} = {
         "RELIANT_OAUTH_<KEY>_CLIENT_SECRET" = {"RELIANT_OAUTH_" + _k + "_CLIENT_SECRET": forge.SecretRef {name = _v.name, key = _v.key, store_key = "RELIANT_OAUTH_" + _k + "_CLIENT_SECRET"} for _k, _v in c.integrations.oauth_client_secrets}
@@ -74,9 +88,10 @@ appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forg
     assert all _n in config_secrets { _n in _sensitive or _n in _families }, \
         "appConfigEnvMap: config_secrets names ${[_n for _n in config_secrets if _n not in _sensitive and _n not in _families]}, which is not a `sensitive` field or env family of AppConfig. Sensitive fields: ${sorted([_k for _k in _sensitive] + [_k for _k in _families])}. Add `sensitive: true` to the field's (forge.v1.config) annotation in its config proto, or drop the name from this workload's config_secrets."
     {
-        # forge:section
+        # forge:section appConfigEnvMap values (root)
         "PORT" = str(c.port)
 
+        # forge:section appConfigEnvMap values (end)
     } | {"RELIANT_OAUTH_" + _k + "_CLIENT_ID": _v for _k, _v in c.integrations.oauth_client_ids} | {"RELIANT_FEATURE_" + _k: "true" if _v else "false" for _k, _v in c.integrations.features} | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets} | {_k: _v for _n in config_secrets if _n in _families for _k, _v in _families[_n]}
 }
 

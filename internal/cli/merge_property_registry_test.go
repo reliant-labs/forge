@@ -6,7 +6,6 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -79,19 +78,6 @@ func knownGap(why string, paths ...string) mergeCase {
 	return mergeCase{kind: mergeKnownGap, why: why, gapPaths: paths}
 }
 
-// knownGapPath reports whether p (slash-separated, project-relative) is a
-// declared known-gap path, and of which step.
-func knownGapPath(p string) (step string, ok bool) {
-	for name, c := range mergeCases {
-		for _, g := range c.gapPaths {
-			if m, _ := path.Match(g, p); m {
-				return name, true
-			}
-		}
-	}
-	return "", false
-}
-
 // mergeCases is the registry: every generateSteps() name, and how it merges.
 var mergeCases = map[string]mergeCase{
 	"load project config":                        noOutput("reads forge.yaml"),
@@ -120,15 +106,15 @@ var mergeCases = map[string]mergeCase{
 	"frontend hooks":                             perInput("one <service>-hooks.ts per service"),
 	"ensure frontend components":                 scaffoldOnce("component library copied once"),
 	"frontend CRUD pages":                        scaffoldOnce("pages are the user's from birth"),
-	"frontend nav + dashboard": knownGap("nav.tsx and dashboard.tsx are refreshed until the user's first edit, so two branches that each add an entity both rewrite them (dashboard's hook import lines collide) and both restamp their .forge/scaffolded/ birth_hash",
-		"frontends/*/src/app/dashboard.tsx", "frontends/*/src/components/nav.tsx",
+	"frontend nav + dashboard": knownGap("nav.tsx and dashboard.tsx are refreshed until the user's first edit, so two branches that each add an entity both rewrite them (dashboard's hook import lines collide; nav's route rows merge) and both restamp their .forge/scaffolded/ birth_hash",
+		"frontends/*/src/app/dashboard.tsx",
 		".forge/scaffolded/frontends/*/src/app/dashboard.tsx.json", ".forge/scaffolded/frontends/*/src/components/nav.tsx.json"),
 	"service stubs": perInput("one rpc_<name>.go per rpc, in its service's directory"),
 	"internal/db/ ORM (entity-driven)": knownGap("one ORM file per table, but internal/db/store_gen.go aggregates every entity's Store under one forge:hash, and two new entities both append after the last one: needs one store file per entity",
 		"internal/db/store_gen.go"),
 	"CRUD handlers": perInput("one ops file per service"),
 	"service mocks": proved("one sectioned mock per interface (#1568)",
-		"TestMockMergeProperty_IndependentInterfacesMergeWithPlainGit", "TestStampSections_PlainGitMergeOfIndependentParts"),
+		"TestMockMergeProperty_IndependentInterfacesMergeWithPlainGit", "TestStampSections_EveryIndependentPairMergesWithPlainGit"),
 	"internal package contracts": proved("one sectioned mock per interface (#1568)",
 		"TestMockMergeProperty_IndependentInterfacesMergeWithPlainGit"),
 	"open-procedure set (pkg/middleware)":       perInput("procedures_gen.go: one line per rpc; rpcs of different services sort apart"),
@@ -155,8 +141,8 @@ var mergeCases = map[string]mergeCase{
 	"ingress k3d ports fragment":        perInput("a function of the env's ports"),
 	"CRD KCL manifests (api/ Go types)": perInput("one manifest per CRD"),
 	"entity-aware seed data":            perInput("one seed file per table"),
-	"frontend mocks + transport": knownGap("fixture fingerprint out of git (#1585) and one fixture per entity, but scenario-rpcs_gen.ts's section line is the first line of its section and carries the hash, so a service inserted before a changed neighbour touches that neighbour's changed line; and lib/mock-transport_gen.ts aggregates every entity's descriptor and schema imports, unsectioned",
-		"frontends/*/src/mocks/scenario-rpcs_gen.ts", "frontends/*/src/lib/mock-transport_gen.ts"),
+	"frontend mocks + transport": knownGap("scenario-rpcs_gen.ts is one named section per service (#1582, named headers in v1.0.11), proved by TestMergeProperty_ScenarioRpcs; fixture fingerprint out of git (#1585) and one fixture per entity; but lib/mock-transport_gen.ts aggregates every entity's descriptor and schema imports, unsectioned",
+		"frontends/*/src/lib/mock-transport_gen.ts"),
 	"repoint renamed *_gen frontend imports":                    perInput("rewrites import lines in the files that name a renamed module"),
 	"retire delivered agent skills":                             noOutput("removes retired files"),
 	"go mod tidy (root)":                                        external("go.mod / go.sum"),

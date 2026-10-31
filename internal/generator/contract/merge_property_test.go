@@ -74,8 +74,11 @@ func TestMockMergeProperty_IndependentInterfacesMergeWithPlainGit(t *testing.T) 
 	runGitT(t, repo, "add", ".")
 	runGitT(t, repo, "commit", "-qm", "base")
 
+	// Alpha and Bravo are NEIGHBOURING sections: the shape that conflicted
+	// while a section's hash rode on its header (Charlie sat between the
+	// two changes in the original proof, so it never saw it).
 	alpha := map[string]string{"Alpha": "Put(ctx context.Context, id, v string) error"}
-	charlie := map[string]string{"Charlie": "Delete(ctx context.Context, id string) error"}
+	charlie := map[string]string{"Bravo": "Delete(ctx context.Context, id string) error"}
 
 	runGitT(t, repo, "checkout", "-qb", "alpha")
 	generateInto(t, repo, contractWith(alpha))
@@ -83,7 +86,7 @@ func TestMockMergeProperty_IndependentInterfacesMergeWithPlainGit(t *testing.T) 
 
 	runGitT(t, repo, "checkout", "-q", "main")
 	generateInto(t, repo, contractWith(charlie))
-	runGitT(t, repo, "commit", "-qam", "charlie gains Delete")
+	runGitT(t, repo, "commit", "-qam", "bravo gains Delete")
 
 	// contract.go is hand-written: both branches change different
 	// interfaces, so it merges too.
@@ -97,7 +100,7 @@ func TestMockMergeProperty_IndependentInterfacesMergeWithPlainGit(t *testing.T) 
 	// What forge generate writes for the merged inputs, in a fresh tree.
 	fresh := t.TempDir()
 	writeTree(t, fresh, map[string]string{"go.mod": "module example.com/proj\n\ngo 1.22\n"})
-	both := map[string]string{"Alpha": alpha["Alpha"], "Charlie": charlie["Charlie"]}
+	both := map[string]string{"Alpha": alpha["Alpha"], "Bravo": charlie["Bravo"]}
 	generateInto(t, fresh, contractWith(both))
 	want, err := os.ReadFile(filepath.Join(fresh, "internal", "widgets", "mock_gen.go"))
 	if err != nil {

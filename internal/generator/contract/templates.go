@@ -60,7 +60,7 @@ import (
 {{ end -}}
 
 {{ range $iface := .Interfaces -}}
-// forge:section
+// forge:section {{ $iface.MockName }}
 
 // {{ $iface.MockName }} is a test mock for the {{ $iface.QualifiedName }} interface.
 //

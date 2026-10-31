@@ -23,14 +23,14 @@ type UnaryReturn<T> = T | Promise<T>;
 
 export type ScenarioRpcHandlers =
 {{- range .Services}}
-  // forge:section
+  // forge:section {{.Name}}
   & {
 {{- range .Entries}}
     "{{.Key}}"?: (req: {{.RequestType}}) => UnaryReturn<MessageInitShape<typeof {{.ResponseSchema}}>>;
 {{- end}}
   }
 {{ end}}
-  // forge:section
+  // forge:section (escape hatch)
   & {
     // Escape hatch: streaming RPCs, or methods added since the last
     // `forge generate`. Unchecked keys — prefer the typed entries above.

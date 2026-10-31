@@ -131,12 +131,18 @@ type Column struct {
 	NoDashboard bool
 }
 
-// sectionLine begins one independent part of the script: forge stamps each
-// with that part's own hash (forge's checksums package, "sectioned
-// self-certification"). One hash over the whole file made any two branches
-// that changed different tables conflict on its one line; with a hash per
-// table they merge as text. It is an SQL comment, so the script runs as is.
-const sectionLine = "-- forge:section\n"
+// sectionLine is the header of one independent part of the script, named
+// for that part (a table's schema.name, or the constant tail): forge stamps
+// each with that part's own hash on the line after it (forge's checksums
+// package, "sectioned self-certification"). One hash over the whole file made
+// any two branches that changed different tables conflict on its one line;
+// with a hash per table they merge as text. The name keeps every header
+// unique and unchanged while its table exists, so a table added beside one
+// another branch changed does not touch that branch's lines. It is an SQL
+// comment, so the script runs as is.
+func sectionLine(name string) string {
+	return "-- forge:section " + strings.ReplaceAll(name, "\n", " ") + "\n"
+}
 
 // dollarTag delimits the script's single DO block. An identifier containing it
 // would end the block early, so Render refuses one.
@@ -362,7 +368,7 @@ func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 			if len(lits) > 0 {
 				arr = "ARRAY[" + strings.Join(lits, ", ") + "]::text[]"
 			}
-			b.WriteString("    " + sectionLine)
+			b.WriteString("    " + sectionLine(schema+"."+t.Name))
 			fmt.Fprintf(&b, "    , (%s, %s, %s)\n", quoteLiteral(schema), quoteLiteral(t.Name), arr)
 			if len(secret) > 0 {
 				b.WriteString("    --   " + strings.ReplaceAll(schema+"."+t.Name+": "+strings.Join(secret, ", "), "\n", " ") + "  (forge:secret, withheld)\n")
@@ -379,7 +385,7 @@ func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 	}
 	// The rest of the script is constant: its own section, so the last
 	// table's section ends here rather than at the end of the file.
-	b.WriteString("  " + sectionLine)
+	b.WriteString("  " + sectionLine("(apply)"))
 	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL AND role_login LOOP\n")
 	b.WriteString("    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attname) INTO readable\n")
 	b.WriteString("      FROM pg_attribute a\n")

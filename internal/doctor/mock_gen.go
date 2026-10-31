@@ -14,7 +14,8 @@ import (
 	"github.com/reliant-labs/forge/pkg/contractkit"
 )
 
-// forge:section forge:hash=a5d5e70a4901f58928b53d0c9f56c5102d802548539d3567c4f65812d19374fc
+// forge:section MockService
+// forge:hash=1d83bae1183c76638db601c63f3ea50fe0a2556f5a4d52bb30eba1a67dd30379
 
 // MockService is a test mock for the Service interface.
 //

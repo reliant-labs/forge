@@ -296,8 +296,10 @@ type ScenarioRPCEntry struct {
 	ResponseSchema string
 }
 
-// ScenarioRPCService is one service's rows: one forge:section of the file.
+// ScenarioRPCService is one service's rows: one forge:section of the file,
+// headed by the service's fully-qualified name.
 type ScenarioRPCService struct {
+	Name    string
 	Entries []ScenarioRPCEntry
 }
 
@@ -324,7 +326,7 @@ type ScenarioRPCData struct {
 func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
 	var data ScenarioRPCData
 	for _, svc := range services {
-		var group ScenarioRPCService
+		group := ScenarioRPCService{Name: svc.Package + "." + svc.Name}
 		for _, m := range svc.Methods {
 			if m.ClientStreaming || m.ServerStreaming {
 				continue

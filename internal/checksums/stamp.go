@@ -234,15 +234,17 @@ func stripMarkerLines(content []byte) []byte {
 	return out
 }
 
-// stripHeadMarkerLines removes the marker lines that are NOT section
-// lines: what Stamp replaces, leaving the section boundaries in place.
+// stripHeadMarkerLines removes the marker lines that belong to no section:
+// what Stamp replaces, leaving section headers and their hash lines in place.
 func stripHeadMarkerLines(content []byte) []byte {
 	if !bytes.Contains(content, []byte(markerKey)) {
 		return content
 	}
+	lines := splitLines(content)
+	hashLine := sectionRoles(lines)
 	var out []byte
-	for _, line := range splitLines(content) {
-		if bytes.Contains(line, []byte(markerKey)) && !isSectionLine(line) {
+	for i, line := range lines {
+		if bytes.Contains(line, []byte(markerKey)) && !isSectionLine(line) && !hashLine[i] {
 			continue
 		}
 		out = append(out, line...)
@@ -357,7 +359,7 @@ func isHashValue(s string) bool {
 // user-owned file must not advertise forge certification) and by the
 // Tier-2 reclassification path.
 func StripMarker(content []byte) []byte {
-	if !bytes.Contains(content, []byte(markerKey)) {
+	if !bytes.Contains(content, []byte(markerKey)) && !bytes.Contains(content, []byte(sectionKey)) {
 		return content
 	}
 	// Work on raw bytes (not LF-normalized) so we only ever delete the
@@ -372,7 +374,7 @@ func StripMarker(content []byte) []byte {
 		} else {
 			line, rest = rest[:i+1], rest[i+1:]
 		}
-		if bytes.Contains(line, []byte(markerKey)) {
+		if bytes.Contains(line, []byte(markerKey)) || isSectionLine(line) {
 			continue
 		}
 		out = append(out, line...)

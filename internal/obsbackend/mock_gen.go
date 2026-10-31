@@ -13,7 +13,8 @@ import (
 	"github.com/reliant-labs/forge/pkg/contractkit"
 )
 
-// forge:section forge:hash=b9df7d40b85727907915a59533dedd69e83e10dfea3251c243b2dfab8031b391
+// forge:section MockBackend
+// forge:hash=aebe29fda49f95579d5ee75e6295bfbbc6ed50b036d4179adf860004b6136994
 
 // MockBackend is a test mock for the Backend interface.
 //
@@ -128,7 +129,8 @@ func (m *MockBackend) Query(ctx context.Context, req QueryRequest) (QueryResult,
 // Compile-time check.
 var _ Backend = (*MockBackend)(nil)
 
-// forge:section forge:hash=18ade9f4c7089b2c7d1b77396f068d0a587f4a62a73d81a2672acd7e92b4f60b
+// forge:section MockIssueReader
+// forge:hash=0d6c1e83892f8e1a6fd3f6d8fa68719393699d507e6f2b2eee70eaaac5ea4e71
 
 // MockIssueReader is a test mock for the IssueReader interface.
 //
@@ -213,7 +215,8 @@ func (m *MockIssueReader) AssignIssue(ctx context.Context, req AssignIssueReques
 // Compile-time check.
 var _ IssueReader = (*MockIssueReader)(nil)
 
-// forge:section forge:hash=fe376259e0d48932238564de3f33ca3a003d98eea78217b4f34973676f3adbfb
+// forge:section MockSessionReader
+// forge:hash=13d796969f73dd4f890fcef0345e8356bdffab382b53ce1604934dd2351b038a
 
 // MockSessionReader is a test mock for the SessionReader interface.
 //
@@ -248,7 +251,8 @@ func (m *MockSessionReader) GetSession(ctx context.Context, req GetSessionReques
 // Compile-time check.
 var _ SessionReader = (*MockSessionReader)(nil)
 
-// forge:section forge:hash=55d807c6537f40968c5ce5e2a7f18c1c513eaaf380c4ecddf5c527a3be8eea43
+// forge:section MockHealthReader
+// forge:hash=a800afb4b55c4883d596d1b42b98f8848ba9d26c6551f0aedc2f9efd1956c7b9
 
 // MockHealthReader is a test mock for the HealthReader interface.
 //
@@ -273,7 +277,8 @@ func (m *MockHealthReader) ReleaseHealth(ctx context.Context, req HealthRequest)
 // Compile-time check.
 var _ HealthReader = (*MockHealthReader)(nil)
 
-// forge:section forge:hash=10fbcc6e35aa4b72f4c2cd8335c0b560f7e4f79a5c1d92b1d1740d077e81b317
+// forge:section MockChangesReader
+// forge:hash=ace1e24a9a17e69076f6b1859431719da10ae39d184ef7b0967efd9fcf7fc6e5
 
 // MockChangesReader is a test mock for the ChangesReader interface.
 //
@@ -298,7 +303,8 @@ func (m *MockChangesReader) Changes(ctx context.Context, req ChangesRequest) (Ch
 // Compile-time check.
 var _ ChangesReader = (*MockChangesReader)(nil)
 
-// forge:section forge:hash=620c6423debcbec24c06da7892f1cc733b7e13d4b1c24d3403294a0ba7f12ac0
+// forge:section MockOverviewReader
+// forge:hash=e3fd2d19a1ffb0cd4add2b579b022c5220be53e22c62fed241dce0e1ee3ec8bb
 
 // MockOverviewReader is a test mock for the OverviewReader interface.
 //
@@ -323,7 +329,8 @@ func (m *MockOverviewReader) Overview(ctx context.Context, req OverviewRequest) 
 // Compile-time check.
 var _ OverviewReader = (*MockOverviewReader)(nil)
 
-// forge:section forge:hash=8c2860c96cbd22f8bf7bede6f9c127009f9d00a81b0b6c7663b3a38c36133b07
+// forge:section MockAlertReader
+// forge:hash=6b4f83d1c00daee2ec5591a1ac51e5f7b1721e2d1b102ab695a8302217c0323a
 
 // MockAlertReader is a test mock for the AlertReader interface.
 //
@@ -348,7 +355,8 @@ func (m *MockAlertReader) Alerts(ctx context.Context) ([]Alert, error) {
 // Compile-time check.
 var _ AlertReader = (*MockAlertReader)(nil)
 
-// forge:section forge:hash=e0f4fd8891e3163e7adf235d2a54fb15949cef35e5ea2e85dc8f387c43464193
+// forge:section MockDeliveryReader
+// forge:hash=0beec02cd11b95fde5af981de2c810547b3187b0312e9f808bb071ae2925dfe0
 
 // MockDeliveryReader is a test mock for the DeliveryReader interface.
 //
@@ -373,7 +381,8 @@ func (m *MockDeliveryReader) TelemetryDeliveries(ctx context.Context) (Deliverie
 // Compile-time check.
 var _ DeliveryReader = (*MockDeliveryReader)(nil)
 
-// forge:section forge:hash=d56b217458e95f593e03726cae247524d7faa6e24fca735c291c8ffbfd4ad0a2
+// forge:section MockDashboardReader
+// forge:hash=263eae50f87d1ab630ef59d0b972fcce31de38b11c3c1d253ecd3aefba94d02c
 
 // MockDashboardReader is a test mock for the DashboardReader interface.
 //

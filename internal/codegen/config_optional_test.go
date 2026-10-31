@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -121,14 +123,48 @@ func TestOptionalSensitiveFieldProjectsSecretOptionalIntoKCL(t *testing.T) {
 func TestOptionalSecretsAreListedInTheGeneratedConstant(t *testing.T) {
 	out := renderConfigEnvMapNamed(optionalFixture()[0].Fields, "AppConfig", "appConfigEnvMap")
 
-	if !strings.Contains(out, `APP_CONFIG_OPTIONAL_SECRET_ENV: [str] = ["ADMIN_PASSWORD"]`) {
-		t.Errorf("the optional-secret constant is missing or wrong:\n%s", out)
+	if got := kclListConstant(t, out, "APP_CONFIG_OPTIONAL_SECRET_ENV"); !slices.Equal(got, []string{"ADMIN_PASSWORD"}) {
+		t.Errorf("the optional-secret constant is %q, want [ADMIN_PASSWORD]:\n%s", got, out)
 	}
 	// Both credentials are still sensitive; optionality does not remove them
 	// from the sensitive set, it only exempts them from the value check.
-	if !strings.Contains(out, `APP_CONFIG_SENSITIVE_ENV: [str] = ["DATABASE_URL", "ADMIN_PASSWORD"]`) {
-		t.Errorf("optionality changed the sensitive set, which it must not:\n%s", out)
+	if got := kclListConstant(t, out, "APP_CONFIG_SENSITIVE_ENV"); !slices.Equal(got, []string{"DATABASE_URL", "ADMIN_PASSWORD"}) {
+		t.Errorf("optionality changed the sensitive set, which it must not: %q\n%s", got, out)
 	}
+}
+
+// kclListConstant returns the string entries of the module-level `[str]`
+// constant name in a rendered config module, in order. The constant is one
+// entry per line, in sections (forge:section headers and hash lines are
+// comments), so this reads the values rather than a spelling.
+func kclListConstant(t *testing.T, module, name string) []string {
+	t.Helper()
+	open := name + ": [str] = ["
+	i := strings.Index(module, open)
+	if i < 0 {
+		t.Fatalf("no %s constant in:\n%s", name, module)
+	}
+	rest := module[i+len(open):]
+	if strings.HasPrefix(rest, "]") {
+		return nil
+	}
+	end := strings.Index(rest, "\n]")
+	if end < 0 {
+		t.Fatalf("%s constant is not closed:\n%s", name, module)
+	}
+	var out []string
+	for _, line := range strings.Split(rest[:end], "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		v, err := strconv.Unquote(strings.TrimSuffix(line, ","))
+		if err != nil {
+			t.Fatalf("%s entry %q: %v", name, line, err)
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 func TestOptionalSecretsConstantNameFollowsTheSchema(t *testing.T) {

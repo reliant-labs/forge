@@ -97,7 +97,7 @@ func GenerateConfigKCL(fields []ConfigField, projectName string) (string, error)
 	}
 	b.WriteString(schema)
 	b.WriteString("\n")
-	b.WriteString(kclSectionLine)
+	b.WriteString(kclSection("env-map appConfigEnvMap"))
 	b.WriteString(renderAppConfigEnvMap(fields))
 
 	return b.String(), nil
@@ -205,7 +205,7 @@ func GenerateConfigKCLPerBinary(rootFields []ConfigField, perBinary []BinaryConf
 		first = false
 		b.WriteString(schema)
 		b.WriteString("\n")
-		b.WriteString(kclSectionLine)
+		b.WriteString(kclSection("env-map " + lambdaName))
 		b.WriteString(renderConfigEnvMapNamed(fields, schemaName, lambdaName))
 		b.WriteString("\n")
 		return nil
@@ -233,7 +233,7 @@ func GenerateConfigKCLPerBinary(rootFields []ConfigField, perBinary []BinaryConf
 					"and a config message of that name already exists. Rename the message",
 				ps.Binary, ps.SchemaName())
 		}
-		b.WriteString(kclSectionLine)
+		b.WriteString(kclSection("process-selector " + ps.SchemaName()))
 		b.WriteString(renderProcessSelector(ps))
 		b.WriteString("\n")
 	}
@@ -674,22 +674,36 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	var b strings.Builder
 
 	// writeGrouped writes entries with each config block's run of entries
-	// in its own forge:section, closed by a blank line, so two branches that
-	// add fields to different blocks change different sections of the map
-	// (and never adjacent lines) and merge with plain git.
-	writeGrouped := func(entries []kv, write func(kv)) {
+	// in its own forge:section (named "<group> <block>"), closed by a blank
+	// line, so two branches that add fields to different blocks change
+	// different sections (and never adjacent lines) and merge with plain
+	// git. A closing "<group> (end)" section then holds whatever follows the
+	// group, so a block appended at the end does not move that tail out of
+	// the previous block's section (which would rehash it).
+	writeGrouped := func(indent, group string, entries []kv, write func(kv)) {
+		// Root fields declared on both sides of a block form two runs; the
+		// second takes an ordinal, so every header in the module stays unique.
+		runs := map[string]int{}
 		for i, e := range entries {
 			if i == 0 || e.block != entries[i-1].block {
 				if i > 0 {
 					b.WriteString("\n")
 				}
-				b.WriteString("        " + kclSectionLine)
+				block := e.block
+				if block == "" {
+					block = "(root)"
+				}
+				if runs[block]++; runs[block] > 1 {
+					block += fmt.Sprintf(" #%d", runs[block])
+				}
+				b.WriteString(indent + kclSection(group+" "+block))
 			}
 			write(e)
 		}
 		if len(entries) > 0 {
 			b.WriteString("\n")
 		}
+		b.WriteString(indent + kclSection(group+" (end)"))
 	}
 
 	// The full sensitive-var list, as a module-level constant emitted BEFORE
@@ -705,14 +719,14 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	b.WriteString("# every pod. Declare what a workload reads in its `config_secrets` instead.\n")
 	// A sensitive env family is listed by its pattern
 	// (APP_OAUTH_<KEY>_CLIENT_SECRET), the name config_secrets selects it by.
+	//
+	// One entry per line, grouped by config block like the env map below:
+	// two branches that add credentials to different blocks change
+	// different sections of the list, not its one line.
 	allSecrets := append(append([]kv(nil), secrets...), familySecrets...)
-	fmt.Fprintf(&b, "%s: [str] = [", KCLAllSensitiveName(schemaName))
-	for i, e := range allSecrets {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "%q", e.key)
-	}
+	writeKeys := func(e kv) { fmt.Fprintf(&b, "    %q\n", e.key) }
+	fmt.Fprintf(&b, "%s: [str] = [\n", KCLAllSensitiveName(schemaName))
+	writeGrouped("    ", KCLAllSensitiveName(schemaName), allSecrets, writeKeys)
 	b.WriteString("]\n\n")
 
 	// The OPTIONAL subset of the above. Read by forge's secret pre-flight to
@@ -724,20 +738,14 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	b.WriteString("# secret with no value is an error by default, and this is the author\n")
 	b.WriteString("# stating that THIS one's absence is intended (a tier's off-switch, a\n")
 	b.WriteString("# credential only some environments own).\n")
-	fmt.Fprintf(&b, "%s: [str] = [", KCLOptionalSecretsName(schemaName))
-	{
-		first := true
-		for _, e := range allSecrets {
-			if !e.optional {
-				continue
-			}
-			if !first {
-				b.WriteString(", ")
-			}
-			first = false
-			fmt.Fprintf(&b, "%q", e.key)
+	var optionalSecrets []kv
+	for _, e := range allSecrets {
+		if e.optional {
+			optionalSecrets = append(optionalSecrets, e)
 		}
 	}
+	fmt.Fprintf(&b, "%s: [str] = [\n", KCLOptionalSecretsName(schemaName))
+	writeGrouped("    ", KCLOptionalSecretsName(schemaName), optionalSecrets, writeKeys)
 	b.WriteString("]\n\n")
 
 	fmt.Fprintf(&b, "# %s projects a typed %s into a workload's env MAP (fw.Workload.env):\n", lambdaName, schemaName)
@@ -764,7 +772,7 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	// The sensitive half is bound first so the assert can name what IS
 	// available when an entry does not resolve.
 	b.WriteString("    _sensitive: {str: forge.SecretRef} = {\n")
-	writeGrouped(secrets, func(e kv) { fmt.Fprintf(&b, "        %q = %s\n", e.key, e.expr) })
+	writeGrouped("        ", lambdaName+" secrets", secrets, func(e kv) { fmt.Fprintf(&b, "        %q = %s\n", e.key, e.expr) })
 	b.WriteString("    }\n")
 	if len(familySecrets) == 0 {
 		b.WriteString("    assert all _n in config_secrets { _n in _sensitive }, \\\n")
@@ -797,7 +805,7 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 		b.WriteString("    {}" + rest)
 	} else {
 		b.WriteString("    {\n")
-		writeGrouped(inline, func(e kv) {
+		writeGrouped("        ", lambdaName+" values", inline, func(e kv) {
 			if e.omitWhen != "" {
 				fmt.Fprintf(&b, "        if %s:\n", e.omitWhen)
 				fmt.Fprintf(&b, "            %q = %s\n", e.key, e.expr)

@@ -1062,11 +1062,13 @@ func TestMockTransportTemplate_EntityServedByTwoServices(t *testing.T) {
 	}
 }
 
-// The merge invariant (internal/mergeproperty) for scenario-rpcs_gen.ts: one
-// branch adds an rpc to AlphaService, the other to GammaService, with
-// BetaService between them untouched. Each service is its own section and
-// every type is imported inline, so no shared import block or type literal
-// changes on both sides.
+// The merge invariant (internal/mergeproperty) for scenario-rpcs_gen.ts. Each
+// service is its own named section and every type is imported inline, so no
+// shared import block or type literal changes on both sides. Three shapes:
+// services apart (BetaService untouched between them), NEIGHBOURING services,
+// and a service born directly before one the other branch changed — the
+// shape a two-service project hits first (orders sorts before users), which
+// conflicted while the section's hash rode on its header.
 func TestMergeProperty_ScenarioRpcs(t *testing.T) {
 	svc := func(name string, rpcs ...string) codegen.ServiceDef {
 		lower := strings.ToLower(strings.TrimSuffix(name, "Service"))
@@ -1076,13 +1078,30 @@ func TestMergeProperty_ScenarioRpcs(t *testing.T) {
 		}
 		return d
 	}
-	variants := map[string][]codegen.ServiceDef{
-		"base":   {svc("AlphaService", "Get"), svc("BetaService", "Get"), svc("GammaService", "Get")},
-		"ours":   {svc("AlphaService", "Get", "Put"), svc("BetaService", "Get"), svc("GammaService", "Get")},
-		"theirs": {svc("AlphaService", "Get"), svc("BetaService", "Get"), svc("GammaService", "Get", "Delete")},
-		"merged": {svc("AlphaService", "Get", "Put"), svc("BetaService", "Get"), svc("GammaService", "Get", "Delete")},
+	for name, variants := range map[string]map[string][]codegen.ServiceDef{
+		"apart": {
+			"base":   {svc("AlphaService", "Get"), svc("BetaService", "Get"), svc("GammaService", "Get")},
+			"ours":   {svc("AlphaService", "Get", "Put"), svc("BetaService", "Get"), svc("GammaService", "Get")},
+			"theirs": {svc("AlphaService", "Get"), svc("BetaService", "Get"), svc("GammaService", "Get", "Delete")},
+			"merged": {svc("AlphaService", "Get", "Put"), svc("BetaService", "Get"), svc("GammaService", "Get", "Delete")},
+		},
+		"neighbours": {
+			"base":   {svc("AlphaService", "Get"), svc("BetaService", "Get")},
+			"ours":   {svc("AlphaService", "Get", "Put"), svc("BetaService", "Get")},
+			"theirs": {svc("AlphaService", "Get"), svc("BetaService", "Get", "Delete")},
+			"merged": {svc("AlphaService", "Get", "Put"), svc("BetaService", "Get", "Delete")},
+		},
+		"born before a changed neighbour": {
+			"base":   {svc("UsersService", "Get")},
+			"ours":   {svc("UsersService", "Ping", "Get")},
+			"theirs": {svc("OrdersService", "Ping"), svc("UsersService", "Get")},
+			"merged": {svc("OrdersService", "Ping"), svc("UsersService", "Ping", "Get")},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mergeproperty.AssertPlainMergeIsRender(t, "frontends/web/src/mocks/scenario-rpcs_gen.ts", func(v string) []byte {
+				return []byte(renderFrontendTemplate(t, "mocks/scenarios/scenario-rpcs.ts.tmpl", codegen.BuildScenarioRPCData(variants[v])))
+			})
+		})
 	}
-	mergeproperty.AssertPlainMergeIsRender(t, "frontends/web/src/mocks/scenario-rpcs_gen.ts", func(v string) []byte {
-		return []byte(renderFrontendTemplate(t, "mocks/scenarios/scenario-rpcs.ts.tmpl", codegen.BuildScenarioRPCData(variants[v])))
-	})
 }

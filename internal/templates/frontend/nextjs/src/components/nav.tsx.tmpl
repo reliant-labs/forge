@@ -1,15 +1,13 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //
-// STARTER CODE, NOT A DESIGN. Forge writes this file once, seeded with a link
-// per entity it generated pages for, and never touches it again. Rewriting it
-// — restyling, regrouping, replacing the whole component — is expected, not a
-// deviation.
+// STARTER CODE, NOT A DESIGN. Forge writes this file once and never edits it
+// for an entity. Rewriting it — restyling, regrouping, replacing the whole
+// component — is expected, not a deviation.
 //
-// The route list below is a starting point, not a projection: forge does not
-// re-derive it, so a route you add stays and a route you delete stays deleted.
-// Adding an entity later scaffolds its pages but does NOT edit this file —
-// add its link yourself, which is the same edit you would make for any route
-// that isn't backed by an entity at all.
+// The entity links come from ENTITY_ROUTES (src/lib/nav-routes_gen.ts, one
+// generated module per entity), so an entity added later is linked without
+// forge touching this file. Filter, reorder or replace that spread freely; a
+// route of your own is one more entry in ALL_ROUTES.
 //
 // Presentation lives in globals.css: this component reads the semantic theme
 // tokens (bg-surface, text-ink, border-border), so rebranding the whole app is
@@ -21,27 +19,15 @@ import { ChevronLeft, LayoutDashboard, Table2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { ENTITY_ROUTES, type NavRoute } from "@/lib/nav-routes_gen";
 import { useUiStore } from "@/stores/ui-store";
 
 /** One entry in the sidebar. Add, remove and reorder freely. */
-export type RouteSpec = {
-  /** URL path, always rooted (e.g. "/billing"). */
-  path: string;
-  /** Display label, capitalized for menus and tile headers. */
-  label: string;
-  /** Lowercase variant, useful for descriptions ("manage billing"). */
-  labelLower: string;
-  /** Slug — the path segment without the leading slash. */
-  slug: string;
-  /** Singular display name ("Task") for "Create X" affordances. */
-  labelSingular: string;
-  /** True when the entity has a create page at `<path>/new`. */
-  hasCreate: boolean;
-};
+export type RouteSpec = NavRoute;
 
-// Seeded with the entities that existed at scaffold time. The dashboard
-// imports this, so pruning here prunes there too.
-export const ALL_ROUTES: Array<RouteSpec & { icon?: string }> = [
+// The dashboard, then every entity's list page. The dashboard imports this,
+// so pruning here prunes there too.
+export const ALL_ROUTES: RouteSpec[] = [
   {
     path: "/",
     label: "Dashboard",
@@ -51,17 +37,7 @@ export const ALL_ROUTES: Array<RouteSpec & { icon?: string }> = [
     hasCreate: false,
     icon: "dashboard",
   },
-{{- range .Pages}}
-  {
-    path: "/{{.Slug}}",
-    label: "{{.Label}}",
-    labelLower: "{{.LabelLower}}",
-    slug: "{{.Slug}}",
-    labelSingular: "{{.LabelSingular}}",
-    hasCreate: {{.HasCreate}},
-    icon: "entity",
-  },
-{{- end}}
+  ...ENTITY_ROUTES,
 ];
 
 const navItems = ALL_ROUTES;

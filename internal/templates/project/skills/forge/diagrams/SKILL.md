@@ -150,7 +150,7 @@ Mermaid is better than anything you'd hand-roll for these shapes, and forcing th
 Diagrams are exactly the case where the diff lies. After making one:
 
 1. Load the page in a browser.
-2. Screenshot it.
+2. Screenshot it — Chrome DevTools `take_screenshot` with no `filePath`, so the image returns inline and you can see it (`frontend/design/verify`, "Seeing the screenshot").
 3. Look at the screenshot — do lines land on boxes, do labels fit, is anything overlapping?
 4. For every connector path, list the (x,y) waypoints and check that no waypoint falls inside the rect of a card other than the source or target. Connector-through-unrelated-card is the second most common diagram bug after coordinate drift — a vertical line at x=1060 routed past a card at x=1020..1220 slices straight through it, and the screenshot will show the collision.
 5. If you cannot load the app, say so explicitly. A diagram that "compiles" can still be visually broken.

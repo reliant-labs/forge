@@ -8,12 +8,24 @@ description: Visual verification before declaring frontend work done — the scr
 Code that type-checks and tests that pass do not prove a UI looks right. Before reporting visual work complete:
 
 1. Launch the app and load the page you changed (use the `run` skill if available, or the explicit dev-server command).
-2. Take a screenshot. Look at it. Compare to the brief.
+2. Take a screenshot. Look at it. Compare to the brief (see "Seeing the screenshot" below — a PNG on disk is not a look).
 3. Check at least one other viewport width (mobile if the design is desktop-first, or vice versa).
 4. Run the overflow probe below against the changed surface and read the report.
 5. Check for overflow / text wrap / alignment regressions in the surrounding area, not just the changed component.
 
 If you cannot run the app, say so explicitly — do not claim visual success based on the diff alone.
+
+## Seeing the screenshot
+
+A screenshot saved to disk and opened with a file viewer often comes back as metadata only, and the review silently degrades to OCR and pixel sampling. Get the image inline instead:
+
+1. Load the Chrome DevTools tools — they are often deferred: `mcp__chrome-devtools__navigate_page`, `resize_page`, `take_screenshot`, `evaluate_script` (via `load_tool` or your harness's equivalent).
+2. `navigate_page` to the dev server URL of the page you changed.
+3. `resize_page` to each viewport you check (e.g. 1440×900, 768×1024, 375×812).
+4. `take_screenshot` with **no `filePath`** — optionally `fullPage: true`, or a `uid` from `take_snapshot` for one element. The image then comes back in the tool result itself.
+5. Look at it, and critique it against the brief and the anti-slop blocklist in `frontend/design`.
+
+Never claim a visual check from a file you could not view. If your harness cannot return inline images, say so explicitly, fall back to the overflow probe plus measurements (`evaluate_script` for rects, computed styles, contrast), and label the result as measured, not seen. A screenshot written to disk with `filePath` is for handing to the user, not for your own review.
 
 ## Overflow probe
 

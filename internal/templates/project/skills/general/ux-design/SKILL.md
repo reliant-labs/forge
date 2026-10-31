@@ -125,6 +125,9 @@ Target metrics:
 
 **IMPORTANT**: You MUST validate the site loads with no javascript errors. You MUST navigate to all pages, and click on various buttons, and user journeys. Use playwright if you need.
 
+### Verify visually
+Look at every page you changed at more than one viewport. Take the screenshot with Chrome DevTools `take_screenshot` and no `filePath` so the image returns inline — a PNG on disk is often unviewable to you. Steps and fallbacks: `frontend/design/verify`, "Seeing the screenshot". Never claim a visual check you could not see.
+
 ## Workflow Instructions
 
 1. **Research First**: Always research current trends and patterns before implementing

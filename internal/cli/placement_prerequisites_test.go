@@ -136,8 +136,10 @@ func TestPlacementPrerequisitesFrontendDeclarations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decl) != 3 || len(decl[2].Dependencies) != 2 || len(decl[1].Dependencies) != 1 {
-		t.Fatalf("missing conservative/same-stage edges: %+v", decl)
+	// web (hosted) waits for both cluster servers; worker -> api is
+	// same-stage, a compatibility claim that orders nothing.
+	if len(decl) != 3 || len(decl[2].Dependencies) != 2 || len(decl[1].Dependencies) != 0 {
+		t.Fatalf("want the conservative cross-stage edges and no same-stage one: %+v", decl)
 	}
 	e.Frontends[0].ReleaseDependencies = map[string]string{}
 	decl, err = bundlePlacementDeclarations(e)
@@ -234,10 +236,31 @@ func TestPlacementPrerequisitesNativeOpenBao(t *testing.T) {
 	}
 }
 
-func TestPlacementPrerequisitesSameStageCycle(t *testing.T) {
-	e := &KCLEntities{Workloads: []WorkloadEntity{orderClusterWorkload("a", map[string]string{"b": "v1"}), orderClusterWorkload("b", map[string]string{"a": "v1"})}}
-	if _, err := deployStageOrder(e); err == nil || !strings.Contains(err.Error(), "cycle") {
-		t.Fatalf("same-stage cycle ignored: %v", err)
+// release_dependencies inside one stage is a compatibility claim, not an
+// order: the two-way pair control-plane prod and reliant declare (api-server
+// and daemon-gateway each name the other's NATS contract) deploys. The same
+// pair across stages is a real cycle and is still refused, by item.
+func TestPlacementPrerequisitesSameStagePairIsNotACycle(t *testing.T) {
+	e := &KCLEntities{Workloads: []WorkloadEntity{
+		orderClusterWorkload("reliant-api-server", map[string]string{"daemon-gateway": "reliant/api-gateway-nats/v1"}),
+		orderClusterWorkload("daemon-gateway", map[string]string{"reliant-api-server": "reliant/api-gateway-nats/v1"}),
+	}}
+	edges, err := deployStageEdges(e)
+	if err != nil || len(edges) != 0 {
+		t.Fatalf("a same-stage pair ordered something: edges=%+v err=%v", edges, err)
+	}
+	if _, err := deployStageOrder(e); err != nil {
+		t.Fatalf("a same-stage pair was refused: %v", err)
+	}
+	if _, err := bundlePlacementDeclarations(e); err != nil {
+		t.Fatalf("placement declarations refused a same-stage pair: %v", err)
+	}
+	cross := &KCLEntities{Workloads: []WorkloadEntity{
+		orderHostedWorkload("a", map[string]string{"b": "v1"}),
+		orderClusterWorkload("b", map[string]string{"a": "v1"}),
+	}}
+	if _, err := deployStageOrder(cross); err == nil || !strings.Contains(err.Error(), "release dependency cycle") {
+		t.Fatalf("a cross-stage cycle was not refused: %v", err)
 	}
 }
 

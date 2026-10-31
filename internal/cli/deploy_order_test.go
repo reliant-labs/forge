@@ -118,7 +118,7 @@ func TestDeployStageEdges_FrontendDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []stageEdge{{Dependency: "api", Dependent: "web", From: stageLocal, To: stageHosted}, {Dependency: "edge", Dependent: "web", From: stageHosted, To: stageHosted}}
+	want := []stageEdge{{Dependency: "api", Dependent: "web", From: stageLocal, To: stageHosted}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("edges = %+v, want %+v (build-only and same-stage peers add none)", got, want)
 	}
@@ -132,7 +132,7 @@ func TestDeployStageEdges_FrontendDefaults(t *testing.T) {
 // A peer that names nothing at all still refuses.
 func TestDeployStageEdges_BuildOnlyPeerOrdersNothing(t *testing.T) {
 	e := &KCLEntities{Workloads: []WorkloadEntity{
-		orderClusterWorkload("api", nil),
+		orderHostedWorkload("api", nil),
 		orderClusterWorkload("worker", map[string]string{"api": "v1", "workspace-base": "v1"}),
 		{Name: "workspace-base", Runtime: RuntimeEntity{Type: RuntimeBuildOnly}, ReleaseDependencies: map[string]string{"worker": "v1"}},
 	}}
@@ -140,7 +140,7 @@ func TestDeployStageEdges_BuildOnlyPeerOrdersNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a dependency on a build-only artifact refused the deploy: %v", err)
 	}
-	want := []stageEdge{{Dependency: "api", Dependent: "worker", From: stageLocal, To: stageLocal}}
+	want := []stageEdge{{Dependency: "api", Dependent: "worker", From: stageHosted, To: stageLocal}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("edges = %+v, want %+v", got, want)
 	}

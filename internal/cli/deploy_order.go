@@ -102,7 +102,7 @@ func deployStageOrder(e *KCLEntities) ([]deployStage, error) {
 	after := map[deployStage]map[deployStage]stageEdge{} // to -> from -> a witness
 	for _, ed := range edges {
 		if ed.From == ed.To {
-			continue // retained and cycle-checked in the item graph above
+			continue // declaredPlacementEdges returns none; kept as a guard
 		}
 		if after[ed.To] == nil {
 			after[ed.To] = map[deployStage]stageEdge{}

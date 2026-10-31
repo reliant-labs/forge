@@ -389,6 +389,8 @@ schema Workload:
     # Conservative release cohorts. Key is a peer workload name, value is the
     # versioned compatibility contract required to carry that peer unchanged.
     # Absent = unknown (full cohort required); explicit {} = independent.
+    # Deploy ORDER only across placements (the peer's placement goes first);
+    # a peer in the same placement, or a build-only one, orders nothing.
     release_dependencies?: {str: str}
     # Extra declared immutable consumers (pre-pull, provisioning inputs, etc.).
     # Values are complete image references, pinned by workload/slot at render.

@@ -3,13 +3,13 @@
 package cli
 
 import (
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/goexec"
 )
 
@@ -23,30 +23,12 @@ func forgetScaffoldRecordE2E(t *testing.T, projectDir, fullPath, relPath string)
 	if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("remove %s: %v", relPath, err)
 	}
-	ledgerPath := filepath.Join(projectDir, ".forge", "scaffolded.json")
-	data, err := os.ReadFile(ledgerPath)
-	if os.IsNotExist(err) {
-		return
+	entry := filepath.Join(projectDir, filepath.FromSlash(checksums.ScaffoldEntryPath(relPath)))
+	if _, err := os.Stat(entry); err != nil {
+		t.Fatalf("scaffold ledger has no record of %s — the re-birth this sets up would be vacuous: %v", relPath, err)
 	}
-	if err != nil {
-		t.Fatalf("read scaffold ledger: %v", err)
-	}
-	var ledger struct {
-		Files map[string]json.RawMessage `json:"files"`
-	}
-	if err := json.Unmarshal(data, &ledger); err != nil {
-		t.Fatalf("parse scaffold ledger: %v", err)
-	}
-	if _, ok := ledger.Files[relPath]; !ok {
-		t.Fatalf("scaffold ledger has no record of %s — the re-birth this sets up would be vacuous", relPath)
-	}
-	delete(ledger.Files, relPath)
-	out, err := json.MarshalIndent(map[string]any{"files": ledger.Files}, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal scaffold ledger: %v", err)
-	}
-	if err := os.WriteFile(ledgerPath, out, 0o644); err != nil {
-		t.Fatalf("write scaffold ledger: %v", err)
+	if err := os.Remove(entry); err != nil {
+		t.Fatalf("remove ledger entry: %v", err)
 	}
 }
 

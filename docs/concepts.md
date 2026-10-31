@@ -64,7 +64,7 @@ the generated file shrinks to per-app data. That is what makes regeneration
 safe — there is nothing in a generated file worth hand-editing.
 
 Scaffold-once files are written exactly once, and **deleting one sticks**:
-`.forge/scaffolded.json` (committed) records every file forge has scaffolded,
+`.forge/scaffolded/` (committed, one entry file per path) records every file forge has scaffolded,
 so an absent one reads as a decision and `forge generate` leaves it absent in
 every clone. To get forge's version back, ask for it by name:
 
@@ -85,7 +85,7 @@ and was rolled back with its record — is **declined** instead of deleted:
 forge project disown cmd/app/cmd/serve.go --absent --reason "serve.go turns composition on; our roots land later"
 ```
 
-The decline is a `"declined": "<reason>"` entry in `.forge/scaffolded.json`,
+The decline is a `"declined": "<reason>"` entry in the path's file under `.forge/scaffolded/`,
 written outside `generate`, so a failed run's rollback (which restores that
 file to its pre-run bytes) keeps it. `forge project scaffolded` lists declines
 with their reasons; `forge project rescaffold <path>` re-adopts one.

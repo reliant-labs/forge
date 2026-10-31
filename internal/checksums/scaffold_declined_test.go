@@ -44,7 +44,7 @@ func TestDeclinedScaffold_NeverWrittenAndSurvivesAFailedRun(t *testing.T) {
 	// The decline also survives a fresh read of the file, not just the cache.
 	ResetScaffoldLedgerCache()
 	if _, ok := ScaffoldDeclined(root, serve); !ok {
-		t.Fatalf("decline was not persisted to %s", ScaffoldedFile)
+		t.Fatalf("decline was not persisted to %s", ScaffoldedDir)
 	}
 	if ScaffoldOnceDecision(root, serve) {
 		t.Fatalf("ScaffoldOnceDecision would birth a declined path")
@@ -105,10 +105,7 @@ func TestRollback_BirthWhoseFileCannotBeRemovedKeepsItsRecord(t *testing.T) {
 // ledger at its pre-run bytes rather than re-recording it.
 func TestRollback_AdoptionIsNotReconciledBackIn(t *testing.T) {
 	root := absentChangeProject(t, []string{"seed.go"}, []string{"old.go", "seed.go"})
-	before, err := os.ReadFile(filepath.Join(root, ScaffoldedFile))
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := ledgerFileBytes(t, root)
 	BeginRollbackJournal(root)
 	if ScaffoldOnceDecision(root, "old.go") {
 		t.Fatalf("a present file is never a birth")
@@ -117,10 +114,7 @@ func TestRollback_AdoptionIsNotReconciledBackIn(t *testing.T) {
 		t.Fatalf("ScaffoldsCreatedThisRun = %v, want none (an adoption creates no file)", got)
 	}
 	RestoreRollback(root)
-	after, err := os.ReadFile(filepath.Join(root, ScaffoldedFile))
-	if err != nil {
-		t.Fatal(err)
-	}
+	after := ledgerFileBytes(t, root)
 	if string(after) != string(before) {
 		t.Fatalf("ledger differs from its pre-run bytes after a rollback:\nbefore %s\nafter  %s", before, after)
 	}

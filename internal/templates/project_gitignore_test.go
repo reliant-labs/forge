@@ -10,7 +10,7 @@
 //     in any clone or worktree
 //   - hashes/ — one render-hash certificate per comment-incapable
 //     generated output (JSON), so no shared manifest conflicts
-//   - scaffolded.json — the scaffold-once BIRTH LEDGER: every "yours"
+//   - scaffolded/ — the scaffold-once BIRTH LEDGER, one entry per path: every "yours"
 //     file forge has ever scaffolded here. It is what makes DELETING a
 //     scaffold stick, so it must travel with the repo — a teammate's
 //     fresh clone has to inherit "we removed that file" rather than
@@ -74,7 +74,7 @@ func TestProjectGitignore_ForgeStateNegations(t *testing.T) {
 	committedState := []string{
 		"!" + checksums.DisownedFile,
 		"!" + checksums.HashesDir + "/",
-		"!" + checksums.ScaffoldedFile,
+		"!" + checksums.ScaffoldedDir + "/",
 	}
 	for _, neg := range committedState {
 		if !has(neg) {

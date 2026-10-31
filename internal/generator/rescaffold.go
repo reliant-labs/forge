@@ -17,7 +17,7 @@ import (
 // Re-emitting the files `forge project new` writes.
 //
 // A scaffold-once file is the user's from birth, and deleting one is an act
-// of ownership the birth ledger (.forge/scaffolded.json) makes stick across
+// of ownership the birth ledger (.forge/scaffolded/) makes stick across
 // clones. Deliberate re-scaffolding is `forge project rescaffold <path>`,
 // which drops the birth record and has forge write the file again.
 //

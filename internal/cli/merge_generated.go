@@ -24,9 +24,10 @@ package cli
 //
 // Beyond fingerprints, the driver settles the two kinds of file every branch
 // that adds a service changes (P3b friction F16, 33 parallel lanes):
-//   - forge's committed state files (.forge/scaffolded.json, disowned.json)
-//     merge key by key (checksums.MergeStateFile), so two lanes' births never
-//     conflict. A JSON output's certificate is its own file under
+//   - forge's committed state merges key by key (checksums.MergeStateFile):
+//     disowned.json, and a scaffold birth or JSON certificate, each its own
+//     file under .forge/scaffolded/ or .forge/hashes/, so two lanes' births
+//     never even meet. A JSON output's certificate is its own file under
 //     .forge/hashes/, which conflicts only when both sides re-rendered that
 //     output; the driver then keeps this side's, with this side's render;
 //   - a forge render both sides changed whose line merge still conflicts —
@@ -889,7 +890,7 @@ const (
 var generatedMergePatterns = []string{
 	"*_gen.go", "*_gen.ts", "*_gen.test.ts", "*_gen.json", "*_gen.ndjson",
 	"forge_service_catalog.json",
-	".forge/scaffolded.json", ".forge/hashes/**", ".forge/disowned.json",
+	".forge/scaffolded/**", ".forge/hashes/**", ".forge/disowned.json",
 }
 
 // writeMergeAttributes writes forge's block into the clone's

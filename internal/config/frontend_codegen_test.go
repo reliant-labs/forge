@@ -58,7 +58,7 @@ func TestFrontendAdoptedDetection(t *testing.T) {
 		{
 			name: "the ledger records its package.json",
 			setup: func(t *testing.T, root string) {
-				writeCodegenFile(t, root, ".forge/scaffolded.json", `{"files": {"frontends/web/package.json": {}}}`)
+				writeCodegenFile(t, root, ".forge/scaffolded/frontends/web/package.json.json", "{}\n")
 			},
 			adopted: false,
 		},
@@ -73,8 +73,9 @@ func TestFrontendAdoptedDetection(t *testing.T) {
 		{
 			name: "births generate made inside an adopted frontend do not make it scaffolded",
 			setup: func(t *testing.T, root string) {
+				writeCodegenFile(t, root, ".forge/scaffolded/frontends/web/src/lib/connect.ts.json", "{}\n")
 				writeCodegenFile(t, root, ".forge/scaffolded.json",
-					`{"files": {"frontends/web/src/lib/connect.ts": {}, "frontends/web/src/hooks/chat-service-hooks.test.tsx": {}}}`)
+					`{"files": {"frontends/web/src/hooks/chat-service-hooks.test.tsx": {}}}`)
 			},
 			adopted: true,
 		},

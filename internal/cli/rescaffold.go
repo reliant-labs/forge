@@ -2,7 +2,7 @@
 // again.
 //
 // A scaffold-once ("yours") file is written exactly once and then belongs to
-// the user. The birth ledger (.forge/scaffolded.json, committed) is what makes
+// the user. The birth ledger (.forge/scaffolded/, committed) is what makes
 // that true across deletion: an absent file with a birth record was deleted on
 // purpose, and `forge generate` leaves it deleted in every clone. That is a
 // feature — a repo that runs its own CI deletes forge's workflows and they
@@ -68,7 +68,7 @@ func newRescaffoldCmd() *cobra.Command {
 		Long: `Re-create one or more scaffold-once ("yours") files.
 
 forge writes a scaffold-once file exactly once. Deleting it is an act of
-ownership that .forge/scaffolded.json records, so ` + "`forge generate`" + ` leaves it deleted —
+ownership that .forge/scaffolded/ records, so ` + "`forge generate`" + ` leaves it deleted —
 in this checkout and every clone. To get forge's version back, name it here:
 
   forge project rescaffold .github/workflows/ci.yml

@@ -166,8 +166,10 @@ tmp/
 #                     (JSON outputs only), at the file's path + .sha256.
 #                     One file each, so parallel branches never conflict
 #                     in a shared manifest.
-#   scaffolded.json — the scaffold-once BIRTH LEDGER: every "yours" file
-#                     forge has ever scaffolded here. It is what makes
+#   scaffolded/     — the scaffold-once BIRTH LEDGER, one entry file per
+#                     path: every "yours" file forge has ever scaffolded
+#                     here (one file each, so parallel branches never
+#                     conflict in a shared ledger). It is what makes
 #                     DELETING a scaffold stick — without it, an absent
 #                     file is indistinguishable from one never written
 #                     and the next `forge generate` hands it back. Must
@@ -193,7 +195,7 @@ tmp/
 .forge/*
 !.forge/disowned.json
 !.forge/hashes/
-!.forge/scaffolded.json
+!.forge/scaffolded/
 !.forge/releases/
 !.forge/releases/*.json
 !.forge/promotions/

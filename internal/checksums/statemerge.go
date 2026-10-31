@@ -11,7 +11,8 @@ import (
 )
 
 // MergeStateFile three-way merges one of the committed state files under
-// .forge/ (scaffolded.json, disowned.json, a certificate under hashes/) key by key, and
+// .forge/ (disowned.json, the legacy scaffolded.json, a certificate under
+// hashes/, a ledger entry under scaffolded/) key by key, and
 // renders the result exactly as forge's own writers do.
 //
 // WHY. Every branch that adds a service records its births in the scaffold
@@ -24,7 +25,8 @@ import (
 // merged as maps, the only collision left is one key whose value both sides
 // changed, and for these files that has a forge answer:
 //
-//   - scaffolded.json: a birth recorded on either side is recorded; one
+//   - a ledger entry under scaffolded/ (and the legacy scaffolded.json, key
+//     by key): a birth recorded on either side is recorded; one
 //     side's deletion (rescaffold) stands when the other left the entry
 //     alone. Both sides recording the same path keep this side's entry —
 //     the timestamp is provenance nobody branches on.
@@ -44,11 +46,14 @@ func MergeStateFile(relPath string, base, ours, theirs []byte) (merged []byte, o
 	if isCertPathAnywhere(relPath) {
 		return mergeHashCert(base, ours, theirs)
 	}
+	if isScaffoldEntryAnywhere(relPath) {
+		return mergeScaffoldEntry(base, ours, theirs)
+	}
 	if path.Base(path.Dir(path.Clean("/"+relPath))) != ".forge" {
 		return nil, false
 	}
 	switch path.Base(relPath) {
-	case path.Base(ScaffoldedFile):
+	case path.Base(LegacyScaffoldedFile):
 		var b, o, t scaffoldedJSON
 		if !decodeState(base, &b) || !decodeState(ours, &o) || !decodeState(theirs, &t) {
 			return nil, false
@@ -80,6 +85,36 @@ func isCertPathAnywhere(relPath string) bool {
 	rel := path.Clean("/" + filepath.ToSlash(relPath))
 	i := strings.LastIndex(rel, "/"+HashesDir+"/")
 	return i >= 0 && IsHashCert(rel[i+1:])
+}
+
+// isScaffoldEntryAnywhere reports whether relPath, relative to the top of
+// the work tree, is a scaffold ledger entry file.
+func isScaffoldEntryAnywhere(relPath string) bool {
+	rel := path.Clean("/" + filepath.ToSlash(relPath))
+	i := strings.LastIndex(rel, "/"+ScaffoldedDir+"/")
+	if i < 0 {
+		return false
+	}
+	_, ok := ScaffoldEntryTarget(rel[i+1:])
+	return ok
+}
+
+// mergeScaffoldEntry merges one scaffold ledger entry: a side that changed
+// it (or deleted it: a rescaffold) wins over one that did not; when both
+// changed it, this side's stands — a birth is a birth, and the timestamp is
+// provenance nobody branches on. A side that does not parse leaves the file
+// to the text merge.
+func mergeScaffoldEntry(base, ours, theirs []byte) ([]byte, bool) {
+	for _, side := range [][]byte{base, ours, theirs} {
+		var e ScaffoldEntry
+		if len(bytes.TrimSpace(side)) > 0 && json.Unmarshal(side, &e) != nil {
+			return nil, false
+		}
+	}
+	if bytes.Equal(bytes.TrimSpace(ours), bytes.TrimSpace(base)) {
+		return theirs, true
+	}
+	return ours, true
 }
 
 // mergeHashCert merges one certificate file: a side that changed it (or

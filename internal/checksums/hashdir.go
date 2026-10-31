@@ -195,6 +195,14 @@ const (
 // as uncertified. Only that exact line is touched: .gitignore is the
 // user's, and journaled like any other write so a failed run restores it.
 func migrateHashesNegation(root string) {
+	migrateGitignoreLine(root, legacyHashesNegation, hashesNegation)
+}
+
+// migrateGitignoreLine rewrites the project .gitignore's line from to to,
+// touching only that exact line (.gitignore is the user's). A file that
+// already holds to keeps one copy. Journaled like any other write, so a
+// failed run restores it.
+func migrateGitignoreLine(root, from, to string) {
 	full := filepath.Join(root, ".gitignore")
 	data, err := os.ReadFile(full)
 	if err != nil {
@@ -204,10 +212,10 @@ func migrateHashesNegation(root string) {
 	changed, present := false, false
 	for i, line := range lines {
 		switch strings.TrimSpace(line) {
-		case hashesNegation:
+		case to:
 			present = true
-		case legacyHashesNegation:
-			lines[i] = strings.Replace(line, legacyHashesNegation, hashesNegation, 1)
+		case from:
+			lines[i] = strings.Replace(line, from, to, 1)
 			changed = true
 		}
 	}
@@ -216,8 +224,8 @@ func migrateHashesNegation(root string) {
 	}
 	out := strings.Join(lines, "")
 	if present {
-		// Both lines were there: drop the rewritten duplicate.
-		out = strings.Replace(out, hashesNegation+"\n", "", 1)
+		// Both lines were there: drop the duplicate.
+		out = strings.Replace(out, to+"\n", "", 1)
 	}
 	recordPreWrite(root, ".gitignore")
 	_ = atomicfile.WriteFile(full, []byte(out), 0o644)
@@ -271,13 +279,17 @@ func pruneEmptyDirs(dir, stop string) {
 }
 
 // IsCommittedState reports whether relPath is one of the files under .forge/
-// a project commits: a CommittedStateFiles entry or a certificate file.
+// a project commits: a CommittedStateFiles entry, a certificate file or a
+// scaffold ledger entry.
 func IsCommittedState(relPath string) bool {
 	relPath = slashKey(relPath)
 	for _, f := range CommittedStateFiles() {
 		if relPath == f {
 			return true
 		}
+	}
+	if _, ok := ScaffoldEntryTarget(relPath); ok {
+		return true
 	}
 	return IsHashCert(relPath)
 }
@@ -295,6 +307,14 @@ func CommittedStatePaths(root string) []string {
 	certs, _ := loadHashCertFiles(root)
 	for certRel := range certs {
 		out = append(out, certRel)
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	_, _, entries := readScaffoldLedger(abs)
+	for entryRel := range entries {
+		out = append(out, entryRel)
 	}
 	sort.Strings(out)
 	return out

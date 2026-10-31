@@ -15,7 +15,7 @@
 //
 // Both directories sit under `.forge/`, which the scaffolded project
 // .gitignore already excludes (only disowned.json / hashes/ /
-// scaffolded.json are negated back in) — side renders are per-developer
+// scaffolded/ are negated back in) — side renders are per-developer
 // state, never committed.
 package checksums
 

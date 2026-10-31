@@ -2,7 +2,7 @@
 // generate against: zero means the tree already matched. It used to count
 // only the writes that went through forge's journaled chokepoints, so every
 // other write vanished from it. The P3b pilot saw "0 changed" while generate
-// rewrote .forge/scaffolded.json (F17), and the ownership state
+// rewrote the scaffold ledger (F17), and the ownership state
 // (.forge/hashes.json) was saved after the line was printed. Each test here
 // is one write the line missed.
 package cli
@@ -63,17 +63,18 @@ func TestGenerate_ChangeCountIncludesTheScaffoldLedger(t *testing.T) {
 
 	// A scaffold forge recorded is now gone, and no run has reported it:
 	// the next run records it as reported, rewriting the ledger.
-	writeTreeFileT(t, filepath.Join(dir, checksums.ScaffoldedFile), "{\n  \"files\": {\n    \"internal/gone.go\": {}\n  }\n}\n")
+	entry := filepath.Join(dir, filepath.FromSlash(checksums.ScaffoldEntryPath("internal/gone.go")))
+	writeTreeFileT(t, entry, "{}\n")
 	checksums.ResetScaffoldLedgerCache()
-	before, _ := os.ReadFile(filepath.Join(dir, checksums.ScaffoldedFile))
+	before, _ := os.ReadFile(entry)
 
 	out := runPipelineOK(t, dir)
-	after, _ := os.ReadFile(filepath.Join(dir, checksums.ScaffoldedFile))
+	after, _ := os.ReadFile(entry)
 	if string(before) == string(after) {
-		t.Fatalf("precondition: the run must rewrite %s:\n%s", checksums.ScaffoldedFile, after)
+		t.Fatalf("precondition: the run must rewrite %s:\n%s", entry, after)
 	}
 	if strings.Contains(out, "0 changed") {
-		t.Errorf("generate rewrote %s and reported \"0 changed\":\n%s", checksums.ScaffoldedFile, out)
+		t.Errorf("generate rewrote %s and reported \"0 changed\":\n%s", entry, out)
 	}
 	if !strings.Contains(out, "1 changed (0 new, 1 updated)") {
 		t.Errorf("want the ledger counted as 1 updated file:\n%s", out)

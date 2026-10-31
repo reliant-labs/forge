@@ -141,7 +141,7 @@ func attachFrontendDiskFacts(projectDir, feRel string, fe *FrontendConfig) {
 // frontendScaffoldedByForge reports whether forge scaffolded the frontend at
 // feRel. Two records say so, and either suffices:
 //
-//   - the birth ledger (.forge/scaffolded.json, committed) records the
+//   - the birth ledger (.forge/scaffolded/, committed) records the
 //     frontend's package.json. `forge scaffold frontend` and `forge project
 //     new --frontend` record every file they write, and package.json is the
 //     one a frontend cannot exist without. It is checked by name rather than
@@ -165,14 +165,22 @@ func frontendScaffoldedByForge(projectDir, feRel, absFeDir string) bool {
 // frontend scaffold writes (generator.GenerateFrontendFilesWithOptions).
 const frontendGoModBoundaryMarker = "// Nested module boundary so `go test ./...`"
 
-// scaffoldLedgerFile is the birth ledger's project-relative location. The
-// format's owner is internal/checksums (scaffoldledger.go); this package is
-// a pure schema package with no internal imports, so it reads the one fact
-// it needs — whether a key is present — with a local view of the shape.
-const scaffoldLedgerFile = ".forge/scaffolded.json"
+// scaffoldLedgerDir and legacyScaffoldLedgerFile are the birth ledger's
+// project-relative locations: one entry file per path, and the one-file
+// ledger it replaced. The format's owner is internal/checksums
+// (scaffoldledger.go); this package is a pure schema package with no
+// internal imports, so it reads the one fact it needs — whether a key is
+// recorded — with a local view of the layout.
+const (
+	scaffoldLedgerDir        = ".forge/scaffolded"
+	legacyScaffoldLedgerFile = ".forge/scaffolded.json"
+)
 
 func ledgerRecords(projectDir, key string) bool {
-	data, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(scaffoldLedgerFile)))
+	if _, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(scaffoldLedgerDir+"/"+key+".json"))); err == nil {
+		return true
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(legacyScaffoldLedgerFile)))
 	if err != nil {
 		return false
 	}

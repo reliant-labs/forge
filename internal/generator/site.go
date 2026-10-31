@@ -115,7 +115,7 @@ secrets/
 .forge/*
 !.forge/disowned.json
 !.forge/hashes/
-!.forge/scaffolded.json
+!.forge/scaffolded/
 !.forge/releases/
 !.forge/releases/*.json
 !.forge/promotions/

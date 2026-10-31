@@ -47,7 +47,7 @@ func TestScaffoldLedger_LocalOnlyPathIsNeverRecorded(t *testing.T) {
 	if ScaffoldOnceDecision(root, rel) {
 		t.Fatal("present local-only path must be left alone")
 	}
-	if _, err := os.Stat(filepath.Join(root, ScaffoldedFile)); !os.IsNotExist(err) {
-		t.Fatalf("ledger file written for a local-only path only: %v", err)
+	if got := ledgerFileBytes(t, root); got != nil {
+		t.Fatalf("ledger written for a local-only path only:\n%s", got)
 	}
 }

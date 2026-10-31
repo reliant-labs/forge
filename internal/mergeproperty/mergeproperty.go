@@ -96,3 +96,72 @@ func PlainMerge(t *testing.T, rel string, base, ours, theirs []byte) []byte {
 	}
 	return got
 }
+
+// AssertPlainMergeIsRenderTree is AssertPlainMergeIsRender for output that is
+// a TREE of files (one file per input, like the scaffold ledger): build
+// brings the work tree dir to the given variant's state through forge's own
+// writers, starting from whatever is there. The files under sub after a
+// plain merge of the "ours" and "theirs" commits must be exactly the files
+// build writes for "merged" into an empty directory.
+func AssertPlainMergeIsRenderTree(t *testing.T, sub string, build func(dir, variant string)) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	build(dir, "base")
+	git("add", "-A")
+	git("commit", "-qm", "base", "--allow-empty")
+	git("checkout", "-qb", "theirs")
+	build(dir, "theirs")
+	git("add", "-A")
+	git("commit", "-qm", "theirs", "--allow-empty")
+	git("checkout", "-q", "main")
+	build(dir, "ours")
+	git("add", "-A")
+	git("commit", "-qm", "ours", "--allow-empty")
+	git("merge", "-q", "--no-edit", "theirs")
+
+	fresh := t.TempDir()
+	build(fresh, "merged")
+	got, want := treeFiles(t, filepath.Join(dir, sub)), treeFiles(t, filepath.Join(fresh, sub))
+	for rel, body := range want {
+		if got[rel] != body {
+			t.Errorf("%s/%s after a plain git merge differs from forge's writers on the merged inputs:\n--- merged ---\n%s\n--- generate ---\n%s", sub, rel, got[rel], body)
+		}
+	}
+	for rel := range got {
+		if _, ok := want[rel]; !ok {
+			t.Errorf("%s/%s survives the merge but forge's writers on the merged inputs do not write it", sub, rel)
+		}
+	}
+}
+
+// treeFiles maps every file under dir (slash-relative) to its content.
+func treeFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		rel, _ := filepath.Rel(dir, p)
+		out[filepath.ToSlash(rel)] = string(b)
+		return nil
+	})
+	return out
+}

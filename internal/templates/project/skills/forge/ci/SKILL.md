@@ -297,7 +297,7 @@ or add a Tier-2 workflow that runs `actionlint` and friends against
   `deploy.yml`, `release.yml`, `e2e.yml`, `reconcile.yml`, `pre-commit.yml`,
   `dependabot.yml`) and the vendored `.github/actions/forge-deploy/action.yml`
   are scaffold-once: written once, then yours to edit.
-  Deleting one sticks — `.forge/scaffolded.json` records it, so `forge
+  Deleting one sticks — `.forge/scaffolded/` records it, so `forge
 generate` does not bring it back. To get forge's current version of one,
   delete it and run `forge project rescaffold .github/workflows/<name>.yml`
   (only workflows this project has: e2e.yml needs an e2e suite,

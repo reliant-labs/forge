@@ -45,7 +45,8 @@
 //     output's changes touch its certificate and parallel branches do
 //     not conflict in it. Committed.
 //
-//   - .forge/scaffolded.json — the scaffold-once BIRTH LEDGER: every
+//   - .forge/scaffolded/ — the scaffold-once BIRTH LEDGER, one entry file
+//     per path (scaffoldledger.go): every
 //     path forge has ever scaffolded here. It is what lets a DELETED
 //     scaffold stay deleted (see scaffoldledger.go). Committed.
 //
@@ -90,13 +91,13 @@ const (
 )
 
 // CommittedStateFiles are the single files under .forge/ that a project
-// commits: the ownership state and the scaffold birth ledger. The
-// certificate files under HashesDir are committed too (IsCommittedState,
-// CommittedStatePaths). Everything else there (the lock, logs, side
+// commits: the ownership state. The certificate files under HashesDir and
+// the scaffold ledger's entry files under ScaffoldedDir are committed too
+// (IsCommittedState, CommittedStatePaths). Everything else there (the lock, logs, side
 // renders, a failed run's output) is per-clone scratch. A caller that sets
 // .forge/ aside as scratch keeps these.
 func CommittedStateFiles() []string {
-	return []string{DisownedFile, ScaffoldedFile}
+	return []string{DisownedFile}
 }
 
 // ResetSkipWrite clears the written-this-run set. Called at the start of

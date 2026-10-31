@@ -19,7 +19,7 @@
 // scratch directory, stripping the CRUD rpcs out of the proto, deleting
 // db/migrations, deleting the handler directory — none of which could work,
 // because the one thing that brought the file back was an edit to
-// .forge/scaffolded.json that nothing in forge's output had ever named. That
+// .forge/scaffolded/ that nothing in forge's output had ever named. That
 // edit is now a command, `forge project rescaffold <path>` (rescaffold.go),
 // and this notice names it.
 //
@@ -76,7 +76,7 @@ func missingScaffoldNotice(paths []string) string {
 		fmt.Fprintf(&b, "   - %s\n", p)
 	}
 	b.WriteString("    These are yours from birth: forge writes each exactly once and never again,\n")
-	fmt.Fprintf(&b, "    and DELETING one is an act of ownership %s records, so re-running\n", checksums.ScaffoldedFile)
+	fmt.Fprintf(&b, "    and DELETING one is an act of ownership %s records, so re-running\n", checksums.ScaffoldedDir+"/")
 	b.WriteString("    generate does not bring it back. If that is what you meant, nothing to do;\n")
 	b.WriteString("    this notice is informational and the run did not fail.\n")
 	b.WriteString("    To have forge scaffold one FRESH against the project as it stands today\n")
@@ -130,7 +130,7 @@ func scaffoldSkipLine(root, relPath string) (line string, routine bool) {
 		return fmt.Sprintf("  ⏭️  %s exists — yours to edit, leaving it untouched", relPath), true
 	}
 	return fmt.Sprintf("  ⏭️  %s is absent, but deleted by you (%s) — leaving it deleted. Re-create it: %s",
-		relPath, checksums.ScaffoldedFile, rescaffoldCmd(relPath)), true
+		relPath, checksums.ScaffoldedDir+"/", rescaffoldCmd(relPath)), true
 }
 
 // reportMissingScaffolds writes the notice for root's absent scaffold-once

@@ -108,7 +108,7 @@ func TestAbsentScaffoldsIfChanged_PersistsAcrossProcesses(t *testing.T) {
 
 	if got := AbsentScaffoldsIfChanged(root); got != nil {
 		t.Fatalf("a NEW PROCESS re-reported %v over an unchanged set — the baseline must persist "+
-			"in %s, or every run is a first run", got, ScaffoldedFile)
+			"in %s, or every run is a first run", got, ScaffoldedDir)
 	}
 }
 

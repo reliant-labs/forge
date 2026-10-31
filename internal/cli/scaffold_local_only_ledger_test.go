@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,18 +34,29 @@ func regenerateEnvConfig(t *testing.T, dir string) {
 	})
 }
 
+// readLedgerBytes is the whole on-disk ledger: every entry file under
+// checksums.ScaffoldedDir, by path.
 func readLedgerBytes(t *testing.T, dir string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, checksums.ScaffoldedFile))
+	var out []byte
+	err := filepath.WalkDir(filepath.Join(dir, checksums.ScaffoldedDir), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, rerr := os.ReadFile(p)
+		rel, _ := filepath.Rel(dir, p)
+		out = append(append(out, filepath.ToSlash(rel)+"\n"...), b...)
+		return rerr
+	})
 	if err != nil {
 		t.Fatalf("read scaffold ledger: %v", err)
 	}
-	return b
+	return out
 }
 
 // TestScaffoldLedger_GitignoredSecretStoreIsNotRecorded: `forge generate` is a
 // pure function of COMMITTED inputs. secrets/dev.yaml is gitignored, so the
-// committed .forge/scaffolded.json must come out byte-identical whether the
+// committed scaffold ledger must come out byte-identical whether the
 // file exists in the checkout (a developer's tree) or not (a clean clone, CI) —
 // and a clean clone must still get the store written.
 func TestScaffoldLedger_GitignoredSecretStoreIsNotRecorded(t *testing.T) {
@@ -54,13 +66,7 @@ func TestScaffoldLedger_GitignoredSecretStoreIsNotRecorded(t *testing.T) {
 		t.Fatalf("scaffold did not seed %s: %v", localOnlyStore, err)
 	}
 	committed := readLedgerBytes(t, dir)
-	var led struct {
-		Files map[string]json.RawMessage `json:"files"`
-	}
-	if err := json.Unmarshal(committed, &led); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := led.Files[localOnlyStore]; ok {
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(checksums.ScaffoldEntryPath(localOnlyStore)))); err == nil {
 		t.Fatalf("%s is gitignored but was recorded in the committed ledger", localOnlyStore)
 	}
 
@@ -91,17 +97,16 @@ func TestScaffoldLedger_LegacyLocalOnlyEntryConverges(t *testing.T) {
 	dir := scaffoldWorkloadModelProject(t)
 	clean := readLedgerBytes(t, dir)
 
-	var raw map[string]any
-	if err := json.Unmarshal(clean, &raw); err != nil {
-		t.Fatal(err)
-	}
-	raw["files"].(map[string]any)[localOnlyStore] = map[string]any{"scaffolded_at": "2026-09-04T15:19:42Z"}
-	raw["absent_reported"] = []any{localOnlyStore}
-	legacy, err := json.MarshalIndent(raw, "", "  ")
+	// An older forge's one-file ledger carrying the entry, beside the
+	// current entry files.
+	legacy, err := json.MarshalIndent(map[string]any{
+		"files":           map[string]any{localOnlyStore: map[string]any{"scaffolded_at": "2026-09-04T15:19:42Z"}},
+		"absent_reported": []any{localOnlyStore},
+	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, checksums.ScaffoldedFile), append(legacy, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, checksums.LegacyScaffoldedFile), append(legacy, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// The legacy shape that bit control-plane: entry committed, file absent.

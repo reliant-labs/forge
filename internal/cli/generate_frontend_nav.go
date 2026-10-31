@@ -509,7 +509,7 @@ func warnIfNextConfigIgnoresBasePath(projectDir, feDir, feName, basePath string)
 // files are user-owned from birth: forge writes them once at scaffold
 // time and NEVER writes that path again — no flag, no exception. That
 // covers deletion as well as editing; to re-scaffold on purpose, drop the
-// path's entry from .forge/scaffolded.json.
+// path's entry from .forge/scaffolded/.
 func emitScaffoldOnceIfMissing(projectDir, relPath, tmplPath string, data templates.FrontendTemplateData) error {
 	full := filepath.Join(projectDir, relPath)
 	if !checksums.ScaffoldOnceDecision(projectDir, relPath) {

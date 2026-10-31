@@ -31,7 +31,7 @@ func newScaffoldedCmd() *cobra.Command {
 		Use:   "scaffolded",
 		Short: "List the scaffold-once files forge has written, and which are absent",
 		Long: `List every scaffold-once ("yours") file forge has written in this project,
-from the birth ledger at ` + checksums.ScaffoldedFile + `.
+from the birth ledger at ` + checksums.ScaffoldedDir + "/" + `.
 
 forge writes a scaffold-once file exactly once and then it is yours. Deleting
 one is an act of ownership the ledger records, so ` + "`forge generate`" + ` leaves it
@@ -77,12 +77,12 @@ Examples:
 
 			all := checksums.ScaffoldLedgerPaths(root)
 			if len(all) == 0 {
-				_, _ = fmt.Fprintf(out, "No scaffold-once files recorded — %s is empty or absent.\n", checksums.ScaffoldedFile)
+				_, _ = fmt.Fprintf(out, "No scaffold-once files recorded — %s is empty or absent.\n", checksums.ScaffoldedDir+"/")
 				return nil
 			}
 			declined := checksums.DeclinedScaffolds(root)
 			_, _ = fmt.Fprintf(out, "%d scaffold-once file(s) recorded in %s (%d absent, %d declined):\n",
-				len(all), checksums.ScaffoldedFile, len(absent), len(declined))
+				len(all), checksums.ScaffoldedDir+"/", len(absent), len(declined))
 			for _, p := range all {
 				status := "present "
 				switch {

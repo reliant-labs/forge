@@ -68,29 +68,66 @@
 package checksums
 
 import (
+	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
-// ScaffoldedFile is the birth ledger's project-relative location. Committed
-// (see the .gitignore negation beside disowned.json / hashes/): the
-// decision to delete a scaffold belongs to the repository, not to one
-// developer's working copy.
-const ScaffoldedFile = ".forge/scaffolded.json"
+// ScaffoldedDir holds the birth ledger, ONE FILE PER PATH: the record of
+// internal/app/compose.go is .forge/scaffolded/internal/app/compose.go.json
+// (ScaffoldEntryPath). Committed (see the .gitignore negation beside
+// disowned.json / hashes/): the decision to delete a scaffold belongs to the
+// repository, not to one developer's working copy.
+//
+// One file per path, not one shared file: every branch that scaffolds
+// anything records births, and with one sorted file two branches' births
+// were neighbouring insertions in it, which git (and GitHub's server-side
+// merge, which runs no merge driver) reported as a conflict. A path's entry
+// now changes only when that path is born, declined or re-adopted, so two
+// branches conflict here only over the same path.
+const ScaffoldedDir = ".forge/scaffolded"
 
-// ScaffoldEntry is one path's birth record. The timestamp is provenance
-// for a human reading the file ("when did forge decide it had done this?");
-// nothing in the code branches on it.
+// LegacyScaffoldedFile is the one-file ledger ScaffoldedDir replaces. The
+// load still reads it, and the next save writes its entries out and deletes
+// it, so one `forge generate` migrates a project.
+const LegacyScaffoldedFile = ".forge/scaffolded.json"
+
+// scaffoldEntrySuffix ends every entry file's name.
+const scaffoldEntrySuffix = ".json"
+
+// ScaffoldEntryPath is the project-relative entry file recording relPath.
+func ScaffoldEntryPath(relPath string) string {
+	return ScaffoldedDir + "/" + slashKey(relPath) + scaffoldEntrySuffix
+}
+
+// ScaffoldEntryTarget is the inverse of ScaffoldEntryPath: the path an
+// entry file at entryRel records, and whether entryRel is one.
+func ScaffoldEntryTarget(entryRel string) (string, bool) {
+	rest, ok := strings.CutPrefix(slashKey(entryRel), ScaffoldedDir+"/")
+	if !ok || !strings.HasSuffix(rest, scaffoldEntrySuffix) {
+		return "", false
+	}
+	target := strings.TrimSuffix(rest, scaffoldEntrySuffix)
+	if target == "" || path.Clean(target) != target || strings.HasPrefix(target, "../") {
+		return "", false
+	}
+	return target, true
+}
+
+// ScaffoldEntry is one path's birth record. A plain birth records nothing
+// but its existence: its entry file holds `{}`. It used to carry the birth's
+// timestamp, which nothing branched on and which made the record a function
+// of the clock: two branches that each scaffolded the same new path wrote
+// two different entries for it, and conflicted.
 type ScaffoldEntry struct {
-	ScaffoldedAt string `json:"scaffolded_at,omitempty"`
 	// BirthHash is the content hash forge wrote, recorded only for the few
 	// scaffolds that keep refreshing while untouched (see
 	// RecordScaffoldWithHash / ScaffoldIsPristine). Empty for the ordinary
@@ -113,6 +150,12 @@ type ScaffoldEntry struct {
 	// it (nothing went missing), and `forge project rescaffold <path>`
 	// re-adopts the path by dropping the entry, exactly as for a deletion.
 	Declined string `json:"declined,omitempty"`
+	// AbsentReported marks a path that was absent at the last run that
+	// reported the absent set (AbsentScaffoldsIfChanged): what turns the
+	// absent-scaffolds notice from a standing banner into an EVENT. It lives
+	// on the path's own entry so that two branches deleting different
+	// scaffolds change different entry files.
+	AbsentReported bool `json:"absent_reported,omitempty"`
 }
 
 // IsLocalOnlyScaffold reports whether relPath is a scaffold-once file that is
@@ -155,16 +198,9 @@ func PersistLedgerPrune(root string) {
 	if err != nil {
 		abs = root
 	}
-	data, rerr := os.ReadFile(filepath.Join(abs, ScaffoldedFile))
-	if rerr != nil {
-		return
-	}
-	var s scaffoldedJSON
-	if json.Unmarshal(data, &s) != nil {
-		return
-	}
-	dirty := len(withoutLocalOnly(s.AbsentReported)) != len(s.AbsentReported)
-	for p := range s.Files {
+	led, reported, _ := readScaffoldLedger(abs)
+	dirty := len(withoutLocalOnly(reported)) != len(reported)
+	for p := range led {
 		if IsLocalOnlyScaffold(p) {
 			dirty = true
 		}
@@ -176,7 +212,8 @@ func PersistLedgerPrune(root string) {
 	saveScaffoldLedgerLocked(abs)
 }
 
-// scaffoldedJSON is the wire shape, mirroring disownedJSON / hashesJSON.
+// scaffoldedJSON is the legacy one-file shape (LegacyScaffoldedFile), read
+// until the next save migrates it.
 type scaffoldedJSON struct {
 	ForgeVersion string                   `json:"forge_version,omitempty"`
 	Files        map[string]ScaffoldEntry `json:"files"`
@@ -223,6 +260,7 @@ func ResetScaffoldLedgerCache() {
 	defer scaffoldMu.Unlock()
 	scaffoldLedgers = map[string]map[string]ScaffoldEntry{}
 	scaffoldAbsentReported = map[string][]string{}
+	scaffoldOnDisk = map[string]map[string][]byte{}
 }
 
 // loadScaffoldLedger returns root's ledger, reading it from disk on first
@@ -238,33 +276,92 @@ func loadScaffoldLedgerLocked(root string) map[string]ScaffoldEntry {
 	if led, ok := scaffoldLedgers[abs]; ok {
 		return led
 	}
-	led := map[string]ScaffoldEntry{}
-	if data, rerr := os.ReadFile(filepath.Join(abs, ScaffoldedFile)); rerr == nil {
-		var s scaffoldedJSON
-		if json.Unmarshal(data, &s) == nil {
-			if s.Files != nil {
-				led = s.Files
-			}
-			// Entries an older forge committed for local-only paths are
-			// dropped in memory here and leave the file at the next save
-			// (PersistLedgerPrune forces one), so a project converges on
-			// its next generate.
-			for p := range led {
-				if IsLocalOnlyScaffold(p) {
-					delete(led, p)
-				}
-			}
-			scaffoldAbsentReported[abs] = withoutLocalOnly(s.AbsentReported)
+	led, reported, onDisk := readScaffoldLedger(abs)
+	// Entries an older forge committed for local-only paths are dropped in
+	// memory here and leave the ledger at the next save (PersistLedgerPrune
+	// forces one), so a project converges on its next generate.
+	for p := range led {
+		if IsLocalOnlyScaffold(p) {
+			delete(led, p)
 		}
 	}
+	scaffoldAbsentReported[abs] = withoutLocalOnly(reported)
+	scaffoldOnDisk[abs] = onDisk
 	scaffoldLedgers[abs] = led
 	return led
 }
 
-// saveScaffoldLedger persists root's ledger, removing the file when the
-// ledger is empty (the same no-bookkeeping-churn rule Save applies to the
-// other two state files). Best-effort by the same discipline as the load:
-// a ledger we cannot write must not abort a write that already succeeded.
+// scaffoldOnDisk memoizes, per root, the bytes of every entry file as last
+// read or written, so a save rewrites only the entries that changed.
+// Guarded by scaffoldMu.
+var scaffoldOnDisk = map[string]map[string][]byte{}
+
+// readScaffoldLedger reads abs's ledger from disk: the legacy one-file
+// ledger, if any, then every entry file under ScaffoldedDir (an entry file
+// is newer than the legacy file by construction — the save that wrote it
+// deleted the legacy file — so it wins). onDisk maps each entry file read to
+// its bytes. A missing or unparseable record yields no entry rather than an
+// error: the ledger's only job is to suppress a re-write, so the failure
+// mode of an unreadable ledger must be forge's historical behavior (scaffold
+// it), never a refusal to scaffold a project that has no ledger.
+func readScaffoldLedger(abs string) (led map[string]ScaffoldEntry, reported []string, onDisk map[string][]byte) {
+	led = map[string]ScaffoldEntry{}
+	onDisk = map[string][]byte{}
+	reportedSet := map[string]bool{}
+	if data, rerr := os.ReadFile(filepath.Join(abs, filepath.FromSlash(LegacyScaffoldedFile))); rerr == nil {
+		var s scaffoldedJSON
+		if json.Unmarshal(data, &s) == nil {
+			for p, e := range s.Files {
+				led[slashKey(p)] = e
+			}
+			for _, p := range s.AbsentReported {
+				reportedSet[slashKey(p)] = true
+			}
+		}
+	}
+	dir := filepath.Join(abs, filepath.FromSlash(ScaffoldedDir))
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(abs, p)
+		if rerr != nil {
+			return nil
+		}
+		target, ok := ScaffoldEntryTarget(rel)
+		if !ok {
+			return nil
+		}
+		data, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return nil
+		}
+		var e ScaffoldEntry
+		if json.Unmarshal(data, &e) != nil {
+			return nil
+		}
+		onDisk[filepath.ToSlash(rel)] = data
+		reportedSet[target] = e.AbsentReported
+		e.AbsentReported = false
+		led[target] = e
+		return nil
+	})
+	for p, on := range reportedSet {
+		if on {
+			reported = append(reported, p)
+		}
+	}
+	sort.Strings(reported)
+	return led, reported, onDisk
+}
+
+// saveScaffoldLedger persists root's ledger: it makes ScaffoldedDir hold
+// exactly one entry file per recorded path, rewriting only the entries that
+// changed, removing those of paths no longer recorded (and the directories
+// that empties), and deleting the legacy one-file ledger. An empty ledger
+// leaves no files at all (the same no-bookkeeping-churn rule Save applies
+// to the other state). Best-effort by the same discipline as the load: a
+// ledger we cannot write must not abort a write that already succeeded.
 func saveScaffoldLedgerLocked(root string) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -275,25 +372,66 @@ func saveScaffoldLedgerLocked(root string) {
 		return
 	}
 	led := scaffoldLedgers[abs]
-	reported := scaffoldAbsentReported[abs]
-	full := filepath.Join(abs, ScaffoldedFile)
-	// The ledger is a committed state file and a write the run made, like
-	// the disown record (saveStateFile): journal it, so a failed generate restores
-	// it with everything else instead of leaving the run's births recorded
-	// for files the rollback deleted.
-	RecordPreWriteAbs(full)
-	if len(led) == 0 && len(reported) == 0 {
-		_ = os.Remove(full)
-		return
+	reported := map[string]bool{}
+	for _, p := range scaffoldAbsentReported[abs] {
+		reported[p] = true
 	}
-	if mkErr := os.MkdirAll(filepath.Dir(full), 0o755); mkErr != nil {
-		return
+	onDisk := scaffoldOnDisk[abs]
+	if onDisk == nil {
+		_, _, onDisk = readScaffoldLedger(abs)
 	}
-	data, merr := json.MarshalIndent(scaffoldedJSON{Files: led, AbsentReported: reported}, "", "  ")
-	if merr != nil {
-		return
+	want := make(map[string][]byte, len(led))
+	for p, e := range led {
+		e.AbsentReported = reported[p]
+		data, merr := json.Marshal(e)
+		if merr != nil {
+			continue
+		}
+		want[ScaffoldEntryPath(p)] = append(data, '\n')
 	}
-	_ = atomicfile.WriteFile(full, append(data, '\n'), 0o644)
+	// The ledger is committed state and a write the run made, like the
+	// disown record (saveStateFile): journal every write and removal, so a
+	// failed generate restores it with everything else instead of leaving
+	// the run's births recorded for files the rollback deleted.
+	entries := make([]string, 0, len(want))
+	for rel := range want {
+		entries = append(entries, rel)
+	}
+	sort.Strings(entries)
+	for _, rel := range entries {
+		if have, ok := onDisk[rel]; ok && bytes.Equal(have, want[rel]) {
+			continue
+		}
+		full := filepath.Join(abs, filepath.FromSlash(rel))
+		RecordPreWriteAbs(full)
+		if os.MkdirAll(filepath.Dir(full), 0o755) != nil {
+			continue
+		}
+		if atomicfile.WriteFile(full, want[rel], 0o644) == nil {
+			onDisk[rel] = want[rel]
+		}
+	}
+	dirRoot := filepath.Join(abs, filepath.FromSlash(ScaffoldedDir))
+	for rel := range onDisk {
+		if _, keep := want[rel]; keep {
+			continue
+		}
+		full := filepath.Join(abs, filepath.FromSlash(rel))
+		RecordPreWriteAbs(full)
+		if err := os.Remove(full); err == nil || os.IsNotExist(err) {
+			delete(onDisk, rel)
+			pruneEmptyDirs(filepath.Dir(full), dirRoot)
+		}
+	}
+	scaffoldOnDisk[abs] = onDisk
+	legacy := filepath.Join(abs, filepath.FromSlash(LegacyScaffoldedFile))
+	if _, serr := os.Stat(legacy); serr == nil {
+		RecordPreWriteAbs(legacy)
+		_ = os.Remove(legacy)
+		if len(want) > 0 {
+			migrateGitignoreLine(abs, "!"+LegacyScaffoldedFile, "!"+ScaffoldedDir+"/")
+		}
+	}
 }
 
 // scaffoldDeferred counts the open DeferScaffoldLedger batches per root, and
@@ -384,7 +522,7 @@ func RecordScaffold(root, relPath string) {
 	if _, ok := led[rel]; ok {
 		return // already recorded — no churn
 	}
-	led[rel] = ScaffoldEntry{ScaffoldedAt: time.Now().UTC().Format(time.RFC3339)}
+	led[rel] = ScaffoldEntry{}
 	noteBirthLocked(rel)
 	saveScaffoldLedgerLocked(root)
 }
@@ -766,9 +904,6 @@ func RecordScaffoldWithHash(root, relPath string, content []byte) {
 	e, known := led[rel]
 	if !known {
 		noteBirthLocked(rel)
-	}
-	if e.ScaffoldedAt == "" {
-		e.ScaffoldedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	e.BirthHash = Hash(content)
 	led[rel] = e

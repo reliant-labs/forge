@@ -135,7 +135,7 @@ func observabilityFiles(t *testing.T, dir string) map[string]string {
 // single file as a hand edit.
 func assertConvergesToBothServices(t *testing.T, dir string) {
 	t.Helper()
-	for _, rel := range []string{".forge/scaffolded.json", "internal/app/mounts_gen.go"} {
+	for _, rel := range []string{"internal/app/mounts_gen.go"} {
 		data, err := os.ReadFile(filepath.Join(dir, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -144,9 +144,10 @@ func assertConvergesToBothServices(t *testing.T, dir string) {
 			t.Errorf("%s carries conflict markers:\n%s", rel, data)
 		}
 	}
-	ledger, _ := os.ReadFile(filepath.Join(dir, checksums.ScaffoldedFile))
+	checksums.ResetScaffoldLedgerCache()
+	ledger := strings.Join(checksums.ScaffoldLedgerPaths(dir), "\n")
 	for _, s := range []string{"question", "run"} {
-		if !strings.Contains(string(ledger), "internal/handlers/"+s+"/") {
+		if !strings.Contains(ledger, "internal/handlers/"+s+"/") {
 			t.Errorf("the merged ledger lost %s's birth:\n%s", s, ledger)
 		}
 	}

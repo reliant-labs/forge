@@ -879,7 +879,7 @@ func selectPipelineSteps(flags pipelineFlags) (steps []GenStep, total int, err e
 // The journal records the writes that go through forge's chokepoints. A
 // write that does not — the scaffold birth ledger saving itself, a step's
 // raw os.WriteFile, a tool nobody declared — used to vanish from the count:
-// generate printed "0 changed" while rewriting .forge/scaffolded.json, and
+// generate printed "0 changed" while rewriting .forge/scaffolded/, and
 // the agent reading that line as its fixed point never saw the drift. The
 // fingerprint closes the class rather than the instance: any file whose
 // bytes differ from the pre-run tree counts, whatever wrote it.

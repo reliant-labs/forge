@@ -7,7 +7,7 @@ description: Generating into a frontend forge did not scaffold — an existing a
 
 An app forge did not scaffold — moved under `frontends/<name>/`, or named by a
 KCL `forge.Frontend` `path` — is **adopted**. forge tells the two apart by
-record, not guesswork: it scaffolded a frontend when `.forge/scaffolded.json`
+record, not guesswork: it scaffolded a frontend when `.forge/scaffolded/`
 records its `package.json`, or its directory holds the nested `go.mod`
 boundary marker forge writes. Anything else is adopted, and `forge generate`
 writes only what generated code needs into it:

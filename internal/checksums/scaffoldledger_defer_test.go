@@ -1,19 +1,35 @@
 package checksums
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// ledgerFileBytes is the whole on-disk ledger — every entry file under
+// ScaffoldedDir, by path, plus a legacy one-file ledger — as one byte
+// string: nil when there is none.
 func ledgerFileBytes(t *testing.T, root string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(root, ScaffoldedFile))
-	if err != nil {
-		return nil
+	var out []byte
+	if b, err := os.ReadFile(filepath.Join(root, LegacyScaffoldedFile)); err == nil {
+		out = append(append(out, LegacyScaffoldedFile+"\n"...), b...)
 	}
-	return b
+	_ = filepath.WalkDir(filepath.Join(root, ScaffoldedDir), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		out = append(append(out, filepath.ToSlash(rel)+"\n"...), b...)
+		return nil
+	})
+	return out
 }
 
 // A deferred batch answers from memory, writes the file once when it closes,

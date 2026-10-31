@@ -7,6 +7,13 @@
 // renders DASHBOARD_TILES, so an entity added later gets its tile without
 // forge editing your dashboard, and no file lists the entities: two branches
 // that each add one merge as files.
+{{- if .Pages }}
+// import.meta.glob (the vitest branch below) is typed by Vite's ImportMeta
+// augmentation, which a Next app does not load: reference it, and only it
+// (vite/client's asset modules collide with Next's). vite is a devDependency
+// of every forge frontend: vitest runs on it.
+/// <reference types="vite/types/importMeta.d.ts" />
+{{- end }}
 import type { ComponentType } from "react";
 
 /** One entity's tile: a live count linking to its list page. */

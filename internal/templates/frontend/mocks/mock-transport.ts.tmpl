@@ -27,6 +27,13 @@
 // barrel: a production bundle must be able to shake the fixtures and the
 // engine out entirely, which is why connect.ts reaches this module through
 // a dynamic `require()` gated on the mock-mode env var.
+{{- if .Entities }}
+// import.meta.glob (the vitest branch below) is typed by Vite's ImportMeta
+// augmentation, which a Next app does not load: reference it, and only it
+// (vite/client's asset modules collide with Next's). vite is a devDependency
+// of every forge frontend: vitest runs on it.
+/// <reference types="vite/types/importMeta.d.ts" />
+{{- end }}
 import { createMockTransport as createEngineTransport, resolveActiveScenario } from "@reliantlabs/forge-web-runtime/mock-transport";
 {{- /*
   Import order matters: the emitted file must pass the scaffold's

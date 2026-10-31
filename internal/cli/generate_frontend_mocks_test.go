@@ -583,3 +583,64 @@ func TestMockTransport_NoEntities_EmitsScenarioCapableTransport(t *testing.T) {
 		}
 	}
 }
+
+// The per-entity registries gather their modules with import.meta.glob under
+// vitest. A Next app loads no Vite types, so tsc failed them with TS2339
+// ("Property 'glob' does not exist on type 'ImportMeta'") until each file
+// referenced Vite's ImportMeta augmentation itself. tsc honours a triple-slash
+// directive only above the first statement, so the reference must precede
+// every non-comment line; and it is emitted only with the glob branch.
+func TestRegistriesReferenceVitesImportMetaAboveTheirFirstStatement(t *testing.T) {
+	const ref = `/// <reference types="vite/types/importMeta.d.ts" />`
+	render := func(name string, data any) string {
+		t.Helper()
+		body, err := templates.FrontendTemplates().Get(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		tmpl, err := template.New(name).Funcs(templates.FuncMap()).Parse(string(body))
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, data); err != nil {
+			t.Fatalf("execute %s: %v", name, err)
+		}
+		return buf.String()
+	}
+	referencesFirst := func(t *testing.T, name, out string) {
+		t.Helper()
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || (strings.HasPrefix(line, "//") && line != ref) {
+				continue
+			}
+			if line != ref {
+				t.Errorf("%s: first non-comment line is %q, want the Vite ImportMeta reference above it", name, line)
+			}
+			return
+		}
+		t.Errorf("%s: no statement at all", name)
+	}
+
+	entity := []codegen.MockTransportEntity{{EntityName: "Patient", EntityNamePlural: "Patients", EntitySlug: "patients",
+		ServiceName: "ClinicService", ServiceTypeName: "demo.v1.ClinicService", ListRPC: "ListPatients", HasList: true,
+		ImportPath: "services/clinic/v1/clinic_pb", ListResponseType: "ListPatientsResponse"}}
+	mocks := render(filepath.Join("mocks", "mock-transport.ts.tmpl"), codegen.NewMockTransportTemplateData(entity))
+	referencesFirst(t, "mock-transport", mocks)
+	if !strings.Contains(mocks, "import.meta.glob") {
+		t.Fatalf("mock-transport no longer uses import.meta.glob; drop the reference with it")
+	}
+	if none := render(filepath.Join("mocks", "mock-transport.ts.tmpl"), codegen.NewMockTransportTemplateData(nil)); strings.Contains(none, ref) {
+		t.Errorf("mock-transport with no entities references Vite's types without using them")
+	}
+
+	pages := struct{ Pages []struct{} }{Pages: []struct{}{{}}}
+	for _, name := range []string{"nextjs/src/lib/nav-routes_gen.ts.tmpl", "nextjs/src/components/dashboard-tiles_gen.ts.tmpl"} {
+		out := render(name, pages)
+		referencesFirst(t, name, out)
+		if none := render(name, struct{ Pages []struct{} }{}); strings.Contains(none, ref) {
+			t.Errorf("%s with no pages references Vite's types without using them", name)
+		}
+	}
+}

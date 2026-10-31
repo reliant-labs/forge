@@ -26,11 +26,13 @@ func graphCatalog(in GraphGenInput, m *graphModel) servicecatalog.Catalog {
 	if descriptorErr != nil {
 		c.Diagnostics = append(c.Diagnostics, servicecatalog.Diagnostic{Code: "descriptor_unavailable"})
 	}
-	// The typed graph proves generated route-set reach, not arbitrary runtime
-	// mux registration, reflection, proxy routes, or unregistered API clients.
-	c.Diagnostics = append(c.Diagnostics, servicecatalog.Diagnostic{Code: "coverage_generated_routes_and_registered_clients_only"})
-	// The committed catalog records no code method sets (catalogNoMethods).
-	c.Diagnostics = append(c.Diagnostics, servicecatalog.Diagnostic{Code: servicecatalog.DiagnosticBundleMethodSetsOmitted})
+	c.Diagnostics = append(c.Diagnostics,
+		// The typed graph proves generated route-set reach, not arbitrary runtime
+		// mux registration, reflection, proxy routes, or unregistered API clients.
+		servicecatalog.Diagnostic{Code: "coverage_generated_routes_and_registered_clients_only"},
+		// The committed catalog records no code method sets (catalogNoMethods).
+		servicecatalog.Diagnostic{Code: servicecatalog.DiagnosticBundleMethodSetsOmitted},
+	)
 	if len(services) == 0 {
 		services = in.Services
 	}

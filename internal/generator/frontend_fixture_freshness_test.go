@@ -1,12 +1,14 @@
 package generator
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
@@ -56,17 +58,19 @@ func emitFreshness(t *testing.T, root, feRel string) (manifest, guard string) {
 // not, the emitted guard would compare a constant to a constant and pass on a
 // stale tree — the exact failure this whole surface exists to prevent.
 func TestFreshnessManifestRecordsAndTracksTheSchema(t *testing.T) {
-	before, _ := emitFreshness(t, freshnessProject(t, map[string]string{
+	feRel := filepath.Join("frontends", "web")
+	beforeRoot := freshnessProject(t, map[string]string{
 		"00001_create_orders.up.sql": "CREATE TABLE orders (id UUID PRIMARY KEY);",
-	}), filepath.Join("frontends", "web"))
-
-	after, _ := emitFreshness(t, freshnessProject(t, map[string]string{
+	})
+	beforeManifest, beforeGuard := emitFreshness(t, beforeRoot, feRel)
+	afterRoot := freshnessProject(t, map[string]string{
 		"00001_create_orders.up.sql": "CREATE TABLE orders (id UUID PRIMARY KEY);",
 		"00002_add_status.up.sql":    "ALTER TABLE orders ADD COLUMN status TEXT;",
-	}), filepath.Join("frontends", "web"))
+	})
+	afterManifest, afterGuard := emitFreshness(t, afterRoot, feRel)
 
-	beforeFP := extractConst(t, before, "SEED_FINGERPRINT")
-	afterFP := extractConst(t, after, "SEED_FINGERPRINT")
+	beforeM, afterM := readFixtureMarker(t, beforeRoot, feRel), readFixtureMarker(t, afterRoot, feRel)
+	beforeFP, afterFP := beforeM.SeedFingerprint, afterM.SeedFingerprint
 
 	if beforeFP == "" || afterFP == "" {
 		t.Fatal("a project WITH migrations recorded an empty fingerprint — the guard would " +
@@ -76,8 +80,42 @@ func TestFreshnessManifestRecordsAndTracksTheSchema(t *testing.T) {
 		t.Error("adding a migration did not change the recorded fingerprint; a stale fixture set " +
 			"would pass the freshness guard")
 	}
-	if got := extractConst(t, after, "SEED_FINGERPRINT_FILES"); got != "2" {
-		t.Errorf("SEED_FINGERPRINT_FILES = %s, want 2", got)
+	if afterM.SeedFingerprintFiles != 2 {
+		t.Errorf("seed_fingerprint_files = %d, want 2", afterM.SeedFingerprintFiles)
+	}
+	// The marker vouches for the files it was written beside.
+	if afterM.Fixtures[fixtureFreshnessFiles[0]] == "" || afterM.Fixtures[fixtureFreshnessFiles[1]] == "" {
+		t.Errorf("the marker does not record the generated files beside it: %v", afterM.Fixtures)
+	}
+
+	// The merge invariant: the COMMITTED surface does not move when a
+	// migration is added. A digest in a committed file was one line that
+	// every branch adding a migration rewrote, so any two conflicted.
+	if beforeManifest != afterManifest || beforeGuard != afterGuard {
+		t.Error("adding a migration changed the committed manifest or guard; two branches that each add one would conflict there")
+	}
+}
+
+// readFixtureMarker reads the marker the emitter wrote for feRel.
+func readFixtureMarker(t *testing.T, root, feRel string) fixtureMarker {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(FixtureMarkerPath(feRel))))
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	var m fixtureMarker
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("parse marker: %v", err)
+	}
+	return m
+}
+
+// The marker is never committed: .forge/ is ignored in every forge project
+// apart from forge's committed state, which the marker is not.
+func TestFixtureMarkerIsNotCommittedState(t *testing.T) {
+	rel := FixtureMarkerPath(filepath.Join("frontends", "web"))
+	if !strings.HasPrefix(rel, ".forge/") || checksums.IsCommittedState(rel) {
+		t.Errorf("%s must live under .forge/ and not be committed state", rel)
 	}
 }
 
@@ -85,10 +123,11 @@ func TestFreshnessManifestRecordsAndTracksTheSchema(t *testing.T) {
 // an EMPTY fingerprint — and the guard must still be a real assertion, not a
 // skip, so the "nothing to check" state is visible in the test report.
 func TestFreshnessSurfaceWithoutMigrations(t *testing.T) {
-	manifest, guard := emitFreshness(t, freshnessProject(t, nil), filepath.Join("frontends", "web"))
+	root := freshnessProject(t, nil)
+	_, guard := emitFreshness(t, root, filepath.Join("frontends", "web"))
 
-	if got := extractConst(t, manifest, "SEED_FINGERPRINT"); got != "" {
-		t.Errorf("SEED_FINGERPRINT = %q, want empty for a project with no migrations", got)
+	if got := readFixtureMarker(t, root, filepath.Join("frontends", "web")).SeedFingerprint; got != "" {
+		t.Errorf("seed_fingerprint = %q, want empty for a project with no migrations", got)
 	}
 	if !strings.Contains(guard, "no migrations") {
 		t.Error("the no-schema guard does not explain why it is checking nothing")
@@ -287,7 +326,7 @@ func TestFreshnessGuardNamesBothCausesAndTheFix(t *testing.T) {
 		t.Fatal("guard no longer carries the STALE MOCK FIXTURES message")
 	}
 	msg := guard[start:]
-	if end := strings.Index(msg, ").toBe(SEED_FINGERPRINT)"); end > 0 {
+	if end := strings.Index(msg, ").toBe(marker.seed_fingerprint)"); end > 0 {
 		msg = msg[:end]
 	}
 	// Join the TypeScript string concatenation back into the text a reader

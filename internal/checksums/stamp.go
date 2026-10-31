@@ -53,7 +53,7 @@
 //	/*  forge:hash=… */     .css
 //
 // Comment-incapable formats (JSON et al.) are NOT stampable: callers
-// route those few files through the scoped .forge/hashes.json fallback
+// route those few files through the scoped .forge/hashes/ fallback
 // (see FileChecksums.Unstampable) — deliberately minimal so the
 // exception cannot resurrect the global manifest.
 //

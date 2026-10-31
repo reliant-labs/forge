@@ -642,7 +642,7 @@ func Hash(content []byte) string {
 //     bytes are a fixed point of the formatter a user's tooling runs;
 //   - the rendered content is STAMPED with its embedded forge:hash
 //     marker (comment-incapable formats fall back to the scoped
-//     .forge/hashes.json entry);
+//     .forge/hashes/ certificate);
 //   - existing on-disk content is classified by Verify: pristine
 //     content regenerates (healing older vintages loudly), hand-edited
 //     content is skipped unless force applies, unmarked content is
@@ -744,7 +744,7 @@ func tier1Preamble(root, relPath string, cs *FileChecksums) (proceed, reAdopting
 
 // Uncertified reports whether relPath is a Tier-1 output that NOTHING
 // certifies: a comment-incapable forge aggregate in forge's wholly-owned
-// gen/ tree (uncertifiedOutputs). .forge/hashes.json never records one (Load drops
+// gen/ tree (uncertifiedOutputs). .forge/hashes/ never records one (Load drops
 // a leftover entry), so it is regenerated whole on every run and is never a
 // stomp-guard or cleanup candidate. gen/forge_descriptor.json has never had a
 // certificate either; gen/forge_service_catalog.json is the Tier-1 one.
@@ -917,7 +917,7 @@ func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 
 // writeUnstampable is the Tier-1 write path for comment-incapable
 // formats (JSON, …): pristineness is tracked in the scoped
-// .forge/hashes.json instead of an embedded marker. Same outcomes as
+// a certificate under .forge/hashes/ instead of an embedded marker. Same outcomes as
 // the stamped path: recorded-hash match → regenerate (loud heal when
 // the content actually changes), mismatch → hand-edited (skip unless
 // force), no record → write.

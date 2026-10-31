@@ -11,7 +11,7 @@ import (
 )
 
 // MergeStateFile three-way merges one of the committed state files under
-// .forge/ (scaffolded.json, hashes.json, disowned.json) key by key, and
+// .forge/ (scaffolded.json, disowned.json, a certificate under hashes/) key by key, and
 // renders the result exactly as forge's own writers do.
 //
 // WHY. Every branch that adds a service records its births in the scaffold

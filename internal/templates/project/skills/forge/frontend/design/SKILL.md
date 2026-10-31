@@ -125,6 +125,6 @@ Every element earns its place — one thousand no's for every yes; less is more.
 
 ## Verify visually before declaring done
 
-Code that type-checks and tests that pass do not prove a UI looks right. Launch the app, load the page you changed, screenshot it and compare against the brief, then check at least one other viewport width. If you cannot run the app, say so explicitly — do not claim visual success from the diff alone.
+Code that type-checks and tests that pass do not prove a UI looks right. Launch the app, load the page you changed, screenshot it and compare against the brief, then check at least one other viewport width. If you cannot run the app, say so explicitly — do not claim visual success from the diff alone. Taking a screenshot is not seeing it: take it with Chrome DevTools `take_screenshot` and no `filePath`, then check you actually received an image — `frontend/design/verify`, "Seeing the screenshot".
 
 `frontend/design/verify` carries the full checklist and the `auditOverflow` browser probe, which finds the escaped headlines, clipped cards and horizontal scroll a diff never shows.

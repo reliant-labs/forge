@@ -25,12 +25,19 @@ func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) { //nolint:funl
 		return nil
 	}
 	var servers []string
+	// A build-only workload (forge.BuildOnly: an image the release carries and
+	// something else runs, e.g. a daemon base image) is never deployed, so it has
+	// no stage. A dependency on it is a compatibility claim between artifacts of
+	// one release, already satisfied when the release is cut: it orders nothing.
+	buildOnly := map[string]bool{}
 	for _, w := range e.Workloads {
 		if s := stageOfWorkload(w); s != "" {
 			if err := addName(w.Name, s); err != nil {
 				return nil, err
 			}
 			servers = append(servers, w.Name)
+		} else if w.Runtime.Type == RuntimeBuildOnly {
+			buildOnly[w.Name] = true
 		}
 	}
 	for _, f := range e.Frontends {
@@ -65,6 +72,9 @@ func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) { //nolint:funl
 	add := func(name string, peers []string) error {
 		for _, peer := range peers {
 			from, ok := stages[peer]
+			if !ok && buildOnly[peer] {
+				continue
+			}
 			if !ok {
 				return fmt.Errorf("release component %s has missing predecessor %q", name, peer)
 			}

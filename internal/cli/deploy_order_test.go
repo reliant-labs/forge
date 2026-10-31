@@ -124,6 +124,35 @@ func TestDeployStageEdges_FrontendDefaults(t *testing.T) {
 	}
 }
 
+// A deployed workload may declare a release dependency on a build-only
+// artifact (control-plane prod: reliant-temporal-worker and daemon-gateway on
+// workspace-base, the daemon image the release carries). The artifact has no
+// stage, so the edge orders nothing; it must not refuse the deploy as a
+// missing predecessor (v1.7.85 was recorded on prod and then not applied).
+// A peer that names nothing at all still refuses.
+func TestDeployStageEdges_BuildOnlyPeerOrdersNothing(t *testing.T) {
+	e := &KCLEntities{Workloads: []WorkloadEntity{
+		orderClusterWorkload("api", nil),
+		orderClusterWorkload("worker", map[string]string{"api": "v1", "workspace-base": "v1"}),
+		{Name: "workspace-base", Runtime: RuntimeEntity{Type: RuntimeBuildOnly}, ReleaseDependencies: map[string]string{"worker": "v1"}},
+	}}
+	got, err := deployStageEdges(e)
+	if err != nil {
+		t.Fatalf("a dependency on a build-only artifact refused the deploy: %v", err)
+	}
+	want := []stageEdge{{Dependency: "api", Dependent: "worker", From: stageLocal, To: stageLocal}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("edges = %+v, want %+v", got, want)
+	}
+	if _, err := deployStageOrder(e); err != nil {
+		t.Errorf("order: %v", err)
+	}
+	e.Workloads[1].ReleaseDependencies["absent"] = "v1"
+	if _, err := deployStageEdges(e); err == nil || !strings.Contains(err.Error(), "missing predecessor") {
+		t.Errorf("a peer that names nothing was accepted: %v", err)
+	}
+}
+
 // Every part reports its own placement and actuator; the env has no kind.
 func TestPlacementsOf_MixedEnv(t *testing.T) {
 	e := &KCLEntities{

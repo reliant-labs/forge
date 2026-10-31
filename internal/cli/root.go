@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
@@ -38,6 +39,9 @@ func Execute() error {
 	if handed, err := HandOffToPinned(context.Background(), os.Args[1:], os.Stderr); err != nil || handed {
 		return err
 	}
+	// The descriptor is never committed: whichever command first reads it
+	// in a checkout extracts it from proto/ (codegen.LoadDescriptor).
+	codegen.RegisterDescriptorBuilder(buildDescriptorOnDemand)
 	return NewRootCmd().Execute()
 }
 

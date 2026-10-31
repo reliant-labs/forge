@@ -12,9 +12,8 @@
 # and so on every open pull request, for most of a day. That check runs the
 # whole `forge generate` in CI, minutes after the push; this one regenerates
 # the single file a proto edit can stale, in about a second, before the
-# commit exists. gen/forge_descriptor.json is not checked: since #984 forge's
-# own descriptor stamps no source (`"sources": {}`), so a proto edit cannot
-# stale it.
+# commit exists. gen/forge_descriptor/ is not checked: it is derived on
+# demand and never committed.
 #
 # The protoc-gen-go and protoc version lines of the header are compared out:
 # a plugin a patch away from go.mod's pin would fail every commit here over a

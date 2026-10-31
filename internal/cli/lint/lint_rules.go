@@ -130,7 +130,7 @@ func gradableRules() []string {
 		tracinglint.RuleLogWithoutCtx, tracinglint.RuleRawHTTPClient, tracinglint.RuleRawSQLOpen,
 		tracinglint.RuleContractUninstrumented,
 		// commit policy
-		commitpolicy.RuleGeneratedIgnored, commitpolicy.RuleLocalStateTracked,
+		commitpolicy.RuleGeneratedIgnored, commitpolicy.RuleLocalStateTracked, commitpolicy.RuleToolDerivedTracked,
 		// frontend lockfile
 		ruleFrontendLockDrift,
 		// cross-lane workarounds

@@ -477,7 +477,10 @@ func scaffoldPipelineStub(t *testing.T, runs *int) func(string) error {
 		if merr != nil {
 			return merr
 		}
-		return os.WriteFile(filepath.Join(root, "gen", "forge_descriptor.json"), raw, 0o644)
+		if err := os.MkdirAll(filepath.Join(root, "gen", "forge_descriptor"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return os.WriteFile(filepath.Join(root, "gen", "forge_descriptor", "fixture.json"), raw, 0o644)
 	}
 }
 

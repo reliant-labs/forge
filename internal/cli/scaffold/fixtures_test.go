@@ -18,7 +18,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// verticalDescriptor builds the gen/forge_descriptor.json content for the
+// verticalDescriptor builds the gen/forge_descriptor/ content for the
 // fixture: TasksService with a unary SubmitOrder (Timestamp / optional /
 // repeated / nested-message / enum / map fields, auth_required) and a
 // server-streaming TailEvents.
@@ -173,6 +173,6 @@ func setupVerticalProject(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFixtureFile(t, dir, filepath.Join("gen", "forge_descriptor.json"), string(desc))
+	writeFixtureFile(t, dir, filepath.Join("gen", "forge_descriptor", "fixture.json"), string(desc))
 	return dir
 }

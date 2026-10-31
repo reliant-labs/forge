@@ -111,7 +111,7 @@ func catalogFuncSymbol(fd *ast.FuncDecl) string {
 // never create another endpoint registry or export resolved values/defaults.
 func catalogConfigFields(dir string) map[string]bool {
 	fields := map[string]bool{}
-	desc, err := loadDescriptor(dir)
+	desc, err := LoadDescriptor(dir)
 	if err != nil || desc == nil {
 		return fields
 	}

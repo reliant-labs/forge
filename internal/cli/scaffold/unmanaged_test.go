@@ -29,7 +29,10 @@ func TestRefuseUnmanagedService(t *testing.T) {
 	desc := `{"services":[
 	  {"Name":"LegacyService","Package":"services.legacy.v1","ProtoFile":"services/legacy/v1/legacy.proto","Unmanaged":true},
 	  {"Name":"BillingService","Package":"services.billing.v1","ProtoFile":"services/billing/v1/billing.proto"}]}`
-	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), []byte(desc), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"), []byte(desc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

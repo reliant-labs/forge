@@ -50,7 +50,7 @@ type Service interface {
 	GenerateMigrate(targetDir string, modulePath string, hasMigrations bool, cs *checksums.FileChecksums) error
 }
 
-// Parser reads forge_descriptor.json + go.mod to produce ServiceDefs,
+// Parser reads gen/forge_descriptor/ + go.mod to produce ServiceDefs,
 // EntityDefs, ConfigMessages, and the user project's module path. No
 // files are written.
 type Parser interface {

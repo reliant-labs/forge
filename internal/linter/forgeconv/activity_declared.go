@@ -14,7 +14,7 @@
 //
 // ── Source of truth ──────────────────────────────────────────────────────
 //
-// gen/forge_descriptor.json, whose methods carry Activity: the verdict of
+// gen/forge_descriptor/, whose methods carry Activity: the verdict of
 // activity.IsMutating and activity.Resolve, recorded by `forge generate`
 // from the COMPILED descriptors. Those are the functions the runtime
 // interceptor calls, so this rule cannot disagree with what the
@@ -69,9 +69,8 @@ func checkActivityDeclared(rootDir string, protoFiles []string) map[string][]Fin
 		return nil
 	}
 	projectDir := filepath.Dir(absRoot)
-	if _, err := os.Stat(filepath.Join(projectDir, "gen", "forge_descriptor.json")); err != nil {
-		return nil
-	}
+	// The descriptor is derived on demand (codegen.LoadDescriptor extracts
+	// it when this checkout has none), so a nil result means no protos.
 	services, err := codegen.ParseDeclaredServices(projectDir)
 	if err != nil {
 		return map[string][]Finding{"": {{
@@ -136,7 +135,7 @@ func checkActivityDeclared(rootDir string, protoFiles []string) map[string][]Fin
 		out[""] = append(out[""], Finding{
 			Rule:        ruleActivityDeclared,
 			Severity:    SeverityError,
-			Message:     "gen/forge_descriptor.json predates activity declarations, so they cannot be checked",
+			Message:     "gen/forge_descriptor/ predates activity declarations, so they cannot be checked",
 			Remediation: "run `forge generate`",
 		})
 	}

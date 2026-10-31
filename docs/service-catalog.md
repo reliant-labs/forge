@@ -17,7 +17,7 @@ RPC execution endpoint, endpoint registry or new database is involved.
 - Service methods retain fully qualified input/output names, both streaming
   flags, auth declaration and protobuf idempotency as the closed set `UNKNOWN`,
   `IDEMPOTENT`, `NO_SIDE_EFFECTS` (protobuf's `IDEMPOTENCY_UNKNOWN` is `UNKNOWN`).
-  Each service's `descriptor` is the existing `forge_descriptor.json` ServiceDef:
+  Each service's `descriptor` is the existing forge descriptor (`gen/forge_descriptor/`) ServiceDef:
   `Schemas`, `SchemaFiles`, `Enums`, `validate` and `validate_options` are reused
   verbatim. There is no second validation/form dialect or invocation handle.
 - Components expose their type and module-relative source location (see
@@ -56,8 +56,8 @@ catalog stale, and every pull request after it failed "forge generate is not a
 no-op" in the merge queue. Nothing read them (the bundle copy never carried
 them); `go doc` answers the question for a person.
 
-The file is also certified by nothing, like `gen/forge_descriptor.json`
-(`checksums.Uncertified`): no `forge:hash`, no certificate under `.forge/hashes/`. A
+The file is also certified by nothing (`checksums.Uncertified`): no
+`forge:hash`, no certificate under `.forge/hashes/`. A
 certificate of a whole-project aggregate changes on every branch that changes
 any input, so two branches whose catalog changes are disjoint lines still
 conflicted on its hashes.json line, and git's server-side merge runs no merge

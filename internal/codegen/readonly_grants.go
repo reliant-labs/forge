@@ -207,7 +207,7 @@ func UndecidedReadOnlyColumns(tables []schemadef.Table, services []ServiceDef) [
 // `forge:secret` marker: every service in the descriptor, managed or not. nil
 // when the project has no compiled descriptor yet.
 func ParseReadOnlyGrantsServices(projectDir string) ([]ServiceDef, error) {
-	desc, err := loadDescriptor(projectDir)
+	desc, err := LoadDescriptor(projectDir)
 	if err != nil || desc == nil {
 		return nil, err
 	}

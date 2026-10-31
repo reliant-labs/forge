@@ -130,7 +130,7 @@ func TestRootModuleOwnsGen(t *testing.T) {
 			want:  false,
 		},
 		"gen holds no Go files": {
-			files: map[string]string{"go.mod": goMod, "gen/forge_descriptor.json": "{}\n"},
+			files: map[string]string{"go.mod": goMod, "gen/forge_descriptor/fixture.json": "{}\n"},
 			want:  false,
 		},
 		"not a module": {

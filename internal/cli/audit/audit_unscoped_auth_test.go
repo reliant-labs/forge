@@ -12,7 +12,7 @@ import (
 )
 
 // These tests build a project on disk with the SAME two inputs the real
-// category reads — a gen/forge_descriptor.json carrying per-method
+// category reads — a gen/forge_descriptor/ carrying per-method
 // AuthRequired, and a user-owned handler package — then assert on the
 // derived sets. Nothing here greps rendered prose or quotes a sentence
 // from a template.
@@ -65,7 +65,10 @@ func writeProject(t *testing.T, service string, methods map[string]bool, handler
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(genDir, "forge_descriptor.json"), data, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(genDir, "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(genDir, "forge_descriptor", "fixture.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/app\n\ngo 1.24\n"), 0o644); err != nil {

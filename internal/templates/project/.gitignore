@@ -68,9 +68,8 @@ node_modules/
 
 # ── Generated code is COMMITTED ──
 #
-# gen/ (buf's Go stubs, gen/go.mod, forge_descriptor.json), every `*_gen.go`,
-# the forge-generated mocks, and each frontend's src/gen/ are checked in
-# deliberately. Nothing here ignores them, and `forge lint` fails if a rule
+# gen/ (buf's Go stubs, gen/go.mod), every `*_gen.go`, the forge-generated
+# mocks, and each frontend's src/gen/ are checked in deliberately. Nothing here ignores them, and `forge lint` fails if a rule
 # anywhere in the project does.
 #
 # They used to be ignored on the reasoning that `forge generate` re-creates
@@ -87,6 +86,13 @@ node_modules/
 # The rule is that a checkout builds as-cloned, and regenerating is a no-op:
 # if `forge generate` produces a diff, commit it in the same change that
 # caused it.
+#
+# What is committed is what a COMPILER needs. A file only forge or tooling
+# reads is derived on demand and never committed: gen/forge_descriptor/ (the
+# services and rpcs extracted from proto/) is produced by whichever forge
+# command reads it. Committed, it conflicted between any two branches that
+# touched any proto.
+/gen/forge_descriptor/
 
 # ── Machine-local forge state (NEVER committed) ──
 #

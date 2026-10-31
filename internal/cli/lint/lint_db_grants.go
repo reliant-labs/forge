@@ -135,7 +135,7 @@ func collectDBGrantsFindings(root, migrationsDir string) (dbGrantsReport, error)
 	if services == nil && dirExists(filepath.Join(root, protoDirDefault)) {
 		// Without the descriptor the proto-side `forge:secret` markers are
 		// invisible, and every column they cover would be reported undecided.
-		rep.Unverified = "gen/forge_descriptor.json is missing, so proto `// forge:secret` markers cannot be read; run `forge generate` first"
+		rep.Unverified = "gen/forge_descriptor/ is missing, so proto `// forge:secret` markers cannot be read; run `forge generate` first"
 		return rep, nil
 	}
 	tables, err := shadowdb.Tables(root, migDir)

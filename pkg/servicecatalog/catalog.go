@@ -82,7 +82,7 @@ type Service struct {
 	Name      string   `json:"name"`
 	ProtoFile string   `json:"proto_file"`
 	Methods   []Method `json:"methods"`
-	// Descriptor is the existing forge_descriptor.json ServiceDef, unchanged:
+	// Descriptor is the existing forge descriptor (gen/forge_descriptor/) ServiceDef, unchanged:
 	// Schemas, SchemaFiles, Enums and field validate/validate_options are the
 	// authoritative schema graph. Do not invent a second validation dialect.
 	Descriptor json.RawMessage `json:"descriptor"`

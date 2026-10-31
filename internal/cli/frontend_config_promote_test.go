@@ -11,7 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
-// writeFrontendDescriptor writes the gen/forge_descriptor.json (and the
+// writeFrontendDescriptor writes the gen/forge_descriptor/ (and the
 // go.mod its project-root walk-up keys on) that the deploy path reads its
 // config messages from — the same source `forge generate` populates.
 func writeFrontendDescriptor(t *testing.T, projectDir string) {
@@ -32,8 +32,11 @@ func writeFrontendDescriptor(t *testing.T, projectDir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(projectDir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(
-		filepath.Join(projectDir, "gen", "forge_descriptor.json"), data, 0o644); err != nil {
+		filepath.Join(projectDir, "gen", "forge_descriptor", "fixture.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -49,7 +49,10 @@ func projectWithService(t *testing.T, service string) string {
 		t.Fatal(err)
 	}
 	desc := `{"services": [{"Name": "` + service + `", "Package": "` + service + `.v1"}]}`
-	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), []byte(desc), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"), []byte(desc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dir

@@ -291,7 +291,7 @@ jobs:
       # A scaffolded frontend pins pnpm (package.json packageManager,
       # templates.PnpmVersion); TestPnpmVersionIsPinnedEverywhere keeps this
       # version equal to it.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 12.15.0
 

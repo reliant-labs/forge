@@ -409,7 +409,7 @@ jobs:
         uses: ./.github/actions/install-migrate
       # Match test-short-warm's PATH for cache-sound result replay.
       - name: Install Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
         with:
           version: 3.52.0
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -614,7 +614,7 @@ jobs:
       # Full CLI tests execute rendered Taskfiles; do not skip them when a
       # runner lacks Task. Pin the version exercised by these fixtures.
       - name: Install Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
         with:
           version: 3.52.0
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -672,7 +672,7 @@ jobs:
         uses: ./.github/actions/install-migrate
       # Full-tier changed-test repetition can include the Taskfile fixtures.
       - name: Install Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
         with:
           version: 3.52.0
           repo-token: ${{ secrets.GITHUB_TOKEN }}

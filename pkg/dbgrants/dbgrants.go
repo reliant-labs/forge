@@ -131,6 +131,13 @@ type Column struct {
 	NoDashboard bool
 }
 
+// sectionLine begins one independent part of the script: forge stamps each
+// with that part's own hash (forge's checksums package, "sectioned
+// self-certification"). One hash over the whole file made any two branches
+// that changed different tables conflict on its one line; with a hash per
+// table they merge as text. It is an SQL comment, so the script runs as is.
+const sectionLine = "-- forge:section\n"
+
 // dollarTag delimits the script's single DO block. An identifier containing it
 // would end the block early, so Render refuses one.
 const dollarTag = "$forge_grants$"
@@ -323,9 +330,12 @@ func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 	b.WriteString("  END IF;\n\n")
 
 	b.WriteString("  -- tables: the columns the role may read. A forge:secret column, and a credential-shaped one nobody decided, is not listed.\n")
+	b.WriteString("  -- Each table is its own forge:section, so changes to different tables merge as text (see sectionLine).\n")
 	b.WriteString("  FOR r IN SELECT g.* FROM (VALUES\n")
-	var rows []string
-	var withheld, withheldUndecided []string
+	// The first row is a constant the loop skips, so every table's row can
+	// open with its own comma: adding or removing the last table never
+	// rewrites the row before it.
+	b.WriteString("    (NULL::text, NULL::text, ARRAY[]::text[])\n\n")
 	for _, schema := range schemas {
 		ts := bySchema[schema]
 		sort.Slice(ts, func(i, j int) bool { return ts[i].Name < ts[j].Name })
@@ -352,19 +362,24 @@ func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 			if len(lits) > 0 {
 				arr = "ARRAY[" + strings.Join(lits, ", ") + "]::text[]"
 			}
-			rows = append(rows, fmt.Sprintf("    (%s, %s, %s)", quoteLiteral(schema), quoteLiteral(t.Name), arr))
+			b.WriteString("    " + sectionLine)
+			fmt.Fprintf(&b, "    , (%s, %s, %s)\n", quoteLiteral(schema), quoteLiteral(t.Name), arr)
 			if len(secret) > 0 {
-				withheld = append(withheld, fmt.Sprintf("%s.%s: %s", schema, t.Name, strings.Join(secret, ", ")))
+				b.WriteString("    --   " + strings.ReplaceAll(schema+"."+t.Name+": "+strings.Join(secret, ", "), "\n", " ") + "  (forge:secret, withheld)\n")
 			}
 			if len(undecided) > 0 {
-				withheldUndecided = append(withheldUndecided, fmt.Sprintf("%s.%s: %s", schema, t.Name, strings.Join(undecided, ", ")))
+				b.WriteString("    --   " + strings.ReplaceAll(schema+"."+t.Name+": "+strings.Join(undecided, ", "), "\n", " ") +
+					"  (credential-shaped columns nobody decided: withheld until a migration declares COMMENT ON COLUMN t.c IS 'forge:secret' or 'forge:readable <reason>')\n")
 			}
+			// The unchanged line between one table's last line and the next
+			// table's section line: git conflicts on edits to adjacent
+			// lines, so this is what lets neighbouring tables change apart.
+			b.WriteString("\n")
 		}
 	}
-	if len(rows) == 0 {
-		rows = []string{"    (NULL::text, NULL::text, ARRAY[]::text[])"}
-	}
-	b.WriteString(strings.Join(rows, ",\n") + "\n")
+	// The rest of the script is constant: its own section, so the last
+	// table's section ends here rather than at the end of the file.
+	b.WriteString("  " + sectionLine)
 	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL AND role_login LOOP\n")
 	b.WriteString("    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attname) INTO readable\n")
 	b.WriteString("      FROM pg_attribute a\n")
@@ -383,19 +398,6 @@ func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 	b.WriteString("  EXCEPTION WHEN insufficient_privilege THEN\n")
 	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n  END;\n", quoteLiteral("could not set default_transaction_read_only on "+role+": the migrating role may not alter it"))
 	b.WriteString("END\n" + dollarTag + ";\n")
-	if len(withheld) > 0 {
-		b.WriteString("\n-- forge:secret columns withheld from the role:\n")
-		for _, w := range withheld {
-			b.WriteString("--   " + strings.ReplaceAll(w, "\n", " ") + "\n")
-		}
-	}
-	if len(withheldUndecided) > 0 {
-		b.WriteString("\n-- credential-shaped columns nobody decided, withheld until a migration declares\n")
-		b.WriteString("-- COMMENT ON COLUMN t.c IS 'forge:secret'  (stay hidden)  or  'forge:readable <reason>'  (grant):\n")
-		for _, w := range withheldUndecided {
-			b.WriteString("--   " + strings.ReplaceAll(w, "\n", " ") + "\n")
-		}
-	}
 	return b.String(), nil
 }
 

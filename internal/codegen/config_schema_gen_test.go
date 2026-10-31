@@ -81,6 +81,7 @@ func TestGenerateConfigSchemaKCL_ExactBlock(t *testing.T) {
 		"    name: str\n" +
 		"    key: str\n" +
 		"\n" +
+		"# forge:section\n" +
 		"schema AppConfig:\n" +
 		"    # Log level (debug, info, warn, error)\n" +
 		"    log_level: str = \"info\"\n" +

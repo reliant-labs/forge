@@ -289,9 +289,16 @@ type MockTransportEntity struct {
 // ScenarioRPCEntry is one unary RPC row in the generated typed scenario
 // handler map (src/mocks/scenario-rpcs_gen.ts).
 type ScenarioRPCEntry struct {
-	Key            string // "demo.v1.TaskService/GetTask" — matches method.parent.typeName dispatch
-	RequestType    string // "GetTaskRequest"
-	ResponseSchema string // "GetTaskResponseSchema"
+	Key string // "demo.v1.TaskService/GetTask" — matches method.parent.typeName dispatch
+	// RequestType and ResponseSchema are TypeScript type expressions that
+	// import their module inline: `import("@/gen/tasks/v1/tasks_pb").GetTaskRequest`.
+	RequestType    string
+	ResponseSchema string
+}
+
+// ScenarioRPCService is one service's rows: one forge:section of the file.
+type ScenarioRPCService struct {
+	Entries []ScenarioRPCEntry
 }
 
 // ScenarioRPCData drives scenario-rpcs.ts.tmpl: a typed handler map keyed
@@ -300,9 +307,15 @@ type ScenarioRPCEntry struct {
 // kills the snake_case-payload silent failure: a scenario returning
 // `{ user_name: "x" }` for a `userName` field fails tsc instead of
 // rendering empty cells.
+//
+// The map is an intersection of one object type per service, each its own
+// forge:section, and every type is imported inline (`import("…").Name`)
+// rather than from a shared import block. So two branches that change
+// different services touch different sections and no shared line, and merge
+// with plain git; and two services declaring the same message name need no
+// aliasing, because every reference names its module.
 type ScenarioRPCData struct {
-	Entries     []ScenarioRPCEntry
-	TypeImports []HookImportGroup // type-only imports, grouped per declaring module
+	Services []ScenarioRPCService
 }
 
 // BuildScenarioRPCData collects every unary RPC across all services.
@@ -310,19 +323,8 @@ type ScenarioRPCData struct {
 // there is no canonical typed return shape for an arbitrary stream.
 func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
 	var data ScenarioRPCData
-	buckets := map[string]map[string]struct{}{}
-	add := func(path, sym string) {
-		set, ok := buckets[path]
-		if !ok {
-			set = map[string]struct{}{}
-			buckets[path] = set
-		}
-		set[sym] = struct{}{}
-	}
-
-	type ref struct{ inPath, outPath string }
-	var refs []ref
 	for _, svc := range services {
+		var group ScenarioRPCService
 		for _, m := range svc.Methods {
 			if m.ClientStreaming || m.ServerStreaming {
 				continue
@@ -335,27 +337,23 @@ func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
 			if outPath == "" {
 				outPath = svc.ProtoFile
 			}
-			add(ProtoFileToTSImportPath(inPath), m.InputType)
-			add(ProtoFileToTSImportPath(outPath), m.OutputType+"Schema")
-			refs = append(refs, ref{ProtoFileToTSImportPath(inPath), ProtoFileToTSImportPath(outPath)})
-			data.Entries = append(data.Entries, ScenarioRPCEntry{
+			group.Entries = append(group.Entries, ScenarioRPCEntry{
 				Key:            svc.Package + "." + svc.Name + "/" + m.Name,
-				RequestType:    m.InputType,
-				ResponseSchema: m.OutputType + "Schema",
+				RequestType:    tsInlineImport(inPath, m.InputType),
+				ResponseSchema: tsInlineImport(outPath, m.OutputType+"Schema"),
 			})
 		}
+		if len(group.Entries) > 0 {
+			data.Services = append(data.Services, group)
+		}
 	}
-
-	// Every service's messages land in this one file, and two services
-	// declaring the same message name (`PingRequest`) is ordinary proto: such
-	// a name is imported `as <module>_<Name>` from each (tsImportPlan).
-	plan := newTSImportPlan(buckets)
-	for i, r := range refs {
-		data.Entries[i].RequestType = plan.Local(r.inPath, data.Entries[i].RequestType)
-		data.Entries[i].ResponseSchema = plan.Local(r.outPath, data.Entries[i].ResponseSchema)
-	}
-	data.TypeImports = plan.Groups(buckets)
 	return data
+}
+
+// tsInlineImport is the TypeScript type expression naming sym in the
+// generated module of protoFile, imported inline.
+func tsInlineImport(protoFile, sym string) string {
+	return `import("@/gen/` + ProtoFileToTSImportPath(protoFile) + `").` + sym
 }
 
 // ──────────────────────────────────────────────────────────────────────

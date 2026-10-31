@@ -35,6 +35,7 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"    name: str\n" +
 		"    key: str\n" +
 		"\n" +
+		"# forge:section\n" +
 		"schema AppConfig:\n" +
 		"    # Log level (debug, info, warn, error)\n" +
 		"    log_level: str = \"info\"\n" +
@@ -48,6 +49,7 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"    sample_rate: float = 0.0\n" +
 		representativeEmptyEnvChecks +
 		"\n" +
+		"# forge:section\n" +
 		"# Every ENV_VAR AppConfig declares `sensitive: true` for. Used by forge's\n" +
 		"# host-mode config probe, which resolves the whole config for `forge env up`\n" +
 		"# and the parity report. A WORKLOAD must not use it: naming every\n" +
@@ -78,16 +80,20 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"#     env = appConfigEnvMap(cfg, config_secrets) | {EXTRA = \"value\"}\n" +
 		"appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {\n" +
 		"    _sensitive: {str: forge.SecretRef} = {\n" +
+		"        # forge:section\n" +
 		"        \"DATABASE_URL\" = forge.SecretRef {name = c.database_url.name, key = c.database_url.key, store_key = \"DATABASE_URL\"}\n" +
+		"\n" +
 		"    }\n" +
 		"    assert all _n in config_secrets { _n in _sensitive }, \\\n" +
 		"        \"appConfigEnvMap: config_secrets names ${[_n for _n in config_secrets if _n not in _sensitive]}, which is not a `sensitive` field of AppConfig. Sensitive fields: ${sorted([_k for _k in _sensitive])}. Add `sensitive: true` to the field's (forge.v1.config) annotation in its config proto, or drop the name from this workload's config_secrets.\"\n" +
 		"    {\n" +
+		"        # forge:section\n" +
 		"        \"LOG_LEVEL\" = c.log_level\n" +
 		"        \"PORT\" = str(c.port)\n" +
 		"        \"CORS_ALLOW_CREDENTIALS\" = \"true\" if c.cors_allow_credentials else \"false\"\n" +
 		"        \"SHUTDOWN_TIMEOUT\" = c.shutdown_timeout\n" +
 		"        \"SAMPLE_RATE\" = str(c.sample_rate)\n" +
+		"\n" +
 		"    } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n" +
 		"}\n"
 

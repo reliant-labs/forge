@@ -13,12 +13,14 @@
 package mergeproperty
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
@@ -41,7 +43,7 @@ func AssertPlainMergeIsRender(t *testing.T, rel string, render func(variant stri
 	}
 	got := PlainMerge(t, rel, stamp("base"), stamp("ours"), stamp("theirs"))
 	want := stamp("merged")
-	if string(got) != string(want) {
+	if !bytes.Equal(got, want) {
 		t.Fatalf("%s: a plain git merge of independent changes differs from forge generate on the merged inputs:\n--- merged ---\n%s\n--- generate ---\n%s", rel, got, want)
 	}
 	if checksums.Verify(got) != checksums.Pristine {
@@ -75,7 +77,7 @@ func PlainMerge(t *testing.T, rel string, base, ours, theirs []byte) []byte {
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(full, b, 0o644); err != nil {
+		if err := atomicfile.WriteFile(full, b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

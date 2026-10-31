@@ -40,8 +40,11 @@ const (
 	// directory, or a path whose .git is not a gitdir file naming one of the
 	// repository's worktrees (a stale registration now holding a clone).
 	HoldNotLinked = "not a linked worktree"
-	// HoldManaged is a worktree under Reliant's worktree root. Reliant knows
-	// which chat each is bound to and reclaims them itself.
+	// HoldManaged is a worktree Reliant has locked as its own (a lock whose
+	// reason starts with reliantLockPrefix). Reliant knows which chat each is
+	// bound to and reclaims them itself. Where a worktree lives says nothing:
+	// agents also run plain `git worktree add` under Reliant's worktree root,
+	// and nothing but this reaper ever reclaims those.
 	HoldManaged = "managed by reliant"
 	// HoldDeferred is a worktree whose removal would overrun what is left of
 	// the pass's delete budget; a later pass takes it.
@@ -116,18 +119,21 @@ type reapOptions struct {
 	base  string
 	idle  time.Duration
 	apply bool
-	// reliantManaged includes worktrees under Reliant's worktree root.
-	reliantManaged bool
 }
 
+// reliantLockPrefix starts the reason Reliant records on `git worktree lock`
+// for every worktree it manages ("reliant: worktree <id>", and the restored
+// and archived variants). It is a cross-tool contract, mirrored by
+// LockReason in reliant's internal/worktreereclaim.
+const reliantLockPrefix = "reliant: worktree "
+
 // Worktrees is the explicit `forge storage worktrees` entry point. It runs the
-// same classifier the GC layer does, over one repository. reliantManaged
-// includes worktrees under Reliant's worktree root, which are otherwise held.
-func (r Runner) Worktrees(ctx context.Context, repo, base string, idle time.Duration, apply, reliantManaged bool) error {
+// same classifier the GC layer does, over one repository.
+func (r Runner) Worktrees(ctx context.Context, repo, base string, idle time.Duration, apply bool) error {
 	if idle < minWorktreeIdle {
 		return fmt.Errorf("worktree idle time must be at least %s", minWorktreeIdle)
 	}
-	_, err := r.reapWorktrees(ctx, reapOptions{repos: []string{repo}, base: base, idle: idle, apply: apply, reliantManaged: reliantManaged})
+	_, err := r.reapWorktrees(ctx, reapOptions{repos: []string{repo}, base: base, idle: idle, apply: apply})
 	return err
 }
 
@@ -147,7 +153,7 @@ func (r Runner) worktreeLayer(apply bool) error {
 	default:
 		r.print("worktrees: preview only (scheduled and automatic passes never remove worktrees; an explicit `forge storage gc --apply` does)\n")
 	}
-	_, err := r.reapWorktrees(r.hostCtx(), reapOptions{repos: repos, idle: minWorktreeIdle, apply: remove, reliantManaged: r.Policy.WorktreeReapReliantManaged})
+	_, err := r.reapWorktrees(r.hostCtx(), reapOptions{repos: repos, idle: minWorktreeIdle, apply: remove})
 	return err
 }
 
@@ -160,7 +166,7 @@ func (r Runner) PrintHeldWorktrees(ctx context.Context) error {
 	}
 	quiet := r
 	quiet.Out = nil
-	report, err := quiet.reapWorktrees(ctx, reapOptions{repos: repos, idle: minWorktreeIdle, reliantManaged: r.Policy.WorktreeReapReliantManaged})
+	report, err := quiet.reapWorktrees(ctx, reapOptions{repos: repos, idle: minWorktreeIdle})
 	reasons := make([]string, 0)
 	counts := report.HeldByReason()
 	for reason := range counts {
@@ -222,7 +228,9 @@ func (r Runner) rebuildable() []string {
 type worktreeEntry struct {
 	path, head       string
 	locked, prunable bool
-	bare             bool
+	// lockReason is the reason recorded with the lock, "" when none was.
+	lockReason string
+	bare       bool
 }
 
 func parseWorktrees(porcelain string) []worktreeEntry {
@@ -237,6 +245,7 @@ func parseWorktrees(porcelain string) []worktreeEntry {
 				e.head = strings.TrimPrefix(line, "HEAD ")
 			case line == "locked" || strings.HasPrefix(line, "locked "):
 				e.locked = true
+				e.lockReason = strings.TrimPrefix(strings.TrimPrefix(line, "locked"), " ")
 			case line == "prunable" || strings.HasPrefix(line, "prunable "):
 				e.prunable = true
 			case line == "bare":
@@ -257,10 +266,6 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 	self := openfiles.FromPaths([]string{wd})
 	inUse := lazyOpenFiles{take: r.openSnapshot}
 	seenCommon := map[string]bool{}
-	var managed []string
-	if !o.reliantManaged {
-		managed = reliantWorktreeRoots()
-	}
 
 	for _, repo := range o.repos {
 		if err := ctx.Err(); err != nil {
@@ -299,7 +304,7 @@ func (r Runner) reapWorktrees(ctx context.Context, o reapOptions) (WorktreeRepor
 			base = r.defaultBase(ctx, repo)
 		}
 		entries := parseWorktrees(string(b))
-		rules := worktreeRules{base: base, idle: o.idle, common: common, managed: managed, self: self}
+		rules := worktreeRules{base: base, idle: o.idle, common: common, self: self}
 		if len(entries) > 0 {
 			rules.main = canonicalPath(entries[0].path)
 			if !entries[0].bare {
@@ -371,15 +376,13 @@ type worktreeRules struct {
 	// source is main when it is a working tree an ignored file can be copied
 	// from; "" for a bare repository.
 	source string
-	// managed are canonical roots another tool owns its worktrees under.
-	managed []string
-	self    openfiles.Snapshot
+	self   openfiles.Snapshot
 }
 
 // refuse holds what is not plainly a linked worktree this reaper may judge:
 // the main checkout, a directory containing it or the home directory,
 // anything whose .git is not a gitdir FILE naming one of this repository's
-// worktree admin directories, and anything under a managed root. These are
+// worktree admin directories. These are
 // identity checks, so they come before any question of age or cleanliness.
 func (rules worktreeRules) refuse(path string) (reason, detail string) {
 	canonical := canonicalPath(path)
@@ -404,11 +407,6 @@ func (rules worktreeRules) refuse(path string) (reason, detail string) {
 	if admin == "" || rules.common == "" || canonicalPath(filepath.Dir(admin)) != filepath.Join(rules.common, "worktrees") {
 		return HoldNotLinked, fmt.Sprintf(".git names %q, not a worktree of this repository", admin)
 	}
-	for _, root := range rules.managed {
-		if canonical == root || within(root, canonical) {
-			return HoldManaged, fmt.Sprintf("under %s; Reliant reclaims its own worktrees (\"worktree_reap_reliant_managed\": true includes them)", root)
-		}
-	}
 	return "", ""
 }
 
@@ -430,25 +428,13 @@ func canonicalPath(path string) string {
 	return filepath.Clean(path)
 }
 
-// reliantWorktreeRoots is where Reliant creates worktrees: <config>/worktrees,
-// where <config> is $RELIANT_USER_CONFIG_DIR, else ~/.reliant. Both roots are
-// held when the variable is set: the process that created a worktree may not
-// have seen the same environment as this one.
-func reliantWorktreeRoots() []string {
-	var roots []string
-	if dir := os.Getenv("RELIANT_USER_CONFIG_DIR"); dir != "" {
-		roots = append(roots, canonicalPath(filepath.Join(dir, "worktrees")))
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		roots = append(roots, canonicalPath(filepath.Join(home, ".reliant", "worktrees")))
-	}
-	return roots
-}
-
 // classifyWorktree decides one linked worktree: "" reason means removable.
 // skip means it is not a candidate at all (gone from disk).
 func (r Runner) classifyWorktree(ctx context.Context, e worktreeEntry, rules worktreeRules, holds func(path string) (bool, error)) (reason, detail string, skip bool) {
 	if e.locked {
+		if strings.HasPrefix(e.lockReason, reliantLockPrefix) {
+			return HoldManaged, "locked by Reliant (" + e.lockReason + "); Reliant reclaims its own worktrees", false
+		}
 		return HoldLocked, "", false
 	}
 	info, err := os.Stat(e.path)

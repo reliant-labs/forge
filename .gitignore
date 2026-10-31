@@ -160,7 +160,7 @@ tmp/
 .forge/*
 !.forge/disowned.json
 !.forge/hashes.json
-!.forge/scaffolded.json
+!.forge/scaffolded/
 
 # ── What NOT to ignore ──
 #

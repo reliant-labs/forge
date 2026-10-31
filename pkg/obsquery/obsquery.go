@@ -275,7 +275,7 @@ func (b *builder) resourceConds(sig Signal, s Scope) ([]string, error) {
 	for _, f := range s.Filters {
 		// Classify BEFORE compiling: compiling binds parameters, and a filter
 		// that is then dropped would leave them bound but unused.
-		cls, err := b.classify(sig, f.Key)
+		cls, err := b.filterClass(sig, f.Key)
 		if err != nil {
 			return nil, err
 		}

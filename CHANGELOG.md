@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.12] - 2026-10-31
+
+### Added
+
+- **dbgrants:** the read-only and dashboard grants are one constant script per role plus one row file per table, so tables born on different branches merge as files ([#1594](https://github.com/reliant-labs/forge/pull/1594))
+- **generator:** one store file per entity, and the aggregate Store is a struct whose accessors live in those files, so entities born on different branches merge as files ([#1595](https://github.com/reliant-labs/forge/pull/1595))
+- **frontend:** the mock dispatch table is one module per entity, gathered by the bundler, so entities born on different branches merge as files ([#1596](https://github.com/reliant-labs/forge/pull/1596))
+- **frontend:** the nav and dashboard read the entities from generated per-entity modules, so they never churn and entities born on different branches merge as files ([#1597](https://github.com/reliant-labs/forge/pull/1597))
+- **obs:** filter traces and logs by any attribute, named by its map (span.attr.<k>, log.attr.<k>, resource.attr.<k>) ([#1601](https://github.com/reliant-labs/forge/pull/1601))
+- **db:** forge db query reaches a database forge does not run, declared as forge.ExternalDatabase ([#1602](https://github.com/reliant-labs/forge/pull/1602))
+
+### Changed
+
+- **skills:** view design screenshots inline via chrome devtools ([#1577](https://github.com/reliant-labs/forge/pull/1577))
+- gofmt test files and stub the host disk check in cli tests ([#1599](https://github.com/reliant-labs/forge/pull/1599))
+
+### Fixed
+
+- **checksums:** a section's header names its part and its hash moves to the next line, so a part born beside a changed neighbour merges with plain git ([#1588](https://github.com/reliant-labs/forge/pull/1588))
+- **deploy:** release_dependencies orders the deploy only across placements (same-stage pairs and build-only peers order nothing) ([#1600](https://github.com/reliant-labs/forge/pull/1600))
+- **frontend:** the per-entity registries reference Vite's ImportMeta types, so a Next app typechecks them ([#1604](https://github.com/reliant-labs/forge/pull/1604))
+
 ## [v1.0.11] - 2026-10-31
 
 ### Added
@@ -8355,7 +8377,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.11...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.12...HEAD
+[v1.0.12]: https://github.com/reliant-labs/forge/compare/v1.0.11...v1.0.12
 [v1.0.11]: https://github.com/reliant-labs/forge/compare/v1.0.10...v1.0.11
 [v1.0.10]: https://github.com/reliant-labs/forge/compare/v1.0.9...v1.0.10
 [v1.0.9]: https://github.com/reliant-labs/forge/compare/v1.0.8...v1.0.9

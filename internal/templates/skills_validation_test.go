@@ -416,6 +416,7 @@ var knownDotForgeEntries = map[string]bool{
 	"hashes.json":           true, // HashesDir's legacy one-manifest predecessor; the migration skills name it
 	"scaffolded":            true, // the scaffold-once birth ledger, one entry per path (checksums.ScaffoldedDir)
 	"scaffolded.json":       true, // ScaffoldedDir's legacy one-file predecessor; the migration skills name it
+	"fixtures":              true, // per-frontend mock-fixture markers, gitignored (generator.FixtureMarkerDir)
 	"render":                true,
 	"friction.jsonl":        true,
 	"skills":                true,

@@ -2,43 +2,126 @@ package generator
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 // fixtureFreshnessData is what the manifest + guard templates render from.
+// Every field is constant for a frontend: the committed manifest and guard
+// never change when a migration does (see FixtureMarker for where the
+// fingerprint went).
 type fixtureFreshnessData struct {
-	// SeedFingerprint is the digest of the INPUT FILES the fixtures were
-	// generated from (migrations + vocab), or "" when there were none to
-	// read.
-	//
-	// This is deliberately the file-only digest, NOT the config-folded one:
-	// it is the value the emitted TypeScript guard recomputes, and the
-	// guard can only read files. Recording a digest with the seed config
-	// folded in would be a value nothing at `npm test` time can reproduce,
-	// so the comparison would fail on every clean tree — which is exactly
-	// what happened the first time this shipped.
-	SeedFingerprint string
-	// SeedConfigFingerprint folds the seed config (salt, row counts) into
-	// the digest above. Salt and row counts reshuffle every fixture value
-	// without touching a migration, so the file digest alone cannot see
-	// them move. It is compared Go-side, on the next `forge generate`,
-	// rather than by the TypeScript guard.
-	SeedConfigFingerprint string
-	// SeedFingerprintFiles is how many input files that digest covers.
-	SeedFingerprintFiles int
 	// ProjectRootRelative is the relative path from <frontend>/src/mocks/
 	// back to the project root.
 	ProjectRootRelative string
+	// MarkerRel is the project-relative path of this frontend's marker
+	// (FixtureMarkerPath).
+	MarkerRel string
 	// HasSchema selects the real input-hashing guard over the
 	// no-migrations-yet placeholder.
 	HasSchema bool
+}
+
+// FixtureMarkerDir holds, per frontend, the record of what the last `forge
+// generate` IN THIS CHECKOUT wrote its mock fixtures from. It is under .forge/,
+// which every forge project ignores, so it is never committed.
+//
+// WHY NOT COMMITTED. The record used to be SEED_FINGERPRINT in the committed
+// fixture-manifest_gen.ts: one digest over every migration. Every branch that
+// added a migration rewrote that one line, so any two such branches conflicted
+// there — control-plane's manifest conflicted in 45 merges in the week to
+// 2026-10-30 — and a digest of a list cannot be split per input, because two
+// new migrations always sort to the same place (the end). It is tooling-only
+// state, needed by no compiler, so it follows the descriptor out of git
+// (#1572): the committed manifest keeps only constants, and the fingerprint
+// lives here.
+//
+// The guard stays useful without it. The marker also records the bytes of the
+// fixture files it describes, so the guard can tell its two cases apart:
+//
+//   - the fixtures on disk are the ones this checkout's last generate wrote,
+//     and the seed inputs moved since → STALE, fail with the fix;
+//   - no marker (a fresh clone, CI), or fixtures that differ from what the
+//     marker recorded (pulled or checked out since) → cannot verify; skip,
+//     naming `forge generate`. Committed fixtures are checked against their
+//     inputs by `forge ci verify-generated`, which regenerates them.
+const FixtureMarkerDir = ".forge/fixtures"
+
+// FixtureMarkerPath is the project-relative marker of the frontend at feRel.
+func FixtureMarkerPath(feRel string) string {
+	return FixtureMarkerDir + "/" + filepath.ToSlash(filepath.Clean(feRel)) + "/generated-from.json"
+}
+
+// fixtureMarker is the marker's shape. The guard reads seed_fingerprint and
+// fixtures; seed_config_fingerprint (which folds in forge.yaml's seed salt and
+// row counts, which no file-reading process can see) is kept for a person or
+// a later generate asking which dataset the fixtures came from.
+type fixtureMarker struct {
+	SeedFingerprint       string            `json:"seed_fingerprint"`
+	SeedFingerprintFiles  int               `json:"seed_fingerprint_files"`
+	SeedConfigFingerprint string            `json:"seed_config_fingerprint"`
+	Fixtures              map[string]string `json:"fixtures"`
+}
+
+// writeFixtureMarker records files/cfg and the sha256 of every *_gen.* file
+// this run wrote into mocksRel (by base name), so it must run after
+// everything this run writes there.
+func writeFixtureMarker(root, feRel, mocksRel string, files, cfg seedplan.Fingerprint) error {
+	m := fixtureMarker{
+		SeedFingerprint:       files.Hex,
+		SeedFingerprintFiles:  files.Files,
+		SeedConfigFingerprint: cfg.Hex,
+		Fixtures:              map[string]string{},
+	}
+	entries, err := os.ReadDir(filepath.Join(root, mocksRel))
+	if err != nil {
+		return err
+	}
+	full := filepath.Join(root, filepath.FromSlash(FixtureMarkerPath(feRel)))
+	checksums.RecordPreWriteAbs(full)
+	for _, e := range entries {
+		if e.IsDir() || !strings.Contains(e.Name(), "_gen.") {
+			continue
+		}
+		rel := filepath.Join(mocksRel, e.Name())
+		if !checksums.WasWrittenThisRun(rel) {
+			if checksums.IsTier1Target(rel) {
+				// This run rendered the file but left the bytes on disk
+				// alone (a pristine older render, without --heal). They
+				// are not what these inputs produce, so nothing can be
+				// vouched for: no marker, and the guard skips.
+				_ = os.Remove(full)
+				return nil
+			}
+			continue // not this run's output (a leftover the sweep retires)
+		}
+		body, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(body)
+		m.Fixtures[e.Name()] = hex.EncodeToString(sum[:])
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return err
+	}
+	return atomicfile.WriteFile(full, append(data, '\n'), 0o644)
 }
 
 // fixtureFreshnessFiles are the manifest and the guard, under <fe>/src/mocks/.
@@ -105,19 +188,20 @@ var fixtureFreshnessFiles = [2]string{"fixture-manifest_gen.ts", "fixture-freshn
 func EmitFixtureFreshnessSurface(root, feRel string, fixtures int, files, cfg seedplan.Fingerprint, cs *FileChecksums) error {
 	mocksRel := filepath.Join(feRel, "src", "mocks")
 
+	marker := filepath.Join(root, filepath.FromSlash(FixtureMarkerPath(feRel)))
 	if fixtures == 0 {
 		for _, out := range fixtureFreshnessFiles {
 			codegen.RetireGenerated(root, filepath.Join(mocksRel, out), cs)
 		}
+		checksums.RecordPreWriteAbs(marker)
+		_ = os.Remove(marker)
 		return nil
 	}
 
 	data := fixtureFreshnessData{
-		SeedFingerprint:       files.Hex,
-		SeedConfigFingerprint: cfg.Hex,
-		SeedFingerprintFiles:  files.Files,
-		ProjectRootRelative:   projectRootFromMocksDir(mocksRel),
-		HasSchema:             !files.Empty(),
+		ProjectRootRelative: projectRootFromMocksDir(mocksRel),
+		MarkerRel:           FixtureMarkerPath(feRel),
+		HasSchema:           !files.Empty(),
 	}
 
 	for _, f := range []struct{ tmpl, out string }{
@@ -139,6 +223,9 @@ func EmitFixtureFreshnessSurface(root, feRel string, fixtures int, files, cfg se
 		if _, err := WriteGeneratedFileTier1(root, filepath.Join(mocksRel, f.out), buf.Bytes(), cs, true); err != nil {
 			return fmt.Errorf("write %s: %w", f.out, err)
 		}
+	}
+	if err := writeFixtureMarker(root, feRel, mocksRel, files, cfg); err != nil {
+		return fmt.Errorf("write %s: %w", FixtureMarkerPath(feRel), err)
 	}
 	return nil
 }

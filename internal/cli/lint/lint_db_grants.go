@@ -19,8 +19,8 @@
 // The same dbgrants.Column.Disposition judges here and in `forge generate`, so
 // the lint and the grants cannot disagree about which columns are withheld.
 //
-// The lane also judges db/grants/dashboard_gen.sql, the dashboard role's
-// grants: they are a function of the forge:dashboard / forge:no-dashboard
+// The lane also judges db/grants/dashboard_gen.sql and its per-table rows
+// (db/grants/dashboard/), the dashboard role's grants: they are a function of the forge:dashboard / forge:no-dashboard
 // comments, so a marker added or removed without `forge generate` leaves the
 // file granting what the schema no longer says (or not granting what it does).
 // The file is compared with a fresh projection and any difference is reported
@@ -113,7 +113,7 @@ func (s dbGrantsStale) message() string {
 }
 
 func (dbGrantsStale) fixHint() string {
-	return "run `forge generate` and commit db/grants/dashboard_gen.sql; the migrator applies it after every run once the role exists. See `forge skill load db`, \"Dashboards over your database\""
+	return "run `forge generate` and commit db/grants/dashboard_gen.sql and db/grants/dashboard/; the migrator applies them after every run once the role exists. See `forge skill load db`, \"Dashboards over your database\""
 }
 
 // collectDBGrantsFindings is the shared engine behind text mode and
@@ -171,23 +171,43 @@ func collectDBGrantsFindings(root, migrationsDir string) (dbGrantsReport, error)
 	return rep, nil
 }
 
-// dashboardGrantsStale compares db/grants/dashboard_gen.sql on disk with the
-// file `forge generate` would write for tables. Bodies are compared with the
-// ownership marker stripped, so a freshly generated file is never stale.
+// dashboardGrantsStale compares the dashboard role's grants on disk
+// (db/grants/dashboard_gen.sql and its per-table rows under
+// db/grants/dashboard/) with the files `forge generate` would write for
+// tables. Bodies are compared with the ownership marker stripped, so a
+// freshly generated file is never stale; a row file no table accounts for is.
 func dashboardGrantsStale(root string, tables []dbgrants.Table) (*dbGrantsStale, error) {
-	script, err := dbgrants.RenderDashboard(tables)
+	want, err := codegen.DashboardGrantsFileSet(tables)
 	if err != nil {
 		return nil, err
 	}
-	want := codegen.DashboardGrantsFile(script)
-	got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(dbgrants.DashboardGrantsPath)))
-	switch {
-	case os.IsNotExist(err):
-		return &dbGrantsStale{File: dbgrants.DashboardGrantsPath, Missing: true}, nil
-	case err != nil:
-		return nil, err
-	case checksums.BodyHash(got) != checksums.BodyHash(want):
-		return &dbGrantsStale{File: dbgrants.DashboardGrantsPath}, nil
+	// The script first, then its rows: a missing script is the finding to
+	// name, whatever else is missing with it.
+	rels := make([]string, 0, len(want))
+	for rel := range want {
+		if rel != dbgrants.DashboardGrantsPath {
+			rels = append(rels, rel)
+		}
+	}
+	sort.Strings(rels)
+	rels = append([]string{dbgrants.DashboardGrantsPath}, rels...)
+	for _, rel := range rels {
+		got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		switch {
+		case os.IsNotExist(err):
+			return &dbGrantsStale{File: rel, Missing: true}, nil
+		case err != nil:
+			return nil, err
+		case checksums.BodyHash(got) != checksums.BodyHash(want[rel]):
+			return &dbGrantsStale{File: rel}, nil
+		}
+	}
+	entries, _ := os.ReadDir(filepath.Join(root, filepath.FromSlash(dbgrants.DashboardGrantsRowsDir)))
+	for _, e := range entries {
+		rel := dbgrants.DashboardGrantsRowsDir + "/" + e.Name()
+		if !e.IsDir() && strings.HasSuffix(e.Name(), "_gen.sql") && want[rel] == nil {
+			return &dbGrantsStale{File: rel}, nil
+		}
 	}
 	return nil, nil
 }

@@ -72,5 +72,11 @@ func RenderDashboard(tables []Table) (string, error) {
 // cluster-wide only tests need. It is the one place the login gate is on: see
 // "Switching dashboards off" above.
 func RenderDashboardFor(role string, tables []Table) (string, error) {
-	return renderFor(role, DashboardTables(tables), true)
+	return assembled(renderFiles(role, DashboardTables(tables), true))
+}
+
+// RenderDashboardFiles is [RenderDashboard] as a project commits it; see
+// [Files].
+func RenderDashboardFiles(tables []Table) (Files, error) {
+	return renderFiles(DashboardRoleName, DashboardTables(tables), true)
 }

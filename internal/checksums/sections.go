@@ -38,7 +38,7 @@ package checksums
 // WHY THE HEADER IS NAMED AND THE HASH IS NOT ON IT. git conflicts on changes
 // to ADJACENT lines, and a part inserted into the file lands directly before
 // the header of the part that follows it. When the hash rode on the header
-// (the format before v1.0.11), a branch that changed part B rewrote B's first
+// (the format before v1.0.12), a branch that changed part B rewrote B's first
 // line, and a branch that inserted part A before B wrote right next to it:
 // independent changes to neighbouring parts conflicted. The header now never
 // changes while its part exists, so it is the unchanged line between an
@@ -91,7 +91,7 @@ func isHashLine(line []byte) bool {
 	return bytes.Contains(line, []byte(markerKey)) && hashLineRE.Match(line)
 }
 
-// isLegacySectionLine reports whether a header is the pre-v1.0.11 one-line
+// isLegacySectionLine reports whether a header is the pre-v1.0.12 one-line
 // form, which carries its section's hash itself.
 func isLegacySectionLine(line []byte) bool {
 	return isSectionLine(line) && bytes.Contains(line, []byte(markerKey))

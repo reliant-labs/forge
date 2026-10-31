@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
@@ -35,6 +36,23 @@ func latestApplyLine(projectDir, env, promotionID string, now time.Time) string 
 		return describeApply(release.DeriveApplyState(a.Apply, a.Outcome, now), a.Outcome)
 	}
 	return ""
+}
+
+// recordedApplyGateLine is the same line for an apply recorded on a HOSTED
+// ledger, as the promotion's "apply" gate: the evidence every machine reads,
+// not only the one that ran the apply. Empty when none was recorded.
+func recordedApplyGateLine(p release.Promotion) string {
+	g, ok := latestApplyGate(p)
+	if !ok {
+		return ""
+	}
+	switch g.Status {
+	case release.GateStatusPassed:
+		return "  apply    SUCCEEDED (recorded on the ledger)"
+	case release.GateStatusFailed:
+		return fmt.Sprintf("  apply    FAILED (recorded on the ledger) — this release is RECORDED but was not applied: %s", oneLine(g.Summary, 200))
+	}
+	return fmt.Sprintf("  apply    %s (recorded on the ledger)", strings.ToUpper(string(g.Status)))
 }
 
 func describeApply(state release.ApplyState, outcome *release.ApplyOutcome) string {

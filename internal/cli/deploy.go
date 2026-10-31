@@ -1346,6 +1346,21 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	}
 	entities, fullEntities = withoutWorkloads(entities, opts.omitWorkloads), withoutWorkloads(fullEntities, opts.omitWorkloads)
 
+	// THE ORDER THE PLACEMENTS SHIP IN, derived from declared
+	// release_dependencies (deploy_order.go). Pure, so it is decided here,
+	// before any cluster is touched and inside the pre-write preflight
+	// (preflightOnly): an order the deploy cannot place is refused with the
+	// binding unmoved. It used to be decided only by the apply, after the
+	// promotion was recorded: control-plane v1.7.85 was bound on prod with
+	// "missing predecessor" and nothing applied. Read from the FULL env: the
+	// order is a property of the environment, and a --target or
+	// --frontends-only scope that drops a peer must not turn its edge into a
+	// missing predecessor.
+	stageOrder, err := deployStageOrder(fullEntities)
+	if err != nil {
+		return err
+	}
+
 	// A targeted deploy is still a deploy INTO the whole env's topology: a
 	// target may be a group of raw manifests that no entity owns (so the
 	// scoped entities carry no cluster service at all), and the cluster
@@ -1581,14 +1596,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		// The frontend half's own refusals, which otherwise fire only AFTER
 		// the cluster apply above has shipped — see preflightFrontendDeploys.
 		return opts.preflightFrontend(ctx, entities, projectDir)
-	}
-
-	// THE ORDER THE PLACEMENTS SHIP IN, derived from declared
-	// release_dependencies (deploy_order.go). Decided before anything ships,
-	// so a cycle is refused while nothing has changed.
-	stageOrder, err := deployStageOrder(entities)
-	if err != nil {
-		return err
 	}
 
 	// Everything from here on changes a live target. Each stage is recorded

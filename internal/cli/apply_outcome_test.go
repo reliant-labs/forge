@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -87,14 +89,128 @@ func TestRenderPromotePlan_FailedApplyHintSaysReplanAndReapprove(t *testing.T) {
 
 // `env status --history` marks a promotion whose apply failed.
 func TestEnvHistory_MarksAPromotionWhoseApplyFailed(t *testing.T) {
-	e := envHistoryEntry{Promotion: release.Promotion{RecordedGates: []release.Gate{failedApplyGate("boom")}}}
-	if got := evidenceLabel(e); !strings.Contains(got, "NOT APPLIED") {
+	p := release.Promotion{ID: "p-2", RecordedGates: []release.Gate{failedApplyGate("boom")}}
+	if got := evidenceLabel(newEnvHistoryEntry(t.TempDir(), "prod", p)); !strings.Contains(got, "NOT APPLIED") {
 		t.Errorf("evidence = %q; want NOT APPLIED", got)
 	}
 	// A later successful apply of the same promotion clears it.
-	e.RecordedGates = append(e.RecordedGates, release.Gate{Name: applyGateName, Status: release.GateStatusPassed})
-	if got := evidenceLabel(e); strings.Contains(got, "NOT APPLIED") {
+	p.RecordedGates = append(p.RecordedGates, release.Gate{Name: applyGateName, Status: release.GateStatusPassed})
+	if got := evidenceLabel(newEnvHistoryEntry(t.TempDir(), "prod", p)); strings.Contains(got, "NOT APPLIED") {
 		t.Errorf("evidence = %q after a successful re-apply; want it cleared", got)
+	}
+}
+
+// v1785LedgerFixture is control-plane prod on 2026-10-31: v1.7.83 applied,
+// then v1.7.85 promoted and its apply refused before anything shipped.
+func v1785LedgerFixture() *memBindingStore {
+	store := newMemBindingStore(map[string]release.Promotion{"prod": {ID: "p-83", Release: "v1.7.83",
+		Resolved:      map[string]string{"ghcr.io/acme/api": sha("3")},
+		RecordedGates: []release.Gate{{Name: applyGateName, Status: release.GateStatusPassed, Summary: "applied from this machine"}}}})
+	store.history["prod"] = append(store.history["prod"], release.Promotion{
+		ID: "p-85", Env: "prod", Release: "v1.7.85", Kind: release.KindPromote,
+		Resolved:      map[string]string{"ghcr.io/acme/api": sha("5")},
+		RecordedGates: []release.Gate{failedApplyGate(`release component reliant-temporal-worker has missing predecessor "workspace-base"`)},
+	})
+	return store
+}
+
+// `--history --json` says, per promotion, whether it was applied. A script
+// that read `.promotions[0].release` as "prod applied this" (release-local.sh
+// --resume-web) shipped v1.7.85's web half against an API still on v1.7.83;
+// `.promotions[0].apply.status` is what it checks now.
+func TestEnvHistory_JSONSaysWhetherEachPromotionWasApplied(t *testing.T) {
+	store := v1785LedgerFixture()
+	store.history["prod"] = append([]release.Promotion{{ID: "p-81", Env: "prod", Release: "v1.7.81"}}, store.history["prod"]...)
+	var err error
+	out := captureStdout(t, func() {
+		err = runEnvHistory(context.Background(), store, "prod", historyQuery{}, true, &bytes.Buffer{})
+	})
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	var doc struct {
+		Promotions []struct {
+			Release string `json:"release"`
+			Apply   struct {
+				Status  string `json:"status"`
+				Summary string `json:"summary"`
+			} `json:"apply"`
+		} `json:"promotions"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	want := []string{"v1.7.85 failed", "v1.7.83 passed", "v1.7.81 unrecorded"}
+	var got []string
+	for _, p := range doc.Promotions {
+		got = append(got, p.Release+" "+p.Apply.Status)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("apply per promotion = %v, want %v", got, want)
+	}
+	if !strings.Contains(doc.Promotions[0].Apply.Summary, "missing predecessor") {
+		t.Errorf("the failed apply does not say what failed: %q", doc.Promotions[0].Apply.Summary)
+	}
+}
+
+// `env status <env>` says plainly what runs when the bound release's apply
+// failed: the newest applied release, and the bound one as NOT APPLIED —
+// before any per-image line, and in --json as `apply`.
+func TestEnvStatus_SaysWhatRunsWhenTheBoundReleaseWasNotApplied(t *testing.T) {
+	opts := envStatusOptions{
+		Bindings: v1785LedgerFixture(),
+		Lister:   &stubLister{images: []cluster.WorkloadImage{runningImage("ghcr.io/acme/api", sha("3"))}},
+		Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
+	}
+	var err error
+	out := captureStdout(t, func() { err = runEnvStatusRelease(context.Background(), "prod", opts) })
+	if got := exitCodeForError(err); got != exitWrong {
+		t.Errorf("exit %d (%v), want %d: the env does not run what it is bound to", got, err, exitWrong)
+	}
+	want := `current  v1.7.83 applied; v1.7.85 promoted but NOT APPLIED (apply failed: release component reliant-temporal-worker has missing predecessor "workspace-base")`
+	if !strings.Contains(out, want) {
+		t.Errorf("status does not say what runs:\nwant %s\n%s", want, out)
+	}
+	if !strings.Contains(out, "apply    FAILED (recorded on the ledger)") {
+		t.Errorf("status does not show the recorded apply gate:\n%s", out)
+	}
+	if i, j := strings.Index(out, "NOT APPLIED"), strings.Index(out, "drift"); i < 0 || (j >= 0 && j < i) {
+		t.Errorf("NOT APPLIED must come before the per-image verdicts:\n%s", out)
+	}
+
+	opts.JSON = true
+	out = captureStdout(t, func() { _ = runEnvStatusRelease(context.Background(), "prod", opts) })
+	var doc struct {
+		Release string         `json:"release"`
+		Apply   envApplyReport `json:"apply"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if doc.Release != "v1.7.85" || doc.Apply.Status != applyStatusFailed ||
+		doc.Apply.LastAppliedRelease != "v1.7.83" || doc.Apply.LastAppliedPromotionID != "p-83" || doc.Apply.LastAppliedStatus != applyStatusPassed {
+		t.Errorf("json = release %q apply %+v; want bound v1.7.85, apply failed, last applied v1.7.83 (p-83, passed)", doc.Release, doc.Apply)
+	}
+}
+
+// A bound release whose apply passed reads as applied, with no "current" line.
+func TestEnvStatus_AppliedReleaseHasNoNotAppliedLine(t *testing.T) {
+	store := v1785LedgerFixture()
+	h := store.history["prod"]
+	h[len(h)-1].RecordedGates = append(h[len(h)-1].RecordedGates, release.Gate{Name: applyGateName, Status: release.GateStatusPassed})
+	var err error
+	out := captureStdout(t, func() {
+		err = runEnvStatusRelease(context.Background(), "prod", envStatusOptions{
+			Bindings: store,
+			Lister:   &stubLister{images: []cluster.WorkloadImage{runningImage("ghcr.io/acme/api", sha("5"))}},
+			Resolver: stubResolver{target: envTarget{KubeContext: "test-context", Namespace: "test-ns"}},
+		})
+	})
+	if err != nil {
+		t.Fatalf("a re-applied, matching env must exit 0: %v", err)
+	}
+	if strings.Contains(out, "NOT APPLIED") || !strings.Contains(out, "apply    SUCCEEDED (recorded on the ledger)") {
+		t.Errorf("a re-applied release must read as applied:\n%s", out)
 	}
 }
 

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.11] - 2026-10-31
+
+### Added
+
+- **generate:** grants, config_gen.k and scenario-rpcs certify each table, config block and service, so independent changes merge with plain git ([#1582](https://github.com/reliant-labs/forge/pull/1582))
+- **checksums:** the scaffold ledger is one entry file per path under .forge/scaffolded/, so independent births merge with plain git ([#1584](https://github.com/reliant-labs/forge/pull/1584))
+- **generate:** the mock-fixture fingerprint leaves git for a gitignored marker; the freshness guard fails on real staleness and skips what it cannot vouch for ([#1585](https://github.com/reliant-labs/forge/pull/1585))
+
+### Changed
+
+- **generate:** every generate step declares how its output merges; TestE2EMergeProperty proves it at project scale ([#1587](https://github.com/reliant-labs/forge/pull/1587))
+
+### Fixed
+
+- **storage:** judge unlocked worktrees under Reliant's root; the Go cache trim reaches inside 2h only to meet its budget ([#1583](https://github.com/reliant-labs/forge/pull/1583))
+- **mergeproperty:** write fixtures with atomicfile.WriteFile and compare with bytes.Equal, so main's writeguard and gocritic are green ([#1586](https://github.com/reliant-labs/forge/pull/1586))
+
 ## [v1.0.10] - 2026-10-31
 
 ### Added
@@ -8338,7 +8355,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.10...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.11...HEAD
+[v1.0.11]: https://github.com/reliant-labs/forge/compare/v1.0.10...v1.0.11
 [v1.0.10]: https://github.com/reliant-labs/forge/compare/v1.0.9...v1.0.10
 [v1.0.9]: https://github.com/reliant-labs/forge/compare/v1.0.8...v1.0.9
 [v1.0.8]: https://github.com/reliant-labs/forge/compare/v1.0.7...v1.0.8

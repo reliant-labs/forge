@@ -17,7 +17,7 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.49.0
 	github.com/MicahParks/keyfunc/v3 v3.8.2
 	github.com/XSAM/otelsql v0.44.0
-	github.com/brianvoe/gofakeit/v7 v7.18.0
+	github.com/brianvoe/gofakeit/v7 v7.18.1
 	github.com/ebitengine/purego v0.11.2
 	github.com/evanw/esbuild v0.28.2
 	github.com/fergusstrange/embedded-postgres v1.34.0
@@ -88,7 +88,7 @@ require (
 	k8s.io/apiextensions-apiserver v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
-	k8s.io/streaming v0.37.1
+	k8s.io/streaming v0.37.2
 	kcl-lang.io/kcl-go v0.13.2
 	kcl-lang.io/kpm v0.13.2
 	kcl-lang.io/lib v0.13.2

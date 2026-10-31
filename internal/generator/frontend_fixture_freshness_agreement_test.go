@@ -67,10 +67,10 @@ func TestFreshnessGuardHashAgreesWithGo(t *testing.T) {
 	write(filepath.Join(seedsDir, "vocab.yaml"),
 		"columns:\n  orders.customer_name: [Ada Lovelace, Grace Hopper, José]\n")
 
-	// The Go answer, read from the EMITTED MANIFEST rather than by calling
+	// The Go answer, read from the EMITTED MARKER rather than by calling
 	// seedplan directly.
 	//
-	// Reading it from the manifest is the whole point. An earlier version of
+	// Reading it from the marker is the whole point. An earlier version of
 	// this test compared node's output to a fresh FingerprintInputs call and
 	// passed — while the emitter was recording FingerprintWithConfig, a
 	// digest with the seed salt folded in that no file-reading process can
@@ -79,10 +79,11 @@ func TestFreshnessGuardHashAgreesWithGo(t *testing.T) {
 	// reported STALE MOCK FIXTURES against fixtures written seconds earlier.
 	// Comparing against the emitted value is what makes this test see the
 	// thing users actually get.
-	manifest, guard := emitFreshness(t, root, filepath.Join("frontends", "web"))
-	want := extractConst(t, manifest, "SEED_FINGERPRINT")
+	_, guard := emitFreshness(t, root, filepath.Join("frontends", "web"))
+	marker := readFixtureMarker(t, root, filepath.Join("frontends", "web"))
+	want := marker.SeedFingerprint
 	if want == "" {
-		t.Fatal("the emitted manifest records no fingerprint — nothing would be compared")
+		t.Fatal("the emitted marker records no fingerprint — nothing would be compared")
 	}
 
 	// The TypeScript answer, from the hashing logic the guard template
@@ -106,7 +107,7 @@ func TestFreshnessGuardHashAgreesWithGo(t *testing.T) {
 
 	if got != want {
 		t.Fatalf("the emitted TypeScript fingerprint disagrees with the digest recorded in "+
-			"the emitted manifest.\n  manifest = %s\n  node     = %s\n\n"+
+			"the emitted marker.\n  marker   = %s\n  node     = %s\n\n"+
 			"The two implementations of one digest have diverged. On a real project this "+
 			"fails the freshness guard on a CLEAN tree, and the likely response is to "+
 			"delete the guard — which silently restores the staleness hole it exists to close.",
@@ -117,12 +118,12 @@ func TestFreshnessGuardHashAgreesWithGo(t *testing.T) {
 	// the file-only one — if they were equal, the manifest would be
 	// recording the same value twice and the salt/row-count dimension would
 	// be invisible.
-	cfgFP := extractConst(t, manifest, "SEED_CONFIG_FINGERPRINT")
+	cfgFP := marker.SeedConfigFingerprint
 	if cfgFP == "" {
-		t.Error("SEED_CONFIG_FINGERPRINT is empty for a project with migrations")
+		t.Error("seed_config_fingerprint is empty for a project with migrations")
 	}
 	if cfgFP == want {
-		t.Error("SEED_CONFIG_FINGERPRINT equals SEED_FINGERPRINT — the seed config is not " +
+		t.Error("seed_config_fingerprint equals seed_fingerprint — the seed config is not " +
 			"actually folded in, so a salt change would leave stale fixtures undetected")
 	}
 }
@@ -168,4 +169,111 @@ func nodeScriptFromGuard(t *testing.T, guard, migDir string) string {
 // tsStringLiteral renders a Go string as a JSON-safe TS/JS string literal.
 func tsStringLiteral(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
+}
+
+// TestFreshnessGuardVerdicts runs the emitted guard's test body in node, with
+// a minimal stand-in for vitest, against the four states a checkout can be
+// in. The fingerprint is not committed (FixtureMarkerDir), so the guard must
+// tell "these fixtures went stale here" from "nothing here can vouch for
+// them" — failing the first, skipping the second, never passing either.
+func TestFreshnessGuardVerdicts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns node processes; skipped under -short")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed — the guard's verdicts are NOT verified in this run")
+	}
+	feRel := filepath.Join("frontends", "web")
+	setup := func(t *testing.T) (root, mocks string) {
+		t.Helper()
+		root = freshnessProject(t, map[string]string{"00001_create_orders.up.sql": "CREATE TABLE orders (id UUID PRIMARY KEY);\n"})
+		emitFreshness(t, root, feRel)
+		return root, filepath.Join(root, feRel, "src", "mocks")
+	}
+	run := func(t *testing.T, root, mocks string) string {
+		t.Helper()
+		guard, err := os.ReadFile(filepath.Join(mocks, fixtureFreshnessFiles[1]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(guard)
+		shim := "const __dirname = " + tsStringLiteral(mocks) + ";\n" +
+			"const PROJECT_ROOT_FROM_FRONTEND = " + tsStringLiteral(projectRootFromMocksDir(filepath.Join(feRel, "src", "mocks"))) + ";\n" +
+			"const FIXTURE_MARKER = " + tsStringLiteral(FixtureMarkerPath(feRel)) + ";\n" +
+			"const tests: Array<() => Promise<void>> = [];\n" +
+			"function describe(_: string, f: () => void) { f(); }\n" +
+			"class Skip extends Error {}\n" +
+			"function it(_: string, f: (ctx: { skip: (m?: string) => never }) => Promise<void> | void) {\n" +
+			"  tests.push(async () => { await f({ skip: (m?: string) => { throw new Skip(m); } }); });\n" +
+			"}\n" +
+			"function expect(v: unknown, msg?: string) {\n" +
+			"  return { toBe(w: unknown) { if (v !== w) throw new Error(msg ?? `${v} !== ${w}`); } };\n" +
+			"}\n"
+		var kept []string
+		for _, line := range strings.Split(src, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "import ") && (strings.Contains(trimmed, `"vitest"`) || strings.Contains(trimmed, "fixture-manifest_gen")) {
+				continue
+			}
+			kept = append(kept, line)
+		}
+		script := strings.Join(kept, "\n") + "\n" + shim +
+			"for (const t of tests) {\n" +
+			"  try { await t(); process.stdout.write(\"PASS\"); }\n" +
+			"  catch (e) { process.stdout.write(e instanceof Skip ? \"SKIP \" + e.message : \"FAIL \" + (e as Error).message); }\n" +
+			"}\n"
+		// The shim's declarations must precede their use at module scope:
+		// hoist it above the guard's describe block.
+		script = strings.Replace(script, "describe(\"mock fixture freshness\"", shim+"describe(\"mock fixture freshness\"", 1)
+		script = strings.Replace(script, "\n"+shim+"for (const t", "\nfor (const t", 1)
+		p := filepath.Join(t.TempDir(), "guard.mts")
+		if err := os.WriteFile(p, []byte(script), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command(node, p).CombinedOutput()
+		if err != nil {
+			t.Fatalf("node: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+
+	t.Run("fresh: the marker describes these fixtures and these inputs", func(t *testing.T) {
+		root, mocks := setup(t)
+		if got := run(t, root, mocks); got != "PASS" {
+			t.Errorf("verdict %q, want PASS", got)
+		}
+	})
+	t.Run("stale: a migration landed without a generate", func(t *testing.T) {
+		root, mocks := setup(t)
+		if err := os.WriteFile(filepath.Join(root, "db", "migrations", "00002_add_status.up.sql"), []byte("ALTER TABLE orders ADD COLUMN status TEXT;\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := run(t, root, mocks); !strings.HasPrefix(got, "FAIL STALE MOCK FIXTURES") {
+			t.Errorf("verdict %q, want the STALE failure", got)
+		}
+	})
+	t.Run("fresh clone: no marker", func(t *testing.T) {
+		root, mocks := setup(t)
+		if err := os.RemoveAll(filepath.Join(root, FixtureMarkerDir)); err != nil {
+			t.Fatal(err)
+		}
+		if got := run(t, root, mocks); !strings.HasPrefix(got, "SKIP") || !strings.Contains(got, "forge generate") {
+			t.Errorf("verdict %q, want a SKIP naming forge generate", got)
+		}
+	})
+	t.Run("pulled: the fixtures are not the ones the marker describes", func(t *testing.T) {
+		root, mocks := setup(t)
+		f := filepath.Join(mocks, fixtureFreshnessFiles[0])
+		body, _ := os.ReadFile(f)
+		if err := os.WriteFile(f, append(body, []byte("// pulled\n")...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "db", "migrations", "00002_add_status.up.sql"), []byte("ALTER TABLE orders ADD COLUMN status TEXT;\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := run(t, root, mocks); !strings.HasPrefix(got, "SKIP") {
+			t.Errorf("verdict %q, want SKIP (nothing here can vouch for pulled fixtures)", got)
+		}
+	})
 }

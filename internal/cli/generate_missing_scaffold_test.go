@@ -77,7 +77,7 @@ func TestMissingScaffoldNotice_NamesFileAndAction(t *testing.T) {
 		t.Errorf("notice does not name the command that re-creates the file (%q):\n%s", want, got)
 	}
 	if strings.Contains(got, "jq ") {
-		t.Errorf("notice still tells the reader to hand-edit %s:\n%s", checksums.ScaffoldedFile, got)
+		t.Errorf("notice still tells the reader to hand-edit %s:\n%s", checksums.ScaffoldedDir, got)
 	}
 }
 

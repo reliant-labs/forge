@@ -11,7 +11,7 @@
 // birth record — correctly, since a record for a file the rollback deleted
 // would have consumed the path's only birth. Every later generate repeated
 // the cycle, so there was never a record to delete the file against; the
-// only way out was hand-writing JSON into .forge/scaffolded.json.
+// only way out was hand-writing JSON into the scaffold ledger.
 //
 // So declining is a first-class, declared act: a ledger entry carrying the
 // reason (ScaffoldEntry.Declined), written by this command OUTSIDE generate.
@@ -146,7 +146,7 @@ func declineScaffolds(w io.Writer, root string, args []string, reason string, dr
 		return nil
 	}
 	if dryRun {
-		_, _ = fmt.Fprintf(w, "\n--dry-run: would decline %d scaffold(s) in %s:\n", len(fresh), checksums.ScaffoldedFile)
+		_, _ = fmt.Fprintf(w, "\n--dry-run: would decline %d scaffold(s) in %s:\n", len(fresh), checksums.ScaffoldedDir+"/")
 		for _, p := range fresh {
 			_, _ = fmt.Fprintf(w, "  - %s\n", p)
 		}
@@ -158,7 +158,7 @@ func declineScaffolds(w io.Writer, root string, args []string, reason string, dr
 		_, _ = fmt.Fprintf(w, "  ✓ declined %s\n", p)
 	}
 	_, _ = fmt.Fprintf(w, "\n✅ Declined %d scaffold(s): forge will not write %s in this project, and a failed `forge generate` keeps the decline (recorded in %s — commit it).\n",
-		len(fresh), plural(len(fresh), "it", "them"), checksums.ScaffoldedFile)
+		len(fresh), plural(len(fresh), "it", "them"), checksums.ScaffoldedDir+"/")
 	_, _ = fmt.Fprintf(w, "   To have forge scaffold one after all: %s\n", rescaffoldCmd("<path>"))
 	return nil
 }

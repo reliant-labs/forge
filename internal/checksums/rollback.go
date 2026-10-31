@@ -572,7 +572,7 @@ func RestoreRollbackReport(root string) (restored, failed []string) {
 	// birth record must go with it: a surviving record would make the failed
 	// run consume the path's one and only birth. The birth ledger is
 	// journaled like every other write (saveScaffoldLedgerLocked), so the
-	// loop already put .forge/scaffolded.json back to its pre-run bytes —
+	// loop already put .forge/scaffolded/ back to its pre-run bytes —
 	// births and absent-set alike. What remains is the in-memory copy, which
 	// still holds this run's records: drop it, so the next query reads the
 	// restored file.

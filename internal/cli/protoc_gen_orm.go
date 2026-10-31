@@ -12,7 +12,7 @@ import (
 // forgePluginMode controls what the protoc-gen-forge plugin generates.
 //
 // Only descriptor mode exists: the plugin extracts services/configs
-// metadata into forge_descriptor.json fragments. The historical
+// metadata into gen/forge_descriptor/ fragments. The historical
 // mode=orm (entity-proto → *.pb.orm.go codegen) is gone — entities are
 // projections of the applied db/migrations schema now, not of proto
 // annotations.

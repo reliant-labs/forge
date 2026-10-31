@@ -87,8 +87,9 @@ proto/ (the API), the migrations under db/migrations/ (the schema), and
 forge.yaml plus deploy/kcl/ (features, frontends, environments).
 
 What it writes, in order:
-  - gen/: Go + Connect stubs (buf generate) and gen/forge_descriptor.json,
-    the services, rpcs and config messages extracted from the protos
+  - gen/: Go + Connect stubs (buf generate) and gen/forge_descriptor/,
+    the services, rpcs and config messages extracted from the protos (one
+    file per .proto, so independent proto changes merge cleanly)
   - each frontend's TypeScript stubs, hooks, CRUD pages, nav and mocks
   - pkg/config/ from proto/<project>/config/v1/, the typed config loader
   - internal/handlers/<svc>/: a stub for every rpc no handler implements yet,
@@ -878,7 +879,7 @@ func selectPipelineSteps(flags pipelineFlags) (steps []GenStep, total int, err e
 // The journal records the writes that go through forge's chokepoints. A
 // write that does not — the scaffold birth ledger saving itself, a step's
 // raw os.WriteFile, a tool nobody declared — used to vanish from the count:
-// generate printed "0 changed" while rewriting .forge/scaffolded.json, and
+// generate printed "0 changed" while rewriting .forge/scaffolded/, and
 // the agent reading that line as its fixed point never saw the drift. The
 // fingerprint closes the class rather than the instance: any file whose
 // bytes differ from the pre-run tree counts, whatever wrote it.

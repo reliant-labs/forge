@@ -35,7 +35,7 @@ import (
 // Eleven agents each re-derived the same contract, and each grep cost a whole
 // turn. One `shapes` call answers all of it.
 //
-// ── Why it does NOT read gen/forge_descriptor.json ───────────────────────
+// ── Why it does NOT read gen/forge_descriptor/ ───────────────────────
 //
 // The descriptor is a derived CACHE of the protos. A command whose whole job
 // is to tell an agent the truth must not answer from a cache that can be
@@ -92,7 +92,7 @@ func newShapesCmd() *cobra.Command {
 		Long: `List every API shape in the project with its source location.
 
 Derived LIVE from .proto, db/migrations and source on every call — never from
-gen/forge_descriptor.json, which is a cache and can be stale. Answers "where is
+gen/forge_descriptor/, which is a cache and can be stale. Answers "where is
 X and what shape is it" in ONE call instead of a sequence of greps.
 
 Start recon here. A measured fan-out spent 28 minutes across 123 calls

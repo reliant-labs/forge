@@ -94,7 +94,7 @@ func setupEntityFromProtoProject(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFixtureFile(t, dir, filepath.Join("gen", "forge_descriptor.json"), string(desc))
+	writeFixtureFile(t, dir, filepath.Join("gen", "forge_descriptor", "fixture.json"), string(desc))
 	return dir
 }
 

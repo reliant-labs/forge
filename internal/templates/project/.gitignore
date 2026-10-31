@@ -68,9 +68,8 @@ node_modules/
 
 # ── Generated code is COMMITTED ──
 #
-# gen/ (buf's Go stubs, gen/go.mod, forge_descriptor.json), every `*_gen.go`,
-# the forge-generated mocks, and each frontend's src/gen/ are checked in
-# deliberately. Nothing here ignores them, and `forge lint` fails if a rule
+# gen/ (buf's Go stubs, gen/go.mod), every `*_gen.go`, the forge-generated
+# mocks, and each frontend's src/gen/ are checked in deliberately. Nothing here ignores them, and `forge lint` fails if a rule
 # anywhere in the project does.
 #
 # They used to be ignored on the reasoning that `forge generate` re-creates
@@ -87,6 +86,13 @@ node_modules/
 # The rule is that a checkout builds as-cloned, and regenerating is a no-op:
 # if `forge generate` produces a diff, commit it in the same change that
 # caused it.
+#
+# What is committed is what a COMPILER needs. A file only forge or tooling
+# reads is derived on demand and never committed: gen/forge_descriptor/ (the
+# services and rpcs extracted from proto/) is produced by whichever forge
+# command reads it. Committed, it conflicted between any two branches that
+# touched any proto.
+/gen/forge_descriptor/
 
 # ── Machine-local forge state (NEVER committed) ──
 #
@@ -155,11 +161,15 @@ tmp/
 #                     path + reason + timestamp. Travels with the repo
 #                     so forge never regenerates a disowned file in any
 #                     clone or worktree.
-#   hashes.json     — scoped render hashes for the few generated files
+#   hashes/         — one render-hash certificate per generated file
 #                     whose format cannot carry an embedded marker
-#                     (JSON outputs only).
-#   scaffolded.json — the scaffold-once BIRTH LEDGER: every "yours" file
-#                     forge has ever scaffolded here. It is what makes
+#                     (JSON outputs only), at the file's path + .sha256.
+#                     One file each, so parallel branches never conflict
+#                     in a shared manifest.
+#   scaffolded/     — the scaffold-once BIRTH LEDGER, one entry file per
+#                     path: every "yours" file forge has ever scaffolded
+#                     here (one file each, so parallel branches never
+#                     conflict in a shared ledger). It is what makes
 #                     DELETING a scaffold stick — without it, an absent
 #                     file is indistinguishable from one never written
 #                     and the next `forge generate` hands it back. Must
@@ -184,8 +194,8 @@ tmp/
 # its .gitignore fork note.)
 .forge/*
 !.forge/disowned.json
-!.forge/hashes.json
-!.forge/scaffolded.json
+!.forge/hashes/
+!.forge/scaffolded/
 !.forge/releases/
 !.forge/releases/*.json
 !.forge/promotions/

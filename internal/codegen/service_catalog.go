@@ -31,8 +31,7 @@ func graphCatalog(in GraphGenInput, m *graphModel) servicecatalog.Catalog {
 		// mux registration, reflection, proxy routes, or unregistered API clients.
 		servicecatalog.Diagnostic{Code: "coverage_generated_routes_and_registered_clients_only"},
 		// The committed catalog records no code method sets (catalogNoMethods).
-		servicecatalog.Diagnostic{Code: servicecatalog.DiagnosticBundleMethodSetsOmitted},
-	)
+		servicecatalog.Diagnostic{Code: servicecatalog.DiagnosticBundleMethodSetsOmitted})
 	if len(services) == 0 {
 		services = in.Services
 	}

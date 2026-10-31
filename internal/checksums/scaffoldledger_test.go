@@ -237,13 +237,13 @@ func TestScaffoldOnce_LedgerPersistsAcrossProcesses(t *testing.T) {
 
 	if wrote, err := WriteScaffoldIfMissing(root, rel, body); err != nil || wrote {
 		t.Fatalf("deletion must survive a fresh process — the ledger has to be "+
-			"read back from %s (wrote=%v, err=%v)", ScaffoldedFile, wrote, err)
+			"read back from %s (wrote=%v, err=%v)", ScaffoldedDir, wrote, err)
 	}
 	// And the on-disk ledger must actually name the path.
 	paths := ScaffoldLedgerPaths(root)
 	if len(paths) == 0 {
 		t.Fatalf("derived ledger path set is EMPTY — the ledger at %s recorded "+
-			"nothing, so every assertion above is vacuous", ScaffoldedFile)
+			"nothing, so every assertion above is vacuous", ScaffoldedDir)
 	}
 	found := false
 	for _, p := range paths {
@@ -299,7 +299,7 @@ func TestScaffoldOnce_FailedRunForgetsBirth(t *testing.T) {
 
 // TestScaffoldOnce_FailedRunRestoresLedgerBytes pins the FILE, not only the
 // answer ScaffoldRecorded gives. generate's rollback verdict compares the
-// tree — .forge/scaffolded.json included — against its pre-run fingerprint,
+// tree — .forge/scaffolded/ included — against its pre-run fingerprint,
 // so a failed run that leaves the ledger rewritten cannot report the tree
 // back in its pre-run state, even when every birth it recorded was dropped.
 func TestScaffoldOnce_FailedRunRestoresLedgerBytes(t *testing.T) {
@@ -311,10 +311,9 @@ func TestScaffoldOnce_FailedRunRestoresLedgerBytes(t *testing.T) {
 	if wrote, err := WriteScaffoldIfMissing(root, earlier, []byte("package app\n")); err != nil || !wrote {
 		t.Fatalf("seed an earlier birth (wrote=%v, err=%v)", wrote, err)
 	}
-	ledgerPath := filepath.Join(root, ScaffoldedFile)
-	before, err := os.ReadFile(ledgerPath)
-	if err != nil || len(before) == 0 {
-		t.Fatalf("premise broken: the earlier birth left no ledger to restore (err=%v)", err)
+	before := ledgerFileBytes(t, root)
+	if len(before) == 0 {
+		t.Fatalf("premise broken: the earlier birth left no ledger to restore")
 	}
 	ResetScaffoldLedgerCache() // the failing generate is a fresh process
 
@@ -323,19 +322,16 @@ func TestScaffoldOnce_FailedRunRestoresLedgerBytes(t *testing.T) {
 	if wrote, err := WriteScaffoldIfMissing(root, thisRun, []byte("package app\n")); err != nil || !wrote {
 		t.Fatalf("scaffold under an armed journal must write (wrote=%v, err=%v)", wrote, err)
 	}
-	if during, _ := os.ReadFile(ledgerPath); bytes.Equal(during, before) {
+	if during := ledgerFileBytes(t, root); bytes.Equal(during, before) {
 		t.Fatal("premise broken: this run's birth should have rewritten the ledger")
 	}
 
 	RestoreRollback(root)
 
-	after, err := os.ReadFile(ledgerPath)
-	if err != nil {
-		t.Fatalf("the ledger existed before the run, so the rollback must leave it in place: %v", err)
-	}
+	after := ledgerFileBytes(t, root)
 	if !bytes.Equal(after, before) {
 		t.Errorf("a rolled-back run must leave %s byte-for-byte as it found it\nbefore:\n%s\nafter:\n%s",
-			ScaffoldedFile, before, after)
+			ScaffoldedDir, before, after)
 	}
 	if ScaffoldRecorded(root, thisRun) {
 		t.Error("the rolled-back birth must be forgotten, in memory as well as on disk")
@@ -355,11 +351,7 @@ func TestScaffoldOnce_SteadyStateWritesNoLedgerChurn(t *testing.T) {
 	if _, err := WriteScaffoldIfMissing(root, rel, []byte("package app\n")); err != nil {
 		t.Fatalf("first scaffold: %v", err)
 	}
-	ledgerPath := filepath.Join(root, ScaffoldedFile)
-	before, err := os.ReadFile(ledgerPath)
-	if err != nil {
-		t.Fatalf("read ledger: %v", err)
-	}
+	before := ledgerFileBytes(t, root)
 	if len(before) == 0 {
 		t.Fatal("ledger is empty after a birth — nothing to test for churn")
 	}
@@ -369,10 +361,7 @@ func TestScaffoldOnce_SteadyStateWritesNoLedgerChurn(t *testing.T) {
 			t.Fatalf("re-run %d: %v", i, err)
 		}
 	}
-	after, err := os.ReadFile(ledgerPath)
-	if err != nil {
-		t.Fatalf("re-read ledger: %v", err)
-	}
+	after := ledgerFileBytes(t, root)
 	if string(before) != string(after) {
 		t.Fatalf("steady-state re-runs churned the ledger:\nbefore: %s\nafter:  %s", before, after)
 	}

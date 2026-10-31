@@ -80,8 +80,8 @@ func TestPrettierScriptFormatsWhatTheHookFormats(t *testing.T) {
 		"internal/cli/testdata/golden.json",
 		"internal/templates/skills/forge/SKILL.md",
 		"pkg/deploy/eso/crds/externalsecret.yaml",
-		"gen/forge_descriptor.json",
-		".forge/scaffolded.json",
+		"gen/forge_descriptor/services/api/v1/api.json",
+		".forge/scaffolded/frontends/web/package.json.json",
 		"internal/cli/generate.go",
 		"api.pb.go",
 	}

@@ -33,7 +33,6 @@ import (
 var generatedPaths = []string{
 	"gen/go.mod",
 	"gen/go.sum",
-	"gen/forge_descriptor.json",
 	"gen/services/api/v1/api.pb.go",
 	"gen/services/api/v1/apiv1connect/api.connect.go",
 	"gen/config/v1/config.pb.go",
@@ -57,6 +56,22 @@ func TestProjectGitignore_CommitsGeneratedCode(t *testing.T) {
 	for _, p := range generatedPaths {
 		if rule, ok := ignored[p]; ok {
 			t.Errorf("%s is generated code but the scaffold .gitignore ignores it (%s) — a fresh clone would not build", p, rule)
+		}
+	}
+}
+
+// The proto descriptor is read only by forge, which derives it on demand
+// (commitpolicy.IsToolDerived), so it is never committed.
+func TestProjectGitignore_IgnoresToolDerivedDescriptor(t *testing.T) {
+	body, err := templates.ProjectTemplates().Get(".gitignore")
+	if err != nil {
+		t.Fatalf("read project .gitignore template: %v", err)
+	}
+	paths := []string{"gen/forge_descriptor/services/api/v1/api.json", "gen/forge_descriptor/.generated-from"}
+	ignored := checkIgnored(t, map[string]string{".gitignore": string(body)}, paths)
+	for _, p := range paths {
+		if _, ok := ignored[p]; !ok {
+			t.Errorf("%s must be ignored: forge derives the descriptor on demand and never commits it", p)
 		}
 	}
 }

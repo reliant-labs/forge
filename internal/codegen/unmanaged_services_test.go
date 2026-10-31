@@ -8,7 +8,7 @@ import (
 )
 
 // writeDescriptorProject lays down the two files the service parsers read —
-// go.mod and an UNSTAMPED gen/forge_descriptor.json (no proto tree to hash,
+// go.mod and an UNSTAMPED gen/forge_descriptor/ (no proto tree to hash,
 // so the staleness guard does not apply) — and returns the project dir.
 func writeDescriptorProject(t *testing.T, services ...ServiceDef) string {
 	t.Helper()
@@ -23,7 +23,10 @@ func writeDescriptorProject(t *testing.T, services ...ServiceDef) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), b, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dir

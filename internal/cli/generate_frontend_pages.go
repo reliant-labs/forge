@@ -88,7 +88,7 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) erro
 // already uses for nav.tsx / page.tsx. Once forge has scaffolded a page it
 // NEVER writes that path again — no flag — whether the user then edits the
 // file or deletes it. To re-scaffold on purpose, drop the path's entry
-// from .forge/scaffolded.json.
+// from .forge/scaffolded/.
 //
 // Per-kind dispatch:
 //   - nextjs:   pages/ templates → src/app/<slug>/{,new/,view/,edit/}page.tsx
@@ -610,7 +610,7 @@ func loadPageTemplate(dir, name string) (*template.Template, error) {
 // runs, matching the leading banner comment every page template carries.
 // Once forge has scaffolded the page it leaves that path alone — no flag,
 // no exception — whether the user edited it or deleted it. To re-scaffold
-// on purpose, drop the path's entry from .forge/scaffolded.json.
+// on purpose, drop the path's entry from .forge/scaffolded/.
 //
 // Returns (wrote, err) — wrote=false when the destination already
 // existed and was preserved, so the caller can distinguish freshly-

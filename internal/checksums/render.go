@@ -14,8 +14,8 @@
 //     tool can find what older versions left behind.
 //
 // Both directories sit under `.forge/`, which the scaffolded project
-// .gitignore already excludes (only disowned.json / hashes.json /
-// scaffolded.json are negated back in) — side renders are per-developer
+// .gitignore already excludes (only disowned.json / hashes/ /
+// scaffolded/ are negated back in) — side renders are per-developer
 // state, never committed.
 package checksums
 

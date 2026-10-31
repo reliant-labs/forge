@@ -97,6 +97,7 @@ func GenerateConfigKCL(fields []ConfigField, projectName string) (string, error)
 	}
 	b.WriteString(schema)
 	b.WriteString("\n")
+	b.WriteString(kclSectionLine)
 	b.WriteString(renderAppConfigEnvMap(fields))
 
 	return b.String(), nil
@@ -204,6 +205,7 @@ func GenerateConfigKCLPerBinary(rootFields []ConfigField, perBinary []BinaryConf
 		first = false
 		b.WriteString(schema)
 		b.WriteString("\n")
+		b.WriteString(kclSectionLine)
 		b.WriteString(renderConfigEnvMapNamed(fields, schemaName, lambdaName))
 		b.WriteString("\n")
 		return nil
@@ -231,6 +233,7 @@ func GenerateConfigKCLPerBinary(rootFields []ConfigField, perBinary []BinaryConf
 					"and a config message of that name already exists. Rename the message",
 				ps.Binary, ps.SchemaName())
 		}
+		b.WriteString(kclSectionLine)
 		b.WriteString(renderProcessSelector(ps))
 		b.WriteString("\n")
 	}
@@ -579,6 +582,10 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	type kv struct {
 		key, expr string
 		optional  bool
+		// block is the config block the field belongs to ("" for a root
+		// field): each block's entries are their own forge:section (see
+		// writeGrouped).
+		block string
 		// omitWhen, on an inline entry, is the KCL condition under which the
 		// entry is projected at all ("" = always). See the Optional branch
 		// below.
@@ -633,6 +640,7 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 				key:      f.EnvVar,
 				expr:     expr,
 				optional: f.Optional,
+				block:    f.KCLBlock,
 			})
 			continue
 		}
@@ -651,8 +659,9 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 		// REQUIRED or unannotated field keeps the old always-projected shape:
 		// its presence in the manifest is part of what an operator audits.
 		entry := kv{
-			key:  f.EnvVar,
-			expr: kclConfigValueExpr(f, "c"),
+			key:   f.EnvVar,
+			expr:  kclConfigValueExpr(f, "c"),
+			block: f.KCLBlock,
 		}
 		if f.Optional {
 			if def, ok := kclConfigDefaultLiteral(f); ok {
@@ -663,6 +672,25 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	}
 
 	var b strings.Builder
+
+	// writeGrouped writes entries with each config block's run of entries
+	// in its own forge:section, closed by a blank line, so two branches that
+	// add fields to different blocks change different sections of the map
+	// (and never adjacent lines) and merge with plain git.
+	writeGrouped := func(entries []kv, write func(kv)) {
+		for i, e := range entries {
+			if i == 0 || e.block != entries[i-1].block {
+				if i > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString("        " + kclSectionLine)
+			}
+			write(e)
+		}
+		if len(entries) > 0 {
+			b.WriteString("\n")
+		}
+	}
 
 	// The full sensitive-var list, as a module-level constant emitted BEFORE
 	// the lambda (KCL binds top-level names; it cannot live in the body).
@@ -736,9 +764,7 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 	// The sensitive half is bound first so the assert can name what IS
 	// available when an entry does not resolve.
 	b.WriteString("    _sensitive: {str: forge.SecretRef} = {\n")
-	for _, e := range secrets {
-		fmt.Fprintf(&b, "        %q = %s\n", e.key, e.expr)
-	}
+	writeGrouped(secrets, func(e kv) { fmt.Fprintf(&b, "        %q = %s\n", e.key, e.expr) })
 	b.WriteString("    }\n")
 	if len(familySecrets) == 0 {
 		b.WriteString("    assert all _n in config_secrets { _n in _sensitive }, \\\n")
@@ -771,14 +797,14 @@ func renderConfigEnvMapNamed(fields []ConfigField, schemaName, lambdaName string
 		b.WriteString("    {}" + rest)
 	} else {
 		b.WriteString("    {\n")
-		for _, e := range inline {
+		writeGrouped(inline, func(e kv) {
 			if e.omitWhen != "" {
 				fmt.Fprintf(&b, "        if %s:\n", e.omitWhen)
 				fmt.Fprintf(&b, "            %q = %s\n", e.key, e.expr)
-				continue
+				return
 			}
 			fmt.Fprintf(&b, "        %q = %s\n", e.key, e.expr)
-		}
+		})
 		b.WriteString("    }" + rest)
 	}
 	b.WriteString("}\n")

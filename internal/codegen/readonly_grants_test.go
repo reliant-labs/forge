@@ -224,7 +224,7 @@ func dashTable(name, comment string, cols map[string]string, order ...string) sc
 func dashColumns(t *testing.T, script, table string) string {
 	t.Helper()
 	for _, l := range strings.Split(script, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(l), "('public', '"+table+"'") {
+		if strings.HasPrefix(strings.TrimPrefix(strings.TrimSpace(l), ", "), "('public', '"+table+"'") {
 			return l
 		}
 	}

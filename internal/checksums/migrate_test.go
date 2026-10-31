@@ -172,7 +172,7 @@ func TestMigrateLegacyManifest_Outcomes(t *testing.T) {
 	if strings.Contains(string(gi), "!"+LegacyChecksumFile) {
 		t.Errorf(".gitignore still negates the dead manifest:\n%s", gi)
 	}
-	if !strings.Contains(string(gi), "!"+DisownedFile) || !strings.Contains(string(gi), "!"+HashesFile) {
+	if !strings.Contains(string(gi), "!"+DisownedFile) || !strings.Contains(string(gi), "!"+HashesDir+"/") {
 		t.Errorf(".gitignore missing the new negations:\n%s", gi)
 	}
 	if !strings.Contains(string(gi), "node_modules/") {

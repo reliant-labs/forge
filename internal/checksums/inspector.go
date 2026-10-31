@@ -6,7 +6,7 @@
 // / Tier-2 ownership. The Inspector collapses those walks behind a
 // small interface. In the self-certifying era ownership is read from
 // the files themselves (the forge:hash marker scan) plus the two small
-// state files (.forge/disowned.json, .forge/hashes.json) — there is no
+// state files (.forge/disowned.json, .forge/hashes/) — there is no
 // manifest to walk.
 //
 // Scope: the Inspector answers questions about a *single project's*

@@ -4,9 +4,9 @@ import (
 	"github.com/reliant-labs/forge/internal/commitpolicy"
 )
 
-// The commit-policy step: generated code must be committed, and
-// machine-local materializations (.forge-kcl/, a frontend's dev
-// public/config.js) must not be. See internal/commitpolicy for why this is a
+// The commit-policy step: generated code a compiler needs must be committed,
+// and neither tool-derived outputs (gen/forge_descriptor/) nor machine-local
+// materializations (.forge-kcl/, a frontend's dev public/config.js) may be. See internal/commitpolicy for why this is a
 // gating check rather than a template default — a project keeps the
 // .gitignore it was scaffolded with, and `forge ci verify-generated` cannot
 // see an ignored file.

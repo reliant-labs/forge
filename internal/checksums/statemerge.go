@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 )
 
 // MergeStateFile three-way merges one of the committed state files under
-// .forge/ (scaffolded.json, hashes.json, disowned.json) key by key, and
+// .forge/ (disowned.json, the legacy scaffolded.json, a certificate under
+// hashes/, a ledger entry under scaffolded/) key by key, and
 // renders the result exactly as forge's own writers do.
 //
 // WHY. Every branch that adds a service records its births in the scaffold
@@ -22,27 +25,35 @@ import (
 // merged as maps, the only collision left is one key whose value both sides
 // changed, and for these files that has a forge answer:
 //
-//   - scaffolded.json: a birth recorded on either side is recorded; one
+//   - a ledger entry under scaffolded/ (and the legacy scaffolded.json, key
+//     by key): a birth recorded on either side is recorded; one
 //     side's deletion (rescaffold) stands when the other left the entry
 //     alone. Both sides recording the same path keep this side's entry —
 //     the timestamp is provenance nobody branches on.
-//   - hashes.json: both sides re-rendered the same comment-incapable output
-//     (an aggregate of every service). The merge driver keeps THIS side's bytes for
-//     that output (see the cli merge driver), so this side's hash is the one
-//     that certifies them, and the next `forge generate` renders the merged
-//     inputs over a file it can still verify.
+//   - a certificate under .forge/hashes/ (and the legacy hashes.json, key
+//     by key): both sides re-rendered the same comment-incapable output. The
+//     merge driver keeps THIS side's bytes for that output (see the cli merge
+//     driver), so this side's hash is the one that certifies them, and the
+//     next `forge generate` renders the merged inputs over a file it can
+//     still verify. One side's change alone (or deletion) stands.
 //   - disowned.json: both sides changed one disown's reason; keep this
 //     side's.
 //
-// ok is false when relPath is not one of the three files, or a side does
-// not parse as one — the caller then merges it as text, the historical
-// behaviour, so nothing is lost to a format this function does not know.
+// ok is false when relPath is none of these files, or a side does not parse
+// as one — the caller then merges it as text, the historical behaviour, so
+// nothing is lost to a format this function does not know.
 func MergeStateFile(relPath string, base, ours, theirs []byte) (merged []byte, ok bool) {
+	if isCertPathAnywhere(relPath) {
+		return mergeHashCert(base, ours, theirs)
+	}
+	if isScaffoldEntryAnywhere(relPath) {
+		return mergeScaffoldEntry(base, ours, theirs)
+	}
 	if path.Base(path.Dir(path.Clean("/"+relPath))) != ".forge" {
 		return nil, false
 	}
 	switch path.Base(relPath) {
-	case path.Base(ScaffoldedFile):
+	case path.Base(LegacyScaffoldedFile):
 		var b, o, t scaffoldedJSON
 		if !decodeState(base, &b) || !decodeState(ours, &o) || !decodeState(theirs, &t) {
 			return nil, false
@@ -52,7 +63,7 @@ func MergeStateFile(relPath string, base, ours, theirs []byte) (merged []byte, o
 			AbsentReported: mergeSet(b.AbsentReported, o.AbsentReported, t.AbsentReported),
 		}
 		return encodeState(out)
-	case path.Base(HashesFile):
+	case path.Base(LegacyHashesFile):
 		var b, o, t hashesJSON
 		if !decodeState(base, &b) || !decodeState(ours, &o) || !decodeState(theirs, &t) {
 			return nil, false
@@ -66,6 +77,64 @@ func MergeStateFile(relPath string, base, ours, theirs []byte) (merged []byte, o
 		return encodeState(disownedJSON{Files: mergeKeyed(b.Files, o.Files, t.Files)})
 	}
 	return nil, false
+}
+
+// isCertPathAnywhere reports whether relPath, relative to the top of the
+// work tree (the project may sit below it), is a certificate file.
+func isCertPathAnywhere(relPath string) bool {
+	rel := path.Clean("/" + filepath.ToSlash(relPath))
+	i := strings.LastIndex(rel, "/"+HashesDir+"/")
+	return i >= 0 && IsHashCert(rel[i+1:])
+}
+
+// isScaffoldEntryAnywhere reports whether relPath, relative to the top of
+// the work tree, is a scaffold ledger entry file.
+func isScaffoldEntryAnywhere(relPath string) bool {
+	rel := path.Clean("/" + filepath.ToSlash(relPath))
+	i := strings.LastIndex(rel, "/"+ScaffoldedDir+"/")
+	if i < 0 {
+		return false
+	}
+	_, ok := ScaffoldEntryTarget(rel[i+1:])
+	return ok
+}
+
+// mergeScaffoldEntry merges one scaffold ledger entry: a side that changed
+// it (or deleted it: a rescaffold) wins over one that did not; when both
+// changed it, this side's stands — a birth is a birth, and the timestamp is
+// provenance nobody branches on. A side that does not parse leaves the file
+// to the text merge.
+func mergeScaffoldEntry(base, ours, theirs []byte) ([]byte, bool) {
+	for _, side := range [][]byte{base, ours, theirs} {
+		var e ScaffoldEntry
+		if len(bytes.TrimSpace(side)) > 0 && json.Unmarshal(side, &e) != nil {
+			return nil, false
+		}
+	}
+	if bytes.Equal(bytes.TrimSpace(ours), bytes.TrimSpace(base)) {
+		return theirs, true
+	}
+	return ours, true
+}
+
+// mergeHashCert merges one certificate file: a side that changed it (or
+// deleted it) wins over one that did not, and when both changed it, this
+// side's stands — the driver keeps this side's render of the output it
+// certifies. A side that does not parse leaves the file to the text merge.
+func mergeHashCert(base, ours, theirs []byte) ([]byte, bool) {
+	for _, side := range [][]byte{base, ours, theirs} {
+		if len(bytes.TrimSpace(side)) == 0 {
+			continue
+		}
+		if _, ok := ParseHashCert(side); !ok {
+			return nil, false
+		}
+	}
+	same := func(a, b []byte) bool { return bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b)) }
+	if same(ours, base) {
+		return theirs, true
+	}
+	return ours, true
 }
 
 // decodeState unmarshals one side. An empty side is the empty state — the

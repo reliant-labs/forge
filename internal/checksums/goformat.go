@@ -191,7 +191,7 @@ func ClassifyPath(root, relPath string, content []byte) VerifyStatus {
 	if !found {
 		return NoMarker
 	}
-	if embedded == BodyHash(content) {
+	if selfCertifies(content, embedded) {
 		return Pristine
 	}
 	if goFormatterEquivalent(root, relPath, content, embedded) {
@@ -207,9 +207,12 @@ func ClassifyPath(root, relPath string, content []byte) VerifyStatus {
 // clean, not hand-edited. Comment/text/code edits survive formatting
 // and therefore still mismatch.
 func goFormatterEquivalent(root, relPath string, content []byte, embedded string) bool {
-	if embedded == "" || embedded == UnverifiedMarkerValue {
+	if embedded == "" || embedded == UnverifiedMarkerValue || !isGoSource(relPath) {
 		return false
 	}
-	body, ok := canonicalGoBody(root, relPath, content)
-	return ok && body == embedded
+	// The marker lines are comments, so formatting keeps them (and every
+	// section line) in place: the formatted bytes verify exactly when the
+	// drift was formatting alone.
+	formatted, err := CanonicalGoSource(GoImportsLocalPrefix(root), relPath, content)
+	return err == nil && selfCertifies(formatted, embedded)
 }

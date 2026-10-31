@@ -5,7 +5,7 @@
 // POST with application/json — no gRPC tooling needed — but the URL shape
 // and Content-Type rules are undocumented in most projects. This command
 // removes the discovery friction: look up the method's input message in
-// forge_descriptor.json and emit a curl command with a request-body skeleton
+// gen/forge_descriptor/ and emit a curl command with a request-body skeleton
 // populated from zero values for each field, addressed to the conventional
 // local listener (--port overrides).
 //
@@ -114,7 +114,7 @@ type curlOptions struct {
 }
 
 // buildCurlCommand is the pure function under the cobra command. It loads
-// forge.yaml + forge_descriptor.json, resolves the target service+method,
+// forge.yaml + gen/forge_descriptor/, resolves the target service+method,
 // and renders a curl invocation as a single string.
 //
 // Returned errors are user-facing (via cliutil.UserErr): they identify the
@@ -125,14 +125,14 @@ func buildCurlCommand(projectDir, target string, opts curlOptions) (string, erro
 	desc, err := loadForgeDescriptor(projectDir)
 	if err != nil {
 		return "", cliutil.UserErr("forge api curl",
-			fmt.Sprintf("could not read forge_descriptor.json: %v", err),
-			"gen/forge_descriptor.json",
+			fmt.Sprintf("could not read the forge descriptor: %v", err),
+			codegen.DescriptorDir+"/",
 			"run `forge generate` to produce the proto descriptor, then retry")
 	}
 	if desc == nil || len(desc.Services) == 0 {
 		return "", cliutil.UserErr("forge api curl",
-			"no services found in forge_descriptor.json",
-			"gen/forge_descriptor.json",
+			"no services found in the forge descriptor",
+			codegen.DescriptorDir+"/",
 			"run `forge generate` after declaring at least one service in proto/")
 	}
 

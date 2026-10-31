@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/obsdash"
 )
 
@@ -137,7 +135,7 @@ func observabilityFiles(t *testing.T, dir string) map[string]string {
 // single file as a hand edit.
 func assertConvergesToBothServices(t *testing.T, dir string) {
 	t.Helper()
-	for _, rel := range []string{".forge/hashes.json", ".forge/scaffolded.json", "internal/app/mounts_gen.go"} {
+	for _, rel := range []string{"internal/app/mounts_gen.go"} {
 		data, err := os.ReadFile(filepath.Join(dir, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -146,9 +144,10 @@ func assertConvergesToBothServices(t *testing.T, dir string) {
 			t.Errorf("%s carries conflict markers:\n%s", rel, data)
 		}
 	}
-	ledger, _ := os.ReadFile(filepath.Join(dir, checksums.ScaffoldedFile))
+	checksums.ResetScaffoldLedgerCache()
+	ledger := strings.Join(checksums.ScaffoldLedgerPaths(dir), "\n")
 	for _, s := range []string{"question", "run"} {
-		if !strings.Contains(string(ledger), "internal/handlers/"+s+"/") {
+		if !strings.Contains(ledger, "internal/handlers/"+s+"/") {
 			t.Errorf("the merged ledger lost %s's birth:\n%s", s, ledger)
 		}
 	}
@@ -190,7 +189,7 @@ func assertConvergesToBothServices(t *testing.T, dir string) {
 			continue
 		}
 		if cs.Unstampable[rel] != checksums.BodyHash([]byte(body)) {
-			t.Errorf("%s is not certified by the merged hashes.json: generate would refuse it as a hand edit", rel)
+			t.Errorf("%s is not certified by its merged certificate under %s: generate would refuse it as a hand edit", rel, checksums.HashesDir)
 		}
 	}
 	if drift := checksums.ScanTier1Drift(dir, cs); len(drift) != 0 {
@@ -240,97 +239,107 @@ func TestMergeGenerated_TwoServiceBranchesMergeClean(t *testing.T) {
 	assertConvergesToBothServices(t, dir)
 }
 
-func TestMergeGenerated_TwoServiceBranchesRebaseClean(t *testing.T) {
-	dir := twoServiceBranches(t)
-	gitT(t, dir, "rebase", "run")
-	assertConvergesToBothServices(t, dir)
-}
-
-// The report that started this: every rebase of a branch that edited one
-// proto onto a branch that edited another left gen/forge_descriptor.json
-// stamped for protos that no longer existed on disk, so the lane had to
-// regenerate and amend before verify-generated would pass.
-//
-// Real git, real rebase, the test binary as the driver, and the real stamp
-// (codegen.DescriptorSources) over a real proto tree: after the rebase the
-// descriptor must name exactly the protos the work tree holds, with no
-// generate in between.
-func TestMergeGenerated_RebaseKeepsDescriptorStampCurrent(t *testing.T) {
+// TestPlainGitMerge_ObservabilityOutputsAndCertificates is the merge
+// invariant for the JSON outputs and their certificates, with NO driver —
+// GitHub's server-side merge runs none. Each output and each certificate is
+// its own file, so two branches that each add a service merge into exactly
+// what a generate over both services writes, and every merged output is
+// certified. (Before .forge/hashes/, both branches rewrote neighbouring
+// lines of one .forge/hashes.json and this merge conflicted.)
+func TestPlainGitMerge_ObservabilityOutputsAndCertificates(t *testing.T) {
 	if testing.Short() {
-		t.Skip("-short: runs a real git rebase that execs the test binary as the driver; runs in task test")
+		t.Skip("-short: runs real git merges (~3s); runs in task test")
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
-	dir := t.TempDir()
-	gitT(t, dir, "init", "-q", "-b", "main")
-	writeTreeFileT(t, filepath.Join(dir, "forge.yaml"), "name: app\nmodule_path: example.com/app\n")
-	exe, err := filepath.Abs(os.Args[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	gitT(t, dir, "config", "merge.forge-generated.driver", "'"+exe+"' merge-generated %O %A %B %L %P")
-	if _, ok := writeMergeAttributes(dir); !ok {
-		t.Fatal("precondition: the attributes block was written")
-	}
-
-	stamp := func(services ...string) {
+	render := func(dir string, services ...string) {
 		t.Helper()
-		out, err := json.MarshalIndent(codegen.ForgeDescriptor{
-			Services: func() (s []codegen.ServiceDef) {
-				for _, n := range services {
-					s = append(s, codegen.ServiceDef{Name: n})
-				}
-				return
-			}(),
-			Sources: codegen.DescriptorSources(dir),
-		}, "", "  ")
+		checksums.ResetScaffoldLedgerCache()
+		cs, err := checksums.Load(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		writeTreeFileT(t, filepath.Join(dir, "gen", "forge_descriptor.json"), string(out)+"\n")
+		in := obsdash.Input{Project: "app"}
+		for _, s := range services {
+			in.Services = append(in.Services, obsdash.Service{
+				Name: s, Package: "app.v1", ProtoService: strings.ToUpper(s[:1]) + s[1:] + "Service",
+				Methods: []obsdash.Method{{Name: "Ping"}},
+			})
+		}
+		if _, err := obsdash.Write(dir, in, cs); err != nil {
+			t.Fatal(err)
+		}
+		if err := checksums.Save(dir, cs); err != nil {
+			t.Fatal(err)
+		}
+		checksums.ResetScaffoldLedgerCache()
 	}
-	proto := func(name, body string) {
+	git := func(dir string, args ...string) string {
 		t.Helper()
-		writeTreeFileT(t, filepath.Join(dir, "proto", name+".proto"), body)
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
 	}
-	commit := func(msg string) {
-		gitT(t, dir, "add", "-A")
-		gitT(t, dir, "commit", "-qm", msg)
+	dir := t.TempDir()
+	writeTreeFileT(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.24\n")
+	git(dir, "init", "-q", "-b", "main")
+	render(dir, "system")
+	git(dir, "add", "-A")
+	git(dir, "commit", "-qm", "base")
+	git(dir, "checkout", "-qb", "run")
+	render(dir, "run", "system")
+	git(dir, "add", "-A")
+	git(dir, "commit", "-qm", "run")
+	git(dir, "checkout", "-q", "main")
+	render(dir, "question", "system")
+	git(dir, "add", "-A")
+	git(dir, "commit", "-qm", "question")
+	git(dir, "merge", "--no-edit", "run")
+
+	fresh := t.TempDir()
+	writeTreeFileT(t, filepath.Join(fresh, "go.mod"), "module example.com/app\n\ngo 1.24\n")
+	render(fresh, "question", "run", "system")
+
+	merged, want := observabilityFiles(t, dir), observabilityFiles(t, fresh)
+	for rel, body := range want {
+		if merged[rel] != body {
+			t.Errorf("%s after a plain git merge differs from a generate over both services", rel)
+		}
 	}
-
-	for _, n := range []string{"alpha", "beta", "gamma"} {
-		proto(n, "syntax = \"proto3\";\nmessage "+n+" {}\n")
+	for rel := range merged {
+		if _, ok := want[rel]; !ok {
+			t.Errorf("%s survives the merge but a generate over both services does not write it", rel)
+		}
 	}
-	stamp("alpha", "beta", "gamma")
-	commit("base")
-
-	gitT(t, dir, "checkout", "-qb", "feature")
-	proto("alpha", "syntax = \"proto3\";\nmessage alpha {}\nmessage AlphaTwo {}\n")
-	stamp("alpha", "beta", "gamma")
-	commit("feature edits alpha")
-
-	gitT(t, dir, "checkout", "-q", "main")
-	proto("beta", "syntax = \"proto3\";\nmessage beta {}\nmessage BetaTwo {}\n")
-	proto("delta", "syntax = \"proto3\";\nmessage delta {}\n")
-	stamp("alpha", "beta", "gamma", "delta")
-	commit("main edits beta and adds delta")
-
-	gitT(t, dir, "checkout", "-q", "feature")
-	gitT(t, dir, "rebase", "main")
-
-	data, err := os.ReadFile(filepath.Join(dir, "gen", "forge_descriptor.json"))
+	mergedCS, err := checksums.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got codegen.ForgeDescriptor
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("the rebased descriptor does not parse: %v\n%s", err, data)
+	freshCS, err := checksums.Load(fresh)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if drift := codegen.DescriptorDrift(dir, got.Sources); drift != "" || len(got.Sources) == 0 {
-		t.Errorf("after the rebase the descriptor is stamped for protos the tree does not hold (%q); the lane would have to regenerate and amend:\n%s", drift, data)
+	if len(mergedCS.Unstampable) != len(freshCS.Unstampable) {
+		t.Errorf("merged certificates %d, fresh %d", len(mergedCS.Unstampable), len(freshCS.Unstampable))
 	}
-	if strings.Contains(string(data), "<<<<<<<") {
-		t.Errorf("the descriptor carries conflict markers:\n%s", data)
+	for rel, h := range freshCS.Unstampable {
+		if mergedCS.Unstampable[rel] != h {
+			t.Errorf("%s: merged certificate %q, generate writes %q", rel, mergedCS.Unstampable[rel], h)
+		}
 	}
+	if drift := checksums.ScanTier1Drift(dir, mergedCS); len(drift) != 0 {
+		t.Fatalf("the stomp guard sees drift after a plain merge: %v", drift)
+	}
+}
+
+func TestMergeGenerated_TwoServiceBranchesRebaseClean(t *testing.T) {
+	dir := twoServiceBranches(t)
+	gitT(t, dir, "rebase", "run")
+	assertConvergesToBothServices(t, dir)
 }

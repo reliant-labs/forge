@@ -56,7 +56,7 @@ service ChatService {
 }
 ```
 
-- **What forge still does:** buf generates the service's Go/TS code as before, it stays in `gen/forge_descriptor.json`, and its rpcs' `auth_required` declarations still project into `pkg/middleware/procedures_gen.go` (whether an rpc is public is part of the contract, whoever serves it — so a hand-written server can use the generated open set).
+- **What forge still does:** buf generates the service's Go/TS code as before, it stays in `gen/forge_descriptor/`, and its rpcs' `auth_required` declarations still project into `pkg/middleware/procedures_gen.go` (whether an rpc is public is part of the contract, whoever serves it — so a hand-written server can use the generated open set).
 - **What forge skips:** everything service-scoped — handler dir and rpc stubs, scaffold tests, mocks, CRUD wiring and entities, the mount, compose entry and subcommand, frontend hooks and pages. `forge scaffold` skips it and refuses `scaffold service|rpc|entity --from-proto` on it; `forge lint`'s list-filter rule and `forge project shapes` treat its rpcs as not forge's.
 - **The ledger:** `forge project audit --json` lists every unmanaged service under the shape category's `unmanaged_services`; `generate` prints the count each run.
 - **Adopt one:** delete its marker line, run `forge generate` — it scaffolds `internal/handlers/<svc>/` like any new service — move the real logic onto the generated `*Service` methods, swap the old mount for `Mount<Svc>`, and delete the old handler. One service per PR; the rest of the tree is untouched.

@@ -204,10 +204,10 @@ func TestGoCacheCutoffNeverBelowFloor(t *testing.T) {
 		return s
 	}
 	// Way over budget, but every sampled entry is 1m old (inside the floor):
-	// the cutoff must still be no newer than now-floor.
+	// the cutoff must still be no newer than now-minimum floor.
 	c, _ := goCacheCutoff(mk(time.Minute, time.Minute, time.Minute), 1, now, 48*time.Hour, 1)
-	if c.After(now.Add(-goCacheFloor)) {
-		t.Fatalf("cutoff %v is inside the floor %s", now.Sub(c), goCacheFloor)
+	if c.After(now.Add(-goCacheMinFloor)) {
+		t.Fatalf("cutoff %v is inside the minimum floor %s", now.Sub(c), goCacheMinFloor)
 	}
 	// A tiny unused window is clamped to the floor: the AGE rule never
 	// reaches into it.
@@ -227,13 +227,20 @@ func TestGoCacheCutoffNeverBelowFloor(t *testing.T) {
 	if now.Sub(c) > 3*time.Hour || now.Sub(c) < goCacheFloor {
 		t.Fatalf("budget cutoff age %v out of range", now.Sub(c))
 	}
-	// ... but never inside the 2h floor, however far over budget (the
-	// 2026-10-22 machine: every entry under 4h old). Reaching in broke
-	// running builds on 2026-10-23 (`could not load export data … -d: no
-	// such file`): only the 150m entry is past the floor.
-	c, _ = goCacheCutoff(mk(30*time.Minute, 45*time.Minute, 90*time.Minute, 150*time.Minute), 1, now, 48*time.Hour, 200)
+	// While entries older than the 2h floor can meet the budget, the size
+	// rule stays outside it: a slow fill never moves the floor.
+	c, _ = goCacheCutoff(mk(30*time.Minute, 150*time.Minute, 300*time.Minute), 1, now, 48*time.Hour, 200)
 	if now.Sub(c) < goCacheFloor {
-		t.Fatalf("over budget with only young entries: cutoff age %v is inside the %s floor", now.Sub(c), goCacheFloor)
+		t.Fatalf("older entries meet the budget, yet the cutoff age %v is inside the %s floor", now.Sub(c), goCacheFloor)
+	}
+	// A fill too fast for the entries past 2h to meet the budget (the
+	// 2026-10-30 machine: 50 GiB/h into a 40 GiB budget) moves the size rule
+	// inside 2h, as far as it needs, but never inside the minimum floor: the
+	// 20m reach of 2026-10-22 broke running builds (`could not load export
+	// data … -d: no such file`) because it ignored cmd/go's hour.
+	c, _ = goCacheCutoff(mk(30*time.Minute, 45*time.Minute, 90*time.Minute, 150*time.Minute), 1, now, 48*time.Hour, 200)
+	if age := now.Sub(c); age < goCacheMinFloor || age >= goCacheFloor {
+		t.Fatalf("over budget with only young entries: cutoff age %v, want within [%s, %s)", age, goCacheMinFloor, goCacheFloor)
 	}
 }
 
@@ -437,7 +444,7 @@ func TestGoCacheTrimReportsWhatItMeasured(t *testing.T) {
 		tr.EstimatedBytes != 16*40*100 || tr.YoungBytes != 16*30*100 || tr.BudgetBytes != 40_000 {
 		t.Fatalf("report = %+v\n%s", tr, out)
 	}
-	if !tr.Cutoff.Before(time.Now().Add(-goCacheFloor + time.Minute)) {
+	if !tr.Cutoff.Before(time.Now().Add(-goCacheMinFloor + time.Minute)) {
 		t.Fatalf("cutoff %s is inside the floor", tr.Cutoff)
 	}
 }
@@ -582,8 +589,8 @@ func TestGoCacheBudgetUnreachableInsideTheFloor(t *testing.T) {
 	if !errors.As(err, &ub) {
 		t.Fatalf("want a BudgetUnreachableError, got %v\n%s", err, out)
 	}
-	if ub.Young != 48_000 || ub.Budget != 40_000 || ub.Floor != goCacheFloor {
-		t.Fatalf("young=%d budget=%d floor=%s, want 48000, 40000, %s", ub.Young, ub.Budget, ub.Floor, goCacheFloor)
+	if ub.Young != 48_000 || ub.Budget != 40_000 || ub.Floor != goCacheMinFloor {
+		t.Fatalf("young=%d budget=%d floor=%s, want 48000, 40000, %s", ub.Young, ub.Budget, ub.Floor, goCacheMinFloor)
 	}
 	if got := countEntries(root); got != 16*30 {
 		t.Fatalf("%d entries left, want the %d young ones: everything past the floor goes, nothing inside it\n%s", got, 16*30, out)
@@ -592,7 +599,7 @@ func TestGoCacheBudgetUnreachableInsideTheFloor(t *testing.T) {
 		if err != nil || d.IsDir() || filepath.Base(p) == "README" {
 			return nil
 		}
-		if info, _ := d.Info(); time.Since(info.ModTime()) > goCacheFloor {
+		if info, _ := d.Info(); time.Since(info.ModTime()) > goCacheMinFloor {
 			t.Errorf("%s is past the floor and survived an over-budget pass", filepath.Base(p))
 		}
 		return nil
@@ -652,7 +659,7 @@ func TestGoCachesRecordsCutOffAndUnreachableTogether(t *testing.T) {
 func TestGoCacheStatusReportsTheYoungShare(t *testing.T) {
 	r, _, out := overBudgetCache(t, 30, 10)
 	r.goCacheStatus(context.Background())
-	for _, want := range []string{"~0.0 GiB used in the last 2h0m0s", "WARNING"} {
+	for _, want := range []string{"~0.0 GiB used in the last 1h5m0s", "WARNING"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("status does not say %q:\n%s", want, out)
 		}
@@ -692,8 +699,8 @@ func TestGoCacheOverBudgetNeverReachesIntoTheFloor(t *testing.T) {
 	}
 	err := r.SharedGoCache(true)
 	var ub *BudgetUnreachableError
-	if !errors.As(err, &ub) || ub.Floor != goCacheFloor {
-		t.Fatalf("want a BudgetUnreachableError at the %s floor, got %v\n%s", goCacheFloor, err, out.String())
+	if !errors.As(err, &ub) || ub.Floor != goCacheMinFloor {
+		t.Fatalf("want a BudgetUnreachableError at the %s minimum floor, got %v\n%s", goCacheMinFloor, err, out.String())
 	}
 	if RealFailure(err) != nil {
 		t.Fatalf("an unreachable budget must not fail the pass: %v", RealFailure(err))
@@ -836,5 +843,19 @@ func TestGoCacheRemovesLeastRecentlyUsedFirst(t *testing.T) {
 		if exists(p) == oldest {
 			t.Errorf("entry %d (%s old): exists=%v; the cap of 2 must take the two oldest (120h, 100h)\n%s", n, ages[n], exists(p), out.String())
 		}
+	}
+}
+
+// The budget message points at -trimpath only when the go command might be
+// missing it: on 2026-10-30 GOFLAGS had it, and the hint sent readers the
+// wrong way.
+func TestBudgetUnreachableHintFollowsTrimpath(t *testing.T) {
+	e := &BudgetUnreachableError{Cache: "c", Estimated: 3 * GiB, Budget: GiB, Young: 2 * GiB, Floor: goCacheMinFloor}
+	if !strings.Contains(e.Error(), "builds without -trimpath") {
+		t.Fatalf("unknown GOFLAGS must keep the hint: %v", e)
+	}
+	e.Trimpath, e.TrimpathKnown = true, true
+	if msg := e.Error(); strings.Contains(msg, "without -trimpath") || !strings.Contains(msg, "already use -trimpath") {
+		t.Fatalf("with -trimpath set the hint must not blame it: %v", msg)
 	}
 }

@@ -33,9 +33,11 @@ import (
 // an hour stale: an entry older than X has been unused for at least X-1h, so
 // with a floor of 2h a live build never loses an entry it is using.
 //
-// The floor binds BOTH rules. The age rule (go_cache_unused) and the size rule
-// (go_cache_gib: least recently used first, down to goCacheLowWater of the
-// budget) each stop at it, whatever the budget pressure. That is cmd/go's own
+// The floor binds BOTH rules. The age rule (go_cache_unused) stops at
+// goCacheFloor; the size rule (go_cache_gib: least recently used first, down
+// to goCacheLowWater of the budget) stops there too unless the entries older
+// than it cannot meet the budget, and then at goCacheMinFloor, whatever the
+// budget pressure. That is cmd/go's own
 // contract (cmd/go/internal/cache): markUsed restamps an entry only when its
 // mtime is more than mtimeInterval (1h) stale, and Go's trim deletes only past
 // trimLimit (5 days). So an mtime younger than 1h says nothing about use, and
@@ -63,10 +65,31 @@ import (
 // trim.txt and README are top-level files, which the trim never touches;
 // cmd/go's own trim is independent of this one.
 
-// goCacheFloor is the youngest entry the trim may ever delete, under any rule
-// and any budget pressure: cmd/go's mtimeInterval (1h) plus an hour of margin.
-// It is what makes the trim safe under live builds, and it is not a knob.
+// goCacheFloor is the youngest entry the AGE rule ever deletes, and the
+// youngest the size rule deletes while older entries can still bring the
+// cache under its budget: cmd/go's mtimeInterval (1h) plus an hour of margin.
+// It is not a knob.
 const goCacheFloor = 2 * time.Hour
+
+// goCacheMinFloor is the youngest entry the trim may ever delete, under any
+// rule and any budget pressure: cmd/go's mtimeInterval (1h) plus the live
+// build margin's 5 minutes. The size rule reaches past goCacheFloor toward it
+// only when everything older is not enough to meet the budget, so the window
+// the trim cannot touch follows the fill rate: at a few GiB an hour it stays
+// at 2h, at 50 GiB/h (2026-10-30: a 40 GiB budget, 100-120 GiB inside a flat
+// 2h floor, a 629 GiB disk at 96%) it shrinks to 65 minutes.
+//
+// Why that is safe (gocache_livebuild.go has the argument): an entry a process
+// looked up at or after its start S has an mtime of at least S-1h, so for a
+// build the process table shows, the live-build bound holds the cutoff back
+// to before its start. A process that starts after the shard is read
+// restamps any entry more than an hour stale on lookup, and every entry is
+// re-statted just before it is unlinked (streamTrimGoCache). What it does not
+// cover is a build ps cannot see (another PID namespace) that started more
+// than 5 minutes earlier and looked up an entry between 65m and 2h old: such
+// a build can fail with "could not load export data", and a rerun succeeds.
+// The trim takes that risk only to stop a disk filling, never at rest.
+const goCacheMinFloor = time.Hour + 5*time.Minute
 
 // goCacheWorkers bounds how many shards are read and trimmed at once. The
 // unlinks themselves are paced by the pass's deletion governor (deletes.go),
@@ -361,7 +384,7 @@ func sampleGoCache(ctx context.Context, root string, shards []string, offset int
 		n = len(shards)
 	}
 	var out goCacheSample
-	floor := now.Add(-goCacheFloor)
+	floor := now.Add(-goCacheMinFloor)
 	for i := 0; i < n && ctx.Err() == nil; i++ {
 		shard := shards[(offset+i*len(shards)/n)%len(shards)]
 		entries, err := readGoCacheShard(root, shard)
@@ -388,8 +411,9 @@ const goCacheLowWater = 0.8
 
 // goCacheCutoff picks the mtime below which entries are deleted: the older of
 // "unused longer than the age rule" and "what must go to reach the low-water
-// mark", whichever deletes more, and NEVER newer than the safety floor, under
-// either rule. No global sort and no complete scan: the budget cutoff is read
+// mark", whichever deletes more. The age rule never reaches inside
+// goCacheFloor; the size rule reaches inside it only as far as the budget
+// needs, and NEVER inside goCacheMinFloor. No global sort and no complete scan: the budget cutoff is read
 // off the sample's mtime distribution scaled to the whole cache, so it takes
 // the oldest entries first.
 func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time.Duration, budget uint64) (cutoff time.Time, estTotal uint64) {
@@ -408,7 +432,8 @@ func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time
 	}
 	need := float64(estTotal-uint64(float64(budget)*goCacheLowWater)) / scale // bytes to drop from the sample
 	var acc float64
-	budgetCut := floorCut // the sample cannot cover the excess: take everything past the floor
+	minCut := now.Add(-goCacheMinFloor)
+	budgetCut := minCut // the sample cannot cover the excess: take everything past the minimum floor
 	for _, e := range sample.entries {
 		acc += float64(e.size)
 		if acc >= need {
@@ -416,8 +441,8 @@ func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time
 			break
 		}
 	}
-	if budgetCut.After(floorCut) {
-		budgetCut = floorCut
+	if budgetCut.After(minCut) {
+		budgetCut = minCut
 	}
 	if budgetCut.After(cutoff) {
 		cutoff = budgetCut
@@ -427,7 +452,7 @@ func goCacheCutoff(sample goCacheSample, nShards int, now time.Time, unused time
 
 // goCacheNeed estimates how many entries are last used before cutoff across
 // the whole cache: the sample's count scaled to every shard. The sample's
-// entries are those past the floor, which every cutoff is.
+// entries are those past the minimum floor, which every cutoff is.
 func goCacheNeed(sample goCacheSample, nShards int, cutoff time.Time) int {
 	if sample.shards == 0 {
 		return 0
@@ -562,8 +587,8 @@ func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply boo
 		r.saveGoCacheCursor(label, (start+pass.shardsCovered)%len(shards))
 	}
 
-	r.print("%s %s: ~%.1f GiB estimated (budget %.1f GiB, trimmed to %.1f GiB when over); deleting entries last used before %s (age rule %s, floor %s under every rule, and the start of any running Go build)%s\n",
-		label, root, float64(estTotal)/float64(GiB), float64(budget)/float64(GiB), float64(budget)*goCacheLowWater/float64(GiB), cutoff.Format(time.RFC3339), unused, goCacheFloor, heldBack+overBudget)
+	r.print("%s %s: ~%.1f GiB estimated (budget %.1f GiB, trimmed to %.1f GiB when over); deleting entries last used before %s (age rule %s, floor %s, down to %s only to meet the budget, and the start of any running Go build)%s\n",
+		label, root, float64(estTotal)/float64(GiB), float64(budget)/float64(GiB), float64(budget)*goCacheLowWater/float64(GiB), cutoff.Format(time.RFC3339), unused, goCacheFloor, goCacheMinFloor, heldBack+overBudget)
 	for _, p := range pass.samples {
 		r.print("  %s %s\n", verb(apply), p)
 	}
@@ -581,7 +606,7 @@ func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply boo
 	}
 	r.print("%s: %s %d entries, %.1f GiB (%s)\n", label, map[bool]string{true: "removed", false: "would remove"}[apply], pass.removed, float64(pass.freed)/float64(GiB), status)
 	young := goCacheYoungBytes(sample, len(shards))
-	protectedFor := goCacheFloor
+	protectedFor := goCacheMinFloor
 	if liveBuild > 0 {
 		// What a running build can hold is as untouchable as the floor's
 		// share: count the sampled entries between the floor and the bound.
@@ -607,6 +632,7 @@ func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply boo
 	}
 	if young > budget {
 		unreachable := &BudgetUnreachableError{Cache: label, Estimated: estTotal, Budget: budget, Young: young, Floor: protectedFor}
+		unreachable.Trimpath, unreachable.TrimpathKnown = goFlagsTrimpath(ctx)
 		r.print("WARNING %v\n", unreachable)
 		return errors.Join(pass.stop, unreachable)
 	}
@@ -614,8 +640,8 @@ func (r Runner) trimGoBuildCache(label, root string, budgetGiB uint64, apply boo
 }
 
 // goCacheYoungBytes estimates the bytes of the whole cache last used inside the
-// safety floor — the part no pass may delete. The sample's entries are those
-// past the floor, so the rest of its bytes are the young ones.
+// minimum floor — the part no pass may delete. The sample's entries are those
+// past it, so the rest of its bytes are the young ones.
 func goCacheYoungBytes(sample goCacheSample, nShards int) uint64 {
 	if sample.shards == 0 {
 		return 0
@@ -663,9 +689,9 @@ type GoCacheTrim struct {
 }
 
 // goCacheProtectedByBuild estimates the bytes of the whole cache with a
-// last-use time between the floor and cutoff: past the floor, but held by a
+// last-use time between the minimum floor and cutoff: past it, but held by a
 // running build (gocache_livebuild.go). The sample's entries are those past
-// the floor.
+// the minimum floor.
 func goCacheProtectedByBuild(sample goCacheSample, nShards int, cutoff time.Time) uint64 {
 	if sample.shards == 0 {
 		return 0
@@ -681,7 +707,7 @@ func goCacheProtectedByBuild(sample goCacheSample, nShards int, cutoff time.Time
 
 // BudgetUnreachableError marks a cache no trim can bring under its size budget,
 // because more than the budget was used inside the safety floor (Floor,
-// goCacheFloor). Entries that young may belong to a running build — cmd/go
+// goCacheMinFloor). Entries that young may belong to a running build — cmd/go
 // restamps a used entry only once it is an hour stale — so they are never
 // deleted, whatever the pressure: the pass removed everything older and the
 // cache still sits at roughly Young. Only a slower fill, or a larger budget,
@@ -698,16 +724,25 @@ type BudgetUnreachableError struct {
 	// age of the oldest running build plus its margin when that is longer), in bytes.
 	Estimated, Budget, Young uint64
 	Floor                    time.Duration
+	// Trimpath is whether the go command already builds with -trimpath
+	// (goFlagsTrimpath), when that is known. Then the usual cause of a fast
+	// fill is ruled out and the message does not send the reader after it.
+	Trimpath, TrimpathKnown bool
 }
 
 func (e *BudgetUnreachableError) Error() string {
 	gib := func(b uint64) float64 { return float64(b) / float64(GiB) }
+	cause := "A common cause is builds without -trimpath, which compile every " +
+		"worktree's packages again: run `go env GOFLAGS` in a worktree (a go.mod toolchain line that switches to a " +
+		"downloaded toolchain drops a -trimpath set in $GOROOT/go.env)"
+	if e.TrimpathKnown && e.Trimpath {
+		cause = "Builds already use -trimpath, so the fill is real work: many distinct commits built at once " +
+			"(one per worktree), `go run pkg@version` executables and test variants"
+	}
 	return fmt.Sprintf("%s is over its budget and no trim can reach it: ~%.1f GiB against %.1f GiB, of which ~%.1f GiB "+
 		"was used in the last %s (~%.0f GiB/h). Entries that young may belong to a running build, so they are never "+
-		"trimmed; raise go_cache_gib, or slow the fill. A common cause is builds without -trimpath, which compile every "+
-		"worktree's packages again: run `go env GOFLAGS` in a worktree (a go.mod toolchain line that switches to a "+
-		"downloaded toolchain drops a -trimpath set in $GOROOT/go.env)",
-		e.Cache, gib(e.Estimated), gib(e.Budget), gib(e.Young), e.Floor, gib(e.Young)/e.Floor.Hours())
+		"trimmed; raise go_cache_gib, or slow the fill. %s",
+		e.Cache, gib(e.Estimated), gib(e.Budget), gib(e.Young), e.Floor, gib(e.Young)/e.Floor.Hours(), cause)
 }
 
 // streamTrimGoCache walks the shards in rotated order from start, deleting
@@ -832,9 +867,11 @@ func (r Runner) goCacheStatus(ctx context.Context) {
 	budget := r.goCacheBudget(root)
 	young := goCacheYoungBytes(sample, len(shards))
 	r.print("go build cache %s: ~%.1f GiB estimated from %d/%d shards (budget %.1f GiB, unused %s; ~%.1f GiB used in the last %s, which no trim deletes)\n", root,
-		est/float64(GiB), sample.shards, len(shards), float64(budget)/float64(GiB), r.Policy.GoCacheUnused, float64(young)/float64(GiB), goCacheFloor)
+		est/float64(GiB), sample.shards, len(shards), float64(budget)/float64(GiB), r.Policy.GoCacheUnused, float64(young)/float64(GiB), goCacheMinFloor)
 	if young > budget {
-		r.print("WARNING %v\n", &BudgetUnreachableError{Cache: "go build cache", Estimated: uint64(est), Budget: budget, Young: young, Floor: goCacheFloor})
+		ub := &BudgetUnreachableError{Cache: "go build cache", Estimated: uint64(est), Budget: budget, Young: young, Floor: goCacheMinFloor}
+		ub.Trimpath, ub.TrimpathKnown = goFlagsTrimpath(ctx)
+		r.print("WARNING %v\n", ub)
 	}
 }
 
@@ -852,4 +889,24 @@ func ProductionGoCacheRoots(ctx context.Context, command func(context.Context, s
 		golangci = filepath.Join(dir, "golangci-lint")
 	}
 	return
+}
+
+// goFlagsTrimpath reports whether `go env GOFLAGS` carries -trimpath, and
+// whether that could be read at all. A var so tests can answer.
+var goFlagsTrimpath = func(ctx context.Context) (set, known bool) {
+	if testing.Testing() {
+		return false, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "go", "env", "GOFLAGS").Output()
+	if err != nil {
+		return false, false
+	}
+	for _, f := range strings.Fields(string(out)) {
+		if f == "-trimpath" || f == "-trimpath=true" {
+			return true, true
+		}
+	}
+	return false, true
 }

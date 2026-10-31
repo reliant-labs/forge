@@ -17,7 +17,7 @@ import (
 // A scaffold whose writes are generate INPUTS must end with a generate run, or
 // the project it hands back is lint-red until the user thinks to run one.
 // `forge scaffold frontend` wrote proto/config/v1/<fe>_config.proto and stopped,
-// so gen/forge_descriptor.json went stale and `forge lint`'s convention and
+// so gen/forge_descriptor/ went stale and `forge lint`'s convention and
 // graph lanes refused it; `scaffold package` / `scaffold adapter` stopped
 // before middleware_gen.go existed (golangci `unused` on the owned
 // observe_chain.go seam) and before an adapter's config.<Name>Config was

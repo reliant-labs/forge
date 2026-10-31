@@ -116,7 +116,7 @@ func TestWorktreesRetainIgnoredAndUntrackedData(t *testing.T) {
 
 			var out strings.Builder
 			r := Runner{Out: &out}
-			if err := r.Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false); err != nil {
+			if err := r.Worktrees(context.Background(), repo, "main", 24*time.Hour, true); err != nil {
 				t.Fatalf("Worktrees: %v\n%s", err, out.String())
 			}
 			for _, rel := range tc.files {
@@ -138,7 +138,7 @@ func TestWorktreesRemoveATrulyCleanWorktree(t *testing.T) {
 	ageDir(t, worktree)
 	fakeLsof(t, unrelatedOpenFile, "exit 0")
 	var out strings.Builder
-	if err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false); err != nil {
+	if err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true); err != nil {
 		t.Fatalf("Worktrees: %v\n%s", err, out.String())
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
@@ -171,7 +171,7 @@ func TestWorktreesRetainAWorktreeAProcessIsUsing(t *testing.T) {
 			ageDir(t, worktree)
 			fakeLsof(t, "p4242\n"+strings.ReplaceAll(tc.record, "%s", resolved(t, worktree)), "exit 0")
 			var out strings.Builder
-			if err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false); err != nil {
+			if err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true); err != nil {
 				t.Fatalf("Worktrees: %v\n%s", err, out.String())
 			}
 			if _, err := os.Stat(worktree); err != nil {
@@ -191,7 +191,7 @@ func TestWorktreesRefuseWhenUseCannotBeDetermined(t *testing.T) {
 	ageDir(t, worktree)
 	fakeLsof(t, "", "exit 2")
 	var out strings.Builder
-	err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false)
+	err := (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true)
 	if _, statErr := os.Stat(worktree); statErr != nil {
 		t.Fatalf("removed a worktree with no in-use evidence (%v)\n%s", statErr, out.String())
 	}
@@ -462,38 +462,48 @@ func TestWorktreeHoldsADirectoryThatIsItsOwnCheckout(t *testing.T) {
 	}
 }
 
-// Worktrees under Reliant's root are Reliant's to reclaim: it knows which chat
-// each is bound to. Held unless the caller opts in.
-func TestWorktreeUnderReliantRootIsHeldUnlessOptedIn(t *testing.T) {
+// Reliant reclaims the worktrees it locked as its own, wherever they live; an
+// unlocked worktree under its root (a plain `git worktree add` there) is
+// judged like any other, or nothing would ever reclaim it.
+func TestWorktreeHeldAsReliantsOnlyByReliantsLock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories and worktrees; runs in task test")
 	}
-	for _, optIn := range []bool{false, true} {
+	for _, locked := range []bool{false, true} {
 		repo, worktree := gitRepoWithWorktree(t)
 		runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
 		config := t.TempDir()
 		t.Setenv("RELIANT_USER_CONFIG_DIR", config)
-		managed := filepath.Join(config, "worktrees", "repo-id", "feature")
-		if err := os.MkdirAll(filepath.Dir(managed), 0o700); err != nil {
+		under := filepath.Join(config, "worktrees", "agent-made")
+		if err := os.MkdirAll(filepath.Dir(under), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		runGit(t, repo, "worktree", "move", worktree, managed)
-		ageDir(t, managed)
+		runGit(t, repo, "worktree", "move", worktree, under)
+		if locked {
+			runGit(t, repo, "worktree", "lock", "--reason", "reliant: worktree 0b6c", under)
+		}
+		ageDir(t, under)
 		fakeLsof(t, unrelatedOpenFile, "exit 0")
-		report, err := (Runner{}).reapWorktrees(context.Background(), reapOptions{repos: []string{repo}, base: "main", idle: 24 * time.Hour, apply: true, reliantManaged: optIn})
+		report, err := (Runner{}).reapWorktrees(context.Background(), reapOptions{repos: []string{repo}, base: "main", idle: 24 * time.Hour, apply: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, statErr := os.Stat(managed)
-		gone := os.IsNotExist(statErr)
-		if gone != optIn {
-			t.Fatalf("reliantManaged=%v: removed=%v (held %+v)", optIn, gone, report.Held)
+		_, statErr := os.Stat(under)
+		if gone := os.IsNotExist(statErr); gone == locked {
+			t.Fatalf("locked=%v: removed=%v (held %+v)", locked, gone, report.Held)
 		}
-		if !optIn {
-			if got := heldReason(report, managed); got != HoldManaged {
+		if locked {
+			if got := heldReason(report, under); got != HoldManaged {
 				t.Fatalf("held reason = %q, want %q", got, HoldManaged)
 			}
 		}
+	}
+}
+
+func TestParseWorktreesKeepsTheLockReason(t *testing.T) {
+	got := parseWorktrees("worktree /m\nHEAD a\n\nworktree /w\nHEAD b\nlocked reliant: worktree 1\n\nworktree /x\nHEAD c\nlocked\n")
+	if len(got) != 3 || got[1].lockReason != "reliant: worktree 1" || !got[2].locked || got[2].lockReason != "" {
+		t.Fatalf("parsed %+v", got)
 	}
 }
 
@@ -550,7 +560,7 @@ func TestWorktreesRetainWhenLsofIsMissing(t *testing.T) {
 	t.Setenv("PATH", bin)                      // git, and no lsof
 	t.Setenv("FORGE_OPENFILES_SOURCE", "lsof") // Linux reads /proc, which needs none; force the lsof source
 	var out strings.Builder
-	err = (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true, false)
+	err = (Runner{Out: &out}).Worktrees(context.Background(), repo, "main", 24*time.Hour, true)
 	if _, statErr := os.Stat(worktree); statErr != nil {
 		t.Fatalf("removed a worktree with no lsof to check it (%v)\n%s", statErr, out.String())
 	}

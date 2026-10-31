@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,11 +10,20 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// runDescriptorGenerate runs buf generate with the protoc-gen-forge plugin (mode=descriptor)
-// to extract service, entity, and config data from all proto files into forge_descriptor.json.
-func runDescriptorGenerate(projectDir string) error {
+// runDescriptorGenerate runs buf generate with the protoc-gen-forge plugin
+// (mode=descriptor) to extract service and config data from all proto files
+// into the descriptor directory, gen/forge_descriptor/ (one file per proto;
+// codegen.WriteDescriptor). Progress goes to out: stdout under `forge
+// generate`, stderr when a reader extracts on demand (buildDescriptorOnDemand),
+// so a command's own stdout (`--json`) stays clean.
+//
+// Every run stages in a private temporary directory, with a private buf
+// template, so concurrent extractions — two on-demand readers, or a reader
+// beside `forge generate` — never see each other's fragments.
+func runDescriptorGenerate(projectDir string, out io.Writer) error {
 	// Collect every proto/<sub>/ that contains .proto files. This includes
 	// the canonical {services,api,db,config} dirs plus any scaffolded
 	// proto trees (e.g. proto/audit/). Without
@@ -35,10 +45,7 @@ func runDescriptorGenerate(projectDir string) error {
 		return fmt.Errorf("vendor annotation protos: %w", err)
 	}
 
-	// Remove stale descriptor + any leftover staging fragments so the
-	// merge step in MergeDescriptorFragments only sees fragments from
-	// this invocation.
-	_ = os.Remove(filepath.Join(projectDir, "gen", "forge_descriptor.json"))
+	// A staging dir an older forge left inside gen/.
 	_ = os.RemoveAll(filepath.Join(projectDir, "gen", descriptorStageDir))
 
 	forgeCmd, err := forgeExecCommand()
@@ -46,7 +53,7 @@ func runDescriptorGenerate(projectDir string) error {
 		return fmt.Errorf("resolve forge binary: %w", err)
 	}
 
-	fmt.Println("🔨 Running protoc-gen-forge (mode=descriptor) to extract proto metadata...")
+	_, _ = fmt.Fprintln(out, "🔨 Running protoc-gen-forge (mode=descriptor) to extract proto metadata...")
 
 	pluginArgs := slices.Concat(forgeCmd, []string{"protoc-gen-forge"})
 	quoted := make([]string, len(pluginArgs))
@@ -55,26 +62,25 @@ func runDescriptorGenerate(projectDir string) error {
 	}
 	pluginCmd := "[" + strings.Join(quoted, ", ") + "]"
 
-	absProjectDir, err := filepath.Abs(projectDir)
+	work, err := os.MkdirTemp("", "forge-descriptor-")
 	if err != nil {
-		return fmt.Errorf("resolve project dir: %w", err)
+		return fmt.Errorf("descriptor staging dir: %w", err)
 	}
-	genDir := filepath.Join(absProjectDir, "gen")
+	defer func() { _ = os.RemoveAll(work) }()
 	descConfig := fmt.Sprintf(`version: v2
 plugins:
   - local: %s
-    out: gen
+    out: %s
     opt:
       - mode=descriptor
       - descriptor_out=%s
-`, pluginCmd, genDir)
-	tmpFile := filepath.Join(projectDir, "buf.gen.descriptor.yaml")
-	if err := atomicfile.WriteFile(tmpFile, []byte(descConfig), 0644); err != nil {
+`, pluginCmd, filepath.Join(work, "out"), work)
+	template := filepath.Join(work, "buf.gen.descriptor.yaml")
+	if err := atomicfile.WriteFile(template, []byte(descConfig), 0o644); err != nil {
 		return fmt.Errorf("failed to write descriptor buf config: %w", err)
 	}
-	defer func() { _ = os.Remove(tmpFile) }()
 
-	args := bufGenerateArgs("--template", "buf.gen.descriptor.yaml")
+	args := bufGenerateArgs("--template", template)
 	for _, p := range protoPaths {
 		args = append(args, "--path", p)
 	}
@@ -84,35 +90,37 @@ plugins:
 	if err := withPinnedTools(cmd, projectDir); err != nil {
 		return err
 	}
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = out
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("descriptor generation failed: %w", err)
 	}
 
-	// Each plugin process wrote a per-invocation fragment under
-	// gen/.descriptor.d/; merge them into gen/forge_descriptor.json now
-	// that buf has finished. This step is what makes parallel buf-plugin
-	// invocations safe — the merge happens in a single parent process.
-	if err := MergeDescriptorFragments(filepath.Join(projectDir, "gen")); err != nil {
+	// Post-condition: proto files exist, so the plugin must have run, and
+	// every plugin invocation creates the staging dir even when it stages
+	// nothing. A missing one means the self-invoked plugin silently never
+	// executed — fail loudly instead of letting downstream codegen quietly
+	// emit nothing.
+	if _, err := os.Stat(filepath.Join(work, descriptorStageDir)); err != nil {
+		return fmt.Errorf("buf generate reported success but protoc-gen-forge (invoked as %s) did not run: no descriptor fragments were staged", pluginCmd)
+	}
+
+	// Each plugin process staged one fragment per proto; write them out as
+	// gen/forge_descriptor/ now that buf has finished. This step is what
+	// makes parallel buf-plugin invocations safe — one process writes.
+	if err := MergeDescriptorFragments(work, projectDir); err != nil {
 		return fmt.Errorf("merge descriptor fragments: %w", err)
 	}
 
-	// Post-condition: proto files exist, so the plugin must have run and
-	// the merged descriptor must be on disk (every plugin invocation
-	// creates the staging dir even when its fragment is empty, and the
-	// merge writes the file whenever the staging dir exists). A missing
-	// descriptor here means the self-invoked plugin silently never
-	// executed — fail loudly instead of letting downstream codegen
-	// quietly emit nothing.
-	descPath := filepath.Join(projectDir, "gen", "forge_descriptor.json")
-	if _, err := os.Stat(descPath); err != nil {
-		return fmt.Errorf("buf generate reported success but %s was not produced — protoc-gen-forge (invoked as %s) did not run", descPath, pluginCmd)
-	}
-
-	fmt.Println("  ✅ forge_descriptor.json generated")
+	_, _ = fmt.Fprintln(out, "  ✅ "+codegen.DescriptorDir+"/ generated")
 	return nil
+}
+
+// buildDescriptorOnDemand is the extractor codegen.LoadDescriptor runs when a
+// reader finds the descriptor missing or stale (registered by Execute).
+func buildDescriptorOnDemand(projectDir string) error {
+	return runDescriptorGenerate(projectDir, os.Stderr)
 }
 
 func hasProtoFilesInDir(root string) (bool, error) {

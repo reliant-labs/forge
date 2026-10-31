@@ -76,7 +76,7 @@ project. Use it for a scaffold the project does not want at all — one whose
 very presence would change the build (a cmd tree's serve.go switches internal/app
 composition on) — including one forge has not written yet, or one a failed
 generate wrote and then rolled back. The decline is recorded with its reason in
-` + checksums.ScaffoldedFile + `, which a failed ` + "`forge generate`" + ` restores rather than
+` + checksums.ScaffoldedDir + "/" + `, which a failed ` + "`forge generate`" + ` restores rather than
 loses. Re-adopt it with ` + "`forge project rescaffold <path>`" + `.
 
 Examples:
@@ -91,9 +91,9 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded in .forge/disowned.json, or "+checksums.ScaffoldedFile+" with --absent)")
+	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded in .forge/disowned.json, or "+checksums.ScaffoldedDir+"/"+" with --absent)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/disowned.json")
-	cmd.Flags().BoolVar(&absent, "absent", false, "Decline scaffold-once files: forge never writes them in this project (recorded in "+checksums.ScaffoldedFile+")")
+	cmd.Flags().BoolVar(&absent, "absent", false, "Decline scaffold-once files: forge never writes them in this project (recorded in "+checksums.ScaffoldedDir+"/"+")")
 
 	// Writes .forge/disowned.json, one of the state files the merge driver merges.
 	return cmdutil.ConfiguresClone(cmd)

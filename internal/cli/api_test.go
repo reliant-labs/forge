@@ -17,7 +17,7 @@ import (
 )
 
 // writeProjectWithDescriptor lays down a minimal forge project on disk: a
-// minimal forge.yaml plus the gen/forge_descriptor.json built from desc.
+// minimal forge.yaml plus the gen/forge_descriptor/ built from desc.
 // Returns the project dir.
 //
 // Both pieces are required for buildCurlCommand to succeed end-to-end, and
@@ -48,13 +48,16 @@ func writeProjectWithDescriptor(t *testing.T, desc ForgeDescriptor) string {
 	if err != nil {
 		t.Fatalf("marshal descriptor: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), data, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"), data, 0o644); err != nil {
 		t.Fatalf("write descriptor: %v", err)
 	}
 	return dir
 }
 
-// writeForgeDescriptor lays down a minimal gen/forge_descriptor.json whose
+// writeForgeDescriptor lays down a minimal gen/forge_descriptor/ whose
 // services carry the given proto service NAMES (e.g. "TasksService"). The
 // introspection consumers (audit / graph / api / doctor) source their service
 // inventory from this descriptor via codegen.IntrospectComponents, so a test
@@ -73,7 +76,10 @@ func writeForgeDescriptor(t *testing.T, dir string, protoServiceNames ...string)
 	if err != nil {
 		t.Fatalf("marshal descriptor: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), data, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"), data, 0o644); err != nil {
 		t.Fatalf("write descriptor: %v", err)
 	}
 }
@@ -559,7 +565,7 @@ func TestBuildCurlCommand_NoDescriptor(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing descriptor")
 	}
-	if !strings.Contains(err.Error(), "no services found") && !strings.Contains(err.Error(), "forge_descriptor.json") {
+	if !strings.Contains(err.Error(), "no services found") && !strings.Contains(err.Error(), "forge descriptor") {
 		t.Errorf("error %q should mention the missing descriptor / no services", err.Error())
 	}
 	if !strings.Contains(err.Error(), "forge generate") {

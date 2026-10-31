@@ -46,7 +46,7 @@ internal/                     # the application: components, DI, data access
 pkg/app/                      # substrate: testing.go (per-component test harness) + migrate.go
 pkg/config/                   # typed config projected from the config proto (below)
 pkg/middleware/               # thin owned policy file
-gen/                          # ALL generated stubs/clients/mocks + forge_descriptor.json — never hand-edit
+gen/                          # ALL generated stubs/clients/mocks + forge_descriptor/ — never hand-edit
 proto/services/<svc>/v1/      # protobuf service definitions (API contracts)
 proto/<project>/config/v1/     # config truth: every field, its env var, flag, default
 db/migrations/                # SQL migrations — THE schema source of truth   (db/queries/ — SQL queries)
@@ -67,7 +67,7 @@ Config ownership follows the PROCESS: one project-global `AppConfig` by default,
 | `internal/handlers/<svc>/handlers_crud_ops_gen.go` | `internal/handlers/<svc>/handlers_crud.go` — CRUD delegations (access-control WHERE) |
 | `internal/app/graph_gen.go`, `routes_gen.go` (disown to hand-own) | `internal/app/providers.go`, `auth.go`, `roots.go` — providers, `SetupAuth`, roots; `compose.go` — yours, with only missing methods / Deps keys reconciled |
 | `internal/db/<entity>_orm.go` — entity struct + ORM (from schema) | `db/migrations/` — schema truth; `internal/db/<entity>_repo_ext.go` — custom queries |
-| `pkg/config/`, `pkg/app/testing.go`, frontend `*-hooks.ts`, `gen/forge_descriptor.json` | `pkg/middleware/` — policy; `cmd/<binary>.go` — owned subcommands |
+| `pkg/config/`, `pkg/app/testing.go`, frontend `*-hooks.ts`, `gen/forge_descriptor/` | `pkg/middleware/` — policy; `cmd/<binary>.go` — owned subcommands |
 
 **Rule of thumb:** `_gen` in the name or under `gen/` — regenerated; `pkg/` is a mix (table above).
 
@@ -77,7 +77,7 @@ Config ownership follows the PROCESS: one project-global `AppConfig` by default,
 
 ```
 proto/services/<svc>/v1/<svc>.proto
-  → protoc-gen-forge → forge_descriptor.json; protoc-gen-{go,connect-go} → gen/ stubs
+  → protoc-gen-forge → gen/forge_descriptor/; protoc-gen-{go,connect-go} → gen/ stubs
   → forge generate → a pb-through stub per custom RPC (+ scaffold-once handlers_crud.go / handlers_crud_test.go)
 
 db/migrations/*.up.sql (shadow-applied to a real ephemeral postgres, introspected) + CRUD RPC shapes

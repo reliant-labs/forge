@@ -3,7 +3,6 @@ package codegen
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
@@ -60,9 +59,9 @@ type ForgeDescriptor struct {
 // such branches landed without a regenerate between them, while the real
 // generated code (the .pb.go files, one per proto) merged correctly. Per-file
 // entries change exactly where their inputs change, so two branches touching
-// different protos merge to the stamp of the merged tree; the merge driver
-// (mergeDescriptorSources) settles them key by key even when git would call
-// two neighbouring lines a conflict.
+// different protos merge to the stamp of the merged tree. Each entry now
+// lives in its own proto's file under gen/forge_descriptor/ (WriteDescriptor),
+// so those branches do not even touch the same file.
 //
 // forge's vendored annotation protos (forge/v1/forge.proto,
 // buf/validate/validate.proto) are not stamped. They are the GRAMMAR the
@@ -143,7 +142,7 @@ func DescriptorDrift(projectDir string, sources map[string]string) string {
 	return strings.Join(changed, ", ")
 }
 
-// noticeMissingDescriptor reports the absent gen/forge_descriptor.json —
+// noticeMissingDescriptor reports the absent gen/forge_descriptor/ —
 // but ONLY for a project that actually declares a service in a .proto.
 //
 // A missing descriptor is a normal, permanent state for a project with no
@@ -159,7 +158,7 @@ func noticeMissingDescriptor(projectDir string) {
 	if !protoSourceDeclaresService(projectDir) {
 		return
 	}
-	log.Println("Info: forge_descriptor.json not found — run 'forge generate' with protoc-gen-forge to produce it")
+	log.Println("Info: gen/forge_descriptor/ not found — run 'forge generate' with protoc-gen-forge to produce it")
 }
 
 // protoSourceDeclaresService reports whether any .proto under
@@ -188,20 +187,25 @@ func protoSourceDeclaresService(projectDir string) bool {
 	return found
 }
 
-// loadDescriptor reads and parses the forge_descriptor.json file from the gen/ directory.
-func loadDescriptor(projectDir string) (*ForgeDescriptor, error) {
-	descPath := filepath.Join(projectDir, "gen", "forge_descriptor.json")
-	data, err := os.ReadFile(descPath)
+// LoadDescriptor reads the descriptor directory (gen/forge_descriptor/, see
+// ReadDescriptor), extracting it from the protos first when it is missing or
+// does not match them (the registered builder; see descriptor_dir.go), and
+// refuses one that still does not match.
+func LoadDescriptor(projectDir string) (*ForgeDescriptor, error) {
+	desc, err := ReadDescriptor(projectDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil // No descriptor yet — not an error
-		}
-		return nil, fmt.Errorf("read forge descriptor: %w", err)
+		return nil, err
 	}
-
-	var desc ForgeDescriptor
-	if err := json.Unmarshal(data, &desc); err != nil {
-		return nil, fmt.Errorf("parse forge descriptor: %w", err)
+	if descriptorBuilder != nil && (desc == nil || DescriptorDrift(projectDir, desc.Sources) != "") && len(DescriptorSources(projectDir)) > 0 {
+		if err := descriptorBuilder(projectDir); err != nil {
+			return nil, fmt.Errorf("extract the forge descriptor (%s/) from proto/: %w", DescriptorDir, err)
+		}
+		if desc, err = ReadDescriptor(projectDir); err != nil {
+			return nil, err
+		}
+	}
+	if desc == nil {
+		return nil, nil // no protos to describe — not an error
 	}
 
 	// REFUSE a descriptor that does not match the protos on disk. Warning
@@ -216,11 +220,11 @@ func loadDescriptor(projectDir string) (*ForgeDescriptor, error) {
 	// which is the sequence that actually happens.
 	if drift := DescriptorDrift(projectDir, desc.Sources); drift != "" {
 		return nil, fmt.Errorf(
-			"gen/forge_descriptor.json is stale: it was extracted from different .proto files than the ones on disk (%s).\n"+
+			DescriptorDir+"/ is stale: it was extracted from different .proto files than the ones on disk (%s).\n"+
 				"  It is a DERIVED cache — the protos are the source of truth — so forge refuses to answer from it.\n"+
 				"  Fix: reliant forge generate", drift)
 	}
-	return &desc, nil
+	return desc, nil
 }
 
 // ParseServicesFromProtos reads the services forge MANAGES from the forge
@@ -253,7 +257,7 @@ func ParseServicesFromProtos(dir string, projectDir string) ([]ServiceDef, error
 // the unmanaged-service listing in `forge project audit`. Everything else
 // reads ParseServicesFromProtos.
 func ParseDeclaredServices(projectDir string) ([]ServiceDef, error) {
-	desc, err := loadDescriptor(projectDir)
+	desc, err := LoadDescriptor(projectDir)
 	if err != nil {
 		return nil, err
 	}
@@ -309,7 +313,7 @@ func UnmanagedServices(defs []ServiceDef) []ServiceDef {
 // entity from it would wire generic CRUD, pages and seeds over business
 // logic forge does not own. The entity appears when the service is adopted.
 func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
-	desc, err := loadDescriptor(projectDir)
+	desc, err := LoadDescriptor(projectDir)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +330,7 @@ func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
 // needs no descriptor — a project whose protos have not been compiled yet
 // still has a schema, and the store is a projection of the schema alone.
 func ParseORMEntities(projectDir string) ([]EntityDef, error) {
-	desc, err := loadDescriptor(projectDir)
+	desc, err := LoadDescriptor(projectDir)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +346,7 @@ func ParseORMEntities(projectDir string) ([]EntityDef, error) {
 // handler implements by hand (WithoutHandImplemented). Empty when the
 // descriptor or the migrations do not exist yet.
 func ParseUnmatchedCRUDRPCs(projectDir string) ([]UnmatchedCRUDRPC, error) {
-	desc, err := loadDescriptor(projectDir)
+	desc, err := LoadDescriptor(projectDir)
 	if err != nil || desc == nil {
 		return nil, err
 	}
@@ -369,7 +373,7 @@ func ParseConfigProto(protoPath string) ([]ConfigMessage, error) {
 		}
 	}
 
-	desc, err := loadDescriptor(projectDir)
+	desc, err := LoadDescriptor(projectDir)
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +401,7 @@ func ParseConfigProtosFromDir(dir string) ([]ConfigMessage, error) {
 		projectDir = parent
 	}
 
-	desc, err := loadDescriptor(projectDir)
+	desc, err := LoadDescriptor(projectDir)
 	if err != nil {
 		return nil, err
 	}

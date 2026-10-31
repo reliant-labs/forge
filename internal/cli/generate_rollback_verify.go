@@ -173,18 +173,11 @@ func fileSum(root, rel string) ([sha256.Size]byte, bool) {
 // own state (.forge holds the run's lock, logs, and the failed-generate
 // preserve directory the rollback writes), VCS metadata, and dependency
 // installs.
-var verifyRootExcluded = map[string]bool{".forge": true, ".git": true, "node_modules": true}
-
-// verifyKeptState are the files under an excluded .forge/ that are still
-// the project's: the committed ownership state and birth ledger. A run that
+// The files under an excluded .forge/ that are still the project's — the
+// committed ownership state, birth ledger and JSON certificates
+// (checksums.IsCommittedState) — are listed all the same: a run that
 // rewrites one has changed the project, and both verdicts must see it.
-var verifyKeptState = func() map[string]bool {
-	out := map[string]bool{}
-	for _, rel := range checksums.CommittedStateFiles() {
-		out[rel] = true
-	}
-	return out
-}()
+var verifyRootExcluded = map[string]bool{".forge": true, ".git": true, "node_modules": true}
 
 // listWorkTree returns the project's files, slash-separated and relative to
 // root.
@@ -213,11 +206,7 @@ func listWorkTree(root string) ([]string, bool) {
 	if err != nil {
 		return nil, false
 	}
-	for rel := range verifyKeptState {
-		if info, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); statErr == nil && info.Mode().IsRegular() {
-			out = append(out, rel)
-		}
-	}
+	out = append(out, checksums.CommittedStatePaths(root)...)
 	return out, true
 }
 
@@ -243,7 +232,7 @@ func gitListWorkTree(root string) ([]string, bool) {
 			continue
 		}
 		top, _, _ := strings.Cut(rel, "/")
-		if verifyRootExcluded[top] && !verifyKeptState[rel] {
+		if verifyRootExcluded[top] && !checksums.IsCommittedState(rel) {
 			continue
 		}
 		seen[rel] = true

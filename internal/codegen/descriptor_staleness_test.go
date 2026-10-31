@@ -37,16 +37,29 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 	if err := os.MkdirAll(genDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	descDir := filepath.Join(dir, DescriptorDir)
+	// write lays down a hand-built (unstamped unless d says so) descriptor.
 	write := func(d ForgeDescriptor) {
 		b, err := json.Marshal(d)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(genDir, "forge_descriptor.json"), b, 0o644); err != nil {
+		if err := os.RemoveAll(descDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(descDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(descDir, "fixture.json"), b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	stamp := func() { write(ForgeDescriptor{Sources: DescriptorSources(dir)}) }
+	// stamp writes the descriptor as generate does: one stamped file per proto.
+	stamp := func() {
+		if err := WriteDescriptor(dir, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
 	reset := func() {
 		writeProto("services/widget/v1/widget.proto", proto)
 		_ = os.Remove(filepath.Join(dir, "proto", "shared", "v1", "types.proto"))
@@ -55,7 +68,7 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 	t.Run("matching stamp loads", func(t *testing.T) {
 		reset()
 		stamp()
-		got, err := loadDescriptor(dir)
+		got, err := LoadDescriptor(dir)
 		if err != nil {
 			t.Fatalf("a descriptor matching the protos must load: %v", err)
 		}
@@ -86,7 +99,7 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 			// The real-world sequence: change a proto, then run an inspection
 			// command before regenerating.
 			tc.change()
-			_, err := loadDescriptor(dir)
+			_, err := LoadDescriptor(dir)
 			if err == nil {
 				t.Fatal("a descriptor extracted from different protos must be REFUSED, not returned")
 			}
@@ -109,7 +122,7 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 		stamp()
 		writeProto("forge/v1/forge.proto", "syntax = \"proto3\";\npackage forge.v1;\nmessage NewOption {}\n")
 		writeProto("buf/validate/validate.proto", "syntax = \"proto2\";\npackage buf.validate;\nmessage NewRule {}\n")
-		if _, err := loadDescriptor(dir); err != nil {
+		if _, err := LoadDescriptor(dir); err != nil {
 			t.Fatalf("an edit to a vendored annotation proto must not stale the descriptor: %v", err)
 		}
 	})
@@ -123,7 +136,7 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 		reset()
 		writeProto("services/widget/v1/widget.proto", proto+"\n// drifted\n")
 		write(ForgeDescriptor{})
-		got, err := loadDescriptor(dir)
+		got, err := LoadDescriptor(dir)
 		if err != nil {
 			t.Fatalf("an unstamped descriptor must still load: %v", err)
 		}
@@ -133,10 +146,10 @@ func TestLoadDescriptor_RefusesStaleCache(t *testing.T) {
 	})
 
 	t.Run("missing descriptor is still fine", func(t *testing.T) {
-		if err := os.Remove(filepath.Join(genDir, "forge_descriptor.json")); err != nil {
+		if err := os.RemoveAll(descDir); err != nil {
 			t.Fatal(err)
 		}
-		got, err := loadDescriptor(dir)
+		got, err := LoadDescriptor(dir)
 		if err != nil || got != nil {
 			t.Fatalf("absent is a normal state (CLI/library projects); got %v, %v", got, err)
 		}

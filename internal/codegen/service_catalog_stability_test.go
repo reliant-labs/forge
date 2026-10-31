@@ -181,7 +181,10 @@ func NewOrdersServiceClient() OrdersServiceClient { return nil }
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gen/forge_descriptor.json"), desc, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen/forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen/forge_descriptor/fixture.json"), desc, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	in := GraphGenInput{GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/shop"}, Services: services}

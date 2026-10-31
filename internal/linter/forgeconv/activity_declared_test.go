@@ -2,6 +2,7 @@ package forgeconv
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,7 +38,8 @@ func lintActivity(t *testing.T, methods []codegen.Method) []Finding {
 	}}}
 	b, err := json.Marshal(desc)
 	must(t, err)
-	must(t, writeFile(filepath.Join(dir, "gen", "forge_descriptor.json"), string(b)))
+	must(t, os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755))
+	must(t, writeFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"), string(b)))
 	res, err := LintProtoTree(filepath.Join(dir, "proto"))
 	if err != nil {
 		t.Fatalf("LintProtoTree: %v", err)
@@ -94,7 +96,7 @@ func TestActivityDeclared_StaleDescriptor(t *testing.T) {
 		methods[i].Activity = nil
 	}
 	got := lintActivity(t, methods)
-	if len(got) != 1 || !strings.Contains(got[0].Message, "gen/forge_descriptor.json") || !strings.Contains(got[0].Remediation, "forge generate") {
+	if len(got) != 1 || !strings.Contains(got[0].Message, "gen/forge_descriptor/") || !strings.Contains(got[0].Remediation, "forge generate") {
 		t.Fatalf("findings = %+v, want one asking for forge generate", got)
 	}
 }

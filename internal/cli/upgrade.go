@@ -95,7 +95,7 @@ template accounts for. Adopt one by naming it:
 'forge project upgrade --force <path>'. Bare --force does not reach them.
 
 A scaffold-once file the project deleted stays deleted. The birth ledger
-(.forge/scaffolded.json) records every scaffold-once file forge has written, so a
+(.forge/scaffolded/) records every scaffold-once file forge has written, so a
 managed file the template ships that is absent AND recorded there — or declined
 ('forge project disown <path> --absent'), or disowned — is the project's decision,
 not drift: upgrade never re-creates it (nor does 'forge generate'), and says so

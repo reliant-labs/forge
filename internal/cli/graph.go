@@ -34,7 +34,7 @@ import (
 //                        each Deps field becomes a service→package edge
 //                        when the field's type references a known
 //                        internal package).
-//   - gen/forge_descriptor.json — loadForgeDescriptor (RPCs per service,
+//   - gen/forge_descriptor/ — loadForgeDescriptor (RPCs per service,
 //                        AuthRequired per RPC).
 //
 // All sub-readers are tolerant: a missing or malformed input degrades
@@ -190,7 +190,7 @@ project declares (services, packages, frontends, binaries, gateways,
 routes) and the explicit dependency edges between them.
 
 Sources are existing forge parsers: forge.yaml, the KCL render for
-the selected env, contract.go's Deps struct, and gen/forge_descriptor.json.
+the selected env, contract.go's Deps struct, and gen/forge_descriptor/.
 Partial-data conditions (missing forge.yaml, KCL fails to render) are
 reported via the top-level "warnings" array rather than aborting the
 command — consumers should always read warnings before trusting the

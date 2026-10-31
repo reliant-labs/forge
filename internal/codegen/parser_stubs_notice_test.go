@@ -25,7 +25,7 @@ func captureLog(t *testing.T, fn func()) string {
 }
 
 // A project with no service protos has NOTHING for protoc-gen-forge to
-// describe, so a missing gen/forge_descriptor.json is the correct and
+// describe, so a missing gen/forge_descriptor/ is the correct and
 // final state — not a step the user forgot. Telling them to "run 'forge
 // generate' with protoc-gen-forge" is advice that cannot be acted on: the
 // pipeline skips descriptor extraction whenever features.codegen is off
@@ -48,7 +48,7 @@ func TestLoadDescriptor_NoServiceProtos_IsSilent(t *testing.T) {
 		}
 	})
 
-	if strings.Contains(out, "forge_descriptor.json not found") {
+	if strings.Contains(out, "gen/forge_descriptor/ not found") {
 		t.Errorf("a project with no service protos must not be told to generate a descriptor; got:\n%s", out)
 	}
 }
@@ -72,7 +72,7 @@ func TestLoadDescriptor_WithServiceProto_StillNotifies(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "forge_descriptor.json not found") {
+	if !strings.Contains(out, "gen/forge_descriptor/ not found") {
 		t.Errorf("a project that declares a service and has no descriptor must still be told; got:\n%s", out)
 	}
 }

@@ -413,7 +413,7 @@ const noGenerateFlagUsage = "skip the post-scaffold 'forge generate' run (scaffo
 // Without it the scaffold hands the user a tree whose derived files disagree
 // with their sources: `forge scaffold frontend` writes
 // proto/<project>/config/v1/<fe>_config.proto, and until generate re-extracts
-// gen/forge_descriptor.json, `forge lint`'s convention and graph lanes refuse
+// gen/forge_descriptor/, `forge lint`'s convention and graph lanes refuse
 // to read the stale descriptor and fail. A scaffold that must be followed by a
 // second command before the project is green is a two-step procedure that
 // gets skipped; `scaffold service` and `scaffold rpc` already end this way.
@@ -1662,7 +1662,7 @@ nothing else to run.
 
 The scaffold ends with a 'forge generate' run, because the frontend's
 config proto (proto/<project>/config/v1/<name>_config.proto) is a generate input: the
-run re-extracts gen/forge_descriptor.json and writes the frontend's typed
+run re-extracts gen/forge_descriptor/ and writes the frontend's typed
 config, so the next 'forge lint' is green. --no-generate skips it, for a
 round that stages several scaffolds and generates once.
 

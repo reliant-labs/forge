@@ -64,7 +64,7 @@ func traderConfigMessages() []ConfigMessage {
 	}
 }
 
-// writeConfigDescriptor writes go.mod + gen/forge_descriptor.json so
+// writeConfigDescriptor writes go.mod + gen/forge_descriptor/ so
 // loadConfigBlockIndex (via ParseConfigProto's go.mod walk-up) sees the
 // same config messages GenerateConfigLoader consumed.
 func writeConfigDescriptor(t *testing.T, projectDir string, messages []ConfigMessage) {
@@ -80,7 +80,10 @@ func writeConfigDescriptor(t *testing.T, projectDir string, messages []ConfigMes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "gen", "forge_descriptor.json"), data, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(projectDir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "gen", "forge_descriptor", "fixture.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

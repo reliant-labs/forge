@@ -508,7 +508,7 @@ forge_version: dev
 	if err := os.MkdirAll(filepath.Join(dir, "proto", "services"), 0o755); err != nil {
 		t.Fatalf("mkdir proto/services: %v", err)
 	}
-	// ParseServicesFromProtos reads gen/forge_descriptor.json.
+	// ParseServicesFromProtos reads gen/forge_descriptor/.
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
 		t.Fatalf("mkdir gen: %v", err)
 	}
@@ -525,7 +525,10 @@ forge_version: dev
     }
   ]
 }`
-	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), []byte(descriptor), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"), []byte(descriptor), 0o644); err != nil {
 		t.Fatalf("write descriptor: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/test/test-project\n"), 0o644); err != nil {

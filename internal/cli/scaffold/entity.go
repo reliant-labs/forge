@@ -91,7 +91,7 @@ ORM, CRUD wiring, and frontend pages.
 
   --from-proto <svc>[.<Message>]   Derive the create-table migration from
       the already-authored proto message (read from
-      gen/forge_descriptor.json). With no <Message> and no <name>, sweeps
+      gen/forge_descriptor/). With no <Message> and no <name>, sweeps
       every message sitting in entity position of a full CRUD quintet that
       has no applied table yet, PLUS every message carrying a leading
       ` + "`// forge:entity`" + ` marker (those also get their missing CRUD quintet

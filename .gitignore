@@ -160,7 +160,7 @@ tmp/
 .forge/*
 !.forge/disowned.json
 !.forge/hashes.json
-!.forge/scaffolded.json
+!.forge/scaffolded/
 
 # ── What NOT to ignore ──
 #
@@ -222,3 +222,6 @@ tmp/
 # tree (e.g. internal/templates/project/skills/forge/).
 /forge
 .grepai/
+
+# forge's proto descriptor: derived from proto/ on demand, never committed.
+/gen/forge_descriptor/

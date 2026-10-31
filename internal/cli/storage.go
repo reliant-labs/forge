@@ -239,13 +239,17 @@ func newStorageWorktreesCmd() *cobra.Command {
 	var worktreeAge time.Duration
 	var remove, reliantManaged bool
 	trees := &cobra.Command{Use: "worktrees", Args: cobra.NoArgs, Short: "Preview idle, clean, pushed worktrees of a repo; --apply removes them", RunE: func(cmd *cobra.Command, _ []string) error {
-		return (storage.Runner{Out: cmd.OutOrStdout()}).Worktrees(cmd.Context(), repo, base, worktreeAge, remove, reliantManaged)
+		return (storage.Runner{Out: cmd.OutOrStdout()}).Worktrees(cmd.Context(), repo, base, worktreeAge, remove)
 	}}
 	trees.Flags().StringVar(&repo, "repo", ".", "repository whose worktrees to inspect")
 	trees.Flags().StringVar(&base, "base", "", "integration branch for the pushed test (default: origin/HEAD, else origin/main)")
 	trees.Flags().DurationVar(&worktreeAge, "idle", 24*time.Hour, "minimum time since any activity in the worktree (at least 24h)")
 	trees.Flags().BoolVar(&remove, "apply", false, "remove removable worktrees without forcing or deleting branches")
-	trees.Flags().BoolVar(&reliantManaged, "reliant-managed", false, "also consider worktrees under Reliant's worktree root (~/.reliant/worktrees), which Reliant otherwise reclaims itself")
+	// Accepted and ignored: Reliant's worktrees are held by Reliant's lock,
+	// wherever they live, so no flag widens the reaper to them. Reliant's
+	// daemon passed it while worktrees under its root were held by location.
+	trees.Flags().BoolVar(&reliantManaged, "reliant-managed", false, "ignored: a worktree Reliant manages is held by its lock")
+	_ = trees.Flags().MarkHidden("reliant-managed")
 	return trees
 }
 

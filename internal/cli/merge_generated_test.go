@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -79,68 +77,6 @@ func TestMergeGenerated_BodyConflictsStillConflict(t *testing.T) {
 	if clean || !strings.Contains(string(merged), "<<<<<<< ours") {
 		t.Fatalf("a body conflict was reported clean:\n%s", merged)
 	}
-}
-
-// gen/forge_descriptor.json stamps one entry per .proto. Two branches that
-// edit different protos change different entries, and the merge of the two
-// stamps must be the stamp of the merged tree — even when the entries sit on
-// neighbouring lines, which git's line merge calls a conflict.
-func TestMergeGenerated_DescriptorSourcesMergeKeyByKey(t *testing.T) {
-	desc := func(services []string, sources map[string]string) []byte {
-		b, err := json.MarshalIndent(struct {
-			Services []string          `json:"services"`
-			Configs  []string          `json:"configs"`
-			Sources  map[string]string `json:"sources"`
-		}{services, nil, sources}, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return append(b, '\n')
-	}
-	base := desc([]string{"a", "b", "c", "d"},
-		map[string]string{"a.proto": "a0", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
-	// ours edits a.proto and adds a service; theirs edits b.proto (the
-	// neighbouring line), adds d2.proto and deletes e.proto.
-	ours := desc([]string{"a", "a2", "b", "c", "d"},
-		map[string]string{"a.proto": "a1", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
-	theirs := desc([]string{"a", "b", "c", "d", "f"},
-		map[string]string{"a.proto": "a0", "b.proto": "b1", "c.proto": "c0", "d2.proto": "d1"})
-
-	merged, clean, err := mergeGenerated(context.Background(), base, ours, theirs, 7)
-	if err != nil || !clean {
-		t.Fatalf("clean=%v err=%v:\n%s", clean, err, merged)
-	}
-	var got struct {
-		Services []string          `json:"services"`
-		Sources  map[string]string `json:"sources"`
-	}
-	if err := json.Unmarshal(merged, &got); err != nil {
-		t.Fatalf("merged descriptor is not JSON: %v\n%s", err, merged)
-	}
-	if want := []string{"a", "a2", "b", "c", "d", "f"}; strings.Join(got.Services, ",") != strings.Join(want, ",") {
-		t.Errorf("services = %v, want %v", got.Services, want)
-	}
-	want := map[string]string{"a.proto": "a1", "b.proto": "b1", "c.proto": "c0", "d2.proto": "d1"}
-	if fmt.Sprint(got.Sources) != fmt.Sprint(want) {
-		t.Errorf("sources = %v, want the stamp of the merged tree %v", got.Sources, want)
-	}
-	// Byte-for-byte what forge writes for that descriptor, so the merge
-	// leaves nothing for the next generate to reformat.
-	if string(merged) != string(desc(got.Services, want)) {
-		t.Errorf("merged descriptor is not in forge's own rendering:\n%s", merged)
-	}
-
-	t.Run("both sides edited one proto: ours wins, and the next generate restamps", func(t *testing.T) {
-		theirs := desc([]string{"a", "b", "c", "d"},
-			map[string]string{"a.proto": "a9", "b.proto": "b0", "c.proto": "c0", "e.proto": "e0"})
-		merged, clean, err := mergeGenerated(context.Background(), base, ours, theirs, 7)
-		if err != nil || !clean {
-			t.Fatalf("clean=%v err=%v:\n%s", clean, err, merged)
-		}
-		if !strings.Contains(string(merged), `"a.proto": "a1"`) {
-			t.Errorf("want ours' entry:\n%s", merged)
-		}
-	})
 }
 
 // stampedRender is a Tier-1 file as forge writes it: the body certified by a
@@ -330,7 +266,7 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"svc/**/*_gen.json merge=forge-generated", "svc/.forge/hashes.json merge=forge-generated", "svc/.forge/scaffolded.json merge=forge-generated"} {
+	for _, want := range []string{"svc/**/*_gen.json merge=forge-generated", "svc/.forge/hashes/** merge=forge-generated", "svc/.forge/scaffolded/** merge=forge-generated"} {
 		if !strings.Contains(string(attrs), want) {
 			t.Errorf("info/attributes lacks %q:\n%s", want, attrs)
 		}
@@ -728,21 +664,4 @@ func TestMergeGenerated_ServiceCatalogRealMerge(t *testing.T) {
 			t.Fatalf("the incoming side's line was dropped:\n%s", got)
 		}
 	})
-}
-
-// gen/forge_descriptor.json has no hashes.json entry and is not a Tier-1
-// write (checksums.Uncertified names only the catalog), yet a conflict in it
-// is still forge's to settle: this side's render, for generate to refresh.
-func TestMergeGenerated_DescriptorConflictKeepsThisSide(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: app\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(dir)
-	body := func(v string) []byte { return []byte("{\n  \"services\": [\n    \"" + v + "\"\n  ]\n}\n") }
-	ours := body("ours")
-	merged, clean, note, err := mergeGeneratedPath(context.Background(), "gen/forge_descriptor.json", body("base"), ours, body("theirs"), 7)
-	if err != nil || !clean || string(merged) != string(ours) || note == "" {
-		t.Fatalf("descriptor conflict: clean=%v err=%v note=%q\n%s", clean, err, note, merged)
-	}
 }

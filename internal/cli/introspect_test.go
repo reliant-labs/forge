@@ -197,7 +197,10 @@ forge_version: dev
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
 		t.Fatalf("mkdir gen: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), descBytes, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "gen", "forge_descriptor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor", "fixture.json"), descBytes, 0o644); err != nil {
 		t.Fatalf("write descriptor: %v", err)
 	}
 

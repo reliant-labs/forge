@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -20,51 +19,41 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/pkg/activity"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
-
-	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
-// descriptorStageDir is the per-invocation staging directory under the
-// descriptor output directory where each buf-plugin process drops a JSON
-// fragment named after the proto package(s) it processed. The parent
-// process (runDescriptorGenerate) merges these fragments into
-// forge_descriptor.json after buf finishes.
+// descriptorStageDir is the staging directory under gen/ where each
+// buf-plugin process drops one JSON fragment per proto file it processed. The
+// parent process (runDescriptorGenerate) writes them out as the descriptor
+// directory (codegen.WriteDescriptor) after buf finishes.
 const descriptorStageDir = ".descriptor.d"
 
-// ForgeDescriptor is the top-level JSON structure written by mode=descriptor.
-// It aggregates all data the generate.go pipeline needs from proto descriptors.
-// NOTE: this mirrors codegen.ForgeDescriptor — the writer's view of the same
-// file the reader parses. Every field must stay in sync with it, INCLUDING
-// Sources: a field added on one side only would produce a file the other
-// side silently ignores.
-type ForgeDescriptor struct {
+// ForgeDescriptor is the descriptor as codegen reads and writes it: one type,
+// so the writer and the readers cannot disagree about a field.
+type ForgeDescriptor = codegen.ForgeDescriptor
+
+// descriptorFragment is one proto file's extraction, as a plugin process
+// stages it for the parent.
+type descriptorFragment struct {
+	// File is the proto's path as the compiler names it (relative to the
+	// buf module root, proto/ in a forge project).
+	File     string                  `json:"file"`
 	Services []codegen.ServiceDef    `json:"services"`
 	Configs  []codegen.ConfigMessage `json:"configs"`
-
-	// Sources fingerprints the .proto files this descriptor came from, one
-	// entry per file (codegen.DescriptorSources). codegen.loadDescriptor
-	// REFUSES a descriptor whose entries do not match the protos on disk. It
-	// is the LAST field: the merge driver settles the block key by key
-	// (mergeDescriptorSources), so its position must stay fixed.
-	Sources map[string]string `json:"sources"`
 }
 
-// generateDescriptor extracts services, entities, and configs from all proto
-// files this plugin invocation was given, and writes a per-invocation
-// fragment under <descriptorOut>/<descriptorStageDir>/<hash>.json.
+// generateDescriptor extracts services and configs from every proto file this
+// plugin invocation was given, and stages one fragment per file under
+// <descriptorOut>/<descriptorStageDir>/<sha1(path)>.json.
 //
-// The output directory is passed via the "descriptor_out" plugin option
-// (set by runDescriptorGenerate in generate_orm.go). The fragments are
-// merged into forge_descriptor.json by mergeDescriptorFragments() in the
-// parent process after buf finishes.
+// The output directory is passed via the "descriptor_out" plugin option (set
+// by runDescriptorGenerate in generate_orm.go). MergeDescriptorFragments
+// writes the fragments out in the parent process after buf finishes.
 //
-// Why per-invocation fragments instead of a shared file: buf spawns one
-// plugin process per proto module, so the previous read-modify-write
-// approach (with an in-process syscall.Flock) silently raced when two
-// plugin processes were active at the same time, producing concatenated
-// or truncated JSON. Per-process fragment writes are atomic with respect
-// to each other (each process owns its own filename) and the parent
-// process is the single writer of the final descriptor.
+// Why staged fragments instead of writing the descriptor here: buf may spawn
+// several plugin processes at once, and the previous read-modify-write of a
+// shared file (with an in-process syscall.Flock) silently raced, producing
+// concatenated or truncated JSON. Each fragment is owned by one process, and
+// the parent is the single writer of the descriptor directory.
 func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 	if err := os.MkdirAll(descriptorOut, 0o755); err != nil {
 		return fmt.Errorf("create descriptor output directory: %w", err)
@@ -74,14 +63,10 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 		return fmt.Errorf("create descriptor stage directory: %w", err)
 	}
 
-	var desc ForgeDescriptor
-	var fragmentKeyParts []string
-
 	for _, f := range p.Files {
 		if !f.Generate {
 			continue
 		}
-		fragmentKeyParts = append(fragmentKeyParts, f.Desc.Path())
 
 		// `// forge:unmanaged` decides whether forge scaffolds a whole
 		// service, so a marker that would silently do nothing — misspelled,
@@ -96,10 +81,9 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 			return err
 		}
 
-		// Extract services
+		frag := descriptorFragment{File: f.Desc.Path()}
 		for _, svc := range f.Services {
-			sd := extractService(f, svc)
-			desc.Services = append(desc.Services, sd)
+			frag.Services = append(frag.Services, extractService(f, svc))
 		}
 
 		// Entity protos are dead: SQL is the schema language and entities
@@ -114,27 +98,28 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 		// so a component config block declared inside AppConfig (instead
 		// of the conventional top-level declaration) still generates.
 		for _, msg := range f.Messages {
-			appendConfigMessages(&desc.Configs, msg)
+			appendConfigMessages(&frag.Configs, msg)
+		}
+
+		// A file with nothing to say needs no fragment: the parent writes
+		// its stamp-only descriptor file from the proto tree.
+		if len(frag.Services) == 0 && len(frag.Configs) == 0 {
+			continue
+		}
+		if err := stageDescriptorFragment(stageDir, frag); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// Skip writing an empty fragment — saves a no-op file per plugin
-	// invocation and keeps the merge step's directory listing clean.
-	if len(desc.Services) == 0 && len(desc.Configs) == 0 {
-		return nil
-	}
+// stageDescriptorFragment writes one fragment atomically, named by its proto
+// path so a second invocation over the same file overwrites it.
+func stageDescriptorFragment(stageDir string, frag descriptorFragment) error {
+	sum := sha1.Sum([]byte(frag.File))
+	fragmentName := hex.EncodeToString(sum[:]) + ".json"
 
-	// Stable, content-addressable filename so a second invocation against
-	// the same proto files overwrites rather than duplicating fragments.
-	sort.Strings(fragmentKeyParts)
-	h := sha1.New()
-	for _, p := range fragmentKeyParts {
-		_, _ = h.Write([]byte(p))
-		_, _ = h.Write([]byte{'\x00'})
-	}
-	fragmentName := hex.EncodeToString(h.Sum(nil)) + ".json"
-
-	descBytes, err := json.MarshalIndent(desc, "", "  ")
+	descBytes, err := json.MarshalIndent(frag, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -160,20 +145,19 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename descriptor fragment: %w", err)
 	}
-
 	return nil
 }
 
-// MergeDescriptorFragments combines all per-invocation fragments under
-// <descriptorOut>/<descriptorStageDir>/ into a single forge_descriptor.json
-// at <descriptorOut>/forge_descriptor.json, then removes the staging dir.
-// Called by runDescriptorGenerate in the parent process after buf returns.
+// MergeDescriptorFragments writes the fragments staged under
+// <descriptorOut>/<descriptorStageDir>/ out as projectDir's descriptor
+// directory, gen/forge_descriptor/ (codegen.WriteDescriptor: one file per
+// proto, each stamped with its own proto's fingerprint), then removes the
+// staging dir. Called by runDescriptorGenerate in the parent process after
+// buf returns.
 //
-// Idempotent: running it twice is safe (the second run sees an empty stage
-// dir and is a no-op apart from rewriting the final descriptor with what's
-// already there). Returns nil silently when no fragments exist (clean
-// projects with no services/entities/configs).
-func MergeDescriptorFragments(descriptorOut string) error {
+// Idempotent. Returns nil without writing anything when no plugin process ran
+// (no staging dir).
+func MergeDescriptorFragments(descriptorOut, projectDir string) error {
 	stageDir := filepath.Join(descriptorOut, descriptorStageDir)
 	entries, err := os.ReadDir(stageDir)
 	if err != nil {
@@ -183,46 +167,30 @@ func MergeDescriptorFragments(descriptorOut string) error {
 		return fmt.Errorf("read descriptor stage dir: %w", err)
 	}
 
-	// Sort fragment names so the merged descriptor has a deterministic
-	// order regardless of OS-specific directory iteration order.
-	names := make([]string, 0, len(entries))
+	parts := map[string]codegen.DescriptorPart{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-
-	var merged ForgeDescriptor
-	for _, name := range names {
-		data, err := os.ReadFile(filepath.Join(stageDir, name))
+		data, err := os.ReadFile(filepath.Join(stageDir, e.Name()))
 		if err != nil {
-			return fmt.Errorf("read descriptor fragment %s: %w", name, err)
+			return fmt.Errorf("read descriptor fragment %s: %w", e.Name(), err)
 		}
-		var frag ForgeDescriptor
+		var frag descriptorFragment
 		if err := json.Unmarshal(data, &frag); err != nil {
-			return fmt.Errorf("parse descriptor fragment %s: %w", name, err)
+			return fmt.Errorf("parse descriptor fragment %s: %w", e.Name(), err)
 		}
-		merged.Services = append(merged.Services, frag.Services...)
-		merged.Configs = append(merged.Configs, frag.Configs...)
+		if frag.File == "" {
+			return fmt.Errorf("descriptor fragment %s names no proto file", e.Name())
+		}
+		part := parts[frag.File]
+		part.Services = append(part.Services, frag.Services...)
+		part.Configs = append(part.Configs, frag.Configs...)
+		parts[frag.File] = part
 	}
 
-	// Stamp the fingerprints of the protos this descriptor was extracted
-	// from. descriptorOut is <projectDir>/gen, so the project root is its
-	// parent. Without this the file is an unverifiable cache — see
-	// codegen.DescriptorSources.
-	merged.Sources = codegen.DescriptorSources(filepath.Dir(descriptorOut))
-
-	out, err := json.MarshalIndent(merged, "", "  ")
-	if err != nil {
+	if err := codegen.WriteDescriptor(projectDir, parts); err != nil {
 		return err
-	}
-	outPath := filepath.Join(descriptorOut, "forge_descriptor.json")
-	// A text file ends in a newline; without one every end-of-file fixer
-	// rewrites the generated file and the next generate rewrites it back.
-	if err := atomicfile.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
-		return fmt.Errorf("write forge_descriptor.json: %w", err)
 	}
 
 	// Best-effort cleanup of the staging dir; failure here doesn't matter

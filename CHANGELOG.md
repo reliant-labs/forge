@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.10] - 2026-10-31
+
+### Added
+
+- **generate:** generated files merge with plain git — per-output JSON certificates under .forge/hashes/, per-interface mock certification ([#1568](https://github.com/reliant-labs/forge/pull/1568))
+
+### Changed
+
+- **review:** `Reliant review`, a GitHub Actions check that passes only when pr-review passed the exact head ([#1565](https://github.com/reliant-labs/forge/pull/1565))
+
+### Fixed
+
+- **descriptor:** gen/forge_descriptor is derived on demand and never committed ([#1572](https://github.com/reliant-labs/forge/pull/1572))
+- **lint:** combine the service catalog's diagnostic appends (gocritic appendCombine) ([#1571](https://github.com/reliant-labs/forge/pull/1571))
+- **test:** pull-request-only workflows may cancel in progress; they have no main run to starve ([#1573](https://github.com/reliant-labs/forge/pull/1573))
+- **release:** key #1568/#1572 to v1.0.10, the release they ship in; .forge/hashes/ is a known path ([#1576](https://github.com/reliant-labs/forge/pull/1576))
+
+## [v1.0.9] - 2026-10-31
+
+### Added
+
+- **obs:** dashboards named for the forge workload, one Jobs dashboard, panels by capability, dashboard group/tags/replaces ([#1518](https://github.com/reliant-labs/forge/pull/1518))
+- **obs:** forge obs dashboards audit — replay each panel as the console asks and say why an empty one is empty ([#1522](https://github.com/reliant-labs/forge/pull/1522))
+- **db:** opt-in forge_dash role and grants for live dashboard panels ([#1521](https://github.com/reliant-labs/forge/pull/1521))
+
+### Changed
+
+- **merge-queue:** review first — a pull request push runs only pr-checks; the merge tier runs once, in the merge queue ([#1547](https://github.com/reliant-labs/forge/pull/1547))
+- remove the flaky on-host route traffic assertion; file flake:suspected from main ([#1555](https://github.com/reliant-labs/forge/pull/1555))
+- **memory:** agents never detach long work with nohup, & or setsid; run_in_background keeps it bounded and killable ([#1560](https://github.com/reliant-labs/forge/pull/1560))
+- **reliant.md:** implement as the user; review, label and merge as reliant-labs[bot] ([#1559](https://github.com/reliant-labs/forge/pull/1559))
+
+### Fixed
+
+- **release:** a mixed bundle of a real two-cluster env composes (no kind refused for being unknown; controller-less consumers are inventory; placement-prerequisites-v2) ([#1540](https://github.com/reliant-labs/forge/pull/1540))
+- **e2e:** the .forge-pkg bridge carries the forge internal packages pkg/ imports (main E2E red: pkg/pgtest -> internal/openfiles) ([#1553](https://github.com/reliant-labs/forge/pull/1553))
+- **ci:** main is green, and a release waits ~13 min, not ~22, for full tests (sharded Test and internal/cli, parallel release archives, e2e bridge) ([#1558](https://github.com/reliant-labs/forge/pull/1558))
+- **generate:** the service catalog records no Go method sets and no hashes.json certificate, so Go-only and parallel PRs no longer leave it stale or conflicting ([#1551](https://github.com/reliant-labs/forge/pull/1551))
+- **frontend:** env up writes the runtime config of a frontend declared only in KCL ([#1561](https://github.com/reliant-labs/forge/pull/1561))
+
 ## [v1.0.8] - 2026-10-30
 
 No notable changes.
@@ -8298,7 +8338,9 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.8...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.10...HEAD
+[v1.0.10]: https://github.com/reliant-labs/forge/compare/v1.0.9...v1.0.10
+[v1.0.9]: https://github.com/reliant-labs/forge/compare/v1.0.8...v1.0.9
 [v1.0.8]: https://github.com/reliant-labs/forge/compare/v1.0.7...v1.0.8
 [v1.0.7]: https://github.com/reliant-labs/forge/compare/v1.0.6...v1.0.7
 [v1.0.6]: https://github.com/reliant-labs/forge/compare/v1.0.5...v1.0.6

@@ -128,7 +128,77 @@ func (b *builder) classify(sig Signal, key string) (int, error) {
 	if sig == SigMetrics && b.declared[key] {
 		return classMetric, nil
 	}
-	return 0, invalid("%q is not a filterable attribute: use one of the allowlisted resource, span or event keys (or, for a metric, one of its declared attributes)", key)
+	return 0, invalid("%q is not a filterable attribute: use one of the allowlisted resource, span or event keys (or, for a metric, one of its declared attributes); a filter also takes any attribute as %s<key> or resource.attr.<key>", key, sig.attrPrefix())
+}
+
+// filterClass is classify for a filter, which also takes the open attribute
+// vocabulary (openAttr). A group-by or a values listing does not: grouping by
+// an arbitrary attribute is unbounded cardinality, and the allowlist is what
+// bounds it.
+func (b *builder) filterClass(sig Signal, key string) (int, error) {
+	if ref, ok, err := openAttr(sig, key); ok || err != nil {
+		return ref.class, err
+	}
+	return b.classify(sig, key)
+}
+
+// attrPrefix is the open vocabulary's prefix for the signal's own attributes,
+// the same one panel fields use (span.attr.<k>, log.attr.<k>, metric.attr.<k>).
+func (s Signal) attrPrefix() string {
+	switch s {
+	case SigLogs:
+		return "log.attr."
+	case SigMetrics:
+		return "metric.attr."
+	}
+	return "span.attr."
+}
+
+// openRef is a key of the open attribute vocabulary: one map entry, named
+// exactly, read from that map alone.
+type openRef struct {
+	col   string // the map column
+	key   string // the entry
+	class int
+}
+
+// openAttr resolves a key of the open vocabulary: <signal>.attr.<k> reads the
+// signal's own attributes (SpanAttributes for traces), resource.attr.<k> the
+// resource's. Unlike an allowlisted key, it never falls back from one map to
+// the other: the caller names which one it means, so a span attribute cannot
+// be answered by a resource attribute of the same name, or the reverse. ok is
+// false for a key outside the vocabulary; err refuses one that names another
+// signal's attributes or no key at all.
+func openAttr(sig Signal, key string) (ref openRef, ok bool, err error) {
+	if k, found := strings.CutPrefix(key, "resource.attr."); found {
+		if k == "" {
+			return openRef{}, true, invalid("%q needs an attribute key", key)
+		}
+		return openRef{col: "ResourceAttributes", key: k, class: classResource}, true, nil
+	}
+	if k, found := strings.CutPrefix(key, sig.attrPrefix()); found {
+		if k == "" {
+			return openRef{}, true, invalid("%q needs an attribute key", key)
+		}
+		return openRef{col: sig.attrColumn(), key: k, class: classSpan}, true, nil
+	}
+	for _, other := range []Signal{SigTraces, SigLogs, SigMetrics} {
+		if other != sig && strings.HasPrefix(key, other.attrPrefix()) {
+			return openRef{}, true, invalid("%q names %s attributes; this query reads %s, whose attributes are %s<key>", key, other.name(), sig.name(), sig.attrPrefix())
+		}
+	}
+	return openRef{}, false, nil
+}
+
+// name is the signal's name, as SignalOf reads it.
+func (s Signal) name() string {
+	switch s {
+	case SigLogs:
+		return "logs"
+	case SigMetrics:
+		return "metrics"
+	}
+	return "traces"
 }
 
 // keyExpr compiles an allowlisted key to a String expression over the signal's
@@ -249,8 +319,12 @@ func (b *builder) filterCond(sig Signal, f AttrFilter) (cond string, resource bo
 	if f.Op == "exists" {
 		return b.existsCond(sig, f)
 	}
-	expr, resource, err := b.keyExpr(sig, f.Key)
-	if err != nil {
+	var expr string
+	if ref, ok, err := openAttr(sig, f.Key); err != nil {
+		return "", false, err
+	} else if ok {
+		expr, resource = ref.col+"["+b.str(ref.key)+"]", ref.class == classResource
+	} else if expr, resource, err = b.keyExpr(sig, f.Key); err != nil {
 		return "", false, err
 	}
 	if len(f.Value) > maxPanelValueLen {
@@ -282,6 +356,11 @@ func (b *builder) filterCond(sig Signal, f AttrFilter) (cond string, resource bo
 }
 
 func (b *builder) existsCond(sig Signal, f AttrFilter) (string, bool, error) {
+	if ref, ok, err := openAttr(sig, f.Key); err != nil {
+		return "", false, err
+	} else if ok {
+		return "mapContains(" + ref.col + ", " + b.str(ref.key) + ")", ref.class == classResource, nil
+	}
 	cls, err := b.classify(sig, f.Key)
 	if err != nil {
 		return "", false, err

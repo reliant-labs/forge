@@ -156,7 +156,7 @@ func ParseFilter(s string) (Filter, error) {
 	if k, v, ok := strings.Cut(s, "="); ok && k != "" && !strings.HasSuffix(k, "!") {
 		return Filter{Key: k, Value: v}, nil
 	}
-	return Filter{}, Wrong("--filter %q: use key=value or key!=value (keys: %s)", s, filterKeysHint())
+	return Filter{}, Wrong("--filter %q: use key=value or key!=value (keys: %s; or any attribute as span.attr.<k>, log.attr.<k> or resource.attr.<k>)", s, filterKeysHint())
 }
 
 func filterKeysHint() string {

@@ -412,7 +412,8 @@ var knownDotForgeEntries = map[string]bool{
 	// migration), so it stays a known entry.
 	"checksums.json":        true,
 	"disowned.json":         true,
-	"hashes.json":           true,
+	"hashes.json":           true, // legacy single-file certificates; forge reads + migrates it into hashes/
+	"hashes":                true, // per-output JSON certificates, .forge/hashes/<path>.sha256 (internal/checksums/hashdir.go)
 	"scaffolded.json":       true, // the scaffold-once birth ledger (internal/checksums/scaffoldledger.go)
 	"render":                true,
 	"friction.jsonl":        true,

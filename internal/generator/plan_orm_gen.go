@@ -64,7 +64,10 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 			src:    renderORMEntity(pkgName, ent, hasRepoExtExtraType(root, orm, ent.Name)),
 		})
 	}
-	outputs = append(outputs, ormOutput{file: storeGenFile, src: renderStoreInterfaces(pkgName, entities)})
+	for _, ent := range entities {
+		outputs = append(outputs, ormOutput{file: entityStoreFile(ent), entity: ent.Name, src: renderEntityStoreFile(pkgName, ent)})
+	}
+	outputs = append(outputs, ormOutput{file: storeGenFile, src: renderStoreAggregate(pkgName)})
 	if err := checkORMNameCollisions(dbDir, relDir, entities, outputs); err != nil {
 		return err
 	}
@@ -82,6 +85,7 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	expectedFiles["types.go"] = true
 	for _, ent := range entities {
 		expectedFiles[naming.ToSnakeCase(ent.Name)+"_orm_gen.go"] = true
+		expectedFiles[entityStoreFile(ent)] = true
 	}
 	sweepStaleORMFiles(root, relDir, expectedFiles, false, cs)
 	// A project that moved its ORM out of internal/db (database.orm.package)
@@ -163,7 +167,7 @@ func sweepStaleORMFiles(root, relDir string, expected map[string]bool, withStore
 		// are reclaimed by the same pass that prunes deleted entities.
 		nm := e.Name()
 		isORM := strings.HasSuffix(nm, "_orm.go") || strings.HasSuffix(nm, "_orm_gen.go") ||
-			nm == "orm_shared.go" || (withStore && nm == storeGenFile)
+			strings.HasSuffix(nm, "_store_gen.go") || nm == "orm_shared.go" || (withStore && nm == storeGenFile)
 		if e.IsDir() || !isORM || expected[nm] {
 			continue
 		}

@@ -65,66 +65,109 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-// storeGenFile is the single generated file holding every entity's store
-// interface plus the aggregate. One file, not one per entity: the
-// interfaces are pure signatures derived from the same schema pass, and
-// splitting them across N files would multiply the regen churn without
-// giving anyone a smaller thing to read.
+// storeGenFile holds the aggregate Store: a constant struct with no
+// per-entity line in it. Each entity's store — its interface, its adapter and
+// the aggregate's accessor for it — is its own <entity>_store_gen.go.
+//
+// ONE FILE PER ENTITY, NOT ONE FILE. The stores were one file, and the
+// aggregate interface listed one accessor per entity. Two branches that each
+// add an entity sorting between the same two neighbours then insert at one
+// point of that file, which no line merge can order (TestE2EMergeProperty
+// measured it), and every change rewrote its one forge:hash line. A Go
+// interface's method set cannot span files, so the aggregate is a concrete
+// struct and each entity file adds its accessor as a method. Depend on a
+// per-entity store (an interface, mocked by forge) to fake persistence in a
+// test; the aggregate is for code that runs against a database.
 const storeGenFile = "store_gen.go"
 
-// writeStoreInterfaces renders internal/db/store_gen.go for the given
-// entities. Callers pass the same entity slice the ORM render used, so the
-// interfaces cannot describe a different schema than the delegates they
+// entityStoreFile is ent's store file.
+func entityStoreFile(ent config.PlanEntity) string {
+	return naming.ToSnakeCase(ent.Name) + "_store_gen.go"
+}
+
+// writeStoreInterfaces renders the aggregate (store_gen.go) and one store
+// file per entity. Callers pass the same entity slice the ORM render used, so
+// the interfaces cannot describe a different schema than the delegates they
 // abstract.
 func writeStoreInterfaces(root string, orm config.ORMConfig, entities []config.PlanEntity, cs *FileChecksums) error {
 	if len(entities) == 0 {
 		return nil
 	}
-	return writeORMFile(root, orm, storeGenFile, renderStoreInterfaces(orm.PackageName(), entities), cs)
+	for _, ent := range entities {
+		if err := writeORMFile(root, orm, entityStoreFile(ent), renderEntityStoreFile(orm.PackageName(), ent), cs); err != nil {
+			return err
+		}
+	}
+	return writeORMFile(root, orm, storeGenFile, renderStoreAggregate(orm.PackageName()), cs)
 }
 
-// renderStoreInterfaces builds the store file: one interface per entity,
-// mirroring that entity's generated delegates exactly, then an aggregate
-// embedding them all.
+// renderStoreInterfaces is every store file's source concatenated, for tests
+// that read the stores as one text.
 func renderStoreInterfaces(pkgName string, entities []config.PlanEntity) []byte {
-	var b strings.Builder
+	out := renderStoreAggregate(pkgName)
+	for _, ent := range entities {
+		out = append(out, renderEntityStoreFile(pkgName, ent)...)
+	}
+	return out
+}
 
-	writeORMGeneratedHeader(&b, "the APPLIED schema (db/migrations) — the CRUD delegates of every <entity>_orm_gen.go beside it.")
+// renderStoreAggregate is store_gen.go: the aggregate Store, which names no
+// entity, so no schema change rewrites it.
+func renderStoreAggregate(pkgName string) []byte {
+	var b strings.Builder
+	writeORMGeneratedHeader(&b, "forge — the aggregate of the <entity>_store_gen.go stores beside it.")
 	fmt.Fprintf(&b, "package %s\n\n", pkgName)
-	// crud is imported for UpdateOption, which only a store with an
-	// Update names: a project whose every entity is append-only or a view
-	// would otherwise fail to build on an unused import.
-	if storesWrite(entities) {
+	b.WriteString("import \"github.com/reliant-labs/forge/pkg/orm\"\n\n")
+	b.WriteString("// The generated CRUD delegates have an INTERFACE shape per entity — the\n")
+	b.WriteString("// <Entity>Store in each <entity>_store_gen.go — so a domain package can\n")
+	b.WriteString("// depend on persistence the same way it depends on any other component: a\n")
+	b.WriteString("// Deps field forge resolves by type, and forge generates its mock.\n")
+	b.WriteString("//\n")
+	b.WriteString("// These cover the GENERATED CRUD surface only. A hand-written or raw-SQL\n")
+	b.WriteString("// query belongs in the entity's <entity>_repo_ext.go seam; declare it on\n")
+	b.WriteString("// your own interface in the consuming package, because these files are\n")
+	b.WriteString("// regenerated and would go stale against it.\n\n")
+	b.WriteString("// Store is every entity's store behind one handle, for code that genuinely\n")
+	b.WriteString("// spans several tables against a real database (a reporting job, a\n")
+	b.WriteString("// migration of data). Each entity's accessor (<Entities>()) is declared in\n")
+	b.WriteString("// that entity's _store_gen.go, so entities born on different branches never\n")
+	b.WriteString("// edit one shared list. It is a struct, not an interface: to fake persistence\n")
+	b.WriteString("// in a test, depend on the per-entity stores, which forge mocks.\n")
+	b.WriteString("type Store struct{ db orm.Context }\n\n")
+	b.WriteString("// NewStore returns the aggregate store bound to db. Pass the *orm.Client\n")
+	b.WriteString("// for ordinary use, or a transaction handle to scope every call to it.\n")
+	b.WriteString("func NewStore(db orm.Context) Store { return Store{db: db} }\n\n")
+	b.WriteString("// WithTx returns every store bound to one transaction handle, so a use\n")
+	b.WriteString("// case spanning tables commits or rolls back as a unit.\n")
+	b.WriteString("func (s Store) WithTx(tx orm.Context) Store { return Store{db: tx} }\n")
+	return formatStoreSource(b.String())
+}
+
+// renderEntityStoreFile is ent's <entity>_store_gen.go: its store interface,
+// the adapter over its delegates, and the aggregate's accessor for it.
+func renderEntityStoreFile(pkgName string, ent config.PlanEntity) []byte {
+	var b strings.Builder
+	writeORMGeneratedHeader(&b, "the APPLIED schema (db/migrations) — the CRUD delegates of "+naming.ToSnakeCase(ent.Name)+"_orm_gen.go beside it.")
+	fmt.Fprintf(&b, "package %s\n\n", pkgName)
+	// crud is imported for UpdateOption, which only a store with an Update
+	// names; context only by a store with a method.
+	if storesWrite([]config.PlanEntity{ent}) {
 		b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/crud\"\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
 	} else {
 		b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
 	}
+	writeEntityStore(&b, ent)
+	plural := naming.Pluralize(ent.Name)
+	fmt.Fprintf(&b, "// %s returns the %s store, bound to the aggregate's handle.\n", plural, ent.Name)
+	fmt.Fprintf(&b, "func (s Store) %s() %sStore { return %s{db: s.db} }\n", plural, ent.Name, lowerFirst(ent.Name)+"Store")
+	return formatStoreSource(b.String())
+}
 
-	b.WriteString("// This file gives the generated CRUD delegates an INTERFACE shape, so a\n")
-	b.WriteString("// domain package can depend on persistence the same way it depends on any\n")
-	b.WriteString("// other component: a Deps field forge resolves by type.\n")
-	b.WriteString("//\n")
-	b.WriteString("// Depend on the narrowest thing that works — one entity's store when a\n")
-	b.WriteString("// package touches one entity, the aggregate Store when it genuinely spans\n")
-	b.WriteString("// many. The aggregate embeds the per-entity interfaces, so the two views\n")
-	b.WriteString("// never disagree.\n")
-	b.WriteString("//\n")
-	b.WriteString("// These cover the GENERATED CRUD surface only. A hand-written or raw-SQL\n")
-	b.WriteString("// query belongs in the entity's <entity>_repo_ext.go seam; declare it on\n")
-	b.WriteString("// your own interface in the consuming package, because this file is\n")
-	b.WriteString("// regenerated and would go stale against it.\n\n")
-
-	for _, ent := range entities {
-		writeEntityStore(&b, ent)
-	}
-
-	writeAggregateStore(&b, entities)
-
-	src := []byte(b.String())
-	if formatted, err := format.Source(src); err == nil {
+func formatStoreSource(src string) []byte {
+	if formatted, err := format.Source([]byte(src)); err == nil {
 		return formatted
 	}
-	return src
+	return []byte(src)
 }
 
 // writeEntityStore emits one entity's store interface and the compile-time
@@ -352,52 +395,6 @@ func writeReadOnlyStore(b *strings.Builder, ent config.PlanEntity) {
 	}
 	fmt.Fprintf(b, "func (s %s) WithTx(tx orm.Context) %s { return %s{db: tx} }\n\n", adapter, iface, adapter)
 	fmt.Fprintf(b, "var _ %s = %s{}\n\n", iface, adapter)
-}
-
-// writeAggregateStore emits the all-entity interface and its adapter.
-func writeAggregateStore(b *strings.Builder, entities []config.PlanEntity) {
-	b.WriteString("// Store is every entity's store in one interface, for a service that\n")
-	b.WriteString("// genuinely spans several tables (a reporting or analytics service, a\n")
-	b.WriteString("// use-case orchestrator). Prefer a per-entity store when one is enough —\n")
-	b.WriteString("// a narrower dep is a smaller fake in a test.\n")
-	// ACCESSORS, not embedded interfaces. Each per-entity store declares its
-	// own WithTx, so embedding N of them makes the selector ambiguous and the
-	// aggregate cannot satisfy its own interface — measured: `forge generate`
-	// rejected exactly that render with "ambiguous selector store.WithTx".
-	// Accessors also read better at the call site: `s.DB.Estimates().Get...`
-	// says which table it is touching.
-	b.WriteString("type Store interface {\n")
-	for _, ent := range entities {
-		fmt.Fprintf(b, "\t// %s returns the %s store.\n", naming.Pluralize(ent.Name), ent.Name)
-		fmt.Fprintf(b, "\t%s() %sStore\n", naming.Pluralize(ent.Name), ent.Name)
-	}
-	b.WriteString("\n\t// WithTx returns every store bound to one transaction handle, so a\n")
-	b.WriteString("\t// use case spanning tables commits or rolls back as a unit.\n")
-	b.WriteString("\tWithTx(tx orm.Context) Store\n")
-	b.WriteString("}\n\n")
-
-	// The aggregate embeds the per-entity ADAPTERS, so it satisfies Store
-	// without restating a method. Each embedded adapter carries its own
-	// handle; NewStore gives them all the same one.
-	b.WriteString("// store is the aggregate adapter: one handle, one accessor per entity.\n")
-	b.WriteString("type store struct{ db orm.Context }\n\n")
-	for _, ent := range entities {
-		fmt.Fprintf(b, "func (s store) %s() %sStore { return %s{db: s.db} }\n",
-			naming.Pluralize(ent.Name), ent.Name, lowerFirst(ent.Name)+"Store")
-	}
-	b.WriteString("\n")
-
-	// Each per-entity WithTx is promoted from its embedded adapter and returns
-	// only THAT entity's store, so the aggregate needs its own differently
-	// named rebinder. Naming it WithTx too would be ambiguous across the
-	// embedded set and would not compile.
-	b.WriteString("// WithTx rebinds every accessor to tx.\n")
-	b.WriteString("func (store) WithTx(tx orm.Context) Store { return NewStore(tx) }\n\n")
-
-	b.WriteString("// NewStore returns the aggregate store bound to db. Pass the *orm.Client\n")
-	b.WriteString("// for ordinary use, or a transaction handle to scope every call to it.\n")
-	b.WriteString("func NewStore(db orm.Context) Store { return store{db: db} }\n\n")
-	b.WriteString("var _ Store = store{}\n")
 }
 
 // storePKGoType returns the Go type of an entity's primary key, matching

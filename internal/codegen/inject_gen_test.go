@@ -1559,18 +1559,25 @@ func New(d Deps) (Service, error) { return nil, nil }
 // by the ORM generator; this is the shape that matters to composition.
 func writeStoreGen(t *testing.T, projectDir string, entities ...[2]string) {
 	t.Helper()
-	var b strings.Builder
-	b.WriteString("package db\n\ntype Store interface {\n")
-	for _, e := range entities {
-		b.WriteString("\t" + e[1] + "() " + e[0] + "Store\n")
-	}
-	b.WriteString("}\n")
-	dir := filepath.Join(projectDir, "internal", "db")
+	writeStoreFiles(t, filepath.Join(projectDir, "internal", "db"), "db", entities...)
+}
+
+// writeStoreFiles writes the generator's store layout into dir: the
+// aggregate store_gen.go, and one <entity>_store_gen.go per entity carrying
+// the aggregate's accessor for it.
+func writeStoreFiles(t *testing.T, dir, pkg string, entities ...[2]string) {
+	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "store_gen.go"), []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "store_gen.go"), []byte("package "+pkg+"\n\ntype Store struct{}\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	for _, e := range entities {
+		src := "package " + pkg + "\n\nfunc (s Store) " + e[1] + "() " + e[0] + "Store { return nil }\n"
+		if err := os.WriteFile(filepath.Join(dir, strings.ToLower(e[0])+"_store_gen.go"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -1768,10 +1775,7 @@ func TestGenerateInject_StoreSeamFollowsTheORMPackage(t *testing.T) {
 	if err := os.MkdirAll(storeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(storeDir, "store_gen.go"),
-		[]byte("package store\n\ntype Store interface {\n\tEstimates() EstimateStore\n}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeStoreFiles(t, storeDir, "store", [2]string{"Estimate", "Estimates"})
 	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
 		"\tEstimates store.EstimateStore\n\tAll store.Store")
 

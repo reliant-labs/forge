@@ -1,8 +1,8 @@
 ---
 name: v1.0.12
-description: Upgrade a project to forge v1.0.12. Every sectioned generated file (contract mocks, config_gen.k, scenario-rpcs_gen.ts) names each section and puts its hash on the next line, so a part added beside a changed one merges with plain git, and the read-only and dashboard grants become one constant script per role plus one row file per table (db/grants/readonly/, db/grants/dashboard/). Use when the project commits a mock_gen.go, deploy/kcl/config_gen.k, a scenario-rpcs_gen.ts or db/grants/.
+description: Upgrade a project to forge v1.0.12. Every sectioned generated file (contract mocks, config_gen.k, scenario-rpcs_gen.ts) names each section and puts its hash on the next line, so a part added beside a changed one merges with plain git, the read-only and dashboard grants become one constant script per role plus one row file per table (db/grants/readonly/, db/grants/dashboard/), and each entity's store is its own internal/db/<entity>_store_gen.go with the aggregate Store now a struct. Use when the project commits a mock_gen.go, deploy/kcl/config_gen.k, a scenario-rpcs_gen.ts, db/grants/ or internal/db/store_gen.go.
 version: v1.0.12
-detection: test -f db/grants/readonly_gen.sql -o -f deploy/kcl/config_gen.k && exit 0; ls frontends/*/src/mocks/scenario-rpcs_gen.ts >/dev/null 2>&1 && exit 0; git grep -q -l 'forge:section forge:hash=' 2>/dev/null && exit 0; exit 1
+detection: test -f db/grants/readonly_gen.sql -o -f deploy/kcl/config_gen.k -o -f internal/db/store_gen.go && exit 0; ls frontends/*/src/mocks/scenario-rpcs_gen.ts >/dev/null 2>&1 && exit 0; git grep -q -l 'forge:section forge:hash=' 2>/dev/null && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.12
@@ -30,6 +30,14 @@ In `config_gen.k`, the `<SCHEMA>_SENSITIVE_ENV` and `<SCHEMA>_OPTIONAL_SECRET_EN
 **What generate does.** It rewrites both scripts, writes the row files, and changes `db/embed_gen.go` to embed the whole `db/grants` directory (`//go:embed migrations/*.sql grants`). Commit both new directories. A binary built before this regeneration still applies the one-file script it embeds.
 
 `forge lint --db-grants` now judges every dashboard row file too, and reports a row no table accounts for as stale.
+
+## 3. One store file per entity, and the aggregate `Store` is a struct
+
+**Use when** the project has entities (`internal/db/store_gen.go` exists).
+
+**What changed.** Every entity's store interface (`<Entity>Store`) and its adapter lived in `store_gen.go`, and the aggregate `Store` interface listed one accessor per entity, so two pull requests that each added an entity edited one list and conflicted. Each entity's store is now its own `<entity>_store_gen.go`, which also declares the aggregate's accessor for it as a method (`func (s Store) Estimates() EstimateStore`). A Go interface's method set cannot span files, so the aggregate `Store` in `store_gen.go` is now a **struct** with `NewStore(handle)` and `WithTx(tx)`, and names no entity.
+
+Code that calls the aggregate (`db.NewStore(client).Estimates().GetEstimateByID(…)`, a `Deps{DB db.Store}` field that compose fills) compiles unchanged. Code that treated it as an interface does not: a fake implementing `db.Store`, or a test using the `MockStore` forge generated for a `db.Store` Deps field (no longer generated, because a struct cannot be mocked). Move such a package to the per-entity stores (`Deps{Estimates db.EstimateStore}`), which forge mocks; `forge generate` names this fix when the build fails on it.
 
 ### Still a conflict
 

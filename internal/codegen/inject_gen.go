@@ -237,7 +237,7 @@ func (s storeSeam) aggregateType() string { return s.pkg + ".Store" }
 func (s storeSeam) aggregateExpr() string { return s.pkg + ".NewStore(infra.ORM)" }
 
 // source names the generated file, for the compose comment.
-func (s storeSeam) source() string { return "generated store (" + s.dir + "/store_gen.go)" }
+func (s storeSeam) source() string { return "generated store (" + s.dir + "/*_store_gen.go)" }
 
 // owns reports whether depType is a store type the seam provides.
 func (s storeSeam) owns(depType string) bool {
@@ -266,43 +266,40 @@ func (s storeSeam) entityExpr(depType string) string {
 	return s.aggregateExpr() + "." + plural + "()"
 }
 
-// storeAccessorRE matches one accessor line in the generated store interface:
+// storeAccessorRE matches the aggregate's accessor in an entity's store file
+// (<entity>_store_gen.go):
 //
-//	Estimates() EstimateStore
-var storeAccessorRE = regexp.MustCompile(`^\t([A-Z]\w*)\(\) ([A-Z]\w*Store)$`)
+//	func (s Store) Estimates() EstimateStore { return estimateStore{db: s.db} }
+var storeAccessorRE = regexp.MustCompile(`^func \(s Store\) ([A-Z]\w*)\(\) ([A-Z]\w*Store) \{`)
 
-// parseStoreSeam reads the ORM package's store_gen.go and returns the seam:
-// a map of qualified dep type (`db.EstimateStore`) → accessor name
+// parseStoreSeam reads the ORM package's generated store files and returns
+// the seam: a map of qualified dep type (`db.EstimateStore`) → accessor name
 // (`Estimates`), under the ORM package's name.
 //
-// Reading the generated file is deliberate: it is the only place that knows
-// BOTH which entities exist and what the pluralizer named their accessors, so
-// a rename or a new entity flows through with no second source to keep in
-// sync. An absent file (a project with no entities, or one generated before
-// stores existed) yields no accessors, and every store dep then falls through
-// to the ordinary missing-provider path.
+// Reading the generated files is deliberate: they are the only place that
+// knows BOTH which entities exist and what the pluralizer named their
+// accessors, so a rename or a new entity flows through with no second source
+// to keep in sync. No store files (a project with no entities, or one
+// generated before stores existed) yield no accessors, and every store dep
+// then falls through to the ordinary missing-provider path.
 func parseStoreSeam(projectDir string) storeSeam {
 	orm := ProjectORMPackage(projectDir)
 	seam := storeSeam{pkg: orm.PackageName(), dir: orm.PackageDir()}
-	raw, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(seam.dir), "store_gen.go"))
-	if err != nil {
+	dir := filepath.Join(projectDir, filepath.FromSlash(seam.dir))
+	if _, err := os.Stat(filepath.Join(dir, "store_gen.go")); err != nil {
 		return seam
 	}
 	seam.accessors = map[string]string{}
-	inAggregate := false
-	for _, line := range strings.Split(string(raw), "\n") {
-		switch {
-		case strings.HasPrefix(line, "type Store interface {"):
-			inAggregate = true
-			continue
-		case inAggregate && strings.HasPrefix(line, "}"):
-			inAggregate = false
-		}
-		if !inAggregate {
+	files, _ := filepath.Glob(filepath.Join(dir, "*_store_gen.go"))
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
 			continue
 		}
-		if m := storeAccessorRE.FindStringSubmatch(line); m != nil {
-			seam.accessors[seam.pkg+"."+m[2]] = m[1]
+		for _, line := range strings.Split(string(raw), "\n") {
+			if m := storeAccessorRE.FindStringSubmatch(line); m != nil {
+				seam.accessors[seam.pkg+"."+m[2]] = m[1]
+			}
 		}
 	}
 	return seam

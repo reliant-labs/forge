@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"k8s.io/client-go/tools/clientcmd"
@@ -60,6 +61,11 @@ var newDBQueryClient = func(kubeContext string) (*kubedial.Client, error) {
 // resolveDBQueryCluster resolves the port-forward target for an OnCluster
 // workload's env. The returned target's close stops the tunnel.
 func resolveDBQueryCluster(ctx context.Context, o dbQueryOptions, e *KCLEntities, w WorkloadEntity) (dbQueryTarget, error) {
+	if x, ok, err := selectExternalDatabase(e, o.database); err != nil {
+		return dbQueryTarget{}, err
+	} else if ok {
+		return resolveDBQueryExternal(ctx, o, e, x, w.Name)
+	}
 	switch e.Lifecycle {
 	case lifecycleLocal, lifecycleEphemeral:
 	default:
@@ -121,7 +127,7 @@ func selectQueryDatabase(e *KCLEntities, name string) (DatabaseEntity, error) {
 				return d, nil
 			}
 		}
-		return DatabaseEntity{}, exitCodeError{code: exitWrong, msg: fmt.Sprintf("no cluster database named %q (the env declares %s)", name, databaseNames(all))}
+		return DatabaseEntity{}, exitCodeError{code: exitWrong, msg: fmt.Sprintf("no cluster database named %q (the env declares %s)", name, databaseNames(all, e.ExternalDatabases))}
 	}
 	switch len(all) {
 	case 1:
@@ -129,20 +135,94 @@ func selectQueryDatabase(e *KCLEntities, name string) (DatabaseEntity, error) {
 	case 0:
 		return DatabaseEntity{}, exitCodeError{code: exitUndetermined, msg: "the env declares no ManagedDatabase on a cluster to query"}
 	default:
-		return DatabaseEntity{}, exitCodeError{code: exitWrong, msg: fmt.Sprintf("the env declares %d cluster databases (%s): pick one with --database", len(all), databaseNames(all))}
+		return DatabaseEntity{}, exitCodeError{code: exitWrong, msg: fmt.Sprintf("the env declares %d cluster databases (%s): pick one with --database", len(all), databaseNames(all, nil))}
 	}
 }
 
-func databaseNames(ds []DatabaseEntity) string {
-	if len(ds) == 0 {
+// databaseNames lists the databases --database can name.
+func databaseNames(ds []DatabaseEntity, xs []ExternalDatabaseEntity) string {
+	var names []string
+	for _, d := range ds {
+		names = append(names, d.Name)
+	}
+	for _, x := range xs {
+		names = append(names, x.Name+" (external)")
+	}
+	if len(names) == 0 {
 		return "none"
 	}
-	out := ""
-	for i, d := range ds {
-		if i > 0 {
-			out += ", "
+	return strings.Join(names, ", ")
+}
+
+// selectExternalDatabase picks the forge.ExternalDatabase a query reads: the
+// one --database names, or, when it names none, the env's only database of
+// either kind when that one is external. ok is false when the query is not
+// for an external database.
+func selectExternalDatabase(e *KCLEntities, name string) (ExternalDatabaseEntity, bool, error) {
+	if name != "" {
+		for _, x := range e.ExternalDatabases {
+			if x.Name == name {
+				return x, true, nil
+			}
 		}
-		out += d.Name
+		return ExternalDatabaseEntity{}, false, nil
 	}
-	return out
+	managed := 0
+	for _, d := range e.Databases {
+		if d.Runtime == RuntimeCluster {
+			managed++
+		}
+	}
+	switch {
+	case len(e.ExternalDatabases) == 0:
+		return ExternalDatabaseEntity{}, false, nil
+	case len(e.ExternalDatabases) == 1 && managed == 0:
+		return e.ExternalDatabases[0], true, nil
+	}
+	clusterDBs := make([]DatabaseEntity, 0, managed)
+	for _, d := range e.Databases {
+		if d.Runtime == RuntimeCluster {
+			clusterDBs = append(clusterDBs, d)
+		}
+	}
+	return ExternalDatabaseEntity{}, false, exitCodeError{code: exitWrong, msg: fmt.Sprintf("the env declares %d databases (%s): pick one with --database", managed+len(e.ExternalDatabases), databaseNames(clusterDBs, e.ExternalDatabases))}
+}
+
+// resolveDBQueryExternal is the port-forward transport for a
+// forge.ExternalDatabase: a tunnel to a ready pod behind its Service, signed
+// in as its declared role. Unlike a ManagedDatabase it is reachable on a real
+// env: no control plane runs it, and declaring it is the env's opt-in. The
+// env's data_access policy still decides who may ask (checked by the caller).
+func resolveDBQueryExternal(ctx context.Context, o dbQueryOptions, e *KCLEntities, x ExternalDatabaseEntity, workload string) (dbQueryTarget, error) {
+	if o.addr != "" {
+		return dbQueryTarget{}, exitCodeError{code: exitWrong, msg: fmt.Sprintf("--addr does not apply to external database %q: forge reaches it through its service %s/%s; drop --addr", x.Name, x.Namespace, x.Service)}
+	}
+	if x.Cluster == "" || x.Namespace == "" {
+		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("external database %q in %s has no cluster or namespace: bind `runtime = forge.OnCluster {target = ...}` on it", x.Name, o.env)}
+	}
+	// Judge the policy before reading the password: a refused query never
+	// touches the credential. runDBQuery judges it again, as for every
+	// transport.
+	policy := dbQueryPolicy(e)
+	if err := checkDBQueryPolicy(o, policy); err != nil {
+		return dbQueryTarget{}, err
+	}
+	client, err := newDBQueryClient(x.Cluster)
+	if err != nil {
+		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("external database %q in %s: %v", x.Name, o.env, err)}
+	}
+	cfg, err := client.ExternalConnConfig(ctx, kubedial.External{
+		Namespace: x.Namespace, Service: x.Service, Database: x.Database, Username: x.Username,
+		PasswordSecret: x.PasswordSecret, PasswordKey: x.PasswordKey, SSLMode: x.SSLMode,
+	})
+	if err != nil {
+		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("external database %q in %s: %v", x.Name, o.env, err)}
+	}
+	if dbClusterConnTweak != nil {
+		dbClusterConnTweak(cfg)
+	}
+	return dbQueryTarget{
+		connConfig: cfg,
+		scope:      dbQueryScope{Env: o.env, Transport: "port-forward", Workload: workload, Database: x.Name, Policy: policy},
+	}, nil
 }

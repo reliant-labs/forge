@@ -1902,6 +1902,23 @@ _render_database = lambda db: any, bundle: Bundle -> any {
     }
 }
 
+# An ExternalDatabase as `forge db query` reads it: where its Service is and
+# how to sign in. Nothing is deployed for it, so it reaches no manifest.
+_render_external_database = lambda x: any, bundle: Bundle -> any {
+    _target = x.runtime.target if x.runtime else _primary_target(bundle)
+    {
+        "name": x.name
+        "cluster": _target.cluster if _target else None
+        "namespace": (x.namespace if x.namespace else _target.namespace) if _target else None
+        "service": x.service
+        "database": x.database
+        "username": x.username
+        "password_secret": x.password_secret
+        "password_key": x.password_key
+        "sslmode": x.sslmode
+    }
+}
+
 # The Namespaces the cluster runtime deploys into, one per (cluster,
 # namespace), primary target first. RenderWorkloads does not emit them: the
 # namespace belongs to the ENV (restricted PSA, forge.dev/env), not to a
@@ -2079,6 +2096,8 @@ render = lambda bundle: Bundle -> any {
         "infra": [_render_host_infra(i) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]
+        if bundle.external_databases:
+            "external_databases": [_render_external_database(x, bundle) for x in bundle.external_databases]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
         "gateways": [_render_gateway(g) for g in _gateways_rendered(bundle)]
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]

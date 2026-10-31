@@ -21,6 +21,9 @@ package cli
 //	OnHosted             the control plane's AppDatabaseService.QueryDatabase,
 //	                     which runs the same core inside the platform as
 //	                     forge_ro and audits the call (db_query_cloud.go)
+//	ExternalDatabase     a port-forward to the Service in front of a database
+//	                     forge does not run, as the role it declares, on any
+//	                     env: declaring it is the opt-in (db_query_cluster.go)
 //	--addr host:port     the user's own route (a VPN, a kubectl port-forward, a
 //	                     bastion): forge dials that address and nothing else,
 //	                     for any database it cannot route to itself. Not for a
@@ -61,19 +64,22 @@ const dbQuerySchema = "forge.db.query/v1"
 const maxDBQueryReason = 500
 
 type dbQueryOptions struct {
-	env        string
-	sql        string
-	file       string
-	workload   string
-	database   string
-	maxRows    int
-	timeout    time.Duration
-	format     string
-	jsonOut    bool
-	confirmEnv string
-	reason     string
-	addr       string
-	sslmode    string
+	env      string
+	sql      string
+	file     string
+	workload string
+	// workloadSet is whether --workload was given: without it, a query of an
+	// env whose database is external needs no workload at all.
+	workloadSet bool
+	database    string
+	maxRows     int
+	timeout     time.Duration
+	format      string
+	jsonOut     bool
+	confirmEnv  string
+	reason      string
+	addr        string
+	sslmode     string
 }
 
 func newDBQueryCommand() *cobra.Command {
@@ -99,8 +105,15 @@ The connection follows the workload (` + "`--workload`" + `, default "api"):
   OnHosted            the control plane runs it inside the platform
                       (AppDatabaseService.QueryDatabase), as forge_ro, and
                       records it in the audit log and the activity feed
-The databases of real (not scratch) cluster envs are not reachable from forge
-yet (exit 2), unless you bring your own route: --addr.
+  forge.ExternalDatabase  a database forge does not run (Cloud SQL, RDS, one
+                      behind a pooler), declared on the env with the Service
+                      in front of it and the role and Secret to sign in with:
+                      a port-forward to that Service with your kube context.
+                      Reachable on a real env too (declaring it is the
+                      opt-in); --database <name> picks it, no --workload
+                      needed
+A ManagedDatabase of a real (not scratch) cluster env is not reachable from
+forge yet (exit 2), unless you bring your own route: --addr.
 
 --addr <host:port> dials that address directly instead of any transport above,
 for a database forge cannot route to itself. The route (a VPN, a kubectl
@@ -134,7 +147,8 @@ connection lost).
   ` + Name() + ` db query dev -f report.sql --format csv > report.csv
   ` + Name() + ` db query staging "select * from jobs limit 5" --confirm-env staging --reason "ISS-7f3a"
   kubectl -n app-prod port-forward svc/ledger-rw 5432:5432 &
-  ` + Name() + ` db query prod "select 1" --addr localhost:5432 --confirm-env prod --reason "ISS-7f3a"`,
+  ` + Name() + ` db query prod "select 1" --addr localhost:5432 --confirm-env prod --reason "ISS-7f3a"
+  ` + Name() + ` db query prod "select count(*) from chats" --database reliant --confirm-env prod --reason "ISS-7f3a"`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 1 || len(args) > 2 {
 				return fmt.Errorf("use: %s db query <env> \"<sql>\" | -f FILE", Name())
@@ -144,6 +158,7 @@ connection lost).
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.env = args[0]
+			o.workloadSet = cmd.Flags().Changed("workload")
 			if len(args) == 2 {
 				o.sql = args[1]
 			}
@@ -155,7 +170,7 @@ connection lost).
 	}
 	cmd.Flags().StringVarP(&o.file, "file", "f", "", "Read the statement from FILE (- for stdin)")
 	cmd.Flags().StringVar(&o.workload, "workload", "api", "Workload whose database to query")
-	cmd.Flags().StringVar(&o.database, "database", "", "ManagedDatabase to query, when a cluster env declares several")
+	cmd.Flags().StringVar(&o.database, "database", "", "ManagedDatabase or ExternalDatabase to query, when a cluster env declares several")
 	cmd.Flags().IntVar(&o.maxRows, "max-rows", dbquery.DefaultMaxRows, fmt.Sprintf("Row cap (at most %d)", dbquery.MaxRowsLimit))
 	cmd.Flags().DurationVar(&o.timeout, "timeout", dbquery.DefaultTimeout, fmt.Sprintf("Statement timeout (at most %s)", dbquery.MaxTimeout))
 	cmd.Flags().StringVar(&o.format, "format", "table", "Output format: table, json or csv")
@@ -257,6 +272,10 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 			if o.addr != "" {
 				return nil, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("cannot connect to %s's database at %s (workload %q): %s; is your route to it up (VPN, kubectl port-forward)?", o.env, o.addr, target.scope.Workload, redactDSNError(err, target.dsn))}
 			}
+			if target.scope.Workload == "" {
+				// An external database, reached through its own service.
+				return nil, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("cannot connect to %s's database %q: %s", o.env, target.scope.Database, redactDSNError(err, target.dsn))}
+			}
 			return nil, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("cannot connect to %s's database (workload %q): %s; is it running? (%s env up %s)", o.env, target.scope.Workload, redactDSNError(err, target.dsn), Name(), o.env)}
 		}
 		defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
@@ -337,6 +356,16 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 	e, err := readEnvConfigEntities(ctx, projectDir, o.env)
 	if err != nil {
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: err.Error()}
+	}
+	// An external database is reached through its own Service, not through
+	// a workload: --database naming one, or an env whose only database is
+	// one, needs no --workload.
+	if o.database != "" || !o.workloadSet {
+		if x, ok, err := selectExternalDatabase(e, o.database); err != nil {
+			return dbQueryTarget{}, err
+		} else if ok {
+			return resolveDBQueryExternal(ctx, o, e, x, "")
+		}
 	}
 	w, err := selectExecWorkload(e, o.workload)
 	if err != nil {

@@ -1050,6 +1050,66 @@ schema ManagedDatabase:
         not (runtime and runtime.type == "hosted" and namespace), \
             "ManagedDatabase.namespace must NOT be set on the hosted runtime ('${name}'): the control plane allocates it. Remove it"
 
+_EXTERNAL_DATABASE_SSLMODES = ["require", "disable"]
+
+schema ExternalDatabase:
+    """A Postgres the env's workloads use but forge does not run (Cloud SQL,
+    RDS, a database behind a pooler), declared so `forge db query <env>` can
+    read it. Set on `Bundle.external_databases`.
+
+        external_databases = [forge.ExternalDatabase {
+            name = "ledger"
+            service = "pgbouncer"          # the in-cluster Service in front of it
+            database = "ledger_prod"       # the database (a pooler's pool) to open
+            username = "ledger_ro"
+            password_secret = "ledger-ro"  # Secret in the namespace; key `password`
+        }]
+
+    forge renders nothing for it: no manifest, no credential, no role. It is a
+    route. `forge db query <env> --database ledger` tunnels to a ready pod
+    behind `service` through the kube API (a pods/portforward stream, the same
+    transport as a ManagedDatabase's) with your own kube context, reads the
+    password from `password_secret`, and runs the statement as `username`.
+
+    Declaring it is what makes a REAL env's database reachable from forge: a
+    ManagedDatabase on a real cluster is the control plane's to query, but an
+    external database has no control plane behind it, so the declaration is
+    the opt-in. The env's data_access policy applies as on every transport:
+    a real env is audited by default (`--confirm-env <env> --reason "<why>"`).
+
+    Every statement runs in a READ ONLY transaction that Postgres enforces,
+    one statement at a time, under forge's timeouts and caps. Point `username`
+    at a read-only role all the same: that is what keeps the query from
+    reading what the transaction would still let it read (secrets, other
+    schemas), which forge cannot grant on a database it does not run.
+
+    WHERE IT IS is its `runtime`: the cluster and namespace of `service`.
+    With no `runtime`, the env's primary cluster target, in `namespace` when
+    set. TLS is `sslmode`: `require` (the default: encrypted, not verified,
+    since the tunnel ends at a pod rather than a name a certificate carries)
+    or `disable`.
+    """
+    name: str
+    runtime?: OnCluster
+    # Overrides the cluster target's namespace.
+    namespace: str = ""
+    # The Service in front of the database; forge reaches its Postgres port
+    # (5432), or its only port (a pooler's 6432).
+    service: str
+    database: str
+    username: str
+    password_secret: str
+    password_key: str = "password"
+    sslmode: str = "require"
+
+    check:
+        regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 63, \
+            "ExternalDatabase.name '${name}' must be an RFC-1123 label of at most 63 characters: `forge db query --database` names it"
+        service and database and username and password_secret, \
+            "ExternalDatabase '${name}' needs service, database, username and password_secret: they are how forge db query reaches it"
+        sslmode in _EXTERNAL_DATABASE_SSLMODES, \
+            "ExternalDatabase '${name}'.sslmode '${sslmode}' is not one of ${_EXTERNAL_DATABASE_SSLMODES}"
+
 schema HostInfra:
     """A third-party server forge runs as a HOST PROCESS — no container,
     no daemon, nothing to install first.
@@ -6621,6 +6681,10 @@ schema Bundle:
     # Go renderer, as a CloudNativePG Cluster in its own namespace. See
     # ManagedDatabase.
     databases: [ManagedDatabase] = []
+    # Databases the env's workloads use but forge does not run, declared so
+    # `forge db query` can reach them. Nothing is rendered for them. See
+    # ExternalDatabase.
+    external_databases: [ExternalDatabase] = []
     # Platform dependencies rendered from helm charts (helm-as-a-RENDERER:
     # `helm template --skip-crds` → manifests folded into the normal apply
     # pipeline; NO `helm install`). Each is a renderable with a NAME the
@@ -6855,6 +6919,11 @@ schema Bundle:
         # A database binds a runtime, or lands on the env's cluster_target.
         all db in databases { _db_runtime(db) or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
             "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"
+        # `forge db query --database <name>` picks among both kinds.
+        len(_duplicates([db.name for db in databases] + [x.name for x in external_databases])) == 0, \
+            "Bundle: a database name is declared twice across databases and external_databases: ${_duplicates([db.name for db in databases] + [x.name for x in external_databases])}. `forge db query --database` names one"
+        all x in external_databases { x.runtime or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
+            "ExternalDatabase ${[x.name for x in external_databases if not x.runtime]} binds no runtime and the env has no cluster target: set `runtime = forge.OnCluster {target = ...}` on it (the cluster its service runs on)"
         # HostedSecrets names no endpoint of its own — the values live in THIS
         # env's control plane — so without one there is nowhere to put them.
         # PLAINTEXT SECRETS ONLY WHERE THEY CANNOT ESCAPE THIS MACHINE.

@@ -156,6 +156,10 @@ type KCLEntities struct {
 	// Databases are the env's managed databases (forge.ManagedDatabase),
 	// each bound to the cluster or hosted runtime. See DatabaseEntity.
 	Databases []DatabaseEntity `json:"databases,omitempty"`
+	// ExternalDatabases are the databases the env's workloads use but forge
+	// does not run (forge.ExternalDatabase): routes for `forge db query`,
+	// never rendered. See ExternalDatabaseEntity.
+	ExternalDatabases []ExternalDatabaseEntity `json:"external_databases,omitempty"`
 	// SecretProvider is the bundle-level secret provider declaration
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider.
@@ -1115,6 +1119,22 @@ type DatabaseEntity struct {
 // Hosted reports whether the control plane runs this database.
 func (d DatabaseEntity) Hosted() bool { return d.Runtime == RuntimeHosted }
 
+// ExternalDatabaseEntity is one forge.ExternalDatabase: a Postgres forge does
+// not run, reached through Service in Namespace on Cluster (a kube context),
+// signed in to as Username with the password at PasswordKey of the
+// PasswordSecret Secret in that namespace.
+type ExternalDatabaseEntity struct {
+	Name           string `json:"name"`
+	Cluster        string `json:"cluster,omitempty"`
+	Namespace      string `json:"namespace,omitempty"`
+	Service        string `json:"service"`
+	Database       string `json:"database"`
+	Username       string `json:"username"`
+	PasswordSecret string `json:"password_secret"`
+	PasswordKey    string `json:"password_key"`
+	SSLMode        string `json:"sslmode"`
+}
+
 // BuildOnlyDeploy is the forge.BuildOnly runtime: the workload is built and
 // shipped as an artifact, never run — a CLI shipped in a release, etc.
 // BuildVariants lets one workload emit several binaries (different ldflags /
@@ -1443,6 +1463,7 @@ type kclRenderRaw struct {
 	HTTPRoutes               []HTTPRouteEntity                         `json:"http_routes,omitempty"`
 	GRPCRoutes               []GRPCRouteEntity                         `json:"grpc_routes,omitempty"`
 	Databases                []DatabaseEntity                          `json:"databases,omitempty"`
+	ExternalDatabases        []ExternalDatabaseEntity                  `json:"external_databases,omitempty"`
 	HelmCharts               []HelmChartEntity                         `json:"helm_charts,omitempty"`
 	SecretProvider           *SecretProviderEntity                     `json:"secret_provider,omitempty"`
 	RenderedSecrets          []RenderedSecretEntity                    `json:"rendered_secrets,omitempty"`
@@ -1783,6 +1804,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		GRPCRoutes:               raw.GRPCRoutes,
 		HelmCharts:               raw.HelmCharts,
 		Databases:                raw.Databases,
+		ExternalDatabases:        raw.ExternalDatabases,
 		SecretProvider:           raw.SecretProvider,
 		Observability:            raw.Observability,
 		DeliveryPolicy:           raw.DeliveryPolicy,

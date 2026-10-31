@@ -130,7 +130,7 @@ Import the generated transport from `src/lib/connect.ts`; for direct calls `crea
 
 The engine is library code (`@reliantlabs/forge-web-runtime/mock-transport`, a subpath so production bundles shake it out). Your project keeps:
 
-- **`src/lib/mock-transport_gen.ts`** (Tier-1) — one `MockEntityDescriptor` per entity, regenerated from your protos.
+- **`src/lib/mock-transport_gen.ts`** (Tier-1) — gathers the per-entity `src/mocks/entities/*_gen.ts`.
 - **`src/mocks/<entity>_gen.ts`** — the fixtures, the same rows `forge db seed apply` writes.
 - **`src/mocks/scenarios/*.ts`** — your scenarios; forge only regenerates the `index_gen.ts` barrel.
 

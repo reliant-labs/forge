@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -79,7 +80,6 @@ func TestEnvFamilyKCL_Golden(t *testing.T) {
 		"    oauth_client_secrets: {str: ConfigSecretRef} = {}",
 		"    oauth_client_ids: {str: str} = {}",
 		"    features: {str: bool} = {}",
-		`APP_CONFIG_SENSITIVE_ENV: [str] = ["RELIANT_GITHUB_WEBHOOK_SECRET", "RELIANT_OAUTH_<KEY>_CLIENT_SECRET"]`,
 		`        "RELIANT_OAUTH_<KEY>_CLIENT_SECRET" = {"RELIANT_OAUTH_" + _k + "_CLIENT_SECRET": forge.SecretRef {name = _v.name, key = _v.key, store_key = "RELIANT_OAUTH_" + _k + "_CLIENT_SECRET"} for _k, _v in c.integrations.oauth_client_secrets}`,
 		`{"RELIANT_OAUTH_" + _k + "_CLIENT_ID": _v for _k, _v in c.integrations.oauth_client_ids}`,
 		`RootFamily {prefix = "RELIANT_OAUTH_", suffix = "_CLIENT_SECRET", sensitive = True}`,
@@ -87,6 +87,9 @@ func TestEnvFamilyKCL_Golden(t *testing.T) {
 		if !strings.Contains(got, line) {
 			t.Errorf("module missing %q", line)
 		}
+	}
+	if vals := kclListConstant(t, got, "APP_CONFIG_SENSITIVE_ENV"); !slices.Equal(vals, []string{"RELIANT_GITHUB_WEBHOOK_SECRET", "RELIANT_OAUTH_<KEY>_CLIENT_SECRET"}) {
+		t.Errorf("APP_CONFIG_SENSITIVE_ENV = %q", vals)
 	}
 }
 

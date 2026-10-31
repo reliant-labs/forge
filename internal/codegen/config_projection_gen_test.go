@@ -35,7 +35,7 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"    name: str\n" +
 		"    key: str\n" +
 		"\n" +
-		"# forge:section\n" +
+		"# forge:section schema AppConfig\n" +
 		"schema AppConfig:\n" +
 		"    # Log level (debug, info, warn, error)\n" +
 		"    log_level: str = \"info\"\n" +
@@ -49,20 +49,27 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"    sample_rate: float = 0.0\n" +
 		representativeEmptyEnvChecks +
 		"\n" +
-		"# forge:section\n" +
+		"# forge:section env-map appConfigEnvMap\n" +
 		"# Every ENV_VAR AppConfig declares `sensitive: true` for. Used by forge's\n" +
 		"# host-mode config probe, which resolves the whole config for `forge env up`\n" +
 		"# and the parity report. A WORKLOAD must not use it: naming every\n" +
 		"# credential is the broadcast that put one feature's secretKeyRef on\n" +
 		"# every pod. Declare what a workload reads in its `config_secrets` instead.\n" +
-		"APP_CONFIG_SENSITIVE_ENV: [str] = [\"DATABASE_URL\"]\n" +
+		"APP_CONFIG_SENSITIVE_ENV: [str] = [\n" +
+		"    # forge:section APP_CONFIG_SENSITIVE_ENV (root)\n" +
+		"    \"DATABASE_URL\"\n" +
+		"\n" +
+		"    # forge:section APP_CONFIG_SENSITIVE_ENV (end)\n" +
+		"]\n" +
 		"\n" +
 		"# Every ENV_VAR AppConfig declares BOTH `sensitive: true` and\n" +
 		"# `optional: true` for. The secret pre-flight skips these: a declared\n" +
 		"# secret with no value is an error by default, and this is the author\n" +
 		"# stating that THIS one's absence is intended (a tier's off-switch, a\n" +
 		"# credential only some environments own).\n" +
-		"APP_CONFIG_OPTIONAL_SECRET_ENV: [str] = []\n" +
+		"APP_CONFIG_OPTIONAL_SECRET_ENV: [str] = [\n" +
+		"    # forge:section APP_CONFIG_OPTIONAL_SECRET_ENV (end)\n" +
+		"]\n" +
 		"\n" +
 		"# appConfigEnvMap projects a typed AppConfig into a workload's env MAP (fw.Workload.env):\n" +
 		"# one entry per field that declares an env_var, keyed by ENV_VAR name — a\n" +
@@ -80,20 +87,22 @@ func TestGenerateConfigProjectionKCL_ExactBlock(t *testing.T) {
 		"#     env = appConfigEnvMap(cfg, config_secrets) | {EXTRA = \"value\"}\n" +
 		"appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forge.SecretRef} {\n" +
 		"    _sensitive: {str: forge.SecretRef} = {\n" +
-		"        # forge:section\n" +
+		"        # forge:section appConfigEnvMap secrets (root)\n" +
 		"        \"DATABASE_URL\" = forge.SecretRef {name = c.database_url.name, key = c.database_url.key, store_key = \"DATABASE_URL\"}\n" +
 		"\n" +
+		"        # forge:section appConfigEnvMap secrets (end)\n" +
 		"    }\n" +
 		"    assert all _n in config_secrets { _n in _sensitive }, \\\n" +
 		"        \"appConfigEnvMap: config_secrets names ${[_n for _n in config_secrets if _n not in _sensitive]}, which is not a `sensitive` field of AppConfig. Sensitive fields: ${sorted([_k for _k in _sensitive])}. Add `sensitive: true` to the field's (forge.v1.config) annotation in its config proto, or drop the name from this workload's config_secrets.\"\n" +
 		"    {\n" +
-		"        # forge:section\n" +
+		"        # forge:section appConfigEnvMap values (root)\n" +
 		"        \"LOG_LEVEL\" = c.log_level\n" +
 		"        \"PORT\" = str(c.port)\n" +
 		"        \"CORS_ALLOW_CREDENTIALS\" = \"true\" if c.cors_allow_credentials else \"false\"\n" +
 		"        \"SHUTDOWN_TIMEOUT\" = c.shutdown_timeout\n" +
 		"        \"SAMPLE_RATE\" = str(c.sample_rate)\n" +
 		"\n" +
+		"        # forge:section appConfigEnvMap values (end)\n" +
 		"    } | {_k: _sensitive[_k] for _k in _sensitive if _k in config_secrets}\n" +
 		"}\n"
 
@@ -225,8 +234,8 @@ func TestGenerateConfigProjectionKCL_EmptyFields(t *testing.T) {
 	}
 	// The sensitive-var constant is emitted even when empty, so forge's
 	// host-mode probe can reference it in a project with no credentials.
-	if !strings.Contains(got, "APP_CONFIG_SENSITIVE_ENV: [str] = []\n") {
-		t.Fatalf("the sensitive-var constant must be emitted even when empty:\n%s", got)
+	if vals := kclListConstant(t, got, "APP_CONFIG_SENSITIVE_ENV"); len(vals) != 0 {
+		t.Fatalf("the sensitive-var constant must be emitted, empty, when nothing is sensitive; got %q:\n%s", vals, got)
 	}
 	// The ConfigMap projector is gone — no second lambda.
 	if strings.Contains(got, "appConfigConfigMap") {

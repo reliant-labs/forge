@@ -5,9 +5,11 @@ package cli
 import (
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -23,6 +25,22 @@ import (
 func TestE2EMergeProperty(t *testing.T) {
 	t.Parallel() // independent projects in their own t.TempDirs; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
+
+	// A declared gap no case reaches is stale: the generator was fixed and
+	// its row must say so. Checked once every case has passed.
+	hits := &gapHits{seen: map[string]bool{}}
+	t.Cleanup(func() {
+		if t.Failed() {
+			return
+		}
+		for step, c := range mergeCases {
+			for _, g := range c.gapPaths {
+				if !hits.seen[g] {
+					t.Errorf("known merge gap %q of step %q neither conflicted nor regenerated in any case: it is closed, so mark the step's merge case for what now holds", g, step)
+				}
+			}
+		}
+	})
 
 	for _, tc := range []struct {
 		name         string
@@ -46,7 +64,7 @@ func TestE2EMergeProperty(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			runMergeProperty(t, forgeBin, tc.ours, tc.theirs)
+			runMergeProperty(t, forgeBin, hits, tc.ours, tc.theirs)
 		})
 	}
 }
@@ -63,7 +81,27 @@ func entityProto(name, fields string) string {
 	return "\n// forge:entity\nmessage " + name + " {\n  string id = 1;\n" + fields + "}\n"
 }
 
-func runMergeProperty(t *testing.T, forgeBin string, ours, theirs mergeEdit) {
+// gapHits records which declared gap globs a case actually hit.
+type gapHits struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func (h *gapHits) hit(p string) (step string, ok bool) {
+	for name, c := range mergeCases {
+		for _, g := range c.gapPaths {
+			if m, _ := path.Match(g, p); m {
+				h.mu.Lock()
+				h.seen[g] = true
+				h.mu.Unlock()
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+func runMergeProperty(t *testing.T, forgeBin string, hits *gapHits, ours, theirs mergeEdit) {
 	t.Helper()
 	dir := t.TempDir()
 	env := append(os.Environ(),
@@ -131,7 +169,7 @@ func runMergeProperty(t *testing.T, forgeBin string, ours, theirs mergeEdit) {
 		// gap (mergeCases); anywhere else it is a regression of the invariant.
 		var undeclared []string
 		for _, f := range conflicted {
-			if step, ok := knownGapPath(f); ok {
+			if step, ok := hits.hit(f); ok {
 				t.Logf("known merge gap (%s): %s conflicts", step, f)
 				continue
 			}
@@ -169,7 +207,7 @@ func runMergeProperty(t *testing.T, forgeBin string, ours, theirs mergeEdit) {
 		if i := strings.Index(f, " -> "); i >= 0 {
 			f = f[i+4:]
 		}
-		if step, ok := knownGapPath(f); ok {
+		if step, ok := hits.hit(f); ok {
 			t.Logf("known merge gap (%s): %s regenerated after the merge", step, f)
 			continue
 		}

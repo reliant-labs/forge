@@ -13,7 +13,8 @@ import (
 	"github.com/reliant-labs/forge/pkg/contractkit"
 )
 
-// forge:section forge:hash=6907acd9f19e95c971099314a019ccd53168a8417e494f100a4b62ab62299beb
+// forge:section MockSourceResolver
+// forge:hash=c22c7e8cfde70a55d555461e708323004fb97773629ed404879995ebffc467f9
 
 // MockSourceResolver is a test mock for the SourceResolver interface.
 //
@@ -48,7 +49,8 @@ func (m *MockSourceResolver) Refresh(src Source) error {
 // Compile-time check.
 var _ SourceResolver = (*MockSourceResolver)(nil)
 
-// forge:section forge:hash=27159ba2e2f578e9d06deebd5587a6b31d1380f1701d1008a396e0ead602c4d9
+// forge:section MockFetcher
+// forge:hash=a6b02993360bc2dd06f3b33257d29e37a0022186e7bd5e8c2b2b81b14a3123cf
 
 // MockFetcher is a test mock for the Fetcher interface.
 //

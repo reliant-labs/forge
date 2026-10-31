@@ -12,7 +12,8 @@ import (
 	"github.com/reliant-labs/forge/pkg/contractkit"
 )
 
-// forge:section forge:hash=f938909bbc6d3c6d971eaee01a055c783ff6b238bbd75793c306c429d8c4a9a1
+// forge:section MockService
+// forge:hash=b895014310be8b42504cea3bb18bf21b76aa479f06ab9f84a5fde76960c40109
 
 // MockService is a test mock for the Service interface.
 //
@@ -137,7 +138,8 @@ func (m *MockService) GenerateMigrate(targetDir string, modulePath string, hasMi
 // Compile-time check.
 var _ Service = (*MockService)(nil)
 
-// forge:section forge:hash=f01de2fded074ef5a3316b0859b63c32b8f93cd17e9d934357006f3d9ae988d9
+// forge:section MockParser
+// forge:hash=2cf117fca23ad292a9cd76abcdb0bdc8305fe7189abe4beb53507c835c089584
 
 // MockParser is a test mock for the Parser interface.
 //
@@ -202,7 +204,8 @@ func (m *MockParser) GetModulePath(dir string) (string, error) {
 // Compile-time check.
 var _ Parser = (*MockParser)(nil)
 
-// forge:section forge:hash=c61ec10a59853ad5073f5d108e3ad6cf480cc176b2301a353f3270215d245174
+// forge:section MockInspector
+// forge:hash=619ac7f94fb5c1ffe5ae98bd39c5085b32ba581ab713bc84c26807f5dd08ce3e
 
 // MockInspector is a test mock for the Inspector interface.
 //

@@ -14,7 +14,8 @@ import (
 	"github.com/reliant-labs/forge/pkg/contractkit"
 )
 
-// forge:section forge:hash=08c3965e290292478bafea396725ff6c67b83941057992bfeae01bbeaef156e1
+// forge:section MockSource
+// forge:hash=2a2db1c2f378550556308b87f9d1603659d56d701adcf024794e3c6ea1d81147
 
 // MockSource is a test mock for the Source interface.
 //

@@ -12,7 +12,8 @@ import (
 	"github.com/reliant-labs/forge/pkg/contractkit"
 )
 
-// forge:section forge:hash=8eb31499bf3db75d152f332ebdea5f13fbc6442fb3efcd9c18cf2b07b3de250a
+// forge:section MockService
+// forge:hash=cd51b98c27d8c54913c394a681ca680414836e90c171f9c1239f196eb8ca8154
 
 // MockService is a test mock for the Service interface.
 //
@@ -177,7 +178,8 @@ func (m *MockService) SaveChecksums(root string, cs *FileChecksums) error {
 // Compile-time check.
 var _ Service = (*MockService)(nil)
 
-// forge:section forge:hash=357b1d57b2eb6508bcc594be9e93caefdf00d4f819aa32101b9e44bf285288d6
+// forge:section MockConfigService
+// forge:hash=7032bd32aeb705002ac321c24e9aabce95e000abce63fee9dbf525708e47735c
 
 // MockConfigService is a test mock for the ConfigService interface.
 //

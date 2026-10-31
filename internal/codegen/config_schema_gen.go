@@ -151,7 +151,7 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 	// get their own, and a block message name can never shadow a root schema.
 	for _, blk := range blocks {
 		name := blk.schemaName(schemaName)
-		b.WriteString(kclSectionLine)
+		b.WriteString(kclSection("schema " + name))
 		fmt.Fprintf(&b, "# %s is the %s block (%s) — author its values in config.k as `%s.<field> = ...`.\n", name, blk.Field, blk.Type, blk.Field)
 		b.WriteString("schema " + name + ":\n")
 		blockBody, emitted := renderConfigSchemaFields(blk.Fields, projectName)
@@ -164,7 +164,7 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 		b.WriteString("\n")
 	}
 
-	b.WriteString(kclSectionLine)
+	b.WriteString(kclSection("schema " + schemaName))
 	b.WriteString("schema " + schemaName + ":\n")
 
 	rootBody, emitted := renderConfigSchemaFields(root, projectName)
@@ -192,15 +192,18 @@ func renderConfigSchemaNamed(fields []ConfigField, projectName, schemaName strin
 	return b.String(), nil
 }
 
-// kclSectionLine begins one independent part of a generated KCL config
-// module: each config block's schema, each root schema, each env-projection
-// lambda and each process selector. forge stamps each part with its own hash
+// kclSection is the header of one independent part of a generated KCL
+// config module: each config block's schema, each root schema, each
+// env-projection lambda, each block's run of env-map entries and each process
+// selector. forge stamps each part with its own hash on the line after it
 // (forge's checksums package, "sectioned self-certification"), so two
 // branches that change different config blocks merge with plain git instead
-// of conflicting on the module's one header hash. Every part ends with a
-// blank line, which keeps the end of one part and the next part's section
-// line from being adjacent changes.
-const kclSectionLine = "# forge:section\n"
+// of conflicting on the module's one header hash. name must be unique in the
+// module and stable while the part exists: it is the unchanged line between
+// a part inserted before this one and a change to this one. Every part ends
+// with a blank line, which keeps the end of one part and the next part's
+// header from being adjacent changes.
+func kclSection(name string) string { return "# forge:section " + name + "\n" }
 
 // renderSchemaChecks emits the schema `check:` block refusing an empty
 // string for each field that has a non-empty default, and an unusable entry

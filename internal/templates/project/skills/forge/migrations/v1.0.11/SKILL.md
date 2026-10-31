@@ -1,6 +1,6 @@
 ---
 name: v1.0.11
-description: Upgrade a project to forge v1.0.11. More generated files merge with plain git. The read-only and dashboard grants (db/grants/*_gen.sql), the config module (deploy/kcl/config_gen.k) and the scenario handler map (src/mocks/scenario-rpcs_gen.ts) certify each table, config block and service separately, the scaffold ledger .forge/scaffolded.json becomes one entry file per path under .forge/scaffolded/, and the mock-fixture fingerprint leaves the committed fixture-manifest_gen.ts for a gitignored marker. Use when the project commits any of those files.
+description: Upgrade a project to forge v1.0.11. More generated files merge with plain git. The read-only and dashboard grants (db/grants/*_gen.sql), the config module (deploy/kcl/config_gen.k) and the scenario handler map (src/mocks/scenario-rpcs_gen.ts) certify each table, config block and service separately, every sectioned file (contract mocks included) names each section and puts its hash on the next line, the scaffold ledger .forge/scaffolded.json becomes one entry file per path under .forge/scaffolded/, and the mock-fixture fingerprint leaves the committed fixture-manifest_gen.ts for a gitignored marker. Use when the project commits any of those files.
 version: v1.0.11
 detection: test -f .forge/scaffolded.json -o -f db/grants/readonly_gen.sql -o -f deploy/kcl/config_gen.k && exit 0; ls frontends/*/src/mocks/scenario-rpcs_gen.ts frontends/*/src/mocks/fixture-manifest_gen.ts >/dev/null 2>&1 && exit 0; exit 1
 ---
@@ -13,15 +13,21 @@ The first `forge generate` on v1.0.11 migrates everything below. Commit what it 
 
 Each of these files gathers independent parts into one file, and each carried ONE `forge:hash` over all of it. Two pull requests that changed different parts (two tables' columns, two config blocks, two services' rpcs) both rewrote that one line, and git, including GitHub's server-side merge, which runs no merge driver, reported a conflict. Over the week to 2026-10-30, `readonly_gen.sql` and `config_gen.k` conflicted in 34 pull requests across reliant and control-plane, every time on that line alone.
 
-Each part now begins with its own `forge:section forge:hash=…` comment, which certifies that part. The header hash covers only the shared preamble. A file still counts as forge's untouched render only when every hash verifies, so hand-edit detection is unchanged. Two pull requests that change different parts now merge into exactly what `forge generate` writes for both.
+Each part now begins with a header naming it, `forge:section <name>` (the table, the config block, the service), and the line after it, `forge:hash=…`, certifies that part. The file's head hash covers only the shared preamble. A file still counts as forge's untouched render only when every hash verifies, so hand-edit detection is unchanged. Two pull requests that change different parts now merge into exactly what `forge generate` writes for both.
 
 - **`db/grants/readonly_gen.sql`, `db/grants/dashboard_gen.sql`:** one section per table. The table's columns list starts with a constant first row, so every table's row starts with its own comma, and adding the last table never rewrites the row before it. The withheld-column notes (`forge:secret`, and credential-shaped columns nobody decided) moved from the end of the file into each table's section. The SQL the migrator applies is unchanged in effect.
 - **`deploy/kcl/config_gen.k`:** one section per config block schema, per root schema, per env-projection lambda and per process selector. Inside each lambda, one section per config block's env entries.
 - **`src/mocks/scenario-rpcs_gen.ts`:** `ScenarioRpcHandlers` is an intersection of one object type per service, each its own section. Every request and response type is imported inline (`import("@/gen/…").Name`), so the shared `import type` block is gone, and so are the `<module>_<Name>` aliases for message names two services share. Scenario files that use `ScenarioRpcHandlers` need no change.
 
+### Named headers, in every sectioned file
+
+v1.0.10 sectioned the contract mocks (`mock_gen.go`, one section per interface) with the hash on the header itself: `// forge:section forge:hash=…`. That header is the first line of its part, and a part inserted into the file lands directly before the header of the part after it. So a pull request that changed one part and another that added a part right before it conflicted on that header. This is the common case: in a project with two services, a new `orders` service sorts directly before a changed `users` service. Every sectioned file, the mocks included, now writes the named two-line form, and the header stays the same while its part exists. The name also makes each header unique, which keeps git from aligning one part's header with another's.
+
+The first `forge generate` restamps every sectioned file into the new form. The old form still verifies as forge's own render, so nothing reads as hand-edited during the upgrade. In `config_gen.k`, the `<SCHEMA>_SENSITIVE_ENV` and `<SCHEMA>_OPTIONAL_SECRET_ENV` lists now hold one entry per line, grouped by config block like the env map, so two blocks gaining credentials no longer rewrite one shared line. Their values are unchanged.
+
 ### Still a conflict
 
-Two pull requests that change the SAME table, config block or service still conflict there, because both changed that part. So do two that each add a new one between the same two neighbours. `forge generate` on the merged inputs resolves either.
+Two pull requests that change the SAME table, config block or service still conflict there, because both changed that part. Line merging cannot take two other shapes either: two pull requests that each add a new part between the same two neighbours, and one that deletes a part while the other deletes or adds a part right beside it. `forge generate` on the merged inputs resolves each of them. Generators whose parts are born and removed independently are moving to one file per part, which removes these shapes too.
 
 ## 2. `.forge/scaffolded.json` becomes `.forge/scaffolded/`
 

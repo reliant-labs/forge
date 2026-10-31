@@ -35,17 +35,40 @@ func TestMergeProperty_ConfigKCL(t *testing.T) {
 		}
 		return append(fs, field("stripe", "stripe_key", true))
 	}
-	variants := map[string][]ConfigField{
-		"base": fields(false, false), "ours": fields(true, false),
-		"theirs": fields(false, true), "merged": fields(true, true),
-	}
-	mergeproperty.AssertPlainMergeIsRender(t, "deploy/kcl/config_gen.k", func(v string) []byte {
-		out, err := GenerateConfigKCL(variants[v], "app")
-		if err != nil {
-			t.Fatal(err)
+	// Neighbours: ours adds a field to the nats block; theirs declares a new
+	// kafka block directly before it. Every part of the kafka block (schema,
+	// env entries, secret refs) lands right before a nats part ours changed.
+	neighbours := func(extraNats, kafka bool) []ConfigField {
+		fs := []ConfigField{root, field("email", "email_from", false)}
+		if kafka {
+			fs = append(fs, field("kafka", "kafka_brokers", false), field("kafka", "kafka_password", true))
 		}
-		return []byte(out)
-	})
+		fs = append(fs, field("nats", "nats_url", false))
+		if extraNats {
+			fs = append(fs, field("nats", "nats_subject", false), field("nats", "nats_token", true))
+		}
+		return append(fs, field("nats", "nats_password", true))
+	}
+	for name, variants := range map[string]map[string][]ConfigField{
+		"apart": {
+			"base": fields(false, false), "ours": fields(true, false),
+			"theirs": fields(false, true), "merged": fields(true, true),
+		},
+		"block born before a changed neighbour": {
+			"base": neighbours(false, false), "ours": neighbours(true, false),
+			"theirs": neighbours(false, true), "merged": neighbours(true, true),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mergeproperty.AssertPlainMergeIsRender(t, "deploy/kcl/config_gen.k", func(v string) []byte {
+				out, err := GenerateConfigKCL(variants[v], "app")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return []byte(out)
+			})
+		})
+	}
 }
 
 func TestMergeProperty_ReadOnlyGrants(t *testing.T) {
@@ -56,13 +79,23 @@ func TestMergeProperty_ReadOnlyGrants(t *testing.T) {
 		}
 		return tb
 	}
-	// ours changes accounts; theirs changes users and adds widgets. Orders
-	// sits between them, unchanged.
-	tables := map[string][]dbgrants.Table{
-		"base":   {table("accounts", "id"), table("orders", "id"), table("users", "id", "email")},
-		"ours":   {table("accounts", "id", "balance"), table("orders", "id"), table("users", "id", "email")},
-		"theirs": {table("accounts", "id"), table("orders", "id"), table("users", "id", "email", "name"), table("widgets", "id")},
-		"merged": {table("accounts", "id", "balance"), table("orders", "id"), table("users", "id", "email", "name"), table("widgets", "id")},
+	cases := map[string]map[string][]dbgrants.Table{
+		// ours changes accounts; theirs changes users and adds widgets.
+		// Orders sits between them, unchanged.
+		"apart": {
+			"base":   {table("accounts", "id"), table("orders", "id"), table("users", "id", "email")},
+			"ours":   {table("accounts", "id", "balance"), table("orders", "id"), table("users", "id", "email")},
+			"theirs": {table("accounts", "id"), table("orders", "id"), table("users", "id", "email", "name"), table("widgets", "id")},
+			"merged": {table("accounts", "id", "balance"), table("orders", "id"), table("users", "id", "email", "name"), table("widgets", "id")},
+		},
+		// ours changes orders; theirs changes accounts, its neighbour, and
+		// adds events directly before orders.
+		"neighbours": {
+			"base":   {table("accounts", "id"), table("orders", "id")},
+			"ours":   {table("accounts", "id"), table("orders", "id", "total")},
+			"theirs": {table("accounts", "id", "name"), table("events", "id"), table("orders", "id")},
+			"merged": {table("accounts", "id", "name"), table("events", "id"), table("orders", "id", "total")},
+		},
 	}
 	for _, tc := range []struct {
 		rel    string
@@ -80,14 +113,16 @@ func TestMergeProperty_ReadOnlyGrants(t *testing.T) {
 			return dbgrants.RenderDashboard(marked)
 		}, DashboardGrantsFile},
 	} {
-		t.Run(tc.rel, func(t *testing.T) {
-			mergeproperty.AssertPlainMergeIsRender(t, tc.rel, func(v string) []byte {
-				script, err := tc.render(tables[v])
-				if err != nil {
-					t.Fatal(err)
-				}
-				return tc.file(script)
+		for name, tables := range cases {
+			t.Run(tc.rel+"/"+name, func(t *testing.T) {
+				mergeproperty.AssertPlainMergeIsRender(t, tc.rel, func(v string) []byte {
+					script, err := tc.render(tables[v])
+					if err != nil {
+						t.Fatal(err)
+					}
+					return tc.file(script)
+				})
 			})
-		})
+		}
 	}
 }

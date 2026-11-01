@@ -7,19 +7,27 @@ package cli
 // reads would make "what is running" cost a round trip per environment while
 // giving a reader no way to see a consistent moment.
 //
+// A ROSTER, NOT THE DOCUMENTS. The control plane keeps every Live row bounded
+// (a few KB) however much the environment contains, so the row IDENTIFIES the
+// documents that grow with it and a reader fetches the one it needs:
+//
+//   - the declared shape: GetEnvironmentShape (hostedLiveClient.GetEnvironmentShape);
+//   - the bundle, its shape included: GetBundle (hostedBundleClient.GetBundleByID);
+//   - the release: GetRelease (hostedStore.Get).
+//
 // WHAT EACH POINTER MEANS, because they are easy to conflate:
 //
-//   - CurrentPromotion / CurrentRelease — where the IMAGES come from.
-//   - CurrentBundle — where the CONFIG comes from: the newest bundle with a
-//     succeeded apply, or on a hosted env the row's applied_bundle_id. Two
-//     pointers because images and config move independently.
+//   - CurrentPromotion — where the IMAGES come from.
+//   - CurrentBundle — where the CONFIG comes from: the bundle the current
+//     promotion names, by id and digest. Two pointers because images and
+//     config move independently.
 //   - LatestApply may be NEWER than CurrentBundle and still running or
 //     failed, which is exactly the state worth seeing: it is the deploy
 //     somebody is currently watching.
-//   - Environment.DeclaredShape is the DECLARATION — what the checked-in
-//     config says — and is for display only. A plan never diffs against it:
-//     `forge env build` refreshes it from the very render being deployed, so
-//     diffing against it would hide every change (§7).
+//   - Env.DeclaredAt says a DECLARATION exists — what the checked-in config
+//     says — and the declaration itself is for display only. A plan never
+//     diffs against it: `forge env build` refreshes it from the very render
+//     being deployed, so diffing against it would hide every change (§7).
 //
 // EMPTY IS NOT UNKNOWN. A missing env list is an empty list, never an error,
 // and `drift.state = unknown` is kept distinct from `in_sync`: a self-managed
@@ -36,8 +44,9 @@ import (
 )
 
 const (
-	procGetLiveView = "controlplane.v1.DeployService/GetLiveView"
-	procGetDrift    = "controlplane.v1.DeployService/GetDrift"
+	procGetLiveView         = "controlplane.v1.DeployService/GetLiveView"
+	procGetEnvironmentShape = "controlplane.v1.DeployService/GetEnvironmentShape"
+	procGetDrift            = "controlplane.v1.DeployService/GetDrift"
 )
 
 // Drift states, as controlplane.v1.DeployDrift.state spells them.
@@ -60,7 +69,8 @@ const (
 // ─── Wire shapes ─────────────────────────────────────────────────────────────
 
 // wireLiveEnvironment is the DeployEnvironment fields the Live view reads,
-// including F-DECL's declaration half (tags 20–22).
+// including F-DECL's declaration stamp (tags 21–22; the shape itself, once
+// tag 20, is GetEnvironmentShape's).
 //
 // This is a WIDER read than deploytarget.wireEnvironment, which is the
 // deploy target's view. Kept separate rather than widening that one: the two
@@ -73,11 +83,8 @@ type wireLiveEnvironment struct {
 	Project   string `json:"project,omitempty"`
 	Kind      string `json:"kind,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
-	// DeclaredShape is a google.protobuf.Struct holding release.Shape's
-	// canonical JSON (snake_case keys), kept raw for the reason
-	// shapeFromWire explains.
-	DeclaredShape json.RawMessage `json:"declaredShape,omitempty"`
-	DeclaredBy    *wireProvenance `json:"declaredBy,omitempty"`
+	// DeclaredBy and DeclaredAt are set exactly when a declaration exists.
+	DeclaredBy *wireProvenance `json:"declaredBy,omitempty"`
 	// DeclaredAt is the staleness signal: a shape from six weeks ago is
 	// still a shape, but a plan computed against it is worth less than one
 	// computed against this morning's.
@@ -128,18 +135,26 @@ type wireDrift struct {
 	Detail     string            `json:"detail,omitempty"`
 }
 
+// wireBundleSummary is controlplane.v1.DeployBundleSummary: a bundle's
+// identity on a Live row, without its shape or snapshot.
+type wireBundleSummary struct {
+	ID             string `json:"id"`
+	ReleaseVersion string `json:"releaseVersion,omitempty"`
+	Digest         string `json:"digest"`
+	ConfigDigest   string `json:"configDigest,omitempty"`
+}
+
 // wireLiveEnvRow is controlplane.v1.DeployLiveEnvironment.
 //
 // `findings` (tag 8) is reserved for #516 and absent here.
 type wireLiveEnvRow struct {
-	Environment      *wireLiveEnvironment `json:"environment,omitempty"`
-	CurrentPromotion *wirePromotion       `json:"currentPromotion,omitempty"`
-	CurrentRelease   *wireRelease         `json:"currentRelease,omitempty"`
-	CurrentBundle    *wireBundle          `json:"currentBundle,omitempty"`
-	LatestApply      *wireApply           `json:"latestApply,omitempty"`
-	Phase            string               `json:"phase,omitempty"`
-	Sessions         []wireLocalSession   `json:"sessions,omitempty"`
-	Drift            *wireDrift           `json:"drift,omitempty"`
+	Environment          *wireLiveEnvironment `json:"environment,omitempty"`
+	CurrentPromotion     *wirePromotion       `json:"currentPromotion,omitempty"`
+	CurrentBundleSummary *wireBundleSummary   `json:"currentBundleSummary,omitempty"`
+	LatestApply          *wireApply           `json:"latestApply,omitempty"`
+	Phase                string               `json:"phase,omitempty"`
+	Sessions             []wireLocalSession   `json:"sessions,omitempty"`
+	Drift                *wireDrift           `json:"drift,omitempty"`
 }
 
 // ─── Domain shapes ───────────────────────────────────────────────────────────
@@ -152,7 +167,9 @@ type wireLiveEnvRow struct {
 // from their empty equivalents, which is why none of them is flattened into a
 // zero value.
 type LiveEnvironment struct {
-	// Env is the environment's record: name, kind, and the declaration.
+	// Env is the environment's record: name, kind, and the declaration's
+	// provenance and time. Its DeclaredShape is never set from Live — the
+	// shape is GetEnvironmentShape's.
 	Env release.EnvRecord
 	// EnvironmentID is the control plane's id, for the per-env RPCs a
 	// reader may follow up with.
@@ -163,11 +180,12 @@ type LiveEnvironment struct {
 	// refuse fast rather than wait out a timeout.
 	ConvergesPromotions bool
 
-	// CurrentPromotion and CurrentRelease are where the IMAGES come from.
+	// CurrentPromotion is where the IMAGES come from. The release itself is
+	// hostedStore.Get(CurrentPromotion.Release).
 	CurrentPromotion *release.Promotion
-	CurrentRelease   *release.Release
-	// CurrentBundle is where the CONFIG comes from.
-	CurrentBundle *release.BundleRecord
+	// CurrentBundle is where the CONFIG comes from, by identity. The bundle
+	// itself (its shape) is hostedBundleClient.GetBundleByID(CurrentBundle.ID).
+	CurrentBundle *LiveBundle
 	// LatestApply may be newer than CurrentBundle and still running.
 	LatestApply *ApplyRecord
 	// Phase is the rollout phase, as the wire enum names it. Rendered with
@@ -181,6 +199,14 @@ type LiveEnvironment struct {
 	// confused with "no drift found", which is a Drift whose Objects are
 	// empty and whose State is in_sync.
 	Drift *LiveDrift
+}
+
+// LiveBundle identifies the bundle an environment's current promotion names.
+type LiveBundle struct {
+	ID           string
+	Release      string
+	Digest       string
+	ConfigDigest string
 }
 
 // LiveDrift is what an observer saw of the live cluster, against the applied
@@ -249,6 +275,22 @@ func (c hostedLiveClient) GetLiveView(ctx context.Context, project string, inclu
 	return out, nil
 }
 
+// GetEnvironmentShape reads one environment's DECLARED shape by its control
+// plane id. Nil, with no error, when nothing has declared it — "never built",
+// which is not a shape that declares nothing.
+func (c hostedLiveClient) GetEnvironmentShape(ctx context.Context, environmentID string) (*release.Shape, error) {
+	if environmentID == "" {
+		return nil, fmt.Errorf("%w: reading a declared shape needs an environment id", release.ErrInvalid)
+	}
+	var resp struct {
+		DeclaredShape json.RawMessage `json:"declaredShape,omitempty"`
+	}
+	if err := c.client.Call(ctx, procGetEnvironmentShape, map[string]any{"environmentId": environmentID}, &resp); err != nil {
+		return nil, err
+	}
+	return shapeFromWire(resp.DeclaredShape)
+}
+
 func liveEnvFromWire(row wireLiveEnvRow, now time.Time) (LiveEnvironment, error) {
 	if row.Environment == nil {
 		return LiveEnvironment{}, fmt.Errorf("%w: the control plane returned a Live row with no environment", release.ErrInvalid)
@@ -263,22 +305,7 @@ func liveEnvFromWire(row wireLiveEnvRow, now time.Time) (LiveEnvironment, error)
 		Namespace:           we.Namespace,
 		ConvergesPromotions: we.ConvergesPromotions,
 		Phase:               row.Phase,
-		Env:                 release.EnvRecord{Name: we.Name, Kind: kind},
-	}
-	shape, err := shapeFromWire(we.DeclaredShape)
-	if err != nil {
-		return LiveEnvironment{}, fmt.Errorf("environment %q: %w", we.Name, err)
-	}
-	out.Env.DeclaredShape = shape
-	out.Env.DeclaredAt = we.DeclaredAt
-	if out.Env.DeclaredShape != nil && out.Env.DeclaredAt == nil {
-		// EnvRecord.Validate requires the two together: a declaration with
-		// no time cannot be judged stale, and staleness is most of what a
-		// declaration is read for. Rather than refuse the whole row — the
-		// shape is still useful — the time is taken as unknown and the
-		// shape dropped, so no reader can present an undateable shape as
-		// current.
-		out.Env.DeclaredShape = nil
+		Env:                 release.EnvRecord{Name: we.Name, Kind: kind, DeclaredAt: we.DeclaredAt},
 	}
 	declaredBy, err := provenanceFromWire(we.DeclaredBy)
 	if err != nil {
@@ -296,19 +323,11 @@ func liveEnvFromWire(row wireLiveEnvRow, now time.Time) (LiveEnvironment, error)
 		}
 		out.CurrentPromotion = &p
 	}
-	if w := row.CurrentRelease; w != nil {
-		r, rerr := releaseFromWire(*w)
-		if rerr != nil {
-			return LiveEnvironment{}, rerr
+	if w := row.CurrentBundleSummary; w != nil {
+		if w.ID == "" || w.Digest == "" {
+			return LiveEnvironment{}, fmt.Errorf("%w: environment %q: the control plane returned a bundle summary with no id or digest", release.ErrInvalid, we.Name)
 		}
-		out.CurrentRelease = &r
-	}
-	if w := row.CurrentBundle; w != nil {
-		b, berr := bundleFromWire(we.Name, *w)
-		if berr != nil {
-			return LiveEnvironment{}, berr
-		}
-		out.CurrentBundle = &b
+		out.CurrentBundle = &LiveBundle{ID: w.ID, Release: w.ReleaseVersion, Digest: w.Digest, ConfigDigest: w.ConfigDigest}
 	}
 	if w := row.LatestApply; w != nil {
 		a, outcome, aerr := applyFromWire(we.Name, *w)

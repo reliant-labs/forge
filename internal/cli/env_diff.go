@@ -294,10 +294,8 @@ func envDiffTargets(projectDir string, opts envDiffOptions) ([]string, error) {
 // diffEnvironments renders and diffs each env, at most envDiffConcurrency at
 // a time, and returns the entries in the order the envs were given.
 func diffEnvironments(ctx context.Context, projectDir string, envs []string, opts envDiffOptions, errOut io.Writer) []envDiffEntry {
-	// The Live side is fetched ONCE for the whole project, not per env.
-	// GetLiveView is one round trip returning every env's bundle shape
-	// (which is why §8.0 made it one call), so a per-env fetch would be N
-	// round trips for data the first one already held.
+	// The Live roster is fetched ONCE for the whole project, then only the
+	// requested envs' documents (bundle, declaration) are read.
 	live := fetchLiveShapes(ctx, projectDir, envs, errOut)
 
 	entries := make([]envDiffEntry, len(envs))
@@ -334,7 +332,10 @@ type liveSide struct {
 	Secrets map[string]bool
 }
 
-// fetchLiveShapes reads every env's Live side in one call.
+// fetchLiveShapes reads the requested envs' Live sides: the roster in one
+// call, then each env's bundle (GetBundle) or, before any bundle, its
+// declaration (GetEnvironmentShape) — the documents the roster identifies but
+// does not carry.
 //
 // A control plane that cannot be reached is NOT an error: it yields an empty
 // map, every env reports LiveSource "none", and the diff says "no recorded
@@ -356,24 +357,62 @@ func fetchLiveShapes(ctx context.Context, projectDir string, envs []string, errO
 		fmt.Fprintf(errOut, "warning: could not read Live (%v); every environment will report \"no recorded config\"\n", err)
 		return out
 	}
+	wanted := make(map[string]bool, len(envs))
+	for _, env := range envs {
+		wanted[env] = true
+	}
 	for _, env := range environments {
+		if !wanted[env.Env.Name] {
+			continue
+		}
 		side := liveSide{Known: true, Source: "none"}
+		// The declaration is read whenever one exists: it decides whose
+		// store holds the env's secrets, and it is the live side before
+		// any bundle was recorded.
+		var declared *release.Shape
+		if env.Env.DeclaredAt != nil && env.EnvironmentID != "" {
+			shape, derr := hostedLiveClient{client: client}.GetEnvironmentShape(ctx, env.EnvironmentID)
+			if derr != nil {
+				fmt.Fprintf(errOut, "warning: could not read %s's declared shape (%v)\n", env.Env.Name, derr)
+			}
+			declared = shape
+		}
+		var bundleShape *release.Shape
+		if env.CurrentBundle != nil {
+			bundle, berr := hostedBundleClient{client: client}.GetBundleByID(ctx, env.Env.Name, env.CurrentBundle.ID)
+			switch {
+			case berr != nil:
+				fmt.Fprintf(errOut, "warning: could not read %s's bundle %s (%v); it reports \"no recorded config\"\n",
+					env.Env.Name, env.CurrentBundle.ID, berr)
+			case bundle != nil:
+				bundleShape = &bundle.Shape
+			}
+		}
 		switch {
-		case env.CurrentBundle != nil:
+		case bundleShape != nil:
 			// THE APPLIED BUNDLE, which is the only honest live
 			// side: declared_shape is refreshed by every build and
 			// would hide the change the user is looking for.
-			shape := env.CurrentBundle.Shape
-			side.Shape, side.Source = &shape, "bundle"
+			side.Shape, side.Source = bundleShape, "bundle"
 			side.ConfigDigest = env.CurrentBundle.ConfigDigest
-		case env.Env.DeclaredShape != nil:
+		case env.CurrentBundle == nil && declared != nil:
 			// Pre-bundle history only.
-			side.Shape, side.Source = env.Env.DeclaredShape, "declared_shape"
+			side.Shape, side.Source = declared, "declared_shape"
 		}
-		side.Secrets = fetchSecretPresence(ctx, client, env, errOut)
+		side.Secrets = fetchSecretPresence(ctx, client, env, secretsShape(declared, bundleShape), errOut)
 		out[env.Env.Name] = side
 	}
 	return out
+}
+
+// secretsShape is the shape whose secrets decide which store to ask: the
+// declaration when there is one (the fact the control plane holds without a
+// render), else the bundle's.
+func secretsShape(declared, bundle *release.Shape) *release.Shape {
+	if declared != nil {
+		return declared
+	}
+	return bundle
 }
 
 // fetchSecretPresence asks the MANAGED secret store which of an env's
@@ -390,7 +429,7 @@ func fetchLiveShapes(ctx context.Context, projectDir string, envs []string, errO
 // situation. Returning an empty map of falses instead would put "MISSING —
 // you must set this" in front of a user whose secrets are perfectly fine,
 // which is worse than saying nothing.
-func fetchSecretPresence(ctx context.Context, client cloudCaller, env LiveEnvironment, errOut io.Writer) map[string]bool {
+func fetchSecretPresence(ctx context.Context, client cloudCaller, env LiveEnvironment, shape *release.Shape, errOut io.Writer) map[string]bool {
 	if env.EnvironmentID == "" {
 		// No row, so nothing to ask about. A never-registered env's
 		// secrets are unverifiable by definition.
@@ -400,7 +439,7 @@ func fetchSecretPresence(ctx context.Context, client cloudCaller, env LiveEnviro
 	// names another provider is left unverifiable rather than queried
 	// against a store that does not hold its values — which would report
 	// every secret missing.
-	if !managedSecretProvider(env) {
+	if !managedSecretProvider(shape) {
 		return nil
 	}
 	summaries, err := cloudSecretWriter{client: client, environmentID: env.EnvironmentID}.List(ctx)
@@ -423,16 +462,13 @@ func fetchSecretPresence(ctx context.Context, client cloudCaller, env LiveEnviro
 // control plane's own store, which is the only one presence can be read
 // from.
 //
-// Read from the env's DECLARED shape, because that is the fact the control
-// plane holds without a render — and this whole function runs on the Live
-// side, which must not need a checkout.
-func managedSecretProvider(env LiveEnvironment) bool {
-	shape := env.Env.DeclaredShape
+// Read from the env's DECLARED shape (else its bundle's), because that is the
+// fact the control plane holds without a render — and this whole function
+// runs on the Live side, which must not need a checkout. A nil shape asks
+// nothing.
+func managedSecretProvider(shape *release.Shape) bool {
 	if shape == nil {
-		if env.CurrentBundle == nil {
-			return false
-		}
-		shape = &env.CurrentBundle.Shape
+		return false
 	}
 	for _, s := range shape.Secrets {
 		// One managed secret is enough to make the store worth asking:

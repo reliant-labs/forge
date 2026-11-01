@@ -100,8 +100,12 @@ func (r EnvRecord) Validate() error {
 	if !r.Kind.Valid() {
 		return fmt.Errorf("%w: environment %q: unknown kind %q", ErrInvalid, r.Name, r.Kind)
 	}
-	if (r.DeclaredShape == nil) != (r.DeclaredAt == nil) {
-		return fmt.Errorf("%w: environment %q: a declared shape and its time come together", ErrInvalid, r.Name)
+	// A shape needs its time — an undateable declaration cannot be judged
+	// stale — but a time may stand alone: the control plane's Live roster
+	// stamps that a declaration exists and serves the shape itself per
+	// environment (GetEnvironmentShape).
+	if r.DeclaredShape != nil && r.DeclaredAt == nil {
+		return fmt.Errorf("%w: environment %q: a declared shape needs the time it was declared", ErrInvalid, r.Name)
 	}
 	if r.DeclaredShape != nil {
 		if err := r.DeclaredShape.Validate(); err != nil {

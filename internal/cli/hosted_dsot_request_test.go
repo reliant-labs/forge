@@ -318,6 +318,36 @@ func TestGetLiveView_EmptyIsAListNotAnError(t *testing.T) {
 	})
 }
 
+// ─── GetEnvironmentShape ─────────────────────────────────────────────────────
+
+// TestGetEnvironmentShape_ReadsTheDeclarationAndKeepsNeverDeclaredNil pins the
+// per-environment read of the declaration the Live roster no longer carries:
+// it sends the id, decodes the shape, and answers a never-declared env with
+// nil — "never built", not a shape that declares nothing.
+func TestGetEnvironmentShape_ReadsTheDeclarationAndKeepsNeverDeclaredNil(t *testing.T) {
+	t.Parallel()
+	f := &fakeDSOTCaller{replies: map[string]any{
+		procGetEnvironmentShape: map[string]any{"declaredShape": map[string]any{
+			"kind": "persistent", "workloads": []any{map[string]any{"name": "api", "runtime": "hosted"}},
+			"secrets": []any{map[string]any{"name": "DB_URL", "provider": "hosted"}},
+		}},
+	}}
+	shape, err := hostedLiveClient{client: f}.GetEnvironmentShape(context.Background(), "env_prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shape == nil || len(shape.Secrets) != 1 || shape.Secrets[0].Name != "DB_URL" {
+		t.Fatalf("shape = %+v, want the declared DB_URL secret", shape)
+	}
+	wantFields(t, f.body(t, procGetEnvironmentShape), map[string]any{"environmentId": "env_prod"})
+
+	none := &fakeDSOTCaller{replies: map[string]any{procGetEnvironmentShape: map[string]any{}}}
+	shape, err = hostedLiveClient{client: none}.GetEnvironmentShape(context.Background(), "env_new")
+	if err != nil || shape != nil {
+		t.Fatalf("a never-declared env = (%+v, %v), want (nil, nil)", shape, err)
+	}
+}
+
 // ─── ReportLocalSession ──────────────────────────────────────────────────────
 
 // TestReportLocalSession_SendsPresenceAndStripsThePath pins

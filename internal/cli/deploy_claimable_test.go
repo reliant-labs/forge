@@ -278,7 +278,7 @@ func TestClaimDocument_NoOutboundInternetOnlyForCompute(t *testing.T) {
 	if !backend.NoOutboundInternet {
 		t.Error("a service's claim document does not carry no_outbound_internet")
 	}
-	for _, want := range []string{"no outbound internet", "fails with a connection error", "not a bug in the app", "the moment the deploy is claimed"} {
+	for _, want := range []string{"no outbound internet", "fails with a connection error", "not a bug in the app", "only the cluster's own names", "restarts the backend on the normal hosted network"} {
 		if !strings.Contains(backend.AgentInstructions, want) {
 			t.Errorf("agent_instructions lacks %q:\n%s", want, backend.AgentInstructions)
 		}
@@ -287,7 +287,7 @@ func TestClaimDocument_NoOutboundInternetOnlyForCompute(t *testing.T) {
 	claimableNow = func() time.Time { return now }
 	defer func() { claimableNow = time.Now }()
 	printClaimBlock(&text, "prod", backend)
-	for _, want := range []string{"NO OUTBOUND INTERNET until claimed", "uses its own", "not a bug in the app"} {
+	for _, want := range []string{"NO OUTBOUND INTERNET until claimed", "uses its own", "not a bug in the app", "restarts"} {
 		if !strings.Contains(text.String(), want) {
 			t.Errorf("claim block lacks %q:\n%s", want, text.String())
 		}

@@ -44,7 +44,9 @@ func TestTaskfileFrontendTestsHaveTaskInCI(t *testing.T) {
 			}
 			installed, tested := false, false
 			for _, step := range job.Steps {
-				if step.Uses == "arduino/setup-task@v2" {
+				// Any release of the action: dependabot bumps its major, and
+				// what this test pins is the Task version it installs.
+				if strings.HasPrefix(step.Uses, "arduino/setup-task@") {
 					if step.With["version"] != "3.52.0" || step.If != "" {
 						t.Fatal("Task must be installed unconditionally at the tested pin 3.52.0")
 					}

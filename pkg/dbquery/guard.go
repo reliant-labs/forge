@@ -331,25 +331,9 @@ func lex(sql string) ([][]token, error) {
 				}
 			}
 		case c == '\'':
-			// E'...' takes backslash escapes; name'...' is a typed literal (the
-			// type "name" and a standard string), which is why the byte before
-			// the E must not continue an identifier.
-			escapes := i > 0 && (sql[i-1] == 'e' || sql[i-1] == 'E') && (i < 2 || !isIdentByte(sql[i-2]))
-			end, ok := scanQuoted(sql, i, '\'', escapes)
-			if !ok {
-				return nil, refused("unterminated", "unterminated string literal")
-			}
-			// A literal continued on a following line is one literal, and the
-			// continuation of an E-string is read with escapes too:
-			// E'a'<newline>'\'' is one string, not two.
-			for escapes {
-				next, more := continuation(sql, end)
-				if !more {
-					break
-				}
-				if end, ok = scanQuoted(sql, next, '\'', true); !ok {
-					return nil, refused("unterminated", "unterminated string literal")
-				}
+			end, escapes, err := scanString(sql, i)
+			if err != nil {
+				return nil, err
 			}
 			// An E before the quote was lexed as a word; it is a prefix.
 			if escapes && len(cur) > 0 && cur[len(cur)-1].kind == tokWord && cur[len(cur)-1].text == "E" {
@@ -421,6 +405,30 @@ func lex(sql string) ([][]token, error) {
 // opens no dollar quote, and in é'…' the literal is typed, not an E-string.
 func isIdentByte(c byte) bool {
 	return c == '_' || c == '$' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80
+}
+
+// scanString reads the string literal whose opening quote is sql[i], and its
+// continuations, and returns the index after it and whether it is an E-string.
+//
+// E'...' takes backslash escapes; name'...' is a typed literal (the type
+// "name" and a standard string), which is why the byte before the E must not
+// continue an identifier. A literal continued on a following line is one
+// literal, and the continuation of an E-string is read with escapes too:
+// E'a'<newline>'\” is one string, not two.
+func scanString(sql string, i int) (end int, escapes bool, err error) {
+	escapes = i > 0 && (sql[i-1] == 'e' || sql[i-1] == 'E') && (i < 2 || !isIdentByte(sql[i-2]))
+	end, ok := scanQuoted(sql, i, '\'', escapes)
+	for ok && escapes {
+		next, more := continuation(sql, end)
+		if !more {
+			break
+		}
+		end, ok = scanQuoted(sql, next, '\'', true)
+	}
+	if !ok {
+		return 0, false, refused("unterminated", "unterminated string literal")
+	}
+	return end, escapes, nil
 }
 
 // continuation returns the index of the quote that continues the string

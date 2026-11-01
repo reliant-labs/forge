@@ -23,10 +23,23 @@ var explainable = map[string]bool{"SELECT": true, "WITH": true, "TABLE": true, "
 // SELECT, WITH, TABLE, VALUES, SHOW or EXPLAIN, and refuses EXPLAIN ANALYZE
 // over anything but a SELECT, because ANALYZE executes what it explains.
 //
+// It also refuses SET and RESET by name, and a call to any function in
+// [deniedFunctions]: the ones that change the session (set_config, which a
+// read-only transaction allows and through which a query can raise its own
+// work_mem or drop its statement_timeout), run SQL text the guard never saw
+// (ts_stat, ts_rewrite, query_to_xml, dblink, crosstab), take locks that outlive
+// the statement, or reach the server's administration. A name is a call when an
+// opening parenthesis follows it, schema-qualified or quoted alike; a column
+// that happens to share a name is not refused. A Unicode-escaped identifier
+// (U&"...") followed by a parenthesis is refused outright, since its spelling
+// can hide the name.
+//
 // IT IS NOT THE SECURITY BOUNDARY. A WITH can still carry a data-modifying
 // CTE and a SELECT can still call nextval(); the read-only transaction [Run]
 // opens is what refuses them, and the role's privileges are what refuse
-// everything else. The guard is pure Go (no cgo, no parser dependency) so the
+// everything else. A denylist over SQL can only ever be as complete as the day
+// it was written; the client-side deadline in [Run] bounds a query whatever it
+// managed to set. The guard is pure Go (no cgo, no parser dependency) so the
 // forge binary stays cross-compilable; it understands comments, quoted
 // identifiers, string literals (including E” and dollar quoting) well enough
 // to find the statement's end, and no more.
@@ -62,8 +75,14 @@ func Check(sql string) (leader string, err error) {
 		return "", refused("not_read_only", "the statement must start with SELECT, WITH, TABLE, VALUES, SHOW or EXPLAIN")
 	}
 	leader = stmt[i].text
+	if leader == "SET" || leader == "RESET" {
+		return "", refused("session_state", fmt.Sprintf("a query cannot %s: it may not change session settings", leader))
+	}
 	if !allowedLeaders[leader] {
 		return "", refused("not_read_only", fmt.Sprintf("only SELECT, WITH, TABLE, VALUES, SHOW and EXPLAIN statements are allowed; got %s", leader))
+	}
+	if err := deniedCall(stmt); err != nil {
+		return "", err
 	}
 	if leader != "EXPLAIN" {
 		return leader, nil
@@ -140,6 +159,115 @@ func ParamRefs(sql string) (max int, err error) {
 	return max, nil
 }
 
+// deniedFunctions are the functions a query may not call, by lower-cased name;
+// deniedPrefixes cover whole families. Each one changes the session, runs SQL
+// text the guard never read, leaves something behind on the connection, or
+// reaches the server's administration. Most of the last need privileges a
+// read-only role does not hold; they are listed so the refusal is a message
+// rather than depend on that.
+var deniedFunctions = map[string]string{
+	"set_config": "a query may not change session settings, so the limits set for it hold",
+
+	// They execute the SQL text (or the cursor) they are given.
+	"ts_stat":                    "it runs the SQL text it is given",
+	"ts_rewrite":                 "it runs the SQL text it is given",
+	"query_to_xml":               "it runs the SQL text it is given",
+	"query_to_xmlschema":         "it runs the SQL text it is given",
+	"query_to_xml_and_xmlschema": "it runs the SQL text it is given",
+	"cursor_to_xml":              "it reads a cursor the session holds",
+	"cursor_to_xmlschema":        "it reads a cursor the session holds",
+	"crosstab":                   "it runs the SQL text it is given",
+	"crosstab2":                  "it runs the SQL text it is given",
+	"crosstab3":                  "it runs the SQL text it is given",
+	"crosstab4":                  "it runs the SQL text it is given",
+	"connectby":                  "it runs a query it builds from its arguments",
+	// They scan whole tables, schemas or the database behind one call.
+	"table_to_xml":                  "it scans the whole table",
+	"table_to_xmlschema":            "it scans the whole table",
+	"table_to_xml_and_xmlschema":    "it scans the whole table",
+	"schema_to_xml":                 "it scans every table of a schema",
+	"schema_to_xmlschema":           "it scans every table of a schema",
+	"schema_to_xml_and_xmlschema":   "it scans every table of a schema",
+	"database_to_xml":               "it scans every table of the database",
+	"database_to_xmlschema":         "it scans every table of the database",
+	"database_to_xml_and_xmlschema": "it scans every table of the database",
+
+	"pg_notify":                      "a query may not notify the database's listeners",
+	"pg_terminate_backend":           "a query may not signal other sessions",
+	"pg_cancel_backend":              "a query may not signal other sessions",
+	"pg_reload_conf":                 "a query may not reconfigure the server",
+	"pg_rotate_logfile":              "a query may not administer the server",
+	"pg_switch_wal":                  "a query may not administer the server",
+	"pg_create_restore_point":        "a query may not administer the server",
+	"pg_logical_emit_message":        "a query may not write to the WAL",
+	"pg_promote":                     "a query may not administer the server",
+	"pg_wal_replay_pause":            "a query may not administer the server",
+	"pg_wal_replay_resume":           "a query may not administer the server",
+	"pg_backup_start":                "a query may not administer the server",
+	"pg_backup_stop":                 "a query may not administer the server",
+	"pg_log_backend_memory_contexts": "a query may not administer the server",
+	"pg_import_system_collations":    "a query may not change the catalog",
+	"pg_export_snapshot":             "a query may not export its snapshot to other sessions",
+
+	// Large objects: listed by name, since lo_ is a prefix a project's own
+	// functions may use.
+	"lo_import": "a query may not touch large objects", "lo_export": "a query may not touch large objects",
+	"lo_unlink": "a query may not touch large objects", "lo_create": "a query may not touch large objects",
+	"lo_creat": "a query may not touch large objects", "lo_put": "a query may not touch large objects",
+	"lo_from_bytea": "a query may not touch large objects", "lo_truncate": "a query may not touch large objects",
+	"lo_truncate64": "a query may not touch large objects", "lo_open": "a query may not touch large objects",
+	"lowrite": "a query may not touch large objects",
+}
+
+var deniedPrefixes = []struct{ prefix, why string }{
+	{"dblink", "it opens a connection of its own"},
+	{"pg_advisory_", "a query may not take locks that outlive or block its statement"},
+	{"pg_try_advisory_", "a query may not take locks that outlive or block its statement"},
+	{"pg_stat_reset", "a query may not reset the server's statistics"},
+	{"pg_replication_", "a query may not touch replication"},
+	{"pg_create_logical_replication_slot", "a query may not touch replication"},
+	{"pg_create_physical_replication_slot", "a query may not touch replication"},
+	{"pg_copy_logical_replication_slot", "a query may not touch replication"},
+	{"pg_copy_physical_replication_slot", "a query may not touch replication"},
+	{"pg_drop_replication_slot", "a query may not touch replication"},
+	{"pg_logical_slot_", "a query may not touch replication"},
+}
+
+// deniedFunction reports why a call to name (any case) is refused, or false.
+func deniedFunction(name string) (string, bool) {
+	name = strings.ToLower(name)
+	if why, ok := deniedFunctions[name]; ok {
+		return why, true
+	}
+	for _, p := range deniedPrefixes {
+		if strings.HasPrefix(name, p.prefix) {
+			return p.why, true
+		}
+	}
+	return "", false
+}
+
+// deniedCall refuses the first call in stmt to a denied function: a word or
+// quoted identifier directly followed by "(" (comments are already gone, so
+// `set_config /* x */ (` is a call too).
+func deniedCall(stmt []token) error {
+	for i := 0; i+1 < len(stmt); i++ {
+		t := stmt[i]
+		if next := stmt[i+1]; next.kind != tokPunct || next.text != "(" {
+			continue
+		}
+		switch t.kind {
+		case tokUnicodeIdent:
+			return refused("unicode_identifier", "a Unicode-escaped identifier (U&\"...\") cannot name a function in a query")
+		case tokWord, tokQuotedIdent:
+			if why, bad := deniedFunction(t.text); bad {
+				return refused("denied_function", fmt.Sprintf("%s() is not allowed in a query: %s", strings.ToLower(t.text), why))
+			}
+		}
+	}
+	return nil
+}
+
 func skipParens(stmt []token, i int) int {
 	for i < len(stmt) && stmt[i].kind == tokPunct && stmt[i].text == "(" {
 		i++
@@ -152,13 +280,15 @@ type tokenKind int
 const (
 	tokWord tokenKind = iota
 	tokPunct
-	tokLiteral // string, quoted identifier, dollar-quoted body
-	tokParam   // $n; text is the digits
+	tokLiteral      // string or dollar-quoted body
+	tokQuotedIdent  // "name"; text is the name, "" unescaped
+	tokUnicodeIdent // U&"name": its spelling can hide the name, so it is not read
+	tokParam        // $n; text is the digits
 )
 
 type token struct {
 	kind tokenKind
-	text string // upper-cased for words, "(" or ")" for punctuation
+	text string // upper-cased for words, the name for a quoted identifier, "(" or ")" for punctuation
 }
 
 // lex splits sql into statements at top-level semicolons, dropping comments
@@ -201,10 +331,25 @@ func lex(sql string) ([][]token, error) {
 				}
 			}
 		case c == '\'':
+			// E'...' takes backslash escapes; name'...' is a typed literal (the
+			// type "name" and a standard string), which is why the byte before
+			// the E must not continue an identifier.
 			escapes := i > 0 && (sql[i-1] == 'e' || sql[i-1] == 'E') && (i < 2 || !isIdentByte(sql[i-2]))
 			end, ok := scanQuoted(sql, i, '\'', escapes)
 			if !ok {
 				return nil, refused("unterminated", "unterminated string literal")
+			}
+			// A literal continued on a following line is one literal, and the
+			// continuation of an E-string is read with escapes too:
+			// E'a'<newline>'\'' is one string, not two.
+			for escapes {
+				next, more := continuation(sql, end)
+				if !more {
+					break
+				}
+				if end, ok = scanQuoted(sql, next, '\'', true); !ok {
+					return nil, refused("unterminated", "unterminated string literal")
+				}
 			}
 			// An E before the quote was lexed as a word; it is a prefix.
 			if escapes && len(cur) > 0 && cur[len(cur)-1].kind == tokWord && cur[len(cur)-1].text == "E" {
@@ -217,7 +362,15 @@ func lex(sql string) ([][]token, error) {
 			if !ok {
 				return nil, refused("unterminated", "unterminated quoted identifier")
 			}
-			cur = append(cur, token{kind: tokLiteral})
+			kind := tokQuotedIdent
+			// U&"..." spells the name with escapes (U&"set\005fconfig").
+			if i >= 2 && sql[i-1] == '&' && (sql[i-2] == 'U' || sql[i-2] == 'u') && (i < 3 || !isIdentByte(sql[i-3])) {
+				kind = tokUnicodeIdent
+				if len(cur) >= 2 && cur[len(cur)-1].text == "&" && cur[len(cur)-2].text == "U" {
+					cur = cur[:len(cur)-2]
+				}
+			}
+			cur = append(cur, token{kind: kind, text: strings.ReplaceAll(sql[i+1:end-1], `""`, `"`)})
 			i = end
 		case c == '$' && (i == 0 || !isIdentByte(sql[i-1])):
 			tag, ok := dollarTag(sql, i)
@@ -246,9 +399,9 @@ func lex(sql string) ([][]token, error) {
 		case c == '(' || c == ')':
 			cur = append(cur, token{kind: tokPunct, text: string(c)})
 			i++
-		case isIdentByte(c) || c >= 0x80:
+		case isIdentByte(c):
 			j := i
-			for j < n && (isIdentByte(sql[j]) || sql[j] >= 0x80) {
+			for j < n && isIdentByte(sql[j]) {
 				j++
 			}
 			cur = append(cur, token{kind: tokWord, text: strings.ToUpper(sql[i:j])})
@@ -262,8 +415,62 @@ func lex(sql string) ([][]token, error) {
 	return stmts, nil
 }
 
+// isIdentByte reports whether c can continue an identifier, as Postgres reads
+// one: a letter, a digit, '_', '$', or any byte of a multi-byte character.
+// The last matters at a boundary: in é$$ the $$ continues the identifier and
+// opens no dollar quote, and in é'…' the literal is typed, not an E-string.
 func isIdentByte(c byte) bool {
-	return c == '_' || c == '$' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	return c == '_' || c == '$' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80
+}
+
+// continuation returns the index of the quote that continues the string
+// literal ending at sql[i], when there is one: Postgres joins two literals
+// separated only by whitespace that includes a newline (a -- comment counts as
+// whitespace). It is the scanner's quotecontinue rule:
+//
+//	horiz_whitespace* newline special_whitespace* quote
+func continuation(sql string, i int) (int, bool) {
+	n := len(sql)
+	comment := func(j int) int { // past a -- comment, up to (not over) its newline
+		for j < n && sql[j] != '\n' && sql[j] != '\r' {
+			j++
+		}
+		return j
+	}
+	j := i
+	for j < n {
+		switch {
+		case sql[j] == ' ' || sql[j] == '\t' || sql[j] == '\f':
+			j++
+			continue
+		case sql[j] == '-' && j+1 < n && sql[j+1] == '-':
+			j = comment(j)
+			continue
+		}
+		break
+	}
+	if j >= n || (sql[j] != '\n' && sql[j] != '\r') {
+		return 0, false
+	}
+	j++
+	for j < n {
+		switch c := sql[j]; {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v':
+			j++
+			continue
+		case c == '-' && j+1 < n && sql[j+1] == '-':
+			// special_whitespace takes a comment only with its newline.
+			if k := comment(j); k < n {
+				j = k + 1
+				continue
+			}
+		}
+		break
+	}
+	if j < n && sql[j] == '\'' {
+		return j, true
+	}
+	return 0, false
 }
 
 // scanQuoted returns the index after the closing quote of the literal that

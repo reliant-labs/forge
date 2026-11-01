@@ -50,7 +50,7 @@ That is the whole mechanism. The migration applies in dev, in tests, in CI and i
 2. **Prefer a column list to a whole table.** `GRANT SELECT ON messages TO forge_dash` covers every column the table will EVER have, including a secret one added next quarter. A column list does not grow. Grant a whole table only when every current column is fine to show and the table cannot plausibly gain a sensitive one (a lookup table of plan names).
 3. **Never grant PII or secrets.** Not emails, names, phone numbers, addresses, IPs, free text a user typed (titles, notes, prompts, messages), and not tokens, keys, password or token hashes, ciphertext, or anything `forge:secret`. When in doubt, check the table's row in `db/grants/readonly/<schema>.<table>_gen.sql`: the columns listed there as withheld (`forge:secret`, or credential-shaped and undecided) are never for a panel. A panel that needs a person groups by an opaque id (`user_id`), not an email.
 4. **Grant base-table columns, not views.** A view reads its tables with its owner's privileges, so granting a view grants every column it selects, whatever the column grants say. If a panel needs an aggregate, write it in the panel's SQL over the granted columns.
-5. **Another schema needs USAGE too.** `public` is usable by every role by default; for a table in another schema add `GRANT USAGE ON SCHEMA billing TO forge_dash;`. On Postgres 14, and on a database upgraded from it, PUBLIC can also CREATE in `public`, which the check below refuses: add `REVOKE CREATE ON SCHEMA public FROM PUBLIC;` (Postgres 15's default) in a migration.
+5. **Another schema needs USAGE too.** `public` is usable by every role by default; for a table in another schema add `GRANT USAGE ON SCHEMA billing TO forge_dash;`. On Postgres 14, and on a database upgraded from it, PUBLIC can also CREATE in `public`, which the check below refuses: `REVOKE CREATE ON SCHEMA public FROM PUBLIC;` (Postgres 15's default), and run it as the owner of `public` (on Postgres 14, the bootstrap superuser `postgres`): any other role's REVOKE "succeeds" with only `WARNING: no privileges could be revoked`.
 6. **Grant nothing else, to it or to PUBLIC.** Only `SELECT` (on tables, columns and sequences), schema `USAGE` and database `CONNECT` are allowed; see section 4. What PUBLIC holds, every role holds, `forge_dash` included.
 
 ### Removing access is a later migration
@@ -77,22 +77,24 @@ One role may not create it: a ManagedDatabase's own application role has no `CRE
 
 After the migrations, every run asks Postgres what `forge_dash` can **effectively** do (`has_table_privilege` and its siblings, which count what it holds through PUBLIC as well as what was granted to it) and **fails** if it can do anything but read. The error names each object and privilege, with the statement that takes it away:
 
-- `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER` (and `MAINTAIN` on Postgres 17) on any table, view or foreign table, whole or one column, and `SELECT ... WITH GRANT OPTION`;
-- `SELECT` granted to PUBLIC on a table: every role reads those columns whatever your migrations granted (`REVOKE SELECT ON t FROM PUBLIC`, then grant the roles that need it);
+- `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER` (and `MAINTAIN` on Postgres 17) on any table, view or foreign table, whole or one column;
+- a grant option on anything, read privileges included (table or sequence `SELECT`, schema `USAGE`, database `CONNECT`): the role could hand them on;
+- `SELECT` granted to PUBLIC on a table or a large object: every role reads it whatever your migrations granted (`REVOKE SELECT ON t FROM PUBLIC`, then grant the roles that need it);
 - `USAGE` or `UPDATE` on a sequence (`nextval`, `setval`);
-- `CREATE` on any schema (Postgres 14's `public` included: `REVOKE CREATE ON SCHEMA public FROM PUBLIC`), and `CREATE` on any database of the cluster;
+- `CREATE` on any schema (Postgres 14's `public` included: `REVOKE CREATE ON SCHEMA public FROM PUBLIC`, which only the schema's owner can run), and `CREATE` on any database of the cluster;
+- `USAGE` on a foreign-data wrapper (`CREATE SERVER`) or a foreign server (`CREATE USER MAPPING`);
 - owning anything: a table, schema, function, type, large object or database, in any database. An owner holds every privilege with no grant to see;
 - `UPDATE` on a large object, and `SET` or `ALTER SYSTEM` on a parameter (Postgres 15+), granted to the role or to PUBLIC: `ALTER SYSTEM SET archive_command` runs an OS command;
-- an `ALTER DEFAULT PRIVILEGES ... TO forge_dash` entry, which would hand it every table created later instead of the columns you named;
+- an `ALTER DEFAULT PRIVILEGES ... TO forge_dash` entry, which would hand it every table created later instead of the columns you named, and one `TO PUBLIC` granting more than `SELECT` (Postgres's own `EXECUTE` on functions and `USAGE` on types are fine): a table your application creates between runs, a partition, would be born writable;
 - membership in any role (`pg_read_all_data` would make every column grant moot), and the `SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION` and `BYPASSRLS` attributes.
 
 forge never revokes anything itself: PUBLIC's privileges are your schema's, and the fix is a migration you write.
 
-**It detects; it does not prevent.** The offending migration has already committed when the check runs, so every run fails until a new migration revokes it, and the release that over-granted never serves. In between, the previous release keeps serving and a role that can log in holds the privilege. `task test` runs the same check on test databases (`testkit.NewMigratedPostgresDB`, `app.NewMigratedTestDB`, whose templates revoke Postgres 14's `CREATE` on `public` to match 15+), so it fails before review, not in production.
+**It detects; it does not prevent.** The offending migration has already committed when the check runs, so every run fails until a new migration revokes it, and the release that over-granted never serves. In between, the previous release keeps serving and a role that can log in holds the privilege. `task test` runs the same check on test databases (`testkit.NewMigratedPostgresDB`, `app.NewMigratedTestDB`, whose databases revoke Postgres 14's `CREATE` on `public` to match 15+), so it fails before review, not in production. That one difference cuts the other way on Postgres 14: `task test` passes while production fails until the owner of `public` has run the REVOKE.
 
 **Allowed, by choice:** `TEMP` on the database (PUBLIC's default) lets a dashboard session create temporary tables, which live in that session alone and cannot touch your data; a `READ ONLY` transaction still lets a session write its own temporary tables. `EXECUTE` on functions is PUBLIC's default and is not refused; see SECURITY DEFINER below.
 
-**Not checked:** objects in another database of the same cluster (that database's own migrator checks them; roles and `CREATE` on databases are checked cluster-wide), and `USAGE` on foreign servers, foreign-data wrappers, tablespaces, types and languages. `USAGE` on a foreign server lets the role create its own user mapping: do not grant it.
+**Not checked:** objects in another database of the same cluster (that database's own migrator checks them; roles and `CREATE` on databases are checked cluster-wide), and `USAGE` on tablespaces, types and languages, which let the role read nothing.
 
 To see what a panel could read, log in as the role in a test against a migrated database (or `SET ROLE forge_dash;`) and run the panel's SQL.
 

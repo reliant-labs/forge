@@ -294,6 +294,7 @@ func TestEveryWayToDoMoreThanReadFailsTheRun(t *testing.T) {
 	cases := []struct {
 		name    string
 		grant   string // {role} is the role
+		runtime string // run by the application after the migrations, before the role uses it
 		use     string // run as the role, logged in
 		want    string // in the run's error
 		minimum int    // server_version_num the case needs
@@ -306,7 +307,7 @@ func TestEveryWayToDoMoreThanReadFailsTheRun(t *testing.T) {
 			use: `SELECT api_token FROM users`, want: "SELECT on table users is granted to PUBLIC"},
 		{name: "CREATE on public held through PUBLIC (Postgres 14's default)", grant: `GRANT CREATE ON SCHEMA public TO PUBLIC;`,
 			use:  `CREATE FUNCTION public.lower(varchar) RETURNS text LANGUAGE sql AS $$ SELECT 'pwned'::text $$`,
-			want: "CREATE on schema public, held through PUBLIC (fix: REVOKE CREATE ON SCHEMA public FROM PUBLIC)"},
+			want: "CREATE on schema public, held through PUBLIC (fix: REVOKE CREATE ON SCHEMA public FROM PUBLIC, run as the owner of SCHEMA public"},
 		{name: "owning a table", grant: `ALTER TABLE users OWNER TO {role};`,
 			use: `UPDATE users SET api_token = 'x'`, want: "owns table users"},
 		{name: "owning a schema", grant: `CREATE SCHEMA dash_s; ALTER SCHEMA dash_s OWNER TO {role};`,
@@ -318,6 +319,37 @@ func TestEveryWayToDoMoreThanReadFailsTheRun(t *testing.T) {
 		{name: "ALTER SYSTEM on a parameter", grant: `GRANT ALTER SYSTEM ON PARAMETER archive_command TO {role};`,
 			// RESET needs the same privilege and leaves the shared server as it was.
 			use: `ALTER SYSTEM RESET archive_command`, want: "ALTER SYSTEM on parameter archive_command", minimum: 150000},
+		{name: "default privileges handing PUBLIC writes on future tables",
+			grant: `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT INSERT, UPDATE ON TABLES TO PUBLIC;`,
+			// A partition the application creates between runs.
+			runtime: `CREATE TABLE public.events_2026_11 (id int)`,
+			use:     `INSERT INTO public.events_2026_11 VALUES (1)`, want: "on new tables grant INSERT to PUBLIC"},
+		{name: "SELECT on a large object to PUBLIC",
+			grant: `SELECT lo_from_bytea(424243, '\x01'::bytea); GRANT SELECT ON LARGE OBJECT 424243 TO PUBLIC;`,
+			use:   `SELECT lo_get(424243)`, want: "SELECT on large object 424243 is granted to PUBLIC"},
+		{name: "USAGE on a foreign-data wrapper",
+			grant: `CREATE FOREIGN DATA WRAPPER dash_fdw; GRANT USAGE ON FOREIGN DATA WRAPPER dash_fdw TO {role};`,
+			use:   `CREATE SERVER dash_own FOREIGN DATA WRAPPER dash_fdw`, want: "USAGE on foreign-data wrapper dash_fdw"},
+		{name: "USAGE on a foreign server",
+			grant: `CREATE FOREIGN DATA WRAPPER dash_fdw2; CREATE SERVER dash_srv FOREIGN DATA WRAPPER dash_fdw2; GRANT USAGE ON FOREIGN SERVER dash_srv TO {role};`,
+			use:   `CREATE USER MAPPING FOR CURRENT_USER SERVER dash_srv`, want: "USAGE on foreign server dash_srv"},
+		{name: "a grant option on sequence SELECT",
+			grant: `CREATE SEQUENCE dash_seq; GRANT SELECT ON SEQUENCE dash_seq TO {role} WITH GRANT OPTION;`,
+			use: handOn(`GRANT SELECT ON SEQUENCE dash_seq TO PUBLIC`, `has_sequence_privilege('public', 'dash_seq', 'SELECT')`,
+				`REVOKE SELECT ON SEQUENCE dash_seq FROM PUBLIC`),
+			want: "SELECT WITH GRANT OPTION on sequence dash_seq"},
+		{name: "a grant option on schema USAGE",
+			grant: `CREATE SCHEMA dash_g; GRANT USAGE ON SCHEMA dash_g TO {role} WITH GRANT OPTION;`,
+			use: handOn(`GRANT USAGE ON SCHEMA dash_g TO PUBLIC`, `has_schema_privilege('public', 'dash_g', 'USAGE')`,
+				`REVOKE USAGE ON SCHEMA dash_g FROM PUBLIC`),
+			want: "USAGE WITH GRANT OPTION on schema dash_g"},
+		{name: "a grant option on database CONNECT",
+			grant: `DO $$ BEGIN EXECUTE format('GRANT CONNECT ON DATABASE %I TO {role} WITH GRANT OPTION', current_database()); END $$;`,
+			// PUBLIC already holds CONNECT, so the proof is an ACL entry the role granted.
+			use: handOn(`EXECUTE format('GRANT CONNECT ON DATABASE %I TO PUBLIC', current_database())`,
+				`EXISTS (SELECT 1 FROM pg_database d, aclexplode(d.datacl) x WHERE d.datname = current_database() AND x.grantee = 0 AND x.grantor = current_user::regrole)`,
+				`EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())`),
+			want: "CONNECT WITH GRANT OPTION on database"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -357,12 +389,25 @@ func TestEveryWayToDoMoreThanReadFailsTheRun(t *testing.T) {
 					t.Fatalf("%s: up = %v, want a DashboardPrivilegeError naming %q", run, err, c.want)
 				}
 			}
+			if c.runtime != "" {
+				if _, err := openRecordDB(t, dsn).Exec(c.runtime); err != nil {
+					t.Fatal(err)
+				}
+			}
 			// The capability the run refused is real.
 			if err := loginAs(t, dsn, dash, pw, c.use); err != nil {
 				t.Fatalf("logged in as the role, %q failed: %v; the check refused a capability that does not exist", c.use, err)
 			}
 		})
 	}
+}
+
+// handOn is a statement the role runs to prove it can delegate a privilege:
+// Postgres answers a GRANT the grantor holds no grant option for with a
+// WARNING, not an error, so the block checks the grant took effect, raising
+// otherwise, and takes it back so the role is not left a grantor.
+func handOn(grant, took, undo string) string {
+	return "DO $$ BEGIN " + grant + "; IF NOT (" + took + ") THEN RAISE EXCEPTION 'nothing was granted'; END IF; " + undo + "; END $$"
 }
 
 // TestRevokingAWriteGrantLetsTheRunFinish: the fix the error names works.

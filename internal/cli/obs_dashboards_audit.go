@@ -685,6 +685,11 @@ func (a *dashAudit) panel(p dashspec.Panel, base time.Duration, source string, s
 		ap.ProbableCause = "a search panel is a link into the logs or traces explorer; the console runs no query for it"
 		return ap
 	}
+	if p.Kind == dashspec.KindText {
+		ap.Status, ap.Reason = auditNotApplicable, "text_panel"
+		ap.ProbableCause = "a text panel is Markdown; the console runs no query for it"
+		return ap
+	}
 	op := panelOf(p)
 	var ro obsbackend.PanelReadout
 	attempts, err := a.guarded(func() error {

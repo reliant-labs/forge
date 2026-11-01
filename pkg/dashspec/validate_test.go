@@ -185,9 +185,11 @@ func TestValidationKnowsTheConsoleKindsAndRejectsUnknownOnes(t *testing.T) {
 func TestEveryPanelKindTheSpecDeclaresIsKnownToTheValidator(t *testing.T) {
 	// A kind added to spec.go but not to validate.go would be a panel the
 	// console is sent and the validator rejects in a user's file.
-	for _, k := range []PanelKind{KindNumber, KindLine, KindTable, KindSearch, KindBar, KindHeatmap, KindSQL, KindIssues, KindSessions, KindFunnel, KindPostgres} {
+	for _, k := range []PanelKind{KindNumber, KindLine, KindTable, KindSearch, KindBar, KindHeatmap, KindSQL, KindIssues, KindSessions, KindFunnel, KindPostgres, KindText} {
 		var src string
 		switch k {
+		case KindText:
+			src = `"kind":"text","markdown":"# Notes"`
 		case KindBar:
 			src = `"kind":"bar","signal":"traces","groupBy":["span.name"],"series":[{"label":"a","agg":"count"}]`
 		case KindHeatmap:

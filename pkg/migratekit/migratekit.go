@@ -133,9 +133,12 @@ type Migrator struct {
 	// run is the limits every statement the run issues is guarded by
 	// (locktimeout.go): its migrations, through bindMigrate, and its grants.
 	run RunOptions
-	// grants are the grants scripts this binary embeds beside its
-	// migrations (grants.go).
-	grants grantScripts
+	// grants is the read-only grants script this binary embeds beside its
+	// migrations (grants.go), "" when it embeds none.
+	grants string
+	// dashRefs are the embedded migrations that name the dashboard role
+	// (dashboard.go).
+	dashRefs []dashboardRef
 }
 
 // Open builds a Migrator over the embedded migration set in opts.FS, on one
@@ -173,7 +176,12 @@ func Open(opts Options) (*Migrator, error) {
 		_ = src.Close()
 		return nil, fmt.Errorf("open embedded migrations (%s): %w", dir, err)
 	}
-	grants, err := grantsScripts(opts.FS, dir)
+	grants, err := grantsScript(opts.FS, dir)
+	if err != nil {
+		_ = src.Close()
+		return nil, fmt.Errorf("open migrator: %w", err)
+	}
+	dashRefs, err := scanDashboardRefs(opts.FS, dir, embedded, dashboardRole)
 	if err != nil {
 		_ = src.Close()
 		return nil, fmt.Errorf("open migrator: %w", err)
@@ -193,6 +201,7 @@ func Open(opts Options) (*Migrator, error) {
 	}
 	mg.db = db
 	mg.grants = grants
+	mg.dashRefs = dashRefs
 	return mg, nil
 }
 
@@ -347,6 +356,9 @@ type Result struct {
 	// Grants is what the run did with the read-only role's grants (grants.go):
 	// nil when the binary embeds none, or when the schema was ahead of it.
 	Grants *Grants
+	// Dashboard is what the run found of the dashboard role (dashboard.go):
+	// nil when the schema was ahead of the binary.
+	Dashboard *DashboardRole
 }
 
 // Up applies every pending migration.
@@ -419,6 +431,12 @@ func (mg *Migrator) up(ctx context.Context) (res Result, err error) {
 		res.After = res.Before
 		return res, err
 	}
+	// The dashboard role exists before the first migration that may grant
+	// to it runs (dashboard.go).
+	if res.Dashboard, err = ensureDashboardRole(ctx, mg.conn, mg.dashRefs, res.Before.settled()); err != nil {
+		res.After = res.Before
+		return res, err
+	}
 	if err := recordCompat(ctx, mg.conn, mg.source); err != nil {
 		return res, err
 	}
@@ -433,8 +451,10 @@ func (mg *Migrator) up(ctx context.Context) (res Result, err error) {
 	if err := recordApplied(ctx, mg.conn, mg.source, res.Before, res.After); err != nil {
 		return res, err
 	}
-	res.Grants, err = applyGrants(ctx, mg.conn, mg.grants, mg.run)
-	return res, err
+	if res.Grants, err = applyGrants(ctx, mg.conn, mg.grants, mg.run); err != nil {
+		return res, err
+	}
+	return res, checkDashboardRole(ctx, mg.conn, res.Dashboard)
 }
 
 // Force sets the recorded version and CLEARS the dirty flag without running

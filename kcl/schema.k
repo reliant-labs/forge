@@ -954,16 +954,17 @@ schema DatabaseDashboards:
             dashboards = forge.DatabaseDashboards {enabled = True}
         }
 
-    Enabling it adds a second read-only Postgres role, `forge_dash`, whose
-    password is a Secret named `<database>-forge-dash` (minted the way
-    `<database>-forge-ro` is). That role reads ONLY the tables a migration
-    marked `COMMENT ON TABLE t IS 'forge:dashboard'`, and on them only the
-    columns `forge_ro` may read, minus any `forge:no-dashboard` column. The
-    allowlist is Postgres privileges, not a parser, so no panel query can read
-    past it. Disabled, the role is rendered present but `login: false` with
-    its password disabled (never `ensure: absent`: CNPG's DROP ROLE is refused
-    once the role holds a grant), and the migrator revokes everything it held
-    and grants nothing until the role can log in again.
+    The role panels query as, `forge_dash`, exists in every database forge
+    migrates: the migrator creates it NOLOGIN before any migration runs.
+    Enabling dashboards lets it log in, with a password in a Secret named
+    `<database>-forge-dash` (minted the way `<database>-forge-ro` is). What
+    it reads is what your migrations GRANT it, column by column
+    (`GRANT SELECT (id, created_at) ON t TO forge_dash;`), so the allowlist
+    is Postgres privileges, not a parser, and no panel query can read past
+    it. Disabled, the role is rendered present but `login: false` with its
+    password disabled (never `ensure: absent`: CNPG's DROP ROLE is refused
+    once the role holds a grant); its grants stay in place, unusable until
+    it can log in again. See `forge skill load db/dashboards`.
 
     The limits are enforced by whatever queries as the role:
 

@@ -66,8 +66,8 @@ func squashHeader(squashed []compat.Migration) string {
 		b.WriteString("-- It builds the schema the release before the squash runs on:\n")
 		b.WriteString(compat.Directive + "\n")
 	}
-	b.WriteString("-- pg_dump --no-owner --no-privileges --inserts --exclude-table=public.schema_migrations --exclude-table=public.schema_migrations_compat --exclude-table=public.schema_migrations_applied\n")
-	b.WriteString("-- pg_dump's session prelude (SET, set_config) and psql meta-commands (\\restrict) are stripped.\n\n")
+	b.WriteString("-- pg_dump --no-owner --inserts --exclude-table=public.schema_migrations --exclude-table=public.schema_migrations_compat --exclude-table=public.schema_migrations_applied\n")
+	b.WriteString("-- pg_dump's session prelude (SET, set_config), psql meta-commands (\\restrict) and every privilege but forge_dash's grants are stripped.\n\n")
 	return b.String()
 }
 

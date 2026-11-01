@@ -59,6 +59,24 @@ COMMENT ON CONSTRAINT orders_patient_id_fkey ON orders IS 'forge:ref derived-fro
 	}
 }
 
+// A retired marker in an applied migration may be cleared by a later one, and
+// an applied migration is never edited, so the text lane leaves it to the
+// catalog check (schemadef.CheckMarkers); a misspelling beside it still counts.
+func TestCollectColumnMarkerFindings_LeavesRetiredMarkersToTheCatalog(t *testing.T) {
+	dir := writeColumnMarkersFixture(t, "0001_dash.up.sql", `
+COMMENT ON TABLE usage_events IS 'forge:dashboard';
+COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
+COMMENT ON COLUMN usage_events.model IS 'forge:immutible';
+`)
+	findings, err := collectColumnMarkerFindings(dir)
+	if err != nil {
+		t.Fatalf("collectColumnMarkerFindings: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Marker != "forge:immutible" {
+		t.Errorf("findings = %+v, want only the misspelling", findings)
+	}
+}
+
 func TestCollectColumnMarkerFindings_IgnoresProseWithoutForgeToken(t *testing.T) {
 	dir := writeColumnMarkersFixture(t, "0001_prose.up.sql", `
 COMMENT ON COLUMN invoices.notes IS 'free-text notes field, nothing special';

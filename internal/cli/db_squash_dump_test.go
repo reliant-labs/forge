@@ -180,6 +180,17 @@ func TestSquashBaseline_LexesLikePostgres(t *testing.T) {
 			want: "-- SET x; \\restrict\nCREATE TABLE t (i int); -- trailing; SET\n",
 		},
 		{
+			name: "of the privileges only the dashboard role's grants are kept",
+			in: "CREATE TABLE public.t (id int, email text);\n" +
+				"REVOKE USAGE ON SCHEMA public FROM PUBLIC;\n" +
+				"GRANT ALL ON SCHEMA public TO PUBLIC;\n" +
+				"GRANT SELECT(id) ON TABLE public.t TO forge_dash;\n" +
+				"GRANT SELECT(id),SELECT(email) ON TABLE public.t TO forge_ro;\n" +
+				"GRANT SELECT ON TABLE public.t TO forge_dashboards;\n" +
+				"ALTER DEFAULT PRIVILEGES FOR ROLE app IN SCHEMA public GRANT SELECT ON TABLES TO forge_dash;\n",
+			want: "CREATE TABLE public.t (id int, email text);\n\n\nGRANT SELECT(id) ON TABLE public.t TO forge_dash;\n\n\n",
+		},
+		{
 			name: "no function, no preamble",
 			in:   "SET x = 1;\nCREATE TABLE t (i int);\n",
 			want: "\nCREATE TABLE t (i int);\n",

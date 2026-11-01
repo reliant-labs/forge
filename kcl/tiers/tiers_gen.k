@@ -279,7 +279,7 @@ container_json = lambda v: Container -> {str:} {
 }
 
 schema DatabaseDashboards:
-    """DatabaseDashboards is the opt-in dashboard role and the limits its queries run under. The limits are enforced by whoever queries as the role (the control plane, pkg/dbquery); the role itself is bounded by Postgres: column-level SELECT on forge:dashboard tables, a connection limit, and a read-only default transaction. See pkg/dbgrants."""
+    """DatabaseDashboards is the opt-in dashboard role and the limits its queries run under. The limits are enforced by whoever queries as the role (the control plane, pkg/dbquery); the role itself is bounded by Postgres: the column SELECTs the project's migrations grant it (and nothing but read privileges, which the migrator enforces), a connection limit, and a read-only transaction. See pkg/dbgrants."""
     enabled?: bool
     maxConcurrency: int = 2
     rowCap: int = 1000

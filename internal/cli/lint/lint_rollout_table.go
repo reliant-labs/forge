@@ -155,8 +155,6 @@ var newRules = []rolloutGroup{
 	// Commit policy: a generated file only tooling reads (the proto
 	// descriptor) is never committed.
 	{IntroducedIn: "v1.0.10", GatesFrom: "v1.0.11", Fix: "forge generate && git rm -r --cached gen/forge_descriptor", Rules: []string{"tool-derived-file-tracked"}},
-	// db/grants/dashboard_gen.sql no longer matching the forge:dashboard markers.
-	{IntroducedIn: "v1.0.9", GatesFrom: "v1.0.10", Rules: []string{dbGrantsStaleRule}},
 	// forge lint --go-markers (#1039).
 	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-go-markers"}},
 	// forge lint --graph (#968, #1017).

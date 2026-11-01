@@ -89,7 +89,8 @@ var pullRequestEvents = map[string]bool{
 // pullRequestEvents. Such a workflow has no main or tag run for a
 // cancel-in-progress to starve, so it may cancel on every event it has — the
 // review gate (reliant-review.yml) does, so a pull_request_review run that
-// turns the check green supersedes the red pull_request run before it.
+// turns the check green cancels a red pull_request run still in progress (one
+// that already completed red, the gate re-runs itself).
 func pullRequestOnly(t *testing.T, name string, content []byte) bool {
 	t.Helper()
 	var doc struct {

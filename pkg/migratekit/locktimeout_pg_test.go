@@ -86,6 +86,50 @@ func logTo(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(buf, nil))
 }
 
+// releaseOnRetry is the log of a run that a blocker holds up: the first
+// record carrying every one of marks ends the blocker, synchronously, before
+// the run sleeps and tries again. A test that asserts the run retried and
+// then succeeded is then deterministic. Releasing on a timer raced the first
+// attempt: on a loaded machine the run could reach the blocked statement only
+// after the timer had fired, take the lock at once, and never retry.
+type releaseOnRetry struct {
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	marks    []string
+	release  func()
+	released bool
+}
+
+func newReleaseOnRetry(release func(), marks ...string) *releaseOnRetry {
+	return &releaseOnRetry{release: release, marks: marks}
+}
+
+// Write receives one slog record per call (slog's TextHandler writes each
+// record whole).
+func (w *releaseOnRetry) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.released {
+		match := true
+		for _, m := range w.marks {
+			match = match && bytes.Contains(p, []byte(m))
+		}
+		if match {
+			w.released = true
+			w.release()
+		}
+	}
+	return w.buf.Write(p)
+}
+
+func (w *releaseOnRetry) logger() *slog.Logger { return slog.New(slog.NewTextHandler(w, nil)) }
+
+func (w *releaseOnRetry) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
 func stateAt(t *testing.T, dsn string) State {
 	t.Helper()
 	mg, err := Open(Options{FS: release(lockBase), Dir: "migrations", DSN: dsn})
@@ -189,12 +233,9 @@ func TestMigrationFailsFastOnLockTimeoutAndBlocksNobody(t *testing.T) {
 // the migrator is between attempts. The run succeeds, and says what it did.
 func TestMigrationRetriesUntilTheBlockerReleases(t *testing.T) {
 	dsn := baseSchema(t)
-	releaseReader := holdReader(t, dsn)
-	time.AfterFunc(900*time.Millisecond, releaseReader)
-
-	var logs bytes.Buffer
+	logs := newReleaseOnRetry(holdReader(t, dsn), "migration lock wait timed out; retrying")
 	res, err := upWith(release(merged(lockBase, map[string]string{"2_note.up.sql": addColumn})), dsn,
-		RunOptions{Logger: logTo(&logs), Limits: Limits{LockTimeout: 250 * time.Millisecond, LockAttempts: 10, RetryBackoff: 100 * time.Millisecond}})
+		RunOptions{Logger: logs.logger(), Limits: Limits{LockTimeout: 250 * time.Millisecond, LockAttempts: 10, RetryBackoff: 100 * time.Millisecond}})
 	if err != nil {
 		t.Fatalf("Up: %v\nlogs:\n%s", err, logs.String())
 	}
@@ -395,12 +436,9 @@ const concurrentlyIndex = "-- forge:backward-compatible\nCREATE INDEX CONCURRENT
 // is valid.
 func TestConcurrentlyIndexRetriesAndLeavesNoInvalidIndex(t *testing.T) {
 	dsn := baseSchema(t)
-	releaseSnapshot := holdSnapshot(t, dsn)
-	time.AfterFunc(1500*time.Millisecond, releaseSnapshot)
-
-	var logs bytes.Buffer
+	logs := newReleaseOnRetry(holdSnapshot(t, dsn), "migration lock wait timed out; retrying")
 	res, err := upWith(release(merged(lockBase, map[string]string{"2_items_v.up.sql": concurrentlyIndex})), dsn,
-		RunOptions{Logger: logTo(&logs), Limits: Limits{LockTimeout: 300 * time.Millisecond, LockAttempts: 10, RetryBackoff: 100 * time.Millisecond}})
+		RunOptions{Logger: logs.logger(), Limits: Limits{LockTimeout: 300 * time.Millisecond, LockAttempts: 10, RetryBackoff: 100 * time.Millisecond}})
 	if err != nil {
 		t.Fatalf("Up: %v\nlogs:\n%s", err, logs.String())
 	}
@@ -598,10 +636,8 @@ func TestGrantsFailFastBehindABlockerAndTheNextRunAppliesThem(t *testing.T) {
 // attempts. The run succeeds and the role has its grants.
 func TestGrantsRetryUntilTheBlockerReleases(t *testing.T) {
 	dsn, fsys := grantsFixture(t)
-	time.AfterFunc(800*time.Millisecond, grantsBlocker(t, dsn))
-
-	var logs bytes.Buffer
-	res, err := upWith(fsys, dsn, RunOptions{Logger: logTo(&logs),
+	logs := newReleaseOnRetry(grantsBlocker(t, dsn), "lock wait timed out; retrying", `statement="read-only grants"`)
+	res, err := upWith(fsys, dsn, RunOptions{Logger: logs.logger(),
 		Limits: Limits{LockTimeout: 200 * time.Millisecond, LockAttempts: 10, RetryBackoff: 100 * time.Millisecond}})
 	if err != nil || res.Grants == nil || !res.Grants.Applied {
 		t.Fatalf("Up: %+v, %v\n%s", res.Grants, err, logs.String())

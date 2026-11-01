@@ -376,6 +376,7 @@ func mergeStoreSourceFacts(report secretListReport, e *KCLEntities, st secretLis
 			// Declared by the provider too: a value in either store counts.
 			prev := report.Secrets[i]
 			entry.DeclaredBy = append(prev.DeclaredBy, entry.DeclaredBy...)
+			entry.Access = prev.Access
 			if prev.Present {
 				entry.Present, entry.Presence, entry.Version = true, prev.Presence, prev.Version
 			}

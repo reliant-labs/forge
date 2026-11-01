@@ -26,6 +26,11 @@ type fakeControlPlane struct {
 	envs  []cloudEnvironment
 	// stored secret names -> version
 	stored map[string]uint32
+	// access is the active access list, in the proto3-JSON shape of
+	// SecretAccessEntry; refuse, when set, fails the three access rpcs with
+	// that Connect error body (HTTP 403).
+	access []map[string]any
+	refuse string
 }
 
 type recordedCall struct {
@@ -90,11 +95,65 @@ func (f *fakeControlPlane) handler(t *testing.T) http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{"secrets": out})
 		case "/controlplane.v1.SecretStoreService/DeleteSecret":
 			_, _ = w.Write([]byte(`{}`))
+		case "/controlplane.v1.SecretStoreService/AllowSecretUse",
+			"/controlplane.v1.SecretStoreService/DenySecretUse",
+			"/controlplane.v1.SecretStoreService/ListSecretAccess":
+			f.serveAccess(w, r.URL.Path, body)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"code":"unimplemented","message":"no such procedure"}`))
 		}
 	})
+}
+
+// serveAccess is the access-list half of the fake: Allow/Deny are idempotent,
+// List filters by environment and (when named) secret.
+func (f *fakeControlPlane) serveAccess(w http.ResponseWriter, path string, body map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refuse != "" {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": "permission_denied", "message": f.refuse})
+		return
+	}
+	env, _ := body["environmentId"].(string)
+	name, _ := body["secretName"].(string)
+	p, _ := body["principal"].(map[string]any)
+	same := func(e map[string]any) bool {
+		ep, _ := e["principal"].(map[string]any)
+		return e["environmentId"] == env && e["secretName"] == name &&
+			ep["projectId"] == p["projectId"] && ep["workflowName"] == p["workflowName"]
+	}
+	switch path {
+	case "/controlplane.v1.SecretStoreService/AllowSecretUse":
+		for _, e := range f.access {
+			if same(e) {
+				_, _ = w.Write([]byte(`{}`))
+				return
+			}
+		}
+		f.access = append(f.access, map[string]any{"environmentId": env, "secretName": name, "principal": p,
+			"createdBy": "owner@example.com", "createdAt": "2026-11-02T10:00:00Z"})
+		_, _ = w.Write([]byte(`{}`))
+	case "/controlplane.v1.SecretStoreService/DenySecretUse":
+		kept := f.access[:0:0]
+		for _, e := range f.access {
+			if !same(e) {
+				kept = append(kept, e)
+			}
+		}
+		f.access = kept
+		_, _ = w.Write([]byte(`{}`))
+	default:
+		out := []map[string]any{}
+		for _, e := range f.access {
+			if e["environmentId"] == env && (name == "" || e["secretName"] == name) {
+				out = append(out, map[string]any{"secretName": e["secretName"], "principal": e["principal"],
+					"createdBy": e["createdBy"], "createdAt": e["createdAt"]})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"entries": out})
+	}
 }
 
 func (f *fakeControlPlane) callsTo(proc string) []recordedCall {

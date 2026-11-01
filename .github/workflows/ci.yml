@@ -1173,6 +1173,8 @@ jobs:
       actions: read
       # The main-red override reads the pull request's labels.
       pull-requests: read
+      # The merge queue's budget report keeps one rolling pipeline:slo issue.
+      issues: write
     steps:
       - uses: actions/checkout@v7
       - name: Job wall times
@@ -1180,6 +1182,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         # Reporting only: a failed API call must not turn the gate red.
         run: scripts/ci-run-timings.sh || echo "::warning::could not read this run's job timings"
+      # The merge queue's five-minute budget (owner, 2026-11-01), runner wait
+      # included. Reporting only, like the step above: it always exits 0.
+      - name: Merge-queue budget
+        if: ${{ github.event_name == 'merge_group' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci-queue-budget.sh || true
       # A red run passes only through the main-red override: a pull request
       # labelled `ci:main-red` whose every failure also fails on main's latest
       # run (scripts/ci-main-red.sh says exactly what is matched, and refuses

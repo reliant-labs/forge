@@ -15,7 +15,7 @@ GRANT SELECT (id, created_at, model, cost_cents) ON messages TO forge_dash;
 
 Gone: the `forge:dashboard` table marker, the `forge:no-dashboard` column marker, the generated `db/grants/dashboard_gen.sql` and `db/grants/dashboard/`, the migrator step that applied them, and the `forge-db-grants-stale` lint rule. Unchanged: `forge_ro`, its `forge:secret` / `forge:readable` markers and `db/grants/readonly*`.
 
-New, in every migration run (`db migrate up`, boot-time AutoMigrate, `testkit.NewMigratedPostgresDB`): the migrator creates `forge_dash` NOLOGIN before applying anything when the cluster has none, so a migration may GRANT to it everywhere; and after the migrations it **fails** if `forge_dash` holds anything but `SELECT`, schema `USAGE` and `CONNECT`. The contract and the rules for writing grants: `forge skill load db/dashboards`.
+New, in every migration run (`db migrate up`, boot-time AutoMigrate, `testkit.NewMigratedPostgresDB`): the migrator creates `forge_dash` NOLOGIN before applying anything when the cluster has none, so a migration may GRANT to it everywhere; and after the migrations it **fails** if `forge_dash` can effectively do anything but read: a write, `CREATE` on a schema, owning an object, a parameter ACL, a membership, counting what it holds through PUBLIC. The contract and the rules for writing grants: `forge skill load db/dashboards`.
 
 Apply the sections whose "Use when" matches.
 
@@ -54,10 +54,10 @@ Each row file holds one row, `('<schema>', '<table>', ARRAY['col', …]::text[])
 |---|---|
 | `migratekit.Grants.DashboardApplied`, `.DashboardRoleDisabled`, `.DashboardRoleMissing` | `migratekit.Result.Dashboard` (`*migratekit.DashboardRole`: `Created`, `Missing`, `CanLogin`, `SecurityDefiner`) |
 | `migratekit.DashboardGrantsFile`, `migratekit.DashboardGrantsRowsDir` | nothing: there is no file |
-| `dbgrants.DashboardTables`, `RenderDashboard`, `RenderDashboardFor`, `RenderDashboardFiles`, `ApplyDashboard`, `DashboardGrantsPath`, `DashboardGrantsRowsDir`, `Table.Dashboard`, `Column.NoDashboard` | grants are migrations; `dbgrants.EnsureDashboardRole` / `EnsureRole` and `dbgrants.DashboardPrivilegeViolations` are the lifecycle and the check |
+| `dbgrants.DashboardTables`, `RenderDashboard`, `RenderDashboardFor`, `RenderDashboardFiles`, `ApplyDashboard`, `DashboardGrantsPath`, `DashboardGrantsRowsDir`, `Table.Dashboard`, `Column.NoDashboard` | grants are migrations; `dbgrants.EnsureDashboardRole` / `EnsureRole` and `dbgrants.DashboardPrivilegeViolations` (returning `[]dbgrants.Violation`, each with its fix) are the lifecycle and the check |
 | `schemadef.TableMarkerDashboard`, `ColumnMarkerNoDashboard`, `Table.Dashboard()`, `Column.DeclaresNoDashboard()` | `schemadef.RetiredMarker` |
 
-A run can now fail two new ways: `*migratekit.DashboardRoleMissingError` (the role does not exist, the migrating role may not create it, and a pending migration names it; nothing was applied, so retry once the role exists) and `*migratekit.DashboardPrivilegeError` (the role holds a non-read privilege; fix with a migration that revokes it).
+A run can now fail two new ways: `*migratekit.DashboardRoleMissingError` (the role does not exist, the migrating role may not create it, and a pending migration names it; nothing was applied, so retry once the role exists) and `*migratekit.DashboardPrivilegeError` (the role can do more than read; its `Violations` name each object, privilege and fix; fix with a migration that revokes it).
 
 **A migration runner of your own** (one that applies the files without `migratekit` or `testkit`) must call `dbgrants.EnsureDashboardRole(ctx, db)` before the first file, or a migration that grants to `forge_dash` fails on a fresh database with `role "forge_dash" does not exist`.
 
@@ -67,8 +67,14 @@ A run can now fail two new ways: `*migratekit.DashboardRoleMissingError` (the ro
 
 The rule is gone, so the entry is reported as a rule ID nothing has. Delete it.
 
-## 4. `forge db squash` now keeps the dashboard role's grants
+## 4. `forge db squash` now keeps the dashboard role's and PUBLIC's privileges
 
 **Use when** you squash a forge history (`forge db squash`).
 
-The squash used to dump with `--no-privileges`. It now keeps every `GRANT … TO forge_dash` and drops every other privilege statement, so a baseline that replaces your GRANT migrations still grants what they did. Nothing to do; re-squash if a baseline written by an earlier forge replaced a GRANT migration.
+The squash used to dump with `--no-privileges`. It now keeps every `GRANT … TO forge_dash` and every `GRANT … TO PUBLIC` / `REVOKE … FROM PUBLIC`, and drops every other privilege statement, so a baseline that replaces your migrations still grants what they did and still takes away what they took from PUBLIC (`REVOKE EXECUTE ON FUNCTION f() FROM PUBLIC`). Nothing to do; re-squash if a baseline written by an earlier forge replaced such a migration.
+
+## 5. A run can fail on what PUBLIC holds
+
+**Use when** the database runs Postgres 14 (or was upgraded from it), or a migration grants anything to PUBLIC.
+
+The check counts PUBLIC's privileges as the dashboard role's, because they are. On Postgres 14 PUBLIC can `CREATE` in the `public` schema by default, so the first run on v1.0.13 fails naming `CREATE on schema public, held through PUBLIC`. Write the migration the error names, `REVOKE CREATE ON SCHEMA public FROM PUBLIC;` (Postgres 15's default; it needs the role that owns `public`). A `GRANT SELECT ON t TO PUBLIC` or a write granted to PUBLIC fails the same way: revoke it from PUBLIC and grant the roles that need it. forge does not revoke anything itself.

@@ -212,9 +212,8 @@ func applyUpMigrations(db *sql.DB, migrations fs.FS) error {
 		return err
 	}
 	if len(violations) > 0 {
-		return &migrationError{file: "(after the last migration)", err: fmt.Errorf(
-			"role %s may only read, but the migrations granted it: %s; grant it column SELECTs only",
-			dbgrants.DashboardRoleName, strings.Join(violations, "; "))}
+		return &migrationError{file: "(after the last migration)", err: errors.New(
+			dbgrants.DescribeViolations(dbgrants.DashboardRoleName, violations))}
 	}
 	return nil
 }

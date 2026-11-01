@@ -135,7 +135,11 @@ CREATE FUNCTION helper() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;
 		if err != nil {
 			t.Fatal(err)
 		}
-		return got
+		out := make([]string, len(got))
+		for i, v := range got {
+			out[i] = v.String()
+		}
+		return out
 	}
 
 	// The whole read-only vocabulary: none of it is a violation.
@@ -150,15 +154,29 @@ CREATE FUNCTION helper() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;
 	}
 
 	cases := []struct{ grant, revoke, want string }{
-		{`GRANT INSERT ON events TO %s`, `REVOKE INSERT ON events FROM %s`, "INSERT on table events"},
-		{`GRANT UPDATE (note) ON events TO %s`, `REVOKE UPDATE (note) ON events FROM %s`, "UPDATE on column events.note"},
-		{`GRANT SELECT ON other TO %s WITH GRANT OPTION`, `REVOKE GRANT OPTION FOR SELECT ON other FROM %s`, "SELECT on table other WITH GRANT OPTION"},
+		{`GRANT INSERT ON events TO %s`, `REVOKE INSERT ON events FROM %s`, "INSERT on table events (fix: REVOKE INSERT ON TABLE events FROM"},
+		{`GRANT UPDATE (note) ON events TO %s`, `REVOKE UPDATE (note) ON events FROM %s`, "UPDATE on table events"},
+		{`GRANT SELECT ON other TO %s WITH GRANT OPTION`, `REVOKE GRANT OPTION FOR SELECT ON other FROM %s`, "SELECT WITH GRANT OPTION on table other (fix: REVOKE GRANT OPTION FOR SELECT"},
 		{`GRANT USAGE ON SEQUENCE events_seq TO %s`, `REVOKE USAGE ON SEQUENCE events_seq FROM %s`, "USAGE on sequence events_seq"},
 		{`GRANT CREATE ON SCHEMA public TO %s`, `REVOKE CREATE ON SCHEMA public FROM %s`, "CREATE on schema public"},
-		{`GRANT EXECUTE ON FUNCTION helper() TO %s`, `REVOKE EXECUTE ON FUNCTION helper() FROM %s`, "EXECUTE on function helper()"},
 		{`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO %s`, `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM %s`, " in schema public on new tables"},
 		{`GRANT pg_read_all_data TO %s`, `REVOKE pg_read_all_data FROM %s`, "membership in role pg_read_all_data"},
 		{`ALTER ROLE %s CREATEDB`, `ALTER ROLE %s NOCREATEDB`, "role attribute CREATEDB"},
+		// Effective privileges: what PUBLIC holds, the role holds.
+		{`GRANT DELETE ON events TO PUBLIC -- %s`, `REVOKE DELETE ON events FROM PUBLIC -- %s`, "DELETE on table events, held through PUBLIC (fix: REVOKE DELETE ON TABLE events FROM PUBLIC)"},
+		{`GRANT SELECT ON events TO PUBLIC -- %s`, `REVOKE SELECT ON events FROM PUBLIC -- %s`, "SELECT on table events is granted to PUBLIC, so " + role + " reads every column"},
+		{`GRANT SELECT (note) ON events TO PUBLIC -- %s`, `REVOKE SELECT (note) ON events FROM PUBLIC -- %s`, "SELECT on some columns of table events is granted to PUBLIC"},
+		{`GRANT CREATE ON SCHEMA public TO PUBLIC -- %s`, `REVOKE CREATE ON SCHEMA public FROM PUBLIC -- %s`, "CREATE on schema public, held through PUBLIC (fix: REVOKE CREATE ON SCHEMA public FROM PUBLIC)"},
+		// Ownership carries every privilege with no ACL entry.
+		{`ALTER TABLE other OWNER TO %s`, `ALTER TABLE other OWNER TO CURRENT_USER -- %s`, "owns table other"},
+		{`ALTER SEQUENCE events_seq OWNER TO %s`, `ALTER SEQUENCE events_seq OWNER TO CURRENT_USER -- %s`, "owns sequence events_seq"},
+		{`ALTER FUNCTION helper() OWNER TO %s`, `ALTER FUNCTION helper() OWNER TO CURRENT_USER -- %s`, "owns function helper()"},
+	}
+	if serverVersion(t, f) >= 150000 {
+		cases = append(cases, struct{ grant, revoke, want string }{
+			`GRANT ALTER SYSTEM ON PARAMETER archive_command TO %s`, `REVOKE ALTER SYSTEM ON PARAMETER archive_command FROM %s`,
+			"ALTER SYSTEM on parameter archive_command (fix: REVOKE ALTER SYSTEM ON PARAMETER archive_command FROM",
+		})
 	}
 	for _, c := range cases {
 		f.exec(fmt.Sprintf(c.grant, role))
@@ -172,9 +190,25 @@ CREATE FUNCTION helper() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;
 		}
 	}
 
+	// EXECUTE is PUBLIC's default on every function and is not listed; a
+	// SECURITY DEFINER function is SecurityDefinerExposure's warning.
+	f.exec(`GRANT EXECUTE ON FUNCTION helper() TO ` + role)
+	if got := violations(); len(got) != 0 {
+		t.Errorf("a direct EXECUTE grant: violations = %v, want none", got)
+	}
+
 	if got, err := DashboardPrivilegeViolations(ctx, f.db, role+"_missing"); err != nil || len(got) != 0 {
 		t.Errorf("a missing role: violations=%v err=%v, want none", got, err)
 	}
+}
+
+func serverVersion(t *testing.T, f *pgFixture) int {
+	t.Helper()
+	var v int
+	if err := f.db.QueryRowContext(context.Background(), `SELECT current_setting('server_version_num')::int`).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return v
 }
 
 func currentDB(t *testing.T, f *pgFixture) string {

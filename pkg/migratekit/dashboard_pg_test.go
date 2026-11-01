@@ -31,18 +31,23 @@ func useDashboardRole(t *testing.T, dsn string) string {
 	t.Cleanup(func() {
 		dashboardRole = prev
 		c := context.Background()
+		// A database the role was made to own is not dropped by DROP OWNED.
+		_, _ = admin.ExecContext(c, `REASSIGN OWNED BY `+name+` TO CURRENT_USER`)
 		_, _ = admin.ExecContext(c, `DROP OWNED BY `+name)
 		_, _ = admin.ExecContext(c, `DROP ROLE IF EXISTS `+name)
 	})
 	return name
 }
 
-func asDashboardRole(t *testing.T, dsn, role string, fn func(ctx context.Context, conn *sql.Conn)) {
+// enableLogin does what the deploy does when dashboards are on: the role can
+// log in with a password. It returns the password.
+func enableLogin(t *testing.T, dsn, role string) string {
 	t.Helper()
-	prev := testRole
-	testRole = role
-	defer func() { testRole = prev }()
-	asRole(t, dsn, fn)
+	const pw = "dash-login-pw"
+	if _, err := openRecordDB(t, dsn).Exec(fmt.Sprintf(`ALTER ROLE %s LOGIN PASSWORD '%s'`, role, pw)); err != nil {
+		t.Fatal(err)
+	}
+	return pw
 }
 
 // roleDSN is dsn with the user and password swapped for the role's, so a test
@@ -114,13 +119,14 @@ func TestDashboardRoleExistsBeforeTheMigrationThatGrantsIt(t *testing.T) {
 		t.Error("the migrator created a role that can log in: that is the deploy's decision")
 	}
 	seed(t, dsn)
-	asDashboardRole(t, dsn, dash, func(ctx context.Context, c *sql.Conn) {
-		if err := readable(ctx, c, `SELECT id, email FROM users`); err != nil {
-			t.Errorf("the granted columns: %v", err)
-		}
-		wantDenied(t, readable(ctx, c, `SELECT api_token FROM users`), "a column no migration granted")
-		wantDenied(t, readable(ctx, c, `SELECT * FROM users`), "select * over an ungranted column")
-	})
+	pw := enableLogin(t, dsn, dash)
+	if err := loginAs(t, dsn, dash, pw, `SELECT id, email FROM users`); err != nil {
+		t.Errorf("the granted columns: %v", err)
+	}
+	wantDenied(t, loginAs(t, dsn, dash, pw, `SELECT api_token FROM users`), "a column no migration granted")
+	wantDenied(t, loginAs(t, dsn, dash, pw, `SELECT * FROM users`), "select * over an ungranted column")
+	wantDenied(t, loginAs(t, dsn, dash, pw, `UPDATE users SET email = 'x'`), "a write")
+	wantDenied(t, loginAs(t, dsn, dash, pw, `CREATE TABLE public.dash_owned (i int)`), "CREATE in public")
 
 	// The next run finds it and leaves it alone.
 	if res := mustUp(t, fsys, dsn); res.Dashboard == nil || res.Dashboard.Created {
@@ -193,12 +199,11 @@ func TestRevokingInALaterMigrationRemovesAccess(t *testing.T) {
 	mustUp(t, release(files), dsn)
 	files["3_revoke.up.sql"] = fmt.Sprintf("REVOKE SELECT (email) ON users FROM %s;", dash)
 	mustUp(t, release(files), dsn)
-	asDashboardRole(t, dsn, dash, func(ctx context.Context, c *sql.Conn) {
-		if err := readable(ctx, c, `SELECT id FROM users`); err != nil {
-			t.Errorf("a column still granted: %v", err)
-		}
-		wantDenied(t, readable(ctx, c, `SELECT email FROM users`), "a revoked column")
-	})
+	pw := enableLogin(t, dsn, dash)
+	if err := loginAs(t, dsn, dash, pw, `SELECT id FROM users`); err != nil {
+		t.Errorf("a column still granted: %v", err)
+	}
+	wantDenied(t, loginAs(t, dsn, dash, pw, `SELECT email FROM users`), "a revoked column")
 }
 
 // migratorDSN creates a login role that owns nothing and may not create roles
@@ -278,15 +283,95 @@ func TestAMigratorThatMayNotCreateTheRole(t *testing.T) {
 	}
 }
 
-// TestADashboardRoleThatMayWriteFailsTheRun: the one check forge keeps. A
-// migration granting the dashboard role anything but reads fails the run that
-// applied it, and every run after, until a migration revokes it.
-func TestADashboardRoleThatMayWriteFailsTheRun(t *testing.T) {
+// TestEveryWayToDoMoreThanReadFailsTheRun is the safety net, case by case,
+// against a real login. Each case's migration hands the dashboard role a
+// capability beyond reading — directly, through PUBLIC, through ownership, or
+// through a parameter ACL. The case logs in as the role WITH A PASSWORD and
+// uses the capability, proving it is real, and the run that applied the
+// migration fails naming it, as does every run after until a migration takes
+// it away.
+func TestEveryWayToDoMoreThanReadFailsTheRun(t *testing.T) {
+	cases := []struct {
+		name    string
+		grant   string // {role} is the role
+		use     string // run as the role, logged in
+		want    string // in the run's error
+		minimum int    // server_version_num the case needs
+	}{
+		{name: "a direct write grant", grant: `GRANT INSERT ON users TO {role};`,
+			use: `INSERT INTO users (id, email) VALUES ('u9', 'w@example.test')`, want: "INSERT on table users"},
+		{name: "a write grant to PUBLIC", grant: `GRANT INSERT, UPDATE, DELETE, TRUNCATE ON users TO PUBLIC;`,
+			use: `UPDATE users SET api_token = 'x'`, want: "UPDATE on table users, held through PUBLIC (fix: REVOKE UPDATE ON TABLE users FROM PUBLIC)"},
+		{name: "a whole-table SELECT to PUBLIC", grant: `GRANT SELECT ON users TO PUBLIC;`,
+			use: `SELECT api_token FROM users`, want: "SELECT on table users is granted to PUBLIC"},
+		{name: "CREATE on public held through PUBLIC (Postgres 14's default)", grant: `GRANT CREATE ON SCHEMA public TO PUBLIC;`,
+			use:  `CREATE FUNCTION public.lower(varchar) RETURNS text LANGUAGE sql AS $$ SELECT 'pwned'::text $$`,
+			want: "CREATE on schema public, held through PUBLIC (fix: REVOKE CREATE ON SCHEMA public FROM PUBLIC)"},
+		{name: "owning a table", grant: `ALTER TABLE users OWNER TO {role};`,
+			use: `UPDATE users SET api_token = 'x'`, want: "owns table users"},
+		{name: "owning a schema", grant: `CREATE SCHEMA dash_s; ALTER SCHEMA dash_s OWNER TO {role};`,
+			use: `CREATE TABLE dash_s.mine (i int)`, want: "owns schema dash_s"},
+		{name: "owning the database", grant: `DO $$ BEGIN EXECUTE format('ALTER DATABASE %I OWNER TO {role}', current_database()); END $$;`,
+			use: `CREATE SCHEMA evil`, want: "owns database"},
+		{name: "owning a large object", grant: `SELECT lo_create(424242); ALTER LARGE OBJECT 424242 OWNER TO {role};`,
+			use: `SELECT lo_put(424242, 0, '\x01')`, want: "owns large object 424242"},
+		{name: "ALTER SYSTEM on a parameter", grant: `GRANT ALTER SYSTEM ON PARAMETER archive_command TO {role};`,
+			// RESET needs the same privilege and leaves the shared server as it was.
+			use: `ALTER SYSTEM RESET archive_command`, want: "ALTER SYSTEM on parameter archive_command", minimum: 150000},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dsn := requirePG(t)
+			if c.minimum > 0 {
+				var v int
+				if err := openRecordDB(t, dsn).QueryRow(`SELECT current_setting('server_version_num')::int`).Scan(&v); err != nil {
+					t.Fatal(err)
+				}
+				if v < c.minimum {
+					t.Skipf("needs server_version_num %d, have %d", c.minimum, v)
+				}
+			}
+			dash := useDashboardRole(t, dsn)
+			files := map[string]string{"1_users.up.sql": usersSQL + notesSQL}
+			mustUp(t, release(files), dsn)
+			seed(t, dsn)
+			pw := enableLogin(t, dsn, dash)
+			if err := loginAs(t, dsn, dash, pw, c.use); err == nil {
+				t.Fatalf("the role could %q before any migration granted it: the case proves nothing", c.use)
+			}
+
+			files["2_grant.up.sql"] = strings.ReplaceAll(c.grant, "{role}", dash)
+			up := func() error {
+				mg, err := Open(Options{FS: release(files), Dir: "migrations", DSN: dsn})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = mg.Close() }()
+				_, err = mg.Up()
+				return err
+			}
+			for _, run := range []string{"the run that applied it", "the next run"} {
+				err := up()
+				var priv *DashboardPrivilegeError
+				if !errors.As(err, &priv) || !strings.Contains(err.Error(), c.want) {
+					t.Fatalf("%s: up = %v, want a DashboardPrivilegeError naming %q", run, err, c.want)
+				}
+			}
+			// The capability the run refused is real.
+			if err := loginAs(t, dsn, dash, pw, c.use); err != nil {
+				t.Fatalf("logged in as the role, %q failed: %v; the check refused a capability that does not exist", c.use, err)
+			}
+		})
+	}
+}
+
+// TestRevokingAWriteGrantLetsTheRunFinish: the fix the error names works.
+func TestRevokingAWriteGrantLetsTheRunFinish(t *testing.T) {
 	dsn := requirePG(t)
 	dash := useDashboardRole(t, dsn)
 	files := map[string]string{
 		"1_users.up.sql":     usersSQL,
-		"2_dashboard.up.sql": grantDashboard(dash) + fmt.Sprintf("\nGRANT INSERT ON users TO %s;", dash),
+		"2_dashboard.up.sql": grantDashboard(dash) + "\nGRANT CREATE ON SCHEMA public TO PUBLIC;",
 	}
 	up := func() (Result, error) {
 		mg, err := Open(Options{FS: release(files), Dir: "migrations", DSN: dsn})
@@ -296,17 +381,15 @@ func TestADashboardRoleThatMayWriteFailsTheRun(t *testing.T) {
 		defer func() { _ = mg.Close() }()
 		return mg.Up()
 	}
-	for _, run := range []string{"the run that granted it", "the next run"} {
-		_, err := up()
-		var priv *DashboardPrivilegeError
-		if !errors.As(err, &priv) || len(priv.Violations) != 1 || !strings.Contains(priv.Violations[0], "INSERT on table users") {
-			t.Fatalf("%s: up = %v, want a DashboardPrivilegeError naming INSERT on users", run, err)
-		}
+	if _, err := up(); err == nil {
+		t.Fatal("a run after GRANT CREATE ON SCHEMA public TO PUBLIC succeeded")
 	}
-	files["3_revoke.up.sql"] = fmt.Sprintf("REVOKE INSERT ON users FROM %s;", dash)
+	files["3_revoke.up.sql"] = "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
 	if res, err := up(); err != nil || res.After.Version != 3 {
 		t.Fatalf("after the revoking migration: version %d err %v, want 3 and no error", res.After.Version, err)
 	}
+	pw := enableLogin(t, dsn, dash)
+	wantDenied(t, loginAs(t, dsn, dash, pw, `CREATE TABLE public.dash_owned (i int)`), "CREATE in public after the revoke")
 }
 
 // TestApplyEnsuresTheDashboardRoleToo: the boot path (AutoMigrate -> Apply)

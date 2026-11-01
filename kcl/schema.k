@@ -954,8 +954,9 @@ schema DatabaseDashboards:
             dashboards = forge.DatabaseDashboards {enabled = True}
         }
 
-    The role panels query as, `forge_dash`, exists in every database forge
-    migrates: the migrator creates it NOLOGIN before any migration runs.
+    The role panels query as, `forge_dash`, exists in every cluster forge
+    migrates (a role is cluster-wide, shared by every database on the
+    server): the migrator creates it NOLOGIN before any migration runs.
     Enabling dashboards lets it log in, with a password in a Secret named
     `<database>-forge-dash` (minted the way `<database>-forge-ro` is). What
     it reads is what your migrations GRANT it, column by column

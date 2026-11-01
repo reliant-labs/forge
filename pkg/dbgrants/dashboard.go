@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // # The dashboard role
@@ -12,10 +14,13 @@ import (
 // [DashboardRoleName] is the role live dashboard panels query as. forge owns
 // its LIFECYCLE and nothing else:
 //
-//   - The role exists in every database a forge migrator touches. The migrator
-//     creates it NOLOGIN before any migration runs ([EnsureRole]), so a
-//     migration may name it in dev, in tests, in CI and in production, whether
-//     dashboards are on or not.
+//   - The role exists in every cluster a forge migrator touches. Roles are
+//     cluster-wide: on a server shared by several databases there is one
+//     forge_dash, and its login reaches the grants of every database on it.
+//     The migrator creates it NOLOGIN before any migration runs
+//     ([EnsureRole]), so a migration may name it in dev, in tests, in CI and
+//     in production, whether dashboards are on or not. A role that already
+//     exists is adopted as it is, whatever its login and password.
 //   - The deploy decides whether it can log in. A ManagedDatabase renders it as
 //     a CNPG managed role (pkg/deploy): LOGIN, a password Secret and a
 //     connection limit while ManagedDatabase.dashboards is enabled, NOLOGIN
@@ -30,8 +35,8 @@ import (
 // Switching dashboards off therefore leaves the grants in place on a role that
 // cannot log in, so they are unusable until it can again.
 //
-// The one check forge keeps costs no annotation: a read-only role holds read
-// privileges only. [DashboardPrivilegeViolations] lists anything else, and the
+// The one check forge keeps costs no annotation: a read-only role can only
+// read. [DashboardPrivilegeViolations] lists what it can do besides, and the
 // migrator refuses to finish while the list is not empty (pkg/migratekit).
 
 // ErrRoleNotCreatable means the role does not exist and the connecting role may
@@ -86,79 +91,220 @@ func sqlState(err error) string {
 	return ""
 }
 
-// DashboardPrivilegeViolations lists what role holds beyond reading, one
-// sentence each, sorted: nil when it holds nothing else or does not exist.
+// Violation is one thing the dashboard role can do besides reading.
+type Violation struct {
+	// What names the object and the privilege: "INSERT on table public.users".
+	What string
+	// Fix is the statement that takes it away, for the failure message.
+	Fix string
+}
+
+func (v Violation) String() string { return v.What + " (fix: " + v.Fix + ")" }
+
+// DescribeViolations is the failure message for violations of role: what it
+// can do besides reading, each with its fix, and the rule to follow instead.
+func DescribeViolations(role string, violations []Violation) string {
+	lines := make([]string, len(violations))
+	for i, v := range violations {
+		lines[i] = "  - " + v.String()
+	}
+	return fmt.Sprintf("role %s may only read (SELECT, schema USAGE, CONNECT), but it can also:\n%s\n"+
+		"Take each away in a new migration, and grant %s column SELECTs only. "+
+		"A privilege held through PUBLIC is every role's: revoke it from PUBLIC and grant the roles that need it. "+
+		"See `forge skill load db/dashboards`", role, strings.Join(lines, "\n"), role)
+}
+
+// DashboardPrivilegeViolations lists what role can do besides reading, sorted:
+// nil when nothing, or when the role does not exist.
 //
-// A read-only role needs SELECT (on tables, views, columns and sequences),
-// USAGE on schemas and CONNECT on the database; everything else is listed:
+// It asks Postgres for the role's EFFECTIVE privileges (has_table_privilege
+// and its siblings), not for ACL entries naming it, so a privilege it holds
+// through PUBLIC counts exactly like one granted to it, and ownership, which
+// carries every privilege without an ACL entry, is listed on its own. Listed:
 //
-//   - any other privilege on a database, schema, table, view, column,
-//     sequence or large object, and any privilege held WITH GRANT OPTION;
-//   - EXECUTE granted to the role itself (PUBLIC's default EXECUTE is not the
-//     role's grant and is not listed; see [SecurityDefinerExposure]);
-//   - ALTER DEFAULT PRIVILEGES entries naming the role, which would hand it
-//     every table created later instead of the columns a migration named;
+//   - every object the role owns, in any database and of any kind
+//     (pg_shdepend);
+//   - INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER (and MAINTAIN from
+//     Postgres 17) on any table, view, materialized view or foreign table, and
+//     SELECT WITH GRANT OPTION;
+//   - SELECT that PUBLIC holds on a table (whole or some columns): every role,
+//     this one included, reads those columns whatever the migrations granted;
+//   - USAGE or UPDATE on a sequence (nextval, setval);
+//   - CREATE on any schema, and CREATE on any database of the cluster;
+//   - UPDATE on a large object granted to the role or to PUBLIC;
+//   - SET or ALTER SYSTEM on a parameter (Postgres 15+), granted to the role or
+//     to PUBLIC: ALTER SYSTEM SET archive_command runs an OS command;
+//   - ALTER DEFAULT PRIVILEGES entries naming the role;
 //   - membership in any role, and the SUPERUSER, CREATEROLE, CREATEDB,
-//     REPLICATION and BYPASSRLS attributes.
+//     REPLICATION and BYPASSRLS attributes (a superuser is reported by its
+//     attribute alone: it holds everything).
 //
-// It reads the catalog of the database c is connected to (and the shared
-// catalogs), so it covers the objects of that database only.
-func DashboardPrivilegeViolations(ctx context.Context, c Conn, role string) ([]string, error) {
+// Tables, schemas and sequences are those of the database c is connected to,
+// outside pg_catalog, information_schema and pg_toast. Not listed, by choice:
+// TEMP on a database (PUBLIC's default; a temporary table lives in its own
+// session and cannot touch the application's data), EXECUTE on functions
+// (PUBLIC's default; a SECURITY DEFINER one is [SecurityDefinerExposure]'s
+// warning), and privileges on another database's objects, which that
+// database's own migrator checks.
+func DashboardPrivilegeViolations(ctx context.Context, c Conn, role string) ([]Violation, error) {
+	var version int
+	if err := c.QueryRowContext(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&version); err != nil {
+		return nil, fmt.Errorf("dbgrants: read the server version: %w", err)
+	}
 	var raw []byte
-	if err := c.QueryRowContext(ctx, privilegeViolationsSQL, role).Scan(&raw); err != nil {
+	if err := c.QueryRowContext(ctx, violationsSQL(version), role).Scan(&raw); err != nil {
 		return nil, fmt.Errorf("dbgrants: read the privileges of %s: %w", role, err)
 	}
-	var out []string
-	if err := json.Unmarshal(raw, &out); err != nil {
+	var rows []struct {
+		Kind   string `json:"kind"`
+		Object string `json:"object"`
+		Target string `json:"target"`
+		Priv   string `json:"priv"`
+		Public bool   `json:"public"`
+		Whole  bool   `json:"whole"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
 		return nil, fmt.Errorf("dbgrants: decode the privileges of %s: %w", role, err)
+	}
+	out := make([]Violation, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, violation(role, r.Kind, r.Object, r.Target, r.Priv, r.Public, r.Whole))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].What < out[j].What })
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }
 
-const privilegeViolationsSQL = `
+// violation words one row of violationsSQL.
+func violation(role, kind, object, target, priv string, public, whole bool) Violation {
+	from := quoteIdent(role)
+	if public {
+		from = "PUBLIC"
+	}
+	revoke := func(p string) string {
+		if rest, ok := strings.CutSuffix(p, " WITH GRANT OPTION"); ok {
+			return "REVOKE GRANT OPTION FOR " + rest + " ON " + target + " FROM " + from
+		}
+		return "REVOKE " + p + " ON " + target + " FROM " + from
+	}
+	held := ""
+	if public {
+		held = ", held through PUBLIC"
+	}
+	switch kind {
+	case "attribute":
+		return Violation{"role attribute " + priv, "ALTER ROLE " + quoteIdent(role) + " NO" + priv}
+	case "membership":
+		return Violation{"membership in role " + object, "REVOKE " + object + " FROM " + quoteIdent(role)}
+	case "owner":
+		return Violation{"owns " + object, "give it to the role that should own it (ALTER ... OWNER TO ...), or drop it"}
+	case "public-select":
+		what := "SELECT on some columns of " + object + " is granted to PUBLIC, so " + role + " reads them whatever the migrations granted"
+		if whole {
+			what = "SELECT on " + object + " is granted to PUBLIC, so " + role + " reads every column of it"
+		}
+		return Violation{what, "REVOKE SELECT ON " + target + " FROM PUBLIC, then grant the roles that need it"}
+	case "default":
+		return Violation{object, "ALTER DEFAULT PRIVILEGES " + target + " FROM " + quoteIdent(role)}
+	}
+	return Violation{priv + " on " + object + held, revoke(priv)}
+}
+
+// violationsSQL is the effective-privilege query for a server_version_num:
+// MAINTAIN exists from 17, pg_parameter_acl from 15. Each row is a JSON object
+// that [violation] words.
+func violationsSQL(version int) string {
+	tablePrivs := `'DELETE', 'TRUNCATE', 'TRIGGER'`
+	if version >= 170000 {
+		tablePrivs += `, 'MAINTAIN'`
+	}
+	parameters := ""
+	if version >= 150000 {
+		parameters = `
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', 'parameter ' || p.parname, 'target', 'PARAMETER ' || p.parname,
+                           'priv', x.privilege_type, 'public', x.grantee = 0)
+    FROM r, pg_parameter_acl p, aclexplode(p.paracl) x
+   WHERE NOT r.rolsuper AND x.grantee IN (r.id, 0)`
+	}
+	return `
 WITH r AS (
   SELECT oid AS id, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = $1
+), rels AS (
+  SELECT c.oid, c.relkind, c.relowner, c.oid::regclass::text AS name,
+         CASE c.relkind WHEN 'S' THEN 'sequence' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view'
+                        WHEN 'f' THEN 'foreign table' ELSE 'table' END AS kind,
+         EXISTS (SELECT 1 FROM pg_depend e WHERE e.classid = 'pg_class'::regclass AND e.objid = c.oid AND e.deptype = 'e') AS extension
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+     AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp\_%'
+), schemas AS (
+  SELECT n.oid, n.nspname, n.nspowner FROM pg_namespace n
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp\_%'
 )
-SELECT coalesce(json_agg(v.what ORDER BY v.what), '[]'::json) FROM (
-  SELECT 'role attribute ' || a.name AS what
+SELECT coalesce(json_agg(v.row), '[]'::json) FROM (
+  SELECT json_build_object('kind', 'attribute', 'priv', a.name) AS row
     FROM r, LATERAL (VALUES ('SUPERUSER', r.rolsuper), ('CREATEROLE', r.rolcreaterole), ('CREATEDB', r.rolcreatedb),
                             ('REPLICATION', r.rolreplication), ('BYPASSRLS', r.rolbypassrls)) AS a(name, held)
    WHERE a.held
   UNION ALL
-  SELECT 'membership in role ' || quote_ident(pg_get_userbyid(m.roleid))
+  SELECT json_build_object('kind', 'membership', 'object', quote_ident(pg_get_userbyid(m.roleid)))
     FROM r JOIN pg_auth_members m ON m.member = r.id
   UNION ALL
-  SELECT format('%s on database %I', x.privilege_type, d.datname) || CASE WHEN x.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END
-    FROM r, pg_database d, aclexplode(d.datacl) x
-   WHERE d.datname = current_database() AND x.grantee = r.id AND (x.privilege_type <> 'CONNECT' OR x.is_grantable)
+  SELECT json_build_object('kind', 'owner', 'object',
+           CASE WHEN d.dbid = 0 OR db.datname = current_database() THEN pg_describe_object(d.classid, d.objid, d.objsubid)
+                ELSE format('an object (%s) in database %I', d.classid::regclass, db.datname) END)
+    FROM r JOIN pg_shdepend d ON d.refclassid = 'pg_authid'::regclass AND d.refobjid = r.id AND d.deptype = 'o'
+    LEFT JOIN pg_database db ON db.oid = d.dbid
   UNION ALL
-  SELECT format('%s on schema %I', x.privilege_type, n.nspname) || CASE WHEN x.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END
-    FROM r, pg_namespace n, aclexplode(n.nspacl) x
-   WHERE x.grantee = r.id AND (x.privilege_type <> 'USAGE' OR x.is_grantable)
+  SELECT json_build_object('kind', 'privilege', 'object', t.kind || ' ' || t.name, 'target', 'TABLE ' || t.name,
+                           'priv', p.priv, 'public', has_table_privilege('public', t.oid, p.priv))
+    FROM r, rels t, unnest(ARRAY[` + tablePrivs + `]) AS p(priv)
+   WHERE NOT r.rolsuper AND t.relkind <> 'S' AND t.relowner <> r.id AND has_table_privilege(r.id, t.oid, p.priv)
   UNION ALL
-  SELECT format('%s on %s %s', x.privilege_type,
-                CASE c.relkind WHEN 'S' THEN 'sequence' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view'
-                               WHEN 'f' THEN 'foreign table' ELSE 'table' END,
-                c.oid::regclass) || CASE WHEN x.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END
-    FROM r, pg_class c, aclexplode(c.relacl) x
-   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') AND x.grantee = r.id AND (x.privilege_type <> 'SELECT' OR x.is_grantable)
+  SELECT json_build_object('kind', 'privilege', 'object', t.kind || ' ' || t.name, 'target', 'TABLE ' || t.name,
+                           'priv', p.priv, 'public', has_any_column_privilege('public', t.oid, p.priv))
+    FROM r, rels t, unnest(ARRAY['INSERT', 'UPDATE', 'REFERENCES', 'SELECT WITH GRANT OPTION']) AS p(priv)
+   WHERE NOT r.rolsuper AND t.relkind <> 'S' AND t.relowner <> r.id AND has_any_column_privilege(r.id, t.oid, p.priv)
   UNION ALL
-  SELECT format('%s on column %s.%I', x.privilege_type, c.oid::regclass, a.attname) || CASE WHEN x.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END
-    FROM r, pg_attribute a JOIN pg_class c ON c.oid = a.attrelid, aclexplode(a.attacl) x
-   WHERE a.attnum > 0 AND NOT a.attisdropped AND x.grantee = r.id AND (x.privilege_type <> 'SELECT' OR x.is_grantable)
+  SELECT json_build_object('kind', 'public-select', 'object', t.kind || ' ' || t.name, 'target', 'TABLE ' || t.name,
+                           'whole', has_table_privilege('public', t.oid, 'SELECT'))
+    FROM r, rels t
+   WHERE NOT r.rolsuper AND t.relkind <> 'S' AND NOT t.extension AND t.relowner <> r.id
+     AND has_any_column_privilege('public', t.oid, 'SELECT')
   UNION ALL
-  SELECT format('%s on large object %s', x.privilege_type, l.oid) || CASE WHEN x.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END
+  SELECT json_build_object('kind', 'privilege', 'object', 'sequence ' || t.name, 'target', 'SEQUENCE ' || t.name,
+                           'priv', p.priv, 'public', has_sequence_privilege('public', t.oid, p.priv))
+    FROM r, rels t, unnest(ARRAY['USAGE', 'UPDATE']) AS p(priv)
+   WHERE NOT r.rolsuper AND t.relkind = 'S' AND t.relowner <> r.id AND has_sequence_privilege(r.id, t.oid, p.priv)
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', 'schema ' || quote_ident(n.nspname), 'target', 'SCHEMA ' || quote_ident(n.nspname),
+                           'priv', 'CREATE', 'public', has_schema_privilege('public', n.oid, 'CREATE'))
+    FROM r, schemas n
+   WHERE NOT r.rolsuper AND n.nspowner <> r.id AND has_schema_privilege(r.id, n.oid, 'CREATE')
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', 'database ' || quote_ident(d.datname), 'target', 'DATABASE ' || quote_ident(d.datname),
+                           'priv', 'CREATE', 'public', has_database_privilege('public', d.oid, 'CREATE'))
+    FROM r, pg_database d
+   WHERE NOT r.rolsuper AND d.datdba <> r.id AND has_database_privilege(r.id, d.oid, 'CREATE')
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', 'large object ' || l.oid, 'target', 'LARGE OBJECT ' || l.oid,
+                           'priv', x.privilege_type, 'public', x.grantee = 0)
     FROM r, pg_largeobject_metadata l, aclexplode(l.lomacl) x
-   WHERE x.grantee = r.id AND (x.privilege_type <> 'SELECT' OR x.is_grantable)
+   WHERE NOT r.rolsuper AND l.lomowner <> r.id AND x.grantee IN (r.id, 0) AND x.privilege_type <> 'SELECT'
   UNION ALL
-  SELECT format('EXECUTE on %s %s', CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END, p.oid::regprocedure)
-    FROM r, pg_proc p, aclexplode(p.proacl) x
-   WHERE x.grantee = r.id
-  UNION ALL
-  SELECT format('default privileges of role %I%s on new %s', pg_get_userbyid(d.defaclrole),
-                CASE WHEN d.defaclnamespace = 0 THEN '' ELSE format(' in schema %I', n.nspname) END,
-                CASE d.defaclobjtype WHEN 'r' THEN 'tables' WHEN 'S' THEN 'sequences' WHEN 'f' THEN 'functions'
-                                     WHEN 'T' THEN 'types' WHEN 'n' THEN 'schemas' WHEN 'L' THEN 'large objects' ELSE d.defaclobjtype::text END)
+  SELECT json_build_object('kind', 'default',
+           'object', format('default privileges of role %I%s on new %s', pg_get_userbyid(d.defaclrole),
+                            CASE WHEN d.defaclnamespace = 0 THEN '' ELSE format(' in schema %I', n.nspname) END,
+                            CASE d.defaclobjtype WHEN 'r' THEN 'tables' WHEN 'S' THEN 'sequences' WHEN 'f' THEN 'functions'
+                                                 WHEN 'T' THEN 'types' WHEN 'n' THEN 'schemas' WHEN 'L' THEN 'large objects' ELSE d.defaclobjtype::text END),
+           'target', format('FOR ROLE %I%s REVOKE ALL ON %s', pg_get_userbyid(d.defaclrole),
+                            CASE WHEN d.defaclnamespace = 0 THEN '' ELSE format(' IN SCHEMA %I', n.nspname) END,
+                            CASE d.defaclobjtype WHEN 'r' THEN 'TABLES' WHEN 'S' THEN 'SEQUENCES' WHEN 'f' THEN 'FUNCTIONS'
+                                                 WHEN 'T' THEN 'TYPES' WHEN 'n' THEN 'SCHEMAS' WHEN 'L' THEN 'LARGE OBJECTS' ELSE d.defaclobjtype::text END))
     FROM r, pg_default_acl d LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace, aclexplode(d.defaclacl) x
-   WHERE x.grantee = r.id
+   WHERE x.grantee = r.id` + parameters + `
 ) v`
+}

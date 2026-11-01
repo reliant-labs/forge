@@ -32,16 +32,18 @@ import (
 // *DashboardRoleMissingError. The Job's retry, after CNPG has created the
 // role, succeeds.
 //
-// THE ROLE HOLDS READ PRIVILEGES ONLY. After the migrations (and the read-only
-// grants), the run reads what the role holds from the catalog and fails with a
-// *DashboardPrivilegeError if it is anything but SELECT, schema USAGE and
-// CONNECT (dbgrants.DashboardPrivilegeViolations): a write privilege, a grant
-// option, an EXECUTE, a default privilege, a role membership or attribute. The
-// migrations are committed by then, so the run keeps failing until a migration
-// revokes it, and the release that over-granted never serves. It fails rather
-// than warns because no database can legitimately be in that state: the
-// dashboard role is read-only by definition, and the release before this one
-// revoked everything it held on every run.
+// THE ROLE CAN ONLY READ. After the migrations (and the read-only grants), the
+// run asks Postgres what the role can effectively do — through PUBLIC and
+// through ownership as well as through grants to it — and fails with a
+// *DashboardPrivilegeError naming each object, privilege and fix if it can do
+// anything but read (dbgrants.DashboardPrivilegeViolations). The migrations
+// are committed by then, so the run keeps failing until a migration revokes
+// it, and the release that over-granted never serves; the check detects, it
+// does not prevent. It fails rather than warns because a dashboard role that
+// can write is not a dashboard role. What it holds through PUBLIC is the one
+// state an existing database can already be in (Postgres 14's CREATE on
+// public); the error names the REVOKE, which the project writes: forge
+// revokes nothing.
 //
 // Neither runs when the schema is ahead of this binary: nothing is applied,
 // and the newer release's own run does both.
@@ -62,9 +64,10 @@ type DashboardRole struct {
 	// CanLogin is true when dashboards are on: the deploy made the role
 	// login-capable. Off, its grants stay in place and nobody can use them.
 	CanLogin bool
-	// SecurityDefiner lists the SECURITY DEFINER functions a login-capable
-	// role can execute (dbgrants.SecurityDefinerExposure): a way around its
-	// column grants. A warning for the caller to log, never a failure.
+	// SecurityDefiner lists the SECURITY DEFINER functions the role can
+	// execute (dbgrants.SecurityDefinerExposure), whether or not it can log in
+	// now: each runs as its owner, so it can read past the column grants and
+	// write. A warning for the caller to log, never a failure.
 	SecurityDefiner []string
 }
 
@@ -88,13 +91,11 @@ func (e *DashboardRoleMissingError) Error() string {
 // more than read privileges.
 type DashboardPrivilegeError struct {
 	Role       string
-	Violations []string
+	Violations []dbgrants.Violation
 }
 
 func (e *DashboardPrivilegeError) Error() string {
-	return fmt.Sprintf("role %s may only read (SELECT, schema USAGE, CONNECT), but it holds: %s. "+
-		"Revoke them in a new migration (`REVOKE ... FROM %s;`); grant it column SELECTs only. See `forge skill load db/dashboards`",
-		e.Role, strings.Join(e.Violations, "; "), e.Role)
+	return dbgrants.DescribeViolations(e.Role, e.Violations)
 }
 
 // dashboardRef is a migration whose SQL names the dashboard role.
@@ -163,7 +164,9 @@ func ensureDashboardRole(ctx context.Context, conn *sql.Conn, refs []dashboardRe
 }
 
 // checkDashboardRole is the run's last step on the dashboard role: refuse
-// anything but read privileges, and note whether it can log in.
+// anything but reading, note whether it can log in, and list the SECURITY
+// DEFINER functions it could execute. The list is computed whether or not it
+// can log in: a dev or test run, where it cannot, is where an author sees it.
 func checkDashboardRole(ctx context.Context, conn *sql.Conn, d *DashboardRole) error {
 	if d == nil || d.Missing {
 		return nil
@@ -179,12 +182,10 @@ func checkDashboardRole(ctx context.Context, conn *sql.Conn, d *DashboardRole) e
 	if err != nil {
 		return err
 	}
-	if d.CanLogin {
-		// Informational, like the read-only role's: a failed lookup does not
-		// fail a run that succeeded.
-		if fns, err := dbgrants.SecurityDefinerExposure(ctx, conn, dashboardRole); err == nil {
-			d.SecurityDefiner = fns
-		}
+	// Informational, like the read-only role's: a failed lookup does not
+	// fail a run that succeeded.
+	if fns, err := dbgrants.SecurityDefinerExposure(ctx, conn, dashboardRole); err == nil {
+		d.SecurityDefiner = fns
 	}
 	return nil
 }

@@ -9,9 +9,9 @@ Live dashboard panels (a spend chart, a cohort table) can query your application
 
 | forge does | you do |
 |---|---|
-| creates `forge_dash` (NOLOGIN) in every database before any migration runs | write a migration that GRANTs it the columns a panel needs |
+| creates `forge_dash` (NOLOGIN) in the cluster before any migration runs | write a migration that GRANTs it the columns a panel needs |
 | lets it log in, with a password Secret and a connection limit, when the database enables dashboards | write a later migration that REVOKEs what a panel no longer needs |
-| fails the migration run if the role holds anything but read privileges | keep PII and secrets out of every GRANT |
+| fails the migration run if the role can do anything but read | keep PII and secrets out of every GRANT |
 
 ## 1. The database turns dashboards on (KCL)
 
@@ -50,8 +50,8 @@ That is the whole mechanism. The migration applies in dev, in tests, in CI and i
 2. **Prefer a column list to a whole table.** `GRANT SELECT ON messages TO forge_dash` covers every column the table will EVER have, including a secret one added next quarter. A column list does not grow. Grant a whole table only when every current column is fine to show and the table cannot plausibly gain a sensitive one (a lookup table of plan names).
 3. **Never grant PII or secrets.** Not emails, names, phone numbers, addresses, IPs, free text a user typed (titles, notes, prompts, messages), and not tokens, keys, password or token hashes, ciphertext, or anything `forge:secret`. When in doubt, check the table's row in `db/grants/readonly/<schema>.<table>_gen.sql`: the columns listed there as withheld (`forge:secret`, or credential-shaped and undecided) are never for a panel. A panel that needs a person groups by an opaque id (`user_id`), not an email.
 4. **Grant base-table columns, not views.** A view reads its tables with its owner's privileges, so granting a view grants every column it selects, whatever the column grants say. If a panel needs an aggregate, write it in the panel's SQL over the granted columns.
-5. **Another schema needs USAGE too.** `public` is usable by every role by default; for a table in another schema add `GRANT USAGE ON SCHEMA billing TO forge_dash;`.
-6. **Grant nothing else.** Only `SELECT` (on tables, columns and sequences), schema `USAGE` and database `CONNECT` are allowed; see section 4.
+5. **Another schema needs USAGE too.** `public` is usable by every role by default; for a table in another schema add `GRANT USAGE ON SCHEMA billing TO forge_dash;`. On Postgres 14, and on a database upgraded from it, PUBLIC can also CREATE in `public`, which the check below refuses: add `REVOKE CREATE ON SCHEMA public FROM PUBLIC;` (Postgres 15's default) in a migration.
+6. **Grant nothing else, to it or to PUBLIC.** Only `SELECT` (on tables, columns and sequences), schema `USAGE` and database `CONNECT` are allowed; see section 4. What PUBLIC holds, every role holds, `forge_dash` included.
 
 ### Removing access is a later migration
 
@@ -67,29 +67,40 @@ A column a migration drops takes its grant with it. Renaming a column keeps its 
 
 ## 3. The role exists before your first migration
 
-Every migration run (`db migrate up`, the server's boot-time AutoMigrate, a test database) first creates `forge_dash` as `NOLOGIN NOINHERIT` when the cluster has none, and otherwise leaves the existing role exactly as it is. On a ManagedDatabase, CNPG declares the role too and **adopts** the one the migrator created: its reconciler finds a declared role in the catalog and ALTERs it to the declared attributes (login, password, connection limit, comment) instead of creating it.
+Every migration run (`db migrate up`, the server's boot-time AutoMigrate, a test database) first creates `forge_dash` as `NOLOGIN NOINHERIT` when the cluster has none, and otherwise leaves the existing role exactly as it is, whatever its login and password.
+
+**The role is cluster-wide.** A Postgres role belongs to the server, not to a database. On a server several databases share (a Cloud SQL instance serving two apps, a dev Postgres), there is one `forge_dash`: every database's migrations grant to the same role, PUBLIC's default `CONNECT` lets it connect to all of them, and one leaked credential reaches what every database granted. Give each app its own server when that matters. On a ManagedDatabase, CNPG declares the role too and **adopts** the one the migrator created: its reconciler finds a declared role in the catalog and ALTERs it to the declared attributes (login, password, connection limit, comment) instead of creating it.
 
 One role may not create it: a ManagedDatabase's own application role has no `CREATEROLE`, and CNPG's managed roles can reconcile after the first migration Job starts. The run then continues if no pending migration names `forge_dash`. If one does, the run refuses **before applying anything** (`role forge_dash does not exist and the migrating role may not create it … Nothing was applied`), so the schema is not left dirty; the Job's retry, after CNPG has created the role, succeeds. On a database you run yourself with a migrating role that lacks `CREATEROLE`, have an administrator run `CREATE ROLE forge_dash NOLOGIN` once.
 
-## 4. The migrator's one check: read privileges only
+## 4. The migrator's one check: the role can only read
 
-After the migrations, every run reads what `forge_dash` holds from the catalog and **fails** if it is anything but `SELECT`, schema `USAGE` and database `CONNECT`:
+After the migrations, every run asks Postgres what `forge_dash` can **effectively** do (`has_table_privilege` and its siblings, which count what it holds through PUBLIC as well as what was granted to it) and **fails** if it can do anything but read. The error names each object and privilege, with the statement that takes it away:
 
-- `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER` on a table or column, `USAGE`/`UPDATE` on a sequence, `CREATE` on a schema, `CREATE`/`TEMPORARY` on the database;
-- any privilege held `WITH GRANT OPTION`;
-- `EXECUTE` granted to the role itself (PUBLIC's default `EXECUTE` is not counted; see SECURITY DEFINER below);
+- `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER` (and `MAINTAIN` on Postgres 17) on any table, view or foreign table, whole or one column, and `SELECT ... WITH GRANT OPTION`;
+- `SELECT` granted to PUBLIC on a table: every role reads those columns whatever your migrations granted (`REVOKE SELECT ON t FROM PUBLIC`, then grant the roles that need it);
+- `USAGE` or `UPDATE` on a sequence (`nextval`, `setval`);
+- `CREATE` on any schema (Postgres 14's `public` included: `REVOKE CREATE ON SCHEMA public FROM PUBLIC`), and `CREATE` on any database of the cluster;
+- owning anything: a table, schema, function, type, large object or database, in any database. An owner holds every privilege with no grant to see;
+- `UPDATE` on a large object, and `SET` or `ALTER SYSTEM` on a parameter (Postgres 15+), granted to the role or to PUBLIC: `ALTER SYSTEM SET archive_command` runs an OS command;
 - an `ALTER DEFAULT PRIVILEGES ... TO forge_dash` entry, which would hand it every table created later instead of the columns you named;
 - membership in any role (`pg_read_all_data` would make every column grant moot), and the `SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION` and `BYPASSRLS` attributes.
 
-The error names each privilege. The offending migration has already committed, so every run fails until a new migration revokes it (`REVOKE INSERT ON messages FROM forge_dash;`): the release that over-granted never serves. Test databases (`testkit.NewMigratedPostgresDB`, `app.NewMigratedTestDB`) apply the same check, so `task test` catches it before review does.
+forge never revokes anything itself: PUBLIC's privileges are your schema's, and the fix is a migration you write.
 
-To see what a panel could read, act as the role in a test against a migrated database: `SET ROLE forge_dash;` then run the panel's SQL.
+**It detects; it does not prevent.** The offending migration has already committed when the check runs, so every run fails until a new migration revokes it, and the release that over-granted never serves. In between, the previous release keeps serving and a role that can log in holds the privilege. `task test` runs the same check on test databases (`testkit.NewMigratedPostgresDB`, `app.NewMigratedTestDB`, whose templates revoke Postgres 14's `CREATE` on `public` to match 15+), so it fails before review, not in production.
 
-### SECURITY DEFINER functions are a way around the column grants
+**Allowed, by choice:** `TEMP` on the database (PUBLIC's default) lets a dashboard session create temporary tables, which live in that session alone and cannot touch your data; a `READ ONLY` transaction still lets a session write its own temporary tables. `EXECUTE` on functions is PUBLIC's default and is not refused; see SECURITY DEFINER below.
 
-The boundary holds for every expression the **role** evaluates. A `SECURITY DEFINER` function evaluates its body as its **owner**, so a column the role has no `SELECT` on is readable through one the role may execute, and Postgres grants `EXECUTE` on every new function to `PUBLIC` by default. `forge_ro` has the same exposure. Writes stay blocked (the caller's transaction is `READ ONLY` and holds inside the function); the column boundary does not.
+**Not checked:** objects in another database of the same cluster (that database's own migrator checks them; roles and `CREATE` on databases are checked cluster-wide), and `USAGE` on foreign servers, foreign-data wrappers, tablespaces, types and languages. `USAGE` on a foreign server lets the role create its own user mapping: do not grant it.
 
-forge generates no such function, but it is real. While dashboards are on, each migration run lists the `SECURITY DEFINER` functions `forge_dash` (or `forge_ro`) can execute and logs a warning naming them (it never fails the run). Fix it at the function: `REVOKE EXECUTE ON FUNCTION f(...) FROM PUBLIC;`, or do not write a definer function over a table with a sensitive column.
+To see what a panel could read, log in as the role in a test against a migrated database (or `SET ROLE forge_dash;`) and run the panel's SQL.
+
+### SECURITY DEFINER functions are a way around the grants
+
+The boundary holds for every expression the **role** evaluates. A `SECURITY DEFINER` function evaluates its body as its **owner**, so through one the role may execute it reads columns it has no `SELECT` on and, unless the caller's transaction is `READ ONLY`, writes. `pkg/dbquery` runs every panel `READ ONLY`, which blocks the writes; a leaked `forge_dash` password used from `psql` is not, and writes through the function. Postgres grants `EXECUTE` on every new function to `PUBLIC` by default. `forge_ro` has the same exposure.
+
+forge generates no such function, but it is real. Every migration run lists the `SECURITY DEFINER` functions `forge_dash` or `forge_ro` can execute and logs a warning naming them, whether or not dashboards are on, so a dev or test run shows it (it never fails the run). Fix it at the function: `REVOKE EXECUTE ON FUNCTION f(...) FROM PUBLIC;` (`forge db squash` keeps that revoke), or do not write a definer function over a sensitive table.
 
 ### Not bounded by the privileges
 

@@ -181,6 +181,7 @@ var deniedFunctions = map[string]string{
 	"crosstab3":                  "it runs the SQL text it is given",
 	"crosstab4":                  "it runs the SQL text it is given",
 	"connectby":                  "it runs a query it builds from its arguments",
+	"xpath_table":                "it runs a query it builds from its arguments",
 	// They scan whole tables, schemas or the database behind one call.
 	"table_to_xml":                  "it scans the whole table",
 	"table_to_xmlschema":            "it scans the whole table",
@@ -209,6 +210,22 @@ var deniedFunctions = map[string]string{
 	"pg_import_system_collations":    "a query may not change the catalog",
 	"pg_export_snapshot":             "a query may not export its snapshot to other sessions",
 
+	// Replication: listed by name, since the read-only views
+	// pg_replication_slots and pg_replication_origin_status share the
+	// pg_replication_ prefix and replication-lag panels read them. The
+	// read-only functions of the family (pg_replication_origin_oid,
+	// pg_replication_origin_progress, ..._session_is_setup,
+	// ..._session_progress) are not listed.
+	"pg_replication_origin_create":        "a query may not touch replication",
+	"pg_replication_origin_drop":          "a query may not touch replication",
+	"pg_replication_origin_advance":       "a query may not touch replication",
+	"pg_replication_origin_session_setup": "a query may not touch replication",
+	"pg_replication_origin_session_reset": "a query may not touch replication",
+	"pg_replication_origin_xact_setup":    "a query may not touch replication",
+	"pg_replication_origin_xact_reset":    "a query may not touch replication",
+	"pg_replication_slot_advance":         "a query may not touch replication",
+	"pg_sync_replication_slots":           "a query may not touch replication",
+
 	// Large objects: listed by name, since lo_ is a prefix a project's own
 	// functions may use.
 	"lo_import": "a query may not touch large objects", "lo_export": "a query may not touch large objects",
@@ -224,7 +241,6 @@ var deniedPrefixes = []struct{ prefix, why string }{
 	{"pg_advisory_", "a query may not take locks that outlive or block its statement"},
 	{"pg_try_advisory_", "a query may not take locks that outlive or block its statement"},
 	{"pg_stat_reset", "a query may not reset the server's statistics"},
-	{"pg_replication_", "a query may not touch replication"},
 	{"pg_create_logical_replication_slot", "a query may not touch replication"},
 	{"pg_create_physical_replication_slot", "a query may not touch replication"},
 	{"pg_copy_logical_replication_slot", "a query may not touch replication"},

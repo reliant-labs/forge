@@ -375,6 +375,9 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 	}
 	key, _ := credentials.Normalize(ep.URL)
 	fmt.Fprintf(out, "Logged in to %s\n", key)
+	if stored.AccountEmail != "" {
+		fmt.Fprintf(out, "  Account:     %s\n", stored.AccountEmail)
+	}
 	if len(p.Envs) > 0 {
 		fmt.Fprintf(out, "  Declared by: %s\n", strings.Join(p.Envs, ", "))
 	}

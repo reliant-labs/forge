@@ -27,11 +27,24 @@ func TestGenerate_InterruptRollsTheTreeBack(t *testing.T) {
 	writeTreeFileT(t, filepath.Join(dir, filepath.FromSlash(mockRel)), string(stamped))
 	before := snapshotTree(t, dir)
 
-	// The test's own registration makes the self-signal observable (and
-	// keeps it from killing the test binary whatever the pipeline does).
-	seen := make(chan os.Signal, 1)
-	signal.Notify(seen, os.Interrupt)
-	t.Cleanup(func() { signal.Stop(seen) })
+	// The test's own registration keeps the self-signal from killing the
+	// test binary whatever the pipeline does.
+	guard := make(chan os.Signal, 1)
+	signal.Notify(guard, os.Interrupt)
+	t.Cleanup(func() { signal.Stop(guard) })
+
+	// Hold the pipeline's own interrupt channel, still registered for real
+	// signals. The interrupt step returns only once THAT channel holds the
+	// signal: the signal package delivers to its channels one at a time, so
+	// waiting on the guard alone let the step return before the pipeline's
+	// channel was filled, and the run went on to complete (forge#1564).
+	var interrupts chan<- os.Signal
+	prevNotify := notifyGenerateInterrupts
+	notifyGenerateInterrupts = func(c chan<- os.Signal, sig ...os.Signal) {
+		interrupts = c
+		prevNotify(c, sig...)
+	}
+	t.Cleanup(func() { notifyGenerateInterrupts = prevNotify })
 
 	writer := GenStep{
 		Name: "internal package contracts", Gate: always, Tag: "codegen",
@@ -43,13 +56,17 @@ func TestGenerate_InterruptRollsTheTreeBack(t *testing.T) {
 	interrupt := GenStep{
 		Name: "a step during which the user presses Ctrl-C", Gate: always, Tag: "tools",
 		Run: func(*pipelineContext) error {
+			if interrupts == nil {
+				return errors.New("the pipeline registered no interrupt channel")
+			}
 			if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
 				return err
 			}
-			select {
-			case <-seen:
-			case <-time.After(5 * time.Second):
-				t.Error("SIGINT was never delivered")
+			for deadline := time.Now().Add(5 * time.Second); len(interrupts) == 0; time.Sleep(time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Error("SIGINT never reached the pipeline's interrupt channel")
+					break
+				}
 			}
 			return nil
 		},

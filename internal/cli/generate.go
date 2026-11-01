@@ -585,7 +585,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// once), then the run fails and rolls back. A second signal is not
 	// caught: it ends the process, for a user who will not wait.
 	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	notifyGenerateInterrupts(interrupts, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(interrupts)
 
 	// Save checksums on exit, even on partial failures: a step that
@@ -765,6 +765,12 @@ func cleanUpFailedStep(ctx *pipelineContext, flags pipelineFlags, err error, onl
 	reprintCompilerOutput(err, "")
 	return false
 }
+
+// notifyGenerateInterrupts registers the pipeline's interrupt channel. A
+// seam only so a test can hold that channel: the signal package fans one
+// signal out to its channels one after another, so a test's own registration
+// can see the signal before the pipeline's channel holds it.
+var notifyGenerateInterrupts = signal.Notify
 
 // generateInterruptedError fails a run that received SIGINT/SIGTERM. It
 // wraps the in-flight step's own error, when the signal made it fail too.

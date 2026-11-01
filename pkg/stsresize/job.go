@@ -224,7 +224,11 @@ func Build(spec JobSpec) (Objects, error) {
 	pod := corev1.PodSpec{
 		ServiceAccountName:           base,
 		AutomountServiceAccountToken: new(true),
-		RestartPolicy:                corev1.RestartPolicyNever,
+		// No <SERVICE>_PORT=tcp://… per Service in the namespace: those names
+		// can shadow the script's own env. kubectl still finds the apiserver,
+		// because KUBERNETES_SERVICE_HOST/PORT are injected regardless.
+		EnableServiceLinks: new(false),
+		RestartPolicy:      corev1.RestartPolicyNever,
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot:   new(true),
 			RunAsUser:      &uid,

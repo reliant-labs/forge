@@ -704,6 +704,9 @@ _connected_shard_objects = lambda o: {str: any} -> [any] {
                     spec = {
                         serviceAccountName = FLUX_CONNECTED_CONTROLLER
                         automountServiceAccountToken = True
+                        # As every pod forge renders: no env var per Service in
+                        # flux-system (KUBERNETES_SERVICE_* is injected anyway).
+                        enableServiceLinks = False
                         terminationGracePeriodSeconds = 60
                         securityContext.fsGroup = 1337
                         containers = [{

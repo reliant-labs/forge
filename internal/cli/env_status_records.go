@@ -345,12 +345,13 @@ func readMachineEnvRecords(env, projectDir string, target sessionTarget, now tim
 
 // readHostedEnvRecords reads the control plane's Live view.
 //
-// ONE RPC, not several. GetLiveView already returns the current promotion,
-// the current release, the current bundle, the rollout phase, the observer's
-// drift record and the sessions for every env of a project — assembled
-// server-side against one snapshot. Several per-env calls would be several
-// round trips that could each see a different instant, which is how a view
-// ends up describing a convergence onto a bundle it also says is not current.
+// THE ROSTER IN ONE RPC. GetLiveView returns the current promotion, the
+// current bundle's identity, the rollout phase, the observer's drift record
+// and the sessions for every env of a project — assembled server-side against
+// one snapshot, so the view cannot describe a convergence onto a bundle it
+// also says is not current. The documents the roster identifies but does not
+// carry — the release (provenance) and the bundle (its trees) — are then read
+// for this one env, by the ids the snapshot named.
 //
 // IT DELIBERATELY IGNORES row.LatestApply. That field carries the records
 // forge's own BeginApply / FinishApply wrote, and forge no longer applies to
@@ -384,7 +385,14 @@ func readHostedEnvRecords(ctx context.Context, env string, entities *KCLEntities
 			continue
 		}
 		if row.CurrentPromotion != nil {
-			out.Provenance = provenanceOf(*row.CurrentPromotion, row.CurrentRelease)
+			// The release behind the promotion carries the provenance.
+			// Unreadable is reported as no provenance rather than failing
+			// the whole status: the binding itself is still true.
+			rel, rerr := hosted.Get(ctx, row.CurrentPromotion.Release)
+			if rerr != nil {
+				rel = nil
+			}
+			out.Provenance = provenanceOf(*row.CurrentPromotion, rel)
 		}
 		out.Convergence, out.ConvergenceDetail = convergenceOf(row)
 		split, serr := unitSplitOf(entities)
@@ -713,8 +721,8 @@ func shortID(id string) string {
 //
 // BOUND is the bundle the env's current promotion resolves to: the control
 // plane's recorded bundle for the promoted release, whose shape names every
-// object's tree. It is read from the Live row (CurrentBundle) and falls back to
-// nothing when the control plane holds none.
+// object's tree. The Live row names it (CurrentBundle) and GetBundle reads it;
+// it falls back to nothing when the control plane holds none.
 //
 // LIVE is the control plane's convergence timeline (ListConvergences), read at
 // whatever precision it reports (see tree_status.go). A timeline that cannot be
@@ -722,12 +730,18 @@ func shortID(id string) string {
 // says so in TreesDetail: this view never fails the command and never invents a
 // reading.
 func treesOf(ctx context.Context, hosted *hostedStore, env string, split unitSplit, row LiveEnvironment) ([]envStatusTree, string) {
-	bundle := row.CurrentBundle
-	if bundle == nil {
+	if row.CurrentBundle == nil {
 		if row.CurrentPromotion == nil {
 			return nil, ""
 		}
 		return nil, "no bundle is recorded for the bound release, so its trees cannot be listed"
+	}
+	bundle, berr := hostedBundleClient{client: hosted.client}.GetBundleByID(ctx, env, row.CurrentBundle.ID)
+	if berr != nil {
+		return nil, "the bound bundle could not be read, so its trees cannot be listed: " + berr.Error()
+	}
+	if bundle == nil {
+		return nil, "the bound bundle is no longer recorded, so its trees cannot be listed"
 	}
 	trees := treeInventory(bundle.Shape)
 	if len(trees) == 0 {

@@ -10,8 +10,18 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// declaredPlacementEdges retains same-stage edges and refuses missing peers.
-// Stage aggregation cannot establish whether the actual item graph is cyclic.
+// declaredPlacementEdges returns the ORDERING edges release_dependencies
+// imply, and refuses a peer that names no release component.
+//
+// release_dependencies is first a compatibility claim ("I consume this peer's
+// contract"), and only an edge between two deploy stages turns it into order:
+// that peer's stage goes first. Inside one stage it orders nothing, so a
+// two-way pair there (reliant-api-server <-> daemon-gateway, each declaring
+// the other's NATS contract) is legal, not a cycle. A build-only peer
+// (forge.BuildOnly: an image the release carries and something else runs) is
+// never deployed and has no stage; the cut already satisfied the claim, so it
+// orders nothing either. A cycle through cross-stage edges is refused here by
+// item, and deployStageOrder refuses one at stage granularity.
 func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) { //nolint:funlen // one pass per declaring entity kind (workloads, frontends, manifests, …) over the same edge rules; splitting it per kind would scatter one rule set.
 	if e == nil {
 		return nil, nil
@@ -25,12 +35,15 @@ func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) { //nolint:funl
 		return nil
 	}
 	var servers []string
+	buildOnly := map[string]bool{} // peers with no stage that still name a component
 	for _, w := range e.Workloads {
 		if s := stageOfWorkload(w); s != "" {
 			if err := addName(w.Name, s); err != nil {
 				return nil, err
 			}
 			servers = append(servers, w.Name)
+		} else if w.Runtime.Type == RuntimeBuildOnly {
+			buildOnly[w.Name] = true
 		}
 	}
 	for _, f := range e.Frontends {
@@ -65,8 +78,14 @@ func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) { //nolint:funl
 	add := func(name string, peers []string) error {
 		for _, peer := range peers {
 			from, ok := stages[peer]
+			if !ok && buildOnly[peer] {
+				continue
+			}
 			if !ok {
 				return fmt.Errorf("release component %s has missing predecessor %q", name, peer)
+			}
+			if from == stages[name] {
+				continue // same stage: a compatibility claim, not an order
 			}
 			edges = append(edges, stageEdge{Dependency: peer, Dependent: name, From: from, To: stages[name]})
 		}

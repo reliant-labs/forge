@@ -74,17 +74,23 @@ COMMENT ON TABLE legacy_audit IS 'written by the old pipeline — forge:no-entit
 	if _, err := os.Stat(filepath.Join(dir, "internal/db/legacy_audit_orm_gen.go")); err == nil {
 		t.Error("a forge:no-entity table was projected")
 	}
-	store, err := os.ReadFile(filepath.Join(dir, "internal", "db", "store_gen.go"))
-	if err != nil {
-		t.Fatal(err)
+	// The stores: the aggregate and one <entity>_store_gen.go per table.
+	var store []byte
+	storeFiles, _ := filepath.Glob(filepath.Join(dir, "internal", "db", "*store_gen.go"))
+	for _, f := range storeFiles {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store = append(store, b...)
 	}
 	for _, want := range []string{"type TaskStore interface", "type MessageContentBlockStore interface"} {
 		if !strings.Contains(string(store), want) {
-			t.Errorf("store_gen.go lacks %q", want)
+			t.Errorf("the store files lack %q", want)
 		}
 	}
 	if strings.Contains(string(store), "LegacyAudit") {
-		t.Error("store_gen.go names the forge:no-entity table")
+		t.Error("a store file names the forge:no-entity table")
 	}
 }
 

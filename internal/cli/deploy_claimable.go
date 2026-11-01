@@ -142,8 +142,9 @@ type deployClaimJSON struct {
 // (the claim block, the --json instructions, the preview, the skills).
 const noOutboundNote = "An unclaimed backend has no outbound internet: it serves requests and uses its own " +
 	"database, but any call out of it (a payment, an LLM, a webhook, a package or DNS lookup of an outside name) " +
-	"fails with a connection error or a name that does not resolve. That is the platform, not a bug in the app. " +
-	"It ends the moment the deploy is claimed."
+	"fails with a connection error or a name that does not resolve; only the cluster's own names, such as its " +
+	"database's, resolve. That is the platform, not a bug in the app. " +
+	"It ends when the deploy is claimed: the platform restarts the backend on the normal hosted network."
 
 // claimableRefusal is a refusal this path raises itself (or a throttle it
 // translated): an error that carries its exit code and the machine-readable
@@ -934,7 +935,8 @@ func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
 		fmt.Fprintf(w, "\n  NO OUTBOUND INTERNET until claimed: this backend serves requests and uses its own\n")
 		fmt.Fprintf(w, "  database, but every call out of it (a payment, an LLM, a webhook, an outside DNS\n")
 		fmt.Fprintf(w, "  name) fails with a connection error or an unresolvable name. That is the platform,\n")
-		fmt.Fprintf(w, "  not a bug in the app. It ends the moment the deploy is claimed.\n")
+		fmt.Fprintf(w, "  not a bug in the app. It ends when the deploy is claimed: the platform restarts\n")
+		fmt.Fprintf(w, "  the backend on the normal hosted network.\n")
 	}
 }
 

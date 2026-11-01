@@ -15,7 +15,7 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
 | `_hosted(_api)` | THE API: the binary's `server` — every service and worker — as one workload |
 | `_hosted(wl.<name>)` | a workload `server` does not run (a job such as `migrate`; one you split out) |
 | `_hosted_frontend(_web_frontend)` | the static export on platform static hosting: the platform owns the bucket, the CDN and the hostname |
-| `secret_provider = forge.HostedSecrets {}` | write-only store: `forge secret set --env <env> <KEY>` |
+| `secret_provider = forge.HostedSecrets {}` | write-only store: `forge secret set --env <env> <KEY>`; who may use a secret: `forge secret allow` (below) |
 
 `_hosted` also:
 
@@ -70,7 +70,7 @@ it as `claim` (`state`, `url`, `claim_url`, `expires_at`, `purge_after`,
 | Only with the flag | There is no auto-detection. With no credential, a plain `forge env deploy` fails and its error names `--claimable` |
 | Signed in? Refused (exit 1) | A user with a login or `$FORGE_CREDENTIAL_HELPER` deploys to their own org: drop the flag |
 | Fits | one static site, or one service (1 replica, at most 125m / 128 MiB, request and limit, no burst) with one managed database (256 MiB of data on a 1 GiB volume) and that service's migration job (a gating `before = [fw.BEFORE_ALL]` job, or a standalone pre-rollout one). No workers, cron, second service or database, custom domains or remote builds: exit 4, naming each with its KCL fix |
-| **No outbound internet until claimed** | An unclaimed **service** (not a static site) serves requests and uses its own database, but every call out of it fails: a payment, an LLM, a webhook, a package download, and any DNS lookup of a name outside the cluster (the connection errors, or the name does not resolve). That is the platform, not a bug in the app, so do not debug it or work around it; it ends the moment the deploy is claimed, when the normal hosted network (TCP 80/443 to the public internet) applies. Plan for it: an app that needs an external API at startup will not come up unclaimed. The claim block, `--json` (`claim.no_outbound_internet`, and `claim.agent_instructions`) and `--plan-only` all say so |
+| **No outbound internet until claimed** | An unclaimed **service** (not a static site) serves requests and uses its own database, but every call out of it fails: a payment, an LLM, a webhook, a package download, and any DNS lookup of a name outside the cluster (the connection errors, or the name does not resolve: the backend's resolver answers only the cluster's own names, such as its database's). That is the platform, not a bug in the app, so do not debug it or work around it; it ends when the deploy is claimed, when the platform restarts the backend on the normal hosted network (TCP 80/443 to the public internet). Plan for it: an app that needs an external API at startup will not come up unclaimed. The claim block, `--json` (`claim.no_outbound_internet`, and `claim.agent_instructions`) and `--plan-only` all say so |
 | Not the shape band | The billed plan's 4 GiB-per-vCPU band does not apply to an anonymous deploy (it is never billed); the caps above do. `forge env shape <env> --claimable` judges an env that way |
 | Preview first | `forge env deploy <env> --claimable --plan-only` checks everything locally (the caps, the hosted plan, the resources) and asks the platform whether it takes anonymous deploys right now. No identity, nothing created; exit 0 when the env fits |
 | Scaffold for it | `forge project new <name> --claimable ...` writes a prod that fits: `control_plane = forge.ControlPlane {claimable = True}` (every check then judges it under this plan, and a signed-in deploy is refused until you remove the line) and `_claimable_resources` on its hosted services and jobs |
@@ -148,6 +148,37 @@ _workloads = [
   origin the frontend can reach — which hosting does not give it.
 - `forge env new <env> --from prod --bind api=cluster` moves the whole API;
   `--bind <service>=…` is refused there, naming `_api`.
+
+## Secrets a Reliant workflow uses: access lists
+
+A hosted secret is opaque and write-only, and it carries an **access list**: the
+principals allowed to use it. A Reliant workflow uses a secret by declaring it
+(top-level `secrets: {NAME: {environment: <project>/<env>}}`) and writing
+`{{ secrets.NAME }}` in an `http/request@1` header; the control plane
+substitutes the value when the request is sent, so the value never reaches the
+workflow, its logs or the model. It does so only if the workflow is on the
+list. The list names no destination, path or step: it answers "may this workflow
+use this secret", and what the credential can do is the receiving app's call.
+
+```bash
+forge secret set    --env staging TRADER_KEY                     # the value, on stdin
+forge secret allow  --env staging --workflow trader-bot --project <reliant project id> TRADER_KEY
+forge secret access --env staging [TRADER_KEY] [--json]          # who may use it
+forge secret deny   --env staging --workflow trader-bot --project <reliant project id> TRADER_KEY
+forge secret list   --env staging                                # each secret's access beside its version
+```
+
+- `--workflow` is the workflow's name (its `.reliant/workflows/<name>.yaml`);
+  any run or trigger of it is covered. `--project` is the Reliant project id
+  that owns it: find it with `reliant project list` (the row whose PATH is the
+  checkout holding the workflow). forge never guesses it.
+- `allow` and `deny` are idempotent. Only an org owner or admin edits a list
+  (a machine token with no acting user is refused; a protected env asks for
+  step-up). The control plane's refusal is printed as sent.
+- A run denied for lack of access names this command in its error.
+- Hosted envs only: a `forge.FileSecrets` store has no access list, and these
+  commands say so. Workloads keep receiving secrets through `managedSecret` /
+  `config_secrets`; access lists govern workflows.
 
 ## Hosting elsewhere
 

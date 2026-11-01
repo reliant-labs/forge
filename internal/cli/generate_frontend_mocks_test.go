@@ -12,24 +12,48 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// renderMockTransport parses and executes the frontend mocks/mock-transport
-// template with the given entity data. Helper for the regression tests below.
+// renderMockTransport renders the mock dispatch table as a project carries
+// it: src/lib/mock-transport_gen.ts, then each entity's
+// src/mocks/entities/<slug>_gen.ts (its rows, one per serving service),
+// concatenated. Helper for the regression tests below.
 func renderMockTransport(t *testing.T, entities []codegen.MockTransportEntity) string {
 	t.Helper()
-	tmplContent, err := templates.FrontendTemplates().Get(filepath.Join("mocks", "mock-transport.ts.tmpl"))
-	if err != nil {
-		t.Fatalf("read mock-transport template: %v", err)
+	return strings.Join(renderMockTransportFiles(t, entities), "")
+}
+
+// renderMockTransportFiles is renderMockTransport file by file: the
+// transport first, then one entry per entity module.
+func renderMockTransportFiles(t *testing.T, entities []codegen.MockTransportEntity) []string {
+	t.Helper()
+	render := func(name string, data any) string {
+		t.Helper()
+		tmplContent, err := templates.FrontendTemplates().Get(filepath.Join("mocks", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		tmpl, err := template.New(name).Funcs(templates.FuncMap()).Parse(string(tmplContent))
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, data); err != nil {
+			t.Fatalf("execute %s: %v", name, err)
+		}
+		return buf.String()
 	}
-	tmpl, err := template.New("mock-transport.ts.tmpl").Funcs(templates.FuncMap()).Parse(string(tmplContent))
-	if err != nil {
-		t.Fatalf("parse mock-transport template: %v", err)
+	out := []string{render("mock-transport.ts.tmpl", codegen.NewMockTransportTemplateData(entities))}
+	bySlug := map[string][]codegen.MockTransportEntity{}
+	var slugs []string
+	for _, e := range entities {
+		if bySlug[e.EntitySlug] == nil {
+			slugs = append(slugs, e.EntitySlug)
+		}
+		bySlug[e.EntitySlug] = append(bySlug[e.EntitySlug], e)
 	}
-	var buf bytes.Buffer
-	data := codegen.NewMockTransportTemplateData(entities)
-	if err := tmpl.Execute(&buf, data); err != nil {
-		t.Fatalf("execute mock-transport template: %v", err)
+	for _, slug := range slugs {
+		out = append(out, render("entity-descriptor.ts.tmpl", codegen.NewMockTransportTemplateData(bySlug[slug])))
 	}
-	return buf.String()
+	return out
 }
 
 // TestMockTransport_ListOnlyEntity_DoesNotEmitEmptySchemaImports is the
@@ -299,29 +323,33 @@ func TestMockTransport_GroupsImportsByModule(t *testing.T) {
 		},
 	}
 
-	got := renderMockTransport(t, entities)
-
-	// Exactly one schema-import line should reference the shared
-	// api_pb module — three would be a regression.
-	const wantPath = `from "@/gen/services/api/v1/api_pb"`
-	occurrences := strings.Count(got, wantPath)
-	if occurrences != 1 {
-		t.Errorf("expected exactly one `from \"@/gen/services/api/v1/api_pb\"` line (merged import), got %d. Output:\n%s", occurrences, got)
+	files := renderMockTransportFiles(t, entities)
+	if len(files) != 4 {
+		t.Fatalf("want the transport and one module per entity, got %d files", len(files))
 	}
 
-	// And that single line must list all three schemas, regardless
-	// of order (NewMockTransportTemplateData sorts symbols
-	// alphabetically for deterministic output).
+	// Each entity's module imports from the shared api_pb module on ONE
+	// line, and the transport imports no entity at all.
+	const wantPath = `from "@/gen/services/api/v1/api_pb"`
+	if strings.Contains(files[0], wantPath) {
+		t.Errorf("the transport must import no entity schema (each entity module does):\n%s", files[0])
+	}
+	for i, f := range files[1:] {
+		if n := strings.Count(f, wantPath); n != 1 {
+			t.Errorf("entity module %d: want exactly one `%s` line, got %d:\n%s", i, wantPath, n, f)
+		}
+	}
+	got := strings.Join(files, "")
 	for _, sym := range []string{"ListTradesResponseSchema", "ListHypothesesResponseSchema", "ListSettlementsResponseSchema"} {
 		if !strings.Contains(got, sym) {
-			t.Errorf("merged import should contain %q. Output:\n%s", sym, got)
+			t.Errorf("expected %q. Output:\n%s", sym, got)
 		}
 	}
 
 	// Per-entity mock fixtures stay 1:1 — distinct modules per entity.
-	for _, sym := range []string{"tradesMocks", "hypothesesMocks", "settlementsMocks"} {
-		if !strings.Contains(got, sym) {
-			t.Errorf("expected mock fixture import alias %q in output. Got:\n%s", sym, got)
+	for _, slug := range []string{"trades", "hypotheses", "settlements"} {
+		if want := `import * as fixtures from "@/mocks/` + slug + `_gen";`; !strings.Contains(got, want) {
+			t.Errorf("expected %q in output. Got:\n%s", want, got)
 		}
 	}
 }
@@ -429,7 +457,7 @@ func TestMockTransport_SurrogatePk_KeyAndLookupsUseSameField(t *testing.T) {
 
 	// The fixtures the store is built from must come from the entity's own
 	// mock module, and the CRUD arms must all be declared.
-	if !strings.Contains(got, "fixtures: usageEventsMocks.usageEvents,") {
+	if !strings.Contains(got, "fixtures: fixtures.usageEvents,") {
 		t.Errorf("expected the descriptor to carry the entity's fixtures. Got:\n%s", got)
 	}
 	for _, want := range []string{
@@ -552,6 +580,67 @@ func TestMockTransport_NoEntities_EmitsScenarioCapableTransport(t *testing.T) {
 	} {
 		if strings.Contains(got, unwanted) {
 			t.Errorf("did not expect entity-fixture artifact %q in no-entity transport. Got:\n%s", unwanted, got)
+		}
+	}
+}
+
+// The per-entity registries gather their modules with import.meta.glob under
+// vitest. A Next app loads no Vite types, so tsc failed them with TS2339
+// ("Property 'glob' does not exist on type 'ImportMeta'") until each file
+// referenced Vite's ImportMeta augmentation itself. tsc honours a triple-slash
+// directive only above the first statement, so the reference must precede
+// every non-comment line; and it is emitted only with the glob branch.
+func TestRegistriesReferenceVitesImportMetaAboveTheirFirstStatement(t *testing.T) {
+	const ref = `/// <reference types="vite/types/importMeta.d.ts" />`
+	render := func(name string, data any) string {
+		t.Helper()
+		body, err := templates.FrontendTemplates().Get(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		tmpl, err := template.New(name).Funcs(templates.FuncMap()).Parse(string(body))
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, data); err != nil {
+			t.Fatalf("execute %s: %v", name, err)
+		}
+		return buf.String()
+	}
+	referencesFirst := func(t *testing.T, name, out string) {
+		t.Helper()
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || (strings.HasPrefix(line, "//") && line != ref) {
+				continue
+			}
+			if line != ref {
+				t.Errorf("%s: first non-comment line is %q, want the Vite ImportMeta reference above it", name, line)
+			}
+			return
+		}
+		t.Errorf("%s: no statement at all", name)
+	}
+
+	entity := []codegen.MockTransportEntity{{EntityName: "Patient", EntityNamePlural: "Patients", EntitySlug: "patients",
+		ServiceName: "ClinicService", ServiceTypeName: "demo.v1.ClinicService", ListRPC: "ListPatients", HasList: true,
+		ImportPath: "services/clinic/v1/clinic_pb", ListResponseType: "ListPatientsResponse"}}
+	mocks := render(filepath.Join("mocks", "mock-transport.ts.tmpl"), codegen.NewMockTransportTemplateData(entity))
+	referencesFirst(t, "mock-transport", mocks)
+	if !strings.Contains(mocks, "import.meta.glob") {
+		t.Fatalf("mock-transport no longer uses import.meta.glob; drop the reference with it")
+	}
+	if none := render(filepath.Join("mocks", "mock-transport.ts.tmpl"), codegen.NewMockTransportTemplateData(nil)); strings.Contains(none, ref) {
+		t.Errorf("mock-transport with no entities references Vite's types without using them")
+	}
+
+	pages := struct{ Pages []struct{} }{Pages: []struct{}{{}}}
+	for _, name := range []string{"nextjs/src/lib/nav-routes_gen.ts.tmpl", "nextjs/src/components/dashboard-tiles_gen.ts.tmpl"} {
+		out := render(name, pages)
+		referencesFirst(t, name, out)
+		if none := render(name, struct{ Pages []struct{} }{}); strings.Contains(none, ref) {
+			t.Errorf("%s with no pages references Vite's types without using them", name)
 		}
 	}
 }

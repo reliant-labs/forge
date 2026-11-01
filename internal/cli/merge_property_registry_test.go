@@ -49,8 +49,11 @@ const (
 	// goimports, buf), merged as that tool's files always are.
 	mergeExternalTool
 	// mergeKnownGap: the step's output does NOT yet keep the invariant.
-	// why names what conflicts and the tracking issue. Allowed, so the table
-	// tells the truth; never the default for a new step.
+	// why names what conflicts and gapPaths where
+	// (mergeCase{kind: mergeKnownGap, why: …, gapPaths: …}). Allowed, so the
+	// table tells the truth; never the default for a new step. None is
+	// declared today: TestE2EMergeProperty merges every case without a
+	// conflict.
 	mergeKnownGap
 )
 
@@ -74,9 +77,6 @@ func perInput(why string) mergeCase     { return mergeCase{kind: mergePerInput, 
 func noOutput(why string) mergeCase     { return mergeCase{kind: mergeNoCommittedOutput, why: why} }
 func scaffoldOnce(why string) mergeCase { return mergeCase{kind: mergeScaffoldOnce, why: why} }
 func external(why string) mergeCase     { return mergeCase{kind: mergeExternalTool, why: why} }
-func knownGap(why string, paths ...string) mergeCase {
-	return mergeCase{kind: mergeKnownGap, why: why, gapPaths: paths}
-}
 
 // mergeCases is the registry: every generateSteps() name, and how it merges.
 var mergeCases = map[string]mergeCase{
@@ -106,13 +106,11 @@ var mergeCases = map[string]mergeCase{
 	"frontend hooks":                             perInput("one <service>-hooks.ts per service"),
 	"ensure frontend components":                 scaffoldOnce("component library copied once"),
 	"frontend CRUD pages":                        scaffoldOnce("pages are the user's from birth"),
-	"frontend nav + dashboard": knownGap("nav.tsx and dashboard.tsx are refreshed until the user's first edit, so two branches that each add an entity both rewrite them (dashboard's hook import lines collide; nav's route rows merge) and both restamp their .forge/scaffolded/ birth_hash",
-		"frontends/*/src/app/dashboard.tsx",
-		".forge/scaffolded/frontends/*/src/app/dashboard.tsx.json", ".forge/scaffolded/frontends/*/src/components/nav.tsx.json"),
-	"service stubs": perInput("one rpc_<name>.go per rpc, in its service's directory"),
-	"internal/db/ ORM (entity-driven)": knownGap("one ORM file per table, but internal/db/store_gen.go aggregates every entity's Store under one forge:hash, and two new entities both append after the last one: needs one store file per entity",
-		"internal/db/store_gen.go"),
-	"CRUD handlers": perInput("one ops file per service"),
+	"frontend nav + dashboard": proved("nav.tsx and dashboard.tsx are the user's and render the same for every entity set (their birth hash with them); each entity's route and tile is its own generated module (src/lib/nav-routes/, src/components/dashboard-tiles/), gathered by the bundler",
+		"TestE2EMergeProperty"),
+	"service stubs":                    perInput("one rpc_<name>.go per rpc, in its service's directory"),
+	"internal/db/ ORM (entity-driven)": perInput("one <entity>_orm_gen.go and one <entity>_store_gen.go per table; the aggregate store_gen.go names no entity (each accessor is a method in its entity's store file), proved at project scale by TestE2EMergeProperty"),
+	"CRUD handlers":                    perInput("one ops file per service"),
 	"service mocks": proved("one sectioned mock per interface (#1568)",
 		"TestMockMergeProperty_IndependentInterfacesMergeWithPlainGit", "TestStampSections_EveryIndependentPairMergesWithPlainGit"),
 	"internal package contracts": proved("one sectioned mock per interface (#1568)",
@@ -126,8 +124,8 @@ var mergeCases = map[string]mergeCase{
 	"go mod tidy (pre-wiring)":                  external("go.mod / go.sum"),
 	"cmd/commands.go (user extension point)":    scaffoldOnce("the user's extension point"),
 	"per-service test helpers":                  perInput("one helpers_gen_test.go per component"),
-	"db/embed.go (embedded migrations)": knownGap("db/embed.go is a directory embed (a migration does not change it); db/grants/*_gen.sql is one section per table (#1582), proved for tables apart by TestMergeProperty_ReadOnlyGrants, but two new tables that sort between the same neighbours are two insertions at one point, which line merging cannot take: needs one grant file per table",
-		"db/grants/*_gen.sql"),
+	"db/embed.go (embedded migrations)": proved("db/embed.go embeds the db/grants directory (a migration does not change it); the grants are one constant script per role and one row file per table (pkg/dbgrants.Files), so tables born, changed or dropped on different branches are different files",
+		"TestMergeProperty_ReadOnlyGrants"),
 	"regenerate infra files":                          perInput("infra files are functions of forge.yaml and the pin, not of services"),
 	"cmd command groups (services/workers/operators)": perInput("one command file per group"),
 	"discover components":                             noOutput("in-memory"),
@@ -141,8 +139,8 @@ var mergeCases = map[string]mergeCase{
 	"ingress k3d ports fragment":        perInput("a function of the env's ports"),
 	"CRD KCL manifests (api/ Go types)": perInput("one manifest per CRD"),
 	"entity-aware seed data":            perInput("one seed file per table"),
-	"frontend mocks + transport": knownGap("scenario-rpcs_gen.ts is one named section per service (#1582, named headers in v1.0.11), proved by TestMergeProperty_ScenarioRpcs; fixture fingerprint out of git (#1585) and one fixture per entity; but lib/mock-transport_gen.ts aggregates every entity's descriptor and schema imports, unsectioned",
-		"frontends/*/src/lib/mock-transport_gen.ts"),
+	"frontend mocks + transport": proved("scenario-rpcs_gen.ts is one named section per service (#1582, named headers in v1.0.12); one fixture module and one dispatch-row module (src/mocks/entities/<slug>_gen.ts) per entity, gathered by the bundler, so mock-transport_gen.ts names no entity; the fixture fingerprint is out of git (#1585)",
+		"TestMergeProperty_ScenarioRpcs", "TestE2EMergeProperty"),
 	"repoint renamed *_gen frontend imports":                    perInput("rewrites import lines in the files that name a renamed module"),
 	"retire delivered agent skills":                             noOutput("removes retired files"),
 	"go mod tidy (root)":                                        external("go.mod / go.sum"),

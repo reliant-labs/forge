@@ -26,7 +26,7 @@
 #
 # Usage:
 #   scripts/release-forge.sh [--dry-run] [--repo <dir>] [--branch <name>]
-#                            [--skip-proxy-check] [--publish-npm] [vX.Y.Z]
+#                            [--skip-proxy-check] [vX.Y.Z]
 #
 #   vX.Y.Z        the release to cut. Defaults to NEXT_VERSION's, and must be
 #                 it or a pre-release of it (step 2b); a final release moves
@@ -40,11 +40,6 @@
 #                 tag goes on SHA itself (so it stays reachable from main) and
 #                 the bookkeeping (VERSION, NEXT_VERSION, CHANGELOG.md) lands
 #                 as a release/vX.Y.Z pull request through the merge queue.
-#   --publish-npm after the GitHub release exists, `npm publish` npm/ (the
-#                 @reliantlabs/forge shim) and wait for the registry to serve
-#                 it. Off by default: it needs a logged-in npm account with
-#                 publish rights (and its OTP), which only a maintainer has.
-#                 Without it the script prints the command to run.
 #   --skip-proxy-check
 #                 skip the immutable-version gate (step 5). Only for an
 #                 offline release where you have verified BY HAND that the
@@ -54,8 +49,9 @@
 # windows on amd64 and arm64, plus checksums.txt (scripts/build-release-assets.sh).
 # install.sh, install.ps1, the npm shim (npm/) and the Homebrew formula all
 # download those; a release without them leaves every installer failing.
-# npm/package.json is synced to the release version too. Publishing it is NOT
-# done unless --publish-npm is passed (docs/releasing.md, "Installers").
+# npm/package.json is synced to the release version too; the npm package is
+# published by .github/workflows/release-npm.yml, which the GitHub release
+# created here triggers (docs/releasing.md, "Installers").
 #
 # CHANGELOG.md is written HERE and nowhere else. This script builds the new
 # `## [vX.Y.Z] - <date>` section from the squash commits (the merged PR titles)
@@ -69,7 +65,6 @@
 #   FORGE_RELEASE_PRETTIER   command to format CHANGELOG.md with, given the
 #                            file as its argument (default: npx prettier@<pin>)
 #   FORGE_RELEASE_GH         the gh binary (default: gh)
-#   FORGE_RELEASE_NPM        the npm binary (default: npm)
 #   FORGE_RELEASE_TARGETS    GOOS/GOARCH list to build release archives for
 #                            (default: the six scripts/build-release-assets.sh ships)
 #
@@ -88,11 +83,10 @@ SKIP_PROXY_CHECK=0
 # instead of the public proxy; nothing else should set it.
 PROXY_BASE="${FORGE_RELEASE_PROXY_BASE:-https://proxy.golang.org}"
 
-PUBLISH_NPM=0
 COMMIT=""
 
 usage() {
-  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--commit <sha>] [--skip-proxy-check] [--publish-npm] [vX.Y.Z]" >&2
+  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--commit <sha>] [--skip-proxy-check] [vX.Y.Z]" >&2
   echo "       the version defaults to NEXT_VERSION's, and must be it (or a pre-release of it)" >&2
   exit 2
 }
@@ -101,7 +95,6 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --skip-proxy-check) SKIP_PROXY_CHECK=1; shift ;;
-    --publish-npm) PUBLISH_NPM=1; shift ;;
     --repo)    [ $# -ge 2 ] || usage; REPO_ROOT="$2"; shift 2 ;;
     --branch)  [ $# -ge 2 ] || usage; BRANCH="$2"; shift 2 ;;
     --commit)  [ $# -ge 2 ] || usage; COMMIT="$2"; shift 2 ;;
@@ -732,33 +725,18 @@ case "$VERSION" in
 esac
 
 # ── 9d. npm shim ────────────────────────────────────────────────────
-# @reliantlabs/forge downloads the binaries attached above, so it can only be
-# published after the GitHub release exists. A prerelease is never published
-# (the `latest` dist-tag would move to it).
-NPM_BIN="${FORGE_RELEASE_NPM:-npm}"
+# @reliantlabs/forge is published by .github/workflows/release-npm.yml, which
+# the `release: published` event of the GitHub release above starts: npm
+# trusted publishing (OIDC) only exists inside GitHub Actions, so no machine
+# running this script holds an npm credential. A prerelease is never published.
 case "$VERSION" in
-  *-*) echo "→ $VERSION is a prerelease: not publishing the npm shim" ;;
+  *-*) echo "→ $VERSION is a prerelease: the npm shim is not published" ;;
   *)
-    if [ ! -f "$NPM_MANIFEST" ]; then
-      :
-    elif [ "$GH_RELEASE_FAILED" != "0" ]; then
-      echo "→ skipping the npm shim: its binaries are not on a GitHub release yet" >&2
-    elif [ "$PUBLISH_NPM" = "1" ]; then
-      echo "→ publishing @reliantlabs/forge ${VERSION#v} to npm"
-      if (cd "$(dirname "$NPM_MANIFEST")" && "$NPM_BIN" publish --access public) &&
-        NPM_VIEW_CMD="${NPM_VIEW_CMD:-$NPM_BIN view}" "$RELEASE_SCRIPT_DIR/verify-npm-published.sh" \
-          --name @reliantlabs/forge --version "${VERSION#v}" --publish-reported-success; then
-        :
-      else
-        echo "⚠️  the npm publish did not complete; $VERSION itself is released. Retry: (cd npm && npm publish --access public)" >&2
-        NPM_FAILED=1
-      fi
-    else
-      echo "→ npm shim not published (pass --publish-npm, or run: cd npm && npm publish --access public)"
+    if [ -f "$NPM_MANIFEST" ] && [ "$GH_RELEASE_FAILED" = "0" ] && [ -n "$GITHUB_REPO" ]; then
+      echo "→ npm: release-npm.yml publishes @reliantlabs/forge ${VERSION#v} from the GitHub release (gh run list --repo $GITHUB_REPO --workflow release-npm.yml)"
     fi
     ;;
 esac
-NPM_FAILED="${NPM_FAILED:-0}"
 
 # ── 10. Wait for the proxy to ingest the tag ────────────────────────
 # The push above returns as soon as GitHub has the tag. proxy.golang.org has
@@ -804,7 +782,6 @@ if GOPROXY_WAIT_BASE="${GOPROXY_WAIT_BASE:-$PROXY_BASE}" \
   # The tag, the commit and the module are all out; only the GitHub release
   # page is missing, and the retry command was printed above.
   [ "$GH_RELEASE_FAILED" = "0" ] || exit 1
-  [ "$NPM_FAILED" = "0" ] || exit 1
 else
   echo ""
   echo "⚠️  $VERSION is TAGGED AND PUSHED — the release itself succeeded."

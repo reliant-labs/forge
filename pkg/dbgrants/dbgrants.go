@@ -79,8 +79,11 @@ const (
 	// SecretSuffix is appended to a cluster name to name the Secret that holds
 	// the role's password.
 	SecretSuffix = "-forge-ro"
-	// GrantsPath is the generated grants file, relative to the project root.
+	// GrantsPath is the generated grants script, relative to the project root.
 	GrantsPath = "db/grants/readonly_gen.sql"
+	// GrantsRowsDir holds the script's per-table rows, one [FileName] each,
+	// relative to the project root (see [Files]).
+	GrantsRowsDir = "db/grants/readonly"
 
 	// DashboardRoleName is the dashboard Postgres role: the opt-in role live
 	// dashboard panels query as (ManagedDatabase.dashboards in KCL). It reads
@@ -92,6 +95,8 @@ const (
 	// DashboardGrantsPath is the generated dashboard grants file, relative to
 	// the project root.
 	DashboardGrantsPath = "db/grants/dashboard_gen.sql"
+	// DashboardGrantsRowsDir is [GrantsRowsDir] for the dashboard role.
+	DashboardGrantsRowsDir = "db/grants/dashboard"
 )
 
 // SecretName is the kubernetes.io/basic-auth Secret holding the role's
@@ -131,19 +136,6 @@ type Column struct {
 	NoDashboard bool
 }
 
-// sectionLine is the header of one independent part of the script, named
-// for that part (a table's schema.name, or the constant tail): forge stamps
-// each with that part's own hash on the line after it (forge's checksums
-// package, "sectioned self-certification"). One hash over the whole file made
-// any two branches that changed different tables conflict on its one line;
-// with a hash per table they merge as text. The name keeps every header
-// unique and unchanged while its table exists, so a table added beside one
-// another branch changed does not touch that branch's lines. It is an SQL
-// comment, so the script runs as is.
-func sectionLine(name string) string {
-	return "-- forge:section " + strings.ReplaceAll(name, "\n", " ") + "\n"
-}
-
 // dollarTag delimits the script's single DO block. An identifier containing it
 // would end the block early, so Render refuses one.
 const dollarTag = "$forge_grants$"
@@ -164,34 +156,151 @@ const dollarTag = "$forge_grants$"
 //
 // The script is a no-op when the role does not exist, so it is safe to apply to
 // a database that has none (a local compose Postgres).
+//
+// The script is [Assemble] over [RenderFiles]: what a project commits is the
+// files, and what the migrator runs is this.
 func Render(tables []Table) (string, error) { return RenderFor(RoleName, tables) }
 
 // RenderFor is Render for a named role. Production has exactly one role,
 // [RoleName]; the parameter exists because roles are cluster-wide, so tests
 // that share a Postgres server cannot all create forge_ro.
-func RenderFor(role string, tables []Table) (string, error) { return renderFor(role, tables, false) }
+func RenderFor(role string, tables []Table) (string, error) {
+	return assembled(renderFiles(role, tables, false))
+}
 
-// renderFor is [RenderFor]. gateOnLogin makes the script serve the role only
-// while it can log in: a role with rolcanlogin = false gets every privilege
-// revoked and nothing granted (see [RenderDashboardFor]).
-func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
-	if err := checkIdent(role); err != nil {
+func assembled(f Files, err error) (string, error) {
+	if err != nil {
 		return "", err
+	}
+	return Assemble(f.Main, f.Rows())
+}
+
+// # One file per table
+//
+// A project commits the grants as one CONSTANT script per role (Files.Main,
+// db/grants/<role>_gen.sql) and one ROW file per table
+// (db/grants/<role>/<schema>.<table>_gen.sql): the table's declaration, a
+// VALUES row of (schema, table, readable columns), with its withheld columns
+// noted beside it. [Assemble] splices the rows into the script, so what runs
+// is still one statement, atomic as before.
+//
+// WHY FILES, NOT ROWS IN ONE FILE. Tables are born and dropped independently,
+// one migration each, and two branches that each add a table that sorts
+// between the same two neighbours insert at one point of any single file:
+// line merging cannot order them, so git conflicted however the file was
+// divided (measured by TestE2EMergeProperty). As files they are two new paths,
+// which merge, and a dropped table is a deleted path.
+
+// Files is one role's grants as a project commits them.
+type Files struct {
+	// Main is the role's convergence script, with [rowsPlaceholder] where the
+	// rows go. It depends on nothing but the role, so it never changes with
+	// the schema.
+	Main string
+	// Tables are the per-table rows, in [FileName] order.
+	Tables []TableFile
+}
+
+// TableFile is one table's row.
+type TableFile struct {
+	Schema, Name string
+	// Row is the VALUES row, then a comment line per kind of withheld column.
+	Row string
+}
+
+// Rows are the files' rows in order.
+func (f Files) Rows() []string {
+	rows := make([]string, len(f.Tables))
+	for i, t := range f.Tables {
+		rows[i] = t.Row
+	}
+	return rows
+}
+
+// FileName is a table's row file name within its role's directory:
+// <schema>.<table>_gen.sql, with any byte outside [A-Za-z0-9_-] of either
+// name written %XX so the name is one path segment on every filesystem.
+func FileName(schema, table string) string {
+	return escapeFileName(schema) + "." + escapeFileName(table) + "_gen.sql"
+}
+
+func escapeFileName(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' {
+			b.WriteByte(c)
+			continue
+		}
+		fmt.Fprintf(&b, "%%%02X", c)
+	}
+	return b.String()
+}
+
+// rowsPlaceholder is the line of [Files.Main] that [Assemble] replaces with the
+// rows. It sits inside a VALUES list, after a constant first row, so every row
+// opens with its own comma.
+const rowsPlaceholder = "    -- forge:rows\n"
+
+// Assemble is the script the migrator runs: main with rows spliced in, in
+// order. A main with no placeholder is a script rendered before the rows had
+// files of their own: it is returned whole when there are no rows (so a binary
+// built from a project not yet regenerated applies what it embeds), and
+// refused when there are.
+func Assemble(main string, rows []string) (string, error) {
+	n := strings.Count(main, rowsPlaceholder)
+	if n == 0 {
+		if len(rows) > 0 {
+			return "", errors.New("dbgrants: the grants script has no place for its per-table rows: it predates them; run `forge generate`")
+		}
+		return main, nil
+	}
+	var b strings.Builder
+	for _, row := range rows {
+		for _, line := range strings.SplitAfter(strings.TrimRight(row, "\n")+"\n", "\n") {
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "(") {
+				line = ", " + line
+			}
+			b.WriteString("    " + line)
+		}
+	}
+	return strings.ReplaceAll(main, rowsPlaceholder, b.String()), nil
+}
+
+// RenderFiles is the grants for tables as a project commits them; see
+// [Files]. [Render] is the same declaration assembled.
+func RenderFiles(tables []Table) (Files, error) { return RenderFilesFor(RoleName, tables) }
+
+// RenderFilesFor is [RenderFiles] for a named role, as [RenderFor] is
+// [Render]'s.
+func RenderFilesFor(role string, tables []Table) (Files, error) {
+	return renderFiles(role, tables, false)
+}
+
+// renderFiles is [RenderFiles] for a named role. gateOnLogin makes the script
+// serve the role only while it can log in: a role with rolcanlogin = false
+// gets every privilege revoked and nothing granted (see [RenderDashboardFor]).
+func renderFiles(role string, tables []Table, gateOnLogin bool) (Files, error) {
+	if err := checkIdent(role); err != nil {
+		return Files{}, err
 	}
 	bySchema := map[string][]Table{}
 	for _, t := range tables {
 		if t.Schema == "" || t.Name == "" {
-			return "", errors.New("dbgrants: a table needs a schema and a name")
+			return Files{}, errors.New("dbgrants: a table needs a schema and a name")
 		}
 		if err := checkIdent(t.Schema); err != nil {
-			return "", err
+			return Files{}, err
 		}
 		if err := checkIdent(t.Name); err != nil {
-			return "", err
+			return Files{}, err
 		}
 		for _, c := range t.Columns {
 			if err := checkIdent(c.Name); err != nil {
-				return "", err
+				return Files{}, err
 			}
 		}
 		bySchema[t.Schema] = append(bySchema[t.Schema], t)
@@ -225,19 +334,14 @@ func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 	// that became secret, a table that was dropped from the declaration and a
 	// table no declaration has met yet are all covered by this, which is why it
 	// precedes the grants rather than being a diff against them.
-	b.WriteString("  -- schemas: where the role may look\n")
-	b.WriteString("  FOR r IN SELECT s.nspname AS schema FROM (VALUES\n")
-	for i, schema := range schemas {
-		sep := ","
-		if i == len(schemas)-1 {
-			sep = ""
-		}
-		fmt.Fprintf(&b, "    (%s)%s\n", quoteLiteral(schema), sep)
-	}
-	if len(schemas) == 0 {
-		b.WriteString("    (NULL::text)\n")
-	}
-	b.WriteString("  ) AS s(nspname) WHERE s.nspname IS NOT NULL AND EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = s.nspname) LOOP\n")
+	// The declared schemas are the schemas of the declared tables: the rows,
+	// spliced here as well as below, so no list of schemas is kept apart from
+	// them.
+	b.WriteString("  -- schemas: where the role may look (the schemas of the tables below)\n")
+	b.WriteString("  FOR r IN SELECT DISTINCT g.schema FROM (VALUES\n")
+	b.WriteString("    (NULL::text, NULL::text, ARRAY[]::text[])\n")
+	b.WriteString(rowsPlaceholder)
+	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL AND EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = g.schema) ORDER BY 1 LOOP\n")
 	b.WriteString("    declared := declared || r.schema;\n")
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	b.WriteString("    IF role_login THEN\n")
@@ -336,56 +440,12 @@ func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 	b.WriteString("  END IF;\n\n")
 
 	b.WriteString("  -- tables: the columns the role may read. A forge:secret column, and a credential-shaped one nobody decided, is not listed.\n")
-	b.WriteString("  -- Each table is its own forge:section, so changes to different tables merge as text (see sectionLine).\n")
+	b.WriteString("  -- One row per table, each from its own file (db/grants/<role>/<schema>.<table>_gen.sql; see pkg/dbgrants.Files).\n")
 	b.WriteString("  FOR r IN SELECT g.* FROM (VALUES\n")
 	// The first row is a constant the loop skips, so every table's row can
-	// open with its own comma: adding or removing the last table never
-	// rewrites the row before it.
-	b.WriteString("    (NULL::text, NULL::text, ARRAY[]::text[])\n\n")
-	for _, schema := range schemas {
-		ts := bySchema[schema]
-		sort.Slice(ts, func(i, j int) bool { return ts[i].Name < ts[j].Name })
-		for _, t := range ts {
-			var open, secret, undecided []string
-			for _, c := range t.Columns {
-				switch c.Disposition() {
-				case WithheldSecret:
-					secret = append(secret, c.Name)
-				case WithheldUndecided:
-					undecided = append(undecided, c.Name)
-				default:
-					open = append(open, c.Name)
-				}
-			}
-			sort.Strings(open)
-			sort.Strings(secret)
-			sort.Strings(undecided)
-			lits := make([]string, len(open))
-			for i, c := range open {
-				lits[i] = quoteLiteral(c)
-			}
-			arr := "ARRAY[]::text[]"
-			if len(lits) > 0 {
-				arr = "ARRAY[" + strings.Join(lits, ", ") + "]::text[]"
-			}
-			b.WriteString("    " + sectionLine(schema+"."+t.Name))
-			fmt.Fprintf(&b, "    , (%s, %s, %s)\n", quoteLiteral(schema), quoteLiteral(t.Name), arr)
-			if len(secret) > 0 {
-				b.WriteString("    --   " + strings.ReplaceAll(schema+"."+t.Name+": "+strings.Join(secret, ", "), "\n", " ") + "  (forge:secret, withheld)\n")
-			}
-			if len(undecided) > 0 {
-				b.WriteString("    --   " + strings.ReplaceAll(schema+"."+t.Name+": "+strings.Join(undecided, ", "), "\n", " ") +
-					"  (credential-shaped columns nobody decided: withheld until a migration declares COMMENT ON COLUMN t.c IS 'forge:secret' or 'forge:readable <reason>')\n")
-			}
-			// The unchanged line between one table's last line and the next
-			// table's section line: git conflicts on edits to adjacent
-			// lines, so this is what lets neighbouring tables change apart.
-			b.WriteString("\n")
-		}
-	}
-	// The rest of the script is constant: its own section, so the last
-	// table's section ends here rather than at the end of the file.
-	b.WriteString("  " + sectionLine("(apply)"))
+	// open with its own comma.
+	b.WriteString("    (NULL::text, NULL::text, ARRAY[]::text[])\n")
+	b.WriteString(rowsPlaceholder)
 	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL AND role_login LOOP\n")
 	b.WriteString("    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attname) INTO readable\n")
 	b.WriteString("      FROM pg_attribute a\n")
@@ -404,7 +464,56 @@ func renderFor(role string, tables []Table, gateOnLogin bool) (string, error) {
 	b.WriteString("  EXCEPTION WHEN insufficient_privilege THEN\n")
 	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n  END;\n", quoteLiteral("could not set default_transaction_read_only on "+role+": the migrating role may not alter it"))
 	b.WriteString("END\n" + dollarTag + ";\n")
-	return b.String(), nil
+
+	out := Files{Main: b.String()}
+	for _, schema := range schemas {
+		for _, t := range bySchema[schema] {
+			out.Tables = append(out.Tables, TableFile{Schema: schema, Name: t.Name, Row: tableRow(schema, t)})
+		}
+	}
+	// In file-name order: the order the migrator reads the files in, so
+	// [Render] and an applied project splice the same script.
+	sort.Slice(out.Tables, func(i, j int) bool {
+		return FileName(out.Tables[i].Schema, out.Tables[i].Name) < FileName(out.Tables[j].Schema, out.Tables[j].Name)
+	})
+	return out, nil
+}
+
+// tableRow is t's VALUES row: (schema, table, readable columns), then one
+// comment line per kind of withheld column.
+func tableRow(schema string, t Table) string {
+	var open, secret, undecided []string
+	for _, c := range t.Columns {
+		switch c.Disposition() {
+		case WithheldSecret:
+			secret = append(secret, c.Name)
+		case WithheldUndecided:
+			undecided = append(undecided, c.Name)
+		default:
+			open = append(open, c.Name)
+		}
+	}
+	sort.Strings(open)
+	sort.Strings(secret)
+	sort.Strings(undecided)
+	lits := make([]string, len(open))
+	for i, c := range open {
+		lits[i] = quoteLiteral(c)
+	}
+	arr := "ARRAY[]::text[]"
+	if len(lits) > 0 {
+		arr = "ARRAY[" + strings.Join(lits, ", ") + "]::text[]"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "(%s, %s, %s)\n", quoteLiteral(schema), quoteLiteral(t.Name), arr)
+	if len(secret) > 0 {
+		b.WriteString("--   " + strings.ReplaceAll(schema+"."+t.Name+": "+strings.Join(secret, ", "), "\n", " ") + "  (forge:secret, withheld)\n")
+	}
+	if len(undecided) > 0 {
+		b.WriteString("--   " + strings.ReplaceAll(schema+"."+t.Name+": "+strings.Join(undecided, ", "), "\n", " ") +
+			"  (credential-shaped columns nobody decided: withheld until a migration declares COMMENT ON COLUMN t.c IS 'forge:secret' or 'forge:readable <reason>')\n")
+	}
+	return b.String()
 }
 
 func checkIdent(s string) error {

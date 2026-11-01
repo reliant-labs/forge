@@ -1,6 +1,6 @@
 {
   "name": "@reliantlabs/forge",
-  "version": "1.0.10",
+  "version": "1.0.12",
   "description": "The forge CLI via npm: `npx @reliantlabs/forge ...`. A thin shim that downloads the matching prebuilt forge binary from the GitHub release and runs it. No Go toolchain, no postinstall script.",
   "license": "Apache-2.0",
   "repository": {

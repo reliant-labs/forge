@@ -254,6 +254,9 @@ func TestSecretListReportHasNoValueCarryingField(t *testing.T) {
 		// presence is an enum (set|missing|unknown), version a counter,
 		// verifiable a bool — none can carry a value.
 		"presence": true, "version": true, "verifiable": true,
+		// access entries: ids, names and timestamps of principals.
+		"access": true, "access_only": true, "project_id": true,
+		"workflow_name": true, "created_by": true, "created_at": true,
 	}
 	for _, f := range jsonFieldNames(reflect.TypeOf(secretListReport{}), map[reflect.Type]bool{}) {
 		if !allowed[f] {

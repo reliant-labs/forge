@@ -54,6 +54,9 @@ func TestKeysOutsideTheAllowlistAreInvalid(t *testing.T) {
 			},
 			"values": AttrValues{Scope: scopeWith(nil), Key: key, Limit: 10}.Compile,
 		} {
+			if key == "span.attr.x" && name == "filter/traces" {
+				continue // a trace filter takes the open vocabulary (TestOpenAttributeFilters); nothing else does
+			}
 			if _, err := compile(); !isInvalid(err) {
 				t.Errorf("%s: key %q: err = %v, want ErrInvalid", name, key, err)
 			}
@@ -213,6 +216,68 @@ func TestFilterOperators(t *testing.T) {
 	})
 	if _, err := (TraceQuery{Scope: tooMany, Limit: 5}).Compile(); !isInvalid(err) {
 		t.Errorf("%d filters accepted", MaxScopeFilters+1)
+	}
+}
+
+// Any attribute is filterable when named by the map it lives in: the traces
+// of one chat are found by span.attr.chat.id, an app attribute no allowlist
+// could anticipate. The key and value stay parameters, the span map is read
+// without the resource fallback an allowlisted key gets, and a span filter
+// keeps a trace when ANY of its spans matches.
+func TestOpenAttributeFilters(t *testing.T) {
+	h := "x') OR 1=1 --"
+	for _, f := range []AttrFilter{
+		{Key: "span.attr.chat.id", Value: h}, {Key: "span.attr." + h, Value: "c"},
+		{Key: "span.attr.chat.id", Op: "neq", Value: h}, {Key: "span.attr.chat.id", Op: "in", Values: []string{h, "b"}},
+		{Key: "span.attr.chat.id", Op: "exists"}, {Key: "resource.attr.host.name", Value: h},
+	} {
+		sc := scopeWith(func(s *Scope) { s.Filters = []AttrFilter{f} })
+		st, err := TraceQuery{Scope: sc, Limit: 5}.Compile()
+		if err != nil {
+			t.Errorf("%+v: %v", f, err)
+			continue
+		}
+		assertParameterized(t, st, h)
+	}
+
+	sc := scopeWith(func(s *Scope) { s.Filters = []AttrFilter{{Key: "span.attr.chat.id", Value: "chat-1"}} })
+	st, err := TraceQuery{Scope: sc, Limit: 5}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, having, _ := strings.Cut(st.SQL, "HAVING")
+	if !strings.Contains(having, "countIf(SpanAttributes[") {
+		t.Errorf("span.attr filter is not a per-trace HAVING over SpanAttributes:\n%s", st.SQL)
+	}
+	if strings.Contains(st.SQL, "mapContains(SpanAttributes") {
+		t.Errorf("span.attr filter falls back to the resource map:\n%s", st.SQL)
+	}
+	bound := false
+	for _, v := range st.Params {
+		bound = bound || v == "chat.id"
+	}
+	if !bound {
+		t.Errorf("the attribute key is not bound as a parameter: %v", st.Params)
+	}
+
+	res := scopeWith(func(s *Scope) { s.Filters = []AttrFilter{{Key: "resource.attr.host.name", Value: "h"}} })
+	st, err = TraceQuery{Scope: res, Limit: 5}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if where, _, _ := strings.Cut(st.SQL, "HAVING"); !strings.Contains(where, "ResourceAttributes[") {
+		t.Errorf("resource.attr filter not in WHERE:\n%s", st.SQL)
+	}
+
+	for name, key := range map[string]string{
+		"another signal's map": "log.attr.chat.id",
+		"no key":               "span.attr.",
+		"unknown bare key":     "chat.id",
+	} {
+		sc := scopeWith(func(s *Scope) { s.Filters = []AttrFilter{{Key: key, Value: "x"}} })
+		if _, err := (TraceQuery{Scope: sc, Limit: 5}).Compile(); !isInvalid(err) {
+			t.Errorf("%s (%q): %v, want ErrInvalid", name, key, err)
+		}
 	}
 }
 

@@ -8,12 +8,24 @@ description: Visual verification before declaring frontend work done — the scr
 Code that type-checks and tests that pass do not prove a UI looks right. Before reporting visual work complete:
 
 1. Launch the app and load the page you changed (use the `run` skill if available, or the explicit dev-server command).
-2. Take a screenshot. Look at it. Compare to the brief.
+2. Take a screenshot. Look at it. Compare to the brief (see "Seeing the screenshot" below — taking one is not seeing it).
 3. Check at least one other viewport width (mobile if the design is desktop-first, or vice versa).
 4. Run the overflow probe below against the changed surface and read the report.
 5. Check for overflow / text wrap / alignment regressions in the surrounding area, not just the changed component.
 
 If you cannot run the app, say so explicitly — do not claim visual success based on the diff alone.
+
+## Seeing the screenshot
+
+Taking a screenshot does not mean you saw it. A PNG opened from disk often comes back as metadata only, and some harnesses return an inline screenshot as a text placeholder (`[Image: image/png, 412 KB]`) with no pixels. Either way the review silently degrades to OCR and pixel sampling unless you check:
+
+1. Load the Chrome DevTools tools — they are often deferred: `mcp__chrome-devtools__navigate_page`, `resize_page`, `take_screenshot`, `evaluate_script` (via `load_tool` or your harness's equivalent).
+2. `navigate_page` to the dev server URL of the page you changed.
+3. `resize_page` to each viewport you check (e.g. 1440×900, 768×1024, 375×812).
+4. `take_screenshot` with **no `filePath`** — optionally `fullPage: true`, or a `uid` from `take_snapshot` for one element — so any image comes back in the tool result itself.
+5. **Check what you received.** If you can describe what is in it — layout, colours, the actual copy — you saw it: critique it against the brief and the anti-slop blocklist in `frontend/design`. If you got a placeholder, metadata, or nothing you can describe, you did not see it.
+
+When you did not see it, say so plainly. Run the overflow probe plus measurements (`evaluate_script` for rects, computed styles, contrast), report them as **measured, not seen**, and hand the visual judgement to the user: a screenshot saved with `filePath`, or the preview URL. Never claim a visual check you could not see.
 
 ## Overflow probe
 

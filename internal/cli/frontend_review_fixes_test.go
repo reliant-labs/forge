@@ -541,9 +541,16 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render dashboard: %v", err)
 	}
-	out := string(rendered)
+	// The tile is the entity's own generated module, which the dashboard
+	// renders through DASHBOARD_TILES.
+	tile, err := templates.FrontendTemplates().Render("nav/dashboard-tile.tsx.tmpl", data.Pages[0])
+	if err != nil {
+		t.Fatalf("render tile: %v", err)
+	}
+	out := string(rendered) + string(tile)
 
 	for _, want := range []string{
+		"DASHBOARD_TILES.map(({ slug, Tile }) => (",
 		`import { useListTasks } from "@/hooks/task-service-hooks";`,
 		"const { data } = useListTasks({});",
 		"const count = data?.tasks?.length;",
@@ -582,14 +589,22 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 		}
 	}
 
-	// nav carries hasCreate so the dashboard can gate.
+	// The entity's route carries hasCreate so the dashboard can gate, and
+	// the nav spreads every entity's route.
 	navRendered, err := templates.FrontendTemplates().Render(
 		"nextjs/src/components/nav.tsx.tmpl", data)
 	if err != nil {
 		t.Fatalf("render nav: %v", err)
 	}
-	if !strings.Contains(string(navRendered), "slug: \"tasks\",\n    labelSingular: \"Task\",\n    hasCreate: true,") {
-		t.Errorf("nav missing hasCreate/labelSingular route fields:\n%s", navRendered)
+	if !strings.Contains(string(navRendered), "...ENTITY_ROUTES,") {
+		t.Errorf("nav does not spread ENTITY_ROUTES:\n%s", navRendered)
+	}
+	route, err := templates.FrontendTemplates().Render("nav/nav-route.ts.tmpl", data.Pages[0])
+	if err != nil {
+		t.Fatalf("render route: %v", err)
+	}
+	if !strings.Contains(string(route), "slug: \"tasks\",\n  labelSingular: \"Task\",\n  hasCreate: true,") {
+		t.Errorf("route missing hasCreate/labelSingular fields:\n%s", route)
 	}
 }
 
@@ -607,17 +622,10 @@ func TestDashboardGenTemplate_RealCountsAndCreateGating(t *testing.T) {
 func TestDashboardGenTemplate_CountsTotalCountNotPageLength(t *testing.T) {
 	render := func(t *testing.T, page templates.NavPageData) string {
 		t.Helper()
-		rendered, err := templates.FrontendTemplates().Render(
-			"nextjs/src/app/dashboard.tsx.tmpl", templates.FrontendTemplateData{
-				FrontendName: "web",
-				ProjectName:  "demo",
-				Pages:        []templates.NavPageData{page},
-				NavHookImports: []templates.NavHookImport{{
-					Module: "@/hooks/task-service-hooks", Symbols: []string{"useListTasks"},
-				}},
-			})
+		// The tile is the entity's own generated module.
+		rendered, err := templates.FrontendTemplates().Render("nav/dashboard-tile.tsx.tmpl", page)
 		if err != nil {
-			t.Fatalf("render dashboard: %v", err)
+			t.Fatalf("render tile: %v", err)
 		}
 		return string(rendered)
 	}
@@ -755,7 +763,7 @@ func TestMockTransport_MutableStoreAndNotFound(t *testing.T) {
 	// what is pinned here.
 	for _, want := range []string{
 		// the fixtures the session store is seeded from
-		"fixtures: tasksMocks.tasks,",
+		"fixtures: fixtures.tasks,",
 		// the field the store keys by, and the CRUD arms that use it
 		`pkField: "id",`,
 		`list: { rpc: "ListTasks", responseSchema: ListTasksResponseSchema, itemsField: "tasks" }`,
@@ -987,10 +995,10 @@ func TestHooksTemplate_SameMessageNameFromTwoModules(t *testing.T) {
 	}
 }
 
-// mock-transport.ts imports every entity's response schemas into one scope
-// too, and the entities belong to different services whose protos may name
-// a response alike — a generic `GetResponse` in two services. Each row must
-// name its own service's schema.
+// Each entity's dispatch rows are their own module, so entities of different
+// services whose protos name a response alike — a generic `GetResponse` in
+// two services — no longer share an import scope: each module imports its
+// own service's schema under its own name.
 func TestMockTransportTemplate_SameResponseNameInTwoServices(t *testing.T) {
 	entity := func(name, svc string) codegen.MockTransportEntity {
 		lower := strings.ToLower(name)
@@ -1006,30 +1014,32 @@ func TestMockTransportTemplate_SameResponseNameInTwoServices(t *testing.T) {
 			ListResponseType: "ListResponse", GetResponseType: "GetResponse", CreateResponseType: "CreateResponse",
 		}
 	}
-	out := renderMockTransport(t, []codegen.MockTransportEntity{entity("Thing", "ThingService"), entity("Widget", "WidgetService")})
-	for name, n := range tsImportLocals(out) {
-		if n > 1 {
-			t.Errorf("mock-transport imports %q %d times (TS2300 Duplicate identifier):\n%s", name, n, out)
+	files := renderMockTransportFiles(t, []codegen.MockTransportEntity{entity("Thing", "ThingService"), entity("Widget", "WidgetService")})
+	for _, f := range files {
+		for name, n := range tsImportLocals(f) {
+			if n > 1 {
+				t.Errorf("a mock module imports %q %d times (TS2300 Duplicate identifier):\n%s", name, n, f)
+			}
 		}
 	}
+	out := strings.Join(files, "")
 	for _, want := range []string{
-		`import { CreateResponseSchema as services_thing_v1_thing_pb_CreateResponseSchema, GetResponseSchema as services_thing_v1_thing_pb_GetResponseSchema, ListResponseSchema as services_thing_v1_thing_pb_ListResponseSchema, ThingSchema } from "@/gen/services/thing/v1/thing_pb";`,
-		`list: { rpc: "ListWidgets", responseSchema: services_widget_v1_widget_pb_ListResponseSchema, itemsField: "items" }`,
-		`get: { rpc: "GetThing", responseSchema: services_thing_v1_thing_pb_GetResponseSchema, entityField: "item" }`,
-		`create: { rpc: "CreateWidget", responseSchema: services_widget_v1_widget_pb_CreateResponseSchema,`,
-		// The entity schemas are distinct names and keep their own.
+		`import { CreateResponseSchema, GetResponseSchema, ListResponseSchema, ThingSchema } from "@/gen/services/thing/v1/thing_pb";`,
+		`import { CreateResponseSchema, GetResponseSchema, ListResponseSchema, WidgetSchema } from "@/gen/services/widget/v1/widget_pb";`,
+		`list: { rpc: "ListWidgets", responseSchema: ListResponseSchema, itemsField: "items" }`,
+		`get: { rpc: "GetThing", responseSchema: GetResponseSchema, entityField: "item" }`,
 		"entitySchema: WidgetSchema,",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("mock-transport missing %q:\n%s", want, out)
+			t.Errorf("mock modules missing %q:\n%s", want, out)
 		}
 	}
 }
 
 // One entity listed by two services — each declaring its own
-// `ListThingsResponse` — is two dispatch rows over ONE fixture module. The
-// rows name their own service's schema, and the fixture module is imported
-// once: an import per row declared `thingsMocks` twice.
+// `ListThingsResponse` — is two dispatch rows over ONE fixture module, in
+// the entity's one module: the rows name their own service's schema, and the
+// fixture module is imported once.
 func TestMockTransportTemplate_EntityServedByTwoServices(t *testing.T) {
 	row := func(svc string) codegen.MockTransportEntity {
 		lower := strings.ToLower(strings.TrimSuffix(svc, "Service"))
@@ -1041,23 +1051,27 @@ func TestMockTransportTemplate_EntityServedByTwoServices(t *testing.T) {
 			ListResponseType: "ListThingsResponse",
 		}
 	}
-	out := renderMockTransport(t, []codegen.MockTransportEntity{row("AlphaService"), row("BetaService")})
+	files := renderMockTransportFiles(t, []codegen.MockTransportEntity{row("AlphaService"), row("BetaService")})
+	if len(files) != 2 {
+		t.Fatalf("want the transport and ONE module for the entity, got %d files", len(files))
+	}
+	out := files[1]
 	for name, n := range tsImportLocals(out) {
 		if n > 1 {
-			t.Errorf("mock-transport imports %q %d times (TS2300 Duplicate identifier):\n%s", name, n, out)
+			t.Errorf("the entity module imports %q %d times (TS2300 Duplicate identifier):\n%s", name, n, out)
 		}
 	}
 	for _, want := range []string{
-		`import * as thingsMocks from "@/mocks/things_gen";`,
+		`import * as fixtures from "@/mocks/things_gen";`,
 		`service: "services.alpha.v1.AlphaService",`,
 		`list: { rpc: "ListThings", responseSchema: services_alpha_v1_alpha_pb_ListThingsResponseSchema, itemsField: "things" }`,
 		`list: { rpc: "ListThings", responseSchema: services_beta_v1_beta_pb_ListThingsResponseSchema, itemsField: "things" }`,
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("mock-transport missing %q:\n%s", want, out)
+			t.Errorf("entity module missing %q:\n%s", want, out)
 		}
 	}
-	if n := strings.Count(out, "fixtures: thingsMocks.things,"); n != 2 {
+	if n := strings.Count(out, "fixtures: fixtures.things,"); n != 2 {
 		t.Errorf("want both rows seeded from the one fixture module, got %d:\n%s", n, out)
 	}
 }

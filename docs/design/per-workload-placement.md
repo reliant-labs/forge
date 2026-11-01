@@ -258,7 +258,11 @@ group. Edges come only from declarations:
    manifests groups already carry. `{peer: contract}` says "I consume `peer`'s contract `contract`", so `peer`
    must be **Ready at the new release** before this item changes. This is the claim the release-cohort
    machinery already reads (`release_compose_declaration.go`). The same edge decides both "must change
-   together" and "goes first".
+   together" and, **across placements only**, "goes first". Inside one placement it orders nothing: services
+   that share a protocol name each other (reliant's api-server and daemon-gateway both declare
+   `reliant/api-gateway-nats/v1`), and reading that as order made every such pair a cycle. That refusal stopped
+   control-plane v1.7.85 after its promotion was recorded. A peer that is `build-only` (an image the release
+   carries and something else runs) is never deployed, so it orders nothing either.
 2. **`DeliveryUnit.after`** between units, now honored by direct apply and the hosted publish as well as by Flux.
    "Direct apply ignores units" is deleted.
 3. **No declaration means no order guess, with one conservative default.** A _frontend_ with
@@ -267,8 +271,8 @@ group. Edges come only from declarations:
    behavior. An explicit `{}` means independent.
 
 There is no fixed tier ("cluster before hosted"). The local-then-hosted order becomes just the topological order
-when no edge says otherwise. Nodes with no path between them run concurrently. A cycle is a render error that
-names it.
+when no edge says otherwise. Nodes with no path between them run concurrently. A cycle through placements (a
+hosted part and a cluster part each waiting for the other) is a render error that names it.
 
 ### 6.3 Who honors the DAG
 

@@ -174,7 +174,10 @@ forge db query prod 'select 1 as reachable' --addr localhost:15432 \
 ```
 
 Use `--workload` (default `api`) and, for several managed DBs, `--database` to
-select the database that owns the records. `--addr host:port` supplies only
+select the database that owns the records. A database forge does not run
+(Cloud SQL behind a pooler) is reachable when the env declares it as a
+`forge.ExternalDatabase`: `--database <name>` then tunnels to its service
+with your kube context, on a real env too (load `db/query`). `--addr host:port` supplies only
 **your existing VPN/tunnel/bastion route**; it creates no route and bypasses
 neither policy nor guards. Hosted envs refuse `--addr`: the control plane
 executes/audits the query. Cluster routes use `forge_ro`, its kube Secret and

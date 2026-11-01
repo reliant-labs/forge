@@ -12,7 +12,8 @@ the wire. Every applied BASE TABLE gets:
   constants and constraint names;
 - package-level delegates (`Create<E>`, `Get<E>ByID`, `List<E>`, `Count<E>`,
   `Update<E>`, `Update<E>Masked`, `Delete<E>`);
-- an `<E>Store` interface in `store_gen.go` (and the aggregate `Store`);
+- an `<E>Store` interface in `<entity>_store_gen.go`, which also declares the
+  aggregate's accessor for it (`Store` itself, a struct, is in `store_gen.go`);
 - a scaffold-once `<entity>_repo_ext.go` seam for hand-written queries.
 
 Two answers every store gives the same way. A by-key method (`Get<E>ByID`,

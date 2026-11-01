@@ -94,6 +94,15 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 		return 0, fmt.Errorf("parse mock-transport template: %w", err)
 	}
 
+	descriptorTmplContent, err := templates.FrontendTemplates().Get(filepath.Join("mocks", "entity-descriptor.ts.tmpl"))
+	if err != nil {
+		return 0, fmt.Errorf("read entity-descriptor template: %w", err)
+	}
+	descriptorTmpl, err := template.New("entity-descriptor.ts.tmpl").Funcs(templates.FuncMap()).Parse(string(descriptorTmplContent))
+	if err != nil {
+		return 0, fmt.Errorf("parse entity-descriptor template: %w", err)
+	}
+
 	// Build entity→service mapping: match entity names to the service that
 	// owns them, and the transport's per-entity dispatch rows.
 	entities, _ = codegen.FrontendEntities(entities)
@@ -146,6 +155,32 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 	libRel := filepath.Join(feRel, "src", "lib")
 	if err := os.MkdirAll(filepath.Join(root, libRel), 0o755); err != nil {
 		return 0, fmt.Errorf("create lib directory: %w", err)
+	}
+
+	// One dispatch-table module per entity (its row for each service that
+	// serves it), gathered by the bundler from src/mocks/entities/: no file
+	// lists the entities, so two branches that each add one merge as files.
+	// A dropped entity's module is reclaimed by the stale-file sweep.
+	entitiesRel := filepath.Join(mocksRel, "entities")
+	bySlug := map[string][]codegen.MockTransportEntity{}
+	var slugs []string
+	for _, e := range transportEntities {
+		if bySlug[e.EntitySlug] == nil {
+			slugs = append(slugs, e.EntitySlug)
+		}
+		bySlug[e.EntitySlug] = append(bySlug[e.EntitySlug], e)
+	}
+	for _, slug := range slugs {
+		var dbuf bytes.Buffer
+		if err := descriptorTmpl.Execute(&dbuf, codegen.NewMockTransportTemplateData(bySlug[slug])); err != nil {
+			return 0, fmt.Errorf("render mock dispatch rows for %s: %w", slug, err)
+		}
+		if err := os.MkdirAll(filepath.Join(root, entitiesRel), 0o755); err != nil {
+			return 0, fmt.Errorf("create mock entities directory: %w", err)
+		}
+		if _, err := WriteGeneratedFileTier1(root, filepath.Join(entitiesRel, slug+"_gen.ts"), dbuf.Bytes(), cs, true); err != nil {
+			return 0, fmt.Errorf("write mock dispatch rows for %s: %w", slug, err)
+		}
 	}
 
 	transportData := codegen.NewMockTransportTemplateData(transportEntities)

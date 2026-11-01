@@ -133,7 +133,7 @@ func TestRenderDashboardWithNoMarkedTableStillRevokes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(script, "REVOKE ALL ON ALL TABLES IN SCHEMA") || !strings.Contains(script, "('public')") {
+	if !strings.Contains(script, "REVOKE ALL ON ALL TABLES IN SCHEMA") || !strings.Contains(script, ", ('public', ") {
 		t.Errorf("no revoke for the declared schema:\n%s", script)
 	}
 	if strings.Contains(script, "ARRAY['") {

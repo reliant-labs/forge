@@ -42,7 +42,7 @@ func appendOnlyStoreSource(t *testing.T) string {
 	if err := GeneratePlanORM(root, config.ORMConfig{}, appendOnlyStoreEntities(), nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
-	b, err := os.ReadFile(filepath.Join(root, "internal", "db", storeGenFile))
+	b, err := readStoreFiles(root)
 	if err != nil {
 		t.Fatalf("store file was not generated: %v", err)
 	}

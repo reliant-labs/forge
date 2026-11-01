@@ -19,7 +19,7 @@ forge db query staging "select status, count(*) from jobs group by 1" --confirm-
 
 ## What a statement may do
 
-Every query runs in a `READ ONLY` transaction with a statement timeout and a lock timeout, as one statement over the extended protocol, then rolls back. Writes, `nextval()`, DDL and a second statement are refused. A lexical guard refuses them first so the message is readable; Postgres refuses them anyway. `SELECT`, `WITH`, `TABLE`, `VALUES`, `SHOW` and `EXPLAIN` lead a statement. `EXPLAIN ANALYZE` is allowed only over a `SELECT`.
+Every query runs in a `READ ONLY` transaction with a statement timeout and a lock timeout, as one statement over the extended protocol, then rolls back. Writes, `nextval()`, DDL and a second statement are refused. A lexical guard refuses them first so the message is readable; Postgres refuses them anyway. `SELECT`, `WITH`, `TABLE`, `VALUES`, `SHOW` and `EXPLAIN` lead a statement. `EXPLAIN ANALYZE` is allowed only over a `SELECT`. `SET`, `RESET`, `set_config()` and the functions that run SQL text or reach the server's administration (`ts_stat`, `ts_rewrite`, `query_to_xml`, `dblink`, advisory locks, large objects, `pg_terminate_backend`, ...) are refused by name.
 
 | Limit | Default | Flag | Maximum |
 |---|---|---|---|
@@ -39,9 +39,34 @@ The workload decides (`--workload`, default `api`):
 | OnHost / OnCompose | **direct**: the workload's resolved `DATABASE_URL`, the same value `forge env exec` gives the process | whatever that URL names |
 | OnCluster, in an env declared `lifecycle = "local"` or `"ephemeral"` | **port-forward**: a pods/portforward stream through your kube context's API server (needs `pods/portforward` create, `endpointslices` list and `secrets` get on the two database Secrets in the env's namespace) to the env's ManagedDatabase (`<name>-ro` when it runs standbys, else `<name>-rw`) | `forge_ro` |
 | OnHosted | **control plane**: `AppDatabaseService.QueryDatabase` runs the same read-only core inside the platform (`<name>-ro` when there are replicas) and writes an audit row and an activity event, with your credential (under Reliant, the helper) | `forge_ro` |
-| OnCluster in a real env | not reachable from forge yet: exit 2, unless you pass `--addr` (below) | — |
+| OnCluster in a real env, its ManagedDatabase | not reachable from forge yet: exit 2, unless you pass `--addr` (below) | — |
+| any env, a declared `forge.ExternalDatabase` | **port-forward** to a ready pod behind its `service` (below), any lifecycle | the role it declares |
 
-`--database <name>` picks the ManagedDatabase when a cluster env declares several.
+`--database <name>` picks the database when the env declares several (ManagedDatabases and ExternalDatabases share one namespace of names).
+
+## A database forge does not run: `forge.ExternalDatabase`
+
+Cloud SQL, RDS, a database behind a pooler: forge renders nothing for it, but declaring it on the env (`Bundle.external_databases`) gives `forge db query` a route to it, on a real env too. Declaring it is the opt-in:
+
+```kcl
+external_databases = [forge.ExternalDatabase {
+    name = "ledger"
+    service = "pgbouncer"           # the in-cluster Service in front of it (its 5432, or its only port)
+    database = "ledger_prod"        # the database, or the pooler's pool, to open
+    username = "ledger_ro"          # make it a read-only role
+    password_secret = "ledger-ro"   # a Secret in the namespace; key `password_key` (default "password")
+}]
+```
+
+```bash
+forge db query prod "select count(*) from entries" --database ledger --confirm-env prod --reason "ISS-7f3a"
+```
+
+- **Where**: `runtime = forge.OnCluster {target}` names the cluster (kube context) and namespace of `service`; unset, the env's primary cluster target (`namespace` overrides it).
+- **Transport**: the same pods/portforward stream as a ManagedDatabase's, with your kube context (`pods/portforward` create, `endpointslices` list, `secrets` get on `password_secret`). A port-forward enters the pod, so the service's NetworkPolicy does not stand in the way. No `--workload` is needed: `--database` names it, or it is the env's only database.
+- **Policy** is the env's `data_access`, as everywhere: a real env is `audited`, judged before the password Secret is read.
+- **Read-only**: every statement runs in a READ ONLY transaction Postgres enforces, so a write is refused even from a role that may write. forge cannot create a role on a database it does not run, so pointing `username` at a read-only role is yours, and it is what keeps a query from reading `forge:secret` columns.
+- **TLS** is `sslmode`: `require` (default: encrypted, not verified, since the tunnel ends at a pod) or `disable`. `--addr` does not apply.
 
 ## Bring your own route: `--addr host:port`
 
@@ -64,11 +89,11 @@ There is no per-env config key: the address belongs to your machine and your rou
 
 ## The read-only role
 
-Every ManagedDatabase carries `forge_ro`, a role forge declares on the CNPG Cluster. Its password is in the `<name>-forge-ro` Secret. `forge generate` projects its grants from the applied schema into `db/grants/readonly_gen.sql`, and the migrator applies them after every run. The role may SELECT the columns somebody **decided** it may read, and nothing else: no writes, no sequences, no views.
+Every ManagedDatabase carries `forge_ro`, a role forge declares on the CNPG Cluster. Its password is in the `<name>-forge-ro` Secret. `forge generate` projects its grants from the applied schema into `db/grants/readonly_gen.sql` and one row file per table under `db/grants/readonly/`, and the migrator applies them after every run. The role may SELECT the columns somebody **decided** it may read, and nothing else: no writes, no sequences, no views.
 
 The boundary is Postgres, not a redactor. `select upper(api_key) from …` is refused (`permission_denied`, exit 1) just like `select api_key`. A column added later is unreadable until a migration converges the grants. Don't grant the role more by hand; the next migration revokes it.
 
-`// forge:secret` on a proto field keeps the column settable on Create/Update and drops only the read path (`<entity>ToProto`). Its second effect is the one Postgres enforces, below: `forge generate` leaves the column out of `db/grants/readonly_gen.sql`, and the migrator applies that file after every `db migrate up`, so `forge_ro` is refused it through any expression. The role holds column-level `SELECT` only: no write privilege, no table-level `SELECT`, so a column added later is unreadable until `forge generate` has seen whether it is secret.
+`// forge:secret` on a proto field keeps the column settable on Create/Update and drops only the read path (`<entity>ToProto`). Its second effect is the one Postgres enforces, below: `forge generate` leaves the column out of its table's row in `db/grants/readonly/`, and the migrator applies the grants after every `db migrate up`, so `forge_ro` is refused it through any expression. The role holds column-level `SELECT` only: no write privilege, no table-level `SELECT`, so a column added later is unreadable until `forge generate` has seen whether it is secret.
 
 ### Safe by construction: who decides a column
 

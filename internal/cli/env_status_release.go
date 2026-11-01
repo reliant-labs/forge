@@ -150,6 +150,12 @@ type envStatusDocument struct {
 	// its control plane reports it. Absent when the env declares none or is
 	// not hosted. Never affects the verdict.
 	Identity *envIdentityReport `json:"identity,omitempty"`
+	// Apply says whether the bound promotion was APPLIED, as the ledger
+	// records it: `release` is what the env is bound to, and a failed apply
+	// means it does not run it (apply.last_applied_release is what likely
+	// does). A consumer that finishes or verifies a release checks
+	// apply.status == "passed", never `release` alone. Absent when unbound.
+	Apply *envApplyReport `json:"apply,omitempty"`
 }
 
 // envTarget is WHERE an environment runs: the kubectl context and the
@@ -318,6 +324,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 			envName, binding.Release, binding.Release, envName)
 	}
 
+	applied := envApplyOf(ctx, opts.Bindings, projectDir, envName, binding)
 	if !opts.JSON {
 		fmt.Printf("Verifying environment %s against release %s (%d image(s))\n", envName, binding.Release, len(binding.Resolved))
 		if !binding.PromotedAt.IsZero() {
@@ -328,6 +335,13 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 			fmt.Printf("  promoted %s (promote time, NOT deploy time — that gap is what this command checks)\n", formatLedgerTime(binding.PromotedAt))
 		}
 		if line := latestApplyLine(projectDir, envName, binding.ID, time.Now()); line != "" {
+			fmt.Println(line)
+		} else if line := recordedApplyGateLine(binding); line != "" {
+			fmt.Println(line)
+		}
+		// Before any per-image line: a reader who stops at "release" must
+		// not walk away believing the env runs it.
+		if line := applied.currentLine(binding.Release); line != "" {
 			fmt.Println(line)
 		}
 		if ledger != nil {
@@ -388,6 +402,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 
 			OfflineCache: offline,
 			Identity:     identity,
+			Apply:        &applied,
 		}
 		if queued != nil {
 			report.Queued = queued.document()

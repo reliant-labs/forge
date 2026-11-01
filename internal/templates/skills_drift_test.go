@@ -73,7 +73,8 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		"audit_gen.go":    {}, // retired audit codegen (audit is now forge/pkg/audit)
 		"frontend_gen.go": {}, // retired frontend codegen (components are owned scaffold now)
 		// ORM / entity wrapper generation.
-		"<entity>_orm_gen.go": {}, // placeholder pattern referenced in skills
+		"<entity>_orm_gen.go":   {}, // placeholder pattern referenced in skills
+		"<entity>_store_gen.go": {}, // per-entity store file (internal/generator/plan_orm_store_gen.go)
 		// The Tier-1 renames: every hash-guarded file now says _gen in its
 		// NAME, so a reader can tell it is un-editable without opening it.
 		"orm_shared_gen.go":  {},

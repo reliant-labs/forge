@@ -482,7 +482,7 @@ func GenerateEnvSecretsScaffold(fields []ConfigField, projectName, projectDir, e
 	// it (checksums.IsLocalOnlyScaffold); this is also the step every
 	// generate passes through, so it is where a ledger an older forge
 	// committed the entry into is cleaned.
-	checksums.PersistLedgerPrune(projectDir)
+	checksums.PersistLedgerMigrations(projectDir)
 	// The store lives in its own directory, so unlike the root-level dotenv
 	// it replaced, the parent may not exist yet on a fresh scaffold.
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {

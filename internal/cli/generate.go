@@ -696,6 +696,9 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 
 	// Success: the writes stand. The ownership state files are the run's
 	// last writes; land them first, so the completion line counts them.
+	// The scaffold ledger is one of them: a legacy one-file ledger is
+	// migrated here even when the run recorded no birth.
+	checksums.PersistLedgerMigrations(ctx.AbsPath)
 	if ctx.Checksums != nil {
 		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
 			log.Printf("Warning: failed to save checksums: %v", saveErr)
@@ -1587,6 +1590,9 @@ func goBuildValidateFixHint(errOutput string, originOf func(rel string) goSource
 	if strings.Contains(errOutput, "pkg/config") {
 		return "ensure proto/<project>/config/v1/ has annotated config fields and re-run 'forge generate'"
 	}
+	if m := aggregateStoreAsInterfaceRE.FindStringSubmatch(errOutput); m != nil {
+		return aggregateStoreHint(m[1])
+	}
 	if errs := compilerErrorLines(errOutput); len(errs) > 0 {
 		file := errorLineFile(errs[0])
 		origin := originHandWritten
@@ -1617,6 +1623,29 @@ func goBuildValidateFixHint(errOutput string, originOf func(rel string) goSource
 			"then re-run 'forge generate'"
 	}
 	return "ensure all referenced types are imported and re-run 'forge generate'"
+}
+
+// aggregateStoreAsInterfaceRE matches a compile error from code that treats
+// the ORM package's aggregate Store as an interface: something else used as
+// one, a type assertion to it, or the aggregate mock forge no longer writes.
+//
+// Only the ORM package's default name (db) and its usual relocation (store)
+// are matched: another package's Store type (pkg/activity's, a project's own)
+// fails for its own reasons, and this hint would mislead there.
+var aggregateStoreAsInterfaceRE = regexp.MustCompile(`\b(db|store)\.Store (?:value in|is not an interface|\(non-interface type)|undefined: (?:\w+\.)?MockStore\b()`)
+
+// aggregateStoreHint is the fix for code written against the aggregate Store
+// when it was an interface (before v1.0.12). pkg is the ORM package's name
+// as the error spells it, "" when only MockStore was named.
+func aggregateStoreHint(pkg string) string {
+	if pkg == "" {
+		pkg = "db"
+	}
+	return pkg + ".Store, the aggregate of the generated stores, is a struct since forge v1.0.12: each entity's accessor " +
+		"is declared in that entity's <entity>_store_gen.go, so entities born on different branches merge as files, and an " +
+		"interface's method set cannot span files. It is no longer an interface and has no generated MockStore. To fake " +
+		"persistence in a test, depend on the per-entity stores (" + pkg + ".<Entity>Store, which forge mocks); to use the " +
+		"aggregate, build it with " + pkg + ".NewStore(handle). See `forge skill load migrations/v1.0.12`"
 }
 
 // preCodegenContractCheck runs the internal-package contract shape rule

@@ -1,6 +1,6 @@
 ---
 name: dashboards
-description: Dashboards over your database — the opt-in forge_dash role (ManagedDatabase.dashboards in KCL), the forge:dashboard table marker and forge:no-dashboard column marker, db/grants/dashboard_gen.sql, the recorded limits (row cap, timeout, concurrency), kubedial credentials by role, and why the allowlist is Postgres privileges rather than an SQL parser.
+description: Dashboards over your database — the opt-in forge_dash role (ManagedDatabase.dashboards in KCL), the forge:dashboard table marker and forge:no-dashboard column marker, db/grants/dashboard_gen.sql and its per-table rows, the recorded limits (row cap, timeout, concurrency), kubedial credentials by role, and why the allowlist is Postgres privileges rather than an SQL parser.
 ---
 
 # Dashboards over your database
@@ -30,7 +30,7 @@ COMMENT ON TABLE usage_events IS 'forge:dashboard';
 COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
 ```
 
-`forge:dashboard` is a **table** marker and `forge:no-dashboard` a **column** marker, read the way `forge:no-entity` and `forge:secret` are: by whole token, so either coexists with other markers in the same comment (`'forge:append-only forge:dashboard'`). Declared on the wrong object, or misspelled, they fail `forge generate` and `forge lint --column-markers`. `forge generate` writes `db/grants/dashboard_gen.sql`, and the migrator applies it right after `readonly_gen.sql` on every run once `forge_dash` exists (a database without the role skips it silently; a script that fails fails the run). Commit it; `forge lint --db-grants` reports it stale or missing when the markers and the file disagree.
+`forge:dashboard` is a **table** marker and `forge:no-dashboard` a **column** marker, read the way `forge:no-entity` and `forge:secret` are: by whole token, so either coexists with other markers in the same comment (`'forge:append-only forge:dashboard'`). Declared on the wrong object, or misspelled, they fail `forge generate` and `forge lint --column-markers`. `forge generate` writes `db/grants/dashboard_gen.sql` plus one row per table under `db/grants/dashboard/` (`<schema>.<table>_gen.sql`), and the migrator splices the rows into the script and applies it right after the read-only grants on every run once `forge_dash` exists (a database without the role skips it silently; a script that fails fails the run). Commit them; `forge lint --db-grants` reports a file stale or missing when the markers and the files disagree.
 
 What `forge_dash` can read is a strict subset of what `forge_ro` can:
 
@@ -48,7 +48,7 @@ forge generates no such function, so this is a limit rather than a hole in the s
 
 ### Not bounded by the privileges
 
-The role cannot set per-role GUCs, and a panel runs in a session where `set_config('work_mem', ...)` and `set_config('statement_timeout', '0', true)` succeed, so the row cap, the statement timeout and the concurrency cap do not bound a query's memory. The query service that runs panels is to `SET LOCAL` its limits and refuse `SET` in panel SQL; until then set a cluster-level `temp_file_limit`. The script also tries `ALTER ROLE ... SET default_transaction_read_only`; under the application's owner role that is always a notice, and the caller's explicit `READ ONLY` transaction is the boundary.
+The role cannot set per-role GUCs, and inside a read-only transaction `set_config('work_mem', ...)` and `set_config('statement_timeout', '0', true)` still succeed, so the privileges alone do not bound a query's memory. `dbquery`'s guard refuses `SET`, `RESET`, `set_config()` and the functions that run SQL text they are handed (`ts_stat`, `ts_rewrite`, `query_to_xml`, `dblink`, `crosstab`, ...), and the query service that runs panels sets its limits with `SET LOCAL` per query. It refuses a denied name wherever it appears (attribute notation calls a function without parentheses) and every `U&"..."` identifier. A denylist over SQL is a speed bump, not a boundary: a cluster-level `temp_file_limit` is the real backstop for a panel's memory, so set one. The script also tries `ALTER ROLE ... SET default_transaction_read_only`; under the application's owner role that is always a notice, and the caller's explicit `READ ONLY` transaction is the boundary.
 
 ## Why the allowlist is Postgres privileges, not an SQL parser
 

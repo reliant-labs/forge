@@ -38,6 +38,18 @@ type envHistoryDocument struct {
 type envHistoryEntry struct {
 	release.Promotion
 	Gates *gatesSummary `json:"gates_summary,omitempty"`
+	// Apply is whether this promotion was APPLIED: passed, failed, or
+	// unrecorded (nobody said). A promotion is recorded BEFORE it is applied,
+	// so `.promotions[0].release` is what the env is bound to, not what it
+	// runs; a reader that acts on "the env runs X" checks apply.status ==
+	// "passed" too.
+	Apply historyApply `json:"apply"`
+}
+
+// historyApply is one promotion's apply verdict as history reports it.
+type historyApply struct {
+	Status  string `json:"status"`
+	Summary string `json:"summary,omitempty"`
 }
 
 func runEnvHistory(ctx context.Context, store bindingStore, env string, q historyQuery, jsonOut bool, out io.Writer) error {
@@ -57,8 +69,9 @@ func runEnvHistory(ctx context.Context, store bindingStore, env string, q histor
 	}
 
 	doc := envHistoryDocument{Env: env, Ledger: store.Location(), NextBefore: page.Next, Promotions: []envHistoryEntry{}}
+	projectDir := projectDirForKCL()
 	for _, p := range page.Promotions {
-		doc.Promotions = append(doc.Promotions, envHistoryEntry{Promotion: p, Gates: summarizeGates(p.Gates, p.RecordedGates)})
+		doc.Promotions = append(doc.Promotions, newEnvHistoryEntry(projectDir, env, p))
 	}
 	doc.stamp(nil)
 	if jsonOut {
@@ -66,6 +79,16 @@ func runEnvHistory(ctx context.Context, store bindingStore, env string, q histor
 	}
 	renderEnvHistory(out, doc)
 	return nil
+}
+
+// newEnvHistoryEntry is one promotion with its evidence counted and its apply
+// verdict read (the hosted "apply" gate, else this machine's apply record).
+func newEnvHistoryEntry(projectDir, env string, p release.Promotion) envHistoryEntry {
+	a := applyOf(projectDir, env, p)
+	return envHistoryEntry{
+		Promotion: p, Gates: summarizeGates(p.Gates, p.RecordedGates),
+		Apply: historyApply{Status: a.Status(), Summary: a.Summary},
+	}
 }
 
 func renderEnvHistory(out io.Writer, doc envHistoryDocument) {
@@ -93,7 +116,7 @@ func evidenceLabel(e envHistoryEntry) string {
 	var parts []string
 	// First, because it changes what the row means: this release was
 	// recorded but never reached the target.
-	if g, ok := latestApplyGate(e.Promotion); ok && g.Status == release.GateStatusFailed {
+	if e.Apply.Status == applyStatusFailed {
 		parts = append(parts, "NOT APPLIED")
 	}
 	if s := e.Gates; s != nil {

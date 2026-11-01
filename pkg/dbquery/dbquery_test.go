@@ -346,7 +346,8 @@ func TestRun_StatementTimeoutIsATypedError(t *testing.T) {
 }
 
 // A statement that lifts its own timeout (set_config is allowed in a
-// read-only transaction) is still stopped by the client-side deadline.
+// read-only transaction, and only the guard refuses it) is still stopped by the
+// client-side deadline.
 func TestRun_ClientDeadlineBacksUpTheServerTimeout(t *testing.T) {
 	conn := newConn(t)
 	old := ctxGrace
@@ -354,8 +355,10 @@ func TestRun_ClientDeadlineBacksUpTheServerTimeout(t *testing.T) {
 	t.Cleanup(func() { ctxGrace = old })
 
 	start := time.Now()
+	// skipGuard: the guard refuses set_config; this proves the deadline holds
+	// for a statement that got past it anyway.
 	_, err := Run(context.Background(), conn,
-		`SELECT set_config('statement_timeout', '0', true), pg_sleep(30)`, Options{Timeout: 200 * time.Millisecond})
+		`SELECT set_config('statement_timeout', '0', true), pg_sleep(30)`, Options{Timeout: 200 * time.Millisecond, skipGuard: true})
 	wantKind(t, err, KindTimeout)
 	if d := time.Since(start); d > 10*time.Second {
 		t.Errorf("took %s: the client deadline did not fire", d)
@@ -759,5 +762,88 @@ func TestRun_AuditEventCarriesTheArgsAsValues(t *testing.T) {
 	ev := rec.events[0]
 	if ev.SQL != sql || len(ev.Args) != 1 || ev.Args[0] != "v" {
 		t.Errorf("event = %+v", ev)
+	}
+}
+
+// The guard's refusals, end to end: each spelling is a way a statement was
+// once found to raise work_mem past the guard. Run refuses it, and a
+// statement that runs leaves work_mem as the transaction had it.
+func TestRun_SessionSettingsCannotBeChangedPastTheGuard(t *testing.T) {
+	conn := newConn(t)
+	for _, sql := range []string{
+		`SELECT name'\' AS x, set_config('work_mem','1GB',true) AS y, '\' AS z`,
+		"SELECT E'x'\n'\\' AS a, ' AS b, set_config('work_mem','1GB',true) AS c, 'q' AS d",
+		`SELECT ts_rewrite('a'::tsquery, 'SELECT set_config(''work_mem'',''3GB'',true)::tsquery, ''b''::tsquery')`,
+		`SELECT * FROM ts_stat('SELECT set_config(''work_mem'',''2GB'',true)::tsvector')`,
+		`SELECT query_to_xml('SELECT set_config(''work_mem'',''2GB'',true)', true, false, '')`,
+		`SELECT "pg_catalog"."set_config"('work_mem', '1GB', true)`,
+		`SELECT (x)."ts_stat" FROM (SELECT 'SELECT pg_catalog.set_config(''work_mem'',''5GB'',true)::tsvector'::text AS x) t`,
+	} {
+		_, err := Run(context.Background(), conn, sql, Options{})
+		if e := wantKind(t, err, KindRefused); e.Reason != "denied_function" {
+			t.Errorf("%q refused as %q, want denied_function", sql, e.Reason)
+		}
+	}
+	for _, sql := range []string{
+		`SELECT U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true) AS y, current_setting('work_mem') AS w`,
+		`SELECT pg_catalog.U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true)`,
+		`SELECT * FROM U&"ts!005fstat" UESCAPE '!' ('SELECT pg_catalog.set_config(''work_mem'',''2GB'',true)::tsvector')`,
+		`SELECT U&"pg!005fadvisory!005flock" UESCAPE '!' (1)`,
+	} {
+		_, err := Run(context.Background(), conn, sql, Options{})
+		if e := wantKind(t, err, KindRefused); e.Reason != "unicode_identifier" {
+			t.Errorf("%q refused as %q, want unicode_identifier", sql, e.Reason)
+		}
+	}
+	// What the guard accepts runs with the transaction's own work_mem.
+	res, err := Run(context.Background(), conn, `SELECT current_setting('work_mem') AS w, 'set_config(' AS s, name'x' AS n`, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var def string
+	if err := conn.QueryRow(context.Background(), `SHOW work_mem`).Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Rows[0][0]; got != def {
+		t.Fatalf("work_mem = %v, want the server's %s", got, def)
+	}
+}
+
+// A database or role default can switch standard_conforming_strings off, and
+// then '\' escapes a quote: the server would read a different statement than
+// the guard judged. Run pins it on for its transaction.
+func TestRun_StringsAreReadAsTheGuardReadsThem(t *testing.T) {
+	conn := newConn(t)
+	if _, err := conn.Exec(context.Background(), `SET standard_conforming_strings = off`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), conn, `SELECT 'a\' AS x, 1 AS y`, Options{})
+	if err != nil {
+		t.Fatalf("a plain string ending in a backslash: %v", err)
+	}
+	if got := mustJSON(t, res.Rows[0]); got != `["a\\",1]` {
+		t.Fatalf("row = %s", got)
+	}
+}
+
+// The limits Run sets go through pg_catalog.set_config, so a search_path that
+// puts a schema ahead of pg_catalog (a database or role default can) does not
+// let a same-named function there take its place.
+func TestRun_SetsItsLimitsThroughPgCatalogWhateverTheSearchPath(t *testing.T) {
+	conn := newConn(t)
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `CREATE FUNCTION public.set_config(text, text, boolean) RETURNS text
+		LANGUAGE sql AS $$ SELECT 'shadowed'::text $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `SET search_path = public, pg_catalog`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(ctx, conn, `SELECT pg_catalog.current_setting('statement_timeout') AS st`, Options{Timeout: 7 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Rows[0][0]; got != "7s" {
+		t.Fatalf("statement_timeout = %v: the shadowing set_config was called instead of pg_catalog's", got)
 	}
 }

@@ -138,6 +138,13 @@ await initBrowserTelemetry({
 });
 ```
 
+One visit is one session (`rum.sessionId`), ending after 15 minutes without
+activity or 4 hours. The SDK keeps the session only in a cookie, so on an origin
+that drops cookies (an Electron renderer served from `app://`) it used to start a
+new session every minute. Init now probes whether cookies persist and, when they
+do not, keeps that one cookie in localStorage under the same limits
+(`installSessionCookieFallback`). Origins whose cookies work are untouched.
+
 `track`, `setTelemetryUser` and `disableTelemetry` come from the barrel, so a
 component can call them without importing the SDK. They are safe anywhere: no-ops
 on the server, and calls made while the SDK chunk is still loading are held

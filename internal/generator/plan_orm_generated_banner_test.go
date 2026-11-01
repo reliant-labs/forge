@@ -76,7 +76,7 @@ func TestGeneratePlanORM_EveryGeneratedFileCarriesGoGeneratedBanner(t *testing.T
 			// seam that starts being stamped) has to update this list on purpose.
 			sort.Strings(generated)
 			sort.Strings(owned)
-			if got, want := strings.Join(generated, " "), "job_orm_gen.go store_gen.go task_orm_gen.go"; got != want {
+			if got, want := strings.Join(generated, " "), "job_orm_gen.go job_store_gen.go store_gen.go task_orm_gen.go task_store_gen.go"; got != want {
 				t.Errorf("forge-generated ORM files = %s, want %s", got, want)
 			}
 			if got, want := strings.Join(owned, " "), "job_repo_ext.go task_repo_ext.go"; got != want {

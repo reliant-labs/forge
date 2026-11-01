@@ -110,6 +110,13 @@ func TestMain(m *testing.M) {
 	// Nor does any test reach a deployed site: status probes a cloud env's
 	// shipped frontends at their real URLs.
 	probeDeployedURL = func(context.Context, string) bool { return false }
+	// Nor does a build test measure the host's disks. The admission check
+	// reads $HOME, the temp dir and the Go caches; on a sandbox whose $HOME
+	// is a small tmpfs every in-process build test failed "below the 5 GiB
+	// reserve" although nothing it builds lands there. The answer is a host
+	// with room; storage_reserve_ci_test.go calls checkBuildStorage itself,
+	// and storage_guards_test.go sets its own refusal.
+	checkBuildStorageFn = func(string) error { return nil }
 	if err := isolateLedgerHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
 		os.Exit(1)

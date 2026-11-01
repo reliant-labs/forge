@@ -154,15 +154,39 @@ type promotionApply struct {
 	// Failed is true when the LATEST recorded apply of the promotion did not
 	// succeed (failed, or timed out).
 	Failed bool
-	// Summary is what the failed apply said.
+	// Passed is true when the LATEST recorded apply succeeded. Neither is
+	// set when nothing was recorded.
+	Passed bool
+	// Summary is what the latest apply said.
 	Summary string
+}
+
+// The apply states a reader sees, in `env status --json`'s `apply.status` and
+// on every `--history --json` entry. A script that finishes a release (ships
+// its web half, verifies it) acts only on applyStatusPassed: "unrecorded" is
+// not "applied", it is "nobody said".
+const (
+	applyStatusPassed     = "passed"
+	applyStatusFailed     = "failed"
+	applyStatusUnrecorded = "unrecorded"
+)
+
+// Status is the apply as one word: passed, failed or unrecorded.
+func (a promotionApply) Status() string {
+	switch {
+	case a.Failed:
+		return applyStatusFailed
+	case a.Passed:
+		return applyStatusPassed
+	}
+	return applyStatusUnrecorded
 }
 
 // applyOf reads a promotion's apply evidence: the latest "apply" gate on a
 // hosted promotion, else the latest machine-ledger apply record for it.
 func applyOf(projectDir, env string, p release.Promotion) promotionApply {
 	if g, ok := latestApplyGate(p); ok {
-		return promotionApply{Failed: g.Status == release.GateStatusFailed, Summary: g.Summary}
+		return promotionApply{Failed: g.Status == release.GateStatusFailed, Passed: g.Status == release.GateStatusPassed, Summary: g.Summary}
 	}
 	store, err := openMachineLedger(projectDir)
 	if err != nil {
@@ -177,7 +201,8 @@ func applyOf(projectDir, env string, p release.Promotion) promotionApply {
 		if r.Apply.PromotionID != p.ID || r.Outcome == nil {
 			continue
 		}
-		return promotionApply{Failed: r.Outcome.Status != release.ApplySucceeded, Summary: r.Outcome.Summary}
+		ok := r.Outcome.Status == release.ApplySucceeded
+		return promotionApply{Failed: !ok, Passed: ok, Summary: r.Outcome.Summary}
 	}
 	return promotionApply{}
 }
@@ -190,6 +215,63 @@ func latestApplyGate(p release.Promotion) (release.Gate, bool) {
 		}
 	}
 	return release.Gate{}, false
+}
+
+// envApplyReport is `env status --json`'s `apply`: whether the BOUND
+// promotion was applied, and — when its apply failed — the newest earlier
+// promotion whose apply did not, which is what the env most likely runs.
+//
+// The binding alone is not "what runs". A promotion is recorded before it is
+// applied, so a failed apply leaves the env bound to a release nothing
+// shipped: control-plane v1.7.85 was bound on prod with `apply: failed`, and
+// a script that read the binding as "prod applied v1.7.85" shipped its web
+// half against an API still on v1.7.83.
+type envApplyReport struct {
+	// Status is passed, failed or unrecorded (see applyStatusPassed).
+	Status string `json:"status"`
+	// Summary is what the latest apply said.
+	Summary string `json:"summary,omitempty"`
+	// LastAppliedRelease and LastAppliedPromotionID name the newest earlier
+	// promotion whose apply did not fail. Set only when Status is failed and
+	// the ledger's history has one.
+	LastAppliedRelease     string `json:"last_applied_release,omitempty"`
+	LastAppliedPromotionID string `json:"last_applied_promotion_id,omitempty"`
+	// LastAppliedStatus is that promotion's own apply status: passed, or
+	// unrecorded for one written before applies were recorded.
+	LastAppliedStatus string `json:"last_applied_status,omitempty"`
+}
+
+// envApplyOf is the apply report for env's bound promotion.
+func envApplyOf(ctx context.Context, bindings bindingStore, projectDir, env string, binding release.Promotion) envApplyReport {
+	a := applyOf(projectDir, env, binding)
+	r := envApplyReport{Status: a.Status(), Summary: a.Summary}
+	if !a.Failed {
+		return r
+	}
+	if prev, ok := lastAppliedPromotion(ctx, bindings, projectDir, env, binding.ID); ok {
+		r.LastAppliedRelease, r.LastAppliedPromotionID = prev.Release, prev.ID
+		r.LastAppliedStatus = applyOf(projectDir, env, prev).Status()
+	}
+	return r
+}
+
+// currentLine is the one line a human reads first when the bound release was
+// NOT applied: what the env runs, and what it is merely bound to. Empty when
+// the bound promotion's apply did not fail.
+//
+//	current  v1.7.83 applied; v1.7.85 promoted but NOT APPLIED (apply failed: …)
+func (r envApplyReport) currentLine(bound string) string {
+	if r.Status != applyStatusFailed {
+		return ""
+	}
+	running := "no earlier promotion is recorded as applied"
+	switch {
+	case r.LastAppliedRelease != "" && r.LastAppliedStatus == applyStatusPassed:
+		running = r.LastAppliedRelease + " applied"
+	case r.LastAppliedRelease != "":
+		running = r.LastAppliedRelease + " (the newest promotion whose apply did not fail; its apply was not recorded)"
+	}
+	return fmt.Sprintf("  current  %s; %s promoted but NOT APPLIED (apply failed: %s)", running, bound, oneLine(r.Summary, 200))
 }
 
 // lastAppliedPromotion is the newest promotion of env before the current one

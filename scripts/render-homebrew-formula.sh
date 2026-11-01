@@ -8,6 +8,11 @@
 # linux archives (no Go toolchain, no build from source) and pins each to its
 # sha256, so a bump needs only the new version and that one file.
 #
+# The URLs spell the version out and there is no `version` stanza: Homebrew
+# scans the version from the release URL, and `brew audit --strict` rejects a
+# stanza that repeats it ("version ... is redundant with version scanned from
+# URL"). The tap's workflow audits every formula it renders.
+#
 # The tap (reliant-labs/homebrew-reliant) runs this from its
 # update-forge-formula.yml, triggered by release-forge.sh's dispatch. It lives
 # here, beside build-release-assets.sh, because the formula names those
@@ -44,7 +49,6 @@ cat <<EOF
 class Forge < Formula
   desc "Production-ready Go + Connect RPC + Postgres + Next.js project framework"
   homepage "https://github.com/reliant-labs/forge"
-  version "$VERSION"
   license "Apache-2.0"
 
   livecheck do
@@ -54,22 +58,22 @@ class Forge < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/reliant-labs/forge/releases/download/v#{version}/forge_darwin_arm64.tar.gz"
+      url "https://github.com/reliant-labs/forge/releases/download/v$VERSION/forge_darwin_arm64.tar.gz"
       sha256 "$DARWIN_ARM64"
     end
     on_intel do
-      url "https://github.com/reliant-labs/forge/releases/download/v#{version}/forge_darwin_amd64.tar.gz"
+      url "https://github.com/reliant-labs/forge/releases/download/v$VERSION/forge_darwin_amd64.tar.gz"
       sha256 "$DARWIN_AMD64"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/reliant-labs/forge/releases/download/v#{version}/forge_linux_arm64.tar.gz"
+      url "https://github.com/reliant-labs/forge/releases/download/v$VERSION/forge_linux_arm64.tar.gz"
       sha256 "$LINUX_ARM64"
     end
     on_intel do
-      url "https://github.com/reliant-labs/forge/releases/download/v#{version}/forge_linux_amd64.tar.gz"
+      url "https://github.com/reliant-labs/forge/releases/download/v$VERSION/forge_linux_amd64.tar.gz"
       sha256 "$LINUX_AMD64"
     end
   end

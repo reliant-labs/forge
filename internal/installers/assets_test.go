@@ -208,11 +208,10 @@ func TestRenderHomebrewFormula(t *testing.T) {
 	f := string(out)
 	for _, want := range []string{
 		`class Forge < Formula`,
-		`version "1.2.3"`,
-		`releases/download/v#{version}/forge_darwin_arm64.tar.gz"` + "\n      sha256 \"" + sum("1") + `"`,
-		`releases/download/v#{version}/forge_darwin_amd64.tar.gz"` + "\n      sha256 \"" + sum("2") + `"`,
-		`releases/download/v#{version}/forge_linux_arm64.tar.gz"` + "\n      sha256 \"" + sum("3") + `"`,
-		`releases/download/v#{version}/forge_linux_amd64.tar.gz"` + "\n      sha256 \"" + sum("4") + `"`,
+		`releases/download/v1.2.3/forge_darwin_arm64.tar.gz"` + "\n      sha256 \"" + sum("1") + `"`,
+		`releases/download/v1.2.3/forge_darwin_amd64.tar.gz"` + "\n      sha256 \"" + sum("2") + `"`,
+		`releases/download/v1.2.3/forge_linux_arm64.tar.gz"` + "\n      sha256 \"" + sum("3") + `"`,
+		`releases/download/v1.2.3/forge_linux_amd64.tar.gz"` + "\n      sha256 \"" + sum("4") + `"`,
 		`bin.install "forge"`,
 	} {
 		if !strings.Contains(f, want) {
@@ -221,6 +220,11 @@ func TestRenderHomebrewFormula(t *testing.T) {
 	}
 	if strings.Contains(f, sum("5")) {
 		t.Errorf("formula leaked the windows checksum")
+	}
+	// Homebrew scans the version from the URL; `brew audit --strict` fails a
+	// formula whose `version` stanza repeats it.
+	if strings.Contains(f, "\n  version ") {
+		t.Errorf("formula declares a redundant version stanza:\n%s", f)
 	}
 
 	// A prerelease, or a checksums file missing a platform, must fail loudly

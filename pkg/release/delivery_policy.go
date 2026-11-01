@@ -127,10 +127,14 @@ type ShapeApprovals struct {
 
 // DefaultDeliveryPolicy is every control at its default: the hybrid rule of
 // the delivery design. A control that cannot block a deploy and costs the
-// customer nothing is enforced (signing and provenance/SBOM are done by forge
-// or the platform builder on the customer's behalf, and Flux verification
-// only checks what that signing produced). A control that can refuse a deploy
-// is audited until the env turns it up.
+// customer nothing is enforced (signing and provenance/SBOM are to be done by
+// forge or the platform builder on the customer's behalf, and Flux
+// verification only checks what that signing produced). A control that can
+// refuse a deploy is audited until the env turns it up.
+//
+// These are DECLARED modes, not active enforcement: nothing signs a bundle or
+// an image yet and no consumer writes OCIRepository.spec.verify, so a reader
+// must not report "enforce" here as a verification that took place.
 //
 // It must agree with the defaults of forge.DeliveryPolicy in kcl/schema.k;
 // TestDeliveryPolicyDefaultsAgreeWithKCL fails if they drift.

@@ -5175,8 +5175,11 @@ schema Signing:
     image digests, repo names and signer identities; `oidc_issuer` and
     `oidc_subject` (a regexp) say which identity is trusted.
 
-    Default mode `enforce`: forge and the platform builder do the signing on
-    your behalf, so there is nothing for you to set up.
+    Default mode `enforce`: once signing lands, forge and the platform builder
+    sign on your behalf, so there is nothing for you to set up. NOT YET: today
+    nothing signs a bundle or an image (`forge env deploy` and the hosted
+    builder push them unsigned), so this mode is recorded and changes
+    nothing. Load `deploy/delivery-policy`.
     """
     mode: ControlMode = "enforce"
     key: "org_kms" | "customer" | "keyless" = "org_kms"
@@ -5324,8 +5327,11 @@ schema DeliveryPolicy:
     baseline. Every env gets them.
 
     The resolved policy is recorded in the release shape (`delivery_policy`)
-    when any value differs from the default, so the control plane enforces
-    what the env declared.
+    when any value differs from the default, so the control plane can enforce
+    what the env declared. It does not yet: every control is recorded and
+    none blocks a release. In particular nothing signs a bundle and no Flux
+    OCIRepository carries `spec.verify`, so `signing` and `flux_verify` at
+    their `enforce` defaults verify nothing today.
     """
     trusted_builder: TrustedBuilder = TrustedBuilder {}
     signing: Signing = Signing {}

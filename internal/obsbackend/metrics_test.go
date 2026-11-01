@@ -225,6 +225,43 @@ func TestLocalMetricsListMergesTheDeclaredSchema(t *testing.T) {
 	}
 }
 
+// NoEnv drops the env predicate from the catalog, as it does from a platform
+// dashboard's panel read: on the control plane the scope names no env, and
+// locally the statement carries no env filter (#1548).
+func TestMetricsListNoEnvDropsTheEnvPredicate(t *testing.T) {
+	envIn := func(st []obsbackend.Statement) bool {
+		for _, s := range st {
+			if strings.Contains(s.SQL, "'dev'") {
+				return true
+			}
+			for _, v := range s.Params {
+				if v == "dev" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, noEnv := range []bool{false, true} {
+		res, err := local(fixture()).MetricsList(context.Background(), obsbackend.MetricsListRequest{Narrow: obsbackend.Narrow{Range: narrow().Range, Explain: true}, Limit: 5, NoEnv: noEnv})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := envIn(res.Statements); got == noEnv {
+			t.Errorf("local NoEnv=%v: env filter present=%v\n%+v", noEnv, got, res.Statements)
+		}
+
+		rc := &recCaller{replies: map[string]string{procListMetrics: `{"metrics":[]}`}}
+		if _, err := cloudWith(rc).MetricsList(context.Background(), obsbackend.MetricsListRequest{Narrow: narrow(), Limit: 5, NoEnv: noEnv}); err != nil {
+			t.Fatal(err)
+		}
+		scope, _ := rc.calls[procListMetrics]["scope"].(map[string]any)
+		if _, bound := scope["envIds"]; bound == noEnv {
+			t.Errorf("cloud NoEnv=%v: scope %v", noEnv, scope)
+		}
+	}
+}
+
 func TestLocalMetricsDescribe(t *testing.T) {
 	f := fixture()
 	l := local(f)

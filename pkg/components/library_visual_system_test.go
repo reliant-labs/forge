@@ -159,3 +159,18 @@ func TestDataTableStacksOnPhones(t *testing.T) {
 		}
 	}
 }
+
+// TestDataTableScrollerContainsHiddenHeaders pins the scroller's `relative`.
+// The visually hidden header labels (`sr-only`, e.g. an Actions column) are
+// absolutely positioned; with no positioned ancestor inside the
+// `overflow-x-auto` wrapper they escaped it, and at 390px the whole page
+// scrolled sideways (Settings → Machines measured scrollWidth 617).
+func TestDataTableScrollerContainsHiddenHeaders(t *testing.T) {
+	src, err := NewLibrary().Get("data_table")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(src, `<div className="relative overflow-x-auto">`) {
+		t.Error(`data_table.tsx's scroller must be "relative overflow-x-auto" so absolutely positioned sr-only headers stay inside it`)
+	}
+}

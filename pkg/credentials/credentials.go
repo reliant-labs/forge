@@ -115,6 +115,16 @@ type Credential struct {
 	// from the endpoint it is presented to (reliant logs in at the control
 	// plane and presents the token to its API server). Informational.
 	Issuer string `json:"issuer,omitempty"`
+	// AccountID and AccountEmail name the account the login signed in as,
+	// as the issuer reported them (the token reply's account_id and
+	// account_email extension fields; AccountID is the issuer's stable
+	// external id for the person). Empty when the issuer did not say — an
+	// older issuer, or a token pasted by hand. Informational: they let a
+	// client show who it is signed in as, and tell two logins of one
+	// person from logins of two people, without a network call. The server
+	// decides who the token acts as.
+	AccountID    string `json:"account_id,omitempty"`
+	AccountEmail string `json:"account_email,omitempty"`
 	// Claimable is set only on an entry stored under a claimable-deploy client
 	// id (forge-cli-claimable…): the anonymous deploy this token belongs to.
 	// It sits beside the token because the claim link is as sensitive as the

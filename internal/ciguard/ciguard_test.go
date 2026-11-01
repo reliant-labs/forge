@@ -201,14 +201,12 @@ const (
 	notReviewFirst = "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') }}"
 	// The checks that read the pull request itself.
 	prOnly = "${{ github.event_name == 'pull_request' }}"
-	// The review marker: a notice on the pull request, enforced in the queue.
-	prAndQueue = "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"
 )
 
 // The jobs an unlabelled pull request runs before its review (REVIEW FIRST).
 // Anything else there spends CI minutes on a head nobody has reviewed, and
 // could hold a reviewed pull request out of the queue.
-var reviewFirstJobs = []string{"pr-checks", "review-marker", "gate"}
+var reviewFirstJobs = []string{"pr-checks", "gate"}
 
 // TestRequiredGateReportsOnEveryPullRequestAndQueueEntry proves `CI gate`
 // reports on every event the main ruleset judges a merge by.
@@ -243,7 +241,7 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 			}
 		}
 	}
-	allowed := []string{queueTier, mainTier, notReviewFirst, prOnly, prAndQueue}
+	allowed := []string{queueTier, mainTier, notReviewFirst, prOnly}
 	for name, j := range wf.Jobs {
 		cond := strings.TrimSpace(j.If)
 		if name == "gate" {
@@ -255,7 +253,7 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 		}
 		// Runs on an unlabelled pull request: no if:, or a spelling that
 		// admits one.
-		onPR := cond == "" || cond == prOnly || cond == prAndQueue
+		onPR := cond == "" || cond == prOnly
 		if onPR && !slices.Contains(reviewFirstJobs, name) {
 			t.Errorf("job %q runs on every pull request push, before review; only %v may (REVIEW FIRST): gate it with %q", name, reviewFirstJobs, queueTier)
 		}

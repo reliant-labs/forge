@@ -371,7 +371,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "postgres", "section", "minStep")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "postgres", "section", "minStep", "markdown", "display")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -383,9 +383,19 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	v.str(path, o, "title", true)
 	v.str(path, o, "description", false)
-	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres))
+	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres), string(KindText))
+	if kind == string(KindText) {
+		v.textPanel(path, o)
+		return
+	}
+	if _, has := o["markdown"]; has {
+		v.add(childPath(path, "markdown"), "only a text panel takes \"markdown\"")
+	}
 	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL) && kind != string(KindPostgres), string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)
+	if raw, has := o["display"]; has && kind != "" {
+		v.display(path, o, PanelKind(kind), raw)
+	}
 	if _, has := o["minStep"]; has && kind != string(KindSQL) {
 		v.add(childPath(path, "minStep"), "only a sql panel takes \"minStep\"")
 	}
@@ -537,6 +547,114 @@ func (v *validator) sqlPanel(path string, o map[string]any) {
 	if m := v.str(path, o, "minStep", false); m != "" {
 		if _, err := ParseSpan(m); err != nil {
 			v.add(childPath(path, "minStep"), "%v", err)
+		}
+	}
+}
+
+// textPanel validates a KindText panel: Markdown is all it carries, besides
+// the common presentation fields.
+func (v *validator) textPanel(path string, o map[string]any) {
+	v.refuse(path, o, KindText, "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "funnel", "hasError", "sql", "postgres", "minStep", "display")
+	raw, present := o["markdown"]
+	if !present {
+		v.add(path, "a text panel needs \"markdown\"")
+		return
+	}
+	s, ok := raw.(string)
+	switch {
+	case !ok:
+		v.add(childPath(path, "markdown"), "must be a string")
+	case strings.TrimSpace(s) == "":
+		v.add(childPath(path, "markdown"), "must not be empty")
+	case len(s) > MaxMarkdownBytes:
+		v.add(childPath(path, "markdown"), "is %d bytes, over the %d a text panel may hold", len(s), MaxMarkdownBytes)
+	}
+}
+
+// display validates Panel.Display against the panel's kind: the style is one
+// the kind takes, and each option is one the style uses. An option a renderer
+// would silently ignore is refused, as everywhere else in the spec.
+func (v *validator) display(path string, o map[string]any, kind PanelKind, raw any) {
+	dp := childPath(path, "display")
+	styles := displayStyles[kind]
+	if len(styles) == 0 {
+		v.add(dp, "a %s panel is drawn one way and takes no \"display\" (it applies to line, bar, number and sql panels)", kind)
+		return
+	}
+	d, ok := v.object(dp, raw)
+	if !ok {
+		return
+	}
+	v.known(dp, d, "style", "stack", "horizontal", "min", "max", "topN")
+	names := make([]string, len(styles))
+	for i, s := range styles {
+		names[i] = string(s)
+	}
+	style := DisplayStyle(v.oneOf(dp, d, "style", false, names...))
+	if _, has := d["style"]; !has {
+		style = styles[0]
+	}
+	flag := func(key string) bool {
+		raw, has := d[key]
+		if !has {
+			return false
+		}
+		b, ok := raw.(bool)
+		if !ok {
+			v.add(childPath(dp, key), "must be true or false")
+		}
+		return ok && b
+	}
+	if _, has := d["stack"]; has {
+		flag("stack")
+		switch {
+		case style == "":
+		case kind == KindBar && style != StyleBar:
+			v.add(childPath(dp, "stack"), "a %s has no bars to stack; stack applies to style %q", style, StyleBar)
+		case (kind == KindLine || kind == KindSQL) && style != StyleArea && style != StyleBars:
+			v.add(childPath(dp, "stack"), "stacked lines hide each series' own value; stack a style %q or %q panel", StyleArea, StyleBars)
+		case kind == KindNumber:
+			v.add(childPath(dp, "stack"), "a number panel has nothing to stack")
+		}
+	}
+	if _, has := d["horizontal"]; has {
+		flag("horizontal")
+		if style != "" && (kind != KindBar || style != StyleBar) {
+			v.add(childPath(dp, "horizontal"), "only a bar panel drawn as bars takes \"horizontal\"")
+		}
+	}
+	lo, hasMin := v.number(dp, d, "min")
+	hi, hasMax := v.number(dp, d, "max")
+	if style == StyleGauge {
+		unit, _ := o["unit"].(string)
+		switch {
+		case !hasMax && unit != string(UnitPercent):
+			v.add(dp, "a gauge needs \"max\", the top of its scale (a percent panel's scale is 0 to 1 without one)")
+		case hasMax && hasMin && lo >= hi:
+			v.add(childPath(dp, "min"), "a gauge's min must be below its max, got min %v and max %v", lo, hi)
+		case hasMax && !hasMin && hi <= 0:
+			v.add(childPath(dp, "max"), "a gauge's max must be above its min (0 when unset), got %v", hi)
+		}
+	} else if style != "" {
+		if hasMin {
+			v.add(childPath(dp, "min"), "only a gauge takes \"min\"")
+		}
+		if hasMax {
+			v.add(childPath(dp, "max"), "only a gauge takes \"max\"")
+		}
+	}
+	if n, has := v.number(dp, d, "topN"); has {
+		switch {
+		case n < 1 || n > MaxTopN || n != float64(int(n)):
+			v.add(childPath(dp, "topN"), "must be a whole number of series from 1 to %d", MaxTopN)
+		case style == "":
+		case style == StyleFunnel || kind == KindNumber || (kind == KindBar && style == StyleBar):
+			v.add(childPath(dp, "topN"), "topN folds a line panel's series, or a pie's slices, into \"Other\"; a %s %s has none to fold (a bar panel keeps its top groups with \"limit\")", style, kind)
+		}
+	}
+	if style == StylePie || style == StyleDonut {
+		if series, ok := o["series"].([]any); ok && len(series) != 1 {
+			v.add(childPath(path, "series"), "a %s draws one value per group: it takes exactly 1 series, has %d", style, len(series))
 		}
 	}
 }

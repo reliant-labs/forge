@@ -211,5 +211,20 @@ func hostedSecretListStore(ctx context.Context, envName string, entities *KCLEnt
 			store.versions[s.Name] = s.CurrentVersion
 		}
 	}
+	if acc, ok := w.(hostedSecretAccess); ok {
+		entries, err := acc.Access(ctx, "")
+		var apiErr *cloud.Error
+		switch {
+		case errors.As(err, &apiErr) && apiErr.HasCode(cloud.CodeUnimplemented):
+			// A control plane older than access lists: list still answers.
+		case err != nil:
+			return secretListStore{}, err
+		default:
+			store.access = map[string][]secretAccessEntry{}
+			for _, e := range entries {
+				store.access[e.SecretName] = append(store.access[e.SecretName], e)
+			}
+		}
+	}
 	return store, nil
 }

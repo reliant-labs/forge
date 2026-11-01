@@ -53,6 +53,11 @@ secret_provider is, and set / list / import act on it there:
   forge.GCPSecretManagerStore   Google Secret Manager, with your Application
                                 Default Credentials.
 
+  forge secret allow / deny / access
+                        a HOSTED secret's access list: which Reliant workflows
+                        may use it ({{ secrets.NAME }} in an http/request
+                        header). Hosted envs only.
+
   forge secret import   copy values that already exist into a store, create-only
                         (the first step of moving a Secret onto ESO)
 
@@ -71,6 +76,9 @@ service references does nothing — config belongs in deploy/kcl/<env>/config.k.
   forge secret set   --env dev STRIPE_SECRET_KEY   # value on stdin; add, or replace (= rotate)
   forge secret unset --env dev STRIPE_SECRET_KEY
   forge secret list  --env dev                     # names + presence, never values
+  forge secret allow --env prod --workflow trader-bot --project <id> TRADER_KEY   # hosted: let a workflow use it
+  forge secret deny  --env prod --workflow trader-bot --project <id> TRADER_KEY
+  forge secret access --env prod [TRADER_KEY]      # hosted: who may use it
   forge secret ensure --env dev                    # FileSecrets: create the file + report missing
   forge secret migrate --env dev                   # FileSecrets: convert a legacy .env file`,
 	}
@@ -79,6 +87,9 @@ service references does nothing — config belongs in deploy/kcl/<env>/config.k.
 		newSecretUnsetCmd(),
 		newSecretImportCmd(),
 		newSecretListCmd(),
+		newSecretAllowCmd(),
+		newSecretDenyCmd(),
+		newSecretAccessCmd(),
 		newSecretEnsureCmd(),
 		newSecretMigrateCmd(),
 	)
@@ -476,6 +487,8 @@ type secretListEntry struct {
 	Presence   string              `json:"presence"`
 	Version    uint32              `json:"version,omitempty"` // hosted: the current version number
 	DeclaredBy []secretDeclaration `json:"declared_by,omitempty"`
+	// Access is the hosted secret's access list: who may use it. Hosted only.
+	Access []secretAccessEntry `json:"access,omitempty"`
 }
 
 // The Presence vocabulary.
@@ -530,16 +543,20 @@ const (
 // unknown) secrets in both modes, for EVERY provider. Exit codes are
 // identical between text and --json.
 type secretListReport struct {
-	Env          string            `json:"env"`
-	Provider     string            `json:"provider"`
-	StorePath    string            `json:"store_path"`
-	StoreExists  bool              `json:"store_exists"`
-	Verifiable   bool              `json:"verifiable"`
-	Secrets      []secretListEntry `json:"secrets"`
-	Inert        []string          `json:"inert"`
-	Missing      []string          `json:"missing"`
-	MissingCount int               `json:"missing_count"`
-	OK           bool              `json:"ok"`
+	Env         string            `json:"env"`
+	Provider    string            `json:"provider"`
+	StorePath   string            `json:"store_path"`
+	StoreExists bool              `json:"store_exists"`
+	Verifiable  bool              `json:"verifiable"`
+	Secrets     []secretListEntry `json:"secrets"`
+	Inert       []string          `json:"inert"`
+	// AccessOnly holds stored names no KCL declaration reads but whose access
+	// list is non-empty: secrets used by workflows only. They are not inert,
+	// so they are listed here instead of in Inert. Hosted only.
+	AccessOnly   map[string][]secretAccessEntry `json:"access_only,omitempty"`
+	Missing      []string                       `json:"missing"`
+	MissingCount int                            `json:"missing_count"`
+	OK           bool                           `json:"ok"`
 }
 
 // secretListStore is what one provider knows about its store, reduced to
@@ -552,6 +569,7 @@ type secretListStore struct {
 	verifiable bool
 	present    map[string]bool
 	versions   map[string]uint32
+	access     map[string][]secretAccessEntry
 }
 
 // collectSecretListFacts is the single declared-vs-present computation both
@@ -679,6 +697,7 @@ func buildSecretListReport(envName string, entities *KCLEntities, store secretLi
 				report.Missing = append(report.Missing, name)
 			}
 		}
+		entry.Access = store.access[name]
 		report.Secrets = append(report.Secrets, entry)
 	}
 	report.MissingCount = len(report.Missing)
@@ -688,9 +707,17 @@ func buildSecretListReport(envName string, entities *KCLEntities, store secretLi
 	// Surfacing them is what keeps the store from silently accumulating
 	// config that belongs in KCL.
 	for k := range store.present {
-		if !containsString(declared, k) {
-			report.Inert = append(report.Inert, k)
+		if containsString(declared, k) {
+			continue
 		}
+		if entries := store.access[k]; len(entries) > 0 {
+			if report.AccessOnly == nil {
+				report.AccessOnly = map[string][]secretAccessEntry{}
+			}
+			report.AccessOnly[k] = entries
+			continue
+		}
+		report.Inert = append(report.Inert, k)
 	}
 	sort.Strings(report.Inert)
 	return report
@@ -846,6 +873,7 @@ func runSecretList(ctx context.Context, envName string, out io.Writer) error {
 			}
 		}
 		fmt.Fprintf(out, "  %-34s %s\n", s.Name, mark)
+		writeAccessEntries(out, s.Access, false, "      allowed: ")
 	}
 
 	if len(report.Inert) > 0 {
@@ -855,6 +883,18 @@ func runSecretList(ctx context.Context, envName string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "fix: declare it with `forge.EnvVar {name = \"%s\", secret_ref = \"...\"}`,\n", report.Inert[0])
 		fmt.Fprintln(out, "     move it to deploy/kcl/<env>/config.k if it is not a credential, or remove it.")
+	}
+	if len(report.AccessOnly) > 0 {
+		names := make([]string, 0, len(report.AccessOnly))
+		for n := range report.AccessOnly {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		fmt.Fprintf(out, "\n%d secret(s) no service declares, used by workflows through their access list:\n", len(names))
+		for _, n := range names {
+			fmt.Fprintf(out, "  %-34s %s\n", n, "set")
+			writeAccessEntries(out, report.AccessOnly[n], false, "      allowed: ")
+		}
 	}
 	if report.MissingCount > 0 && (report.Provider == "file" || report.Provider == "hosted") {
 		fmt.Fprintf(out, "\nfix: forge secret set --env %s <KEY>\n", envName)

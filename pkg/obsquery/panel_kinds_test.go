@@ -1,6 +1,7 @@
 package obsquery
 
 import (
+	"errors"
 	"math"
 	"strconv"
 	"strings"
@@ -159,6 +160,67 @@ func TestHeatmapBounds(t *testing.T) {
 	// Adjacent buckets tile the line.
 	if _, h := HeatmapBounds(-3); h != func() float64 { l, _ := HeatmapBounds(-2); return l }() {
 		t.Error("buckets -3 and -2 do not meet")
+	}
+}
+
+// An alert rule names its env as {reliant_env_id:String}. A sql panel binds it
+// to the one environment its scope is restricted to, so the rule's query runs
+// as written; over any other scope a statement that uses it is refused rather
+// than run against a guessed environment.
+func TestSQLPanelBindsTheEnvIDOfOneEnvironmentOnly(t *testing.T) {
+	const rule = "SELECT count() AS value FROM otel_logs WHERE ResourceAttributes['reliant.env.id'] = {reliant_env_id:String}"
+	base := Scope{Database: "t_org_a", Start: time.Unix(1700000000, 0), End: time.Unix(1700003600, 0)}
+
+	one := base
+	one.EnvRestricted, one.EnvIDs = true, []string{"e1\tx"}
+	st, err := SQLPanel{Scope: one, SQL: rule, StepSeconds: 30}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Params[EnvIDParam]; got != `e1\tx` {
+		t.Errorf("reliant_env_id = %q, want the one env's id in escaped text", got)
+	}
+	if st.SQL != rule {
+		t.Errorf("the statement was changed: %q", st.SQL)
+	}
+
+	several, every, none := base, base, base
+	several.EnvRestricted, several.EnvIDs = true, []string{"e1", "e2"}
+	none.EnvRestricted = true
+	for name, sc := range map[string]Scope{"several environments": several, "every environment": every, "no environment": none} {
+		t.Run(name, func(t *testing.T) {
+			_, err := SQLPanel{Scope: sc, SQL: rule, StepSeconds: 30}.Compile()
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "choose a single environment") {
+				t.Errorf("err = %v, want a refusal asking for a single environment", err)
+			}
+			// A statement that does not use it is bound as before, without it.
+			st, err := SQLPanel{Scope: sc, SQL: "SELECT count() FROM otel_logs", StepSeconds: 30}.Compile()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v, ok := st.Params[EnvIDParam]; ok {
+				t.Errorf("reliant_env_id bound to %q over a scope that is not one environment", v)
+			}
+		})
+	}
+}
+
+func TestUsesParamIgnoresCommentsAndLiterals(t *testing.T) {
+	for sql, want := range map[string]bool{
+		"SELECT 1 WHERE e = {reliant_env_id:String}":                                             true,
+		"SELECT 1 WHERE e = { reliant_env_id : String }":                                         true,
+		"SELECT 1 AS value WHERE 0 /* reliant:platform new-issue env:{reliant_env_id:String} */": false,
+		"SELECT '{reliant_env_id:String}' AS a":                                                  false,
+		"SELECT `{reliant_env_id:String}` FROM t":                                                false,
+		"SELECT 1 -- {reliant_env_id:String}\nFROM t":                                            false,
+		"SELECT 1 # {reliant_env_id:String}":                                                     false,
+		"SELECT 'it''s', 'a\\'b' WHERE e = {reliant_env_id:String}":                              true,
+		"SELECT {reliant_env_id_2:String}":                                                       false,
+		"SELECT {services:Array(String)}":                                                        false,
+	} {
+		if got := usesParam(sql, EnvIDParam); got != want {
+			t.Errorf("usesParam(%q) = %v, want %v", sql, got, want)
+		}
 	}
 }
 

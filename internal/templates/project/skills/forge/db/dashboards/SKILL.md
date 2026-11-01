@@ -104,7 +104,7 @@ forge generates no such function, but it is real. Every migration run lists the 
 
 ### Not bounded by the privileges
 
-The role cannot set per-role GUCs, and a panel runs in a session where `set_config('work_mem', ...)` and `set_config('statement_timeout', '0', true)` succeed, so the row cap, the statement timeout and the concurrency cap do not bound a query's memory. `pkg/dbquery`, which runs panels, sets its timeouts for the panel's own transaction and keeps a client-side deadline behind them; set a cluster-level `temp_file_limit` as well. The caller's explicit `READ ONLY` transaction is what keeps a panel from writing, beside the privileges.
+The role cannot set per-role GUCs, and inside a read-only transaction `set_config('work_mem', ...)` and `set_config('statement_timeout', '0', true)` still succeed, so the privileges alone do not bound a query's memory. `dbquery`'s guard refuses `SET`, `RESET`, `set_config()` and the functions that run SQL text they are handed (`ts_stat`, `ts_rewrite`, `query_to_xml`, `dblink`, `crosstab`, ...), and `pkg/dbquery`, which runs panels, sets its timeouts for the panel's own transaction and keeps a client-side deadline behind them. It refuses a denied name wherever it appears (attribute notation calls a function without parentheses) and every `U&"..."` identifier. A denylist over SQL is a speed bump, not a boundary: a cluster-level `temp_file_limit` is the real backstop for a panel's memory, so set one. The caller's explicit `READ ONLY` transaction is what keeps a panel from writing, beside the privileges.
 
 ## Why the allowlist is Postgres privileges, not an SQL parser
 

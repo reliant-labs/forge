@@ -67,6 +67,7 @@ value is ever spliced into the SQL:
   {step:UInt32}                              a bucket width in seconds (--step)
   {services:Array(String)}                   the --service values; [] = all
   {envs:Array(String)}  {env_ids:Array(String)}   the env being read
+  {reliant_env_id:String}                    that env's id, as an alert rule names it
 
   ` + Name() + ` obs query dev --sql "SELECT toStartOfMinute(Timestamp) AS t, count() AS n
       FROM otel_logs WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)}

@@ -154,14 +154,44 @@ change `install.sh`, `install.ps1`, `npm/lib/install.js` and
 `scripts/render-homebrew-formula.sh` in the same pull request;
 `internal/installers` fails if they drift.
 
-| Channel                                                   | What the release does                                                                                                                                                                     | Needs a human                                                                                                                                                        |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `curl \| sh` (`install.sh`), `irm \| iex` (`install.ps1`) | Nothing: they read `main` and download the release's assets.                                                                                                                              | No                                                                                                                                                                   |
-| GitHub release assets                                     | `build-release-assets.sh` runs before the release commit; `gh release create` attaches the archives and `checksums.txt`.                                                                  | No                                                                                                                                                                   |
-| Homebrew `reliant-labs/reliant/forge`                     | Dispatches `forge-release-published` to `reliant-labs/homebrew-reliant`; its `update-forge-formula.yml` renders `Formula/forge.rb` (`scripts/render-homebrew-formula.sh`) and opens a PR. | Yes: the tap's ruleset requires an approving review, same as the cask. The workflow lives in the tap; see `docs/installers/update-forge-formula.yml` for the source. |
-| npm `@reliantlabs/forge`                                  | `npm/package.json` is synced to the release version in the release commit. Publishing happens only with `--publish-npm` (then `verify-npm-published.sh` waits for the registry).          | Yes: `npm publish` needs an npm login with rights to the `@reliantlabs` scope (and its OTP), or a trusted-publisher registration like web-runtime's.                 |
+| Channel                                                   | What the release does                                                                                                                                                                                                                                                  | Needs a human                                                                                                                                                   |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `curl \| sh` (`install.sh`), `irm \| iex` (`install.ps1`) | Nothing: they read `main` and download the release's assets.                                                                                                                                                                                                           | No                                                                                                                                                              |
+| GitHub release assets                                     | `build-release-assets.sh` runs before the release commit; `gh release create` attaches the archives and `checksums.txt`.                                                                                                                                               | No                                                                                                                                                              |
+| Homebrew `reliant-labs/reliant/forge`                     | Dispatches `forge-release-published` to `reliant-labs/homebrew-reliant`; its `update-forge-formula.yml` renders `Formula/forge.rb` (`scripts/render-homebrew-formula.sh`), installs and tests it, and opens a PR.                                                      | Yes: the tap's ruleset requires an approving review, same as the cask. The workflow lives in the tap; `docs/installers/update-forge-formula.yml` is its source. |
+| npm `@reliantlabs/forge`                                  | `npm/package.json` is synced in the release commit. The GitHub release's `release: published` event runs `.github/workflows/release-npm.yml`, which publishes the shim at the tag's version with npm trusted publishing (OIDC) and waits for the registry to serve it. | No, once the trusted publisher is registered (below).                                                                                                           |
 
-Publish npm by hand after any release with `(cd npm && npm publish --access public)`.
+Re-run either channel for an existing release by hand:
+
+```sh
+gh workflow run update-forge-formula.yml --repo reliant-labs/homebrew-reliant -f version=X.Y.Z
+gh workflow run release-npm.yml --repo reliant-labs/forge -f version=X.Y.Z -f dry_run=false
+```
+
+`release-npm.yml` takes the version from the tag, not from `npm/package.json`
+at the tagged commit (a `--commit` cut tags a commit whose manifest still names
+the previous version), smoke-tests the packed tarball against the release's
+archives, and is a no-op for a version the registry already serves.
+
+**The npm trusted publisher.** There is no npm token anywhere: npm accepts a
+publish of `@reliantlabs/forge` only from `reliant-labs/forge`'s
+`release-npm.yml`, the same arrangement as `release-web-runtime.yml`. An npm
+owner of the `@reliantlabs` scope registers it once, on the package's
+**Settings → Trusted publishing** page (GitHub Actions; organization
+`reliant-labs`, repository `forge`, workflow filename `release-npm.yml`, no
+environment; allow `npm publish`), or from the command line:
+
+```sh
+npx npm@11 trust github @reliantlabs/forge --repo reliant-labs/forge --file release-npm.yml --allow-publish
+```
+
+npm only offers that page for a package that exists, so the very first version
+is published by that owner from a checkout of `main`
+(`cd npm && npm publish --access public`, with `npm/package.json` at the latest
+release's version). A new registration expires unless a publish goes through
+it within two days; the next release does that, so register it when one is due.
+Renaming the workflow file breaks publishing until the registration is updated.
+
 A prerelease tag gets assets but is never sent to Homebrew or npm.
 
 If the GitHub release step fails after the tag is pushed, the script prints the

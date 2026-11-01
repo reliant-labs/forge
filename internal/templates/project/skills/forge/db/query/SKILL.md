@@ -19,7 +19,7 @@ forge db query staging "select status, count(*) from jobs group by 1" --confirm-
 
 ## What a statement may do
 
-Every query runs in a `READ ONLY` transaction with a statement timeout and a lock timeout, as one statement over the extended protocol, then rolls back. Writes, `nextval()`, DDL and a second statement are refused. A lexical guard refuses them first so the message is readable; Postgres refuses them anyway. `SELECT`, `WITH`, `TABLE`, `VALUES`, `SHOW` and `EXPLAIN` lead a statement. `EXPLAIN ANALYZE` is allowed only over a `SELECT`.
+Every query runs in a `READ ONLY` transaction with a statement timeout and a lock timeout, as one statement over the extended protocol, then rolls back. Writes, `nextval()`, DDL and a second statement are refused. A lexical guard refuses them first so the message is readable; Postgres refuses them anyway. `SELECT`, `WITH`, `TABLE`, `VALUES`, `SHOW` and `EXPLAIN` lead a statement. `EXPLAIN ANALYZE` is allowed only over a `SELECT`. `SET`, `RESET`, `set_config()` and the functions that run SQL text or reach the server's administration (`ts_stat`, `ts_rewrite`, `query_to_xml`, `dblink`, advisory locks, large objects, `pg_terminate_backend`, ...) are refused by name.
 
 | Limit | Default | Flag | Maximum |
 |---|---|---|---|

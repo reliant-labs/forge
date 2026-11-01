@@ -64,16 +64,97 @@ const (
 	// Postgres, run live against one of the project's databases (see
 	// PostgresQuery). The console runs it; HyperDX cannot.
 	KindPostgres PanelKind = "postgres"
+	// KindText is prose, not data: the Markdown in Panel.Markdown, drawn with
+	// no query (a heading over a row of panels, a runbook link, what a
+	// dashboard is for). It takes no signal, series or group-by.
+	KindText PanelKind = "text"
 )
 
 // IsConsoleKind reports whether k is drawn only by the Reliant console, so the
 // HyperDX renderer has nothing to emit for it.
 func IsConsoleKind(k PanelKind) bool {
 	switch k {
-	case KindIssues, KindSessions, KindFunnel, KindPostgres:
+	case KindIssues, KindSessions, KindFunnel, KindPostgres, KindText:
 		return true
 	}
 	return false
+}
+
+// MaxMarkdownBytes bounds a KindText panel's Markdown.
+const MaxMarkdownBytes = 10_000
+
+// DisplayStyle is one way to draw a panel's data, where its kind has more
+// than one. The query a panel runs is decided by its kind alone; a style only
+// changes the picture, so a reader that does not know a style draws the
+// kind's default instead and is still right about the numbers.
+type DisplayStyle string
+
+// The display styles, by the kinds that take them. The first of each kind is
+// its default.
+const (
+	// StyleLine (default), StyleArea and StyleBars draw a line panel's time
+	// series, or a sql panel's, as lines, filled areas or one bar per bucket.
+	StyleLine DisplayStyle = "line"
+	StyleArea DisplayStyle = "area"
+	StyleBars DisplayStyle = "bars"
+	// StyleBar (default), StylePie and StyleDonut draw a bar panel's groups as
+	// bars or as the slices of a whole. A pie reads Series[0] alone.
+	StyleBar   DisplayStyle = "bar"
+	StylePie   DisplayStyle = "pie"
+	StyleDonut DisplayStyle = "donut"
+	// StyleStat (default) and StyleGauge draw a number panel's values as
+	// figures or as dials between Display.Min and Display.Max.
+	StyleStat  DisplayStyle = "stat"
+	StyleGauge DisplayStyle = "gauge"
+	// StyleFunnel draws a sql panel's rows as funnel steps, in the order the
+	// statement returns them: the first text column names the step, the first
+	// numeric column counts it, and the reader works out the conversion and
+	// drop-off between steps. It is how a funnel the funnel kind cannot
+	// express (one stitched across identities, say) is still drawn as one.
+	StyleFunnel DisplayStyle = "funnel"
+)
+
+// displayStyles lists the styles each kind takes, its default first.
+var displayStyles = map[PanelKind][]DisplayStyle{
+	KindLine:   {StyleLine, StyleArea, StyleBars},
+	KindBar:    {StyleBar, StylePie, StyleDonut},
+	KindNumber: {StyleStat, StyleGauge},
+	KindSQL:    {StyleLine, StyleArea, StyleBars, StyleFunnel},
+}
+
+// DisplayStyles returns the styles kind k takes, its default first; nil for a
+// kind that is drawn one way only and takes no Display.
+func DisplayStyles(k PanelKind) []DisplayStyle {
+	return append([]DisplayStyle(nil), displayStyles[k]...)
+}
+
+// MaxTopN bounds Display.TopN.
+const MaxTopN = 50
+
+// Display says how a panel's data is drawn when its kind can draw it more
+// than one way. Every field is optional and changes the picture only, never
+// the query. Renderers that cannot honour a field ignore it (HyperDX ignores
+// all of them).
+type Display struct {
+	// Style is one of DisplayStyles(kind). Empty is the kind's default.
+	Style DisplayStyle `json:"style,omitempty"`
+	// Stack stacks the series, so the top edge is their total and each band
+	// or bar segment is one series' share: a line or sql panel drawn as area
+	// or bars, or a bar panel drawn as bars. Only additive values (counts,
+	// sums, rates) add up to a meaningful whole; the author decides.
+	Stack bool `json:"stack,omitempty"`
+	// Horizontal lays a bar panel's bars along the y axis, which suits long
+	// group names.
+	Horizontal bool `json:"horizontal,omitempty"`
+	// Min and Max are a gauge's scale. Min defaults to 0; Max is required
+	// unless the panel's unit is percent, whose scale is 0 to 1.
+	Min *float64 `json:"min,omitempty"`
+	Max *float64 `json:"max,omitempty"`
+	// TopN is how many series a line panel (or slices a pie or donut) draws
+	// before folding the rest into one "Other": summed where the values add
+	// up, left out where they do not. The full list stays a click away. Zero
+	// is the reader's own default; at most MaxTopN.
+	TopN int `json:"topN,omitempty"`
 }
 
 // Row limits of a table or bar panel (Panel.Limit).
@@ -266,7 +347,13 @@ type Panel struct {
 	// HasError narrows a KindSessions panel to sessions that hit an error;
 	// only that kind takes it.
 	HasError bool `json:"hasError,omitempty"`
-	Unit     Unit `json:"unit,omitempty"`
+	// Markdown is a KindText panel's content (CommonMark with GFM tables and
+	// links, at most MaxMarkdownBytes); only that kind takes it.
+	Markdown string `json:"markdown,omitempty"`
+	// Display picks how a line, bar, number or sql panel is drawn (see
+	// Display); nil draws the kind's default.
+	Display *Display `json:"display,omitempty"`
+	Unit    Unit     `json:"unit,omitempty"`
 	// Width is in grid columns out of 24; Height in rows. Zero takes the
 	// default for the kind.
 	Width  int `json:"width,omitempty"`

@@ -117,9 +117,11 @@ func CommentMarkerProblems(site MarkerSite, column, comment string) []MarkerProb
 	return out
 }
 
-// siteOf names the site a known marker belongs to, "" for an unknown one.
+// siteOf names the site a known marker belongs to, "" for an unknown one. A
+// marker read at more than one site (forge:dashboard: table and column) names
+// the table, so one misplaced on a view is pointed at COMMENT ON TABLE.
 func siteOf(marker string) MarkerSite {
-	for _, s := range []MarkerSite{SiteColumn, SiteConstraint, SiteTable, SiteView} {
+	for _, s := range []MarkerSite{SiteTable, SiteColumn, SiteConstraint, SiteView} {
 		if slices.Contains(SiteMarkers(s), marker) {
 			return s
 		}
@@ -193,7 +195,9 @@ func CheckMarkers(tables []Table) error {
 		}
 		problems = append(problems, located(fmt.Sprintf("%s %s", site, t.Name), CommentMarkerProblems(site, "", t.Comment))...)
 		for _, c := range t.Columns {
-			problems = append(problems, located(fmt.Sprintf("column %s.%s", t.Name, c.Name), CommentMarkerProblems(SiteColumn, c.Name, c.Comment))...)
+			object := fmt.Sprintf("column %s.%s", t.Name, c.Name)
+			problems = append(problems, located(object, CommentMarkerProblems(SiteColumn, c.Name, c.Comment))...)
+			problems = append(problems, located(object, dashboardColumnProblems(t, c))...)
 		}
 		for _, fk := range t.ForeignKeys {
 			object := fmt.Sprintf("constraint %s on %s", fk.Name, t.Name)
@@ -217,6 +221,38 @@ func CheckMarkers(tables []Table) error {
 	return errors.New("the applied schema's catalog comments carry forge markers that do nothing where they are declared " +
 		"(fix the COMMENT ON in the migration; `forge project annotations --kind column` and `--kind table` list every marker):\n" +
 		strings.Join(lines, "\n"))
+}
+
+// dashboardColumnProblems judges a column's forge:dashboard against its table:
+// the column allow is read only on a base table that is itself marked
+// forge:dashboard, and a comment that also denies the column (forge:no-dashboard
+// or forge:secret) says two opposite things. The deny would win, but a
+// declaration that reads one way and grants the other is a review trap, so it
+// fails like a misplaced marker.
+func dashboardColumnProblems(t Table, c Column) []MarkerProblem {
+	if !c.DeclaresDashboard() {
+		return nil
+	}
+	m := ColumnMarkerDashboard
+	var out []MarkerProblem
+	switch {
+	case t.IsView:
+		out = append(out, MarkerProblem{Marker: m, Problem: fmt.Sprintf(
+			"%s on a column is read only on a base table marked %s; the dashboard role is never granted a view — remove it", m, TableMarkerDashboard)})
+	case !t.Dashboard():
+		out = append(out, MarkerProblem{Marker: m, Problem: fmt.Sprintf(
+			"%s on a column is read only on a table marked %s, and %s is not, so it grants nothing — "+
+				"mark the table (COMMENT ON TABLE %s IS '%s') or remove it from the column", m, TableMarkerDashboard, t.Name, t.Name, TableMarkerDashboard)})
+	}
+	if c.DeclaresNoDashboard() {
+		out = append(out, MarkerProblem{Marker: m, Problem: fmt.Sprintf(
+			"declares both %s and %s, which contradict each other — keep the one you mean", m, ColumnMarkerNoDashboard)})
+	}
+	if c.DeclaresSecret() {
+		out = append(out, MarkerProblem{Marker: m, Problem: fmt.Sprintf(
+			"declares both %s and %s; a secret column is never granted to any role, so %s does nothing — remove it", m, ColumnMarkerSecret, m)})
+	}
+	return out
 }
 
 // misplacedConstraintMarker reports marker on a constraint of kind is, when

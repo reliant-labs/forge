@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -54,10 +55,14 @@ func dashboardRelease(migrations map[string]string, readOnly, dashboard string) 
 	return fsys
 }
 
-// dashTables: users is marked (id, email readable; api_token secret), notes is not.
+// dashTables: users is marked (id, email allowed; api_token secret), notes is not.
 func dashTables() []dbgrants.Table {
 	users := usersTable(true)
 	users.Dashboard = true
+	users.Columns = slices.Clone(users.Columns)
+	for i := range users.Columns {
+		users.Columns[i].Dashboard = users.Columns[i].Name != "api_token"
+	}
 	return []dbgrants.Table{users, notesTable}
 }
 

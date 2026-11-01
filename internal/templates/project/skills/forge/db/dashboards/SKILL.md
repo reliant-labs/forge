@@ -1,11 +1,11 @@
 ---
 name: dashboards
-description: Dashboards over your database — the opt-in forge_dash role (ManagedDatabase.dashboards in KCL), the forge:dashboard table marker and forge:no-dashboard column marker, db/grants/dashboard_gen.sql and its per-table rows, the recorded limits (row cap, timeout, concurrency), kubedial credentials by role, and why the allowlist is Postgres privileges rather than an SQL parser.
+description: Dashboards over your database — the opt-in forge_dash role (ManagedDatabase.dashboards in KCL), the forge:dashboard table marker and the per-column forge:dashboard / forge:no-dashboard decision every column of a marked table needs, db/grants/dashboard_gen.sql and its per-table rows, the recorded limits (row cap, timeout, concurrency), kubedial credentials by role, and why the allowlist is Postgres privileges rather than an SQL parser.
 ---
 
 # Dashboards over your database
 
-Live dashboard panels (a spend chart, a cohort table) can query your application's own Postgres. It is **opt-in at two levels** and off by default: a database enables it, and a table is marked into it. Nothing else is reachable. The summary is in the `db` skill; this is the depth.
+Live dashboard panels (a spend chart, a cohort table) can query your application's own Postgres. It is **opt-in at three levels** and off by default: a database enables it, a table is marked into it, and each column of that table is allowed one by one. Nothing else is reachable. The summary is in the `db` skill; this is the depth.
 
 ## 1. The database opts in (KCL)
 
@@ -23,22 +23,27 @@ forge.ManagedDatabase {
 
 Enabled, forge declares a second CNPG managed role, `forge_dash` (login, no role membership, connection limit `max_concurrency + 1`), with its password in the `<name>-forge-dash` Secret, minted the same way `<name>-forge-ro` is. Absent or `enabled = False`, the role still renders, but `ensure: present` with `login: false` and `disablePassword: true`: it cannot log in and has no password. It is deliberately not `ensure: absent`, because CNPG removes a role with a plain `DROP ROLE`, which Postgres refuses (`2BP01`) once the role holds a grant; the role would keep its login and password and the migrator would keep granting to it. The migrator never sees the KCL, so the role is the switch: `dashboard_gen.sql` grants only to a role that can log in, and for one that cannot it revokes everything and grants nothing (the run reports `dashboards are off`). Turning dashboards back on flips the same entry, the next migration grants again, and the `-forge-dash` Secret was kept, so the password does not rotate. A value out of range fails the render naming the field, and `dashboards` set on both the wrapper and its `spec` is refused. The limits are recorded in the release shape (`databases[].dashboards`, bundle feature `shape-database-dashboards`) and the control plane enforces them from there; an env that records nothing reads as **disabled**, never open.
 
-## 2. The table opts in (a migration)
+## 2. The table and its columns opt in (a migration)
 
 ```sql
 COMMENT ON TABLE usage_events IS 'forge:dashboard';
+COMMENT ON COLUMN usage_events.model IS 'forge:dashboard';
+COMMENT ON COLUMN usage_events.cost_cents IS 'forge:dashboard';
+COMMENT ON COLUMN usage_events.created_at IS 'forge:dashboard';
 COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
 ```
 
-`forge:dashboard` is a **table** marker and `forge:no-dashboard` a **column** marker, read the way `forge:no-entity` and `forge:secret` are: by whole token, so either coexists with other markers in the same comment (`'forge:append-only forge:dashboard'`). Declared on the wrong object, or misspelled, they fail `forge generate` and `forge lint --column-markers`. `forge generate` writes `db/grants/dashboard_gen.sql` plus one row per table under `db/grants/dashboard/` (`<schema>.<table>_gen.sql`), and the migrator splices the rows into the script and applies it right after the read-only grants on every run once `forge_dash` exists (a database without the role skips it silently; a script that fails fails the run). Commit them; `forge lint --db-grants` reports a file stale or missing when the markers and the files disagree.
+On the table, `forge:dashboard` lets the role **see** the table; it grants no column. On a column, `forge:dashboard` is the explicit **allow** and `forge:no-dashboard` (or `forge:secret`) the explicit **deny**. **Every column of a marked table needs one of them.** A column with neither is withheld, so the default fails closed: a column a later migration adds to a marked table (an email, a prompt, a phone number) is unreadable by every panel until a migration decides it, instead of readable because nobody did. `forge lint --db-grants` names each undecided column with the migration line that created it (`forge-db-grants-dashboard-undecided`), and the table's row under `db/grants/dashboard/` lists them in a comment.
+
+The markers are read the way `forge:no-entity` and `forge:secret` are: by whole token, so they coexist with other markers in one comment (`'forge:append-only forge:dashboard'`, `'forge:go-type=... forge:dashboard'`). `COMMENT ON` replaces the whole comment, so carry an existing marker forward when you add one. Declared on the wrong object, misspelled, a column `forge:dashboard` on a table that is not itself marked (or on a view), or a column that says both `forge:dashboard` and `forge:no-dashboard` / `forge:secret`, fails `forge generate` (and `forge lint --db-grants`; a misspelling also fails `--column-markers`). So taking a table out means clearing its columns' `forge:dashboard` in the same migration. `forge generate` writes `db/grants/dashboard_gen.sql` plus one row per table under `db/grants/dashboard/` (`<schema>.<table>_gen.sql`), and the migrator splices the rows into the script and applies it right after the read-only grants on every run once `forge_dash` exists (a database without the role skips it silently; a script that fails fails the run). Commit them; `forge lint --db-grants` reports a file stale or missing when the markers and the files disagree.
 
 What `forge_dash` can read is a strict subset of what `forge_ro` can:
 
 ```
-tables marked forge:dashboard  ∩  columns forge_ro may read  −  forge:no-dashboard columns
+tables marked forge:dashboard  ∩  columns marked forge:dashboard  ∩  columns forge_ro may read
 ```
 
-So a `forge:secret` column, and a credential-shaped column nobody decided (`db/query`), is never reachable by a panel whatever `forge:no-dashboard` says. A view is never granted, even one marked: the catalog cannot say which base column a view exposes. Taking the last marker off a table revokes on the next run; the script is a REVOKE then GRANT, not a delta. The REVOKE reads what the catalog holds for the role (column, view, sequence, routine and schema privileges, and `ALTER DEFAULT PRIVILEGES` entries naming it), not what the declaration lists, so a column that gains `forge:no-dashboard` or `forge:secret` loses its access on the next run. A privilege the migrating role cannot revoke fails the run instead of standing silently. Privileges `PUBLIC` holds and role memberships are not the script's to remove.
+So a `forge:secret` column, and a credential-shaped column nobody decided for `forge_ro` (`db/query`), is never reachable by a panel whatever its `forge:dashboard` says, and `forge:no-dashboard` wins over `forge:dashboard`. A view is never granted, even one marked: the catalog cannot say which base column a view exposes. Taking the last marker off a table revokes on the next run; the script is a REVOKE then GRANT, not a delta. The REVOKE reads what the catalog holds for the role (column, view, sequence, routine and schema privileges, and `ALTER DEFAULT PRIVILEGES` entries naming it), not what the declaration lists, so a column that gains `forge:no-dashboard` or `forge:secret`, or loses its `forge:dashboard`, loses its access on the next run. A privilege the migrating role cannot revoke fails the run instead of standing silently. Privileges `PUBLIC` holds and role memberships are not the script's to remove.
 
 ### SECURITY DEFINER functions are a way around the column grants
 

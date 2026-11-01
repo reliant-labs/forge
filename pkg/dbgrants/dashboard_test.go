@@ -21,14 +21,15 @@ func TestDashboardNames(t *testing.T) {
 func dashFixture() []Table {
 	return []Table{
 		{Schema: "public", Name: "usage_events", Dashboard: true, Columns: []Column{
-			{Name: "id"},
-			{Name: "model"},
-			{Name: "cost_cents", Kind: KindScalar},
+			{Name: "id", Dashboard: true},
+			{Name: "model", Dashboard: true},
+			{Name: "cost_cents", Kind: KindScalar, Dashboard: true},
 			{Name: "user_email", NoDashboard: true},
 			{Name: "api_token", Secret: true},
-			{Name: "key_hash"}, // credential-shaped, nobody decided
-			{Name: "prompt_hash", Readable: true},
+			{Name: "key_hash", Dashboard: true}, // credential-shaped, nobody decided for forge_ro
+			{Name: "prompt_hash", Readable: true, Dashboard: true},
 			{Name: "token_secret", Secret: true, NoDashboard: true},
+			{Name: "added_later"}, // a column a later migration added: no decision
 		}},
 		{Schema: "public", Name: "users", Columns: []Column{{Name: "id"}, {Name: "email"}}},
 	}
@@ -42,7 +43,8 @@ func cols(tb Table) string {
 	return strings.Join(out, ",")
 }
 
-// The projection is: marked tables ∩ what forge_ro may read − no-dashboard.
+// The projection is: marked tables ∩ forge:dashboard columns ∩ what forge_ro
+// may read.
 func TestDashboardTables(t *testing.T) {
 	got := DashboardTables(dashFixture())
 	if len(got) != 2 {
@@ -51,7 +53,10 @@ func TestDashboardTables(t *testing.T) {
 	if g, want := cols(got[0]), "id,model,cost_cents,prompt_hash"; g != want {
 		t.Errorf("usage_events columns = %s, want %s", g, want)
 	}
-	if got[1].Name != "users" || len(got[1].Columns) != 0 {
+	if g := strings.Join(got[0].Undeclared, ","); g != "added_later" {
+		t.Errorf("usage_events undeclared = %s, want added_later", g)
+	}
+	if got[1].Name != "users" || len(got[1].Columns) != 0 || len(got[1].Undeclared) != 0 {
 		t.Errorf("an unmarked table is granted columns: %+v", got[1])
 	}
 
@@ -73,12 +78,46 @@ func TestDashboardTables(t *testing.T) {
 	}
 }
 
-// The marker does not widen anything by itself: a table with no
-// forge:no-dashboard columns gets exactly forge_ro's columns.
-func TestDashboardTablesEqualReadOnlyWhenNothingIsNarrowed(t *testing.T) {
-	in := []Table{{Schema: "public", Name: "t", Dashboard: true, Columns: []Column{{Name: "a"}, {Name: "b"}, {Name: "c", Secret: true}}}}
-	if g := cols(DashboardTables(in)[0]); g != "a,b" {
-		t.Errorf("columns = %s, want a,b", g)
+// The table marker grants no column by itself: a column is readable only
+// when it declares forge:dashboard, so one a later migration adds is withheld
+// until someone decides it. The deny wins over the allow, and the allow never
+// widens forge_ro's decision.
+func TestDashboardTablesGrantOnlyDeclaredColumns(t *testing.T) {
+	in := []Table{{Schema: "public", Name: "t", Dashboard: true, Columns: []Column{
+		{Name: "a", Dashboard: true},
+		{Name: "b"},
+		{Name: "c", Secret: true, Dashboard: true},
+		{Name: "d", Dashboard: true, NoDashboard: true},
+		{Name: "e", NoDashboard: true},
+		{Name: "f_token", Dashboard: true}, // credential-shaped, undecided for forge_ro
+	}}}
+	got := DashboardTables(in)[0]
+	if g := cols(got); g != "a" {
+		t.Errorf("columns = %s, want a", g)
+	}
+	if g := strings.Join(got.Undeclared, ","); g != "b" {
+		t.Errorf("undeclared = %s, want b", g)
+	}
+
+	// A marked table with no column declared grants nothing at all.
+	bare := []Table{{Schema: "public", Name: "t", Dashboard: true, Columns: []Column{{Name: "a"}, {Name: "b"}}}}
+	if g := DashboardTables(bare)[0]; len(g.Columns) != 0 || strings.Join(g.Undeclared, ",") != "a,b" {
+		t.Errorf("a marked table with no column declared: %+v", g)
+	}
+}
+
+// DashboardUndecided names exactly the columns of marked tables that carry no
+// dashboard decision; forge:secret (proto or SQL) and forge:no-dashboard are
+// decisions, and an unmarked table needs none.
+func TestDashboardUndecided(t *testing.T) {
+	tables := dashFixture()
+	tables = append(tables, Table{Schema: "audit", Name: "events", Dashboard: true, Columns: []Column{{Name: "z"}, {Name: "key_hash"}}})
+	var got []string
+	for _, f := range DashboardUndecided(tables) {
+		got = append(got, f.String())
+	}
+	if g, want := strings.Join(got, " "), "audit.events.key_hash audit.events.z public.usage_events.added_later"; g != want {
+		t.Errorf("DashboardUndecided = %s, want %s", g, want)
 	}
 }
 
@@ -98,7 +137,10 @@ func TestRenderDashboardScript(t *testing.T) {
 			t.Errorf("script lacks %q:\n%s", want, script)
 		}
 	}
-	for _, leak := range []string{"user_email", "api_token", "key_hash", "token_secret"} {
+	if !strings.Contains(script, "--   public.usage_events: added_later  (no dashboard decision: withheld until a migration declares") {
+		t.Errorf("the row does not name the undeclared column:\n%s", script)
+	}
+	for _, leak := range []string{"user_email", "api_token", "key_hash", "token_secret", "added_later"} {
 		// Withheld columns may be NAMED in the audit comment, never in the
 		// VALUES list that is data for the GRANT loop.
 		for _, line := range strings.Split(script, "\n") {
@@ -153,6 +195,7 @@ func TestReadOnlyRenderIgnoresDashboardMarkers(t *testing.T) {
 		plain[i].Dashboard = false
 		for j := range plain[i].Columns {
 			plain[i].Columns[j].NoDashboard = false
+			plain[i].Columns[j].Dashboard = false
 		}
 	}
 	b, err := Render(plain)

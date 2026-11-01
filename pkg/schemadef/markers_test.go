@@ -265,6 +265,24 @@ func TestDashboardMarkersCoexistWithOtherMarkers(t *testing.T) {
 		}
 	}
 
+	allow := func(c string) bool { return Column{Comment: c}.DeclaresDashboard() }
+	for comment, want := range map[string]bool{
+		"forge:dashboard":                          true,
+		"forge:dashboard — spend by model":         true,
+		"forge:go-type=x.Kind forge:dashboard":     true,
+		"forge:readable — a hash; forge:dashboard": true,
+		"":                         false,
+		"forge:no-dashboard":       false,
+		"forge:dashboard-ish":      false,
+		"forge:dashboards":         false,
+		"xforge:dashboard":         false,
+		"see docs/forge:dashboard": false,
+	} {
+		if got := allow(comment); got != want {
+			t.Errorf("Column.DeclaresDashboard(%q) = %v, want %v", comment, got, want)
+		}
+	}
+
 	// Another marker's reading is unaffected by the dashboard one sharing its
 	// comment.
 	if !(Table{Comment: "forge:dashboard forge:no-entity"}).NoEntity() || !(Table{Comment: "forge:append-only forge:dashboard"}).AppendOnly() {
@@ -276,18 +294,30 @@ func TestDashboardMarkersCoexistWithOtherMarkers(t *testing.T) {
 }
 
 func TestCheckMarkers_DashboardPlacement(t *testing.T) {
-	ok := []Table{{Name: "usage_events", Comment: "forge:dashboard", Columns: []Column{{Name: "email", Comment: "forge:no-dashboard"}}}}
+	ok := []Table{{Name: "usage_events", Comment: "forge:dashboard", Columns: []Column{
+		{Name: "email", Comment: "forge:no-dashboard"},
+		{Name: "model", Comment: "forge:dashboard"},
+		{Name: "kind", Comment: "forge:go-type=x.Kind forge:dashboard"},
+	}}}
 	if err := CheckMarkers(ok); err != nil {
-		t.Errorf("a correctly placed pair is rejected: %v", err)
+		t.Errorf("correctly placed markers are rejected: %v", err)
 	}
 	for name, tc := range map[string]struct {
 		tables []Table
 		want   string
 	}{
 		"no-dashboard on a table": {[]Table{{Name: "t", Comment: "forge:no-dashboard"}}, "forge:no-dashboard is a column marker"},
-		"dashboard on a column":   {[]Table{{Name: "t", Columns: []Column{{Name: "c", Comment: "forge:dashboard"}}}}, "forge:dashboard is a table marker"},
 		"dashboard on a view":     {[]Table{{Name: "v", IsView: true, Comment: "forge:dashboard"}}, "forge:dashboard is a table marker"},
 		"misspelled":              {[]Table{{Name: "t", Comment: "forge:dashbord"}}, "did you mean forge:dashboard"},
+		// The column allow is read only under a marked table.
+		"column allow on an unmarked table": {[]Table{{Name: "t", Columns: []Column{{Name: "c", Comment: "forge:dashboard"}}}},
+			"t is not, so it grants nothing"},
+		"column allow on a view": {[]Table{{Name: "v", IsView: true, Columns: []Column{{Name: "c", Comment: "forge:dashboard"}}}},
+			"never granted a view"},
+		"column allow and deny": {[]Table{{Name: "t", Comment: "forge:dashboard", Columns: []Column{{Name: "c", Comment: "forge:dashboard forge:no-dashboard"}}}},
+			"declares both forge:dashboard and forge:no-dashboard"},
+		"column allow and secret": {[]Table{{Name: "t", Comment: "forge:dashboard", Columns: []Column{{Name: "c", Comment: "forge:secret forge:dashboard"}}}},
+			"declares both forge:dashboard and forge:secret"},
 	} {
 		err := CheckMarkers(tc.tables)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

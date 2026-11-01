@@ -31,7 +31,8 @@ import (
 //
 // It also writes db/grants/dashboard_gen.sql and db/grants/dashboard/, the dashboard role's grants
 // (pkg/dbgrants.DashboardRoleName): the forge:dashboard tables, narrowed to the
-// columns the read-only role may read and minus forge:no-dashboard ones. The
+// columns that declare forge:dashboard themselves and the read-only role may
+// read. A column of a marked table with no decision is withheld. The
 // file is written whether or not any table is marked, because a script with no
 // marked table is what REVOKEs a role whose last marker was removed.
 //
@@ -161,7 +162,8 @@ func DashboardGrantsFile(script string) []byte {
 		"--\n" +
 		"-- The grants of the " + dbgrants.DashboardRoleName + " role, the opt-in role live dashboard panels query as\n" +
 		"-- (ManagedDatabase.dashboards). It reads ONLY tables marked forge:dashboard, and on them only\n" +
-		"-- the columns " + dbgrants.RoleName + " may read minus forge:no-dashboard ones. The migrator applies this file\n" +
+		"-- the columns marked forge:dashboard that " + dbgrants.RoleName + " may read: a column with no decision is\n" +
+		"-- withheld (forge:no-dashboard is the explicit no). The migrator applies this file\n" +
 		"-- after the read-only grants whenever the role exists. While the role cannot log in (dashboards\n" +
 		"-- are off) it revokes everything the role held and grants nothing. Postgres refuses everything else.\n" +
 		script)
@@ -243,6 +245,7 @@ func ReadOnlyGrantTables(tables []schemadef.Table, services []ServiceDef) []dbgr
 				Secret:      secretCols[t.Name][c.Name] || c.DeclaresSecret(),
 				Readable:    readable,
 				Kind:        grantColumnKind(c),
+				Dashboard:   c.DeclaresDashboard(),
 				NoDashboard: c.DeclaresNoDashboard(),
 			})
 		}
@@ -278,6 +281,14 @@ func grantColumnKind(c schemadef.Column) dbgrants.ColumnKind {
 // withhold them all the same; this is the half that makes the omission loud.
 func UndecidedReadOnlyColumns(tables []schemadef.Table, services []ServiceDef) []dbgrants.Finding {
 	return dbgrants.Undecided(ReadOnlyGrantTables(tables, services))
+}
+
+// UndecidedDashboardColumns is the dashboard half of `forge lint --db-grants`:
+// the columns of forge:dashboard tables that declare neither forge:dashboard
+// nor a deny (forge:no-dashboard, forge:secret on the proto field or in SQL).
+// The grants withhold them; this makes the omission loud.
+func UndecidedDashboardColumns(tables []schemadef.Table, services []ServiceDef) []dbgrants.Finding {
+	return dbgrants.DashboardUndecided(ReadOnlyGrantTables(tables, services))
 }
 
 // ParseReadOnlyGrantsServices returns the services whose messages can carry a

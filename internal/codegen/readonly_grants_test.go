@@ -232,15 +232,18 @@ func dashColumns(t *testing.T, script, table string) string {
 	return ""
 }
 
-// Marked tables, unmarked tables, a secret column, a no-dashboard column and a
-// view, in one fixture: the dashboard script grants the marked table's columns
-// minus the secret and no-dashboard ones, and nothing of anything else.
+// Marked tables, unmarked tables, allowed, undeclared, secret and no-dashboard
+// columns and a view, in one fixture: the dashboard script grants the marked
+// table's forge:dashboard columns, and nothing of anything else.
 func TestDashboardGrants_Projection(t *testing.T) {
 	usage := dashTable("usage_events", "forge:append-only forge:dashboard", map[string]string{
+		"id":         "forge:dashboard",
+		"model":      "forge:dashboard — the model a call used",
+		"cost":       "forge:go-type=int64 forge:dashboard",
 		"api_token":  "forge:secret",
 		"user_email": "forge:no-dashboard",
 		"prompt":     "forge:readable — free text, but forge_ro may read it; forge:no-dashboard",
-	}, "id", "model", "cost", "user_email", "api_token", "prompt")
+	}, "id", "model", "cost", "user_email", "api_token", "prompt", "added_later")
 	users := dashTable("users", "", nil, "id", "email")
 	view := dashTable("usage_rollup", "forge:dashboard", nil, "id", "model")
 	view.IsView = true
@@ -265,7 +268,7 @@ func TestDashboardGrants_Projection(t *testing.T) {
 			t.Errorf("usage_events row %q lacks %s", row, want)
 		}
 	}
-	for _, leak := range []string{"user_email", "api_token", "'prompt'"} {
+	for _, leak := range []string{"user_email", "api_token", "'prompt'", "added_later"} {
 		if strings.Contains(row, leak) {
 			t.Errorf("usage_events row %q grants %s", row, leak)
 		}
@@ -282,8 +285,17 @@ func TestDashboardGrants_Projection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := dashColumns(t, ro, "usage_events"); !strings.Contains(r, "'user_email'") || strings.Contains(r, "api_token") {
-		t.Errorf("forge_ro's row for usage_events = %q, want user_email granted and api_token withheld", r)
+	if r := dashColumns(t, ro, "usage_events"); !strings.Contains(r, "'user_email'") || !strings.Contains(r, "'added_later'") || strings.Contains(r, "api_token") {
+		t.Errorf("forge_ro's row for usage_events = %q, want user_email and added_later granted and api_token withheld", r)
+	}
+
+	// The column no migration decided is the one the lint names.
+	var undecided []string
+	for _, f := range UndecidedDashboardColumns(tables, nil) {
+		undecided = append(undecided, f.String())
+	}
+	if g := strings.Join(undecided, " "); g != "public.usage_events.added_later" {
+		t.Errorf("UndecidedDashboardColumns = %s, want public.usage_events.added_later", g)
 	}
 	if r := dashColumns(t, ro, "users"); !strings.Contains(r, "'email'") {
 		t.Errorf("forge_ro lost the unmarked users table: %q", r)
@@ -291,10 +303,14 @@ func TestDashboardGrants_Projection(t *testing.T) {
 }
 
 // A credential-shaped column nobody decided stays withheld from the dashboard
-// role, marked table or not, and forge:readable grants it to both roles.
+// role even when it declares forge:dashboard, and forge:readable grants it to
+// both roles.
 func TestDashboardGrants_CredentialShapedColumnsFollowTheReadOnlyDecision(t *testing.T) {
-	tb := dashTable("keys", "forge:dashboard", map[string]string{"key_hash": "forge:readable — hash of the prompt"},
-		"id", "access_token", "key_hash", "label")
+	tb := dashTable("keys", "forge:dashboard", map[string]string{
+		"key_hash":     "forge:readable — hash of the prompt forge:dashboard",
+		"access_token": "forge:dashboard",
+		"label":        "forge:dashboard",
+	}, "id", "access_token", "key_hash", "label")
 	script, err := dbgrants.RenderDashboard(ReadOnlyGrantTables([]schemadef.Table{tb}, nil))
 	if err != nil {
 		t.Fatal(err)

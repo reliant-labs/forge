@@ -409,9 +409,16 @@ func markerSpecs() []MarkerSpec {
 			Example:   "COMMENT ON COLUMN git_credentials.access_token IS 'forge:secret';",
 		},
 		{
+			Name:      schemadef.ColumnMarkerDashboard,
+			AppliesTo: "column",
+			Effect:    "Allows the dashboard role (forge_dash) to read this one column of a table marked `forge:dashboard` (the same name as the table marker, read at the column level). On a marked table EVERY column needs a decision: this, or `forge:no-dashboard` / `forge:secret`. A column with neither is NOT granted — so a column a later migration adds stays unreadable by panels until someone decides it — and `forge lint --db-grants` reports it (forge-db-grants-dashboard-undecided). The allow never widens forge_ro's decision: a forge:secret or undecided credential-shaped column stays withheld. On a column of an unmarked table or a view, or beside forge:no-dashboard / forge:secret in the same comment, it fails `forge generate`.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:dashboard'; in a migration, on a table that is itself marked forge:dashboard",
+			Example:   "COMMENT ON COLUMN usage_events.model IS 'forge:dashboard';",
+		},
+		{
 			Name:      schemadef.ColumnMarkerNoDashboard,
 			AppliesTo: "column",
-			Effect:    "Withholds the column from the dashboard role (forge_dash) on a table marked `forge:dashboard`: Postgres refuses it by name, through `select *` and any expression. The dashboard role reads a SUBSET of what forge_ro reads — a forge:secret or undecided credential-shaped column is never granted to it whatever this says — so this marker is for a column that is fine for `forge db query` but not for a panel (an email, a free-text field). Has no effect on a table that is not marked forge:dashboard.",
+			Effect:    "Declares that the dashboard role (forge_dash) may NOT read the column of a table marked `forge:dashboard`: Postgres refuses it by name, through `select *` and any expression. A column with no decision is withheld too; this is the explicit \"decided: no\" that satisfies `forge lint --db-grants`, for a column that is fine for `forge db query` but not for a panel (an email, a free-text field). It wins over a column-level `forge:dashboard`. Has no effect on a table that is not marked forge:dashboard.",
 			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:no-dashboard'; in a migration",
 			Example:   "COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';",
 		},
@@ -446,7 +453,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      schemadef.TableMarkerDashboard,
 			AppliesTo: "table",
-			Effect:    "Opts the TABLE into the dashboard role (forge_dash), the opt-in Postgres role live dashboard panels query as (`ManagedDatabase.dashboards` in KCL). The role reads ONLY marked tables, and on them only the columns forge_ro may read minus any `forge:no-dashboard` column; an unmarked table is invisible to it. Nothing else changes: the table keeps its entity, store and forge_ro access. `forge generate` writes the grants to db/grants/dashboard_gen.sql and the migrator applies them after every run once the role exists.",
+			Effect:    "Opts the TABLE into the dashboard role (forge_dash), the opt-in Postgres role live dashboard panels query as (`ManagedDatabase.dashboards` in KCL). The role reads ONLY marked tables, and on them only the columns that declare `forge:dashboard` themselves (and forge_ro may read); a column with no decision is withheld and reported by `forge lint --db-grants`, so a column added later is never readable by default. An unmarked table is invisible to it. Nothing else changes: the table keeps its entity, store and forge_ro access. `forge generate` writes the grants to db/grants/dashboard_gen.sql and the migrator applies them after every run once the role exists.",
 			Placement: "COMMENT ON TABLE <table> IS 'forge:dashboard'; in a migration — on the TABLE, not a column.",
 			Example:   "COMMENT ON TABLE usage_events IS 'forge:dashboard';",
 		},

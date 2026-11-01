@@ -162,6 +162,11 @@ func Undecided(tables []Table) []Finding {
 			}
 		}
 	}
+	sortFindings(out)
+	return out
+}
+
+func sortFindings(out []Finding) {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Schema != out[j].Schema {
 			return out[i].Schema < out[j].Schema
@@ -171,5 +176,4 @@ func Undecided(tables []Table) []Finding {
 		}
 		return out[i].Column < out[j].Column
 	})
-	return out
 }

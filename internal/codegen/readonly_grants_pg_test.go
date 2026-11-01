@@ -244,7 +244,8 @@ CREATE TABLE usage_events (
     cost       BIGINT NOT NULL,
     user_email TEXT NOT NULL,
     api_token  TEXT NOT NULL,
-    note       TEXT NOT NULL
+    note       TEXT NOT NULL,
+    region     TEXT NOT NULL DEFAULT 'eu'
 );
 INSERT INTO usage_events VALUES ('e1', 'sonnet', 12, 'a@example.test', 'tok-SECRET', 'free text');
 CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL);
@@ -252,8 +253,13 @@ INSERT INTO users VALUES ('u1', 'a@example.test');
 CREATE VIEW usage_by_model AS SELECT model, sum(cost) AS cost FROM usage_events GROUP BY model;
 COMMENT ON TABLE usage_events IS 'forge:append-only forge:dashboard';
 COMMENT ON TABLE users IS 'forge:no-entity';
+COMMENT ON COLUMN usage_events.id IS 'forge:dashboard';
+COMMENT ON COLUMN usage_events.model IS 'forge:dashboard';
+COMMENT ON COLUMN usage_events.cost IS 'forge:dashboard';
+COMMENT ON COLUMN usage_events.note IS 'forge:dashboard';
 COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
 COMMENT ON COLUMN usage_events.api_token IS 'forge:secret';
+-- region declares nothing: the dashboard role is refused it until a migration decides.
 `
 
 // dashboardFixture projects the schema through the production chain, converges
@@ -343,6 +349,9 @@ func TestDashboardRole_ReadsOnlyMarkedTablesAndAllowedColumns(t *testing.T) {
 		} {
 			mustBeDenied(t, canSelect(ctx, c, q), "no-dashboard column: "+q)
 		}
+		// A column that declares nothing, though forge_ro may read it.
+		mustBeDenied(t, canSelect(ctx, c, `SELECT region FROM usage_events`), "an undeclared column")
+		mustBeDenied(t, canSelect(ctx, c, `SELECT id FROM usage_events WHERE region = 'eu'`), "an undeclared column in a WHERE")
 		// A forge:secret column.
 		mustBeDenied(t, canSelect(ctx, c, `SELECT api_token FROM usage_events`), "a forge:secret column")
 		mustBeDenied(t, canSelect(ctx, c, `SELECT length(api_token) FROM usage_events`), "a forge:secret column through an expression")
@@ -369,12 +378,13 @@ func TestDashboardRole_CredentialShapedColumnsFollowTheReadOnlyDecision(t *testi
 	dashboardFixture(t, `
 ALTER TABLE usage_events ADD COLUMN prompt_hash TEXT NOT NULL DEFAULT 'h';
 ALTER TABLE usage_events ADD COLUMN session_token TEXT NOT NULL DEFAULT 't';
-COMMENT ON COLUMN usage_events.prompt_hash IS 'forge:readable — a content hash, not of a credential';
+COMMENT ON COLUMN usage_events.prompt_hash IS 'forge:readable — a content hash, not of a credential; forge:dashboard';
+COMMENT ON COLUMN usage_events.session_token IS 'forge:dashboard';
 `, func(ctx context.Context, c *sql.Conn) {
 		if err := canSelect(ctx, c, `SELECT prompt_hash FROM usage_events`); err != nil {
 			t.Errorf("a forge:readable column on a marked table: %v", err)
 		}
-		mustBeDenied(t, canSelect(ctx, c, `SELECT session_token FROM usage_events`), "an undecided credential-shaped column")
+		mustBeDenied(t, canSelect(ctx, c, `SELECT session_token FROM usage_events`), "an undecided credential-shaped column, though it declares forge:dashboard")
 	})
 }
 
@@ -514,10 +524,10 @@ func (d *dashboardConvergence) can(q string) error {
 // access on the next convergence, and keeps its neighbours.
 func TestDashboardRole_AddingNoDashboardRevokesTheColumn(t *testing.T) {
 	d := newDashboardConvergence(t)
-	d.exec(`COMMENT ON COLUMN usage_events.user_email IS NULL`)
+	d.exec(`COMMENT ON COLUMN usage_events.user_email IS 'forge:dashboard'`)
 	d.converge()
 	if err := d.can(`SELECT user_email FROM usage_events`); err != nil {
-		t.Fatalf("not readable before the marker: %v", err)
+		t.Fatalf("not readable while allowed: %v", err)
 	}
 	d.exec(`COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard'`)
 	d.converge()
@@ -529,14 +539,15 @@ func TestDashboardRole_AddingNoDashboardRevokesTheColumn(t *testing.T) {
 }
 
 // A column that is newly marked forge:secret after the role could read it is
-// refused on the next convergence.
+// refused on the next convergence, even with its forge:dashboard allow left in
+// place (CheckMarkers rejects that comment; the grants must not depend on it).
 func TestDashboardRole_NewlySecretColumnRevokes(t *testing.T) {
 	d := newDashboardConvergence(t)
 	d.converge()
 	if err := d.can(`SELECT note FROM usage_events`); err != nil {
 		t.Fatalf("not readable before it became secret: %v", err)
 	}
-	d.exec(`COMMENT ON COLUMN usage_events.note IS 'forge:secret'`)
+	d.exec(`COMMENT ON COLUMN usage_events.note IS 'forge:secret forge:dashboard'`)
 	d.converge()
 	mustBeDenied(t, d.can(`SELECT note FROM usage_events`), "a column that became forge:secret")
 	mustBeDenied(t, d.can(`SELECT length(note) FROM usage_events`), "the same, through an expression")
@@ -546,7 +557,7 @@ func TestDashboardRole_NewlySecretColumnRevokes(t *testing.T) {
 }
 
 // The whole marker is dropped, as opposed to rewritten, and every column the
-// role held goes with it.
+// role held goes with it, though the columns still declare forge:dashboard.
 func TestDashboardRole_RemovingTheMarkerRevokesEveryColumn(t *testing.T) {
 	d := newDashboardConvergence(t)
 	d.converge()
@@ -560,4 +571,46 @@ func TestDashboardRole_RemovingTheMarkerRevokesEveryColumn(t *testing.T) {
 	for _, q := range []string{`SELECT id FROM usage_events`, `SELECT model FROM usage_events`, `SELECT cost FROM usage_events`} {
 		mustBeDenied(t, d.can(q), "after the marker was removed: "+q)
 	}
+}
+
+// The gap this closes (forge#1521 follow-up): a column a later migration adds
+// to a marked table is NOT readable by the dashboard role until a migration
+// declares it, while forge_ro reads it from the first convergence. Declaring
+// it forge:dashboard grants it on the next run; forge:no-dashboard keeps it out.
+func TestDashboardRole_ColumnAddedLaterIsRefusedUntilDeclared(t *testing.T) {
+	d := newDashboardConvergence(t)
+	d.converge()
+	d.exec(`ALTER TABLE usage_events ADD COLUMN customer_phone TEXT NOT NULL DEFAULT '+1 555 0100'`)
+	d.converge()
+	for _, q := range []string{
+		`SELECT customer_phone FROM usage_events`,
+		`SELECT upper(customer_phone) FROM usage_events`,
+		`SELECT row_to_json(e) FROM usage_events e`,
+		`SELECT id FROM usage_events WHERE customer_phone <> ''`,
+	} {
+		mustBeDenied(t, d.can(q), "a column added after the table was marked: "+q)
+	}
+	if err := d.can(`SELECT id, model, cost FROM usage_events`); err != nil {
+		t.Errorf("the declared columns stopped being readable: %v", err)
+	}
+	tables, err := schemadef.Introspect(d.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var undecided []string
+	for _, f := range UndecidedDashboardColumns(tables, nil) {
+		undecided = append(undecided, f.String())
+	}
+	if g, want := strings.Join(undecided, " "), "public.usage_events.customer_phone public.usage_events.region"; g != want {
+		t.Errorf("UndecidedDashboardColumns = %s, want %s", g, want)
+	}
+
+	d.exec(`COMMENT ON COLUMN usage_events.customer_phone IS 'forge:dashboard'`)
+	d.converge()
+	if err := d.can(`SELECT customer_phone FROM usage_events`); err != nil {
+		t.Errorf("a column declared forge:dashboard is not readable: %v", err)
+	}
+	d.exec(`COMMENT ON COLUMN usage_events.customer_phone IS 'forge:no-dashboard'`)
+	d.converge()
+	mustBeDenied(t, d.can(`SELECT customer_phone FROM usage_events`), "a column switched to forge:no-dashboard")
 }

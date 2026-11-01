@@ -25,6 +25,18 @@
 // file granting what the schema no longer says (or not granting what it does).
 // The file is compared with a fresh projection and any difference is reported
 // as stale. A hand edit to the file is the generated-drift lane's.
+//
+// And it reports every column of a forge:dashboard table that carries no
+// dashboard decision (forge-db-grants-dashboard-undecided). The dashboard role
+// reads a marked table's column only when the column itself declares
+// `forge:dashboard`, so an undecided column — typically one a later migration
+// added — is withheld; the finding makes that a decision someone takes, not a
+// panel that silently cannot see the column:
+//
+//	COMMENT ON COLUMN usage_events.model IS 'forge:dashboard';
+//	COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
+//
+// `forge:secret` (SQL comment or proto field) is a decision too.
 
 package lint
 
@@ -48,6 +60,7 @@ const (
 	dbGrantsRule           = "forge-db-grants-undecided"
 	dbGrantsUnverifiedRule = "forge-db-grants-unverified"
 	dbGrantsStaleRule      = "forge-db-grants-stale"
+	dbGrantsDashboardRule  = "forge-db-grants-dashboard-undecided"
 )
 
 // dbGrantsFinding is one undecided credential-shaped column.
@@ -87,10 +100,35 @@ func (f dbGrantsFinding) fixHint() string {
 		"A proto field marked `// forge:secret` also counts. See `forge skill load db/query`.", target, target, prior)
 }
 
+// dashboardUndecidedMessage and dashboardUndecidedFixHint word a
+// forge-db-grants-dashboard-undecided finding: a column of a forge:dashboard
+// table with no dashboard decision. f.Comment is its existing catalog comment.
+func (f dbGrantsFinding) dashboardUndecidedMessage() string {
+	return fmt.Sprintf("%s is on a forge:dashboard table and declares no dashboard decision: %s cannot read it until a migration declares one",
+		f.qualified(), dbgrants.DashboardRoleName)
+}
+
+func (f dbGrantsFinding) dashboardUndecidedFixHint() string {
+	target := f.Table + "." + f.Column
+	if f.Schema != "public" && f.Schema != "" {
+		target = f.Schema + "." + target
+	}
+	prior := ""
+	if c := strings.TrimSpace(f.Comment); c != "" {
+		prior = fmt.Sprintf(" COMMENT ON replaces the whole comment, so keep its text: it is %q (e.g. '%s forge:dashboard').", c, strings.ReplaceAll(c, "'", "''"))
+	}
+	return fmt.Sprintf("in a new migration, declare one: COMMENT ON COLUMN %s IS 'forge:dashboard'; (panels may read it) "+
+		"or COMMENT ON COLUMN %s IS 'forge:no-dashboard'; (panels may not; forge:secret also counts).%s "+
+		"See `forge skill load db/dashboards`.", target, target, prior)
+}
+
 // dbGrantsReport is everything one run found. Unverified is non-empty when the
 // lane could not run, which must never read as clean.
 type dbGrantsReport struct {
 	Findings []dbGrantsFinding
+	// DashboardUndecided are the columns of forge:dashboard tables with no
+	// dashboard decision (forge:dashboard, forge:no-dashboard, forge:secret).
+	DashboardUndecided []dbGrantsFinding
 	// Stale are the generated grants files that no longer match the schema.
 	Stale      []dbGrantsStale
 	Unverified string
@@ -160,6 +198,11 @@ func collectDBGrantsFindings(root, migrationsDir string) (dbGrantsReport, error)
 		f := dbGrantsFinding{Schema: u.Schema, Table: u.Table, Column: u.Column, Comment: comments[u.Table+"."+u.Column]}
 		f.File, f.Line = files.locate(root, u.Table, u.Column)
 		rep.Findings = append(rep.Findings, f)
+	}
+	for _, u := range codegen.UndecidedDashboardColumns(tables, services) {
+		f := dbGrantsFinding{Schema: u.Schema, Table: u.Table, Column: u.Column, Comment: comments[u.Table+"."+u.Column]}
+		f.File, f.Line = files.locate(root, u.Table, u.Column)
+		rep.DashboardUndecided = append(rep.DashboardUndecided, f)
 	}
 	stale, err := dashboardGrantsStale(root, codegen.ReadOnlyGrantTables(tables, services))
 	if err != nil {
@@ -251,10 +294,11 @@ func readMigrationSources(dir string) (migrationSources, error) {
 }
 
 // locate finds the first line, in a migration that names the table, that
-// declares the column. Best effort: a column added by a statement this does not
-// recognise is located at the table's file with no line.
+// declares the column: a CREATE TABLE column line, or an ADD COLUMN, alone on
+// its line or after `ALTER TABLE <t>` on the same one. Best effort: a column
+// added by a statement this does not recognise is located with no file.
 func (ms migrationSources) locate(root, table, column string) (string, int) {
-	colRE := regexp.MustCompile(`(?i)^\s*(?:add\s+column\s+(?:if\s+not\s+exists\s+)?)?"?` + regexp.QuoteMeta(column) + `"?\s+[A-Za-z]`)
+	colRE := regexp.MustCompile(`(?i)^\s*(?:alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?\S+\s+)?(?:add\s+column\s+(?:if\s+not\s+exists\s+)?)?"?` + regexp.QuoteMeta(column) + `"?\s+[A-Za-z]`)
 	tableRE := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(table) + `\b`)
 	for _, m := range ms {
 		if !tableRE.MatchString(m.text) {
@@ -274,7 +318,9 @@ func (ms migrationSources) locate(root, table, column string) (string, int) {
 }
 
 // collectDBGrantsJSON maps db-grants findings onto the JSON contract. Severity
-// error: an undecided credential is the gap this lane exists to close.
+// error: an undecided credential is the gap this lane exists to close. An
+// undecided dashboard column is an error too, softened to a warning for a
+// project pinned below its GatesFrom (lint_rollout_table.go).
 func collectDBGrantsJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
 	rep, err := collectDBGrantsFindings(cwd, migrationsDirFor(cfg))
 	if err != nil {
@@ -292,6 +338,12 @@ func collectDBGrantsJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONFindi
 		out = append(out, lintJSONFinding{
 			File: f.File, Line: f.Line, Severity: lintSevError,
 			Rule: dbGrantsRule, Message: f.message(), FixHint: f.fixHint(),
+		})
+	}
+	for _, f := range rep.DashboardUndecided {
+		out = append(out, lintJSONFinding{
+			File: f.File, Line: f.Line, Severity: lintSevError,
+			Rule: dbGrantsDashboardRule, Message: f.dashboardUndecidedMessage(), FixHint: f.dashboardUndecidedFixHint(),
 		})
 	}
 	for _, st := range rep.Stale {

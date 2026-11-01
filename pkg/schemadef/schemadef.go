@@ -314,8 +314,11 @@ const TableMarkerEntityName = "forge:entity-name"
 // TableMarkerDashboard opts one table into the dashboard role's reach:
 // `COMMENT ON TABLE usage_events IS 'forge:dashboard'`. The dashboard role
 // (pkg/dbgrants.DashboardRoleName) reads a table only when it carries this
-// marker; an unmarked table is invisible to it. The marker reads nothing else:
-// the table keeps its entity, store and forge_ro access exactly as before.
+// marker; an unmarked table is invisible to it. On a marked table the role
+// reads only the columns that declare ColumnMarkerDashboard themselves, so a
+// column added later stays unreadable until a migration decides it. The
+// marker reads nothing else: the table keeps its entity, store and forge_ro
+// access exactly as before.
 const TableMarkerDashboard = "forge:dashboard"
 
 // KnownTableMarkers is the complete set of `forge:*` marker NAMES a
@@ -439,7 +442,7 @@ var appendOnlyTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerApp
 // maintaining its own copy, which is exactly the discoverability gap
 // forge:ref fell into (undiscoverable outside two skill files) that this
 // registry exists to close.
-var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerClosedSet, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete, ColumnMarkerSecret, ColumnMarkerReadable, ColumnMarkerNoDashboard}
+var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerClosedSet, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete, ColumnMarkerSecret, ColumnMarkerReadable, ColumnMarkerDashboard, ColumnMarkerNoDashboard}
 
 // ColumnMarkerSecret declares a column the database's read-only role (pkg/dbgrants)
 // must never read: `COMMENT ON COLUMN git_credentials.access_token IS
@@ -449,20 +452,40 @@ var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, Column
 // the proto one also strips it from read responses.
 const ColumnMarkerSecret = "forge:secret"
 
+// ColumnMarkerDashboard allows the dashboard role
+// (pkg/dbgrants.DashboardRoleName) one column of a table marked
+// TableMarkerDashboard: `COMMENT ON COLUMN usage_events.model IS
+// 'forge:dashboard'`. It is the same name as the table marker, read at the
+// other level: the table marker lets the role see the table, the column
+// marker lets it read that column. A column of a marked table that declares
+// neither this nor ColumnMarkerNoDashboard (or forge:secret) is NOT granted,
+// so a column added later is unreadable until a migration decides it. The
+// allow never widens forge_ro's decision: a forge:secret or undecided
+// credential-shaped column stays withheld whatever this says.
+const ColumnMarkerDashboard = "forge:dashboard"
+
 // ColumnMarkerNoDashboard withholds a column from the dashboard role
 // (pkg/dbgrants.DashboardRoleName) on a table marked TableMarkerDashboard:
 // `COMMENT ON COLUMN usage_events.prompt_preview IS 'forge:no-dashboard'`.
-// The dashboard role reads a subset of what forge_ro reads, so a column
-// forge:secret already withholds is never granted either way; this marker is
-// for a column that is fine for `forge db query` but not for a panel (an
-// email, a free-text field).
+// An undeclared column is withheld too; this is the explicit "decided: no"
+// that `forge lint --db-grants` accepts, for a column that is fine for
+// `forge db query` but not for a panel (an email, a free-text field). It wins
+// over ColumnMarkerDashboard in the same comment.
 const ColumnMarkerNoDashboard = "forge:no-dashboard"
+
+// DeclaresDashboard reports whether the column's catalog comment carries
+// ColumnMarkerDashboard, matched as a whole token (forge:no-dashboard is not
+// it).
+func (c Column) DeclaresDashboard() bool { return dashboardColumnMarkerRE.MatchString(c.Comment) }
 
 // DeclaresNoDashboard reports whether the column's catalog comment carries
 // ColumnMarkerNoDashboard, matched as a whole token.
 func (c Column) DeclaresNoDashboard() bool { return noDashboardMarkerRE.MatchString(c.Comment) }
 
-var noDashboardMarkerRE = regexp.MustCompile(`(?:^|[^\w/.:-])` + regexp.QuoteMeta(ColumnMarkerNoDashboard) + `(?:[^\w:-]|$)`)
+var (
+	dashboardColumnMarkerRE = regexp.MustCompile(`(?:^|[^\w/.:-])` + regexp.QuoteMeta(ColumnMarkerDashboard) + `(?:[^\w:-]|$)`)
+	noDashboardMarkerRE     = regexp.MustCompile(`(?:^|[^\w/.:-])` + regexp.QuoteMeta(ColumnMarkerNoDashboard) + `(?:[^\w:-]|$)`)
+)
 
 // ColumnMarkerReadable declares a column whose name looks like a credential but
 // is not one, so the read-only role may read it: `COMMENT ON COLUMN

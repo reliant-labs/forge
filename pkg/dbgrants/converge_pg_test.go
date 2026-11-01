@@ -482,7 +482,7 @@ func (f *pgFixture) convergeDashboard(tables []Table) {
 
 func dashTablesFor() []Table {
 	return []Table{
-		{Schema: "public", Name: "events", Dashboard: true, Columns: []Column{{Name: "id"}, {Name: "model"}}},
+		{Schema: "public", Name: "events", Dashboard: true, Columns: []Column{{Name: "id", Dashboard: true}, {Name: "model", Dashboard: true}}},
 		{Schema: "public", Name: "other"},
 	}
 }

@@ -3,10 +3,22 @@ package dbgrants
 // # The dashboard role
 //
 // [DashboardRoleName] is the role live dashboard panels query as. It is opt-in
-// per database (ManagedDatabase.dashboards in KCL) and per table, and what it
-// may read is a SUBSET of what [RoleName] may read:
+// per database (ManagedDatabase.dashboards in KCL), per table and per column,
+// and what it may read is a SUBSET of what [RoleName] may read:
 //
-//	forge:dashboard tables  ∩  columns forge_ro may read  −  forge:no-dashboard columns
+//	forge:dashboard tables  ∩  forge:dashboard columns  ∩  columns forge_ro may read
+//
+// # Every column is an explicit allow
+//
+// The table marker lets the role see a table; it does not let it read the
+// table's columns. Each column is allowed by its own `forge:dashboard`
+// comment, and `forge:no-dashboard` (or `forge:secret`) is the explicit
+// deny. A column that declares neither is withheld. That is what makes the
+// default fail closed: a column a later migration adds to a marked table (an
+// email, a prompt) is unreadable by panels until someone decides it, instead
+// of readable because nobody did. `forge lint --db-grants` reports every
+// undecided column (rule forge-db-grants-dashboard-undecided), so the
+// omission is loud, not silent; [DashboardUndecided] is what it reads.
 //
 // The allowlist lives in Postgres privileges, not in an SQL parser. A panel's
 // query is arbitrary SQL, and any filter that reads it (a table allowlist, a
@@ -42,22 +54,54 @@ package dbgrants
 // what makes removing the last forge:dashboard marker from a schema take the
 // access away on the next run instead of leaving the old grant behind.
 //
-// Columns are judged by [Column.Disposition] first, so a forge:secret column
+// On a marked table a column is granted only when it declares forge:dashboard,
+// and it is judged by [Column.Disposition] as well, so a forge:secret column
 // or a credential-shaped one nobody decided is withheld from the dashboard role
-// exactly as from the read-only role, whatever forge:no-dashboard says.
+// exactly as from the read-only role, whatever forge:dashboard says.
+// forge:no-dashboard wins over forge:dashboard. A column with no decision at
+// all is withheld and listed in the result's [Table.Undeclared].
 func DashboardTables(tables []Table) []Table {
 	out := make([]Table, 0, len(tables))
 	for _, t := range tables {
 		d := Table{Schema: t.Schema, Name: t.Name, Dashboard: t.Dashboard}
 		if t.Dashboard {
 			for _, c := range t.Columns {
-				if c.Disposition() == Granted && !c.NoDashboard {
+				switch {
+				case c.Dashboard && !c.NoDashboard && c.Disposition() == Granted:
 					d.Columns = append(d.Columns, c)
+				case dashboardUndecided(c):
+					d.Undeclared = append(d.Undeclared, c.Name)
 				}
 			}
 		}
 		out = append(out, d)
 	}
+	return out
+}
+
+// dashboardUndecided: a column of a marked table that nobody decided for the
+// dashboard role — no forge:dashboard, no forge:no-dashboard, no forge:secret.
+func dashboardUndecided(c Column) bool { return !c.Dashboard && !c.NoDashboard && !c.Secret }
+
+// DashboardUndecided returns every column of a forge:dashboard table that
+// carries no dashboard decision (see [DashboardTables]), sorted: the columns
+// the dashboard role is refused without anyone having said so. A
+// credential-shaped column forge_ro withholds as undecided is included: the
+// dashboard decision is a separate one, and forge:no-dashboard or forge:secret
+// makes it.
+func DashboardUndecided(tables []Table) []Finding {
+	var out []Finding
+	for _, t := range tables {
+		if !t.Dashboard {
+			continue
+		}
+		for _, c := range t.Columns {
+			if dashboardUndecided(c) {
+				out = append(out, Finding{Schema: t.Schema, Table: t.Name, Column: c.Name})
+			}
+		}
+	}
+	sortFindings(out)
 	return out
 }
 

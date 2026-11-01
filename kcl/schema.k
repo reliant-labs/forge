@@ -958,7 +958,7 @@ schema DatabaseDashboards:
     password is a Secret named `<database>-forge-dash` (minted the way
     `<database>-forge-ro` is). That role reads ONLY the tables a migration
     marked `COMMENT ON TABLE t IS 'forge:dashboard'`, and on them only the
-    columns `forge_ro` may read, minus any `forge:no-dashboard` column. The
+    columns marked `forge:dashboard` that `forge_ro` may read. The
     allowlist is Postgres privileges, not a parser, so no panel query can read
     past it. Disabled, the role is rendered present but `login: false` with
     its password disabled (never `ensure: absent`: CNPG's DROP ROLE is refused

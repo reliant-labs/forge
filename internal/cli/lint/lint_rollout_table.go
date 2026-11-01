@@ -157,6 +157,10 @@ var newRules = []rolloutGroup{
 	{IntroducedIn: "v1.0.10", GatesFrom: "v1.0.11", Fix: "forge generate && git rm -r --cached gen/forge_descriptor", Rules: []string{"tool-derived-file-tracked"}},
 	// db/grants/dashboard_gen.sql no longer matching the forge:dashboard markers.
 	{IntroducedIn: "v1.0.9", GatesFrom: "v1.0.10", Rules: []string{dbGrantsStaleRule}},
+	// A column of a forge:dashboard table with no dashboard decision: the
+	// dashboard role is refused it until a migration declares forge:dashboard
+	// or forge:no-dashboard on the column.
+	{IntroducedIn: "v1.0.13", GatesFrom: "v1.0.14", Rules: []string{dbGrantsDashboardRule}},
 	// forge lint --go-markers (#1039).
 	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-go-markers"}},
 	// forge lint --graph (#968, #1017).

@@ -69,6 +69,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -117,6 +118,11 @@ type Table struct {
 	Columns []Column
 	// Dashboard: declared forge:dashboard. Only [DashboardTables] reads it.
 	Dashboard bool
+	// Undeclared is set by [DashboardTables] only: the columns of a
+	// forge:dashboard table that declare neither forge:dashboard nor a deny,
+	// and so are withheld. The row names them in a comment; nothing grants
+	// them.
+	Undeclared []string
 }
 
 // Column is one column of a Table, with the declarations that decide whether
@@ -131,6 +137,10 @@ type Column struct {
 	// Kind is the column's type class. The zero value, [KindText], is the
 	// stricter reading.
 	Kind ColumnKind
+	// Dashboard: declared forge:dashboard on the column, the explicit allow
+	// for the dashboard role. Only [DashboardTables] reads it; the read-only
+	// role is unaffected.
+	Dashboard bool
 	// NoDashboard: declared forge:no-dashboard. Only [DashboardTables] reads
 	// it; the read-only role is unaffected.
 	NoDashboard bool
@@ -512,6 +522,12 @@ func tableRow(schema string, t Table) string {
 	if len(undecided) > 0 {
 		b.WriteString("--   " + strings.ReplaceAll(schema+"."+t.Name+": "+strings.Join(undecided, ", "), "\n", " ") +
 			"  (credential-shaped columns nobody decided: withheld until a migration declares COMMENT ON COLUMN t.c IS 'forge:secret' or 'forge:readable <reason>')\n")
+	}
+	if len(t.Undeclared) > 0 {
+		undeclared := slices.Clone(t.Undeclared)
+		sort.Strings(undeclared)
+		b.WriteString("--   " + strings.ReplaceAll(schema+"."+t.Name+": "+strings.Join(undeclared, ", "), "\n", " ") +
+			"  (no dashboard decision: withheld until a migration declares COMMENT ON COLUMN t.c IS 'forge:dashboard' or 'forge:no-dashboard')\n")
 	}
 	return b.String()
 }

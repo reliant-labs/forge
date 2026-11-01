@@ -37,6 +37,7 @@ assert_shard_is_deployment_in_flux_system = _shard.metadata.namespace == "flux-s
 assert_shard_image_is_pinned = _shard.spec.template.spec.containers[0].image == "ghcr.io/fluxcd/kustomize-controller:v1.9.5"
 assert_shard_hermetic = "--no-cross-namespace-refs=true" in _args and "--no-remote-bases=true" in _args
 assert_shard_leader_election = "--enable-leader-election" in _args
+assert_shard_no_service_links = _shard.spec.template.spec.enableServiceLinks == False
 
 # ── The ban: no service account on the shard ───────────────────────
 assert_shard_has_no_default_sa_flag = len([a for a in _args if "default-service-account" in a]) == 0

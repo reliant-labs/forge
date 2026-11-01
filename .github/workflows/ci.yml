@@ -355,8 +355,8 @@ jobs:
   # -short here. This deliberately trades premerge whole-repo diagnosis for
   # the five-minute test budget; full/main retains every assertion.
   #
-  # Changed-test repetition is an independent entry: do not add its compile
-  # and three-run work to either shard's critical path.
+  # Changed-test repetition runs after the tier in the same job: its compile
+  # reuses the tier's, and a second runner cost more in queue than it saved.
   test-short:
     name: Test (${{ matrix.label }})
     if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}
@@ -366,16 +366,15 @@ jobs:
       # Every shard reports: one failure must not hide another shard's.
       fail-fast: false
       matrix:
+        # ONE entry (owner, 2026-11-01: the merge queue's budget is five
+        # minutes, runner queue included, and every entry is a slot under the
+        # org's 20-job cap). On 2026-11-01 each of the three entries ran 1-4
+        # minutes and waited 0-18 for a runner; the whole -short tier runs in
+        # 2-3 minutes in one job, so three entries bought queue waits, not speed.
         include:
-          - label: "-short 1/2"
-            shard: "1/2"
-            args: "0 2"
-          - label: "-short 2/2"
-            shard: "2/2"
-            args: "1 2"
-          - label: "flake gate"
-            shard: "flake"
-            args: ""
+          - label: "-short + flake gate"
+            shard: "1/1"
+            args: "0 1"
             flake: "true"
     steps:
       # Depth 2 for the flake gate: the merge commit and its first parent,

@@ -187,11 +187,16 @@ func withoutLocalOnly(paths []string) []string {
 	return out
 }
 
-// PersistLedgerPrune rewrites root's ledger when the file on disk still
-// carries entries IsLocalOnlyScaffold forbids, so the cleanup of a legacy
-// ledger reaches the committed file even on a run that records no new birth.
-// A ledger with nothing to prune is not touched.
-func PersistLedgerPrune(root string) {
+// PersistLedgerMigrations rewrites root's ledger when the copy on disk is
+// in a shape this forge no longer writes: the legacy one-file ledger
+// (LegacyScaffoldedFile), or entries IsLocalOnlyScaffold forbids. Every save
+// converges both, but a save happens only when a run records a birth, so a
+// project whose upgrade run scaffolded nothing kept its legacy ledger, and
+// the first pull request to scaffold anything afterwards carried the whole
+// migration. `forge generate` calls this on every successful run, so the
+// upgrade run itself migrates. A ledger already in the current shape is not
+// touched.
+func PersistLedgerMigrations(root string) {
 	scaffoldMu.Lock()
 	defer scaffoldMu.Unlock()
 	abs, err := filepath.Abs(root)
@@ -200,6 +205,9 @@ func PersistLedgerPrune(root string) {
 	}
 	led, reported, _ := readScaffoldLedger(abs)
 	dirty := len(withoutLocalOnly(reported)) != len(reported)
+	if _, serr := os.Stat(filepath.Join(abs, filepath.FromSlash(LegacyScaffoldedFile))); serr == nil {
+		dirty = true
+	}
 	for p := range led {
 		if IsLocalOnlyScaffold(p) {
 			dirty = true
@@ -278,7 +286,7 @@ func loadScaffoldLedgerLocked(root string) map[string]ScaffoldEntry {
 	}
 	led, reported, onDisk := readScaffoldLedger(abs)
 	// Entries an older forge committed for local-only paths are dropped in
-	// memory here and leave the ledger at the next save (PersistLedgerPrune
+	// memory here and leave the ledger at the next save (PersistLedgerMigrations
 	// forces one), so a project converges on its next generate.
 	for p := range led {
 		if IsLocalOnlyScaffold(p) {

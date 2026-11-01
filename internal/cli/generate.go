@@ -696,6 +696,9 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 
 	// Success: the writes stand. The ownership state files are the run's
 	// last writes; land them first, so the completion line counts them.
+	// The scaffold ledger is one of them: a legacy one-file ledger is
+	// migrated here even when the run recorded no birth.
+	checksums.PersistLedgerMigrations(ctx.AbsPath)
 	if ctx.Checksums != nil {
 		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
 			log.Printf("Warning: failed to save checksums: %v", saveErr)

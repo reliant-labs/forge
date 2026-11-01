@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/mergeproperty"
@@ -98,6 +99,50 @@ func TestScaffoldLedger_MigratesTheLegacyFile(t *testing.T) {
 	checksums.ForgetScaffold(root, "b.go")
 	if _, err := os.Stat(filepath.Join(root, checksums.ScaffoldedDir)); !os.IsNotExist(err) {
 		t.Errorf("an empty ledger must leave no directory (stat err=%v)", err)
+	}
+}
+
+// The upgrade run migrates a legacy ledger even when it scaffolds nothing:
+// a save used to need a birth, so a project whose upgrade run recorded none
+// kept .forge/scaffolded.json until some later pull request scaffolded a
+// file and carried the whole migration (reliant, upgrading to v1.0.12).
+func TestPersistLedgerMigrations_MigratesWithoutABirth(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".forge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(root, filepath.FromSlash(checksums.LegacyScaffoldedFile))
+	if err := os.WriteFile(legacy, []byte(`{"files": {"a.go": {"scaffolded_at": "2026-10-01T00:00:00Z"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".forge/*\n!.forge/scaffolded.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checksums.ResetScaffoldLedgerCache()
+	checksums.PersistLedgerMigrations(root)
+	checksums.ResetScaffoldLedgerCache()
+
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("the legacy ledger must be migrated without a birth (stat err=%v)", err)
+	}
+	entry := filepath.Join(root, filepath.FromSlash(checksums.ScaffoldEntryPath("a.go")))
+	if got, err := os.ReadFile(entry); err != nil || string(got) != "{}\n" {
+		t.Errorf("a.go's entry = %q (err %v), want {}", got, err)
+	}
+	gi, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if !strings.Contains(string(gi), "!.forge/scaffolded/\n") {
+		t.Errorf(".gitignore must re-include the ledger directory:\n%s", gi)
+	}
+
+	// A ledger already in the current shape is left alone.
+	old := time.Unix(1_700_000_000, 0)
+	if err := os.Chtimes(entry, old, old); err != nil {
+		t.Fatal(err)
+	}
+	checksums.PersistLedgerMigrations(root)
+	checksums.ResetScaffoldLedgerCache()
+	if st, err := os.Stat(entry); err != nil || !st.ModTime().Equal(old) {
+		t.Errorf("a current ledger was rewritten (err %v)", err)
 	}
 }
 

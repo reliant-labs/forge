@@ -677,12 +677,15 @@ func finite(f float64) float64 {
 var reservedParams = map[string]bool{
 	dashspec.SQLParamFrom: true, dashspec.SQLParamTo: true, dashspec.SQLParamStep: true,
 	dashspec.SQLParamEnvIDs: true, dashspec.SQLParamEnvs: true, dashspec.SQLParamServices: true,
+	obsquery.EnvIDParam: true,
 }
 
 // sqlScope is the scope raw SQL is bound to. Locally there is no reliant.env.id,
 // so the env is its name: {envs} holds it and {env_ids} holds the empty id the
 // local rows carry, which keeps `has({env_ids}, ResourceAttributes['reliant.env.id'])`
-// true for them.
+// true for them. It is one environment, so {reliant_env_id} (an alert rule's
+// placeholder) is bound to that same empty id, and a rule's query runs here as
+// written.
 func (l Local) sqlScope(n Narrow) obsquery.Scope {
 	sc := obsquery.Scope{Database: obsquery.LocalDatabase, Local: true, Services: n.Services, Start: n.Range.From, End: n.Range.To}
 	if l.Env != "" {
@@ -728,7 +731,7 @@ func (l Local) querySQL(ctx context.Context, req QueryRequest, step int64) (Quer
 
 // ReservedParamList names the scope parameters, for help text.
 func ReservedParamList() string {
-	return "{from:DateTime64(9)}, {to:DateTime64(9)}, {step:UInt32}, {env_ids:Array(String)}, {envs:Array(String)}, {services:Array(String)}"
+	return "{from:DateTime64(9)}, {to:DateTime64(9)}, {step:UInt32}, {env_ids:Array(String)}, {envs:Array(String)}, {services:Array(String)}, {" + obsquery.EnvIDParam + ":String}"
 }
 
 func (l Local) runTable(ctx context.Context, st obsquery.Stmt, limit int, res QueryResult) (QueryResult, error) {

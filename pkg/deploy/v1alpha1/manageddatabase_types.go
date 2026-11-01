@@ -100,21 +100,23 @@ type ManagedDatabaseSpec struct {
 	// +optional
 	Restore *DatabaseRestore `json:"restore,omitempty"`
 
-	// Dashboards opts the database into live dashboard panels: a second
-	// read-only Postgres role (forge_dash) that reads ONLY the tables marked
-	// forge:dashboard. Nil means disabled, and a disabled database renders the
-	// role `ensure: absent`, so declaring nothing never leaves a login behind.
+	// Dashboards opts the database into live dashboard panels: it lets the
+	// dashboard role (forge_dash) log in. The role reads only what the
+	// project's migrations GRANT it. Nil means disabled, and a disabled
+	// database renders the role NOLOGIN with no password, so declaring
+	// nothing never leaves a login behind.
 	// +optional
 	Dashboards *DatabaseDashboards `json:"dashboards,omitempty"`
 }
 
 // DatabaseDashboards is the opt-in dashboard role and the limits its queries
 // run under. The limits are enforced by whoever queries as the role (the
-// control plane, pkg/dbquery); the role itself is bounded by Postgres:
-// column-level SELECT on forge:dashboard tables, a connection limit, and a
-// read-only default transaction. See pkg/dbgrants.
+// control plane, pkg/dbquery); the role itself is bounded by Postgres: the
+// column SELECTs the project's migrations grant it (and nothing but read
+// privileges, which the migrator enforces), a connection limit, and a
+// read-only transaction. See pkg/dbgrants.
 type DatabaseDashboards struct {
-	// Enabled creates the dashboard role. False renders it absent.
+	// Enabled lets the dashboard role log in. False renders it NOLOGIN.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 

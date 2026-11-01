@@ -40,7 +40,7 @@ const (
 func SiteMarkers(site MarkerSite) []string {
 	switch site {
 	case SiteTable:
-		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, TableMarkerDashboard}
+		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName}
 	case SiteView:
 		return []string{ViewMarkerEntity, TableMarkerEntityName}
 	case SiteColumn:
@@ -101,6 +101,10 @@ func CommentMarkerProblems(site MarkerSite, column, comment string) []MarkerProb
 			}
 			continue
 		}
+		if retired, ok := retiredMarkers[tok]; ok {
+			out = append(out, MarkerProblem{Marker: tok, Problem: tok + " " + retired})
+			continue
+		}
 		if other := siteOf(tok); other != "" {
 			out = append(out, MarkerProblem{Marker: tok, Problem: fmt.Sprintf(
 				"%s is a %s marker and does nothing on a %s — declare it with COMMENT ON %s",
@@ -115,6 +119,25 @@ func CommentMarkerProblems(site MarkerSite, column, comment string) []MarkerProb
 		out = append(out, MarkerProblem{Marker: tok, Problem: problem})
 	}
 	return out
+}
+
+// retiredMarkers are markers forge once read and no longer does, each with
+// what replaced it. A comment still carrying one is a project that has not
+// migrated, so it is told how rather than offered a near spelling.
+var retiredMarkers = map[string]string{
+	"forge:dashboard": "was retired in forge v1.0.13: the dashboard role (forge_dash) reads what your migrations GRANT it, " +
+		"so grant the columns a panel needs (`GRANT SELECT (id, created_at) ON t TO forge_dash;`) and drop the marker. " +
+		"See `forge skill load migrations/v1.0.13`",
+	"forge:no-dashboard": "was retired in forge v1.0.13: the dashboard role (forge_dash) reads only the columns your migrations GRANT it, " +
+		"so leave this column out of the GRANT and drop the marker. See `forge skill load migrations/v1.0.13`",
+}
+
+// RetiredMarker reports whether marker is one forge no longer reads. A
+// catalog comment still carrying one fails CheckMarkers with what replaced
+// it; migration text may name one a later migration cleared.
+func RetiredMarker(marker string) bool {
+	_, ok := retiredMarkers[marker]
+	return ok
 }
 
 // siteOf names the site a known marker belongs to, "" for an unknown one.

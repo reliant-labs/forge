@@ -38,7 +38,7 @@ const (
 	// RoleReadOnly is dbgrants.RoleName (forge_ro), secret <db>-forge-ro.
 	RoleReadOnly Role = iota
 	// RoleDashboard is dbgrants.DashboardRoleName (forge_dash), secret
-	// <db>-forge-dash. It reads only forge:dashboard tables.
+	// <db>-forge-dash. It reads only what the project's migrations grant it.
 	RoleDashboard
 )
 

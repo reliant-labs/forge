@@ -357,7 +357,8 @@ func runDBSquash(ctx context.Context, opts squashOptions) error {
 		container,
 		"pg_dump",
 		"--no-owner",
-		"--no-privileges",
+		// Privileges are dumped for the dashboard role's grants and
+		// PUBLIC's, the only ones squashBaseline keeps (db_squash_dump.go).
 		"--inserts",
 		"--exclude-table=public.schema_migrations",
 		// migratekit's bookkeeping: rows describing THIS database's

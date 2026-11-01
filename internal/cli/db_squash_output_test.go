@@ -36,8 +36,8 @@ func TestSquashHeaderIsAFunctionOfTheHistory(t *testing.T) {
 		"-- forge:adopts forge 20260101000001 20260101000002\n" +
 		"-- It builds the schema the release before the squash runs on:\n" +
 		"-- forge:backward-compatible\n" +
-		"-- pg_dump --no-owner --no-privileges --inserts --exclude-table=public.schema_migrations --exclude-table=public.schema_migrations_compat --exclude-table=public.schema_migrations_applied\n" +
-		"-- pg_dump's session prelude (SET, set_config) and psql meta-commands (\\restrict) are stripped.\n\n"
+		"-- pg_dump --no-owner --inserts --exclude-table=public.schema_migrations --exclude-table=public.schema_migrations_compat --exclude-table=public.schema_migrations_applied\n" +
+		"-- pg_dump's session prelude (SET, set_config), psql meta-commands (\\restrict) and every privilege but forge_dash's grants and PUBLIC's are stripped.\n\n"
 	if got != want {
 		t.Errorf("header:\n%s\nwant:\n%s", got, want)
 	}

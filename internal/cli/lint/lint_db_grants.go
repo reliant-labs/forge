@@ -18,13 +18,6 @@
 // or, for a column with a wire field, `// forge:secret` on the proto field.
 // The same dbgrants.Column.Disposition judges here and in `forge generate`, so
 // the lint and the grants cannot disagree about which columns are withheld.
-//
-// The lane also judges db/grants/dashboard_gen.sql and its per-table rows
-// (db/grants/dashboard/), the dashboard role's grants: they are a function of the forge:dashboard / forge:no-dashboard
-// comments, so a marker added or removed without `forge generate` leaves the
-// file granting what the schema no longer says (or not granting what it does).
-// The file is compared with a fresh projection and any difference is reported
-// as stale. A hand edit to the file is the generated-drift lane's.
 
 package lint
 
@@ -36,18 +29,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/shadowdb"
-	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 const (
 	dbGrantsRule           = "forge-db-grants-undecided"
 	dbGrantsUnverifiedRule = "forge-db-grants-unverified"
-	dbGrantsStaleRule      = "forge-db-grants-stale"
 )
 
 // dbGrantsFinding is one undecided credential-shaped column.
@@ -90,30 +80,8 @@ func (f dbGrantsFinding) fixHint() string {
 // dbGrantsReport is everything one run found. Unverified is non-empty when the
 // lane could not run, which must never read as clean.
 type dbGrantsReport struct {
-	Findings []dbGrantsFinding
-	// Stale are the generated grants files that no longer match the schema.
-	Stale      []dbGrantsStale
+	Findings   []dbGrantsFinding
 	Unverified string
-}
-
-// dbGrantsStale is one generated grants file that differs from what the
-// current schema projects.
-type dbGrantsStale struct {
-	// File is the grants file, relative to the project root.
-	File string
-	// Missing: the file does not exist at all.
-	Missing bool
-}
-
-func (s dbGrantsStale) message() string {
-	if s.Missing {
-		return fmt.Sprintf("%s is missing: the dashboard role (%s) has no generated grants", s.File, dbgrants.DashboardRoleName)
-	}
-	return fmt.Sprintf("%s is stale: it no longer matches the forge:dashboard / forge:no-dashboard markers and the schema, so %s is granted something other than what they declare", s.File, dbgrants.DashboardRoleName)
-}
-
-func (dbGrantsStale) fixHint() string {
-	return "run `forge generate` and commit db/grants/dashboard_gen.sql and db/grants/dashboard/; the migrator applies them after every run once the role exists. See `forge skill load db`, \"Dashboards over your database\""
 }
 
 // collectDBGrantsFindings is the shared engine behind text mode and
@@ -161,55 +129,7 @@ func collectDBGrantsFindings(root, migrationsDir string) (dbGrantsReport, error)
 		f.File, f.Line = files.locate(root, u.Table, u.Column)
 		rep.Findings = append(rep.Findings, f)
 	}
-	stale, err := dashboardGrantsStale(root, codegen.ReadOnlyGrantTables(tables, services))
-	if err != nil {
-		return rep, err
-	}
-	if stale != nil {
-		rep.Stale = append(rep.Stale, *stale)
-	}
 	return rep, nil
-}
-
-// dashboardGrantsStale compares the dashboard role's grants on disk
-// (db/grants/dashboard_gen.sql and its per-table rows under
-// db/grants/dashboard/) with the files `forge generate` would write for
-// tables. Bodies are compared with the ownership marker stripped, so a
-// freshly generated file is never stale; a row file no table accounts for is.
-func dashboardGrantsStale(root string, tables []dbgrants.Table) (*dbGrantsStale, error) {
-	want, err := codegen.DashboardGrantsFileSet(tables)
-	if err != nil {
-		return nil, err
-	}
-	// The script first, then its rows: a missing script is the finding to
-	// name, whatever else is missing with it.
-	rels := make([]string, 0, len(want))
-	for rel := range want {
-		if rel != dbgrants.DashboardGrantsPath {
-			rels = append(rels, rel)
-		}
-	}
-	sort.Strings(rels)
-	rels = append([]string{dbgrants.DashboardGrantsPath}, rels...)
-	for _, rel := range rels {
-		got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-		switch {
-		case os.IsNotExist(err):
-			return &dbGrantsStale{File: rel, Missing: true}, nil
-		case err != nil:
-			return nil, err
-		case checksums.BodyHash(got) != checksums.BodyHash(want[rel]):
-			return &dbGrantsStale{File: rel}, nil
-		}
-	}
-	entries, _ := os.ReadDir(filepath.Join(root, filepath.FromSlash(dbgrants.DashboardGrantsRowsDir)))
-	for _, e := range entries {
-		rel := dbgrants.DashboardGrantsRowsDir + "/" + e.Name()
-		if !e.IsDir() && strings.HasSuffix(e.Name(), "_gen.sql") && want[rel] == nil {
-			return &dbGrantsStale{File: rel}, nil
-		}
-	}
-	return nil, nil
 }
 
 func dirHasUpSQL(dir string) bool {
@@ -292,12 +212,6 @@ func collectDBGrantsJSON(cwd string, cfg *config.ProjectConfig) ([]lintJSONFindi
 		out = append(out, lintJSONFinding{
 			File: f.File, Line: f.Line, Severity: lintSevError,
 			Rule: dbGrantsRule, Message: f.message(), FixHint: f.fixHint(),
-		})
-	}
-	for _, st := range rep.Stale {
-		out = append(out, lintJSONFinding{
-			File: st.File, Severity: lintSevError,
-			Rule: dbGrantsStaleRule, Message: st.message(), FixHint: st.fixHint(),
 		})
 	}
 	return out, nil

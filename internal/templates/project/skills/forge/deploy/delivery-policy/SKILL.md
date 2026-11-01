@@ -38,11 +38,19 @@ a control set to `enforce` is a **declaration of intent**: it is in the shape
 and the ledger, and nothing refuses a release because of it. The last column says
 which task makes it real.
 
+Signing in particular is **not produced yet**, not merely unchecked: `forge env
+deploy`, the hosted builder and the control plane's converger push every bundle
+and image unsigned, and no Flux `OCIRepository` carries `spec.verify`. So never
+report `signing` or `flux_verify` at their `enforce` defaults as a signature that
+was made or verified. (The GitHub Actions `build-images.yml` that `forge project
+new` scaffolds does sign the images it pushes, keyless with GitHub's OIDC; nothing
+in the release path reads those signatures.)
+
 | Control | Default | Why that default | `enforce` does | Enforced by | Status |
 |---|---|---|---|---|---|
-| `signing` | **enforce** | forge or the platform builder signs on your behalf; nothing for you to set up, nothing it can block | images and the bundle are signed, with the org's KMS key (`key = "org_kms"`), a key you hold (`"customer"` + `key_ref`), or keyless Sigstore (`"keyless"` + OIDC identity) | forge F15 (sign on the builder); control-plane C13 (per-org KMS service, key registry) | recorded, not enforced yet |
+| `signing` | **enforce** | forge or the platform builder signs on your behalf; nothing for you to set up, nothing it can block | images and the bundle are signed, with the org's KMS key (`key = "org_kms"`), a key you hold (`"customer"` + `key_ref`), or keyless Sigstore (`"keyless"` + OIDC identity) | forge F15 (sign on the builder); control-plane C13 (per-org KMS service, key registry) | recorded; nothing signs yet |
 | `provenance_sbom` | **enforce** | produced by the same builder run as the signature, at no cost to you | a builder-generated SLSA provenance statement and an SBOM are attached to every artifact and recorded in the ledger | forge F15; control-plane C13 | recorded, not enforced yet |
-| `flux_verify` | **enforce** | only checks the signature `signing` produced; cannot refuse anything `signing` did not already make | the converger writes `OCIRepository.spec.verify`, so an unsigned bundle never reaches the Kustomizations | control-plane C1/C13 (converger) | recorded, not enforced yet |
+| `flux_verify` | **enforce** | only checks the signature `signing` produced; cannot refuse anything `signing` did not already make | the converger writes `OCIRepository.spec.verify`, so an unsigned bundle never reaches the Kustomizations | control-plane C1/C13 (converger) | recorded; no `OCIRepository` carries `spec.verify` yet |
 | `trusted_builder` | **audit** | enforcing refuses an artifact built on a laptop or an unlisted CI, so it can block a deploy | RecordBundle refuses a bundle whose provenance names a builder or repo not allowed; the registry issues push tokens to builder identities only | forge F14 (`--builder`); control-plane C14 | recorded, not enforced yet |
 | `admission_verify` | **audit** | a pod without a valid signature cannot start; turning this on before every running image is signed takes the env down | the env's namespaces are opted in to Sigstore policy-controller; unsigned images are denied (`audit`: warn only) | forge F17 (policy render); control-plane C15 | recorded, not enforced yet |
 | `signed_promotions` | **audit** | the converger refuses an unsigned or replayed promotion; a signing outage then blocks every deploy | a promotion is an in-toto statement signed by the org's pipeline identity; the converger and a webhook verify it, including `previous_digest` | forge F18; control-plane C13, C16 | recorded, not enforced yet |

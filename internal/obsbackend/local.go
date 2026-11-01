@@ -429,7 +429,11 @@ func (l Local) evalErr(err error) error {
 // MetricsList implements Backend: the catalog over every metric kind, joined
 // with the declared schemas this machine has.
 func (l Local) MetricsList(ctx context.Context, req MetricsListRequest) (MetricsListResult, error) {
-	q := obsquery.MetricCatalog{Scope: LocalScope(req.Narrow, l.Env), NameContains: req.NameContains, Limit: req.Limit}
+	env := l.Env
+	if req.NoEnv {
+		env = ""
+	}
+	q := obsquery.MetricCatalog{Scope: LocalScope(req.Narrow, env), NameContains: req.NameContains, Limit: req.Limit}
 	st, err := q.Compile()
 	if err != nil {
 		return MetricsListResult{}, compileErr(err)

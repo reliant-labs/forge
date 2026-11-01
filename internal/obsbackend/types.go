@@ -227,6 +227,10 @@ type MetricsListRequest struct {
 	Narrow
 	NameContains string
 	Limit        int
+	// NoEnv drops the env predicate, as PanelReadoutRequest.NoEnv does for a
+	// platform-scoped dashboard: its telemetry carries no env id, so an
+	// env-bound catalog cannot see its metrics.
+	NoEnv bool
 }
 
 // MetricAttributeSpec is one attribute a release declares for a metric, with

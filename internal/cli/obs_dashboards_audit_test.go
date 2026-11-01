@@ -33,9 +33,10 @@ type auditCP struct {
 	// panel answers QueryPanel for (panel id, shape of the request).
 	panel func(q auditQuery) (string, error)
 	// metrics is the ListMetrics reply; metricsFor, when set, answers by the
-	// width of the requested window instead.
+	// shape of the request instead (its window's width, whether it was bounded
+	// to one env).
 	metrics    string
-	metricsFor func(window time.Duration) string
+	metricsFor func(q auditQuery) string
 	errs       map[string]error
 	calls      []auditQuery
 	// serverProject is the control plane's id for the project ("proj", the
@@ -91,8 +92,9 @@ func (c *auditCP) Call(_ context.Context, procedure string, req, out any) error 
 			tr, _ := scope["timeRange"].(map[string]any)
 			start, _ := time.Parse(time.RFC3339, tr["start"].(string))
 			end, _ := time.Parse(time.RFC3339, tr["end"].(string))
-			reply = c.metricsFor(end.Sub(start))
-			c.calls = append(c.calls, auditQuery{Proc: procedure, Window: end.Sub(start)})
+			q := auditQuery{Proc: procedure, Window: end.Sub(start), AllEnvs: scope["envIds"] == nil}
+			reply = c.metricsFor(q)
+			c.calls = append(c.calls, q)
 			return json.Unmarshal([]byte(reply), out)
 		}
 	case cpQueryPanel:
@@ -1115,8 +1117,8 @@ func TestAuditCatalogIsPerRangeAndDeclaredTypeIsPerPanel(t *testing.T) {
 		"d1": specWith("", typed("hourly-a", "sum"), typed("hourly-b", "sum")),
 		"d2": specWith("7d", typed("weekly", "gauge"))},
 		// The metric was last seen more than a week ago.
-		metricsFor: func(w time.Duration) string {
-			if w > week {
+		metricsFor: func(q auditQuery) string {
+			if q.Window > week {
 				return `{"metrics":[{"name":"jobs.runs","type":"METRIC_TYPE_SUM","seen":true,"queryable":true}]}`
 			}
 			return `{"metrics":[]}`
@@ -1305,6 +1307,78 @@ func TestAuditReplaysTheDashboardsScope(t *testing.T) {
 	if slices.Contains(platEmpty, "all_envs") || allEnvProbes["p-org"] != 0 {
 		t.Errorf("an all-env probe ran for a platform (%v) or org (%d) dashboard", platEmpty, allEnvProbes["p-org"])
 	}
+}
+
+// A platform dashboard's metric catalog is read in the dashboard's own scope,
+// with no env predicate: an untagged platform metric is seen there, so an
+// empty, filtered platform panel is no_data_anywhere, never metric_never_seen.
+// The same metric on a project dashboard is asked of the env's catalog — a
+// different question, cached apart — and when the env-free catalog cannot be
+// read, the platform panel's verdict is probe_failed (#1548).
+func TestAuditCatalogIsReadInThePlatformDashboardsScope(t *testing.T) {
+	spec := func(key, scope string) string {
+		panel := fmt.Sprintf(`{"id":"p-%s","title":"p","kind":"line","signal":"metrics","series":[{"label":"n","agg":"rate","field":"platform.jobs","metricType":"sum"}],"where":[{"field":"queue","op":"eq","value":"x"}]}`, key)
+		sc := ""
+		if scope != "" {
+			sc = fmt.Sprintf(`,"scope":%q`, scope)
+		}
+		return fmt.Sprintf(`{"summary":{"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":%q},"title":%q},"spec":{"id":%q,"title":%q%s,"panels":[%s]}}`, key, key, key, key, sc, panel)
+	}
+	index := func(keys ...string) string {
+		var refs []string
+		for _, k := range keys {
+			refs = append(refs, fmt.Sprintf(`{"ref":{"source":"DASHBOARD_SOURCE_GENERATED","key":%q},"title":%q,"source":"DASHBOARD_SOURCE_GENERATED"}`, k, k))
+		}
+		return `{"dashboards":[` + strings.Join(refs, ",") + `]}`
+	}
+	verdicts := func(t *testing.T, out string) map[string]string {
+		t.Helper()
+		v := map[string]string{}
+		for _, d := range decodeAudit(t, out).Dashboards {
+			for _, p := range d.Panels {
+				if p.Probe == nil || len(p.Probe.Catalog) != 1 {
+					t.Fatalf("panel %s: no catalog lookup\n%s", p.ID, out)
+				}
+				v[p.ID] = p.Probe.Verdict
+			}
+		}
+		return v
+	}
+
+	t.Run("an untagged platform metric is seen", func(t *testing.T) {
+		cp := &auditCP{dashboards: index("plat", "proj"), specs: map[string]string{"plat": spec("plat", "platform"), "proj": spec("proj", "")},
+			// The metric is stored with no env id: only an env-free catalog has it.
+			metricsFor: func(q auditQuery) string {
+				if q.AllEnvs {
+					return `{"metrics":[{"name":"platform.jobs","type":"METRIC_TYPE_SUM","seen":true,"queryable":true}]}`
+				}
+				return `{"metrics":[]}`
+			},
+			panel: func(auditQuery) (string, error) { return respEmpty, nil }}
+		out, _, _ := auditRun(t, cp)
+		v := verdicts(t, out)
+		if v["p-plat"] != "no_data_anywhere" {
+			t.Errorf("platform panel verdict %q, want no_data_anywhere: the metric exists in its scope\n%s", v["p-plat"], out)
+		}
+		if v["p-proj"] != "metric_never_seen" {
+			t.Errorf("project panel verdict %q, want metric_never_seen: its env's catalog lacks the metric\n%s", v["p-proj"], out)
+		}
+		envFree := cp.count(func(q auditQuery) bool { return q.Proc == cpListMetrics && q.AllEnvs })
+		envBound := cp.count(func(q auditQuery) bool { return q.Proc == cpListMetrics && !q.AllEnvs })
+		if envFree != 1 || envBound != 1 {
+			t.Errorf("ListMetrics env-free %d, env-bound %d: want one of each (the scope is part of the catalog key)", envFree, envBound)
+		}
+	})
+
+	t.Run("an unreadable env-free catalog is not absence", func(t *testing.T) {
+		cp := &auditCP{dashboards: index("plat"), specs: map[string]string{"plat": spec("plat", "platform")},
+			errs:  map[string]error{cpListMetrics: &cloud.Error{HTTPStatus: http.StatusBadRequest, Code: cloud.CodeInvalidArgument, Message: "an env is required"}},
+			panel: func(auditQuery) (string, error) { return respEmpty, nil }}
+		out, _, _ := auditRun(t, cp)
+		if v := verdicts(t, out)["p-plat"]; v != "probe_failed" {
+			t.Errorf("platform panel verdict %q, want probe_failed\n%s", v, out)
+		}
+	})
 }
 
 // Data that only exists in another env AND only without the panel's filters is

@@ -365,12 +365,52 @@ func (t Table) NoEntity() bool { return noEntityTableMarkerRE.MatchString(t.Comm
 var noEntityTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerNoEntity) + `(?:[^\w:-]|$)`)
 
 // Dashboard reports whether the table declares TableMarkerDashboard in its
-// catalog comment, matched as a whole token so it coexists with any other
-// marker in the same comment and a longer name (`forge:dashboard-x`) is not
-// mistaken for it.
-func (t Table) Dashboard() bool { return dashboardTableMarkerRE.MatchString(t.Comment) }
+// catalog comment's marker list (MarkerListPattern): `forge:dashboard` and
+// `forge:append-only forge:dashboard — usage rollups` declare it, `not
+// forge:dashboard` does not, and CheckMarkers refuses the latter.
+func (t Table) Dashboard() bool { return dashboardDeclaredRE.MatchString(t.Comment) }
 
-var dashboardTableMarkerRE = regexp.MustCompile(`(?:^|[^\w/.:-])` + regexp.QuoteMeta(TableMarkerDashboard) + `(?:[^\w:-]|$)`)
+// A marker that WIDENS what a role may read is declared only in a marker list,
+// never by a mention in prose. The grammar is the one forge's proto and Go
+// markers already use — the marker opens its line, prose may follow — with
+// several markers on one line separated by whitespace, the way catalog
+// comments carry them (`forge:go-type=x.Kind forge:dashboard`):
+//
+//	marker-list = { ws } token { ws+ token } ( ws | end-of-line )
+//	token       = "forge:" name [ "=" argument ]     (no whitespace inside)
+//
+// So `forge:dashboard`, `forge:dashboard — spend by model` and
+// `forge:go-type=x.Kind forge:dashboard` declare forge:dashboard, while `not
+// forge:dashboard`, `forge:readable — a hash; forge:dashboard` and
+// `forge:dashboard=yes` do not. A comment that mentions the marker without
+// declaring it is ambiguous, and CheckMarkers refuses it at generate rather
+// than guess either way (CommentMarkerProblems, MarkerProblem.Prose).
+//
+// The deny markers (forge:no-dashboard, forge:secret) keep the looser
+// whole-token match: reading a deny out of prose withholds a column, which is
+// the direction a misreading may fail in.
+//
+// The same pattern is the runtime re-check in the dashboard grants script
+// (pkg/dbgrants), so it is written in the regular-expression syntax Go's
+// regexp and Postgres's ARE share; TestMarkerListPatternAgreesWithPostgres
+// holds the two engines to one answer.
+
+// markerListToken is one token of a marker list. POSIX classes rather than
+// backslash escapes, so the pattern means the same in a Postgres string
+// literal whatever standard_conforming_strings says.
+const markerListToken = `forge:[A-Za-z][A-Za-z0-9_-]*(=[^[:space:]]*)?`
+
+// MarkerListPattern is the regular expression that matches a catalog comment
+// declaring marker in a marker list, on any line of the comment. It needs
+// line-anchored ^ and $: Go compiles it with a `(?m)` prefix, Postgres with
+// `(?n)` (newline-sensitive matching).
+func MarkerListPattern(marker string) string {
+	return `^[[:blank:]]*(` + markerListToken + `[[:blank:]]+)*` + regexp.QuoteMeta(marker) + `([[:space:]]|$)`
+}
+
+// dashboardDeclaredRE reads TableMarkerDashboard / ColumnMarkerDashboard (one
+// name, read at two levels) out of a marker list.
+var dashboardDeclaredRE = regexp.MustCompile(`(?m)` + MarkerListPattern(TableMarkerDashboard))
 
 // AppendOnly reports whether the table is an append-only ledger: INSERT and
 // SELECT only, no UPDATE and no DELETE.
@@ -473,19 +513,17 @@ const ColumnMarkerDashboard = "forge:dashboard"
 // over ColumnMarkerDashboard in the same comment.
 const ColumnMarkerNoDashboard = "forge:no-dashboard"
 
-// DeclaresDashboard reports whether the column's catalog comment carries
-// ColumnMarkerDashboard, matched as a whole token (forge:no-dashboard is not
-// it).
-func (c Column) DeclaresDashboard() bool { return dashboardColumnMarkerRE.MatchString(c.Comment) }
+// DeclaresDashboard reports whether the column's catalog comment declares
+// ColumnMarkerDashboard in its marker list (MarkerListPattern): an allow is
+// never read out of prose.
+func (c Column) DeclaresDashboard() bool { return dashboardDeclaredRE.MatchString(c.Comment) }
 
 // DeclaresNoDashboard reports whether the column's catalog comment carries
-// ColumnMarkerNoDashboard, matched as a whole token.
+// ColumnMarkerNoDashboard, matched as a whole token anywhere: a deny read out
+// of prose withholds, which is the safe direction.
 func (c Column) DeclaresNoDashboard() bool { return noDashboardMarkerRE.MatchString(c.Comment) }
 
-var (
-	dashboardColumnMarkerRE = regexp.MustCompile(`(?:^|[^\w/.:-])` + regexp.QuoteMeta(ColumnMarkerDashboard) + `(?:[^\w:-]|$)`)
-	noDashboardMarkerRE     = regexp.MustCompile(`(?:^|[^\w/.:-])` + regexp.QuoteMeta(ColumnMarkerNoDashboard) + `(?:[^\w:-]|$)`)
-)
+var noDashboardMarkerRE = regexp.MustCompile(`(?:^|[^\w/.:-])` + regexp.QuoteMeta(ColumnMarkerNoDashboard) + `(?:[^\w:-]|$)`)
 
 // ColumnMarkerReadable declares a column whose name looks like a credential but
 // is not one, so the read-only role may read it: `COMMENT ON COLUMN

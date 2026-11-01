@@ -213,6 +213,33 @@ COMMENT ON COLUMN invoices.total_cents IS 'forge:immutible';
 	}
 }
 
+// forge:dashboard named in prose is reported as its own rule, so it rolls out
+// on its own clock; declared in the marker list it is clean.
+func TestCollectColumnMarkersJSON_DashboardInProse(t *testing.T) {
+	dir := writeColumnMarkersFixture(t, "0001_dash.up.sql", `
+COMMENT ON TABLE usage_events IS 'forge:append-only forge:dashboard';
+COMMENT ON COLUMN usage_events.model IS 'forge:dashboard — spend by model';
+COMMENT ON COLUMN usage_events.kind IS 'forge:go-type=x.Kind forge:dashboard';
+COMMENT ON COLUMN usage_events.email IS 'an email, never forge:dashboard';
+COMMENT ON TABLE other IS 'not forge:dashboard';
+`)
+	cfg := &config.ProjectConfig{Database: config.DatabaseConfig{MigrationsDir: dir}}
+	fs, err := collectColumnMarkersJSON(cfg)
+	if err != nil {
+		t.Fatalf("collectColumnMarkersJSON: %v", err)
+	}
+	var lines []int
+	for _, f := range fs {
+		if f.Rule != columnMarkerProseRule {
+			t.Errorf("rule = %q, want %q: %+v", f.Rule, columnMarkerProseRule, f)
+		}
+		lines = append(lines, f.Line)
+	}
+	if len(lines) != 2 || lines[0] != 5 || lines[1] != 6 {
+		t.Fatalf("findings on lines %v, want the two prose mentions (5, 6): %+v", lines, fs)
+	}
+}
+
 // A COMMENT ON COLUMN whose object is schema-qualified and quoted
 // (`"public"."invoices".total_cents`) is still read: the pattern used to stop
 // at the first quote and miss the statement, so a misspelled marker there

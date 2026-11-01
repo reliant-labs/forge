@@ -616,12 +616,16 @@ func collectColumnMarkersJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, err
 	}
 	out := make([]lintJSONFinding, 0, len(findings))
 	for _, f := range findings {
+		rule, msg := "forge-column-markers", fmt.Sprintf("%s on %s does nothing", f.Marker, f.Object)
+		if f.Prose {
+			rule, msg = columnMarkerProseRule, fmt.Sprintf("%s on %s is mentioned in prose, not declared", f.Marker, f.Object)
+		}
 		out = append(out, lintJSONFinding{
 			File:     f.File,
 			Line:     f.Line,
 			Severity: lintSevError,
-			Rule:     "forge-column-markers",
-			Message:  fmt.Sprintf("%s on %s does nothing", f.Marker, f.Object),
+			Rule:     rule,
+			Message:  msg,
 			FixHint:  columnMarkerFixHint(f),
 		})
 	}

@@ -79,7 +79,7 @@ func roleFixture(t *testing.T, more string, fn func(ctx context.Context, c *sql.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := dbgrants.Apply(ctx, db, script); err != nil {
+	if _, err := dbgrants.Apply(ctx, db, script); err != nil {
 		t.Fatalf("apply grants: %v", err)
 	}
 
@@ -302,7 +302,7 @@ func dashboardFixture(t *testing.T, more string, fn func(ctx context.Context, c 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := dbgrants.ApplyDashboard(ctx, db, script); err != nil {
+	if _, err := dbgrants.ApplyDashboard(ctx, db, script); err != nil {
 		t.Fatalf("apply grants: %v", err)
 	}
 	conn, err := db.Conn(ctx)
@@ -378,7 +378,7 @@ func TestDashboardRole_CredentialShapedColumnsFollowTheReadOnlyDecision(t *testi
 	dashboardFixture(t, `
 ALTER TABLE usage_events ADD COLUMN prompt_hash TEXT NOT NULL DEFAULT 'h';
 ALTER TABLE usage_events ADD COLUMN session_token TEXT NOT NULL DEFAULT 't';
-COMMENT ON COLUMN usage_events.prompt_hash IS 'forge:readable — a content hash, not of a credential; forge:dashboard';
+COMMENT ON COLUMN usage_events.prompt_hash IS 'forge:dashboard forge:readable — a content hash, not of a credential';
 COMMENT ON COLUMN usage_events.session_token IS 'forge:dashboard';
 `, func(ctx context.Context, c *sql.Conn) {
 		if err := canSelect(ctx, c, `SELECT prompt_hash FROM usage_events`); err != nil {
@@ -421,7 +421,7 @@ func TestDashboardRole_RemovingTheMarkerRevokes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := dbgrants.ApplyDashboard(ctx, db, script); err != nil {
+		if _, err := dbgrants.ApplyDashboard(ctx, db, script); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -500,7 +500,7 @@ func (d *dashboardConvergence) converge() {
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	if err := dbgrants.ApplyDashboard(context.Background(), d.db, script); err != nil {
+	if _, err := dbgrants.ApplyDashboard(context.Background(), d.db, script); err != nil {
 		d.t.Fatal(err)
 	}
 }

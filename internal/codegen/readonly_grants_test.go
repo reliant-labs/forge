@@ -307,7 +307,7 @@ func TestDashboardGrants_Projection(t *testing.T) {
 // both roles.
 func TestDashboardGrants_CredentialShapedColumnsFollowTheReadOnlyDecision(t *testing.T) {
 	tb := dashTable("keys", "forge:dashboard", map[string]string{
-		"key_hash":     "forge:readable — hash of the prompt forge:dashboard",
+		"key_hash":     "forge:dashboard forge:readable — hash of the prompt",
 		"access_token": "forge:dashboard",
 		"label":        "forge:dashboard",
 	}, "id", "access_token", "key_hash", "label")

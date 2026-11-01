@@ -72,7 +72,17 @@ type columnMarkerFinding struct {
 	// Problem is schemadef's sentence: why the marker does nothing there,
 	// and the vocabulary that object does read.
 	Problem string
+	// Prose: an access-widening marker mentioned outside the comment's
+	// marker list (schemadef.MarkerProblem.Prose), reported as
+	// columnMarkerProseRule.
+	Prose bool
 }
+
+// columnMarkerProseRule is the rule a Prose finding is reported under: its
+// own rule, so it rolls out on its own clock (lint_rollout_table.go) instead
+// of re-opening the grace period of forge-column-markers. `forge generate`
+// refuses the same comment from the release it ships in.
+const columnMarkerProseRule = "forge-column-marker-prose"
 
 // columnMarkerFixHint renders the remediation: schemadef's own sentence, so
 // the hint names exactly the vocabulary the generator enforces.
@@ -142,6 +152,7 @@ func findUnknownColumnMarkers(file, content string) []columnMarkerFinding {
 				Object:  object,
 				Marker:  p.Marker,
 				Problem: p.Problem,
+				Prose:   p.Prose,
 			})
 		}
 	}

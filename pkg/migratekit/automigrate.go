@@ -229,6 +229,14 @@ func logRun(logger *slog.Logger, res Result, err error) {
 		if g.DashboardRoleDisabled {
 			logf(logger, "dashboards are off: the dashboard role cannot log in, its grants were revoked and none applied", "role", dbgrants.DashboardRoleName)
 		}
+		if len(g.Refused) > 0 {
+			warnf(logger, "read-only grants withheld columns the grants file lists but whose catalog comment no longer allows them: the file is older than the schema; run forge generate",
+				"role", dbgrants.RoleName, "columns", strings.Join(g.Refused, ", "))
+		}
+		if len(g.DashboardRefused) > 0 {
+			warnf(logger, "dashboard grants withheld columns the grants file lists but whose catalog comment no longer allows them: the file is older than the schema; run forge generate",
+				"role", dbgrants.DashboardRoleName, "columns", strings.Join(g.DashboardRefused, ", "))
+		}
 		if len(g.SecurityDefiner) > 0 {
 			warnf(logger, "SECURITY DEFINER functions are executable by a grants role: each runs as its owner and can return columns the role has no SELECT on; revoke EXECUTE from PUBLIC on them, or do not write one over a table with a secret column",
 				"functions", strings.Join(g.SecurityDefiner, ", "))

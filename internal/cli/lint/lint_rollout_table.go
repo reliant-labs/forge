@@ -161,6 +161,9 @@ var newRules = []rolloutGroup{
 	// dashboard role is refused it until a migration declares forge:dashboard
 	// or forge:no-dashboard on the column.
 	{IntroducedIn: "v1.0.13", GatesFrom: "v1.0.14", Rules: []string{dbGrantsDashboardRule}},
+	// forge:dashboard named in a comment's prose rather than declared in its
+	// marker list: ambiguous, so neither read as an allow nor ignored.
+	{IntroducedIn: "v1.0.13", GatesFrom: "v1.0.14", Rules: []string{columnMarkerProseRule}},
 	// forge lint --go-markers (#1039).
 	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-go-markers"}},
 	// forge lint --graph (#968, #1017).

@@ -171,6 +171,14 @@ func reportGrants(w io.Writer, res migratekit.Result) {
 	if g.DashboardRoleDisabled {
 		_, _ = fmt.Fprintf(w, "dashboards are off: %s cannot log in, its grants were revoked\n", dbgrants.DashboardRoleName)
 	}
+	for _, r := range []struct {
+		role    string
+		refused []string
+	}{{dbgrants.RoleName, g.Refused}, {dbgrants.DashboardRoleName, g.DashboardRefused}} {
+		if len(r.refused) > 0 {
+			_, _ = fmt.Fprintf(w, "warning: %s was not granted %s: the grants file lists them, but their catalog comments no longer allow it (the file is older than the schema; run `forge generate`)\n", r.role, strings.Join(r.refused, ", "))
+		}
+	}
 	if len(g.SecurityDefiner) > 0 {
 		_, _ = fmt.Fprintf(w, "warning: SECURITY DEFINER functions are executable by a grants role and run as their owner, so they can return columns the role has no SELECT on: %s\n", strings.Join(g.SecurityDefiner, ", "))
 	}

@@ -290,10 +290,12 @@ func RenderFilesFor(role string, tables []Table) (Files, error) {
 	return renderFiles(role, tables, false)
 }
 
-// renderFiles is [RenderFiles] for a named role. gateOnLogin makes the script
-// serve the role only while it can log in: a role with rolcanlogin = false
-// gets every privilege revoked and nothing granted (see [RenderDashboardFor]).
-func renderFiles(role string, tables []Table, gateOnLogin bool) (Files, error) {
+// renderFiles is [RenderFiles] for a named role. dashboard renders the
+// dashboard role's script: it serves the role only while it can log in (a role
+// with rolcanlogin = false gets every privilege revoked and nothing granted;
+// see [RenderDashboardFor]), and its apply-time re-check requires the
+// forge:dashboard allows as well as the absence of a deny (see recheck.go).
+func renderFiles(role string, tables []Table, dashboard bool) (Files, error) {
 	if err := checkIdent(role); err != nil {
 		return Files{}, err
 	}
@@ -328,12 +330,12 @@ func renderFiles(role string, tables []Table, gateOnLogin bool) (Files, error) {
 	}
 	b.WriteString("-- The " + label + " role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
 	b.WriteString("DO " + dollarTag + "\n")
-	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\n  role_login boolean;\nBEGIN\n")
+	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\n  role_login boolean;\n  refused text[];\n  refused_all text[] := ARRAY[]::text[];\nBEGIN\n")
 	fmt.Fprintf(&b, "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: "+label+" grants not applied"))
 
 	fmt.Fprintf(&b, "  SELECT oid, rolcanlogin INTO role_oid, role_login FROM pg_roles WHERE rolname = %s;\n", quoteLiteral(role))
-	if gateOnLogin {
+	if dashboard {
 		fmt.Fprintf(&b, "  IF NOT role_login THEN\n    RAISE NOTICE %s;\n  END IF;\n", quoteLiteral("role "+role+" cannot log in: "+label+" access revoked, nothing granted"))
 	} else {
 		b.WriteString("  role_login := true;\n")
@@ -457,13 +459,25 @@ func renderFiles(role string, tables []Table, gateOnLogin bool) (Files, error) {
 	b.WriteString("    (NULL::text, NULL::text, ARRAY[]::text[])\n")
 	b.WriteString(rowsPlaceholder)
 	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL AND role_login LOOP\n")
-	b.WriteString("    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attname) INTO readable\n")
-	b.WriteString("      FROM pg_attribute a\n")
-	b.WriteString("     WHERE a.attrelid = to_regclass(format('%I.%I', r.schema, r.tbl))\n")
-	b.WriteString("       AND a.attnum > 0 AND NOT a.attisdropped AND a.attname = ANY (r.cols);\n")
+	// The rows are the file's view of the schema; the catalog comments are the
+	// schema's own. A listed column is granted only while its comment still
+	// allows it, so a file older than the schema fails closed (recheck.go).
+	b.WriteString("    -- re-check: a listed column is granted only while its catalog comment still allows it\n")
+	b.WriteString("    SELECT string_agg(format('%I', c.attname), ', ' ORDER BY c.attname) FILTER (WHERE c.allowed),\n")
+	b.WriteString("           array_agg(format('%I.%I.%I', r.schema, r.tbl, c.attname) ORDER BY c.attname) FILTER (WHERE NOT c.allowed)\n")
+	b.WriteString("      INTO readable, refused\n")
+	b.WriteString("      FROM (SELECT a.attname, " + recheckExpr(dashboard) + " AS allowed\n")
+	b.WriteString("              FROM pg_attribute a\n")
+	b.WriteString("             WHERE a.attrelid = to_regclass(format('%I.%I', r.schema, r.tbl))\n")
+	b.WriteString("               AND a.attnum > 0 AND NOT a.attisdropped AND a.attname = ANY (r.cols)) c;\n")
 	b.WriteString("    IF readable IS NOT NULL THEN\n")
 	fmt.Fprintf(&b, "      EXECUTE format('GRANT SELECT (%%s) ON TABLE %%I.%%I TO %%I', readable, r.schema, r.tbl, %s);\n", quoteLiteral(role))
-	b.WriteString("    END IF;\n  END LOOP;\n")
+	b.WriteString("    END IF;\n")
+	b.WriteString("    IF refused IS NOT NULL THEN\n      refused_all := refused_all || refused;\n    END IF;\n  END LOOP;\n")
+	b.WriteString("  IF cardinality(refused_all) > 0 THEN\n")
+	fmt.Fprintf(&b, "    RAISE WARNING 'role %%: not granted %%: the grants file lists them, but their catalog comments no longer allow it (the file is older than the schema; run forge generate)', %s, array_to_string(refused_all, ', ');\n", quoteLiteral(role))
+	b.WriteString("  END IF;\n")
+	fmt.Fprintf(&b, "  PERFORM set_config(%s, to_json(refused_all)::text, false);\n", quoteLiteral(refusedSetting))
 
 	// Defence in depth only: the grants above already give the role no write
 	// privilege, and every query runs in a READ ONLY transaction. Changing a
@@ -600,22 +614,4 @@ SELECT coalesce(json_agg(f.name ORDER BY f.name), '[]'::json) FROM (
 		return nil, fmt.Errorf("dbgrants: decode security definer functions: %w", err)
 	}
 	return out, nil
-}
-
-// Apply runs script, a [Render] result, on c. The script is one statement, so
-// it is atomic: a failure leaves the previous grants in place.
-func Apply(ctx context.Context, c Conn, script string) error {
-	if _, err := c.ExecContext(ctx, script); err != nil {
-		return fmt.Errorf("dbgrants: apply read-only grants: %w", err)
-	}
-	return nil
-}
-
-// ApplyDashboard is [Apply] for a [RenderDashboard] script, so a failure names
-// the role it was converging.
-func ApplyDashboard(ctx context.Context, c Conn, script string) error {
-	if _, err := c.ExecContext(ctx, script); err != nil {
-		return fmt.Errorf("dbgrants: apply dashboard grants: %w", err)
-	}
-	return nil
 }

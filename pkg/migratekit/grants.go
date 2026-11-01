@@ -48,6 +48,11 @@ import (
 // says so. Turning dashboards back on makes the role login-capable and the next
 // run grants again.
 //
+// A STALE FILE FAILS CLOSED. Each script re-checks, at apply time, that every
+// column it lists is still allowed by the column's catalog comment, and
+// withholds one that is not; Grants.Refused / DashboardRefused name them so
+// the run logs a warning (pkg/dbgrants, "The apply-time re-check").
+//
 // A FAILURE IS THE RUN'S FAILURE. The migrations are committed by then, but a
 // column that has become secret keeps its old grant until the script succeeds,
 // so the run reports it rather than serving on. A rerun finds nothing pending
@@ -100,6 +105,13 @@ type Grants struct {
 	// execute (dbgrants.SecurityDefinerExposure): a way around its column
 	// grants. A warning for the caller to log, never a failure.
 	SecurityDefiner []string
+	// Refused and DashboardRefused are the columns a role's grants file lists
+	// that the script withheld, as `schema.table.column`, because the column's
+	// current catalog comment no longer allows it: a file older than the
+	// schema (dbgrants, "The apply-time re-check"). Not a failure — the
+	// withholding is the safe outcome — but a warning for the caller to log,
+	// because the file needs `forge generate`.
+	Refused, DashboardRefused []string
 	// DashboardRoleMissing is true when the binary embeds the dashboard script
 	// but the database has no [dbgrants.DashboardRoleName], so it was not run.
 	// The role is opt-in: this is the normal state, said by nobody.
@@ -171,7 +183,9 @@ func applyGrants(ctx context.Context, conn *sql.Conn, scripts grantScripts, run 
 			g.RoleMissing = true
 		} else {
 			if err := guardedStatement(ctx, conn, run, "read-only grants", func() error {
-				return dbgrants.Apply(ctx, conn, scripts.readOnly)
+				refused, err := dbgrants.Apply(ctx, conn, scripts.readOnly)
+				g.Refused = refused
+				return err
 			}); err != nil {
 				return nil, err
 			}
@@ -187,7 +201,9 @@ func applyGrants(ctx context.Context, conn *sql.Conn, scripts grantScripts, run 
 			g.DashboardRoleMissing = true
 		} else {
 			if err := guardedStatement(ctx, conn, run, "dashboard grants", func() error {
-				return dbgrants.ApplyDashboard(ctx, conn, scripts.dashboard)
+				refused, err := dbgrants.ApplyDashboard(ctx, conn, scripts.dashboard)
+				g.DashboardRefused = refused
+				return err
 			}); err != nil {
 				return g, err
 			}

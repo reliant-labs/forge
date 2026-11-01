@@ -120,7 +120,7 @@ func gradableRules() []string {
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,
 		secrets.RuleSingleOwner, ruleSecretsNotRendered,
 		// schema markers
-		"forge-column-markers", "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule, dbGrantsStaleRule, dbGrantsDashboardRule,
+		"forge-column-markers", columnMarkerProseRule, "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule, dbGrantsStaleRule, dbGrantsDashboardRule,
 		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, "forge-vendored-proto-drift",
 		// write policy
 		ruleCreateRequestNullability, computedFieldRuleID, readOnlyFieldRuleID, "forgeconv-guarded-field-written",

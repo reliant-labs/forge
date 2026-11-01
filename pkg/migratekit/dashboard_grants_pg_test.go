@@ -55,6 +55,15 @@ func dashboardRelease(migrations map[string]string, readOnly, dashboard string) 
 	return fsys
 }
 
+// dashUsersSQL is usersSQL with the catalog declaring what dashTables declares
+// to the renderer: the dashboard script grants a listed column only while its
+// comment still allows it (pkg/dbgrants, "The apply-time re-check").
+const dashUsersSQL = usersSQL + `
+COMMENT ON TABLE users IS 'forge:dashboard';
+COMMENT ON COLUMN users.id IS 'forge:dashboard';
+COMMENT ON COLUMN users.email IS 'forge:dashboard';
+COMMENT ON COLUMN users.api_token IS 'forge:secret';`
+
 // dashTables: users is marked (id, email allowed; api_token secret), notes is not.
 func dashTables() []dbgrants.Table {
 	users := usersTable(true)
@@ -93,7 +102,7 @@ func TestDashboardGrantsConvergeWhenTheRoleExists(t *testing.T) {
 	dash := useDashboardRole(t)
 	withDashboardRole(t, dsn, dash)
 
-	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL, "2_notes.up.sql": notesSQL},
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": dashUsersSQL, "2_notes.up.sql": notesSQL},
 		mustRender(t, dashTables()...), mustRenderDashboard(t, dash, dashTables()))
 	res := mustUp(t, fsys, dsn)
 	if res.Grants == nil || !res.Grants.Applied || !res.Grants.DashboardApplied || res.Grants.DashboardRoleMissing {
@@ -135,7 +144,7 @@ func TestDashboardGrantsSkipSilentlyWithoutTheRole(t *testing.T) {
 	withRole(t, dsn)
 	dash := useDashboardRole(t)
 
-	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL},
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": dashUsersSQL},
 		mustRender(t, dashTables()...), mustRenderDashboard(t, dash, dashTables()))
 	res := mustUp(t, fsys, dsn)
 	if res.Grants == nil || !res.Grants.Applied {
@@ -154,7 +163,7 @@ func TestDashboardGrantsApplyEvenWhenTheReadOnlyRoleIsMissing(t *testing.T) {
 	dash := useDashboardRole(t)
 	withDashboardRole(t, dsn, dash)
 
-	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL},
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": dashUsersSQL},
 		mustRender(t, dashTables()...), mustRenderDashboard(t, dash, dashTables()))
 	res := mustUp(t, fsys, dsn)
 	if res.Grants == nil || !res.Grants.RoleMissing || !res.Grants.DashboardApplied {
@@ -169,7 +178,7 @@ func TestDashboardGrantsCatchUpWhenTheRoleAppearsLater(t *testing.T) {
 	dsn := requirePG(t)
 	useRole(t)
 	dash := useDashboardRole(t)
-	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL, "2_notes.up.sql": notesSQL},
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": dashUsersSQL, "2_notes.up.sql": notesSQL},
 		mustRender(t, dashTables()...), mustRenderDashboard(t, dash, dashTables()))
 	if res := mustUp(t, fsys, dsn); res.Grants == nil || !res.Grants.DashboardRoleMissing {
 		t.Fatalf("first run: %+v, want the dashboard role missing", res.Grants)
@@ -198,7 +207,7 @@ func TestDashboardGrantsFailureFailsTheRun(t *testing.T) {
 	withDashboardRole(t, dsn, dash)
 
 	broken := fmt.Sprintf("DO $$ BEGIN RAISE EXCEPTION 'dashboard grants exploded'; END $$; -- %s", dash)
-	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL}, mustRender(t, dashTables()...), broken)
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": dashUsersSQL}, mustRender(t, dashTables()...), broken)
 
 	mg, err := Open(Options{FS: fsys, Dir: "migrations", DSN: dsn})
 	if err != nil {
@@ -236,7 +245,7 @@ func TestDashboardGrantsAreOptionalInTheEmbed(t *testing.T) {
 	dsn := requirePG(t)
 	useRole(t)
 	withRole(t, dsn)
-	res := mustUp(t, grantsRelease(map[string]string{"1_users.up.sql": usersSQL}, mustRender(t, usersTable(true))), dsn)
+	res := mustUp(t, grantsRelease(map[string]string{"1_users.up.sql": dashUsersSQL}, mustRender(t, usersTable(true))), dsn)
 	if res.Grants == nil || !res.Grants.Applied || res.Grants.DashboardApplied || res.Grants.DashboardRoleMissing {
 		t.Fatalf("Result.Grants = %+v, want only forge_ro applied when no dashboard script is embedded", res.Grants)
 	}
@@ -250,7 +259,7 @@ func TestApplyAppliesTheDashboardGrantsToo(t *testing.T) {
 	dash := useDashboardRole(t)
 	withDashboardRole(t, dsn, dash)
 	db := openRecordDB(t, dsn)
-	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL}, "", mustRenderDashboard(t, dash, dashTables()))
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": dashUsersSQL}, "", mustRenderDashboard(t, dash, dashTables()))
 	res, err := Apply(context.Background(), db, fsys, "migrations")
 	if err != nil {
 		t.Fatal(err)
@@ -274,7 +283,7 @@ func TestDashboardGrantsFailFastBehindABlockerAndTheNextRunAppliesThem(t *testin
 	useRole(t)
 	dash := useDashboardRole(t)
 	withDashboardRole(t, dsn, dash)
-	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL, "2_notes.up.sql": notesSQL},
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": dashUsersSQL, "2_notes.up.sql": notesSQL},
 		mustRender(t, dashTables()...), mustRenderDashboard(t, dash, dashTables()))
 	releaseBlocker := grantsBlocker(t, dsn)
 
@@ -364,7 +373,7 @@ func TestDashboardsOffRevokesEverythingAndTheRoleCannotLogIn(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	fsys := dashboardRelease(map[string]string{"1_users.up.sql": usersSQL, "2_notes.up.sql": notesSQL},
+	fsys := dashboardRelease(map[string]string{"1_users.up.sql": dashUsersSQL, "2_notes.up.sql": notesSQL},
 		"", mustRenderDashboard(t, dash, dashTables()))
 
 	// ON.
@@ -438,7 +447,7 @@ func TestSecurityDefinerFunctionsAreReported(t *testing.T) {
 	useRole(t)
 	withRole(t, dsn)
 	fsys := grantsRelease(map[string]string{
-		"1_users.up.sql": usersSQL,
+		"1_users.up.sql": dashUsersSQL,
 		"2_definer.up.sql": `CREATE FUNCTION get_token(uid TEXT) RETURNS TEXT LANGUAGE sql SECURITY DEFINER AS $$ SELECT api_token FROM users WHERE id = uid $$;
 CREATE FUNCTION invoker_fn() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;
 CREATE FUNCTION locked_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$;
@@ -461,4 +470,70 @@ REVOKE EXECUTE ON FUNCTION locked_definer() FROM PUBLIC;`,
 			t.Errorf("the exposure the warning describes does not exist: %v", err)
 		}
 	})
+}
+
+// TestDashboardRoleByLogin_UndeclaredAndStaleColumnsAreRefused acts as the
+// dashboard role the way a panel does: a password login, not SET ROLE from a
+// superuser session. Through migrator runs it pins the two fail-closed
+// properties of a marked table:
+//
+//   - a column a later migration adds is refused until a migration declares it,
+//     even after the grants are regenerated (they list it as undecided);
+//   - a declared column dropped and re-added under the same name, with the
+//     grants file NOT regenerated, is refused by the apply-time re-check, and
+//     the run reports it.
+func TestDashboardRoleByLogin_UndeclaredAndStaleColumnsAreRefused(t *testing.T) {
+	dsn := requirePG(t)
+	useRole(t)
+	dash := useDashboardRole(t)
+	withDashboardRole(t, dsn, dash)
+	const pw = "s3cret-panel"
+	if _, err := openRecordDB(t, dsn).Exec(fmt.Sprintf(`ALTER ROLE %s LOGIN PASSWORD '%s'`, dash, pw)); err != nil {
+		t.Fatal(err)
+	}
+	denied := func(q, what string) {
+		t.Helper()
+		wantDenied(t, loginAs(t, dsn, dash, pw, q), what)
+	}
+	allowed := func(q, what string) {
+		t.Helper()
+		if err := loginAs(t, dsn, dash, pw, q); err != nil {
+			t.Errorf("%s: %s: %v, want allowed", what, q, err)
+		}
+	}
+
+	migrations := map[string]string{"1_users.up.sql": dashUsersSQL, "2_notes.up.sql": notesSQL}
+	res := mustUp(t, dashboardRelease(migrations, "", mustRenderDashboard(t, dash, dashTables())), dsn)
+	if res.Grants == nil || !res.Grants.DashboardApplied || res.Grants.DashboardRefused != nil {
+		t.Fatalf("first run: Grants = %+v, want applied with nothing refused", res.Grants)
+	}
+	seed(t, dsn)
+	allowed(`SELECT id, email FROM users`, "declared columns")
+	denied(`SELECT api_token FROM users`, "a secret column")
+
+	// A column added later, and the grants regenerated: it is undecided.
+	migrations["3_phone.up.sql"] = `ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT '+1 555 0100';`
+	regenerated := dashTables()
+	regenerated[0].Columns = append(slices.Clone(regenerated[0].Columns), dbgrants.Column{Name: "phone"})
+	res = mustUp(t, dashboardRelease(migrations, "", mustRenderDashboard(t, dash, regenerated)), dsn)
+	if res.Grants == nil || !res.Grants.DashboardApplied {
+		t.Fatalf("second run: Grants = %+v, want applied", res.Grants)
+	}
+	denied(`SELECT phone FROM users`, "a column added later, undeclared")
+	denied(`SELECT * FROM users`, "star over a table with an undeclared column")
+	denied(`SELECT id FROM users WHERE phone LIKE '+1%'`, "an undeclared column in a WHERE")
+	allowed(`SELECT id, email FROM users`, "declared columns, after the column was added")
+
+	// The declared email column dropped and re-added under its name, and the
+	// grants file NOT regenerated: it still lists email.
+	migrations["4_email.up.sql"] = `ALTER TABLE users DROP COLUMN email; ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT 'raw@customer.test';`
+	res = mustUp(t, dashboardRelease(migrations, "", mustRenderDashboard(t, dash, regenerated)), dsn)
+	if res.Grants == nil || !res.Grants.DashboardApplied {
+		t.Fatalf("third run: Grants = %+v, want applied", res.Grants)
+	}
+	if want := []string{"public.users.email"}; !slices.Equal(res.Grants.DashboardRefused, want) {
+		t.Errorf("DashboardRefused = %v, want %v", res.Grants.DashboardRefused, want)
+	}
+	denied(`SELECT email FROM users`, "a re-added column a stale grants file lists")
+	allowed(`SELECT id FROM users`, "a declared column, under a stale grants file")
 }

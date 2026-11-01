@@ -63,7 +63,7 @@ func (f *pgFixture) converge(tables []Table) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	if err := Apply(context.Background(), f.db, script); err != nil {
+	if _, err := Apply(context.Background(), f.db, script); err != nil {
 		f.t.Fatalf("apply: %v\n%s", err, script)
 	}
 }
@@ -295,7 +295,7 @@ func TestConvergeFailsClosedOnAPrivilegeItCannotRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = Apply(ctx, f.db, script)
+	_, err = Apply(ctx, f.db, script)
 	if err == nil {
 		t.Fatal("the run converged while a privilege granted by another role still stands")
 	}
@@ -363,7 +363,7 @@ func TestConvergeAsANonSuperuserMigratorWithForeignObjects(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, `SET ROLE `+app); err != nil {
 		t.Fatal(err)
 	}
-	if err := Apply(ctx, conn, script); err != nil {
+	if _, err := Apply(ctx, conn, script); err != nil {
 		t.Fatalf("a non-superuser migrator could not converge: %v", err)
 	}
 	if _, err := conn.ExecContext(ctx, `RESET ROLE`); err != nil {
@@ -424,7 +424,7 @@ func TestConvergeFailsClosedOnADefaultPrivilegeItCannotRevoke(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, `SET ROLE `+migrator); err != nil {
 		t.Fatal(err)
 	}
-	err = Apply(ctx, conn, script)
+	_, err = Apply(ctx, conn, script)
 	if err == nil {
 		t.Fatal("the run converged while another role's default privilege still names the role")
 	}
@@ -460,7 +460,7 @@ func TestConvergeFailsClosedOnASchemaPrivilegeItCannotRevoke(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, `SET ROLE `+migrator); err != nil {
 		t.Fatal(err)
 	}
-	err = Apply(ctx, conn, script)
+	_, err = Apply(ctx, conn, script)
 	if err == nil {
 		t.Fatal("the run converged while a schema CREATE the migrator cannot revoke still stands")
 	}
@@ -475,10 +475,18 @@ func (f *pgFixture) convergeDashboard(tables []Table) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	if err := ApplyDashboard(context.Background(), f.db, script); err != nil {
+	if _, err := ApplyDashboard(context.Background(), f.db, script); err != nil {
 		f.t.Fatalf("apply: %v\n%s", err, script)
 	}
 }
+
+// dashCommentsSQL declares in the catalog what dashTablesFor declares to the
+// renderer: the script re-checks the comments at apply time (recheck.go).
+const dashCommentsSQL = `
+COMMENT ON TABLE events IS 'forge:dashboard';
+COMMENT ON COLUMN events.id IS 'forge:dashboard';
+COMMENT ON COLUMN events.model IS 'forge:dashboard';
+`
 
 func dashTablesFor() []Table {
 	return []Table{
@@ -490,7 +498,7 @@ func dashTablesFor() []Table {
 // The dashboard script serves a role only while it can log in: a NOLOGIN role
 // is revoked and granted nothing, and the same role granted again once it can.
 func TestDashboardScriptFollowsTheRolesLoginAttribute(t *testing.T) {
-	f := newPGFixture(t, convergeSchemaSQL)
+	f := newPGFixture(t, convergeSchemaSQL+dashCommentsSQL)
 	f.exec(`ALTER ROLE ` + f.role + ` LOGIN`)
 	f.convergeDashboard(dashTablesFor())
 	f.allowed(`SELECT model FROM events`, "enabled")

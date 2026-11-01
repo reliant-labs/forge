@@ -229,12 +229,19 @@ func TestCheckMarkers_ReadableNeedsAReason(t *testing.T) {
 func TestDashboardMarkersCoexistWithOtherMarkers(t *testing.T) {
 	table := func(c string) bool { return Table{Comment: c}.Dashboard() }
 	for comment, want := range map[string]bool{
-		"forge:dashboard":                     true,
-		"forge:dashboard — usage rollups":     true,
-		"forge:append-only forge:dashboard":   true,
-		"forge:dashboard forge:no-entity":     true,
-		"forge:no-entity, forge:dashboard.":   true,
-		"ledger of payments. forge:dashboard": true,
+		"forge:dashboard":                   true,
+		"forge:dashboard — usage rollups":   true,
+		"forge:append-only forge:dashboard": true,
+		"forge:dashboard forge:no-entity":   true,
+		"forge:no-entity\tforge:dashboard":  true,
+		"usage rollups\nforge:dashboard":    true,
+		"forge:dashboard\r\n":               true,
+		// Mentioned, not declared: an allow is never read out of prose.
+		"not forge:dashboard":                 false,
+		"forge:no-entity, forge:dashboard.":   false,
+		"ledger of payments. forge:dashboard": false,
+		"forge:dashboard=yes":                 false,
+		"forge:dashboard.":                    false,
 		"":                                    false,
 		"a dashboard table":                   false,
 		"forge:dashboard-ish":                 false,
@@ -270,13 +277,16 @@ func TestDashboardMarkersCoexistWithOtherMarkers(t *testing.T) {
 		"forge:dashboard":                          true,
 		"forge:dashboard — spend by model":         true,
 		"forge:go-type=x.Kind forge:dashboard":     true,
-		"forge:readable — a hash; forge:dashboard": true,
-		"":                         false,
-		"forge:no-dashboard":       false,
-		"forge:dashboard-ish":      false,
-		"forge:dashboards":         false,
-		"xforge:dashboard":         false,
-		"see docs/forge:dashboard": false,
+		"forge:dashboard forge:readable — a hash":  true,
+		"forge:readable — a hash; forge:dashboard": false,
+		"not forge:dashboard":                      false,
+		"  - forge:dashboard":                      false,
+		"":                                         false,
+		"forge:no-dashboard":                       false,
+		"forge:dashboard-ish":                      false,
+		"forge:dashboards":                         false,
+		"xforge:dashboard":                         false,
+		"see docs/forge:dashboard":                 false,
 	} {
 		if got := allow(comment); got != want {
 			t.Errorf("Column.DeclaresDashboard(%q) = %v, want %v", comment, got, want)
@@ -302,6 +312,10 @@ func TestCheckMarkers_DashboardPlacement(t *testing.T) {
 	if err := CheckMarkers(ok); err != nil {
 		t.Errorf("correctly placed markers are rejected: %v", err)
 	}
+	// A deny in prose is not ambiguous: it withholds either way.
+	if err := CheckMarkers([]Table{{Name: "t", Comment: "forge:dashboard", Columns: []Column{{Name: "c", Comment: "an email, so forge:no-dashboard"}}}}); err != nil {
+		t.Errorf("a deny after prose is rejected: %v", err)
+	}
 	for name, tc := range map[string]struct {
 		tables []Table
 		want   string
@@ -318,6 +332,12 @@ func TestCheckMarkers_DashboardPlacement(t *testing.T) {
 			"declares both forge:dashboard and forge:no-dashboard"},
 		"column allow and secret": {[]Table{{Name: "t", Comment: "forge:dashboard", Columns: []Column{{Name: "c", Comment: "forge:secret forge:dashboard"}}}},
 			"declares both forge:dashboard and forge:secret"},
+		// Prose that names the allow is refused, not guessed at.
+		"table allow in prose": {[]Table{{Name: "t", Comment: "not forge:dashboard"}}, "table t: forge:dashboard is mentioned but not declared"},
+		"column allow in prose": {[]Table{{Name: "t", Comment: "forge:dashboard", Columns: []Column{{Name: "c", Comment: "forge:readable — a hash; forge:dashboard"}}}},
+			"column t.c: forge:dashboard is mentioned but not declared"},
+		"column allow with an argument": {[]Table{{Name: "t", Comment: "forge:dashboard", Columns: []Column{{Name: "c", Comment: "forge:dashboard=yes"}}}},
+			"forge:dashboard is mentioned but not declared"},
 	} {
 		err := CheckMarkers(tc.tables)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

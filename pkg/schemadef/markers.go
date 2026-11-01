@@ -85,8 +85,18 @@ func MarkerTokens(comment string) []string {
 func CommentMarkerProblems(site MarkerSite, column, comment string) []MarkerProblem {
 	var out []MarkerProblem
 	allowed := SiteMarkers(site)
+	proseReported := false
 	for _, tok := range MarkerTokens(comment) {
 		if slices.Contains(allowed, tok) {
+			if tok == TableMarkerDashboard && (site == SiteTable || site == SiteColumn) && !proseReported && !dashboardDeclaredRE.MatchString(comment) {
+				proseReported = true
+				out = append(out, MarkerProblem{Marker: tok, Prose: true, Problem: fmt.Sprintf(
+					"%s is mentioned but not declared: it grants the dashboard role access, so it is read only as an exact token "+
+						"in the comment's marker list — the whitespace-separated forge:* tokens a line opens with "+
+						"(`'%s'`, `'%s — <prose>'`, `'forge:go-type=… %s'`). Move it to the front of the comment, "+
+						"or reword the prose so it does not name the marker",
+					tok, tok, tok, tok)})
+			}
 			if tok == ColumnMarkerReadable && site == SiteColumn {
 				if reason, _ := readableReason(comment); reason == "" {
 					out = append(out, MarkerProblem{Marker: tok, Problem: fmt.Sprintf(
@@ -179,6 +189,10 @@ type MarkerProblem struct {
 	Marker string
 	// Problem is the sentence saying why it does nothing and what to do.
 	Problem string
+	// Prose: a known access-widening marker the comment mentions outside its
+	// marker list (MarkerListPattern), so it is not declared. Its own class
+	// because the lint lane rolls it out as its own rule.
+	Prose bool
 }
 
 // CheckMarkers checks every catalog comment of the applied schema — table,

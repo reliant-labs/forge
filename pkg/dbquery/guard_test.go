@@ -337,6 +337,29 @@ func TestCheck_RefusesDeniedFunctions(t *testing.T) {
 		// A multi-byte identifier continues through $ and before a quote.
 		{`SELECT 1 AS é$$, set_config('work_mem','1GB',true) AS y, 2 AS ü$$`, "denied_function"},
 		{`SELECT U&"set\005fconfig"('statement_timeout', '0', false)`, "unicode_identifier"},
+		// UESCAPE puts a clause between the identifier and "(" (round 3 of the
+		// control-plane#1729 review): every U&"..." identifier is refused,
+		// wherever it sits.
+		{`SELECT U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT u&"set!005fconfig" uescape '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT pg_catalog.U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT U&"set_config" UESCAPE '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT U&"set!005fconfig" UESCAPE '!' /* gap */ ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT * FROM U&"ts!005fstat" UESCAPE '!' ('SELECT 1')`, "unicode_identifier"},
+		{`SELECT U&"query!005fto!005fxml" UESCAPE '!' ('select 1', true, false, '')`, "unicode_identifier"},
+		{`SELECT U&"pg!005fadvisory!005flock" UESCAPE '!' (1)`, "unicode_identifier"},
+		{`EXPLAIN (ANALYZE) SELECT U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT U&"set_config"('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT U&"anything" FROM t`, "unicode_identifier"},
+		{`SELECT a FROM U&"t"`, "unicode_identifier"},
+		// Attribute notation calls a one-argument function with no parentheses:
+		// (x).ts_stat is ts_stat(x). A denied name is refused wherever it is.
+		{`SELECT (x)."ts_stat" FROM (SELECT 'SELECT 1'::text AS x) t`, "denied_function"},
+		{`SELECT ('SELECT 1'::text).ts_stat`, "denied_function"},
+		{`SELECT (1::bigint).pg_advisory_lock`, "denied_function"},
+		{`SELECT * FROM ROWS FROM (set_config('work_mem','1GB',true)) x`, "denied_function"},
+		{`SELECT set_config FROM t`, "denied_function"},
+		{`SELECT "set_config" FROM t`, "denied_function"},
 		{`SELECT ts_stat('SELECT 1')`, "denied_function"},
 		{`SELECT query_to_xml('select 1', true, false, '')`, "denied_function"},
 		{`SELECT query_to_xmlschema('select 1', true, false, '')`, "denied_function"},
@@ -366,7 +389,9 @@ func TestCheck_RefusesDeniedFunctions(t *testing.T) {
 	}
 }
 
-// A denied name that is not a call, or sits in data, is not refused.
+// A denied name inside data (a literal, a comment, a dollar-quoted body) is not
+// refused, nor is a longer name that merely contains one. A U&'...' STRING is
+// data too: only a Unicode-escaped identifier is refused.
 func TestCheck_DeniedNamesThatAreNotCallsPass(t *testing.T) {
 	t.Parallel()
 	for _, sql := range []string{
@@ -374,8 +399,6 @@ func TestCheck_DeniedNamesThatAreNotCallsPass(t *testing.T) {
 		`SELECT $q$set_config('statement_timeout','0',false)$q$ AS note`,
 		"SELECT 1 -- set_config('statement_timeout','0',false)\n",
 		`SELECT 1 /* set_config(...) */`,
-		`SELECT set_config FROM t`,
-		`SELECT "set_config" FROM t`,
 		`SELECT lo_count, ts_rewrite_count FROM t`,
 		`SELECT lo_total(x) FROM t`,
 		`SELECT name'x' AS typed, E'it\'s' AS escaped`,
@@ -383,6 +406,7 @@ func TestCheck_DeniedNamesThatAreNotCallsPass(t *testing.T) {
 		"SELECT 'a'\n'b' AS joined",
 		`SELECT xpath('/a', '<a/>'::xml)`,
 		`SHOW work_mem`,
+		`SELECT U&'d\0061t\+000061' AS s, U&'d!0061t' UESCAPE '!' AS t`,
 		`SELECT 1 AS reset_count`,
 	} {
 		if _, err := Check(sql); err != nil {

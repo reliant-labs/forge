@@ -330,12 +330,15 @@ func run(ctx context.Context, db Beginner, sql string, opts Options, lim bounds,
 	}()
 
 	if _, err := tx.Exec(ctx,
+		// Qualified with pg_catalog: a database or role default search_path
+		// that puts a schema ahead of pg_catalog would otherwise let a
+		// same-named function there stand in for set_config.
 		// standard_conforming_strings is pinned on because the guard lexes a
 		// plain '...' string the way that setting reads it: with it off (a
 		// database or role default can switch it off), a backslash would escape
 		// the quote and the server would read a different statement than the
 		// one the guard judged.
-		`SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true), set_config('idle_in_transaction_session_timeout', $3, true), set_config('standard_conforming_strings', 'on', true)`,
+		`SELECT pg_catalog.set_config('statement_timeout', $1, true), pg_catalog.set_config('lock_timeout', $2, true), pg_catalog.set_config('idle_in_transaction_session_timeout', $3, true), pg_catalog.set_config('standard_conforming_strings', 'on', true)`,
 		strconv.FormatInt(timeout.Milliseconds(), 10)+"ms",
 		strconv.FormatInt(lim.lockTimeout.Milliseconds(), 10)+"ms",
 		strconv.FormatInt(lim.idleTimeout.Milliseconds(), 10)+"ms",

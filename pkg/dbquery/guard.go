@@ -23,16 +23,16 @@ var explainable = map[string]bool{"SELECT": true, "WITH": true, "TABLE": true, "
 // SELECT, WITH, TABLE, VALUES, SHOW or EXPLAIN, and refuses EXPLAIN ANALYZE
 // over anything but a SELECT, because ANALYZE executes what it explains.
 //
-// It also refuses SET and RESET by name, and a call to any function in
-// [deniedFunctions]: the ones that change the session (set_config, which a
-// read-only transaction allows and through which a query can raise its own
-// work_mem or drop its statement_timeout), run SQL text the guard never saw
+// It also refuses SET and RESET by name, and any identifier that names a
+// function in [deniedFunctions]: the ones that change the session (set_config,
+// which a read-only transaction allows and through which a query can raise its
+// own work_mem or drop its statement_timeout), run SQL text the guard never saw
 // (ts_stat, ts_rewrite, query_to_xml, dblink, crosstab), take locks that outlive
-// the statement, or reach the server's administration. A name is a call when an
-// opening parenthesis follows it, schema-qualified or quoted alike; a column
-// that happens to share a name is not refused. A Unicode-escaped identifier
-// (U&"...") followed by a parenthesis is refused outright, since its spelling
-// can hide the name.
+// the statement, or reach the server's administration. The name is refused
+// wherever it appears, schema-qualified or quoted alike, since attribute
+// notation calls a function without parentheses; and every Unicode-escaped
+// identifier (U&"...", with or without UESCAPE) is refused, since its spelling
+// can hide the name. See [deniedIdentifier].
 //
 // IT IS NOT THE SECURITY BOUNDARY. A WITH can still carry a data-modifying
 // CTE and a SELECT can still call nextval(); the read-only transaction [Run]
@@ -81,7 +81,7 @@ func Check(sql string) (leader string, err error) {
 	if !allowedLeaders[leader] {
 		return "", refused("not_read_only", fmt.Sprintf("only SELECT, WITH, TABLE, VALUES, SHOW and EXPLAIN statements are allowed; got %s", leader))
 	}
-	if err := deniedCall(stmt); err != nil {
+	if err := deniedIdentifier(stmt); err != nil {
 		return "", err
 	}
 	if leader != "EXPLAIN" {
@@ -247,18 +247,26 @@ func deniedFunction(name string) (string, bool) {
 	return "", false
 }
 
-// deniedCall refuses the first call in stmt to a denied function: a word or
-// quoted identifier directly followed by "(" (comments are already gone, so
-// `set_config /* x */ (` is a call too).
-func deniedCall(stmt []token) error {
-	for i := 0; i+1 < len(stmt); i++ {
-		t := stmt[i]
-		if next := stmt[i+1]; next.kind != tokPunct || next.text != "(" {
-			continue
-		}
+// deniedIdentifier refuses the first identifier in stmt that names a denied
+// function, or that is spelled with Unicode escapes.
+//
+// A denied name is refused wherever it appears, not only before "(":
+// Postgres's attribute notation calls a one-argument function with no
+// parentheses at all ((x).ts_stat is ts_stat(x)), and refusing the name
+// everywhere means not having to know every position a call can take. The
+// cost is that a column or table that shares a denied name cannot be named in a
+// query; none of the names is a plausible column.
+//
+// A U&"..." identifier is refused wherever it appears, with or without a
+// UESCAPE clause: its spelling can hide the name it stands for
+// (U&"set!005fconfig" UESCAPE '!' is set_config), and a query has no need for
+// one. It is the only syntax in which an identifier's spelling and its name
+// differ by more than case and the "" escape, both of which the lexer undoes.
+func deniedIdentifier(stmt []token) error {
+	for _, t := range stmt {
 		switch t.kind {
 		case tokUnicodeIdent:
-			return refused("unicode_identifier", "a Unicode-escaped identifier (U&\"...\") cannot name a function in a query")
+			return refused("unicode_identifier", "a Unicode-escaped identifier (U&\"...\") is not allowed in a query")
 		case tokWord, tokQuotedIdent:
 			if why, bad := deniedFunction(t.text); bad {
 				return refused("denied_function", fmt.Sprintf("%s() is not allowed in a query: %s", strings.ToLower(t.text), why))

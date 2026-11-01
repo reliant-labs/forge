@@ -777,10 +777,22 @@ func TestRun_SessionSettingsCannotBeChangedPastTheGuard(t *testing.T) {
 		`SELECT * FROM ts_stat('SELECT set_config(''work_mem'',''2GB'',true)::tsvector')`,
 		`SELECT query_to_xml('SELECT set_config(''work_mem'',''2GB'',true)', true, false, '')`,
 		`SELECT "pg_catalog"."set_config"('work_mem', '1GB', true)`,
+		`SELECT (x)."ts_stat" FROM (SELECT 'SELECT pg_catalog.set_config(''work_mem'',''5GB'',true)::tsvector'::text AS x) t`,
 	} {
 		_, err := Run(context.Background(), conn, sql, Options{})
 		if e := wantKind(t, err, KindRefused); e.Reason != "denied_function" {
 			t.Errorf("%q refused as %q, want denied_function", sql, e.Reason)
+		}
+	}
+	for _, sql := range []string{
+		`SELECT U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true) AS y, current_setting('work_mem') AS w`,
+		`SELECT pg_catalog.U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true)`,
+		`SELECT * FROM U&"ts!005fstat" UESCAPE '!' ('SELECT pg_catalog.set_config(''work_mem'',''2GB'',true)::tsvector')`,
+		`SELECT U&"pg!005fadvisory!005flock" UESCAPE '!' (1)`,
+	} {
+		_, err := Run(context.Background(), conn, sql, Options{})
+		if e := wantKind(t, err, KindRefused); e.Reason != "unicode_identifier" {
+			t.Errorf("%q refused as %q, want unicode_identifier", sql, e.Reason)
 		}
 	}
 	// What the guard accepts runs with the transaction's own work_mem.
@@ -811,5 +823,27 @@ func TestRun_StringsAreReadAsTheGuardReadsThem(t *testing.T) {
 	}
 	if got := mustJSON(t, res.Rows[0]); got != `["a\\",1]` {
 		t.Fatalf("row = %s", got)
+	}
+}
+
+// The limits Run sets go through pg_catalog.set_config, so a search_path that
+// puts a schema ahead of pg_catalog (a database or role default can) does not
+// let a same-named function there take its place.
+func TestRun_SetsItsLimitsThroughPgCatalogWhateverTheSearchPath(t *testing.T) {
+	conn := newConn(t)
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `CREATE FUNCTION public.set_config(text, text, boolean) RETURNS text
+		LANGUAGE sql AS $$ SELECT 'shadowed'::text $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `SET search_path = public, pg_catalog`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(ctx, conn, `SELECT pg_catalog.current_setting('statement_timeout') AS st`, Options{Timeout: 7 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Rows[0][0]; got != "7s" {
+		t.Fatalf("statement_timeout = %v: the shadowing set_config was called instead of pg_catalog's", got)
 	}
 }

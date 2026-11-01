@@ -1,9 +1,9 @@
 # Files a `flake:suspected` issue for a test that failed on main, then passed
 # when rerun alone on the same commit.
 #
-# WHY: owner policy (2026-10-30), "I'd rather remove a test than have it be
-# flaky". A flaky test is fixed within the day or removed with a
-# `flake:removed` issue; it never keeps main red. The merge tier's flake gate
+# WHY: owner policy (2026-11-01): flaky = delete immediately; rewrite as a new
+# deterministic test if it's worth having. A deleted test gets a
+# `flake:removed` issue; a flake never keeps main red. The merge tier's flake gate
 # keeps NEW flaky tests out (each added or edited test runs three times). This
 # is the net for EXISTING ones: the 2026-10-30 purge found tests that failed
 # one main run in five for days with nobody noticing past "main is red again".

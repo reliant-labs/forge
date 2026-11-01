@@ -79,7 +79,7 @@ For UI-level end-to-end tests:
 ## Rules
 
 - **Never hit production URLs** — all tests target the local stack only
-- **A flaky test never blocks a merge** — fix it within the day, or delete the test (or its flaky assertion) and open an issue holding its body, failure signature and frequency so coverage is restored on purpose. A failure the host causes (no Docker, an exhausted inotify budget) is a `t.Skip` naming the missing resource, never a failure
+- **Flaky = delete immediately; rewrite as a new deterministic test if it's worth having** — delete the test (or its flaky assertion) rather than root-causing it, and open an issue holding its body and failure signature. A failure the host causes (no Docker, an exhausted inotify budget) is a `t.Skip` naming the missing resource, never a failure
 - **No test interdependence** — each test stands alone
 
 ## When to Drop Down a Level

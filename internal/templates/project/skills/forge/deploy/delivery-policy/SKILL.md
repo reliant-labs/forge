@@ -39,8 +39,8 @@ and the ledger, and nothing refuses a release because of it. The last column say
 which task makes it real.
 
 Signing in particular is **not produced yet**, not merely unchecked: `forge env
-deploy`, the hosted builder and the control plane's converger push every bundle
-and image unsigned, and no Flux `OCIRepository` carries `spec.verify`. So never
+deploy` and the hosted builder push every bundle and image unsigned, and the
+control plane's converger writes no `spec.verify` on any Flux `OCIRepository`. So never
 report `signing` or `flux_verify` at their `enforce` defaults as a signature that
 was made or verified. (The GitHub Actions `build-images.yml` that `forge project
 new` scaffolds does sign the images it pushes, keyless with GitHub's OIDC; nothing

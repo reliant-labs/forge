@@ -5177,9 +5177,9 @@ schema Signing:
 
     Default mode `enforce`: once signing lands, forge and the platform builder
     sign on your behalf, so there is nothing for you to set up. NOT YET: today
-    nothing signs a bundle or an image (`forge env deploy`, the hosted builder
-    and the control plane's converger all push unsigned), so this mode is
-    recorded and changes nothing. Load `deploy/delivery-policy`.
+    nothing signs a bundle or an image (`forge env deploy` and the hosted
+    builder push them unsigned), so this mode is recorded and changes
+    nothing. Load `deploy/delivery-policy`.
     """
     mode: ControlMode = "enforce"
     key: "org_kms" | "customer" | "keyless" = "org_kms"

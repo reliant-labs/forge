@@ -568,32 +568,9 @@ func TestReleaseForgeScript_AttachesBinariesSyncsNpmAndDispatchesBrew(t *testing
 	if got := gitOut(t, origin, "show", "main:npm/package.json"); !strings.Contains(got, `"node": ">=18"`) {
 		t.Errorf("syncing npm/package.json clobbered other fields:\n%s", got)
 	}
-	if !strings.Contains(out, "npm shim not published") {
-		t.Errorf("without --publish-npm the script must say it did not publish:\n%s", out)
-	}
-}
-
-func TestReleaseForgeScript_PublishNpmRunsPublishAndVerify(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs a build and a git push")
-	}
-	repo, _ := githubFixtureRepo(t)
-	gh, _ := fakeGH(t, "", false)
-	dir := t.TempDir()
-	npmLog := filepath.Join(dir, "npm.log")
-	npm := filepath.Join(dir, "npm")
-	if err := os.WriteFile(npm, []byte("#!/usr/bin/env bash\necho \"NPM(cwd=$(basename \"$PWD\")): $*\" >> '"+npmLog+"'\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := runForgeScriptEnv(t, repo, []string{"FORGE_RELEASE_GH=" + gh, "FORGE_RELEASE_NPM=" + npm}, "--publish-npm", "v0.2.0")
-	if err != nil {
-		t.Fatalf("release failed: %v\n%s", err, out)
-	}
-	logged, _ := os.ReadFile(npmLog)
-	for _, want := range []string{"NPM(cwd=npm): publish --access public", "view @reliantlabs/forge@0.2.0 version"} {
-		if !strings.Contains(string(logged), want) {
-			t.Errorf("npm was not driven as expected; missing %q in:\n%s", want, logged)
-		}
+	// npm is published by CI (trusted publishing), never from this machine:
+	// the script names the workflow that does it.
+	if !strings.Contains(out, "release-npm.yml publishes @reliantlabs/forge 0.2.0") {
+		t.Errorf("the script must name the workflow that publishes the npm shim:\n%s", out)
 	}
 }

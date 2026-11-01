@@ -112,15 +112,16 @@ The HyperDX renderer **skips** them (HyperDX's own UI already plays replay and
 searches spans), so a local `forge env up` stack shows the frontend dashboard
 without them.
 
-Three more kinds, and one field, are queries the console draws and HyperDX
-has no equivalent for, so HyperDX skips them too:
+These kinds, and one field, are drawn by the console and have no HyperDX
+equivalent, so HyperDX skips them too:
 
 | kind / field | takes | draws |
 |---|---|---|
 | `bar` | `groupBy` (required), `series`, `limit` (default 10) | top-N bars: one group per `groupBy` value, the `limit` largest by the first series |
 | `heatmap` | one series: `agg: count` plus a numeric `field` (`span.duration`); `signal` traces or logs | time across, value buckets up, each cell the number of events in it |
 | `sql` | `sql`: one read-only SELECT; no `series`, `where` or `groupBy`; `signal` optional | the rows; a first `DateTime` column draws a time series |
-| `postgres` | `postgres: {database, sql, draw?, time?, values?, group?}`; no `signal`, `series`, `sql`, `where` or `groupBy` | a live read-only query of one of your Postgres databases (below) |
+| `postgres` | `postgres: {database, sql, draw?, time?, values?, group?}`; no `signal`, `series`, `sql`, `where` or `groupBy` | a live read-only query of one of your Postgres databases (`observability/dashboards/panels`) |
+| `text` | `markdown`; nothing else | prose: a heading, what the dashboard is for, a runbook link |
 | `formula` on `line` / `number` | `"A / B * 100"`: series by position (A, B, ... J), numbers, `+ - * /`, parentheses | that one expression instead of the series; `x / 0` is 0, as in `ratio` |
 
 `limit` (1 to 200) also keeps the top rows of a `table`. A `sql` statement runs
@@ -134,49 +135,9 @@ ClickHouse parameters: `{from:DateTime64(9)}`, `{to:DateTime64(9)}`,
 (over any other scope a statement that uses it is refused: choose one
 environment).
 
-### Postgres panels
-
-A `postgres` panel runs one statement against a database of yours, live, each
-time the panel loads. It is the panel for what only the database knows: signups
-per hour, rows by state, the size of a queue.
-
-```json
-{
-  "id": "signups",
-  "title": "Signups per hour",
-  "kind": "postgres",
-  "postgres": {
-    "database": "app",
-    "draw": "line",
-    "time": "t",
-    "values": ["signups"],
-    "sql": "SELECT date_trunc('hour', created_at) AS t, count(*) AS signups FROM users WHERE created_at >= $1 AND created_at < $2 GROUP BY 1 ORDER BY 1"
-  }
-}
-```
-
-- `database` is a lowercase name (`a-z`, `0-9`, `-`, `_`; at most 63 bytes),
-  the same name `forge db query` takes.
-- `sql` is one read-only `SELECT`, `WITH`, `TABLE` or `VALUES` statement of at
-  most 16 KiB, checked by the same guard as `forge db query`. It may use three
-  bound parameters, never spliced: `$1` the start of the dashboard's range
-  (`timestamptz`, inclusive), `$2` its end (`timestamptz`, exclusive) and `$3`
-  a bucket width in seconds suited to the range (`int4`). A statement need not
-  use them, but one that uses `$2` must use `$1` as well (Postgres cannot type a
-  skipped parameter), and none may use `$4`. Give a parameter with no context a
-  cast (`$3::int4`).
-- `draw` is `auto` (the default), `line`, `number`, `table` or `bar`. Auto draws
-  a line when `time` is set, a number for one row of one value, a table
-  otherwise. `line` requires `time`, the column holding each row's timestamp;
-  `number` takes at most one of `values`, the numeric columns to plot (empty
-  means every column that is not `time` or in `group`); `group` names the
-  columns that split rows into one series each. Column names are 1 to 63 bytes.
-- The statement is read only and runs at read committed with a 5 s statement
-  timeout and a 1 s lock timeout, so a dashboard never blocks other queries and
-  waits behind no writer. Keep it cheap: an indexed range scan on the time
-  column, not a table scan.
-
-HyperDX skips a `postgres` panel, as it does the other console kinds.
+Postgres panels (a live read-only query of your own database), `text`
+panels (Markdown) and `display` (area, stacked, bars, pie, donut, gauge and
+funnel pictures of the same query) are in `observability/dashboards/panels`.
 
 A `table` or `number` series may carry `thresholds: {good, poor}`
 to grade its value like Core Web Vitals do; renderers that cannot colour ignore
@@ -331,7 +292,7 @@ They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so 
 
 A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/process-<workload>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
 
-Every file is validated at the cut, and `forge obs dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel, postgres`.
+Every file is validated at the cut, and `forge obs dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel, postgres, text`.
 
 The file checks cannot know what your telemetry holds. `forge obs dashboards check --against <env>` also looks up every metrics panel series in that env over `--since` (24h): a `metricType` that is not the kind the metric is stored as fails the check, and a metric with no data is listed (a misspelt name, one the collector drops or renames, such as the filter processor's `otelcol_processor_filter_logs.filtered`, or a counter that only exists once something fails). `--strict` fails on those too. In the console a series with no data draws an empty panel with a `metric_absent` note, never an error.
 

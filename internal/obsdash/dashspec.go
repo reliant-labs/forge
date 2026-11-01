@@ -69,6 +69,7 @@ const (
 	KindIssues          = dashspec.KindIssues
 	KindSessions        = dashspec.KindSessions
 	KindFunnel          = dashspec.KindFunnel
+	KindText            = dashspec.KindText
 	FunnelBySession     = dashspec.FunnelBySession
 	FunnelByUser        = dashspec.FunnelByUser
 	DefaultFunnelWindow = dashspec.DefaultFunnelWindow

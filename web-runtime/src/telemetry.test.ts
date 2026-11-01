@@ -1240,3 +1240,41 @@ describe("app.client, visitor.id and user_identified", () => {
     expect(addAction).not.toHaveBeenCalled();
   });
 });
+
+describe("initBrowserTelemetry on an origin that drops cookies", () => {
+  function stubDomDroppingCookies() {
+    const store = new Map<string, string>();
+    stubDom();
+    vi.stubGlobal("window", {
+      ...(globalThis.window as unknown as Record<string, unknown>),
+      localStorage: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => void store.set(k, v),
+        removeItem: (k: string) => void store.delete(k),
+      },
+    });
+    const doc = {
+      get cookie() {
+        return "";
+      },
+      set cookie(_v: string) {},
+    };
+    vi.stubGlobal("document", doc);
+    return { doc, store };
+  }
+
+  it("keeps the SDK's session cookie in localStorage before the SDK starts", async () => {
+    const { doc, store } = stubDomDroppingCookies();
+    let seenAtInit = "";
+    init.mockImplementation(() => {
+      // What the SDK's session module would read and write as it starts.
+      doc.cookie = "__rum_sid=abc; path=/;max-age=900;SameSite=Strict";
+      seenAtInit = doc.cookie;
+    });
+    const { t } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    expect(init).toHaveBeenCalledTimes(1);
+    expect(seenAtInit).toBe("__rum_sid=abc");
+    expect(store.get(t.RUM_SESSION_STORAGE_KEY)).toContain('"v":"abc"');
+  });
+});

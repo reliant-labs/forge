@@ -52,6 +52,16 @@
 // SDK has no session sampler, so the decision is made here, once, and held in
 // sessionStorage for the tab's session.
 //
+// ── One session per visit, even where cookies are dropped ────────────────
+//
+// The SDK keeps its session id only in the `__rum_sid` cookie and mints a new
+// one whenever it cannot read that cookie back, which it checks every minute.
+// An origin that drops cookies (an Electron renderer on a custom scheme such
+// as `app://`) therefore got a new session every minute. Before init, the
+// runtime probes whether cookies persist and, when they do not, keeps that one
+// cookie in localStorage with the same 15-minute inactivity and 4-hour limits
+// (session-cookie-fallback.ts). Origins whose cookies work are untouched.
+//
 // ── Network URLs carry no query string ───────────────────────────────────
 //
 // fetch/XHR spans record the request URL, and a query string is where tokens,
@@ -84,12 +94,20 @@ import {
   FilteredErrorCounter,
 } from "./benign-errors.js";
 import { setExceptionReporter } from "./error-reporter.js";
+import { installSessionCookieFallback } from "./session-cookie-fallback.js";
 import { registerTelemetryStartup } from "./telemetry-gate.js";
 import {
   isTelemetryDisabled,
   setTelemetrySink,
   type TrackValue,
 } from "./track.js";
+
+export {
+  cookiesPersist,
+  installSessionCookieFallback,
+  RUM_SESSION_COOKIE,
+  RUM_SESSION_STORAGE_KEY,
+} from "./session-cookie-fallback.js";
 
 export {
   type BenignErrorClassifier,
@@ -305,6 +323,8 @@ async function start(
       return false;
     }
     const replay = decideReplay(config, sessionStorageOrNull(), Math.random);
+    // Before init: the SDK reads its session cookie as it starts.
+    keepSessionWithoutCookies();
     hdx.init(
       buildSdkOptions({ ...config, replay }, ingest, window.location.origin),
     );
@@ -816,6 +836,18 @@ function clampRate(rate: number | undefined): number {
     return 0;
   }
   return Math.min(1, Math.max(0, rate));
+}
+
+/** See "One session per visit" in the header. Never throws. */
+function keepSessionWithoutCookies(): void {
+  try {
+    if (typeof document === "undefined") {
+      return;
+    }
+    installSessionCookieFallback(document, window.localStorage ?? null);
+  } catch {
+    // localStorage access can throw (blocked storage): keep the SDK default.
+  }
 }
 
 function sessionStorageOrNull(): DecisionStore | null {

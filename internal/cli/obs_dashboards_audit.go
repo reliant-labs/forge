@@ -880,7 +880,7 @@ func (a *dashAudit) probe(ap *auditPanel, op obsquery.Panel) *auditProbe {
 	var catalogMissing, catalogFailed bool
 	if len(ap.Metrics) > 0 {
 		for _, m := range ap.Metrics {
-			c := a.metricCatalog(m, wide, op)
+			c := a.metricCatalog(m, wide, op, ap.scope == dashspec.ScopePlatform)
 			pr.Catalog = append(pr.Catalog, c)
 			switch {
 			case c.Error != "":
@@ -984,13 +984,16 @@ func withoutFilters(op obsquery.Panel) (obsquery.Panel, bool) {
 	return bare, changed
 }
 
-// metricCatalog looks one metric up in the env's catalog over the probe range.
-// One lookup per metric and range per run: the answer depends on the range (a
-// 7d and a 28d probe can disagree), so that is the key, and concurrent panels
+// metricCatalog looks one metric up in the catalog of the dashboard's scope
+// over the probe range: the selected env's, or, for a platform dashboard
+// (noEnv), every env's, as its panels are read — platform telemetry carries no
+// env id, so an env-bound catalog would call its metrics unseen. One lookup
+// per question per run: the answer depends on the range (a 7d and a 28d probe
+// can disagree) and on the scope, so both are the key, and concurrent panels
 // asking the same question share one read. The declared type is the panel's
 // own, never cached.
-func (a *dashAudit) metricCatalog(name string, wide obsbackend.Narrow, op obsquery.Panel) auditCatalog {
-	key := catalogKey{metric: name, from: wide.Range.From.UnixNano(), to: wide.Range.To.UnixNano()}
+func (a *dashAudit) metricCatalog(name string, wide obsbackend.Narrow, op obsquery.Panel, noEnv bool) auditCatalog {
+	key := catalogKey{metric: name, from: wide.Range.From.UnixNano(), to: wide.Range.To.UnixNano(), noEnv: noEnv}
 	a.mu.Lock()
 	e, ok := a.catalog[key]
 	if !ok {
@@ -1001,7 +1004,7 @@ func (a *dashAudit) metricCatalog(name string, wide obsbackend.Narrow, op obsque
 	if ok {
 		<-e.done
 	} else {
-		e.c = a.lookupMetric(name, wide)
+		e.c = a.lookupMetric(name, wide, noEnv)
 		close(e.done)
 	}
 	c := e.c
@@ -1013,10 +1016,15 @@ func (a *dashAudit) metricCatalog(name string, wide obsbackend.Narrow, op obsque
 	return c
 }
 
-// catalogKey is one catalog question: a metric over a range.
+// catalogKey is one catalog question: a metric over a range, in one env or
+// in none. A project and an org dashboard ask the same question — the catalog
+// is never narrowed to a project, so a project's answer can only be wider than
+// its panels' read, which can turn metric_never_seen into no_data_anywhere but
+// never the reverse.
 type catalogKey struct {
 	metric   string
 	from, to int64
+	noEnv    bool
 }
 
 // catalogEntry is a catalog answer, ready once done is closed.
@@ -1025,12 +1033,16 @@ type catalogEntry struct {
 	c    auditCatalog
 }
 
-func (a *dashAudit) lookupMetric(name string, wide obsbackend.Narrow) auditCatalog {
+// lookupMetric asks the backend's catalog. A backend that cannot answer for
+// the scope asked fails the lookup, and a failed lookup is probe_failed, never
+// metric_never_seen: absence is only claimed from a catalog that read the
+// panel's own scope.
+func (a *dashAudit) lookupMetric(name string, wide obsbackend.Narrow, noEnv bool) auditCatalog {
 	c := auditCatalog{Metric: name}
 	var res obsbackend.MetricsListResult
 	_, err := a.guarded(func() error {
 		var err error
-		res, err = a.b.MetricsList(a.ctx, obsbackend.MetricsListRequest{Narrow: wide, NameContains: name, Limit: obsquery.ListMetricsMax})
+		res, err = a.b.MetricsList(a.ctx, obsbackend.MetricsListRequest{Narrow: wide, NameContains: name, Limit: obsquery.ListMetricsMax, NoEnv: noEnv})
 		return err
 	})
 	if err != nil {

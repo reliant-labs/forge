@@ -315,6 +315,40 @@ func TestQuerySQLBindsTheScopeAndRefusesWrites(t *testing.T) {
 	}
 }
 
+// An alert rule's query names its env as {reliant_env_id:String}. Locally the
+// scope is one environment whose rows carry the empty reliant.env.id, so the
+// parameter is bound to it (as {env_ids} is) and the rule runs as written; over
+// no environment the statement is refused before ClickHouse sees it, as the
+// control plane refuses it; and a --param may not shadow it.
+func TestQuerySQLBindsTheEnvIDOfTheOneEnvironment(t *testing.T) {
+	const rule = "SELECT count() AS value FROM otel_logs WHERE ResourceAttributes['reliant.env.id'] = {reliant_env_id:String}"
+	fr := &fakeRunner{answers: []fakeAnswer{{"otel_logs", Result{Columns: []Column{{Name: "value", Type: "UInt64"}}, Rows: [][]any{{num64("4")}}}}}}
+	if _, err := (Local{Env: "dev", Runner: fr}).Query(context.Background(), QueryRequest{Narrow: rng(), SQL: rule, Limit: 5}); err != nil {
+		t.Fatal(err)
+	}
+	p := fr.ran[0].Params
+	if v, ok := p[obsquery.EnvIDParam]; !ok || v != "" || p[dashspec.SQLParamEnvIDs] != "['']" {
+		t.Errorf("reliant_env_id = %q (bound %v), env_ids = %s; want both the local rows' empty id", v, ok, p[dashspec.SQLParamEnvIDs])
+	}
+	if fr.ran[0].SQL != rule {
+		t.Errorf("the statement runs as written")
+	}
+
+	ran := len(fr.ran)
+	_, err := (Local{Runner: fr}).Query(context.Background(), QueryRequest{Narrow: rng(), SQL: rule, Limit: 5})
+	if be, ok := err.(*Error); !ok || be.ExitCode() != ExitWrong || !strings.Contains(err.Error(), "choose a single environment") {
+		t.Errorf("no environment: want exit 1 asking for a single environment, got %#v", err)
+	}
+	if len(fr.ran) != ran {
+		t.Error("a statement with an unbound reliant_env_id reached ClickHouse")
+	}
+
+	_, err = (Local{Env: "dev", Runner: fr}).Query(context.Background(), QueryRequest{Narrow: rng(), SQL: rule, Params: map[string]string{obsquery.EnvIDParam: "x"}, Limit: 5})
+	if err == nil || !strings.Contains(err.Error(), "scope parameter") {
+		t.Errorf("a --param may not shadow reliant_env_id: %v", err)
+	}
+}
+
 func TestQueryPanelCompilesAndFlattens(t *testing.T) {
 	p := obsquery.Panel{ID: "e", Kind: "table", Signal: "traces", GroupBy: []string{"service.name"},
 		Series: []obsquery.PanelSeries{{Label: "requests", Agg: "count"}, {Label: "p95", Agg: "quantile", Quantile: 0.95, Field: "span.duration"}}}

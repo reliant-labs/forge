@@ -129,7 +129,10 @@ under the alert-rule guard and limits (one SELECT; no writes, DDL, `SETTINGS`,
 viewer's own read-only database user, and binds the dashboard's scope as
 ClickHouse parameters: `{from:DateTime64(9)}`, `{to:DateTime64(9)}`,
 `{step:UInt32}`, `{env_ids:Array(String)}`, `{envs:Array(String)}`,
-`{services:Array(String)}`.
+`{services:Array(String)}`, and, when exactly one environment is in scope,
+`{reliant_env_id:String}`, so an alert rule's query runs in a panel as written
+(over any other scope a statement that uses it is refused: choose one
+environment).
 
 ### Postgres panels
 

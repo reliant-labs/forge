@@ -74,7 +74,7 @@ func TestCheck_Refuses(t *testing.T) {
 		{"COPY t TO PROGRAM 'x'", "not_read_only"},
 		{"CALL p()", "not_read_only"},
 		{"DO $$ begin end $$", "not_read_only"},
-		{"SET ROLE postgres", "not_read_only"},
+		{"SET ROLE postgres", "session_state"},
 		{"BEGIN", "not_read_only"},
 		{"COMMIT", "not_read_only"},
 		{"LOCK t", "not_read_only"},
@@ -98,6 +98,10 @@ func TestCheck_Refuses(t *testing.T) {
 		{"SELECT 1\x00", "invalid_text"},
 		{"SELECT '\xff'", "invalid_text"},
 		{"SELECT '" + strings.Repeat("a", MaxSQLBytes) + "'", "sql_too_large"},
+		{"SET statement_timeout = 0", "session_state"},
+		{"set work_mem = '1GB'", "session_state"},
+		{"RESET ALL", "session_state"},
+		{"/* x */ SET LOCAL work_mem = '1GB'", "session_state"},
 	} {
 		tc := tc
 		name := tc.sql
@@ -303,5 +307,134 @@ func TestText_CutsOnARuneBoundaryAndSaysSo(t *testing.T) {
 	}
 	if v, _, cut := text([]byte(strings.Repeat("a", MaxCellBytes))); cut || len(v.(string)) != MaxCellBytes {
 		t.Error("a cell exactly at the cap must be kept whole")
+	}
+}
+
+// A call to a function that changes the session, runs SQL text, or leaves
+// state behind is refused however it is spelled, and wherever in the statement
+// it sits.
+func TestCheck_RefusesDeniedFunctions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ sql, reason string }{
+		{`SELECT set_config('statement_timeout', '0', false)`, "denied_function"},
+		{`SELECT SET_CONFIG('work_mem', '1GB', true)`, "denied_function"},
+		{`SELECT "set_config"('work_mem', '1GB', true)`, "denied_function"},
+		{`SELECT pg_catalog.set_config('work_mem', '1GB', true)`, "denied_function"},
+		{`SELECT "pg_catalog"."set_config"('work_mem', '1GB', true)`, "denied_function"},
+		{`SELECT set_config /* gap */ ('work_mem', '1GB', true)`, "denied_function"},
+		{"SELECT set_config -- gap\n('work_mem', '1GB', true)", "denied_function"},
+		{`WITH x AS (SELECT set_config('work_mem','1GB',true)) SELECT * FROM x`, "denied_function"},
+		{`SELECT * FROM (SELECT set_config('lock_timeout','0',false)) s`, "denied_function"},
+		{`EXPLAIN SELECT set_config('work_mem','1GB',true)`, "denied_function"},
+		// The two review findings: a typed literal is not an E-string, and
+		// ts_rewrite runs the text it is given.
+		{`SELECT name'\' AS x, set_config('work_mem','1GB',true) AS y, '\' AS z`, "denied_function"},
+		{`SELECT x LIKE'\' AS a, set_config('work_mem','1GB',true) AS y, '\' AS z FROM t`, "denied_function"},
+		{`SELECT ts_rewrite('a'::tsquery, 'SELECT set_config(''work_mem'',''3GB'',true)::tsquery, ''b''::tsquery')`, "denied_function"},
+		// An E-string continued on the next line is read with escapes too.
+		{"SELECT E'x'\n'\\' AS a, ' AS b, set_config('work_mem','1GB',true) AS c, 'q' AS d", "denied_function"},
+		{"SELECT E'x' -- c\n  '\\' AS a, ' AS b, set_config('work_mem','1GB',true) AS c, 'q' AS d", "denied_function"},
+		// A multi-byte identifier continues through $ and before a quote.
+		{`SELECT 1 AS é$$, set_config('work_mem','1GB',true) AS y, 2 AS ü$$`, "denied_function"},
+		{`SELECT U&"set\005fconfig"('statement_timeout', '0', false)`, "unicode_identifier"},
+		// UESCAPE puts a clause between the identifier and "(" (round 3 of the
+		// control-plane#1729 review): every U&"..." identifier is refused,
+		// wherever it sits.
+		{`SELECT U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT u&"set!005fconfig" uescape '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT pg_catalog.U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT U&"set_config" UESCAPE '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT U&"set!005fconfig" UESCAPE '!' /* gap */ ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT * FROM U&"ts!005fstat" UESCAPE '!' ('SELECT 1')`, "unicode_identifier"},
+		{`SELECT U&"query!005fto!005fxml" UESCAPE '!' ('select 1', true, false, '')`, "unicode_identifier"},
+		{`SELECT U&"pg!005fadvisory!005flock" UESCAPE '!' (1)`, "unicode_identifier"},
+		{`EXPLAIN (ANALYZE) SELECT U&"set!005fconfig" UESCAPE '!' ('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT U&"set_config"('work_mem','1GB',true)`, "unicode_identifier"},
+		{`SELECT U&"anything" FROM t`, "unicode_identifier"},
+		{`SELECT a FROM U&"t"`, "unicode_identifier"},
+		// Attribute notation calls a one-argument function with no parentheses:
+		// (x).ts_stat is ts_stat(x). A denied name is refused wherever it is.
+		{`SELECT (x)."ts_stat" FROM (SELECT 'SELECT 1'::text AS x) t`, "denied_function"},
+		{`SELECT ('SELECT 1'::text).ts_stat`, "denied_function"},
+		{`SELECT (1::bigint).pg_advisory_lock`, "denied_function"},
+		{`SELECT * FROM ROWS FROM (set_config('work_mem','1GB',true)) x`, "denied_function"},
+		{`SELECT set_config FROM t`, "denied_function"},
+		{`SELECT "set_config" FROM t`, "denied_function"},
+		{`SELECT ts_stat('SELECT 1')`, "denied_function"},
+		{`SELECT query_to_xml('select 1', true, false, '')`, "denied_function"},
+		{`SELECT query_to_xmlschema('select 1', true, false, '')`, "denied_function"},
+		{`SELECT query_to_xml_and_xmlschema('select 1', true, false, '')`, "denied_function"},
+		{`SELECT cursor_to_xml('c', 1, true, false, '')`, "denied_function"},
+		{`SELECT table_to_xml('t', true, false, '')`, "denied_function"},
+		{`SELECT database_to_xml(true, false, '')`, "denied_function"},
+		{`SELECT * FROM crosstab('select 1')`, "denied_function"},
+		{`SELECT * FROM dblink('dbname=x', 'select 1') AS t(a int)`, "denied_function"},
+		{`SELECT dblink_exec('select 1')`, "denied_function"},
+		{`SELECT pg_advisory_lock(1)`, "denied_function"},
+		{`SELECT pg_try_advisory_xact_lock(1)`, "denied_function"},
+		{`SELECT pg_notify('c', 'x')`, "denied_function"},
+		{`SELECT pg_terminate_backend(1)`, "denied_function"},
+		{`SELECT lo_import('/etc/passwd')`, "denied_function"},
+		{`SELECT pg_stat_reset()`, "denied_function"},
+	} {
+		tc := tc
+		t.Run(tc.sql, func(t *testing.T) {
+			t.Parallel()
+			_, err := Check(tc.sql)
+			var e *Error
+			if !errors.As(err, &e) || e.Kind != KindRefused || e.Reason != tc.reason {
+				t.Fatalf("Check(%q) = %v; want refused/%s", tc.sql, err, tc.reason)
+			}
+		})
+	}
+}
+
+// A denied name inside data (a literal, a comment, a dollar-quoted body) is not
+// refused, nor is a longer name that merely contains one. A U&'...' STRING is
+// data too: only a Unicode-escaped identifier is refused.
+func TestCheck_DeniedNamesThatAreNotCallsPass(t *testing.T) {
+	t.Parallel()
+	for _, sql := range []string{
+		`SELECT 'set_config(' AS note`,
+		`SELECT $q$set_config('statement_timeout','0',false)$q$ AS note`,
+		"SELECT 1 -- set_config('statement_timeout','0',false)\n",
+		`SELECT 1 /* set_config(...) */`,
+		`SELECT lo_count, ts_rewrite_count FROM t`,
+		`SELECT lo_total(x) FROM t`,
+		`SELECT name'x' AS typed, E'it\'s' AS escaped`,
+		`SELECT 'a' 'b'`,
+		"SELECT 'a'\n'b' AS joined",
+		`SELECT xpath('/a', '<a/>'::xml)`,
+		`SHOW work_mem`,
+		`SELECT U&'d\0061t\+000061' AS s, U&'d!0061t' UESCAPE '!' AS t`,
+		`SELECT 1 AS reset_count`,
+	} {
+		if _, err := Check(sql); err != nil {
+			t.Errorf("Check(%q) = %v", sql, err)
+		}
+	}
+}
+
+func TestContinuation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		after string
+		ok    bool
+	}{
+		{"\n'", true},
+		{"  \n  '", true},
+		{" -- c\n'", true},
+		{"\n-- c\n'", true},
+		{"\r\n'", true},
+		{" '", false},      // no newline: a syntax error to Postgres, not a continuation
+		{"\nx'", false},    // something else first
+		{"/**/\n'", false}, // a block comment ends it
+		{"", false},
+	} {
+		sql := "'a'" + tc.after
+		_, got := continuation(sql, 3)
+		if got != tc.ok {
+			t.Errorf("continuation after %q = %v, want %v", tc.after, got, tc.ok)
+		}
 	}
 }

@@ -11,7 +11,8 @@
 //     messages and is NOT the security boundary.
 //  2. BEGIN TRANSACTION READ ONLY ISOLATION LEVEL READ COMMITTED, then
 //     statement_timeout, lock_timeout and idle_in_transaction_session_timeout
-//     set for that transaction only.
+//     set for that transaction only, and standard_conforming_strings on, so
+//     the server reads string literals the way the guard did.
 //  3. The statement goes over the extended protocol, which refuses a
 //     multi-statement string on its own, and its rows are read up to the cap.
 //     [Options.Args] bind the $n parameters the statement references.
@@ -32,8 +33,9 @@
 // nextval() and a data-modifying CTE, plus the role's privileges, which the
 // caller owns (a role that cannot SELECT a column cannot read it through any
 // expression). The context deadline is a client-side backstop to the
-// server-side timeout: a SELECT can call set_config('statement_timeout', '0')
-// on its own transaction.
+// server-side timeout: the guard refuses set_config(), but a denylist is not a
+// boundary, and a statement that reached set_config('statement_timeout', '0')
+// some other way is still stopped.
 //
 // # Bounds
 //
@@ -328,7 +330,15 @@ func run(ctx context.Context, db Beginner, sql string, opts Options, lim bounds,
 	}()
 
 	if _, err := tx.Exec(ctx,
-		`SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true), set_config('idle_in_transaction_session_timeout', $3, true)`,
+		// Qualified with pg_catalog: a database or role default search_path
+		// that puts a schema ahead of pg_catalog would otherwise let a
+		// same-named function there stand in for set_config.
+		// standard_conforming_strings is pinned on because the guard lexes a
+		// plain '...' string the way that setting reads it: with it off (a
+		// database or role default can switch it off), a backslash would escape
+		// the quote and the server would read a different statement than the
+		// one the guard judged.
+		`SELECT pg_catalog.set_config('statement_timeout', $1, true), pg_catalog.set_config('lock_timeout', $2, true), pg_catalog.set_config('idle_in_transaction_session_timeout', $3, true), pg_catalog.set_config('standard_conforming_strings', 'on', true)`,
 		strconv.FormatInt(timeout.Milliseconds(), 10)+"ms",
 		strconv.FormatInt(lim.lockTimeout.Milliseconds(), 10)+"ms",
 		strconv.FormatInt(lim.idleTimeout.Milliseconds(), 10)+"ms",

@@ -3027,13 +3027,15 @@ _render_kubeconfig_secret = lambda k: KubeconfigSecret -> any {
 # `forge.Manifests {objects = [...]}` entry.
 crd = crd_lib.crd
 
-# flux_chart(values, cluster) — Flux as a version-pinned forge.HelmChart
-# (lib/flux.k), for a `Bundle.helm_charts` entry.
+# flux_chart(...) — Flux as a version-pinned forge.HelmChart (lib/flux.k), for
+# a `Bundle.helm_charts` entry: ControlPlane's Flux Operator, pinned by digest,
+# with a hardened FluxInstance riding it.
 #
-# Declared by a consumer that needs Flux for its OWN reasons — hosted
-# tenants, a reconciler it drives itself — so that `forge cluster up` sees a
-# chart already providing Flux and installs no second one. Two Flux installs
-# in one cluster collide on the same CRDs and the same `flux-system`.
+# Declared by a consumer that needs Flux for its OWN reasons — a control
+# plane's hub, or a self-hosted cluster that pulls its desired state — so that
+# `forge cluster up` sees a chart already providing Flux and installs no second
+# one. Two Flux installs in one cluster collide on the same CRDs and the same
+# `flux-system`.
 flux_chart = flux_lib.flux_chart
 
 # flux_placement_delivery_v1 / flux_namespace_bindings — the `delivery-v1` pool
@@ -3043,14 +3045,20 @@ flux_chart = flux_lib.flux_chart
 flux_placement_delivery_v1 = flux_lib.flux_placement_delivery_v1
 flux_namespace_bindings = flux_lib.flux_namespace_bindings
 
-# FLUX_CHART_OCI / FLUX_CHART_VERSION / FLUX_NAMESPACE — the pinned chart
-# reference, its version and Flux's namespace (lib/flux.k). Re-exported
+# FLUX_CHART_OCI / FLUX_CHART_VERSION / FLUX_NAMESPACE — the pinned Flux
+# Operator chart reference, its version and Flux's namespace (lib/flux.k);
+# FLUX_VERSION is the Flux minor its FluxInstance pins. Re-exported
 # because FLUX_CHART_OCI is the SHARED-FLUX DETECTOR: a consumer declaring
 # this ref is recognised as providing Flux, by reference rather than by the
 # chart's freely-chosen name.
 FLUX_CHART_OCI = flux_lib.FLUX_CHART_OCI
 FLUX_CHART_VERSION = flux_lib.FLUX_CHART_VERSION
 FLUX_NAMESPACE = flux_lib.FLUX_NAMESPACE
+FLUX_CHART_NAME = flux_lib.FLUX_CHART_NAME
+FLUX_VERSION = flux_lib.FLUX_VERSION
+FLUX_INSTANCE_NAME = flux_lib.FLUX_INSTANCE_NAME
+FLUX_OPERATOR_IMAGE = flux_lib.FLUX_OPERATOR_IMAGE
+FLUX_RESOURCESET_SERVICE_ACCOUNT = flux_lib.FLUX_RESOURCESET_SERVICE_ACCOUNT
 FLUX_DEPLOY_SERVICE_ACCOUNT = flux_lib.FLUX_DEPLOY_SERVICE_ACCOUNT
 FLUX_RECONCILER_ROLE = flux_lib.FLUX_RECONCILER_ROLE
 FLUX_SOURCE_ROLE = flux_lib.FLUX_SOURCE_ROLE

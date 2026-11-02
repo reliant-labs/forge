@@ -217,7 +217,19 @@ func (e *Evaluator) run(ctx context.Context, rule Rule) ([]series, error) {
 	if len(rows) > e.limits.MaxInstancesPerRule {
 		return nil, fmt.Errorf("%w: %s returned more than %d rows; tighten the HAVING clause", ErrBadResult, rule.RuleKey, e.limits.MaxInstancesPerRule)
 	}
-	return buildSeries(rule, rows)
+	ss, err := buildSeries(rule, rows)
+	if err != nil {
+		return nil, err
+	}
+	// One line per evaluation, not per instance: a broken template fails the
+	// same way on every row.
+	for _, s := range ss {
+		if s.annotationErr != nil {
+			e.logger.WarnContext(ctx, "alert annotation template failed; sending its raw text", "rule", rule.String(), "error", s.annotationErr)
+			break
+		}
+	}
+	return ss, nil
 }
 
 // commit persists first and notifies second. If notification fails after the

@@ -50,8 +50,6 @@ var (
 	ErrBadResult = errors.New("alerting: unusable result")
 
 	invalidLabelChar = regexp.MustCompile(`[^a-zA-Z0-9_]`)
-	labelRef         = regexp.MustCompile(`\{\{\s*\$labels\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
-	valueRef         = regexp.MustCompile(`\{\{\s*\$value\s*\}\}`)
 )
 
 // series is one row, resolved to final labels.
@@ -61,6 +59,9 @@ type series struct {
 	annotations map[string]string
 	value       float64
 	why         json.RawMessage
+	// annotationErr names the annotations sent as raw text because their
+	// template failed; the evaluator logs it.
+	annotationErr error
 }
 
 // isReserved reports whether a label name is in the identity namespace.
@@ -114,6 +115,7 @@ func buildSeries(rule Rule, rows []Row) ([]series, error) {
 		}
 	}
 
+	annotations := compileAnnotations(rule.Annotations)
 	out := make([]series, 0, len(rows))
 	seen := make(map[string]int, len(rows))
 	for i, row := range rows {
@@ -163,12 +165,14 @@ func buildSeries(rule Rule, rows []Row) ([]series, error) {
 			return nil, fmt.Errorf("%w: rows %d and %d have the same labels; group by the columns that tell them apart", ErrBadResult, j, i)
 		}
 		seen[fp] = i
+		ann, annErr := annotations.expand(labels, value)
 		out = append(out, series{
-			fp:          fp,
-			labels:      labels,
-			annotations: expandAnnotations(rule.Annotations, labels, value),
-			value:       value,
-			why:         why,
+			fp:            fp,
+			labels:        labels,
+			annotations:   ann,
+			value:         value,
+			why:           why,
+			annotationErr: annErr,
 		})
 	}
 	return out, nil
@@ -226,25 +230,6 @@ func fingerprint(k RuleKey, labels map[string]string) string {
 		h.Write([]byte{0xff})
 	}
 	return hex.EncodeToString(h.Sum(nil)[:16])
-}
-
-// expandAnnotations substitutes {{ $labels.name }} and {{ $value }}. That is
-// the whole template language: annotations are text for a human, and nothing a
-// rule says is evaluated.
-func expandAnnotations(in map[string]string, labels map[string]string, value float64) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	val := strconv.FormatFloat(value, 'g', 6, 64)
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		v = labelRef.ReplaceAllStringFunc(v, func(m string) string {
-			return labels[labelRef.FindStringSubmatch(m)[1]]
-		})
-		v = valueRef.ReplaceAllLiteralString(v, val)
-		out[k] = truncate(v)
-	}
-	return out
 }
 
 func toLabel(v any) string {

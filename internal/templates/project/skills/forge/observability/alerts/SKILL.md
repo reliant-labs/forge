@@ -42,7 +42,7 @@ Rules follow the Prometheus shape, with the condition **inside** `expr`: `alert`
 - `for` holds the condition before it fires (default `5m`). It is a KCL keyword, so write it quoted: `"for" = "10m"`.
 - `interval` is the evaluation period, floor `1m`. `keep_firing_for` holds a cleared alert.
 - `severity` is a label: `critical | warning | info`, default `warning`. Add any other labels you route on.
-- `annotations` expand `{{ $labels.<col> }}` and `{{ $value }}`, nothing more.
+- `annotations` are Go templates in the Prometheus convention: `{{ $labels.<col> }}` (or `.Labels.<col>`) and `{{ $value }}` (or `.Value`, six significant digits). Functions: `printf` (`{{ printf "%.0f" $value }}`; a numeric verb also formats a label holding a number), `humanize`, `humanize1024`, `humanizeDuration`, `humanizePercentage`, `toUpper`, `toLower`, the float arithmetic `addf` / `subf` / `mulf` / `divf` (`{{ printf "%.0f" (mulf $value 100.0) }}%`), and text/template's builtins (`if`, `with`, `eq`, `gt`, …). `range`, `define` / `block` / `template`, a printf width or precision over 64, `*` and `%[n]` are refused. A template that fails at evaluation is sent as its raw text and logged; it never stops the alert.
 
 ## What render refuses
 
@@ -56,6 +56,7 @@ Each is an error naming the rule, at `forge env render` / `shape` / `deploy`, no
 | `expr` not starting with SELECT/WITH, or containing `;` | one read-only statement |
 | labels `alertname`, `reliant_*` | set by the platform, so a rule cannot claim another project's identity |
 | `severity` other than critical / warning / info | |
+| an annotation template that does not parse, calls an unknown function, or uses a refused construct | it would only ever be sent as raw text |
 | two rules with one `alert` in an env; a rule named like a default | unique per env |
 | a route `receiver` that is a URL, a token, or contains `hooks.slack.com` | a route names a receiver; its secret is entered in the control plane console |
 | routes with no empty-`match` route | every alert must have somewhere to go |

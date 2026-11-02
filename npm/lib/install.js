@@ -151,30 +151,55 @@ function expectedChecksum(checksums, asset) {
   return null;
 }
 
+// cacheDir is where the binary for `version` verified against `want` (the
+// pinned sha256 of its archive) is cached, or, with no pin, the separate
+// directory for binaries checked only against the release's own checksums.txt.
+// Keying verified entries by the signed digest means a binary cached
+// unverified, or verified against another pin, never satisfies a pinned run.
+function cacheDir(version, want, env = process.env) {
+  return path.join(
+    cacheRoot(env),
+    version.replace(/^v/, ""),
+    want === null ? "unverified" : `sha256-${want}`,
+  );
+}
+
+const NO_PIN =
+  "this copy of @reliantlabs/forge carries no signed release checksums (lib/release-checksums.txt; packages published to npm do)";
+
 // ensureBinary returns the path of the cached forge binary for `version`,
 // downloading and verifying it first when it is not cached yet. `pinned` is
 // the release checksums the package carries (null when it carries none).
+// The policy (FORGE_REQUIRE_SIGNATURE, and the pin it demands) is checked
+// before the cache is consulted, so a cache hit never bypasses it.
 async function ensureBinary(
   version,
   env = process.env,
   { pinned = readPinnedChecksums() } = {},
 ) {
   const { asset, binary } = platformAsset();
-  const dir = path.join(cacheRoot(env), version.replace(/^v/, ""));
+  const strict = requireSignature(env);
+  if (pinned === null && strict)
+    throw new Error(
+      `${NO_PIN}, and FORGE_REQUIRE_SIGNATURE=1 refuses an unverified install; nothing was installed`,
+    );
+  const source =
+    pinned === null
+      ? "checksums.txt"
+      : `the checksums pinned in @reliantlabs/forge@${version.replace(/^v/, "")}`;
+  let want = null;
+  if (pinned !== null) {
+    want = expectedChecksum(pinned, asset);
+    if (!want) throw new Error(`${source} has no entry for ${asset}`);
+  }
+  const dir = cacheDir(version, want, env);
   const target = path.join(dir, binary);
   if (fs.existsSync(target)) return target;
 
-  const strict = requireSignature(env);
   const url = releaseUrl(version, env);
   if (pinned === null) {
-    const why =
-      "this copy of @reliantlabs/forge carries no signed release checksums (lib/release-checksums.txt; packages published to npm do)";
-    if (strict)
-      throw new Error(
-        `${why}, and FORGE_REQUIRE_SIGNATURE=1 refuses an unverified install; nothing was installed`,
-      );
     process.stderr.write(
-      `forge: warning: ${why}.\n  Checking the download against the release's own checksums.txt, which cannot detect a tampered release.\n  Set FORGE_REQUIRE_SIGNATURE=1 to refuse an unverified install instead.\n`,
+      `forge: warning: ${NO_PIN}.\n  Checking the download against the release's own checksums.txt, which cannot detect a tampered release.\n  Set FORGE_REQUIRE_SIGNATURE=1 to refuse an unverified install instead.\n`,
     );
   }
   process.stderr.write(
@@ -192,12 +217,10 @@ async function ensureBinary(
     );
   }
 
-  const source =
-    pinned === null
-      ? "checksums.txt"
-      : `the checksums pinned in @reliantlabs/forge@${version.replace(/^v/, "")}`;
-  const want = expectedChecksum(checksums, asset);
-  if (!want) throw new Error(`${source} has no entry for ${asset}`);
+  if (want === null) {
+    want = expectedChecksum(checksums, asset);
+    if (!want) throw new Error(`${source} has no entry for ${asset}`);
+  }
   const got = crypto.createHash("sha256").update(archive).digest("hex");
   if (got !== want)
     throw new Error(
@@ -235,6 +258,7 @@ module.exports = {
   platformAsset,
   releaseUrl,
   cacheRoot,
+  cacheDir,
   expectedChecksum,
   readPinnedChecksums,
   requireSignature,

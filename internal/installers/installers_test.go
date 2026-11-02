@@ -78,13 +78,15 @@ func fakeArchive(t *testing.T, ver string) []byte {
 }
 
 // release is a fixture GitHub-releases server. Each version serves its archive
-// at /download/<tag>/<asset>, and the newest one is also at /latest/download/.
+// at /download/<tag>/<asset>, and /latest redirects to /tag/<newest tag> as
+// GitHub's does.
 type release struct {
 	srv *httptest.Server
 
-	mu       sync.Mutex
-	files    map[string][]byte // URL path -> body
-	requests []string
+	mu        sync.Mutex
+	files     map[string][]byte // URL path -> body
+	latestTag string
+	requests  []string
 }
 
 func newRelease(t *testing.T) *release {
@@ -94,7 +96,12 @@ func newRelease(t *testing.T) *release {
 		r.mu.Lock()
 		r.requests = append(r.requests, req.URL.Path)
 		body, ok := r.files[req.URL.Path]
+		latest := r.latestTag
 		r.mu.Unlock()
+		if req.URL.Path == "/latest" && latest != "" {
+			http.Redirect(w, req, "/tag/"+latest, http.StatusFound)
+			return
+		}
 		if !ok {
 			http.NotFound(w, req)
 			return
@@ -113,13 +120,10 @@ func (r *release) publish(t *testing.T, tag string, latest bool, sumFor func(ass
 	sums := fmt.Sprintf("%s  %s\n%s  forge_other_os.tar.gz\n", sumFor(asset, archive), asset, strings.Repeat("0", 64))
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, prefix := range []string{"/download/" + tag} {
-		r.files[prefix+"/"+asset] = archive
-		r.files[prefix+"/checksums.txt"] = []byte(sums)
-	}
+	r.files["/download/"+tag+"/"+asset] = archive
+	r.files["/download/"+tag+"/checksums.txt"] = []byte(sums)
 	if latest {
-		r.files["/latest/download/"+asset] = archive
-		r.files["/latest/download/checksums.txt"] = []byte(sums)
+		r.latestTag = tag
 	}
 }
 
@@ -264,7 +268,7 @@ func TestInstallSh_MissingChecksumEntryFails(t *testing.T) {
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
 	rel.mu.Lock()
-	rel.files["/latest/download/checksums.txt"] = []byte(strings.Repeat("0", 64) + "  forge_other_os.tar.gz\n")
+	rel.files["/download/v0.9.0/checksums.txt"] = []byte(strings.Repeat("0", 64) + "  forge_other_os.tar.gz\n")
 	rel.mu.Unlock()
 
 	res := runInstall(t, "sh", rel, "")

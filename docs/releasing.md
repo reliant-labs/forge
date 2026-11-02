@@ -219,10 +219,15 @@ Every release is therefore signed as well:
 - **Verifying.** `install.sh` verifies the archive with
   `gh attestation verify --bundle` (gh 2.49+, offline from GitHub's API, so no
   login) or `cosign verify-blob-attestation`. It accepts only that workflow at a
-  release tag or on main. A signature that fails verification fails the install.
+  release tag or on main, and the signed predicate (`{repository, release,
+commit}`) must name `reliant-labs/forge` and the tag being installed
+  (`latest` is first resolved to its tag), so an older release's signed set
+  replayed under a newer tag is refused. A signature that fails verification
+  fails the install.
   A missing signature or a missing verifier only warns, unless
   `FORGE_REQUIRE_SIGNATURE=1` is set. `release-npm.yml` waits for the
-  signature, verifies every asset with the same identity, and copies
+  signature, verifies every asset with the same identity and the same release
+  binding, and copies
   `checksums.txt` into the package as `lib/release-checksums.txt`. The shim then
   checks downloads against that pin, never against the release's own
   `checksums.txt`. The signer identity, predicate type and asset name are one

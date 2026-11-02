@@ -25,7 +25,9 @@ postinstall script, so `--ignore-scripts` is fine. The package version is the fo
 version.
 
 - Cache: `~/.cache/forge/npm/<version>` (Linux), `~/Library/Caches/forge/npm/<version>` (macOS),
-  `%LOCALAPPDATA%\forge\npm\<version>` (Windows). Override with `FORGE_NPM_CACHE_DIR`.
+  `%LOCALAPPDATA%\forge\npm\<version>` (Windows), one subdirectory per pinned
+  digest (`sha256-<digest>`; `unverified` for a copy with no pin, which a
+  pinned or `FORGE_REQUIRE_SIGNATURE=1` run never uses). Override with `FORGE_NPM_CACHE_DIR`.
 - Needs Node 18+ and `tar` on `PATH` (present on Linux, macOS and Windows 10+).
 - Platforms: linux, darwin, windows on amd64 and arm64.
 

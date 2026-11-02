@@ -1,6 +1,8 @@
 package installers
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,6 +37,13 @@ func TestSignatureContractIsSharedByInstallerAndWorkflows(t *testing.T) {
 	for _, want := range []string{"types: [published]", "id-token: write", "attestations: write", "uses: actions/attest@", "predicate-type:", "gh release upload", "FORGE_REQUIRE_SIGNATURE=1"} {
 		if !strings.Contains(attest, want) {
 			t.Errorf("release-attest.yml lacks %q", want)
+		}
+	}
+	// Binding: a verifier must also check that the signed predicate names the
+	// release, or an older release's signed set replays under a newer tag.
+	for rel, body := range map[string]string{"release-attest.yml": attest, "release-npm.yml": strings.Join(codeLines(readRepoFile(t, ".github/workflows/release-npm.yml")), "\n")} {
+		if !strings.Contains(body, ".verificationResult.statement.predicate.release == $release") {
+			t.Errorf("%s does not bind the verified signature to the release", rel)
 		}
 	}
 	if strings.Contains(attest, "--clobber") {
@@ -86,7 +95,7 @@ func TestSignerIdentityAdmitsOnlyTheReleaseWorkflow(t *testing.T) {
 func toolbox(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, tool := range []string{"sh", "uname", "mktemp", "rm", "curl", "awk", "tr", "tar", "gzip", "mkdir", "cp", "chmod", "mv", "sed", "grep", "cat", "sha256sum"} {
+	for _, tool := range []string{"sh", "uname", "mktemp", "rm", "curl", "awk", "tr", "tar", "gzip", "mkdir", "cp", "chmod", "mv", "sed", "grep", "cat", "sha256sum", "base64", "wc"} {
 		p, err := exec.LookPath(tool)
 		if err != nil {
 			t.Skipf("%s not on PATH", tool)
@@ -99,7 +108,7 @@ func toolbox(t *testing.T) string {
 }
 
 // fakeGh verifies like `gh attestation verify --bundle`: it succeeds only when
-// the bundle lists the file's sha256 and install.sh passed forge's identity,
+// the bundle's statement lists the file's sha256 and install.sh passed forge's identity,
 // predicate type and repository. With noAttestation it is a gh older than
 // 2.49, which has no attestation command.
 const fakeGh = `#!/bin/sh
@@ -123,7 +132,8 @@ done
 [ "$ptype" = "$FAKE_PREDICATE" ] || { echo "wrong predicate type: $ptype"; exit 1; }
 [ "$repo" = reliant-labs/forge ] || { echo "wrong repo: $repo"; exit 1; }
 sum=$(sha256sum "$file" | awk '{print $1}')
-grep -qx "$sum" "$bundle" || { echo "Error: digest $sum is not a subject of the attestation"; exit 1; }
+statement=$(tr -d ' \n' <"$bundle" | grep -o '"payload":"[^"]*"' | sed 's/^"payload":"//; s/"$//' | base64 -d)
+case "$statement" in *"\"sha256\":\"$sum\""*) ;; *) echo "Error: digest $sum is not a subject of the attestation"; exit 1 ;; esac
 echo "Verification succeeded!"
 `
 
@@ -152,7 +162,8 @@ if [ -n "$FAKE_COSIGN_V2" ] && [ -z "$newfmt" ]; then echo "Error: bundle is not
 [ "$issuer" = https://token.actions.githubusercontent.com ] || { echo "wrong issuer: $issuer"; exit 1; }
 [ "$ptype" = "$FAKE_PREDICATE" ] || { echo "wrong predicate type: $ptype"; exit 1; }
 sum=$(sha256sum "$file" | awk '{print $1}')
-grep -qx "$sum" "$bundle" || { echo "Error: provided artifact digests do not match digests in statement"; exit 1; }
+statement=$(tr -d ' \n' <"$bundle" | grep -o '"payload":"[^"]*"' | sed 's/^"payload":"//; s/"$//' | base64 -d)
+case "$statement" in *"\"sha256\":\"$sum\""*) ;; *) echo "Error: provided artifact digests do not match digests in statement"; exit 1 ;; esac
 echo "Verified OK"
 `
 
@@ -187,9 +198,10 @@ func (e sigEnv) calls(t *testing.T) string {
 	return string(b)
 }
 
-// sign attaches a fake Sigstore bundle to tag whose subjects are the digests
-// of the release's current host archive.
-func (r *release) sign(t *testing.T, tag string, latest bool) {
+// sign attaches to tag a fake Sigstore bundle shaped like actions/attest's: a
+// DSSE envelope whose in-toto statement names the release's current host
+// archive as its subject and tag as the release in its predicate.
+func (r *release) sign(t *testing.T, tag string) {
 	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -197,30 +209,70 @@ func (r *release) sign(t *testing.T, tag string, latest bool) {
 	if !ok {
 		t.Fatalf("no %s archive to sign", tag)
 	}
-	bundle := []byte(sha256Hex(archive) + "\n")
-	r.files["/download/"+tag+"/"+signatureAsset] = bundle
-	if latest {
-		r.files["/latest/download/"+signatureAsset] = bundle
+	r.files["/download/"+tag+"/"+signatureAsset] = fakeBundle(t, tag, sha256Hex(archive))
+}
+
+func fakeBundle(t *testing.T, tag, digest string) []byte {
+	t.Helper()
+	type subject struct {
+		Name   string            `json:"name"`
+		Digest map[string]string `json:"digest"`
 	}
+	statement, err := json.Marshal(struct {
+		Type          string            `json:"_type"`
+		Subject       []subject         `json:"subject"`
+		PredicateType string            `json:"predicateType"`
+		Predicate     map[string]string `json:"predicate"`
+	}{
+		Type:          "https://in-toto.io/Statement/v1",
+		Subject:       []subject{{Name: hostAsset(), Digest: map[string]string{"sha256": digest}}},
+		PredicateType: predicateType,
+		Predicate:     map[string]string{"repository": "reliant-labs/forge", "release": tag, "commit": strings.Repeat("c", 40)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := json.MarshalIndent(map[string]any{
+		"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+		"dsseEnvelope": map[string]any{
+			"payload":     base64.StdEncoding.EncodeToString(statement),
+			"payloadType": "application/vnd.in-toto+json",
+			"signatures":  []map[string]string{{"sig": "fake"}},
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bundle
 }
 
 // tamper is RF-2's attacker: someone who can write release assets swaps the
 // archive AND rewrites checksums.txt to match it, so the sha256 check passes.
 // The signature stays the original's: it cannot be re-made without the
 // release workflow's identity.
-func (r *release) tamper(t *testing.T, tag string, latest bool) {
+func (r *release) tamper(t *testing.T, tag string) {
 	t.Helper()
 	evil := fakeArchive(t, "evil")
 	sums := []byte(fmt.Sprintf("%s  %s\n", sha256Hex(evil), hostAsset()))
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	prefixes := []string{"/download/" + tag}
-	if latest {
-		prefixes = append(prefixes, "/latest/download")
-	}
-	for _, p := range prefixes {
-		r.files[p+"/"+hostAsset()] = evil
-		r.files[p+"/checksums.txt"] = sums
+	r.files["/download/"+tag+"/"+hostAsset()] = evil
+	r.files["/download/"+tag+"/checksums.txt"] = sums
+}
+
+// replay is the same attacker with an older, legitimately signed release in
+// hand: it copies that release's archive, checksums.txt and signature over
+// tag's, so every digest matches a valid signature, made for the wrong release.
+func (r *release) replay(t *testing.T, from, tag string) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, f := range []string{hostAsset(), "checksums.txt", signatureAsset} {
+		body, ok := r.files["/download/"+from+"/"+f]
+		if !ok {
+			t.Fatalf("%s has no %s to replay", from, f)
+		}
+		r.files["/download/"+tag+"/"+f] = body
 	}
 }
 
@@ -236,7 +288,7 @@ func TestInstallSh_VerifiesTheReleaseSignatureWithGh(t *testing.T) {
 	t.Parallel()
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
-	rel.sign(t, "v0.9.0", true)
+	rel.sign(t, "v0.9.0")
 	ve := verifierEnv(t, "gh", "cosign")
 
 	res := runInstall(t, "sh", rel, "", ve.env()...)
@@ -276,8 +328,8 @@ func TestInstallSh_TamperedReleaseWithMatchingChecksumIsRefused(t *testing.T) {
 			t.Parallel()
 			rel := newRelease(t)
 			rel.publish(t, "v0.9.0", true, goodSum)
-			rel.sign(t, "v0.9.0", true)
-			rel.tamper(t, "v0.9.0", true)
+			rel.sign(t, "v0.9.0")
+			rel.tamper(t, "v0.9.0")
 			ve := verifierEnv(t, tc.fakes...)
 
 			res := runInstall(t, "sh", rel, "", ve.env(tc.extra...)...)
@@ -312,7 +364,7 @@ func TestInstallSh_FallsBackToCosign(t *testing.T) {
 			t.Parallel()
 			rel := newRelease(t)
 			rel.publish(t, "v0.8.0", false, goodSum)
-			rel.sign(t, "v0.8.0", false)
+			rel.sign(t, "v0.8.0")
 			ve := verifierEnv(t, tc.fakes...)
 
 			res := runInstall(t, "sh", rel, "", ve.env(append([]string{"FORGE_VERSION=v0.8.0"}, tc.extra...)...)...)
@@ -339,7 +391,7 @@ func TestInstallSh_MissingSignatureWarns(t *testing.T) {
 	if res.err != nil {
 		t.Fatalf("an unsigned release must still install by default: %v\n%s", res.err, res.out)
 	}
-	if !strings.Contains(res.out, "warning: the latest release carries no signature ("+signatureAsset+")") || !strings.Contains(res.out, "FORGE_REQUIRE_SIGNATURE=1") {
+	if !strings.Contains(res.out, "warning: v0.9.0 (the latest release) carries no signature ("+signatureAsset+")") || !strings.Contains(res.out, "FORGE_REQUIRE_SIGNATURE=1") {
 		t.Errorf("expected a missing-signature warning naming the opt-in:\n%s", res.out)
 	}
 	if strings.Contains(ve.calls(t), "verify ") {
@@ -369,7 +421,7 @@ func TestInstallSh_NoVerifierWarnsUnlessRequired(t *testing.T) {
 	t.Parallel()
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
-	rel.sign(t, "v0.9.0", true)
+	rel.sign(t, "v0.9.0")
 	ve := verifierEnv(t) // neither gh nor cosign
 
 	res := runInstall(t, "sh", rel, "", ve.env()...)
@@ -400,5 +452,69 @@ func TestInstallSh_RejectsBadRequireSignatureValue(t *testing.T) {
 	}
 	if len(rel.requests) != 0 {
 		t.Errorf("a rejected setting must not reach the network, saw %v", rel.requests)
+	}
+}
+
+// A valid signature from an older release, replayed with that release's
+// archive and checksums.txt under a newer tag (pinned or resolved from
+// latest): every digest verifies, but the statement names the older release,
+// so the install is refused, with either verifier.
+func TestInstallSh_ReplayedOlderReleaseIsRefused(t *testing.T) {
+	requireUnix(t)
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		fakes []string
+		extra []string
+	}{
+		{"gh-latest", []string{"gh"}, nil},
+		{"gh-pinned", []string{"gh"}, []string{"FORGE_VERSION=v0.9.0"}},
+		{"cosign-pinned", []string{"cosign"}, []string{"FORGE_VERSION=v0.9.0"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rel := newRelease(t)
+			rel.publish(t, "v0.8.0", false, goodSum)
+			rel.sign(t, "v0.8.0")
+			rel.publish(t, "v0.9.0", true, goodSum)
+			rel.sign(t, "v0.9.0")
+			rel.replay(t, "v0.8.0", "v0.9.0")
+			ve := verifierEnv(t, tc.fakes...)
+
+			res := runInstall(t, "sh", rel, "", ve.env(append([]string{"FORGE_REQUIRE_SIGNATURE=1"}, tc.extra...)...)...)
+			if res.err == nil {
+				t.Fatalf("an older release replayed under v0.9.0 installed:\n%s", res.out)
+			}
+			if !strings.Contains(res.out, "it was not made for reliant-labs/forge v0.9.0") {
+				t.Errorf("error should say the signature is for another release:\n%s", res.out)
+			}
+			requireNotInstalled(t, res)
+		})
+	}
+}
+
+// A signed install reports the release the signature was bound to; the latest
+// release is resolved to its tag and downloaded from it.
+func TestInstallSh_LatestIsResolvedAndBound(t *testing.T) {
+	requireUnix(t)
+	t.Parallel()
+	rel := newRelease(t)
+	rel.publish(t, "v0.9.0", true, goodSum)
+	rel.sign(t, "v0.9.0")
+	ve := verifierEnv(t, "gh")
+
+	res := runInstall(t, "sh", rel, "", ve.env("FORGE_REQUIRE_SIGNATURE=1")...)
+	if res.err != nil {
+		t.Fatalf("install failed: %v\n%s", res.err, res.out)
+	}
+	if !strings.Contains(res.out, "release v0.9.0)") {
+		t.Errorf("install did not report the bound release:\n%s", res.out)
+	}
+	rel.mu.Lock()
+	defer rel.mu.Unlock()
+	for _, p := range rel.requests {
+		if strings.HasPrefix(p, "/latest/download") {
+			t.Errorf("install downloaded through /latest/download instead of the resolved tag: %v", rel.requests)
+		}
 	}
 }

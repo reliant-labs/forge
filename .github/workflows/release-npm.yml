@@ -187,9 +187,19 @@ jobs:
           gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
             --pattern checksums.txt --pattern 'forge_*.tar.gz' --clobber
           (cd "$dir" && sha256sum --strict -c checksums.txt)
+          # Each asset must verify AND the signed statement must name this
+          # release: an older release's signed set, replayed under v$VERSION,
+          # verifies but names its own tag, and must not become this pin.
           for f in "$dir"/forge_*.tar.gz "$dir/checksums.txt"; do
             gh attestation verify "$f" --bundle "$dir/$SIGNATURE_ASSET" --repo "$GITHUB_REPOSITORY" \
-              --cert-identity-regex "$SIGNER_IDENTITY" --predicate-type "$PREDICATE_TYPE" --deny-self-hosted-runners
+              --cert-identity-regex "$SIGNER_IDENTITY" --predicate-type "$PREDICATE_TYPE" --deny-self-hosted-runners \
+              --format json >"$RUNNER_TEMP/verified.json"
+            jq -e --arg release "v$VERSION" --arg repo "$GITHUB_REPOSITORY" \
+              'length > 0 and all(.[]; .verificationResult.statement.predicate.release == $release and .verificationResult.statement.predicate.repository == $repo)' \
+              "$RUNNER_TEMP/verified.json" >/dev/null || {
+              echo "::error::$SIGNATURE_ASSET on v$VERSION verifies $(basename "$f") but was not signed for reliant-labs/forge v$VERSION"
+              exit 1
+            }
           done
           cp "$dir/checksums.txt" npm/lib/release-checksums.txt
 

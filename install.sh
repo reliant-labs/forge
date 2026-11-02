@@ -16,9 +16,12 @@
 # (docs/releasing.md, "Signed release assets"). This script checks the archive
 # against it with `gh attestation verify` (gh 2.49+; no login needed) or, when
 # gh cannot, `cosign verify-blob-attestation`, pinned to that workflow's
-# identity. A signature that does not verify fails the install. When the
-# release has no signature, or neither verifier is installed, it warns and
-# installs on the sha256 alone, unless FORGE_REQUIRE_SIGNATURE=1.
+# identity, and the signed statement must name the release being installed
+# ("latest" is resolved to its tag first), so a valid signature replayed from
+# another release is refused. A signature that does not verify fails the
+# install. When the release has no signature, or neither verifier is
+# installed, it warns and installs on the sha256 alone, unless
+# FORGE_REQUIRE_SIGNATURE=1.
 #
 # Environment:
 #   FORGE_VERSION            release to install, e.g. v1.0.0 or 1.0.0 (default: latest)
@@ -28,8 +31,8 @@
 #
 # Testing seam (not for general use):
 #   FORGE_RELEASE_BASE_URL  replaces https://github.com/reliant-labs/forge/releases;
-#                           the script appends /latest/download/<file> or
-#                           /download/<tag>/<file> to it.
+#                           the script reads the redirect of /latest and
+#                           appends /download/<tag>/<file> to it.
 #
 # Windows: use install.ps1 (PowerShell). Release assets are named by
 # scripts/build-release-assets.sh; keep the installers in step with it.
@@ -112,6 +115,58 @@ verify_signature() {
   return 2
 }
 
+# latest_tag prints the tag $BASE_URL/latest redirects to (GitHub answers
+# /releases/latest with a redirect to /releases/tag/<tag>), or nothing. The
+# redirect is read, not followed.
+latest_tag() {
+  if have curl; then
+    loc="$(curl -sS --retry 3 -o /dev/null -w '%{redirect_url}' "$BASE_URL/latest" 2>/dev/null)" || loc=""
+  elif have wget; then
+    loc="$(wget -q -S --max-redirect=0 -O /dev/null "$BASE_URL/latest" 2>&1 | awk '$1 == "Location:" { print $2; exit }')" || loc=""
+  else
+    die "need curl or wget to download the release"
+  fi
+  loc="$(printf '%s' "$loc" | tr -d '\r')"
+  case "$loc" in
+    */tag/*) printf '%s\n' "${loc##*/tag/}" ;;
+  esac
+}
+
+base64_decode() {
+  if base64 -d 2>/dev/null; then
+    return 0
+  fi
+  have openssl || return 1
+  openssl base64 -d -A
+}
+
+# signed_statement BUNDLE prints the in-toto statement the bundle's DSSE envelope
+# carries, whitespace removed, or fails. Call it only after the bundle
+# verified: the verifier checked the signature over exactly this payload.
+signed_statement() {
+  payloads="$(tr -d ' \t\r\n' <"$1" | grep -o '"payload":"[A-Za-z0-9+/=]*"')" || return 1
+  # One envelope only: a bundle with two payloads could show the verifier one
+  # and this check the other.
+  [ "$(printf '%s\n' "$payloads" | wc -l | tr -d ' ')" = 1 ] || return 1
+  printf '%s' "$payloads" | sed 's/^"payload":"//; s/"$//' | base64_decode | tr -d ' \t\r\n'
+}
+
+# bound_to_release BUNDLE TAG succeeds when the verified statement was signed
+# for TAG of this repository. Without it, a valid signature from an older
+# release, replayed with that release's archive and checksums.txt under a newer
+# tag, would install the older binary.
+bound_to_release() {
+  statement="$(signed_statement "$1")" || return 1
+  case "$statement" in
+    *"\"repository\":\"$REPO\""*) ;;
+    *) return 1 ;;
+  esac
+  case "$statement" in
+    *"\"release\":\"$2\""*) return 0 ;;
+  esac
+  return 1
+}
+
 # unverified REASON: the install goes ahead on the sha256 alone, with a
 # warning, unless FORGE_REQUIRE_SIGNATURE=1 refuses it.
 unverified() {
@@ -141,11 +196,6 @@ if [ -n "${FORGE_VERSION:-}" ]; then
   case "$tag" in
     *[!0-9A-Za-z.+-]* | v) die "FORGE_VERSION must look like v1.0.0 (got: $FORGE_VERSION)" ;;
   esac
-  release_url="$BASE_URL/download/$tag"
-  wanted="$tag"
-else
-  release_url="$BASE_URL/latest/download"
-  wanted="the latest release"
 fi
 
 case "${FORGE_REQUIRE_SIGNATURE:-}" in
@@ -163,6 +213,23 @@ fi
 
 have tar || die "need tar to unpack the release"
 have gzip || die "need gzip to unpack the release"
+
+if [ -n "${tag:-}" ]; then
+  wanted="$tag"
+else
+  # The signature names the release it was made for, so it can only be bound
+  # to a concrete tag: resolve "latest" to one before downloading anything.
+  tag="$(latest_tag)"
+  case "$tag" in
+    v[0-9]*) ;;
+    *) die "could not resolve the latest release from $BASE_URL/latest; pin one with FORGE_VERSION=vX.Y.Z" ;;
+  esac
+  case "$tag" in
+    *[!0-9A-Za-z.+-]*) die "the latest release resolved to an unexpected tag ($tag); pin one with FORGE_VERSION=vX.Y.Z" ;;
+  esac
+  wanted="$tag (the latest release)"
+fi
+release_url="$BASE_URL/download/$tag"
 
 asset="forge_${os}_${arch}.tar.gz"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/forge-install.XXXXXX")" || die "could not create a temporary directory"
@@ -185,7 +252,12 @@ if fetch "$release_url/$SIGNATURE_ASSET" "$tmp/$SIGNATURE_ASSET" 2>/dev/null; th
   verifier=""
   verify_signature "$tmp/$asset" "$tmp/$SIGNATURE_ASSET" && sig=0 || sig=$?
   case "$sig" in
-    0) say "Verified $asset against the release signature ($verifier; signer: $REPO release-attest.yml)" ;;
+    0)
+      bound_to_release "$tmp/$SIGNATURE_ASSET" "$tag" ||
+        die "the release signature verifies for $asset, but it was not made for $REPO $tag; nothing was installed.
+  A signed set from another release may have been replayed under $tag. Report it: https://github.com/$REPO/security"
+      say "Verified $asset against the release signature ($verifier; signer: $REPO release-attest.yml; release $tag)"
+      ;;
     1)
       sed 's/^/  /' "$tmp/verify.log" >&2
       die "the release signature does not verify for $asset ($verifier refused it); nothing was installed.

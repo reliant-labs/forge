@@ -154,7 +154,11 @@ func TestReleaseAssets_BuiltArchivesInstallAndRun(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// /download/v1.2.3/<file> and /latest/download/<file> both map to dist/<file>.
+		// /latest redirects to v1.2.3, as GitHub's does; /download/v1.2.3/<file> maps to dist/<file>.
+		if r.URL.Path == "/latest" {
+			http.Redirect(w, r, "/tag/v1.2.3", http.StatusFound)
+			return
+		}
 		http.ServeFile(w, r, filepath.Join(dist, filepath.Base(r.URL.Path)))
 	}))
 	t.Cleanup(srv.Close)

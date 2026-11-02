@@ -9,7 +9,10 @@
 # https://github.com/reliant-labs/forge/.github/workflows/release-attest.yml@<ref>,
 # and the signing is recorded in the public Rekor transparency log. install.sh
 # and release-npm.yml accept only that identity, for a release tag or main,
-# so the same file run from any other branch cannot sign.
+# so the same file run from any other branch cannot sign. The predicate names
+# the release ({repository, release, commit}), and every verifier requires it
+# to equal the release being installed or pinned, so a signed set cannot be
+# replayed under another tag.
 #
 # WHAT IT DOES NOT PROVE. The archives are built by scripts/release-forge.sh on
 # the machine that cuts the release, not here, so this attests "these are the
@@ -127,9 +130,15 @@ jobs:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: |
           cp "$BUNDLE" "$RUNNER_TEMP/$SIGNATURE_ASSET"
+          # Installers also require the signed statement to name the release
+          # (install.sh, release-npm.yml); prove this bundle does.
           for f in assets/forge_*.tar.gz assets/checksums.txt; do
             gh attestation verify "$f" --bundle "$RUNNER_TEMP/$SIGNATURE_ASSET" --repo "$GITHUB_REPOSITORY" \
-              --cert-identity-regex "$SIGNER_IDENTITY" --predicate-type "$PREDICATE_TYPE" --deny-self-hosted-runners
+              --cert-identity-regex "$SIGNER_IDENTITY" --predicate-type "$PREDICATE_TYPE" --deny-self-hosted-runners \
+              --format json >"$RUNNER_TEMP/verified.json"
+            jq -e --arg release "$TAG" --arg repo "$GITHUB_REPOSITORY" \
+              'length > 0 and all(.[]; .verificationResult.statement.predicate.release == $release and .verificationResult.statement.predicate.repository == $repo)' \
+              "$RUNNER_TEMP/verified.json" >/dev/null
           done
           # No --clobber: a bundle uploaded meanwhile is kept, and this fails.
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$RUNNER_TEMP/$SIGNATURE_ASSET"

@@ -146,6 +146,15 @@ function serve(version, { sumOverride, redirects = {} } = {}) {
   );
 }
 
+// cachedBinaries lists every forge binary under a cache root, at any depth.
+function cachedBinaries(cache) {
+  const { binary } = platformAsset();
+  if (!fs.existsSync(cache)) return [];
+  return fs
+    .readdirSync(cache, { recursive: true })
+    .filter((f) => path.basename(f) === binary);
+}
+
 test("ensureBinary downloads, verifies, caches and reuses the binary", async () => {
   const { server, hits, base } = await serve("9.9.9");
   const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
@@ -180,8 +189,7 @@ test("ensureBinary refuses a checksum mismatch and caches nothing", async () => 
       ),
       /sha256 mismatch/,
     );
-    const { binary } = platformAsset();
-    assert.ok(!fs.existsSync(path.join(cache, "9.9.8", binary)));
+    assert.deepEqual(cachedBinaries(cache), []);
   } finally {
     server.close();
   }
@@ -220,8 +228,7 @@ test("ensureBinary refuses a release whose archive and checksums.txt were both r
       ),
       /sha256 mismatch[\s\S]*pinned in @reliantlabs\/forge@9\.9\.6[\s\S]*tampered/,
     );
-    const { binary } = platformAsset();
-    assert.ok(!fs.existsSync(path.join(cache, "9.9.6", binary)));
+    assert.deepEqual(cachedBinaries(cache), []);
     assert.ok(
       !hits.some((h) => h.endsWith("/checksums.txt")),
       `a pinned package must not read the release's checksums.txt: ${hits}`,
@@ -287,8 +294,7 @@ test("ensureBinary with FORGE_REQUIRE_SIGNATURE=1 refuses an unpinned package", 
       /no signed release checksums[\s\S]*FORGE_REQUIRE_SIGNATURE=1 refuses/,
     );
     assert.deepEqual(hits, []);
-    const { binary } = platformAsset();
-    assert.ok(!fs.existsSync(path.join(cache, "9.9.3", binary)));
+    assert.deepEqual(cachedBinaries(cache), []);
   } finally {
     server.close();
   }
@@ -347,3 +353,70 @@ test(
     }
   },
 );
+
+// A binary cached by an unpinned run (checked only against the release's own
+// checksums.txt) must never satisfy a run that requires a signature: strict
+// mode still refuses an unpinned copy, and a pinned run downloads and verifies
+// its own copy instead of executing the unverified one.
+test("ensureBinary never lets an unverified cache entry satisfy a verified run", async () => {
+  const { server, hits, asset, sum, base } = await serve("9.9.1");
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
+  const env = { FORGE_RELEASE_BASE_URL: base, FORGE_NPM_CACHE_DIR: cache };
+  try {
+    const unverified = await ensureBinary("9.9.1", env, { pinned: null });
+    const before = hits.length;
+
+    await assert.rejects(
+      ensureBinary(
+        "9.9.1",
+        { ...env, FORGE_REQUIRE_SIGNATURE: "1" },
+        { pinned: null },
+      ),
+      /no signed release checksums[\s\S]*FORGE_REQUIRE_SIGNATURE=1 refuses/,
+    );
+    await assert.rejects(
+      ensureBinary(
+        "9.9.1",
+        { ...env, FORGE_REQUIRE_SIGNATURE: "maybe" },
+        { pinned: null },
+      ),
+      /FORGE_REQUIRE_SIGNATURE must be 1 or 0/,
+    );
+    assert.equal(hits.length, before, "a refusal must not touch the network");
+
+    const verified = await ensureBinary(
+      "9.9.1",
+      { ...env, FORGE_REQUIRE_SIGNATURE: "1" },
+      { pinned: `${sum}  ${asset}\n` },
+    );
+    assert.notEqual(verified, unverified);
+    assert.deepEqual(hits.slice(before), [`/download/v9.9.1/${asset}`]);
+  } finally {
+    server.close();
+  }
+});
+
+// The verified cache is keyed by the pinned digest: a binary verified against
+// one pin is not reused for a package that pins another digest.
+test("ensureBinary keys the verified cache by the pinned digest", async () => {
+  const { server, hits, asset, sum, base } = await serve("9.9.0");
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
+  const env = { FORGE_RELEASE_BASE_URL: base, FORGE_NPM_CACHE_DIR: cache };
+  try {
+    const first = await ensureBinary("9.9.0", env, {
+      pinned: `${sum}  ${asset}\n`,
+    });
+    assert.equal(
+      await ensureBinary("9.9.0", env, { pinned: `${sum}  ${asset}\n` }),
+      first,
+    );
+    const downloads = hits.length;
+    await assert.rejects(
+      ensureBinary("9.9.0", env, { pinned: `${"ef".repeat(32)}  ${asset}\n` }),
+      /sha256 mismatch/,
+    );
+    assert.equal(hits.length, downloads + 1, "another pin must download again");
+  } finally {
+    server.close();
+  }
+});

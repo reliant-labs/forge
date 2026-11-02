@@ -16,9 +16,9 @@ func TestChartProvidedBy_ByReferenceNotName(t *testing.T) {
 	}
 	// Spellings of one reference.
 	for _, ref := range []string{
-		"ghcr.io/fluxcd-community/charts/flux2",
-		"OCI://ghcr.io/fluxcd-community/charts/flux2",
-		"oci://ghcr.io/fluxcd-community/charts/flux2/",
+		"ghcr.io/controlplaneio-fluxcd/charts/flux-operator",
+		"OCI://ghcr.io/controlplaneio-fluxcd/charts/flux-operator",
+		"oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator/",
 	} {
 		if !ChartProvidedBy(ref) {
 			t.Errorf("ChartProvidedBy(%q) = false; it is the same chart under a different spelling", ref)
@@ -29,7 +29,10 @@ func TestChartProvidedBy_ByReferenceNotName(t *testing.T) {
 	for _, ref := range []string{
 		"oci://docker.io/envoyproxy/gateway-helm",
 		"https://charts.jetstack.io",
-		"oci://ghcr.io/some-fork/charts/flux2",
+		"oci://ghcr.io/some-fork/charts/flux-operator",
+		// The community flux2 chart forge pinned before the operator is no
+		// longer forge's Flux.
+		"oci://ghcr.io/fluxcd-community/charts/flux2",
 		"",
 	} {
 		if ChartProvidedBy(ref) {

@@ -20,6 +20,9 @@ func TestKCLNamesAgree(t *testing.T) {
 	for kcl, goVal := range map[string]string{
 		"FLUX_CHART_OCI":                 ChartOCI,
 		"FLUX_CHART_VERSION":             ChartVersion,
+		"FLUX_CHART_NAME":                ChartName,
+		"FLUX_VERSION":                   FluxVersion,
+		"FLUX_INSTANCE_NAME":             InstanceName,
 		"FLUX_NAMESPACE":                 Namespace,
 		"FLUX_RECONCILER_ROLE":           ReconcilerRole,
 		"FLUX_SOURCE_ROLE":               SourceRole,

@@ -10,6 +10,8 @@ const (
 	ChartOCI                = pkgflux.ChartOCI
 	ChartVersion            = pkgflux.ChartVersion
 	ChartName               = pkgflux.ChartName
+	FluxVersion             = pkgflux.FluxVersion
+	InstanceName            = pkgflux.InstanceName
 	Namespace               = pkgflux.Namespace
 	ReconcilerRole          = pkgflux.ReconcilerRole
 	SourceRole              = pkgflux.SourceRole

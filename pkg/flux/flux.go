@@ -1,8 +1,9 @@
-// Package flux holds the identity of the Flux chart forge pins, and the names a
-// writer of Flux objects needs to agree with `forge.flux_chart()`: the
-// per-namespace ClusterRoles, the tenant ServiceAccount, and the
-// connected-cluster shard (the sharding label, its value, the shard's
-// controller and the ClusterRole a namespace binds it to).
+// Package flux holds the identity of the Flux install forge pins — ControlPlane's
+// Flux Operator chart and the FluxInstance riding it — and the names a writer
+// of Flux objects needs to agree with `forge.flux_chart()`: the per-namespace
+// ClusterRoles, the tenant ServiceAccount, and the connected-cluster shard
+// (the sharding label, its value, the shard's controller and the ClusterRole a
+// namespace binds it to).
 //
 // It is public so a consumer that writes Kustomizations or RoleBindings for a
 // hub (control-plane does) imports the spellings instead of restating them.
@@ -11,12 +12,10 @@
 //
 // forge does not install Flux into a deploy target and writes no pointer at
 // one: a real cluster is reconciled by a control plane's hub, or applied by
-// forge directly (Bundle.applier = "forge", Bundle.lifecycle). What survives of
-// the old in-cluster reconciler is the chart's identity, because a consumer
-// that needs Flux for its own reasons (control-plane's e2e runs one to reconcile
-// hosted workloads) declares `forge.flux_chart()`, and an env's bootstrap-chart install
-// must recognise it by REFERENCE, never by name, so a second copy is never
-// installed beside it. The values below are the Go half of kcl/lib/flux.k.
+// forge directly (Bundle.applier = "forge", Bundle.lifecycle). A consumer that
+// needs Flux for its own reasons declares `forge.flux_chart()`, and an env's
+// bootstrap-chart install must recognise it by REFERENCE, never by name, so a
+// second copy is never installed beside it.
 package flux
 
 import "strings"
@@ -24,27 +23,30 @@ import "strings"
 // The chart forge installs, and the one a consumer declares to be recognised
 // as already providing Flux.
 //
-// THESE TWO STRINGS ARE SHARED WITH KCL and must not drift:
-// `kcl/lib/flux.k`'s FLUX_CHART_OCI / FLUX_CHART_VERSION are the same values,
-// and kcl/tests/positive_flux_chart.k pins them against the literals. The
+// THESE STRINGS ARE SHARED WITH KCL and must not drift: `kcl/lib/flux.k`'s
+// FLUX_CHART_OCI / FLUX_CHART_VERSION / FLUX_CHART_NAME / FLUX_VERSION /
+// FLUX_INSTANCE_NAME are the same values, pinned by TestKCLNamesAgree. The
 // reference is the SHARED-FLUX DETECTOR — [ChartProvidedBy] compares a
 // declared chart's `oci` against ChartOCI — so a divergence here would make a
 // consumer's Flux undetectable and forge would install a second one into a
 // cluster that already had one.
 const (
-	// ChartOCI is the community flux2 chart. There is no fluxcd-published
-	// chart; this is the canonical install path.
-	ChartOCI = "oci://ghcr.io/fluxcd-community/charts/flux2"
-	// ChartVersion is the pinned CHART version. Chart 2.19.1 is appVersion
-	// v2.9.5 (source-controller and kustomize-controller v1.9.5). The two
-	// numbers are unrelated lineages — re-derive with
-	// `helm show chart <ChartOCI> --version <v> | grep appVersion` on a
-	// bump, never increment.
-	ChartVersion = "2.19.1"
+	// ChartOCI is ControlPlane's Flux Operator chart. The operator installs
+	// Flux itself from the FluxInstance riding the chart.
+	ChartOCI = "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator"
+	// ChartVersion is the pinned operator chart version (appVersion
+	// v<ChartVersion>; the image is pinned by digest in kcl/lib/flux.k).
+	ChartVersion = "0.62.1"
+	// FluxVersion is the Flux minor the FluxInstance pins; the operator picks
+	// the newest patch of it that its pinned image embeds.
+	FluxVersion = "2.9.x"
+	// InstanceName is the FluxInstance's name: the operator reconciles only
+	// `flux`, in its own namespace.
+	InstanceName = "flux"
 	// ChartName is the `--target` selector forge's own install uses. A
 	// consumer may name its chart anything, which is exactly why detection
 	// is by reference and not by this.
-	ChartName = "flux"
+	ChartName = "flux-operator"
 	// Namespace is Flux's namespace, and where the pointer is written. Not
 	// configurable: a second spelling would only let the writer and the
 	// controller disagree about where the OCIRepository lives.
@@ -65,7 +67,7 @@ const (
 	DeployServiceAccount = "reliant-deploy-tenant"
 	// ShardLabel / ConnectedShard are Flux's sharding label and the value that
 	// routes a Kustomization to the connected-cluster controller
-	// (`flux_chart(connected_shard = True)`). A writer of a Kustomization with
+	// (`flux_chart(connected_shard = True)`, a FluxInstance shard). A writer of a Kustomization with
 	// spec.kubeConfig MUST set it: the admission policy refuses the object
 	// otherwise. Same spellings as KCL's FLUX_SHARD_LABEL / FLUX_CONNECTED_SHARD.
 	ShardLabel     = "sharding.fluxcd.io/key"

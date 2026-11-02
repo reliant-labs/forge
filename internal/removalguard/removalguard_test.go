@@ -103,10 +103,11 @@ var removals = []removal{
 			},
 			{
 				Name: "Flux's own multitenancy chart values and the tenants it isolates",
-				Reason: "forge installs Flux from the community flux2 chart, whose values key is " +
-					"literally `multitenancy` (`multitenancy.enabled`, `.privileged`, " +
-					"`.defaultServiceAccount`), and whose isolation model is described in terms of " +
-					"tenants. The key is Flux's identifier and cannot be renamed.\n" +
+				Reason: "forge installs Flux through ControlPlane's Flux Operator, whose FluxInstance " +
+					"spells the lockdown `cluster.multitenant` / `tenantDefaultServiceAccount`, whose chart's " +
+					"values key is literally `multitenancy` (`.enabled`, `.defaultServiceAccount`), and whose " +
+					"isolation model is described in terms of tenants. The keys are Flux's identifiers and " +
+					"cannot be renamed.\n" +
 					"This is Flux's tenancy, not a forge tenant concept: forge ships no tenant " +
 					"column, header, context key or helper on the strength of it. Scoped to the " +
 					"Flux component's own files, so a `TenantID` anywhere else still fails.",

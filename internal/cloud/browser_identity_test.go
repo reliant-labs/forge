@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/credentials"
 	"github.com/reliant-labs/forge/pkg/oauth2"
@@ -64,5 +65,27 @@ func TestCredentialKindComesFromOAuthResponseNotTokenPrefix(t *testing.T) {
 	token := &oauth2.Token{AccessToken: "opaque-human", Raw: map[string]any{"credential_kind": "human"}}
 	if tokenCredentialKind(token) != "human" {
 		t.Fatal("human identity metadata lost")
+	}
+}
+
+// The token reply names who the login signed in as; the stored credential
+// keeps it, so a client can say whose login it holds without a network call.
+// An issuer that does not say leaves both empty.
+func TestCredentialFromTokenRecordsTheAccount(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		raw             map[string]any
+		wantID, wantEml string
+	}{
+		{"named", map[string]any{"account_id": "ext-1", "account_email": "a@example.test"}, "ext-1", "a@example.test"},
+		{"older issuer", map[string]any{"org_id": "A"}, "", ""},
+		{"wrong type", map[string]any{"account_id": 7}, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := CredentialFromToken(&oauth2.Token{AccessToken: "rlat_0123456789abcdef", Raw: tc.raw}, time.Now())
+			if c.AccountID != tc.wantID || c.AccountEmail != tc.wantEml {
+				t.Fatalf("account = %q %q, want %q %q", c.AccountID, c.AccountEmail, tc.wantID, tc.wantEml)
+			}
+		})
 	}
 }

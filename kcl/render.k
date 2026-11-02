@@ -1651,19 +1651,21 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
 # DeliveryPolicy, every control resolved. The key set is the release shape's
 # `delivery_policy`; lists are sorted so the shape does not depend on the order
 # the author typed them in.
-_render_delivery_policy = lambda p: DeliveryPolicy -> any {
+_render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
     _ex = {e.id: {"id": e.id, "reason": e.reason, "expires": e.expires} for e in p.vuln_gate.exemptions}
     {
         "trusted_builder": {"mode": p.trusted_builder.mode, "builders": sorted(p.trusted_builder.builders)}
+        # Unset signing / flux_verify resolve for where the env delivers:
+        # audit with a control plane, off without one (schema.k).
         "signing": {
-            "mode": p.signing.mode
-            "key": p.signing.key
-            "key_ref": p.signing.key_ref if p.signing.key_ref else None
-            "oidc_issuer": p.signing.oidc_issuer if p.signing.oidc_issuer else None
-            "oidc_subject": p.signing.oidc_subject if p.signing.oidc_subject else None
+            "mode": _delivery_signing_mode(p, hosted)
+            "key": p.signing.key if p.signing else "org_kms"
+            "key_ref": p.signing.key_ref if p.signing and p.signing.key_ref else None
+            "oidc_issuer": p.signing.oidc_issuer if p.signing and p.signing.oidc_issuer else None
+            "oidc_subject": p.signing.oidc_subject if p.signing and p.signing.oidc_subject else None
         }
         "provenance_sbom": {"mode": p.provenance_sbom.mode}
-        "flux_verify": {"mode": p.flux_verify.mode}
+        "flux_verify": {"mode": _delivery_flux_verify_mode(p, hosted)}
         "admission_verify": {"mode": p.admission_verify.mode}
         "signed_promotions": {"mode": p.signed_promotions.mode}
         "vuln_gate": {
@@ -2081,7 +2083,7 @@ render = lambda bundle: Bundle -> any {
         # env declares one. Go records it in the release shape unless it is all
         # defaults.
         if bundle.delivery_policy:
-            "delivery_policy": _render_delivery_policy(bundle.delivery_policy)
+            "delivery_policy": _render_delivery_policy(bundle.delivery_policy, bool(bundle.control_plane))
         # How the env's data may be read (forge db query), resolved: the
         # declaration, else what the lifecycle implies. Present only when it
         # is not "audited", the default of an env with no lifecycle: absence

@@ -242,7 +242,9 @@ func TestRoundTrip_DeployApply_FromRealProto(t *testing.T) {
 	}
 }
 
-// cpLiveEnvFixture is controlplane.v1.DeployLiveEnvironment, from cp 7a5253d8.
+// cpLiveEnvFixture is controlplane.v1.DeployLiveEnvironment as the slim roster
+// sends it (control-plane#1768): the declaration's stamp but not its shape,
+// and the bundle by identity.
 const cpLiveEnvFixture = `{
   "environment":  {
     "id":  "env_prod",
@@ -250,23 +252,6 @@ const cpLiveEnvFixture = `{
     "kind":  "DEPLOY_ENVIRONMENT_KIND_SELF_MANAGED",
     "namespace":  "acme-prod",
     "project":  "hounders",
-    "declaredShape":  {
-      "clusters":  ["prod-ctx"],
-      "domains":  ["app.example.com"],
-      "kind":  "self_managed",
-      "objects":  [
-        {
-          "api_version":  "apps/v1",
-          "cluster":  "prod-ctx",
-          "hash":  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "kind":  "Deployment",
-          "name":  "api",
-          "namespace":  "app"
-        }
-      ],
-      "secrets":  [{"name":  "DB_URL", "provider":  "hosted"}],
-      "workloads":  [{"name":  "api", "runtime":  "cluster"}]
-    },
     "declaredBy":  {
       "repo":  "github.com/reliant-labs/hounders",
       "commit":  "1111111111111111111111111111111111111111",
@@ -290,6 +275,14 @@ const cpLiveEnvFixture = `{
     "approvedBy":  "usr_1",
     "acknowledgedFindings":  ["stateful_deletion"]
   },
+  "currentBundleSummary":  {
+    "id":  "bd_1",
+    "releaseVersion":  "v1.4.0",
+    "digest":  "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "configDigest":  "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "createdAt":  "2026-10-02T10:00:00Z"
+  },
+  "treeHealth":  {"total":  1, "converged":  1},
   "phase":  "DEPLOY_ROLLOUT_PHASE_SUCCEEDED"
 }`
 
@@ -316,11 +309,10 @@ func TestRoundTrip_DeployLiveEnvironment_FromRealProto(t *testing.T) {
 	if live.Namespace != "acme-prod" {
 		t.Errorf("namespace = %q", live.Namespace)
 	}
-	if live.Env.DeclaredShape == nil {
-		t.Fatal("declaredShape never arrived (F-DECL's whole point)")
-	}
-	if len(live.Env.DeclaredShape.Objects) != 1 || live.Env.DeclaredShape.Objects[0].APIVersion != "apps/v1" {
-		t.Errorf("declared shape objects = %+v", live.Env.DeclaredShape.Objects)
+	// THE SHAPE IS NOT ON THE ROSTER: GetEnvironmentShape serves it. The
+	// stamp says one exists.
+	if live.Env.DeclaredShape != nil {
+		t.Errorf("a roster row produced a declared shape: %+v", live.Env.DeclaredShape)
 	}
 	if live.Env.DeclaredAt == nil {
 		t.Error("declaredAt never arrived; without it a declaration cannot be judged stale")
@@ -346,12 +338,15 @@ func TestRoundTrip_DeployLiveEnvironment_FromRealProto(t *testing.T) {
 	if rolloutPhaseName(live.Phase) != "succeeded" {
 		t.Errorf("phase = %q", live.Phase)
 	}
-	// Phase B fills these; Phase A leaves them empty. nil is MEANINGFUL
-	// here — no bundle means no config has been applied — so the test pins
-	// that the absent fields decode as absent rather than as zero values
-	// pretending to be records.
-	if live.CurrentBundle != nil || live.LatestApply != nil {
-		t.Error("a row with no bundle or apply must leave both nil, not zero-valued")
+	// The bundle arrives by identity; GetBundle reads the rest.
+	if b := live.CurrentBundle; b == nil || b.ID != "bd_1" || b.Digest != "sha256:"+rep64('c') ||
+		b.ConfigDigest != "sha256:"+rep64('d') || b.Release != "v1.4.0" {
+		t.Errorf("current bundle = %+v, want bd_1 with its digests", live.CurrentBundle)
+	}
+	// nil is MEANINGFUL for an absent apply, so it must decode as absent
+	// rather than as a zero value pretending to be a record.
+	if live.LatestApply != nil {
+		t.Error("a row with no apply must leave it nil, not zero-valued")
 	}
 	if live.Drift != nil {
 		t.Error("a row with no drift must leave it nil: unobservable is not in_sync")

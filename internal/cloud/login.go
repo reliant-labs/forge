@@ -120,6 +120,8 @@ func CredentialFromToken(tok *oauth2.Token, now time.Time) credentials.Credentia
 		Scopes:      strings.Fields(tok.Scope),
 		CreatedAt:   now.UTC(),
 	}
+	c.AccountID, _ = tok.Raw["account_id"].(string)
+	c.AccountEmail, _ = tok.Raw["account_email"].(string)
 	if exp := tok.Expiry(now); !exp.IsZero() {
 		exp = exp.UTC()
 		c.ExpiresAt = &exp

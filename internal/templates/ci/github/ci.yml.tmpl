@@ -49,14 +49,19 @@ on:
 permissions:
   contents: {{.PermContents | default "read"}}
 
-# Cancel a superseded run on a pull request only. On main (and tags) the run in
-# progress always finishes: every push to main shares one group, so cancelling
-# there lets each merge kill the run before it — often while its jobs are still
-# queued for a runner — and main can go hours without a single verdict. GitHub
-# keeps at most one PENDING run per group and a newer push replaces it, so a
-# burst of merges costs one extra run, not one per merge.
+# On a pull request a newer push cancels the run in progress. On main the run
+# in progress always finishes, and a newer push SUPERSEDES the pending one:
+# every push to main shares this group with cancel-in-progress false, and
+# GitHub keeps at most one pending run per group, cancelling the older one when
+# a newer one queues. A burst of merges costs the run in progress plus one run
+# of the newest commit, and the commits between get no run of their own.
+# Cancelling the run in progress on main is never right: each merge would kill
+# the run before it — often while its jobs are still queued for a runner — and
+# main could go hours without a single verdict. A workflow that also runs on a
+# schedule, a dispatch or a workflow_call keys its group on github.event_name
+# too, so those runs never supersede a push run (build-images.yml, e2e.yml).
 concurrency:
-  group: ci-${{"{{"}} github.ref {{"}}"}}${{"{{"}} github.event_name != 'pull_request' && format('-{0}', github.sha) || '' {{"}}"}}
+  group: ci-${{"{{"}} github.ref {{"}}"}}
   cancel-in-progress: ${{"{{"}} github.event_name == 'pull_request' {{"}}"}}
 
 # Go version is read from go.mod's `go` directive via setup-go's

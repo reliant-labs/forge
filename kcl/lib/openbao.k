@@ -439,6 +439,8 @@ render = lambda ob: any, ctx: any -> any {
         "seal": {"keyID": ob.seal.key_id}
         "recoverySecret": ob.name + "-recovery"
         "kv": {"mount": ob.kv.mount, "maxVersions": ob.kv.max_versions}
+        if ob.transit:
+            "transit": [{"mount": t.mount} for t in ob.transit]
         "ha": {
             "pdb": ob.ha.pdb
             "zoneSpread": ob.ha.zone_spread

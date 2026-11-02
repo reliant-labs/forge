@@ -11,10 +11,18 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// renderDeliveryPolicy renders a one-workload env with the given
-// `delivery_policy = ...` expression ("" for none) through the same seam
-// `forge env shape` uses, and returns the decoded entities.
+// renderDeliveryPolicy renders a one-workload env that delivers through a
+// control plane with the given `delivery_policy = ...` expression ("" for
+// none) through the same seam `forge env shape` uses, and returns the decoded
+// entities.
 func renderDeliveryPolicy(t *testing.T, policy string) *KCLEntities {
+	t.Helper()
+	return renderDeliveryPolicyIn(t, policy, true)
+}
+
+// renderDeliveryPolicyIn is renderDeliveryPolicy with the control plane
+// optional: without one, the env is self-hosted.
+func renderDeliveryPolicyIn(t *testing.T, policy string, controlPlane bool) *KCLEntities {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("-short: renders KCL; runs in task test")
@@ -23,6 +31,9 @@ func renderDeliveryPolicy(t *testing.T, policy string) *KCLEntities {
 	decl := ""
 	if policy != "" {
 		decl = "delivery_policy = " + policy
+	}
+	if controlPlane {
+		decl += "\n    control_plane = forge.ControlPlane {}"
 	}
 	files := map[string]string{
 		"kcl.mod": "[package]\nname = \"deliverypolicy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
@@ -68,6 +79,22 @@ func TestDeliveryPolicyDefaultsAgreeWithKCL(t *testing.T) {
 	}
 	if got := shapeDeliveryPolicyOf(e); got != nil {
 		t.Errorf("an all-default policy must not be recorded in the shape, got %+v", got)
+	}
+}
+
+// With no control plane nothing signs: forge.DeliveryPolicy {} renders
+// signing and flux_verify off, and the shape records it (it is not the
+// shape-level default, which is the hosted one).
+func TestDeliveryPolicySelfHostedDefaultsSignNothing(t *testing.T) {
+	e := renderDeliveryPolicyIn(t, "forge.DeliveryPolicy {}", false)
+	if e.DeliveryPolicy == nil {
+		t.Fatal("an env that declares a delivery_policy rendered none")
+	}
+	if want := release.DefaultSelfHostedDeliveryPolicy(); !reflect.DeepEqual(*e.DeliveryPolicy, want) {
+		t.Errorf("self-hosted defaults:\n kcl %+v\n go  %+v", *e.DeliveryPolicy, want)
+	}
+	if shapeDeliveryPolicyOf(e) == nil {
+		t.Error("a self-hosted policy (signing off) must be recorded: it differs from the hosted default")
 	}
 }
 

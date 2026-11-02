@@ -24,7 +24,7 @@ copy. Only artifacts you push are ever installed.
 | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | Flux **security** release (any controller forge installs: source-controller, kustomize-controller) | forge release within **7 days**, consumers deployed dev → prod right after                                      |
 | Flux **minor** release                                                                             | forge release within **30 days**                                                                                |
-| Flux Operator **security** release                                                                 | forge release within **7 days**: the operator is cluster-admin on every cluster that declares Flux                |
+| Flux Operator **security** release                                                                 | forge release within **7 days**: the operator is cluster-admin on every cluster that declares Flux              |
 | Advisory against a controller forge does **not** install (helm, notification, image-\*)            | note it here; no release needed, but re-read "Two controllers, not six" in `kcl/lib/flux.k` before enabling one |
 
 ## CVE watch
@@ -45,7 +45,7 @@ forge does not run a feed; whoever owns the pin does.
 | Secret/kubeconfig injection (CVE-2021-41254, CVE-2022-24817)   | no `--insecure-kubeconfig-exec`; the controller reads Secrets only in namespaces bound to `flux-tenant-*`            |
 | Kustomize / YAML path traversal (GHSA-j77r-2fxf-5jrw)          | `--no-remote-bases`, plugins off by construction; validate the artifact at ingest (`release.ValidateManifestsLayer`) |
 | Source-controller non-OCI paths (CVE-2026-47680)               | OCIRepository only; do not declare Bucket/GitRepository sources                                                      |
-| notification-controller network exposure (GHSA-mwcp-qpcg-fr7c) | controller not installed; `allow-webhooks` NetworkPolicy not rendered (FluxInstance `networkPolicy` off)                 |
+| notification-controller network exposure (GHSA-mwcp-qpcg-fr7c) | controller not installed; `allow-webhooks` NetworkPolicy not rendered (FluxInstance `networkPolicy` off)             |
 
 ## Procedure
 
@@ -96,8 +96,9 @@ forge does not run a feed; whoever owns the pin does.
    `TestFluxInstance_*` / `TestFluxConnectedShardAdmission` in `internal/cluster`.
 5. **Roll it dev first.** The operator upgrades the controllers and CRDs in
    place. Watch `kubectl -n flux-system get fluxinstance flux` (Ready, the
-   new `lastAppliedRevision`), `kubectl -n flux-system rollout status
-   deploy/kustomize-controller deploy/source-controller`, then confirm a
+   new `lastAppliedRevision`),
+   `kubectl -n flux-system rollout status deploy/kustomize-controller deploy/source-controller`,
+   then confirm a
    Kustomization reconciles to a new revision.
 6. **Release forge**, then bump the pin in each consumer.
 

@@ -221,7 +221,7 @@ func TestFluxConnectedShardAdmission(t *testing.T) {
 			"selector": map[string]any{"matchLabels": map[string]any{"app": name}},
 			"template": map[string]any{
 				"metadata": map[string]any{"labels": map[string]any{"app": name}},
-				"spec": map[string]any{"serviceAccountName": sa, "containers": []any{map[string]any{"name": "manager", "image": "x", "args": a}}},
+				"spec":     map[string]any{"serviceAccountName": sa, "containers": []any{map[string]any{"name": "manager", "image": "x", "args": a}}},
 			},
 		}}}
 		u.SetAPIVersion("apps/v1")

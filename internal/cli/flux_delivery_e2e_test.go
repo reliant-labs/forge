@@ -61,6 +61,7 @@ type fluxDeliveryE2E struct {
 	registryPort int
 	kctx         string
 	deliveryNS   string
+	kicks        int // reconcile requests made, for a unique request value each
 }
 
 func TestE2EFluxDeliverySelfHosted(t *testing.T) {
@@ -564,7 +565,12 @@ func (e *fluxDeliveryE2E) revokeWidgetGrant() {
 	e.kubectl("replace", "-f", path)
 }
 
-// kickPreTree asks kustomize-controller to reconcile the pre tree now.
+// kickPreTree asks kustomize-controller to reconcile the pre tree now, and
+// returns only once it has HANDLED that request: status.lastHandledReconcileAt
+// is set to the request's value when the reconciliation it started finishes.
+// Without the wait, the next read could still see the previous
+// reconciliation's verdict (Ready before a revocation, Forbidden before a
+// heal) and pass or fail on it.
 func (e *fluxDeliveryE2E) kickPreTree() {
 	e.t.Helper()
 	names := strings.Fields(e.kubectl("get", "kustomizations.kustomize.toolkit.fluxcd.io", "-n", e.deliveryNS,
@@ -572,9 +578,34 @@ func (e *fluxDeliveryE2E) kickPreTree() {
 	if len(names) == 0 {
 		e.t.Fatal("no pre Kustomization to reconcile")
 	}
+	e.kicks++
+	token := fmt.Sprintf("forge-e2e-kick-%d", e.kicks)
 	for _, n := range names {
 		e.kubectl("annotate", "--overwrite", "kustomizations.kustomize.toolkit.fluxcd.io", n, "-n", e.deliveryNS,
-			"reconcile.fluxcd.io/requestedAt="+time.Now().UTC().Format(time.RFC3339Nano))
+			"reconcile.fluxcd.io/requestedAt="+token)
+	}
+	for _, n := range names {
+		e.waitFor(4*time.Minute, "Kustomization "+n+" to handle reconcile request "+token, func() (bool, string) {
+			out, _ := e.kubectlErr("get", "kustomizations.kustomize.toolkit.fluxcd.io", n, "-n", e.deliveryNS,
+				"-o", "jsonpath={.status.lastHandledReconcileAt}")
+			return strings.TrimSpace(out) == token, out
+		})
+	}
+}
+
+// waitFor polls done until it holds, failing the test when budget runs out.
+func (e *fluxDeliveryE2E) waitFor(budget time.Duration, what string, done func() (bool, string)) {
+	e.t.Helper()
+	deadline := time.Now().Add(budget)
+	for {
+		ok, last := done()
+		if ok {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			e.t.Fatalf("waited %s for %s; last read: %s", budget, what, last)
+		}
+		time.Sleep(time.Second)
 	}
 }
 

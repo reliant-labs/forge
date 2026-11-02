@@ -22,9 +22,12 @@ package cli
 //  4. THE POINTER, after the record (followFluxDelivery). The pointer is a
 //     projection of the ledger: written first, a cluster could converge to a
 //     release the ledger never recorded, and nothing would know to re-point
-//     it. Server-side applied under a resourceVersion precondition, refused
-//     by fluxdelivery.CheckTransition when it would move the fence backwards,
-//     drop an un-retired applier or move one's path.
+//     it. Written conditionally on the pointer just read (create-only, or
+//     an update at its resourceVersion) with the next fence in the
+//     CLUSTER's sequence (pointFluxDelivery), refused by
+//     fluxdelivery.CheckTransition when it would move the fence backwards,
+//     drop an un-retired applier or move one's path. A tree the release no
+//     longer carries is retired, and that retire observed, first.
 //  5. THE WAIT (waitFluxDelivery): every Kustomization has applied the
 //     digest and is Ready (0), Flux reports a failure in its own words (1;
 //     a Forbidden for an apply identity is the grant refusal's message), or
@@ -34,11 +37,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -431,21 +436,10 @@ func followFluxDelivery(ctx context.Context, env string, plan promotePlan, ledge
 	if rel == nil || plan.Recorded == nil {
 		return fmt.Errorf("env %s: the deploy recorded no promotion to point its in-cluster Flux at", env)
 	}
-	projectDir := o.projectDir
-	if projectDir == "" {
-		projectDir = projectDirForKCL()
-	}
-	fence, err := fluxDeliveryFence(projectDir, env, plan.Recorded.ID)
-	if err != nil {
-		return err
-	}
-	in, err := rel.input(strconv.Itoa(fence), plan.Recorded.ID)
-	if err != nil {
-		return err
-	}
 	o.notice("\nPointing env %s's in-cluster Flux at release %s (bundle %s, %s/%s)\n",
 		env, rel.version, shortDigest(rel.digest), rel.fd.Namespace, fluxdelivery.InputProviderName(env, ""))
-	if err := writeFluxDeliveryPointer(ctx, rel.fd, in); err != nil {
+	in, err := pointFluxDelivery(ctx, rel, plan.Recorded.ID, o.Timeout, func(f string, a ...any) { o.notice(f, a...) })
+	if err != nil {
 		return err
 	}
 	if o.NoWait {
@@ -455,61 +449,232 @@ func followFluxDelivery(ctx context.Context, env string, plan promotePlan, ledge
 	return waitFluxDelivery(ctx, env, rel.version, rel.fd, in, o.Timeout, func(f string, a ...any) { o.notice(f, a...) })
 }
 
-// fluxDeliveryFence is the promotion's sequence in the env's file ledger,
-// 1-based: monotonic per env, so a pointer write that carries a smaller one
-// lost a race to a newer deploy.
-func fluxDeliveryFence(projectDir, env, promotionID string) (int, error) {
-	store, err := openMachineLedger(projectDir)
-	if err != nil {
-		return 0, err
-	}
-	ps, err := store.Promotions(env)
-	if err != nil {
-		return 0, err
-	}
-	for i, p := range ps {
-		if p.ID == promotionID {
-			return i + 1, nil
+// fluxDeliveryPointAttempts bounds how often a pointer write re-reads after
+// another writer changed the pointer under it.
+const fluxDeliveryPointAttempts = 5
+
+// pointFluxDelivery writes the pointer for rel at promotion and returns the
+// input it wrote.
+//
+// THE FENCE IS THE CLUSTER'S. Every deployer — another administrator, a fresh
+// CI runner — has its own ledger, so no ledger position orders their writes.
+// The pointer itself does: each write carries the live pointer's fence plus
+// one and is conditional on the object it read (create-only when there was
+// none, a resourceVersion-conditional update otherwise). A writer that lost
+// the race gets a conflict, re-reads, and re-checks the transition against
+// what actually won, so nothing is ever overwritten unchecked.
+//
+// A TREE THE RELEASE NO LONGER CARRIES is retired before the source moves:
+// first a write that keeps the live source and marks the dropped appliers
+// `retire: orphan`, then — once the renderer has applied that — the release
+// itself, which drops them. Without it the dropped Kustomization would keep
+// reading the shared source and prune everything it applied the moment the
+// source moved to a digest without its path.
+func pointFluxDelivery(ctx context.Context, rel *fluxDeliveryRelease, promotion string, budget time.Duration, notice func(string, ...any)) (fluxdelivery.BindingInput, error) {
+	fd := rel.fd
+	for attempt := 1; ; attempt++ {
+		live, err := fluxDeliveryPointerIO.read(ctx, fd)
+		if err != nil {
+			return fluxdelivery.BindingInput{}, err
 		}
+		var liveIn *fluxdelivery.BindingInput
+		rv := ""
+		if live != nil {
+			l, err := fluxdelivery.LiveInput(live)
+			if err != nil {
+				return fluxdelivery.BindingInput{}, fmt.Errorf("env %s: the live pointer cannot be read, so this write cannot prove it is safe: %w", fd.Env, err)
+			}
+			liveIn, rv = &l, live.GetResourceVersion()
+		}
+		fence, err := nextFluxDeliveryFence(liveIn)
+		if err != nil {
+			return fluxdelivery.BindingInput{}, fmt.Errorf("env %s: refusing to point its Flux: %w", fd.Env, err)
+		}
+		next, err := rel.input(fence, promotion)
+		if err != nil {
+			return fluxdelivery.BindingInput{}, err
+		}
+		write, retiring := next, fluxDeliveryUnretired(liveIn, next)
+		if len(retiring) > 0 {
+			write = retireFluxDeliveryAppliers(*liveIn, retiring, fence)
+			notice("  release %s no longer carries %s: retiring %s first (orphaned, not deleted)\n",
+				rel.version, plural(len(retiring), "a tree", "trees"), strings.Join(retiring, ", "))
+		}
+		err = writeFluxDeliveryPointer(ctx, fd, liveIn, rv, write)
+		if errors.Is(err, errFluxPointerConflict) && attempt < fluxDeliveryPointAttempts {
+			notice("  env %s's pointer changed under this write; re-reading it\n", fd.Env)
+			continue
+		}
+		if err != nil {
+			return fluxdelivery.BindingInput{}, err
+		}
+		if len(retiring) == 0 {
+			return next, nil
+		}
+		if err := waitFluxDeliveryRetired(ctx, fd, retiring, budget); err != nil {
+			return fluxdelivery.BindingInput{}, err
+		}
+		// The retire is applied: the next pass re-reads it and drops them.
 	}
-	return 0, fmt.Errorf("env %s: promotion %s is not in this machine's ledger", env, promotionID)
 }
 
-// writeFluxDeliveryPointer checks in against the live pointer and writes it.
-func writeFluxDeliveryPointer(ctx context.Context, fd FluxDeliveryEntity, in fluxdelivery.BindingInput) error {
+// nextFluxDeliveryFence is the fence a write over live carries: one past
+// live's, or 1 for the first write.
+func nextFluxDeliveryFence(live *fluxdelivery.BindingInput) (string, error) {
+	if live == nil {
+		return "1", nil
+	}
+	n, err := strconv.ParseUint(live.Fence, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("%w: the live pointer's fence %q is not a sequence number, so no write can be ordered after it",
+			fluxdelivery.ErrStaleFence, live.Fence)
+	}
+	return strconv.FormatUint(n+1, 10), nil
+}
+
+// fluxDeliveryUnretired names the appliers live holds that next drops and live
+// never retired, sorted: the ones a write must retire before it drops them.
+func fluxDeliveryUnretired(live *fluxdelivery.BindingInput, next fluxdelivery.BindingInput) []string {
+	if live == nil || live.Retire != "" {
+		return nil
+	}
+	kept := map[string]bool{}
+	for _, a := range next.Appliers {
+		kept[a.Name] = true
+	}
+	var out []string
+	for _, a := range live.Appliers {
+		if !kept[a.Name] && a.Retire == "" {
+			out = append(out, a.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// retireFluxDeliveryAppliers is live, at fence, with the named appliers
+// retired (orphan): the same source and the same promotion, so it moves
+// nothing but those appliers' lifecycle.
+func retireFluxDeliveryAppliers(live fluxdelivery.BindingInput, names []string, fence string) fluxdelivery.BindingInput {
+	retire := map[string]bool{}
+	for _, n := range names {
+		retire[n] = true
+	}
+	out := live
+	out.Fence = fence
+	out.Appliers = append([]fluxdelivery.Applier(nil), live.Appliers...)
+	for i := range out.Appliers {
+		if retire[out.Appliers[i].Name] {
+			out.Appliers[i].Retire = fluxdelivery.RetireOrphan
+		}
+	}
+	return out
+}
+
+// waitFluxDeliveryRetired polls until the renderer has applied a retire to
+// every named Kustomization (or it is gone), within budget.
+func waitFluxDeliveryRetired(ctx context.Context, fd FluxDeliveryEntity, names []string, budget time.Duration) error {
+	if budget <= 0 {
+		budget = fluxDeliveryWaitDefault
+	}
+	deadline := time.Now().Add(budget)
+	for {
+		done, err := fluxDeliveryRetireApplied(ctx, fd, names)
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return exitCodeError{code: exitTimedOut, msg: fmt.Sprintf(
+				"env %s: its Flux did not apply the retire of %s within %s, so the release was not pointed at (the retire is recorded on the pointer; re-run the deploy to continue).\n"+
+					"  `kubectl --context %s -n %s get kustomizations` shows Flux's own view.",
+				fd.Env, strings.Join(names, ", "), budget, fd.Cluster, fd.Namespace)}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(fluxDeliveryWaitInterval):
+		}
+	}
+}
+
+// fluxDeliveryRetireApplied reports whether every named Kustomization is gone
+// or carries the retire the renderer renders (suspended, orphaning). A var so
+// the writer is testable without a cluster.
+var fluxDeliveryRetireApplied = func(ctx context.Context, fd FluxDeliveryEntity, names []string) (bool, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "--context", fd.Cluster, "-n", fd.Namespace,
+		"get", "kustomizations.kustomize.toolkit.fluxcd.io", "-o", "json").Output()
+	if err != nil {
+		return false, fmt.Errorf("read env %s's Kustomizations on %s: %w", fd.Env, fd.Cluster, kubectlErr(err))
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return false, fmt.Errorf("decode env %s's Kustomizations: %w", fd.Env, err)
+	}
+	byName := map[string]map[string]any{}
+	for _, item := range list.Items {
+		name, _ := nested(item, "metadata", "name").(string)
+		byName[name] = item
+	}
+	for _, n := range names {
+		k, ok := byName[n]
+		if !ok {
+			continue
+		}
+		suspended, _ := nested(k, "spec", "suspend").(bool)
+		policy, _ := nested(k, "spec", "deletionPolicy").(string)
+		if !suspended || policy != "Orphan" {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// errFluxPointerConflict is a pointer write the API server refused because
+// the pointer is not the one it was conditional on: another writer created,
+// updated or deleted it since the read.
+var errFluxPointerConflict = errors.New("the pointer changed since it was read")
+
+// writeFluxDeliveryPointer checks in against live (nil: no pointer exists) and
+// writes it conditionally on that read: create-only when there was none, an
+// update at liveRV otherwise. A conflict is errFluxPointerConflict.
+func writeFluxDeliveryPointer(ctx context.Context, fd FluxDeliveryEntity, live *fluxdelivery.BindingInput, liveRV string, in fluxdelivery.BindingInput) error {
 	if err := checkFluxDeliveryInput(in, fd); err != nil {
 		return fmt.Errorf("env %s: refusing to point its Flux: %w", fd.Env, err)
-	}
-	live, err := fluxDeliveryPointerIO.read(ctx, fd)
-	if err != nil {
-		return err
 	}
 	pointer, err := fluxdelivery.InputProvider(in)
 	if err != nil {
 		return err
 	}
-	if live != nil {
-		liveIn, err := fluxdelivery.LiveInput(live)
-		if err != nil {
-			return fmt.Errorf("env %s: the live pointer cannot be read, so this write cannot prove it is safe: %w", fd.Env, err)
-		}
-		if err := fluxdelivery.CheckTransition(&liveIn, in); err != nil {
-			return fmt.Errorf("env %s: refusing to point its Flux: %w", fd.Env, err)
-		}
-		// The write is conditional on the object just read: a concurrent
-		// deploy between the read and this write fails it rather than
-		// being overwritten unchecked.
-		md := pointer["metadata"].(map[string]any)
-		md["resourceVersion"] = live.GetResourceVersion()
+	if live == nil {
+		return fluxDeliveryPointerIO.create(ctx, fd, pointer)
 	}
-	return fluxDeliveryPointerIO.apply(ctx, fd, pointer)
+	if err := fluxdelivery.CheckTransition(live, in); err != nil {
+		return fmt.Errorf("env %s: refusing to point its Flux: %w", fd.Env, err)
+	}
+	// A fence names ONE promotion: an equal fence is this write repeated,
+	// never another promotion's.
+	if in.Fence == live.Fence && in.Promotion != live.Promotion {
+		return fmt.Errorf("env %s: refusing to point its Flux: %w: fence %s is promotion %s's, not %s",
+			fd.Env, fluxdelivery.ErrStaleFence, live.Fence, live.Promotion, in.Promotion)
+	}
+	md := pointer["metadata"].(map[string]any)
+	md["resourceVersion"] = liveRV
+	return fluxDeliveryPointerIO.update(ctx, fd, pointer)
 }
 
 // fluxDeliveryPointerIO is the pointer's cluster I/O. A seam so the writer's
-// refusals are testable without a cluster.
+// refusals are testable without a cluster. create is create-only; update is
+// conditional on the pointer's metadata.resourceVersion. Both return
+// errFluxPointerConflict when that precondition fails.
 var fluxDeliveryPointerIO = struct {
-	read  func(ctx context.Context, fd FluxDeliveryEntity) (*unstructured.Unstructured, error)
-	apply func(ctx context.Context, fd FluxDeliveryEntity, pointer map[string]any) error
+	read   func(ctx context.Context, fd FluxDeliveryEntity) (*unstructured.Unstructured, error)
+	create func(ctx context.Context, fd FluxDeliveryEntity, pointer map[string]any) error
+	update func(ctx context.Context, fd FluxDeliveryEntity, pointer map[string]any) error
 }{
 	read: func(ctx context.Context, fd FluxDeliveryEntity) (*unstructured.Unstructured, error) {
 		out, err := exec.CommandContext(ctx, "kubectl", "--context", fd.Cluster, "-n", fd.Namespace, "get",
@@ -527,23 +692,43 @@ var fluxDeliveryPointerIO = struct {
 		}
 		return &unstructured.Unstructured{Object: obj}, nil
 	},
-	apply: func(ctx context.Context, fd FluxDeliveryEntity, pointer map[string]any) error {
-		body, err := json.Marshal(pointer)
-		if err != nil {
-			return err
-		}
-		cmd := exec.CommandContext(ctx, "kubectl", "--context", fd.Cluster, "apply", "--server-side",
-			"--field-manager", fluxDeliveryFieldManager, "--force-conflicts", "-f", "-")
-		cmd.Stdin = bytes.NewReader(body)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("write env %s's pointer %s/%s on %s: %w: %s", fd.Env, fd.Namespace,
-				fluxdelivery.InputProviderName(fd.Env, ""), fd.Cluster, err, strings.TrimSpace(stderr.String()))
-		}
-		return nil
+	create: func(ctx context.Context, fd FluxDeliveryEntity, pointer map[string]any) error {
+		return kubectlWritePointer(ctx, fd, "create", pointer)
+	},
+	update: func(ctx context.Context, fd FluxDeliveryEntity, pointer map[string]any) error {
+		return kubectlWritePointer(ctx, fd, "replace", pointer)
 	},
 }
+
+// kubectlWritePointer runs `kubectl create|replace` with the pointer. Neither
+// verb forces anything: create fails when the pointer exists, and replace
+// fails when its resourceVersion is not the live one (or it was deleted) —
+// each errFluxPointerConflict.
+func kubectlWritePointer(ctx context.Context, fd FluxDeliveryEntity, verb string, pointer map[string]any) error {
+	body, err := json.Marshal(pointer)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", fd.Cluster, verb,
+		"--field-manager", fluxDeliveryFieldManager, "-f", "-")
+	cmd.Stdin = bytes.NewReader(body)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if fluxPointerConflictRE.MatchString(msg) {
+			return fmt.Errorf("write env %s's pointer: %w: %s", fd.Env, errFluxPointerConflict, msg)
+		}
+		return fmt.Errorf("write env %s's pointer %s/%s on %s: %w: %s", fd.Env, fd.Namespace,
+			fluxdelivery.InputProviderName(fd.Env, ""), fd.Cluster, err, msg)
+	}
+	return nil
+}
+
+// fluxPointerConflictRE is the API server's refusal of a conditional write, as
+// kubectl prints it: AlreadyExists (create), Conflict (a stale
+// resourceVersion), NotFound (deleted since the read).
+var fluxPointerConflictRE = regexp.MustCompile(`Error from server \((AlreadyExists|Conflict|NotFound)\)`)
 
 // fluxDeliveryFieldManager owns the pointer's fields.
 const fluxDeliveryFieldManager = "forge"
@@ -558,6 +743,13 @@ const (
 // is Ready (nil), Flux reports a failure for it (exit 1), or the budget runs
 // out (exit 8).
 func waitFluxDelivery(ctx context.Context, env, rel string, fd FluxDeliveryEntity, in fluxdelivery.BindingInput, budget time.Duration, notice func(string, ...any)) error {
+	_, err := waitFluxDeliveryObserved(ctx, env, rel, fd, in, budget, notice)
+	return err
+}
+
+// waitFluxDeliveryObserved is waitFluxDelivery, also returning the last
+// observation (zero when none was made) for a caller that reports it.
+func waitFluxDeliveryObserved(ctx context.Context, env, rel string, fd FluxDeliveryEntity, in fluxdelivery.BindingInput, budget time.Duration, notice func(string, ...any)) (fluxDeliveryObservation, error) {
 	if budget <= 0 {
 		budget = fluxDeliveryWaitDefault
 	}
@@ -568,21 +760,21 @@ func waitFluxDelivery(ctx context.Context, env, rel string, fd FluxDeliveryEntit
 	for {
 		obs, err := fluxDeliveryObserve(ctx, fd, in)
 		if err != nil {
-			return err
+			return obs, exitCodeError{code: exitUndetermined, msg: err.Error()}
 		}
 		if obs.converged(in.Source.Digest) {
 			notice("  converged: %s in %s\n", obs.summary(in.Source.Digest), time.Since(started).Round(time.Second))
-			return nil
+			return obs, nil
 		}
 		if err := obs.failure(env, rel, in.Source.Digest); err != nil {
-			return err
+			return obs, err
 		}
 		if line := obs.summary(in.Source.Digest); line != last {
 			notice("  %s\n", line)
 			last = line
 		}
 		if !time.Now().Before(deadline) {
-			return exitCodeError{code: exitTimedOut, msg: fmt.Sprintf(
+			return obs, exitCodeError{code: exitTimedOut, msg: fmt.Sprintf(
 				"env %s did not converge to %s within %s: %s.\n"+
 					"  Its Flux keeps reconciling; `forge env status %s --wait` keeps waiting, and\n"+
 					"  `kubectl --context %s -n %s get kustomizations` shows Flux's own view.",
@@ -590,7 +782,7 @@ func waitFluxDelivery(ctx context.Context, env, rel string, fd FluxDeliveryEntit
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return obs, ctx.Err()
 		case <-time.After(fluxDeliveryWaitInterval):
 		}
 	}
@@ -613,22 +805,86 @@ func fluxDeliveryOfEnv(ctx context.Context, projectDir, env string) (*FluxDelive
 }
 
 // waitFluxDeliveryCurrent is `forge env status <env> --wait` for a flux env:
-// the wait on whatever the live pointer names.
-func waitFluxDeliveryCurrent(ctx context.Context, env string, fd FluxDeliveryEntity, budget time.Duration, out io.Writer) error {
-	live, err := fluxDeliveryPointerIO.read(ctx, fd)
-	if err != nil {
-		return exitCodeError{code: exitUndetermined, msg: err.Error()}
+// the wait on whatever the live pointer names. With jsonOut it writes the
+// same document every other `--wait` writes (envWaitReport) to out, with one
+// row per Kustomization, and its progress to progress; otherwise both go to
+// out as text.
+func waitFluxDeliveryCurrent(ctx context.Context, env string, fd FluxDeliveryEntity, budget time.Duration, jsonOut bool, out, progress io.Writer) error {
+	if !jsonOut {
+		progress = out
 	}
-	if live == nil {
-		return exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(
-			"env %s's in-cluster Flux has never been pointed at a release (no %s/%s). Deploy one: forge env deploy %s",
-			env, fd.Namespace, fluxdelivery.InputProviderName(env, ""), env)}
+	notice := func(f string, a ...any) { fmt.Fprintf(progress, f, a...) }
+	report := envWaitReport{Env: env, Workloads: []envWaitWorkloadJSON{}}
+	started := time.Now().UTC()
+	report.StartedAt = &started
+	err := func() error {
+		live, err := fluxDeliveryPointerIO.read(ctx, fd)
+		if err != nil {
+			return exitCodeError{code: exitUndetermined, msg: err.Error()}
+		}
+		if live == nil {
+			return exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(
+				"env %s's in-cluster Flux has never been pointed at a release (no %s/%s). Deploy one: forge env deploy %s",
+				env, fd.Namespace, fluxdelivery.InputProviderName(env, ""), env)}
+		}
+		in, err := fluxdelivery.LiveInput(live)
+		if err != nil {
+			return exitCodeError{code: exitUndetermined, msg: err.Error()}
+		}
+		report.Promotion = &envWaitPromotionJSON{ID: in.Promotion}
+		obs, err := waitFluxDeliveryObserved(ctx, env, "", fd, in, budget, notice)
+		report.Workloads = fluxDeliveryWaitRows(obs, in.Source.Digest)
+		if len(obs.Appliers) > 0 {
+			report.Reason = obs.summary(in.Source.Digest)
+		}
+		return err
+	}()
+	finished := time.Now().UTC()
+	report.FinishedAt = &finished
+	report.WaitedMS = finished.Sub(started).Milliseconds()
+	report.Phase = fluxDeliveryWaitPhase(err)
+	if !jsonOut {
+		return err
 	}
-	in, err := fluxdelivery.LiveInput(live)
-	if err != nil {
-		return exitCodeError{code: exitUndetermined, msg: err.Error()}
+	report.stamp(err)
+	if werr := writeJSONDocument(out, report); werr != nil && err == nil {
+		return werr
 	}
-	return waitFluxDelivery(ctx, env, "", fd, in, budget, func(f string, a ...any) { fmt.Fprintf(out, f, a...) })
+	return err
+}
+
+// fluxDeliveryWaitPhase is the report's phase for the wait's outcome, in the
+// rollout phases' own words.
+func fluxDeliveryWaitPhase(err error) string {
+	switch {
+	case err == nil:
+		return "succeeded"
+	case exitCodeForError(err) == exitTimedOut:
+		return "progressing"
+	case exitCodeForError(err) == exitUndetermined:
+		return "unknown"
+	}
+	return "degraded"
+}
+
+// fluxDeliveryWaitRows is one report row per Kustomization: pinned to the
+// pointer's digest, observed at what it last applied.
+func fluxDeliveryWaitRows(obs fluxDeliveryObservation, digest string) []envWaitWorkloadJSON {
+	rows := []envWaitWorkloadJSON{}
+	for _, a := range obs.Appliers {
+		row := envWaitWorkloadJSON{
+			Name: a.Name, PinnedDigest: digest, ObservedDigest: revisionDigestOf(a.LastApplied),
+			Reason: a.Reason, Phase: "progressing",
+		}
+		switch {
+		case a.Found && a.Ready == "True" && a.Current && row.ObservedDigest == digest:
+			row.Phase = "succeeded"
+		case a.Found && a.Ready == "False" && !fluxProgressing(a.Reason):
+			row.Phase, row.LastError = "degraded", strings.TrimSpace(a.Message)
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 // fluxRegistryBase is the registry subtree a flux env's bundles are pushed to,
@@ -685,15 +941,16 @@ func clusterReachableRegistry(ref string) string {
 // insecureRegistry reports whether a bundle repository is served over plain
 // HTTP. A PREDICATE OVER THE ADDRESS, never a flag: `insecure: true` downgrades
 // the pull's transport, so only addresses no certificate could cover produce
-// it — loopback, `*.localhost`, the k3d host gateway and a k3d registry's
-// in-network container name.
+// it — loopback, `*.localhost` (reserved, RFC 6761) and the k3d host gateway
+// alias. A name's prefix is not such evidence: `k3d-registry.example.com` is
+// an ordinary public host that can hold a certificate, and keeps TLS.
 func insecureRegistry(ref string) bool {
 	host, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(ref), "oci://"), "/")
 	hostOnly, _, _ := strings.Cut(host, ":")
 	switch {
 	case hostOnly == "localhost", hostOnly == "127.0.0.1", hostOnly == k3dHostGatewayAlias:
 		return true
-	case strings.HasSuffix(hostOnly, ".localhost"), strings.HasPrefix(hostOnly, "k3d-"):
+	case strings.HasSuffix(hostOnly, ".localhost"):
 		return true
 	}
 	return false

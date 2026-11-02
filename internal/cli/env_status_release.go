@@ -377,7 +377,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	// An `applier = "flux"` env's reconciler is the env's own Flux: what it
 	// reports about the pointer is part of the verdict, and a Forbidden for
 	// an apply identity is the grant refusal (flux_delivery_observe.go).
-	reconcilerLine, reconcilerErr := fluxDeliveryStatusOf(ctx, projectDir, envName, binding.Release)
+	reconcilerLine, reconcilerErr := fluxDeliveryStatusOf(ctx, projectDir, envName, binding)
 	tally := tallyEnvStatusRelease(results)
 	failure := envStatusReleaseVerdict(envName, binding.Release, staleErr, tally)
 	if failure == nil && reconcilerErr != nil {

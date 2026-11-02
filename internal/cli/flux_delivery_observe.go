@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/pkg/fluxdelivery"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // fluxObjectStatus is one Flux object's Ready condition and revisions.
@@ -264,37 +265,55 @@ func nested(obj map[string]any, keys ...string) any {
 }
 
 // fluxDeliveryStatusOf is `forge env status`'s reconciler line for a flux env:
-// what its Flux reports for the live pointer, and the failure when it reports
-// one. ("", nil) for every other env, and for one the render cannot resolve:
-// the rest of the status still reports.
-func fluxDeliveryStatusOf(ctx context.Context, projectDir, env, rel string) (string, error) {
+// what its Flux reports for the live pointer, judged against the bound
+// promotion. ("", nil) for every other env, and for one the render cannot
+// resolve: the rest of the status still reports.
+//
+// Only a converged pointer that projects the bound promotion is a success.
+// Workload digests can match while Flux is unreachable, was never pointed, or
+// is pointed at another promotion — or while a config-only release is still
+// applying — so each of those is a non-success verdict here: a failure Flux
+// reports is exit 1, anything this cannot prove is exit 2.
+func fluxDeliveryStatusOf(ctx context.Context, projectDir, env string, bound release.Promotion) (string, error) {
 	fd, err := fluxDeliveryOfEnv(ctx, projectDir, env)
 	if err != nil || fd == nil {
 		return "", nil
 	}
+	undetermined := func(line, format string, a ...any) (string, error) {
+		return "  reconciler  in-cluster Flux: " + line, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(format, a...)}
+	}
 	live, err := fluxDeliveryPointerIO.read(ctx, *fd)
 	if err != nil {
-		return "  reconciler  in-cluster Flux: UNREACHABLE (" + err.Error() + ")", nil
+		return undetermined("UNREACHABLE ("+err.Error()+")", "env %s: its in-cluster Flux could not be read, so its delivery is unverified: %v", env, err)
 	}
 	if live == nil {
-		return "  reconciler  in-cluster Flux: never pointed at a release (deploy one: forge env deploy " + env + ")", nil
+		return undetermined("never pointed at a release (deploy one: forge env deploy "+env+")",
+			"env %s: its in-cluster Flux has never been pointed at a release, so release %s is not delivered", env, bound.Release)
 	}
 	in, err := fluxdelivery.LiveInput(live)
 	if err != nil {
-		return "  reconciler  in-cluster Flux: the pointer cannot be read (" + err.Error() + ")", nil
+		return undetermined("the pointer cannot be read ("+err.Error()+")", "env %s: its delivery pointer cannot be read: %v", env, err)
+	}
+	if bound.ID != "" && in.Promotion != bound.ID {
+		return undetermined(fmt.Sprintf("pointed at promotion %s, not the bound %s", emptyAs(in.Promotion, "(none)"), bound.ID),
+			"env %s: its in-cluster Flux is pointed at promotion %s, not the bound promotion %s (release %s); re-run: forge env deploy %s",
+			env, emptyAs(in.Promotion, "(none)"), bound.ID, bound.Release, env)
 	}
 	obs, err := fluxDeliveryObserve(ctx, *fd, in)
 	if err != nil {
-		return "  reconciler  in-cluster Flux: UNREACHABLE (" + err.Error() + ")", nil
+		return undetermined("UNREACHABLE ("+err.Error()+")", "env %s: its in-cluster Flux could not be read, so its delivery is unverified: %v", env, err)
 	}
 	digest := in.Source.Digest
 	switch {
 	case obs.converged(digest):
 		return fmt.Sprintf("  reconciler  in-cluster Flux applied %s (promotion %s): %s", shortDigest(digest), in.Promotion, obs.summary(digest)), nil
 	default:
-		if ferr := obs.failure(env, rel, digest); ferr != nil {
+		if ferr := obs.failure(env, bound.Release, digest); ferr != nil {
 			return fmt.Sprintf("  reconciler  in-cluster Flux FAILING on %s (promotion %s)", shortDigest(digest), in.Promotion), ferr
 		}
-		return fmt.Sprintf("  reconciler  in-cluster Flux PROGRESSING on %s (promotion %s): %s", shortDigest(digest), in.Promotion, obs.summary(digest)), nil
+		return fmt.Sprintf("  reconciler  in-cluster Flux PROGRESSING on %s (promotion %s): %s", shortDigest(digest), in.Promotion, obs.summary(digest)),
+			exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(
+				"env %s: its in-cluster Flux has not finished applying %s (%s); gate on it with: forge env status %s --wait",
+				env, shortDigest(digest), obs.summary(digest), env)}
 	}
 }

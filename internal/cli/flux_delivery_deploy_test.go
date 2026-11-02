@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -113,8 +117,11 @@ func TestFluxDeliveryRegistry(t *testing.T) {
 		}
 	}
 	for ref, want := range map[string]bool{
-		"oci://host.k3d.internal:5050/acme": true, "oci://k3d-reg:5000/a": true, "oci://registry.localhost:5000/a": true,
+		"oci://host.k3d.internal:5050/acme": true, "oci://registry.localhost:5000/a": true, "oci://localhost:5050/a": true,
 		"oci://ghcr.io/acme": false, "oci://localhost.evil.com/a": false,
+		// A k3d-looking name is not evidence of a local container: a public
+		// host may carry it, with a real certificate.
+		"oci://k3d-registry.example.com/a": false, "oci://k3d-reg:5000/a": false,
 	} {
 		if got := insecureRegistry(ref); got != want {
 			t.Errorf("insecureRegistry(%q) = %t, want %t", ref, got, want)
@@ -122,10 +129,15 @@ func TestFluxDeliveryRegistry(t *testing.T) {
 	}
 }
 
-// fakePointer is the pointer's cluster I/O, in memory.
+// fakePointer is the pointer's cluster I/O, in memory, with the API server's
+// preconditions: create fails on an existing pointer, update on a stale (or
+// deleted) resourceVersion. before, when set, runs ahead of every write, so a
+// test can interleave another writer between a read and a write.
 type fakePointer struct {
 	live    *unstructured.Unstructured
+	rv      int
 	applied []map[string]any
+	before  func(f *fakePointer)
 }
 
 func (f *fakePointer) install(t *testing.T) {
@@ -133,16 +145,71 @@ func (f *fakePointer) install(t *testing.T) {
 	prev := fluxDeliveryPointerIO
 	t.Cleanup(func() { fluxDeliveryPointerIO = prev })
 	fluxDeliveryPointerIO.read = func(context.Context, FluxDeliveryEntity) (*unstructured.Unstructured, error) {
-		return f.live, nil
+		if f.live == nil {
+			return nil, nil
+		}
+		return f.live.DeepCopy(), nil
 	}
-	fluxDeliveryPointerIO.apply = func(_ context.Context, _ FluxDeliveryEntity, p map[string]any) error {
-		f.applied = append(f.applied, p)
-		u := (&unstructured.Unstructured{Object: p}).DeepCopy()
-		u.SetResourceVersion("rv-" + u.GetAnnotations()[fluxdelivery.PointerFenceAnnotation])
-		f.live = u
+	fluxDeliveryPointerIO.create = func(_ context.Context, _ FluxDeliveryEntity, p map[string]any) error {
+		f.hook()
+		if f.live != nil {
+			return errFluxPointerConflict
+		}
+		f.store(p)
+		return nil
+	}
+	fluxDeliveryPointerIO.update = func(_ context.Context, _ FluxDeliveryEntity, p map[string]any) error {
+		f.hook()
+		u := unstructured.Unstructured{Object: p}
+		if f.live == nil || u.GetResourceVersion() != f.live.GetResourceVersion() {
+			return errFluxPointerConflict
+		}
+		f.store(p)
 		return nil
 	}
 }
+
+func (f *fakePointer) hook() {
+	if b := f.before; b != nil {
+		f.before = nil
+		b(f)
+	}
+}
+
+// store is a write the server accepted: a new resourceVersion.
+func (f *fakePointer) store(p map[string]any) {
+	f.applied = append(f.applied, p)
+	u := (&unstructured.Unstructured{Object: p}).DeepCopy()
+	f.rv++
+	u.SetResourceVersion(fmt.Sprintf("rv-%d", f.rv))
+	f.live = u
+}
+
+// liveInput is the pointer's input as the cluster holds it.
+func (f *fakePointer) liveInput(t *testing.T) fluxdelivery.BindingInput {
+	t.Helper()
+	in, err := fluxdelivery.LiveInput(f.live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in
+}
+
+// stubRetireApplied makes the renderer's retire observation report done
+// after `after` reads, recording the names it was asked about.
+func stubRetireApplied(t *testing.T, after int, asked *[]string) {
+	t.Helper()
+	prev := fluxDeliveryRetireApplied
+	t.Cleanup(func() { fluxDeliveryRetireApplied = prev })
+	reads := 0
+	fluxDeliveryRetireApplied = func(_ context.Context, _ FluxDeliveryEntity, names []string) (bool, error) {
+		reads++
+		*asked = append([]string(nil), names...)
+		return reads > after, nil
+	}
+}
+
+var quietNotice = func(string, ...any) {}
 
 // TestWriteFluxDeliveryPointer is the writer's refusal matrix against a live
 // pointer. Not parallel: it swaps the pointer seam.
@@ -152,32 +219,263 @@ func TestWriteFluxDeliveryPointer(t *testing.T) {
 	f.install(t)
 
 	first, _ := rel.input("4", "promo-4")
-	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, first); err != nil {
+	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, nil, "", first); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	if md := f.applied[0]["metadata"].(map[string]any); md["resourceVersion"] != nil {
 		t.Errorf("a first write carries a resourceVersion precondition: %v", md["resourceVersion"])
 	}
+	live := f.liveInput(t)
 
 	next, _ := rel.input("5", "promo-5")
-	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, next); err != nil {
+	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, &live, f.live.GetResourceVersion(), next); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
-	if md := f.applied[1]["metadata"].(map[string]any); md["resourceVersion"] != "rv-4" {
+	if md := f.applied[1]["metadata"].(map[string]any); md["resourceVersion"] != "rv-1" {
 		t.Errorf("the second write is not conditional on the pointer it read: resourceVersion %v", md["resourceVersion"])
 	}
+	live = f.liveInput(t)
+	rv := f.live.GetResourceVersion()
 
 	stale, _ := rel.input("3", "promo-3")
-	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, stale); !errors.Is(err, fluxdelivery.ErrStaleFence) {
+	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, &live, rv, stale); !errors.Is(err, fluxdelivery.ErrStaleFence) {
 		t.Fatalf("an older fence: err = %v, want ErrStaleFence", err)
+	}
+	reused, _ := rel.input("5", "promo-other")
+	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, &live, rv, reused); !errors.Is(err, fluxdelivery.ErrStaleFence) {
+		t.Fatalf("an equal fence for another promotion: err = %v, want ErrStaleFence", err)
 	}
 	dropped, _ := rel.input("6", "promo-6")
 	dropped.Appliers = dropped.Appliers[:2]
-	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, dropped); !errors.Is(err, fluxdelivery.ErrUnretiredApplierDropped) {
+	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, &live, rv, dropped); !errors.Is(err, fluxdelivery.ErrUnretiredApplierDropped) {
 		t.Fatalf("a dropped tree: err = %v, want ErrUnretiredApplierDropped", err)
 	}
 	if len(f.applied) != 2 {
 		t.Errorf("a refused write reached the cluster: %d writes, want 2", len(f.applied))
+	}
+	if err := writeFluxDeliveryPointer(context.Background(), rel.fd, nil, "", first); !errors.Is(err, errFluxPointerConflict) {
+		t.Fatalf("a create over an existing pointer: err = %v, want the conflict", err)
+	}
+}
+
+// TestPointFluxDeliveryFenceIsTheClusters: two deployers with independent
+// ledgers (nothing but the cluster in common) each write the next fence in
+// the cluster's sequence, so neither is stuck behind the other and neither
+// can reuse the other's fence. Not parallel: it swaps the pointer seam.
+func TestPointFluxDeliveryFenceIsTheClusters(t *testing.T) {
+	f := &fakePointer{}
+	f.install(t)
+	ctx := context.Background()
+
+	ci, admin := fluxRelease(true), fluxRelease(true)
+	for i, step := range []struct {
+		rel       *fluxDeliveryRelease
+		promotion string
+	}{{ci, "ci-1"}, {admin, "admin-1"}, {ci, "ci-2"}} {
+		in, err := pointFluxDelivery(ctx, step.rel, step.promotion, time.Minute, quietNotice)
+		if err != nil {
+			t.Fatalf("write %d (%s): %v", i+1, step.promotion, err)
+		}
+		want := strconv.Itoa(i + 1)
+		if got := f.liveInput(t); got.Fence != want || got.Promotion != step.promotion || in.Fence != want {
+			t.Errorf("write %d: live fence %s promotion %s, want fence %s promotion %s", i+1, got.Fence, got.Promotion, want, step.promotion)
+		}
+	}
+}
+
+// TestPointFluxDeliveryInterleavedFirstWrites: two deploys both read "no
+// pointer". The other one creates it first; this one's create-only write
+// fails, and it re-reads and checks the transition against what won rather
+// than overwriting it. Not parallel: it swaps the pointer seam.
+func TestPointFluxDeliveryInterleavedFirstWrites(t *testing.T) {
+	f := &fakePointer{}
+	f.install(t)
+	ctx := context.Background()
+	rel := fluxRelease(true)
+
+	newer := fluxRelease(true)
+	newerIn, _ := newer.input("1", "newer")
+	f.before = func(f *fakePointer) {
+		p, err := fluxdelivery.InputProvider(newerIn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.store(p)
+	}
+	in, err := pointFluxDelivery(ctx, rel, "older", time.Minute, quietNotice)
+	if err != nil {
+		t.Fatalf("interleaved first write: %v", err)
+	}
+	if len(f.applied) != 2 {
+		t.Fatalf("writes = %d, want the other deploy's create and this one's conditional update", len(f.applied))
+	}
+	if md := f.applied[1]["metadata"].(map[string]any); md["resourceVersion"] != "rv-1" {
+		t.Errorf("the retry is not conditional on the pointer that won: resourceVersion %v", md["resourceVersion"])
+	}
+	if in.Fence != "2" || f.liveInput(t).Promotion != "older" {
+		t.Errorf("after the conflict: fence %s promotion %s, want fence 2 over the winner's 1", in.Fence, f.liveInput(t).Promotion)
+	}
+
+	// The winner's pointer is one this write may not follow (it drops a
+	// tree the winner holds, and the retire never lands): the retry is
+	// CHECKED, not forced.
+	g := &fakePointer{}
+	g.install(t)
+	wide := fluxRelease(true)
+	wide.doc.Trees = append(wide.doc.Trees, release.BundleTree{
+		Cluster: testCtx, Unit: "jobs", Phase: release.PhaseRollout,
+		Path:      release.BundleTreePath(testCtx, "jobs", release.PhaseRollout),
+		Documents: 1, TimeoutSeconds: 90, RetryIntervalSeconds: 15,
+	})
+	wideIn, _ := wide.input("1", "wide")
+	g.before = func(g *fakePointer) {
+		p, _ := fluxdelivery.InputProvider(wideIn)
+		g.store(p)
+	}
+	var asked []string
+	stubRetireApplied(t, 1<<30, &asked)
+	_, err = pointFluxDelivery(ctx, rel, "narrow", time.Nanosecond, quietNotice)
+	if exitcode.Of(err) != exitTimedOut {
+		t.Fatalf("a retry over a pointer whose retire never lands: err = %v (exit %d), want the retire timeout", err, exitcode.Of(err))
+	}
+	if got := g.liveInput(t); got.Source.Digest != wideIn.Source.Digest || got.Promotion != "wide" {
+		t.Errorf("the retry moved the winner's source: %+v", got.Source)
+	}
+}
+
+// TestPointFluxDeliveryRetiresDroppedTrees: a release that drops its last
+// post Job (the post tree), or a whole delivery unit, retires the dropped
+// trees under the LIVE source first, waits for the renderer to apply that,
+// then ships. Not parallel: it swaps the pointer and retire seams.
+func TestPointFluxDeliveryRetiresDroppedTrees(t *testing.T) {
+	withUnit := func() *fluxDeliveryRelease {
+		r := fluxRelease(true)
+		r.doc.Trees = append(r.doc.Trees, release.BundleTree{
+			Cluster: testCtx, Unit: "jobs", Phase: release.PhaseRollout,
+			Path:      release.BundleTreePath(testCtx, "jobs", release.PhaseRollout),
+			Documents: 1, TimeoutSeconds: 90, RetryIntervalSeconds: 15,
+		})
+		return r
+	}
+	dropPost := func() *fluxDeliveryRelease {
+		r := fluxRelease(true)
+		r.doc.Trees = r.doc.Trees[:2]
+		return r
+	}
+	for _, tc := range []struct {
+		name     string
+		previous *fluxDeliveryRelease
+		next     *fluxDeliveryRelease
+		dropped  int
+	}{
+		{"the last post Job", fluxRelease(true), dropPost(), 1},
+		{"a whole delivery unit", withUnit(), fluxRelease(true), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakePointer{}
+			f.install(t)
+			ctx := context.Background()
+			if _, err := pointFluxDelivery(ctx, tc.previous, "promo-1", time.Minute, quietNotice); err != nil {
+				t.Fatalf("previous release: %v", err)
+			}
+			before := f.liveInput(t)
+			tc.next.digest = "sha256:" + strings.Repeat("e", 64)
+			var asked []string
+			stubRetireApplied(t, 0, &asked)
+
+			in, err := pointFluxDelivery(ctx, tc.next, "promo-2", time.Minute, quietNotice)
+			if err != nil {
+				t.Fatalf("a release that drops a tree: %v", err)
+			}
+			if len(f.applied) != 3 {
+				t.Fatalf("writes = %d, want previous, retire, release", len(f.applied))
+			}
+			retire, err := fluxdelivery.LiveInput(&unstructured.Unstructured{Object: f.applied[1]})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retire.Source.Digest != before.Source.Digest || retire.Promotion != before.Promotion || retire.Fence != "2" {
+				t.Errorf("the retire moved more than the lifecycle: digest %s promotion %s fence %s", retire.Source.Digest, retire.Promotion, retire.Fence)
+			}
+			var retired []string
+			for _, a := range retire.Appliers {
+				if a.Retire == fluxdelivery.RetireOrphan {
+					retired = append(retired, a.Name)
+				}
+			}
+			if len(retired) != tc.dropped || len(asked) != tc.dropped || retired[0] != asked[0] {
+				t.Errorf("retired %v, waited on %v, want the %d dropped tree(s)", retired, asked, tc.dropped)
+			}
+			if in.Fence != "3" || in.Source.Digest != tc.next.digest || len(in.Appliers) != len(before.Appliers)-tc.dropped {
+				t.Errorf("the release write: fence %s digest %s appliers %d", in.Fence, in.Source.Digest, len(in.Appliers))
+			}
+			for _, a := range in.Appliers {
+				if a.Name == retired[0] {
+					t.Errorf("the release still carries the retired %s", a.Name)
+				}
+			}
+		})
+	}
+}
+
+// TestWaitFluxDeliveryCurrentJSON: `env status <flux-env> --wait --json`
+// writes the wait document to stdout and its progress to stderr, for success,
+// failure and a missing pointer. Not parallel: it swaps the seams.
+func TestWaitFluxDeliveryCurrentJSON(t *testing.T) {
+	rel := fluxRelease(true)
+	f := &fakePointer{}
+	f.install(t)
+	in, _ := rel.input("1", "promo-1")
+	ctx := context.Background()
+
+	var out, progress bytes.Buffer
+	err := waitFluxDeliveryCurrent(ctx, "prod", rel.fd, time.Minute, true, &out, &progress)
+	var doc envWaitReport
+	if jerr := json.Unmarshal(out.Bytes(), &doc); jerr != nil {
+		t.Fatalf("no pointer: stdout is not one JSON document: %v\n%s", jerr, out.String())
+	}
+	if exitcode.Of(err) != exitUndetermined || doc.OK || doc.ExitCode != exitUndetermined || doc.Phase != "unknown" {
+		t.Errorf("no pointer: err %v, doc %+v", err, doc)
+	}
+
+	if err := writeFluxDeliveryPointer(ctx, rel.fd, nil, "", in); err != nil {
+		t.Fatal(err)
+	}
+	prev := fluxDeliveryObserve
+	t.Cleanup(func() { fluxDeliveryObserve = prev })
+	d := in.Source.Digest
+	for _, tc := range []struct {
+		name  string
+		state fluxObjectStatus
+		phase string
+		code  int
+	}{
+		{"converged", fluxObjectStatus{Found: true, Ready: "True", Current: true, LastApplied: d, LastAttempted: d}, "succeeded", exitOK},
+		{"failing", fluxObjectStatus{Found: true, Ready: "False", Reason: "HealthCheckFailed", Message: "Job failed", Current: true, LastAttempted: d}, "degraded", exitWrong},
+	} {
+		fluxDeliveryObserve = func(context.Context, FluxDeliveryEntity, fluxdelivery.BindingInput) (fluxDeliveryObservation, error) {
+			return observed(in, func(a fluxdelivery.Applier) fluxObjectStatus {
+				s := tc.state
+				s.Name = a.Name
+				return s
+			}), nil
+		}
+		out.Reset()
+		progress.Reset()
+		err := waitFluxDeliveryCurrent(ctx, "prod", rel.fd, time.Minute, true, &out, &progress)
+		var doc envWaitReport
+		if jerr := json.Unmarshal(out.Bytes(), &doc); jerr != nil {
+			t.Fatalf("%s: stdout is not one JSON document: %v\n%s", tc.name, jerr, out.String())
+		}
+		if exitcode.Of(err) != tc.code || doc.ExitCode != tc.code || doc.Phase != tc.phase {
+			t.Errorf("%s: err %v (exit %d), doc exit %d phase %q, want exit %d phase %q", tc.name, err, exitcode.Of(err), doc.ExitCode, doc.Phase, tc.code, tc.phase)
+		}
+		if doc.Promotion == nil || doc.Promotion.ID != "promo-1" || len(doc.Workloads) != len(in.Appliers) || doc.Workloads[0].Phase != tc.phase {
+			t.Errorf("%s: doc = %+v", tc.name, doc)
+		}
+		if !strings.Contains(progress.String(), "Waiting for env prod") || strings.Contains(out.String(), "Waiting for") {
+			t.Errorf("%s: progress went to stdout:\nstdout %s\nstderr %s", tc.name, out.String(), progress.String())
+		}
 	}
 }
 

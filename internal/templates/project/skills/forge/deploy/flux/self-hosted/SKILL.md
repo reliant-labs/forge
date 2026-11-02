@@ -61,6 +61,18 @@ registry of the env's first cluster workload image (`ghcr.io/acme/api` →
 reaches it by. The push uses your docker credentials; the Flux pulls with the
 copied `pull_secret_from` Secret.
 
+**Several deployers, one order.** The pointer carries a fence, the number of
+pointer writes so far, and every write is conditional on the pointer it read
+(create-only for the first, resourceVersion-conditional after). So a CI runner
+and an administrator, each with their own ledger, share one sequence: the one
+that loses a race re-reads the pointer and re-checks against what won.
+
+**A release that drops a tree** (its last post-rollout Job, or a whole delivery
+unit) first retires that tree under the live bundle (`retire: orphan`: what it
+applied stays in the cluster, unmanaged), waits until the Flux has applied the
+retire, then ships. Delete the orphaned objects yourself if you no longer want
+them.
+
 The deploy's exit codes are the usual ones (`forge env deploy --help`): 0 live,
 1 Flux reported a failure (relayed in its own words), 8 still progressing when
 the budget ran out (keep waiting with `forge env status <env> --wait`), and 9
@@ -103,7 +115,7 @@ retries on its own; once the bootstrap re-runs, it converges with no
 re-deploy.
 
 A deploy credential needs, in the env's delivery namespace only: create and
-patch on `resourcesetinputproviders.fluxcd.controlplane.io`, get on the
+update on `resourcesetinputproviders.fluxcd.controlplane.io`, get on the
 `forge-delivery-grants` ConfigMap, and get/list on `resourcesets`,
 `ocirepositories` and `kustomizations`; plus push access to the bundle
 registry. It needs no RBAC write anywhere.

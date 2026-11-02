@@ -35,9 +35,12 @@ const (
 	// InputProviderStatic is the provider type whose one exported input is
 	// its `spec.defaultValues`.
 	InputProviderStatic = "Static"
-	// PointerFenceAnnotation carries the writer's fence on the pointer: the
-	// file ledger's promotion sequence, as decimal digits. A write that would
-	// move it backwards is refused ([ErrStaleFence]).
+	// PointerFenceAnnotation carries the writer's fence on the pointer, as
+	// decimal digits: the live pointer's fence plus one, allocated by the
+	// write that is conditional on that pointer, so the sequence is the
+	// cluster's and shared by every deployer. A write that would move it
+	// backwards is refused ([ErrStaleFence]); the self-hosted writer also
+	// refuses one that reuses it for another promotion.
 	PointerFenceAnnotation = "forge.dev/delivery-fence"
 	// PointerPromotionAnnotation names the ledger promotion the pointer
 	// projects.

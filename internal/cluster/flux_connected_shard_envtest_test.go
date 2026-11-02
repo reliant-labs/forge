@@ -42,7 +42,7 @@ output = forge.flux_chart(connected_shard = True, egress = {
     kustomize = []
     source = []
     kustomize_connected = []
-    flux_check = []
+    operator = []
 })
 `
 
@@ -84,23 +84,23 @@ func renderConnectedShardObjects(t *testing.T) []*unstructured.Unstructured {
 	}
 	var contract struct {
 		Output struct {
-			Values struct {
-				ExtraObjects []map[string]any `json:"extraObjects"`
-			} `json:"values"`
+			Manifests []map[string]any `json:"manifests"`
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(out, &contract); err != nil {
 		t.Fatalf("contract: %v", err)
 	}
 	var vap []*unstructured.Unstructured
-	for _, o := range contract.Output.Values.ExtraObjects {
+	for _, o := range contract.Output.Manifests {
 		u := &unstructured.Unstructured{Object: o}
 		if strings.HasPrefix(u.GetKind(), "ValidatingAdmissionPolicy") {
 			vap = append(vap, u)
 		}
 	}
-	if len(vap) != 2 {
-		t.Fatalf("rendered %d admission objects, want the policy and its binding", len(vap))
+	// The shard's Kustomization policy, its identity policy and the
+	// controller binding guard, each with its binding.
+	if len(vap) != 6 {
+		t.Fatalf("rendered %d admission objects, want three policies and their bindings", len(vap))
 	}
 	return vap
 }
@@ -204,6 +204,89 @@ func TestFluxConnectedShardAdmission(t *testing.T) {
 			case tc.deny && !strings.Contains(err.Error(), tc.reason):
 				t.Fatalf("refused for the wrong reason:\n got: %v\nwant: %q", err, tc.reason)
 			case !tc.deny && err != nil:
+				t.Fatalf("refused: %v", err)
+			}
+		})
+	}
+
+	// THE IDENTITY. The operator renders the shard Deployment; one that runs as
+	// anything but the shard's own ServiceAccount, or impersonates by
+	// default, is refused, so a patch that stopped matching fails loudly.
+	deploy := func(name, sa string, args ...string) *unstructured.Unstructured {
+		var a []any
+		for _, s := range args {
+			a = append(a, s)
+		}
+		u := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{
+			"selector": map[string]any{"matchLabels": map[string]any{"app": name}},
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": map[string]any{"app": name}},
+				"spec": map[string]any{"serviceAccountName": sa, "containers": []any{map[string]any{"name": "manager", "image": "x", "args": a}}},
+			},
+		}}}
+		u.SetAPIVersion("apps/v1")
+		u.SetKind("Deployment")
+		u.SetNamespace("flux-system")
+		u.SetName(name)
+		return u
+	}
+	fluxSystem := &unstructured.Unstructured{Object: map[string]any{}}
+	fluxSystem.SetAPIVersion("v1")
+	fluxSystem.SetKind("Namespace")
+	fluxSystem.SetName("flux-system")
+	if err := admin.Create(ctx, fluxSystem); err != nil {
+		t.Fatal(err)
+	}
+	waitRefused(t, "shard identity policy", func() error {
+		return admin.Create(ctx, deploy(flux.ConnectedController, "kustomize-controller"))
+	}, func() { _ = admin.Delete(ctx, deploy(flux.ConnectedController, "")) })
+	if err := admin.Create(ctx, deploy(flux.ConnectedController, flux.ConnectedController, "--default-service-account=x")); err == nil || !strings.Contains(err.Error(), "--default-service-account") {
+		t.Errorf("a shard passing --default-service-account: err = %v, want a refusal", err)
+	}
+	if err := admin.Create(ctx, deploy(flux.ConnectedController, flux.ConnectedController, "--watch-label-selector=sharding.fluxcd.io/key=connected")); err != nil {
+		t.Errorf("the shard as rendered must be admitted: %v", err)
+	}
+	if err := admin.Create(ctx, deploy("kustomize-controller", "kustomize-controller", "--default-service-account=reliant-deploy-tenant")); err != nil {
+		t.Errorf("the main controller is not the shard policy's business: %v", err)
+	}
+
+	// THE BINDING GUARD. A binding of a controller ServiceAccount to anything
+	// but forge's roles is refused — cluster-admin above all.
+	binding := func(name, role string, subjects ...map[string]any) *unstructured.Unstructured {
+		var subs []any
+		for _, s := range subjects {
+			subs = append(subs, s)
+		}
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": role},
+			"subjects": subs,
+		}}
+		u.SetAPIVersion("rbac.authorization.k8s.io/v1")
+		u.SetKind("ClusterRoleBinding")
+		u.SetName(name)
+		return u
+	}
+	kc := map[string]any{"kind": "ServiceAccount", "name": "kustomize-controller", "namespace": "flux-system"}
+	waitRefused(t, "binding guard", func() error {
+		return admin.Create(ctx, binding("cluster-reconciler-flux-system", "cluster-admin", kc))
+	}, func() { _ = admin.Delete(ctx, binding("cluster-reconciler-flux-system", "cluster-admin")) })
+	for _, tc := range []struct {
+		name, role string
+		subject    map[string]any
+		deny       bool
+	}{
+		{"controller to crd-controller", "crd-controller", kc, false},
+		{"controller to the distribution's crd-controller", "crd-controller-flux-system", kc, true},
+		{"group of flux-system service accounts to cluster-admin", "cluster-admin", map[string]any{"kind": "Group", "name": "system:serviceaccounts:flux-system", "apiGroup": "rbac.authorization.k8s.io"}, true},
+		{"unrelated subject to cluster-admin", "cluster-admin", map[string]any{"kind": "ServiceAccount", "name": "someone", "namespace": "default"}, false},
+	} {
+		i++
+		t.Run("binding: "+tc.name, func(t *testing.T) {
+			err := admin.Create(ctx, binding(fmt.Sprintf("guard-%d", i), tc.role, tc.subject))
+			if tc.deny && (err == nil || !strings.Contains(err.Error(), "may be bound only to")) {
+				t.Fatalf("err = %v, want the guard's refusal", err)
+			}
+			if !tc.deny && err != nil {
 				t.Fatalf("refused: %v", err)
 			}
 		})

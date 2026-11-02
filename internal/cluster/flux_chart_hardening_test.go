@@ -3,11 +3,13 @@ package cluster
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -16,11 +18,18 @@ import (
 )
 
 // These tests render forge.flux_chart() THE WAY A DEPLOY DOES — KCL, then the
-// KCL contract, then helm template of the real community chart, then forge's
-// own patch step — and assert on the objects that would reach the cluster.
-// The KCL fixtures (kcl/tests/positive_flux_chart_*.k) pin the declaration;
-// only this layer can catch the chart renaming a value, an object, or a
-// template condition so that a default silently stops doing anything.
+// KCL contract, then helm template of the real Flux Operator chart, then
+// forge's own patch step, plus the manifests riding the chart — and assert on
+// the objects that would reach the cluster. The KCL fixtures
+// (kcl/tests/positive_flux_chart_*.k) pin the declaration; only this layer can
+// catch the chart renaming a value, an object, or a template condition so that
+// a default silently stops doing anything.
+//
+// The Flux controllers themselves are rendered in-cluster by the operator from
+// the FluxInstance. TestFluxInstance_OperatorBuildIsHardened checks that build
+// with the operator's own CLI (`flux-operator build instance`) when one is on
+// PATH (or named by FLUX_OPERATOR_CLI); it is AGPL-licensed, so forge runs it
+// rather than linking its builder.
 //
 // They pull the chart (OCI, from ghcr.io), so they skip under -short and when
 // helm is absent.
@@ -75,6 +84,7 @@ func renderFluxThroughHelm(t *testing.T, chartArgs string) renderedFlux {
 				Values          map[string]any    `json:"values"`
 				NamespaceLabels map[string]string `json:"namespace_labels"`
 				Patches         map[string]any    `json:"patches"`
+				Manifests       []map[string]any  `json:"manifests"`
 			} `json:"helm_charts"`
 		} `json:"output"`
 	}
@@ -90,6 +100,13 @@ func renderFluxThroughHelm(t *testing.T, chartArgs string) renderedFlux {
 		t.Fatalf("RenderHelmChart: %v", err)
 	}
 	r := renderedFlux{byKey: map[string]map[string]any{}}
+	for _, m := range c.Manifests {
+		b, err := yaml.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream += "\n---\n" + string(b)
+	}
 	dec := yaml.NewDecoder(strings.NewReader(stream))
 	for {
 		var d map[string]any
@@ -148,19 +165,60 @@ func fluxPodSpec(r renderedFlux, deploy string) map[string]any {
 	return r.named("Deployment", deploy)["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
 }
 
-func TestFluxChart_HardenedDefaultsReachTheRenderedObjects(t *testing.T) {
+func TestFluxChart_OperatorRendersHardened(t *testing.T) {
 	r := renderFluxThroughHelm(t, "")
 
-	// The chart's over-broad RBAC is gone; ours replaces it.
-	if r.has("ClusterRole", "cluster-reconciler-impersonator") {
-		t.Error("the chart's cluster-wide impersonator ClusterRole must not render")
+	op := r.named("Deployment", "flux-operator")
+	if op == nil {
+		t.Fatal("Deployment/flux-operator must render")
 	}
-	if r.has("ClusterRoleBinding", "cluster-reconciler") {
-		t.Error("the controllers must hold no cluster-admin binding")
+	spec := fluxPodSpec(r, "flux-operator")
+	img := spec["containers"].([]any)[0].(map[string]any)["image"].(string)
+	if !strings.HasSuffix(img, "@sha256:1d09a3f96524d0895fb11e8072d84a3dd029cecdec0f869efa371be6b001469c") {
+		t.Errorf("the operator image must be pinned by digest, got %q", img)
+	}
+	if spec["enableServiceLinks"] != false {
+		t.Errorf("the operator pod must not get service-link env vars: %v", spec["enableServiceLinks"])
+	}
+	if !fluxContains(fluxArgs(t, r, "flux-operator"), "--default-service-account=flux-delivery") {
+		t.Errorf("a ResourceSet must impersonate a named ServiceAccount by default: %v", fluxArgs(t, r, "flux-operator"))
+	}
+	for _, c := range spec["containers"].([]any) {
+		for _, e := range c.(map[string]any)["env"].([]any) {
+			if env := e.(map[string]any); env["name"] == "WEB_SERVER_PORT" && env["value"] != "0" {
+				t.Errorf("the operator web UI must be off: %v", env)
+			}
+		}
+	}
+	// The web UI's NetworkPolicy admits every namespace; the aggregation
+	// hands namespace admins the operator's kinds.
+	for _, d := range r.docs {
+		md, _ := d["metadata"].(map[string]any)
+		name, _ := md["name"].(string)
+		if d["kind"] == "NetworkPolicy" && strings.Contains(name, "web") {
+			t.Errorf("no web UI policy may render: %s", name)
+		}
+		if d["kind"] == "ClusterRole" && strings.Contains(fmt.Sprint(md["labels"]), "aggregate-to") {
+			t.Errorf("no aggregated ClusterRole may render: %s", name)
+		}
+	}
+	// The operator's CRDs ride the chart's templates, ResourceSets included.
+	for _, crd := range []string{"fluxinstances", "fluxreports", "resourcesets", "resourcesetinputproviders"} {
+		if !r.has("CustomResourceDefinition", crd+".fluxcd.controlplane.io") {
+			t.Errorf("CRD %s.fluxcd.controlplane.io must render", crd)
+		}
+	}
+	// The FluxInstance and forge's own objects ride the chart.
+	fi := r.named("FluxInstance", "flux")
+	if fi == nil {
+		t.Fatal("FluxInstance/flux must ride the chart")
+	}
+	if a := fi["metadata"].(map[string]any)["annotations"].(map[string]any); a["kustomize.toolkit.fluxcd.io/prune"] != "disabled" {
+		t.Errorf("the FluxInstance must carry forge's prune opt-out (deleting it uninstalls Flux): %v", a)
 	}
 	crd := r.named("ClusterRole", "crd-controller")
 	if crd == nil {
-		t.Fatal("crd-controller must still exist (narrowed in place)")
+		t.Fatal("crd-controller must ride the chart")
 	}
 	for _, rule := range crd["rules"].([]any) {
 		res := strings.Join(fluxToStrings(rule.(map[string]any)["resources"]), ",")
@@ -168,50 +226,20 @@ func TestFluxChart_HardenedDefaultsReachTheRenderedObjects(t *testing.T) {
 			t.Errorf("crd-controller must not read Secrets/ConfigMaps cluster-wide: %v", rule)
 		}
 	}
-	for _, role := range []string{"flux-tenant-reconciler", "flux-tenant-source"} {
-		if !r.has("ClusterRole", role) {
-			t.Errorf("ClusterRole/%s missing", role)
+	for _, name := range []string{"flux-tenant-reconciler", "flux-tenant-source"} {
+		if !r.has("ClusterRole", name) {
+			t.Errorf("ClusterRole/%s missing", name)
 		}
 	}
-
-	// Sizing and gates reach the container args, verbatim.
-	kc := fluxArgs(t, r, "kustomize-controller")
-	for _, want := range []string{
-		"--concurrent=16", "--concurrent-ssa=8", "--requeue-dependency=10s",
-		"--no-remote-bases=true", "--no-cross-namespace-refs=true",
-		"--default-service-account=reliant-deploy-tenant",
-		"--feature-gates=CancelHealthCheckOnNewRevision=true,DisableConfigWatchers=true",
-	} {
-		if !fluxContains(kc, want) {
-			t.Errorf("kustomize-controller args missing %q: %v", want, kc)
-		}
+	if !r.has("ValidatingAdmissionPolicy", "flux-controller-bindings") || !r.has("PriorityClass", "forge-delivery") {
+		t.Error("the binding guard and the PriorityClass must ride the chart")
 	}
-	if !fluxContains(fluxArgs(t, r, "source-controller"), "--concurrent=8") {
-		t.Errorf("source-controller must run --concurrent=8: %v", fluxArgs(t, r, "source-controller"))
-	}
-	if ps := fluxPodSpec(r, "kustomize-controller")["priorityClassName"]; ps != "forge-delivery" {
-		t.Errorf("priorityClassName = %v", ps)
-	}
-	if !r.has("PriorityClass", "forge-delivery") {
-		t.Error("the PriorityClass the pods name must be declared too: admission rejects a pod naming one that does not exist")
-	}
-	// No placement unless asked for.
-	if _, ok := fluxPodSpec(r, "kustomize-controller")["runtimeClassName"]; ok {
-		t.Error("runtimeClassName must not be set by default")
-	}
-	if _, ok := fluxPodSpec(r, "kustomize-controller")["nodeSelector"]; ok {
-		t.Error("nodeSelector must not be set by default")
-	}
-
-	// Namespace PSA.
 	ns := r.named("Namespace", "flux-system")
-	labels := ns["metadata"].(map[string]any)["labels"].(map[string]any)
-	if labels["pod-security.kubernetes.io/enforce"] != "restricted" {
+	if labels := ns["metadata"].(map[string]any)["labels"].(map[string]any); labels["pod-security.kubernetes.io/enforce"] != "restricted" {
 		t.Errorf("flux-system Namespace labels = %v", labels)
 	}
 }
 
-// The invariant: ingress to every flux-system pod only from flux-system pods.
 func TestFluxChart_AllowEgressAdmitsIngressOnlyFromFluxSystem(t *testing.T) {
 	for name, chartArgs := range map[string]string{
 		"default":                 "",
@@ -279,69 +307,94 @@ func TestFluxChart_NetworkPoliciesNegative(t *testing.T) {
 	}
 }
 
-func TestFluxChart_PlacementReachesThePods(t *testing.T) {
-	r := renderFluxThroughHelm(t, `placement = forge.flux_placement_delivery_v1(runtime_class_name = forge.FLUX_RUNTIME_CLASS_GVISOR)`)
-	for _, d := range []string{"kustomize-controller", "source-controller"} {
-		ps := fluxPodSpec(r, d)
-		if ps["runtimeClassName"] != "gvisor" {
-			t.Errorf("%s runtimeClassName = %v", d, ps["runtimeClassName"])
-		}
-		if sel, _ := ps["nodeSelector"].(map[string]any); sel["reliant.dev/pool"] != "delivery-v1" {
-			t.Errorf("%s nodeSelector = %v", d, ps["nodeSelector"])
-		}
-		tol, _ := ps["tolerations"].([]any)
-		if len(tol) != 1 || tol[0].(map[string]any)["key"] != "reliant.dev/pool" || tol[0].(map[string]any)["effect"] != "NoSchedule" {
-			t.Errorf("%s tolerations = %v", d, ps["tolerations"])
-		}
-		// A patch must not drop what the chart rendered: the containers stay.
-		if cs, _ := ps["containers"].([]any); len(cs) != 1 {
-			t.Errorf("%s containers = %v", d, cs)
-		}
+func TestFluxChart_PlacementReachesTheOperator(t *testing.T) {
+	r := renderFluxThroughHelm(t, `placement = forge.flux_placement_delivery_v1(runtime_class_name = "gvisor")`)
+	spec := fluxPodSpec(r, "flux-operator")
+	if spec["runtimeClassName"] != "gvisor" {
+		t.Errorf("runtimeClassName = %v", spec["runtimeClassName"])
 	}
-	// And only those two pods: nothing else is a Pod template here.
-	if sa := r.named("ServiceAccount", "kustomize-controller"); sa == nil {
-		t.Error("ServiceAccount/kustomize-controller missing")
+	if sel := spec["nodeSelector"].(map[string]any); sel["reliant.dev/pool"] != "delivery-v1" {
+		t.Errorf("nodeSelector = %v", sel)
 	}
 }
 
-func TestFluxChart_ChartRBACModeRestoresTheChartsOwn(t *testing.T) {
-	r := renderFluxThroughHelm(t, `rbac = "chart", network_policies = "chart", pod_security = "", priority_class_name = "", priority_class_create = False`)
-	for _, want := range [][2]string{{"ClusterRole", "crd-controller"}, {"ClusterRoleBinding", "crd-controller"}, {"ClusterRoleBinding", "cluster-reconciler"}} {
-		if !r.has(want[0], want[1]) {
-			t.Errorf("rbac = \"chart\" must leave the chart's %s/%s", want[0], want[1])
+// TestFluxInstance_OperatorBuildIsHardened builds the rendered FluxInstance
+// with the operator's own builder and asserts on the Flux the operator would
+// apply: exactly forge's flags, none of the distribution's grants, the shard
+// on its own identity, and every CRD kept on an uninstall.
+func TestFluxInstance_OperatorBuildIsHardened(t *testing.T) {
+	cli := os.Getenv("FLUX_OPERATOR_CLI")
+	if cli == "" {
+		cli, _ = exec.LookPath("flux-operator")
+	}
+	if cli == "" {
+		t.Skip("no flux-operator CLI (set FLUX_OPERATOR_CLI); see docs/runbooks/flux-patch-and-upgrade.md")
+	}
+	dns := `{"to" = [{podSelector.matchLabels = {"k8s-app" = "kube-dns"}}]}`
+	r := renderFluxThroughHelm(t, `connected_shard = True, egress = {kustomize = [`+dns+`], source = [`+dns+`], kustomize_connected = [`+dns+`], operator = [`+dns+`]}`)
+	fi, err := yaml.Marshal(r.named("FluxInstance", "flux"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(t.TempDir(), "fluxinstance.yaml")
+	if err := os.WriteFile(f, fi, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, cli, "build", "instance", "-f", f).Output()
+	if err != nil {
+		t.Fatalf("flux-operator build instance: %v", err)
+	}
+	b := renderedFlux{byKey: map[string]map[string]any{}}
+	dec := yaml.NewDecoder(strings.NewReader(string(out)))
+	for {
+		var d map[string]any
+		if err := dec.Decode(&d); err != nil {
+			break
+		}
+		if d != nil {
+			b.docs = append(b.docs, d)
 		}
 	}
-	for _, n := range []string{"allow-egress", "allow-scraping", "allow-webhooks"} {
-		if !r.has("NetworkPolicy", n) {
-			t.Errorf("network_policies = \"chart\" must leave the chart's %s", n)
+	for _, name := range []string{"cluster-reconciler-flux-system", "crd-controller-flux-system"} {
+		if b.has("ClusterRoleBinding", name) || b.has("ClusterRole", name) {
+			t.Errorf("the distribution's %s must be deleted from the build", name)
 		}
 	}
-	if r.has("ClusterRole", "flux-tenant-reconciler") || r.has("PriorityClass", "forge-delivery") {
-		t.Error("opting out must not add forge's own objects")
+	if b.has("Deployment", "source-controller-connected") || b.has("Service", "source-controller-connected") {
+		t.Error("the operator's source-controller shard must be deleted from the build")
 	}
-}
-
-func TestFluxChart_PinnedModePinsImpersonationByName(t *testing.T) {
-	r := renderFluxThroughHelm(t, `rbac = "pinned"`)
-	imp := r.named("ClusterRole", "cluster-reconciler-impersonator")
-	if imp == nil {
-		t.Fatal("pinned mode must render the impersonator ClusterRole")
+	for _, d := range b.docs {
+		if d["kind"] != "CustomResourceDefinition" {
+			continue
+		}
+		if a, _ := d["metadata"].(map[string]any)["annotations"].(map[string]any); a["fluxcd.controlplane.io/prune"] != "disabled" {
+			t.Errorf("CRD %v must survive an uninstall", d["metadata"].(map[string]any)["name"])
+		}
 	}
-	rule := imp["rules"].([]any)[0].(map[string]any)
-	if got := fluxToStrings(rule["resourceNames"]); len(got) != 1 || got[0] != "reliant-deploy-tenant" {
-		t.Errorf("impersonation must be pinned by resourceNames, got %v", rule)
+	main := fluxArgs(t, b, "kustomize-controller")
+	if main[len(main)-1] != "--watch-label-selector=sharding.fluxcd.io/key notin (connected)" || fluxContains(main, "--watch-label-selector=!sharding.fluxcd.io/key") {
+		t.Errorf("the main controller must keep shard0 and unlabelled objects: %v", main)
 	}
-	if fluxContains(fluxArgs(t, r, "kustomize-controller"), "--feature-gates=CancelHealthCheckOnNewRevision=true,DisableConfigWatchers=true") {
-		t.Error("pinned mode keeps the cluster-wide list, so the config watcher stays on")
+	if !fluxContains(main, "--default-service-account=reliant-deploy-tenant") {
+		t.Errorf("main controller args = %v", main)
 	}
-}
-
-func fluxToStrings(v any) []string {
-	var out []string
-	for _, x := range v.([]any) {
-		out = append(out, x.(string))
+	if src := fluxArgs(t, b, "source-controller"); strings.Contains(strings.Join(src, " "), "watch-label-selector") {
+		t.Errorf("the source-controller must watch every source: %v", src)
 	}
-	return out
+	shard := fluxPodSpec(b, "kustomize-controller-connected")
+	if shard["serviceAccountName"] != "kustomize-controller-connected" {
+		t.Errorf("the shard must run as its own ServiceAccount, got %v", shard["serviceAccountName"])
+	}
+	if strings.Contains(strings.Join(fluxArgs(t, b, "kustomize-controller-connected"), " "), "default-service-account") {
+		t.Error("the shard must not pass --default-service-account")
+	}
+	for _, d := range []string{"kustomize-controller", "source-controller", "kustomize-controller-connected"} {
+		if fluxPodSpec(b, d)["enableServiceLinks"] != false {
+			t.Errorf("%s must not get service-link env vars", d)
+		}
+	}
 }
 
 func fluxContains(ss []string, want string) bool {
@@ -353,78 +406,10 @@ func fluxContains(ss []string, want string) bool {
 	return false
 }
 
-const fluxShardChartArgs = `connected_shard = True, egress = {
-    kustomize = [{"to" = [{podSelector.matchLabels = {app = "source-controller"}}], ports = [{port = 9090, protocol = "TCP"}]}]
-    source = []
-    kustomize_connected = [{"to" = [{ipBlock = {cidr = "0.0.0.0/0", except = ["10.0.0.0/8"]}}], ports = [{port = 443, protocol = "TCP"}]}]
-    flux_check = []
-}, placement = forge.flux_placement_delivery_v1(runtime_class_name = "gvisor")`
-
-// The connected shard through the real chart: the main controller keeps its
-// default service account and is told to leave the shard alone, the shard is a
-// second Deployment with no default service account, and the egress policies
-// carry exactly what was declared.
-func TestFluxChart_ConnectedShardReachesTheRenderedObjects(t *testing.T) {
-	r := renderFluxThroughHelm(t, fluxShardChartArgs)
-
-	main := fluxArgs(t, r, "kustomize-controller")
-	for _, want := range []string{
-		"--default-service-account=reliant-deploy-tenant",
-		"--watch-label-selector=sharding.fluxcd.io/key notin (connected)",
-	} {
-		if !fluxContains(main, want) {
-			t.Errorf("main kustomize-controller args missing %q: %v", want, main)
-		}
+func fluxToStrings(v any) []string {
+	var out []string
+	for _, x := range v.([]any) {
+		out = append(out, x.(string))
 	}
-
-	shard := fluxArgs(t, r, "kustomize-controller-connected")
-	if !fluxContains(shard, "--watch-label-selector=sharding.fluxcd.io/key=connected") {
-		t.Errorf("shard must select its label: %v", shard)
-	}
-	for _, a := range shard {
-		if strings.Contains(a, "default-service-account") {
-			t.Errorf("the shard must never carry a default service account: %v", shard)
-		}
-	}
-	ps := fluxPodSpec(r, "kustomize-controller-connected")
-	if ps["serviceAccountName"] != "kustomize-controller-connected" {
-		t.Errorf("shard serviceAccountName = %v", ps["serviceAccountName"])
-	}
-	if ps["runtimeClassName"] != "gvisor" {
-		t.Errorf("placement must reach the shard too: runtimeClassName = %v", ps["runtimeClassName"])
-	}
-	sa := r.named("ServiceAccount", "kustomize-controller-connected")
-	if sa == nil {
-		t.Fatal("the shard's ServiceAccount must render")
-	}
-	if md := sa["metadata"].(map[string]any); md["annotations"] != nil {
-		t.Errorf("the shard's ServiceAccount must carry no workload identity: %v", md["annotations"])
-	}
-
-	// The chart's own SA for the main controller is untouched by the shard.
-	if !r.has("ServiceAccount", "kustomize-controller") {
-		t.Error("the main controller's ServiceAccount must still render")
-	}
-	for _, kind := range []string{"ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"} {
-		if !r.has(kind, "flux-connected-shard-no-serviceaccount") {
-			t.Errorf("%s must render", kind)
-		}
-	}
-
-	ae := r.named("NetworkPolicy", "allow-egress")["spec"].(map[string]any)
-	if _, open := ae["egress"]; open {
-		t.Errorf("allow-egress must carry no egress rule once egress is declared (a {} rule cancels every other policy): %v", ae["egress"])
-	}
-	ce := r.named("NetworkPolicy", "kustomize-controller-connected-egress")
-	if ce == nil {
-		t.Fatal("the shard's egress policy must render")
-	}
-	b, _ := json.Marshal(ce["spec"])
-	if !strings.Contains(string(b), `"0.0.0.0/0"`) || !strings.Contains(string(b), "10.0.0.0/8") {
-		t.Errorf("shard egress lost its declared rules: %s", b)
-	}
-	mb, _ := json.Marshal(r.named("NetworkPolicy", "kustomize-controller-egress")["spec"])
-	if strings.Contains(string(mb), "ipBlock") {
-		t.Errorf("the in-cluster controller must have no internet egress: %s", mb)
-	}
+	return out
 }

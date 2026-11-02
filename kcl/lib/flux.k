@@ -164,8 +164,9 @@ FLUX_DEPLOY_SERVICE_ACCOUNT = "reliant-deploy-tenant"
 # its own namespace when it names none (the operator's
 # `--default-service-account`). Without it a ResourceSet applies as the
 # operator, which is cluster-admin; with it, a namespace that grants this SA
-# nothing gets nothing applied. "" turns the default off.
-FLUX_RESOURCESET_SERVICE_ACCOUNT = "flux-resourceset"
+# nothing gets nothing applied. "" turns the default off. `flux-delivery` is the
+# identity a control plane's per-org ResourceSet is granted in its namespace.
+FLUX_RESOURCESET_SERVICE_ACCOUNT = "flux-delivery"
 
 # The two ClusterRoles of the per-namespace RBAC model. They grant NOTHING until
 # a RoleBinding in a namespace names them (`flux_namespace_bindings`). The names
@@ -275,6 +276,11 @@ _ALLOWED_CONTROLLER_ROLES = [
 #   impersonate_service_account     the SA impersonated and pinned (rbac != "upstream").
 #   resourceset_service_account     the SA a ResourceSet impersonates by default
 #                              ("" for none; FLUX_RESOURCESET_SERVICE_ACCOUNT).
+#   override_managers          field managers whose ownership the operator takes
+#                              over when it applies an object (`--override-manager`,
+#                              repeatable): the writer a ResourceSet or the
+#                              FluxInstance adopts objects from. kubectl, helm and
+#                              kustomize-controller are taken over already.
 #   network_policies           "hardened" (default) or "upstream".
 #   scrape_namespaces          namespaces allowed to scrape :8080 (metrics).
 #                              Empty (default): nothing outside flux-system.
@@ -355,6 +361,7 @@ flux_chart = lambda values: {str: any} = {}, \
         rbac: "namespaced" | "pinned" | "upstream" = "namespaced", \
         impersonate_service_account: str = FLUX_DEPLOY_SERVICE_ACCOUNT, \
         resourceset_service_account: str = FLUX_RESOURCESET_SERVICE_ACCOUNT, \
+        override_managers: [str] = [], \
         network_policies: "hardened" | "upstream" = "hardened", \
         scrape_namespaces: [str] = [], \
         pod_security: str = "restricted", \
@@ -372,6 +379,7 @@ flux_chart = lambda values: {str: any} = {}, \
         extra_objects: [any] = [] -> any {
     assert regex.match(impersonate_service_account, _LABEL_RE), "flux_chart: impersonate_service_account '${impersonate_service_account}' is not an RFC-1123 label"
     assert resourceset_service_account == "" or regex.match(resourceset_service_account, _LABEL_RE), "flux_chart: resourceset_service_account '${resourceset_service_account}' is not an RFC-1123 label"
+    assert all m in override_managers { m and " " not in m and "=" not in m }, "flux_chart: override_managers entries must be field-manager names"
     assert all ns in scrape_namespaces { regex.match(ns, _LABEL_RE) and len(ns) <= 63 }, "flux_chart: scrape_namespaces entries must be namespace names (RFC-1123 labels); a wildcard is not one, and admitting every namespace is what Flux's own allow-scraping does"
     assert pod_security in ["", "privileged", "baseline", "restricted"], "flux_chart: pod_security must be \"\", \"privileged\", \"baseline\" or \"restricted\", got '${pod_security}'"
     assert concurrency >= 1 and concurrency_ssa >= 1 and source_concurrency >= 1, "flux_chart: concurrency, concurrency_ssa and source_concurrency must be >= 1"
@@ -442,7 +450,8 @@ flux_chart = lambda values: {str: any} = {}, \
             defaultServiceAccount = resourceset_service_account or FLUX_OPERATOR_NAME
         }
         installCRDs = True
-    } | ({priorityClassName = priority_class_name} if priority_class_name else {}) \
+    } | ({extraArgs = ["--override-manager=${m}" for m in override_managers]} if override_managers else {}) \
+      | ({priorityClassName = priority_class_name} if priority_class_name else {}) \
       | ({nodeSelector = _node_selector} if _node_selector else {}) \
       | ({tolerations = _tolerations} if _tolerations else {})
 
@@ -929,6 +938,8 @@ _connected_identity_objects = lambda -> [any] {
 # policy is the audit's to find.
 _rbac_guard_objects = lambda -> [any] {
     _sas = "['kustomize-controller', 'source-controller', '${FLUX_CONNECTED_CONTROLLER}']"
+    # A CEL list literal: KCL's own list interpolation leaves strings unquoted.
+    _allowed = "[" + ", ".join(["'${r}'" for r in _ALLOWED_CONTROLLER_ROLES]) + "]"
     _subject = "(s.kind == 'ServiceAccount' && s.name in ${_sas} && (has(s.namespace) ? s.namespace : request.namespace) == '${FLUX_NAMESPACE}') || (s.kind == 'Group' && s.name in ['system:serviceaccounts', 'system:serviceaccounts:${FLUX_NAMESPACE}'])"
     [
         {
@@ -945,7 +956,7 @@ _rbac_guard_objects = lambda -> [any] {
                 }]
                 variables = [{name = "namesFlux", expression = "has(object.subjects) && object.subjects.exists(s, ${_subject})"}]
                 validations = [{
-                    expression = "!variables.namesFlux || (object.roleRef.kind + '/' + object.roleRef.name) in ${_ALLOWED_CONTROLLER_ROLES}"
+                    expression = "!variables.namesFlux || (object.roleRef.kind + '/' + object.roleRef.name) in ${_allowed}"
                     messageExpression = "'a Flux controller ServiceAccount may be bound only to ${', '.join(_ALLOWED_CONTROLLER_ROLES)}; refusing ' + object.roleRef.kind + '/' + object.roleRef.name"
                     reason = "Forbidden"
                 }]

@@ -1,8 +1,8 @@
 ---
 name: v1.0.13
-description: Upgrade a project to forge v1.0.13. The dashboard role (forge_dash) is granted by ordinary migrations, not annotations - the forge:dashboard / forge:no-dashboard markers, the generated db/grants/dashboard_gen.sql and db/grants/dashboard/, and the forge-db-grants-stale lint rule are gone, and the migrator now creates forge_dash before any migration runs and fails a run after which it holds more than read privileges. Use when the project's migrations carry forge:dashboard or forge:no-dashboard, it commits db/grants/dashboard_gen.sql, or Go code reads the removed dashboard fields of pkg/migratekit or pkg/dbgrants.
+description: Upgrade a project to forge v1.0.13. The dashboard role (forge_dash) is granted by ordinary migrations, not annotations - the forge:dashboard / forge:no-dashboard markers, the generated db/grants/dashboard_gen.sql and db/grants/dashboard/, and the forge-db-grants-stale lint rule are gone, and the migrator now creates forge_dash before any migration runs and fails a run after which it holds more than read privileges. Also: `forge.flux_chart()` installs Flux through the Flux Operator and a FluxInstance (see migrations/v1.0.13/flux-operator). Use when deploy/kcl declares `forge.flux_chart(`, or the project's migrations carry forge:dashboard or forge:no-dashboard, it commits db/grants/dashboard_gen.sql, or Go code reads the removed dashboard fields of pkg/migratekit or pkg/dbgrants.
 version: v1.0.13
-detection: test -f db/grants/dashboard_gen.sql -o -d db/grants/dashboard && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'Dashboard(Applied|RoleDisabled|RoleMissing|GrantsPath|GrantsRowsDir|GrantsFile|Tables)\b|RenderDashboard|ApplyDashboard|DeclaresNoDashboard|TableMarkerDashboard|ColumnMarkerNoDashboard' . && exit 0; exit 1
+detection: grep -qsE 'flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k && exit 0; test -f db/grants/dashboard_gen.sql -o -d db/grants/dashboard && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'Dashboard(Applied|RoleDisabled|RoleMissing|GrantsPath|GrantsRowsDir|GrantsFile|Tables)\b|RenderDashboard|ApplyDashboard|DeclaresNoDashboard|TableMarkerDashboard|ColumnMarkerNoDashboard' . && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.13
@@ -78,3 +78,9 @@ The squash used to dump with `--no-privileges`. It now keeps every `GRANT … TO
 **Use when** the database runs Postgres 14 (or was upgraded from it), or a migration grants anything to PUBLIC.
 
 The check counts PUBLIC's privileges as the dashboard role's, because they are. On Postgres 14 PUBLIC can `CREATE` in the `public` schema by default, so the first run on v1.0.13 fails naming `CREATE on schema public, held through PUBLIC`. Write the migration the error names, `REVOKE CREATE ON SCHEMA public FROM PUBLIC;` (Postgres 15's default; it needs the role that owns `public`). A `GRANT SELECT ON t TO PUBLIC` or a write granted to PUBLIC fails the same way: revoke it from PUBLIC and grant the roles that need it. forge does not revoke anything itself.
+
+## 6. `forge.flux_chart()` installs Flux through the Flux Operator
+
+Use when deploy/kcl declares `forge.flux_chart(`. The chart is renamed
+`flux-operator` and adopts an existing Flux in place. See
+`migrations/v1.0.13/flux-operator`.

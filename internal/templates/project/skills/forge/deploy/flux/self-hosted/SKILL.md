@@ -80,9 +80,17 @@ no longer want them.
 (exit 6 when it names another, 2 when an older pointer does not record its
 release); `--interval` and `--fail-fast` apply, and `--stable-for`,
 `--watch-json` and `--include-unpinned` are refused (exit 1). A release is live
-only when the delivery ResourceSet has rendered its digest into the
-OCIRepository, the source has fetched it, and every Kustomization reports it
-applied, each by a status of its current generation.
+only when the delivery ResourceSet has rendered this pointer's input (the
+OCIRepository carries its fence and digest, and every Kustomization's spec is
+the one the input renders, suspension, dependencies and health checks
+included), the source has fetched the digest, and every Kustomization reports
+it applied, each by a status of its current generation.
+
+Like every `--wait`, the wait is not fail-fast: a Kustomization that fails a
+health check on a cold start and then settles converges, and a failure Flux
+still reports when the budget runs out is exit 1. `--fail-fast` (on the deploy
+or on `forge env status --wait`) ends it at the first failure. A renderer that
+stalls on the input ends it at once either way.
 
 The deploy's exit codes are the usual ones (`forge env deploy --help`): 0 live,
 1 Flux reported a failure (relayed in its own words), 8 still progressing when

@@ -13,39 +13,66 @@ Dockerfile** to bump.
 See `docs/versioning.md` for the dev-vs-release dependency model. This file is
 the operational checklist for cutting a version.
 
-## 0. Who releases: the release workflow
+## 0. Who releases: the RC train
 
 **Maintainers and agents do not cut forge releases by hand.** The Reliant workflow
-`release` (control-plane `.reliant/workflows/release.yaml`) does, on the flagship
-Claude model following control-plane's `release` skill: when a merge is the 10th
-first-parent commit on main since the newest `v*` tag, when a PR labelled
-`release:asap` merges, or when started from a chat. It cuts forge first, then the
-consumers:
+`rc-train` (control-plane `.reliant/workflows/rc-train.yaml`, driving
+`scripts/rc/rc.sh`; design in control-plane `docs/design/release-train.md`) does.
+Every 10 minutes it reads the three mains; when a main moved and 2h passed, or a PR
+labelled `release:asap` merged, it cuts a release-candidate set — a forge commit
+`F` and matching reliant and control-plane commits — gates it, and promotes the
+first green set. Promotion pushes the final tags, forge's with
+`scripts/release-forge.sh --commit F` (the release `NEXT_VERSION` names at `F`; see
+below), then opens one pull request per consumer moving its pin to the promoted
+set. It replaced the `release`, `release-forge` and `pin-bot` workflows.
 
-- **web-runtime**, when `web-runtime/package.json` is ahead of its newest
-  `web-runtime/v*` tag: `scripts/release-web-runtime.sh vX.Y.Z`, then the tag push
-  that publishes it. The version bump itself is a reviewed PR; the release never
-  invents one.
-- **forge**, when main's tip has a green full `ci.yml` run on push (the proof
-  `scripts/check-release-tests.sh` reads): `scripts/release-forge.sh` with no
-  version, which cuts the release `NEXT_VERSION` names (see below). The release
-  never computes a version from the last tag.
-- **the consumer bumps** (step 2 below), as one pull request per downstream repo
-  labelled `merge:queue`, when a consumer does not already pin a forge that contains
-  the release. pin-bot normally has.
+**web-runtime** is released separately, when `web-runtime/package.json` is ahead of
+its newest `web-runtime/v*` tag: `scripts/release-web-runtime.sh vX.Y.Z`, then the
+tag push that publishes it. The version bump itself is a reviewed PR; the release
+never invents one.
 
-Need a forge change released sooner: label its PR **`release:asap`**. There is no
-release lock: the tag push decides a race (a second cutter's push of the same tag is
-refused, and `release-forge.sh` refuses an existing tag before it builds anything). The
-steps below are what the train runs, for whoever fixes it.
+Need a forge change released sooner: label its PR **`release:asap`**. One release of
+the repository runs at a time (`scripts/release-lock.sh`, a lock ref on origin), and
+`release-forge.sh` refuses a tag that already exists, locally or on origin, before it
+builds anything. The steps below are what the train runs, for whoever fixes it, and
+what an owner-authorized hand release runs.
 
-## 1. Tag forge (from a clean `main`) — ONE command
+## 1. Tag forge — ONE command, and nothing is pushed to `main`
 
 ```sh
 cd forge
 task release:forge -- --dry-run   # optional: every validation, no side effects
 task release:forge                # cuts the version NEXT_VERSION names
+task release:forge -- --commit <sha>   # a specific green commit of main instead
 ```
+
+**A release never pushes to `main`.** `main` merges only through the merge queue
+(the `main` ruleset), and the release does not need an exception to it:
+
+- the tag goes on a commit `main` **already has** — by default the newest commit of
+  `main`'s first-parent history whose full CI is green (the proof
+  `scripts/check-release-tests.sh` reads; `FORGE_RELEASE_GREEN_DEPTH` commits are
+  searched, default 40), or the one `--commit` names. `main` keeps merging while a
+  release is cut, and the tag stays reachable from it;
+- the **bookkeeping** — `VERSION`, `internal/buildinfo/VERSION`, `NEXT_VERSION`,
+  `CHANGELOG.md`, `npm/package.json` — is committed on top of that commit, pushed to
+  `release/vX.Y.Z` together with the tag (one atomic push), and lands as the pull
+  request `chore: release vX.Y.Z`, set to auto-merge, through review and the merge
+  queue like any other change.
+
+So the tagged tree still names the previous version in `VERSION`. Nothing reads that
+file for a release: the archives are stamped with `-X main.Version=vX.Y.Z`
+(`scripts/build-release-assets.sh`), `go install …@vX.Y.Z` reports the module
+version, and `release-npm.yml` takes the version from the tag.
+
+The release is cut in a private worktree at that commit, never in your checkout:
+uncommitted work there cannot block a release or be swept into one, and the
+worktree is removed when the script exits.
+
+If origin refuses the push, the script deletes the local tag it made and says
+which refusal it was: origin already has the tag (another cut released it: fetch
+it, do not re-cut), a `release/vX.Y.Z` branch is left from an earlier attempt, or
+the push itself was refused (a ruleset, a permission, the network).
 
 **`NEXT_VERSION` declares the next release.** It is not always the last tag's
 patch+1: v0.1.46 was followed by v1.0.0. Lint rollout rows (`IntroducedIn`),
@@ -54,15 +81,16 @@ unreleased work are keyed to it, and their tests fail a key that is neither
 shipped (at or before `VERSION`) nor `NEXT_VERSION`. The script refuses a version
 that is not `NEXT_VERSION` or a pre-release of it (`vX.Y.Z-rc.1`); to cut a
 minor or major release, change `NEXT_VERSION` (and those keys) in a pull request
-first. A final release writes `NEXT_VERSION`'s next patch in the release commit.
+first. A final release writes `NEXT_VERSION`'s next patch in the bookkeeping
+commit. `NEXT_VERSION` is read at the commit being tagged.
 
 What it does, in order:
 
-1. validates the version shape, a **clean tree**, and that the tag does not
-   already exist;
+1. picks the commit to tag (above) and checks it out in a private worktree;
+   validates the version shape and that the tag does not already exist;
 2. confirms against the module proxy that the version was never published at a
    **different** commit (see below), then requires the latest full `ci.yml` run
-   at the exact source `HEAD` to have succeeded. PR/merge-queue runs do not
+   at the exact commit being tagged to have succeeded. PR/merge-queue runs do not
    count: every shard of `Test (unit I/N)` and `Test (internal/cli I/N)`, and
    `Test (-short whole tier, then guards)`, must each succeed, even if `CI gate`
    waived an existing red. Missing, queued, failed, or unreadable proof blocks
@@ -72,13 +100,16 @@ What it does, in order:
    with the prettier the pre-commit hook pins;
 4. syncs `VERSION` and `internal/buildinfo/VERSION` — which must stay
    byte-identical, since `buildinfo` embeds a copy;
-5. builds the module;
-6. commits, tags `vX.Y.Z` and pushes the branch and tag in a single atomic
-   `git push`;
-7. creates the GitHub release (`gh release create`) with that section as its notes.
+5. builds the module and the release archives;
+6. commits the bookkeeping, tags `vX.Y.Z` at the commit `main` already has, and
+   pushes the tag and `release/vX.Y.Z` in a single atomic `git push` — never
+   `main`;
+7. opens the `chore: release vX.Y.Z` pull request from `release/vX.Y.Z` and sets
+   it to auto-merge;
+8. creates the GitHub release (`gh release create`) with that section as its notes.
 
-`--dry-run` runs every validation and every file edit, prints the plan, then
-restores the tree — no commit, no tag, no push.
+`--dry-run` runs every validation and every file edit in the private worktree,
+prints the plan, then removes it — no commit, no tag, no push, no pull request.
 
 ### CHANGELOG.md and the GitHub release notes
 
@@ -154,12 +185,12 @@ change `install.sh`, `install.ps1`, `npm/lib/install.js` and
 `scripts/render-homebrew-formula.sh` in the same pull request;
 `internal/installers` fails if they drift.
 
-| Channel                                                   | What the release does                                                                                                                                                                                                                                                  | Needs a human                                                                                                                                                   |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `curl \| sh` (`install.sh`), `irm \| iex` (`install.ps1`) | Nothing: they read `main` and download the release's assets.                                                                                                                                                                                                           | No                                                                                                                                                              |
-| GitHub release assets                                     | `build-release-assets.sh` runs before the release commit; `gh release create` attaches the archives and `checksums.txt`.                                                                                                                                               | No                                                                                                                                                              |
-| Homebrew `reliant-labs/reliant/forge`                     | Dispatches `forge-release-published` to `reliant-labs/homebrew-reliant`; its `update-forge-formula.yml` renders `Formula/forge.rb` (`scripts/render-homebrew-formula.sh`), installs and tests it, and opens a PR.                                                      | Yes: the tap's ruleset requires an approving review, same as the cask. The workflow lives in the tap; `docs/installers/update-forge-formula.yml` is its source. |
-| npm `@reliantlabs/forge`                                  | `npm/package.json` is synced in the release commit. The GitHub release's `release: published` event runs `.github/workflows/release-npm.yml`, which publishes the shim at the tag's version with npm trusted publishing (OIDC) and waits for the registry to serve it. | No, once the trusted publisher is registered (below).                                                                                                           |
+| Channel                                                   | What the release does                                                                                                                                                                                                                                                      | Needs a human                                                                                                                                                   |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `curl \| sh` (`install.sh`), `irm \| iex` (`install.ps1`) | Nothing: they read `main` and download the release's assets.                                                                                                                                                                                                               | No                                                                                                                                                              |
+| GitHub release assets                                     | `build-release-assets.sh` runs before the bookkeeping commit; `gh release create` attaches the archives and `checksums.txt`.                                                                                                                                               | No                                                                                                                                                              |
+| Homebrew `reliant-labs/reliant/forge`                     | Dispatches `forge-release-published` to `reliant-labs/homebrew-reliant`; its `update-forge-formula.yml` renders `Formula/forge.rb` (`scripts/render-homebrew-formula.sh`), installs and tests it, and opens a PR.                                                          | Yes: the tap's ruleset requires an approving review, same as the cask. The workflow lives in the tap; `docs/installers/update-forge-formula.yml` is its source. |
+| npm `@reliantlabs/forge`                                  | `npm/package.json` is synced in the bookkeeping commit. The GitHub release's `release: published` event runs `.github/workflows/release-npm.yml`, which publishes the shim at the tag's version with npm trusted publishing (OIDC) and waits for the registry to serve it. | No, once the trusted publisher is registered (below).                                                                                                           |
 
 Re-run either channel for an existing release by hand:
 
@@ -169,8 +200,8 @@ gh workflow run release-npm.yml --repo reliant-labs/forge -f version=X.Y.Z -f dr
 ```
 
 `release-npm.yml` takes the version from the tag, not from `npm/package.json`
-at the tagged commit (a `--commit` cut tags a commit whose manifest still names
-the previous version), smoke-tests the packed tarball against the release's
+at the tagged commit (every release tags a commit whose manifest still names
+the previous version; the bump is in the bookkeeping pull request), smoke-tests the packed tarball against the release's
 archives, and is a no-op for a version the registry already serves.
 
 **The npm trusted publisher.** There is no npm token anywhere: npm accepts a

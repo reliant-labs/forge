@@ -1,18 +1,18 @@
 // File: internal/cli/release_forge_script_test.go
 //
 // Exercises scripts/release-forge.sh — the one-command release gate that
-// tags github.com/reliant-labs/forge (vX.Y.Z) once, at the commit that syncs
-// the version files.
+// tags github.com/reliant-labs/forge (vX.Y.Z) once, at a commit already on
+// origin/main, and lands the bookkeeping (version files, CHANGELOG.md) as a
+// release/vX.Y.Z branch for a pull request.
 //
 // The tests that matter most here are not the refusals but the invariants:
 //
-//   - one tag, on the release commit. It used to be two — the module and its
-//     pkg/ submodule, which had to land on the same commit — until pkg/ was
-//     folded into the root module.
-//   - a dry run leaving NO trace. The script edits the version files in
-//     place, so a failed or dry run must restore the tree exactly — this
-//     checkout is routinely shared with other agents, and the obvious cleanup
-//     verb (`git checkout -- <path>`) is the destructive one we must never use.
+//   - one tag, on a commit origin/main already has, and NOTHING pushed to
+//     main. main merges only through the merge queue; a release that pushed
+//     to it needed a ruleset bypass actor.
+//   - the caller's checkout untouched. The release works in a private
+//     worktree, so a shared checkout's uncommitted work can never be swept
+//     into a release, and a dry run leaves no trace.
 //
 // These tests shell out to bash + git + go; they skip when bash is
 // unavailable (never the case on the supported dev platforms). The script
@@ -114,7 +114,46 @@ func newForgeFixtureRepo(t *testing.T) string {
 	gitIn(t, root, "add", ".")
 	gitIn(t, root, "commit", "-q", "-m", "fixture")
 	gitIn(t, root, "tag", "-a", "v0.1.0", "-m", "forge v0.1.0")
+	// A bare origin holding main: the release names a commit already on
+	// origin/main, so even a dry run reads it.
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, root, "clone", "--bare", "--quiet", root, origin)
+	gitIn(t, root, "remote", "add", "origin", origin)
 	return root
+}
+
+// fixtureOrigin is the bare origin newForgeFixtureRepo made for repo.
+func fixtureOrigin(t *testing.T, repo string) string {
+	t.Helper()
+	return gitOut(t, repo, "config", "remote.origin.url")
+}
+
+// bookkeepingFile reads rel from the release/<version> branch the script
+// pushed to origin, byte for byte.
+func bookkeepingFile(t *testing.T, origin, version, rel string) string {
+	t.Helper()
+	cmd := exec.CommandContext(context.Background(), "git", "show", "release/"+version+":"+rel)
+	cmd.Dir = origin
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git show release/%s:%s in %s: %v", version, rel, origin, err)
+	}
+	return string(out)
+}
+
+// assertNoReleaseWorktree: the script's private worktree is gone after a run.
+func assertNoReleaseWorktree(t *testing.T, repo string) {
+	t.Helper()
+	wts := gitOut(t, repo, "worktree", "list", "--porcelain")
+	n := 0
+	for _, l := range strings.Split(wts, "\n") {
+		if strings.HasPrefix(l, "worktree ") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("the release left a worktree behind:\n%s", wts)
+	}
 }
 
 // runForgeScript runs the release script HERMETICALLY: both of its network
@@ -215,6 +254,10 @@ func TestReleaseForgeScript_DryRunLeavesNoTrace(t *testing.T) {
 	if tags := gitOut(t, repo, "tag", "-l", "v0.2.0", "pkg/v0.2.0"); tags != "" {
 		t.Errorf("dry run created tags: %q", tags)
 	}
+	assertNoReleaseWorktree(t, repo)
+	if branches := gitOut(t, fixtureOrigin(t, repo), "branch", "--list", "release/*"); branches != "" {
+		t.Errorf("dry run pushed a bookkeeping branch: %q", branches)
+	}
 }
 
 // The release to cut is declared in NEXT_VERSION, not computed from the last
@@ -248,69 +291,74 @@ func TestReleaseForgeScript_CutsTheReleaseNextVersionNames(t *testing.T) {
 	}
 }
 
-// TestReleaseForgeScript_TagsOnceAtTheReleaseCommit: one module, one tag, on
-// the commit that syncs the version files. This replaced a test asserting
-// that pkg/vX.Y.Z and vX.Y.Z landed on the SAME commit — an invariant that
-// only had to be asserted because there were two tags to get wrong.
-func TestReleaseForgeScript_TagsOnceAtTheReleaseCommit(t *testing.T) {
+// TestReleaseForgeScript_TagsOriginsCommitAndNeverPushesMain: one module, one
+// tag, on the commit origin/main already has; the bookkeeping that syncs the
+// version files is pushed to release/v0.2.0, a child of the tagged commit, for
+// a pull request to land. main itself is never pushed: it merges only through
+// the merge queue, and a release that pushed to it needed a bypass actor.
+func TestReleaseForgeScript_TagsOriginsCommitAndNeverPushesMain(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs a git push")
 	}
 	repo := newForgeFixtureRepo(t)
-	// A bare remote so the script's atomic push has a destination.
-	origin := filepath.Join(t.TempDir(), "origin.git")
-	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
-	gitIn(t, repo, "remote", "add", "origin", origin)
+	origin := fixtureOrigin(t, repo)
+	mainBefore := gitOut(t, origin, "rev-parse", "refs/heads/main")
+	headBefore := gitOut(t, repo, "rev-parse", "HEAD")
 
 	out, err := runForgeScript(t, repo, "v0.2.0")
 	if err != nil {
 		t.Fatalf("release failed: %v\n%s", err, out)
 	}
 
-	head := gitOut(t, repo, "rev-parse", "HEAD")
-	tag := gitOut(t, repo, "rev-parse", "v0.2.0^{commit}")
-	if tag != head {
-		t.Errorf("tag does not point at the release commit: tag=%s HEAD=%s", tag, head)
+	if got := gitOut(t, origin, "rev-parse", "refs/heads/main"); got != mainBefore {
+		t.Errorf("the release pushed to main: %s -> %s", mainBefore, got)
 	}
+	if tag := gitOut(t, origin, "rev-parse", "v0.2.0^{commit}"); tag != mainBefore {
+		t.Errorf("origin tag v0.2.0 -> %s, want origin/main's commit %s", tag, mainBefore)
+	}
+	if tag := gitOut(t, repo, "rev-parse", "v0.2.0^{commit}"); tag != mainBefore {
+		t.Errorf("local tag v0.2.0 -> %s, want %s", tag, mainBefore)
+	}
+	// The caller's checkout is not where the release happened.
+	if head := gitOut(t, repo, "rev-parse", "HEAD"); head != headBefore {
+		t.Errorf("the release committed in the caller's checkout: HEAD %s -> %s", headBefore, head)
+	}
+	if status := gitOut(t, repo, "status", "--porcelain"); status != "" {
+		t.Errorf("the release left the caller's tree dirty:\n%s", status)
+	}
+	assertNoReleaseWorktree(t, repo)
 
-	// Only the version files move now: there is no require to bump and no
-	// go.sum to populate.
-	files := gitOut(t, repo, "show", "--pretty=format:", "--name-only", "HEAD")
-	for _, want := range []string{"VERSION", "internal/buildinfo/VERSION"} {
+	// The bookkeeping: one commit on top of the tagged one.
+	if parent := gitOut(t, origin, "rev-parse", "release/v0.2.0^"); parent != mainBefore {
+		t.Errorf("release/v0.2.0's parent is %s, want the tagged commit %s", parent, mainBefore)
+	}
+	// Only the version files move: there is no require to bump and no go.sum
+	// to populate.
+	files := gitOut(t, origin, "show", "--pretty=format:", "--name-only", "release/v0.2.0")
+	for _, want := range []string{"VERSION", "internal/buildinfo/VERSION", "NEXT_VERSION", "CHANGELOG.md"} {
 		if !strings.Contains(files, want) {
-			t.Errorf("release commit does not touch %s:\n%s", want, files)
+			t.Errorf("the bookkeeping commit does not touch %s:\n%s", want, files)
 		}
 	}
 	if strings.Contains(files, "go.mod") {
-		t.Errorf("release commit touches go.mod — nothing in a single-module release should:\n%s", files)
+		t.Errorf("the bookkeeping commit touches go.mod — nothing in a single-module release should:\n%s", files)
 	}
-
-	for _, vf := range []string{"VERSION", "internal/buildinfo/VERSION"} {
-		got, err := os.ReadFile(filepath.Join(repo, vf))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.TrimSpace(string(got)) != "v0.2.0" {
-			t.Errorf("%s = %q, want v0.2.0", vf, strings.TrimSpace(string(got)))
-		}
+	rootV := bookkeepingFile(t, origin, "v0.2.0", "VERSION")
+	if strings.TrimSpace(rootV) != "v0.2.0" {
+		t.Errorf("VERSION = %q, want v0.2.0", strings.TrimSpace(rootV))
 	}
 	// The two VERSION files must stay byte-identical — buildinfo embeds a
 	// copy and TestEmbeddedVersionFileMatchesSource enforces the match.
-	rootV, _ := os.ReadFile(filepath.Join(repo, "VERSION"))
-	embeddedV, _ := os.ReadFile(filepath.Join(repo, "internal/buildinfo/VERSION"))
-	if string(rootV) != string(embeddedV) {
+	if embeddedV := bookkeepingFile(t, origin, "v0.2.0", "internal/buildinfo/VERSION"); rootV != embeddedV {
 		t.Errorf("VERSION (%q) and internal/buildinfo/VERSION (%q) diverged", rootV, embeddedV)
 	}
-	// The release commit names the release after it.
-	if !strings.Contains(files, "NEXT_VERSION") {
-		t.Errorf("release commit does not touch NEXT_VERSION:\n%s", files)
+	// The bookkeeping names the release after it.
+	if next := bookkeepingFile(t, origin, "v0.2.0", "NEXT_VERSION"); strings.TrimSpace(next) != "v0.2.1" {
+		t.Errorf("NEXT_VERSION = %q after releasing v0.2.0, want v0.2.1", strings.TrimSpace(next))
 	}
-	if next, _ := os.ReadFile(filepath.Join(repo, "NEXT_VERSION")); strings.TrimSpace(string(next)) != "v0.2.1" {
-		t.Errorf("NEXT_VERSION = %q after releasing v0.2.0, want v0.2.1", strings.TrimSpace(string(next)))
-	}
-	// The push is atomic, so the remote must have the branch AND the tag.
-	if remoteTags := gitOut(t, origin, "tag", "-l"); !strings.Contains(remoteTags, "v0.2.0") {
-		t.Errorf("tag v0.2.0 did not reach the remote; got:\n%s", remoteTags)
+	// A local origin gets no pull request: the script says to merge by hand.
+	if !strings.Contains(out, "merge release/v0.2.0 into main by hand") {
+		t.Errorf("the script did not say how the bookkeeping lands:\n%s", out)
 	}
 	// The release lock is dropped on the way out.
 	if locks := gitOut(t, origin, "for-each-ref", "refs/release-lock/"); locks != "" {
@@ -327,9 +375,7 @@ func TestReleaseForgeScript_RejectsAConcurrentRelease(t *testing.T) {
 		t.Skip("runs a git push")
 	}
 	repo := newForgeFixtureRepo(t)
-	origin := filepath.Join(t.TempDir(), "origin.git")
-	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
-	gitIn(t, repo, "remote", "add", "origin", origin)
+	origin := fixtureOrigin(t, repo)
 	tree := gitOut(t, repo, "mktree")
 	lock := gitOut(t, repo, "-c", "user.name=F", "-c", "user.email=f@x.invalid", "commit-tree", tree, "-m", "release lock: v0.1.9 by other@box pid 1 release-forge.sh")
 	gitIn(t, repo, "push", "-q", "origin", lock+":refs/release-lock/release")
@@ -372,9 +418,7 @@ func TestReleaseForgeScript_OneRunEditsACheckoutAtATime(t *testing.T) {
 		t.Skip("flock not on PATH")
 	}
 	repo := newForgeFixtureRepo(t)
-	origin := filepath.Join(t.TempDir(), "origin.git")
-	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
-	gitIn(t, repo, "remote", "add", "origin", origin)
+	origin := fixtureOrigin(t, repo)
 
 	// Another run of the script, mid-release: it holds the checkout lock.
 	lockPath := filepath.Join(gitOut(t, repo, "rev-parse", "--absolute-git-dir"), "release-forge.lock")
@@ -451,42 +495,62 @@ func TestReleaseForgeScript_OneRunEditsACheckoutAtATime(t *testing.T) {
 	}
 }
 
-// TestReleaseForgeScript_ReleasesFromABranchThatIsNotMain pins the push
-// refspec. The script used to push `origin main v0.2.0`, which sends the LOCAL
-// `main` ref — the release commit only when the script runs on a checked-out,
-// up-to-date main. Released from a worktree on another branch (how v0.1.18 was
-// cut), local main lagged origin, the remote rejected the stale tip as
-// non-fast-forward, and the atomic push dropped the tag with it.
-func TestReleaseForgeScript_ReleasesFromABranchThatIsNotMain(t *testing.T) {
+// TestReleaseForgeScript_ReleasesOriginsMainNotTheLocalCheckout: what is
+// released is decided by origin, never by the checkout the script runs in.
+// Here local `main` lags origin (merged work it has not fetched) and the
+// caller sits on a feature branch with an unpushed commit: the tag still lands
+// on origin/main's commit, the unpushed commit is in neither the tag nor the
+// bookkeeping, and the caller's branch is left alone.
+func TestReleaseForgeScript_ReleasesOriginsMainNotTheLocalCheckout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs a git push")
 	}
 	repo := newForgeFixtureRepo(t)
-	origin := filepath.Join(t.TempDir(), "origin.git")
-	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
-	gitIn(t, repo, "remote", "add", "origin", origin)
+	origin := fixtureOrigin(t, repo)
 
-	// origin/main moves ahead; the release is cut from a branch based on it
-	// while the local `main` ref stays behind.
-	gitIn(t, repo, "checkout", "-q", "-b", "release/v0.2.0")
-	if err := os.WriteFile(filepath.Join(repo, "CHANGES"), []byte("merged work\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitIn(t, repo, "add", "CHANGES")
-	gitIn(t, repo, "commit", "-q", "-m", "merged work")
+	// origin/main moves ahead of the local main ref.
+	gitIn(t, repo, "checkout", "-q", "-b", "merged")
+	commitEmpty(t, repo, "feat: merged work (#9)")
 	gitIn(t, repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+	merged := gitOut(t, repo, "rev-parse", "HEAD")
+	// The caller then works on a branch with a commit origin does not have.
+	gitIn(t, repo, "checkout", "-q", "-b", "feature")
+	commitEmpty(t, repo, "feat: unpushed work (#10)")
+	unpushed := gitOut(t, repo, "rev-parse", "HEAD")
 
-	if out, err := runForgeScript(t, repo, "v0.2.0"); err != nil {
-		t.Fatalf("release from a non-main branch failed: %v\n%s", err, out)
+	out, err := runForgeScript(t, repo, "v0.2.0")
+	if err != nil {
+		t.Fatalf("release failed: %v\n%s", err, out)
 	}
+	if remoteMain := gitOut(t, origin, "rev-parse", "refs/heads/main"); remoteMain != merged {
+		t.Errorf("origin main = %s, want it untouched at %s", remoteMain, merged)
+	}
+	if remoteTag := gitOut(t, origin, "rev-parse", "v0.2.0^{commit}"); remoteTag != merged {
+		t.Errorf("origin tag v0.2.0 -> %s, want origin/main's commit %s", remoteTag, merged)
+	}
+	if head := gitOut(t, repo, "rev-parse", "HEAD"); head != unpushed {
+		t.Errorf("the caller's branch moved: HEAD %s, want %s", head, unpushed)
+	}
+	changelog := bookkeepingFile(t, origin, "v0.2.0", "CHANGELOG.md")
+	if !strings.Contains(changelog, "merged work") || strings.Contains(changelog, "unpushed work") {
+		t.Errorf("the changelog must cover origin/main, not the local branch:\n%s", changelog)
+	}
+}
 
-	release := gitOut(t, repo, "rev-parse", "HEAD")
-	if remoteMain := gitOut(t, origin, "rev-parse", "refs/heads/main"); remoteMain != release {
-		t.Errorf("origin main = %s, want the release commit %s", remoteMain, release)
+// TestReleaseForgeScript_CommitMustBeOnOrigin: --commit names a commit the
+// merge queue already landed, so a commit origin/main does not have is refused
+// before anything is edited.
+func TestReleaseForgeScript_CommitMustBeOnOrigin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
 	}
-	if remoteTag := gitOut(t, origin, "rev-parse", "v0.2.0^{commit}"); remoteTag != release {
-		t.Errorf("origin tag v0.2.0 -> %s, want the release commit %s", remoteTag, release)
+	repo := newForgeFixtureRepo(t)
+	commitEmpty(t, repo, "feat: unpushed (#11)")
+	out, err := runForgeScript(t, repo, "--dry-run", "--commit", "HEAD", "v0.2.0")
+	if err == nil || !strings.Contains(out, "is not on origin/main") {
+		t.Fatalf("want a refusal for a commit origin/main lacks; err=%v:\n%s", err, out)
 	}
+	assertNoReleaseWorktree(t, repo)
 }
 
 func TestReleaseForgeScript_RejectsBadVersions(t *testing.T) {
@@ -506,22 +570,29 @@ func TestReleaseForgeScript_RejectsBadVersions(t *testing.T) {
 	}
 }
 
-func TestReleaseForgeScript_RejectsDirtyTree(t *testing.T) {
+// TestReleaseForgeScript_IgnoresADirtyCallerCheckout: the release is cut in a
+// private worktree at origin's commit, so uncommitted work in the (shared)
+// checkout it is run from can neither block it nor be swept into it, and is
+// left exactly as it was.
+func TestReleaseForgeScript_IgnoresADirtyCallerCheckout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the release script under bash against a git fixture; runs in task test")
 	}
 	repo := newForgeFixtureRepo(t)
-	// Any dirty file blocks a release: the script commits root-module files,
-	// so unrelated work would otherwise be swept into the release commit.
 	if err := os.WriteFile(filepath.Join(repo, "unrelated.go"), []byte("package forge\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0")
-	if err == nil {
-		t.Fatalf("expected dirty-tree rejection, got success:\n%s", out)
+	if err := os.WriteFile(filepath.Join(repo, "VERSION"), []byte("someone's edit\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(out, "working tree is not clean") {
-		t.Errorf("unexpected error output:\n%s", out)
+	if out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0"); err != nil {
+		t.Fatalf("a dirty caller checkout blocked the release: %v\n%s", err, out)
+	}
+	if got := readRepoFile(t, repo, "VERSION"); got != "someone's edit\n" {
+		t.Errorf("the release touched the caller's VERSION: %q", got)
+	}
+	if status := gitOut(t, repo, "status", "--porcelain"); status != "M VERSION\n?? unrelated.go" {
+		t.Errorf("the caller's checkout changed:\n%s", status)
 	}
 }
 

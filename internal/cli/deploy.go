@@ -606,6 +606,14 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) (e
 	if f.explain || f.dryRun {
 		return dispatchSpecChangeDeploy(ctx, envName, f)
 	}
+	// THE SELF-HOSTED BOOTSTRAP: `--target flux-delivery` on an
+	// `applier = "flux"` env installs that env's Flux and records nothing
+	// (flux_delivery.go). Any other env goes on to the refusal below.
+	if fluxDeliveryBootstrapRequested(f) {
+		if handled, err := dispatchFluxDeliveryBootstrap(ctx, envName, f, os.Stdout); handled {
+			return err
+		}
+	}
 	// A SCOPE FLAG IS REFUSED HERE, before anything is built. A no-version
 	// deploy cuts a release over EVERY artifact, so scoping the apply
 	// would pay for the whole build to ship one part of it and record a
@@ -1428,6 +1436,13 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	// that changed with the target flag would describe a different env on
 	// every invocation.
 	opts.directApplyAllowed = DirectApplyAllowed(fullEntities)
+	// An `applier = "flux"` env's Flux applies it; forge never does. A dry
+	// run writes nothing, so it may still show the manifests.
+	if !dryRun {
+		if err := refuseFluxDeliveryApply(envName, fullEntities); err != nil {
+			return err
+		}
+	}
 
 	// Loud-by-default namespace mismatch guard: when KCL env_vars hardcode
 	// a project-prefixed `*.svc.cluster.local` reference that disagrees

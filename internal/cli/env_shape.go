@@ -122,7 +122,10 @@ type envShapeDoc struct {
 // exactly those, so the first unit to move onto Flux is neither held up by an
 // unsafe object in one that has not, nor allowed to carry its own.
 func (d envShapeDoc) reconciled() bool {
-	return d.Lifecycle == "" && d.Shape.Applier == "" && len(d.Shape.Units) == 0
+	// applier = "flux" declares exactly that: its in-cluster Flux applies
+	// the whole bundle and prunes it.
+	applier := d.Shape.Applier == "" || d.Shape.Applier == release.ApplierFlux
+	return d.Lifecycle == "" && applier && len(d.Shape.Units) == 0
 }
 
 // reconciledUnits are the delivery units the hub converges, from the shape's
@@ -770,8 +773,13 @@ func shapeIdentityOf(e *KCLEntities) *release.ShapeIdentity {
 // recorded: an env that declares none stays empty, so "undeclared" and "forge
 // applies it on purpose" remain different facts a reader can tell apart.
 func shapeApplierOf(e *KCLEntities) string {
-	if e != nil && e.Applier == applierForge {
+	switch {
+	case e == nil:
+		return ""
+	case e.Applier == applierForge:
 		return release.ApplierForge
+	case e.Applier == applierFlux:
+		return release.ApplierFlux
 	}
 	return ""
 }
@@ -967,6 +975,14 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 	}
 	if doc.Shape.Applier != "" {
 		fmt.Fprintf(w, "  applied by: %s (declared: Bundle.applier)\n", doc.Shape.Applier)
+	}
+	if doc.entities != nil && doc.entities.FluxDelivery != nil {
+		fd := doc.entities.FluxDelivery
+		fmt.Fprintf(w, "  delivered by: the in-cluster Flux on %s (namespace %s, ResourceSet %s; bootstrap: --target %s)\n",
+			fd.Cluster, fd.Namespace, fd.ResourceSet, fd.Chart)
+		if line := fluxDeliverySigningNotice(doc.Env, fd); line != "" {
+			fmt.Fprintf(w, "  %s\n", line)
+		}
 	}
 	if len(doc.Shape.ControlPlaneSecrets) > 0 {
 		fmt.Fprintf(w, "  delivered by the control plane: %d (names only; the control plane mints and renews them)\n", len(doc.Shape.ControlPlaneSecrets))

@@ -88,6 +88,13 @@ var templateOwnedPrefixes = []string{ShardLabel, "fluxcd.controlplane.io/", "res
 // path-invariance and fence refusals): those compare two inputs of one
 // binding and belong to the writer.
 func Validate(in BindingInput) error {
+	return validate(in, nil)
+}
+
+// validate is Validate, and ValidateSelfHosted's structural half when
+// selfHosted is set: there an in-cluster tree is the norm, and a delivery
+// without identities names none on its trees.
+func validate(in BindingInput, selfHosted *SelfHosted) error {
 	if in.Schema != Schema {
 		return fmt.Errorf("%w: schema %q, want %q", ErrInvalidInput, in.Schema, Schema)
 	}
@@ -116,7 +123,7 @@ func Validate(in BindingInput) error {
 	if err := validateSource(in); err != nil {
 		return err
 	}
-	return validateAppliers(in)
+	return validateAppliers(in, selfHosted)
 }
 
 func validateSource(in BindingInput) error {
@@ -183,7 +190,7 @@ func validateVerify(v Verify) error {
 	return nil
 }
 
-func validateAppliers(in BindingInput) error {
+func validateAppliers(in BindingInput, selfHosted *SelfHosted) error {
 	if len(in.Appliers) == 0 {
 		return fmt.Errorf("%w: org %s env %s", ErrNoAppliers, in.Org, in.Env)
 	}
@@ -191,7 +198,7 @@ func validateAppliers(in BindingInput) error {
 	flat := map[string]bool{}
 	tree := map[string]bool{}
 	for _, a := range in.Appliers {
-		if err := validateApplier(in, a); err != nil {
+		if err := validateApplier(in, a, selfHosted); err != nil {
 			return err
 		}
 		if names[a.Name] {
@@ -234,7 +241,7 @@ func validateAppliers(in BindingInput) error {
 	return nil
 }
 
-func validateApplier(in BindingInput, a Applier) error {
+func validateApplier(in BindingInput, a Applier, selfHosted *SelfHosted) error {
 	if a.Source != in.Source.Name {
 		return fmt.Errorf("%w: applier %s reads source %q, but this binding's one source is %q",
 			ErrInvalidInput, a.Name, a.Source, in.Source.Name)
@@ -287,10 +294,10 @@ func validateApplier(in BindingInput, a Applier) error {
 	case a.InCluster == (a.KubeConfigSecret != ""):
 		return fmt.Errorf("%w: applier %s (inCluster %t, kubeConfigSecret %q)",
 			ErrNoClusterCredential, a.Name, a.InCluster, a.KubeConfigSecret)
-	case a.InCluster && a.ServiceAccountName == "":
+	case a.InCluster && a.ServiceAccountName == "" && (selfHosted == nil || selfHosted.ApplyIdentities):
 		return fmt.Errorf("%w: applier %s is in-cluster with no serviceAccountName to impersonate; "+
 			"the destination Role is the boundary there, so it is refused rather than defaulted", ErrNoClusterCredential, a.Name)
-	case a.InCluster && a.Phase != "":
+	case a.InCluster && a.Phase != "" && selfHosted == nil:
 		return fmt.Errorf("%w: tree %s is in-cluster; every tree applies through a kubeconfig", ErrNoClusterCredential, a.Name)
 	case !a.InCluster && a.ServiceAccountName != "":
 		return fmt.Errorf("%w: applier %s names %q", ErrServiceAccountOnConnected, a.Name, a.ServiceAccountName)

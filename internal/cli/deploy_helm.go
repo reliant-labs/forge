@@ -116,6 +116,23 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, d
 		if err != nil {
 			return nil, fmt.Errorf("platform dependency %q manifests: %w", c.Name, err)
 		}
+		// A self-hosted delivery's bootstrap: the grants derived from the
+		// env's render ride the chart, and the pull Secret is copied.
+		var copies []cluster.SecretCopy
+		if c.FluxDelivery != nil {
+			ids, cps, err := fluxDeliveryChartExtras(ctx, *c.FluxDelivery)
+			if err != nil {
+				return nil, fmt.Errorf("platform dependency %q: %w", c.Name, err)
+			}
+			switch {
+			case strings.TrimSpace(ids) == "":
+			case strings.TrimSpace(extra) == "":
+				extra = ids
+			default:
+				extra = strings.TrimRight(extra, "\n") + "\n---\n" + ids
+			}
+			copies = cps
+		}
 		specs = append(specs, cluster.HelmChartSpec{
 			Name:      c.Name,
 			Chart:     c.Chart,
@@ -134,6 +151,7 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, d
 			Owner:                owner,
 			Prune:                c.PruneEnabled(),
 			Patches:              c.Patches,
+			SecretCopies:         copies,
 		})
 	}
 	return specs, nil

@@ -541,8 +541,9 @@ type Shape struct {
 	// ([BundleFeatureDatabaseDashboards]).
 	Databases []ShapeDatabase `json:"databases,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
-	// environment none of whose delivery units has moved onto the hub yet. It
-	// is a transitional state (see [ApplierForge]). Empty means undeclared, and
+	// environment none of whose delivery units has moved onto the hub yet (a
+	// transitional state, see [ApplierForge]), or "flux" for one an in-cluster
+	// Flux reconciles ([ApplierFlux]). Empty means undeclared, and
 	// omitted, so every shape recorded before the field encodes and hashes as
 	// it did.
 	Applier string `json:"applier,omitempty"`
@@ -561,6 +562,13 @@ type Shape struct {
 // a transitional state: an env whose every delivery unit is still applied by
 // forge. The end state is every unit converged by the hub ([UnitApplierHub]).
 const ApplierForge = "forge"
+
+// ApplierFlux is [Shape.Applier] for an env with no control plane that a Flux
+// forge installs in its own cluster reconciles from the recorded bundle
+// (Bundle.applier = "flux"). Like an undeclared env, its whole bundle is
+// applied by a reconciler and pruned; unlike one, the reconciler is that
+// in-cluster Flux and never a hub.
+const ApplierFlux = "flux"
 
 // Who applies a delivery unit ([ShapeUnit.Applier]).
 const (
@@ -1045,8 +1053,8 @@ func (s Shape) Validate() error {
 			return fmt.Errorf("%w: shape workload needs a name and a runtime", ErrInvalid)
 		}
 	}
-	if s.Applier != "" && s.Applier != ApplierForge {
-		return fmt.Errorf("%w: shape applier %q (expected %q or none)", ErrInvalid, s.Applier, ApplierForge)
+	if s.Applier != "" && s.Applier != ApplierForge && s.Applier != ApplierFlux {
+		return fmt.Errorf("%w: shape applier %q (expected %q, %q or none)", ErrInvalid, s.Applier, ApplierForge, ApplierFlux)
 	}
 	seenUnit := map[string]bool{}
 	for _, u := range s.Units {

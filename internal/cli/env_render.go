@@ -341,6 +341,9 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	if kerr != nil {
 		return kerr
 	}
+	// On stderr with the render's other notes: the manifest stream is the
+	// only thing out carries.
+	writeFluxDeliverySigningNotice(errOut, envName, entities.FluxDelivery)
 
 	namespace := renderEnvNamespace(opts.namespace, entities, store.Meta().Name, envName)
 

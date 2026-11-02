@@ -2045,8 +2045,13 @@ render = lambda bundle: Bundle -> any {
         # missing one.
         "lifecycle": bundle.lifecycle if bundle.lifecycle else None
         # WHO APPLIES, declared: "forge" for a real env forge applies (the
-        # platform's own env), else null. See Bundle.applier.
+        # platform's own env), "flux" for one an in-cluster Flux forge installs
+        # reconciles, else null. See Bundle.applier.
         "applier": bundle.applier if bundle.applier else None
+        # The self-hosted delivery of an `applier = "flux"` env, resolved
+        # (_render_flux_delivery). Absent for every other env.
+        if bundle.applier == "flux":
+            "flux_delivery": _render_flux_delivery(bundle)
         # WHICH DELIVERY UNITS THE HUB CONVERGES. The key appears only when the
         # Bundle declares it, and an empty list IS a declaration (the hub
         # converges none): absent keeps forge's inference, [] ends it.
@@ -2847,7 +2852,56 @@ _render_cluster = lambda c: Cluster -> any {
 # The declared charts plus the one chart each ExternalSecretsOperator lowers
 # to (lib/eso.k). Built through HelmChart so its check: block runs.
 _all_helm_charts = lambda b: Bundle -> [HelmChart] {
-    b.helm_charts + [HelmChart {**eso_lib.eso_chart(e, eso_lib.eso_owner(b.project, b.env), es_lib.admission_defaults(b, _primary_target(b), _eso_context(e)))} for e in b.external_secrets_operators]
+    b.helm_charts + [HelmChart {**eso_lib.eso_chart(e, eso_lib.eso_owner(b.project, b.env), es_lib.admission_defaults(b, _primary_target(b), _eso_context(e)))} for e in b.external_secrets_operators] \
+        + ([HelmChart {**_flux_delivery_chart(b)}] if b.applier == "flux" else [])
+}
+
+# ── applier = "flux": the self-hosted delivery ──────────────────────
+#
+# The Flux chart lib/flux_delivery.k composes, added to the env's bootstrap
+# charts (target flux-delivery), and the resolved declaration Go reads to
+# derive the apply identities and copy the pull Secret.
+
+_FLUX_CHART_OCI = flux_lib.FLUX_CHART_OCI
+
+# The env's delivery namespace: declared, else forge-delivery-<project>-<env>.
+# Fields, not the Bundle, so a schema `check:` can call it.
+_flux_delivery_ns = lambda fd: any, project: str, env: str -> str {
+    fd.namespace if fd and fd.namespace else flux_delivery_lib.flux_delivery_namespace(project, env)
+}
+
+_flux_delivery_chart = lambda b: Bundle -> any {
+    _fd = b.flux_delivery or FluxDelivery {}
+    # No `cluster`: the env has exactly one (checked on Bundle), so the
+    # chart's default, the env's primary cluster, is that one.
+    flux_delivery_lib.flux_delivery_chart(b.env, _flux_delivery_ns(b.flux_delivery, b.project, b.env), _fd.apply_identities, _fd.values, _fd.placement, _fd.distribution)
+}
+
+# SIGNING ON A SELF-HOSTED DELIVERY IS AT MOST `audit`. Nothing signs an env's
+# bundles without a control plane yet, so an `enforce` would admit no release
+# at all; it is recorded as asked and resolved to audit, and forge says so.
+_flux_delivery_signing_cap = lambda mode: str -> str {
+    "audit" if mode == "enforce" else mode
+}
+
+_render_flux_delivery = lambda b: Bundle -> {str: any} {
+    _fd = b.flux_delivery or FluxDelivery {}
+    _p = b.delivery_policy or DeliveryPolicy {}
+    _ctx = _targeted_contexts(b.workloads, b.databases, b.cluster_target, b.gateways, b.http_routes, b.grpc_routes, b.helm_charts, b.manifests, b.generated, b.rendered_secrets)
+    {
+        "chart": flux_delivery_lib.FLUX_DELIVERY_CHART_NAME
+        "env": b.env
+        # The env's one cluster: where its Flux runs and every tree applies.
+        "cluster": _ctx[0] if _ctx else ""
+        "namespace": _flux_delivery_ns(b.flux_delivery, b.project, b.env)
+        "resourceset": flux_delivery_lib.flux_delivery_resourceset_name(b.env)
+        "apply_identities": _fd.apply_identities
+        "delivery_scope": _fd.delivery_scope
+        "pull_secret_from": _fd.pull_secret_from
+        "pull_secret": flux_delivery_lib.FLUX_DELIVERY_PULL_SECRET if _fd.pull_secret_from else ""
+        "signing": {"requested": _p.signing.mode, "effective": _flux_delivery_signing_cap(_p.signing.mode)}
+        "flux_verify": {"requested": _p.flux_verify.mode, "effective": _flux_delivery_signing_cap(_p.flux_verify.mode)}
+    }
 }
 
 # Render a HelmChart (platform dependency) to its stable dict form. The
@@ -3085,6 +3139,19 @@ FLUX_DELIVERY_PRUNE_DISABLED = flux_delivery_lib.FLUX_DELIVERY_PRUNE_DISABLED
 FLUX_DELIVERY_RETIRE_ORPHAN = flux_delivery_lib.FLUX_DELIVERY_RETIRE_ORPHAN
 FLUX_DELIVERY_RETIRE_TEARDOWN = flux_delivery_lib.FLUX_DELIVERY_RETIRE_TEARDOWN
 FLUX_DELIVERY_INPUT_LABEL = flux_delivery_lib.FLUX_DELIVERY_INPUT_LABEL
+
+# The self-hosted delivery (`Bundle.applier = "flux"`, lib/flux_delivery.k):
+# the bootstrap chart forge adds to such an env, the per-env objects riding
+# it, and the names they share with Go.
+flux_delivery_chart = flux_delivery_lib.flux_delivery_chart
+flux_delivery_self_hosted = flux_delivery_lib.flux_delivery_self_hosted
+flux_delivery_namespace = flux_delivery_lib.flux_delivery_namespace
+FLUX_DELIVERY_CHART_NAME = flux_delivery_lib.FLUX_DELIVERY_CHART_NAME
+FLUX_DELIVERY_PRE_SA = flux_delivery_lib.FLUX_DELIVERY_PRE_SA
+FLUX_DELIVERY_APPLY_SA = flux_delivery_lib.FLUX_DELIVERY_APPLY_SA
+FLUX_DELIVERY_NONE_SA = flux_delivery_lib.FLUX_DELIVERY_NONE_SA
+FLUX_DELIVERY_PULL_SECRET = flux_delivery_lib.FLUX_DELIVERY_PULL_SECRET
+FLUX_DELIVERY_ENV_LABEL = flux_delivery_lib.FLUX_DELIVERY_ENV_LABEL
 
 # target_arch — the GOARCH forge resolved for this build (lib/build.k).
 #

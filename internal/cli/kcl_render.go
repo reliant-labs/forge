@@ -98,10 +98,15 @@ type KCLEntities struct {
 
 	// Applier is "forge" when the env DECLARES that forge applies it
 	// (Bundle.applier): a real environment, not a scratch one, none of whose
-	// delivery units has moved onto the hub yet. Transitional. Empty
+	// delivery units has moved onto the hub yet. Transitional. "flux" when an
+	// in-cluster Flux forge installs reconciles it (FluxDelivery). Empty
 	// otherwise. Read it through unitSplitOf and DirectApplyAllowed rather
 	// than comparing strings.
 	Applier string `json:"applier,omitempty"`
+
+	// FluxDelivery is the resolved self-hosted delivery of an
+	// `applier = "flux"` env; nil for every other env.
+	FluxDelivery *FluxDeliveryEntity `json:"flux_delivery,omitempty"`
 
 	// DeliveryUnits are the units the env's bundle is split into, in
 	// declaration order (Bundle.delivery_units). Empty: everything is in the
@@ -657,6 +662,12 @@ type HelmChartEntity struct {
 	// declaration, so validateChartCluster does not look for it in the env's
 	// k3d clusters.
 	ClusterTarget bool `json:"cluster_target,omitempty"`
+	// FluxDelivery is set on the one chart an `applier = "flux"` env's
+	// render adds (its bootstrap): its install derives the apply identities
+	// from the env's render and copies the pull Secret (flux_delivery.go).
+	// Not read from the chart's own JSON: the render states it once, on the
+	// env (attachFluxDelivery).
+	FluxDelivery *FluxDeliveryEntity `json:"-"`
 	// Manifests are consumer-declared raw k8s manifest dicts that ride this
 	// chart's `--target` (the `eg` GatewayClass, cert-manager ClusterIssuers)
 	// — the cluster-scoped instances the chart's controller reconciles but
@@ -1444,6 +1455,7 @@ type kclRenderRaw struct {
 	ImageTag                 string                                    `json:"image_tag,omitempty"`
 	Lifecycle                string                                    `json:"lifecycle,omitempty"`
 	Applier                  string                                    `json:"applier,omitempty"`
+	FluxDelivery             *FluxDeliveryEntity                       `json:"flux_delivery,omitempty"`
 	DeliveryUnits            []deliveryUnitRaw                         `json:"delivery_units,omitempty"`
 	HubConverges             *[]string                                 `json:"hub_converges,omitempty"`
 	Clusters                 []ClusterEntity                           `json:"clusters,omitempty"`
@@ -1790,6 +1802,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ImageTag:                 raw.ImageTag,
 		Lifecycle:                raw.Lifecycle,
 		Applier:                  raw.Applier,
+		FluxDelivery:             raw.FluxDelivery,
 		DeliveryUnits:            deliveryUnitsOf(raw.DeliveryUnits),
 		ReleaseManifestConsumers: raw.ReleaseManifestConsumers,
 		HubConverges:             hubConvergesOf(raw.HubConverges),
@@ -1844,6 +1857,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		seen[ent.Name] = true
 		out.Workloads = append(out.Workloads, ent)
 	}
+	attachFluxDelivery(out)
 	return out, nil
 }
 

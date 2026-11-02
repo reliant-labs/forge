@@ -21,7 +21,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/user"
+	"path/filepath"
 
 	"github.com/reliant-labs/forge/pkg/deploystate"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -462,6 +464,18 @@ func preflightFollow(ctx context.Context, env, version, projectDir string, ledge
 func resolveReleaseLedger(ctx context.Context, projectDir, env string) (envLedger, error) {
 	if projectDir == "" {
 		projectDir = projectDirForKCL()
+	}
+	// The one render the ledger selection reads anyway, rendered here so an
+	// `applier = "flux"` env is refused before anything is built or recorded.
+	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")); err == nil {
+		entities, err := RenderKCL(ctx, projectDir, env)
+		if err != nil {
+			return envLedger{}, fmt.Errorf("choose the release ledger for env %q: render deploy/kcl/%s: %w", env, env, err)
+		}
+		if err := refuseFluxDeliveryApply(env, entities); err != nil {
+			return envLedger{}, err
+		}
+		return ledgerForRendered(ctx, projectDir, env, entities)
 	}
 	return ledgerFor(ctx, projectDir, env)
 }

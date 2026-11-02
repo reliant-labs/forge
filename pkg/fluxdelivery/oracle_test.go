@@ -65,6 +65,18 @@ func TestRenderMatchesFluxOperator(t *testing.T) {
 		got := oracleBuild(t, bin, dir, fx.name, rs, nil)
 		assertSameObjects(t, fx.name, got, want)
 	}
+	// The self-hosted bindings: in-cluster trees, with and without identities.
+	for name, identities := range map[string]bool{"self_hosted_identities": true, "self_hosted_no_identities": false} {
+		rs, err := fluxdelivery.ResourceSet(selfHosted(identities))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := fluxdelivery.Render(rs)
+		if err != nil {
+			t.Fatalf("%s: Render: %v", name, err)
+		}
+		assertSameObjects(t, name, oracleBuild(t, bin, dir, name, rs, nil), want)
+	}
 
 	// The self-hosted route: the same input through a Static
 	// ResourceSetInputProvider.

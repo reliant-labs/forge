@@ -90,7 +90,8 @@ type ShapeInput struct {
 	// their workload entries (live dashboards), or nil when it declares none.
 	Databases []release.ShapeDatabase
 
-	// Applier is the env's declared applier (release.ApplierForge), or "".
+	// Applier is the env's declared applier (release.ApplierForge or
+	// release.ApplierFlux), or "".
 	Applier string
 	// Units is who applies each delivery unit, when the env declares a split.
 	Units []release.ShapeUnit

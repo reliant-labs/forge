@@ -31,13 +31,25 @@ var ErrUnsafeRender = errors.New("fluxdelivery: unsafe render")
 //   - deletionPolicy Orphan on every Kustomization unless the binding is
 //     torn down (then Delete), and suspend exactly when retired as orphan or
 //     carried suspended;
-//   - the shard label and kubeConfig agree, and a Kustomization without a
-//     kubeConfig impersonates a named ServiceAccount;
+//   - the shard label and kubeConfig agree, every Kustomization applies as
+//     the input's ServiceAccount, and one without a kubeConfig impersonates a
+//     named one;
 //   - the source is digest-pinned to the input's digest, selects the
 //     manifests layer, carries the fence, and verifies exactly when the
 //     input enforces;
 //   - every Kustomization reads the input's source at the applier's path.
 func CheckRendered(in BindingInput, objs []*unstructured.Unstructured) error {
+	return checkRendered(in, objs, nil)
+}
+
+// CheckRenderedSelfHosted is [CheckRendered] for a self-hosted binding
+// ([ValidateSelfHosted]): a delivery without identities names no
+// ServiceAccount, because kustomize-controller applies as itself there.
+func CheckRenderedSelfHosted(in BindingInput, objs []*unstructured.Unstructured, mode SelfHosted) error {
+	return checkRendered(in, objs, &mode)
+}
+
+func checkRendered(in BindingInput, objs []*unstructured.Unstructured, selfHosted *SelfHosted) error {
 	if len(objs) != 1+len(in.Appliers) {
 		return fmt.Errorf("%w: %d objects for 1 source and %d appliers (a document with no name is silently dropped)",
 			ErrUnsafeRender, len(objs), len(in.Appliers))
@@ -51,7 +63,7 @@ func CheckRendered(in BindingInput, objs []*unstructured.Unstructured) error {
 		return err
 	}
 	for i, a := range in.Appliers {
-		if err := checkKustomization(in, a, objs[i+1]); err != nil {
+		if err := checkKustomization(in, a, objs[i+1], selfHosted); err != nil {
 			return err
 		}
 	}
@@ -112,7 +124,7 @@ func checkSource(in BindingInput, o *unstructured.Unstructured) error {
 	return nil
 }
 
-func checkKustomization(in BindingInput, a Applier, o *unstructured.Unstructured) error {
+func checkKustomization(in BindingInput, a Applier, o *unstructured.Unstructured, selfHosted *SelfHosted) error {
 	if o.GetAPIVersion() != KustomizeAPIVersion || o.GetKind() != KindKustomization || o.GetName() != a.Name {
 		return fmt.Errorf("%w: got %s %s %s, want Kustomization %s", ErrUnsafeRender, o.GetAPIVersion(), o.GetKind(), o.GetName(), a.Name)
 	}
@@ -144,14 +156,19 @@ func checkKustomization(in BindingInput, a Applier, o *unstructured.Unstructured
 	}
 	kubeConfig := nestedString(o, "spec.kubeConfig.secretRef.name")
 	shard := o.GetLabels()[ShardLabel]
+	sa := nestedString(o, "spec.serviceAccountName")
+	// Only a self-hosted delivery without identities applies with no identity.
+	unnamedAllowed := selfHosted != nil && !selfHosted.ApplyIdentities
 	switch {
+	case sa != a.ServiceAccountName:
+		return fmt.Errorf("%w: Kustomization %s serviceAccountName %q, want %q", ErrUnsafeRender, a.Name, sa, a.ServiceAccountName)
 	case kubeConfig != a.KubeConfigSecret:
 		return fmt.Errorf("%w: Kustomization %s kubeConfig %q, want %q", ErrUnsafeRender, a.Name, kubeConfig, a.KubeConfigSecret)
 	case kubeConfig != "" && (shard != ShardConnected || nestedString(o, "spec.kubeConfig.secretRef.key") != KubeConfigKey):
 		return fmt.Errorf("%w: Kustomization %s has a kubeConfig but shard %q", ErrUnsafeRender, a.Name, shard)
 	case kubeConfig != "" && nestedString(o, "spec.serviceAccountName") != "":
 		return fmt.Errorf("%w: Kustomization %s names a serviceAccountName beside a kubeConfig", ErrUnsafeRender, a.Name)
-	case kubeConfig == "" && (shard != ShardMain || nestedString(o, "spec.serviceAccountName") == ""):
+	case kubeConfig == "" && (shard != ShardMain || (sa == "" && !unnamedAllowed)):
 		return fmt.Errorf("%w: Kustomization %s has no kubeConfig, shard %q and serviceAccountName %q",
 			ErrUnsafeRender, a.Name, shard, nestedString(o, "spec.serviceAccountName"))
 	}

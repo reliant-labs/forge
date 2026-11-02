@@ -305,6 +305,15 @@ var removals = []removal{
 				Paths:  []string{"internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "internal/templates/project/skills/forge/deploy/plan/SKILL.md"},
 			},
 			{
+				Name: "Kubernetes RBAC objects in the Flux delivery templates",
+				Reason: "pkg/fluxdelivery renders and checks the Kubernetes objects one delivery binding may " +
+					"create (a ResourceSet's Roles and RoleBindings, `flux_delivery_rbac`), and asserts that it " +
+					"renders no other RBAC. That is Kubernetes object permission on the deploy surface, not " +
+					"application role authorization. Scoped to the package, so a role check anywhere else still fails.",
+				Token: regexp.MustCompile(`(?i)\brbac\b`),
+				Paths: []string{"pkg/fluxdelivery/"},
+			},
+			{
 				Name:   "HTTP Authorization header",
 				Reason: "`Authorization: Bearer …` is AUTHENTICATION, which forge still supports and generates. Never confuse the header with the removed authorization feature.",
 				Token:  regexp.MustCompile(`(?i)\bauthorizations?\b`),

@@ -23,8 +23,8 @@ import (
 // 19:13 to 21:51 UTC were all cancelled without running a step, and a
 // cross-repo drift reached main unnoticed (control-plane#831). With this
 // expression the main run in progress always finishes; GitHub keeps at most
-// one PENDING run per group and a newer push replaces it, so a burst of merges
-// costs one extra run, not one per merge.
+// one PENDING run per group and a newer push supersedes it, so a burst of
+// merges costs one extra run, not one per merge (supersedeViolations).
 const prOnlyCancel = "${{ github.event_name == 'pull_request' }}"
 
 // concurrencyCancelViolations returns every concurrency block in a workflow
@@ -138,10 +138,11 @@ func workflowConcurrency(t *testing.T, name string, content []byte) map[string]a
 }
 
 // TestCIWorkflows_CancelInProgressOnlyOnPullRequests renders every GitHub
-// Actions workflow forge scaffolds and pins the concurrency policy: a run is
-// cancelled by a newer one only on a pull request. The workflows that group on
-// github.ref and run on pushes to main carry exactly prOnlyCancel; none
-// anywhere carries a literal true.
+// Actions workflow forge scaffolds and pins the concurrency policy: the run in
+// progress is cancelled by a newer one only on a pull request, and on main a
+// newer push supersedes only the pending run (supersedeViolations). The
+// workflows that group on github.ref carry exactly prOnlyCancel and never key
+// their group on github.sha; none anywhere carries a literal true.
 func TestCIWorkflows_CancelInProgressOnlyOnPullRequests(t *testing.T) {
 	minimal := CIWorkflowData{ProjectName: "demo", LintGolangci: true, PermContents: "read", HasDocker: true, VerifyGenerated: true}
 	workflows := []struct {
@@ -181,15 +182,15 @@ func TestCIWorkflows_CancelInProgressOnlyOnPullRequests(t *testing.T) {
 		if got["cancel-in-progress"] != prOnlyCancel {
 			t.Errorf("%s: workflow concurrency = %v, want cancel-in-progress: %s", wf.name, got, prOnlyCancel)
 		}
-		if g, _ := got["group"].(string); !strings.Contains(g, perCommitPushGroup) {
-			t.Errorf("%s: group %q shares one group across pushes; GitHub REPLACES a pending run in a group, so most main commits would get no verdict. Append %s", wf.name, g, perCommitPushGroup)
+		bad, _ := supersedeViolations(t, wf.name, out)
+		for _, v := range bad {
+			t.Error(v)
+		}
+		if g, _ := got["group"].(string); strings.Contains(g, "github.sha") {
+			t.Errorf("%s: group %q is keyed on github.sha; a run's group must be shared per ref so a newer run supersedes the pending one", wf.name, g)
 		}
 	}
 }
-
-// perCommitPushGroup gives every non-PR run a group of its own commit, so no
-// push to main replaces another's pending run and each commit gets a verdict.
-const perCommitPushGroup = "${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}"
 
 // workflowEvents returns a workflow's trigger events and, for `push`, the
 // branches it filters on (nil when it has no branches filter).
@@ -238,16 +239,50 @@ func asStrings(v any) []string {
 	return out
 }
 
-// TestForgeOwnWorkflows_MainPushesSupersedePendingRuns pins the owner's rule
-// of 2026-11-01 for forge's own CI: every push to main shares one concurrency
-// group per workflow, so a newer push SUPERSEDES the pending run (GitHub keeps
-// at most one pending run per group) while the run in progress finishes
-// (cancel-in-progress is false off a pull request, which
-// TestForgeOwnWorkflows_CancelInProgressOnlyOnPullRequests holds). A group
-// keyed on github.sha or github.run_id for pushes would give every commit a
-// group of its own and queue a run per merge. A workflow that is also
-// scheduled or called (nightly.yml) keys its group on github.event_name, so a
-// nightly run neither supersedes nor is superseded by a push run.
+// supersedeViolations holds a workflow that runs on push to main to the rule
+// of 2026-11-01 (owner): every push to main shares one concurrency group per
+// workflow and ref, so a newer push SUPERSEDES the pending run (GitHub keeps at
+// most one pending run per group and cancels the older one when a newer one
+// queues) while the run in progress finishes (cancel-in-progress false off a
+// pull request). A group keyed on github.sha gives every commit a group of its
+// own and queues a run per merge. A workflow that also runs on a schedule, a
+// dispatch or a workflow_call keys its group on github.event_name too, so
+// those runs neither supersede nor are superseded by a push run. A merge_group
+// run stays alone in its group because its ref names the group's own head.
+//
+// pushesToMain reports whether the rule applied at all.
+func supersedeViolations(t *testing.T, name string, content []byte) (bad []string, pushesToMain bool) {
+	t.Helper()
+	events, branches, tagsOnly := workflowEvents(t, name, content)
+	if !events["push"] || tagsOnly {
+		return nil, false
+	}
+	if branches != nil && !slices.Contains(branches, "main") {
+		return nil, false
+	}
+	conc := workflowConcurrency(t, name, content)
+	group, _ := conc["group"].(string)
+	if group == "" {
+		return []string{fmt.Sprintf("%s runs on push to main but has no workflow concurrency group; want one group per ref so a newer push supersedes the pending run", name)}, true
+	}
+	if !strings.Contains(group, "github.ref") {
+		bad = append(bad, fmt.Sprintf("%s: group %q is not keyed on github.ref", name, group))
+	}
+	if strings.Contains(group, "github.sha") {
+		bad = append(bad, fmt.Sprintf("%s: group %q is keyed on github.sha, so pushes to main never share a group and a newer push cannot supersede a pending run", name, group))
+	}
+	if (events["schedule"] || events["workflow_call"] || events["workflow_dispatch"]) && !strings.Contains(group, "github.event_name") {
+		bad = append(bad, fmt.Sprintf("%s: group %q is shared by push and scheduled/dispatched/called runs; key it on github.event_name so they stay out of the main push group", name, group))
+	}
+	if c := conc["cancel-in-progress"]; c != prOnlyCancel && c != false && c != nil {
+		bad = append(bad, fmt.Sprintf("%s: cancel-in-progress = %v; a main run in progress must finish (want false or %s)", name, c, prOnlyCancel))
+	}
+	return bad, true
+}
+
+// TestForgeOwnWorkflows_MainPushesSupersedePendingRuns holds forge's own CI
+// to supersedeViolations' rule, the one it scaffolds
+// (TestCIWorkflows_CancelInProgressOnlyOnPullRequests).
 func TestForgeOwnWorkflows_MainPushesSupersedePendingRuns(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("..", "..", ".github", "workflows", "*.yml"))
 	if err != nil {
@@ -255,36 +290,16 @@ func TestForgeOwnWorkflows_MainPushesSupersedePendingRuns(t *testing.T) {
 	}
 	checked := 0
 	for _, p := range paths {
-		name := filepath.Base(p)
 		content, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		events, branches, tagsOnly := workflowEvents(t, name, content)
-		if !events["push"] || tagsOnly {
-			continue
+		bad, applies := supersedeViolations(t, filepath.Base(p), content)
+		if applies {
+			checked++
 		}
-		if branches != nil && !slices.Contains(branches, "main") {
-			continue
-		}
-		checked++
-		conc := workflowConcurrency(t, name, content)
-		group, _ := conc["group"].(string)
-		if group == "" {
-			t.Errorf("%s runs on push to main but has no workflow concurrency group; want one group per ref so a newer push supersedes the pending run", name)
-			continue
-		}
-		if !strings.Contains(group, "github.ref") {
-			t.Errorf("%s: group %q is not keyed on github.ref", name, group)
-		}
-		if strings.Contains(group, "github.sha") {
-			t.Errorf("%s: group %q is keyed on github.sha, so pushes to main never share a group and a newer push cannot supersede a pending run", name, group)
-		}
-		if (events["schedule"] || events["workflow_call"]) && !strings.Contains(group, "github.event_name") {
-			t.Errorf("%s: group %q is shared by push and scheduled/called runs; key it on github.event_name so nightly runs stay out of the main push group", name, group)
-		}
-		if c := conc["cancel-in-progress"]; c != prOnlyCancel && c != false && c != nil {
-			t.Errorf("%s: cancel-in-progress = %v; a main run in progress must finish (want false or %s)", name, c, prOnlyCancel)
+		for _, v := range bad {
+			t.Error(v)
 		}
 	}
 	if checked == 0 {

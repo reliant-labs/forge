@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -165,5 +166,33 @@ func TestTwoClientsOneEndpoint(t *testing.T) {
 	}
 	if _, err := Lookup(path, ep, "reliant-cli"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("reliant's token must be gone")
+	}
+}
+
+// The account a login signed in as round-trips with the token, and an entry
+// written without one (an older writer) reads back with both empty.
+func TestStore_AccountRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	in := Credential{Token: "ta", AccountID: "ext-1", AccountEmail: "a@example.test"}
+	if err := Store(path, "https://a.example.com", "reliant-cli", in); err != nil {
+		t.Fatal(err)
+	}
+	if err := Store(path, "https://b.example.com", "reliant-cli", Credential{Token: "tb"}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Lookup(path, "https://a.example.com", "reliant-cli")
+	if err != nil || a.AccountID != "ext-1" || a.AccountEmail != "a@example.test" {
+		t.Fatalf("a: %+v %v", a, err)
+	}
+	b, err := Lookup(path, "https://b.example.com", "reliant-cli")
+	if err != nil || b.AccountID != "" || b.AccountEmail != "" {
+		t.Fatalf("b: %+v %v", b, err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(raw), `"account_id"`) != 1 {
+		t.Fatalf("an unknown account must be omitted, not written empty:\n%s", raw)
 	}
 }

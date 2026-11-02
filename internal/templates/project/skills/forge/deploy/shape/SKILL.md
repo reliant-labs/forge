@@ -25,7 +25,7 @@ re-rendering anything.
 | `domains` | every hostname the env binds — a Gateway's host, its listeners' overrides, each route's override |
 | `clusters` | every kubectl context the env deploys to |
 | `objects` | one entry per rendered object per cluster it lands on: identity, `hash`, `config_hash`, images, and whether it holds data or an external address |
-| `delivery_policy` | what the env's releases must prove before they ship (signing, trusted builder, vulnerability gate, approvals, ...), every control with its mode. Absent means every control at its default, so an env that declares nothing records nothing: `deploy/delivery-policy` |
+| `delivery_policy` | what the env's releases must prove before they ship (signing, trusted builder, vulnerability gate, approvals, ...), every control with its mode. Absent means every control at its control-plane default (`signing` and `flux_verify` audit), so an env that declares nothing records nothing; a self-hosted env that declares one records `signing`/`flux_verify` off: `deploy/delivery-policy` |
 
 ## The two hashes answer different questions
 

@@ -185,7 +185,7 @@ func TestConvergenceOfIgnoresForgeWrittenApplyRecords(t *testing.T) {
 			},
 			State: release.ApplyAbandoned,
 		},
-		CurrentBundle: &release.BundleRecord{ID: "bd-1", Digest: "sha256:abc"},
+		CurrentBundle: &LiveBundle{ID: "bd-1", Digest: "sha256:abc"},
 	}
 	got, detail := convergenceOf(row)
 	if got != nil {
@@ -205,7 +205,7 @@ func TestConvergenceOfReadsThePhaseAndTheObserver(t *testing.T) {
 	row := LiveEnvironment{
 		Env:              release.EnvRecord{Name: "prod"},
 		Phase:            wireRolloutPhaseSucceeded,
-		CurrentBundle:    &release.BundleRecord{ID: "bd-9", Digest: "sha256:beef"},
+		CurrentBundle:    &LiveBundle{ID: "bd-9", Digest: "sha256:beef"},
 		CurrentPromotion: &release.Promotion{ID: "pr-3", Env: "prod", Release: "v2.0.0"},
 		Drift: &LiveDrift{
 			State: "in_sync", ObservedAt: &observed, Detail: "all objects match",

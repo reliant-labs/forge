@@ -1,7 +1,10 @@
 """
 Positive test — `forge.DeliveryPolicy {}` resolves every control to its
-default: the controls that cannot block a deploy enforce, the ones that can
-block it audit. This is the hybrid default of the delivery design (section 9.3).
+default: provenance/SBOM (cannot block a deploy) enforces, the controls that
+can block it audit, and signing / flux_verify audit with a control plane.
+This env has none, so signing and flux_verify resolve OFF: nothing signs a
+self-hosted env's bundles yet (positive_delivery_policy_defaults_hosted.k is
+the same env with a control plane).
 """
 
 import forge
@@ -16,10 +19,11 @@ output = forge.render(forge.Bundle {
 })
 
 _p = output.delivery_policy
+# no control plane: nothing signs, nothing verifies
+assert_signing_off_self_hosted = _p.signing.mode == "off" and _p.signing.key == "org_kms"
+assert_flux_verify_off_self_hosted = _p.flux_verify.mode == "off"
 # cannot block a deploy: enforce
-assert_signing_enforces = _p.signing.mode == "enforce" and _p.signing.key == "org_kms"
 assert_provenance_sbom_enforces = _p.provenance_sbom.mode == "enforce"
-assert_flux_verify_enforces = _p.flux_verify.mode == "enforce"
 # can block a deploy: audit
 assert_trusted_builder_audits = _p.trusted_builder.mode == "audit" and _p.trusted_builder.builders == []
 assert_admission_audits = _p.admission_verify.mode == "audit"

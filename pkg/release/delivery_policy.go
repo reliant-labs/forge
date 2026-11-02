@@ -143,25 +143,26 @@ type ShapeApprovals struct {
 	Approvers []string     `json:"approvers"`
 }
 
-// DefaultDeliveryPolicy is every control at its default: the hybrid rule of
-// the delivery design. A control that cannot block a deploy and costs the
-// customer nothing is enforced (signing and provenance/SBOM are to be done by
-// forge or the platform builder on the customer's behalf, and Flux
-// verification only checks what that signing produced). A control that can
-// refuse a deploy is audited until the env turns it up.
+// DefaultDeliveryPolicy is every control at its default for an env that
+// delivers through a control plane (the only reader of a recorded policy,
+// so it is what a nil policy in a shape means). A control that cannot block
+// a deploy and costs the customer nothing is enforced (provenance/SBOM); a
+// control that can refuse a deploy is audited until the env turns it up.
 //
-// These are DECLARED modes, not active enforcement: nothing signs a bundle or
-// an image yet and no consumer writes OCIRepository.spec.verify, so a reader
-// must not report "enforce" here as a verification that took place.
+// Signing and flux_verify are audit: the platform signs every recorded bundle
+// with the org's key and verifies it server-side, recording the verdict, and
+// enforce (spec.verify, and Promote refusing an unsigned bundle) is the env's
+// opt-in once every rollback target is signed.
 //
-// It must agree with the defaults of forge.DeliveryPolicy in kcl/schema.k;
-// TestDeliveryPolicyDefaultsAgreeWithKCL fails if they drift.
+// It must agree with the defaults of forge.DeliveryPolicy in kcl/schema.k for
+// an env with a control plane; TestDeliveryPolicyDefaultsAgreeWithKCL fails if
+// they drift.
 func DefaultDeliveryPolicy() ShapeDeliveryPolicy {
 	return ShapeDeliveryPolicy{
 		TrustedBuilder:   ShapeTrustedBuilder{Mode: DeliveryAudit, Builders: []string{}},
-		Signing:          ShapeSigning{Mode: DeliveryEnforce, Key: SigningKeyOrgKMS},
+		Signing:          ShapeSigning{Mode: DeliveryAudit, Key: SigningKeyOrgKMS},
 		ProvenanceSBOM:   ShapeControl{Mode: DeliveryEnforce},
-		FluxVerify:       ShapeControl{Mode: DeliveryEnforce},
+		FluxVerify:       ShapeControl{Mode: DeliveryAudit},
 		AdmissionVerify:  ShapeControl{Mode: DeliveryAudit},
 		SignedPromotions: ShapeControl{Mode: DeliveryAudit},
 		VulnGate: ShapeVulnGate{
@@ -171,6 +172,18 @@ func DefaultDeliveryPolicy() ShapeDeliveryPolicy {
 		BundleKinds: ShapeBundleKinds{Mode: DeliveryAudit, Allow: []string{}, Deny: []string{}},
 		Approvals:   ShapeApprovals{Mode: DeliveryAudit, Required: 1, Approvers: []string{}},
 	}
+}
+
+// DefaultSelfHostedDeliveryPolicy is the default of an env with no control
+// plane: as DefaultDeliveryPolicy, except that signing and flux_verify are
+// off, because nothing signs a self-hosted env's bundles yet. Such an env
+// that declares forge.DeliveryPolicy {} records this, which is not the
+// shape-level default, so the shape says plainly that nothing is signed.
+func DefaultSelfHostedDeliveryPolicy() ShapeDeliveryPolicy {
+	p := DefaultDeliveryPolicy()
+	p.Signing.Mode = DeliveryOff
+	p.FluxVerify.Mode = DeliveryOff
+	return p
 }
 
 // IsDefault reports whether p, once canonical, is [DefaultDeliveryPolicy]. A

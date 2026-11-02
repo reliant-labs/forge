@@ -1519,11 +1519,23 @@ _workload_record = lambda entity: any, part_of: str, release: str = "" -> any {
 # a primary for an unattributed object), so leaving the primary's objects
 # unstamped put a primary-only ClusterIssuer on every cluster. Only an env
 # with no cluster at all leaves the label off.
+# THE OWNER OF A forge.Manifests GROUP'S OBJECTS: its name, or none. The ONE
+# definition both sides read: _raw_manifests stamps it on every object as
+# forge.dev/workload, and output.manifest_owners declares it (the release's
+# placement inventory, internal/cli placementDeclarations). A group whose objects
+# carry an owner the inventory does not declare is refused when a mixed bundle
+# is sealed ("undeclared placement owner"), so the two must never be decided
+# apart (a group used to be declared only when it had release_inputs).
+_manifests_owner = lambda g: any -> str {
+    g.name if g.name else ""
+}
+
 _raw_manifests = lambda g: any, primary: any, part_of: str -> [any] {
     _cluster = g.cluster if g.cluster else (primary.cluster if primary else "")
     _ns = g.namespace if g.namespace else (primary.namespace if primary else "")
-    [_stamp_unit(_stamp_cluster(_default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns), _cluster) \
-        if _cluster else _default_namespace(_stamp_owner(m, g.name, part_of) if g.name else m, _ns), g.delivery_unit) \
+    _owner = _manifests_owner(g)
+    [_stamp_unit(_stamp_cluster(_default_namespace(_stamp_owner(m, _owner, part_of) if _owner else m, _ns), _cluster) \
+        if _cluster else _default_namespace(_stamp_owner(m, _owner, part_of) if _owner else m, _ns), g.delivery_unit) \
         for m in g.objects]
 }
 
@@ -2076,7 +2088,14 @@ render = lambda bundle: Bundle -> any {
             "release_inputs": g.release_inputs
             if g.release_dependencies is not Undefined:
                 "release_dependencies": g.release_dependencies
-        } for g in bundle.manifests if g.name and g.release_inputs]
+        } for g in bundle.manifests if _manifests_owner(g) and g.release_inputs]
+        # Every group that owns its objects (_manifests_owner), release_inputs or
+        # not: the placement inventory's raw-manifest half. A group with
+        # controllers becomes placement items; one without is inventory only.
+        "manifest_owners": [{
+            "name": _manifests_owner(g)
+            "cluster": g.cluster or (_pt.cluster if _pt else "")
+        } for g in bundle.manifests if _manifests_owner(g)]
         if bundle.observability:
             "observability": _render_observability(bundle)
         # The resolved delivery policy, every control spelled out, only when the

@@ -305,14 +305,19 @@ func inventoryEntities() *KCLEntities {
 		// Declared, so the inventory is not mixed up with v1's hosted-predecessor refusal.
 		Frontends:                []FrontendEntity{orderFrontend("web", FrontendRuntimeHosted, map[string]string{"api": "v1"})},
 		ReleaseManifestConsumers: []releaseManifestConsumer{{Name: "nats", Cluster: "prod"}},
-		OpenBao:                  &OpenBaoEntity{Name: "store", Namespace: "secrets", Cluster: "prod", ReleaseOwner: "openbao-secrets-store", ReleaseInputs: map[string]string{"container:openbao": "registry.example/openbao@" + digest, "container:converge": "registry.example/converge@" + digest}},
+		// Every named forge.Manifests group: nats (a consumer too) and a
+		// group with no release_inputs, which only the placement inventory has.
+		ManifestOwners: []manifestOwner{{Name: "nats", Cluster: "prod"}, {Name: "cluster-rbac", Cluster: "prod"}},
+		OpenBao:        &OpenBaoEntity{Name: "store", Namespace: "secrets", Cluster: "prod", ReleaseOwner: "openbao-secrets-store", ReleaseInputs: map[string]string{"container:openbao": "registry.example/openbao@" + digest, "container:converge": "registry.example/converge@" + digest}},
 	}
 }
 
-// The placement inventory is exactly compositionConsumers' runtime set: every
-// consumer a composition seals, except build-only artifacts, which have no
-// placement. A consumer source added to one and not the other fails here,
-// before it can pass a preflight and then fail sealing after a push.
+// The placement inventory is exactly compositionConsumers' runtime set, plus
+// every named forge.Manifests group that is not a consumer (no release_inputs:
+// nothing to compose, but its objects carry its owner label, so sealing needs
+// it declared). Build-only artifacts have no placement. A consumer or owner
+// source added to one side and not the other fails here, before it can pass a
+// preflight and then fail sealing after a push.
 func TestPlacementInventoryIsCompositionConsumers(t *testing.T) {
 	e := inventoryEntities()
 	consumers, err := compositionConsumers(e)
@@ -333,10 +338,15 @@ func TestPlacementInventoryIsCompositionConsumers(t *testing.T) {
 	for _, d := range decl {
 		got = append(got, d.Workload)
 	}
+	for _, o := range e.ManifestOwners {
+		if !slices.Contains(want, o.Name) {
+			want = append(want, o.Name)
+		}
+	}
 	slices.Sort(want)
 	slices.Sort(got)
 	if !slices.Equal(got, want) {
-		t.Fatalf("placement inventory %v != composition runtime consumers %v", got, want)
+		t.Fatalf("placement inventory %v != composition runtime consumers + manifest owners %v", got, want)
 	}
 }
 

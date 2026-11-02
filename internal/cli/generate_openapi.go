@@ -125,6 +125,7 @@ func openapiBufTemplate(outDir string) string {
 plugins:
   - local: %s
     out: %s
+    strategy: all
     opt:
       - format=yaml
       - base=connect

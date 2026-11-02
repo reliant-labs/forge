@@ -13,11 +13,13 @@ on:
         required: false
         type: string
 
-# Never cancel a build on main: a newer push waits as the one pending run, so
-# every image push and its signing finish instead of dying half-done (ci.yml
-# says why). Only a pull_request run would ever be cancelled.
+# Never cancel a build in progress on main, so every image push and its
+# signing finish instead of dying half-done; a newer push supersedes the
+# pending build, so the next one built is the newest commit (ci.yml says why).
+# The event keeps a dispatch out of the push group. Only a pull_request run
+# would ever be cancelled.
 concurrency:
-  group: build-images-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
+  group: build-images-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Supply chain hardening (M-12):

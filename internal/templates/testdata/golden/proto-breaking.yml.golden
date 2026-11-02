@@ -17,11 +17,11 @@ on:
 permissions:
   contents: read
 
-# Cancel a superseded run on a pull request only — the same rule as every
-# forge workflow, so it stays right if this one ever runs on main (ci.yml says
-# why).
+# Cancel the run in progress on a pull request only — the same rule as every
+# forge workflow, so it stays right if this one ever runs on main, where a
+# newer push supersedes only the pending run (ci.yml says why).
 concurrency:
-  group: proto-breaking-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
+  group: proto-breaking-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

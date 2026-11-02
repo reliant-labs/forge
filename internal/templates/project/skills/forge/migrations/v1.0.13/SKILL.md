@@ -1,8 +1,8 @@
 ---
 name: v1.0.13
-description: Upgrade a project to forge v1.0.13. The dashboard role (forge_dash) is granted by ordinary migrations, not annotations - the forge:dashboard / forge:no-dashboard markers, the generated db/grants/dashboard_gen.sql and db/grants/dashboard/, and the forge-db-grants-stale lint rule are gone, and the migrator now creates forge_dash before any migration runs and fails a run after which it holds more than read privileges. Use when the project's migrations carry forge:dashboard or forge:no-dashboard, it commits db/grants/dashboard_gen.sql, Go code reads the removed dashboard fields of pkg/migratekit or pkg/dbgrants, or the project runs Postgres 14, where every project's migrations fail until the owner of the public schema revokes PUBLIC's CREATE on it.
+description: Upgrade a project to forge v1.0.13. The dashboard role (forge_dash) is granted by ordinary migrations, not annotations - the forge:dashboard / forge:no-dashboard markers, the generated db/grants/dashboard_gen.sql and db/grants/dashboard/, and the forge-db-grants-stale lint rule are gone, and the migrator now creates forge_dash before any migration runs and fails a run after which it holds more than read privileges. Use when the project's migrations carry forge:dashboard or forge:no-dashboard, it commits db/grants/dashboard_gen.sql, Go code reads the removed dashboard fields of pkg/migratekit or pkg/dbgrants, or the project runs Postgres 14, where every project's migrations fail until the owner of the public schema revokes PUBLIC's CREATE on it. Also: the scaffolded GitHub Actions workflows group push-to-main runs per workflow and ref instead of per commit, so a newer push supersedes the pending run; use when a .github/workflows file still groups on github.sha.
 version: v1.0.13
-detection: test -f db/grants/dashboard_gen.sql -o -d db/grants/dashboard && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'Dashboard(Applied|RoleDisabled|RoleMissing|GrantsPath|GrantsRowsDir|GrantsFile|Tables)\b|RenderDashboard|ApplyDashboard|DeclaresNoDashboard|TableMarkerDashboard|ColumnMarkerNoDashboard' . && exit 0; grep -qsE 'postgres_version:[[:space:]]*"?v?14' forge.yaml && exit 0; grep -rqsE 'postgres:14' docker-compose.yml docker-compose.yaml compose.yml compose.yaml deploy && exit 0; exit 1
+detection: test -f db/grants/dashboard_gen.sql -o -d db/grants/dashboard && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'Dashboard(Applied|RoleDisabled|RoleMissing|GrantsPath|GrantsRowsDir|GrantsFile|Tables)\b|RenderDashboard|ApplyDashboard|DeclaresNoDashboard|TableMarkerDashboard|ColumnMarkerNoDashboard' . && exit 0; grep -qsE 'postgres_version:[[:space:]]*"?v?14' forge.yaml && exit 0; grep -rqsE 'postgres:14' docker-compose.yml docker-compose.yaml compose.yml compose.yaml deploy && exit 0; grep -qsF "format('-{0}', github.sha)" .github/workflows/*.yml && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.13
@@ -78,3 +78,30 @@ The squash used to dump with `--no-privileges`. It now keeps every `GRANT … TO
 **Use when** the database runs Postgres 14 (or was upgraded from it), or a migration grants anything to PUBLIC. This applies to every project, dashboards or not: the migrator creates `forge_dash` and checks it on every run.
 
 The check counts PUBLIC's privileges as the dashboard role's, because they are. On Postgres 14 PUBLIC can `CREATE` in the `public` schema by default, so the first run on v1.0.13 fails naming `CREATE on schema public, held through PUBLIC`. The fix is `REVOKE CREATE ON SCHEMA public FROM PUBLIC;` (Postgres 15's default), and **it must run as the owner of `public`**, which on Postgres 14 is the bootstrap superuser (`postgres`), not your application's role. Run by any other role, the REVOKE "succeeds" with only `WARNING: no privileges could be revoked`, so a migration your application role applies changes nothing and every run keeps failing. Have whoever administers the server run it once (`psql -U postgres -d <db> -c 'REVOKE CREATE ON SCHEMA public FROM PUBLIC'`), or ship it as a migration only where the migrator connects as that owner. `task test` passes on Postgres 14 regardless, because forge's test databases already revoke it: check production before you upgrade. A `GRANT SELECT ON t TO PUBLIC` or a write granted to PUBLIC fails the same way: revoke it from PUBLIC and grant the roles that need it. forge does not revoke anything itself.
+
+## 6. A newer push to main supersedes the pending CI run
+
+**Use when** a workflow under `.github/workflows/` still groups on the commit: its `concurrency.group` ends in `${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}`.
+
+**What changed.** The workflows forge scaffolds (`ci.yml`, `build-images.yml`, `e2e.yml`, `proto-breaking.yml`) gave every push to main a concurrency group of its own commit, so every merge queued a full run and a burst of merges queued one run per merge. Now every push to main shares one group per workflow and ref, with `cancel-in-progress` still true only on a pull request. GitHub keeps at most one pending run per group: when a newer push queues, the older *pending* run is cancelled, and the run *in progress* always finishes. A burst of merges costs the run in progress plus one run of the newest commit; the commits between get no run of their own, and a superseded run shows as cancelled. A workflow that also runs on a dispatch (`build-images.yml`, `e2e.yml`) keys its group on `github.event_name` too, so a manual run never supersedes a push run. A `merge_group` run stays alone in its group, because its ref names the group's own head.
+
+```yaml
+# before
+concurrency:
+  group: ci-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# after
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
+
+**What generate does.** Nothing to a workflow that exists. Workflows are scaffolded once and then yours: `forge generate` writes one only when it is missing, so a new project, or a workflow you deleted, gets the new groups. For the rest:
+
+1. `forge project upgrade --check` names every workflow whose template moved on; `forge project upgrade --check .github/workflows/ci.yml` shows the diff.
+2. A workflow you never edited: `forge project upgrade --force .github/workflows/ci.yml` (and each other one named) adopts the template.
+3. A workflow you edited: change its `group:` line by hand, as above. `--force` would discard your edits. If it also runs on `schedule`, `workflow_dispatch` or `workflow_call`, key the group on the event: `group: <name>-${{ github.event_name }}-${{ github.ref }}`.
+
+Never set `cancel-in-progress: true` on a workflow that runs on push to main: it cancels the run in progress, and a busy runner pool then leaves main with no verdict at all.
+
+If a release process of yours needs a CI verdict for *every* commit of main, keep the per-commit group in that one workflow: it is your file.

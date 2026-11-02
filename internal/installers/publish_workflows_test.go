@@ -2,6 +2,7 @@ package installers
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -86,4 +87,52 @@ func TestNpmPublishWorkflowUsesTrustedPublishing(t *testing.T) {
 			t.Errorf("release-npm.yml sets %s; publishing must use trusted publishing only", banned)
 		}
 	}
+}
+
+// pinnedActionRef is an external action pinned to a full commit SHA. A tag or
+// branch (`@v7`) is mutable: whoever controls the action's repository can move
+// it, and the moved code runs with the publish job's OIDC token.
+var pinnedActionRef = regexp.MustCompile(`^[\w.-]+/[\w./-]+@[0-9a-f]{40}$`)
+
+// The workflows that publish to npm hold an id-token: write credential, so
+// every action they run must be pinned to an immutable commit.
+func TestPublishWorkflowsPinActionsToCommitSHAs(t *testing.T) {
+	for _, rel := range []string{
+		".github/workflows/release-npm.yml",
+		".github/workflows/release-web-runtime.yml",
+	} {
+		uses := 0
+		for _, line := range codeLines(readRepoFile(t, rel)) {
+			ref, ok := actionRef(line)
+			if !ok {
+				continue
+			}
+			uses++
+			// A local action (./path) is code from this commit, already pinned.
+			if strings.HasPrefix(ref, "./") {
+				continue
+			}
+			if !pinnedActionRef.MatchString(ref) {
+				t.Errorf("%s: uses %q; pin it to a full commit SHA (owner/repo@<40 hex> # vX.Y.Z)", rel, ref)
+			}
+		}
+		if uses == 0 {
+			t.Errorf("%s: found no `uses:` lines; has the file's shape changed?", rel)
+		}
+	}
+}
+
+// actionRef returns the reference of a `uses:` step key, without its trailing
+// comment or quotes.
+func actionRef(line string) (string, bool) {
+	s := strings.TrimSpace(line)
+	s = strings.TrimPrefix(s, "- ")
+	rest, ok := strings.CutPrefix(strings.TrimSpace(s), "uses:")
+	if !ok {
+		return "", false
+	}
+	if i := strings.Index(rest, "#"); i >= 0 {
+		rest = rest[:i]
+	}
+	return strings.Trim(strings.TrimSpace(rest), `"'`), true
 }

@@ -532,6 +532,14 @@ type promotePlan struct {
 	// --skip-frontend waives the check. Empty when there is nothing to
 	// report.
 	FrontendPreflight []frontendPreflightFinding `json:"frontend_preflight,omitempty"`
+	// DeliveryGrants are the permissions a self-hosted delivery's apply
+	// identities lack for this release, which this deploy grants by
+	// re-running the bootstrap with the caller's credential
+	// (flux_delivery_grants.go). Empty when the release is covered.
+	DeliveryGrants []fluxDeliveryGrantRow `json:"delivery_grants,omitempty"`
+	// flux is the release a self-hosted delivery's follow-through points its
+	// Flux at, resolved by the preflight. Nil for every other env.
+	flux *fluxDeliveryRelease
 	// followed is set once the deploy verb's follow-through ran, which is
 	// what decides whether the footer reports what shipped or names the
 	// deploy that will ship it.
@@ -1528,6 +1536,8 @@ func renderPromotePlanFooter(out io.Writer, plan promotePlan) {
 			renderShippedStages(out, plan)
 		case plan.FollowError != "":
 			fmt.Fprintf(out, "  Shipped:  nothing — the deploy failed before reaching a live target.\n")
+		case plan.flux != nil:
+			fmt.Fprintf(out, "  Shipped:  nothing from this machine — %s's in-cluster Flux applies bundle %s, which this deploy pointed it at.\n", plan.Env, shortDigest(plan.flux.digest))
 		default:
 			fmt.Fprintf(out, "  Shipped:  nothing from this machine — %s's control plane applies it.\n", plan.Env)
 		}

@@ -6640,6 +6640,12 @@ schema FluxDelivery:
     # registry credential the env's bundles are pulled with. The bootstrap
     # copies it into the delivery namespace. Empty: the registry needs none.
     pull_secret_from: str = ""
+    # The registry subtree the env's bundles are pushed to, as the machine
+    # running `forge env deploy` reaches it (`ghcr.io/acme`). Each release's
+    # bundle lands at `<registry>/bundle.v1/<env>`, pinned by digest, and the
+    # env's Flux pulls it from there. Empty: the registry of the env's first
+    # cluster workload image, so the bundle sits beside the images it pins.
+    registry: str = ""
     # Passed to forge.flux_chart: the Flux Operator chart's values, a node
     # placement (forge.flux_placement_delivery_v1()) and a registry mirror for
     # the Flux images (`distribution`).
@@ -6652,6 +6658,8 @@ schema FluxDelivery:
             "FluxDelivery.namespace '${namespace}' is not a namespace name (an RFC-1123 label of at most 63 characters)"
         not pull_secret_from or regex.match(pull_secret_from, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-.a-z0-9]*[a-z0-9])?$"), \
             "FluxDelivery.pull_secret_from '${pull_secret_from}' must be `<namespace>/<name>` of an existing image-pull Secret"
+        not registry or (not registry.startswith("oci://") and not registry.endswith("/") and "@" not in registry and len(registry.split("/")[0]) > 0), \
+            "FluxDelivery.registry '${registry}' must be a registry host and path (`ghcr.io/acme`), with no oci:// scheme, tag, digest or trailing slash"
         apply_identities or delivery_scope == "namespace", \
             "FluxDelivery.delivery_scope = \"cluster\" scopes the derived apply identity, and apply_identities = False renders none (kustomize-controller applies as cluster-admin). Drop one of the two"
 

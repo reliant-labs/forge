@@ -98,6 +98,12 @@ func fluxDeliveryGrants(stream string, fd FluxDeliveryEntity) (pre, apply fluxDe
 	if err != nil {
 		return pre, apply, nil, err
 	}
+	return fluxDeliveryGrantsOf(objs, fd)
+}
+
+// fluxDeliveryGrantsOf is fluxDeliveryGrants over parsed objects: a render's,
+// or a recorded release bundle's (flux_delivery_deploy.go).
+func fluxDeliveryGrantsOf(objs []bundle.RenderedObject, fd FluxDeliveryEntity) (pre, apply fluxDeliveryGrant, namespaces []string, err error) {
 	inPhase := func(want func(release.Phase) bool) func(bundle.RenderedObject) (bool, error) {
 		return func(o bundle.RenderedObject) (bool, error) {
 			p, err := objectPhase(o)
@@ -189,7 +195,20 @@ func fluxDeliveryGrants(stream string, fd FluxDeliveryEntity) (pre, apply fluxDe
 // fluxDeliveryIdentityObjects renders the grants as RBAC objects (and the
 // Namespaces their Roles need), sorted.
 func fluxDeliveryIdentityObjects(stream string, fd FluxDeliveryEntity) ([]rbacObject, error) {
-	pre, apply, namespaces, err := fluxDeliveryGrants(stream, fd)
+	objs, err := bundle.ParseRenderedStream(stream)
+	if err != nil {
+		return nil, err
+	}
+	return fluxDeliveryIdentityObjectsOf(objs, fd)
+}
+
+// fluxDeliveryIdentityObjectsOf is fluxDeliveryIdentityObjects over parsed
+// objects. Beside the grants it renders their RECORD
+// (fluxDeliveryGrantsRecordObject), which a deploy diffs a release's needs
+// against (flux_delivery_grants.go): the two ride one chart, so the record
+// cannot describe grants that were not made.
+func fluxDeliveryIdentityObjectsOf(objs []bundle.RenderedObject, fd FluxDeliveryEntity) ([]rbacObject, error) {
+	pre, apply, namespaces, err := fluxDeliveryGrantsOf(objs, fd)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +230,7 @@ func fluxDeliveryIdentityObjects(stream string, fd FluxDeliveryEntity) ([]rbacOb
 		}
 		return rbacObject{Kind: kind, Namespace: namespace, Name: name, Body: body}
 	}
-	var out []rbacObject
+	out := []rbacObject{fluxDeliveryGrantsRecordObject(fd, fluxDeliveryPermissions(pre, apply))}
 	for _, ns := range namespaces {
 		out = append(out, rbacObject{Kind: "Namespace", Name: ns, Body: map[string]any{
 			"apiVersion": "v1", "kind": "Namespace",
@@ -251,7 +270,17 @@ func fluxDeliveryIdentityObjects(stream string, fd FluxDeliveryEntity) ([]rbacOb
 // fluxDeliveryIdentityManifests is fluxDeliveryIdentityObjects as the `---`
 // stream that rides the bootstrap chart.
 func fluxDeliveryIdentityManifests(stream string, fd FluxDeliveryEntity) (string, error) {
-	objs, err := fluxDeliveryIdentityObjects(stream, fd)
+	parsed, err := bundle.ParseRenderedStream(stream)
+	if err != nil {
+		return "", err
+	}
+	return fluxDeliveryIdentityManifestsOf(append(parsed, fd.releaseObjects...), fd)
+}
+
+// fluxDeliveryIdentityManifestsOf is fluxDeliveryIdentityManifests over parsed
+// objects.
+func fluxDeliveryIdentityManifestsOf(parsed []bundle.RenderedObject, fd FluxDeliveryEntity) (string, error) {
+	objs, err := fluxDeliveryIdentityObjectsOf(parsed, fd)
 	if err != nil {
 		return "", err
 	}

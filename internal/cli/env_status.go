@@ -337,6 +337,15 @@ func dispatchEnvStatus(cmd *cobra.Command, args []string, m envStatusModes) erro
 	switch {
 	case m.wait:
 		m.waitOpts.Timeout, m.waitOpts.Once = resolveWaitBudget(cmd, m.timeout)
+		// An `applier = "flux"` env has no server-side rollout: its own
+		// Flux is the witness (flux_delivery_deploy.go).
+		if fd, err := fluxDeliveryOfEnv(cmd.Context(), projectDirForKCL(), env); err == nil && fd != nil {
+			budget := m.waitOpts.Timeout
+			if m.waitOpts.Once {
+				budget = time.Nanosecond
+			}
+			return waitFluxDeliveryCurrent(cmd.Context(), env, *fd, budget, cmd.OutOrStdout())
+		}
 		m.waitOpts.JSON = m.jsonOut
 		return runEnvWaitForCmd(cmd.Context(), env, m.waitOpts)
 	case m.history:

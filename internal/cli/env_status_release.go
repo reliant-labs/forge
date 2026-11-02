@@ -374,8 +374,15 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	} else {
 		results, kubeContext, namespace = verifyCluster(ctx, projectDir, envName, binding.Resolved, opts)
 	}
+	// An `applier = "flux"` env's reconciler is the env's own Flux: what it
+	// reports about the pointer is part of the verdict, and a Forbidden for
+	// an apply identity is the grant refusal (flux_delivery_observe.go).
+	reconcilerLine, reconcilerErr := fluxDeliveryStatusOf(ctx, projectDir, envName, binding.Release)
 	tally := tallyEnvStatusRelease(results)
 	failure := envStatusReleaseVerdict(envName, binding.Release, staleErr, tally)
+	if failure == nil && reconcilerErr != nil {
+		failure = reconcilerErr
+	}
 	if queued != nil && staleErr == nil {
 		// QUEUED OUTRANKS DRIFT. The declared release is accepted and
 		// waiting on a person, so "the env does not run it yet" is the
@@ -430,6 +437,9 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		tally.Match, tally.Drift, tally.Missing, tally.Untagged, tally.Unreachable)
 	if identity != nil {
 		fmt.Println(identity.line())
+	}
+	if reconcilerLine != "" {
+		fmt.Println(reconcilerLine)
 	}
 
 	// BEFORE the failure return, not after. A DRIFT whose cause is an apply

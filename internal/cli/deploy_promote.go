@@ -20,6 +20,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -260,6 +261,17 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	// ship. See preflightFollow.
 	if opts.Follow != nil {
 		if err := preflightFollow(ctx, env, version, projectDir, ledger, &plan, opts); err != nil {
+			// A self-hosted delivery's grant refusal is a document too:
+			// --json carries each missing permission as data, beside the
+			// plan that could not ship.
+			var refusal *fluxDeliveryGrantRefusal
+			if opts.JSON && errors.As(err, &refusal) {
+				plan.DeliveryGrants = refusal.Missing
+				plan.stamp(err)
+				if emitErr := emitJSONDocument(plan); emitErr != nil {
+					return emitErr
+				}
+			}
 			return err
 		}
 	}
@@ -323,6 +335,14 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	// either way, which is why --plan cannot describe a different change
 	// than the one that gets made.
 	var writeErr error
+	// A FLUX env's grants and bundle push, after the approval and before
+	// the record: a failure leaves the ledger untouched
+	// (flux_delivery_deploy.go).
+	if !opts.DryRun && plan.flux != nil && opts.Follow != nil {
+		if err := beforeRecordFluxDelivery(ctx, env, plan.flux, opts.Follow.notice); err != nil {
+			return err
+		}
+	}
 	if !opts.DryRun {
 		writeErr = applyPromotePlan(ctx, ledger.Bindings, &plan, promoteWrite{
 			By:    promoteActor(opts.Actor),
@@ -433,11 +453,22 @@ func preflightFollow(ctx context.Context, env, version, projectDir string, ledge
 	// A PINNED env refuses the apply. --plan is exempt for the same reason
 	// the apply's own gate exempts a dry run: a reviewer reading what WOULD
 	// ship during a freeze is who the freeze is for.
-	if !opts.DryRun && ledger.appliesLocally() {
+	if !opts.DryRun && (ledger.appliesLocally() || ledger.flux()) {
 		policyStore := deploystate.NewLocal(projectDir)
 		if err := gateDeployOnPolicy(ctx, policyStore, env, policyStore.PolicyPath(env)); err != nil {
 			return fmt.Errorf("%w\n\nNOTHING WAS RECORDED: env %q's binding did not move", err, env)
 		}
+	}
+	// A FLUX env's preflight: the bundle it will point at, the input that
+	// pointer carries, and the grants the release needs. A refusal writes
+	// nothing; a grant this deploy makes becomes a finding on the plan.
+	if ledger.flux() {
+		rel, err := preflightFluxDelivery(ctx, env, version, projectDir, ledger, opts.DeployPlan, follow.notice)
+		if err != nil {
+			return err
+		}
+		plan.flux = rel
+		plan.DeliveryGrants = fluxDeliveryGrantRows(rel.grants.Missing)
 	}
 	nonBinding := opts.DryRun || follow.clientDeploy.dryRun || (opts.Confirm != nil && opts.Confirm.PlanOnly)
 	findings, err := preflightBeforeRecord(ctx, env, version, ledger, follow, nonBinding)
@@ -466,16 +497,26 @@ func resolveReleaseLedger(ctx context.Context, projectDir, env string) (envLedge
 		projectDir = projectDirForKCL()
 	}
 	// The one render the ledger selection reads anyway, rendered here so an
-	// `applier = "flux"` env is refused before anything is built or recorded.
+	// `applier = "flux"` env is known as one before anything is built or
+	// recorded: its follow-through points its Flux instead of applying.
 	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")); err == nil {
 		entities, err := RenderKCL(ctx, projectDir, env)
 		if err != nil {
 			return envLedger{}, fmt.Errorf("choose the release ledger for env %q: render deploy/kcl/%s: %w", env, env, err)
 		}
-		if err := refuseFluxDeliveryApply(env, entities); err != nil {
+		l, err := ledgerForRendered(ctx, projectDir, env, entities)
+		if err != nil {
 			return envLedger{}, err
 		}
-		return ledgerForRendered(ctx, projectDir, env, entities)
+		if entities.Applier == applierFlux && entities.FluxDelivery != nil {
+			if l.Hosted {
+				// The schema refuses applier = "flux" beside a control
+				// plane; a ledger override cannot make one hosted either.
+				return envLedger{}, fmt.Errorf("env %q declares applier = \"flux\" but resolves to a hosted ledger; a self-hosted delivery records in forge's file ledger", env)
+			}
+			l.FluxEntities = entities
+		}
+		return l, nil
 	}
 	return ledgerFor(ctx, projectDir, env)
 }

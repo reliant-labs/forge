@@ -108,7 +108,17 @@ const (
 	// see the header.)
 	exitTimedOut = 8
 
-	// exitNeedsHuman: `forge project upgrade` applied every mechanical fix it
+	// exitNeedsHuman: nothing more happens until a PERSON acts, and re-running
+	// changes nothing until they have.
+	//
+	// `forge env deploy` of an `applier = "flux"` env: the release needs
+	// permissions its Flux's apply identities were not granted, and the
+	// caller's credential cannot grant them (flux_delivery_grants.go).
+	// NOTHING was recorded, pushed or pointed; a cluster admin re-runs the
+	// bootstrap, then the deploy is re-run. Not exitRefused (4): waiting and
+	// retrying cannot help. Not exitWrong (1): the release is not bad.
+	//
+	// `forge project upgrade`: it applied every mechanical fix it
 	// knows and the project still needs a person — a lint error, a playbook
 	// whose old shape remains, a codemod that listed what it could not
 	// decide. Nothing failed: the tree is as far along as automation can take

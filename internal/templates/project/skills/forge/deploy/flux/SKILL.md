@@ -8,8 +8,8 @@ description: Flux in forge — who applies a real env, the opt-in self-hosted de
 **forge installs Flux into a deploy target only when the env opts in with
 `applier = "flux"`** (below). Every other env is unaffected: `forge cluster up`
 installs no Flux of its own, and `forge env deploy` writes no desired-state
-pointer at a cluster. A note saying either happens for an env that does not
-declare `applier = "flux"` describes a path that does not exist.
+pointer at a cluster. Only an env that declares `applier = "flux"` is ever
+delivered that way.
 
 ## Who applies a real environment
 
@@ -33,9 +33,12 @@ dependency, never something forge puts in your cluster as a side effect.
 ## A self-hosted env reconciled by its own Flux: `applier = "flux"`
 
 An env with **no control plane** can opt in to being reconciled by a Flux forge
-installs in its own cluster: declare `applier = "flux"` on the Bundle and run
-`forge env deploy <env> --target flux-delivery` once. Load
-`deploy/flux/self-hosted` for the declaration, the bootstrap and its options.
+installs in its own cluster: declare `applier = "flux"` on the Bundle, run
+`forge env deploy <env> --target flux-delivery` once, then ship releases with
+the ordinary `forge env deploy <env> [<version>]`, which pushes the bundle and
+points that Flux at it. Load `deploy/flux/self-hosted` for the declaration, the
+bootstrap, shipping, and what happens when a release needs a permission the
+Flux was not granted.
 
 ## What remains: `forge.flux_chart()`
 

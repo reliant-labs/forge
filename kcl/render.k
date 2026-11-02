@@ -2901,6 +2901,7 @@ _render_flux_delivery = lambda b: Bundle -> {str: any} {
         "delivery_scope": _fd.delivery_scope
         "pull_secret_from": _fd.pull_secret_from
         "pull_secret": flux_delivery_lib.FLUX_DELIVERY_PULL_SECRET if _fd.pull_secret_from else ""
+        "registry": _fd.registry
         # Resolved as the shape records them: unset follows where the env
         # delivers (`off` without a control plane, forge #1653).
         "signing": {"requested": _sign, "effective": _flux_delivery_signing_cap(_sign)}

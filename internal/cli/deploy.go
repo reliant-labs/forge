@@ -141,6 +141,16 @@ machine, and that apply's per-resource rollout wait IS the health gate. Both
 reach "the release is live or this command is red"; which machinery got there
 is an implementation detail of where the env runs.
 
+AN ENV THAT DECLARES applier = "flux" is applied by the Flux forge installed in
+its own cluster (` + "`forge env deploy <env> --target flux-delivery`" + `, once). Its
+deploy records the release, pushes the release's bundle to the env's registry,
+points that Flux at it (one ResourceSetInputProvider in the env's delivery
+namespace) and waits until every Kustomization has applied it. Before anything
+is written it checks the release against what the bootstrap granted the Flux's
+apply identities: a release that needs a new kind (a CRD, a first CronJob) is
+granted it in the same command when YOUR credential can grant it (shown on the
+plan), and refused with exit 9 otherwise.
+
 ` + "`forge env build <env> --release <version>`" + ` builds the env-agnostic images
 ONCE, captures their content-addressed digests, and cuts a release. Naming that
 version here advances it BY REFERENCE: one entry — env, release, and the
@@ -210,6 +220,11 @@ Exit codes (release deploys):
      a hosted deploy is STILL APPLYING: published and accepted, and not yet
      reported applied by the platform. Nothing failed (--json: .applying);
      keep watching with forge env status <env> --wait
+  9  needs a person — an applier = "flux" env's release needs permissions its
+     Flux was not granted and this credential cannot grant them. NOTHING was
+     recorded, pushed or pointed. The output names each missing permission
+     (--json: .delivery_grants) and the bootstrap a cluster admin runs; re-run
+     the deploy once they have. Re-running before that changes nothing
 
 5 USED TO MEAN THE TIMEOUT, which is now 8. The confirmation gate took 5
 because it is the one outcome that must be impossible to misread as success:
@@ -736,6 +751,13 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	ledger, err := resolveReleaseLedger(ctx, projectDir, envName)
 	if err != nil {
 		return err
+	}
+	// An `applier = "flux"` env's Flux applies the WHOLE bundle it is
+	// pointed at, so a scope would record a move that did not happen.
+	if ledger.flux() && (len(f.targets) > 0 || f.frontendsOnly) {
+		return fmt.Errorf("env %q declares applier = \"flux\": its in-cluster Flux applies a release's whole bundle, so a deploy "+
+			"cannot be scoped (--target / --frontends-only). Deploy the release whole: forge env deploy %s %s",
+			envName, envName, emptyAs(p.version, "<version>"))
 	}
 	isSnapshot := false
 	if p.version != "" {

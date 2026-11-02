@@ -19,11 +19,11 @@ package cli
 //     env's render (flux_delivery_identity.go), and a COPY of the registry pull
 //     Secret. `forge env deploy <env> --target flux-delivery` installs it, with
 //     no release: a bootstrap chart rides no bundle;
-//   - every other deploy of such an env is refused before anything is
-//     recorded (resolveReleaseLedger) and before anything is applied
-//     (runDeploy): writing the pointer is the step that ships a release, and
-//     until forge writes it the declaration must not quietly fall back to a
-//     direct apply over the objects its Flux owns;
+//   - a release deploy records the release, pushes its bundle and writes the
+//     POINTER the delivery ResourceSet reads (flux_delivery_deploy.go), after
+//     a grant preflight (flux_delivery_grants.go). A direct apply is refused
+//     (runDeploy): the declaration must never quietly fall back to forge
+//     applying the objects its Flux owns;
 //   - signing is at most `audit` (the render resolves it, and forge says so):
 //     nothing signs a self-hosted env's bundles yet, so `enforce` would admit
 //     no release at all.
@@ -34,6 +34,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/fluxdelivery"
 )
@@ -66,6 +67,17 @@ type FluxDeliveryEntity struct {
 	// they take effect here (at most audit).
 	Signing    FluxDeliveryControl `json:"signing"`
 	FluxVerify FluxDeliveryControl `json:"flux_verify"`
+	// Registry is FluxDelivery.registry as declared: the registry subtree the
+	// env's bundles are pushed to, as this machine reaches it. Empty: the
+	// registry of the env's first cluster workload image (fluxRegistryBase).
+	Registry string `json:"registry"`
+
+	// releaseObjects are a release bundle's objects whose grants a deploy's
+	// re-grant adds to the render's (flux_delivery_deploy.go), so re-running
+	// the bootstrap for a release covers what that release applies even
+	// when this checkout's render no longer matches it. Nil for a bootstrap
+	// run on its own.
+	releaseObjects []bundle.RenderedObject
 }
 
 // FluxDeliveryControl is one delivery-policy control on a self-hosted
@@ -89,19 +101,18 @@ func attachFluxDelivery(e *KCLEntities) {
 	}
 }
 
-// refuseFluxDeliveryApply refuses any deploy of an `applier = "flux"` env that
-// would record a release or apply its objects: that env's Flux applies them,
-// and forge does not yet write the pointer that ships a release to it.
+// refuseFluxDeliveryApply refuses a direct apply of an `applier = "flux"` env:
+// that env's Flux applies its objects, and forge only points it at a release.
 func refuseFluxDeliveryApply(env string, e *KCLEntities) error {
 	if e == nil || e.Applier != applierFlux {
 		return nil
 	}
 	return fmt.Errorf("env %q declares applier = \"flux\": the Flux forge installs in its cluster applies its bundle, "+
 		"and forge never applies it directly.\n"+
-		"  Bootstrap that Flux (no release is recorded):\n"+
-		"    forge env deploy %s --target %s\n"+
-		"  Shipping a release to it (record, push the bundle, point the Flux at it) is not in this forge yet; "+
-		"until it is, remove applier = \"flux\" to deploy the env directly", env, env, fluxdelivery.ChartName)
+		"  Ship a release (record it, push its bundle, point the Flux at it):\n"+
+		"    forge env deploy %s [<version>]\n"+
+		"  Bootstrap that Flux first if you have not (no release is recorded):\n"+
+		"    forge env deploy %s --target %s", env, env, env, fluxdelivery.ChartName)
 }
 
 // fluxDeliveryBootstrapRequested reports whether a deploy names the bootstrap

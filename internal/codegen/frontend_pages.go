@@ -333,7 +333,7 @@ type PageField struct {
 	TSType string
 	// ZodExpr is the whole zod schema expression for this field —
 	// `z.coerce.number().gte(0)`, `z.string().min(1)`,
-	// `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`, or one
+	// `z.string().regex(/^(-?\d+)?$/, "Enter a whole number")`, or one
 	// of those wrapped in the empty-as-unset preprocess (EmptyIsUnset).
 	// Nothing is added at render time.
 	//

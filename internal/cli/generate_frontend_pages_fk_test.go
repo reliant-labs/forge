@@ -119,8 +119,11 @@ func TestScaffoldedFormsUseEntityPickerForForeignKeys(t *testing.T) {
 				`optionLabel={(item) => String(item.fullName)}`,
 				`buildRequest={(search) => ({ pageSize: 20, search: search || undefined })}`,
 				`placeholder="Select a patient"`,
-				// The label stops claiming the control edits an id.
-				`>\n            Patient *`,
+				// The label stops claiming the control edits an id; required
+				// is the <Label required> asterisk (aria-hidden), and the
+				// picker names its error message.
+				`<Label htmlFor="patientId" required>\n            Patient\n          </Label>`,
+				`aria-describedby={errors.patientId ? "patientId-error" : undefined}`,
 			} {
 				want = strings.ReplaceAll(want, `\n`, "\n")
 				if !strings.Contains(out, want) {

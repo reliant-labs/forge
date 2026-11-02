@@ -399,6 +399,10 @@ func tsInlineImport(protoFile, sym string) string {
 type SeedProjection struct {
 	cfg  seedplan.Config
 	plan *seedplan.Plan
+	// fixtureRows is, per table, the dataset rows its fixtures carry, in
+	// order: the first mockRecordCount, plus every row another fixture's
+	// foreign key points at. See fixtureRowClosure.
+	fixtureRows map[string][]int
 }
 
 // BuildSeedProjection resolves the project's seed plan from its migrations.
@@ -447,7 +451,7 @@ func newSeedProjection(tables []schemadef.Table, cfg seedplan.Config, vocab *see
 	}
 	plan.SetBounds(seedplan.BoundsFromTables(tables))
 	plan.ApplyVocab(vocab)
-	return &SeedProjection{cfg: cfg, plan: plan}
+	return &SeedProjection{cfg: cfg, plan: plan, fixtureRows: fixtureRowClosure(tables, plan, cfg, mockRecordCount)}
 }
 
 // Value returns the value the seeded database holds at (table, column, row),
@@ -491,6 +495,97 @@ func SeedFingerprint(projectDir string, cfg seedplan.Config) (files, withConfig 
 	files, _ = seedplan.FingerprintInputs(migDir)
 	withConfig, _ = seedplan.FingerprintWithConfig(migDir, cfg)
 	return files, withConfig
+}
+
+// FixtureRows is the dataset rows a table's fixtures carry, or nil when there
+// is no dataset (the caller then mocks its own first rows).
+func (p *SeedProjection) FixtureRows(table string) []int {
+	if p == nil {
+		return nil
+	}
+	return p.fixtureRows[table]
+}
+
+// IsNull reports whether the dataset holds NULL at (table, column, row).
+func (p *SeedProjection) IsNull(table, column string, row int) bool {
+	if p == nil || p.plan == nil {
+		return false
+	}
+	return p.plan.SeedIsNull(table, column, row)
+}
+
+// fixtureRowClosure picks the dataset rows each table's fixtures carry, so the
+// mock data is REFERENTIALLY CONSISTENT: every foreign key in a fixture points
+// at a row some fixture holds.
+//
+// Each table starts from its first `base` rows — enough to fill a list page.
+// That alone dangled: the seeder spreads a child's foreign keys over ALL of
+// the parent's rows (20 by default), so capping each table at its own first
+// ten independently left half the jobs pointing at customers no fixture
+// held, and every such row rendered "—" where the customer's name belonged.
+// So the set is closed over the declared REFERENCES: a referenced parent row
+// joins its table's fixtures, which may reference further rows in turn,
+// until nothing changes. The rows stay the dataset's own rows (the fixtures
+// still agree with the dev database cell for cell); only which rows are
+// included grows.
+func fixtureRowClosure(tables []schemadef.Table, plan *seedplan.Plan, cfg seedplan.Config, base int) map[string][]int {
+	want := make(map[string]map[int]bool, len(tables))
+	for _, t := range tables {
+		rows := map[int]bool{}
+		for r := 0; r < min(base, cfg.EffectiveRows(t.Name)); r++ {
+			rows[r] = true
+		}
+		want[t.Name] = rows
+	}
+	// The row of `table` whose `column` holds a value, indexed on first use.
+	index := map[string]map[string]int{}
+	rowOf := func(table, column, value string) (int, bool) {
+		key := table + "\x00" + column
+		byValue, ok := index[key]
+		if !ok {
+			byValue = map[string]int{}
+			for r := 0; r < cfg.EffectiveRows(table); r++ {
+				if v, ok := plan.SeedValue(table, column, r); ok {
+					if _, seen := byValue[v]; !seen {
+						byValue[v] = r
+					}
+				}
+			}
+			index[key] = byValue
+		}
+		r, ok := byValue[value]
+		return r, ok
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, t := range tables {
+			for _, fk := range t.ForeignKeys {
+				if _, ok := want[fk.RefTable]; !ok || strings.Contains(fk.Column, ",") {
+					continue
+				}
+				for r := range want[t.Name] {
+					v, ok := plan.SeedValue(t.Name, fk.Column, r)
+					if !ok {
+						continue
+					}
+					if pr, ok := rowOf(fk.RefTable, fk.RefColumn, v); ok && !want[fk.RefTable][pr] {
+						want[fk.RefTable][pr] = true
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	out := make(map[string][]int, len(want))
+	for table, rows := range want {
+		list := make([]int, 0, len(rows))
+		for r := range rows {
+			list = append(list, r)
+		}
+		sort.Ints(list)
+		out[table] = list
+	}
+	return out
 }
 
 // Rows is how many rows the dataset holds for a table. 0 means "no plan", and
@@ -549,12 +644,20 @@ func EntityDefToMockData(entity EntityDef, svc ServiceDef, seed *SeedProjection)
 	}
 	importPath := ProtoFileToTSImportPath(importSource)
 
-	rowCount := mockRecordCount
-	if n := seed.Rows(entity.TableName); n > 0 && n < rowCount {
-		rowCount = n
+	// The dataset rows to mirror (see fixtureRowClosure); with no dataset,
+	// the first mockRecordCount rows mocked from scratch.
+	rows := seed.FixtureRows(entity.TableName)
+	if rows == nil {
+		rowCount := mockRecordCount
+		if n := seed.Rows(entity.TableName); n > 0 && n < rowCount {
+			rowCount = n
+		}
+		for r := 0; r < rowCount; r++ {
+			rows = append(rows, r)
+		}
 	}
-	records := make([]MockRecord, rowCount)
-	for i := 0; i < rowCount; i++ {
+	records := make([]MockRecord, len(rows))
+	for idx, i := range rows {
 		var fieldValues []MockFieldValue
 		for j, f := range entity.Fields {
 			ef := f
@@ -566,7 +669,7 @@ func EntityDefToMockData(entity EntityDef, svc ServiceDef, seed *SeedProjection)
 				Last:  j == len(entity.Fields)-1,
 			})
 		}
-		records[i] = MockRecord{Fields: fieldValues}
+		records[idx] = MockRecord{Fields: fieldValues}
 	}
 
 	return MockEntityTemplateData{
@@ -805,6 +908,14 @@ func mockGenerateValue(seed *SeedProjection, tableName string, f EntityField, i 
 	}
 
 	ts, isScalar := protoScalarTSType(protoType)
+
+	// A nullable column the dataset leaves NULL — an optional foreign key, an
+	// optional note — is unset in the fixture too. Inventing a value here
+	// gave optional references a synthetic "sample_<col>_N" id that matched
+	// no row, so the UI showed a dangling reference the database never had.
+	if f.Optional && seed.IsNull(tableName, col, i) {
+		return "undefined"
+	}
 
 	// What the database will hold at this cell, when there is a database to
 	// agree with.

@@ -107,7 +107,7 @@ func TestAnnotations_JSONValidAndComplete(t *testing.T) {
 	if got := byRule["gte"].DBEffect; got != "CHECK (value >= 1)" {
 		t.Errorf("gte db_effect = %q, want the SQLChecks projection", got)
 	}
-	if got := byRule["gte"].ZodEffect; got != ".gte(1)" {
+	if got := byRule["gte"].ZodEffect; got != `.gte(1, "Must be 1 or more")` {
 		t.Errorf("gte zod_effect = %q, want the ZodChain projection", got)
 	}
 	if byRule["email"].DBEffect == "" || byRule["email"].ZodEffect == "" {

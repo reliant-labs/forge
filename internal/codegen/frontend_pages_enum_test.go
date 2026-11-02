@@ -355,7 +355,8 @@ func TestCreatePage_EnumFieldTypedSelect(t *testing.T) {
 				`import { BrandStatus } from "@/gen/services/brand/v1/brand_pb";`,
 				// Enum zod refuses the zero — the mirror of the born CHECK.
 				`status: z.coerce.number().pipe(z.nativeEnum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
-				`<select`,
+				// The installed library primitive, not a hand-styled <select>.
+				`<Select`,
 				// A NOT NULL enum starts on its column DEFAULT, the first
 				// real member — what Create stores when the field is omitted.
 				`defaultValue={ BrandStatus.DRAFT }`,
@@ -403,7 +404,8 @@ func TestEditPage_EnumFieldAndEntityFields(t *testing.T) {
 				// enum (a number), never String()-coerced, and never
 				// defaulted to the zero.
 				"status: item.status,",
-				`<select`,
+				// The installed library primitive, not a hand-styled <select>.
+				`<Select`,
 				`{...register("status")}`,
 				`<option value={ BrandStatus.ACTIVE }>Active</option>`,
 				// The sibling plain fields made it into the form too.

@@ -171,7 +171,8 @@ func TestFlakeReportNeverRetriesARaceWithoutTheDetector(t *testing.T) {
 
 // fakeIssueGH logs every call to $GH_LOG and answers `issue list` (from
 // $GH_LIST, or $GH_LIST_SEARCH when the call names no --label) and `issue
-// view` (from $GH_VIEW), applying -q/--jq as the real gh does.
+// view` (from $GH_VIEW), applying -q/--jq as the real gh does — LF-only, as
+// the real gh prints, even where jq is a native jq.exe that prints CRLF.
 const fakeIssueGH = `#!/usr/bin/env bash
 echo "$*" >>"$GH_LOG"
 case "$1 $2" in
@@ -181,7 +182,7 @@ case "$1 $2" in
 esac
 q="" prev=""
 for a in "$@"; do case "$prev" in -q|--jq) q="$a" ;; esac; prev="$a"; done
-if [ -n "$q" ]; then jq -r "$q" "${fixture:-/dev/null}"; else cat "${fixture:-/dev/null}"; fi
+if [ -n "$q" ]; then jq -r "$q" "${fixture:-/dev/null}" | tr -d '\r'; else cat "${fixture:-/dev/null}"; fi
 `
 
 // runWithFakeGH runs script with args from dir/mod, after writing files

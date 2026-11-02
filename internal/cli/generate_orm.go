@@ -67,14 +67,7 @@ func runDescriptorGenerate(projectDir string, out io.Writer) error {
 		return fmt.Errorf("descriptor staging dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(work) }()
-	descConfig := fmt.Sprintf(`version: v2
-plugins:
-  - local: %s
-    out: %s
-    opt:
-      - mode=descriptor
-      - descriptor_out=%s
-`, pluginCmd, filepath.Join(work, "out"), work)
+	descConfig := descriptorBufTemplate(pluginCmd, filepath.Join(work, "out"), work)
 	template := filepath.Join(work, "buf.gen.descriptor.yaml")
 	if err := atomicfile.WriteFile(template, []byte(descConfig), 0o644); err != nil {
 		return fmt.Errorf("failed to write descriptor buf config: %w", err)
@@ -115,6 +108,24 @@ plugins:
 
 	_, _ = fmt.Fprintln(out, "  ✅ "+codegen.DescriptorDir+"/ generated")
 	return nil
+}
+
+// descriptorBufTemplate is the throwaway buf.gen.descriptor.yaml that runs
+// protoc-gen-forge (pluginCmd, a YAML flow list) in descriptor mode, staging
+// fragments under descriptorOut. `strategy: all` makes it one protoc-gen-forge
+// process — a whole forge binary — instead of one per proto directory, all at
+// once; fragments are per proto file, so the descriptor is the same either
+// way. See bufStrategyAllComment.
+func descriptorBufTemplate(pluginCmd, out, descriptorOut string) string {
+	return fmt.Sprintf(`version: v2
+plugins:
+  - local: %s
+    out: %s
+    strategy: all
+    opt:
+      - mode=descriptor
+      - descriptor_out=%s
+`, pluginCmd, out, descriptorOut)
 }
 
 // buildDescriptorOnDemand is the extractor codegen.LoadDescriptor runs when a

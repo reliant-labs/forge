@@ -102,6 +102,9 @@ func TestBuild_PodIsLockedDown(t *testing.T) {
 	if !strings.Contains(c.Image, "@sha256:") {
 		t.Fatalf("default image %q must be pinned by digest", c.Image)
 	}
+	if pod.EnableServiceLinks == nil || *pod.EnableServiceLinks {
+		t.Fatal("the pod must render enableServiceLinks: false, as every forge-rendered pod does")
+	}
 }
 
 func TestBuild_HashTracksTheDeclaredVolumesAndNothingElse(t *testing.T) {

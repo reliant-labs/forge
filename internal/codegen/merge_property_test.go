@@ -82,7 +82,7 @@ func TestMergeProperty_ConfigKCL(t *testing.T) {
 // TestE2EMergeProperty), and a table dropped beside one born.
 func TestMergeProperty_ReadOnlyGrants(t *testing.T) {
 	table := func(name string, cols ...string) dbgrants.Table {
-		tb := dbgrants.Table{Schema: "public", Name: name, Dashboard: true}
+		tb := dbgrants.Table{Schema: "public", Name: name}
 		for _, c := range cols {
 			tb.Columns = append(tb.Columns, dbgrants.Column{Name: c})
 		}

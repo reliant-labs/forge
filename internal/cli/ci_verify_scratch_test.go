@@ -32,7 +32,7 @@ func verifyRepo(t *testing.T) (parent, repo string) {
 	gitOut(t, parent, "init", "-q", "app")
 	for rel, body := range map[string]string{
 		"forge.yaml":                          "name: app\nmodule_path: example.com/app\nfeatures:\n  ci: true\n",
-		".gitignore":                          "node_modules/\n.env\n.forge/generate-cache.json\n.forge/forge.lock\ntmp/\n",
+		".gitignore":                          "node_modules/\n.env\n.forge/generate-cache.json\n.forge/forge.lock\ntmp/\n/gen/forge_descriptor/\n",
 		"gen/widget_gen.go":                   "package gen\n",
 		"internal/app/providers.go":           "package app\n",
 		"frontends/web/package.json":          "{}\n",
@@ -272,6 +272,11 @@ func TestVerifyScratch_CopiesTheWorkingTreeAndTheInputsGenerateReads(t *testing.
 	writeTestFile(t, filepath.Join(repo, "go.mod"), "module example.com/app\n\ngo 1.24\n\nreplace example.com/lib => ./tmp/lib\n")
 	writeTestFile(t, filepath.Join(repo, "tmp", "lib", "go.mod"), "module example.com/lib\n")
 	writeTestFile(t, filepath.Join(repo, "tmp", "lib", "lib.go"), "package lib\n")
+	// The ignored, derived-on-demand descriptor and its .generated-from
+	// stamp: absent from the scratch, every regenerate there created the
+	// stamp, so no verify ever recorded a fixed point.
+	writeTestFile(t, filepath.Join(repo, "gen", "forge_descriptor", ".generated-from"), "{}\n")
+	writeTestFile(t, filepath.Join(repo, "gen", "forge_descriptor", "services", "w", "v1", "w.json"), "{}\n")
 
 	s, err := newVerifyScratch(context.Background(), repo, io.Discard)
 	if err != nil {
@@ -294,6 +299,9 @@ func TestVerifyScratch_CopiesTheWorkingTreeAndTheInputsGenerateReads(t *testing.
 		".forge/generate-cache.json": `{"version":0}`,
 		"tmp/ci/check.log":           "<absent>",
 		"tmp/lib/lib.go":             "package lib\n",
+
+		"gen/forge_descriptor/.generated-from":      "{}\n",
+		"gen/forge_descriptor/services/w/v1/w.json": "{}\n",
 	} {
 		if got := read(rel); got != want {
 			t.Errorf("%s = %q, want %q", rel, got, want)

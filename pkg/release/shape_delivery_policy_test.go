@@ -266,6 +266,15 @@ func TestShape_DeliveryPolicyRefusals(t *testing.T) {
 		}), "off asks nobody"},
 		"approver twice":        {mut(func(p *ShapeDeliveryPolicy) { p.Approvals.Required, p.Approvals.Approvers = 2, []string{"ana", "ana"} }), "twice"},
 		"approver with a space": {mut(func(p *ShapeDeliveryPolicy) { p.Approvals.Approvers = []string{"ana b"} }), "approver"},
+		"health gate mode": {mut(func(p *ShapeDeliveryPolicy) {
+			p.HealthGate = &ShapeHealthGate{Mode: "strict", After: []string{"staging"}}
+		}), "health_gate mode"},
+		"health gate not an env": {mut(func(p *ShapeDeliveryPolicy) {
+			p.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"Staging Env"}}
+		}), "not an env name"},
+		"health gate env twice": {mut(func(p *ShapeDeliveryPolicy) {
+			p.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"staging", "staging"}}
+		}), "twice"},
 	} {
 		err := Shape{Kind: EnvLocal, DeliveryPolicy: tc.p}.Canonical().Validate()
 		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.want) {
@@ -294,5 +303,47 @@ func TestShape_DeliveryPolicyAllOffIsValid(t *testing.T) {
 	p.VulnGate.Mode, p.BundleKinds.Mode, p.Approvals.Mode = DeliveryOff, DeliveryOff, DeliveryOff
 	if err := (Shape{Kind: EnvLocal, DeliveryPolicy: &p}.Canonical().Validate()); err != nil {
 		t.Fatalf("a customer may turn every control off: %v", err)
+	}
+}
+
+// The health gate is recorded only when it says something: the default (enforce,
+// naming nothing) is the absence of one, so it neither records the policy nor
+// changes its hash, and the order the envs are named in is not part of it.
+func TestShape_DeliveryPolicyHealthGate(t *testing.T) {
+	spelled := DefaultDeliveryPolicy()
+	spelled.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{}}
+	if !spelled.IsDefault() {
+		t.Fatal("a health gate naming no env must be the default")
+	}
+	if b, _ := (Shape{Kind: EnvSelfManaged, DeliveryPolicy: &spelled}).Encode(); strings.Contains(string(b), "health_gate") {
+		t.Fatalf("the default health gate was recorded: %s", b)
+	}
+
+	a, b := DefaultDeliveryPolicy(), DefaultDeliveryPolicy()
+	a.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"staging", "canary"}}
+	b.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"canary", "staging"}}
+	ea, err := Shape{Kind: EnvSelfManaged, DeliveryPolicy: &a}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eb, _ := Shape{Kind: EnvSelfManaged, DeliveryPolicy: &b}.Encode()
+	if string(ea) != string(eb) {
+		t.Errorf("env order changed the encoding:\n%s\n%s", ea, eb)
+	}
+	if !strings.Contains(string(ea), `"health_gate":{"mode":"enforce","after":["canary","staging"]}`) {
+		t.Errorf("health_gate wire form changed: %s", ea)
+	}
+	var back Shape
+	if err := json.Unmarshal(ea, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.DeliveryPolicy == nil || back.DeliveryPolicy.HealthGate == nil || back.DeliveryPolicy.HealthGate.After[0] != "canary" {
+		t.Fatalf("round trip lost the gate: %+v", back.DeliveryPolicy)
+	}
+
+	off := DefaultDeliveryPolicy()
+	off.HealthGate = &ShapeHealthGate{Mode: DeliveryOff, After: []string{}}
+	if off.IsDefault() {
+		t.Error("an explicitly off health gate is a declaration, not the default")
 	}
 }

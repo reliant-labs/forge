@@ -145,7 +145,12 @@ func ApplyWith(ctx context.Context, db *sql.DB, fsys fs.FS, dir string, run RunO
 	// openSession binds golang-migrate to a connection it checks out itself,
 	// and Close then closes only that connection, which returns it to the
 	// pool.
-	grants, err := grantsScripts(fsys, dir)
+	grants, err := grantsScript(fsys, dir)
+	if err != nil {
+		_ = src.Close()
+		return Result{}, err
+	}
+	dashRefs, err := scanDashboardRefs(fsys, dir, embedded, dashboardRole)
 	if err != nil {
 		_ = src.Close()
 		return Result{}, err
@@ -155,6 +160,7 @@ func ApplyWith(ctx context.Context, db *sql.DB, fsys fs.FS, dir string, run RunO
 		return Result{}, err
 	}
 	mg.grants = grants
+	mg.dashRefs = dashRefs
 	defer func() { _ = mg.Close() }()
 
 	var res Result
@@ -223,17 +229,32 @@ func logRun(logger *slog.Logger, res Result, err error) {
 		case g.Applied:
 			logf(logger, "read-only grants applied", "role", dbgrants.RoleName)
 		}
-		if g.DashboardApplied {
-			logf(logger, "dashboard grants applied", "role", dbgrants.DashboardRoleName)
-		}
-		if g.DashboardRoleDisabled {
-			logf(logger, "dashboards are off: the dashboard role cannot log in, its grants were revoked and none applied", "role", dbgrants.DashboardRoleName)
-		}
-		if len(g.SecurityDefiner) > 0 {
-			warnf(logger, "SECURITY DEFINER functions are executable by a grants role: each runs as its owner and can return columns the role has no SELECT on; revoke EXECUTE from PUBLIC on them, or do not write one over a table with a secret column",
-				"functions", strings.Join(g.SecurityDefiner, ", "))
+	}
+	if d := res.Dashboard; d != nil && err == nil {
+		switch {
+		case d.Created:
+			logf(logger, "dashboard role created (NOLOGIN), so migrations can grant to it; the deploy decides whether it can log in", "role", dbgrants.DashboardRoleName)
+		case d.Missing:
+			logf(logger, "dashboard role not provisioned in this database and the migrating role may not create it; no migration grants to it yet", "role", dbgrants.DashboardRoleName)
 		}
 	}
+	if fns := securityDefiner(res); len(fns) > 0 && err == nil {
+		warnf(logger, "SECURITY DEFINER functions are executable by a database role forge provisions: each runs as its owner and can return columns the role has no SELECT on; revoke EXECUTE from PUBLIC on them, or do not write one over a table with a secret column",
+			"functions", strings.Join(fns, ", "))
+	}
+}
+
+// securityDefiner is every SECURITY DEFINER function a run found executable by
+// the read-only or the dashboard role, sorted and deduplicated.
+func securityDefiner(res Result) []string {
+	var all []string
+	if res.Grants != nil {
+		all = append(all, res.Grants.SecurityDefiner...)
+	}
+	if res.Dashboard != nil {
+		all = append(all, res.Dashboard.SecurityDefiner...)
+	}
+	return uniqueSorted(all)
 }
 
 // hasSQL reports whether the entry set holds at least one .sql file.

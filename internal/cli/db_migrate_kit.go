@@ -154,25 +154,30 @@ func reportMigrateUp(w io.Writer, res migratekit.Result) {
 // database nobody provisioned the role for, and the reason `forge db query`
 // has nothing to connect as.
 func reportGrants(w io.Writer, res migratekit.Result) {
-	g := res.Grants
-	if g == nil {
-		return
+	if g := res.Grants; g != nil {
+		switch {
+		case g.RoleMissing:
+			_, _ = fmt.Fprintf(w, "read-only grants not applied: this database has no %s role\n", dbgrants.RoleName)
+		case g.Applied:
+			_, _ = fmt.Fprintf(w, "read-only grants applied (%s)\n", dbgrants.RoleName)
+		}
 	}
-	switch {
-	case g.RoleMissing:
-		_, _ = fmt.Fprintf(w, "read-only grants not applied: this database has no %s role\n", dbgrants.RoleName)
-	case g.Applied:
-		_, _ = fmt.Fprintf(w, "read-only grants applied (%s)\n", dbgrants.RoleName)
+	// The dashboard role's grants are the project's own migrations, so only
+	// its creation is news.
+	if d := res.Dashboard; d != nil && d.Created {
+		_, _ = fmt.Fprintf(w, "dashboard role created (%s, NOLOGIN): migrations can grant to it; the deploy decides whether it logs in\n", dbgrants.DashboardRoleName)
 	}
-	// The dashboard role is opt-in, so its absence is not worth a line.
-	if g.DashboardApplied {
-		_, _ = fmt.Fprintf(w, "dashboard grants applied (%s)\n", dbgrants.DashboardRoleName)
+	var definers []string
+	if res.Grants != nil {
+		definers = append(definers, res.Grants.SecurityDefiner...)
 	}
-	if g.DashboardRoleDisabled {
-		_, _ = fmt.Fprintf(w, "dashboards are off: %s cannot log in, its grants were revoked\n", dbgrants.DashboardRoleName)
+	if res.Dashboard != nil {
+		definers = append(definers, res.Dashboard.SecurityDefiner...)
 	}
-	if len(g.SecurityDefiner) > 0 {
-		_, _ = fmt.Fprintf(w, "warning: SECURITY DEFINER functions are executable by a grants role and run as their owner, so they can return columns the role has no SELECT on: %s\n", strings.Join(g.SecurityDefiner, ", "))
+	if len(definers) > 0 {
+		slices.Sort(definers)
+		definers = slices.Compact(definers)
+		_, _ = fmt.Fprintf(w, "warning: SECURITY DEFINER functions are executable by a database role forge provisions and run as their owner, so they can return columns the role has no SELECT on: %s\n", strings.Join(definers, ", "))
 	}
 }
 

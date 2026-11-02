@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/pkgdirective"
 )
 
 // DepsField describes one field of a service's `Deps` struct as parsed
@@ -275,16 +277,7 @@ func HasOptionalDepMarkerCommentGroup(cg *ast.CommentGroup) bool {
 // verbatim (minus whitespace) so callers can apply their own exact-match
 // logic against forge marker spellings.
 func trimCommentMarkers(raw string) string {
-	switch {
-	case strings.HasPrefix(raw, "//"):
-		return strings.TrimSpace(strings.TrimPrefix(raw, "//"))
-	case strings.HasPrefix(raw, "/*"):
-		inner := strings.TrimPrefix(raw, "/*")
-		inner = strings.TrimSuffix(inner, "*/")
-		return strings.TrimSpace(inner)
-	default:
-		return strings.TrimSpace(raw)
-	}
+	return pkgdirective.TrimCommentMarkers(raw)
 }
 
 // ExtractPlaceholderType returns the target type from a

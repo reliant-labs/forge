@@ -22,24 +22,35 @@
 # All three are gone with the submodule. A single module cannot require
 # itself, so there is no unpushed version to resolve, no second tag to order,
 # and no hand-maintained pin to drift. What remains is what a release
-# genuinely needs: validate, sync the version files, tag once, push atomically.
+# genuinely needs: validate, sync the version files, tag once, push.
+#
+# A RELEASE NEVER PUSHES TO THE BRANCH. The tag goes on a commit that is
+# already on origin/<branch> and whose full CI is green; the bookkeeping
+# (VERSION, NEXT_VERSION, CHANGELOG.md, npm/package.json) is committed on top
+# of that commit, pushed to release/vX.Y.Z, and lands through a pull request
+# and the merge queue like any other change. main is protected by a ruleset
+# that only the merge queue may satisfy, so a direct push would need a bypass
+# actor; this script is why none is needed. The tagged tree therefore still
+# names the previous version in VERSION: the release binaries are stamped
+# from the tag (scripts/build-release-assets.sh), not from that file.
 #
 # Usage:
 #   scripts/release-forge.sh [--dry-run] [--repo <dir>] [--branch <name>]
-#                            [--skip-proxy-check] [vX.Y.Z]
+#                            [--commit <sha>] [--skip-proxy-check] [vX.Y.Z]
 #
-#   vX.Y.Z        the release to cut. Defaults to NEXT_VERSION's, and must be
-#                 it or a pre-release of it (step 2b); a final release moves
-#                 NEXT_VERSION to its next patch.
+#   vX.Y.Z        the release to cut. Defaults to NEXT_VERSION's (read at the
+#                 commit being released), and must be it or a pre-release of
+#                 it (step 2b); a final release moves NEXT_VERSION to its
+#                 next patch.
 #   --dry-run     run every validation and every file edit, print the plan,
-#                 then RESTORE the working tree and create no commit or tag.
+#                 and create no commit, tag, push or pull request.
 #   --repo DIR    operate on DIR instead of the enclosing git repo (tests).
-#   --branch NAME the branch to push (default: main).
+#   --branch NAME the branch whose commits are released, and the base of the
+#                 bookkeeping pull request (default: main). Never pushed to.
 #   --commit SHA  tag SHA, a commit already on origin/<branch> whose full CI
-#                 is green, instead of the branch tip. Main keeps merging: the
-#                 tag goes on SHA itself (so it stays reachable from main) and
-#                 the bookkeeping (VERSION, NEXT_VERSION, CHANGELOG.md) lands
-#                 as a release/vX.Y.Z pull request through the merge queue.
+#                 is green. Default: the newest such commit on the branch's
+#                 first-parent history (step 2a), so main keeps merging while
+#                 a release is cut and the tag stays reachable from it.
 #   --skip-proxy-check
 #                 skip the immutable-version gate (step 5). Only for an
 #                 offline release where you have verified BY HAND that the
@@ -67,6 +78,8 @@
 #   FORGE_RELEASE_GH         the gh binary (default: gh)
 #   FORGE_RELEASE_TARGETS    GOOS/GOARCH list to build release archives for
 #                            (default: the six scripts/build-release-assets.sh ships)
+#   FORGE_RELEASE_GREEN_DEPTH how many first-parent commits of origin/<branch>
+#                            to search for the newest green one (default: 40)
 #
 # See docs/releasing.md.
 set -euo pipefail
@@ -123,22 +136,76 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 cd "$REPO_ROOT"
 
-# ── 2a. --commit: release a green commit of main, not its tip ──────
+# The GitHub repository behind origin, if it is one: it is asked for the full
+# CI verdict of a commit (step 2a, step 6) and receives the bookkeeping pull
+# request and the GitHub release. Local fixture remotes have no GitHub CI.
+RELEASE_ORIGIN="$(git config --get remote.origin.url 2>/dev/null || true)"
+RELEASE_REPO=""
+case "$RELEASE_ORIGIN" in
+  git@github.com:*) RELEASE_REPO="${RELEASE_ORIGIN#git@github.com:}" ;;
+  https://github.com/*) RELEASE_REPO="${RELEASE_ORIGIN#https://github.com/}" ;;
+  ssh://git@github.com/*) RELEASE_REPO="${RELEASE_ORIGIN#ssh://git@github.com/}" ;;
+esac
+RELEASE_REPO="${RELEASE_REPO%.git}"
+
+# ── 2a. The commit to release: green, and already on origin/<branch> ──
+# Never the local checkout's HEAD and never a commit this run makes: the tag
+# names a commit the merge queue already landed, so nothing here has to push
+# to the branch. Without --commit, the newest commit of the branch's
+# first-parent history whose full CI is green (check-release-tests.sh, the
+# same proof step 6 requires) is released; a local remote has no CI, so its
+# tip is.
+if ! git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; then
+  echo "error: cannot fetch $BRANCH from origin; the release names a commit on origin/$BRANCH" >&2
+  exit 1
+fi
 if [ -n "$COMMIT" ]; then
-  git fetch -q origin "$BRANCH"
   COMMIT="$(git rev-parse --verify "$COMMIT^{commit}")"
   if ! git merge-base --is-ancestor "$COMMIT" "origin/$BRANCH"; then
     echo "error: --commit $COMMIT is not on origin/$BRANCH" >&2
     exit 1
   fi
-  # A private detached worktree, never `git checkout` here: this script is
-  # being read by bash as it runs, and checking out an older commit would
-  # swap the file under it mid-run.
-  REPO_ROOT="$(mktemp -d)/forge-$COMMIT"
-  git worktree add -q --detach "$REPO_ROOT" "$COMMIT"
-  cd "$REPO_ROOT"
-  echo "→ releasing $COMMIT in $REPO_ROOT (origin/$BRANCH is $(git rev-parse --short "origin/$BRANCH"))"
+elif [ -z "$RELEASE_REPO" ]; then
+  COMMIT="$(git rev-parse "origin/$BRANCH")"
+  echo "→ local/non-GitHub remote: no hosted CI to ask, so releasing origin/$BRANCH's tip $(git rev-parse --short "$COMMIT")"
+else
+  GREEN_DEPTH="${FORGE_RELEASE_GREEN_DEPTH:-40}"
+  echo "→ finding the newest commit of origin/$BRANCH with green full tests (searching $GREEN_DEPTH)"
+  for candidate in $(git rev-list --first-parent --max-count="$GREEN_DEPTH" "origin/$BRANCH"); do
+    if bash "$RELEASE_SCRIPT_DIR/check-release-tests.sh" "$RELEASE_REPO" "$candidate" >/dev/null 2>&1; then
+      COMMIT="$candidate"
+      break
+    fi
+  done
+  if [ -z "$COMMIT" ]; then
+    echo "error: none of the newest $GREEN_DEPTH commits of origin/$BRANCH has green full tests, so there is nothing to release" >&2
+    echo "hint: wait for main's CI (scripts/check-release-tests.sh $RELEASE_REPO <sha> says why a commit is not green)," >&2
+    echo "      or pass --commit <sha> for an older green commit." >&2
+    exit 1
+  fi
+  echo "  newest green: $(git log -1 --format='%h %s' "$COMMIT")"
 fi
+
+# A private detached worktree at that commit, never `git checkout` here: this
+# script is being read by bash as it runs, and checking out another commit
+# would swap the file under it mid-run. The caller's checkout is never edited,
+# so other agents' work in it cannot be swept into a release; the checkout
+# lock below still lives in the caller's git dir, so two runs from one
+# checkout (which share its refs/tags/) take turns.
+CALLER_ROOT="$REPO_ROOT"
+CHECKOUT_LOCK="$(git rev-parse --absolute-git-dir)/release-forge.lock"
+RELEASE_WORKTREE_PARENT="$(mktemp -d)"
+REPO_ROOT="$RELEASE_WORKTREE_PARENT/forge-$COMMIT"
+git worktree add -q --detach "$REPO_ROOT" "$COMMIT"
+remove_release_worktree() {
+  cd "$CALLER_ROOT" 2>/dev/null || cd /
+  git -C "$CALLER_ROOT" worktree remove --force "$REPO_ROOT" >/dev/null 2>&1 || true
+  rm -rf "$RELEASE_WORKTREE_PARENT"
+}
+# Replaced by restore_tree (step 7), which ends by calling this.
+trap remove_release_worktree EXIT
+cd "$REPO_ROOT"
+echo "→ releasing $COMMIT in $REPO_ROOT (origin/$BRANCH is $(git rev-parse --short "origin/$BRANCH"))"
 
 
 if [ ! -f go.mod ]; then
@@ -201,10 +268,9 @@ case "$VERSION" in
 esac
 
 # ── 3. Clean tree ───────────────────────────────────────────────────
-# The WHOLE tree, not just pkg/: this script commits root-module files, so any
-# unrelated uncommitted change would be swept into the release commit. (The
-# stage below names every path explicitly, but a dirty tree still means the
-# tag would not describe a state anyone can reproduce.)
+# The release worktree step 2a just made, which nothing else writes: a dirty
+# one means something is wrong with this run, not with the caller's checkout
+# (whose uncommitted work the release never sees).
 if [ -n "$(git status --porcelain)" ]; then
   echo "error: working tree is not clean; commit or set aside your changes before releasing" >&2
   git status --short >&2
@@ -315,10 +381,10 @@ if [ "$SKIP_PROXY_CHECK" = "1" ]; then
   echo "  this release is permanently broken and cannot be fixed."
 else
   echo "→ checking $VERSION is not already published on the module proxy"
-  # The commit that will carry the tags. The release commit is created on top
-  # of HEAD, so an already-published version can only legitimately match when
-  # HEAD *is* that release commit (a re-run after a successful push) — every
-  # other match means the tag is about to move, which is the poisoning case.
+  # The commit that will carry the tag: HEAD of the release worktree, the
+  # commit step 2a chose. An already-published version can only legitimately
+  # match it (a re-run after a successful push); every other match means the
+  # tag is about to move, which is the poisoning case.
   TAG_COMMIT="$(git rev-parse HEAD)"
   module="$ROOT_MODULE"
   if ! PUBLISHED_COMMIT="$(proxy_published_commit "$module" "$VERSION")"; then
@@ -351,33 +417,25 @@ fi
 # ── 6. Full tests at the exact source commit must be green ──────────
 # A fast premerge green is not a release proof. Local fixture remotes have
 # no GitHub CI; published GitHub releases fail closed, including dry runs.
-RELEASE_ORIGIN="$(git config --get remote.origin.url 2>/dev/null || true)"
-RELEASE_REPO=""
-case "$RELEASE_ORIGIN" in
-  git@github.com:*) RELEASE_REPO="${RELEASE_ORIGIN#git@github.com:}" ;;
-  https://github.com/*) RELEASE_REPO="${RELEASE_ORIGIN#https://github.com/}" ;;
-  ssh://git@github.com/*) RELEASE_REPO="${RELEASE_ORIGIN#ssh://git@github.com/}" ;;
-esac
+# Step 2a already searched with this check; it is asked again here so a
+# --commit the caller named is held to the same proof.
 if [ -n "$RELEASE_REPO" ]; then
-  bash "$RELEASE_SCRIPT_DIR/check-release-tests.sh" "${RELEASE_REPO%.git}" "$(git rev-parse HEAD)"
+  bash "$RELEASE_SCRIPT_DIR/check-release-tests.sh" "$RELEASE_REPO" "$(git rev-parse HEAD)"
 else
   echo "→ local/non-GitHub remote: no hosted full-test proof (not a GitHub publication)"
 fi
 
 # ── 7. Edit the release files ───────────────────────────────────────
-# Everything below mutates the working tree. Back the files up first and
-# restore them on ANY exit that is not a completed real release, so a failed
-# or dry run leaves the checkout exactly as it was found. This matters more
-# than usual here: the tree is shared with other agents, and the alternative
-# cleanup (`git checkout -- <path>`) is exactly the destructive verb that is
-# forbidden in this repo.
+# Everything below mutates the release worktree, which is removed on exit.
+# The files are still backed up and restored on ANY exit that is not a
+# completed real release, so the edits never outlive a failed or dry run even
+# if the worktree cannot be removed.
 #
 # Two locks are taken BEFORE anything is backed up or edited, with the cleanup
 # that drops them registered first:
-#   - the checkout lock: one run of this script edits this working tree at a
-#     time, dry runs included. Without it two runs in one shared checkout both
-#     pass the clean-tree gate, both rewrite the release files, and the loser's
-#     restore clobbers the winner's edits while the winner commits them.
+#   - the checkout lock (in the caller's git dir, step 2a): one run of this
+#     script per checkout at a time, dry runs included. Runs from one checkout
+#     share its refs/tags/, where step 9 creates the local tag.
 #   - the release lock (release-lock.sh, real runs only): one release of this
 #     repository at a time, across machines and pipelines; the release workflow
 #     coalesces into a live one.
@@ -396,7 +454,6 @@ TOUCHED=("${VERSION_FILES[@]}" "$NEXT_FILE" "$CHANGELOG_FILE")
 # taken over, and two runs that judge the same dead holder can both take it —
 # exactly the concurrent edit this lock exists to prevent. So no flock, no
 # release (Linux has it in util-linux; macOS: `brew install flock`).
-CHECKOUT_LOCK="$(git rev-parse --absolute-git-dir)/release-forge.lock"
 checkout_lock_acquire() {
   if ! command -v flock >/dev/null 2>&1; then
     echo "error: flock(1) is not installed, and this script will not edit a shared checkout without it" >&2
@@ -433,6 +490,7 @@ restore_tree() {
   rm -rf "$BACKUP_DIR" "${CLONE_DIR:-}"
   release_lock_release
   checkout_lock_release
+  remove_release_worktree
 }
 trap restore_tree EXIT
 
@@ -499,13 +557,7 @@ fi
 GH_BIN="${FORGE_RELEASE_GH:-gh}"
 PREV_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
 RELEASE_DATE="$(date -u +%Y-%m-%d)"
-ORIGIN_URL="$(git config --get remote.origin.url 2>/dev/null || true)"
-GITHUB_REPO=""
-case "$ORIGIN_URL" in
-  git@github.com:*)     GITHUB_REPO="${ORIGIN_URL#git@github.com:}" ;;
-  https://github.com/*) GITHUB_REPO="${ORIGIN_URL#https://github.com/}" ;;
-esac
-GITHUB_REPO="${GITHUB_REPO%.git}"
+GITHUB_REPO="$RELEASE_REPO"
 
 # git is the source of truth (it works offline); gh only enriches it with the
 # PRs labelled `breaking`, which a conventional-commit title cannot always say.
@@ -583,10 +635,10 @@ echo "→ building the module"
 go build ./...
 
 # ── 8b. Release archives ────────────────────────────────────────────
-# Built before the release commit exists, so a build failure leaves no commit or
-# tag behind. The stamped commit is therefore the release commit's PARENT; the
-# release commit changes only VERSION, npm/package.json and CHANGELOG.md, so the
-# compiled source is identical.
+# Built before the bookkeeping commit exists, so a build failure leaves no
+# commit or tag behind. The stamped commit is the tagged one (HEAD here); the
+# bookkeeping commit changes only VERSION, NEXT_VERSION, npm/package.json and
+# CHANGELOG.md, so the compiled source is the tagged source.
 ASSETS_DIR="$BACKUP_DIR/assets"
 echo "→ building release archives"
 FORGE_RELEASE_COMMIT="$(git rev-parse HEAD)" "$RELEASE_SCRIPT_DIR/build-release-assets.sh" "$VERSION" "$ASSETS_DIR"
@@ -606,61 +658,34 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "DRY RUN: origin is not on github.com; would skip the GitHub release"
   fi
   echo "DRY RUN: would attach: $(for f in "${ASSET_FILES[@]}"; do basename "$f"; done | tr '\n' ' ')"
-  echo "DRY RUN: would tag $RELEASE_TAG at that commit"
-  if [ -n "$COMMIT" ]; then
-    echo "DRY RUN: would push:   git push --atomic origin refs/tags/$RELEASE_TAG (at $COMMIT) <release commit>:refs/heads/release/$VERSION, then open + auto-merge that PR"
-  else
-    echo "DRY RUN: would push:   git push --atomic origin <release commit>:refs/heads/$BRANCH refs/tags/$RELEASE_TAG"
-  fi
+  echo "DRY RUN: would tag $RELEASE_TAG at $COMMIT (already on origin/$BRANCH)"
+  echo "DRY RUN: would push:   git push --atomic origin refs/tags/$RELEASE_TAG <bookkeeping commit>:refs/heads/release/$VERSION"
+  echo "DRY RUN: would open:   a pull request release/$VERSION -> $BRANCH, set to auto-merge (nothing is pushed to $BRANCH)"
   echo ""
-  echo "DRY RUN: restoring the working tree; no commit, tag or push was created."
+  echo "DRY RUN: removing the release worktree; no commit, tag, push or pull request was created."
   exit 0
 fi
 
-# Stage ONLY the files this script edited, by explicit path. Never `git add -A`
-# — this checkout is routinely shared with other agents whose in-flight work
-# would otherwise be swept into a release commit.
+# Stage ONLY the files this script edited, by explicit path.
 git add -- "${TOUCHED[@]}"
 git commit -q -m "chore: release $VERSION
 
 Sync VERSION and internal/buildinfo/VERSION; name $NEXT_AFTER in NEXT_VERSION;
 write the $VERSION section of CHANGELOG.md from the PR titles merged since ${PREV_TAG:-the start}.
 
-Tagged $RELEASE_TAG at this commit."
+Bookkeeping for $RELEASE_TAG, tagged at $COMMIT."
 
-RELEASE_SHA="$(git rev-parse HEAD)"
-# From here the tree is intentionally changed; do not restore it on exit.
-RESTORE_ON_EXIT=0
-
-if [ -n "$COMMIT" ]; then
-  # The tag names the green commit; the release commit becomes a PR.
-  RELEASE_SHA="$COMMIT"
-  git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
-  # Publish only while this release provably still holds the lock (release-lock.sh);
-  # a refusal leaves no local tag behind (see the push below).
-  release_lock_assert || { git tag -d "$RELEASE_TAG" >/dev/null; exit 1; }
-  git push --atomic origin "refs/tags/$RELEASE_TAG" "HEAD:refs/heads/release/$VERSION"
-  "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "release/$VERSION" \
-    --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT." &&
-    "$GH_BIN" pr merge --repo "$GITHUB_REPO" --squash --auto "release/$VERSION" ||
-    echo "⚠️  open the release/$VERSION bookkeeping PR by hand; $RELEASE_TAG is pushed" >&2
-else
-git tag -a "$RELEASE_TAG" -m "forge $VERSION"
-
+# The tag names the green commit (step 2a), which is already on origin/$BRANCH;
+# the bookkeeping commit on top of it reaches $BRANCH only as a pull request.
+RELEASE_SHA="$COMMIT"
+BOOKKEEPING_BRANCH="release/$VERSION"
+git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
 echo ""
-echo "✅ committed $(git rev-parse --short HEAD) and tagged $RELEASE_TAG at it"
+echo "✅ committed the bookkeeping as $(git rev-parse --short HEAD) and tagged $RELEASE_TAG at $(git rev-parse --short "$COMMIT")"
 echo ""
-echo "→ pushing atomically (branch + tag, all-or-nothing)"
-# --atomic keeps the branch and the tag from landing separately: a tag without
-# its commit on the branch is a release nobody can reproduce.
-#
-# Push the RELEASE COMMIT to the remote branch, not the local branch of that
-# name. A bare "$BRANCH" refspec pushes whatever the local `main` points at,
-# which is the release commit only when the script runs on a checked-out,
-# up-to-date `main`. Run from a worktree on another branch, or from a shared
-# checkout whose `main` lags origin, it pushed a stale tip; the remote rejected
-# it as non-fast-forward and the atomic push dropped the tag with it (v0.1.18
-# hit exactly this).
+echo "→ pushing atomically (tag + $BOOKKEEPING_BRANCH, all-or-nothing; nothing goes to $BRANCH)"
+# --atomic keeps the tag from landing without its bookkeeping branch, so a
+# re-run never finds half a release.
 #
 # A refused push deletes the local tag this run just made (step 4 proved it did
 # not exist before). Otherwise a cutter that lost a race leaves its own tag
@@ -673,16 +698,36 @@ if ! release_lock_assert; then
   git tag -d "$RELEASE_TAG" >/dev/null
   exit 1
 fi
-if ! git push --atomic origin "$RELEASE_SHA:refs/heads/$BRANCH" "refs/tags/$RELEASE_TAG"; then
+if ! git push --atomic origin "refs/tags/$RELEASE_TAG" "HEAD:refs/heads/$BOOKKEEPING_BRANCH"; then
   git tag -d "$RELEASE_TAG" >/dev/null
-  echo "error: the push was refused, so nothing was released; deleted the local tag $RELEASE_TAG" >&2
-  echo "       (if origin now has $RELEASE_TAG, another cut won the race: fetch it, don't re-cut)" >&2
+  echo "error: origin refused the push (git's reason is above), so nothing was released; deleted the local tag $RELEASE_TAG" >&2
+  # Say which refusal it was. Only an origin that already has the tag means
+  # another cut won; anything else is about this push, and reading every
+  # refusal as a lost race sends the cutter to fetch a tag that is not there.
+  if [ -n "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" 2>/dev/null)" ]; then
+    echo "       origin already has $RELEASE_TAG: another cut released it. Fetch it; do not re-cut." >&2
+  elif [ -n "$(git ls-remote --heads origin "refs/heads/$BOOKKEEPING_BRANCH" 2>/dev/null)" ]; then
+    echo "       origin has no $RELEASE_TAG, but already has a branch $BOOKKEEPING_BRANCH (an earlier attempt" >&2
+    echo "       at this release?). Delete it if nothing uses it (git push origin :refs/heads/$BOOKKEEPING_BRANCH), then re-run." >&2
+  else
+    echo "       origin has no $RELEASE_TAG, so no other cut won a race: the push itself was refused" >&2
+    echo "       (a ruleset or branch protection, missing permission, or the network). Fix that, then re-run." >&2
+  fi
   exit 1
 fi
+# The bookkeeping commit is pushed; the worktree holding it can go on exit.
+RESTORE_ON_EXIT=0
+
+if [ -z "$GITHUB_REPO" ]; then
+  echo "→ origin is not on github.com; merge $BOOKKEEPING_BRANCH into $BRANCH by hand"
+elif ! { "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "$BOOKKEEPING_BRANCH" \
+      --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT." &&
+    "$GH_BIN" pr merge --repo "$GITHUB_REPO" --squash --auto "$BOOKKEEPING_BRANCH"; }; then
+  echo "⚠️  open the $BOOKKEEPING_BRANCH bookkeeping PR into $BRANCH by hand; $RELEASE_TAG is pushed" >&2
 fi
 
 echo ""
-echo "✅ committed and pushed $VERSION at $RELEASE_SHA"
+echo "✅ tagged and pushed $VERSION at $RELEASE_SHA"
 
 # ── 9b. The GitHub release ──────────────────────────────────────────
 # The tag is pushed and immutable by now, so nothing here can un-release it. A

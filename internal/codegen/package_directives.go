@@ -55,13 +55,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/generator/contract"
+	"github.com/reliant-labs/forge/internal/pkgdirective"
 )
 
 // Package directive spellings. exclude-contract has a single spelling;
 // external-component accepts `provided` as a shorter synonym (same intent,
 // "forge does not build this").
 const (
-	directiveExcludeContract    = "forge:exclude-contract"
+	directiveExcludeContract    = contract.ExcludeContractDirective
 	directiveExternalComponent  = "forge:external-component"
 	directiveExternalComponent2 = "forge:provided"
 	directiveNotAComponent      = "forge:not-a-component"
@@ -319,15 +322,10 @@ func HasExcludeContractDirective(dir string) bool {
 
 // ReasonedMarker is one occurrence of a package directive that takes a
 // reason — `//forge:exclude-contract: <why>` or `//forge:not-a-component:
-// <why>`.
-type ReasonedMarker struct {
-	// File is the absolute path of the file carrying the marker.
-	File string
-	// Line is the marker's 1-indexed line.
-	Line int
-	// Reason is the text after `forge:<directive>:`; "" for a bare marker.
-	Reason string
-}
+// <why>`. It is pkgdirective.Marker: the contract-mock bootstrap tool reads
+// directives through that standard-library-only package, so both read them
+// the same way.
+type ReasonedMarker = pkgdirective.Marker
 
 // FindExcludeContractMarker returns the package's `//forge:exclude-contract`
 // marker, scanning non-test, non-generated files in name order so the answer
@@ -381,67 +379,23 @@ func FindNotAComponentMarkers(dir string) []ReasonedMarker {
 }
 
 // findReasonedDirective returns the first occurrence of a reasoned package
-// directive (`//<directive>: <why>` or the bare `//<directive>`) in dir's
-// non-test, non-generated files, scanned in name order. A reasoned
-// occurrence anywhere wins over a bare one.
+// directive, a reasoned one winning over a bare one (pkgdirective.Find).
 func findReasonedDirective(dir, directive string) (ReasonedMarker, bool) {
-	all := findReasonedDirectives(dir, directive)
-	for _, m := range all {
-		if m.Reason != "" {
-			return m, true
-		}
-	}
-	if len(all) > 0 {
-		return all[0], true
-	}
-	return ReasonedMarker{}, false
+	return pkgdirective.Find(dir, directive)
 }
 
 // findReasonedDirectives returns every occurrence of a reasoned package
 // directive in dir's non-test, non-generated files, in file-name then line
-// order.
+// order (pkgdirective.FindAll).
 func findReasonedDirectives(dir, directive string) []ReasonedMarker {
-	var out []ReasonedMarker
-	forEachPackageComment(dir, func(path string, line int, raw string) {
-		if reason, ok := parseReasonedDirective(raw, directive); ok {
-			out = append(out, ReasonedMarker{File: path, Line: line, Reason: reason})
-		}
-	})
-	return out
+	return pkgdirective.FindAll(dir, directive)
 }
 
 // forEachPackageComment calls fn for every comment in dir's non-test,
-// non-generated .go files, in file-name then position order. Unparseable
-// files are skipped: a directive is read best-effort.
+// non-generated .go files, in file-name then position order
+// (pkgdirective.ForEachPackageComment).
 func forEachPackageComment(dir string, fn func(path string, line int, raw string)) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	var names []string
-	for _, e := range entries {
-		n := e.Name()
-		if e.IsDir() || !strings.HasSuffix(n, ".go") ||
-			strings.HasSuffix(n, "_test.go") || strings.HasSuffix(n, "_gen.go") {
-			continue
-		}
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
-	fset := token.NewFileSet()
-	for _, n := range names {
-		path := filepath.Join(dir, n)
-		file, perr := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
-		if perr != nil {
-			continue
-		}
-		for _, cg := range file.Comments {
-			for _, c := range cg.List {
-				fn(path, fset.Position(c.Pos()).Line, c.Text)
-			}
-		}
-	}
+	pkgdirective.ForEachPackageComment(dir, fn)
 }
 
 // ParseExcludeContractComment reports whether one raw comment IS the
@@ -461,17 +415,9 @@ func ParseExcludeContractComment(raw string) (reason string, ok bool) {
 }
 
 // parseReasonedDirective is the shared whole-line rule for a directive that
-// takes a reason after a colon.
+// takes a reason after a colon (pkgdirective.ParseReasoned).
 func parseReasonedDirective(raw, directive string) (reason string, ok bool) {
-	text := trimCommentMarkers(raw)
-	if text == directive {
-		return "", true
-	}
-	rest, has := strings.CutPrefix(text, directive+":")
-	if !has {
-		return "", false
-	}
-	return strings.TrimSpace(rest), true
+	return pkgdirective.ParseReasoned(raw, directive)
 }
 
 // HasOutboundIODirective reports whether the package rooted at dir declares

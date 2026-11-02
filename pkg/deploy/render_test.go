@@ -2007,7 +2007,7 @@ func wantDashboardRole(database string, connectionLimit float64) map[string]any 
 	return map[string]any{
 		"name":            "forge_dash",
 		"ensure":          "present",
-		"comment":         "forge dashboard role: column grants on forge:dashboard tables only, no write privilege",
+		"comment":         "forge dashboard role: reads only what migrations grant it, no write privilege",
 		"login":           true,
 		"superuser":       false,
 		"createdb":        false,

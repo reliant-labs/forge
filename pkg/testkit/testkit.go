@@ -66,6 +66,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/auth"
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/pgtest"
@@ -190,7 +191,34 @@ func migrationsKey(migrations fs.FS) (string, error) {
 
 // applyUpMigrations runs every *.up.sql file in migrations against db in
 // version order. Split out of NewMigratedPostgresDB for direct testing.
+//
+// It keeps the migrator's two dashboard-role rules (pkg/migratekit,
+// dashboard.go), so a migration that works in a test works in production and
+// the reverse: the role exists before the first file runs, because a migration
+// may GRANT to it, and after the last one it may hold read privileges only.
 func applyUpMigrations(db *sql.DB, migrations fs.FS) error {
+	ctx := context.Background()
+	// The test server's role is a superuser, so the role is always created
+	// here; ErrRoleNotCreatable would mean a server of the caller's own, and a
+	// migration that needs the role then fails naming it.
+	if _, err := dbgrants.EnsureDashboardRole(ctx, db); err != nil && !errors.Is(err, dbgrants.ErrRoleNotCreatable) {
+		return err
+	}
+	if err := runUpMigrations(db, migrations); err != nil {
+		return err
+	}
+	violations, err := dbgrants.DashboardPrivilegeViolations(ctx, db, dbgrants.DashboardRoleName)
+	if err != nil {
+		return err
+	}
+	if len(violations) > 0 {
+		return &migrationError{file: "(after the last migration)", err: errors.New(
+			dbgrants.DescribeViolations(dbgrants.DashboardRoleName, violations))}
+	}
+	return nil
+}
+
+func runUpMigrations(db *sql.DB, migrations fs.FS) error {
 	root := migrations
 	if sub, err := fs.Sub(migrations, "migrations"); err == nil {
 		if entries, err := fs.ReadDir(sub, "."); err == nil && len(entries) > 0 {

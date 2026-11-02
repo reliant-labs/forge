@@ -635,6 +635,9 @@ func (c Cloud) MetricsList(ctx context.Context, req MetricsListRequest) (Metrics
 		NameContains string    `json:"nameContains,omitempty"`
 		Limit        int       `json:"limit,omitempty"`
 	}{c.scope(req.Narrow), req.NameContains, req.Limit}
+	if req.NoEnv {
+		in.Scope.EnvIDs = nil
+	}
 	var out struct {
 		Metrics   []wireMetricInfo `json:"metrics"`
 		Truncated bool             `json:"truncated"`

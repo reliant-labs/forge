@@ -136,6 +136,13 @@ func findUnknownColumnMarkers(file, content string) []columnMarkerFinding {
 	var findings []columnMarkerFinding
 	add := func(start int, object string, site schemadef.MarkerSite, column, text string) {
 		for _, p := range schemadef.CommentMarkerProblems(site, column, text) {
+			// A retired marker in migration TEXT may be one a later
+			// migration already cleared, and an applied migration is never
+			// edited; whether the schema still carries it is the catalog's
+			// question, which generate and --db-grants ask (CheckMarkers).
+			if schemadef.RetiredMarker(p.Marker) {
+				continue
+			}
 			findings = append(findings, columnMarkerFinding{
 				File:    file,
 				Line:    strings.Count(content[:start], "\n") + 1,

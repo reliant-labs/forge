@@ -409,13 +409,6 @@ func markerSpecs() []MarkerSpec {
 			Example:   "COMMENT ON COLUMN git_credentials.access_token IS 'forge:secret';",
 		},
 		{
-			Name:      schemadef.ColumnMarkerNoDashboard,
-			AppliesTo: "column",
-			Effect:    "Withholds the column from the dashboard role (forge_dash) on a table marked `forge:dashboard`: Postgres refuses it by name, through `select *` and any expression. The dashboard role reads a SUBSET of what forge_ro reads — a forge:secret or undecided credential-shaped column is never granted to it whatever this says — so this marker is for a column that is fine for `forge db query` but not for a panel (an email, a free-text field). Has no effect on a table that is not marked forge:dashboard.",
-			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:no-dashboard'; in a migration",
-			Example:   "COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';",
-		},
-		{
 			Name:      schemadef.ColumnMarkerReadable,
 			AppliesTo: "column",
 			Effect:    "Grants the read-only role a column whose NAME looks like a credential but is not one (`token_hash` of a prompt, a public `api_key_prefix`, a bytea attachment). The reason after the marker is mandatory — it is the review record of an exception to the role's fail-closed default — and `forge generate` rejects a bare `forge:readable`. forge:secret wins when a column declares both. Grants exactly that column; the rest of the table stays as decided.",
@@ -442,13 +435,6 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Keeps the TABLE out of the generated data layer: no <entity>_orm_gen.go struct, no <Entity>Store, no delegates, no factory — and no CRUD wiring, since a CRUD-named rpc over it has no store to call (it is custom, as if the table did not exist). Without it every applied BASE TABLE is projected, whether or not any service declares a CRUD rpc for it: the store follows the schema, not the wire, so `// forge:custom` rpcs do not take a table off the store. Declare it on a table hand-written SQL owns (another tool's bookkeeping, a partition parent), or on one whose projected name collides with a declaration of yours while you port onto the store. `//forge:no-orm` is the same opt-out for the whole data layer.",
 			Placement: "COMMENT ON TABLE <table> IS 'forge:no-entity'; in a migration — on the TABLE, not a column.",
 			Example:   "COMMENT ON TABLE goose_db_version IS 'forge:no-entity — goose owns it';",
-		},
-		{
-			Name:      schemadef.TableMarkerDashboard,
-			AppliesTo: "table",
-			Effect:    "Opts the TABLE into the dashboard role (forge_dash), the opt-in Postgres role live dashboard panels query as (`ManagedDatabase.dashboards` in KCL). The role reads ONLY marked tables, and on them only the columns forge_ro may read minus any `forge:no-dashboard` column; an unmarked table is invisible to it. Nothing else changes: the table keeps its entity, store and forge_ro access. `forge generate` writes the grants to db/grants/dashboard_gen.sql and the migrator applies them after every run once the role exists.",
-			Placement: "COMMENT ON TABLE <table> IS 'forge:dashboard'; in a migration — on the TABLE, not a column.",
-			Example:   "COMMENT ON TABLE usage_events IS 'forge:dashboard';",
 		},
 		{
 			Name:      schemadef.TableMarkerEntityName,

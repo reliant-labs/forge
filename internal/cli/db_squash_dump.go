@@ -19,7 +19,8 @@
 //   - `\restrict` is not SQL at all, so golang-migrate fails on it.
 //
 // So the baseline keeps every statement that builds the database and drops
-// every statement that configures the session running it. A line-oriented
+// every statement that configures the session running it. Of the privileges
+// it keeps only the dashboard role's grants and PUBLIC's (privilegeStatementRe). A line-oriented
 // filter (`grep -v '^SET '`) cannot do that safely: a function body or an
 // inserted text value can hold a line that begins with `SET ` or `\`, and
 // dropping it corrupts the body or the row. squashBaseline reads the dump the
@@ -32,6 +33,8 @@ package cli
 import (
 	"regexp"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 )
 
 // sessionStatementRe matches a top-level statement that configures the
@@ -41,6 +44,23 @@ import (
 // setval — the sequence state that goes with inserted rows — is a different
 // function and is kept.
 var sessionStatementRe = regexp.MustCompile(`(?is)^(?:SET|RESET)\b|^SELECT\s+(?:pg_catalog\s*\.\s*)?set_config\s*\(`)
+
+// privilegeStatementRe matches a statement that grants or revokes. A squash
+// dumps privileges so that two kinds survive it: the dashboard role's grants,
+// which the project wrote as migrations (pkg/dbgrants, dashboard.go), and
+// PUBLIC's, which the project changes with migrations too (`REVOKE EXECUTE ON
+// FUNCTION f() FROM PUBLIC`, `REVOKE CREATE ON SCHEMA public FROM PUBLIC`). A
+// baseline without them would build a database the role cannot read, or one
+// where every role regains what a migration took away. Every other privilege
+// is dropped, as `--no-privileges` dropped them all before: forge_ro's grants
+// are re-converged after every run, and the rest name roles (the dumping
+// user, the application's own) that are this database's, not the history's.
+var privilegeStatementRe = regexp.MustCompile(`(?is)^(?:GRANT|REVOKE|ALTER\s+DEFAULT\s+PRIVILEGES)\b`)
+
+// keptPrivilegeRe matches the privilege statements a baseline keeps: a GRANT
+// to the dashboard role, and a GRANT to or REVOKE from PUBLIC. pg_dump writes
+// one statement per grantee.
+var keptPrivilegeRe = regexp.MustCompile(`(?is)^(?:GRANT\b.*\bTO\s+(?:"?` + regexp.QuoteMeta(dbgrants.DashboardRoleName) + `"?|PUBLIC)|REVOKE\b.*\bFROM\s+PUBLIC)\s*;$`)
 
 // routineStatementRe matches a statement whose body postgres validates at
 // CREATE time when check_function_bodies is on.
@@ -115,7 +135,8 @@ func squashBaseline(dump string) string {
 			text := stmt.String()
 			stmt.Reset()
 			inStmt = false
-			if sessionStatementRe.MatchString(text) {
+			if sessionStatementRe.MatchString(text) ||
+				privilegeStatementRe.MatchString(text) && !keptPrivilegeRe.MatchString(text) {
 				// Dropped. The gap before it stays pending, so the comments
 				// around it survive and the blank lines it leaves collapse.
 				continue

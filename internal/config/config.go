@@ -1597,6 +1597,19 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 	return MatchExclude(c.Exclude, pkgPath)
 }
 
+// InterfaceTypeSet is InterfaceTypes as the set contract.Options'
+// ExtraInterfaceTypes takes; nil when none are listed.
+func (c ContractsConfig) InterfaceTypeSet() map[string]bool {
+	if len(c.InterfaceTypes) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(c.InterfaceTypes))
+	for _, t := range c.InterfaceTypes {
+		set[t] = true
+	}
+	return set
+}
+
 // FeaturesConfig is the resolved on/off state of each forge subsystem
 // (codegen, orm, deploy, ...).
 //

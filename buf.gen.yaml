@@ -19,8 +19,13 @@ version: v2
 #
 # No protoc-gen-connect-go: forge.proto declares no service, so it would emit
 # nothing.
+#
+# `strategy: all`, as on every local plugin forge writes: one plugin process
+# over every file rather than one per proto directory
+# (internal/cli/buf_strategy_guard_test.go).
 plugins:
   - local: protoc-gen-go
     out: .
+    strategy: all
     opt:
       - module=github.com/reliant-labs/forge

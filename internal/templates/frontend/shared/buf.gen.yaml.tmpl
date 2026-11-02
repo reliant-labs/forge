@@ -11,10 +11,14 @@ version: v2
 #
 # To opt back into BSR-hosted plugins, replace `local:` with
 #   `remote: buf.build/bufbuild/es`
-# (or use `forge project new --buf-plugins=remote` at scaffold time).
+# and drop `strategy: all` (buf accepts it on local plugins only), or use
+# `forge project new --buf-plugins=remote` at scaffold time.
 plugins:
   - local: ./frontends/{{.FrontendName}}/node_modules/.bin/protoc-gen-es
     out: frontends/{{.FrontendName}}/src/gen
+    # Once over every proto file, not once per proto directory (buf's
+    # default, which starts one node per directory, all at once).
+    strategy: all
     # include_imports is a plugin-level field in buf.gen.yaml v2 (same
     # level as `out:` / `opt:`), not an `opt:` entry — protoc-gen-es rejects
     # unknown options. This ensures transitive proto imports (e.g.

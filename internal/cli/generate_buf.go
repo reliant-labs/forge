@@ -78,6 +78,65 @@ const bufGenGoInputs = `inputs:
       - proto/buf/validate
 `
 
+// bufStrategyAllComment is the one-line why behind `strategy: all` on every
+// local plugin of every buf template forge writes. buf's default strategy,
+// `directory`, runs a plugin once per proto directory, all of those processes
+// at once up to NumCPU, each a Go runtime (or node) with its own threads: on a
+// many-core machine one generate reached thousands of threads and failed with
+// `pthread_create: Resource temporarily unavailable` under a cgroup pids
+// limit. These plugins write one file per proto file, so `all` (one process
+// per plugin) produces the same bytes.
+const bufStrategyAllComment = "`strategy: all` runs each plugin once over every proto file, not once per directory."
+
+// frontendBufGenYaml is the buf.gen.yaml forge writes into a frontend that has
+// none: the local TypeScript plugin from feDir's node_modules (feDir is
+// slash-separated, relative to the project root, where buf runs).
+// include_imports must be a plugin-level field in buf.gen.yaml v2, not an
+// `opt:` entry — protoc-gen-es rejects unknown opts.
+func frontendBufGenYaml(feDir string) string {
+	return fmt.Sprintf(`version: v2
+# Local TypeScript plugin (no BSR auth needed). Run 'npm install' in
+# %s/ before 'forge generate' so node_modules/.bin/protoc-gen-es exists.
+# To switch to BSR-hosted plugin, replace 'local:' line with:
+#   - remote: buf.build/bufbuild/es
+# and drop 'strategy: all' (buf accepts it on local plugins only).
+# %s
+plugins:
+  - local: ./%s/node_modules/.bin/protoc-gen-es
+    out: %s/src/gen
+    strategy: all
+    include_imports: true
+    opt:
+      - target=ts
+      - import_extension=.js
+`, feDir, bufStrategyAllComment, feDir, feDir)
+}
+
+// workspaceBufGenYaml is packages/api/buf.gen.yaml for the workspace layout:
+// the TypeScript plugin installed in feDir's node_modules, writing the shared
+// @<scope>/api package.
+func workspaceBufGenYaml(feDir string) string {
+	return fmt.Sprintf(`version: v2
+# Local TypeScript plugin (no BSR auth needed). Sourced from
+# %s/node_modules/.bin/ — the workspace-layout convention picks one
+# frontend to install protoc-gen-es; all frontends consume the
+# generated output via the @<scope>/api workspace package.
+#
+# To switch to BSR-hosted plugin, replace 'local:' with
+#   - remote: buf.build/bufbuild/es
+# and drop 'strategy: all' (buf accepts it on local plugins only).
+# %s
+plugins:
+  - local: ./%s/node_modules/.bin/protoc-gen-es
+    out: packages/api/src/gen
+    strategy: all
+    include_imports: true
+    opt:
+      - target=ts
+      - import_extension=.js
+`, feDir, bufStrategyAllComment, feDir)
+}
+
 // writeDefaultBufGenYaml writes a standard buf.gen.yaml with Go plugins.
 // Defaults to `local:` plugins (resolved from $PATH) so anonymous users
 // can `forge generate` without `buf registry login`. Users who want
@@ -92,6 +151,9 @@ func writeDefaultBufGenYaml(projectDir string) error {
 # and the binary name with the BSR plugin path, e.g.
 #   - remote: buf.build/protocolbuffers/go
 #   - remote: buf.build/connectrpc/go
+# and drop ` + "`strategy: all`" + ` (buf accepts it on local plugins only).
+#
+# ` + bufStrategyAllComment + `
 #
 # OpenAPI specs: set ` + "`api.openapi: true`" + ` in forge.yaml. Forge invokes
 # protoc-gen-connect-openapi via a synthesized template; you do NOT
@@ -100,10 +162,12 @@ func writeDefaultBufGenYaml(projectDir string) error {
 ` + bufGenGoInputs + `plugins:
   - local: protoc-gen-go
     out: gen
+    strategy: all
     opt:
       - paths=source_relative
   - local: protoc-gen-connect-go
     out: gen
+    strategy: all
     opt:
       - paths=source_relative
 `
@@ -161,22 +225,7 @@ func runBufGenerateTypeScript(fe config.FrontendConfig, cfg *config.ProjectConfi
 	// internal/templates/frontend/{nextjs,react-native}/buf.gen.yaml.tmpl.
 	feBufGen := filepath.Join(absFeDir, "buf.gen.yaml")
 	if _, err := os.Stat(feBufGen); os.IsNotExist(err) {
-		// include_imports must be a plugin-level field in buf.gen.yaml v2,
-		// not an `opt:` entry — protoc-gen-es rejects unknown opts.
-		feSlash := filepath.ToSlash(feDir)
-		tsConfig := fmt.Sprintf(`version: v2
-# Local TypeScript plugin (no BSR auth needed). Run 'npm install' in
-# %s/ before 'forge generate' so node_modules/.bin/protoc-gen-es exists.
-# To switch to BSR-hosted plugin, replace 'local:' line with:
-#   - remote: buf.build/bufbuild/es
-plugins:
-  - local: ./%s/node_modules/.bin/protoc-gen-es
-    out: %s/src/gen
-    include_imports: true
-    opt:
-      - target=ts
-      - import_extension=.js
-`, feSlash, feSlash, feSlash)
+		tsConfig := frontendBufGenYaml(filepath.ToSlash(feDir))
 		if err := atomicfile.WriteFile(feBufGen, []byte(tsConfig), 0644); err != nil {
 			return fmt.Errorf("failed to write TypeScript buf config: %w", err)
 		}
@@ -322,23 +371,7 @@ func runBufGenerateTypeScriptWorkspace(cfg *config.ProjectConfig, projectDir str
 		if err := os.MkdirAll(filepath.Dir(bufGenPath), 0o755); err != nil {
 			return fmt.Errorf("create packages/api dir: %w", err)
 		}
-		feSlash := filepath.ToSlash(feDir)
-		body := fmt.Sprintf(`version: v2
-# Local TypeScript plugin (no BSR auth needed). Sourced from
-# %s/node_modules/.bin/ — the workspace-layout convention picks one
-# frontend to install protoc-gen-es; all frontends consume the
-# generated output via the @<scope>/api workspace package.
-#
-# To switch to BSR-hosted plugin, replace 'local:' with
-#   - remote: buf.build/bufbuild/es
-plugins:
-  - local: ./%s/node_modules/.bin/protoc-gen-es
-    out: packages/api/src/gen
-    include_imports: true
-    opt:
-      - target=ts
-      - import_extension=.js
-`, feSlash, feSlash)
+		body := workspaceBufGenYaml(filepath.ToSlash(feDir))
 		if err := atomicfile.WriteFile(bufGenPath, []byte(body), 0o644); err != nil {
 			return fmt.Errorf("write packages/api/buf.gen.yaml: %w", err)
 		}

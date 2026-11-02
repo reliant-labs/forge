@@ -109,3 +109,15 @@ export function emitToast(toast: ToastEvent): void {
   if (!_bus) return;
   _bus.emit("toast:show", toast);
 }
+
+/**
+ * emitAuthExpired — the transport's signal that the server refused an RPC as
+ * Unauthenticated (HTTP 401), i.e. the session may have lapsed mid-use. The
+ * auth context (src/lib/auth/context.tsx) re-checks the session on it, and
+ * RouteGuard returns a signed-out user to sign-in. Fire-and-forget, and a
+ * no-op before the bus exists, like emitToast.
+ */
+export function emitAuthExpired(): void {
+  if (!_bus) return;
+  _bus.emit("auth:expired");
+}

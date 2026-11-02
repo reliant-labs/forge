@@ -38,25 +38,25 @@ function getInitials(name: string): string {
     .toUpperCase();
 }
 
+// Deterministic per-name identity colors, drawn from the SEMANTIC tint pairs
+// (`<role>-surface` fill + `<role>-ink` text) rather than raw palette hues.
+// Each pair is held to 4.5:1 in light AND dark by the scaffold's palette
+// contract test, so initials stay legible at the 10px `xs` size, and a rebrand
+// or dark mode moves avatars with everything else. Raw `bg-*-500` with white
+// initials measured 2.89:1.
+const initialsColors = [
+  "bg-accent-surface text-accent-ink",
+  "bg-success-surface text-success-ink",
+  "bg-warning-surface text-warning-ink",
+  "bg-danger-surface text-danger-ink",
+  "bg-surface-sunken text-ink",
+] as const;
+
 function initialsColor(name: string): string {
-  // Deterministic per-name identity palette (GitHub/Slack-style variety) —
-  // intentionally raw multi-hue, NOT semantic theme tokens. Rebrand/dark-mode
-  // deliberately do not touch these; the fixed -500 hues stay legible with
-  // white text on both light and dark surfaces.
-  const colors = [
-    "bg-blue-500",
-    "bg-green-500",
-    "bg-purple-500",
-    "bg-pink-500",
-    "bg-indigo-500",
-    "bg-teal-500",
-    "bg-orange-500",
-    "bg-cyan-500",
-  ];
   const hash = [...name].reduce((a, c) => a + c.charCodeAt(0), 0);
   // Index is provably in-bounds, but noUncheckedIndexedAccess can't see
   // that — the fallback keeps the lookup total.
-  return colors[hash % colors.length] ?? "bg-gray-500";
+  return initialsColors[hash % initialsColors.length] ?? "bg-surface-sunken text-ink";
 }
 
 export default function Avatar({ src, alt, name, size = "md", status }: AvatarProps) {
@@ -82,7 +82,7 @@ export default function Avatar({ src, alt, name, size = "md", status }: AvatarPr
         <div
           className={`${
             s.container
-          } flex items-center justify-center rounded-full text-white ${initialsColor(name)}`}
+          } flex items-center justify-center rounded-full ${initialsColor(name)}`}
         >
           <span className={`font-medium leading-none ${s.text}`}>{getInitials(name)}</span>
         </div>

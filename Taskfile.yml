@@ -74,13 +74,16 @@ tasks:
       - go install -trimpath=false -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
 
   release:forge:
-    desc: "Cut the forge release NEXT_VERSION names (one module, one tag): task release:forge (add -- --dry-run to validate only)"
+    desc: "Cut the forge release NEXT_VERSION names (one tag, on main's newest green commit; never pushes main): task release:forge (-- --dry-run to validate only, -- --commit <sha> for another green commit)"
     cmds:
-      # THE release command. forge is one module, so a release is one tag:
-      # validate the version shape, a clean tree and that the tag does not
-      # exist; confirm the version was never published at another commit (the
-      # proxy is immutable); sync VERSION and internal/buildinfo/VERSION;
-      # build; then tag vX.Y.Z and push branch + tag atomically.
+      # THE release command. forge is one module, so a release is one tag, on
+      # a commit main already has: by default the newest one whose full CI is
+      # green. In a private worktree at that commit: validate the version shape
+      # and that the tag does not exist; confirm the version was never
+      # published at another commit (the proxy is immutable); sync VERSION,
+      # internal/buildinfo/VERSION, NEXT_VERSION and CHANGELOG.md; build; then
+      # push the tag and the bookkeeping branch release/vX.Y.Z atomically and
+      # open its pull request. Nothing is pushed to main.
       #
       # The forge/pkg submodule this used to co-release is gone, and with it
       # the second tag, the require bump, and the go.sum resolution dance. See

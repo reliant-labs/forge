@@ -17,12 +17,17 @@ forge version
 This package is a thin shim. On first run it downloads the prebuilt `forge`
 binary for your OS and CPU from the matching
 [GitHub release](https://github.com/reliant-labs/forge/releases), verifies its
-sha256 against the release's `checksums.txt`, caches it, and runs it. There is no
+sha256 against the release checksums pinned into this package when it was
+published (pinned only after the release's Sigstore signature verified), caches
+it, and runs it. `FORGE_REQUIRE_SIGNATURE=1` refuses to run from a copy that
+carries no pin. There is no
 postinstall script, so `--ignore-scripts` is fine. The package version is the forge
 version.
 
 - Cache: `~/.cache/forge/npm/<version>` (Linux), `~/Library/Caches/forge/npm/<version>` (macOS),
-  `%LOCALAPPDATA%\forge\npm\<version>` (Windows). Override with `FORGE_NPM_CACHE_DIR`.
+  `%LOCALAPPDATA%\forge\npm\<version>` (Windows), one subdirectory per pinned
+  digest (`sha256-<digest>`; `unverified` for a copy with no pin, which a
+  pinned or `FORGE_REQUIRE_SIGNATURE=1` run never uses). Override with `FORGE_NPM_CACHE_DIR`.
 - Needs Node 18+ and `tar` on `PATH` (present on Linux, macOS and Windows 10+).
 - Platforms: linux, darwin, windows on amd64 and arm64.
 

@@ -2,7 +2,8 @@
 "use strict";
 // `npx @reliantlabs/forge <args>` runs the forge CLI. The binary matching this
 // package's version is downloaded from the GitHub release on first use, checked
-// against the release's sha256 sums, cached, and executed with stdio inherited.
+// against the signed sha256 sums the package pins (lib/install.js), cached, and
+// executed with stdio inherited.
 
 const { spawn } = require("node:child_process");
 const { version } = require("../package.json");

@@ -60,6 +60,9 @@
 # windows on amd64 and arm64, plus checksums.txt (scripts/build-release-assets.sh).
 # install.sh, install.ps1, the npm shim (npm/) and the Homebrew formula all
 # download those; a release without them leaves every installer failing.
+# Nothing here signs them: the `release: published` event of the GitHub
+# release runs .github/workflows/release-attest.yml, which attaches
+# forge-release.sigstore.json (docs/releasing.md, "Signed release assets").
 # npm/package.json is synced to the release version too; the npm package is
 # published by .github/workflows/release-npm.yml, which the GitHub release
 # created here triggers (docs/releasing.md, "Installers").

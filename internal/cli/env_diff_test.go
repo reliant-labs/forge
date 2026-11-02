@@ -473,23 +473,17 @@ func TestEnvDiff_JSONCarriesNoDiffForANonOKStatus(t *testing.T) {
 // against a store that does not hold its values — which would report every
 // secret missing and tell a user to set secrets that are already fine.
 func TestEnvDiff_OnlyTheManagedStoreIsAskedForPresence(t *testing.T) {
-	managed := LiveEnvironment{
-		EnvironmentID: "env-1",
-		Env: release.EnvRecord{Name: "prod", Kind: release.EnvPersistent, DeclaredShape: &release.Shape{
-			Kind:    release.EnvPersistent,
-			Secrets: []release.ShapeSecret{{Name: "A", Provider: "hosted"}},
-		}},
+	managed := &release.Shape{
+		Kind:    release.EnvPersistent,
+		Secrets: []release.ShapeSecret{{Name: "A", Provider: "hosted"}},
 	}
 	if !managedSecretProvider(managed) {
 		t.Error("an env declaring a hosted secret must be queryable")
 	}
 
-	external := LiveEnvironment{
-		EnvironmentID: "env-2",
-		Env: release.EnvRecord{Name: "prod", Kind: release.EnvSelfManaged, DeclaredShape: &release.Shape{
-			Kind:    release.EnvSelfManaged,
-			Secrets: []release.ShapeSecret{{Name: "A", Provider: "external_secrets"}},
-		}},
+	external := &release.Shape{
+		Kind:    release.EnvSelfManaged,
+		Secrets: []release.ShapeSecret{{Name: "A", Provider: "external_secrets"}},
 	}
 	if managedSecretProvider(external) {
 		t.Error("an external-provider env must NOT be queried: its secrets are unverifiable from here")
@@ -498,15 +492,15 @@ func TestEnvDiff_OnlyTheManagedStoreIsAskedForPresence(t *testing.T) {
 	// A mixed env IS queried: its managed names get a real verdict and
 	// the rest stay absent, which is the per-name distinction the rule
 	// asks for.
-	mixed := LiveEnvironment{
-		EnvironmentID: "env-3",
-		Env: release.EnvRecord{Name: "prod", Kind: release.EnvSelfManaged, DeclaredShape: &release.Shape{
-			Kind: release.EnvSelfManaged,
-			Secrets: []release.ShapeSecret{
-				{Name: "A", Provider: "external_secrets"},
-				{Name: "B", Provider: "hosted"},
-			},
-		}},
+	mixed := &release.Shape{
+		Kind: release.EnvSelfManaged,
+		Secrets: []release.ShapeSecret{
+			{Name: "A", Provider: "external_secrets"},
+			{Name: "B", Provider: "hosted"},
+		},
+	}
+	if managedSecretProvider(nil) {
+		t.Error("an env with no readable shape must NOT be queried")
 	}
 	if !managedSecretProvider(mixed) {
 		t.Error("a mixed env must be queried, so its managed names get a real verdict")
@@ -518,7 +512,7 @@ func TestEnvDiff_OnlyTheManagedStoreIsAskedForPresence(t *testing.T) {
 // that does not exist.
 func TestEnvDiff_AnUnregisteredEnvHasUnverifiableSecrets(t *testing.T) {
 	got := fetchSecretPresence(context.Background(), nil,
-		LiveEnvironment{Env: release.EnvRecord{Name: "brand-new", Kind: release.EnvSelfManaged}}, io.Discard)
+		LiveEnvironment{Env: release.EnvRecord{Name: "brand-new", Kind: release.EnvSelfManaged}}, nil, io.Discard)
 	if got != nil {
 		t.Errorf("presence = %v, want nil (unverifiable) for an env with no row", got)
 	}

@@ -113,35 +113,18 @@ jobs:
     if: ${{ always() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
     steps:
+      # The script alone: one rolling issue, found by its label, reopened on
+      # the next red, commented only when the set of red jobs changes.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
       - name: Open, update or close the "Nightly CI is red" issue
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RESULTS: ${{ toJSON(needs) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          title="Nightly CI is red"
-          # A cancelled job did not verify anything either: a job that runs
-          # past timeout-minutes is reported as cancelled, not failed.
-          red=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "- `\(.key)`: \(.value.result)"' <<<"$RESULTS")
-          open=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
-            --jq "[.[] | select(.title == \"$title\")][0].number // empty")
-          if [ -n "$red" ]; then
-            body=$(printf 'The nightly run on main is red: %s\n\n%s\n\nNightly checks are the ones moved off pull requests for speed (see `.github/workflows/nightly.yml`), so a pull request merged since the last green nightly is the likely cause.\n' "$RUN_URL" "$red")
-            if [ -n "$open" ]; then
-              gh issue comment "$open" --body "$body"
-              echo "commented on #$open"
-            else
-              gh issue create --title "$title" --body "$body"
-            fi
-            echo "::error::nightly is red:"
-            echo "$red"
-          elif [ -n "$open" ]; then
-            gh issue close "$open" --comment "Green again: $RUN_URL"
-            echo "closed #$open"
-          else
-            echo "nightly is green; no open issue"
-          fi
+        run: scripts/ci-nightly-issue.sh

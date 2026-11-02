@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/alerting"
 )
 
 func TestAlertInputFollowsTheDashboardInput(t *testing.T) {
@@ -594,5 +595,15 @@ func TestFrontendAlertsFirePerReportedServiceName(t *testing.T) {
 	}
 	if seen != 2 {
 		t.Errorf("resolved %d frontend defaults, want 2", seen)
+	}
+}
+
+// Every default's annotations must render: a summary the evaluator cannot
+// template is sent as raw text.
+func TestAlertDefaultAnnotationsRender(t *testing.T) {
+	for _, d := range alertDefs {
+		if err := alerting.ValidateAnnotations(d.annotations); err != nil {
+			t.Errorf("default %s: %v", d.ID, err)
+		}
 	}
 }

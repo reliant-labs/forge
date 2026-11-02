@@ -164,6 +164,22 @@ const (
 	// since nothing about waiting makes a deleted blob reappear. The remedy
 	// is to re-build and re-record.
 	reasonBundleMissing = "bundle_missing"
+
+	// The promotion health gate's refusals (the env's
+	// delivery_policy.health_gate): an env it follows has not proved the
+	// release good. They split the way `forge obs check`'s exit codes do.
+	//
+	// reasonHealthGateRegressed: the release's verdict there is FAIL.
+	// exitWrong, like obs check's 1: we looked and the release is bad.
+	// Waiting changes nothing; the fix goes forward in a new release.
+	reasonHealthGateRegressed = "health_gate_regressed"
+	// reasonHealthGateUnproven: INCONCLUSIVE, or the release never ran there.
+	// exitRefused: declined, nothing lost; the release must run there and be
+	// judged (or the promote overridden, recorded) before it is admitted.
+	reasonHealthGateUnproven = "health_gate_unproven"
+	// reasonHealthGatePending: it runs there, and its verdict is not in yet.
+	// exitRefused: the one health-gate refusal waiting fixes.
+	reasonHealthGatePending = "health_gate_pending"
 )
 
 // exitCodeForRefusal maps a refusal REASON to its exit code — the one table
@@ -186,9 +202,10 @@ func exitCodeForRefusal(reason string) int {
 	switch reason {
 	case reasonPromotionConflict, reasonSourceMoved, reasonPlanStale:
 		return exitConflict
-	case reasonRolloutInFlight, reasonEnvironmentPinned, reasonPlanUnacknowledged:
+	case reasonRolloutInFlight, reasonEnvironmentPinned, reasonPlanUnacknowledged,
+		reasonHealthGateUnproven, reasonHealthGatePending:
 		return exitRefused
-	case reasonBundleMissing:
+	case reasonBundleMissing, reasonHealthGateRegressed:
 		return exitWrong
 	default:
 		return exitWrong

@@ -188,9 +188,10 @@ func TestResolveShapeAlerts_NothingToEvaluateRecordsNothing(t *testing.T) {
 func TestResolveShapeAlerts_Refusals(t *testing.T) {
 	dir := writeAlertDefaults(t, alertProject())
 	cases := map[string]*AlertsEntity{
-		"a rule reusing a default's name": {Rules: []AlertRuleEntity{{Alert: "ServiceErrorRateHigh", Expr: "SELECT 1 AS value", Labels: map[string]string{"severity": "info"}, Enabled: true}}},
-		"an unknown default":              {Defaults: map[string]AlertDefaultEntity{"error-rte": {Enabled: true}}},
-		"an unknown param":                {Defaults: map[string]AlertDefaultEntity{"error-rate": {Enabled: true, Params: map[string]float64{"thresold": 1}}}},
+		"a rule reusing a default's name":  {Rules: []AlertRuleEntity{{Alert: "ServiceErrorRateHigh", Expr: "SELECT 1 AS value", Labels: map[string]string{"severity": "info"}, Enabled: true}}},
+		"an unknown default":               {Defaults: map[string]AlertDefaultEntity{"error-rte": {Enabled: true}}},
+		"an unknown param":                 {Defaults: map[string]AlertDefaultEntity{"error-rate": {Enabled: true, Params: map[string]float64{"thresold": 1}}}},
+		"an annotation that cannot render": {Rules: []AlertRuleEntity{{Alert: "Mine", Expr: "SELECT 1 AS value", Labels: map[string]string{"severity": "info"}, Annotations: map[string]string{"summary": "{{ query \"up\" }}"}, Enabled: true}}},
 	}
 	for name, a := range cases {
 		if _, _, err := resolveShapeAlerts(dir, "dev", obsEntities(a)); err == nil {

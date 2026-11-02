@@ -4522,6 +4522,24 @@ schema OpenBaoKV:
         max_versions >= 2 and max_versions <= 1000, \
             "OpenBaoKV.max_versions must be 2..1000: a rotation keeps the previous version readable so a pin can be rolled back"
 
+schema OpenBaoTransit:
+    """A transit secret engine: OpenBao signs, verifies and encrypts with keys
+    it never releases. The converge Job ENABLES the mount (and never disables
+    it: that would destroy every key on it); keys are created by a consumer
+    whose grants allow `<mount>/keys/<name>`, and used through
+    `<mount>/sign/<name>`. The converge Job itself holds no capability under
+    the mount.
+
+        transit = [forge.OpenBaoTransit {mount = "transit"}]
+        consumers = [forge.OpenBaoConsumer {name = "signer", workload = "signer", grants = [
+            forge.OpenBaoGrant {path = "transit/keys/+", capabilities = ["create", "update", "read"], wildcard_read_reason = "public keys only"}
+            forge.OpenBaoGrant {path = "transit/sign/+", capabilities = ["update"]}
+        ]}]"""
+    mount: str = "transit"
+
+    check:
+        regex.match(mount, r"^[A-Za-z0-9][A-Za-z0-9_-]*$"), "OpenBaoTransit.mount '${mount}' must be a single path segment (letters, digits, '_', '-')"
+
 schema OpenBaoHA:
     """High availability, rendered when there is more than one replica: a
     PodDisruptionBudget, a node spread and a zone spread.
@@ -4755,6 +4773,7 @@ schema OpenBao:
       * `seal`      — a static key, escrowed in `Bundle.bootstrap_source`.
       * `recovery`  — where `bao operator init` output is escrowed.
       * `kv`, `ha`, `audit` — the KV-v2 mount, availability, audit devices.
+      * `transit`   — transit secret engines to enable (signing keys).
       * `consumers` — static principals with exact grants.
       * `writer`    — how a person writes values (default: a service-account
                       token; opt in to OIDC with a ManagedIdentity).
@@ -4780,6 +4799,7 @@ schema OpenBao:
     seal: StaticSeal = StaticSeal {}
     recovery: OpenBaoRecovery = OpenBaoRecovery {}
     kv: OpenBaoKV = OpenBaoKV {}
+    transit: [OpenBaoTransit] = []
     ha: OpenBaoHA = OpenBaoHA {}
     audit: OpenBaoAudit = OpenBaoAudit {}
     consumers: [OpenBaoConsumer] = []
@@ -4806,6 +4826,8 @@ schema OpenBao:
         any l in listeners { l.tls }, \
             "OpenBao.listeners has no TLS listener: a plaintext listener is only transitional, beside a TLS one. Add forge.OpenBaoListener {} (TLS, the default)"
         len(_duplicates([c.name for c in consumers])) == 0, "OpenBao.consumers: a name is declared twice: ${_duplicates([c.name for c in consumers])}"
+        len(_duplicates([t.mount for t in transit])) == 0, "OpenBao.transit: a mount is declared twice: ${_duplicates([t.mount for t in transit])}"
+        kv.mount not in [t.mount for t in transit], "OpenBao.transit mount '${kv.mount}' is the KV mount: give the transit engine its own mount"
         len(_duplicates([(c.namespace or namespace) + "/" + c.workload for c in consumers])) == 0, \
             "OpenBao.consumers: a workload is declared twice: ${_duplicates([(c.namespace or namespace) + '/' + c.workload for c in consumers])}. One principal has one role; merge the grants"
         len(_duplicates([m.name for m in retired_auth_mounts])) == 0, \
@@ -5177,13 +5199,14 @@ schema Signing:
     image digests, repo names and signer identities; `oidc_issuer` and
     `oidc_subject` (a regexp) say which identity is trusted.
 
-    Default mode `enforce`: once signing lands, forge and the platform builder
-    sign on your behalf, so there is nothing for you to set up. NOT YET: today
-    nothing signs a bundle or an image (`forge env deploy` and the hosted
-    builder push them unsigned), so this mode is recorded and changes
-    nothing. Load `deploy/delivery-policy`.
+    Default mode `audit`: with a control plane, the platform signs every
+    recorded bundle with the org's key (an OpenBao transit key) and verifies
+    it server-side, recording the verdict without blocking. `enforce` also
+    refuses a promotion of an unsigned bundle. An env with no control plane
+    has nothing that signs yet: `signing` unset is `off` there, and
+    `enforce` is refused.
     """
-    mode: ControlMode = "enforce"
+    mode: ControlMode = "audit"
     key: "org_kms" | "customer" | "keyless" = "org_kms"
     key_ref?: str
     oidc_issuer?: str
@@ -5305,6 +5328,38 @@ schema Approvals:
         len(approvers) == len({a: 1 for a in approvers}), \
             "Approvals.approvers names a person twice: ${[a for a in approvers if len([x for x in approvers if x == a]) > 1]}"
 
+_HEALTH_GATE_ENV_RE = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+
+schema HealthGate:
+    """The promotion health gate: this env takes a release only once every env
+    in `after` has proved it good.
+
+        health_gate = forge.HealthGate {after = ["staging"]}
+
+    "Proved good" is the control plane's own release-health verdict for the
+    newest promotion of the release there — the verdict `forge obs check`
+    reports as exit 0, judged with that env's `release_health` once its
+    window closes. A FAIL (exit 1), an INCONCLUSIVE (exit 2), no verdict yet
+    (exit 8) or a release that never ran there refuses the promotion, each
+    with its own reason and what to run. A release this env itself already
+    ran with a PASS needs no detour (a rollback).
+
+    The order is DECLARED here, never inferred: an empty `after` gates
+    nothing whatever the mode, so declaring it is the opt-in, and the
+    default mode is `enforce`. `audit` admits and records what enforce would
+    refuse. An incident override is `forge env deploy <env> <v>
+    --override-health-gate "<why>"`, recorded on the promotion with who and
+    why. Enforced by the control plane at promote, inside the promotion's
+    transaction; a self-hosted env with no control plane records it only.
+    """
+    mode: ControlMode = "enforce"
+    after: [str] = []
+
+    check:
+        len([e for e in after if not regex.match(e, _HEALTH_GATE_ENV_RE)]) == 0, \
+            "HealthGate.after ${[e for e in after if not regex.match(e, _HEALTH_GATE_ENV_RE)]} are not env names: name the envs under deploy/kcl/ this one follows, e.g. [\"staging\"]"
+        isunique(after), "HealthGate.after names an env twice"
+
 schema DeliveryPolicy:
     """What an env's releases must prove, per control, per env. Set on
     `Bundle.delivery_policy`. UNSET is the default for every control.
@@ -5329,36 +5384,62 @@ schema DeliveryPolicy:
     baseline. Every env gets them.
 
     The resolved policy is recorded in the release shape (`delivery_policy`)
-    when any value differs from the default, so the control plane can enforce
-    what the env declared. It does not yet: every control is recorded and
-    none blocks a release. In particular nothing signs a bundle and no Flux
-    OCIRepository carries `spec.verify`, so `signing` and `flux_verify` at
-    their `enforce` defaults verify nothing today.
+    when any value differs from the default, so the control plane enforces
+    what the env declared. A control plane enforces `signing` and
+    `flux_verify` (bundles) and `health_gate`; every other control is
+    recorded and blocks nothing yet. Load `deploy/delivery-policy`.
     """
     trusted_builder: TrustedBuilder = TrustedBuilder {}
-    signing: Signing = Signing {}
+    # UNSET FOLLOWS WHERE THE ENV DELIVERS: `audit` with a control plane
+    # (the platform signs, and verifies server-side), `off` without one
+    # (nothing signs a self-hosted env's bundles yet). Resolved at render.
+    signing?: Signing
     provenance_sbom: Control = Control {mode = "enforce"}
-    flux_verify: Control = Control {mode = "enforce"}
+    # Unset follows `signing`'s rule: `audit` with a control plane, `off`
+    # without one. `enforce` writes OCIRepository spec.verify on the hub.
+    flux_verify?: Control
     admission_verify: Control = Control {mode = "audit"}
     signed_promotions: Control = Control {mode = "audit"}
     vuln_gate: VulnPolicy = VulnPolicy {}
     bundle_kinds: BundleKinds = BundleKinds {}
     approvals: Approvals = Approvals {}
+    # The promotion health gate. UNSET = no gate: the envs a release must be
+    # proven good in first are declared, never inferred. See HealthGate.
+    health_gate?: HealthGate
 
     check:
         # An ENFORCING control cannot be satisfied when what it checks is never
         # produced. Audit over a missing prerequisite only records "unverifiable",
         # so it is allowed: it is noise, not a deploy that can never pass.
-        signing.mode != "off" or len(_delivery_enforced_verifiers(flux_verify, admission_verify, signed_promotions)) == 0, \
+        not signing or signing.mode != "off" or len(_delivery_enforced_verifiers(flux_verify, admission_verify, signed_promotions)) == 0, \
             "DeliveryPolicy: signing is \"off\" but ${', '.join(_delivery_enforced_verifiers(flux_verify, admission_verify, signed_promotions))} enforce(s) signature verification: nothing would carry a signature, so nothing could pass. Set them to \"audit\" or \"off\", or turn signing on"
         provenance_sbom.mode != "off" or trusted_builder.mode != "enforce", \
             "DeliveryPolicy: trusted_builder is \"enforce\" but provenance_sbom is \"off\": the builder is read from the provenance, which would not exist, so no artifact could pass. Set trusted_builder to \"audit\" or \"off\", or turn provenance_sbom on"
         provenance_sbom.mode != "off" or vuln_gate.mode != "enforce", \
             "DeliveryPolicy: vuln_gate is \"enforce\" but provenance_sbom is \"off\": the gate scans the SBOM, which would not exist, so no release could pass. Set vuln_gate to \"audit\" or \"off\", or turn provenance_sbom on"
 
+# signing / flux_verify resolved for where the env delivers: the declaration,
+# else `audit` with a control plane and `off` without one.
+_delivery_signing_mode = lambda p: DeliveryPolicy, hosted: bool -> str {
+    p.signing.mode if p.signing else ("audit" if hosted else "off")
+}
+_delivery_flux_verify_mode = lambda p: DeliveryPolicy, hosted: bool -> str {
+    p.flux_verify.mode if p.flux_verify else ("audit" if hosted else "off")
+}
+
+# The signing controls an env with no control plane declares as enforce:
+# nothing there signs, so none of them could ever pass.
+# (A check message is evaluated even when its condition holds, so this takes
+# an unset policy too and answers [].)
+_delivery_self_hosted_enforced = lambda p -> [str] {
+    [] if not p else (["signing"] if p.signing and p.signing.mode == "enforce" else []) \
+        + (["flux_verify"] if p.flux_verify and p.flux_verify.mode == "enforce" else []) \
+        + ([v for v in _delivery_enforced_verifiers(p.flux_verify, p.admission_verify, p.signed_promotions) if v != "flux_verify"] if not p.signing else [])
+}
+
 # The signature-verifying controls set to enforce, in declaration order.
-_delivery_enforced_verifiers = lambda flux_verify: Control, admission_verify: Control, signed_promotions: Control -> [str] {
-    (["flux_verify"] if flux_verify.mode == "enforce" else []) + (["admission_verify"] if admission_verify.mode == "enforce" else []) + (["signed_promotions"] if signed_promotions.mode == "enforce" else [])
+_delivery_enforced_verifiers = lambda flux_verify, admission_verify: Control, signed_promotions: Control -> [str] {
+    (["flux_verify"] if flux_verify and flux_verify.mode == "enforce" else []) + (["admission_verify"] if admission_verify.mode == "enforce" else []) + (["signed_promotions"] if signed_promotions.mode == "enforce" else [])
 }
 
 _DB_QUERY_POLICIES = ["open", "audited", "deny"]
@@ -5783,7 +5864,9 @@ schema AlertRule:
       * `keep_firing_for` — hold the alert this long after it clears.
       * `labels`          — `severity` is one of critical | warning | info
         (default warning). `reliant_*` and `alertname` are reserved.
-      * `annotations`     — free text (summary, description, runbook_url).
+      * `annotations`     — summary, description, runbook_url: Prometheus-style
+        Go templates (`{{ $labels.x }}`, `{{ printf "%.0f" $value }}`,
+        `humanize`, `mulf`, ...; the `observability/alerts` skill lists them).
       * `enabled`         — False keeps the rule in the file and out of the shape.
     """
     alert: str
@@ -7015,6 +7098,8 @@ schema Bundle:
             "Bundle.hub_converges lists a unit twice: ${hub_converges}"
         len([u for u in (hub_converges or []) if u != "base" and u not in [d.name for d in delivery_units]]) == 0, \
             "Bundle.hub_converges names a unit that is not declared: ${[u for u in (hub_converges or []) if u != 'base' and u not in [d.name for d in delivery_units]]} (declared: ${[d.name for d in delivery_units] + ['base']}). A unit exists only if Bundle.delivery_units declares it, or it is the default unit base"
+        not delivery_policy or control_plane or len(_delivery_self_hosted_enforced(delivery_policy)) == 0, \
+            "Bundle.delivery_policy sets ${', '.join(_delivery_self_hosted_enforced(delivery_policy))} to enforce, but this env has no control_plane: nothing signs a self-hosted env's bundles yet, so nothing could pass. Use \"audit\" or \"off\" (unset is off without a control plane), or deliver through a control plane"
         not hub_converges or control_plane, \
             "Bundle.hub_converges = ${hub_converges} needs control_plane = forge.ControlPlane {}: the control plane's hub is what converges the units it lists"
         not (hub_converges and lifecycle), \

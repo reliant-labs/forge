@@ -1493,6 +1493,13 @@ func activateGitHooks(ctx context.Context, path string) error {
 	// one setting in the shared .git/config makes the hooks fire in every
 	// linked worktree. Set here, before the initial commit, so the repo
 	// ships activated; fresh clones self-heal via ensureGitHooksActivated.
+	//
+	// FORGE_NO_GIT_HOOKS opts out here exactly as it does there: a process
+	// that said "no git hooks" (a script, a test driving plain git) must not
+	// get them from the one command that creates the repository.
+	if gitHooksOptOut() != "" {
+		return nil
+	}
 	cmd := exec.CommandContext(ctx, "git", "config", "--local", "core.hooksPath", ".githooks")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {

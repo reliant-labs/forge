@@ -37,16 +37,15 @@ func TestDefaultDeliveryPolicyIsValidAndIsItsOwnDefault(t *testing.T) {
 }
 
 // The hybrid rule, pinned: what cannot block a deploy enforces, what can audits.
+// Signing and flux_verify audit: enforcing them refuses a rollback to a
+// release signed before them, so an env opts in once its history is signed.
 func TestDefaultDeliveryPolicyFollowsTheHybridRule(t *testing.T) {
 	d := DefaultDeliveryPolicy()
-	for name, got := range map[string]DeliveryMode{
-		"signing": d.Signing.Mode, "provenance_sbom": d.ProvenanceSBOM.Mode, "flux_verify": d.FluxVerify.Mode,
-	} {
-		if got != DeliveryEnforce {
-			t.Errorf("%s defaults to %s, want enforce: it cannot block a deploy", name, got)
-		}
+	if d.ProvenanceSBOM.Mode != DeliveryEnforce {
+		t.Errorf("provenance_sbom defaults to %s, want enforce: it cannot block a deploy", d.ProvenanceSBOM.Mode)
 	}
 	for name, got := range map[string]DeliveryMode{
+		"signing": d.Signing.Mode, "flux_verify": d.FluxVerify.Mode,
 		"trusted_builder": d.TrustedBuilder.Mode, "admission_verify": d.AdmissionVerify.Mode,
 		"signed_promotions": d.SignedPromotions.Mode, "vuln_gate": d.VulnGate.Mode,
 		"bundle_kinds": d.BundleKinds.Mode, "approvals": d.Approvals.Mode,
@@ -57,6 +56,22 @@ func TestDefaultDeliveryPolicyFollowsTheHybridRule(t *testing.T) {
 	}
 	if d.Approvals.Required != 1 {
 		t.Errorf("approvals default to %d people, want one-person", d.Approvals.Required)
+	}
+}
+
+// With no control plane nothing signs, so the self-hosted default claims
+// nothing: signing and flux_verify off, everything else as hosted.
+func TestDefaultSelfHostedDeliveryPolicySignsNothing(t *testing.T) {
+	sh, d := DefaultSelfHostedDeliveryPolicy(), DefaultDeliveryPolicy()
+	if sh.Signing.Mode != DeliveryOff || sh.FluxVerify.Mode != DeliveryOff {
+		t.Fatalf("self-hosted default signing=%s flux_verify=%s, want off/off", sh.Signing.Mode, sh.FluxVerify.Mode)
+	}
+	if err := sh.validate(); err != nil {
+		t.Fatalf("the self-hosted default is invalid: %v", err)
+	}
+	sh.Signing.Mode, sh.FluxVerify.Mode = d.Signing.Mode, d.FluxVerify.Mode
+	if !reflect.DeepEqual(sh, d) {
+		t.Errorf("self-hosted and hosted defaults differ beyond signing/flux_verify:\n %+v\n %+v", sh, d)
 	}
 }
 
@@ -171,9 +186,9 @@ func TestShape_DeliveryPolicyGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	const want = `{"trusted_builder":{"mode":"audit","builders":[]},` +
-		`"signing":{"mode":"enforce","key":"org_kms"},` +
+		`"signing":{"mode":"audit","key":"org_kms"},` +
 		`"provenance_sbom":{"mode":"enforce"},` +
-		`"flux_verify":{"mode":"enforce"},` +
+		`"flux_verify":{"mode":"audit"},` +
 		`"admission_verify":{"mode":"audit"},` +
 		`"signed_promotions":{"mode":"audit"},` +
 		`"vuln_gate":{"mode":"enforce","block_severity":"critical","warn_severity":"high","block_kev":true,"fixable_only":true,"exemptions":[]},` +
@@ -201,7 +216,10 @@ func TestShape_DeliveryPolicyRefusals(t *testing.T) {
 			p.FluxVerify.Mode = DeliveryOff
 			p.AdmissionVerify.Mode = DeliveryEnforce
 		}), "admission_verify is enforce but signing is off"},
-		"flux enforce, no sign": {mut(func(p *ShapeDeliveryPolicy) { p.Signing.Mode = DeliveryOff }), "flux_verify is enforce but signing is off"},
+		"flux enforce, no sign": {mut(func(p *ShapeDeliveryPolicy) {
+			p.Signing.Mode = DeliveryOff
+			p.FluxVerify.Mode = DeliveryEnforce
+		}), "flux_verify is enforce but signing is off"},
 		"promotions enforce, no sign": {mut(func(p *ShapeDeliveryPolicy) {
 			p.Signing.Mode = DeliveryOff
 			p.FluxVerify.Mode = DeliveryOff
@@ -248,6 +266,15 @@ func TestShape_DeliveryPolicyRefusals(t *testing.T) {
 		}), "off asks nobody"},
 		"approver twice":        {mut(func(p *ShapeDeliveryPolicy) { p.Approvals.Required, p.Approvals.Approvers = 2, []string{"ana", "ana"} }), "twice"},
 		"approver with a space": {mut(func(p *ShapeDeliveryPolicy) { p.Approvals.Approvers = []string{"ana b"} }), "approver"},
+		"health gate mode": {mut(func(p *ShapeDeliveryPolicy) {
+			p.HealthGate = &ShapeHealthGate{Mode: "strict", After: []string{"staging"}}
+		}), "health_gate mode"},
+		"health gate not an env": {mut(func(p *ShapeDeliveryPolicy) {
+			p.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"Staging Env"}}
+		}), "not an env name"},
+		"health gate env twice": {mut(func(p *ShapeDeliveryPolicy) {
+			p.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"staging", "staging"}}
+		}), "twice"},
 	} {
 		err := Shape{Kind: EnvLocal, DeliveryPolicy: tc.p}.Canonical().Validate()
 		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.want) {
@@ -276,5 +303,47 @@ func TestShape_DeliveryPolicyAllOffIsValid(t *testing.T) {
 	p.VulnGate.Mode, p.BundleKinds.Mode, p.Approvals.Mode = DeliveryOff, DeliveryOff, DeliveryOff
 	if err := (Shape{Kind: EnvLocal, DeliveryPolicy: &p}.Canonical().Validate()); err != nil {
 		t.Fatalf("a customer may turn every control off: %v", err)
+	}
+}
+
+// The health gate is recorded only when it says something: the default (enforce,
+// naming nothing) is the absence of one, so it neither records the policy nor
+// changes its hash, and the order the envs are named in is not part of it.
+func TestShape_DeliveryPolicyHealthGate(t *testing.T) {
+	spelled := DefaultDeliveryPolicy()
+	spelled.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{}}
+	if !spelled.IsDefault() {
+		t.Fatal("a health gate naming no env must be the default")
+	}
+	if b, _ := (Shape{Kind: EnvSelfManaged, DeliveryPolicy: &spelled}).Encode(); strings.Contains(string(b), "health_gate") {
+		t.Fatalf("the default health gate was recorded: %s", b)
+	}
+
+	a, b := DefaultDeliveryPolicy(), DefaultDeliveryPolicy()
+	a.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"staging", "canary"}}
+	b.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"canary", "staging"}}
+	ea, err := Shape{Kind: EnvSelfManaged, DeliveryPolicy: &a}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eb, _ := Shape{Kind: EnvSelfManaged, DeliveryPolicy: &b}.Encode()
+	if string(ea) != string(eb) {
+		t.Errorf("env order changed the encoding:\n%s\n%s", ea, eb)
+	}
+	if !strings.Contains(string(ea), `"health_gate":{"mode":"enforce","after":["canary","staging"]}`) {
+		t.Errorf("health_gate wire form changed: %s", ea)
+	}
+	var back Shape
+	if err := json.Unmarshal(ea, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.DeliveryPolicy == nil || back.DeliveryPolicy.HealthGate == nil || back.DeliveryPolicy.HealthGate.After[0] != "canary" {
+		t.Fatalf("round trip lost the gate: %+v", back.DeliveryPolicy)
+	}
+
+	off := DefaultDeliveryPolicy()
+	off.HealthGate = &ShapeHealthGate{Mode: DeliveryOff, After: []string{}}
+	if off.IsDefault() {
+		t.Error("an explicitly off health gate is a declaration, not the default")
 	}
 }

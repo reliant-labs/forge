@@ -58,6 +58,9 @@ func TestForgeGeneratedPathPattern(t *testing.T) {
 		"frontends/web/src/hooks/index.ts",
 		"frontends/web/src/mocks/fixture-freshness_gen.test.ts",
 		".forge-kcl/forge/schema.k",
+		".forge/scaffolded/frontends/web/tsconfig.json.json",
+		".forge/hashes/internal/app/graph_gen.go.json",
+		".forge/disowned.json",
 	}
 	handWritten := []string{
 		"frontends/web/src/components/pricing.tsx",

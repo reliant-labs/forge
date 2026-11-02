@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/reliant-labs/forge/internal/obsdash"
+	"github.com/reliant-labs/forge/pkg/alerting"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -107,6 +108,9 @@ func resolveShapeAlerts(projectDir, envName string, e *KCLEntities) ([]release.S
 	for _, r := range decl.Rules {
 		if !r.Enabled {
 			continue
+		}
+		if err := alerting.ValidateAnnotations(r.Annotations); err != nil {
+			return nil, nil, fmt.Errorf("observability.alerts: rule %q: %w", r.Alert, err)
 		}
 		out = append(out, release.ShapeAlert{
 			Alert: r.Alert, Expr: r.Expr, For: r.For, Interval: r.Interval, KeepFiringFor: r.KeepFiringFor,

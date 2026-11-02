@@ -134,14 +134,14 @@ prints the deploy plan and will not write a promotion until somebody approves
 it. A GitHub runner has no TTY to prompt on, so without `--yes` the command
 exits **5** (`plan_unconfirmed`) having built, pushed and cut but deployed
 nothing. `--yes` means "I read the plan" — the plan is still computed and
-printed into the job log immediately above the write, so the record of what
-shipped is in the run. For a pipeline that wants a human in the loop, run
+printed into the job log above the write, so what shipped is in
+the run. For a pipeline that wants a human in the loop, run
 `--plan-only` in one job and put the approving job behind a GitHub Environment
-with required reviewers; `release.yml` already has that shape.
+with required reviewers; `release.yml` has that shape.
 The env list is the project's `deploy/kcl/<env>/main.k` set (dev excluded),
 read when the workflow is scaffolded; with several, the first auto-deploys
-after a green image build on main and the last is protected. A lone env is
-never auto-deployed.
+after a green image build on main and the last is protected (health gate:
+`deploy/delivery-policy`). A lone env is never auto-deployed.
 
 Credentials: an env with `forge.OnCluster` workloads needs `secrets.KUBECONFIG` holding a
 context named exactly the ClusterTarget's `cluster`; `forge.OnHosted`

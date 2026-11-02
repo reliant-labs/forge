@@ -12,6 +12,8 @@ _k3d = forge.ClusterTarget {cluster = "k3d-demo", namespace = "demo-dev"}
 
 output = forge.render(forge.Bundle {
     project = "demo"
+    # Enforcing signing needs something that signs: the control plane.
+    control_plane = forge.ControlPlane {}
     delivery_policy = forge.DeliveryPolicy {
         trusted_builder = forge.TrustedBuilder {mode = "enforce", builders = ["github:acme/api", "cloudbuild:acme-prod/delivery"]}
         signing = forge.Signing {mode = "enforce"}

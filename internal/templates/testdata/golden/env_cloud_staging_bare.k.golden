@@ -171,8 +171,13 @@ _api_config = {API_URL = forge.WorkloadURL {workload = _api.name}} if any w in _
 
 # HOSTED: the platform's static hosting. Like a workload, its image
 # names no registry host. The release carries no config.js: the control
-# plane writes one after every sync, resolving API_URL to the hosted API's
-# URL, so one release promotes between envs unchanged.
+# plane writes one after every sync, so one release promotes between envs
+# unchanged. An API_URL that references a workload becomes "/_api": the
+# platform serves that workload on every host of the site (custom domains
+# too) at /_api/*, the path the dev loop proxies, so the session cookie is
+# first-party to the site. The API's own URL keeps working for CLIs, mobile
+# apps and servers. To have the browser call that URL instead, write it as a
+# literal: `API_URL = "https://<api host>"` is never rewritten.
 _hosted_frontend = lambda f: forge.Frontend -> forge.Frontend {
     f | {
         image = f.name

@@ -164,9 +164,14 @@ CREATE FUNCTION helper() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;
 		{`ALTER ROLE %s CREATEDB`, `ALTER ROLE %s NOCREATEDB`, "role attribute CREATEDB"},
 		// Effective privileges: what PUBLIC holds, the role holds.
 		{`GRANT DELETE ON events TO PUBLIC -- %s`, `REVOKE DELETE ON events FROM PUBLIC -- %s`, "DELETE on table events, held through PUBLIC (fix: REVOKE DELETE ON TABLE events FROM PUBLIC)"},
-		{`GRANT SELECT ON events TO PUBLIC -- %s`, `REVOKE SELECT ON events FROM PUBLIC -- %s`, "SELECT on table events is granted to PUBLIC, so " + role + " reads every column"},
+		{`GRANT SELECT ON events TO PUBLIC -- %s`, `REVOKE SELECT ON events FROM PUBLIC -- %s`, "SELECT on table events is granted to PUBLIC, so " + role + " reads all of it"},
 		{`GRANT SELECT (note) ON events TO PUBLIC -- %s`, `REVOKE SELECT (note) ON events FROM PUBLIC -- %s`, "SELECT on some columns of table events is granted to PUBLIC"},
-		{`GRANT CREATE ON SCHEMA public TO PUBLIC -- %s`, `REVOKE CREATE ON SCHEMA public FROM PUBLIC -- %s`, "CREATE on schema public, held through PUBLIC (fix: REVOKE CREATE ON SCHEMA public FROM PUBLIC)"},
+		{`GRANT CREATE ON SCHEMA public TO PUBLIC -- %s`, `REVOKE CREATE ON SCHEMA public FROM PUBLIC -- %s`, "CREATE on schema public, held through PUBLIC (fix: REVOKE CREATE ON SCHEMA public FROM PUBLIC, run as the owner of SCHEMA public ("},
+		// Grant options on read privileges: the role could hand them on.
+		{`GRANT SELECT ON SEQUENCE events_seq TO %s WITH GRANT OPTION`, `REVOKE GRANT OPTION FOR SELECT ON SEQUENCE events_seq FROM %s`, "SELECT WITH GRANT OPTION on sequence events_seq"},
+		{`GRANT USAGE ON SCHEMA public TO %s WITH GRANT OPTION`, `REVOKE GRANT OPTION FOR USAGE ON SCHEMA public FROM %s`, "USAGE WITH GRANT OPTION on schema public"},
+		// PUBLIC's default privileges beyond reading; SELECT is allowed (below).
+		{`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT INSERT ON TABLES TO PUBLIC -- %s`, `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE INSERT ON TABLES FROM PUBLIC -- %s`, "on new tables grant INSERT to PUBLIC (fix: ALTER DEFAULT PRIVILEGES FOR ROLE"},
 		// Ownership carries every privilege with no ACL entry.
 		{`ALTER TABLE other OWNER TO %s`, `ALTER TABLE other OWNER TO CURRENT_USER -- %s`, "owns table other"},
 		{`ALTER SEQUENCE events_seq OWNER TO %s`, `ALTER SEQUENCE events_seq OWNER TO CURRENT_USER -- %s`, "owns sequence events_seq"},
@@ -189,6 +194,16 @@ CREATE FUNCTION helper() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;
 			t.Errorf("after %q: violations = %v, want none", fmt.Sprintf(c.revoke, role), got)
 		}
 	}
+
+	// PUBLIC's default SELECT on new tables, and Postgres's own defaults
+	// re-stated, are reading.
+	f.exec(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO PUBLIC`)
+	f.exec(`ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`)
+	f.exec(`ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO PUBLIC`)
+	if got := violations(); len(got) != 0 {
+		t.Errorf("PUBLIC's reading defaults: violations = %v, want none", got)
+	}
+	f.exec(`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM PUBLIC`)
 
 	// EXECUTE is PUBLIC's default on every function and is not listed; a
 	// SECURITY DEFINER function is SecurityDefinerExposure's warning.

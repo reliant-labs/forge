@@ -10,6 +10,13 @@
 //                               config (config.js), exactly as before. A
 //                               built SPA is plain files, with no proxy.
 //
+// On Reliant hosting that runtime config says `/_api`: the platform serves the
+// env's API on every host of the site (custom domains too) at `/_api/*`, the
+// same path as the dev loop below, so sign-in's session cookie is first-party
+// to the site. The value is origin-relative and used as is; it is never
+// resolved against a host here. A literal API_URL in the env's KCL is not
+// rewritten, if the browser should call the API's own host instead.
+//
 // ── Why the dev loop goes through this origin ─────────────────────────
 //
 // `forge env up` runs the API on one port and this dev server on another.

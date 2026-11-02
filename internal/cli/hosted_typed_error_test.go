@@ -94,6 +94,12 @@ func TestExitCodeForRefusal_SeparatesConflictFromRefused(t *testing.T) {
 		{reasonPromotionConflict, exitConflict},
 		{reasonRolloutInFlight, exitRefused},
 		{reasonEnvironmentPinned, exitRefused},
+		// The health gate splits as `obs check` does: a regression is a
+		// bad release (1); unproven and pending were declined (4), and
+		// pending is the one waiting fixes.
+		{reasonHealthGateRegressed, exitWrong},
+		{reasonHealthGateUnproven, exitRefused},
+		{reasonHealthGatePending, exitRefused},
 		// A reason forge does not know is a forge gap, not an
 		// unobservable environment: the server refused, which means it
 		// looked. Reporting 2 would tell CI to retry a write that will

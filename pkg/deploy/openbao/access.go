@@ -22,11 +22,13 @@ import (
 type AccessDoc struct {
 	// Self is the id of the cluster OpenBao runs on; its mount (jwt-<Self>)
 	// holds the converge, consumer and writer roles and is never removed.
-	Self     string   `json:"self"`
-	KV       KV       `json:"kv"`
-	Mounts   []Mount  `json:"mounts"`
-	Policies []Policy `json:"policies"`
-	Roles    []Role   `json:"roles"`
+	Self string `json:"self"`
+	KV   KV     `json:"kv"`
+	// Transit are the transit mounts to enable; never disabled.
+	Transit  []TransitMount `json:"transit,omitempty"`
+	Mounts   []Mount        `json:"mounts"`
+	Policies []Policy       `json:"policies"`
+	Roles    []Role         `json:"roles"`
 	// Retired are auth mounts the store must not carry; converge disables
 	// each that is present (retired.go). Widen never applies them.
 	Retired []RetiredAuthMount `json:"retired,omitempty"`
@@ -127,7 +129,7 @@ func BuildAccess(s Spec) (AccessDoc, error) {
 		return AccessDoc{}, err
 	}
 
-	doc := AccessDoc{Self: a.SelfCluster, KV: s.KV, Retired: sortedRetired(s.RetiredAuthMounts)}
+	doc := AccessDoc{Self: a.SelfCluster, KV: s.KV, Transit: sortedTransit(s.Transit), Retired: sortedRetired(s.RetiredAuthMounts)}
 	selfMount := secretaccess.MountName(a.SelfCluster)
 	for _, m := range derived.Mounts {
 		md := Mount{Name: m.Name(), Cluster: m.Cluster, Trust: "config", Config: m.ConfigPayload()}
@@ -157,7 +159,7 @@ func BuildAccess(s Spec) (AccessDoc, error) {
 
 	doc.Policies = append(doc.Policies,
 		Policy{Name: PolicyAccessAdmin, Rules: accessAdminRules()},
-		Policy{Name: PolicyConverge, Rules: convergeRules(kv, doc.Retired)},
+		Policy{Name: PolicyConverge, Rules: convergeRules(kv, doc.Transit, doc.Retired)},
 	)
 	selfAud := self.Audience
 	doc.Roles = append(doc.Roles, Role{Mount: selfMount, Name: RoleConverge, Payload: map[string]any{
@@ -237,19 +239,35 @@ func accessAdminRules() []Rule {
 	}
 }
 
-// convergeRules: access-admin, the KV mount itself, and policies of any name,
-// plus the exact retire grants for each retired auth mount (never a glob).
-// No capability on the KV mount's data: the Job cannot read a value.
-func convergeRules(kv string, retired []RetiredAuthMount) []Rule {
+// convergeRules: access-admin, the KV mount itself, each transit mount
+// itself, and policies of any name, plus the exact retire grants for each
+// retired auth mount (never a glob). No capability on the KV mount's data (the
+// Job cannot read a value) and none under a transit mount (it cannot create,
+// read or use a key): enabling the engine is all it does there.
+func convergeRules(kv string, transit []TransitMount, retired []RetiredAuthMount) []Rule {
 	r := accessAdminRules()
 	r = slices.DeleteFunc(r, func(x Rule) bool { return x.Path == "sys/policies/acl/env-*" })
 	r = append(r, retiredRules(retired)...)
+	for _, t := range transit {
+		r = append(r, Rule{Path: "sys/mounts/" + t.Mount, Capabilities: []string{"create", "update", "read"}})
+	}
 	return append(r,
 		Rule{Path: "sys/mounts", Capabilities: []string{"read"}},
 		Rule{Path: "sys/mounts/" + kv, Capabilities: []string{"create", "update", "read"}},
 		Rule{Path: kv + "/config", Capabilities: []string{"create", "update", "read"}},
 		Rule{Path: "sys/policies/acl/*", Capabilities: []string{"create", "read", "update", "delete"}},
 	)
+}
+
+// sortedTransit is the transit mounts in a canonical order (nil for none, so
+// a store without transit keeps its document bytes).
+func sortedTransit(in []TransitMount) []TransitMount {
+	if len(in) == 0 {
+		return nil
+	}
+	out := slices.Clone(in)
+	slices.SortFunc(out, func(a, b TransitMount) int { return cmp.Compare(a.Mount, b.Mount) })
+	return out
 }
 
 func sortRules(r []Rule) {

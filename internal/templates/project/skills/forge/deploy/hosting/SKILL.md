@@ -26,15 +26,38 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
   listing it in `config_secrets`;
 - sets a service's `CORS_ORIGINS = forge.WorkloadURL {workload = "<site>"}`
   and `CORS_ALLOW_CREDENTIALS = "true"` when the project was born with a
-  frontend (`forge scaffold frontend` later prints the line to add). The site
-  and the API are different origins and native sign-in's session cookie is
-  the API's: without credentials allowed, `/auth/login` answers 200 and every
-  call after it 401s.
+  frontend (`forge scaffold frontend` later prints the line to add). They
+  serve a browser that calls the API's own host (a literal `API_URL`, below):
+  there the site and the API are different origins, and without credentials
+  allowed `/auth/login` answers 200 and every call after it 401s.
 
 `_hosted_frontend` sets the bare `image` and `runtime_config = _api_config`
 (`{API_URL = forge.WorkloadURL {workload = "api"}}` once `_api` is bound): the
 control plane writes config.js after every sync, so one release promotes
-unchanged. The frontend must be a static export (`output: static`, which the
+unchanged.
+
+**The browser reaches the API on the site's own origin.** An `API_URL` that
+references a workload is written into config.js as `"/_api"`, and the platform
+serves that workload at `/_api/*` on every host of the site — its platform
+name and every custom domain — stripping the prefix (`/_api/acme.v1.Svc/Get`
+reaches the API as `/acme.v1.Svc/Get`). It is the path `forge env up` proxies in
+dev, so the bundle behaves the same in both. Native sign-in's host-only
+`SameSite=Lax` cookie is therefore first-party to the site, whatever the
+Public Suffix List says about the two hostnames, and no CORS is involved.
+
+- The API sees a direct call: `X-Forwarded-Host` is its own hostname, so
+  redirect URIs and absolute URLs it builds stay on that host, which keeps
+  serving CLIs, mobile apps and servers.
+- A `Set-Cookie` scoped to the API's host becomes host-only on the site; a
+  `Path` below `/` moves under `/_api`. API responses are never cached by the
+  platform's CDN (`Cache-Control` becomes `private`).
+- `/_api` is reserved on hosted sites: with no API it answers 404, not the
+  SPA fallback.
+- To have the browser call the API's own host instead, set the URL as a
+  literal (`API_URL = "https://<api host>"`): a literal is never rewritten,
+  and the CORS settings above make it work while the two hosts are same-site.
+
+The frontend must be a static export (`output: static`, which the
 scaffold writes). A frontend scaffolded by forge ≤ v0.1.43 has no `output:`
 (it is standalone) and dynamic `[id]` pages: `forge skill load
 migrations/v0.1.44`.
@@ -45,6 +68,16 @@ Signed in to Reliant (`reliant forge …`, or a Reliant agent's shell) there is 
 `forge login`: forge mints a token from your session. Standalone forge uses
 `forge login`; CI sets the env's token variable. Deploy `staging` first, then
 promote the same release to `prod`; check with `forge env status <env>`.
+
+To make that order binding, declare it in `deploy/kcl/prod/main.k`:
+`delivery_policy = forge.DeliveryPolicy {health_gate = forge.HealthGate {after
+= ["staging"]}}`. The control plane then refuses to promote a release to prod
+until its own release-health verdict for the release on staging is PASS
+(`health_gate_pending` exit 4 while the window is open: `forge obs check
+staging --release <v> --wait`; `health_gate_regressed` exit 1 on a FAIL;
+`health_gate_unproven` exit 4 otherwise). `--override-health-gate "<why>"` is
+the recorded incident override. A new project declares no order, so its first
+`forge env deploy prod` is never gated. See `deploy/delivery-policy`.
 
 ### No account: `--claimable`
 

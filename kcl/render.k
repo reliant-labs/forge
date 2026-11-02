@@ -91,6 +91,7 @@ import .lib.flux as flux_lib
 import .lib.eso as eso_lib
 import .lib.openbao as openbao_lib
 import .lib.external_secret as es_lib
+import .lib.flux_delivery as flux_delivery_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
 _TWorkload = tiers.Workload
@@ -1650,19 +1651,21 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
 # DeliveryPolicy, every control resolved. The key set is the release shape's
 # `delivery_policy`; lists are sorted so the shape does not depend on the order
 # the author typed them in.
-_render_delivery_policy = lambda p: DeliveryPolicy -> any {
+_render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
     _ex = {e.id: {"id": e.id, "reason": e.reason, "expires": e.expires} for e in p.vuln_gate.exemptions}
     {
         "trusted_builder": {"mode": p.trusted_builder.mode, "builders": sorted(p.trusted_builder.builders)}
+        # Unset signing / flux_verify resolve for where the env delivers:
+        # audit with a control plane, off without one (schema.k).
         "signing": {
-            "mode": p.signing.mode
-            "key": p.signing.key
-            "key_ref": p.signing.key_ref if p.signing.key_ref else None
-            "oidc_issuer": p.signing.oidc_issuer if p.signing.oidc_issuer else None
-            "oidc_subject": p.signing.oidc_subject if p.signing.oidc_subject else None
+            "mode": _delivery_signing_mode(p, hosted)
+            "key": p.signing.key if p.signing else "org_kms"
+            "key_ref": p.signing.key_ref if p.signing and p.signing.key_ref else None
+            "oidc_issuer": p.signing.oidc_issuer if p.signing and p.signing.oidc_issuer else None
+            "oidc_subject": p.signing.oidc_subject if p.signing and p.signing.oidc_subject else None
         }
         "provenance_sbom": {"mode": p.provenance_sbom.mode}
-        "flux_verify": {"mode": p.flux_verify.mode}
+        "flux_verify": {"mode": _delivery_flux_verify_mode(p, hosted)}
         "admission_verify": {"mode": p.admission_verify.mode}
         "signed_promotions": {"mode": p.signed_promotions.mode}
         "vuln_gate": {
@@ -1675,6 +1678,8 @@ _render_delivery_policy = lambda p: DeliveryPolicy -> any {
         }
         "bundle_kinds": {"mode": p.bundle_kinds.mode, "allow": sorted(p.bundle_kinds.allow), "deny": sorted(p.bundle_kinds.deny)}
         "approvals": {"mode": p.approvals.mode, "required": p.approvals.required, "approvers": sorted(p.approvals.approvers)}
+        if p.health_gate:
+            "health_gate": {"mode": p.health_gate.mode, "after": sorted(p.health_gate.after)}
     }
 }
 
@@ -2073,7 +2078,7 @@ render = lambda bundle: Bundle -> any {
         # env declares one. Go records it in the release shape unless it is all
         # defaults.
         if bundle.delivery_policy:
-            "delivery_policy": _render_delivery_policy(bundle.delivery_policy)
+            "delivery_policy": _render_delivery_policy(bundle.delivery_policy, bool(bundle.control_plane))
         # How the env's data may be read (forge db query), resolved: the
         # declaration, else what the lifecycle implies. Present only when it
         # is not "audited", the default of an env with no lifecycle: absence
@@ -3056,6 +3061,22 @@ FLUX_RECONCILER_ROLE = flux_lib.FLUX_RECONCILER_ROLE
 FLUX_SOURCE_ROLE = flux_lib.FLUX_SOURCE_ROLE
 FLUX_PRIORITY_CLASS = flux_lib.FLUX_PRIORITY_CLASS
 FLUX_RUNTIME_CLASS_GVISOR = flux_lib.FLUX_RUNTIME_CLASS_GVISOR
+
+# flux_delivery_resourceset / flux_delivery_rbac — gitless Flux delivery
+# through a flux-operator ResourceSet (lib/flux_delivery.k): the ResourceSet
+# that renders FLUX_DELIVERY_TEMPLATE once per delivery-unit input, and the
+# ServiceAccount, Role and RoleBinding it runs as. Go reads the same template
+# as forge/pkg/fluxdelivery.Template.
+flux_delivery_resourceset = flux_delivery_lib.flux_delivery_resourceset
+flux_delivery_rbac = flux_delivery_lib.flux_delivery_rbac
+FLUX_DELIVERY_TEMPLATE = flux_delivery_lib.FLUX_DELIVERY_TEMPLATE
+FLUX_DELIVERY_API_VERSION = flux_delivery_lib.FLUX_DELIVERY_API_VERSION
+FLUX_DELIVERY_SA = flux_delivery_lib.FLUX_DELIVERY_SA
+FLUX_DELIVERY_PRUNE_ANNOTATION = flux_delivery_lib.FLUX_DELIVERY_PRUNE_ANNOTATION
+FLUX_DELIVERY_PRUNE_DISABLED = flux_delivery_lib.FLUX_DELIVERY_PRUNE_DISABLED
+FLUX_DELIVERY_RETIRE_ORPHAN = flux_delivery_lib.FLUX_DELIVERY_RETIRE_ORPHAN
+FLUX_DELIVERY_RETIRE_TEARDOWN = flux_delivery_lib.FLUX_DELIVERY_RETIRE_TEARDOWN
+FLUX_DELIVERY_INPUT_LABEL = flux_delivery_lib.FLUX_DELIVERY_INPUT_LABEL
 
 # target_arch — the GOARCH forge resolved for this build (lib/build.k).
 #

@@ -5783,7 +5783,9 @@ schema AlertRule:
       * `keep_firing_for` — hold the alert this long after it clears.
       * `labels`          — `severity` is one of critical | warning | info
         (default warning). `reliant_*` and `alertname` are reserved.
-      * `annotations`     — free text (summary, description, runbook_url).
+      * `annotations`     — summary, description, runbook_url: Prometheus-style
+        Go templates (`{{ $labels.x }}`, `{{ printf "%.0f" $value }}`,
+        `humanize`, `mulf`, ...; the `observability/alerts` skill lists them).
       * `enabled`         — False keeps the rule in the file and out of the shape.
     """
     alert: str

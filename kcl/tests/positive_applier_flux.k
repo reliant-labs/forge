@@ -58,6 +58,7 @@ assert_namespace_bindings = sorted([o.roleRef.name for o in _kinds("RoleBinding"
 # No delivery object is a Secret: the pull Secret is copied by the bootstrap.
 assert_no_secret = len(_kinds("Secret")) == 0
 
-# Signing: enforce (the default) resolves to audit with no control plane.
-assert_signing_capped = _fd.signing == {requested = "enforce", effective = "audit"}
-assert_verify_capped = _fd.flux_verify == {requested = "enforce", effective = "audit"}
+# Signing: unset resolves to off with no control plane (nothing signs a
+# self-hosted env's bundles yet; declaring enforce is refused at render).
+assert_signing_off = _fd.signing == {requested = "off", effective = "off"}
+assert_verify_off = _fd.flux_verify == {requested = "off", effective = "off"}

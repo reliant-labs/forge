@@ -2887,6 +2887,8 @@ _flux_delivery_signing_cap = lambda mode: str -> str {
 _render_flux_delivery = lambda b: Bundle -> {str: any} {
     _fd = b.flux_delivery or FluxDelivery {}
     _p = b.delivery_policy or DeliveryPolicy {}
+    _sign = _delivery_signing_mode(_p, bool(b.control_plane))
+    _verify = _delivery_flux_verify_mode(_p, bool(b.control_plane))
     _ctx = _targeted_contexts(b.workloads, b.databases, b.cluster_target, b.gateways, b.http_routes, b.grpc_routes, b.helm_charts, b.manifests, b.generated, b.rendered_secrets)
     {
         "chart": flux_delivery_lib.FLUX_DELIVERY_CHART_NAME
@@ -2899,8 +2901,10 @@ _render_flux_delivery = lambda b: Bundle -> {str: any} {
         "delivery_scope": _fd.delivery_scope
         "pull_secret_from": _fd.pull_secret_from
         "pull_secret": flux_delivery_lib.FLUX_DELIVERY_PULL_SECRET if _fd.pull_secret_from else ""
-        "signing": {"requested": _p.signing.mode, "effective": _flux_delivery_signing_cap(_p.signing.mode)}
-        "flux_verify": {"requested": _p.flux_verify.mode, "effective": _flux_delivery_signing_cap(_p.flux_verify.mode)}
+        # Resolved as the shape records them: unset follows where the env
+        # delivers (`off` without a control plane, forge #1653).
+        "signing": {"requested": _sign, "effective": _flux_delivery_signing_cap(_sign)}
+        "flux_verify": {"requested": _verify, "effective": _flux_delivery_signing_cap(_verify)}
     }
 }
 

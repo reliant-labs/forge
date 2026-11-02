@@ -23,16 +23,16 @@
       "delivery_scope": "namespace",
       "env": "prod",
       "flux_verify": {
-        "effective": "audit",
-        "requested": "enforce"
+        "effective": "off",
+        "requested": "off"
       },
       "namespace": "forge-delivery-acme-prod",
       "pull_secret": "forge-delivery-pull",
       "pull_secret_from": "acme-prod/ghcr-pull",
       "resourceset": "delivery.prod",
       "signing": {
-        "effective": "audit",
-        "requested": "enforce"
+        "effective": "off",
+        "requested": "off"
       }
     },
     "frontends": [],

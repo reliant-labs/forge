@@ -88,10 +88,10 @@ var pullRequestEvents = map[string]bool{
 
 // pullRequestOnly reports whether a workflow triggers on nothing but
 // pullRequestEvents. Such a workflow has no main or tag run for a
-// cancel-in-progress to starve, so it may cancel on every event it has — the
-// review gate (reliant-review.yml) does, so a pull_request_review run that
-// turns the check green cancels a red pull_request run still in progress (one
-// that already completed red, the gate re-runs itself).
+// cancel-in-progress to starve, so it may cancel on every event it has. (The
+// review gate, reliant-review.yml, deliberately has no group at all: GitHub
+// holds a required check red while any suite's newest run of it is
+// cancelled.)
 func pullRequestOnly(t *testing.T, name string, content []byte) bool {
 	t.Helper()
 	var doc struct {

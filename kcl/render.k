@@ -1675,6 +1675,8 @@ _render_delivery_policy = lambda p: DeliveryPolicy -> any {
         }
         "bundle_kinds": {"mode": p.bundle_kinds.mode, "allow": sorted(p.bundle_kinds.allow), "deny": sorted(p.bundle_kinds.deny)}
         "approvals": {"mode": p.approvals.mode, "required": p.approvals.required, "approvers": sorted(p.approvals.approvers)}
+        if p.health_gate:
+            "health_gate": {"mode": p.health_gate.mode, "after": sorted(p.health_gate.after)}
     }
 }
 

@@ -69,6 +69,16 @@ Signed in to Reliant (`reliant forge …`, or a Reliant agent's shell) there is 
 `forge login`; CI sets the env's token variable. Deploy `staging` first, then
 promote the same release to `prod`; check with `forge env status <env>`.
 
+To make that order binding, declare it in `deploy/kcl/prod/main.k`:
+`delivery_policy = forge.DeliveryPolicy {health_gate = forge.HealthGate {after
+= ["staging"]}}`. The control plane then refuses to promote a release to prod
+until its own release-health verdict for the release on staging is PASS
+(`health_gate_pending` exit 4 while the window is open: `forge obs check
+staging --release <v> --wait`; `health_gate_regressed` exit 1 on a FAIL;
+`health_gate_unproven` exit 4 otherwise). `--override-health-gate "<why>"` is
+the recorded incident override. A new project declares no order, so its first
+`forge env deploy prod` is never gated. See `deploy/delivery-policy`.
+
 ### No account: `--claimable`
 
 An agent with no Reliant account (standalone forge, nothing signed in) can still

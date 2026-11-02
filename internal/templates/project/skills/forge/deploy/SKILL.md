@@ -339,8 +339,8 @@ always a **new release that rolls forward** — `forge env deploy prod` with the
 fix in the tree, or `--plan-only` first to read the plan.
 
 A release deploy compare-and-sets against the plan's read: exit **3** = the env
-moved meanwhile, nothing written — never retry blind. CI recipe:
-`forge env deploy --help`.
+moved meanwhile, nothing written; never retry blind. health_gate_*:
+`deploy/delivery-policy`. CI recipe: `forge env deploy --help`.
 
 A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
 migration before any workload changes, and a workload that never becomes ready

@@ -120,16 +120,16 @@ on:
 permissions:
   contents: read
 
-# Cancel a superseded run on a pull request only; a run on main always
-# finishes (ci.yml says why). The event is part of the group so nightly.yml's
-# call, which shares main's ref, never queues behind — or replaces — a push
-# run's pending one.
+# Cancel the run in progress on a pull request only; on main it always
+# finishes, and a newer push supersedes the pending one (ci.yml says why). The
+# event is part of the group so nightly.yml's call, which shares main's ref,
+# never queues behind — or supersedes — a push run's pending one.
 #
 # Adding some OTHER label to a pull request is a `labeled` event too. Its run
 # gets a group of its own (the run id), so it cannot cancel a `ci:e2e` run in
 # progress; all of its jobs then skip.
 concurrency:
-  group: e2e-suite-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
+  group: e2e-suite-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

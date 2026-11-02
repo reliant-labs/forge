@@ -122,8 +122,12 @@ type deletePass struct {
 	inBatch   int
 	batchFrom time.Time
 	backoff   *BackedOffError
-	remove    func(string) error
-	sleep     func(context.Context, time.Duration) error
+	// remove replaces every unlink when set (tests); nil makes the real one.
+	remove func(string) error
+	// afterLstat, when set, runs between removeTree examining an entry and
+	// acting on it (tests: the swap race).
+	afterLstat func(string)
+	sleep      func(context.Context, time.Duration) error
 	// overBudget counts unlinks granted from an over-budget allowance; they
 	// are not in count.
 	overBudget int
@@ -151,9 +155,6 @@ func newDeleter(p Policy, remove func(string) error, sleep func(context.Context,
 	rate := p.DeleteRatePerSec
 	if rate <= 0 {
 		rate = defaultDeleteRatePerSec
-	}
-	if remove == nil {
-		remove = os.Remove
 	}
 	if sleep == nil {
 		sleep = sleepCtx
@@ -336,16 +337,30 @@ func (d deleter) observeLocked(path string, err error) error {
 // what makes "the first EMFILE is the last unlink" exact: no other worker can
 // have one in flight when it arrives.
 func (d deleter) unlink(ctx context.Context, path string) error {
+	return d.governed(ctx, path, func() error {
+		err := os.Remove(path)
+		if err != nil && errors.Is(err, fs.ErrPermission) {
+			// A read-only file on Windows, or an entry a module cache wrote 0444.
+			_ = os.Chmod(path, 0o700)
+			err = os.Remove(path)
+		}
+		return err
+	})
+}
+
+// governed grants one unlink and makes it with rm — or with the pass's
+// remove seam, when a test set one.
+func (d deleter) governed(ctx context.Context, path string, rm func() error) error {
 	d.pass.mu.Lock()
 	defer d.pass.mu.Unlock()
 	if err := d.grantLocked(ctx); err != nil {
 		return err
 	}
-	err := d.pass.remove(path)
-	if err != nil && errors.Is(err, fs.ErrPermission) {
-		// A read-only file on Windows, or an entry a module cache wrote 0444.
-		_ = os.Chmod(path, 0o700)
+	var err error
+	if d.pass.remove != nil {
 		err = d.pass.remove(path)
+	} else {
+		err = rm()
 	}
 	if err == nil || errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -354,45 +369,82 @@ func (d deleter) unlink(ctx context.Context, path string) error {
 }
 
 // removeTree deletes a tree one governed unlink at a time, children before
-// their directory, never following a symlink. Directories are made writable
-// first: a Go module cache writes 0555 directories, whose children cannot
-// otherwise be unlinked. Direct children named in keepLast go last, so a tree
+// their directory. Direct children named in keepLast go last, so a tree
 // stopped partway still carries the marker that identifies it to the next
 // pass. A stop (cap, back-off, deadline) leaves the rest in place.
+//
+// The walk holds each directory open and acts on its entries relative to that
+// descriptor (treedir_unix.go): it never follows a symlink, including one
+// swapped in for a directory after the walk examined it, and never changes
+// permissions through a path.
 func (d deleter) removeTree(ctx context.Context, path string, keepLast ...string) error {
-	info, err := os.Lstat(path)
+	parent, name, err := openTreeParent(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return d.observe(path, err)
 	}
-	if !info.IsDir() {
-		return d.unlink(ctx, path)
+	defer parent.close()
+	return d.removeEntry(ctx, parent, name, path, keepLast)
+}
+
+// removeEntry removes parent's entry name (at path) and, when it is a
+// directory, everything under it first.
+func (d deleter) removeEntry(ctx context.Context, parent *treeDir, name, path string, keepLast []string) error {
+	st, err := parent.lstat(name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return d.observe(path, err)
 	}
-	if info.Mode().Perm()&0o700 != 0o700 {
-		_ = os.Chmod(path, info.Mode().Perm()|0o700)
+	if d.pass.afterLstat != nil {
+		d.pass.afterLstat(path)
 	}
-	entries, err := os.ReadDir(path)
+	if !st.dir {
+		return d.governed(ctx, path, func() error { return parent.remove(name, false) })
+	}
+	dir, err := parent.openDir(name, st)
+	switch {
+	case errors.Is(err, errNotDir):
+		// Swapped for a symlink or a file since lstat: remove the entry
+		// itself, never what it points to.
+		return d.governed(ctx, path, func() error { return parent.remove(name, false) })
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return d.observe(path, err)
+	}
+	err = d.removeChildren(ctx, dir, path, keepLast)
+	dir.close()
+	if err != nil {
+		return err
+	}
+	return d.governed(ctx, path, func() error { return parent.remove(name, true) })
+}
+
+func (d deleter) removeChildren(ctx context.Context, dir *treeDir, path string, keepLast []string) error {
+	names, err := dir.names()
 	if err != nil {
 		return d.observe(path, err)
 	}
 	var last []string
-	for _, entry := range entries {
-		if slices.Contains(keepLast, entry.Name()) {
-			last = append(last, entry.Name())
+	for _, name := range names {
+		if slices.Contains(keepLast, name) {
+			last = append(last, name)
 			continue
 		}
-		if err := d.removeTree(ctx, filepath.Join(path, entry.Name())); err != nil {
+		if err := d.removeEntry(ctx, dir, name, filepath.Join(path, name), nil); err != nil {
 			return err
 		}
 	}
 	for _, name := range last {
-		if err := d.removeTree(ctx, filepath.Join(path, name)); err != nil {
+		if err := d.removeEntry(ctx, dir, name, filepath.Join(path, name), nil); err != nil {
 			return err
 		}
 	}
-	return d.unlink(ctx, path)
+	return nil
 }
 
 // stopsPass reports whether err from a governed unlink means the layer must

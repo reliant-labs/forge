@@ -3,6 +3,8 @@ package codegen
 import (
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
 func u64(n uint64) *uint64 { return &n }
@@ -194,12 +196,15 @@ func TestFieldConstraints_ZodChain(t *testing.T) {
 		formType string
 		want     string
 	}{
-		{"numeric bounds", FieldConstraints{Gte: "0", Lte: "100"}, "number", ".gte(0).lte(100)"},
-		{"numeric gt/lt", FieldConstraints{Gt: "1", Lt: "9.99"}, "number", ".gt(1).lt(9.99)"},
-		{"string len", FieldConstraints{MinLen: u64(2), MaxLen: u64(64)}, "text", ".min(2).max(64)"},
-		{"required only", FieldConstraints{Required: true}, "text", ".min(1)"},
-		{"email", FieldConstraints{Email: true}, "text", ".email()"},
-		{"pattern", FieldConstraints{Pattern: `^SKU-\d+$`}, "text", `.regex(new RegExp("^SKU-\\d+$"))`},
+		{"numeric bounds", FieldConstraints{Gte: "0", Lte: "100"}, "number", `.gte(0, "Must be 0 or more").lte(100, "Must be 100 or less")`},
+		{"numeric gt/lt", FieldConstraints{Gt: "1", Lt: "9.99"}, "number", `.gt(1, "Must be more than 1").lt(9.99, "Must be less than 9.99")`},
+		{"string len", FieldConstraints{MinLen: u64(2), MaxLen: u64(64)}, "text", `.min(2, "Must be at least 2 characters").max(64, "Must be at most 64 characters")`},
+		// A required field left blank says "Required", not zod's
+		// "String must contain at least 1 character(s)".
+		{"required only", FieldConstraints{Required: true}, "text", `.min(1, "Required")`},
+		{"min_len 1", FieldConstraints{MinLen: u64(1)}, "text", `.min(1, "Required")`},
+		{"email", FieldConstraints{Email: true}, "text", `.email("Enter a valid email address")`},
+		{"pattern", FieldConstraints{Pattern: `^SKU-\d+$`}, "text", `.regex(new RegExp("^SKU-\\d+$"), "Not in the expected format")`},
 		{"numeric ignores string rules", FieldConstraints{MinLen: u64(3)}, "number", ""},
 		{"empty", FieldConstraints{}, "text", ""},
 	}
@@ -313,5 +318,15 @@ func TestValidateFieldOptions_MatchesParsedRules(t *testing.T) {
 		if ValidateFieldOptions(in) != "" {
 			t.Errorf("%q must carry nothing, got %q", in, ValidateFieldOptions(in))
 		}
+	}
+}
+
+// TestEmailCheckPatternAgreesWithSeeder: the seeder recognises forge's email
+// CHECK by its exact text to seed user1@example.com instead of the 1@1.1 the
+// pattern's shape gives (which fails the form's zod .email()). If the CHECK
+// forge births ever changes, the seeder must change with it.
+func TestEmailCheckPatternAgreesWithSeeder(t *testing.T) {
+	if emailSQLRegex != seedplan.EmailCheckPattern {
+		t.Fatalf("emailSQLRegex = %q, seedplan.EmailCheckPattern = %q — the seeder no longer recognises the CHECK forge births", emailSQLRegex, seedplan.EmailCheckPattern)
 	}
 }

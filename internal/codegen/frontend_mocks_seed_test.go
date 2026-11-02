@@ -483,3 +483,65 @@ func TestMockEnumsShowEveryValueTheDatasetShows(t *testing.T) {
 			"real data has", len(mocked), len(seeded))
 	}
 }
+
+// TestMockFixturesAreReferentiallyClosed pins the fix for dangling mock
+// foreign keys. Each table's fixtures used to be its first ten rows, chosen
+// independently — while the seeder spreads a child's references over ALL of
+// the parent's rows — so half the products pointed at categories no fixture
+// held, and the UI rendered "—" where the category's name belonged. Every
+// foreign key a fixture carries must name a row some fixture holds.
+func TestMockFixturesAreReferentiallyClosed(t *testing.T) {
+	tables := mockTestSchema()
+	seed := newSeedProjection(tables, seedplan.DefaultConfig(), nil)
+	if seed == nil {
+		t.Fatal("the planner refused this schema")
+	}
+	products := EntityDefToMockData(mockTestProductEntity(), ServiceDef{Name: "CatalogService"}, seed)
+	categoryEntity := EntityDef{
+		Name: "Category", TableName: "categories", PkField: "id",
+		Fields: []EntityField{
+			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+		},
+	}
+	categories := EntityDefToMockData(categoryEntity, ServiceDef{Name: "CatalogService"}, seed)
+
+	held := map[string]bool{}
+	for _, rec := range categories.Records {
+		held[mockRecordValue(t, rec, "id")] = true
+	}
+	if len(products.Records) != mockRecordCount {
+		t.Fatalf("products carry %d fixtures, want the first %d rows", len(products.Records), mockRecordCount)
+	}
+	for i, rec := range products.Records {
+		if ref := mockRecordValue(t, rec, "categoryId"); !held[ref] {
+			t.Errorf("product %d references category %s, which no category fixture holds", i, ref)
+		}
+	}
+}
+
+// TestMockOptionalNullIsUnset: a nullable column the dataset leaves NULL is
+// unset in the fixture — never a synthetic "sample_<col>_N" id that matches
+// no row.
+func TestMockOptionalNullIsUnset(t *testing.T) {
+	tables := mockTestSchema()
+	for i := range tables {
+		if tables[i].Name == "products" {
+			tables[i].Columns = append(tables[i].Columns, schemadef.Column{Name: "parent_id", Type: schemadef.TypeString})
+			tables[i].ForeignKeys = append(tables[i].ForeignKeys, schemadef.ForeignKey{Column: "parent_id", RefTable: "products", RefColumn: "id"})
+		}
+	}
+	seed := newSeedProjection(tables, seedplan.DefaultConfig(), nil)
+	if seed == nil {
+		t.Fatal("the planner refused this schema")
+	}
+	entity := mockTestProductEntity()
+	entity.Fields = append(entity.Fields, EntityField{Name: "parent_id", GoName: "ParentId", ProtoType: "string", GoType: "string", Kind: FieldKindScalar, Optional: true})
+	data := EntityDefToMockData(entity, ServiceDef{Name: "CatalogService"}, seed)
+	for i, rec := range data.Records {
+		got := mockRecordValue(t, rec, "parentId")
+		if strings.Contains(got, "sample_") {
+			t.Errorf("record %d: optional parentId = %s — an invented id for a reference the database leaves NULL", i, got)
+		}
+	}
+}

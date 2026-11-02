@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"regexp"
 	"regexp/syntax"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -492,12 +493,45 @@ func SynthString(t schemadef.Table, col schemadef.Column, row int) string {
 		return syntheticUUID(t.Name, col.Name, row)
 	}
 	if pats := patternsOf(t, col); len(pats) > 0 {
-		minLen, _ := LengthBounds(t, col)
+		minLen, maxLen := LengthBounds(t, col)
+		if v, ok := emailSample(pats, row, minLen, maxLen); ok {
+			return v
+		}
 		if v, ok := patternSample(pats, row, minLen); ok {
 			return v
 		}
 	}
 	return placeholderString(col.Name, row)
+}
+
+// EmailCheckPattern is the CHECK forge births for a field declaring the
+// protovalidate `string.email` rule (internal/codegen's emailSQLRegex; a test
+// there holds the two equal).
+const EmailCheckPattern = `^[^@\s]+@[^@\s]+\.[^@\s]+$`
+
+// emailSample seeds a column carrying forge's email CHECK with an address
+// every validator accepts: user1@example.com, user2@example.com, … The
+// pattern alone yields 1@1.1, which satisfies the CHECK and fails the zod
+// `.email()` the same rule projects onto the form — so a seeded row could
+// not be saved from its own edit page. This reads the DECLARATION (the email
+// rule's CHECK), never the column's name, and example.com is reserved for
+// exactly this (RFC 2606). Distinct per row, for a UNIQUE column.
+func emailSample(pats []string, row, minLen, maxLen int) (string, bool) {
+	if !slices.Contains(pats, EmailCheckPattern) {
+		return "", false
+	}
+	v := fmt.Sprintf("user%d@example.com", row+1)
+	n := utf8.RuneCountInString(v)
+	if n < minLen || (maxLen > 0 && n > maxLen) {
+		return "", false
+	}
+	for _, p := range pats {
+		re, err := regexp.Compile(p)
+		if err != nil || !re.MatchString(v) {
+			return "", false
+		}
+	}
+	return v, true
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -545,7 +579,8 @@ func patternsOf(t schemadef.Table, col schemadef.Column) []string {
 // row enters as the filler for repeated single-character shapes, so
 // `^[^@\s]+@[^@\s]+\.[^@\s]+$` yields 1@1.1, 2@2.2, … — deterministic,
 // distinct per row (which is what a UNIQUE column needs), and visibly
-// invented.
+// invented. (That exact pattern, forge's email CHECK, is seeded by
+// emailSample before this runs: 1@1.1 fails the form's zod `.email()`.)
 func patternSample(pats []string, row, minLen int) (string, bool) {
 	compiled := make([]*regexp.Regexp, 0, len(pats))
 	for _, p := range pats {

@@ -122,12 +122,12 @@ message Widget {
 	assertPathExistsE2E(t, createPath)
 	create := readFileE2E(t, createPath)
 	for _, want := range []string{
-		"quantity: z.coerce.number().gte(0),",
-		"name: z.string().min(2).max(64),",
-		`sku: z.string().regex(new RegExp("^SKU-[0-9]+$")),`,
-		"email: z.string().email(),",
-		"code: z.string().min(1),",
-		"currency: z.string().min(3).max(3),",
+		`quantity: z.coerce.number().gte(0, "Must be 0 or more"),`,
+		`name: z.string().min(2, "Must be at least 2 characters").max(64, "Must be at most 64 characters"),`,
+		`sku: z.string().regex(new RegExp("^SKU-[0-9]+$"), "Not in the expected format"),`,
+		`email: z.string().email("Enter a valid email address"),`,
+		`code: z.string().min(1, "Required"),`,
+		`currency: z.string().min(3, "Must be at least 3 characters").max(3, "Must be at most 3 characters"),`,
 	} {
 		if !strings.Contains(create, want) {
 			t.Errorf("born create form missing zod validator %q:\n%s", want, create)
@@ -136,17 +136,17 @@ message Widget {
 	// Negative control: the unconstrained numeric field carries no
 	// refinement beyond the base expression for its type. `count` is int64,
 	// so that base is the bigint digits-string, not z.coerce.number().
-	if !strings.Contains(create, `count: z.string().regex(/^(-?\d+)?$/, "expected a whole number")`) {
+	if !strings.Contains(create, `count: z.string().regex(/^(-?\d+)?$/, "Enter a whole number")`) {
 		t.Errorf("unconstrained `count` field must keep the bare bigint base expression:\n%s", create)
 	}
-	if strings.Contains(create, "count: z.coerce.number().gte") || strings.Contains(create, "count: z.string().regex(/^(-?\\d+)?$/, \"expected a whole number\").gte") {
+	if strings.Contains(create, "count: z.coerce.number().gte") || strings.Contains(create, "count: z.string().regex(/^(-?\\d+)?$/, \"Enter a whole number\").gte") {
 		t.Errorf("unconstrained `count` field must carry no numeric refinement:\n%s", create)
 	}
 	// The edit form (fields sourced from the entity itself) carries them too.
 	editPath := filepath.Join(appDir, "widgets", "edit", "page.tsx")
 	assertPathExistsE2E(t, editPath)
 	edit := readFileE2E(t, editPath)
-	for _, want := range []string{"name: z.string().min(2).max(64),", "quantity: z.coerce.number().gte(0),"} {
+	for _, want := range []string{`name: z.string().min(2, "Must be at least 2 characters").max(64, "Must be at most 64 characters"),`, `quantity: z.coerce.number().gte(0, "Must be 0 or more"),`} {
 		if !strings.Contains(edit, want) {
 			t.Errorf("born edit form missing zod validator %q:\n%s", want, edit)
 		}

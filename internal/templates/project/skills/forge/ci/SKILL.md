@@ -134,24 +134,14 @@ prints the deploy plan and will not write a promotion until somebody approves
 it. A GitHub runner has no TTY to prompt on, so without `--yes` the command
 exits **5** (`plan_unconfirmed`) having built, pushed and cut but deployed
 nothing. `--yes` means "I read the plan" — the plan is still computed and
-printed into the job log immediately above the write, so the record of what
-shipped is in the run. For a pipeline that wants a human in the loop, run
+printed into the job log above the write, so what shipped is in
+the run. For a pipeline that wants a human in the loop, run
 `--plan-only` in one job and put the approving job behind a GitHub Environment
-with required reviewers; `release.yml` already has that shape.
+with required reviewers; `release.yml` has that shape.
 The env list is the project's `deploy/kcl/<env>/main.k` set (dev excluded),
 read when the workflow is scaffolded; with several, the first auto-deploys
-after a green image build on main and the last is protected. A lone env is
-never auto-deployed.
-
-**A later env may be health-gated on the earlier one.** When the protected
-env's KCL declares `delivery_policy.health_gate.after = ["staging"]`, the
-control plane refuses its promotion until staging's recorded release-health
-verdict for that release is PASS — no flag in the workflow can skip it. Have
-the job wait for the evidence first (`forge obs check staging --release <v>
---wait`), and branch on the refusal: exit **4** with `health_gate_pending` is
-"retry later", exit **1** with `health_gate_regressed` is a bad release. The
-only bypass is a human's `--override-health-gate "<why>"`, recorded; never
-hard-code it in a workflow. See `deploy/delivery-policy`.
+after a green image build on main and the last is protected (health gate:
+`deploy/delivery-policy`). A lone env is never auto-deployed.
 
 Credentials: an env with `forge.OnCluster` workloads needs `secrets.KUBECONFIG` holding a
 context named exactly the ClusterTarget's `cluster`; `forge.OnHosted`

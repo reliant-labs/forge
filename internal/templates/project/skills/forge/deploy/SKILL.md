@@ -343,28 +343,8 @@ always a **new release that rolls forward** — `forge env deploy prod` with the
 fix in the tree, or `--plan-only` first to read the plan.
 
 A release deploy compare-and-sets against the plan's read: exit **3** = the env
-moved meanwhile, nothing written — never retry blind. CI recipe:
-`forge env deploy --help`.
-
-**Promotion is health-gated when the env says so.** An env whose KCL declares
-`delivery_policy = forge.DeliveryPolicy {health_gate = forge.HealthGate {after =
-["staging"]}}` takes a release only once staging has PROVED it good: the
-control plane holds a PASS release-health verdict for staging's newest
-promotion of it. The verdict is the control plane's own (its evaluator judges
-every promotion once its `release_health.window` closes, with the rule `forge
-obs check` applies), checked inside the promotion's transaction, so skipping
-`obs check` in CI skips nothing. Refusals, nothing written:
-
-| reason | exit | what to do |
-|---|---|---|
-| `health_gate_regressed` | 1 | the release FAILed on staging: fix forward |
-| `health_gate_unproven` | 4 | INCONCLUSIVE, or it never ran on staging: deploy it there and let it serve |
-| `health_gate_pending` | 4 | no verdict yet: `forge obs check staging --release <v> --wait`, then retry |
-
-A release this env already ran with a PASS needs no detour (a rollback). In an
-incident, `forge env deploy prod <v> --override-health-gate "<why>"` overrides
-this gate only, recorded on the promotion with who and why. Details:
-`deploy/delivery-policy`.
+moved meanwhile, nothing written; never retry blind. health_gate_*:
+`deploy/delivery-policy`. CI recipe: `forge env deploy --help`.
 
 A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
 migration before any workload changes, and a workload that never becomes ready

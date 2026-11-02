@@ -771,6 +771,16 @@ var removals = []removal{
 					"kcl/render.k",
 				},
 			},
+			{
+				Name: "FluxDelivery.registry, the registry an applier = \"flux\" env's BUNDLES go to",
+				Reason: "A self-hosted Flux env (#1665) declares where its release bundles are pushed and " +
+					"pulled from: `flux_delivery = forge.FluxDelivery {registry = \"…\"}`. That is the " +
+					"bundle subtree of one delivery, not an env-wide image registry, and its fixtures must " +
+					"spell the field. Scoped to the applier-flux fixtures, so an env-level " +
+					"`registry = \"…\"` anywhere else still fails.",
+				Token: regexp.MustCompile(`(?m)^\s*registry\s*=\s*"`),
+				Paths: []string{"kcl/tests/positive_applier_flux*.k"},
+			},
 		},
 	},
 	{

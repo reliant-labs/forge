@@ -470,6 +470,14 @@ const fluxDeliveryPointAttempts = 5
 // itself, which drops them. Without it the dropped Kustomization would keep
 // reading the shared source and prune everything it applied the moment the
 // source moved to a digest without its path.
+//
+// The OBSERVATION is not tied to the write that marked the retire. Every
+// write that drops an applier first waits for the renderer to have applied
+// that applier's retire, whoever marked it: this deploy, an earlier one that
+// timed out or crashed after marking it, or a concurrent one. And the drop is
+// conditional on the pointer read BEFORE that wait, so a pointer that changed
+// while this one waited (a writer that un-retired the applier, or moved the
+// source) fails the write, which re-reads and observes again.
 func pointFluxDelivery(ctx context.Context, rel *fluxDeliveryRelease, promotion string, budget time.Duration, notice func(string, ...any)) (fluxdelivery.BindingInput, error) {
 	fd := rel.fd
 	for attempt := 1; ; attempt++ {
@@ -478,13 +486,14 @@ func pointFluxDelivery(ctx context.Context, rel *fluxDeliveryRelease, promotion 
 			return fluxdelivery.BindingInput{}, err
 		}
 		var liveIn *fluxdelivery.BindingInput
-		rv := ""
+		rv, liveRelease := "", ""
 		if live != nil {
 			l, err := fluxdelivery.LiveInput(live)
 			if err != nil {
 				return fluxdelivery.BindingInput{}, fmt.Errorf("env %s: the live pointer cannot be read, so this write cannot prove it is safe: %w", fd.Env, err)
 			}
 			liveIn, rv = &l, live.GetResourceVersion()
+			liveRelease = live.GetAnnotations()[fluxDeliveryReleaseAnnotation]
 		}
 		fence, err := nextFluxDeliveryFence(liveIn)
 		if err != nil {
@@ -494,13 +503,21 @@ func pointFluxDelivery(ctx context.Context, rel *fluxDeliveryRelease, promotion 
 		if err != nil {
 			return fluxdelivery.BindingInput{}, err
 		}
-		write, retiring := next, fluxDeliveryUnretired(liveIn, next)
-		if len(retiring) > 0 {
-			write = retireFluxDeliveryAppliers(*liveIn, retiring, fence)
+		dropping, unmarked := fluxDeliveryDropped(liveIn, next)
+		write, writeRelease := next, rel.version
+		switch {
+		case len(unmarked) > 0:
+			// Mark first; the next pass observes the mark and drops.
+			write, writeRelease = retireFluxDeliveryAppliers(*liveIn, unmarked, fence), liveRelease
 			notice("  release %s no longer carries %s: retiring %s first (orphaned, not deleted)\n",
-				rel.version, plural(len(retiring), "a tree", "trees"), strings.Join(retiring, ", "))
+				rel.version, plural(len(unmarked), "a tree", "trees"), strings.Join(unmarked, ", "))
+		case len(dropping) > 0:
+			// Every drop is observed, whoever marked it.
+			if err := waitFluxDeliveryRetired(ctx, fd, dropping, budget); err != nil {
+				return fluxdelivery.BindingInput{}, err
+			}
 		}
-		err = writeFluxDeliveryPointer(ctx, fd, liveIn, rv, write)
+		err = writeFluxDeliveryPointer(ctx, fd, liveIn, rv, write, writeRelease)
 		if errors.Is(err, errFluxPointerConflict) && attempt < fluxDeliveryPointAttempts {
 			notice("  env %s's pointer changed under this write; re-reading it\n", fd.Env)
 			continue
@@ -508,13 +525,11 @@ func pointFluxDelivery(ctx context.Context, rel *fluxDeliveryRelease, promotion 
 		if err != nil {
 			return fluxdelivery.BindingInput{}, err
 		}
-		if len(retiring) == 0 {
+		if len(unmarked) == 0 {
 			return next, nil
 		}
-		if err := waitFluxDeliveryRetired(ctx, fd, retiring, budget); err != nil {
-			return fluxdelivery.BindingInput{}, err
-		}
-		// The retire is applied: the next pass re-reads it and drops them.
+		// The retire is marked: the next pass re-reads it, observes it
+		// applied, and drops them.
 	}
 }
 
@@ -532,24 +547,31 @@ func nextFluxDeliveryFence(live *fluxdelivery.BindingInput) (string, error) {
 	return strconv.FormatUint(n+1, 10), nil
 }
 
-// fluxDeliveryUnretired names the appliers live holds that next drops and live
-// never retired, sorted: the ones a write must retire before it drops them.
-func fluxDeliveryUnretired(live *fluxdelivery.BindingInput, next fluxdelivery.BindingInput) []string {
+// fluxDeliveryDropped names the appliers live holds that next drops (sorted),
+// and of those the ones live never marked retired: the ones a write must mark
+// before anything drops them. Every dropped one must be OBSERVED retired
+// before the drop, marked or not. A binding-wide retire is the ledger's intent
+// for the whole binding, which CheckTransition owns; nothing is dropped here.
+func fluxDeliveryDropped(live *fluxdelivery.BindingInput, next fluxdelivery.BindingInput) (dropping, unmarked []string) {
 	if live == nil || live.Retire != "" {
-		return nil
+		return nil, nil
 	}
 	kept := map[string]bool{}
 	for _, a := range next.Appliers {
 		kept[a.Name] = true
 	}
-	var out []string
 	for _, a := range live.Appliers {
-		if !kept[a.Name] && a.Retire == "" {
-			out = append(out, a.Name)
+		if kept[a.Name] {
+			continue
+		}
+		dropping = append(dropping, a.Name)
+		if a.Retire == "" {
+			unmarked = append(unmarked, a.Name)
 		}
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(dropping)
+	sort.Strings(unmarked)
+	return dropping, unmarked
 }
 
 // retireFluxDeliveryAppliers is live, at fence, with the named appliers
@@ -634,6 +656,11 @@ var fluxDeliveryRetireApplied = func(ctx context.Context, fd FluxDeliveryEntity,
 	return true, nil
 }
 
+// fluxDeliveryReleaseAnnotation names, on the pointer, the release version its
+// promotion binds: what `forge env status --wait --release` checks, read from
+// the cluster rather than any one deployer's ledger.
+const fluxDeliveryReleaseAnnotation = "forge.dev/delivery-release"
+
 // errFluxPointerConflict is a pointer write the API server refused because
 // the pointer is not the one it was conditional on: another writer created,
 // updated or deleted it since the read.
@@ -641,14 +668,19 @@ var errFluxPointerConflict = errors.New("the pointer changed since it was read")
 
 // writeFluxDeliveryPointer checks in against live (nil: no pointer exists) and
 // writes it conditionally on that read: create-only when there was none, an
-// update at liveRV otherwise. A conflict is errFluxPointerConflict.
-func writeFluxDeliveryPointer(ctx context.Context, fd FluxDeliveryEntity, live *fluxdelivery.BindingInput, liveRV string, in fluxdelivery.BindingInput) error {
+// update at liveRV otherwise, annotated with the release version in's
+// promotion binds. A conflict is errFluxPointerConflict.
+func writeFluxDeliveryPointer(ctx context.Context, fd FluxDeliveryEntity, live *fluxdelivery.BindingInput, liveRV string, in fluxdelivery.BindingInput, version string) error {
 	if err := checkFluxDeliveryInput(in, fd); err != nil {
 		return fmt.Errorf("env %s: refusing to point its Flux: %w", fd.Env, err)
 	}
 	pointer, err := fluxdelivery.InputProvider(in)
 	if err != nil {
 		return err
+	}
+	if version != "" {
+		md := pointer["metadata"].(map[string]any)
+		md["annotations"].(map[string]any)[fluxDeliveryReleaseAnnotation] = version
 	}
 	if live == nil {
 		return fluxDeliveryPointerIO.create(ctx, fd, pointer)
@@ -743,15 +775,19 @@ const (
 // is Ready (nil), Flux reports a failure for it (exit 1), or the budget runs
 // out (exit 8).
 func waitFluxDelivery(ctx context.Context, env, rel string, fd FluxDeliveryEntity, in fluxdelivery.BindingInput, budget time.Duration, notice func(string, ...any)) error {
-	_, err := waitFluxDeliveryObserved(ctx, env, rel, fd, in, budget, notice)
+	_, err := waitFluxDeliveryObserved(ctx, env, rel, fd, in, budget, 0, notice)
 	return err
 }
 
 // waitFluxDeliveryObserved is waitFluxDelivery, also returning the last
 // observation (zero when none was made) for a caller that reports it.
-func waitFluxDeliveryObserved(ctx context.Context, env, rel string, fd FluxDeliveryEntity, in fluxdelivery.BindingInput, budget time.Duration, notice func(string, ...any)) (fluxDeliveryObservation, error) {
+// interval is the poll cadence (0: fluxDeliveryWaitInterval).
+func waitFluxDeliveryObserved(ctx context.Context, env, rel string, fd FluxDeliveryEntity, in fluxdelivery.BindingInput, budget, interval time.Duration, notice func(string, ...any)) (fluxDeliveryObservation, error) {
 	if budget <= 0 {
 		budget = fluxDeliveryWaitDefault
+	}
+	if interval <= 0 {
+		interval = fluxDeliveryWaitInterval
 	}
 	started := time.Now()
 	deadline := started.Add(budget)
@@ -783,7 +819,7 @@ func waitFluxDeliveryObserved(ctx context.Context, env, rel string, fd FluxDeliv
 		select {
 		case <-ctx.Done():
 			return obs, ctx.Err()
-		case <-time.After(fluxDeliveryWaitInterval):
+		case <-time.After(interval):
 		}
 	}
 }
@@ -804,12 +840,62 @@ func fluxDeliveryOfEnv(ctx context.Context, projectDir, env string) (*FluxDelive
 	return entities.FluxDelivery, nil
 }
 
+// checkFluxDeliveryWaitOptions refuses the `--wait` options a flux env's wait
+// cannot honour, before it waits: silently dropping one would report success
+// on terms the caller did not ask for. --fail-fast is already the flux wait's
+// only behaviour (it returns at the first failure Flux reports), and
+// --interval is the poll cadence.
+func checkFluxDeliveryWaitOptions(env string, opts envWaitOptions) error {
+	var unsupported []string
+	if opts.StableFor > 0 {
+		unsupported = append(unsupported, "--stable-for")
+	}
+	if opts.WatchJSON {
+		unsupported = append(unsupported, "--watch-json")
+	}
+	if opts.IncludeUnpinned {
+		unsupported = append(unsupported, "--include-unpinned")
+	}
+	if len(unsupported) > 0 {
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf(
+			"env %s is delivered by its in-cluster Flux, whose wait does not support %s: it reports each Kustomization's own Ready, "+
+				"with no stability hold, phase stream or unpinned workloads. Drop the flag", env, strings.Join(unsupported, ", "))}
+	}
+	if opts.Release != "" && opts.PromotionID != "" {
+		return exitCodeError{code: exitWrong, msg: "--promotion and --release name the promotion two different ways; pass one"}
+	}
+	return nil
+}
+
+// checkFluxDeliveryWaitTarget enforces --promotion and --release against what
+// the live pointer projects, before the wait: a pointer at another promotion
+// was overtaken (6), and one that does not record its release cannot prove
+// it binds the one asked about (2). Without it, `--release A` would wait on
+// whatever the pointer names and report its success.
+func checkFluxDeliveryWaitTarget(env string, opts envWaitOptions, got envWaitPromotionJSON) error {
+	switch {
+	case opts.PromotionID != "" && got.ID != opts.PromotionID:
+		return exitCodeError{code: exitSuperseded, msg: fmt.Sprintf(
+			"env %s's in-cluster Flux is pointed at promotion %s, not the %s this wait was asked about — it was overtaken",
+			env, emptyAs(got.ID, "(none)"), opts.PromotionID)}
+	case opts.Release != "" && got.ID != "" && got.Release == "":
+		return exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(
+			"env %s's pointer (promotion %s) does not record which release it binds, so it cannot be proven to be %s; re-run: forge env deploy %s",
+			env, got.ID, opts.Release, env)}
+	case opts.Release != "":
+		return checkWaitRelease(env, opts.Release, got)
+	}
+	return nil
+}
+
 // waitFluxDeliveryCurrent is `forge env status <env> --wait` for a flux env:
-// the wait on whatever the live pointer names. With jsonOut it writes the
-// same document every other `--wait` writes (envWaitReport) to out, with one
-// row per Kustomization, and its progress to progress; otherwise both go to
-// out as text.
-func waitFluxDeliveryCurrent(ctx context.Context, env string, fd FluxDeliveryEntity, budget time.Duration, jsonOut bool, out, progress io.Writer) error {
+// the wait on whatever the live pointer names, refused first when that is not
+// the promotion or release opts names. With opts.JSON it writes the same
+// document every other `--wait` writes (envWaitReport) to out, with one row
+// per Kustomization, and its progress to progress; otherwise both go to out
+// as text.
+func waitFluxDeliveryCurrent(ctx context.Context, env string, fd FluxDeliveryEntity, budget time.Duration, opts envWaitOptions, out, progress io.Writer) error {
+	jsonOut := opts.JSON
 	if !jsonOut {
 		progress = out
 	}
@@ -818,11 +904,19 @@ func waitFluxDeliveryCurrent(ctx context.Context, env string, fd FluxDeliveryEnt
 	started := time.Now().UTC()
 	report.StartedAt = &started
 	err := func() error {
+		if err := checkFluxDeliveryWaitOptions(env, opts); err != nil {
+			return err
+		}
 		live, err := fluxDeliveryPointerIO.read(ctx, fd)
 		if err != nil {
 			return exitCodeError{code: exitUndetermined, msg: err.Error()}
 		}
 		if live == nil {
+			if opts.Release != "" || opts.PromotionID != "" {
+				return exitCodeError{code: exitConflict, msg: fmt.Sprintf(
+					"env %s's in-cluster Flux has never been pointed at a release, so %s was never delivered to it",
+					env, emptyAs(opts.Release, "promotion "+opts.PromotionID))}
+			}
 			return exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(
 				"env %s's in-cluster Flux has never been pointed at a release (no %s/%s). Deploy one: forge env deploy %s",
 				env, fd.Namespace, fluxdelivery.InputProviderName(env, ""), env)}
@@ -831,8 +925,11 @@ func waitFluxDeliveryCurrent(ctx context.Context, env string, fd FluxDeliveryEnt
 		if err != nil {
 			return exitCodeError{code: exitUndetermined, msg: err.Error()}
 		}
-		report.Promotion = &envWaitPromotionJSON{ID: in.Promotion}
-		obs, err := waitFluxDeliveryObserved(ctx, env, "", fd, in, budget, notice)
+		report.Promotion = &envWaitPromotionJSON{ID: in.Promotion, Release: live.GetAnnotations()[fluxDeliveryReleaseAnnotation]}
+		if err := checkFluxDeliveryWaitTarget(env, opts, *report.Promotion); err != nil {
+			return err
+		}
+		obs, err := waitFluxDeliveryObserved(ctx, env, report.Promotion.Release, fd, in, budget, opts.Interval, notice)
 		report.Workloads = fluxDeliveryWaitRows(obs, in.Source.Digest)
 		if len(obs.Appliers) > 0 {
 			report.Reason = obs.summary(in.Source.Digest)

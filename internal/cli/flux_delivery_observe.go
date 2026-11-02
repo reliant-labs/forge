@@ -5,15 +5,22 @@ package cli
 // deploy's wait and `forge env status`, so the two cannot disagree about
 // whether a release is live.
 //
-// Three objects answer it, read by the names the input carries:
+// Four objects answer it, read by the names the input carries:
 //
+//   - the pointer: when it was last written (its managedFields), the moment
+//     a renderer condition must postdate to be about this input;
 //   - the delivery ResourceSet: has the renderer applied the pointer's input?
-//     Stalled (a template refusal) is a failure; not yet Ready is progress;
-//   - the OCIRepository: can Flux fetch the bundle at its digest? A Ready=False
-//     at the input's digest is a failure in Flux's words;
+//     Its evidence is the OCIRepository it renders: only a source whose
+//     spec.ref.digest is the input's digest proves the renderer consumed it.
+//     Stalled since the pointer was written is a failure; a Stalled older
+//     than the write is about a previous input, and is progress;
+//   - the OCIRepository: can Flux fetch the bundle at its digest? Judged only
+//     once its spec requests the digest and its status describes that spec
+//     (observedGeneration): an error from the previous digest decides nothing;
 //   - one Kustomization per applier: has it applied the digest
-//     (status.lastAppliedRevision) and is it Ready? A Ready=False whose last
-//     ATTEMPT was this digest is a failure, relayed verbatim — except a
+//     (status.lastAppliedRevision) and is it Ready? A Ready=False whose
+//     status is current and whose last ATTEMPT was this digest is a failure,
+//     relayed verbatim — except a
 //     `Forbidden` for a forge-delivery-* identity, which is mapped to the
 //     grant refusal's message (flux_delivery_grants.go): the reconciler's half
 //     of the same tripwire the deploy's preflight runs.
@@ -26,6 +33,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/fluxdelivery"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -49,19 +57,46 @@ type fluxObjectStatus struct {
 	// Current is true when the status describes the object's current spec
 	// (status.observedGeneration == metadata.generation).
 	Current bool `json:"current"`
+	// RequestedDigest is an OCIRepository's spec.ref.digest: the digest the
+	// renderer last rendered into it.
+	RequestedDigest string `json:"requested_digest,omitempty"`
+	// StalledSince is when the Stalled condition last turned True (zero
+	// when it is not Stalled, or did not say).
+	StalledSince time.Time `json:"stalled_since,omitempty"`
 }
 
 // fluxDeliveryObservation is the delivery as Flux reports it.
 type fluxDeliveryObservation struct {
-	Renderer fluxObjectStatus   `json:"renderer"`
-	Source   fluxObjectStatus   `json:"source"`
-	Appliers []fluxObjectStatus `json:"appliers"`
+	// PointerWrittenAt is when the pointer was last written, by the API
+	// server's clock (zero when it could not be read).
+	PointerWrittenAt time.Time          `json:"pointer_written_at,omitempty"`
+	Renderer         fluxObjectStatus   `json:"renderer"`
+	Source           fluxObjectStatus   `json:"source"`
+	Appliers         []fluxObjectStatus `json:"appliers"`
 }
 
-// converged: the renderer applied the input, and every applier applied the
-// digest and is Ready.
+// rendered: the renderer is installed, healthy and current, and the source it
+// renders requests digest — the evidence it consumed the promoted input. An
+// applier Ready on the digest without it is an orphan of an earlier render,
+// not this delivery.
+func (o fluxDeliveryObservation) rendered(digest string) bool {
+	r := o.Renderer
+	return r.Found && r.Current && !r.Stalled && r.Ready == "True" &&
+		o.Source.Found && o.Source.RequestedDigest == digest
+}
+
+// sourceFetched: the source's status describes its current spec, which
+// requests digest, and it has fetched that digest.
+func (o fluxDeliveryObservation) sourceFetched(digest string) bool {
+	s := o.Source
+	return s.Found && s.Current && s.RequestedDigest == digest && s.Ready == "True" && revisionDigestOf(s.LastApplied) == digest
+}
+
+// converged: the renderer applied the input, the source fetched its digest,
+// and every applier applied the digest and is Ready, each by a status that
+// describes its current spec.
 func (o fluxDeliveryObservation) converged(digest string) bool {
-	if len(o.Appliers) == 0 {
+	if len(o.Appliers) == 0 || !o.rendered(digest) || !o.sourceFetched(digest) {
 		return false
 	}
 	for _, a := range o.Appliers {
@@ -72,23 +107,34 @@ func (o fluxDeliveryObservation) converged(digest string) bool {
 	return true
 }
 
+// rendererStalledOnInput: the renderer is Stalled, and turned so no earlier
+// than the pointer's last write, so the stall is about this input. Both times
+// are the cluster's. A stall that cannot be dated after the write is not
+// attributed to it: the wait keeps going and its timeout names the stall.
+func (o fluxDeliveryObservation) rendererStalledOnInput() bool {
+	r := o.Renderer
+	return r.Found && r.Stalled && !o.PointerWrittenAt.IsZero() && !r.StalledSince.IsZero() &&
+		!r.StalledSince.Before(o.PointerWrittenAt)
+}
+
 // failure is the verdict when Flux reports this digest failing, or nil while
 // it is still progressing. A Forbidden for an apply identity is the grant
 // refusal; anything else is Flux's own words.
 func (o fluxDeliveryObservation) failure(env, rel, digest string) error {
-	if o.Renderer.Found && o.Renderer.Stalled {
+	if o.rendererStalledOnInput() {
 		return exitCodeError{code: exitWrong, msg: fmt.Sprintf(
 			"env %s: the renderer has not applied the promoted inputs: ResourceSet %s is Stalled (%s): %s",
 			env, o.Renderer.Name, o.Renderer.Reason, strings.TrimSpace(o.Renderer.Message))}
 	}
-	if o.Source.Found && o.Source.Current && o.Source.Ready == "False" && !fluxProgressing(o.Source.Reason) {
+	if o.Source.Found && o.Source.Current && o.Source.RequestedDigest == digest &&
+		o.Source.Ready == "False" && !fluxProgressing(o.Source.Reason) {
 		return exitCodeError{code: exitWrong, msg: fmt.Sprintf(
 			"env %s: its Flux cannot fetch bundle %s: OCIRepository %s reports %s: %s",
 			env, shortDigest(digest), o.Source.Name, o.Source.Reason, strings.TrimSpace(o.Source.Message))}
 	}
 	var failing []fluxObjectStatus
 	for _, a := range o.Appliers {
-		if a.Found && a.Ready == "False" && revisionDigestOf(a.LastAttempted) == digest && !fluxProgressing(a.Reason) {
+		if a.Found && a.Current && a.Ready == "False" && revisionDigestOf(a.LastAttempted) == digest && !fluxProgressing(a.Reason) {
 			failing = append(failing, a)
 		}
 	}
@@ -124,6 +170,15 @@ func (o fluxDeliveryObservation) summary(digest string) string {
 	if !o.Renderer.Found {
 		return "the delivery ResourceSet is not installed (run the bootstrap)"
 	}
+	var prefix string
+	switch {
+	case o.Renderer.Stalled:
+		prefix = fmt.Sprintf("the renderer %s is Stalled (%s): %s; ", o.Renderer.Name, o.Renderer.Reason, strings.TrimSpace(o.Renderer.Message))
+	case !o.rendered(digest):
+		prefix = "the renderer has not rendered the promoted input yet; "
+	case !o.sourceFetched(digest):
+		prefix = fmt.Sprintf("OCIRepository %s has not fetched %s yet; ", o.Source.Name, shortDigest(digest))
+	}
 	done := 0
 	var pending []string
 	for _, a := range o.Appliers {
@@ -137,7 +192,7 @@ func (o fluxDeliveryObservation) summary(digest string) string {
 		}
 		pending = append(pending, a.Name+" ("+state+")")
 	}
-	line := fmt.Sprintf("%d/%d Kustomizations applied %s", done, len(o.Appliers), shortDigest(digest))
+	line := prefix + fmt.Sprintf("%d/%d Kustomizations applied %s", done, len(o.Appliers), shortDigest(digest))
 	if len(pending) > 0 {
 		line += "; waiting on " + strings.Join(pending, ", ")
 	}
@@ -199,6 +254,11 @@ var fluxDeliveryObserve = func(ctx context.Context, fd FluxDeliveryEntity, in fl
 		}
 		return byName, nil
 	}
+	pointers, err := get("resourcesetinputproviders.fluxcd.controlplane.io")
+	if err != nil {
+		return obs, err
+	}
+	obs.PointerWrittenAt = lastWrittenAt(pointers[fluxdelivery.InputProviderName(fd.Env, "")])
 	sets, err := get("resourcesets.fluxcd.controlplane.io")
 	if err != nil {
 		return obs, err
@@ -215,6 +275,7 @@ var fluxDeliveryObserve = func(ctx context.Context, fd FluxDeliveryEntity, in fl
 	obs.Source = fluxStatusOf(in.Source.Name, sources[in.Source.Name])
 	if obs.Source.Found {
 		obs.Source.LastApplied, _ = nested(sources[in.Source.Name], "status", "artifact", "revision").(string)
+		obs.Source.RequestedDigest, _ = nested(sources[in.Source.Name], "spec", "ref", "digest").(string)
 	}
 	for _, a := range in.Appliers {
 		obs.Appliers = append(obs.Appliers, fluxStatusOf(a.Name, ks[a.Name]))
@@ -246,9 +307,37 @@ func fluxStatusOf(name string, obj map[string]any) fluxObjectStatus {
 			s.Message, _ = cm["message"].(string)
 		case "Stalled":
 			s.Stalled = status == "True"
+			if s.Stalled {
+				s.StalledSince = parseKubeTime(cm["lastTransitionTime"])
+			}
 		}
 	}
 	return s
+}
+
+// lastWrittenAt is the latest write any field manager made to obj, by the API
+// server's clock (metadata.managedFields[].time). Zero for a missing object.
+func lastWrittenAt(obj map[string]any) time.Time {
+	var latest time.Time
+	fields, _ := nested(obj, "metadata", "managedFields").([]any)
+	for _, f := range fields {
+		fm, _ := f.(map[string]any)
+		if t := parseKubeTime(fm["time"]); t.After(latest) {
+			latest = t
+		}
+	}
+	return latest
+}
+
+// parseKubeTime reads a Kubernetes metav1.Time (RFC 3339); zero when absent
+// or malformed.
+func parseKubeTime(v any) time.Time {
+	s, _ := v.(string)
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // nested walks a decoded JSON object by keys.

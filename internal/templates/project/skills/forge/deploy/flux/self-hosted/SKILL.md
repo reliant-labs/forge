@@ -70,8 +70,19 @@ that loses a race re-reads the pointer and re-checks against what won.
 **A release that drops a tree** (its last post-rollout Job, or a whole delivery
 unit) first retires that tree under the live bundle (`retire: orphan`: what it
 applied stays in the cluster, unmanaged), waits until the Flux has applied the
-retire, then ships. Delete the orphaned objects yourself if you no longer want
-them.
+retire, then ships. A deploy that times out (or dies) after the retire is
+written leaves it on the pointer; the next deploy still waits for the Flux to
+apply it before it drops the tree. Delete the orphaned objects yourself if you
+no longer want them.
+
+**`forge env status <env> --wait`** waits on whatever the pointer names.
+`--release <v>` and `--promotion <id>` are checked against the pointer first
+(exit 6 when it names another, 2 when an older pointer does not record its
+release); `--interval` and `--fail-fast` apply, and `--stable-for`,
+`--watch-json` and `--include-unpinned` are refused (exit 1). A release is live
+only when the delivery ResourceSet has rendered its digest into the
+OCIRepository, the source has fetched it, and every Kustomization reports it
+applied, each by a status of its current generation.
 
 The deploy's exit codes are the usual ones (`forge env deploy --help`): 0 live,
 1 Flux reported a failure (relayed in its own words), 8 still progressing when

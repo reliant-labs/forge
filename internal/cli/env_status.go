@@ -344,7 +344,8 @@ func dispatchEnvStatus(cmd *cobra.Command, args []string, m envStatusModes) erro
 			if m.waitOpts.Once {
 				budget = time.Nanosecond
 			}
-			return waitFluxDeliveryCurrent(cmd.Context(), env, *fd, budget, m.jsonOut, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			m.waitOpts.JSON = m.jsonOut
+			return waitFluxDeliveryCurrent(cmd.Context(), env, *fd, budget, m.waitOpts, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		}
 		m.waitOpts.JSON = m.jsonOut
 		return runEnvWaitForCmd(cmd.Context(), env, m.waitOpts)

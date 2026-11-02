@@ -105,8 +105,11 @@ type Spec struct {
 	// `operator init` output to, before it converges anything.
 	RecoverySecret string `json:"recoverySecret"`
 	KV             KV     `json:"kv"`
-	HA             HA     `json:"ha"`
-	Audit          Audit  `json:"audit"`
+	// Transit are the transit secret-engine mounts the converge Job enables
+	// (keys are created by the consumers whose grants allow it). Empty = none.
+	Transit []TransitMount `json:"transit,omitempty"`
+	HA      HA             `json:"ha"`
+	Audit   Audit          `json:"audit"`
 
 	Consumers []Consumer `json:"consumers,omitempty"`
 	Writer    Writer     `json:"writer"`
@@ -235,6 +238,16 @@ type TLS struct {
 // Seal is the static auto-unseal.
 type Seal struct {
 	KeyID string `json:"keyID"`
+}
+
+// mountSegmentRe is one secret-engine mount path segment.
+var mountSegmentRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+// TransitMount is one transit secret engine: OpenBao signs and encrypts with
+// keys it never releases. A mount is enabled and never disabled by the Job:
+// disabling it would destroy every key on it.
+type TransitMount struct {
+	Mount string `json:"mount"`
 }
 
 // KV is the KV-v2 mount.
@@ -422,6 +435,18 @@ func (s Spec) Validate() error {
 	}
 	if s.KV.Mount == "" || s.KV.MaxVersions < 2 {
 		bad("kv needs a mount and maxVersions >= 2")
+	}
+	seenTransit := map[string]bool{}
+	for _, t := range s.Transit {
+		switch {
+		case !mountSegmentRe.MatchString(t.Mount):
+			bad("transit mount %q must be a single path segment (letters, digits, '_', '-')", t.Mount)
+		case t.Mount == s.KV.Mount:
+			bad("transit mount %q is the KV mount", t.Mount)
+		case seenTransit[t.Mount]:
+			bad("transit mount %q is declared twice", t.Mount)
+		}
+		seenTransit[t.Mount] = true
 	}
 	switch s.HA.NodeSpread {
 	case "", NodeSpreadRequired:

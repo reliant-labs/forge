@@ -404,6 +404,24 @@ ensure_kv() {
   must POST "$KV_MOUNT/config" "$(jq -n --argjson v "$KV_MAX_VERSIONS" '{max_versions: $v}')"
 }
 
+# ensure_transit: enable each transit mount the document lists, if missing.
+# Never disables one (that would destroy its keys) and never touches a key.
+ensure_transit() {
+  local doc=$1 t
+  [ "$(jq '(.transit // []) | length' <<<"$doc")" -gt 0 ] || return 0
+  api GET sys/mounts
+  [ "$API_CODE" = 200 ] || die "cannot list mounts: $(api_failure)"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    if jq -e --arg k "$t/" '(.data // .)[$k]' "$TMP/resp" >/dev/null; then
+      log "transit already mounted at $t/"
+    else
+      log "mounting transit at $t/"
+      must POST "sys/mounts/$t" '{"type":"transit","description":"forge.OpenBaoTransit"}'
+    fi
+  done <<<"$(jq -r '(.transit // [])[].mount' <<<"$doc")"
+}
+
 apply_doc() {
   local doc=$1 p m r name existing
   ensure_kv
@@ -414,6 +432,11 @@ apply_doc() {
     must PUT "sys/policies/acl/$name" "$(jq -n --arg policy "$(jq -r "$JQ_HCL" <<<"$p")" '{policy: $policy}')"
   done <<<"$(jq -c '.policies[]' <<<"$doc")"
   log "applied $(jq '.policies | length' <<<"$doc") policies"
+  # AFTER the policies: converge-admin's grant on each transit mount is
+  # written above, and a token's policies are read at request time. The
+  # widened document carries no transit list, so mounts are enabled by the
+  # pass over the new document.
+  ensure_transit "$doc"
 
   api GET sys/auth
   [ "$API_CODE" = 200 ] || die "cannot list auth mounts: $(api_failure)"

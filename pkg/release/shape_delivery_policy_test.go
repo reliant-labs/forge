@@ -37,16 +37,15 @@ func TestDefaultDeliveryPolicyIsValidAndIsItsOwnDefault(t *testing.T) {
 }
 
 // The hybrid rule, pinned: what cannot block a deploy enforces, what can audits.
+// Signing and flux_verify audit: enforcing them refuses a rollback to a
+// release signed before them, so an env opts in once its history is signed.
 func TestDefaultDeliveryPolicyFollowsTheHybridRule(t *testing.T) {
 	d := DefaultDeliveryPolicy()
-	for name, got := range map[string]DeliveryMode{
-		"signing": d.Signing.Mode, "provenance_sbom": d.ProvenanceSBOM.Mode, "flux_verify": d.FluxVerify.Mode,
-	} {
-		if got != DeliveryEnforce {
-			t.Errorf("%s defaults to %s, want enforce: it cannot block a deploy", name, got)
-		}
+	if d.ProvenanceSBOM.Mode != DeliveryEnforce {
+		t.Errorf("provenance_sbom defaults to %s, want enforce: it cannot block a deploy", d.ProvenanceSBOM.Mode)
 	}
 	for name, got := range map[string]DeliveryMode{
+		"signing": d.Signing.Mode, "flux_verify": d.FluxVerify.Mode,
 		"trusted_builder": d.TrustedBuilder.Mode, "admission_verify": d.AdmissionVerify.Mode,
 		"signed_promotions": d.SignedPromotions.Mode, "vuln_gate": d.VulnGate.Mode,
 		"bundle_kinds": d.BundleKinds.Mode, "approvals": d.Approvals.Mode,
@@ -57,6 +56,22 @@ func TestDefaultDeliveryPolicyFollowsTheHybridRule(t *testing.T) {
 	}
 	if d.Approvals.Required != 1 {
 		t.Errorf("approvals default to %d people, want one-person", d.Approvals.Required)
+	}
+}
+
+// With no control plane nothing signs, so the self-hosted default claims
+// nothing: signing and flux_verify off, everything else as hosted.
+func TestDefaultSelfHostedDeliveryPolicySignsNothing(t *testing.T) {
+	sh, d := DefaultSelfHostedDeliveryPolicy(), DefaultDeliveryPolicy()
+	if sh.Signing.Mode != DeliveryOff || sh.FluxVerify.Mode != DeliveryOff {
+		t.Fatalf("self-hosted default signing=%s flux_verify=%s, want off/off", sh.Signing.Mode, sh.FluxVerify.Mode)
+	}
+	if err := sh.validate(); err != nil {
+		t.Fatalf("the self-hosted default is invalid: %v", err)
+	}
+	sh.Signing.Mode, sh.FluxVerify.Mode = d.Signing.Mode, d.FluxVerify.Mode
+	if !reflect.DeepEqual(sh, d) {
+		t.Errorf("self-hosted and hosted defaults differ beyond signing/flux_verify:\n %+v\n %+v", sh, d)
 	}
 }
 
@@ -171,9 +186,9 @@ func TestShape_DeliveryPolicyGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	const want = `{"trusted_builder":{"mode":"audit","builders":[]},` +
-		`"signing":{"mode":"enforce","key":"org_kms"},` +
+		`"signing":{"mode":"audit","key":"org_kms"},` +
 		`"provenance_sbom":{"mode":"enforce"},` +
-		`"flux_verify":{"mode":"enforce"},` +
+		`"flux_verify":{"mode":"audit"},` +
 		`"admission_verify":{"mode":"audit"},` +
 		`"signed_promotions":{"mode":"audit"},` +
 		`"vuln_gate":{"mode":"enforce","block_severity":"critical","warn_severity":"high","block_kev":true,"fixable_only":true,"exemptions":[]},` +
@@ -201,7 +216,10 @@ func TestShape_DeliveryPolicyRefusals(t *testing.T) {
 			p.FluxVerify.Mode = DeliveryOff
 			p.AdmissionVerify.Mode = DeliveryEnforce
 		}), "admission_verify is enforce but signing is off"},
-		"flux enforce, no sign": {mut(func(p *ShapeDeliveryPolicy) { p.Signing.Mode = DeliveryOff }), "flux_verify is enforce but signing is off"},
+		"flux enforce, no sign": {mut(func(p *ShapeDeliveryPolicy) {
+			p.Signing.Mode = DeliveryOff
+			p.FluxVerify.Mode = DeliveryEnforce
+		}), "flux_verify is enforce but signing is off"},
 		"promotions enforce, no sign": {mut(func(p *ShapeDeliveryPolicy) {
 			p.Signing.Mode = DeliveryOff
 			p.FluxVerify.Mode = DeliveryOff

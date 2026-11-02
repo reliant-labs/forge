@@ -167,6 +167,31 @@ PodDisruptionBudgets over one set of pods block every node drain, so check.
 | a flip in the adoption release | 0 |
 | a flip in a later release | the whole gap |
 
+## Transit: signing keys the store never releases
+
+```python
+openbao = forge.OpenBao {
+    transit = [forge.OpenBaoTransit {mount = "transit"}]
+    consumers = [forge.OpenBaoConsumer {name = "signer", workload = "signer", grants = [
+        forge.OpenBaoGrant {path = "transit/keys/+", capabilities = ["create", "update", "read"],
+            wildcard_read_reason = "public keys only: transit returns no private material"}
+        forge.OpenBaoGrant {path = "transit/sign/+", capabilities = ["update"]}
+    ]}]
+}
+```
+
+The converge Job ENABLES each `transit` mount, after it writes the policies, and
+never disables one (that would destroy every key on it). It holds
+`sys/mounts/<mount>` and nothing under the mount, so it never creates, reads or
+uses a key. Keys are the consumers' business: grant `<mount>/keys/+` to create a
+key on first use and read its public half, `<mount>/sign/+` to sign. Use `+`,
+not `*`: `*` is a prefix glob and would also grant `keys/<name>/config` (deletion,
+export) and `keys/<name>/rotate`. Rotate deliberately, as an operator.
+
+A store that declares no transit renders exactly as before. Reliant's control
+plane uses one mount for per-org delivery-bundle signing keys
+(`deploy/delivery-policy`, `signing`).
+
 ## HA: replicas never share a node
 
 With `replicas >= 2` the component renders a hard topology spread

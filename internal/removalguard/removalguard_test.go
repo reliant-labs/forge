@@ -127,6 +127,19 @@ var removals = []removal{
 				},
 			},
 			{
+				Name: "the control plane's impersonated ServiceAccount in fluxdelivery goldens",
+				Reason: "pkg/fluxdelivery's hosted-binding golden, and the frozen copy of control-plane's \n" +
+					"typed-builder golden it is compared against, render the ServiceAccount a hosted \n" +
+					"Kustomization impersonates: pkg/flux.DeployServiceAccount, a control-plane identifier \n" +
+					"that cannot be renamed here. Go code names it through the constant; only these two \n" +
+					"rendered files spell it, and only that exact literal is excused.",
+				Token: regexp.MustCompile(`reliant-deploy-tenant`),
+				Paths: []string{
+					"pkg/fluxdelivery/testdata/golden/flat_hosted.yaml",
+					"pkg/fluxdelivery/testdata/fluxtenant/bundle_flat_hosted.golden.json",
+				},
+			},
+			{
 				Name: "Flux's per-namespace controller ClusterRoles in the changelog",
 				Reason: "The changelog entry for the hardened flux_chart() names the two ClusterRoles \n" +
 					"(`flux-tenant-reconciler`, `flux-tenant-source`) and Flux's own `multitenancy` chart \n" +

@@ -91,6 +91,7 @@ import .lib.flux as flux_lib
 import .lib.eso as eso_lib
 import .lib.openbao as openbao_lib
 import .lib.external_secret as es_lib
+import .lib.flux_delivery as flux_delivery_lib
 
 # Bare aliases for schema instantiation inside lambda bodies (KCL v0.11).
 _TWorkload = tiers.Workload
@@ -3056,6 +3057,22 @@ FLUX_RECONCILER_ROLE = flux_lib.FLUX_RECONCILER_ROLE
 FLUX_SOURCE_ROLE = flux_lib.FLUX_SOURCE_ROLE
 FLUX_PRIORITY_CLASS = flux_lib.FLUX_PRIORITY_CLASS
 FLUX_RUNTIME_CLASS_GVISOR = flux_lib.FLUX_RUNTIME_CLASS_GVISOR
+
+# flux_delivery_resourceset / flux_delivery_rbac — gitless Flux delivery
+# through a flux-operator ResourceSet (lib/flux_delivery.k): the ResourceSet
+# that renders FLUX_DELIVERY_TEMPLATE once per delivery-unit input, and the
+# ServiceAccount, Role and RoleBinding it runs as. Go reads the same template
+# as forge/pkg/fluxdelivery.Template.
+flux_delivery_resourceset = flux_delivery_lib.flux_delivery_resourceset
+flux_delivery_rbac = flux_delivery_lib.flux_delivery_rbac
+FLUX_DELIVERY_TEMPLATE = flux_delivery_lib.FLUX_DELIVERY_TEMPLATE
+FLUX_DELIVERY_API_VERSION = flux_delivery_lib.FLUX_DELIVERY_API_VERSION
+FLUX_DELIVERY_SA = flux_delivery_lib.FLUX_DELIVERY_SA
+FLUX_DELIVERY_PRUNE_ANNOTATION = flux_delivery_lib.FLUX_DELIVERY_PRUNE_ANNOTATION
+FLUX_DELIVERY_PRUNE_DISABLED = flux_delivery_lib.FLUX_DELIVERY_PRUNE_DISABLED
+FLUX_DELIVERY_RETIRE_ORPHAN = flux_delivery_lib.FLUX_DELIVERY_RETIRE_ORPHAN
+FLUX_DELIVERY_RETIRE_TEARDOWN = flux_delivery_lib.FLUX_DELIVERY_RETIRE_TEARDOWN
+FLUX_DELIVERY_INPUT_LABEL = flux_delivery_lib.FLUX_DELIVERY_INPUT_LABEL
 
 # target_arch — the GOARCH forge resolved for this build (lib/build.k).
 #

@@ -308,7 +308,7 @@ func inventoryEntities() *KCLEntities {
 		// Every named forge.Manifests group: nats (a consumer too) and a
 		// group with no release_inputs, which only the placement inventory has.
 		ManifestOwners: []manifestOwner{{Name: "nats", Cluster: "prod"}, {Name: "cluster-rbac", Cluster: "prod"}},
-		OpenBao:                  &OpenBaoEntity{Name: "store", Namespace: "secrets", Cluster: "prod", ReleaseOwner: "openbao-secrets-store", ReleaseInputs: map[string]string{"container:openbao": "registry.example/openbao@" + digest, "container:converge": "registry.example/converge@" + digest}},
+		OpenBao:        &OpenBaoEntity{Name: "store", Namespace: "secrets", Cluster: "prod", ReleaseOwner: "openbao-secrets-store", ReleaseInputs: map[string]string{"container:openbao": "registry.example/openbao@" + digest, "container:converge": "registry.example/converge@" + digest}},
 	}
 }
 

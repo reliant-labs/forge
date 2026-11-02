@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.13] - 2026-11-02
+
+### Added
+
+- **secret:** forge secret allow|deny|access and access entries in secret list ([#1617](https://github.com/reliant-labs/forge/pull/1617))
+- **release:** publish @reliantlabs/forge to npm by trusted publishing; fix the Homebrew tap workflow ([#1614](https://github.com/reliant-labs/forge/pull/1614))
+
+### Changed
+
+- **test:** flaky = delete immediately; rewrite as a new deterministic test if worth having ([#1629](https://github.com/reliant-labs/forge/pull/1629))
+- delete flaky tests (flaky = delete immediately) ([#1632](https://github.com/reliant-labs/forge/pull/1632))
+
+### Fixed
+
+- **checksums:** forge generate migrates a legacy .forge/scaffolded.json on the upgrade run, even when it scaffolds nothing ([#1605](https://github.com/reliant-labs/forge/pull/1605))
+- **deploy:** an order the deploy cannot place is refused before the promotion is recorded; env status says bound vs applied ([#1603](https://github.com/reliant-labs/forge/pull/1603))
+- **claimable:** an unclaimed backend's text says only cluster names resolve, and that a claim restarts it on the hosted network ([#1619](https://github.com/reliant-labs/forge/pull/1619))
+- **obs:** a sql panel over one environment binds {reliant_env_id}, so an alert rule's query runs in forge obs query ([#1618](https://github.com/reliant-labs/forge/pull/1618))
+- **web-runtime:** one RUM session per visit on origins that drop cookies (Electron app://) ([#1616](https://github.com/reliant-labs/forge/pull/1616))
+- **ci:** a green review verdict re-runs the head's earlier red ones, so a reviewed PR enters the merge queue ([#1612](https://github.com/reliant-labs/forge/pull/1612))
+- **dbquery:** the guard refuses set_config, SET and SQL-executing functions, and lexes literals as Postgres does ([#1607](https://github.com/reliant-labs/forge/pull/1607))
+
 ## [v1.0.12] - 2026-10-31
 
 ### Added
@@ -8377,7 +8399,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.12...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.13...HEAD
+[v1.0.13]: https://github.com/reliant-labs/forge/compare/v1.0.12...v1.0.13
 [v1.0.12]: https://github.com/reliant-labs/forge/compare/v1.0.11...v1.0.12
 [v1.0.11]: https://github.com/reliant-labs/forge/compare/v1.0.10...v1.0.11
 [v1.0.10]: https://github.com/reliant-labs/forge/compare/v1.0.9...v1.0.10

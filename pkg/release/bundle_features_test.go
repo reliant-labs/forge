@@ -22,6 +22,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureUptimeChecks:           {"shape.uptime_checks"},
 	BundleFeatureDataAccess:             {"shape.data_access"},
 	BundleFeatureDatabaseDashboards:     {"shape.databases"},
+	BundleFeatureHealthGate:             {"shape.delivery_policy.health_gate"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -117,6 +118,7 @@ func fullBundleDoc() BundleDoc {
 			ReleaseHealth:            &ShapeReleaseHealth{WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2, NewIssueMinEvents: 5, FailOn: []string{HealthErrorRate}},
 			UptimeChecks:             []ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: UptimeSourceDefault}},
 			Databases:                []ShapeDatabase{{Name: "orders", Dashboards: &ShapeDatabaseDashboards{Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1}}},
+			DeliveryPolicy:           healthGatedPolicy(),
 		},
 		Objects:   []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		CreatedAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC),
@@ -144,7 +146,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	for _, p := range strays {
 		strayRoots[p] = true
 	}
-	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.databases"} {
+	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.databases", "shape.delivery_policy.health_gate"} {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
@@ -183,6 +185,9 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.UptimeChecks = nil
 	wantShape.DataAccess = nil
 	wantShape.Databases = nil
+	gateless := *full.Shape.DeliveryPolicy
+	gateless.HealthGate = nil
+	wantShape.DeliveryPolicy = &gateless
 	wantShape.ControlPlaneSecrets = []ShapeControlPlaneSecret{full.Shape.ControlPlaneSecrets[0]}
 	wantShape.ControlPlaneSecrets[0].Delivery = ""
 	pol := *wantShape.ObservabilityPolicy
@@ -191,7 +196,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	if limited.Provenance.Commit != full.Provenance.Commit || !reflect.DeepEqual(limited.Shape, wantShape) {
 		t.Fatalf("Limit removed more than the optional features:\n got %+v\nwant %+v", limited.Shape, wantShape)
 	}
-	if full.Shape.FrontendTelemetry == nil || full.Shape.ObservabilityPolicy.Retention == nil {
+	if full.Shape.FrontendTelemetry == nil || full.Shape.ObservabilityPolicy.Retention == nil || full.Shape.DeliveryPolicy.HealthGate == nil {
 		t.Fatal("Limit modified the document it was given")
 	}
 }
@@ -228,6 +233,13 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	if len(dashboards.Shape.Databases) != 1 || dashboards.Shape.UptimeChecks != nil || dashboards.Shape.StoreSecrets != nil || dashboards.Shape.DataAccess != nil {
 		t.Errorf("a reader of database dashboards only: %+v", dashboards)
 	}
+	gate := (&BundleReader{Features: []string{BundleFeatureHealthGate}}).Limit(full)
+	if gate.Shape.DeliveryPolicy == nil || gate.Shape.DeliveryPolicy.HealthGate == nil || gate.Shape.ReleaseHealth != nil || gate.Shape.StoreSecrets != nil {
+		t.Errorf("a reader of the health gate only: %+v", gate.Shape.DeliveryPolicy)
+	}
+	if noGate := (&BundleReader{Features: []string{BundleFeatureReleaseHealth}}).Limit(full); noGate.Shape.DeliveryPolicy.HealthGate != nil {
+		t.Errorf("a reader without the health gate feature was sent the gate")
+	}
 	health := (&BundleReader{Features: []string{BundleFeatureReleaseHealth}}).Limit(full)
 	if health.Shape.ReleaseHealth == nil || health.Shape.StoreSecrets != nil || health.Shape.FrontendTelemetry != nil {
 		t.Errorf("a reader of release health only: %+v", health)
@@ -239,4 +251,12 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	if full.Shape.ControlPlaneSecrets[0].Delivery != ControlPlaneSecretDeliveryStore {
 		t.Fatal("Limit modified the control-plane secrets of the document it was given")
 	}
+}
+
+// healthGatedPolicy is the default delivery policy with a declared health gate:
+// the one non-default part of it, so the gate is what makes it recorded.
+func healthGatedPolicy() *ShapeDeliveryPolicy {
+	p := DefaultDeliveryPolicy()
+	p.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"staging"}}
+	return &p
 }

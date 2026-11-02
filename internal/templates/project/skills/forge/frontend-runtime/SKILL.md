@@ -342,6 +342,21 @@ export function ItemsPage() {
 }
 ```
 
+The layout is fixed: a header (`title` + `actions`, the primary action only),
+a wrapping toolbar row (the search box + `toolbar`, where filters go — never
+`actions`, which does not wrap), the table, and a footer with the record count
+(`totalCount`, plus `pageStart` for a "1–25 of 112" range) and the pager, which
+hides itself on a single page.
+
+- **Sorting** is server-side: give a column a `sortKey` (the List request's
+  `order_by` value) and pass `sort` / `onSortChange`. Headers become buttons
+  with `aria-sort`; a click cycles ascending → descending → unsorted. pkg/crud
+  pages only in primary-key order, so a sorted List returns one page.
+- **Rows keep table semantics.** `onRowClick` is a pointer convenience; it is
+  not announced and takes no tab stop, and a click on a link or control inside
+  the row is left to it. Render a real link in the row's primary cell — that is
+  how a keyboard or screen-reader user reaches the record.
+
 ## 4. Browser telemetry (HyperDX SDK)
 
 Forge scaffolds, injects and initialises the **HyperDX browser SDK**

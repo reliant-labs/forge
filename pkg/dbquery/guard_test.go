@@ -376,6 +376,23 @@ func TestCheck_RefusesDeniedFunctions(t *testing.T) {
 		{`SELECT pg_terminate_backend(1)`, "denied_function"},
 		{`SELECT lo_import('/etc/passwd')`, "denied_function"},
 		{`SELECT pg_stat_reset()`, "denied_function"},
+		// xpath_table (contrib xml2) builds a query from its arguments and runs
+		// it (the forge#1607 review raised work_mem through it).
+		{`SELECT * FROM xpath_table('id', 'doc', 'docs', '/a', 'true') AS t(id int, a text)`, "denied_function"},
+		{`SELECT * FROM public.XPATH_TABLE('id', 'doc', 'set_config(''work_mem'',''1GB'',true)', '/a', 'true') AS t(id int, a text)`, "denied_function"},
+		// The replication functions that change state, by exact name.
+		{`SELECT pg_replication_origin_create('o')`, "denied_function"},
+		{`SELECT pg_replication_origin_drop('o')`, "denied_function"},
+		{`SELECT pg_replication_origin_advance('o', '0/0')`, "denied_function"},
+		{`SELECT pg_replication_origin_session_setup('o')`, "denied_function"},
+		{`SELECT pg_replication_origin_session_reset()`, "denied_function"},
+		{`SELECT pg_replication_origin_xact_setup('0/0', now())`, "denied_function"},
+		{`SELECT pg_replication_origin_xact_reset()`, "denied_function"},
+		{`SELECT pg_replication_slot_advance('s', '0/0')`, "denied_function"},
+		{`SELECT pg_sync_replication_slots()`, "denied_function"},
+		{`SELECT pg_create_logical_replication_slot('s', 'pgoutput')`, "denied_function"},
+		{`SELECT pg_drop_replication_slot('s')`, "denied_function"},
+		{`SELECT * FROM pg_logical_slot_get_changes('s', NULL, NULL)`, "denied_function"},
 	} {
 		tc := tc
 		t.Run(tc.sql, func(t *testing.T) {
@@ -408,6 +425,14 @@ func TestCheck_DeniedNamesThatAreNotCallsPass(t *testing.T) {
 		`SHOW work_mem`,
 		`SELECT U&'d\0061t\+000061' AS s, U&'d!0061t' UESCAPE '!' AS t`,
 		`SELECT 1 AS reset_count`,
+		// The read-only replication views and functions, which replication-lag
+		// panels read; only the functions that change state are denied.
+		`SELECT slot_name, pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS lag FROM pg_replication_slots`,
+		`SELECT * FROM pg_catalog.pg_replication_origin_status`,
+		`SELECT * FROM pg_stat_replication`,
+		`SELECT * FROM pg_stat_replication_slots`,
+		`SELECT pg_replication_origin_oid('o'), pg_replication_origin_progress('o', false)`,
+		`SELECT pg_replication_origin_session_is_setup(), pg_replication_origin_session_progress(false)`,
 	} {
 		if _, err := Check(sql); err != nil {
 			t.Errorf("Check(%q) = %v", sql, err)

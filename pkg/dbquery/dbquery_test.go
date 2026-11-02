@@ -159,6 +159,27 @@ func TestRun_ReadsAnInformationalStatement(t *testing.T) {
 	}
 }
 
+// The read-only replication views run against a real server: the guard denies
+// the replication functions that change state by name, not the whole
+// pg_replication_ family, so a replication-lag panel works.
+func TestRun_ReadsTheReplicationViews(t *testing.T) {
+	conn := newConn(t)
+	for _, sql := range []string{
+		`SELECT slot_name, active, pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS lag FROM pg_replication_slots`,
+		`SELECT * FROM pg_replication_origin_status`,
+		`SELECT * FROM pg_stat_replication`,
+		`SELECT * FROM pg_stat_replication_slots`,
+	} {
+		if _, err := Run(context.Background(), conn, sql, Options{}); err != nil {
+			t.Errorf("%s: %v", sql, err)
+		}
+	}
+	_, err := Run(context.Background(), conn, `SELECT pg_replication_origin_create('o')`, Options{})
+	if e := wantKind(t, err, KindRefused); e.Reason != "denied_function" {
+		t.Errorf("pg_replication_origin_create: reason %q, want denied_function", e.Reason)
+	}
+}
+
 // The timeouts apply to the query's own transaction only, and are visible to
 // it, so what the server enforces is what we set.
 func TestRun_SetsTransactionLimitsAndReadOnly(t *testing.T) {

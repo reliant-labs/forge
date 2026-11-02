@@ -16,12 +16,13 @@ package codegen
 // an opaque server cursor, not a view anyone should be linking to, and a
 // filter change resets it to page one.
 
-// HasURLFilters reports whether the list page has any filter control at all,
-// and therefore whether it reads and writes the query string. False (an
-// unfiltered list) leaves the page exactly as it was: no schema, no
+// HasURLFilters reports whether the list page has any filter control at all
+// — or a sortable column, since the sort is URL state too — and therefore
+// whether it reads and writes the query string. False (an unfiltered,
+// unsorted list) leaves the page exactly as it was: no schema, no
 // useSearchParams, and so no Suspense boundary either.
 func (p PageTemplateData) HasURLFilters() bool {
-	return p.SearchFilterField != "" || len(p.ExactFilterFields) > 0
+	return p.SearchFilterField != "" || len(p.ExactFilterFields) > 0 || p.HasListSortColumn()
 }
 
 // ListReactImports is the `react` import list the list page needs, in

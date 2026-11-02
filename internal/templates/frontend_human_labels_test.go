@@ -43,8 +43,8 @@ func TestFrontendPageHumanLabelsMultiWordEntity(t *testing.T) {
 		dir, page string
 		want      []string
 	}{
-		{"pages", "list-page.tsx.tmpl", []string{`emptyTitle="No retained databases found"`, `title="Retained Databases"`, `Search retained databases…`, `Create Retained Database`}},
-		{"vite-spa-pages", "list-page.tsx.tmpl", []string{`emptyTitle="No retained databases found"`, `title="Retained Databases"`, `Create Retained Database`}},
+		{"pages", "list-page.tsx.tmpl", []string{`emptyTitle="No retained databases found"`, `title="Retained Databases"`, `Search retained databases…`, `New Retained Database`}},
+		{"vite-spa-pages", "list-page.tsx.tmpl", []string{`emptyTitle="No retained databases found"`, `title="Retained Databases"`, `New Retained Database`}},
 		{"pages", "create-page.tsx.tmpl", []string{`title="Create Retained Database"`, `label: "Retained Databases", href: "/retained-databases"`}},
 		{"pages", "edit-page.tsx.tmpl", []string{`title="Edit Retained Database"`, `Back to retained databases`}},
 		{"pages", "detail-page.tsx.tmpl", []string{`title="Delete Retained Database"`, `delete this retained database?`}},

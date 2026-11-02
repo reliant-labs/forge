@@ -19,7 +19,8 @@ import (
 // that may write a table, one that owns one, one that can SET ROLE to the
 // owner without inheriting it, one that can terminate other sessions, and a
 // role attribute, one that may run a SECURITY DEFINER function, and one that
-// may advance a sequence.
+// may advance a sequence, one that owns only a sequence it has revoked its
+// own grants on, and one that may read server files.
 func TestInspectRole(t *testing.T) {
 	testkit.Slow(t, "boots a real postgres (pgtest)")
 	dsn, cleanup, err := pgtest.NewURL()
@@ -41,19 +42,19 @@ func TestInspectRole(t *testing.T) {
 	}
 	sfx := "_" + hex.EncodeToString(b)
 	owner, reader, writer, member, signaler, creator := "own"+sfx, "ro"+sfx, "rw"+sfx, "mem"+sfx, "sig"+sfx, "cr"+sfx
-	definer, sequencer := "def"+sfx, "seq"+sfx
+	definer, sequencer, seqOwner, fileReader := "def"+sfx, "seq"+sfx, "sqo"+sfx, "frd"+sfx
 	exec := func(sql string) {
 		t.Helper()
 		if _, err := admin.Exec(ctx, sql); err != nil {
 			t.Fatalf("%s: %v", sql, err)
 		}
 	}
-	for _, r := range []string{owner, reader, writer, member, signaler, definer, sequencer} {
+	for _, r := range []string{owner, reader, writer, member, signaler, definer, sequencer, seqOwner, fileReader} {
 		exec(fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD 'pw'`, r))
 	}
 	exec(fmt.Sprintf(`CREATE ROLE %s LOGIN CREATEDB PASSWORD 'pw'`, creator))
 	t.Cleanup(func() {
-		for _, r := range []string{member, signaler, creator, definer, sequencer, reader, writer, owner} {
+		for _, r := range []string{member, signaler, creator, definer, sequencer, seqOwner, fileReader, reader, writer, owner} {
 			_, _ = admin.Exec(ctx, fmt.Sprintf(`DROP OWNED BY %s`, r))
 			_, _ = admin.Exec(ctx, fmt.Sprintf(`DROP ROLE IF EXISTS %s`, r))
 		}
@@ -65,6 +66,13 @@ func TestInspectRole(t *testing.T) {
 	exec(`CREATE FUNCTION bump() RETURNS void LANGUAGE sql SECURITY DEFINER AS 'UPDATE ledger SET amount = amount + 1'`)
 	exec(`REVOKE EXECUTE ON FUNCTION bump() FROM PUBLIC`)
 	exec(`RESET ROLE`)
+	exec(fmt.Sprintf(`GRANT CREATE ON SCHEMA public TO %s`, seqOwner))
+	exec(fmt.Sprintf(`SET ROLE %s`, seqOwner))
+	exec(`CREATE SEQUENCE orphan_ids`)
+	exec(fmt.Sprintf(`REVOKE ALL ON SEQUENCE orphan_ids FROM %s`, seqOwner))
+	exec(`RESET ROLE`)
+	exec(fmt.Sprintf(`REVOKE CREATE ON SCHEMA public FROM %s`, seqOwner))
+	exec(fmt.Sprintf(`GRANT pg_read_server_files TO %s`, fileReader))
 	exec(fmt.Sprintf(`GRANT SELECT ON ledger TO %s, %s, %s`, reader, writer, signaler))
 	exec(fmt.Sprintf(`GRANT UPDATE (amount) ON ledger TO %s`, writer))
 	exec(fmt.Sprintf(`ALTER ROLE %s NOINHERIT`, member))
@@ -101,13 +109,15 @@ func TestInspectRole(t *testing.T) {
 		t.Errorf("a SELECT-only role is a reader, got %v", r.Writes)
 	}
 	for role, want := range map[string]string{
-		writer:    "may write 1 relations",
-		owner:     "owns 1 relations",
-		member:    "owns 1 relations",
-		signaler:  "member of pg_signal_backend",
-		creator:   "CREATEDB",
-		definer:   "may execute 1 SECURITY DEFINER functions",
-		sequencer: "may advance 1 sequences",
+		writer:     "may write 1 relations",
+		owner:      "owns 2 relations",
+		member:     "owns 2 relations",
+		signaler:   "member of pg_signal_backend",
+		creator:    "CREATEDB",
+		definer:    "may execute 1 SECURITY DEFINER functions",
+		sequencer:  "may advance 1 sequences",
+		seqOwner:   "owns 1 relations",
+		fileReader: "member of pg_read_server_files",
 	} {
 		r := inspect(role)
 		if !r.Writable() || !strings.Contains(strings.Join(r.Writes, "; "), want) {

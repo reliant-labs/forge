@@ -40,10 +40,12 @@ func (r Role) Writable() bool { return len(r.Writes) > 0 }
 var powerRoles = []string{
 	"pg_signal_backend",         // pg_terminate_backend / pg_cancel_backend on any non-superuser session
 	"pg_write_all_data",         // INSERT/UPDATE/DELETE on every table
+	"pg_read_server_files",      // COPY ... FROM / pg_read_file on any file the server can read
 	"pg_write_server_files",     // COPY ... TO a server file
 	"pg_execute_server_program", // COPY ... PROGRAM
 	"pg_checkpoint",
 	"pg_create_subscription",
+	"pg_maintain", // VACUUM, REINDEX, CLUSTER, REFRESH MATERIALIZED VIEW, LOCK TABLE on every relation
 }
 
 // roleProbe asks the server what current_user can do, in one statement.
@@ -52,7 +54,9 @@ var powerRoles = []string{
 // owner even when its membership does not inherit, so a NOINHERIT member of
 // the app role is still the app role. Ownership of a relation is counted
 // separately from write grants because an owner can grant itself anything
-// and ALTER or DROP the relation.
+// and ALTER or DROP the relation; sequences are counted among the owned
+// relations, because an owner can grant itself a sequence's privileges even
+// after revoking them.
 //
 // Table grants are not the only way to write. A SECURITY DEFINER function
 // runs as its owner, so EXECUTE on one is whatever that owner can do; USAGE
@@ -66,11 +70,18 @@ WITH me AS (
   SELECT r.rolname, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls
     FROM pg_catalog.pg_roles r WHERE r.rolname = current_user
 ), rels AS (
-  SELECT c.oid, c.relowner
+  SELECT c.oid
     FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
    WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
      AND n.nspname NOT IN ('pg_catalog', 'information_schema')
      AND n.nspname !~ '^pg_toast'
+), owned AS (
+  SELECT c.oid
+    FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+     AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+     AND n.nspname !~ '^pg_toast'
+     AND pg_catalog.pg_has_role(current_user, c.relowner, 'MEMBER')
 ), user_ns AS (
   SELECT n.oid FROM pg_catalog.pg_namespace n
    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
@@ -81,7 +92,7 @@ SELECT me.rolname, me.rolsuper, me.rolcreaterole, me.rolcreatedb, me.rolreplicat
        ARRAY(SELECT p.rolname::text FROM pg_catalog.pg_roles p
               WHERE p.rolname = ANY ($1::text[]) AND pg_catalog.pg_has_role(current_user, p.oid, 'MEMBER')
               ORDER BY 1),
-       (SELECT count(*) FROM rels WHERE pg_catalog.pg_has_role(current_user, rels.relowner, 'MEMBER')),
+       (SELECT count(*) FROM owned),
        (SELECT count(*) FROM rels
          WHERE pg_catalog.has_table_privilege(rels.oid, 'INSERT, UPDATE, DELETE, TRUNCATE')
             OR pg_catalog.has_any_column_privilege(rels.oid, 'INSERT, UPDATE')),

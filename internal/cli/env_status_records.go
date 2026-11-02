@@ -276,6 +276,12 @@ func readEnvRecords(ctx context.Context, projectDir, env string, now time.Time) 
 		return readHostedEnvRecords(ctx, env, entities, now)
 	}
 	out, err := readMachineEnvRecords(env, projectDir, target, now)
+	if entities.Applier == applierFlux {
+		// Its reconciler is the Flux in its own cluster, whose verdict the
+		// release half reads live (the `reconciler` line): there is no
+		// record of it to show here.
+		out.ConvergenceDetail = "the env's in-cluster Flux (see the reconciler line above)"
+	}
 	if target.Report {
 		facts := newOSProcFacts()
 		reconcileLocalPresence(&out, projectDir, env, facts.pidList(), facts)

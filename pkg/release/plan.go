@@ -101,6 +101,12 @@ const (
 	// WARN, never silence: a blank section must not read as "nothing
 	// changes" (F-20).
 	FindingUnknown = "unknown"
+	// FindingDeliveryGrant: a self-hosted delivery (`applier = "flux"`)
+	// grants one of its apply identities a permission it lacked, because
+	// this release needs it. The deploy re-runs the bootstrap with the
+	// caller's own credential to make the grant, so the grant is reviewed
+	// and approved with the rest of the plan.
+	FindingDeliveryGrant = "delivery_grant"
 )
 
 // FindingCodes is the closed set of codes.
@@ -108,6 +114,7 @@ var FindingCodes = []string{
 	FindingObjectAdded, FindingObjectChanged, FindingObjectRemoved,
 	FindingImageChanged, FindingConfigChanged, FindingSecretNeeded,
 	FindingStatefulDeletion, FindingLBIdentityChange, FindingTreeMoved, FindingDrift, FindingUnknown,
+	FindingDeliveryGrant,
 }
 
 // Plan sections, in display order (§8.6).
@@ -120,10 +127,13 @@ const (
 	SectionConfig   = "config"
 	SectionSecrets  = "secrets"
 	SectionDrift    = "drift"
+	// SectionDeliveryGrants is the apply-identity grants a self-hosted
+	// delivery's deploy makes (FindingDeliveryGrant).
+	SectionDeliveryGrants = "delivery_grants"
 )
 
 // PlanSections is the closed set, in display order.
-var PlanSections = []string{SectionStateful, SectionLB, SectionTrees, SectionObjects, SectionImages, SectionConfig, SectionSecrets, SectionDrift}
+var PlanSections = []string{SectionStateful, SectionLB, SectionTrees, SectionDeliveryGrants, SectionObjects, SectionImages, SectionConfig, SectionSecrets, SectionDrift}
 
 // Plan is one reviewed deploy. Field names match controlplane.v1.DeployPlan.
 type Plan struct {
@@ -447,6 +457,25 @@ func (p Plan) Unacknowledged(acknowledged []string) []string {
 		}
 	}
 	return out
+}
+
+// WithFindings is p with fs added — findings a caller learns after the plan
+// was built (a self-hosted delivery's grants) — sorted, and the digest
+// recomputed over them, so an approval of the returned plan approves them too.
+func (p Plan) WithFindings(fs ...PlanFinding) (Plan, error) {
+	for _, f := range fs {
+		if !f.Class.Valid() {
+			return Plan{}, fmt.Errorf("%w: plan finding %s: class %q", ErrInvalid, f.Code, f.Class)
+		}
+	}
+	p.Findings = append(append([]PlanFinding{}, p.Findings...), fs...)
+	sortFindings(p.Findings)
+	d, err := p.computeDigest()
+	if err != nil {
+		return Plan{}, err
+	}
+	p.Digest = d
+	return p, nil
 }
 
 // VerifyDigest recomputes the digest and reports whether it matches Digest.

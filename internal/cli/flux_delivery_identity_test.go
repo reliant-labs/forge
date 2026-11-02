@@ -170,6 +170,7 @@ func TestFluxDeliveryIdentityObjects(t *testing.T) {
 	want := []string{
 		"ClusterRole " + deliveryNS + "-pre",
 		"ClusterRoleBinding " + deliveryNS + "-pre",
+		"ConfigMap " + deliveryNS + "/" + fluxdelivery.GrantsRecord,
 		"Namespace acme-prod",
 		"Role acme-prod/" + deliveryNS + "-apply",
 		"Role acme-prod/" + deliveryNS + "-pre",

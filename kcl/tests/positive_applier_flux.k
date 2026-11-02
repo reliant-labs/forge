@@ -34,7 +34,7 @@ assert_applier_is_projected = output.applier == "flux"
 assert_one_bootstrap_chart = len(_charts) == 1
 assert_chart_is_the_flux_operator = _chart.oci == forge.FLUX_CHART_OCI
 assert_delivery_namespace = _fd.namespace == _ns and _fd.resourceset == "delivery.prod"
-assert_defaults = _fd.apply_identities == True and _fd.delivery_scope == "namespace" and _fd.pull_secret == ""
+assert_defaults = _fd.apply_identities == True and _fd.delivery_scope == "namespace" and _fd.pull_secret == "" and _fd.registry == ""
 
 # The env's delivery lives in its own namespace, created by the bootstrap.
 assert_namespace_object = [o.metadata.name for o in _kinds("Namespace")] == [_ns]

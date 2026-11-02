@@ -182,6 +182,11 @@ func validatePromoteFollow(o promoteFollowOptions) error {
 // nothing.
 func followPromote(ctx context.Context, env string, plan promotePlan, ledger envLedger, o promoteFollowOptions) error {
 	noteDeployPhase(ctx, "rollout")
+	// A FLUX env: forge points its in-cluster Flux and waits on it; nothing
+	// is applied from here (flux_delivery_deploy.go).
+	if ledger.flux() {
+		return followFluxDelivery(ctx, env, plan, ledger, o)
+	}
 	// QUEUED ON A PERSON? The control plane says so on the write itself
 	// (the Promote response's holds) — so this is known with no extra call,
 	// before anything waits. See deploy_queued.go.

@@ -29,6 +29,7 @@
       "namespace": "forge-delivery-acme-prod",
       "pull_secret": "forge-delivery-pull",
       "pull_secret_from": "acme-prod/ghcr-pull",
+      "registry": "",
       "resourceset": "delivery.prod",
       "signing": {
         "effective": "off",

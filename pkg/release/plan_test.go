@@ -486,3 +486,31 @@ func TestBuildPlan_NamesRecreatableKindsThatChange(t *testing.T) {
 		t.Errorf("a changed StorageClass must be flagged as possibly recreated: %+v", p.Findings)
 	}
 }
+
+// TestPlanWithFindingsReDigests: a finding added after the plan was built is
+// covered by its digest, so an approval of the old digest cannot approve it.
+func TestPlanWithFindingsReDigests(t *testing.T) {
+	p := Plan{EnvironmentID: "prod", BundleID: "b1", Findings: []PlanFinding{}}
+	d, err := p.computeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Digest = d
+	grant := PlanFinding{Code: FindingDeliveryGrant, Class: ClassWarn, Section: SectionDeliveryGrants, Subject: "forge-delivery-pre apps/statefulsets (cluster)"}
+	got, err := p.WithFindings(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Digest == p.Digest {
+		t.Fatal("adding a finding left the digest unchanged")
+	}
+	if ok, err := got.VerifyDigest(); err != nil || !ok {
+		t.Fatalf("the re-digested plan does not verify: %v", err)
+	}
+	if len(p.Findings) != 0 {
+		t.Error("WithFindings mutated the plan it was called on")
+	}
+	if _, err := p.WithFindings(PlanFinding{Code: FindingDeliveryGrant, Class: "loud"}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("an invalid class: err = %v, want ErrInvalid", err)
+	}
+}

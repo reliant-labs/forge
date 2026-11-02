@@ -260,6 +260,7 @@ var planSectionOrder = []struct {
 	{release.SectionObjects, "per-object diff"},
 	{release.SectionStateful, "stateful deletions (DESTRUCTIVE)"},
 	{release.SectionLB, "load-balancer identity (DESTRUCTIVE)"},
+	{release.SectionDeliveryGrants, "delivery identity grants (re-runs the bootstrap with your credential)"},
 	{release.SectionImages, "image changes"},
 	{release.SectionConfig, "config / flag changes"},
 	{release.SectionSecrets, "new secrets needed"},

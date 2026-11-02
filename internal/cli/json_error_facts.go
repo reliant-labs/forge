@@ -24,6 +24,12 @@ import (
 // refused. Signing in fixes it.
 const ReasonNoControlPlaneCredential = "no_control_plane_credential"
 
+// ReasonDeliveryGrantsMissing is an `applier = "flux"` env's release needing
+// permissions its Flux's apply identities were not granted
+// (flux_delivery_grants.go): refused before anything was written (exit 9), or
+// reported by the reconciler as Forbidden (exit 1).
+const ReasonDeliveryGrantsMissing = "delivery_grants_missing"
+
 // jsonErrorFacts is what a document reports about its error beside the text.
 // Every field is omitted when unknown, so a consumer tests for the key.
 type jsonErrorFacts struct {
@@ -54,6 +60,10 @@ type jsonErrorFacts struct {
 func errorFactsOf(err error) jsonErrorFacts {
 	if err == nil {
 		return jsonErrorFacts{}
+	}
+	var gr *fluxDeliveryGrantRefusal
+	if errors.As(err, &gr) {
+		return jsonErrorFacts{ErrorReason: ReasonDeliveryGrantsMissing}
 	}
 	var cr *claimableRefusal
 	if errors.As(err, &cr) {

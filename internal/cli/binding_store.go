@@ -249,7 +249,16 @@ type envLedger struct {
 	// Offline is set when `--offline-ledger` replaced a hosted ledger with
 	// its cached copy (offline_ledger.go). Nil otherwise.
 	Offline *offlineBindings
+	// FluxEntities is the env's render when it declares `applier = "flux"`
+	// (its FluxDelivery is set), nil otherwise: such an env's in-cluster
+	// Flux applies each release from its bundle, and forge records, pushes
+	// and points (flux_delivery_deploy.go). Never applies locally.
+	FluxEntities *KCLEntities
 }
+
+// flux reports an `applier = "flux"` env: forge points its in-cluster Flux and
+// never applies it.
+func (l envLedger) flux() bool { return l.FluxEntities != nil && l.FluxEntities.FluxDelivery != nil }
 
 // ledgerOnly reports a hosted-ledger env whose control plane converges NONE
 // of it: Mixed (forge applies its workloads from here), no hosted tier, and no
@@ -265,7 +274,7 @@ func (l envLedger) ledgerOnly() bool {
 // MACHINE. A self-managed env always is: nothing watches a jsonl file, so if
 // this command does not apply the binding it just wrote, nothing ever will. A
 // hosted env is only when it is Mixed.
-func (l envLedger) appliesLocally() bool { return !l.Hosted || l.Mixed }
+func (l envLedger) appliesLocally() bool { return !l.flux() && (!l.Hosted || l.Mixed) }
 
 // hubUnits reports whether the hub applies at least one unit of the env: the
 // bundle must be recorded for it, its reconciler must be able to apply, and the

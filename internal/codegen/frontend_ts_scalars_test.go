@@ -217,8 +217,8 @@ var wantSingularForm = map[string]formProjection{
 	"string":     {control: "text", zod: `z.string()`, prefill: `String(item.<F> ?? "")`},
 	"boolean":    {control: "checkbox", zod: `z.boolean().default(false)`, prefill: `Boolean(item.<F>)`},
 	"number":     {control: "number", zod: `z.coerce.number()`, prefill: `Number(item.<F> ?? 0)`},
-	"bigint":     {control: "text", zod: `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`, submit: `BigInt(values.<F>)`, prefill: `String(item.<F> ?? 0n)`},
-	"Uint8Array": {control: "base64", zod: `z.string().regex(/^[A-Za-z0-9+/=_-]*$/, "expected base64")`, submit: `base64Decode(values.<F>)`, prefill: `base64Encode(item.<F> ?? new Uint8Array())`},
+	"bigint":     {control: "text", zod: `z.string().regex(/^(-?\d+)?$/, "Enter a whole number")`, submit: `BigInt(values.<F>)`, prefill: `String(item.<F> ?? 0n)`},
+	"Uint8Array": {control: "base64", zod: `z.string().regex(/^[A-Za-z0-9+/=_-]*$/, "Enter base64-encoded data")`, submit: `base64Decode(values.<F>)`, prefill: `base64Encode(item.<F> ?? new Uint8Array())`},
 }
 
 // emptyAsUnset is the preprocess a proto3 `optional` field's zod schema is
@@ -233,8 +233,8 @@ var wantOptionalForm = map[string]formProjection{
 	"string":     {control: "text", zod: fmt.Sprintf(emptyAsUnset, `z.string()`), prefill: `item.<F> ?? ""`},
 	"boolean":    wantSingularForm["boolean"],
 	"number":     {control: "number", zod: fmt.Sprintf(emptyAsUnset, `z.coerce.number()`), prefill: `item.<F>`},
-	"bigint":     {control: "text", zod: fmt.Sprintf(emptyAsUnset, `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`), submit: `values.<F> === undefined ? undefined : BigInt(values.<F>)`, prefill: `String(item.<F> ?? "")`},
-	"Uint8Array": {control: "base64", zod: fmt.Sprintf(emptyAsUnset, `z.string().regex(/^[A-Za-z0-9+/=_-]*$/, "expected base64")`), submit: `values.<F> === undefined ? undefined : base64Decode(values.<F>)`, prefill: `item.<F> ? base64Encode(item.<F>) : ""`},
+	"bigint":     {control: "text", zod: fmt.Sprintf(emptyAsUnset, `z.string().regex(/^(-?\d+)?$/, "Enter a whole number")`), submit: `values.<F> === undefined ? undefined : BigInt(values.<F>)`, prefill: `String(item.<F> ?? "")`},
+	"Uint8Array": {control: "base64", zod: fmt.Sprintf(emptyAsUnset, `z.string().regex(/^[A-Za-z0-9+/=_-]*$/, "Enter base64-encoded data")`), submit: `values.<F> === undefined ? undefined : base64Decode(values.<F>)`, prefill: `item.<F> ? base64Encode(item.<F>) : ""`},
 }
 
 // wantRepeatedElemConv is the per-element conversion the comma-split

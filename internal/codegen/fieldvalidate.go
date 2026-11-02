@@ -184,11 +184,17 @@ func (c *FieldConstraints) SuppressesZeroDefault(kind string) bool {
 	return false
 }
 
-// ZodChain returns the zod validator suffix (e.g. ".gte(0).lte(100)" or
-// ".min(1).max(64).email()") for a form field of the given form type
-// ("number" takes numeric bounds; everything else is treated as a string
-// input). The base builder (z.coerce.number() / z.string()) is emitted by
-// the template; this is only the trailing refinement chain.
+// ZodChain returns the zod validator suffix (e.g. `.gte(0, "Must be 0 or
+// more")` or `.min(1, "Required").max(64, "…").email("…")`) for a form field
+// of the given form type ("number" takes numeric bounds; everything else is
+// treated as a string input). The base builder (z.coerce.number() /
+// z.string()) is emitted by the template; this is only the trailing
+// refinement chain.
+//
+// Every refinement carries a message written for the person filling in the
+// form. zod's defaults are written for a developer — a required name left
+// blank reads "String must contain at least 1 character(s)" — and they sat
+// beside the scaffold's own "Required", so one form spoke in two voices.
 func (c *FieldConstraints) ZodChain(formType string) string {
 	if !c.HasAny() {
 		return ""
@@ -196,16 +202,16 @@ func (c *FieldConstraints) ZodChain(formType string) string {
 	var b strings.Builder
 	if formType == "number" {
 		if c.Gte != "" {
-			fmt.Fprintf(&b, ".gte(%s)", c.Gte)
+			fmt.Fprintf(&b, ".gte(%s, %s)", c.Gte, jsStringLiteral("Must be "+c.Gte+" or more"))
 		}
 		if c.Gt != "" {
-			fmt.Fprintf(&b, ".gt(%s)", c.Gt)
+			fmt.Fprintf(&b, ".gt(%s, %s)", c.Gt, jsStringLiteral("Must be more than "+c.Gt))
 		}
 		if c.Lte != "" {
-			fmt.Fprintf(&b, ".lte(%s)", c.Lte)
+			fmt.Fprintf(&b, ".lte(%s, %s)", c.Lte, jsStringLiteral("Must be "+c.Lte+" or less"))
 		}
 		if c.Lt != "" {
-			fmt.Fprintf(&b, ".lt(%s)", c.Lt)
+			fmt.Fprintf(&b, ".lt(%s, %s)", c.Lt, jsStringLiteral("Must be less than "+c.Lt))
 		}
 		return b.String()
 	}
@@ -216,18 +222,26 @@ func (c *FieldConstraints) ZodChain(formType string) string {
 		minLen = &one
 	}
 	if minLen != nil {
-		fmt.Fprintf(&b, ".min(%d)", *minLen)
+		msg := "Required"
+		if *minLen > 1 {
+			msg = fmt.Sprintf("Must be at least %d characters", *minLen)
+		}
+		fmt.Fprintf(&b, ".min(%d, %s)", *minLen, jsStringLiteral(msg))
 	}
 	if c.MaxLen != nil {
-		fmt.Fprintf(&b, ".max(%d)", *c.MaxLen)
+		msg := fmt.Sprintf("Must be at most %d characters", *c.MaxLen)
+		if *c.MaxLen == 1 {
+			msg = "Must be at most 1 character"
+		}
+		fmt.Fprintf(&b, ".max(%d, %s)", *c.MaxLen, jsStringLiteral(msg))
 	}
 	if c.Email {
-		b.WriteString(".email()")
+		b.WriteString(`.email("Enter a valid email address")`)
 	}
 	if c.Pattern != "" {
 		// new RegExp("...") sidesteps the / delimiter-escaping the /re/
 		// literal would need; the pattern is JS-string-escaped.
-		fmt.Fprintf(&b, ".regex(new RegExp(%s))", jsStringLiteral(c.Pattern))
+		fmt.Fprintf(&b, `.regex(new RegExp(%s), "Not in the expected format")`, jsStringLiteral(c.Pattern))
 	}
 	return b.String()
 }

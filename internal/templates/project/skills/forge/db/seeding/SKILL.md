@@ -216,8 +216,13 @@ CREATE TABLE accounts (
     contact TEXT NOT NULL CHECK (contact ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$'),
     reference TEXT NOT NULL CHECK (reference ~ '^SKU-[0-9]{4}$')
 );
--- seeds  contact = '1@1.1', '2@2.2', …   reference = 'SKU-0001', 'SKU-0002', …
+-- seeds  contact = 'user1@example.com', …   reference = 'SKU-0001', 'SKU-0002', …
 ```
+
+The email CHECK is the one pattern seeded by its meaning rather than its
+shape: the shape alone gives `1@1.1`, which satisfies the CHECK and fails the
+form's `.email()` validator, so a seeded row could not be saved from its own
+edit page. `example.com` is reserved for exactly this.
 
 Anything genuinely unsatisfiable is resolved at **plan** time, before a single
 INSERT: a UNIQUE column backed by a 5-value CHECK vocabulary can never carry 20

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -190,24 +191,112 @@ func TestCIWorkflows_CancelInProgressOnlyOnPullRequests(t *testing.T) {
 // push to main replaces another's pending run and each commit gets a verdict.
 const perCommitPushGroup = "${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}"
 
-// TestForgeOwnWorkflows_EveryMainCommitGetsAVerdict: forge's own push-to-main
-// workflows group per commit (see perCommitPushGroup); release-forge.sh
-// --commit tags the newest green one.
-func TestForgeOwnWorkflows_EveryMainCommitGetsAVerdict(t *testing.T) {
-	for _, name := range []string{"ci.yml", "e2e-suite.yml", "e2e-scaffold.yml"} {
-		content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
+// workflowEvents returns a workflow's trigger events and, for `push`, the
+// branches it filters on (nil when it has no branches filter).
+func workflowEvents(t *testing.T, name string, content []byte) (events map[string]bool, pushBranches []string, pushTagsOnly bool) {
+	t.Helper()
+	var doc struct {
+		On any `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		t.Fatalf("%s does not parse as YAML: %v", name, err)
+	}
+	events = map[string]bool{}
+	switch on := doc.On.(type) {
+	case string:
+		events[on] = true
+	case []any:
+		for _, e := range on {
+			s, _ := e.(string)
+			events[s] = true
+		}
+	case map[string]any:
+		for e, v := range on {
+			events[e] = true
+			if e != "push" {
+				continue
+			}
+			push, _ := v.(map[string]any)
+			if push["branches"] != nil {
+				pushBranches = asStrings(push["branches"])
+			}
+			_, hasTags := push["tags"]
+			pushTagsOnly = hasTags && push["branches"] == nil
+		}
+	}
+	return events, pushBranches, pushTagsOnly
+}
+
+func asStrings(v any) []string {
+	list, _ := v.([]any)
+	out := make([]string, 0, len(list))
+	for _, e := range list {
+		if s, ok := e.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TestForgeOwnWorkflows_MainPushesSupersedePendingRuns pins the owner's rule
+// of 2026-11-01 for forge's own CI: every push to main shares one concurrency
+// group per workflow, so a newer push SUPERSEDES the pending run (GitHub keeps
+// at most one pending run per group) while the run in progress finishes
+// (cancel-in-progress is false off a pull request, which
+// TestForgeOwnWorkflows_CancelInProgressOnlyOnPullRequests holds). A group
+// keyed on github.sha or github.run_id for pushes would give every commit a
+// group of its own and queue a run per merge. A workflow that is also
+// scheduled or called (nightly.yml) keys its group on github.event_name, so a
+// nightly run neither supersedes nor is superseded by a push run.
+func TestForgeOwnWorkflows_MainPushesSupersedePendingRuns(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("..", "..", ".github", "workflows", "*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, p := range paths {
+		name := filepath.Base(p)
+		content, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if g, _ := workflowConcurrency(t, name, content)["group"].(string); !strings.Contains(g, perCommitPushGroup) {
-			t.Errorf("%s: group %q must end with %s", name, g, perCommitPushGroup)
+		events, branches, tagsOnly := workflowEvents(t, name, content)
+		if !events["push"] || tagsOnly {
+			continue
 		}
+		if branches != nil && !slices.Contains(branches, "main") {
+			continue
+		}
+		checked++
+		conc := workflowConcurrency(t, name, content)
+		group, _ := conc["group"].(string)
+		if group == "" {
+			t.Errorf("%s runs on push to main but has no workflow concurrency group; want one group per ref so a newer push supersedes the pending run", name)
+			continue
+		}
+		if !strings.Contains(group, "github.ref") {
+			t.Errorf("%s: group %q is not keyed on github.ref", name, group)
+		}
+		if strings.Contains(group, "github.sha") {
+			t.Errorf("%s: group %q is keyed on github.sha, so pushes to main never share a group and a newer push cannot supersede a pending run", name, group)
+		}
+		if (events["schedule"] || events["workflow_call"]) && !strings.Contains(group, "github.event_name") {
+			t.Errorf("%s: group %q is shared by push and scheduled/called runs; key it on github.event_name so nightly runs stay out of the main push group", name, group)
+		}
+		if c := conc["cancel-in-progress"]; c != prOnlyCancel && c != false && c != nil {
+			t.Errorf("%s: cancel-in-progress = %v; a main run in progress must finish (want false or %s)", name, c, prOnlyCancel)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("found no workflow that runs on push to main — has the repo layout moved?")
 	}
 }
 
 // TestForgeOwnWorkflows_CancelInProgressOnlyOnPullRequests holds forge's own
-// CI to the policy it scaffolds. Every one of these runs on push to main, and
-// the files are read by this process, so the test cache sees an edit to them.
+// CI to the policy it scaffolds: the run in progress is cancelled by a newer
+// one only on a pull request, never on main (where a newer push supersedes
+// only the PENDING run — TestForgeOwnWorkflows_MainPushesSupersedePendingRuns).
+// The files are read by this process, so the test cache sees an edit to them.
 // A workflow that runs only for pull requests and merge groups is exempt
 // (pullRequestOnly): it has no main run to cancel.
 func TestForgeOwnWorkflows_CancelInProgressOnlyOnPullRequests(t *testing.T) {

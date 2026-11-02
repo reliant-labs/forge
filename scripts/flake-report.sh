@@ -54,6 +54,13 @@
 
 set -uo pipefail
 
+# A native jq.exe (Windows, where internal/ciguard's test runs this script
+# under Git Bash) ends every line with CRLF. --sweep reads the issue's age as
+# the last field of a jq line, so it carried the CR, `[[ "12\r" -ge 7 ]]` was
+# false, and a quiet issue was never closed. Drop CRs at the source, as
+# scripts/ci-main-red.sh does.
+jq() { command jq "$@" | tr -d '\r'; }
+
 run_id="" logs_dir="" sha="" run_url="" dry_run=0 list_only=0 sweep=0
 while [[ $# -gt 0 ]]; do
   case "$1" in

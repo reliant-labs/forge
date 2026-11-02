@@ -96,6 +96,8 @@ func TestDBQueryExternalWithoutItsSecret(t *testing.T) {
 // client, the tunnel lands on the ready pod behind its Service at the
 // Service's only port, and the statement runs as the declared role in a READ
 // ONLY transaction, which refuses a write even from a role that may write.
+// Such a role is refused outright unless --allow-writable-role reads as it,
+// and the audit record names the kube context the tunnel used.
 func TestDBQueryExternalThroughTheTunnel(t *testing.T) {
 	if testing.Short() {
 		t.Skip("boots a real postgres (pgtest); runs in task test")
@@ -154,8 +156,11 @@ func TestDBQueryExternalThroughTheTunnel(t *testing.T) {
 	withKCLFixture(t, fmt.Sprintf(externalFixture, dbName, role))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
+	if _, err := runDBQueryCmd(t, "prod", "select id from ledger_entries", "--confirm-env", "prod", "--reason", "ISS-1"); exitCodeForError(err) != exitWrong || err == nil || !strings.Contains(err.Error(), "may write 1 relations") {
+		t.Errorf("a role that may write: err = %v, want exit 1 naming its write grant", err)
+	}
 	out, err := runDBQueryCmd(t, "prod", "select id, amount, current_user from ledger_entries order by id",
-		"--json", "--confirm-env", "prod", "--reason", "ISS-1")
+		"--json", "--confirm-env", "prod", "--reason", "ISS-1", "--allow-writable-role")
 	if err != nil {
 		t.Fatalf("query: %v\n%s", err, out)
 	}
@@ -180,9 +185,13 @@ func TestDBQueryExternalThroughTheTunnel(t *testing.T) {
 		t.Errorf("forwarded to %v, want the ready pod behind the service, at its port", calls)
 	}
 
+	if recs := readDBQueryAudit(t, "prod"); len(recs) != 1 || recs[0].Who.KubeContext != "gke-prod" || recs[0].Database != "ledger" || recs[0].Role != role || !recs[0].AllowWritableRole {
+		t.Errorf("records %+v", recs)
+	}
+
 	// The role may insert; the READ ONLY transaction refuses it all the same.
 	if _, err := runDBQueryCmd(t, "prod", "with x as (insert into ledger_entries values (2, 20) returning id) select id from x",
-		"--confirm-env", "prod", "--reason", "ISS-1"); exitCodeForError(err) != exitWrong {
+		"--confirm-env", "prod", "--reason", "ISS-1", "--allow-writable-role"); exitCodeForError(err) != exitWrong {
 		t.Errorf("a write: err = %v, want exit 1", err)
 	}
 }

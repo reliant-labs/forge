@@ -107,8 +107,9 @@ func resolveDBQueryCluster(ctx context.Context, o dbQueryOptions, e *KCLEntities
 		transport = dbQueryTransportAddr
 	}
 	return dbQueryTarget{
-		connConfig: cfg,
-		scope:      dbQueryScope{Env: o.env, Transport: transport, Workload: w.Name, Database: db.Name, Policy: dbQueryPolicy(e)},
+		connConfig:  cfg,
+		scope:       dbQueryScope{Env: o.env, Transport: transport, Workload: w.Name, Database: db.Name, Policy: dbQueryPolicy(e)},
+		kubeContext: db.Cluster,
 	}, nil
 }
 
@@ -222,7 +223,8 @@ func resolveDBQueryExternal(ctx context.Context, o dbQueryOptions, e *KCLEntitie
 		dbClusterConnTweak(cfg)
 	}
 	return dbQueryTarget{
-		connConfig: cfg,
-		scope:      dbQueryScope{Env: o.env, Transport: "port-forward", Workload: workload, Database: x.Name, Policy: policy},
+		connConfig:  cfg,
+		scope:       dbQueryScope{Env: o.env, Transport: "port-forward", Workload: workload, Database: x.Name, Policy: policy},
+		kubeContext: x.Cluster,
 	}, nil
 }

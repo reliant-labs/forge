@@ -65,7 +65,7 @@ forge db query prod "select count(*) from entries" --database ledger --confirm-e
 - **Where**: `runtime = forge.OnCluster {target}` names the cluster (kube context) and namespace of `service`; unset, the env's primary cluster target (`namespace` overrides it).
 - **Transport**: the same pods/portforward stream as a ManagedDatabase's, with your kube context (`pods/portforward` create, `endpointslices` list, `secrets` get on `password_secret`). A port-forward enters the pod, so the service's NetworkPolicy does not stand in the way. No `--workload` is needed: `--database` names it, or it is the env's only database.
 - **Policy** is the env's `data_access`, as everywhere: a real env is `audited`, judged before the password Secret is read.
-- **Read-only**: every statement runs in a READ ONLY transaction Postgres enforces, so a write is refused even from a role that may write. forge cannot create a role on a database it does not run, so pointing `username` at a read-only role is yours, and it is what keeps a query from reading `forge:secret` columns.
+- **Read-only**: every statement runs in a READ ONLY transaction Postgres enforces, so a write is refused even from a role that may write. forge cannot create a role on a database it does not run, so pointing `username` at a read-only role is yours, and it is what keeps a query from reading `forge:secret` columns. On a real env forge checks it (below): a `username` that can write is refused.
 - **TLS** is `sslmode`: `require` (default: encrypted, not verified, since the tunnel ends at a pod) or `disable`. `--addr` does not apply.
 
 ## Bring your own route: `--addr host:port`
@@ -140,6 +140,30 @@ data_access = forge.DataAccess {db_query = "audited"}
 
 The policy is recorded in the release shape. For a hosted env the control plane enforces the **recorded** one (not this checkout's KCL) and audits every call; a client flag cannot weaken it. On a hosted audited env it is people only (an org automation token is refused) and needs the `db:query` grant (owners and admins hold it); a machine token on an open env needs the `db:query` scope. One query per person per env at a time, 30 a minute.
 
+On every other transport the policy is judged by the `forge` process you run, so it guards against mistakes, not against someone holding the role's password. What bounds that person is the role, hence the next two rules.
+
+## A real env is read as a role that cannot write
+
+The READ ONLY transaction binds one transaction, not the role: the same role can `pg_terminate_backend` the app's sessions, and in a session of its own (psql with the same password) change anything. So on a real env (`lifecycle` neither local nor ephemeral) forge asks the server what the role it signed in as can do (`dbquery.InspectRole`: the catalogs, not a declaration) and refuses, exit 1, a role with any write grant, an owned relation (or SET ROLE to an owner), a role attribute (`SUPERUSER`, `CREATEROLE`, `CREATEDB`, `REPLICATION`, `BYPASSRLS`), or a predefined role such as `pg_signal_backend` or `pg_write_all_data`:
+
+| Transport | Role | On a real env |
+|---|---|---|
+| ManagedDatabase, port-forward or `--addr` | `forge_ro` | passes |
+| `forge.ExternalDatabase` | its `username` | passes when SELECT-only; point it at one |
+| OnHost / OnCompose `DATABASE_URL`, with or without `--addr` | the app's own role | refused |
+
+`--allow-writable-role` reads as such a role anyway, still in a READ ONLY transaction; the audit record carries `allow_writable_role` and what the role can do (`role_writes`). A scratch env is not checked.
+
+## Every query is recorded
+
+A hosted env's query is recorded by the control plane (its audit log and activity feed). Every query forge runs itself, on the direct, port-forward and `--addr` transports, is recorded where it runs, the refused ones included:
+
+- one JSON line appended to `.forge/audit/<env>.jsonl` in the project (`schema` `forge.db.query.audit/v1`: `id`, `at`, `env`, `transport`, `database`, `policy`, `who` {`user`, `host`, `kube_context`}, `reason`, `role`, `role_writes`, `sql`, `sql_sha256`, `outcome`, `error`, `row_count`, `duration_ms`);
+- one structured log line on stderr naming the record (the statement itself stays in the file);
+- the record's id in the connection's `application_name` (`forge db query dbq_…`), so the database's own logs and `pg_stat_activity` name it.
+
+A record that cannot be written withholds the rows (exit 2). It is a record, not a control: for a log nobody at the keyboard can edit, turn on the database's own audit logging (pgaudit, or the managed service's data-access logs) for the read-only role.
+
 ## Output for agents
 
 `--json` (the same as `--format json`) prints one document to stdout:
@@ -154,15 +178,15 @@ The policy is recorded in the release shape. For a hosted env the control plane 
 - `ok` and `exit_code` are computed from the same error the process exits with.
 - On failure `error` carries the message, and `reason` carries a stable subcode such as `multiple_statements` or `statement_timeout`.
 - Cells are JSON values. A bigint or numeric beyond 15 digits is a string, so no reader rounds it. Dates, uuids and arrays are Postgres's text. `json`/`jsonb` is inline JSON.
-- `scope.database` is present on the port-forward and control-plane transports. On the control-plane transport `scope.policy` is absent (the control plane applied the recorded one) and `audit` carries `id` (the audit_log row), `sql_sha256` and `replica` (`ro` or `rw`); the table footer names the audit id.
+- `scope.database` is present on the port-forward and control-plane transports. On the control-plane transport `scope.policy` is absent (the control plane applied the recorded one) and `audit` carries `id` (the audit_log row), `sql_sha256` and `replica` (`ro` or `rw`). On the others `audit` carries `id`, `sql_sha256` and `record` (the `.forge/audit/<env>.jsonl` file). The table footer names the audit id.
 - A hosted refusal keeps the control plane's `reason`: `confirmation_required` (pass `--confirm-env` and `--reason`), `credential_missing` (the env's `forge_ro` is not provisioned yet), `rate_limited`, `query_in_flight`, or the executor's subcode.
 - `release` is the release live in the env when the query ran (`version`, `promotion_id`, `promoted_at`, and `unsettled` when its rollout hadn't finished), read from the env's release ledger. It's absent when nothing was promoted yet; an unreadable ledger warns on stderr and never fails the query. `forge env releases at <env> <time>` answers the same question for any moment.
 
 | Exit | Meaning |
 |---|---|
 | 0 | rows returned |
-| 1 | the statement or the request is wrong: the guard, the read-only transaction, a SQL error, a permission error, the env's policy |
-| 2 | forge could not look: no database reachable, the tunnel, a timeout, a lost connection; hosted: the control plane unreachable, signed out, rate limited, or the read-only role not provisioned |
+| 1 | the statement or the request is wrong: the guard, the read-only transaction, a SQL error, a permission error, the env's policy, a writable role on a real env |
+| 2 | forge could not look: no database reachable, the tunnel, a timeout, a lost connection, the audit record not written; hosted: the control plane unreachable, signed out, rate limited, or the read-only role not provisioned |
 
 Treat exit 2 as "not answered", never as "no rows".
 

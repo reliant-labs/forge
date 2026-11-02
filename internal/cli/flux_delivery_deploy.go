@@ -798,14 +798,17 @@ func waitFluxDeliveryObserved(ctx context.Context, env, rel string, fd FluxDeliv
 		if err != nil {
 			return obs, exitCodeError{code: exitUndetermined, msg: err.Error()}
 		}
-		if obs.converged(in.Source.Digest) {
-			notice("  converged: %s in %s\n", obs.summary(in.Source.Digest), time.Since(started).Round(time.Second))
-			return obs, nil
-		}
-		if err := obs.failure(env, rel, in.Source.Digest); err != nil {
+		if err := obs.superseded(env, in); err != nil {
 			return obs, err
 		}
-		if line := obs.summary(in.Source.Digest); line != last {
+		if obs.converged(in) {
+			notice("  converged: %s in %s\n", obs.summary(in), time.Since(started).Round(time.Second))
+			return obs, nil
+		}
+		if err := obs.failure(env, rel, in); err != nil {
+			return obs, err
+		}
+		if line := obs.summary(in); line != last {
 			notice("  %s\n", line)
 			last = line
 		}
@@ -814,7 +817,7 @@ func waitFluxDeliveryObserved(ctx context.Context, env, rel string, fd FluxDeliv
 				"env %s did not converge to %s within %s: %s.\n"+
 					"  Its Flux keeps reconciling; `forge env status %s --wait` keeps waiting, and\n"+
 					"  `kubectl --context %s -n %s get kustomizations` shows Flux's own view.",
-				env, shortDigest(in.Source.Digest), budget, obs.summary(in.Source.Digest), env, fd.Cluster, fd.Namespace)}
+				env, shortDigest(in.Source.Digest), budget, obs.summary(in), env, fd.Cluster, fd.Namespace)}
 		}
 		select {
 		case <-ctx.Done():
@@ -932,7 +935,7 @@ func waitFluxDeliveryCurrent(ctx context.Context, env string, fd FluxDeliveryEnt
 		obs, err := waitFluxDeliveryObserved(ctx, env, report.Promotion.Release, fd, in, budget, opts.Interval, notice)
 		report.Workloads = fluxDeliveryWaitRows(obs, in.Source.Digest)
 		if len(obs.Appliers) > 0 {
-			report.Reason = obs.summary(in.Source.Digest)
+			report.Reason = obs.summary(in)
 		}
 		return err
 	}()
@@ -974,7 +977,7 @@ func fluxDeliveryWaitRows(obs fluxDeliveryObservation, digest string) []envWaitW
 			Reason: a.Reason, Phase: "progressing",
 		}
 		switch {
-		case a.Found && a.Ready == "True" && a.Current && row.ObservedDigest == digest:
+		case a.Found && a.Ready == "True" && a.Current && a.SpecMatches && row.ObservedDigest == digest:
 			row.Phase = "succeeded"
 		case a.Found && a.Ready == "False" && !fluxProgressing(a.Reason):
 			row.Phase, row.LastError = "degraded", strings.TrimSpace(a.Message)

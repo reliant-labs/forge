@@ -7,11 +7,16 @@ package cli
 //
 // Four objects answer it, read by the names the input carries:
 //
-//   - the pointer: when it was last written (its managedFields), the moment
-//     a renderer condition must postdate to be about this input;
+//   - the pointer: which input it projects (promotion and fence; a wait whose
+//     input it no longer projects was superseded), and when it was last
+//     written (its managedFields), the moment a renderer condition must
+//     postdate to be about this input;
 //   - the delivery ResourceSet: has the renderer applied the pointer's input?
-//     Its evidence is the OCIRepository it renders: only a source whose
-//     spec.ref.digest is the input's digest proves the renderer consumed it.
+//     Its evidence is the OCIRepository it renders: only a source stamped
+//     with the input's fence (fluxdelivery.FenceAnnotation) and requesting
+//     its digest proves the renderer consumed it — the digest alone does not,
+//     since a re-deploy at the same digest is a new promotion — and every
+//     Kustomization must carry the spec the input renders for it.
 //     Stalled since the pointer was written is a failure; a Stalled older
 //     than the write is about a previous input, and is progress;
 //   - the OCIRepository: can Flux fetch the bundle at its digest? Judged only
@@ -37,6 +42,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/fluxdelivery"
 	"github.com/reliant-labs/forge/pkg/release"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // fluxObjectStatus is one Flux object's Ready condition and revisions.
@@ -63,10 +69,27 @@ type fluxObjectStatus struct {
 	// StalledSince is when the Stalled condition last turned True (zero
 	// when it is not Stalled, or did not say).
 	StalledSince time.Time `json:"stalled_since,omitempty"`
+	// Fence is an OCIRepository's fluxdelivery.FenceAnnotation: the fence of
+	// the input the renderer last rendered into it.
+	Fence string `json:"fence,omitempty"`
+	// SpecMatches is true when a Kustomization's spec is the one the
+	// observed input renders for it (source, path, identity, target
+	// namespace, deletion policy).
+	SpecMatches bool `json:"spec_matches,omitempty"`
+}
+
+// fluxPointerIdentity is which input the live pointer projects.
+type fluxPointerIdentity struct {
+	Found     bool   `json:"found"`
+	Promotion string `json:"promotion,omitempty"`
+	Fence     string `json:"fence,omitempty"`
+	Digest    string `json:"digest,omitempty"`
 }
 
 // fluxDeliveryObservation is the delivery as Flux reports it.
 type fluxDeliveryObservation struct {
+	// Pointer is the live pointer's identity at the observation.
+	Pointer fluxPointerIdentity `json:"pointer"`
 	// PointerWrittenAt is when the pointer was last written, by the API
 	// server's clock (zero when it could not be read).
 	PointerWrittenAt time.Time          `json:"pointer_written_at,omitempty"`
@@ -75,36 +98,69 @@ type fluxDeliveryObservation struct {
 	Appliers         []fluxObjectStatus `json:"appliers"`
 }
 
-// rendered: the renderer is installed, healthy and current, and the source it
-// renders requests digest — the evidence it consumed the promoted input. An
-// applier Ready on the digest without it is an orphan of an earlier render,
-// not this delivery.
-func (o fluxDeliveryObservation) rendered(digest string) bool {
+// consumed: the source carries in's fence and requests its digest — the
+// evidence the renderer applied THIS input. The digest alone is not: a
+// re-deploy of the same release (or another release with the same bundle) is
+// a new promotion at an unchanged digest, and only the fence, which every
+// pointer write advances, tells its render from the previous one's.
+func (o fluxDeliveryObservation) consumed(in fluxdelivery.BindingInput) bool {
+	return o.Source.Found && o.Source.Fence == in.Fence && o.Source.RequestedDigest == in.Source.Digest
+}
+
+// rendered: the renderer is installed, healthy and current, it consumed in,
+// and every applier carries the spec in renders. An applier Ready on the
+// digest without it is an orphan of an earlier render, not this delivery.
+func (o fluxDeliveryObservation) rendered(in fluxdelivery.BindingInput) bool {
 	r := o.Renderer
-	return r.Found && r.Current && !r.Stalled && r.Ready == "True" &&
-		o.Source.Found && o.Source.RequestedDigest == digest
-}
-
-// sourceFetched: the source's status describes its current spec, which
-// requests digest, and it has fetched that digest.
-func (o fluxDeliveryObservation) sourceFetched(digest string) bool {
-	s := o.Source
-	return s.Found && s.Current && s.RequestedDigest == digest && s.Ready == "True" && revisionDigestOf(s.LastApplied) == digest
-}
-
-// converged: the renderer applied the input, the source fetched its digest,
-// and every applier applied the digest and is Ready, each by a status that
-// describes its current spec.
-func (o fluxDeliveryObservation) converged(digest string) bool {
-	if len(o.Appliers) == 0 || !o.rendered(digest) || !o.sourceFetched(digest) {
+	if !r.Found || !r.Current || r.Stalled || r.Ready != "True" || !o.consumed(in) {
 		return false
 	}
 	for _, a := range o.Appliers {
-		if !a.Found || a.Ready != "True" || !a.Current || revisionDigestOf(a.LastApplied) != digest {
+		if a.Found && !a.SpecMatches {
 			return false
 		}
 	}
 	return true
+}
+
+// sourceFetched: the source's status describes its current spec, which
+// requests in's digest, and it has fetched that digest.
+func (o fluxDeliveryObservation) sourceFetched(in fluxdelivery.BindingInput) bool {
+	s, digest := o.Source, in.Source.Digest
+	return s.Found && s.Current && s.RequestedDigest == digest && s.Ready == "True" && revisionDigestOf(s.LastApplied) == digest
+}
+
+// converged: the renderer applied in, the source fetched its digest, and
+// every applier applied the digest and is Ready, each by a status that
+// describes its current spec.
+func (o fluxDeliveryObservation) converged(in fluxdelivery.BindingInput) bool {
+	if len(o.Appliers) == 0 || !o.rendered(in) || !o.sourceFetched(in) {
+		return false
+	}
+	for _, a := range o.Appliers {
+		if !a.Found || a.Ready != "True" || !a.Current || !a.SpecMatches || revisionDigestOf(a.LastApplied) != in.Source.Digest {
+			return false
+		}
+	}
+	return true
+}
+
+// superseded is the verdict when the live pointer no longer projects in —
+// another writer moved it (a newer fence, another promotion, even at the
+// same digest) or removed it — or nil while it still does. A wait on in can
+// then never be about the input that is live.
+func (o fluxDeliveryObservation) superseded(env string, in fluxdelivery.BindingInput) error {
+	p := o.Pointer
+	switch {
+	case !p.Found:
+		return exitCodeError{code: exitSuperseded, msg: fmt.Sprintf(
+			"env %s's delivery pointer was removed while this wait was on promotion %s (fence %s)", env, in.Promotion, in.Fence)}
+	case p.Promotion != in.Promotion || p.Fence != in.Fence:
+		return exitCodeError{code: exitSuperseded, msg: fmt.Sprintf(
+			"env %s's in-cluster Flux was re-pointed at promotion %s (fence %s, bundle %s) while this wait was on promotion %s (fence %s) — it was overtaken",
+			env, emptyAs(p.Promotion, "(none)"), p.Fence, shortDigest(p.Digest), in.Promotion, in.Fence)}
+	}
+	return nil
 }
 
 // rendererStalledOnInput: the renderer is Stalled, and turned so no earlier
@@ -120,11 +176,18 @@ func (o fluxDeliveryObservation) rendererStalledOnInput() bool {
 // failure is the verdict when Flux reports this digest failing, or nil while
 // it is still progressing. A Forbidden for an apply identity is the grant
 // refusal; anything else is Flux's own words.
-func (o fluxDeliveryObservation) failure(env, rel, digest string) error {
+//
+// The source's and appliers' failures count only once the renderer consumed
+// in: before that they are about the previous input, even at the same digest.
+func (o fluxDeliveryObservation) failure(env, rel string, in fluxdelivery.BindingInput) error {
+	digest := in.Source.Digest
 	if o.rendererStalledOnInput() {
 		return exitCodeError{code: exitWrong, msg: fmt.Sprintf(
 			"env %s: the renderer has not applied the promoted inputs: ResourceSet %s is Stalled (%s): %s",
 			env, o.Renderer.Name, o.Renderer.Reason, strings.TrimSpace(o.Renderer.Message))}
+	}
+	if !o.consumed(in) {
+		return nil
 	}
 	if o.Source.Found && o.Source.Current && o.Source.RequestedDigest == digest &&
 		o.Source.Ready == "False" && !fluxProgressing(o.Source.Reason) {
@@ -166,7 +229,8 @@ func fluxProgressing(reason string) bool {
 }
 
 // summary is one progress line: how many appliers have applied the digest.
-func (o fluxDeliveryObservation) summary(digest string) string {
+func (o fluxDeliveryObservation) summary(in fluxdelivery.BindingInput) string {
+	digest := in.Source.Digest
 	if !o.Renderer.Found {
 		return "the delivery ResourceSet is not installed (run the bootstrap)"
 	}
@@ -174,15 +238,15 @@ func (o fluxDeliveryObservation) summary(digest string) string {
 	switch {
 	case o.Renderer.Stalled:
 		prefix = fmt.Sprintf("the renderer %s is Stalled (%s): %s; ", o.Renderer.Name, o.Renderer.Reason, strings.TrimSpace(o.Renderer.Message))
-	case !o.rendered(digest):
+	case !o.rendered(in):
 		prefix = "the renderer has not rendered the promoted input yet; "
-	case !o.sourceFetched(digest):
+	case !o.sourceFetched(in):
 		prefix = fmt.Sprintf("OCIRepository %s has not fetched %s yet; ", o.Source.Name, shortDigest(digest))
 	}
 	done := 0
 	var pending []string
 	for _, a := range o.Appliers {
-		if a.Found && a.Ready == "True" && revisionDigestOf(a.LastApplied) == digest {
+		if a.Found && a.Ready == "True" && a.SpecMatches && revisionDigestOf(a.LastApplied) == digest {
 			done++
 			continue
 		}
@@ -258,7 +322,14 @@ var fluxDeliveryObserve = func(ctx context.Context, fd FluxDeliveryEntity, in fl
 	if err != nil {
 		return obs, err
 	}
-	obs.PointerWrittenAt = lastWrittenAt(pointers[fluxdelivery.InputProviderName(fd.Env, "")])
+	if pointer := pointers[fluxdelivery.InputProviderName(fd.Env, "")]; pointer != nil {
+		live, err := fluxdelivery.LiveInput(&unstructured.Unstructured{Object: pointer})
+		if err != nil {
+			return obs, err
+		}
+		obs.Pointer = fluxPointerIdentity{Found: true, Promotion: live.Promotion, Fence: live.Fence, Digest: live.Source.Digest}
+		obs.PointerWrittenAt = lastWrittenAt(pointer)
+	}
 	sets, err := get("resourcesets.fluxcd.controlplane.io")
 	if err != nil {
 		return obs, err
@@ -276,11 +347,36 @@ var fluxDeliveryObserve = func(ctx context.Context, fd FluxDeliveryEntity, in fl
 	if obs.Source.Found {
 		obs.Source.LastApplied, _ = nested(sources[in.Source.Name], "status", "artifact", "revision").(string)
 		obs.Source.RequestedDigest, _ = nested(sources[in.Source.Name], "spec", "ref", "digest").(string)
+		obs.Source.Fence, _ = nested(sources[in.Source.Name], "metadata", "annotations", fluxdelivery.FenceAnnotation).(string)
 	}
 	for _, a := range in.Appliers {
-		obs.Appliers = append(obs.Appliers, fluxStatusOf(a.Name, ks[a.Name]))
+		s := fluxStatusOf(a.Name, ks[a.Name])
+		s.SpecMatches = s.Found && fluxApplierSpecMatches(in, a, ks[a.Name])
+		obs.Appliers = append(obs.Appliers, s)
 	}
 	return obs, nil
+}
+
+// fluxApplierSpecMatches: the Kustomization's spec is what in renders for a
+// (the template's fields that differ between inputs), so its status, once
+// current, is about this input's applier and not a previous one's.
+func fluxApplierSpecMatches(in fluxdelivery.BindingInput, a fluxdelivery.Applier, obj map[string]any) bool {
+	str := func(keys ...string) string {
+		s, _ := nested(obj, keys...).(string)
+		return s
+	}
+	retire, deletionPolicy := in.Retire, "Orphan"
+	if retire == "" {
+		retire = a.Retire
+	}
+	if retire == fluxdelivery.RetireTeardown {
+		deletionPolicy = "Delete"
+	}
+	return str("spec", "sourceRef", "name") == a.Source &&
+		str("spec", "path") == a.Path &&
+		str("spec", "serviceAccountName") == a.ServiceAccountName &&
+		str("spec", "targetNamespace") == a.TargetNamespace &&
+		str("spec", "deletionPolicy") == deletionPolicy
 }
 
 // fluxStatusOf reads one object's Ready/Stalled conditions and revisions.
@@ -394,15 +490,15 @@ func fluxDeliveryStatusOf(ctx context.Context, projectDir, env string, bound rel
 	}
 	digest := in.Source.Digest
 	switch {
-	case obs.converged(digest):
-		return fmt.Sprintf("  reconciler  in-cluster Flux applied %s (promotion %s): %s", shortDigest(digest), in.Promotion, obs.summary(digest)), nil
+	case obs.converged(in):
+		return fmt.Sprintf("  reconciler  in-cluster Flux applied %s (promotion %s): %s", shortDigest(digest), in.Promotion, obs.summary(in)), nil
 	default:
-		if ferr := obs.failure(env, bound.Release, digest); ferr != nil {
+		if ferr := obs.failure(env, bound.Release, in); ferr != nil {
 			return fmt.Sprintf("  reconciler  in-cluster Flux FAILING on %s (promotion %s)", shortDigest(digest), in.Promotion), ferr
 		}
-		return fmt.Sprintf("  reconciler  in-cluster Flux PROGRESSING on %s (promotion %s): %s", shortDigest(digest), in.Promotion, obs.summary(digest)),
+		return fmt.Sprintf("  reconciler  in-cluster Flux PROGRESSING on %s (promotion %s): %s", shortDigest(digest), in.Promotion, obs.summary(in)),
 			exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(
 				"env %s: its in-cluster Flux has not finished applying %s (%s); gate on it with: forge env status %s --wait",
-				env, shortDigest(digest), obs.summary(digest), env)}
+				env, shortDigest(digest), obs.summary(in), env)}
 	}
 }

@@ -485,13 +485,16 @@ var pointerWrittenAt = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 // observed builds an observation of in's appliers, each in the given state.
 func observed(in fluxdelivery.BindingInput, each func(a fluxdelivery.Applier) fluxObjectStatus) fluxDeliveryObservation {
 	obs := fluxDeliveryObservation{
+		Pointer:          fluxPointerIdentity{Found: true, Promotion: in.Promotion, Fence: in.Fence, Digest: in.Source.Digest},
 		PointerWrittenAt: pointerWrittenAt,
 		Renderer:         fluxObjectStatus{Name: "delivery.prod", Found: true, Ready: "True", Current: true},
 		Source: fluxObjectStatus{Name: in.Source.Name, Found: true, Ready: "True", Current: true,
-			RequestedDigest: in.Source.Digest, LastApplied: "latest@" + in.Source.Digest},
+			RequestedDigest: in.Source.Digest, LastApplied: "latest@" + in.Source.Digest, Fence: in.Fence},
 	}
 	for _, a := range in.Appliers {
-		obs.Appliers = append(obs.Appliers, each(a))
+		s := each(a)
+		s.SpecMatches = s.Found
+		obs.Appliers = append(obs.Appliers, s)
 	}
 	return obs
 }
@@ -529,7 +532,7 @@ func TestFluxDeliveryObservationVerdicts(t *testing.T) {
 	ready := observed(in, func(a fluxdelivery.Applier) fluxObjectStatus {
 		return fluxObjectStatus{Name: a.Name, Found: true, Ready: "True", Current: true, LastApplied: "latest@" + d, LastAttempted: "latest@" + d}
 	})
-	if !ready.converged(d) || ready.failure("prod", "v2", d) != nil {
+	if !ready.converged(in) || ready.failure("prod", "v2", in) != nil {
 		t.Fatalf("a fully applied release is not converged: %+v", ready)
 	}
 
@@ -542,7 +545,7 @@ func TestFluxDeliveryObservationVerdicts(t *testing.T) {
 		})
 	}
 
-	err := failing("ReconciliationFailed", forbiddenMessage, d).failure("prod", "v2", d)
+	err := failing("ReconciliationFailed", forbiddenMessage, d).failure("prod", "v2", in)
 	var refusal *fluxDeliveryGrantRefusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("a Forbidden for an apply identity: err = %v, want the grant refusal", err)
@@ -552,23 +555,23 @@ func TestFluxDeliveryObservationVerdicts(t *testing.T) {
 		t.Errorf("mapped refusal = %v (exit %d)", err, exitcode.Of(err))
 	}
 
-	err = failing("HealthCheckFailed", "timeout waiting for: [Job/acme-prod/migrate-abc status: 'Failed']", d).failure("prod", "v2", d)
+	err = failing("HealthCheckFailed", "timeout waiting for: [Job/acme-prod/migrate-abc status: 'Failed']", d).failure("prod", "v2", in)
 	if exitcode.Of(err) != exitWrong || !strings.Contains(err.Error(), "HealthCheckFailed") || errors.As(err, &refusal) {
 		t.Errorf("a health failure: %v (exit %d), want Flux's own words, exit 1", err, exitcode.Of(err))
 	}
 
 	old := "sha256:" + strings.Repeat("0", 64)
-	if err := failing("ReconciliationFailed", forbiddenMessage, "latest@"+old).failure("prod", "v2", d); err != nil {
+	if err := failing("ReconciliationFailed", forbiddenMessage, "latest@"+old).failure("prod", "v2", in); err != nil {
 		t.Errorf("a failure of the PREVIOUS revision decided this one: %v", err)
 	}
 
 	stalled := ready
 	stalled.Renderer.Stalled, stalled.Renderer.Reason = true, "BuildFailed"
 	stalled.Renderer.StalledSince = pointerWrittenAt.Add(time.Second)
-	if err := stalled.failure("prod", "v2", d); err == nil || !strings.Contains(err.Error(), "renderer has not applied the promoted inputs") {
+	if err := stalled.failure("prod", "v2", in); err == nil || !strings.Contains(err.Error(), "renderer has not applied the promoted inputs") {
 		t.Errorf("a renderer stalled since the pointer was written: %v", err)
 	}
-	if stalled.converged(d) {
+	if stalled.converged(in) {
 		t.Errorf("a stalled renderer is converged")
 	}
 }
@@ -600,10 +603,12 @@ func TestFluxDeliveryObservationFreshness(t *testing.T) {
 		{"source not fetched the digest", func(o *fluxDeliveryObservation) { o.Source.LastApplied = "latest@" + old }},
 		{"source status of an old generation", func(o *fluxDeliveryObservation) { o.Source.Current = false }},
 		{"stale applier generation", func(o *fluxDeliveryObservation) { o.Appliers[0].Current = false }},
+		{"source rendered from the previous fence", func(o *fluxDeliveryObservation) { o.Source.Fence = "1" }},
+		{"applier spec of a previous input", func(o *fluxDeliveryObservation) { o.Appliers[0].SpecMatches = false }},
 	} {
 		o := ready()
 		tc.mutate(&o)
-		if o.converged(d) {
+		if o.converged(in) {
 			t.Errorf("%s: converged", tc.name)
 		}
 	}
@@ -612,15 +617,15 @@ func TestFluxDeliveryObservationFreshness(t *testing.T) {
 	o := ready()
 	o.Renderer.Stalled, o.Renderer.Reason = true, "BuildFailed"
 	o.Renderer.StalledSince = pointerWrittenAt.Add(-time.Minute)
-	if err := o.failure("prod", "v2", d); err != nil {
+	if err := o.failure("prod", "v2", in); err != nil {
 		t.Errorf("a stall older than the pointer's write decided this promotion: %v", err)
 	}
-	if !strings.Contains(o.summary(d), "Stalled") {
-		t.Errorf("the progress line hides the stall: %s", o.summary(d))
+	if !strings.Contains(o.summary(in), "Stalled") {
+		t.Errorf("the progress line hides the stall: %s", o.summary(in))
 	}
 	// One that cannot be dated is not attributed either.
 	o.Renderer.StalledSince, o.PointerWrittenAt = time.Time{}, time.Time{}
-	if err := o.failure("prod", "v2", d); err != nil {
+	if err := o.failure("prod", "v2", in); err != nil {
 		t.Errorf("an undated stall decided this promotion: %v", err)
 	}
 
@@ -628,11 +633,11 @@ func TestFluxDeliveryObservationFreshness(t *testing.T) {
 	// updated it is not this release's failure; at the promoted digest it is.
 	o = ready()
 	o.Source.RequestedDigest, o.Source.Ready, o.Source.Reason, o.Source.Message = old, "False", "OCIArtifactPullFailed", "manifest unknown"
-	if err := o.failure("prod", "v2", d); err != nil {
+	if err := o.failure("prod", "v2", in); err != nil {
 		t.Errorf("a source error from the previous digest decided this promotion: %v", err)
 	}
 	o.Source.RequestedDigest = d
-	if err := o.failure("prod", "v2", d); exitcode.Of(err) != exitWrong {
+	if err := o.failure("prod", "v2", in); exitcode.Of(err) != exitWrong {
 		t.Errorf("a source error at the promoted digest: %v (exit %d), want exit 1", err, exitcode.Of(err))
 	}
 
@@ -640,8 +645,72 @@ func TestFluxDeliveryObservationFreshness(t *testing.T) {
 	o = observed(in, func(a fluxdelivery.Applier) fluxObjectStatus {
 		return fluxObjectStatus{Name: a.Name, Found: true, Ready: "False", Reason: "HealthCheckFailed", Message: "Job failed", Current: false, LastAttempted: d}
 	})
-	if err := o.failure("prod", "v2", d); err != nil {
+	if err := o.failure("prod", "v2", in); err != nil {
 		t.Errorf("an applier failure of an unobserved generation decided this promotion: %v", err)
+	}
+}
+
+// TestFluxDeliverySameDigestNewFence: a re-deploy at an unchanged digest is
+// a new promotion at a new fence. Until the renderer stamps that fence on the
+// source, the previous promotion's Ready (or failing) objects at the same
+// digest decide nothing.
+func TestFluxDeliverySameDigestNewFence(t *testing.T) {
+	t.Parallel()
+	prevIn, _ := fluxRelease(true).input("2", "promo-2")
+	in, _ := fluxRelease(true).input("3", "promo-3")
+	d := in.Source.Digest
+	if prevIn.Source.Digest != d {
+		t.Fatalf("fixture: digests differ")
+	}
+	stale := observed(prevIn, func(a fluxdelivery.Applier) fluxObjectStatus {
+		return fluxObjectStatus{Name: a.Name, Found: true, Ready: "True", Current: true, LastApplied: d, LastAttempted: d}
+	})
+	stale.Pointer = fluxPointerIdentity{Found: true, Promotion: in.Promotion, Fence: in.Fence, Digest: d}
+	if stale.converged(in) {
+		t.Errorf("the previous promotion's Ready objects at the same digest converged the new one")
+	}
+	failing := observed(prevIn, func(a fluxdelivery.Applier) fluxObjectStatus {
+		return fluxObjectStatus{Name: a.Name, Found: true, Ready: "False", Reason: "HealthCheckFailed", Message: "Job failed", Current: true, LastAttempted: d}
+	})
+	if err := failing.failure("prod", "v3", in); err != nil {
+		t.Errorf("the previous promotion's failure at the same digest decided the new one: %v", err)
+	}
+	stale.Source.Fence = in.Fence
+	if !stale.converged(in) {
+		t.Errorf("not converged once the renderer stamped the new fence: %+v", stale)
+	}
+}
+
+// TestFluxApplierSpecMatches: a Kustomization matches only the spec the
+// input renders for it.
+func TestFluxApplierSpecMatches(t *testing.T) {
+	t.Parallel()
+	in, _ := fluxRelease(true).input("2", "promo-2")
+	a := in.Appliers[0]
+	obj := func() map[string]any {
+		spec := map[string]any{
+			"sourceRef":          map[string]any{"name": a.Source},
+			"path":               a.Path,
+			"serviceAccountName": a.ServiceAccountName,
+			"deletionPolicy":     "Orphan",
+		}
+		if a.TargetNamespace != "" {
+			spec["targetNamespace"] = a.TargetNamespace
+		}
+		return map[string]any{"spec": spec}
+	}
+	if !fluxApplierSpecMatches(in, a, obj()) {
+		t.Fatalf("the rendered spec does not match")
+	}
+	o := obj()
+	o["spec"].(map[string]any)["path"] = "elsewhere"
+	if fluxApplierSpecMatches(in, a, o) {
+		t.Errorf("another path matched")
+	}
+	torn := in
+	torn.Retire = fluxdelivery.RetireTeardown
+	if fluxApplierSpecMatches(torn, a, obj()) {
+		t.Errorf("an Orphan deletionPolicy matched a teardown")
 	}
 }
 
@@ -700,6 +769,49 @@ func TestWaitFluxDelivery(t *testing.T) {
 	}
 	if err := waitFluxDelivery(context.Background(), "prod", "v2", rel.fd, in, time.Nanosecond, quiet); exitcode.Of(err) != exitTimedOut {
 		t.Fatalf("still progressing at the deadline: err = %v (exit %d), want exit 8", err, exitcode.Of(err))
+	}
+}
+
+// TestWaitFluxDeliverySupersededMidWait: a pointer replaced after the wait
+// started — even at the same digest — ends the wait superseded (exit 6) at
+// the next poll, never as the replacement's success. Not parallel: it swaps
+// the seam.
+func TestWaitFluxDeliverySupersededMidWait(t *testing.T) {
+	rel := fluxRelease(true)
+	in, _ := rel.input("2", "promo-2")
+	d := in.Source.Digest
+	prev := fluxDeliveryObserve
+	t.Cleanup(func() { fluxDeliveryObserve = prev })
+	quiet := func(string, ...any) {}
+	for _, tc := range []struct {
+		name    string
+		pointer fluxPointerIdentity
+	}{
+		{"same digest, newer promotion", fluxPointerIdentity{Found: true, Promotion: "promo-3", Fence: "3", Digest: d}},
+		{"another digest", fluxPointerIdentity{Found: true, Promotion: "promo-3", Fence: "3", Digest: "sha256:" + strings.Repeat("f", 64)}},
+		{"removed", fluxPointerIdentity{}},
+	} {
+		polls := 0
+		fluxDeliveryObserve = func(context.Context, FluxDeliveryEntity, fluxdelivery.BindingInput) (fluxDeliveryObservation, error) {
+			polls++
+			if polls == 1 {
+				return observed(in, func(a fluxdelivery.Applier) fluxObjectStatus {
+					return fluxObjectStatus{Name: a.Name, Found: true, Ready: "Unknown", Reason: "Progressing", Current: true}
+				}), nil
+			}
+			// The replacement is rendered and Ready at its digest.
+			next := in
+			next.Promotion, next.Fence = tc.pointer.Promotion, tc.pointer.Fence
+			o := observed(next, func(a fluxdelivery.Applier) fluxObjectStatus {
+				return fluxObjectStatus{Name: a.Name, Found: true, Ready: "True", Current: true, LastApplied: d, LastAttempted: d}
+			})
+			o.Pointer = tc.pointer
+			return o, nil
+		}
+		_, err := waitFluxDeliveryObserved(context.Background(), "prod", "v2", rel.fd, in, time.Minute, time.Millisecond, quiet)
+		if exitcode.Of(err) != exitSuperseded || polls != 2 {
+			t.Errorf("%s: err = %v (exit %d) after %d polls, want exit 6 after 2", tc.name, err, exitcode.Of(err), polls)
+		}
 	}
 }
 

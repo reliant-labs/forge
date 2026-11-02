@@ -15,7 +15,7 @@ package cli
 //     deploy plan, so the approval covers it.
 //  2. AFTER THE APPROVAL, BEFORE THE RECORD (beforeRecordFluxDelivery). Re-run
 //     the bootstrap when the preflight decided to re-grant, then push the
-//     bundle to its flux registry (fluxRegistryBase). Both are safe to repeat and neither moves
+//     bundle to the delivery registry. Both are safe to repeat and neither moves
 //     what the env runs: the bundle is content-addressed, and a grant is not a
 //     release. A failure here still leaves the ledger untouched.
 //  3. THE RECORD (the ordinary promotion write).

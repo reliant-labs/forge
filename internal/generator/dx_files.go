@@ -411,9 +411,15 @@ see [CONTRIBUTING.md](CONTRIBUTING.md).
 // verify-generated` demands they regenerate byte-identically, so a formatter
 // rewriting one makes the two gates fight on every commit.
 //
+// .forge/ is forge's committed state (the scaffold ledger, generated-file
+// certificates, the disown record). forge writes it in its own encoding —
+// a ledger entry is one compact JSON line — and its merge driver and its
+// no-churn save compare those bytes, so a formatter must never own it: the
+// scaffold's own first commit failed its prettier hook on the ledger.
+//
 // TestForgeGeneratedPathPattern matches it against every forge-owned file in
 // a real scaffold, so a new generated path that escapes it fails there.
-const forgeGeneratedPathPattern = `(^|/)gen/|_gen(_test)?(\.test)?\.[A-Za-z0-9]+$|^\.forge-kcl/|(^|/)public/config\.js$|(^|/)src/hooks/index\.ts$`
+const forgeGeneratedPathPattern = `(^|/)gen/|_gen(_test)?(\.test)?\.[A-Za-z0-9]+$|^\.forge/|^\.forge-kcl/|(^|/)public/config\.js$|(^|/)src/hooks/index\.ts$`
 
 // generatePreCommitConfig writes .pre-commit-config.yaml. Hooks are
 // chosen to match the existing CI surface (gofmt/govet/goimports via

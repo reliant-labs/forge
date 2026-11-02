@@ -3,6 +3,14 @@
 //
 // The behavioural surface is a single Service. Data carriers
 // (File, InterfaceDef, MethodDef, ParamDef) remain plain types.
+//
+// This package generates mocks but gets none: internal/tools/mockgen links it
+// to refresh forge's own mocks WITHOUT building forge (forge#1261), so a
+// mock_gen.go here would put generated code back in the very import closure
+// that must stay free of it — a method added to Service would leave the tool
+// that regenerates the stale mock unable to compile. Nothing mocks Service.
+//
+//forge:exclude-contract: links into internal/tools/mockgen, whose import closure must carry no generated contract code (forge#1261); nothing mocks Service
 package contract
 
 // Service drives contract.go → *_gen.go generation. Generate parses the

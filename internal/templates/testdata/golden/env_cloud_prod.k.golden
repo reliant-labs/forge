@@ -71,11 +71,14 @@ _configured = lambda w: fw.Workload -> fw.Workload {
 # HOSTED: a Workload on the forge control plane. Its image is the declared
 # one minus the registry host: the platform pulls only from its own
 # registry, and forge composes that address (<registry>/<org>/shop/<name>)
-# from your credential. DATABASE_URL is the managed database's; a
-# service's CORS_ORIGINS is the hosted frontend's URL, which the platform
-# allocates, and CORS_ALLOW_CREDENTIALS lets the browser send the session
-# cookie /auth/login sets: the site and the API are different origins, so
-# without it sign-in answers 200 and every call after it 401s.
+# from your credential. DATABASE_URL is the managed database's. The
+# hosted frontend calls the API on its OWN origin, at /_api (see
+# _hosted_frontend below), so sign-in's session cookie is first-party and
+# CORS is not involved. A service's CORS_ORIGINS (the frontend's URL, which
+# the platform allocates) and CORS_ALLOW_CREDENTIALS serve a frontend that
+# calls the API's own host instead — a literal API_URL — where the site and
+# the API are different origins: without them sign-in answers 200 and every
+# call after it 401s.
 _hosted = lambda w: fw.Workload -> fw.Workload {
     _c = _configured(w)
     _c | {
@@ -181,8 +184,13 @@ _api_config = {API_URL = forge.WorkloadURL {workload = _api.name}} if any w in _
 
 # HOSTED: the platform's static hosting. Like a workload, its image
 # names no registry host. The release carries no config.js: the control
-# plane writes one after every sync, resolving API_URL to the hosted API's
-# URL, so one release promotes between envs unchanged.
+# plane writes one after every sync, so one release promotes between envs
+# unchanged. An API_URL that references a workload becomes "/_api": the
+# platform serves that workload on every host of the site (custom domains
+# too) at /_api/*, the path the dev loop proxies, so the session cookie is
+# first-party to the site. The API's own URL keeps working for CLIs, mobile
+# apps and servers. To have the browser call that URL instead, write it as a
+# literal: `API_URL = "https://<api host>"` is never rewritten.
 _hosted_frontend = lambda f: forge.Frontend -> forge.Frontend {
     f | {
         image = f.name

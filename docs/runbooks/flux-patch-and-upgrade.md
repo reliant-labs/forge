@@ -114,4 +114,4 @@ the CRDs prune-disabled, but the controllers go).
 ## Migrating a consumer onto the hardened defaults
 
 See the v0.1.46 migration, section "Hardened `forge.flux_chart()`", and the
-v1.0.13 migration for the move from the community chart to the Flux Operator.
+v1.0.14 migration for the move from the community chart to the Flux Operator.

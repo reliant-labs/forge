@@ -125,7 +125,7 @@ var removals = []removal{
 					"internal/cli/flux_reconcile_e2e_test.go",
 					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
 					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
-					"internal/templates/project/skills/forge/migrations/v1.0.13/flux-operator/SKILL.md",
+					"internal/templates/project/skills/forge/migrations/v1.0.14/flux-operator/SKILL.md",
 					"docs/runbooks/flux-patch-and-upgrade.md",
 					// A self-hosted delivery's bootstrap IS this install
 					// (applier = "flux"): its fixtures assert the FluxInstance's
@@ -426,7 +426,7 @@ var removals = []removal{
 					// identity on the deploy surface, in its skill, runbook and changelog.
 					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
 					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
-					"internal/templates/project/skills/forge/migrations/v1.0.13/flux-operator/SKILL.md",
+					"internal/templates/project/skills/forge/migrations/v1.0.14/flux-operator/SKILL.md",
 					"docs/runbooks/flux-patch-and-upgrade.md",
 					// fluxdelivery renders and checks Flux objects and the
 					// Kubernetes Role its ResourceSet runs as; a self-hosted

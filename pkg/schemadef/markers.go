@@ -125,11 +125,11 @@ func CommentMarkerProblems(site MarkerSite, column, comment string) []MarkerProb
 // what replaced it. A comment still carrying one is a project that has not
 // migrated, so it is told how rather than offered a near spelling.
 var retiredMarkers = map[string]string{
-	"forge:dashboard": "was retired in forge v1.0.13: the dashboard role (forge_dash) reads what your migrations GRANT it, " +
+	"forge:dashboard": "was retired in forge v1.0.14: the dashboard role (forge_dash) reads what your migrations GRANT it, " +
 		"so grant the columns a panel needs (`GRANT SELECT (id, created_at) ON t TO forge_dash;`) and drop the marker. " +
-		"See `forge skill load migrations/v1.0.13`",
-	"forge:no-dashboard": "was retired in forge v1.0.13: the dashboard role (forge_dash) reads only the columns your migrations GRANT it, " +
-		"so leave this column out of the GRANT and drop the marker. See `forge skill load migrations/v1.0.13`",
+		"See `forge skill load migrations/v1.0.14`",
+	"forge:no-dashboard": "was retired in forge v1.0.14: the dashboard role (forge_dash) reads only the columns your migrations GRANT it, " +
+		"so leave this column out of the GRANT and drop the marker. See `forge skill load migrations/v1.0.14`",
 }
 
 // RetiredMarker reports whether marker is one forge no longer reads. A

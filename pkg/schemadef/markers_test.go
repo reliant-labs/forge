@@ -236,8 +236,8 @@ func TestCheckMarkers_RetiredDashboardMarkersSayHowToMigrate(t *testing.T) {
 		"forge:no-dashboard on a column": {{Name: "t", Columns: []Column{{Name: "c", Comment: "forge:secret forge:no-dashboard"}}}},
 	} {
 		err := CheckMarkers(tables)
-		if err == nil || !strings.Contains(err.Error(), "retired in forge v1.0.13") ||
-			!strings.Contains(err.Error(), "GRANT") || !strings.Contains(err.Error(), "migrations/v1.0.13") {
+		if err == nil || !strings.Contains(err.Error(), "retired in forge v1.0.14") ||
+			!strings.Contains(err.Error(), "GRANT") || !strings.Contains(err.Error(), "migrations/v1.0.14") {
 			t.Errorf("%s: err = %v, want the retirement and how to migrate", name, err)
 		}
 		if err != nil && strings.Contains(err.Error(), "did you mean") {

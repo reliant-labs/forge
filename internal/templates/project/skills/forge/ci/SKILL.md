@@ -318,7 +318,7 @@ generate` does not bring it back. To get forge's current version of one,
   group per workflow and ref (`ci-${{ github.ref }}`, plus
   `${{ github.event_name }}` if also scheduled, dispatched or called): a newer
   push supersedes the pending run. Never group on `github.sha`. Older
-  scaffolds: `migrations/v1.0.13`.
+  scaffolds: `migrations/v1.0.14`.
 - Tier-2 workflows live alongside Tier-1 in `.github/workflows/`. Use
   any name forge doesn't own; open with `# yours: scaffolded once,
 never touched again — forge will not overwrite this file` so the

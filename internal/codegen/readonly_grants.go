@@ -79,7 +79,7 @@ func GenerateReadOnlyGrants(projectDir string, services []ServiceDef, cs *checks
 }
 
 // The dashboard role's generated grants, retired when its access moved to the
-// project's own migrations (migrations/v1.0.13).
+// project's own migrations (migrations/v1.0.14).
 const (
 	retiredDashboardGrantsPath    = "db/grants/dashboard_gen.sql"
 	retiredDashboardGrantsRowsDir = "db/grants/dashboard"

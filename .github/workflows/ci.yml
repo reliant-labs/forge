@@ -143,18 +143,23 @@ permissions:
 # `gate` (CI gate) needs every job, fails if any failed, and writes each
 # job's wall time and the run's critical path to the run summary.
 
-# Cancel a superseded run on a pull request only. On main the run in progress
-# always finishes, and so does every other one: a push run's group is its own
-# commit. A shared main group let each merge kill the run before it
-# (control-plane lost every main run for 2.5 hours on 2026-10-11,
-# control-plane#831), and even without cancel-in-progress GitHub keeps at most
-# one PENDING run per group and a newer push REPLACES it, so a burst of merges
-# left most main commits with no verdict at all and nothing releasable. A
-# release tags the newest commit whose run is green (release-forge.sh
-# --commit), so every commit needs one. Every workflow here follows the same
-# rule, and internal/templates/ci_concurrency_test.go holds them to it.
+# On a pull request a newer push cancels the run in progress. On main the run
+# in progress always finishes, and a newer push SUPERSEDES the pending one:
+# every push to main shares one group with cancel-in-progress false, and
+# GitHub keeps at most one pending run per group, cancelling the older one
+# when a newer one queues (owner, 2026-11-01). So a burst of merges costs the
+# run in progress plus one run of the newest commit, and the commits between
+# get no verdict; a release tags the newest commit whose run is green
+# (release-forge.sh --commit). Cancelling the run in progress on main is never
+# allowed: it let each merge kill the run before it, and control-plane lost
+# every main run for 2.5 hours on 2026-10-11 (control-plane#831).
+#
+# The event is part of the group, so a dispatch never supersedes a push run,
+# and a merge_group run is alone in its group (its ref names the group's own
+# head). Every workflow here follows the same rule, and
+# internal/templates/ci_concurrency_test.go holds them to it.
 concurrency:
-  group: ci-${{ github.ref }}${{ github.event_name != 'pull_request' && format('-{0}', github.sha) || '' }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Go version is read from go.mod's `go` directive via setup-go's

@@ -74,6 +74,17 @@ func declaredPlacementEdges(e *KCLEntities) ([]stageEdge, error) { //nolint:funl
 		}
 		servers = append(servers, p.Owner)
 	}
+	// Every other named forge.Manifests group owns its objects too, so it is a
+	// server like any cluster component: a frontend with absent
+	// release_dependencies waits for it. A group with no controller orders
+	// nothing (the bundle treats it as inventory only).
+	for _, o := range e.ManifestOwners {
+		if _, ok := stages[o.Name]; ok {
+			continue // also a workload, consumer or provider: already placed
+		}
+		stages[o.Name] = stageLocal
+		servers = append(servers, o.Name)
+	}
 	var edges []stageEdge
 	add := func(name string, peers []string) error {
 		for _, peer := range peers {
@@ -189,7 +200,7 @@ func placementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration, error
 	if err != nil {
 		return nil, err
 	}
-	hasCluster = hasCluster || len(e.ReleaseManifestConsumers) > 0 || len(providers) > 0
+	hasCluster = hasCluster || len(e.ReleaseManifestConsumers) > 0 || len(e.ManifestOwners) > 0 || len(providers) > 0
 	if !hasCluster || !hasHosted {
 		return nil, nil
 	}
@@ -248,6 +259,27 @@ func placementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration, error
 			actuator = "hub" // same as raw manifest consumers: no inferred unit ownership
 		}
 		out = append(out, bundle.PlacementDeclaration{Workload: p.Owner, Runtime: "cluster", Actuator: actuator, Dependencies: deps[p.Owner]})
+	}
+	// THE REST OF THE OWNERS kcl/render.k stamps: every named forge.Manifests
+	// group, from output.manifest_owners, the same definition that labels its
+	// objects. One with release_inputs is a consumer above; one without (RBAC,
+	// PriorityClasses, routes) is declared here, so a sealed object never names
+	// an owner the inventory lacks. The bundle makes a group with controllers
+	// items and one without inventory only.
+	declared := map[string]bool{}
+	for _, d := range out {
+		declared[d.Workload] = true
+	}
+	for _, o := range e.ManifestOwners {
+		if declared[o.Name] {
+			continue
+		}
+		declared[o.Name] = true
+		actuator := "forge"
+		if len(split.Hub) > 0 {
+			actuator = "hub" // as for raw manifest consumers: no inferred unit ownership
+		}
+		out = append(out, bundle.PlacementDeclaration{Workload: o.Name, Runtime: "cluster", Actuator: actuator})
 	}
 	for _, d := range out {
 		if d.Actuator != "forge" && d.Actuator != "platform" {

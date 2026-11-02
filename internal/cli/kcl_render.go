@@ -61,6 +61,15 @@ import (
 // env-wide. Callers (`forge build`, `forge env deploy`, `forge env up`,
 // `forge env up`) read this rather than reaching back into forge.yaml,
 // because placement is a per-env decision that lives in the KCL layer.
+// manifestOwner is a named forge.Manifests group: the owner kcl/render.k
+// stamps on every object the group renders (forge.dev/workload). It is
+// declared to the placement inventory whether or not it has release_inputs;
+// the subset that does is also a composition consumer (releaseManifestConsumer).
+type manifestOwner struct {
+	Name    string `json:"name"`
+	Cluster string `json:"cluster"`
+}
+
 type releaseManifestConsumer struct {
 	Name                string            `json:"name"`
 	Cluster             string            `json:"cluster"`
@@ -75,6 +84,9 @@ type KCLEntities struct {
 	// (scopeOptionalInfra). Run state, never part of the render.
 	OptionalSkipped          []string `json:"-"`
 	ReleaseManifestConsumers []releaseManifestConsumer
+	// ManifestOwners are every named forge.Manifests group (output.manifest_owners),
+	// from the same KCL definition that stamps their objects' owner label.
+	ManifestOwners []manifestOwner
 	// Project and Env are the bundle's project name and the env it was
 	// rendered for. ImageTag is the env's RESOLVED image tag — the tag the
 	// Cluster workload records' images carry, and therefore the tag
@@ -1450,6 +1462,7 @@ type ObservabilityPolicyEntity struct {
 // are tagged unions and their spec is decoded strictly.
 type kclRenderRaw struct {
 	ReleaseManifestConsumers []releaseManifestConsumer                 `json:"release_manifest_consumers,omitempty"`
+	ManifestOwners           []manifestOwner                           `json:"manifest_owners,omitempty"`
 	Project                  string                                    `json:"project,omitempty"`
 	Env                      string                                    `json:"env,omitempty"`
 	ImageTag                 string                                    `json:"image_tag,omitempty"`
@@ -1805,6 +1818,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		FluxDelivery:             raw.FluxDelivery,
 		DeliveryUnits:            deliveryUnitsOf(raw.DeliveryUnits),
 		ReleaseManifestConsumers: raw.ReleaseManifestConsumers,
+		ManifestOwners:           raw.ManifestOwners,
 		HubConverges:             hubConvergesOf(raw.HubConverges),
 		Clusters:                 raw.Clusters,
 		ClusterTarget:            raw.ClusterTarget,

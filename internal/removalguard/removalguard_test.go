@@ -546,6 +546,38 @@ var removals = []removal{
 		},
 	},
 	{
+		Name: "annotation-driven dashboard grants",
+		Why: "The dashboard role (forge_dash) is granted by the project's own migrations " +
+			"(`GRANT SELECT (id, cost) ON t TO forge_dash;`). The forge:dashboard / " +
+			"forge:no-dashboard markers, the generated db/grants/dashboard_gen.sql and its " +
+			"per-table rows, the migrator step that applied them, their stale-file lint and " +
+			"the dbgrants/migratekit API behind them were removed: forge owns the role's " +
+			"lifecycle, not what it reads.",
+		Patterns: []*regexp.Regexp{
+			regexp.MustCompile(`forge:(?:no-)?dashboard\b`),
+			regexp.MustCompile(`dashboard_gen\.sql|grants/dashboard\b`),
+			regexp.MustCompile(`\bRenderDashboard|\bDashboardTables\b|\bDashboardGrants(?:Path|RowsDir|File|FileSet)\b|\bApplyDashboard\b`),
+			regexp.MustCompile(`\bDeclaresNoDashboard\b|\bTableMarkerDashboard\b|\bColumnMarkerNoDashboard\b|\bDashboard(?:Applied|RoleDisabled|RoleMissing)\b`),
+		},
+		Allowances: []allowance{
+			{
+				Name: "the retirement: its message, the upgrade that deletes the old files, the playbooks, and the tests proving them",
+				Reason: "A project still carrying a marker or the generated files is told what replaced " +
+					"them, and forge's pristine copies are deleted on its next generate, so that code " +
+					"and the upgrade playbooks must name them. CHANGELOG.md is release history.",
+				Paths: []string{
+					"pkg/schemadef/markers.go",
+					"pkg/schemadef/markers_test.go",
+					"internal/cli/lint/lint_column_markers_test.go",
+					"internal/codegen/readonly_grants.go",
+					"internal/codegen/readonly_grants_pg_test.go",
+					"internal/templates/project/skills/forge/migrations/",
+					"CHANGELOG.md",
+				},
+			},
+		},
+	},
+	{
 		Name: "the server-advertised image push base and its on-disk cache",
 		Why: "forge used to LEARN where to push hosted artifacts: EnsureEnvironment returned an " +
 			"`imagePushBase`, forge wrote it to .forge/state/push-base-<env>.json, and the offline " +

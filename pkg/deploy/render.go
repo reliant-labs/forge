@@ -299,13 +299,14 @@ func readOnlyRole(database string) map[string]any {
 // renders `ensure: present, login: false, disablePassword: true`. `ensure:
 // absent` looks like the obvious spelling and does not work: CNPG removes a
 // role with a plain DROP ROLE, Postgres refuses that (2BP01) once the role
-// holds a grant, and the role would stay, with its login and its password, and
-// keep being re-granted by the migrator. A NOLOGIN role with a NULL password
-// converges whatever the role held before, CNPG reverts drift in these
-// attributes, and a database that never turned dashboards on gets a harmless
-// role with no grants (the migrator grants only to a role that can log in:
-// pkg/dbgrants, "Switching dashboards off"). Enabling later flips the same
-// entry back and the next migration grants again.
+// holds a grant, and the role would stay, with its login and its password. A
+// NOLOGIN role with a NULL password is off whatever it was granted, CNPG
+// reverts drift in these attributes, and its grants (the project's
+// migrations) stay in place, unusable while it cannot log in. Enabling later
+// flips the same entry back.
+// The migrator creates the role NOLOGIN before the first migration when CNPG
+// has not yet (pkg/dbgrants, EnsureRole); CNPG adopts an existing role,
+// ALTERing it to this entry rather than creating it.
 //
 // There is no passwordSecret while off (CNPG refuses one beside
 // disablePassword); the Secret the executor minted stays, unused, so
@@ -317,8 +318,7 @@ func readOnlyRole(database string) map[string]any {
 // connection limit is MaxConcurrency+1, so a panel query being cancelled never
 // starves the next one.
 //
-// What it may read is the grants the migrator applies (pkg/dbgrants), not
-// this entry.
+// What it may read is what the project's migrations grant it, not this entry.
 func dashboardRole(database string, d *v1alpha1.DatabaseDashboards) map[string]any {
 	role := map[string]any{
 		"name":        dbgrants.DashboardRoleName,
@@ -336,7 +336,7 @@ func dashboardRole(database string, d *v1alpha1.DatabaseDashboards) map[string]a
 		role["disablePassword"] = true
 		return role
 	}
-	role["comment"] = "forge dashboard role: column grants on forge:dashboard tables only, no write privilege"
+	role["comment"] = "forge dashboard role: reads only what migrations grant it, no write privilege"
 	role["login"] = true
 	role["connectionLimit"] = int64(d.WithDefaults().MaxConcurrency) + 1
 	role["passwordSecret"] = map[string]any{"name": dbgrants.DashboardSecretName(database)}

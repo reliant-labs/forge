@@ -61,6 +61,11 @@
 // of its base table, and the catalog cannot say which), and any table-level
 // SELECT — a table-level SELECT would cover columns added later, including
 // secret ones.
+//
+// The dashboard role, [DashboardRoleName], is a different contract: forge
+// renders no grants for it. The project grants it with ordinary migrations,
+// and this package only makes sure the role exists before they run and that it
+// holds nothing but read privileges after (dashboard.go).
 package dbgrants
 
 import (
@@ -85,18 +90,14 @@ const (
 	// relative to the project root (see [Files]).
 	GrantsRowsDir = "db/grants/readonly"
 
-	// DashboardRoleName is the dashboard Postgres role: the opt-in role live
-	// dashboard panels query as (ManagedDatabase.dashboards in KCL). It reads
-	// a strict subset of what [RoleName] reads; see [DashboardTables].
+	// DashboardRoleName is the dashboard Postgres role: the role live
+	// dashboard panels query as (ManagedDatabase.dashboards in KCL). What it
+	// may read is whatever the project's own migrations GRANT it; see
+	// dashboard.go.
 	DashboardRoleName = "forge_dash"
 	// DashboardSecretSuffix is appended to a cluster name to name the Secret
 	// that holds [DashboardRoleName]'s password.
 	DashboardSecretSuffix = "-forge-dash"
-	// DashboardGrantsPath is the generated dashboard grants file, relative to
-	// the project root.
-	DashboardGrantsPath = "db/grants/dashboard_gen.sql"
-	// DashboardGrantsRowsDir is [GrantsRowsDir] for the dashboard role.
-	DashboardGrantsRowsDir = "db/grants/dashboard"
 )
 
 // SecretName is the kubernetes.io/basic-auth Secret holding the role's
@@ -115,8 +116,6 @@ type Table struct {
 	Schema  string
 	Name    string
 	Columns []Column
-	// Dashboard: declared forge:dashboard. Only [DashboardTables] reads it.
-	Dashboard bool
 }
 
 // Column is one column of a Table, with the declarations that decide whether
@@ -131,9 +130,6 @@ type Column struct {
 	// Kind is the column's type class. The zero value, [KindText], is the
 	// stricter reading.
 	Kind ColumnKind
-	// NoDashboard: declared forge:no-dashboard. Only [DashboardTables] reads
-	// it; the read-only role is unaffected.
-	NoDashboard bool
 }
 
 // dollarTag delimits the script's single DO block. An identifier containing it
@@ -165,7 +161,7 @@ func Render(tables []Table) (string, error) { return RenderFor(RoleName, tables)
 // [RoleName]; the parameter exists because roles are cluster-wide, so tests
 // that share a Postgres server cannot all create forge_ro.
 func RenderFor(role string, tables []Table) (string, error) {
-	return assembled(renderFiles(role, tables, false))
+	return assembled(RenderFilesFor(role, tables))
 }
 
 func assembled(f Files, err error) (string, error) {
@@ -277,13 +273,6 @@ func RenderFiles(tables []Table) (Files, error) { return RenderFilesFor(RoleName
 // RenderFilesFor is [RenderFiles] for a named role, as [RenderFor] is
 // [Render]'s.
 func RenderFilesFor(role string, tables []Table) (Files, error) {
-	return renderFiles(role, tables, false)
-}
-
-// renderFiles is [RenderFiles] for a named role. gateOnLogin makes the script
-// serve the role only while it can log in: a role with rolcanlogin = false
-// gets every privilege revoked and nothing granted (see [RenderDashboardFor]).
-func renderFiles(role string, tables []Table, gateOnLogin bool) (Files, error) {
 	if err := checkIdent(role); err != nil {
 		return Files{}, err
 	}
@@ -312,23 +301,13 @@ func renderFiles(role string, tables []Table, gateOnLogin bool) (Files, error) {
 	sort.Strings(schemas)
 
 	var b strings.Builder
-	label := "read-only"
-	if role == DashboardRoleName {
-		label = "dashboard"
-	}
-	b.WriteString("-- The " + label + " role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
+	b.WriteString("-- The read-only role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
 	b.WriteString("DO " + dollarTag + "\n")
-	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\n  role_login boolean;\nBEGIN\n")
+	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\nBEGIN\n")
 	fmt.Fprintf(&b, "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN\n", quoteLiteral(role))
-	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: "+label+" grants not applied"))
+	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: read-only grants not applied"))
 
-	fmt.Fprintf(&b, "  SELECT oid, rolcanlogin INTO role_oid, role_login FROM pg_roles WHERE rolname = %s;\n", quoteLiteral(role))
-	if gateOnLogin {
-		fmt.Fprintf(&b, "  IF NOT role_login THEN\n    RAISE NOTICE %s;\n  END IF;\n", quoteLiteral("role "+role+" cannot log in: "+label+" access revoked, nothing granted"))
-	} else {
-		b.WriteString("  role_login := true;\n")
-	}
-	b.WriteString("\n")
+	fmt.Fprintf(&b, "  SELECT oid INTO role_oid FROM pg_roles WHERE rolname = %s;\n\n", quoteLiteral(role))
 
 	// Everything the role holds, in every declared schema, goes first. A column
 	// that became secret, a table that was dropped from the declaration and a
@@ -344,9 +323,7 @@ func renderFiles(role string, tables []Table, gateOnLogin bool) (Files, error) {
 	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL AND EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = g.schema) ORDER BY 1 LOOP\n")
 	b.WriteString("    declared := declared || r.schema;\n")
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
-	b.WriteString("    IF role_login THEN\n")
-	fmt.Fprintf(&b, "      EXECUTE format('GRANT USAGE ON SCHEMA %%I TO %%I', r.schema, %s);\n", quoteLiteral(role))
-	b.WriteString("    END IF;\n")
+	fmt.Fprintf(&b, "    EXECUTE format('GRANT USAGE ON SCHEMA %%I TO %%I', r.schema, %s);\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %%I FROM %%I', r.schema, %s);\n", quoteLiteral(role))
 	b.WriteString("  END LOOP;\n\n")
@@ -446,7 +423,7 @@ func renderFiles(role string, tables []Table, gateOnLogin bool) (Files, error) {
 	// open with its own comma.
 	b.WriteString("    (NULL::text, NULL::text, ARRAY[]::text[])\n")
 	b.WriteString(rowsPlaceholder)
-	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL AND role_login LOOP\n")
+	b.WriteString("  ) AS g(schema, tbl, cols) WHERE g.schema IS NOT NULL LOOP\n")
 	b.WriteString("    SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attname) INTO readable\n")
 	b.WriteString("      FROM pg_attribute a\n")
 	b.WriteString("     WHERE a.attrelid = to_regclass(format('%I.%I', r.schema, r.tbl))\n")
@@ -591,15 +568,6 @@ SELECT coalesce(json_agg(f.name ORDER BY f.name), '[]'::json) FROM (
 func Apply(ctx context.Context, c Conn, script string) error {
 	if _, err := c.ExecContext(ctx, script); err != nil {
 		return fmt.Errorf("dbgrants: apply read-only grants: %w", err)
-	}
-	return nil
-}
-
-// ApplyDashboard is [Apply] for a [RenderDashboard] script, so a failure names
-// the role it was converging.
-func ApplyDashboard(ctx context.Context, c Conn, script string) error {
-	if _, err := c.ExecContext(ctx, script); err != nil {
-		return fmt.Errorf("dbgrants: apply dashboard grants: %w", err)
 	}
 	return nil
 }

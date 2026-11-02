@@ -954,16 +954,18 @@ schema DatabaseDashboards:
             dashboards = forge.DatabaseDashboards {enabled = True}
         }
 
-    Enabling it adds a second read-only Postgres role, `forge_dash`, whose
-    password is a Secret named `<database>-forge-dash` (minted the way
-    `<database>-forge-ro` is). That role reads ONLY the tables a migration
-    marked `COMMENT ON TABLE t IS 'forge:dashboard'`, and on them only the
-    columns `forge_ro` may read, minus any `forge:no-dashboard` column. The
-    allowlist is Postgres privileges, not a parser, so no panel query can read
-    past it. Disabled, the role is rendered present but `login: false` with
-    its password disabled (never `ensure: absent`: CNPG's DROP ROLE is refused
-    once the role holds a grant), and the migrator revokes everything it held
-    and grants nothing until the role can log in again.
+    The role panels query as, `forge_dash`, exists in every cluster forge
+    migrates (a role is cluster-wide, shared by every database on the
+    server): the migrator creates it NOLOGIN before any migration runs.
+    Enabling dashboards lets it log in, with a password in a Secret named
+    `<database>-forge-dash` (minted the way `<database>-forge-ro` is). What
+    it reads is what your migrations GRANT it, column by column
+    (`GRANT SELECT (id, created_at) ON t TO forge_dash;`), so the allowlist
+    is Postgres privileges, not a parser, and no panel query can read past
+    it. Disabled, the role is rendered present but `login: false` with its
+    password disabled (never `ensure: absent`: CNPG's DROP ROLE is refused
+    once the role holds a grant); its grants stay in place, unusable until
+    it can log in again. See `forge skill load db/dashboards`.
 
     The limits are enforced by whatever queries as the role:
 
@@ -5175,8 +5177,11 @@ schema Signing:
     image digests, repo names and signer identities; `oidc_issuer` and
     `oidc_subject` (a regexp) say which identity is trusted.
 
-    Default mode `enforce`: forge and the platform builder do the signing on
-    your behalf, so there is nothing for you to set up.
+    Default mode `enforce`: once signing lands, forge and the platform builder
+    sign on your behalf, so there is nothing for you to set up. NOT YET: today
+    nothing signs a bundle or an image (`forge env deploy` and the hosted
+    builder push them unsigned), so this mode is recorded and changes
+    nothing. Load `deploy/delivery-policy`.
     """
     mode: ControlMode = "enforce"
     key: "org_kms" | "customer" | "keyless" = "org_kms"
@@ -5324,8 +5329,11 @@ schema DeliveryPolicy:
     baseline. Every env gets them.
 
     The resolved policy is recorded in the release shape (`delivery_policy`)
-    when any value differs from the default, so the control plane enforces
-    what the env declared.
+    when any value differs from the default, so the control plane can enforce
+    what the env declared. It does not yet: every control is recorded and
+    none blocks a release. In particular nothing signs a bundle and no Flux
+    OCIRepository carries `spec.verify`, so `signing` and `flux_verify` at
+    their `enforce` defaults verify nothing today.
     """
     trusted_builder: TrustedBuilder = TrustedBuilder {}
     signing: Signing = Signing {}

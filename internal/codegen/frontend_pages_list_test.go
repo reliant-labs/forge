@@ -172,20 +172,23 @@ func TestListPage_RendersServerSideResource(t *testing.T) {
 	for _, want := range []string{
 		// Adopts the runtime container + tristate adapter.
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
-		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
+		`import { Resource, type ResourceColumn`,
 		`const resource = useQueryResource(query);`,
 		`<Resource<Order>`,
 		`status={resource.status}`,
 		`data={resource.status === "success" ? resource.data.orders : undefined}`,
-		// Enum filter imported + rendered as a typed <select>.
+		// Enum filter imported + rendered by the installed <FilterBar>, in a
+		// toolbar row of its own (not the header, which overflowed a phone).
 		`import { OrderStatus } from "@/gen/services/orders/v1/orders_pb";`,
-		`<option value={String(OrderStatus.SHIPPED)}>Shipped</option>`,
+		`import FilterBar from "@/components/ui/filter_bar";`,
+		`{ value: OrderStatus[OrderStatus.SHIPPED], label: "Shipped" }`,
+		`toolbar={`,
 		// Filter state lives in the URL, so a dashboard tile linking to
 		// `?status=SHIPPED` lands on a FILTERED list. The token is the enum
 		// MEMBER NAME, not its ordinal.
 		`const statusOptions = [`,
 		`const status = statusOptions.find((member) => OrderStatus[member] === params.status);`,
-		`setFilters({ status: picked === undefined ? undefined : OrderStatus[picked] });`,
+		`setFilters({ status: next.status, expedited: next.expedited });`,
 		`const params = useTypedSearchParams(searchParamsSchema);`,
 		// Every filter passed to the List RPC (server-side).
 		`const query = useListOrders({`,
@@ -194,10 +197,11 @@ func TestListPage_RendersServerSideResource(t *testing.T) {
 		`search: search || undefined,`,
 		`status: status,`,
 		`expedited: expedited,`,
-		// Cursor pagination + real total.
+		// Cursor pagination + real total, shown in the pager.
 		`onNextPage={() => setCursor((c) => [...c, nextToken])}`,
 		`hasNextPage={Boolean(nextToken)}`,
 		`resource.data.totalCount`,
+		`totalCount={total}`,
 		// <Resource>'s debounced search box is wired to the search filter.
 		`filter={search}`,
 		`onFilterChange={(value) => {`,
@@ -232,12 +236,13 @@ func TestViteSpaListPage_ServerSideResource(t *testing.T) {
 	for _, want := range []string{
 		// Adopts the runtime container + tristate adapter.
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
-		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
+		`import { Resource, type ResourceColumn`,
 		`const resource = useQueryResource(query);`,
 		`<Resource<Order>`,
-		// Enum filter imported + rendered as a typed <select>.
+		// Enum filter imported + rendered by the installed <FilterBar>.
 		`import { OrderStatus } from "@/gen/services/orders/v1/orders_pb";`,
-		`(Number(v) as OrderStatus)`,
+		`{ value: String(OrderStatus.SHIPPED), label: "Shipped" }`,
+		`(Number(next.status) as OrderStatus)`,
 		// Every filter passed to the List RPC (server-side), with the prior
 		// page held while the next loads.
 		`const query = useListOrders({`,

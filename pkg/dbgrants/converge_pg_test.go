@@ -469,57 +469,7 @@ func TestConvergeFailsClosedOnASchemaPrivilegeItCannotRevoke(t *testing.T) {
 	}
 }
 
-func (f *pgFixture) convergeDashboard(tables []Table) {
-	f.t.Helper()
-	script, err := RenderDashboardFor(f.role, tables)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	if err := ApplyDashboard(context.Background(), f.db, script); err != nil {
-		f.t.Fatalf("apply: %v\n%s", err, script)
-	}
-}
-
-func dashTablesFor() []Table {
-	return []Table{
-		{Schema: "public", Name: "events", Dashboard: true, Columns: []Column{{Name: "id"}, {Name: "model"}}},
-		{Schema: "public", Name: "other"},
-	}
-}
-
-// The dashboard script serves a role only while it can log in: a NOLOGIN role
-// is revoked and granted nothing, and the same role granted again once it can.
-func TestDashboardScriptFollowsTheRolesLoginAttribute(t *testing.T) {
-	f := newPGFixture(t, convergeSchemaSQL)
-	f.exec(`ALTER ROLE ` + f.role + ` LOGIN`)
-	f.convergeDashboard(dashTablesFor())
-	f.allowed(`SELECT model FROM events`, "enabled")
-
-	f.exec(`ALTER ROLE ` + f.role + ` NOLOGIN`)
-	f.convergeDashboard(dashTablesFor())
-	f.denied(`SELECT model FROM events`, "disabled")
-	if n := f.privilegeRows("disabled"); n != 0 {
-		t.Errorf("%d table/column privileges remain on a disabled role", n)
-	}
-	var schemaPriv int
-	if err := f.db.QueryRowContext(context.Background(), `
-SELECT count(*) FROM pg_namespace n, aclexplode(n.nspacl) x
- WHERE x.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1)`, f.role).Scan(&schemaPriv); err != nil {
-		t.Fatal(err)
-	}
-	if schemaPriv != 0 {
-		t.Errorf("%d schema privileges remain on a disabled role", schemaPriv)
-	}
-
-	// Idempotent while off, then back on.
-	f.convergeDashboard(dashTablesFor())
-	f.exec(`ALTER ROLE ` + f.role + ` LOGIN`)
-	f.convergeDashboard(dashTablesFor())
-	f.allowed(`SELECT model FROM events`, "re-enabled")
-	f.denied(`SELECT user_email FROM events`, "re-enabled, undeclared column")
-}
-
-// forge_ro's script is not gated on login: only the dashboard role's is.
+// forge_ro's script is not gated on login: a NOLOGIN role is converged too.
 func TestReadOnlyScriptIsNotGatedOnLogin(t *testing.T) {
 	f := newPGFixture(t, convergeSchemaSQL)
 	f.exec(`ALTER ROLE ` + f.role + ` NOLOGIN`)

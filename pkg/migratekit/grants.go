@@ -32,22 +32,6 @@ import (
 // table only the newer release knows, and the newer release's own run
 // converges the grants anyway.
 //
-// THE DASHBOARD ROLE'S GRANTS FOLLOW THEM. db/grants/dashboard_gen.sql
-// (dbgrants.DashboardRoleName) is applied right after the read-only grants,
-// under the same rules: every run, never when the schema is ahead. The role is
-// opt-in (ManagedDatabase.dashboards), so a database without it is the NORMAL
-// case and the script is skipped silently (Grants.DashboardRoleMissing, which
-// callers do not report as a fault). A project that predates the file embeds
-// none and migrates as before.
-//
-// THE MIGRATOR DOES NOT SEE THE KCL, SO THE ROLE IS THE SWITCH. Dashboards off
-// render forge_dash present but NOLOGIN with no password (pkg/deploy), and the
-// dashboard script grants nothing to a role that cannot log in and revokes what
-// it held (pkg/dbgrants, "Switching dashboards off"). The script runs for such
-// a role too, which is what takes the access away; Grants.DashboardRoleDisabled
-// says so. Turning dashboards back on makes the role login-capable and the next
-// run grants again.
-//
 // A FAILURE IS THE RUN'S FAILURE. The migrations are committed by then, but a
 // column that has become secret keeps its old grant until the script succeeds,
 // so the run reports it rather than serving on. A rerun finds nothing pending
@@ -58,27 +42,15 @@ import (
 // so a role namespace) can each use a role of their own.
 var grantsRole = dbgrants.RoleName
 
-// dashboardGrantsRole is grantsRole for the dashboard role.
-var dashboardGrantsRole = dbgrants.DashboardRoleName
-
 // GrantsFile is the grants script's path relative to the directory that holds
 // the migrations' directory — "grants/readonly_gen.sql" beside
 // "migrations/", which is where a project's embed puts it.
 const GrantsFile = "grants/readonly_gen.sql"
 
-// DashboardGrantsFile is [GrantsFile] for the dashboard role's script.
-const DashboardGrantsFile = "grants/dashboard_gen.sql"
-
-// GrantsRowsDir and DashboardGrantsRowsDir hold each script's per-table rows,
-// relative to the same directory as [GrantsFile]: one file per table
-// (pkg/dbgrants.Files), spliced into the script in file-name order.
-const (
-	GrantsRowsDir          = "grants/readonly"
-	DashboardGrantsRowsDir = "grants/dashboard"
-)
-
-// grantScripts are the scripts one binary embeds, "" for one it does not.
-type grantScripts struct{ readOnly, dashboard string }
+// GrantsRowsDir holds the script's per-table rows, relative to the same
+// directory as [GrantsFile]: one file per table (pkg/dbgrants.Files), spliced
+// into the script in file-name order.
+const GrantsRowsDir = "grants/readonly"
 
 // Grants reports what a run did with the read-only grants. Nil on a Result
 // means the project embeds none.
@@ -89,127 +61,80 @@ type Grants struct {
 	// the script was not run. That is the normal state of a database nobody
 	// provisioned the role for, not a fault.
 	RoleMissing bool
-
-	// DashboardApplied is true when the dashboard role's script ran.
-	DashboardApplied bool
-	// DashboardRoleDisabled is true when the role exists but cannot log in,
-	// which is how dashboards being off reaches the database. The script ran
-	// and revoked everything the role held; it granted nothing.
-	DashboardRoleDisabled bool
-	// SecurityDefiner lists the SECURITY DEFINER functions a granted role can
+	// SecurityDefiner lists the SECURITY DEFINER functions the role can
 	// execute (dbgrants.SecurityDefinerExposure): a way around its column
 	// grants. A warning for the caller to log, never a failure.
 	SecurityDefiner []string
-	// DashboardRoleMissing is true when the binary embeds the dashboard script
-	// but the database has no [dbgrants.DashboardRoleName], so it was not run.
-	// The role is opt-in: this is the normal state, said by nobody.
-	DashboardRoleMissing bool
 }
 
-// grantsScripts reads the grants scripts that sit beside the migrations'
-// directory dir in fsys. A script the project embeds none of is "".
-func grantsScripts(fsys fs.FS, dir string) (grantScripts, error) {
-	var out grantScripts
+// grantsScript reads the read-only grants script that sits beside the
+// migrations' directory dir in fsys, with its per-table rows spliced in. ""
+// when the project embeds none.
+func grantsScript(fsys fs.FS, dir string) (string, error) {
 	if fsys == nil {
-		return out, nil
+		return "", nil
 	}
-	for _, f := range []struct {
-		file, rows string
-		into       *string
-	}{{GrantsFile, GrantsRowsDir, &out.readOnly}, {DashboardGrantsFile, DashboardGrantsRowsDir, &out.dashboard}} {
-		p := path.Join(path.Dir(dir), f.file)
-		b, err := fs.ReadFile(fsys, p)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return grantScripts{}, fmt.Errorf("read embedded grants (%s): %w", p, err)
-		}
-		// fs.Glob returns the names sorted: the order dbgrants.Render uses.
-		names, err := fs.Glob(fsys, path.Join(path.Dir(dir), f.rows, "*_gen.sql"))
-		if err != nil {
-			return grantScripts{}, fmt.Errorf("list embedded grants rows (%s): %w", f.rows, err)
-		}
-		rows := make([]string, 0, len(names))
-		for _, name := range names {
-			row, err := fs.ReadFile(fsys, name)
-			if err != nil {
-				return grantScripts{}, fmt.Errorf("read embedded grants row (%s): %w", name, err)
-			}
-			rows = append(rows, string(row))
-		}
-		script, err := dbgrants.Assemble(string(b), rows)
-		if err != nil {
-			return grantScripts{}, fmt.Errorf("embedded grants (%s): %w", p, err)
-		}
-		*f.into = script
+	p := path.Join(path.Dir(dir), GrantsFile)
+	b, err := fs.ReadFile(fsys, p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
 	}
-	return out, nil
+	if err != nil {
+		return "", fmt.Errorf("read embedded grants (%s): %w", p, err)
+	}
+	// fs.Glob returns the names sorted: the order dbgrants.Render uses.
+	names, err := fs.Glob(fsys, path.Join(path.Dir(dir), GrantsRowsDir, "*_gen.sql"))
+	if err != nil {
+		return "", fmt.Errorf("list embedded grants rows (%s): %w", GrantsRowsDir, err)
+	}
+	rows := make([]string, 0, len(names))
+	for _, name := range names {
+		row, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			return "", fmt.Errorf("read embedded grants row (%s): %w", name, err)
+		}
+		rows = append(rows, string(row))
+	}
+	script, err := dbgrants.Assemble(string(b), rows)
+	if err != nil {
+		return "", fmt.Errorf("embedded grants (%s): %w", p, err)
+	}
+	return script, nil
 }
 
-// applyGrants applies the run's grants scripts on conn, read-only first, or
-// reports nil when the project has none. A failed script fails the run, and the
-// result still says what ran before it.
+// applyGrants applies the run's read-only grants script on conn, or reports
+// nil when the project has none. A failed script fails the run.
 //
-// REVOKE and GRANT take locks, so each script runs under the run's limits
+// REVOKE and GRANT take locks, so the script runs under the run's limits
 // (guardedStatement): it waits behind a long reader for lock_timeout, is
 // retried, and fails the run with a *LockTimeoutError if the reader outlasts
-// the attempts. Each script is its own guarded statement, so a retry reruns
-// only the one that timed out; the role lookups take no conflicting lock and
-// stay outside. A script added to a run must go through guardedStatement too.
-func applyGrants(ctx context.Context, conn *sql.Conn, scripts grantScripts, run RunOptions) (*Grants, error) {
-	if scripts == (grantScripts{}) {
+// the attempts. The role lookup takes no conflicting lock and stays outside. A
+// script added to a run must go through guardedStatement too.
+func applyGrants(ctx context.Context, conn *sql.Conn, script string, run RunOptions) (*Grants, error) {
+	if script == "" {
 		return nil, nil
 	}
 	g := &Grants{}
-	if scripts.readOnly != "" {
-		exists, err := dbgrants.RoleExists(ctx, conn, grantsRole)
-		if err != nil {
-			return nil, err
-		}
-		if !exists {
-			g.RoleMissing = true
-		} else {
-			if err := guardedStatement(ctx, conn, run, "read-only grants", func() error {
-				return dbgrants.Apply(ctx, conn, scripts.readOnly)
-			}); err != nil {
-				return nil, err
-			}
-			g.Applied = true
-		}
+	exists, err := dbgrants.RoleExists(ctx, conn, grantsRole)
+	if err != nil {
+		return nil, err
 	}
-	if scripts.dashboard != "" {
-		exists, canLogin, err := dbgrants.RoleLogin(ctx, conn, dashboardGrantsRole)
-		if err != nil {
-			return g, err
-		}
-		if !exists {
-			g.DashboardRoleMissing = true
-		} else {
-			if err := guardedStatement(ctx, conn, run, "dashboard grants", func() error {
-				return dbgrants.ApplyDashboard(ctx, conn, scripts.dashboard)
-			}); err != nil {
-				return g, err
-			}
-			g.DashboardApplied = canLogin
-			g.DashboardRoleDisabled = !canLogin
-		}
+	if !exists {
+		g.RoleMissing = true
+		return g, nil
 	}
+	if err := guardedStatement(ctx, conn, run, "read-only grants", func() error {
+		return dbgrants.Apply(ctx, conn, script)
+	}); err != nil {
+		return nil, err
+	}
+	g.Applied = true
 	// Read after the grants, from the catalog, on the same session: a function
 	// created by this very run is seen. Informational, so a failed lookup does
 	// not fail a run whose grants succeeded.
-	for _, role := range []struct {
-		name string
-		on   bool
-	}{{grantsRole, g.Applied}, {dashboardGrantsRole, g.DashboardApplied}} {
-		if !role.on {
-			continue
-		}
-		if fns, err := dbgrants.SecurityDefinerExposure(ctx, conn, role.name); err == nil {
-			g.SecurityDefiner = append(g.SecurityDefiner, fns...)
-		}
+	if fns, err := dbgrants.SecurityDefinerExposure(ctx, conn, grantsRole); err == nil {
+		g.SecurityDefiner = fns
 	}
-	g.SecurityDefiner = uniqueSorted(g.SecurityDefiner)
 	return g, nil
 }
 

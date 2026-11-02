@@ -5,10 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/shadowdb"
-	"github.com/reliant-labs/forge/pkg/dbgrants"
 )
 
 // writeGrantsProject lays down a project whose only schema is migrations, so
@@ -131,172 +127,12 @@ func TestDBGrants_JSONSeverityIsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var undecided []lintJSONFinding
+	if len(fs) != 3 {
+		t.Fatalf("%d JSON findings, want 3: %+v", len(fs), fs)
+	}
 	for _, f := range fs {
-		// This project never ran `forge generate`, so its dashboard grants file
-		// is missing too; that finding has its own tests below.
-		if f.Rule == dbGrantsStaleRule {
-			continue
-		}
-		undecided = append(undecided, f)
-	}
-	if len(undecided) != 3 {
-		t.Fatalf("%d JSON findings, want 3: %+v", len(undecided), fs)
-	}
-	for _, f := range undecided {
 		if f.Severity != lintSevError || f.Rule != dbGrantsRule || f.File == "" || f.Line == 0 || f.FixHint == "" {
 			t.Errorf("finding not actionable: %+v", f)
 		}
-	}
-}
-
-// ---- db/grants/dashboard_gen.sql drift ----
-
-const dashboardBirthSQL = `CREATE TABLE usage_events (
-    id         TEXT PRIMARY KEY,
-    model      TEXT NOT NULL,
-    user_email TEXT NOT NULL
-);
-CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL);
-COMMENT ON TABLE usage_events IS 'forge:dashboard';
-COMMENT ON COLUMN usage_events.user_email IS 'forge:no-dashboard';
-`
-
-// writeDashboardGrants writes the file `forge generate` would for the project's
-// own schema, optionally rewritten by edit.
-func writeDashboardGrants(t *testing.T, root string, edit func(string) string) {
-	t.Helper()
-	tables := dashboardProjection(t, root)
-	files, err := codegen.DashboardGrantsFileSet(tables)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rel, b := range files {
-		body := string(b)
-		if edit != nil {
-			body = edit(body)
-		}
-		path := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-func dashboardProjection(t *testing.T, root string) []dbgrants.Table {
-	t.Helper()
-	tables, err := shadowdb.Tables(root, filepath.Join(root, "db", "migrations"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return codegen.ReadOnlyGrantTables(tables, nil)
-}
-
-func staleFiles(rep dbGrantsReport) []string {
-	var out []string
-	for _, s := range rep.Stale {
-		if s.Missing {
-			out = append(out, s.File+" (missing)")
-		} else {
-			out = append(out, s.File)
-		}
-	}
-	return out
-}
-
-// A project whose dashboard grants file is what generate writes is clean.
-func TestDBGrants_DashboardGrantsCurrentIsClean(t *testing.T) {
-	root := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": dashboardBirthSQL})
-	grantsReport(t, root) // skips under -short
-	writeDashboardGrants(t, root, nil)
-	rep := grantsReport(t, root)
-	if len(rep.Stale) != 0 || len(rep.Findings) != 0 {
-		t.Errorf("a current project reports stale=%v findings=%v", staleFiles(rep), names(rep))
-	}
-}
-
-// A marker added in a migration without `forge generate`, a marker removed, a
-// no-dashboard column added, a table born or dropped: each leaves a committed
-// file disagreeing with the schema (the table's row file, or one no table
-// accounts for), and the lane names it.
-func TestDBGrants_DashboardGrantsDriftIsReported(t *testing.T) {
-	rows := dbgrants.DashboardGrantsRowsDir + "/"
-	for name, tc := range map[string]struct {
-		migration, want string
-	}{
-		"a new table marked":               {`COMMENT ON TABLE users IS 'forge:dashboard';`, rows + dbgrants.FileName("public", "users")},
-		"a marker removed":                 {`COMMENT ON TABLE usage_events IS NULL;`, rows + dbgrants.FileName("public", "usage_events")},
-		"a column withheld":                {`COMMENT ON COLUMN usage_events.model IS 'forge:no-dashboard';`, rows + dbgrants.FileName("public", "usage_events")},
-		"a column un-withheld":             {`COMMENT ON COLUMN usage_events.user_email IS NULL;`, rows + dbgrants.FileName("public", "usage_events")},
-		"a column added to a marked table": {`ALTER TABLE usage_events ADD COLUMN cost BIGINT NOT NULL DEFAULT 0;`, rows + dbgrants.FileName("public", "usage_events")},
-		"a table born":                     {`CREATE TABLE notes (id TEXT PRIMARY KEY);`, rows + dbgrants.FileName("public", "notes") + " (missing)"},
-		"a table dropped":                  {`DROP TABLE users;`, rows + dbgrants.FileName("public", "users")},
-	} {
-		root := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": dashboardBirthSQL})
-		grantsReport(t, root) // skips under -short
-		writeDashboardGrants(t, root, nil)
-		if err := os.WriteFile(filepath.Join(root, "db", "migrations", "0002_change.up.sql"), []byte(tc.migration), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		rep := grantsReport(t, root)
-		if got := staleFiles(rep); len(got) != 1 || got[0] != tc.want {
-			t.Errorf("%s: stale = %v, want %s", name, got, tc.want)
-		}
-	}
-}
-
-// The file missing altogether is stale too: the role would have no grants.
-func TestDBGrants_MissingDashboardGrantsIsReported(t *testing.T) {
-	root := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": dashboardBirthSQL})
-	rep := grantsReport(t, root)
-	if got := staleFiles(rep); len(got) != 1 || !strings.HasSuffix(got[0], "(missing)") {
-		t.Errorf("stale = %v, want the missing dashboard file", got)
-	}
-}
-
-// The ownership stamp is not part of the comparison: the file `forge generate`
-// wrote (with its forge:hash line) is never stale against itself.
-func TestDBGrants_StampIsIgnoredWhenJudgingStaleness(t *testing.T) {
-	root := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": dashboardBirthSQL})
-	grantsReport(t, root)
-	writeDashboardGrants(t, root, func(body string) string {
-		return strings.Replace(body, "-- Code generated by forge. DO NOT EDIT.\n", "-- Code generated by forge. DO NOT EDIT.\n-- forge:hash=deadbeef\n", 1)
-	})
-	if rep := grantsReport(t, root); len(rep.Stale) != 0 {
-		t.Errorf("a stamped file is stale: %v", staleFiles(rep))
-	}
-}
-
-// The JSON lane gates, with a fix hint that names the command and the skill.
-func TestDBGrants_StaleJSONFinding(t *testing.T) {
-	root := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": dashboardBirthSQL})
-	grantsReport(t, root)
-	fs, err := collectDBGrantsJSON(root, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stale []lintJSONFinding
-	for _, f := range fs {
-		if f.Rule == dbGrantsStaleRule {
-			stale = append(stale, f)
-		}
-	}
-	if len(stale) != 1 {
-		t.Fatalf("%d stale findings in %+v, want 1", len(stale), fs)
-	}
-	f := stale[0]
-	if f.Severity != lintSevError || f.File != dbgrants.DashboardGrantsPath || !strings.Contains(f.FixHint, "forge generate") || !strings.Contains(f.FixHint, "Dashboards over your database") {
-		t.Errorf("finding not actionable: %+v", f)
-	}
-}
-
-// A project with no migrations reports nothing: there is no schema to be stale against.
-func TestDBGrants_NoMigrationsHasNoStaleDashboardGrants(t *testing.T) {
-	rep, err := collectDBGrantsFindings(t.TempDir(), "db/migrations")
-	if err != nil || len(rep.Stale) != 0 {
-		t.Errorf("(%+v, %v), want nothing", rep, err)
 	}
 }

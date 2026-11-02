@@ -76,3 +76,82 @@ describe("<Resource> error state", () => {
     expect(html).not.toContain("Something went wrong");
   });
 });
+
+describe("<Resource> table, toolbar and footer", () => {
+  const rows: Row[] = [{ id: "a" }, { id: "b" }];
+
+  function render(
+    props: Partial<Parameters<typeof Resource<Row>>[0]> = {},
+  ): string {
+    return renderToStaticMarkup(
+      <Resource<Row>
+        status="success"
+        data={rows}
+        columns={columns}
+        rowKey={(row) => row.id}
+        {...props}
+      />,
+    );
+  }
+
+  it("keeps table-row semantics on clickable rows", () => {
+    // A <tr role="button"> is announced as a button, not a row of data, and
+    // defeats the table caption. The row click is a pointer convenience; the
+    // accessible action is a link the page renders in the primary cell.
+    const html = render({ onRowClick: () => {} });
+    expect(html).not.toContain('role="button"');
+    expect(html).not.toContain("tabindex");
+  });
+
+  it("renders the toolbar in its own row, not in the header", () => {
+    const html = render({
+      title: "Jobs",
+      actions: <a href="/jobs/new">New job</a>,
+      toolbar: <select aria-label="Filter by status" />,
+    });
+    const header = html.slice(
+      html.indexOf("<header"),
+      html.indexOf("</header>"),
+    );
+    expect(header).toContain("New job");
+    expect(header).not.toContain("Filter by status");
+    expect(html).toContain("Filter by status");
+  });
+
+  it("shows the record range and total in the footer", () => {
+    expect(render({ totalCount: 12, pageStart: 10 })).toContain("11–12 of 12");
+    expect(render({ totalCount: 2 })).toContain("2 results");
+  });
+
+  it("hides the pager when there is only one page", () => {
+    const single = render({
+      onNextPage: () => {},
+      onPrevPage: () => {},
+      hasNextPage: false,
+      hasPrevPage: false,
+    });
+    expect(single).not.toContain(">Next<");
+    const paged = render({
+      onNextPage: () => {},
+      onPrevPage: () => {},
+      hasNextPage: true,
+      hasPrevPage: false,
+    });
+    expect(paged).toContain(">Next<");
+  });
+
+  it("marks the sorted column with aria-sort and makes sortable headers buttons", () => {
+    const sortable: ResourceColumn<Row>[] = [
+      { header: "Name", cell: (row) => row.id, sortKey: "name" },
+      { header: "Plain", cell: (row) => row.id },
+    ];
+    const html = render({
+      columns: sortable,
+      sort: { key: "name", descending: true },
+      onSortChange: () => {},
+    });
+    expect(html).toContain('aria-sort="descending"');
+    expect(html.match(/<th\s[^>]*>/g)?.[1]).not.toContain("aria-sort");
+    expect(html).toMatch(/<button type="button"[^>]*>Name/);
+  });
+});

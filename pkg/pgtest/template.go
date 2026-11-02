@@ -221,6 +221,9 @@ func ensureTemplate(s *server, key string, build func(*sql.DB, string) error) (s
 			_ = bdb.Close()
 			return fail(err)
 		}
+		// A template matches the Postgres 15+ public schema whatever server
+		// it was built on (revokePublicCreate).
+		revokePublicCreate(bdb)
 		berr := build(bdb, buildDSN)
 		_ = bdb.Close()
 		if berr != nil {

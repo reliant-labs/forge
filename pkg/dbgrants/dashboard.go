@@ -1,82 +1,310 @@
 package dbgrants
 
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+)
+
 // # The dashboard role
 //
-// [DashboardRoleName] is the role live dashboard panels query as. It is opt-in
-// per database (ManagedDatabase.dashboards in KCL) and per table, and what it
-// may read is a SUBSET of what [RoleName] may read:
+// [DashboardRoleName] is the role live dashboard panels query as. forge owns
+// its LIFECYCLE and nothing else:
 //
-//	forge:dashboard tables  ∩  columns forge_ro may read  −  forge:no-dashboard columns
+//   - The role exists in every cluster a forge migrator touches. Roles are
+//     cluster-wide: on a server shared by several databases there is one
+//     forge_dash, and its login reaches the grants of every database on it.
+//     The migrator creates it NOLOGIN before any migration runs
+//     ([EnsureRole]), so a migration may name it in dev, in tests, in CI and
+//     in production, whether dashboards are on or not. A role that already
+//     exists is adopted as it is, whatever its login and password.
+//   - The deploy decides whether it can log in. A ManagedDatabase renders it as
+//     a CNPG managed role (pkg/deploy): LOGIN, a password Secret and a
+//     connection limit while ManagedDatabase.dashboards is enabled, NOLOGIN
+//     with no password while it is not. CNPG adopts a role that already
+//     exists: its reconciler ALTERs a declared role it finds in the catalog to
+//     the declared attributes instead of creating it.
+//   - What it may READ is the project's: ordinary migrations grant it, column
+//     by column (`GRANT SELECT (id, created_at, cost) ON messages TO
+//     forge_dash;`), and a later migration revokes. forge renders no grants for
+//     it and converges none.
 //
-// The allowlist lives in Postgres privileges, not in an SQL parser. A panel's
-// query is arbitrary SQL, and any filter that reads it (a table allowlist, a
-// blocklist of functions) is a second SQL grammar that disagrees with
-// Postgres's about `select * from (select …)`, a CTE, a view or
-// `upper(secret_col)`. A column the role has no SELECT privilege on is refused
-// by the server whatever the SQL says, which is the only check that cannot be
-// out-parsed. The same reasoning is why the role is never granted a view.
+// Switching dashboards off therefore leaves the grants in place on a role that
+// cannot log in, so they are unusable until it can again.
 //
-// The script is [RenderFor] with [DashboardRoleName] over [DashboardTables], so
-// it is the same convergence as forge_ro's (REVOKE, then GRANT exactly the
-// declared columns), no-ops when the role does not exist, and tries to set
-// default_transaction_read_only (a notice, not a failure, when the migrating
-// role may not: the caller's READ ONLY transaction is the boundary).
-//
-// # Switching dashboards off
-//
-// Off is a role that CANNOT LOG IN. The deploy renders forge_dash as
-// `ensure: present, login: false, disablePassword: true` (pkg/deploy), never
-// `absent`: CNPG removes a role with a plain DROP ROLE, which Postgres refuses
-// (2BP01) once the role holds a grant, so an absent role would keep its login
-// and password. The script reads the role's own rolcanlogin as the switch:
-// while it is false the script revokes everything and grants nothing, and it
-// grants again the run after the role can log in. The migrator never sees the
-// KCL; the role it finds is the declaration.
+// The one check forge keeps costs no annotation: a read-only role can only
+// read. [DashboardPrivilegeViolations] lists what it can do besides, and the
+// migrator refuses to finish while the list is not empty (pkg/migratekit).
 
-// DashboardTables projects tables (every applied base table, as
-// [Table]/[Column] declare them) onto the dashboard role: the same tables, each
-// with only the columns the role may read.
+// ErrRoleNotCreatable means the role does not exist and the connecting role may
+// not create it (it has neither CREATEROLE nor superuser). A ManagedDatabase's
+// application role is such a role: there the role comes from CNPG's managed
+// roles, which can reconcile after the first migration run starts.
+var ErrRoleNotCreatable = errors.New("role does not exist and the connecting role may not create it")
+
+// EnsureDashboardRole is [EnsureRole] for [DashboardRoleName].
+func EnsureDashboardRole(ctx context.Context, c Conn) (created bool, err error) {
+	return EnsureRole(ctx, c, DashboardRoleName)
+}
+
+// EnsureRole creates the role called name, NOLOGIN NOINHERIT with no password,
+// when the cluster has none, and reports whether it did. An existing role is
+// left exactly as it is: its LOGIN, password and connection limit belong to
+// whoever declared it (CNPG), and so do its grants.
 //
-// An unmarked table stays in the result with no columns rather than being
-// dropped. The script revokes per SCHEMA it declares, so keeping the table is
-// what makes removing the last forge:dashboard marker from a schema take the
-// access away on the next run instead of leaving the old grant behind.
-//
-// Columns are judged by [Column.Disposition] first, so a forge:secret column
-// or a credential-shaped one nobody decided is withheld from the dashboard role
-// exactly as from the read-only role, whatever forge:no-dashboard says.
-func DashboardTables(tables []Table) []Table {
-	out := make([]Table, 0, len(tables))
-	for _, t := range tables {
-		d := Table{Schema: t.Schema, Name: t.Name, Dashboard: t.Dashboard}
-		if t.Dashboard {
-			for _, c := range t.Columns {
-				if c.Disposition() == Granted && !c.NoDashboard {
-					d.Columns = append(d.Columns, c)
-				}
-			}
-		}
-		out = append(out, d)
+// Roles are cluster-wide, so two migrators of different databases on one
+// server can race to create it; the loser finds it created and reports false.
+// A connecting role that may not create roles gets an error wrapping
+// [ErrRoleNotCreatable].
+func EnsureRole(ctx context.Context, c Conn, name string) (created bool, err error) {
+	if err := checkIdent(name); err != nil {
+		return false, err
 	}
-	return out
+	exists, err := RoleExists(ctx, c, name)
+	if err != nil || exists {
+		return false, err
+	}
+	// NOINHERIT matches the managed-role declaration (pkg/deploy), so CNPG
+	// adopting it changes as little as possible.
+	if _, err := c.ExecContext(ctx, "CREATE ROLE "+quoteIdent(name)+" NOLOGIN NOINHERIT"); err != nil {
+		switch sqlState(err) {
+		case "42710", "23505": // duplicate_object, unique_violation: another session created it first
+			return false, nil
+		case "42501": // insufficient_privilege
+			return false, fmt.Errorf("dbgrants: %s: %w", name, ErrRoleNotCreatable)
+		}
+		return false, fmt.Errorf("dbgrants: create role %s: %w", name, err)
+	}
+	return true, nil
 }
 
-// RenderDashboard is the dashboard role's grants script. tables is the same
-// set [Render] takes (every base table, marked or not); it is deterministic,
-// like [Render].
-func RenderDashboard(tables []Table) (string, error) {
-	return RenderDashboardFor(DashboardRoleName, tables)
+// sqlState is the SQLSTATE of a driver error, "" when it carries none. pgx's
+// *pgconn.PgError and lib/pq's *pq.Error both implement SQLState().
+func sqlState(err error) string {
+	var s interface{ SQLState() string }
+	if errors.As(err, &s) {
+		return s.SQLState()
+	}
+	return ""
 }
 
-// RenderDashboardFor is [RenderDashboard] for a named role, which roles being
-// cluster-wide only tests need. It is the one place the login gate is on: see
-// "Switching dashboards off" above.
-func RenderDashboardFor(role string, tables []Table) (string, error) {
-	return assembled(renderFiles(role, DashboardTables(tables), true))
+// Violation is one thing the dashboard role can do besides reading.
+type Violation struct {
+	// What names the object and the privilege: "INSERT on table public.users".
+	What string
+	// Fix is the statement that takes it away, for the failure message.
+	Fix string
 }
 
-// RenderDashboardFiles is [RenderDashboard] as a project commits it; see
-// [Files].
-func RenderDashboardFiles(tables []Table) (Files, error) {
-	return renderFiles(DashboardRoleName, DashboardTables(tables), true)
+func (v Violation) String() string { return v.What + " (fix: " + v.Fix + ")" }
+
+// DescribeViolations is the failure message for violations of role: what it
+// can do besides reading, each with its fix, and the rule to follow instead.
+func DescribeViolations(role string, violations []Violation) string {
+	lines := make([]string, len(violations))
+	for i, v := range violations {
+		lines[i] = "  - " + v.String()
+	}
+	return fmt.Sprintf("role %s may only read (SELECT, schema USAGE, CONNECT), but it can also:\n%s\n"+
+		"Take each away in a new migration, and grant %s column SELECTs only. "+
+		"A privilege held through PUBLIC is every role's: revoke it from PUBLIC and grant the roles that need it. "+
+		"See `forge skill load db/dashboards`", role, strings.Join(lines, "\n"), role)
+}
+
+// DashboardPrivilegeViolations lists what role can do besides reading, sorted:
+// nil when nothing, or when the role does not exist.
+//
+// It asks Postgres for the role's EFFECTIVE privileges (has_table_privilege
+// and its siblings), not for ACL entries naming it, so a privilege it holds
+// through PUBLIC counts exactly like one granted to it, and ownership, which
+// carries every privilege without an ACL entry, is listed on its own. Listed:
+//
+//   - every object the role owns, in any database and of any kind
+//     (pg_shdepend);
+//   - INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER (and MAINTAIN from
+//     Postgres 17) on any table, view, materialized view or foreign table, and
+//     SELECT WITH GRANT OPTION;
+//   - SELECT that PUBLIC holds on a table (whole or some columns): every role,
+//     this one included, reads those columns whatever the migrations granted;
+//   - USAGE or UPDATE on a sequence (nextval, setval);
+//   - CREATE on any schema, and CREATE on any database of the cluster;
+//   - UPDATE on a large object granted to the role or to PUBLIC;
+//   - SET or ALTER SYSTEM on a parameter (Postgres 15+), granted to the role or
+//     to PUBLIC: ALTER SYSTEM SET archive_command runs an OS command;
+//   - ALTER DEFAULT PRIVILEGES entries naming the role;
+//   - membership in any role, and the SUPERUSER, CREATEROLE, CREATEDB,
+//     REPLICATION and BYPASSRLS attributes (a superuser is reported by its
+//     attribute alone: it holds everything).
+//
+// Tables, schemas and sequences are those of the database c is connected to,
+// outside pg_catalog, information_schema and pg_toast. Not listed, by choice:
+// TEMP on a database (PUBLIC's default; a temporary table lives in its own
+// session and cannot touch the application's data), EXECUTE on functions
+// (PUBLIC's default; a SECURITY DEFINER one is [SecurityDefinerExposure]'s
+// warning), and privileges on another database's objects, which that
+// database's own migrator checks.
+func DashboardPrivilegeViolations(ctx context.Context, c Conn, role string) ([]Violation, error) {
+	var version int
+	if err := c.QueryRowContext(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&version); err != nil {
+		return nil, fmt.Errorf("dbgrants: read the server version: %w", err)
+	}
+	var raw []byte
+	if err := c.QueryRowContext(ctx, violationsSQL(version), role).Scan(&raw); err != nil {
+		return nil, fmt.Errorf("dbgrants: read the privileges of %s: %w", role, err)
+	}
+	var rows []struct {
+		Kind   string `json:"kind"`
+		Object string `json:"object"`
+		Target string `json:"target"`
+		Priv   string `json:"priv"`
+		Public bool   `json:"public"`
+		Whole  bool   `json:"whole"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("dbgrants: decode the privileges of %s: %w", role, err)
+	}
+	out := make([]Violation, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, violation(role, r.Kind, r.Object, r.Target, r.Priv, r.Public, r.Whole))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].What < out[j].What })
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// violation words one row of violationsSQL.
+func violation(role, kind, object, target, priv string, public, whole bool) Violation {
+	from := quoteIdent(role)
+	if public {
+		from = "PUBLIC"
+	}
+	revoke := func(p string) string {
+		if rest, ok := strings.CutSuffix(p, " WITH GRANT OPTION"); ok {
+			return "REVOKE GRANT OPTION FOR " + rest + " ON " + target + " FROM " + from
+		}
+		return "REVOKE " + p + " ON " + target + " FROM " + from
+	}
+	held := ""
+	if public {
+		held = ", held through PUBLIC"
+	}
+	switch kind {
+	case "attribute":
+		return Violation{"role attribute " + priv, "ALTER ROLE " + quoteIdent(role) + " NO" + priv}
+	case "membership":
+		return Violation{"membership in role " + object, "REVOKE " + object + " FROM " + quoteIdent(role)}
+	case "owner":
+		return Violation{"owns " + object, "give it to the role that should own it (ALTER ... OWNER TO ...), or drop it"}
+	case "public-select":
+		what := "SELECT on some columns of " + object + " is granted to PUBLIC, so " + role + " reads them whatever the migrations granted"
+		if whole {
+			what = "SELECT on " + object + " is granted to PUBLIC, so " + role + " reads every column of it"
+		}
+		return Violation{what, "REVOKE SELECT ON " + target + " FROM PUBLIC, then grant the roles that need it"}
+	case "default":
+		return Violation{object, "ALTER DEFAULT PRIVILEGES " + target + " FROM " + quoteIdent(role)}
+	}
+	return Violation{priv + " on " + object + held, revoke(priv)}
+}
+
+// violationsSQL is the effective-privilege query for a server_version_num:
+// MAINTAIN exists from 17, pg_parameter_acl from 15. Each row is a JSON object
+// that [violation] words.
+func violationsSQL(version int) string {
+	tablePrivs := `'DELETE', 'TRUNCATE', 'TRIGGER'`
+	if version >= 170000 {
+		tablePrivs += `, 'MAINTAIN'`
+	}
+	parameters := ""
+	if version >= 150000 {
+		parameters = `
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', 'parameter ' || p.parname, 'target', 'PARAMETER ' || p.parname,
+                           'priv', x.privilege_type, 'public', x.grantee = 0)
+    FROM r, pg_parameter_acl p, aclexplode(p.paracl) x
+   WHERE NOT r.rolsuper AND x.grantee IN (r.id, 0)`
+	}
+	return `
+WITH r AS (
+  SELECT oid AS id, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = $1
+), rels AS (
+  SELECT c.oid, c.relkind, c.relowner, c.oid::regclass::text AS name,
+         CASE c.relkind WHEN 'S' THEN 'sequence' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view'
+                        WHEN 'f' THEN 'foreign table' ELSE 'table' END AS kind,
+         EXISTS (SELECT 1 FROM pg_depend e WHERE e.classid = 'pg_class'::regclass AND e.objid = c.oid AND e.deptype = 'e') AS extension
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+     AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp\_%'
+), schemas AS (
+  SELECT n.oid, n.nspname, n.nspowner FROM pg_namespace n
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp\_%'
+)
+SELECT coalesce(json_agg(v.row), '[]'::json) FROM (
+  SELECT json_build_object('kind', 'attribute', 'priv', a.name) AS row
+    FROM r, LATERAL (VALUES ('SUPERUSER', r.rolsuper), ('CREATEROLE', r.rolcreaterole), ('CREATEDB', r.rolcreatedb),
+                            ('REPLICATION', r.rolreplication), ('BYPASSRLS', r.rolbypassrls)) AS a(name, held)
+   WHERE a.held
+  UNION ALL
+  SELECT json_build_object('kind', 'membership', 'object', quote_ident(pg_get_userbyid(m.roleid)))
+    FROM r JOIN pg_auth_members m ON m.member = r.id
+  UNION ALL
+  SELECT json_build_object('kind', 'owner', 'object',
+           CASE WHEN d.dbid = 0 OR db.datname = current_database() THEN pg_describe_object(d.classid, d.objid, d.objsubid)
+                ELSE format('an object (%s) in database %I', d.classid::regclass, db.datname) END)
+    FROM r JOIN pg_shdepend d ON d.refclassid = 'pg_authid'::regclass AND d.refobjid = r.id AND d.deptype = 'o'
+    LEFT JOIN pg_database db ON db.oid = d.dbid
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', t.kind || ' ' || t.name, 'target', 'TABLE ' || t.name,
+                           'priv', p.priv, 'public', has_table_privilege('public', t.oid, p.priv))
+    FROM r, rels t, unnest(ARRAY[` + tablePrivs + `]) AS p(priv)
+   WHERE NOT r.rolsuper AND t.relkind <> 'S' AND t.relowner <> r.id AND has_table_privilege(r.id, t.oid, p.priv)
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', t.kind || ' ' || t.name, 'target', 'TABLE ' || t.name,
+                           'priv', p.priv, 'public', has_any_column_privilege('public', t.oid, p.priv))
+    FROM r, rels t, unnest(ARRAY['INSERT', 'UPDATE', 'REFERENCES', 'SELECT WITH GRANT OPTION']) AS p(priv)
+   WHERE NOT r.rolsuper AND t.relkind <> 'S' AND t.relowner <> r.id AND has_any_column_privilege(r.id, t.oid, p.priv)
+  UNION ALL
+  SELECT json_build_object('kind', 'public-select', 'object', t.kind || ' ' || t.name, 'target', 'TABLE ' || t.name,
+                           'whole', has_table_privilege('public', t.oid, 'SELECT'))
+    FROM r, rels t
+   WHERE NOT r.rolsuper AND t.relkind <> 'S' AND NOT t.extension AND t.relowner <> r.id
+     AND has_any_column_privilege('public', t.oid, 'SELECT')
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', 'sequence ' || t.name, 'target', 'SEQUENCE ' || t.name,
+                           'priv', p.priv, 'public', has_sequence_privilege('public', t.oid, p.priv))
+    FROM r, rels t, unnest(ARRAY['USAGE', 'UPDATE']) AS p(priv)
+   WHERE NOT r.rolsuper AND t.relkind = 'S' AND t.relowner <> r.id AND has_sequence_privilege(r.id, t.oid, p.priv)
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', 'schema ' || quote_ident(n.nspname), 'target', 'SCHEMA ' || quote_ident(n.nspname),
+                           'priv', 'CREATE', 'public', has_schema_privilege('public', n.oid, 'CREATE'))
+    FROM r, schemas n
+   WHERE NOT r.rolsuper AND n.nspowner <> r.id AND has_schema_privilege(r.id, n.oid, 'CREATE')
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', 'database ' || quote_ident(d.datname), 'target', 'DATABASE ' || quote_ident(d.datname),
+                           'priv', 'CREATE', 'public', has_database_privilege('public', d.oid, 'CREATE'))
+    FROM r, pg_database d
+   WHERE NOT r.rolsuper AND d.datdba <> r.id AND has_database_privilege(r.id, d.oid, 'CREATE')
+  UNION ALL
+  SELECT json_build_object('kind', 'privilege', 'object', 'large object ' || l.oid, 'target', 'LARGE OBJECT ' || l.oid,
+                           'priv', x.privilege_type, 'public', x.grantee = 0)
+    FROM r, pg_largeobject_metadata l, aclexplode(l.lomacl) x
+   WHERE NOT r.rolsuper AND l.lomowner <> r.id AND x.grantee IN (r.id, 0) AND x.privilege_type <> 'SELECT'
+  UNION ALL
+  SELECT json_build_object('kind', 'default',
+           'object', format('default privileges of role %I%s on new %s', pg_get_userbyid(d.defaclrole),
+                            CASE WHEN d.defaclnamespace = 0 THEN '' ELSE format(' in schema %I', n.nspname) END,
+                            CASE d.defaclobjtype WHEN 'r' THEN 'tables' WHEN 'S' THEN 'sequences' WHEN 'f' THEN 'functions'
+                                                 WHEN 'T' THEN 'types' WHEN 'n' THEN 'schemas' WHEN 'L' THEN 'large objects' ELSE d.defaclobjtype::text END),
+           'target', format('FOR ROLE %I%s REVOKE ALL ON %s', pg_get_userbyid(d.defaclrole),
+                            CASE WHEN d.defaclnamespace = 0 THEN '' ELSE format(' IN SCHEMA %I', n.nspname) END,
+                            CASE d.defaclobjtype WHEN 'r' THEN 'TABLES' WHEN 'S' THEN 'SEQUENCES' WHEN 'f' THEN 'FUNCTIONS'
+                                                 WHEN 'T' THEN 'TYPES' WHEN 'n' THEN 'SCHEMAS' WHEN 'L' THEN 'LARGE OBJECTS' ELSE d.defaclobjtype::text END))
+    FROM r, pg_default_acl d LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace, aclexplode(d.defaclacl) x
+   WHERE x.grantee = r.id` + parameters + `
+) v`
 }

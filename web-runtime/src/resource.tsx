@@ -11,7 +11,19 @@
 // { status, data, error } and hand it here. Pagination is
 // cursor-based (page_token / next_page_token in Connect list RPCs): the page
 // owns the cursor stack and passes onNextPage/onPrevPage.
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+//
+// Layout, top to bottom: a header (title + primary action), a toolbar row
+// (search + the page's `toolbar` facets) that WRAPS, the table, and a footer
+// (the record count + the pager). Filters used to share the header row with
+// the title and the create button in one non-wrapping flex row, which pushed
+// the button off-canvas on a phone; they now have a row of their own.
+import {
+  useEffect,
+  useState,
+  type MouseEvent,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 
 import { userMessage } from "./errors.js";
 
@@ -20,6 +32,19 @@ export interface ResourceColumn<T> {
   cell: (row: T) => ReactNode;
   /** Extra classes for the cell + header (alignment, width). */
   className?: string;
+  /**
+   * Makes the column sortable: the server-side sort key (the List request's
+   * `order_by` value, a column name) this header sorts by. The header renders
+   * a button and `aria-sort`; the page owns the state through
+   * `sort` / `onSortChange`.
+   */
+  sortKey?: string;
+}
+
+/** The active server-side sort: an `order_by` key and its direction. */
+export interface ResourceSort {
+  key: string;
+  descending: boolean;
 }
 
 export type ResourceStatus = "loading" | "error" | "success";
@@ -31,10 +56,24 @@ export interface ResourceProps<T> {
   rowKey: (row: T) => string;
 
   title?: string;
-  /** Header-right slot, e.g. a "New" button. */
+  /** Header-right slot: the page's primary action, e.g. a "New" button. */
   actions?: ReactNode;
+  /**
+   * Filter controls, rendered in their own wrapping row beside the search
+   * box — never in the header, so a page with several facets still fits a
+   * phone. Pass a filter bar, selects, pickers.
+   */
+  toolbar?: ReactNode;
   error?: Error | null;
   onRetry?: () => void;
+  /**
+   * A POINTER convenience: clicking anywhere on a row calls it. It is not
+   * the row's accessible action — rows keep table semantics (a row marked
+   * up as a button is announced as a button, not as a row of data). Render
+   * a real link in the row's primary cell for keyboard and screen-reader
+   * users; a click that lands on a link or another control inside the row is
+   * left to that control.
+   */
   onRowClick?: (row: T) => void;
 
   emptyTitle?: string;
@@ -46,13 +85,39 @@ export interface ResourceProps<T> {
   filterPlaceholder?: string;
   filterDebounceMs?: number;
 
-  // Cursor pagination. Omit the handlers to hide the footer.
+  // Server-side sort, driven by columns that declare a sortKey. Each click
+  // on a header cycles ascending → descending → unsorted.
+  sort?: ResourceSort | null;
+  onSortChange?: (sort: ResourceSort | null) => void;
+
+  // Cursor pagination. Omit the handlers to hide the pager.
   onNextPage?: () => void;
   onPrevPage?: () => void;
   hasNextPage?: boolean;
   hasPrevPage?: boolean;
   /** True during a background refetch (page change / filter change). */
   isFetching?: boolean;
+  /**
+   * The total number of matching records (the List response's total_count),
+   * shown in the footer: "1–25 of 112". Omit when the API does not report it.
+   */
+  totalCount?: number;
+  /** Zero-based index of this page's first row, for the footer's range. */
+  pageStart?: number;
+}
+
+// The controls a row click must not hijack: a click on any of these inside a
+// row belongs to that control (and a link inside the row already navigates).
+const INTERACTIVE =
+  "a, button, input, select, textarea, label, [role='button'], [role='combobox']";
+
+function nextSort(
+  current: ResourceSort | null | undefined,
+  key: string,
+): ResourceSort | null {
+  if (current?.key !== key) return { key, descending: false };
+  if (!current.descending) return { key, descending: true };
+  return null;
 }
 
 export function Resource<T>({
@@ -62,6 +127,7 @@ export function Resource<T>({
   rowKey,
   title,
   actions,
+  toolbar,
   error,
   onRetry,
   onRowClick,
@@ -71,11 +137,15 @@ export function Resource<T>({
   onFilterChange,
   filterPlaceholder = "Search…",
   filterDebounceMs = 300,
+  sort,
+  onSortChange,
   onNextPage,
   onPrevPage,
   hasNextPage,
   hasPrevPage,
   isFetching,
+  totalCount,
+  pageStart,
 }: ResourceProps<T>): ReactElement {
   const [query, setQuery] = useState(filter ?? "");
 
@@ -93,34 +163,55 @@ export function Resource<T>({
     return () => clearTimeout(handle);
   }, [query, filter, onFilterChange, filterDebounceMs]);
 
-  const showFooter = Boolean(onNextPage || onPrevPage);
   const colCount = columns.length;
   const captionText = title ?? "Results";
+  const rows = status === "success" && data ? data.length : 0;
+  const showPager =
+    Boolean(onNextPage || onPrevPage) && Boolean(hasNextPage || hasPrevPage);
+  const countText = describeCount(rows, totalCount, pageStart);
+  const showFooter = showPager || countText !== "" || Boolean(isFetching);
+  const showToolbar = Boolean(onFilterChange || toolbar);
+
+  const handleRowClick = onRowClick
+    ? (row: T) => (e: MouseEvent<HTMLTableRowElement>) => {
+        // Leave clicks on the row's own controls (the primary-cell link, a
+        // menu) to those controls, and never turn a text selection into a
+        // navigation.
+        if ((e.target as Element).closest(INTERACTIVE)) return;
+        if (window.getSelection()?.toString()) return;
+        onRowClick(row);
+      }
+    : undefined;
 
   return (
     <section className="flex flex-col gap-4">
       {(title || actions) && (
-        <header className="flex items-center justify-between gap-4">
+        <header className="flex flex-wrap items-center justify-between gap-3">
           {title ? (
             <h1 className="text-xl font-semibold text-ink">{title}</h1>
           ) : (
             <span />
           )}
           {actions ? (
-            <div className="flex items-center gap-2">{actions}</div>
+            <div className="flex flex-wrap items-center gap-2">{actions}</div>
           ) : null}
         </header>
       )}
 
-      {onFilterChange ? (
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={filterPlaceholder}
-          aria-label={title ? `Search ${title.toLowerCase()}` : "Search"}
-          className="w-full max-w-sm rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-        />
+      {showToolbar ? (
+        <div className="flex flex-wrap items-start gap-2">
+          {onFilterChange ? (
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={filterPlaceholder}
+              aria-label={title ? `Search ${title.toLowerCase()}` : "Search"}
+              className="h-9 w-full min-w-0 rounded-md border border-border-strong bg-surface px-3 text-sm text-ink placeholder:text-ink-subtle focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent sm:w-64"
+            />
+          ) : null}
+          {toolbar ? <div className="min-w-0 flex-1">{toolbar}</div> : null}
+        </div>
       ) : null}
 
       <div className="overflow-x-auto rounded-lg border border-border bg-surface">
@@ -128,17 +219,46 @@ export function Resource<T>({
           <caption className="sr-only">{captionText}</caption>
           <thead className="bg-surface-muted">
             <tr>
-              {columns.map((col, i) => (
-                <th
-                  key={i}
-                  scope="col"
-                  className={`px-4 py-2.5 text-left font-medium text-ink-muted ${
-                    col.className ?? ""
-                  }`}
-                >
-                  {col.header}
-                </th>
-              ))}
+              {columns.map((col, i) => {
+                const sortable = Boolean(col.sortKey && onSortChange);
+                const active = sortable && sort?.key === col.sortKey;
+                return (
+                  <th
+                    key={i}
+                    scope="col"
+                    aria-sort={
+                      active
+                        ? sort?.descending
+                          ? "descending"
+                          : "ascending"
+                        : undefined
+                    }
+                    className={`px-4 py-2.5 text-left font-medium text-ink-muted ${
+                      col.className ?? ""
+                    }`}
+                  >
+                    {sortable ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onSortChange?.(nextSort(sort, col.sortKey ?? ""))
+                        }
+                        className="-mx-1 inline-flex items-center gap-1 rounded px-1 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                      >
+                        {col.header}
+                        <span
+                          aria-hidden="true"
+                          className={active ? "text-ink" : "text-ink-subtle"}
+                        >
+                          {active ? (sort?.descending ? "↓" : "↑") : "↕"}
+                        </span>
+                      </button>
+                    ) : (
+                      col.header
+                    )}
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
@@ -160,24 +280,10 @@ export function Resource<T>({
               data.map((row) => (
                 <tr
                   key={rowKey(row)}
-                  onClick={onRowClick ? () => onRowClick(row) : undefined}
-                  // Keyboard-operable when the row navigates: Enter/Space
-                  // activate it, and it takes focus in tab order.
-                  role={onRowClick ? "button" : undefined}
-                  tabIndex={onRowClick ? 0 : undefined}
-                  onKeyDown={
-                    onRowClick
-                      ? (e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            onRowClick(row);
-                          }
-                        }
-                      : undefined
-                  }
+                  onClick={handleRowClick?.(row)}
                   className={
                     onRowClick
-                      ? "cursor-pointer transition-colors hover:bg-surface-muted focus:bg-surface-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+                      ? "cursor-pointer transition-colors hover:bg-surface-muted focus-within:bg-surface-muted"
                       : undefined
                   }
                 >
@@ -197,30 +303,55 @@ export function Resource<T>({
       </div>
 
       {showFooter ? (
-        <footer className="flex items-center justify-end gap-2">
-          {isFetching ? (
-            <span className="mr-auto text-xs text-ink-subtle">Loading…</span>
+        <footer className="flex flex-wrap items-center justify-end gap-2">
+          <span
+            aria-live="polite"
+            className="mr-auto text-sm text-ink-muted tabular-nums"
+          >
+            {isFetching ? "Loading…" : countText}
+          </span>
+          {showPager ? (
+            <>
+              <button
+                type="button"
+                onClick={onPrevPage}
+                disabled={!hasPrevPage}
+                className="h-9 rounded-md border border-border-strong px-3 text-sm font-medium text-ink hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={onNextPage}
+                disabled={!hasNextPage}
+                className="h-9 rounded-md border border-border-strong px-3 text-sm font-medium text-ink hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+              </button>
+            </>
           ) : null}
-          <button
-            type="button"
-            onClick={onPrevPage}
-            disabled={!hasPrevPage}
-            className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-ink-muted hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Previous
-          </button>
-          <button
-            type="button"
-            onClick={onNextPage}
-            disabled={!hasNextPage}
-            className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-ink-muted hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Next
-          </button>
         </footer>
       ) : null}
     </section>
   );
+}
+
+/**
+ * describeCount is the footer's record count: "1–25 of 112" with a known page
+ * offset, "112 results" without one, and nothing while no row is shown.
+ */
+function describeCount(
+  rows: number,
+  total?: number,
+  pageStart?: number,
+): string {
+  if (total === undefined || rows === 0) return "";
+  if (pageStart === undefined) {
+    return `${total.toLocaleString()} ${total === 1 ? "result" : "results"}`;
+  }
+  const first = (pageStart + 1).toLocaleString();
+  const last = (pageStart + rows).toLocaleString();
+  return `${first}–${last} of ${total.toLocaleString()}`;
 }
 
 // SkeletonRows is the loading rung of the tristate ladder: a shimmer the

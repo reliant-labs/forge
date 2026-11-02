@@ -303,6 +303,9 @@ func TestEnumZeroValue_NeverAChoice(t *testing.T) {
 				"<option value={ ThingKind.UNSPECIFIED }>",
 				"<option value={String(ThingKind.UNSPECIFIED)}>",
 				"[ThingKind.UNSPECIFIED,",
+				// The list's <FilterBar> options, in either tree.
+				"[ThingKind.UNSPECIFIED], label",
+				"String(ThingKind.UNSPECIFIED), label",
 			} {
 				if strings.Contains(out, offered) {
 					t.Errorf("%s/%s offers the UNSPECIFIED zero value (%s):\n%s", tmplKind, name, offered, out)
@@ -321,7 +324,9 @@ func TestEnumZeroValue_NeverAChoice(t *testing.T) {
 		}
 		list := renderPageTemplate(t, tmplKind, "list-page.tsx.tmpl", page)
 		for _, member := range []string{"ThingKind.RESIDENTIAL", "ThingKind.COMMERCIAL"} {
-			if !strings.Contains(list, "<option value={String("+member+")}>") {
+			// The list filter is the installed <FilterBar>: Next.js keys its
+			// options by member NAME (the URL token), Vite by number.
+			if !strings.Contains(list, "["+member+"], label") && !strings.Contains(list, "String("+member+"), label") {
 				t.Errorf("%s list filter lost the real member %s:\n%s", tmplKind, member, list)
 			}
 		}

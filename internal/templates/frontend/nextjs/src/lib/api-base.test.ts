@@ -50,6 +50,16 @@ describe("chooseApiBase", () => {
     ).toBe("https://api.example.com");
   });
 
+  // Reliant hosting's config.js: the API on this page's own origin, on every
+  // host the site answers on, so it must stay a path.
+  it("keeps the platform's same-origin /_api path as a path", () => {
+    for (const configured of ["/_api", "/_api/"]) {
+      expect(
+        chooseApiBase({ devProxyPath: "", origin: preview, basePath: mount, configured }),
+      ).toBe("/_api");
+    }
+  });
+
   it("leaves an empty configured URL empty, which means same-origin", () => {
     expect(chooseApiBase({ devProxyPath: "", origin: preview, basePath: "", configured: "" })).toBe(
       "",

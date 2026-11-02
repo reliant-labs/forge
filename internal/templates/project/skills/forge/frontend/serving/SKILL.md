@@ -73,6 +73,12 @@ CORS, and the session cookie is first-party to the host the page is on.
 - **Production has neither proxy.** A static export has no server. The API
   URL comes from `config.js`, and `<basePath>/_otel` must be routed by the
   ingress.
+- **Reliant hosting keeps the one origin.** The platform writes
+  `API_URL: "/_api"` into `config.js` for an `API_URL` that references a
+  workload, and serves that workload at `/_api/*` on every host of the site
+  (at the host root, whatever the basePath; custom domains too). Same path,
+  same first-party cookie, as the dev loop. A literal `API_URL` is used as
+  written. Details: `deploy/hosting`.
 - **Expo** has no page origin: `EXPO_PUBLIC_API_URL` must name an address
   the device can reach.
 

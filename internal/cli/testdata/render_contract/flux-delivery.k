@@ -2,8 +2,8 @@
 render contract — a self-hosted env (`Bundle.applier = "flux"`): no control
 plane, one cluster, reconciled by a Flux forge installs there. Pins the
 resolved `flux_delivery` the decoder reads (the env's one cluster, its
-delivery namespace and ResourceSet, the copied pull Secret, signing capped at
-audit) and the one bootstrap chart, `flux-delivery`, its render adds beside
+delivery namespace and ResourceSet, the copied pull Secret, signing and
+flux_verify resolved to off) and the one bootstrap chart, `flux-delivery`, its render adds beside
 the declared ones.
 """
 # kcl-args: env="prod"

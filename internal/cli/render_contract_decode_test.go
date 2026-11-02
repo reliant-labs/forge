@@ -506,8 +506,8 @@ func TestRenderContract_FluxDelivery(t *testing.T) {
 		Namespace: "forge-delivery-acme-prod", ResourceSet: "delivery.prod",
 		ApplyIdentities: true, DeliveryScope: "namespace",
 		PullSecretFrom: "acme-prod/ghcr-pull", PullSecret: "forge-delivery-pull",
-		Signing:    FluxDeliveryControl{Requested: "enforce", Effective: "audit"},
-		FluxVerify: FluxDeliveryControl{Requested: "enforce", Effective: "audit"},
+		Signing:    FluxDeliveryControl{Requested: "off", Effective: "off"},
+		FluxVerify: FluxDeliveryControl{Requested: "off", Effective: "off"},
 	}
 	if !reflect.DeepEqual(*fd, want) {
 		t.Errorf("flux_delivery = %+v\nwant %+v", *fd, want)

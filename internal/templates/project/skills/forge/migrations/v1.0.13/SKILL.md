@@ -1,8 +1,8 @@
 ---
 name: v1.0.13
-description: Upgrade a project to forge v1.0.13. The dashboard role (forge_dash) is granted by ordinary migrations, not annotations - the forge:dashboard / forge:no-dashboard markers, the generated db/grants/dashboard_gen.sql and db/grants/dashboard/, and the forge-db-grants-stale lint rule are gone, and the migrator now creates forge_dash before any migration runs and fails a run after which it holds more than read privileges. Use when the project's migrations carry forge:dashboard or forge:no-dashboard, it commits db/grants/dashboard_gen.sql, Go code reads the removed dashboard fields of pkg/migratekit or pkg/dbgrants, or the project runs Postgres 14, where every project's migrations fail until the owner of the public schema revokes PUBLIC's CREATE on it. Also: the scaffolded GitHub Actions workflows group push-to-main runs per workflow and ref instead of per commit, so a newer push supersedes the pending run; use when a .github/workflows file still groups on github.sha.
+description: Upgrade a project to forge v1.0.13. The dashboard role (forge_dash) is granted by ordinary migrations, not annotations - the forge:dashboard / forge:no-dashboard markers, the generated db/grants/dashboard_gen.sql and db/grants/dashboard/, and the forge-db-grants-stale lint rule are gone, and the migrator now creates forge_dash before any migration runs and fails a run after which it holds more than read privileges. Use when the project's migrations carry forge:dashboard or forge:no-dashboard, it commits db/grants/dashboard_gen.sql, Go code reads the removed dashboard fields of pkg/migratekit or pkg/dbgrants, or the project runs Postgres 14, where every project's migrations fail until the owner of the public schema revokes PUBLIC's CREATE on it. Also: the scaffolded GitHub Actions workflows group push-to-main runs per workflow and ref instead of per commit, so a newer push supersedes the pending run; use when a .github/workflows file still groups on github.sha. Also: `forge.flux_chart()` installs Flux through the Flux Operator and a FluxInstance (see migrations/v1.0.13/flux-operator); use it when deploy/kcl declares `forge.flux_chart(`.
 version: v1.0.13
-detection: test -f db/grants/dashboard_gen.sql -o -d db/grants/dashboard && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'Dashboard(Applied|RoleDisabled|RoleMissing|GrantsPath|GrantsRowsDir|GrantsFile|Tables)\b|RenderDashboard|ApplyDashboard|DeclaresNoDashboard|TableMarkerDashboard|ColumnMarkerNoDashboard' . && exit 0; grep -qsE 'postgres_version:[[:space:]]*"?v?14' forge.yaml && exit 0; grep -rqsE 'postgres:14' docker-compose.yml docker-compose.yaml compose.yml compose.yaml deploy && exit 0; grep -qsF "format('-{0}', github.sha)" .github/workflows/*.yml && exit 0; exit 1
+detection: grep -qsE 'flux_chart\(' deploy/kcl/*/*.k deploy/kcl/lib/*.k && exit 0; test -f db/grants/dashboard_gen.sql -o -d db/grants/dashboard && exit 0; grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'Dashboard(Applied|RoleDisabled|RoleMissing|GrantsPath|GrantsRowsDir|GrantsFile|Tables)\b|RenderDashboard|ApplyDashboard|DeclaresNoDashboard|TableMarkerDashboard|ColumnMarkerNoDashboard' . && exit 0; grep -qsE 'postgres_version:[[:space:]]*"?v?14' forge.yaml && exit 0; grep -rqsE 'postgres:14' docker-compose.yml docker-compose.yaml compose.yml compose.yaml deploy && exit 0; grep -qsF "format('-{0}', github.sha)" .github/workflows/*.yml && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.13
@@ -105,3 +105,9 @@ concurrency:
 Never set `cancel-in-progress: true` on a workflow that runs on push to main: it cancels the run in progress, and a busy runner pool then leaves main with no verdict at all.
 
 If a release process of yours needs a CI verdict for *every* commit of main, keep the per-commit group in that one workflow: it is your file.
+
+## 7. `forge.flux_chart()` installs Flux through the Flux Operator
+
+Use when deploy/kcl declares `forge.flux_chart(`. The chart is renamed
+`flux-operator` and adopts an existing Flux in place. See
+`migrations/v1.0.13/flux-operator`.

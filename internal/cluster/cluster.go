@@ -778,10 +778,15 @@ func applyLockedChart(ctx context.Context, chartCtx string, rc renderedChart, ap
 	if prune != nil {
 		ctx = context.WithValue(ctx, chartPruneContextKey{}, prune)
 	}
+	// A riding object a chart's pods need in order to BECOME Available — its
+	// network allow, its identity, its grants, its priority class — lands with
+	// the chart, not after the Available wait that would otherwise wait on it.
+	prereqs, riding := PartitionChartPrerequisites(rc.extra)
+	rc.extra = riding
 	// rc.spec.Namespace is the chart's DECLARED namespace, threaded into
 	// the apply as `-n` so a chart object with no `metadata.namespace`
 	// lands there instead of in `default` (see KubectlApplyNamespaced).
-	if err := applyCRDsThenRest(ctx, chartCtx, rc.spec.Namespace, rc.crds, rc.manifests); err != nil {
+	if err := applyCRDsThenRest(ctx, chartCtx, rc.spec.Namespace, rc.crds, joinNonEmpty(prereqs, rc.manifests)); err != nil {
 		// Never record intended but unconfirmed UIDs after a failed apply.
 		// The prior inventory remains intact; retain the lock for recovery.
 		return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
@@ -3181,6 +3186,42 @@ func PartitionConfigManifests(manifests string) (config, rest string) {
 		}
 	}
 	return strings.Join(cfg, docDelimiter), strings.Join(other, docDelimiter)
+}
+
+// chartPrerequisiteKinds are the riding-manifest kinds a chart's own pods may
+// need before they can become Available, and that no chart controller has to
+// admit: a NetworkPolicy allowing a pod's egress, its ServiceAccount, its RBAC,
+// its PriorityClass. Riding manifests otherwise wait for the chart's
+// Deployments to be Available (a cert-manager webhook must be up before a
+// ClusterIssuer), which deadlocks when the Deployment is what waits on them:
+// in a namespace whose egress is already default-deny, a new controller cannot
+// reach the API server, and so cannot become Available, until its allow exists.
+var chartPrerequisiteKinds = map[string]struct{}{
+	"NetworkPolicy":      {},
+	"ServiceAccount":     {},
+	"Role":               {},
+	"ClusterRole":        {},
+	"RoleBinding":        {},
+	"ClusterRoleBinding": {},
+	"PriorityClass":      {},
+}
+
+// PartitionChartPrerequisites splits a chart's riding manifests into the
+// prerequisites (chartPrerequisiteKinds), applied ahead of the chart's own
+// objects, and the rest, applied once its controllers are Available. Order is
+// kept within each part. A document that cannot be parsed stays with the rest.
+func PartitionChartPrerequisites(manifests string) (prereqs, rest string) {
+	var pre, other []string
+	for _, doc := range splitDocs(manifests) {
+		if m, ok := parseDoc(doc); ok {
+			if _, ok := chartPrerequisiteKinds[m.Kind]; ok {
+				pre = append(pre, doc)
+				continue
+			}
+		}
+		other = append(other, doc)
+	}
+	return strings.Join(pre, docDelimiter), strings.Join(other, docDelimiter)
 }
 
 // RenderedJobNames extracts the `metadata.name` of every `kind: Job`

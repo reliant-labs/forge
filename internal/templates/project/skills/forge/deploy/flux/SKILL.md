@@ -1,6 +1,6 @@
 ---
 name: deploy/flux
-description: Flux in forge — what forge no longer does (install Flux into a deploy target, write a desired-state pointer at one), who applies a real env instead, and the one thing that remains (`forge.flux_chart()`, the pinned chart a consumer declares when it runs a Flux of its own). Use when a skill or an old note says an env without a control plane reconciles through an in-cluster Flux.
+description: Flux in forge — what forge no longer does (install Flux into a deploy target, write a desired-state pointer at one), who applies a real env instead, and the one thing that remains (`forge.flux_chart()`: ControlPlane's Flux Operator plus a hardened FluxInstance, pinned, which a consumer declares when it runs a Flux of its own — a control plane's hub or a self-hosted cluster). Use when a skill or an old note says an env without a control plane reconciles through an in-cluster Flux.
 ---
 
 # Flux
@@ -32,31 +32,60 @@ cluster as a side effect.
 
 ## What remains: `forge.flux_chart()`
 
-An env that needs Flux for its own reasons (control-plane's e2e runs one to
-reconcile hosted workloads) declares forge's pinned chart as an ordinary bootstrap
-`forge.HelmChart`:
+An env that needs Flux for its own reasons (a control plane's hub reconciling
+hosted workloads, or a self-hosted cluster pulling its desired state) declares
+forge's pinned install as an ordinary bootstrap `forge.HelmChart`:
 
 ```kcl
 helm_charts = [
-    forge.flux_chart(values = {
-        # Merged OVER forge's posture, last-wins.
-        sourceController.serviceAccount.annotations = {
-            "iam.gke.io/gcp-service-account" = "flux@proj.iam.gserviceaccount.com"
-        }
-    })
+    forge.flux_chart()
     # Multi-cluster: re-target it like any other chart.
     # forge.flux_chart(cluster = _control_plane)
 ]
 ```
+
+What that installs, in two pinned layers (credit: the
+[Flux Operator](https://github.com/controlplaneio-fluxcd/flux-operator) by ControlPlane):
+
+1. **The Flux Operator**, chart `oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator`
+   at `FLUX_CHART_VERSION`, image pinned **by digest**. Its web UI and its
+   aggregation into admin/edit are off. Its FluxInstance, FluxReport,
+   ResourceSet and ResourceSetInputProvider CRDs and controllers are all on; a
+   ResourceSet with no `serviceAccountName` impersonates
+   `resourceset_service_account` (default `flux-delivery`) in its own namespace
+   instead of running as the operator. `override_managers` adds
+   `--override-manager` flags: the field managers whose ownership the operator
+   (a ResourceSet adopting objects, or the FluxInstance) takes over.
+2. **A FluxInstance** named `flux`, riding the chart. The operator renders Flux
+   from manifests **embedded in its own image**: `FLUX_VERSION` pins the minor
+   (`2.9.x`), the patch is the newest one the pinned operator embeds, and no
+   `distribution.artifact` is set, so nothing third-party changes what runs.
+   `distribution = {registry, variant, imagePullSecret, artifact, artifactPullSecret}`
+   points at a mirror (a mirrored `flux-operator-manifests` artifact ships Flux
+   CVE patches without an operator bump); `version` is refused.
+
+`values` merges over the operator chart's values; `instance_patches` appends
+FluxInstance `kustomize.patches` after forge's; `extra_objects` appends riding
+objects. **Deleting a FluxInstance uninstalls Flux**, CRDs included, so forge
+marks every CRD `fluxcd.controlplane.io/prune: disabled` and the FluxInstance
+`kustomize.toolkit.fluxcd.io/prune: disabled`; pause the operator with the
+annotation `fluxcd.controlplane.io/reconcile: disabled` instead.
 
 `forge cluster up <env>` installs the env's declared bootstrap charts (Flux
 first, then charts that ship a CRD bundle, then the rest) into the env's
 forge-managed k3d clusters; `forge env deploy <env> --target <chart>` installs
 just that one.
 
-The chart is **version-pinned with no knob**, and it runs **two controllers, not
-six** (`source-controller`, `kustomize-controller`; helm, notification and the two
-image controllers are off, a security decision rather than a resource one).
+The install is **version-pinned with no knob**, and it runs **two controllers, not
+six** (`components: [source-controller, kustomize-controller]`; helm,
+notification, the two image controllers and source-watcher are not installed, a
+security decision rather than a resource one).
+
+**The controller flags are replaced, not appended to.** Each controller's
+`args` is one FluxInstance patch with exactly the flags below. The operator's
+sharding profile otherwise appends `--watch-label-selector=!sharding.fluxcd.io/key`
+to every main controller, which orphans any object carrying a shard value
+(control-plane labels hosted objects `shard0`).
 
 ### Hardened and sized by default
 
@@ -65,19 +94,18 @@ point, so the defaults are the hardened ones. Everything is overridable.
 
 | Default | What it does | Turn it off / change it |
 |---|---|---|
-| `rbac = "namespaced"` | Flux CRs cluster-wide; leader election in `flux-system`; impersonation (pinned by `resourceNames` to one ServiceAccount) and Secret reads only where a RoleBinding names `flux-tenant-reconciler` / `flux-tenant-source`. Multitenancy on, no cluster-admin binding | `rbac = "pinned"` (cluster-wide reads, impersonation pinned), `rbac = "chart"` (the chart's own), `impersonate_service_account` |
+| `rbac = "namespaced"` | the distribution's `cluster-reconciler-flux-system` (cluster-admin) and `crd-controller-flux-system` are deleted from the build; Flux CRs cluster-wide; leader election in `flux-system`; impersonation (pinned by `resourceNames` to one ServiceAccount) and Secret reads only where a RoleBinding names `flux-tenant-reconciler` / `flux-tenant-source`. `multitenant` on. The `flux-controller-bindings` admission policy refuses any other binding of a controller ServiceAccount, so an upstream rename fails the operator's apply instead of granting cluster-admin | `rbac = "pinned"` (cluster-wide reads, impersonation pinned), `rbac = "upstream"` (the distribution's own, no lockdown), `impersonate_service_account` |
 | `flux_namespace_bindings(ns)` | the two RoleBindings a namespace holding Flux objects needs | declare per namespace |
 | `DisableConfigWatchers` | config watcher off (it needs a cluster-wide Secret list) | `feature_gates = {DisableConfigWatchers = False}` with `rbac = "pinned"` |
 | `CancelHealthCheckOnNewRevision` | a fix-forward revision cancels a stuck health check | `feature_gates = {...}` |
-| `concurrency = 16`, `concurrency_ssa = 8`, `source_concurrency = 8`, `--requeue-dependency=10s` | one 13-minute rollout holds 1 of 4 default workers; this keeps a slow rollout from blocking everyone | the three arguments; or `values` |
-| requests/limits, `priority_class_name = "forge-delivery"` | sized starting points; the PriorityClass is declared with the chart | `values`; `priority_class_create = False` to name a class that exists |
-| NetworkPolicies | `allow-egress` only: **ingress to every `flux-system` pod only from `flux-system` pods** (an invariant, tested); egress open (`[{}]`) unless you declare `egress`; no `allow-webhooks`; `allow-scraping` only for `scrape_namespaces` | `egress = {...}` (below); `scrape_namespaces = ["observability"]`; `network_policies = "chart"` |
-| `pod_security = "restricted"` | Pod Security enforce/warn/audit on `flux-system` | `pod_security = "baseline"` or `""` |
+| `concurrency = 16`, `concurrency_ssa = 8`, `source_concurrency = 8`, `--requeue-dependency=10s` | one 13-minute rollout holds 1 of 4 default workers; this keeps a slow rollout from blocking everyone | the three arguments |
+| requests/limits, `priority_class_name = "forge-delivery"`, `enableServiceLinks: false` | sized starting points on every Flux pod; the PriorityClass rides the chart | `instance_patches`; `priority_class_create = False` to name a class that exists, `""` for the distribution's own |
+| NetworkPolicies | the FluxInstance's `networkPolicy` is **off** and forge declares them (a patch that stopped matching could never quietly restore the stock ones): `allow-egress` only — **ingress to every `flux-system` pod only from `flux-system` pods** (an invariant, tested); egress open (`[{}]`) unless you declare `egress`; no `allow-webhooks`; `allow-scraping` only for `scrape_namespaces` | `egress = {...}` (below); `scrape_namespaces = ["observability"]`; `network_policies = "upstream"` (the FluxInstance's stock set) |
+| `pod_security = "restricted"` | Pod Security enforce/warn/audit on `flux-system`, written on the Namespace forge creates AND patched into the one the operator renders (it takes the Namespace over and would strip the label) | `pod_security = "baseline"` or `""` |
 
 ### Declare the hub's egress
 
-The default leaves every controller's egress open, exactly as the chart ships
-it. A hub that reconciles other people's bundles should not run that way:
+The default leaves every Flux pod's egress open, exactly as Flux ships it. A hub that reconciles other people's bundles should not run that way:
 kustomize-controller dials whatever address a Kustomization's kubeconfig names,
 so open egress lets that address be anywhere. `egress` declares it:
 
@@ -88,12 +116,17 @@ forge.flux_chart(egress = {
     kustomize = [_dns, {"to" = [{podSelector.matchLabels = {app = "source-controller"}}], ports = [{port = 9090, protocol = "TCP"}]},
                  {"to" = [{ipBlock.cidr = "172.16.0.0/28"}], ports = [{port = 443, protocol = "TCP"}]}]   # the hub's API
     source = [_dns, ...]
-    flux_check = [_dns, ...]        # the chart's pre-install `flux check` Job
+    operator = [_dns, {"to" = [{ipBlock.cidr = "172.16.0.0/28"}], ports = [{port = 443, protocol = "TCP"}]}]   # the API server (+ a mirror artifact's registry)
 })
 ```
 
-- Keys: `kustomize`, `source`, `flux_check`, and `kustomize_connected` (only
-  with `connected_shard`). A key **replaces** that controller's rules.
+- Keys: `kustomize`, `source`, `operator` (the Flux Operator, selected by
+  `app.kubernetes.io/name: flux-operator`), and `kustomize_connected` (only
+  with `connected_shard`). A key **replaces** that pod's rules.
+- Riding NetworkPolicies, RBAC, ServiceAccounts and PriorityClasses are applied
+  WITH the chart, before forge waits for its Deployments: an operator starting in
+  a `flux-system` whose egress is already default-deny cannot become Available
+  until its allow exists.
 - Once `egress` is set, **every** controller must be named. An unnamed one would
   silently lose all egress, so the render refuses; `[{}]` opts one back into
   open egress on purpose.
@@ -112,7 +145,8 @@ forge.flux_chart(egress = {
 Applying to a cluster someone else owns (`spec.kubeConfig`) is a different
 authority from applying in your own, and it needs the internet, which your own
 controller must not have. So there are two kustomize-controllers, selected by
-Flux's sharding label:
+Flux's sharding label. The second is the FluxInstance shard `connected`
+(`spec.sharding`), so it upgrades with the main one:
 
 | | `kustomize-controller` (main) | `kustomize-controller-connected` (shard) |
 |---|---|---|
@@ -125,7 +159,7 @@ Flux's sharding label:
 ```kcl
 forge.flux_chart(
     connected_shard = True,
-    egress = {kustomize = [...], kustomize_connected = [...], source = [...], flux_check = [...]},
+    egress = {kustomize = [...], kustomize_connected = [...], source = [...], operator = [...]},
 )
 # per namespace that holds Flux objects:
 forge.flux_namespace_bindings("flux-acme", connected_shard = True)
@@ -133,6 +167,10 @@ forge.flux_namespace_bindings("flux-acme", connected_shard = True)
 
 Applying with a ServiceAccount on the shard is **banned, not merely unused**:
 
+- its own ServiceAccount (`kustomize-controller-connected`; the operator's shards
+  reuse the main controller's, so a patch swaps it, and a second admission
+  policy, `flux-connected-shard-identity`, refuses a shard Deployment with any
+  other ServiceAccount or with `--default-service-account`);
 - no `--default-service-account` flag, no workload-identity annotation, and a
   ServiceAccount whose roles hold no `impersonate`, no `serviceaccounts` or
   `serviceaccounts/token`, no wildcard and no cluster-wide Secret read (pinned
@@ -157,9 +195,10 @@ protects nothing, so the render refuses). The main controller keeps its
 hub-side tenant impersonation; that is a separate grant and this does not touch
 it.
 
-The shard's Deployment is rendered by forge beside the chart's, with the same
-image tag the chart pins (`values.kustomizeController.image` / `.tag` move both).
-It shares placement, priority class and `imagePullSecrets` with the main one.
+The shard's Deployment is the operator's, at the same version as the main
+controller; it shares placement and priority class. The operator also shards
+source-controller; forge deletes that shard from the build, because sources are
+never labelled `connected` and the main source-controller watches every one.
 
 Opt-in placement, for a dedicated delivery node pool (forge has no node-pool
 primitive, so provision it yourself, tainted `reliant.dev/pool=delivery-v1:NoSchedule`):
@@ -173,10 +212,10 @@ forge.flux_chart(
 ```
 
 `runtime_class_name` is never defaulted on: a pod naming a RuntimeClass the
-cluster lacks never schedules. The chart has no `runtimeClassName` value, so it
-reaches the pods through `HelmChart.patches` (`"Deployment/kustomize-controller" = {...}`),
-which fails the render, naming the candidates, if a chart bump renames a Deployment.
-The same field patches any chart's rendered objects.
+cluster lacks never schedules. It reaches the Flux pods through the
+FluxInstance's pod patches and the operator through `HelmChart.patches`
+(`"Deployment/flux-operator" = {...}`), which fails the render, naming the
+candidates, if a chart bump renames the Deployment.
 
 **gVisor.** GKE Sandbox's documented gVisor limits (no privileged containers,
 no hostPath, no port-forward, seccomp/AppArmor unsupported) are not features the
@@ -188,16 +227,46 @@ a reconcile to a new revision, and `kubectl top`) before relying on it, and fall
 back to the pool alone if it fails. Patching and CVE watch:
 `docs/runbooks/flux-patch-and-upgrade.md`.
 
-> **Chart version ≠ Flux version.** There is no fluxcd-published chart; forge
-> uses the community chart at `oci://ghcr.io/fluxcd-community/charts/flux2`, whose
-> version has its own lineage. Chart **2.19.1** is Flux **v2.9.5**. On a bump,
-> re-derive it, do not increment:
-> `helm show chart oci://ghcr.io/fluxcd-community/charts/flux2 --version <v> | grep appVersion`
+> **Operator version ≠ Flux version.** The operator chart (0.62.1) embeds the
+> Flux distributions it can install; `FLUX_VERSION` (`2.9.x`) picks the minor.
+> Check what a bump would run with the operator's own builder before merging it:
+> `flux-operator build instance -f <rendered FluxInstance>`
+> (`docs/runbooks/flux-patch-and-upgrade.md`).
+
+### Adopting a Flux installed some other way
+
+The operator adopts an existing install **in place**: it server-side-applies
+objects of the same names and takes ownership of fields written by `kubectl`
+(forge's apply), `helm` and `kustomize-controller`, so the Deployments keep
+their UIDs and selectors and roll like any update; no CRD is deleted and no
+Kustomization is pruned. Two rules for moving an env off the community `flux2`
+chart forge used to pin:
+
+- **Never re-apply the old chart to remove it.** The new chart has a new name
+  (`flux-operator`), so the old chart `flux` is simply no longer declared and
+  forge never prunes its inventory. Re-rendering it empty would delete the
+  controller Deployments the operator is adopting.
+- **Delete the old chart's leftovers by hand afterwards**: the `flux-flux-check`
+  Job and ServiceAccount, the `flux-check-egress` NetworkPolicy, and the old
+  `flux-edit` / `flux-view` ClusterRoles (the operator renders `-flux-system`
+  copies), plus the chart's inventory/lock ConfigMaps in `kube-system`.
+
+### Multitenancy and a bundle carrying cluster-scoped objects
+
+With `rbac = "namespaced"` (or `"pinned"`) every Kustomization that names no
+`serviceAccountName` applies as `impersonate_service_account`, which
+`flux-tenant-reconciler` grants only per namespace. That is what made #441's
+in-cluster Flux fail `Forbidden` on the Namespaces and CRDs a bundle carries.
+A self-hosted cluster that reconciles its own bundles through this install must
+either give the Kustomizations (or the ResourceSet rendering them) an identity
+that may write those kinds, split the cluster-scoped `pre` unit onto such an
+identity, or run with `rbac = "upstream"` where no tenant shares the cluster.
 
 ### Namespace labels, and what a re-apply prunes
 
 `flux-system` is created by forge (`helm template` never emits a chart's
-Namespace), so its metadata is declared on the chart:
+Namespace), so its metadata is declared on the chart (`flux_chart()` declares
+PSA itself, and patches the same labels into the operator's render):
 
 ```kcl
 forge.flux_chart() | {

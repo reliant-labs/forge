@@ -103,14 +103,15 @@ var removals = []removal{
 			},
 			{
 				Name: "Flux's own multitenancy chart values and the tenants it isolates",
-				Reason: "forge installs Flux from the community flux2 chart, whose values key is " +
-					"literally `multitenancy` (`multitenancy.enabled`, `.privileged`, " +
-					"`.defaultServiceAccount`), and whose isolation model is described in terms of " +
-					"tenants. The key is Flux's identifier and cannot be renamed.\n" +
+				Reason: "forge installs Flux through ControlPlane's Flux Operator, whose FluxInstance " +
+					"spells the lockdown `cluster.multitenant` / `tenantDefaultServiceAccount`, whose chart's " +
+					"values key is literally `multitenancy` (`.enabled`, `.defaultServiceAccount`), and whose " +
+					"isolation model is described in terms of tenants. The keys are Flux's identifiers and " +
+					"cannot be renamed.\n" +
 					"This is Flux's tenancy, not a forge tenant concept: forge ships no tenant " +
 					"column, header, context key or helper on the strength of it. Scoped to the " +
 					"Flux component's own files, so a `TenantID` anywhere else still fails.",
-				Token: regexp.MustCompile(`(?i)multitenancy|hosted tenants?|tenants?`),
+				Token: regexp.MustCompile(`(?i)multitenan(cy|t)|hosted tenants?|tenants?`),
 				Paths: []string{
 					"kcl/lib/flux.k",
 					"kcl/render.k",
@@ -120,9 +121,11 @@ var removals = []removal{
 					"internal/flux/",
 					"pkg/flux/",
 					"internal/cluster/flux_chart_hardening_test.go",
+					"internal/cluster/flux_connected_shard_envtest_test.go",
 					"internal/cli/flux_reconcile_e2e_test.go",
 					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
 					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
+					"internal/templates/project/skills/forge/migrations/v1.0.13/flux-operator/SKILL.md",
 					"docs/runbooks/flux-patch-and-upgrade.md",
 				},
 			},
@@ -418,6 +421,7 @@ var removals = []removal{
 					// identity on the deploy surface, in its skill, runbook and changelog.
 					"internal/templates/project/skills/forge/deploy/flux/SKILL.md",
 					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
+					"internal/templates/project/skills/forge/migrations/v1.0.13/flux-operator/SKILL.md",
 					"docs/runbooks/flux-patch-and-upgrade.md",
 					"CHANGELOG.md",
 					"internal/doctor/clusterhealth*.go",

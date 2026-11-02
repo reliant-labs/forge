@@ -8,8 +8,8 @@ here admits none; a consumer names the namespaces that scrape.
 
 import forge
 
-_one = forge.flux_chart(scrape_namespaces = ["observability"]).values.extraObjects
-_two = forge.flux_chart(scrape_namespaces = ["observability", "monitoring"]).values.extraObjects
+_one = forge.flux_chart(scrape_namespaces = ["observability"]).manifests
+_two = forge.flux_chart(scrape_namespaces = ["observability", "monitoring"]).manifests
 _scrape = lambda objs: [any] -> any { [o for o in objs if o.kind == "NetworkPolicy" and o.metadata.name == "allow-scraping"] }
 _egress = lambda objs: [any] -> any { [o for o in objs if o.kind == "NetworkPolicy" and o.metadata.name == "allow-egress"][0] }
 
@@ -22,5 +22,5 @@ assert_scrape_not_all = "namespaceSelector: {}" not in str(_scrape(_one)) and _s
 # No allow-webhooks, whatever is configured.
 assert_no_webhooks = len([o for o in _one if o.kind == "NetworkPolicy" and o.metadata.name == "allow-webhooks"]) == 0
 # The invariant is the same object in every configuration.
-assert_egress_invariant_same = _egress(_one) == _egress(_two) and _egress(_one) == _egress(forge.flux_chart().values.extraObjects)
+assert_egress_invariant_same = _egress(_one) == _egress(_two) and _egress(_one) == _egress(forge.flux_chart().manifests)
 assert_egress_ingress = _egress(_one).spec.ingress == [{"from" = [{podSelector = {}}]}]

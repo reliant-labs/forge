@@ -31,6 +31,7 @@ package cli
 //     of the same tripwire the deploy's preflight runs.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -40,9 +41,10 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	"github.com/reliant-labs/forge/pkg/fluxdelivery"
 	"github.com/reliant-labs/forge/pkg/release"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // fluxObjectStatus is one Flux object's Ready condition and revisions.
@@ -453,7 +455,7 @@ func fluxSpecValueMatches(want, live any) bool {
 	}
 	wj, werr := json.Marshal(want)
 	lj, lerr := json.Marshal(live)
-	return werr == nil && lerr == nil && string(wj) == string(lj)
+	return werr == nil && lerr == nil && bytes.Equal(wj, lj)
 }
 
 // fluxSpecZero: v is unset, or the zero of its JSON type.

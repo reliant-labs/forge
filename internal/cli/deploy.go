@@ -143,7 +143,7 @@ is an implementation detail of where the env runs.
 
 AN ENV THAT DECLARES applier = "flux" is applied by the Flux forge installed in
 its own cluster (` + "`forge env deploy <env> --target flux-delivery`" + `, once). Its
-deploy records the release, pushes the release's bundle to the env's registry,
+deploy records the release, pushes the release's bundle to its flux registry,
 points that Flux at it (one ResourceSetInputProvider in the env's delivery
 namespace) and waits until every Kustomization has applied it. Before anything
 is written it checks the release against what the bootstrap granted the Flux's

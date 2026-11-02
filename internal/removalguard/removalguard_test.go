@@ -771,6 +771,17 @@ var removals = []removal{
 					"kcl/render.k",
 				},
 			},
+			{
+				Name: "FluxDelivery.registry, where a flux env's release BUNDLES are pushed",
+				Reason: "An applier = \"flux\" env's Flux pulls each release's bundle (an OCI artifact, not an " +
+					"image) from one repository subtree, declared as forge.FluxDelivery {registry = …} or " +
+					"derived from the first cluster workload's image (fluxRegistryBase). It names no " +
+					"workload's image and composes onto none, so it is not the env-wide image registry " +
+					"this entry removed. Its schema line is already allowed (kcl/schema.k); this is the " +
+					"positive fixture that sets it.",
+				Token: regexp.MustCompile(`(?m)^\s*registry\s*=\s*"`),
+				Paths: []string{"kcl/tests/positive_applier_flux_no_identities.k"},
+			},
 		},
 	},
 	{

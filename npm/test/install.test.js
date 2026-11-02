@@ -12,6 +12,8 @@ const {
   platformAsset,
   expectedChecksum,
   releaseUrl,
+  readPinnedChecksums,
+  requireSignature,
   ensureBinary,
 } = require("../lib/install.js");
 const pkg = require("../package.json");
@@ -48,9 +50,42 @@ test("releaseUrl pins the package version and honours the override", () => {
     "https://github.com/reliant-labs/forge/releases/download/v0.1.46",
   );
   assert.equal(
-    releaseUrl("v0.1.46", { FORGE_RELEASE_BASE_URL: "http://x/r/" }),
-    "http://x/r/download/v0.1.46",
+    releaseUrl("v0.1.46", { FORGE_RELEASE_BASE_URL: "https://x/r/" }),
+    "https://x/r/download/v0.1.46",
   );
+  assert.equal(
+    releaseUrl("v0.1.46", { FORGE_RELEASE_BASE_URL: "http://127.0.0.1:9/r" }),
+    "http://127.0.0.1:9/r/download/v0.1.46",
+  );
+});
+
+test("releaseUrl refuses a plain-http override to another host", () => {
+  assert.throws(
+    () => releaseUrl("0.1.46", { FORGE_RELEASE_BASE_URL: "http://x/r/" }),
+    /only https is allowed/,
+  );
+  assert.throws(
+    () => releaseUrl("0.1.46", { FORGE_RELEASE_BASE_URL: "file:///tmp/r" }),
+    /only https is allowed/,
+  );
+});
+
+test("requireSignature accepts 1/0 spellings and rejects anything else", () => {
+  assert.equal(requireSignature({}), false);
+  assert.equal(requireSignature({ FORGE_REQUIRE_SIGNATURE: "0" }), false);
+  assert.equal(requireSignature({ FORGE_REQUIRE_SIGNATURE: "1" }), true);
+  assert.equal(requireSignature({ FORGE_REQUIRE_SIGNATURE: "TRUE" }), true);
+  assert.throws(
+    () => requireSignature({ FORGE_REQUIRE_SIGNATURE: "please" }),
+    /must be 1 or 0/,
+  );
+});
+
+test("readPinnedChecksums is null when the package carries no pin", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-pin-"));
+  assert.equal(readPinnedChecksums(path.join(dir, "absent.txt")), null);
+  fs.writeFileSync(path.join(dir, "pin.txt"), "x");
+  assert.equal(readPinnedChecksums(path.join(dir, "pin.txt")), "x");
 });
 
 test("package.json is publishable as @reliantlabs/forge", () => {
@@ -66,8 +101,9 @@ test("package.json is publishable as @reliantlabs/forge", () => {
   assert.equal(pkg.dependencies, undefined, "the shim has no dependencies");
 });
 
-// serves a fake release for `version`; sumOverride corrupts the checksum.
-function serve(version, { sumOverride } = {}) {
+// serves a fake release for `version`; sumOverride corrupts the checksum, and
+// redirects maps a URL path to the Location it answers 302 with.
+function serve(version, { sumOverride, redirects = {} } = {}) {
   const { asset, binary } = platformAsset();
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-fixture-"));
   const script =
@@ -86,6 +122,10 @@ function serve(version, { sumOverride } = {}) {
   const hits = [];
   const server = http.createServer((req, res) => {
     hits.push(req.url);
+    if (redirects[req.url]) {
+      res.writeHead(302, { location: redirects[req.url] }).end();
+      return;
+    }
     const body = files[req.url];
     if (!body) {
       res.writeHead(404).end();
@@ -98,6 +138,8 @@ function serve(version, { sumOverride } = {}) {
       resolve({
         server,
         hits,
+        asset,
+        sum: crypto.createHash("sha256").update(archive).digest("hex"),
         base: `http://127.0.0.1:${server.address().port}`,
       }),
     ),
@@ -109,11 +151,11 @@ test("ensureBinary downloads, verifies, caches and reuses the binary", async () 
   const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
   const env = { FORGE_RELEASE_BASE_URL: base, FORGE_NPM_CACHE_DIR: cache };
   try {
-    const first = await ensureBinary("9.9.9", env);
+    const first = await ensureBinary("9.9.9", env, { pinned: null });
     assert.ok(first.startsWith(cache), first);
     assert.ok(fs.existsSync(first));
     const downloads = hits.length;
-    assert.equal(await ensureBinary("9.9.9", env), first);
+    assert.equal(await ensureBinary("9.9.9", env, { pinned: null }), first);
     assert.equal(
       hits.length,
       downloads,
@@ -131,10 +173,11 @@ test("ensureBinary refuses a checksum mismatch and caches nothing", async () => 
   const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
   try {
     await assert.rejects(
-      ensureBinary("9.9.8", {
-        FORGE_RELEASE_BASE_URL: base,
-        FORGE_NPM_CACHE_DIR: cache,
-      }),
+      ensureBinary(
+        "9.9.8",
+        { FORGE_RELEASE_BASE_URL: base, FORGE_NPM_CACHE_DIR: cache },
+        { pinned: null },
+      ),
       /sha256 mismatch/,
     );
     const { binary } = platformAsset();
@@ -149,11 +192,124 @@ test("ensureBinary explains a version with no binaries", async () => {
   const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
   try {
     await assert.rejects(
-      ensureBinary("1.0.0", {
+      ensureBinary(
+        "1.0.0",
+        { FORGE_RELEASE_BASE_URL: base, FORGE_NPM_CACHE_DIR: cache },
+        { pinned: null },
+      ),
+      /HTTP 404[\s\S]*binaries attached/,
+    );
+  } finally {
+    server.close();
+  }
+});
+
+// RF-2: an attacker who can write release assets replaces the archive AND
+// checksums.txt, so the two agree. The pin the package carries is the signed
+// digest, so the swap is refused, and the release's checksums.txt is not read.
+test("ensureBinary refuses a release whose archive and checksums.txt were both replaced", async () => {
+  const { server, hits, asset, base } = await serve("9.9.6");
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
+  const signed = `${"cd".repeat(32)}  ${asset}\n`;
+  try {
+    await assert.rejects(
+      ensureBinary(
+        "9.9.6",
+        { FORGE_RELEASE_BASE_URL: base, FORGE_NPM_CACHE_DIR: cache },
+        { pinned: signed },
+      ),
+      /sha256 mismatch[\s\S]*pinned in @reliantlabs\/forge@9\.9\.6[\s\S]*tampered/,
+    );
+    const { binary } = platformAsset();
+    assert.ok(!fs.existsSync(path.join(cache, "9.9.6", binary)));
+    assert.ok(
+      !hits.some((h) => h.endsWith("/checksums.txt")),
+      `a pinned package must not read the release's checksums.txt: ${hits}`,
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test("ensureBinary installs against the pinned checksums alone", async () => {
+  const { server, hits, asset, sum, base } = await serve("9.9.5");
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
+  try {
+    const bin = await ensureBinary(
+      "9.9.5",
+      {
         FORGE_RELEASE_BASE_URL: base,
         FORGE_NPM_CACHE_DIR: cache,
-      }),
-      /HTTP 404[\s\S]*binaries attached/,
+        FORGE_REQUIRE_SIGNATURE: "1",
+      },
+      { pinned: `${sum}  ${asset}\n` },
+    );
+    assert.ok(fs.existsSync(bin));
+    assert.deepEqual(hits, [`/download/v9.9.5/${asset}`]);
+  } finally {
+    server.close();
+  }
+});
+
+test("ensureBinary refuses a pin with no entry for this platform", async () => {
+  const { server, base } = await serve("9.9.4");
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
+  try {
+    await assert.rejects(
+      ensureBinary(
+        "9.9.4",
+        { FORGE_RELEASE_BASE_URL: base, FORGE_NPM_CACHE_DIR: cache },
+        { pinned: `${"0".repeat(64)}  forge_other_os.tar.gz\n` },
+      ),
+      /pinned in @reliantlabs\/forge@9\.9\.4 has no entry/,
+    );
+  } finally {
+    server.close();
+  }
+});
+
+// A missing signature: with FORGE_REQUIRE_SIGNATURE=1 a package that carries
+// no signed checksums installs nothing and touches no network.
+test("ensureBinary with FORGE_REQUIRE_SIGNATURE=1 refuses an unpinned package", async () => {
+  const { server, hits, base } = await serve("9.9.3");
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
+  try {
+    await assert.rejects(
+      ensureBinary(
+        "9.9.3",
+        {
+          FORGE_RELEASE_BASE_URL: base,
+          FORGE_NPM_CACHE_DIR: cache,
+          FORGE_REQUIRE_SIGNATURE: "1",
+        },
+        { pinned: null },
+      ),
+      /no signed release checksums[\s\S]*FORGE_REQUIRE_SIGNATURE=1 refuses/,
+    );
+    assert.deepEqual(hits, []);
+    const { binary } = platformAsset();
+    assert.ok(!fs.existsSync(path.join(cache, "9.9.3", binary)));
+  } finally {
+    server.close();
+  }
+});
+
+test("ensureBinary refuses a redirect that downgrades to http", async () => {
+  const { asset } = platformAsset();
+  const { server, base } = await serve("9.9.2", {
+    redirects: {
+      [`/download/v9.9.2/${asset}`]: `http://example.invalid/${asset}`,
+    },
+  });
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
+  try {
+    await assert.rejects(
+      ensureBinary(
+        "9.9.2",
+        { FORGE_RELEASE_BASE_URL: base, FORGE_NPM_CACHE_DIR: cache },
+        { pinned: `${"0".repeat(64)}  ${asset}\n` },
+      ),
+      /refusing to download http:\/\/example\.invalid[\s\S]*only https/,
     );
   } finally {
     server.close();

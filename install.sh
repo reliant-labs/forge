@@ -5,11 +5,26 @@
 #
 # Non-interactive and sudo-free: it detects the OS and CPU, downloads the
 # matching release archive, verifies its sha256 against the release's
-# checksums.txt, and installs one `forge` binary. It never prompts.
+# checksums.txt, verifies the release's signature, and installs one `forge`
+# binary. It never prompts.
+#
+# THE SIGNATURE. checksums.txt comes from the same release as the archive, so
+# on its own it detects corruption, not tampering: whoever can replace one
+# release asset can replace both. Each release therefore also carries
+# forge-release.sigstore.json, a Sigstore attestation over every archive and
+# checksums.txt, signed keyless by forge's release-attest.yml workflow
+# (docs/releasing.md, "Signed release assets"). This script checks the archive
+# against it with `gh attestation verify` (gh 2.49+; no login needed) or, when
+# gh cannot, `cosign verify-blob-attestation`, pinned to that workflow's
+# identity. A signature that does not verify fails the install. When the
+# release has no signature, or neither verifier is installed, it warns and
+# installs on the sha256 alone, unless FORGE_REQUIRE_SIGNATURE=1.
 #
 # Environment:
-#   FORGE_VERSION      release to install, e.g. v1.0.0 or 1.0.0 (default: latest)
-#   FORGE_INSTALL_DIR  directory to install into (default: $HOME/.local/bin)
+#   FORGE_VERSION            release to install, e.g. v1.0.0 or 1.0.0 (default: latest)
+#   FORGE_INSTALL_DIR        directory to install into (default: $HOME/.local/bin)
+#   FORGE_REQUIRE_SIGNATURE  1: refuse to install unless the signature verifies
+#                            (no signature, or no gh/cosign, is then an error)
 #
 # Testing seam (not for general use):
 #   FORGE_RELEASE_BASE_URL  replaces https://github.com/reliant-labs/forge/releases;
@@ -24,6 +39,16 @@ REPO="reliant-labs/forge"
 BASE_URL="${FORGE_RELEASE_BASE_URL:-https://github.com/$REPO/releases}"
 BASE_URL="${BASE_URL%/}"
 
+# Who may sign a release: release-attest.yml, run for a release tag or
+# dispatched from main (a backfill). Anything else, including the same file run
+# from another branch, is refused. .github/workflows/release-attest.yml and
+# release-npm.yml verify with the same three values; internal/installers holds
+# them equal.
+SIGNATURE_ASSET="forge-release.sigstore.json"
+SIGNER_IDENTITY='^https://github\.com/reliant-labs/forge/\.github/workflows/release-attest\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$'
+SIGNER_ISSUER="https://token.actions.githubusercontent.com"
+PREDICATE_TYPE="https://github.com/reliant-labs/forge/attestations/release-assets/v1"
+
 say() { printf '%s\n' "$*"; }
 die() {
   printf 'forge install: error: %s\n' "$*" >&2
@@ -34,7 +59,8 @@ have() { command -v "$1" >/dev/null 2>&1; }
 fetch() {
   # fetch URL DEST
   if have curl; then
-    curl -fsSL --retry 3 -o "$2" "$1"
+    # A redirect may not downgrade the download to plain http.
+    curl -fsSL --proto-redir =https --retry 3 -o "$2" "$1"
   elif have wget; then
     wget -q -O "$2" "$1"
   else
@@ -52,6 +78,49 @@ sha256_of() {
   else
     die "need sha256sum, shasum or openssl to verify the download"
   fi
+}
+
+# verify_signature FILE BUNDLE checks FILE against the Sigstore bundle with the
+# first verifier that can: 0 verified, 1 refused, 2 no verifier installed. The
+# verifier's output goes to $tmp/verify.log and names it in $verifier.
+verify_signature() {
+  if have gh && gh attestation verify --help >/dev/null 2>&1; then
+    verifier=gh
+    # --bundle makes this offline from GitHub's API, so no `gh auth login`.
+    GH_HOST=github.com GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1 \
+      gh attestation verify "$1" --bundle "$2" --repo "$REPO" \
+      --cert-identity-regex "$SIGNER_IDENTITY" --cert-oidc-issuer "$SIGNER_ISSUER" \
+      --predicate-type "$PREDICATE_TYPE" --deny-self-hosted-runners >"$tmp/verify.log" 2>&1 || return 1
+    return 0
+  fi
+  if have cosign && cosign verify-blob-attestation --help >/dev/null 2>&1; then
+    verifier=cosign
+    file=$1
+    bundle=$2
+    # cosign 2.x reads a Sigstore bundle only with --new-bundle-format; 3.x
+    # reads it by default and deprecates the flag.
+    if cosign verify-blob-attestation --help 2>&1 | grep -q -- '--new-bundle-format'; then
+      set -- --new-bundle-format
+    else
+      set --
+    fi
+    cosign verify-blob-attestation --bundle "$bundle" "$@" \
+      --certificate-identity-regexp "$SIGNER_IDENTITY" --certificate-oidc-issuer "$SIGNER_ISSUER" \
+      --type "$PREDICATE_TYPE" "$file" >"$tmp/verify.log" 2>&1 || return 1
+    return 0
+  fi
+  return 2
+}
+
+# unverified REASON: the install goes ahead on the sha256 alone, with a
+# warning, unless FORGE_REQUIRE_SIGNATURE=1 refuses it.
+unverified() {
+  if [ "$require_signature" = 1 ]; then
+    die "$1. FORGE_REQUIRE_SIGNATURE=1 refuses an install whose signature was not verified; nothing was installed"
+  fi
+  say "warning: $1." >&2
+  say "  Installing on the sha256 check alone, which cannot detect a tampered release." >&2
+  say "  Set FORGE_REQUIRE_SIGNATURE=1 to refuse an unverified install instead." >&2
 }
 
 case "$(uname -s)" in
@@ -79,6 +148,12 @@ else
   wanted="the latest release"
 fi
 
+case "${FORGE_REQUIRE_SIGNATURE:-}" in
+  1 | true | yes) require_signature=1 ;;
+  "" | 0 | false | no) require_signature=0 ;;
+  *) die "FORGE_REQUIRE_SIGNATURE must be 1 or 0 (got: $FORGE_REQUIRE_SIGNATURE)" ;;
+esac
+
 if [ -n "${FORGE_INSTALL_DIR:-}" ]; then
   dest_dir="$FORGE_INSTALL_DIR"
 else
@@ -105,6 +180,22 @@ expected="$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1; exit }' "$tmp/
 [ -n "$expected" ] || die "checksums.txt has no entry for $asset"
 actual="$(sha256_of "$tmp/$asset" | tr 'A-F' 'a-f')"
 [ "$expected" = "$actual" ] || die "sha256 mismatch for $asset (expected $expected, got $actual); nothing was installed"
+
+if fetch "$release_url/$SIGNATURE_ASSET" "$tmp/$SIGNATURE_ASSET" 2>/dev/null; then
+  verifier=""
+  verify_signature "$tmp/$asset" "$tmp/$SIGNATURE_ASSET" && sig=0 || sig=$?
+  case "$sig" in
+    0) say "Verified $asset against the release signature ($verifier; signer: $REPO release-attest.yml)" ;;
+    1)
+      sed 's/^/  /' "$tmp/verify.log" >&2
+      die "the release signature does not verify for $asset ($verifier refused it); nothing was installed.
+  The release may have been tampered with. Report it: https://github.com/$REPO/security"
+      ;;
+    *) unverified "neither gh (2.49 or later) nor cosign is installed, so the release signature was not checked" ;;
+  esac
+else
+  unverified "$wanted carries no signature ($SIGNATURE_ASSET); releases cut before signing began have none"
+fi
 
 mkdir "$tmp/unpacked"
 tar -xzf "$tmp/$asset" -C "$tmp/unpacked" || die "could not unpack $asset"

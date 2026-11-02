@@ -17,7 +17,10 @@ forge version
 This package is a thin shim. On first run it downloads the prebuilt `forge`
 binary for your OS and CPU from the matching
 [GitHub release](https://github.com/reliant-labs/forge/releases), verifies its
-sha256 against the release's `checksums.txt`, caches it, and runs it. There is no
+sha256 against the release checksums pinned into this package when it was
+published (pinned only after the release's Sigstore signature verified), caches
+it, and runs it. `FORGE_REQUIRE_SIGNATURE=1` refuses to run from a copy that
+carries no pin. There is no
 postinstall script, so `--ignore-scripts` is fine. The package version is the forge
 version.
 

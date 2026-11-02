@@ -188,7 +188,7 @@ change `install.sh`, `install.ps1`, `npm/lib/install.js` and
 | Channel                                                   | What the release does                                                                                                                                                                                                                                                      | Needs a human                                                                                                                                                   |
 | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `curl \| sh` (`install.sh`), `irm \| iex` (`install.ps1`) | Nothing: they read `main` and download the release's assets.                                                                                                                                                                                                               | No                                                                                                                                                              |
-| GitHub release assets                                     | `build-release-assets.sh` runs before the bookkeeping commit; `gh release create` attaches the archives and `checksums.txt`.                                                                                                                                               | No                                                                                                                                                              |
+| GitHub release assets                                     | `build-release-assets.sh` runs before the bookkeeping commit; `gh release create` attaches the archives and `checksums.txt`; `release-attest.yml` then signs them (below).                                                                                                 | No                                                                                                                                                              |
 | Homebrew `reliant-labs/reliant/forge`                     | Dispatches `forge-release-published` to `reliant-labs/homebrew-reliant`; its `update-forge-formula.yml` renders `Formula/forge.rb` (`scripts/render-homebrew-formula.sh`), installs and tests it, and opens a PR.                                                          | Yes: the tap's ruleset requires an approving review, same as the cask. The workflow lives in the tap; `docs/installers/update-forge-formula.yml` is its source. |
 | npm `@reliantlabs/forge`                                  | `npm/package.json` is synced in the bookkeeping commit. The GitHub release's `release: published` event runs `.github/workflows/release-npm.yml`, which publishes the shim at the tag's version with npm trusted publishing (OIDC) and waits for the registry to serve it. | No, once the trusted publisher is registered (below).                                                                                                           |
 
@@ -198,6 +198,45 @@ Re-run either channel for an existing release by hand:
 gh workflow run update-forge-formula.yml --repo reliant-labs/homebrew-reliant -f version=X.Y.Z
 gh workflow run release-npm.yml --repo reliant-labs/forge -f version=X.Y.Z -f dry_run=false
 ```
+
+### Signed release assets
+
+`checksums.txt` is fetched from the release it describes, so on its own it
+cannot detect tampering: whoever can write one release asset can rewrite both.
+Every release is therefore signed as well:
+
+- **Signing.** The release's `release: published` event runs
+  `.github/workflows/release-attest.yml`. It checks the archives against
+  `checksums.txt` and creates one keyless Sigstore attestation (`actions/attest`,
+  predicate type `https://github.com/reliant-labs/forge/attestations/release-assets/v1`)
+  over every archive and `checksums.txt`. It attaches that attestation as
+  `forge-release.sigstore.json` and proves that `install.sh` accepts it. There is
+  no key: the certificate names the workflow
+  (`release-attest.yml@refs/tags/vX.Y.Z`, or `@refs/heads/main` for a backfill),
+  and the signing is recorded in Rekor. A signature is never replaced. To sign a
+  release that has none:
+  `gh workflow run release-attest.yml --repo reliant-labs/forge -f version=vX.Y.Z`.
+- **Verifying.** `install.sh` verifies the archive with
+  `gh attestation verify --bundle` (gh 2.49+, offline from GitHub's API, so no
+  login) or `cosign verify-blob-attestation`. It accepts only that workflow at a
+  release tag or on main. A signature that fails verification fails the install.
+  A missing signature or a missing verifier only warns, unless
+  `FORGE_REQUIRE_SIGNATURE=1` is set. `release-npm.yml` waits for the
+  signature, verifies every asset with the same identity, and copies
+  `checksums.txt` into the package as `lib/release-checksums.txt`. The shim then
+  checks downloads against that pin, never against the release's own
+  `checksums.txt`. The signer identity, predicate type and asset name are one
+  contract across `install.sh` and both workflows;
+  `internal/installers/signature_test.go` holds them equal.
+- **What it does not prove.** The archives are built by `release-forge.sh`
+  on the machine that cuts the release, not in Actions. The attestation therefore
+  says "these are the assets forge's release published", not "this binary was
+  built from commit X", and someone who can publish a whole new release gets
+  their assets signed too. What it stops is changing the assets of a release
+  that has already been signed. Building the archives in the signing workflow
+  would close the rest.
+- **Not yet covered.** `install.ps1` and the Homebrew formula still check only
+  the sha256.
 
 `release-npm.yml` takes the version from the tag, not from `npm/package.json`
 at the tagged commit (every release tags a commit whose manifest still names

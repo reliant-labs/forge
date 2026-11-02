@@ -559,8 +559,9 @@ first four need no Go toolchain either.
 
 ```bash
 # macOS / Linux (amd64, arm64): one command, no sudo, no prompts.
-# Installs to ~/.local/bin (set FORGE_INSTALL_DIR to change it) and checks the
-# release's sha256 before installing. Pin a release with FORGE_VERSION=v1.0.0.
+# Installs to ~/.local/bin (set FORGE_INSTALL_DIR to change it), checks the
+# release's sha256 and, with gh or cosign installed, its signature before
+# installing. Pin a release with FORGE_VERSION=v1.0.0.
 curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
 ```
 
@@ -591,6 +592,43 @@ export PATH="$HOME/.local/bin:$PATH"   # the installer prints this if it is need
 
 Releases attach `forge_<os>_<arch>.tar.gz` for linux, darwin and windows on amd64
 and arm64, plus `checksums.txt`, if you would rather download one yourself.
+
+### Verifying a release
+
+`checksums.txt` comes from the same release as the archives, so it catches a
+corrupt download, not a tampered one. Each release therefore also carries
+`forge-release.sigstore.json`, a keyless Sigstore attestation over every archive
+and `checksums.txt`, signed by forge's `release-attest.yml` workflow. Verify an
+archive against it with either tool (no login needed):
+
+```bash
+gh attestation verify forge_linux_amd64.tar.gz --bundle forge-release.sigstore.json \
+  --repo reliant-labs/forge \
+  --predicate-type https://github.com/reliant-labs/forge/attestations/release-assets/v1 \
+  --cert-identity-regex '^https://github\.com/reliant-labs/forge/\.github/workflows/release-attest\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$'
+
+cosign verify-blob-attestation --bundle forge-release.sigstore.json \
+  --type https://github.com/reliant-labs/forge/attestations/release-assets/v1 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/reliant-labs/forge/\.github/workflows/release-attest\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$' \
+  forge_linux_amd64.tar.gz      # cosign 2.x also needs --new-bundle-format
+```
+
+`install.sh` runs the first of these that is installed (gh 2.49+, else cosign).
+It refuses an archive whose signature does not verify. When there is no signature,
+or no verifier is installed, it only warns: releases cut before signing began have
+no signature. To refuse an unverified install, add `FORGE_REQUIRE_SIGNATURE=1`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | FORGE_REQUIRE_SIGNATURE=1 sh
+```
+
+The npm package is checked against the release checksums pinned into it at
+publish time, and `release-npm.yml` pins them only after it has verified the
+signature. A release asset swapped after that cannot reach an `npx` user.
+`FORGE_REQUIRE_SIGNATURE=1` makes the shim refuse to run from a copy that
+carries no pin. `install.ps1` and the Homebrew formula still check only the
+sha256.
 
 ### From a clone
 

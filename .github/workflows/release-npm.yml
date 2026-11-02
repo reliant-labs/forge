@@ -3,11 +3,19 @@
 #
 # WHAT IS PUBLISHED. The shim is a thin wrapper: on first run it downloads the
 # forge binary for the package's own version from the GitHub release and checks
-# it against that release's checksums.txt. So the package can only be published
+# it against the checksums this workflow pins into the package
+# (npm/lib/release-checksums.txt). So the package can only be published
 # AFTER the release carries its archives, and its version must equal the
 # release's. That is why this triggers on `release: published` (which
 # scripts/release-forge.sh's `gh release create` fires once the assets are
 # uploaded) and not on the tag push.
+#
+# THE PIN IS THE SIGNED SET. release-attest.yml, on the same event, signs the
+# release's assets. This workflow waits for that signature, verifies every
+# archive against it with the identity install.sh pins, and only then copies
+# checksums.txt into the package. An npm user's download is therefore checked
+# against digests that were signed, never against a checksums.txt fetched at
+# run time from the release it is meant to check (lib/install.js).
 #
 # THE VERSION COMES FROM THE TAG, not from npm/package.json at the tagged
 # commit. A release cut with `release-forge.sh --commit <sha>` tags a green
@@ -49,6 +57,13 @@ permissions:
   # The OIDC token npm exchanges for a short-lived publish credential, and that
   # --provenance signs the attestation with.
   id-token: write
+
+env:
+  # The release signature's contract, shared with install.sh and
+  # release-attest.yml (internal/installers holds the three equal).
+  SIGNATURE_ASSET: forge-release.sigstore.json
+  SIGNER_IDENTITY: '^https://github\.com/reliant-labs/forge/\.github/workflows/release-attest\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$'
+  PREDICATE_TYPE: https://github.com/reliant-labs/forge/attestations/release-assets/v1
 
 concurrency:
   # Never let two publishes of one version race; never cancel one half-way.
@@ -147,10 +162,42 @@ jobs:
         working-directory: npm
         run: npm test
 
+      - name: Pin the release's signed checksums into the package
+        # After `npm test`, which exercises the unpinned path; the smoke test
+        # below runs the pinned one. release-attest.yml starts on the same
+        # event and takes about a minute; no signature in 20 minutes fails the
+        # publish rather than ship a package pinned to unsigned digests.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dir="$RUNNER_TEMP/signed-release"
+          mkdir -p "$dir"
+          for attempt in $(seq 1 60); do
+            if gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
+                --pattern "$SIGNATURE_ASSET" --clobber 2>/dev/null; then
+              break
+            fi
+            if [ "$attempt" = 60 ]; then
+              echo "::error::v$VERSION carries no $SIGNATURE_ASSET after 20 minutes; did release-attest.yml run? (gh workflow run release-attest.yml -f version=v$VERSION)"
+              exit 1
+            fi
+            sleep 20
+          done
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
+            --pattern checksums.txt --pattern 'forge_*.tar.gz' --clobber
+          (cd "$dir" && sha256sum --strict -c checksums.txt)
+          for f in "$dir"/forge_*.tar.gz "$dir/checksums.txt"; do
+            gh attestation verify "$f" --bundle "$dir/$SIGNATURE_ASSET" --repo "$GITHUB_REPOSITORY" \
+              --cert-identity-regex "$SIGNER_IDENTITY" --predicate-type "$PREDICATE_TYPE" --deny-self-hosted-runners
+          done
+          cp "$dir/checksums.txt" npm/lib/release-checksums.txt
+
       - name: Pack and smoke-test the tarball
         # Install the exact tarball that would be published, and run it: the
-        # shim downloads this release's linux archive, checks its sha256 and
-        # must report the released version. A pack missing a file, or a
+        # shim downloads this release's linux archive, checks its sha256
+        # against the pinned set (FORGE_REQUIRE_SIGNATURE=1 fails if the pin
+        # did not make it into the tarball) and must report the released version. A pack missing a file, or a
         # version that disagrees with the release, fails here instead of on a
         # stranger's machine.
         working-directory: npm
@@ -159,13 +206,13 @@ jobs:
         run: |
           TARBALL="$RUNNER_TEMP/$(npm pack --pack-destination "$RUNNER_TEMP" | tail -n1)"
           tar -tzf "$TARBALL" | tee "$RUNNER_TEMP/pack.txt"
-          for required in package/bin/forge.js package/lib/install.js package/package.json package/LICENSE package/NOTICE package/README.md; do
+          for required in package/bin/forge.js package/lib/install.js package/lib/release-checksums.txt package/package.json package/LICENSE package/NOTICE package/README.md; do
             grep -qx "$required" "$RUNNER_TEMP/pack.txt" || { echo "::error::$required is missing from the tarball"; exit 1; }
           done
           SMOKE="$RUNNER_TEMP/smoke"
           mkdir -p "$SMOKE"
           (cd "$SMOKE" && npm init -y >/dev/null && npm install --no-audit --no-fund "$TARBALL")
-          OUT="$(FORGE_NPM_CACHE_DIR="$RUNNER_TEMP/forge-cache" "$SMOKE/node_modules/.bin/forge" version)"
+          OUT="$(FORGE_REQUIRE_SIGNATURE=1 FORGE_NPM_CACHE_DIR="$RUNNER_TEMP/forge-cache" "$SMOKE/node_modules/.bin/forge" version)"
           echo "$OUT"
           echo "$OUT" | head -n1 | grep -q "v$VERSION" || { echo "::error::the packed shim did not run forge v$VERSION"; exit 1; }
 

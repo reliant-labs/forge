@@ -52,6 +52,39 @@ func TestEnsureGitHooksActivated(t *testing.T) {
 	}
 }
 
+// `forge project new` activates the hooks of the repository it creates, and
+// honours the same opt-out as every later command. A test driving plain git
+// with FORGE_NO_GIT_HOOKS=1 (TestE2EMergeProperty) got the scaffold's
+// pre-commit run on its own commits when it did not.
+func TestActivateGitHooks_HonoursOptOut(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		optOut string
+		want   string
+	}{
+		{name: "activated by default", want: ".githooks"},
+		{name: "FORGE_NO_GIT_HOOKS opts out", optOut: gitHooksOptOutEnv, want: ""},
+		{name: "FORGE_NO_HOOKS opts out", optOut: legacyGitHooksOptOutEnv, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateGit(t)
+			if tc.optOut != "" {
+				t.Setenv(tc.optOut, "1")
+			}
+			repo := t.TempDir()
+			gitOut(t, repo, "init", "-q")
+
+			if err := activateGitHooks(t.Context(), repo); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := gitOut(t, repo, "config", "--local", "--default", "", "core.hooksPath"); got != tc.want {
+				t.Errorf("core.hooksPath = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // A core.hooksPath the user already set is never replaced, forge hook or not.
 func TestEnsureGitHooksActivated_KeepsExistingSetting(t *testing.T) {
 	isolateGit(t)

@@ -256,9 +256,18 @@ tasks:
     # package with a contract.go) is universal. This task keeps the
     # verb consistent across kinds so verify-generate has something
     # canonical to call.
+    #
+    # THIS REPO ONLY: forge generates forge, so the mocks come first, from
+    # internal/tools/mockgen, which links no package that carries a generated
+    # mock. A contract that gained a method leaves its mock_gen.go stale, and
+    # a package forge imports then stops compiling — and with it the forge
+    # that would regenerate the mock (forge#1261). Then the forge built from
+    # this checkout runs the whole generate, the same one verify-generated in
+    # CI runs.
     desc: Run forge generate (contract mocks, etc.)
     cmds:
-      - forge generate
+      - go run ./internal/tools/mockgen
+      - go run ./cmd/forge generate
 
   verify-generate:
     # CI gate: regenerate everything, then assert nothing changed.

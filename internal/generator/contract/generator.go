@@ -202,21 +202,30 @@ func Generate(contractPath string) error {
 // entry point; the bare Generate is preserved for call sites that don't
 // need the extension surface.
 func GenerateWithOptions(contractPath string, opts Options) error {
+	if err := GenerateMock(contractPath, opts); err != nil {
+		return err
+	}
+
+	if err := removeLegacyWrappers(filepath.Dir(contractPath)); err != nil {
+		return fmt.Errorf("remove legacy wrappers: %w", err)
+	}
+
+	return nil
+}
+
+// GenerateMock parses contractPath and (re)writes mock_gen.go next to it, and
+// nothing else: unlike GenerateWithOptions it leaves the package's other
+// generated files alone. internal/tools/mockgen calls it to refresh forge's
+// own mocks without building forge, where deleting a middleware_gen.go it
+// cannot regenerate would break the build it exists to repair.
+func GenerateMock(contractPath string, opts Options) error {
 	cf, err := ParseContractWith(contractPath, opts.Resolver)
 	if err != nil {
 		return fmt.Errorf("parse contract: %w", err)
 	}
-
-	dir := filepath.Dir(contractPath)
-
-	if err := writeMock(cf, dir, opts); err != nil {
+	if err := writeMock(cf, filepath.Dir(contractPath), opts); err != nil {
 		return fmt.Errorf("generate mock: %w", err)
 	}
-
-	if err := removeLegacyWrappers(dir); err != nil {
-		return fmt.Errorf("remove legacy wrappers: %w", err)
-	}
-
 	return nil
 }
 

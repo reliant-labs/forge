@@ -165,9 +165,9 @@ See the comment block at the top of `internal/cli/fixture_corpus_e2e_test.go` fo
 Review first, then three moments (owner, 2026-10-30: no CI minutes on a head nobody has
 reviewed). A **pull request push** runs almost nothing; the **merge queue** runs the fast
 merge tier once, on main plus the entry, and that run decides the merge; a **push to main**
-runs the slow tier after the merge, and a red there never blocks a merge — pipeline-health
-files and fixes it (`pipeline:slo`), and `scripts/release-forge.sh` refuses to cut a release
-until it is green. Each workflow's header says why its lanes are shaped the way they are;
+runs the slow tier after the merge, and a red there never blocks a merge — fix it from the
+open `Nightly CI is red` issue; a release never ships a forge commit whose full tests are
+not green. Each workflow's header says why its lanes are shaped the way they are;
 read it before moving a check between lanes. `ci.yml`'s `CI gate` job prints every job's
 wall time and the critical path on each run — watch it when you add a test.
 
@@ -220,17 +220,23 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
   So `ci.yml` has no path filter (a skipped workflow never reports the required check), and
   a job says when it runs with one of the `if:` spellings in its header; `internal/ciguard`
   holds them, and fails a job that would run on every pull request push before review.
-- **Merging: push, label `merge:queue`, stop.** Authors open the PR, add
-  **`merge:queue`** ("done: review and merge it"), and report the PR URL as done. The
-  Reliant workflow `pr-review` (control-plane `.reliant/workflows/`, design in
-  control-plane `docs/pr-pipeline.md`) reviews the exact head and posts a COMMENT review
-  plus **`review:passed`** or **`review:changes`**. On changes it removes `merge:queue`:
-  the author chat fixes, pushes and re-adds it. On a pass it enters GitHub's native
-  merge queue at that exact head (`gh pr merge --auto --match-head-commit`), where
-  `CI gate` must pass on the merge group; a refused enqueue is labelled
-  **`merge:failed`**. A push while `merge:queue` is set is reviewed again. Never
-  `gh pr merge` yourself, never `--admin`, never rerun Actions to see green.
-  **`release:asap`** releases forge when the PR merges; otherwise every 10th merge does.
+- **Merging: open the PR non-draft when it is ready, then stop.** Add no queue label
+  (`merge:queue` is the pipeline's, never an author's) and report the PR URL as done. A
+  draft means "not ready" and is never reviewed. The Reliant workflow `pr-review`
+  (control-plane `.reliant/workflows/`, design in control-plane `docs/pr-pipeline.md`)
+  reviews the exact head and posts a COMMENT review plus **`review:passed`** or
+  **`review:changes`**. A pass adds `merge:queue` and enters GitHub's native merge queue
+  at that exact head, where `CI gate` must pass on the merge group; a refused enqueue is
+  labelled **`merge:failed`**. On `review:changes` or `merge:failed`, fix and push: every
+  push is reviewed again (pr-fix takes over a PR nobody is fixing). `hold` keeps a PR out
+  of both queues. Never `gh pr merge` yourself, never `--admin`, never rerun Actions to
+  see green.
+- **Releasing: the `rc-train` workflow, never a chat.** control-plane's `rc-train` cuts a
+  release candidate when a main moved and 2h passed, or right after a PR labelled
+  **`release:asap`** merges: add that label to ship sooner. It tags a commit `main`
+  already has and lands the release bookkeeping (`VERSION`, `CHANGELOG.md`) as a
+  `chore: release vX.Y.Z` PR; nothing pushes to `main`. Never run
+  `scripts/release-forge.sh` yourself unless the owner asked you to release.
 - **GitHub identity (owner, 2026-10-30): implement as the user, review and merge as the
   bot.** Commits, pushes and opening a PR are the user's (plain `git`/`gh`). Every review,
   label, enqueue and merge is `reliant-labs[bot]`'s: `reliant github gh --repo

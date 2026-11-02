@@ -71,6 +71,7 @@ import (
 	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // verifyScratch is one scratch copy of a checkout.
@@ -223,6 +224,22 @@ func (s *verifyScratch) copyIgnoredInputs(topFiles []string) error {
 	}
 	want := generateCacheExtraFiles(s.callerRoot, snap)
 	want = append(want, generateCacheRel)
+	// The descriptor forge derives on demand (gen/forge_descriptor/, with the
+	// .generated-from stamp of the protos gen/ was generated from): ignored,
+	// so neither the listing nor the extras carry it, and without the caller's
+	// copy every scratch regenerate CREATED the stamp — a change, so the run
+	// was never a fixed point, recorded nothing, and every check ran every
+	// step. Copied as the caller has it; a stale one is rewritten by the
+	// regenerate, which then rightly records nothing.
+	_ = filepath.WalkDir(filepath.Join(s.callerRoot, filepath.FromSlash(codegen.DescriptorDir)), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if rel, rerr := filepath.Rel(s.callerRoot, p); rerr == nil {
+			want = append(want, filepath.ToSlash(rel))
+		}
+		return nil
+	})
 	if m := loadGenerateCacheManifest(s.callerRoot); m != nil {
 		want = append(want, m.Outputs...)
 		for _, dir := range m.OutputDirs {

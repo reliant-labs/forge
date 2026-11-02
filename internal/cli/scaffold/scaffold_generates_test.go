@@ -24,6 +24,26 @@ import (
 // compiled. These pin the tail; TestE2EScaffoldNounsLeaveLintGreen runs the
 // real `forge lint` after every noun.
 
+// A project whose forge.yaml switches codegen off has no buf module, so a
+// config proto would be its only proto and break every later generate
+// (TestE2EFrontendOnlyLifecycle). Adding a frontend there writes none, as
+// `forge project new` writes none for its first frontend.
+func TestRunFrontend_CodegenSwitchedOffWritesNoConfigProto(t *testing.T) {
+	skipNpmInstall(t)
+	dir := withTempProject(t, freshServiceForgeYAML+"features:\n  codegen: false\n")
+	markServiceProject(t, dir)
+
+	f := testFactory()
+	f.Gen.RunPipeline = func(string) error { return nil }
+	if err := runFrontend(context.Background(), f, frontendArgs{name: "web"}); err != nil {
+		t.Fatalf("runFrontend: %v", err)
+	}
+	proto := filepath.Join(dir, filepath.FromSlash(configproto.ForProject(dir).Dir()), "web_config.proto")
+	if _, err := os.Stat(proto); !os.IsNotExist(err) {
+		t.Errorf("codegen is off, yet the frontend's config proto was written (stat: %v)", err)
+	}
+}
+
 func TestRunFrontend_EndsWithGenerate(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

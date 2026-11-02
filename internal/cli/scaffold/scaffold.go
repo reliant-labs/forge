@@ -1911,8 +1911,19 @@ func runFrontend(ctx context.Context, f *factory.Factory, a frontendArgs) error 
 	// writes a NEW per-frontend file, so no config content already on disk
 	// is read, rewritten or reordered, and an existing file for this
 	// frontend is left exactly as it is.
-	if err := generator.WriteFrontendConfigProto(root, configproto.ForProject(root), cfg.ModulePath, name, apiPort); err != nil {
-		return fmt.Errorf("write frontend config proto: %w", err)
+	//
+	// Not when forge.yaml switches codegen off (`features.codegen: false`,
+	// `forge project new --disable codegen`), as `forge project new` does
+	// not: such a project has no buf.yaml and runs none of the generators
+	// that consume the annotation, so the proto would be its only one — and
+	// every later `forge generate` would fail compiling it, unable to
+	// resolve its forge/v1/forge.proto import without a buf module. Only the
+	// explicit switch counts: an unpinned codegen is DERIVED from the tree
+	// having protos, which this very file is what first provides.
+	if !cfg.Features.Pinned(config.FeatureCodegen) || cfg.Features.CodegenEnabled() {
+		if err := generator.WriteFrontendConfigProto(root, configproto.ForProject(root), cfg.ModulePath, name, apiPort); err != nil {
+			return fmt.Errorf("write frontend config proto: %w", err)
+		}
 	}
 
 	// Which typed fields the frontend's templates may read. A project that

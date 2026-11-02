@@ -123,17 +123,18 @@ unit at a time. See deploy/shape.
 - **Rollout safety** above one replica: a PodDisruptionBudget and soft
   topology spread. On nodes shared with ranked pods, also declare
   `priorityClassName` — see `deploy/pod-priority`.
-- **`strategy`** is how the Deployment replaces its pods. Unset is
-  Kubernetes' `RollingUpdate`, which surges a new pod before the old one
-  stops — so `replicas = 1` does NOT mean one process: two run for the
-  length of every rollout. When the replica count is a correctness bound
-  rather than a capacity choice (a sweeper not idempotent under
-  concurrency), declare `strategy = "Recreate"` and accept the gap with no
-  pod. Storage already forces Recreate, and `RollingUpdate` beside
-  `storageGiB` is refused — the ReadWriteOnce volume would deadlock the
-  surge pod.
+- **`strategy`**: unset is `RollingUpdate`, which surges a new pod before
+  the old one stops, so `replicas = 1` still runs two during a rollout.
+  When the count is a correctness bound (a sweeper not idempotent under
+  concurrency), declare `strategy = "Recreate"` and accept the gap. Storage
+  forces Recreate; `RollingUpdate` beside `storageGiB` is refused (the
+  ReadWriteOnce volume would deadlock the surge pod).
 - **Pod hardening**: non-root, read-only root filesystem with a `/tmp`
   emptyDir, no ServiceAccount token unless the workload declares RBAC.
+- **No service-link env vars** (`enableServiceLinks: false`): a Service
+  `temporal` cannot inject `TEMPORAL_PORT=tcp://…` into typed config. Use
+  DNS or explicit env; `enableServiceLinks = True` on a cluster workload
+  opts in.
 - **`before` jobs** (`migrate` has `before = [fw.BEFORE_ALL]`) as an
   initContainer on every workload they gate.
 
@@ -312,11 +313,6 @@ Raising a StatefulSet's declared volume size (immutable `volumeClaimTemplates`) 
 converged by a pre-rollout Job forge renders; a shrink is refused:
 deploy/statefulset-volumes.
 
-## Pod priority on shared nodes
-
-Declare `priorityClassName` on nodes shared with ranked pods, or yours get
-preempted: `deploy/pod-priority`.
-
 ## forge env up — the local loop
 
 ```
@@ -343,8 +339,8 @@ always a **new release that rolls forward** — `forge env deploy prod` with the
 fix in the tree, or `--plan-only` first to read the plan.
 
 A release deploy compare-and-sets against the plan's read: exit **3** = the env
-moved meanwhile, nothing written — never retry blind. CI recipe:
-`forge env deploy --help`.
+moved meanwhile, nothing written; never retry blind. health_gate_*:
+`deploy/delivery-policy`. CI recipe: `forge env deploy --help`.
 
 A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
 migration before any workload changes, and a workload that never becomes ready

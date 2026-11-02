@@ -5305,6 +5305,38 @@ schema Approvals:
         len(approvers) == len({a: 1 for a in approvers}), \
             "Approvals.approvers names a person twice: ${[a for a in approvers if len([x for x in approvers if x == a]) > 1]}"
 
+_HEALTH_GATE_ENV_RE = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+
+schema HealthGate:
+    """The promotion health gate: this env takes a release only once every env
+    in `after` has proved it good.
+
+        health_gate = forge.HealthGate {after = ["staging"]}
+
+    "Proved good" is the control plane's own release-health verdict for the
+    newest promotion of the release there — the verdict `forge obs check`
+    reports as exit 0, judged with that env's `release_health` once its
+    window closes. A FAIL (exit 1), an INCONCLUSIVE (exit 2), no verdict yet
+    (exit 8) or a release that never ran there refuses the promotion, each
+    with its own reason and what to run. A release this env itself already
+    ran with a PASS needs no detour (a rollback).
+
+    The order is DECLARED here, never inferred: an empty `after` gates
+    nothing whatever the mode, so declaring it is the opt-in, and the
+    default mode is `enforce`. `audit` admits and records what enforce would
+    refuse. An incident override is `forge env deploy <env> <v>
+    --override-health-gate "<why>"`, recorded on the promotion with who and
+    why. Enforced by the control plane at promote, inside the promotion's
+    transaction; a self-hosted env with no control plane records it only.
+    """
+    mode: ControlMode = "enforce"
+    after: [str] = []
+
+    check:
+        len([e for e in after if not regex.match(e, _HEALTH_GATE_ENV_RE)]) == 0, \
+            "HealthGate.after ${[e for e in after if not regex.match(e, _HEALTH_GATE_ENV_RE)]} are not env names: name the envs under deploy/kcl/ this one follows, e.g. [\"staging\"]"
+        isunique(after), "HealthGate.after names an env twice"
+
 schema DeliveryPolicy:
     """What an env's releases must prove, per control, per env. Set on
     `Bundle.delivery_policy`. UNSET is the default for every control.
@@ -5344,6 +5376,9 @@ schema DeliveryPolicy:
     vuln_gate: VulnPolicy = VulnPolicy {}
     bundle_kinds: BundleKinds = BundleKinds {}
     approvals: Approvals = Approvals {}
+    # The promotion health gate. UNSET = no gate: the envs a release must be
+    # proven good in first are declared, never inferred. See HealthGate.
+    health_gate?: HealthGate
 
     check:
         # An ENFORCING control cannot be satisfied when what it checks is never
@@ -5783,7 +5818,9 @@ schema AlertRule:
       * `keep_firing_for` — hold the alert this long after it clears.
       * `labels`          — `severity` is one of critical | warning | info
         (default warning). `reliant_*` and `alertname` are reserved.
-      * `annotations`     — free text (summary, description, runbook_url).
+      * `annotations`     — summary, description, runbook_url: Prometheus-style
+        Go templates (`{{ $labels.x }}`, `{{ printf "%.0f" $value }}`,
+        `humanize`, `mulf`, ...; the `observability/alerts` skill lists them).
       * `enabled`         — False keeps the rule in the file and out of the shape.
     """
     alert: str

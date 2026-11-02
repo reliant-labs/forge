@@ -132,34 +132,20 @@ func generateWebhookRoutes(reg *serviceRegistry, projectDir string, cs *generato
 }
 
 // contractPathsUnder lists every file the contracts walk below will generate
-// from — each contract.go, and the marked deps.go of a package without one —
-// with the same testdata and cfg.Contracts.Exclude pruning, so one
-// contract.Resolver can be built over all of them before the walk starts.
-// A deps.go left out of the Resolver still generates, but every interface it
-// embeds from another package resolves to nothing: its mock silently lacks
-// those methods and fails generate's build validation.
-// Walk errors are not fatal here: the generating walk reports them.
+// from (contract.Targets), with the same testdata and cfg.Contracts.Exclude
+// pruning, so one contract.Resolver can be built over all of them before the
+// walk starts. internal/tools/mockgen lists forge's own mocks the same way.
 func contractPathsUnder(internalDir, projectDir string, cfg *config.ProjectConfig) []string {
-	var paths []string
-	_ = filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return nil
-		}
-		if d.Name() == "testdata" {
-			return filepath.SkipDir
-		}
-		if rel, relErr := filepath.Rel(projectDir, path); relErr == nil && cfg != nil && cfg.Contracts.IsExcluded(filepath.ToSlash(rel)) {
-			return filepath.SkipDir
-		}
-		contractPath := filepath.Join(path, "contract.go")
-		if _, statErr := os.Stat(contractPath); statErr == nil {
-			paths = append(paths, contractPath)
-		} else if os.IsNotExist(statErr) && depsurface.HasDepsMarker(path) {
-			paths = append(paths, filepath.Join(path, depsurface.DepsFileName))
-		}
+	return contract.Targets(internalDir, projectDir, contractsExcluded(cfg))
+}
+
+// contractsExcluded is cfg's forge.yaml `contracts.exclude` as the predicate
+// contract.Targets takes; nil (nothing excluded) for a nil cfg.
+func contractsExcluded(cfg *config.ProjectConfig) func(rel string) bool {
+	if cfg == nil {
 		return nil
-	})
-	return paths
+	}
+	return cfg.Contracts.IsExcluded
 }
 
 // generateInternalPackageContracts walks internal/ recursively and, for every
@@ -194,11 +180,8 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	// decides whether to emit "nil" or "T{}" for a return type. nil/empty
 	// is the no-op default.
 	var extraIfaceTypes map[string]bool
-	if cfg != nil && len(cfg.Contracts.InterfaceTypes) > 0 {
-		extraIfaceTypes = make(map[string]bool, len(cfg.Contracts.InterfaceTypes))
-		for _, t := range cfg.Contracts.InterfaceTypes {
-			extraIfaceTypes[t] = true
-		}
+	if cfg != nil {
+		extraIfaceTypes = cfg.Contracts.InterfaceTypeSet()
 	}
 	contractOpts := contract.Options{
 		ExtraInterfaceTypes: extraIfaceTypes,

@@ -245,3 +245,20 @@ func TestDataAccessDeclarationOverridesTheLifecycle(t *testing.T) {
 		t.Errorf("a declared deny is not in the shape: %+v", got)
 	}
 }
+
+// A declared health gate reaches the shape, its envs sorted; it is the one
+// non-default value, so it alone records the policy.
+func TestDeliveryPolicyHealthGateReachesTheShape(t *testing.T) {
+	e := renderDeliveryPolicy(t, `forge.DeliveryPolicy {health_gate = forge.HealthGate {after = ["staging", "canary"]}}`)
+	got := shapeDeliveryPolicyOf(e)
+	if got == nil || got.HealthGate == nil {
+		t.Fatalf("a declared health gate was not recorded: %+v", got)
+	}
+	want := release.ShapeHealthGate{Mode: release.DeliveryEnforce, After: []string{"canary", "staging"}}
+	if !reflect.DeepEqual(*got.HealthGate, want) {
+		t.Errorf("health gate: got %+v want %+v", *got.HealthGate, want)
+	}
+	if err := (release.Shape{Kind: release.EnvSelfManaged, DeliveryPolicy: got}).Canonical().Validate(); err != nil {
+		t.Errorf("a gate KCL accepted must satisfy the shape's validation: %v", err)
+	}
+}

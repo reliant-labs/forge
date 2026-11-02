@@ -219,4 +219,4 @@ to keep current, and costs one `go list` instead of a `go build`.
 
 ## Releasing
 
-`task release:forge` — one tag, one commit, for the release `NEXT_VERSION` names. See `docs/releasing.md`.
+`task release:forge` — one tag, on a green commit `main` already has, for the release `NEXT_VERSION` names; the version bump lands as a pull request. See `docs/releasing.md`.

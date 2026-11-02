@@ -73,12 +73,24 @@ message Widget {
 	//
 	// The no-handle property is the one that makes it usable as a Deps
 	// field. Asserting the type exists would have passed the broken cut.
+	//
+	// Each entity's store, and the aggregate's accessor for it, live in that
+	// entity's own widget_store_gen.go; store_gen.go holds only the aggregate
+	// Store struct, so entities born on different branches merge as files.
 	storeGen := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "store_gen.go"))
-	if !strings.Contains(storeGen, "type WidgetStore interface") {
-		t.Fatalf("expected a per-entity WidgetStore interface; store_gen.go:\n%s", storeGen)
+	if !strings.Contains(storeGen, "type Store struct") {
+		t.Fatalf("expected the aggregate Store struct in store_gen.go:\n%s", storeGen)
 	}
-	ifaceStart := strings.Index(storeGen, "type WidgetStore interface {")
-	iface := storeGen[ifaceStart : ifaceStart+strings.Index(storeGen[ifaceStart:], "\n}")]
+	if strings.Contains(storeGen, "Widget") {
+		t.Errorf("store_gen.go must name no entity — a per-entity line there conflicts when entities are "+
+			"born on two branches; it belongs in widget_store_gen.go:\n%s", storeGen)
+	}
+	widgetStoreGen := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "widget_store_gen.go"))
+	if !strings.Contains(widgetStoreGen, "type WidgetStore interface") {
+		t.Fatalf("expected a per-entity WidgetStore interface; widget_store_gen.go:\n%s", widgetStoreGen)
+	}
+	ifaceStart := strings.Index(widgetStoreGen, "type WidgetStore interface {")
+	iface := widgetStoreGen[ifaceStart : ifaceStart+strings.Index(widgetStoreGen[ifaceStart:], "\n}")]
 	if strings.Contains(iface, "db orm.Context") {
 		t.Errorf("no store METHOD may take an orm.Context — a consumer would then need the handle as a "+
 			"second dep and would write the very passthrough this seam removes:\n%s", iface)
@@ -86,8 +98,8 @@ message Widget {
 	if !strings.Contains(iface, "WithTx(tx orm.Context) WidgetStore") {
 		t.Errorf("binding the handle must not cost the transaction seam; WidgetStore needs WithTx:\n%s", iface)
 	}
-	if !strings.Contains(storeGen, "Widgets() WidgetStore") {
-		t.Errorf("the aggregate Store must expose a per-entity accessor; store_gen.go:\n%s", storeGen)
+	if !strings.Contains(widgetStoreGen, "Widgets() WidgetStore") {
+		t.Errorf("the aggregate Store must expose a per-entity accessor; widget_store_gen.go:\n%s", widgetStoreGen)
 	}
 
 	// ── 2. A package DECLARING the dep resolves with no hand-wiring ──────

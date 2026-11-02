@@ -687,30 +687,110 @@ func TestFluxApplierSpecMatches(t *testing.T) {
 	t.Parallel()
 	in, _ := fluxRelease(true).input("2", "promo-2")
 	a := in.Appliers[0]
-	obj := func() map[string]any {
-		spec := map[string]any{
-			"sourceRef":          map[string]any{"name": a.Source},
-			"path":               a.Path,
-			"serviceAccountName": a.ServiceAccountName,
-			"deletionPolicy":     "Orphan",
+	specs := func(in fluxdelivery.BindingInput) map[string]map[string]any {
+		t.Helper()
+		s, err := fluxApplierSpecs(in)
+		if err != nil {
+			t.Fatalf("fluxApplierSpecs: %v", err)
 		}
-		if a.TargetNamespace != "" {
-			spec["targetNamespace"] = a.TargetNamespace
+		return s
+	}
+	want := specs(in)[a.Name]
+	// live is the object as kubectl returns it: JSON-decoded, with the
+	// fields the API server defaults.
+	live := func(spec map[string]any) map[string]any {
+		t.Helper()
+		b, err := json.Marshal(spec)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return map[string]any{"spec": spec}
+		var decoded map[string]any
+		if err := json.Unmarshal(b, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		decoded["force"] = false
+		return map[string]any{"spec": decoded}
 	}
-	if !fluxApplierSpecMatches(in, a, obj()) {
-		t.Fatalf("the rendered spec does not match")
+	if !fluxApplierSpecMatches(want, live(want)) {
+		t.Fatalf("the rendered spec does not match itself: %v", want)
 	}
-	o := obj()
+	o := live(want)
 	o["spec"].(map[string]any)["path"] = "elsewhere"
-	if fluxApplierSpecMatches(in, a, o) {
+	if fluxApplierSpecMatches(want, o) {
 		t.Errorf("another path matched")
 	}
 	torn := in
 	torn.Retire = fluxdelivery.RetireTeardown
-	if fluxApplierSpecMatches(torn, a, obj()) {
+	if fluxApplierSpecMatches(specs(torn)[a.Name], live(want)) {
 		t.Errorf("an Orphan deletionPolicy matched a teardown")
+	}
+	// A field only the live object holds counts unless it is zero.
+	for field, value := range map[string]any{
+		"suspend":      true,
+		"dependsOn":    []any{map[string]any{"name": "previous"}},
+		"healthChecks": []any{map[string]any{"kind": "Job", "name": "migrate"}},
+	} {
+		o := live(want)
+		o["spec"].(map[string]any)[field] = value
+		if fluxApplierSpecMatches(want, o) {
+			t.Errorf("a live %s the input does not render matched", field)
+		}
+	}
+	if fluxApplierSpecMatches(nil, live(want)) {
+		t.Errorf("an applier the input does not render matched")
+	}
+}
+
+// TestFluxDeliveryReactivatedApplierAtSameDigest: reactivating a suspended
+// applier at an unchanged digest. The renderer writes the source and the
+// Kustomizations separately, so the source can carry the new fence while the
+// Kustomization is still the previous input's, suspended, with that input's
+// Ready (or failing) status. Neither decides the new promotion.
+func TestFluxDeliveryReactivatedApplierAtSameDigest(t *testing.T) {
+	t.Parallel()
+	prevIn, _ := fluxRelease(true).input("2", "promo-2")
+	in, _ := fluxRelease(true).input("3", "promo-3")
+	prevIn.Appliers = append([]fluxdelivery.Applier(nil), prevIn.Appliers...)
+	prevIn.Appliers[0].Suspended = true
+	d := in.Source.Digest
+	prevSpecs, err := fluxApplierSpecs(prevIn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSpecs, err := fluxApplierSpecs(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := in.Appliers[0]
+	if suspend, _ := prevSpecs[a.Name]["suspend"].(bool); !suspend {
+		t.Fatalf("fixture: the previous input does not render %s suspended: %v", a.Name, prevSpecs[a.Name])
+	}
+	stale := map[string]any{"spec": prevSpecs[a.Name]}
+	if fluxApplierSpecMatches(wantSpecs[a.Name], stale) {
+		t.Fatalf("the previous input's suspended Kustomization matched the reactivated applier")
+	}
+	at := func(ready, reason string) fluxDeliveryObservation {
+		o := observed(in, func(b fluxdelivery.Applier) fluxObjectStatus {
+			if b.Name != a.Name {
+				return fluxObjectStatus{Name: b.Name, Found: true, Ready: "True", Current: true, LastApplied: d, LastAttempted: d}
+			}
+			return fluxObjectStatus{Name: b.Name, Found: true, Ready: ready, Reason: reason, Message: "Job failed", Current: true, LastApplied: d, LastAttempted: d}
+		})
+		// The source already carries in's fence (observed's default); the
+		// first applier is still the previous input's.
+		o.Appliers[0].SpecMatches = fluxApplierSpecMatches(wantSpecs[a.Name], stale)
+		return o
+	}
+	if o := at("True", ""); o.converged(in) {
+		t.Errorf("the previous input's suspended Ready applier converged the reactivation")
+	}
+	if err := at("False", "HealthCheckFailed").failure("prod", "v3", in); err != nil {
+		t.Errorf("the previous input's failure decided the reactivation: %v", err)
+	}
+	fresh := at("False", "HealthCheckFailed")
+	fresh.Appliers[0].SpecMatches = true
+	if err := fresh.failure("prod", "v3", in); err == nil {
+		t.Errorf("the reactivated applier's own failure was not reported")
 	}
 }
 

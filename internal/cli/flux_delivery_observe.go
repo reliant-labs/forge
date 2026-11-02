@@ -197,7 +197,10 @@ func (o fluxDeliveryObservation) failure(env, rel string, in fluxdelivery.Bindin
 	}
 	var failing []fluxObjectStatus
 	for _, a := range o.Appliers {
-		if a.Found && a.Current && a.Ready == "False" && revisionDigestOf(a.LastAttempted) == digest && !fluxProgressing(a.Reason) {
+		// SpecMatches: a failure of an applier the renderer has not yet
+		// re-applied for in (still suspended, other dependencies) is the
+		// previous input's, however current its status.
+		if a.Found && a.Current && a.SpecMatches && a.Ready == "False" && revisionDigestOf(a.LastAttempted) == digest && !fluxProgressing(a.Reason) {
 			failing = append(failing, a)
 		}
 	}
@@ -349,34 +352,117 @@ var fluxDeliveryObserve = func(ctx context.Context, fd FluxDeliveryEntity, in fl
 		obs.Source.RequestedDigest, _ = nested(sources[in.Source.Name], "spec", "ref", "digest").(string)
 		obs.Source.Fence, _ = nested(sources[in.Source.Name], "metadata", "annotations", fluxdelivery.FenceAnnotation).(string)
 	}
+	want, err := fluxApplierSpecs(in)
+	if err != nil {
+		return obs, err
+	}
 	for _, a := range in.Appliers {
 		s := fluxStatusOf(a.Name, ks[a.Name])
-		s.SpecMatches = s.Found && fluxApplierSpecMatches(in, a, ks[a.Name])
+		s.SpecMatches = s.Found && fluxApplierSpecMatches(want[a.Name], ks[a.Name])
 		obs.Appliers = append(obs.Appliers, s)
 	}
 	return obs, nil
 }
 
-// fluxApplierSpecMatches: the Kustomization's spec is what in renders for a
-// (the template's fields that differ between inputs), so its status, once
-// current, is about this input's applier and not a previous one's.
-func fluxApplierSpecMatches(in fluxdelivery.BindingInput, a fluxdelivery.Applier, obj map[string]any) bool {
-	str := func(keys ...string) string {
-		s, _ := nested(obj, keys...).(string)
-		return s
+// fluxApplierSpecs is the spec of every Kustomization in renders, by name:
+// the renderer's own template run over in ([fluxdelivery.Render]), so the
+// comparison covers every field an input decides — suspension, dependencies
+// and health checks included — and cannot fall behind the template.
+func fluxApplierSpecs(in fluxdelivery.BindingInput) (map[string]map[string]any, error) {
+	rs, err := fluxdelivery.ResourceSet(in)
+	if err != nil {
+		return nil, fmt.Errorf("render the promoted input's appliers: %w", err)
 	}
-	retire, deletionPolicy := in.Retire, "Orphan"
-	if retire == "" {
-		retire = a.Retire
+	objs, err := fluxdelivery.Render(rs)
+	if err != nil {
+		return nil, fmt.Errorf("render the promoted input's appliers: %w", err)
 	}
-	if retire == fluxdelivery.RetireTeardown {
-		deletionPolicy = "Delete"
+	specs := map[string]map[string]any{}
+	for _, o := range objs {
+		if o.GetKind() != fluxdelivery.KindKustomization {
+			continue
+		}
+		spec, _, _ := unstructured.NestedMap(o.Object, "spec")
+		specs[o.GetName()] = spec
 	}
-	return str("spec", "sourceRef", "name") == a.Source &&
-		str("spec", "path") == a.Path &&
-		str("spec", "serviceAccountName") == a.ServiceAccountName &&
-		str("spec", "targetNamespace") == a.TargetNamespace &&
-		str("spec", "deletionPolicy") == deletionPolicy
+	return specs, nil
+}
+
+// fluxApplierSpecMatches: the Kustomization's spec is want, the spec the
+// input renders for it, so its status, once current, is about this input's
+// applier and not a previous one's. Every field want sets must hold its
+// value; a field only the live object sets must be zero — what the API
+// server defaults (force: false), never a previous input's suspend: true or
+// dependsOn. A renderer that has not yet re-applied a reactivated applier
+// therefore does not match, even when the source already carries the fence.
+func fluxApplierSpecMatches(want map[string]any, obj map[string]any) bool {
+	if want == nil {
+		return false
+	}
+	live, _ := nested(obj, "spec").(map[string]any)
+	return fluxSpecValueMatches(want, live)
+}
+
+// fluxSpecValueMatches compares a rendered value with a live one: maps key by
+// key (a key only live holds must be zero), lists element by element, and
+// scalars by their JSON form, so an int64 from the render equals the float64
+// kubectl's JSON decodes.
+func fluxSpecValueMatches(want, live any) bool {
+	switch w := want.(type) {
+	case map[string]any:
+		l, ok := live.(map[string]any)
+		if !ok {
+			return len(w) == 0 && fluxSpecZero(live)
+		}
+		for k, wv := range w {
+			if !fluxSpecValueMatches(wv, l[k]) {
+				return false
+			}
+		}
+		for k, lv := range l {
+			if _, set := w[k]; !set && !fluxSpecZero(lv) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		l, _ := live.([]any)
+		if len(l) != len(w) {
+			return false
+		}
+		for i := range w {
+			if !fluxSpecValueMatches(w[i], l[i]) {
+				return false
+			}
+		}
+		return true
+	case nil:
+		return fluxSpecZero(live)
+	}
+	wj, werr := json.Marshal(want)
+	lj, lerr := json.Marshal(live)
+	return werr == nil && lerr == nil && string(wj) == string(lj)
+}
+
+// fluxSpecZero: v is unset, or the zero of its JSON type.
+func fluxSpecZero(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case bool:
+		return !x
+	case string:
+		return x == ""
+	case float64:
+		return x == 0
+	case int64:
+		return x == 0
+	case map[string]any:
+		return len(x) == 0
+	case []any:
+		return len(x) == 0
+	}
+	return false
 }
 
 // fluxStatusOf reads one object's Ready/Stalled conditions and revisions.

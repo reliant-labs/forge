@@ -243,18 +243,19 @@ func TestDesignSkillOklchExemplarPassesScaffoldLint(t *testing.T) {
 	}
 }
 
-// scaffoldedGoogleFont extracts the font family the Next.js scaffold loads,
-// e.g. `import { Inter } from "next/font/google";` → "Inter".
-var scaffoldedGoogleFont = regexp.MustCompile(`import\s+\{\s*(\w+)\s*\}\s+from\s+"next/font/google"`)
+// scaffoldedFont extracts the font family the Next.js scaffold loads, from
+// either loader it has used: `import { Inter } from "next/font/google";` →
+// "Inter", or `import { GeistSans } from "geist/font/sans";` → "Geist".
+var scaffoldedFont = regexp.MustCompile(`import\s+\{\s*(\w+?)(?:Sans)?\s*\}\s+from\s+"(?:next/font/google|geist/font/sans)"`)
 
 // TestDesignSkillExemptsTheScaffoldedFont resolves the contradiction where
 // the scaffold loaded Inter and the design skill listed Inter among the
 // fonts that "scream 'model picked this'". A unit that reads the blocklist
 // first churns on replacing a font forge itself chose.
 //
-// The scaffold keeps Inter — it is the neutral default an app with no brief
-// yet is owed, self-hosted by next/font — so the SKILL carries the
-// exemption, and it must name the token a rebrand actually moves.
+// The scaffold keeps its declared face (Geist since Inter) — it is the neutral
+// default an app with no brief yet is owed, self-hosted — so the SKILL carries
+// the exemption, and it must name the token a rebrand actually moves.
 func TestDesignSkillExemptsTheScaffoldedFont(t *testing.T) {
 	t.Parallel()
 
@@ -265,9 +266,9 @@ func TestDesignSkillExemptsTheScaffoldedFont(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render nextjs/src/app/layout.tsx.tmpl: %v", err)
 	}
-	m := scaffoldedGoogleFont.FindStringSubmatch(string(layout))
+	m := scaffoldedFont.FindStringSubmatch(string(layout))
 	if m == nil {
-		t.Skip("the Next.js scaffold no longer loads a next/font/google family — nothing for the skill to exempt")
+		t.Fatal("found no font loader in the Next.js layout — the scanner has drifted from layout.tsx.tmpl and this guard is now inert")
 	}
 	font := m[1]
 

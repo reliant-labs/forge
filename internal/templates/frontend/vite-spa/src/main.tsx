@@ -3,6 +3,12 @@ import { createRoot } from "react-dom/client";
 
 import { installDevLogging } from "@reliantlabs/forge-web-runtime";
 
+// Geist and Geist Mono, self-hosted: Vite bundles the woff2 files, so the app
+// makes no third-party font request. index.css names them in --font-sans and
+// --font-mono.
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
+
 import "./index.css";
 import { initTelemetry } from "@/lib/otel_gen";
 

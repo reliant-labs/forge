@@ -26,6 +26,11 @@ function isRetryable(err: unknown): boolean {
   return err instanceof TypeError;
 }
 
+/** True for an RPC the server refused because the caller is not signed in. */
+function isUnauthenticated(err: unknown): boolean {
+  return err instanceof ConnectError && err.code === Code.Unauthenticated;
+}
+
 // ---------------------------------------------------------------------------
 // BigInt-safe query-key hashing
 //
@@ -147,6 +152,10 @@ export const queryClient = new QueryClient({
   mutationCache: new MutationCache({
     onError: (error, _variables, _context, mutation) => {
       if (mutation.meta?.silenceErrorToast) return;
+      // An Unauthenticated failure is a lapsed session, not an error the user
+      // can act on here: the transport emitted `auth:expired` and the app is
+      // on its way to sign-in, so a toast would only flash in front of it.
+      if (isUnauthenticated(error)) return;
       emitToast({ message: userMessage(error), variant: "error" });
     },
   }),

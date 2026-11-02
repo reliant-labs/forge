@@ -256,10 +256,9 @@ exit 0
 func githubFixtureRepo(t *testing.T) (repo, origin string) {
 	t.Helper()
 	repo = newForgeFixtureRepo(t)
-	origin = filepath.Join(t.TempDir(), "origin.git")
-	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
+	origin = fixtureOrigin(t, repo)
 	fake := "https://github.com/reliant-labs/forge.git"
-	gitIn(t, repo, "remote", "add", "origin", fake)
+	gitIn(t, repo, "remote", "set-url", "origin", fake)
 	gitIn(t, repo, "config", "url."+origin+".insteadOf", fake)
 	commitEmpty(t, repo, "feat(kcl): a new thing (#201)")
 	commitEmpty(t, repo, "fix: a bug (#202)")
@@ -280,21 +279,18 @@ func TestReleaseForgeScript_WritesChangelogCommitsItAndCreatesTheGitHubRelease(t
 		t.Fatalf("release failed: %v\n%s", err, out)
 	}
 
-	// The release commit carries CHANGELOG.md alongside the version files.
-	files := gitOut(t, repo, "show", "--pretty=format:", "--name-only", "HEAD")
+	// The bookkeeping commit carries CHANGELOG.md alongside the version files.
+	files := gitOut(t, origin, "show", "--pretty=format:", "--name-only", "release/v0.2.0")
 	for _, want := range []string{"CHANGELOG.md", "VERSION", "internal/buildinfo/VERSION"} {
 		if !strings.Contains(files, want) {
-			t.Errorf("release commit does not touch %s:\n%s", want, files)
+			t.Errorf("the bookkeeping commit does not touch %s:\n%s", want, files)
 		}
 	}
 	if status := gitOut(t, repo, "status", "--porcelain"); status != "" {
 		t.Errorf("the release left the tree dirty:\n%s", status)
 	}
-	if remote := gitOut(t, origin, "show", "main:CHANGELOG.md"); !strings.Contains(remote, "## [v0.2.0] - ") {
-		t.Errorf("the pushed CHANGELOG.md has no v0.2.0 section:\n%s", remote)
-	}
 
-	got := readRepoFile(t, repo, "CHANGELOG.md")
+	got := bookkeepingFile(t, origin, "v0.2.0", "CHANGELOG.md")
 	sec := section(t, got, "v0.2.0")
 	for _, w := range []string{
 		"### Breaking changes", "an incompatible change", // from `gh pr list --label breaking`
@@ -314,6 +310,9 @@ func TestReleaseForgeScript_WritesChangelogCommitsItAndCreatesTheGitHubRelease(t
 	for _, want := range []string{
 		"ARGS: pr list --repo reliant-labs/forge --state merged --label breaking",
 		"ARGS: release create v0.2.0 --repo reliant-labs/forge --verify-tag --title v0.2.0 --notes-file",
+		// The bookkeeping lands through a pull request, never a push to main.
+		"ARGS: pr create --repo reliant-labs/forge --base main --head release/v0.2.0 --title chore: release v0.2.0",
+		"ARGS: pr merge --repo reliant-labs/forge --squash --auto release/v0.2.0",
 		"NOTES-BEGIN",
 		"a new thing",
 		"an incompatible change",
@@ -338,7 +337,7 @@ func TestReleaseForgeScript_OversizedSectionPublishesGeneratedBulletsOnly(t *tes
 	if testing.Short() {
 		t.Skip("runs a build and a git push")
 	}
-	repo, _ := githubFixtureRepo(t)
+	repo, origin := githubFixtureRepo(t)
 	// A long-lived [Unreleased] folded in makes the section exceed GitHub's
 	// 125000-character release-body limit.
 	huge := "# Changelog\n\n## [Unreleased]\n\n### Added\n\n" + strings.Repeat("- old per-PR entry that is long enough to add up quickly, padding padding padding\n", 2000) + "\n## [0.1.0] - 2026-01-01\n"
@@ -367,7 +366,7 @@ func TestReleaseForgeScript_OversizedSectionPublishesGeneratedBulletsOnly(t *tes
 		t.Error("fallback notes still carry the folded Unreleased prose")
 	}
 	// The committed changelog keeps everything.
-	if !strings.Contains(readRepoFile(t, repo, "CHANGELOG.md"), "old per-PR entry") {
+	if !strings.Contains(bookkeepingFile(t, origin, "v0.2.0", "CHANGELOG.md"), "old per-PR entry") {
 		t.Error("CHANGELOG.md lost the folded Unreleased prose")
 	}
 }
@@ -391,31 +390,69 @@ func TestReleaseForgeScript_GitHubReleaseFailureStillLeavesTheTagPushed(t *testi
 	}
 }
 
-// A cutter that loses the tag race must not leave its own tag object behind:
-// every worktree of a checkout shares refs/tags/, so a stale local tag breaks
-// every later `git fetch --tags` there with "would clobber existing tag"
-// (forge#1524).
-func TestReleaseForgeScript_RefusedPushDeletesTheLocalTag(t *testing.T) {
+// A refused push must not leave its tag object behind — every worktree of a
+// checkout shares refs/tags/, so a stale local tag breaks every later
+// `git fetch --tags` there with "would clobber existing tag" (forge#1524) —
+// and must say WHY it was refused. It used to read every refusal as "another
+// cut won the race", which sent the cutter to fetch a tag that did not exist
+// when the real cause was a ruleset refusing the push.
+func TestReleaseForgeScript_RefusedPushDeletesTheLocalTagAndSaysWhy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs a build and a git push")
 	}
-	repo, _ := githubFixtureRepo(t)
-	// Another cut won: origin's main moved to a release commit this checkout
-	// lacks, so the atomic push of branch + tag is refused as non-fast-forward.
-	won := gitOut(t, repo, "-c", "user.name=other", "-c", "user.email=other@example.com",
-		"commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "chore: release v0.2.0 (the other cut)")
-	gitIn(t, repo, "push", "-q", "origin", won+":refs/heads/main")
-	gh, _ := fakeGH(t, "", false)
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, repo, origin string)
+		want  string
+	}{{
+		name: "origin refuses the tag",
+		setup: func(t *testing.T, _, origin string) {
+			// A pre-receive hook standing in for a tag ruleset; the release lock
+			// (refs/release-lock/*) still goes through.
+			hook := "#!/usr/bin/env bash\nwhile read -r _ _ ref; do\n  case \"$ref\" in refs/tags/*) echo \"refused by ruleset\" >&2; exit 1 ;; esac\ndone\n"
+			if err := os.WriteFile(filepath.Join(origin, "hooks", "pre-receive"), []byte(hook), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		want: "no other cut won a race: the push itself was refused",
+	}, {
+		name: "an earlier attempt left the bookkeeping branch",
+		setup: func(t *testing.T, repo, _ string) {
+			stale := gitOut(t, repo, "-c", "user.name=other", "-c", "user.email=other@example.com",
+				"commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "chore: release v0.2.0 (an earlier attempt)")
+			gitIn(t, repo, "push", "-q", "origin", stale+":refs/heads/release/v0.2.0")
+		},
+		want: "already has a branch release/v0.2.0",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, origin := githubFixtureRepo(t)
+			tc.setup(t, repo, origin)
+			mainBefore := gitOut(t, origin, "rev-parse", "refs/heads/main")
+			gh, ghLog := fakeGH(t, "", false)
 
-	out, err := runForgeScriptEnv(t, repo, []string{"FORGE_RELEASE_GH=" + gh}, "v0.2.0")
-	if err == nil {
-		t.Fatalf("a refused push must fail the script:\n%s", out)
-	}
-	if !strings.Contains(out, "deleted the local tag v0.2.0") {
-		t.Errorf("the failure must say the local tag was removed:\n%s", out)
-	}
-	if tags := gitOut(t, repo, "tag", "-l", "v0.2.0"); tags != "" {
-		t.Errorf("the losing cut left its local tag behind: %q", tags)
+			out, err := runForgeScriptEnv(t, repo, []string{"FORGE_RELEASE_GH=" + gh}, "v0.2.0")
+			if err == nil {
+				t.Fatalf("a refused push must fail the script:\n%s", out)
+			}
+			if !strings.Contains(out, "deleted the local tag v0.2.0") || !strings.Contains(out, tc.want) {
+				t.Errorf("the failure must say the local tag was removed and %q:\n%s", tc.want, out)
+			}
+			if strings.Contains(out, "another cut released it") {
+				t.Errorf("the failure blames a race no other cut won:\n%s", out)
+			}
+			if tags := gitOut(t, repo, "tag", "-l", "v0.2.0"); tags != "" {
+				t.Errorf("the refused cut left its local tag behind: %q", tags)
+			}
+			if tags := gitOut(t, origin, "tag", "-l", "v0.2.0"); tags != "" {
+				t.Errorf("the refused cut published its tag: %q", tags)
+			}
+			if got := gitOut(t, origin, "rev-parse", "refs/heads/main"); got != mainBefore {
+				t.Errorf("the refused cut moved main: %s -> %s", mainBefore, got)
+			}
+			if b, _ := os.ReadFile(ghLog); strings.Contains(string(b), "pr create") || strings.Contains(string(b), "release create") {
+				t.Errorf("the refused cut went on to GitHub:\n%s", b)
+			}
+		})
 	}
 }
 
@@ -424,9 +461,7 @@ func TestReleaseForgeScript_NoGitHubOriginSkipsTheGitHubRelease(t *testing.T) {
 		t.Skip("runs a build and a git push")
 	}
 	repo := newForgeFixtureRepo(t)
-	origin := filepath.Join(t.TempDir(), "origin.git")
-	gitIn(t, repo, "clone", "--bare", "--quiet", repo, origin)
-	gitIn(t, repo, "remote", "add", "origin", origin)
+	origin := fixtureOrigin(t, repo)
 	commitEmpty(t, repo, "feat: offline thing (#5)")
 	gitIn(t, repo, "push", "-q", "origin", "HEAD:refs/heads/main")
 	gh, ghLog := fakeGH(t, "", false)
@@ -441,8 +476,11 @@ func TestReleaseForgeScript_NoGitHubOriginSkipsTheGitHubRelease(t *testing.T) {
 	if b, _ := os.ReadFile(ghLog); strings.Contains(string(b), "release create") {
 		t.Errorf("gh release create ran for a non-GitHub origin:\n%s", b)
 	}
-	if sec := section(t, readRepoFile(t, repo, "CHANGELOG.md"), "v0.2.0"); !strings.Contains(sec, "offline thing") {
+	if sec := section(t, bookkeepingFile(t, origin, "v0.2.0", "CHANGELOG.md"), "v0.2.0"); !strings.Contains(sec, "offline thing") {
 		t.Errorf("CHANGELOG.md was not written offline:\n%s", sec)
+	}
+	if b, _ := os.ReadFile(ghLog); strings.Contains(string(b), "pr create") {
+		t.Errorf("gh pr create ran for a non-GitHub origin:\n%s", b)
 	}
 }
 
@@ -452,6 +490,7 @@ func TestReleaseForgeScript_DryRunLeavesChangelogUntouched(t *testing.T) {
 	}
 	repo := newForgeFixtureRepo(t)
 	commitEmpty(t, repo, "feat: dry thing (#7)")
+	gitIn(t, repo, "push", "-q", "origin", "HEAD:refs/heads/main")
 	before := readRepoFile(t, repo, "CHANGELOG.md")
 	gh, ghLog := fakeGH(t, "", false)
 
@@ -502,7 +541,7 @@ func TestReleaseForgeScript_ChangelogIsPrettierClean(t *testing.T) {
 		t.Fatal("no prettier pin found in forge's .pre-commit-config.yaml")
 	}
 
-	repo, _ := githubFixtureRepo(t)
+	repo, origin := githubFixtureRepo(t)
 	// The script reads the pin from the repo it releases, and the prose below is
 	// what prettier rewrites: a `*` bullet, a long wrapped line, a table.
 	writeRepoFile(t, repo, ".pre-commit-config.yaml", string(pin))
@@ -516,11 +555,13 @@ func TestReleaseForgeScript_ChangelogIsPrettierClean(t *testing.T) {
 	if err != nil {
 		t.Fatalf("release failed: %v\n%s", err, out)
 	}
-	got := readRepoFile(t, repo, "CHANGELOG.md")
+	got := bookkeepingFile(t, origin, "v0.2.0", "CHANGELOG.md")
 	if strings.Contains(got, "* a star bullet") || !strings.Contains(got, "- a star bullet") {
 		t.Errorf("prettier did not run over the written CHANGELOG.md:\n%s", got)
 	}
-	if out, err := exec.Command(npx, "--yes", "prettier@"+pinVer, "--check", filepath.Join(repo, "CHANGELOG.md")).CombinedOutput(); err != nil {
+	released := filepath.Join(t.TempDir(), "CHANGELOG.md")
+	writeRepoFile(t, filepath.Dir(released), "CHANGELOG.md", got)
+	if out, err := exec.Command(npx, "--yes", "prettier@"+pinVer, "--check", released).CombinedOutput(); err != nil {
 		t.Fatalf("the released CHANGELOG.md is not prettier-clean: %v\n%s", err, out)
 	}
 }
@@ -561,11 +602,11 @@ func TestReleaseForgeScript_AttachesBinariesSyncsNpmAndDispatchesBrew(t *testing
 		t.Errorf("the Homebrew tap was not dispatched for 0.2.0:\n%s", log)
 	}
 
-	if got := gitOut(t, origin, "show", "main:npm/package.json"); !strings.Contains(got, `"version": "0.2.0"`) || strings.Contains(got, `"version": "0.1.0"`) {
+	if got := bookkeepingFile(t, origin, "v0.2.0", "npm/package.json"); !strings.Contains(got, `"version": "0.2.0"`) || strings.Contains(got, `"version": "0.1.0"`) {
 		t.Errorf("npm/package.json was not synced to 0.2.0:\n%s", got)
 	}
 	// Only the manifest's own version line moves.
-	if got := gitOut(t, origin, "show", "main:npm/package.json"); !strings.Contains(got, `"node": ">=18"`) {
+	if got := bookkeepingFile(t, origin, "v0.2.0", "npm/package.json"); !strings.Contains(got, `"node": ">=18"`) {
 		t.Errorf("syncing npm/package.json clobbered other fields:\n%s", got)
 	}
 	// npm is published by CI (trusted publishing), never from this machine:

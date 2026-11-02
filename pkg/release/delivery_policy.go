@@ -62,6 +62,24 @@ type ShapeDeliveryPolicy struct {
 	VulnGate         ShapeVulnGate       `json:"vuln_gate"`
 	BundleKinds      ShapeBundleKinds    `json:"bundle_kinds"`
 	Approvals        ShapeApprovals      `json:"approvals"`
+	// HealthGate is the promotion health gate (forge.HealthGate). Nil is its
+	// default — mode enforce, no environments named, so no gate — and is how
+	// a policy that declares none encodes, so every shape recorded before
+	// the field still hashes as it did. A reader that predates it never sees
+	// it: it is the bundle feature [BundleFeatureHealthGate].
+	HealthGate *ShapeHealthGate `json:"health_gate,omitempty"`
+}
+
+// ShapeHealthGate: a promotion of release R to this env is admitted only
+// once every env in After has proved R good — the control plane holds a
+// release-health verdict of PASS for its newest promotion of R there (the
+// verdict `forge obs check` reports as exit 0). The order is declared, never
+// inferred: an empty After gates nothing, whatever the mode. `enforce`
+// refuses an unproven promotion unless it carries the recorded override;
+// `audit` admits it and records what enforce would have refused.
+type ShapeHealthGate struct {
+	Mode  DeliveryMode `json:"mode"`
+	After []string     `json:"after"`
 }
 
 // ShapeControl is a control with no parameters beyond its mode.
@@ -183,6 +201,15 @@ func (p ShapeDeliveryPolicy) canonical() ShapeDeliveryPolicy {
 	ex := append([]ShapeVulnExempt{}, p.VulnGate.Exemptions...)
 	sort.Slice(ex, func(i, j int) bool { return ex[i].ID < ex[j].ID })
 	out.VulnGate.Exemptions = ex
+	// The default gate (enforce, naming nothing) is the absence of one, so a
+	// policy that spells it out hashes as one that does not.
+	if p.HealthGate != nil {
+		g := ShapeHealthGate{Mode: p.HealthGate.Mode, After: sortedNonNil(p.HealthGate.After)}
+		out.HealthGate = &g
+		if g.Mode == DeliveryEnforce && len(g.After) == 0 {
+			out.HealthGate = nil
+		}
+	}
 	return out
 }
 
@@ -197,6 +224,9 @@ var (
 	deliveryDateRE     = regexp.MustCompile(`^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$`)
 	deliveryBuilderRE  = regexp.MustCompile(`^[a-z][a-z0-9-]*:[^\s:]\S*$`)
 	deliveryKindRE     = regexp.MustCompile(`^([a-z0-9][a-z0-9.-]*/)?[A-Z][A-Za-z0-9]*$`)
+	// deliveryEnvRE is an env name as health_gate.after names it: the
+	// directory under deploy/kcl, an RFC 1123 label.
+	deliveryEnvRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 )
 
 func vulnRank(s string) int {
@@ -351,6 +381,22 @@ func (p ShapeDeliveryPolicy) validate() error {
 			return bad("approvals names %q twice", who)
 		}
 		people[who] = true
+	}
+
+	if g := p.HealthGate; g != nil {
+		if !g.Mode.Valid() {
+			return bad("health_gate mode %q (expected off, audit or enforce)", g.Mode)
+		}
+		envs := map[string]bool{}
+		for _, env := range g.After {
+			if !deliveryEnvRE.MatchString(env) {
+				return bad("health_gate.after names %q, which is not an env name", env)
+			}
+			if envs[env] {
+				return bad("health_gate.after names %q twice", env)
+			}
+			envs[env] = true
+		}
 	}
 	return nil
 }

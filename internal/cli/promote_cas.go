@@ -253,6 +253,12 @@ func refusalHint(reason string) string {
 		return "this deploy destroys something that cannot be recreated by re-running it. Acknowledge each finding by code (--acknowledge-destructive <code>); --yes does not cover a stop-class finding."
 	case reasonBundleMissing:
 		return "the bundle's blob is no longer in the registry, so there are no bytes to apply. Re-build and re-record the bundle (`forge env build <env>`)."
+	case reasonHealthGateRegressed:
+		return "this release regressed in an env this one follows (delivery_policy.health_gate). Fix forward in a new release; to override for an incident, re-run with --override-health-gate \"<why>\" (recorded)."
+	case reasonHealthGateUnproven:
+		return "this release is not proven good in an env this one follows (delivery_policy.health_gate). Deploy it there and let it be judged, or re-run with --override-health-gate \"<why>\" (recorded)."
+	case reasonHealthGatePending:
+		return "an env this one follows runs this release but its health verdict is not in yet. Wait with `forge obs check <that env> --release <version> --wait`, then retry."
 	default:
 		return ""
 	}

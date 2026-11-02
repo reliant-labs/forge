@@ -212,7 +212,9 @@ runtime_config = {
 
 On `OnHosted` the references are kept in the published spec, and the platform
 writes `config.js` after every sync, so the release carries no `config.js` and
-promotes across envs unchanged.
+promotes across envs unchanged. There an `API_URL` that references a workload
+becomes `"/_api"`, which the platform serves on the site's own hosts
+(`deploy/hosting`): the browser never calls the API's hostname.
 
 Secrets do not belong in a static site: everything in `config.js` is public.
 A value that must stay secret belongs on a service (`forge secret set`).

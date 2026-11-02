@@ -1,6 +1,6 @@
 ---
 name: deploy/delivery-policy
-description: What an env's releases must prove before they ship — `forge.DeliveryPolicy`, the nine per-env controls (trusted builder, signing, provenance/SBOM, Flux verification, admission verification, signed promotions, vulnerability gate, bundle kinds, approvals), their off/audit/enforce modes and defaults, what is mandatory and NOT in the policy, and which controls are recorded but not enforced yet.
+description: What an env's releases must prove before they ship — `forge.DeliveryPolicy`, the per-env controls (trusted builder, signing, provenance/SBOM, Flux verification, admission verification, signed promotions, vulnerability gate, bundle kinds, approvals, the promotion health gate), their off/audit/enforce modes and defaults, what is mandatory and NOT in the policy, and which controls are recorded but not enforced yet.
 ---
 
 # Delivery policy
@@ -57,11 +57,45 @@ in the release path reads those signatures.)
 | `vuln_gate` | **audit** | a new advisory can block a release nobody changed | Grype over the SBOM at record and again at promote; see below | control-plane C12 | recorded, not enforced yet |
 | `bundle_kinds` | **audit** | a narrowing can reject a bundle that built yesterday | narrows the kinds a bundle may carry for this env (`allow` / `deny`), on top of the mandatory ingest baseline; empty lists narrow nothing | control-plane C19 (ingest) | recorded, not enforced yet |
 | `approvals` | **audit** | `enforce` makes every promotion wait for a person | a promotion stays pending until `required` distinct people approve; `--yes` cannot bypass it | control-plane C12 | recorded, not enforced yet |
+| `health_gate` | **enforce**, gating nothing until `after` names an env | the order is declared, never inferred: declaring `after` is the opt-in | a promotion of release R is refused until every env in `after` holds a PASS release-health verdict for R; see below | the control plane, at promote, in the promotion's transaction | **enforced** by a control plane that advertises `shape-health-gate`; recorded only by one that does not, and by a self-hosted env |
 
 The rule behind the defaults: **a control that cannot block a deploy and costs
 you nothing defaults to `enforce`; a control that can refuse a deploy defaults to
 `audit`**, and one line moves it to `enforce`. `audit` is the safe way to turn a
 blocking control on: read its would-deny verdicts for a while, then enforce.
+
+### `health_gate`
+
+```kcl
+# deploy/kcl/prod/main.k
+delivery_policy = forge.DeliveryPolicy {
+    health_gate = forge.HealthGate {after = ["staging"]}     # mode defaults to "enforce"
+}
+```
+
+prod takes release R only once staging has **proved R good**: the control plane
+holds a release-health verdict of PASS for staging's newest promotion of R. The
+verdict is the control plane's own — its release-health evaluator judges every
+promotion once the window closes (`release_health.window`, 15m by default, plus
+~2m to settle), with the rule `forge obs check` applies — so a client cannot
+skip it or supply it. The check runs inside the promotion's transaction.
+
+| staging's verdict for R | `obs check` exit | prod promote | reason (exit) |
+|---|---|---|---|
+| PASS | 0 | admitted; a `health_gate` gate is recorded on the promotion | — |
+| FAIL | 1 | refused | `health_gate_regressed` (1) |
+| INCONCLUSIVE, or R never ran on staging | 2 | refused | `health_gate_unproven` (4) |
+| not judged yet | 8 | refused | `health_gate_pending` (4): `forge obs check staging --release R --wait`, then retry |
+
+- A release prod itself already ran with a PASS is admitted without staging: a
+  rollback needs no detour.
+- `audit` admits and records what `enforce` would have refused.
+- **The incident override**: `forge env deploy prod R --override-health-gate
+  "<why>"`. It overrides this gate only, and the promotion's `health_gate` gate
+  records it: who, why, and what staging showed. (On the wire it is the
+  acknowledged code `health_gate` plus the note; the flag spells both.)
+- `after` may name several envs; each must have proved R. An env not in this
+  project's control plane, or a local one, never proves anything.
 
 ### `vuln_gate`
 

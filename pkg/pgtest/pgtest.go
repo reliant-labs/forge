@@ -88,6 +88,11 @@ type server struct {
 	baseURL string
 	baseDB  *sql.DB
 	release func()
+	// publicCreate is true on a server older than Postgres 15, where every
+	// new database lets PUBLIC create in the public schema unless its
+	// template says otherwise (revokePublicCreate). An embedded server's
+	// template1 already does; an external one's may not.
+	publicCreate bool
 }
 
 var (
@@ -165,7 +170,9 @@ func startServer() (*server, error) {
 	// Collect the scratch databases crashed processes left on this server
 	// (owner.go). Once per server per process, before this one adds its own.
 	sweepScratchOnce(db, baseURL)
-	return &server{baseURL: baseURL, baseDB: db, release: release}, nil
+	var version int
+	_ = db.QueryRow(`SELECT current_setting('server_version_num')::int`).Scan(&version)
+	return &server{baseURL: baseURL, baseDB: db, release: release, publicCreate: version > 0 && version < 150000}, nil
 }
 
 // Shutdown releases this process's shared-server reference: it closes the
@@ -323,7 +330,10 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 }
 
 // revokePublicCreate takes CREATE on the public schema away from PUBLIC, as
-// Postgres 15+ does by default and 14 does not. On 14 every role could create
+// Postgres 15+ does by default and 14 does not. pgtest runs it in every
+// database it creates on a pre-15 server: in template1 of the embedded one,
+// in each template it builds, and in each empty database New and NewURL
+// create (an external server's template1 is not pgtest's to change). On 14 every role could create
 // objects in public, which a migrator's read-only check on the dashboard role
 // (pkg/dbgrants) rightly refuses; a test database matches the newer default
 // instead. Best effort: a no-op on 15+, and a server whose role does not own
@@ -612,6 +622,11 @@ func newOnShared(template string) (*sql.DB, func(), error) {
 		_, _ = s.baseDB.Exec("DROP DATABASE IF EXISTS " + name)
 		return nil, nil, fmt.Errorf("pgtest: ping %s: %w", name, err)
 	}
+	// A copy keeps its template's ACL; an empty database gets the Postgres
+	// 15+ public schema whatever server it is on.
+	if template == "" && s.publicCreate {
+		revokePublicCreate(db)
+	}
 
 	// Capture the maintenance handle rather than the server struct: a caller
 	// that defers BOTH cleanup and Shutdown runs them in the natural order
@@ -653,7 +668,14 @@ func NewURL() (dsn string, cleanup func(), err error) {
 			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name)
 		_, _ = s.baseDB.Exec("DROP DATABASE IF EXISTS " + name)
 	}
-	return replaceDBName(s.baseURL, name), cleanup, nil
+	dsn = replaceDBName(s.baseURL, name)
+	if s.publicCreate {
+		if db, err := open(dsn); err == nil {
+			revokePublicCreate(db)
+			_ = db.Close()
+		}
+	}
+	return dsn, cleanup, nil
 }
 
 // NewAtURL creates a fresh, uniquely-named, empty database on the

@@ -95,6 +95,12 @@ const (
 	// dedicated frozen frontend declaration asset is permitted under forge/"),
 	// so forge uploads the catalog only to one that names it.
 	BundleFeatureServiceCatalog = "layer-service-catalog"
+	// BundleFeatureHealthGate is ShapeDeliveryPolicy.HealthGate: the envs a
+	// release must be proven good in before this env takes it
+	// (forge.HealthGate). A control plane that predates it gates nothing, so
+	// a shape carrying it is written only to one that names the feature,
+	// which is the control plane that enforces it.
+	BundleFeatureHealthGate = "shape-health-gate"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -102,7 +108,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -183,6 +189,11 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureDatabaseDashboards) {
 		s.Databases = nil
+	}
+	if !r.Supports(BundleFeatureHealthGate) && s.DeliveryPolicy != nil && s.DeliveryPolicy.HealthGate != nil {
+		pol := *s.DeliveryPolicy
+		pol.HealthGate = nil
+		s.DeliveryPolicy = &pol
 	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
 		return s

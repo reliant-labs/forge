@@ -186,12 +186,18 @@ whatever the expectation says, so a retried success is never a conflict.
 Exit codes (release deploys):
   0  deployed and healthy, or already on this release (no-op), or --plan /
      --plan-only, or a confirmation answered "no" (nothing was written)
-  1  failed: invalid input, unreadable ledger, release not found, DEGRADED
+  1  failed: invalid input, unreadable ledger, release not found, DEGRADED,
+     or health_gate_regressed — the release regressed in an env this one's
+     delivery_policy.health_gate follows
   2  undetermined — we could not look (the control plane was unreachable)
   3  promotion_conflict / source_moved — the env (or --from's source) moved
      since the plan was read. Stop and look; retrying would overwrite it
   4  rollout_in_flight / environment_pinned — declined, nothing lost. Wait
-     and retry, or pass --supersede (recorded) to replace an unfinished rollout
+     and retry, or pass --supersede (recorded) to replace an unfinished rollout.
+     Also health_gate_pending (the env it follows has no verdict for the
+     release yet: forge obs check <that env> --release <v> --wait) and
+     health_gate_unproven (inconclusive, or never ran there). An incident
+     overrides the health gate with --override-health-gate "<why>" (recorded)
   5  plan_unconfirmed — the plan was printed and nobody approved it: no
      terminal to prompt on and no --yes. NOTHING was promoted. Add --yes
   6  superseded — the env was promoted past the promotion being waited on
@@ -326,6 +332,11 @@ func newDeployCmd() *cobra.Command {
 			if len(args) == 2 {
 				apply.promote.version = args[1]
 			}
+			promote, err := apply.promote.withHealthGateOverride()
+			if err != nil {
+				return err
+			}
+			apply.promote = promote
 			return dispatchDeployCmd(cmd.Context(), args[0], apply)
 		},
 	}
@@ -399,6 +410,11 @@ type promoteCmdFlags struct {
 	// findings accepted, which --yes deliberately does not cover.
 	approve                string
 	acknowledgeDestructive []string
+	// overrideHealthGate is the recorded reason to promote past the env's
+	// promotion health gate (an incident). Sent as the acknowledged code
+	// healthGateAckCode with the reason as the note; see
+	// withHealthGateOverride.
+	overrideHealthGate string
 	// rerecordBundle replaces a release's bundle of record when this
 	// checkout renders different objects than the one recorded (see
 	// release_bundle_of_record.go). Off, such a render is refused.
@@ -460,6 +476,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Proceed only if the plan is EXACTLY this digest (from an earlier --plan-only). The stronger form of --yes, for a two-stage pipeline where a human reviews stage one's plan: a plan that changed between the stages is refused (exit 3, plan_stale) rather than re-approved blind. The digest also travels on the write, and the server recomputes the plan under the environment's row lock before admitting it")
 	flags.StringSliceVar(&f.acknowledgeDestructive, "acknowledge-destructive", nil,
 		"Accept the named stop-class finding codes (comma-separated), e.g. stateful_deletion. REQUIRED for every destructive change the plan reports, and --yes does not cover them: --yes is the flag that ends up hard-coded in CI, and one that covered destructive changes would silently pre-approve every future one. The codes are not knowable in advance — run --plan-only to see them")
+	flags.StringVar(&f.overrideHealthGate, "override-health-gate", "",
+		"Promote even though the env's health gate (delivery_policy.health_gate) refuses: an env it follows has not proved this release good. Give the reason; it is recorded on the promotion with who overrode it. For incidents — the gate's refusal says what is missing")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
 	flags.BoolVar(&f.skipHubCheck, "skip-hub-check", false,
 		"Record a hub-converged env's promotion even when its control plane's hub reports the reconciler failing. Without it, such a deploy is refused before anything is recorded")
@@ -839,6 +857,9 @@ func refusePromoteFlagsWithoutRelease(f promoteCmdFlags) error {
 	}
 	if f.rerecordBundle {
 		set = append(set, "--rerecord-bundle")
+	}
+	if f.overrideHealthGate != "" {
+		set = append(set, "--override-health-gate")
 	}
 	if len(set) == 0 {
 		return nil
@@ -5453,4 +5474,38 @@ func projectNameOf(cfg *config.ProjectConfig) string {
 		return ""
 	}
 	return cfg.Name
+}
+
+// healthGateAckCode is the acknowledged_findings code a control plane reads as
+// the promotion health gate's override (control-plane deploy.AckHealthGate).
+const healthGateAckCode = "health_gate"
+
+// withHealthGateOverride folds --override-health-gate into what the promote
+// already sends: the code in the acknowledged findings, the reason in the
+// note. That is the shape the control plane reads an override in — a code
+// named on purpose plus the reason written on the ledger — so the flag adds no
+// wire field, and `--acknowledge-destructive health_gate --note "<why>"` is the
+// same request spelled by hand.
+//
+// A --note given as well is kept, and the reason follows it, so the ledger's
+// one note says both what the deploy is and why the gate was overridden.
+func (f promoteCmdFlags) withHealthGateOverride() (promoteCmdFlags, error) {
+	reason := strings.TrimSpace(f.overrideHealthGate)
+	if f.overrideHealthGate != "" && reason == "" {
+		return f, fmt.Errorf("--override-health-gate needs the reason: it is recorded on the promotion, with who overrode the gate")
+	}
+	// No release, no promotion to override on: refusePromoteFlagsWithoutRelease
+	// names the flag, and the note must not look as though it was given too.
+	if reason == "" || !f.requestedRelease() {
+		return f, nil
+	}
+	if !slices.Contains(f.acknowledgeDestructive, healthGateAckCode) {
+		f.acknowledgeDestructive = append(slices.Clone(f.acknowledgeDestructive), healthGateAckCode)
+	}
+	if note := strings.TrimSpace(f.note); note != "" {
+		f.note = note + " — health gate overridden: " + reason
+	} else {
+		f.note = "health gate overridden: " + reason
+	}
+	return f, nil
 }

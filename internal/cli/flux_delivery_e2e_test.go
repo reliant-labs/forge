@@ -156,7 +156,9 @@ func TestE2EFluxDeliverySelfHosted(t *testing.T) {
 	// ── 4. The backstop: a grant taken away, Flux's Forbidden mapped ─────
 	e.revokeWidgetGrant()
 	e.kickPreTree()
-	out, code = e.forge(e.adminConfig, "env", "status", fluxDeliveryE2EEnv, "--wait", "--timeout", "4m")
+	// --fail-fast: the default wait tolerates the failure until its deadline
+	// (Flux retries, and the grant may land); this asks for it at once.
+	out, code = e.forge(e.adminConfig, "env", "status", fluxDeliveryE2EEnv, "--wait", "--fail-fast", "--timeout", "4m")
 	if code != exitWrong || !strings.Contains(out, "Ask a cluster admin to run:   forge env deploy "+fluxDeliveryE2EEnv+" --target flux-delivery") ||
 		!strings.Contains(out, "e2e.forge.dev/widgets") {
 		t.Errorf("status --wait on a Forbidden apply: exit %d, want 1 with the grant message\n%s", code, out)

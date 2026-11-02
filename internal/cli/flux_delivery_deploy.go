@@ -170,18 +170,24 @@ func checkFluxDeliveryInput(in fluxdelivery.BindingInput, fd FluxDeliveryEntity)
 	if err := fluxdelivery.ValidateSelfHosted(in, mode); err != nil {
 		return err
 	}
-	pointer, err := fluxdelivery.InputProvider(in)
-	if err != nil {
-		return err
-	}
-	values, _, _ := unstructured.NestedMap(pointer, "spec", "defaultValues")
-	objs, err := fluxdelivery.Render(fluxDeliveryResourceSet(fd), fluxdelivery.Provider{
-		Name: fluxdelivery.InputProviderName(in.Env, in.Binding), Inputs: []map[string]any{values},
-	})
+	objs, err := renderFluxDeliveryInput(in, fd)
 	if err != nil {
 		return err
 	}
 	return fluxdelivery.CheckRenderedSelfHosted(in, objs, mode)
+}
+
+// renderFluxDeliveryInput is what the bootstrap's ResourceSet renders for in,
+// read through the pointer exactly as flux-operator reads it.
+func renderFluxDeliveryInput(in fluxdelivery.BindingInput, fd FluxDeliveryEntity) ([]*unstructured.Unstructured, error) {
+	pointer, err := fluxdelivery.InputProvider(in)
+	if err != nil {
+		return nil, err
+	}
+	values, _, _ := unstructured.NestedMap(pointer, "spec", "defaultValues")
+	return fluxdelivery.Render(fluxDeliveryResourceSet(fd), fluxdelivery.Provider{
+		Name: fluxdelivery.InputProviderName(in.Env, in.Binding), Inputs: []map[string]any{values},
+	})
 }
 
 // fluxDeliveryResourceSet is the ResourceSet the bootstrap installs (kcl's
@@ -446,7 +452,7 @@ func followFluxDelivery(ctx context.Context, env string, plan promotePlan, ledge
 		o.notice("\nRecorded and pointed. %s is converged by the Flux in its cluster; gate on it with: forge env status %s --wait\n", env, env)
 		return nil
 	}
-	return waitFluxDelivery(ctx, env, rel.version, rel.fd, in, o.Timeout, func(f string, a ...any) { o.notice(f, a...) })
+	return waitFluxDelivery(ctx, env, rel.version, rel.fd, in, o.Timeout, fluxWaitPace{failFast: o.FailFast}, func(f string, a ...any) { o.notice(f, a...) })
 }
 
 // fluxDeliveryPointAttempts bounds how often a pointer write re-reads after
@@ -771,18 +777,34 @@ const (
 	fluxDeliveryWaitInterval = 3 * time.Second
 )
 
+// fluxWaitPace is how a flux wait polls: its cadence (0:
+// fluxDeliveryWaitInterval) and whether the first failure Flux reports ends
+// it (--fail-fast).
+type fluxWaitPace struct {
+	interval time.Duration
+	failFast bool
+}
+
 // waitFluxDelivery polls until every applier of in has applied its digest and
 // is Ready (nil), Flux reports a failure for it (exit 1), or the budget runs
 // out (exit 8).
-func waitFluxDelivery(ctx context.Context, env, rel string, fd FluxDeliveryEntity, in fluxdelivery.BindingInput, budget time.Duration, notice func(string, ...any)) error {
-	_, err := waitFluxDeliveryObserved(ctx, env, rel, fd, in, budget, 0, notice)
+//
+// NOT FAIL-FAST BY DEFAULT, like every other `--wait` (env_wait.go, owner
+// ruling Q4): a Kustomization whose health check fails once on a cold start
+// and then settles is ordinary, and Flux retries it on its own. A failure is
+// tolerated until the deadline, which turns one still reported then into
+// exit 1; pace.failFast returns it at once. A renderer Stalled on this input
+// is terminal either way: flux-operator does not retry an input it cannot
+// render, so only a new pointer changes it.
+func waitFluxDelivery(ctx context.Context, env, rel string, fd FluxDeliveryEntity, in fluxdelivery.BindingInput, budget time.Duration, pace fluxWaitPace, notice func(string, ...any)) error {
+	_, err := waitFluxDeliveryObserved(ctx, env, rel, fd, in, budget, pace, notice)
 	return err
 }
 
 // waitFluxDeliveryObserved is waitFluxDelivery, also returning the last
 // observation (zero when none was made) for a caller that reports it.
-// interval is the poll cadence (0: fluxDeliveryWaitInterval).
-func waitFluxDeliveryObserved(ctx context.Context, env, rel string, fd FluxDeliveryEntity, in fluxdelivery.BindingInput, budget, interval time.Duration, notice func(string, ...any)) (fluxDeliveryObservation, error) {
+func waitFluxDeliveryObserved(ctx context.Context, env, rel string, fd FluxDeliveryEntity, in fluxdelivery.BindingInput, budget time.Duration, pace fluxWaitPace, notice func(string, ...any)) (fluxDeliveryObservation, error) {
+	interval := pace.interval
 	if budget <= 0 {
 		budget = fluxDeliveryWaitDefault
 	}
@@ -805,14 +827,24 @@ func waitFluxDeliveryObserved(ctx context.Context, env, rel string, fd FluxDeliv
 			notice("  converged: %s in %s\n", obs.summary(in), time.Since(started).Round(time.Second))
 			return obs, nil
 		}
-		if err := obs.failure(env, rel, in); err != nil {
-			return obs, err
+		failed := obs.failure(env, rel, in)
+		if failed != nil && (pace.failFast || obs.rendererStalledOnInput()) {
+			return obs, failed
 		}
-		if line := obs.summary(in); line != last {
+		line := obs.summary(in)
+		if failed != nil {
+			// Tolerated: Flux retries it, and the deadline decides.
+			line = "degraded: " + strings.ReplaceAll(failed.Error(), "\n", "; ")
+		}
+		if line != last {
 			notice("  %s\n", line)
 			last = line
 		}
 		if !time.Now().Before(deadline) {
+			if failed != nil {
+				notice("  still failing when the %s budget ran out\n", budget)
+				return obs, failed
+			}
 			return obs, exitCodeError{code: exitTimedOut, msg: fmt.Sprintf(
 				"env %s did not converge to %s within %s: %s.\n"+
 					"  Its Flux keeps reconciling; `forge env status %s --wait` keeps waiting, and\n"+
@@ -845,9 +877,8 @@ func fluxDeliveryOfEnv(ctx context.Context, projectDir, env string) (*FluxDelive
 
 // checkFluxDeliveryWaitOptions refuses the `--wait` options a flux env's wait
 // cannot honour, before it waits: silently dropping one would report success
-// on terms the caller did not ask for. --fail-fast is already the flux wait's
-// only behaviour (it returns at the first failure Flux reports), and
-// --interval is the poll cadence.
+// on terms the caller did not ask for. --fail-fast and --interval are honoured
+// (fluxWaitPace).
 func checkFluxDeliveryWaitOptions(env string, opts envWaitOptions) error {
 	var unsupported []string
 	if opts.StableFor > 0 {
@@ -932,7 +963,7 @@ func waitFluxDeliveryCurrent(ctx context.Context, env string, fd FluxDeliveryEnt
 		if err := checkFluxDeliveryWaitTarget(env, opts, *report.Promotion); err != nil {
 			return err
 		}
-		obs, err := waitFluxDeliveryObserved(ctx, env, report.Promotion.Release, fd, in, budget, opts.Interval, notice)
+		obs, err := waitFluxDeliveryObserved(ctx, env, report.Promotion.Release, fd, in, budget, fluxWaitPace{interval: opts.Interval, failFast: opts.FailFast}, notice)
 		report.Workloads = fluxDeliveryWaitRows(obs, in.Source.Digest)
 		if len(obs.Appliers) > 0 {
 			report.Reason = obs.summary(in)

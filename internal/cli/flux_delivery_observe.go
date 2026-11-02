@@ -72,9 +72,8 @@ type fluxObjectStatus struct {
 	// Fence is an OCIRepository's fluxdelivery.FenceAnnotation: the fence of
 	// the input the renderer last rendered into it.
 	Fence string `json:"fence,omitempty"`
-	// SpecMatches is true when a Kustomization's spec is the one the
-	// observed input renders for it (source, path, identity, target
-	// namespace, deletion policy).
+	// SpecMatches is true when a Kustomization's spec is, field for field,
+	// the one the observed input renders for it (fluxApplierSpecMatches).
 	SpecMatches bool `json:"spec_matches,omitempty"`
 }
 
@@ -294,6 +293,17 @@ func fluxDeliveryForbidden(message string) []fluxDeliveryPermission {
 	return out
 }
 
+// fluxDeliveryKubectl runs one read-only kubectl against fd's cluster and
+// delivery namespace and returns its stdout. A var so the reader is testable
+// down to the arguments it passes, without a cluster.
+var fluxDeliveryKubectl = func(ctx context.Context, fd FluxDeliveryEntity, args ...string) ([]byte, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", append([]string{"--context", fd.Cluster, "-n", fd.Namespace}, args...)...).Output()
+	if err != nil {
+		return nil, kubectlErr(err)
+	}
+	return out, nil
+}
+
 // fluxDeliveryObserve reads the delivery. A var so the wait and status are
 // testable without a cluster.
 var fluxDeliveryObserve = func(ctx context.Context, fd FluxDeliveryEntity, in fluxdelivery.BindingInput) (fluxDeliveryObservation, error) {
@@ -301,11 +311,10 @@ var fluxDeliveryObserve = func(ctx context.Context, fd FluxDeliveryEntity, in fl
 		Renderer: fluxObjectStatus{Name: fd.ResourceSet},
 		Source:   fluxObjectStatus{Name: in.Source.Name},
 	}
-	get := func(resource string) (map[string]map[string]any, error) {
-		out, err := exec.CommandContext(ctx, "kubectl", "--context", fd.Cluster, "-n", fd.Namespace,
-			"get", resource, "-o", "json").Output()
+	get := func(resource string, extra ...string) (map[string]map[string]any, error) {
+		out, err := fluxDeliveryKubectl(ctx, fd, append([]string{"get", resource, "-o", "json"}, extra...)...)
 		if err != nil {
-			return nil, fmt.Errorf("read %s in %s on %s: %w", resource, fd.Namespace, fd.Cluster, kubectlErr(err))
+			return nil, fmt.Errorf("read %s in %s on %s: %w", resource, fd.Namespace, fd.Cluster, err)
 		}
 		var list struct {
 			Items []map[string]any `json:"items"`
@@ -321,7 +330,10 @@ var fluxDeliveryObserve = func(ctx context.Context, fd FluxDeliveryEntity, in fl
 		}
 		return byName, nil
 	}
-	pointers, err := get("resourcesetinputproviders.fluxcd.controlplane.io")
+	// kubectl omits metadata.managedFields unless asked, and they are the
+	// pointer's write time (lastWrittenAt): without them no renderer stall
+	// could ever be dated after the write, so none would be attributed.
+	pointers, err := get("resourcesetinputproviders.fluxcd.controlplane.io", "--show-managed-fields")
 	if err != nil {
 		return obs, err
 	}
@@ -473,8 +485,10 @@ func fluxStatusOf(name string, obj map[string]any) fluxObjectStatus {
 	}
 	s.Found = true
 	gen, _ := nested(obj, "metadata", "generation").(float64)
-	observed, _ := nested(obj, "status", "observedGeneration").(float64)
-	s.Current = gen == 0 || observed == gen
+	// The toolkit controllers report status.observedGeneration; flux-operator's
+	// ResourceSet has none, and dates each condition instead
+	// (conditions[].observedGeneration), so its Ready's stands in for it.
+	observed, hasObserved := nested(obj, "status", "observedGeneration").(float64)
 	s.LastApplied, _ = nested(obj, "status", "lastAppliedRevision").(string)
 	s.LastAttempted, _ = nested(obj, "status", "lastAttemptedRevision").(string)
 	conds, _ := nested(obj, "status", "conditions").([]any)
@@ -484,6 +498,9 @@ func fluxStatusOf(name string, obj map[string]any) fluxObjectStatus {
 		status, _ := cm["status"].(string)
 		switch typ {
 		case "Ready":
+			if !hasObserved {
+				observed, _ = cm["observedGeneration"].(float64)
+			}
 			s.Ready = status
 			s.Reason, _ = cm["reason"].(string)
 			s.Message, _ = cm["message"].(string)
@@ -494,6 +511,7 @@ func fluxStatusOf(name string, obj map[string]any) fluxObjectStatus {
 			}
 		}
 	}
+	s.Current = gen == 0 || observed == gen
 	return s
 }
 

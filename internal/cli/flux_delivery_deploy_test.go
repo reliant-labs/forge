@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -462,7 +464,9 @@ func TestWaitFluxDeliveryCurrentJSON(t *testing.T) {
 		}
 		out.Reset()
 		progress.Reset()
-		err := waitFluxDeliveryCurrent(ctx, "prod", rel.fd, time.Minute, envWaitOptions{JSON: true}, &out, &progress)
+		// A budget spent at the first poll: the failure is not fail-fast, so
+		// it is the verdict only once the deadline passes still failing.
+		err := waitFluxDeliveryCurrent(ctx, "prod", rel.fd, time.Nanosecond, envWaitOptions{JSON: true}, &out, &progress)
 		var doc envWaitReport
 		if jerr := json.Unmarshal(out.Bytes(), &doc); jerr != nil {
 			t.Fatalf("%s: stdout is not one JSON document: %v\n%s", tc.name, jerr, out.String())
@@ -681,9 +685,10 @@ func TestFluxDeliverySameDigestNewFence(t *testing.T) {
 	}
 }
 
-// TestFluxApplierSpecMatches: a Kustomization matches only the spec the
-// input renders for it.
-func TestFluxApplierSpecMatches(t *testing.T) {
+// TestFluxSpecMatches: a Kustomization matches only the whole spec the input
+// renders for it — suspension, dependencies and health checks included — and
+// a field the render omits matches only absent or zero.
+func TestFluxSpecMatches(t *testing.T) {
 	t.Parallel()
 	in, _ := fluxRelease(true).input("2", "promo-2")
 	a := in.Appliers[0]
@@ -794,6 +799,50 @@ func TestFluxDeliveryReactivatedApplierAtSameDigest(t *testing.T) {
 	}
 }
 
+// TestFluxKustomizationCRDDefaultsAreZero pins fluxApplierSpecMatches' premise: a
+// field the render omits must be absent or zero live, which the API server
+// keeps only while every default the Kustomization CRD declares is a zero
+// value. A Flux upgrade that adds a non-zero default must widen the match.
+func TestFluxKustomizationCRDDefaultsAreZero(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "pkg", "fluxdelivery", "testdata", "crds", "kustomization-kustomize-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := nested(schema, "properties", "spec").(map[string]any)
+	if spec == nil {
+		t.Fatal("the CRD schema has no spec")
+	}
+	var walk func(path string, v any)
+	defaults := 0
+	walk = func(path string, v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			if d, ok := x["default"]; ok {
+				defaults++
+				if !fluxSpecZero(d) {
+					t.Errorf("spec%s defaults to %v, which a render that omits it would not match", path, d)
+				}
+			}
+			for k, c := range x {
+				walk(path+"."+k, c)
+			}
+		case []any:
+			for i, c := range x {
+				walk(fmt.Sprintf("%s[%d]", path, i), c)
+			}
+		}
+	}
+	walk("", spec)
+	if defaults == 0 {
+		t.Fatal("found no defaults: the walk is not reading the schema")
+	}
+}
+
 // TestLastWrittenAt: the pointer's write time is its latest managedFields
 // entry.
 func TestLastWrittenAt(t *testing.T) {
@@ -828,18 +877,25 @@ func TestWaitFluxDelivery(t *testing.T) {
 			return fluxObjectStatus{Name: a.Name, Found: true, Ready: "True", Current: true, LastApplied: d, LastAttempted: d}
 		}), nil
 	}
-	if err := waitFluxDelivery(context.Background(), "prod", "v2", rel.fd, in, time.Minute, quiet); err != nil || calls != 1 {
+	if err := waitFluxDelivery(context.Background(), "prod", "v2", rel.fd, in, time.Minute, fluxWaitPace{}, quiet); err != nil || calls != 1 {
 		t.Fatalf("converged: err = %v after %d reads", err, calls)
 	}
 
+	calls = 0
 	fluxDeliveryObserve = func(context.Context, FluxDeliveryEntity, fluxdelivery.BindingInput) (fluxDeliveryObservation, error) {
+		calls++
 		return observed(in, func(a fluxdelivery.Applier) fluxObjectStatus {
 			return fluxObjectStatus{Name: a.Name, Found: true, Ready: "False", Reason: "ReconciliationFailed", Message: forbiddenMessage, Current: true, LastAttempted: d}
 		}), nil
 	}
 	var refusal *fluxDeliveryGrantRefusal
-	if err := waitFluxDelivery(context.Background(), "prod", "v2", rel.fd, in, time.Minute, quiet); !errors.As(err, &refusal) {
-		t.Fatalf("forbidden: err = %v, want the grant refusal", err)
+	if err := waitFluxDelivery(context.Background(), "prod", "v2", rel.fd, in, time.Minute, fluxWaitPace{failFast: true}, quiet); !errors.As(err, &refusal) || calls != 1 {
+		t.Fatalf("forbidden, --fail-fast: err = %v after %d reads, want the grant refusal at the first", err, calls)
+	}
+	// Without --fail-fast a failure still reported at the deadline is the
+	// verdict (exit 1, in Flux's words), not a timeout.
+	if err := waitFluxDelivery(context.Background(), "prod", "v2", rel.fd, in, time.Nanosecond, fluxWaitPace{}, quiet); !errors.As(err, &refusal) || exitcode.Of(err) != exitWrong {
+		t.Fatalf("forbidden at the deadline: err = %v (exit %d), want the grant refusal, exit 1", err, exitcode.Of(err))
 	}
 
 	fluxDeliveryObserve = func(context.Context, FluxDeliveryEntity, fluxdelivery.BindingInput) (fluxDeliveryObservation, error) {
@@ -847,8 +903,57 @@ func TestWaitFluxDelivery(t *testing.T) {
 			return fluxObjectStatus{Name: a.Name, Found: true, Ready: "Unknown", Reason: "Progressing", Current: true}
 		}), nil
 	}
-	if err := waitFluxDelivery(context.Background(), "prod", "v2", rel.fd, in, time.Nanosecond, quiet); exitcode.Of(err) != exitTimedOut {
+	if err := waitFluxDelivery(context.Background(), "prod", "v2", rel.fd, in, time.Nanosecond, fluxWaitPace{}, quiet); exitcode.Of(err) != exitTimedOut {
 		t.Fatalf("still progressing at the deadline: err = %v (exit %d), want exit 8", err, exitcode.Of(err))
+	}
+}
+
+// TestWaitFluxDeliveryToleratesARecoveredFailure: the default wait is not
+// fail-fast (owner ruling Q4) — a health check that fails once and then
+// settles converges — while --fail-fast ends it at the first failure, and a
+// renderer Stalled on the input ends it either way. Not parallel: it swaps
+// the seam.
+func TestWaitFluxDeliveryToleratesARecoveredFailure(t *testing.T) {
+	rel := fluxRelease(true)
+	in, _ := rel.input("2", "promo-2")
+	d := in.Source.Digest
+	prev := fluxDeliveryObserve
+	t.Cleanup(func() { fluxDeliveryObserve = prev })
+	quiet := func(string, ...any) {}
+	polls := 0
+	fluxDeliveryObserve = func(context.Context, FluxDeliveryEntity, fluxdelivery.BindingInput) (fluxDeliveryObservation, error) {
+		polls++
+		if polls == 1 {
+			return observed(in, func(a fluxdelivery.Applier) fluxObjectStatus {
+				return fluxObjectStatus{Name: a.Name, Found: true, Ready: "False", Reason: "HealthCheckFailed",
+					Message: "timeout waiting for: [Deployment/acme-prod/api status: 'InProgress']", Current: true, LastAttempted: d}
+			}), nil
+		}
+		return observed(in, func(a fluxdelivery.Applier) fluxObjectStatus {
+			return fluxObjectStatus{Name: a.Name, Found: true, Ready: "True", Current: true, LastApplied: d, LastAttempted: d}
+		}), nil
+	}
+	pace := fluxWaitPace{interval: time.Millisecond}
+	if _, err := waitFluxDeliveryObserved(context.Background(), "prod", "v2", rel.fd, in, time.Minute, pace, quiet); err != nil || polls != 2 {
+		t.Fatalf("default wait: err = %v after %d polls, want convergence at the second", err, polls)
+	}
+	polls = 0
+	pace.failFast = true
+	if _, err := waitFluxDeliveryObserved(context.Background(), "prod", "v2", rel.fd, in, time.Minute, pace, quiet); exitcode.Of(err) != exitWrong || polls != 1 {
+		t.Fatalf("--fail-fast: err = %v (exit %d) after %d polls, want exit 1 at the first", err, exitcode.Of(err), polls)
+	}
+
+	polls = 0
+	fluxDeliveryObserve = func(context.Context, FluxDeliveryEntity, fluxdelivery.BindingInput) (fluxDeliveryObservation, error) {
+		polls++
+		o := observed(in, func(a fluxdelivery.Applier) fluxObjectStatus {
+			return fluxObjectStatus{Name: a.Name, Found: true, Ready: "Unknown", Reason: "Progressing", Current: true}
+		})
+		o.Renderer.Stalled, o.Renderer.Reason, o.Renderer.StalledSince = true, "BuildFailed", pointerWrittenAt.Add(time.Second)
+		return o, nil
+	}
+	if _, err := waitFluxDeliveryObserved(context.Background(), "prod", "v2", rel.fd, in, time.Minute, fluxWaitPace{interval: time.Millisecond}, quiet); exitcode.Of(err) != exitWrong || polls != 1 {
+		t.Fatalf("a renderer stalled on the input: err = %v (exit %d) after %d polls, want exit 1 at the first", err, exitcode.Of(err), polls)
 	}
 }
 
@@ -888,7 +993,7 @@ func TestWaitFluxDeliverySupersededMidWait(t *testing.T) {
 			o.Pointer = tc.pointer
 			return o, nil
 		}
-		_, err := waitFluxDeliveryObserved(context.Background(), "prod", "v2", rel.fd, in, time.Minute, time.Millisecond, quiet)
+		_, err := waitFluxDeliveryObserved(context.Background(), "prod", "v2", rel.fd, in, time.Minute, fluxWaitPace{interval: time.Millisecond}, quiet)
 		if exitcode.Of(err) != exitSuperseded || polls != 2 {
 			t.Errorf("%s: err = %v (exit %d) after %d polls, want exit 6 after 2", tc.name, err, exitcode.Of(err), polls)
 		}

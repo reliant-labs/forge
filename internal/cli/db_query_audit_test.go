@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/dbquery"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // readDBQueryAudit returns the records of env in the current project.
@@ -105,9 +107,7 @@ func TestDBQueryAuditorAppendsOneLinePerAttempt(t *testing.T) {
 // statement and its hash, the outcome and the row count, the refused write
 // included. The connection carries the record's id as its application_name.
 func TestDBQueryDirectWritesAnAuditRecord(t *testing.T) {
-	if testing.Short() {
-		t.Skip("boots a real postgres (pgtest); runs in task test")
-	}
+	testkit.Slow(t, "boots a real postgres (pgtest)")
 	dsn, cleanup, err := pgtest.NewURL()
 	if err != nil {
 		t.Fatalf("pgtest.NewURL: %v", err)
@@ -161,9 +161,7 @@ func TestDBQueryDirectWritesAnAuditRecord(t *testing.T) {
 // leaves no record; --allow-writable-role reads as it and the record says
 // so; a SELECT-only role needs no flag.
 func TestDBQueryRealEnvRefusesAWritableRole(t *testing.T) {
-	if testing.Short() {
-		t.Skip("boots a real postgres (pgtest); runs in task test")
-	}
+	testkit.Slow(t, "boots a real postgres (pgtest)")
 	dsn, cleanup, err := pgtest.NewURL()
 	if err != nil {
 		t.Fatalf("pgtest.NewURL: %v", err)
@@ -175,7 +173,11 @@ func TestDBQueryRealEnvRefusesAWritableRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = admin.Close(ctx) })
-	reader := fmt.Sprintf("fbq_ro_%d", time.Now().UnixNano())
+	sfx := make([]byte, 8)
+	if _, err := rand.Read(sfx); err != nil {
+		t.Fatal(err)
+	}
+	reader := "fbq_ro_" + hex.EncodeToString(sfx)
 	if _, err := admin.Exec(ctx, fmt.Sprintf(`CREATE TABLE jobs (id int PRIMARY KEY); INSERT INTO jobs VALUES (1);
 		CREATE ROLE %s LOGIN PASSWORD 'pw'; GRANT SELECT ON jobs TO %s`, reader, reader)); err != nil {
 		t.Fatal(err)

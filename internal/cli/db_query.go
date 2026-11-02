@@ -137,8 +137,9 @@ an audited one is open to people only (and to a db:query grant).
 
 A real env (lifecycle neither local nor ephemeral) is read only as a role that
 cannot write: forge asks the server what the role it signed in as can do, and
-refuses one with a write grant, an owned relation, a role attribute or a
-predefined role such as pg_signal_backend. forge_ro and a SELECT-only
+refuses one with a write grant, an owned relation, a sequence it may advance,
+a SECURITY DEFINER function it may execute, CREATE on a schema or the
+database, a role attribute or a predefined role such as pg_signal_backend. forge_ro and a SELECT-only
 ExternalDatabase username pass; a workload's own DATABASE_URL does not.
 --allow-writable-role reads as such a role anyway.
 

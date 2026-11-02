@@ -24,8 +24,9 @@ type Role struct {
 	// Writes lists what makes the role more than a reader, in a stable
 	// order: role attributes (SUPERUSER, CREATEROLE, CREATEDB, REPLICATION,
 	// BYPASSRLS), predefined roles it can act as (pg_signal_backend,
-	// pg_write_all_data, ...), and relations it owns or may write. Empty
-	// means a reader.
+	// pg_write_all_data, ...), relations it owns or may write, sequences it
+	// may advance, SECURITY DEFINER functions it may execute, and schemas or
+	// a database it may create in. Empty means a reader.
 	Writes []string `json:"writes,omitempty"`
 }
 
@@ -52,6 +53,14 @@ var powerRoles = []string{
 // the app role is still the app role. Ownership of a relation is counted
 // separately from write grants because an owner can grant itself anything
 // and ALTER or DROP the relation.
+//
+// Table grants are not the only way to write. A SECURITY DEFINER function
+// runs as its owner, so EXECUTE on one is whatever that owner can do; USAGE
+// or UPDATE on a sequence advances or resets it; CREATE on a schema or on the
+// database adds objects. Each counts. SECURITY DEFINER functions in
+// pg_catalog and information_schema are the server's own and are not counted.
+// The privilege checks sit under CASE because SQL does not short-circuit AND:
+// has_sequence_privilege errors on a relation that is not a sequence.
 const roleProbe = `
 WITH me AS (
   SELECT r.rolname, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls
@@ -62,6 +71,11 @@ WITH me AS (
    WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
      AND n.nspname NOT IN ('pg_catalog', 'information_schema')
      AND n.nspname !~ '^pg_toast'
+), user_ns AS (
+  SELECT n.oid FROM pg_catalog.pg_namespace n
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+     AND n.nspname !~ '^pg_toast'
+     AND n.nspname !~ '^pg_temp_'
 )
 SELECT me.rolname, me.rolsuper, me.rolcreaterole, me.rolcreatedb, me.rolreplication, me.rolbypassrls,
        ARRAY(SELECT p.rolname::text FROM pg_catalog.pg_roles p
@@ -70,7 +84,15 @@ SELECT me.rolname, me.rolsuper, me.rolcreaterole, me.rolcreatedb, me.rolreplicat
        (SELECT count(*) FROM rels WHERE pg_catalog.pg_has_role(current_user, rels.relowner, 'MEMBER')),
        (SELECT count(*) FROM rels
          WHERE pg_catalog.has_table_privilege(rels.oid, 'INSERT, UPDATE, DELETE, TRUNCATE')
-            OR pg_catalog.has_any_column_privilege(rels.oid, 'INSERT, UPDATE'))
+            OR pg_catalog.has_any_column_privilege(rels.oid, 'INSERT, UPDATE')),
+       (SELECT count(*) FROM pg_catalog.pg_class c
+         WHERE CASE WHEN c.relkind = 'S' AND c.relnamespace IN (SELECT oid FROM user_ns)
+                    THEN pg_catalog.has_sequence_privilege(c.oid, 'USAGE, UPDATE') END),
+       (SELECT count(*) FROM pg_catalog.pg_proc p
+         WHERE CASE WHEN p.prosecdef AND p.pronamespace IN (SELECT oid FROM user_ns)
+                    THEN pg_catalog.has_function_privilege(p.oid, 'EXECUTE') END),
+       (SELECT count(*) FROM user_ns WHERE pg_catalog.has_schema_privilege(user_ns.oid, 'CREATE')),
+       pg_catalog.has_database_privilege(pg_catalog.current_database(), 'CREATE')
   FROM me`
 
 // InspectRole reports what the connected role could do beyond reading. It
@@ -97,10 +119,12 @@ func InspectRole(ctx context.Context, db Beginner) (Role, error) {
 		r                                         Role
 		super, createRole, createDB, repl, bypass bool
 		power                                     []string
-		owned, writable                           int64
+		owned, writable, seqs, definers, schemas  int64
+		createInDB                                bool
 	)
 	if err := tx.QueryRow(ctx, roleProbe, powerRoles).Scan(
 		&r.Name, &super, &createRole, &createDB, &repl, &bypass, &power, &owned, &writable,
+		&seqs, &definers, &schemas, &createInDB,
 	); err != nil {
 		return Role{}, classify(err)
 	}
@@ -121,6 +145,18 @@ func InspectRole(ctx context.Context, db Beginner) (Role, error) {
 	}
 	if writable > 0 {
 		r.Writes = append(r.Writes, fmt.Sprintf("may write %d relations", writable))
+	}
+	if seqs > 0 {
+		r.Writes = append(r.Writes, fmt.Sprintf("may advance %d sequences", seqs))
+	}
+	if definers > 0 {
+		r.Writes = append(r.Writes, fmt.Sprintf("may execute %d SECURITY DEFINER functions", definers))
+	}
+	if schemas > 0 {
+		r.Writes = append(r.Writes, fmt.Sprintf("may create in %d schemas", schemas))
+	}
+	if createInDB {
+		r.Writes = append(r.Writes, "may create schemas in the database")
 	}
 	return r, nil
 }

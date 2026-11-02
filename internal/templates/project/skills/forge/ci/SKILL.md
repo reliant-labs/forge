@@ -143,6 +143,16 @@ read when the workflow is scaffolded; with several, the first auto-deploys
 after a green image build on main and the last is protected. A lone env is
 never auto-deployed.
 
+**A later env may be health-gated on the earlier one.** When the protected
+env's KCL declares `delivery_policy.health_gate.after = ["staging"]`, the
+control plane refuses its promotion until staging's recorded release-health
+verdict for that release is PASS — no flag in the workflow can skip it. Have
+the job wait for the evidence first (`forge obs check staging --release <v>
+--wait`), and branch on the refusal: exit **4** with `health_gate_pending` is
+"retry later", exit **1** with `health_gate_regressed` is a bad release. The
+only bypass is a human's `--override-health-gate "<why>"`, recorded; never
+hard-code it in a workflow. See `deploy/delivery-policy`.
+
 Credentials: an env with `forge.OnCluster` workloads needs `secrets.KUBECONFIG` holding a
 context named exactly the ClusterTarget's `cluster`; `forge.OnHosted`
 workloads need `secrets.FORGE_CONTROL_PLANE_TOKEN` (for the env's

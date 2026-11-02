@@ -127,6 +127,8 @@ release_health = forge.ReleaseHealth {
 
 `--gate-json FILE` writes the evidence `forge gate record --from` attaches to the promotion.
 
+**The control plane records its own verdict.** For an env on a control plane, its release-health evaluator judges every promotion once the after window closes and settles (~2m), with the same rule and the env's declared policy (no `--threshold`/`--fail-on` overrides), and stores it once per promotion, append-only: `pass`, `fail` or `inconclusive` — the verdicts `obs check` reports as 0, 1 and 2. A FAIL raises `ReleaseRegressed`. That stored verdict, not the CLI's exit code, is what the **promotion health gate** reads: an env declaring `delivery_policy.health_gate.after = ["staging"]` refuses a release until staging's verdict for it is `pass` (`deploy/delivery-policy`). So in a staging → prod pipeline, `forge obs check staging --release <v> --wait` is how to wait for the evidence prod's promotion needs; its exit code tells you what the gate will see, and loosening it with `--threshold` or `--allow-inconclusive` changes nothing on the server.
+
 ## Investigate a user session
 
 "A user hit a bug" is a reproduction, not a stack trace. The session timeline is what they did, in order.

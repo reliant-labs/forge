@@ -19,9 +19,10 @@ func TestPartitionChartPrerequisites(t *testing.T) {
 		"apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  name: crd-controller",
 		"apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: guard",
 		"apiVersion: scheduling.k8s.io/v1\nkind: PriorityClass\nmetadata:\n  name: forge-delivery",
+		"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: forge-delivery-acme-prod",
 	}, docDelimiter)
 	pre, rest := PartitionChartPrerequisites(stream)
-	for _, want := range []string{"operator-egress", "name: shard", "name: crd-controller", "forge-delivery"} {
+	for _, want := range []string{"operator-egress", "name: shard", "name: crd-controller", "name: forge-delivery\n", "forge-delivery-acme-prod"} {
 		if !strings.Contains(pre, want) {
 			t.Errorf("prerequisites lack %q:\n%s", want, pre)
 		}

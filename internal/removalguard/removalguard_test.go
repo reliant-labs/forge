@@ -127,6 +127,11 @@ var removals = []removal{
 					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
 					"internal/templates/project/skills/forge/migrations/v1.0.13/flux-operator/SKILL.md",
 					"docs/runbooks/flux-patch-and-upgrade.md",
+					// A self-hosted delivery's bootstrap IS this install
+					// (applier = "flux"): its fixtures assert the FluxInstance's
+					// lockdown keys and the render golden carries them.
+					"kcl/tests/positive_applier_flux*.k",
+					"internal/cli/testdata/render_contract/flux-delivery.json",
 				},
 			},
 			{
@@ -414,6 +419,14 @@ var removals = []removal{
 					"internal/templates/project/skills/forge/migrations/v0.1.46/SKILL.md",
 					"internal/templates/project/skills/forge/migrations/v1.0.13/flux-operator/SKILL.md",
 					"docs/runbooks/flux-patch-and-upgrade.md",
+					// fluxdelivery renders and checks Flux objects and the
+					// Kubernetes Role its ResourceSet runs as; a self-hosted
+					// delivery derives its apply identities' ClusterRoles and
+					// Roles from the env's render, the way connect does.
+					"pkg/fluxdelivery/",
+					"internal/cli/flux_delivery*.go",
+					"internal/cli/testdata/render_contract/flux-delivery.json",
+					"internal/templates/project/skills/forge/deploy/flux/self-hosted/SKILL.md",
 					"CHANGELOG.md",
 					"internal/doctor/clusterhealth*.go",
 					"internal/templates/deploy_build_test.go",

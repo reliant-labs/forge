@@ -105,7 +105,7 @@ forge env new cloud --check                                 # no placeholder lef
 `lifecycle` (`"local"`/`"ephemeral"`), `applier = "forge"` and `hub_converges` declare
 WHO APPLIES an env: scratch clusters (scaffolded `dev`), a real env forge applies for
 now, and the delivery units the hub has taken over, so a real env moves onto Flux one
-unit at a time. See deploy/shape.
+unit at a time. See deploy/shape; `applier = "flux"`: deploy/flux/self-hosted.
 
 ### What forge writes into every spec
 

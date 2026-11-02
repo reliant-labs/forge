@@ -1,16 +1,15 @@
 ---
 name: deploy/flux
-description: Flux in forge — what forge no longer does (install Flux into a deploy target, write a desired-state pointer at one), who applies a real env instead, and the one thing that remains (`forge.flux_chart()`: ControlPlane's Flux Operator plus a hardened FluxInstance, pinned, which a consumer declares when it runs a Flux of its own — a control plane's hub or a self-hosted cluster). Use when a skill or an old note says an env without a control plane reconciles through an in-cluster Flux.
+description: Flux in forge — who applies a real env, the opt-in self-hosted delivery (`applier = "flux"`, see deploy/flux/self-hosted), and `forge.flux_chart()` (ControlPlane's Flux Operator plus a hardened FluxInstance, pinned) for a consumer that runs a Flux of its own, such as a control plane's hub. Use when declaring or tuning a Flux install, or deciding who applies an env.
 ---
 
 # Flux
 
-**forge never installs Flux into a deploy target and never writes a
-desired-state pointer (OCIRepository + Kustomization) at one.** An earlier
-design did both for an env with no control plane; #461 removed it and the code
-has since been deleted. If a note says `forge cluster up` installs
-`source-controller`/`kustomize-controller`, or that `forge env deploy` "writes the
-pointer and waits", it is describing a path that does not exist.
+**forge installs Flux into a deploy target only when the env opts in with
+`applier = "flux"`** (below). Every other env is unaffected: `forge cluster up`
+installs no Flux of its own, and `forge env deploy` writes no desired-state
+pointer at a cluster. A note saying either happens for an env that does not
+declare `applier = "flux"` describes a path that does not exist.
 
 ## Who applies a real environment
 
@@ -19,6 +18,7 @@ pointer and waits", it is describing a path that does not exist.
 | `forge.ControlPlane` and clusters bound to connected clusters (`forge cluster connect`) | the control plane's hub Flux converges the recorded bundle; forge records and waits (`deploy/cluster-connect`) |
 | `hub_converges = [units]` | the hub converges **those delivery units** from the recorded bundle; forge applies the rest directly. This is how a real env moves onto Flux one unit at a time (`deploy/shape`) |
 | `applier = "forge"` | **forge**, directly, for now: no unit has moved to the hub yet. A transitional state, the same as `hub_converges = []`; every real env ends on the hub (`deploy/shape`) |
+| `applier = "flux"` (no control plane) | a Flux **forge installs in the env's own cluster**, reading the env's bundle; forge never applies the bundle itself (below) |
 | `lifecycle = "local"` / `"ephemeral"` | forge, directly: the clusters are scratch it creates and deletes |
 | none of these | forge, directly, with one notice that this will be refused (F-REFUSE-DIRECT) once an env must say which of the above it is |
 
@@ -26,9 +26,16 @@ Direct apply is where every env starts and where only dev and ephemeral envs end
 For a real env it is a stage, not a mode: list its units in `hub_converges` as
 they move, and the declaration ends when the list is complete.
 
-A Flux on a cluster exists only because a control plane declared one. Flux is a
-platform dependency of the control plane, not something forge puts in your
-cluster as a side effect.
+A Flux on a cluster exists only because something declared one: a control
+plane, or an env that opted into `applier = "flux"`. Flux is a declared platform
+dependency, never something forge puts in your cluster as a side effect.
+
+## A self-hosted env reconciled by its own Flux: `applier = "flux"`
+
+An env with **no control plane** can opt in to being reconciled by a Flux forge
+installs in its own cluster: declare `applier = "flux"` on the Bundle and run
+`forge env deploy <env> --target flux-delivery` once. Load
+`deploy/flux/self-hosted` for the declaration, the bootstrap and its options.
 
 ## What remains: `forge.flux_chart()`
 
@@ -257,10 +264,12 @@ With `rbac = "namespaced"` (or `"pinned"`) every Kustomization that names no
 `serviceAccountName` applies as `impersonate_service_account`, which
 `flux-tenant-reconciler` grants only per namespace. That is what made #441's
 in-cluster Flux fail `Forbidden` on the Namespaces and CRDs a bundle carries.
-A self-hosted cluster that reconciles its own bundles through this install must
-either give the Kustomizations (or the ResourceSet rendering them) an identity
-that may write those kinds, split the cluster-scoped `pre` unit onto such an
-identity, or run with `rbac = "upstream"` where no tenant shares the cluster.
+A self-hosted env should use `applier = "flux"` (above), whose bootstrap derives
+those identities from the render. A consumer declaring `forge.flux_chart()` for
+its own self-hosted reconciler must either give its Kustomizations (or the
+ResourceSet rendering them) identities that may write those kinds, naming each
+in `impersonable_service_accounts` so the controller may impersonate it, or run
+with `rbac = "upstream"` where no tenant shares the cluster.
 
 ### Namespace labels, and what a re-apply prunes
 

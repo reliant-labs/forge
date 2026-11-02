@@ -174,6 +174,11 @@ applier = "forge"          # nothing has moved yet
 | no unit hub-converged | `hubConverged = false` is recorded however fully the clusters are bound to connected clusters; binding says WHERE an env lands, not who puts it there |
 | recorded in the shape | `shape.applier = "forge"` in `forge env shape --json`; an env that declares nothing records nothing, so "undeclared" and "forge applies it for now" stay distinguishable |
 
+`applier = "flux"` is the other declared value: an env with **no** control plane
+that a Flux forge installs in its own cluster reconciles (`shape.applier =
+"flux"`; direct apply is refused). It is opt-in and has its own page:
+deploy/flux.
+
 Declaring both `applier` and `lifecycle` is refused at render: they answer one
 question opposite ways. Unlike `lifecycle` it is **not** checked against the
 clusters, because a real cluster is exactly what it is for.

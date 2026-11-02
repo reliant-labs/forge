@@ -23,6 +23,7 @@ one mixed env. Together they are the §9.1 contract between three parties:
 | `identity-share-with` | A preview env reusing staging's users: only derived applications and consumers, the owner named |
 | `identity-host` | The dev loop: the identity on a host-run Zitadel, a seed user, config read from the env's secret store |
 | `secrets-components` | `forge.OpenBao`, `forge.ExternalSecretsOperator`, `bootstrap_source` and a store-backed `forge.ExternalSecret`. The ExternalSecret renders its ESO objects into `manifests` (the `reliant-secrets` ServiceAccount, the token Role + RoleBinding, a `SecretStore`, the `ExternalSecret`); the two components are still declarations only. This golden changes the day a later PR wires a component into the output |
+| `flux-delivery` | `Bundle.applier = "flux"`: a self-hosted env with no control plane. The resolved `flux_delivery` (the env's one cluster, its delivery namespace and ResourceSet, the copied pull Secret, `signing` and `flux_verify` capped at `audit`) and the one bootstrap chart `flux-delivery` the render adds to `helm_charts` (the Flux Operator, the per-env delivery objects riding it) |
 
 ## Invariants
 

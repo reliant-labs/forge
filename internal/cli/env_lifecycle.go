@@ -31,6 +31,12 @@ const (
 	// starting position of that move, the same declaration as
 	// hub_converges = [].
 	applierForge = "forge"
+
+	// applierFlux is Bundle.applier = "flux": a real environment with no
+	// control plane, reconciled by a Flux forge installs in its own cluster
+	// (flux_delivery.go). forge records and points; it never applies the
+	// bundle, so direct apply is refused rather than noticed.
+	applierFlux = "flux"
 )
 
 // DirectApplyAllowed reports whether forge may apply to this environment
@@ -69,6 +75,10 @@ func DirectApplyAllowed(e *KCLEntities) bool {
 		// need a reconciler, and the callers here are notice/projection
 		// paths that must not invent one.
 		return true
+	}
+	if e.Applier == applierFlux {
+		// Declared: the in-cluster Flux applies it, and only it.
+		return false
 	}
 	if e.Applier == applierForge || e.HubConverges != nil {
 		return true

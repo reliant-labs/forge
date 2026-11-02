@@ -791,6 +791,11 @@ func applyLockedChart(ctx context.Context, chartCtx string, rc renderedChart, ap
 		// The prior inventory remains intact; retain the lock for recovery.
 		return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
 	}
+	// The namespaces the copies land in exist now (they ride as
+	// prerequisites), and nothing that reads a copy has been applied yet.
+	if err := applySecretCopies(ctx, chartCtx, rc.spec.SecretCopies); err != nil {
+		return fmt.Errorf("platform dependency %q: %w", rc.spec.Name, err)
+	}
 	// Consumer-declared manifests riding this chart's --target
 	// (GatewayClass / ClusterIssuers) — applied AFTER the chart's
 	// controllers so the controller (envoy-gateway / cert-manager) is up
@@ -3191,12 +3196,16 @@ func PartitionConfigManifests(manifests string) (config, rest string) {
 // chartPrerequisiteKinds are the riding-manifest kinds a chart's own pods may
 // need before they can become Available, and that no chart controller has to
 // admit: a NetworkPolicy allowing a pod's egress, its ServiceAccount, its RBAC,
-// its PriorityClass. Riding manifests otherwise wait for the chart's
+// its PriorityClass, and the Namespace any of those lives in (a riding
+// ServiceAccount in a namespace the chart does not render would otherwise be
+// applied before its Namespace exists; applyCRDsThenRest sends Namespaces
+// first). Riding manifests otherwise wait for the chart's
 // Deployments to be Available (a cert-manager webhook must be up before a
 // ClusterIssuer), which deadlocks when the Deployment is what waits on them:
 // in a namespace whose egress is already default-deny, a new controller cannot
 // reach the API server, and so cannot become Available, until its allow exists.
 var chartPrerequisiteKinds = map[string]struct{}{
+	"Namespace":          {},
 	"NetworkPolicy":      {},
 	"ServiceAccount":     {},
 	"Role":               {},

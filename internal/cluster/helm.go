@@ -165,6 +165,14 @@ type HelmChartSpec struct {
 	// the chart does not template, such as a pod's runtimeClassName. Every
 	// key must match exactly one rendered object.
 	Patches map[string]any
+	// SecretCopies are existing Secrets this chart's install copies, by
+	// value, into a namespace it creates: a self-hosted delivery's registry
+	// pull Secret (a Secret never rides a render, so it cannot be a riding
+	// manifest). Copied after the chart's own objects and prerequisites
+	// exist and before its riding manifests. A copy is re-read on every
+	// install, so re-running the install picks up a rotated source; it is
+	// not inventoried, so the chart prune never deletes one.
+	SecretCopies []SecretCopy
 }
 
 // renderedChart pairs a chart spec with its rendered (stamped,

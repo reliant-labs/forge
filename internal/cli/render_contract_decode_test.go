@@ -45,7 +45,7 @@ func runtimesOf(e *KCLEntities) map[string][]string {
 // Every golden decodes, strictly, and every workload's runtime block carries
 // exactly the variant its type names — nothing guessed, nothing dropped.
 func TestRenderContract_EveryGoldenDecodes(t *testing.T) {
-	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "mixed", "unit-split"} {
+	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "mixed", "unit-split", "flux-delivery"} {
 		t.Run(name, func(t *testing.T) {
 			e, _ := loadContract(t, name)
 			if len(e.Workloads) == 0 {
@@ -489,5 +489,36 @@ func TestRenderContract_UnitSplit(t *testing.T) {
 	// Direct apply is allowed for an env that declares the split.
 	if !DirectApplyAllowed(e) {
 		t.Error("an env that declares hub_converges is mid-move and may be direct-applied for now")
+	}
+}
+
+// TestRenderContract_FluxDelivery: an `applier = "flux"` env reaches the
+// decoder with its resolved delivery attached to the one bootstrap chart, and
+// is never direct-applied.
+func TestRenderContract_FluxDelivery(t *testing.T) {
+	e, _ := loadContract(t, "flux-delivery")
+	fd := e.FluxDelivery
+	if e.Applier != applierFlux || fd == nil {
+		t.Fatalf("applier %q, flux_delivery %+v", e.Applier, fd)
+	}
+	want := FluxDeliveryEntity{
+		Chart: "flux-delivery", Env: "prod", Cluster: "gke_acme_prod",
+		Namespace: "forge-delivery-acme-prod", ResourceSet: "delivery.prod",
+		ApplyIdentities: true, DeliveryScope: "namespace",
+		PullSecretFrom: "acme-prod/ghcr-pull", PullSecret: "forge-delivery-pull",
+		Signing:    FluxDeliveryControl{Requested: "enforce", Effective: "audit"},
+		FluxVerify: FluxDeliveryControl{Requested: "enforce", Effective: "audit"},
+	}
+	if !reflect.DeepEqual(*fd, want) {
+		t.Errorf("flux_delivery = %+v\nwant %+v", *fd, want)
+	}
+	if len(e.HelmCharts) != 1 || e.HelmCharts[0].Name != "flux-delivery" || e.HelmCharts[0].FluxDelivery != fd {
+		t.Fatalf("helm charts = %+v, want the bootstrap chart carrying the delivery", e.HelmCharts)
+	}
+	if platformChartContext(e, e.HelmCharts[0]) != "gke_acme_prod" {
+		t.Errorf("the bootstrap installs into %q, want the env's one cluster", platformChartContext(e, e.HelmCharts[0]))
+	}
+	if DirectApplyAllowed(e) {
+		t.Error("an applier = flux env may be direct-applied")
 	}
 }

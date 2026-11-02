@@ -274,6 +274,13 @@ _ALLOWED_CONTROLLER_ROLES = [
 #                              (kustomize-controller is cluster-admin) and no
 #                              multitenancy lockdown.
 #   impersonate_service_account     the SA impersonated and pinned (rbac != "upstream").
+#   impersonable_service_accounts   further SA names the impersonate grant is pinned
+#                              to, beside impersonate_service_account (which stays
+#                              the default for a Kustomization that names none).
+#                              For a cluster whose Kustomizations name their own
+#                              apply identities (a self-hosted delivery's derived
+#                              ones, lib/flux_delivery.k). Still granted only in
+#                              namespaces that carry flux_namespace_bindings.
 #   resourceset_service_account     the SA a ResourceSet impersonates by default
 #                              ("" for none; FLUX_RESOURCESET_SERVICE_ACCOUNT).
 #   override_managers          field managers whose ownership the operator takes
@@ -360,6 +367,7 @@ flux_chart = lambda values: {str: any} = {}, \
         cluster: any = Undefined, \
         rbac: "namespaced" | "pinned" | "upstream" = "namespaced", \
         impersonate_service_account: str = FLUX_DEPLOY_SERVICE_ACCOUNT, \
+        impersonable_service_accounts: [str] = [], \
         resourceset_service_account: str = FLUX_RESOURCESET_SERVICE_ACCOUNT, \
         override_managers: [str] = [], \
         network_policies: "hardened" | "upstream" = "hardened", \
@@ -378,6 +386,7 @@ flux_chart = lambda values: {str: any} = {}, \
         instance_patches: [{str: any}] = [], \
         extra_objects: [any] = [] -> any {
     assert regex.match(impersonate_service_account, _LABEL_RE), "flux_chart: impersonate_service_account '${impersonate_service_account}' is not an RFC-1123 label"
+    assert all sa in impersonable_service_accounts { regex.match(sa, _LABEL_RE) }, "flux_chart: impersonable_service_accounts ${impersonable_service_accounts} must all be RFC-1123 labels (ServiceAccount names); a wildcard would let the controller impersonate any ServiceAccount in a bound namespace"
     assert resourceset_service_account == "" or regex.match(resourceset_service_account, _LABEL_RE), "flux_chart: resourceset_service_account '${resourceset_service_account}' is not an RFC-1123 label"
     assert all m in override_managers { m and " " not in m and "=" not in m }, "flux_chart: override_managers entries must be field-manager names"
     assert all ns in scrape_namespaces { regex.match(ns, _LABEL_RE) and len(ns) <= 63 }, "flux_chart: scrape_namespaces entries must be namespace names (RFC-1123 labels); a wildcard is not one, and admitting every namespace is what Flux's own allow-scraping does"
@@ -430,7 +439,8 @@ flux_chart = lambda values: {str: any} = {}, \
             runtime_class = _runtime_class
         }) + instance_patches
     })
-    _riding = (_rbac_objects(rbac, impersonate_service_account, connected_shard) if _hardened_rbac else []) \
+    _impersonable = [impersonate_service_account] + [sa for sa in impersonable_service_accounts if sa != impersonate_service_account]
+    _riding = (_rbac_objects(rbac, _impersonable, connected_shard) if _hardened_rbac else []) \
         + (_network_policy_objects(scrape_namespaces, egress, connected_shard) if network_policies == "hardened" else []) \
         + (_priority_class_objects(priority_class_name) if priority_class_create else []) \
         + (_connected_shard_objects() if connected_shard else []) \
@@ -680,7 +690,7 @@ _leader_election_objects = lambda connected: bool = False -> [any] {
 # the operator's copies). `crd-controller` keeps the name the community chart
 # used, so an install that came from that chart is narrowed in place rather
 # than left beside a copy.
-_rbac_objects = lambda mode: str, target_sa: str, connected: bool = False -> [any] {
+_rbac_objects = lambda mode: str, target_sas: [str], connected: bool = False -> [any] {
     [
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
@@ -706,7 +716,7 @@ _rbac_objects = lambda mode: str, target_sa: str, connected: bool = False -> [an
             kind = "ClusterRole"
             metadata = {name = FLUX_RECONCILER_ROLE, labels = _FLUX_LABELS}
             rules = [
-                {apiGroups = [""], resources = ["serviceaccounts"], verbs = ["impersonate"], resourceNames = [target_sa]}
+                {apiGroups = [""], resources = ["serviceaccounts"], verbs = ["impersonate"], resourceNames = target_sas}
                 _FLUX_CONFIG_READ
             ]
         }
@@ -721,7 +731,7 @@ _rbac_objects = lambda mode: str, target_sa: str, connected: bool = False -> [an
             apiVersion = "rbac.authorization.k8s.io/v1"
             kind = "ClusterRole"
             metadata = {name = "cluster-reconciler-impersonator", labels = _FLUX_LABELS}
-            rules = [{apiGroups = [""], resources = ["serviceaccounts"], verbs = ["impersonate"], resourceNames = [target_sa]}]
+            rules = [{apiGroups = [""], resources = ["serviceaccounts"], verbs = ["impersonate"], resourceNames = target_sas}]
         }
         {
             apiVersion = "rbac.authorization.k8s.io/v1"

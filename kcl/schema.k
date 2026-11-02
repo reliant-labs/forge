@@ -6557,6 +6557,58 @@ schema ManagedIdentity:
         not share_with or not runtime or runtime.type == "hosted", \
             "ManagedIdentity.share_with needs a hosted instance to share: a host-run IdP belongs to one machine"
 
+schema FluxDelivery:
+    """How an env with `applier = "flux"` is delivered by the Flux forge
+    installs in its own cluster. Every field has a working default, so
+    `applier = "flux"` alone is a complete declaration; declare this only to
+    change one.
+
+        forge.Bundle {
+            applier = "flux"
+            flux_delivery = forge.FluxDelivery {
+                pull_secret_from = "acme-prod/ghcr-pull"
+            }
+        }
+
+    `forge env deploy <env> --target flux-delivery` installs it (the Flux
+    Operator, the env's delivery namespace and ResourceSet, and the apply
+    identities); see the `deploy/flux` skill.
+    """
+    # APPLY IDENTITIES (default): Flux's controllers hold no cluster-wide write.
+    # Each tree applies as an identity whose grant forge derives from what the
+    # env's bundle contains: the `pre` trees (Namespaces, CRDs, RBAC, config)
+    # as one, the rollout and post trees as another, and a Kustomization that
+    # names neither is Forbidden. False: kustomize-controller applies as
+    # cluster-admin. Defensible on a cluster nobody else shares, where this
+    # Flux is the only thing that applies anything; forge renders no identity.
+    apply_identities: bool = True
+    # Where the rollout and post identity may write: "namespace" (default) is
+    # a Role in each namespace the render targets; "cluster" is one
+    # ClusterRole over the same kinds in every namespace. The `pre` identity
+    # holds the cluster-scoped kinds the bundle carries either way.
+    delivery_scope: "namespace" | "cluster" = "namespace"
+    # The namespace the env's delivery lives in (its ResourceSet, its pointer
+    # and its apply identities). Default: forge-delivery-<project>-<env>.
+    namespace: str = ""
+    # An EXISTING image-pull Secret (`<namespace>/<name>`) holding the
+    # registry credential the env's bundles are pulled with. The bootstrap
+    # copies it into the delivery namespace. Empty: the registry needs none.
+    pull_secret_from: str = ""
+    # Passed to forge.flux_chart: the Flux Operator chart's values, a node
+    # placement (forge.flux_placement_delivery_v1()) and a registry mirror for
+    # the Flux images (`distribution`).
+    values: {str: any} = {}
+    placement: {str: any} = {}
+    distribution: {str: str} = {}
+
+    check:
+        not namespace or (regex.match(namespace, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(namespace) <= 63), \
+            "FluxDelivery.namespace '${namespace}' is not a namespace name (an RFC-1123 label of at most 63 characters)"
+        not pull_secret_from or regex.match(pull_secret_from, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-.a-z0-9]*[a-z0-9])?$"), \
+            "FluxDelivery.pull_secret_from '${pull_secret_from}' must be `<namespace>/<name>` of an existing image-pull Secret"
+        apply_identities or delivery_scope == "namespace", \
+            "FluxDelivery.delivery_scope = \"cluster\" scopes the derived apply identity, and apply_identities = False renders none (kustomize-controller applies as cluster-admin). Drop one of the two"
+
 schema Bundle:
     """Everything one environment runs and declares.
 
@@ -6817,7 +6869,21 @@ schema Bundle:
     # checked against every cluster the env targets. This says the opposite:
     # the cluster is real, and forge is the applier until the units move.
     # Declaring both is refused: they answer the same question differently.
-    applier?: "forge"
+    #
+    #     applier = "flux"
+    #
+    # A REAL environment with NO control plane, reconciled by a Flux that
+    # forge installs IN ITS OWN CLUSTER. forge records each release in its
+    # file ledger and points that Flux at the release's bundle; it never
+    # applies the bundle itself, so direct apply is refused. Opt-in: an env
+    # that declares nothing is unaffected. Needs exactly one cluster (the
+    # Flux applies where it runs) and no `control_plane` (an env with one is
+    # delivered by its hub: `hub_converges`). Tuned by `flux_delivery`;
+    # bootstrapped by `forge env deploy <env> --target flux-delivery`.
+    applier?: "forge" | "flux"
+    # How an `applier = "flux"` env is delivered (forge.FluxDelivery). Unset:
+    # every default. Declaring it without `applier = "flux"` is refused.
+    flux_delivery?: FluxDelivery
     # THE DELIVERY UNITS THE HUB CONVERGES, by name. Every other unit of a
     # real cluster is applied by `forge env deploy`, directly. This is how an
     # env moves onto the Flux path one unit at a time, with forge's direct
@@ -7057,7 +7123,19 @@ schema Bundle:
         not (hub_converges and lifecycle), \
             "Bundle sets both hub_converges = ${hub_converges} and lifecycle = \"${lifecycle}\". A local or ephemeral env's clusters are scratch that forge applies directly; there is no hub to hand a unit to"
         not (hub_converges and applier), \
-            "Bundle sets both applier = \"${applier}\" and hub_converges = ${hub_converges}. applier = \"forge\" says the hub converges no unit; hub_converges says it converges these. Drop applier once the first unit moves (hub_converges = [] is the same as applier = \"forge\")"
+            "Bundle sets both applier = \"${applier}\" and hub_converges = ${hub_converges}. applier says the hub converges no unit; hub_converges says it converges these. Drop applier once the first unit moves (hub_converges = [] is the same as applier = \"forge\")"
+        # applier = "flux": the self-hosted delivery. Its Flux runs in the
+        # env's one cluster and there is no control plane to hand it to.
+        not flux_delivery or applier == "flux", \
+            "Bundle.flux_delivery configures the in-cluster Flux of an `applier = \"flux\"` env, and this env declares applier = ${applier}. Declare applier = \"flux\", or drop flux_delivery"
+        applier != "flux" or not control_plane, \
+            "Bundle sets applier = \"flux\" and control_plane: an env with a control plane is delivered by its hub (`hub_converges`), never by a second Flux forge installs. applier = \"flux\" is for an env with no control plane"
+        applier != "flux" or len(_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets)) == 1, \
+            "Bundle sets applier = \"flux\", which needs exactly ONE cluster: the Flux forge installs applies in the cluster it runs in. This env targets ${_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets) or 'none'}"
+        applier != "flux" or not env or (regex.match(_flux_delivery_ns(flux_delivery, project, env), r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(_flux_delivery_ns(flux_delivery, project, env)) <= 63), \
+            "Bundle sets applier = \"flux\" and its delivery namespace '${_flux_delivery_ns(flux_delivery, project, env)}' (forge-delivery-<project>-<env>) is not a namespace name of at most 63 characters. Name one: flux_delivery = forge.FluxDelivery {namespace = \"...\"}"
+        applier != "flux" or len([h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]) == 0, \
+            "Bundle sets applier = \"flux\" and also declares the Flux chart (${[h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]}): applier = \"flux\" installs Flux itself (target flux-delivery), and two Flux installs in one cluster fight over the same CRDs. Drop the helm_charts entry; tune the install through flux_delivery"
         not lifecycle or len(_unmanaged_contexts(clusters, workloads, databases, \
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
                 manifests, generated, rendered_secrets)) == 0, \

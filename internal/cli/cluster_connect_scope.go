@@ -202,6 +202,19 @@ func deriveGrantNeeds(stream, kubeContext string, hubUnits []string) (grantNeeds
 	for _, u := range hubUnits {
 		hub[u] = true
 	}
+	return deriveGrantNeedsOf(objs, kubeContext, func(o bundle.RenderedObject) (bool, error) {
+		return hub[objectUnit(o.Body)], nil
+	})
+}
+
+// deriveGrantNeedsOf is the derivation itself, shared by every identity forge
+// grants from a render: connect's (the objects of the units the hub
+// converges) and a self-hosted delivery's (the objects of one phase's trees,
+// flux_delivery_identity.go). include picks, among the non-Secret objects on
+// kubeContext, the ones the identity applies; the rest only count toward
+// OnCluster. A CustomResourceDefinition anywhere in objs still names its kind,
+// so an included instance of it resolves to the right resource and scope.
+func deriveGrantNeedsOf(objs []bundle.RenderedObject, kubeContext string, include func(bundle.RenderedObject) (bool, error)) (grantNeeds, error) {
 	type crd struct {
 		plural        string
 		clusterScoped bool
@@ -243,8 +256,11 @@ func deriveGrantNeeds(stream, kubeContext string, hubUnits []string) (grantNeeds
 			continue
 		}
 		needs.OnCluster++
-		unit := objectUnit(o.Body)
-		if !hub[unit] {
+		applied, err := include(o)
+		if err != nil {
+			return grantNeeds{}, err
+		}
+		if !applied {
 			continue
 		}
 		group, version := apiGroupOf(o.APIVersion)

@@ -106,3 +106,40 @@ func TestPureHostedEnvKeepsEverySecretRefusal(t *testing.T) {
 		t.Fatalf("a pure-hosted env must still be refused for its Secrets, got %v", err)
 	}
 }
+
+// THE HOSTED STAGE ITSELF, on control-plane prod's shape (forge bug 382bc13a):
+// runHostedDeploy is what the deploy calls for the hosted groups, and its
+// first act is the Secret refusal. With only cluster-tier Secrets beside the
+// hosted StaticSite it gets past that gate (and stops at the next one here: no
+// control-plane credential in this test's home); with a hosted workload that
+// consumes one of them it is refused before it reaches for a credential.
+func TestRunHostedDeployIsJudgedOnTheHostedTiersOwnSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("FORGE_CONTROL_PLANE_TOKEN", "")
+	stubShapeManifests(t, prodShapeStream)
+	cp := &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.invalid"}
+
+	site := mixedProdEntities()
+	site.ControlPlane = cp
+	var err error
+	captureStdout(t, func() { err = runHostedDeploy(context.Background(), "prod", site, hostedGroupOf(), deployOptions{}) })
+	if err == nil || strings.Contains(err.Error(), "cannot deliver") {
+		t.Fatalf("the hosted StaticSite beside cluster-only Secrets was refused (or ran to completion): %v", err)
+	}
+
+	api := WorkloadEntity{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHosted}}
+	api.Spec.Env = []deployv1alpha1.EnvVar{{
+		Name:      "OPS_TOKEN",
+		SecretRef: &deployv1alpha1.SecretKeyRef{Name: "control-plane-ops-automation", Key: "token"},
+	}}
+	consumer := mixedProdEntities(api)
+	consumer.ControlPlane = cp
+	captureStdout(t, func() {
+		err = runHostedDeploy(context.Background(), "prod", consumer, hostedGroupOf("api"), deployOptions{})
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot deliver: control-plane-prod/control-plane-ops-automation") {
+		t.Fatalf("want the hosted stage refused for the Secret its own workload consumes, got %v", err)
+	}
+}

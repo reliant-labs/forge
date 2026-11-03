@@ -1671,47 +1671,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	runStage := map[deployStage]func() error{
 		stageLocal: func() error {
 			return ship.run(applyStageLabels(groups, hasK8sServices && !opts.skipClusterApply, deployContext, namespace), func() error {
-				// The release's own Namespaces, before anything below writes
-				// into one (deploy_namespaces_first.go).
+				// Everything written into a cluster before the apply, in order
+				// (deploy_local_prewrites.go).
 				if !opts.skipClusterApply {
-					if err := applyMissingRenderedNamespaces(ctx, entities, dryRun); err != nil {
+					if err := applyLocalPrewrites(ctx, localPrewriteInput{
+						entities: entities, fullEntities: fullEntities, groups: groups,
+						namespace: namespace, deployContext: deployContext, envName: envName, dryRun: dryRun,
+					}); err != nil {
 						return err
-					}
-				}
-
-				// k8s Secret projection: for a dotenv secret_provider, render the
-				// declared cluster secret refs into plaintext Secret manifests and
-				// apply them BEFORE the Deployments roll out (so each Deployment's
-				// secretKeyRef resolves on first schedule).
-				if !opts.skipClusterApply {
-					if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, envName, dryRun); err != nil {
-						return err
-					}
-				}
-
-				// The bootstrap values the secret store needs before it can serve a
-				// read (its seal key, its database password) are minted into the
-				// bootstrap source once, before ESO is asked to deliver them.
-				// Create-if-absent; never an overwrite. See bootstrap_secret.go.
-				if !opts.skipClusterApply {
-					if err := ensureBootstrapSecrets(ctx, fullEntities, dryRun, os.Stdout); err != nil {
-						return err
-					}
-				}
-
-				// Minted kubeconfig Secrets, BEFORE the workloads that mount them
-				// roll out. `env up` mints at the cluster→deploy boundary, which
-				// covers dev and e2e; a cloud env is deployed with `env deploy`
-				// against clusters that already exist and never runs that phase, so
-				// the mint has to happen here too or a cloud consumer's Secret is
-				// simply never created.
-				//
-				// Only the MINTING declarations run here: a k3d in-network mint
-				// resolves a docker container address, which is meaningless on the
-				// deploy path and stays owned by `env up`.
-				if !opts.skipClusterApply {
-					if err := mintDeployKubeconfigSecrets(ctx, entities, namespace, dryRun); err != nil {
-						return fmt.Errorf("kubeconfig secrets: %w", err)
 					}
 				}
 

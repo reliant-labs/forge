@@ -295,6 +295,54 @@ type SecretDocument struct {
 	Body      map[string]any
 }
 
+// StringsOnClusters is every string scalar (keys and values) in the
+// non-Secret documents of a rendered stream that the deploy layer routes to at
+// least one cluster for which on reports true. A document routed nowhere is
+// skipped. It answers "could an object on those clusters name X?" without
+// knowing every field a reference can hide in (a secretKeyRef, a volume's
+// secretName, an imagePullSecret, a CRD's own field), so a caller deciding
+// what to keep errs towards keeping. A Secret's own data is never read.
+func StringsOnClusters(stream string, on func(cluster string) bool) (map[string]bool, error) {
+	out := map[string]bool{}
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case string:
+			out[t] = true
+		case map[string]any:
+			for k, e := range t {
+				out[k] = true
+				walk(e)
+			}
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		}
+	}
+	for i, doc := range splitStream(stream) {
+		routed := false
+		for _, c := range doc.clusters {
+			if on(c) {
+				routed = true
+				break
+			}
+		}
+		if !routed {
+			continue
+		}
+		var body map[string]any
+		if err := yaml.Unmarshal([]byte(doc.yaml), &body); err != nil {
+			return nil, fmt.Errorf("manifest document %d does not parse as YAML: %w", i+1, err)
+		}
+		if body == nil || body["kind"] == "Secret" {
+			continue
+		}
+		walk(body)
+	}
+	return out, nil
+}
+
 // SecretDocuments extracts the Secret documents of a rendered stream with
 // their values intact, in stream order.
 func SecretDocuments(stream string) ([]SecretDocument, error) {

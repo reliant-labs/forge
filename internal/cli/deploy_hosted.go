@@ -376,5 +376,5 @@ func refuseUnsyncableHostedSecretsFor(ctx context.Context, envName string, entit
 	if err != nil {
 		return nil
 	}
-	return refuseUnsyncableHostedSecrets(envName, hostedTierSecretRefs(entities, hostedGroups, refs))
+	return refuseUnsyncableHostedSecrets(envName, hostedTierSecretRefs(entities, hostedGroups, doc.manifests, refs))
 }

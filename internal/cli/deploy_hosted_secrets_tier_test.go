@@ -106,3 +106,44 @@ func TestPureHostedEnvKeepsEverySecretRefusal(t *testing.T) {
 		t.Fatalf("a pure-hosted env must still be refused for its Secrets, got %v", err)
 	}
 }
+
+// A hosted object that names a cluster tier's Secret in a field the workload
+// scan never sees (here a rendered volume's secretName, and a CRD field) still
+// needs it supplied where it runs: that stays a refusal, and only for the
+// Secrets it names.
+func TestHostedTierIsRefusedForASecretItsRenderedObjectsName(t *testing.T) {
+	stubShapeManifests(t, prodShapeStream+`---
+# cluster: hosted
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hosted-api
+spec:
+  template:
+    spec:
+      volumes:
+        - name: codes
+          secret:
+            secretName: control-plane-operator-sign-in-codes
+---
+# cluster: hosted
+apiVersion: forge.dev/v1alpha1
+kind: HostedProvider
+metadata:
+  name: alerts
+spec:
+  secret_refs: [alertmanager-config]
+`)
+	err := refuseUnsyncableHostedSecretsFor(context.Background(), "prod", mixedProdEntities(), hostedGroupOf())
+	if err == nil {
+		t.Fatal("a hosted object naming a cluster tier's Secret was not refused")
+	}
+	for _, want := range []string{"control-plane-prod/control-plane-operator-sign-in-codes", "observability-data/alertmanager-config"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not name %s, which a hosted object consumes: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "ops-automation") {
+		t.Fatalf("the refusal names a cluster-only Secret no hosted object consumes: %v", err)
+	}
+}

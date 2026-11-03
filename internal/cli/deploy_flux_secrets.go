@@ -77,7 +77,14 @@ func envSyncedSecretRefs(entities *KCLEntities, groups []deploytarget.ServiceGro
 // StaticSite consumes no Secret, so it needs none. control-plane's prod shipped
 // every cluster tier and then had its hosted reliant-web refused for three
 // hub Secrets the site never reads (forge bug 382bc13a).
-func hostedTierSecretRefs(entities *KCLEntities, hostedGroups []deploytarget.ServiceGroup, refs []release.BundleSecretRef) []release.BundleSecretRef {
+//
+// "Consumes" is read from both places a hosted dependency can show: the hosted
+// groups' workload SecretRefs, and every rendered document routed to a cluster
+// this machine does not apply (the hosted tier's own objects). A ref whose name
+// appears anywhere in such a document is kept, whatever field names it, so a
+// dependency the workload scan cannot see still refuses. When the stream cannot
+// be read, every ref stays: the refusal fails closed.
+func hostedTierSecretRefs(entities *KCLEntities, hostedGroups []deploytarget.ServiceGroup, manifests string, refs []release.BundleSecretRef) []release.BundleSecretRef {
 	if entities == nil || !envAppliesLocally(entities) {
 		return refs
 	}
@@ -89,7 +96,10 @@ func hostedTierSecretRefs(entities *KCLEntities, hostedGroups []deploytarget.Ser
 		local[c] = true
 	}
 	delete(local, deploytarget.HostedProviderID)
-	consumed := map[string]bool{}
+	consumed, err := bundle.StringsOnClusters(manifests, func(c string) bool { return !local[c] })
+	if err != nil {
+		return refs
+	}
 	for _, g := range hostedGroups {
 		for name := range referencedSecretNamesForGroup(entities, g) {
 			consumed[name] = true

@@ -87,6 +87,9 @@ type dbQueryAudit struct {
 	SQLSHA256 string `json:"sql_sha256,omitempty"`
 	// Replica says which server answered: "ro" (a read replica) or "rw".
 	Replica string `json:"replica,omitempty"`
+	// Record is the local file holding the record, on a transport forge
+	// runs itself (db_query_audit.go); absent on a hosted env.
+	Record string `json:"record,omitempty"`
 }
 
 // dbQueryRemote runs a statement somewhere forge does not connect to itself,

@@ -80,6 +80,9 @@ type dbQueryOptions struct {
 	reason      string
 	addr        string
 	sslmode     string
+	// allowWritableRole lets a real env be read as a role that can do more
+	// than read (checkDBQueryRole).
+	allowWritableRole bool
 }
 
 func newDBQueryCommand() *cobra.Command {
@@ -132,11 +135,25 @@ other env: pass --confirm-env <env> and a --reason) or deny. A hosted env is
 judged by the control plane from the policy its deployed release recorded, and
 an audited one is open to people only (and to a db:query grant).
 
+A real env (lifecycle neither local nor ephemeral) is read only as a role that
+cannot write: forge asks the server what the role it signed in as can do, and
+refuses one with a write grant, an owned relation, a sequence it may advance,
+a SECURITY DEFINER function it may execute, CREATE on a schema or the
+database, a role attribute or a predefined role such as pg_signal_backend. forge_ro and a SELECT-only
+ExternalDatabase username pass; a workload's own DATABASE_URL does not.
+--allow-writable-role reads as such a role anyway.
+
+Every query forge runs itself is recorded: who, the env, the reason, the
+statement, its sha256, the outcome and the row count, as one line appended to
+.forge/audit/<env>.jsonl, one structured log line on stderr, and the record's
+id in the connection's application_name. A hosted env's query is recorded by
+the control plane instead. A record that cannot be written withholds the rows.
+
 Output: a table, or --format json|csv. --json is --format json; the document
 carries ok, exit_code and error like every other forge --json verb, plus
 schema "` + dbQuerySchema + `", scope, columns[{name,pg_type}], rows, row_count,
-truncated, truncated_by, cells_truncated, duration_ms and bytes; a hosted
-query adds audit{id, sql_sha256, replica}.
+truncated, truncated_by, cells_truncated, duration_ms, bytes and audit{id,
+sql_sha256}: a hosted query's adds replica, a local one's record (the file).
 
 Exit codes: 0 rows returned; 1 the statement or the request is wrong (refused
 by the guard or the read-only transaction, a SQL error, a permission error, a
@@ -179,6 +196,7 @@ connection lost).
 	cmd.Flags().StringVar(&o.reason, "reason", "", "Required on a real env: why you are reading it (at most 500 characters)")
 	cmd.Flags().StringVar(&o.addr, "addr", "", "Dial host:port directly (your VPN, kubectl port-forward or bastion) instead of forge's own transport; not for a hosted env")
 	cmd.Flags().StringVar(&o.sslmode, "sslmode", "", "With --addr on a cluster database: verify-full (default, against the cluster CA), require or disable")
+	cmd.Flags().BoolVar(&o.allowWritableRole, "allow-writable-role", false, "On a real env, read as a role that can do more than read (still in a READ ONLY transaction; the audit record says so)")
 	return cmd
 }
 
@@ -220,13 +238,32 @@ type dbQueryTarget struct {
 	// remote runs the statement elsewhere (the control plane); set instead
 	// of dsn.
 	remote dbQueryRemote
+	// scratch is whether the env declares itself scratch (lifecycle local
+	// or ephemeral). Any other env's database is real, and is read only as
+	// a role that cannot write (checkDBQueryRole).
+	scratch bool
+	// kubeContext is the identity a port-forward transport dials with, for
+	// the audit record; empty on the others.
+	kubeContext string
 }
 
-func (t dbQueryTarget) connect(ctx context.Context) (*pgx.Conn, error) {
-	if t.connConfig != nil {
-		return pgx.ConnectConfig(ctx, t.connConfig)
+// connect opens the connection, named application (application_name) so the
+// database's own logs name the audit record.
+func (t dbQueryTarget) connect(ctx context.Context, application string) (*pgx.Conn, error) {
+	cfg := t.connConfig
+	if cfg == nil {
+		var err error
+		if cfg, err = pgx.ParseConfig(t.dsn); err != nil {
+			return nil, err
+		}
+	} else {
+		cfg = cfg.Copy()
 	}
-	return pgx.Connect(ctx, t.dsn)
+	if cfg.RuntimeParams == nil {
+		cfg.RuntimeParams = map[string]string{}
+	}
+	cfg.RuntimeParams["application_name"] = application
+	return pgx.ConnectConfig(ctx, cfg)
 }
 
 func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o dbQueryOptions) error {
@@ -266,7 +303,12 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 		if err := checkDBQueryPolicy(o, target.scope.Policy); err != nil {
 			return nil, err
 		}
-		conn, err := target.connect(ctx)
+		auditPath, err := dbQueryAuditPath(projectDirForKCL(), o.env)
+		if err != nil {
+			return nil, exitCodeError{code: exitWrong, msg: err.Error()}
+		}
+		auditID := newDBQueryAuditID()
+		conn, err := target.connect(ctx, Name()+" db query "+auditID)
 		if err != nil {
 			// The DSN can carry a password; never echo it.
 			if o.addr != "" {
@@ -279,11 +321,22 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 			return nil, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("cannot connect to %s's database (workload %q): %s; is it running? (%s env up %s)", o.env, target.scope.Workload, redactDSNError(err, target.dsn), Name(), o.env)}
 		}
 		defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+		role, err := checkDBQueryRole(ctx, conn, o, target)
+		if err != nil {
+			return nil, err
+		}
+		auditor := newDBQueryAuditor(auditPath, dbQueryAuditRecord{
+			ID: auditID, Env: o.env, Transport: target.scope.Transport, Workload: target.scope.Workload,
+			Database: target.scope.Database, Policy: target.scope.Policy,
+			Who: currentDBQueryActor(target.kubeContext), Reason: strings.TrimSpace(o.reason),
+			Role: role.Name, RoleWrites: role.Writes, AllowWritableRole: o.allowWritableRole,
+		}, errOut)
 		ranAt = time.Now().UTC()
-		res, err := dbquery.Run(ctx, conn, sql, dbquery.Options{MaxRows: o.maxRows, Timeout: o.timeout})
+		res, err := dbquery.Run(ctx, conn, sql, dbquery.Options{MaxRows: o.maxRows, Timeout: o.timeout, Auditor: auditor})
 		if err != nil {
 			return nil, dbQueryError(err)
 		}
+		audit = &dbQueryAudit{ID: auditID, SQLSHA256: auditor.sqlSHA256, Record: auditPath}
 		return res, nil
 	}()
 
@@ -357,6 +410,12 @@ func resolveDBQueryTarget(ctx context.Context, o dbQueryOptions) (dbQueryTarget,
 	if err != nil {
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: err.Error()}
 	}
+	t, err := resolveDBQueryTransport(ctx, o, projectDir, e)
+	t.scratch = e != nil && (e.Lifecycle == lifecycleLocal || e.Lifecycle == lifecycleEphemeral)
+	return t, err
+}
+
+func resolveDBQueryTransport(ctx context.Context, o dbQueryOptions, projectDir string, e *KCLEntities) (dbQueryTarget, error) {
 	// An external database is reached through its own Service, not through
 	// a workload: --database naming one, or an env whose only database is
 	// one, needs no --workload.
@@ -435,6 +494,35 @@ func checkDBQueryPolicy(o dbQueryOptions, policy string) error {
 	default:
 		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s refuses database queries (data_access db_query = %s)", o.env, policy)}
 	}
+}
+
+// checkDBQueryRole is the role rule: a real env's database is read as a role
+// that cannot write. The READ ONLY transaction refuses writes either way, but
+// it binds this one transaction, not the role: a role that can write can also
+// pg_terminate_backend the app's sessions and, in a session of its own, change
+// anything. So on a real env forge asks the server what the role can do
+// (dbquery.InspectRole: never a declaration it would have to trust) and
+// refuses one that can do more than read, unless --allow-writable-role says
+// to read as it anyway. A scratch env is not asked: its data is scratch.
+//
+// The read-only role is whichever the transport signs in as: forge_ro on a
+// ManagedDatabase, the declared username of a forge.ExternalDatabase. A
+// workload's DATABASE_URL (OnHost / OnCompose, with or without --addr) is the
+// app's own role, so a real env read through one is refused unless the flag
+// is given.
+func checkDBQueryRole(ctx context.Context, conn *pgx.Conn, o dbQueryOptions, t dbQueryTarget) (dbquery.Role, error) {
+	if t.scratch {
+		return dbquery.Role{Name: conn.Config().User}, nil
+	}
+	role, err := dbquery.InspectRole(ctx, conn)
+	if err != nil {
+		return dbquery.Role{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("%s is a real environment and forge could not tell whether role %q can write, so it did not read as it: %v", o.env, conn.Config().User, err)}
+	}
+	if role.Writable() && !o.allowWritableRole {
+		return role, exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s is a real environment and role %q can do more than read (%s): forge reads a real env as a read-only role (forge_ro on a ManagedDatabase; for a forge.ExternalDatabase, a username with SELECT only). Point the declaration at one, or pass --allow-writable-role to read as %q anyway (still in a READ ONLY transaction, and the audit record says so)",
+			o.env, role.Name, strings.Join(role.Writes, "; "), role.Name)}
+	}
+	return role, nil
 }
 
 // dbQueryError maps a dbquery failure onto the exit table: the request was

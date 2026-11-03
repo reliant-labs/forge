@@ -19,15 +19,21 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// dbQueryFixture is a one-workload render of an open env whose api runs as
-// runtime with the given DATABASE_URL.
+// dbQueryFixture is a one-workload render of an open, local env whose api
+// runs as runtime with the given DATABASE_URL.
 func dbQueryFixture(runtime, dsn string) string {
+	return dbQueryFixtureAs("local", "open", runtime, dsn)
+}
+
+// dbQueryFixtureAs is dbQueryFixture with the env's lifecycle ("" for a real
+// env) and db_query policy.
+func dbQueryFixtureAs(lifecycle, policy, runtime, dsn string) string {
 	env := ""
 	if dsn != "" {
 		env = fmt.Sprintf(`"env":[{"name":"DATABASE_URL","value":%q}]`, dsn)
 	}
-	return fmt.Sprintf(`{"output":{"data_access":{"db_query":"open"},"workloads":[{"name":"api","kind":"service","runtime":{"type":%q},"spec":{"kind":"service"%s}}]}}`,
-		runtime, map[bool]string{true: "," + env, false: ""}[env != ""])
+	return fmt.Sprintf(`{"output":{"lifecycle":%q,"data_access":{"db_query":%q},"workloads":[{"name":"api","kind":"service","runtime":{"type":%q},"spec":{"kind":"service"%s}}]}}`,
+		lifecycle, policy, runtime, map[bool]string{true: "," + env, false: ""}[env != ""])
 }
 
 // runDBQueryCmd runs `forge db query args...` and returns stdout and the error.

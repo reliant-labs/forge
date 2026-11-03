@@ -1083,7 +1083,12 @@ schema ExternalDatabase:
     one statement at a time, under forge's timeouts and caps. Point `username`
     at a read-only role all the same: that is what keeps the query from
     reading what the transaction would still let it read (secrets, other
-    schemas), which forge cannot grant on a database it does not run.
+    schemas), and the role, not the transaction, is what binds someone who
+    holds its password. forge cannot grant one on a database it does not
+    run, so on a real env it checks: a `username` that can write, owns a
+    relation or holds a role attribute is refused unless the query passes
+    --allow-writable-role. Every query is recorded in
+    .forge/audit/<env>.jsonl.
 
     WHERE IT IS is its `runtime`: the cluster and namespace of `service`.
     With no `runtime`, the env's primary cluster target, in `namespace` when

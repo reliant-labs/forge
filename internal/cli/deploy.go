@@ -1663,6 +1663,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	runStage := map[deployStage]func() error{
 		stageLocal: func() error {
 			return ship.run(applyStageLabels(groups, hasK8sServices && !opts.skipClusterApply, deployContext, namespace), func() error {
+				// The release's own Namespaces, before anything below writes
+				// into one (deploy_namespaces_first.go).
+				if !opts.skipClusterApply {
+					if err := applyMissingRenderedNamespaces(ctx, entities, dryRun); err != nil {
+						return err
+					}
+				}
+
 				// k8s Secret projection: for a dotenv secret_provider, render the
 				// declared cluster secret refs into plaintext Secret manifests and
 				// apply them BEFORE the Deployments roll out (so each Deployment's

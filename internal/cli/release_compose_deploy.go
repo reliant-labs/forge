@@ -222,6 +222,7 @@ func executeSnapshotPromotion(ctx context.Context, r release.Release, ledger env
 	if !ledger.hubUnits() {
 		defer func() {
 			gate := applyOutcomeGate(started, time.Now(), retErr, record.Digest, plan.Digest)
+			gate.RunID = applyGateRunID(ctx)
 			backend, err := snapshotResolveGateBackend(ctx, env)
 			if err == nil && backend.store == nil {
 				err = fmt.Errorf("no gate store for %s", env)

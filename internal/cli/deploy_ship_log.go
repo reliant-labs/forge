@@ -142,10 +142,17 @@ func (l *shipLog) changedAnything() bool {
 }
 
 // annotate is the apply's failure as the LEDGER should record it: when some of
-// the deploy shipped before it failed, say so ahead of the error, so a later
-// plan's "its apply FAILED (…)" carries the stages that are in fact live.
-// Ahead, because the ledger keeps a bounded summary and the error is the part a
-// reader can rediscover.
+// the deploy shipped before it failed, say so, so a later plan's "its apply
+// FAILED (…)" does not read as "the previous release still runs".
+//
+// THE ERROR COMES FIRST, the stages after it. The ledger keeps a bounded
+// summary (300 bytes) and every reader shows less (200), while a stage label
+// lists every workload of its cluster. With the stages first, control-plane
+// prod's 2026-11-03 records were cut inside the shipped list, and none of them
+// said what failed (delivery-signer not ready; a namespace that did not exist;
+// a refused hosted Secret). The error is the one part that names the failing
+// object, and it is NOT rediscoverable from the ledger; the stages are, from
+// the cluster itself.
 func (l *shipLog) annotate(err error) error {
 	if err == nil || !l.changedAnything() {
 		return err
@@ -157,5 +164,5 @@ func (l *shipLog) annotate(err error) error {
 	if p := l.Partial(); len(p) > 0 {
 		parts = append(parts, "partly applied "+strings.Join(p, "; "))
 	}
-	return fmt.Errorf("PARTLY APPLIED (%s): %w", strings.Join(parts, "; "), err)
+	return fmt.Errorf("PARTLY APPLIED: %w (%s)", err, strings.Join(parts, "; "))
 }

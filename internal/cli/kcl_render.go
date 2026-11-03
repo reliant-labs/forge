@@ -261,6 +261,11 @@ type KCLEntities struct {
 	// applied there instead of silently never applied.
 	ManifestClusters []ManifestClusterEntity `json:"-"`
 
+	// ManifestNamespaces are the Namespaces the rendered stream creates, per
+	// cluster. A deploy creates the missing ones before anything is written
+	// into them (applyMissingRenderedNamespaces).
+	ManifestNamespaces []RenderedNamespaceEntity `json:"-"`
+
 	// ManifestUnits are the delivery units raw forge.Manifests objects are
 	// stamped with (forge.dev/delivery-unit), sorted and de-duplicated. Together
 	// with the workloads' units and Bundle.delivery_units they are the universe
@@ -1546,10 +1551,41 @@ type kclWorkloadRaw struct {
 type rawManifest struct {
 	Kind     string `json:"kind,omitempty"`
 	Metadata struct {
-		Name      string            `json:"name,omitempty"`
-		Namespace string            `json:"namespace,omitempty"`
-		Labels    map[string]string `json:"labels,omitempty"`
+		Name        string            `json:"name,omitempty"`
+		Namespace   string            `json:"namespace,omitempty"`
+		Labels      map[string]string `json:"labels,omitempty"`
+		Annotations map[string]string `json:"annotations,omitempty"`
 	} `json:"metadata,omitempty"`
+}
+
+// RenderedNamespaceEntity is one Namespace the rendered stream creates, on the
+// cluster it is stamped for (forge.dev/cluster), with its labels and
+// annotations exactly as rendered. See applyMissingRenderedNamespaces.
+type RenderedNamespaceEntity struct {
+	Cluster     string
+	Name        string
+	Labels      map[string]string
+	Annotations map[string]string
+}
+
+// renderedNamespaces returns every stamped Namespace in the stream, sorted by
+// cluster then name.
+func renderedNamespaces(manifests []rawManifest) []RenderedNamespaceEntity {
+	var out []RenderedNamespaceEntity
+	for _, m := range manifests {
+		c := strings.TrimSpace(m.Metadata.Labels[cluster.ClusterRoutingLabel])
+		if m.Kind != "Namespace" || c == "" || m.Metadata.Name == "" {
+			continue
+		}
+		out = append(out, RenderedNamespaceEntity{Cluster: c, Name: m.Metadata.Name, Labels: m.Metadata.Labels, Annotations: m.Metadata.Annotations})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Cluster != out[j].Cluster {
+			return out[i].Cluster < out[j].Cluster
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 // ManifestClusterEntity is one kubectl context the rendered stream stamps an
@@ -1850,6 +1886,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ManifestNamespace:        manifestNamespace(raw.Manifests),
 		ManifestServiceNames:     manifestServiceNames(raw.Manifests),
 		ManifestClusters:         manifestClusters(raw.Manifests),
+		ManifestNamespaces:       renderedNamespaces(raw.Manifests),
 		ManifestUnits:            manifestUnits(raw.Manifests),
 		ClusterWork:              manifestClusterWork(raw.Manifests, raw.Gateways),
 	}

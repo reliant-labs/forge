@@ -1531,6 +1531,12 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 		// a k3d cluster is recreated. No-op when none are declared.
 		ownerNetwork := ownerNetworkFromClusters(entities.Clusters)
 		deployNS := upDeployNamespace(entities, store, opts.env)
+		// The mint grants Roles in the release's namespaces, so they exist first.
+		if len(entities.KubeconfigSecrets) > 0 {
+			if err := applyMissingRenderedNamespaces(ctx, entities, false); err != nil {
+				return err
+			}
+		}
 		if err := mintKubeconfigSecrets(ctx, entities.KubeconfigSecrets, ownerNetwork, deployNS); err != nil {
 			return fmt.Errorf("kubeconfig secrets: %w", err)
 		}

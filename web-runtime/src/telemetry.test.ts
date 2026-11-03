@@ -930,6 +930,78 @@ describe("decideReplay", () => {
   });
 });
 
+describe("no session before the page is first visible", () => {
+  function stubHiddenDocument() {
+    const docListeners: Listener[] = [];
+    const doc = {
+      visibilityState: "hidden" as DocumentVisibilityState,
+      addEventListener: (type: string, fn: Listener) => {
+        if (type === "visibilitychange") docListeners.push(fn);
+      },
+      removeEventListener: (type: string, fn: Listener) => {
+        const i = docListeners.indexOf(fn);
+        if (type === "visibilitychange" && i >= 0) docListeners.splice(i, 1);
+      },
+    };
+    vi.stubGlobal("document", doc);
+    return {
+      show() {
+        doc.visibilityState = "visible";
+        for (const fn of [...docListeners]) fn({});
+      },
+    };
+  }
+
+  it("does not load the SDK while the page has never been visible, and starts it when it is", async () => {
+    stubDom();
+    const doc = stubHiddenDocument();
+    const { t, r } = await load();
+    let running: boolean | undefined;
+    const started = t
+      .initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" })
+      .then((ok) => (running = ok));
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(init).not.toHaveBeenCalled();
+    expect(running).toBeUndefined();
+    // Nothing to record yet: the caller falls back to the console.
+    expect(r.reportException(new Error("early"))).toBe(false);
+
+    doc.show();
+    await started;
+    expect(running).toBe(true);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts at once on a visible page", async () => {
+    stubDom();
+    vi.stubGlobal("document", {
+      visibilityState: "visible",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    const { t } = await load();
+    expect(
+      await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" }),
+    ).toBe(true);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays off when telemetry is disabled before the page is first shown", async () => {
+    stubDom();
+    const doc = stubHiddenDocument();
+    const { t, k } = await load();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    k.disableTelemetry();
+    doc.show();
+    expect(await started).toBe(false);
+    expect(init).not.toHaveBeenCalled();
+  });
+});
+
 describe("initBrowserTelemetry replay wiring", () => {
   function stubDomWithStorage(sampled?: "1" | "0") {
     const store = new Map<string, string>();

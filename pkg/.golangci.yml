@@ -154,6 +154,14 @@ linters:
         linters:
           - forbidigo
 
+      # The component behaviour test (vitest in jsdom over testdata/behavior/)
+      # reads CI for the same reason — a missing npm is a skip on a laptop and
+      # a failure in CI — and hands the inherited environment plus CI=1 to the
+      # vitest child it execs. Same test-only switch.
+      - path: ^components/library_behaviour_test\.go$
+        linters:
+          - forbidigo
+
       # The headers-file smoke boots two collector containers, so it is
       # opt-in: RUN_HEADERS_FILE_SMOKE=1 is the switch, read by an
       # integration-tagged test file that never compiles into a shipped binary

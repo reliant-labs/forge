@@ -669,9 +669,20 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
+# Releases are made by the Reliant bot, whichever machine cuts them (owner,
+# 2026-11-03): its identity is set per command, never in git config. A machine
+# with no user.name could not tag at all ("Committer identity unknown"), and one
+# whose git config names a person released as that person.
+RELEASE_GIT_NAME='reliant-labs[bot]'
+RELEASE_GIT_EMAIL='186876276+reliant-labs[bot]@users.noreply.github.com'
+as_release_bot() {
+  GIT_AUTHOR_NAME="$RELEASE_GIT_NAME" GIT_AUTHOR_EMAIL="$RELEASE_GIT_EMAIL" \
+    GIT_COMMITTER_NAME="$RELEASE_GIT_NAME" GIT_COMMITTER_EMAIL="$RELEASE_GIT_EMAIL" "$@"
+}
+
 # Stage ONLY the files this script edited, by explicit path.
 git add -- "${TOUCHED[@]}"
-git commit -q -m "chore: release $VERSION
+as_release_bot git commit -q -m "chore: release $VERSION
 
 Sync VERSION and internal/buildinfo/VERSION; name $NEXT_AFTER in NEXT_VERSION;
 write the $VERSION section of CHANGELOG.md from the PR titles merged since ${PREV_TAG:-the start}.
@@ -682,7 +693,7 @@ Bookkeeping for $RELEASE_TAG, tagged at $COMMIT."
 # the bookkeeping commit on top of it reaches $BRANCH only as a pull request.
 RELEASE_SHA="$COMMIT"
 BOOKKEEPING_BRANCH="release/$VERSION"
-git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
+as_release_bot git tag -a "$RELEASE_TAG" -m "forge $VERSION" "$COMMIT"
 echo ""
 echo "✅ committed the bookkeeping as $(git rev-parse --short HEAD) and tagged $RELEASE_TAG at $(git rev-parse --short "$COMMIT")"
 echo ""

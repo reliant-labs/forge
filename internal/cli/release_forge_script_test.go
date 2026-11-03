@@ -174,11 +174,18 @@ func runForgeScript(t *testing.T, repo string, args ...string) (string, error) {
 // care about prettier set FORGE_RELEASE_PRETTIER themselves.
 func runForgeScriptEnv(t *testing.T, repo string, extraEnv []string, args ...string) (string, error) {
 	t.Helper()
+	return runForgeScriptBaseEnv(t, repo, os.Environ(), extraEnv, args...)
+}
+
+// runForgeScriptBaseEnv is runForgeScriptEnv over baseEnv instead of the
+// test's own environment, for a test that must REMOVE inherited variables.
+func runForgeScriptBaseEnv(t *testing.T, repo string, baseEnv, extraEnv []string, args ...string) (string, error) {
+	t.Helper()
 	script := releaseForgeScriptPath(t)
 	full := append([]string{script, "--repo", repo}, args...)
 	cmd := exec.CommandContext(context.Background(), "bash", full...)
 	registry := ingestingRegistry(t, repo)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append([]string(nil), baseEnv...),
 		// ONE override for the proxy: release-forge.sh forwards it to the
 		// wait (GOPROXY_WAIT_BASE), so this also proves the forwarding.
 		"FORGE_RELEASE_PROXY_BASE="+registry,

@@ -203,6 +203,11 @@ type HealthCheck struct {
 type HealthCheckExpr struct {
 	APIVersion string `json:"apiVersion"`
 	Kind       string `json:"kind"`
+	// InProgress and Failed are evaluated before Current, in that order
+	// (Flux RFC 0009). omitempty keeps an expression that sets only Current
+	// rendering exactly as before.
+	InProgress string `json:"inProgress,omitempty"`
+	Failed     string `json:"failed,omitempty"`
 	Current    string `json:"current"`
 }
 
@@ -289,8 +294,54 @@ func HealthAPIVersion(kind string) (string, bool) {
 		return "batch/v1", true
 	case "ExternalSecret":
 		return "external-secrets.io/v1", true
+	case "Workload", "ManagedDatabase", "StaticSite":
+		return forgeTierAPIVersion, true
 	}
 	return "", false
+}
+
+// forgeTierAPIVersion is the forge.dev tier kinds' group/version
+// (pkg/deploy/v1alpha1), spelled here so this package imports no CRD types.
+const forgeTierAPIVersion = "forge.dev/v1alpha1"
+
+// A STOPPED TIER IS SETTLED, NOT STILL ROLLING OUT.
+//
+// A forge.dev tier whose compute was stopped on purpose (its owner suspended
+// it, or a billing lapse did) carries Suspended=True and Ready=False. kstatus
+// reads a custom resource's Ready=False as InProgress, so an applier waiting
+// on a suspended tier timed out its health check and its tree read failed
+// (control-plane prod's egresscanary env, 2026-11-01: FluxTreeNotReady for an
+// environment exactly as its owner left it).
+//
+// These judge the tier kinds as kstatus would, plus one arm: Suspended=True
+// at the current generation is Current. Reconciling=True is InProgress,
+// Stalled=True is Failed (a controller's fail-fast), Ready=True is Current, and
+// Flux holds a stale observedGeneration InProgress before any expression runs.
+const (
+	ForgeTierInProgress = `has(status.conditions) &&
+status.conditions.exists(c, c.type == 'Reconciling' && c.status == 'True')`
+
+	ForgeTierFailed = `has(status.conditions) &&
+status.conditions.exists(c, c.type == 'Stalled' && c.status == 'True')`
+
+	ForgeTierCurrent = `has(status.conditions) && (
+status.conditions.exists(c, c.type == 'Ready' && c.status == 'True') ||
+status.conditions.exists(c, c.type == 'Suspended' && c.status == 'True' &&
+  (!has(c.observedGeneration) || c.observedGeneration == metadata.generation)))`
+)
+
+// ForgeTierHealthExprs is one expression per forge.dev tier kind, for an
+// applier that waits on every object it applies (Wait).
+func ForgeTierHealthExprs() []HealthCheckExpr {
+	kinds := []string{"Workload", "ManagedDatabase", "StaticSite"}
+	out := make([]HealthCheckExpr, 0, len(kinds))
+	for _, kind := range kinds {
+		out = append(out, HealthCheckExpr{
+			APIVersion: forgeTierAPIVersion, Kind: kind,
+			InProgress: ForgeTierInProgress, Failed: ForgeTierFailed, Current: ForgeTierCurrent,
+		})
+	}
+	return out
 }
 
 // ExternalSecretCurrent is the health expression for an ExternalSecret

@@ -235,6 +235,11 @@ type loadOptions struct {
 	// collect, when set, receives every problem the load finds and the load
 	// goes on (loadOptions.report); nil ends it at the first, as at boot.
 	collect *[]error
+	// check is the boot config check this load runs under (check.go); nil
+	// for an ordinary load. presentFields are the fields it set from a
+	// placeholder: present, value unknown.
+	check         *checkMode
+	presentFields map[protoreflect.FieldDescriptor]bool
 }
 
 // RequiredWithin makes `required: true` apply only to the named fields — the
@@ -386,18 +391,23 @@ func Validate(msg proto.Message) error {
 	if err := validateMessage(msg.ProtoReflect()); err != nil {
 		return err
 	}
-	return validateRules(msg, func(err error) error { return err })
+	return validateRules(msg, knownValues, func(err error) error { return err })
 }
+
+// knownValues is the unknown-value test of a message built by hand: every
+// value is real.
+func knownValues(protoreflect.FieldDescriptor) bool { return false }
 
 // validateMessage stops at the first violation.
 func validateMessage(m protoreflect.Message) error {
-	return validateMessageReport(m, func(err error) error { return err })
+	return validateMessageReport(m, knownValues, func(err error) error { return err })
 }
 
 // validateMessageReport hands each violation to report, and stops when report
 // returns an error — at the first, for validateMessage; never, for a load that
-// collects every problem.
-func validateMessageReport(m protoreflect.Message, report func(error) error) error {
+// collects every problem. A field unknown reports true for holds a boot
+// config check's placeholder, so its allowed_values are not judged.
+func validateMessageReport(m protoreflect.Message, unknown func(protoreflect.FieldDescriptor) bool, report func(error) error) error {
 	fields := m.Descriptor().Fields()
 
 	var (
@@ -413,14 +423,14 @@ func validateMessageReport(m protoreflect.Message, report func(error) error) err
 
 		// Recurse into nested config blocks first.
 		if isConfigBlock(fd) {
-			if err := validateMessageReport(m.Get(fd).Message(), report); err != nil {
+			if err := validateMessageReport(m.Get(fd).Message(), unknown, report); err != nil {
 				return err
 			}
 			continue
 		}
 
 		opt := roleOptions(fd)
-		if opt == nil {
+		if opt == nil || unknown(fd) {
 			continue
 		}
 

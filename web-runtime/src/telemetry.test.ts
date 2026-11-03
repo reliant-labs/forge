@@ -945,6 +945,7 @@ describe("no session before the page is first visible", () => {
     };
     vi.stubGlobal("document", doc);
     return {
+      waiting: () => docListeners.length,
       show() {
         doc.visibilityState = "visible";
         for (const fn of [...docListeners]) fn({});
@@ -961,7 +962,9 @@ describe("no session before the page is first visible", () => {
       .initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" })
       .then((ok) => (running = ok));
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Startup is parked on the visibility listener: once it is registered,
+    // nothing but a visibilitychange can move it on.
+    await vi.waitFor(() => expect(doc.waiting()).toBe(1));
     expect(init).not.toHaveBeenCalled();
     expect(running).toBeUndefined();
     // Nothing to record yet: the caller falls back to the console.

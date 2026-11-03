@@ -274,20 +274,23 @@ export default function Popover({
   // in the panel may portal its own layer to <body> (a full-screen picker
   // sheet on touch), and a press or focus there must not dismiss the panel
   // that owns it. React events bubble through portals, so the panel's capture
-  // handlers see those and record them; the native listeners below, which
-  // run after React's, read the record.
-  const pressInTree = useRef(false);
-  const focusInTree = useRef(false);
+  // handlers see those and record WHICH native event they saw; the native
+  // listeners below, which run after React's, compare it with their own. A
+  // record names one event, so one React never dispatched (propagation
+  // stopped before React's listener) cannot leave a stale "inside" behind.
+  const pressInTree = useRef<Event | null>(null);
+  const focusInTree = useRef<Event | null>(null);
 
   // A press outside both the trigger and the panel dismisses, leaving focus
   // where the press put it.
   useEffect(() => {
     if (!open) return;
     function onPointerDown(e: PointerEvent) {
-      const inTree = pressInTree.current;
-      pressInTree.current = false;
+      const inTree = pressInTree.current === e;
+      pressInTree.current = null;
       const target = e.target as Node;
-      if (inTree || triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      if (inTree || triggerRef.current?.contains(target) || panelRef.current?.contains(target))
+        return;
       close(false);
     }
     document.addEventListener("pointerdown", onPointerDown);
@@ -316,14 +319,13 @@ export default function Popover({
       // fires after this focusout: the panel's React capture handler marks
       // it, and the document listener below, which runs after React's root
       // and portal listeners, reads the mark.
-      focusInTree.current = false;
       focusLeft = true;
     }
-    function onFocusIn() {
+    function onFocusIn(e: FocusEvent) {
       if (!focusLeft) return;
       focusLeft = false;
-      const inTree = focusInTree.current;
-      focusInTree.current = false;
+      const inTree = focusInTree.current === e;
+      focusInTree.current = null;
       if (!inTree && !triggerRef.current?.contains(document.activeElement)) close(false);
     }
     panel.addEventListener("keydown", onKeyDown);
@@ -397,11 +399,11 @@ export default function Popover({
             tabIndex={-1}
             aria-label={label}
             aria-labelledby={label || trigger === undefined ? undefined : triggerId}
-            onPointerDownCapture={() => {
-              pressInTree.current = true;
+            onPointerDownCapture={(e) => {
+              pressInTree.current = e.nativeEvent;
             }}
-            onFocusCapture={() => {
-              focusInTree.current = true;
+            onFocusCapture={(e) => {
+              focusInTree.current = e.nativeEvent;
             }}
             className={`fixed z-50 rounded-lg border border-border bg-surface shadow-lg focus:outline-none ${panelClassName ?? ""}`}
             style={{

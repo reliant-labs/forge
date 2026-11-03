@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.14] - 2026-11-03
+
+### Breaking changes
+
+- **refactor(dashboards):** dashboard access is granted by ordinary migrations, not annotations ([#1613](https://github.com/reliant-labs/forge/pull/1613))
+
+### Added
+
+- **dashspec:** display styles (area, stacked, bars, pie, donut, gauge, sql funnel) and a text panel kind ([#1615](https://github.com/reliant-labs/forge/pull/1615))
+- **hosting:** hosted frontends call their API same-origin at /\_api ([#1649](https://github.com/reliant-labs/forge/pull/1649))
+- **deploy:** delivery_policy.health_gate — a release must be proven good in the envs before it ([#1654](https://github.com/reliant-labs/forge/pull/1654))
+- **deploy:** add fluxdelivery ResourceSet templates for ledger-driven delivery ([#1656](https://github.com/reliant-labs/forge/pull/1656))
+- **openbao,delivery-policy:** transit mounts for platform signing keys; signing and flux_verify default to audit (off without a control plane) ([#1653](https://github.com/reliant-labs/forge/pull/1653))
+- **credentials:** a stored login names the account it signed in as ([#1631](https://github.com/reliant-labs/forge/pull/1631))
+- **ci:** scaffolded workflows let a newer push to main supersede the pending run ([#1650](https://github.com/reliant-labs/forge/pull/1650))
+- **deploy:** install hub Flux through the Flux Operator's FluxInstance ([#1657](https://github.com/reliant-labs/forge/pull/1657))
+- **deploy:** applier = "flux" bootstraps a self-hosted env's own Flux with derived apply identities ([#1665](https://github.com/reliant-labs/forge/pull/1665))
+- **deploy:** forge env deploy ships releases to an applier = "flux" env through its in-cluster Flux ([#1670](https://github.com/reliant-labs/forge/pull/1670))
+
+### Changed
+
+- **review:** drop the Review marker job; the required Reliant review check judges the marker ([#1575](https://github.com/reliant-labs/forge/pull/1575))
+- **deps:** bump the go-patch group across 1 directory with 2 updates ([#1591](https://github.com/reliant-labs/forge/pull/1591))
+- **deps:** bump the go-otel group across 1 directory with 3 updates ([#1592](https://github.com/reliant-labs/forge/pull/1592))
+- **merge-queue:** one -short test entry per group, not three ([#1638](https://github.com/reliant-labs/forge/pull/1638))
+- **merge-queue:** report the five-minute budget on every merge group ([#1639](https://github.com/reliant-labs/forge/pull/1639))
+- **delivery-policy:** say nothing signs bundles or writes OCIRepository.spec.verify yet ([#1627](https://github.com/reliant-labs/forge/pull/1627))
+- **bundle:** split placementPrerequisites into phase functions ([#1620](https://github.com/reliant-labs/forge/pull/1620))
+- **migratekit:** lock-retry tests release their blocker on an observed retry, not a timer ([#1625](https://github.com/reliant-labs/forge/pull/1625))
+- **e2e:** TestE2EGeneratedStoreSeam reads the per-entity widget_store_gen.go ([#1644](https://github.com/reliant-labs/forge/pull/1644))
+- a newer push to main supersedes the pending run, the run in progress finishes ([#1642](https://github.com/reliant-labs/forge/pull/1642))
+- **deps:** bump the github-actions group with 2 updates ([#1590](https://github.com/reliant-labs/forge/pull/1590))
+- **skills:** deploy skill names the enableServiceLinks default and opt-in; repo notes: no merge:queue from authors, rc-train releases ([#1651](https://github.com/reliant-labs/forge/pull/1651))
+- **deps:** bump the go-minor group (cel-go 0.33.1, clickhouse-go 2.50.0, prometheus/common 0.73.0, x/net 0.62.0, grpc 1.85.0) ([#1672](https://github.com/reliant-labs/forge/pull/1672))
+
+### Fixed
+
+- **codegen:** combine chained appends in service catalog for lint ([#1569](https://github.com/reliant-labs/forge/pull/1569))
+- **ci:** the Reliant review check never passes a fork's head (CPI-1) ([#1623](https://github.com/reliant-labs/forge/pull/1623))
+- **ci:** the review check is never cancelled, so a reviewed PR enters the merge queue ([#1641](https://github.com/reliant-labs/forge/pull/1641))
+- **deploy:** disable service-link env vars on the volume-resize Job and Flux connected shard ([#1622](https://github.com/reliant-labs/forge/pull/1622))
+- **obs:** dashboards audit reads a platform dashboard's metric catalog without the env predicate ([#1621](https://github.com/reliant-labs/forge/pull/1621))
+- **redact:** redact bare AWS secret keys, cookie headers and claim tokens/links; keep git commit ids ([#1624](https://github.com/reliant-labs/forge/pull/1624))
+- **components:** keep data_table's sr-only headers inside its scroller ([#1637](https://github.com/reliant-labs/forge/pull/1637))
+- **ci:** one rolling Nightly CI issue, commented only when the red jobs change; sweep stale flake:suspected issues ([#1628](https://github.com/reliant-labs/forge/pull/1628))
+- **new:** forge project new honours FORGE_NO_GIT_HOOKS when it activates the hooks ([#1645](https://github.com/reliant-labs/forge/pull/1645))
+- **release:** tag a green commit and land bookkeeping by PR; never push to main ([#1643](https://github.com/reliant-labs/forge/pull/1643))
+- **dbgrants:** the read-only check also covers default privileges to PUBLIC, large objects and foreign servers ([#1646](https://github.com/reliant-labs/forge/pull/1646))
+- **scaffold:** the pre-commit formatters leave forge's .forge/ state alone ([#1647](https://github.com/reliant-labs/forge/pull/1647))
+- **alerting:** render alert annotations as Prometheus-style Go templates ([#1648](https://github.com/reliant-labs/forge/pull/1648))
+- **generate:** scaffolded buf configs run each plugin once ([#1655](https://github.com/reliant-labs/forge/pull/1655))
+- **generate:** forge's own contract mocks regenerate without building forge ([#1652](https://github.com/reliant-labs/forge/pull/1652))
+- **scaffold:** scaffold frontend writes no config proto when forge.yaml switches codegen off ([#1658](https://github.com/reliant-labs/forge/pull/1658))
+- **ci:** verify-generated's scratch copy carries the derived descriptor, so a verified tree is recorded as a fixed point ([#1659](https://github.com/reliant-labs/forge/pull/1659))
+- **ci:** a passed head's stale review runs are re-run one at a time, and stuck PRs heal on their own ([#1660](https://github.com/reliant-labs/forge/pull/1660))
+- **cli:** read the declared shape and bundle per environment from the slim Live roster ([#1630](https://github.com/reliant-labs/forge/pull/1630))
+- **ci:** the green review run waits for an earlier run still in progress, a cancelled re-run is retried, and the sweep is schedule-only ([#1662](https://github.com/reliant-labs/forge/pull/1662))
+- **removalguard:** pkg/fluxdelivery's Kubernetes RBAC is not the removed authorization feature ([#1663](https://github.com/reliant-labs/forge/pull/1663))
+- **ci:** the review healer stops cleanly before its timeout and retries a re-run GitHub refuses for now ([#1664](https://github.com/reliant-labs/forge/pull/1664))
+- **deploy:** flux_delivery reads the resolved signing and flux_verify modes ([#1668](https://github.com/reliant-labs/forge/pull/1668))
+- **skills:** the upgrade playbook for what merged after v1.0.13 is v1.0.14 ([#1669](https://github.com/reliant-labs/forge/pull/1669))
+- **ci:** flake-report.sh --sweep strips jq's CRLF so a quiet issue closes on Windows ([#1671](https://github.com/reliant-labs/forge/pull/1671))
+- **deploy:** flux wait converges on a real cluster, dates renderer stalls, and honours --fail-fast ([#1673](https://github.com/reliant-labs/forge/pull/1673))
+- **fluxdelivery:** template_gen.go carries forge's canonical header and a Source line, so fresh scaffolds lint clean ([#1674](https://github.com/reliant-labs/forge/pull/1674))
+- **ci:** main is green again after #1670 (removalguard, gocritic, goimports) ([#1675](https://github.com/reliant-labs/forge/pull/1675))
+- **deploy:** main's push-tier lint and removalguard on #1670's flux delivery ([#1676](https://github.com/reliant-labs/forge/pull/1676))
+- **install:** sign release assets with Sigstore and verify them in install.sh and the npm shim ([#1677](https://github.com/reliant-labs/forge/pull/1677))
+- **storage:** the reaper's removeTree walks by file descriptor and never follows a swapped-in symlink ([#1678](https://github.com/reliant-labs/forge/pull/1678))
+
 ## [v1.0.13] - 2026-11-02
 
 ### Added
@@ -8399,7 +8468,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.13...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.14...HEAD
+[v1.0.14]: https://github.com/reliant-labs/forge/compare/v1.0.13...v1.0.14
 [v1.0.13]: https://github.com/reliant-labs/forge/compare/v1.0.12...v1.0.13
 [v1.0.12]: https://github.com/reliant-labs/forge/compare/v1.0.11...v1.0.12
 [v1.0.11]: https://github.com/reliant-labs/forge/compare/v1.0.10...v1.0.11

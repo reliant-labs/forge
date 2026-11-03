@@ -15,7 +15,8 @@ import (
 // sheet on touch), which is outside the panel's DOM but inside its React
 // tree. React events bubble through portals, so the panel's capture handlers
 // record presses and focus there, and the native outside-press and focusout
-// listeners skip the close when they did — otherwise a tap on the portalled
+// listeners skip the close when they did (focusout hands the decision to the
+// document focusin that follows, so the close stays synchronous) — otherwise a tap on the portalled
 // layer dismisses the panel and unmounts the control that opened it.
 func TestPopoverTreatsPortalledDescendantsAsInside(t *testing.T) {
 	t.Parallel()
@@ -26,14 +27,16 @@ func TestPopoverTreatsPortalledDescendantsAsInside(t *testing.T) {
 	for _, want := range []string{
 		`onPointerDownCapture={() => {`,
 		`pressInTree.current = true;`,
-		`onFocusCapture={(e) => {`,
-		`focusInTree.current = e.target;`,
+		`onFocusCapture={() => {`,
+		`focusInTree.current = true;`,
 		// the document pointerdown listener reads and resets the record
 		`const inTree = pressInTree.current;`,
 		`if (inTree || triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;`,
-		// focusout defers its close until focusin has reported where focus went
-		`pendingFocusOut = setTimeout(() => {`,
-		`if (focusInTree.current !== next) close(false);`,
+		// focusout only marks that focus left; the document focusin that follows,
+		// which runs after React's listeners, decides synchronously
+		`focusLeft = true;`,
+		`document.addEventListener("focusin", onFocusIn);`,
+		`if (!inTree && !triggerRef.current?.contains(document.activeElement)) close(false);`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("popover.tsx no longer contains %q", want)

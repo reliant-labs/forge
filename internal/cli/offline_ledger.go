@@ -386,9 +386,10 @@ func offlineBanner(w io.Writer, env, target string, l envLedger) {
 
 // recordOfflineApplyOutcome files the apply's verdict on the queued record.
 // Best-effort, like its hosted twin: the deploy's outcome is the apply's.
-func recordOfflineApplyOutcome(env string, plan promotePlan, ledger envLedger, started time.Time, applyErr error, o promoteFollowOptions) {
+func recordOfflineApplyOutcome(env string, plan promotePlan, ledger envLedger, started time.Time, applyErr error, runID string, o promoteFollowOptions) {
 	gate := applyOutcomeGate(started, time.Now(), applyErr,
 		appliedBundleDigest(env, plan.Recorded.Release, o.clientDeploy), o.planDigest)
+	gate.RunID = runID
 	if err := ledger.Offline.attachGate(env, gate); err != nil {
 		o.notice("[deploy] Note: the apply's %s verdict could not be queued for replay: %v\n", gate.Status, err)
 	}

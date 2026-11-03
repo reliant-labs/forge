@@ -26,6 +26,8 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -56,7 +58,7 @@ const (
 // worth judging, so it records nothing here.
 func recordApplyOutcome(ctx context.Context, env string, plan promotePlan, ledger envLedger, started time.Time, applyErr error, o promoteFollowOptions) {
 	if ledger.Offline != nil && plan.Recorded != nil && !o.clientDeploy.dryRun {
-		recordOfflineApplyOutcome(env, plan, ledger, started, applyErr, o)
+		recordOfflineApplyOutcome(env, plan, ledger, started, applyErr, applyGateRunID(ctx), o)
 		return
 	}
 	// A still-applying publish is not a failed apply either: filing it as
@@ -66,6 +68,7 @@ func recordApplyOutcome(ctx context.Context, env string, plan promotePlan, ledge
 	}
 	gate := applyOutcomeGate(started, time.Now(), applyErr,
 		appliedBundleDigest(env, plan.Recorded.Release, o.clientDeploy), o.planDigest)
+	gate.RunID = applyGateRunID(ctx)
 	gate = withUnitSplit(gate, ledger.Units)
 	backend, err := resolveGateBackend(ctx, env)
 	if err == nil && backend.store == nil {
@@ -78,6 +81,32 @@ func recordApplyOutcome(ctx context.Context, env string, plan promotePlan, ledge
 		o.notice("[deploy] Note: the apply's %s verdict could not be recorded on promotion %s: %v\n",
 			gate.Status, plan.Recorded.ID, err)
 	}
+}
+
+// applyGateRunID is the identity one apply's gate is recorded under: the deploy
+// attempt this invocation opened on the control plane, else a fresh id.
+//
+// EVERY APPLY GETS ITS OWN, because the control plane records gates
+// idempotently on (promotion, name, run id). Under the empty run id every
+// apply of a promotion shared one key, so only the FIRST apply's verdict was
+// ever stored: a re-apply that fixed a failed one was handed back the old
+// failed row, and the promotion read "NOT APPLIED" for good. control-plane
+// prod's v1.7.89-rc.2 was applied three times on 2026-11-03 and kept its
+// 06:54 verdict through all of them. latestApplyGate reads the newest row, so
+// one row per apply is what makes "the latest apply" mean what it says. A retry
+// of the same record call inside one apply still dedupes on the attempt id.
+func applyGateRunID(ctx context.Context) string {
+	if a := deployAttemptFrom(ctx); a != nil {
+		a.mu.Lock()
+		id, opened := a.id, a.opened
+		a.mu.Unlock()
+		if opened && id != "" {
+			return id
+		}
+	}
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return "apply_" + hex.EncodeToString(b[:])
 }
 
 // appliedBundleDigest is the bundle an apply of release shipped WHOLE: the one

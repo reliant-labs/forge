@@ -428,7 +428,7 @@ func TestShipLog(t *testing.T) {
 	if err := l.run([]string{"firebase"}, func() error { return boom }); !errors.Is(err, boom) {
 		t.Fatalf("run must return fn's error, got %v", err)
 	}
-	if got := l.annotate(boom).Error(); got != "PARTLY APPLIED (shipped cluster; partly applied firebase): boom" {
+	if got := l.annotate(boom).Error(); got != "PARTLY APPLIED: boom (shipped cluster; partly applied firebase)" {
 		t.Fatalf("annotate = %q", got)
 	}
 	if !errors.Is(l.annotate(boom), boom) {

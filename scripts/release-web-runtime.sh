@@ -161,7 +161,18 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-git tag -a "$TAG" -m "$PKG_NAME $VERSION"
+# Release tags are made by the Reliant bot, whichever machine cuts them (owner,
+# 2026-11-03): its identity is set per command, never in git config. A machine
+# with no user.name could not tag at all ("Committer identity unknown"), and one
+# whose git config names a person tagged as that person.
+RELEASE_GIT_NAME='reliant-labs[bot]'
+RELEASE_GIT_EMAIL='186876276+reliant-labs[bot]@users.noreply.github.com'
+as_release_bot() {
+  GIT_AUTHOR_NAME="$RELEASE_GIT_NAME" GIT_AUTHOR_EMAIL="$RELEASE_GIT_EMAIL" \
+    GIT_COMMITTER_NAME="$RELEASE_GIT_NAME" GIT_COMMITTER_EMAIL="$RELEASE_GIT_EMAIL" "$@"
+}
+
+as_release_bot git tag -a "$TAG" -m "$PKG_NAME $VERSION"
 echo
 echo "Created tag $TAG."
 echo

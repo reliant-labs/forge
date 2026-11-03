@@ -1651,6 +1651,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 		}); err != nil {
 			return err
 		}
+		// The hosted half's Secret refusal, likewise: it used to fire only in
+		// the hosted stage, after every cluster tier had shipped, so a
+		// reviewed plan recorded a promotion that then failed part-way.
+		if len(hostedGroups) > 0 {
+			if err := refuseUnsyncableHostedSecretsFor(ctx, envName, entities, hostedGroups); err != nil {
+				return err
+			}
+		}
 		// The frontend half's own refusals, which otherwise fire only AFTER
 		// the cluster apply above has shipped — see preflightFrontendDeploys.
 		return opts.preflightFrontend(ctx, entities, projectDir)

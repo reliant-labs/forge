@@ -153,7 +153,7 @@ func envAppliesLocally(e *KCLEntities) bool {
 func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities, groups []deploytarget.ServiceGroup, opts deployOptions) error {
 	report := opts.report
 	if !opts.dryRun {
-		if err := refuseUnsyncableHostedSecretsFor(ctx, envName, entities); err != nil {
+		if err := refuseUnsyncableHostedSecretsFor(ctx, envName, entities, groups); err != nil {
 			return err
 		}
 	}
@@ -359,10 +359,15 @@ func hostedPinsFromLedger(ctx context.Context, ledger envLedger, envName string)
 	return pins, nil
 }
 
-// refuseUnsyncableHostedSecretsFor finds the Secret values a pure-hosted env's
-// render needs forge to supply and refuses when it has no way to. Best effort
-// on the render: a projection failure is reported by the deploy proper.
-func refuseUnsyncableHostedSecretsFor(ctx context.Context, envName string, entities *KCLEntities) error {
+// refuseUnsyncableHostedSecretsFor finds the Secret values the hosted tier of
+// an env (all of a pure-hosted env; the hosted groups of a mixed one) needs
+// forge to supply and refuses when it has no way to. Best effort on the
+// render: a projection failure is reported by the deploy proper.
+//
+// The deploy runs it twice: in the pre-record preflight (preflightOnly), so a
+// promotion is refused before anything is written, and again right before the
+// hosted publish.
+func refuseUnsyncableHostedSecretsFor(ctx context.Context, envName string, entities *KCLEntities, hostedGroups []deploytarget.ServiceGroup) error {
 	doc, err := projectEnvShapeFn(ctx, io.Discard, envName)
 	if err != nil {
 		return nil
@@ -371,5 +376,5 @@ func refuseUnsyncableHostedSecretsFor(ctx context.Context, envName string, entit
 	if err != nil {
 		return nil
 	}
-	return refuseUnsyncableHostedSecrets(envName, refs)
+	return refuseUnsyncableHostedSecrets(envName, hostedTierSecretRefs(entities, hostedGroups, refs))
 }

@@ -64,6 +64,47 @@ func envSyncedSecretRefs(entities *KCLEntities, groups []deploytarget.ServiceGro
 	return withoutStoreBacked(refs, entities), nil
 }
 
+// hostedTierSecretRefs narrows refs to the Secrets the HOSTED tier of an env
+// needs supplied: what its own objects consume, and anything placed on no
+// cluster this machine applies.
+//
+// A pure-hosted env applies nothing locally, so every ref stays. A MIXED env's
+// cluster tiers are applied from this machine, which syncs their Secrets with
+// the apply (applyK8sSecretsFromProvider); a Secret placed on one of those
+// clusters is the cluster tier's, and the hosted tier is not refused for it
+// unless one of its own workloads names it (a hosted workload runs where the
+// platform puts it, so a cluster-tier copy does not reach it). A hosted
+// StaticSite consumes no Secret, so it needs none. control-plane's prod shipped
+// every cluster tier and then had its hosted reliant-web refused for three
+// hub Secrets the site never reads (forge bug 382bc13a).
+func hostedTierSecretRefs(entities *KCLEntities, hostedGroups []deploytarget.ServiceGroup, refs []release.BundleSecretRef) []release.BundleSecretRef {
+	if entities == nil || !envAppliesLocally(entities) {
+		return refs
+	}
+	local := map[string]bool{}
+	for _, mc := range entities.ManifestClusters {
+		local[mc.Cluster] = true
+	}
+	if c := entities.ClusterTarget.field("cluster"); c != "" {
+		local[c] = true
+	}
+	delete(local, deploytarget.HostedProviderID)
+	consumed := map[string]bool{}
+	for _, g := range hostedGroups {
+		for name := range referencedSecretNamesForGroup(entities, g) {
+			consumed[name] = true
+		}
+	}
+	var out []release.BundleSecretRef
+	for _, r := range refs {
+		if r.Cluster != "" && local[r.Cluster] && !consumed[r.Name] {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 func providerResolvesValues(entities *KCLEntities) bool {
 	if entities == nil || entities.SecretProvider == nil || entities.SecretProvider.Type == "rendered" {
 		return false

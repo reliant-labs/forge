@@ -1,9 +1,10 @@
-import { createClient, type Transport } from "@connectrpc/connect";
+import { Code, createClient, type Transport } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
-{{if .HasTypedConfig}}
-import { loadConfig } from "@/lib/config_gen";
-{{end}}
+
+{{if .HasTypedConfig}}import { loadConfig } from "@/lib/config_gen";
+{{end}}import { emitAuthExpired } from "@/lib/events";
+
 import { apiBase } from "./api-base";
 import { DEV_API_URL } from "./apiurl_gen";
 
@@ -60,7 +61,16 @@ function apiBaseUrl(): string {
 // cookie. This bundle cannot read that cookie — a token no script can reach
 // is a token an XSS cannot steal — so there is no token to attach. The
 // cookie travels on the fetch below instead. See src/lib/auth/native-login.ts.
-const interceptors = buildRuntimeInterceptors({});
+//
+// onError is how a session that lapses MID-USE is noticed: an RPC the server
+// refuses as Unauthenticated (HTTP 401) emits `auth:expired`, the auth context
+// re-checks the session, and RouteGuard returns a signed-out user to sign-in
+// with a returnTo — instead of leaving every list on an error panel.
+const interceptors = buildRuntimeInterceptors({
+  onError: (err) => {
+    if (err.code === Code.Unauthenticated) emitAuthExpired();
+  },
+});
 
 // Send the session cookie with every RPC.
 //

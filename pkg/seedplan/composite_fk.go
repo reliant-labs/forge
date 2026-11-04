@@ -46,13 +46,26 @@ import (
 // never crosses a tenant. Its tenant_id is CIRCULAR: the column is also one
 // the key references, so reading it off the parent row would read it off a
 // row whose own tenant_id is being decided the same way. A circular member is
-// therefore never placed by its composite; it keeps its own placement and
-// instead narrows the parent: row i points at the latest earlier row that
-// holds the same values in the circular columns, and every other member is
-// read off that row. A row with no such predecessor declines the reference (a
-// NULL anchor) when the anchor is optional, and points at itself — which
-// agrees with itself — when it is not. With no circular member it is the
-// one-column self-reference policy: row i -> row i-1.
+// therefore never placed by its composite.
+//
+// Left to its own placement, each row's tenant_id is an independent pick, and
+// a row whose tenant no earlier row happens to share has no parent to point
+// at — with as many tenants as nodes, most rows. So the table is shaped into
+// trees instead: row 0 and about one row in five after it are roots, every
+// other row hangs under a hash-picked earlier row, and each circular column
+// is read off the row's root, which keeps its own placement (a real tenant).
+// A node and its parent share a root, so they agree on every circular column
+// by construction, and every non-root row has a parent. A root declines the
+// reference (a NULL anchor) when the anchor is optional, and points at itself
+// — which agrees with itself — when it is not.
+//
+// That shaping needs each circular column to be free: placed by its own
+// single-column reference and nothing else (no composite, composite UNIQUE,
+// 1-1 deal or forge:ref declaration ties it to another column of the row).
+// Otherwise row i points at the latest earlier row that holds the same
+// values in the circular columns, and declines like a root when there is
+// none. Every other member is read off the parent row. With no circular
+// member it is the one-column self-reference policy: row i -> row i-1.
 //
 // # Composite UNIQUE over composite members
 //
@@ -389,9 +402,98 @@ func tupleKey(vals []string) string {
 	return b.String()
 }
 
+// selfTreeComposite returns the self-referencing composite that shapes its
+// table into trees: the first (constraint-name order) whose circular columns
+// all have a free single-column reference of their own — nothing else (a
+// composite, a composite UNIQUE, a 1-1 deal, a forge:ref declaration) decides
+// them. Its circular columns are then read off each row's tree root, so
+// every non-root row has a parent that agrees with it by construction.
+func (p *Plan) selfTreeComposite(table string) (compositeFK, bool) {
+	for _, c := range p.composites[table] {
+		if !c.self {
+			continue
+		}
+		free, hasCircular := true, false
+		for k := range c.members {
+			if !c.circular[k] {
+				continue
+			}
+			hasCircular = true
+			if !p.freeCircular(table, c.column(k)) {
+				free = false
+				break
+			}
+		}
+		if hasCircular && free {
+			return c, true
+		}
+	}
+	return compositeFK{}, false
+}
+
+// freeCircular reports whether a circular column's value comes from its own
+// single-column reference alone, so reading it off another row of the same
+// table moves nothing else the plan has tied to it.
+func (p *Plan) freeCircular(table, column string) bool {
+	_, cp, ok := p.colPlan(table, column)
+	if !ok || cp.fk == nil || cp.selfRef || cp.uniqueFK || cp.forceNull || cp.col.IsPK {
+		return false
+	}
+	if _, owned := p.compositeOwnerOf(table, column); owned {
+		return false
+	}
+	if p.tupleOwns(table, column) {
+		return false
+	}
+	if _, derived := p.derivedRefs[table][column]; derived {
+		return false
+	}
+	if _, _, paired := p.authPairFor(table, column); paired {
+		return false
+	}
+	return true
+}
+
+// selfTreeIsRoot reports whether row i of a tree-shaped table starts a tree:
+// row 0, and about one row in five after it.
+func (p *Plan) selfTreeIsRoot(table string, c compositeFK, i int) bool {
+	return i == 0 || cellHash(p.cfg.EffectiveSalt(), table, c.name, i)%5 == 0
+}
+
+// selfTreeParent is the earlier row a non-root row i hangs under.
+func (p *Plan) selfTreeParent(table string, c compositeFK, i int) int {
+	return pick(p.cfg.EffectiveSalt(), table, c.name+"\x00parent", i, i)
+}
+
+// selfTreeRoot is the root of row i's tree: the row whose own placement
+// every circular column of the tree takes.
+func (p *Plan) selfTreeRoot(table string, c compositeFK, i int) int {
+	for !p.selfTreeIsRoot(table, c, i) {
+		i = p.selfTreeParent(table, c, i)
+	}
+	return i
+}
+
+// selfTreeCircularRow redirects a circular column of the table's tree
+// composite to the root of row i's tree; ok is false for any other column.
+func (p *Plan) selfTreeCircularRow(table, column string, i int) (int, bool) {
+	c, ok := p.selfTreeComposite(table)
+	if !ok {
+		return 0, false
+	}
+	for k := range c.members {
+		if c.circular[k] && c.column(k) == column {
+			return p.selfTreeRoot(table, c, i), true
+		}
+	}
+	return 0, false
+}
+
 // selfCompositeRow resolves the row of its own table a self-referencing
-// composite points at on row i (see the package comment above): the latest
-// earlier row that agrees with row i on every circular column.
+// composite points at on row i (see the package comment above). For the
+// table's tree composite it is row i's tree parent, which shares row i's
+// root and so every circular value; for any other, the latest earlier row
+// that agrees with row i on every circular column.
 func (p *Plan) selfCompositeRow(tp tablePlan, c compositeFK, i, depth int) (row int, anchorNull bool) {
 	table := tp.table.Name
 	anchorOptional := true
@@ -399,6 +501,19 @@ func (p *Plan) selfCompositeRow(tp tablePlan, c compositeFK, i, depth int) (row 
 		if col.Name == c.column(c.anchor) {
 			anchorOptional = !col.NotNull
 		}
+	}
+	if _, cp, ok := p.colPlan(table, c.column(c.anchor)); ok && cp.requireEdge {
+		anchorOptional = false
+	}
+	if tree, ok := p.selfTreeComposite(table); ok && tree.name == c.name {
+		if !p.selfTreeIsRoot(table, c, i) {
+			return p.selfTreeParent(table, c, i), false
+		}
+		if anchorOptional {
+			return 0, true
+		}
+		// A NOT NULL root points at itself, which agrees with itself.
+		return i, false
 	}
 	var positions []int
 	for k := range c.members {

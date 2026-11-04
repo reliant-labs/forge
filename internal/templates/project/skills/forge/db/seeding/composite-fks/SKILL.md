@@ -38,10 +38,14 @@ forge does not invent a parent.
 ## A composite that references its own table
 
 A tenant-scoped tree: `FOREIGN KEY (tenant_id, parent_id) REFERENCES nodes
-(tenant_id, id)`. The seeder keeps each node's `tenant_id` and points
-`parent_id` at the latest earlier node of that tenant. The first node of a
-tenant has no parent, so its `parent_id` is NULL (or the node itself, when
-`parent_id` is NOT NULL).
+(tenant_id, id)`. The seeder shapes the table into trees: about one node in
+five is a root, which keeps its own `tenant_id` (a real tenant); every other
+node's `parent_id` names an earlier node, and its `tenant_id` is its root's,
+so a node and its parent always share a tenant. A root's `parent_id` is NULL
+(or the node itself, when `parent_id` is NOT NULL). When something else also
+decides `tenant_id` (another composite, a composite UNIQUE, a `forge:ref`
+declaration), the seeder keeps that value and points `parent_id` at the latest
+earlier node of the same tenant, or NULL when there is none.
 
 ## A composite UNIQUE over composite columns
 

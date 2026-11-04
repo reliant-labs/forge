@@ -271,6 +271,53 @@ func TestCompositeFK_SelfReferenceStaysInOneParentRow(t *testing.T) {
 	}
 }
 
+// TestCompositeFK_SelfReferenceFormsSameTenantTrees: with as many tenants as
+// nodes, an independent tenant pick per node would leave most nodes with no
+// earlier node of their tenant. The tree shaping gives every non-root node a
+// parent, of its own tenant, across several tenants.
+func TestCompositeFK_SelfReferenceFormsSameTenantTrees(t *testing.T) {
+	p := buildOrFail(t, selfCompositeSchema(), Config{Rows: 40, Salt: 11})
+	if p.rowsOf["tenants"] < p.rowsOf["nodes"] {
+		t.Fatalf("fixture wants at least as many tenants (%d) as nodes (%d)", p.rowsOf["tenants"], p.rowsOf["nodes"])
+	}
+	tree, ok := p.selfTreeComposite("nodes")
+	if !ok {
+		t.Fatal("nodes' composite self-reference was not shaped into trees")
+	}
+	tenantOf := map[string]string{}
+	for r := 0; r < p.rowsOf["nodes"]; r++ {
+		id, _ := p.SeedValue("nodes", "id", r)
+		tenantOf[id], _ = p.SeedValue("nodes", "tenant_id", r)
+	}
+	parented, roots, tenantsWithTrees := 0, 0, map[string]bool{}
+	for r := 0; r < p.rowsOf["nodes"]; r++ {
+		tenant, _ := p.SeedValue("nodes", "tenant_id", r)
+		if p.selfTreeIsRoot("nodes", tree, r) {
+			roots++
+			if !p.SeedIsNull("nodes", "parent_id", r) {
+				t.Errorf("row %d: a root of an optional parent_id names a parent", r)
+			}
+			continue
+		}
+		if p.SeedIsNull("nodes", "parent_id", r) {
+			t.Errorf("row %d: a non-root node has no parent", r)
+			continue
+		}
+		parent, _ := p.SeedValue("nodes", "parent_id", r)
+		if tenantOf[parent] != tenant {
+			t.Errorf("row %d: tenant %q, but parent %q belongs to tenant %q", r, tenant, parent, tenantOf[parent])
+		}
+		parented++
+		tenantsWithTrees[tenant] = true
+	}
+	if parented < p.rowsOf["nodes"]/2 {
+		t.Errorf("only %d of %d nodes have a parent", parented, p.rowsOf["nodes"])
+	}
+	if roots < 2 || len(tenantsWithTrees) < 2 {
+		t.Errorf("%d roots, parented nodes in %d tenants: want trees in several tenants", roots, len(tenantsWithTrees))
+	}
+}
+
 // TestCompositeFK_CompositeUniqueDealsOnlyTheAnchor: a composite UNIQUE over
 // a composite's columns deals the unpinned composite's anchor, so the tuple
 // never repeats AND every row still reads both columns off one parent; a

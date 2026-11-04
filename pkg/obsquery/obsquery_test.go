@@ -703,6 +703,20 @@ func TestREDErrorsLeaveOutCancellations(t *testing.T) {
 	}
 }
 
+// REDByEndpoint splits RED by server span name, with RED's latency rule.
+func TestREDByEndpointGroupsByServiceAndSpanName(t *testing.T) {
+	st, err := Overview{Scope: scope()}.REDByEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One row past the cap, so a caller can tell a truncated set from a whole one.
+	for _, want := range []string{"SpanName AS endpoint", "GROUP BY ServiceName, endpoint", "NOT " + spanStreamExpr, spanServerExpr, "LIMIT 1001"} {
+		if !strings.Contains(st.SQL, want) {
+			t.Errorf("REDByEndpoint lacks %q:\n%s", want, st.SQL)
+		}
+	}
+}
+
 // A streaming RPC's server span lasts as long as the stream, so the RED
 // latency quantiles are over unary spans only, while requests count both.
 func TestREDLatencyExcludesStreams(t *testing.T) {

@@ -74,6 +74,91 @@ func TestVerdicts(t *testing.T) {
 	}
 }
 
+func ep(name string, beforeReq, afterReq int64, beforeP95, afterP95 float64) EndpointHealth {
+	return EndpointHealth{Endpoint: name,
+		Before: WindowStats{Requests: beforeReq, P95Ms: beforeP95},
+		After:  WindowStats{Requests: afterReq, P95Ms: afterP95}}
+}
+
+// forge#1728: the deploy's own GetRelease polling filled admin-server's before
+// window with fast calls and then stopped. The service p95 tripled; no endpoint
+// got slower. Per-endpoint figures judge the endpoints, not the mix.
+func TestLatencyIsJudgedPerEndpointNotByTrafficMix(t *testing.T) {
+	mix := svc("admin-server", 1400, 300, 0, 0, 40, 120)
+	mix.Endpoints = []EndpointHealth{
+		ep("/deploy.v1.DeployService/GetRelease", 1164, 3, 30, 31),
+		ep("/deploy.v1.DeployService/GetStatus", 120, 140, 334, 363),
+		ep("/token.v1.AccessTokenInternalService/Introspect", 100, 150, 30, 36),
+		ep("/token.v1.GitCredentialInternalService/GetUserAccessToken", 16, 7, 12, 14),
+		ep("/new.v1.New/OnlyAfter", 0, 50, 0, 30), // no before: judged against the service's 40ms
+	}
+	if r := Evaluate(input(t, true, mix)); len(r.Findings) != 0 {
+		t.Errorf("a traffic-mix shift is judged a latency regression: %+v", r.Findings)
+	}
+	if ratio, ok := mix.LatencyRatio(); !ok || ratio > 1.2 {
+		t.Errorf("LatencyRatio = %v, %v; want the endpoints' ~1.1x", ratio, ok)
+	}
+
+	slow := svc("admin-server", 300, 300, 0, 0, 100, 110)
+	slow.Endpoints = []EndpointHealth{
+		ep("/a.v1.A/Hot", 200, 200, 100, 400),
+		ep("/a.v1.A/Cold", 100, 100, 100, 100),
+	}
+	r := Evaluate(input(t, true, slow))
+	if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthLatency || r.Findings[0].Value != 3 {
+		t.Fatalf("a busy endpoint 4x slower must be a latency finding at 3x (weighted): %+v", r.Findings)
+	}
+	if !strings.Contains(r.Findings[0].Message, "per endpoint") {
+		t.Errorf("message does not say the ratio is per endpoint: %s", r.Findings[0].Message)
+	}
+
+	none := svc("api", 0, 100, 0, 0, 0, 900)
+	none.Endpoints = []EndpointHealth{ep("/a.v1.A/New", 0, 100, 0, 900)}
+	if _, ok := none.LatencyRatio(); ok {
+		t.Error("a service with no before traffic at all still produced a latency ratio")
+	}
+}
+
+// An endpoint with no before p95 has no baseline of its own. Unknown is not
+// safe: it is judged against the service-level before p95, so a new, very slow
+// route beside stable ones is a latency finding, and fails when asked.
+func TestAfterOnlyEndpointIsJudgedAgainstServiceBaseline(t *testing.T) {
+	s := svc("api", 1000, 1100, 0, 0, 100, 900)
+	s.Endpoints = []EndpointHealth{
+		ep("/a.v1.A/Stable", 1000, 1000, 100, 100),
+		ep("/a.v1.A/New", 0, 100, 0, 20000),
+	}
+	ratio, ok := s.LatencyRatio()
+	if !ok || ratio <= defaults(t).MaxP95Ratio {
+		t.Fatalf("LatencyRatio = %v, %v; a 200x after-only endpoint must exceed the limit", ratio, ok)
+	}
+	r := Evaluate(input(t, true, s))
+	if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthLatency {
+		t.Fatalf("a very slow after-only endpoint produced no latency finding: %+v", r.Findings)
+	}
+	if j := Rejudge(r, []string{release.HealthLatency}); j.Verdict == Pass {
+		t.Errorf("a very slow after-only endpoint passes with fail_on=latency: %+v", j.Findings)
+	}
+}
+
+// A route whose after p95 rounds to zero is no measurement. However busy it is,
+// it must not dilute a slow after-only route out of the verdict.
+func TestZeroP95EndpointDoesNotDiluteSlowAfterOnlyEndpoint(t *testing.T) {
+	s := svc("api", 1000, 100100, 0, 0, 100, 100)
+	s.Endpoints = []EndpointHealth{
+		ep("/a.v1.A/Fast", 1000, 100000, 0, 0),
+		ep("/a.v1.A/New", 0, 100, 0, 20000),
+	}
+	ratio, ok := s.LatencyRatio()
+	if !ok || ratio <= defaults(t).MaxP95Ratio {
+		t.Fatalf("LatencyRatio = %v, %v; a busy zero-p95 route diluted a 200x after-only endpoint", ratio, ok)
+	}
+	r := Evaluate(input(t, true, s))
+	if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthLatency {
+		t.Fatalf("a slow after-only endpoint beside a zero-p95 route produced no latency finding: %+v", r.Findings)
+	}
+}
+
 func TestLatencyFindingWarnsByDefaultAndFailsWhenAsked(t *testing.T) {
 	in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 400))
 	r := Evaluate(in)

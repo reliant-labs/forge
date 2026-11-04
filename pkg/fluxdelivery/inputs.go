@@ -315,8 +315,11 @@ const forgeTierAPIVersion = "forge.dev/v1alpha1"
 //
 // These judge the tier kinds as kstatus would, plus one arm: Suspended=True
 // at the current generation is Current. Reconciling=True is InProgress,
-// Stalled=True is Failed (a controller's fail-fast), Ready=True is Current, and
-// Flux holds a stale observedGeneration InProgress before any expression runs.
+// Stalled=True is Failed (a controller's fail-fast), and Ready=True is Current.
+// Current also requires status.observedGeneration to equal metadata.generation
+// itself: Flux holds a stale observedGeneration InProgress before any
+// expression runs, but the expression does not lean on that, so a Ready=True
+// left over from a previous spec never reads settled for a newer one.
 const (
 	ForgeTierInProgress = `has(status.conditions) &&
 status.conditions.exists(c, c.type == 'Reconciling' && c.status == 'True')`
@@ -324,7 +327,8 @@ status.conditions.exists(c, c.type == 'Reconciling' && c.status == 'True')`
 	ForgeTierFailed = `has(status.conditions) &&
 status.conditions.exists(c, c.type == 'Stalled' && c.status == 'True')`
 
-	ForgeTierCurrent = `has(status.conditions) && (
+	ForgeTierCurrent = `has(status.conditions) &&
+has(status.observedGeneration) && status.observedGeneration == metadata.generation && (
 status.conditions.exists(c, c.type == 'Ready' && c.status == 'True') ||
 status.conditions.exists(c, c.type == 'Suspended' && c.status == 'True' &&
   (!has(c.observedGeneration) || c.observedGeneration == metadata.generation)))`

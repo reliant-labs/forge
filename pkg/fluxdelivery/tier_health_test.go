@@ -20,6 +20,13 @@ func fluxStatus(t *testing.T, e fluxdelivery.HealthCheckExpr, obj map[string]any
 	if og, ok := st["observedGeneration"]; ok && og != meta["generation"] {
 		return "InProgress"
 	}
+	return exprStatus(t, e, obj)
+}
+
+// exprStatus is fluxStatus without Flux's stale-generation pre-check: what
+// the expressions alone decide.
+func exprStatus(t *testing.T, e fluxdelivery.HealthCheckExpr, obj map[string]any) string {
+	t.Helper()
 	env, err := cel.NewEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +107,30 @@ func TestForgeTierHealthExprs_AStoppedTierIsSettled(t *testing.T) {
 	for name, tc := range cases {
 		if got := fluxStatus(t, e, tc.obj); got != tc.want {
 			t.Errorf("%s: Flux reads %s, want %s", name, got, tc.want)
+		}
+	}
+}
+
+// A READY=TRUE LEFT FROM A PREVIOUS SPEC IS NOT CURRENT. Current itself checks
+// status.observedGeneration, without leaning on Flux's own stale-generation
+// pre-check, so it is evaluated here alone.
+func TestForgeTierCurrent_StaleReadyIsNotCurrent(t *testing.T) {
+	current := fluxdelivery.HealthCheckExpr{Current: fluxdelivery.ForgeTierCurrent}
+	stale := tierObject(1, tierCond("Ready", "True", "Ready", 1))
+	stale["metadata"].(map[string]any)["generation"] = int64(2)
+	unobserved := tierObject(2, tierCond("Ready", "True", "Ready", 2))
+	delete(unobserved["status"].(map[string]any), "observedGeneration")
+	cases := map[string]struct {
+		obj  map[string]any
+		want string
+	}{
+		"ready at the current generation":         {tierObject(2, tierCond("Ready", "True", "Ready", 2)), "Current"},
+		"ready for a previous generation":         {stale, "InProgress"},
+		"ready with no observedGeneration at all": {unobserved, "InProgress"},
+	}
+	for name, tc := range cases {
+		if got := exprStatus(t, current, tc.obj); got != tc.want {
+			t.Errorf("%s: Current reads %s, want %s", name, got, tc.want)
 		}
 	}
 }

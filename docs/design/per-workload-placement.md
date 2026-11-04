@@ -282,9 +282,15 @@ already exist), so every actuator reads the same order:
 - **forge** (direct apply / `applier = "forge"`) walks it. It applies a cluster node, waits for it to be Ready,
   and then publishes or awaits the hosted nodes that depend on it. The hosted readiness wait already confirms the
   platform applied _this_ bundle (`HostedProvider.RecordBundle` digest).
-- **The hosted converger** holds a hosted node whose predecessors are not yet Ready **at this bundle**,
-  reading the predecessors' evidence (§4, live-bundle union). So a promote from the console, where no forge
-  process drives the order, still ships the SPA after its API.
+- **The hosted converger** holds a hosted node whose predecessors are not yet Ready **at this bundle**. When
+  forge applies the predecessors, the evidence is forge's own: the moment its local stage finishes, and before
+  its hosted stage, `forge env deploy` records the `cluster-rollout` gate on the promotion
+  (`release.ClusterRolloutGateName`). It is `passed` only when the rollout wait saw every Deployment,
+  StatefulSet, DaemonSet and one-shot Job it sent become ready, `skipped` under `--no-wait`, `failed`
+  otherwise, and it names the bundle it applied. The converger activates the hosted node only on a passed gate
+  for the bundle it is activating, so it needs no identity on the clusters forge applies. A promote from the
+  console, where no forge process applies the cluster half, records no gate, and the SPA stays on the previous
+  release instead of running ahead of its API.
 - **The hub** already orders units with `dependsOn`. Hosted ↔ hub edges are honored by the converger's hold.
 
 A node that fails stops its dependents, and the deploy reports one verdict:

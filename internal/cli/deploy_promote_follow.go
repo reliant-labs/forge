@@ -194,6 +194,12 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 	if ledger.appliesLocally() {
 		finish := beginApplyRecord(env, plan, ledger, o.projectDir)
 		started := time.Now()
+		// A MIXED env's hosted part is held by its control plane until the
+		// cluster half's rollout is reported, and that report must land
+		// before the hosted stage inside this same apply starts waiting on
+		// it (cluster_rollout_gate.go).
+		rollout := newClusterRolloutRecorder(ctx, env, plan, ledger, started, o)
+		o.clientDeploy.onLocalStage = rollout.hook()
 		// The apply renders the release this command just recorded, so its
 		// tag comes from the release and not from this checkout's build state.
 		err := applySelfManaged(withHostedPinRelease(ctx, plan.Target.Release), env, ledger, o)
@@ -204,6 +210,7 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 		// error it is, which then records no apply gate: neither passed
 		// (the hosted half is not confirmed) nor failed (nothing failed).
 		evidence := o.clientDeploy.shipped.annotate(err)
+		rollout.finish(evidence)
 		finish(evidence)
 		recordApplyOutcome(ctx, env, plan, ledger, started, evidence, o)
 		if err != nil {

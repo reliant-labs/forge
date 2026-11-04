@@ -37,6 +37,10 @@ type PendingRollout struct {
 	// skipDeployments are Deployments the hub rolls, not this apply: they are
 	// not awaited (delivery_unit_filter.go).
 	skipDeployments []string
+	// workloads are the StatefulSets, DaemonSets and other-namespace
+	// Deployments this apply sent, awaited beside the namespace's listed
+	// Deployments (workload_wait.go).
+	workloads []workloadRef
 	// label prefixes this rollout's failure in WaitRollouts' verdict — the
 	// caller's own name for the apply. Empty leaves the error unprefixed,
 	// which is what Apply returns.
@@ -122,10 +126,27 @@ func (w *rolloutWait) verdict() error {
 	return err
 }
 
-// deploymentWait is one Deployment to await, on one pending rollout's cluster.
+// deploymentWait is one workload to await, on one pending rollout's cluster: a
+// Deployment, StatefulSet or DaemonSet in namespace.
 type deploymentWait struct {
-	w    *rolloutWait
-	name string
+	w         *rolloutWait
+	name      string
+	kind      string
+	namespace string
+}
+
+// label names the workload in a progress line: the bare name for a Deployment
+// in the apply's namespace (what the wait has always printed), else its kind
+// and, outside that namespace, its namespace too.
+func (d deploymentWait) label() string {
+	label := d.name
+	if d.kind != "Deployment" {
+		label = strings.ToLower(d.kind) + "/" + d.name
+	}
+	if d.namespace != d.w.p.opts.Namespace {
+		label = d.namespace + "/" + label
+	}
+	return label
 }
 
 // WaitRollouts waits on every pending rollout and grades them as ONE result.
@@ -211,20 +232,35 @@ func awaitRollouts(ctx context.Context, waits []*rolloutWait) error {
 			if hub[dep] {
 				continue
 			}
-			queue = append(queue, deploymentWait{w: w, name: dep})
+			queue = append(queue, deploymentWait{w: w, name: dep, kind: "Deployment", namespace: w.p.opts.Namespace})
+		}
+		// The workloads the namespace list cannot see: every StatefulSet and
+		// DaemonSet this apply sent, and its Deployments in other namespaces
+		// (workload_wait.go).
+		for _, ref := range w.p.workloads {
+			queue = append(queue, deploymentWait{w: w, name: ref.Name, kind: ref.Kind, namespace: ref.Namespace})
 		}
 	}
 	orderWaitQueue(queue)
 
 	for _, item := range queue {
 		w, opts := item.w, item.w.p.opts
-		state, err := WaitRolloutObserved(ctx, opts.Context, item.name, opts.Namespace, w.p.policy.Timeout)
-		observeRollout(opts, "Deployment", item.name, state, err)
+		var (
+			state RolloutState
+			err   error
+		)
+		if item.kind == "Deployment" {
+			state, err = WaitRolloutObserved(ctx, opts.Context, item.name, item.namespace, w.p.policy.Timeout)
+		} else {
+			state, err = WaitWorkloadObserved(ctx, opts.Context, item.kind, item.name, item.namespace, w.p.policy.Timeout)
+		}
+		observeRollout(opts, item.kind, item.name, state, err)
+		label := item.label()
 		if err == nil {
-			fmt.Printf("  %s: ready\n", subject(w, item.name))
+			fmt.Printf("  %s: ready\n", subject(w, label))
 			continue
 		}
-		w.note("rollout", subject(w, item.name), err)
+		w.note("rollout", subject(w, label), err)
 		if w.stopsOnFailure() {
 			return aggregateRolloutVerdicts(waits)
 		}

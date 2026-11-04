@@ -102,6 +102,27 @@ func (s *GateStatus) UnmarshalJSON(data []byte) error {
 
 // ─── Gate ────────────────────────────────────────────────────────────────────
 
+// ClusterRolloutGateName is the gate `forge env deploy` records on a MIXED
+// env's promotion — forge applies its cluster parts, a control plane converges
+// its hosted part — the moment its local stage finishes and before its hosted
+// stage starts. Its status is the rollout wait's verdict on every cluster
+// workload the apply sent: passed only when the deploy waited and every one
+// rolled out, skipped when it did not wait (--no-wait), failed when the apply
+// or the rollout failed. Its details name the bundle it applied under
+// [GateDetailBundleDigest], for a whole-env apply only.
+//
+// It is the contract a control plane orders the hosted part by: it holds the
+// hosted part's activation until the NEWEST gate of this name on the
+// promotion it is activating says passed for the bundle it is activating.
+// One row per apply (a fresh run id each), so a re-apply's verdict is the one
+// that counts.
+const ClusterRolloutGateName = "cluster-rollout"
+
+// GateDetailBundleDigest is the details key naming the bundle (its OCI
+// manifest digest) an apply shipped whole. Absent for a scoped apply, which
+// shipped only part of it.
+const GateDetailBundleDigest = "bundle_digest"
+
 // Gate is one check's result, attached to a promotion. EVIDENCE, not
 // enforcement: a gate that must block a promotion is checked BEFORE the
 // entry is written, because a recorded claim proves only that it was made,

@@ -63,8 +63,9 @@ import (
 type RolloutMode string
 
 const (
-	// RolloutWait waits for every managed Deployment (and one-shot Job) and
-	// FAILS the deploy if any of them does not become ready. The default,
+	// RolloutWait waits for every managed Deployment, every StatefulSet and
+	// DaemonSet the apply sent (workload_wait.go), and every one-shot Job,
+	// and FAILS the deploy if any of them does not become ready. The default,
 	// and the only correct behavior for a real environment: "kubectl apply
 	// exited 0" says the API server accepted the objects, not that anything
 	// is running.
@@ -1189,7 +1190,11 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 			jobs = append(jobs, name)
 		}
 	}
-	pending := &PendingRollout{opts: opts, policy: policy, jobs: jobs, skipDeployments: DeploymentsInUnits(desired, opts.SkipUnits)}
+	pending := &PendingRollout{
+		opts: opts, policy: policy, jobs: jobs,
+		skipDeployments: DeploymentsInUnits(desired, opts.SkipUnits),
+		workloads:       streamWorkloads(manifests, opts.Namespace),
+	}
 	pending.prune = ownedPruneFor(opts, desired)
 	return pending, nil
 }

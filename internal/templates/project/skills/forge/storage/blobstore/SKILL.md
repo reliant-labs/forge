@@ -118,6 +118,42 @@ What is refused, at render:
 Removing the declaration leaves the bucket and its objects in place unless
 `deletion_policy = "delete"`.
 
+#### Verify a hosted bucket
+
+`forge env deploy` publishes the bucket but cannot observe it: the control
+plane reports no status for a ManagedBucket, so the deploy lists it as
+`not_waited` (in `--json` too), never as ready. A workload that reads it
+turning ready proves only that the credential Secret exists. A bucket no
+workload reads (a bucket-only env) is proved by nothing. After the first
+deploy of a hosted bucket, and after any change to its `public_read` or
+`cors_origins`, check it from the deployed app, through the same handlers your
+users hit:
+
+1. **Upload**: from a page served on one of the bucket's origins, presign a
+   PUT (section 4) and send it from the browser (section 5). A CORS error in
+   the browser console means the origin is missing from `cors_origins` or the
+   platform has not applied it yet.
+2. **Confirm and download**: `Stat` the key (section 6), then fetch a
+   presigned GET and compare the bytes.
+3. **Private stays private**: fetch the object's plain URL,
+   `https://storage.googleapis.com/<UPLOADS_BUCKET>/<key>`, with no signature.
+   It must be refused (403) unless the bucket is `public_read`, and must
+   succeed when it is.
+
+For a bucket-only env, run the check once a workload that reads the bucket is
+deployed; until then nothing has used the credential.
+
+**Recovering** from a bad bucket change rolls forward, as every forge deploy
+does (`deploy`, "Verify + recover"): restore the previous declaration (or
+drop the bucket's referrers) in the tree and `forge env deploy <env>` again;
+binding the env to an older release is the same promote. Either keeps the
+bucket, its objects and its credential: a bucket is never release-bound, and
+the default `deletion_policy = "retain"` leaves it in place even when the
+declaration is removed. Never set `deletion_policy = "delete"` to
+undo a change; it destroys every object. Do not delete the `forge-bucket-<name>`
+Secret to "reset" a credential: the platform owns it, and the workloads that
+read it stop starting until it is rewritten.
+
 Every env a workload runs in must declare each bucket the workload references;
 the render names a missing one.
 
@@ -133,8 +169,11 @@ That is seven `forge.BucketRef`s: `UPLOADS_ENDPOINT`, `UPLOADS_PUBLIC_ENDPOINT`,
 `UPLOADS_REGION`, `UPLOADS_BUCKET`, `UPLOADS_ACCESS_KEY_ID`,
 `UPLOADS_SECRET_ACCESS_KEY`, `UPLOADS_PATH_STYLE`, which are the fields of
 `blobstore.S3Config`. Each lowers per env and per runtime. For a dev MinIO
-bucket they are literals, and the endpoint is `localhost` for a host process
-but the cluster's host gateway for a k3d pod. `PUBLIC_ENDPOINT` stays
+bucket they are literals, and the endpoint is `localhost` for a host process,
+the cluster's host gateway for a k3d pod, and `http://minio:9000` (the compose
+service, on the compose network) for a container in the MinIO's own compose
+file, whose compose process env carries them for the file to pass through
+(`UPLOADS_ENDPOINT: ${UPLOADS_ENDPOINT}`). `PUBLIC_ENDPOINT` stays
 `localhost`, because the browser is on this machine and the presigned URL has
 to be signed for the host the browser actually dials. For a `BucketOnS3`
 bucket you get the declared values, and the credentials go through their own

@@ -1245,11 +1245,12 @@ schema BucketOnS3:
         not bucket or regex.match(bucket, r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"), "BucketOnS3.bucket '${bucket}' is not an S3 bucket name"
 
 # Every BucketRef key of a bucket on its MinIO, for a referrer reaching the
-# MinIO host through `host` ("localhost" for a host process, the cluster's
-# host gateway for a pod). The browser always uses localhost.
-_bucket_minio_values = lambda b: Bucket, host: str -> {str:} {
+# S3 API at `endpoint` (render.k's _bucket_minio_endpoint: localhost for a
+# host process, the cluster's host gateway for a pod, the compose service
+# for a compose container). The browser always uses localhost.
+_bucket_minio_values = lambda b: Bucket, endpoint: str -> {str:} {
     {
-        "endpoint" = "http://${host}:${b.runtime.port}"
+        "endpoint" = endpoint
         "public_endpoint" = "http://localhost:${b.runtime.port}"
         "region" = b.runtime.region
         "bucket" = b.name

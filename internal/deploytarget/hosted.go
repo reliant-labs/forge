@@ -1282,7 +1282,26 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if group.Hosted != nil {
 		promotionID = group.Hosted.PromotionID
 	}
+	p.reportBucketsNotWaited(plan)
 	return p.wait(ctx, c, group.Env, envID, promotionID, bundleDigest, observedItems(plan))
+}
+
+// reportBucketsNotWaited records every published ManagedBucket as not
+// waited, and says so. The control plane reports no status for one, so this
+// deploy cannot prove it provisioned, credentialed or allowed CORS: a
+// workload reading it proves the Secret exists when it turns ready, and
+// nothing proves it for a bucket no workload reads. Reporting it as absent
+// would let a bucket-only env read as fully observed.
+func (p HostedProvider) reportBucketsNotWaited(plan []hostedPlanItem) {
+	for _, item := range plan {
+		if item.Tier != HostedTierBucket {
+			continue
+		}
+		fmt.Printf("  bucket %s: published; provisioning is not observed by this deploy (verify it: the storage/blobstore skill, \"Verify a hosted bucket\")\n", item.Name)
+		if p.OnRollout != nil {
+			p.OnRollout(cluster.RolloutObservation{Kind: "ManagedBucket", Name: item.Name, State: cluster.RolloutStateNotWaited})
+		}
+	}
 }
 
 // observedItems is the plan less what the control plane keeps no deployment

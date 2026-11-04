@@ -105,7 +105,7 @@ func TestHostedBucketIsNotReleaseBound(t *testing.T) {
 
 // The control plane keeps no deployment row for a ManagedBucket, so the
 // readiness wait observes only the workload and the database. Waiting on the
-// bucket would wait for a status nobody reports.
+// bucket would wait for a status nobody reports, so it is reported not_waited.
 func TestHostedDeployDoesNotWaitOnABucket(t *testing.T) {
 	cp := &fakeCP{status: readyStatus(digestA)}
 	var outcomes []cluster.RolloutObservation
@@ -115,12 +115,20 @@ func TestHostedDeployDoesNotWaitOnABucket(t *testing.T) {
 	if err := p.Deploy(context.Background(), bucketGroup()); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if len(outcomes) != 2 {
-		t.Fatalf("rollout outcomes = %+v, want the api and orders only", outcomes)
+	if len(outcomes) != 3 {
+		t.Fatalf("rollout outcomes = %+v, want the api and orders ready and the bucket not waited", outcomes)
 	}
 	for _, o := range outcomes {
-		if o.State != cluster.RolloutStateReady {
-			t.Errorf("outcome %+v, want ready", o)
+		want := cluster.RolloutStateReady
+		if o.Name == "uploads" {
+			// Reported, never silently absent: nothing observed it.
+			want = cluster.RolloutStateNotWaited
+			if o.Kind != "ManagedBucket" {
+				t.Errorf("bucket outcome %+v, want kind ManagedBucket", o)
+			}
+		}
+		if o.State != want {
+			t.Errorf("outcome %+v, want %v", o, want)
 		}
 	}
 }

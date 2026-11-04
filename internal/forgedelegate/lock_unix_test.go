@@ -1,7 +1,7 @@
-//go:build !windows
+//go:build unix && !aix
 
-// These tests need the entry lock, which only exists off Windows (see
-// lock_windows.go): without it nothing proves a staging directory dead, and
+// These tests need the entry lock, which only exists where x/sys/unix has
+// flock(2) (see lock_other.go): without it nothing proves a staging directory dead, and
 // concurrent builders are not serialized.
 
 package forgedelegate

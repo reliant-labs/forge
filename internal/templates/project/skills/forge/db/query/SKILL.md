@@ -68,6 +68,32 @@ forge db query prod "select count(*) from entries" --database ledger --confirm-e
 - **Read-only**: every statement runs in a READ ONLY transaction Postgres enforces, so a write is refused even from a role that may write. On a real env forge checks the role (below): a `username` that can write is refused. Point `username` at `forge_ro` and it is also what keeps a query from reading `forge:secret` columns. The migrator creates `forge_ro` NOLOGIN on every run whose migrating role may create roles, and converges its generated column grants (`db/grants/readonly/`), so the role and its grants already exist on the external database. What stays yours is its login: `ALTER ROLE forge_ro LOGIN PASSWORD … CONNECTION LIMIT …` from a deploy step, the password in `password_secret`, and an entry in the pooler's user list.
 - **TLS** is `sslmode`: `require` (default: encrypted, not verified, since the tunnel ends at a pod) or `disable`. `--addr` does not apply.
 
+### Checking `forge_ro` after the first migration, and undoing it
+
+The migration log says what the run did: `read-only role created (NOLOGIN) and its grants applied` (it created the role), `read-only grants applied` (the role already existed and was left as it was), or `read-only role not provisioned … may not create it` (the migrating role lacks CREATEROLE: nothing was created or granted). Then check the catalog, connected to the external database as an administrator:
+
+```sql
+-- The role: a created one is rolcanlogin = false, rolinherit = false, and no superuser, createrole, createdb, replication or bypassrls.
+-- A role that existed before keeps exactly the attributes it had: compare with what you recorded before the deploy.
+SELECT rolname, rolcanlogin, rolinherit, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls, rolconnlimit
+  FROM pg_roles WHERE rolname = 'forge_ro';
+
+-- Its privileges: column SELECT only, and no write, no table-level grant, no sequence.
+SELECT table_schema, table_name, privilege_type, count(*) AS columns
+  FROM information_schema.column_privileges WHERE grantee = 'forge_ro' GROUP BY 1, 2, 3 ORDER BY 1, 2;
+SELECT table_schema, table_name, privilege_type
+  FROM information_schema.table_privileges WHERE grantee = 'forge_ro';   -- expect no rows
+SELECT has_column_privilege('forge_ro', '<table>', '<secret column>', 'SELECT');  -- expect false for every forge:secret column
+```
+
+Once the deploy has given the role LOGIN, check the boundary as the reader itself, through `forge db query`: `select count(*) from <table>` answers, `select <secret column> from <table>` is refused (`permission_denied`, exit 1), and `delete from <table>` is refused (read-only, exit 1).
+
+**Undoing it.** A NOLOGIN role with column SELECT grants lets nobody in, so leaving it is safe; while this release migrates the database, a dropped `forge_ro` is created again on the next run. In order, as far as you need to go:
+
+1. **Stop reading as it**: `ALTER ROLE forge_ro NOLOGIN;` then end its sessions with `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'forge_ro';`, and remove it from the pooler's user list and `password_secret`. Nothing forge runs logs in as `forge_ro`, so the application is unaffected.
+2. **Stop forge creating it**: run the migrations as a role without CREATEROLE (the run then reports the role missing and applies no grants), or pin the previous forge release, which applies grants only to a `forge_ro` that already exists.
+3. **Drop it**: a role is cluster-wide, and on a shared instance another database may grant to it too (another forge project's migrations do). Find every database that does: `SELECT DISTINCT d.datname FROM pg_shdepend s JOIN pg_database d ON d.oid = s.dbid WHERE s.refobjid = 'forge_ro'::regrole;`. Drop it only when you mean to take it from all of them: in each one, connected as its owner, `DROP OWNED BY forge_ro;` (it owns nothing, so this only revokes its privileges in that database), then `DROP ROLE forge_ro;` once. If another database still needs it, stop at step 1 and revoke in yours alone with `DROP OWNED BY forge_ro;` there.
+
 ## Bring your own route: `--addr host:port`
 
 For a database forge cannot route to itself (a real, non-scratch cluster env, or one behind a VPN or bastion) **you supply the address and the network path**; forge builds no fallback transport. `--addr` makes forge dial exactly that address instead of its own transport (compose/host direct, the kube port-forward, or the control plane):

@@ -600,6 +600,25 @@ describe("benign browser errors", () => {
 describe("buildSdkOptions", () => {
   const base = { serviceName: "web" };
 
+  it("carries the page's client attributes on the resource, under the config's own", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { ...base, serviceVersion: "1.8.16-dev+7d787d80" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+      {
+        "browser.platform": "macOS",
+        "app.desktop.version": "1.8.16",
+        "service.version": "spoofed",
+      },
+    );
+    expect(opts.otelResourceAttributes).toEqual({
+      "browser.platform": "macOS",
+      "app.desktop.version": "1.8.16",
+      "service.version": "1.8.16-dev+7d787d80",
+    });
+  });
+
   it("keeps replay OFF by default", async () => {
     const { t } = await load();
     const opts = t.buildSdkOptions(base, `${ORIGIN}/_otel`, ORIGIN);

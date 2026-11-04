@@ -307,3 +307,90 @@ window.addEventListener("unhandledrejection", (e) => window.seen.push("after/rej
     await close(server);
   }
 });
+
+// The viewport and screen (src/client-context.ts) go through the SDK's
+// setGlobalAttributes, whose span processor stamps the current set on every
+// span as it STARTS. Only the real SDK in a real browser proves that contract:
+// a span before a resize carries the old size, a span after it the new one.
+test("every span carries the viewport and screen current when it started, restamped after a resize", { timeout: 30000 }, async () => {
+  const traces = [];
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (url.startsWith("/_otel/")) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
+        res.setHeader("content-type", "application/json");
+        res.end("{}");
+      } else if (url === "/sdk.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await readFile(sdk));
+      } else if (url === "/hyperdx.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end("export default globalThis.HyperDX;");
+      } else if (url === "/") {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html>
+<script src="/sdk.js"></script>
+<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="module">
+import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
+window.tracing = trace;
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', consoleCapture: false });
+window.mark = (name) => trace.getTracer('viewport-proof').startSpan(name).end();
+</script>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(origin);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    await page.evaluate(() => window.mark("before-resize"));
+    await page.setViewportSize({ width: 1024, height: 700 });
+    // The resize is debounced (VIEWPORT_DEBOUNCE_MS): observe the SDK's own
+    // global attributes rather than sleeping a fixed time.
+    await page.waitForFunction(() => {
+      const provider = window.tracing.getTracerProvider().getDelegate();
+      return provider._activeSpanProcessor._spanProcessors.some((processor) =>
+        processor.getGlobalAttributes?.()["app.viewport.width"] === "1024");
+    }, undefined, { timeout: 5000 });
+    await page.evaluate(async () => {
+      window.mark("after-resize");
+      await window.tracing.getTracerProvider().getDelegate().forceFlush();
+    });
+
+    assert.deepEqual(errors, []);
+    const spans = traces.flatMap((batch) => batch.resourceSpans ?? [])
+      .flatMap((resource) => resource.scopeSpans ?? [])
+      .flatMap((scope) => scope.spans ?? []);
+    const size = (name) => {
+      const span = spans.find((s) => s.name === name);
+      assert.ok(span, `${name} is exported: ${JSON.stringify(spans.map((s) => s.name))}`);
+      const attr = (key) => span.attributes?.find((a) => a.key === key)?.value?.stringValue;
+      return {
+        viewport: `${attr("app.viewport.width")}x${attr("app.viewport.height")}`,
+        screen: attr("app.screen.width") !== undefined && attr("app.screen.height") !== undefined,
+      };
+    };
+    assert.deepEqual(size("before-resize"), { viewport: "800x600", screen: true });
+    assert.deepEqual(size("after-resize"), { viewport: "1024x700", screen: true });
+  } finally {
+    await browser?.close();
+    await close(server);
+  }
+});

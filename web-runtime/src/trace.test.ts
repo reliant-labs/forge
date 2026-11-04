@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { buildRuntimeInterceptors, traceInterceptor } from "./interceptors.js";
 import {
+  registerRumSession,
   registerTelemetryStartup,
   resetTelemetryGate,
   telemetryReady,
@@ -17,7 +18,38 @@ import {
   freshTraceparent,
   injectTraceContext,
   TRACEPARENT_RE,
+  withSessionBaggage,
 } from "./trace.js";
+
+describe("session baggage", () => {
+  afterEach(() => resetTelemetryGate());
+
+  it("sends the RUM session as baggage session.id while telemetry runs", () => {
+    registerRumSession(() => "91b955b313a1a86644ea53730a92deab");
+    const header = new Headers();
+    injectTraceContext(header);
+    expect(header.get("baggage")).toBe(
+      "session.id=91b955b313a1a86644ea53730a92deab",
+    );
+    expect(header.get("traceparent")).toMatch(TRACEPARENT_RE);
+  });
+
+  it("sends no baggage without a session, or with one of the wrong shape", () => {
+    for (const source of [null, () => undefined, () => "a b"]) {
+      registerRumSession(source);
+      const header = new Headers();
+      injectTraceContext(header);
+      expect(header.get("baggage")).toBeNull();
+    }
+  });
+
+  it("keeps other baggage members and replaces a stale session.id", () => {
+    expect(withSessionBaggage("a=1, session.id=old ,b=2", "new")).toBe(
+      "a=1,b=2,session.id=new",
+    );
+    expect(withSessionBaggage(null, "s")).toBe("session.id=s");
+  });
+});
 
 const ZERO_TRACE_ID = "0".repeat(32);
 

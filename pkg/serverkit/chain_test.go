@@ -162,10 +162,10 @@ func TestNewChain_DefaultsAndOmits(t *testing.T) {
 	if n := len(bare.Interceptors()); n != core {
 		t.Fatalf("all defaults omitted: %d interceptors, want observe's core (%d)", n, core)
 	}
-	// trace (+ its profile-labels and traceresponse companions), deadline,
-	// audit, activity, stream drain, validate.
-	if n := len(full.Interceptors()); n != core+8 {
-		t.Fatalf("all defaults: %d interceptors, want %d", n, core+8)
+	// trace (+ its profile-labels, traceresponse and request-span companions),
+	// deadline, audit, activity, stream drain, validate.
+	if n := len(full.Interceptors()); n != core+9 {
+		t.Fatalf("all defaults: %d interceptors, want %d", n, core+9)
 	}
 }
 

@@ -103,6 +103,15 @@ type SessionSummary struct {
 	Interactions uint64
 	Errors       uint64
 	HasReplay    bool
+	// Where the session's browser was, derived at ingest by the platform from the
+	// address it connected from (resource attributes geo.country.iso_code,
+	// geo.region.name and geo.locality.name), kept together as one tuple so the
+	// three always come from the same report. Empty when the platform derived none.
+	Country, Region, City string
+	// ClientAddress is the browser's address (client.address). Empty unless the
+	// platform is configured to keep it; by default it derives the location and
+	// drops the address.
+	ClientAddress string
 }
 
 // Duration is how long the session was observed.
@@ -110,10 +119,13 @@ func (s SessionSummary) Duration() time.Duration { return s.Ended.Sub(s.Started)
 
 // sessionCols is the select list of the session statements, in the order
 // scanSession reads: session_id, service, version, env_id, user_id, entry_path,
-// started, ended, page_views, interactions, errors, has_replay.
+// started, ended, page_views, interactions, errors, has_replay, country, region,
+// city, client_address.
 const sessionCols = "SessionId, ServiceName, max(ServiceVersion) AS version, max(EnvId) AS env_id, max(UserId) AS user_id,\n" +
 	"       argMinMerge(EntryPath) AS entry_path, min(Start) AS started, max(End) AS ended,\n" +
-	"       sum(PageViews) AS page_views, sum(Interactions) AS interactions, sum(Errors) AS errors, max(HasReplay) AS has_replay"
+	"       sum(PageViews) AS page_views, sum(Interactions) AS interactions, sum(Errors) AS errors, max(HasReplay) AS has_replay,\n" +
+	"       tupleElement(max(Geo), 1) AS country, tupleElement(max(Geo), 2) AS region, tupleElement(max(Geo), 3) AS city,\n" +
+	"       max(ClientAddress) AS client_address"
 
 func scanSession(rows Rows, names map[string]string) (SessionSummary, error) {
 	var (
@@ -123,13 +135,16 @@ func scanSession(rows Rows, names map[string]string) (SessionSummary, error) {
 		started, ended        time.Time
 		id, svc, ver, env, us string
 		entry                 string
+		country, region, city string
+		addr                  string
 	)
-	if err := rows.Scan(&id, &svc, &ver, &env, &us, &entry, &started, &ended, &pv, &ia, &er, &replay); err != nil {
+	if err := rows.Scan(&id, &svc, &ver, &env, &us, &entry, &started, &ended, &pv, &ia, &er, &replay, &country, &region, &city, &addr); err != nil {
 		return s, err
 	}
 	return SessionSummary{
 		SessionID: id, Service: svc, Version: ver, EnvID: env, EnvName: names[env], UserID: us, EntryPath: entry,
 		Started: started, Ended: ended, PageViews: pv, Interactions: ia, Errors: er, HasReplay: replay != 0,
+		Country: country, Region: region, City: city, ClientAddress: addr,
 	}, nil
 }
 

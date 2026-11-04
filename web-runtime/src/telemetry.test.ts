@@ -811,6 +811,35 @@ describe("fetch and XHR URL query stripping", () => {
     expect(() => hook({ setAttribute: vi.fn() })).not.toThrow();
   });
 
+  it("stamps the RUM session on fetch and xhr spans while telemetry runs", async () => {
+    const { t } = await load();
+    const gate = await import("./telemetry-gate.js");
+    const opts = t.buildSdkOptions(
+      { serviceName: "web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const inst = opts.instrumentations as Record<string, Hooked>;
+
+    gate.registerRumSession(() => "91b955b313a1a86644ea53730a92deab");
+    for (const kind of ["fetch", "xhr"]) {
+      const s = span({ "http.url": "https://api.example.com/v1/items" });
+      inst[kind]!.applyCustomAttributesOnSpan(s);
+      expect(s.attributes["session.id"]).toBe(
+        "91b955b313a1a86644ea53730a92deab",
+      );
+    }
+
+    // No session (telemetry off), or one that is not a session id: nothing.
+    for (const source of [null, () => "not a session"]) {
+      gate.registerRumSession(source);
+      const s = span({});
+      inst.fetch!.applyCustomAttributesOnSpan(s);
+      expect(s.attributes).not.toHaveProperty("session.id");
+    }
+    gate.resetTelemetryGate();
+  });
+
   it("restates what the SDK's own fetch/xhr config would have carried", async () => {
     const { t } = await load();
     const opts = t.buildSdkOptions(

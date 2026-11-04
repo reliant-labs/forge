@@ -1,15 +1,15 @@
 ---
-name: v1.0.17
-description: Upgrade a project to forge v1.0.17. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3.
-version: v1.0.17
+name: v1.0.16
+description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3.
+version: v1.0.16
 detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; exit 1
 ---
 
-# Upgrading to v1.0.17
+# Upgrading to v1.0.16
 
 ## 1. Cron workers fire once per tick, not once per replica
 
-**Use when** a worker under `internal/workers/` imports `github.com/robfig/cron/v3` (it was scaffolded with `--kind cron` before v1.0.17).
+**Use when** a worker under `internal/workers/` imports `github.com/robfig/cron/v3` (it was scaffolded with `--kind cron` before v1.0.16).
 
 ### What changed
 

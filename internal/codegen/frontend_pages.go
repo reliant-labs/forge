@@ -1335,6 +1335,14 @@ func attachTSConversions(pf *PageField) {
 		// stored value as-is. Defaulting it (the old `?? <first value>`)
 		// named the zero, which is not a state a row can be in.
 		pf.PrefillExpr = fmt.Sprintf("item.%s", n)
+		if pf.EmptyIsUnset() && pf.EnumZeroRef != "" {
+			// An `optional` enum's NULL arrives absent, or as the zero
+			// should a server set presence on it. Both prefill as unset,
+			// which react-hook-form renders as "" — the None option — so
+			// a Save that never touched the select leaves NULL alone
+			// instead of the browser picking the first real member.
+			pf.PrefillExpr = fmt.Sprintf("item.%s === %s ? undefined : item.%s", n, pf.EnumZeroRef, n)
+		}
 	case pf.EmptyIsUnset():
 		attachUnsetTSConversions(pf)
 	case pf.IsRepeated:

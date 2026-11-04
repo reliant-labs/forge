@@ -378,6 +378,12 @@ func TestEnumOptional_NoneIsAChoice(t *testing.T) {
 	if want := `z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().pipe(z.nativeEnum(ThingKind)).refine((v): boolean => v !== ThingKind.UNSPECIFIED, "Choose a value").optional())`; kind.ZodExpr != want {
 		t.Errorf("optional kind zod = %s, want %s", kind.ZodExpr, want)
 	}
+	// Edit opens a NULL enum on None, never on the first real member — an
+	// unrelated Save must not write a value the record never had.
+	editKind := formFieldNamed(t, page.UpdateFields, "kind")
+	if want := "item.kind === ThingKind.UNSPECIFIED ? undefined : item.kind"; editKind.PrefillExpr != want {
+		t.Errorf("optional kind edit prefill = %s, want %s", editKind.PrefillExpr, want)
+	}
 	for _, tmplKind := range []string{"pages", "vite-spa-pages"} {
 		for _, name := range []string{"create-page.tsx.tmpl", "edit-page.tsx.tmpl"} {
 			out := renderPageTemplate(t, tmplKind, name, page)

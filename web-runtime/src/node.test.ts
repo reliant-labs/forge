@@ -202,7 +202,11 @@ describe("configuration", () => {
         },
       },
       {
-        versions: { node: "22.1.0", electron: "41.0.0" },
+        versions: {
+          node: "22.1.0",
+          electron: "41.0.0",
+          chrome: "146.0.7680.31",
+        },
         platform: "win32",
         arch: "x64",
       },
@@ -220,6 +224,9 @@ describe("configuration", () => {
       "telemetry.sdk.version": "0.9.3",
       "process.runtime.name": "electron",
       "process.runtime.version": "41.0.0",
+      "app.desktop.version": "1.2.3",
+      "app.desktop.electron.version": "41.0.0",
+      "app.desktop.chromium.version": "146.0.7680.31",
       "os.type": "windows",
       "host.arch": "amd64",
     });

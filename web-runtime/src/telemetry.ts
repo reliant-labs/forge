@@ -90,6 +90,16 @@
 // URL keeps `HTTP <METHOD>`: a free-form path can carry ids and tokens, and
 // the span name is exported unscrubbed.
 //
+// ── Client context ───────────────────────────────────────────────────────
+//
+// The page reports what only it can know about its client — client hints
+// (browser.brands/platform/mobile), its viewport and screen (app.viewport.*,
+// app.screen.*) and, inside a desktop app, the app's versions from the
+// `window.forgeDesktop` preload bridge (app.desktop.*) — sanitized
+// (client-context.ts). Browser, OS and device type are NOT page claims: the
+// ingest side derives them from the request's User-Agent and Sec-CH-UA
+// headers and overwrites any the page sent.
+//
 // ── Loading ──────────────────────────────────────────────────────────────
 //
 // The SDK is ~600 KB minified (rrweb and the OTel web stack are bundled in
@@ -113,6 +123,10 @@ import {
   classifyBenignError,
   FilteredErrorCounter,
 } from "./benign-errors.js";
+import {
+  pageClientResourceAttributes,
+  watchViewport,
+} from "./client-context.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { installSessionCookieFallback } from "./session-cookie-fallback.js";
 import {
@@ -125,6 +139,12 @@ import {
   setTelemetrySink,
   type TrackValue,
 } from "./track.js";
+
+export {
+  clientResourceAttributes,
+  type ForgeDesktopInfo,
+  viewportAttributes,
+} from "./client-context.js";
 
 export {
   cookiesPersist,
@@ -352,7 +372,12 @@ async function start(
     // Before init: the SDK reads its session cookie as it starts.
     keepSessionWithoutCookies();
     hdx.init(
-      buildSdkOptions({ ...config, replay }, ingest, window.location.origin),
+      buildSdkOptions(
+        { ...config, replay },
+        ingest,
+        window.location.origin,
+        pageClientResourceAttributes(),
+      ),
     );
     // After init: both hook what the SDK RECORDS, never what the app sees.
     const benign = benignFilter(config, hdx);
@@ -372,6 +397,11 @@ async function start(
       globals["visitor.id"] = captureVisitor(config);
     }
     hdx.setGlobalAttributes?.(globals);
+    // The viewport and screen ride on every span, refreshed on resize
+    // (client-context.ts). Device, OS and browser are derived at ingest.
+    const stopViewport = watchViewport((attrs) =>
+      hdx.setGlobalAttributes?.(attrs),
+    );
     runningClient = hdx;
     runningConfig = config;
     // The session id rides on every Connect call as baggage (trace.ts) and on
@@ -400,6 +430,7 @@ async function start(
         // back to console.error and the error does not vanish.
         setExceptionReporter(null);
         registerRumSession(null);
+        stopViewport();
         hdx.stopSessionRecorder?.();
       },
     });
@@ -754,17 +785,20 @@ function alreadyRecorded(error: unknown): boolean {
 
 /**
  * The options passed to HyperDX.init. Exported for tests and for apps that
- * want to see exactly what is configured — it is pure.
+ * want to see exactly what is configured — it is pure. `clientAttributes`
+ * are the page's own client resource attributes (client-context.ts:
+ * browser.* client hints, app.desktop.*); the config's keys win over them.
  */
 export function buildSdkOptions(
   config: BrowserTelemetryConfig,
   ingestUrl: string,
   pageOrigin: string,
+  clientAttributes: Record<string, string> = {},
 ): Record<string, unknown> {
   // `config.replay` is the FINAL decision here. initBrowserTelemetry resolves
   // replaySampleRate into it (decideReplay) before calling this.
   const replay = config.replay === true;
-  const resourceAttributes: Record<string, string> = {};
+  const resourceAttributes: Record<string, string> = { ...clientAttributes };
   if (config.serviceVersion) {
     resourceAttributes["service.version"] = config.serviceVersion;
   }

@@ -182,6 +182,22 @@ on the server, and calls made while the SDK chunk is still loading are held
   and the visitor id key; `getAttribution()` is the captured record, for a site
   that stamps campaign values on its own events.
 
+- Client context: init puts the low-entropy client hints of
+  `navigator.userAgentData` on the resource (`browser.brands` as
+  `"Google Chrome 131, Chromium 131"` with GREASE brands dropped,
+  `browser.platform`, `browser.mobile`), and the viewport and screen in CSS
+  pixels on every span (`app.viewport.width|height`, `app.screen.width|height`,
+  restamped once a resize settles). Every value is validated and a malformed
+  one is dropped. Browser, OS and device type are deliberately not reported:
+  the ingest side derives them from the request's `User-Agent` and `Sec-CH-UA*`
+  headers, which page script cannot set. A desktop app's preload exposes its
+  versions as `window.forgeDesktop` (`contextBridge.exposeInMainWorld("forgeDesktop",
+{ appVersion, electronVersion: process.versions.electron, chromiumVersion:
+process.versions.chrome })`), which init stamps as `app.desktop.version`,
+  `app.desktop.electron.version` and `app.desktop.chromium.version`; `/node`
+  stamps the same three on an Electron main process (`app.desktop.version` is
+  its `serviceVersion`).
+
 - Benign browser errors (`classifyBenignError`, `forge.errors_filtered`): an
   `AbortError` (a cancelled request, an unmounted component, a navigation) and
   the browser's generic fetch failure (a `TypeError` reading exactly `Failed to

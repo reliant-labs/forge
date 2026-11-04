@@ -143,6 +143,10 @@ type RawProtoMessage struct {
 	// surface and it would ship on the born Create request — so birth
 	// refuses the entity and names the site.
 	UnappliedReadOnlyMarkers []RawProtoMarkerSite
+	// UnappliedOwnerMarkers are `// forge:owner` field markers written
+	// inside this message that attached to no captured field — refused at
+	// birth for the reason UnappliedReadOnlyMarkers is.
+	UnappliedOwnerMarkers []RawProtoMarkerSite
 	// GeneratedMarkers are the `// forge:generated <expr>` markers bound to
 	// a field of this message, one per marker, in declaration order. The
 	// expression also lands on the field (SchemaFieldDef.Generated); this
@@ -401,6 +405,7 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		options   string // trailing `[...]` inline options (buf.validate rules)
 		readOnly  bool   // carries a `// forge:read-only` leading/trailing marker
 		generated string // the `// forge:generated <expr>` expression, if any
+		owner     bool   // carries a `// forge:owner` leading/trailing marker
 	}
 	type rawMessage struct {
 		msg    *RawProtoMessage
@@ -456,6 +461,10 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		// field consumes them all, and none is reported as unapplied.
 		pendingFieldReadOnly := false
 		var pendingFieldReadOnlyAt []int // byte offsets of the pending markers
+		// `// forge:owner` lines, pending exactly like the read-only ones.
+		// Tracked apart because a line may carry both (`// forge:read-only
+		// forge:owner`), and each is consumed — or reported — on its own.
+		var pendingFieldOwnerAt []int
 
 		// Every `// forge:read-only` occurrence in this file, and which of
 		// them a field actually consumed. Whatever is left over is a marker
@@ -463,6 +472,8 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		// so birth can refuse loudly instead of dropping it.
 		readOnlySites := readOnlyFieldMarkerRE.FindAllStringIndex(content, -1)
 		consumedReadOnly := make(map[int]bool, len(readOnlySites))
+		ownerSites := OwnerMarkerLineRE.FindAllStringIndex(content, -1)
+		consumedOwner := make(map[int]bool, len(ownerSites))
 		msgStartIdx := len(messages)
 
 		lines := strings.Split(content, "\n")
@@ -484,6 +495,11 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 				continue // blank line — a pending marker survives
 			}
 			if strings.HasPrefix(trimmedRaw, "//") {
+				// FIELD-level owner marker on its own line, alone or after
+				// another marker: attaches to the next captured field.
+				if loc := OwnerMarkerLineRE.FindStringIndex(line); loc != nil {
+					pendingFieldOwnerAt = append(pendingFieldOwnerAt, lineOffset+loc[0])
+				}
 				switch {
 				case entityMarkerRE.MatchString(trimmedRaw):
 					pendingMarker = true
@@ -663,14 +679,25 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 								}
 								return readOnly, generated
 							}
+							// The owner marker, by the same leading/trailing rule.
+							takeOwner := func(fieldName string) bool {
+								sites := append([]int(nil), pendingFieldOwnerAt...)
+								if off, ok := rawFieldTrailingMarker(restFromLine, fieldName, OwnerMarkerLineRE); ok {
+									sites = append(sites, lineOffset+off)
+								}
+								for _, at := range sites {
+									consumedOwner[at] = true
+								}
+								return len(sites) > 0
+							}
 							if m := rawMapFieldRE.FindStringSubmatch(trimmed); m != nil {
 								readOnly, generated := takeReadOnly(m[3])
 								currentMsg.fields = append(currentMsg.fields, rawField{
 									typeToken: "map", mapKey: m[1], mapValue: m[2], name: m[3], oneof: oneofName,
-									readOnly: readOnly, generated: generated,
+									readOnly: readOnly, generated: generated, owner: takeOwner(m[3]),
 								})
 								currentMsg.msg.MaxFieldNumber = maxInt(currentMsg.msg.MaxFieldNumber, atoiOr(m[4], 0))
-								pendingFieldReadOnly, pendingFieldReadOnlyAt = false, nil
+								pendingFieldReadOnly, pendingFieldReadOnlyAt, pendingFieldOwnerAt = false, nil, nil
 							} else if m := rawFieldRE.FindStringSubmatch(trimmed); m != nil {
 								readOnly, generated := takeReadOnly(m[3])
 								currentMsg.fields = append(currentMsg.fields, rawField{
@@ -683,9 +710,10 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 									options:   findInlineOptions(restFromLine, m[3]),
 									readOnly:  readOnly,
 									generated: generated,
+									owner:     takeOwner(m[3]),
 								})
 								currentMsg.msg.MaxFieldNumber = maxInt(currentMsg.msg.MaxFieldNumber, atoiOr(m[4], 0))
-								pendingFieldReadOnly, pendingFieldReadOnlyAt = false, nil
+								pendingFieldReadOnly, pendingFieldReadOnlyAt, pendingFieldOwnerAt = false, nil, nil
 							}
 						}
 					}
@@ -739,7 +767,7 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 				// only: any non-field statement (a decl, an enum value) drops it.
 				// Comment/blank lines `continue` above without reaching here, so
 				// the marker still survives those between it and its field.
-				pendingFieldReadOnly, pendingFieldReadOnlyAt = false, nil
+				pendingFieldReadOnly, pendingFieldReadOnlyAt, pendingFieldOwnerAt = false, nil, nil
 			}
 		}
 
@@ -756,6 +784,24 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 					continue
 				}
 				rm.msg.UnappliedReadOnlyMarkers = append(rm.msg.UnappliedReadOnlyMarkers,
+					RawProtoMarkerSite{File: path, Line: lineNumberAt(content, site[0]), Text: sourceLineAt(content, site[0])})
+				break
+			}
+		}
+
+		// Every owner marker no field took, attributed the same way. Birth
+		// refuses the entity: a dropped one would birth the table unowned
+		// and handlers_crud.go unscoped, which is the outcome it was written
+		// to prevent.
+		for _, site := range ownerSites {
+			if consumedOwner[site[0]] {
+				continue
+			}
+			for _, rm := range messages[msgStartIdx:] {
+				if site[0] < rm.msg.BodyOpen || site[0] > rm.msg.BodyClose {
+					continue
+				}
+				rm.msg.UnappliedOwnerMarkers = append(rm.msg.UnappliedOwnerMarkers,
 					RawProtoMarkerSite{File: path, Line: lineNumberAt(content, site[0]), Text: sourceLineAt(content, site[0])})
 				break
 			}
@@ -882,6 +928,8 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 			// `// forge:generated <expr>` — the born column is
 			// GENERATED ALWAYS AS (<expr>) STORED.
 			def.Generated = f.generated
+			// `// forge:owner` — the born column is the table's owner.
+			def.Owner = f.owner
 			rm.msg.Fields = append(rm.msg.Fields, def)
 		}
 		scan.Messages = append(scan.Messages, *rm.msg)
@@ -986,6 +1034,13 @@ func sourceLineAt(content string, off int) string {
 // exact across a twelve-field app: every field with a bracket kept, every
 // field without one stripped.
 func rawFieldTrailingReadOnly(text, field string) (int, bool) {
+	return rawFieldTrailingMarker(text, field, readOnlyFieldMarkerRE)
+}
+
+// rawFieldTrailingMarker is rawFieldTrailingReadOnly for any field marker:
+// the offset of a trailing comment after field's declaration that marker
+// matches.
+func rawFieldTrailingMarker(text, field string, marker *regexp.Regexp) (int, bool) {
 	fre := regexp.MustCompile(`\b` + regexp.QuoteMeta(field) + `\s*=\s*\d+`)
 	loc := fre.FindStringIndex(text)
 	if loc == nil {
@@ -1006,7 +1061,7 @@ func rawFieldTrailingReadOnly(text, field string) (int, bool) {
 	if nl := strings.IndexByte(comment, '\n'); nl >= 0 {
 		comment = comment[:nl]
 	}
-	if !readOnlyFieldMarkerRE.MatchString(comment) {
+	if !marker.MatchString(comment) {
 		return 0, false
 	}
 	return i, true

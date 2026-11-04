@@ -76,8 +76,9 @@ import (
 //
 // method must be a CRUD RPC name (Create/Get/List/Update/Delete + entity)
 // and ownerColumn must be non-empty; anything else is an error rather
-// than a guess.
-func RenderScopedCRUDShim(method, inputType, outputType, entity, ownerColumn string) (string, error) {
+// than a guess. ownerIsPK reports an owner column that is the table's
+// primary key (CRUDMethodTemplateData.OwnerIsPK).
+func RenderScopedCRUDShim(method, inputType, outputType, entity, ownerColumn string, ownerIsPK bool) (string, error) {
 	if strings.TrimSpace(ownerColumn) == "" {
 		return "", fmt.Errorf("render scoping wrapper for %s: no owner column — the predicate has nothing to name", method)
 	}
@@ -100,6 +101,7 @@ func RenderScopedCRUDShim(method, inputType, outputType, entity, ownerColumn str
 		AuthSeam:     crudAuthSeam,
 		OwnerColumn:  ownerColumn,
 		OwnerField:   naming.ColumnGoName(ownerColumn),
+		OwnerIsPK:    ownerIsPK,
 		Scoped:       true,
 	}
 

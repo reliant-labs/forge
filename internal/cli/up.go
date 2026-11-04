@@ -1123,14 +1123,11 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		sigCtx, stopSignals := signal.NotifyContext(ctx, upTeardownSignals...)
 		defer stopSignals()
 		ctx = sigCtx
-		defer func() {
-			// The hold below tears down itself; this covers a signal that
-			// cut a phase short before it.
-			if ctx.Err() != nil && !procs.stopped() {
-				fmt.Println("\n[up] interrupted while starting — shutting down...")
-				procs.shutdown()
-			}
-		}()
+		// The hold below tears down itself; this covers every other way out
+		// of a supervising run — a signal that cut a phase short, and an
+		// ordinary error (a failed readiness or cluster gate) after children
+		// started. Only --background leaves a stack running.
+		defer func() { teardownSupervisedExit(ctx, procs) }()
 	}
 
 	// Phase 3: host-mode services.
@@ -1248,9 +1245,9 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if clusterErr != nil {
 		// Do NOT hold the foreground on an env that is not up: the hold
 		// exits 0 on Ctrl-C, which is the green-exit-over-a-crashloop this
-		// gate exists to end. Nothing is killed — the host children are in
-		// the ledger, so `forge env down` still reaches them.
-		fmt.Printf("[up] host/frontend process(es) from this run are still running — stop them with `forge env down %s`.\n", opts.env)
+		// gate exists to end. Nor leave the host children behind: this run
+		// owns them, so the deferred teardown stops them as it returns.
+		session.stop(time.Now().UTC())
 		return clusterErr
 	}
 
@@ -1276,6 +1273,27 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	session.stop(time.Now().UTC())
 	procs.shutdown()
 	return nil
+}
+
+// teardownSupervisedExit stops a supervising run's children on any return
+// that did not already tear them down: a signal before the hold, or an error
+// returned after the first child started. The children run in process groups
+// of their own, so without it they would outlive the command that owns them.
+func teardownSupervisedExit(ctx context.Context, procs *procRegistry) {
+	if procs.stopped() {
+		return
+	}
+	switch {
+	case ctx.Err() != nil:
+		fmt.Println("\n[up] interrupted while starting — shutting down...")
+	case procs.count() > 0:
+		fmt.Println("[up] startup failed — stopping the process(es) this run started...")
+	default:
+		// Nothing started and nothing interrupted: no stack of this run's
+		// to stop, and its records are not this run's to remove.
+		return
+	}
+	procs.shutdown()
 }
 
 // upTeardownSignals stop a supervising `forge env up` and tear its stack

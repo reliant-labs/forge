@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TestResolveUpLifecycle pins the lifecycle decision behind `forge env up`:
@@ -83,5 +86,38 @@ func TestUpWatchBackgroundMutuallyExclusive(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Errorf("error should mention mutual exclusion, got %v", err)
+	}
+}
+
+// TestTeardownSupervisedExitStopsChildrenOnAnOrdinaryError pins the exit a
+// supervising `forge env up` takes when a startup step (the readiness gate,
+// the cluster gate) returns an error after children started, with no signal:
+// the children it owns stop with it, rather than outliving the command in
+// process groups of their own. A run that started nothing stops nothing.
+func TestTeardownSupervisedExitStopsChildrenOnAnOrdinaryError(t *testing.T) {
+	dir, projectID, env := testStack(t)
+	t.Chdir(dir)
+
+	idle := newProcRegistry(projectID, dir, env)
+	teardownSupervisedExit(context.Background(), idle)
+	if idle.stopped() {
+		t.Error("a run that started nothing tore a stack down")
+	}
+
+	reg := newProcRegistry(projectID, dir, env)
+	if err := reg.start("api", exec.Command("sleep", "60"), false); err != nil {
+		t.Fatal(err)
+	}
+	mp := reg.processes[0]
+	t.Cleanup(func() { _ = killProcessTree(mp.pid, syscall.SIGKILL) })
+
+	teardownSupervisedExit(context.Background(), reg)
+	if !reg.stopped() {
+		t.Fatal("an error return after a child started did not tear the stack down")
+	}
+	select {
+	case <-mp.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the child outlived the supervising run's error return")
 	}
 }

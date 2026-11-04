@@ -321,7 +321,8 @@ export default function {{.EntityNamePlural}}Page() {
             setCursor([]);
 {{- end}}
           }}
-          hasOtherFilters={ {{if .ListFilterExtraFields}}{{range $i, $f := .ListFilterExtraFields}}{{if $i}} || {{end}}Boolean({{$f.Name}}{{if ne $f.Kind "fk"}}Input{{end}}){{end}}{{else}}false{{end}} }
+{{- if .ListFilterExtraFields}}
+          hasOtherFilters={ {{range $i, $f := .ListFilterExtraFields}}{{if $i}} || {{end}}Boolean({{$f.Name}}{{if ne $f.Kind "fk"}}Input{{end}}){{end}} }
         >
 {{- range .ListFilterExtraFields}}
 {{- if eq .Kind "fk"}}
@@ -346,6 +347,9 @@ export default function {{.EntityNamePlural}}Page() {
 {{- end}}
 {{- end}}
         </FilterBar>
+{{- else}}
+        />
+{{- end}}
       }
 {{- end}}
 {{- if .HasCreate}}

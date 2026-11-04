@@ -392,7 +392,8 @@ const filterDefs = [
             setCursor([]);
 {{- end}}
           }}
-          hasOtherFilters={ {{if .ListFilterExtraFields}}{{range $i, $f := .ListFilterExtraFields}}{{if $i}} || {{end}}Boolean(params.{{$f.Name}}){{end}}{{else}}false{{end}} }
+{{- if .ListFilterExtraFields}}
+          hasOtherFilters={ {{range $i, $f := .ListFilterExtraFields}}{{if $i}} || {{end}}Boolean(params.{{$f.Name}}){{end}} }
         >
 {{- range .ListFilterExtraFields}}
 {{- if eq .Kind "fk"}}
@@ -417,6 +418,9 @@ const filterDefs = [
 {{- end}}
 {{- end}}
         </FilterBar>
+{{- else}}
+        />
+{{- end}}
       }
 {{- end}}
 {{- if .HasCreate}}

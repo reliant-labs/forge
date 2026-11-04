@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/cronkit"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The ORM handle a forge worker's Deps carries is what the scaffolded cron
@@ -27,9 +28,7 @@ var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 func testDSN(t *testing.T) string {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("boots real postgres; skipped under -short")
-	}
+	testkit.Slow(t, "boots real postgres (pgtest)")
 	dsn, cleanup, err := pgtest.NewURL()
 	if err != nil {
 		t.Fatalf("test postgres: %v", err)

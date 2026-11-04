@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestGenerateWorkerFilesDefault(t *testing.T) {
@@ -126,9 +128,7 @@ func TestGenerateWorkerFilesCronClaimsTicksOnTheDatabase(t *testing.T) {
 // everything forge's runtime needs except the cron module; no typed config.
 // What is under test is the go.mod requirement, not the template body.
 func TestGenerateWorkerFilesCron_CompilesAgainstProjectModule(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds a module (go mod tidy + go get + go build); -short runs the string-level assertions only")
-	}
+	testkit.Slow(t, "builds a module (go mod tidy + go get + go build); -short runs the string-level assertions only")
 	forgeRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)

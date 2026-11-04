@@ -57,9 +57,11 @@ declare it:
 COMMENT ON COLUMN crews.company_id IS 'forge:owner';
 ```
 
-This changes no codegen. Forge still stores no ownership of its own and will not
-inject a `WHERE` clause for you, because only your app knows how a caller's
-claims map onto this column's values. What it changes is what forge lets ship: it
+Or declare it at birth: `// forge:owner` on the proto field writes this comment
+into the create-table migration, so `handlers_crud.go` is born with the
+owner-scoping wrapper. Forge still stores no ownership of its own and injects no
+runtime `WHERE`: the wrapper leaves one expression mapping the caller's claims
+onto this column's values, which only your app knows. It also changes what forge lets ship: it
 arms the `unscoped_auth` audit gate for this table, so an authenticated RPC over
 `crews` whose handler never resolves the caller becomes an `error` rather than a
 warning. A column can carry both markers — `'forge:owner forge:immutable'` — and

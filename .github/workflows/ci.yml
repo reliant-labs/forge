@@ -992,6 +992,14 @@ jobs:
       - name: CHANGELOG.md is not edited by pull requests
         if: ${{ github.event_name == 'pull_request' }}
         run: scripts/check-changelog-untouched.sh HEAD^1
+      # No binary file, and no new file over 1 MiB, in the pull request:
+      # HEAD^1..HEAD is its whole change, merges included. Git alone, seconds,
+      # so every pull request runs it, labelled or not. pre-commit's
+      # no-committed-binaries hook cannot stand in for it: it reads the staged
+      # change, which is empty in CI (control-plane#1952 merged a 5.9 MB
+      # build binary through that gap).
+      - name: No committed binaries
+        run: scripts/check-no-binaries.sh --range HEAD^1 HEAD
       - uses: actions/setup-go@v7
         if: ${{ !cancelled() }}
         with:

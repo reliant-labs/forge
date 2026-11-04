@@ -105,7 +105,7 @@ func runEntityFromProto(args []string, fromProto string, opts entityOpts) error 
 	}
 
 	migDir := filepath.Join(root, "db", "migrations")
-	applied, existing := appliedSchema(migDir)
+	applied, existing, _ := appliedSchema(migDir)
 	fkReg := newFKRegistry(existing)
 
 	// ── batch form: --from-proto <svc>, no message, no name ─────────
@@ -859,26 +859,31 @@ func markersFromScan(scan *codegen.RawProtoScan, msgName string) entityBirthMark
 	return entityBirthMarkers{}
 }
 
-// appliedSchema returns both views of the applied schema a birth needs:
-// the table-name set (the one-time-birth guard, the FK referent registry)
-// and the per-table reference columns still missing a FOREIGN KEY — the
+// appliedSchema returns the views of the applied schema a birth needs:
+// the table-name set (the one-time-birth guard, the FK referent registry),
+// the per-table reference columns still missing a FOREIGN KEY — the
 // columns a newly born table may be able to constrain from its own
-// migration, once it creates the table they point at.
+// migration, once it creates the table they point at — and the tables
+// themselves, for the sweep's CRUD-rpc pre-flight (which reads their
+// `forge:entity-name` / `forge:no-entity` comments).
 //
 // The reference-column view needs real introspection; the regex fallback
 // recovers table names only. When it is all we have the back-fill is
-// simply empty, which loses a constraint but never emits a broken one.
-func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTable) {
+// simply empty, which loses a constraint but never emits a broken one, and
+// the tables carry their names alone.
+func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTable, []schemadef.Table) {
 	out := map[string]bool{}
 	projectDir := filepath.Dir(filepath.Dir(migDir))
 	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
+		var named []schemadef.Table
 		if parsed, perr := database.ParseMigrationsForSchema(migDir); perr == nil {
 			for _, t := range parsed {
 				out[t.Name] = true
+				named = append(named, schemadef.Table{Name: t.Name})
 			}
 		}
-		return out, nil
+		return out, nil, named
 	}
 	existing := make([]entityscaffold.ExistingTable, 0, len(tables))
 	for _, t := range tables {
@@ -888,7 +893,7 @@ func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTab
 			UnconstrainedRefColumns: unconstrainedRefColumns(t),
 		})
 	}
-	return out, existing
+	return out, existing, tables
 }
 
 // unconstrainedRefColumns lists a table's TEXT `<x>_id` columns that carry

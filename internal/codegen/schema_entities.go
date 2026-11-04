@@ -385,6 +385,49 @@ func UnmatchedCRUDRPCs(tables []schemadef.Table, services []ServiceDef) []Unmatc
 	return out
 }
 
+// RawUnmatchedCRUDRPCs is UnmatchedCRUDRPCs read off the RAW protos, for a
+// pass that runs before the descriptor is compiled: `forge scaffold`'s
+// pre-flight, which must answer the same question the generate pipeline's
+// CRUD step will ask minutes later, before anything is written. tables is
+// the applied schema; born names the tables the same run will birth, which
+// count as tables already — their quintet rpcs are what the birth adds.
+//
+// The classification is UnmatchedCRUDRPCs itself, over ServiceDefs built
+// from the scan, so the two cannot disagree about what a CRUD name is. The
+// raw scan sees only the messages declared in the service's own proto
+// directory; an entity message imported from elsewhere is not reported
+// here (generate still refuses it), which errs on the side of never
+// failing a scaffold that generate would pass.
+func RawUnmatchedCRUDRPCs(tables []schemadef.Table, born []string, scans []*RawProtoScan) []UnmatchedCRUDRPC {
+	all := append([]schemadef.Table(nil), tables...)
+	for _, name := range born {
+		all = append(all, schemadef.Table{Name: name})
+	}
+	var services []ServiceDef
+	for _, scan := range scans {
+		if scan == nil {
+			continue
+		}
+		messages := make(map[string][]MessageFieldDef, len(scan.Messages))
+		for _, m := range scan.Messages {
+			messages[m.Name] = nil
+		}
+		for _, rs := range scan.Services {
+			if rs.Unmanaged {
+				continue
+			}
+			sd := ServiceDef{Name: rs.Name, Package: scan.Package, Messages: messages}
+			for _, r := range scan.RPCs {
+				if r.Service == rs.Name {
+					sd.Methods = append(sd.Methods, Method{Name: r.Name, Custom: r.Custom, ClientStreaming: r.Streaming})
+				}
+			}
+			services = append(services, sd)
+		}
+	}
+	return UnmatchedCRUDRPCs(all, services)
+}
+
 // WithoutHandImplemented drops the rpcs projectDir's handler packages
 // implement by hand: a CRUD-named rpc over no table that the author wrote
 // (a computed ListArchivedChats, a GetRun over a workflow engine) is

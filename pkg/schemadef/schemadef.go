@@ -654,11 +654,27 @@ type IndexKey struct {
 	Fold string
 }
 
-// ForeignKey is a declared REFERENCES constraint.
+// ForeignKey is a declared REFERENCES constraint — or, for a composite one,
+// one column of it.
+//
+// A composite constraint (`FOREIGN KEY (tenant_id, strategy_id) REFERENCES
+// strategies (tenant_id, id)`) is reported as one ForeignKey per column, each
+// pairing a column with the referenced column at the same position, and every
+// one of them carrying the whole key in KeyColumns / RefKeyColumns. A reader
+// that understands only single-column references still reads a true fact
+// from each entry (strategy_id's value is some strategies.id); a reader that
+// places values reads KeyColumns, because the composite says more than its
+// columns do: all of them name the SAME parent row.
 type ForeignKey struct {
 	Column    string
 	RefTable  string
 	RefColumn string
+	// KeyColumns and RefKeyColumns are the constraint's whole key, in
+	// declaration order, when it spans more than one column; nil for a
+	// single-column reference. Column is KeyColumns[i] and RefColumn is
+	// RefKeyColumns[i] for this entry's position i.
+	KeyColumns    []string
+	RefKeyColumns []string
 	// Name is the constraint name postgres knows it by — explicit
 	// (`CONSTRAINT orders_patient_id_fkey`) or auto-derived from an inline
 	// REFERENCES. It is what a COMMENT ON CONSTRAINT statement names.
@@ -1349,7 +1365,7 @@ func introspectTable(ctx context.Context, db Queryer, schema, name string) (Tabl
 	// col_description carries the COMMENT ON COLUMN text, which is where a
 	// column's `forge:*` declarations live. information_schema exposes no
 	// path to it, so it is read from the catalog by regclass + ordinal —
-	// the same shape introspectFKComments uses for constraint comments.
+	// the same shape introspectForeignKeys uses for constraint comments.
 	rows, err := db.QueryContext(ctx, `
 		SELECT column_name, data_type, udt_name, is_nullable, column_default, is_generated,
 		       is_identity, character_maximum_length,
@@ -1636,27 +1652,45 @@ func parseFoldedKey(expr string) (column, fold string) {
 }
 
 // introspectForeignKeys returns the declared REFERENCES constraints of a
-// table via information_schema.
+// table, one entry per constrained column (see ForeignKey for the composite
+// shape), with each constraint's name and catalog comment.
+//
+// It reads pg_constraint, pairing conkey[i] with confkey[i]. It used to join
+// information_schema.key_column_usage to constraint_column_usage by
+// constraint name, which has no column pairing to join on: a two-column key
+// came back as the four-row cross product, so `(tenant_id, strategy_id)
+// REFERENCES strategies (tenant_id, id)` also reported strategy_id →
+// strategies.tenant_id — and the seeder, believing it, wrote a tenant's id
+// into strategy_id. pg_constraint also carries the comment (pg_description,
+// which information_schema exposes no path to), so the name and the comment
+// arrive on the row they belong to instead of being looked up by column,
+// which a column under two constraints could not answer.
 func introspectForeignKeys(ctx context.Context, db Queryer, schema, table string) ([]ForeignKey, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT kcu.column_name,
-		       ccu.table_name AS ref_table,
-		       ccu.column_name AS ref_column,
-		       COALESCE(rc.delete_rule, '') AS delete_rule
-		FROM information_schema.table_constraints tc
-		JOIN information_schema.key_column_usage kcu
-		  ON tc.constraint_name = kcu.constraint_name
-		  AND tc.table_schema = kcu.table_schema
-		JOIN information_schema.constraint_column_usage ccu
-		  ON tc.constraint_name = ccu.constraint_name
-		  AND tc.table_schema = ccu.table_schema
-		LEFT JOIN information_schema.referential_constraints rc
-		  ON rc.constraint_name = tc.constraint_name
-		  AND rc.constraint_schema = tc.table_schema
-		WHERE tc.constraint_type = 'FOREIGN KEY'
-		  AND tc.table_schema = $1
-		  AND tc.table_name = $2
-		ORDER BY kcu.ordinal_position`, schema, table)
+		SELECT att.attname,
+		       refcl.relname,
+		       refatt.attname,
+		       CASE con.confdeltype
+		         WHEN 'a' THEN 'NO ACTION'
+		         WHEN 'r' THEN 'RESTRICT'
+		         WHEN 'c' THEN 'CASCADE'
+		         WHEN 'n' THEN 'SET NULL'
+		         WHEN 'd' THEN 'SET DEFAULT'
+		         ELSE ''
+		       END,
+		       con.conname,
+		       COALESCE(obj_description(con.oid, 'pg_constraint'), '')
+		FROM pg_constraint con
+		JOIN pg_class cl ON cl.oid = con.conrelid
+		JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+		JOIN pg_class refcl ON refcl.oid = con.confrelid
+		CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(attnum, refattnum, ord)
+		JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = k.attnum
+		JOIN pg_attribute refatt ON refatt.attrelid = con.confrelid AND refatt.attnum = k.refattnum
+		WHERE con.contype = 'f'
+		  AND ns.nspname = $1
+		  AND cl.relname = $2
+		ORDER BY con.conkey[1], con.conname, k.ord`, schema, table)
 	if err != nil {
 		return nil, err
 	}
@@ -1664,25 +1698,33 @@ func introspectForeignKeys(ctx context.Context, db Queryer, schema, table string
 	var fks []ForeignKey
 	for rows.Next() {
 		var fk ForeignKey
-		if err := rows.Scan(&fk.Column, &fk.RefTable, &fk.RefColumn, &fk.OnDelete); err != nil {
+		if err := rows.Scan(&fk.Column, &fk.RefTable, &fk.RefColumn, &fk.OnDelete, &fk.Name, &fk.Comment); err != nil {
 			return nil, err
-		}
-		if fk.RefColumn == "" {
-			fk.RefColumn = "id"
 		}
 		fks = append(fks, fk)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
-	names, comments, err := introspectFKComments(ctx, db, schema, table)
-	if err != nil {
-		return nil, err
-	}
-	for i := range fks {
-		fks[i].Name = names[fks[i].Column]
-		fks[i].Comment = comments[fks[i].Column]
+	// Attach each composite constraint's whole key to every one of its
+	// columns. Rows arrive grouped by constraint, in key order.
+	for start := 0; start < len(fks); {
+		end := start + 1
+		for end < len(fks) && fks[end].Name == fks[start].Name {
+			end++
+		}
+		if end-start > 1 {
+			cols := make([]string, 0, end-start)
+			refs := make([]string, 0, end-start)
+			for _, fk := range fks[start:end] {
+				cols = append(cols, fk.Column)
+				refs = append(refs, fk.RefColumn)
+			}
+			for i := start; i < end; i++ {
+				fks[i].KeyColumns, fks[i].RefKeyColumns = cols, refs
+			}
+		}
+		start = end
 	}
 	return fks, nil
 }
@@ -1742,47 +1784,6 @@ func introspectTriggers(ctx context.Context, db Queryer, schema, table string) (
 		names = append(names, name)
 	}
 	return names, rows.Err()
-}
-
-// introspectFKComments returns, per constrained column, the foreign-key
-// constraint's name and its catalog comment.
-//
-// It reads pg_catalog rather than information_schema because a COMMENT lives
-// in pg_description and information_schema exposes no path to it. Kept as a
-// separate query so the reference resolution above — which several unrelated
-// consumers depend on — stays exactly as it was.
-//
-// Single-column keys only: `attnum = ANY(conkey)` would attribute a composite
-// key's comment to each of its columns, and every reference forge models (and
-// every one the seeder can resolve) is single-column.
-func introspectFKComments(ctx context.Context, db Queryer, schema, table string) (names, comments map[string]string, err error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT att.attname,
-		       con.conname,
-		       COALESCE(obj_description(con.oid, 'pg_constraint'), '')
-		FROM pg_constraint con
-		JOIN pg_class cl ON cl.oid = con.conrelid
-		JOIN pg_namespace ns ON ns.oid = cl.relnamespace
-		JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1]
-		WHERE con.contype = 'f'
-		  AND array_length(con.conkey, 1) = 1
-		  AND ns.nspname = $1
-		  AND cl.relname = $2`, schema, table)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	names, comments = map[string]string{}, map[string]string{}
-	for rows.Next() {
-		var col, name, comment string
-		if err := rows.Scan(&col, &name, &comment); err != nil {
-			return nil, nil, err
-		}
-		names[col] = name
-		comments[col] = comment
-	}
-	return names, comments, rows.Err()
 }
 
 // MapDeclaredType maps a declared SQL column type to the canonical

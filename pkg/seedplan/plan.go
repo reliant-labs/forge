@@ -256,6 +256,17 @@ type Plan struct {
 	// value is DERIVED from, per a `forge:ref derived-from=` declaration on
 	// that column's constraint. Set by finalize; read by fkParentRow.
 	derivedRefs map[string]map[string][]fkHop
+	// composites holds each table's multi-column foreign keys, and
+	// compositeOwner maps table -> column -> the composite that places it
+	// (see composite_fk.go). Schema facts, set by BuildPlan.
+	composites     map[string][]compositeFK
+	compositeOwner map[string]map[string]int
+	// compositeMemo indexes a composite's parent rows by the values a shared
+	// column pins; reset by finalize with the row counts it depends on.
+	compositeMemo map[string]map[string][]int
+	// compositeCands memoizes the parent rows a composite may draw from so
+	// the composites it pins can agree with it; reset by finalize.
+	compositeCands map[string][]int
 	// authRefs maps table -> the `forge:ref authoritative` pairs declared on
 	// it: one column is the truth and the other is narrowed to agree. Set by
 	// finalize; read by fkParentRow.
@@ -504,6 +515,23 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 		fkByCol := map[string]schemadef.ForeignKey{}
 		for _, fk := range t.ForeignKeys {
 			fkByCol[fk.Column] = fk
+		}
+		// A column a composite foreign key places references what the
+		// composite says, whatever single-column reference sits beside it:
+		// its value is read off the composite's parent row (composite_fk.go).
+		if comps, owner := buildCompositeFKs(t, byName); len(comps) > 0 {
+			if plan.composites == nil {
+				plan.composites = map[string][]compositeFK{}
+				plan.compositeOwner = map[string]map[string]int{}
+			}
+			plan.composites[n], plan.compositeOwner[n] = comps, owner
+			for col, ci := range owner {
+				for _, m := range comps[ci].members {
+					if m.Column == col {
+						fkByCol[col] = m
+					}
+				}
+			}
 		}
 
 		tp := tablePlan{table: t, n: rowsOf[n]}

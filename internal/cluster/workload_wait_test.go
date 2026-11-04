@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func ptr(i int64) *int64 { return &i }
@@ -72,6 +74,12 @@ func TestWorkloadReady(t *testing.T) {
 			}{Partition: ptr(2)}
 			s.Status.UpdatedReplicas, s.Status.UpdateRevision = 0, "db-3"
 		}), false},
+		{"statefulset partition at or above replicas needs no update", sts(0, func(s *workloadStatus) {
+			s.Spec.UpdateStrategy.RollingUpdate = &struct {
+				Partition *int64 `json:"partition"`
+			}{Partition: ptr(2)}
+			s.Status.UpdatedReplicas, s.Status.UpdateRevision = 0, "db-3"
+		}), true},
 		{"statefulset on OnDelete is current once observed", sts(3, func(s *workloadStatus) {
 			s.Spec.UpdateStrategy.Type = "OnDelete"
 			s.Status.UpdateRevision, s.Status.ReadyReplicas = "db-3", 0
@@ -216,9 +224,7 @@ metadata:
 // The rollout wait judges every StatefulSet, DaemonSet and other-namespace
 // Deployment the apply sent, beside the namespace's listed Deployments.
 func TestWaitRollouts_AwaitsStatefulSetsDaemonSetsAndOtherNamespaces(t *testing.T) {
-	if testing.Short() {
-		t.Skip("drives a fake kubectl through shell subprocesses; runs in task test")
-	}
+	testkit.Slow(t, "drives a fake kubectl through shell subprocesses")
 	dir, calls := fakeWorkloadKubectl(t)
 	writeWorkloadStatus(t, dir, "app", "db", sts(3, nil))
 	writeWorkloadStatus(t, dir, "kube-system", "prepull", ds(5, nil))
@@ -256,9 +262,7 @@ func TestWaitRollouts_AwaitsStatefulSetsDaemonSetsAndOtherNamespaces(t *testing.
 // A StatefulSet that never rolls out fails the deploy under the default
 // policy, and names itself; under warn it is reported and tolerated.
 func TestWaitRollouts_UnreadyStatefulSetFailsTheWait(t *testing.T) {
-	if testing.Short() {
-		t.Skip("drives a fake kubectl through shell subprocesses; runs in task test")
-	}
+	testkit.Slow(t, "drives a fake kubectl through shell subprocesses")
 	prev := workloadPollInterval
 	workloadPollInterval = 50 * time.Millisecond
 	t.Cleanup(func() { workloadPollInterval = prev })

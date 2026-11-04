@@ -159,7 +159,9 @@ func statefulSetReady(s workloadStatus) string {
 	if ru := s.Spec.UpdateStrategy.RollingUpdate; ru != nil && ru.Partition != nil && *ru.Partition > 0 {
 		// A partitioned rollout updates only the ordinals at or above the
 		// partition, and is complete when those are updated.
-		if need := want - *ru.Partition; st.UpdatedReplicas < need {
+		// A partition at or above the replica count updates no ordinal.
+		need := max(want-*ru.Partition, 0)
+		if st.UpdatedReplicas < need {
 			return fmt.Sprintf("updated %d/%d (partition %d)", st.UpdatedReplicas, need, *ru.Partition)
 		}
 		return ""

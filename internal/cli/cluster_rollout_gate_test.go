@@ -68,7 +68,8 @@ func TestClusterRolloutGate_StatusFollowsTheRolloutPolicy(t *testing.T) {
 // A scoped apply shipped part of the bundle, so its gate names none: a control
 // plane that binds activation to the digest keeps holding.
 func TestClusterRolloutGate_ScopedApplyNamesNoBundle(t *testing.T) {
-	g := clusterRolloutGate(time.Now(), time.Now(), nil, cluster.RolloutPolicy{}, "")
+	at := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	g := clusterRolloutGate(at, at, nil, cluster.RolloutPolicy{}, "")
 	if _, ok := g.Details[applyGateBundleDigest]; ok {
 		t.Fatalf("details %v name a bundle for an apply that shipped none whole", g.Details)
 	}

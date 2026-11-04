@@ -310,6 +310,7 @@ hand-wrote and then deleted.
 | **port a utility** (errors, auth, middleware, test harness, money, retries) | `forge project libraries` lists every `forge/pkg/*` package with its purpose and source path. Adopt before porting — `forge/pkg/svcerr` is the most re-implemented thing in forge's history | `forge-libraries` |
 | **read a forge library's API** | `forge project libraries <pkg>` prints every signature in one call — never `find`, never `grep`, and not `go doc <pkg>`, which shows no methods | `forge-libraries` |
 | **see what a generated store offers** | `go doc ./internal/db <Entity>Store` (interfaces render in full), or `forge project shapes --kind store` for the list. Never forge's generator source | `db`, `service-layer` |
+| accept **file uploads** (images, documents) | `forge/pkg/blobstore` presigns a browser upload straight to object storage; `forge.Bucket` + `forge.bucket_env` wire the bucket into each env, and the dev env runs MinIO for it | `storage/blobstore` |
 | need **dev data** | `forge db seed apply` derives FK-coherent rows from the applied schema; teach it your domain nouns in `db/seeds/vocab.yaml` | `db/seeding` |
 
 `forge scaffold` also births a `worker`, `operator`, `crd`, `binary`, `adapter`,

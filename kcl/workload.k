@@ -137,7 +137,35 @@ schema IdentityRef:
         output in ["issuer", "audience", "scopes", "idp_base", "jwks", "client_id", "redirect_uri", "login_uri", "broker_token", "roles_claim"], \
             "IdentityRef.output '${output}' must be one of issuer, audience, scopes, idp_base, jwks, client_id, redirect_uri, login_uri, broker_token, roles_claim"
 
-type EnvValue = str | SecretRef | ConfigMapRef | FieldRef | ManagedSecret | DatabaseRef | WorkloadURL | IdentityRef
+schema BucketRef:
+    """One connection fact of a `forge.Bucket` in this env, as an env value:
+
+        env = {UPLOADS_BUCKET = forge.BucketRef {name = "uploads", key = "bucket"}}
+
+    You rarely write one by hand: `forge.bucket_env("UPLOADS", "uploads")`
+    returns all seven (UPLOADS_ENDPOINT, UPLOADS_PUBLIC_ENDPOINT,
+    UPLOADS_REGION, UPLOADS_BUCKET, UPLOADS_ACCESS_KEY_ID,
+    UPLOADS_SECRET_ACCESS_KEY, UPLOADS_PATH_STYLE), the fields of
+    forge/pkg/blobstore's S3Config.
+
+    `key` is one of endpoint, public_endpoint, region, bucket, access_key_id,
+    secret_access_key, path_style. What it lowers to depends on the bucket's
+    runtime and on where the referrer runs: a literal for a dev MinIO (the
+    endpoint through the cluster's host gateway for a pod, localhost for a
+    host process), and for a forge.BucketOnS3 its declared values, the two
+    credentials as the SecretRef / ManagedSecret it names.
+    """
+    name: str
+    key: str = "bucket"
+
+    check:
+        key in BUCKET_REF_KEYS, "BucketRef.key '${key}' must be one of ${BUCKET_REF_KEYS}"
+
+# The connection facts a forge.BucketRef can name, in the order
+# forge.bucket_env emits them.
+BUCKET_REF_KEYS: [str] = ["endpoint", "public_endpoint", "region", "bucket", "access_key_id", "secret_access_key", "path_style"]
+
+type EnvValue = str | SecretRef | ConfigMapRef | FieldRef | ManagedSecret | DatabaseRef | WorkloadURL | IdentityRef | BucketRef
 
 # ---------------------------------------------------------------------------
 # Runtimes. The `type` discriminator is what the JSON contract dispatches on

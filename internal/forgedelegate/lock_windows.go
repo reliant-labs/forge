@@ -7,5 +7,11 @@ import "context"
 const entryLocks = false
 
 // lockEntry is a no-op on Windows: concurrent builds of one entry race, and
-// publish keeps whichever binary lands first.
-func lockEntry(context.Context, string) (func(), error) { return func() {}, nil }
+// publish keeps whichever binary lands first. A ctx that has ended still
+// fails, as it does off Windows.
+func lockEntry(ctx context.Context, _ string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return func() {}, nil
+}

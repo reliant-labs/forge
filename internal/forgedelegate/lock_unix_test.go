@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -73,6 +72,17 @@ func TestPinned_ConcurrentRequestsBuildOnce(t *testing.T) {
 		<-release
 		return atomicfile.WriteFile(filepath.Join(gobin, exeName()), []byte("#!/bin/sh\n"), 0o755)
 	}
+	// The second builder signals here once it has found the entry's lock
+	// held: from then on it is excluded until the first one unlocks, which
+	// it cannot do before release is closed.
+	contended := make(chan struct{}, 1)
+	lockEntryContended = func(string) {
+		select {
+		case contended <- struct{}{}:
+		default:
+		}
+	}
+	t.Cleanup(func() { lockEntryContended = nil })
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
@@ -81,10 +91,11 @@ func TestPinned_ConcurrentRequestsBuildOnce(t *testing.T) {
 		}()
 	}
 	<-started
+	<-contended
 	select {
 	case <-started:
 		t.Fatal("a second build started while the first held the entry")
-	case <-time.After(3 * lockEntryPoll):
+	default:
 	}
 	close(release)
 	for range 2 {
@@ -95,4 +106,23 @@ func TestPinned_ConcurrentRequestsBuildOnce(t *testing.T) {
 	if builds != 1 {
 		t.Errorf("%d builds, want 1", builds)
 	}
+}
+
+// A canceled context never takes the entry's lock, even a free one, so a
+// canceled caller never goes on to take a heavy slot and build.
+func TestLockEntry_CanceledContextDoesNotLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".lock")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if unlock, err := lockEntry(ctx, path); !errors.Is(err, context.Canceled) {
+		if unlock != nil {
+			unlock()
+		}
+		t.Fatalf("lockEntry with a canceled context: err %v, want context.Canceled", err)
+	}
+	unlock, err := lockEntry(context.Background(), path)
+	if err != nil {
+		t.Fatalf("the lock was left held: %v", err)
+	}
+	unlock()
 }

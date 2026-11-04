@@ -104,7 +104,7 @@ enum BrandStatus {
 		`{...register("tagline")}`,
 		`{...register("priority")}`,
 		`{...register("status")}`,
-		"<select",
+		"<Select", // the installed ui/select, not a hand-styled native control
 		"<option value={ BrandStatus.ACTIVE }>Active</option>",
 		// Create lands on the record it made.
 		"onSuccess: ({ brand: created }) => router.push(created ? entityViewHref(\"brands\", created.id) : \"/brands\"),",
@@ -138,7 +138,7 @@ enum BrandStatus {
 		`{...register("tagline")}`,
 		`{...register("priority")}`,
 		`{...register("status")}`,
-		"<select",
+		"<Select", // the installed ui/select, not a hand-styled native control
 		`updateMask: { paths: ["name", "tagline", "priority", "status"] },`,
 	} {
 		if !containsTSE2E(edit, want) {

@@ -5,8 +5,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -192,6 +194,52 @@ func TestCheckFailsClosedOnAnErrorTheLoadReturns(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.Problems, "\n"), "CHK_SIGNER_ENABLED") {
 		t.Fatalf("problems = %q, want the refused build default", r.Problems)
+	}
+}
+
+// A command that registers a config it never loads has not had that config
+// verified: when the settle elapses the check fails, it never reports ok.
+func TestCheckFailsWhenARegisteredConfigNeverLoads(t *testing.T) {
+	t.Setenv(CheckEnv, "1")
+	t.Setenv(CheckPresentEnv, "CHK_INTERNAL_SERVICE_SECRET")
+	t.Setenv("CHK_INTERNAL_SERVICE_SECRET", CheckPlaceholder)
+	var (
+		mu   sync.Mutex
+		out  bytes.Buffer
+		code = -1
+		done = make(chan struct{})
+	)
+	prevExit, prevOut, prevSettle := checkExit, checkOut, checkSettle
+	checkExit = func(c int) { mu.Lock(); code = c; mu.Unlock(); close(done) }
+	checkOut, checkSettle = &out, 10*time.Millisecond
+	checkOnce, checkActive = sync.Once{}, nil
+	t.Cleanup(func() {
+		checkExit, checkOut, checkSettle = prevExit, prevOut, prevSettle
+		checkOnce, checkActive = sync.Once{}, nil
+	})
+
+	cmd := &cobra.Command{Use: "svc", Annotations: map[string]string{
+		fileMessagesAnnotation: "config.checktest.v1.SignerConfig,config.checktest.v1.NeverLoaded",
+	}}
+	if err := LoadInto(cmd, buildSignerMessage(t)); err != nil {
+		t.Fatalf("LoadInto: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the check never settled")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	r, ok := ParseCheckResult(out.String())
+	if !ok {
+		t.Fatalf("no %s line in %q", CheckResultPrefix, out.String())
+	}
+	if code != 1 || r.OK {
+		t.Fatalf("exit %d, result %+v, want exit 1 and not ok", code, r)
+	}
+	if len(r.Problems) != 1 || !strings.Contains(r.Problems[0], "config.checktest.v1.NeverLoaded: registered on the command but never loaded") {
+		t.Fatalf("problems = %q, want the unloaded config", r.Problems)
 	}
 }
 

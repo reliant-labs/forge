@@ -45,8 +45,8 @@ package config
 // config; once every config registered on the command's path has loaded
 // (the configs a generated root loads in sequence), the process prints ok and
 // exits 0. A process that loads fewer — a hand-written command that registers
-// a config it never loads — prints ok after checkSettle with a note naming
-// what never loaded. The runner gives the process no network, so nothing a
+// a config it never loads — fails after checkSettle with a problem naming
+// what never loaded: a config the check did not load is not verified. The runner gives the process no network, so nothing a
 // process does between its loads reaches anything.
 //
 // The mode is read from the process environment only. Root.Validate, which
@@ -224,11 +224,18 @@ func (c *checkMode) finish(cmd *cobra.Command, msg proto.Message, collected []er
 			if c.emitted {
 				return
 			}
-			r := c.resultLocked(true)
-			if still := c.unloadedLocked(cmd, ""); len(still) > 0 {
-				r.Notes = append(r.Notes, fmt.Sprintf("registered on the command but never loaded: %s", strings.Join(still, ", ")))
+			// A config the command registers but never loads is one the
+			// check did not verify: that is a failure, never an ok.
+			still := c.unloadedLocked(cmd, "")
+			if len(still) == 0 {
+				c.emitLocked(c.resultLocked(true), 0)
+				return
 			}
-			c.emitLocked(r, 0)
+			r := c.resultLocked(false)
+			for _, n := range still {
+				r.Problems = append(r.Problems, fmt.Sprintf("%s: registered on the command but never loaded within %s, so the check could not verify it", n, checkSettle))
+			}
+			c.emitLocked(r, 1)
 		})
 	}
 	return nil

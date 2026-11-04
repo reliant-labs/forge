@@ -58,11 +58,14 @@ var registry = []Entry{
 	{Name: "quadrant_chart", Category: CategoryCharts, Description: "2x2 quadrant/matrix chart with positioned items, axis labels, and highlighted item. Items use 0-1 normalized coordinates — all pixel math is internal.", Tags: []string{"chart", "competitive", "matrix", "deck", "marketing", "comparison"}},
 	{Name: "concentric_circles", Category: CategoryCharts, Description: "Nested concentric circles for TAM/SAM/SOM or layered metrics. Rings auto-space and labels position in visible bands.", Tags: []string{"chart", "market", "tam", "deck", "marketing"}},
 	{Name: "funnel_chart", Category: CategoryCharts, Description: "Vertical funnel visualization with tapering stages, conversion annotations, and alert highlighting for problem stages.", Tags: []string{"chart", "funnel", "sales", "conversion", "deck", "marketing", "crm"}},
-	// NOTE: For commodity data viz (bar, line, area, donut, pie, scatter), install
-	// Recharts (`npm i recharts`) — do NOT hand-roll. The component library only
-	// ships *narrative* charts (quadrant, concentric_circles, funnel) where heavy
-	// customization matters more than interactivity. The frontend skill carries
-	// the full guidance.
+	{Name: "time_series_chart", Category: CategoryCharts, Description: "Multi-series line/area chart over time with annotations — labelled vertical markers for the events that explain the curve (\"posted on HN\", a launch). Tooltip on hover and keyboard scrubbing (arrow keys), responsive width, null values as gaps. No charting dependency.", Tags: []string{"chart", "line", "area", "time-series", "annotations", "analytics", "dashboard", "growth", "marketing"}},
+	{Name: "cohort_grid", Category: CategoryCharts, Description: "Retention triangle: cohort rows × period columns, each cell the share retained with heat shading and its n; small-n cells dimmed below a minN threshold; optional size-weighted average row.", Tags: []string{"chart", "cohort", "retention", "heatmap", "analytics", "growth", "dashboard"}},
+	// NOTE: For commodity data viz (bar, donut, pie, scatter, a plain line),
+	// install Recharts (`npm i recharts`) — do NOT hand-roll. The component
+	// library only ships *narrative* charts (quadrant, concentric_circles,
+	// funnel, an annotated time series, a cohort triangle) where the story on
+	// top of the data matters more than chart-type breadth. The frontend skill
+	// carries the full guidance.
 
 	// ── Diagrams ─────────────────────────────────────────────────────────
 	{Name: "flow_horizontal", Category: CategoryDiagrams, Description: "Horizontal flow/pipeline with connected steps, status indicators, and optional loop-back arrow.", Tags: []string{"diagram", "flow", "pipeline", "process", "deck", "marketing"}},
@@ -115,6 +118,9 @@ var registry = []Entry{
 	{Name: "alert_banner", Category: CategoryUI, Description: "Info, success, warning, and error banner for top of page. Dismissible with optional action button. title/message take composed ReactNode, so a banner can carry a link or emphasis inside the sentence.", Tags: []string{"ui", "alert", "banner", "notification", "admin"}},
 	{Name: "toggle_switch", Category: CategoryUI, Description: "On/off switch (role=switch) with an optional visible label (aria-labelledby) and description (aria-describedby), an ariaLabel for a switch named elsewhere, id/FormField binding for an external label, className, disabled state, and three sizes.", Tags: []string{"ui", "toggle", "switch", "input", "form", "admin"}},
 	{Name: "activity_feed", Category: CategoryUI, Description: "Timeline of recent activity/events with user avatars, relative timestamps, and connecting lines.", Tags: []string{"ui", "activity", "feed", "timeline", "admin", "dashboard"}},
+	{Name: "markdown_editor", Category: CategoryUI, Description: "Markdown textarea with a formatting toolbar (heading, bold, italic, link, code, list) and its shortcuts, a Write/Preview tab pair with a safe built-in renderer (or your own via renderPreview), character and word counts, and per-channel length limits (e.g. Bluesky 300) that warn when exceeded. Controlled or uncontrolled; no WYSIWYG dependency.", Tags: []string{"ui", "editor", "markdown", "textarea", "form", "composer", "content", "social", "controlled"}},
+	{Name: "calendar", Category: CategoryUI, Description: "Month and week calendar of dated items rendered as chips coloured per channel; drag (or keyboard: M, arrows, Enter) to reschedule via onMove(itemId, newDate) keeping the time of day; click a day's empty space for onDayClick; roving-focus keyboard grid; \"+N more\" overflow. View and date controlled or uncontrolled.", Tags: []string{"ui", "calendar", "schedule", "planner", "content", "drag", "dnd", "marketing", "controlled"}},
+	{Name: "upload_dropzone", Category: CategoryUI, Description: "Drag-and-drop or click-to-browse file upload: accept and maxBytes validation, per-file progress, cancel and retry, bounded concurrency. Built for presigned PUT URLs — you supply getUploadUrl(file) => Promise<{url, headers}>, it PUTs with XHR for progress and hands your target back in onUploaded.", Tags: []string{"ui", "upload", "dropzone", "file", "drag", "dnd", "s3", "presigned", "form", "progress"}},
 	{Name: "metric_card", Category: CategoryUI, Description: "Single metric display with trend indicator, sparkline chart, and optional link.", Tags: []string{"ui", "metric", "stat", "dashboard", "analytics", "admin"}},
 
 	// ── UI Primitives (low-level building blocks consumed by frontend packs) ──

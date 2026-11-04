@@ -351,6 +351,41 @@ func (q Workloads) Versions(services []string) (Stmt, error) {
 		") GROUP BY env, svc, version ORDER BY first_seen, env, svc LIMIT " + strconv.Itoa(MaxWorkloadChanges+1)), nil
 }
 
+// LatestVersions is the service.version each (env, service) of services
+// reported LAST, from the same telemetry as Versions: one row per pair, so no
+// row cap can drop a newer version for an older one, however many versions
+// any service reported. A tie on last_seen (whole seconds) goes to the greater
+// version string, the same answer whichever range read it. Columns: env, svc,
+// version, last_seen (DateTime); ordered by env, svc.
+func (q Workloads) LatestVersions(services []string) (Stmt, error) {
+	if err := q.validate(); err != nil {
+		return Stmt{}, err
+	}
+	if len(services) == 0 || len(services) > MaxScopeEnvs {
+		return Stmt{}, invalid("a version lookup names 1-%d services", MaxScopeEnvs)
+	}
+	b := newBuilder(q.Scope)
+	svc := "has(" + b.strArray(services) + ", ServiceName)"
+	ver := "ResourceAttributes['service.version']"
+	rc, err := b.resourceConds(SigTraces, q.Scope)
+	if err != nil {
+		return Stmt{}, err
+	}
+	tconds := append([]string{b.rangeCond("Timestamp", q.Scope), svc, ver + " != ''"}, rc...)
+	rcm, err := b.resourceConds(SigMetrics, q.Scope)
+	if err != nil {
+		return Stmt{}, err
+	}
+	mconds := append([]string{b.rangeCondSec("TimeUnix", q.Scope), svc, ver + " != ''"}, rcm...)
+	return b.stmt("SELECT env, svc, argMax(version, (l0, version)) AS version, max(l0) AS last_seen FROM (\n" +
+		"  SELECT " + wlEnv + " AS env, ServiceName AS svc, " + ver + " AS version, toDateTime(max(Timestamp)) AS l0\n" +
+		"  FROM " + b.table(q.Scope, "otel_traces") + " " + where(tconds) + " GROUP BY env, svc, version\n" +
+		"  UNION ALL\n" +
+		"  SELECT " + wlEnv + " AS env, ServiceName AS svc, " + ver + " AS version, max(TimeUnix) AS l0\n" +
+		"  FROM " + b.table(q.Scope, MetricGauge.table()) + " " + where(mconds) + " GROUP BY env, svc, version\n" +
+		") GROUP BY env, svc ORDER BY env, svc"), nil
+}
+
 // Series charts the gauges over time: per pod the last value in each bucket,
 // then the worst (highest) replica. Columns: env, container, metric, bucket
 // (DateTime), value.

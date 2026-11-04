@@ -884,7 +884,7 @@ describe("fetch and XHR span names", () => {
     };
   }
 
-  it("renames HyperDX's HTTP <METHOD> to the called route on both instrumentations", async () => {
+  it("renames HyperDX's HTTP <METHOD> to the called procedure on both instrumentations", async () => {
     const { t } = await load();
     const opts = t.buildSdkOptions(
       { serviceName: "web" },
@@ -904,11 +904,11 @@ describe("fetch and XHR span names", () => {
 
       const rest = span({
         "http.request.method": "get",
-        "url.full":
-          "https://api.example.com/v1/items/42/notes/7f3c9a1b-0d2e-4f5a-8b6c-1d2e3f4a5b6c",
+        "url.full": "https://api.example.com/v1/items/42/notes/abc123",
       });
       inst[kind]!.applyCustomAttributesOnSpan(rest);
-      expect(rest.named.name).toBe("GET /v1/items/{id}/notes/{id}");
+      expect(rest.updateName).not.toHaveBeenCalled();
+      expect(rest.named.name).toBe("HTTP POST");
     }
   });
 
@@ -933,32 +933,31 @@ describe("fetch and XHR span names", () => {
     ).not.toThrow();
   });
 
-  it("spanRouteName keeps routes low-cardinality", async () => {
+  it("spanRouteName names Connect/gRPC procedures and nothing else", async () => {
     const { t } = await load();
 
     expect(t.spanRouteName("post", "/pkg.v1.Svc/Do")).toBe(
       "POST /pkg.v1.Svc/Do",
     );
-    expect(t.spanRouteName("", "https://x.example/")).toBe("GET /");
     expect(
-      t.spanRouteName("GET", "https://x.example/users/a%40b.com/settings"),
-    ).toBe("GET /users/{id}/settings");
-    expect(
-      t.spanRouteName("GET", "https://x.example/blob/deadbeefdeadbeef01"),
-    ).toBe("GET /blob/{id}");
-    expect(
-      t.spanRouteName("GET", "https://x.example/t/abcDEF123_xyz-0987654321"),
-    ).toBe("GET /t/{id}");
-    // A long word is part of the route, not a value.
-    expect(
-      t.spanRouteName(
-        "GET",
-        "https://x.example/getting-started-with-everything",
-      ),
-    ).toBe("GET /getting-started-with-everything");
-    expect(t.spanRouteName("POST", "https://dash.example/auth/v1/token")).toBe(
-      "POST /auth/v1/token",
-    );
+      t.spanRouteName("", "https://x.example/reliant.v1.ChatService/Send"),
+    ).toBe("POST /reliant.v1.ChatService/Send");
+    // A free-form path can hold values no pattern recognises (short ids,
+    // opaque tokens, emails), so it never becomes a span name.
+    for (const url of [
+      "https://x.example/",
+      "https://x.example/users/abc123",
+      "https://x.example/invite/secret-token",
+      "https://x.example/reset/qwertyuiopasdfghjklzxcvbnm",
+      "https://x.example/users/a%40b.com/settings",
+      "https://x.example/v1/items/42",
+      "https://dash.example/auth/v1/token",
+      "https://x.example/files.v1/secret",
+      "https://x.example/pkg.v1.Svc/Do/extra",
+    ]) {
+      expect(t.spanRouteName("GET", url)).toBe("");
+    }
+    expect(t.spanRouteName("GET", "http://[bad")).toBe("");
   });
 });
 

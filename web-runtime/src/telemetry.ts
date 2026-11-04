@@ -85,10 +85,10 @@
 //
 // HyperDX names every fetch/XHR span `HTTP <METHOD>`, so a trace a browser
 // starts is titled "HTTP POST" whatever it did. The same hook renames it to
-// the route: a Connect/gRPC call to its procedure (`POST
-// /pkg.v1.Service/Method`, the server span's name with the method in front),
-// anything else to `<METHOD> <path>` with id-like segments collapsed to `{id}`
-// (spanRouteName), so the name stays a low-cardinality route, not a URL.
+// the procedure when it is a Connect/gRPC call (`POST /pkg.v1.Service/Method`,
+// the server span's name with the method in front; spanRouteName). Any other
+// URL keeps `HTTP <METHOD>`: a free-form path can carry ids and tokens, and
+// the span name is exported unscrubbed.
 //
 // ── Loading ──────────────────────────────────────────────────────────────
 //
@@ -964,21 +964,18 @@ function stripNetworkQuery(span: UrlSpan): void {
   }
 }
 
-// A Connect/gRPC procedure: `/<package>.<Service>/<Method>`.
-const RPC_PATH = /^\/[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+\/[A-Za-z_]\w*$/;
-
-// A path segment that is a value, not part of the route: a number, a UUID, a
-// long hex string, a long token with a digit in it (a long all-letter slug is
-// a route), or anything with an `@` (an email).
-const ID_SEGMENT =
-  /^(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|(?=[\w-]*\d)[\w-]{20,}|.*@.*)$/i;
+// A Connect/gRPC procedure: `/<package>.<Service>/<Method>`, the service and
+// method PascalCase as protobuf declares them. The whole path is the route,
+// fixed by the proto, so it carries no request values.
+const RPC_PATH = /^\/[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.[A-Z]\w*\/[A-Z]\w*$/;
 
 /**
- * The name a fetch/XHR span gets: `<METHOD> <route>`, the OpenTelemetry HTTP
- * client span name. A Connect/gRPC path is its own route; any other path has
- * its id-like segments replaced by `{id}`, so names stay a small set. Empty
- * when `url` cannot be parsed (the span keeps the SDK's name). Exported for
- * tests.
+ * The name a fetch/XHR span gets: `<METHOD> /<package>.<Service>/<Method>`,
+ * the server span's name with the method in front, when the URL is a
+ * Connect/gRPC procedure. Empty for any other URL, which keeps the SDK's
+ * `HTTP <METHOD>`: an arbitrary path can hold values (ids, tokens, emails) no
+ * pattern recognises reliably, and a span name must be neither sensitive nor
+ * unbounded. Empty too when `url` cannot be parsed. Exported for tests.
  */
 export function spanRouteName(method: string, url: string): string {
   let path: string;
@@ -987,25 +984,10 @@ export function spanRouteName(method: string, url: string): string {
   } catch {
     return "";
   }
-  const verb = method.trim().toUpperCase() || "GET";
-  if (RPC_PATH.test(path)) {
-    return `${verb} ${path}`;
+  if (!RPC_PATH.test(path)) {
+    return "";
   }
-  const route = path
-    .split("/")
-    .map((segment) =>
-      segment && ID_SEGMENT.test(decodeSegment(segment)) ? "{id}" : segment,
-    )
-    .join("/");
-  return `${verb} ${route || "/"}`;
-}
-
-function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
+  return `${method.trim().toUpperCase() || "POST"} ${path}`;
 }
 
 /**

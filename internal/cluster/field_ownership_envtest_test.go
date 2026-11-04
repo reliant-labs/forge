@@ -23,7 +23,7 @@ import (
 // Spec-driven reconciliation against a REAL kube-apiserver, through the real
 // kubectl and the real apply path (KubectlApplyNamespaced). It reproduces the
 // three shapes of drift prod's control-plane carried on 2026-11-04 — a
-// RUN_OPERATORS env var `kubectl` (Update) added to admin-server, a `scratch`
+// PPROF_ENABLED env var `kubectl` (Update) added to admin-server, a `scratch`
 // volume nobody owned on daemon-gateway, and a serviceAccountName nobody owned
 // on zitadel — and proves one forge apply removes all three while keeping what
 // the cluster itself wrote (a controller's annotation, a scale through the
@@ -60,7 +60,7 @@ spec:
 `
 
 // ownershipV2 is today's declaration: no scratch, no service account, and no
-// RUN_OPERATORS. It also declares no replicas (an autoscaler owns them).
+// PPROF_ENABLED. It also declares no replicas (an autoscaler owns them).
 const ownershipV2 = `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -199,7 +199,7 @@ func TestFieldOwnership_ForgeApplyRemovesFieldsSetOutsideIt(t *testing.T) {
 
 	// Hand edits, each as the manager the real command writes as.
 	e.kubectl("", "patch", "deployment", "admin-server", "-n", ownershipNS, "--field-manager=kubectl", "--type=strategic", "-p",
-		`{"spec":{"template":{"spec":{"containers":[{"name":"admin-server","env":[{"name":"RUN_OPERATORS","value":"false"}]}]}}}}`)
+		`{"spec":{"template":{"spec":{"containers":[{"name":"admin-server","env":[{"name":"PPROF_ENABLED","value":"false"}]}]}}}}`)
 	e.kubectl("", "set", "env", "deployment/admin-server", "-n", ownershipNS, "DEBUG=1")
 	e.kubectl("", "label", "deployment", "admin-server", "-n", ownershipNS, "hand-label=yes")
 	// What the cluster itself writes, which must survive: an operator's
@@ -377,7 +377,7 @@ func TestFieldOwnership_SharedObjectKeepsOtherWritersFields(t *testing.T) {
 	shared := strings.Replace(ownershipV2, "  labels: {app.kubernetes.io/name: admin-server}\n",
 		"  labels: {app.kubernetes.io/name: admin-server}\n  annotations: {forge.dev/field-ownership: shared}\n", 1)
 	e.forgeApply(shared)
-	e.kubectl("", "set", "env", "deployment/admin-server", "-n", ownershipNS, "RUN_OPERATORS=false")
+	e.kubectl("", "set", "env", "deployment/admin-server", "-n", ownershipNS, "PPROF_ENABLED=false")
 	e.forgeApply(shared)
 	env := podSpec(e.get("deployment", "admin-server"))["containers"].([]any)[0].(map[string]any)["env"].([]any)
 	if len(env) != 2 {

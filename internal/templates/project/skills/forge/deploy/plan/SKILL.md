@@ -107,7 +107,7 @@ a controller or another tool's manager writes (an HPA's replicas, an operator's
 annotation) stay. The deploy prints each object whose fields it takes back:
 
     [deploy]   Deployment/prod/admin-server: forge takes back 2 field(s) set outside it (kubectl, no owner); …
-    [deploy]       .spec.template.spec.containers[name="admin-server"].env[name="RUN_OPERATORS"]
+    [deploy]       .spec.template.spec.containers[name="admin-server"].env[name="PPROF_ENABLED"]
     [deploy]       .spec.template.spec.volumes[name="scratch"]
 
 A setting you need is declared in KCL, never left as a hand edit. To keep

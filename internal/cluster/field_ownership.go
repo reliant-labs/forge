@@ -7,13 +7,13 @@ package cluster
 // MANAGER owned it and stops declaring it; a field owned by anyone else, or by
 // no one, survives every apply forever. --force-conflicts does not help: it
 // settles a field the config declares, and the fields that drift are exactly
-// the ones it does not. So without help, a forge deploy converges only what it
+// the ones it does not. So without help, a `forge env deploy` converges only what it
 // declares, and everything else that lands on its objects stays:
 //
 //   - a hand edit: `kubectl set env`, `kubectl edit`, `kubectl patch`, `kubectl
 //     label` each write as their own manager (kubectl-set, kubectl-edit, ...),
-//     with operation Update. Prod's admin-server kept a RUN_OPERATORS=false
-//     that `kubectl` (Update) added, through every later deploy.
+//     with operation Update. Prod's admin-server kept an env var
+//     a `kubectl` Update had added, through every later deploy.
 //   - an OWNERLESS field: one no managedFields entry claims. They are left
 //     behind when ownership history is lost (managedFields cleared or edited
 //     by hand, an entry removed, an object handed between appliers), and

@@ -90,7 +90,7 @@ func TestLatencyIsJudgedPerEndpointNotByTrafficMix(t *testing.T) {
 		ep("/deploy.v1.DeployService/GetStatus", 120, 140, 334, 363),
 		ep("/token.v1.AccessTokenInternalService/Introspect", 100, 150, 30, 36),
 		ep("/token.v1.GitCredentialInternalService/GetUserAccessToken", 16, 7, 12, 14),
-		ep("/new.v1.New/OnlyAfter", 0, 50, 0, 5000), // no before: nothing to compare
+		ep("/new.v1.New/OnlyAfter", 0, 50, 0, 30), // no before: judged against the service's 40ms
 	}
 	if r := Evaluate(input(t, true, mix)); len(r.Findings) != 0 {
 		t.Errorf("a traffic-mix shift is judged a latency regression: %+v", r.Findings)
@@ -112,10 +112,32 @@ func TestLatencyIsJudgedPerEndpointNotByTrafficMix(t *testing.T) {
 		t.Errorf("message does not say the ratio is per endpoint: %s", r.Findings[0].Message)
 	}
 
-	none := svc("api", 100, 100, 0, 0, 10, 900)
-	none.Endpoints = []EndpointHealth{ep("/a.v1.A/Gone", 100, 0, 10, 0), ep("/a.v1.A/New", 0, 100, 0, 900)}
+	none := svc("api", 0, 100, 0, 0, 0, 900)
+	none.Endpoints = []EndpointHealth{ep("/a.v1.A/New", 0, 100, 0, 900)}
 	if _, ok := none.LatencyRatio(); ok {
-		t.Error("no endpoint in both windows still produced a latency ratio")
+		t.Error("a service with no before traffic at all still produced a latency ratio")
+	}
+}
+
+// An endpoint with no before p95 has no baseline of its own. Unknown is not
+// safe: it is judged against the service-level before p95, so a new, very slow
+// route beside stable ones is a latency finding, and fails when asked.
+func TestAfterOnlyEndpointIsJudgedAgainstServiceBaseline(t *testing.T) {
+	s := svc("api", 1000, 1100, 0, 0, 100, 900)
+	s.Endpoints = []EndpointHealth{
+		ep("/a.v1.A/Stable", 1000, 1000, 100, 100),
+		ep("/a.v1.A/New", 0, 100, 0, 20000),
+	}
+	ratio, ok := s.LatencyRatio()
+	if !ok || ratio <= defaults(t).MaxP95Ratio {
+		t.Fatalf("LatencyRatio = %v, %v; a 200x after-only endpoint must exceed the limit", ratio, ok)
+	}
+	r := Evaluate(input(t, true, s))
+	if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthLatency {
+		t.Fatalf("a very slow after-only endpoint produced no latency finding: %+v", r.Findings)
+	}
+	if j := Rejudge(r, []string{release.HealthLatency}); j.Verdict == Pass {
+		t.Errorf("a very slow after-only endpoint passes with fail_on=latency: %+v", j.Findings)
 	}
 }
 

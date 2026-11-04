@@ -352,8 +352,11 @@ type EndpointHealth struct {
 // endpoints with a p95 in both windows: a window filled with one client's
 // fast calls (a deploy polling its own release) and then emptied of them
 // moves the service-level p95 without any endpoint getting slower
-// (forge#1728). An endpoint new or gone in the after window has nothing to
-// compare. Without per-endpoint figures it is the service-level ratio.
+// (forge#1728). An endpoint with no p95 before the promotion (new in the
+// after window) is judged against the service-level before p95: an unknown
+// baseline is never read as safe, so a new, slow endpoint counts. An endpoint
+// gone from the after window has nothing to judge. Without per-endpoint
+// figures it is the service-level ratio.
 func (s ServiceHealth) LatencyRatio() (float64, bool) {
 	if len(s.Endpoints) == 0 {
 		if s.Before.P95Ms <= 0 {
@@ -363,11 +366,18 @@ func (s ServiceHealth) LatencyRatio() (float64, bool) {
 	}
 	var sum, weight float64
 	for _, e := range s.Endpoints {
-		if e.Before.P95Ms <= 0 || e.After.P95Ms <= 0 || e.After.Requests <= 0 {
+		if e.After.P95Ms <= 0 || e.After.Requests <= 0 {
+			continue
+		}
+		base := e.Before.P95Ms
+		if base <= 0 {
+			base = s.Before.P95Ms
+		}
+		if base <= 0 {
 			continue
 		}
 		w := float64(e.After.Requests)
-		sum += w * e.After.P95Ms / e.Before.P95Ms
+		sum += w * e.After.P95Ms / base
 		weight += w
 	}
 	if weight == 0 {

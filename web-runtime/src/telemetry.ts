@@ -70,6 +70,15 @@
 // The SDK's own `location.href` attribute (the page URL, stamped on every span)
 // has no client-side hook; the ingest side scrubs it.
 //
+// ── Network spans are named by what they called ──────────────────────────
+//
+// HyperDX names every fetch/XHR span `HTTP <METHOD>`, so a trace a browser
+// starts is titled "HTTP POST" whatever it did. The same hook renames it to
+// the route: a Connect/gRPC call to its procedure (`POST
+// /pkg.v1.Service/Method`, the server span's name with the method in front),
+// anything else to `<METHOD> <path>` with id-like segments collapsed to `{id}`
+// (spanRouteName), so the name stays a low-cardinality route, not a URL.
+//
 // ── Loading ──────────────────────────────────────────────────────────────
 //
 // The SDK is ~600 KB minified (rrweb and the OTel web stack are bundled in
@@ -748,12 +757,12 @@ export function buildSdkOptions(
       fetch: {
         propagateTraceHeaderCorsUrls: targets,
         advancedNetworkCapture: () => advancedNetworkCapture,
-        applyCustomAttributesOnSpan: stripNetworkQuery,
+        applyCustomAttributesOnSpan: finishNetworkSpan,
       },
       xhr: {
         propagateTraceHeaderCorsUrls: targets,
         advancedNetworkCapture: () => advancedNetworkCapture,
-        applyCustomAttributesOnSpan: stripNetworkQuery,
+        applyCustomAttributesOnSpan: finishNetworkSpan,
       },
     },
     // Polls for window.Intercom on a timer; nothing here uses Intercom.
@@ -870,10 +879,25 @@ export function stripUrlQuery(url: string): string {
 interface UrlSpan {
   attributes?: Record<string, unknown>;
   setAttribute(key: string, value: string): unknown;
+  updateName?(name: string): unknown;
 }
 
 // applyCustomAttributesOnSpan for both instrumentations: it runs before the
-// span ends, so the rewritten value is the one exported.
+// span ends, and after HyperDX's own `HTTP <METHOD>` rename, so the values
+// set here are the ones exported.
+function finishNetworkSpan(span: UrlSpan): void {
+  stripNetworkQuery(span);
+  const url = span.attributes?.["url.full"] ?? span.attributes?.["http.url"];
+  const method =
+    span.attributes?.["http.request.method"] ?? span.attributes?.["http.method"];
+  if (typeof url === "string" && typeof span.updateName === "function") {
+    const name = spanRouteName(typeof method === "string" ? method : "", url);
+    if (name) {
+      span.updateName(name);
+    }
+  }
+}
+
 function stripNetworkQuery(span: UrlSpan): void {
   for (const key of URL_ATTRIBUTES) {
     const value = span.attributes?.[key];
@@ -883,6 +907,48 @@ function stripNetworkQuery(span: UrlSpan): void {
         span.setAttribute(key, stripped);
       }
     }
+  }
+}
+
+// A Connect/gRPC procedure: `/<package>.<Service>/<Method>`.
+const RPC_PATH = /^\/[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+\/[A-Za-z_]\w*$/;
+
+// A path segment that is a value, not part of the route: a number, a UUID, a
+// long hex string, a long token with a digit in it (a long all-letter slug is
+// a route), or anything with an `@` (an email).
+const ID_SEGMENT =
+  /^(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|(?=[\w-]*\d)[\w-]{20,}|.*@.*)$/i;
+
+/**
+ * The name a fetch/XHR span gets: `<METHOD> <route>`, the OpenTelemetry HTTP
+ * client span name. A Connect/gRPC path is its own route; any other path has
+ * its id-like segments replaced by `{id}`, so names stay a small set. Empty
+ * when `url` cannot be parsed (the span keeps the SDK's name). Exported for
+ * tests.
+ */
+export function spanRouteName(method: string, url: string): string {
+  let path: string;
+  try {
+    path = new URL(url, "http://base.invalid").pathname;
+  } catch {
+    return "";
+  }
+  const verb = method.trim().toUpperCase() || "GET";
+  if (RPC_PATH.test(path)) {
+    return `${verb} ${path}`;
+  }
+  const route = path
+    .split("/")
+    .map((segment) => (segment && ID_SEGMENT.test(decodeSegment(segment)) ? "{id}" : segment))
+    .join("/");
+  return `${verb} ${route || "/"}`;
+}
+
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
   }
 }
 

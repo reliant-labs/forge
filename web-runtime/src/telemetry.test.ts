@@ -838,6 +838,72 @@ describe("fetch and XHR URL query stripping", () => {
   });
 });
 
+describe("fetch and XHR span names", () => {
+  type Hooked = { applyCustomAttributesOnSpan: (span: unknown) => void };
+
+  function span(attributes: Record<string, unknown>) {
+    const named = { name: "HTTP POST" };
+    return {
+      named,
+      attributes,
+      setAttribute: vi.fn((k: string, v: unknown) => {
+        attributes[k] = v;
+      }),
+      updateName: vi.fn((n: string) => {
+        named.name = n;
+      }),
+    };
+  }
+
+  it("renames HyperDX's HTTP <METHOD> to the called route on both instrumentations", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions({ serviceName: "web" }, `${ORIGIN}/_otel`, ORIGIN);
+    const inst = opts.instrumentations as Record<string, Hooked>;
+
+    for (const kind of ["fetch", "xhr"]) {
+      const rpc = span({
+        "http.method": "POST",
+        "http.url": "https://api.example.com/reliant.v1.ChatService/SendMessage?x=1",
+      });
+      inst[kind]!.applyCustomAttributesOnSpan(rpc);
+      expect(rpc.named.name).toBe("POST /reliant.v1.ChatService/SendMessage");
+
+      const rest = span({
+        "http.request.method": "get",
+        "url.full": "https://api.example.com/v1/items/42/notes/7f3c9a1b-0d2e-4f5a-8b6c-1d2e3f4a5b6c",
+      });
+      inst[kind]!.applyCustomAttributesOnSpan(rest);
+      expect(rest.named.name).toBe("GET /v1/items/{id}/notes/{id}");
+    }
+  });
+
+  it("keeps the SDK's name when the span has no URL or cannot be renamed", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions({ serviceName: "web" }, `${ORIGIN}/_otel`, ORIGIN);
+    const hook = (opts.instrumentations as Record<string, Hooked>).fetch!.applyCustomAttributesOnSpan;
+
+    const bare = span({ "http.method": "POST" });
+    hook(bare);
+    expect(bare.updateName).not.toHaveBeenCalled();
+    expect(() => hook({ attributes: { "http.url": "https://a.example/x" }, setAttribute: vi.fn() })).not.toThrow();
+  });
+
+  it("spanRouteName keeps routes low-cardinality", async () => {
+    const { t } = await load();
+
+    expect(t.spanRouteName("post", "/pkg.v1.Svc/Do")).toBe("POST /pkg.v1.Svc/Do");
+    expect(t.spanRouteName("", "https://x.example/")).toBe("GET /");
+    expect(t.spanRouteName("GET", "https://x.example/users/a%40b.com/settings")).toBe("GET /users/{id}/settings");
+    expect(t.spanRouteName("GET", "https://x.example/blob/deadbeefdeadbeef01")).toBe("GET /blob/{id}");
+    expect(t.spanRouteName("GET", "https://x.example/t/abcDEF123_xyz-0987654321")).toBe("GET /t/{id}");
+    // A long word is part of the route, not a value.
+    expect(t.spanRouteName("GET", "https://x.example/getting-started-with-everything")).toBe(
+      "GET /getting-started-with-everything",
+    );
+    expect(t.spanRouteName("POST", "https://dash.example/auth/v1/token")).toBe("POST /auth/v1/token");
+  });
+});
+
 describe("decideReplay", () => {
   function store() {
     const m = new Map<string, string>();

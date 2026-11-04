@@ -100,7 +100,9 @@ CREATE TABLE IF NOT EXISTS {{DB}}.rum_sessions
     `PageViews` SimpleAggregateFunction(sum, UInt64),
     `Interactions` SimpleAggregateFunction(sum, UInt64),
     `Errors` SimpleAggregateFunction(sum, UInt64),
-    `HasReplay` SimpleAggregateFunction(max, UInt8)
+    `HasReplay` SimpleAggregateFunction(max, UInt8),
+    `Geo` SimpleAggregateFunction(max, Tuple(String, String, String)),
+    `ClientAddress` SimpleAggregateFunction(max, String)
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY Day
@@ -124,6 +126,11 @@ CREATE TABLE IF NOT EXISTS {{DB}}.error_events
     `StackRaw` String CODEC(ZSTD(3)),
     `StackText` String CODEC(ZSTD(3)),
     `UrlPath` String CODEC(ZSTD(1)),
+    `UserId` String CODEC(ZSTD(1)),
+    `Country` LowCardinality(String) CODEC(ZSTD(1)),
+    `Region` String CODEC(ZSTD(1)),
+    `City` String CODEC(ZSTD(1)),
+    `ClientAddress` String CODEC(ZSTD(1)),
     `RawStackHash` UInt64 CODEC(ZSTD(1)),
     INDEX idx_session_id SessionId TYPE bloom_filter(0.01) GRANULARITY 1
 )
@@ -194,6 +201,11 @@ SELECT
     estack AS StackRaw,
     if(SpanAttributes['error.stack'] != '', SpanAttributes['error.stack'], ex['exception.stacktrace']) AS StackText,
     path(SpanAttributes['location.href']) AS UrlPath,
+    substring(SpanAttributes['userId'], 1, 128) AS UserId,
+    ResourceAttributes['geo.country.iso_code'] AS Country,
+    ResourceAttributes['geo.region.name'] AS Region,
+    ResourceAttributes['geo.locality.name'] AS City,
+    ResourceAttributes['client.address'] AS ClientAddress,
     cityHash64(etype, norm, replaceRegexpAll(estack, '"filename":"[a-zA-Z][a-zA-Z0-9+.-]*://[^/"]*', '"filename":"')) AS RawStackHash
 FROM {{DB}}.otel_traces
 WHERE ResourceAttributes['rum.sessionId'] != ''
@@ -211,6 +223,8 @@ AS SELECT
     max(ResourceAttributes['service.version']) AS ServiceVersion,
     max(ResourceAttributes['reliant.env.id']) AS EnvId,
     max(SpanAttributes['userId']) AS UserId,
+    max((ResourceAttributes['geo.country.iso_code'], ResourceAttributes['geo.region.name'], ResourceAttributes['geo.locality.name'])) AS Geo,
+    max(ResourceAttributes['client.address']) AS ClientAddress,
     argMinIfState(path(SpanAttributes['location.href']), Timestamp, SpanAttributes['location.href'] != '') AS EntryPath,
     countIf(SpanName IN ('documentLoad', 'routeChange')) AS PageViews,
     countIf(SpanAttributes['component'] = 'user-interaction' AND SpanName = 'mousedown') AS Interactions,

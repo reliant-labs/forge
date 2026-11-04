@@ -17,6 +17,8 @@
 //     no browser-side collector is required.
 import { context, propagation } from "@opentelemetry/api";
 
+import { rumSessionId } from "./telemetry-gate.js";
+
 /** Matches a well-formed W3C traceparent: version-traceid-spanid-flags. */
 export const TRACEPARENT_RE = /^00-[0-9a-f]{32}-[0-9a-f]{16}-0[0-9a-f]$/;
 
@@ -129,8 +131,29 @@ export function injectTraceContext(header: Headers): void {
     for (const [k, v] of Object.entries(carrier)) {
       header.set(k, v);
     }
-    return;
+  } else {
+    header.set("traceparent", freshTraceparent());
   }
-
-  header.set("traceparent", freshTraceparent());
+  const session = rumSessionId();
+  if (session) {
+    header.set("baggage", withSessionBaggage(header.get("baggage"), session));
+  }
 }
+
+/**
+ * withSessionBaggage adds the `session.id` member to a W3C baggage value,
+ * replacing one already there, and keeps every other member.
+ */
+export function withSessionBaggage(
+  existing: string | null,
+  session: string,
+): string {
+  const others = (existing ?? "")
+    .split(",")
+    .map((m) => m.trim())
+    .filter((m) => m !== "" && m.split("=")[0]?.trim() !== SESSION_BAGGAGE_KEY);
+  return [...others, `${SESSION_BAGGAGE_KEY}=${session}`].join(",");
+}
+
+/** The baggage member forge servers read the RUM session from. */
+export const SESSION_BAGGAGE_KEY = "session.id";

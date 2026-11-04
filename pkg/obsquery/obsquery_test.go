@@ -608,6 +608,48 @@ func TestTraceNewestCursorFingerprintIsUnchangedByOrder(t *testing.T) {
 	}
 }
 
+// A user or session filter narrows the candidate traces, binds its value, joins
+// the cursor's fingerprint, and refuses a value of the wrong shape. Every page
+// row carries who and where the trace was.
+func TestTraceQueryUserAndSession(t *testing.T) {
+	hostile := "u'); DROP TABLE x; --"
+	q := TraceQuery{Scope: scope(), UserID: hostile, SessionID: "91b955b313a1a86644ea53730a92deab", Limit: 10}
+	st, err := q.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertParameterized(t, st, hostile)
+	if n := strings.Count(st.SQL, "TraceId IN (SELECT TraceId FROM t_org_a.otel_traces"); n != 2 {
+		t.Errorf("%d candidate prefilters, want 2:\n%s", n, st.SQL)
+	}
+	for _, col := range []string{"AS user_id", "AS session_id", "AS country", "AS region", "AS city"} {
+		if !strings.Contains(st.SQL, col) {
+			t.Errorf("page statement has no %s:\n%s", col, st.SQL)
+		}
+	}
+	if !strings.Contains(st.SQL, "SpanAttributes['user.id']") || !strings.Contains(st.SQL, "ResourceAttributes['rum.sessionId']") {
+		t.Errorf("user/session do not read both the backend and the browser shape:\n%s", st.SQL)
+	}
+	plain := TraceQuery{Scope: scope(), Limit: 10}
+	if q.Fingerprint() == plain.Fingerprint() || (TraceQuery{Scope: scope(), UserID: "a"}).Fingerprint() == (TraceQuery{Scope: scope(), SessionID: "a"}).Fingerprint() {
+		t.Error("user/session filters are not part of the cursor fingerprint")
+	}
+	c, err := DecodeTraceCursor(q.NextCursor(time.Unix(0, 1), "t1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain.Cursor = c
+	if _, err := plain.Compile(); !isInvalid(err) {
+		t.Errorf("a user-filtered cursor continued an unfiltered query: %v", err)
+	}
+	if _, err := (TraceQuery{Scope: scope(), SessionID: "not a session", Limit: 1}).Compile(); !isInvalid(err) {
+		t.Errorf("malformed session id accepted: %v", err)
+	}
+	if _, err := (TraceQuery{Scope: scope(), UserID: strings.Repeat("u", 257), Limit: 1}).Compile(); !isInvalid(err) {
+		t.Errorf("over-long user id accepted: %v", err)
+	}
+}
+
 // An errors-only or root-name filter narrows the traces before the per-trace
 // aggregation, so a wide window does not group every span in it; with neither
 // filter there is nothing to narrow by.

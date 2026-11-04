@@ -54,6 +54,10 @@ type TraceQuery struct {
 	// GroupBy are the allowlisted keys the RED summary is split by, valued at
 	// each trace's root span (CompileREDGroups).
 	GroupBy []string
+	// UserID keeps traces with a span of that user (traceUserExpr); SessionID
+	// those with a span of that browser session (traceSessionExpr). Empty keeps
+	// all.
+	UserID, SessionID string
 	// Order is the page's row order; the zero value is newest first. It is
 	// part of the cursor's fingerprint: a token only continues the order that
 	// produced it.
@@ -79,6 +83,13 @@ func (q TraceQuery) Fingerprint() string {
 		// Appended only for a non-default order, so newest-first tokens are
 		// byte-identical to what they were before Order existed.
 		parts = append(parts, "order:"+string(q.Order))
+	}
+	// Appended only when set, for the same reason.
+	if q.UserID != "" {
+		parts = append(parts, "user:"+q.UserID)
+	}
+	if q.SessionID != "" {
+		parts = append(parts, "session:"+q.SessionID)
 	}
 	return fingerprint(parts...)
 }
@@ -123,11 +134,39 @@ func DecodeTraceCursor(tok string) (*TraceCursor, error) {
 	return &c, nil
 }
 
+// Who and where a span is, across the two shapes that carry it:
+//
+//   - user: a backend span's user.id, which forge's IdentitySpanInterceptor sets
+//     from the AUTHENTICATED caller, else a browser span's userId, the id the
+//     page reported (display only);
+//   - session: a backend span's session.id (the browser's baggage, copied onto
+//     the server span), else a browser span's rum.sessionId resource attribute;
+//   - geo: the browser resource's geo.* attributes, which the platform's gateway
+//     derived from the address the browser connected from. A backend span has
+//     none, so a trace's location is its browser spans'.
+const (
+	traceUserExpr    = "if(SpanAttributes['user.id'] != '', SpanAttributes['user.id'], SpanAttributes['userId'])"
+	traceSessionExpr = "if(SpanAttributes['session.id'] != '', SpanAttributes['session.id'], ResourceAttributes['rum.sessionId'])"
+	traceCountryExpr = "ResourceAttributes['geo.country.iso_code']"
+	traceRegionExpr  = "ResourceAttributes['geo.region.name']"
+	traceCityExpr    = "ResourceAttributes['geo.locality.name']"
+)
+
 // perTrace is the per-trace summary subquery shared by the page and RED
 // statements. Columns: trace_id, start (DateTime64(9)), dur_ms, root_service,
 // root_name, root_dur_ms, span_count, error_count, tw (how many real traces this
-// stored one stands for, see weight.go), services, source.
+// stored one stands for, see weight.go), services, source, user_id, session_id,
+// country, region, city (each the first non-empty value of its trace's spans,
+// "" when none).
 func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, error) {
+	if err := checkRumValue("user_id", q.UserID); err != nil {
+		return "", err
+	}
+	if q.SessionID != "" {
+		if err := CheckSessionID(q.SessionID); err != nil {
+			return "", err
+		}
+	}
 	conds := []string{b.rangeCond("Timestamp", q.Scope), "TraceId != ''"}
 	// Resource-level filters pick the spans counted; span-level ones keep a
 	// trace when ANY of its spans matches.
@@ -152,6 +191,12 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 	}
 	if q.RootSpanName != "" {
 		prefilter("positionCaseInsensitive(SpanName, " + b.str(q.RootSpanName) + ") > 0")
+	}
+	if q.UserID != "" {
+		prefilter(traceUserExpr + " = " + b.str(q.UserID))
+	}
+	if q.SessionID != "" {
+		prefilter(traceSessionExpr + " = " + b.str(q.SessionID))
 	}
 
 	having := append([]string{}, spanHaving...)
@@ -195,7 +240,12 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 		"       countIf(" + spanErrorExpr + ") AS error_count,\n" +
 		"       max(" + spanWeightExpr + ") AS tw,\n" +
 		"       groupUniqArray(ServiceName) AS services,\n" +
-		"       maxIf(ResourceAttributes['reliant.source'], ResourceAttributes['reliant.source'] != '') AS source" + groupCols + "\n" +
+		"       maxIf(ResourceAttributes['reliant.source'], ResourceAttributes['reliant.source'] != '') AS source,\n" +
+		"       anyIf(" + traceUserExpr + ", " + traceUserExpr + " != '') AS user_id,\n" +
+		"       anyIf(" + traceSessionExpr + ", " + traceSessionExpr + " != '') AS session_id,\n" +
+		"       anyIf(" + traceCountryExpr + ", " + traceCountryExpr + " != '') AS country,\n" +
+		"       anyIf(" + traceRegionExpr + ", " + traceCountryExpr + " != '') AS region,\n" +
+		"       anyIf(" + traceCityExpr + ", " + traceCountryExpr + " != '') AS city" + groupCols + "\n" +
 		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
 		"GROUP BY trace_id"
 	if len(having) > 0 {

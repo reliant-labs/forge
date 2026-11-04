@@ -106,7 +106,11 @@ import {
 } from "./benign-errors.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { installSessionCookieFallback } from "./session-cookie-fallback.js";
-import { registerTelemetryStartup } from "./telemetry-gate.js";
+import {
+  registerRumSession,
+  registerTelemetryStartup,
+  rumSessionId,
+} from "./telemetry-gate.js";
 import {
   isTelemetryDisabled,
   setTelemetrySink,
@@ -246,6 +250,7 @@ interface HyperDXClient {
   addAction?(name: string, attributes?: Record<string, TrackValue>): void;
   setGlobalAttributes?(attributes: Record<string, string>): void;
   stopSessionRecorder?(): void;
+  getSessionId?(): string | undefined;
 }
 
 let started: Promise<boolean> | null = null;
@@ -360,6 +365,10 @@ async function start(
     hdx.setGlobalAttributes?.(globals);
     runningClient = hdx;
     runningConfig = config;
+    // The session id rides on every Connect call as baggage (trace.ts) and on
+    // every fetch/XHR span (sessionAttribute), joining backend traces to the
+    // session that caused them.
+    registerRumSession(() => hdx.getSessionId?.());
     setExceptionReporter((error, attributes) => {
       if (alreadyRecorded(error) || benign.filtered(error, "reportException")) {
         return;
@@ -381,6 +390,7 @@ async function start(
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
         setExceptionReporter(null);
+        registerRumSession(null);
         hdx.stopSessionRecorder?.();
       },
     });
@@ -784,12 +794,12 @@ export function buildSdkOptions(
       fetch: {
         propagateTraceHeaderCorsUrls: targets,
         advancedNetworkCapture: () => advancedNetworkCapture,
-        applyCustomAttributesOnSpan: stripNetworkQuery,
+        applyCustomAttributesOnSpan: networkSpanAttributes,
       },
       xhr: {
         propagateTraceHeaderCorsUrls: targets,
         advancedNetworkCapture: () => advancedNetworkCapture,
-        applyCustomAttributesOnSpan: stripNetworkQuery,
+        applyCustomAttributesOnSpan: networkSpanAttributes,
       },
     },
     // Polls for window.Intercom on a timer; nothing here uses Intercom.
@@ -909,7 +919,18 @@ interface UrlSpan {
 }
 
 // applyCustomAttributesOnSpan for both instrumentations: it runs before the
-// span ends, so the rewritten value is the one exported.
+// span ends, so what it writes is what is exported. The span carries the RUM
+// session as `session.id` (the resource's rum.sessionId says the same for the
+// browser; the attribute is what the backend's own spans carry too, so a trace
+// is found by session from either side).
+function networkSpanAttributes(span: UrlSpan): void {
+  stripNetworkQuery(span);
+  const session = rumSessionId();
+  if (session) {
+    span.setAttribute("session.id", session);
+  }
+}
+
 function stripNetworkQuery(span: UrlSpan): void {
   for (const key of URL_ATTRIBUTES) {
     const value = span.attributes?.[key];

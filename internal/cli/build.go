@@ -906,7 +906,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		if err := finishComposition(ctx, cfg, entities, opts, succeeded); err != nil {
 			return err
 		}
-	} else if err := finishReleaseArtifacts(ctx, opts, entities); err != nil {
+	} else if err := finishReleaseArtifacts(ctx, opts, entities, cutPushedRepositories(projectStateImage(cfg, opts, skipProjectDocker), opts, succeeded)); err != nil {
 		return err
 	}
 
@@ -1568,6 +1568,15 @@ func persistProjectBuildState(ctx context.Context, cfg *config.ProjectConfig, op
 	}
 }
 
+// projectStateImage is the name of the project image whose build state
+// persistProjectBuildState records, or "" when the build records none.
+func projectStateImage(cfg *config.ProjectConfig, opts buildOptions, skipProjectDocker bool) string {
+	if !opts.buildDocker || skipProjectDocker {
+		return ""
+	}
+	return cfg.Name
+}
+
 // persistImageBuildStates records the build→deploy handoff for every NON-project
 // image built in this run — today, the cluster-deployed frontends.
 //
@@ -1626,7 +1635,10 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 // version rather than "" — and the render it seals resolves the digests that
 // release just recorded. Writing the bundle first would pin a release that
 // did not exist yet.
-func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KCLEntities) error {
+//
+// pushed is every image repository the build pushed (cutPushedRepositories):
+// the cut journal is written only when it names each of them.
+func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KCLEntities, pushed []string) error {
 	if err := buildHostedStaticSites(ctx, projectDirForKCL(), entities, opts); err != nil {
 		return err
 	}
@@ -1640,7 +1652,7 @@ func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KC
 		}
 		// Every image is pushed and the record is next: from here on an
 		// interrupted cut can be resumed instead of burning the version.
-		writeCutJournal(ctx, opts)
+		writeCutJournal(ctx, opts, pushed)
 		if err := writeReleaseLedger(ctx, opts, entities); err != nil {
 			return err
 		}

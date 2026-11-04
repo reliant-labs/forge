@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const (
@@ -39,6 +41,8 @@ type cutFixture struct {
 	digests  map[string]string
 	prov     release.Provenance
 	opts     buildOptions
+	// pushed is every image repository the build's results pushed.
+	pushed []string
 	// cuts records each call of the one cut path, with what it harvested.
 	cuts []map[string]release.Artifact
 	// commits is what the cut saw as the build's commits.
@@ -99,6 +103,7 @@ func newCutFixture(t *testing.T) *cutFixture {
 
 	// The build: both images pushed under the version, their state on disk,
 	// beside a stale record from an unrelated earlier build.
+	f.pushed = []string{cutAPI, cutWorker}
 	f.digests[cutAPI] = pushTestImage(t, f.registry[cutAPI], cutVersion, "api")
 	f.digests[cutWorker] = pushTestImage(t, f.registry[cutWorker], cutVersion, "worker")
 	mustNoErr(t, WriteBuildState(f.dir, "prod", BuildState{Image: cutAPI, Tag: cutVersion, Pushed: true, Commit: cutCommit, Digest: f.digests[cutAPI]}))
@@ -168,7 +173,7 @@ func pushTestImage(t *testing.T, store *memory.Store, tag, body string) string {
 func TestInterruptedCutIsResumedFromItsJournal(t *testing.T) {
 	f := newCutFixture(t)
 	ctx := context.Background()
-	writeCutJournal(ctx, f.opts)
+	writeCutJournal(ctx, f.opts, f.pushed)
 	if _, err := f.registry[cutAPI].Resolve(ctx, cutVersion+cutjournal.TagSuffix); err != nil {
 		t.Fatalf("the journal is not in the first non-static destination (%s): %v", cutAPI, err)
 	}
@@ -215,7 +220,7 @@ func TestInterruptedCutRefusesAResumeItCannotProve(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newCutFixture(t)
 			ctx := context.Background()
-			writeCutJournal(ctx, f.opts)
+			writeCutJournal(ctx, f.opts, f.pushed)
 			f.reboot(t)
 			entities := &KCLEntities{}
 			if tc.edit != nil {
@@ -259,9 +264,60 @@ func TestNoJournalBuildsAsBefore(t *testing.T) {
 func TestCutJournalIsNotWrittenWithoutAVersionTaggedImage(t *testing.T) {
 	f := newCutFixture(t)
 	f.opts.release = "v9.9.9"
-	writeCutJournal(context.Background(), f.opts)
+	writeCutJournal(context.Background(), f.opts, f.pushed)
 	if _, err := f.registry[cutAPI].Resolve(context.Background(), "v9.9.9"+cutjournal.TagSuffix); err == nil {
 		t.Fatal("a journal was written for a version no image was pushed under")
+	}
+}
+
+// A journal covers every image the cut pushed or is not written: an image
+// pushed with no build state, or a state with no digest, would leave a resume
+// verifying a subset of the cut and recording a release over the rest.
+func TestCutJournalIsNotWrittenWhenAPushedImageHasNoDigest(t *testing.T) {
+	for name, edit := range map[string]func(*testing.T, *cutFixture){
+		"no state": func(t *testing.T, f *cutFixture) {
+			mustNoErr(t, os.Remove(buildtarget.StatePath(f.dir, "prod", "worker")))
+		},
+		"no digest": func(t *testing.T, f *cutFixture) {
+			mustNoErr(t, buildtarget.WriteState(f.dir, "prod", buildtarget.State{Service: "worker", Image: cutWorker, Tag: cutVersion}))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newCutFixture(t)
+			ctx := context.Background()
+			edit(t, f)
+			writeCutJournal(ctx, f.opts, f.pushed)
+			if _, err := f.registry[cutAPI].Resolve(ctx, cutVersion+cutjournal.TagSuffix); err == nil {
+				t.Fatal("a journal was written that does not name every pushed image")
+			}
+			f.reboot(t)
+			if resumed, err := resumeInterruptedCut(ctx, &KCLEntities{}, f.opts); resumed || err != nil {
+				t.Fatalf("resumeInterruptedCut = %v, %v; want an ordinary build", resumed, err)
+			}
+		})
+	}
+}
+
+// The pushed set comes from the build's results, named as their build states
+// name them.
+func TestCutPushedRepositoriesNamesEveryPushedImage(t *testing.T) {
+	opts := buildOptions{pushPlan: pushPlan{push: true, env: "prod", destinations: []imageDestination{{repository: "reg.example/p/shop"}, {repository: "reg.example/p/web"}}}}
+	results := []buildResult{
+		{kind: "docker", name: "shop (docker)", tag: cutVersion},
+		{kind: "docker", name: "web (docker)", image: "web", tag: cutVersion},
+		{kind: "docker", name: "api (docker)", image: "api", repository: "ghcr.io/acme/api", tag: cutVersion},
+		{kind: "docker", name: "untagged (docker)", image: "untagged"},
+		{kind: "service", name: "api"},
+	}
+	got := cutPushedRepositories("shop", opts, results)
+	want := []string{"ghcr.io/acme/api", opts.pushPlan.repositoryFor("shop"), opts.pushPlan.repositoryFor("web")}
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("cutPushedRepositories = %v, want %v", got, want)
+	}
+	opts.pushPlan.push = false
+	if got := cutPushedRepositories("shop", opts, results); len(got) != 0 {
+		t.Fatalf("a build that pushed nothing: %v", got)
 	}
 }
 
@@ -326,7 +382,7 @@ func TestCutJournalChecksAReusedImageByDigest(t *testing.T) {
 	f.registry[runtime] = memory.New()
 	digest := pushTestImage(t, f.registry[runtime], "inputs-abc", "toolchain")
 	mustNoErr(t, buildtarget.WriteState(f.dir, "prod", buildtarget.State{Service: "runtime", Image: runtime, Tag: "inputs-abc", Digest: digest}))
-	writeCutJournal(ctx, f.opts)
+	writeCutJournal(ctx, f.opts, f.pushed)
 	f.reboot(t)
 
 	// The shared tag moving is not a problem; the journal never named it.
@@ -357,9 +413,7 @@ func TestCutJournalChecksAReusedImageByDigest(t *testing.T) {
 // worktree). A resume re-points the recorded checkout at the one here, and
 // only when it is the same repository at the same commit, clean.
 func TestInterruptedCutRelocatesItsSiblingCheckout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds real git repositories; runs in task test")
-	}
+	testkit.Slow(t, "builds real git repositories")
 	ctx := context.Background()
 	root := t.TempDir()
 	sib := filepath.Join(root, "sib")

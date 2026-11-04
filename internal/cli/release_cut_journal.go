@@ -177,6 +177,59 @@ func snapshotCutJournal(ctx context.Context, projectDir string, opts buildOption
 	return j, nil
 }
 
+// cutPushedRepositories is every image repository a build's results pushed
+// and its build state should record: the project image (projectImage, its
+// name; "" when the build made none) and each other docker result with a tag,
+// resolved the way persistProjectBuildState and persistImageBuildStates
+// resolve them, so the two name each image identically.
+func cutPushedRepositories(projectImage string, opts buildOptions, succeeded []buildResult) []string {
+	if !opts.pushPlan.push {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range succeeded {
+		if r.kind != "docker" || r.tag == "" {
+			continue
+		}
+		var repo string
+		switch {
+		case projectImage != "" && r.name == projectImage+" (docker)":
+			repo = opts.pushPlan.repositoryFor(projectImage)
+		case r.image == "":
+			continue // no build state is written for it, so no cut reads it
+		case r.repository != "":
+			repo = r.repository
+		default:
+			repo = opts.pushPlan.repositoryFor(r.image)
+		}
+		if repo != "" && !seen[repo] {
+			seen[repo] = true
+			out = append(out, repo)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// cutJournalMissingImages is each pushed repository the journal does not
+// name with a digest.
+func cutJournalMissingImages(j cutjournal.Journal, pushed []string) []string {
+	have := map[string]bool{}
+	for _, img := range j.Images {
+		if img.Digest != "" {
+			have[img.Repository] = true
+		}
+	}
+	var missing []string
+	for _, repo := range pushed {
+		if !have[repo] {
+			missing = append(missing, repo)
+		}
+	}
+	return missing
+}
+
 func outputDirOrBin(dir string) string {
 	if dir == "" {
 		return "bin"
@@ -189,7 +242,12 @@ func outputDirOrBin(dir string) string {
 // every image is pushed and before the ledger record. Never fails the cut: a
 // cut whose journal could not be written is exactly as recoverable as one
 // before journals existed, and says so.
-func writeCutJournal(ctx context.Context, opts buildOptions) {
+//
+// pushed is every image repository the build pushed (cutPushedRepositories),
+// from its results rather than its state: a journal that does not name each
+// of them with a digest would let a resume check a subset of the cut and
+// record a release over the rest unverified, so none is written.
+func writeCutJournal(ctx context.Context, opts buildOptions, pushed []string) {
 	if opts.release == "" || opts.composition != nil {
 		return
 	}
@@ -202,6 +260,11 @@ func writeCutJournal(ctx context.Context, opts buildOptions) {
 	j, err := snapshotCutJournal(ctx, projectDir, opts)
 	if err == nil && !j.PushedUnder(opts.release) {
 		return // nothing was pushed under the version: a retry has nothing to adopt
+	}
+	if err == nil {
+		if missing := cutJournalMissingImages(j, pushed); len(missing) > 0 {
+			err = fmt.Errorf("no build state records a digest for %s, so a resume could not verify every image the cut pushed", strings.Join(missing, ", "))
+		}
 	}
 	var digest string
 	if err == nil {

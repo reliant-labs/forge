@@ -51,11 +51,8 @@ func TestScaffoldTemplatesRunOnlyReleasedForgeCommands(t *testing.T) {
 	tree := forgeCommandTree(NewRootCmd())
 	releasedVersion, released := readReleasedCommands(t)
 
-	floor := buildinfo.PublishedFloor()
-	if !semver.IsValid(releasedVersion) || (semver.IsValid(floor) && semver.Compare(releasedVersion, floor) > 0) {
-		t.Fatalf("testdata/released_commands.txt describes forge %q, but this source descends from release %q "+
-			"(internal/buildinfo/VERSION): the file must describe that release or an older one. "+
-			"Regenerate it: scripts/released-commands.sh", releasedVersion, floor)
+	if problem := releasedSnapshotProblem(releasedVersion, buildinfo.PublishedFloor()); problem != "" {
+		t.Fatal(problem)
 	}
 
 	invocations := scaffoldTemplateForgeInvocations(t)
@@ -71,14 +68,7 @@ func TestScaffoldTemplatesRunOnlyReleasedForgeCommands(t *testing.T) {
 		if _, ok := tree["forge "+inv.words[0]]; !ok {
 			continue
 		}
-		cmdPath, problem := resolveForgeInvocation(inv.words, tree)
-		if problem == "" && !released[cmdPath] {
-			problem = fmt.Sprintf("`%s` is not in forge %s, the release a forge built from this checkout pins "+
-				"(buildinfo.PublishedFloor), so a project it scaffolds would run a forge without it. "+
-				"Use the command in templates once a release ships it, then refresh "+
-				"testdata/released_commands.txt with scripts/released-commands.sh", cmdPath, releasedVersion)
-		}
-		if problem != "" {
+		if problem := releasedInvocationProblem(inv.words, tree, released, releasedVersion); problem != "" {
 			problems = append(problems, fmt.Sprintf("%s:%d: %s\n      %s", inv.file, inv.line, problem, strings.TrimSpace(inv.text)))
 		}
 	}
@@ -114,6 +104,69 @@ func TestResolveForgeInvocation(t *testing.T) {
 			t.Errorf("resolve(%q) = %q, %q; want %q, a problem containing %q", c.words, got, problem, c.path, c.want)
 		}
 	}
+}
+
+// The release check rejects a command this binary has but the release lacks,
+// and a snapshot newer than the release this source descends from.
+func TestReleasedCommandChecks(t *testing.T) {
+	leaf := forgeCommand{runs: true, takesArgs: true}
+	tree := map[string]forgeCommand{
+		"forge project": {runs: true}, "forge project new": leaf, "forge project frontends": leaf,
+	}
+	released := map[string]bool{"forge project": true, "forge project new": true}
+	for _, c := range []struct {
+		words, want string // want: a substring of the problem; "" is none
+	}{
+		{"project new demo", ""},
+		{"project frontends", "`forge project frontends` is not in forge v1.0.15"},
+		{"project nope", "has no subcommand \"nope\""}, // the resolver's problem wins
+	} {
+		problem := releasedInvocationProblem(strings.Fields(c.words), tree, released, "v1.0.15")
+		if (c.want == "") != (problem == "") || !strings.Contains(problem, c.want) {
+			t.Errorf("releasedInvocationProblem(%q) = %q; want a problem containing %q", c.words, problem, c.want)
+		}
+	}
+
+	for _, c := range []struct {
+		snapshot, floor string
+		bad             bool
+	}{
+		{"v1.0.15", "v1.0.15", false},
+		{"v1.0.14", "v1.0.15", false}, // older: only stricter
+		{"v1.0.16", "v1.0.15", true},  // newer than the pinned release
+		{"", "v1.0.15", true},
+		{"1.0.15", "v1.0.15", true},
+	} {
+		if got := releasedSnapshotProblem(c.snapshot, c.floor); (got != "") != c.bad {
+			t.Errorf("releasedSnapshotProblem(%q, %q) = %q; want a problem: %v", c.snapshot, c.floor, got, c.bad)
+		}
+	}
+}
+
+// releasedSnapshotProblem reports why a snapshot of release snapshot cannot
+// stand for floor, the release this source descends from: it must be a valid
+// version no newer than floor.
+func releasedSnapshotProblem(snapshot, floor string) string {
+	if !semver.IsValid(snapshot) || (semver.IsValid(floor) && semver.Compare(snapshot, floor) > 0) {
+		return fmt.Sprintf("testdata/released_commands.txt describes forge %q, but this source descends from release %q "+
+			"(internal/buildinfo/VERSION): the file must describe that release or an older one. "+
+			"Regenerate it: scripts/released-commands.sh", snapshot, floor)
+	}
+	return ""
+}
+
+// releasedInvocationProblem resolves words against this binary's tree, then
+// requires the resolved command to be in released, the command paths of
+// releasedVersion.
+func releasedInvocationProblem(words []string, tree map[string]forgeCommand, released map[string]bool, releasedVersion string) string {
+	cmdPath, problem := resolveForgeInvocation(words, tree)
+	if problem == "" && !released[cmdPath] {
+		problem = fmt.Sprintf("`%s` is not in forge %s, the release a forge built from this checkout pins "+
+			"(buildinfo.PublishedFloor), so a project it scaffolds would run a forge without it. "+
+			"Use the command in templates once a release ships it, then refresh "+
+			"testdata/released_commands.txt with scripts/released-commands.sh", cmdPath, releasedVersion)
+	}
+	return problem
 }
 
 // forgeCommand is what the resolver needs to know of one command.

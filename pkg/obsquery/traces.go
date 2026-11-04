@@ -58,6 +58,12 @@ type TraceQuery struct {
 	// those with a span of that browser session (traceSessionExpr). Empty keeps
 	// all.
 	UserID, SessionID string
+	// Browser and OS keep traces a browser of that client started (the
+	// platform-derived user_agent.name / os.name of a browser span; exact).
+	// FrontendVersion keeps traces with a browser span of that build, and
+	// BackendVersion those with a server span of that build (service.version on
+	// either side; see traceFrontendVersionExpr). Empty keeps all.
+	Browser, OS, FrontendVersion, BackendVersion string
 	// Order is the page's row order; the zero value is newest first. It is
 	// part of the cursor's fingerprint: a token only continues the order that
 	// produced it.
@@ -90,6 +96,11 @@ func (q TraceQuery) Fingerprint() string {
 	}
 	if q.SessionID != "" {
 		parts = append(parts, "session:"+q.SessionID)
+	}
+	for _, f := range [][2]string{{"browser", q.Browser}, {"os", q.OS}, {"frontend", q.FrontendVersion}, {"backend", q.BackendVersion}} {
+		if f[1] != "" {
+			parts = append(parts, f[0]+":"+f[1])
+		}
 	}
 	return fingerprint(parts...)
 }
@@ -157,18 +168,50 @@ const (
 	traceGeoExpr = "anyIf(tuple(" + traceCountryExpr + ", " + traceRegionExpr + ", " + traceCityExpr + "), " + traceCountryExpr + " != '')"
 )
 
+// Which client and which builds a trace ran on:
+//
+//   - a browser span is one with a rum.sessionId; its resource carries the
+//     client the platform derived at ingest (user_agent.*, os.*,
+//     reliant.device.type) and the desktop app's version the page reported
+//     (app.desktop.version), all of one resource, so traceClientExpr picks
+//     them whole from one span;
+//   - the frontend version is a browser span's service.version (the build
+//     that made the call);
+//   - the backend versions are the service.version of every other span that
+//     did not arrive through the browser pipeline (the builds that served
+//     it), at most 8 (service, version) pairs.
+const (
+	traceBrowserSpan         = "ResourceAttributes['rum.sessionId'] != ''"
+	traceServerSpan          = "ResourceAttributes['rum.sessionId'] = '' AND ResourceAttributes['reliant.ingest.class'] != 'browser'"
+	traceVersionExpr         = "ResourceAttributes['service.version']"
+	traceBrowserNameExpr     = "ResourceAttributes['user_agent.name']"
+	traceOSNameExpr          = "ResourceAttributes['os.name']"
+	traceDesktopVersionExpr  = "ResourceAttributes['app.desktop.version']"
+	traceFrontendVersionExpr = "anyIf(" + traceVersionExpr + ", " + traceBrowserSpan + " AND " + traceVersionExpr + " != '')"
+	traceBackendVersionsExpr = "groupUniqArrayIf(8)(tuple(ServiceName, " + traceVersionExpr + "), " + traceServerSpan + " AND " + traceVersionExpr + " != '')"
+	traceClientExpr          = "anyIf(tuple(" + traceBrowserNameExpr + ", ResourceAttributes['user_agent.version'], " + traceOSNameExpr + ", ResourceAttributes['os.version'], ResourceAttributes['reliant.device.type'], " + traceDesktopVersionExpr + "), " + traceBrowserSpan + " AND (" + traceBrowserNameExpr + " != '' OR " + traceDesktopVersionExpr + " != ''))"
+)
+
 // perTrace is the per-trace summary subquery shared by the page and RED
 // statements. Columns: trace_id, start (DateTime64(9)), dur_ms, root_service,
 // root_name, root_dur_ms, span_count, error_count, tw (how many real traces this
 // stored one stands for, see weight.go), services, source, user_id, session_id,
 // country, region, city (each the first non-empty value of its trace's spans,
-// "" when none).
+// "" when none), then client_name, client_version, os_name, os_version,
+// device_type, desktop_version (one browser span's, traceClientExpr),
+// frontend_version, backend_services and backend_versions (two parallel arrays,
+// the same pairs in the same order).
 func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, error) {
 	if err := checkRumValue("user_id", q.UserID); err != nil {
 		return "", err
 	}
 	if q.SessionID != "" {
 		if err := CheckSessionID(q.SessionID); err != nil {
+			return "", err
+		}
+	}
+	for _, f := range [][2]string{{"browser", q.Browser}, {"os", q.OS}, {"frontend_version", q.FrontendVersion}, {"backend_version", q.BackendVersion}} {
+		if err := checkRumValue(f[0], f[1]); err != nil {
 			return "", err
 		}
 	}
@@ -202,6 +245,18 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 	}
 	if q.SessionID != "" {
 		prefilter(traceSessionExpr + " = " + b.str(q.SessionID))
+	}
+	if q.Browser != "" {
+		prefilter(traceBrowserSpan + " AND " + traceBrowserNameExpr + " = " + b.str(q.Browser))
+	}
+	if q.OS != "" {
+		prefilter(traceBrowserSpan + " AND " + traceOSNameExpr + " = " + b.str(q.OS))
+	}
+	if q.FrontendVersion != "" {
+		prefilter(traceBrowserSpan + " AND " + traceVersionExpr + " = " + b.str(q.FrontendVersion))
+	}
+	if q.BackendVersion != "" {
+		prefilter(traceServerSpan + " AND " + traceVersionExpr + " = " + b.str(q.BackendVersion))
 	}
 
 	having := append([]string{}, spanHaving...)
@@ -250,7 +305,16 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 		"       anyIf(" + traceSessionExpr + ", " + traceSessionExpr + " != '') AS session_id,\n" +
 		"       tupleElement(" + traceGeoExpr + ", 1) AS country,\n" +
 		"       tupleElement(" + traceGeoExpr + ", 2) AS region,\n" +
-		"       tupleElement(" + traceGeoExpr + ", 3) AS city" + groupCols + "\n" +
+		"       tupleElement(" + traceGeoExpr + ", 3) AS city,\n" +
+		"       tupleElement(" + traceClientExpr + ", 1) AS client_name,\n" +
+		"       tupleElement(" + traceClientExpr + ", 2) AS client_version,\n" +
+		"       tupleElement(" + traceClientExpr + ", 3) AS os_name,\n" +
+		"       tupleElement(" + traceClientExpr + ", 4) AS os_version,\n" +
+		"       tupleElement(" + traceClientExpr + ", 5) AS device_type,\n" +
+		"       tupleElement(" + traceClientExpr + ", 6) AS desktop_version,\n" +
+		"       " + traceFrontendVersionExpr + " AS frontend_version,\n" +
+		"       arrayMap(p -> tupleElement(p, 1), " + traceBackendVersionsExpr + ") AS backend_services,\n" +
+		"       arrayMap(p -> tupleElement(p, 2), " + traceBackendVersionsExpr + ") AS backend_versions" + groupCols + "\n" +
 		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
 		"GROUP BY trace_id"
 	if len(having) > 0 {

@@ -221,7 +221,9 @@ func TestSessionTimelineCursor(t *testing.T) {
 func sessionRow(id, svc string, startedMs int64, errs uint64, replay uint8) []any {
 	return []any{id, svc, "3f9c0e", "env-prod", "user-42", "/pay",
 		time.UnixMilli(startedMs).UTC(), time.UnixMilli(startedMs + 5000).UTC(), uint64(2), uint64(3), errs, replay,
-		"DE", "Berlin", "Berlin", ""}
+		"DE", "Berlin", "Berlin", "",
+		"Electron", "41.10.7", "macOS", "15.1.0", "desktop", "146.0.7680.216", "1.8.16", "41.0.0",
+		uint32(1440), uint32(900), uint32(2560), uint32(1440)}
 }
 
 func TestParseSessions(t *testing.T) {
@@ -357,5 +359,88 @@ func TestSessionColumnsFollowTheTenantsShape(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// The client columns are named only for a scope whose tables have them, after the
+// location columns, in the order scanSession reads; a desktop renderer's Electron
+// is the one its User-Agent named.
+func TestSessionClientColumns(t *testing.T) {
+	for _, client := range []bool{false, true} {
+		sc := rumScope()
+		sc.SessionClient = client
+		st, err := SessionQuery{Scope: sc}.Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if names := strings.Contains(st.SQL, "max(Client)") && strings.Contains(st.SQL, "max(Viewport)"); names != client {
+			t.Errorf("SessionClient=%v names the client columns: %v\n%s", client, names, st.SQL)
+		}
+		if client && !strings.Contains(st.SQL, "max(Geo)") {
+			t.Errorf("SessionClient implies the location columns:\n%s", st.SQL)
+		}
+		last := strings.Index(st.SQL, "AS client_address")
+		for _, col := range []string{"AS browser_name", "AS browser_version", "AS os_name", "AS os_version", "AS device_type",
+			"AS chromium_version", "AS desktop_version", "AS desktop_electron_version",
+			"AS viewport_width", "AS viewport_height", "AS screen_width", "AS screen_height"} {
+			i := strings.Index(st.SQL, col)
+			if i < last {
+				t.Errorf("SessionClient=%v: %s missing or out of order", client, col)
+			}
+			last = i
+		}
+	}
+	s, err := ParseSession(&catalogTestRows{rows: [][]any{sessionRow("s1", "web", 1000, 0, 0)}}, rumScope().Envs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ClientInfo{BrowserName: "Electron", BrowserVersion: "41.10.7", OSName: "macOS", OSVersion: "15.1.0", DeviceType: "desktop",
+		ChromiumVersion: "146.0.7680.216", DesktopVersion: "1.8.16", ElectronVersion: "41.10.7",
+		ViewportWidth: 1440, ViewportHeight: 900, ScreenWidth: 2560, ScreenHeight: 1440}
+	if s.Client != want {
+		t.Errorf("client = %+v\nwant %+v", s.Client, want)
+	}
+}
+
+// The client and version filters compile to exact matches on the client tuple
+// and the build; without the client columns a client filter matches nothing
+// rather than erroring, and every filter is part of the page token.
+func TestSessionClientFilters(t *testing.T) {
+	sc := rumScope()
+	sc.SessionClient = true
+	q := SessionQuery{Scope: sc, Browser: "Firefox", OS: "Windows", DeviceType: "mobile", Version: "1.8.16"}
+	st, err := q.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tupleElement(max(Client), 1) = {", "tupleElement(max(Client), 3) = {", "tupleElement(max(Client), 5) = {", "max(ServiceVersion) = {"} {
+		if !strings.Contains(st.SQL, want) {
+			t.Errorf("missing %q:\n%s", want, st.SQL)
+		}
+	}
+	for _, v := range []string{"Firefox", "Windows", "mobile", "1.8.16"} {
+		found := false
+		for _, p := range st.Params {
+			if p == v {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q is not a bound parameter: %v", v, st.Params)
+		}
+	}
+	old := SessionQuery{Scope: rumScope(), Browser: "Firefox"}
+	st, err = old.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(st.SQL, "max(Client)") || !strings.Contains(st.SQL, "\n  AND 0") {
+		t.Errorf("a client filter on a tenant without the columns should match nothing:\n%s", st.SQL)
+	}
+	if (SessionQuery{Scope: sc}).Fingerprint() == q.Fingerprint() {
+		t.Error("the client filters are not part of the page token")
+	}
+	if _, err := (SessionQuery{Scope: sc, Browser: strings.Repeat("x", 1000)}).Compile(); err == nil {
+		t.Error("an oversized browser filter compiled")
 	}
 }

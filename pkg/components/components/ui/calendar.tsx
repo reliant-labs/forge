@@ -353,7 +353,9 @@ export default function Calendar({
 
   function commitMove(itemId: string, key: string) {
     const entry = items.find((i) => i.id === itemId);
-    if (!entry || !onMove) return;
+    // The one guard every move path shares: a drop carries only an id, so a
+    // pinned item must be refused here, not just made undraggable.
+    if (!entry || !onMove || entry.movable === false) return;
     const from = toDate(entry.date);
     if (dayKey(from) === key) return;
     const target = toDate(key);

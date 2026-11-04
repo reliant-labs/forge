@@ -104,6 +104,16 @@ test("a pinned item is not draggable and dropping on its own day is a no-op", ()
   expect(onMove).not.toHaveBeenCalled();
 });
 
+test("a drop carrying a pinned item's id does not move it", () => {
+  const onMove = vi.fn();
+  render(<Calendar items={items} today={today} onMove={onMove} />);
+  const dt = dataTransfer();
+  dt.setData("application/x-calendar-item", "pinned");
+  drag("dragover", cell("2026-11-19"), dt);
+  drag("drop", cell("2026-11-19"), dt);
+  expect(onMove).not.toHaveBeenCalled();
+});
+
 test("the keyboard can pick up, move and drop an item", () => {
   const onMove = vi.fn();
   render(<Calendar items={items} today={today} onMove={onMove} />);

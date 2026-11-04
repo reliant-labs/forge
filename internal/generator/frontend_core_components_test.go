@@ -2,6 +2,10 @@
 package generator
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/components"
@@ -22,6 +26,43 @@ func TestCoreComponentsResolve(t *testing.T) {
 			t.Errorf("coreComponents lists %q, which is not in the component library — "+
 				"the scaffold would silently ship without it", name)
 		}
+	}
+}
+
+// TestCoreComponentsCoverTemplateImports pins every `@/components/ui/<name>`
+// a frontend template imports to an installed component. forge has no
+// import-driven install: a generated page that imports a component outside
+// coreComponents (the create form's Textarea was one) fails `next build` /
+// `vite build` in a project the user has not touched yet.
+func TestCoreComponentsCoverTemplateImports(t *testing.T) {
+	installed := map[string]bool{}
+	for _, name := range coreComponents {
+		installed[name] = true
+	}
+	importRe := regexp.MustCompile(`from "@/components/ui/([a-z0-9_]+)"`)
+	root := filepath.Join("..", "templates", "frontend")
+	seen := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, m := range importRe.FindAllStringSubmatch(string(body), -1) {
+			seen++
+			if !installed[m[1]] {
+				t.Errorf("%s imports @/components/ui/%s, which the scaffold never installs — add it to coreComponents", path, m[1])
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen == 0 {
+		t.Fatalf("no @/components/ui/ import found under %s — the pattern no longer matches the templates", root)
 	}
 }
 

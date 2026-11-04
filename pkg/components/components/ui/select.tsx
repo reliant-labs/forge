@@ -36,7 +36,7 @@ export interface SelectProps extends Omit<React.SelectHTMLAttributes<HTMLSelectE
 
 const sizeStyles: Record<SelectSize, string> = {
   sm: "h-8 pl-2.5 pr-8 text-xs",
-  md: "h-10 pl-3 pr-9 text-sm",
+  md: "h-9 pl-3 pr-9 text-sm",
   lg: "h-12 pl-3.5 pr-10 text-base",
 };
 

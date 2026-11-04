@@ -18,6 +18,8 @@ import { Suspense, useState } from "react";
 
 import { PasswordRequirements } from "@/components/password-requirements";
 import Button from "@/components/ui/button";
+import Input from "@/components/ui/input";
+import Label from "@/components/ui/label";
 import { AuthError, signIn, signUp, type PasswordRule } from "@/lib/auth/native-login";
 import { useAuth } from "@/lib/auth/use-auth";
 import { usePasswordPolicy } from "@/lib/auth/use-password-policy";
@@ -94,10 +96,10 @@ function SignIn() {
             {signingUp ? "Create your {{.ProjectName}} account" : "Sign in to {{.ProjectName}}"}
           </h1>
 
-          <label className="mt-6 block text-sm font-medium text-ink" htmlFor="email">
+          <Label className="mt-6" htmlFor="email">
             Email
-          </label>
-          <input
+          </Label>
+          <Input
             id="email"
             name="email"
             type="email"
@@ -106,13 +108,12 @@ function SignIn() {
             autoFocus
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
           />
 
-          <label className="mt-4 block text-sm font-medium text-ink" htmlFor="password">
+          <Label className="mt-4" htmlFor="password">
             Password
-          </label>
-          <input
+          </Label>
+          <Input
             id="password"
             name="password"
             type="password"
@@ -121,7 +122,6 @@ function SignIn() {
             aria-describedby={signingUp ? "password-requirements" : undefined}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
           />
 
           {signingUp ? (
@@ -148,10 +148,10 @@ function SignIn() {
 
           {!signingUp && needsTotp ? (
             <>
-              <label className="mt-4 block text-sm font-medium text-ink" htmlFor="totp">
+              <Label className="mt-4" htmlFor="totp">
                 Authentication code
-              </label>
-              <input
+              </Label>
+              <Input
                 id="totp"
                 name="totp"
                 type="text"
@@ -159,7 +159,6 @@ function SignIn() {
                 autoComplete="one-time-code"
                 value={totp}
                 onChange={(e) => setTotp(e.target.value)}
-                className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
               />
             </>
           ) : null}

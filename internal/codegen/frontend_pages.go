@@ -316,7 +316,7 @@ type PageField struct {
 	TSType string
 	// ZodExpr is the whole zod schema expression for this field —
 	// `z.coerce.number().gte(0)`, `z.string().min(1)`,
-	// `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`, or one
+	// `z.string().regex(/^(-?\d+)?$/, "Enter a whole number")`, or one
 	// of those wrapped in the empty-as-unset preprocess (EmptyIsUnset).
 	// Nothing is added at render time.
 	//
@@ -1335,6 +1335,14 @@ func attachTSConversions(pf *PageField) {
 		// stored value as-is. Defaulting it (the old `?? <first value>`)
 		// named the zero, which is not a state a row can be in.
 		pf.PrefillExpr = fmt.Sprintf("item.%s", n)
+		if pf.EmptyIsUnset() && pf.EnumZeroRef != "" {
+			// An `optional` enum's NULL arrives absent, or as the zero
+			// should a server set presence on it. Both prefill as unset,
+			// which react-hook-form renders as "" — the None option — so
+			// a Save that never touched the select leaves NULL alone
+			// instead of the browser picking the first real member.
+			pf.PrefillExpr = fmt.Sprintf("item.%s === %s ? undefined : item.%s", n, pf.EnumZeroRef, n)
+		}
 	case pf.EmptyIsUnset():
 		attachUnsetTSConversions(pf)
 	case pf.IsRepeated:

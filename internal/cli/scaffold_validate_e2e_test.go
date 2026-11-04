@@ -129,17 +129,17 @@ message Widget {
 		`code: z.string().min(1, "Required"),`,
 		`currency: z.string().min(3, "Must be at least 3 characters").max(3, "Must be at most 3 characters"),`,
 	} {
-		if !strings.Contains(create, want) {
+		if !containsTSE2E(create, want) {
 			t.Errorf("born create form missing zod validator %q:\n%s", want, create)
 		}
 	}
 	// Negative control: the unconstrained numeric field carries no
 	// refinement beyond the base expression for its type. `count` is int64,
 	// so that base is the bigint digits-string, not z.coerce.number().
-	if !strings.Contains(create, `count: z.string().regex(/^(-?\d+)?$/, "Enter a whole number")`) {
+	if !containsTSE2E(create, `count: z.string().regex(/^(-?\d+)?$/, "Enter a whole number")`) {
 		t.Errorf("unconstrained `count` field must keep the bare bigint base expression:\n%s", create)
 	}
-	if strings.Contains(create, "count: z.coerce.number().gte") || strings.Contains(create, "count: z.string().regex(/^(-?\\d+)?$/, \"Enter a whole number\").gte") {
+	if containsTSE2E(create, "count: z.coerce.number().gte") || containsTSE2E(create, "count: z.string().regex(/^(-?\\d+)?$/, \"Enter a whole number\").gte") {
 		t.Errorf("unconstrained `count` field must carry no numeric refinement:\n%s", create)
 	}
 	// The edit form (fields sourced from the entity itself) carries them too.
@@ -147,7 +147,7 @@ message Widget {
 	assertPathExistsE2E(t, editPath)
 	edit := readFileE2E(t, editPath)
 	for _, want := range []string{`name: z.string().min(2, "Must be at least 2 characters").max(64, "Must be at most 64 characters"),`, `quantity: z.coerce.number().gte(0, "Must be 0 or more"),`} {
-		if !strings.Contains(edit, want) {
+		if !containsTSE2E(edit, want) {
 			t.Errorf("born edit form missing zod validator %q:\n%s", want, edit)
 		}
 	}

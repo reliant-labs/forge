@@ -2,7 +2,9 @@ package generator
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +25,91 @@ func TestGenerateGitHooks_AllRecognisedAsForgeManaged(t *testing.T) {
 		if !IsForgeManagedGitHook(script) {
 			t.Errorf(".githooks/%s is not recognised as forge-managed; its first lines:\n%.200s", stage, script)
 		}
+	}
+}
+
+// TestPrePushHook_LintsOnlyWhatThePushChanges runs the generated pre-push hook
+// in a real repository, with a fake `forge` on PATH that records its
+// arguments. The hook must lint the files the pushed commits touch that still
+// exist — not the whole project, which measured 19 minutes on a 22-entity
+// project — and must lint nothing when the push changes no file.
+func TestPrePushHook_LintsOnlyWhatThePushChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs git and sh subprocesses; runs in task test")
+	}
+	repo := t.TempDir()
+	bin := t.TempDir()
+	argsLog := filepath.Join(t.TempDir(), "forge-args")
+	if err := os.WriteFile(filepath.Join(bin, "forge"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >>"+argsLog+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com", "GIT_CONFIG_GLOBAL=/dev/null")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	write("internal/old/old.go", "package old\n")
+	write("internal/kept/kept.go", "package kept\n")
+	git("add", "-A")
+	git("commit", "-qm", "base")
+	// What the remote already has: a remote-tracking ref at the base commit.
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+	write("internal/handlers/a/a.go", "package a\n")
+	write("db/migrations/0002_x.up.sql", "SELECT 1;\n")
+	git("rm", "-q", "internal/old/old.go")
+	git("add", "-A")
+	git("commit", "-qm", "change")
+	head := git("rev-parse", "HEAD")
+
+	runHook := func(stdin string) string {
+		t.Helper()
+		_ = os.Remove(argsLog)
+		cmd := exec.Command("sh", "-c", prePushHook, "pre-push", "origin", "https://example.com/r.git")
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "FORGE_PRE_PUSH_FULL=")
+		cmd.Stdin = strings.NewReader(stdin)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("pre-push hook: %v\n%s", err, out)
+		}
+		got, _ := os.ReadFile(argsLog)
+		return strings.TrimSpace(string(got))
+	}
+
+	zero := strings.Repeat("0", 40)
+	got := runHook("refs/heads/main " + head + " refs/heads/main " + zero + "\n")
+	want := "lint --quiet --scope db/migrations/0002_x.up.sql --scope internal/handlers/a/a.go"
+	if got != want {
+		t.Errorf("hook ran forge %q, want %q (only the pushed, still-existing files)", got, want)
+	}
+
+	// Deleting a remote branch pushes no commit, so there is nothing to lint.
+	if got := runHook("(delete) " + zero + " refs/heads/old " + head + "\n"); got != "" {
+		t.Errorf("a ref deletion ran forge %q, want nothing", got)
+	}
+
+	// Once the remote has the commits, a re-push changes nothing.
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+	if got := runHook("refs/heads/main " + head + " refs/heads/main " + head + "\n"); got != "" {
+		t.Errorf("a push of commits the remote already has ran forge %q, want nothing", got)
 	}
 }
 

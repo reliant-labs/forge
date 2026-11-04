@@ -63,7 +63,11 @@ func TestLatestVersionsOnePerWorkload(t *testing.T) {
 	}
 	// A rollback: web re-reports an old version after its newest one, in spans.
 	span("env-1", "web", "v0001", base.Add(time.Hour))
-	// A tie on last_seen goes to the greater version string.
+	// Two versions in one second of spans: the later report wins although its
+	// version string is the smaller one.
+	span("env-1", "edge", "z-earlier", base.Add(2*time.Hour+100*time.Millisecond))
+	span("env-1", "edge", "b-later", base.Add(2*time.Hour+900*time.Millisecond))
+	// An exact tie goes to the greater version string.
 	gauge("env-1", "worker", "a-tie", base.Add(time.Duration(3*n-1)*time.Second))
 	// Another environment of api, and one outside the scope.
 	gauge("env-2", "api", "v-env2", base.Add(time.Minute))
@@ -75,7 +79,7 @@ func TestLatestVersionsOnePerWorkload(t *testing.T) {
 		Database: "lvdb", Start: base, End: base.Add(3 * time.Hour),
 		EnvRestricted: true, EnvIDs: []string{"env-1", "env-2"},
 	}
-	st, err := obsquery.Workloads{Scope: sc}.LatestVersions(names)
+	st, err := obsquery.Workloads{Scope: sc}.LatestVersions(append(names, "edge"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +109,7 @@ func TestLatestVersionsOnePerWorkload(t *testing.T) {
 		"env-1/web":    "v0001",
 		"env-1/worker": fmt.Sprintf("v%04d", n-1), // "v…" > "a-tie" at the same second
 		"env-2/api":    "v-env2",
+		"env-1/edge":   "b-later",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)

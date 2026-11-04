@@ -48,7 +48,7 @@ import (
 // <word>` whose first word is no forge command at all, which in a run file is
 // prose too (a YAML desc, a step name).
 func TestScaffoldTemplatesRunOnlyReleasedForgeCommands(t *testing.T) {
-	tree := forgeCommandTree(NewRootCmd())
+	tree := forgeCommandTree(newTestRootCmd(t))
 	releasedVersion, released := readReleasedCommands(t)
 
 	if problem := releasedSnapshotProblem(releasedVersion, buildinfo.PublishedFloor()); problem != "" {

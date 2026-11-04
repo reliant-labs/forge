@@ -311,7 +311,12 @@ func checkOneWorkload(ctx context.Context, image string, t configCheckTarget) co
 	if r, ok := forgeconfig.ParseCheckResult(stdout); ok {
 		return configCheckOutcome{Workload: t.Workload, Result: &r}
 	}
-	why := "it exited without loading its config"
+	// A clean exit with no result is a command that reads no typed config:
+	// say how such a command joins the check (a `db migrate` scaffolded
+	// before it did is the common case).
+	why := "it exited without loading its config; a command that reads its settings from environment " +
+		"variables answers the check by calling config.CheckVariables (forge/pkg/config) with them first — " +
+		"the scaffolded `db migrate` does it in checkMigratorConfig (cmd/<binary>/cmd/db.go)"
 	switch {
 	case errors.Is(cctx.Err(), context.DeadlineExceeded):
 		why = fmt.Sprintf("it printed no result within %s (a command that loads no config, or blocks before it)", configCheckTimeout)

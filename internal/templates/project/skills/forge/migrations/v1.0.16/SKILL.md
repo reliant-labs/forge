@@ -1,8 +1,8 @@
 ---
 name: v1.0.16
-description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3.
+description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth.
 version: v1.0.16
-detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; exit 1
+detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.16
@@ -98,3 +98,22 @@ fresh claim history (harmless: the next tick is claimed under the new name).
   process start.
 
 The `workers` skill (Cron-Scheduled Worker) is the full contract.
+
+## 2. `releasehealth.ServiceHealth` is no longer comparable
+
+**Use when** Go code imports `github.com/reliant-labs/forge/pkg/releasehealth`.
+
+### What changed
+
+`ServiceHealth` gained `Endpoints []EndpointHealth`: release health now judges
+p95 latency per endpoint (`ServiceHealth.LatencyRatio`), so a window that
+merely holds a different mix of endpoints does not read as the service getting
+slower. A struct with a slice field cannot be compared with `==` or used as a
+map key.
+
+### What to do
+
+Nothing, unless your code compares two `ServiceHealth` values with `==`/`!=`
+or keys a map by one; the compiler names each such site. Compare the fields
+you mean instead (`a.Service == b.Service`), or `reflect.DeepEqual` in a test.
+Leaving `Endpoints` nil keeps the old service-level latency verdict.

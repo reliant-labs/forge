@@ -67,6 +67,15 @@
 # published by .github/workflows/release-npm.yml, which the GitHub release
 # created here triggers (docs/releasing.md, "Installers").
 #
+# WEB RUNTIME. @reliantlabs/forge-web-runtime ships with every release: before
+# anything is tagged, scripts/release-web-runtime.sh publishes it from the
+# released commit when what it ships changed since its last web-runtime/v* tag
+# (the version is computed there), or proves npm already serves the current
+# one. If it cannot, this release STOPS before its tag: a forge whose runtime
+# is not on npm is not released. The bookkeeping then writes that version into
+# web-runtime/package.json and forge's scaffold floor (webRuntimePublishedRange),
+# so the floor only ever names a published version.
+#
 # CHANGELOG.md is written HERE and nowhere else. This script builds the new
 # `## [vX.Y.Z] - <date>` section from the squash commits (the merged PR titles)
 # since the previous tag, folds the existing `## [Unreleased]` prose in once,
@@ -450,6 +459,14 @@ CHANGELOG_FILE="CHANGELOG.md"
 NPM_MANIFEST="npm/package.json"
 TOUCHED=("${VERSION_FILES[@]}" "$NEXT_FILE" "$CHANGELOG_FILE")
 [ -f "$NPM_MANIFEST" ] && TOUCHED+=("$NPM_MANIFEST")
+# The web runtime's bookkeeping (step 8c): its manifests' versions and the
+# scaffold floor that names it.
+WR_MANIFEST="web-runtime/package.json"
+WR_LOCK="web-runtime/package-lock.json"
+WR_FLOOR_FILE="internal/generator/frontend_webruntime.go"
+for f in "$WR_MANIFEST" "$WR_LOCK" "$WR_FLOOR_FILE"; do
+  [ -f "$f" ] && TOUCHED+=("$f")
+done
 
 # The checkout lock is flock(1) on a file in this worktree's git dir: the kernel
 # arbitrates it, and drops it when its holder dies, however it dies. There is no
@@ -647,6 +664,58 @@ echo "→ building release archives"
 FORGE_RELEASE_COMMIT="$(git rev-parse HEAD)" "$RELEASE_SCRIPT_DIR/build-release-assets.sh" "$VERSION" "$ASSETS_DIR"
 ASSET_FILES=("$ASSETS_DIR"/forge_*.tar.gz "$ASSETS_DIR/checksums.txt")
 
+# ── 8c. The web runtime ships first ─────────────────────────────────
+# After every forge check has passed and before the forge tag exists: a runtime
+# that cannot be published stops the release with nothing of forge's pushed.
+# The publish itself is the tag web-runtime/vX.Y.Z (its workflow publishes to
+# npm); release-web-runtime.sh waits until npm serves it. A dry run validates
+# the package and publishes nothing. At a release the train cut, the cut
+# already published it and this is a check that npm serves it.
+WEB_RUNTIME_VERSION=""
+WEB_RUNTIME_SUMMARY="no web-runtime/ package"
+if [ -f "$WR_MANIFEST" ]; then
+  echo "→ @reliantlabs/forge-web-runtime for $COMMIT"
+  WR_ARGS=(--repo "$CALLER_ROOT" --branch "$BRANCH" --commit "$COMMIT")
+  [ "$DRY_RUN" = "1" ] && WR_ARGS+=(--dry-run)
+  WR_JSON=""
+  if ! WR_JSON="$(bash "$RELEASE_SCRIPT_DIR/release-web-runtime.sh" "${WR_ARGS[@]}" | tail -n 1)"; then
+    echo "error: forge $VERSION is NOT released: @reliantlabs/forge-web-runtime could not be published for $COMMIT (above)." >&2
+    echo "       Nothing of forge's was tagged or pushed. Fix the runtime's publish, then re-run this release." >&2
+    echo "       $WR_JSON" >&2
+    exit 1
+  fi
+  wr_field() { printf '%s' "$WR_JSON" | grep -o "\"$1\":\"[^\"]*\"" | head -n 1 | cut -d'"' -f4; }
+  WEB_RUNTIME_VERSION="$(wr_field version)"
+  if [ -z "$WEB_RUNTIME_VERSION" ]; then
+    echo "error: release-web-runtime.sh reported no version: $WR_JSON" >&2
+    exit 1
+  fi
+  WEB_RUNTIME_SUMMARY="@reliantlabs/forge-web-runtime $WEB_RUNTIME_VERSION ($(wr_field state): $(wr_field detail))"
+  # The bookkeeping: the manifests name the published version, and the
+  # scaffold floor rises to it, so forge never scaffolds a range npm lacks.
+  if [ "$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$WR_MANIFEST" | head -n 1)" != "$WEB_RUNTIME_VERSION" ]; then
+    echo "→ syncing web-runtime to $WEB_RUNTIME_VERSION"
+    # Only the top-level "version" is two-space indented (prettier's layout).
+    sed -i.bak -e 's/^  "version": "[^"]*"/  "version": "'"$WEB_RUNTIME_VERSION"'"/' "$WR_MANIFEST" && rm -f "$WR_MANIFEST.bak"
+    if [ -f "$WR_LOCK" ]; then
+      # The lock's own version and its root package's (the first inside "": {).
+      awk -v v="$WEB_RUNTIME_VERSION" '
+        !top && /^  "version": "/ { sub(/"version": "[^"]*"/, "\"version\": \"" v "\""); top = 1 }
+        /^    "": \{/ { inroot = 1 }
+        inroot && !rootv && /^      "version": "/ { sub(/"version": "[^"]*"/, "\"version\": \"" v "\""); rootv = 1 }
+        inroot && /^    \}/ { inroot = 0 }
+        { print }' "$WR_LOCK" >"$BACKUP_DIR/wr-lock.new" && cat "$BACKUP_DIR/wr-lock.new" >"$WR_LOCK"
+    fi
+    if [ -f "$WR_FLOOR_FILE" ]; then
+      sed -i.bak -e 's/^const webRuntimePublishedRange = ".*"/const webRuntimePublishedRange = "^'"$WEB_RUNTIME_VERSION"'"/' "$WR_FLOOR_FILE" && rm -f "$WR_FLOOR_FILE.bak"
+      grep -q "^const webRuntimePublishedRange = \"^$WEB_RUNTIME_VERSION\"" "$WR_FLOOR_FILE" || {
+        echo "error: could not set webRuntimePublishedRange in $WR_FLOOR_FILE to ^$WEB_RUNTIME_VERSION" >&2
+        exit 1
+      }
+    fi
+  fi
+fi
+
 # ── 9. Commit, tag, push (or describe the plan) ─────────────────────
 if [ "$DRY_RUN" = "1" ]; then
   echo ""
@@ -661,6 +730,7 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "DRY RUN: origin is not on github.com; would skip the GitHub release"
   fi
   echo "DRY RUN: would attach: $(for f in "${ASSET_FILES[@]}"; do basename "$f"; done | tr '\n' ' ')"
+  echo "DRY RUN: web runtime: $WEB_RUNTIME_SUMMARY"
   echo "DRY RUN: would tag $RELEASE_TAG at $COMMIT (already on origin/$BRANCH)"
   echo "DRY RUN: would push:   git push --atomic origin refs/tags/$RELEASE_TAG <bookkeeping commit>:refs/heads/release/$VERSION"
   echo "DRY RUN: would open:   a pull request release/$VERSION -> $BRANCH, set to auto-merge (nothing is pushed to $BRANCH)"
@@ -686,6 +756,7 @@ as_release_bot git commit -q -m "chore: release $VERSION
 
 Sync VERSION and internal/buildinfo/VERSION; name $NEXT_AFTER in NEXT_VERSION;
 write the $VERSION section of CHANGELOG.md from the PR titles merged since ${PREV_TAG:-the start}.
+Web runtime: $WEB_RUNTIME_SUMMARY.
 
 Bookkeeping for $RELEASE_TAG, tagged at $COMMIT."
 
@@ -742,6 +813,7 @@ fi
 
 echo ""
 echo "✅ tagged and pushed $VERSION at $RELEASE_SHA"
+echo "   web runtime: $WEB_RUNTIME_SUMMARY"
 
 # ── 9b. The GitHub release ──────────────────────────────────────────
 # The tag is pushed and immutable by now, so nothing here can un-release it. A

@@ -51,7 +51,38 @@ export function telemetryReady(
   });
 }
 
+// ── The RUM session the requests belong to ─────────────────────────────────
+//
+// initBrowserTelemetry registers the SDK's session id here once it runs, and
+// clears it when telemetry is disabled. injectTraceContext (trace.ts) sends it
+// as the W3C baggage member `session.id`, which forge servers copy onto their
+// server span (forge/pkg/observe, span_identity.go), so a backend trace links
+// back to the browser session that caused it.
+
+/** The shape of a RUM session id; forge servers drop anything else. */
+const RUM_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+let sessionSource: (() => string | undefined) | null = null;
+
+/** Called by initBrowserTelemetry with the SDK's session getter, or null. */
+export function registerRumSession(
+  source: (() => string | undefined) | null,
+): void {
+  sessionSource = source;
+}
+
+/** The current RUM session id, or undefined with telemetry off. Never throws. */
+export function rumSessionId(): string | undefined {
+  try {
+    const id = sessionSource?.();
+    return id && RUM_SESSION_ID_RE.test(id) ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Test seam. */
 export function resetTelemetryGate(): void {
   startup = null;
+  sessionSource = null;
 }

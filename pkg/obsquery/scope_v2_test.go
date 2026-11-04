@@ -440,7 +440,7 @@ func TestWorkloadStatements(t *testing.T) {
 	for name, f := range map[string]func() (Stmt, error){
 		"usage": q.Usage, "restarts": q.Restarts, "terminations": q.Terminations, "warnings": q.LatestWarnings,
 		"events": q.Events, "images": q.ImageChanges, "versions": func() (Stmt, error) { return q.Versions([]string{h, "b"}) },
-		"series": func() (Stmt, error) { return q.Series(60) }, "restart series": func() (Stmt, error) { return q.RestartSeries(60) },
+		"latest versions": func() (Stmt, error) { return q.LatestVersions([]string{h, "b"}) }, "series": func() (Stmt, error) { return q.Series(60) }, "restart series": func() (Stmt, error) { return q.RestartSeries(60) },
 		"replicas": q.Replicas, "readiness": func() (Stmt, error) { return q.Readiness(60) }, "pods": q.Pods, "pod restarts": q.PodRestarts, "jobs": q.Jobs,
 	} {
 		st, err := f()
@@ -505,6 +505,9 @@ func TestWorkloadStatements(t *testing.T) {
 	}
 	if _, err := (Workloads{Scope: sc}).Versions(nil); !isInvalid(err) {
 		t.Errorf("versions of nothing accepted")
+	}
+	if _, err := (Workloads{Scope: sc}).LatestVersions(nil); !isInvalid(err) {
+		t.Errorf("latest versions of nothing accepted")
 	}
 	if _, err := (Workloads{Scope: scopeWith(func(s *Scope) { s.End = s.Start.Add(8 * 24 * time.Hour) })}).Usage(); !isInvalid(err) {
 		t.Errorf("workloads over 7 days accepted")

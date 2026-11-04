@@ -113,7 +113,8 @@ func TestScaffoldedFrontend_ConfigReadsGoThroughTheTypedModule(t *testing.T) {
 		{"nextjs", "", map[string][]string{
 			"src/lib/connect.ts":           {"loadConfig().API_URL", "loadConfig().MOCK_API"},
 			"src/lib/auth/native-login.ts": {"loadConfig().API_URL"},
-			"src/app/layout.tsx":           {"loadConfig().MOCK_API"},
+			// The banner reads the mode in the browser — see mock_mode_banner.tsx.
+			"src/components/mock_mode_banner.tsx": {"loadConfig().MOCK_API"},
 		}},
 		{"vite-spa", "vite-spa", map[string][]string{
 			"src/lib/connect.ts":           {"loadConfig().API_URL", "loadConfig().MOCK_API"},

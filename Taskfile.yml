@@ -91,18 +91,15 @@ tasks:
       - ./scripts/release-forge.sh {{.CLI_ARGS}}
 
   release:web-runtime:
-    desc: "Tag a @reliantlabs/forge-web-runtime release: task release:web-runtime -- vX.Y.Z (add --dry-run to validate only)"
+    desc: "Publish @reliantlabs/forge-web-runtime for a commit if what it ships changed (version computed): task release:web-runtime -- [--plan|--dry-run] [--commit <sha>]"
     cmds:
-      # The npm twin of release:pkg. Validates version shape, a clean
-      # web-runtime/ tree, no existing tag, package.json/tag agreement, a
-      # green build+typecheck+test, that the packed tarball really contains
-      # dist/, and that forge's webRuntimePublishedRange tracks the version
-      # being released — so a released forge can never scaffold a range the
-      # registry cannot satisfy.
-      #
-      # Pushing the tag and `npm publish` are deliberate manual steps the
-      # script prints at the end: both are irreversible, and npm requires a
-      # 2FA OTP to publish.
+      # Every forge release already runs this (release:forge, and the release
+      # train at each cut); run it alone only to see what it would publish
+      # (--plan) or to repair a publish. It computes the version from the
+      # commit (what changed since the last web-runtime/v* tag), validates the
+      # package (npm ci, typecheck, test, build, pack contents), pushes the
+      # web-runtime/vX.Y.Z tag whose workflow publishes it, and waits until npm
+      # serves it. Unchanged content publishes nothing.
       - ./scripts/release-web-runtime.sh {{.CLI_ARGS}}
 
   test:

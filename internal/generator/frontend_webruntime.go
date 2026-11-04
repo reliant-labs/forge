@@ -55,10 +55,17 @@ import (
 const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 
 // webRuntimePublishedRange is the semver range a scaffold declares when it is
-// not bridged to a local checkout. Keep the major.minor pointed at
-// web-runtime/package.json's version — TestWebRuntimePublishedRangeTracksPackage
-// fails the build when the two drift apart.
-const webRuntimePublishedRange = "^0.12.0"
+// not bridged to a local checkout. It must name a PUBLISHED version, because
+// `forge generate` raises every consumer to it. forge's release bookkeeping
+// (scripts/release-forge.sh) writes it, with web-runtime/package.json's
+// version, after scripts/release-web-runtime.sh has published that version:
+// pull requests do not bump it, except the one making a breaking runtime
+// change, which raises it to the new minor (major from 1.0) because a forge
+// release ships this range from the commit it tags; release-web-runtime.sh
+// refuses a range the computed version does not satisfy.
+// TestWebRuntimePublishedRangeTracksPackage
+// holds its major.minor to package.json's.
+const webRuntimePublishedRange = "^0.13.0"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a

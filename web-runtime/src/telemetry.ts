@@ -62,6 +62,17 @@
 // cookie in localStorage with the same 15-minute inactivity and 4-hour limits
 // (session-cookie-fallback.ts). Origins whose cookies work are untouched.
 //
+// ── No session until the page has been seen ──────────────────────────────
+//
+// A page loaded in the background (a desktop window opened hidden, a tab
+// restored behind another) starts no session at all: the SDK is not loaded
+// until the document is first visible. Started hidden, it would mint a session
+// made only of background fetch spans, with nothing on screen to record, and
+// the recorder would hold no replay for it. Until then reportException returns
+// false (the caller logs to the console) and track() calls are held, bounded,
+// as they are while the SDK loads. A page that never becomes visible sends
+// nothing.
+//
 // ── Network URLs carry no query string ───────────────────────────────────
 //
 // fetch/XHR spans record the request URL, and a query string is where tokens,
@@ -69,6 +80,25 @@
 // `url.full` on every fetch/XHR span to the URL without query or fragment.
 // The SDK's own `location.href` attribute (the page URL, stamped on every span)
 // has no client-side hook; the ingest side scrubs it.
+//
+// ── Network spans are named by what they called ──────────────────────────
+//
+// HyperDX names every fetch/XHR span `HTTP <METHOD>`, so a trace a browser
+// starts is titled "HTTP POST" whatever it did. The same hook renames it to
+// the procedure when it is a Connect/gRPC call (`POST /pkg.v1.Service/Method`,
+// the server span's name with the method in front; spanRouteName). Any other
+// URL keeps `HTTP <METHOD>`: a free-form path can carry ids and tokens, and
+// the span name is exported unscrubbed.
+//
+// ── Client context ───────────────────────────────────────────────────────
+//
+// The page reports what only it can know about its client — client hints
+// (browser.brands/platform/mobile), its viewport and screen (app.viewport.*,
+// app.screen.*) and, inside a desktop app, the app's versions from the
+// `window.forgeDesktop` preload bridge (app.desktop.*) — sanitized
+// (client-context.ts). Browser, OS and device type are NOT page claims: the
+// ingest side derives them from the request's User-Agent and Sec-CH-UA
+// headers and overwrites any the page sent.
 //
 // ── Loading ──────────────────────────────────────────────────────────────
 //
@@ -93,14 +123,28 @@ import {
   classifyBenignError,
   FilteredErrorCounter,
 } from "./benign-errors.js";
+import {
+  pageClientResourceAttributes,
+  watchViewport,
+} from "./client-context.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { installSessionCookieFallback } from "./session-cookie-fallback.js";
-import { registerTelemetryStartup } from "./telemetry-gate.js";
+import {
+  registerRumSession,
+  registerTelemetryStartup,
+  rumSessionId,
+} from "./telemetry-gate.js";
 import {
   isTelemetryDisabled,
   setTelemetrySink,
   type TrackValue,
 } from "./track.js";
+
+export {
+  clientResourceAttributes,
+  type ForgeDesktopInfo,
+  viewportAttributes,
+} from "./client-context.js";
 
 export {
   cookiesPersist,
@@ -235,6 +279,7 @@ interface HyperDXClient {
   addAction?(name: string, attributes?: Record<string, TrackValue>): void;
   setGlobalAttributes?(attributes: Record<string, string>): void;
   stopSessionRecorder?(): void;
+  getSessionId?(): string | undefined;
 }
 
 let started: Promise<boolean> | null = null;
@@ -317,6 +362,7 @@ async function start(
   ingest: string,
 ): Promise<boolean> {
   try {
+    await firstVisible();
     const hdx = resolveClient(await import("@hyperdx/browser"));
     if (!hdx || isTelemetryDisabled()) {
       setTelemetrySink(null);
@@ -326,7 +372,12 @@ async function start(
     // Before init: the SDK reads its session cookie as it starts.
     keepSessionWithoutCookies();
     hdx.init(
-      buildSdkOptions({ ...config, replay }, ingest, window.location.origin),
+      buildSdkOptions(
+        { ...config, replay },
+        ingest,
+        window.location.origin,
+        pageClientResourceAttributes(),
+      ),
     );
     // After init: both hook what the SDK RECORDS, never what the app sees.
     const benign = benignFilter(config, hdx);
@@ -346,8 +397,21 @@ async function start(
       globals["visitor.id"] = captureVisitor(config);
     }
     hdx.setGlobalAttributes?.(globals);
+    // The viewport and screen ride on every span, refreshed on resize
+    // (client-context.ts): the SDK's global attributes are a span processor
+    // that stamps the current set on each span as it starts, so a span carries
+    // the size of the moment it began (proved against the real SDK in
+    // scripts/browser-telemetry-smoke.mjs). Device, OS and browser are
+    // derived at ingest.
+    const stopViewport = watchViewport((attrs) =>
+      hdx.setGlobalAttributes?.(attrs),
+    );
     runningClient = hdx;
     runningConfig = config;
+    // The session id rides on every Connect call as baggage (trace.ts) and on
+    // every fetch/XHR span (sessionAttribute), joining backend traces to the
+    // session that caused them.
+    registerRumSession(() => hdx.getSessionId?.());
     setExceptionReporter((error, attributes) => {
       if (alreadyRecorded(error) || benign.filtered(error, "reportException")) {
         return;
@@ -369,6 +433,8 @@ async function start(
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
         setExceptionReporter(null);
+        registerRumSession(null);
+        stopViewport();
         hdx.stopSessionRecorder?.();
       },
     });
@@ -381,6 +447,30 @@ async function start(
     setTelemetrySink(null);
     return false;
   }
+}
+
+/**
+ * Resolves once the document is visible: at once for a visible page or one
+ * with no Page Visibility API, otherwise at its first visibilitychange to
+ * visible. See "No session until the page has been seen" in the header.
+ */
+function firstVisible(): Promise<void> {
+  if (
+    typeof document === "undefined" ||
+    document.visibilityState !== "hidden" ||
+    typeof document.addEventListener !== "function"
+  ) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const onChange = () => {
+      if (document.visibilityState !== "hidden") {
+        document.removeEventListener("visibilitychange", onChange);
+        resolve();
+      }
+    };
+    document.addEventListener("visibilitychange", onChange);
+  });
 }
 
 // ── One failure, one record ──────────────────────────────────────────────
@@ -699,17 +789,20 @@ function alreadyRecorded(error: unknown): boolean {
 
 /**
  * The options passed to HyperDX.init. Exported for tests and for apps that
- * want to see exactly what is configured — it is pure.
+ * want to see exactly what is configured — it is pure. `clientAttributes`
+ * are the page's own client resource attributes (client-context.ts:
+ * browser.* client hints, app.desktop.*); the config's keys win over them.
  */
 export function buildSdkOptions(
   config: BrowserTelemetryConfig,
   ingestUrl: string,
   pageOrigin: string,
+  clientAttributes: Record<string, string> = {},
 ): Record<string, unknown> {
   // `config.replay` is the FINAL decision here. initBrowserTelemetry resolves
   // replaySampleRate into it (decideReplay) before calling this.
   const replay = config.replay === true;
-  const resourceAttributes: Record<string, string> = {};
+  const resourceAttributes: Record<string, string> = { ...clientAttributes };
   if (config.serviceVersion) {
     resourceAttributes["service.version"] = config.serviceVersion;
   }
@@ -748,12 +841,12 @@ export function buildSdkOptions(
       fetch: {
         propagateTraceHeaderCorsUrls: targets,
         advancedNetworkCapture: () => advancedNetworkCapture,
-        applyCustomAttributesOnSpan: stripNetworkQuery,
+        applyCustomAttributesOnSpan: finishNetworkSpan,
       },
       xhr: {
         propagateTraceHeaderCorsUrls: targets,
         advancedNetworkCapture: () => advancedNetworkCapture,
-        applyCustomAttributesOnSpan: stripNetworkQuery,
+        applyCustomAttributesOnSpan: finishNetworkSpan,
       },
     },
     // Polls for window.Intercom on a timer; nothing here uses Intercom.
@@ -870,10 +963,33 @@ export function stripUrlQuery(url: string): string {
 interface UrlSpan {
   attributes?: Record<string, unknown>;
   setAttribute(key: string, value: string): unknown;
+  updateName?(name: string): unknown;
 }
 
 // applyCustomAttributesOnSpan for both instrumentations: it runs before the
-// span ends, so the rewritten value is the one exported.
+// span ends, and after HyperDX's own `HTTP <METHOD>` rename, so the values
+// set here are the ones exported. The span carries the RUM session as
+// `session.id` (the resource's rum.sessionId says the same for the browser;
+// the attribute is what the backend's own spans carry too, so a trace is found
+// by session from either side).
+function finishNetworkSpan(span: UrlSpan): void {
+  stripNetworkQuery(span);
+  const url = span.attributes?.["url.full"] ?? span.attributes?.["http.url"];
+  const method =
+    span.attributes?.["http.request.method"] ??
+    span.attributes?.["http.method"];
+  if (typeof url === "string" && typeof span.updateName === "function") {
+    const name = spanRouteName(typeof method === "string" ? method : "", url);
+    if (name) {
+      span.updateName(name);
+    }
+  }
+  const session = rumSessionId();
+  if (session) {
+    span.setAttribute("session.id", session);
+  }
+}
+
 function stripNetworkQuery(span: UrlSpan): void {
   for (const key of URL_ATTRIBUTES) {
     const value = span.attributes?.[key];
@@ -884,6 +1000,32 @@ function stripNetworkQuery(span: UrlSpan): void {
       }
     }
   }
+}
+
+// A Connect/gRPC procedure: `/<package>.<Service>/<Method>`, the service and
+// method PascalCase as protobuf declares them. The whole path is the route,
+// fixed by the proto, so it carries no request values.
+const RPC_PATH = /^\/[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.[A-Z]\w*\/[A-Z]\w*$/;
+
+/**
+ * The name a fetch/XHR span gets: `<METHOD> /<package>.<Service>/<Method>`,
+ * the server span's name with the method in front, when the URL is a
+ * Connect/gRPC procedure. Empty for any other URL, which keeps the SDK's
+ * `HTTP <METHOD>`: an arbitrary path can hold values (ids, tokens, emails) no
+ * pattern recognises reliably, and a span name must be neither sensitive nor
+ * unbounded. Empty too when `url` cannot be parsed. Exported for tests.
+ */
+export function spanRouteName(method: string, url: string): string {
+  let path: string;
+  try {
+    path = new URL(url, "http://base.invalid").pathname;
+  } catch {
+    return "";
+  }
+  if (!RPC_PATH.test(path)) {
+    return "";
+  }
+  return `${method.trim().toUpperCase() || "POST"} ${path}`;
 }
 
 /**

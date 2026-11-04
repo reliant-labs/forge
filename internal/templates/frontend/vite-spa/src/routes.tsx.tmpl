@@ -37,6 +37,8 @@ import { ForgotPasswordForm } from "@/components/forgot-password-form";
 import { PasswordRequirements } from "@/components/password-requirements";
 import { ResetPasswordForm } from "@/components/reset-password-form";
 import Button from "@/components/ui/button";
+import Input from "@/components/ui/input";
+import Label from "@/components/ui/label";
 import { AuthError, signIn, signUp, type PasswordRule } from "@/lib/auth/native-login";
 import { RouteGuard } from "@/lib/auth/route-guard";
 import { useAuth } from "@/lib/auth/use-auth";
@@ -230,10 +232,10 @@ const signInRoute = createRoute({
               {signingUp ? "Create your {{.ProjectName}} account" : "Sign in to {{.ProjectName}}"}
             </h1>
 
-            <label className="mt-6 block text-sm font-medium text-ink" htmlFor="email">
+            <Label className="mt-6" htmlFor="email">
               Email
-            </label>
-            <input
+            </Label>
+            <Input
               id="email"
               name="email"
               type="email"
@@ -242,13 +244,12 @@ const signInRoute = createRoute({
               autoFocus
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
             />
 
-            <label className="mt-4 block text-sm font-medium text-ink" htmlFor="password">
+            <Label className="mt-4" htmlFor="password">
               Password
-            </label>
-            <input
+            </Label>
+            <Input
               id="password"
               name="password"
               type="password"
@@ -257,7 +258,6 @@ const signInRoute = createRoute({
               aria-describedby={signingUp ? "password-requirements" : undefined}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
             />
 
             {signingUp ? (
@@ -284,10 +284,10 @@ const signInRoute = createRoute({
 
             {!signingUp && needsTotp ? (
               <>
-                <label className="mt-4 block text-sm font-medium text-ink" htmlFor="totp">
+                <Label className="mt-4" htmlFor="totp">
                   Authentication code
-                </label>
-                <input
+                </Label>
+                <Input
                   id="totp"
                   name="totp"
                   type="text"
@@ -295,7 +295,6 @@ const signInRoute = createRoute({
                   autoComplete="one-time-code"
                   value={totp}
                   onChange={(e) => setTotp(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent"
                 />
               </>
             ) : null}

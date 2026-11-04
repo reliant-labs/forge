@@ -83,12 +83,12 @@ forge obs logs dev --service api --severity error --json
 
 ## Error levels: who has to act
 
-A log level is a routing decision: ERROR is what alerts match, what a Sentry
+A log level is a routing decision: ERROR is what alerts match, what a log
 forwarder sends, what a post-deploy log gate fails on. So forge sets the level
 of every error record from **fault attribution** — `svcerr.Classify(err)` —
 not from how the call site spelled its log line:
 
-| `error_class` | what it means | example | level | pages (ERROR → Sentry / alerts) |
+| `error_class` | what it means | example | level | pages (ERROR → alerts) |
 |---|---|---|---|---|
 | `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error | ERROR | yes |
 | `server` | server-side, but "retry", not "page" | DeadlineExceeded, Aborted, Unimplemented | WARN | no |
@@ -114,13 +114,13 @@ The policy holds at all three places a record comes from:
    lowers a record carrying a non-server error to the user-error level, adding
    `error_class`. It only ever lowers; it never raises a WARN to ERROR.
 
-**If you forward logs to Sentry (or count them), wrap
+**If you forward logs to another sink (or count them), wrap
 `observe.NewErrorClassHandler` OUTSIDE that handler**, so it sees the
 classified level — the forwarder keeps gating on `level >= ERROR` and never
 needs to know about svcerr:
 
 ```go
-handler := sentryHandler(serverkit.NewLogger(cfg).Handler()) // forwards >= ERROR
+handler := forwardingHandler(serverkit.NewLogger(cfg).Handler()) // forwards >= ERROR
 logger := slog.New(observe.NewErrorClassHandler(handler))
 ```
 

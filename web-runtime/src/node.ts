@@ -302,6 +302,16 @@ export function buildNodeResource(
   };
   if (version) out["telemetry.sdk.version"] = version;
   if (config.serviceVersion) out["service.version"] = config.serviceVersion;
+  if (electron) {
+    // A desktop app's main process: the same app.desktop.* its renderer
+    // reports from the preload bridge (client-context.ts), so main-process
+    // errors name the app, Electron and Chromium versions they ran on.
+    if (config.serviceVersion)
+      out["app.desktop.version"] = config.serviceVersion;
+    out["app.desktop.electron.version"] = electron;
+    if (runtime.versions.chrome)
+      out["app.desktop.chromium.version"] = runtime.versions.chrome;
+  }
   if (config.serviceNamespace)
     out["service.namespace"] = config.serviceNamespace;
   if (config.frontend) out["forge.frontend"] = config.frontend;

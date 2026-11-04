@@ -406,6 +406,20 @@ func (p *Plan) SeedValue(table, column string, row int) (string, bool) {
 	return decodeScalarLiteral(p.cellLiteral(tp, cp, row, 0))
 }
 
+// SeedIsNull reports whether the seeded database holds NULL at (table,
+// column, row): the column is planned, the INSERT names it, and the cell's
+// value is NULL — a nullable column the planner left unset, such as an
+// optional foreign key. It is what lets a consumer mirroring the dataset (the
+// frontend mock fixtures) write "unset" instead of inventing a value the
+// database does not hold.
+func (p *Plan) SeedIsNull(table, column string, row int) bool {
+	tp, cp, ok := p.colPlan(table, column)
+	if !ok || cp.omit || row < 0 || row >= tp.n {
+		return false
+	}
+	return p.cellLiteral(tp, cp, row, 0) == "NULL"
+}
+
 // NaturalValue is SeedValue without the minimal plan's omission: the raw
 // value the planner places at (table, column, row) whether or not the INSERT
 // names the column. A caller that writes rows through some other path — a

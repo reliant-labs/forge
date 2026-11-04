@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -306,4 +307,113 @@ func fieldNames(fs []EntityField) []string {
 		out = append(out, f.Name)
 	}
 	return out
+}
+
+// TestAttachForeignKeys_ListPageResolvesNames pins the list half of the
+// foreign-key projection. ListColumns is a COPY of Columns taken before this
+// pass, and it used to be skipped — so the detail page showed "Patient:
+// Ada Lovelace" while the list printed a UUID under "Patient Id". The list's
+// foreign-key FILTER was a free-text box for a UUID too; it is a picker.
+func TestAttachForeignKeys_ListPageResolvesNames(t *testing.T) {
+	referents := BuildFKReferents([]PageTemplateData{patientPage(), orderPage()})
+	page := orderPage()
+	page.HasSort = true
+	page.ListColumns = []EntityPageField{
+		{Name: "patientId", Label: "Patient Id", SortKey: "patient_id"},
+		{Name: "notes", Label: "Notes", SortKey: "notes"},
+	}
+	page.ExactFilterFields = []ListFilterField{
+		{Name: "patientId", NamePascal: "PatientId", Label: "Patient Id", Kind: "text"},
+	}
+	page.HasScalarExactFilter = true
+	AttachForeignKeys(&page, referents)
+
+	col := page.ListColumns[0]
+	if col.FK == nil || col.Label != "Patient" {
+		t.Fatalf("list FK column not resolved: %+v", col)
+	}
+	if col.SortKey != "" {
+		t.Errorf("an FK column must not sort (its id order means nothing to a reader of names): SortKey = %q", col.SortKey)
+	}
+	if page.ListColumns[1].FK != nil || page.ListColumns[1].SortKey != "notes" {
+		t.Errorf("plain list column changed: %+v", page.ListColumns[1])
+	}
+
+	f := page.ExactFilterFields[0]
+	if f.Kind != "fk" || f.FK == nil || f.Label != "Patient" {
+		t.Fatalf("FK filter not turned into a picker: %+v", f)
+	}
+	if !f.FK.ResolveSelectedLabel {
+		t.Error("the filter's value comes from the URL, so its closed picker must resolve the id to a name")
+	}
+	if page.HasScalarExactFilter {
+		t.Error("HasScalarExactFilter still true with no scalar filter left — the page would import an unused useDebouncedValue")
+	}
+
+	hooks := page.ListHookImports()
+	if len(hooks) != 1 || hooks[0].Module != "@/hooks/clinic-service-hooks" {
+		t.Fatalf("ListHookImports = %+v, want one merged module", hooks)
+	}
+	want := []string{"useGetPatient", "useListOrders", "useListPatients"}
+	if got := hooks[0].Symbols; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("ListHookImports symbols = %v, want %v", got, want)
+	}
+	if keys := page.ListSortKeys(); len(keys) != 1 || keys[0] != "notes" {
+		t.Errorf("ListSortKeys = %v, want [notes]", keys)
+	}
+	if got := page.PrimaryListColumn(); got != "patientId" {
+		t.Errorf("PrimaryListColumn = %q, want the first column when no display field is listed", got)
+	}
+}
+
+// TestListPage_RowsLinkAndResolveForeignKeys renders both trees' list pages
+// for an entity with a foreign key: the FK cell is an <EntityName>, the
+// primary cell is a real link (the row's accessible action), the FK filter
+// is an <EntityPicker>, and sortable columns carry their order_by key.
+func TestListPage_RowsLinkAndResolveForeignKeys(t *testing.T) {
+	referents := BuildFKReferents([]PageTemplateData{patientPage(), orderPage()})
+	page := orderPage()
+	page.EntityNamePlural = "Orders"
+	page.EntityTypeImportPath = "@/gen/services/clinic/v1/clinic_pb"
+	page.HasSort = true
+	page.DisplayField = "notes"
+	page.ListColumns = []EntityPageField{
+		{Name: "patientId", Label: "Patient Id", SortKey: "patient_id"},
+		{Name: "notes", Label: "Notes", SortKey: "notes"},
+	}
+	page.ExactFilterFields = []ListFilterField{
+		{Name: "patientId", NamePascal: "PatientId", Label: "Patient Id", Kind: "text"},
+	}
+	AttachForeignKeys(&page, referents)
+
+	for _, kind := range []string{"pages", "vite-spa-pages"} {
+		out := renderPageTemplate(t, kind, "list-page.tsx.tmpl", page)
+		for _, want := range []string{
+			`import { EntityName } from "@/components/entity-name";`,
+			`import { EntityPicker } from "@/components/entity-picker";`,
+			`useGet={ useGetPatient }`,
+			`nameOf={(res) => res.patient?.fullName}`,
+			`useList={ useListPatients }`,
+			`sortKey: "notes",`,
+			`header: "Patient",`,
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s list page missing %q:\n%s", kind, want, out)
+			}
+		}
+		if strings.Contains(out, `sortKey: "patient_id"`) {
+			t.Errorf("%s list page sorts by a foreign key:\n%s", kind, out)
+		}
+		if strings.Contains(out, `role="button"`) {
+			t.Errorf("%s list page marks something up as a button:\n%s", kind, out)
+		}
+	}
+	next := renderPageTemplate(t, "pages", "list-page.tsx.tmpl", page)
+	if !strings.Contains(next, `href={entityViewHref("orders", item.id)}`) {
+		t.Errorf("Next.js primary cell is not a link to the record:\n%s", next)
+	}
+	vite := renderPageTemplate(t, "vite-spa-pages", "list-page.tsx.tmpl", page)
+	if !strings.Contains(vite, `to="/orders/$id"`) {
+		t.Errorf("Vite primary cell is not a link to the record:\n%s", vite)
+	}
 }

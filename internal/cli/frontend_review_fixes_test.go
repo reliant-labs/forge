@@ -236,7 +236,10 @@ func TestPageTemplates_TypedColumnsNoReflection(t *testing.T) {
 		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
 		`const columns: ResourceColumn<Task>[] = [`,
 		`header: "Title",`,
-		`cell: (item) => formatValue(item.title),`,
+		// title is the primary cell: a real link to the record, around the
+		// same formatted value.
+		`href={entityViewHref("tasks", item.id)}`,
+		`{formatValue(item.title)}`,
 		// status is enum-like (a string, not a proto enum) → <StatusBadge>
 		// with the raw field. No enum object to pass: there is no TS enum
 		// behind a plain string column. The proto-enum branch is pinned by
@@ -380,7 +383,9 @@ func TestPageTemplates_EnumColumnsRenderThroughStatusBadge(t *testing.T) {
 		tmpl string
 		cell string
 	}{
-		{tmpl: "list-page.tsx.tmpl", cell: `cell: (item) => <StatusBadge value={item.status} enumType={ OrderStatus } />,`},
+		// status is this entity's primary cell, so the list wraps the badge
+		// in the record link; the badge call itself is the same.
+		{tmpl: "list-page.tsx.tmpl", cell: `<StatusBadge value={item.status} enumType={ OrderStatus } />`},
 		{tmpl: "detail-page.tsx.tmpl", cell: `value: <StatusBadge value={item.status} enumType={ OrderStatus } />,`},
 	} {
 		// Both browser page trees must tell the SAME story — the vite-spa

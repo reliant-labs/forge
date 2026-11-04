@@ -125,6 +125,7 @@ export { RouteGuard, type RouteGuardProps } from "./route-guard.js";
 export {
   Resource,
   type ResourceColumn,
+  type ResourceSort,
   type ResourceProps,
   type ResourceStatus,
 } from "./resource.js";

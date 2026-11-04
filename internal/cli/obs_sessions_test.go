@@ -85,13 +85,13 @@ func localTimelineAnswer(entries []sessEntry) scriptedAnswer {
 func localSessionRow(id string, started time.Time, user, entry string, pv, ia, errs int, replay int) []any {
 	return []any{id, "reliant-web", "3f9c0e", "", user, entry, started.Format("2006-01-02 15:04:05.000000000"),
 		started.Add(3*time.Minute + 12*time.Second).Format("2006-01-02 15:04:05.000000000"),
-		jn(fmt.Sprint(pv)), jn(fmt.Sprint(ia)), jn(fmt.Sprint(errs)), jn(fmt.Sprint(replay))}
+		jn(fmt.Sprint(pv)), jn(fmt.Sprint(ia)), jn(fmt.Sprint(errs)), jn(fmt.Sprint(replay)), "", "", "", ""}
 }
 
 func localSessionAnswers(entries []sessEntry) []scriptedAnswer {
 	return []scriptedAnswer{
 		{"ORDER BY started DESC\nLIMIT 1", obsbackend.Result{Rows: [][]any{
-			{sessID, "reliant-web", "3f9c0e", "", "user-42", "/", sessStart.Format("2006-01-02 15:04:05.000000000"), sessEnd.Format("2006-01-02 15:04:05.000000000"), jn("5"), jn("12"), jn("2"), jn("1")},
+			{sessID, "reliant-web", "3f9c0e", "", "user-42", "/", sessStart.Format("2006-01-02 15:04:05.000000000"), sessEnd.Format("2006-01-02 15:04:05.000000000"), jn("5"), jn("12"), jn("2"), jn("1"), "", "", "", ""},
 		}}},
 		localTimelineAnswer(entries),
 	}

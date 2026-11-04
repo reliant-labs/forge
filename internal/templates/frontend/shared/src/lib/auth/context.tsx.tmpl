@@ -73,7 +73,9 @@
 // The context object and useAuth() live in ./use-auth, so React Fast Refresh
 // can hot-swap this provider when you edit it. Import the hook from there.
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+
+import { EventBusContext } from "../use-event";
 
 {{if eq .Platform "react-native"}}// React Native does not share the web's cookie model — there is no cookie
 // jar on fetch by default and no same-origin to be same as — so native
@@ -156,6 +158,24 @@ export function AuthContextProvider({ children }: { children: ReactNode }) {
       await refresh();
     })();
   }, [refresh]);
+
+  // A session can lapse mid-use: the cookie expires, or the server revokes it.
+  // The transport emits `auth:expired` when an RPC fails Unauthenticated (HTTP
+  // 401; see src/lib/connect.ts). Re-ask the server who is signed in rather
+  // than trusting the one failure: when the session really is gone, identity
+  // flips to signed-out and RouteGuard sends the user to sign-in with a
+  // returnTo; when it is not (one rpc's own auth rule), nothing changes. A
+  // burst of failing queries shares one check.
+  const bus = useContext(EventBusContext);
+  const expiryCheck = useRef<Promise<void> | null>(null);
+  useEffect(() => {
+    if (!bus) return;
+    return bus.on("auth:expired", () => {
+      expiryCheck.current ??= refresh().finally(() => {
+        expiryCheck.current = null;
+      });
+    });
+  }, [bus, refresh]);
 
   const logout = useCallback(async () => {
 {{- if eq .Platform "react-native"}}

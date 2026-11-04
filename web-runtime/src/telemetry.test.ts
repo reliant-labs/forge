@@ -600,6 +600,25 @@ describe("benign browser errors", () => {
 describe("buildSdkOptions", () => {
   const base = { serviceName: "web" };
 
+  it("carries the page's client attributes on the resource, under the config's own", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { ...base, serviceVersion: "1.8.16-dev+7d787d80" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+      {
+        "browser.platform": "macOS",
+        "app.desktop.version": "1.8.16",
+        "service.version": "spoofed",
+      },
+    );
+    expect(opts.otelResourceAttributes).toEqual({
+      "browser.platform": "macOS",
+      "app.desktop.version": "1.8.16",
+      "service.version": "1.8.16-dev+7d787d80",
+    });
+  });
+
   it("keeps replay OFF by default", async () => {
     const { t } = await load();
     const opts = t.buildSdkOptions(base, `${ORIGIN}/_otel`, ORIGIN);
@@ -811,6 +830,35 @@ describe("fetch and XHR URL query stripping", () => {
     expect(() => hook({ setAttribute: vi.fn() })).not.toThrow();
   });
 
+  it("stamps the RUM session on fetch and xhr spans while telemetry runs", async () => {
+    const { t } = await load();
+    const gate = await import("./telemetry-gate.js");
+    const opts = t.buildSdkOptions(
+      { serviceName: "web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const inst = opts.instrumentations as Record<string, Hooked>;
+
+    gate.registerRumSession(() => "91b955b313a1a86644ea53730a92deab");
+    for (const kind of ["fetch", "xhr"]) {
+      const s = span({ "http.url": "https://api.example.com/v1/items" });
+      inst[kind]!.applyCustomAttributesOnSpan(s);
+      expect(s.attributes["session.id"]).toBe(
+        "91b955b313a1a86644ea53730a92deab",
+      );
+    }
+
+    // No session (telemetry off), or one that is not a session id: nothing.
+    for (const source of [null, () => "not a session"]) {
+      gate.registerRumSession(source);
+      const s = span({});
+      inst.fetch!.applyCustomAttributesOnSpan(s);
+      expect(s.attributes).not.toHaveProperty("session.id");
+    }
+    gate.resetTelemetryGate();
+  });
+
   it("restates what the SDK's own fetch/xhr config would have carried", async () => {
     const { t } = await load();
     const opts = t.buildSdkOptions(
@@ -835,6 +883,100 @@ describe("fetch and XHR URL query stripping", () => {
     expect(t.stripUrlQuery("/a/b?x=1")).toBe("/a/b");
     expect(t.stripUrlQuery("/a/b#frag?x")).toBe("/a/b");
     expect(t.stripUrlQuery("/a/b")).toBe("/a/b");
+  });
+});
+
+describe("fetch and XHR span names", () => {
+  type Hooked = { applyCustomAttributesOnSpan: (span: unknown) => void };
+
+  function span(attributes: Record<string, unknown>) {
+    const named = { name: "HTTP POST" };
+    return {
+      named,
+      attributes,
+      setAttribute: vi.fn((k: string, v: unknown) => {
+        attributes[k] = v;
+      }),
+      updateName: vi.fn((n: string) => {
+        named.name = n;
+      }),
+    };
+  }
+
+  it("renames HyperDX's HTTP <METHOD> to the called procedure on both instrumentations", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { serviceName: "web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const inst = opts.instrumentations as Record<string, Hooked>;
+
+    for (const kind of ["fetch", "xhr"]) {
+      const rpc = span({
+        "http.method": "POST",
+        "http.url":
+          "https://api.example.com/reliant.v1.ChatService/SendMessage?x=1",
+      });
+      inst[kind]!.applyCustomAttributesOnSpan(rpc);
+      expect(rpc.named.name).toBe("POST /reliant.v1.ChatService/SendMessage");
+
+      const rest = span({
+        "http.request.method": "get",
+        "url.full": "https://api.example.com/v1/items/42/notes/abc123",
+      });
+      inst[kind]!.applyCustomAttributesOnSpan(rest);
+      expect(rest.updateName).not.toHaveBeenCalled();
+      expect(rest.named.name).toBe("HTTP POST");
+    }
+  });
+
+  it("keeps the SDK's name when the span has no URL or cannot be renamed", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { serviceName: "web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const hook = (opts.instrumentations as Record<string, Hooked>).fetch!
+      .applyCustomAttributesOnSpan;
+
+    const bare = span({ "http.method": "POST" });
+    hook(bare);
+    expect(bare.updateName).not.toHaveBeenCalled();
+    expect(() =>
+      hook({
+        attributes: { "http.url": "https://a.example/x" },
+        setAttribute: vi.fn(),
+      }),
+    ).not.toThrow();
+  });
+
+  it("spanRouteName names Connect/gRPC procedures and nothing else", async () => {
+    const { t } = await load();
+
+    expect(t.spanRouteName("post", "/pkg.v1.Svc/Do")).toBe(
+      "POST /pkg.v1.Svc/Do",
+    );
+    expect(
+      t.spanRouteName("", "https://x.example/reliant.v1.ChatService/Send"),
+    ).toBe("POST /reliant.v1.ChatService/Send");
+    // A free-form path can hold values no pattern recognises (short ids,
+    // opaque tokens, emails), so it never becomes a span name.
+    for (const url of [
+      "https://x.example/",
+      "https://x.example/users/abc123",
+      "https://x.example/invite/secret-token",
+      "https://x.example/reset/qwertyuiopasdfghjklzxcvbnm",
+      "https://x.example/users/a%40b.com/settings",
+      "https://x.example/v1/items/42",
+      "https://dash.example/auth/v1/token",
+      "https://x.example/files.v1/secret",
+      "https://x.example/pkg.v1.Svc/Do/extra",
+    ]) {
+      expect(t.spanRouteName("GET", url)).toBe("");
+    }
+    expect(t.spanRouteName("GET", "http://[bad")).toBe("");
   });
 });
 
@@ -927,6 +1069,81 @@ describe("decideReplay", () => {
         () => 0.1,
       ),
     ).toBe(true);
+  });
+});
+
+describe("no session before the page is first visible", () => {
+  function stubHiddenDocument() {
+    const docListeners: Listener[] = [];
+    const doc = {
+      visibilityState: "hidden" as DocumentVisibilityState,
+      addEventListener: (type: string, fn: Listener) => {
+        if (type === "visibilitychange") docListeners.push(fn);
+      },
+      removeEventListener: (type: string, fn: Listener) => {
+        const i = docListeners.indexOf(fn);
+        if (type === "visibilitychange" && i >= 0) docListeners.splice(i, 1);
+      },
+    };
+    vi.stubGlobal("document", doc);
+    return {
+      waiting: () => docListeners.length,
+      show() {
+        doc.visibilityState = "visible";
+        for (const fn of [...docListeners]) fn({});
+      },
+    };
+  }
+
+  it("does not load the SDK while the page has never been visible, and starts it when it is", async () => {
+    stubDom();
+    const doc = stubHiddenDocument();
+    const { t, r } = await load();
+    let running: boolean | undefined;
+    const started = t
+      .initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" })
+      .then((ok) => (running = ok));
+
+    // Startup is parked on the visibility listener: once it is registered,
+    // nothing but a visibilitychange can move it on.
+    await vi.waitFor(() => expect(doc.waiting()).toBe(1));
+    expect(init).not.toHaveBeenCalled();
+    expect(running).toBeUndefined();
+    // Nothing to record yet: the caller falls back to the console.
+    expect(r.reportException(new Error("early"))).toBe(false);
+
+    doc.show();
+    await started;
+    expect(running).toBe(true);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts at once on a visible page", async () => {
+    stubDom();
+    vi.stubGlobal("document", {
+      visibilityState: "visible",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    const { t } = await load();
+    expect(
+      await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" }),
+    ).toBe(true);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays off when telemetry is disabled before the page is first shown", async () => {
+    stubDom();
+    const doc = stubHiddenDocument();
+    const { t, k } = await load();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    k.disableTelemetry();
+    doc.show();
+    expect(await started).toBe(false);
+    expect(init).not.toHaveBeenCalled();
   });
 });
 

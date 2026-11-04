@@ -198,6 +198,11 @@ type PageTemplateData struct {
 	// reports the real total instead of the current page's length.
 	HasTotalCount   bool
 	TotalCountField string
+	// HasSort is true when the List request carries both `order_by` and
+	// `descending` — what the scaffold births on every List. The list page
+	// then makes its sortable columns (EntityPageField.SortKey) header
+	// buttons and sends the choice through the URL to the request.
+	HasSort bool
 }
 
 // ListFilterField is one discrete (non-search) server-side filter control
@@ -217,6 +222,11 @@ type ListFilterField struct {
 	// (int64/uint64/…) — protobuf-es types those as bigint, so the request
 	// value is BigInt(...) not Number(...).
 	IsBigInt bool
+	// FK is set, and Kind is "fk", when the filter is a foreign key onto
+	// another CRUD entity (`customer_id`): nobody types a UUID, so the page
+	// renders an <EntityPicker> over the referent instead. See
+	// AttachForeignKeys.
+	FK *PageFieldFK
 	// EnumType / EnumImport / EnumValues are populated only for Kind "enum":
 	// the protobuf-es TS enum identifier, the _pb module to import it from,
 	// and the <option> refs/labels — the real members only, never the zero
@@ -270,12 +280,19 @@ type EntityPageField struct {
 	// the formatter's USD default.
 	CurrencyField string
 	// FK is non-nil when the column is a FOREIGN KEY onto another CRUD
-	// entity. The DETAIL page then resolves it through <EntityName> — one
-	// row, one lookup — instead of printing a UUID. The LIST page keeps
-	// printing the raw id on purpose: resolving names per row costs a
-	// request per distinct id, and the right fix there is a server-side
-	// join the application owns. See AttachForeignKeys.
+	// entity. The detail AND list pages resolve it through <EntityName>
+	// instead of printing a UUID. On a list that is one Get per DISTINCT id
+	// on the page (React Query dedupes by key), so a 25-row page of jobs over
+	// four customers costs four lookups; an app that needs fewer returns the
+	// name from its List RPC (a join it owns) and renders that field instead.
+	// See AttachForeignKeys.
 	FK *PageFieldFK
+	// SortKey is the column's server-side sort key — the List request's
+	// `order_by` value, which pkg/crud validates against the table's
+	// columns. Empty for a column the list cannot sort by (a repeated field,
+	// a foreign key, whose id order means nothing to a reader). Used only
+	// when the page HasSort.
+	SortKey string
 }
 
 // PageField represents a form field derived from a proto message field.
@@ -316,7 +333,7 @@ type PageField struct {
 	TSType string
 	// ZodExpr is the whole zod schema expression for this field —
 	// `z.coerce.number().gte(0)`, `z.string().min(1)`,
-	// `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`, or one
+	// `z.string().regex(/^(-?\d+)?$/, "Enter a whole number")`, or one
 	// of those wrapped in the empty-as-unset preprocess (EmptyIsUnset).
 	// Nothing is added at render time.
 	//
@@ -823,6 +840,7 @@ func collectEnumImports(fields []PageField) []PageEnumImport {
 // a typed select is DROPPED rather than fabricated as an untyped control.
 func attachListMeta(page *PageTemplateData, svc ServiceDef, entityName, listReq, listReqFQ, listResp string) {
 	hasPageToken := false
+	hasOrderBy, hasDescending := false, false
 	if listReq != "" { //nolint:nestif // List-RPC shape derivation: one arm per request-field form the page model can consume.
 		if fields, ok := formFieldsForMessage(svc, listReq, listReqFQ); ok {
 			for _, f := range fields {
@@ -834,6 +852,10 @@ func attachListMeta(page *PageTemplateData, svc ServiceDef, entityName, listReq,
 					page.HasPageSize = true
 					continue
 				case "order_by":
+					hasOrderBy = true
+					continue
+				case "descending":
+					hasDescending = true
 					continue
 				}
 				if classifySkipField(f.Name) {
@@ -925,6 +947,7 @@ func attachListMeta(page *PageTemplateData, svc ServiceDef, entityName, listReq,
 		}
 	}
 	page.HasCursorPagination = hasPageToken && hasNextToken
+	page.HasSort = hasOrderBy && hasDescending
 }
 
 // ExtractCRUDEntities analyzes a service's methods and returns PageTemplateData
@@ -1335,6 +1358,14 @@ func attachTSConversions(pf *PageField) {
 		// stored value as-is. Defaulting it (the old `?? <first value>`)
 		// named the zero, which is not a state a row can be in.
 		pf.PrefillExpr = fmt.Sprintf("item.%s", n)
+		if pf.EmptyIsUnset() && pf.EnumZeroRef != "" {
+			// An `optional` enum's NULL arrives absent, or as the zero
+			// should a server set presence on it. Both prefill as unset,
+			// which react-hook-form renders as "" — the None option — so
+			// a Save that never touched the select leaves NULL alone
+			// instead of the browser picking the first real member.
+			pf.PrefillExpr = fmt.Sprintf("item.%s === %s ? undefined : item.%s", n, pf.EnumZeroRef, n)
+		}
 	case pf.EmptyIsUnset():
 		attachUnsetTSConversions(pf)
 	case pf.IsRepeated:
@@ -1740,6 +1771,9 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) 
 			Label:   fieldNameToLabel(f.Name),
 			IsBadge: isBadge,
 			IsMoney: isMoney,
+		}
+		if !repeated {
+			col.SortKey = f.Name
 		}
 		// A money column renders currency-aware only when its entity has a
 		// sibling currency field; otherwise the cell keeps the USD default.

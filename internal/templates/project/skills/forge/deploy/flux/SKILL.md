@@ -290,7 +290,8 @@ forge.flux_chart() | {
 ```
 
 They converge under server-side apply: a changed value is updated, a key you
-stop declaring is removed, a key another manager set is left alone.
+stop declaring is removed, a key a controller set is left alone, and one a
+`kubectl` hand edit set is removed (`deploy/plan`, "The apply removes drift").
 
 The labels forge stamps on that Namespace are forge's, and declaring one is
 refused: every `forge.dev/*` key, `app.kubernetes.io/name` (the chart's `name`),

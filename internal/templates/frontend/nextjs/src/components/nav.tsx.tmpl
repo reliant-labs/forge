@@ -76,6 +76,7 @@ export function Nav({ variant = "rail" }: { variant?: "rail" | "drawer" }) {
 
   return (
     <nav
+      aria-label="Main"
       className={`flex shrink-0 flex-col bg-surface ${
         inDrawer
           ? "h-full w-full"

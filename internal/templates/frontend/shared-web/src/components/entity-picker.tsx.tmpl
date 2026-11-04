@@ -267,8 +267,10 @@ export function EntityPicker<TItem, TReq, TRes>({
           ref={triggerRef}
           type="button"
           id={triggerId}
+          // The error is announced through aria-describedby (the message's
+          // id). aria-invalid is not a supported state of the button role,
+          // so jsx-a11y rejects it here and assistive tech may ignore it.
           aria-describedby={ariaDescribedBy}
-          aria-invalid={invalid || undefined}
           aria-expanded={open}
           aria-haspopup="listbox"
           aria-label={ariaLabel}

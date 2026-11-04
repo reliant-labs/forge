@@ -95,13 +95,8 @@
  *      existing file into the passing form.
  */
 @theme {
-  /*
-   * Geist and Geist Mono, self-hosted from @fontsource-variable (imported in
-   * src/main.tsx, bundled by Vite — no third-party font request). The neutral
-   * default for an app with no brief yet; to rebrand, swap the imports there
-   * and these two tokens, never per-component `font-*` classes.
-   */
-  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans:
+    "Geist Variable", ui-sans-serif, system-ui, sans-serif; /* Geist, self-hosted via @fontsource-variable in src/main.tsx; rebrand there + here */
   --font-mono: "Geist Mono Variable", ui-monospace, sfmono-regular, menlo, monospace;
   --radius-md: 0.375rem; /* controls: buttons, inputs, chips */
   --radius-lg: 0.625rem; /* containers: cards, panels, tiles */

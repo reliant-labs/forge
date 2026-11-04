@@ -63,7 +63,9 @@ func TestNextLayoutPutsFontVariablesOnHTML(t *testing.T) {
 		t.Errorf("<body> carries a font variable (%s): below :root it cannot define what --font-sans reads", body)
 	}
 
-	css := renderPalette(t, "nextjs")
+	// Whitespace-collapsed: prettier breaks a long declaration after its
+	// colon, and the token's meaning does not depend on where it breaks.
+	css := strings.Join(strings.Fields(renderPalette(t, "nextjs")), " ")
 	for _, want := range []string{"--font-sans: var(--font-geist-sans)", "--font-mono: var(--font-geist-mono)"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("globals.css does not declare %q — the token must read the variable the geist loader sets", want)
@@ -84,7 +86,7 @@ func TestViteScaffoldSelfHostsGeist(t *testing.T) {
 			t.Errorf("vite-spa main.tsx is missing %s", want)
 		}
 	}
-	css := renderPalette(t, "vite-spa")
+	css := strings.Join(strings.Fields(renderPalette(t, "vite-spa")), " ")
 	for _, want := range []string{`--font-sans: "Geist Variable"`, `--font-mono: "Geist Mono Variable"`} {
 		if !strings.Contains(css, want) {
 			t.Errorf("vite-spa index.css does not declare %s", want)

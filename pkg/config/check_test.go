@@ -158,6 +158,43 @@ func TestCheckReportsEveryProblemAndNeverJudgesAPlaceholder(t *testing.T) {
 	}
 }
 
+// A value the env sets that does not parse is a problem the check reports,
+// like any other the load collects.
+func TestCheckFailsOnAMalformedEnvValue(t *testing.T) {
+	code, r := runCheck(t, map[string]string{
+		CheckEnv:                      "1",
+		CheckPresentEnv:               "CHK_INTERNAL_SERVICE_SECRET",
+		"CHK_INTERNAL_SERVICE_SECRET": CheckPlaceholder,
+		"CHK_SIGNER_ENABLED":          "maybe",
+	})
+	if code != 1 || r.OK {
+		t.Fatalf("exit %d ok=%v, want exit 1 and not ok: %+v", code, r.OK, r)
+	}
+	if !strings.Contains(strings.Join(r.Problems, "\n"), `invalid value "maybe" for config field signer_enabled`) {
+		t.Fatalf("problems = %q, want the malformed signer_enabled", r.Problems)
+	}
+}
+
+// A stage that ends the load by returning its error rather than reporting it
+// (a refused build-defaults stamp, a default that does not parse, a family
+// prefix nothing claims) still fails the check: finish takes the load's
+// returned error as a problem, so the check fails closed.
+func TestCheckFailsClosedOnAnErrorTheLoadReturns(t *testing.T) {
+	SetBuildDefaults("CHK_SIGNER_ENABLED=maybe", buildSignerMessage(t))
+	t.Cleanup(func() { SetBuildDefaults("") })
+	code, r := runCheck(t, map[string]string{
+		CheckEnv:                      "1",
+		CheckPresentEnv:               "CHK_INTERNAL_SERVICE_SECRET",
+		"CHK_INTERNAL_SERVICE_SECRET": CheckPlaceholder,
+	})
+	if code != 1 || r.OK || len(r.Problems) == 0 {
+		t.Fatalf("exit %d, result %+v, want exit 1, not ok, and the stamp's problem", code, r)
+	}
+	if !strings.Contains(strings.Join(r.Problems, "\n"), "CHK_SIGNER_ENABLED") {
+		t.Fatalf("problems = %q, want the refused build default", r.Problems)
+	}
+}
+
 // Without the mode a load is an ordinary load: the first problem is the
 // error, nothing is printed and nothing exits.
 func TestLoadWithoutTheCheckIsUnchanged(t *testing.T) {

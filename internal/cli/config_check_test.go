@@ -72,6 +72,38 @@ func TestConfigCheckEnvIsTheRenderWithPlaceholders(t *testing.T) {
 	}
 }
 
+// The target runs the image the way the pod does. Kubernetes `command`
+// replaces the image ENTRYPOINT and `args` its CMD; `docker run --entrypoint
+// E image A...` is the same (an --entrypoint override also drops the image's
+// CMD), and with no command `docker run image A...` keeps the ENTRYPOINT and
+// replaces the CMD with args, or keeps both when args is empty too.
+func TestPlanConfigCheckRunsTheWorkloadCommandAsThePodDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		command, args []string
+		entrypoint    string
+		wantArgs      string
+	}{
+		{name: "image entrypoint and cmd", entrypoint: "", wantArgs: ""},
+		{name: "args replace the image cmd", args: []string{"delivery_signer"}, wantArgs: "delivery_signer"},
+		{name: "command alone", command: []string{"/app/control-plane"}, entrypoint: "/app/control-plane", wantArgs: ""},
+		{name: "command and args", command: []string{"/app/control-plane", "--verbose"}, args: []string{"delivery_signer"},
+			entrypoint: "/app/control-plane", wantArgs: "--verbose delivery_signer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := signerWorkload()
+			w.Spec.Command, w.Spec.Args = tc.command, tc.args
+			targets, _ := planConfigCheck(&KCLEntities{Workloads: []WorkloadEntity{w}}, "bin")
+			if len(targets) != 1 {
+				t.Fatalf("targets = %+v, want one", targets)
+			}
+			if got := targets[0]; got.Entrypoint != tc.entrypoint || strings.Join(got.Args, " ") != tc.wantArgs {
+				t.Errorf("entrypoint %q args %q, want %q and %q", got.Entrypoint, got.Args, tc.entrypoint, tc.wantArgs)
+			}
+		})
+	}
+}
+
 func TestPlanConfigCheckNamesEveryWorkloadItSkips(t *testing.T) {
 	signer := signerWorkload()
 	signer.Spec.Command = []string{"/app/control-plane", "--verbose"}

@@ -217,15 +217,24 @@ func TestProjectConfigCheckSkipsABinaryWithoutTheMode(t *testing.T) {
 	}
 }
 
-func TestProjectConfigCheckNeverGatesAnUnverifiedWorkload(t *testing.T) {
+func TestProjectConfigCheckRefusesAGatedUnverifiedWorkload(t *testing.T) {
 	stubConfigCheckRunner(t, "started\n")
-	var out bytes.Buffer
-	chk := &projectConfigCheck{entities: &KCLEntities{Workloads: []WorkloadEntity{signerWorkload()}}, env: "prod", mode: configCheckGate, out: &out, outputDir: fakeProjectBinary(t, true)}
-	if err := chk.run(t.Context(), "control-plane:v1"); err != nil {
-		t.Fatalf("an unverified workload gated: %v", err)
-	}
-	if !strings.Contains(out.String(), "? delivery-signer: unverified") {
-		t.Errorf("unverified is not reported:\n%s", out.String())
+	for _, c := range []struct {
+		mode    string
+		wantErr bool
+	}{{configCheckGate, true}, {configCheckWarn, false}} {
+		var out bytes.Buffer
+		chk := &projectConfigCheck{entities: &KCLEntities{Workloads: []WorkloadEntity{signerWorkload()}}, env: "prod", mode: c.mode, out: &out, outputDir: fakeProjectBinary(t, true)}
+		err := chk.run(t.Context(), "control-plane:v1")
+		if (err != nil) != c.wantErr {
+			t.Fatalf("mode %s: err = %v, want error %v\n%s", c.mode, err, c.wantErr, out.String())
+		}
+		if c.wantErr && !strings.Contains(err.Error(), "delivery-signer") {
+			t.Errorf("mode %s: the refusal does not name the workload: %v", c.mode, err)
+		}
+		if !strings.Contains(out.String(), "? delivery-signer: unverified") {
+			t.Errorf("mode %s: unverified is not reported:\n%s", c.mode, out.String())
+		}
 	}
 }
 

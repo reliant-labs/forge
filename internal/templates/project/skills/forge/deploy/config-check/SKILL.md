@@ -14,7 +14,9 @@ required variable the env never wires, a value outside `allowed_values`, a
 `buf.validate` field or CEL rule the values break) and exits. A variable the
 env wires from a Secret, the secret store, a database credential, a
 ConfigMap or the Downward API gets a placeholder: it counts as set, and its
-value is not judged. A failure refuses the push and names the workload.
+value is not judged. A failure refuses the push and names the workload; so
+does a workload that prints no result (it exits, or blocks for 30s, before
+its config load), since its config was never verified.
 
 ## Cross-field rules belong on the config message
 

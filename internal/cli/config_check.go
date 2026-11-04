@@ -69,8 +69,10 @@ const (
 
 // configCheckTimeout bounds one workload's check. A process that loads its
 // config does so in milliseconds; one that has not printed a result by now
-// never reached its load (a command that loads none), and is reported as
-// unverified rather than failed.
+// never reached its load (a command that loads none, or blocks before it),
+// and is reported as unverified. Unverified is not OK: it fails the check
+// like a problem does, under the same gate, because a push the check never
+// judged is exactly the push it exists to stop.
 var configCheckTimeout = 30 * time.Second
 
 // configCheckParallel is how many checks run at once.
@@ -116,7 +118,7 @@ type configCheckSkip struct {
 type configCheckOutcome struct {
 	Workload string
 	// Result is set when the process printed one; Unverified says why it
-	// did not, and is never a gate.
+	// did not, and fails the check as a problem does.
 	Result     *forgeconfig.CheckResult
 	Unverified string
 }
@@ -393,6 +395,7 @@ func (c *projectConfigCheck) run(ctx context.Context, image string) error {
 	for _, o := range outcomes {
 		switch {
 		case o.Result == nil:
+			failed = append(failed, o.Workload)
 			fmt.Fprintf(c.out, "[build]   ? %s: unverified: %s\n", o.Workload, o.Unverified)
 		case o.Result.OK:
 			fmt.Fprintf(c.out, "[build]   ✓ %s\n", o.Workload)
@@ -422,6 +425,6 @@ func (c *projectConfigCheck) run(ctx context.Context, image string) error {
 			configCheckIntroducedIn, configCheckGatesFrom, pin)
 		return nil
 	}
-	return fmt.Errorf("config check: %s would refuse to start with %s's config, so nothing was pushed; fix the env's KCL (or the config it breaks), or pass --config-check=warn to push anyway",
+	return fmt.Errorf("config check: %s would refuse to start, or could not be verified, with %s's config, so nothing was pushed; fix the env's KCL (or the config it breaks), or pass --config-check=warn to push anyway",
 		strings.Join(failed, ", "), c.env)
 }

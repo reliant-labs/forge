@@ -135,6 +135,19 @@ ClickHouse parameters: `{from:DateTime64(9)}`, `{to:DateTime64(9)}`,
 (over any other scope a statement that uses it is refused: choose one
 environment).
 
+A **toggle filter** is an on/off switch a `sql` panel reads as a Bool
+parameter named by its id: `{"id": "include_internal", "kind": "toggle",
+"label": "Include internal users", "default": false}` binds
+`{include_internal:Bool}`, so `WHERE {include_internal:Bool} OR UserId NOT IN
+(...)` hides internal users until the viewer turns it on. The id must match
+`^[a-z][a-z0-9_]{0,31}$` and not name a built-in parameter; a toggle takes no
+`field`, `signal` or `panelIds`, and structured panels ignore it. A reader binds
+every toggle the dashboard declares (its `default` until the viewer sets it:
+`dashspec.Dashboard.ToggleValues` into `obsquery.Scope.Toggles`), so the
+statement may rely on it. Only a reader that knows toggles binds them: do not
+ship a panel that reads one to a control plane older than the forge that added
+them.
+
 Postgres panels (a live read-only query of your own database), `text`
 panels (Markdown) and `display` (area, stacked, bars, pie, donut, gauge and
 funnel pictures of the same query) are in `observability/dashboards/panels`.

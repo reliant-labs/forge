@@ -4,11 +4,16 @@ package blobstore_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -138,5 +143,123 @@ func TestS3StatMapsNotFound(t *testing.T) {
 	}
 	if _, err := s.Stat(ctx, "forbidden"); err == nil || errors.Is(err, blobstore.ErrNotFound) {
 		t.Fatalf("Stat(forbidden) = %v, want a failure that is not ErrNotFound", err)
+	}
+}
+
+// fakeListServer answers ListObjectsV2 over keys the way S3 does: sorted,
+// after start-after or the continuation token (which wins over start-after,
+// as S3 documents), at most max-keys a response and never more than
+// serverCap (S3's own cap is 1000). Its continuation tokens are opaque, as
+// S3's are, and it refuses one it did not issue. It records the largest
+// max-keys it was asked for.
+func fakeListServer(t *testing.T, keys []string, serverCap int, askedMaxKeys *atomic.Int32) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if r.URL.Path != "/uploads/" && r.URL.Path != "/uploads" || q.Get("list-type") != "2" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		after := q.Get("start-after")
+		if tok := q.Get("continuation-token"); tok != "" {
+			raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(tok, "opaque-"))
+			if err != nil || !strings.HasPrefix(tok, "opaque-") {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			after = string(raw)
+		}
+		maxKeys, err := strconv.Atoi(q.Get("max-keys"))
+		if err != nil || maxKeys <= 0 || maxKeys > 1000 {
+			maxKeys = 1000
+		}
+		asked := maxKeys
+		maxKeys = min(maxKeys, serverCap)
+		for {
+			old := askedMaxKeys.Load()
+			if int32(asked) <= old || askedMaxKeys.CompareAndSwap(old, int32(asked)) {
+				break
+			}
+		}
+		var page []string
+		truncated := false
+		for _, k := range keys {
+			if !strings.HasPrefix(k, q.Get("prefix")) || k <= after {
+				continue
+			}
+			if len(page) == maxKeys {
+				truncated = true
+				break
+			}
+			page = append(page, k)
+		}
+		var b strings.Builder
+		b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>uploads</Name>`)
+		fmt.Fprintf(&b, "<KeyCount>%d</KeyCount><MaxKeys>%d</MaxKeys><IsTruncated>%t</IsTruncated>", len(page), maxKeys, truncated)
+		if truncated {
+			fmt.Fprintf(&b, "<NextContinuationToken>opaque-%s</NextContinuationToken>", base64.RawURLEncoding.EncodeToString([]byte(page[len(page)-1])))
+		}
+		for _, k := range page {
+			fmt.Fprintf(&b, `<Contents><Key>%s</Key><Size>1</Size><ETag>"e"</ETag><LastModified>2026-01-02T03:04:05.000Z</LastModified></Contents>`, k)
+		}
+		b.WriteString("</ListBucketResult>")
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = io.WriteString(w, b.String())
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// List pages through every object, including a page that ends exactly on
+// the last object. It asks for one key past the page, so a single response
+// shows whether another page exists. (How many requests minio's iterator
+// makes is not asserted: it prefetches the next response concurrently.)
+//
+// A service that caps max-keys below limit+1 answers a full, truncated
+// response with an opaque continuation token, so the iterator fetches the
+// rest (the one-past object included) with that token, and the iterator is
+// then cancelled with that state discarded. Nothing is lost: Next is the
+// last object RETURNED, the next List is a fresh request with start-after =
+// Next and no token, and start-after is exclusive, so it begins at the
+// one-past object.
+func TestS3ListPagesThroughEveryObject(t *testing.T) {
+	t.Parallel()
+	all := []string{"t/a", "t/b", "t/c", "t/d", "t/e", "u/x"}
+	for _, tc := range []struct{ limit, serverCap int }{
+		{1, 1000}, {2, 1000}, {3, 1000}, {5, 1000}, {6, 1000},
+		{1, 1}, {2, 1}, {2, 2}, {3, 2}, {4, 3}, {5, 5}, {6, 4},
+	} {
+		limit := tc.limit
+		var askedMaxKeys atomic.Int32
+		s, err := blobstore.NewS3(s3Config(fakeListServer(t, all, tc.serverCap, &askedMaxKeys).URL))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		opts := blobstore.ListOptions{Limit: limit}
+		pages := 0
+		for ; ; pages++ {
+			if pages > len(all) {
+				t.Fatalf("limit %d, cap %d: paging does not terminate", limit, tc.serverCap)
+			}
+			page, err := s.List(context.Background(), "t/", opts)
+			if err != nil {
+				t.Fatalf("limit %d, cap %d: %v", limit, tc.serverCap, err)
+			}
+			if len(page.Objects) > limit {
+				t.Fatalf("limit %d, cap %d: page of %d objects", limit, tc.serverCap, len(page.Objects))
+			}
+			got = append(got, keys(page)...)
+			if page.Next == "" {
+				break
+			}
+			opts.After = page.Next
+		}
+		if strings.Join(got, ",") != "t/a,t/b,t/c,t/d,t/e" {
+			t.Fatalf("limit %d, cap %d: paged listing = %v", limit, tc.serverCap, got)
+		}
+		if n := int(askedMaxKeys.Load()); n != limit+1 {
+			t.Fatalf("limit %d, cap %d: asked for max-keys %d, want %d", limit, tc.serverCap, n, limit+1)
+		}
 	}
 }

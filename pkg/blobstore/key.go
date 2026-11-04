@@ -4,6 +4,7 @@ package blobstore
 
 import (
 	"context"
+	"fmt"
 	"mime"
 	"strings"
 	"time"
@@ -133,7 +134,9 @@ func rfc5987(s string) string {
 //
 // It is the tenant boundary. Key validation refuses ".." and empty segments,
 // and S3 keys are opaque strings (nothing resolves them as paths), so no key
-// handed to the scoped store can name an object outside the prefix.
+// handed to the scoped store can name an object outside the prefix. Nor does
+// it trust the wrapped store: a Stat or List answer naming a key (or cursor)
+// outside the prefix is an error, never passed through.
 func Scoped(store Store, prefix string) (Store, error) {
 	if err := ValidateKey(prefix); err != nil {
 		return nil, errorf(ErrInvalidKey, "scope prefix %q: %v", prefix, err)
@@ -178,7 +181,9 @@ func (s *scoped) Stat(ctx context.Context, key string) (Object, error) {
 	if err != nil {
 		return Object{}, err
 	}
-	o.Key = strings.TrimPrefix(o.Key, s.prefix)
+	if o.Key, err = s.unscope(o.Key); err != nil {
+		return Object{}, err
+	}
 	return o, nil
 }
 
@@ -204,9 +209,29 @@ func (s *scoped) List(ctx context.Context, prefix string, opts ListOptions) (Lis
 	if err != nil {
 		return ListPage{}, err
 	}
+	// The boundary does not trust the inner store to honour the prefix it
+	// was asked for: a key or cursor outside the scope fails the call
+	// rather than reaching the caller (or being silently dropped, which
+	// would truncate the listing).
 	for i := range page.Objects {
-		page.Objects[i].Key = strings.TrimPrefix(page.Objects[i].Key, s.prefix)
+		if page.Objects[i].Key, err = s.unscope(page.Objects[i].Key); err != nil {
+			return ListPage{}, err
+		}
 	}
-	page.Next = strings.TrimPrefix(page.Next, s.prefix)
+	if page.Next != "" {
+		if page.Next, err = s.unscope(page.Next); err != nil {
+			return ListPage{}, err
+		}
+	}
 	return page, nil
+}
+
+// unscope removes the scope prefix from a key the inner store reported, and
+// refuses one that is not under it.
+func (s *scoped) unscope(key string) (string, error) {
+	rel, ok := strings.CutPrefix(key, s.prefix)
+	if !ok || rel == "" {
+		return "", fmt.Errorf("blobstore: scope %q: the inner store reported key %q, outside the scope", s.prefix, key)
+	}
+	return rel, nil
 }

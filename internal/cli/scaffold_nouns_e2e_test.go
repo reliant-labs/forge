@@ -5,6 +5,7 @@ package cli
 import (
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -80,6 +81,11 @@ func TestE2EAddVerbsProduceABuildableTree(t *testing.T) {
 		if !strings.Contains(compose, want) {
 			t.Errorf("internal/app/compose.go missing %q — graph_gen.go's accessor calls it:\n%s", want, compose)
 		}
+	}
+	// The cron worker claims each tick on the project's database, so it
+	// fires on one replica: its optional DB field resolves to the ORM.
+	if _, body, ok := strings.Cut(compose, "func (g *Graph) newNightly()"); !ok || !regexp.MustCompile(`\bDB:\s+g\.ORM\(\),`).MatchString(strings.SplitN(body, "\nfunc ", 2)[0]) {
+		t.Errorf("compose.go's newNightly does not hand the cron worker the ORM to claim ticks on:\n%s", compose)
 	}
 
 	// ── bug 3: the dependent verbs' output landed ────────────────────

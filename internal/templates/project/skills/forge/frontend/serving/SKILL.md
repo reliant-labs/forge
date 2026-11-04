@@ -120,8 +120,9 @@ reads `id` in the browser. The hosts forge ships to resolve that file as
 follows:
 
 - **Hosted static hosting** (`forge.OnHosted {}`) tries `<path>`, then
-  `<path>.html`, then `<path>/index.html`. A route-shaped miss falls back to
-  the site's `index.html`.
+  `<path>.html`, then `<path>/index.html`. A miss is the export's `404.html`
+  with status 404 (a site with no `404.html` is treated as a SPA: a
+  route-shaped miss gets its `index.html`; `deploy/static-site`).
 - **The scaffolded nginx image** uses `try_files $uri $uri.html $uri/ =404`.
 - **A host that only maps directories to `index.html`** (a bare bucket website,
   `python -m http.server`) cannot find `books/view.html` from `/books/view`.
@@ -129,7 +130,8 @@ follows:
   then writes `books/view/index.html`, and Next adds the slash to every link.
   The entity-route helpers need no change.
 
-Do not rely on the hosted SPA fallback for a route you exported. It serves
+Do not rely on the hosted SPA fallback for a route you exported. A Next.js
+export ships `404.html`, so there is none, and without it the fallback serves
 the root `index.html`, which is the dashboard and not your page.
 
 **Build dirs are fenced.** In `standalone`/`server`, production builds write to

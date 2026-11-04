@@ -529,3 +529,94 @@ func TestGenerateFrontendFilesViteSPA(t *testing.T) {
 		t.Error("routes.tsx should contain the FORGE-ROUTES marker block")
 	}
 }
+
+// `forge scaffold service <svc>` over a handler directory that already holds
+// hand-written files (the default mode, no --resume): each owned file is
+// decided on its own. service.go, missing, is written in the directory's own
+// package and reported; the hand-written files — a service.go included —
+// are never overwritten. Before, the default mode wrote service.go
+// unconditionally, clobbering a hand-written one.
+func TestGenerateServiceFilesCompletesAHandWrittenHandlerDir(t *testing.T) {
+	seed := func(t *testing.T, files map[string]string) string {
+		t.Helper()
+		root := t.TempDir()
+		for rel, body := range files {
+			full := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return root
+	}
+	read := func(t *testing.T, root, rel string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		return string(b)
+	}
+
+	t.Run("missing service.go is written", func(t *testing.T) {
+		helper := "package orders\n\n// Rate is hand-written.\nfunc Rate() int { return 1 }\n"
+		root := seed(t, map[string]string{"internal/handlers/orders/helper.go": helper})
+		var progress bytes.Buffer
+		if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", ScaffoldFail, &progress); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, root, "internal/handlers/orders/service.go"); !strings.Contains(got, "type Service struct") {
+			t.Errorf("service.go was not written:\n%s", got)
+		}
+		if got := read(t, root, "internal/handlers/orders/helper.go"); got != helper {
+			t.Errorf("helper.go changed:\n%s", got)
+		}
+		for _, want := range []string{"wrote: " + filepath.Join(root, "internal/handlers/orders/service.go"), "wrote: " + filepath.Join(root, "proto/services/orders/v1/orders.proto")} {
+			if !strings.Contains(progress.String(), want) {
+				t.Errorf("progress does not say %q:\n%s", want, progress.String())
+			}
+		}
+	})
+
+	t.Run("hand-written service.go is kept", func(t *testing.T) {
+		mine := "package orders\n\n// mine: hand-written\ntype Service struct{}\n"
+		root := seed(t, map[string]string{"internal/handlers/orders/service.go": mine})
+		var progress bytes.Buffer
+		if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", ScaffoldFail, &progress); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, root, "internal/handlers/orders/service.go"); got != mine {
+			t.Errorf("the default mode overwrote a hand-written service.go:\n%s", got)
+		}
+		if !strings.Contains(progress.String(), "skipped: "+filepath.Join(root, "internal/handlers/orders/service.go")+" (exists; kept") {
+			t.Errorf("progress does not say service.go was kept:\n%s", progress.String())
+		}
+	})
+
+	t.Run("Service declared in another file is not redeclared", func(t *testing.T) {
+		root := seed(t, map[string]string{"internal/handlers/orders/handler.go": "package orders\n\ntype Service struct{}\n"})
+		var progress bytes.Buffer
+		if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", ScaffoldFail, &progress); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "internal/handlers/orders/service.go")); !os.IsNotExist(err) {
+			t.Errorf("service.go was written beside a hand-written Service (redeclared)")
+		}
+		if !strings.Contains(progress.String(), "Service in handler.go") {
+			t.Errorf("progress does not name the hand-written Service:\n%s", progress.String())
+		}
+	})
+
+	t.Run("hand-written package clause is joined", func(t *testing.T) {
+		root := seed(t, map[string]string{"internal/handlers/orders/helper.go": "package ordersvc\n\nfunc Rate() int { return 1 }\n"})
+		if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", ScaffoldFail, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, root, "internal/handlers/orders/service.go"); !strings.HasPrefix(strings.TrimSpace(got), "package ordersvc") &&
+			!strings.Contains(got, "\npackage ordersvc\n") {
+			t.Errorf("service.go does not join the directory's package ordersvc:\n%s", got)
+		}
+	})
+}

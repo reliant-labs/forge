@@ -20,6 +20,7 @@
 import {
   useEffect,
   useState,
+  type KeyboardEvent,
   type MouseEvent,
   type ReactElement,
   type ReactNode,
@@ -67,14 +68,21 @@ export interface ResourceProps<T> {
   error?: Error | null;
   onRetry?: () => void;
   /**
-   * A POINTER convenience: clicking anywhere on a row calls it. It is not
-   * the row's accessible action — rows keep table semantics (a row marked
-   * up as a button is announced as a button, not as a row of data). Render
-   * a real link in the row's primary cell for keyboard and screen-reader
-   * users; a click that lands on a link or another control inside the row is
-   * left to that control.
+   * Clicking anywhere on a row calls it; a click that lands on a link or
+   * another control inside the row is left to that control. Without
+   * `rowsHaveLinks` the row is also the keyboard path to the record: it takes
+   * a tab stop, `role="button"`, and Enter/Space call this.
    */
   onRowClick?: (row: T) => void;
+  /**
+   * Declares that every row renders a real link to its record (in the
+   * primary cell), so `onRowClick` is a POINTER convenience only: the row
+   * keeps table semantics (no button role, no tab stop) and keyboard and
+   * screen-reader users reach the record through the link. Set it only when
+   * the link is there — without it, a row with `onRowClick` stays keyboard
+   * operable itself, so a page that predates the link is never stranded.
+   */
+  rowsHaveLinks?: boolean;
 
   emptyTitle?: string;
   emptyMessage?: string;
@@ -131,6 +139,7 @@ export function Resource<T>({
   error,
   onRetry,
   onRowClick,
+  rowsHaveLinks = false,
   emptyTitle = "Nothing here yet",
   emptyMessage = "No records match.",
   filter,
@@ -171,17 +180,6 @@ export function Resource<T>({
   const countText = describeCount(rows, totalCount, pageStart);
   const showFooter = showPager || countText !== "" || Boolean(isFetching);
   const showToolbar = Boolean(onFilterChange || toolbar);
-
-  const handleRowClick = onRowClick
-    ? (row: T) => (e: MouseEvent<HTMLTableRowElement>) => {
-        // Leave clicks on the row's own controls (the primary-cell link, a
-        // menu) to those controls, and never turn a text selection into a
-        // navigation.
-        if ((e.target as Element).closest(INTERACTIVE)) return;
-        if (window.getSelection()?.toString()) return;
-        onRowClick(row);
-      }
-    : undefined;
 
   return (
     <section className="flex flex-col gap-4">
@@ -280,12 +278,7 @@ export function Resource<T>({
               data.map((row) => (
                 <tr
                   key={rowKey(row)}
-                  onClick={handleRowClick?.(row)}
-                  className={
-                    onRowClick
-                      ? "cursor-pointer transition-colors hover:bg-surface-muted focus-within:bg-surface-muted"
-                      : undefined
-                  }
+                  {...rowInteraction(row, onRowClick, rowsHaveLinks)}
                 >
                   {columns.map((col, i) => (
                     <td
@@ -334,6 +327,62 @@ export function Resource<T>({
       ) : null}
     </section>
   );
+}
+
+/** The props rowInteraction puts on a body row. */
+export interface RowInteraction {
+  onClick?: (e: MouseEvent<HTMLTableRowElement>) => void;
+  onKeyDown?: (e: KeyboardEvent<HTMLTableRowElement>) => void;
+  role?: "button";
+  tabIndex?: number;
+  className?: string;
+}
+
+/**
+ * rowInteraction is how a body row responds to its onRowClick. A row with
+ * no onRowClick is inert data. A row whose cells link to the record
+ * (`rowsHaveLinks`) gets a pointer-only click and keeps table semantics. A
+ * row with onRowClick and no link is the only way to its record, so it is
+ * keyboard operable itself: a tab stop, a button role, Enter/Space. Exported
+ * for its tests; not part of the package's index.
+ */
+export function rowInteraction<T>(
+  row: T,
+  onRowClick: ((row: T) => void) | undefined,
+  rowsHaveLinks: boolean,
+): RowInteraction {
+  if (!onRowClick) return {};
+  const onClick = (e: MouseEvent<HTMLTableRowElement>) => {
+    // Leave clicks on the row's own controls (the primary-cell link, a
+    // menu) to those controls, and never turn a text selection into a
+    // navigation.
+    if ((e.target as Element).closest(INTERACTIVE)) return;
+    if (window.getSelection()?.toString()) return;
+    onRowClick(row);
+  };
+  if (rowsHaveLinks) {
+    return {
+      onClick,
+      className:
+        "cursor-pointer transition-colors hover:bg-surface-muted focus-within:bg-surface-muted",
+    };
+  }
+  return {
+    onClick,
+    role: "button",
+    tabIndex: 0,
+    onKeyDown: (e) => {
+      // Only the row's own keys: Enter on a control inside the row is
+      // that control's.
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onRowClick(row);
+      }
+    },
+    className:
+      "cursor-pointer transition-colors hover:bg-surface-muted focus:bg-surface-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
+  };
 }
 
 /**

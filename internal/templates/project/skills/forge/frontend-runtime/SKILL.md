@@ -349,8 +349,8 @@ the count (`totalCount`; `pageStart` for "1–25 of 112") and the pager.
 - **Sorting**: a column's `sortKey` (the List `order_by`) plus `sort` /
   `onSortChange` make its header an `aria-sort` button (asc → desc → off).
   pkg/crud pages only in key order: a sorted List is one page.
-- **Rows keep table semantics**: `onRowClick` is pointer-only; put a real link
-  in the primary cell for keyboard and screen-reader users.
+- **Row clicks**: link the primary cell, pass `rowsHaveLinks` (rows stay
+  table rows); without it an `onRowClick` row is a button.
 
 ## 4. Browser telemetry (HyperDX SDK)
 

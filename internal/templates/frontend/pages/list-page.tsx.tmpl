@@ -333,6 +333,9 @@ const filterDefs = [
       rowKey={(item) => String(item.{{.PkFieldCamel}})}
 {{- if .EmitsDetailPage}}
       onRowClick={(item) => router.push(entityViewHref("{{.EntitySlug}}", item.{{.PkFieldCamel}}))}
+{{- if .PrimaryListColumn}}
+      rowsHaveLinks
+{{- end}}
 {{- end}}
       emptyTitle="No {{.EntityNamePlural | humanLower}} found"
       emptyMessage="No records match the current view."

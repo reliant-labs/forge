@@ -14,9 +14,10 @@
 // service-hooks.test.ts).
 import { Code, ConnectError } from "@connectrpc/connect";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import type { KeyboardEvent, MouseEvent } from "react";
+import { describe, expect, it, vi } from "vitest";
 
-import { Resource, type ResourceColumn } from "./resource.js";
+import { Resource, rowInteraction, type ResourceColumn } from "./resource.js";
 
 interface Row {
   id: string;
@@ -94,13 +95,22 @@ describe("<Resource> table, toolbar and footer", () => {
     );
   }
 
-  it("keeps table-row semantics on clickable rows", () => {
-    // A <tr role="button"> is announced as a button, not a row of data, and
-    // defeats the table caption. The row click is a pointer convenience; the
-    // accessible action is a link the page renders in the primary cell.
-    const html = render({ onRowClick: () => {} });
+  it("keeps table-row semantics on rows that link to their record", () => {
+    // A <tr role="button"> is announced as a button, not a row of data. When
+    // the page renders a link in the primary cell, the row click is a
+    // pointer convenience and the link is the accessible action.
+    const html = render({ onRowClick: () => {}, rowsHaveLinks: true });
     expect(html).not.toContain('role="button"');
     expect(html).not.toContain("tabindex");
+  });
+
+  it("keeps a row with onRowClick and no link keyboard operable", () => {
+    // A page written before rowsHaveLinks existed (the scaffold-once list
+    // pages of earlier releases) has no cell link: the row is its only way
+    // to the record, so it must stay a tab stop.
+    const html = render({ onRowClick: () => {} });
+    expect(html).toContain('role="button"');
+    expect(html).toContain('tabindex="0"');
   });
 
   it("renders the toolbar in its own row, not in the header", () => {
@@ -153,5 +163,78 @@ describe("<Resource> table, toolbar and footer", () => {
     expect(html).toContain('aria-sort="descending"');
     expect(html.match(/<th\s[^>]*>/g)?.[1]).not.toContain("aria-sort");
     expect(html).toMatch(/<button type="button"[^>]*>Name/);
+  });
+});
+
+// The row's event handlers, driven with hand-built events: this package
+// carries no jsdom, and rowInteraction is the whole of a row's behaviour.
+describe("rowInteraction", () => {
+  const row: Row = { id: "a" };
+
+  function keyEvent(key: string, onRow = true) {
+    const target = {};
+    let prevented = false;
+    return {
+      event: {
+        key,
+        target,
+        currentTarget: onRow ? target : {},
+        preventDefault: () => {
+          prevented = true;
+        },
+      } as unknown as KeyboardEvent<HTMLTableRowElement>,
+      prevented: () => prevented,
+    };
+  }
+
+  function clickOn(closest: Element | null) {
+    return {
+      target: { closest: () => closest },
+    } as unknown as MouseEvent<HTMLTableRowElement>;
+  }
+
+  const noSelection = { getSelection: () => ({ toString: () => "" }) };
+
+  it("is inert without onRowClick", () => {
+    expect(rowInteraction(row, undefined, false)).toEqual({});
+    expect(rowInteraction(row, undefined, true)).toEqual({});
+  });
+
+  it("opens the record from the keyboard when the row has no link", () => {
+    const opened: Row[] = [];
+    const props = rowInteraction(row, (r: Row) => opened.push(r), false);
+    expect(props.role).toBe("button");
+    expect(props.tabIndex).toBe(0);
+
+    for (const key of ["Enter", " "]) {
+      const { event, prevented } = keyEvent(key);
+      props.onKeyDown?.(event);
+      expect(prevented()).toBe(true);
+    }
+    expect(opened).toEqual([row, row]);
+
+    props.onKeyDown?.(keyEvent("a").event);
+    // Enter on a control inside the row belongs to that control.
+    props.onKeyDown?.(keyEvent("Enter", false).event);
+    expect(opened).toHaveLength(2);
+  });
+
+  it("is pointer-only when the row links to its record", () => {
+    const opened: Row[] = [];
+    const props = rowInteraction(row, (r: Row) => opened.push(r), true);
+    expect(props.role).toBeUndefined();
+    expect(props.tabIndex).toBeUndefined();
+    expect(props.onKeyDown).toBeUndefined();
+
+    vi.stubGlobal("window", noSelection);
+    try {
+      props.onClick?.(clickOn(null));
+      expect(opened).toEqual([row]);
+      // A click on the cell link is the link's navigation, not a second one.
+      props.onClick?.(clickOn({} as Element));
+      expect(opened).toEqual([row]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

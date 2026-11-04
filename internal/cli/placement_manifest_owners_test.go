@@ -65,7 +65,7 @@ func TestPlacementDeclaresEveryManifestOwner(t *testing.T) {
 // ClusterRole carried forge.dev/workload=daemon-cluster while the inventory
 // never declared it, and sealing refused the bundle ("undeclared placement
 // owner"). Now it seals: the controller group is an item the SPA waits for,
-// the RBAC group is inventory only, and every owner label on every sealed
+// the ClusterRole group is inventory only, and every owner label on every sealed
 // object names a declared placement.
 func TestMixedBundleSealsManifestGroupsWithoutReleaseInputs(t *testing.T) {
 	if testing.Short() {
@@ -100,7 +100,7 @@ output = forge.render(forge.Bundle {
  manifests = [
   forge.Manifests {name = "daemon-cluster", cluster = "k3d-prod-daemon", objects = [
    {apiVersion = "rbac.authorization.k8s.io/v1", kind = "ClusterRole", metadata = {name = "scheduler"}, rules = []}
-   {apiVersion = "scheduling.k8s.io/v1", kind = "PriorityClass", metadata = {name = "tenant"}, value = 1000}
+   {apiVersion = "scheduling.k8s.io/v1", kind = "PriorityClass", metadata = {name = "workloads"}, value = 1000}
   ]}
   forge.Manifests {name = "side-jobs", cluster = "k3d-prod-hub", namespace = "app", objects = [_deploy("side")]}
  ]

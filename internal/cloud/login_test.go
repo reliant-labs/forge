@@ -81,6 +81,12 @@ func TestBrowserLogin_PKCECodeFlow(t *testing.T) {
 	if req.Get("client_id") != ClientID || req.Get("code_challenge_method") != "S256" || req.Get("device") == "" {
 		t.Errorf("authorize request: %v", *req)
 	}
+	if req.Get("credential_kind") != "human" {
+		t.Errorf("forge login must ask for a human identity; credential_kind = %q", req.Get("credential_kind"))
+	}
+	if cred.Kind != KindHuman {
+		t.Errorf("a credential_kind=human reply must be stored as a human identity; kind %q", cred.Kind)
+	}
 }
 
 // TestBrowserLogin_TimesOutWithTheCITip — a login that hangs forever

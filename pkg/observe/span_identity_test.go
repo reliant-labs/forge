@@ -26,6 +26,8 @@ func TestSessionIDFromBaggage(t *testing.T) {
 		{"not a session id", []string{"session.id=a%20b"}, ""},
 		{"too long", []string{"session.id=" + longID()}, ""},
 		{"malformed baggage", []string{"session.id"}, ""},
+		{"beside a malformed member", []string{"bad member,session.id=s3", "=oops"}, "s3"},
+		{"malformed member after", []string{"session.id=s4,no-equals"}, "s4"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := http.Header{}

@@ -55,22 +55,23 @@ func serverSpanOf(ctx context.Context) trace.Span {
 	return trace.SpanFromContext(ctx)
 }
 
-// SessionIDFromBaggage returns the session.id member of the request's W3C
-// baggage when it has the shape of a session id, else "".
+// SessionIDFromBaggage returns the first session.id member of the request's W3C
+// baggage that has the shape of a session id, else "". Each list member is
+// parsed on its own, so a malformed member another party added (or one that
+// pushes the whole header past baggage's size limits) does not hide the session.
 func SessionIDFromBaggage(header http.Header) string {
-	values := header.Values("baggage")
-	if len(values) == 0 {
-		return ""
+	for _, value := range header.Values("baggage") {
+		for _, member := range strings.Split(value, ",") {
+			b, err := baggage.Parse(member)
+			if err != nil {
+				continue
+			}
+			if id := b.Member(AttrSessionID).Value(); sessionIDRe.MatchString(id) {
+				return id
+			}
+		}
 	}
-	b, err := baggage.Parse(strings.Join(values, ","))
-	if err != nil {
-		return ""
-	}
-	id := b.Member(AttrSessionID).Value()
-	if !sessionIDRe.MatchString(id) {
-		return ""
-	}
-	return id
+	return ""
 }
 
 // RequestSpanInterceptor records the request's server span (the one the Trace

@@ -627,6 +627,14 @@ func TestTraceQueryUserAndSession(t *testing.T) {
 			t.Errorf("page statement has no %s:\n%s", col, st.SQL)
 		}
 	}
+	// The location is one span's tuple, never country, region and city picked
+	// from different spans.
+	if n := strings.Count(st.SQL, "anyIf(tuple(ResourceAttributes['geo.country.iso_code'], ResourceAttributes['geo.region.name'], ResourceAttributes['geo.locality.name'])"); n != 3 {
+		t.Errorf("%d reads of the geo tuple, want 3 (country, region, city):\n%s", n, st.SQL)
+	}
+	if strings.Contains(st.SQL, "anyIf(ResourceAttributes['geo.") {
+		t.Errorf("a geo field is aggregated on its own:\n%s", st.SQL)
+	}
 	if !strings.Contains(st.SQL, "SpanAttributes['user.id']") || !strings.Contains(st.SQL, "ResourceAttributes['rum.sessionId']") {
 		t.Errorf("user/session do not read both the backend and the browser shape:\n%s", st.SQL)
 	}

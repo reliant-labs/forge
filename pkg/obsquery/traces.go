@@ -150,6 +150,11 @@ const (
 	traceCountryExpr = "ResourceAttributes['geo.country.iso_code']"
 	traceRegionExpr  = "ResourceAttributes['geo.region.name']"
 	traceCityExpr    = "ResourceAttributes['geo.locality.name']"
+	// traceGeoExpr picks one span's whole location, so country, region and city
+	// always come from the same span. ClickHouse computes an aggregate once
+	// however many times the statement names it, so the three tupleElement reads
+	// share one tuple.
+	traceGeoExpr = "anyIf(tuple(" + traceCountryExpr + ", " + traceRegionExpr + ", " + traceCityExpr + "), " + traceCountryExpr + " != '')"
 )
 
 // perTrace is the per-trace summary subquery shared by the page and RED
@@ -243,9 +248,9 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 		"       maxIf(ResourceAttributes['reliant.source'], ResourceAttributes['reliant.source'] != '') AS source,\n" +
 		"       anyIf(" + traceUserExpr + ", " + traceUserExpr + " != '') AS user_id,\n" +
 		"       anyIf(" + traceSessionExpr + ", " + traceSessionExpr + " != '') AS session_id,\n" +
-		"       anyIf(" + traceCountryExpr + ", " + traceCountryExpr + " != '') AS country,\n" +
-		"       anyIf(" + traceRegionExpr + ", " + traceCountryExpr + " != '') AS region,\n" +
-		"       anyIf(" + traceCityExpr + ", " + traceCountryExpr + " != '') AS city" + groupCols + "\n" +
+		"       tupleElement(" + traceGeoExpr + ", 1) AS country,\n" +
+		"       tupleElement(" + traceGeoExpr + ", 2) AS region,\n" +
+		"       tupleElement(" + traceGeoExpr + ", 3) AS city" + groupCols + "\n" +
 		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
 		"GROUP BY trace_id"
 	if len(having) > 0 {

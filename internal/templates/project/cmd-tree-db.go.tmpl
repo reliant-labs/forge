@@ -56,6 +56,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	forgeconfig "github.com/reliant-labs/forge/pkg/config"
 	"github.com/reliant-labs/forge/pkg/migratekit"
 
 	forgedb "{{.Module}}/db"
@@ -244,6 +245,7 @@ func newDBCmd(deps Deps) *cobra.Command {
 // actually landed.
 func withMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
+		checkMigratorConfig(cmd)
 		m, err := openMigrator(cmd)
 		if err != nil {
 			return err
@@ -276,6 +278,10 @@ func withMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cob
 // the other side.
 func withOptionalMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
+		// Before the embedded-set check: a project with no migrations yet
+		// still answers the boot config check, or its migration job could
+		// never be verified and every push of the env would be refused.
+		checkMigratorConfig(cmd)
 		// HasMigrations, not `Source() == nil`: with migrations embedded,
 		// Source returns a concrete embed.FS value that is never nil, so the
 		// nil comparison is dead code (staticcheck SA4023).
@@ -287,6 +293,20 @@ func withOptionalMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) f
 		}
 		return withMigrator(fn)(cmd, args)
 	}
+}
+
+// checkMigratorConfig is `db migrate`'s part in the boot config check:
+// `forge env build` runs every workload of the image with FORGE_CONFIG_CHECK=1
+// before it pushes, and refuses an image a workload would not start with. The
+// migrator loads no typed config — its whole configuration is the DSN
+// migratorDSN reads — so it reports whether one is wired and exits. Outside
+// the check it returns at once.
+func checkMigratorConfig(cmd *cobra.Command) {
+	if url, _ := cmd.Flags().GetString("database-url"); url != "" {
+		forgeconfig.CheckVariables()
+		return
+	}
+	forgeconfig.CheckVariables("DATABASE_URL")
 }
 
 // openMigrator resolves the DSN and opens a migrator over the embedded set.

@@ -59,7 +59,11 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // `forge generate` raises every consumer to it. forge's release bookkeeping
 // (scripts/release-forge.sh) writes it, with web-runtime/package.json's
 // version, after scripts/release-web-runtime.sh has published that version:
-// pull requests do not bump it. TestWebRuntimePublishedRangeTracksPackage
+// pull requests do not bump it, except the one making a breaking runtime
+// change, which raises it to the new minor (major from 1.0) because a forge
+// release ships this range from the commit it tags; release-web-runtime.sh
+// refuses a range the computed version does not satisfy.
+// TestWebRuntimePublishedRangeTracksPackage
 // holds its major.minor to package.json's.
 const webRuntimePublishedRange = "^0.13.0"
 

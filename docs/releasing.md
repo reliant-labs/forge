@@ -34,7 +34,12 @@ nothing otherwise. The bump keeps `^` ranges working: before 1.0, a breaking cha
 `type!:` title or a `BREAKING CHANGE:` footer on a commit touching `web-runtime/`) bumps
 the minor and anything else the patch; from 1.0, breaking → major, `feat` → minor, else
 patch. `web-runtime/package.json`'s version is a floor: raise it in a pull request only
-to declare a version the titles do not say. The script pushes the `web-runtime/vX.Y.Z`
+to declare a version the titles do not say (it is published even when nothing else
+changed). Because a forge release ships the generator of the very commit it tags, the
+scaffold floor `webRuntimePublishedRange` at that commit must be a `^` range the computed
+version satisfies: the pull request that makes a breaking runtime change raises it, and
+`package.json`'s version, to the new minor (major from 1.0), or the release refuses
+before publishing anything. The script pushes the `web-runtime/vX.Y.Z`
 tag, whose `release-web-runtime.yml` run publishes it (npm trusted publishing), and
 returns only once npm serves it. `--plan` prints the decision; `--dry-run` also
 validates the package.

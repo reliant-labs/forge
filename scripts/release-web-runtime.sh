@@ -28,8 +28,14 @@
 #             else the patch; from 1.0, breaking → major, feat → minor, else
 #             patch.
 #   declared  web-runtime/package.json's version at the commit is a FLOOR: the
-#             result is never below it. A PR never has to touch it; one may
-#             raise it to declare a version the titles do not say.
+#             result is never below it, even when nothing else changed. A PR
+#             never has to touch it; one may raise it to declare a version the
+#             titles do not say.
+#   range     the scaffold floor at the commit (webRuntimePublishedRange) must
+#             be a caret range the result satisfies, because forge's release
+#             ships the generator of exactly this commit. So the PR making a
+#             breaking runtime change raises it (and package.json's version)
+#             to the new minor (major from 1.0); the release refuses otherwise.
 #
 # After a publish, forge's release bookkeeping (scripts/release-forge.sh, the
 # release/vX.Y.Z pull request) writes the version into web-runtime/package.json
@@ -278,7 +284,14 @@ elif [ -z "$PREV_VERSION" ]; then
   # Never released below this commit: the first release is the declared one.
   R_VERSION="$DECLARED"; R_TAG="$TAG_PREFIX$DECLARED"; R_CHANGED=true; R_BUMP=declared
 elif ! shipped_differs "$PREV_COMMIT" "$COMMIT"; then
-  R_VERSION="$PREV_VERSION"; R_TAG="$TAG_PREFIX$PREV_VERSION"; R_CHANGED=false; R_BUMP=none
+  if ver_ge "$DECLARED" "$PREV_VERSION" && [ "$DECLARED" != "$PREV_VERSION" ]; then
+    # Nothing shipped changed, but a pull request raised the manifest's version:
+    # the declared version is a floor here too, so it is published as declared
+    # (lowering it would make the bookkeeping rewrite the manifest back down).
+    R_VERSION="$DECLARED"; R_TAG="$TAG_PREFIX$DECLARED"; R_CHANGED=true; R_BUMP=declared
+  else
+    R_VERSION="$PREV_VERSION"; R_TAG="$TAG_PREFIX$PREV_VERSION"; R_CHANGED=false; R_BUMP=none
+  fi
 else
   R_CHANGED=true
   breaking=0 feature=0
@@ -304,11 +317,32 @@ else
   R_VERSION="$NEXT"; R_TAG="$TAG_PREFIX$NEXT"
 fi
 
-# The scaffold floor at the commit must be satisfiable by what this commit
-# publishes, or a forge built from it scaffolds a range npm cannot meet.
+# The scaffold floor at the commit must be an npm caret range that the version
+# this commit releases SATISFIES. forge's release builds its archives and tags
+# this very commit, so its generator scaffolds exactly this range: a floor
+# above the version names one npm lacks, and a floor in an older caret window
+# (^0.13.0 for a breaking 0.14.0, ^1.x for 2.0.0) resolves only runtimes
+# older than the one the generated code needs. The bookkeeping that later
+# raises the floor does not reach the released binary, so refuse it here,
+# before anything is published.
+caret_satisfies() { # $1 version, $2 the X.Y.Z of a ^X.Y.Z range
+  local vmaj vmin vpat fmaj fmin fpat
+  IFS=. read -r vmaj vmin vpat <<<"$1"; IFS=. read -r fmaj fmin fpat <<<"$2"
+  ver_ge "$1" "$2" || return 1
+  if [ "$fmaj" -gt 0 ]; then [ "$vmaj" -eq "$fmaj" ]
+  elif [ "$fmin" -gt 0 ]; then [ "$vmaj" -eq 0 ] && [ "$vmin" -eq "$fmin" ]
+  else [ "$1" = "$2" ]
+  fi
+}
 FLOOR="$(git show "$COMMIT:$FLOOR_FILE" 2>/dev/null | sed -n 's/^const webRuntimePublishedRange = "^\([0-9.]*\)".*/\1/p' | head -n 1)"
+if [ -n "$FLOOR" ] && ! [[ "$FLOOR" =~ $SEMVER_RE ]]; then
+  fail "$FLOOR_FILE at $COMMIT declares ^$FLOOR, not ^X.Y.Z"
+fi
 if [ -n "$FLOOR" ] && ! ver_ge "$R_VERSION" "$FLOOR"; then
   fail "$FLOOR_FILE at $COMMIT declares ^$FLOOR, above the $R_VERSION this commit releases; lower it, or raise $PKG_DIR/package.json's version to declare $FLOOR"
+fi
+if [ -n "$FLOOR" ] && ! caret_satisfies "$R_VERSION" "$FLOOR"; then
+  fail "$FLOOR_FILE at $COMMIT declares ^$FLOOR, which does not admit the $R_VERSION this commit releases (a ${R_BUMP} bump): a forge released from it would scaffold a range that cannot install the runtime its generated code needs. In the pull request that makes the breaking change, raise webRuntimePublishedRange to ^$R_VERSION and $PKG_DIR/package.json's version to $R_VERSION"
 fi
 
 if [ "$R_CHANGED" = true ]; then

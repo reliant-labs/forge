@@ -17,7 +17,9 @@
 //     A pseudo-version names one commit, so an entry never goes stale;
 //  3. a build: `go install github.com/reliant-labs/forge/cmd/forge@<version>`
 //     into a temp dir that is renamed into the cache, so a build that dies
-//     never leaves a half-written binary where step 2 would trust it.
+//     never leaves a half-written binary where step 2 would trust it. One
+//     process builds an entry at a time, in a heavy slot, with its scratch
+//     inside the temp dir (stage).
 //
 // A project whose go.mod or go.work points forge at a local checkout (the
 // dev link) is a different case: the forge it runs is that checkout, built
@@ -45,6 +47,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
 // MarkerEnv is set in the environment of a forge that was delegated to. It
@@ -140,6 +143,9 @@ type Resolver struct {
 	Install func(ctx context.Context, pkg, gobin string) error
 	// Build runs `go build` of cmd/forge in checkout dir, writing out.
 	Build func(ctx context.Context, dir, out string) error
+	// Slot takes one of the machine's heavy slots for a build (label names
+	// it to waiters) and returns its release. Nil is hostslot's heavy class.
+	Slot func(ctx context.Context, label string) (release func(), err error)
 }
 
 func (r *Resolver) logw() io.Writer {
@@ -208,11 +214,15 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	if err := os.MkdirAll(entry, 0o755); err != nil {
 		return Result{}, err
 	}
-	tmp, err := os.MkdirTemp(entry, ".build-")
+	tmp, done, err := r.stage(ctx, entry, bin, "forge: building forge "+pin)
 	if err != nil {
 		return Result{}, err
 	}
-	defer func() { _ = os.RemoveAll(tmp) }()
+	defer done()
+	if tmp == "" {
+		touch(entry)
+		return Result{Path: bin, Source: "the cached build of " + pin}, nil
+	}
 
 	fmt.Fprintf(r.logw(), "forge: building forge %s (one time; cached in %s)\n", pin, dir)
 	install := r.Install
@@ -221,6 +231,9 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	}
 	if err := install(ctx, cmdPackage+"@"+pin, tmp); err != nil {
 		return Result{}, fmt.Errorf("could not build forge %s (offline, or the version is not published?): %w", pin, err)
+	}
+	if err := builtInTime(ctx); err != nil {
+		return Result{}, err
 	}
 	if err := publish(filepath.Join(tmp, exeName()), bin); err != nil {
 		return Result{}, err
@@ -255,11 +268,15 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	if err := os.MkdirAll(entry, 0o755); err != nil {
 		return Result{}, err
 	}
-	tmp, err := os.MkdirTemp(entry, ".build-")
+	tmp, done, err := r.stage(ctx, entry, bin, "forge: building forge from "+dir)
 	if err != nil {
 		return Result{}, err
 	}
-	defer func() { _ = os.RemoveAll(tmp) }()
+	defer done()
+	if tmp == "" {
+		touch(entry)
+		return Result{Path: bin, Source: "the build of checkout " + dir}, nil
+	}
 
 	fmt.Fprintf(r.logw(), "forge: building forge from the checkout %s (cached until it changes)\n", dir)
 	build := r.Build
@@ -269,6 +286,9 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	out := filepath.Join(tmp, exeName())
 	if err := build(ctx, dir, out); err != nil {
 		return Result{}, fmt.Errorf("could not build forge from %s: %w", dir, err)
+	}
+	if err := builtInTime(ctx); err != nil {
+		return Result{}, err
 	}
 	if err := publish(out, bin); err != nil {
 		return Result{}, err
@@ -298,6 +318,20 @@ func buildSettingsKey(env []string) string {
 		b.WriteString(k + "=" + vals[k] + "\x00")
 	}
 	return b.String()
+}
+
+// builtInTime is the check between a build returning and its publication: a
+// build whose ctx ended is never published, even one that reported success.
+// A go command killed by the cancel can exit 0 having written part of its
+// output, and a builder that finishes as the cancel lands cannot be told from
+// one cut short; either way the caller is gone and nothing may make the
+// output trusted. The error goes back through stage's done, which removes the
+// staging directory and wakes the next waiter on the entry, who builds it.
+func builtInTime(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("canceled before the build was published: %w", err)
+	}
+	return nil
 }
 
 // publish moves a finished build into the cache. A binary already there wins
@@ -355,6 +389,87 @@ func (r *Resolver) prune(dir, keep string) {
 	}
 }
 
+// stagingPrefix names a build's staging directory inside a cache entry.
+const stagingPrefix = ".build-"
+
+// stage makes this process the one builder of entry and returns the staging
+// directory to build in, and done, which removes it and gives the entry up.
+// tmp is "" when bin appeared while this process waited for the entry: a
+// concurrent build of the same version published it, and there is nothing to
+// build.
+//
+// Why one builder. Every caller that finds the entry empty used to build it,
+// so a daemon asking for one pin from several projects at once ran as many
+// concurrent `go install`s of the same forge, each a few cores for minutes. On
+// a loaded machine they outlived their callers' deadlines, were killed, and
+// were retried, each time leaving its scratch behind (2026-11-03: ~1,500
+// go-build* directories, 222 GB, in /tmp). The entry's lock serializes them,
+// and the heavy slot bounds builds of different versions like every other
+// heavy job on the machine.
+//
+// Holding the lock is also what proves a staging directory left in the entry
+// is a dead build's: only the lock holder builds here, so any .build-* the
+// holder finds is from a process that died holding it, and is removed.
+func (r *Resolver) stage(ctx context.Context, entry, bin, label string) (tmp string, done func(), err error) {
+	unlock, err := lockEntry(ctx, filepath.Join(entry, ".lock"))
+	if err != nil {
+		return "", nil, fmt.Errorf("waiting for another build of %s: %w", entry, err)
+	}
+	if st, err := os.Stat(bin); err == nil && !st.IsDir() {
+		unlock()
+		return "", func() {}, nil
+	}
+	if entryLocks {
+		sweepStaging(entry)
+	}
+	slot := r.Slot
+	if slot == nil {
+		slot = heavySlot(r.logw())
+	}
+	release, err := slot(ctx, label)
+	if err != nil {
+		unlock()
+		return "", nil, err
+	}
+	tmp, err = os.MkdirTemp(entry, stagingPrefix)
+	if err != nil {
+		release()
+		unlock()
+		return "", nil, err
+	}
+	return tmp, func() {
+		_ = os.RemoveAll(tmp)
+		release()
+		unlock()
+	}, nil
+}
+
+// sweepStaging removes the staging directories of builds that died in entry.
+// The caller holds the entry's lock.
+func sweepStaging(entry string) {
+	ents, err := os.ReadDir(entry)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if e.IsDir() && strings.HasPrefix(e.Name(), stagingPrefix) {
+			_ = os.RemoveAll(filepath.Join(entry, e.Name()))
+		}
+	}
+}
+
+// heavySlot takes one of the machine's heavy slots (forge/pkg/hostslot), the
+// pool forge's own heavy lanes and Reliant's heavy commands share.
+func heavySlot(log io.Writer) func(ctx context.Context, label string) (func(), error) {
+	return func(ctx context.Context, label string) (func(), error) {
+		s, err := hostslot.Acquire(ctx, hostslot.Heavy, hostslot.Options{Env: os.Environ(), Out: log, Label: label})
+		if err != nil {
+			return nil, err
+		}
+		return func() { _ = s.Release() }, nil
+	}
+}
+
 // touch marks an entry used now, which is what prune ranks by. Failing is
 // harmless: the entry just looks older than it is.
 func touch(entry string) {
@@ -391,24 +506,46 @@ func buildEnvExtra(more ...string) []string {
 }
 
 func goInstall(ctx context.Context, pkg, gobin string) error {
-	cwd, err := os.MkdirTemp("", "forge-install-")
+	scratch, err := scratchDir(gobin)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(cwd) }()
-	cmd := exec.CommandContext(ctx, "go", "install", pkg)
-	cmd.Dir = cwd
-	cmd.Env = goexec.Env(buildEnvExtra("GOBIN=" + gobin)...)
+	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", "install", pkg))
+	cmd.Dir = scratch
+	cmd.Env = goexec.Env(buildEnvExtra(append(scratchEnv(scratch), "GOBIN="+gobin)...)...)
 	return runCaptured(cmd)
 }
 
 func goBuild(ctx context.Context, dir, out string) error {
-	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=true",
+	scratch, err := scratchDir(filepath.Dir(out))
+	if err != nil {
+		return err
+	}
+	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", "build", "-buildvcs=true",
 		"-ldflags", "-X "+modulePath+"/internal/buildinfo.DevForgeRoot="+dir,
-		"-o", out, "./cmd/forge")
+		"-o", out, "./cmd/forge"))
 	cmd.Dir = dir
-	cmd.Env = goexec.Env(buildEnvExtra()...)
+	cmd.Env = goexec.Env(buildEnvExtra(scratchEnv(scratch)...)...)
 	return runCaptured(cmd)
+}
+
+// scratchDir is the build's scratch directory inside its staging directory.
+//
+// A build's scratch is the go command's work directory (go-build*, holding
+// the ~280 MB linked forge until it is installed) and the external linker's
+// (go-link-*). Both default to TMPDIR, and a go command killed before it
+// exits leaves its work directory there for good: nothing on the machine can
+// tell a dead build's from a live one's. Inside the staging directory it is
+// removed with the staging directory, and a dead build's is swept by the next
+// build of the entry, which knows it is the entry's only builder (stage).
+func scratchDir(staging string) (string, error) {
+	d := filepath.Join(staging, ".work")
+	return d, os.MkdirAll(d, 0o755)
+}
+
+// scratchEnv points the go command's and the linker's scratch at dir.
+func scratchEnv(dir string) []string {
+	return []string{"GOTMPDIR=" + dir, "TMPDIR=" + dir}
 }
 
 // runCaptured runs cmd, keeping its output for the error and not for the

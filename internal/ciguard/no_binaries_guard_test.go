@@ -48,6 +48,16 @@ func TestNoBinariesGuardRunsOnEveryPullRequest(t *testing.T) {
 				t.Errorf("the binary guard step runs %q; it must judge --range HEAD^1 HEAD, the whole change of the merge commit", s.Run)
 			}
 		}
+		if !found || name != "pr-checks" {
+			continue
+		}
+		// The guard judges every commit against its parent, so the checkout
+		// must carry the pull request's whole history, not depth 2.
+		for _, s := range j.Steps {
+			if strings.HasPrefix(s.Uses, "actions/checkout@") && s.With["fetch-depth"] != "0" {
+				t.Errorf("pr-checks checks out with fetch-depth %q; the binary guard needs fetch-depth: 0", s.With["fetch-depth"])
+			}
+		}
 	}
 	if !found {
 		t.Error("ci.yml does not run scripts/check-no-binaries.sh: a pull request could commit a binary again")
@@ -155,6 +165,73 @@ func TestNoBinariesGuardVerdicts(t *testing.T) {
 		out, code := runNoBinaries(t, dir, []string{"MAX_NEW_FILE_BYTES=1024"}, "--range", "main", "HEAD")
 		if code != 1 || !strings.Contains(out, "data/dump.json: new file of 2049 bytes") || strings.Contains(out, "README.md") {
 			t.Fatalf("exit %d, want 1 naming data/dump.json only:\n%s", code, out)
+		}
+	})
+	t.Run("a binary committed and deleted again in the branch fails", func(t *testing.T) {
+		t.Parallel()
+		dir, git, write := binGuardRepo(t)
+		write("bin/tool", elfBytes)
+		write("data/dump.json", strings.Repeat("x", 2048)+"\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "oops")
+		git("rm", "-q", "bin/tool", "data/dump.json")
+		git("commit", "-q", "-m", "remove it again")
+		out, code := runNoBinaries(t, dir, []string{"MAX_NEW_FILE_BYTES=1024"}, "--range", "main", "HEAD")
+		if code != 1 || !strings.Contains(out, "bin/tool: binary file") || !strings.Contains(out, "data/dump.json: new file of 2049 bytes") {
+			t.Fatalf("exit %d, want 1 naming bin/tool and data/dump.json:\n%s", code, out)
+		}
+	})
+	symlinkToELF := func(t *testing.T) (string, func(...string)) {
+		t.Helper()
+		dir, git, write := binGuardRepo(t)
+		if err := os.Symlink("README.md", filepath.Join(dir, "tool")); err != nil {
+			t.Skipf("cannot create a symlink: %v", err)
+		}
+		git("add", "-A")
+		git("commit", "-q", "-m", "a symlink")
+		if err := os.Remove(filepath.Join(dir, "tool")); err != nil {
+			t.Fatal(err)
+		}
+		write("tool", elfBytes+strings.Repeat("\x00", 2048))
+		git("add", "-A")
+		return dir, git
+	}
+	t.Run("a symlink replaced by an executable fails in the staged mode", func(t *testing.T) {
+		t.Parallel()
+		dir, _ := symlinkToELF(t)
+		out, code := runNoBinaries(t, dir, []string{"MAX_NEW_FILE_BYTES=1024"})
+		if code != 1 || !strings.Contains(out, "tool: binary file") || !strings.Contains(out, "tool: new file of") {
+			t.Fatalf("exit %d, want 1 naming tool as binary and over the cap:\n%s", code, out)
+		}
+	})
+	t.Run("a symlink replaced by an executable fails in the range mode", func(t *testing.T) {
+		t.Parallel()
+		dir, git := symlinkToELF(t)
+		git("commit", "-q", "-m", "symlink becomes a binary")
+		out, code := runNoBinaries(t, dir, []string{"MAX_NEW_FILE_BYTES=1024"}, "--range", "HEAD^", "HEAD")
+		if code != 1 || !strings.Contains(out, "tool: binary file") || !strings.Contains(out, "tool: new file of") {
+			t.Fatalf("exit %d, want 1 naming tool as binary and over the cap:\n%s", code, out)
+		}
+	})
+	t.Run("a shallow clone that stops inside the range fails loudly", func(t *testing.T) {
+		t.Parallel()
+		dir, git, write := binGuardRepo(t)
+		for _, n := range []string{"1", "2"} {
+			write("f"+n, n+"\n")
+			git("add", "-A")
+			git("commit", "-q", "-m", n)
+		}
+		// What actions/checkout's fetch-depth: 2 gives a pull request: the
+		// merge commit and its parents, not the parents' history.
+		git("checkout", "-q", "main")
+		write("g", "main moved\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "main moved")
+		git("merge", "-q", "--no-ff", "--no-edit", "feature")
+		clone := t.TempDir()
+		git("clone", "-q", "--depth", "2", "--branch", "main", "file://"+dir, clone)
+		if out, code := runNoBinaries(t, clone, nil, "--range", "HEAD^1", "HEAD"); code != 2 || !strings.Contains(out, "shallow") {
+			t.Fatalf("exit %d, want 2 naming the shallow clone:\n%s", code, out)
 		}
 	})
 	t.Run("an allowlisted glob passes", func(t *testing.T) {

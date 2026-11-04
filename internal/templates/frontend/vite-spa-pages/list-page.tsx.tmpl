@@ -21,7 +21,11 @@
 //   - Typed columns: enum columns render through <StatusBadge>, which takes
 //     the raw field plus the enum object and does the protobuf-es NUMBER →
 //     member-name reverse map itself; money (*_cents) columns format as
-//     currency.
+//     currency; foreign keys show the referenced record's name.
+//   - Rows keep table semantics: the primary cell is a real link, and the
+//     row click is a pointer convenience on top of it.
+//   - Filters sit in their own wrapping toolbar row (the installed
+//     <FilterBar>); the record count lives in the pager.
 //
 // This file is yours — hand-edit freely. To regenerate it from the current
 // proto, delete the file and run `forge project rescaffold <path>`.
@@ -32,23 +36,35 @@
        writer sorts what was actually emitted — see
        templates.CanonicalTSImportOrder. List a new import wherever it reads
        best; do not hand-maintain the order. */}}
-{{- if or .HasCursorPagination .SearchFilterField .ExactFilterFields}}
+{{- if or .HasCursorPagination .SearchFilterField .ExactFilterFields .HasListSortColumn}}
 
 import { useState } from "react";
 {{- end}}
-import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";
+import { Resource, type ResourceColumn{{if .HasListSortColumn}}, type ResourceSort{{end}} } from "@reliantlabs/forge-web-runtime";
 import { keepPreviousData } from "@tanstack/react-query";
-{{- if or .HasCreate .EmitsDetailPage}}
-import { {{if .HasCreate}}Link{{end}}{{if and .HasCreate .EmitsDetailPage}}, {{end}}{{if .EmitsDetailPage}}useNavigate{{end}} } from "@tanstack/react-router";
+{{- if .EmitsDetailPage}}
+import { {{if .PrimaryListColumn}}Link, {{end}}useNavigate } from "@tanstack/react-router";
 {{- end}}
 {{- if .HasCreate}}
 import { Plus } from "lucide-react";
 {{- end}}
 
+{{if .HasListEntityName}}import { EntityName } from "@/components/entity-name";
+{{end -}}
+{{if .HasListFKFilter}}import { EntityPicker } from "@/components/entity-picker";
+{{end -}}
 {{if .HasBadgeColumns}}import { StatusBadge } from "@/components/status-badge";
+{{end -}}
+{{if .HasCreate}}import Button from "@/components/ui/button";
+{{end -}}
+{{if .ExactFilterFields}}import FilterBar from "@/components/ui/filter_bar";
+{{end -}}
+{{if .HasScalarExactFilter}}import Input from "@/components/ui/input";
 {{end}}import { useQueryResource{{if .HasScalarExactFilter}}, useDebouncedValue{{end}} } from "@/hooks/use-query-resource";
 import { {{if .HasMoneyColumns}}formatMoneyCents, {{end}}formatValue } from "@/lib/format-utils";
-import { use{{.ListRPC}} } from "{{.HooksImportPath}}";
+{{- range .ListHookImports}}
+import { {{joinStrings .Symbols ", "}} } from "{{.Module}}";
+{{- end}}
 {{- range .ListEnumImports}}
 import { {{range $i, $t := .Types}}{{if $i}}, {{end}}{{$t}}{{end}} } from "{{.Path}}";
 {{- end}}
@@ -64,32 +80,78 @@ const PAGE_SIZE = 25;
 // ---- Typed columns ----
 // One entry per renderable proto field, type-checked against {{.EntityName}}.
 {{- if .EmitsDetailPage}}
-// The id and the created/updated timestamps are deliberately NOT here — the row
-// already links to the detail page, which is where they belong. Add one back if
-// this list needs it; this file is yours.
+// The id and the created/updated timestamps are deliberately NOT here — the
+// primary cell already links to the detail page, which is where they belong.
+// Add one back if this list needs it; this file is yours.
 {{- else}}
 // The service has no Get RPC, so there is no detail page: rows are not links,
 // and the id and timestamps a detail page would show stay here instead. Add a
 // Get RPC (and delete + rescaffold this file) to give records a page of their own.
 {{- end}}
+{{- if .HasListSortColumn}}
+// A column with a sortKey sorts SERVER-SIDE: the key is the List request's
+// order_by (a column name). A sorted list is one page — the server's keyset
+// cursor pages only in primary-key order, so it returns no next-page token.
+{{- end}}
 const columns: ResourceColumn<{{.EntityName}}>[] = [
+{{- $primary := .PrimaryListColumn}}
 {{- range .ListColumns}}
   {
     header: "{{.Label}}",
-{{- if .IsBadge}}
-{{- if .EnumType}}
-    cell: (item) => <StatusBadge value={item.{{.Name}}} enumType={ {{.EnumType}} } />,
-{{- else}}
-    cell: (item) => <StatusBadge value={item.{{.Name}}} />,
+{{- if and $.HasSort .SortKey}}
+    sortKey: "{{.SortKey}}",
 {{- end}}
-{{- else if .IsMoney}}
-    cell: (item) => formatMoneyCents(item.{{.Name}}{{if .CurrencyField}}, item.{{.CurrencyField}}{{end}}),
+{{- if and $primary (eq .Name $primary)}}
+    cell: (item) => (
+      <Link
+        to="/{{$.EntitySlug}}/$id"
+        params={ { id: String(item.{{$.PkFieldCamel}}) } }
+        className="font-medium text-ink underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        {{- if or .FK .IsBadge}}
+        {{template "listCellValue" .}}
+        {{- else}}
+        {{"{"}}{{template "listCellValue" .}}{{"}"}}
+        {{- end}}
+      </Link>
+    ),
 {{- else}}
-    cell: (item) => formatValue(item.{{.Name}}),
+    cell: (item) => {{template "listCellValue" .}},
 {{- end}}
   },
 {{- end}}
 ];
+{{- if .ListFilterBarFields}}
+
+// The facets <FilterBar> renders. Its values are strings: an enum member's
+// number, or "true" / "false".
+const filterDefs = [
+{{- range .ListFilterBarFields}}
+{{- if eq .Kind "enum"}}
+  {
+    key: "{{.Name}}",
+    label: "{{.Label}}",
+    type: "select" as const,
+    options: [
+{{- range .EnumValues}}
+      { value: String({{.Ref}}), label: "{{.Label}}" },
+{{- end}}
+    ],
+  },
+{{- else}}
+  {
+    key: "{{.Name}}",
+    label: "{{.Label}}",
+    type: "select" as const,
+    options: [
+      { value: "true", label: "{{.Label}}" },
+      { value: "false", label: "Not {{.Label | lower}}" },
+    ],
+  },
+{{- end}}
+{{- end}}
+];
+{{- end}}
 
 export default function {{.EntityNamePlural}}Page() {
 {{- if .EmitsDetailPage}}
@@ -98,18 +160,29 @@ export default function {{.EntityNamePlural}}Page() {
 {{- if .HasCursorPagination}}
 
   // Cursor stack: each entry is the page_token that opened that page (the
-  // last entry is the current page; empty = first page). Any filter change
-  // resets the stack to page one.
+  // last entry is the current page; empty = first page). Any filter or sort
+  // change resets the stack to page one.
   const [cursor, setCursor] = useState<string[]>([]);
 {{- end}}
 {{- if .SearchFilterField}}
   const [search, setSearch] = useState("");
+{{- end}}
+{{- if .HasListSortColumn}}
+  const [sort, setSort] = useState<ResourceSort | null>(null);
 {{- end}}
 {{- range .ExactFilterFields}}
 {{- if eq .Kind "enum"}}
   const [{{.Name}}, set{{.NamePascal}}] = useState<{{.EnumType}} | undefined>(undefined);
 {{- else if eq .Kind "bool"}}
   const [{{.Name}}, set{{.NamePascal}}] = useState<boolean | undefined>(undefined);
+{{- else if eq .Kind "fk"}}
+  const [{{.Name}}, set{{.NamePascal}}State] = useState<string | undefined>(undefined);
+  const set{{.NamePascal}} = (value: string | undefined) => {
+    set{{.NamePascal}}State(value);
+{{- if $.HasCursorPagination}}
+    setCursor([]);
+{{- end}}
+  };
 {{- else}}
   // Debounced so typing doesn't fire one RPC per keystroke.
   const [{{.Name}}Input, set{{.NamePascal}}Input] = useState("");
@@ -117,14 +190,18 @@ export default function {{.EntityNamePlural}}Page() {
 {{- end}}
 {{- end}}
 
-  // Server-side query: filters + cursor go to the backend; nothing is
-  // filtered or capped in the browser.
+  // Server-side query: filters, sort and cursor go to the backend; nothing is
+  // filtered, sorted or capped in the browser.
   const query = use{{.ListRPC}}({
 {{- if .HasPageSize}}
     pageSize: PAGE_SIZE,
 {{- end}}
 {{- if .HasCursorPagination}}
     pageToken: cursor.at(-1),
+{{- end}}
+{{- if .HasListSortColumn}}
+    orderBy: sort?.key ?? "",
+    descending: sort?.descending ?? false,
 {{- end}}
 {{- if .SearchFilterField}}
     {{.SearchFilterField}}: search || undefined,
@@ -140,7 +217,7 @@ export default function {{.EntityNamePlural}}Page() {
 {{- else}}
     {{.Name}}: {{.Name}} === "" ? undefined : Number({{.Name}}),
 {{- end}}
-{{- else if eq .Kind "text"}}
+{{- else if or (eq .Kind "text") (eq .Kind "fk")}}
     {{.Name}}: {{.Name}} || undefined,
 {{- else}}
     {{.Name}}: {{.Name}},
@@ -153,7 +230,7 @@ export default function {{.EntityNamePlural}}Page() {
   const nextToken = resource.status === "success" ? resource.data.{{.NextTokenField}} : "";
 {{- end}}
 {{- if .HasTotalCount}}
-  const total = resource.status === "success" ? resource.data.{{.TotalCountField}} : undefined;
+  const total = resource.status === "success" ? Number(resource.data.{{.TotalCountField}}) : undefined;
 {{- end}}
 
   return (
@@ -168,6 +245,9 @@ export default function {{.EntityNamePlural}}Page() {
       rowKey={(item) => String(item.{{.PkFieldCamel}})}
 {{- if .EmitsDetailPage}}
       onRowClick={(item) => void navigate({ to: `/{{.EntitySlug}}/$id`, params: { id: String(item.{{.PkFieldCamel}}) } })}
+{{- if .PrimaryListColumn}}
+      rowsHaveLinks
+{{- end}}
 {{- end}}
       emptyTitle="No {{.EntityNamePlural | humanLower}} found"
       emptyMessage="No records match the current view."
@@ -181,84 +261,102 @@ export default function {{.EntityNamePlural}}Page() {
       }}
       filterPlaceholder="Search {{.EntityNamePlural | humanLower}}…"
 {{- end}}
+{{- if .HasListSortColumn}}
+      sort={sort}
+      onSortChange={(next) => {
+        setSort(next);
+{{- if .HasCursorPagination}}
+        setCursor([]);
+{{- end}}
+      }}
+{{- end}}
 {{- if .HasCursorPagination}}
       onNextPage={() => setCursor((c) => [...c, nextToken])}
       onPrevPage={() => setCursor((c) => c.slice(0, -1))}
       hasNextPage={Boolean(nextToken)}
       hasPrevPage={cursor.length > 0}
 {{- end}}
-{{- if or .HasCreate .HasTotalCount .ExactFilterFields}}
-      actions={
-        <>
 {{- if .HasTotalCount}}
-          {total !== undefined ? (
-            <span className="text-sm text-ink-muted">{total} total</span>
-          ) : null}
+      totalCount={total}
+{{- if .HasPageSize}}
+      pageStart={ {{if .HasCursorPagination}}cursor.length * PAGE_SIZE{{else}}0{{end}} }
 {{- end}}
-{{- range .ExactFilterFields}}
-{{- if eq .Kind "enum"}}
-          <select
-            aria-label="Filter by {{.Label | lower}}"
-            value={ {{.Name}} === undefined ? "" : String({{.Name}}) }
-            onChange={(e) => {
-              const v = e.target.value;
-              set{{.NamePascal}}(v === "" ? undefined : (Number(v) as {{.EnumType}}));
-{{- if $.HasCursorPagination}}
-              setCursor([]);
 {{- end}}
-            }}
-            className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-          >
-            <option value="">All {{.Label | lower}}</option>
-{{- range .EnumValues}}
-            <option value={String({{.Ref}})}>{{.Label}}</option>
-{{- end}}
-          </select>
-{{- else if eq .Kind "bool"}}
-          <select
-            aria-label="Filter by {{.Label | lower}}"
-            value={ {{.Name}} === undefined ? "" : {{.Name}} ? "true" : "false" }
-            onChange={(e) => {
-              const v = e.target.value;
-              set{{.NamePascal}}(v === "" ? undefined : v === "true");
-{{- if $.HasCursorPagination}}
-              setCursor([]);
-{{- end}}
-            }}
-            className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-          >
-            <option value="">All</option>
-            <option value="true">{{.Label}}</option>
-            <option value="false">Not {{.Label}}</option>
-          </select>
+{{- if .ExactFilterFields}}
+      toolbar={
+        <FilterBar
+          filters={ {{if .ListFilterBarFields}}filterDefs{{else}}[]{{end}} }
+          values={ {
+{{- range $i, $f := .ListFilterBarFields}}
+{{- if eq $f.Kind "enum"}}
+            {{$f.Name}}: {{$f.Name}} === undefined ? "" : String({{$f.Name}}),
 {{- else}}
-          <input
-            {{- /* A 64-bit field is filtered as TEXT: <input type="number"> is a
-                   double and cannot hold every int64. */}}
-            type="{{if and (eq .Kind "number") (not .IsBigInt)}}number{{else if eq .Kind "number"}}text{{else}}search{{end}}"
-            aria-label="Filter by {{.Label | lower}}"
-            value={ {{.Name}}Input }
-            onChange={(e) => {
-              set{{.NamePascal}}Input(e.target.value);
+            {{$f.Name}}: {{$f.Name}} === undefined ? "" : String({{$f.Name}}),
+{{- end}}
+{{- end}}
+          } }
+          onFilterChange={(next) => {
+{{- range .ListFilterBarFields}}
+{{- if eq .Kind "enum"}}
+            set{{.NamePascal}}(next.{{.Name}} ? (Number(next.{{.Name}}) as {{.EnumType}}) : undefined);
+{{- else}}
+            set{{.NamePascal}}(next.{{.Name}} ? next.{{.Name}} === "true" : undefined);
+{{- end}}
+{{- end}}
+{{- if .HasCursorPagination}}
+            setCursor([]);
+{{- end}}
+          }}
+          onClearAll={() => {
+{{- range .ExactFilterFields}}
+{{- if eq .Kind "fk"}}
+            set{{.NamePascal}}State(undefined);
+{{- else if or (eq .Kind "enum") (eq .Kind "bool")}}
+            set{{.NamePascal}}(undefined);
+{{- else}}
+            set{{.NamePascal}}Input("");
+{{- end}}
+{{- end}}
+{{- if .HasCursorPagination}}
+            setCursor([]);
+{{- end}}
+          }}
+{{- if .ListFilterExtraFields}}
+          hasOtherFilters={ {{range $i, $f := .ListFilterExtraFields}}{{if $i}} || {{end}}Boolean({{$f.Name}}{{if ne $f.Kind "fk"}}Input{{end}}){{end}} }
+        >
+{{- range .ListFilterExtraFields}}
+{{- if eq .Kind "fk"}}
+{{- template "listFKFilterPicker" .}}
+{{- else}}
+          <div className="w-full min-w-0 sm:w-48">
+            <Input
+              {{- /* A 64-bit field is filtered as TEXT: <input type="number"> is a
+                     double and cannot hold every int64. */}}
+              type="{{if and (eq .Kind "number") (not .IsBigInt)}}number{{else if eq .Kind "number"}}text{{else}}search{{end}}"
+              aria-label="Filter by {{.Label | lower}}"
+              value={ {{.Name}}Input }
+              onChange={(e) => {
+                set{{.NamePascal}}Input(e.target.value);
 {{- if $.HasCursorPagination}}
-              setCursor([]);
+                setCursor([]);
 {{- end}}
-            }}
-            placeholder="{{.Label}}"
-            className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-          />
+              }}
+              placeholder="{{.Label}}"
+            />
+          </div>
 {{- end}}
+{{- end}}
+        </FilterBar>
+{{- else}}
+        />
+{{- end}}
+      }
 {{- end}}
 {{- if .HasCreate}}
-          <Link
-            to="/{{.EntitySlug}}/new"
-            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent shadow-sm hover:bg-accent-hover"
-          >
-            <Plus aria-hidden className="h-4 w-4" strokeWidth={2} />
-            Create {{.EntityName | humanize}}
-          </Link>
-{{- end}}
-        </>
+      actions={
+        <Button href="/{{.EntitySlug}}/new" size="lg" leftIcon={<Plus aria-hidden strokeWidth={2} />}>
+          New {{.EntityName | humanize}}
+        </Button>
       }
 {{- end}}
     />

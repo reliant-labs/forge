@@ -190,3 +190,67 @@ definition serves both trees.
             />
           ),
 {{- end}}
+
+{{- define "listCellValue"}}
+{{- /* One list cell's value, shared by the Next.js and Vite list pages. A
+       foreign key resolves to the referent's name — one Get per DISTINCT id
+       on the page, cached by React Query — instead of printing a UUID. The
+       value starts at the caller's cursor (no leading newline or indent), so
+       a plain cell stays on its `cell: (item) => …,` line. */}}
+{{- if .FK -}}
+<EntityName
+          id={item.{{.Name}}}
+          useGet={ {{.FK.GetHook}} }
+          buildRequest={(value) => ({ {{.FK.PkFieldCamel}}: value })}
+          nameOf={(res) => res.{{.FK.GetEntityField}}?.{{if .FK.LabelField}}{{.FK.LabelField}}{{else}}{{.FK.PkFieldCamel}}{{end}}}
+        />
+{{- else if .IsBadge}}
+{{- if .EnumType -}}
+<StatusBadge value={item.{{.Name}}} enumType={ {{.EnumType}} } />
+{{- else -}}
+<StatusBadge value={item.{{.Name}}} />
+{{- end}}
+{{- else if .IsMoney -}}
+formatMoneyCents(item.{{.Name}}{{if .CurrencyField}}, item.{{.CurrencyField}}{{end}})
+{{- else -}}
+formatValue(item.{{.Name}})
+{{- end}}
+{{- end}}
+
+{{- define "listFKFilterPicker"}}
+{{- /* A foreign-key filter: browse {{.FK.EntityName}} by name, filter by its
+       id. The page declares `{{.Name}}` and `set{{.NamePascal}}` (URL state in
+       Next.js, component state in Vite); the closed picker resolves the id it
+       was handed back to a name through <EntityName>. */}}
+          <div className="w-full min-w-0 sm:w-56">
+            <EntityPicker
+              id="filter-{{.Name}}"
+              value={ {{.Name}} }
+              onChange={(picked) => set{{.NamePascal}}(picked)}
+              useList={ {{.FK.ListHook}} }
+{{- if .FK.SearchFilterField}}
+              buildRequest={(search) => ({ {{if .FK.HasPageSize}}pageSize: 20, {{end}}{{.FK.SearchFilterField}}: search || undefined })}
+{{- else}}
+              buildRequest={() => ({ {{if .FK.HasPageSize}}pageSize: 20{{end}} })}
+              searchable={false}
+{{- end}}
+              itemsOf={(res) => res.{{.FK.ItemsField}}}
+{{- if .FK.NextTokenField}}
+              hasMoreOf={(res) => Boolean(res.{{.FK.NextTokenField}})}
+{{- end}}
+              optionValue={(item) => item.{{.FK.PkFieldCamel}}}
+              optionLabel={(item) => String(item.{{if .FK.LabelField}}{{.FK.LabelField}}{{else}}{{.FK.PkFieldCamel}}{{end}})}
+              selectedLabel={
+                <EntityName
+                  id={ {{.Name}} }
+                  useGet={ {{.FK.GetHook}} }
+                  buildRequest={(value) => ({ {{.FK.PkFieldCamel}}: value })}
+                  nameOf={(res) => res.{{.FK.GetEntityField}}?.{{if .FK.LabelField}}{{.FK.LabelField}}{{else}}{{.FK.PkFieldCamel}}{{end}}}
+                />
+              }
+              placeholder="All {{.Label | lower}}s"
+              clearable
+              aria-label="Filter by {{.Label | lower}}"
+            />
+          </div>
+{{- end}}

@@ -185,6 +185,44 @@ func AttachForeignKeys(page *PageTemplateData, referents map[string]PageFieldFK)
 			page.Columns[i].Label = trimIDLabel(page.Columns[i].Label)
 		}
 	}
+	// The list's columns are a COPY of Columns, taken before this pass ran,
+	// so they need the same resolution — leaving them out is what had list
+	// pages print UUIDs under "Customer Id" while the detail page showed the
+	// customer's name. A foreign key is not sortable: ordering by a UUID
+	// means nothing to the reader of the column, which shows a name.
+	for i := range page.ListColumns {
+		fk := resolveColumnFK(page, page.ListColumns[i], referents)
+		page.ListColumns[i].FK = fk
+		if fk != nil {
+			page.ListColumns[i].Label = trimIDLabel(page.ListColumns[i].Label)
+			page.ListColumns[i].SortKey = ""
+		}
+	}
+	// A foreign-key FILTER is a picker over the referent, not a text box
+	// for a UUID. Only a plain string filter can be one (an enum or bool
+	// filter is not a reference).
+	scalar := false
+	for i := range page.ExactFilterFields {
+		lf := &page.ExactFilterFields[i]
+		if lf.Kind == "text" {
+			if fk := lookupFKByProtoName(page, "", lf.Name, referents); fk != nil {
+				resolved := *fk
+				// The value comes from the URL, so the closed picker resolves
+				// its label through <EntityName>, like an edit form's.
+				resolved.ResolveSelectedLabel = true
+				lf.FK = &resolved
+				lf.Kind = "fk"
+				lf.Label = trimIDLabel(lf.Label)
+			}
+		}
+		if lf.Kind == "text" || lf.Kind == "number" {
+			scalar = true
+		}
+	}
+	// Recomputed, not left as attachListMeta set it: a page whose only
+	// scalar filters became pickers has no debounced input left, and an
+	// unused useDebouncedValue import fails the generated frontend's lint.
+	page.HasScalarExactFilter = scalar
 }
 
 // requireReference marks a resolved, NON-optional foreign key required.
@@ -365,6 +403,127 @@ func (p PageTemplateData) DetailHookImports() []PageHookImport {
 		}
 	}
 	return m.sorted()
+}
+
+// ListHookImports returns the merged generated-hook imports the list page
+// needs: its own List hook, each FK column's Get hook (the <EntityName> cell)
+// and each FK filter's List + Get hooks (the picker and its closed label).
+func (p PageTemplateData) ListHookImports() []PageHookImport {
+	m := newHookImportSet()
+	m.add(p.HooksImportPath, "use"+p.ListRPC)
+	for _, c := range p.ListColumns {
+		if c.FK != nil {
+			m.add(c.FK.HooksModule, c.FK.GetHook)
+		}
+	}
+	for _, f := range p.ExactFilterFields {
+		if f.FK != nil {
+			m.add(f.FK.HooksModule, f.FK.ListHook)
+			m.add(f.FK.HooksModule, f.FK.GetHook)
+		}
+	}
+	return m.sorted()
+}
+
+// HasListFKColumn reports whether a list column is a foreign key, which gates
+// the <EntityName> import on the list page.
+func (p PageTemplateData) HasListFKColumn() bool {
+	for _, c := range p.ListColumns {
+		if c.FK != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// HasListFKFilter reports whether a list filter is a foreign-key picker,
+// which gates the <EntityPicker> import (and its <EntityName> label).
+func (p PageTemplateData) HasListFKFilter() bool {
+	for _, f := range p.ExactFilterFields {
+		if f.FK != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// HasListEntityName reports whether the list page renders <EntityName> at
+// all — in an FK cell or as an FK picker's closed label.
+func (p PageTemplateData) HasListEntityName() bool {
+	return p.HasListFKColumn() || p.HasListFKFilter()
+}
+
+// ListFilterBarFields are the filters the installed <FilterBar> renders
+// itself — enum and bool selects. Pickers and scalar inputs are passed to it
+// as children (ListFilterExtraFields).
+func (p PageTemplateData) ListFilterBarFields() []ListFilterField {
+	var out []ListFilterField
+	for _, f := range p.ExactFilterFields {
+		if f.Kind == "enum" || f.Kind == "bool" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// ListFilterExtraFields are the filters <FilterBar> cannot model: foreign-key
+// pickers and text/number inputs.
+func (p PageTemplateData) ListFilterExtraFields() []ListFilterField {
+	var out []ListFilterField
+	for _, f := range p.ExactFilterFields {
+		if f.Kind != "enum" && f.Kind != "bool" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// HasListSortColumn reports whether the list page sorts at all: the List
+// request takes order_by + descending AND some column has a sort key.
+func (p PageTemplateData) HasListSortColumn() bool {
+	if !p.HasSort {
+		return false
+	}
+	for _, c := range p.ListColumns {
+		if c.SortKey != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ListSortKeys are the sort keys the list page accepts from the URL, in
+// column order. A `?sort=` naming anything else is ignored rather than sent
+// to the server, which would refuse it as an invalid order_by.
+func (p PageTemplateData) ListSortKeys() []string {
+	if !p.HasSort {
+		return nil
+	}
+	var out []string
+	for _, c := range p.ListColumns {
+		if c.SortKey != "" {
+			out = append(out, c.SortKey)
+		}
+	}
+	return out
+}
+
+// PrimaryListColumn is the camelCase name of the list column whose cell
+// links to the record — the display-name column when the list shows it,
+// otherwise the first column. The link is the row's accessible action: a
+// keyboard or screen-reader user reaches the record through it, while the
+// row click stays a pointer convenience. Empty when there is no detail page
+// to link to.
+func (p PageTemplateData) PrimaryListColumn() string {
+	if !p.EmitsDetailPage() || len(p.ListColumns) == 0 {
+		return ""
+	}
+	for _, c := range p.ListColumns {
+		if p.DisplayField != "" && c.Name == p.DisplayField {
+			return c.Name
+		}
+	}
+	return p.ListColumns[0].Name
 }
 
 // HasCreateFK reports whether the create form has a foreign-key field, which

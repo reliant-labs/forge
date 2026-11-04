@@ -69,7 +69,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 	// their line breaks, brace padding and trailing commas.
 	for _, want := range []string{
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
-		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
+		`import { Resource, type ResourceColumn, type ResourceSort } from "@reliantlabs/forge-web-runtime";`,
 		`import { OrderStatus } from "@/gen/services/order/v1/order_pb";`,
 		`const resource = useQueryResource(query);`,
 		`<Resource<Order>`,
@@ -80,8 +80,18 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		`pageToken: cursor.at(-1),`,
 		`search: search || undefined,`,
 		`status: status,`,
-		// Typed enum <select> for the status filter.
-		`<option value={String(OrderStatus.SHIPPED)}>Shipped</option>`,
+		// The status facet is a typed option of the installed <FilterBar>,
+		// in the wrapping toolbar row, not in the header's actions.
+		`{ value: OrderStatus[OrderStatus.SHIPPED], label: "Shipped" }`,
+		`import FilterBar from "@/components/ui/filter_bar";`,
+		`toolbar={`,
+		`<FilterBar`,
+		// Server-side sort through the URL, by declared column keys only.
+		`const sortKeys = ["status", "amount_cents", "note"] as const;`,
+		`onSortChange={`,
+		// A foreign-key column shows the customer's name, not its UUID.
+		`useGetCustomer`,
+		`id={item.customerId}`,
 		// Cursor pagination + real total.
 		`onNextPage={() => setCursor((c) => [...c, nextToken])}`,
 		`hasNextPage={Boolean(nextToken)}`,
@@ -97,6 +107,9 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		"items.filter(",
 		"pageSize: 200",
 		".filter((item)",
+		// The list printed the raw foreign key under "Customer Id".
+		"formatValue(item.customerId)",
+		`header: "Customer Id"`,
 	} {
 		if containsTSE2E(list, bad) {
 			t.Errorf("generated list page STILL has the client-side/compute defect %q:\n%s", bad, list)
@@ -112,7 +125,8 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		`const params = useTypedSearchParams(searchParamsSchema);`,
 		`const search = params.q ?? "";`,
 		`const status = statusOptions.find((member) => OrderStatus[member] === params.status);`,
-		`setFilters({ status: picked === undefined ? undefined : OrderStatus[picked] });`,
+		`setFilters({ status: next.status });`,
+		`values={{ status: params.status ?? "" }}`,
 		// useSearchParams() outside a Suspense boundary fails `next build`.
 		`<Suspense fallback={<SkeletonLoader variant="table-row" count={5} />}>`,
 	} {

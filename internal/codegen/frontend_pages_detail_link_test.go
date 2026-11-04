@@ -97,6 +97,14 @@ func TestListPage_RowLinksOnlyToAGeneratedDetailPage(t *testing.T) {
 			}
 
 			if tc.withGet {
+				// The primary cell links to the record, so the row click is
+				// pointer-only: the page must say so, or <Resource> makes
+				// every row a second tab stop beside its link.
+				for name, out := range map[string]string{"Next.js": next, "Vite": vite} {
+					if !strings.Contains(out, "rowsHaveLinks") {
+						t.Errorf("%s list page links its primary cell but does not pass rowsHaveLinks:\n%s", name, out)
+					}
+				}
 				return
 			}
 			// No link, so nothing the link needed: an unused router hook

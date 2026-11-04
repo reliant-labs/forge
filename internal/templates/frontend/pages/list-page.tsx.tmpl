@@ -24,7 +24,13 @@
 //     entity) instead of reflected out of Object.keys at runtime. Enum
 //     columns render through <StatusBadge>, which takes the raw field plus
 //     the enum object and does the protobuf-es NUMBER → member-name reverse
-//     map itself; money columns (*_cents) format as currency.
+//     map itself; money columns (*_cents) format as currency; foreign keys
+//     show the referenced record's name through <EntityName>.
+//   - Rows keep table semantics. The record's primary cell is a real link
+//     (what a keyboard or screen-reader user follows); clicking elsewhere on
+//     the row is a pointer convenience on top of it.
+//   - Filters sit in a toolbar row of their own (the installed <FilterBar>),
+//     which wraps on a phone; the record count lives in the pager.
 //
 // This file is yours — hand-edit freely (add a column, tweak a cell). To
 // regenerate it from the current proto, delete the file and run
@@ -35,10 +41,12 @@
      line order here can be canonical for every entity. The page writer sorts
      what was actually emitted — see templates.CanonicalTSImportOrder. List a
      new import wherever it reads best; do not hand-maintain the order. */}}
-import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";
+import { Resource, type ResourceColumn{{if .HasListSortColumn}}, type ResourceSort{{end}} } from "@reliantlabs/forge-web-runtime";
 import { keepPreviousData } from "@tanstack/react-query";
 {{- if .HasCreate}}
 import { Plus } from "lucide-react";
+{{- end}}
+{{- if .PrimaryListColumn}}
 import Link from "next/link";
 {{- end}}
 {{- if .HasURLFilters}}
@@ -54,7 +62,17 @@ import { useState } from "react";
 {{- end}}
 {{- end}}
 
+{{if .HasListEntityName}}import { EntityName } from "@/components/entity-name";
+{{end -}}
+{{if .HasListFKFilter}}import { EntityPicker } from "@/components/entity-picker";
+{{end -}}
 {{if .HasBadgeColumns}}import { StatusBadge } from "@/components/status-badge";
+{{end -}}
+{{if .HasCreate}}import Button from "@/components/ui/button";
+{{end -}}
+{{if .ExactFilterFields}}import FilterBar from "@/components/ui/filter_bar";
+{{end -}}
+{{if .HasScalarExactFilter}}import Input from "@/components/ui/input";
 {{end -}}
 {{if .HasURLFilters}}import SkeletonLoader from "@/components/ui/skeleton_loader";
 {{end}}import { useQueryResource{{if .HasScalarExactFilter}}, useDebouncedValue{{end}} } from "@/hooks/use-query-resource";
@@ -65,7 +83,9 @@ import { {{if .HasMoneyColumns}}formatMoneyCents, {{end}}formatValue } from "@/l
 {{- if .HasURLFilters}}
 import { useTypedSearchParams } from "@/lib/search-schemas";
 {{- end}}
-import { use{{.ListRPC}} } from "{{.HooksImportPath}}";
+{{- range .ListHookImports}}
+import { {{joinStrings .Symbols ", "}} } from "{{.Module}}";
+{{- end}}
 {{- range .ListEnumImports}}
 import { {{range $i, $t := .Types}}{{if $i}}, {{end}}{{$t}}{{end}} } from "{{.Path}}";
 {{- end}}
@@ -82,28 +102,42 @@ const PAGE_SIZE = 25;
 // ---- Typed columns ----
 // One entry per renderable proto field, type-checked against {{.EntityName}}.
 {{- if .EmitsDetailPage}}
-// The id and the created/updated timestamps are deliberately NOT here — the row
-// already links to the detail page, which is where they belong. Add one back if
-// this list needs it; this file is yours.
+// The id and the created/updated timestamps are deliberately NOT here — the
+// primary cell already links to the detail page, which is where they belong.
+// Add one back if this list needs it; this file is yours.
 {{- else}}
 // The service has no Get RPC, so there is no detail page: rows are not links,
 // and the id and timestamps a detail page would show stay here instead. Add a
 // Get RPC (and delete + rescaffold this file) to give records a page of their own.
 {{- end}}
+{{- if .HasListSortColumn}}
+// A column with a sortKey sorts SERVER-SIDE: the key is the List request's
+// order_by (a column name). A sorted list is one page — the server's keyset
+// cursor pages only in primary-key order, so it returns no next-page token.
+{{- end}}
 const columns: ResourceColumn<{{.EntityName}}>[] = [
+{{- $primary := .PrimaryListColumn}}
 {{- range .ListColumns}}
   {
     header: "{{.Label}}",
-{{- if .IsBadge}}
-{{- if .EnumType}}
-    cell: (item) => <StatusBadge value={item.{{.Name}}} enumType={ {{.EnumType}} } />,
-{{- else}}
-    cell: (item) => <StatusBadge value={item.{{.Name}}} />,
+{{- if and $.HasSort .SortKey}}
+    sortKey: "{{.SortKey}}",
 {{- end}}
-{{- else if .IsMoney}}
-    cell: (item) => formatMoneyCents(item.{{.Name}}{{if .CurrencyField}}, item.{{.CurrencyField}}{{end}}),
+{{- if and $primary (eq .Name $primary)}}
+    cell: (item) => (
+      <Link
+        href={entityViewHref("{{$.EntitySlug}}", item.{{$.PkFieldCamel}})}
+        className="font-medium text-ink underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        {{- if or .FK .IsBadge}}
+        {{template "listCellValue" .}}
+        {{- else}}
+        {{"{"}}{{template "listCellValue" .}}{{"}"}}
+        {{- end}}
+      </Link>
+    ),
 {{- else}}
-    cell: (item) => formatValue(item.{{.Name}}),
+    cell: (item) => {{template "listCellValue" .}},
 {{- end}}
   },
 {{- end}}
@@ -111,9 +145,9 @@ const columns: ResourceColumn<{{.EntityName}}>[] = [
 
 {{- if .HasURLFilters}}
 
-// The URL is the source of truth for this page's filters — the "schema at
-// the URL boundary" convention from the `frontend/state` skill, driven by
-// useTypedSearchParams. A dashboard tile linking to
+// The URL is the source of truth for this page's filters and sort — the
+// "schema at the URL boundary" convention from the `frontend/state` skill,
+// driven by useTypedSearchParams. A dashboard tile linking to
 // `/{{.EntitySlug}}?…` therefore lands on a FILTERED list; the Back button undoes a
 // filter change; and a filtered view is a link somebody can paste into a
 // ticket. Holding these in useState instead makes every such link dead — it
@@ -125,7 +159,17 @@ const searchParamsSchema = z.object({
 {{- range .ExactFilterFields}}
   {{.Name}}: z.string().optional(),
 {{- end}}
+{{- if .HasListSortColumn}}
+  sort: z.string().optional(),
+  desc: z.string().optional(),
+{{- end}}
 });
+{{- if .HasListSortColumn}}
+
+// The sort keys this page accepts from `?sort=`. Anything else is ignored
+// rather than sent: the server refuses an order_by it does not know.
+const sortKeys = [{{range $i, $k := .ListSortKeys}}{{if $i}}, {{end}}"{{$k}}"{{end}}] as const;
+{{- end}}
 {{- range .ExactFilterFields}}
 {{- if eq .Kind "enum"}}
 
@@ -134,6 +178,36 @@ const searchParamsSchema = z.object({
 // filter" rather than an error page.
 const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.Ref}}{{end}}] as const;
 {{- end}}
+{{- end}}
+{{- if .ListFilterBarFields}}
+
+// The facets <FilterBar> renders (its values are the URL tokens above).
+const filterDefs = [
+{{- range $f := .ListFilterBarFields}}
+{{- if eq .Kind "enum"}}
+  {
+    key: "{{.Name}}",
+    label: "{{.Label}}",
+    type: "select" as const,
+    options: [
+{{- range .EnumValues}}
+      { value: {{$f.EnumType}}[{{.Ref}}], label: "{{.Label}}" },
+{{- end}}
+    ],
+  },
+{{- else}}
+  {
+    key: "{{.Name}}",
+    label: "{{.Label}}",
+    type: "select" as const,
+    options: [
+      { value: "true", label: "{{.Label}}" },
+      { value: "false", label: "Not {{.Label | lower}}" },
+    ],
+  },
+{{- end}}
+{{- end}}
+];
 {{- end}}
 {{- end}}
 
@@ -168,17 +242,29 @@ const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.
   // Cursor stack: each entry is the page_token that opened that page (the
   // last entry is the current page; empty = first page). The cursor stays in
   // component state — it is an opaque server cursor, not a view worth
-  // linking to — and any filter change resets the stack to page one.
+  // linking to — and any filter or sort change resets the stack to page one.
   const [cursor, setCursor] = useState<string[]>([]);
 {{- end}}
 {{- if .SearchFilterField}}
   const search = params.q ?? "";
+{{- end}}
+{{- if .HasListSortColumn}}
+  const sortKey = sortKeys.find((key) => key === params.sort);
+  const sort: ResourceSort | null = sortKey ? { key: sortKey, descending: params.desc === "true" } : null;
 {{- end}}
 {{- range .ExactFilterFields}}
 {{- if eq .Kind "enum"}}
   const {{.Name}} = {{.Name}}Options.find((member) => {{.EnumType}}[member] === params.{{.Name}});
 {{- else if eq .Kind "bool"}}
   const {{.Name}} = params.{{.Name}} === undefined ? undefined : params.{{.Name}} === "true";
+{{- else if eq .Kind "fk"}}
+  const {{.Name}} = params.{{.Name}};
+  const set{{.NamePascal}} = (value: string | undefined) => {
+    setFilters({ {{.Name}}: value });
+{{- if $.HasCursorPagination}}
+    setCursor([]);
+{{- end}}
+  };
 {{- else}}
   // Debounced so typing doesn't fire one RPC per keystroke (like the
   // <Resource> search box). The input binds the raw value; the settled value
@@ -191,15 +277,19 @@ const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.
 {{- end}}
 {{- end}}
 
-  // Server-side query: filters + cursor go to the backend; nothing is
-  // filtered or capped in the browser. keepPreviousData holds the prior page
-  // while the next loads (no skeleton flash).
+  // Server-side query: filters, sort and cursor go to the backend; nothing is
+  // filtered, sorted or capped in the browser. keepPreviousData holds the
+  // prior page while the next loads (no skeleton flash).
   const query = use{{.ListRPC}}({
 {{- if .HasPageSize}}
     pageSize: PAGE_SIZE,
 {{- end}}
 {{- if .HasCursorPagination}}
     pageToken: cursor.at(-1),
+{{- end}}
+{{- if .HasListSortColumn}}
+    orderBy: sort?.key ?? "",
+    descending: sort?.descending ?? false,
 {{- end}}
 {{- if .SearchFilterField}}
     {{.SearchFilterField}}: search || undefined,
@@ -215,7 +305,7 @@ const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.
 {{- else}}
     {{.Name}}: {{.Name}} === "" ? undefined : Number({{.Name}}),
 {{- end}}
-{{- else if eq .Kind "text"}}
+{{- else if or (eq .Kind "text") (eq .Kind "fk")}}
     {{.Name}}: {{.Name}} || undefined,
 {{- else}}
     {{.Name}}: {{.Name}},
@@ -228,7 +318,7 @@ const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.
   const nextToken = resource.status === "success" ? resource.data.{{.NextTokenField}} : "";
 {{- end}}
 {{- if .HasTotalCount}}
-  const total = resource.status === "success" ? resource.data.{{.TotalCountField}} : undefined;
+  const total = resource.status === "success" ? Number(resource.data.{{.TotalCountField}}) : undefined;
 {{- end}}
 
   return (
@@ -243,6 +333,9 @@ const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.
       rowKey={(item) => String(item.{{.PkFieldCamel}})}
 {{- if .EmitsDetailPage}}
       onRowClick={(item) => router.push(entityViewHref("{{.EntitySlug}}", item.{{.PkFieldCamel}}))}
+{{- if .PrimaryListColumn}}
+      rowsHaveLinks
+{{- end}}
 {{- end}}
       emptyTitle="No {{.EntityNamePlural | humanLower}} found"
       emptyMessage="No records match the current view."
@@ -256,83 +349,85 @@ const {{.Name}}Options = [{{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v.
       }}
       filterPlaceholder="Search {{.EntityNamePlural | humanLower}}…"
 {{- end}}
+{{- if .HasListSortColumn}}
+      sort={sort}
+      onSortChange={(next) => {
+        setFilters({ sort: next?.key, desc: next?.descending ? "true" : undefined });
+{{- if .HasCursorPagination}}
+        setCursor([]);
+{{- end}}
+      }}
+{{- end}}
 {{- if .HasCursorPagination}}
       onNextPage={() => setCursor((c) => [...c, nextToken])}
       onPrevPage={() => setCursor((c) => c.slice(0, -1))}
       hasNextPage={Boolean(nextToken)}
       hasPrevPage={cursor.length > 0}
 {{- end}}
-{{- if or .HasCreate .HasTotalCount .ExactFilterFields}}
-      actions={
-        <>
 {{- if .HasTotalCount}}
-          {total !== undefined ? (
-            <span className="text-sm text-ink-muted">{total} total</span>
-          ) : null}
+      totalCount={total}
+{{- if .HasPageSize}}
+      pageStart={ {{if .HasCursorPagination}}cursor.length * PAGE_SIZE{{else}}0{{end}} }
 {{- end}}
-{{- range .ExactFilterFields}}
-{{- if eq .Kind "enum"}}
-          <select
-            aria-label="Filter by {{.Label | lower}}"
-            value={ {{.Name}} === undefined ? "" : String({{.Name}}) }
-            onChange={(e) => {
-              const picked = {{.Name}}Options.find((member) => String(member) === e.target.value);
-              setFilters({ {{.Name}}: picked === undefined ? undefined : {{.EnumType}}[picked] });
-{{- if $.HasCursorPagination}}
-              setCursor([]);
 {{- end}}
-            }}
-            className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-          >
-            <option value="">All {{.Label | lower}}</option>
-{{- range .EnumValues}}
-            <option value={String({{.Ref}})}>{{.Label}}</option>
+{{- if .ExactFilterFields}}
+      toolbar={
+        <FilterBar
+          filters={ {{if .ListFilterBarFields}}filterDefs{{else}}[]{{end}} }
+          values={ { {{range $i, $f := .ListFilterBarFields}}{{if $i}}, {{end}}{{$f.Name}}: params.{{$f.Name}} ?? ""{{end}} } }
+          onFilterChange={(next) => {
+            setFilters({ {{range $i, $f := .ListFilterBarFields}}{{if $i}}, {{end}}{{$f.Name}}: next.{{$f.Name}}{{end}} });
+{{- if .HasCursorPagination}}
+            setCursor([]);
 {{- end}}
-          </select>
-{{- else if eq .Kind "bool"}}
-          <select
-            aria-label="Filter by {{.Label | lower}}"
-            value={ {{.Name}} === undefined ? "" : {{.Name}} ? "true" : "false" }
-            onChange={(e) => {
-              setFilters({ {{.Name}}: e.target.value });
-{{- if $.HasCursorPagination}}
-              setCursor([]);
+          }}
+          onClearAll={() => {
+            setFilters({ {{range $i, $f := .ExactFilterFields}}{{if $i}}, {{end}}{{$f.Name}}: undefined{{end}} });
+{{- range .ListFilterExtraFields}}
+{{- if ne .Kind "fk"}}
+            set{{.NamePascal}}Input("");
 {{- end}}
-            }}
-            className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-          >
-            <option value="">All</option>
-            <option value="true">{{.Label}}</option>
-            <option value="false">Not {{.Label}}</option>
-          </select>
+{{- end}}
+{{- if .HasCursorPagination}}
+            setCursor([]);
+{{- end}}
+          }}
+{{- if .ListFilterExtraFields}}
+          hasOtherFilters={ {{range $i, $f := .ListFilterExtraFields}}{{if $i}} || {{end}}Boolean(params.{{$f.Name}}){{end}} }
+        >
+{{- range .ListFilterExtraFields}}
+{{- if eq .Kind "fk"}}
+{{- template "listFKFilterPicker" .}}
 {{- else}}
-          <input
-            {{- /* A 64-bit field is filtered as TEXT: <input type="number"> is a
-                   double and cannot hold every int64. */}}
-            type="{{if and (eq .Kind "number") (not .IsBigInt)}}number{{else if eq .Kind "number"}}text{{else}}search{{end}}"
-            aria-label="Filter by {{.Label | lower}}"
-            value={ {{.Name}}Input }
-            onChange={(e) => {
-              set{{.NamePascal}}Input(e.target.value);
+          <div className="w-full min-w-0 sm:w-48">
+            <Input
+              {{- /* A 64-bit field is filtered as TEXT: <input type="number"> is a
+                     double and cannot hold every int64. */}}
+              type="{{if and (eq .Kind "number") (not .IsBigInt)}}number{{else if eq .Kind "number"}}text{{else}}search{{end}}"
+              aria-label="Filter by {{.Label | lower}}"
+              value={ {{.Name}}Input }
+              onChange={(e) => {
+                set{{.NamePascal}}Input(e.target.value);
 {{- if $.HasCursorPagination}}
-              setCursor([]);
+                setCursor([]);
 {{- end}}
-            }}
-            placeholder="{{.Label}}"
-            className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink shadow-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
-          />
+              }}
+              placeholder="{{.Label}}"
+            />
+          </div>
 {{- end}}
+{{- end}}
+        </FilterBar>
+{{- else}}
+        />
+{{- end}}
+      }
 {{- end}}
 {{- if .HasCreate}}
-          <Link
-            href="/{{.EntitySlug}}/new"
-            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent shadow-sm hover:bg-accent-hover"
-          >
-            <Plus aria-hidden className="h-4 w-4" strokeWidth={2} />
-            Create {{.EntityName | humanize}}
-          </Link>
-{{- end}}
-        </>
+      actions={
+        <Button href="/{{.EntitySlug}}/new" size="lg" leftIcon={<Plus aria-hidden strokeWidth={2} />}>
+          New {{.EntityName | humanize}}
+        </Button>
       }
 {{- end}}
     />

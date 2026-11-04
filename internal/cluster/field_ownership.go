@@ -255,6 +255,12 @@ func ownershipOf(live liveObject) (ownershipPicture, error) {
 	if pic.forge >= 0 && live.entries[pic.forge].APIVersion != "" {
 		pic.version = live.entries[pic.forge].APIVersion
 	}
+	// The probe names the fields of the version the object was read at.
+	// Entries all recorded at another version (forge's included) agree with
+	// one another, not with the probe.
+	if live.version != "" && pic.version != live.version {
+		pic.sameVersion = false
+	}
 	for _, e := range live.entries {
 		s, err := fieldSet(e)
 		if err != nil {
@@ -740,7 +746,11 @@ func readLive(ctx context.Context, run kubectlRun, namespace string, docs []stri
 func patchClaim(ctx context.Context, run kubectlRun, c *ownershipClaim) (conflict bool, err error) {
 	ops := []map[string]any{
 		{"op": "test", "path": "/metadata/resourceVersion", "value": c.rv},
-		{"op": "replace", "path": "/metadata/managedFields", "value": c.entries},
+		// `add`, not `replace`: an object whose history was cleared has no
+		// metadata.managedFields member at all, and a JSON-patch `replace`
+		// of a missing member is refused. `add` sets an object member
+		// whether or not it exists.
+		{"op": "add", "path": "/metadata/managedFields", "value": c.entries},
 	}
 	patch, err := json.Marshal(ops)
 	if err != nil {

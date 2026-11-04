@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -250,6 +251,25 @@ func TestPlanClaim_MixedVersionsAreLeftAlone(t *testing.T) {
 	}
 }
 
+// Every entry, forge's included, recorded at an older version than the one
+// the object (and so the probe) was read at: the sets agree with one another
+// but name the old version's fields, so they cannot say what nobody owns at
+// the new one. The hand edit at forge's version is still taken back.
+func TestPlanClaim_EntriesAtAnotherVersionThanTheProbe(t *testing.T) {
+	managed := strings.ReplaceAll(adminServerManagedFields, `"apiVersion":"apps/v1"`, `"apiVersion":"apps/v1beta2"`)
+	live := liveFixture(t, managed, podTemplate("tmp", "scratch"))
+	if live.version != "apps/v1" {
+		t.Fatalf("fixture read at %q", live.version)
+	}
+	c, err := planClaim(live, setOf(t, adminServerFields), map[string]any{"spec": podTemplate("tmp")}, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c != nil && c.ownerless != 0 {
+		t.Errorf("claimed %d ownerless field(s) judged against a probe at another version", c.ownerless)
+	}
+}
+
 func TestTakenOverManager(t *testing.T) {
 	for _, tc := range []struct {
 		manager, op, sub string
@@ -380,6 +400,9 @@ func (f *fakeOwnershipKubectl) run(_ context.Context, args []string, stdin []byt
 		return b, nil, nil
 	case args[0] == "patch":
 		f.patches = append(f.patches, args[len(args)-1])
+		if msg := f.patchRefusal(args[len(args)-1], stdin); msg != "" {
+			return nil, []byte(msg), errors.New("exit status 1")
+		}
 		if f.lose > 0 {
 			f.lose--
 			if f.raced != nil {
@@ -390,6 +413,43 @@ func (f *fakeOwnershipKubectl) run(_ context.Context, args []string, stdin []byt
 		return nil, nil, nil
 	}
 	return nil, nil, nil
+}
+
+// patchRefusal is the API server's JSON-patch semantics for the patched live
+// object: a `replace` (or `test`) of a member the object lacks is refused, as
+// the server refuses it, so a patch that only works on a fake fails here too.
+func (f *fakeOwnershipKubectl) patchRefusal(patch string, ident []byte) string {
+	var ops []map[string]any
+	if err := json.Unmarshal([]byte(patch), &ops); err != nil {
+		return "error: unable to parse the patch: " + err.Error()
+	}
+	var id struct{ Metadata struct{ Name string } }
+	_ = json.Unmarshal(ident, &id)
+	var obj map[string]any
+	for _, o := range f.live {
+		if md, _ := o["metadata"].(map[string]any); md != nil && md["name"] == id.Metadata.Name {
+			obj = o
+		}
+	}
+	if obj == nil {
+		return fmt.Sprintf("Error from server (NotFound): %q not found", id.Metadata.Name)
+	}
+	for _, op := range ops {
+		path, _ := op["path"].(string)
+		if op["op"] != "replace" && op["op"] != "test" {
+			continue
+		}
+		var node any = obj
+		for _, k := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+			m, _ := node.(map[string]any)
+			v, ok := m[k]
+			if !ok {
+				return fmt.Sprintf("The request is invalid: jsonpatch %s operation does not apply: doc is missing key: %s", op["op"], path)
+			}
+			node = v
+		}
+	}
+	return ""
 }
 
 const adminServerDoc = `apiVersion: apps/v1
@@ -417,8 +477,8 @@ func TestConvergeFieldOwnership_PatchesManagedFieldsBeforeTheApply(t *testing.T)
 	if ops[0]["op"] != "test" || ops[0]["path"] != "/metadata/resourceVersion" || ops[0]["value"] != "41" {
 		t.Errorf("the patch must be guarded by the resourceVersion it was planned on: %v", ops[0])
 	}
-	if ops[1]["op"] != "replace" || ops[1]["path"] != "/metadata/managedFields" {
-		t.Errorf("want a managedFields replace: %v", ops[1])
+	if ops[1]["op"] != "add" || ops[1]["path"] != "/metadata/managedFields" {
+		t.Errorf("want a managedFields add (it may be absent): %v", ops[1])
 	}
 	mf, _ := json.Marshal(ops[1]["value"])
 	var entries []metav1.ManagedFieldsEntry

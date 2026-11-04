@@ -18,6 +18,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cutjournal"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -284,6 +285,34 @@ func TestRestoreCutJournalReplacesTheEnvsState(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(dir, "bin", filepath.FromSlash(MetricsSchemaArtifact)))
 	if err != nil || string(raw) != `{"metrics":[]}` {
 		t.Fatalf("metrics schema = %q, %v", raw, err)
+	}
+}
+
+// An env whose name extends this one (prod-web for prod) shares its filename
+// prefix. Its state is neither snapshotted nor removed by a resume of prod.
+func TestRestoreCutJournalKeepsAnExtendingEnvsState(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, statefile.DirRel)
+	mustNoErr(t, WriteBuildState(dir, "prod", BuildState{Image: "reg/app", Tag: "old"}))
+	mustNoErr(t, buildtarget.WriteState(dir, "prod", buildtarget.State{Service: "api", Image: "reg/api", Tag: "old"}))
+	mustNoErr(t, WriteBuildState(dir, "prod-web", BuildState{Image: "reg/web", Tag: "w1"}))
+	mustNoErr(t, buildtarget.WriteState(dir, "prod-web", buildtarget.State{Service: "api", Image: "reg/web-api", Tag: "w1"}))
+	mustNoErr(t, deploytarget.WriteSourcemapsState(dir, "prod-web", deploytarget.SourcemapsRecord{Frontend: "site"}))
+	mustNoErr(t, deploytarget.WriteSourcemapsState(dir, "prod", deploytarget.SourcemapsRecord{Frontend: "site"}))
+
+	want := "build-prod-api.json,build-prod.json,sourcemaps-prod-site.json"
+	if got := strings.Join(cutJournalStateFiles(dir, "prod"), ","); got != want {
+		t.Fatalf("prod's state files = %s, want %s", got, want)
+	}
+	j := cutjournal.Journal{State: []cutjournal.File{{Name: "build-prod.json", Data: []byte(`{"image":"a"}`)}}}
+	mustNoErr(t, restoreCutJournal(dir, "bin", "prod", j))
+	for _, name := range []string{"build-prod-web.json", "build-prod-web-api.json", "sourcemaps-prod-web-site.json"} {
+		if _, err := os.Stat(filepath.Join(stateDir, name)); err != nil {
+			t.Fatalf("prod-web's %s was removed by a resume of prod: %v", name, err)
+		}
+	}
+	if got := strings.Join(cutJournalStateFiles(dir, "prod"), ","); got != "build-prod.json" {
+		t.Fatalf("prod's state after restore: %s, want only the journal's", got)
 	}
 }
 

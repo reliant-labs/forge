@@ -61,26 +61,54 @@ func cutJournalRepository(plan pushPlan) string {
 // name: the aggregate and per-image build states of each lookup key, and the
 // env's source-map records. One function for the snapshot the writer takes
 // and for the files a resume replaces, so the two cannot cover different sets.
+//
+// The filenames cannot say which env a file belongs to on their own:
+// build-prod-*.json also matches build-prod-web.json, the aggregate of env
+// prod-web, and build-prod-web-api.json, its per-service state. So a file
+// matched by a prefix glob is this env's only when its content says so (see
+// ownsCutJournalStateFile); every other env's state is left alone, never
+// snapshotted and never removed by a resume.
 func cutJournalStateFiles(projectDir, env string) []string {
 	dir := filepath.Join(projectDir, statefile.DirRel)
-	var patterns []string
-	for _, key := range buildStateLookupEnvs(env) {
-		seg := statefile.SafeSegment(key)
-		patterns = append(patterns, "build-"+seg+".json", "build-"+seg+"-*.json")
-	}
-	patterns = append(patterns, "sourcemaps-"+statefile.SafeSegment(envNameOrDefault(env))+"-*.json")
 	seen := map[string]bool{}
 	var out []string
-	for _, p := range patterns {
-		matches, _ := filepath.Glob(filepath.Join(dir, p))
+	add := func(name string) {
+		if !seen[name] && cutjournal.StateFileName(name) {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	glob := func(prefix string, owns func(path, rest string) bool) {
+		matches, _ := filepath.Glob(filepath.Join(dir, prefix+"*.json"))
 		for _, m := range matches {
-			name := filepath.Base(m)
-			if !seen[name] && cutjournal.StateFileName(name) {
-				seen[name] = true
-				out = append(out, name)
+			rest := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), prefix), ".json")
+			if owns(m, rest) {
+				add(filepath.Base(m))
 			}
 		}
 	}
+	for _, key := range buildStateLookupEnvs(env) {
+		seg := statefile.SafeSegment(key)
+		if _, err := os.Stat(filepath.Join(dir, "build-"+seg+".json")); err == nil {
+			add("build-" + seg + ".json")
+		}
+		glob("build-"+seg+"-", func(path, service string) bool {
+			var st buildtarget.State
+			raw, err := os.ReadFile(path)
+			if err != nil || json.Unmarshal(raw, &st) != nil || st.Service == "" {
+				return false // another env's aggregate, or nothing the harvest reads
+			}
+			return buildtarget.StateBelongsTo(&st, key, service)
+		})
+	}
+	glob("sourcemaps-"+statefile.SafeSegment(envNameOrDefault(env))+"-", func(path, frontend string) bool {
+		var rec deploytarget.SourcemapsRecord
+		raw, err := os.ReadFile(path)
+		if err != nil || json.Unmarshal(raw, &rec) != nil {
+			return false
+		}
+		return rec.Frontend != "" && statefile.SafeSegment(rec.Frontend) == frontend
+	})
 	sort.Strings(out)
 	return out
 }
@@ -379,10 +407,9 @@ func resumeInterruptedCut(ctx context.Context, entities *KCLEntities, opts build
 // restoreCutJournal makes the build state the cut harvests exactly the
 // journal's: every state file the harvest would read is removed and the
 // journal's written in its place, and its outputs are written into the output
-// directory. "Every file the harvest would read" is the harvest's own glob, so
-// a resume run in a checkout that also holds state of an env whose name
-// extends this one (build-prod-web.json for prod-web) drops that cache too;
-// the next build or deploy of that env writes it again.
+// directory. Only this env's files are removed (cutJournalStateFiles): the
+// state of an env whose name extends this one (build-prod-web.json for
+// prod-web) matches the same globs and is kept.
 func restoreCutJournal(projectDir, outputDir, env string, j cutjournal.Journal) error {
 	stateDir := filepath.Join(projectDir, statefile.DirRel)
 	for _, name := range cutJournalStateFiles(projectDir, env) {

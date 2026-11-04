@@ -387,7 +387,10 @@ func (s *Store) settle(ctx context.Context, q string, args ...any) (Item, error)
 // into rejected. An item whose follow-up failed or reported
 // [HandoffIncomplete] stays as it was, to be tried on the next call; failures
 // are returned joined. Several redrivers may run at once: each item is
-// locked while it is worked, and one another worker holds is skipped.
+// locked while it is worked, and a redriver that reaches an item another
+// holds waits for it, then re-checks it. So when Redrive returns no error,
+// every item it selected was handed off (by this call or another) or was
+// tried by this call; none is passed over because someone else held it.
 func (s *Store) Redrive(ctx context.Context, f Filter, fn FollowUp) ([]Item, error) {
 	if fn == nil {
 		return nil, invalid("redrive needs a follow-up")
@@ -408,8 +411,12 @@ func (s *Store) Redrive(ctx context.Context, f Filter, fn FollowUp) ([]Item, err
 		var out Item
 		var worked bool
 		err := s.db.RunTx(ctx, orm.ReadCommitted, func(ctx context.Context) error {
+			// FOR UPDATE (not SKIP LOCKED) waits out a concurrent redriver;
+			// under READ COMMITTED the WHERE is then re-evaluated against the
+			// committed row, so an item it handed off matches nothing and one
+			// it left incomplete is tried again here.
 			locked, err := s.query(ctx, `SELECT `+itemColumns+` FROM `+s.cfg.table+
-				` WHERE id = $1 AND state = 'approved' AND NOT handed_off FOR UPDATE SKIP LOCKED`, cand.ID)
+				` WHERE id = $1 AND state = 'approved' AND NOT handed_off FOR UPDATE`, cand.ID)
 			if err != nil || len(locked) == 0 {
 				return err
 			}

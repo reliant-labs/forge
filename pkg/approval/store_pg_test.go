@@ -227,7 +227,6 @@ func TestStore_ConcurrentRedriveRunsOnce(t *testing.T) {
 			<-start
 			_, err := s.Redrive(ctx, Filter{}, func(context.Context, Item, Decision) (string, error) {
 				calls.Add(1)
-				time.Sleep(30 * time.Millisecond)
 				return "done", nil
 			})
 			if err != nil {
@@ -242,6 +241,81 @@ func TestStore_ConcurrentRedriveRunsOnce(t *testing.T) {
 	}
 	if got, _ := s.Get(ctx, it.ID); !got.HandedOff || got.Outcome != "done" {
 		t.Errorf("final = %+v", got)
+	}
+}
+
+// A redriver that reaches an item another redriver holds waits for it rather
+// than passing over it: when the holder leaves it incomplete, the waiter runs
+// it and reports it, so a successful Redrive never hides held work.
+func TestStore_RedriveWaitsForAHeldItem(t *testing.T) {
+	client := newPG(t)
+	ctx := context.Background()
+	clock := newClock()
+	s := NewStore(client, WithNow(clock.Now))
+	it, err := s.Propose(ctx, Item{Kind: "trade", SubjectRef: "s", ExpiresAt: Within(clock.Now(), time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(ctx, Decision{ID: it.ID, Approve: true, By: "sean"},
+		func(context.Context, Item, Decision) (string, error) { return "", HandoffIncomplete(nil) }); err != nil {
+		t.Fatal(err)
+	}
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	holderErr := make(chan error, 1)
+	go func() {
+		_, err := s.Redrive(ctx, Filter{}, func(context.Context, Item, Decision) (string, error) {
+			close(entered)
+			<-release
+			return "", HandoffIncomplete(nil)
+		})
+		holderErr <- err
+	}()
+	<-entered
+
+	type result struct {
+		items []Item
+		err   error
+	}
+	waiter := make(chan result, 1)
+	go func() {
+		items, err := s.Redrive(ctx, Filter{}, func(context.Context, Item, Decision) (string, error) {
+			return "done", nil
+		})
+		waiter <- result{items, err}
+	}()
+
+	// Release the holder only once the waiter is blocked on the row lock.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		rows, err := client.Query(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var waiting int
+		for rows.Next() {
+			if err := rows.Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_ = rows.Close()
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second redriver never waited on the held item")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(release)
+
+	if err := <-holderErr; err != nil {
+		t.Fatalf("holder Redrive: %v", err)
+	}
+	got := <-waiter
+	if got.err != nil || len(got.items) != 1 || got.items[0].ID != it.ID || got.items[0].Outcome != "done" {
+		t.Fatalf("waiting Redrive = %+v, %v; want the held item, handed off", got.items, got.err)
 	}
 }
 

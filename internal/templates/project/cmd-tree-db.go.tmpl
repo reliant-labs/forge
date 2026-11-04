@@ -301,8 +301,12 @@ func withOptionalMigrator(fn func(*cobra.Command, *migratekit.Migrator) error) f
 // migrator loads no typed config — its whole configuration is the DSN
 // migratorDSN reads — so it reports whether one is wired and exits. Outside
 // the check it returns at once.
+//
+// It resolves the DSN through migratorDSN itself (the flag, including any
+// flag default, else DATABASE_URL), so the check and the migration it vouches
+// for cannot disagree about whether a DSN is wired.
 func checkMigratorConfig(cmd *cobra.Command) {
-	if url, _ := cmd.Flags().GetString("database-url"); url != "" {
+	if _, err := migratorDSN(cmd); err == nil {
 		forgeconfig.CheckVariables()
 		return
 	}

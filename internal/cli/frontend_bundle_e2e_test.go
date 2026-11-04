@@ -78,7 +78,7 @@ func outputTimeout(dir string, timeout time.Duration, name string, args ...strin
 	return string(out), err
 }
 
-func lastLines(s string, n int) string {
+func outputTail(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
@@ -226,7 +226,7 @@ func TestE2ENextBuildPrerendersWithInstalledPeerPins(t *testing.T) {
 	writeFileE2E(t, tsconfig, pinProbeTsconfig())
 
 	if out, err := outputTimeout(feDir, 5*time.Minute, "pnpm", "install", "--no-frozen-lockfile", "--prefer-offline"); err != nil {
-		t.Fatalf("npm install: %v\n%s", err, lastLines(out, 40))
+		t.Fatalf("npm install: %v\n%s", err, outputTail(out, 40))
 	}
 	for _, pkg := range []string{"@tanstack/react-query", "@reliantlabs/forge-web-runtime"} {
 		if _, err := os.Stat(filepath.Join(feDir, "node_modules", filepath.FromSlash(pkg), "package.json")); err != nil {
@@ -239,11 +239,11 @@ func TestE2ENextBuildPrerendersWithInstalledPeerPins(t *testing.T) {
 	out, err := outputTimeout(feDir, 5*time.Minute, "pnpm", "run", "build")
 	if err == nil {
 		t.Fatalf("next build SUCCEEDED with directory pins; the probe no longer reproduces the bundle "+
-			"split, so the after-half proves nothing. Output tail:\n%s", lastLines(out, 40))
+			"split, so the after-half proves nothing. Output tail:\n%s", outputTail(out, 40))
 	}
 	if !strings.Contains(out, "No QueryClient set") {
 		t.Fatalf("next build with directory pins failed for a reason other than the bundle split: %v\n%s",
-			err, lastLines(out, 60))
+			err, outputTail(out, 60))
 	}
 
 	// ── After: forge's post-install reconcile. ──
@@ -261,14 +261,14 @@ func TestE2ENextBuildPrerendersWithInstalledPeerPins(t *testing.T) {
 		t.Fatal(err)
 	}
 	if out, err := outputTimeout(feDir, 5*time.Minute, "pnpm", "run", "build"); err != nil {
-		t.Fatalf("next build failed with declaration-file pins: %v\n%s", err, lastLines(out, 60))
+		t.Fatalf("next build failed with declaration-file pins: %v\n%s", err, outputTail(out, 60))
 	}
 	html := readFileE2E(t, filepath.Join(feDir, ".next", "server", "app", "pin-probe.html"))
 	if !strings.Contains(html, "pin probe") {
-		t.Errorf("the probe page was not prerendered with its content:\n%s", lastLines(html, 5))
+		t.Errorf("the probe page was not prerendered with its content:\n%s", outputTail(html, 5))
 	}
 	if out, err := outputTimeout(feDir, 3*time.Minute, "npx", "--no-install", "tsc", "--noEmit"); err != nil {
-		t.Fatalf("tsc --noEmit failed with declaration-file pins: %v\n%s", err, lastLines(out, 40))
+		t.Fatalf("tsc --noEmit failed with declaration-file pins: %v\n%s", err, outputTail(out, 40))
 	}
 }
 
@@ -322,14 +322,14 @@ func TestE2ENextjsDockerfileStaticImageBuilds(t *testing.T) {
 	writeFileE2E(t, filepath.Join(feDir, "node_modules", ".poison"), "a host install must not reach the image\n")
 
 	if out, err := outputTimeout(feDir, 4*time.Minute, "pnpm", "install", "--lockfile-only", "--no-frozen-lockfile"); err != nil {
-		t.Fatalf("pnpm install --lockfile-only: %v\n%s", err, lastLines(out, 40))
+		t.Fatalf("pnpm install --lockfile-only: %v\n%s", err, outputTail(out, 40))
 	}
 
 	id := strings.ToLower(strings.ReplaceAll(filepath.Base(filepath.Dir(feDir))+"-"+filepath.Base(feDir), "_", "-"))
 	tag := "forge-e2e-nextjs-static:" + id
 	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
 	if out, err := outputTimeout(feDir, 10*time.Minute, "docker", "build", "-t", tag, "-f", filepath.Join(feDir, "Dockerfile"), feDir); err != nil {
-		t.Fatalf("docker build of a static Next.js frontend failed: %v\n%s", err, lastLines(out, 60))
+		t.Fatalf("docker build of a static Next.js frontend failed: %v\n%s", err, outputTail(out, 60))
 	}
 
 	name := "forge-e2e-nextjs-static-" + id
@@ -346,7 +346,7 @@ func TestE2ENextjsDockerfileStaticImageBuilds(t *testing.T) {
 	for _, probe := range []struct{ path, want string }{{"/", "static image ok"}, {"/about", "about page"}} {
 		body := getWithRetry(t, "http://"+addr+probe.path)
 		if !strings.Contains(body, probe.want) {
-			t.Errorf("GET %s did not serve the export (want %q):\n%s", probe.path, probe.want, lastLines(body, 5))
+			t.Errorf("GET %s did not serve the export (want %q):\n%s", probe.path, probe.want, outputTail(body, 5))
 		}
 	}
 	if uid, err := exec.Command("docker", "exec", name, "id", "-u").Output(); err != nil || strings.TrimSpace(string(uid)) == "0" {

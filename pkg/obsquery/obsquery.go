@@ -100,6 +100,11 @@ type Scope struct {
 	Services []string
 	// Filters are generic attribute predicates, ANDed.
 	Filters []AttrFilter
+	// Toggles are the dashboard's toggle filters (dashspec.FilterToggle) by id,
+	// each bound to a sql panel as the Bool parameter {<id>:Bool}. Build it with
+	// dashspec.Dashboard.ToggleValues so every declared toggle is bound.
+	// Structured panels ignore it.
+	Toggles map[string]bool
 	// Declared are the attribute keys the queried metric's own data points
 	// carry; the one extension to the key allowlist, for metrics.
 	Declared map[string]bool

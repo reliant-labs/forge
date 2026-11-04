@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -543,5 +544,40 @@ func TestMockOptionalNullIsUnset(t *testing.T) {
 		if strings.Contains(got, "sample_") {
 			t.Errorf("record %d: optional parentId = %s — an invented id for a reference the database leaves NULL", i, got)
 		}
+	}
+}
+
+// A parent's fixtures depend only on whether it is referenced, never on which
+// children reference it: two branches that each add a child of the same
+// parent write the same parent fixtures, so plain git merges them (forge#948,
+// TestE2EMergeProperty "two entities referencing the same parent").
+func TestMockFixtureRowsOfAParentDoNotDependOnItsChildren(t *testing.T) {
+	col := func(name string, pk bool) schemadef.Column {
+		return schemadef.Column{Name: name, Type: schemadef.TypeString, NotNull: true, IsPK: pk}
+	}
+	accounts := schemadef.Table{Name: "accounts", PKCols: []string{"id"}, Columns: []schemadef.Column{col("id", true), col("name", false)}}
+	child := func(name string) schemadef.Table {
+		return schemadef.Table{Name: name, PKCols: []string{"id"}, Columns: []schemadef.Column{col("id", true), col("account_id", false)},
+			ForeignKeys: []schemadef.ForeignKey{{Column: "account_id", RefTable: "accounts", RefColumn: "id"}}}
+	}
+	cfg := seedplan.DefaultConfig()
+	rowsOf := func(tables ...schemadef.Table) []int {
+		seed := newSeedProjection(tables, cfg, nil)
+		if seed == nil {
+			t.Fatal("the planner refused this schema")
+		}
+		return seed.FixtureRows("accounts")
+	}
+	ours := rowsOf(accounts, child("memberships"))
+	theirs := rowsOf(accounts, child("orders"))
+	both := rowsOf(accounts, child("memberships"), child("orders"))
+	if !reflect.DeepEqual(ours, theirs) || !reflect.DeepEqual(ours, both) {
+		t.Errorf("accounts' fixture rows depend on its children: memberships %v, orders %v, both %v", ours, theirs, both)
+	}
+	if len(ours) != cfg.EffectiveRows("accounts") {
+		t.Errorf("a referenced table carries %d fixture rows, want every dataset row (%d)", len(ours), cfg.EffectiveRows("accounts"))
+	}
+	if alone := rowsOf(accounts); len(alone) != min(mockRecordCount, cfg.EffectiveRows("accounts")) {
+		t.Errorf("an unreferenced table carries %d fixture rows, want its first %d", len(alone), mockRecordCount)
 	}
 }

@@ -2,6 +2,7 @@ package obsquery
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -76,6 +77,8 @@ type SQLPanel struct {
 //	           when restricted to none
 //	envs       their names, in env_ids order
 //	services   the services in scope; [] = all
+//	<toggle>   each Scope.Toggles entry, as a Bool ("true" / "false") named by
+//	           the toggle's id (dashspec.FilterToggle)
 //	reliant_env_id
 //	           the one environment in scope (EnvIDParam); absent otherwise,
 //	           and a statement that uses it is refused
@@ -111,6 +114,15 @@ func (q SQLPanel) Compile() (Stmt, error) {
 		dashspec.SQLParamEnvs:     stringArrayText(envs),
 		dashspec.SQLParamServices: stringArrayText(q.Scope.Services),
 	}
+	for name, on := range q.Scope.Toggles {
+		if !toggleName.MatchString(name) {
+			return Stmt{}, invalid("toggle %q: a toggle's name is its sql parameter name and must match %s", name, dashspec.ToggleIDPattern)
+		}
+		if _, builtin := params[name]; builtin || name == EnvIDParam {
+			return Stmt{}, invalid("toggle %q shadows a built-in sql parameter", name)
+		}
+		params[name] = strconv.FormatBool(on)
+	}
 	switch {
 	case q.Scope.EnvRestricted && len(q.Scope.EnvIDs) == 1:
 		// A String parameter is parsed in ClickHouse's escaped text format.
@@ -120,6 +132,8 @@ func (q SQLPanel) Compile() (Stmt, error) {
 	}
 	return Stmt{SQL: q.SQL, Params: params}, nil
 }
+
+var toggleName = regexp.MustCompile(dashspec.ToggleIDPattern)
 
 // usesParam reports whether sql uses the ClickHouse parameter name ({name:Type},
 // spaces allowed inside the braces). One in a comment, a string literal or a

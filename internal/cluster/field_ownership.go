@@ -57,6 +57,7 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -860,7 +861,45 @@ func (j ownerlessJudge) judge(ctx context.Context, objs []liveObject) (map[objec
 		}
 	}
 	probes := probeSets(ctx, j.run, check)
-	return probes, trimmedDefaults(ctx, j.run, check, probes, j.declared, j.out)
+	trimmed := trimmedDefaults(ctx, j.run, check, probes, j.declared, j.out)
+	for key, t := range trimmed {
+		putBackStringData(t, key, j.declared[key])
+	}
+	return probes, trimmed
+}
+
+// putBackStringData marks, in a Secret's trimmed answer, the data keys its
+// declaration writes through stringData. The server folds stringData into data
+// and records the applier as owning only stringData, so every such data key is
+// ownerless on the live object; and stringData is never stored, so removing
+// the key in the dry-run replace sticks. Judged by the server alone, each one
+// is an orphan, and forge claimed it on every apply, which rewrote an unchanged
+// Secret on every deploy. The declaration puts the key back, so it is not
+// drift: the key goes back with the value the server stores for it, the
+// declared string base64-encoded, so the answer is the object forge's apply
+// leaves (planClaim reads only presence, but the answer stays true to it).
+func putBackStringData(trimmed map[string]any, key objectKey, declared map[string]any) {
+	if key.Kind != "Secret" || trimmed == nil || declared == nil {
+		return
+	}
+	sd, _ := declared["stringData"].(map[string]any)
+	if len(sd) == 0 {
+		return
+	}
+	data, _ := trimmed["data"].(map[string]any)
+	if data == nil {
+		data = map[string]any{}
+		trimmed["data"] = data
+	}
+	for k, v := range sd {
+		if _, ok := data[k]; !ok {
+			s, isString := v.(string)
+			if !isString {
+				s = fmt.Sprint(v)
+			}
+			data[k] = base64.StdEncoding.EncodeToString([]byte(s))
+		}
+	}
 }
 
 // claimOne plans and writes one object's claim. When another writer got in

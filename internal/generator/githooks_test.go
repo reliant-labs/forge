@@ -111,6 +111,48 @@ func TestPrePushHook_LintsOnlyWhatThePushChanges(t *testing.T) {
 	if got := runHook("refs/heads/main " + head + " refs/heads/main " + head + "\n"); got != "" {
 		t.Errorf("a push of commits the remote already has ran forge %q, want nothing", got)
 	}
+
+	// A commit another remote already has is still new to the destination:
+	// a contributor's branch fetched from upstream and pushed to origin.
+	git("checkout", "-q", "-b", "topic", head)
+	write("internal/up/up.go", "package up\n")
+	git("add", "-A")
+	git("commit", "-qm", "upstream work")
+	git("update-ref", "refs/remotes/upstream/topic", "HEAD")
+	topic := git("rev-parse", "HEAD")
+	got = runHook("refs/heads/topic " + topic + " refs/heads/topic " + zero + "\n")
+	if want := "lint --quiet --scope internal/up/up.go"; got != want {
+		t.Errorf("a commit only upstream has ran forge %q, want %q", got, want)
+	}
+
+	// A merge whose parents the destination already has: its conflict
+	// resolution is the only new code, and it must be linted.
+	git("checkout", "-q", "-b", "side", head)
+	write("internal/side/side.go", "package side\n")
+	git("add", "-A")
+	git("commit", "-qm", "side")
+	git("update-ref", "refs/remotes/origin/side", "HEAD")
+	git("checkout", "-q", "-b", "merged", head)
+	git("merge", "-q", "--no-ff", "--no-commit", "side")
+	write("internal/kept/kept.go", "package kept\n\n// resolved\n")
+	git("add", "-A")
+	git("commit", "-qm", "merge side")
+	merged := git("rev-parse", "HEAD")
+	got = runHook("refs/heads/merged " + merged + " refs/heads/merged " + zero + "\n")
+	if want := "lint --quiet --scope internal/kept/kept.go --scope internal/side/side.go"; got != want {
+		t.Errorf("a new merge ran forge %q, want %q (its resolution edit included)", got, want)
+	}
+
+	// An update to a ref the destination has, touching a name git quotes by
+	// default (core.quotePath): the path reaches --scope as it is on disk.
+	write("internal/café/café.go", "package cafe\n")
+	git("add", "-A")
+	git("commit", "-qm", "cafe")
+	cafe := git("rev-parse", "HEAD")
+	got = runHook("refs/heads/merged " + cafe + " refs/heads/merged " + merged + "\n")
+	if want := "lint --quiet --scope internal/café/café.go"; got != want {
+		t.Errorf("an update ran forge %q, want %q", got, want)
+	}
 }
 
 // A project's own hook — what `project new --in-place` keeps — is never

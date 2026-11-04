@@ -677,10 +677,21 @@ fi
 // prePushHook is .githooks/pre-push.
 //
 // git hands a pre-push hook one line per ref being pushed on stdin:
-// `<local ref> <local sha> <remote ref> <remote sha>`. The files to lint are
-// the ones touched by the commits no remote-tracking ref already has
-// (`git log <sha> --not --remotes`), which is right for a new branch and an
-// updated one alike, and costs nothing to compute. A file the push deletes
+// `<local ref> <local sha> <remote ref> <remote sha>`, and the destination
+// remote as $1. The files to lint are judged against that destination alone:
+//
+//   - An update whose remote sha is a commit we have: the files that differ
+//     between it and the pushed sha (`git diff <remote> <local>`), which
+//     includes whatever a merge's conflict resolution changed.
+//   - A new ref, or a remote sha we have not fetched: every commit the
+//     destination's remote-tracking refs lack (`--not --remotes=<remote>`,
+//     never every remote's: a commit fetched from upstream is still new to
+//     origin), each diffed against every parent (`diff-tree -m`), so a
+//     merge's resolution edits are listed too. A push to a bare URL has no
+//     tracking refs, so it lints every file the history touched.
+//
+// Paths are read NUL-separated (-z), so a name git would quote (non-ASCII,
+// a space) reaches --scope as it is on disk. A file the push deletes
 // has nothing to lint, so only paths that still exist are passed: --scope
 // refuses one that does not.
 //
@@ -702,14 +713,26 @@ if [ -n "${FORGE_PRE_PUSH_FULL:-}" ]; then
 	exec forge project audit
 fi
 
+remote=${1:-}
 changed=$(mktemp)
 trap 'rm -f "$changed" "$changed.sorted"' EXIT
-while read -r _ local_sha _ _; do
+while read -r _ local_sha _ remote_sha; do
 	case "$local_sha" in
-	*[!0]*) git log --format= --name-only "$local_sha" --not --remotes -- >>"$changed" ;;
+	*[!0]*) ;;
+	*) continue ;;
 	esac
+	case "$remote_sha" in
+	*[!0]*)
+		if git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+			git diff --no-ext-diff --name-only -z "$remote_sha" "$local_sha" -- >>"$changed"
+			continue
+		fi
+		;;
+	esac
+	git rev-list "$local_sha" --not --remotes="$remote" |
+		git diff-tree --stdin -m -r --root --no-commit-id --name-only -z -- >>"$changed"
 done
-sort -u "$changed" >"$changed.sorted"
+tr '\0' '\n' <"$changed" | sort -u >"$changed.sorted"
 
 set --
 while IFS= read -r path; do

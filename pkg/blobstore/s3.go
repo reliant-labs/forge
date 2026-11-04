@@ -246,6 +246,12 @@ func (s *S3) List(ctx context.Context, prefix string, opts ListOptions) (ListPag
 				return ListPage{}, s.mapErr("list", prefix, info.Err)
 			}
 			if len(page.Objects) == limit {
+				// The one-past object only proves another page exists;
+				// it is not returned. Next is the last key returned, and
+				// the next List is a fresh request (no continuation token)
+				// with start-after = Next, which S3 treats as exclusive,
+				// so it starts at that object. The iterator's own
+				// continuation state, discarded by cancel, is never needed.
 				page.Next = page.Objects[limit-1].Key
 				break
 			}

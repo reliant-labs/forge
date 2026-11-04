@@ -66,6 +66,14 @@ func (l Local) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 	if err != nil {
 		return out, err
 	}
+	beforeEP, err := l.endpointStats(ctx, win.Before, &out)
+	if err != nil {
+		return out, err
+	}
+	afterEP, err := l.endpointStats(ctx, win.After, &out)
+	if err != nil {
+		return out, err
+	}
 	issues, err := l.newIssues(ctx, win, &out)
 	if err != nil {
 		return out, err
@@ -80,7 +88,8 @@ func (l Local) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 	}
 	var services []releasehealth.ServiceHealth
 	for s := range names {
-		services = append(services, releasehealth.ServiceHealth{Service: s, Before: before[s], After: after[s]})
+		services = append(services, releasehealth.ServiceHealth{Service: s, Before: before[s], After: after[s],
+			Endpoints: endpointHealth(beforeEP[s], afterEP[s])})
 	}
 	sort.Slice(services, func(i, j int) bool { return services[i].Service < services[j].Service })
 
@@ -126,6 +135,59 @@ func (l Local) windowStats(ctx context.Context, r releasehealth.Range, out *Heal
 		stats[AsString(row[0])] = ws
 	}
 	return stats, nil
+}
+
+// endpointStats is windowStats per endpoint: service -> endpoint -> figures.
+func (l Local) endpointStats(ctx context.Context, r releasehealth.Range, out *HealthResult) (map[string]map[string]releasehealth.WindowStats, error) {
+	stats := map[string]map[string]releasehealth.WindowStats{}
+	if r.To.Sub(r.From) < time.Second {
+		return stats, nil
+	}
+	st, err := obsquery.Overview{Scope: LocalScope(Narrow{Range: Range{From: r.From, To: r.To}}, l.Env)}.REDByEndpoint()
+	if err != nil {
+		return nil, compileErr(err)
+	}
+	out.Statements = append(out.Statements, stmt("red by endpoint "+r.From.UTC().Format(time.RFC3339), st))
+	res, err := l.run(ctx, st, DefaultLimits())
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range res.Rows {
+		if len(row) < 5 {
+			return nil, Undetermined("the local ClickStack returned %d columns for release health by endpoint, want 5", len(row))
+		}
+		q := AsFloats(row[4])
+		if len(q) < 3 {
+			q = []float64{0, 0, 0}
+		}
+		ws := releasehealth.WindowStats{Requests: AsInt(row[2]), P50Ms: finite(q[0]), P95Ms: finite(q[1]), P99Ms: finite(q[2])}
+		if ws.Requests > 0 {
+			ws.ErrorRate = float64(AsInt(row[3])) / float64(ws.Requests)
+		}
+		svc := AsString(row[0])
+		if stats[svc] == nil {
+			stats[svc] = map[string]releasehealth.WindowStats{}
+		}
+		stats[svc][AsString(row[1])] = ws
+	}
+	return stats, nil
+}
+
+// endpointHealth pairs one service's endpoints across the windows, by name.
+func endpointHealth(before, after map[string]releasehealth.WindowStats) []releasehealth.EndpointHealth {
+	names := map[string]bool{}
+	for n := range before {
+		names[n] = true
+	}
+	for n := range after {
+		names[n] = true
+	}
+	var out []releasehealth.EndpointHealth
+	for n := range names {
+		out = append(out, releasehealth.EndpointHealth{Endpoint: n, Before: before[n], After: after[n]})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Endpoint < out[j].Endpoint })
+	return out
 }
 
 // newIssues is the sfp1 groups first seen at or after P.

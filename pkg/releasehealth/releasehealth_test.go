@@ -74,6 +74,51 @@ func TestVerdicts(t *testing.T) {
 	}
 }
 
+func ep(name string, beforeReq, afterReq int64, beforeP95, afterP95 float64) EndpointHealth {
+	return EndpointHealth{Endpoint: name,
+		Before: WindowStats{Requests: beforeReq, P95Ms: beforeP95},
+		After:  WindowStats{Requests: afterReq, P95Ms: afterP95}}
+}
+
+// forge#1728: the deploy's own GetRelease polling filled admin-server's before
+// window with fast calls and then stopped. The service p95 tripled; no endpoint
+// got slower. Per-endpoint figures judge the endpoints, not the mix.
+func TestLatencyIsJudgedPerEndpointNotByTrafficMix(t *testing.T) {
+	mix := svc("admin-server", 1400, 300, 0, 0, 40, 120)
+	mix.Endpoints = []EndpointHealth{
+		ep("/deploy.v1.DeployService/GetRelease", 1164, 3, 30, 31),
+		ep("/deploy.v1.DeployService/GetStatus", 120, 140, 334, 363),
+		ep("/token.v1.AccessTokenInternalService/Introspect", 100, 150, 30, 36),
+		ep("/token.v1.GitCredentialInternalService/GetUserAccessToken", 16, 7, 12, 14),
+		ep("/new.v1.New/OnlyAfter", 0, 50, 0, 5000), // no before: nothing to compare
+	}
+	if r := Evaluate(input(t, true, mix)); len(r.Findings) != 0 {
+		t.Errorf("a traffic-mix shift is judged a latency regression: %+v", r.Findings)
+	}
+	if ratio, ok := mix.LatencyRatio(); !ok || ratio > 1.2 {
+		t.Errorf("LatencyRatio = %v, %v; want the endpoints' ~1.1x", ratio, ok)
+	}
+
+	slow := svc("admin-server", 300, 300, 0, 0, 100, 110)
+	slow.Endpoints = []EndpointHealth{
+		ep("/a.v1.A/Hot", 200, 200, 100, 400),
+		ep("/a.v1.A/Cold", 100, 100, 100, 100),
+	}
+	r := Evaluate(input(t, true, slow))
+	if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthLatency || r.Findings[0].Value != 3 {
+		t.Fatalf("a busy endpoint 4x slower must be a latency finding at 3x (weighted): %+v", r.Findings)
+	}
+	if !strings.Contains(r.Findings[0].Message, "per endpoint") {
+		t.Errorf("message does not say the ratio is per endpoint: %s", r.Findings[0].Message)
+	}
+
+	none := svc("api", 100, 100, 0, 0, 10, 900)
+	none.Endpoints = []EndpointHealth{ep("/a.v1.A/Gone", 100, 0, 10, 0), ep("/a.v1.A/New", 0, 100, 0, 900)}
+	if _, ok := none.LatencyRatio(); ok {
+		t.Error("no endpoint in both windows still produced a latency ratio")
+	}
+}
+
 func TestLatencyFindingWarnsByDefaultAndFailsWhenAsked(t *testing.T) {
 	in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 400))
 	r := Evaluate(in)

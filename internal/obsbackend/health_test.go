@@ -138,8 +138,8 @@ func TestLocalReleaseHealthNeedsAnInstantAndLabelsWhatItSkipped(t *testing.T) {
 			t.Errorf("not_evaluated lacks %s: %v", want, res.Report.NotEvaluated)
 		}
 	}
-	if len(res.Statements) != 3 {
-		t.Errorf("statements = %d, want RED per window plus issues", len(res.Statements))
+	if len(res.Statements) != 5 {
+		t.Errorf("statements = %d, want RED and RED by endpoint per window, plus issues", len(res.Statements))
 	}
 	if bad := (releasehealth.Options{Overrides: map[string]string{"min_requests": "x"}}); true {
 		if _, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c, Options: bad}); err == nil || err.(*Error).Code != ExitWrong {

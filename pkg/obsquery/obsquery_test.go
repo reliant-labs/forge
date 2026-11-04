@@ -699,6 +699,15 @@ func TestREDErrorsLeaveOutCancellations(t *testing.T) {
 	for _, want := range []string{"SpanAttributes['error_class'] = 'canceled'", "'rpc.connect_rpc.error_code'] = 'canceled'", "= '499'"} {
 		if !strings.Contains(spanCanceledExpr, want) {
 			t.Errorf("spanCanceledExpr does not recognise %s: %s", want, spanCanceledExpr)
+// REDByEndpoint splits RED by server span name, with RED's latency rule.
+func TestREDByEndpointGroupsByServiceAndSpanName(t *testing.T) {
+	st, err := Overview{Scope: scope()}.REDByEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SpanName AS endpoint", "GROUP BY ServiceName, endpoint", "NOT " + spanStreamExpr, spanServerExpr} {
+		if !strings.Contains(st.SQL, want) {
+			t.Errorf("REDByEndpoint lacks %q:\n%s", want, st.SQL)
 		}
 	}
 }

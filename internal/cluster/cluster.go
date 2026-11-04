@@ -2074,6 +2074,12 @@ func KubectlApplyNamespaced(ctx context.Context, kctx, namespace, manifests stri
 // rollout-strategy recovery, and the apply-completeness verification every
 // forge apply is gated on.
 func applyStreamInNamespace(ctx context.Context, kctx, namespace, manifests string) error {
+	// Server-side apply removes only fields forge itself owned; a hand edit's
+	// fields and ownerless ones survive it. Claiming them first is what makes
+	// the apply converge each object to its declaration (field_ownership.go).
+	if err := convergeBeforeApply(ctx, kctx, namespace, manifests); err != nil {
+		return err
+	}
 	// The strategy recovery wraps the INNER apply, so it heals a
 	// stale-rollingUpdate wedge on the immutable recovery's re-applies too,
 	// not just the first attempt. Both recoveries are no-ops until an apply

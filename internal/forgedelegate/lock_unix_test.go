@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -65,9 +66,9 @@ func TestPinned_ConcurrentRequestsBuildOnce(t *testing.T) {
 	r.Slot = func(context.Context, string) (func(), error) { return func() {}, nil }
 	release := make(chan struct{})
 	started := make(chan struct{}, 2)
-	var builds int
+	var builds atomic.Int32
 	r.Install = func(_ context.Context, _, gobin string) error {
-		builds++
+		builds.Add(1)
 		started <- struct{}{}
 		<-release
 		return atomicfile.WriteFile(filepath.Join(gobin, exeName()), []byte("#!/bin/sh\n"), 0o755)
@@ -103,8 +104,8 @@ func TestPinned_ConcurrentRequestsBuildOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if builds != 1 {
-		t.Errorf("%d builds, want 1", builds)
+	if n := builds.Load(); n != 1 {
+		t.Errorf("%d builds, want 1", n)
 	}
 }
 

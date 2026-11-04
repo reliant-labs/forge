@@ -224,6 +224,9 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	if err := install(ctx, cmdPackage+"@"+pin, tmp); err != nil {
 		return Result{}, fmt.Errorf("could not build forge %s (offline, or the version is not published?): %w", pin, err)
 	}
+	if err := builtInTime(ctx); err != nil {
+		return Result{}, err
+	}
 	if err := publish(filepath.Join(tmp, exeName()), bin); err != nil {
 		return Result{}, err
 	}
@@ -276,6 +279,9 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	if err := build(ctx, dir, out); err != nil {
 		return Result{}, fmt.Errorf("could not build forge from %s: %w", dir, err)
 	}
+	if err := builtInTime(ctx); err != nil {
+		return Result{}, err
+	}
 	if err := publish(out, bin); err != nil {
 		return Result{}, err
 	}
@@ -304,6 +310,20 @@ func buildSettingsKey(env []string) string {
 		b.WriteString(k + "=" + vals[k] + "\x00")
 	}
 	return b.String()
+}
+
+// builtInTime is the check between a build returning and its publication: a
+// build whose ctx ended is never published, even one that reported success.
+// A go command killed by the cancel can exit 0 having written part of its
+// output, and a builder that finishes as the cancel lands cannot be told from
+// one cut short; either way the caller is gone and nothing may make the
+// output trusted. The error goes back through stage's done, which removes the
+// staging directory and wakes the next waiter on the entry, who builds it.
+func builtInTime(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("canceled before the build was published: %w", err)
+	}
+	return nil
 }
 
 // publish moves a finished build into the cache. A binary already there wins

@@ -283,6 +283,8 @@ func TestObsCheckEarlyPass(t *testing.T) {
 		{"less observed than asked", []string{open, open, done}, "20m", 2, false},
 		{"a warn finding waits for the window", []string{healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, latencyFinding, ""), done}, "5m", 1, false},
 		{"rollout not finished", []string{strings.Replace(open, `"versionShare":1`, `"versionShare":0.6`, 1), done}, "5m", 1, false},
+		{"a second service too quiet waits for the window", []string{strings.Replace(open, `"versionShare":1}]`, `"versionShare":1},{"service":"worker","before":{"requests":"5"},"after":{"requests":"3"},"versionShare":1}]`, 1), done}, "5m", 1, false},
+		{"a second service with no version share waits for the window", []string{strings.Replace(open, `"versionShare":1}]`, `"versionShare":1},{"service":"worker","before":{"requests":"900"},"after":{"requests":"900"}}]`, 1), done}, "5m", 1, false},
 		{"a new issue waits for the window", []string{healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, "", `"newIssues":[{"id":"i1","service":"api","title":"boom","events":"9"}],`), done}, "5m", 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

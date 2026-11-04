@@ -330,10 +330,10 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 const earlyPassVersionShare = 0.99
 
 // earlyPassWhy says why an open after window is good enough to PASS now, or ""
-// when it is not: at least min of it observed, every service that reports a
-// version share served by the judged version, no finding of any policy (a warn
-// too), no new or regressed issue, firing alert or workload restart, no
-// critical alert standing or unread, and one service with enough requests.
+// when it is not: at least min of it observed, every service with a measured
+// version share served by the judged version and at least min_requests, no
+// finding of any policy (a warn too), no new or regressed issue, firing alert
+// or workload restart, and no critical alert standing or unread.
 func earlyPassWhy(r releasehealth.Report, min time.Duration) string {
 	observed := r.After.To.Sub(r.After.From)
 	if r.AfterComplete || observed < min {
@@ -351,18 +351,16 @@ func earlyPassWhy(r releasehealth.Report, min time.Duration) string {
 			}
 		}
 	}
-	shares, enough := 0, false
-	for _, s := range r.Services {
-		if s.VersionShare != nil {
-			if *s.VersionShare < earlyPassVersionShare {
-				return ""
-			}
-			shares++
-		}
-		enough = enough || s.After.Requests >= int64(minReq)
-	}
-	if shares == 0 || !enough {
+	// Every judged service must supply its own evidence: a measured version
+	// share served by the judged version and enough requests. One quiet or
+	// unmeasured service keeps the wait going to the end of the window.
+	if len(r.Services) == 0 {
 		return ""
+	}
+	for _, s := range r.Services {
+		if s.VersionShare == nil || *s.VersionShare < earlyPassVersionShare || s.After.Requests < int64(minReq) {
+			return ""
+		}
 	}
 	return fmt.Sprintf("%s of the after window observed (until %s), the judged version serving all traffic, nothing found",
 		observed.Round(time.Second), r.After.To.UTC().Format(time.RFC3339))

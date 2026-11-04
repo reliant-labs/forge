@@ -684,6 +684,25 @@ func TestTraceQueryPrefiltersCandidateTraces(t *testing.T) {
 	}
 }
 
+// forge#1666: a request the client walked away from is not a server error, in
+// RED or anywhere else an error span is counted.
+func TestREDErrorsLeaveOutCancellations(t *testing.T) {
+	st, err := Overview{Scope: scope()}.RED()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"sumIf(" + spanWeightExpr + ", " + spanErrorExpr + ")", "NOT " + spanCanceledExpr} {
+		if !strings.Contains(st.SQL, want) {
+			t.Errorf("RED lacks %q:\n%s", want, st.SQL)
+		}
+	}
+	for _, want := range []string{"SpanAttributes['error_class'] = 'canceled'", "'rpc.connect_rpc.error_code'] = 'canceled'", "= '499'"} {
+		if !strings.Contains(spanCanceledExpr, want) {
+			t.Errorf("spanCanceledExpr does not recognise %s: %s", want, spanCanceledExpr)
+		}
+	}
+}
+
 // A streaming RPC's server span lasts as long as the stream, so the RED
 // latency quantiles are over unary spans only, while requests count both.
 func TestREDLatencyExcludesStreams(t *testing.T) {

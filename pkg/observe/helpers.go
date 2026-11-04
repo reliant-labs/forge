@@ -81,7 +81,9 @@ func TraceVoidCall(ctx context.Context, tracer trace.Tracer, operationName strin
 }
 
 // RecordSpanError marks span as failed when err is non-nil: the error is
-// recorded as a span event and the span status is set to Error. This is
+// recorded as a span event, its svcerr class is stamped as error_class, and
+// the span status is set to Error unless the class is canceled (the caller
+// went away, or this replica is draining: not a failure). This is
 // the one-liner the owned per-package observe.go wrappers call after each
 // inner method invocation:
 //
@@ -99,10 +101,18 @@ func RecordSpanError(span trace.Span, err error) {
 	if span == nil || err == nil {
 		return
 	}
+	class := svcerr.Classify(err)
+	span.SetAttributes(attribute.String(ErrorClassKey, class.String()))
 	if st, ok := svcerr.StackOf(err); ok {
 		span.RecordError(err, trace.WithAttributes(attribute.String(LogKeyExceptionStacktrace, st.Trace)))
 	} else {
 		span.RecordError(err)
+	}
+	if class == svcerr.ClassCanceled {
+		// The caller went away (or this replica is draining): nobody has to
+		// act, so the span is not a failure. otelconnect leaves a canceled
+		// server span unset for the same reason (forge#1666).
+		return
 	}
 	span.SetStatus(codes.Error, err.Error())
 }

@@ -258,6 +258,45 @@ GROUP BY ServiceName ORDER BY n DESC, ServiceName`
 			t.Errorf("rows = %v columns = %v", res.Rows, res.Columns)
 		}
 	})
+
+	// forge#1666. Three hours back, clear of every other case's range: 60
+	// requests after the instant, 6 of them errors the client caused by going
+	// away (error_class, Connect's code, a proxy's 499) and 1 a real fault.
+	t.Run("release health: a client cancellation is not a server error", func(t *testing.T) {
+		p := now.Add(-3 * time.Hour)
+		at := func(i int) string {
+			return p.Add(time.Duration(i+1) * 10 * time.Second).Format("2006-01-02 15:04:05")
+		}
+		var rows []string
+		for i := 0; i < 60; i++ {
+			status, attrs := "Unset", "map()"
+			switch {
+			case i < 2:
+				status, attrs = "Error", "map('error_class','canceled')"
+			case i < 4:
+				status, attrs = "Error", "map('rpc.connect_rpc.error_code','canceled')"
+			case i < 6:
+				status, attrs = "Error", "map('http.response.status_code','499')"
+			case i == 6:
+				status = "Error"
+			}
+			rows = append(rows, fmt.Sprintf("(toDateTime64('%s', 9), 'cc%02d', 'c%02d', '', 'GET /object', 'Server', 'cancelsvc', map('deployment.environment.name','dev'), %s, 1000000, '%s')", at(i), i, i, attrs, status))
+		}
+		write(t, "INSERT INTO otel_traces (Timestamp, TraceId, SpanId, ParentSpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode) VALUES "+strings.Join(rows, ", "))
+		res, err := l.ReleaseHealth(ctx, obsbackend.HealthRequest{PromotedAt: p, Now: p.Add(20 * time.Minute)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range res.Report.Services {
+			if s.Service == "cancelsvc" {
+				if s.After.Requests != 60 || s.After.ErrorRate*60 < 0.99 || s.After.ErrorRate*60 > 1.01 {
+					t.Errorf("after = %+v, want 60 requests and the one real fault (1/60)", s.After)
+				}
+				return
+			}
+		}
+		t.Fatalf("no cancelsvc: %+v", res.Report.Services)
+	})
 }
 
 func exceptionType(s obsbackend.Span) string {

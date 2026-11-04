@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -148,4 +149,32 @@ func eventAttr(t *testing.T, stub tracetest.SpanStub, key string) string {
 		}
 	}
 	return ""
+}
+
+// forge#1666: a call the client walked away from is recorded, classed, and not
+// a failure; a server fault still is.
+func TestSpanErrorStatusSparesCancellations(t *testing.T) {
+	_, record := spanWith(t)
+	attr := func(stub tracetest.SpanStub) string {
+		for _, kv := range stub.Attributes {
+			if string(kv.Key) == ErrorClassKey {
+				return kv.Value.AsString()
+			}
+		}
+		return ""
+	}
+	canceled := record(fmt.Errorf("read object: %w", context.Canceled))
+	if canceled.Status.Code == codes.Error {
+		t.Errorf("a client cancellation set the span status to Error (%q)", canceled.Status.Description)
+	}
+	if got := attr(canceled); got != "canceled" {
+		t.Errorf("error_class = %q, want canceled", got)
+	}
+	if len(canceled.Events) != 1 || canceled.Events[0].Name != "exception" {
+		t.Errorf("the cancellation is still recorded as an event: %v", canceled.Events)
+	}
+	fault := record(svcerr.Internal("boom"))
+	if fault.Status.Code != codes.Error || attr(fault) != "server" {
+		t.Errorf("a server fault: status %v, error_class %q; want Error, server", fault.Status.Code, attr(fault))
+	}
 }

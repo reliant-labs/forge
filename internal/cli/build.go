@@ -709,6 +709,12 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if err := preflightRealBuild(ctx, entities, opts); err != nil {
 		return err
 	}
+	// A cut of this version that pushed every image and was interrupted
+	// before its record is finished, not rebuilt: its tags are immutable, so
+	// a rebuild could only fail at its first push (release_cut_journal.go).
+	if resumed, err := resumeInterruptedCut(ctx, entities, opts); resumed || err != nil {
+		return err
+	}
 	// A release that can only come out empty is refused now, not after the
 	// build (a frontend build alone is minutes).
 	if why, empty := releaseCapturesNothing(projectDirForKCL(), entities, targets, opts); empty {
@@ -1632,6 +1638,9 @@ func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KC
 				return fmt.Errorf("--release %s: %w", opts.release, err)
 			}
 		}
+		// Every image is pushed and the record is next: from here on an
+		// interrupted cut can be resumed instead of burning the version.
+		writeCutJournal(ctx, opts)
 		if err := writeReleaseLedger(ctx, opts, entities); err != nil {
 			return err
 		}

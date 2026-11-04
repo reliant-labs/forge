@@ -157,6 +157,15 @@ case " $* " in
     rm -f "$in"
     for d in $FAKE_DEPLOYMENTS; do echo "$d"; done
     exit 0 ;;
+  *' get statefulset '*)
+    # Every StatefulSet has rolled out (workload_wait.go reads its status).
+    rm -f "$in"
+    echo '{"kind":"StatefulSet","metadata":{"generation":1},"spec":{"replicas":1},"status":{"observedGeneration":1,"replicas":1,"readyReplicas":1,"currentReplicas":1,"updatedReplicas":1,"currentRevision":"r1","updateRevision":"r1"}}'
+    exit 0 ;;
+  *' get daemonset '*)
+    rm -f "$in"
+    echo '{"kind":"DaemonSet","metadata":{"generation":1},"status":{"observedGeneration":1,"desiredNumberScheduled":1,"currentNumberScheduled":1,"updatedNumberScheduled":1,"numberAvailable":1,"numberReady":1}}'
+    exit 0 ;;
   *' get externalsecret'*)
     rm -f "$in"
     # FAKE_ES_JSON is what the fake ESO reports; secret_order_test.go sets it.

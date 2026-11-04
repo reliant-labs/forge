@@ -1202,6 +1202,16 @@ type deployOptions struct {
 	// real environment — see cluster.RolloutPolicy.
 	rollout cluster.RolloutPolicy
 
+	// onLocalStage, when non-nil, is handed the local stage's verdict, and the
+	// rollout policy it ran under, the moment that stage finishes and before
+	// any later stage runs. A real deploy
+	// only: a dry run and the pre-record preflight never reach the stages.
+	// The promote follow-through records the cluster-rollout gate through it
+	// (cluster_rollout_gate.go), and that gate must land BEFORE the hosted
+	// stage, which waits on a convergence the control plane holds until it
+	// reads the gate.
+	onLocalStage func(policy cluster.RolloutPolicy, err error)
+
 	// report, when non-nil, accumulates the machine-readable document
 	// (--json). It is threaded THROUGH the deploy rather than computed
 	// beside it: every method on it is nil-safe, so text mode passes nil and
@@ -1737,12 +1747,12 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 	}
 	workloadStagesLeft := 2
 	for i, stage := range stageOrder {
-		if err := runStage[stage](); err != nil {
+		if stageErr := runDeployStage(stage, runStage[stage], opts, dryRun); stageErr != nil {
 			// A hosted part STILL APPLYING stops the stages after it, which
 			// may depend on it. Then the deploy is incomplete, not merely
 			// pending: the platform cannot run this machine's stages, so no
 			// amount of watching finishes it (deploy_applying.go).
-			return stageStopError(envName, err, stageOrder[i+1:], stageWork)
+			return stageStopError(envName, stageErr, stageOrder[i+1:], stageWork)
 		}
 		if stage == stageLocal || stage == stageHosted {
 			workloadStagesLeft--
@@ -1764,6 +1774,17 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error { 
 
 	fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	return nil
+}
+
+// runDeployStage runs one deploy stage and, for the local stage of a real
+// deploy, hands its verdict to opts.onLocalStage before returning, so the hook
+// has run before the next stage (the hosted one, in the default order) starts.
+func runDeployStage(stage deployStage, run func() error, opts deployOptions, dryRun bool) error {
+	err := run()
+	if stage == stageLocal && opts.onLocalStage != nil && !dryRun {
+		opts.onLocalStage(opts.rollout, err)
+	}
+	return err
 }
 
 // shipFrontendsOnly is the whole deploy of an env whose every delivery unit the

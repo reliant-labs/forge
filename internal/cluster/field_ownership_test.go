@@ -712,12 +712,12 @@ func TestKubectlApply_ConvergesFieldOwnershipFirst(t *testing.T) {
 // keys the declaration does not write, are left as the server answered.
 func TestPutBackStringData(t *testing.T) {
 	secret := keyOf("v1", "Secret", "prod", "store-creds")
-	declared := map[string]any{"stringData": map[string]any{"token": "x"}}
+	declared := map[string]any{"stringData": map[string]any{"token": "s3cret"}}
 	trimmed := map[string]any{"data": map[string]any{"kept": "eQ=="}}
 	putBackStringData(trimmed, secret, declared)
 	data := trimmed["data"].(map[string]any)
-	if _, ok := data["token"]; !ok {
-		t.Errorf("the declared stringData key was not put back: %v", data)
+	if data["token"] != "czNjcmV0" {
+		t.Errorf("the declared stringData key was not put back as the server stores it (base64 of the declared value): %v", data)
 	}
 	if data["kept"] != "eQ==" || len(data) != 2 {
 		t.Errorf("the server's answer was changed beyond the declared keys: %v", data)

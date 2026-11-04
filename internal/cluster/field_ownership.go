@@ -57,6 +57,7 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -874,7 +875,9 @@ func (j ownerlessJudge) judge(ctx context.Context, objs []liveObject) (map[objec
 // the key in the dry-run replace sticks. Judged by the server alone, each one
 // is an orphan, and forge claimed it on every apply, which rewrote an unchanged
 // Secret on every deploy. The declaration puts the key back, so it is not
-// drift.
+// drift: the key goes back with the value the server stores for it, the
+// declared string base64-encoded, so the answer is the object forge's apply
+// leaves (planClaim reads only presence, but the answer stays true to it).
 func putBackStringData(trimmed map[string]any, key objectKey, declared map[string]any) {
 	if key.Kind != "Secret" || trimmed == nil || declared == nil {
 		return
@@ -888,9 +891,13 @@ func putBackStringData(trimmed map[string]any, key objectKey, declared map[strin
 		data = map[string]any{}
 		trimmed["data"] = data
 	}
-	for k := range sd {
+	for k, v := range sd {
 		if _, ok := data[k]; !ok {
-			data[k] = ""
+			s, isString := v.(string)
+			if !isString {
+				s = fmt.Sprint(v)
+			}
+			data[k] = base64.StdEncoding.EncodeToString([]byte(s))
 		}
 	}
 }

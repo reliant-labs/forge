@@ -89,6 +89,36 @@ func TestNpmPublishWorkflowUsesTrustedPublishing(t *testing.T) {
 	}
 }
 
+// @reliantlabs/forge-web-runtime is published only by the workflow registered
+// as its trusted publisher: reliant-labs/forge's release-web-runtime.yml, run
+// by the web-runtime/v* tag that scripts/release-web-runtime.sh pushes (at a
+// release train cut and at every forge release). Renaming the file or moving
+// the publish to another trigger breaks publishing until the npm registration
+// moves with it, so this pins the file, its trigger and the OIDC publish.
+func TestWebRuntimePublishWorkflowUsesTrustedPublishing(t *testing.T) {
+	body := strings.Join(codeLines(readRepoFile(t, ".github/workflows/release-web-runtime.yml")), "\n")
+	for _, want := range []string{
+		"id-token: write",          // the OIDC token npm exchanges
+		`tags: ["web-runtime/v*"]`, // the tag release-web-runtime.sh pushes
+		`npm pkg set version=`,     // the tag's computed version, not the tagged manifest's
+		"npm publish --provenance --access public",
+		"scripts/verify-npm-published.sh",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("release-web-runtime.yml lacks %q", want)
+		}
+	}
+	for _, banned := range []string{"NODE_AUTH_TOKEN", "NPM_TOKEN"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("release-web-runtime.yml sets %s; publishing must use trusted publishing only", banned)
+		}
+	}
+	script := readRepoFile(t, "scripts/release-web-runtime.sh")
+	if !strings.Contains(script, `WORKFLOW_FILE="release-web-runtime.yml"`) {
+		t.Errorf("scripts/release-web-runtime.sh no longer waits on release-web-runtime.yml, the workflow npm trusts")
+	}
+}
+
 // pinnedActionRef is an external action pinned to a full commit SHA. A tag or
 // branch (`@v7`) is mutable: whoever controls the action's repository can move
 // it, and the moved code runs with the publish job's OIDC token.

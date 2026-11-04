@@ -26,10 +26,35 @@ first green set. Promotion pushes the final tags, forge's with
 below), then opens one pull request per consumer moving its pin to the promoted
 set. It replaced the `release`, `release-forge` and `pin-bot` workflows.
 
-**web-runtime** is released separately, when `web-runtime/package.json` is ahead of
-its newest `web-runtime/v*` tag: `scripts/release-web-runtime.sh vX.Y.Z`, then the
-tag push that publishes it. The version bump itself is a reviewed PR; the release
-never invents one.
+**web-runtime** (`@reliantlabs/forge-web-runtime` on npm) ships with forge, and its
+version is computed, never bumped in a pull request. `scripts/release-web-runtime.sh
+--commit <sha>` publishes it when what it ships (`web-runtime/` minus tests and the
+manifests' version fields) changed since its last `web-runtime/v*` tag, and publishes
+nothing otherwise. The bump keeps `^` ranges working: before 1.0, a breaking change (a
+`type!:` title or a `BREAKING CHANGE:` footer on a commit touching `web-runtime/`) bumps
+the minor and anything else the patch; from 1.0, breaking → major, `feat` → minor, else
+patch. `web-runtime/package.json`'s version is a floor: raise it in a pull request only
+to declare a version the titles do not say. The script pushes the `web-runtime/vX.Y.Z`
+tag, whose `release-web-runtime.yml` run publishes it (npm trusted publishing), and
+returns only once npm serves it. `--plan` prints the decision; `--dry-run` also
+validates the package.
+
+Two callers run it, so nobody has to:
+
+- **The train's cut**, for the set's forge commit `F`, before reliant and the control
+  plane are pinned to `F`. A pin regenerates their code from `F`, which may need `F`'s
+  runtime, so the runtime must be on npm first. The cut then pins every consumer the
+  control plane's `deploy/release-pipeline.yaml` declares (`npm:`) to that version, and
+  so do the pin pull requests after promotion. A publish that fails fails the cut.
+- **Every forge release** (`release-forge.sh`, the train's finalize and a hand cut),
+  before its tag. At a train release the cut already published it, so this proves npm
+  serves it; at a hand cut it publishes. If it cannot, the release stops before forge's
+  tag: a forge whose runtime is not on npm is not released. The bookkeeping pull request
+  then writes the version into `web-runtime/package.json` and the scaffold floor
+  `webRuntimePublishedRange`, so forge never scaffolds a range npm cannot meet.
+
+A tag whose publish failed (`release-web-runtime.yml` red) is reported on every re-run
+until npm serves it. Re-run that workflow run; never move or delete the tag.
 
 Need a forge change released sooner: label its PR **`release:asap`**. One release of
 the repository runs at a time (`scripts/release-lock.sh`, a lock ref on origin), and

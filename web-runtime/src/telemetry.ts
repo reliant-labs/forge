@@ -398,7 +398,11 @@ async function start(
     }
     hdx.setGlobalAttributes?.(globals);
     // The viewport and screen ride on every span, refreshed on resize
-    // (client-context.ts). Device, OS and browser are derived at ingest.
+    // (client-context.ts): the SDK's global attributes are a span processor
+    // that stamps the current set on each span as it starts, so a span carries
+    // the size of the moment it began (proved against the real SDK in
+    // scripts/browser-telemetry-smoke.mjs). Device, OS and browser are
+    // derived at ingest.
     const stopViewport = watchViewport((attrs) =>
       hdx.setGlobalAttributes?.(attrs),
     );

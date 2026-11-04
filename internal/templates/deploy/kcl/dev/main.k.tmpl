@@ -186,6 +186,29 @@ _observability_decl = forge.Observability {
 } if _observability else None
 _ttl = forge.observability_ttl(_observability_decl) if _observability_decl else ""
 
+# ── OBJECT STORAGE — OFF UNTIL THE APP STORES FILES ─────────────────────────
+# Buckets the app uploads to and serves from (forge.Bucket), reached through
+# forge/pkg/blobstore, which speaks the S3 API. Here they live on MinIO,
+# docker-compose.yml's `minio`: `forge env up` starts it, creates every
+# bucket below, and hands each workload that references one the endpoint,
+# bucket and dev credentials. Turn it on and declare the buckets:
+#
+#     _object_storage = True
+#     _buckets = [forge.Bucket {name = "uploads", runtime = _minio}]
+#
+# then give a workload the connection in deploy/kcl/workloads.k:
+#
+#     env = forge.bucket_env("UPLOADS", "uploads")
+#
+# Every env a workload runs in must declare the buckets it references
+# (staging and prod on forge.BucketOnS3). `forge skill load storage/blobstore`
+# walks through it, from the declaration to an upload from the browser.
+_object_storage = False
+_minio = forge.BucketOnMinIO {
+    port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-minio", 9000)
+} if _object_storage else None
+_buckets: [forge.Bucket] = []
+
 # ---------------------------------------------------------------------------
 # Each workload's env here.
 # ---------------------------------------------------------------------------
@@ -405,7 +428,9 @@ _bundle = forge.Bundle {
     lifecycle = "local"
     # Where the env's support objects (Namespace, gateways, routes) land.
     cluster_target = _k3d
-    workloads = _workloads + _telemetry_workloads
+    workloads = _workloads + _telemetry_workloads + ([forge.minio_workload(_minio, _buckets)] if _object_storage else [])
+    # The object-storage buckets declared above, on this env's MinIO.
+    buckets = _buckets
     observability = _observability_decl
     # ── THIS ENVIRONMENT'S INFRASTRUCTURE ─────────────────────────────────
     #

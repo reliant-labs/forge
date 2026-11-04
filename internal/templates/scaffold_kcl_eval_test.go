@@ -33,6 +33,74 @@ import (
 // out would test a path no user takes and would fail on a scaffold that
 // is completely correct.
 func TestScaffoldedIngressEvaluates(t *testing.T) {
+	tmp := scaffoldServiceForRender(t)
+
+	// workDir is the project root so the main.k's relative imports
+	// (`..workloads`, `..ingress`) and its kcl.mod dependency path resolve
+	// — the same cwd contract forge's RenderKCL / RenderManifests honor.
+	out, err := kclrender.Run(tmp, filepath.Join(tmp, "deploy/kcl/dev"), []string{"env=dev"})
+	if err != nil {
+		t.Fatalf("render dev env: %v", err)
+	}
+	// The rendered document wraps the contract as `output = forge.render(...)`
+	// alongside `manifests`, so unwrap the same way parseKCLEntities does.
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	parsed, ok := doc["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("rendered document has no `output` contract:\n%s", out)
+	}
+	// Ingress arrays present and empty (no routes uncommented in scaffold).
+	for _, k := range []string{"gateways", "http_routes", "grpc_routes"} {
+		v, ok := parsed[k]
+		if !ok {
+			t.Errorf("scaffold JSON missing %q bucket\n%s", k, out)
+			continue
+		}
+		arr, ok := v.([]any)
+		if !ok {
+			t.Errorf("scaffold JSON %q not an array: %T", k, v)
+			continue
+		}
+		if k == "gateways" && len(arr) != 1 {
+			t.Errorf("scaffold gateways count = %d, want 1 (public)\n%s", len(arr), out)
+		}
+		if (k == "http_routes" || k == "grpc_routes") && len(arr) != 0 {
+			t.Errorf("scaffold %s count = %d, want 0\n%s", k, len(arr), out)
+		}
+	}
+	// Sanity: main.k import block references ingress (relative to the
+	// deploy/kcl package root).
+	mainK, _ := os.ReadFile(filepath.Join(tmp, "deploy/kcl/dev/main.k"))
+	if !strings.Contains(string(mainK), "import .ingress as ing") {
+		t.Errorf("dev/main.k missing ingress import after Generate:\n%s", mainK)
+	}
+
+	// THE SCAFFOLDED DEV ENV DECLARES ITSELF LOCAL. dev is a developer's
+	// own k3d cluster, so forge applies to it directly; a real env declares
+	// nothing and is reconciled from a bundle instead.
+	//
+	// Asserted on the RENDER, not on the template text, because that is
+	// what every forge command actually reads — and because it proves the
+	// declaration SURVIVES the Bundle check. The scaffolded dev env targets
+	// `k3d-<project>` without a Bundle.clusters entry (its cluster comes
+	// from deploy/k3d.yaml via `forge cluster up`), which is exactly the
+	// shape a stricter reading of that check would have refused. A grep of
+	// main.k would have passed while the scaffold failed to render at all.
+	if got := parsed["lifecycle"]; got != "local" {
+		t.Errorf("scaffolded dev env renders lifecycle = %#v, want \"local\" — dev is a developer's own cluster and forge applies to it directly\n%s", got, out)
+	}
+	if !strings.Contains(string(mainK), `lifecycle = "local"`) {
+		t.Errorf("dev/main.k does not declare lifecycle = \"local\":\n%s", mainK)
+	}
+}
+
+// scaffoldServiceForRender scaffolds a service-kind project into a temp dir
+// with the generated config trio stubbed, ready for kclrender.Run of an env.
+func scaffoldServiceForRender(t *testing.T) string {
+	t.Helper()
 	tmp := t.TempDir()
 	g := generator.NewProjectGenerator("svc-eval", tmp, "example.com/svc-eval")
 	g.Kind = config.ProjectKindService
@@ -104,64 +172,5 @@ app_config: config_gen.AppConfig = {
 		}
 	}
 
-	// workDir is the project root so the main.k's relative imports
-	// (`..workloads`, `..ingress`) and its kcl.mod dependency path resolve
-	// — the same cwd contract forge's RenderKCL / RenderManifests honor.
-	out, err := kclrender.Run(tmp, filepath.Join(tmp, "deploy/kcl/dev"), []string{"env=dev"})
-	if err != nil {
-		t.Fatalf("render dev env: %v", err)
-	}
-	// The rendered document wraps the contract as `output = forge.render(...)`
-	// alongside `manifests`, so unwrap the same way parseKCLEntities does.
-	var doc map[string]any
-	if err := json.Unmarshal(out, &doc); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, out)
-	}
-	parsed, ok := doc["output"].(map[string]any)
-	if !ok {
-		t.Fatalf("rendered document has no `output` contract:\n%s", out)
-	}
-	// Ingress arrays present and empty (no routes uncommented in scaffold).
-	for _, k := range []string{"gateways", "http_routes", "grpc_routes"} {
-		v, ok := parsed[k]
-		if !ok {
-			t.Errorf("scaffold JSON missing %q bucket\n%s", k, out)
-			continue
-		}
-		arr, ok := v.([]any)
-		if !ok {
-			t.Errorf("scaffold JSON %q not an array: %T", k, v)
-			continue
-		}
-		if k == "gateways" && len(arr) != 1 {
-			t.Errorf("scaffold gateways count = %d, want 1 (public)\n%s", len(arr), out)
-		}
-		if (k == "http_routes" || k == "grpc_routes") && len(arr) != 0 {
-			t.Errorf("scaffold %s count = %d, want 0\n%s", k, len(arr), out)
-		}
-	}
-	// Sanity: main.k import block references ingress (relative to the
-	// deploy/kcl package root).
-	mainK, _ := os.ReadFile(filepath.Join(tmp, "deploy/kcl/dev/main.k"))
-	if !strings.Contains(string(mainK), "import .ingress as ing") {
-		t.Errorf("dev/main.k missing ingress import after Generate:\n%s", mainK)
-	}
-
-	// THE SCAFFOLDED DEV ENV DECLARES ITSELF LOCAL. dev is a developer's
-	// own k3d cluster, so forge applies to it directly; a real env declares
-	// nothing and is reconciled from a bundle instead.
-	//
-	// Asserted on the RENDER, not on the template text, because that is
-	// what every forge command actually reads — and because it proves the
-	// declaration SURVIVES the Bundle check. The scaffolded dev env targets
-	// `k3d-<project>` without a Bundle.clusters entry (its cluster comes
-	// from deploy/k3d.yaml via `forge cluster up`), which is exactly the
-	// shape a stricter reading of that check would have refused. A grep of
-	// main.k would have passed while the scaffold failed to render at all.
-	if got := parsed["lifecycle"]; got != "local" {
-		t.Errorf("scaffolded dev env renders lifecycle = %#v, want \"local\" — dev is a developer's own cluster and forge applies to it directly\n%s", got, out)
-	}
-	if !strings.Contains(string(mainK), `lifecycle = "local"`) {
-		t.Errorf("dev/main.k does not declare lifecycle = \"local\":\n%s", mainK)
-	}
+	return tmp
 }

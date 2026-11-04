@@ -681,6 +681,56 @@ services:
     networks:
       - {{.ProjectName}}-net
 
+  # ── Object storage (forge.Bucket) ────────────────────────────────────────
+  # MinIO: the S3 API forge/pkg/blobstore speaks, for the buckets
+  # deploy/kcl/dev/main.k declares on a forge.BucketOnMinIO. `forge env up`
+  # runs it only when the env declares one (`forge.minio_workload` binds
+  # this service), and everything below comes from that declaration through
+  # the compose environment: the published port, the root credentials, the
+  # buckets to create, the ones anyone may read, and the CORS origins the
+  # browser uploads from. A bucket is created at start and never deleted;
+  # the data persists in the minio_data volume.
+  #
+  # Upstream MinIO stopped publishing images in 2025. Chainguard builds it
+  # from source, with the `mc` client beside it, which is what creates the
+  # buckets once the server answers. Healthy means every bucket exists.
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:3c60a2a8c4d33409a9bc7a623a7fcbfb4605adc3d89422d2f53b3f673a6e5597
+    restart: unless-stopped
+    mem_limit: 512m
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        rm -f /tmp/buckets-ready
+        minio server /data --address :9000 --console-address :9001 &
+        pid=$$!
+        trap 'kill -TERM $$pid; wait $$pid; exit 0' TERM INT
+        until mc alias set local http://127.0.0.1:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do sleep 0.5; done
+        for b in $$MINIO_BUCKETS; do mc mb --ignore-existing --region "$$MINIO_REGION" "local/$$b" || exit 1; done
+        for b in $$MINIO_PUBLIC_BUCKETS; do mc anonymous set download "local/$$b" || exit 1; done
+        touch /tmp/buckets-ready
+        wait $$pid
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      MINIO_BUCKETS: ${MINIO_BUCKETS-}
+      MINIO_PUBLIC_BUCKETS: ${MINIO_PUBLIC_BUCKETS-}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-*}
+      MC_CONFIG_DIR: /tmp/mc
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000" # S3 API
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-0}:9001" # web console (0 = any free port)
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/buckets-ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      - {{.ProjectName}}-net
+
 volumes:
   postgres_data:
   go_mod_cache:
@@ -688,6 +738,7 @@ volumes:
   clickstack_clickhouse:
   clickstack_mongo:
   alertmanager_data:
+  minio_data:
 {{- if .HasFrontend}}
   idp_db_data:
 {{- end}}

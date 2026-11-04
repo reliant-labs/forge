@@ -1,56 +1,57 @@
 package cli
 
 import (
+	"os"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
-// TestResolveUpLifecycle pins the pure TTY-aware lifecycle decision behind
-// `forge env up` (Part B, the LLM-first fix): an agent / CI invocation with no
-// TTY and no explicit flag must resolve to `once` (start + return), never
-// `supervise` (the interactive Ctrl-C hold that would hang forever). The
-// explicit --watch / --background flags override the TTY default, with
-// --background the documented winner when both are somehow set.
-//
-// Pure-decision test style: inject isTTY and the two flags, assert the
-// resolved lifecycle, no real stdin manipulation.
+// TestResolveUpLifecycle pins the lifecycle decision behind `forge env up`:
+// it supervises — holds the foreground and tears the stack down on a signal —
+// unless --background asked it to detach. A missing TTY no longer detaches: an
+// agent harness runs the command in its own background and stops it with a
+// signal, and a stack that outlived the command would be one the harness can
+// neither see nor stop.
 func TestResolveUpLifecycle(t *testing.T) {
-	cases := []struct {
-		name       string
-		isTTY      bool
-		watch      bool
-		background bool
-		want       reconcileLifecycle
-	}{
-		// The load-bearing case: no TTY, no flag -> once (don't hang an agent).
-		{"no tty, no flags -> once (agent/CI)", false, false, false, lifecycleOnce},
-		// TTY, no flag -> supervise (today's interactive behaviour).
-		{"tty, no flags -> supervise (interactive)", true, false, false, lifecycleSupervise},
-		// --watch forces supervise even without a TTY (human piping output).
-		{"no tty, --watch -> supervise", false, true, false, lifecycleSupervise},
-		{"tty, --watch -> supervise", true, true, false, lifecycleSupervise},
-		// --background always detaches + returns, regardless of the TTY.
-		{"tty, --background -> once", true, false, true, lifecycleOnce},
-		{"no tty, --background -> once", false, false, true, lifecycleOnce},
-		// Precedence: --background beats --watch when both are set.
-		{"--background beats --watch (no tty)", false, true, true, lifecycleOnce},
-		{"--background beats --watch (tty)", true, true, true, lifecycleOnce},
+	if got := resolveUpLifecycle(false); got != lifecycleSupervise {
+		t.Errorf("resolveUpLifecycle(background=false) = %v, want supervise (TTY or not)", got)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := resolveUpLifecycle(tc.isTTY, tc.watch, tc.background)
-			if got != tc.want {
-				t.Errorf("resolveUpLifecycle(isTTY=%v, watch=%v, background=%v) = %v, want %v",
-					tc.isTTY, tc.watch, tc.background, got, tc.want)
-			}
-		})
+	if got := resolveUpLifecycle(true); got != lifecycleOnce {
+		t.Errorf("resolveUpLifecycle(background=true) = %v, want once (detach + return)", got)
 	}
 }
 
-// TestUpWatchFlagRegistered confirms `forge env up --watch` is wired with help
-// text that names the force-supervise / no-TTY intent — the surface a human
-// piping output relies on, and the documented counterpart to the non-TTY
-// "return after start" default.
+// TestUpTeardownSignals pins the signals a supervising `forge env up` tears its
+// stack down on. SIGTERM is how a harness or a supervisor stops a command, and
+// SIGHUP is its terminal closing; catching only Ctrl-C left both to kill forge
+// alone, orphaning children that run in process groups of their own.
+func TestUpTeardownSignals(t *testing.T) {
+	for _, want := range []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP} {
+		if !slices.Contains(upTeardownSignals, want) {
+			t.Errorf("upTeardownSignals = %v, missing %v", upTeardownSignals, want)
+		}
+	}
+}
+
+// TestProcRegistryStoppedAfterShutdown pins the guard that keeps the deferred
+// startup teardown from stopping a stack the hold already stopped.
+func TestProcRegistryStoppedAfterShutdown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := newProcRegistry("proj-stopped", t.TempDir(), "dev")
+	if p.stopped() {
+		t.Fatal("a fresh registry reports stopped")
+	}
+	p.shutdown()
+	if !p.stopped() {
+		t.Fatal("registry does not report stopped after shutdown")
+	}
+}
+
+// TestUpWatchFlagRegistered confirms `forge env up --watch` is still wired —
+// scripts pass it — and that its help says the hold is now the default.
 func TestUpWatchFlagRegistered(t *testing.T) {
 	cmd := newEnvUpCmd()
 	f := cmd.Flags().Lookup("watch")
@@ -63,10 +64,8 @@ func TestUpWatchFlagRegistered(t *testing.T) {
 	if f.Value.Type() != "bool" {
 		t.Errorf("--watch should be a bool flag, got %q", f.Value.Type())
 	}
-	// The help must point at the TTY-aware lifecycle so a reader of
-	// `forge env up --help` understands when the hold happens vs the return.
-	if !strings.Contains(strings.ToLower(f.Usage), "tty") {
-		t.Errorf("--watch usage should explain the TTY-aware default, got %q", f.Usage)
+	if !strings.Contains(strings.ToLower(f.Usage), "default") {
+		t.Errorf("--watch usage should say the hold is the default, got %q", f.Usage)
 	}
 }
 

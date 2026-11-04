@@ -122,7 +122,7 @@ forge cluster up --wait
 forge env deploy dev
 
 # Terminal 2: the API (every service; air reloads it as you edit)
-forge env up dev --target api                  # foreground; Ctrl-C to stop
+forge env up dev --target api                  # foreground, TTY or not; Ctrl-C / SIGTERM to stop
 # or detach + tail logs separately:
 forge env up dev --target api --background     # detach; PIDs tracked per env
 forge env down dev                                     # later teardown

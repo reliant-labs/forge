@@ -81,6 +81,15 @@
 // The SDK's own `location.href` attribute (the page URL, stamped on every span)
 // has no client-side hook; the ingest side scrubs it.
 //
+// ── Network spans are named by what they called ──────────────────────────
+//
+// HyperDX names every fetch/XHR span `HTTP <METHOD>`, so a trace a browser
+// starts is titled "HTTP POST" whatever it did. The same hook renames it to
+// the procedure when it is a Connect/gRPC call (`POST /pkg.v1.Service/Method`,
+// the server span's name with the method in front; spanRouteName). Any other
+// URL keeps `HTTP <METHOD>`: a free-form path can carry ids and tokens, and
+// the span name is exported unscrubbed.
+//
 // ── Loading ──────────────────────────────────────────────────────────────
 //
 // The SDK is ~600 KB minified (rrweb and the OTel web stack are bundled in
@@ -794,12 +803,12 @@ export function buildSdkOptions(
       fetch: {
         propagateTraceHeaderCorsUrls: targets,
         advancedNetworkCapture: () => advancedNetworkCapture,
-        applyCustomAttributesOnSpan: networkSpanAttributes,
+        applyCustomAttributesOnSpan: finishNetworkSpan,
       },
       xhr: {
         propagateTraceHeaderCorsUrls: targets,
         advancedNetworkCapture: () => advancedNetworkCapture,
-        applyCustomAttributesOnSpan: networkSpanAttributes,
+        applyCustomAttributesOnSpan: finishNetworkSpan,
       },
     },
     // Polls for window.Intercom on a timer; nothing here uses Intercom.
@@ -916,15 +925,27 @@ export function stripUrlQuery(url: string): string {
 interface UrlSpan {
   attributes?: Record<string, unknown>;
   setAttribute(key: string, value: string): unknown;
+  updateName?(name: string): unknown;
 }
 
 // applyCustomAttributesOnSpan for both instrumentations: it runs before the
-// span ends, so what it writes is what is exported. The span carries the RUM
-// session as `session.id` (the resource's rum.sessionId says the same for the
-// browser; the attribute is what the backend's own spans carry too, so a trace
-// is found by session from either side).
-function networkSpanAttributes(span: UrlSpan): void {
+// span ends, and after HyperDX's own `HTTP <METHOD>` rename, so the values
+// set here are the ones exported. The span carries the RUM session as
+// `session.id` (the resource's rum.sessionId says the same for the browser;
+// the attribute is what the backend's own spans carry too, so a trace is found
+// by session from either side).
+function finishNetworkSpan(span: UrlSpan): void {
   stripNetworkQuery(span);
+  const url = span.attributes?.["url.full"] ?? span.attributes?.["http.url"];
+  const method =
+    span.attributes?.["http.request.method"] ??
+    span.attributes?.["http.method"];
+  if (typeof url === "string" && typeof span.updateName === "function") {
+    const name = spanRouteName(typeof method === "string" ? method : "", url);
+    if (name) {
+      span.updateName(name);
+    }
+  }
   const session = rumSessionId();
   if (session) {
     span.setAttribute("session.id", session);
@@ -941,6 +962,32 @@ function stripNetworkQuery(span: UrlSpan): void {
       }
     }
   }
+}
+
+// A Connect/gRPC procedure: `/<package>.<Service>/<Method>`, the service and
+// method PascalCase as protobuf declares them. The whole path is the route,
+// fixed by the proto, so it carries no request values.
+const RPC_PATH = /^\/[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.[A-Z]\w*\/[A-Z]\w*$/;
+
+/**
+ * The name a fetch/XHR span gets: `<METHOD> /<package>.<Service>/<Method>`,
+ * the server span's name with the method in front, when the URL is a
+ * Connect/gRPC procedure. Empty for any other URL, which keeps the SDK's
+ * `HTTP <METHOD>`: an arbitrary path can hold values (ids, tokens, emails) no
+ * pattern recognises reliably, and a span name must be neither sensitive nor
+ * unbounded. Empty too when `url` cannot be parsed. Exported for tests.
+ */
+export function spanRouteName(method: string, url: string): string {
+  let path: string;
+  try {
+    path = new URL(url, "http://base.invalid").pathname;
+  } catch {
+    return "";
+  }
+  if (!RPC_PATH.test(path)) {
+    return "";
+  }
+  return `${method.trim().toUpperCase() || "POST"} ${path}`;
 }
 
 /**

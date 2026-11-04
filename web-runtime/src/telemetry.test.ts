@@ -867,6 +867,100 @@ describe("fetch and XHR URL query stripping", () => {
   });
 });
 
+describe("fetch and XHR span names", () => {
+  type Hooked = { applyCustomAttributesOnSpan: (span: unknown) => void };
+
+  function span(attributes: Record<string, unknown>) {
+    const named = { name: "HTTP POST" };
+    return {
+      named,
+      attributes,
+      setAttribute: vi.fn((k: string, v: unknown) => {
+        attributes[k] = v;
+      }),
+      updateName: vi.fn((n: string) => {
+        named.name = n;
+      }),
+    };
+  }
+
+  it("renames HyperDX's HTTP <METHOD> to the called procedure on both instrumentations", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { serviceName: "web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const inst = opts.instrumentations as Record<string, Hooked>;
+
+    for (const kind of ["fetch", "xhr"]) {
+      const rpc = span({
+        "http.method": "POST",
+        "http.url":
+          "https://api.example.com/reliant.v1.ChatService/SendMessage?x=1",
+      });
+      inst[kind]!.applyCustomAttributesOnSpan(rpc);
+      expect(rpc.named.name).toBe("POST /reliant.v1.ChatService/SendMessage");
+
+      const rest = span({
+        "http.request.method": "get",
+        "url.full": "https://api.example.com/v1/items/42/notes/abc123",
+      });
+      inst[kind]!.applyCustomAttributesOnSpan(rest);
+      expect(rest.updateName).not.toHaveBeenCalled();
+      expect(rest.named.name).toBe("HTTP POST");
+    }
+  });
+
+  it("keeps the SDK's name when the span has no URL or cannot be renamed", async () => {
+    const { t } = await load();
+    const opts = t.buildSdkOptions(
+      { serviceName: "web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    const hook = (opts.instrumentations as Record<string, Hooked>).fetch!
+      .applyCustomAttributesOnSpan;
+
+    const bare = span({ "http.method": "POST" });
+    hook(bare);
+    expect(bare.updateName).not.toHaveBeenCalled();
+    expect(() =>
+      hook({
+        attributes: { "http.url": "https://a.example/x" },
+        setAttribute: vi.fn(),
+      }),
+    ).not.toThrow();
+  });
+
+  it("spanRouteName names Connect/gRPC procedures and nothing else", async () => {
+    const { t } = await load();
+
+    expect(t.spanRouteName("post", "/pkg.v1.Svc/Do")).toBe(
+      "POST /pkg.v1.Svc/Do",
+    );
+    expect(
+      t.spanRouteName("", "https://x.example/reliant.v1.ChatService/Send"),
+    ).toBe("POST /reliant.v1.ChatService/Send");
+    // A free-form path can hold values no pattern recognises (short ids,
+    // opaque tokens, emails), so it never becomes a span name.
+    for (const url of [
+      "https://x.example/",
+      "https://x.example/users/abc123",
+      "https://x.example/invite/secret-token",
+      "https://x.example/reset/qwertyuiopasdfghjklzxcvbnm",
+      "https://x.example/users/a%40b.com/settings",
+      "https://x.example/v1/items/42",
+      "https://dash.example/auth/v1/token",
+      "https://x.example/files.v1/secret",
+      "https://x.example/pkg.v1.Svc/Do/extra",
+    ]) {
+      expect(t.spanRouteName("GET", url)).toBe("");
+    }
+    expect(t.spanRouteName("GET", "http://[bad")).toBe("");
+  });
+});
+
 describe("decideReplay", () => {
   function store() {
     const m = new Map<string, string>();

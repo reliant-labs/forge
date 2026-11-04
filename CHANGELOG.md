@@ -8165,6 +8165,7 @@ and union support, and the testreport package.
 
 ### Added
 
+- **`pkg/approval`: items an agent proposed wait for a person, expire, and hand off once.** `Propose` (idempotent on scope+kind+subject), `ExpireDue`, `Cancel`, `Decide(d, FollowUp)` and `Redrive`. `Decide` expires a late item first, lets only one concurrent approver win, and runs the app's follow-up in the same transaction (`*Rejection` records "approved, but the re-check refused it"; `HandoffIncomplete` leaves it for `Redrive`). The deadline is an input; domain logic stays in the callback. `SchemaSQL` is the table (the project owns the migration); a `MemoryStore` serves unit tests. It does not check identity: declare the decide rpc `human_only`.
 - **`forge env render <env>` — read what an environment renders, without
   deploying it.** There was no supported way to ask "what objects does this
   environment own". `kcl run` fails on a real project (it needs forge's

@@ -93,21 +93,55 @@ func (w *Worker) Start(ctx context.Context) error {
 
 ### Cron-Scheduled Worker
 
-Use `--kind cron` with a `--schedule` (standard cron expression) to scaffold a worker that runs on a schedule using `robfig/cron/v3`:
+Use `--kind cron` with a `--schedule` (standard cron expression) to scaffold a worker that runs on a schedule using `forge/pkg/cronkit`:
 
 ```bash
 forge scaffold worker cleanup --kind cron --schedule "0 */6 * * *"
 ```
 
-The generated worker has a `Run(ctx context.Context)` method for your job logic. The cron scheduler is managed inside `Start` and stopped on context cancellation — same lifecycle as a regular worker. The cron closure derives a per-tick `ctx` from a base context set in `Start` and cancelled in `Stop`, so long-running jobs can observe graceful shutdown via `ctx.Done()` instead of running to completion after `Stop` fires.
+The generated worker has a `Run(ctx context.Context) error` method for your job logic. `Start` blocks in `cronkit.Run` until its context is cancelled, then waits for an in-flight tick (whose ctx is cancelled too) — same lifecycle as a regular worker. Each tick is a trace of its own (`cron.<name>.tick`); a returned error is logged and a panic recovered, so one bad tick never stops the schedule.
 
 ```go
-func (w *Worker) Run(ctx context.Context) {
+func (w *Worker) Run(ctx context.Context) error {
     // Your scheduled job logic here. Plumb ctx through every
     // context-aware downstream call so shutdown is observed.
-    w.deps.Logger.InfoContext(ctx, "running scheduled cleanup")
+    at, _ := cronkit.TickTime(ctx) // the scheduled time, identical on every replica
+    return w.deps.Store.SweepBefore(ctx, at)
 }
 ```
+
+**Each tick fires on ONE replica, by default.** A cron worker runs inside a long-running workload (the hosted `api` workload, not a Kubernetes CronJob), so every replica computes the same schedule. Before running a tick, cronkit claims it: an `INSERT … ON CONFLICT DO NOTHING` of (worker name, scheduled tick time) into the `forge_cron_ticks` table in the app's Postgres. The replica whose insert lands runs the tick; every other replica skips it (a DEBUG log, and `forge_cron_ticks_total{outcome="skipped"}`). The table is bookkeeping, like the migrator's own: cronkit creates it on first use and prunes rows older than a day. In the scaffold that is:
+
+```go
+// Deps
+// forge:optional-dep
+DB orm.Context // resolved to the ORM by type; nil when the app has no database
+
+// Start
+return cronkit.Run(ctx, cronkit.Options{
+    Name:       w.Name(),               // the claim key: renaming the worker resets its history
+    Schedule:   Schedule,
+    PerReplica: PerReplica,
+    Claims:     cronkit.Postgres(w.deps.DB),
+    Logger:     w.deps.Logger,
+}, w.Run)
+```
+
+What the claim guarantees, and what it does not:
+
+- **At most once per tick.** The claim is taken before `Run`, so a replica that crashes mid-tick loses that tick (cron semantics: no catch-up). A claim that fails (database down) skips the tick on that replica, logs at ERROR and counts `outcome="claim_error"`; it never runs unclaimed.
+- **Ticks on one replica never overlap**: a tick that outlives its period skips the ticks it covered (WARN). A later tick can still start on another replica while a slow one runs here; if `Run` must never overlap itself, hold a `forge/pkg/lease` lease inside it.
+- **`@every <d>` is aligned to multiples of d**, so replicas that started at different moments share tick times (robfig/cron counts it from process start).
+- **No database, no claims.** A project without `db/migrations` scaffolds no `DB` field, and an app booted without `DATABASE_URL` hands cronkit a nil ORM. Either way every replica fires, as before, and `Start` logs a WARN at boot (`cron worker started WITHOUT tick claims`).
+
+**Opting out.** A job meant to run on every pod (refreshing an in-process cache, sweeping a local temp dir) declares it beside the schedule; claims are then never consulted:
+
+```go
+// PerReplica: every tick runs on every replica.
+const PerReplica = true
+```
+
+`forge_cron_ticks_total{worker, outcome}` counts every tick each replica saw: `ran`, `failed` (Run returned an error or panicked), `skipped` (claimed elsewhere), `claim_error`. Summed over replicas, `ran + failed` is the number of ticks that executed.
 
 The schedule is not recorded anywhere outside the code. The `Schedule`
 const the cron template emits IS the declaration — discovery reads it back off
@@ -172,6 +206,7 @@ A worker pod scaled to two runs every worker twice. Decide per worker, and write
 |---|---|
 | a queue consumer (`SELECT ... FOR UPDATE SKIP LOCKED`, a durable JetStream consumer, a Temporal worker) | nothing: it is meant to run on every replica |
 | an idempotent set-based sweep (`UPDATE ... WHERE stopped_at IS NULL`, deleting rows already past retention) | nothing: a second replica matches no rows |
+| a `--kind cron` worker | nothing: each tick already fires on one replica (see [Cron-Scheduled Worker](#cron-scheduled-worker)); `PerReplica = true` makes it run everywhere |
 | anything that reads a value and writes a derived one, calls a provider that bills or mails, or otherwise must not overlap | make it a **singleton** |
 
 A singleton takes a Postgres advisory-lock lease (`forge/pkg/lease`): one replica runs it, the rest stand by and take over within seconds of the holder exiting, crashing or losing its database session. No Kubernetes RBAC, no schema, the same behaviour in `forge env up`, compose and a cluster.
@@ -245,3 +280,4 @@ Because `Deps` fields are interfaces filled in one place, instantiating a worker
 - Wire workers explicitly: construct in `NewComponents` onto the worker's `Components` field; `lifecycle.go`'s `WorkerList` and the cmd serve path supervise them. For late-bound, cross-worker deps, use setters directly in `NewComponents` — `compose.go` is yours and forge keeps those lines. There is no `wire_gen.go` and no name-matched `*App` resolution.
 - Use `forge scaffold worker`, not manual directory creation.
 - Cron workers require `--schedule` with a valid cron expression (5-field standard format).
+- A cron worker fires each tick on one replica (claimed in Postgres through `cronkit.Postgres`). Run it everywhere only by declaring `const PerReplica = true`, never by dropping the claims.

@@ -76,9 +76,10 @@ func TestCronWorkerRunAcceptsContext(t *testing.T) {
 	})
 
 	// A cancelled context is the contract's simplest exercise: Run must
-	// accept it without panicking. Real Run bodies should select on
-	// ctx.Done() to bail early; the scaffold body just logs.
+	// accept it without panicking, and may return ctx.Err(). Real Run
+	// bodies should select on ctx.Done() to bail early; the scaffold body
+	// just logs.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	w.Run(ctx)
+	_ = w.Run(ctx)
 }

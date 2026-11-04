@@ -101,8 +101,16 @@ const (
 )
 
 // keepVersions is how many other pinned builds the cache keeps beside the one
-// just used: each is a ~100 MB binary, and projects move their pins often.
-const keepVersions = 4
+// just used. Each is a ~200 MB binary, so this bounds the cache near 3.5 GB.
+//
+// IT MUST EXCEED THE PINS IN USE AT ONCE, or the cache thrashes. One machine
+// hosting a handful of projects and their worktrees runs a dozen distinct pins
+// (13 on a shared cloud machine, 2026-11-04), and reliant's daemon resolves
+// each project's pin for every session. With 4 kept, each resolution evicted
+// another project's build, so the next session in that project rebuilt it:
+// a continuous stream of full forge links, minutes each under load, which is
+// what kept timing out and leaking work directories into /tmp.
+const keepVersions = 16
 
 // Result is a forge ready to exec.
 type Result struct {

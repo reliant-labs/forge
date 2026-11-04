@@ -21,7 +21,7 @@ import (
 // the same against a real API server.
 
 // adminServerManagedFields is prod admin-server's ownership, reduced: forge's
-// apply (kubectl/Apply), the RUN_OPERATORS a `kubectl` Update added, the
+// apply (kubectl/Apply), the PPROF_ENABLED a `kubectl` Update added, the
 // revision annotation kube-controller-manager writes, an operator's
 // annotation, a rollout restart, and the status subresource.
 const adminServerManagedFields = `[
@@ -30,7 +30,7 @@ const adminServerManagedFields = `[
     "f:containers":{"k:{\"name\":\"admin-server\"}":{".":{},"f:name":{},"f:image":{},"f:env":{".":{},"k:{\"name\":\"LOG_LEVEL\"}":{".":{},"f:name":{},"f:value":{}}}}},
     "f:volumes":{"k:{\"name\":\"tmp\"}":{".":{},"f:name":{},"f:emptyDir":{}}}}}}}},
  {"manager":"kubectl","operation":"Update","apiVersion":"apps/v1","fieldsType":"FieldsV1","fieldsV1":
-  {"f:spec":{"f:template":{"f:spec":{"f:containers":{"k:{\"name\":\"admin-server\"}":{"f:env":{"k:{\"name\":\"RUN_OPERATORS\"}":{".":{},"f:name":{},"f:value":{}}}}}}}}}},
+  {"f:spec":{"f:template":{"f:spec":{"f:containers":{"k:{\"name\":\"admin-server\"}":{"f:env":{"k:{\"name\":\"PPROF_ENABLED\"}":{".":{},"f:name":{},"f:value":{}}}}}}}}}},
  {"manager":"kube-controller-manager","operation":"Update","apiVersion":"apps/v1","fieldsType":"FieldsV1","fieldsV1":
   {"f:metadata":{"f:annotations":{".":{},"f:deployment.kubernetes.io/revision":{}}}}},
  {"manager":"some-operator","operation":"Update","apiVersion":"apps/v1","fieldsType":"FieldsV1","fieldsV1":
@@ -45,7 +45,7 @@ const adminServerManagedFields = `[
 const adminServerFields = `{"f:metadata":{"f:annotations":{".":{},"f:deployment.kubernetes.io/revision":{},"f:operator.example/nudge":{}}},
  "f:spec":{"f:revisionHistoryLimit":{},"f:template":{"f:spec":{"f:dnsPolicy":{},
   "f:containers":{"k:{\"name\":\"admin-server\"}":{".":{},"f:name":{},"f:image":{},"f:terminationMessagePath":{},
-    "f:env":{".":{},"k:{\"name\":\"LOG_LEVEL\"}":{".":{},"f:name":{},"f:value":{}},"k:{\"name\":\"RUN_OPERATORS\"}":{".":{},"f:name":{},"f:value":{}}}}},
+    "f:env":{".":{},"k:{\"name\":\"LOG_LEVEL\"}":{".":{},"f:name":{},"f:value":{}},"k:{\"name\":\"PPROF_ENABLED\"}":{".":{},"f:name":{},"f:value":{}}}}},
   "f:volumes":{"k:{\"name\":\"tmp\"}":{".":{},"f:name":{},"f:emptyDir":{}},"k:{\"name\":\"scratch\"}":{".":{},"f:name":{},"f:emptyDir":{}}}}}}}`
 
 func liveFixture(t *testing.T, managedFields string, spec map[string]any) liveObject {
@@ -139,10 +139,10 @@ func TestPlanClaim_TakesBackHandEditsAndOwnerlessFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c == nil {
-		t.Fatal("no claim: the RUN_OPERATORS a kubectl Update added and the ownerless scratch volume would survive the apply")
+		t.Fatal("no claim: the PPROF_ENABLED a kubectl Update added and the ownerless scratch volume would survive the apply")
 	}
 	forge := entrySet(t, c, "kubectl", metav1.ManagedFieldsOperationApply)
-	runOps := containerPath(t, "env", keyBy("name", "RUN_OPERATORS"))
+	runOps := containerPath(t, "env", keyBy("name", "PPROF_ENABLED"))
 	scratch := mustPath(t, "spec", "template", "spec", "volumes", keyBy("name", "scratch"))
 	for _, p := range []fieldpath.Path{runOps, scratch, append(scratch.Copy(), fieldpath.PathElement{FieldName: strPtr("emptyDir")})} {
 		if !forge.Has(p) {
@@ -230,7 +230,7 @@ func TestPlanClaim_UnreadableObjectStillTakesBackHandEdits(t *testing.T) {
 		if c.ownerless != 0 {
 			t.Errorf("%s: claimed %d ownerless field(s) it could not judge", name, c.ownerless)
 		}
-		if !entrySet(t, c, "kubectl", metav1.ManagedFieldsOperationApply).Has(containerPath(t, "env", keyBy("name", "RUN_OPERATORS"))) {
+		if !entrySet(t, c, "kubectl", metav1.ManagedFieldsOperationApply).Has(containerPath(t, "env", keyBy("name", "PPROF_ENABLED"))) {
 			t.Errorf("%s: the hand edit was not taken back", name)
 		}
 	}
@@ -488,10 +488,10 @@ func TestConvergeFieldOwnership_PatchesManagedFieldsBeforeTheApply(t *testing.T)
 	if got := strings.Join(managerNames(entries), ","); got != "kubectl/Apply,kube-controller-manager/Update,some-operator/Update,kube-controller-manager/Update/status" {
 		t.Errorf("managedFields after the claim: %s", got)
 	}
-	if forgeFields := entries[0].FieldsV1.GetRawString(); !strings.Contains(forgeFields, "scratch") || !strings.Contains(forgeFields, "RUN_OPERATORS") {
+	if forgeFields := entries[0].FieldsV1.GetRawString(); !strings.Contains(forgeFields, "scratch") || !strings.Contains(forgeFields, "PPROF_ENABLED") {
 		t.Errorf("forge's entry does not hold the claimed fields: %s", forgeFields)
 	}
-	for _, want := range []string{"Deployment/control-plane-prod/admin-server", "kubectl, no owner", `env[name="RUN_OPERATORS"]`, `volumes[name="scratch"]`} {
+	for _, want := range []string{"Deployment/control-plane-prod/admin-server", "kubectl, no owner", `env[name="PPROF_ENABLED"]`, `volumes[name="scratch"]`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("report lacks %q:\n%s", want, out.String())
 		}
@@ -552,7 +552,7 @@ func TestConvergeFieldOwnership_ObjectWithNoManagedFields(t *testing.T) {
 		t.Fatalf("rv=%v entries=%v, want forge's entry alone at 41", rv, managerNames(entries))
 	}
 	forge := entries[0].FieldsV1.GetRawString()
-	if !strings.Contains(forge, "scratch") || !strings.Contains(forge, "RUN_OPERATORS") {
+	if !strings.Contains(forge, "scratch") || !strings.Contains(forge, "PPROF_ENABLED") {
 		t.Errorf("forge's entry lacks the orphans: %s", forge)
 	}
 	if strings.Contains(forge, "dnsPolicy") || strings.Contains(forge, "terminationMessagePath") || strings.Contains(forge, "revisionHistoryLimit") {

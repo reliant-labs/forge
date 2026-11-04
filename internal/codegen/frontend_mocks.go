@@ -400,8 +400,8 @@ type SeedProjection struct {
 	cfg  seedplan.Config
 	plan *seedplan.Plan
 	// fixtureRows is, per table, the dataset rows its fixtures carry, in
-	// order: the first mockRecordCount, plus every row another fixture's
-	// foreign key points at. See fixtureRowClosure.
+	// order: every row of a table a foreign key references, the first
+	// mockRecordCount of any other. See fixtureRowClosure.
 	fixtureRows map[string][]int
 }
 
@@ -451,7 +451,7 @@ func newSeedProjection(tables []schemadef.Table, cfg seedplan.Config, vocab *see
 	}
 	plan.SetBounds(seedplan.BoundsFromTables(tables))
 	plan.ApplyVocab(vocab)
-	return &SeedProjection{cfg: cfg, plan: plan, fixtureRows: fixtureRowClosure(tables, plan, cfg, mockRecordCount)}
+	return &SeedProjection{cfg: cfg, plan: plan, fixtureRows: fixtureRowClosure(tables, cfg, mockRecordCount)}
 }
 
 // Value returns the value the seeded database holds at (table, column, row),
@@ -518,72 +518,44 @@ func (p *SeedProjection) IsNull(table, column string, row int) bool {
 // mock data is REFERENTIALLY CONSISTENT: every foreign key in a fixture points
 // at a row some fixture holds.
 //
-// Each table starts from its first `base` rows — enough to fill a list page.
-// That alone dangled: the seeder spreads a child's foreign keys over ALL of
-// the parent's rows (20 by default), so capping each table at its own first
-// ten independently left half the jobs pointing at customers no fixture
-// held, and every such row rendered "—" where the customer's name belonged.
-// So the set is closed over the declared REFERENCES: a referenced parent row
-// joins its table's fixtures, which may reference further rows in turn,
-// until nothing changes. The rows stay the dataset's own rows (the fixtures
-// still agree with the dev database cell for cell); only which rows are
-// included grows.
-func fixtureRowClosure(tables []schemadef.Table, plan *seedplan.Plan, cfg seedplan.Config, base int) map[string][]int {
-	want := make(map[string]map[int]bool, len(tables))
+// A table no foreign key references carries its first `base` rows — enough
+// to fill a list page. A referenced table carries ALL of its dataset rows:
+// the seeder spreads a child's foreign keys over every row of the parent (20
+// by default), so its first ten alone left half the jobs pointing at
+// customers no fixture held, and every such row rendered "—" where the
+// customer's name belonged. The rows stay the dataset's own rows (the
+// fixtures still agree with the dev database cell for cell).
+//
+// It is all of them, not the subset some fixture happens to reference, so a
+// parent's fixtures depend only on WHETHER it is referenced, never on which
+// children exist: two branches that each add a child of the same parent
+// write the same parent file, and plain git merges them (forge#948,
+// TestE2EMergeProperty). A subset closed over the children made each
+// branch's parent file a different row set, and every such merge conflicted.
+func fixtureRowClosure(tables []schemadef.Table, cfg seedplan.Config, base int) map[string][]int {
+	referenced := map[string]bool{}
+	known := make(map[string]bool, len(tables))
 	for _, t := range tables {
-		rows := map[int]bool{}
-		for r := 0; r < min(base, cfg.EffectiveRows(t.Name)); r++ {
-			rows[r] = true
-		}
-		want[t.Name] = rows
+		known[t.Name] = true
 	}
-	// The row of `table` whose `column` holds a value, indexed on first use.
-	index := map[string]map[string]int{}
-	rowOf := func(table, column, value string) (int, bool) {
-		key := table + "\x00" + column
-		byValue, ok := index[key]
-		if !ok {
-			byValue = map[string]int{}
-			for r := 0; r < cfg.EffectiveRows(table); r++ {
-				if v, ok := plan.SeedValue(table, column, r); ok {
-					if _, seen := byValue[v]; !seen {
-						byValue[v] = r
-					}
-				}
-			}
-			index[key] = byValue
-		}
-		r, ok := byValue[value]
-		return r, ok
-	}
-	for changed := true; changed; {
-		changed = false
-		for _, t := range tables {
-			for _, fk := range t.ForeignKeys {
-				if _, ok := want[fk.RefTable]; !ok || strings.Contains(fk.Column, ",") {
-					continue
-				}
-				for r := range want[t.Name] {
-					v, ok := plan.SeedValue(t.Name, fk.Column, r)
-					if !ok {
-						continue
-					}
-					if pr, ok := rowOf(fk.RefTable, fk.RefColumn, v); ok && !want[fk.RefTable][pr] {
-						want[fk.RefTable][pr] = true
-						changed = true
-					}
-				}
+	for _, t := range tables {
+		for _, fk := range t.ForeignKeys {
+			if known[fk.RefTable] && !strings.Contains(fk.Column, ",") {
+				referenced[fk.RefTable] = true
 			}
 		}
 	}
-	out := make(map[string][]int, len(want))
-	for table, rows := range want {
-		list := make([]int, 0, len(rows))
-		for r := range rows {
+	out := make(map[string][]int, len(tables))
+	for _, t := range tables {
+		n := cfg.EffectiveRows(t.Name)
+		if !referenced[t.Name] {
+			n = min(base, n)
+		}
+		list := make([]int, 0, n)
+		for r := 0; r < n; r++ {
 			list = append(list, r)
 		}
-		sort.Ints(list)
-		out[table] = list
+		out[t.Name] = list
 	}
 	return out
 }

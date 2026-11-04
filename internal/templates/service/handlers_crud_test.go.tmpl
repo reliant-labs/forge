@@ -15,6 +15,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 	"github.com/reliant-labs/forge/pkg/testkit"
 {{- if .NeedsFieldMask}}
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -95,12 +96,18 @@ func crudTestCtx() context.Context {
 
 // assertCleanError asserts a client-facing error: the expected code, and
 // no leaked SQL/driver internals in the message.
+//
+// The code is svcerr.Code, the code the client is sent — not connect.CodeOf.
+// These tests call the handler directly, without the svcerr interceptor, so a
+// handler that returns a bare kind (`return nil, svcerr.PermissionDenied(…)`)
+// hands back no *connect.Error, and connect.CodeOf would read it as Unknown
+// while the generated CRUD paths' *connect.Error read correctly.
 func assertCleanError(t *testing.T, label string, err error, want connect.Code) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("%s: expected %v error, got nil", label, want)
 	}
-	if got := connect.CodeOf(err); got != want {
+	if got := svcerr.Code(err); got != want {
 		t.Errorf("%s: code = %v, want %v (err: %v)", label, got, want, err)
 	}
 	for _, leak := range []string{"sql:", "SELECT", "no rows in result set", "no such column"} {

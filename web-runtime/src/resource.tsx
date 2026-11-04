@@ -355,8 +355,16 @@ export function rowInteraction<T>(
   const onClick = (e: MouseEvent<HTMLTableRowElement>) => {
     // Leave clicks on the row's own controls (the primary-cell link, a
     // menu) to those controls, and never turn a text selection into a
-    // navigation.
-    if ((e.target as Element).closest(INTERACTIVE)) return;
+    // navigation. Only a control INSIDE the row counts: a keyboard-operable
+    // row is itself role="button", and closest() matches the row too.
+    const control = (e.target as Element).closest(INTERACTIVE);
+    if (
+      control &&
+      control !== e.currentTarget &&
+      e.currentTarget.contains(control)
+    ) {
+      return;
+    }
     if (window.getSelection()?.toString()) return;
     onRowClick(row);
   };

@@ -187,9 +187,19 @@ describe("rowInteraction", () => {
     };
   }
 
+  // A body row holding one control (the cell link or a menu button).
+  const control = {} as Element;
+  const tr = {
+    contains: (el: Element) => el === (tr as unknown) || el === control,
+  } as unknown as Element;
+
+  // clickOn is a click on the row whose target's closest() interactive
+  // match is `closest`: null for a plain cell, `control` for the row's own
+  // control, `tr` itself when the row is role="button".
   function clickOn(closest: Element | null) {
     return {
       target: { closest: () => closest },
+      currentTarget: tr,
     } as unknown as MouseEvent<HTMLTableRowElement>;
   }
 
@@ -231,8 +241,27 @@ describe("rowInteraction", () => {
       props.onClick?.(clickOn(null));
       expect(opened).toEqual([row]);
       // A click on the cell link is the link's navigation, not a second one.
-      props.onClick?.(clickOn({} as Element));
+      props.onClick?.(clickOn(control));
       expect(opened).toEqual([row]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("opens the record on a plain-cell click when the row is the button", () => {
+    const opened: Row[] = [];
+    const props = rowInteraction(row, (r: Row) => opened.push(r), false);
+
+    vi.stubGlobal("window", noSelection);
+    try {
+      // The row is role="button", so closest() from a plain cell finds the
+      // row itself: that is still a row click.
+      props.onClick?.(clickOn(tr));
+      props.onClick?.(clickOn(null));
+      expect(opened).toEqual([row, row]);
+      // A control nested in the row keeps its own click.
+      props.onClick?.(clickOn(control));
+      expect(opened).toEqual([row, row]);
     } finally {
       vi.unstubAllGlobals();
     }

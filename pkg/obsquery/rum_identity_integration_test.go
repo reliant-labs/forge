@@ -111,11 +111,11 @@ func TestRumIdentitySessionGeoAndTraceLinks(t *testing.T) {
 	}
 }
 
-// A tenant not yet migrated to the location columns (control-plane tenant schema
+// An org whose tables are not yet migrated to the location columns (per-org schema
 // v19) is still readable: without Scope.SessionGeo the session reads name none of
 // them. With it, the same tables refuse the read, which is why a reader says
-// which shape its tenant has rather than assuming the newest.
-func TestRumIdentitySessionReadsSurviveAnUnmigratedTenant(t *testing.T) {
+// which shape its org's tables have rather than assuming the newest.
+func TestRumIdentitySessionReadsSurviveAnUnmigratedOrg(t *testing.T) {
 	c := startClickHouse(t)
 	ctx := context.Background()
 	raw, err := os.ReadFile("testdata/rum/hosted_schema.sql")
@@ -154,6 +154,6 @@ func TestRumIdentitySessionReadsSurviveAnUnmigratedTenant(t *testing.T) {
 	}
 	sc.SessionGeo = true
 	if _, err := obsquery.GetSession(ctx, run, obsquery.SessionLookup{Scope: sc, SessionID: rumReplaySession}); err == nil {
-		t.Error("an unmigrated tenant answered a read of its missing location columns")
+		t.Error("an unmigrated org answered a read of its missing location columns")
 	}
 }

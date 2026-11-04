@@ -17,6 +17,7 @@
     "infra": [],
     "kubeconfig_secrets": [],
     "lifecycle": null,
+    "manifest_owners": [],
     "manifests": [],
     "network_policy": null,
     "overrides": {},

@@ -106,9 +106,9 @@ type Scope struct {
 	// Start inclusive, End exclusive.
 	Start, End time.Time
 	// SessionGeo says the hosted browser tables carry the location and address
-	// columns (rum_sessions.Geo and ClientAddress, control-plane tenant schema
+	// columns (rum_sessions.Geo and ClientAddress, the control plane's per-org schema
 	// v20). The session reads select them only then, and answer "" for them
-	// otherwise, so a reader can roll out before every tenant is migrated. Zero
+	// otherwise, so a reader can roll out before every org's tables are migrated. Zero
 	// is the older shape.
 	SessionGeo bool
 }

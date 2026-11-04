@@ -706,3 +706,30 @@ func TestKubectlApply_ConvergesFieldOwnershipFirst(t *testing.T) {
 		t.Fatalf("want the ownership read before the apply, got:\n%s", strings.Join(args, "\n"))
 	}
 }
+
+// A Secret's data keys its declaration writes through stringData are put back
+// in the trimmed answer, so they are never judged orphans; other kinds, and
+// keys the declaration does not write, are left as the server answered.
+func TestPutBackStringData(t *testing.T) {
+	secret := keyOf("v1", "Secret", "prod", "store-creds")
+	declared := map[string]any{"stringData": map[string]any{"token": "x"}}
+	trimmed := map[string]any{"data": map[string]any{"kept": "eQ=="}}
+	putBackStringData(trimmed, secret, declared)
+	data := trimmed["data"].(map[string]any)
+	if _, ok := data["token"]; !ok {
+		t.Errorf("the declared stringData key was not put back: %v", data)
+	}
+	if data["kept"] != "eQ==" || len(data) != 2 {
+		t.Errorf("the server's answer was changed beyond the declared keys: %v", data)
+	}
+	cm := map[string]any{}
+	putBackStringData(cm, keyOf("v1", "ConfigMap", "prod", "c"), declared)
+	if len(cm) != 0 {
+		t.Errorf("a non-Secret was changed: %v", cm)
+	}
+	none := map[string]any{}
+	putBackStringData(none, secret, map[string]any{"data": map[string]any{"token": "eA=="}})
+	if len(none) != 0 {
+		t.Errorf("a Secret declared through data was changed: %v", none)
+	}
+}

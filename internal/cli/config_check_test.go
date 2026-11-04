@@ -11,6 +11,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/forgecompat"
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/templates"
 	forgeconfig "github.com/reliant-labs/forge/pkg/config"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
@@ -421,7 +422,7 @@ func buildScaffoldedMigrator(t *testing.T) string {
 	bin := t.TempDir()
 	build := exec.Command("go", "build", "-o", filepath.Join(bin, "demo"), ".")
 	build.Dir = mod
-	build.Env = append(os.Environ(), "GOWORK="+filepath.Join(mod, "go.work"), "GOFLAGS=-mod=readonly")
+	build.Env = goexec.WithTrimpath(append(os.Environ(), "GOWORK="+filepath.Join(mod, "go.work"), "GOFLAGS=-mod=readonly"))
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build the scaffolded migrator: %v\n%s", err, out)
 	}

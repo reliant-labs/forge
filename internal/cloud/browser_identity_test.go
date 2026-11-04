@@ -2,9 +2,11 @@ package cloud
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +27,31 @@ func TestBrowserLoginKeepsOrgBoundTokenDelegated(t *testing.T) {
 	}
 }
 
+// A control plane that ignores credential_kind (one that predates human
+// identities, or was rolled back past them) answers with an org-bound token.
+// It is kept, on the delegated path, but the login says so: getting a
+// different credential than the one asked for is never silent.
+func TestBrowserLoginSaysWhenTheServerIgnoredCredentialKind(t *testing.T) {
+	var out strings.Builder
+	cred, err := browserLoginAgainstOut(t, `{"access_token":"rlat_legacy","token_type":"Bearer"}`, &out)
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if cred.Kind != KindOrgLogin {
+		t.Fatalf("kind %q, want %q", cred.Kind, KindOrgLogin)
+	}
+	if !strings.Contains(out.String(), "organization-bound login, not a human identity") {
+		t.Fatalf("an ignored credential_kind must be reported; output:\n%s", out.String())
+	}
+	out.Reset()
+	if _, err := browserLoginAgainstOut(t, `{"access_token":"rlci_x","token_type":"Bearer","credential_kind":"human"}`, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "organization-bound") {
+		t.Fatalf("a human identity login must not carry the org-bound note:\n%s", out.String())
+	}
+}
+
 func TestBrowserLoginRefusesUnknownCredentialKind(t *testing.T) {
 	if _, err := browserLoginAgainst(t, `{"access_token":"x","token_type":"Bearer","credential_kind":"robot"}`); err == nil {
 		t.Fatal("an unknown credential kind must not be stored")
@@ -32,6 +59,11 @@ func TestBrowserLoginRefusesUnknownCredentialKind(t *testing.T) {
 }
 
 func browserLoginAgainst(t *testing.T, tokenResponse string) (credentials.Credential, error) {
+	t.Helper()
+	return browserLoginAgainstOut(t, tokenResponse, nil)
+}
+
+func browserLoginAgainstOut(t *testing.T, tokenResponse string, out io.Writer) (credentials.Credential, error) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -58,7 +90,7 @@ func browserLoginAgainst(t *testing.T, tokenResponse string) (credentials.Creden
 		}
 		return err
 	}
-	return (BrowserLogin{Endpoint: Endpoint{URL: srv.URL}, OpenURL: open}).Run(context.Background())
+	return (BrowserLogin{Endpoint: Endpoint{URL: srv.URL}, OpenURL: open, Out: out}).Run(context.Background())
 }
 
 func TestCredentialKindComesFromOAuthResponseNotTokenPrefix(t *testing.T) {

@@ -360,18 +360,48 @@ type Panel struct {
 	Height int `json:"height,omitempty"`
 }
 
-// Filter is a dashboard-level dropdown that narrows every panel.
+// Filter is a dashboard-level control. The default kind is a dropdown over a
+// field that narrows every panel; FilterToggle is an on/off switch a sql panel
+// reads as a Bool parameter.
 type Filter struct {
 	// PanelIDs restricts this filter to declared panels. Empty preserves the
 	// dashboard-wide default. RPC filters must not blank runtime/billing panels.
 	PanelIDs []string `json:"panelIds,omitempty"`
-	ID       string   `json:"id"`
-	Label    string   `json:"label"`
-	Field    string   `json:"field"`
+	// Kind is "" (a field dropdown) or FilterToggle.
+	Kind  FilterKind `json:"kind,omitempty"`
+	ID    string     `json:"id"`
+	Label string     `json:"label"`
+	// Field is the dropdown's field. A toggle has none.
+	Field string `json:"field,omitempty"`
 	// Signal is the telemetry the dropdown reads its values from. Empty is
-	// Traces, which every dashboard but the metrics ones draws.
+	// Traces, which every dashboard but the metrics ones draws. A toggle has
+	// none.
 	Signal Signal `json:"signal,omitempty"`
+	// Default is a toggle's state when the viewer has not touched it. Only a
+	// toggle takes it.
+	Default bool `json:"default,omitempty"`
 }
+
+// FilterKind is the kind of a dashboard Filter.
+type FilterKind string
+
+// FilterToggle is an on/off dashboard control. A sql panel reads it as the
+// ClickHouse parameter named by the filter's id, typed Bool:
+//
+//	{"id": "include_internal", "kind": "toggle", "label": "Include internal users"}
+//
+//	WHERE {include_internal:Bool} OR UserId NOT IN (...)
+//
+// The reader binds every toggle the dashboard declares, its Default when the
+// viewer has not set it (obsquery.Scope.Toggles), so a statement may rely on
+// the parameter being bound. It is a typed value, never spliced into the SQL.
+// The id is the parameter's name: ToggleIDPattern, and not one of the built-in
+// parameters (SQLParamFrom, ...). A toggle narrows nothing else: structured
+// panels ignore it.
+const FilterToggle FilterKind = "toggle"
+
+// ToggleIDPattern is what a toggle filter's id (its parameter name) must match.
+const ToggleIDPattern = `^[a-z][a-z0-9_]{0,31}$`
 
 // AnnotationSource names where a dashboard's time-series markers come from.
 type AnnotationSource string
@@ -488,3 +518,24 @@ type Dashboard struct {
 // MaxDefaultRange bounds Dashboard.DefaultRange: the longest range a
 // dashboard's panels may be read over.
 const MaxDefaultRange = 30 * 24 * time.Hour
+
+// ToggleValues is the state of each toggle d declares: set's value for a toggle
+// it names, else the toggle's Default. Names d does not declare are dropped, so
+// a reader binds exactly the dashboard's toggles (obsquery.Scope.Toggles).
+func (d Dashboard) ToggleValues(set map[string]bool) map[string]bool {
+	var out map[string]bool
+	for _, f := range d.Filters {
+		if f.Kind != FilterToggle {
+			continue
+		}
+		if out == nil {
+			out = map[string]bool{}
+		}
+		v, ok := set[f.ID]
+		if !ok {
+			v = f.Default
+		}
+		out[f.ID] = v
+	}
+	return out
+}

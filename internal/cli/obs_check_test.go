@@ -267,6 +267,44 @@ func TestObsCheckWaitPollsUntilTheWindowFinishes(t *testing.T) {
 	}
 }
 
+// --early-pass: an open window that is clean, rolled out and busy enough passes
+// at once; anything found, or too little of the window, keeps the wait going.
+func TestObsCheckEarlyPass(t *testing.T) {
+	open := healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, "", "")
+	done := healthReply("RELEASE_VERDICT_PASS", true, "", "")
+	for _, tc := range []struct {
+		name       string
+		replies    []string
+		earlyPass  string
+		wantSleeps int
+		wantEarly  bool
+	}{
+		{"clean, rolled out, 15m observed", []string{open, open, done}, "5m", 0, true},
+		{"less observed than asked", []string{open, open, done}, "20m", 2, false},
+		{"a warn finding waits for the window", []string{healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, latencyFinding, ""), done}, "5m", 1, false},
+		{"rollout not finished", []string{strings.Replace(open, `"versionShare":1`, `"versionShare":0.6`, 1), done}, "5m", 1, false},
+		{"a second service too quiet waits for the window", []string{strings.Replace(open, `"versionShare":1}]`, `"versionShare":1},{"service":"worker","before":{"requests":"5"},"after":{"requests":"3"},"versionShare":1}]`, 1), done}, "5m", 1, false},
+		{"a second service with no version share waits for the window", []string{strings.Replace(open, `"versionShare":1}]`, `"versionShare":1},{"service":"worker","before":{"requests":"900"},"after":{"requests":"900"}}]`, 1), done}, "5m", 1, false},
+		{"a new issue waits for the window", []string{healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, "", `"newIssues":[{"id":"i1","service":"api","title":"boom","events":"9"}],`), done}, "5m", 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caller := &seqCaller{replies: map[string][]string{procHealth: tc.replies}}
+			env := newObsCheckHarness()
+			out, errOut, err := env.run(t, cloudFacts(), caller, nil, "check", "prod", "--wait", "--early-pass", tc.earlyPass, "--json")
+			if err != nil {
+				t.Fatalf("%v\n%s", err, errOut)
+			}
+			doc := decode(t, out)
+			if env.sleeps != tc.wantSleeps || doc["verdict"] != "PASS" {
+				t.Errorf("sleeps = %d verdict = %v, want %d PASS", env.sleeps, doc["verdict"], tc.wantSleeps)
+			}
+			if early := doc["early_pass"] != nil; early != tc.wantEarly {
+				t.Errorf("early_pass = %v, want set: %v", doc["early_pass"], tc.wantEarly)
+			}
+		})
+	}
+}
+
 func TestObsCheckWaitTimeoutIsExit8(t *testing.T) {
 	open := healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, "", "")
 	caller := &seqCaller{replies: map[string][]string{procHealth: {open}}}

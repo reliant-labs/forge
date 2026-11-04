@@ -108,6 +108,29 @@ func TestSilentDefaultNeedsSteadyTraffic(t *testing.T) {
 	}
 }
 
+// TestSilentDefaultCountsEveryCallAServiceServes pins forge#1727: the project's
+// rpc services pick which services are judged, but a service's liveness is
+// every call it serves. Only the subquery that picks the services may filter on
+// the procedure.
+func TestSilentDefaultCountsEveryCallAServiceServes(t *testing.T) {
+	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "dev", nil)
+	for _, r := range rules {
+		if r.ID != "service-silent" {
+			continue
+		}
+		if n := strings.Count(r.Expr, "Attributes['procedure']"); n != 1 {
+			t.Errorf("service-silent filters on the procedure %d times, want once (in the service subquery): %s", n, r.Expr)
+		}
+		sub := strings.Index(r.Expr, "ServiceName IN (")
+		proc := strings.Index(r.Expr, "Attributes['procedure']")
+		if sub < 0 || proc < sub {
+			t.Errorf("service-silent must scope by the services that served the project's rpcs, not by the calls it counts: %s", r.Expr)
+		}
+		return
+	}
+	t.Fatal("no service-silent default")
+}
+
 func TestTuningDisablesRetargetsAndRefusesTypos(t *testing.T) {
 	in := AlertInputOf(fixture())
 	rules, err := ResolveAlertDefaults(in, "dev", map[string]AlertTuning{

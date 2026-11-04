@@ -175,14 +175,10 @@ what the pod runs, the same subcommand the host runtime runs.
 
 ### The hosted registry takes your control-plane credential
 
-A hosted env's images go to the PLATFORM registry, authenticated with the same
-`rlat_` forge reaches the control plane with — no registry password, and
-`--push` / `forge env deploy` log themselves in before their first push.
-`forge registry login <env>` REFUSES `--username`/`--password-*` for that host.
-A bare `image = "api"` resolves under `<registry_host>/<org>/<project>/` (org = your credential's).
-
-Load `deploy/hosted-registry` for credential sources, the CI shape, and
-denied-push triage.
+A hosted env's images go to the PLATFORM registry with your control-plane
+`rlat_` — no registry password; `--push` / `forge env deploy` log in themselves.
+A bare `image = "api"` resolves under `<registry_host>/<org>/<project>/`.
+Credential sources, CI, denied pushes: load `deploy/hosted-registry`.
 
 A non-hosted env declares no registry: each workload — and each hosted
 frontend, via `forge.Frontend.image` — names its own.
@@ -191,35 +187,16 @@ Every image is built with `docker build`, so building one needs a running Docker
 
 ### The config check runs before the push
 
-Between building the project image and pushing it, `--push` / `--release`
-(and so `forge env deploy`) run every workload of that image the way the env
-runs it — its command, args and rendered env — in a `docker run --network
-none` with `FORGE_CONFIG_CHECK=1`. The binary's typed config load
-(`forge/pkg/config`) then reports every problem it would boot with (a
-required variable the env never wires, a value outside `allowed_values`, a
-`buf.validate` field or CEL rule the values break) and exits. A variable the
-env wires from a Secret, the secret store, a database credential, a
-ConfigMap or the Downward API gets a placeholder: it counts as set, and its
-value is not judged. A failure refuses the push and names the workload.
-
-So declare a cross-field requirement as a CEL rule on the config message
-(`option (buf.validate.message).cel`), not in a constructor: a constructor
-runs after the check has exited, and the env that breaks it ships.
-
-It gates from v1.0.16; a project pinned below that sees the failures as
-warnings. `--config-check=gate` opts in now, `=warn` keeps pushing, `=off`
-skips it. Workloads it does not run (another image, host runtime, a binary
-built before the check) are listed with the reason.
+`--push` / `--release` (so `forge env deploy`) boot each workload of the
+project image with its rendered env under `FORGE_CONFIG_CHECK=1`; a config
+error refuses the push. Cross-field rules go in the config message's CEL, not
+a constructor. Load `deploy/config-check`.
 
 ### Docker build contexts
 
-A `forge.DockerBuild` sends the PROJECT ROOT as its build context unless it
-sets `context` (a project-root-relative directory) — set that when the
-Dockerfile expects to run from its own directory, or an un-prefixed `COPY
-package.json ./` fails with `failed to compute cache key`. Separately,
-`docker.build_contexts` declares NAMED contexts for files outside the project
-tree, consumed via `COPY --from=<name>`. For both, and which one a Dockerfile
-needs: load `deploy/build-contexts`.
+A `forge.DockerBuild` sends the PROJECT ROOT unless it sets `context`; a
+`COPY` that fails with `failed to compute cache key` usually needs it. Files
+outside the tree: named `docker.build_contexts`. Load `deploy/build-contexts`.
 
 ## Deploy
 

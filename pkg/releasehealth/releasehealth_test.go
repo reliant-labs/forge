@@ -141,6 +141,24 @@ func TestAfterOnlyEndpointIsJudgedAgainstServiceBaseline(t *testing.T) {
 	}
 }
 
+// A route whose after p95 rounds to zero is no measurement. However busy it is,
+// it must not dilute a slow after-only route out of the verdict.
+func TestZeroP95EndpointDoesNotDiluteSlowAfterOnlyEndpoint(t *testing.T) {
+	s := svc("api", 1000, 100100, 0, 0, 100, 100)
+	s.Endpoints = []EndpointHealth{
+		ep("/a.v1.A/Fast", 1000, 100000, 0, 0),
+		ep("/a.v1.A/New", 0, 100, 0, 20000),
+	}
+	ratio, ok := s.LatencyRatio()
+	if !ok || ratio <= defaults(t).MaxP95Ratio {
+		t.Fatalf("LatencyRatio = %v, %v; a busy zero-p95 route diluted a 200x after-only endpoint", ratio, ok)
+	}
+	r := Evaluate(input(t, true, s))
+	if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthLatency {
+		t.Fatalf("a slow after-only endpoint beside a zero-p95 route produced no latency finding: %+v", r.Findings)
+	}
+}
+
 func TestLatencyFindingWarnsByDefaultAndFailsWhenAsked(t *testing.T) {
 	in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 400))
 	r := Evaluate(in)

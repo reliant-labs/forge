@@ -366,6 +366,10 @@ func (s ServiceHealth) LatencyRatio() (float64, bool) {
 	}
 	var sum, weight float64
 	for _, e := range s.Endpoints {
+		// An after p95 of zero is no measurement, not a 0x ratio: counted as
+		// zero, a busy fast route would add weight and nothing else, diluting
+		// a slow route beside it below the limit. Skipping it can only raise
+		// the ratio, never hide a slow endpoint.
 		if e.After.P95Ms <= 0 || e.After.Requests <= 0 {
 			continue
 		}

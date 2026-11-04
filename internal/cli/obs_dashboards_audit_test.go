@@ -39,8 +39,10 @@ type auditCP struct {
 	metricsFor func(q auditQuery) string
 	errs       map[string]error
 	calls      []auditQuery
-	// serverProject is the control plane's id for the project ("proj", the
-	// project's name, when unset).
+	// serverProject is the hosted project's id ResolveHostedProject answers
+	// ("proj", the project's name, when unset). The index never matches it:
+	// like the real one, ListDashboards keeps only the entries whose
+	// ref.projectId (the deploy ledger's project, its name) is the request's.
 	serverProject string
 }
 
@@ -78,7 +80,7 @@ func (c *auditCP) Call(_ context.Context, procedure string, req, out any) error 
 		reply = c.dashboards
 		project, _ := in["projectId"].(string)
 		c.calls = append(c.calls, auditQuery{Proc: procedure, Project: project})
-		return json.Unmarshal([]byte(reply), out)
+		return json.Unmarshal([]byte(indexForProject(reply, project)), out)
 	case cpGetDashboard:
 		key := in["ref"].(map[string]any)["key"].(string)
 		reply = c.specs[key]
@@ -186,10 +188,17 @@ func auditRun(t *testing.T, cp *auditCP, args ...string) (string, string, error)
 	old := auditSleep
 	auditSleep = func(context.Context, time.Duration) {}
 	t.Cleanup(func() { auditSleep = old })
-	oldProject := hostedProjectName
-	hostedProjectName = func() string { return "proj" }
-	t.Cleanup(func() { hostedProjectName = oldProject })
+	withAuditProject(t)
 	return mxRun(t, mxCloud(cp), append([]string{"dashboards", "audit", "prod", "--json"}, args...)...)
+}
+
+// withAuditProject names the checkout's project "proj", the project the
+// fixtures' index entries carry.
+func withAuditProject(t *testing.T) {
+	t.Helper()
+	old := hostedProjectName
+	hostedProjectName = func() string { return "proj" }
+	t.Cleanup(func() { hostedProjectName = old })
 }
 
 type auditDocT struct {
@@ -534,6 +543,7 @@ func TestAuditFailuresFirstAndTextTable(t *testing.T) {
 	}
 
 	var stdout string
+	withAuditProject(t)
 	stdout, _, _ = mxRun(t, mxCloud(cp), "dashboards", "audit", "prod")
 	iBoom, iEmpty := strings.Index(stdout, "d1/boom"), strings.Index(stdout, "d1/empty")
 	if iBoom < 0 || iEmpty < 0 || iBoom > iEmpty || strings.Contains(stdout, "d1/good") {
@@ -718,6 +728,7 @@ func TestAuditTextGolden(t *testing.T) {
 			}
 			return respOne, nil
 		}}
+	withAuditProject(t)
 	out, _, err := mxRun(t, mxCloud(cp), "dashboards", "audit", "prod")
 	if exitcode.Of(err) != 1 {
 		t.Fatalf("exit = %d, want 1 (a refused panel outranks the empty ones)", exitcode.Of(err))
@@ -928,6 +939,7 @@ func TestAuditWidensAPanelForItsMinStep(t *testing.T) {
 			}
 			return respEmpty, nil
 		}}
+	withAuditProject(t)
 	text, _, _ := mxRun(t, mxCloud(cp), "dashboards", "audit", "prod", "--no-probe", "--all")
 	if !strings.Contains(text, "window smaller than the panel's 1d bucket: ran over 7d instead of 1h") {
 		t.Errorf("text lacks the widening note:\n%s", text)
@@ -1448,29 +1460,63 @@ func TestAuditTruncatedAnswerIsPartial(t *testing.T) {
 	if p.Status != "partial" || p.Reason != "truncated" || !strings.Contains(p.ProbableCause, "2 of 12 series") {
 		t.Errorf("status %q reason %q cause %q", p.Status, p.Reason, p.ProbableCause)
 	}
+	withAuditProject(t)
 	text, _, _ := mxRun(t, mxCloud(cp), "dashboards", "audit", "prod")
 	if !strings.Contains(text, "cut") || !strings.Contains(text, "truncated") {
 		t.Errorf("a truncated panel is missing from the default text output:\n%s", text)
 	}
 }
 
-// The project is named by the control plane's id, not its local name: the
-// dashboard listing and every panel scope carry the resolved id.
-func TestAuditNamesTheProjectByItsServerID(t *testing.T) {
+// The project is named as the deploy ledger keys it, by its name, never by the
+// hosted project's id: the index joins deploy_environments.project, so asking
+// by the id lists nothing and every dashboard the env's release carries reads
+// as missing (prod's product-funnel, 2026-11-04: "it lists: (empty)").
+func TestAuditNamesTheProjectAsTheLedgerKeysIt(t *testing.T) {
 	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(linePanel("p"))},
 		serverProject: "8f2c-srv",
 		panel:         func(auditQuery) (string, error) { return respEmpty, nil }}
-	if _, _, err := auditRun(t, cp); exitcode.Of(err) != 2 {
-		t.Fatalf("exit = %d, want 2", exitcode.Of(err))
+	out, _, err := auditRun(t, cp)
+	if exitcode.Of(err) != 2 {
+		t.Fatalf("exit = %d, want 2\n%s", exitcode.Of(err), out)
+	}
+	if got := len(decodeAudit(t, out).Dashboards); got != 1 {
+		t.Fatalf("audited %d dashboards, want the one the index lists for project proj\n%s", got, out)
 	}
 	for _, q := range cp.calls {
-		if (q.Proc == cpListDashboards || q.Proc == cpQueryPanel) && q.Project != "8f2c-srv" {
-			t.Errorf("%s named project %q, want the server id 8f2c-srv", q.Proc, q.Project)
+		if (q.Proc == cpListDashboards || q.Proc == cpQueryPanel) && q.Project != "proj" {
+			t.Errorf("%s named project %q, want the ledger's project name proj", q.Proc, q.Project)
+		}
+		if q.Proc == cpResolveProject {
+			t.Errorf("the audit resolved the hosted project id; the index is keyed by name")
 		}
 	}
 	if n := cp.count(func(q auditQuery) bool { return q.Proc == cpListDashboards }); n != 1 {
 		t.Errorf("ListDashboards calls = %d", n)
 	}
+}
+
+// indexForProject is ListDashboards' project filter: a request naming a project
+// keeps the entries whose ref carries it (an entry with no project is an org
+// dashboard and stays); one naming none keeps every entry.
+func indexForProject(index, project string) string {
+	if project == "" {
+		return index
+	}
+	var doc struct {
+		Dashboards []map[string]any `json:"dashboards"`
+	}
+	if err := json.Unmarshal([]byte(index), &doc); err != nil {
+		return index
+	}
+	kept := []map[string]any{}
+	for _, d := range doc.Dashboards {
+		ref, _ := d["ref"].(map[string]any)
+		if p, _ := ref["projectId"].(string); p == "" || p == project {
+			kept = append(kept, d)
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"dashboards": kept})
+	return string(b)
 }
 
 // A dashboard whose read was skipped after the allowance ran out reports a

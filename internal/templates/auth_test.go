@@ -56,7 +56,11 @@ func TestRenderAppAuthTemplate(t *testing.T) {
 		// threads into AuthDeps.Validate, and on which it installs the
 		// API-key validator once infra is open.
 		{"SetupAuth signature", "func SetupAuth(cfg *config.Config) (*auth.Authenticator, error) {", true},
-		{"SetupAuth wraps the JWT validator", "return auth.NewAuthenticator(validator.Validate), nil", true},
+		{"SetupAuth wraps the JWT validator", "authenticator := auth.NewAuthenticator(validator.Validate)", true},
+		// A managed identity's access token carries no email; userinfo
+		// fills a verified one for the enrich seam.
+		{"SetupAuth fills Claims.Email from userinfo", "authenticator.UseUserInfo(auth.NewUserInfo(", true},
+		{"userinfo endpoint from discovery", "meta.UserinfoEndpoint", true},
 		{"APIKeyValidator seam", "func APIKeyValidator(_ *Infra) auth.KeyValidator {", true},
 		{"module config import", "example.com/myproject/pkg/config", true},
 		{"forge auth import", "github.com/reliant-labs/forge/pkg/auth", true},

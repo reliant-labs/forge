@@ -175,29 +175,28 @@ what the pod runs, the same subcommand the host runtime runs.
 
 ### The hosted registry takes your control-plane credential
 
-A hosted env's images go to the PLATFORM registry, authenticated with the same
-`rlat_` forge reaches the control plane with — no registry password, and
-`--push` / `forge env deploy` log themselves in before their first push.
-`forge registry login <env>` REFUSES `--username`/`--password-*` for that host.
-A bare `image = "api"` resolves under `<registry_host>/<org>/<project>/` (org = your credential's).
-
-Load `deploy/hosted-registry` for credential sources, the CI shape, and
-denied-push triage.
+A hosted env's images go to the PLATFORM registry with your control-plane
+`rlat_` — no registry password; `--push` / `forge env deploy` log in themselves.
+A bare `image = "api"` resolves under `<registry_host>/<org>/<project>/`.
+Credential sources, CI, denied pushes: load `deploy/hosted-registry`.
 
 A non-hosted env declares no registry: each workload — and each hosted
 frontend, via `forge.Frontend.image` — names its own.
 
 Every image is built with `docker build`, so building one needs a running Docker daemon.
 
+### The config check runs before the push
+
+`--push` / `--release` (so `forge env deploy`) boot each workload of the
+project image with its rendered env under `FORGE_CONFIG_CHECK=1`; a config
+error refuses the push. Cross-field rules go in the config message's CEL, not
+a constructor. Load `deploy/config-check`.
+
 ### Docker build contexts
 
-A `forge.DockerBuild` sends the PROJECT ROOT as its build context unless it
-sets `context` (a project-root-relative directory) — set that when the
-Dockerfile expects to run from its own directory, or an un-prefixed `COPY
-package.json ./` fails with `failed to compute cache key`. Separately,
-`docker.build_contexts` declares NAMED contexts for files outside the project
-tree, consumed via `COPY --from=<name>`. For both, and which one a Dockerfile
-needs: load `deploy/build-contexts`.
+A `forge.DockerBuild` sends the PROJECT ROOT unless it sets `context`; a
+`COPY` that fails with `failed to compute cache key` usually needs it. Files
+outside the tree: named `docker.build_contexts`. Load `deploy/build-contexts`.
 
 ## Deploy
 

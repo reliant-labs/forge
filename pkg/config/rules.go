@@ -43,7 +43,12 @@ import (
 // Each violation is reported on its own (Root.Validate collects them all),
 // naming the field by path with the variable and flag that set it, and its
 // value unless the field is sensitive.
-func validateRules(msg proto.Message, report func(error) error) error {
+//
+// A field unknown reports true for holds a boot config check's placeholder
+// (check.go): a rule on its own value is not judged. A message-level rule
+// still is, over the placeholder, which is what lets a check catch a
+// cross-field rule whose other side the deployment left empty.
+func validateRules(msg proto.Message, unknown func(protoreflect.FieldDescriptor) bool, report func(error) error) error {
 	err := protovalidate.Validate(msg)
 	if err == nil {
 		return nil
@@ -56,6 +61,9 @@ func validateRules(msg proto.Message, report func(error) error) error {
 			msg.ProtoReflect().Descriptor().Name(), err))
 	}
 	for _, v := range verr.Violations {
+		if v.FieldDescriptor != nil && unknown(v.FieldDescriptor) {
+			continue
+		}
 		if rerr := report(ruleViolation(msg.ProtoReflect().Descriptor(), v)); rerr != nil {
 			return rerr
 		}

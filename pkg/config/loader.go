@@ -418,11 +418,29 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // (semantic.go), as FREE FUNCTIONS over the message; Validate is for a
 // message built by hand, which no load has checked. There is no parallel
 // generated struct: a project holds the proto config type.
+//
+// Under FORGE_CONFIG_CHECK=1 a load is a boot config check instead (check.go):
+// it collects every problem, prints one result line, and the process exits
+// before it builds anything.
 func LoadInto(cmd *cobra.Command, msg proto.Message, opts ...LoadOption) error {
 	var o loadOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
+	check := activeCheck(o.env)
+	if check == nil {
+		return loadInto(cmd, msg, &o)
+	}
+	var collected []error
+	o.collect = &collected
+	o.check = check
+	o.presentFields = map[protoreflect.FieldDescriptor]bool{}
+	err := loadInto(cmd, msg, &o)
+	return check.finish(cmd, msg, collected, err)
+}
+
+// loadInto is LoadInto's layers, with the options already applied.
+func loadInto(cmd *cobra.Command, msg proto.Message, o *loadOptions) error {
 	m := msg.ProtoReflect()
 
 	// Layer 1: defaults (the base every later layer overlays).
@@ -441,23 +459,27 @@ func LoadInto(cmd *cobra.Command, msg proto.Message, opts ...LoadOption) error {
 	// file aborts LOUDLY here; no path given means this layer is skipped (not
 	// a fallback).
 	if path, source, ok := resolveConfigPath(cmd, msg, o.env); ok {
-		if err := o.report(applyConfigFile(msg, path, source, o.sharedFileMessages(cmd, msg))); err != nil {
-			return err
+		// A boot config check cannot read a file a Secret or ConfigMap
+		// mounts at run time: the layer is skipped, and the result says so.
+		if !o.check.skipsFile(path) {
+			if err := o.report(applyConfigFile(msg, path, source, o.sharedFileMessages(cmd, msg))); err != nil {
+				return err
+			}
 		}
 	}
 
 	// Layers 3 + 4: env then flags overlay onto whatever defaults/file set.
-	if err := applyEnvAndFlags(cmd, m, &o); err != nil {
+	if err := applyEnvAndFlags(cmd, m, o); err != nil {
 		return err
 	}
 	// An env family's prefix is owned: a variable under it that nothing
 	// claims is a typo, refused rather than silently dropped (envfamily.go).
-	if err := checkFamilyPrefixes(cmd, msg, &o); err != nil {
+	if err := checkFamilyPrefixes(cmd, msg, o); err != nil {
 		return err
 	}
 
 	// Required fields must be satisfied by SOME layer (default/file/env/flag).
-	if err := checkRequiredWithin(m, "", o.required, &o); err != nil {
+	if err := checkRequiredWithin(m, "", o.required, o); err != nil {
 		return err
 	}
 
@@ -465,12 +487,20 @@ func LoadInto(cmd *cobra.Command, msg proto.Message, opts ...LoadOption) error {
 	// credentials) are part of loading, not a second step a caller may skip:
 	// a config whose annotations reject its resolved values never reaches the
 	// process. Validate stays exported for a message built by hand.
-	if err := validateMessageReport(m, o.report); err != nil {
+	if err := validateMessageReport(m, o.unknownValue, o.report); err != nil {
 		return err
 	}
 	// Then the buf.validate rules the config proto declares (rules.go): a
 	// port's range, a positive duration, a cross-field CEL rule.
-	return validateRules(msg, o.report)
+	return validateRules(msg, o.unknownValue, o.report)
+}
+
+// unknownValue reports whether fd holds a boot config check's placeholder
+// rather than a real value: its variable is wired from a Secret or another
+// reference the check cannot read. Its presence counts; a rule about its
+// value cannot be judged. Always false outside a check.
+func (o *loadOptions) unknownValue(fd protoreflect.FieldDescriptor) bool {
+	return o.presentFields[fd]
 }
 
 // report hands a load's problem on: with collect set (Root.Validate), it is
@@ -550,7 +580,7 @@ func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message, o *loadOptions
 		if opt == nil {
 			continue
 		}
-		if err := o.report(overlayField(cmd, m, fd, opt, o.env)); err != nil {
+		if err := o.report(overlayField(cmd, m, fd, opt, o)); err != nil {
 			return err
 		}
 	}
@@ -562,7 +592,8 @@ func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message, o *loadOptions
 // no-op that preserves the earlier layer (default/file). Sensitive fields
 // take env (Secret mount) but NEVER a flag — no flag is ever registered for
 // them, and we defensively skip the flag branch even if one were.
-func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions, env environ) error {
+func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions, o *loadOptions) error {
+	env := o.env
 	if isEnvFamily(opt) {
 		return overlayFamily(m, fd, opt, env) // env only: a family has no flag
 	}
@@ -570,7 +601,16 @@ func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.Fi
 	// (envnames.go). A malformed value in the name that wins is an error; it
 	// never falls through to the next name.
 	name, v, set := lookupFieldEnv(opt, env)
-	if set {
+	if set && o.check.placeholder(name) {
+		// A boot config check's placeholder: the variable is wired, its
+		// value unknown. The field counts as set; a placeholder that parses
+		// as the field's kind is kept, so a message rule sees a non-empty
+		// value, and one that does not is no fault of the deployment.
+		o.presentFields[fd] = true
+		if val, err := parseValue(m, fd, v); err == nil {
+			m.Set(fd, val)
+		}
+	} else if set {
 		val, err := parseValue(m, fd, v)
 		if err != nil {
 			return fmt.Errorf("invalid value %q for config field %s (from env %s): %w", v, fd.Name(), name, err)
@@ -631,7 +671,7 @@ func checkRequiredWithin(m protoreflect.Message, prefix string, within map[strin
 		if within != nil && !within[prefix+string(fd.Name())] {
 			continue
 		}
-		if fieldIsEmpty(m, fd) {
+		if fieldIsEmpty(m, fd) && !o.unknownValue(fd) {
 			env, empty := envSourcesPhrase(opt), emptyEnvNote(opt, o.env)
 			var err error
 			if flag := opt.GetFlag(); flag != "" && !opt.GetSensitive() {

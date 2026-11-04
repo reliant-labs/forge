@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // A rpc named List<X>s is CRUD whenever a message <X> exists — a plain
@@ -103,5 +105,28 @@ func TestProjectScaffold_CustomMarkedListRPCPassesThePreflight(t *testing.T) {
 	out, err := captureStdout(t, func() error { return runSweep(f, "", true) })
 	if err != nil {
 		t.Fatalf("a `// forge:custom` ListDueReads is not CRUD; the dry run must pass: %v\n%s", err, out)
+	}
+}
+
+// When shadow introspection is unavailable, appliedSchema falls back to
+// parsedSchema; the pre-flight must still see a table's forge:entity-name
+// comment, or it refuses an rpc the generator's join matches.
+func TestCRUDRPCPreflight_ParsedSchemaHonorsEntityName(t *testing.T) {
+	dir := setupDueReadsFixture(t, false)
+	writeFixtureFile(t, dir, filepath.Join("db", "migrations", "00002_create_read_queue.up.sql"),
+		"CREATE TABLE read_queue (id TEXT PRIMARY KEY);\nCOMMENT ON TABLE read_queue IS 'forge:entity-name=DueRead';\n")
+
+	migDir := filepath.Join(dir, "db", "migrations")
+	tables := parsedSchema(migDir)
+	applied := map[string]bool{}
+	for _, tb := range tables {
+		applied[tb.Name] = true
+	}
+	scan, err := codegen.ScanRawProtoDir(filepath.Join(dir, "proto", "services", "tasks", "v1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := crudRPCPreflight(dir, []*codegen.RawProtoScan{scan}, tables, applied); err != nil {
+		t.Fatalf("read_queue declares forge:entity-name=DueRead, so ListDueReads is matched; the pre-flight refused it:\n%v", err)
 	}
 }

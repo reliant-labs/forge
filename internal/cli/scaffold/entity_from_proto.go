@@ -868,20 +868,17 @@ func markersFromScan(scan *codegen.RawProtoScan, msgName string) entityBirthMark
 // `forge:entity-name` / `forge:no-entity` comments).
 //
 // The reference-column view needs real introspection; the regex fallback
-// recovers table names only. When it is all we have the back-fill is
-// simply empty, which loses a constraint but never emits a broken one, and
-// the tables carry their names alone.
+// (parsedSchema) recovers table names and table comments only. When it is
+// all we have the back-fill is simply empty, which loses a constraint but
+// never emits a broken one.
 func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTable, []schemadef.Table) {
 	out := map[string]bool{}
 	projectDir := filepath.Dir(filepath.Dir(migDir))
 	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
-		var named []schemadef.Table
-		if parsed, perr := database.ParseMigrationsForSchema(migDir); perr == nil {
-			for _, t := range parsed {
-				out[t.Name] = true
-				named = append(named, schemadef.Table{Name: t.Name})
-			}
+		named := parsedSchema(migDir)
+		for _, t := range named {
+			out[t.Name] = true
 		}
 		return out, nil, named
 	}
@@ -894,6 +891,22 @@ func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTab
 		})
 	}
 	return out, existing, tables
+}
+
+// parsedSchema is appliedSchema's fallback when shadow introspection is
+// unavailable: the tables the migrations' regex parse finds, each with its
+// COMMENT ON TABLE, so the CRUD-rpc pre-flight still honors
+// `forge:entity-name` / `forge:no-entity` the way the generator's join does.
+func parsedSchema(migDir string) []schemadef.Table {
+	parsed, err := database.ParseMigrationsForSchema(migDir)
+	if err != nil {
+		return nil
+	}
+	named := make([]schemadef.Table, 0, len(parsed))
+	for _, t := range parsed {
+		named = append(named, schemadef.Table{Name: t.Name, Comment: t.Comment})
+	}
+	return named
 }
 
 // unconstrainedRefColumns lists a table's TEXT `<x>_id` columns that carry

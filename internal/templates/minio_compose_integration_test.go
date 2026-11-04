@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -31,8 +32,12 @@ func TestScaffoldedMinIOReconcilesAnonymousAccess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scaffolds a project and starts its MinIO compose service twice; runs in the integration lane")
 	}
-	if exec.Command("docker", "compose", "version").Run() != nil {
-		t.Skip("docker compose is not available")
+	// `docker compose version` answers without a daemon; `docker info` needs
+	// one, and is bounded because a wedged daemon never answers it.
+	probe, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if exec.CommandContext(probe, "docker", "info").Run() != nil || exec.Command("docker", "compose", "version").Run() != nil {
+		t.Skip("no docker daemon (or no compose plugin) to start MinIO on")
 	}
 
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "")

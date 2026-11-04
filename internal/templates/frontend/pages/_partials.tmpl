@@ -95,24 +95,26 @@ definition serves both trees.
 {{- define "listCellValue"}}
 {{- /* One list cell's value, shared by the Next.js and Vite list pages. A
        foreign key resolves to the referent's name — one Get per DISTINCT id
-       on the page, cached by React Query — instead of printing a UUID. */}}
-{{- if .FK}}
-      <EntityName
-        id={item.{{.Name}}}
-        useGet={ {{.FK.GetHook}} }
-        buildRequest={(value) => ({ {{.FK.PkFieldCamel}}: value })}
-        nameOf={(res) => res.{{.FK.GetEntityField}}?.{{if .FK.LabelField}}{{.FK.LabelField}}{{else}}{{.FK.PkFieldCamel}}{{end}}}
-      />
+       on the page, cached by React Query — instead of printing a UUID. The
+       value starts at the caller's cursor (no leading newline or indent), so
+       a plain cell stays on its `cell: (item) => …,` line. */}}
+{{- if .FK -}}
+<EntityName
+          id={item.{{.Name}}}
+          useGet={ {{.FK.GetHook}} }
+          buildRequest={(value) => ({ {{.FK.PkFieldCamel}}: value })}
+          nameOf={(res) => res.{{.FK.GetEntityField}}?.{{if .FK.LabelField}}{{.FK.LabelField}}{{else}}{{.FK.PkFieldCamel}}{{end}}}
+        />
 {{- else if .IsBadge}}
-{{- if .EnumType}}
-      <StatusBadge value={item.{{.Name}}} enumType={ {{.EnumType}} } />
-{{- else}}
-      <StatusBadge value={item.{{.Name}}} />
+{{- if .EnumType -}}
+<StatusBadge value={item.{{.Name}}} enumType={ {{.EnumType}} } />
+{{- else -}}
+<StatusBadge value={item.{{.Name}}} />
 {{- end}}
-{{- else if .IsMoney}}
-      formatMoneyCents(item.{{.Name}}{{if .CurrencyField}}, item.{{.CurrencyField}}{{end}})
-{{- else}}
-      formatValue(item.{{.Name}})
+{{- else if .IsMoney -}}
+formatMoneyCents(item.{{.Name}}{{if .CurrencyField}}, item.{{.CurrencyField}}{{end}})
+{{- else -}}
+formatValue(item.{{.Name}})
 {{- end}}
 {{- end}}
 

@@ -819,6 +819,11 @@ HAVING requests >= %s AND value > %s
 ORDER BY service`, windowFilter(p[pWindow]), sqlQuote(env), rpcServiceList(in), num(p[pMinRequests]), num(p["threshold_seconds"]))
 }
 
+// silentSQL fires for a steady service whose calls counter has not moved for
+// silent_minutes. moves holds only the samples where the counter changed, so a
+// quiet period is the distance between two consecutive moves: the unchanged
+// snapshots exported inside it, and samples never exported, both fall in that
+// distance. The current silence (last move to now) is not a prior one.
 func silentSQL(env string, in AlertInput, p map[string]float64) string {
 	return fmt.Sprintf(`WITH moves AS (
     SELECT service, arrayJoin(t) AS t

@@ -231,11 +231,16 @@ func (s *S3) List(ctx context.Context, prefix string, opts ListOptions) (ListPag
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		var page ListPage
+		// MaxKeys is minio's per-request page size, not a cap on the
+		// iteration. Asking for one key past the page lets the first
+		// response alone show whether another page exists (the iterator
+		// would otherwise make a second request, with the continuation
+		// token, to find out). The service clamps it to its own 1000.
 		for info := range s.api.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
 			Prefix:     prefix,
 			StartAfter: opts.After,
 			Recursive:  true,
-			MaxKeys:    limit,
+			MaxKeys:    limit + 1,
 		}) {
 			if info.Err != nil {
 				return ListPage{}, s.mapErr("list", prefix, info.Err)

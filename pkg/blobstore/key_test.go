@@ -195,6 +195,61 @@ func TestMemoryOptions(t *testing.T) {
 	}
 }
 
+// leakyStore is a Store that ignores the prefix it is asked to list and
+// reports whatever page it was given.
+type leakyStore struct {
+	blobstore.Store
+	page blobstore.ListPage
+	stat blobstore.Object
+}
+
+func (l leakyStore) List(context.Context, string, blobstore.ListOptions) (blobstore.ListPage, error) {
+	return l.page, nil
+}
+
+func (l leakyStore) Stat(context.Context, string) (blobstore.Object, error) {
+	return l.stat, nil
+}
+
+// Scoped does not trust the store it wraps: a key or cursor outside the
+// scope fails the call instead of reaching the caller.
+func TestScopedRefusesOutOfScopeResults(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cases := map[string]leakyStore{
+		"an object of another tenant": {page: blobstore.ListPage{Objects: []blobstore.Object{{Key: "tenant-a/mine"}, {Key: "tenant-b/secret"}}}},
+		"a neighbouring prefix":       {page: blobstore.ListPage{Objects: []blobstore.Object{{Key: "tenant-ab/secret"}}}},
+		"the bare prefix":             {page: blobstore.ListPage{Objects: []blobstore.Object{{Key: "tenant-a/"}}}},
+		"a cursor of another tenant":  {page: blobstore.ListPage{Objects: []blobstore.Object{{Key: "tenant-a/mine"}}, Next: "tenant-b/secret"}},
+	}
+	for name, inner := range cases {
+		s, err := blobstore.Scoped(inner, "tenant-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page, err := s.List(ctx, "", blobstore.ListOptions{}); err == nil {
+			t.Errorf("%s: List = %+v, want an error", name, page)
+		}
+	}
+
+	s, err := blobstore.Scoped(leakyStore{stat: blobstore.Object{Key: "tenant-b/secret"}}, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o, err := s.Stat(ctx, "mine"); err == nil {
+		t.Errorf("Stat = %+v, want an error", o)
+	}
+
+	s, err = blobstore.Scoped(leakyStore{page: blobstore.ListPage{Objects: []blobstore.Object{{Key: "tenant-a/mine"}}, Next: "tenant-a/mine"}}, "tenant-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.List(ctx, "", blobstore.ListOptions{})
+	if err != nil || strings.Join(keys(page), ",") != "mine" || page.Next != "mine" {
+		t.Fatalf("in-scope List = %+v, %v", page, err)
+	}
+}
+
 func keys(p blobstore.ListPage) []string {
 	out := make([]string, 0, len(p.Objects))
 	for _, o := range p.Objects {

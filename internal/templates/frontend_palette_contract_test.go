@@ -377,8 +377,14 @@ var contrastPairs = []contrastPair{
 	{"ink-muted", "surface", 4.5, "secondary text on a card"},
 	{"ink-muted", "surface-muted", 4.5, "secondary text on the page background"},
 	{"ink-muted", "surface-sunken", 4.5, "secondary text in an inset"},
-	{"ink-subtle", "surface", 3.0, "placeholder / icon on a card"},
-	{"ink-subtle", "surface-muted", 3.0, "placeholder / icon on the page background"},
+	// ink-subtle is TEXT too — captions, group labels, placeholders — not only
+	// icons, so it is held to the text floor (it measured 3.69:1 at 60% L).
+	{"ink-subtle", "surface", 4.5, "tertiary text / placeholder on a card"},
+	{"ink-subtle", "surface-muted", 4.5, "tertiary text / placeholder on the page background"},
+	// The avatar's identity rotation (pkg/components ui/avatar.tsx).
+	{"accent-ink", "accent-surface", 4.5, "avatar initials"},
+	{"success-ink", "success-surface", 4.5, "avatar initials"},
+	{"warning-ink", "warning-surface", 4.5, "avatar initials"},
 	{"accent", "surface", 4.5, "a link or accent-colored label"},
 	// The focus outline is the accent (WCAG 2.2 focus appearance, 3:1 against
 	// whatever the focused control sits on).

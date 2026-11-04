@@ -668,10 +668,12 @@ func propTypeIs(src, prop, typ string) bool {
 // instead, because adapting the palette cost more than writing eight lines. A
 // library nobody can install is a library nobody uses.
 //
-// Two deliberate exemptions, both because the colour IS DATA rather than chrome:
-//   - categories diagrams/ and deck/ — chart series and node fills
-//   - the identity palettes (avatar initials, badge rotation), which encode a
-//     value by hue; theming them collapses the rotation to one colour
+// Exemptions:
+//   - categories diagrams/ and deck/ — chart series and node fills, where the
+//     colour IS DATA rather than chrome
+//   - detail_view, which still ships raw palette classes and is yet to be
+//     tokenised. (avatar was exempt for its identity rotation; that rotation
+//     now cycles the semantic tint pairs, so it is checked like the rest.)
 func TestComponentsUseThemeTokensNotPaletteLiterals(t *testing.T) {
 	paletteRE := regexp.MustCompile(
 		`\b(bg|text|border|ring|divide|placeholder|from|to|via|fill|stroke|outline|shadow|accent|caret|decoration)` +
@@ -679,7 +681,7 @@ func TestComponentsUseThemeTokensNotPaletteLiterals(t *testing.T) {
 			`-[0-9]{2,3}\b`)
 
 	exemptCategory := map[string]bool{"diagrams": true, "deck": true}
-	exemptFile := map[string]bool{"avatar": true, "detail_view": true}
+	exemptFile := map[string]bool{"detail_view": true}
 
 	lib := NewLibrary()
 	checked := 0

@@ -222,9 +222,9 @@ func tsZodBase(ts string) (expr string, allowChain bool) {
 		// The empty string is admitted (BigInt("") is 0n, the proto3 zero)
 		// and `.min(1, "Required")` is what makes a required field demand
 		// one, exactly as it does for a string.
-		return `z.string().regex(/^(-?\d+)?$/, "expected a whole number")`, false
+		return `z.string().regex(/^(-?\d+)?$/, "Enter a whole number")`, false
 	case "Uint8Array":
-		return `z.string().regex(/^[A-Za-z0-9+/=_-]*$/, "expected base64")`, false
+		return `z.string().regex(/^[A-Za-z0-9+/=_-]*$/, "Enter base64-encoded data")`, false
 	default:
 		return "z.string()", true
 	}

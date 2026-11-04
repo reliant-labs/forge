@@ -189,6 +189,80 @@ func TestBridge_BuildsCheckoutPerStamp(t *testing.T) {
 	}
 }
 
+// A build that reports success after its caller's ctx ended is never
+// published: the canceled request fails, its staging directory goes, and the
+// next request builds the entry afresh rather than trusting that output.
+func TestCanceledBuildIsNeverPublished(t *testing.T) {
+	// cancelThenSucceed writes a complete binary and returns nil, but only
+	// after the request's ctx has ended — a builder that finished as the
+	// cancel landed, or one that ignores ctx.
+	cancelThenSucceed := func(cancel context.CancelFunc, out string) error {
+		cancel()
+		return atomicfile.WriteFile(out, []byte("#!/bin/sh\n"), 0o755)
+	}
+	// noStaging fails if any build left its staging directory in the cache.
+	noStaging := func(t *testing.T) {
+		t.Helper()
+		_ = filepath.WalkDir(os.Getenv(CacheDirEnv), func(p string, d os.DirEntry, err error) error {
+			if err == nil && d.IsDir() && strings.HasPrefix(d.Name(), stagingPrefix) {
+				t.Errorf("a canceled build left its staging directory %s", p)
+			}
+			return nil
+		})
+	}
+
+	t.Run("Pinned", func(t *testing.T) {
+		r, _, _ := newResolver(t)
+		r.Slot = func(context.Context, string) (func(), error) { return func() {}, nil }
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		r.Install = func(_ context.Context, _, gobin string) error {
+			return cancelThenSucceed(cancel, filepath.Join(gobin, exeName()))
+		}
+		if res, err := r.Pinned(ctx, t.TempDir(), pin); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled build = %+v, %v; want context.Canceled", res, err)
+		}
+		noStaging(t)
+
+		var calls []string
+		r.Install = fakeInstall(t, &calls)
+		if _, err := r.Pinned(context.Background(), t.TempDir(), pin); err != nil {
+			t.Fatal(err)
+		}
+		if len(calls) != 1 {
+			t.Errorf("the next request trusted the canceled build: installs %v, want one", calls)
+		}
+	})
+
+	t.Run("Bridge", func(t *testing.T) {
+		r, _, _ := newResolver(t)
+		r.Slot = func(context.Context, string) (func(), error) { return func() {}, nil }
+		checkout := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(checkout, "cmd", "forge"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		r.Build = func(_ context.Context, _, out string) error { return cancelThenSucceed(cancel, out) }
+		if res, err := r.Bridge(ctx, checkout, "abc+false@0"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled build = %+v, %v; want context.Canceled", res, err)
+		}
+		noStaging(t)
+
+		builds := 0
+		r.Build = func(_ context.Context, _, out string) error {
+			builds++
+			return atomicfile.WriteFile(out, []byte("#!/bin/sh\n"), 0o755)
+		}
+		if _, err := r.Bridge(context.Background(), checkout, "abc+false@0"); err != nil {
+			t.Fatal(err)
+		}
+		if builds != 1 {
+			t.Errorf("the next request trusted the canceled build: %d builds, want one", builds)
+		}
+	})
+}
+
 // The marker the hand-off sets names the process it is for, once: a marker
 // inherited from an earlier hand-off is replaced, not passed on beside it.
 func TestEnv_CarriesAMarkerForTheExecdForgeAlone(t *testing.T) {
@@ -387,5 +461,24 @@ func TestPublish_NeverReplacesAPublishedBinary(t *testing.T) {
 	}
 	if got, err := os.ReadFile(fresh); err != nil || string(got) != "second" {
 		t.Fatalf("publish to an empty slot = %q, %v", got, err)
+	}
+}
+
+// The go command's and the linker's scratch go inside the staging directory,
+// never TMPDIR, so the staging directory's removal takes them too.
+func TestScratchEnv_PointsTheToolchainAtTheStagingDirectory(t *testing.T) {
+	staging := t.TempDir()
+	d, err := scratchDir(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(d) != staging {
+		t.Fatalf("scratch %s is not inside the staging directory %s", d, staging)
+	}
+	env := scratchEnv(d)
+	for _, k := range []string{"GOTMPDIR", "TMPDIR"} {
+		if !slices.Contains(env, k+"="+d) {
+			t.Errorf("%s does not point at %s: %v", k, d, env)
+		}
 	}
 }

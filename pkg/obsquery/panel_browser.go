@@ -423,6 +423,10 @@ func (q PanelQuery) compileIssues(b *builder) (Stmt, PanelShape, error) {
 // the span view and from the replay view, so the read merges them per
 // (ServiceName, SessionId). The day before the range is read too: a session
 // that began there must not look as if it began at the range's first midnight.
+//
+// Only sessions with a replay are listed: a session is something to watch.
+// One made only of background fetch spans (a hidden window, no page view, no
+// interaction) has nothing to replay and is left to the traces it came from.
 func (q PanelQuery) compileSessions(b *builder) (Stmt, PanelShape, error) {
 	sw, having, err := b.browserConds(tblSessions, q)
 	if err != nil {
@@ -432,7 +436,7 @@ func (q PanelQuery) compileSessions(b *builder) (Stmt, PanelShape, error) {
 		"Day >= subtractDays(toDate(" + b.nanoTime(q.Scope.Start) + "), 1)",
 		"Day <= toDate(" + b.nanoTime(q.Scope.End) + ")",
 	}
-	having = append([]string{b.rangeCond("started", q.Scope)}, having...)
+	having = append([]string{b.rangeCond("started", q.Scope), "max(HasReplay) = 1"}, having...)
 	if q.Panel.HasError {
 		having = append(having, "sum(Errors) > 0")
 	}

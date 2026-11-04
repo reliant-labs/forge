@@ -62,6 +62,17 @@
 // cookie in localStorage with the same 15-minute inactivity and 4-hour limits
 // (session-cookie-fallback.ts). Origins whose cookies work are untouched.
 //
+// ── No session until the page has been seen ──────────────────────────────
+//
+// A page loaded in the background (a desktop window opened hidden, a tab
+// restored behind another) starts no session at all: the SDK is not loaded
+// until the document is first visible. Started hidden, it would mint a session
+// made only of background fetch spans, with nothing on screen to record, and
+// the recorder would hold no replay for it. Until then reportException returns
+// false (the caller logs to the console) and track() calls are held, bounded,
+// as they are while the SDK loads. A page that never becomes visible sends
+// nothing.
+//
 // ── Network URLs carry no query string ───────────────────────────────────
 //
 // fetch/XHR spans record the request URL, and a query string is where tokens,
@@ -104,7 +115,11 @@ import {
 } from "./benign-errors.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { installSessionCookieFallback } from "./session-cookie-fallback.js";
-import { registerTelemetryStartup } from "./telemetry-gate.js";
+import {
+  registerRumSession,
+  registerTelemetryStartup,
+  rumSessionId,
+} from "./telemetry-gate.js";
 import {
   isTelemetryDisabled,
   setTelemetrySink,
@@ -244,6 +259,7 @@ interface HyperDXClient {
   addAction?(name: string, attributes?: Record<string, TrackValue>): void;
   setGlobalAttributes?(attributes: Record<string, string>): void;
   stopSessionRecorder?(): void;
+  getSessionId?(): string | undefined;
 }
 
 let started: Promise<boolean> | null = null;
@@ -326,6 +342,7 @@ async function start(
   ingest: string,
 ): Promise<boolean> {
   try {
+    await firstVisible();
     const hdx = resolveClient(await import("@hyperdx/browser"));
     if (!hdx || isTelemetryDisabled()) {
       setTelemetrySink(null);
@@ -357,6 +374,10 @@ async function start(
     hdx.setGlobalAttributes?.(globals);
     runningClient = hdx;
     runningConfig = config;
+    // The session id rides on every Connect call as baggage (trace.ts) and on
+    // every fetch/XHR span (sessionAttribute), joining backend traces to the
+    // session that caused them.
+    registerRumSession(() => hdx.getSessionId?.());
     setExceptionReporter((error, attributes) => {
       if (alreadyRecorded(error) || benign.filtered(error, "reportException")) {
         return;
@@ -378,6 +399,7 @@ async function start(
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
         setExceptionReporter(null);
+        registerRumSession(null);
         hdx.stopSessionRecorder?.();
       },
     });
@@ -390,6 +412,30 @@ async function start(
     setTelemetrySink(null);
     return false;
   }
+}
+
+/**
+ * Resolves once the document is visible: at once for a visible page or one
+ * with no Page Visibility API, otherwise at its first visibilitychange to
+ * visible. See "No session until the page has been seen" in the header.
+ */
+function firstVisible(): Promise<void> {
+  if (
+    typeof document === "undefined" ||
+    document.visibilityState !== "hidden" ||
+    typeof document.addEventListener !== "function"
+  ) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const onChange = () => {
+      if (document.visibilityState !== "hidden") {
+        document.removeEventListener("visibilitychange", onChange);
+        resolve();
+      }
+    };
+    document.addEventListener("visibilitychange", onChange);
+  });
 }
 
 // ── One failure, one record ──────────────────────────────────────────────
@@ -884,17 +930,25 @@ interface UrlSpan {
 
 // applyCustomAttributesOnSpan for both instrumentations: it runs before the
 // span ends, and after HyperDX's own `HTTP <METHOD>` rename, so the values
-// set here are the ones exported.
+// set here are the ones exported. The span carries the RUM session as
+// `session.id` (the resource's rum.sessionId says the same for the browser;
+// the attribute is what the backend's own spans carry too, so a trace is found
+// by session from either side).
 function finishNetworkSpan(span: UrlSpan): void {
   stripNetworkQuery(span);
   const url = span.attributes?.["url.full"] ?? span.attributes?.["http.url"];
   const method =
-    span.attributes?.["http.request.method"] ?? span.attributes?.["http.method"];
+    span.attributes?.["http.request.method"] ??
+    span.attributes?.["http.method"];
   if (typeof url === "string" && typeof span.updateName === "function") {
     const name = spanRouteName(typeof method === "string" ? method : "", url);
     if (name) {
       span.updateName(name);
     }
+  }
+  const session = rumSessionId();
+  if (session) {
+    span.setAttribute("session.id", session);
   }
 }
 
@@ -939,7 +993,9 @@ export function spanRouteName(method: string, url: string): string {
   }
   const route = path
     .split("/")
-    .map((segment) => (segment && ID_SEGMENT.test(decodeSegment(segment)) ? "{id}" : segment))
+    .map((segment) =>
+      segment && ID_SEGMENT.test(decodeSegment(segment)) ? "{id}" : segment,
+    )
     .join("/");
   return `${verb} ${route || "/"}`;
 }

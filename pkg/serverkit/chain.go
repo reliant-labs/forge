@@ -318,6 +318,7 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 		// Deadline{} on the chain's logger, NoDeadline drops it).
 		Deadline:   deps.Deadline,
 		Auth:       deps.Auth,
+		Caller:     caller,
 		Audit:      audit,
 		RateLimit:  deps.RateLimit,
 		LogOptions: deps.LogOptions,

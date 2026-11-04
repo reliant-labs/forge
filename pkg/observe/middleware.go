@@ -214,6 +214,11 @@ type Deps struct {
 	// layer entirely (e.g. a worker-only process, or a test harness).
 	Auth connect.Interceptor
 
+	// Caller returns the caller Auth authenticated; Chain stamps its user id
+	// on the request's server span (IdentitySpanInterceptor). nil reads forge's
+	// own claims (authn.ClaimsFromContext). Unused when Auth is nil.
+	Caller CallerLookup
+
 	// Audit is the project's audit interceptor — the value returned by
 	// middleware.AuditInterceptor(sink, ...), with the durable audit sink
 	// already bound. This retires middleware.SetAuditStore: the
@@ -249,7 +254,8 @@ type Deps struct {
 //     then the pprof labels naming it and the traceresponse header returning
 //     its context to the caller (TraceResponseInterceptor). Outside everything
 //     below, so the span covers recovery, logging and auth, and their log
-//     lines carry its ids.
+//     lines carry its ids. RequestSpanInterceptor follows: it records the
+//     server span and sets the browser's session.id on it (span_identity.go).
 //  1. RecoveryInterceptor   — observes panics from everything below.
 //  2. RequestIDInterceptor — mints/propagates the correlation id early.
 //  3. LoggingInterceptor   — every failure; every success, or a sample
@@ -261,6 +267,8 @@ type Deps struct {
 //     authenticating runs inside the RPC's deadline.
 //  7. Auth                 — authenticate (when non-nil). Inner to
 //     observability so auth failures are still logged / traced / counted.
+//     IdentitySpanInterceptor follows it, stamping the caller's user.id on
+//     the server span.
 //  8. Audit                — durable audit record (when non-nil); runs
 //     after auth so it sees the authenticated principal.
 //  9. RateLimit            — throttle (when non-nil); keyed off the
@@ -280,7 +288,7 @@ type Deps struct {
 func Chain(deps Deps) []connect.Interceptor {
 	var chain []connect.Interceptor
 	if deps.Trace != nil {
-		chain = append(chain, deps.Trace, profileLabelsInterceptor(), TraceResponseInterceptor())
+		chain = append(chain, deps.Trace, profileLabelsInterceptor(), TraceResponseInterceptor(), RequestSpanInterceptor())
 	}
 	meter := deps.Meter
 	if meter == nil {
@@ -297,7 +305,7 @@ func Chain(deps Deps) []connect.Interceptor {
 		chain = append(chain, deadline)
 	}
 	if deps.Auth != nil {
-		chain = append(chain, deps.Auth)
+		chain = append(chain, deps.Auth, IdentitySpanInterceptor(deps.Caller))
 	}
 	if deps.Audit != nil {
 		chain = append(chain, deps.Audit)

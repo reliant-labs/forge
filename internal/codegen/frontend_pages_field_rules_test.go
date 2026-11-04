@@ -135,13 +135,13 @@ func TestFormRequired_OnlyFromExplicitRules(t *testing.T) {
 		zod      string
 	}{
 		// string.min_len = 1 — the explicit rule.
-		{"name", true, `z.string().min(1)`},
+		{"name", true, `z.string().min(1, "Required")`},
 		// required = true — the other explicit rule.
-		{"code", true, `z.string().min(1)`},
+		{"code", true, `z.string().min(1, "Required")`},
 		// No rule at all: the column's DEFAULT '' is a valid value.
 		{"notes", false, `z.string()`},
 		// A rule that is not about presence stays exactly as projected.
-		{"tagline", false, `z.string().max(64)`},
+		{"tagline", false, `z.string().max(64, "Must be at most 64 characters")`},
 	}
 	for _, form := range []struct {
 		name   string
@@ -163,10 +163,12 @@ func TestFormRequired_OnlyFromExplicitRules(t *testing.T) {
 		if strings.Contains(create, `notes: z.string().min(1, "Required")`) {
 			t.Errorf("%s create page still makes the rule-less Notes column mandatory:\n%s", kind, create)
 		}
-		if !strings.Contains(create, "Name *") {
+		// Required renders as the <Label required> asterisk (aria-hidden)
+		// plus aria-required on the control itself.
+		if !strings.Contains(create, `<Label htmlFor="name" required>`) || !strings.Contains(create, "aria-required") {
 			t.Errorf("%s create page lost the required marker on Name (string.min_len = 1)", kind)
 		}
-		if strings.Contains(create, "Notes *") {
+		if strings.Contains(create, `<Label htmlFor="notes" required>`) {
 			t.Errorf("%s create page marks the rule-less Notes column required", kind)
 		}
 	}
@@ -196,7 +198,7 @@ func TestFormOptionalScalar_EmptyInputSubmitsUnset(t *testing.T) {
 		}
 
 		email := formFieldNamed(t, form.fields, "email")
-		if want := `z.preprocess((v) => (v === "" ? undefined : v), z.string().email().optional())`; email.ZodExpr != want {
+		if want := `z.preprocess((v) => (v === "" ? undefined : v), z.string().email("Enter a valid email address").optional())`; email.ZodExpr != want {
 			t.Errorf("%s email zod = %s, want %s", form.name, email.ZodExpr, want)
 		}
 		if email.PrefillExpr != `item.email ?? ""` {
@@ -375,6 +377,12 @@ func TestEnumOptional_NoneIsAChoice(t *testing.T) {
 	kind := formFieldNamed(t, page.CreateFields, "kind")
 	if want := `z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().pipe(z.nativeEnum(ThingKind)).refine((v): boolean => v !== ThingKind.UNSPECIFIED, "Choose a value").optional())`; kind.ZodExpr != want {
 		t.Errorf("optional kind zod = %s, want %s", kind.ZodExpr, want)
+	}
+	// Edit opens a NULL enum on None, never on the first real member — an
+	// unrelated Save must not write a value the record never had.
+	editKind := formFieldNamed(t, page.UpdateFields, "kind")
+	if want := "item.kind === ThingKind.UNSPECIFIED ? undefined : item.kind"; editKind.PrefillExpr != want {
+		t.Errorf("optional kind edit prefill = %s, want %s", editKind.PrefillExpr, want)
 	}
 	for _, tmplKind := range []string{"pages", "vite-spa-pages"} {
 		for _, name := range []string{"create-page.tsx.tmpl", "edit-page.tsx.tmpl"} {

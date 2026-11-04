@@ -339,3 +339,32 @@ func TestMaterialize_ColumnTypesOnRealPostgres(t *testing.T) {
 		t.Errorf("api_keys carries %d distinct user_id(s) across 12 rows, want 12", users)
 	}
 }
+
+// The email CHECK forge births is seeded by its meaning, not its shape: the
+// shape alone gives 1@1.1, which satisfies the CHECK and fails the form's zod
+// `.email()`, so a seeded row could not be saved from its own edit page.
+func TestSynthString_EmailCheckSeedsAValidAddress(t *testing.T) {
+	col := textCol("contact")
+	tbl := schemadef.Table{
+		Name:    "accounts",
+		Columns: []schemadef.Column{col},
+		Checks: []schemadef.CheckConstraint{{
+			Name:    "accounts_contact_check",
+			Def:     "CHECK ((contact ~ '" + EmailCheckPattern + "'::text))",
+			Columns: []string{"contact"},
+		}},
+	}
+	for row, want := range []string{"user1@example.com", "user2@example.com"} {
+		if got := SynthString(tbl, col, row); got != want {
+			t.Errorf("row %d: SynthString = %q, want %q", row, got, want)
+		}
+	}
+	// Too long for a declared cap: fall back to the pattern's own shape
+	// rather than writing a value the column refuses.
+	capped := col
+	capped.MaxChars = 8
+	tbl.Columns = []schemadef.Column{capped}
+	if got := SynthString(tbl, capped, 0); got != "1@1.1" {
+		t.Errorf("capped column: SynthString = %q, want the pattern sample", got)
+	}
+}

@@ -408,9 +408,13 @@ var coreComponents = []string{
 	"button",
 	// The classes button imports ("./button_classes").
 	"button_classes",
-	// The context input, label, select and form import ("./form_field_context").
+	// The context input, textarea, label, select and form import ("./form_field_context").
 	"form_field_context",
 	"input",
+	// The generated create/edit forms import "@/components/ui/textarea" for
+	// a multi-line or bytes field; a page importing a component the
+	// scaffold never installed fails `next build` on a file forge wrote.
+	"textarea",
 	"label",
 	"form",
 	"card",

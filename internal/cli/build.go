@@ -201,6 +201,10 @@ type buildOptions struct {
 	// the right scope and the right value. Both flags belong on the command
 	// that builds one thing.
 	renderOptions []string
+	// configCheck is --config-check: whether a pushing build runs the boot
+	// config check before the push, and whether a failure refuses it
+	// (config_check.go). "" and "auto" follow the rollout.
+	configCheck string
 	// tag, when set, overrides the git-derived image tag computed by
 	// resolveImageTag. CI pipelines that pin the image to a release
 	// number (e.g. `--tag v1.2.3`) use this. Empty (the default) means
@@ -790,6 +794,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		resolvedVersion:   resolvedVersion,
 		opts:              opts,
 		memCaps:           memCaps,
+		configCheck:       newProjectConfigCheck(cfg, entities, opts),
 	}
 	if opts.parallel {
 		results = buildParallel(ctx, plan)
@@ -1876,6 +1881,9 @@ type buildPlan struct {
 	// constrained memory budget (empty => apply nothing). Threaded into
 	// buildGoTarget (GOMEMLIMIT/GOMAXPROCS) and buildFrontend (NODE_OPTIONS).
 	memCaps buildMemoryCaps
+	// configCheck is the boot config check the project image runs before it
+	// is pushed (config_check.go); nil runs none.
+	configCheck *projectConfigCheck
 }
 
 func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
@@ -1956,7 +1964,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
 		if len(goTargets) > 0 && !skipProjectDocker {
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
-			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
+			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env, configCheck: plan.configCheck}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -2023,7 +2031,7 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 		if len(goTargets) > 0 && !skipProjectDocker {
 			// Image platform == the arch the project binaries were built for.
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
-			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env}
+			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env, configCheck: plan.configCheck}
 			r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
 			r.goTargets = goTargets
 			results = append(results, r)
@@ -2422,6 +2430,10 @@ type projectImageGuard struct {
 	outputDir   string
 	binaryNames []string
 	envLabel    string
+	// configCheck runs between the image build and the push: every workload
+	// of the image, booted with its env's config (config_check.go). nil
+	// runs nothing.
+	configCheck *projectConfigCheck
 }
 
 // projectImageBinaryNames returns the output basenames of the go-build
@@ -2531,6 +2543,14 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 			kind:     "docker",
 			duration: time.Since(start),
 			err:      err,
+		}
+	}
+
+	// The boot config check, before anything leaves this machine: an image a
+	// workload would refuse to start with is not pushed.
+	if len(pushTags) > 0 && len(tags.local) > 0 {
+		if err := guard.configCheck.run(ctx, tags.local[0]); err != nil {
+			return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 		}
 	}
 

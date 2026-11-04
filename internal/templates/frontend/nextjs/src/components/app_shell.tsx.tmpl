@@ -57,9 +57,9 @@ export function AppShell({
 }: {
   children: React.ReactNode;
   /**
-   * Optional chrome rendered above the shell — the mock-mode banner, which
-   * the root layout defines inline. Passed in rather than imported so this
-   * component does not depend on where the layout chooses to keep it.
+   * Optional chrome rendered above the shell — the mock-mode banner the root
+   * layout passes in. Passed in rather than imported so this component does
+   * not depend on whether, or where, the layout keeps one.
    */
   banner?: React.ReactNode;
 }) {
@@ -77,6 +77,17 @@ export function AppShell({
     // `bg-surface` — separate from their background. Putting both on the same
     // color is what makes a scaffold look like an unstyled wireframe.
     <div className="flex h-screen flex-col overflow-hidden bg-surface text-ink">
+      {/*
+        Skip link: the first tab stop on every page. Without it a keyboard or
+        switch user tabs through the whole sidebar and header before reaching
+        the content. Visually hidden until focused, then pinned top-left.
+      */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-ink focus:shadow-lg focus:ring-2 focus:ring-accent focus:outline-none"
+      >
+        Skip to content
+      </a>
       {banner}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <Nav />
@@ -88,7 +99,11 @@ export function AppShell({
         */}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <AppHeader />
-          <main className="flex-1 overflow-y-auto bg-surface-muted">
+          {/*
+            The page's ONE main landmark — pages render a section, never a
+            second main. tabIndex={-1} lets the skip link move focus here.
+          */}
+          <main id="main" tabIndex={-1} className="flex-1 overflow-y-auto bg-surface-muted focus:outline-none">
             {/*
               A max width on the content column. Full-bleed text on a 27"
               monitor is unreadable, and a scaffold that never sets one

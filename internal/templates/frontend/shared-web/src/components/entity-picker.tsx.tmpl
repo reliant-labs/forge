@@ -117,6 +117,8 @@ export interface EntityPickerProps<TItem, TReq, TRes> {
   /** id of the trigger, so a sibling <Label htmlFor> can point at it. */
   id?: string;
   "aria-label"?: string;
+  /** id of the element describing the control — its error message. */
+  "aria-describedby"?: string;
 }
 
 export function EntityPicker<TItem, TReq, TRes>({
@@ -140,6 +142,7 @@ export function EntityPicker<TItem, TReq, TRes>({
   debounceMs = 300,
   id,
   "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
 }: EntityPickerProps<TItem, TReq, TRes>) {
   const generatedId = useId();
   const triggerId = id ?? `${generatedId}-trigger`;
@@ -153,6 +156,7 @@ export function EntityPicker<TItem, TReq, TRes>({
   const [pickedLabels, setPickedLabels] = useState<Record<string, string>>({});
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
@@ -208,6 +212,9 @@ export function EntityPicker<TItem, TReq, TRes>({
     onChange(picked);
     setOpen(false);
     setSearch("");
+    // Focus was in the popover, which just unmounted: hand it back to the
+    // trigger, or the next Tab starts again from the top of the document.
+    triggerRef.current?.focus();
   }
 
   // Typed on HTMLElement, not HTMLInputElement: the same handler drives the
@@ -241,6 +248,7 @@ export function EntityPicker<TItem, TReq, TRes>({
       case "Escape":
         event.preventDefault();
         setOpen(false);
+        triggerRef.current?.focus();
         break;
       default:
         break;
@@ -256,16 +264,21 @@ export function EntityPicker<TItem, TReq, TRes>({
     <div ref={rootRef} className="relative">
       <div className="flex items-stretch gap-1">
         <button
+          ref={triggerRef}
           type="button"
           id={triggerId}
+          // The error is announced through aria-describedby (the message's
+          // id). aria-invalid is not a supported state of the button role,
+          // so jsx-a11y rejects it here and assistive tech may ignore it.
+          aria-describedby={ariaDescribedBy}
           aria-expanded={open}
           aria-haspopup="listbox"
           aria-label={ariaLabel}
           disabled={disabled}
           onClick={() => setOpen((o) => !o)}
           className={[
-            "flex h-10 w-full items-center justify-between gap-2 rounded-md border bg-surface px-3",
-            "text-left text-sm shadow-sm focus:outline-none focus:ring-1",
+            "flex h-9 w-full items-center justify-between gap-2 rounded-md border bg-surface px-3",
+            "text-left text-sm focus:outline-none focus:ring-1",
             "disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-ink-muted",
             invalid
               ? "border-danger focus:border-danger focus:ring-danger"

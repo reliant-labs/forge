@@ -234,7 +234,7 @@ func TestRunDomainBind_ResolvesEnvByReadAndNeverCreatesIt(t *testing.T) {
 	})
 	var out bytes.Buffer
 	c := domainTestClient(t, f)
-	if err := runDomainBind(context.Background(), c, "prod", "hounders.club", "web", "", &out); err != nil {
+	if err := runDomainBind(context.Background(), c, "prod", "hounders.club", domainBindOptions{target: "web"}, &out); err != nil {
 		t.Fatalf("runDomainBind: %v", err)
 	}
 	for _, proc := range f.order {
@@ -248,6 +248,11 @@ func TestRunDomainBind_ResolvesEnvByReadAndNeverCreatesIt(t *testing.T) {
 	}
 	if _, ok := body["redirectTo"]; ok {
 		t.Error("a --target bind must not also send redirectTo")
+	}
+	// Unset is not sent: a control plane that predates the field refuses a
+	// request naming it.
+	if _, ok := body["hstsIncludeSubdomains"]; ok {
+		t.Error("a bind without --hsts-include-subdomains must not send the field")
 	}
 	rendered := out.String()
 	// A bound domain that is not live yet is waiting on the author's DNS,
@@ -272,7 +277,8 @@ func TestRunDomainBind_RedirectSendsRedirectToOnly(t *testing.T) {
 		"CreateDomainBinding": `{"binding":{"id":"b2","domainId":"dom_02","environmentId":"env-7","redirectTo":"hounders.club"}}`,
 	})
 	var out bytes.Buffer
-	if err := runDomainBind(context.Background(), domainTestClient(t, f), "prod", "www.hounders.club", "", "hounders.club", &out); err != nil {
+	if err := runDomainBind(context.Background(), domainTestClient(t, f), "prod", "www.hounders.club",
+		domainBindOptions{redirectTo: "hounders.club", hstsIncludeSubdomains: true}, &out); err != nil {
 		t.Fatalf("runDomainBind: %v", err)
 	}
 	body := f.bodies["CreateDomainBinding"]
@@ -282,7 +288,10 @@ func TestRunDomainBind_RedirectSendsRedirectToOnly(t *testing.T) {
 	if _, ok := body["target"]; ok {
 		t.Error("a --redirect-to bind must not also send target")
 	}
-	if !strings.Contains(out.String(), "308 redirect") {
+	if body["hstsIncludeSubdomains"] != true {
+		t.Errorf("CreateDomainBinding sent %+v, want hstsIncludeSubdomains", body)
+	}
+	if !strings.Contains(out.String(), "permanent redirect") {
 		t.Errorf("a redirect bind should say so:\n%s", out.String())
 	}
 	// Already live: no DNS table, because there is nothing left to do.

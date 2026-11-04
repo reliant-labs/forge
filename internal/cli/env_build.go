@@ -144,6 +144,9 @@ Examples:
 			if opts.release != "" {
 				opts.push = true
 			}
+			if err := validateConfigCheckMode(opts.configCheck); err != nil {
+				return err
+			}
 			if err := validateReleaseFlags(opts); err != nil {
 				return err
 			}
@@ -197,6 +200,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services (implied by --push and --release)")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
 	cmd.Flags().BoolVar(&opts.push, "push", false, "Push docker images after build (implies --docker), each to the reference its own workload declares (its image field in deploy/kcl/workloads.k). Takes no value and carries no registry")
+	cmd.Flags().StringVar(&opts.configCheck, "config-check", configCheckAuto, "Before a push, boot every workload of the project image with this env's config in the binary's config-check mode (no network) and refuse the push if one would not start: auto (gates from "+configCheckGatesFrom+", warns below that pin), gate, warn, off")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins, or when it conflicts with --release. Recorded in .forge/state so 'forge env deploy' uses the same value.")
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default this runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")

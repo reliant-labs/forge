@@ -66,6 +66,17 @@ function MockModeBanner() {
 export default function App({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-surface text-ink">
+      {/*
+        Skip link: the first tab stop on every page, so a keyboard user does
+        not tab through the header to reach the content. Visually hidden until
+        focused.
+      */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-ink focus:shadow-lg focus:ring-2 focus:ring-accent focus:outline-none"
+      >
+        Skip to content
+      </a>
       <MockModeBanner />
 
       {/*
@@ -92,7 +103,7 @@ export default function App({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <main className="min-h-0 flex-1 overflow-y-auto bg-surface-muted">
+      <main id="main" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto bg-surface-muted focus:outline-none">
         {/* Max width so content does not run full-bleed on a wide display. */}
         <div className="mx-auto max-w-7xl p-6 lg:p-8">{children}</div>
       </main>

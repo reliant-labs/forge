@@ -220,7 +220,8 @@ func TestSessionTimelineCursor(t *testing.T) {
 
 func sessionRow(id, svc string, startedMs int64, errs uint64, replay uint8) []any {
 	return []any{id, svc, "3f9c0e", "env-prod", "user-42", "/pay",
-		time.UnixMilli(startedMs).UTC(), time.UnixMilli(startedMs + 5000).UTC(), uint64(2), uint64(3), errs, replay}
+		time.UnixMilli(startedMs).UTC(), time.UnixMilli(startedMs + 5000).UTC(), uint64(2), uint64(3), errs, replay,
+		"DE", "Berlin", "Berlin", ""}
 }
 
 func TestParseSessions(t *testing.T) {
@@ -239,7 +240,8 @@ func TestParseSessions(t *testing.T) {
 	}
 	s := page.Sessions[0]
 	if !s.HasReplay || s.EnvName != "prod" || s.UserID != "user-42" || s.EntryPath != "/pay" || s.Duration() != 5*time.Second ||
-		s.PageViews != 2 || s.Interactions != 3 || s.Service != "web" || s.Version != "3f9c0e" {
+		s.PageViews != 2 || s.Interactions != 3 || s.Service != "web" || s.Version != "3f9c0e" ||
+		s.Country != "DE" || s.Region != "Berlin" || s.City != "Berlin" || s.ClientAddress != "" {
 		t.Errorf("summary = %+v", s)
 	}
 	if page.Sessions[1].Errors != 2 {
@@ -328,5 +330,32 @@ func TestListSessionsRunsCompileThenParse(t *testing.T) {
 		SessionLookup{Scope: rumScope(), SessionID: "nope"})
 	if !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("GetSession err = %v", err)
+	}
+}
+
+// The location columns are named only for a scope whose tables have them; the
+// columns keep their positions either way, so one scan reads both shapes.
+func TestSessionColumnsFollowTheTenantsShape(t *testing.T) {
+	for _, geo := range []bool{false, true} {
+		sc := rumScope()
+		sc.SessionGeo = geo
+		for name, compile := range map[string]func() (Stmt, error){
+			"list":   SessionQuery{Scope: sc}.Compile,
+			"lookup": SessionLookup{Scope: sc, SessionID: "s1"}.Compile,
+		} {
+			st, err := compile()
+			if err != nil {
+				t.Fatal(err)
+			}
+			names := strings.Contains(st.SQL, "max(Geo)") && strings.Contains(st.SQL, "max(ClientAddress)")
+			if names != geo {
+				t.Errorf("%s with SessionGeo=%v names the location columns: %v\n%s", name, geo, names, st.SQL)
+			}
+			for _, col := range []string{"AS country", "AS region", "AS city", "AS client_address"} {
+				if !strings.Contains(st.SQL, col) {
+					t.Errorf("%s with SessionGeo=%v has no %s column", name, geo, col)
+				}
+			}
+		}
 	}
 }

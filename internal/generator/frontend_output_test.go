@@ -150,11 +150,17 @@ func TestGenerateFrontendFiles_RealBackendByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read layout.tsx: %v", err)
 	}
-	if !strings.Contains(string(layout), "MOCK DATA — backend not connected") {
-		t.Error("layout.tsx should render the mock-mode banner when NEXT_PUBLIC_MOCK_API is enabled")
-	}
-	if !strings.Contains(string(layout), "MockModeBanner") {
+	if !strings.Contains(string(layout), "<MockModeBanner />") {
 		t.Error("layout.tsx should mount MockModeBanner")
+	}
+	// The banner is a client component: a server layout reads the mode at
+	// BUILD time and compiles the banner out of a static export.
+	banner, err := os.ReadFile(filepath.Join(feDir, "src", "components", "mock_mode_banner.tsx"))
+	if err != nil {
+		t.Fatalf("read mock_mode_banner.tsx: %v", err)
+	}
+	if !strings.Contains(string(banner), "MOCK DATA — backend not connected") {
+		t.Error("mock_mode_banner.tsx should render the mock-mode banner when NEXT_PUBLIC_MOCK_API is enabled")
 	}
 }
 

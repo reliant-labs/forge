@@ -30,7 +30,10 @@ INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attri
 SELECT map('deployment.environment.name','prod','service.instance.id','p1'), 'healthy', 'rpc.server.errors', map('procedure','/h.v1.H/Get','error_class','server'), now() - INTERVAL (5-n) MINUTE, n*1000, 2, true FROM (SELECT number n FROM numbers(6));
 
 -- silence: stopped = counter moved every 5 min from 25h ago to 30 min ago; healthy moves to now;
--- sparse = four active hours; young = 2h of history that ended 30 min ago.
+-- sparse = four active hours; young = 2h of history that ended 30 min ago;
+-- bursty = a call every 30 min for a day (every hour active, but silent 30 min at a time), last one 30 min ago.
+INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)
+SELECT map('deployment.environment.name','dev','service.instance.id','b1'), 'bursty', 'rpc.server.calls', map('procedure','/b.v1.B/Get'), now() - INTERVAL (n*30) MINUTE, 100 - n, 2, true FROM (SELECT number n FROM numbers(1, 48));
 INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)
 SELECT map('deployment.environment.name','dev','service.instance.id','s1'), 'stopped', 'rpc.server.calls', map('procedure','/s.v1.T/Get'), now() - INTERVAL (n*5) MINUTE, 1000 - n, 2, true FROM (SELECT number n FROM numbers(6, 294));
 INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)

@@ -252,6 +252,7 @@ var alertDefs = []alertDef{
 			Params: []AlertParam{
 				{"silent_minutes", 10, "minutes without a request before it fires"},
 				{"min_active_hours", 18, "of the previous 24h, the hours the service must have served requests in to count as steady (a quiet staging service never pages)"},
+				{"max_prior_silences", 2, "of the previous 24h, the most gaps of silent_minutes or longer a steady service may have had (a bursty service that is often this quiet never pages)"},
 			},
 		},
 		annotations: map[string]string{"summary": "{{ $labels.service }} has served no requests for {{ $value }}s, after serving traffic through most of the last day"},
@@ -830,18 +831,19 @@ func silentSQL(env string, in AlertInput, p map[string]float64) string {
                arrayFilter((tm, d) -> d != 0, ts, moved) AS t
         FROM otel_metrics_sum
         WHERE MetricName = 'rpc.server.calls'
-          AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL %s MINUTE - INTERVAL 1 MINUTE
-          AND ResourceAttributes['deployment.environment.name'] = %s
-          AND splitByChar('/', Attributes['procedure'])[2] IN (%s)
+          AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL %[1]s MINUTE - INTERVAL 1 MINUTE
+          AND ResourceAttributes['deployment.environment.name'] = %[2]s
+          AND splitByChar('/', Attributes['procedure'])[2] IN (%[3]s)
         GROUP BY ServiceName, ResourceAttributes, Attributes
     )
 )
 SELECT service, dateDiff('second', max(t), now()) AS value
 FROM moves
 GROUP BY service
-HAVING max(t) < now() - INTERVAL %s MINUTE
-   AND uniqExactIf(toStartOfHour(t), t < now() - INTERVAL %s MINUTE) >= %s
-ORDER BY service`, num(p["silent_minutes"]), sqlQuote(env), rpcServiceList(in), num(p["silent_minutes"]), num(p["silent_minutes"]), num(p["min_active_hours"]))
+HAVING max(t) < now() - INTERVAL %[1]s MINUTE
+   AND uniqExactIf(toStartOfHour(t), t < now() - INTERVAL %[1]s MINUTE) >= %[4]s
+   AND arrayCount(d -> d >= %[1]s * 60, arrayDifference(arraySort(groupUniqArray(toUInt32(toUnixTimestamp(t)))))) <= %[5]s
+ORDER BY service`, num(p["silent_minutes"]), sqlQuote(env), rpcServiceList(in), num(p["min_active_hours"]), num(p["max_prior_silences"]))
 }
 
 func frontendErrorsSQL(env string, in AlertInput, p map[string]float64) string {

@@ -66,13 +66,19 @@ func (l Local) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 	if err != nil {
 		return out, err
 	}
-	beforeEP, err := l.endpointStats(ctx, win.Before, &out)
+	beforeEP, beforeWhole, err := l.endpointStats(ctx, win.Before, &out)
 	if err != nil {
 		return out, err
 	}
-	afterEP, err := l.endpointStats(ctx, win.After, &out)
+	afterEP, afterWhole, err := l.endpointStats(ctx, win.After, &out)
 	if err != nil {
 		return out, err
+	}
+	if !beforeWhole || !afterWhole {
+		// A truncated endpoint set would judge latency over the endpoints
+		// that survived the cap, so a slow omitted one could pass: judge the
+		// service-level p95 instead, for both windows alike.
+		beforeEP, afterEP = nil, nil
 	}
 	issues, err := l.newIssues(ctx, win, &out)
 	if err != nil {
@@ -138,23 +144,28 @@ func (l Local) windowStats(ctx context.Context, r releasehealth.Range, out *Heal
 }
 
 // endpointStats is windowStats per endpoint: service -> endpoint -> figures.
-func (l Local) endpointStats(ctx context.Context, r releasehealth.Range, out *HealthResult) (map[string]map[string]releasehealth.WindowStats, error) {
-	stats := map[string]map[string]releasehealth.WindowStats{}
+// whole is false when the endpoint set was cut at obsquery.MaxREDEndpoints,
+// so some service's endpoints are missing and the figures must not be judged.
+func (l Local) endpointStats(ctx context.Context, r releasehealth.Range, out *HealthResult) (stats map[string]map[string]releasehealth.WindowStats, whole bool, err error) {
+	stats = map[string]map[string]releasehealth.WindowStats{}
 	if r.To.Sub(r.From) < time.Second {
-		return stats, nil
+		return stats, true, nil
 	}
 	st, err := obsquery.Overview{Scope: LocalScope(Narrow{Range: Range{From: r.From, To: r.To}}, l.Env)}.REDByEndpoint()
 	if err != nil {
-		return nil, compileErr(err)
+		return nil, false, compileErr(err)
 	}
 	out.Statements = append(out.Statements, stmt("red by endpoint "+r.From.UTC().Format(time.RFC3339), st))
 	res, err := l.run(ctx, st, DefaultLimits())
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if len(res.Rows) > obsquery.MaxREDEndpoints {
+		return nil, false, nil
 	}
 	for _, row := range res.Rows {
 		if len(row) < 5 {
-			return nil, Undetermined("the local ClickStack returned %d columns for release health by endpoint, want 5", len(row))
+			return nil, false, Undetermined("the local ClickStack returned %d columns for release health by endpoint, want 5", len(row))
 		}
 		q := AsFloats(row[4])
 		if len(q) < 3 {
@@ -170,7 +181,7 @@ func (l Local) endpointStats(ctx context.Context, r releasehealth.Range, out *He
 		}
 		stats[svc][AsString(row[1])] = ws
 	}
-	return stats, nil
+	return stats, true, nil
 }
 
 // endpointHealth pairs one service's endpoints across the windows, by name.

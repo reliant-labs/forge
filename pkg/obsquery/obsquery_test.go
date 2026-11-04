@@ -705,7 +705,8 @@ func TestREDByEndpointGroupsByServiceAndSpanName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"SpanName AS endpoint", "GROUP BY ServiceName, endpoint", "NOT " + spanStreamExpr, spanServerExpr} {
+	// One row past the cap, so a caller can tell a truncated set from a whole one.
+	for _, want := range []string{"SpanName AS endpoint", "GROUP BY ServiceName, endpoint", "NOT " + spanStreamExpr, spanServerExpr, "LIMIT 1001"} {
 		if !strings.Contains(st.SQL, want) {
 			t.Errorf("REDByEndpoint lacks %q:\n%s", want, st.SQL)
 		}

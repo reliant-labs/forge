@@ -437,7 +437,9 @@ func (q Overview) RED() (Stmt, error) {
 		"GROUP BY ServiceName" + gnames + "\nORDER BY requests DESC, ServiceName" + gnames + "\nLIMIT 200"), nil
 }
 
-// MaxREDEndpoints bounds the rows REDByEndpoint returns.
+// MaxREDEndpoints bounds the rows REDByEndpoint is complete for. The
+// statement asks for one row more, so a result of more than MaxREDEndpoints
+// rows is a truncated endpoint set: some service's endpoints are missing.
 const MaxREDEndpoints = 1000
 
 // REDByEndpoint is RED split by endpoint (the server span's name), busiest
@@ -445,7 +447,8 @@ const MaxREDEndpoints = 1000
 // ms). Release health judges latency per endpoint from it
 // (releasehealth.ServiceHealth.Endpoints), so a change in which endpoints a
 // window holds does not read as a service getting slower. GroupBy is not
-// applied.
+// applied. It returns at most MaxREDEndpoints+1 rows; more than
+// MaxREDEndpoints means the set is truncated and must not be judged as whole.
 func (q Overview) REDByEndpoint() (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeOverview); err != nil {
 		return Stmt{}, err
@@ -459,7 +462,7 @@ func (q Overview) REDByEndpoint() (Stmt, error) {
 	return b.stmt("SELECT ServiceName, SpanName AS endpoint, toUInt64(round(sum(" + spanWeightExpr + "))) AS requests, toUInt64(round(sumIf(" + spanWeightExpr + ", " + spanErrorExpr + "))) AS errors,\n" +
 		"       quantilesExactWeightedIf(0.5, 0.95, 0.99)(Duration / 1000000, " + spanWeightInt + ", NOT " + spanStreamExpr + ") AS q\n" +
 		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
-		"GROUP BY ServiceName, endpoint\nORDER BY requests DESC, ServiceName, endpoint\nLIMIT " + strconv.Itoa(MaxREDEndpoints)), nil
+		"GROUP BY ServiceName, endpoint\nORDER BY requests DESC, ServiceName, endpoint\nLIMIT " + strconv.Itoa(MaxREDEndpoints+1)), nil
 }
 
 // Trend builds the per-service per-bucket request and error counts. Columns:

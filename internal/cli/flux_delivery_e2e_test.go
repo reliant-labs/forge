@@ -26,8 +26,12 @@ package cli
 //
 // HYGIENE. The cluster and its registry have unique names and are deleted by
 // those names. Every k3d, kubectl and forge call runs with KUBECONFIG pointed
-// at a file in t.TempDir(), so the machine's kubeconfig and its current
-// context are never read or written; the test asserts that at the end. The
+// at a file in t.TempDir(), so the machine's kubeconfig is never read or
+// written; the test asserts at the end that it holds no context for this
+// test's cluster. (Not that its current-context is unchanged: parallel e2e
+// tests that DO use the machine's kubeconfig, such as
+// TestE2EDirectApplySecretsLandAndStayOutOfTheBundle, switch and unset it
+// mid-run, which failed this test on main for a change it never made.) The
 // ledger is a t.TempDir() too.
 
 import (
@@ -39,6 +43,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -68,8 +73,6 @@ func TestE2EFluxDeliverySelfHosted(t *testing.T) {
 	requireTool(t, "k3d", "kubectl", "helm", "docker")
 	t.Parallel() // its own uniquely-named cluster, registry, kubeconfig and t.TempDir
 
-	defaultContext := currentDefaultContext()
-
 	e := &fluxDeliveryE2E{
 		t:            t,
 		forgeBin:     buildforgeBinary(t),
@@ -87,8 +90,8 @@ func TestE2EFluxDeliverySelfHosted(t *testing.T) {
 	e.projectDir = e.scaffold()
 	t.Cleanup(e.teardown)
 	t.Cleanup(func() {
-		if got := currentDefaultContext(); got != defaultContext {
-			t.Errorf("the machine's kubeconfig current-context moved from %q to %q", defaultContext, got)
+		if slices.Contains(defaultKubeconfigContexts(t), e.kctx) {
+			t.Errorf("the machine's kubeconfig gained this test's context %q: something ignored KUBECONFIG", e.kctx)
 		}
 	})
 
@@ -646,12 +649,14 @@ func (e *fluxDeliveryE2E) teardown() {
 	}
 }
 
-// currentDefaultContext is the machine's kubeconfig current-context, as the
-// process environment resolves it.
-func currentDefaultContext() string {
-	out, err := exec.Command("kubectl", "config", "current-context").CombinedOutput()
+// defaultKubeconfigContexts lists the contexts of the machine's kubeconfig,
+// as the process environment resolves it.
+func defaultKubeconfigContexts(t *testing.T) []string {
+	t.Helper()
+	out, err := exec.Command("kubectl", "config", "get-contexts", "-o", "name").Output()
 	if err != nil {
-		return "(none: " + strings.TrimSpace(string(out)) + ")"
+		t.Logf("kubectl config get-contexts: %v (no machine kubeconfig to check)", err)
+		return nil
 	}
-	return strings.TrimSpace(string(out))
+	return strings.Fields(string(out))
 }

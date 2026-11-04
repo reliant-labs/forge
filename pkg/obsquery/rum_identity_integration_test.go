@@ -12,6 +12,7 @@ package obsquery_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ func TestRumIdentitySessionGeoAndTraceLinks(t *testing.T) {
 	rumInsert(t, c, "ri", "otel_traces", string(server))
 	run := rumRunner(c)
 	sc := rumScopeOf("ri", "env-prod")
+	sc.SessionGeo = true
 
 	s, err := obsquery.GetSession(ctx, run, obsquery.SessionLookup{Scope: sc, SessionID: rumReplaySession})
 	if err != nil {
@@ -106,5 +108,52 @@ func TestRumIdentitySessionGeoAndTraceLinks(t *testing.T) {
 	}
 	if n := len(traces(obsquery.TraceQuery{UserID: "user-42"})); n == 0 {
 		t.Error("the page-reported user id finds none of its browser traces")
+	}
+}
+
+// A tenant not yet migrated to the location columns (control-plane tenant schema
+// v19) is still readable: without Scope.SessionGeo the session reads name none of
+// them. With it, the same tables refuse the read, which is why a reader says
+// which shape its tenant has rather than assuming the newest.
+func TestRumIdentitySessionReadsSurviveAnUnmigratedTenant(t *testing.T) {
+	c := startClickHouse(t)
+	ctx := context.Background()
+	raw, err := os.ReadFile("testdata/rum/hosted_schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := string(raw)
+	for _, cut := range []string{
+		",\n    `Geo` SimpleAggregateFunction(max, Tuple(String, String, String)),\n    `ClientAddress` SimpleAggregateFunction(max, String)",
+		"    max((ResourceAttributes['geo.country.iso_code'], ResourceAttributes['geo.region.name'], ResourceAttributes['geo.locality.name'])) AS Geo,\n",
+		"    max(ResourceAttributes['client.address']) AS ClientAddress,\n",
+	} {
+		if !strings.Contains(legacy, cut) {
+			t.Fatalf("hosted_schema.sql moved; update this test's cut: %q", cut)
+		}
+		legacy = strings.Replace(legacy, cut, "", 1)
+	}
+	for _, stmt := range strings.Split(strings.ReplaceAll(legacy, "{{DB}}", "rl"), ";\n\n") {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if err := c.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%v\n%s", err, stmt)
+		}
+	}
+	loadCapture(t, c, "rl")
+	run := rumRunner(c)
+	sc := rumScopeOf("rl", "env-prod")
+
+	s, err := obsquery.GetSession(ctx, run, obsquery.SessionLookup{Scope: sc, SessionID: rumReplaySession})
+	if err != nil || s.UserID != "user-42" || s.Country != "" || s.ClientAddress != "" {
+		t.Fatalf("unmigrated session = %+v, %v", s, err)
+	}
+	if page, err := obsquery.ListSessions(ctx, run, obsquery.SessionQuery{Scope: sc}); err != nil || len(page.Sessions) == 0 {
+		t.Fatalf("unmigrated list = %+v, %v", page, err)
+	}
+	sc.SessionGeo = true
+	if _, err := obsquery.GetSession(ctx, run, obsquery.SessionLookup{Scope: sc, SessionID: rumReplaySession}); err == nil {
+		t.Error("an unmigrated tenant answered a read of its missing location columns")
 	}
 }

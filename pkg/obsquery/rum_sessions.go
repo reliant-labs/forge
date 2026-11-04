@@ -106,7 +106,8 @@ type SessionSummary struct {
 	// Where the session's browser was, derived at ingest by the platform from the
 	// address it connected from (resource attributes geo.country.iso_code,
 	// geo.region.name and geo.locality.name), kept together as one tuple so the
-	// three always come from the same report. Empty when the platform derived none.
+	// three always come from the same report. Empty when the platform derived
+	// none, and always without Scope.SessionGeo.
 	Country, Region, City string
 	// ClientAddress is the browser's address (client.address). Empty unless the
 	// platform is configured to keep it; by default it derives the location and
@@ -120,12 +121,19 @@ func (s SessionSummary) Duration() time.Duration { return s.Ended.Sub(s.Started)
 // sessionCols is the select list of the session statements, in the order
 // scanSession reads: session_id, service, version, env_id, user_id, entry_path,
 // started, ended, page_views, interactions, errors, has_replay, country, region,
-// city, client_address.
-const sessionCols = "SessionId, ServiceName, max(ServiceVersion) AS version, max(EnvId) AS env_id, max(UserId) AS user_id,\n" +
-	"       argMinMerge(EntryPath) AS entry_path, min(Start) AS started, max(End) AS ended,\n" +
-	"       sum(PageViews) AS page_views, sum(Interactions) AS interactions, sum(Errors) AS errors, max(HasReplay) AS has_replay,\n" +
-	"       tupleElement(max(Geo), 1) AS country, tupleElement(max(Geo), 2) AS region, tupleElement(max(Geo), 3) AS city,\n" +
-	"       max(ClientAddress) AS client_address"
+// city, client_address. Without Scope.SessionGeo the last four are constants:
+// the tables predate them, and the columns are named only when they exist.
+func sessionCols(s Scope) string {
+	geo := "'' AS country, '' AS region, '' AS city, '' AS client_address"
+	if s.SessionGeo {
+		geo = "tupleElement(max(Geo), 1) AS country, tupleElement(max(Geo), 2) AS region, tupleElement(max(Geo), 3) AS city,\n" +
+			"       max(ClientAddress) AS client_address"
+	}
+	return "SessionId, ServiceName, max(ServiceVersion) AS version, max(EnvId) AS env_id, max(UserId) AS user_id,\n" +
+		"       argMinMerge(EntryPath) AS entry_path, min(Start) AS started, max(End) AS ended,\n" +
+		"       sum(PageViews) AS page_views, sum(Interactions) AS interactions, sum(Errors) AS errors, max(HasReplay) AS has_replay,\n" +
+		"       " + geo
+}
 
 func scanSession(rows Rows, names map[string]string) (SessionSummary, error) {
 	var (
@@ -250,7 +258,7 @@ func (q SessionQuery) Compile() (Stmt, error) {
 	if c := q.Cursor; c != nil {
 		having = append(having, "(started, ServiceName, SessionId) < (fromUnixTimestamp64Milli("+b.i64(c.TsMs)+"), "+b.str(c.Service)+", "+b.str(c.SessionID)+")")
 	}
-	sql := "SELECT " + sessionCols + "\n" +
+	sql := "SELECT " + sessionCols(q.Scope) + "\n" +
 		"FROM " + b.table(q.Scope, tblSessions) + "\n" + where2(append(b.sessionDays(q.Scope), where...)) + "\n" +
 		"GROUP BY ServiceName, SessionId\n" +
 		"HAVING " + strings.Join(having, "\n  AND ") + "\n" +
@@ -323,7 +331,7 @@ func (q SessionLookup) Compile() (Stmt, error) {
 	if sv := b.serviceIn(q.Scope.Services); sv != "" {
 		where = append(where, sv)
 	}
-	sql := "SELECT " + sessionCols + "\nFROM " + b.table(q.Scope, tblSessions) + "\n" + where2(where) + "\nGROUP BY ServiceName, SessionId\n"
+	sql := "SELECT " + sessionCols(q.Scope) + "\nFROM " + b.table(q.Scope, tblSessions) + "\n" + where2(where) + "\nGROUP BY ServiceName, SessionId\n"
 	if e := b.browserEnvCond("max(EnvId)", q.Scope); e != "" {
 		sql += "HAVING " + e + "\n"
 	}

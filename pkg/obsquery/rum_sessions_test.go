@@ -332,3 +332,30 @@ func TestListSessionsRunsCompileThenParse(t *testing.T) {
 		t.Errorf("GetSession err = %v", err)
 	}
 }
+
+// The location columns are named only for a scope whose tables have them; the
+// columns keep their positions either way, so one scan reads both shapes.
+func TestSessionColumnsFollowTheTenantsShape(t *testing.T) {
+	for _, geo := range []bool{false, true} {
+		sc := rumScope()
+		sc.SessionGeo = geo
+		for name, compile := range map[string]func() (Stmt, error){
+			"list":   SessionQuery{Scope: sc}.Compile,
+			"lookup": SessionLookup{Scope: sc, SessionID: "s1"}.Compile,
+		} {
+			st, err := compile()
+			if err != nil {
+				t.Fatal(err)
+			}
+			names := strings.Contains(st.SQL, "max(Geo)") && strings.Contains(st.SQL, "max(ClientAddress)")
+			if names != geo {
+				t.Errorf("%s with SessionGeo=%v names the location columns: %v\n%s", name, geo, names, st.SQL)
+			}
+			for _, col := range []string{"AS country", "AS region", "AS city", "AS client_address"} {
+				if !strings.Contains(st.SQL, col) {
+					t.Errorf("%s with SessionGeo=%v has no %s column", name, geo, col)
+				}
+			}
+		}
+	}
+}

@@ -185,7 +185,7 @@ func TestPlanClaim_ConvergedObjectClaimsNothing(t *testing.T) {
 	probe := `{"f:metadata":{"f:annotations":{".":{},"f:deployment.kubernetes.io/revision":{}}},
  "f:spec":{"f:template":{"f:spec":{"f:dnsPolicy":{},"f:volumes":{"k:{\"name\":\"tmp\"}":{".":{},"f:name":{},"f:emptyDir":{}}}}}}}`
 	live := liveFixture(t, managed, podTemplate("tmp"))
-	c, err := planClaim(live, setOf(t, probe), map[string]any{"spec": podTemplate("tmp")}, time.Now())
+	c, err := planClaim(live, setOf(t, probe), map[string]any{"spec": podTemplate("tmp")}, time.Unix(0, 0))
 	if err != nil || c != nil {
 		t.Fatalf("a converged object must not be written: claim=%+v err=%v", c, err)
 	}
@@ -204,7 +204,7 @@ func TestPlanClaim_LeavesWhatTheServerPutsBack(t *testing.T) {
 	probe := `{"f:spec":{"f:replicas":{},"f:template":{"f:spec":{"f:serviceAccountName":{},"f:serviceAccount":{}}}}}`
 	tmpl := map[string]any{"replicas": 1, "template": map[string]any{"spec": map[string]any{"serviceAccountName": "zitadel", "serviceAccount": "zitadel"}}}
 	live := liveFixture(t, managed, tmpl)
-	c, err := planClaim(live, setOf(t, probe), map[string]any{"spec": tmpl}, time.Now())
+	c, err := planClaim(live, setOf(t, probe), map[string]any{"spec": tmpl}, time.Unix(0, 0))
 	if err != nil || c != nil {
 		t.Fatalf("claimed a field the server re-derives: %+v err=%v", c, err)
 	}
@@ -222,7 +222,7 @@ func TestPlanClaim_UnreadableObjectStillTakesBackHandEdits(t *testing.T) {
 		"no answer":  {setOf(t, adminServerFields), nil},
 		"no neither": {nil, nil},
 	} {
-		c, err := planClaim(live, tc.probe, tc.trimmed, time.Now())
+		c, err := planClaim(live, tc.probe, tc.trimmed, time.Unix(0, 0))
 		if err != nil || c == nil {
 			t.Fatalf("%s: claim=%v err=%v", name, c, err)
 		}
@@ -241,7 +241,7 @@ func TestPlanClaim_MixedVersionsAreLeftAlone(t *testing.T) {
 	managed := strings.Replace(adminServerManagedFields, `"manager":"kubectl","operation":"Update","apiVersion":"apps/v1"`,
 		`"manager":"kubectl","operation":"Update","apiVersion":"apps/v1beta2"`, 1)
 	live := liveFixture(t, managed, podTemplate("tmp", "scratch"))
-	c, err := planClaim(live, setOf(t, adminServerFields), map[string]any{"spec": podTemplate("tmp")}, time.Now())
+	c, err := planClaim(live, setOf(t, adminServerFields), map[string]any{"spec": podTemplate("tmp")}, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,8 +344,12 @@ type fakeOwnershipKubectl struct {
 	trimmed map[string]any   // what `replace --dry-run` returns
 	getErr  string           // stderr of a failing get
 	lose    int              // how many patches lose a race before one lands
-	calls   []string
-	patches []string
+	// raced, when set, is the cluster after the writer that wins a race:
+	// every later read answers from it.
+	raced    *fakeOwnershipKubectl
+	calls    []string
+	patches  []string
+	replaces []string // the stdin of every replace
 }
 
 func (f *fakeOwnershipKubectl) run(_ context.Context, args []string, stdin []byte) ([]byte, []byte, error) {
@@ -371,12 +375,16 @@ func (f *fakeOwnershipKubectl) run(_ context.Context, args []string, stdin []byt
 		b, _ := json.Marshal(map[string]any{"kind": "List", "items": out})
 		return b, nil, nil
 	case args[0] == "replace":
+		f.replaces = append(f.replaces, string(stdin))
 		b, _ := json.Marshal(f.trimmed)
 		return b, nil, nil
 	case args[0] == "patch":
 		f.patches = append(f.patches, args[len(args)-1])
 		if f.lose > 0 {
 			f.lose--
+			if f.raced != nil {
+				f.live, f.probe, f.trimmed = f.raced.live, f.raced.probe, f.raced.trimmed
+			}
 			return nil, []byte("The request is invalid: the server rejected our request due to an error in our request"), errors.New("exit status 1")
 		}
 		return nil, nil, nil
@@ -430,6 +438,128 @@ func TestConvergeFieldOwnership_PatchesManagedFieldsBeforeTheApply(t *testing.T)
 	}
 	if !strings.HasPrefix(f.calls[0], "get -f - -o json --ignore-not-found --show-managed-fields -n control-plane-prod") {
 		t.Errorf("first call = %q", f.calls[0])
+	}
+	// A custom resource's update must name its resourceVersion, and the
+	// answer must describe the revision the claim is planned on.
+	if len(f.replaces) != 1 || !strings.Contains(f.replaces[0], `"resourceVersion":"41"`) {
+		t.Errorf("the dry-run replace must carry the live resourceVersion: %v", f.replaces)
+	}
+}
+
+func patchedEntries(t *testing.T, patch string) (rv any, entries []metav1.ManagedFieldsEntry) {
+	t.Helper()
+	var ops []map[string]any
+	if err := json.Unmarshal([]byte(patch), &ops); err != nil {
+		t.Fatal(err)
+	}
+	mf, _ := json.Marshal(ops[1]["value"])
+	if err := json.Unmarshal(mf, &entries); err != nil {
+		t.Fatal(err)
+	}
+	return ops[0]["value"], entries
+}
+
+// An object whose managedFields were cleared has every field ownerless. The
+// server's answer for the declaration tells the orphans (absent from it) from
+// the defaults (put back), and forge claims the orphans.
+func TestConvergeFieldOwnership_ObjectWithNoManagedFields(t *testing.T) {
+	live := jsonCopy(map[string]any{"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": map[string]any{"name": "admin-server", "namespace": "control-plane-prod", "resourceVersion": "41"},
+		"spec":     podTemplate("tmp", "scratch")})
+	trimmed := jsonCopy(map[string]any{"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": map[string]any{"name": "admin-server", "namespace": "control-plane-prod"}, "spec": podTemplate("tmp")})
+	f := &fakeOwnershipKubectl{live: []map[string]any{live}, probe: adminServerFields, trimmed: trimmed}
+	var out bytes.Buffer
+	if err := convergeFieldOwnership(context.Background(), f.run, "control-plane-prod", adminServerDoc, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.replaces) != 1 {
+		t.Fatalf("want one dry-run replace, calls: %v", f.calls)
+	}
+	var list struct{ Items []map[string]any }
+	if err := json.Unmarshal([]byte(f.replaces[0]), &list); err != nil || len(list.Items) != 1 {
+		t.Fatalf("replace stdin: %s (%v)", f.replaces[0], err)
+	}
+	md := list.Items[0]["metadata"].(map[string]any)
+	if spec, _ := json.Marshal(list.Items[0]["spec"]); string(spec) != "{}" || md["resourceVersion"] != "41" || md["namespace"] != "control-plane-prod" {
+		t.Errorf("the replacement must be the declaration at the live revision and namespace: %s", f.replaces[0])
+	}
+	if len(f.patches) != 1 {
+		t.Fatalf("the ownerless scratch volume of an object with no managedFields was left: calls %v", f.calls)
+	}
+	rv, entries := patchedEntries(t, f.patches[0])
+	if rv != "41" || strings.Join(managerNames(entries), ",") != "kubectl/Apply" {
+		t.Fatalf("rv=%v entries=%v, want forge's entry alone at 41", rv, managerNames(entries))
+	}
+	forge := entries[0].FieldsV1.GetRawString()
+	if !strings.Contains(forge, "scratch") || !strings.Contains(forge, "RUN_OPERATORS") {
+		t.Errorf("forge's entry lacks the orphans: %s", forge)
+	}
+	if strings.Contains(forge, "dnsPolicy") || strings.Contains(forge, "terminationMessagePath") || strings.Contains(forge, "revisionHistoryLimit") {
+		t.Errorf("forge claimed a default the server puts back: %s", forge)
+	}
+	if !strings.Contains(out.String(), "no owner") {
+		t.Errorf("report: %q", out.String())
+	}
+}
+
+// After a lost race the claim is re-planned on the fresh revision with the
+// server's answers for THAT revision, not the stale ones: here the winning
+// writer dropped serviceAccountName and its owner, so the serviceAccount
+// alias the server used to re-derive is now an orphan forge must claim.
+func TestConvergeFieldOwnership_RetryRejudgesTheFreshRevision(t *testing.T) {
+	saOwner := `,{"manager":"legacy-applier","operation":"Apply","apiVersion":"apps/v1","fieldsType":"FieldsV1","fieldsV1":
+  {"f:spec":{"f:template":{"f:spec":{"f:serviceAccountName":{}}}}}}`
+	managed := func(withSAOwner bool) string {
+		m := `[{"manager":"kubectl","operation":"Apply","apiVersion":"apps/v1","fieldsType":"FieldsV1","fieldsV1":{"f:spec":{"f:replicas":{}}}},
+ {"manager":"kubectl-label","operation":"Update","apiVersion":"apps/v1","fieldsType":"FieldsV1","fieldsV1":{"f:metadata":{"f:labels":{"f:hand":{}}}}}`
+		if withSAOwner {
+			m += saOwner
+		}
+		return m + "]"
+	}
+	obj := func(rv string, spec map[string]any) map[string]any {
+		return jsonCopy(map[string]any{"apiVersion": "apps/v1", "kind": "Deployment",
+			"metadata": map[string]any{"name": "admin-server", "namespace": "control-plane-prod", "resourceVersion": rv}, "spec": spec})
+	}
+	both := map[string]any{"replicas": 1, "template": map[string]any{"spec": map[string]any{"serviceAccountName": "zitadel", "serviceAccount": "zitadel"}}}
+	aliasOnly := map[string]any{"replicas": 1, "template": map[string]any{"spec": map[string]any{"serviceAccount": "zitadel"}}}
+	noSA := map[string]any{"replicas": 1, "template": map[string]any{"spec": map[string]any{}}}
+
+	before := liveFixture(t, managed(true), both).raw
+	after := liveFixture(t, managed(false), aliasOnly).raw
+	after["metadata"].(map[string]any)["resourceVersion"] = "42"
+	f := &fakeOwnershipKubectl{
+		live:    []map[string]any{before},
+		probe:   `{"f:metadata":{"f:labels":{"f:hand":{}}},"f:spec":{"f:replicas":{},"f:template":{"f:spec":{"f:serviceAccountName":{},"f:serviceAccount":{}}}}}`,
+		trimmed: obj("41", both),
+		lose:    1,
+		raced: &fakeOwnershipKubectl{
+			live:    []map[string]any{after},
+			probe:   `{"f:metadata":{"f:labels":{"f:hand":{}}},"f:spec":{"f:replicas":{},"f:template":{"f:spec":{"f:serviceAccount":{}}}}}`,
+			trimmed: obj("42", noSA),
+		},
+	}
+	if err := convergeFieldOwnership(context.Background(), f.run, "control-plane-prod", adminServerDoc, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.patches) != 2 {
+		t.Fatalf("want the lost patch and its retry, calls: %v", f.calls)
+	}
+	_, first := patchedEntries(t, f.patches[0])
+	if fields := first[0].FieldsV1.GetRawString(); strings.Contains(fields, "serviceAccount") {
+		t.Errorf("the first claim took the alias the server re-derived then: %s", fields)
+	}
+	rv, retry := patchedEntries(t, f.patches[1])
+	if rv != "42" {
+		t.Errorf("the retry must be guarded by the fresh revision, got %v", rv)
+	}
+	fields := retry[0].FieldsV1.GetRawString()
+	if !strings.Contains(fields, `"f:serviceAccount"`) || !strings.Contains(fields, `"f:hand"`) {
+		t.Errorf("the retry did not re-judge the fresh revision: forge's entry %s", fields)
+	}
+	if len(f.replaces) != 2 || !strings.Contains(f.replaces[1], `"resourceVersion":"42"`) {
+		t.Errorf("the retry must ask the server about the fresh revision: %v", f.replaces)
 	}
 }
 

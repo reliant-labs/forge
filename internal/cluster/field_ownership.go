@@ -69,6 +69,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 const (
@@ -289,11 +290,12 @@ func ownerlessFields(pic ownershipPicture, probe *fieldpath.Set) *fieldpath.Set 
 // allocated value, the serviceAccount alias the server derives from a
 // serviceAccountName another manager owns — is the cluster's, and stays.
 //
+// An object with no managedFields at all (history cleared) is the same
+// question with every field ownerless; trimmed is then the server's answer
+// for the declaration itself (see trimmedDefaults).
+//
 // It returns nil when there is nothing to claim: the steady state.
 func planClaim(live liveObject, probe *fieldpath.Set, trimmed map[string]any, now time.Time) (*ownershipClaim, error) {
-	if len(live.entries) == 0 {
-		return nil, nil
-	}
 	pic, err := ownershipOf(live)
 	if err != nil {
 		return nil, err
@@ -599,9 +601,21 @@ func probeSets(ctx context.Context, run kubectlRun, objs []liveObject) map[objec
 // makes of it with those fields removed: `kubectl replace --dry-run=server` of
 // the live object minus every ownerless field. A field the server puts back is
 // not drift (see planClaim). replace prints each object it wrote, so an object
-// it refuses costs only its own answer.
-func trimmedDefaults(ctx context.Context, run kubectlRun, objs []liveObject, probes map[objectKey]*fieldpath.Set) map[objectKey]map[string]any {
-	out := map[objectKey]map[string]any{}
+// it refuses costs only its own answer, and that refusal is reported on out:
+// its ownerless fields stay as they are.
+//
+// An object with no managedFields has nothing but ownerless fields, and the
+// live object minus all of them is no object at all (its required fields
+// gone). Its replacement is the declaration instead (declared[key]): what the
+// server makes of it is what forge's apply leaves, so a live field absent from
+// it is one only that apply could remove.
+//
+// Every replacement carries the live resourceVersion: an update of a custom
+// resource must name one, and it makes the answer describe exactly the
+// revision the claim is planned on (a write in between fails it, and the
+// claim's own resourceVersion test then re-reads and re-judges the object).
+func trimmedDefaults(ctx context.Context, run kubectlRun, objs []liveObject, probes map[objectKey]*fieldpath.Set, declared map[objectKey]map[string]any, out io.Writer) map[objectKey]map[string]any {
+	answers := map[objectKey]map[string]any{}
 	var items []any
 	for _, o := range objs {
 		pic, err := ownershipOf(o)
@@ -612,24 +626,47 @@ func trimmedDefaults(ctx context.Context, run kubectlRun, objs []liveObject, pro
 		if ownerless == nil || ownerless.Empty() {
 			continue
 		}
-		body := jsonCopy(probeBody(o.raw))
-		var trimmed any = body
-		for _, p := range shallowest(ownerless) {
-			trimmed = deletePath(trimmed, p)
+		var body map[string]any
+		if len(o.entries) == 0 {
+			decl, ok := declared[o.key]
+			if !ok {
+				continue
+			}
+			body = jsonCopy(decl)
+		} else {
+			body = jsonCopy(probeBody(o.raw))
+			var trimmed any = body
+			for _, p := range shallowest(ownerless) {
+				trimmed = deletePath(trimmed, p)
+			}
+			body = trimmed.(map[string]any)
 		}
-		items = append(items, trimmed)
+		md, _ := body["metadata"].(map[string]any)
+		if md == nil {
+			md = map[string]any{}
+			body["metadata"] = md
+		}
+		md["resourceVersion"] = o.rv
+		if o.key.Namespace != "" {
+			md["namespace"] = o.key.Namespace
+		}
+		items = append(items, body)
 	}
 	if len(items) == 0 {
-		return out
+		return answers
 	}
 	list, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": items})
 	if err != nil {
-		return out
+		return answers
 	}
-	stdout, _, _ := run(ctx, []string{"replace", "--dry-run=server", "-o", "json", "-f", "-"}, list)
+	stdout, stderr, rerr := run(ctx, []string{"replace", "--dry-run=server", "-o", "json", "-f", "-"}, list)
+	if rerr != nil && out != nil {
+		fmt.Fprintf(out, "[deploy]   field ownership: the server refused a dry-run replace, so the ownerless fields of the objects it names stay as they are: %s\n",
+			strings.TrimSpace(string(stderr)))
+	}
 	results, err := decodeObjects(stdout)
 	if err != nil {
-		return out
+		return answers
 	}
 	for _, r := range results {
 		apiVersion, _ := r["apiVersion"].(string)
@@ -637,9 +674,9 @@ func trimmedDefaults(ctx context.Context, run kubectlRun, objs []liveObject, pro
 		md, _ := r["metadata"].(map[string]any)
 		name, _ := md["name"].(string)
 		ns, _ := md["namespace"].(string)
-		out[keyOf(apiVersion, kind, ns, name)] = r
+		answers[keyOf(apiVersion, kind, ns, name)] = r
 	}
-	return out
+	return answers
 }
 
 // jsonCopy deep-copies a decoded JSON value, so trimming never touches the
@@ -733,6 +770,7 @@ func patchClaim(ctx context.Context, run kubectlRun, c *ownershipClaim) (conflic
 // per object whose ownership changed.
 func convergeFieldOwnership(ctx context.Context, run kubectlRun, namespace, manifests string, out io.Writer) error {
 	var docs []string
+	declared := map[objectKey]map[string]any{}
 	for _, doc := range splitDocs(manifests) {
 		m, ok := parseDoc(doc)
 		if !ok || m.Kind == "" || m.Metadata.Name == "" {
@@ -742,6 +780,9 @@ func convergeFieldOwnership(ctx context.Context, run kubectlRun, namespace, mani
 			continue
 		}
 		docs = append(docs, doc)
+		if body, err := docJSON(doc); err == nil {
+			declared[keyOf(m.APIVersion, m.Kind, m.Metadata.Namespace, m.Metadata.Name)] = body
+		}
 	}
 	if len(docs) == 0 {
 		return nil
@@ -750,34 +791,73 @@ func convergeFieldOwnership(ctx context.Context, run kubectlRun, namespace, mani
 	if err != nil {
 		return fmt.Errorf("reading the live objects to converge their field ownership: %w", err)
 	}
-	var candidates, checkObjs []liveObject
-	for _, o := range live {
-		if len(o.entries) == 0 {
-			continue
-		}
-		candidates = append(candidates, o)
-		if !noOrphanCheckKinds[o.key.Kind] {
-			checkObjs = append(checkObjs, o)
-		}
-	}
-	if len(candidates) == 0 {
+	if len(live) == 0 {
 		return nil
 	}
-	probes := probeSets(ctx, run, checkObjs)
-	trimmed := trimmedDefaults(ctx, run, checkObjs, probes)
+	// A declaration that names no namespace takes the apply's; key it by the
+	// live object it resolved to.
+	byLive := map[objectKey]map[string]any{}
+	for _, o := range live {
+		bare := o.key
+		bare.Namespace = ""
+		if d, ok := declared[o.key]; ok {
+			byLive[o.key] = d
+		} else if d, ok := declared[bare]; ok {
+			byLive[o.key] = d
+		}
+	}
+	j := ownerlessJudge{run: run, declared: byLive, out: out}
+	probes, trimmed := j.judge(ctx, live)
 
 	var errs []error
-	for _, o := range candidates {
-		if err := claimOne(ctx, run, o, probes[o.key], trimmed[o.key], out); err != nil {
+	for _, o := range live {
+		if err := claimOne(ctx, run, j, o, probes[o.key], trimmed[o.key], out); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// claimOne plans and writes one object's claim, re-reading and re-planning when
-// another writer got in between.
-func claimOne(ctx context.Context, run kubectlRun, o liveObject, probe *fieldpath.Set, trimmed map[string]any, out io.Writer) error {
+// docJSON decodes one YAML manifest into an unstructured object.
+func docJSON(doc string) (map[string]any, error) {
+	b, err := sigsyaml.YAMLToJSON([]byte(doc))
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// ownerlessJudge reads what the server says about objects' ownerless fields:
+// each object's full field set (probeSets) and what it makes of the object
+// without them (trimmedDefaults). Kinds in noOrphanCheckKinds are not asked.
+type ownerlessJudge struct {
+	run      kubectlRun
+	declared map[objectKey]map[string]any
+	out      io.Writer
+}
+
+func (j ownerlessJudge) judge(ctx context.Context, objs []liveObject) (map[objectKey]*fieldpath.Set, map[objectKey]map[string]any) {
+	var check []liveObject
+	for _, o := range objs {
+		if !noOrphanCheckKinds[o.key.Kind] {
+			check = append(check, o)
+		}
+	}
+	probes := probeSets(ctx, j.run, check)
+	return probes, trimmedDefaults(ctx, j.run, check, probes, j.declared, j.out)
+}
+
+// claimOne plans and writes one object's claim. When another writer got in
+// between, it re-reads the object and re-judges its ownerless fields on that
+// revision: a claim never mixes one revision's ownership with another's
+// defaulting.
+func claimOne(ctx context.Context, run kubectlRun, j ownerlessJudge, o liveObject, probe *fieldpath.Set, trimmed map[string]any, out io.Writer) error {
 	for attempt := 1; ; attempt++ {
 		c, err := planClaim(o, probe, trimmed, time.Now())
 		if err != nil || c == nil {
@@ -804,6 +884,8 @@ func claimOne(ctx context.Context, run kubectlRun, o liveObject, probe *fieldpat
 			return nil // deleted meanwhile: nothing left to claim
 		}
 		o = fresh[0]
+		probes, answers := j.judge(ctx, fresh)
+		probe, trimmed = probes[o.key], answers[o.key]
 	}
 }
 

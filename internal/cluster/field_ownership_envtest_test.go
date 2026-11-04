@@ -273,6 +273,103 @@ func TestFieldOwnership_ForgeApplyRemovesFieldsSetOutsideIt(t *testing.T) {
 	}
 }
 
+// clearManagedFields strips an object's whole ownership history: `[{}]` is the
+// API server's spelling for "no managedFields at all".
+func (e *ownershipEnv) clearManagedFields(kind, name string) {
+	e.t.Helper()
+	e.kubectl("", "patch", kind, name, "-n", ownershipNS, "--type=json", "-p",
+		`[{"op":"replace","path":"/metadata/managedFields","value":[{}]}]`)
+	if mf, ok := e.get(kind, name)["metadata"].(map[string]any)["managedFields"]; ok && len(mf.([]any)) != 0 {
+		e.t.Fatalf("setup: %s/%s still has managedFields %v", kind, name, mf)
+	}
+}
+
+// With every managedFields entry gone, each field is ownerless; forge's apply
+// still removes what it no longer declares and keeps the server's defaults.
+func TestFieldOwnership_ForgeApplyConvergesAnObjectWithNoManagedFields(t *testing.T) {
+	e := startOwnershipEnvtest(t)
+	e.kubectl(ownershipV1, "apply", "--server-side", "--field-manager=legacy-applier", "-f", "-")
+	e.forgeApply(ownershipV2)
+	e.clearManagedFields("deployment", "admin-server")
+	svcIP := e.get("service", "admin-server")["spec"].(map[string]any)["clusterIP"]
+	e.clearManagedFields("service", "admin-server")
+
+	e.forgeApply(ownershipV2)
+
+	ps := podSpec(e.get("deployment", "admin-server"))
+	if vols := ps["volumes"].([]any); len(vols) != 1 || vols[0].(map[string]any)["name"] != "tmp" {
+		t.Errorf("the ownerless scratch volume survived the apply: %v", vols)
+	}
+	if sa, ok := ps["serviceAccountName"]; ok {
+		t.Errorf("the ownerless serviceAccountName survived the apply: %v", sa)
+	}
+	if ps["dnsPolicy"] != "ClusterFirst" || ps["containers"].([]any)[0].(map[string]any)["terminationMessagePath"] == nil {
+		t.Errorf("server defaults must stay: dnsPolicy=%v", ps["dnsPolicy"])
+	}
+	if ip := e.get("service", "admin-server")["spec"].(map[string]any)["clusterIP"]; ip != svcIP {
+		t.Errorf("the Service's allocated clusterIP changed: %v -> %v", svcIP, ip)
+	}
+}
+
+const widgetCRD = `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata: {name: widgets.example.com}
+spec:
+  group: example.com
+  scope: Namespaced
+  names: {kind: Widget, plural: widgets, singular: widget, listKind: WidgetList}
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              size: {type: integer}
+              extra: {type: string}
+`
+
+const widgetV1 = `apiVersion: example.com/v1
+kind: Widget
+metadata: {name: w, namespace: prod}
+spec: {size: 1, extra: legacy}
+`
+
+const widgetV2 = `apiVersion: example.com/v1
+kind: Widget
+metadata: {name: w, namespace: prod}
+spec: {size: 2}
+`
+
+// A custom resource's update must name a resourceVersion; the dry-run replace
+// that judges its ownerless fields carries the live one, so an ownerless field
+// on a custom resource is removed like one on a built-in kind.
+func TestFieldOwnership_ForgeApplyRemovesOwnerlessFieldsOfACustomResource(t *testing.T) {
+	e := startOwnershipEnvtest(t)
+	e.kubectl(widgetCRD, "apply", "--server-side", "-f", "-")
+	e.kubectl("", "wait", "--for=condition=Established", "--timeout=60s", "crd/widgets.example.com")
+	e.kubectl(widgetV1, "apply", "--server-side", "--field-manager=legacy-applier", "-f", "-")
+	e.forgeApply(widgetV2)
+	e.dropManager("widget", "w", "legacy-applier")
+	if spec := e.get("widget", "w")["spec"].(map[string]any); spec["extra"] != "legacy" {
+		t.Fatalf("setup: want the ownerless extra, got %v", spec)
+	}
+
+	e.forgeApply(widgetV2)
+
+	spec := e.get("widget", "w")["spec"].(map[string]any)
+	if _, ok := spec["extra"]; ok {
+		t.Errorf("the custom resource's ownerless field survived the apply: %v", spec)
+	}
+	if spec["size"] != float64(2) {
+		t.Errorf("size = %v, want 2", spec["size"])
+	}
+}
+
 // An object annotated forge.dev/field-ownership: shared keeps other writers'
 // fields: forge converges only what it declares.
 func TestFieldOwnership_SharedObjectKeepsOtherWritersFields(t *testing.T) {

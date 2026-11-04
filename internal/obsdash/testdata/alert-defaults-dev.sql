@@ -128,7 +128,13 @@ WITH moves AS (
         WHERE MetricName = 'rpc.server.calls'
           AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL 10 MINUTE - INTERVAL 1 MINUTE
           AND ResourceAttributes['deployment.environment.name'] = 'dev'
-          AND splitByChar('/', Attributes['procedure'])[2] IN ('billing.v1.BillingService', 'orders.v1.OrdersService')
+          AND ServiceName IN (
+              SELECT ServiceName
+              FROM otel_metrics_sum
+              WHERE MetricName = 'rpc.server.calls'
+                AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL 10 MINUTE - INTERVAL 1 MINUTE
+                AND ResourceAttributes['deployment.environment.name'] = 'dev'
+                AND splitByChar('/', Attributes['procedure'])[2] IN ('billing.v1.BillingService', 'orders.v1.OrdersService'))
         GROUP BY ServiceName, ResourceAttributes, Attributes
     )
 )

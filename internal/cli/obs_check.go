@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,7 +45,7 @@ var obsCheckSchema = obsout.Schema{
 		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message",
 		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "workload_findings",
 		"thresholds", "thresholds.name", "thresholds.value", "thresholds.source",
-		"not_evaluated", "waited", "statements", "statements.purpose", "statements.sql", "statements.params.*",
+		"not_evaluated", "waited", "early_pass", "statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
 	},
 }
@@ -81,7 +82,10 @@ type obsCheckDoc struct {
 	Thresholds       []releasehealth.Threshold `json:"thresholds,omitempty"`
 	NotEvaluated     []string                  `json:"not_evaluated,omitempty"`
 	// Waited is how long --wait polled, when it did.
-	Waited     string                 `json:"waited,omitempty"`
+	Waited string `json:"waited,omitempty"`
+	// EarlyPass says why --early-pass ended the wait before the after window
+	// finished: the PASS is over the part of the window observed so far.
+	EarlyPass  string                 `json:"early_pass,omitempty"`
 	Statements []obsbackend.Statement `json:"statements,omitempty"`
 	Suggested  []string               `json:"suggested,omitempty"`
 }
@@ -95,6 +99,7 @@ type obsCheckOpts struct {
 	since              string
 	wait               bool
 	timeout            time.Duration
+	earlyPass          time.Duration
 	failOn             string
 	thresholds         []string
 	allowInconclusive  bool
@@ -183,6 +188,7 @@ default or request.
 	f.StringVar(&o.since, "since", "", "local env only: when the release started, as a duration ago (20m) or an RFC 3339 time (default: the start of the last env up)")
 	f.BoolVar(&o.wait, "wait", false, "poll until the after window has finished")
 	f.DurationVar(&o.timeout, "timeout", 30*time.Minute, "with --wait: give up (exit 8) after this long")
+	f.DurationVar(&o.earlyPass, "early-pass", 0, "with --wait: PASS before the after window finishes, once at least this much of it is observed with the new version serving all traffic, enough requests, and nothing found (no finding of any policy, issue, alert or restart); 0 waits for the whole window")
 	f.StringVar(&o.failOn, "fail-on", "", "comma-separated finding codes that fail the release (default: the env's release_health.fail_on): "+strings.Join(release.HealthFindings, ", "))
 	f.StringArrayVar(&o.thresholds, "threshold", nil, "override one threshold for this call, name=value (repeatable)")
 	f.BoolVar(&o.allowInconclusive, "allow-inconclusive", false, "exit 0 on INCONCLUSIVE instead of 2")
@@ -264,6 +270,9 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 		if res.Report.AfterComplete || !o.wait {
 			break
 		}
+		if o.earlyPass > 0 && earlyPassWhy(res.Report, o.earlyPass) != "" {
+			break
+		}
 		if !d.Now().Add(obsCheckPollEvery).Before(deadline) {
 			fillCheckDoc(&doc, b.Info(), env, res, o)
 			doc.Waited = o.timeout.String()
@@ -301,8 +310,62 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 			res.Report = releasehealth.WithStandingAlerts(res.Report, firingHealthAlerts(alerts))
 		}
 	}
+	// --early-pass: the open window is judged as far as it goes, after every
+	// rule above had its say (a re-judged finding or a critical alert, standing
+	// or unread, keeps it from passing early).
+	early := ""
+	if o.wait && o.earlyPass > 0 && !res.Report.AfterComplete && res.Report.Verdict == releasehealth.Inconclusive {
+		if early = earlyPassWhy(res.Report, o.earlyPass); early != "" {
+			res.Report.Verdict = releasehealth.Pass
+		}
+	}
 	fillCheckDoc(&doc, b.Info(), env, res, o)
+	doc.EarlyPass = early
 	return doc, verdictError(res.Report, o.allowInconclusive)
+}
+
+// earlyPassVersionShare is how much of every service's after-window traffic the
+// judged version must serve before an open window may pass early: the rollout
+// is over, so the window is the new release's, not a mix with the old one.
+const earlyPassVersionShare = 0.99
+
+// earlyPassWhy says why an open after window is good enough to PASS now, or ""
+// when it is not: at least min of it observed, every service that reports a
+// version share served by the judged version, no finding of any policy (a warn
+// too), no new or regressed issue, firing alert or workload restart, no
+// critical alert standing or unread, and one service with enough requests.
+func earlyPassWhy(r releasehealth.Report, min time.Duration) string {
+	observed := r.After.To.Sub(r.After.From)
+	if r.AfterComplete || observed < min {
+		return ""
+	}
+	if len(r.Findings) > 0 || len(r.NewIssues) > 0 || len(r.RegressedIssues) > 0 || len(r.FiringAlerts) > 0 ||
+		len(r.Workloads) > 0 || len(r.StandingCritical) > 0 || r.AlertStateUnread != "" {
+		return ""
+	}
+	minReq := release.DefaultReleaseHealth().MinRequests
+	for _, th := range r.Thresholds {
+		if th.Name == releasehealth.ThresholdMinRequests {
+			if n, err := strconv.Atoi(th.Value); err == nil && n > 0 {
+				minReq = n
+			}
+		}
+	}
+	shares, enough := 0, false
+	for _, s := range r.Services {
+		if s.VersionShare != nil {
+			if *s.VersionShare < earlyPassVersionShare {
+				return ""
+			}
+			shares++
+		}
+		enough = enough || s.After.Requests >= int64(minReq)
+	}
+	if shares == 0 || !enough {
+		return ""
+	}
+	return fmt.Sprintf("%s of the after window observed (until %s), the judged version serving all traffic, nothing found",
+		observed.Round(time.Second), r.After.To.UTC().Format(time.RFC3339))
 }
 
 // firingHealthAlerts maps the firing alerts onto the rule's vocabulary.
@@ -526,6 +589,9 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 			doc.Windows.Before.From.Format(time.RFC3339), doc.Windows.Before.To.Format(time.RFC3339),
 			doc.Windows.After.From.Format(time.RFC3339), doc.Windows.After.To.Format(time.RFC3339),
 			map[bool]string{true: "", false: "  (still open)"}[doc.Windows.AfterComplete])
+	}
+	if doc.EarlyPass != "" {
+		fmt.Fprintf(w, "early pass (--early-pass): %s\n", doc.EarlyPass)
 	}
 	if doc.Reason != "" {
 		fmt.Fprintf(w, "inconclusive: %s\n", doc.Reason)

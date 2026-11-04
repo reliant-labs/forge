@@ -44,6 +44,14 @@ CREATE TABLE hypotheses (
     FOREIGN KEY (tenant_id, strategy_id) REFERENCES strategies (tenant_id, id),
     FOREIGN KEY (tenant_id, channel_id) REFERENCES channels (tenant_id, id)
 );
+
+CREATE TABLE nodes (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    parent_id TEXT,
+    UNIQUE (tenant_id, id),
+    FOREIGN KEY (tenant_id, parent_id) REFERENCES nodes (tenant_id, id)
+);
 `
 
 // compositeFKSchema is compositeFKMigration as introspection reports it: the
@@ -183,5 +191,142 @@ func assertNoCrossTenant(t *testing.T, ctx context.Context, db *sql.DB) {
 	}
 	if crossed != 0 {
 		t.Errorf("%d hypotheses name a strategy of another tenant", crossed)
+	}
+	var parented int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM nodes WHERE parent_id IS NOT NULL`).Scan(&parented); err != nil {
+		t.Fatalf("nodes query: %v", err)
+	}
+	if parented == 0 {
+		t.Error("no node has a parent — the self-referencing composite went untested")
+	}
+}
+
+// selfCompositeSchema is a tenant-scoped tree: nodes (tenant_id, parent_id)
+// -> nodes (tenant_id, id), with tenant_id circular (the key references it)
+// and its own single-column reference to tenants.
+func selfCompositeSchema() []schemadef.Table {
+	keys, refs := []string{"tenant_id", "parent_id"}, []string{"tenant_id", "id"}
+	nodes := schemadef.Table{
+		Name:   "nodes",
+		PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			col("id", schemadef.TypeString, true, true),
+			col("tenant_id", schemadef.TypeString, true, false),
+			col("parent_id", schemadef.TypeString, false, false),
+		},
+		ForeignKeys: []schemadef.ForeignKey{
+			{Column: "tenant_id", RefTable: "tenants", RefColumn: "id", Name: "nodes_tenant_id_fkey"},
+			{Column: "tenant_id", RefTable: "nodes", RefColumn: "tenant_id", Name: "nodes_tenant_id_parent_id_fkey", KeyColumns: keys, RefKeyColumns: refs},
+			{Column: "parent_id", RefTable: "nodes", RefColumn: "id", Name: "nodes_tenant_id_parent_id_fkey", KeyColumns: keys, RefKeyColumns: refs},
+		},
+	}
+	tenants := schemadef.Table{
+		Name:    "tenants",
+		PKCols:  []string{"id"},
+		Columns: []schemadef.Column{col("id", schemadef.TypeString, true, true)},
+	}
+	return []schemadef.Table{nodes, tenants}
+}
+
+// TestCompositeFK_SelfReferenceStaysInOneParentRow: every parent a node names
+// is an earlier node of the node's own tenant, and tenant_id stays a real
+// tenant (its single-column reference is not replaced by the circular member).
+func TestCompositeFK_SelfReferenceStaysInOneParentRow(t *testing.T) {
+	p := buildOrFail(t, selfCompositeSchema(), Config{Rows: 30, Salt: 3})
+	tenants := map[string]bool{}
+	for r := 0; r < p.rowsOf["tenants"]; r++ {
+		id, _ := p.SeedValue("tenants", "id", r)
+		tenants[id] = true
+	}
+	tenantOf, rowOf := map[string]string{}, map[string]int{}
+	for r := 0; r < p.rowsOf["nodes"]; r++ {
+		id, _ := p.SeedValue("nodes", "id", r)
+		tenant, _ := p.SeedValue("nodes", "tenant_id", r)
+		if !tenants[tenant] {
+			t.Fatalf("row %d: tenant_id %q is not a seeded tenant", r, tenant)
+		}
+		tenantOf[id], rowOf[id] = tenant, r
+	}
+	parented := 0
+	for r := 0; r < p.rowsOf["nodes"]; r++ {
+		if p.SeedIsNull("nodes", "parent_id", r) {
+			continue
+		}
+		parent, _ := p.SeedValue("nodes", "parent_id", r)
+		tenant, _ := p.SeedValue("nodes", "tenant_id", r)
+		got, ok := tenantOf[parent]
+		if !ok {
+			t.Fatalf("row %d: parent_id %q is not a seeded node", r, parent)
+		}
+		if got != tenant {
+			t.Errorf("row %d: tenant %q, but parent %q belongs to tenant %q", r, tenant, parent, got)
+		}
+		if rowOf[parent] >= r {
+			t.Errorf("row %d: parent is row %d, not an earlier row", r, rowOf[parent])
+		}
+		parented++
+	}
+	if parented == 0 {
+		t.Fatal("no node has a parent — the self-referencing composite went untested")
+	}
+}
+
+// TestCompositeFK_CompositeUniqueDealsOnlyTheAnchor: a composite UNIQUE over
+// a composite's columns deals the unpinned composite's anchor, so the tuple
+// never repeats AND every row still reads both columns off one parent; a
+// member the composite places but may not be dealt is not dealt. The channel
+// composite sorts first, so it is the unpinned one; the strategy composite is
+// pinned to it by tenant_id.
+func TestCompositeFK_CompositeUniqueDealsOnlyTheAnchor(t *testing.T) {
+	tables := compositeFKSchema()
+	tables[0].Indexes = append(tables[0].Indexes,
+		schemadef.Index{Name: "hypotheses_tenant_channel_key", Columns: []string{"tenant_id", "channel_id"}, Unique: true},
+		schemadef.Index{Name: "hypotheses_tenant_strategy_key", Columns: []string{"tenant_id", "strategy_id"}, Unique: true},
+	)
+	p := buildOrFail(t, tables, Config{Rows: 12, Salt: 5})
+	for _, column := range []string{"tenant_id", "strategy_id"} {
+		if _, dealt := p.tupleParentRow("hypotheses", column, 1); dealt {
+			t.Errorf("%s is placed by a composite foreign key and may not be dealt by a composite UNIQUE", column)
+		}
+	}
+	if _, dealt := p.tupleParentRow("hypotheses", "channel_id", 1); !dealt {
+		t.Fatal("channel_id, the unpinned composite's primary-key anchor, was not dealt")
+	}
+	channelTenant := map[string]string{}
+	for r := 0; r < p.rowsOf["channels"]; r++ {
+		id, _ := p.SeedValue("channels", "id", r)
+		tenant, _ := p.SeedValue("channels", "tenant_id", r)
+		channelTenant[id] = tenant
+	}
+	seen := map[string]int{}
+	for r := 0; r < p.rowsOf["hypotheses"]; r++ {
+		if p.SeedIsNull("hypotheses", "channel_id", r) {
+			t.Fatalf("row %d: a dealt anchor is never NULL", r)
+		}
+		tenant, _ := p.SeedValue("hypotheses", "tenant_id", r)
+		channel, _ := p.SeedValue("hypotheses", "channel_id", r)
+		if channelTenant[channel] != tenant {
+			t.Errorf("row %d: tenant %q, channel %q of tenant %q", r, tenant, channel, channelTenant[channel])
+		}
+		k := tupleKey([]string{tenant, channel})
+		if prev, dup := seen[k]; dup {
+			t.Errorf("rows %d and %d repeat (tenant_id, channel_id) = (%s, %s)", prev, r, tenant, channel)
+		}
+		seen[k] = r
+	}
+}
+
+// TestTupleKey_NoSeparatorCollision: values holding any byte cannot make two
+// distinct tuples share a key.
+func TestTupleKey_NoSeparatorCollision(t *testing.T) {
+	pairs := [][2][]string{
+		{{"a\x1fb", "c"}, {"a", "b\x1fc"}},
+		{{"1:a", ""}, {"1", ":a"}},
+		{{""}, {"", ""}},
+	}
+	for _, pr := range pairs {
+		if tupleKey(pr[0]) == tupleKey(pr[1]) {
+			t.Errorf("tupleKey(%q) == tupleKey(%q)", pr[0], pr[1])
+		}
 	}
 }

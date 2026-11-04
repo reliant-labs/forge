@@ -16,6 +16,8 @@ func TestApplyAndIntrospect_CompositeForeignKeyPairsItsColumns(t *testing.T) {
 	dir := t.TempDir()
 	writeMig(t, dir, "00001_init.up.sql", `
 CREATE TABLE tenants (id TEXT PRIMARY KEY);
+CREATE SCHEMA archive;
+CREATE TABLE archive.strategies (id TEXT PRIMARY KEY);
 CREATE TABLE strategies (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -25,6 +27,7 @@ CREATE TABLE hypotheses (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL REFERENCES tenants(id),
     strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+    archived_strategy_id TEXT REFERENCES archive.strategies(id),
     CONSTRAINT hypotheses_same_tenant_fkey
         FOREIGN KEY (tenant_id, strategy_id) REFERENCES strategies (tenant_id, id)
 );
@@ -47,7 +50,9 @@ COMMENT ON CONSTRAINT hypotheses_strategy_id_fkey ON hypotheses IS 'forge:ref in
 		got = append(got, ref{fk.Column, fk.RefTable, fk.RefColumn, fk.Name})
 	}
 	// Ordered by each constraint's first column, then constraint name, then
-	// key position: a composite's columns stay together.
+	// key position: a composite's columns stay together. The reference into
+	// archive.strategies is absent: RefTable is a bare name, and reporting it
+	// would make it this schema's strategies.
 	want := []ref{
 		{"tenant_id", "strategies", "tenant_id", "hypotheses_same_tenant_fkey"},
 		{"strategy_id", "strategies", "id", "hypotheses_same_tenant_fkey"},

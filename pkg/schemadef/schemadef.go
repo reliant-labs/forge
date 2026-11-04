@@ -1665,6 +1665,13 @@ func parseFoldedKey(expr string) (column, fold string) {
 // which information_schema exposes no path to), so the name and the comment
 // arrive on the row they belong to instead of being looked up by column,
 // which a column under two constraints could not answer.
+//
+// Only references to a table in the SAME schema are reported. RefTable is a
+// bare name, resolved against the introspected schema's tables, so a
+// reference into another schema (`REFERENCES auth.users`) would name a table
+// it is not — or collide with a same-named one here. It is left out, exactly
+// as the information_schema join (`tc.table_schema = ccu.table_schema`) left
+// it out before.
 func introspectForeignKeys(ctx context.Context, db Queryer, schema, table string) ([]ForeignKey, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT att.attname,
@@ -1690,6 +1697,7 @@ func introspectForeignKeys(ctx context.Context, db Queryer, schema, table string
 		WHERE con.contype = 'f'
 		  AND ns.nspname = $1
 		  AND cl.relname = $2
+		  AND refcl.relnamespace = cl.relnamespace
 		ORDER BY con.conkey[1], con.conname, k.ord`, schema, table)
 	if err != nil {
 		return nil, err

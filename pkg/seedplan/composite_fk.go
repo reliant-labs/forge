@@ -39,6 +39,29 @@ import (
 // of which values go together, so a `forge:ref` declaration on one of those
 // columns cannot move it (see findDiamonds), and the diamond it would
 // otherwise describe is not reported.
+//
+// # A composite that references its own table
+//
+// nodes (tenant_id, parent_id) -> nodes (tenant_id, id) builds a tree that
+// never crosses a tenant. Its tenant_id is CIRCULAR: the column is also one
+// the key references, so reading it off the parent row would read it off a
+// row whose own tenant_id is being decided the same way. A circular member is
+// therefore never placed by its composite; it keeps its own placement and
+// instead narrows the parent: row i points at the latest earlier row that
+// holds the same values in the circular columns, and every other member is
+// read off that row. A row with no such predecessor declines the reference (a
+// NULL anchor) when the anchor is optional, and points at itself — which
+// agrees with itself — when it is not. With no circular member it is the
+// one-column self-reference policy: row i -> row i-1.
+//
+// # Composite UNIQUE over composite members
+//
+// A composite UNIQUE index (tuple.go) may deal a composite's anchor a parent
+// row only when nothing pins the composite — every member is its own — and
+// the anchor references the parent's primary key: distinct parent rows are
+// then distinct anchor values, and every other member follows the dealt row.
+// Any other member a composite places is not the tuple's to deal; the tuple
+// places what else it can, or reports that it cannot (see tupleSupply).
 
 // compositeFK is one multi-column foreign-key constraint on a table.
 type compositeFK struct {
@@ -46,11 +69,34 @@ type compositeFK struct {
 	refTable string
 	members  []schemadef.ForeignKey // one per column, key order
 	// anchor indexes the member the parent row is picked for: the one that
-	// references the parent's single-column primary key, else the first.
+	// references the parent's single-column primary key, else the first
+	// (the first non-circular one, for a self-reference).
 	anchor int
 	// owns[k] reports whether this composite places members[k]: no composite
-	// earlier in the table's list contains that column.
+	// earlier in the table's list contains that column, and the column is
+	// not circular.
 	owns []bool
+	// self reports a composite that references its own table; circular[k]
+	// reports that members[k]'s column is one the key itself references.
+	self     bool
+	circular []bool
+}
+
+// selfCircularMember reports whether fk is a member of a self-referencing
+// composite whose column the same key references (nodes.tenant_id in
+// (tenant_id, parent_id) -> nodes (tenant_id, id)). Such an entry says only
+// "this column equals itself on the parent", so it is not the column's
+// reference: BuildPlan does not resolve the column through it.
+func selfCircularMember(fk schemadef.ForeignKey, table string) bool {
+	if len(fk.KeyColumns) < 2 || fk.RefTable != table {
+		return false
+	}
+	for _, rc := range fk.RefKeyColumns {
+		if rc == fk.Column {
+			return true
+		}
+	}
+	return false
 }
 
 func (c compositeFK) column(k int) string { return c.members[k].Column }
@@ -77,19 +123,39 @@ func buildCompositeFKs(t schemadef.Table, byName map[string]schemadef.Table) (li
 	owner = map[string]int{}
 	for _, n := range names {
 		members := byConstraint[n]
-		if members[0].RefTable == t.Name {
-			continue // a self-referencing composite resolves per row; not modelled
+		c := compositeFK{
+			name: n, refTable: members[0].RefTable, members: members,
+			owns: make([]bool, len(members)), circular: make([]bool, len(members)),
+			self: members[0].RefTable == t.Name,
 		}
-		c := compositeFK{name: n, refTable: members[0].RefTable, members: members, owns: make([]bool, len(members))}
+		placeable := false
+		for k, m := range members {
+			c.circular[k] = c.self && selfCircularMember(m, t.Name)
+			placeable = placeable || !c.circular[k]
+		}
+		if !placeable {
+			// (a, b) -> self (b, a): every member is circular, so no column
+			// can be read off a parent row. Each keeps its own placement.
+			continue
+		}
+		c.anchor = -1
 		ref := byName[c.refTable]
 		for k, m := range members {
-			if len(ref.PKCols) == 1 && ref.PKCols[0] == m.RefColumn {
+			if !c.circular[k] && len(ref.PKCols) == 1 && ref.PKCols[0] == m.RefColumn {
 				c.anchor = k
 				break
 			}
 		}
+		for k := range members {
+			if c.anchor < 0 && !c.circular[k] {
+				c.anchor = k
+			}
+		}
 		placesAny := false
 		for k, m := range members {
+			if c.circular[k] {
+				continue
+			}
 			if _, taken := owner[m.Column]; !taken {
 				c.owns[k] = true
 				placesAny = true
@@ -134,6 +200,9 @@ func (p *Plan) compositeMemberRow(tp tablePlan, ci int, column string, i, depth 
 func (p *Plan) compositeRow(tp tablePlan, ci, i, depth int) (row int, anchorNull bool) {
 	table := tp.table.Name
 	c := p.composites[table][ci]
+	if c.self {
+		return p.selfCompositeRow(tp, c, i, depth)
+	}
 
 	// The anchor's pick, as a single-column reference would make it — the
 	// row-0 spine, the optional-edge coin, the 1-1 deal — but against the
@@ -197,7 +266,7 @@ func (p *Plan) compositeRow(tp tablePlan, ci, i, depth int) (row int, anchorNull
 		}
 		return cands[pick(p.cfg.EffectiveSalt(), table, c.name, i, len(cands))], false
 	}
-	matches := p.compositeMatches(table, c, positions, depth)[strings.Join(want, "\x1f")]
+	matches := p.compositeMatches(table, c, positions, depth)[tupleKey(want)]
 	if len(matches) == 0 {
 		return base, false // nothing agrees: degrade rather than invent a parent
 	}
@@ -230,6 +299,9 @@ func (p *Plan) compositeCandidates(tp tablePlan, ci, depth int) []int {
 	}
 	var partners []partner
 	for j := ci + 1; j < len(comps); j++ {
+		if comps[j].self {
+			continue // narrows its parent among its own rows (selfCompositeRow)
+		}
 		pc := partner{c: comps[j]}
 		solely := true
 		for k := range comps[j].members {
@@ -258,7 +330,7 @@ func (p *Plan) compositeCandidates(tp tablePlan, ci, depth int) []int {
 				for i, col := range pc.cols {
 					vals[i] = p.referencedValue(c.refTable, refColOf[col], r, depth+1)
 				}
-				if len(p.compositeMatches(table, pc.c, pc.positions, depth)[strings.Join(vals, "\x1f")]) == 0 {
+				if len(p.compositeMatches(table, pc.c, pc.positions, depth)[tupleKey(vals)]) == 0 {
 					ok = false
 					break
 				}
@@ -293,7 +365,7 @@ func (p *Plan) compositeMatches(table string, c compositeFK, positions []int, de
 		for i, k := range positions {
 			vals[i] = p.referencedValue(c.refTable, c.members[k].RefColumn, r, depth+1)
 		}
-		v := strings.Join(vals, "\x1f")
+		v := tupleKey(vals)
 		idx[v] = append(idx[v], r)
 	}
 	if p.compositeMemo == nil {
@@ -301,4 +373,85 @@ func (p *Plan) compositeMatches(table string, c compositeFK, positions []int, de
 	}
 	p.compositeMemo[key] = idx
 	return idx
+}
+
+// tupleKey encodes a tuple of literals as one map key. Each value is length-
+// prefixed, so no value — whatever bytes it holds — can make two distinct
+// tuples encode alike (a bare separator join reads ["a\x1fb", "c"] and
+// ["a", "b\x1fc"] as the same key).
+func tupleKey(vals []string) string {
+	var b strings.Builder
+	for _, v := range vals {
+		b.WriteString(strconv.Itoa(len(v)))
+		b.WriteByte(':')
+		b.WriteString(v)
+	}
+	return b.String()
+}
+
+// selfCompositeRow resolves the row of its own table a self-referencing
+// composite points at on row i (see the package comment above): the latest
+// earlier row that agrees with row i on every circular column.
+func (p *Plan) selfCompositeRow(tp tablePlan, c compositeFK, i, depth int) (row int, anchorNull bool) {
+	table := tp.table.Name
+	anchorOptional := true
+	for _, col := range tp.table.Columns {
+		if col.Name == c.column(c.anchor) {
+			anchorOptional = !col.NotNull
+		}
+	}
+	var positions []int
+	for k := range c.members {
+		if c.circular[k] {
+			positions = append(positions, k)
+		}
+	}
+	if len(positions) == 0 {
+		// Nothing to agree on: the one-column self-reference tree.
+		if i == 0 {
+			return 0, anchorOptional
+		}
+		return i - 1, false
+	}
+	if depth >= maxFKDepth {
+		return i, false
+	}
+	want := make([]string, len(positions))
+	for x, k := range positions {
+		want[x] = p.referencedValue(table, c.column(k), i, depth+1)
+	}
+	// Rows are indexed in ascending order: the latest one before i.
+	rows := p.compositeMatches(table, c, positions, depth)[tupleKey(want)]
+	if n := sort.SearchInts(rows, i); n > 0 {
+		return rows[n-1], false
+	}
+	if anchorOptional {
+		return 0, true
+	}
+	// A NOT NULL anchor with no predecessor: the row itself agrees with
+	// itself wherever a circular column references itself.
+	return i, false
+}
+
+// compositeDealable reports whether a composite UNIQUE assignment may deal
+// (table, column) a parent row: the column is the anchor of a composite that
+// nothing pins and that references its parent's primary key, so distinct
+// parent rows are distinct values and every partner follows the dealt row.
+// placed is false when no composite places the column.
+func (p *Plan) compositeDealable(table, column string) (dealable, placed bool) {
+	ci, placed := p.compositeOwnerOf(table, column)
+	if !placed {
+		return false, false
+	}
+	c := p.composites[table][ci]
+	if c.self || c.column(c.anchor) != column {
+		return false, true
+	}
+	for k := range c.members {
+		if !c.owns[k] {
+			return false, true
+		}
+	}
+	ref := p.byName[c.refTable]
+	return len(ref.PKCols) == 1 && ref.PKCols[0] == c.members[c.anchor].RefColumn, true
 }

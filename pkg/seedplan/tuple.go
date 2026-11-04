@@ -397,6 +397,13 @@ func (p *Plan) tupleSupply(tp *tablePlan, cp columnPlan) (tupleMember, bool) {
 		if cp.selfRef {
 			return tupleMember{}, false
 		}
+		// A column a composite foreign key places is that composite's: only
+		// an unpinned composite's primary-key anchor may be dealt, and its
+		// partners follow the dealt row (composite_fk.go). Dealing any other
+		// member would be a second placement the composite overrides.
+		if dealable, placed := p.compositeDealable(table, cp.col.Name); placed && !dealable {
+			return tupleMember{}, false
+		}
 		if _, seeded := p.byName[cp.fk.RefTable]; !seeded {
 			return tupleMember{}, false
 		}

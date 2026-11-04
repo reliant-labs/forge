@@ -405,25 +405,7 @@ and because plain SQL lands in the postgres catalog where forge, `psql \d+` and
 anything else can read it. Prose in the same comment is fine; only the
 `forge:ref ` clause is read.
 
-**A composite foreign key answers the question itself.** The multi-tenant
-pattern is a database fact, so forge needs no declaration for it:
-
-```sql
-ALTER TABLE strategies ADD CONSTRAINT strategies_tenant_id_id_key UNIQUE (tenant_id, id);
-ALTER TABLE hypotheses ADD CONSTRAINT hypotheses_same_tenant_fkey
-    FOREIGN KEY (tenant_id, strategy_id) REFERENCES strategies (tenant_id, id);
-```
-
-The seeder places a composite whole. It picks one parent row for it, and
-takes every column from that row, so `tenant_id` is always the tenant of the
-strategy that `strategy_id` names. The single-column references beside it
-(`hypotheses_tenant_id_fkey`, `hypotheses_strategy_id_fkey`) still hold.
-Sometimes two composites share a column, as `(tenant_id, strategy_id)` and
-`(tenant_id, channel_id)` do. The first one, in constraint-name order, places
-the shared column. The second picks among the parent rows that agree with it,
-here the channels of that tenant. A `forge:ref` comment on a column that a
-composite places is not read, because the composite already decides that
-column.
+A composite foreign key needs no declaration: load `db/seeding/composite-fks`.
 
 ### Sweep the schema for diamonds yourself
 

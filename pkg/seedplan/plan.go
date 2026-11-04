@@ -514,6 +514,9 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 		t := byName[n]
 		fkByCol := map[string]schemadef.ForeignKey{}
 		for _, fk := range t.ForeignKeys {
+			if selfCircularMember(fk, n) {
+				continue // "equals itself on the parent": not this column's reference
+			}
 			fkByCol[fk.Column] = fk
 		}
 		// A column a composite foreign key places references what the

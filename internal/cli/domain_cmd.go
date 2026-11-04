@@ -527,6 +527,7 @@ func runDomainRemove(ctx context.Context, c cloudCaller, hostname string, out io
 
 func newDomainBindCmd() *cobra.Command {
 	var env, token, target, redirectTo string
+	var hstsSubdomains bool
 	cmd := &cobra.Command{
 		Use:   "bind <hostname>",
 		Short: "Point a domain at one environment's workload or frontend",
@@ -541,8 +542,16 @@ which is exactly when a binding must survive. It also lets you bind a domain
 before its target has ever been deployed, which is the natural order for a
 first launch.
 
---redirect-to serves a 308 to another hostname instead of proxying. The
-apex/www pair is the case for it.
+--redirect-to answers with a permanent redirect to another hostname,
+preserving the path and query, instead of proxying: a 301 for GET and HEAD,
+a 308 for anything else. The apex/www pair is the case for it; point the www
+name at the same records as its apex.
+
+--hsts-include-subdomains adds includeSubDomains to the hostname's
+Strict-Transport-Security, so a browser that has seen it uses HTTPS for every
+name under it. Off by default, and leave it off until every subdomain serves
+HTTPS: a browser remembers the header for a year. A rebind without the flag
+turns it off.
 
 BINDABLE IN ANY STATE, SERVES ONLY WHEN LIVE. Bind before DNS has propagated
 and it starts serving by itself once verification and the certificate
@@ -558,13 +567,23 @@ complete.`,
 			if err != nil {
 				return err
 			}
-			return runDomainBind(cmd.Context(), c, env, args[0], target, redirectTo, cmd.OutOrStdout())
+			return runDomainBind(cmd.Context(), c, env, args[0], domainBindOptions{
+				target: target, redirectTo: redirectTo, hstsIncludeSubdomains: hstsSubdomains,
+			}, cmd.OutOrStdout())
 		},
 	}
 	addDomainFlags(cmd, &env, &token)
 	cmd.Flags().StringVar(&target, "target", "", "Workload or frontend name in --env to serve")
-	cmd.Flags().StringVar(&redirectTo, "redirect-to", "", "Serve a 308 to this hostname instead of a target")
+	cmd.Flags().StringVar(&redirectTo, "redirect-to", "", "Redirect permanently to this hostname instead of serving a target")
+	cmd.Flags().BoolVar(&hstsSubdomains, "hsts-include-subdomains", false, "Add includeSubDomains to the hostname's HSTS (every subdomain must serve HTTPS)")
 	return cmd
+}
+
+// domainBindOptions is what a binding serves: exactly one of target and
+// redirectTo, and its HSTS policy.
+type domainBindOptions struct {
+	target, redirectTo    string
+	hstsIncludeSubdomains bool
 }
 
 // domainEnvironmentID resolves --env to the control plane's environment id
@@ -583,7 +602,8 @@ func domainEnvironmentID(ctx context.Context, c cloudCaller, envName string) (st
 	return deploytarget.LookupHostedEnvironment(ctx, caller, hostedProjectName(), envName)
 }
 
-func runDomainBind(ctx context.Context, c cloudCaller, envName, hostname, target, redirectTo string, out io.Writer) error {
+func runDomainBind(ctx context.Context, c cloudCaller, envName, hostname string, opts domainBindOptions, out io.Writer) error {
+	target, redirectTo := opts.target, opts.redirectTo
 	d, err := lookupDomain(ctx, c, hostname)
 	if err != nil {
 		return err
@@ -598,6 +618,11 @@ func runDomainBind(ctx context.Context, c cloudCaller, envName, hostname, target
 	} else {
 		req["redirectTo"] = redirectTo
 	}
+	// Sent only when set: a control plane that predates the field refuses a
+	// request naming it, and false is its default anyway.
+	if opts.hstsIncludeSubdomains {
+		req["hstsIncludeSubdomains"] = true
+	}
 	var resp struct {
 		Binding domainWireBinding `json:"binding"`
 	}
@@ -605,7 +630,7 @@ func runDomainBind(ctx context.Context, c cloudCaller, envName, hostname, target
 		return fmt.Errorf("bind domain %q: %w", hostname, err)
 	}
 	if redirectTo != "" {
-		fmt.Fprintf(out, "Bound %s → %s (308 redirect), in %s.\n", hostname, redirectTo, envName)
+		fmt.Fprintf(out, "Bound %s → %s (permanent redirect), in %s.\n", hostname, redirectTo, envName)
 	} else {
 		fmt.Fprintf(out, "Bound %s → %s, in %s.\n", hostname, target, envName)
 	}

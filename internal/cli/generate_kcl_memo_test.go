@@ -12,11 +12,17 @@ import (
 
 // countKCLEvaluations replaces the render seam with a fake that answers every
 // env with an empty render and counts how many evaluations ran, at most how
-// many at once.
-func countKCLEvaluations(t *testing.T, delay time.Duration) (evals, peak *atomic.Int64) {
+// many at once. With overlap > 1, each evaluation blocks until overlap
+// evaluations have entered (a barrier, not a sleep), so a batch that runs
+// them concurrently reaches that peak deterministically; one that runs them
+// serially is caught by the deadline and leaves the peak at 1.
+func countKCLEvaluations(t *testing.T, overlap int64) (evals, peak *atomic.Int64) {
 	t.Helper()
 	evals, peak = &atomic.Int64{}, &atomic.Int64{}
-	var inFlight atomic.Int64
+	var inFlight, entered atomic.Int64
+	released := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(released) }) }
 	prev := renderKCLRawHook
 	renderKCLRawHook = func(context.Context, string, string, ...string) ([]byte, error) {
 		evals.Add(1)
@@ -28,10 +34,19 @@ func countKCLEvaluations(t *testing.T, delay time.Duration) (evals, peak *atomic
 				break
 			}
 		}
-		time.Sleep(delay)
+		if overlap > 1 {
+			if entered.Add(1) >= overlap {
+				release()
+			}
+			select {
+			case <-released:
+			case <-time.After(30 * time.Second):
+				release() // never overlapped: let every evaluation finish so the test can fail
+			}
+		}
 		return []byte(`{"output": {}}`), nil
 	}
-	t.Cleanup(func() { renderKCLRawHook = prev })
+	t.Cleanup(func() { release(); renderKCLRawHook = prev })
 	return evals, peak
 }
 
@@ -132,7 +147,7 @@ func TestKCLRenderMemo_OffOutsideAGenerateRun(t *testing.T) {
 // envs the memo cannot answer are evaluated at the same time, the results come
 // back in the order asked, and a second walk is answered from the memo.
 func TestRenderEnvsPure_EvaluatesTheMissesConcurrentlyInOrder(t *testing.T) {
-	evals, peak := countKCLEvaluations(t, 150*time.Millisecond)
+	evals, peak := countKCLEvaluations(t, 2)
 	envs := []string{"dev", "prod", "staging"}
 	dir := writeKCLMemoProject(t, envs...)
 	defer beginKCLRenderMemo()()

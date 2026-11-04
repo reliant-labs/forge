@@ -91,6 +91,58 @@ message AgentRun {
 	}
 }
 
+// A marker is scoped to the message body it sits in: one closing a body
+// never leaks into the next message's first field, and one outside every
+// body — above a message, as if it declared table ownership — is refused,
+// attributed to the message it precedes, rather than ignored.
+func TestScanRawProtoDir_OwnerMarkerOutsideFieldIsRefused(t *testing.T) {
+	dir := writeRawScanFixture(t, map[string]string{"v1/agents.proto": `syntax = "proto3";
+package services.agents.v1;
+
+// forge:entity forge:owner
+message AgentRun {
+  string id = 1;
+  string tenant_id = 2;
+  // forge:owner
+}
+
+// forge:owner
+
+// forge:entity
+message Tenant {
+  string owner_id = 1;
+  string slug = 2;
+}
+`})
+	scan, err := ScanRawProtoDir(dir)
+	if err != nil {
+		t.Fatalf("ScanRawProtoDir: %v", err)
+	}
+	want := map[string][]string{
+		"AgentRun": {"agents.proto:4: // forge:entity forge:owner", "agents.proto:8: // forge:owner"},
+		"Tenant":   {"agents.proto:11: // forge:owner"},
+	}
+	for msg, sites := range want {
+		m, ok := scan.MessageByName(msg)
+		if !ok {
+			t.Fatalf("%s not scanned", msg)
+		}
+		if len(m.UnappliedOwnerMarkers) != len(sites) {
+			t.Fatalf("%s: UnappliedOwnerMarkers = %v, want %v", msg, m.UnappliedOwnerMarkers, sites)
+		}
+		for i, s := range sites {
+			if got := m.UnappliedOwnerMarkers[i].String(); !strings.Contains(got, s) {
+				t.Errorf("%s: unapplied[%d] = %q, want it to name %q", msg, i, got, s)
+			}
+		}
+		for _, f := range m.Fields {
+			if f.Owner {
+				t.Errorf("%s.%s took a marker that was not on or directly above it", msg, f.Name)
+			}
+		}
+	}
+}
+
 // The descriptor path reads comment text buf already stripped the slashes
 // from, by the same grammar.
 func TestOwnerMarkerCommentRE(t *testing.T) {

@@ -793,18 +793,40 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		// refuses the entity: a dropped one would birth the table unowned
 		// and handlers_crud.go unscoped, which is the outcome it was written
 		// to prevent.
+		//
+		// A marker OUTSIDE every message body is refused too, never dropped:
+		// one written above a top-level message (`// forge:entity
+		// forge:owner`, or a stray line between two messages) reads as table
+		// ownership to its author. It is attributed to the message it
+		// precedes, or — trailing the file's last message — to that one.
+		fileMsgs := messages[msgStartIdx:]
 		for _, site := range ownerSites {
 			if consumedOwner[site[0]] {
 				continue
 			}
-			for _, rm := range messages[msgStartIdx:] {
-				if site[0] < rm.msg.BodyOpen || site[0] > rm.msg.BodyClose {
-					continue
+			var owner *rawMessage
+			for _, rm := range fileMsgs {
+				if site[0] >= rm.msg.BodyOpen && site[0] <= rm.msg.BodyClose {
+					owner = rm
+					break
 				}
-				rm.msg.UnappliedOwnerMarkers = append(rm.msg.UnappliedOwnerMarkers,
-					RawProtoMarkerSite{File: path, Line: lineNumberAt(content, site[0]), Text: sourceLineAt(content, site[0])})
-				break
 			}
+			if owner == nil {
+				for _, rm := range fileMsgs {
+					if rm.msg.BodyOpen > site[0] {
+						owner = rm
+						break
+					}
+				}
+			}
+			if owner == nil && len(fileMsgs) > 0 {
+				owner = fileMsgs[len(fileMsgs)-1]
+			}
+			if owner == nil {
+				continue // no message in the file: nothing is born from it
+			}
+			owner.msg.UnappliedOwnerMarkers = append(owner.msg.UnappliedOwnerMarkers,
+				RawProtoMarkerSite{File: path, Line: lineNumberAt(content, site[0]), Text: sourceLineAt(content, site[0])})
 		}
 
 		// Every RETIRED spelling this file carries, attributed the same way.

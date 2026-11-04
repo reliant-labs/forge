@@ -136,7 +136,8 @@ func TestSessionsMergesPartialRowsAndFiltersAfterMerging(t *testing.T) {
 	if !strings.Contains(where, "ServiceName = {") {
 		t.Errorf("service predicate must be per row:\n%s", st.SQL)
 	}
-	for _, want := range []string{"max(EnvId) = {", "max(UserId) = {", "max(ServiceVersion) = {", "sum(Errors) > 0", "started >="} {
+	// max(HasReplay) = 1: a session with nothing to replay is never listed
+	for _, want := range []string{"max(EnvId) = {", "max(UserId) = {", "max(ServiceVersion) = {", "sum(Errors) > 0", "started >=", "max(HasReplay) = 1"} {
 		if !strings.Contains(having, want) {
 			t.Errorf("HAVING lacks %q:\n%s", want, st.SQL)
 		}

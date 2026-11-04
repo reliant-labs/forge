@@ -62,6 +62,17 @@
 // cookie in localStorage with the same 15-minute inactivity and 4-hour limits
 // (session-cookie-fallback.ts). Origins whose cookies work are untouched.
 //
+// ── No session until the page has been seen ──────────────────────────────
+//
+// A page loaded in the background (a desktop window opened hidden, a tab
+// restored behind another) starts no session at all: the SDK is not loaded
+// until the document is first visible. Started hidden, it would mint a session
+// made only of background fetch spans, with nothing on screen to record, and
+// the recorder would hold no replay for it. Until then reportException returns
+// false (the caller logs to the console) and track() calls are held, bounded,
+// as they are while the SDK loads. A page that never becomes visible sends
+// nothing.
+//
 // ── Network URLs carry no query string ───────────────────────────────────
 //
 // fetch/XHR spans record the request URL, and a query string is where tokens,
@@ -317,6 +328,7 @@ async function start(
   ingest: string,
 ): Promise<boolean> {
   try {
+    await firstVisible();
     const hdx = resolveClient(await import("@hyperdx/browser"));
     if (!hdx || isTelemetryDisabled()) {
       setTelemetrySink(null);
@@ -381,6 +393,30 @@ async function start(
     setTelemetrySink(null);
     return false;
   }
+}
+
+/**
+ * Resolves once the document is visible: at once for a visible page or one
+ * with no Page Visibility API, otherwise at its first visibilitychange to
+ * visible. See "No session until the page has been seen" in the header.
+ */
+function firstVisible(): Promise<void> {
+  if (
+    typeof document === "undefined" ||
+    document.visibilityState !== "hidden" ||
+    typeof document.addEventListener !== "function"
+  ) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const onChange = () => {
+      if (document.visibilityState !== "hidden") {
+        document.removeEventListener("visibilitychange", onChange);
+        resolve();
+      }
+    };
+    document.addEventListener("visibilitychange", onChange);
+  });
 }
 
 // ── One failure, one record ──────────────────────────────────────────────

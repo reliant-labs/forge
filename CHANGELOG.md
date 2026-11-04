@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **accesstoken:** runs:start, runs:read, runs:control, triggers:fire and triggers:manage scopes, `RequireScope`/`Principal.Require` and the rpc mapping; reliant:api still permits all of them
+
 ## [v1.0.15] - 2026-11-04
 
 ### Breaking changes

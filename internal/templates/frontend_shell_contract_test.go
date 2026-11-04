@@ -146,6 +146,8 @@ func TestPaletteDeclaresColorScheme(t *testing.T) {
 	}
 }
 
+var mainWithIDRE = regexp.MustCompile(`<main\s+id="main"`)
+
 // TestShellHasOneMainLandmarkAndASkipLink: the shell owns the page's only
 // <main>, a skip link reaches it, and the 404 / error pages — rendered inside
 // that main — do not open a second one.
@@ -161,7 +163,9 @@ func TestShellHasOneMainLandmarkAndASkipLink(t *testing.T) {
 			t.Fatalf("render %s: %v", shell, err)
 		}
 		src := string(out)
-		if !strings.Contains(src, `<main id="main"`) {
+		// Matched across whitespace: the element is written as prettier
+		// prints it, one attribute per line once it outgrows the width.
+		if !mainWithIDRE.MatchString(src) {
 			t.Errorf("%s: <main> has no id=\"main\" for the skip link to target", shell)
 		}
 		if !strings.Contains(src, `href="#main"`) {

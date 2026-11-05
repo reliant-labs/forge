@@ -9,7 +9,7 @@ Per-env VALUES (API origin, feature flags) are not part of this package. They
 come from the generated `src/lib/config_gen.ts`, which reads
 `window.__FORGE_CONFIG__` from `<basePath>/config.js`. Dev, Firebase, own-bucket
 and hosted deploys all serve the same `{KEY: "value"}` shape, so the
-bundle cannot tell them apart. See `frontend` → "Runtime config and backend URLs".
+bundle cannot tell them apart. See `frontend/runtime-config`.
 
 Every `runtime_config` key must be one the bundle reads: a field of the
 frontend's config message, or a forge runtime key (`API_URL`, `ENVIRONMENT`,

@@ -3,6 +3,7 @@ package release
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"slices"
 )
 
@@ -112,6 +113,14 @@ const (
 	// "host". Both strict-decoded paths carry the shape, so both are limited
 	// by it ([BundleReader.LimitShape]).
 	BundleFeatureShapePlacement = "shape-placement"
+	// BundleFeatureIdentitySignIn is the identity v2 sign-in declaration on
+	// ShapeIdentity: Owners, OwnerRole, Signup, Methods, PasskeyRPID, Social,
+	// Email and DevMail. A control plane that predates it converges the
+	// identity as v1 did: the login policy is left alone, nobody is seeded,
+	// and no login_policy is delivered, so the broker serves its legacy
+	// policy. That is the fail-closed reading: nothing is enabled that nobody
+	// converged.
+	BundleFeatureIdentitySignIn = "shape-identity-signin"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -119,7 +128,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -214,6 +223,15 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 			s.Workloads = ws
 		}
 	}
+	if !r.Supports(BundleFeatureIdentitySignIn) && s.Identity != nil {
+		id := *s.Identity
+		id.Owners, id.OwnerRole, id.Signup, id.Methods = nil, "", nil, nil
+		id.PasskeyRPID, id.Social, id.Email, id.DevMail = "", nil, nil, ""
+		// The login_policy output is a sign-in addition too: a reader predating
+		// it rejects a consumer that maps or omits it as an unknown output.
+		id.Consumers = withoutLoginPolicyOutput(id.Consumers)
+		s.Identity = &id
+	}
 	if !r.Supports(BundleFeatureHealthGate) && s.DeliveryPolicy != nil && s.DeliveryPolicy.HealthGate != nil {
 		pol := *s.DeliveryPolicy
 		pol.HealthGate = nil
@@ -229,4 +247,41 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		s.ObservabilityPolicy = &pol
 	}
 	return s
+}
+
+// identityOutputLoginPolicy is the identity output the sign-in feature added.
+const identityOutputLoginPolicy = "login_policy"
+
+// withoutLoginPolicyOutput returns cs with every login_policy mapping and
+// omission removed. A copy when anything is removed: cs is not modified.
+func withoutLoginPolicyOutput(cs []ShapeIdentityConsumer) []ShapeIdentityConsumer {
+	names := func(c ShapeIdentityConsumer) bool {
+		_, mapped := c.Fields[identityOutputLoginPolicy]
+		return mapped || slices.Contains(c.Omit, identityOutputLoginPolicy)
+	}
+	if !slices.ContainsFunc(cs, names) {
+		return cs
+	}
+	out := slices.Clone(cs)
+	for i, c := range out {
+		if !names(c) {
+			continue
+		}
+		if _, mapped := c.Fields[identityOutputLoginPolicy]; mapped {
+			fields := maps.Clone(c.Fields)
+			delete(fields, identityOutputLoginPolicy)
+			if len(fields) == 0 {
+				fields = nil
+			}
+			out[i].Fields = fields
+		}
+		if slices.Contains(c.Omit, identityOutputLoginPolicy) {
+			omit := slices.DeleteFunc(slices.Clone(c.Omit), func(o string) bool { return o == identityOutputLoginPolicy })
+			if len(omit) == 0 {
+				omit = nil
+			}
+			out[i].Omit = omit
+		}
+	}
+	return out
 }

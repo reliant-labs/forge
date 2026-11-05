@@ -102,7 +102,9 @@ CREATE TABLE IF NOT EXISTS {{DB}}.rum_sessions
     `Errors` SimpleAggregateFunction(sum, UInt64),
     `HasReplay` SimpleAggregateFunction(max, UInt8),
     `Geo` SimpleAggregateFunction(max, Tuple(String, String, String)),
-    `ClientAddress` SimpleAggregateFunction(max, String)
+    `ClientAddress` SimpleAggregateFunction(max, String),
+    `Client` SimpleAggregateFunction(max, Tuple(String, String, String, String, String, String, String, String)),
+    `Viewport` SimpleAggregateFunction(max, Tuple(UInt32, UInt32, UInt32, UInt32))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY Day
@@ -131,6 +133,12 @@ CREATE TABLE IF NOT EXISTS {{DB}}.error_events
     `Region` String CODEC(ZSTD(1)),
     `City` String CODEC(ZSTD(1)),
     `ClientAddress` String CODEC(ZSTD(1)),
+    `BrowserName` LowCardinality(String) CODEC(ZSTD(1)),
+    `BrowserVersion` LowCardinality(String) CODEC(ZSTD(1)),
+    `OsName` LowCardinality(String) CODEC(ZSTD(1)),
+    `OsVersion` LowCardinality(String) CODEC(ZSTD(1)),
+    `DeviceType` LowCardinality(String) CODEC(ZSTD(1)),
+    `DesktopVersion` LowCardinality(String) CODEC(ZSTD(1)),
     `RawStackHash` UInt64 CODEC(ZSTD(1)),
     INDEX idx_session_id SessionId TYPE bloom_filter(0.01) GRANULARITY 1
 )
@@ -206,6 +214,12 @@ SELECT
     ResourceAttributes['geo.region.name'] AS Region,
     ResourceAttributes['geo.locality.name'] AS City,
     ResourceAttributes['client.address'] AS ClientAddress,
+    ResourceAttributes['user_agent.name'] AS BrowserName,
+    ResourceAttributes['user_agent.version'] AS BrowserVersion,
+    ResourceAttributes['os.name'] AS OsName,
+    ResourceAttributes['os.version'] AS OsVersion,
+    ResourceAttributes['reliant.device.type'] AS DeviceType,
+    ResourceAttributes['app.desktop.version'] AS DesktopVersion,
     cityHash64(etype, norm, replaceRegexpAll(estack, '"filename":"[a-zA-Z][a-zA-Z0-9+.-]*://[^/"]*', '"filename":"')) AS RawStackHash
 FROM {{DB}}.otel_traces
 WHERE ResourceAttributes['rum.sessionId'] != ''
@@ -225,6 +239,8 @@ AS SELECT
     max(SpanAttributes['userId']) AS UserId,
     max((ResourceAttributes['geo.country.iso_code'], ResourceAttributes['geo.region.name'], ResourceAttributes['geo.locality.name'])) AS Geo,
     max(ResourceAttributes['client.address']) AS ClientAddress,
+    max((ResourceAttributes['user_agent.name'], ResourceAttributes['user_agent.version'], ResourceAttributes['os.name'], ResourceAttributes['os.version'], ResourceAttributes['reliant.device.type'], ResourceAttributes['reliant.chromium.version'], ResourceAttributes['app.desktop.version'], ResourceAttributes['app.desktop.electron.version'])) AS Client,
+    max((toUInt32OrZero(SpanAttributes['app.viewport.width']), toUInt32OrZero(SpanAttributes['app.viewport.height']), toUInt32OrZero(SpanAttributes['app.screen.width']), toUInt32OrZero(SpanAttributes['app.screen.height']))) AS Viewport,
     argMinIfState(path(SpanAttributes['location.href']), Timestamp, SpanAttributes['location.href'] != '') AS EntryPath,
     countIf(SpanName IN ('documentLoad', 'routeChange')) AS PageViews,
     countIf(SpanAttributes['component'] = 'user-interaction' AND SpanName = 'mousedown') AS Interactions,

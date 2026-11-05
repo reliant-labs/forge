@@ -76,8 +76,11 @@ func TestRumIdentitySessionGeoAndTraceLinks(t *testing.T) {
 				dur, rd, tw                                        float64
 				spans, errs                                        uint64
 				svcs                                               []string
+				cn, cv, on, ov, dt, dv, fv                         string
+				bsvcs, bvers                                       []string
 			)
-			if err := rows.Scan(&id, &start, &dur, &rs, &rn, &rd, &spans, &errs, &tw, &svcs, &src, &user, &sess, &country, &region, &city); err != nil {
+			if err := rows.Scan(&id, &start, &dur, &rs, &rn, &rd, &spans, &errs, &tw, &svcs, &src, &user, &sess, &country, &region, &city,
+				&cn, &cv, &on, &ov, &dt, &dv, &fv, &bsvcs, &bvers); err != nil {
 				t.Fatal(err)
 			}
 			out[id] = []string{user, sess, country, city}

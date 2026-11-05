@@ -733,6 +733,17 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 		})
 		names = append(names, db.Name)
 	}
+	for _, b := range entities.Buckets {
+		if !b.Hosted() {
+			continue
+		}
+		spec := b.Spec
+		services = append(services, deploytarget.ResolvedService{
+			Name:   b.Name,
+			Hosted: &deploytarget.HostedWorkload{Tier: deploytarget.HostedTierBucket, Bucket: &spec},
+		})
+		names = append(names, b.Name)
+	}
 	if len(services) == 0 {
 		return nil, nil
 	}

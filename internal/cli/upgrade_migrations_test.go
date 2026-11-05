@@ -517,6 +517,12 @@ version: 0.1.0
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), cfg, 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	// A Go service project is a Go module: without go.mod the project reads
+	// as a static site, and upgrade manages none of the Go project's files
+	// (managedFilesForCfg).
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/example/test\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
 	markServiceProject(t, dir)
 	return dir
 }

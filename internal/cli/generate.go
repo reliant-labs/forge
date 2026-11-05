@@ -614,6 +614,10 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		return err
 	}
 
+	// Steps that read an env's KCL share one evaluation per distinct input
+	// state for the length of the run (generate_kcl_memo.go).
+	defer beginKCLRenderMemo()()
+
 	// A plan that keeps the stomp guard keeps its fresh-render check.
 	steps = withDriftAdjudication(steps)
 

@@ -139,6 +139,9 @@ and obs:read).
   backfill-migrations <env>
                          record, from git, the migrations of releases cut
                          before forge recorded them
+  interrupted <env> <version>
+                         whether a cut pushed its images, was never
+                         recorded, and can be resumed from this checkout
 
 Every reading verb takes --json for one machine-readable document (--fields projects it).`,
 	}
@@ -146,6 +149,7 @@ Every reading verb takes --json for one machine-readable document (--fields proj
 	cmd.AddCommand(newEnvReleasesShowCmd(deps))
 	cmd.AddCommand(newEnvReleasesAtCmd(deps))
 	cmd.AddCommand(newEnvReleasesBackfillMigrationsCmd())
+	cmd.AddCommand(newEnvReleasesInterruptedCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 

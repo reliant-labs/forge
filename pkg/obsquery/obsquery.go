@@ -116,6 +116,11 @@ type Scope struct {
 	// otherwise, so a reader can roll out before every org's tables are migrated. Zero
 	// is the older shape.
 	SessionGeo bool
+	// SessionClient says the hosted browser tables carry the client columns
+	// (rum_sessions.Client and Viewport, control-plane tenant schema v21). As
+	// with SessionGeo, the session reads select them only then and answer ""
+	// and 0 otherwise. It implies SessionGeo.
+	SessionClient bool
 }
 
 // Fingerprint identifies the parts of a scope a page cursor belongs to. The

@@ -247,7 +247,14 @@ type CRUDMethodTemplateData struct {
 	// ,skipupdate) is left alone because the custom RPCs that own these
 	// columns write them through the same repository. See ReadOnlyColumns.
 	ReadOnlyColumns []string
-	CreateFields    []CreateFieldData // fields from the create request message
+	// UnmaskableColumns names the entity's `forge:immutable` columns and
+	// its columns with no wire field — present only on an "update" method.
+	// The generated UpdateOp carries them as op.Unmaskable, so a client's
+	// update_mask can neither rewrite a column set once at Create nor reset
+	// one it cannot send a value for. Not passed to crud.Preserve; see
+	// UnmaskableColumns.
+	UnmaskableColumns []string
+	CreateFields      []CreateFieldData // fields from the create request message
 	// ShapeMismatch is true when the request/response message shapes
 	// observed in svc.Messages don't line up with what the CRUD body
 	// templates assume (AIP-158 page_size/page_token for list, an `id`
@@ -1439,10 +1446,11 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	// masked-persistence hooks. Skip on shape mismatch — the stub
 	// branch never dereferences it.
 	updateMaskField := ""
-	var readOnlyColumns []string
+	var readOnlyColumns, unmaskableColumns []string
 	if shapeOK && cm.Operation == "update" {
 		updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
 		readOnlyColumns = ReadOnlyColumns(cm.Entity)
+		unmaskableColumns = UnmaskableColumns(cm.Entity)
 
 		// A forge:version column the wire message does not carry makes
 		// this Update un-runnable after a row's first edit: the caller
@@ -1545,6 +1553,7 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		UpdateEntityField:  updateEntityField,
 		UpdateMaskField:    updateMaskField,
 		ReadOnlyColumns:    readOnlyColumns,
+		UnmaskableColumns:  unmaskableColumns,
 		CreateAssigns:      createAssigns,
 		ShapeMismatch:      !shapeOK,
 		MismatchReason:     shapeReason,
@@ -2055,6 +2064,12 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				// field would make that assertion fail. Skip it, exactly like
 				// read-only.
 				if secretByGoName[f.ProtoName] {
+					continue
+				}
+				// A `forge:immutable` column is neither: a full replace keeps
+				// it as stored and an update_mask naming it is refused
+				// (UpdateOp.Unmaskable).
+				if immutableColumn(cm.Entity, protoNameByGoName[f.ProtoName]) {
 					continue
 				}
 				if mutable == "" {

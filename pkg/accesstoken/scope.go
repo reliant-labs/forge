@@ -156,6 +156,37 @@ const (
 	// further restrict it to people (audited); the scope alone never opens
 	// one.
 	ScopeDBQuery Scope = "db:query"
+
+	// The five scopes below narrow the reliant API for SDK callers: an app
+	// that starts runs, or fires a trigger, need not hold the person's whole
+	// API. They are PRODUCT scopes for a Reliant API (RunService and
+	// TriggerService), checked by that API with RequireScope; this package
+	// knows no rpc. See the "Runs and triggers" section of the package
+	// documentation in runs_triggers.go for the rpc mapping.
+	//
+	// Every one acts as a person (RequiresActingUser): a run executes as a
+	// user, with that user's connections and billing. None is bindable to a
+	// resource. reliant:api permits all five (Permits), so no existing
+	// reliant:api token loses or gains anything.
+
+	// ScopeRunsStart starts runs. Implies runs:read at the point of use.
+	ScopeRunsStart Scope = "runs:start"
+	// ScopeRunsRead reads runs: state, lists, events.
+	ScopeRunsRead Scope = "runs:read"
+	// ScopeRunsControl steers a run that already exists: pause, resume,
+	// cancel, interrupt, signal. Implies runs:read at the point of use. It
+	// does not start runs; runs:start does not control them.
+	ScopeRunsControl Scope = "runs:control"
+	// ScopeTriggersFire fires an existing trigger now. Fire starts a run, so
+	// it is not implied by, and does not imply, runs:start; and it cannot
+	// change what a trigger is or whether it is enabled (triggers:manage).
+	ScopeTriggersFire Scope = "triggers:fire"
+	// ScopeTriggersManage creates, updates, deletes, enables and disables
+	// triggers and rotates a webhook token. Activation is gated by this
+	// permission, not by who holds the token. It does not imply
+	// triggers:fire: managing what runs unattended and running it now are
+	// different authorities.
+	ScopeTriggersManage Scope = "triggers:manage"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -183,6 +214,11 @@ var AllScopes = []Scope{
 	ScopeObsTriage,
 	ScopeObsWrite,
 	ScopeDBQuery,
+	ScopeRunsStart,
+	ScopeRunsRead,
+	ScopeRunsControl,
+	ScopeTriggersFire,
+	ScopeTriggersManage,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an
@@ -262,7 +298,15 @@ func (s Set) Permits(want Scope) bool {
 	if s.Has(want) {
 		return true
 	}
+	// reliant:api is the person's whole API, and the runs and triggers scopes
+	// are slices of it: a token minted before they existed keeps every
+	// permission it had.
+	if s.Has(ScopeReliantAPI) && isRunsOrTriggersScope(want) {
+		return true
+	}
 	switch want {
+	case ScopeRunsRead:
+		return s.Has(ScopeRunsStart) || s.Has(ScopeRunsControl)
 	case ScopeDeployRead:
 		return s.Has(ScopeDeployWrite)
 	case ScopeTokenRead:

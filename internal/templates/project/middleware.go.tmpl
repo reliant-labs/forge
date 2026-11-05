@@ -134,6 +134,28 @@ type AuthDeps struct {
 	// ExternalAuth as the only remaining signal and otherwise refuses to
 	// start (a production server with no auth provider is a bug).
 	Validate func(ctx context.Context, credential string) (*Claims, error)
+
+	// Enrich, when non-nil, replaces enrichClaims below: it is the enrich
+	// seam for a project whose enrichment reads its own database (a members
+	// table mapping the IdP subject to a tenant and role). The generated
+	// graph fills it from UserAuthDeps.Enrich — any component whose value
+	// implements ClaimsEnricher — so the database reaches it the way it
+	// reaches every other component, through Deps.
+	Enrich ClaimsEnricher
+}
+
+// ClaimsEnricher is a component that hydrates validated claims before any
+// handler sees them — enrichClaims, with dependencies. Declare the method on
+// a component's Service interface (`forge scaffold package membership`) and
+// the graph wires it into the auth interceptor; there is nothing to register.
+// Its contract is enrichClaims': return the claims to proceed, or an error to
+// reject the request (a *connect.Error keeps its code).
+//
+// Claims is an alias of github.com/reliant-labs/forge/pkg/auth.Claims, so the
+// component may spell the method with *auth.Claims and need not import this
+// package.
+type ClaimsEnricher interface {
+	EnrichClaims(ctx context.Context, claims *Claims) (*Claims, error)
 }
 
 // ─── Policy hook 2: identity enrichment ──────────────────────────────
@@ -143,7 +165,9 @@ type AuthDeps struct {
 // table, org membership, feature flags. Returning an error rejects the
 // request (CodeUnauthenticated unless you return a *connect.Error).
 //
-// The default is the identity function.
+// The default is the identity function. Enrichment that needs the database
+// is a component instead (ClaimsEnricher, AuthDeps.Enrich): this function has
+// no way to reach one.
 func enrichClaims(_ context.Context, claims *Claims) (*Claims, error) {
 	return claims, nil
 }
@@ -232,13 +256,17 @@ func credentialFrom(h http.Header) string {
 // project's config, and makes "this server authenticates" impossible to
 // prove from the source.
 func NewAuthInterceptor(deps AuthDeps) (connect.Interceptor, error) {
+	enrich := enrichClaims
+	if deps.Enrich != nil {
+		enrich = deps.Enrich.EnrichClaims
+	}
 	return authn.NewInterceptor(authn.Policy{
 		ValidatorConfigured: deps.Validate != nil,
 		ExternalAuth:        deps.ExternalAuth,
 		AnonymousOK:         deps.AnonymousOK,
 		ValidateContext:     deps.Validate,
 		Unauthenticated:     UnauthenticatedProcedures,
-		Enrich:              enrichClaims,
+		Enrich:              enrich,
 		ExtractToken:        credentialFrom,
 	})
 }

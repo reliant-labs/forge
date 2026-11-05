@@ -103,3 +103,45 @@ func TestProjectDeclaresAuthInterceptor(t *testing.T) {
 		t.Error("forge's scaffolded middleware.go declares it")
 	}
 }
+
+// TestProvidersGraph_EnricherComponentSeam pins the DB-backed enrich seam:
+// with a middleware.go that declares ClaimsEnricher, UserAuthDeps takes an
+// optional enricher component and hands it to the interceptor, so enrichment
+// that reads the database is an ordinary component the graph wires. A
+// middleware.go scaffolded before the seam gets neither, so it still compiles.
+func TestProvidersGraph_EnricherComponentSeam(t *testing.T) {
+	with := renderFormatted(t, "providers-graph.go.tmpl", providersGraphData{Module: "example.com/rbc", HasDatabase: true, ConfigFields: map[string]bool{}, ClaimsEnricher: true})
+	for _, want := range []string{"// forge:optional-dep\n\tEnrich middleware.ClaimsEnricher", "middleware.AuthDeps{AnonymousOK: false, Enrich: d.Enrich}"} {
+		if !strings.Contains(with, want) {
+			t.Errorf("UserAuth does not take an enricher component (%q missing):\n%s", want, with)
+		}
+	}
+	without := renderFormatted(t, "providers-graph.go.tmpl", providersGraphData{Module: "example.com/rbc", HasDatabase: true, ConfigFields: map[string]bool{}})
+	if strings.Contains(without, "ClaimsEnricher") || strings.Contains(without, "d.Enrich") {
+		t.Errorf("a middleware.go without the seam must not be named:\n%s", without)
+	}
+}
+
+func TestProjectDeclaresClaimsEnricher(t *testing.T) {
+	dir := t.TempDir()
+	if !projectDeclaresClaimsEnricher(dir) {
+		t.Error("a project with no pkg/middleware yet is about to get forge's, which declares it")
+	}
+	mw := filepath.Join(dir, "pkg", "middleware")
+	if err := os.MkdirAll(mw, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(mw, "middleware.go")
+	if err := os.WriteFile(path, []byte("package middleware\n\nfunc NewAuthInterceptor(deps AuthDeps) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if projectDeclaresClaimsEnricher(dir) {
+		t.Error("a middleware.go scaffolded before the seam does not declare it")
+	}
+	if err := os.WriteFile(path, []byte("package middleware\n\ntype ClaimsEnricher interface {\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !projectDeclaresClaimsEnricher(dir) {
+		t.Error("forge's scaffolded middleware.go declares it")
+	}
+}

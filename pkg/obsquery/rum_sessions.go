@@ -113,6 +113,56 @@ type SessionSummary struct {
 	// platform is configured to keep it; by default it derives the location and
 	// drops the address.
 	ClientAddress string
+	// Client is which client the session ran in. Zero without
+	// Scope.SessionClient.
+	Client ClientInfo
+}
+
+// ClientInfo is which client a browser session ran in. The browser, OS and
+// device type are the platform's, derived at ingest from the request's own
+// User-Agent and client hints (user_agent.*, os.*, reliant.device.type); the
+// desktop versions and the viewport are the page's (app.desktop.*,
+// app.viewport.*, app.screen.*). A zero field is unknown.
+type ClientInfo struct {
+	// BrowserName and BrowserVersion: Chrome 156.0.0, Mobile Safari 26.6.1,
+	// Electron 41.10.7 (a desktop app's renderer).
+	BrowserName, BrowserVersion string
+	OSName, OSVersion           string
+	// DeviceType is desktop, mobile, tablet or bot.
+	DeviceType string
+	// ChromiumVersion is a Chromium-based client's engine (Electron's included).
+	ChromiumVersion string
+	// DesktopVersion is the desktop app's own version; ElectronVersion the
+	// Electron it runs on. Both empty outside a desktop app.
+	DesktopVersion, ElectronVersion string
+	// The viewport and screen in CSS pixels: the widest viewport the session
+	// reported, and its screen.
+	ViewportWidth, ViewportHeight, ScreenWidth, ScreenHeight uint32
+}
+
+// clientTupleCols reads the rum_sessions.Client and Viewport tuples, in the
+// order scanSession reads them. Without the columns they are constants.
+func clientTupleCols(s Scope) string {
+	if !s.SessionClient {
+		return "'' AS browser_name, '' AS browser_version, '' AS os_name, '' AS os_version, '' AS device_type,\n" +
+			"       '' AS chromium_version, '' AS desktop_version, '' AS desktop_electron_version,\n" +
+			"       toUInt32(0) AS viewport_width, toUInt32(0) AS viewport_height, toUInt32(0) AS screen_width, toUInt32(0) AS screen_height"
+	}
+	var b strings.Builder
+	for i, name := range []string{"browser_name", "browser_version", "os_name", "os_version", "device_type", "chromium_version", "desktop_version", "desktop_electron_version"} {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("tupleElement(max(Client), " + strconv.Itoa(i+1) + ") AS " + name)
+	}
+	b.WriteString(",\n       ")
+	for i, name := range []string{"viewport_width", "viewport_height", "screen_width", "screen_height"} {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("tupleElement(max(Viewport), " + strconv.Itoa(i+1) + ") AS " + name)
+	}
+	return b.String()
 }
 
 // Duration is how long the session was observed.
@@ -121,18 +171,21 @@ func (s SessionSummary) Duration() time.Duration { return s.Ended.Sub(s.Started)
 // sessionCols is the select list of the session statements, in the order
 // scanSession reads: session_id, service, version, env_id, user_id, entry_path,
 // started, ended, page_views, interactions, errors, has_replay, country, region,
-// city, client_address. Without Scope.SessionGeo the last four are constants:
-// the tables predate them, and the columns are named only when they exist.
+// city, client_address, then the client (clientTupleCols). Without
+// Scope.SessionGeo the location four are constants, and without
+// Scope.SessionClient the client ones: the tables predate them, and the columns
+// are named only when they exist.
 func sessionCols(s Scope) string {
 	geo := "'' AS country, '' AS region, '' AS city, '' AS client_address"
-	if s.SessionGeo {
+	if s.SessionGeo || s.SessionClient {
 		geo = "tupleElement(max(Geo), 1) AS country, tupleElement(max(Geo), 2) AS region, tupleElement(max(Geo), 3) AS city,\n" +
 			"       max(ClientAddress) AS client_address"
 	}
 	return "SessionId, ServiceName, max(ServiceVersion) AS version, max(EnvId) AS env_id, max(UserId) AS user_id,\n" +
 		"       argMinMerge(EntryPath) AS entry_path, min(Start) AS started, max(End) AS ended,\n" +
 		"       sum(PageViews) AS page_views, sum(Interactions) AS interactions, sum(Errors) AS errors, max(HasReplay) AS has_replay,\n" +
-		"       " + geo
+		"       " + geo + ",\n" +
+		"       " + clientTupleCols(s)
 }
 
 func scanSession(rows Rows, names map[string]string) (SessionSummary, error) {
@@ -145,14 +198,22 @@ func scanSession(rows Rows, names map[string]string) (SessionSummary, error) {
 		entry                 string
 		country, region, city string
 		addr                  string
+		c                     ClientInfo
 	)
-	if err := rows.Scan(&id, &svc, &ver, &env, &us, &entry, &started, &ended, &pv, &ia, &er, &replay, &country, &region, &city, &addr); err != nil {
+	if err := rows.Scan(&id, &svc, &ver, &env, &us, &entry, &started, &ended, &pv, &ia, &er, &replay, &country, &region, &city, &addr,
+		&c.BrowserName, &c.BrowserVersion, &c.OSName, &c.OSVersion, &c.DeviceType, &c.ChromiumVersion, &c.DesktopVersion, &c.ElectronVersion,
+		&c.ViewportWidth, &c.ViewportHeight, &c.ScreenWidth, &c.ScreenHeight); err != nil {
 		return s, err
+	}
+	// The Electron a desktop renderer runs on is in its User-Agent, which the
+	// platform parsed; the page's own report is the fallback.
+	if c.BrowserName == "Electron" && c.BrowserVersion != "" {
+		c.ElectronVersion = c.BrowserVersion
 	}
 	return SessionSummary{
 		SessionID: id, Service: svc, Version: ver, EnvID: env, EnvName: names[env], UserID: us, EntryPath: entry,
 		Started: started, Ended: ended, PageViews: pv, Interactions: ia, Errors: er, HasReplay: replay != 0,
-		Country: country, Region: region, City: city, ClientAddress: addr,
+		Country: country, Region: region, City: city, ClientAddress: addr, Client: c,
 	}, nil
 }
 
@@ -167,8 +228,14 @@ type SessionQuery struct {
 	UserID string
 	// PathContains keeps sessions whose entry path contains it, case-insensitive.
 	PathContains string
-	Limit        int // 0 = DefaultSessionLimit; the statement fetches one more
-	Cursor       *SessionCursor
+	// Browser, OS and DeviceType keep sessions of that client
+	// (ClientInfo.BrowserName, OSName, DeviceType; exact). Without
+	// Scope.SessionClient no session has a client, so a set one matches none.
+	// Version keeps sessions of that frontend build (SessionSummary.Version).
+	// Empty keeps all.
+	Browser, OS, DeviceType, Version string
+	Limit                            int // 0 = DefaultSessionLimit; the statement fetches one more
+	Cursor                           *SessionCursor
 }
 
 // SessionCursor is the keyset position of the last session of a page.
@@ -183,7 +250,14 @@ type SessionCursor struct {
 // deliberately not part of it.
 func (q SessionQuery) Fingerprint() string {
 	parts := append([]string{"sessions"}, q.Scope.Fingerprint()...)
-	return fingerprint(append(parts, strconv.FormatBool(q.HasError), strconv.FormatBool(q.HasReplay), q.UserID, q.PathContains)...)
+	parts = append(parts, strconv.FormatBool(q.HasError), strconv.FormatBool(q.HasReplay), q.UserID, q.PathContains)
+	// Appended only when set, so a token of a query without them is unchanged.
+	for _, f := range [][2]string{{"browser", q.Browser}, {"os", q.OS}, {"device", q.DeviceType}, {"version", q.Version}} {
+		if f[1] != "" {
+			parts = append(parts, f[0]+":"+f[1])
+		}
+	}
+	return fingerprint(parts...)
 }
 
 // NextCursor builds the page token that continues after the session that
@@ -234,6 +308,11 @@ func (q SessionQuery) Compile() (Stmt, error) {
 	if err := checkRumValue("path_contains", q.PathContains); err != nil {
 		return Stmt{}, err
 	}
+	for _, f := range [][2]string{{"browser", q.Browser}, {"os", q.OS}, {"device_type", q.DeviceType}, {"version", q.Version}} {
+		if err := checkRumValue(f[0], f[1]); err != nil {
+			return Stmt{}, err
+		}
+	}
 	if q.Cursor != nil && q.Cursor.Finger != q.Fingerprint() {
 		return Stmt{}, invalid("page_token does not belong to this query")
 	}
@@ -254,6 +333,20 @@ func (q SessionQuery) Compile() (Stmt, error) {
 	}
 	if q.PathContains != "" {
 		having = append(having, "positionCaseInsensitive(argMinMerge(EntryPath), "+b.str(q.PathContains)+") > 0")
+	}
+	if q.Version != "" {
+		having = append(having, "max(ServiceVersion) = "+b.str(q.Version))
+	}
+	for i, v := range []string{q.Browser, q.OS, q.DeviceType} {
+		if v == "" {
+			continue
+		}
+		if !q.Scope.SessionClient {
+			having = append(having, "0") // the tables carry no client: none matches
+			continue
+		}
+		// Client is (browser, version, os, version, device type, ...).
+		having = append(having, "tupleElement(max(Client), "+strconv.Itoa([]int{1, 3, 5}[i])+") = "+b.str(v))
 	}
 	if c := q.Cursor; c != nil {
 		having = append(having, "(started, ServiceName, SessionId) < (fromUnixTimestamp64Milli("+b.i64(c.TsMs)+"), "+b.str(c.Service)+", "+b.str(c.SessionID)+")")

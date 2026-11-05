@@ -405,6 +405,8 @@ and because plain SQL lands in the postgres catalog where forge, `psql \d+` and
 anything else can read it. Prose in the same comment is fine; only the
 `forge:ref ` clause is read.
 
+A composite foreign key needs no declaration: load `db/seeding/composite-fks`.
+
 ### Sweep the schema for diamonds yourself
 
 Declare a diamond when you add the second reference rather than waiting for a

@@ -1,8 +1,8 @@
 ---
 name: v1.0.16
-description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth.
+description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth. Also: create-request factories over a table whose row or FK parents declare forge:owner take FactoryOwner(owner), seeding the parents under the owner a scoped handler stamps; use when a migration declares forge:owner.
 version: v1.0.16
-detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; exit 1
+detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; grep -rqs --include='*.up.sql' 'forge:owner' db/migrations && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.16
@@ -117,3 +117,33 @@ Nothing, unless your code compares two `ServiceHealth` values with `==`/`!=`
 or keys a map by one; the compiler names each such site. Compare the fields
 you mean instead (`a.Service == b.Service`), or `reflect.DeepEqual` in a test.
 Leaving `Endpoints` nil keeps the old service-level latency verdict.
+
+## 3. Create-request factories seed parents under the caller's owner
+
+**Use when** a migration declares `forge:owner` on a column.
+
+### What changed
+
+A scoped Create stamps its row's owner from the caller, while
+`New<Create>Request` seeded the row's FK parents under owners the seed planner
+invented. With a tenants table, the created row referenced a tenant that did not
+exist; with a same-owner guard (a composite `(tenant_id, id)` key, a trigger),
+it crossed owners. A factory whose table or parents declare `forge:owner` now
+takes `FactoryOwner(owner)`: every parent's owner column, and every reference to
+one, is seeded under that owner, and the request's own owner field is set to it.
+Without the option it seeds exactly as before, and existing calls compile
+unchanged.
+
+### What to do
+
+`handlers_crud_test.go` is yours, so forge does not edit an existing one. Where
+a lifecycle test creates a row through a scoped handler, pass the owner the
+handler derives from the test's claims:
+
+```go
+req := orders.NewCreateOrderRequest(t, db, 0, orders.FactoryOwner("test-user"))
+```
+
+"test-user" is what the scaffolded wrapper's `claims.UserID` placeholder yields
+for `crudTestCtx()`. If you disabled a same-owner guard in the lifecycle test to
+get past this, you can turn it back on.

@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // Create-request factories: the rows the scaffolded CRUD lifecycle test
@@ -70,6 +73,17 @@ type createRequestSpec struct {
 	// failure, when set, is why no request could be derived; the emitted
 	// body fails the test with it instead of returning a request.
 	failure string
+	// ownerAware marks a request whose entity or FK parents declare
+	// `forge:owner`: its factory takes FactoryOwner (see factoryOwnerPlan).
+	ownerAware bool
+	// ownerLiterals are the SQL literals of the owner values parentSQL was
+	// planned with — every forge:owner cell of the entity's planned rows and
+	// of every parent row. FactoryOwner rewrites each to the caller's owner.
+	ownerLiterals []string
+	// ownerField is the request field (Go name) carrying the entity's own
+	// owner column, "" when the request has none (a forge:read-only owner,
+	// which the scoped handler stamps instead).
+	ownerField string
 }
 
 // createRequestFactoryName is the factory's Go name for a create RPC — the
@@ -176,11 +190,87 @@ func buildCreateRequestSpecs(ctx context.Context, svc ServiceDef, methods []CRUD
 		if esp := fix.plans[cm.Entity.TableName]; esp != nil {
 			spec.parentSQL = esp.seedSQL
 		}
+		spec.ownerAware, spec.ownerLiterals, spec.ownerField = fix.factoryOwnerPlan(svc, cm, spec.fields)
 		spec.imports = fix.importsUsedBy(spec.fields)
 		spec.failure = verifyCreateRequest(ctx, fix, cm.Entity.TableName, spec.parentSQL)
 		specs = append(specs, spec)
 	}
 	return specs
+}
+
+// factoryOwnerPlan derives what FactoryOwner rewrites in one create
+// request's factory.
+//
+// A scoped Create stamps its row's owner from the CALLER, while the factory
+// seeded that row's parents under owners the seed planner invented. With any
+// same-owner guard in the schema — a composite (tenant_id, id) foreign key, a
+// trigger — every scoped create in the lifecycle test then failed. So when
+// the entity or any parent declares forge:owner, the factory takes the
+// owner: every owner cell the parent rows were planned with is rewritten to
+// it, and so is every foreign key that copies one (the planner gives a
+// reference the very value it references, so one literal covers both), and
+// the request's own owner field is set to it.
+//
+// aware is false when no table the request touches declares an owner; the
+// factory then keeps its plain signature, so FactoryOwner on it does not
+// compile rather than doing nothing.
+func (fx *crudTestFixtures) factoryOwnerPlan(svc ServiceDef, cm CRUDMethod, fields []CRUDTestFieldData) (aware bool, literals []string, field string) {
+	if fx == nil {
+		return false, nil, ""
+	}
+	if col := ownerColumnOf(fx.tables[cm.Entity.TableName]); col != "" {
+		aware = true
+		goName := messageFieldGoName(svc.Messages[cm.Method.InputType], col)
+		for _, f := range fields {
+			if f.ProtoName == goName && f.GoType == "string" {
+				field = goName
+			}
+		}
+	}
+	esp := fx.plans[cm.Entity.TableName]
+	if esp == nil || esp.plan == nil {
+		return aware, nil, field
+	}
+	// The entity's own planned row is included although it is never
+	// inserted: its owner value is the one its owner FOREIGN KEY copies off
+	// a parent (tenants.id under agent_runs.tenant_id), and that parent has
+	// to move to the owner too — whether or not it declares forge:owner.
+	seen := map[string]bool{}
+	for _, table := range esp.plan.Tables() {
+		col := ownerColumnOf(fx.tables[table])
+		if col == "" {
+			continue
+		}
+		aware = true
+		for row := 0; row < 2; row++ {
+			raw, ok := esp.plan.NaturalValue(table, col, row)
+			if !ok {
+				continue
+			}
+			lit := sqlStringLiteral(raw)
+			if !seen[lit] {
+				seen[lit] = true
+				literals = append(literals, lit)
+			}
+		}
+	}
+	return aware, literals, field
+}
+
+// ownerColumnOf is the table's first `forge:owner` column, "" for none —
+// the column codegen.OwnerColumn names for the entity.
+func ownerColumnOf(t schemadef.Table) string {
+	for _, c := range t.Columns {
+		if declaresOwnerMarker(c.Comment) {
+			return c.Name
+		}
+	}
+	return ""
+}
+
+// sqlStringLiteral quotes s the way the seed planner renders a text cell.
+func sqlStringLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // verifyCreateRequest checks a baked request against the live shadow schema:
@@ -239,8 +329,20 @@ func execRolledBack(ctx context.Context, db *sql.DB, steps ...sqlStep) error {
 func renderCreateRequestFactory(b *strings.Builder, s createRequestSpec) {
 	fmt.Fprintf(b, "\n// --- %s ---\n\n", s.inputType)
 	constName := lowerFirst(strings.TrimPrefix(s.funcName, "New")) + "ParentSQL"
+	ownersName := lowerFirst(strings.TrimPrefix(s.funcName, "New")) + "ParentOwners"
 	if s.failure == "" && s.parentSQL != "" {
 		fmt.Fprintf(b, "const %s = %s\n\n", constName, backquoteOrQuote(s.parentSQL))
+		if s.ownerAware && len(s.ownerLiterals) > 0 {
+			fmt.Fprintf(b, "// %s are the forge:owner values %s was planned with.\n", ownersName, constName)
+			fmt.Fprintf(b, "var %s = []string{", ownersName)
+			for i, lit := range s.ownerLiterals {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(strconv.Quote(lit))
+			}
+			b.WriteString("}\n\n")
+		}
 	}
 	fmt.Fprintf(b, "// %s returns a %s the applied schema accepts, after\n", s.funcName, s.inputType)
 	b.WriteString("// seeding the foreign-key parent rows it references. Variants 0 and 1 are two\n")
@@ -257,7 +359,17 @@ func renderCreateRequestFactory(b *strings.Builder, s createRequestSpec) {
 	b.WriteString("// Regenerated from db/migrations on every `forge generate`, so it tracks\n")
 	b.WriteString("// your schema; the scaffold-once handlers_crud_test.go calls it for exactly\n")
 	b.WriteString("// that reason.\n")
-	fmt.Fprintf(b, "func %s(t testing.TB, database orm.Context, variant int) *pb.%s {\n", s.funcName, s.inputType)
+	if s.ownerAware {
+		b.WriteString("//\n")
+		b.WriteString("// The table or its parents declare forge:owner. Pass FactoryOwner(owner) to\n")
+		b.WriteString("// seed the parents under the owner your scoped handler will stamp on the\n")
+		b.WriteString("// row, so a same-owner guard in the schema accepts the create:\n")
+		b.WriteString("//\n")
+		fmt.Fprintf(b, "//\treq := %s(t, database, 0, FactoryOwner(\"tenant-1\"))\n", s.funcName)
+		fmt.Fprintf(b, "func %s(t testing.TB, database orm.Context, variant int, opts ...FactoryOption) *pb.%s {\n", s.funcName, s.inputType)
+	} else {
+		fmt.Fprintf(b, "func %s(t testing.TB, database orm.Context, variant int) *pb.%s {\n", s.funcName, s.inputType)
+	}
 	b.WriteString("\tt.Helper()\n")
 	if s.failure != "" {
 		// database and variant stay in the signature so the callers compile;
@@ -266,6 +378,10 @@ func renderCreateRequestFactory(b *strings.Builder, s createRequestSpec) {
 			s.funcName, backquoteOrQuote(s.failure))
 		b.WriteString("\treturn nil\n")
 		b.WriteString("}\n")
+		return
+	}
+	if s.ownerAware {
+		renderOwnerAwareRequestBody(b, s, constName, ownersName)
 		return
 	}
 	if s.parentSQL != "" {
@@ -292,6 +408,113 @@ func renderCreateRequestFactory(b *strings.Builder, s createRequestSpec) {
 	fmt.Fprintf(b, "\tt.Fatalf(\"%s: variant %%d: only variants 0 and 1 are distinct rows\", variant)\n", s.funcName)
 	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n")
+}
+
+// renderOwnerAwareRequestBody writes the body of a factory that takes
+// FactoryOwner: the parents seeded under the owner, the request built, and
+// its own owner field set.
+func renderOwnerAwareRequestBody(b *strings.Builder, s createRequestSpec, constName, ownersName string) {
+	b.WriteString("\towner := factoryOwner(opts)\n")
+	if s.parentSQL != "" {
+		owners := "nil"
+		if len(s.ownerLiterals) > 0 {
+			owners = ownersName
+		}
+		fmt.Fprintf(b, "\tseedFactoryParents(t, database, withFactoryOwner(%s, %s, owner))\n", constName, owners)
+	}
+	fmt.Fprintf(b, "\tvar req *pb.%s\n", s.inputType)
+	b.WriteString("\tswitch variant {\n")
+	for v := 0; v < 2; v++ {
+		fmt.Fprintf(b, "\tcase %d:\n", v)
+		fmt.Fprintf(b, "\t\treq = &pb.%s{\n", s.inputType)
+		for _, f := range s.fields {
+			lit := f.TestValue
+			if v == 1 {
+				lit = f.TestValue2
+			}
+			fmt.Fprintf(b, "\t\t\t%s: %s,\n", f.ProtoName, lit)
+		}
+		b.WriteString("\t\t}\n")
+	}
+	b.WriteString("\tdefault:\n")
+	fmt.Fprintf(b, "\t\tt.Fatalf(\"%s: variant %%d: only variants 0 and 1 are distinct rows\", variant)\n", s.funcName)
+	b.WriteString("\t\treturn nil\n")
+	b.WriteString("\t}\n")
+	if s.ownerField != "" {
+		b.WriteString("\tif owner != \"\" {\n")
+		fmt.Fprintf(b, "\t\treq.%s = owner\n", s.ownerField)
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("\treturn req\n")
+	b.WriteString("}\n")
+}
+
+// createSpecsOwnerAware reports whether any request factory in a group takes
+// FactoryOwner, so the file declares the option and its helpers.
+func createSpecsOwnerAware(specs []createRequestSpec) bool {
+	for _, s := range specs {
+		if s.failure == "" && s.ownerAware {
+			return true
+		}
+	}
+	return false
+}
+
+// factoryOwnerHelperSource declares FactoryOwner and the helpers the
+// owner-aware request factories call. Emitted only into a file that has one.
+const factoryOwnerHelperSource = `// FactoryOption adjusts what a New<CreateRequest> factory seeds.
+type FactoryOption func(*factoryOptions)
+
+type factoryOptions struct{ owner string }
+
+// FactoryOwner seeds the request's foreign-key parents under owner — every
+// forge:owner column of every parent row, and every reference to one — and
+// sets the request's own owner field when it has one. Pass the owner your
+// scoped handler stamps on the created row (for the scaffolded wrapper,
+// whatever it maps crudTestCtx()'s claims to), so a schema that holds a
+// child to its parent's owner accepts the create.
+func FactoryOwner(owner string) FactoryOption {
+	return func(o *factoryOptions) { o.owner = owner }
+}
+
+func factoryOwner(opts []FactoryOption) string {
+	var o factoryOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o.owner
+}
+
+// withFactoryOwner rewrites the owner values sql was planned with to owner.
+// "" leaves sql as planned.
+func withFactoryOwner(sql string, planned []string, owner string) string {
+` + rewriteOwnerLiteralsBody + `}
+`
+
+// rewriteOwnerLiteralsBody is the body of the emitted withFactoryOwner, and
+// of rewriteOwnerLiterals, the generator-side copy forge's own tests execute
+// against postgres (TestCreateRequestFactory_SeedsParentsUnderTheCallersOwner_PG
+// pins the two equal).
+const rewriteOwnerLiteralsBody = `	if owner == "" {
+		return sql
+	}
+	lit := "'" + strings.ReplaceAll(owner, "'", "''") + "'"
+	for _, p := range planned {
+		sql = strings.ReplaceAll(sql, p, lit)
+	}
+	return sql
+`
+
+// rewriteOwnerLiterals is withFactoryOwner, for forge's own tests.
+func rewriteOwnerLiterals(sql string, planned []string, owner string) string {
+	if owner == "" {
+		return sql
+	}
+	lit := "'" + strings.ReplaceAll(owner, "'", "''") + "'"
+	for _, p := range planned {
+		sql = strings.ReplaceAll(sql, p, lit)
+	}
+	return sql
 }
 
 // createSpecsNeed reports which optional imports a set of create-request

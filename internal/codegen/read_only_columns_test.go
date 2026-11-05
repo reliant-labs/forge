@@ -133,20 +133,29 @@ func TestUnmaskableColumns(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("UnmaskableColumns = %v, want %v (column order; PK and read-only excluded)", got, want)
 	}
-	// An entity with no wire fields at all says nothing about the wire, so
-	// only its immutable columns are reported — never every column.
-	bare := unmaskableTestEntity()
-	bare.Fields = nil
-	if got, want := UnmaskableColumns(bare), []string{"subject", "sealed_secret"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("no wire fields: UnmaskableColumns = %v, want %v", got, want)
+	// No wire fields — an empty message, or none declared at all — lets a
+	// client send no column, so every non-key column is wire-less and
+	// refused: an unknown wire fails closed.
+	for name, fields := range map[string][]EntityField{"no message": nil, "empty message": {}} {
+		bare := unmaskableTestEntity()
+		bare.Fields = fields
+		want := []string{"title", "status", "total", "internal_notes", "subject", "sealed_secret"}
+		if got := UnmaskableColumns(bare); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: UnmaskableColumns = %v, want %v", name, got, want)
+		}
 	}
-	// A KNOWN wire message with no fields lets a client send no column, so
-	// every non-key, non-read-only column is wire-less and refused.
-	empty := unmaskableTestEntity()
-	empty.Fields = []EntityField{}
-	empty.WireKnown = true
-	if got := UnmaskableColumns(empty); !slices.Contains(got, "internal_notes") || !slices.Contains(got, "subject") || slices.Contains(got, empty.PkField) {
-		t.Errorf("known empty wire message: UnmaskableColumns = %v, want every non-key column incl. internal_notes", got)
+}
+
+// An update-capable entity whose wire message the service does not declare
+// generated an op whose mask could name any column, writing the zero the
+// request was left holding. Every non-key column is refused now.
+func TestGenerateCRUDHandlers_UpdateOpWithoutWireMessageRefusesEveryColumn(t *testing.T) {
+	e := unmaskableTestEntity()
+	e.Fields = nil
+	ops := generateReadOnlyOps(t, e)
+
+	if !strings.Contains(ops, `Unmaskable: []string{"title", "status", "total", "internal_notes", "subject", "sealed_secret"},`) {
+		t.Errorf("update op over an entity with no wire message must refuse every non-key column in a mask:\n%s", ops)
 	}
 }
 
@@ -155,7 +164,6 @@ func TestUnmaskableColumns(t *testing.T) {
 // it must not be refused as wire-less.
 func TestUnmaskableColumns_WireSecretStaysMaskWritable(t *testing.T) {
 	e := unmaskableTestEntity()
-	e.WireKnown = true
 	e.Fields = append(e.Fields, EntityField{Name: "api_key", GoName: "ApiKey", ProtoType: "string", GoType: "string", Kind: FieldKindScalar, Secret: true})
 	e.Columns = append(e.Columns, EntityColumn{Name: "api_key", Type: "string"})
 	if got := UnmaskableColumns(e); slices.Contains(got, "api_key") {

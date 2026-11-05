@@ -435,6 +435,7 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 		fd.Validate = fieldConstraintsFromDescriptor(f.Desc)
 		fd.Secret = fieldHasSecretMarker(f)
 		fd.ReadOnly = fieldHasReadOnlyMarker(f)
+		fd.Owner = fieldHasOwnerMarker(f)
 		fd.Generated = fieldGeneratedExpr(f)
 		fd.Guards = fieldGuardTargets(f)
 		fields = append(fields, fd)
@@ -490,6 +491,16 @@ var readOnlyFieldMarkerRE = codegen.ProtoMarkerAnyCommentRE(codegen.ReadOnlyProt
 func fieldHasReadOnlyMarker(f *protogen.Field) bool {
 	return readOnlyFieldMarkerRE.MatchString(string(f.Comments.Leading)) ||
 		readOnlyFieldMarkerRE.MatchString(string(f.Comments.Trailing))
+}
+
+// fieldHasOwnerMarker reports whether a field carries `// forge:owner` as its
+// LEADING comment or a TRAILING one, alone or after another field marker on
+// the same line (codegen.OwnerMarkerCommentRE — the rule the raw scanner
+// applies too). Birth declares the field's column the table's owner column;
+// see SchemaFieldDef.Owner.
+func fieldHasOwnerMarker(f *protogen.Field) bool {
+	return codegen.OwnerMarkerCommentRE.MatchString(string(f.Comments.Leading)) ||
+		codegen.OwnerMarkerCommentRE.MatchString(string(f.Comments.Trailing))
 }
 
 // fieldGeneratedExpr returns the SQL expression a `// forge:generated <expr>`

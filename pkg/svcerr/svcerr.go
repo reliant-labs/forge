@@ -610,6 +610,12 @@ func clientSafe(err error) error {
 //
 // Like ToConnect it reads only the outer error of a [WithCause]: a kind or a
 // *connect.Error in the cause does not change it.
+//
+// It is the code to assert in a test that calls a handler directly. No
+// [Interceptor] runs there, so `return nil, PermissionDenied("admin only")`
+// reaches the test as a bare kind, which connect.CodeOf reads as
+// CodeUnknown; Code reads it as CodePermissionDenied, as the client will be
+// told, and reads a *connect.Error exactly as connect.CodeOf does.
 func Code(err error) connect.Code {
 	if err == nil {
 		return connect.CodeUnknown

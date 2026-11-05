@@ -99,6 +99,9 @@ var writeBundlesFn = writeEnvBundles
 // here binds every env's manifests to the same release and the same source.
 func writeEnvBundles(ctx context.Context, projectDir string, envs []string, in bundleBuildInputs) ([]bundleWriteOutcome, error) {
 	out := make([]bundleWriteOutcome, 0, len(envs))
+	if in.declaredEnvs == nil {
+		in.declaredEnvs = lazyDeclaredEnvCatalog(ctx, projectDir, in.errWriter())
+	}
 	for _, env := range envs {
 		got, err := writeEnvBundle(ctx, projectDir, env, in)
 		if err != nil {
@@ -158,6 +161,10 @@ type bundleBuildInputs struct {
 	StrictObservability bool
 	// errOut is where warnings go. nil means stderr.
 	errOut io.Writer
+	// declaredEnvs yields the project's declared-environment catalog,
+	// computed once per build (lazyDeclaredEnvCatalog). Consulted only for a
+	// bundle that seals it (sealsDeclaredEnvs); nil seals none.
+	declaredEnvs func() []release.DeclaredEnv
 }
 
 // writeEnvBundle renders one env, builds its bundle, puts the bytes where that
@@ -270,18 +277,25 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 			env, release.BundleFeaturePlacementPrerequisites)
 		return bundleWriteOutcome{Env: env, Skipped: true}, nil
 	}
+	// The declared-env catalog rides only a released bundle recorded on a
+	// control plane that decodes it; see bundle_declared_envs.go.
+	var declaredEnvs []release.DeclaredEnv
+	if in.declaredEnvs != nil && sealsDeclaredEnvs(in.Release, ledger, reader) {
+		declaredEnvs = in.declaredEnvs()
+	}
 	built, err := bundle.Build(ctx, bundle.BuildInput{
-		Placements: placements,
-		Project:    doc.Project,
-		Env:        env,
-		Release:    in.Release,
-		Pins:       in.Pins,
-		Provenance: doc.Provenance,
-		Reader:     reader,
-		Shape:      bundleShapeInputOf(doc),
-		CreatedAt:  createdAt,
-		Units:      doc.units,
-		Reconciled: doc.reconciled(),
+		DeclaredEnvs: declaredEnvs,
+		Placements:   placements,
+		Project:      doc.Project,
+		Env:          env,
+		Release:      in.Release,
+		Pins:         in.Pins,
+		Provenance:   doc.Provenance,
+		Reader:       reader,
+		Shape:        bundleShapeInputOf(doc),
+		CreatedAt:    createdAt,
+		Units:        doc.units,
+		Reconciled:   doc.reconciled(),
 		// The units the hub converges, for an env that splits them.
 		ReconciledUnits: doc.reconciledUnits(),
 		Observability:   observability,
@@ -428,6 +442,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		Databases:           doc.Shape.Databases,
 		Applier:             doc.Shape.Applier,
 		Units:               doc.Shape.Units,
+		HostInfra:           doc.Shape.HostInfra,
 		Store: release.StoreProjection{
 			StoreSecrets: doc.Shape.StoreSecrets, GeneratedSecrets: doc.Shape.GeneratedSecrets,
 			OpenBao: doc.Shape.OpenBao, ExternalSecretsOperators: doc.Shape.ExternalSecretsOperators,

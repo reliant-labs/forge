@@ -101,6 +101,17 @@ const (
 	// a shape carrying it is written only to one that names the feature,
 	// which is the control plane that enforces it.
 	BundleFeatureHealthGate = "shape-health-gate"
+	// BundleFeatureDeclaredEnvs is BundleDoc.DeclaredEnvs: the project's
+	// declared-environment catalog (bundle_catalog.go). A control plane that
+	// predates it lists only the envs it has records of.
+	BundleFeatureDeclaredEnvs = "doc-declared-envs"
+	// BundleFeatureShapePlacement is ShapeWorkload.Unit and Shape.HostInfra:
+	// the two placement facts a reader needs to place every part of an env
+	// from its shape alone — which delivery unit a cluster workload is in
+	// (so whether the hub or forge applies it), and whether host infra votes
+	// "host". Both strict-decoded paths carry the shape, so both are limited
+	// by it ([BundleReader.LimitShape]).
+	BundleFeatureShapePlacement = "shape-placement"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -108,7 +119,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -135,6 +146,9 @@ func (r *BundleReader) Limit(d BundleDoc) BundleDoc {
 	}
 	if !r.Supports(BundleFeatureObjectSummaries) {
 		d.Objects = nil
+	}
+	if !r.Supports(BundleFeatureDeclaredEnvs) {
+		d.DeclaredEnvs = nil
 	}
 	d.Shape = r.LimitShape(d.Shape)
 	return d
@@ -189,6 +203,16 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureDatabaseDashboards) {
 		s.Databases = nil
+	}
+	if !r.Supports(BundleFeatureShapePlacement) {
+		s.HostInfra = false
+		if slices.ContainsFunc(s.Workloads, func(w ShapeWorkload) bool { return w.Unit != "" }) {
+			ws := slices.Clone(s.Workloads)
+			for i := range ws {
+				ws[i].Unit = ""
+			}
+			s.Workloads = ws
+		}
 	}
 	if !r.Supports(BundleFeatureHealthGate) && s.DeliveryPolicy != nil && s.DeliveryPolicy.HealthGate != nil {
 		pol := *s.DeliveryPolicy

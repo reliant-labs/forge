@@ -351,6 +351,9 @@ fails loudly otherwise. A user-supplied `order_by` is validated against
 the table's declared-column allowlist (`<Entity>Columns`); an undeclared
 column returns `InvalidArgument`, not a silent no-op.
 
+A range (`published_after`, `week_start_from`) or a key prefix is declared
+on the field, not hand-written: `forge skill load proto/list-filters`.
+
 **The request's fields ARE the filter surface.** To filter or scope a list by
 anything else — an enum `status`, a foreign key, an owner `<owner>_id` — add
 that field to the List request naming the real column, and forge wires it end

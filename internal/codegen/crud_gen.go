@@ -359,8 +359,16 @@ type FilterFieldData struct {
 	GoName     string // PascalCase: "Active", "Search", "Status"
 	ColumnName string // DB column: "active", "status"
 	FieldType  string // "bool", "string", "int32", "int64", "enum"
-	FilterType string // "exact", "search"
-	IsOptional bool   // proto optional keyword
+	// FilterType is "exact", "search", or a declared (forge.v1.filter)
+	// facet's "range" (RangeFunc) or "prefix" (orm.WherePrefix).
+	FilterType string
+	IsOptional bool // proto optional keyword
+	// RangeFunc is a "range" filter's orm comparison: WhereGt, WhereGte,
+	// WhereLt or WhereLte.
+	RangeFunc string
+	// IsTimestamp marks a google.protobuf.Timestamp field, bound as
+	// req.<F>.AsTime() and skipped while nil.
+	IsTimestamp bool
 	// IsEnum marks a pb-enum-typed filter field. Enum entity columns
 	// store the proto enum VALUE NAMES as TEXT (CHECK (col IN (...))),
 	// while the pb field is int32-kinded — binding the enum value raw
@@ -1412,7 +1420,7 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 					ff = classifyFilterField(mf)
 				}
 				ff.GoName = messageFieldGoName(msgFields, mf.Name)
-				ff.EnumNumber = ff.IsEnum && entityColumnType(cm.Entity, mf.Name) == "int64"
+				ff.EnumNumber = ff.IsEnum && entityColumnType(cm.Entity, ff.ColumnName) == "int64"
 				filterFields = append(filterFields, ff)
 			}
 		}
@@ -2293,6 +2301,9 @@ func classifySkipField(name string) bool {
 //     review-confirmed silence bug: the query either errors at runtime or
 //     (SQLite double-quoted fallback) silently matches nothing.
 func classifyEntityFilterField(mf MessageFieldDef, entity EntityDef) (FilterFieldData, error) {
+	if mf.Filter != nil {
+		return classifyFilterFacet(mf, entity)
+	}
 	ff := classifyFilterField(mf)
 	if ff.FilterType == "search" {
 		cols := entityStringColumns(entity)
@@ -2312,6 +2323,92 @@ func classifyEntityFilterField(mf MessageFieldDef, entity EntityDef) (FilterFiel
 	return ff, fmt.Errorf(
 		"list filter field %q has no matching column on entity %s in the applied schema (columns: %s); rename the request field to a real column (or add the column via a migration), or implement the RPC by hand — a method, in any file of the handler package, that does not call its generated crud<Rpc>Op",
 		mf.Name, entity.Name, entityColumnList(entity))
+}
+
+// rangeFuncs maps a range facet's op to the orm comparison it applies.
+var rangeFuncs = map[string]string{
+	FilterOpGT: "WhereGt", FilterOpGTE: "WhereGte", FilterOpLT: "WhereLt", FilterOpLTE: "WhereLte",
+}
+
+// timestampMessage is the one message type a range facet compares.
+const timestampMessage = "google.protobuf.Timestamp"
+
+// classifyFilterFacet maps a List request field that declares
+// `(forge.v1.filter)`: the column it names (its own name when the facet
+// names none) and the comparison it applies. Like the exact path, a column
+// the applied schema does not declare fails the generate; so does an op the
+// field cannot take:
+//
+//   - equality and the range ops: a string or number field, or (ranges
+//     only) a google.protobuf.Timestamp against a time column;
+//   - prefix: a string field against a text column.
+func classifyFilterFacet(mf MessageFieldDef, entity EntityDef) (FilterFieldData, error) {
+	column := mf.Filter.Column
+	if column == "" {
+		column = mf.Name
+	}
+	op := mf.Filter.Op
+	opName := "LIST_FILTER_OP_" + strings.ToUpper(op)
+	if op == "" {
+		opName = "equality"
+	}
+	ff := classifyFilterField(mf)
+	ff.ColumnName = column
+	ff.FilterType = "exact"
+
+	colType := entityColumnType(entity, column)
+	declared := false
+	for _, c := range entity.Columns {
+		if c.Name == column {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return ff, fmt.Errorf(
+			"list filter %q: (forge.v1.filter) names column %q, which entity %s does not declare in the applied schema (columns: %s); name a real column, or add it via a migration",
+			mf.Name, column, entity.Name, entityColumnList(entity))
+	}
+
+	isTimestamp := mf.ProtoType == "message" && mf.MessageType == timestampMessage
+	scalar := mf.ProtoType == "string" || isNumericProtoScalar(mf.ProtoType)
+	switch {
+	case op == FilterOpPrefix:
+		if mf.ProtoType != "string" {
+			return ff, fmt.Errorf("list filter %q: LIST_FILTER_OP_PREFIX needs a string field, not %s", mf.Name, describeFilterFieldType(mf))
+		}
+		if colType != "string" {
+			return ff, fmt.Errorf("list filter %q: LIST_FILTER_OP_PREFIX compares text, and column %q is %s; use a range op, or prefix a text column", mf.Name, column, colType)
+		}
+		ff.FilterType = "prefix"
+	case rangeFuncs[op] != "":
+		switch {
+		case isTimestamp:
+			if colType != "time" {
+				return ff, fmt.Errorf("list filter %q: a google.protobuf.Timestamp compares against a time column, and column %q is %s", mf.Name, column, colType)
+			}
+			ff.IsTimestamp = true
+		case !scalar:
+			return ff, fmt.Errorf("list filter %q: %s needs a string, number or google.protobuf.Timestamp field, not %s", mf.Name, opName, describeFilterFieldType(mf))
+		}
+		ff.FilterType = "range"
+		ff.RangeFunc = rangeFuncs[op]
+	case op == "":
+		if !scalar && mf.ProtoType != "bool" && mf.ProtoType != "enum" {
+			return ff, fmt.Errorf("list filter %q: equality needs a scalar or enum field, not %s", mf.Name, describeFilterFieldType(mf))
+		}
+	default:
+		return ff, fmt.Errorf("list filter %q: unknown (forge.v1.filter) op %q", mf.Name, op)
+	}
+	return ff, nil
+}
+
+// describeFilterFieldType names a request field's type for a facet error.
+func describeFilterFieldType(mf MessageFieldDef) string {
+	if mf.ProtoType == "message" && mf.MessageType != "" {
+		return mf.MessageType
+	}
+	return mf.ProtoType
 }
 
 // buildCustomFilters maps a custom-read-shape RPC's request fields onto
@@ -2334,6 +2431,12 @@ func buildCustomFilters(svc ServiceDef, cm CRUDMethod) []FilterFieldData {
 	var out []FilterFieldData
 	for _, mf := range msgFields {
 		if classifySkipField(mf.Name) || mf.Name == "order_by" {
+			continue
+		}
+		// A declared (forge.v1.filter) facet is the generated List op's
+		// contract; this skeleton seeds only exact and search predicates,
+		// and an exact guess at a range field would filter the wrong way.
+		if mf.Filter != nil {
 			continue
 		}
 		// Only scalar fields make sense as WhereEq/ILike predicates;

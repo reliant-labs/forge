@@ -247,14 +247,18 @@ func birthListedEntityFromProto(bc birthContext, msgName, name string, opts enti
 // author believes it is protected — the worst possible failure mode, and the
 // one this refusal makes impossible. Nothing has been written when it fires:
 // fix the marker, re-run, get the entity.
+//
+// A `// forge:owner` marker no field took is refused the same way: dropped,
+// the table is born unowned and handlers_crud.go unscoped.
 func readOnlyMarkerRefusal(m codegen.RawProtoMessage) error {
-	if len(m.UnappliedReadOnlyMarkers) == 0 {
+	sites := append(append([]codegen.RawProtoMarkerSite(nil), m.UnappliedReadOnlyMarkers...), m.UnappliedOwnerMarkers...)
+	if len(sites) == 0 {
 		return nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "message %s carries a field marker (%s) that attaches to no field:",
-		m.Name, strings.Join(codegen.ReadOnlyProtoMarkers, " / "))
-	for _, site := range m.UnappliedReadOnlyMarkers {
+		m.Name, strings.Join(append(append([]string(nil), codegen.ReadOnlyProtoMarkers...), codegen.ProtoMarkerOwner), " / "))
+	for _, site := range sites {
 		fmt.Fprintf(&b, "\n    %s", site)
 	}
 	b.WriteString("\n  put the marker on the field's own line (trailing) or on the line directly above it, and re-run")

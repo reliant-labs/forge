@@ -143,6 +143,7 @@ FROM moves
 GROUP BY service
 HAVING max(t) < now() - INTERVAL 10 MINUTE
    AND uniqExactIf(toStartOfHour(t), t < now() - INTERVAL 10 MINUTE) >= 18
+   AND arrayCount(d -> d >= 10 * 60, arrayDifference(arraySort(groupUniqArray(toUInt32(toUnixTimestamp(t)))))) <= 2
 ORDER BY service
 
 -- WorkloadCrashLooping (crash-loop) severity=critical for=0s interval=1m

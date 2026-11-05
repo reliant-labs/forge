@@ -109,7 +109,7 @@ func snapshotHostedPins(s release.Snapshot, group deploytarget.ServiceGroup) (ma
 	digests := map[string]string{}
 	bound := map[string]release.SnapshotArtifact{}
 	for _, svc := range group.Services {
-		if svc.Hosted == nil || svc.Hosted.Tier == deploytarget.HostedTierDatabase {
+		if svc.Hosted == nil || svc.Hosted.Tier == deploytarget.HostedTierDatabase || svc.Hosted.Tier == deploytarget.HostedTierBucket {
 			continue
 		}
 		slot := "container:" + svc.Name
@@ -147,6 +147,12 @@ func snapshotHostedPins(s release.Snapshot, group deploytarget.ServiceGroup) (ma
 // applies and the binding a reader audits cannot name different bytes.
 func checkHostedRecordsMatchSnapshot(records []deploytarget.HostedRecord, bound map[string]release.SnapshotArtifact) error {
 	for _, r := range records {
+		// Only the release-bound kinds address bytes. A ManagedDatabase or
+		// ManagedBucket may share a workload's name, and must not be read
+		// as that workload's binding.
+		if r.Kind != "Workload" && r.Kind != "StaticSite" {
+			continue
+		}
 		a, ok := bound[r.Name]
 		if !ok {
 			continue

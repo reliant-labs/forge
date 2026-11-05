@@ -213,7 +213,7 @@ func managedLabels(name, partOf string) map[string]string {
 	return map[string]string{LabelName: name, LabelManagedBy: "forge", LabelPartOf: partOf}
 }
 
-// Render renders one StaticSite or ManagedDatabase. The object's
+// Render renders one StaticSite, ManagedDatabase or ManagedBucket. The object's
 // metadata.name is the resource name and its spec is the declaration. Its
 // metadata.namespace is NOT consulted: on hosted the CR lives where the
 // control plane keeps it, not where the workload runs, so the target is
@@ -237,6 +237,17 @@ func Render(obj runtime.Object, ctx Context) ([]*unstructured.Unstructured, erro
 			return nil, fmt.Errorf("staticsite %s: %w", o.Name, err)
 		}
 		return nil, nil
+	case *v1alpha1.ManagedBucket:
+		// Like a StaticSite, a ManagedBucket renders NO Kubernetes objects:
+		// its executor is the control plane's managedbucket operator, which
+		// provisions the cloud bucket and writes the credential Secret.
+		if err := v1alpha1.ValidateBucketName(o.Name); err != nil {
+			return nil, fmt.Errorf("managedbucket: %w", err)
+		}
+		if err := o.Spec.Validate(); err != nil {
+			return nil, fmt.Errorf("managedbucket %s: %w", o.Name, err)
+		}
+		return nil, nil
 	case *v1alpha1.Workload:
 		return nil, fmt.Errorf("deploy.Render: workload %s must be rendered with its environment's other workloads (deploy.RenderWorkloads): `before` and workloadURL are resolved across the set", o.Name)
 	default:
@@ -250,6 +261,14 @@ func Render(obj runtime.Object, ctx Context) ([]*unstructured.Unstructured, erro
 // var reads it directly, because the Cluster renders into the same namespace
 // as the workload that references it.
 func DatabaseCredentialSecretName(databaseName string) string { return databaseName + "-app" }
+
+// BucketCredentialSecretName is the Secret the hosted platform writes for a
+// ManagedBucket: "forge-bucket-<bucket>", in the bucket's namespace, with one
+// key per v1alpha1.BucketCredentialKey. It is the counterpart of
+// DatabaseCredentialSecretName, but unlike CNPG's "<cluster>-app" this name
+// IS forge's choice, and the control plane's managedbucket operator writes
+// exactly it. A BucketRef env var reads it directly.
+func BucketCredentialSecretName(bucketName string) string { return "forge-bucket-" + bucketName }
 
 // DatabaseIdentifiers are the Postgres objects a ManagedDatabase creates. The
 // Cluster name is the resource name unchanged. The database is that name with

@@ -97,6 +97,7 @@ ConfigMapKeyRef = tiers.ConfigMapKeyRef
 FieldRef = tiers.FieldRef
 ManagedSecretRef = tiers.ManagedSecretRef
 DatabaseRef = tiers.DatabaseRef
+BucketRef = tiers.BucketRef
 WorkloadURLRef = tiers.WorkloadURLRef
 
 # The BROADCAST selector for `Workload.before` (v1alpha1.BeforeAll): gate

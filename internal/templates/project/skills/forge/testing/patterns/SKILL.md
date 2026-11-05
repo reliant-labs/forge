@@ -194,6 +194,8 @@ req.Notes = "rush"
 resp, err := svc.CreateOrder(ctx, connect.NewRequest(req))
 ```
 
+**Owned tables.** When the request's table or any of its FK parents declares `forge:owner`, its factory takes `FactoryOwner(owner)`: every parent's owner column (and every reference to one) is seeded under that owner, and the request's own owner field is set to it. A scoped Create stamps the row with the CALLER's owner, so pass the owner your handler derives from the test's claims, or a same-owner guard (a composite `(tenant_id, id)` key, a trigger) rejects the create: `orders.NewCreateOrderRequest(t, db, 0, orders.FactoryOwner("tenant-1"))`. The scaffolded lifecycle test of a scoped Create passes `FactoryOwner("test-user")`, the owner its placeholder `claims.UserID` yields; change it with the wrapper's mapping. A factory touching no owned table has no such option.
+
 To move a row along its lifecycle, override the status AND the columns the state requires (`x.Status = "SHIPPED"; x.ShippedAt = &now`) — or, better, drive the RPC that owns the transition. A factory forge cannot derive a valid row for still compiles; calling it fails the test with postgres's reason, which `forge generate` also prints.
 
 **Migrating an older lifecycle test.** Lifecycle tests scaffolded before the factories embed a literal `INSERT` seed block and literal `&pb.Create<Entity>Request{...}` values. `forge lint --fixture-drift` executes that SQL against the current schema and reports each statement postgres rejects. The file is yours: delete the seed block and replace each literal create request with `<svc>.NewCreate<Entity>Request(t, db, 0)` / `(t, db, 1)` — exactly what a freshly scaffolded test does.

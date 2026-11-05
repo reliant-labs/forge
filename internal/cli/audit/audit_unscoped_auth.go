@@ -691,7 +691,11 @@ func scopingRemediation(method codegen.Method, entity, column string) string {
 	if entity == "" || column == "" {
 		return ""
 	}
-	snippet, err := codegen.RenderScopedCRUDShim(method.Name, method.InputType, method.OutputType, entity, column)
+	// The audit reads owner declarations off the migration text, which
+	// does not say which column is the key. Forge keys every table it
+	// births on `id`, so an `id` owner is a table owned by itself, and its
+	// Update must not stamp the key (see CRUDMethodTemplateData.OwnerIsPK).
+	snippet, err := codegen.RenderScopedCRUDShim(method.Name, method.InputType, method.OutputType, entity, column, column == "id")
 	if err != nil {
 		return ""
 	}

@@ -154,9 +154,15 @@ wraps rather than replaces:
 ```go
 // handlers_crud_ops_gen.go (generated)
 ReadOnly: []string{"status", "shipped_at"},       // HandleUpdate refuses a mask naming one
+Unmaskable: []string{"customer_id"},              // forge:immutable / no wire field: refused too
 Persist: ... db.UpdateOrder(ctx, s.deps.DB, entity,
         crud.Preserve("status", "shipped_at")) ... // a full replace leaves them as stored
 ```
+
+`Unmaskable` lists the `forge:immutable` columns and the columns with no wire
+field. It only gates the mask: pass `op.ReadOnly`, never `op.Unmaskable`, to
+`crud.Preserve` — a column with no wire field is yours to set from an
+`op.Entity` hook, and Preserve would silently drop that write.
 
 So there is no need to reload the stored row and copy the editable fields onto
 it, or to filter lifecycle paths out of the mask — the op does both, and the
@@ -178,7 +184,9 @@ Two things to know when overriding:
 AIP-203 asks servers to *ignore* output-only `update_mask` paths; forge refuses
 them instead, because a 200 that silently changed nothing is the failure this
 exists to prevent. An override that wants the AIP behaviour sets
-`op.ReadOnly = nil` and filters the paths in `op.PersistMasked`.
+`op.ReadOnly = nil` and filters the paths in `op.PersistMasked`. An Update a
+client may legitimately use to set an immutable column (an admin reassigning an
+owner) removes it from `op.Unmaskable` in that override, and nowhere else.
 
 ## Hand SQL: two placeholder dialects on one handle
 

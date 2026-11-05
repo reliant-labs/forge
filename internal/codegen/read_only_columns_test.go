@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -111,6 +112,78 @@ func TestGenerateCRUDHandlers_UpdateOpRefusesReadOnlyColumns(t *testing.T) {
 	// is how the owning RPC writes these columns.
 	if !strings.Contains(ops, "db.UpdateShipmentMasked(ctx, s.deps.DB, entity, fields)") {
 		t.Errorf("PersistMasked must still delegate to db.UpdateShipmentMasked unchanged:\n%s", ops)
+	}
+}
+
+// unmaskableTestEntity is readOnlyTestEntity plus a `forge:immutable` column
+// on the wire (an OAuth subject) and a `forge:immutable` column with none.
+func unmaskableTestEntity() EntityDef {
+	e := readOnlyTestEntity()
+	e.Fields = append(e.Fields, EntityField{Name: "subject", GoName: "Subject", ProtoType: "string", GoType: "string", Kind: FieldKindScalar})
+	e.Columns = append(e.Columns,
+		EntityColumn{Name: "subject", Type: "string", NotNull: true, Immutable: true},
+		EntityColumn{Name: "sealed_secret", Type: "bytes", Immutable: true},
+	)
+	return e
+}
+
+func TestUnmaskableColumns(t *testing.T) {
+	got := UnmaskableColumns(unmaskableTestEntity())
+	want := []string{"internal_notes", "subject", "sealed_secret"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("UnmaskableColumns = %v, want %v (column order; PK and read-only excluded)", got, want)
+	}
+	// No wire fields — an empty message, or none declared at all — lets a
+	// client send no column, so every non-key column is wire-less and
+	// refused: an unknown wire fails closed.
+	for name, fields := range map[string][]EntityField{"no message": nil, "empty message": {}} {
+		bare := unmaskableTestEntity()
+		bare.Fields = fields
+		want := []string{"title", "status", "total", "internal_notes", "subject", "sealed_secret"}
+		if got := UnmaskableColumns(bare); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: UnmaskableColumns = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// An update-capable entity whose wire message the service does not declare
+// generated an op whose mask could name any column, writing the zero the
+// request was left holding. Every non-key column is refused now.
+func TestGenerateCRUDHandlers_UpdateOpWithoutWireMessageRefusesEveryColumn(t *testing.T) {
+	e := unmaskableTestEntity()
+	e.Fields = nil
+	ops := generateReadOnlyOps(t, e)
+
+	if !strings.Contains(ops, `Unmaskable: []string{"title", "status", "total", "internal_notes", "subject", "sealed_secret"},`) {
+		t.Errorf("update op over an entity with no wire message must refuse every non-key column in a mask:\n%s", ops)
+	}
+}
+
+// A `// forge:secret` wire field is on the wire (reads return "", writes
+// carry the new value), so a client mask naming it rotates the credential:
+// it must not be refused as wire-less.
+func TestUnmaskableColumns_WireSecretStaysMaskWritable(t *testing.T) {
+	e := unmaskableTestEntity()
+	e.Fields = append(e.Fields, EntityField{Name: "api_key", GoName: "ApiKey", ProtoType: "string", GoType: "string", Kind: FieldKindScalar, Secret: true})
+	e.Columns = append(e.Columns, EntityColumn{Name: "api_key", Type: "string"})
+	if got := UnmaskableColumns(e); slices.Contains(got, "api_key") {
+		t.Errorf("wire forge:secret must stay mask-writable; UnmaskableColumns = %v", got)
+	}
+}
+
+// A client update_mask naming a forge:immutable column, or a column with no
+// wire field, was accepted and wrote it — an OAuth subject rewritten, a
+// sealed credential reset to NULL from a value the client never sent. The
+// generated op now names them for HandleUpdate to refuse, and
+// leaves the full replace's Preserve (the read-only columns) unchanged.
+func TestGenerateCRUDHandlers_UpdateOpRefusesUnmaskableColumns(t *testing.T) {
+	ops := generateReadOnlyOps(t, unmaskableTestEntity())
+
+	if !strings.Contains(ops, `Unmaskable: []string{"internal_notes", "subject", "sealed_secret"},`) {
+		t.Errorf("update op must declare its immutable and wire-less columns for HandleUpdate's mask check:\n%s", ops)
+	}
+	if !strings.Contains(ops, `crud.Preserve("status", "total"))`) {
+		t.Errorf("full replace must preserve only the read-only columns:\n%s", ops)
 	}
 }
 

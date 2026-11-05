@@ -27,7 +27,15 @@ type LoginBrokerTemplateData struct {
 	// ConfigType is the pkg/config type the broker reads its idp_* / oidc_*
 	// settings from — the config that declares them; "" is Config.
 	ConfigType string
+	// SelfSignupField reports whether that config declares auth_self_signup,
+	// the opt-in that serves public sign-up outside development. A project
+	// whose config predates it gets a broker that serves sign-up in
+	// development only, and still compiles.
+	SelfSignupField bool
 }
+
+// selfSignupConfigField is the Go name of auth_self_signup.
+const selfSignupConfigField = "AuthSelfSignup"
 
 // middlewareSessionCookieDecl matches the constant the scaffolded
 // pkg/middleware/middleware.go declares.
@@ -75,12 +83,14 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return fmt.Errorf("create internal/app dir: %w", err)
 	}
+	withSignup, signupDeclared := configDeclaring(projectDir, append(append([]string{}, brokerConfigFields...), selfSignupConfigField))
 	mw, _ := os.ReadFile(filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
 	content, err := templates.ProjectTemplates().Render("app-login-broker.go.tmpl", LoginBrokerTemplateData{
 		Module:                          modulePath,
 		Name:                            projectName,
 		MiddlewareDeclaresSessionCookie: middlewareSessionCookieDecl.Match(mw),
 		ConfigType:                      configType,
+		SelfSignupField:                 signupDeclared && withSignup == configType,
 	})
 	if err != nil {
 		return fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

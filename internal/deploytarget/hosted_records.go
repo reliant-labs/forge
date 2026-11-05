@@ -51,6 +51,9 @@ func hostedRecordsOf(plan []hostedPlanItem) ([]HostedRecord, error) {
 		case v1alpha1.ManagedDatabaseSpec:
 			tm.Kind = "ManagedDatabase"
 			doc = v1alpha1.ManagedDatabase{TypeMeta: tm, ObjectMeta: om, Spec: spec}
+		case v1alpha1.ManagedBucketSpec:
+			tm.Kind = "ManagedBucket"
+			doc = v1alpha1.ManagedBucket{TypeMeta: tm, ObjectMeta: om, Spec: spec}
 		default:
 			return nil, fmt.Errorf("%s: hosted plan item carries a %T spec", item.Name, item.Spec)
 		}

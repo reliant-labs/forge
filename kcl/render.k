@@ -326,6 +326,9 @@ _channel = lambda v: any -> str {
         # _bucket_resolve lowers every BucketRef but a hosted referrer's of a
         # hosted bucket, which stays one and rides the wire as bucketRef.
         "BucketRef" = "bucketRef"
+        # _llm_resolve lowers every LLMRef before this (a hosted one to a
+        # blank literal the platform fills); named for the pre-lowering checks.
+        "LLMRef" = "llmRef"
     }[typeof(v)]
 }
 
@@ -335,7 +338,7 @@ _channel = lambda v: any -> str {
 # the WorkloadURL, through its cluster's host gateway when it is a pod.
 _env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any {
     hosted = rt.type == "hosted"
-    v = _idn_resolve(v0, where, rt, bundle) if typeof(v0) == "IdentityRef" else (_bucket_resolve(v0, where, rt, bundle) if typeof(v0) == "BucketRef" else v0)
+    v = _idn_resolve(v0, where, rt, bundle) if typeof(v0) == "IdentityRef" else (_bucket_resolve(v0, where, rt, bundle) if typeof(v0) == "BucketRef" else (_llm_resolve(name, v0, where, rt, bundle) if typeof(v0) == "LLMRef" else v0))
     _c = _channel(v)
     _TEnvVar {
         name = name
@@ -392,6 +395,36 @@ _compose_bucket_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
     _vals = {k: _bucket_resolve(v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env if typeof(v) == "BucketRef"}
     _refs = [k for k, v in _vals if typeof(v) != "str"]
     assert not _refs, "workload '${w.name}' env ${_refs}: a forge.BucketRef credential that is a secret reference cannot reach a compose container, whose environment is literals. Run the referrer on forge.OnHost {} or forge.OnCluster, or bind the bucket to forge.BucketOnMinIO in this env"
+    _vals
+}
+
+# An LLMRef as the value its referrer reads. On forge.OnHosted (Reliant's
+# gateway) only the control plane knows the env's key, so a hosted referrer
+# gets a BLANK literal under the variable's canonical name and the platform's
+# workload operator fills it, the way it fills the OTLP variables; any other
+# referrer is refused. On a forge.LLMEndpoint it is the declared URL, or the
+# credential as the reference it declares, lowered through its own channel.
+_llm_resolve = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> any {
+    _l = bundle.llm
+    assert _l, "${where}: forge.LLMRef needs Bundle.llm (forge.LLM): there is no LLM to read ${v.key} from. Declare `llm = forge.LLM {runtime = forge.OnHosted {}}` (Reliant's gateway) or a forge.LLMEndpoint"
+    _hosted_llm = _l.runtime.type == "hosted"
+    assert not (_hosted_llm and rt.type != "hosted"), \
+        "${where}: forge.LLM is on forge.OnHosted, Reliant's gateway, whose per-env key only the platform hands to a workload it runs, so a workload on the ${rt.type} runtime cannot read it. Run the referrer on forge.OnHosted {}, or bind the LLM to forge.LLMEndpoint {base_url = ..., api_key = ...} in this env"
+    _canonical = name in LLM_ENV_KEYS and LLM_ENV_KEYS[name] == v.key
+    assert not _hosted_llm or _canonical, \
+        "${where}: on forge.OnHosted the platform fills the LLM's variables BY NAME, so forge.LLMRef {key = \"${v.key}\"} must sit under ${[k for k, x in LLM_ENV_KEYS if x == v.key]}. Use `env = forge.llm_env()`"
+    _val = "" if _hosted_llm else _llm_endpoint_values(_l.runtime)[v.key]
+    assert not (rt.type == "hosted" and typeof(_val) == "SecretRef"), \
+        "${where}: forge.LLMEndpoint.api_key is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} (the env's secret store: `forge secret set --env <env> <NAME>`), or forge.OnHosted {} for Reliant's gateway"
+    _val
+}
+
+# A compose workload's LLMRefs as compose process env: literals only, so a
+# credential declared as a secret reference is refused rather than dropped.
+_compose_llm_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
+    _vals = {k: _llm_resolve(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env if typeof(v) == "LLMRef"}
+    _refs = [k for k, v in _vals if typeof(v) != "str"]
+    assert not _refs, "workload '${w.name}' env ${_refs}: a forge.LLMEndpoint credential that is a secret reference cannot reach a compose container, whose environment is literals. Run the referrer on forge.OnHost {} or forge.OnCluster"
     _vals
 }
 
@@ -1368,9 +1401,10 @@ _render_runtime = lambda w: any, rt: any, bundle: Bundle -> any {
         } | ({"optional": True} if rt.optional else {}) | {
         # The compose PROCESS env: the workload's literal env under the
         # runtime's own (the runtime block is the more specific statement).
-        # A BucketRef resolves to its literal here, so the compose file can
-        # hand it to the container (`UPLOADS_ENDPOINT: ${UPLOADS_ENDPOINT}`).
-        "env": {k: v for k, v in w.env if typeof(v) == "str"} | _compose_bucket_env(w, rt, bundle) | rt.env
+        # A BucketRef (and an LLMRef) resolves to its literal here, so the
+        # compose file can hand it to the container
+        # (`UPLOADS_ENDPOINT: ${UPLOADS_ENDPOINT}`).
+        "env": {k: v for k, v in w.env if typeof(v) == "str"} | _compose_bucket_env(w, rt, bundle) | _compose_llm_env(w, rt, bundle) | rt.env
     } if rt.type == "compose" else ({
         "type": "cluster"
         "cluster": rt.target.cluster

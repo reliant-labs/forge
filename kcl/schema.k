@@ -1286,6 +1286,85 @@ bucket_env = lambda prefix: str, name: str -> {str:} {
     {"${prefix}_${k.upper()}": BucketRef {name = name, key = k} for k in BUCKET_REF_KEYS}
 }
 
+# ---------------------------------------------------------------------------
+# LLMs: forge.LLM, where the model gateway is, and how a workload reaches it.
+# ---------------------------------------------------------------------------
+
+schema LLM:
+    """The env's LLM gateway, as `Bundle.llm`. A workload is handed it
+    through `forge.llm_env()`, six variables the OpenAI and Anthropic SDKs
+    read by themselves, so `new OpenAI()` / `new Anthropic()` work with no
+    configuration in code:
+
+        llm = forge.LLM {runtime = forge.OnHosted {}}
+        ...
+        env = forge.llm_env()
+
+    WHERE IT IS is its `runtime`, and there is no default:
+
+      * `forge.OnHosted {}` — Reliant's gateway (OpenAI-compatible
+        /v1/chat/completions, Anthropic-compatible /v1/messages). The
+        platform mints one key per environment, with a per-env spend cap,
+        and fills the variables of every hosted workload that declares them,
+        billed to the org. An unclaimed claimable deploy gets a small
+        platform-funded cap on the cheap model tier. Only a hosted workload
+        can read it.
+      * `forge.LLMEndpoint {base_url, api_key}` — any OpenAI/Anthropic-
+        compatible endpoint: Reliant's public gateway with your own
+        `llm:invoke` token (the dev loop), a local Ollama or LiteLLM, or a
+        provider directly.
+    """
+    runtime: OnHosted | LLMEndpoint
+
+schema LLMEndpoint:
+    """An OpenAI/Anthropic-compatible endpoint forge does not run.
+
+        forge.LLMEndpoint {
+            base_url = "https://admin.reliantapi.com"
+            api_key = forge.ManagedSecret {name = "RELIANT_LLM_API_KEY"}
+        }
+
+    `base_url` is the root an Anthropic client takes (it appends
+    /v1/messages); `openai_base_url` is what an OpenAI client takes, empty
+    for base_url + "/v1". `api_key` is a reference (forge.ManagedSecret, the
+    env's secret store; forge.SecretRef, a Kubernetes Secret on a cluster you
+    operate), or a literal only for an endpoint on this machine that ignores
+    it (a local Ollama).
+    """
+    type: "endpoint" = "endpoint"
+    base_url: str
+    openai_base_url: str = ""
+    api_key: SecretRef | ManagedSecret | str
+
+    check:
+        regex.match(base_url, r"^https?://[^/]+(/[^?#]*[^/?#])?$"), "LLMEndpoint.base_url '${base_url}' must be a URL like https://host[:port][/path], with no trailing slash"
+        not openai_base_url or regex.match(openai_base_url, r"^https?://[^/]+(/[^?#]*[^/?#])?$"), \
+            "LLMEndpoint.openai_base_url '${openai_base_url}' must be a URL like https://host[:port]/v1, with no trailing slash"
+        typeof(api_key) != "str" or regex.match(base_url, r"^http://(localhost|127\.0\.0\.1|host\.docker\.internal|host\.k3d\.internal)(:[0-9]+)?(/.*)?$"), \
+            "LLMEndpoint.api_key is a literal: a key in a committed file is a leaked key. Use forge.ManagedSecret {name = ...} (`forge secret set --env <env> <NAME>`); a literal is accepted only for an endpoint on this machine (http://localhost:...) that ignores it"
+
+# Every LLMRef key of an endpoint, as declared.
+_llm_endpoint_values = lambda e: any -> {str:} {
+    {
+        "base_url" = e.base_url
+        "openai_base_url" = e.openai_base_url or e.base_url + "/v1"
+        "api_key" = e.api_key
+    }
+}
+
+llm_env = lambda -> {str:} {
+    """The env a workload reads the env's forge.LLM from: the six variables
+    of LLM_ENV_KEYS, one forge.LLMRef each. OPENAI_* and ANTHROPIC_* are what
+    the official SDKs read when constructed with no arguments; RELIANT_LLM_*
+    are the same facts for any other client (RELIANT_LLM_BASE_URL is the root:
+    an OpenAI-compatible client takes it plus /v1).
+
+        env = forge.llm_env()
+        env = forge.llm_env() | {PORT = "8080"}
+    """
+    {k: LLMRef {key = x} for k, x in LLM_ENV_KEYS}
+}
+
 minio_workload = lambda minio: BucketOnMinIO, buckets: [Bucket] -> Workload {
     """The docker-compose workload that runs the env's MinIO for `buckets`
     (those of them on `minio`): it publishes the S3 API on `minio.port`,
@@ -7045,6 +7124,9 @@ schema Bundle:
     # Object-storage buckets (forge.Bucket): where each lives, reached by a
     # workload through forge.BucketRef / forge.bucket_env. See Bucket.
     buckets: [Bucket] = []
+    # The env's LLM gateway (forge.LLM), reached by a workload through
+    # forge.LLMRef / forge.llm_env. See LLM.
+    llm?: LLM
     # Platform dependencies rendered from helm charts (helm-as-a-RENDERER:
     # `helm template --skip-crds` → manifests folded into the normal apply
     # pipeline; NO `helm install`). Each is a renderable with a NAME the

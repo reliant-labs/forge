@@ -63,13 +63,15 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"TypeScript stubs (frontends)",
 		"config loader (proto/<project>/config/v1)",
 		"parse services + module path",
-		"frontend hooks",
 		"ensure frontend components",
 		"frontend CRUD pages",
 		"frontend nav + dashboard",
 		"service stubs",
 		"internal/db/ ORM (entity-driven)",
 		"CRUD handlers",
+		// AFTER the stub and CRUD steps: the hooks' <service>Implemented
+		// table is read off the handler packages they write.
+		"frontend hooks",
 		"service mocks",
 		"internal package contracts",
 		"open-procedure set (pkg/middleware)",

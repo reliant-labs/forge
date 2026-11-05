@@ -6,6 +6,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -1122,5 +1124,64 @@ func TestMergeProperty_ScenarioRpcs(t *testing.T) {
 				return []byte(renderFrontendTemplate(t, "mocks/scenarios/scenario-rpcs.ts.tmpl", codegen.BuildScenarioRPCData(variants[v])))
 			})
 		})
+	}
+}
+
+// TestHooksMarkUnimplementedStubs: an rpc whose handler is forge's
+// Unimplemented placeholder gets a hook that type-checks and always fails.
+// growth's UI only learned that from a runtime Code.Unimplemented, so the
+// hooks file carries a <service>Implemented table read off the handler
+// package, and the stub's hook says so in its doc comment.
+func TestHooksMarkUnimplementedStubs(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "task")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := "package task\n\n// SendReport is a placeholder.\n" + codegen.UnwiredStubMarkerComment("task", "SendReport") +
+		"\nfunc (s *Service) SendReport() {}\n"
+	if err := os.WriteFile(filepath.Join(handlerDir, "rpc_send_report.go"), []byte(stub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte("package task\n\ntype Service struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := codegen.ServiceDef{
+		Name:      "TaskService",
+		Package:   "demo.v1",
+		ProtoFile: "proto/services/tasks/v1/tasks.proto",
+		Methods: []codegen.Method{
+			{Name: "GetTask", InputType: "GetTaskRequest", OutputType: "GetTaskResponse"},
+			{Name: "SendReport", InputType: "SendReportRequest", OutputType: "SendReportResponse"},
+		},
+	}
+	data, err := serviceHookData(svc, projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := renderFrontendTemplate(t, "hooks.ts.tmpl", data)
+
+	for _, want := range []string{
+		"export const taskServiceImplemented = {\n  getTask: true,\n  sendReport: false,\n};",
+		"/** Not implemented on the server yet: its handler is forge's Unimplemented placeholder (taskServiceImplemented). */\nexport const useSendReport =",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered hooks missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "placeholder (taskServiceImplemented). */\nexport const useGetTask") {
+		t.Errorf("the implemented GetTask hook is marked as a placeholder:\n%s", out)
+	}
+
+	// No handler package on disk (a backend in another repository): every
+	// rpc reads as implemented, since there is no placeholder to read.
+	data, err = serviceHookData(svc, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := renderFrontendTemplate(t, "hooks.ts.tmpl", data); !strings.Contains(out, "  sendReport: true,") {
+		t.Errorf("with no handler package, sendReport should read as implemented:\n%s", out)
 	}
 }

@@ -1977,7 +1977,9 @@ var removals = []removal{
 			"mode) and `forge project map`/`graph`.\n" +
 			"This removal does NOT touch MCP as a CLIENT: .mcp.json / .mcp.json.example and " +
 			"their templates configure chrome-devtools and reliant-docs MCP servers that " +
-			"agents consume, and those stay.",
+			"agents consume, and those stay. Nor does it cover the live `forge mcp` command " +
+			"(internal/cli/mcp.go), forge's own stdio MCP server over its fixed CLI " +
+			"capabilities (report_bug, deploy_claimable, ...), which generates no manifest.",
 		Patterns: []*regexp.Regexp{
 			// SCOPE — read before widening. This entry forbids the generated
 			// MANIFEST, the bridge package, and the hosts. It deliberately does
@@ -1995,19 +1997,26 @@ var removals = []removal{
 			// "forge-mcp" and "mcpbridge" share no substring with the live
 			// chrome-devtools config.
 			regexp.MustCompile(`\bmcpbridge\b|\bforge-mcp\b`),
-			// The CLI host: the `forge mcp` command and its token env var.
-			// The space is what keeps this off ".mcp.json" and "internal/mcp/".
-			regexp.MustCompile(`\bforge mcp\b|\bFORGE_MCP_TOKEN\b|\bnewMCPCmd\b|\bnewMCPServeCmd\b`),
+			// The CLI host: the `forge mcp serve` subcommand, its constructor
+			// and its token env var. The space is what keeps this off
+			// ".mcp.json" and "internal/mcp/".
+			//
+			// NARROWED, not widened: this alternative used to be the bare
+			// `\bforge mcp\b` (and `\bnewMCPCmd\b`), back when `forge mcp` was
+			// only the manifest host's parent. `forge mcp` is a live command
+			// again — forge's own MCP server (internal/cli/mcp.go), whose
+			// tools are fixed CLI capabilities and which generates nothing per
+			// API — so the bare spelling now names a supported feature and
+			// is named in the npm shim, its MCP registry listing and their
+			// tests. A path allowance for it had to grow with every new
+			// mention. What was removed is still forbidden: `serve`, the token
+			// and newMCPServeCmd above, the manifest, bridge and binary.
+			// `\bserve\b` does not match "forge mcp serves …" prose.
+			regexp.MustCompile(`\bforge mcp serve\b|\bFORGE_MCP_TOKEN\b|\bnewMCPServeCmd\b`),
 			// The audit field that existed only to tell an agent what the
 			// bridge could dispatch. Streaming mode survives it.
 			regexp.MustCompile(`\bmcp_callable\b|\bMCPCallable\b`),
 		},
-		Allowances: []allowance{{
-			Name:   "owned CLI capability MCP server, not a generated per-API manifest",
-			Reason: "The new stdio host exposes forge's fixed CLI capabilities and explicit report tool. It emits no generated per-service API manifest. Only the reused command/constructor spellings are permitted in its owned implementation, docs and license record; old manifest/bridge/token identifiers remain forbidden.",
-			Token:  regexp.MustCompile(`\bforge mcp\b|\bnewMCPCmd\b`),
-			Paths:  []string{".license-allowlist", "README.md", "docs/mcp.md", "internal/cli/mcp.go", "internal/cli/mcp_test.go", "internal/cli/root.go", "internal/cli/testdata/released_commands.txt", "internal/cli/forge_pin_delegate.go", "internal/cli/forge_pin_marker_test.go", "internal/templates/project/reliant.md.tmpl", "internal/templates/project/skills/forge/SKILL.md", "internal/templates/project/skills/forge/debug/SKILL.md"},
-		}},
 	},
 	{
 		Name: "passing an image registry to forge instead of declaring it",
@@ -2687,7 +2696,9 @@ func TestExternalProtocolAndReplacementAllowancesStayNarrow(t *testing.T) {
 		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "integerLiteral", true},
 		{"the generated per-API MCP manifest and its bridge", "internal/cli/mcp.go", "newMCPCmd forge mcp", false},
 		{"the generated per-API MCP manifest and its bridge", "internal/cli/mcp.go", "GenerateMCPManifest gen/mcp/manifest.json FORGE_MCP_TOKEN newMCPServeCmd", true},
-		{"the generated per-API MCP manifest and its bridge", "internal/templates/ci/github/ci.yml.tmpl", "forge mcp", true},
+		{"the generated per-API MCP manifest and its bridge", "npm/smithery.yaml", "Smithery listing for `forge mcp`", false},
+		{"the generated per-API MCP manifest and its bridge", "internal/cli/forge_pin_marker_test.go", "forge mcp serves every tool call", false},
+		{"the generated per-API MCP manifest and its bridge", "internal/templates/ci/github/ci.yml.tmpl", "forge mcp serve", true},
 	}
 	for _, tc := range cases {
 		rm := removalNamed(t, tc.removal)

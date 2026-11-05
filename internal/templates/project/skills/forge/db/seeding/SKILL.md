@@ -340,7 +340,7 @@ A **derivation** (`total_cents = subtotal_cents + tax_cents`) is not placeable
 and the plan says so by name, because three independently synthesized values
 make an equality true only by coincidence. It is not a seeding problem to work
 around — the schema is asserting a rule it never implements. Declare it instead
-(`GENERATED ALWAYS AS (…) STORED`, see the `db` skill) and the column stops
+(`GENERATED ALWAYS AS (…) STORED`, see `db/constraints`) and the column stops
 being seeded at all, because postgres owns it. **Do not pin the columns to
 `{min: 0, max: 0}` in `vocab.yaml` to force the CHECK to hold** — that trades a
 warning for a demo database where every money column reads zero.

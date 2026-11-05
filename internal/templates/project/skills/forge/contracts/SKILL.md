@@ -115,7 +115,7 @@ The remedy depends on your shape:
 |---|---|
 | Hand-written wide `Repository` interface + a concrete `*PostgresRepository` that satisfies it | Drop the wide `Repository`. Define narrow per-aggregate interfaces (`UserRepository`, `OrgRepository`, `BillingRepository`). The same concrete `*PostgresRepository` satisfies all of them structurally — Go does that for free. Each handler depends on the 10-method interface it actually needs. |
 | Multi-aggregate package with wide internal surface | Split into per-aggregate packages: `internal/db/user/`, `internal/db/org/`, `internal/db/billing/`. Each gets its own narrow `contract.go`. Larger refactor; cleanest long-term. |
-| A query generator's `Queries` struct carried over from the source (e.g. sqlc: one method per query, all in one struct) | Transitional only, since forge does not run sqlc. Port the queries onto the generated `<Entity>Store` and `internal/db/<entity>_repo_ext.go` (see `db`). Until each aggregate moves, path-exclude the generated dir with a note naming that port. It is the one case where `interfacebloat` is a false positive: the generator's output shape is not yours to split. |
+| A query generator's `Queries` struct carried over from the source (e.g. sqlc: one method per query, all in one struct) | Transitional only, since forge does not run sqlc. Port the queries onto the generated `<Entity>Store` and `internal/db/<entity>_repo_ext.go` (see `db/generated-orm`). Until each aggregate moves, path-exclude the generated dir with a note naming that port. It is the one case where `interfacebloat` is a false positive: the generator's output shape is not yours to split. |
 | Wide interface but only one or two callers | Either narrow it inline (delete the methods nobody calls) or split per-caller. Don't keep a 50-method interface that two functions use. |
 
 Design for the *callers*, not the implementation. Have the split-or-narrow conversation at port time, not after lint failures pile up.
@@ -181,7 +181,7 @@ file (or stripping its header) is a build-gating error.
 
 ### Diverging from generated CRUD wiring — the owned-shim op override
 
-The same split governs CRUD handlers: the per-entity op wiring (`handlers_crud_ops_gen.go`) is regenerated, the delegating shims in `handlers_crud.go` are yours. To customize one RPC, never edit or disown the generated ops file — take the generated op in your shim, replace the one exported field you need, and keep delegating, so the CRUD lifecycle stays in `forge/pkg/crud` and schema/proto evolution keeps flowing underneath. The **`db` skill carries the worked recipe** (which fields are overridable, the List/single-row variants).
+The same split governs CRUD handlers: the per-entity op wiring (`handlers_crud_ops_gen.go`) is regenerated, the delegating shims in `handlers_crud.go` are yours. To customize one RPC, never edit or disown the generated ops file — take the generated op in your shim, replace the one exported field you need, and keep delegating, so the CRUD lifecycle stays in `forge/pkg/crud` and schema/proto evolution keeps flowing underneath. The **`db/crud-overrides` skill carries the worked recipe** (which fields are overridable, the List/single-row variants).
 
 ### The other generated sibling: `middleware_gen.go`
 

@@ -50,17 +50,20 @@ export default function CommandBar({
     return groups;
   }, [filtered]);
 
-  useEffect(() => {
+  // Each opening starts from an empty search. Adjusted during render when
+  // `open` flips, rather than in an effect, so there is no extra render.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) {
       setQuery("");
       setActiveIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 0);
     }
-  }, [open]);
+  }
 
   useEffect(() => {
-    setActiveIndex(0);
-  }, [query]);
+    if (open) inputRef.current?.focus();
+  }, [open]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -130,7 +133,10 @@ export default function CommandBar({
             ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setActiveIndex(0);
+            }}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             className="h-12 w-full border-0 bg-transparent text-sm text-ink placeholder:text-ink-subtle focus:outline-none focus:ring-0"

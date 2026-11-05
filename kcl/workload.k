@@ -124,9 +124,13 @@ schema IdentityRef:
     hand a workload an output the projection does not (a second issuer, say).
 
     `output` is one of issuer, audience, scopes, idp_base, jwks, client_id,
-    redirect_uri, login_uri, broker_token, roles_claim. The last four of those
-    but roles_claim belong to an APPLICATION, named by `application` (empty =
-    the consuming workload's own).
+    redirect_uri, login_uri, broker_token, roles_claim, login_policy. The
+    four client_id, redirect_uri, login_uri and broker_token belong to an
+    APPLICATION, named by `application` (empty = the consuming workload's
+    own). `login_policy` (the versioned LOGIN_POLICY document the sign-in
+    broker enforces) is OPTIONAL: it is absent until the control plane
+    delivers it, and only an identity that declares methods, signup or social
+    has one.
 
     What it lowers to depends on where the referrer runs: a hosted workload
     reads a reserved managed secret, a cluster workload a key of the Secret
@@ -137,8 +141,8 @@ schema IdentityRef:
     application: str = ""
 
     check:
-        output in ["issuer", "audience", "scopes", "idp_base", "jwks", "client_id", "redirect_uri", "login_uri", "broker_token", "roles_claim"], \
-            "IdentityRef.output '${output}' must be one of issuer, audience, scopes, idp_base, jwks, client_id, redirect_uri, login_uri, broker_token, roles_claim"
+        output in ["issuer", "audience", "scopes", "idp_base", "jwks", "client_id", "redirect_uri", "login_uri", "broker_token", "roles_claim", "login_policy"], \
+            "IdentityRef.output '${output}' must be one of issuer, audience, scopes, idp_base, jwks, client_id, redirect_uri, login_uri, broker_token, roles_claim, login_policy"
 
 schema BucketRef:
     """One connection fact of a `forge.Bucket` in this env, as an env value:

@@ -74,7 +74,7 @@ tasks:
       - go install -trimpath=false -buildvcs=true -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$(git rev-parse --show-toplevel)" ./cmd/forge
 
   release:forge:
-    desc: "Cut the forge release NEXT_VERSION names (one tag, on main's newest green commit; never pushes main): task release:forge (-- --dry-run to validate only, -- --commit <sha> for another green commit)"
+    desc: "Cut the forge release computed from the PR titles since the last tag (feat → minor, else patch; one tag, on main's newest green commit; never pushes main): task release:forge (-- --dry-run to validate only, -- --commit <sha> for another green commit)"
     cmds:
       # THE release command. forge is one module, so a release is one tag, on
       # a commit main already has: by default the newest one whose full CI is

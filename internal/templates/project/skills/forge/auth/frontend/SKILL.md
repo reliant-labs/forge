@@ -48,7 +48,7 @@ The provider's complexity policy is **per instance**, so the app asks rather tha
 
 The broker serves `POST /auth/register` in development, and in a deployed environment **only when its config sets `auth_self_signup: true`** (`AUTH_SELF_SIGNUP`). The sign-in screen reads `GET /auth/options` and shows the "Create an account" toggle only when sign-up is served; it fails closed, so an older server or an outage hides it.
 
-**Before opting in, read this.** A self-registered account's email is **unverified**: the person typed it and is signed in before proving it is theirs. Anything the app binds to a user *by email* (an invitation, a tenant membership, a pre-created record) must require `devidp.User.EmailVerified` first, or registering someone else's address claims what was waiting for them (`auth/authorization` has the check). `forge lint` warns (`forgeconv-open-signup`) about a broker that mounts the route with no condition, as brokers scaffolded before v1.0.16 do; `migrations/v1.0.16` has the edit.
+**Before opting in, read this.** A self-registered account's email is **unverified**: the person typed it and is signed in before proving it is theirs. Anything the app binds to a user *by email* (an invitation, a tenant membership, a pre-created record) must require `devidp.User.EmailVerified` first, or registering someone else's address claims what was waiting for them (`auth/authorization` has the check). `forge lint` warns (`forgeconv-open-signup`) about a broker that mounts the route with no condition, as brokers scaffolded before v1.1.0 do; `migrations/v1.1.0` has the edit.
 
 There is **no scaffolded invite flow**; see `deploy/managed-identity` for how to build one.
 

@@ -738,6 +738,33 @@ services:
     networks:
       - {{.ProjectName}}-net
 
+  # Mailpit: the dev mail catcher, for a project whose infra runs in compose
+  # rather than as host processes (the default is forge.HostInfra
+  # {engine = "mailpit"}, the same release run natively). The IdP's mail
+  # (invitations, verification, reset, magic links) goes to its SMTP port and
+  # is read in the web UI; nothing leaves the machine. Same release as the
+  # host engine (internal/hostinfra/mailpit.go), from the publisher's own
+  # registry, pinned by digest. Messages persist in the mailpit_data volume.
+  mailpit:
+    image: ghcr.io/axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_DISABLE_VERSION_CHECK: "true"
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025" # SMTP
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025" # web UI and API
+    volumes:
+      - mailpit_data:/data
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      - {{.ProjectName}}-net
+
 volumes:
   postgres_data:
   go_mod_cache:
@@ -746,6 +773,7 @@ volumes:
   clickstack_mongo:
   alertmanager_data:
   minio_data:
+  mailpit_data:
 {{- if .HasFrontend}}
   idp_db_data:
 {{- end}}

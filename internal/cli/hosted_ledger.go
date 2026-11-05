@@ -28,6 +28,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/topology"
 )
 
 // hostedErrorHasCode reports whether err is a control-plane failure carrying
@@ -1218,6 +1219,6 @@ func (s *hostedStore) List(ctx context.Context) ([]release.Release, error) {
 		}
 		out = append(out, r)
 	}
-	sortReleasesNewestFirst(out)
+	topology.SortReleasesNewestFirst(out)
 	return out, nil
 }

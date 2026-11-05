@@ -611,7 +611,7 @@ func TestEnvStatus_AllEnvsCarriesF7Fields(t *testing.T) {
 	ledgers := func(context.Context, string) (envLedger, error) {
 		return envLedger{Bindings: store, Releases: testReleases(t, dir)}, nil
 	}
-	row := buildTopologyEnvRow(context.Background(), dir, "prod", false, map[string]release.Release{}, nil,
+	row := assembleTopologyRow(context.Background(), dir, "prod", false, nil,
 		envTopologyOptions{Ledgers: ledgers})
 	if row.PromotionID != got.ID || row.FromEnv != "staging" {
 		t.Errorf("promotion_id/from_env = %q/%q, want %q/staging", row.PromotionID, row.FromEnv, got.ID)
@@ -637,7 +637,7 @@ func TestEnvStatus_AllEnvsCarriesHostedRolloutPhase(t *testing.T) {
 	rollouts := func(context.Context, string, string) (wireRollout, error) {
 		return wireRollout{Phase: wireRolloutPhaseStabilizing}, nil
 	}
-	row := buildTopologyEnvRow(context.Background(), t.TempDir(), "prod", false, map[string]release.Release{}, nil,
+	row := assembleTopologyRow(context.Background(), t.TempDir(), "prod", false, nil,
 		envTopologyOptions{Ledgers: ledgers, Rollouts: rollouts})
 	if row.RolloutPhase != "stabilizing" || row.PromotionID == "" {
 		t.Fatalf("rollout_phase/promotion_id = %q/%q", row.RolloutPhase, row.PromotionID)

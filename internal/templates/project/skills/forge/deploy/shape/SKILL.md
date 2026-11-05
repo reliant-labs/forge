@@ -70,7 +70,9 @@ an `OnCluster` API beside an `OnHosted` static site is one env, one release and
 one deploy. `forge env status --json` lists every part under `placements[]`
 with its placement (`hosted`, `cluster`, `bucket`, `firebase`, `compose`,
 `host`, `build-only`) and who applies it (`platform`, `hub`, `forge`,
-`machine`, `none`).
+`machine`, `none`). The all-envs document's schema and assembly are
+`forge/pkg/topology`: a control plane serving the same picture from its own
+records runs that code, so its report and the CLI's never disagree.
 
 One `forge env deploy` runs the parts forge applies, the hosted parts and the
 frontends forge ships in the order their declared `release_dependencies`

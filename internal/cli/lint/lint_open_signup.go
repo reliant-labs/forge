@@ -5,12 +5,12 @@
 //
 // The scaffolded internal/app/login_broker.go is the project's own file, so a
 // fix to its template never reaches a project scaffolded before it. Brokers
-// scaffolded before v1.0.16 mount POST /auth/register in EVERY environment,
+// scaffolded before v1.1.0 mount POST /auth/register in EVERY environment,
 // and outside development the account it creates is signed in with an
 // address nobody verified. An app that binds invitations or memberships by
 // email is then open to takeover by whoever registers the address first.
 //
-// Since v1.0.16 the broker mounts the route behind `if broker.selfSignup`
+// Since v1.1.0 the broker mounts the route behind `if broker.selfSignup`
 // (development, or the env's auth_self_signup). This lane finds the mount and
 // warns when no `if` encloses it. A project whose deployed app is MEANT to be
 // open still gets the warning until the mount names its switch — which is the
@@ -164,7 +164,7 @@ func collectOpenSignupJSON(root string) ([]lintJSONFinding, error) {
 				"deployed app can create an account under an address nobody verified and is signed straight in",
 			FixHint: "mount it behind a switch that is off outside development — `if broker.selfSignup { mux.Handle(RegisterPath, ...) }` " +
 				"with selfSignup: cfg.Environment == \"development\" || cfg.AuthSelfSignup — and have every bind-by-email " +
-				"check devidp.User.EmailVerified; `forge skill load migrations/v1.0.16` has the exact edit",
+				"check devidp.User.EmailVerified; `forge skill load migrations/v1.1.0` has the exact edit",
 		})
 	}
 	return out, nil

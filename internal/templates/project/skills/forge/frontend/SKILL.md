@@ -56,36 +56,6 @@ A search that returns nothing is a real answer: there is no drawer/sheet or quan
 
 **Data viz:** commodity charts (bar, line, pie, sparkline…) → `npm i recharts`. The library ships only **narrative** charts (`funnel_chart`, `quadrant_chart`, `time_series_chart` (annotated), `cohort_grid`) and `slide_*` charts: check it first.
 
-### Base UI primitives (always available)
-
-Every frontend ships low-level primitives under `src/components/ui/`. Compose these instead of inlining `<button>`/`<input>`/`<table>` markup:
-
-| Primitive | What it is |
-|-----------|-----------|
-| `button` | `primary`/`secondary`/`outline`/`ghost`/`danger`, `xs`–`xl`, `leftIcon`/`rightIcon`, icon-only, `loading`, `href` |
-| `input`, `label`, `form` | Text input, field label, and `Form`/`FormField`/`FormError`/`FormActions`. `<FormField>` mints an id via `useId()`, so child `<Label>`/`<Input>`/`<Select>` auto-bind without `htmlFor`/`id` |
-| `textarea`, `toggle_switch` | On demand: `forge component install textarea toggle_switch`. ToggleSwitch is `role="switch"` with `label` or `ariaLabel`; both auto-bind inside `<FormField>` |
-| `card` | Generic surface primitive |
-| `status`, `tag`, `mono` | State (dot + word), kind label, copyable sha |
-| `avatar`, `tabs`, `chip` | Avatar, tab nav (underline/pills/boxed), filter chip. `Tabs`/`FilterBar`: pass `activeTab`/`values` to control them from the URL |
-| `table` | Bare structural table. For a wired list view use `<Resource>` (see `frontend-runtime`) |
-| `select` | Options array, sizes, invalid state |
-| `toast_notification` | The toast STACK, rendered once by the owned `providers.tsx`. Never call it directly — fire `emitToast({ message, variant })` from `@/lib/events` |
-
-Plus auto-installed: `sidebar_layout`, `page_header`, `badge`, `modal`, `skeleton_loader`, `pagination`, `search_input`, `alert_banner`, `key_value_list`, `login_form`. All `overwrite: once` — yours after install.
-
-Two carry aliases; write against canonical. **`Badge`** — `error`/`success`/`warning`/`info`/`neutral`, aliases `danger→error`, `default→neutral`. **`Modal`** — canonical footer is the **`footer` slot prop**; rewrite footer-in-`children` when you next touch it. (`Button`'s destructive variant is `danger`, not `error`.)
-
-### Owned higher-level components
-
-Owned scaffold (not `ui/`), composing the base primitives — yours to edit or delete:
-
-- **`status-badge.tsx`** / **`enum-select.tsx`** — proto-enum badge + select. See **Formatting** below for the enum-object rule and status colors.
-- **`entity-picker.tsx`** / **`entity-name.tsx`** — the foreign-key pair: searchable select over a generated LIST hook, id→display-name over a GET hook. Never hand-roll a per-entity picker. See `frontend/pages`.
-- **`src/components/session_nav.tsx`** (Next.js) — signed-in user + sign-out, on `useAuth()`. No login form or `/login` route ships; sign-in is your IdP's. See `auth`.
-
-Typed list views are NOT owned scaffold: the generated CRUD pages import `<Resource>` from `@reliantlabs/forge-web-runtime`, which owns the loading/error/empty/data ladder and cursor pagination (`frontend-runtime`).
-
 ## Formatting: `@/lib/format-utils`
 
 Scaffolded into every frontend. **Import these — never re-derive them per feature.**
@@ -113,67 +83,6 @@ registerStatusVariants({ weather_hold: "warning", emergency: "error" });
 ```
 
 An unregistered status renders neutral, never a guessed color.
-
-## Connect RPC clients + mock mode
-
-Import the generated transport from `src/lib/connect.ts`; for direct calls `createClient(MyService, transport)`. It talks to the REAL backend through `src/lib/api-base.ts` (`frontend/serving`). Mock mode is **opt-in**: set `mock_api` in `deploy/kcl/<env>/config.k`, then `forge generate`.
-
-| `mock_api` | RPCs | Signed-in user |
-|---|---|---|
-| `""` (default) | Real backend. | `GET /auth/session` |
-| `"true"` | Fixtures only; "MOCK DATA" banner. | Fixture `dev@localhost`, no `/auth/session`, so guards pass. |
-| `"hybrid"` | `?scenario=` handlers over the real backend. | Same fixture, UI only: forwarded RPCs carry just the real cookie. |
-
-**Never remove the mock banner from the layout** — it stops a working-looking UI masquerading as a working stack.
-
-### Where the mock pipeline lives
-
-The engine is library code (`@reliantlabs/forge-web-runtime/mock-transport`, a subpath so production bundles shake it out). Your project keeps:
-
-- **`src/lib/mock-transport_gen.ts`** (Tier-1) — gathers the per-entity `src/mocks/entities/*_gen.ts`.
-- **`src/mocks/<entity>_gen.ts`** — the fixtures, the same rows `forge db seed apply` writes.
-- **`src/mocks/scenarios/*.ts`** — your scenarios; forge only regenerates the `index_gen.ts` barrel.
-
-Dispatch: scenario handler → hybrid passthrough → fixtures → `Unimplemented`. A Get miss is `NotFound`. Writes persist until reload. A fixture List mirrors the backend's: each SET `optional` request field filters by equality (enums by value), `search` matches strings and enum names, `order_by`/`descending` sort, `page_size` pages, and `total_count` is the filtered count. Custom RPCs need a scenario.
-
-To stub an RPC, run `forge scaffold scenario <name>` and add a typed handler — do NOT edit `mock-transport_gen.ts`. Activate with `?scenario=<name>`; it is read once at module init, so client-side navigation keeps it active until a full reload.
-
-## Runtime config and backend URLs
-
-A frontend reads its per-env values from `src/lib/config_gen.ts` (`loadConfig()`), which reads `window.__FORGE_CONFIG__`. That global is set by **`<basePath>/config.js`**, a classic blocking `<script>` in the shell's `<head>`: `layout.tsx` for Next.js, `index.html` (`%BASE_URL%config.js`) for Vite. Values arrive at runtime, so one bundle promotes across envs: never read `NEXT_PUBLIC_*` / `VITE_*` for a per-env value (the bundler freezes it).
-
-Two sources are layered into the document, key by key:
-
-1. **Typed config**: the `(forge.v1.frontend_config)` proto message, with per-env values in `deploy/kcl/<env>/config.k`.
-2. **`runtime_config`** on the `forge.Frontend`, which wins on the same key; an unread key fails the render (`frontend-runtime`). Use it when a value is **another workload's URL**:
-
-```kcl
-forge.Frontend {
-    name = "web"
-    runtime = forge.OnHost {}
-    runtime_config = {
-        API_URL = forge.WorkloadURL { workload = "api" }   # a sibling workload's public URL
-        APP_NAME = "acme"                                   # or a literal
-    }
-}
-```
-
-Name the workload, never the hostname:
-
-| Env | Who resolves `forge.WorkloadURL` | Who writes `config.js` |
-|---|---|---|
-| **Hosted** (the referrer is a frontend or a workload bound to `forge.OnHosted`) | The control plane: it allocates hostnames and rewrites the document when one moves. | The control plane, after every StaticSite sync (the release carries none). |
-| Everything else (host, compose, cluster, `OnFirebase` / `OnBucket`) | forge, **at render time**: a route to the workload → a custom domain on its exposed port → its host `listen_ports` → a frontend's `port`. | forge: `public/config.js` in dev, per env on a Firebase / bucket deploy. |
-
-Unknown names are refused at load; off hosting, so is a URL forge cannot know at render time (a host service without `listen_ports`).
-
-A hosted site's own hostname is not a field: `forge domain add` (see `deploy`).
-
-The backend half uses the same reference. A workload's `CORS_ORIGINS` names the site, not its URL:
-
-```kcl
-wl.api | {env = {CORS_ORIGINS = forge.WorkloadURL {workload = "web"}}}
-```
 
 ## Protobuf-ES v2
 
@@ -217,24 +126,15 @@ None of it is a design — it is Rails-style scaffolding built from the entity l
 
 Load `frontend/design` before building the real thing; it asks for a brief first and will not proceed on taste alone.
 
-## Scaffolded systems (yours to extend)
+## Where the rest lives
 
-Created by `forge scaffold frontend`, yours to modify:
-
-- **Auth** (`src/lib/auth/`) — native sign-in: the browser POSTs credentials to this app's own API and gets an HttpOnly session cookie; the server runs the OIDC flow. `useAuth()` gives `{ identity, isAuthenticated, isLoading, refresh, logout }` — an identity for rendering, and deliberately no token. See `auth/frontend`.
-- **Event bus** (`src/lib/events.ts`; hooks in `src/lib/use-event.ts`) — typed pub/sub for imperative cross-cutting actions (`toast:show`, `auth:expired`, `navigate`). Extend `EventMap`; use `useEvent(name, handler)`. Not a source of truth.
-- **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for client state (`sidebarCollapsed`, `commandPaletteOpen`). Add domain stores in `src/stores/` (rules below).
-- **`src/lib/format-utils.ts`** — see **Formatting**.
-- Also scaffolded: `src/lib/admin-url.ts` (`adminUrl`/`absoluteAdminUrl` over `basepath_gen.ts` — use these or `joinBasePath` for any string handed to an external system that round-trips back).
-
-## Dev workflow
-
-```bash
-forge env up dev   # infra + services (hot reload) + frontends; reads deploy/kcl/<env>/
-forge generate     # After any .proto change
-```
-
-`forge env up` dev-serves each declared frontend via `npm run dev` (`npm run build` is for `forge build` / `forge env deploy`). Each serves on its own KCL-declared port (`forge.Frontend.port`), **force-injected as `PORT`** into the child (a stale shell `PORT` never wins). There is no dev reverse proxy. To route a service under the prod Gateway, declare an `HTTPRoute` with a `host:` in `deploy/kcl/<env>/main.k`.
+| You need… | Load |
+|---|---|
+| the base UI primitives (`button`, `form`/`FormField`, `table`, `select`, the toast stack), the `Badge`/`Modal` aliases, `status-badge`, `enum-select`, `entity-picker`, `session_nav` | `frontend/components` |
+| the generated transport, `mock_api` (`""`, `"true"`, `"hybrid"`), fixtures, scenarios | `frontend/mock-mode` |
+| per-env values, `config.js`, `runtime_config`, `forge.WorkloadURL`, `CORS_ORIGINS` | `frontend/runtime-config` |
+| the scaffolded auth, event bus, UI store, `admin-url`; `forge env up` and the dev `PORT` | `frontend/scaffolded` |
+| the runtime package: transport, app shell, `<Resource>`, telemetry | `frontend-runtime` |
 
 ## File naming inside `frontends/<name>/src/`
 

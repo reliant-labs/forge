@@ -1,6 +1,11 @@
 package cli
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/reliant-labs/forge/internal/secrets"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+)
 
 // svcWithSecretRefs builds a host service declaring the given env vars as
 // secret refs.
@@ -86,6 +91,39 @@ func TestScopeSecretsToService_MissingValueIsOmittedNotFabricated(t *testing.T) 
 	}
 	if got["PRESENT"] != "v" {
 		t.Fatalf("present secret not injected: %v", got)
+	}
+}
+
+// A host process has no forge-managed-secrets to read, so a managedSecret
+// env var is handed the store's value by its STORE name, under the env
+// var's name: one store entry feeds every variable that names it (an
+// LLMEndpoint key under OPENAI_API_KEY and ANTHROPIC_API_KEY alike), and the
+// pre-flight demands the store name, not the variable.
+func TestHostWorkloadConfig_ManagedSecretReadsTheStoreByItsName(t *testing.T) {
+	svc := hostWL("api", func(w *WorkloadEntity) {
+		for _, n := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY"} {
+			w.Spec.Env = append(w.Spec.Env, deployv1alpha1.EnvVar{Name: n, ManagedSecret: &deployv1alpha1.ManagedSecretRef{Name: "LLM_KEY"}})
+		}
+		w.Spec.Env = append(w.Spec.Env, deployv1alpha1.EnvVar{Name: "SENTRY_DSN", ManagedSecret: &deployv1alpha1.ManagedSecretRef{Name: "SENTRY_DSN", Optional: true}})
+	})
+	store := map[string]string{"LLM_KEY": "rlat_x", "OPENAI_API_KEY": "not-this-one", "UNDECLARED": "no"}
+
+	got := hostWorkloadConfig(nil, svc, store, "")
+	if got["OPENAI_API_KEY"] != "rlat_x" || got["ANTHROPIC_API_KEY"] != "rlat_x" {
+		t.Fatalf("managedSecret vars = %q, %q; want the store's LLM_KEY in both", got["OPENAI_API_KEY"], got["ANTHROPIC_API_KEY"])
+	}
+	for _, k := range []string{"LLM_KEY", "UNDECLARED", "SENTRY_DSN"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s reached the process: only declared variables with a value do", k)
+		}
+	}
+
+	refs := managedSecretRefsForService(&svc)
+	if len(refs) != 3 || refs[0].EnvName != "LLM_KEY" || refs[2].EnvName != "SENTRY_DSN" || !refs[2].Optional {
+		t.Fatalf("pre-flight refs = %+v; want the store names, SENTRY_DSN optional", refs)
+	}
+	if m := secrets.MissingDeclaredRefs(secrets.NewPulledProvider(map[string]string{}), refs); len(m) != 1 || m[0].EnvName != "LLM_KEY" {
+		t.Fatalf("missing = %+v; want LLM_KEY once (the optional one exempt)", m)
 	}
 }
 

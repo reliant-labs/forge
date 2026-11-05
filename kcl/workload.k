@@ -103,8 +103,11 @@ schema FieldRef:
 schema ManagedSecret(tiers.ManagedSecretRef):
     """A value in the environment's secret store, by name:
     `managedSecret` on the wire. The runtime materializes it (hosted: the
-    control plane; cluster: forge). `optional = True` lets the workload
-    start without it."""
+    control plane; cluster: forge; host: `forge env up` hands the process
+    the store's value). A compose container's environment is the compose
+    file's: every store value is in the compose process env under its store
+    name, for the file to read as `${NAME}`. `optional = True` lets the
+    workload start without it."""
 
 schema DatabaseRef(tiers.DatabaseRef):
     """A credential of a `forge.ManagedDatabase` in this env:
@@ -165,7 +168,43 @@ schema BucketRef:
 # forge.bucket_env emits them.
 BUCKET_REF_KEYS: [str] = ["endpoint", "public_endpoint", "region", "bucket", "access_key_id", "secret_access_key", "path_style"]
 
-type EnvValue = str | SecretRef | ConfigMapRef | FieldRef | ManagedSecret | DatabaseRef | WorkloadURL | IdentityRef | BucketRef
+schema LLMRef:
+    """One connection fact of the env's `forge.LLM`, as an env value:
+
+        env = {OPENAI_API_KEY = forge.LLMRef {key = "api_key"}}
+
+    You rarely write one by hand: `forge.llm_env()` returns all six
+    (RELIANT_LLM_BASE_URL, RELIANT_LLM_API_KEY, OPENAI_BASE_URL,
+    OPENAI_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY), the variables the
+    OpenAI and Anthropic SDKs read by themselves.
+
+    `key` is one of base_url (the gateway's root, what an Anthropic client
+    takes), openai_base_url (the root plus /v1, what an OpenAI client takes)
+    and api_key. On forge.OnHosted the platform fills the variable, so there
+    it must sit under its canonical name (LLM_ENV_KEYS); on a
+    forge.LLMEndpoint it lowers to the declared URL or credential.
+    """
+    key: str
+
+    check:
+        key in LLM_REF_KEYS, "LLMRef.key '${key}' must be one of ${LLM_REF_KEYS}"
+
+# The connection facts a forge.LLMRef can name.
+LLM_REF_KEYS: [str] = ["base_url", "openai_base_url", "api_key"]
+
+# The canonical variables of forge.llm_env(), each with the fact it holds. On
+# Reliant hosting these NAMES are the contract: the platform fills each one a
+# hosted workload declares blank, so an LLMRef on OnHosted is legal only here.
+LLM_ENV_KEYS: {str:str} = {
+    RELIANT_LLM_BASE_URL = "base_url"
+    RELIANT_LLM_API_KEY = "api_key"
+    OPENAI_BASE_URL = "openai_base_url"
+    OPENAI_API_KEY = "api_key"
+    ANTHROPIC_BASE_URL = "base_url"
+    ANTHROPIC_API_KEY = "api_key"
+}
+
+type EnvValue = str | SecretRef | ConfigMapRef | FieldRef | ManagedSecret | DatabaseRef | WorkloadURL | IdentityRef | BucketRef | LLMRef
 
 # ---------------------------------------------------------------------------
 # Runtimes. The `type` discriminator is what the JSON contract dispatches on

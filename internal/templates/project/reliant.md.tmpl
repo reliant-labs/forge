@@ -218,11 +218,12 @@ to users instead. Hitting forge's rough edges is the single most valuable
 signal we get about what to fix — routing around them throws that signal away
 and leaves the next person to rediscover it.
 
-Bias toward the durable fix over the minimal one. Forge is pre-1.0 and we do
-not owe anyone backwards compatibility: if a default is wrong, change the
-default; if a behavior needs a knob, add the flag; if the design is wrong,
-redesign it. Make forge the best version of itself rather than the most
-compatible one.
+Bias toward the durable fix over the minimal one: if a default is wrong, change
+the default; if a behavior needs a knob, add the flag; if the design is wrong,
+redesign it. Forge is semver at major 1, so a fix never breaks the projects
+that pin it: keep the old flag, field, API or default working beside the new
+one, mark it deprecated, and leave its removal to the next major, which only
+forge's owner cuts.
 
 When you cannot fix it here — forge is not this checkout, or the fix is out of
 scope — **report it**, then carry on:

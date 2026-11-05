@@ -96,15 +96,43 @@ appended under `[Unreleased]` conflicted with the next one in the merge queue, s
 (`scripts/check-changelog-untouched.sh`; `release/*` branches and the
 `chore: release vX.Y.Z` commit are exempt).
 
-So the PR title is the changelog entry — write a good one, in conventional-commit form:
+So the PR title is the changelog entry, and it also sets the version. Write a good one, in conventional-commit form:
 
-- `feat(scope): what a user can now do` → **Added**
-- `fix(scope): what no longer breaks` → **Fixed**
-- anything else (`refactor`, `docs`, `perf`, `chore`, …) → **Changed**
-- a breaking change: `feat(scope)!: …`, a `BREAKING CHANGE:` footer in the commit
-  body, or a `breaking` label on the PR → listed under **Breaking changes**
+- `feat(scope): what a user can now do` → **Added**, and the release is a **minor**
+- `fix(scope): what no longer breaks` → **Fixed**, a patch
+- anything else (`refactor`, `docs`, `perf`, `chore`, …) → **Changed**, a patch
+- a breaking change (`feat(scope)!: …`, or a `BREAKING CHANGE:` footer in the commit
+  body) is **not allowed in v1**. The release train and `release-forge.sh` refuse to
+  cut a release that contains one, and name the PR (see below). The **Breaking
+  changes** section exists only for a major release, and only the owner cuts those.
 
 A doc comment that says "record it in CHANGELOG.md" means: say it in the PR title.
+
+## Semver at major 1: deprecate, never break
+
+Owner decision, 2026-11-05: forge follows real semver, and its major stays at 1.
+`scripts/semver-next.sh` (the same file in reliant and control-plane) computes each
+release's version from the PR titles since the last final tag. Any `feat` makes
+the release a minor (`v1.Y+1.0`); anything else makes it a patch. `NEXT_VERSION`
+names the next minor, and the lint rollout table, codemods and playbooks are keyed
+to it (`docs/releasing.md`).
+
+A public surface never changes incompatibly within v1. The public surfaces are the
+`pkg/` Go API, CLI commands and flags, the `forge.yaml` and KCL schemas, the proto
+options under `proto/forge`, generated-code contracts, and lint rules a consumer's
+gate runs. To retire something:
+
+- keep the old path working beside the new one;
+- mark it deprecated (`// Deprecated: use X.`, `[deprecated = true]`, a hidden flag
+  that warns);
+- leave its removal to a future major.
+
+The gates hold this line. `internal/apigate` fails an incompatible `pkg/` change
+that the PR does not declare (the `api-break` label or an `API-BREAK:` line) and
+ship a codemod or migration playbook for; pr-review treats any break as a blocker;
+and `scripts/semver-next.sh` refuses to cut a release over a breaking title. A new
+or stricter lint rule is not a break, because it still warns before it gates
+(below).
 
 ## Format with `task fmt:web`, never a bare `npx prettier`
 

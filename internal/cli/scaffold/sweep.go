@@ -31,6 +31,11 @@
 // surface. `--dry-run` prints the plan (phase-1 predictions) and writes
 // nothing. Idempotent: a re-run with nothing missing is a clean no-op
 // summary.
+//
+// Pre-flights run before phase 1, in --dry-run too, for every refusal
+// phase 2 would reach that is decidable from the raw protos and the
+// applied schema: a service/directory name mismatch, and a CRUD-named rpc
+// with a wire message but no table (crudRPCPreflight).
 
 package scaffold
 
@@ -49,6 +54,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 func init() { factory.Register(newScaffoldCmd) }
@@ -88,6 +94,12 @@ then run it:
            pb-through handler stub for every new custom RPC (a method on
            the handler *Service returning Unimplemented) and the CRUD
            wiring for every entity-backed one.
+
+Before phase 1, in --dry-run too, a CRUD-named rpc (Create/Get/List/
+Update/Delete<X>) whose <X> message has no table, and none this run
+births, is refused by name, with the fixes: write its migration, name the
+table with forge:entity-name, or put ` + "`// forge:custom`" + ` above the rpc.
+Phase 2 would refuse it anyway, minutes later.
 
 With a NOUN it scaffolds exactly that one thing, no marker required:
 
@@ -184,7 +196,7 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 	services := codegen.ManagedServices(declared)
 
 	migDir := filepath.Join(root, "db", "migrations")
-	applied, existing := appliedSchema(migDir)
+	applied, existing, appliedTables := appliedSchema(migDir)
 	fkReg := newFKRegistry(existing)
 	summary := &sweepSummary{}
 
@@ -243,6 +255,18 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 	for _, svc := range services {
 		for t := range fkKnownTables(nil, svc) {
 			knownTables[t] = true
+		}
+	}
+
+	// Pre-flight: a CRUD-named rpc whose entity has a wire message but no
+	// table fails phase 2's CRUD step — after the births, the codegen, npm
+	// and `go mod tidy`, which on a fresh 20-entity project is ~9 minutes.
+	// The classification is pure proto + schema analysis, so it is checked
+	// here, in --dry-run too, before anything is written.
+	if cfg.Features.CodegenEnabled() && cfg.Features.ORMEnabled() {
+		if err := crudRPCPreflight(root, allScans, appliedTables, applied); err != nil {
+			return cliutil.UserErr(ctxLabel, err.Error(), "",
+				"resolve each rpc listed above, then re-run `forge scaffold`")
 		}
 	}
 
@@ -375,6 +399,23 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 			"", "fix the reasons above and re-run `forge scaffold`")
 	}
 	return nil
+}
+
+// crudRPCPreflight is the generate pipeline's unmatched-CRUD-rpc refusal
+// (codegen.UnmatchedCRUDRPCsError), answered from the raw protos before
+// phase 1 runs. A marked entity phase 1 will birth counts as tabled: its
+// table is exactly what the birth writes. Nil when nothing would be
+// refused.
+func crudRPCPreflight(root string, scans []*codegen.RawProtoScan, tables []schemadef.Table, applied map[string]bool) error {
+	var born []string
+	for _, scan := range scans {
+		marked, _ := selectMarkedFromRawScan(scan, applied, nil)
+		for _, m := range marked {
+			born = append(born, naming.Pluralize(naming.ToSnakeCase(m.Name)))
+		}
+	}
+	unmatched := codegen.WithoutHandImplemented(root, codegen.RawUnmatchedCRUDRPCs(tables, born, scans))
+	return codegen.UnmatchedCRUDRPCsError(unmatched)
 }
 
 // scaffoldServiceLeaves lists the proto/services/<leaf> directories in

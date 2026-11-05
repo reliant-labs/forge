@@ -20,6 +20,17 @@
 // fills it itself (`forge:fill=ulid`, see forge/pkg/crud's
 // Repo.fillULIDColumns) or the author has stamped it in their own handler
 // and is acknowledging the gap (`forge:fill=handler`).
+//
+// The `forge:owner` column of an authenticated Create needs neither: the
+// owner-scoping wrapper handlers_crud.go is scaffolded with stamps it from
+// the caller (`e.<Owner> = owner`), so an owner column is filled by the
+// handler by definition — and is read-only by intent, since a create that
+// took it off the wire would let anyone file a row under anyone's name. The
+// caller passes that column as `stamped`. A PUBLIC Create gets no wrapper,
+// so its owner column is held to the rule like any other. A handlers_crud.go
+// that predates the owner declaration has no wrapper either; `forge project
+// audit`'s unscoped_auth gate fails that rpc until it gets the one the
+// audit prints.
 package codegen
 
 import (
@@ -47,7 +58,11 @@ type UnsatisfiableColumn struct {
 // `forge:read-only` leaves, not about every column a Create request
 // happens not to carry — an ordinary internal/denormalized column absent
 // from the API is unaffected by any of this and is not a bug.
-func FindUnsatisfiableColumns(entity EntityDef) []UnsatisfiableColumn {
+//
+// stamped names the column the scaffolded Create wrapper assigns itself —
+// the entity's forge:owner column when the Create is scoped — or "" for
+// none; it is never reported.
+func FindUnsatisfiableColumns(entity EntityDef, stamped string) []UnsatisfiableColumn {
 	readOnly := make(map[string]bool, len(entity.Fields))
 	for _, f := range entity.Fields {
 		if f.ReadOnly {
@@ -65,7 +80,7 @@ func FindUnsatisfiableColumns(entity EntityDef) []UnsatisfiableColumn {
 		if strings.TrimSpace(col.Default) != "" {
 			continue
 		}
-		if col.FillStrategy != "" {
+		if col.FillStrategy != "" || col.Name == stamped {
 			continue
 		}
 		out = append(out, UnsatisfiableColumn{Entity: entity.Name, Table: entity.TableName, Column: col.Name})
@@ -79,8 +94,10 @@ func FindUnsatisfiableColumns(entity EntityDef) []UnsatisfiableColumn {
 // forge:read-only, not the PK, not GENERATED). Used to seed the
 // handlers_crud.go Create scaffold's op.Entity wrapper (see
 // ensureCRUDShimFile) with a named reminder of what the handler author
-// still has to stamp.
-func FillHandlerColumns(entity EntityDef) []string {
+// still has to stamp. stamped (see FindUnsatisfiableColumns) is left out:
+// the scoping wrapper already assigns it, so a reminder to would be a second
+// assignment the author is told to write.
+func FillHandlerColumns(entity EntityDef, stamped string) []string {
 	readOnly := make(map[string]bool, len(entity.Fields))
 	for _, f := range entity.Fields {
 		if f.ReadOnly {
@@ -95,7 +112,7 @@ func FillHandlerColumns(entity EntityDef) []string {
 		if strings.TrimSpace(col.Default) != "" {
 			continue
 		}
-		if col.FillStrategy != schemadef.FillStrategyHandler {
+		if col.FillStrategy != schemadef.FillStrategyHandler || col.Name == stamped {
 			continue
 		}
 		out = append(out, col.Name)
@@ -119,6 +136,8 @@ func UnsatisfiableColumnsError(cols []UnsatisfiableColumn) error {
 	}
 	b.WriteString("Fix one of two ways: give the column a DB DEFAULT in a migration, or declare who fills it — " +
 		"`COMMENT ON COLUMN <table>.<col> IS 'forge:fill=handler';` and stamp it yourself in the handler's op.Entity, " +
-		"or `forge:fill=ulid` to have forge generate one at Create.")
+		"or `forge:fill=ulid` to have forge generate one at Create. A column already carrying another marker takes " +
+		"both, space-separated, in its one comment (postgres keeps one per column): `IS 'forge:owner forge:fill=handler'`. " +
+		"An owner column needs neither when its Create is authenticated: the scoping wrapper stamps it from the caller.")
 	return errors.New(b.String())
 }

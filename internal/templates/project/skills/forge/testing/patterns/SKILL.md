@@ -241,5 +241,5 @@ Forge's scaffolders emit Pattern 1 (unit; plus CRUD integration when entities ex
 - Always table-driven. New cases = new struct entry, never a new test function.
 - `t.Parallel()` at the function level by default. Per-row parallelism: skip it inside library helpers — the library iterates serially so per-row Setup hooks remain correct.
 - Name cases by the SCENARIO ("missing name", "duplicate email"), not by the inputs ("test_1", "case_a").
-- For RPC handlers, assert on `connect.CodeOf(err)`, not on the error string. `tdd.AssertConnectError` and `Case.WantErr` already do this.
+- For RPC handlers, assert on `svcerr.Code(err)`, not on the error string and not on `connect.CodeOf(err)` — a handler called directly skips the svcerr interceptor, so `connect.CodeOf` reads a bare kind (`svcerr.PermissionDenied(…)`) as `Unknown`. `tdd.AssertConnectError` and `Case.WantErr` already do this.
 - For maps in test fixtures, sort keys before formatting/comparing (see `testing` skill — Determinism rule).

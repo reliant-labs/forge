@@ -36,16 +36,20 @@ import React, { useEffect, useRef, useState } from "react";
 export type KanbanTone = "neutral" | "accent" | "success" | "warning" | "danger";
 
 export interface KanbanCard {
-  /** Stable identity, reported by onCardMove. Defaults to the title. */
-  id?: string;
+  /**
+   * Stable identity, unique across the board: the React key, the drag
+   * payload, and what onCardMove reports. Titles are not identities — two
+   * cards may share one.
+   */
+  id: string;
   title: string;
   description?: string;
   tags?: string[];
 }
 
 export interface KanbanColumn {
-  /** Stable identity, reported by onCardMove. Defaults to the title. */
-  id?: string;
+  /** Stable identity, unique across the board, reported by onCardMove. */
+  id: string;
   title: string;
   cards: KanbanCard[];
   /** Colour of the column's marker. Defaults to "neutral". */
@@ -72,9 +76,6 @@ const toneDot: Record<KanbanTone, string> = {
 
 const DRAG_TYPE = "application/x-kanban-card";
 
-const columnId = (column: KanbanColumn) => column.id ?? column.title;
-const cardId = (card: KanbanCard) => card.id ?? card.title;
-
 export default function KanbanBoard({
   columns,
   onCardClick,
@@ -90,9 +91,11 @@ export default function KanbanBoard({
   useEffect(() => {
     const id = refocus.current;
     if (!id) return;
-    const el = boardRef.current?.querySelector<HTMLElement>(
-      `[data-kanban-card="${CSS.escape(id)}"]`,
-    );
+    // Compared through dataset rather than interpolated into a selector, so
+    // an id holding quotes or backslashes cannot break the query.
+    const el = Array.from(
+      boardRef.current?.querySelectorAll<HTMLElement>("[data-kanban-card]") ?? [],
+    ).find((card) => card.dataset.kanbanCard === id);
     if (el) {
       el.focus();
       refocus.current = null;
@@ -100,8 +103,8 @@ export default function KanbanBoard({
   }, [columns]);
 
   function move(card: KanbanCard, from: KanbanColumn, to: KanbanColumn) {
-    if (!onCardMove || columnId(from) === columnId(to)) return;
-    onCardMove(cardId(card), columnId(from), columnId(to));
+    if (!onCardMove || from.id === to.id) return;
+    onCardMove(card.id, from.id, to.id);
     setAnnouncement(`Moved ${card.title} to ${to.title}`);
   }
 
@@ -141,9 +144,9 @@ export default function KanbanBoard({
         return;
       }
       const { columns: cols, move: doMove } = dropRef.current;
-      const from = cols.find((c) => columnId(c) === payload.from);
-      const to = cols.find((c) => columnId(c) === zone.dataset.kanbanColumn);
-      const card = from?.cards.find((c) => cardId(c) === payload.card);
+      const from = cols.find((c) => c.id === payload.from);
+      const to = cols.find((c) => c.id === zone.dataset.kanbanColumn);
+      const card = from?.cards.find((c) => c.id === payload.card);
       if (from && to && card) doMove(card, from, to);
     }
     function onDragEnd() {
@@ -168,7 +171,7 @@ export default function KanbanBoard({
     const to = columns[colIndex + step];
     if (step === 0 || !from || !to) return;
     e.preventDefault();
-    refocus.current = cardId(card);
+    refocus.current = card.id;
     move(card, from, to);
   }
 
@@ -178,7 +181,7 @@ export default function KanbanBoard({
       className={`relative flex h-full min-h-0 gap-4 overflow-x-auto ${className ?? ""}`}
     >
       {columns.map((column, colIndex) => {
-        const id = columnId(column);
+        const id = column.id;
         return (
           <section key={id} aria-label={column.title} className="flex w-72 shrink-0 flex-col">
             <div
@@ -228,11 +231,11 @@ export default function KanbanBoard({
                     "block w-full rounded-lg border border-border bg-surface p-3 text-left";
                   const interactive = onCardClick || onCardMove;
                   return (
-                    <li key={cardId(card)}>
+                    <li key={card.id}>
                       {interactive ? (
                         <button
                           type="button"
-                          data-kanban-card={cardId(card)}
+                          data-kanban-card={card.id}
                           draggable={Boolean(onCardMove)}
                           aria-keyshortcuts={
                             onCardMove ? "Alt+ArrowLeft Alt+ArrowRight" : undefined
@@ -242,7 +245,7 @@ export default function KanbanBoard({
                           onDragStart={(e) => {
                             e.dataTransfer.setData(
                               DRAG_TYPE,
-                              JSON.stringify({ card: cardId(card), from: id }),
+                              JSON.stringify({ card: card.id, from: id }),
                             );
                             e.dataTransfer.effectAllowed = "move";
                           }}

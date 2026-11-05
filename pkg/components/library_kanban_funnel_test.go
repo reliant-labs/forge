@@ -60,4 +60,16 @@ func TestKanbanBoardEmbedsInAPage(t *testing.T) {
 			t.Errorf("kanban_board.tsx no longer contains %q", want)
 		}
 	}
+	// A title is not an identity: with a title fallback, dragging the second
+	// of two same-titled cards moved the first. Cards and columns carry ids.
+	for _, banned := range []string{"id?: string", "?? card.title", "?? column.title"} {
+		if strings.Contains(src, banned) {
+			t.Errorf("kanban_board.tsx contains %q; cards and columns need required, unique ids", banned)
+		}
+	}
+	// The refocus compares dataset values instead of interpolating an id
+	// into a selector, which a quote or backslash in the id would break.
+	if strings.Contains(src, "CSS.escape") || strings.Contains(src, `[data-kanban-card="${`) {
+		t.Error("kanban_board.tsx interpolates a card id into a selector; compare dataset.kanbanCard instead")
+	}
 }

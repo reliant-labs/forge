@@ -162,6 +162,21 @@ func TestDetectComponentsDir(t *testing.T) {
 		}
 	})
 
+	t.Run("a forge.yaml that does not load is reported, not treated as no frontend", func(t *testing.T) {
+		root := writeProject(t, "web")
+		if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte("name: [unclosed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(filepath.Join(root, "frontends", "web"))
+		got, err := detectComponentsDir()
+		if err == nil {
+			t.Fatalf("want an error naming forge.yaml, got %q", got)
+		}
+		if !strings.Contains(err.Error(), "forge.yaml") {
+			t.Errorf("error does not name forge.yaml:\n%v", err)
+		}
+	})
+
 	t.Run("no project: a frontend-shaped cwd is used, anything else names --dir", func(t *testing.T) {
 		fe := t.TempDir()
 		writeFrontend(t, fe)

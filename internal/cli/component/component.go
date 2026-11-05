@@ -97,17 +97,26 @@ func detectComponentsDir() (string, error) {
 
 	var frontends []string // absolute frontend roots
 	if root != "" {
-		if cfg, err := config.LoadProjectDir(root); err == nil {
-			for _, fe := range cfg.ToolchainFrontends() {
-				if fe.Type == "react-native" {
-					continue
-				}
-				rel, ok := fe.Dir(root)
-				if !ok {
-					continue
-				}
-				frontends = append(frontends, filepath.Join(root, filepath.FromSlash(rel)))
+		// A forge.yaml that does not load is an error to surface, not an
+		// empty inventory: treating it as "no frontend" would fall through to
+		// installing into whatever frontend-shaped directory cwd happens to be.
+		cfg, err := config.LoadProjectDir(root)
+		if err != nil {
+			return "", cliutil.WrapUserErr("forge component install",
+				"could not load the project to find its frontends",
+				filepath.Join(root, "forge.yaml"),
+				"fix forge.yaml, or pass the frontend directory: --dir <path/to/frontend>",
+				err)
+		}
+		for _, fe := range cfg.ToolchainFrontends() {
+			if fe.Type == "react-native" {
+				continue
 			}
+			rel, ok := fe.Dir(root)
+			if !ok {
+				continue
+			}
+			frontends = append(frontends, filepath.Join(root, filepath.FromSlash(rel)))
 		}
 	}
 

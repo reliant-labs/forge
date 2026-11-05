@@ -163,4 +163,3 @@ DEFAULT, NOT NULL references — leave the rest to DEFAULT or NULL, and take the
 guard branch that keeps the status at its DEFAULT. So the implications above,
 and a column made `GENERATED`, are safe to add to the birth migration right
 after scaffolding: the next `forge generate` re-derives every test row.
-

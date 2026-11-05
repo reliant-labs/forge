@@ -107,6 +107,7 @@ func newForgeFixtureRepo(t *testing.T) string {
 	write("LICENSE", "license\n")
 	write("NOTICE", "notice\n")
 	write("npm/package.json", "{\n  \"name\": \"@reliantlabs/forge\",\n  \"version\": \"0.1.0\",\n  \"engines\": {\n    \"node\": \">=18\"\n  }\n}\n")
+	write("npm/server.json", "{\n  \"name\": \"io.github.reliant-labs/forge\",\n  \"version\": \"0.1.0\",\n  \"packages\": [\n    {\n      \"identifier\": \"@reliantlabs/forge\",\n      \"version\": \"0.1.0\",\n      \"transport\": {\n        \"type\": \"stdio\"\n      }\n    }\n  ]\n}\n")
 
 	gitIn(t, root, "init", "-q", "-b", "main")
 	gitIn(t, root, "config", "user.email", "test@example.com")

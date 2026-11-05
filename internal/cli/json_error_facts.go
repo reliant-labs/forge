@@ -52,6 +52,10 @@ type jsonErrorFacts struct {
 	// not_supported, or forge's not_deployed) and the switch or dependency.
 	UnavailableCause     string `json:"unavailable_cause,omitempty"`
 	UnavailableComponent string `json:"unavailable_component,omitempty"`
+	// NextActions are the exact commands that move past the failure, best
+	// first, for an agent to run rather than parse out of `error`. Set by
+	// the claimable path today.
+	NextActions []string `json:"next_actions,omitempty"`
 }
 
 // errorFactsOf reads err's structure. The control plane's own answer wins
@@ -67,7 +71,7 @@ func errorFactsOf(err error) jsonErrorFacts {
 	}
 	var cr *claimableRefusal
 	if errors.As(err, &cr) {
-		facts := jsonErrorFacts{ErrorCode: cr.code, ErrorReason: cr.reason}
+		facts := jsonErrorFacts{ErrorCode: cr.code, ErrorReason: cr.reason, NextActions: cr.next}
 		if t := cr.throttle; t != nil {
 			facts.RetryAfterSeconds = int64(t.retryAfter / time.Second)
 			facts.RetryAt = t.retryAt.UTC().Format(time.RFC3339)

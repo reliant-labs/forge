@@ -93,6 +93,7 @@ func refuseClaimableEnvSignedIn(env string, e *KCLEntities, cred cloud.Credentia
 			"`resources` of its hosted workloads (the default 250m / 1 GiB is on the hosted shape band), then %s env deploy %s\n"+
 			"  to deploy it anonymously instead: sign out (forge logout), then %s env deploy %s --claimable",
 			env, cred.Source, cred.From, env, Name(), env, Name(), env),
+		next: []string{fmt.Sprintf("%s env deploy %s", Name(), env), fmt.Sprintf("forge logout && %s env deploy %s --claimable", Name(), env)},
 	}
 }
 
@@ -161,6 +162,10 @@ type claimableRefusal struct {
 	// emitted is true when the deploy's own --json document already carries
 	// this outcome, so it must not be written a second time.
 	emitted bool
+	// next are the exact commands that move past this refusal, best first
+	// (the --json `next_actions`). msg ends with the first of them, so an
+	// agent reading only the text has the command too.
+	next []string
 }
 
 type claimableThrottleFacts struct {
@@ -177,7 +182,15 @@ func (e *claimableRefusal) ExitCode() int { return e.exit }
 // names a release.
 func refuseClaimableFlags(envName string, f deployCmdFlags) error {
 	bad := func(flag, why string) error {
-		return fmt.Errorf("--claimable cannot be combined with %s: %s", flag, why)
+		next := fmt.Sprintf("%s env deploy %s --claimable", Name(), envName)
+		if flag == "--plan" || flag == "--dry-run" {
+			next += " --plan-only"
+		}
+		return &claimableRefusal{
+			exit: exitWrong, code: cloud.CodeInvalidArgument,
+			msg:  fmt.Sprintf("--claimable cannot be combined with %s: %s\n  run instead: %s", flag, why, next),
+			next: []string{next},
+		}
 	}
 	switch {
 	case f.offlineLedger:
@@ -211,11 +224,12 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		}
 		if entities == nil || !entities.HasHosted() || entities.ControlPlane == nil {
 			return fmt.Errorf("env %q publishes nothing to a hosted control plane, so there is nothing to deploy with --claimable.\n"+
-				"fix: bind the env's workloads to forge.OnHosted (deploy/hosting), or drop --claimable", envName)
+				"fix: bind the env's workloads to forge.OnHosted (deploy/hosting), then: %s env deploy %s --claimable", envName, Name(), envName)
 		}
 		if envAppliesLocally(entities) {
 			return fmt.Errorf("env %q applies part of itself from this machine (a cluster, compose or host part), "+
-				"which an anonymous deploy cannot do. --claimable publishes only hosted workloads", envName)
+				"which an anonymous deploy cannot do. --claimable publishes only hosted workloads.\n"+
+				"  deploy it to your own account instead: forge login, then %s env deploy %s", envName, Name(), envName)
 		}
 		ep, err := cloud.ResolveEndpoint(envName, declarationFromEntities(entities))
 		if err != nil {
@@ -230,7 +244,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 			return previewClaimable(envName, entities, ep, answer, limits, f.jsonOut)
 		}
 		fmt.Fprintf(out, "  %s\n", limits.note())
-		if err := refuseClaimableWhenSignedIn(ep); err != nil {
+		if err := refuseClaimableWhenSignedIn(ep, envName); err != nil {
 			return err
 		}
 		if reasons := claimableAdmission(envName, entities, limits.limits); len(reasons) > 0 {
@@ -238,7 +252,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		}
 		project := hostedProjectName()
 		if project == "" {
-			return errors.New("--claimable needs the project's name: set `name` in forge.yaml")
+			return fmt.Errorf("--claimable needs the project's name: set `name` in forge.yaml, then: %s env deploy %s --claimable", Name(), envName)
 		}
 		// Before any proof of work, any account and any build: can the
 		// platform take this env anonymously at all right now?
@@ -412,13 +426,15 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 
 // refuseClaimableWhenSignedIn refuses --claimable when a real credential
 // resolves: such a user deploys to their own organization.
-func refuseClaimableWhenSignedIn(ep cloud.Endpoint) error {
+func refuseClaimableWhenSignedIn(ep cloud.Endpoint, env string) error {
 	cred, err := cloud.ResolveCredential("", ep)
 	if err == nil {
+		next := fmt.Sprintf("%s env deploy %s", Name(), env)
 		return &claimableRefusal{
 			exit: exitWrong, code: cloud.CodeFailedPrecondition, reason: reasonClaimableSignedIn,
-			msg: fmt.Sprintf("you are signed in to %s (%s: %s); drop --claimable to deploy to your organization",
-				ep.URL, cred.Source, cred.From),
+			msg: fmt.Sprintf("you are signed in to %s (%s: %s); drop --claimable to deploy to your organization: %s",
+				ep.URL, cred.Source, cred.From, next),
+			next: []string{next},
 		}
 	}
 	if errors.Is(err, cloud.ErrNoCredential) {
@@ -551,8 +567,12 @@ func claimableIneligibleError(env string, caps deploy.ClaimableLimits, reasons [
 	for _, r := range reasons {
 		fmt.Fprintf(&b, "\n  - %s", strings.ReplaceAll(r, "<env>", env))
 	}
-	fmt.Fprintf(&b, "\nor deploy it to your own account instead: forge login, then forge env deploy %s", env)
-	return &claimableRefusal{exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: reasonClaimableIneligible, msg: b.String()}
+	fmt.Fprintf(&b, "\nfix those, then re-run: %s env deploy %s --claimable", Name(), env)
+	fmt.Fprintf(&b, "\nor deploy it to your own account instead: forge login, then %s env deploy %s", Name(), env)
+	return &claimableRefusal{
+		exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: reasonClaimableIneligible, msg: b.String(),
+		next: []string{fmt.Sprintf("%s env deploy %s --claimable", Name(), env), loginThenDeploy(env)},
+	}
 }
 
 // needsCompute reports whether the env runs anything but a static site under
@@ -641,14 +661,16 @@ func claimableUnavailableError(env string, ep cloud.Endpoint, causes []cloud.Cla
 		fmt.Fprintf(&b, "\n  %-24s %s", claimableCauseLabel(c), strings.TrimSuffix(c.Message, "."))
 		retry = retry || c.Code == cloud.ClaimableCauseDependencyUnavailable
 	}
+	var next []string
 	if retry {
 		b.WriteString("\n  This is the platform's configuration, not your project: retry once it is fixed.")
+		next = append(next, fmt.Sprintf("%s env deploy %s --claimable", Name(), env))
 	}
 	fmt.Fprintf(&b, "\n  alternative: deploy to your own account instead: forge login, then %s env deploy %s", Name(), env)
 	first := causes[0]
 	return &claimableRefusal{
 		exit: exitRefused, code: cloud.CodeUnavailable, reason: cloud.ReasonClaimableUnavailable,
-		msg: b.String(), cause: &first,
+		msg: b.String(), cause: &first, next: append(next, loginThenDeploy(env)),
 	}
 }
 
@@ -723,7 +745,8 @@ func obtainClaimable(ctx context.Context, out io.Writer, ep cloud.Endpoint, proj
 	cred, err := cloud.StoreClaimable(ep, project, env, started, now)
 	if err != nil {
 		return nil, fmt.Errorf("the anonymous deploy was created but its token could not be saved (%w); "+
-			"claim link: %s", err, started.ClaimURL)
+			"claim link: %s\n  nothing was published; fix the credential store, then re-run: %s env deploy %s --claimable",
+			err, started.ClaimURL, Name(), env)
 	}
 	return &claimableSession{ep: ep, project: project, env: env, cred: cred, reused: started.Reused}, nil
 }
@@ -751,7 +774,8 @@ func claimableClaimedError(env string) error {
 	return &claimableRefusal{
 		exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: cloud.ReasonClaimableClaimed,
 		msg: fmt.Sprintf("this deploy was claimed: someone opened its claim link and it now belongs to their account.\n"+
-			"  run forge login and deploy without --claimable: forge login, then forge env deploy %s", env),
+			"  run forge login and deploy without --claimable: forge login, then %s env deploy %s", Name(), env),
+		next: []string{loginThenDeploy(env)},
 	}
 }
 
@@ -766,7 +790,8 @@ func claimableDeployError(env string, err error) error {
 		return &claimableRefusal{
 			exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: reasonClaimableIneligible, emitted: true,
 			msg: fmt.Sprintf("the control plane held this anonymous deploy on %s, which an unclaimed deploy cannot resolve.\n"+
-				"sign up for the rest: forge login, then forge env deploy %s", queuedLabel(q.Holds), env),
+				"sign up for the rest: forge login, then %s env deploy %s", queuedLabel(q.Holds), Name(), env),
+			next: []string{loginThenDeploy(env)},
 		}
 	}
 	return err
@@ -791,11 +816,19 @@ func claimableStartError(ep cloud.Endpoint, env string, err error) error {
 				cause = cloud.ClaimableCause{Code: "unavailable", Message: emptyAs(ce.Message, "the control plane refused anonymous deploys without saying why")}
 			}
 			return claimableUnavailableError(env, ep, []cloud.ClaimableCause{cause})
-		case ce.HasReason(cloud.ReasonClaimableTakenDown), ce.HasReason(cloud.ReasonClaimableExpired), ce.HasReason(cloud.ReasonClaimableClaimed):
-			return &claimableRefusal{exit: exitRefused, code: ce.Code, reason: ce.Reason, msg: fmt.Sprintf("%s\n  (reason: %s)", ce.Message, ce.Reason)}
+		case ce.HasReason(cloud.ReasonClaimableClaimed):
+			return claimableClaimedError(env)
+		case ce.HasReason(cloud.ReasonClaimableTakenDown), ce.HasReason(cloud.ReasonClaimableExpired):
+			// Neither comes back anonymously: the platform took it down, or
+			// its window closed. The deploy can go on under an account.
+			return &claimableRefusal{exit: exitRefused, code: ce.Code, reason: ce.Reason, next: []string{loginThenDeploy(env)},
+				msg: fmt.Sprintf("%s\n  (reason: %s)\n  deploy it to your own account instead: forge login, then %s env deploy %s",
+					ce.Message, ce.Reason, Name(), env)}
 		case ce.HasCode(cloud.CodeInvalidArgument), ce.HasCode(cloud.CodeFailedPrecondition):
 			if ce.Reason != "" {
-				return &claimableRefusal{exit: exitRefused, code: ce.Code, reason: ce.Reason, msg: fmt.Sprintf("%s\n  (reason: %s)", ce.Message, ce.Reason)}
+				return &claimableRefusal{exit: exitRefused, code: ce.Code, reason: ce.Reason, next: []string{loginThenDeploy(env)},
+					msg: fmt.Sprintf("%s\n  (reason: %s)\n  or deploy it to your own account instead: forge login, then %s env deploy %s",
+						ce.Message, ce.Reason, Name(), env)}
 			}
 		}
 	}
@@ -817,17 +850,25 @@ func newClaimableThrottle(env string, th cloud.ClaimableThrottle) error {
 		why = "too many claimable deploys right now"
 	}
 	var b strings.Builder
+	// The commands come last: an agent acts on the end of the message.
 	fmt.Fprintf(&b, "Claimable deploys are throttled right now: %s. Nothing was created.\n", why)
+	b.WriteString("  (exit 4: throttled, not a failure of your project)\n")
 	if th.RetryAfter > 0 {
 		fmt.Fprintf(&b, "  retry after  %s  (at %s)\n", formatRetryAfter(th.RetryAfter), at.Format(time.RFC3339))
 	}
 	fmt.Fprintf(&b, "  then         %s env deploy %s --claimable\n", Name(), env)
-	fmt.Fprintf(&b, "  or now       forge login, then %s env deploy %s (your own free account; this limit does not apply)\n", Name(), env)
-	b.WriteString("  (exit 4: throttled, not a failure of your project)")
+	fmt.Fprintf(&b, "  or now       forge login, then %s env deploy %s (your own free account; this limit does not apply)", Name(), env)
 	return &claimableRefusal{
 		exit: exitRefused, code: cloud.CodeResourceExhausted, reason: cloud.ReasonClaimableThrottled,
 		msg: b.String(), throttle: facts,
+		next: []string{fmt.Sprintf("%s env deploy %s --claimable", Name(), env), loginThenDeploy(env)},
 	}
+}
+
+// loginThenDeploy is the one command line that leaves the anonymous path: sign
+// in, then deploy env to the account.
+func loginThenDeploy(env string) string {
+	return fmt.Sprintf("forge login && %s env deploy %s", Name(), env)
 }
 
 // formatRetryAfter renders a wait the way an agent can act on: "45s", "14m",

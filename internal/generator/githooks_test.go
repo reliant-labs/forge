@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Every hook forge writes must be recognisable as forge's: the CLI activates
@@ -34,9 +36,7 @@ func TestGenerateGitHooks_AllRecognisedAsForgeManaged(t *testing.T) {
 // exist — not the whole project, which measured 19 minutes on a 22-entity
 // project — and must lint nothing when the push changes no file.
 func TestPrePushHook_LintsOnlyWhatThePushChanges(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs git and sh subprocesses; runs in task test")
-	}
+	testkit.Slow(t, "runs the hook through git and sh subprocesses")
 	repo := t.TempDir()
 	bin := t.TempDir()
 	argsLog := filepath.Join(t.TempDir(), "forge-args")
@@ -80,18 +80,35 @@ func TestPrePushHook_LintsOnlyWhatThePushChanges(t *testing.T) {
 	git("commit", "-qm", "change")
 	head := git("rev-parse", "HEAD")
 
-	runHook := func(stdin string) string {
+	hook := func(stdin string) (string, error) {
 		t.Helper()
 		_ = os.Remove(argsLog)
 		cmd := exec.Command("sh", "-c", prePushHook, "pre-push", "origin", "https://example.com/r.git")
 		cmd.Dir = repo
 		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "FORGE_PRE_PUSH_FULL=")
 		cmd.Stdin = strings.NewReader(stdin)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	runHook := func(stdin string) string {
+		t.Helper()
+		if out, err := hook(stdin); err != nil {
 			t.Fatalf("pre-push hook: %v\n%s", err, out)
 		}
 		got, _ := os.ReadFile(argsLog)
 		return strings.TrimSpace(string(got))
+	}
+	// refused asserts the hook rejects the push, saying why, without
+	// running forge.
+	refused := func(what, stdin, why string) {
+		t.Helper()
+		out, err := hook(stdin)
+		if err == nil || !strings.Contains(out, why) {
+			t.Errorf("%s: err=%v, output:\n%s\nwant a refusal containing %q", what, err, out, why)
+		}
+		if got, _ := os.ReadFile(argsLog); len(got) != 0 {
+			t.Errorf("%s ran forge %q, want nothing", what, got)
+		}
 	}
 
 	zero := strings.Repeat("0", 40)
@@ -154,21 +171,38 @@ func TestPrePushHook_LintsOnlyWhatThePushChanges(t *testing.T) {
 		t.Errorf("an update ran forge %q, want %q", got, want)
 	}
 
+	// An annotated tag on the checked-out commit: git hands the hook the tag
+	// object's sha, not the commit's, and the push is still of HEAD. Alone,
+	// and beside the branch it tags (git push --follow-tags).
+	git("tag", "-a", "-m", "release", "v1.0.0")
+	tag := git("rev-parse", "v1.0.0")
+	newOnOrigin := "lint --quiet --scope internal/café/café.go --scope internal/kept/kept.go --scope internal/side/side.go"
+	if got := runHook("refs/tags/v1.0.0 " + tag + " refs/tags/v1.0.0 " + zero + "\n"); got != newOnOrigin {
+		t.Errorf("an annotated tag on HEAD ran forge %q, want %q", got, newOnOrigin)
+	}
+	got = runHook("refs/heads/merged " + cafe + " refs/heads/merged " + zero + "\n" +
+		"refs/tags/v1.0.0 " + tag + " refs/tags/v1.0.0 " + zero + "\n")
+	if got != newOnOrigin {
+		t.Errorf("a branch and its annotated tag ran forge %q, want %q", got, newOnOrigin)
+	}
+	// An annotated tag on another commit is another commit.
+	git("tag", "-a", "-m", "old", "v0.9.0", head)
+	refused("an annotated tag on another commit",
+		"refs/tags/v0.9.0 "+git("rev-parse", "v0.9.0")+" refs/tags/v0.9.0 "+zero+"\n", "is not the checked-out commit")
+
+	// A path with a newline in it cannot be told apart from two paths once
+	// the list is line-separated, so the hook refuses rather than drop it.
+	write("internal/nl/a\nb.go", "package nl\n")
+	git("add", "-A")
+	git("commit", "-qm", "newline")
+	refused("a pushed path containing a newline",
+		"refs/heads/merged "+git("rev-parse", "HEAD")+" refs/heads/merged "+cafe+"\n", "contains a newline")
+
 	// A ref that is not checked out: the working tree forge lint reads is
 	// another commit's, so the hook refuses the push rather than lint it.
 	git("checkout", "-q", "main")
-	_ = os.Remove(argsLog)
-	cmd := exec.Command("sh", "-c", prePushHook, "pre-push", "origin", "https://example.com/r.git")
-	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "FORGE_PRE_PUSH_FULL=")
-	cmd.Stdin = strings.NewReader("refs/heads/topic " + topic + " refs/heads/topic " + zero + "\n")
-	out, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "is not the checked-out commit") {
-		t.Errorf("pushing topic with main checked out: err=%v, output:\n%s\nwant a refusal naming the checked-out commit", err, out)
-	}
-	if got, _ := os.ReadFile(argsLog); len(got) != 0 {
-		t.Errorf("pushing a ref that is not checked out ran forge %q, want nothing", got)
-	}
+	refused("pushing topic with main checked out",
+		"refs/heads/topic "+topic+" refs/heads/topic "+zero+"\n", "is not the checked-out commit")
 }
 
 // A project's own hook — what `project new --in-place` keeps — is never

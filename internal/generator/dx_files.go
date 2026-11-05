@@ -693,10 +693,13 @@ fi
 // forge lint reads the working tree, not a commit, so every ref pushed must
 // be the checked-out commit: pushing another ref (`git push origin topic`
 // with main checked out) is refused with guidance rather than linting main's
-// files and reporting the topic's as checked.
+// files and reporting the topic's as checked. An annotated tag is judged by
+// the commit it names, so `git push --follow-tags` of HEAD is not refused.
 //
 // Paths are read NUL-separated (-z), so a name git would quote (non-ASCII,
-// a space) reaches --scope as it is on disk. A file the push deletes
+// a space) reaches --scope as it is on disk. A path containing a newline
+// would be split by the line-separated list, so the push is refused with
+// guidance instead of the path being dropped. A file the push deletes
 // has nothing to lint, so only paths that still exist are passed: --scope
 // refuses one that does not.
 //
@@ -727,7 +730,10 @@ while read -r local_ref local_sha _ remote_sha; do
 	*[!0]*) ;;
 	*) continue ;;
 	esac
-	if [ "$local_sha" != "$head" ]; then
+	# An annotated tag arrives as the tag object's sha: judge the commit it
+	# names. A tag of a tree or blob names none, and is refused below.
+	commit=$(git rev-parse --verify -q "$local_sha^{commit}" || echo "$local_sha")
+	if [ "$commit" != "$head" ]; then
 		echo "pre-push: $local_ref ($local_sha) is not the checked-out commit ($head)." >&2
 		echo "pre-push: forge lint reads the working tree, so it cannot check a ref you have not checked out." >&2
 		echo "pre-push: check it out and push again, or bypass with git push --no-verify." >&2
@@ -736,14 +742,21 @@ while read -r local_ref local_sha _ remote_sha; do
 	case "$remote_sha" in
 	*[!0]*)
 		if git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-			git diff --no-ext-diff --name-only -z "$remote_sha" "$local_sha" -- >>"$changed"
+			git diff --no-ext-diff --name-only -z "$remote_sha" "$commit" -- >>"$changed"
 			continue
 		fi
 		;;
 	esac
-	git rev-list "$local_sha" --not --remotes="$remote" |
+	git rev-list "$commit" --not --remotes="$remote" |
 		git diff-tree --stdin -m -r --root --no-commit-id --name-only -z -- >>"$changed"
 done
+# The list is NUL-separated, so any newline in it is inside a path, which
+# the line-separated list below would split into two names that do not exist.
+if [ "$(tr -cd '\n' <"$changed" | wc -c | tr -d ' ')" != 0 ]; then
+	echo "pre-push: a pushed path contains a newline, which forge lint --scope cannot be given." >&2
+	echo "pre-push: rename it and push again, or bypass with git push --no-verify." >&2
+	exit 1
+fi
 tr '\0' '\n' <"$changed" | sort -u >"$changed.sorted"
 
 set --

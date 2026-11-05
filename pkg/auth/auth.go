@@ -23,6 +23,8 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/reliant-labs/forge/pkg/apikey"
 )
 
 // Provider names recognized by [Config].
@@ -45,6 +47,10 @@ const (
 // outside the fixed fields — Supabase user_metadata, Auth0 app_metadata,
 // Clerk org_permissions, etc. — should read from Raw instead of forking
 // the Claims type.
+//
+// Credential says which kind of credential proved the claims — a token or
+// an API key. Only forge's authenticators set it, never a token's contents;
+// see [Credential].
 type Claims struct {
 	UserID string         `json:"user_id"`
 	Email  string         `json:"email"`
@@ -52,6 +58,8 @@ type Claims struct {
 	Role   string         `json:"role"`
 	Roles  []string       `json:"roles"`
 	Raw    map[string]any `json:"raw,omitempty"`
+
+	Credential Credential `json:"-"`
 }
 
 // UserResolver is an optional hook that translates a raw decoded JWT payload
@@ -480,10 +488,29 @@ func (v *Validator) authenticateAPIKey(ctx context.Context, headers http.Header)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid API key: %w", err))
 	}
-	return claims, nil
+	if claims == nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid API key: key validator returned no claims"))
+	}
+	// This path takes any key format, so a key without forge's prefix
+	// carries no lookup prefix.
+	prefix, _ := apikey.LookupPrefix(apiKey)
+	return withCredential(claims, APIKeyCredential(prefix)), nil
 }
 
+// validateJWT checks a bearer token and marks its claims as a token's,
+// whatever the token validator or a [UserResolver] put in them.
 func (v *Validator) validateJWT(tokenString string) (*Claims, error) {
+	claims, err := v.verifyJWT(tokenString)
+	if err != nil {
+		return nil, err
+	}
+	if claims == nil {
+		return nil, fmt.Errorf("token validator returned no claims")
+	}
+	return withCredential(claims, TokenCredential()), nil
+}
+
+func (v *Validator) verifyJWT(tokenString string) (*Claims, error) {
 	// Prefer the configured TokenValidator chain when present — this is
 	// the path projects opt into for multi-issuer setups.
 	if v.chain != nil {

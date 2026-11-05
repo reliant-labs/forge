@@ -224,8 +224,10 @@ func TestAuthenticateHeaders_APIKey_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if c != want {
-		t.Errorf("claims mismatch: got %+v want %+v", c, want)
+	// The claims are a copy of the validator's, marked as a key's ("abc"
+	// has no forge prefix, so no lookup prefix).
+	if c.UserID != want.UserID || c.OrgID != want.OrgID || !c.IsAPIKey() || c.Credential.KeyPrefix() != "" {
+		t.Errorf("claims mismatch: got %+v want %+v as an API key", c, want)
 	}
 }
 
@@ -264,7 +266,7 @@ func TestAuthenticateHeaders_Both_FallsBackToAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if c != want {
+	if c.UserID != want.UserID || !c.IsAPIKey() {
 		t.Errorf("expected fallback to API key claims, got %+v", c)
 	}
 }

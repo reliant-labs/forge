@@ -19,9 +19,14 @@ import (
 // A declaration alone never passes: the PR must also SHIP the remedy — a
 // codemod registered in internal/codemod, or a migration playbook under
 // internal/templates/project/skills/forge/migrations — in the same diff.
+//
+// And since forge is semver at major 1 (owner, 2026-11-05), neither passes
+// without the OWNER's acceptance: the breaking:approved label, applied by the
+// owner's account. Without it a break fails with the deprecation path.
 const (
-	BreakLabel  = "api-break"
-	markerToken = "API-BREAK:"
+	ApprovedLabel = "breaking:approved"
+	BreakLabel    = "api-break"
+	markerToken   = "API-BREAK:"
 
 	codemodDir    = "internal/codemod/"
 	playbookRoot  = "internal/templates/project/skills/forge/"
@@ -40,6 +45,9 @@ type Remedy struct {
 type Declaration struct {
 	Declared bool
 	Remedies []Remedy
+	// OwnerApproved: the owner applied ApprovedLabel (read from the PR's label
+	// events, never from a label alone, which anyone with triage can add).
+	OwnerApproved bool
 }
 
 // markerLine matches a marker at the START of a line (after indentation), so
@@ -91,8 +99,17 @@ func Evaluate(breaks []Break, decl Declaration, changed []string, root string) V
 		return Verdict{Reason: strings.TrimRight(b.String(), "\n")}
 	}
 
+	if !decl.OwnerApproved {
+		return fail("forge is semver at major 1 (owner, 2026-11-05): an incompatible change to pkg/ does not merge.\n"+
+			"  Deprecate instead: keep the old identifier working beside the new one, mark it\n"+
+			"  `// Deprecated: use <new>.`, and leave its removal to a future major, which only the owner cuts.\n"+
+			"  Only the owner accepts a break, with the `%s` label; it must then still be declared\n"+
+			"  (the `%s` label, or an `%s` line) and ship its remedy: a `forge fix` codemod in %s,\n"+
+			"  or a migration playbook under %s%s<vX.Y.Z>/. (docs: dev-docs/api-breaks.md)",
+			ApprovedLabel, BreakLabel, markerToken, codemodDir, playbookRoot, playbookGroup)
+	}
 	if !decl.Declared {
-		return fail("forge may break freely, but a breaking PR pays for it: declare the break and ship its codemod.\n"+
+		return fail("a breaking PR pays for it: declare the break and ship its codemod.\n"+
 			"  1. Add the `%s` label to the PR, or put a line in the PR body:\n"+
 			"       %s codemod=<forge fix name>        (or playbook=migrations/<vX.Y.Z>)\n"+
 			"  2. Ship the remedy in this PR: a `forge fix <name>` codemod registered in %s, or a\n"+

@@ -197,7 +197,29 @@ type MessageFieldDef struct {
 	// on forge's own scaffold). Additive:
 	// `json:",omitempty"` keeps old descriptors parseable.
 	MessageType string `json:",omitempty"`
+	// Filter is the field's `(forge.v1.filter)` facet, nil when it declares
+	// none: a List request field then filters by exact match on the column
+	// of its own name.
+	Filter *ListFilterDef `json:",omitempty"`
 }
+
+// ListFilterDef is a List request field's declared filter facet
+// (forge.v1.ListFilterOptions): the column it compares and how.
+type ListFilterDef struct {
+	// Column is the compared column; "" is the field's own name.
+	Column string `json:",omitempty"`
+	// Op is one of the FilterOp* values; "" is equality.
+	Op string `json:",omitempty"`
+}
+
+// The ListFilterDef.Op values, one per forge.v1.ListFilterOp.
+const (
+	FilterOpGT     = "gt"
+	FilterOpGTE    = "gte"
+	FilterOpLT     = "lt"
+	FilterOpLTE    = "lte"
+	FilterOpPrefix = "prefix"
+)
 
 // SchemaFieldDef is the deep-schema sibling of MessageFieldDef: one
 // field of a message in ServiceDef.Schemas, carrying enough type

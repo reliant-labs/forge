@@ -296,6 +296,8 @@ export async function fetchAuthOptions(): Promise<AuthOptions> {
  * Null is a normal answer, not an error to show: the requirements are
  * guidance, the server checks the password regardless, and a form with no
  * checklist still works. The checklist is an upgrade, never a dependency.
+ * A 204 is the server saying so outright: the identity provider does not
+ * publish its policy (a hosted instance), so there is no checklist to draw.
  */
 export async function fetchPasswordPolicy(): Promise<PasswordPolicy | null> {
   try {
@@ -303,7 +305,7 @@ export async function fetchPasswordPolicy(): Promise<PasswordPolicy | null> {
       credentials: "include",
       headers: { Accept: "application/json" },
     });
-    if (!response.ok) return null;
+    if (!response.ok || response.status === 204) return null;
     return (await response.json()) as PasswordPolicy;
   } catch {
     return null;

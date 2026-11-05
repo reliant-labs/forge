@@ -1,9 +1,14 @@
-# Breaking `forge/pkg`: declare it, ship the codemod
+# Breaking `forge/pkg`: don't — deprecate; the owner alone accepts a break
 
-forge is pre-1.0 and owes nobody compatibility. A change to `pkg/` may remove
-or reshape an exported API. What it may not do is leave the cost to the next
-person who pins forge: **the breaking PR ships its migration.** Two checks hold
-that line.
+forge is semver at major 1 (owner, 2026-11-05). Within v1 a change to `pkg/`
+never removes or reshapes an exported API: **deprecate it instead** — keep the
+old identifier working beside the new one, mark it `// Deprecated: use <new>.`,
+and leave its removal to a future major, which only the owner cuts. The API
+gate fails every incompatible change unless the **owner** applied the
+`breaking:approved` label (its `labeled` event must name the owner's account,
+`APIGATE_OWNERS`, default `reliant-01`; locally, `-owner-approved`). An accepted
+break still may not leave the cost to the next person who pins forge: **the
+breaking PR ships its migration**, as below. Two checks hold that line.
 
 |                     | what it checks                                                         | where                                                                           | when                                                             |
 | ------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------- |

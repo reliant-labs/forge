@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/topology"
 )
 
 // Custom domains: forge's half.
@@ -132,35 +133,10 @@ type wireCustomDomainStatus struct {
 
 // HostedDNSRecord is one record the author must publish at their registrar
 // before a domain can go live.
-type HostedDNSRecord struct {
-	// Type is A | CNAME | TXT.
-	Type string `json:"type,omitempty"`
-	// Name is the record name, as the registrar wants it.
-	Name string `json:"name,omitempty"`
-	// Value is the record's value — an address, a target, or a token.
-	Value string `json:"value,omitempty"`
-}
+type HostedDNSRecord = topology.DNSRecord
 
 // HostedCustomDomain is one declared custom hostname's observed state.
-type HostedCustomDomain struct {
-	Domain string `json:"domain"`
-	// State is the lower-case vocabulary: pending_dns | verifying |
-	// issuing | live | failed | conflict | unknown.
-	State string `json:"state"`
-	// RequiredRecords are the DNS records still to be set. The platform
-	// reports them for as long as they matter, so a domain stuck in
-	// pending_dns always carries the reason it is stuck.
-	RequiredRecords []HostedDNSRecord `json:"required_records,omitempty"`
-	LastError       string            `json:"last_error,omitempty"`
-	// LiveSince is RFC3339 for when the domain started serving, empty
-	// until it does.
-	LiveSince string `json:"live_since,omitempty"`
-	// ServingPath is where the domain's DNS sends its traffic, as the
-	// control plane resolves it: edge | ingress | elsewhere. Empty when the
-	// control plane did not say (the name does not resolve yet, or an older
-	// control plane). See ServingPathName.
-	ServingPath string `json:"serving_path,omitempty"`
-}
+type HostedCustomDomain = topology.CustomDomain
 
 // The serving-path vocabulary forge reports: which platform path a hostname's
 // DNS reaches.

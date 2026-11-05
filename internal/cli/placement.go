@@ -18,41 +18,32 @@ import (
 	"sort"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/topology"
 )
 
 // The placement vocabulary, as `forge env status --json` reports it per part.
+// The values are forge/pkg/topology's, the one place they are defined.
 const (
-	placementHosted    = "hosted"     // the control plane's platform (OnHosted, a hosted database)
-	placementCluster   = "cluster"    // a Kubernetes cluster the author operates (OnCluster, a cluster database)
-	placementBucket    = "bucket"     // the author's object storage (OnBucket)
-	placementFirebase  = "firebase"   // Firebase Hosting (OnFirebase)
-	placementCompose   = "compose"    // docker compose on this machine
-	placementHost      = "host"       // a host process / dev server on this machine
-	placementBuildOnly = "build-only" // built, never run
+	placementHosted    = topology.PlacementHosted
+	placementCluster   = topology.PlacementCluster
+	placementBucket    = topology.PlacementBucket
+	placementFirebase  = topology.PlacementFirebase
+	placementCompose   = topology.PlacementCompose
+	placementHost      = topology.PlacementHost
+	placementBuildOnly = topology.PlacementBuildOnly
 )
 
 // The actuator vocabulary: WHO applies a part.
 const (
-	actuatorPlatform = "platform" // the control plane converges it
-	actuatorHub      = "hub"      // the control plane's hub converges its delivery unit onto a connected cluster
-	actuatorForge    = "forge"    // `forge env deploy` applies it from the deploying machine
-	actuatorMachine  = "machine"  // `forge env up` runs it on a developer machine
-	actuatorNone     = "none"     // nothing runs it
+	actuatorPlatform = topology.ActuatorPlatform
+	actuatorHub      = topology.ActuatorHub
+	actuatorForge    = topology.ActuatorForge
+	actuatorMachine  = topology.ActuatorMachine
+	actuatorNone     = topology.ActuatorNone
 )
 
 // partPlacement is one deployable part of an env and where it runs.
-type partPlacement struct {
-	// Name is the workload, frontend or database name.
-	Name string `json:"name"`
-	// Kind is "workload", "frontend" or "database".
-	Kind string `json:"kind"`
-	// Placement is one of the placement* constants.
-	Placement string `json:"placement"`
-	// Cluster is the rendered cluster a cluster part lands on, "" otherwise.
-	Cluster string `json:"cluster,omitempty"`
-	// Actuator is one of the actuator* constants.
-	Actuator string `json:"actuator"`
-}
+type partPlacement = topology.Placement
 
 // placementsOf projects every part of the env. Pure; sorted by kind, then
 // name, so the JSON is stable.

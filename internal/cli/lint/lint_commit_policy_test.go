@@ -72,7 +72,14 @@ func TestCommitPolicyStep_WarnsOnIgnoredBirthLedger(t *testing.T) {
 		name, gitignore string
 		want            []string
 	}{
+		// `git check-ignore` matches a path's leading directories too, so a
+		// rule that excludes .forge itself is reported against every probe
+		// below it, in each spelling, and wins over the scaffold's negations.
 		{"directory ignored", ".forge/\n.forge/*\n!.forge/scaffolded/\n!.forge/disowned.json\n!.forge/hashes/\n",
+			[]string{".forge/disowned.json", ".forge/hashes/", ".forge/scaffolded/"}},
+		{"directory ignored, no slash", ".forge\n.forge/*\n!.forge/scaffolded/\n!.forge/disowned.json\n!.forge/hashes/\n",
+			[]string{".forge/disowned.json", ".forge/hashes/", ".forge/scaffolded/"}},
+		{"directory ignored, anchored", "/.forge/\n!.forge/scaffolded/\n!.forge/disowned.json\n!.forge/hashes/\n",
 			[]string{".forge/disowned.json", ".forge/hashes/", ".forge/scaffolded/"}},
 		{"scaffold's rules", ".forge/*\n!.forge/scaffolded/\n!.forge/disowned.json\n!.forge/hashes/\n", nil},
 	} {

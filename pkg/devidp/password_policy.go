@@ -3,7 +3,9 @@ package devidp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"unicode/utf8"
 )
@@ -28,6 +30,22 @@ import (
 // stays the authority: if an org overrides the instance policy, the form
 // shows the instance rules up front and the rejection (see PasswordPolicyError)
 // still names what the issuer actually refused.
+//
+// ── When the endpoint is not there ──────────────────────────────────────
+//
+// A hosted identity instance sits behind a gateway that routes an allowlist of
+// paths (the OIDC endpoints and the session and user APIs the broker drives)
+// and answers 404 for everything else, the Settings API included. That is not
+// an outage: the issuer still enforces its policy when a password is set, it
+// just does not say what the policy is up front. PasswordPolicy reports it as
+// ErrPasswordPolicyUnavailable so a caller can serve "no checklist" quietly
+// rather than log a failure on every sign-up form load.
+
+// ErrPasswordPolicyUnavailable reports that the issuer does not serve its
+// password-complexity policy at all (404, 405 or 501 on the Settings API), as
+// opposed to failing to serve it right now. Test with errors.Is; the wrapped
+// error still carries the issuer's answer.
+var ErrPasswordPolicyUnavailable = errors.New("the identity provider does not serve its password policy")
 
 // PasswordRule names one clause of the complexity policy. The values are the
 // wire spelling the scaffolded frontend reads, so they are part of the
@@ -56,6 +74,11 @@ type PasswordPolicy struct {
 func (c *Client) PasswordPolicy(ctx context.Context) (PasswordPolicy, error) {
 	body, err := c.getJSON(ctx, "/v2/settings/password/complexity")
 	if err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) && (ae.status == http.StatusNotFound ||
+			ae.status == http.StatusMethodNotAllowed || ae.status == http.StatusNotImplemented) {
+			return PasswordPolicy{}, fmt.Errorf("read password policy: %w: %w", ErrPasswordPolicyUnavailable, err)
+		}
 		return PasswordPolicy{}, fmt.Errorf("read password policy: %w", err)
 	}
 	// minLength is an int64, which the gateway renders as a JSON string.

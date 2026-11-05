@@ -1,8 +1,8 @@
 ---
 name: v1.0.16
-description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth. Also: a scaffolded UpdateX over a table owned by its own primary key (COMMENT ON COLUMN <t>.id IS 'forge:owner') stamped the key, moving an update aimed at another row onto the caller's; use when a migration declares forge:owner on an id column.
+description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth. Also: a scaffolded UpdateX over a table owned by its own primary key (COMMENT ON COLUMN <t>.id IS 'forge:owner') stamped the key, moving an update aimed at another row onto the caller's; use when a migration declares forge:owner on an id column. Also: forge/pkg/schemadef.ForeignKey gained KeyColumns / RefKeyColumns slices (a composite foreign key's whole key), so it is no longer comparable with ==; use when Go code imports forge/pkg/schemadef.
 version: v1.0.16
-detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; grep -rqsiE --include='*.up.sql' "on column [a-z0-9_.\"]*\.\"?id\"? is '[^']*forge:owner" db/migrations && exit 0; exit 1
+detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/schemadef"' . && exit 0; grep -rqsiE --include='*.up.sql' "on column [a-z0-9_.\"]*\.\"?id\"? is '[^']*forge:owner" db/migrations && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.16
@@ -152,3 +152,27 @@ already scoped. A `forge:read-only` NOT NULL owner column no longer needs
 `forge:fill=handler` while its Create is authenticated (the wrapper stamps it);
 a `forge:fill=handler` added only to get past "can never be populated" can stay
 or go.
+
+## 4. `schemadef.ForeignKey` is no longer comparable
+
+**Use when** Go code imports `github.com/reliant-labs/forge/pkg/schemadef`.
+
+### What changed
+
+`ForeignKey` gained `KeyColumns []string` and `RefKeyColumns []string`: a
+composite constraint (`FOREIGN KEY (tenant_id, strategy_id) REFERENCES
+strategies (tenant_id, id)`) is still reported as one entry per column, and
+each entry now carries the whole key, so a reader can tell that all its columns
+name the same parent row. Both are nil for a single-column reference.
+Introspection also pairs the key's columns by position: a composite used to
+come back as the cross product of its columns (strategy_id → strategies.tenant_id
+as well as → strategies.id), and now yields exactly one entry per column. A
+struct with a slice field cannot be compared with `==` or used as a map key.
+
+### What to do
+
+Nothing, unless your code compares two `ForeignKey` values with `==`/`!=` or
+keys a map by one; the compiler names each such site. Compare the fields you
+mean instead (`a.Column == b.Column && a.RefTable == b.RefTable`), or
+`reflect.DeepEqual` in a test. Code that deduplicated the old cross-product
+rows of a composite can drop that workaround.

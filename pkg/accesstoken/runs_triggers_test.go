@@ -1,11 +1,12 @@
 package accesstoken
 
 import (
-	"connectrpc.com/connect"
 	"context"
 	"errors"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )

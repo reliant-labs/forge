@@ -337,7 +337,7 @@ func TestMemoizedGoValidateRerunsWhenPackageSelectionMoves(t *testing.T) {
 		what string
 		move func()
 	}{
-		{"GOFLAGS=-tags=extra", func() { t.Setenv("GOFLAGS", "-tags=extra") }},
+		{"GOFLAGS set to -tags=extra", func() { t.Setenv("GOFLAGS", "-tags=extra") }},
 		{"another GOOS", func() { t.Setenv("GOOS", "plan9") }},
 		{"CGO_ENABLED unset", func() { _ = os.Unsetenv("CGO_ENABLED") }},
 		{"a C compiler appearing on PATH", func() { cc = "gcc" }},

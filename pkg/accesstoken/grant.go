@@ -177,6 +177,12 @@ var actingUserScopes = []Scope{
 	ScopeRunsControl,
 	ScopeTriggersFire,
 	ScopeTriggersManage,
+	// The inbox is a person's: what waits on them, what they approve, what
+	// they answer.
+	ScopeInboxRead,
+	ScopeInboxManage,
+	ScopeApprovalsDecide,
+	ScopeQuestionsAnswer,
 }
 
 // RequiresActingUser reports whether a scope acts as a person.

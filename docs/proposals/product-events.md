@@ -27,12 +27,12 @@ Product events (funnels, retention cohorts) should be a **forge feature**: a typ
 
 ## Options for long-term retention
 
-| # | Option | Answers | Privacy cost | Work |
-|---|---|---|---|---|
-| 1 | Keep as-is | Funnels over days | None | None |
-| 2 | ClickHouse materialized view copies `product.*` rows into their own table with a long TTL (e.g. 13 months) | Per-user funnels and retention cohorts; new questions asked of past data | Per-user ids kept for 13 months. The privacy page changes, and account deletion must purge this table. Needs legal review. | Small |
-| 3 | Keep only aggregates long-term (daily counts, cohort tables, no user id) | Only metrics defined up front | Minimal: no personal data past 14 days | Medium: metrics have to be defined ahead of time |
-| 4 | Raise the TTL on all logs | Everything | Worst: every log line is kept | Expensive |
+| #   | Option                                                                                                     | Answers                                                                  | Privacy cost                                                                                                               | Work                                             |
+| --- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| 1   | Keep as-is                                                                                                 | Funnels over days                                                        | None                                                                                                                       | None                                             |
+| 2   | ClickHouse materialized view copies `product.*` rows into their own table with a long TTL (e.g. 13 months) | Per-user funnels and retention cohorts; new questions asked of past data | Per-user ids kept for 13 months. The privacy page changes, and account deletion must purge this table. Needs legal review. | Small                                            |
+| 3   | Keep only aggregates long-term (daily counts, cohort tables, no user id)                                   | Only metrics defined up front                                            | Minimal: no personal data past 14 days                                                                                     | Medium: metrics have to be defined ahead of time |
+| 4   | Raise the TTL on all logs                                                                                  | Everything                                                               | Worst: every log line is kept                                                                                              | Expensive                                        |
 
 **Recommendation:** option 2 with a 13-month TTL. Make the account-deletion purge a hard requirement, and get legal to sign off on the privacy page before launch. Option 3 is the fallback if legal prefers no long-lived per-user data. Option 4 is rejected.
 

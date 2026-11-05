@@ -114,28 +114,38 @@ message Item {
 	runCmd(t, projectDir, "go", "vet", "./...")
 }
 
-// assertNotInBinaryDeps fails when pkg appears in `go list -deps <target>`
-// run inside projectDir. The comparison is on whole lines: `go list -deps`
-// prints one import path per line, and a substring match would confuse
-// `testing` with `internal/testfactory` or `testing/fstest`.
+// assertNotInBinaryDeps fails when a package the project or forge owns, and
+// target links, imports pkg from a non-test file. `go list -deps` reports
+// each linked package's module and its non-test imports, so the edge is
+// judged where it is made: a third-party module's import (prometheus/common's
+// expfmt pulls in pandatix/go-abnf, whose *_fuzz.go files import testing)
+// is logged, not failed, because no scaffold or forge change can remove it.
+// Imports are compared whole: `testing` is not `testing/fstest`.
 func assertNotInBinaryDeps(t *testing.T, projectDir, target, pkg string) {
 	t.Helper()
 
-	cmd := exec.Command("go", "list", "-deps", target)
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}|{{with .Module}}{{.Path}}{{end}}|{{join .Imports \",\"}}", target)
 	cmd.Dir = projectDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go list -deps %s in %s: %v\n%s", target, projectDir, err, out)
 	}
+	mainCmd := exec.Command("go", "list", "-m")
+	mainCmd.Dir = projectDir
+	mainMod, err := mainCmd.Output()
+	if err != nil {
+		t.Fatalf("go list -m in %s: %v", projectDir, err)
+	}
+	owned := func(module string) bool {
+		return module == strings.TrimSpace(string(mainMod)) || module == "github.com/reliant-labs/forge"
+	}
 
-	var offenders []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if strings.TrimSpace(line) == pkg {
-			offenders = append(offenders, line)
-		}
+	offenders, thirdParty := binaryImportersOf(string(out), pkg, owned)
+	for _, imp := range thirdParty {
+		t.Logf("third-party %s imports %q from a non-test file (not forge's to fix)", imp, pkg)
 	}
 	if len(offenders) > 0 {
-		t.Fatalf("package %q is linked into the production binary %s.\n\n"+
+		t.Fatalf("package %q is linked into the production binary %s, imported by %s.\n\n"+
 			"Something under %s imports it from a NON-test .go file. Find the\n"+
 			"edge with:\n\n"+
 			"    go list -deps -json %s | grep -B5 '\"%s\"'\n\n"+
@@ -143,6 +153,6 @@ func assertNotInBinaryDeps(t *testing.T, projectDir, target, pkg string) {
 			"they serve (compiled only into that package's test binary), or in a\n"+
 			"package cmd/ does not import (e.g. internal/testfactory) when they\n"+
 			"must be importable across packages.",
-			pkg, target, target, target, pkg)
+			pkg, target, strings.Join(offenders, ", "), target, target, pkg)
 	}
 }

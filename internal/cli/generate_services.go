@@ -274,6 +274,22 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 		}
 
 		if dirExists(absServiceDir) { //nolint:nestif // per-service existence probe: each arm reports a different reason the service dir cannot be generated into.
+			// A directory that already holds files is not a scaffolded
+			// service: someone may have started it by hand (an rpc file, a
+			// helper) before the proto existed. Each owned file is decided on
+			// its own, so a missing service.go is still written — never over
+			// one, and never when the package declares its symbols elsewhere.
+			wrote, found, err := codegen.EnsureServiceFile(svc, projectDir, absServiceDir)
+			if err != nil {
+				return fmt.Errorf("scaffold service.go for %s: %w", svc.Name, err)
+			}
+			switch {
+			case wrote:
+				fmt.Printf("  ✅ Wrote %s/service.go (Deps, Service, New — yours to edit); the directory's other files were left as they are\n", relServiceDir)
+			case len(found) > 0 && len(found) < len(codegen.ServiceFileSymbols):
+				fmt.Printf("  ⚠️  %s/ has no service.go, and declares %s by hand: it also needs the rest of Deps, Service and New(Deps) (compose.go constructs it), so forge did not write a service.go that would redeclare them\n",
+					relServiceDir, codegen.DescribeDecls(found))
+			}
 			// Incremental: scaffold stubs only for missing RPC methods,
 			// one user-owned rpc_<name>.go each (no forge-owned gen file).
 			// cs is threaded for signature stability only.

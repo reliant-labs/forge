@@ -9,15 +9,17 @@ import (
 	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
-// The cron scheduler the --kind cron worker template compiles against. The
-// version is pinned (not @latest) so every project that scaffolds a cron
-// worker lands on the same, tested module version.
+// The cron parser forge/pkg/cronkit (which the --kind cron worker template
+// runs on) compiles against. The version is pinned (not @latest) so every
+// project that scaffolds a cron worker lands on the same, tested module
+// version.
 const (
 	cronModulePath    = "github.com/robfig/cron/v3"
 	cronModuleVersion = "v3.0.1"
@@ -60,12 +62,18 @@ func GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) er
 		// <module>/pkg/config, only when the project has typed config — the
 		// rule service.go follows. A project adopted in place has none.
 		HasConfig bool
+		// HasDatabase: a cron worker's Deps takes the ORM handle its ticks
+		// are claimed on (forge/pkg/cronkit), only when the project has a
+		// database — the db/migrations directory, the same evidence
+		// config.DeriveDatabase reads. Without one every replica fires.
+		HasDatabase bool
 	}{
-		Name:      workerName,
-		Package:   workerPackage,
-		Module:    modulePath,
-		Schedule:  schedule,
-		HasConfig: codegen.ProjectHasTypedConfig(root),
+		Name:        workerName,
+		Package:     workerPackage,
+		Module:      modulePath,
+		Schedule:    schedule,
+		HasConfig:   codegen.ProjectHasTypedConfig(root),
+		HasDatabase: isDir(filepath.Join(root, config.DefaultMigrationsDir)),
 	}
 
 	// -- worker.go --
@@ -86,8 +94,9 @@ func GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) er
 		return err
 	}
 
-	// A cron worker compiles against robfig/cron, which the scaffolded go.mod
-	// does not carry (a fresh project has no cron worker, so `go mod tidy`
+	// A cron worker compiles against forge/pkg/cronkit, which imports
+	// robfig/cron — a module the scaffolded go.mod does not carry, and which
+	// a pruned module graph needs listed (a fresh project has no cron worker, so `go mod tidy`
 	// would drop the require anyway). Add it here, alongside the code that
 	// needs it — otherwise the very next `go build` (including forge
 	// generate's own validate step) fails with "no required module provides

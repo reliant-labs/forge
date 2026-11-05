@@ -58,7 +58,7 @@ import (
 
 // The apply gate's details keys: what was applied, and what review approved it.
 const (
-	applyGateBundleDigest = "bundle_digest"
+	applyGateBundleDigest = release.GateDetailBundleDigest
 	applyGatePlanDigest   = "plan_digest"
 )
 

@@ -100,6 +100,11 @@ type Scope struct {
 	Services []string
 	// Filters are generic attribute predicates, ANDed.
 	Filters []AttrFilter
+	// Toggles are the dashboard's toggle filters (dashspec.FilterToggle) by id,
+	// each bound to a sql panel as the Bool parameter {<id>:Bool}. Build it with
+	// dashspec.Dashboard.ToggleValues so every declared toggle is bound.
+	// Structured panels ignore it.
+	Toggles map[string]bool
 	// Declared are the attribute keys the queried metric's own data points
 	// carry; the one extension to the key allowlist, for metrics.
 	Declared map[string]bool
@@ -327,8 +332,17 @@ func OperatorSource(source string) bool {
 
 // SpanErrorExpr and SpanServerExpr cover both spellings the pipeline writes
 // (the ClickHouse exporter's "Error"/"Server" and the OTel enum names).
+//
+// An error span is one with an error status that is not a cancellation: a
+// request the client walked away from (forge#1666) is not a failure of the
+// server, so it counts in no error rate, error trace or release-health
+// verdict. spanCanceledExpr recognises one by forge's error_class (which
+// observe.RecordSpanError stamps; it also leaves such a span's status unset),
+// by Connect's canceled code, and by the 499 a proxy answers a closed client.
 const (
-	spanErrorExpr  = "StatusCode IN ('Error', 'STATUS_CODE_ERROR')"
+	spanCanceledExpr = "(SpanAttributes['error_class'] = 'canceled' OR SpanAttributes['rpc.connect_rpc.error_code'] = 'canceled'" +
+		" OR SpanAttributes['http.response.status_code'] = '499' OR SpanAttributes['http.status_code'] = '499')"
+	spanErrorExpr  = "(StatusCode IN ('Error', 'STATUS_CODE_ERROR') AND NOT " + spanCanceledExpr + ")"
 	spanServerExpr = "SpanKind IN ('Server', 'SPAN_KIND_SERVER')"
 	// spanStreamExpr matches the server span of a streaming RPC, whose
 	// duration is the stream's lifetime (minutes to hours), not a request's

@@ -820,10 +820,15 @@ ORDER BY service`, windowFilter(p[pWindow]), sqlQuote(env), rpcServiceList(in), 
 }
 
 // silentSQL fires for a steady service whose calls counter has not moved for
-// silent_minutes. moves holds only the samples where the counter changed, so a
-// quiet period is the distance between two consecutive moves: the unchanged
-// snapshots exported inside it, and samples never exported, both fall in that
-// distance. The current silence (last move to now) is not a prior one.
+// silent_minutes. The project's rpc services decide WHICH services it judges
+// (one that served any of them in the window), but liveness counts every call
+// the service serves: a service in the env may also serve procedures of a
+// package another project owns too (a proxy, a mirrored API), and judging it
+// on the project's procedures alone reads a busy server as silent.
+// moves holds only the samples where the counter changed, so a quiet period
+// is the distance between two consecutive moves: the unchanged snapshots
+// exported inside it, and samples never exported, both fall in that distance.
+// The current silence (last move to now) is not a prior one.
 func silentSQL(env string, in AlertInput, p map[string]float64) string {
 	return fmt.Sprintf(`WITH moves AS (
     SELECT service, arrayJoin(t) AS t
@@ -838,7 +843,13 @@ func silentSQL(env string, in AlertInput, p map[string]float64) string {
         WHERE MetricName = 'rpc.server.calls'
           AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL %[1]s MINUTE - INTERVAL 1 MINUTE
           AND ResourceAttributes['deployment.environment.name'] = %[2]s
-          AND splitByChar('/', Attributes['procedure'])[2] IN (%[3]s)
+          AND ServiceName IN (
+              SELECT ServiceName
+              FROM otel_metrics_sum
+              WHERE MetricName = 'rpc.server.calls'
+                AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL %[1]s MINUTE - INTERVAL 1 MINUTE
+                AND ResourceAttributes['deployment.environment.name'] = %[2]s
+                AND splitByChar('/', Attributes['procedure'])[2] IN (%[3]s))
         GROUP BY ServiceName, ResourceAttributes, Attributes
     )
 )

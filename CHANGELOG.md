@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.15] - 2026-11-04
+
+### Breaking changes
+
+- **feat(db):** forge db query records every query and refuses a writable role on a real env ([#1680](https://github.com/reliant-labs/forge/pull/1680))
+
+### Added
+
+- **fluxdelivery:** a stopped forge.dev tier reads settled to Flux, not in progress ([#1692](https://github.com/reliant-labs/forge/pull/1692))
+- **build:** env build boots every workload with its rendered config before the push ([#1691](https://github.com/reliant-labs/forge/pull/1691))
+- **domain:** forge domain bind --hsts-include-subdomains; document hosted 404.html, \_headers and alias redirects ([#1698](https://github.com/reliant-labs/forge/pull/1698))
+- **observe:** join backend traces to the browser session and user that caused them ([#1696](https://github.com/reliant-labs/forge/pull/1696))
+- **scaffold:** list pages show foreign-key names, filter by entity picker, sort by column and fit a phone (web-runtime 0.13.0) ([#1702](https://github.com/reliant-labs/forge/pull/1702))
+- **web-runtime:** report client hints, viewport/screen and desktop app versions (web-runtime 0.13.1) ([#1707](https://github.com/reliant-labs/forge/pull/1707))
+
+### Changed
+
+- **deploy:** pin the local stage's write order and the hosted stage's Secret gate on control-plane prod's shape ([#1685](https://github.com/reliant-labs/forge/pull/1685))
+- **e2e:** enum and validate e2e assert the ui/Select forms and compare zod chains layout-insensitively ([#1706](https://github.com/reliant-labs/forge/pull/1706))
+- **ciguard:** write the release check's fake gh once, before the parallel subtests (ETXTBSY) ([#1709](https://github.com/reliant-labs/forge/pull/1709))
+
+### Fixed
+
+- **placement:** every named forge.Manifests group is a declared placement owner, release_inputs or not ([#1679](https://github.com/reliant-labs/forge/pull/1679))
+- **dbquery:** deny xpath_table; allow the read-only replication views ([#1609](https://github.com/reliant-labs/forge/pull/1609))
+- **ci:** pin actions in the npm publish workflows to commit SHAs ([#1681](https://github.com/reliant-labs/forge/pull/1681))
+- **deploy:** a mixed env's hosted tier is judged on the Secrets it consumes, and the refusal comes before the write ([#1683](https://github.com/reliant-labs/forge/pull/1683))
+- **deploy:** a release creates its missing Namespaces before anything is written into them, on every cluster ([#1684](https://github.com/reliant-labs/forge/pull/1684))
+- **deploy:** every apply records its own verdict, and a partly applied record names what failed ([#1686](https://github.com/reliant-labs/forge/pull/1686))
+- **release:** release-forge.sh and release-web-runtime.sh tag as reliant-labs[bot] ([#1687](https://github.com/reliant-labs/forge/pull/1687))
+- **ci:** Reliant review reads a head's FIRST review marker, its one verdict ([#1689](https://github.com/reliant-labs/forge/pull/1689))
+- **components:** popover treats portalled descendants as inside ([#1688](https://github.com/reliant-labs/forge/pull/1688))
+- **web-runtime:** no RUM session before a page is first visible; sessions panel lists only replayed sessions (web-runtime 0.12.1) ([#1690](https://github.com/reliant-labs/forge/pull/1690))
+- **forgedelegate:** keep 16 pinned builds, not 4, so a busy machine's pins stop evicting each other ([#1697](https://github.com/reliant-labs/forge/pull/1697))
+- **cli:** the e2e test binary builds again — frontend_bundle_e2e_test's lastLines clashed with config_check.go's ([#1700](https://github.com/reliant-labs/forge/pull/1700))
+- **scaffold:** Geist actually renders, the mock banner survives static export, expired sessions return to sign-in ([#1701](https://github.com/reliant-labs/forge/pull/1701))
+- **scaffold:** forms compose the installed ui components with linked, human error messages; mock fixtures are referentially consistent ([#1703](https://github.com/reliant-labs/forge/pull/1703))
+- **forgedelegate:** build a pinned forge once, in a heavy slot, with its scratch inside the staging dir ([#1693](https://github.com/reliant-labs/forge/pull/1693))
+- **obsquery:** session reads name the location columns only when the tenant has them ([#1704](https://github.com/reliant-labs/forge/pull/1704))
+- **scaffold:** a fresh scaffold lints clean again — @theme opens on a token, the entity picker's button drops aria-invalid ([#1705](https://github.com/reliant-labs/forge/pull/1705))
+- **web-runtime:** name fetch/XHR spans by the route they called, not HTTP <METHOD> ([#1694](https://github.com/reliant-labs/forge/pull/1694))
+- **ci:** green forge main's unit, guard and Windows lanes ([#1708](https://github.com/reliant-labs/forge/pull/1708))
+- **scaffold:** the shell's <main> is written as prettier prints it, so a new project's first commit passes its hooks ([#1711](https://github.com/reliant-labs/forge/pull/1711))
+
 ## [v1.0.14] - 2026-11-03
 
 ### Breaking changes
@@ -8468,7 +8512,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.14...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.15...HEAD
+[v1.0.15]: https://github.com/reliant-labs/forge/compare/v1.0.14...v1.0.15
 [v1.0.14]: https://github.com/reliant-labs/forge/compare/v1.0.13...v1.0.14
 [v1.0.13]: https://github.com/reliant-labs/forge/compare/v1.0.12...v1.0.13
 [v1.0.12]: https://github.com/reliant-labs/forge/compare/v1.0.11...v1.0.12

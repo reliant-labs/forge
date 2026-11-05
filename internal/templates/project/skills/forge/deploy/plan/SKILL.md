@@ -95,6 +95,26 @@ bundle yet. `forge env deploy <env> <version> --live-diff` runs a client-side
 `kubectl diff` of the release's bundle against the cluster when you need to
 see it.
 
+**The apply removes drift.** Every object forge applies converges to its
+declaration, not just the fields it declares. Before each apply stream forge
+takes over the fields of imperative clients — every `kubectl*` field manager
+(`kubectl edit`, `set env`, `patch`, `label`, `rollout restart`, a client-side
+apply) and `before-first-apply`, the set Flux's kustomize-controller takes over
+— and claims ownerless fields (no managedFields entry owns them) that do not
+come back when removed, so server-side apply then removes whatever forge no
+longer declares. Defaults, allocated values (a Service's clusterIP), and fields
+a controller or another tool's manager writes (an HPA's replicas, an operator's
+annotation) stay. The deploy prints each object whose fields it takes back:
+
+    [deploy]   Deployment/prod/admin-server: forge takes back 2 field(s) set outside it (kubectl, no owner); …
+    [deploy]       .spec.template.spec.containers[name="admin-server"].env[name="PPROF_ENABLED"]
+    [deploy]       .spec.template.spec.volumes[name="scratch"]
+
+A setting you need is declared in KCL, never left as a hand edit. To keep
+another writer's fields on one object, annotate it
+`forge.dev/field-ownership: shared`: forge then converges only what it
+declares there.
+
 ## What a release and a promotion record
 
 **A scoped deploy records what it moved.** The promotion carries `targets`

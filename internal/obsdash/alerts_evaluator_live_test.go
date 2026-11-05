@@ -69,7 +69,7 @@ func TestDefaultAlertsThroughTheEvaluator(t *testing.T) {
 	}
 	in := obsdash.AlertInput{FrontendServices: []string{"shop-web"}, Services: []obsdash.AlertService{
 		{Name: "api", RPCService: "a.v1.S"}, {Name: "quiet", RPCService: "q.v1.Q"}, {Name: "reset", RPCService: "r.v1.R"}, {Name: "delta", RPCService: "d.v1.D"}, {Name: "fast", RPCService: "f.v1.F"},
-		{Name: "stopped", RPCService: "s.v1.T"}, {Name: "healthy", RPCService: "h.v1.H"}, {Name: "sparse", RPCService: "p.v1.P"}, {Name: "young", RPCService: "y.v1.Y"}, {Name: "bursty", RPCService: "b.v1.B"}, {Name: "lulls", RPCService: "l.v1.L"}}}
+		{Name: "stopped", RPCService: "s.v1.T"}, {Name: "healthy", RPCService: "h.v1.H"}, {Name: "sparse", RPCService: "p.v1.P"}, {Name: "young", RPCService: "y.v1.Y"}, {Name: "bursty", RPCService: "b.v1.B"}, {Name: "lulls", RPCService: "l.v1.L"}, {Name: "proxied", RPCService: "x.v1.X"}}}
 	rules, err := obsdash.ResolveAlertDefaults(in, "dev", nil)
 	if err != nil {
 		t.Fatal(err)

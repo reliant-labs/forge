@@ -241,6 +241,48 @@ func (c *checkMode) finish(cmd *cobra.Command, msg proto.Message, collected []er
 	return nil
 }
 
+// CheckVariables is the boot config check for a command that reads its
+// settings straight from environment variables instead of loading a typed
+// config — the scaffolded `db migrate`, whose whole configuration is its
+// DSN. In check mode it reports every named variable the process was not
+// given (unset or empty) as a problem, prints the result and exits: 0 when
+// each one is set, 1 otherwise. A placeholder counts as set, as it does for a
+// typed load. Outside check mode it returns at once, so a command calls it
+// first, before it acts on anything.
+//
+// Without it such a command never reaches a config load, so the check can
+// only report it unverified — and a migration job then refuses every push
+// of an otherwise well-wired env.
+func CheckVariables(names ...string) {
+	c := activeCheck(environ{})
+	if c == nil {
+		return
+	}
+	var missing []string
+	for _, n := range names {
+		if v, ok := os.LookupEnv(n); !ok || v == "" {
+			missing = append(missing, n)
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.emitted {
+		return
+	}
+	r := c.resultLocked(len(missing) == 0)
+	if len(names) > 0 {
+		r.Notes = append(r.Notes, fmt.Sprintf("reads %s directly, with no typed config: checked that each is set", strings.Join(names, ", ")))
+	}
+	for _, n := range missing {
+		r.Problems = append(r.Problems, fmt.Sprintf("%s is not set: the command reads it at start and refuses to run without it", n))
+	}
+	code := 0
+	if len(missing) > 0 {
+		code = 1
+	}
+	c.emitLocked(r, code)
+}
+
 // unloadedLocked is the configs registered on cmd's path (and self) that no
 // load has finished yet, sorted.
 func (c *checkMode) unloadedLocked(cmd *cobra.Command, self string) []string {

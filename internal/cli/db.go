@@ -71,7 +71,7 @@ When something is wedged:
 
   Seeded rows are rejected by their own schema
     'forge db seed apply' names the constraint it could not place, and why.
-    Load the db/seeding skill for the constraint shapes forge can seed.`,
+    Load the db/seeding/constraints skill for the constraint shapes forge can seed.`,
 	}
 
 	cmd.AddCommand(newDBMigrationCommand())

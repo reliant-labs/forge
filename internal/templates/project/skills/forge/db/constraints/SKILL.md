@@ -64,4 +64,4 @@ CONSTRAINT estimates_approved_iff
 ```
 
 Enforce the mirror half (not approved ⇒ NULL stamp) in the RPC that owns the
-transition. Why, and the mixing rule: `db/seeding`.
+transition. Why, and the mixing rule: `db/seeding/constraints`.

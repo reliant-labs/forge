@@ -168,7 +168,9 @@ gets its key on the normal hosted network.
   `host.docker.internal` or `host.k3d.internal`);
 - an endpoint URL with user info, a query or a trailing slash;
 - an endpoint read by a hosted workload whose host is not public (loopback,
-  private, link-local, CGNAT, an IPv6 literal, a single-label name, or
+  private, link-local, CGNAT, an IPv4 address spelled any way but the
+  canonical dotted quad (`0177.0.0.1`, `0x7f.1`, `2130706433`), an IPv6
+  literal, a single-label name, or
   `*.localhost` / `*.local` / `*.internal` / `*.svc` / `*.lan` /
   `*.home.arpa`): from Reliant's network that host is the platform's;
 - an endpoint read by a hosted workload over plaintext `http://` (either

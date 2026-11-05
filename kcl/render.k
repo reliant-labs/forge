@@ -415,7 +415,7 @@ _llm_resolve = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> 
         "${where}: on forge.OnHosted the platform fills the LLM's variables BY NAME, so forge.LLMRef {key = \"${v.key}\"} must sit under ${[k for k, x in LLM_ENV_KEYS if x == v.key]}. Use `env = forge.llm_env()`"
     _internal = [] if _hosted_llm or rt.type != "hosted" else [u for u in [_l.runtime.base_url, _l.runtime.openai_base_url] if u and _llm_url_is_internal(u)]
     assert not _internal, \
-        "${where}: forge.LLMEndpoint ${_internal} names a host that is not on the public internet (loopback, private, link-local, an IPv6 literal or an internal name), and from Reliant's network that host is the platform's, not yours, so a hosted workload may not send it requests or its key. Point the endpoint at a public https:// URL, or use forge.OnHosted {} for Reliant's gateway"
+        "${where}: forge.LLMEndpoint ${_internal} names a host that is not on the public internet (loopback, private, link-local, a non-canonical IPv4 spelling, an IPv6 literal or an internal name), and from Reliant's network that host is the platform's, not yours, so a hosted workload may not send it requests or its key. Point the endpoint at a public https:// URL, or use forge.OnHosted {} for Reliant's gateway"
     # A hosted workload's endpoint is across the internet, and its client
     # sends the key in every request: plaintext http:// would hand the
     # credential to anyone on the path.

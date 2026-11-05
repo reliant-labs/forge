@@ -1334,7 +1334,9 @@ schema LLMEndpoint:
 
     A hosted workload reaches only a public https:// endpoint (plaintext
     http:// would expose the key it sends): a URL whose host is
-    loopback, private, link-local or carrier-grade-NAT, an IPv6 literal, or
+    loopback, private, link-local or carrier-grade-NAT, an IPv4 address in
+    any spelling but the canonical dotted quad (0177.0.0.1, 0x7f.1,
+    2130706433), an IPv6 literal, or
     an internal name (one label, *.localhost, *.local, *.internal, *.svc) is
     refused at render for it, because from Reliant's network that host is
     the platform's, not yours. A workload you run (host, compose, your
@@ -1373,12 +1375,22 @@ _llm_url_host = lambda u: str -> str {
 # unspecified address, any IPv6 literal, a single-label name, or a name under
 # a non-public suffix. Decided on the declared host, the only thing a render
 # can see; the hosted network's egress policy is what holds it at runtime.
+# A host whose last label is numeric (decimal or 0x hex) is an IPv4 address
+# to a URL parser (WHATWG), which also reads 0177.0.0.1, 0x7f.1 and 127.1 as
+# loopback; the ranges below match only the canonical dotted quad, so any
+# other numeric spelling counts as internal rather than be classified.
 _llm_url_is_internal = lambda u: str -> bool {
     _h = _llm_url_host(u)
-    _h.startswith("[") or "." not in _h or regex.match(_h, r"^(0|10|127)\.[0-9.]+$") \
+    _h.startswith("[") or "." not in _h \
+        or (regex.match(_h, r"^.*\.(0x[0-9a-f]*|[0-9]+)$") and not regex.match(_h, _LLM_CANONICAL_IPV4)) \
+        or regex.match(_h, r"^(0|10|127)\.[0-9.]+$") \
         or regex.match(_h, r"^(169\.254|192\.168|172\.(1[6-9]|2[0-9]|3[01])|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]))\.[0-9.]+$") \
         or regex.match(_h, r"^([a-z0-9-]+\.)*(localhost|local|internal|svc|lan|home\.arpa)$")
 }
+
+# An IPv4 address in its one canonical spelling: four decimal octets, 0-255,
+# no leading zeros.
+_LLM_CANONICAL_IPV4 = r"^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$"
 
 # Every LLMRef key of an endpoint, as declared.
 _llm_endpoint_values = lambda e: any -> {str:} {

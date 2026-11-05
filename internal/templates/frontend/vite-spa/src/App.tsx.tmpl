@@ -27,6 +27,11 @@ import { ThemeToggle } from "@/components/theme-toggle";
 {{end}}
 import type { ReactNode } from "react";
 
+// Credit link, shown at the bottom of every page. Yours to edit or delete:
+// remove this constant and the footer element below. Forge never re-adds it.
+const BUILT_WITH_FORGE_URL =
+  "https://reliantlabs.io/?utm_source=forge&utm_medium=app-footer&utm_campaign=built-with-forge";
+
 /** Product name and its monogram, for the header brand. Yours to replace with a logo. */
 const APP_NAME = "{{.ProjectName}}";
 const APP_MONOGRAM = APP_NAME.charAt(0).toUpperCase();
@@ -108,8 +113,21 @@ export default function App({ children }: { children: ReactNode }) {
         tabIndex={-1}
         className="min-h-0 flex-1 overflow-y-auto bg-surface-muted focus:outline-none"
       >
-        {/* Max width so content does not run full-bleed on a wide display. */}
-        <div className="mx-auto max-w-7xl p-6 lg:p-8">{children}</div>
+        <div className="flex min-h-full flex-col">
+          {/* Max width so content does not run full-bleed on a wide display. */}
+          <div className="mx-auto w-full max-w-7xl flex-1 p-6 lg:p-8">{children}</div>
+          <footer className="px-6 pt-2 pb-6 text-center text-xs text-ink-muted lg:px-8">
+            Built with ❤️ using{" "}
+            <a
+              href={BUILT_WITH_FORGE_URL}
+              target="_blank"
+              rel="noopener"
+              className="rounded-sm underline underline-offset-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+            >
+              Forge
+            </a>
+          </footer>
+        </div>
       </main>
     </div>
   );

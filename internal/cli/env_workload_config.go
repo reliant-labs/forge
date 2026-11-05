@@ -44,6 +44,9 @@ func hostWorkloadConfig(cfg *config.ProjectConfig, w WorkloadEntity, secretValue
 	for k, v := range scopeSecretsToService(secretValues, &w) {
 		out[k] = v
 	}
+	for k, v := range scopeManagedSecretsToService(secretValues, &w) {
+		out[k] = v
+	}
 	for k, v := range withoutDerivedOTLPIfShellSet(w.HostEnv(), os.Environ()) {
 		out[k] = v
 	}
@@ -87,7 +90,11 @@ func localWorkloadConfig(ctx context.Context, projectDir, env string, e *KCLEnti
 	if err != nil {
 		return nil, nil, fmt.Errorf("secret provider: %w", err)
 	}
-	missing = secrets.MissingDeclaredRefs(prov, secretRefsForService(&w))
+	refs := secretRefsForService(&w)
+	if w.OnRuntime(RuntimeHost) {
+		refs = append(refs, managedSecretRefsForService(&w)...)
+	}
+	missing = secrets.MissingDeclaredRefs(prov, refs)
 	if len(missing) > 0 && mode == secretsRequired {
 		return nil, nil, withEnvInSecretFix(secrets.MissingRefsError(prov, missing, secretStoreLabel(e)), env)
 	}

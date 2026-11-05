@@ -103,8 +103,11 @@ schema FieldRef:
 schema ManagedSecret(tiers.ManagedSecretRef):
     """A value in the environment's secret store, by name:
     `managedSecret` on the wire. The runtime materializes it (hosted: the
-    control plane; cluster: forge). `optional = True` lets the workload
-    start without it."""
+    control plane; cluster: forge; host: `forge env up` hands the process
+    the store's value). A compose container's environment is the compose
+    file's: every store value is in the compose process env under its store
+    name, for the file to read as `${NAME}`. `optional = True` lets the
+    workload start without it."""
 
 schema DatabaseRef(tiers.DatabaseRef):
     """A credential of a `forge.ManagedDatabase` in this env:

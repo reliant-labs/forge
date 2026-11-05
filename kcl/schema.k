@@ -1339,6 +1339,11 @@ schema LLMEndpoint:
     refused at render for it, because from Reliant's network such a host may
     be the platform's, not yours. A workload you run (host, compose, your
     cluster) may name any host: its network is yours.
+
+    A compose workload takes literals only: with a referenced key, give it
+    the URL variables and let the compose file read the key from the store
+    (`OPENAI_API_KEY: ${RELIANT_LLM_API_KEY}`); a host process and a pod
+    receive the reference through their runtime.
     """
     type: "endpoint" = "endpoint"
     base_url: str

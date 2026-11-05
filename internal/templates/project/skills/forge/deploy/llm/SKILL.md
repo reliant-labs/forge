@@ -84,6 +84,28 @@ way it fills the OTLP variables. So:
 - a workload that is not hosted (host, compose, cluster) cannot read a hosted
   LLM and is refused at render: bind that env to a `forge.LLMEndpoint`.
 
+**On a `forge.LLMEndpoint`** each variable is the declared value, and the key
+reaches the workload the way its runtime delivers that reference: a hosted or
+cluster pod reads a `forge.ManagedSecret` from the env's store (a cluster pod
+can also read a `forge.SecretRef`), and `forge env up` hands a host process
+the store's value under each key variable (one `forge secret set --env dev
+RELIANT_LLM_API_KEY` feeds all three). A **compose** container's environment
+is the compose file's, and the compose process env forge passes it holds
+literals, so a referenced key is refused for a compose workload: give it the
+URLs only and let the compose file read the key from the store, which is in
+the compose process env under its store name:
+
+```kcl
+env = {k: v for k, v in forge.llm_env() if not k.endswith("_API_KEY")}
+```
+
+```yaml
+# docker-compose.yml
+environment:
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+  OPENAI_API_KEY: ${RELIANT_LLM_API_KEY}
+```
+
 ## 3. Call it: no configuration in code
 
 ```ts
@@ -177,3 +199,5 @@ gets its key on the normal hosted network.
   clear;
 - a `forge.SecretRef` key on an endpoint read by a hosted workload (use
   `forge.ManagedSecret`).
+- a `forge.ManagedSecret` or `forge.SecretRef` key read by a compose workload
+  (drop the key variables and read the key in the compose file, section 2).

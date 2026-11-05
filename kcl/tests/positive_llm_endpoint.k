@@ -7,7 +7,9 @@ gateway with your own token, or a local Ollama).
   2. a hosted referrer of a public https:// endpoint is legal too, with a
      ManagedSecret key;
   3. a declared openai_base_url replaces the derived one;
-  4. a compose container gets literals (a local endpoint's literal key).
+  4. a compose container gets literals (a local endpoint's literal key);
+     with a forge.ManagedSecret key it takes the URLs only, and the compose
+     file reads the key from the store by its store name.
   5. a workload you run reaches a private endpoint; [::1] takes a literal key.
 """
 
@@ -60,6 +62,18 @@ _compose = forge.render(forge.Bundle {
     }]
 })
 
+_compose_managed = forge.render(forge.Bundle {
+    project = "acme"
+    lifecycle = "local"
+    llm = forge.LLM {runtime = _gw}
+    workloads = [fw.Workload {
+        name = "indexer"
+        kind = "worker"
+        env = {k: v for k, v in forge.llm_env() if not k.endswith("_API_KEY")}
+        runtime = forge.OnCompose {}
+    }]
+})
+
 _lan = forge.render(forge.Bundle {
     project = "acme"
     lifecycle = "local"
@@ -87,6 +101,7 @@ _v6 = forge.render(forge.Bundle {
 _h = {e.name: e for e in _host.workloads[0].spec.env}
 _d = {e.name: e for e in _hosted.workloads[0].spec.env}
 _c = _compose.workloads[0].runtime.env
+_cm = _compose_managed.workloads[0].runtime.env
 
 # 1. A host process.
 assert_host_base = _h.RELIANT_LLM_BASE_URL.value == "https://admin.reliantapi.com" and _h.ANTHROPIC_BASE_URL.value == "https://admin.reliantapi.com"
@@ -99,6 +114,7 @@ assert_hosted_key = _d.OPENAI_API_KEY.managedSecret.name == "LLM_KEY"
 
 # 4. Compose: literals.
 assert_compose_literals = _c.OPENAI_BASE_URL == "http://host.docker.internal:11434/v1" and _c.OPENAI_API_KEY == "ollama"
+assert_compose_managed_urls = _cm.OPENAI_BASE_URL == "https://admin.reliantapi.com/v1" and _cm.ANTHROPIC_BASE_URL == "https://admin.reliantapi.com" and "OPENAI_API_KEY" not in _cm
 
 # 5. A workload you run may reach a private endpoint (its network is yours),
 #    and a literal key is accepted for an exact local host, IPv6 loopback too.

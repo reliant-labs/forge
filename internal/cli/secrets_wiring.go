@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/secrets"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // sharedSecretStorePath resolves relPath against the REPO ANCHOR — the
@@ -158,7 +159,16 @@ func secretRefsForK8sServices(e *KCLEntities) []secrets.SecretRef {
 // workloads only — the set a host launch must be able to resolve from the
 // provider (for fail-fast validation before starting the process).
 func secretRefsForHostServices(e *KCLEntities) []secrets.SecretRef {
-	return secretRefsOnRuntime(e, RuntimeHost)
+	refs := secretRefsOnRuntime(e, RuntimeHost)
+	if e == nil {
+		return refs
+	}
+	for i := range e.Workloads {
+		if e.Workloads[i].OnRuntime(RuntimeHost) {
+			refs = append(refs, managedSecretRefsForService(&e.Workloads[i])...)
+		}
+	}
+	return refs
 }
 
 func secretRefsOnRuntime(e *KCLEntities, runtime string) []secrets.SecretRef {
@@ -309,6 +319,50 @@ func scopeSecretsToService(all map[string]string, svc *WorkloadEntity) map[strin
 		return nil
 	}
 	return out
+}
+
+// scopeManagedSecretsToService is a HOST launch's delivery of the workload's
+// managedSecret env vars. A pod reads each from forge-managed-secrets, which
+// the env's store is materialized into; a host process has no Secret to read,
+// so it is handed the same store value, looked up by its STORE name, under
+// the env var's name. Like scopeSecretsToService, only what the workload
+// declares reaches it, and an empty slot is not a value.
+func scopeManagedSecretsToService(all map[string]string, svc *WorkloadEntity) map[string]string {
+	if len(all) == 0 || svc == nil {
+		return nil
+	}
+	var out map[string]string
+	for _, e := range svc.Spec.Env {
+		if e.ManagedSecret == nil || e.ManagedSecret.Name == "" {
+			continue
+		}
+		if v, ok := all[e.ManagedSecret.Name]; ok && v != "" {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[e.Name] = v
+		}
+	}
+	return out
+}
+
+// managedSecretRefsForService is the pre-flight's view of the workload's
+// managedSecret env vars on a host launch: one ref per store name, which is
+// the key `forge secret set` writes and the provider holds.
+func managedSecretRefsForService(s *WorkloadEntity) []secrets.SecretRef {
+	var refs []secrets.SecretRef
+	for _, e := range s.Spec.Env {
+		if e.ManagedSecret == nil || e.ManagedSecret.Name == "" {
+			continue
+		}
+		refs = append(refs, secrets.SecretRef{
+			EnvName:    e.ManagedSecret.Name,
+			SecretName: deployv1alpha1.ManagedSecretsSecretName,
+			SecretKey:  e.ManagedSecret.Name,
+			Optional:   e.ManagedSecret.Optional,
+		})
+	}
+	return refs
 }
 
 // secretRefsForService extracts the declared secret references from one

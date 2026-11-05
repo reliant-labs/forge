@@ -430,10 +430,15 @@ _llm_resolve = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> 
 
 # A compose workload's LLMRefs as compose process env: literals only, so a
 # credential declared as a secret reference is refused rather than dropped.
+# The compose file can still read a forge.ManagedSecret key itself: the
+# env's local store is the base of the compose process env, under each
+# value's store name, so the file names it as `${NAME}`.
 _compose_llm_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
     _vals = {k: _llm_resolve(k, v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env if typeof(v) == "LLMRef"}
     _refs = [k for k, v in _vals if typeof(v) != "str"]
-    assert not _refs, "workload '${w.name}' env ${_refs}: a forge.LLMEndpoint credential that is a secret reference cannot reach a compose container, whose environment is literals. Run the referrer on forge.OnHost {} or forge.OnCluster"
+    _store = [v.name for _, v in _vals if typeof(v) == "ManagedSecret"]
+    _read = "$" + "{" + (_store[0] if _store else "<NAME>") + "}"
+    assert not _refs, "workload '${w.name}' env ${_refs}: a forge.LLMEndpoint credential that is a secret reference cannot reach a compose container, whose environment is literals. Keep the URLs (`env = {k: v for k, v in forge.llm_env() if not k.endswith(\"_API_KEY\")}`) and have the compose file read the key from the store, which is in the compose process env under its store name: `OPENAI_API_KEY: ${_read}`. Or run the referrer on forge.OnHost {} or forge.OnCluster"
     _vals
 }
 

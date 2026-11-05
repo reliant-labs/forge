@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -58,6 +59,9 @@ type inPlaceMergeResult struct {
 	// gitignoreAdded is how many forge entries the merge appended.
 	gitignoreMerged bool
 	gitignoreAdded  int
+	// gitignoreOpenedForge is how many `.forge/` lines the merge rewrote to
+	// `.forge/*` (openForgeDirIgnore).
+	gitignoreOpenedForge int
 	// gitignoreSkipped lists the forge patterns left out because they match
 	// files the target's repository tracks.
 	gitignoreSkipped []skippedIgnore
@@ -125,6 +129,7 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 			merged, added := mergeGitignore(string(existing), forgeBody)
 			res.gitignoreMerged = true
 			res.gitignoreAdded = added
+			_, res.gitignoreOpenedForge = openForgeDirIgnore(stripForgeGitignoreBlock(string(existing)))
 			if merged == string(existing) {
 				return nil
 			}
@@ -161,7 +166,7 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 // — dropping one because the user happens to spell it too could change what
 // is ignored.
 func mergeGitignore(user, forge string) (string, int) {
-	rest := stripForgeGitignoreBlock(user)
+	rest, _ := openForgeDirIgnore(stripForgeGitignoreBlock(user))
 
 	present := map[string]bool{}
 	for _, line := range strings.Split(rest, "\n") {
@@ -199,6 +204,40 @@ func mergeGitignore(user, forge string) (string, int) {
 	}
 	b.WriteString(forgeGitignoreEnd + "\n")
 	return b.String(), len(missing)
+}
+
+// forgeDirIgnoreRE matches a line that ignores the .forge DIRECTORY itself
+// (`.forge`, `.forge/`, `/.forge`, `/.forge/`), capturing a leading slash.
+var forgeDirIgnoreRE = regexp.MustCompile(`^(/?)\.forge/?$`)
+
+// openForgeDirIgnore rewrites each line of a user's .gitignore that ignores
+// the .forge directory itself into the same rule over its children
+// (`.forge/*`), and reports how many it rewrote.
+//
+// git cannot re-include a file whose parent directory is excluded, so a
+// `.forge/` line silently voids the re-includes in forge's block
+// (`!.forge/scaffolded/`, `!.forge/disowned.json`, ...). The birth ledger
+// then never gets committed, and every fresh clone's first generate hands
+// back each scaffold the project deleted. `.forge/*` ignores everything the
+// user's line did and lets the re-includes apply. Idempotent: the rewritten
+// line no longer matches.
+func openForgeDirIgnore(body string) (string, int) {
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines))
+	n := 0
+	for _, line := range lines {
+		m := forgeDirIgnoreRE.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			out = append(out, line)
+			continue
+		}
+		n++
+		out = append(out,
+			"# forge: was `"+strings.TrimSpace(line)+"`, which ignores the directory itself, so git could not",
+			"# re-include the .forge/ state the forge block below commits (.forge/scaffolded/, ...).",
+			m[1]+".forge/*")
+	}
+	return strings.Join(out, "\n"), n
 }
 
 // stripForgeGitignoreBlock removes a block mergeGitignore wrote earlier, and
@@ -374,8 +413,12 @@ func inPlaceMergeSummary(r inPlaceMergeResult) []string {
 		if r.gitignoreAdded > 0 {
 			out = append(out, fmt.Sprintf("📁 Merged .gitignore: kept your entries, appended %d forge entries under %q.",
 				r.gitignoreAdded, forgeGitignoreBegin))
-		} else {
+		} else if r.gitignoreOpenedForge == 0 {
 			out = append(out, "📁 .gitignore already covers everything forge ignores — left as is.")
+		}
+		if r.gitignoreOpenedForge > 0 {
+			out = append(out, "📁 Rewrote your `.forge/` ignore to `.forge/*`: ignoring the directory itself kept git from committing",
+				"    .forge/scaffolded/, so deleted scaffolds would come back in every fresh clone.")
 		}
 	}
 	if len(r.gitignoreSkipped) > 0 {

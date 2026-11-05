@@ -17,6 +17,13 @@ func collectCommitPolicyJSON(root string) ([]lintJSONFinding, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	// Lint-only, so it reaches projects through the rollout (a warning
+	// first) rather than as a new failure of `forge ci verify-generated`.
+	state, err := commitpolicy.IgnoredForgeState(root)
+	if err != nil {
+		return nil, false, err
+	}
+	vs = append(vs, state...)
 	out := make([]lintJSONFinding, 0, len(vs))
 	for _, v := range vs {
 		out = append(out, lintJSONFinding{

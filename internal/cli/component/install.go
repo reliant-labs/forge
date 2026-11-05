@@ -23,7 +23,8 @@ func newInstallCmd(_ *factory.Factory) *cobra.Command {
 		Long: `Install one or more components from the library into your project's
 src/components/ui/ directory — or the directory the frontend's package.json
 names in "forge": {"components_dir": "..."}. If --dir is not specified, the
-command auto-detects the nearest frontend directory. A component whose file
+command uses the frontend you are inside, or the project's only web frontend;
+with several, it lists the --dir value for each. A component whose file
 name differs only in case from one already there (button.tsx beside
 Button.tsx) is refused: on macOS and Windows that is one file.`,
 		Args: cobra.MinimumNArgs(1),
@@ -31,9 +32,9 @@ Button.tsx) is refused: on macOS and Windows that is one file.`,
 			lib := components.NewLibrary()
 			dir := targetDir
 			if dir == "" {
-				detected := detectComponentsDir()
-				if detected == "" {
-					return fmt.Errorf("could not auto-detect components directory; use --dir to specify")
+				detected, err := detectComponentsDir()
+				if err != nil {
+					return err
 				}
 				dir = detected
 			} else {

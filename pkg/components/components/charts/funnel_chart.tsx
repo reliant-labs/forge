@@ -5,6 +5,10 @@
  * The component computes all trapezoid geometry, spacing,
  * alert highlights, and side annotations.
  *
+ * Colours come from the project's theme tokens (accent, danger, ink,
+ * border-strong), so it follows light and dark mode. `accentColor` and
+ * `alertColor` take any CSS colour, a `var(--color-…)` token included.
+ *
  * Usage:
  * ```tsx
  * <FunnelChart
@@ -35,28 +39,27 @@ interface FunnelChartProps {
   width?: number;
   /** Height in px (default 400) */
   height?: number;
-  /** Accent color (default "#a855f7") */
+  /** Stage fill, any CSS colour (default the theme accent, "var(--color-accent)") */
   accentColor?: string;
-  /** Alert color for flagged stages (default "#ef4444") */
+  /** Fill and note colour for flagged stages (default "var(--color-danger)") */
   alertColor?: string;
 }
 
-function hexToRgba(hex: string, alpha: number): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
-}
+const DEFAULT_ALERT = "var(--color-danger)";
 
 export default function FunnelChart({
   stages,
   width = 300,
   height = 400,
-  accentColor = "#a855f7",
-  alertColor = "#ef4444",
+  accentColor = "var(--color-accent)",
+  alertColor = DEFAULT_ALERT,
 }: FunnelChartProps) {
   const n = stages.length;
   if (n === 0) return null;
+
+  // Text on the page needs the darker danger ink; a caller's own colour is
+  // used as given.
+  const alertNoteColor = alertColor === DEFAULT_ALERT ? "var(--color-danger-ink)" : alertColor;
 
   const paddingX = 16;
   const paddingTop = 12;
@@ -117,8 +120,10 @@ export default function FunnelChart({
         ].join(" ");
 
         const color = stage.alert ? alertColor : accentColor;
-        // Opacity increases slightly toward the bottom (narrower = more intense)
-        const opacity = 0.25 + (i / (n - 1 || 1)) * 0.45;
+        // Opacity increases toward the bottom (narrower = more intense). Held
+        // at or under 0.5 so ink text on the fill keeps its contrast in light
+        // and dark mode alike.
+        const opacity = 0.2 + (i / (n - 1 || 1)) * 0.3;
 
         const midY = y + stageH / 2;
 
@@ -127,8 +132,10 @@ export default function FunnelChart({
             {/* Trapezoid */}
             <path
               d={path}
-              fill={hexToRgba(color, opacity)}
-              stroke={hexToRgba(color, opacity + 0.15)}
+              fill={color}
+              fillOpacity={opacity}
+              stroke={color}
+              strokeOpacity={opacity + 0.15}
               strokeWidth={1}
               filter={stage.alert ? "url(#funnel-glow)" : undefined}
             />
@@ -138,13 +145,13 @@ export default function FunnelChart({
               x={cx}
               y={midY - 4}
               textAnchor="middle"
-              fill="#ffffff"
+              fill="var(--color-ink)"
               fontSize={12}
               fontWeight={600}
             >
               {stage.label}
             </text>
-            <text x={cx} y={midY + 12} textAnchor="middle" fill="#cbd5e1" fontSize={11}>
+            <text x={cx} y={midY + 12} textAnchor="middle" fill="var(--color-ink)" fontSize={11}>
               {stage.value}
             </text>
 
@@ -156,14 +163,14 @@ export default function FunnelChart({
                   y1={midY}
                   x2={width + 8}
                   y2={midY}
-                  stroke="#475569"
+                  stroke="var(--color-border-strong)"
                   strokeWidth={0.75}
                   strokeDasharray="3 2"
                 />
                 <text
                   x={width + 14}
                   y={midY + 4}
-                  fill={stage.alert ? alertColor : "#94a3b8"}
+                  fill={stage.alert ? alertNoteColor : "var(--color-ink-muted)"}
                   fontSize={11}
                 >
                   {stage.note}

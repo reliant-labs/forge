@@ -204,6 +204,10 @@ var newRules = []rolloutGroup{
 	// A workload whose args select no command of the project binary (the
 	// per-service workloads a graph-composed project was scaffolded with).
 	{IntroducedIn: "v1.0.3", GatesFrom: "v1.0.4", Rules: []string{ruleComponentDriftNoCommand}},
+	// A login broker that mounts public sign-up in every environment. The
+	// lane is advisory (its findings are warnings at any pin); the row is
+	// what lets lint.rules raise it.
+	{IntroducedIn: "v1.0.16", GatesFrom: "v1.0.17", Rules: []string{ruleOpenSignup}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

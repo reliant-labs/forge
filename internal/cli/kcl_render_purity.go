@@ -41,12 +41,14 @@
 // writes nothing through its own chokepoint while KCL is evaluating, so such a
 // file can only have come from a file.write in the module.
 //
-// It then restores that file and reports the defect. Restoring is safe by
-// construction and is the point rather than a courtesy: the file is only
-// touched when it was verifiably identical to HEAD immediately before the
-// render, so putting HEAD's bytes back cannot discard anyone's work — this
-// checkout is routinely shared with other agents — and it leaves `forge
-// generate` unable to dirty a clean tree.
+// It then restores that file and reports the defect, so `forge generate`
+// cannot dirty a clean tree. Restoring is NOT safe by construction: "forge
+// writes nothing while KCL evaluates" says nothing about anyone else, and
+// this checkout is routinely shared with other agents, so a file edited by
+// hand during the render looks exactly like the render's write. growth lost
+// two edited test files that way (restoreImpureKCLWrites has the details).
+// So the guard restores only when the module can write files at all, and
+// keeps a copy of everything it reverts.
 //
 // The render's VALUE is kept. The write is what gets undone, not the query
 // that needed the render, so k3d-ports.yaml and the frontend config still
@@ -62,9 +64,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -225,14 +229,39 @@ func renderEnvsPure(ctx context.Context, projectDir string, envs []string) []env
 
 // restoreImpureKCLWrites is shared by environment renders and structural
 // library evaluation on the generate path.
+//
+// A tracked file that went clean → dirty across the render was written by
+// the render OR by someone else while it ran: another agent in a shared
+// checkout, an editor. The two are indistinguishable from the bytes, and
+// restoring the second destroys their work. That happened to growth (friction
+// #18): two committed scaffold tests replaced with real tests during a long
+// generate came back as the scaffold, restored from HEAD by this guard. So:
+//
+//   - a module with no file.write cannot have written anything, and every
+//     such file is someone else's edit. Nothing is restored.
+//   - a module that does write files is still repaired, but losslessly: the
+//     bytes it reverts are kept under .forge/kcl-reverted/ first, and the
+//     report names them.
 func restoreImpureKCLWrites(projectDir string, before map[string]bool) []string {
 	if before == nil {
 		return nil
 	}
-	var restored []string
+	var dirtied []string
 	for path := range dirtyTrackedFiles(projectDir) {
-		if before[path] {
-			continue // already dirty going in — someone else's edit, not ours
+		if !before[path] { // already dirty going in — someone else's edit, not ours
+			dirtied = append(dirtied, path)
+		}
+	}
+	if len(dirtied) == 0 || !kclModuleCanWriteFiles(projectDir) {
+		return nil
+	}
+	var restored []string
+	for _, path := range dirtied {
+		if serr := stashKCLReverted(projectDir, path); serr != nil {
+			// Without a copy, a revert could be the only record of a
+			// concurrent edit lost. Leave the file as it is.
+			fmt.Fprintf(os.Stderr, "⚠️  %s changed during a KCL render; left as is (could not keep a copy before reverting: %v)\n", path, serr)
+			continue
 		}
 		if rerr := restoreTrackedFileFromHEAD(projectDir, path); rerr != nil {
 			// Reporting the path still beats silence: the user can revert it
@@ -243,6 +272,67 @@ func restoreImpureKCLWrites(projectDir string, before map[string]bool) []string 
 	}
 	sort.Strings(restored)
 	return restored
+}
+
+// kclRevertedDir keeps the bytes restoreImpureKCLWrites reverted, by
+// project-relative path, so a concurrent edit the guard took for the
+// render's write can be copied back.
+const kclRevertedDir = ".forge/kcl-reverted"
+
+// stashKCLReverted copies projectDir/rel's current bytes to
+// kclRevertedDir/rel.
+func stashKCLReverted(projectDir, rel string) error {
+	src := filepath.Join(projectDir, filepath.FromSlash(rel))
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	dst := filepath.Join(projectDir, filepath.FromSlash(kclRevertedDir), filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return atomicfile.WriteFile(dst, data, 0o644)
+}
+
+// kclFileWriteRE matches a call to KCL's file.write.
+var kclFileWriteRE = regexp.MustCompile(`\bfile\.write\s*\(`)
+
+// kclModuleCanWriteFiles reports whether any KCL source in the project calls
+// file.write, the only way a render writes a file. Comment lines do not
+// count. Directories that hold no project KCL (VCS, forge state, installed
+// packages, generated code) are skipped. A walk error reads as "can write",
+// so a tree forge cannot read keeps the historical repair.
+func kclModuleCanWriteFiles(projectDir string) bool {
+	found := false
+	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", ".forge", "node_modules", "vendor", "gen":
+				if path != projectDir {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".k" {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if t := strings.TrimSpace(line); !strings.HasPrefix(t, "#") && kclFileWriteRE.MatchString(t) {
+				found = true
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return found || err != nil
 }
 
 // reportImpureRender explains a restored write. The message has to carry the
@@ -263,4 +353,6 @@ func reportImpureRender(env string, restored []string) {
 	fmt.Println("    on the same commit generate different bytes and CI fails for one of them.")
 	fmt.Println("    Move the file.write behind a flag the dev render sets and generate does not,")
 	fmt.Println("    or generate the file from committed inputs only. `forge env up` still runs it.")
+	fmt.Printf("    The reverted bytes are kept under %s/. If you edited one of these files\n", kclRevertedDir)
+	fmt.Println("    while generate ran, that was your edit: copy it back from there.")
 }

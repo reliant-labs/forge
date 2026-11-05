@@ -128,6 +128,87 @@ func TestRestoreTrackedFileFromHEAD_RevertsTheSideEffect(t *testing.T) {
 	}
 }
 
+// TestRestoreImpureKCLWrites_PureModuleLeavesConcurrentEdits is growth's
+// friction #18. During a 6-minute generate an agent replaced two committed
+// handlers_scaffold_<rpc>_test.go files with real tests; when generate
+// finished they held the scaffold again. The edits landed while a KCL render
+// ran, so the guard saw two tracked files go clean → dirty across the render
+// and "restored" them from HEAD. A module with no file.write cannot have
+// written them: someone else did, and the guard must leave their bytes.
+func TestRestoreImpureKCLWrites_PureModuleLeavesConcurrentEdits(t *testing.T) {
+	dir := t.TempDir()
+	const scaffold = "package content_test\n\n// WantScaffoldStub row\n"
+	initGitRepo(t, dir, map[string]string{
+		"deploy/kcl/dev/main.k": "import forge\n\n# no side effects here\n_env = {name = \"dev\"}\n",
+		"internal/handlers/content/handlers_scaffold_draft_post_test.go": scaffold,
+	})
+	before := dirtyTrackedFiles(dir)
+
+	// The concurrent edit, landing while the render runs.
+	const realTests = "package content_test\n\n// real assertions\n"
+	writeGuardFile(t, dir, "internal/handlers/content/handlers_scaffold_draft_post_test.go", realTests)
+
+	if restored := restoreImpureKCLWrites(dir, before); len(restored) != 0 {
+		t.Errorf("restored %v from a module that cannot write files", restored)
+	}
+	if got := readGuardFile(t, dir, "internal/handlers/content/handlers_scaffold_draft_post_test.go"); got != realTests {
+		t.Errorf("a concurrent edit was reverted:\n--- got ---\n%s\n--- want ---\n%s", got, realTests)
+	}
+}
+
+// TestRestoreImpureKCLWrites_WritingModuleStashesWhatItReverts keeps the
+// control-plane repair (a file.write leaking into a tracked conf is undone)
+// while making it lossless: what a module that does write files could
+// have clobbered is still reverted, but its bytes are kept under
+// .forge/kcl-reverted/ first, since a concurrent edit to the same file is
+// indistinguishable from the render's write.
+func TestRestoreImpureKCLWrites_WritingModuleStashesWhatItReverts(t *testing.T) {
+	dir := t.TempDir()
+	const committed = "accounts { CP_DEFAULT: {} }\n"
+	initGitRepo(t, dir, map[string]string{
+		"deploy/kcl/dev/main.k": "import file\n\n_w = file.write(\"deploy/nats/nats.conf\", _conf)\n",
+		"deploy/nats/nats.conf": committed,
+	})
+	before := dirtyTrackedFiles(dir)
+	const leaked = "accounts { CP_DEFAULT: {} CP_prod_: {} }\n"
+	writeGuardFile(t, dir, "deploy/nats/nats.conf", leaked)
+
+	restored := restoreImpureKCLWrites(dir, before)
+	if len(restored) != 1 || restored[0] != "deploy/nats/nats.conf" {
+		t.Fatalf("restored = %v, want [deploy/nats/nats.conf]", restored)
+	}
+	if got := readGuardFile(t, dir, "deploy/nats/nats.conf"); got != committed {
+		t.Errorf("not restored to HEAD:\n%s", got)
+	}
+	if got := readGuardFile(t, dir, ".forge/kcl-reverted/deploy/nats/nats.conf"); got != leaked {
+		t.Errorf("reverted bytes not kept: %q", got)
+	}
+}
+
+func TestKCLModuleCanWriteFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"no file.write", map[string]string{"deploy/kcl/dev/main.k": "_x = 1\n"}, false},
+		{"commented out", map[string]string{"deploy/kcl/dev/main.k": "# _w = file.write(\"a\", \"b\")\n"}, false},
+		{"a write", map[string]string{"deploy/kcl/dev/main.k": "_w = file.write(\"a\", \"b\")\n"}, true},
+		{"a write in a shared module", map[string]string{"deploy/kcl/dev/main.k": "_x = 1\n", "deploy/kcl/nats.k": "  _w = file.write (p, body)\n"}, true},
+		{"node_modules is not the module", map[string]string{"frontends/web/node_modules/x/y.k": "file.write(\"a\", \"b\")\n"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for rel, body := range tc.files {
+				writeGuardFile(t, dir, rel, body)
+			}
+			if got := kclModuleCanWriteFiles(dir); got != tc.want {
+				t.Errorf("kclModuleCanWriteFiles = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRenderKCLPure_LeavesPreexistingEditsAlone is the safety property that
 // makes restoring acceptable at all. This checkout is routinely shared with
 // other agents, so the guard may only revert a file it PROVED was clean

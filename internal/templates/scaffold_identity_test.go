@@ -39,6 +39,11 @@ func TestScaffoldDeclaresManagedIdentityForEveryEnv(t *testing.T) {
 		if len(apps) != 1 {
 			t.Errorf("%s applications = %v, want the one derived for the API", env, apps)
 		}
+		// Dev mail goes to the scaffold's Mailpit, which the dev identity
+		// finds on its own (the env's only mailpit).
+		if env == "dev" && id["dev_mail"] != "mail" {
+			t.Errorf("dev identity dev_mail = %v, want the scaffold's mailpit", id["dev_mail"])
+		}
 	}
 }
 

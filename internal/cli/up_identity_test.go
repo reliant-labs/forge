@@ -135,3 +135,26 @@ func TestDevIdentityInput_RefusesWhatItCannotRunOn(t *testing.T) {
 		}
 	})
 }
+
+func TestDevIdentityInput_FindsTheEnvsMailpit(t *testing.T) {
+	e := identityEntities()
+	if in, err := devIdentityInput(e, e.Identity, t.TempDir(), nil); err != nil || in.MailpitPort != 0 {
+		t.Fatalf("no mailpit: port %d, %v", in.MailpitPort, err)
+	}
+	e.Infra = append(e.Infra, HostInfraEntity{Name: "mail", Engine: "mailpit", Port: 1025})
+	if in, err := devIdentityInput(e, e.Identity, t.TempDir(), nil); err != nil || in.MailpitPort != 1025 {
+		t.Fatalf("the only mailpit: port %d, %v", in.MailpitPort, err)
+	}
+	e.Infra = append(e.Infra, HostInfraEntity{Name: "mail2", Engine: "mailpit", Port: 1026})
+	if _, err := devIdentityInput(e, e.Identity, t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "IdentityOnHost {mail") {
+		t.Fatalf("two mailpits and no name: %v", err)
+	}
+	e.Identity.DevMail = "mail2"
+	if in, err := devIdentityInput(e, e.Identity, t.TempDir(), nil); err != nil || in.MailpitPort != 1026 {
+		t.Fatalf("the named mailpit: port %d, %v", in.MailpitPort, err)
+	}
+	e.Identity.DevMail = "pg"
+	if _, err := devIdentityInput(e, e.Identity, t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "not a forge.HostInfra with engine \"mailpit\"") {
+		t.Fatalf("a named non-mailpit: %v", err)
+	}
+}

@@ -73,7 +73,7 @@ every path below; never set `"delete"` to back out, it destroys every object.
   reads them from starting, the second invites a re-provision under a new
   name.
 - **After step 3, forge defect:** roll forward with a forge fix (forge has
-  no rollback; `deploy` skill, "Verify + recover"). A consumer that must stop
+  no rollback; `deploy/release` skill, "Verify + recover"). A consumer that must stop
   using hosted buckets meanwhile rebinds its buckets to `forge.BucketOnS3`
   in its env (the retained bucket's name is in the ManagedBucket's
   `status.bucketName`) and deploys; the retained bucket keeps its objects.

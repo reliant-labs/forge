@@ -144,7 +144,7 @@ For a bucket-only env, run the check once a workload that reads the bucket is
 deployed; until then nothing has used the credential.
 
 **Recovering** from a bad bucket change rolls forward, as every `forge env deploy`
-does (`deploy`, "Verify + recover"): restore the previous declaration (or
+does (`deploy/release`, "Verify + recover"): restore the previous declaration (or
 drop the bucket's referrers) in the tree and `forge env deploy <env>` again;
 binding the env to an older release is the same promote. Either keeps the
 bucket, its objects and its credential: a bucket is never release-bound, and

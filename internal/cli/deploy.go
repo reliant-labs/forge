@@ -4142,7 +4142,7 @@ func ensureDevCluster(ctx context.Context) error {
 		fmt.Println("  k3d cluster found.")
 		fmt.Println("  Tip: if in-cluster image pulls fail with `localhost:5050`,")
 		fmt.Println("       the cluster pre-dates forge's auto-mirror config. See")
-		fmt.Println("       the deploy skill ('Pre-existing k3d cluster mirror fix').")
+		fmt.Println("       the deploy/k3d-registry skill ('Pre-existing k3d cluster mirror fix').")
 	}
 	return nil
 }

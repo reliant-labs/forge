@@ -15,9 +15,11 @@
 //     in internal/codemod registering that name) or touches a migration
 //     playbook (internal/templates/project/skills/forge/migrations/<version>/).
 //
-// forge is pre-1.0 and owes no compatibility; this gate does not forbid a
-// break, it makes the breaking PR carry the cost of its consumers' migration
-// instead of the next pinner. See dev-docs/api-breaks.md.
+// forge is semver at major 1 (owner, 2026-11-05), so a break fails unless the
+// OWNER accepted it: the breaking:approved label, applied by the owner's
+// account (its `labeled` event names the actor; APIGATE_OWNERS, default
+// reliant-01). An accepted break still carries the cost of its consumers'
+// migration: declared, with its codemod or playbook. See dev-docs/api-breaks.md.
 //
 // WHERE THE DECLARATION COMES FROM. With -pr, the label list and body are read
 // live through `gh api` (GH_TOKEN, GITHUB_REPOSITORY), not from the workflow
@@ -63,6 +65,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	bodyFile := fs.String("body-file", "", "file holding the PR body, instead of -pr")
 	var labels stringList
 	fs.Var(&labels, "label", "a PR label (repeatable), instead of -pr")
+	ownerApproved := fs.Bool("owner-approved", false, "the owner accepted the break (local runs; with -pr it is read from the label's events)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -84,7 +87,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	text, lbl, err := declarationInputs(root, *base, *pr, *bodyFile, labels)
+	text, lbl, approved, err := declarationInputs(root, *base, *pr, *bodyFile, labels)
 	if err != nil {
 		return err
 	}
@@ -102,10 +105,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	v := Evaluate(breaks, ParseDeclaration(text, lbl), changed, root)
+	decl := ParseDeclaration(text, lbl)
+	decl.OwnerApproved = approved || *ownerApproved
+	v := Evaluate(breaks, decl, changed, root)
 	if !v.OK {
 		fmt.Fprintln(stderr, "apigate: FAIL —", v.Reason)
-		return errors.New("incompatible change to forge/pkg is not declared with its codemod")
+		return errors.New("incompatible change to forge/pkg is not an owner-accepted break declared with its codemod")
 	}
 	if len(breaks) == 0 {
 		fmt.Fprintf(stdout, "apigate: ok — no incompatible change to forge/pkg (%d compatible)\n", compatible)
@@ -118,7 +123,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func declarationInputs(root, base, pr, bodyFile string, labels []string) (string, []string, error) {
+// declarationInputs returns the PR text, its labels, and whether the owner
+// applied ApprovedLabel (only -pr can say so).
+func declarationInputs(root, base, pr, bodyFile string, labels []string) (string, []string, bool, error) {
 	var text strings.Builder
 	if out, err := forgereach.Git(root, "log", "--format=%B", base+"..HEAD"); err == nil {
 		text.Write(out)
@@ -134,25 +141,61 @@ func declarationInputs(root, base, pr, bodyFile string, labels []string) (string
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		if err != nil {
-			return "", nil, fmt.Errorf("read PR %s from GitHub: %w\n%s", pr, err, strings.TrimSpace(stderr.String()))
+			return "", nil, false, fmt.Errorf("read PR %s from GitHub: %w\n%s", pr, err, strings.TrimSpace(stderr.String()))
 		}
 		var p struct {
 			Body   string
 			Labels []struct{ Name string }
 		}
 		if err := json.Unmarshal(out, &p); err != nil {
-			return "", nil, fmt.Errorf("decode PR %s: %w", pr, err)
+			return "", nil, false, fmt.Errorf("decode PR %s: %w", pr, err)
 		}
 		text.WriteString("\n" + p.Body)
+		approved := false
 		for _, l := range p.Labels {
 			labels = append(labels, l.Name)
+			approved = approved || l.Name == ApprovedLabel
 		}
+		if approved {
+			var aerr error
+			if approved, aerr = ownerApplied(repo, pr, ApprovedLabel); aerr != nil {
+				return "", nil, false, aerr
+			}
+		}
+		return text.String(), labels, approved, nil
 	case bodyFile != "":
 		b, err := os.ReadFile(bodyFile)
 		if err != nil {
-			return "", nil, err
+			return "", nil, false, err
 		}
 		text.WriteString("\n" + string(b))
 	}
-	return text.String(), labels, nil
+	return text.String(), labels, false, nil
+}
+
+// ownerApplied reports whether the last account to apply label to the PR is
+// one of APIGATE_OWNERS (default reliant-01, the owner).
+func ownerApplied(repo, pr, label string) (bool, error) {
+	cmd := exec.Command("gh", "api", "--paginate", fmt.Sprintf("repos/%s/issues/%s/events", repo, pr),
+		"--jq", fmt.Sprintf(`.[] | select(.event == "labeled" and .label.name == %q) | .actor.login`, label))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("read PR %s's label events from GitHub: %w\n%s", pr, err, strings.TrimSpace(stderr.String()))
+	}
+	lines := strings.Fields(string(out))
+	if len(lines) == 0 {
+		return false, nil
+	}
+	owners := os.Getenv("APIGATE_OWNERS")
+	if owners == "" {
+		owners = "reliant-01"
+	}
+	for _, o := range strings.FieldsFunc(owners, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if o == lines[len(lines)-1] {
+			return true, nil
+		}
+	}
+	return false, nil
 }

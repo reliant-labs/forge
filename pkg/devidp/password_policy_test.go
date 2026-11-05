@@ -81,12 +81,24 @@ func TestPasswordPolicy_AMissingEndpointIsUnavailable(t *testing.T) {
 			t.Errorf("HTTP %d: the issuer's answer was dropped: %v", status, err)
 		}
 	}
-	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable} {
+	// The classification is the response's own status, never text: a failure
+	// whose body quotes a 404 (or a 200 carrying a gateway error that does) is a
+	// plain read failure.
+	for _, tc := range []struct {
+		status int
+		body   string
+	}{
+		{http.StatusBadGateway, ""},
+		{http.StatusServiceUnavailable, ""},
+		{http.StatusServiceUnavailable, "upstream GET /v2/settings/password/complexity: HTTP 404: not found"},
+		{http.StatusOK, `{"code":14,"message":"HTTP 404: not found"}`},
+	} {
 		client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(status)
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(tc.body))
 		})
 		if _, err := client.PasswordPolicy(context.Background()); err == nil || errors.Is(err, ErrPasswordPolicyUnavailable) {
-			t.Errorf("HTTP %d: err = %v, want a plain read failure", status, err)
+			t.Errorf("HTTP %d %q: err = %v, want a plain read failure", tc.status, tc.body, err)
 		}
 	}
 }

@@ -1488,7 +1488,7 @@ func initGitRepositoryWith(ctx context.Context, path string, activateHooks bool)
 
 func activateGitHooks(ctx context.Context, path string) error {
 	// Activate forge's committed git hooks (.githooks/pre-push runs
-	// `forge lint` + `forge project audit`; pre-commit stays fast). core.hooksPath
+	// `forge lint --scope` over what the push changes; pre-commit stays fast). core.hooksPath
 	// is set RELATIVE so it resolves against each worktree's own checkout —
 	// one setting in the shared .git/config makes the hooks fire in every
 	// linked worktree. Set here, before the initial commit, so the repo
@@ -1518,8 +1518,8 @@ func commitInitialScaffold(ctx context.Context, path string) error {
 
 	// --no-verify: the initial commit is forge-authored, known-good
 	// scaffolding — skip the pre-commit framework chain (gofmt/gitleaks/…)
-	// on it. The heavy gate (forge lint + audit) is on pre-push, which this
-	// commit doesn't trigger anyway; the hooks govern the user's work from
+	// on it. The lint gate is on pre-push, which this commit doesn't
+	// trigger anyway; the hooks govern the user's work from
 	// here on.
 	cmd = exec.CommandContext(ctx, "git", "commit", "--no-verify", "-m", initialCommitMessage)
 	cmd.Dir = path

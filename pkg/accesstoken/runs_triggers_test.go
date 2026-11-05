@@ -104,7 +104,7 @@ func TestRunsTriggersScopes_NarrowTokensPermitOnlyTheirSlice(t *testing.T) {
 }
 
 func TestRunsTriggersScopes_GrantRules(t *testing.T) {
-	now := time.Now()
+	now := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
 	g := Grant{OrgID: "o", Name: "app", Scopes: SetOf(ScopeRunsStart, ScopeTriggersFire), ActingUserID: "u"}
 	if err := g.Validate(now); err != nil {
 		t.Fatalf("a narrow token was refused: %v", err)

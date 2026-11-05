@@ -416,6 +416,12 @@ _llm_resolve = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> 
     _internal = [] if _hosted_llm or rt.type != "hosted" else [u for u in [_l.runtime.base_url, _l.runtime.openai_base_url] if u and _llm_url_is_internal(u)]
     assert not _internal, \
         "${where}: forge.LLMEndpoint ${_internal} names a host that is not on the public internet (loopback, private, link-local, an IPv6 literal or an internal name), and from Reliant's network that host is the platform's, not yours, so a hosted workload may not send it requests or its key. Point the endpoint at a public https:// URL, or use forge.OnHosted {} for Reliant's gateway"
+    # A hosted workload's endpoint is across the internet, and its client
+    # sends the key in every request: plaintext http:// would hand the
+    # credential to anyone on the path.
+    _plaintext = [] if _hosted_llm or rt.type != "hosted" else [u for u in [_l.runtime.base_url, _l.runtime.openai_base_url] if u and not u.startswith("https://")]
+    assert not _plaintext, \
+        "${where}: forge.LLMEndpoint ${_plaintext} is plaintext http://, and a hosted workload sends the endpoint's key in every request, so anyone on the path could read it. Point the endpoint at an https:// URL, or use forge.OnHosted {} for Reliant's gateway"
     _val = "" if _hosted_llm else _llm_endpoint_values(_l.runtime)[v.key]
     assert not (rt.type == "hosted" and typeof(_val) == "SecretRef"), \
         "${where}: forge.LLMEndpoint.api_key is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} (the env's secret store: `forge secret set --env <env> <NAME>`), or forge.OnHosted {} for Reliant's gateway"

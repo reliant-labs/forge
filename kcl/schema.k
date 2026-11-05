@@ -1332,7 +1332,8 @@ schema LLMEndpoint:
     it (a local Ollama): its host must be exactly localhost, 127.0.0.1,
     [::1], host.docker.internal or host.k3d.internal.
 
-    A hosted workload reaches only a public endpoint: a URL whose host is
+    A hosted workload reaches only a public https:// endpoint (plaintext
+    http:// would expose the key it sends): a URL whose host is
     loopback, private, link-local or carrier-grade-NAT, an IPv6 literal, or
     an internal name (one label, *.localhost, *.local, *.internal, *.svc) is
     refused at render for it, because from Reliant's network that host is

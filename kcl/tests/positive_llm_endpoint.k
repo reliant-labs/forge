@@ -4,7 +4,8 @@ gateway with your own token, or a local Ollama).
 
   1. a host process reads the root, root + /v1 for OpenAI, and the key as
      the forge.ManagedSecret it declares (the env's secret store);
-  2. a hosted referrer of an endpoint is legal too, with a ManagedSecret key;
+  2. a hosted referrer of a public https:// endpoint is legal too, with a
+     ManagedSecret key;
   3. a declared openai_base_url replaces the derived one;
   4. a compose container gets literals (a local endpoint's literal key).
   5. a workload you run reaches a private endpoint; [::1] takes a literal key.

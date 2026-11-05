@@ -171,5 +171,8 @@ gets its key on the normal hosted network.
   private, link-local, CGNAT, an IPv6 literal, a single-label name, or
   `*.localhost` / `*.local` / `*.internal` / `*.svc` / `*.lan` /
   `*.home.arpa`): from Reliant's network that host is the platform's;
+- an endpoint read by a hosted workload over plaintext `http://` (either
+  `base_url` or `openai_base_url`): the key would cross the internet in the
+  clear;
 - a `forge.SecretRef` key on an endpoint read by a hosted workload (use
   `forge.ManagedSecret`).

@@ -20,7 +20,7 @@ import (
 )
 
 // identityCP is a control plane on the wire, modelled on control-plane's
-// cliauth (ParseAuthorizeRequest, the token reply) and its hosted-project
+// cliauth (its authorize-request parsing, the token reply) and its hosted-project
 // resolution (hostedProjects.ResolveProject): what `forge login` and the first
 // deploy actually talk to since control-plane #1431.
 type identityCP struct {

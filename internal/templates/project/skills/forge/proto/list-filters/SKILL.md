@@ -42,8 +42,9 @@ Empty means the field's own name. `op` is the comparison:
 - **A Timestamp compares against a time column**, bound as `AsTime()`.
 - **`forge generate` refuses** a column the applied schema does not declare,
   a prefix on a non-string field or non-text column, a range on a bool, enum
-  or message other than Timestamp, and a Timestamp against a non-time
-  column. Each refusal names the field.
+  or message other than Timestamp, a Timestamp against a non-time
+  column, and a facet on `search`, `query` or `q` (those names are the
+  free-text search box). Each refusal names the field.
 
 Two fields can bound one column: `_from` (`GTE`) with `_before` (`LT`)
 makes a half-open window. The custom-read-shape skeleton (`proto` has it)

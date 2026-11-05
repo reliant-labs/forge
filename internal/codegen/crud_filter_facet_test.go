@@ -141,6 +141,23 @@ func TestBuildCRUDTemplateData_FilterFacetErrors(t *testing.T) {
 			field: MessageFieldDef{Name: "week_after", ProtoType: "message", MessageType: "google.protobuf.Timestamp", Filter: &ListFilterDef{Column: "week_start", Op: FilterOpGTE}},
 			want:  []string{"week_after", "week_start", "time"},
 		},
+		// A facet on a reserved free-text name must not silently fall
+		// back to the broad ILIKE search across every string column.
+		{
+			name:  "prefix facet on the reserved name search",
+			field: MessageFieldDef{Name: "search", ProtoType: "string", Filter: &ListFilterDef{Column: "key", Op: FilterOpPrefix}},
+			want:  []string{`"search"`, "reserved", "free-text"},
+		},
+		{
+			name:  "range facet on the reserved name query",
+			field: MessageFieldDef{Name: "query", ProtoType: "string", Filter: &ListFilterDef{Column: "week_start", Op: FilterOpGTE}},
+			want:  []string{`"query"`, "reserved"},
+		},
+		{
+			name:  "equality facet on the reserved name q",
+			field: MessageFieldDef{Name: "q", ProtoType: "string", Filter: &ListFilterDef{Column: "key"}},
+			want:  []string{`"q"`, "reserved"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := facetService(tc.field)

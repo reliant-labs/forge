@@ -2352,6 +2352,16 @@ func classifyFilterFacet(mf MessageFieldDef, entity EntityDef) (FilterFieldData,
 	if op == "" {
 		opName = "equality"
 	}
+	// search/query/q are the reserved free-text names: the generated
+	// frontend binds them to its search box, which would send free text
+	// into a facet's comparison. Refuse the facet rather than let one
+	// name mean two predicates.
+	switch mf.Name {
+	case "search", "query", "q":
+		return FilterFieldData{}, fmt.Errorf(
+			"list filter %q: %q is reserved for free-text search across the entity's string columns, so it cannot carry (forge.v1.filter) (%s on column %q); rename the field to say what it compares",
+			mf.Name, mf.Name, opName, column)
+	}
 	ff := classifyFilterField(mf)
 	ff.ColumnName = column
 	ff.FilterType = "exact"

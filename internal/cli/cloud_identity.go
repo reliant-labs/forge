@@ -44,8 +44,9 @@ a flag. The environment must already exist in this project.
 
 Inviting creates the account (or grants roles to an existing one) and, for an
 account with no credential yet, issues a one-time password-set code; reset
-issues one for any account. The code is emailed only where the environment
-declares smtp in KCL ('status' shows "Mail:"). Without smtp the control plane
+issues one for any account. The code is emailed where the instance can send
+mail ('status' shows "Mail:"): the environment declares smtp in KCL, or the
+control plane's platform delivery is on. Without mail the control plane
 refuses both rather than send nothing: pass --return-code to have the code
 handed back, and deliver it yourself through a channel you control. The code is
 a credential. There is no password option, seed account or implicit recipient.
@@ -157,11 +158,31 @@ type identityStatusDocument struct {
 	// their names.
 	OwnerEnvironment   *identityEnvironmentWire  `json:"ownerEnvironment,omitempty"`
 	SharerEnvironments []identityEnvironmentWire `json:"sharerEnvironments,omitempty"`
+	// SocialCallbackURL is the redirect URI to register with each social
+	// provider (KCL ManagedIdentity.social): <issuer>/idps/callback.
+	SocialCallbackURL string `json:"socialCallbackUrl,omitempty"`
+	// Social is each declared social provider as the control plane applied
+	// it.
+	Social []identitySocialStatusWire `json:"social,omitempty"`
+	// OwnersPending are declared owners with no credential yet who were not
+	// invited on the last pass (no mail, or invited recently).
+	OwnersPending []string `json:"ownersPending,omitempty"`
+}
+
+// identitySocialStatusWire is controlplane.v1.IdentitySocialStatus.
+type identitySocialStatusWire struct {
+	Type      string `json:"type"`
+	State     string `json:"state,omitempty"`
+	AppliedAt string `json:"appliedAt,omitempty"`
 }
 
 // mailDeliveryText says what an invitation or a reset does on this instance.
 func mailDeliveryText(v string) string {
 	switch v {
+	case "IDENTITY_MAIL_DELIVERY_PLATFORM":
+		return "platform (invitation, verification, reset and sign-in links are emailed by the platform's identity mail relay)"
+	case "IDENTITY_MAIL_DELIVERY_SANDBOX":
+		return "sandbox (the organization is unclaimed: mail is captured, not sent; org admins can read it)"
 	case "IDENTITY_MAIL_DELIVERY_SMTP":
 		return "smtp (invitation and reset codes are emailed)"
 	case "IDENTITY_MAIL_DELIVERY_NONE":
@@ -236,6 +257,19 @@ func newCloudIdentityStatusCmd() *cobra.Command {
 						written = " written " + d.LastWrittenAt
 					}
 					fmt.Fprintf(out, "Delivery: %s %s/%s/%s %s%s %s\n", d.Kind, d.Cluster, d.Namespace, d.Name, d.State, written, d.LastError)
+				}
+				if doc.SocialCallbackURL != "" {
+					fmt.Fprintf(out, "Social callback: %s (register it as the redirect URI of each OAuth client)\n", doc.SocialCallbackURL)
+				}
+				for _, s := range doc.Social {
+					applied := ""
+					if s.AppliedAt != "" {
+						applied = " applied " + s.AppliedAt
+					}
+					fmt.Fprintf(out, "Social: %s %s%s\n", s.Type, s.State, applied)
+				}
+				if len(doc.OwnersPending) > 0 {
+					fmt.Fprintf(out, "Owners pending: %s (no credential yet and not invited on the last pass)\n", strings.Join(doc.OwnersPending, ", "))
 				}
 			}
 			if doc.Refused != "" {

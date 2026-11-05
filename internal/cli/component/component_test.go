@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +82,101 @@ func TestResolveInstallDir(t *testing.T) {
 		scratch := t.TempDir()
 		if got := resolveInstallDir(scratch); got != scratch {
 			t.Errorf("resolveInstallDir(%q) = %q, want it unchanged", scratch, got)
+		}
+	})
+}
+
+// writeFrontend lays out the markers the inventory scan and the install
+// resolution look for: a framework config, a package.json and src/.
+func writeFrontend(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "src", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"package.json", "next.config.ts"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func writeProject(t *testing.T, frontends ...string) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte("name: demo\nmodule_path: example.com/demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, fe := range frontends {
+		writeFrontend(t, filepath.Join(root, "frontends", fe))
+	}
+	return root
+}
+
+// Auto-detect resolves the project's frontend from wherever the command runs:
+// the project root, inside the frontend, or below either. growth hit
+// "could not auto-detect components directory" with exactly one frontend.
+func TestDetectComponentsDir(t *testing.T) {
+	t.Run("the project's only frontend, from the root and from inside it", func(t *testing.T) {
+		root := writeProject(t, "web")
+		want := filepath.Join(root, "frontends", "web", "src", "components", "ui")
+		for _, cwd := range []string{
+			root,
+			filepath.Join(root, "frontends", "web"),
+			filepath.Join(root, "frontends", "web", "src", "app"),
+			filepath.Join(root, "frontends"),
+		} {
+			t.Chdir(cwd)
+			got, err := detectComponentsDir()
+			if err != nil {
+				t.Fatalf("from %s: %v", cwd, err)
+			}
+			if got != want {
+				t.Errorf("from %s: got %q, want %q", cwd, got, want)
+			}
+		}
+	})
+
+	t.Run("several frontends: the one cwd is in, else an error listing each", func(t *testing.T) {
+		root := writeProject(t, "admin", "web")
+		t.Chdir(filepath.Join(root, "frontends", "web", "src"))
+		got, err := detectComponentsDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(root, "frontends", "web", "src", "components", "ui"); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+
+		t.Chdir(root)
+		_, err = detectComponentsDir()
+		if err == nil {
+			t.Fatal("want an error naming both frontends, got none")
+		}
+		for _, want := range []string{"--dir frontends/admin", "--dir frontends/web"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error does not name %q:\n%v", want, err)
+			}
+		}
+	})
+
+	t.Run("no project: a frontend-shaped cwd is used, anything else names --dir", func(t *testing.T) {
+		fe := t.TempDir()
+		writeFrontend(t, fe)
+		t.Chdir(fe)
+		got, err := detectComponentsDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(fe, "src", "components", "ui"); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+
+		t.Chdir(t.TempDir())
+		if _, err := detectComponentsDir(); err == nil || !strings.Contains(err.Error(), "--dir") {
+			t.Errorf("want an error naming --dir, got %v", err)
 		}
 	})
 }

@@ -10,13 +10,16 @@
 package component
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -35,8 +38,6 @@ func newCmd(f *factory.Factory) *cobra.Command {
 	return cmdutil.StrictGroup(cmd)
 }
 
-// detectComponentsDir looks for a frontends/*/src/components/ui/ directory
-// relative to the current working directory.
 // resolveInstallDir turns a user-supplied --dir into the directory components
 // are actually written to.
 //
@@ -70,27 +71,108 @@ func resolveInstallDir(dir string) string {
 	return cleaned
 }
 
-func detectComponentsDir() string {
-	cwd, err := os.Getwd()
+// detectComponentsDir picks the frontend to install into when --dir is not
+// given, from the project's frontend inventory (the same set `forge lint`
+// and `forge build` read), so it works from the project root, from inside a
+// frontend, and from any directory below either.
+//
+//   - cwd inside a frontend: that frontend.
+//   - exactly one web frontend: that one.
+//   - several: an error listing the --dir value for each, rather than
+//     silently taking the first in directory order.
+//   - none, or no forge.yaml above cwd: the directory itself when it looks
+//     like a frontend root, else an error naming the flag.
+//
+// React Native frontends are not candidates: the library's components are
+// DOM components.
+func detectComponentsDir() (string, error) {
+	cwd, err := cmdutil.ResolutionRoot()
 	if err != nil {
-		return ""
+		return "", err
+	}
+	root, err := cmdutil.FindProjectRoot()
+	if err != nil {
+		return "", err
 	}
 
-	// Check frontends directory
-	frontendsDir := filepath.Join(cwd, "frontends")
-	entries, err := os.ReadDir(frontendsDir)
-	if err != nil {
-		return ""
+	var frontends []string // absolute frontend roots
+	if root != "" {
+		if cfg, err := config.LoadProjectDir(root); err == nil {
+			for _, fe := range cfg.ToolchainFrontends() {
+				if fe.Type == "react-native" {
+					continue
+				}
+				rel, ok := fe.Dir(root)
+				if !ok {
+					continue
+				}
+				frontends = append(frontends, filepath.Join(root, filepath.FromSlash(rel)))
+			}
+		}
 	}
 
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		candidate := filepath.Join(frontendsDir, e.Name(), filepath.FromSlash(config.FrontendComponentsDir(filepath.Join(frontendsDir, e.Name()))))
-		if info, err := os.Stat(filepath.Join(frontendsDir, e.Name(), "src")); err == nil && info.IsDir() {
-			return candidate
+	componentsDir := func(feDir string) string {
+		return filepath.Join(feDir, filepath.FromSlash(config.FrontendComponentsDir(feDir)))
+	}
+
+	// Inside a frontend: the innermost one containing cwd. A root frontend
+	// (".") contains everything, so prefer the longest match.
+	best := ""
+	for _, fe := range frontends {
+		if within(cwd, fe) && len(fe) > len(best) {
+			best = fe
 		}
 	}
-	return ""
+	if best != "" {
+		return componentsDir(best), nil
+	}
+
+	switch len(frontends) {
+	case 1:
+		return componentsDir(frontends[0]), nil
+	case 0:
+		if looksLikeFrontendRoot(cwd) {
+			return componentsDir(cwd), nil
+		}
+		where := "no forge.yaml in this directory or above"
+		if root != "" {
+			where = "the project at " + root + " has no web frontend under frontends/"
+		}
+		return "", cliutil.UserErr("forge component install",
+			"could not find a frontend to install into: "+where,
+			"",
+			"pass the frontend directory: --dir <path/to/frontend> (components go in its src/components/ui/)")
+	default:
+		lines := make([]string, 0, len(frontends))
+		for _, fe := range frontends {
+			rel, err := filepath.Rel(cwd, fe)
+			if err != nil {
+				rel = fe
+			}
+			lines = append(lines, "  --dir "+filepath.ToSlash(rel))
+		}
+		return "", cliutil.UserErr("forge component install",
+			fmt.Sprintf("this project has %d frontends; pick one", len(frontends)),
+			"",
+			"re-run with one of:\n"+strings.Join(lines, "\n"))
+	}
+}
+
+// within reports whether path is dir or below it.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// looksLikeFrontendRoot is the same marker test resolveInstallDir uses for
+// --dir: a package.json and a src/ directory.
+func looksLikeFrontendRoot(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(dir, "src"))
+	return err == nil && info.IsDir()
 }

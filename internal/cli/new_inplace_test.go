@@ -309,3 +309,36 @@ func TestDirHoldsProject(t *testing.T) {
 		t.Error("a missing directory is not a project")
 	}
 }
+
+// TestMergeGitignoreOpensAForgeDirIgnore: growth's own .gitignore carried
+// `.forge/`, and `forge project new --in-place` appended the scaffold's
+// `.forge/*` + `!.forge/scaffolded/` below it. git cannot re-include a file
+// under an excluded directory, so the birth ledger was never committed and a
+// fresh clone's generate re-created every deleted scaffold. The merge
+// rewrites the user's line to `.forge/*`, so the re-includes apply.
+func TestMergeGitignoreOpensAForgeDirIgnore(t *testing.T) {
+	const forge = ".forge/*\n!.forge/scaffolded/\nbin/\n"
+	for _, user := range []string{".forge/\nnode_modules/\n", "node_modules/\n.forge\n", "/.forge/\n"} {
+		once, _ := mergeGitignore(user, forge)
+		for _, line := range strings.Split(once, "\n") {
+			if forgeDirIgnoreRE.MatchString(strings.TrimSpace(line)) {
+				t.Errorf("user %q: merged file still ignores the .forge directory itself (%q):\n%s", user, line, once)
+			}
+		}
+		if !strings.Contains(once, "!.forge/scaffolded/\n") {
+			t.Errorf("user %q: the re-include is missing:\n%s", user, once)
+		}
+		if strings.HasPrefix(user, "/") && !strings.Contains(once, "\n/.forge/*\n") {
+			t.Errorf("user %q: the anchored rule should stay anchored:\n%s", user, once)
+		}
+		if twice, _ := mergeGitignore(once, forge); twice != once {
+			t.Errorf("user %q: not idempotent.\nonce:\n%s\ntwice:\n%s", user, once, twice)
+		}
+		if _, n := openForgeDirIgnore(stripForgeGitignoreBlock(once)); n != 0 {
+			t.Errorf("user %q: a second pass still finds %d line(s) to rewrite", user, n)
+		}
+	}
+	if got, n := openForgeDirIgnore(".forge/*\n.forge-kcl/\n.forge/cache\n"); n != 0 || got != ".forge/*\n.forge-kcl/\n.forge/cache\n" {
+		t.Errorf("rewrote lines that do not ignore the .forge directory itself: %q (%d)", got, n)
+	}
+}

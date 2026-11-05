@@ -56,3 +56,52 @@ func TestCommitPolicyStep_GatesOnIgnoredGeneratedCode(t *testing.T) {
 		t.Errorf("fix hint must name the command that repairs it: %q", fs[0].FixHint)
 	}
 }
+
+// TestCommitPolicyStep_WarnsOnIgnoredBirthLedger: a `.forge/` ignore line
+// keeps .forge/scaffolded/ out of git whatever the scaffold's negations say,
+// so deleted scaffolds come back in every fresh clone. `forge lint` names the
+// path and the fix; the scaffold's own `.forge/*` + negations pass.
+func TestCommitPolicyStep_WarnsOnIgnoredBirthLedger(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs git against a real repository; runs in task test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	for _, tc := range []struct {
+		name, gitignore string
+		want            []string
+	}{
+		{"directory ignored", ".forge/\n.forge/*\n!.forge/scaffolded/\n!.forge/disowned.json\n!.forge/hashes/\n",
+			[]string{".forge/disowned.json", ".forge/hashes/", ".forge/scaffolded/"}},
+		{"scaffold's rules", ".forge/*\n!.forge/scaffolded/\n!.forge/disowned.json\n!.forge/hashes/\n", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+				t.Fatalf("git init: %v\n%s", err, out)
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(tc.gitignore), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fs, _, err := collectCommitPolicyJSON(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, f := range fs {
+				if f.Rule != "forge-state-ignored" {
+					t.Errorf("unexpected finding %+v", f)
+					continue
+				}
+				got = append(got, f.File)
+				if !strings.Contains(f.FixHint, "`.forge/*`") {
+					t.Errorf("fix hint must say to ignore the children: %q", f.FixHint)
+				}
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("findings on %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

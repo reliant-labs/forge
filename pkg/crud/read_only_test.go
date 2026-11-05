@@ -93,6 +93,58 @@ func TestHandleUpdate_ReadOnly_FullReplaceDispatchesToPersist(t *testing.T) {
 	}
 }
 
+// A client update_mask naming a forge:immutable column, or a column with no
+// wire field (a SQL-spelled forge:secret, say), is refused like a read-only
+// one. A full replace never rewrites the first (,skipupdate), and a client
+// cannot send a value for the second, so a mask accepting either let a client
+// rewrite an OAuth subject, or reset a sealed credential to NULL from a value
+// it never sent.
+func TestHandleUpdate_UnmaskablePath_Refused(t *testing.T) {
+	for _, path := range []string{"subject", "sealed_secret"} {
+		var fullCalled bool
+		var maskedFields []string
+		op := maskedUpdateOp(&fullCalled, &maskedFields, nil)
+		op.Unmaskable = []string{"subject", "sealed_secret"}
+
+		_, err := HandleUpdate(op)(context.Background(), connect.NewRequest(&updateReq{
+			User: &user{ID: "u1", Name: "B"},
+			Mask: []string{"name", path},
+		}))
+
+		cerr := new(connect.Error)
+		if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
+			t.Fatalf("path %q: want InvalidArgument, got %v", path, err)
+		}
+		if got := cerr.Meta().Get(svcerr.ReasonHeader); got != ReasonUnknownField {
+			t.Errorf("path %q: reason = %q, want %q", path, got, ReasonUnknownField)
+		}
+		if !strings.Contains(cerr.Message(), `"`+path+`"`) || !strings.Contains(cerr.Message(), "not client-writable") {
+			t.Errorf("path %q: message should name the path and say why, got %q", path, cerr.Message())
+		}
+		if maskedFields != nil || fullCalled {
+			t.Errorf("path %q: nothing may be written when a path is refused (masked=%v full=%v)", path, maskedFields, fullCalled)
+		}
+	}
+}
+
+// Unmaskable constrains the mask only: a full replace still reaches Persist,
+// whose storage policy (,skipupdate) is what keeps an immutable column as
+// stored there.
+func TestHandleUpdate_Unmaskable_FullReplaceDispatchesToPersist(t *testing.T) {
+	var fullCalled bool
+	var maskedFields []string
+	op := maskedUpdateOp(&fullCalled, &maskedFields, nil)
+	op.Unmaskable = []string{"email"}
+	if _, err := HandleUpdate(op)(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1", Email: "ignored@x"},
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fullCalled {
+		t.Error("full replace must still reach Persist")
+	}
+}
+
 // An op with no ReadOnly declaration behaves exactly as before.
 func TestHandleUpdate_NoReadOnly_MaskUnchanged(t *testing.T) {
 	var maskedFields []string

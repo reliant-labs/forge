@@ -29,6 +29,22 @@ Enrichment runs on every authenticated request, so a query here is on the hot pa
 
 **The first sign-in of an invited person is the one time email matters.** The person has a subject the app has never seen and an invitation keyed by address, so `enrichClaims` binds that subject to the invitation once and uses the subject from then on. A managed identity's access token (Zitadel) carries **no `email`**: only `sub`, the audience and roles. The scaffolded `SetupAuth` (`internal/app/auth.go`) therefore installs `authenticator.UseUserInfo(auth.NewUserInfo(...))`, which fills `claims.Email` from the issuer's OIDC userinfo endpoint. It fills only a **verified** address (`email_verified`), looks up only tokens whose `iss` is the configured issuer (a subject is unique only within its issuer), sends the access token over HTTPS only (plain HTTP to a loopback dev issuer excepted, redirects included), caches the answer per subject for five minutes, and leaves `Email` empty instead of failing the request when the lookup fails. A token that carries its own `email` is left as it is, and API keys are never looked up. A project scaffolded before this existed can add the same lines after `auth.NewAuthenticator(validator.Validate)`. Bind on `claims.Email` only when no row has the subject yet; after that, the subject is the key.
 
+**Enrichment that reads the database is a component, not an edit to `enrichClaims`.** The function above is a package function with no `Deps`, so it has no way to reach a store. A package that does database I/O must be a composed component: `requirecontract` refuses a plain helper, and `//forge:exclude-contract` is refused for outbound I/O. So the seam is a component:
+
+1. `forge scaffold package membership`, then put the method on its `Service` interface and implement it over the store:
+
+   ```go
+   // internal/membership/contract.go
+   type Service interface {
+       EnrichClaims(ctx context.Context, claims *auth.Claims) (*auth.Claims, error)
+   }
+   ```
+
+   `middleware.Claims` is an alias of `github.com/reliant-labs/forge/pkg/auth.Claims`, so the package does not need to import `pkg/middleware`.
+2. Run `forge generate`. `UserAuthDeps.Enrich` (`internal/app/providers.go`) is a `// forge:optional-dep` field of type `middleware.ClaimsEnricher`. The graph fills it with the one component whose value implements that interface, and `NewAuthInterceptor` uses `AuthDeps.Enrich` in place of `enrichClaims`. You register nothing, and the component's `Deps` brings the database the way every other component's does. With no such component the field stays nil and `enrichClaims` runs. If two components implement it, generate stops with an ambiguity error; settle it by naming one in `compose.go`.
+
+Projects scaffolded before this have no `ClaimsEnricher` in `pkg/middleware/middleware.go`. Add the interface, the `Enrich ClaimsEnricher` field on `AuthDeps`, and the `deps.Enrich` branch in `NewAuthInterceptor` by hand, then wire `Enrich: d.Enrich` in `NewUserAuth`.
+
 **Request VALIDATION is not `Enrich`'s job.** Field-level input checking is already handled, separately and earlier in the chain, by protovalidate from the `buf.validate` rules on your proto messages:
 
 ```proto

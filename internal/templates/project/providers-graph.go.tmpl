@@ -147,6 +147,15 @@ type UserAuthDeps struct {
 {{- if .HasDatabase}}
 	DB     *DB
 {{- end}}
+{{- if and .ClaimsEnricher (not .NoProjectAuthInterceptor)}}
+	// Enrich is the enrich seam when it needs dependencies: the one component
+	// whose value implements middleware.ClaimsEnricher (a members lookup
+	// that maps the IdP subject to a tenant and role). With none, the
+	// package-level enrichClaims in pkg/middleware runs.
+	//
+	// forge:optional-dep
+	Enrich middleware.ClaimsEnricher
+{{- end}}
 }
 
 // NewUserAuth builds the user audience's authenticator. AnonymousOK: false is
@@ -166,7 +175,7 @@ func NewUserAuth(d UserAuthDeps) (*UserAuth, error) {
 	// API key) is the credential, and no claims enrichment runs.
 	policy := authn.Policy{Unauthenticated: middleware.UnauthenticatedProcedures}
 {{- else}}
-	authDeps := middleware.AuthDeps{AnonymousOK: false}
+	authDeps := middleware.AuthDeps{AnonymousOK: false{{if .ClaimsEnricher}}, Enrich: d.Enrich{{end}}}
 {{- end}}
 	authenticator, err := SetupAuth(d.Config)
 	if err != nil {

@@ -98,8 +98,8 @@ func TestCreateRequestFactory_SeedsParentsUnderTheCallersOwner_PG(t *testing.T) 
 		t.Fatalf("specs = %+v", specs)
 	}
 	s := specs[0]
-	if !s.ownerAware || len(s.ownerLiterals) == 0 || s.ownerField != "TenantId" {
-		t.Fatalf("an owned entity's factory must be owner-aware: aware=%v literals=%v field=%q", s.ownerAware, s.ownerLiterals, s.ownerField)
+	if !s.ownerAware || len(s.ownerCells) == 0 || s.ownerField != "TenantId" {
+		t.Fatalf("an owned entity's factory must be owner-aware: aware=%v cells=%v field=%q", s.ownerAware, s.ownerCells, s.ownerField)
 	}
 
 	// The planned rows, as planned, fail the guard for a child under the
@@ -121,9 +121,9 @@ func TestCreateRequestFactory_SeedsParentsUnderTheCallersOwner_PG(t *testing.T) 
 	// Under FactoryOwner the parents move to the caller's owner, and the
 	// same child is accepted. rewriteOwnerLiterals is what the emitted
 	// withFactoryOwner does, verbatim.
-	if err := childUnder(rewriteOwnerLiterals(s.parentSQL, s.ownerLiterals, "tenant-1")); err != nil {
+	if err := childUnder(rewriteOwnerLiterals(s.parentSQL, s.ownerCells, "tenant-1")); err != nil {
 		t.Fatalf("parents seeded under the caller's owner must satisfy the guard: %v\n%s",
-			err, rewriteOwnerLiterals(s.parentSQL, s.ownerLiterals, "tenant-1"))
+			err, rewriteOwnerLiterals(s.parentSQL, s.ownerCells, "tenant-1"))
 	}
 
 	out := renderEntityFactoryFile("example.com/test/internal/db", factoryGroup{
@@ -146,8 +146,8 @@ func TestCreateRequestFactory_SeedsParentsUnderTheCallersOwner_PG(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), "func rewriteOwnerLiterals(sql string, planned []string, owner string) string {\n"+rewriteOwnerLiteralsBody+"}\n") ||
-		!strings.Contains(content, "func withFactoryOwner(sql string, planned []string, owner string) string {\n"+rewriteOwnerLiteralsBody+"}\n") {
+	if !strings.Contains(string(src), "func rewriteOwnerLiterals(sql string, cells [][2]int, owner string) string {\n"+rewriteOwnerLiteralsBody+"}\n") ||
+		!strings.Contains(content, "func withFactoryOwner(sql string, cells [][2]int, owner string) string {\n"+rewriteOwnerLiteralsBody+"}\n") {
 		t.Errorf("the emitted withFactoryOwner drifted from rewriteOwnerLiterals:\n%s", content)
 	}
 	if _, err := format.Source(out); err != nil {
@@ -179,5 +179,63 @@ func TestCreateRequestFactory_UnownedKeepsPlainSignature(t *testing.T) {
 	}
 	if strings.Contains(out, "FactoryOwner") || strings.Contains(out, "\"strings\"") {
 		t.Errorf("a file with no owner-aware factory must not declare the owner option:\n%s", out)
+	}
+}
+
+// FactoryOwner rewrites owner cells, not owner-shaped text: a cell outside
+// the owner-linked columns keeps its value even when it equals a planned
+// owner (a tenant whose slug is its id), and a literal with an owner value
+// inside it is not touched at all.
+func TestOwnerCellRanges_RewritesOnlyOwnerLinkedCells(t *testing.T) {
+	const sql = `INSERT INTO "tenants" ("id", "slug") VALUES
+    ('tenant-a', 'tenant-a'),
+    ('tenant-b', 'it''s tenant-b; really')
+ON CONFLICT ("id") DO NOTHING;
+INSERT INTO "audit" DEFAULT VALUES;
+INSERT INTO "strategies" ("id", "tenant_id", "name", "uid") VALUES
+    ('s-0', 'tenant-a', 'tenant-a', ARRAY['tenant-a', 'x']),
+    ('s-1', 'tenant-b'::text, 'n(1)', ARRAY['y'])
+ON CONFLICT ("id") DO NOTHING;`
+	linked := map[string]map[string]bool{
+		`"tenants"`:    {"id": true},
+		`"strategies"`: {"tenant_id": true},
+	}
+	planned := map[string]bool{"'tenant-a'": true, "'tenant-b'": true}
+	cells, err := ownerCellRanges(sql, linked, planned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rewriteOwnerLiterals(sql, cells, "o'1")
+	want := `INSERT INTO "tenants" ("id", "slug") VALUES
+    ('o''1', 'tenant-a'),
+    ('o''1', 'it''s tenant-b; really')
+ON CONFLICT ("id") DO NOTHING;
+INSERT INTO "audit" DEFAULT VALUES;
+INSERT INTO "strategies" ("id", "tenant_id", "name", "uid") VALUES
+    ('s-0', 'o''1', 'tenant-a', ARRAY['tenant-a', 'x']),
+    ('s-1', 'o''1'::text, 'n(1)', ARRAY['y'])
+ON CONFLICT ("id") DO NOTHING;`
+	if got != want {
+		t.Errorf("rewrite touched a cell that is not an owner cell:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	if rewriteOwnerLiterals(sql, cells, "") != sql {
+		t.Error("an empty owner must leave the SQL as planned")
+	}
+}
+
+// A seed statement the lexer cannot read is an error, never a silent no-op.
+func TestOwnerCellRanges_RejectsUnreadableSQL(t *testing.T) {
+	for _, sql := range []string{
+		`DELETE FROM "tenants";`,
+		`INSERT INTO "tenants" ("id") VALUES
+    ('a', 'b')
+ON CONFLICT DO NOTHING;`,
+		`INSERT INTO "tenants" ("id") VALUES
+    ('unterminated)
+ON CONFLICT DO NOTHING;`,
+	} {
+		if _, err := ownerCellRanges(sql, nil, map[string]bool{"'a'": true}); err == nil {
+			t.Errorf("expected an error for:\n%s", sql)
+		}
 	}
 }

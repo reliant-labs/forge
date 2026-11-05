@@ -364,7 +364,12 @@ type EntityDef struct {
 	PkField   string        // "id"
 	PkGoType  string        // "string"
 	Fields    []EntityField // wire-message fields (service proto)
-	ProtoFile string        // proto file declaring the wire message
+	// WireKnown reports whether the service declares the entity's wire
+	// message at all, so an empty Fields can be told apart: a known message
+	// with no fields means no column is client-writable, an unknown one says
+	// nothing about the wire (UnmaskableColumns).
+	WireKnown bool   `json:",omitempty"`
+	ProtoFile string // proto file declaring the wire message
 	// Columns is the introspected applied schema for the entity's table.
 	Columns []EntityColumn `json:",omitempty"`
 	// SearchColumns are the text columns the generated list search

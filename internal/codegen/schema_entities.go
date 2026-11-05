@@ -625,6 +625,7 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 
 	// Wire fields from the service proto's entity message.
 	e.Fields = WireEntityFields(svc, name)
+	e.WireKnown = wireMessageKnown(svc, name)
 
 	// forge:secret — a secret column is stripped from read responses
 	// (crud_convert's toProto skip); it must also stay OUT of the generated
@@ -818,6 +819,16 @@ func WireEntityFields(svc ServiceDef, entityName string) []EntityField {
 		fields = append(fields, messageFieldToEntityField(d))
 	}
 	return withMessageGoNames(fields)
+}
+
+// wireMessageKnown reports whether svc declares the wire message
+// WireEntityFields reads, in either map — true for a message with no fields.
+func wireMessageKnown(svc ServiceDef, entityName string) bool {
+	if _, ok := svc.Schemas[svc.Package+"."+entityName]; ok {
+		return true
+	}
+	_, ok := svc.Messages[entityName]
+	return ok
 }
 
 // withMessageGoNames sets each field's GoName to the struct field

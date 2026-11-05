@@ -68,14 +68,18 @@ func ReadOnlyColumns(entity EntityDef) []string {
 //     only reset it to the zero the request was left holding.
 //
 // The primary key and the read-only columns are left out: the repository
-// refuses the first, ReadOnlyColumns covers the second. An entity with no wire
-// fields at all says nothing about the wire, so only its immutable columns are
-// reported rather than every column.
+// refuses the first, ReadOnlyColumns covers the second. A wire field marked
+// `// forge:secret` is on the wire, so it stays mask-writable: that is how a
+// client rotates a write-only credential. An entity whose wire message is
+// unknown (WireKnown false, Fields empty) says nothing about the wire, so only
+// its immutable columns are reported; a known message with no fields makes
+// every column wire-less.
 //
 // These are not passed to crud.Preserve. Whether a full replace writes a
 // column is storage's call (,skipupdate) for the immutable ones, and a column
 // with no wire field is the app's to set from an op.Entity hook.
 func UnmaskableColumns(entity EntityDef) []string {
+	wireKnown := entity.WireKnown || len(entity.Fields) > 0
 	wire := make(map[string]bool, len(entity.Fields))
 	readOnly := make(map[string]bool, len(entity.Fields))
 	for _, f := range entity.Fields {
@@ -89,7 +93,7 @@ func UnmaskableColumns(entity EntityDef) []string {
 		if col.IsPK || col.Name == entity.PkField || readOnly[col.Name] {
 			continue
 		}
-		if col.Immutable || (len(wire) > 0 && !wire[col.Name]) {
+		if col.Immutable || (wireKnown && !wire[col.Name]) {
 			out = append(out, col.Name)
 		}
 	}

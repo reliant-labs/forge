@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -138,6 +139,27 @@ func TestUnmaskableColumns(t *testing.T) {
 	bare.Fields = nil
 	if got, want := UnmaskableColumns(bare), []string{"subject", "sealed_secret"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("no wire fields: UnmaskableColumns = %v, want %v", got, want)
+	}
+	// A KNOWN wire message with no fields lets a client send no column, so
+	// every non-key, non-read-only column is wire-less and refused.
+	empty := unmaskableTestEntity()
+	empty.Fields = []EntityField{}
+	empty.WireKnown = true
+	if got := UnmaskableColumns(empty); !slices.Contains(got, "internal_notes") || !slices.Contains(got, "subject") || slices.Contains(got, empty.PkField) {
+		t.Errorf("known empty wire message: UnmaskableColumns = %v, want every non-key column incl. internal_notes", got)
+	}
+}
+
+// A `// forge:secret` wire field is on the wire (reads return "", writes
+// carry the new value), so a client mask naming it rotates the credential:
+// it must not be refused as wire-less.
+func TestUnmaskableColumns_WireSecretStaysMaskWritable(t *testing.T) {
+	e := unmaskableTestEntity()
+	e.WireKnown = true
+	e.Fields = append(e.Fields, EntityField{Name: "api_key", GoName: "ApiKey", ProtoType: "string", GoType: "string", Kind: FieldKindScalar, Secret: true})
+	e.Columns = append(e.Columns, EntityColumn{Name: "api_key", Type: "string"})
+	if got := UnmaskableColumns(e); slices.Contains(got, "api_key") {
+		t.Errorf("wire forge:secret must stay mask-writable; UnmaskableColumns = %v", got)
 	}
 }
 

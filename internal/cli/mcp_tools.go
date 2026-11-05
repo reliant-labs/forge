@@ -210,6 +210,8 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		}
 		return cmdSpec{dir: in.Dir, args: args}
 	})
+
+	addDeployTools(srv, r)
 }
 
 // cmdSpec is one forge invocation a tool call maps to.

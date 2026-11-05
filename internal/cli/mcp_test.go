@@ -16,6 +16,14 @@ import (
 // client session against it. The runner starts in dir.
 func connectMCP(t *testing.T, dir string) *mcp.ClientSession {
 	t.Helper()
+	cs, _ := connectMCPWith(t, dir, nil)
+	return cs
+}
+
+// connectMCPWith is connectMCP with the client's options (a progress
+// handler), returning the server's runner too.
+func connectMCPWith(t *testing.T, dir string, opts *mcp.ClientOptions) (*mcp.ClientSession, *mcpRunner) {
+	t.Helper()
 	resetCmdRoute(t)
 	t.Chdir(dir)
 	r, err := newMCPRunner(NewRootCmd)
@@ -31,12 +39,12 @@ func connectMCP(t *testing.T, dir string) *mcp.ClientSession {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ss.Close() })
-	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientT, nil)
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, opts).Connect(ctx, clientT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cs.Close() })
-	return cs
+	return cs, r
 }
 
 func callMCP(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) (string, bool) {
@@ -91,8 +99,9 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	for _, tool := range list.Tools {
 		got[tool.Name] = tool
 	}
-	readOnly := []string{"capabilities", "annotations", "libraries", "audit", "shapes", "skill_list", "skill_search", "skill_load"}
-	mutating := []string{"lint", "generate", "report_bug"}
+	readOnly := []string{"capabilities", "annotations", "libraries", "audit", "shapes", "skill_list", "skill_search", "skill_load",
+		"deploy_status", "explain_error"}
+	mutating := []string{"lint", "generate", "report_bug", "deploy_claimable"}
 	if len(got) != len(readOnly)+len(mutating) {
 		t.Errorf("got %d tools, want %d: %v", len(got), len(readOnly)+len(mutating), got)
 	}
@@ -118,10 +127,16 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	}
 	// report_bug is the one tool that sends anything off the machine, and
 	// says so.
-	if rb := got["report_bug"]; rb != nil && (rb.Annotations == nil || rb.Annotations.OpenWorldHint == nil || !*rb.Annotations.OpenWorldHint) {
-		t.Errorf("report_bug must be annotated open-world")
+	// So do the deploy tools, which talk to the control plane.
+	for _, name := range []string{"report_bug", "deploy_claimable", "deploy_status"} {
+		if rb := got[name]; rb != nil && (rb.Annotations == nil || rb.Annotations.OpenWorldHint == nil || !*rb.Annotations.OpenWorldHint) {
+			t.Errorf("%s must be annotated open-world", name)
+		}
 	}
 	for name, tool := range got {
+		if name == "explain_error" {
+			continue // explains an error; acts on no project
+		}
 		schema, _ := json.Marshal(tool.InputSchema)
 		if !strings.Contains(string(schema), `"dir"`) {
 			t.Errorf("%s takes no dir: %s", name, schema)

@@ -609,6 +609,11 @@ func TestReleaseForgeScript_AttachesBinariesSyncsNpmAndDispatchesBrew(t *testing
 	if got := bookkeepingFile(t, origin, "v0.2.0", "npm/package.json"); !strings.Contains(got, `"node": ">=18"`) {
 		t.Errorf("syncing npm/package.json clobbered other fields:\n%s", got)
 	}
+	// The MCP registry listing names the same version, for the server and
+	// for its npm package.
+	if got := bookkeepingFile(t, origin, "v0.2.0", "npm/server.json"); strings.Count(got, `"version": "0.2.0"`) != 2 || strings.Contains(got, `"version": "0.1.0"`) {
+		t.Errorf("npm/server.json was not synced to 0.2.0:\n%s", got)
+	}
 	// npm is published by CI (trusted publishing), never from this machine:
 	// the script names the workflow that does it.
 	if !strings.Contains(out, "release-npm.yml publishes @reliantlabs/forge 0.2.0") {

@@ -1,8 +1,11 @@
 // Package identity converges the CONTENT of one Zitadel instance to a declared
 // Spec: the project, its roles, the OIDC applications (web, SPA, native and the
 // native-sign-in broker app), machine users and their keys, the login /
-// password-complexity / lockout policies, SMTP, declared role members and (dev
-// and preview only) seed users.
+// password-complexity / lockout policies (with the OTP-email factor magic
+// links redeem), the mail provider (SMTP, an HTTP endpoint, or none), social
+// identity providers, declared role members, owners and (dev and preview only)
+// seed users. It also publishes the LOGIN_POLICY document an app's login
+// broker enforces (Output.LoginPolicy), built from Spec.SignIn.
 //
 // It is the one library behind both halves of managed identity. `forge env up`
 // runs it against the dev instance with a bootstrap PAT; the control plane runs

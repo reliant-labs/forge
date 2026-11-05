@@ -17,10 +17,10 @@ import (
 	"time"
 )
 
-// Every platform forge supports has a pinned checksum for both engines, so
+// Every platform forge supports has a pinned checksum for every engine, so
 // "no binary for this platform" can only mean upstream stopped publishing it.
 func TestSupervisedReleasesPinEveryPlatform(t *testing.T) {
-	for _, rel := range []binaryRelease{natsRelease, temporalRelease} {
+	for _, rel := range []binaryRelease{natsRelease, temporalRelease, mailpitRelease} {
 		for _, goos := range []string{"linux", "darwin", "windows"} {
 			for _, goarch := range []string{"amd64", "arm64"} {
 				asset, ok := rel.assetFor(goos, goarch)

@@ -599,7 +599,12 @@ func renderCreateRequestFactory(b *strings.Builder, s createRequestSpec) {
 // FactoryOwner: the parents seeded under the owner, the request built, and
 // its own owner field set.
 func renderOwnerAwareRequestBody(b *strings.Builder, s createRequestSpec, constName, ownersName string) {
-	b.WriteString("\towner := factoryOwner(opts)\n")
+	// A self-owned row with no parents (tenants, owned by its own id) seeds
+	// nothing and carries no owner field: declaring owner there is a
+	// "declared and not used" compile error in the generated test file.
+	if s.parentSQL != "" || s.ownerField != "" {
+		b.WriteString("\towner := factoryOwner(opts)\n")
+	}
 	if s.parentSQL != "" {
 		owners := "nil"
 		if len(s.ownerCells) > 0 {

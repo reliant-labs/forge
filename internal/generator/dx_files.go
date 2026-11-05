@@ -1036,8 +1036,9 @@ This directory is yours: forge scaffolds it once and never regenerates it.
 
 	customREADME := `# db/seeds/custom — your demo-data overlay
 
-Hand-authored (or agent-authored) demo data. Applied AFTER the runtime
-` + "`forge db seed apply`" + ` dataset, in lexicographic order. This directory is
+Hand-authored (or agent-authored) demo data. Applied AFTER the synthesized
+dataset, in lexicographic order, by ` + "`forge db seed apply`" + `, ` + "`forge db reset`" + ` and the
+first-boot seed of ` + "`forge env up`" + `. This directory is
 scaffolded once and owned by you — forge never regenerates it.
 
 Rules:

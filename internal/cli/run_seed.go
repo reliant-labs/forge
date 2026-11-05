@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -332,13 +333,29 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 	defer func() { _ = db.Close() }()
 
 	seedCfg := autoSeedConfig(liveSeedConfig(), crudEntityTablesForSeed)
+	autoSeedFirstBoot(ctx, db, resolveMigrationsDir(""), seedShadowServer(dbProjectRoot()), seedCfg)
+}
+
+// autoSeedFirstBoot is maybeAutoSeed past its guards (dev target, a DSN this
+// project owns, a reachable database): on a database whose seedable tables
+// are all empty it applies the synthesized dataset and then the user's
+// db/seeds/custom/*.sql overlay, the same two layers `forge db seed apply`
+// and `forge db reset` apply.
+//
+// The overlay used to be left out here. A project's own dev rows — its first
+// tenant, the account the seed user maps to — were absent after the first
+// `forge env up`, although db/seeds/README.md says env up seeds a fresh
+// database, and they arrived only on a manual `forge db seed apply`. growth
+// hit it: its tenant row lives in db/seeds/custom/001_reliant.sql.
+func autoSeedFirstBoot(ctx context.Context, db *sql.DB, migDir, shadow string, seedCfg seedplan.Config) {
 	if seedCfg.Tables != nil && len(seedCfg.Tables) == 0 {
 		// quiet-ish: nothing is in scope — no CRUD entity, or `tables: []`.
 		// One line, because "why is my dev DB empty?" deserves an answer.
-		fmt.Println("[up] auto-seed: no tables in scope (no CRUD entities, and database.seed.tables unset) — nothing seeded")
+		fmt.Println("[up] auto-seed: no tables in scope (no CRUD entities, or database.seed.tables: []) — nothing synthesized; " +
+			"`forge db seed apply` applies db/seeds/custom/")
 		return
 	}
-	plan, err := seedplan.BuildLivePlan(ctx, db, resolveMigrationsDir(""), seedShadowServer(dbProjectRoot()), seedCfg)
+	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, shadow, seedCfg)
 	if err != nil {
 		fmt.Printf("[up] auto-seed skipped: %v\n", err)
 		return
@@ -370,6 +387,18 @@ func maybeAutoSeed(ctx context.Context, store *projectstore.Store, cfg *config.P
 	if err != nil {
 		fmt.Printf("[up] auto-seed skipped: %v\n", err)
 		return
+	}
+	// The overlay goes on top of the dataset, as in `forge db seed apply`.
+	// Only when the plan has tables: "every seedable table is empty" is the
+	// first-boot signal, and over zero tables it is true on every boot, which
+	// would re-run the overlay's upserts over the developer's edits each time.
+	// A failure is reported, not fatal: the dataset is in, so the next boot
+	// sees rows and skips, and the fix is the user's file plus a re-apply.
+	if len(plan.Tables()) == 0 {
+		return
+	}
+	if err := applyCustomSeedOverlay(ctx, db, migDir); err != nil {
+		fmt.Printf("[up] auto-seed: %v — fix the file, then `forge db seed apply` (idempotent) applies it\n", err)
 	}
 	if res.Total() > 0 {
 		// Name the tables and BOTH opt-outs. The per-project one used to go

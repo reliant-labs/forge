@@ -54,6 +54,26 @@ If the converge fails the stack still starts, without sign-in, and the message n
 
 Nothing else is needed on the frontend. Sign-in is native: the browser POSTs to this app's own `/auth/login` and the SERVER runs the OIDC flow with the client id above, so the bundle has nothing to configure (see `auth/frontend`).
 
+### Mail, owners and the v2 sign-in methods in dev
+
+Invitations, address verification, password reset and magic links are EMAIL. In dev that mail goes to **Mailpit**, declared like the IdP:
+
+```kcl
+# deploy/kcl/dev/main.k, in infra
+forge.HostInfra {name = "mail", engine = "mailpit", port = _mail_port}
+```
+
+Mailpit is a pinned, checksummed binary supervised as a host process, like Zitadel. `port` is its SMTP port (plain, loopback, no auth); its web UI is on **port + 7000** (1025 → `http://localhost:8025`), and `forge env up` prints it as `Mail: …`. Messages persist in `.forge/hostinfra/mail/`. The identity step points the dev IdP's SMTP at it (`IdentityOnHost.mail` names the entry; with exactly one mailpit it is found on its own). A declaration's own `smtp` still wins. Compose users: `docker-compose.yml` has a digest-pinned `mailpit` service.
+
+With mail available, the dev env gets the SAME policies a hosted env gets from the same `identity.k`:
+
+- **`owners`** are created, granted `owner_role`, and — while they have no credential — sent ONE invitation, which lands in Mailpit and links to `<frontend>/auth/invite?userID=…&code=…`. Re-sent at most every 7 days, 3 times in all; never revoked when removed. Without mail they are created and granted, and `forge env up` says they cannot be invited.
+- **`signup`, `methods`** converge the IdP's login policy exactly as on hosted (the OTP-email factor magic links redeem included), and the broker reads them from `IDP_LOGIN_POLICY` (the `LOGIN_POLICY` document, `"mail": "dev"`), written to the store like every other identity output.
+- **Passkeys** in dev use relying party `localhost`, whatever `passkey_rp_id` the hosted envs use: a passkey is bound to the host the browser is on.
+- **`social`** providers need a SEPARATE DEV OAuth app at Google/GitHub whose callback is the dev IdP's `http://localhost:<idp port>/idps/callback` (printed by `forge env up`); set its secret with `forge secret set --env dev <client_secret name>`. A provider whose secret is missing is left out with a warning; the other methods still work.
+
+One known difference: dev mail uses Zitadel's own templates, hosted mail the platform relay's. The links and codes are identical.
+
 **To use an IdP forge did not start**, declare no `identity` for the env and set `jwt_issuer`, `oidc_client_id` etc. in `config.k` yourself (bring your own issuer). A workload that sets a field the identity fills is refused at render, naming both.
 
 ### Ports

@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/devidentity"
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/secrets"
+	"github.com/reliant-labs/forge/pkg/identity"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -124,7 +125,39 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 			}
 		}
 	}
+	mail, err := devMailInfra(e, id)
+	if err != nil {
+		return devidentity.Input{}, err
+	}
+	if mail != nil {
+		in.MailpitPort = mail.Port
+	}
 	return in, nil
+}
+
+// devMailInfra is the Mailpit the host-run identity's mail goes to: the
+// HostInfra the declaration names (dev_mail), else the env's only mailpit,
+// else none.
+func devMailInfra(e *KCLEntities, id *release.ShapeIdentity) (*HostInfraEntity, error) {
+	var found []*HostInfraEntity
+	for i := range e.Infra {
+		if e.Infra[i].Engine != hostinfra.EngineMailpit {
+			continue
+		}
+		if id.DevMail == e.Infra[i].Name {
+			return &e.Infra[i], nil
+		}
+		found = append(found, &e.Infra[i])
+	}
+	switch {
+	case id.DevMail != "":
+		return nil, fmt.Errorf("identity %q sends its mail to %q, which is not a forge.HostInfra with engine \"mailpit\" in this env", id.Name, id.DevMail)
+	case len(found) == 1:
+		return found[0], nil
+	case len(found) > 1:
+		return nil, fmt.Errorf("identity %q: the env declares %d mailpit infra entries; name one with `runtime = forge.IdentityOnHost {mail = \"<name>\"}`", id.Name, len(found))
+	}
+	return nil, nil
 }
 
 // convergeHostIdentity is the identity step of `forge env up`: it runs the
@@ -154,6 +187,24 @@ func convergeHostIdentity(ctx context.Context, e *KCLEntities, projectDir string
 	}
 	for _, code := range res.Report.SignInCodes {
 		fmt.Printf("[up] identity %s: one-time sign-in code for %s: %s\n", id.Name, code.Email, code.Code)
+	}
+	mailUI := ""
+	if in.MailpitPort > 0 {
+		mailUI = hostinfra.MailpitUIURL(hostinfra.Spec{Port: in.MailpitPort})
+	}
+	for _, email := range res.Report.OwnersInvited {
+		fmt.Printf("[up] identity %s: invited owner %s — open the invitation in %s\n", id.Name, email, firstNonEmptyStr(mailUI, "their inbox"))
+	}
+	for _, email := range res.Report.OwnersPending {
+		if res.Mail == identity.MailNone {
+			fmt.Printf("[up] identity %s: owner %s has no credential and this env sends no mail; add a forge.HostInfra {engine = \"mailpit\"} to invite them\n", id.Name, email)
+		}
+	}
+	if res.SocialCallbackURL != "" {
+		fmt.Printf("[up] identity %s: social sign-in callback (register it on your DEV OAuth apps): %s\n", id.Name, res.SocialCallbackURL)
+	}
+	if mailUI != "" {
+		fmt.Printf("[up] identity %s: Mail: %s\n", id.Name, mailUI)
 	}
 	switch {
 	case res.Report.Changed():

@@ -97,6 +97,10 @@ _pprof_port_of = lambda name: str -> int {
 _idp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-idp", 8080)
 _idp_origin = "http://localhost:${_idp_port}"
 
+# The dev mail catcher's SMTP port. Its web UI is on this port + 7000 (the
+# default 1025 puts it on http://localhost:8025, which `forge env up` prints).
+_mail_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-mail", 1025)
+
 # The frontend's dev-server port. resolve_port: the one external consumer
 # (the issuer's registered login URI) is re-converged by `forge env up` on
 # the same run, so stepping off a busy 3000 is safe.
@@ -462,6 +466,14 @@ _bundle = forge.Bundle {
             engine = "zitadel"
             port = _idp_port
             idp_database_port = _postgres_port
+        }
+        # The dev mail catcher: the IdP's invitations, verification codes,
+        # password resets and magic links land here instead of in an inbox.
+        # Open the web UI `forge env up` prints (port + 7000).
+        forge.HostInfra {
+            name = "mail"
+            engine = "mailpit"
+            port = _mail_port
         }
 {{- end}}
     ]

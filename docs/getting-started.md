@@ -215,7 +215,10 @@ applies to it.
 One detail that matters if you drive Forge from a script or an agent: with a
 terminal attached, `env up` holds the foreground and tears the stack down on
 Ctrl-C. Without one, it starts everything, prints a summary, and **returns**.
-It will not hang waiting for a TTY that is not there.
+It will not hang waiting for a TTY that is not there. An agent or daemon that
+wants the stack to live and die with a process it tracks runs `forge env up
+dev --watch` in the background instead: it holds without a TTY and stops the
+stack on SIGTERM.
 
 Host readiness includes compilation: Forge waits up to two minutes for the
 declared ports, prints progress, and reports a runner's exit immediately.

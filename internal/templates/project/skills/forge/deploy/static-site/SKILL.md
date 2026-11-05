@@ -150,6 +150,7 @@ the binding and release flow below are the same.
 
 ```bash
 forge env up dev    # the frontend's dev server; prints its URL
+forge env up dev --watch   # an agent: run it in the background; SIGTERM stops it
 ```
 
 No database or cluster is needed: the dev env declares only the frontend's dev

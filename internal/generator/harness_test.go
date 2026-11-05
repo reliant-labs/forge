@@ -70,6 +70,9 @@ func TestDetectHarness(t *testing.T) {
 		{"codex session", map[string]string{"CODEX_SESSION_ID": "abc"}, HarnessCodex, "CODEX_SESSION_ID"},
 		{"cursor", map[string]string{"CURSOR_AGENT": "1"}, HarnessCursor, "CURSOR_AGENT"},
 		{"explicit zero is not a marker", map[string]string{"CLAUDECODE": "0"}, "", ""},
+		// gemini is detected for the X-Forge-Client header, but forge has no
+		// scaffold for it, so project creation falls through to the default.
+		{"gemini has no scaffold", map[string]string{"GEMINI_CLI": "1"}, "", ""},
 		// Codex's own user config also exports CODEX_HOME; only the
 		// per-command markers identify a running agent.
 		{"codex home alone is not a marker", map[string]string{"CODEX_HOME": "/x"}, "", ""},

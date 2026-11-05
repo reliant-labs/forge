@@ -3,6 +3,7 @@ package release
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -206,5 +207,76 @@ func TestShape_IdentitySignInValidate(t *testing.T) {
 	withSMTP.SMTP = &ShapeIdentitySMTP{Host: "h", Port: 587, Sender: "a@b.test", PasswordSecret: "P"}
 	if err := (Shape{Kind: EnvLocal, Identity: withSMTP}).Canonical().Validate(); err != nil {
 		t.Errorf("smtp makes mail available: %v", err)
+	}
+}
+
+// A reader predating identity sign-in also predates the login_policy output:
+// its validation rejects a consumer that maps or omits an output outside its
+// lists (forge origin/main e0b2ac43f, pkg/release/identity.go). LimitShape
+// removes both escape hatches, on a copy.
+func TestLimitShape_IdentityConsumersLoseLoginPolicyForAnOldReader(t *testing.T) {
+	oldOutputs := []string{"audience", "broker_token", "client_id", "idp_base", "issuer", "jwks", "login_uri", "redirect_uri", "roles_claim", "scopes"}
+	oldOmittable := []string{"jwks", "login_uri", "roles_claim", "scopes"}
+	old := &BundleReader{Features: []string{}}
+	for name, c := range map[string]struct {
+		consumer   ShapeIdentityConsumer
+		wantFields map[string]string
+		wantOmit   []string
+	}{
+		"mapped": {
+			consumer:   ShapeIdentityConsumer{Workload: "api", Application: "prod:api", Fields: map[string]string{"login_policy": "policy", "issuer": "zitadel_issuer"}},
+			wantFields: map[string]string{"issuer": "zitadel_issuer"},
+		},
+		"mapped alone": {
+			consumer: ShapeIdentityConsumer{Workload: "api", Application: "prod:api", Fields: map[string]string{"login_policy": "policy"}},
+		},
+		"omitted": {
+			consumer: ShapeIdentityConsumer{Workload: "api", Application: "prod:api", Omit: []string{"jwks", "login_policy"}},
+			wantOmit: []string{"jwks"},
+		},
+		"omitted alone": {
+			consumer: ShapeIdentityConsumer{Workload: "api", Application: "prod:api", Omit: []string{"login_policy"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := signInHosted()
+			id.Applications = []ShapeIdentityApplication{{Name: "prod:api", Workload: "api", Kind: IdentityAppNativeBroker}}
+			id.Consumers = []ShapeIdentityConsumer{{Workload: "worker"}, c.consumer}
+			full := shapeWithIdentity(id).Canonical()
+			if err := full.Validate(); err != nil {
+				t.Fatalf("the v2 declaration is valid: %v", err)
+			}
+			before, _ := full.Encode()
+			limited := old.LimitShape(full)
+			if after, _ := full.Encode(); string(after) != string(before) {
+				t.Fatalf("LimitShape modified the shape it was given:\n%s\n%s", after, before)
+			}
+			got := limited.Identity.Consumers
+			var api ShapeIdentityConsumer
+			for _, gc := range got {
+				for output := range gc.Fields {
+					if !slices.Contains(oldOutputs, output) {
+						t.Errorf("consumer %q maps %q, which an old reader rejects", gc.Workload, output)
+					}
+				}
+				for _, output := range gc.Omit {
+					if !slices.Contains(oldOmittable, output) {
+						t.Errorf("consumer %q omits %q, which an old reader rejects", gc.Workload, output)
+					}
+				}
+				if gc.Workload == "api" {
+					api = gc
+				}
+			}
+			if !reflect.DeepEqual(api.Fields, c.wantFields) || !reflect.DeepEqual(api.Omit, c.wantOmit) {
+				t.Errorf("limited consumer: fields %v omit %v, want %v %v", api.Fields, api.Omit, c.wantFields, c.wantOmit)
+			}
+			if err := limited.Canonical().Validate(); err != nil {
+				t.Errorf("the limited shape is invalid: %v", err)
+			}
+			if signIn := (&BundleReader{Features: []string{BundleFeatureIdentitySignIn}}).LimitShape(full); !reflect.DeepEqual(signIn.Identity.Consumers, full.Identity.Consumers) {
+				t.Errorf("a sign-in reader lost consumer outputs: %+v", signIn.Identity.Consumers)
+			}
+		})
 	}
 }

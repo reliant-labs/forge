@@ -307,6 +307,13 @@ type CRUDMethodTemplateData struct {
 	// entity struct (e.g. "company_id" -> "CompanyId"), for the Create
 	// scaffold, which stamps the column rather than filtering on it.
 	OwnerField string
+	// OwnerIsPK reports an owner column that IS the primary key — a table
+	// owned by itself (`COMMENT ON COLUMN tenants.id IS 'forge:owner'`).
+	// The Update wrapper then keeps the predicate and drops the stamp:
+	// stamping the key would silently retarget an update aimed at another
+	// row onto the caller's own, where the predicate alone reports
+	// NotFound.
+	OwnerIsPK bool
 	// Scoped is true when the shim should scaffold the scoping wrapper:
 	// an OwnerColumn exists AND the RPC is authenticated.
 	//
@@ -1465,6 +1472,12 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	// Skip on shape mismatch — the stub doesn't reference these.
 	var createAssigns []string
 	var fillHandlerColumns []string
+	// The owner column the scoped Create wrapper stamps from the caller
+	// (Scoped below: an owner column and an authenticated rpc).
+	stampedOwner := ""
+	if cm.Method.AuthRequired {
+		stampedOwner = OwnerColumn(cm.Entity)
+	}
 	if shapeOK && cm.Operation == "create" {
 		m := Method{
 			Name:        cm.Method.Name,
@@ -1489,11 +1502,11 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 			// fails at the database. Derived purely from schema+wire facts
 			// forge already joined into cm.Entity, so it fires whether or
 			// not the author has ever heard of forge:fill.
-			if err := UnsatisfiableColumnsError(FindUnsatisfiableColumns(cm.Entity)); err != nil {
+			if err := UnsatisfiableColumnsError(FindUnsatisfiableColumns(cm.Entity, stampedOwner)); err != nil {
 				return CRUDMethodTemplateData{}, fmt.Errorf("%s.%s: %w", svc.Name, cm.Method.Name, err)
 			}
 		}
-		fillHandlerColumns = FillHandlerColumns(cm.Entity)
+		fillHandlerColumns = FillHandlerColumns(cm.Entity, stampedOwner)
 	}
 
 	// The owner column seeds the shim's scoping scaffold. Only for a
@@ -1539,6 +1552,7 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		FillHandlerColumns: fillHandlerColumns,
 		OwnerColumn:        ownerColumn,
 		OwnerField:         ownerField,
+		OwnerIsPK:          ownerColumn != "" && ownerColumn == cm.Entity.PkField,
 		Scoped:             ownerColumn != "" && cm.Method.AuthRequired,
 	}, nil
 }

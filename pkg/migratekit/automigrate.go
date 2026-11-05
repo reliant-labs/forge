@@ -225,7 +225,9 @@ func logRun(logger *slog.Logger, res Result, err error) {
 	if g := res.Grants; g != nil && err == nil {
 		switch {
 		case g.RoleMissing:
-			logf(logger, "read-only role not provisioned in this database: read-only grants not applied", "role", dbgrants.RoleName)
+			logf(logger, "read-only role not provisioned in this database and the migrating role may not create it: read-only grants not applied", "role", dbgrants.RoleName)
+		case g.Applied && g.Created:
+			logf(logger, "read-only role created (NOLOGIN) and its grants applied; the deploy decides whether it can log in", "role", dbgrants.RoleName)
 		case g.Applied:
 			logf(logger, "read-only grants applied", "role", dbgrants.RoleName)
 		}

@@ -459,13 +459,49 @@ func TestGrantsAreIdempotent(t *testing.T) {
 	}
 }
 
-// TestGrantsAreANoOpWithoutTheRole: a database nobody provisioned forge_ro for
-// (a local compose Postgres) migrates as it always did, and says so.
-func TestGrantsAreANoOpWithoutTheRole(t *testing.T) {
+// TestTheRunCreatesTheRoleNologinAndGrantsIt: on a database whose migrating
+// role may create roles (a forge.ExternalDatabase on a cloud instance, a
+// compose Postgres) the run creates the read-only role NOLOGIN and converges
+// its grants, so a deploy only has to give it LOGIN and a password. Created,
+// it can sign in as nobody, reads the ordinary columns, is refused the secret
+// one, and cannot write.
+func TestTheRunCreatesTheRoleNologinAndGrantsIt(t *testing.T) {
+	dsn := requirePG(t)
+	role := useRole(t)
+	dropRoleAtEnd(t, dsn, role)
+	fsys := grantsRelease(map[string]string{"1_users.up.sql": usersSQL}, mustRender(t, usersTable(true)))
+	res := mustUp(t, fsys, dsn)
+	if res.Grants == nil || !res.Grants.Created || !res.Grants.Applied || res.Grants.RoleMissing {
+		t.Fatalf("Result.Grants = %+v, want created and applied", res.Grants)
+	}
+	var login bool
+	if err := openRecordDB(t, dsn).QueryRow(`SELECT rolcanlogin FROM pg_roles WHERE rolname = $1`, role).Scan(&login); err != nil {
+		t.Fatal(err)
+	}
+	if login {
+		t.Errorf("the run created %s with LOGIN; it must be NOLOGIN until a deploy gives it one", role)
+	}
+	asRole(t, dsn, func(ctx context.Context, c *sql.Conn) {
+		if err := readable(ctx, c, `SELECT id, email FROM users`); err != nil {
+			t.Errorf("an ordinary column: %v", err)
+		}
+		wantDenied(t, readable(ctx, c, `SELECT api_token FROM users`), "the secret column")
+		_, err := c.ExecContext(ctx, `INSERT INTO users (id, email) VALUES ('w', 'w@example.com')`)
+		wantDenied(t, err, "a write")
+	})
+	if res := mustUp(t, fsys, dsn); res.Grants == nil || res.Grants.Created || !res.Grants.Applied {
+		t.Fatalf("second run: Grants = %+v, want the existing role adopted and the grants applied", res.Grants)
+	}
+}
+
+// TestGrantsAreANoOpWhenTheRoleCannotBeCreated: a migrating role with no
+// CREATEROLE (a ManagedDatabase's, before CNPG reconciles forge_ro) migrates
+// as it always did, and says so.
+func TestGrantsAreANoOpWhenTheRoleCannotBeCreated(t *testing.T) {
 	dsn := requirePG(t)
 	useRole(t)
-	res := mustUp(t, grantsRelease(map[string]string{"1_users.up.sql": usersSQL}, mustRender(t, usersTable(true))), dsn)
-	if res.Grants == nil || !res.Grants.RoleMissing || res.Grants.Applied {
+	res := mustUp(t, grantsRelease(map[string]string{"1_users.up.sql": usersSQL}, mustRender(t, usersTable(true))), migratorDSN(t, dsn))
+	if res.Grants == nil || !res.Grants.RoleMissing || res.Grants.Applied || res.Grants.Created {
 		t.Fatalf("Result.Grants = %+v, want RoleMissing and not applied", res.Grants)
 	}
 }
@@ -476,19 +512,31 @@ func TestGrantsAreANoOpWithoutTheRole(t *testing.T) {
 func TestGrantsCatchUpWhenTheRoleAppearsAfterTheMigration(t *testing.T) {
 	dsn := requirePG(t)
 	useRole(t)
+	mig := migratorDSN(t, dsn)
 	fsys := grantsRelease(map[string]string{"1_users.up.sql": usersSQL}, mustRender(t, usersTable(true)))
-	if res := mustUp(t, fsys, dsn); res.Grants == nil || !res.Grants.RoleMissing {
+	if res := mustUp(t, fsys, mig); res.Grants == nil || !res.Grants.RoleMissing {
 		t.Fatalf("first run: Grants = %+v, want RoleMissing", res.Grants)
 	}
 	withRole(t, dsn)
-	res := mustUp(t, fsys, dsn)
-	if res.Changed || res.Grants == nil || !res.Grants.Applied {
+	res := mustUp(t, fsys, mig)
+	if res.Changed || res.Grants == nil || !res.Grants.Applied || res.Grants.Created {
 		t.Fatalf("second run: Changed=%v Grants=%+v, want nothing pending and the grants applied", res.Changed, res.Grants)
 	}
 	asRole(t, dsn, func(ctx context.Context, c *sql.Conn) {
 		if err := readable(ctx, c, `SELECT id, email FROM users`); err != nil {
 			t.Errorf("granted after the role appeared: %v", err)
 		}
+	})
+}
+
+// dropRoleAtEnd drops role, which the migrator created, and what it holds.
+func dropRoleAtEnd(t *testing.T, dsn, role string) {
+	t.Helper()
+	admin := openRecordDB(t, dsn)
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = admin.ExecContext(c, `DROP OWNED BY `+role)
+		_, _ = admin.ExecContext(c, `DROP ROLE IF EXISTS `+role)
 	})
 }
 

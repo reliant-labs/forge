@@ -65,8 +65,35 @@ forge db query prod "select count(*) from entries" --database ledger --confirm-e
 - **Where**: `runtime = forge.OnCluster {target}` names the cluster (kube context) and namespace of `service`; unset, the env's primary cluster target (`namespace` overrides it).
 - **Transport**: the same pods/portforward stream as a ManagedDatabase's, with your kube context (`pods/portforward` create, `endpointslices` list, `secrets` get on `password_secret`). A port-forward enters the pod, so the service's NetworkPolicy does not stand in the way. No `--workload` is needed: `--database` names it, or it is the env's only database.
 - **Policy** is the env's `data_access`, as everywhere: a real env is `audited`, judged before the password Secret is read.
-- **Read-only**: every statement runs in a READ ONLY transaction Postgres enforces, so a write is refused even from a role that may write. forge cannot create a role on a database it does not run, so pointing `username` at a read-only role is yours, and it is what keeps a query from reading `forge:secret` columns. On a real env forge checks it (below): a `username` that can write is refused.
+- **Read-only**: every statement runs in a READ ONLY transaction Postgres enforces, so a write is refused even from a role that may write. On a real env forge checks the role (below): a `username` that can write is refused. Point `username` at `forge_ro` and it is also what keeps a query from reading `forge:secret` columns. The migrator creates `forge_ro` NOLOGIN on every run whose migrating role may create roles, and converges its generated column grants (`db/grants/readonly/`), so the role and its grants already exist on the external database. What stays yours is its login: `ALTER ROLE forge_ro LOGIN PASSWORD … CONNECTION LIMIT …` from a deploy step, the password in `password_secret`, and an entry in the pooler's user list.
 - **TLS** is `sslmode`: `require` (default: encrypted, not verified, since the tunnel ends at a pod) or `disable`. `--addr` does not apply.
+
+### Checking `forge_ro` after the first migration, and undoing it
+
+The migration log says what the run did: `read-only role created (NOLOGIN) and its grants applied` (it created the role), `read-only grants applied` (the role already existed and was left as it was), or `read-only role not provisioned … may not create it` (the migrating role lacks CREATEROLE: nothing was created or granted). Then check the catalog, connected to the external database as an administrator:
+
+```sql
+-- The role: a created one is rolcanlogin = false, rolinherit = false, and no superuser, createrole, createdb, replication or bypassrls.
+-- A role that existed before keeps exactly the attributes it had: compare with what you recorded before the deploy.
+SELECT rolname, rolcanlogin, rolinherit, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls, rolconnlimit
+  FROM pg_roles WHERE rolname = 'forge_ro';
+
+-- Its privileges: column SELECT only, and no write, no table-level grant, no sequence.
+SELECT table_schema, table_name, privilege_type, count(*) AS columns
+  FROM information_schema.column_privileges WHERE grantee = 'forge_ro' GROUP BY 1, 2, 3 ORDER BY 1, 2;
+SELECT table_schema, table_name, privilege_type
+  FROM information_schema.table_privileges WHERE grantee = 'forge_ro';   -- expect no rows
+SELECT has_column_privilege('forge_ro', '<table>', '<secret column>', 'SELECT');  -- expect false for every forge:secret column
+```
+
+Once the deploy has given the role LOGIN, check the boundary as the reader itself, through `forge db query`: `select count(*) from <table>` answers, `select <secret column> from <table>` is refused (`permission_denied`, exit 1), and `delete from <table>` is refused (read-only, exit 1).
+
+**Undoing it.** A NOLOGIN role with column SELECT grants lets nobody in, so leaving it is safe; while this release migrates the database, a dropped `forge_ro` is created again on the next run. In order, as far as you need to go:
+
+1. **Stop reading as it**: `ALTER ROLE forge_ro NOLOGIN;` then end its sessions with `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'forge_ro';`, and remove it from the pooler's user list and `password_secret`. Nothing forge runs logs in as `forge_ro`, so the application is unaffected.
+2. **Stop forge creating it**: run the migrations as a role without CREATEROLE (the run then reports the role missing and applies no grants), or pin the previous forge release, which applies grants only to a `forge_ro` that already exists.
+3. **Revoke its privileges, never its objects.** Do not run `DROP OWNED BY forge_ro`: it drops every object the role owns, data included, not only its grants, and a `forge_ro` the run adopted (the log said `read-only grants applied`) is whatever role was there before and may own tables. Revoke instead, in your database, connected as the owner of its tables, for each schema the grants cover: `REVOKE ALL ON ALL TABLES IN SCHEMA <schema> FROM forge_ro; REVOKE ALL ON ALL SEQUENCES IN SCHEMA <schema> FROM forge_ro; REVOKE ALL ON SCHEMA <schema> FROM forge_ro;` (a table-level REVOKE removes its column grants too). If the role was adopted, the run's grants replaced the ones it had in this database: re-grant what you recorded before the deploy, and stop here.
+4. **Drop it** only when the run created it (the log said `read-only role created`). A role is cluster-wide, and on a shared instance another database may grant to it too (another forge project's migrations do). First check it owns nothing anywhere: `SELECT d.datname, s.classid::regclass, s.objid FROM pg_shdepend s LEFT JOIN pg_database d ON d.oid = s.dbid WHERE s.refobjid = 'forge_ro'::regrole AND s.deptype = 'o';` must return no rows; if it returns any, keep the role and stop at step 3. Then find every database that still grants to it: `SELECT DISTINCT d.datname FROM pg_shdepend s JOIN pg_database d ON d.oid = s.dbid WHERE s.refobjid = 'forge_ro'::regrole;`. If another database still needs it, stop at step 3. Otherwise revoke as in step 3 in each of them, then `DROP ROLE forge_ro;` once. `DROP ROLE` refuses while the role still owns an object or holds a privilege anywhere, so it cannot take data with it.
 
 ## Bring your own route: `--addr host:port`
 

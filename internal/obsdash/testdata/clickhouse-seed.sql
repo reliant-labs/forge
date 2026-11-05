@@ -39,6 +39,15 @@ INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attri
 SELECT map('deployment.environment.name','dev','service.instance.id','p1'), 'sparse', 'rpc.server.calls', map('procedure','/p.v1.P/Get'), now() - INTERVAL (n*60) MINUTE, 50 - n, 2, true FROM (SELECT arrayJoin([3,5,9,14]) n);
 INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)
 SELECT map('deployment.environment.name','dev','service.instance.id','y1'), 'young', 'rpc.server.calls', map('procedure','/y.v1.Y/Get'), now() - INTERVAL (n*5) MINUTE, 100 - n, 2, true FROM (SELECT number n FROM numbers(6, 18));
+-- proxied = serves the project's rpc hourly (last 30 min ago) and another package's every 5 min to now:
+-- liveness counts every call it serves, so it is not silent. foreign = stopped like stopped, but never
+-- served one of the project's rpcs, so it is not the project's service.
+INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)
+SELECT map('deployment.environment.name','dev','service.instance.id','x1'), 'proxied', 'rpc.server.calls', map('procedure','/x.v1.X/Get'), now() - INTERVAL (30 + n*60) MINUTE, 100 - n, 2, true FROM (SELECT number n FROM numbers(0, 24));
+INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)
+SELECT map('deployment.environment.name','dev','service.instance.id','x1'), 'proxied', 'rpc.server.calls', map('procedure','/other.v1.O/Get'), now() - INTERVAL (n*5) MINUTE, 1000 - n, 2, true FROM (SELECT number n FROM numbers(0, 300));
+INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)
+SELECT map('deployment.environment.name','dev','service.instance.id','z1'), 'foreign', 'rpc.server.calls', map('procedure','/z.v1.Z/Get'), now() - INTERVAL (n*5) MINUTE, 1000 - n, 2, true FROM (SELECT number n FROM numbers(6, 294));
 
 -- latency: api replicas add 10 (<=0.1s) 5 (<=0.5s) 3 (<=1s) 2 (<=5s) per minute; fast is all under 0.1s
 INSERT INTO otel_metrics_histogram (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Count, Sum, BucketCounts, ExplicitBounds, AggregationTemporality)

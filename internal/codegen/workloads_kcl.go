@@ -356,7 +356,8 @@ const (
 //     its manifests were an unscheduled Deployment nobody addressed.
 //
 //   - config.ComponentKindCron is a worker whose process runs an IN-PROCESS
-//     scheduler (worker-cron: robfig/cron, Start blocks until shutdown). It
+//     scheduler (worker-cron: forge/pkg/cronkit, Start blocks until shutdown,
+//     each tick claimed in Postgres so it fires on one replica). It
 //     deploys as a long-running `worker`. A Kubernetes CronJob would start
 //     that process on the schedule and wait for an exit that never comes.
 //

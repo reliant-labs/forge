@@ -818,6 +818,12 @@ HAVING requests >= %s AND value > %s
 ORDER BY service`, windowFilter(p[pWindow]), sqlQuote(env), rpcServiceList(in), num(p[pMinRequests]), num(p["threshold_seconds"]))
 }
 
+// silentSQL fires for a steady service whose calls counter has not moved for
+// silent_minutes. The project's rpc services decide WHICH services it judges
+// (one that served any of them in the window), but liveness counts every call
+// the service serves: a service in the env may also serve procedures of a
+// package another project owns too (a proxy, a mirrored API), and judging it
+// on the project's procedures alone reads a busy server as silent.
 func silentSQL(env string, in AlertInput, p map[string]float64) string {
 	return fmt.Sprintf(`WITH moves AS (
     SELECT service, arrayJoin(t) AS t
@@ -830,18 +836,24 @@ func silentSQL(env string, in AlertInput, p map[string]float64) string {
                arrayFilter((tm, d) -> d != 0, ts, moved) AS t
         FROM otel_metrics_sum
         WHERE MetricName = 'rpc.server.calls'
-          AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL %s MINUTE - INTERVAL 1 MINUTE
-          AND ResourceAttributes['deployment.environment.name'] = %s
-          AND splitByChar('/', Attributes['procedure'])[2] IN (%s)
+          AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL %[1]s MINUTE - INTERVAL 1 MINUTE
+          AND ResourceAttributes['deployment.environment.name'] = %[2]s
+          AND ServiceName IN (
+              SELECT ServiceName
+              FROM otel_metrics_sum
+              WHERE MetricName = 'rpc.server.calls'
+                AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL %[1]s MINUTE - INTERVAL 1 MINUTE
+                AND ResourceAttributes['deployment.environment.name'] = %[2]s
+                AND splitByChar('/', Attributes['procedure'])[2] IN (%[3]s))
         GROUP BY ServiceName, ResourceAttributes, Attributes
     )
 )
 SELECT service, dateDiff('second', max(t), now()) AS value
 FROM moves
 GROUP BY service
-HAVING max(t) < now() - INTERVAL %s MINUTE
-   AND uniqExactIf(toStartOfHour(t), t < now() - INTERVAL %s MINUTE) >= %s
-ORDER BY service`, num(p["silent_minutes"]), sqlQuote(env), rpcServiceList(in), num(p["silent_minutes"]), num(p["silent_minutes"]), num(p["min_active_hours"]))
+HAVING max(t) < now() - INTERVAL %[1]s MINUTE
+   AND uniqExactIf(toStartOfHour(t), t < now() - INTERVAL %[1]s MINUTE) >= %[4]s
+ORDER BY service`, num(p["silent_minutes"]), sqlQuote(env), rpcServiceList(in), num(p["min_active_hours"]))
 }
 
 func frontendErrorsSQL(env string, in AlertInput, p map[string]float64) string {

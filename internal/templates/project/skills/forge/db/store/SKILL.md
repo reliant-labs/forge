@@ -44,7 +44,10 @@ table keeps the wire message's name, so the store and the wiring agree. A
 unary, unmarked CRUD-named rpc whose entity has a wire message but matches no
 table, and whose only implementation is forge's unwired stub (or none), fails
 generate naming the rpc and the tables it looked for: write the migration,
-declare `forge:entity-name`, or mark the rpc `// forge:custom`.
+declare `forge:entity-name`, or mark the rpc `// forge:custom`. A message is
+evidence enough, so `ListDueReads` over a plain `DueRead` response element is
+refused too. `forge scaffold` (and `--dry-run`) refuses it before writing
+anything, counting the tables that run births.
 
 ## Opting out
 

@@ -48,13 +48,13 @@ forge component install card_grid
 | A destructive-action prompt | ✓ `confirmation_dialog` |
 | A sortable/dense table | ✓ `data_table` |
 | A filter/search bar for a list page | ✓ `filter_bar` |
-| A board, timeline, tile grid | `kanban_board`, `timeline`, `card_grid` |
-| A conversion / stage funnel | `funnel_chart` |
+| A board, calendar, timeline, tile grid | `kanban_board`, `calendar`, `timeline`, `card_grid` |
+| A funnel, markdown composer, upload | `funnel_chart`, `markdown_editor`, `upload_dropzone` |
 | A menu, context menu, picker, breadcrumb, toggle, anchored panel, tooltip | `dropdown_menu`, `context_menu`, `combobox`, `breadcrumb`, `toggle_switch`, `popover`, `tooltip` |
 
 A search that returns nothing is a real answer: there is no drawer/sheet or quantity-stepper, so those you write yourself. (The `component_library` MCP tool is the same catalog.)
 
-**Data viz: use Recharts, not the library.** For commodity charts (bar, line, pie, sparkline…) `npm i recharts`. The library ships only **narrative** charts (`quadrant_chart`, `concentric_circles`, `funnel_chart`) and `slide_*` deck charts. Dashboard → Recharts; slide / marketing page → check the library first.
+**Data viz:** commodity charts (bar, line, pie, sparkline…) → `npm i recharts`. The library ships only **narrative** charts (`funnel_chart`, `quadrant_chart`, `time_series_chart` (annotated), `cohort_grid`) and `slide_*` charts: check it first.
 
 ### Base UI primitives (always available)
 

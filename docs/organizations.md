@@ -47,12 +47,20 @@ claimable tokens. Other endpoints and devices are unaffected. A failed revocatio
 retains the local entry so it can be retried; an already revoked/expired session
 can be forgotten safely.
 
-A control plane that predates human identities answers the browser flow with
-an org-bound token and no `credential_kind`. forge stores that as a delegated
-`org-login` entry (client `forge-cli`), never as an identity, so every command
-takes the delegated path that control plane serves (`GetTenant`, no
-`ResolveHostedProject`), and `forge logout` forgets it locally. Once the control
-plane issues human identities, the next `forge login` stores one instead; no
-forge upgrade is needed. Any other unknown `credential_kind` is refused.
+Browser login asks for a human identity: its authorization request carries
+`credential_kind=human`. A control plane that refuses that request
+(`invalid_request`) fails the login with its reason; forge never re-asks
+without the parameter, so a refusal can never quietly become an org-bound
+login.
+
+A control plane that predates human identities ignores the parameter and
+answers with an org-bound token and no `credential_kind`. forge stores that as
+a delegated `org-login` entry (client `forge-cli`), never as an identity, and
+`forge login` prints a note saying it got an organization-bound login. Every
+command then takes the delegated path that control plane serves (`GetTenant`,
+no `ResolveHostedProject`), and `forge logout` forgets it locally. Once the
+control plane issues human identities, the next `forge login` stores one
+instead; no forge upgrade is needed. Any other unknown `credential_kind` is
+refused.
 Automation keeps its existing restricted path. No persistent org-use state or
 per-org human login format is introduced.

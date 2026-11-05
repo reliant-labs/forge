@@ -283,3 +283,25 @@ func TestSQLPanelRefusals(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// A dashboard toggle reaches a sql panel as a typed Bool parameter named by the
+// toggle's id; a name that is not a parameter name, or that shadows a built-in
+// one, is refused.
+func TestSQLPanelBindsToggles(t *testing.T) {
+	const sql = "SELECT count() FROM product_events WHERE {include_internal:Bool} OR UserId != ''"
+	sc := Scope{Database: "t_org_a", Start: time.Unix(1700000000, 0), End: time.Unix(1700003600, 0),
+		Toggles: map[string]bool{"include_internal": true, "only_paid": false}}
+	st, err := SQLPanel{Scope: sc, SQL: sql, StepSeconds: 30}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Params["include_internal"] != "true" || st.Params["only_paid"] != "false" || st.SQL != sql {
+		t.Errorf("params %v, sql %q", st.Params, st.SQL)
+	}
+	for _, bad := range []string{"Bad-Name", "from", "env_ids", EnvIDParam} {
+		sc.Toggles = map[string]bool{bad: true}
+		if _, err := (SQLPanel{Scope: sc, SQL: sql, StepSeconds: 30}).Compile(); err == nil {
+			t.Errorf("toggle %q was bound", bad)
+		}
+	}
+}

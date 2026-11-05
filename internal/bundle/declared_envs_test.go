@@ -8,7 +8,7 @@ import (
 )
 
 // fixtureDigest is buildFixture()'s bundle digest, recorded from forge main
-// (3c41ef2b9) BEFORE the declared-env catalog and the shape-placement fields
+// (849c37b43) BEFORE the declared-env catalog and the shape-placement fields
 // existed. A build that sets none of the new parts — and a build for a reader
 // that names neither feature — must still produce exactly these bytes: that
 // is what "no existing bundle digest changes" means, checked rather than

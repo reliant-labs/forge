@@ -305,3 +305,35 @@ DROP TABLE public.scratch;
 		t.Errorf("tasks columns = %v, want [id title]", cols)
 	}
 }
+
+func TestParseMigrationsForSchema_TableComment(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, sql string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(sql), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("001_create.up.sql", `CREATE TABLE due_read_rows (id TEXT PRIMARY KEY);
+COMMENT ON TABLE public.due_read_rows IS 'forge:entity-name=DueRead — it''s the read queue';
+CREATE TABLE scratch (id TEXT);
+COMMENT ON TABLE scratch IS 'forge:no-entity';
+`)
+	write("002_clear.up.sql", `COMMENT ON TABLE "scratch" IS NULL;
+`)
+
+	tables, err := ParseMigrationsForSchema(dir)
+	if err != nil {
+		t.Fatalf("ParseMigrationsForSchema() error = %v", err)
+	}
+	got := map[string]string{}
+	for _, tb := range tables {
+		got[tb.Name] = tb.Comment
+	}
+	if want := "forge:entity-name=DueRead — it's the read queue"; got["due_read_rows"] != want {
+		t.Errorf("due_read_rows comment = %q, want %q", got["due_read_rows"], want)
+	}
+	if got["scratch"] != "" {
+		t.Errorf("scratch comment = %q, want it cleared by IS NULL", got["scratch"])
+	}
+}

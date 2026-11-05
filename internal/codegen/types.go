@@ -270,6 +270,13 @@ type SchemaFieldDef struct {
 	// quintet from the raw scan, before the descriptor knows it).
 	// `json:",omitempty"` keeps old descriptors parseable (additive contract).
 	ReadOnly bool `json:"read_only,omitempty"`
+	// Owner marks a field carrying the `// forge:owner` marker
+	// (ProtoMarkerOwner): its born column is declared the table's owner
+	// column (`COMMENT ON COLUMN … IS 'forge:owner'`), so handlers_crud.go
+	// is born with the owner-scoping wrapper. Read off BOTH extractors, like
+	// ReadOnly. Birth-only — the catalog comment is the truth afterwards.
+	// `json:",omitempty"` keeps old descriptors parseable.
+	Owner bool `json:"owner,omitempty"`
 	// Generated is the SQL expression a `// forge:generated <expr>` marker
 	// carries, verbatim (see codegen.ProtoMarkerGenerated), or "" when the
 	// field has none. Birth emits the column as `GENERATED ALWAYS AS

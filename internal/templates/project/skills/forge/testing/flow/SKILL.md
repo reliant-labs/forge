@@ -106,6 +106,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/seedplan"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 	"github.com/reliant-labs/forge/pkg/testkit"
 
 	pb "example.com/shop/gen/checkout/v1"
@@ -172,7 +173,7 @@ func TestPlaceOrder_SubscriptionOnlyVariant_FailsPrecondition(t *testing.T) {
 	_, err := svc.PlaceOrder(ctx, connect.NewRequest(&pb.PlaceOrderRequest{
 		CartId: g.PK("carts"),
 	}))
-	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+	if got := svcerr.Code(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("PlaceOrder on a subscription-only variant: code = %v, want FailedPrecondition (err: %v)", got, err)
 	}
 }

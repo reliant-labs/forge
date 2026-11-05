@@ -5,6 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -211,7 +214,11 @@ func TestGoValidateMemoKeyRefusesWhatItCannotEnumerate(t *testing.T) {
 		outside := t.TempDir()
 		writeTestFile(t, filepath.Join(outside, "l.go"), "package l\n")
 		if err := os.Symlink(outside, filepath.Join(root, "internal", "linked")); err != nil {
-			t.Skipf("symlinks unavailable: %v", err)
+			if runtime.GOOS == "windows" {
+				// Unprivileged Windows accounts cannot create symlinks.
+				t.Skipf("symlink privilege unavailable on this host: %v", err)
+			}
+			t.Fatal(err)
 		}
 		m := newTestGoMemo(t, root, pipelineFlags{Cache: true})
 		if _, ok := m.goValidateMemoKey(nil); ok {
@@ -295,6 +302,84 @@ func TestMemoizedGoValidateRecordsOnlyAPass(t *testing.T) {
 	}
 }
 
+// TestMemoizedGoValidateRerunsWhenPackageSelectionMoves: build tags, the
+// target platform and cgo change which files `go list -test ./...` compiles
+// without changing a byte of the tree, so each must miss the record a pass
+// left, through the wrapper the pipeline calls (which reads the process env).
+func TestMemoizedGoValidateRerunsWhenPackageSelectionMoves(t *testing.T) {
+	root := goMemoFixture(t)
+	editMemoFixture(t, root, "internal/a/a_tagged.go", "//go:build extra\n\npackage a\n\nvar Broken = undefinedName\n")
+	t.Setenv("GOFLAGS", "")
+	t.Setenv("GOOS", runtime.GOOS)
+	t.Setenv("CGO_ENABLED", "0")
+	t.Setenv("CC", "")
+	m := newTestGoMemo(t, root, pipelineFlags{Cache: true})
+	cc := ""
+	goLookPath := m.sys.lookPath
+	m.sys.lookPath = func(name string) (string, error) {
+		if name == "go" {
+			return goLookPath("go")
+		}
+		if name == cc {
+			return "/usr/bin/" + name, nil
+		}
+		return "", errors.New("not found")
+	}
+	runs := 0
+	pass := func() error { runs++; return nil }
+	if err := memoizedGoValidate(root, pass); err != nil || runs != 1 {
+		t.Fatalf("first validate: err=%v runs=%d", err, runs)
+	}
+	if err := memoizedGoValidate(root, pass); err != nil || runs != 1 {
+		t.Fatalf("same selection: runs=%d, want the skip", runs)
+	}
+	for _, step := range []struct {
+		what string
+		move func()
+	}{
+		{"GOFLAGS=-tags=extra", func() { t.Setenv("GOFLAGS", "-tags=extra") }},
+		{"another GOOS", func() { t.Setenv("GOOS", "plan9") }},
+		{"CGO_ENABLED unset", func() { _ = os.Unsetenv("CGO_ENABLED") }},
+		{"a C compiler appearing on PATH", func() { cc = "gcc" }},
+		{"CC naming another compiler", func() { t.Setenv("CC", "clang") }},
+	} {
+		before := runs
+		step.move()
+		if err := memoizedGoValidate(root, pass); err != nil || runs != before+1 {
+			t.Errorf("%s: runs=%d, want a run (it selects other files from the same tree)", step.what, runs)
+		}
+		if err := memoizedGoValidate(root, pass); err != nil || runs != before+1 {
+			t.Errorf("%s, again: runs=%d, want the skip", step.what, runs)
+		}
+	}
+}
+
+// TestGoMemoKeysConcurrently: the tidy and validate wrappers may key and
+// record from several goroutines; the shared identity cache and the record
+// are touched only under the memo's lock (run under -race to see it).
+func TestGoMemoKeysConcurrently(t *testing.T) {
+	root := goMemoFixture(t)
+	m := newTestGoMemo(t, root, pipelineFlags{Cache: true})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if k, ok := m.goValidateMemoKey(nil); ok {
+				m.store("validate", k)
+			}
+			if k, ok := m.goTidyMemoKey(root, nil); ok {
+				m.store("tidy:"+strconv.Itoa(i), k.full)
+			}
+			_ = m.hit("validate", "x")
+		}(i)
+	}
+	wg.Wait()
+	if len(m.file.Entries["validate"]) != 1 {
+		t.Errorf("validate record = %v, want the one key every goroutine computed", m.file.Entries["validate"])
+	}
+}
+
 // TestGoMemoKeepsRecentStates: a run tidies at three points whose imports
 // differ (codegen's, then goimports'), and the next run must match each one,
 // not only the last; the record stays bounded.
@@ -372,8 +457,8 @@ func TestGoMemoIsNotAGenerateInput(t *testing.T) {
 // the first fingerprint inside the bracket takes the prefetched listing, any
 // later call lists afresh, and nothing outlives the bracket.
 func TestGitListingsPrefetchedAreTakenOnce(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
+	if testing.Short() {
+		t.Skip("execs git; runs in task test")
 	}
 	root := t.TempDir()
 	if out, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {

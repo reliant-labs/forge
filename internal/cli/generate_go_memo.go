@@ -40,6 +40,10 @@ package cli
 // gitignored files included — the walk reads the disk, not git's listing. A
 // tree with cgo (`import "C"` can #include from anywhere) or a symlinked
 // directory is never memoized: what it reads cannot be enumerated here.
+// Which of those files a build SELECTS is keyed by the toolchain (toolchain):
+// every GO*/CGO_* variable (GOFLAGS' -tags, GOOS, GOARCH, CGO_ENABLED …), the
+// `go env -w` file, GOROOT/go.env, and the C compiler an unset CGO_ENABLED
+// would find.
 //
 // The memo lives in .forge/generate-memo.json (per checkout, gitignored, and
 // outside the whole-run fingerprint: it is bookkeeping, never an input — a
@@ -80,7 +84,7 @@ const (
 
 	// generateMemoVersion is part of every key's meaning: bump it when a key
 	// covers something different, so no record is read under new rules.
-	generateMemoVersion = 1
+	generateMemoVersion = 2
 )
 
 // errGoMemoUnsupported says a tree's inputs cannot be enumerated (cgo, a
@@ -275,6 +279,21 @@ func (m *generateMemo) toolchain(h *memoHasher, env []string) error {
 			return err
 		}
 	}
+	// The toolchain's own defaults layer (GOROOT/go.env: GOFLAGS, GOTOOLCHAIN,
+	// GOPROXY …) sits beside the binary, not in it.
+	if err := h.file("goroot.env", filepath.Join(goRootFor(goBin, env), "go.env")); err != nil {
+		return err
+	}
+	// With CGO_ENABLED unset, cmd/go enables cgo only when it finds a C
+	// compiler, and that decides which `//go:build cgo` files (here and in
+	// every dependency) the build selects. Key what it would find.
+	for _, cc := range cCompilerCandidates(env) {
+		p, err := m.sys.lookPath(cc)
+		if err != nil {
+			p = "absent"
+		}
+		h.add("cc:"+cc, p)
+	}
 	if work := effectiveGoWork(m.root, env); work != "" {
 		if err := h.file("gowork", work); err != nil {
 			return err
@@ -284,6 +303,29 @@ func (m *generateMemo) toolchain(h *memoHasher, env []string) error {
 		}
 	}
 	return nil
+}
+
+// goRootFor is the GOROOT the go binary at goBin runs with: $GOROOT when set,
+// else the directory above the (symlink-resolved) binary's bin/.
+func goRootFor(goBin string, env []string) string {
+	if v, ok := environLookup(env, "GOROOT"); ok && v != "" {
+		return v
+	}
+	if resolved, err := filepath.EvalSymlinks(goBin); err == nil {
+		goBin = resolved
+	}
+	return filepath.Dir(filepath.Dir(goBin))
+}
+
+// cCompilerCandidates names the C compilers cmd/go would look for: $CC's
+// first word when set, else its defaults.
+func cCompilerCandidates(env []string) []string {
+	if v, ok := environLookup(env, "CC"); ok {
+		if fields := strings.Fields(v); len(fields) > 0 {
+			return []string{fields[0]}
+		}
+	}
+	return []string{"gcc", "clang"}
 }
 
 // goTidyKey is the key of one `go mod tidy`: full covers every input, sources

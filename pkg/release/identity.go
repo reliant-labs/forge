@@ -51,6 +51,49 @@ const (
 	IdentityMembersDeclared = "declared"
 )
 
+// Who may create an account from the sign-in screen ([ShapeIdentitySignup.Mode]).
+const (
+	// IdentitySignupInvite: only owners, declared members and invitations.
+	// The default, and the pre-v2 behaviour.
+	IdentitySignupInvite = "invite"
+	// IdentitySignupOpen: anyone, once the address is verified.
+	IdentitySignupOpen = "open"
+	// IdentitySignupDomain: anyone whose VERIFIED address is in
+	// [ShapeIdentitySignup.Domains].
+	IdentitySignupDomain = "domain"
+)
+
+// First-factor sign-in methods ([ShapeIdentity.Methods]).
+const (
+	IdentityMethodPassword  = "password"
+	IdentityMethodPasskey   = "passkey"
+	IdentityMethodMagicLink = "magic_link"
+)
+
+// Social identity providers ([ShapeIdentitySocial.Type]).
+const (
+	IdentitySocialGoogle = "google"
+	IdentitySocialGitHub = "github"
+)
+
+// How a hosted instance's mail is delivered when no smtp is declared
+// ([ShapeIdentityEmail.Delivery]).
+const (
+	// IdentityMailPlatform is the control plane's identity mail relay. The
+	// default: a nil [ShapeIdentity.Email] means this.
+	IdentityMailPlatform = "platform"
+	// IdentityMailNone sends nothing: the pre-v2 behaviour.
+	IdentityMailNone = "none"
+)
+
+// IdentityLoginPolicyKey is the key the control plane delivers the versioned
+// LOGIN_POLICY document under: in the forge-identity-<name> Secret, and as
+// RELIANT_IDENTITY_<NAME>_LOGIN_POLICY for a hosted consumer. It is the
+// `login_policy` output, which forge projects (always optional) into a native
+// broker's config field idp_login_policy, and only for a declaration that
+// [ShapeIdentity.DeclaresLoginPolicy].
+const IdentityLoginPolicyKey = "LOGIN_POLICY"
+
 // The names a managed identity reserves. A consumer reads its outputs from a
 // Secret or a managed secret whose name starts with one of these, and the
 // control plane is the only writer, so neither prefix is an env's own secret.
@@ -71,21 +114,22 @@ const (
 // filled from, and the keys of [ShapeIdentityConsumer.Fields].
 var IdentityOutputs = []string{
 	"audience", "broker_token", "client_id", "idp_base", "issuer",
-	"jwks", "login_uri", "redirect_uri", "roles_claim", "scopes",
+	"jwks", "login_policy", "login_uri", "redirect_uri", "roles_claim", "scopes",
 }
 
 // IdentityOmittableOutputs are the outputs a consumer may decline to have
 // projected ([ShapeIdentityConsumer.Omit]). The rest define the identity.
-var IdentityOmittableOutputs = []string{"jwks", "login_uri", "roles_claim", "scopes"}
+var IdentityOmittableOutputs = []string{"jwks", "login_policy", "login_uri", "roles_claim", "scopes"}
 
 var (
-	identityNameRE   = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	identityRoleRE   = regexp.MustCompile(`^[a-z][a-z0-9_.:-]{0,63}$`)
-	identityFieldRE  = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-	identityEmailRE  = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
-	identityDomainRE = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$`)
-	managedSecretRE  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	slugLabelRunRE   = regexp.MustCompile(`[^a-z0-9]+`)
+	identityNameRE      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	identityRoleRE      = regexp.MustCompile(`^[a-z][a-z0-9_.:-]{0,63}$`)
+	identityFieldRE     = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	identityEmailRE     = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+	identityDomainRE    = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$`)
+	identityFromLocalRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	managedSecretRE     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	slugLabelRunRE      = regexp.MustCompile(`[^a-z0-9]+`)
 )
 
 // ShapeIdentity is the env's managed identity as DECLARED (forge.ManagedIdentity):
@@ -132,6 +176,117 @@ type ShapeIdentity struct {
 	// writes the outputs under for HOSTED consumers. They are not the env's
 	// secrets: nobody sets them.
 	ManagedSecrets []string `json:"managed_secrets,omitempty"`
+
+	// The v2 sign-in fields below are all omitempty and nil or empty by
+	// default, so every shape recorded before them encodes and hashes exactly
+	// as it did.
+
+	// Owners are seeded on every pass (created email-verified, granted
+	// OwnerRole, invited while credential-less). ADDITIVE AND STICKY: an
+	// address removed here is never revoked. Lower-cased.
+	Owners []string `json:"owners,omitempty"`
+	// OwnerRole is set only when Owners is non-empty.
+	OwnerRole string `json:"owner_role,omitempty"`
+	// Signup is who may create an account. Nil = [IdentitySignupInvite].
+	Signup *ShapeIdentitySignup `json:"signup,omitempty"`
+	// Methods are the first-factor methods offered ([IdentityMethodPassword],
+	// ...). When the declaration does not [ShapeIdentity.DeclaresLoginPolicy]
+	// it is nil, meaning [password] and "leave the login policy alone". When
+	// it does, the render always lists them, so nil there means none (social
+	// sign-in only). Read it through [ShapeIdentity.SignInMethods].
+	Methods []string `json:"methods,omitempty"`
+	// PasskeyRPID is the WebAuthn relying-party id. Empty = the host of the
+	// app's sign-in origin.
+	PasskeyRPID string                `json:"passkey_rp_id,omitempty"`
+	Social      []ShapeIdentitySocial `json:"social,omitempty"`
+	// Email is how the instance's mail is addressed. Nil = {delivery:
+	// platform}.
+	Email *ShapeIdentityEmail `json:"email,omitempty"`
+	// DevMail is the mailpit HostInfra a host-run instance's mail goes to.
+	// Host runtime only.
+	DevMail string `json:"dev_mail,omitempty"`
+}
+
+// ShapeIdentitySignup is who may create an account from the sign-in screen.
+type ShapeIdentitySignup struct {
+	// Mode is [IdentitySignupInvite], [IdentitySignupOpen] or
+	// [IdentitySignupDomain].
+	Mode string `json:"mode"`
+	// Domains are the lower-case DNS names a domain-mode signup's VERIFIED
+	// address must be in. A subdomain matches only if listed itself.
+	Domains []string `json:"domains,omitempty"`
+	// Role is granted to a self-signed-up account once verified. Empty =
+	// none.
+	Role string `json:"role,omitempty"`
+}
+
+// ShapeIdentitySocial is one social identity provider, with the app's own
+// OAuth client. The client secret (and a secret client id) are managed-secret
+// NAMES: only the identity reconciler reads them, and no workload is handed
+// them.
+type ShapeIdentitySocial struct {
+	// Type is [IdentitySocialGoogle] or [IdentitySocialGitHub].
+	Type string `json:"type"`
+	// ClientID is the literal client id, OR ClientIDSecret names it.
+	ClientID       string `json:"client_id,omitempty"`
+	ClientIDSecret string `json:"client_id_secret,omitempty"`
+	// ClientSecretSecret names the client secret, always.
+	ClientSecretSecret string   `json:"client_secret_secret"`
+	Scopes             []string `json:"scopes"`
+}
+
+// ShapeIdentityEmail is how the instance's mail is addressed.
+type ShapeIdentityEmail struct {
+	// Delivery is [IdentityMailPlatform] or [IdentityMailNone]. Ignored when
+	// smtp is declared.
+	Delivery string `json:"delivery"`
+	// FromName is the From display name. Empty = the project.
+	FromName string `json:"from_name,omitempty"`
+	// FromLocal is the From local part; the domain is assigned by the
+	// platform. Empty with smtp, whose sender is the From.
+	FromLocal string `json:"from_local,omitempty"`
+	ReplyTo   string `json:"reply_to,omitempty"`
+}
+
+// DeclaresLoginPolicy reports whether the declaration takes over the
+// instance's login policy: Methods, Signup or Social is set. When it does not,
+// the policy is left alone and no login_policy output is projected or
+// delivered, which keeps an adopted instance and a pre-v2 broker as they were.
+func (i ShapeIdentity) DeclaresLoginPolicy() bool {
+	return i.Methods != nil || i.Signup != nil || len(i.Social) > 0
+}
+
+// SignInMethods is the first-factor methods the declaration offers: Methods
+// when it [ShapeIdentity.DeclaresLoginPolicy] (possibly none: social only),
+// else [IdentityMethodPassword].
+func (i ShapeIdentity) SignInMethods() []string {
+	if i.DeclaresLoginPolicy() {
+		return i.Methods
+	}
+	return []string{IdentityMethodPassword}
+}
+
+// SignupMode is [ShapeIdentitySignup.Mode], or [IdentitySignupInvite] when
+// Signup is nil.
+func (i ShapeIdentity) SignupMode() string {
+	if i.Signup == nil {
+		return IdentitySignupInvite
+	}
+	return i.Signup.Mode
+}
+
+// MailAvailable reports whether the instance can send mail at all: smtp is
+// declared, it is hosted with a delivery other than [IdentityMailNone], or it
+// is host-run with a mailpit (DevMail).
+func (i ShapeIdentity) MailAvailable() bool {
+	switch {
+	case i.SMTP != nil:
+		return true
+	case i.Runtime == IdentityRuntimeHosted:
+		return i.Email == nil || i.Email.Delivery != IdentityMailNone
+	default:
+		return i.DevMail != ""
+	}
 }
 
 // ShapeIdentityLogin is how users sign in.
@@ -322,6 +477,35 @@ func (i ShapeIdentity) canonical() ShapeIdentity {
 		out.Deliveries = nil
 	}
 	out.ManagedSecrets = sortedNonEmpty(i.ManagedSecrets)
+	if len(i.Owners) > 0 {
+		lower := make([]string, len(i.Owners))
+		for n, o := range i.Owners {
+			lower[n] = strings.ToLower(o)
+		}
+		out.Owners = sortedStrings(lower)
+	} else {
+		out.Owners = nil
+	}
+	if i.Signup != nil {
+		s := *i.Signup
+		s.Domains = sortedNonEmpty(s.Domains)
+		out.Signup = &s
+	}
+	out.Methods = sortedNonEmpty(i.Methods)
+	if len(i.Social) > 0 {
+		out.Social = make([]ShapeIdentitySocial, len(i.Social))
+		for n, s := range i.Social {
+			s.Scopes = sortedStrings(s.Scopes)
+			out.Social[n] = s
+		}
+		sort.Slice(out.Social, func(a, b int) bool { return out.Social[a].Type < out.Social[b].Type })
+	} else {
+		out.Social = nil
+	}
+	if i.Email != nil {
+		e := *i.Email
+		out.Email = &e
+	}
 	return out
 }
 
@@ -510,6 +694,10 @@ func (i ShapeIdentity) validate(controlPlaneSecrets []ShapeControlPlaneSecret) e
 		}
 	}
 
+	if err := i.validateSignIn(roles, bad); err != nil {
+		return err
+	}
+
 	provided := map[string]ShapeControlPlaneSecret{}
 	for _, c := range controlPlaneSecrets {
 		provided[c.Key()] = c
@@ -541,6 +729,149 @@ func (i ShapeIdentity) validate(controlPlaneSecrets []ShapeControlPlaneSecret) e
 			return bad("managed secret %q listed twice", n)
 		}
 		seenManaged[n] = true
+	}
+	return nil
+}
+
+// validateSignIn re-checks the v2 sign-in fields: rules V1-V15 of the
+// identity v2 contract, kept identical to the KCL checks (V15's "names a
+// mailpit HostInfra" needs Bundle.infra and is KCL's alone; the shape records
+// only the resolved name). roles is the declaration's roles by key.
+func (i ShapeIdentity) validateSignIn(roles map[string]ShapeIdentityRole, bad func(string, ...any) error) error {
+	consoleRole := func(key string) bool {
+		r, ok := roles[key]
+		return ok && r.MembersFrom == IdentityMembersConsole
+	}
+	methods := i.SignInMethods()
+
+	// V7, V8: owners.
+	seenOwner := map[string]bool{}
+	for _, o := range i.Owners {
+		if !identityEmailRE.MatchString(o) {
+			return bad("owner %q is not an email address", o)
+		}
+		if seenOwner[strings.ToLower(o)] {
+			return bad("owner %q listed twice (compared case-insensitively)", o)
+		}
+		seenOwner[strings.ToLower(o)] = true
+	}
+	switch {
+	case len(i.Owners) == 0 && i.OwnerRole != "":
+		return bad("owner_role %q is set without owners", i.OwnerRole)
+	case len(i.Owners) > 0 && !consoleRole(i.OwnerRole):
+		return bad("owner_role %q must be a declared role with members_from %s: owners are never demoted, which a declared (converged) role cannot promise", i.OwnerRole, IdentityMembersConsole)
+	}
+
+	// V1, V2, V3: signup.
+	if s := i.Signup; s != nil {
+		switch s.Mode {
+		case IdentitySignupInvite, IdentitySignupOpen, IdentitySignupDomain:
+		default:
+			return bad("signup mode %q (expected %s, %s or %s)", s.Mode, IdentitySignupInvite, IdentitySignupOpen, IdentitySignupDomain)
+		}
+		if (s.Mode == IdentitySignupDomain) != (len(s.Domains) > 0) {
+			return bad("signup mode %s needs domains, and domains need mode %s", IdentitySignupDomain, IdentitySignupDomain)
+		}
+		seen := map[string]bool{}
+		for _, d := range s.Domains {
+			if !identityDomainRE.MatchString(d) {
+				return bad("signup domain %q is not a lower-case DNS name (no wildcard: a subdomain matches only if listed itself)", d)
+			}
+			if seen[d] {
+				return bad("signup domain %q listed twice", d)
+			}
+			seen[d] = true
+		}
+		if s.Role != "" && !consoleRole(s.Role) {
+			return bad("signup role %q must be a declared role with members_from %s: a declared role is a converged set, so self-signups would be revoked", s.Role, IdentityMembersConsole)
+		}
+	}
+
+	// V4: methods.
+	seenMethod := map[string]bool{}
+	for _, m := range i.Methods {
+		switch m {
+		case IdentityMethodPassword, IdentityMethodPasskey, IdentityMethodMagicLink:
+		default:
+			return bad("method %q (expected %s, %s or %s)", m, IdentityMethodPassword, IdentityMethodPasskey, IdentityMethodMagicLink)
+		}
+		if seenMethod[m] {
+			return bad("method %q listed twice", m)
+		}
+		seenMethod[m] = true
+	}
+	if len(methods)+len(i.Social) == 0 {
+		return bad("no sign-in method and no social provider: someone must be able to sign in")
+	}
+	// V5, V6: what needs mail.
+	if containsString(methods, IdentityMethodMagicLink) && !i.MailAvailable() {
+		return bad("method %s is an email, but the instance can send no mail", IdentityMethodMagicLink)
+	}
+	if i.SignupMode() != IdentitySignupInvite && !i.MailAvailable() {
+		return bad("signup %s verifies every new address by email, but the instance can send no mail", i.SignupMode())
+	}
+
+	// V9, V10: social.
+	seenSocial := map[string]bool{}
+	for _, s := range i.Social {
+		if s.Type != IdentitySocialGoogle && s.Type != IdentitySocialGitHub {
+			return bad("social type %q (expected %s or %s)", s.Type, IdentitySocialGoogle, IdentitySocialGitHub)
+		}
+		if seenSocial[s.Type] {
+			return bad("social %s declared twice", s.Type)
+		}
+		seenSocial[s.Type] = true
+		switch {
+		case (strings.TrimSpace(s.ClientID) == "") == (s.ClientIDSecret == ""):
+			return bad("social %s: give exactly one of client_id (a literal) and client_id_secret (a managed-secret name)", s.Type)
+		case s.ClientIDSecret != "" && !managedSecretRE.MatchString(s.ClientIDSecret):
+			return bad("social %s: client_id_secret %q must be a managed-secret NAME", s.Type, s.ClientIDSecret)
+		case !managedSecretRE.MatchString(s.ClientSecretSecret):
+			return bad("social %s: client_secret_secret %q must be a managed-secret NAME, never the secret", s.Type, s.ClientSecretSecret)
+		case len(s.Scopes) == 0:
+			return bad("social %s has no scopes", s.Type)
+		}
+	}
+
+	// V11: passkey relying party.
+	if i.PasskeyRPID != "" {
+		if !identityDomainRE.MatchString(i.PasskeyRPID) {
+			return bad("passkey_rp_id %q is not a lower-case DNS name", i.PasskeyRPID)
+		}
+		if !containsString(methods, IdentityMethodPasskey) {
+			return bad("passkey_rp_id is set but the methods do not offer %s", IdentityMethodPasskey)
+		}
+	}
+
+	// V12, V13: mail addressing.
+	if e := i.Email; e != nil {
+		switch {
+		case e.Delivery != IdentityMailPlatform && e.Delivery != IdentityMailNone:
+			return bad("email delivery %q (expected %s or %s)", e.Delivery, IdentityMailPlatform, IdentityMailNone)
+		case e.FromLocal != "" && !identityFromLocalRE.MatchString(e.FromLocal):
+			return bad("email from_local %q must match %s", e.FromLocal, identityFromLocalRE)
+		case len(e.FromName) > 64 || strings.ContainsAny(e.FromName, "\r\n<>"):
+			return bad("email from_name must be at most 64 characters with no CR, LF, '<' or '>'")
+		case e.ReplyTo != "" && !identityEmailRE.MatchString(e.ReplyTo):
+			return bad("email reply_to %q is not an email address", e.ReplyTo)
+		case i.SMTP != nil && e.FromLocal != "":
+			return bad("email from_local is set with smtp, whose sender is the From")
+		}
+	}
+
+	// V14: a sharer's sign-in belongs to the owner.
+	if i.ShareWith != "" && (len(i.Owners) > 0 || i.OwnerRole != "" || i.Signup != nil || i.Methods != nil || i.PasskeyRPID != "" || len(i.Social) > 0 || i.Email != nil) {
+		return bad("share_with reuses %q's instance, so owners, signup, methods, passkey_rp_id, social and email belong to the owner and must be at their defaults here", i.ShareWith)
+	}
+
+	// V15: the dev mail server.
+	if i.DevMail != "" {
+		if i.Runtime != IdentityRuntimeHost {
+			return bad("dev_mail names a mailpit HostInfra, which only a host-run instance uses; this instance runs on the %s", i.Runtime)
+		}
+		if !identityNameRE.MatchString(i.DevMail) {
+			return bad("dev_mail %q must be the name of a HostInfra (an RFC-1123 label)", i.DevMail)
+		}
 	}
 	return nil
 }

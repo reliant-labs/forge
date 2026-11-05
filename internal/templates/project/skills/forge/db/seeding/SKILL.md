@@ -47,7 +47,7 @@ forge db seed reset    # wipe seeded tables and re-seed (dev only)
 `seeded nothing` error: load `db/seeding/targets`.
 
 `forge env up` auto-seed a fresh dev database on first boot
-(every in-scope table empty). `apply`/`reset` refuse any non-dev environment,
+(every in-scope table empty): the synthesized rows, then `db/seeds/custom/`. `apply`/`reset` refuse any non-dev environment,
 and the applier is never compiled into your server binary.
 
 **What auto-seed writes to.** Only the tables behind your CRUD entities (a service

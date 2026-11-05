@@ -36,7 +36,7 @@ function getInitials(node: OrgNode): string {
 }
 
 function getColorClass(depth: number, index: number): string {
-  return AVATAR_COLORS[(depth + index) % AVATAR_COLORS.length];
+  return AVATAR_COLORS[(depth + index) % AVATAR_COLORS.length] ?? "bg-blue-500";
 }
 
 function NodeCard({

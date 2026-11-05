@@ -64,7 +64,7 @@ interface ComboboxCommonProps {
   /** The options are still loading: the list says so. */
   loading?: boolean;
   disabled?: boolean;
-  /** Danger border, aria-invalid. */
+  /** Danger border, and "(invalid)" read with the value (a button cannot carry aria-invalid). */
   invalid?: boolean;
   size?: ComboboxSize;
   /** The trigger's id; defaults to the enclosing FormField's. */
@@ -382,7 +382,7 @@ export default function Combobox(props: ComboboxProps) {
           disabled={disabled}
           aria-label={ariaLabel}
           aria-describedby={valueId}
-          aria-invalid={invalid || undefined}
+          data-invalid={invalid || undefined}
           className={`flex w-full items-center gap-2 rounded-md border bg-surface text-left text-ink transition-colors focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-ink-muted ${
             invalid ? "border-danger" : "border-border-strong aria-expanded:border-accent"
           } ${sizeStyles[size]} ${showClear ? "pr-14" : ""}`}
@@ -390,6 +390,9 @@ export default function Combobox(props: ComboboxProps) {
           {/* The choice, read after the field's name (a <Label> names the button). */}
           <span id={valueId} className="flex min-w-0 items-center gap-2">
             {summary ?? <span className="truncate text-ink-subtle">{placeholder}</span>}
+            {/* aria-invalid is not supported on a button, so the state is read
+                with the value instead. */}
+            {invalid ? <span className="sr-only">(invalid)</span> : null}
           </span>
         </button>
         {showClear && (

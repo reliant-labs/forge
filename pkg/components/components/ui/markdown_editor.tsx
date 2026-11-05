@@ -86,9 +86,7 @@ const graphemes =
 
 function countGraphemes(text: string): number {
   if (!graphemes) return Array.from(text).length;
-  let n = 0;
-  for (const _segment of graphemes.segment(text)) n++;
-  return n;
+  return Array.from(graphemes.segment(text)).length;
 }
 
 function countWords(text: string): number {

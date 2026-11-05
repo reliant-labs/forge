@@ -249,6 +249,12 @@ func groupParent(s skillMeta, byPath map[string]skillMeta, isStartHere map[strin
 	if strings.Contains(s.Path, "/") {
 		for idx := strings.Index(s.Path, "/"); idx > 0; {
 			if candidate := s.Path[:idx]; eligible(candidate) {
+				// The candidate may itself be a NAME sibling ("frontend-runtime"
+				// under "frontend"); its children belong to the group it joins,
+				// or they would be orphaned into a row each.
+				if root := groupParent(byPath[candidate], byPath, isStartHere); root != "" {
+					return root
+				}
 				return candidate
 			}
 			next := strings.Index(s.Path[idx+1:], "/")

@@ -218,3 +218,29 @@ func TestSkillListGroupExpandsSubSkills(t *testing.T) {
 		t.Error("an unknown group listed successfully")
 	}
 }
+
+// TestGroupSkillsFoldsChildrenOfANameSibling pins the transitive case: a
+// name sibling ("frontend-runtime", grouped under "frontend") that grows path
+// children ("frontend-runtime/config") must take them into ITS group. Before,
+// the children found no group for "frontend-runtime" and each became a row of
+// its own, so splitting a skill into sub-skills lengthened the catalog.
+func TestGroupSkillsFoldsChildrenOfANameSibling(t *testing.T) {
+	t.Parallel()
+	mk := func(p string) skillMeta { return skillMeta{Path: p, Scope: SkillScopeForge, Emit: SkillEmitForge} }
+	_, sections := groupSkills([]skillMeta{
+		mk("frontend"), mk("frontend/state"), mk("frontend-runtime"),
+		mk("frontend-runtime/config"), mk("frontend-runtime/transport"),
+	})
+	groups := sections[0].groups
+	if len(groups) != 1 || groups[0].parent.Path != "frontend" {
+		t.Fatalf("want one group, frontend; got %+v", groups)
+	}
+	var got []string
+	for _, c := range groups[0].children {
+		got = append(got, c.Path)
+	}
+	want := []string{"frontend-runtime", "frontend-runtime/config", "frontend-runtime/transport", "frontend/state"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("frontend children = %v, want %v", got, want)
+	}
+}

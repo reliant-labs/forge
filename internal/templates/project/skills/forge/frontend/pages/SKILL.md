@@ -84,7 +84,7 @@ Never hand-edit `*-hooks.ts` — overwritten on next `forge generate`. Add custo
 
 `data_table` is in the component library but is NOT one of the components the
 scaffold installs — run `forge component install data_table` first, or reach
-for `<Resource>` from `@reliantlabs/forge-web-runtime` (see `frontend-runtime`).
+for `<Resource>` from `@reliantlabs/forge-web-runtime` (see `frontend-runtime/resource`).
 
 ```tsx
 // frontends/web/src/app/users/page.tsx

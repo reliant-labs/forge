@@ -128,7 +128,13 @@ WITH moves AS (
         WHERE MetricName = 'rpc.server.calls'
           AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL 10 MINUTE - INTERVAL 1 MINUTE
           AND ResourceAttributes['deployment.environment.name'] = 'dev'
-          AND splitByChar('/', Attributes['procedure'])[2] IN ('billing.v1.BillingService', 'orders.v1.OrdersService')
+          AND ServiceName IN (
+              SELECT ServiceName
+              FROM otel_metrics_sum
+              WHERE MetricName = 'rpc.server.calls'
+                AND TimeUnix >= now() - INTERVAL 24 HOUR - INTERVAL 10 MINUTE - INTERVAL 1 MINUTE
+                AND ResourceAttributes['deployment.environment.name'] = 'dev'
+                AND splitByChar('/', Attributes['procedure'])[2] IN ('billing.v1.BillingService', 'orders.v1.OrdersService'))
         GROUP BY ServiceName, ResourceAttributes, Attributes
     )
 )
@@ -137,6 +143,7 @@ FROM moves
 GROUP BY service
 HAVING max(t) < now() - INTERVAL 10 MINUTE
    AND uniqExactIf(toStartOfHour(t), t < now() - INTERVAL 10 MINUTE) >= 18
+   AND arrayCount(d -> d >= 10 * 60, arrayDifference(arraySort(groupUniqArray(toUInt32(toUnixTimestamp(t)))))) <= 2
 ORDER BY service
 
 -- WorkloadCrashLooping (crash-loop) severity=critical for=0s interval=1m

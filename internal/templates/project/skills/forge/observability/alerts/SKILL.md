@@ -114,7 +114,7 @@ Check: `curl -s localhost:<alertmanager port>/api/v2/alerts` shows what is activ
 |---|---|---|---|---|
 | `error-rate` | `ServiceErrorRateHigh` (critical, 5m) | rpc metrics | server errors / requests > 5% over 5m, per service, at least 20 requests; `user` and `canceled` errors excluded | `enabled = False` |
 | `p95-latency` | `ServiceLatencyP95High` (warning, 10m) | rpc metrics | p95 of `rpc.server.duration` > 1s over 5m, per service, at least 20 requests | same |
-| `service-silent` | `ServiceSilent` (warning) | rpc metrics | no request for 10m by a service that served requests in at least 18 of the previous 24 hours | same |
+| `service-silent` | `ServiceSilent` (warning) | rpc metrics | no request for 10m by a service that served requests in at least 18 of the previous 24 hours. A service is judged when it served one of the project's rpcs in that day, and every call it serves counts as a request, whatever package the procedure is in | same |
 | `frontend-js-errors` | `FrontendJSErrorSpike` (warning, 10m) | browser spans | JS error spans in the last 10m > 3x the rate of the 60m before, at least 10; fetch/XHR failures and string-only `console.error("text")` (no exception event) are not counted | same |
 | `frontend-lcp-poor` | `FrontendLCPPoor` (info, 10m) | browser spans | p75 of `webvitals` LCP over 30m > 4000 ms, at least 100 measurements | same |
 | `new-issue` | `NewIssue` (warning) | **platform** | the control plane's issue registry opened an issue in the last hour (an error first seen within the last day, not ignored or resolved). It fires once per issue and resolves when the hour passes | same |
@@ -143,7 +143,7 @@ defaults = {
 }
 ```
 
-`params` per default: `uptime-check-failing` `failures`, `critical_failures`, `window_minutes`; `certificate-expiring` `warn_days`, `critical_days`, `window_minutes`; `error-rate` `threshold`, `window_minutes`, `min_requests`; `p95-latency` `threshold_seconds`, `window_minutes`, `min_requests`; `service-silent` `silent_minutes`, `min_active_hours`; `frontend-js-errors` `spike_factor`, `window_minutes`, `baseline_minutes`, `min_errors`; `crash-loop` `min_restarts`, `window_minutes`; `oom-killed` `window_minutes`; `memory-near-limit` `threshold`, `window_minutes`; `image-pull-failed` and `evicted` `min_events`, `window_minutes`. The two platform ids take `enabled`, `labels` and `for` and no params. To write a variant, copy a default's SQL from `forge env shape <env> --json` into your own rule (under another name).
+`params` per default: `uptime-check-failing` `failures`, `critical_failures`, `window_minutes`; `certificate-expiring` `warn_days`, `critical_days`, `window_minutes`; `error-rate` `threshold`, `window_minutes`, `min_requests`; `p95-latency` `threshold_seconds`, `window_minutes`, `min_requests`; `service-silent` `silent_minutes`, `min_active_hours`, `max_prior_silences`; `frontend-js-errors` `spike_factor`, `window_minutes`, `baseline_minutes`, `min_errors`; `crash-loop` `min_restarts`, `window_minutes`; `oom-killed` `window_minutes`; `memory-near-limit` `threshold`, `window_minutes`; `image-pull-failed` and `evicted` `min_events`, `window_minutes`. The two platform ids take `enabled`, `labels` and `for` and no params. To write a variant, copy a default's SQL from `forge env shape <env> --json` into your own rule (under another name).
 
 ### Customer-metadata rules and the opt-out
 

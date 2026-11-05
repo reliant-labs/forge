@@ -169,6 +169,14 @@ var actingUserScopes = []Scope{
 	ScopeDaemonResume,
 	// Machines are owned by, and billed to, a person.
 	ScopeDaemonManage,
+	// A run executes as a person, with that person's connections and billing;
+	// a trigger is owned by one. Narrower than reliant:api, not different in
+	// kind.
+	ScopeRunsStart,
+	ScopeRunsRead,
+	ScopeRunsControl,
+	ScopeTriggersFire,
+	ScopeTriggersManage,
 }
 
 // RequiresActingUser reports whether a scope acts as a person.

@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -29,6 +30,10 @@ func LoginScopes() []string {
 // BrowserLogin runs the interactive half of `forge login`: the OAuth 2.0
 // authorization-code flow with PKCE (RFC 7636) against the endpoint's
 // /oauth/authorize and /oauth/token, with a loopback redirect (RFC 8252).
+// It asks for a human identity (credential_kind=human): an org-less session
+// whose every operation the server authorizes against its hosted project
+// target. A server that refuses that request fails the login; forge never
+// re-asks without it.
 //
 // The mechanics are forge/pkg/oauth2.LoopbackLogin, which `reliant auth login`
 // also runs. forge depends on no reliant code, deliberately. A user deploying to
@@ -65,12 +70,21 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 		TokenEndpoint:     b.Endpoint.URL + "/oauth/token",
 		ClientID:          ClientID,
 		Scopes:            LoginScopes(),
-		Extra:             url.Values{"device": {DeviceLabel()}},
+		Extra:             url.Values{"device": {DeviceLabel()}, CredentialKindParam: {KindHuman}},
 		OpenURL:           open,
 		Out:               b.Out,
 		Timeout:           timeout,
 	}.Run(ctx)
 	if err != nil {
+		if refused := humanLoginRefusal(err); refused != "" {
+			// Never retried without the parameter: an org-bound login is a
+			// different credential (one org, a scope snapshot), and getting
+			// it silently would hide that the server refused an identity.
+			return credentials.Credential{}, fmt.Errorf("%s refused forge's request for a human identity login (%s=%s): %s\n"+
+				"forge does not fall back to an organization-bound login.\n"+
+				"fix: upgrade forge if this control plane is newer than it, or use `forge login --token <token>` with a token minted in the web app",
+				b.Endpoint.URL, CredentialKindParam, KindHuman, refused)
+		}
 		if strings.Contains(err.Error(), "timed out") {
 			return credentials.Credential{}, fmt.Errorf("%w\n"+
 				"fix: complete the flow in the browser, or use `forge login --token <token>` "+
@@ -79,7 +93,16 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 		return credentials.Credential{}, fmt.Errorf("login to %s failed: %w", b.Endpoint.URL, err)
 	}
 	switch tokenCredentialKind(tok) {
-	case KindHuman, KindOrgLogin:
+	case KindHuman:
+	case KindOrgLogin:
+		// The server ignored credential_kind: it predates human identities
+		// (or was rolled back past them). Its org-bound token still works on
+		// the delegated path, so it is kept, but never without saying so.
+		if b.Out != nil {
+			fmt.Fprintf(b.Out, "note: %s issued an organization-bound login, not a human identity: it does not support %s=%s yet. "+
+				"Commands act in that one organization; run `forge login` again once it does.\n",
+				b.Endpoint.URL, CredentialKindParam, KindHuman)
+		}
 	default:
 		return credentials.Credential{}, fmt.Errorf("control plane returned an unknown credential kind %q for login; upgrade forge", tokenCredentialKind(tok))
 	}
@@ -92,16 +115,35 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 // every operation's organization from its hosted project target.
 //
 // KindOrgLogin is what a control plane that predates human identities issues
-// for the same flow (its token response carries no credential_kind): an
-// `rlat_` token bound to the user's organization. It is a delegated
-// capability, never reclassified as an identity, so it takes the delegated
-// path (GetTenant, no ResolveHostedProject) that such a control plane serves.
-// Once the control plane issues human identities, the next `forge login`
-// stores one instead.
+// for the same flow (it ignores credential_kind, and its token response
+// carries none): an `rlat_` token bound to the user's organization. It is a
+// delegated capability, never reclassified as an identity, so it takes the
+// delegated path (GetTenant, no ResolveHostedProject) that such a control
+// plane serves. Once the control plane issues human identities, the next
+// `forge login` stores one instead.
 const (
 	KindHuman    = "human"
 	KindOrgLogin = "org-login"
 )
+
+// CredentialKindParam is the authorization-request parameter by which forge
+// asks for a credential family. forge always asks for KindHuman. A control
+// plane that understands the parameter answers with credential_kind=human in
+// its token response, or refuses the request outright (invalid_request).
+const CredentialKindParam = "credential_kind"
+
+// humanLoginRefusal returns the server's reason when it refused the
+// authorization request because of credential_kind, and "" for any other
+// failure. The control plane reports the refusal to the loopback listener as
+// invalid_request with a description naming the parameter.
+func humanLoginRefusal(err error) string {
+	var oauthErr *oauth2.Error
+	if !errors.As(err, &oauthErr) || oauthErr.Code != "invalid_request" ||
+		!strings.Contains(oauthErr.Description, CredentialKindParam) {
+		return ""
+	}
+	return oauthErr.Description
+}
 
 func tokenCredentialKind(tok *oauth2.Token) string {
 	kind, _ := tok.Raw["credential_kind"].(string)

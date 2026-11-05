@@ -216,7 +216,29 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 	if err != nil {
 		return nil, fmt.Errorf("build JWT validator: %w", err)
 	}
-	return auth.NewAuthenticator(validator.Validate), nil
+	authenticator := auth.NewAuthenticator(validator.Validate)
+
+	// A managed identity's access token names the user by subject only: no
+	// email. With an issuer to ask, Claims.Email is filled from its OIDC
+	// userinfo endpoint (a VERIFIED address only, cached per subject), so
+	// enrichClaims can bind a first sign-in to an invitation by address. The
+	// endpoint is discovered on the first lookup, never at boot, and a failed
+	// lookup leaves Email empty rather than failing the request. Only tokens
+	// whose iss is cfg.JwtIssuer are looked up, and the access token is sent
+	// over HTTPS only (plain HTTP to a loopback dev issuer excepted). Delete
+	// these lines if nothing reads Claims.Email.
+	if cfg.JwtIssuer != "" && cfg.JwtSecret == "" {
+		authenticator.UseUserInfo(auth.NewUserInfo(cfg.JwtIssuer, func(ctx context.Context) (string, error) {
+			ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+			defer cancel()
+			meta, err := oauth2.Discover(ctx, nil, cfg.JwtIssuer)
+			if err != nil {
+				return "", err
+			}
+			return meta.UserinfoEndpoint, nil
+		}, nil))
+	}
+	return authenticator, nil
 }
 
 {{- end}}

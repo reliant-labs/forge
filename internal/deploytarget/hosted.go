@@ -3,9 +3,10 @@ package deploytarget
 // The HOSTED provider: ship forge's deploy tiers to a control plane.
 //
 // A workload bound to the Hosted runtime (forge.OnHosted), a hosted
-// ManagedDatabase and an OnHosted frontend are not applied to any cluster
-// forge can see. They ride the env's BUNDLE as forge.dev/v1alpha1 records — a
-// Workload, ManagedDatabase or StaticSite per hosted thing, under the hosted
+// ManagedDatabase, a hosted bucket and an OnHosted frontend are not applied to
+// any cluster forge can see. They ride the env's BUNDLE as forge.dev/v1alpha1
+// records — a Workload, ManagedDatabase, ManagedBucket or StaticSite per
+// hosted thing, under the hosted
 // cluster tree (release.BundleHostedCluster) — and the control plane's hub
 // Flux applies that bundle when the promotion lands. This provider never
 // shells out to kubectl, ensures no cluster, and writes NO per-deployment row
@@ -59,15 +60,21 @@ type HostedCaller interface {
 // HostedTier is the tier a hosted workload is published as.
 type HostedTier string
 
-// The three hosted tiers, one per forge.dev kind the control plane admits.
+// The hosted tiers, one per forge.dev kind the control plane admits.
 const (
 	HostedTierWorkload HostedTier = "workload"
 	HostedTierDatabase HostedTier = "database"
 	HostedTierStatic   HostedTier = "static"
+	// HostedTierBucket is a ManagedBucket: provisioned by the control
+	// plane's managedbucket operator, never release-bound, and not a
+	// deployment the readiness wait observes (a workload reading it through
+	// bucketRef does not start until its Secret exists, so that workload's
+	// readiness is the bucket's too).
+	HostedTierBucket HostedTier = "bucket"
 )
 
 // HostedWorkload is one declaration bound for the control plane. Exactly one
-// of Workload / Database / Static is set, matching Tier.
+// of Workload / Database / Bucket / Static is set, matching Tier.
 type HostedWorkload struct {
 	Tier HostedTier
 	// Artifact is the release-ledger artifact name this workload's digest is
@@ -81,6 +88,7 @@ type HostedWorkload struct {
 	// third-party reference — and the plan pins it to the release digest.
 	Workload *v1alpha1.WorkloadSpec
 	Database *v1alpha1.ManagedDatabaseSpec
+	Bucket   *v1alpha1.ManagedBucketSpec
 	// Static is the deployed half of a StaticSite: everything but the
 	// digest, which planHosted pins from the bound release as liveDigest.
 	Static *v1alpha1.StaticSiteSpec
@@ -828,6 +836,21 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				continue
 			}
 			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec})
+		case HostedTierBucket:
+			if w.Bucket == nil {
+				errs = append(errs, fmt.Errorf("%s: bucket has no spec", svc.Name))
+				continue
+			}
+			spec := w.Bucket.WithDefaults()
+			if err := v1alpha1.ValidateBucketName(svc.Name); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
+				continue
+			}
+			if err := spec.Validate(); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", svc.Name, err))
+				continue
+			}
+			out = append(out, hostedPlanItem{Name: svc.Name, Tier: w.Tier, Spec: spec})
 		default:
 			errs = append(errs, fmt.Errorf("%s: unknown hosted tier %q", svc.Name, w.Tier))
 		}
@@ -903,7 +926,7 @@ func hostedArtifactOf(name string, w *HostedWorkload) string {
 	// that names an artifact for a database is a declaration the platform
 	// will refuse, and honouring it here would only move the failure to
 	// the far side of the wire where the message is worse.
-	if w.Tier == HostedTierDatabase {
+	if w.Tier == HostedTierDatabase || w.Tier == HostedTierBucket {
 		return ""
 	}
 	if w.Artifact != "" {
@@ -923,12 +946,15 @@ func hostedArtifactOf(name string, w *HostedWorkload) string {
 //   - a databaseRef naming no ManagedDatabase in this env reads a
 //     "<name>-app" Secret nothing will ever publish, so the pod never
 //     starts (CreateContainerConfigError, no application log);
+//   - a bucketRef naming no ManagedBucket in this env reads a
+//     "forge-bucket-<name>" Secret nothing will ever write, the same way;
 //   - a workloadURL naming a workload the env does not publish, or a
 //     Workload that exposes no port, has no URL the control plane can
 //     allocate — its resolver refuses such a target permanently, and the
 //     referring workload waits on it forever.
 func hostedReferenceErrors(group ServiceGroup) []error {
 	databases := map[string]bool{}
+	buckets := map[string]bool{}
 	urls := map[string]string{} // workload → "" (has a URL) or why it has none
 	for _, svc := range group.Services {
 		w := svc.Hosted
@@ -938,6 +964,8 @@ func hostedReferenceErrors(group ServiceGroup) []error {
 		switch {
 		case w.Tier == HostedTierDatabase:
 			databases[svc.Name] = true
+		case w.Tier == HostedTierBucket:
+			buckets[svc.Name] = true
 		case w.Tier == HostedTierStatic:
 			urls[svc.Name] = ""
 		case w.Tier == HostedTierWorkload && w.Workload != nil:
@@ -970,6 +998,10 @@ func hostedReferenceErrors(group ServiceGroup) []error {
 				if e.DatabaseRef != nil && !databases[e.DatabaseRef.Name] {
 					errs = append(errs, fmt.Errorf("%s: env var %s reads databaseRef %q, but this env declares no ManagedDatabase of that name — "+
 						"its credential Secret will never exist and the pod will never start", svc.Name, e.Name, e.DatabaseRef.Name))
+				}
+				if e.BucketRef != nil && !buckets[e.BucketRef.Name] {
+					errs = append(errs, fmt.Errorf("%s: env var %s references a bucket the env does not declare (bucketRef %q names no ManagedBucket) — "+
+						"its credential Secret %s will never exist and the pod will never start", svc.Name, e.Name, e.BucketRef.Name, deploy.BucketCredentialSecretName(e.BucketRef.Name)))
 				}
 				if e.WorkloadURL != nil {
 					if err := urlRef(svc.Name, "env var "+e.Name, e.WorkloadURL.Name); err != nil {
@@ -1046,6 +1078,7 @@ type HostedPreflightItem struct {
 	Tier     HostedTier
 	Workload *v1alpha1.WorkloadSpec
 	Database *v1alpha1.ManagedDatabaseSpec
+	Bucket   *v1alpha1.ManagedBucketSpec
 	Static   *v1alpha1.StaticSiteSpec
 }
 
@@ -1083,6 +1116,8 @@ func PreflightHosted(group ServiceGroup) ([]HostedPreflightItem, error) {
 			p.Workload = &spec
 		case v1alpha1.ManagedDatabaseSpec:
 			p.Database = &spec
+		case v1alpha1.ManagedBucketSpec:
+			p.Bucket = &spec
 		case v1alpha1.StaticSiteSpec:
 			p.Static = &spec
 		}
@@ -1247,7 +1282,40 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if group.Hosted != nil {
 		promotionID = group.Hosted.PromotionID
 	}
-	return p.wait(ctx, c, group.Env, envID, promotionID, bundleDigest, plan)
+	p.reportBucketsNotWaited(plan)
+	return p.wait(ctx, c, group.Env, envID, promotionID, bundleDigest, observedItems(plan))
+}
+
+// reportBucketsNotWaited records every published ManagedBucket as not
+// waited, and says so. The control plane reports no status for one, so this
+// deploy cannot prove it provisioned, credentialed or allowed CORS: a
+// workload reading it proves the Secret exists when it turns ready, and
+// nothing proves it for a bucket no workload reads. Reporting it as absent
+// would let a bucket-only env read as fully observed.
+func (p HostedProvider) reportBucketsNotWaited(plan []hostedPlanItem) {
+	for _, item := range plan {
+		if item.Tier != HostedTierBucket {
+			continue
+		}
+		fmt.Printf("  bucket %s: published; provisioning is not observed by this deploy (verify it: the storage/blobstore skill, \"Verify a hosted bucket\")\n", item.Name)
+		if p.OnRollout != nil {
+			p.OnRollout(cluster.RolloutObservation{Kind: "ManagedBucket", Name: item.Name, State: cluster.RolloutStateNotWaited})
+		}
+	}
+}
+
+// observedItems is the plan less what the control plane keeps no deployment
+// row for: a ManagedBucket. Waiting on one would wait for a status that is
+// never reported; a workload reading the bucket is held until its Secret
+// exists, so the bucket's readiness is observed through that workload.
+func observedItems(plan []hostedPlanItem) []hostedPlanItem {
+	out := make([]hostedPlanItem, 0, len(plan))
+	for _, item := range plan {
+		if item.Tier != HostedTierBucket {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // wait polls until every published workload is confirmed running the bytes

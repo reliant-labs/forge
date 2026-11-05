@@ -76,6 +76,7 @@ const (
 	LogoutPath         = "POST /auth/logout"
 	SessionPath        = "GET /auth/session"
 	PasswordPolicyPath = "GET /auth/password-policy"
+	OptionsPath        = "GET /auth/options"
 	ForgotPath         = "POST /auth/forgot"
 	ResetPath          = "POST /auth/reset"
 )
@@ -124,6 +125,18 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 		// A dev stack has no mail server, so an unverified address strands
 		// the account behind a step nothing can deliver.
 		devMode: cfg.Environment == "development",
+		// Public sign-up: on in local development, OFF in every deployed
+		// environment unless its config opts in. See the RegisterPath mount
+		// below before turning it on.
+{{- if .SelfSignupField}}
+		selfSignup: cfg.Environment == "development" || cfg.AuthSelfSignup,
+{{- else}}
+		//
+		// Your config declares no auth_self_signup, so sign-up is
+		// development-only. To let a deployed environment opt in, declare
+		// `bool auth_self_signup` on it and OR its value in here.
+		selfSignup: cfg.Environment == "development",
+{{- end}}
 		// Secure cookies everywhere except local development, where the
 		// dev server is plain http and a Secure cookie would be dropped.
 		secureCookie: cfg.Environment != "development",
@@ -140,32 +153,44 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 	// so BEFORE the person types one. Public by design — see handlePasswordPolicy.
 	mux.Handle(PasswordPolicyPath, http.HandlerFunc(broker.handlePasswordPolicy))
 
-	// ── Sign-up: PUBLIC BY DEFAULT ────────────────────────────────────────
+	// ── Sign-up: OFF OUTSIDE DEVELOPMENT UNLESS auth_self_signup ──────────
 	//
-	// With this route mounted, anyone who can reach the app can create an
-	// account and is signed straight in. That is the right default for a
-	// product anyone may join, and the wrong one for an invite-only product.
+	// With RegisterPath mounted, anyone who can reach the app can create an
+	// account and is signed straight in — under an address they TYPED and
+	// nobody has proven they own (outside development the issuer records it
+	// unverified; see handleRegister). That is the right default for a
+	// product anyone may join, provided nothing in it trusts an address it
+	// did not see verified, and the wrong one for an invite-only product.
 	//
-	// TO MAKE THE APP INVITE-ONLY:
+	// BEFORE SETTING auth_self_signup: true, check every place the app binds
+	// something to a user BY EMAIL — an invitation, a tenant membership, a
+	// pre-created record. Each must first require the address verified
+	// (devidp.Client.FindUserByID(ctx, claims.Subject) → User.EmailVerified),
+	// or registering someone else's address claims whatever was waiting for
+	// them. `forge skill load auth/authorization` has the check.
 	//
-	//  1. Delete the next line (and RegisterPath above). The issuer still
-	//     creates accounts — the control plane's invitation action does —
-	//     just not from a public form.
-	//  2. Delete the "Create an account" toggle in the sign-in screen
-	//     (src/app/auth/sign-in/page.tsx, or the sign-in route in
-	//     src/routes.tsx).
+	// `forge lint` warns about a broker that mounts RegisterPath without a
+	// condition. GET /auth/options tells the sign-in screen whether to offer
+	// "Create an account", so the screen follows this one switch.
 	//
-	// There is NO scaffolded invite flow, and an invitation does not email
-	// anyone unless the environment's identity declares `smtp`
-	// (forge.ManagedIdentity.smtp). Building one by hand is a small job:
-	// create the account (IdentityService.InviteUser, or
+	// INVITE-ONLY IS THEREFORE THE DEPLOYED DEFAULT. The issuer still creates
+	// accounts — the control plane's invitation action does — just not from
+	// a public form. There is NO scaffolded invite flow, and an invitation
+	// does not email anyone unless the environment's identity declares
+	// `smtp` (forge.ManagedIdentity.smtp). Building one by hand is a small
+	// job: create the account (IdentityService.InviteUser, or
 	// `forge cloud identity invite`), then give the person a one-time code
 	// with devidp.MintPasswordResetCode and hand them
 	// <your app>/auth/reset?userID=<id>&code=<code> by any channel you
 	// control — your own mailer, a message, an admin screen. /auth/reset
 	// below redeems it. `forge skill load deploy/managed-identity` has the
 	// sketch.
-	mux.Handle(RegisterPath, http.HandlerFunc(broker.handleRegister))
+	if broker.selfSignup {
+		mux.Handle(RegisterPath, http.HandlerFunc(broker.handleRegister))
+	}
+	// Which optional routes this deployment serves. Public by design — see
+	// handleOptions.
+	mux.Handle(OptionsPath, http.HandlerFunc(broker.handleOptions))
 
 	// ── Self-serve password reset ─────────────────────────────────────────
 	//
@@ -191,6 +216,8 @@ type loginBroker struct {
 	logger       *slog.Logger
 	devMode      bool
 	secureCookie bool
+	// selfSignup is whether RegisterPath is served at all.
+	selfSignup bool
 
 	// appBase is the app's public origin plus any base path, with no trailing
 	// slash — the prefix of every link this app emails. Derived from
@@ -231,6 +258,12 @@ type registration struct {
 	FamilyName string `json:"familyName,omitempty"`
 }
 
+// authOptions is what the sign-in screen asks before it renders: which of
+// the broker's optional routes this deployment serves.
+type authOptions struct {
+	SelfSignup bool `json:"selfSignup"`
+}
+
 // identity is the ONLY thing the browser learns about the session: who is
 // signed in, for rendering. Never a token.
 type identity struct {
@@ -267,6 +300,21 @@ func (b *loginBroker) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeAuthJSON(w, http.StatusOK, identityFrom(tokens.IDToken))
 }
 
+// handleOptions reports which optional sign-in routes are served, so the
+// screen offers only what will work rather than a button that answers 404.
+//
+// UNAUTHENTICATED, like the password policy: whether sign-up is open is
+// something anyone could learn by trying it.
+func (b *loginBroker) handleOptions(w http.ResponseWriter, _ *http.Request) {
+	writeAuthJSON(w, http.StatusOK, authOptions{SelfSignup: b.selfSignup})
+}
+
+// handleRegister creates an account and signs it in. Mounted only when
+// selfSignup is set — see RegisterLoginBroker.
+//
+// The new address is UNVERIFIED outside development: the person typed it,
+// and nothing has proven it is theirs. The session this hands back is
+// therefore proof of a password, not of an address.
 func (b *loginBroker) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req registration
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {

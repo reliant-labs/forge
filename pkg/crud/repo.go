@@ -412,7 +412,10 @@ func (r *Repo[M]) ensureMeta(db orm.Context) {
 		//   - updatableSet — the MASKED-update allowlist: a path an
 		//     update_mask may name. A ,skipupdate column IS here, because a
 		//     mask that names it is the caller deliberately asserting a new
-		//     value (Create's sibling write path).
+		//     value (Create's sibling write path). That caller is app code: a
+		//     CLIENT's update_mask naming one is refused before it reaches
+		//     the repo, by the generated op (UpdateOp.Unmaskable), since only
+		//     the op can tell the two apart.
 		//   - updatable    — the FULL-REPLACE SET list. A ,skipupdate column
 		//     is EXCLUDED here: Bun's own ,skipupdate enforcement is
 		//     unconditional (it would drop the column from a masked SET too,

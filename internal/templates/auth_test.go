@@ -19,6 +19,31 @@ import (
 // time and readable by anyone who loads the page).
 var bundleTokenRead = regexp.MustCompile(`(?:process\.env|import\.meta\.env)\.[A-Z0-9_]*(?:TOKEN|SECRET|KEY)`)
 
+// TestMiddlewareTemplate_EnrichIsAComponentSeam pins the DB-backed enrich
+// seam: enrichClaims is a package function with no way to reach a database,
+// so AuthDeps.Enrich (a ClaimsEnricher component the graph wires) replaces it
+// when set.
+func TestMiddlewareTemplate_EnrichIsAComponentSeam(t *testing.T) {
+	content, err := ProjectTemplates().Render("middleware.go.tmpl", struct{ Name string }{Name: "myproject"})
+	if err != nil {
+		t.Fatalf("render middleware.go.tmpl: %v", err)
+	}
+	s := string(content)
+	if _, err := parser.ParseFile(token.NewFileSet(), "middleware.go", s, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("rendered middleware.go does not parse: %v", err)
+	}
+	for _, want := range []string{
+		"type ClaimsEnricher interface {\n\tEnrichClaims(ctx context.Context, claims *Claims) (*Claims, error)\n}",
+		"\tEnrich ClaimsEnricher\n",
+		"enrich := enrichClaims\n\tif deps.Enrich != nil {\n\t\tenrich = deps.Enrich.EnrichClaims\n\t}",
+		"Enrich:              enrich,",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("middleware.go is missing %q", want)
+		}
+	}
+}
+
 // TestRenderAppAuthTemplate verifies the OWNED internal/app/auth.go
 // scaffold (app-auth.go.tmpl): it parses as Go, is owned (no DO-NOT-EDIT
 // banner), exposes SetupAuth with the validator-returning signature the
@@ -56,7 +81,11 @@ func TestRenderAppAuthTemplate(t *testing.T) {
 		// threads into AuthDeps.Validate, and on which it installs the
 		// API-key validator once infra is open.
 		{"SetupAuth signature", "func SetupAuth(cfg *config.Config) (*auth.Authenticator, error) {", true},
-		{"SetupAuth wraps the JWT validator", "return auth.NewAuthenticator(validator.Validate), nil", true},
+		{"SetupAuth wraps the JWT validator", "authenticator := auth.NewAuthenticator(validator.Validate)", true},
+		// A managed identity's access token carries no email; userinfo
+		// fills a verified one for the enrich seam.
+		{"SetupAuth fills Claims.Email from userinfo", "authenticator.UseUserInfo(auth.NewUserInfo(", true},
+		{"userinfo endpoint from discovery", "meta.UserinfoEndpoint", true},
 		{"APIKeyValidator seam", "func APIKeyValidator(_ *Infra) auth.KeyValidator {", true},
 		{"module config import", "example.com/myproject/pkg/config", true},
 		{"forge auth import", "github.com/reliant-labs/forge/pkg/auth", true},

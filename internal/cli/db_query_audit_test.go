@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -94,10 +95,18 @@ func TestDBQueryAuditorAppendsOneLinePerAttempt(t *testing.T) {
 	if r.Schema != dbQueryAuditSchema || r.ID != "dbq_1" || r.SQL != "delete from t" || r.Outcome != "refused" || r.Error != "refused" || r.Reason != "ISS-1" || r.Role != "forge_ro" || !r.At.Equal(at) {
 		t.Errorf("record %+v", r)
 	}
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits: os.Stat reports 0666 for any
+	// writable file, whatever mode it was created with.
+	if fi, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Errorf("record file mode: %v %v", fi.Mode(), err)
 	}
-	if !strings.Contains(log.String(), `"audit_id":"dbq_1"`) || !strings.Contains(log.String(), `"record":"`+path+`"`) || strings.Contains(log.String(), "delete from t") {
+	// The path as the JSON log line spells it: a Windows path's backslashes
+	// are escaped there.
+	recordJSON, err := json.Marshal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), `"audit_id":"dbq_1"`) || !strings.Contains(log.String(), `"record":`+string(recordJSON)) || strings.Contains(log.String(), "delete from t") {
 		t.Errorf("log line names the record, not the statement:\n%s", log.String())
 	}
 }

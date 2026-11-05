@@ -1117,6 +1117,207 @@ schema ExternalDatabase:
         sslmode in _EXTERNAL_DATABASE_SSLMODES, \
             "ExternalDatabase '${name}'.sslmode '${sslmode}' is not one of ${_EXTERNAL_DATABASE_SSLMODES}"
 
+# ---------------------------------------------------------------------------
+# Object storage: forge.Bucket, where it lives, and how a workload reaches it.
+# ---------------------------------------------------------------------------
+
+schema Bucket:
+    """An object-storage bucket the env's workloads upload to and serve from,
+    as a Bundle entry (`Bundle.buckets`). The app talks to it through
+    forge/pkg/blobstore, which speaks the S3 API, and a workload is handed the
+    connection through `forge.BucketRef`, the same shape as a DatabaseRef:
+
+        buckets = [forge.Bucket {name = "uploads", runtime = _minio}]
+        ...
+        env = forge.bucket_env("UPLOADS", "uploads")
+
+    `name` is how a BucketRef names it and, unless the runtime says
+    otherwise, the bucket's real name: 3..63 lowercase letters, digits and
+    hyphens, S3's rule without the dots.
+
+    `public_read` makes every object readable without a signature (avatars, a
+    public gallery). Leave it off for anything a user uploaded privately and
+    hand out forge/pkg/blobstore PresignGet URLs instead.
+
+    `cors_origins` are the browser origins that upload and download directly.
+    The dev MinIO applies them server-wide (empty = any origin, which is what
+    a dev loop on a moving localhost port wants). On forge.BucketOnS3 forge
+    does not manage the bucket, so they are a statement of what the bucket's
+    own CORS configuration must allow, set where the bucket lives.
+
+    WHERE IT LIVES is its `runtime`, and there is no default:
+
+      * `forge.BucketOnMinIO {port}` — the env's MinIO, a docker-compose
+        service forge's dev env runs (`forge.minio_workload`). It creates the
+        bucket at `forge env up`, and the credentials are the dev MinIO's own.
+      * `forge.BucketOnS3 {endpoint, ...}` — an S3-compatible bucket you
+        operate or buy (AWS S3, Cloudflare R2, GCS with an HMAC key, a MinIO
+        of your own). forge renders the connection and never creates,
+        configures or deletes the bucket.
+      * `forge.OnHosted {}` — Reliant hosting provisions it: one bucket per
+        env, with a credential that reaches that bucket alone, published as
+        a forge.dev ManagedBucket. A hosted workload's BucketRef reads the
+        Secret the platform writes for it (`forge-bucket-<name>`), and the
+        bucket's CORS also allows the env's own hosted frontends and custom
+        domains, so `cors_origins` lists only OTHER origins. `name` is at most
+        40 characters here: the cloud bucket's name is a platform prefix
+        plus it. Only a hosted workload can reach it.
+
+    `deletion_policy` is what removing the declaration does to the objects
+    of a bucket forge manages (forge.OnHosted): "retain" (the default) leaves
+    the bucket and every object in place, "delete" deletes them. Deleting a
+    declaration says nothing about whether the uploads should exist, which
+    is why deleting them must be typed.
+    """
+    name: str
+    public_read: bool = False
+    cors_origins: [str] = []
+    deletion_policy: "retain" | "delete" = "retain"
+    runtime: BucketOnMinIO | BucketOnS3 | OnHosted
+
+    check:
+        regex.match(name, r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"), \
+            "Bucket.name '${name}' must be 3..63 lowercase letters, digits and hyphens, starting and ending with a letter or digit: it is the bucket's name on S3"
+        all o in cors_origins { o == "*" or regex.match(o, r"^https?://[^/]+$") }, \
+            "Bucket '${name}'.cors_origins ${cors_origins} must each be an origin (scheme://host[:port], no path) or \"*\""
+        runtime.type != "hosted" or len(name) <= 40, \
+            "Bucket.name '${name}' is ${len(name)} characters; on forge.OnHosted it must be at most 40: the platform prefixes it to make the cloud bucket's name, which is at most 63"
+        len(cors_origins) <= 32, "Bucket '${name}'.cors_origins declares ${len(cors_origins)} origins; at most 32"
+        len(_duplicates(cors_origins)) == 0, "Bucket '${name}'.cors_origins lists ${_duplicates(cors_origins)} more than once"
+
+schema BucketOnMinIO:
+    """A bucket on the env's MinIO: the docker-compose service `service`
+    (default "minio") that `forge.minio_workload` binds, publishing the S3
+    API on `port` on loopback. Dev and e2e only: a hosted workload cannot
+    reach it, and a reference from one is refused.
+
+    `access_key` / `secret_key` are the MinIO root credentials, committed on
+    purpose like the dev postgres password: this server binds loopback and
+    holds only local test files. `console_port`, when set, publishes MinIO's
+    web console.
+    """
+    type: "minio" = "minio"
+    service: str = "minio"
+    port: int
+    console_port?: int
+    region: str = "us-east-1"
+    access_key: str = "minioadmin"
+    secret_key: str = "minioadmin"
+
+    check:
+        port > 0 and port < 65536, "BucketOnMinIO.port must be 1..65535"
+        not console_port or (console_port > 0 and console_port < 65536 and console_port != port), \
+            "BucketOnMinIO.console_port must be 1..65535 and differ from port"
+        len(secret_key) >= 8, "BucketOnMinIO.secret_key must be at least 8 characters: MinIO refuses to start with a shorter root password"
+
+schema BucketOnS3:
+    """A bucket on any S3-compatible service, which forge does not manage.
+
+        forge.BucketOnS3 {
+            endpoint = "https://<account>.r2.cloudflarestorage.com"
+            region = "auto"
+            bucket = "acme-prod-uploads"
+            access_key_id = forge.ManagedSecret {name = "UPLOADS_ACCESS_KEY_ID"}
+            secret_access_key = forge.ManagedSecret {name = "UPLOADS_SECRET_ACCESS_KEY"}
+        }
+
+    `endpoint` is the S3 API's base URL, scheme included; `public_endpoint`
+    is the one a browser reaches when it differs (empty = endpoint). `bucket`
+    is the real bucket name (empty = the forge.Bucket's name). The two
+    credentials are references, never literals: a forge.ManagedSecret (the
+    env's secret store; what a hosted workload reads) or a forge.SecretRef (a
+    Kubernetes Secret on a cluster you operate). GCS takes an HMAC key and
+    endpoint https://storage.googleapis.com; R2 takes region "auto".
+    """
+    type: "s3" = "s3"
+    endpoint: str
+    public_endpoint: str = ""
+    region: str = "us-east-1"
+    bucket: str = ""
+    path_style: bool = False
+    access_key_id: SecretRef | ManagedSecret
+    secret_access_key: SecretRef | ManagedSecret
+
+    check:
+        regex.match(endpoint, r"^https?://[^/]+/?$"), "BucketOnS3.endpoint '${endpoint}' must be a base URL like https://host[:port], with no path"
+        not public_endpoint or regex.match(public_endpoint, r"^https?://[^/]+/?$"), \
+            "BucketOnS3.public_endpoint '${public_endpoint}' must be a base URL like https://host[:port], with no path"
+        not bucket or regex.match(bucket, r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"), "BucketOnS3.bucket '${bucket}' is not an S3 bucket name"
+
+# Every BucketRef key of a bucket on its MinIO, for a referrer reaching the
+# S3 API at `endpoint` (render.k's _bucket_minio_endpoint: localhost for a
+# host process, the cluster's host gateway for a pod, the compose service
+# for a compose container). The browser always uses localhost.
+_bucket_minio_values = lambda b: Bucket, endpoint: str -> {str:} {
+    {
+        "endpoint" = endpoint
+        "public_endpoint" = "http://localhost:${b.runtime.port}"
+        "region" = b.runtime.region
+        "bucket" = b.name
+        "access_key_id" = b.runtime.access_key
+        "secret_access_key" = b.runtime.secret_key
+        "path_style" = "true"
+    }
+}
+
+# Every BucketRef key of a bucket on an S3 service, as declared.
+_bucket_s3_values = lambda b: Bucket -> {str:} {
+    {
+        "endpoint" = b.runtime.endpoint
+        "public_endpoint" = b.runtime.public_endpoint or b.runtime.endpoint
+        "region" = b.runtime.region
+        "bucket" = b.runtime.bucket or b.name
+        "access_key_id" = b.runtime.access_key_id
+        "secret_access_key" = b.runtime.secret_access_key
+        "path_style" = "true" if b.runtime.path_style else "false"
+    }
+}
+
+bucket_env = lambda prefix: str, name: str -> {str:} {
+    """The env a workload reads bucket `name` from: one forge.BucketRef per
+    connection fact, named `<prefix>_<KEY>` — the fields of
+    forge/pkg/blobstore's S3Config, which a typed config message with the
+    same leaves (endpoint, public_endpoint, region, bucket, access_key_id,
+    secret_access_key, path_style) composed on AppConfig as `<prefix>`
+    reads by itself.
+
+        env = forge.bucket_env("UPLOADS", "uploads")
+    """
+    {"${prefix}_${k.upper()}": BucketRef {name = name, key = k} for k in BUCKET_REF_KEYS}
+}
+
+minio_workload = lambda minio: BucketOnMinIO, buckets: [Bucket] -> Workload {
+    """The docker-compose workload that runs the env's MinIO for `buckets`
+    (those of them on `minio`): it publishes the S3 API on `minio.port`,
+    creates each bucket at start, opens the public_read ones to anonymous
+    reads, and allows the buckets' cors_origins (any origin when none is
+    declared). The compose service (forge's scaffolded docker-compose.yml
+    `minio`) reads all of it from the env below.
+
+        _minio = forge.BucketOnMinIO {port = plugin.resolve_port("acme-dev-minio", 9000)}
+        _buckets = [forge.Bucket {name = "uploads", runtime = _minio}]
+        workloads = _workloads + [forge.minio_workload(_minio, _buckets)]
+    """
+    _mine = [b for b in buckets if b.runtime.type == "minio" and b.runtime.service == minio.service]
+    _origins = sorted({o: 0 for b in _mine for o in b.cors_origins})
+    Workload {
+        name = minio.service
+        runtime = OnCompose {
+            service = minio.service
+            env = {
+                MINIO_PORT = str(minio.port)
+                MINIO_CONSOLE_PORT = str(minio.console_port) if minio.console_port else "0"
+                MINIO_ROOT_USER = minio.access_key
+                MINIO_ROOT_PASSWORD = minio.secret_key
+                MINIO_REGION = minio.region
+                MINIO_BUCKETS = " ".join([b.name for b in _mine])
+                MINIO_PUBLIC_BUCKETS = " ".join([b.name for b in _mine if b.public_read])
+                MINIO_API_CORS_ALLOW_ORIGIN = "*" if not _origins or "*" in _origins else ",".join(_origins)
+            }
+        }
+    }
+}
+
 schema HostInfra:
     """A third-party server forge runs as a HOST PROCESS — no container,
     no daemon, nothing to install first.
@@ -6841,6 +7042,9 @@ schema Bundle:
     # `forge db query` can reach them. Nothing is rendered for them. See
     # ExternalDatabase.
     external_databases: [ExternalDatabase] = []
+    # Object-storage buckets (forge.Bucket): where each lives, reached by a
+    # workload through forge.BucketRef / forge.bucket_env. See Bucket.
+    buckets: [Bucket] = []
     # Platform dependencies rendered from helm charts (helm-as-a-RENDERER:
     # `helm template --skip-crds` → manifests folded into the normal apply
     # pipeline; NO `helm install`). Each is a renderable with a NAME the
@@ -7084,8 +7288,8 @@ schema Bundle:
             "Bundle.frontends ${[f.name for f in frontends if not f.runtime]} bind no runtime: every frontend states where it runs — bind it in this env, e.g. `runtime = forge.OnHost {} | forge.OnHosted {} | forge.OnBucket {bucket = ...} | forge.OnFirebase {project = ..., site = ...} | forge.BuildOnly {}`"
         # HOSTED IS PER WORKLOAD / FRONTEND, and it needs a control plane to
         # publish to.
-        control_plane or not _hosted_names(workloads, databases, frontends), \
-            "${_hosted_names(workloads, databases, frontends)} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
+        control_plane or not _hosted_names(workloads, databases + buckets, frontends), \
+            "${_hosted_names(workloads, databases + buckets, frontends)} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
         # A database binds a runtime, or lands on the env's cluster_target.
         all db in databases { _db_runtime(db) or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
             "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"
@@ -7094,6 +7298,12 @@ schema Bundle:
             "Bundle: a database name is declared twice across databases and external_databases: ${_duplicates([db.name for db in databases] + [x.name for x in external_databases])}. `forge db query --database` names one"
         all x in external_databases { x.runtime or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
             "ExternalDatabase ${[x.name for x in external_databases if not x.runtime]} binds no runtime and the env has no cluster target: set `runtime = forge.OnCluster {target = ...}` on it (the cluster its service runs on)"
+        # A forge.BucketRef names a bucket, so the name is unique.
+        len(_duplicates([b.name for b in buckets])) == 0, \
+            "Bundle.buckets: a bucket name is declared twice: ${_duplicates([b.name for b in buckets])}. forge.BucketRef names one"
+        # A bucket on a MinIO needs the MinIO: a workload of that name.
+        all b in buckets { b.runtime.type != "minio" or b.runtime.service in [w.name for w in workloads] }, \
+            "Bundle.buckets ${[b.name for b in buckets if b.runtime.type == 'minio' and b.runtime.service not in [w.name for w in workloads]]} are on a forge.BucketOnMinIO that no workload runs: add `forge.minio_workload(<the BucketOnMinIO>, <buckets>)` to Bundle.workloads (it binds docker-compose.yml's `minio` service)"
         # HostedSecrets names no endpoint of its own — the values live in THIS
         # env's control plane — so without one there is nowhere to put them.
         # PLAINTEXT SECRETS ONLY WHERE THEY CANNOT ESCAPE THIS MACHINE.

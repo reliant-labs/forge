@@ -32,6 +32,17 @@ import (
 // table only the newer release knows, and the newer release's own run
 // converges the grants anyway.
 //
+// THE ROLE EXISTS WHEREVER THE MIGRATING ROLE MAY CREATE IT. Before applying
+// the script the run creates the read-only role NOLOGIN when the cluster has
+// none (dbgrants.EnsureRole), exactly as it creates the dashboard role
+// (dashboard.go), so the grants converge on a database forge does not run (a
+// forge.ExternalDatabase on a cloud instance) without a hand-written CREATE
+// ROLE. Creating it gives nobody access: a NOLOGIN role cannot sign in, and
+// the deploy that wants `forge db query` to read as it gives it LOGIN and a
+// password. An existing role is never altered. A migrating role that may not
+// create roles (a ManagedDatabase's, whose forge_ro CNPG declares) leaves the
+// run as it was: RoleMissing until the role appears.
+//
 // A FAILURE IS THE RUN'S FAILURE. The migrations are committed by then, but a
 // column that has become secret keeps its old grant until the script succeeds,
 // so the run reports it rather than serving on. A rerun finds nothing pending
@@ -57,9 +68,13 @@ const GrantsRowsDir = "grants/readonly"
 type Grants struct {
 	// Applied is true when the script ran.
 	Applied bool
-	// RoleMissing is true when the database has no [dbgrants.RoleName], so
-	// the script was not run. That is the normal state of a database nobody
-	// provisioned the role for, not a fault.
+	// Created is true when the role did not exist and this run created it,
+	// NOLOGIN, before applying the script.
+	Created bool
+	// RoleMissing is true when the database has no [dbgrants.RoleName] and
+	// the migrating role may not create it, so the script was not run. That
+	// is the normal state of a ManagedDatabase before CNPG reconciles the
+	// role, not a fault.
 	RoleMissing bool
 	// SecurityDefiner lists the SECURITY DEFINER functions the role can
 	// execute (dbgrants.SecurityDefinerExposure): a way around its column
@@ -108,21 +123,22 @@ func grantsScript(fsys fs.FS, dir string) (string, error) {
 // REVOKE and GRANT take locks, so the script runs under the run's limits
 // (guardedStatement): it waits behind a long reader for lock_timeout, is
 // retried, and fails the run with a *LockTimeoutError if the reader outlasts
-// the attempts. The role lookup takes no conflicting lock and stays outside. A
+// the attempts. Creating the role takes no table lock and stays outside. A
 // script added to a run must go through guardedStatement too.
 func applyGrants(ctx context.Context, conn *sql.Conn, script string, run RunOptions) (*Grants, error) {
 	if script == "" {
 		return nil, nil
 	}
 	g := &Grants{}
-	exists, err := dbgrants.RoleExists(ctx, conn, grantsRole)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
+	created, err := dbgrants.EnsureRole(ctx, conn, grantsRole)
+	switch {
+	case errors.Is(err, dbgrants.ErrRoleNotCreatable):
 		g.RoleMissing = true
 		return g, nil
+	case err != nil:
+		return nil, err
 	}
+	g.Created = created
 	if err := guardedStatement(ctx, conn, run, "read-only grants", func() error {
 		return dbgrants.Apply(ctx, conn, script)
 	}); err != nil {

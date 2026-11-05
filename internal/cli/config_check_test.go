@@ -11,6 +11,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/forgecompat"
+	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/templates"
 	forgeconfig "github.com/reliant-labs/forge/pkg/config"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -310,4 +312,119 @@ func TestConfigCheckCatchesBothDeliverySignerBootFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A fresh service project's migration job — the scaffolded `db migrate up`,
+// built from the cmd-tree-db.go.tmpl this forge writes — answers the check
+// with its DSN wired, and is refused with it unwired. Before it took part,
+// `db migrate` read DATABASE_URL directly and never reached a config load,
+// so the check reported it unverified and a fresh project's first deploy
+// (`project new --service X --claimable`, then `env deploy prod
+// --claimable`) was refused before the push once the check gated. Built with
+// no migrations embedded: the state every project starts in, before its
+// first entity.
+func TestConfigCheckVerifiesAFreshProjectsMigrationJob(t *testing.T) {
+	testkit.Slow(t, "renders the scaffolded db.go into a module and builds it with go build",
+		testkit.Inputs("internal/templates/project/cmd-tree-db.go.tmpl", "pkg/config/**"))
+
+	bin := buildScaffoldedMigrator(t)
+	prev := configCheckRunner
+	configCheckRunner = hostConfigCheckRunner
+	t.Cleanup(func() { configCheckRunner = prev })
+
+	migrate := func(env ...deployv1alpha1.EnvVar) WorkloadEntity {
+		return WorkloadEntity{
+			Name:    "migrate",
+			Kind:    "job",
+			Image:   "demo",
+			Build:   BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/demo", OutputName: "demo"}},
+			Runtime: RuntimeEntity{Type: RuntimeHosted},
+			Spec:    deployv1alpha1.WorkloadSpec{Kind: deployv1alpha1.KindJob, Args: []string{"db", "migrate", "up"}, Env: env},
+		}
+	}
+	wired := deployv1alpha1.EnvVar{Name: "DATABASE_URL", DatabaseRef: &deployv1alpha1.DatabaseRef{Name: "demo"}}
+	for _, c := range []struct {
+		name string
+		w    WorkloadEntity
+		want string // "" passes
+	}{
+		{"database wired", migrate(wired), ""},
+		{"database unwired", migrate(), "DATABASE_URL is not set"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var out bytes.Buffer
+			chk := &projectConfigCheck{
+				cfg:      &config.ProjectConfig{ForgeVersion: configCheckGatesFrom},
+				entities: &KCLEntities{Workloads: []WorkloadEntity{c.w}},
+				env:      "prod", out: &out, outputDir: bin,
+			}
+			err := chk.run(t.Context(), "demo:v1")
+			if c.want == "" {
+				if err != nil || !strings.Contains(out.String(), "✓ migrate") {
+					t.Fatalf("a fresh project's wired migration job failed the check: %v\n%s", err, out.String())
+				}
+				return
+			}
+			if err == nil || !strings.Contains(out.String(), c.want) {
+				t.Fatalf("err = %v, want a refused push naming %q:\n%s", err, c.want, out.String())
+			}
+		})
+	}
+}
+
+// buildScaffoldedMigrator renders cmd-tree-db.go.tmpl into a minimal module
+// shaped like a fresh project with no migrations (db/ embeds none; pkg/config
+// registers the DSN flag), builds it against this forge checkout through a
+// go.work, and returns the directory holding the binary, named "demo".
+func buildScaffoldedMigrator(t *testing.T) string {
+	t.Helper()
+	forgeRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := templates.ProjectTemplates().Render("cmd-tree-db.go.tmpl", map[string]any{
+		"Module": "example.com/demo", "Name": "demo", "HasMigrations": false,
+	})
+	if err != nil {
+		t.Fatalf("render cmd-tree-db.go.tmpl: %v", err)
+	}
+	mod := t.TempDir()
+	files := map[string]string{
+		"go.mod":  "module example.com/demo\n\ngo 1.27.0\n",
+		"go.work": "go 1.27.0\n\nuse (\n\t.\n\t" + forgeRoot + "\n)\n",
+		"main.go": "package main\n\nimport \"example.com/demo/cmd\"\n\nfunc main() { cmd.Execute() }\n",
+		"db/source.go": "package db\n\nimport \"io/fs\"\n\nconst SourceDir = \"migrations\"\n\nconst HasMigrations = false\n\n" +
+			"func Source() fs.FS { return nil }\n",
+		"pkg/config/config.go": "package config\n\nimport \"github.com/spf13/cobra\"\n\n" +
+			"func RegisterFlags(cmd *cobra.Command) { cmd.PersistentFlags().String(\"database-url\", \"\", \"\") }\n",
+		// The root also has a `server` that loads a typed config, as every
+		// project's does: that is what links the check mode into the binary.
+		"cmd/root.go": "package cmd\n\nimport (\n\t\"os\"\n\n\t\"github.com/spf13/cobra\"\n" +
+			"\t\"google.golang.org/protobuf/types/known/emptypb\"\n\n\tforgeconfig \"github.com/reliant-labs/forge/pkg/config\"\n)\n\n" +
+			"type Deps struct{}\n\nvar factories []func(Deps) *cobra.Command\n\n" +
+			"func registerCommand(f func(Deps) *cobra.Command) { factories = append(factories, f) }\n\n" +
+			"func Execute() {\n\troot := &cobra.Command{Use: \"demo\"}\n" +
+			"\troot.AddCommand(&cobra.Command{Use: \"server\", RunE: func(cmd *cobra.Command, _ []string) error {\n" +
+			"\t\treturn forgeconfig.Load(cmd, &emptypb.Empty{})\n\t}})\n" +
+			"\tfor _, f := range factories {\n\t\troot.AddCommand(f(Deps{}))\n\t}\n" +
+			"\tif root.Execute() != nil {\n\t\tos.Exit(1)\n\t}\n}\n",
+		"cmd/db.go": string(src),
+	}
+	for rel, body := range files {
+		p := filepath.Join(mod, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bin := t.TempDir()
+	build := exec.Command("go", "build", "-o", filepath.Join(bin, "demo"), ".")
+	build.Dir = mod
+	build.Env = goexec.WithTrimpath(append(os.Environ(), "GOWORK="+filepath.Join(mod, "go.work"), "GOFLAGS=-mod=readonly"))
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build the scaffolded migrator: %v\n%s", err, out)
+	}
+	return bin
 }

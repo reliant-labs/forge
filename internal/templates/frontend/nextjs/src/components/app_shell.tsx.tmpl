@@ -103,7 +103,11 @@ export function AppShell({
             The page's ONE main landmark — pages render a section, never a
             second main. tabIndex={-1} lets the skip link move focus here.
           */}
-          <main id="main" tabIndex={-1} className="flex-1 overflow-y-auto bg-surface-muted focus:outline-none">
+          <main
+            id="main"
+            tabIndex={-1}
+            className="flex-1 overflow-y-auto bg-surface-muted focus:outline-none"
+          >
             {/*
               A max width on the content column. Full-bleed text on a 27"
               monitor is unreadable, and a scaffold that never sets one

@@ -109,6 +109,7 @@
     ],
     "kubeconfig_secrets": [],
     "lifecycle": "local",
+    "manifest_owners": [],
     "manifests": [],
     "network_policy": null,
     "overrides": {},

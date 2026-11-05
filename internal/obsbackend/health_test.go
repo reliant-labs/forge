@@ -3,11 +3,13 @@ package obsbackend
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
@@ -138,13 +140,54 @@ func TestLocalReleaseHealthNeedsAnInstantAndLabelsWhatItSkipped(t *testing.T) {
 			t.Errorf("not_evaluated lacks %s: %v", want, res.Report.NotEvaluated)
 		}
 	}
-	if len(res.Statements) != 3 {
-		t.Errorf("statements = %d, want RED per window plus issues", len(res.Statements))
+	if len(res.Statements) != 5 {
+		t.Errorf("statements = %d, want RED and RED by endpoint per window, plus issues", len(res.Statements))
 	}
 	if bad := (releasehealth.Options{Overrides: map[string]string{"min_requests": "x"}}); true {
 		if _, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c, Options: bad}); err == nil || err.(*Error).Code != ExitWrong {
 			t.Errorf("bad threshold: %v", err)
 		}
+	}
+}
+
+// seqRunner answers the n-th statement with results[n].
+type seqRunner struct{ results []Result }
+
+func (s *seqRunner) Run(_ context.Context, _ obsquery.Stmt, _ Limits) (Result, error) {
+	if len(s.results) == 0 {
+		return Result{}, nil
+	}
+	r := s.results[0]
+	s.results = s.results[1:]
+	return r, nil
+}
+
+// An endpoint set cut at obsquery.MaxREDEndpoints is not judged as whole: the
+// surviving endpoints say nothing about the omitted ones, so latency falls
+// back to the service-level p95, which here regressed.
+func TestLocalReleaseHealthJudgesTheServiceWhenTheEndpointSetIsTruncated(t *testing.T) {
+	red := func(p95 string) Result {
+		return Result{Rows: [][]any{{"api", num64("1000"), num64("0"), []any{num64("1"), num64(p95), num64(p95)}, ""}}}
+	}
+	var eps [][]any
+	for i := 0; i <= obsquery.MaxREDEndpoints; i++ {
+		eps = append(eps, []any{"api", fmt.Sprintf("GET /e%d", i), num64("1"), num64("0"), []any{num64("1"), num64("10"), num64("10")}})
+	}
+	// RED before, RED after, by endpoint before, by endpoint after, issues.
+	l := Local{Env: "dev", Runner: &seqRunner{results: []Result{red("10"), red("50"), {Rows: eps}, {Rows: eps}, {}}}}
+	res, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Report.Services) != 1 || len(res.Report.Services[0].Endpoints) != 0 {
+		t.Fatalf("a truncated endpoint set must not be attached: %+v", res.Report.Services)
+	}
+	found := false
+	for _, f := range res.Report.Findings {
+		found = found || f.Code == release.HealthLatency
+	}
+	if !found {
+		t.Errorf("the service-level p95 regression is judged: %+v", res.Report.Findings)
 	}
 }
 

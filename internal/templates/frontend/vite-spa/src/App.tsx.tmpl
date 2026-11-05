@@ -103,7 +103,11 @@ export default function App({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <main id="main" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto bg-surface-muted focus:outline-none">
+      <main
+        id="main"
+        tabIndex={-1}
+        className="min-h-0 flex-1 overflow-y-auto bg-surface-muted focus:outline-none"
+      >
         {/* Max width so content does not run full-bleed on a wide display. */}
         <div className="mx-auto max-w-7xl p-6 lg:p-8">{children}</div>
       </main>

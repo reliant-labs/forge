@@ -337,7 +337,7 @@ func TestListSessionsRunsCompileThenParse(t *testing.T) {
 
 // The location columns are named only for a scope whose tables have them; the
 // columns keep their positions either way, so one scan reads both shapes.
-func TestSessionColumnsFollowTheTenantsShape(t *testing.T) {
+func TestSessionColumnsFollowTheTablesShape(t *testing.T) {
 	for _, geo := range []bool{false, true} {
 		sc := rumScope()
 		sc.SessionGeo = geo

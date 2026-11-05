@@ -241,6 +241,10 @@ func cloneTables(in []Table) []Table {
 			t.Indexes[j].Keys = slices.Clone(t.Indexes[j].Keys)
 		}
 		t.ForeignKeys = slices.Clone(t.ForeignKeys)
+		for j := range t.ForeignKeys {
+			t.ForeignKeys[j].KeyColumns = slices.Clone(t.ForeignKeys[j].KeyColumns)
+			t.ForeignKeys[j].RefKeyColumns = slices.Clone(t.ForeignKeys[j].RefKeyColumns)
+		}
 		t.Checks = slices.Clone(t.Checks)
 		for j := range t.Checks {
 			t.Checks[j].Columns = slices.Clone(t.Checks[j].Columns)

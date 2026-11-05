@@ -262,7 +262,7 @@ func placementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration, error
 	}
 	// THE REST OF THE OWNERS kcl/render.k stamps: every named forge.Manifests
 	// group, from output.manifest_owners, the same definition that labels its
-	// objects. One with release_inputs is a consumer above; one without (RBAC,
+	// objects. One with release_inputs is a consumer above; one without (ClusterRoles,
 	// PriorityClasses, routes) is declared here, so a sealed object never names
 	// an owner the inventory lacks. The bundle makes a group with controllers
 	// items and one without inventory only.

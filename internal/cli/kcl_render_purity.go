@@ -67,6 +67,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -130,14 +131,96 @@ func restoreTrackedFileFromHEAD(projectDir, rel string) error {
 // undoes any tracked-file write the render performed and returns the paths it
 // had to restore. The entities are returned regardless — the query is
 // legitimate; only the side effect is not.
+//
+// Inside a generate run a render whose inputs are unchanged is answered from
+// the run's memo (generate_kcl_memo.go), with nothing restored: the render that
+// produced it already restored and reported. The entities are shared between
+// callers, which only read them. A failed render is not memoized, so a caller
+// after it evaluates again, as before.
 func renderKCLPure(ctx context.Context, projectDir, env string) (*KCLEntities, []string, error) {
+	key, memo := kclRenderMemoKey(projectDir, env)
+	if memo {
+		if e, hit := kclRenderMemoGet(key); hit {
+			return e.entities, nil, nil
+		}
+	}
 	before := dirtyTrackedFiles(projectDir)
 
 	entities, err := RenderKCL(ctx, projectDir, env)
 	if err != nil {
 		return nil, nil, err
 	}
-	return entities, restoreImpureKCLWrites(projectDir, before), nil
+	restored := restoreImpureKCLWrites(projectDir, before)
+	if memo {
+		kclRenderMemoPut(key, kclRenderMemoEntry{entities: entities})
+	}
+	return entities, restored, nil
+}
+
+// envRender is one environment's result from renderEnvsPure.
+type envRender struct {
+	env      string
+	entities *KCLEntities
+	err      error
+}
+
+// renderEnvsParallelism bounds how many env evaluations renderEnvsPure runs at once.
+// Each is a `forge kcl eval` child of a few CPU-seconds; a project has a
+// handful of envs.
+const renderEnvsParallelism = 4
+
+// renderEnvsPure is renderKCLPure for several envs, in the given order: the
+// shape of every generate step that walks all of them. The ones the run's memo
+// cannot answer are evaluated CONCURRENTLY inside ONE purity bracket — two
+// `git status` calls for the batch rather than two per env — and anything an
+// evaluation wrote to a tracked file is restored and reported for the batch,
+// since concurrent renders cannot say which of them wrote it.
+func renderEnvsPure(ctx context.Context, projectDir string, envs []string) []envRender {
+	out := make([]envRender, len(envs))
+	keys := make([]string, len(envs))
+	memo := make([]bool, len(envs))
+	var misses []int
+	for i, env := range envs {
+		out[i].env = env
+		keys[i], memo[i] = kclRenderMemoKey(projectDir, env)
+		if memo[i] {
+			if e, hit := kclRenderMemoGet(keys[i]); hit {
+				out[i].entities = e.entities
+				continue
+			}
+		}
+		misses = append(misses, i)
+	}
+	if len(misses) == 0 {
+		return out
+	}
+
+	before := dirtyTrackedFiles(projectDir)
+	sem := make(chan struct{}, renderEnvsParallelism)
+	var wg sync.WaitGroup
+	for _, i := range misses {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			out[i].entities, out[i].err = RenderKCL(ctx, projectDir, envs[i])
+		}(i)
+	}
+	wg.Wait()
+	rendered := make([]string, 0, len(misses))
+	for _, i := range misses {
+		rendered = append(rendered, envs[i])
+		if out[i].err != nil {
+			out[i].entities = nil
+			continue
+		}
+		if memo[i] {
+			kclRenderMemoPut(keys[i], kclRenderMemoEntry{entities: out[i].entities})
+		}
+	}
+	reportImpureRender(strings.Join(rendered, ", "), restoreImpureKCLWrites(projectDir, before))
+	return out
 }
 
 // restoreImpureKCLWrites is shared by environment renders and structural

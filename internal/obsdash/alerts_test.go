@@ -102,10 +102,36 @@ func TestSilentDefaultNeedsSteadyTraffic(t *testing.T) {
 		if !strings.Contains(r.Expr, "uniqExactIf(toStartOfHour(t)") || !strings.Contains(r.Expr, ">= 18") {
 			t.Errorf("service-silent must require 18 active hours of the previous 24h inside the SQL: %s", r.Expr)
 		}
+		if !strings.Contains(r.Expr, "arrayCount(d -> d >= 10 * 60") || !strings.Contains(r.Expr, ")))))) <= 2") {
+			t.Errorf("service-silent must refuse a service that was silent this long more than twice in the previous 24h (a bursty service is not steady): %s", r.Expr)
+		}
 		if r.For != "0s" {
 			t.Errorf("service-silent for = %q: the silence window is in the SQL, so the hold time is 0s", r.For)
 		}
 	}
+}
+
+// TestSilentDefaultCountsEveryCallAServiceServes pins forge#1727: the project's
+// rpc services pick which services are judged, but a service's liveness is
+// every call it serves. Only the subquery that picks the services may filter on
+// the procedure.
+func TestSilentDefaultCountsEveryCallAServiceServes(t *testing.T) {
+	rules, _ := ResolveAlertDefaults(AlertInputOf(fixture()), "dev", nil)
+	for _, r := range rules {
+		if r.ID != "service-silent" {
+			continue
+		}
+		if n := strings.Count(r.Expr, "Attributes['procedure']"); n != 1 {
+			t.Errorf("service-silent filters on the procedure %d times, want once (in the service subquery): %s", n, r.Expr)
+		}
+		sub := strings.Index(r.Expr, "ServiceName IN (")
+		proc := strings.Index(r.Expr, "Attributes['procedure']")
+		if sub < 0 || proc < sub {
+			t.Errorf("service-silent must scope by the services that served the project's rpcs, not by the calls it counts: %s", r.Expr)
+		}
+		return
+	}
+	t.Fatal("no service-silent default")
 }
 
 func TestTuningDisablesRetargetsAndRefusesTypos(t *testing.T) {

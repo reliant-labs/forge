@@ -75,7 +75,7 @@ func (s RolloutState) String() string {
 // RolloutObservation is one resource's outcome, as handed to an OnRollout
 // callback.
 type RolloutObservation struct {
-	// Kind is the workload kind that was awaited: "Deployment" or "Job".
+	// Kind is the workload kind that was awaited: one of AwaitedKinds.
 	Kind string
 	// Name is the resource's name.
 	Name string

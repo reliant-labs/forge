@@ -45,6 +45,13 @@
 //	map<K, scalar>                     JSONB NOT NULL DEFAULT '{}'
 //	nested message (same package)      JSONB NOT NULL DEFAULT '{}' ('[]' when
 //	                                   repeated, plain JSONB when optional)
+//	google.protobuf.Struct             JSONB NOT NULL DEFAULT '{}' (plain JSONB
+//	                                   when optional)
+//	google.protobuf.ListValue          JSONB NOT NULL DEFAULT '[]' (plain JSONB
+//	                                   when optional)
+//	google.protobuf.Value              JSONB, always nullable — an unset Value
+//	                                   has no JSON encoding, so absent is NULL
+//	                                   (see emitJSONWellKnownColumn)
 //	any of: scalar / enum / Timestamp  <type> NOT NULL GENERATED ALWAYS AS
 //	  + `// forge:generated <expr>`    (<expr>) STORED — no DEFAULT; nullable
 //	                                   when optional (and for a Timestamp);
@@ -54,8 +61,9 @@
 //
 // Deliberately carried as TODO comment lines inside the CREATE TABLE —
 // never silently dropped: oneof members, google.protobuf.* well-knowns
-// other than a SINGULAR Timestamp (Duration, FieldMask, Struct/Value/Any,
-// wrappers, and `repeated Timestamp`), cross-package message/enum
+// other than a SINGULAR Timestamp, Struct, ListValue or Value (Duration,
+// FieldMask, Any, wrappers, and the repeated forms of all of them),
+// cross-package message/enum
 // references, and maps whose VALUES are messages or enums. These are the
 // rule this file shares with the CRUD conversion generator: birth creates a
 // column only for what the generator will map onto it, because a column
@@ -233,6 +241,9 @@ var protoSQLStructuralMappings = []ProtoSQLMapping{
 	{Proto: "repeated enum E", SQL: "TEXT[] NOT NULL DEFAULT '{}'", Notes: "elements take the value names"},
 	{Proto: "google.protobuf.Timestamp", SQL: "TIMESTAMPTZ", Notes: "nullable; the REPEATED form is refused — an array of instants is an event list, give it its own table. BUCKETING WARNING: two-argument `date_trunc('day', col)` truncates a TIMESTAMPTZ in the SESSION timezone, which the driver sets from the client host — so every bucketed total moves with the deploy host, silently. Pin the zone: `date_trunc('day', col, 'UTC')`. See `forge lint --time-bucketing` and the `db` skill"},
 	{Proto: "nested message (same package)", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "'[]' when repeated; plain JSONB when optional"},
+	{Proto: "google.protobuf.Struct", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "plain JSONB when optional; a list is a ListValue"},
+	{Proto: "google.protobuf.ListValue", SQL: "JSONB NOT NULL DEFAULT '[]'", Notes: "plain JSONB when optional"},
+	{Proto: "google.protobuf.Value", SQL: "JSONB", Notes: "always nullable: unset has no JSON encoding"},
 	{Proto: "map<K, scalar>", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "maps with message or enum VALUES are refused — the CRUD generator emits no conversion for them"},
 	{Proto: "<field> // forge:generated <expr>", SQL: "<type> NOT NULL GENERATED ALWAYS AS (<expr>) STORED", Notes: "the expression is copied verbatim and applied to the shadow database before birth writes anything — postgres rejecting it fails the birth naming the marker's file and line; no DEFAULT; nullable when the field is optional (and for a Timestamp); an enum keeps its CHECK; single-valued scalar, enum and Timestamp fields only; the field is read-only (omitted from the born Create request)"},
 }
@@ -557,6 +568,43 @@ func emitGeneratedColumn(
 	return f.Kind == "string" && strings.HasSuffix(f.Name, "_id")
 }
 
+// isJSONWellKnown reports the well-known types that ARE a JSON document:
+// google.protobuf.Struct (an object), ListValue (an array) and Value (any
+// JSON value). protojson encodes each as the document itself, not as a
+// message wrapper, so a JSONB column holds one losslessly and the CRUD
+// conversion generator maps it through the same pkg/orm message pair as a
+// same-package nested message.
+func isJSONWellKnown(typeName string) bool {
+	switch typeName {
+	case "google.protobuf.Struct", "google.protobuf.ListValue", "google.protobuf.Value":
+		return true
+	}
+	return false
+}
+
+// emitJSONWellKnownColumn writes the JSONB column for a singular Struct,
+// ListValue or Value field.
+//
+// Struct and ListValue are NOT NULL with the empty document as DEFAULT: an
+// absent field marshals to that same empty document ("{}" / "[]"), so the
+// column never has to tell "absent" from "empty". `optional` keeps the
+// distinction as SQL NULL, like a nested message.
+//
+// Value is always nullable. An unset Value has no JSON encoding at all —
+// protojson refuses it ("none of the oneof fields is set") — so the write
+// path must store SQL NULL for it, and a NOT NULL column would fail every
+// create that leaves the field out.
+func emitJSONWellKnownColumn(f codegen.SchemaFieldDef, col func(string, ...any)) {
+	switch {
+	case f.TypeName == "google.protobuf.Value" || f.Optional:
+		col("%s JSONB", f.Name)
+	case f.TypeName == "google.protobuf.ListValue":
+		col("%s JSONB NOT NULL DEFAULT '[]'", f.Name)
+	default:
+		col("%s JSONB NOT NULL DEFAULT '{}'", f.Name)
+	}
+}
+
 // RenderEntityMigrationFromProto renders the create-table migration pair
 // for one already-authored proto message, per the mapping table in the
 // file header. Pure: no filesystem, no descriptor loading — the CLI owns
@@ -654,6 +702,13 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 				// form is a child table forge already generates well.
 				todo(f, "an array of timestamps has no column mapping — a repeated instant is an event list; "+
 					"give it its own table with a foreign key back to this one")
+			case isJSONWellKnown(f.TypeName) && f.Repeated:
+				// A list of documents is one document: google.protobuf.ListValue
+				// is that shape on the wire, and it maps to one JSONB column.
+				todo(f, fmt.Sprintf("repeated %s has no column mapping — a list of JSON documents is one document; "+
+					"declare the field as google.protobuf.ListValue (a JSONB array column)", f.TypeName))
+			case isJSONWellKnown(f.TypeName):
+				emitJSONWellKnownColumn(f, col)
 			case strings.HasPrefix(f.TypeName, "google.protobuf."):
 				todo(f, fmt.Sprintf("well-known type %s has no mechanical column mapping", f.TypeName))
 			case !samePackage(f.TypeName):
@@ -757,6 +812,37 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 		b.WriteString("    " + it.text + suffix + "\n")
 	}
 	b.WriteString(");\n")
+
+	// `// forge:owner` — declared in the catalog in the SAME migration that
+	// creates the column, so the comment is in the applied schema before
+	// the first `forge generate` births handlers_crud.go, and that file is
+	// born with the owner-scoping wrapper. A marker on a field birth gave
+	// no column (a TODO) has nothing to declare; the note says so.
+	bornCols := map[string]bool{}
+	for _, it := range items {
+		if !it.comment {
+			name, _, _ := strings.Cut(it.text, " ")
+			bornCols[name] = true
+		}
+	}
+	var owners []string
+	for _, f := range spec.Fields {
+		switch {
+		case !f.Owner:
+		case bornCols[f.Name]:
+			owners = append(owners, f.Name)
+		default:
+			notes = append(notes, fmt.Sprintf("field %s: marked %s but born with no column — nothing to declare; "+
+				"add the column and its COMMENT ON COLUMN by hand", f.Name, codegen.ProtoMarkerOwner))
+		}
+	}
+	if len(owners) > 0 {
+		fmt.Fprintf(&b, "\n-- %s — the column naming who a row belongs to. handlers_crud.go is born\n", schemadef.ColumnMarkerOwner)
+		b.WriteString("-- with the owner-scoping wrapper for every authenticated CRUD rpc.\n")
+		for _, c := range owners {
+			fmt.Fprintf(&b, "COMMENT ON COLUMN %s.%s IS '%s';\n", spec.Table, c, schemadef.ColumnMarkerOwner)
+		}
+	}
 
 	// forge:append-only — the STORAGE half of the marker (the wire half omits
 	// the Update/Delete RPCs): a trigger that rejects every UPDATE/DELETE so

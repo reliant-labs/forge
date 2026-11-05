@@ -97,6 +97,12 @@ func (p *Plan) constraintDef(table, name string) string {
 	}
 	for _, fk := range t.ForeignKeys {
 		if fk.Name == name {
+			if len(fk.KeyColumns) > 1 {
+				// A composite: print the whole key, so the reader sees that
+				// every column must come from one parent row.
+				return fmt.Sprintf("FOREIGN KEY (%s) REFERENCES %s (%s)",
+					strings.Join(fk.KeyColumns, ", "), fk.RefTable, strings.Join(fk.RefKeyColumns, ", "))
+			}
 			return fmt.Sprintf("FOREIGN KEY (%s) REFERENCES %s (%s)", fk.Column, fk.RefTable, fk.RefColumn)
 		}
 	}
@@ -133,6 +139,9 @@ func (p *Plan) constraintColumns(table, name string) []string {
 	}
 	for _, fk := range t.ForeignKeys {
 		if fk.Name == name {
+			if len(fk.KeyColumns) > 1 {
+				return append([]string(nil), fk.KeyColumns...)
+			}
 			return []string{fk.Column}
 		}
 	}

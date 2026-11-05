@@ -351,6 +351,45 @@ func (q Workloads) Versions(services []string) (Stmt, error) {
 		") GROUP BY env, svc, version ORDER BY first_seen, env, svc LIMIT " + strconv.Itoa(MaxWorkloadChanges+1)), nil
 }
 
+// LatestVersions is the service.version each (env, service) of services
+// reported LAST, from the same telemetry as Versions: one row per pair, so no
+// row cap can drop a newer version for an older one, however many versions
+// any service reported. "Last" is by the full-precision timestamp; an exact
+// tie goes to the greater version string, the same answer whichever range read
+// it. Columns: env, svc,
+// version, last_seen (DateTime); ordered by env, svc.
+func (q Workloads) LatestVersions(services []string) (Stmt, error) {
+	if err := q.validate(); err != nil {
+		return Stmt{}, err
+	}
+	if len(services) == 0 || len(services) > MaxScopeEnvs {
+		return Stmt{}, invalid("a version lookup names 1-%d services", MaxScopeEnvs)
+	}
+	b := newBuilder(q.Scope)
+	svc := "has(" + b.strArray(services) + ", ServiceName)"
+	ver := "ResourceAttributes['service.version']"
+	rc, err := b.resourceConds(SigTraces, q.Scope)
+	if err != nil {
+		return Stmt{}, err
+	}
+	tconds := append([]string{b.rangeCond("Timestamp", q.Scope), svc, ver + " != ''"}, rc...)
+	rcm, err := b.resourceConds(SigMetrics, q.Scope)
+	if err != nil {
+		return Stmt{}, err
+	}
+	mconds := append([]string{b.rangeCondSec("TimeUnix", q.Scope), svc, ver + " != ''"}, rcm...)
+	// Rank on the full-precision timestamp (spans are DateTime64(9)): whole
+	// seconds would tie two versions reported within one second and hand the
+	// later report to the greater string. Only last_seen is truncated.
+	return b.stmt("SELECT env, svc, argMax(version, (l0, version)) AS version, toDateTime(max(l0)) AS last_seen FROM (\n" +
+		"  SELECT " + wlEnv + " AS env, ServiceName AS svc, " + ver + " AS version, toDateTime64(max(Timestamp), 9) AS l0\n" +
+		"  FROM " + b.table(q.Scope, "otel_traces") + " " + where(tconds) + " GROUP BY env, svc, version\n" +
+		"  UNION ALL\n" +
+		"  SELECT " + wlEnv + " AS env, ServiceName AS svc, " + ver + " AS version, toDateTime64(max(TimeUnix), 9) AS l0\n" +
+		"  FROM " + b.table(q.Scope, MetricGauge.table()) + " " + where(mconds) + " GROUP BY env, svc, version\n" +
+		") GROUP BY env, svc ORDER BY env, svc"), nil
+}
+
 // Series charts the gauges over time: per pod the last value in each bucket,
 // then the worst (highest) replica. Columns: env, container, metric, bucket
 // (DateTime), value.

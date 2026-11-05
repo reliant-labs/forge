@@ -20,8 +20,8 @@ comment on the proto field. Pick by asking who writes the value.
 | Postgres, from the same row — `line_total = quantity * unit_price` | `// forge:generated <sql expr>` at birth (implies read-only) | Births `GENERATED ALWAYS AS (<expr>) STORED`; the ORM never writes it and reads it back after every write. Depth: `db/derived-values` |
 | Your Go code, from OTHER rows — `amount_paid` summing payments | `// forge:computed` | Everything read-only does, and `forge lint` fails while no non-generated Go file assigns it (a warning while the writing rpc is still forge's unwired stub) |
 | A trigger, or a GENERATED column added after birth | the SQL in a migration, plus `// forge:read-only` | Read-only keeps clients off it. Not `forge:computed`: no Go assigns it, so that lint would fail |
-| The server once, then nobody — an owner id, a Stripe customer id | `COMMENT ON COLUMN … IS 'forge:immutable'`, usually with `// forge:read-only` too | `,skipupdate`: no full replace rewrites it; a masked write naming it still does (below) |
-| Nobody outside the app may READ it through the database's read-only `forge_ro` role — a sealed token, ciphertext, a token hash | `COMMENT ON COLUMN … IS 'forge:secret'` (or `// forge:secret` on a wire field) | Postgres refuses the column to `forge_ro` however it is reached. The SQL spelling is for a column with no wire field. Not a write policy: the app still reads and writes it. A credential-shaped name with no decision is withheld too and fails `forge lint --db-grants`; `COMMENT ON COLUMN … IS 'forge:readable <reason>'` grants one that is not a credential (`db/query`) |
+| The server once, then nobody — an owner id, a Stripe customer id | `COMMENT ON COLUMN … IS 'forge:immutable'`, usually with `// forge:read-only` too | `,skipupdate`: no full replace rewrites it, and a client `update_mask` naming it is `InvalidArgument` (`unknown_field`). App code's masked write still does (below) |
+| Nobody outside the app may READ it through the database's read-only `forge_ro` role — a sealed token, ciphertext, a token hash | `COMMENT ON COLUMN … IS 'forge:secret'` (or `// forge:secret` on a wire field) | Postgres refuses the column to `forge_ro` however it is reached. The SQL spelling is for a column with no wire field, which a client `update_mask` cannot name (below). Not a write policy: the app still reads and writes it. A credential-shaped name with no decision is withheld too and fails `forge lint --db-grants`; `COMMENT ON COLUMN … IS 'forge:readable <reason>'` grants one that is not a credential (`db/query`) |
 | The client at Create; every later change goes through an rpc | `// forge:guards` alone | The edit page stops writing it and names the rpc. **The API still accepts it** through `Update<Entity>`; if clients must not bypass the rpc, override the Update shim in `handlers_crud.go` (`db/crud-overrides`). `forge:read-only` would also drop it from Create |
 
 Since the generated Update enforces `forge:read-only` (and `forge:computed` /
@@ -57,9 +57,11 @@ declare it:
 COMMENT ON COLUMN crews.company_id IS 'forge:owner';
 ```
 
-This changes no codegen. Forge still stores no ownership of its own and will not
-inject a `WHERE` clause for you, because only your app knows how a caller's
-claims map onto this column's values. What it changes is what forge lets ship: it
+Or declare it at birth: `// forge:owner` on the proto field writes this comment
+into the create-table migration, so `handlers_crud.go` is born with the
+owner-scoping wrapper. Forge still stores no ownership of its own and injects no
+runtime `WHERE`: the wrapper leaves one expression mapping the caller's claims
+onto this column's values, which only your app knows. It also changes what forge lets ship: it
 arms the `unscoped_auth` audit gate for this table, so an authenticated RPC over
 `crews` whose handler never resolves the caller becomes an `error` rather than a
 warning. A column can carry both markers — `'forge:owner forge:immutable'` — and
@@ -84,9 +86,14 @@ CompanyId string `bun:"company_id,notnull,skipupdate"`
 ```
 
 Bun's `,skipupdate` omits the column from a full-replace UPDATE's `SET` clause —
-the stored value survives untouched. It is still writable on `INSERT`, and a
-**masked** Update naming the column explicitly still writes it: that is the
-caller asserting a value on purpose.
+the stored value survives untouched. It is still writable on `INSERT`, and app
+code's **masked** Update naming the column explicitly
+(`db.Update<Entity>Masked`) still writes it: that is the code that owns the
+column asserting a value on purpose. A CLIENT's `update_mask` naming it is
+refused before anything runs (`InvalidArgument`, reason `unknown_field`): the
+generated Update op lists it in `op.Unmaskable`, so a mask cannot do what the
+full replace forbids. The scaffolded edit form leaves it off for the same
+reason.
 
 Reach for it on any column a full-replace Update could zero out by accident: a
 server-assigned owner id, an externally-issued identifier (a Stripe customer ID,
@@ -101,17 +108,38 @@ hole or takes a write away from code that needs it.
 |---|---|---|
 | Question | may ANY full replace rewrite this column? | may a CLIENT write it through the API? |
 | Client full-replace Update | leaves it as stored | leaves it as stored |
-| Client `update_mask` naming it | **writes it** | `InvalidArgument` (`unknown_field`) |
+| Client `update_mask` naming it | `InvalidArgument` (`unknown_field`) | `InvalidArgument` (`unknown_field`) |
+| Client Create | writes it | not on the request |
 | App code `db.Update<Entity>` | leaves it as stored | **writes it** |
 | App code `db.Update<Entity>Masked` naming it | writes it | writes it |
 
 A lifecycle column — `status`, `shipped_at`, a balance — is `forge:read-only`:
-clients must not touch it, and the RPC that owns the state machine writes it.
-`forge:immutable` alone would still let a client set it through a mask naming
-it. An owner id that nobody should ever rewrite, including your own full
-replaces, is `forge:immutable`, often with `forge:read-only` on its wire field
-as well. Both hold on every `forge generate`; `forge:read-only` needs no
+clients must not touch it, and the RPC that owns the state machine writes it,
+including through a full replace. An owner id that nobody should ever rewrite,
+including your own full replaces, is `forge:immutable`, often with
+`forge:read-only` on its wire field as well so the client cannot choose it at
+Create either. Both hold on every `forge generate`; `forge:read-only` needs no
 migration because it is a statement about the API, not about storage.
+
+### Masked and full-replace Updates agree, marker by marker
+
+A client's `update_mask` may name only what a client could write in a full
+replace. The generated Update op refuses every other path with `InvalidArgument`
+(`unknown_field`) before the entity is built, so nothing is written:
+
+| Marker | Full replace | Client `update_mask` naming it |
+|---|---|---|
+| `forge:read-only`, `forge:computed`, `forge:generated` | keeps the stored value (`crud.Preserve`; GENERATED is never written) | refused (`op.ReadOnly`) |
+| `forge:immutable` | keeps the stored value (`,skipupdate`) | refused (`op.Unmaskable`) |
+| a column with no wire field (a SQL-spelled `forge:secret`, an internal stamp) | the client sent no value for it | refused (`op.Unmaskable`): naming it could only reset it to the zero the request was left holding |
+| `// forge:secret` on a wire field | keeps the stored value (`,skipupdate`; reads return `""`) | **writes it**: the client sent the new value on purpose, which is how a write-only credential is rotated |
+| `forge:version` | compared and incremented by the repository | refused (`op.ReadOnly`, and by the repository) |
+| `forge:guards` alone | writes it | writes it — the marker only changes the edit page (`proto`) |
+
+App code is never refused: `db.Update<Entity>Masked` from a custom RPC or
+`_repo_ext.go` writes any updatable column it names, because only the op knows
+a client is calling. An override that replaces the op keeps the refusal by
+keeping `op.ReadOnly` and `op.Unmaskable` (`db/crud-overrides`).
 
 Every Update also reads back the columns it did not write (`RETURNING`), so the
 response and the entity you hold afterwards report the stored values of an
@@ -131,6 +159,9 @@ entity's repo directly: `<entity>Repo.UpdateMasked(ctx, db, e,
 proto field says nothing about whether it may be rewritten — an internal rating
 or a denormalized cache is absent from the API and mutable by design. Only
 `forge:immutable` makes a column un-rewritable; absence from the wire never does.
+Absence from the wire keeps a client's `update_mask` off it, but a full replace
+whose entity was built from the request still writes the zero it holds — the
+gap `forge:immutable` closes.
 
 ## `forge:version` — concurrent writes to the same row
 

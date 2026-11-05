@@ -412,6 +412,8 @@ func (p *Plan) finalize() {
 	p.derivedRefs = nil
 	p.authRefs = nil
 	p.bucketMemo = nil
+	p.compositeMemo = nil
+	p.compositeCands = nil
 	p.undeclared = nil
 	p.uniques = nil
 	p.tuples = nil

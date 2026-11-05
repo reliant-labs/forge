@@ -585,8 +585,8 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// once), then the run fails and rolls back. A second signal is not
 	// caught: it ends the process, for a user who will not wait.
 	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(interrupts)
+	stopInterrupts := notifyGenerateInterrupts(interrupts)
+	defer stopInterrupts()
 
 	// Save checksums on exit, even on partial failures: a step that
 	// successfully wrote files should have those tracked so the user's
@@ -613,6 +613,10 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	if err != nil {
 		return err
 	}
+
+	// Steps that read an env's KCL share one evaluation per distinct input
+	// state for the length of the run (generate_kcl_memo.go).
+	defer beginKCLRenderMemo()()
 
 	// A plan that keeps the stomp guard keeps its fresh-render check.
 	steps = withDriftAdjudication(steps)
@@ -662,7 +666,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		}
 		select {
 		case sig := <-interrupts:
-			signal.Stop(interrupts)
+			stopInterrupts()
 			err = &generateInterruptedError{signal: sig, stepErr: err}
 		default:
 		}
@@ -764,6 +768,16 @@ func cleanUpFailedStep(ctx *pipelineContext, flags pipelineFlags, err error, onl
 	// rollback branch).
 	reprintCompilerOutput(err, "")
 	return false
+}
+
+// notifyGenerateInterrupts delivers the run's SIGINT/SIGTERM to c until the
+// returned stop is called (idempotent). A variable so a test can deliver an
+// interrupt to the run directly: a real self-signal reaches every
+// signal.Notify channel in the process asynchronously, so a test could not
+// know the run's channel had it before the step ended (forge#1633).
+var notifyGenerateInterrupts = func(c chan<- os.Signal) (stop func()) {
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	return func() { signal.Stop(c) }
 }
 
 // generateInterruptedError fails a run that received SIGINT/SIGTERM. It

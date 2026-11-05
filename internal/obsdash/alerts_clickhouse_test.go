@@ -46,7 +46,7 @@ func TestDefaultAlertSQLOnClickHouse(t *testing.T) {
 		Project: "shop", FrontendServices: []string{"shop-web"},
 		Services: []AlertService{
 			{"api", "a.v1.S"}, {"quiet", "q.v1.Q"}, {"reset", "r.v1.R"}, {"delta", "d.v1.D"},
-			{"fast", "f.v1.F"}, {"stopped", "s.v1.T"}, {"healthy", "h.v1.H"}, {"sparse", "p.v1.P"}, {"young", "y.v1.Y"},
+			{"fast", "f.v1.F"}, {"stopped", "s.v1.T"}, {"healthy", "h.v1.H"}, {"sparse", "p.v1.P"}, {"young", "y.v1.Y"}, {"bursty", "b.v1.B"}, {"lulls", "l.v1.L"}, {"proxied", "x.v1.X"},
 		},
 	}
 	rules, err := ResolveAlertDefaults(in, "dev", nil)
@@ -88,8 +88,10 @@ func TestDefaultAlertSQLOnClickHouse(t *testing.T) {
 		"error-rate": {"api", "delta"},
 		// api's p95 sits in the (1s, 5s] bucket; fast's in the first.
 		"p95-latency": {"api"},
-		// stopped served traffic through most of the last day, then stopped. sparse (4 active hours) and young (2h) do not count as steady; healthy is serving.
-		"service-silent":     {"stopped"},
+		// stopped served traffic through most of the last day, then stopped; lulls too, with only two earlier gaps (the max_prior_silences boundary).
+		// sparse (4 active hours), young (2h) and bursty (silent 30 min at a time all day, unchanged snapshots between) do not count as steady; healthy is serving.
+		// proxied's own rpc went quiet 30 min ago, but it serves another package's to now (liveness counts every call); foreign never served the project's rpcs.
+		"service-silent":     {"lulls", "stopped"},
 		"frontend-js-errors": {"shop-web"},
 	}
 	for id, w := range want {

@@ -102,6 +102,7 @@ _TConfigMapKeyRef = tiers.ConfigMapKeyRef
 _TFieldRef = tiers.FieldRef
 _TManagedSecretRef = tiers.ManagedSecretRef
 _TDatabaseRef = tiers.DatabaseRef
+_TBucketRef = tiers.BucketRef
 _TWorkloadURLRef = tiers.WorkloadURLRef
 _TResources = tiers.Resources
 _TManagedIdSecret = ManagedSecret
@@ -322,6 +323,9 @@ _channel = lambda v: any -> str {
         "DatabaseRef" = "databaseRef"
         "WorkloadURL" = "workloadURL"
         "IdentityRef" = "identityRef"
+        # _bucket_resolve lowers every BucketRef but a hosted referrer's of a
+        # hosted bucket, which stays one and rides the wire as bucketRef.
+        "BucketRef" = "bucketRef"
     }[typeof(v)]
 }
 
@@ -331,7 +335,7 @@ _channel = lambda v: any -> str {
 # the WorkloadURL, through its cluster's host gateway when it is a pod.
 _env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any {
     hosted = rt.type == "hosted"
-    v = _idn_resolve(v0, where, rt, bundle) if typeof(v0) == "IdentityRef" else v0
+    v = _idn_resolve(v0, where, rt, bundle) if typeof(v0) == "IdentityRef" else (_bucket_resolve(v0, where, rt, bundle) if typeof(v0) == "BucketRef" else v0)
     _c = _channel(v)
     _TEnvVar {
         name = name
@@ -349,11 +353,68 @@ _env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any
             managedSecret = _TManagedSecretRef {name = v.name, optional = v.optional if v.optional else Undefined}
         if _c == "databaseRef":
             databaseRef = _TDatabaseRef {name = v.name, key = v.key if v.key else Undefined}
+        if _c == "bucketRef":
+            bucketRef = _TBucketRef {name = v.name, key = v.key}
         if _c == "workloadURL" and hosted:
             workloadURL = _TWorkloadURLRef {name = _require_hosted_url_target(v.name, where, bundle)}
         if _c == "workloadURL" and not hosted:
             value = _require_workload_url(v.name, where, bundle, rt.target.host_gateway if rt.type == "cluster" else "localhost")
     }
+}
+
+# A BucketRef as the value its referrer reads: a literal, or (a BucketOnS3
+# credential) the SecretRef / ManagedSecret it declares, which then lowers
+# through its own channel above. A dev MinIO is reached through the
+# cluster's host gateway from a pod, on localhost from a host process and
+# by its compose service from a compose container (_bucket_minio_endpoint);
+# a hosted workload cannot reach it at all. A bucket on forge.OnHosted is the
+# reverse: only the control plane knows its real name and key, so a hosted
+# referrer KEEPS the BucketRef (the wire's bucketRef, read from the Secret
+# the platform writes) and any other referrer is refused.
+_bucket_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
+    _bs = [b for b in bundle.buckets if b.name == v.name]
+    assert _bs, "${where}: forge.BucketRef names bucket '${v.name}', which this environment does not declare. Declared buckets: ${[b.name for b in bundle.buckets]}. Declare it in Bundle.buckets (forge.Bucket)"
+    _b = _bs[0]
+    assert not (_b.runtime.type == "minio" and rt.type == "hosted"), \
+        "${where}: forge.BucketRef '${v.name}' is on forge.BucketOnMinIO, the env's local MinIO, which a hosted workload cannot reach. Bind the bucket to forge.BucketOnS3 in this env"
+    assert not (_b.runtime.type == "hosted" and rt.type != "hosted"), \
+        "${where}: forge.BucketRef '${v.name}' is on forge.OnHosted, whose credential only exists in the control plane's namespace, so a workload on the ${rt.type} runtime cannot read it. Run the referrer on forge.OnHosted {}, or bind the bucket to forge.BucketOnS3 in this env"
+    _val = v if _b.runtime.type == "hosted" else (_bucket_minio_values(_b, _bucket_minio_endpoint(_b, v.name, where, rt, bundle)) if _b.runtime.type == "minio" else _bucket_s3_values(_b))[v.key]
+    assert not (rt.type == "hosted" and typeof(_val) == "SecretRef"), \
+        "${where}: forge.BucketRef '${v.name}' ${v.key} is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} on the bucket's forge.BucketOnS3 (the env's secret store: `forge secret set --env <env> <NAME>`)"
+    _val
+}
+
+# A compose workload's BucketRefs as compose process env. The compose
+# process reads only literals, so a credential the bucket declares as a
+# forge.SecretRef / forge.ManagedSecret is refused rather than dropped.
+_compose_bucket_env = lambda w: any, rt: any, bundle: Bundle -> {str:str} {
+    _vals = {k: _bucket_resolve(v, "workload '${w.name}' env ${k}", rt, bundle) for k, v in w.env if typeof(v) == "BucketRef"}
+    _refs = [k for k, v in _vals if typeof(v) != "str"]
+    assert not _refs, "workload '${w.name}' env ${_refs}: a forge.BucketRef credential that is a secret reference cannot reach a compose container, whose environment is literals. Run the referrer on forge.OnHost {} or forge.OnCluster, or bind the bucket to forge.BucketOnMinIO in this env"
+    _vals
+}
+
+# The S3 API of a bucket's dev MinIO as its referrer reaches it. A pod goes
+# through its cluster's host gateway to the published port, and a host
+# process to localhost. A compose container's localhost is the container
+# itself, so it dials the MinIO compose service on the network they share,
+# at the API port inside the container (the scaffolded docker-compose.yml
+# serves it on :9000). That network exists only for a referrer in the same
+# compose project, so a referrer in another compose file, or on the other
+# side of `shared`, is refused.
+_MINIO_CONTAINER_API_PORT = 9000
+
+_bucket_minio_endpoint = lambda b: any, name: str, where: str, rt: any, bundle: Bundle -> str {
+    _svc = b.runtime.service
+    _mw = [w for w in bundle.workloads if w.name == _svc and w.runtime and w.runtime.type == "compose"]
+    _mrt = _mw[0].runtime if _mw else Undefined
+    _compose = rt.type == "compose"
+    _theirs = "${_mrt.file}${', shared' if _mrt.shared else ''}" if _mrt else "no compose file"
+    _mine = "${rt.file}${', shared' if rt.shared else ''}" if _compose else ""
+    assert not _compose or (_mrt and _mine == _theirs), \
+        "${where}: forge.BucketRef '${name}' is on the MinIO compose service '${_svc}', which a compose container reaches only from the same compose project (${_theirs}); this one runs from ${_mine}. Run the referrer in the MinIO's compose file, or on forge.OnHost {}"
+    "http://${_svc}:${_MINIO_CONTAINER_API_PORT}" if rt.type == "compose" else "http://${rt.target.host_gateway if rt.type == 'cluster' else 'localhost'}:${b.runtime.port}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1284,7 +1345,7 @@ _spec_json = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     {k: ("" if k == "image" and v == "-" else v) for k, v in _j}
 }
 
-_render_runtime = lambda w: any, rt: any -> any {
+_render_runtime = lambda w: any, rt: any, bundle: Bundle -> any {
     {
         "type": "host"
         "runner": rt.runner
@@ -1307,7 +1368,9 @@ _render_runtime = lambda w: any, rt: any -> any {
         } | ({"optional": True} if rt.optional else {}) | {
         # The compose PROCESS env: the workload's literal env under the
         # runtime's own (the runtime block is the more specific statement).
-        "env": {k: v for k, v in w.env if typeof(v) == "str"} | rt.env
+        # A BucketRef resolves to its literal here, so the compose file can
+        # hand it to the container (`UPLOADS_ENDPOINT: ${UPLOADS_ENDPOINT}`).
+        "env": {k: v for k, v in w.env if typeof(v) == "str"} | _compose_bucket_env(w, rt, bundle) | rt.env
     } if rt.type == "compose" else ({
         "type": "cluster"
         "cluster": rt.target.cluster
@@ -1340,7 +1403,7 @@ _lower = lambda w: any, bundle: Bundle -> any {
         if w.release_dependencies is not Undefined:
             "release_dependencies": w.release_dependencies
         "release_inputs": {k: workload_image_ref_for(w.name, "input:" + k, v, bundle.image_tag) for k, v in w.release_inputs}
-        "runtime": _render_runtime(w, _rt)
+        "runtime": _render_runtime(w, _rt, bundle)
         "spec": _spec_json(w, _rt, bundle)
     } | ({"flow_checks": [{"path": c.path, "description": c.description or None, "name": c.name or None} for c in w.flow_checks]} if w.flow_checks else {}) \
       | ({"delivery_unit": w.delivery_unit} if w.delivery_unit else {}) \
@@ -1919,6 +1982,20 @@ _render_database = lambda db: any, bundle: Bundle -> any {
     }
 }
 
+# A hosted forge.Bucket as its forge.dev ManagedBucket: the name, and the
+# spec the control plane's managedbucket operator reconciles.
+_render_bucket = lambda b: Bucket -> any {
+    {
+        "name": b.name
+        "runtime": "hosted"
+        "spec": {k: _v for k, _v in {
+            "publicRead": True if b.public_read else Undefined
+            "corsOrigins": b.cors_origins if b.cors_origins else Undefined
+            "deletionPolicy": b.deletion_policy
+        } if _v != Undefined}
+    }
+}
+
 # An ExternalDatabase as `forge db query` reads it: where its Service is and
 # how to sign in. Nothing is deployed for it, so it reaches no manifest.
 _render_external_database = lambda x: any, bundle: Bundle -> any {
@@ -2125,6 +2202,11 @@ render = lambda bundle: Bundle -> any {
         "infra": [_render_host_infra(i) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]
+        # The env's buckets forge manages, as the ManagedBucket the hosted
+        # provider publishes. A MinIO bucket is already a compose workload and
+        # a BucketOnS3 is not forge's, so neither is an entry.
+        if any b in bundle.buckets { b.runtime.type == "hosted" }:
+            "buckets": [_render_bucket(b) for b in bundle.buckets if b.runtime.type == "hosted"]
         if bundle.external_databases:
             "external_databases": [_render_external_database(x, bundle) for x in bundle.external_databases]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]

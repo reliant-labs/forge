@@ -377,3 +377,128 @@ func TestTupleKey_NoSeparatorCollision(t *testing.T) {
 		}
 	}
 }
+
+// TestCompositeFK_UniqueOverCompositeColumnAndOrdinaryFK: a composite UNIQUE
+// whose members are a column a composite foreign key places (tenant_id, by
+// the strategy composite) and an ordinary single-column reference
+// (channel_id). The emitted tuples never repeat, or Validate refuses.
+func TestCompositeFK_UniqueOverCompositeColumnAndOrdinaryFK(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		channelTenanted bool
+	}{
+		{"channel in a tenant (a diamond through tenant_id)", true},
+		{"channel outside any tenant", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tables := compositeFKSchema()
+			h := &tables[0]
+			// Drop the channel composite: channel_id is an ordinary reference.
+			kept := h.ForeignKeys[:0]
+			for _, fk := range h.ForeignKeys {
+				if fk.Name != "hypotheses_tenant_id_channel_id_fkey" {
+					kept = append(kept, fk)
+				}
+			}
+			h.ForeignKeys = kept
+			for i := range h.Columns {
+				if h.Columns[i].Name == "channel_id" {
+					h.Columns[i].NotNull = true
+				}
+			}
+			h.Indexes = append(h.Indexes, schemadef.Index{Name: "hypotheses_tenant_channel_key", Columns: []string{"tenant_id", "channel_id"}, Unique: true})
+			if !tc.channelTenanted {
+				ch := &tables[2]
+				ch.ForeignKeys = nil
+				ch.Columns = []schemadef.Column{col("id", schemadef.TypeString, true, true), col("title", schemadef.TypeString, true, false)}
+			}
+			// Fewer channels and tenants than hypotheses: the tuple cannot
+			// be told apart by channel_id alone.
+			for _, rows := range []int{3, 12, 40} {
+				p := buildOrFail(t, tables, Config{Rows: rows, Salt: 7,
+					RowsPerTable: map[string]int{"channels": 4, "tenants": 3, "strategies": 6}})
+				if err := p.Validate(); err != nil {
+					continue // refusing the plan is an allowed answer
+				}
+				// tenant_id is the strategy composite's, so the tuple planner
+				// may not deal it; channel_id is dealt and the table capped
+				// to the channels there are, so channel_id alone keeps the
+				// tuple distinct whatever tenant the composite places.
+				if _, dealt := p.tupleParentRow("hypotheses", "tenant_id", 1); dealt {
+					t.Fatal("tenant_id is placed by the strategy composite and may not be dealt")
+				}
+				if _, dealt := p.tupleParentRow("hypotheses", "channel_id", 1); !dealt {
+					t.Fatal("channel_id, an ordinary reference, was not dealt")
+				}
+				seen := map[string]int{}
+				for r := 0; r < p.rowsOf["hypotheses"]; r++ {
+					tenant, _ := p.SeedValue("hypotheses", "tenant_id", r)
+					channel, _ := p.SeedValue("hypotheses", "channel_id", r)
+					k := tupleKey([]string{tenant, channel})
+					if prev, dup := seen[k]; dup {
+						t.Errorf("rows=%d: rows %d and %d repeat (tenant_id, channel_id) = (%s, %s)", rows, prev, r, tenant, channel)
+					}
+					seen[k] = r
+				}
+			}
+		})
+	}
+}
+
+// uniqueBesideCompositeMigration is the shape of
+// TestCompositeFK_UniqueOverCompositeColumnAndOrdinaryFK, for postgres to
+// judge: UNIQUE (tenant_id, channel_id), where the strategy composite places
+// tenant_id and channel_id is an ordinary reference to fewer rows.
+const uniqueBesideCompositeMigration = `
+CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE strategies (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    title TEXT NOT NULL,
+    UNIQUE (tenant_id, id)
+);
+CREATE TABLE channels (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    title TEXT NOT NULL
+);
+CREATE TABLE hypotheses (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    strategy_id TEXT NOT NULL REFERENCES strategies(id),
+    channel_id TEXT NOT NULL REFERENCES channels(id),
+    claim TEXT NOT NULL,
+    FOREIGN KEY (tenant_id, strategy_id) REFERENCES strategies (tenant_id, id),
+    UNIQUE (tenant_id, channel_id)
+);
+`
+
+// TestCompositeFK_UniqueBesideCompositeOnRealPostgres: seeded with Apply,
+// postgres enforces the UNIQUE, the composite and every single-column key.
+func TestCompositeFK_UniqueBesideCompositeOnRealPostgres(t *testing.T) {
+	requirePG(t)
+	ctx := context.Background()
+	db, cleanup, err := pgtest.New()
+	if err != nil {
+		t.Fatalf("pgtest.New: %v", err)
+	}
+	t.Cleanup(cleanup)
+	if _, err := db.Exec(uniqueBesideCompositeMigration); err != nil {
+		t.Fatalf("apply migration: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "00001_init.up.sql"), []byte(uniqueBesideCompositeMigration), 0o644); err != nil {
+		t.Fatalf("write migration: %v", err)
+	}
+	plan, err := BuildLivePlan(ctx, db, dir, "", Config{Rows: 20, Salt: 3,
+		RowsPerTable: map[string]int{"channels": 5, "tenants": 3}})
+	if err != nil {
+		t.Fatalf("BuildLivePlan: %v", err)
+	}
+	if _, err := Apply(ctx, db, plan); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if n := countRows(t, ctx, db, "hypotheses"); n < 2 {
+		t.Fatalf("%d hypotheses seeded — the UNIQUE went untested", n)
+	}
+}

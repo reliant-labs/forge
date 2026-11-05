@@ -4,6 +4,7 @@ package templates_test
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -51,6 +52,69 @@ const (
 	longestShippedCLIName = "reliant forge"
 )
 
+// skillSection is one "## " section of a rendered skill, heading included.
+type skillSection struct {
+	heading string
+	bytes   int
+}
+
+// skillSections splits a rendered skill at its level-2 headings, outside
+// fenced code blocks. Everything before the first heading (frontmatter and
+// intro) is one section named "(preamble)".
+func skillSections(content string) []skillSection {
+	secs := []skillSection{{heading: "(preamble)"}}
+	inFence := false
+	for _, line := range strings.SplitAfter(content, "\n") {
+		if strings.HasPrefix(line, "```") {
+			inFence = !inFence
+		}
+		if !inFence && strings.HasPrefix(line, "## ") {
+			secs = append(secs, skillSection{heading: strings.TrimSpace(line)})
+		}
+		secs[len(secs)-1].bytes += len(line)
+	}
+	return secs
+}
+
+// formatLargestSections names the n largest sections, so a budget failure
+// says which section to move rather than leaving the author to measure.
+func formatLargestSections(content string, n int) string {
+	secs := skillSections(content)
+	sort.SliceStable(secs, func(i, j int) bool { return secs[i].bytes > secs[j].bytes })
+	if len(secs) > n {
+		secs = secs[:n]
+	}
+	var b strings.Builder
+	for _, s := range secs {
+		fmt.Fprintf(&b, "  %6d bytes  %s\n", s.bytes, s.heading)
+	}
+	return b.String()
+}
+
+func TestSkillSectionsSplitAtHeadingsOutsideFences(t *testing.T) {
+	t.Parallel()
+	content := "---\nname: x\n---\nintro\n## A\naa\n```\n## not a heading\n```\n## B\nb\n"
+	got := skillSections(content)
+	want := []skillSection{
+		{"(preamble)", len("---\nname: x\n---\nintro\n")},
+		{"## A", len("## A\naa\n```\n## not a heading\n```\n")},
+		{"## B", len("## B\nb\n")},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("skillSections = %v, want %v", got, want)
+	}
+	total := 0
+	for _, s := range got {
+		total += s.bytes
+	}
+	if total != len(content) {
+		t.Fatalf("sections cover %d bytes, content is %d", total, len(content))
+	}
+	if out := formatLargestSections(content, 1); !strings.Contains(out, "## A") || strings.Contains(out, "## B") {
+		t.Fatalf("formatLargestSections(1) = %q, want only the largest (## A)", out)
+	}
+}
+
 func TestShippedSkillsFitLoadBudget(t *testing.T) {
 	// The production renderer resolves user/project overrides. Neither belongs
 	// in a guard for shipped content; no project root also avoids version skew.
@@ -67,9 +131,12 @@ func TestShippedSkillsFitLoadBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(content) > maxRenderedSkillBytes {
-				t.Errorf("skills/%s: rendered as %q: %d bytes exceeds %d (delivery cap %d minus navigation %d and footer %d); split a separable topic into a discoverable sub-skill",
-					rel, longestShippedCLIName, len(content), maxRenderedSkillBytes, maxSkillBytes, skillNavigationBytes, skillFooterBytes)
+			if over := len(content) - maxRenderedSkillBytes; over > 0 {
+				t.Errorf("skills/%s: rendered as %q: %d bytes is %d OVER the %d budget (delivery cap %d minus navigation %d and footer %d).\n"+
+					"Trimming %d bytes only buys until the next edit: move a separable section into a discoverable sub-skill "+
+					"and leave a one-line pointer. Largest sections:\n%s",
+					rel, longestShippedCLIName, len(content), over, maxRenderedSkillBytes, maxSkillBytes, skillNavigationBytes, skillFooterBytes,
+					over, formatLargestSections(string(content), 5))
 			}
 			t.Logf("%d rendered bytes; %d bytes of body margin", len(content), maxRenderedSkillBytes-len(content))
 

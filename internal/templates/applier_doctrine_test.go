@@ -57,7 +57,7 @@ func TestApplierDoctrine_NamesTheUnitByUnitMove(t *testing.T) {
 	for _, path := range []string{
 		"project/skills/forge/deploy/shape/SKILL.md",
 		"project/skills/forge/deploy/flux/SKILL.md",
-		"project/skills/forge/deploy/SKILL.md",
+		"project/skills/forge/deploy/model/SKILL.md",
 	} {
 		b, err := fs.ReadFile(templateFS, path)
 		if err != nil {

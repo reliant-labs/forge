@@ -514,11 +514,14 @@ func (b *loginBroker) writePasswordRejection(ctx context.Context, w http.Respons
 const policyTTL = time.Minute
 
 // policyCache holds the last policy read and when it expires. A failed read
-// is not cached, so the next request retries.
+// is not cached, so the next request retries. An issuer that does not serve
+// its policy at all (unavailable) is cached like a policy: asking again within
+// the minute would get the same 404.
 type policyCache struct {
-	mu      sync.Mutex
-	policy  devidp.PasswordPolicy
-	expires time.Time
+	mu          sync.Mutex
+	policy      devidp.PasswordPolicy
+	unavailable bool
+	expires     time.Time
 }
 
 // passwordPolicy returns the issuer's password-complexity policy, cached for
@@ -528,13 +531,20 @@ func (b *loginBroker) passwordPolicy(ctx context.Context) (devidp.PasswordPolicy
 	b.policy.mu.Lock()
 	defer b.policy.mu.Unlock()
 	if time.Now().Before(b.policy.expires) {
+		if b.policy.unavailable {
+			return devidp.PasswordPolicy{}, devidp.ErrPasswordPolicyUnavailable
+		}
 		return b.policy.policy, nil
 	}
 	p, err := b.client.PasswordPolicy(ctx)
+	if errors.Is(err, devidp.ErrPasswordPolicyUnavailable) {
+		b.policy.policy, b.policy.unavailable, b.policy.expires = devidp.PasswordPolicy{}, true, time.Now().Add(policyTTL)
+		return devidp.PasswordPolicy{}, err
+	}
 	if err != nil {
 		return devidp.PasswordPolicy{}, err
 	}
-	b.policy.policy, b.policy.expires = p, time.Now().Add(policyTTL)
+	b.policy.policy, b.policy.unavailable, b.policy.expires = p, false, time.Now().Add(policyTTL)
 	return p, nil
 }
 
@@ -545,10 +555,23 @@ func (b *loginBroker) passwordPolicy(ctx context.Context) (devidp.PasswordPolicy
 // come back in the rejection. It is cacheable by the browser for the length of
 // the server's own cache, and it is GUIDANCE — the issuer enforces the policy
 // when the password is set.
+//
+// 204 means "no checklist": the issuer does not serve its policy (a hosted
+// identity instance's gateway routes only the sign-in APIs and answers 404 for
+// the Settings API). That is how a hosted instance is built, not a fault, so it
+// logs at DEBUG; the forms work without the checklist and the issuer still
+// enforces its rules. A read that FAILED is a 502, logged as a warning: the
+// forms still work, so nothing is broken for the person signing up.
 func (b *loginBroker) handlePasswordPolicy(w http.ResponseWriter, r *http.Request) {
 	policy, err := b.passwordPolicy(r.Context())
-	if err != nil {
-		b.logger.ErrorContext(r.Context(), "password policy unavailable", "error", err)
+	switch {
+	case errors.Is(err, devidp.ErrPasswordPolicyUnavailable):
+		b.logger.DebugContext(r.Context(), "password policy not served by the identity provider; no checklist", "error", err)
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", int(policyTTL.Seconds())))
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case err != nil:
+		b.logger.WarnContext(r.Context(), "password policy could not be read", "error", err)
 		writeAuthError(w, http.StatusBadGateway, "The password requirements could not be loaded right now.")
 		return
 	}

@@ -57,6 +57,18 @@ func TestLoginBrokerScaffoldServesThePasswordRoutes(t *testing.T) {
 				t.Error("a rejected password no longer reaches writePasswordRejection / code password_policy")
 			}
 
+			// A hosted instance's gateway 404s the Settings API. That is "no
+			// checklist" (204, DEBUG), never a 502 logged as an error on every
+			// sign-up form load.
+			for _, quiet := range []string{"errors.Is(err, devidp.ErrPasswordPolicyUnavailable)", "http.StatusNoContent"} {
+				if !strings.Contains(src, quiet) {
+					t.Errorf("the password-policy route lost %q", quiet)
+				}
+			}
+			if strings.Contains(src, `ErrorContext(r.Context(), "password policy`) {
+				t.Error("the password-policy route logs at ERROR again")
+			}
+
 			// The reset hazard: the broker's credential can set any password with no code.
 			for _, guard := range []string{
 				`code == ""`,          // an empty code is refused here, before the issuer

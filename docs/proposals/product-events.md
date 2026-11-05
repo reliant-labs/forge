@@ -51,7 +51,7 @@ The design should come out of forge rather than reliant:
 ## Open questions
 
 - Whether web events go through the browser OTel sink to ClickStack directly, or through the app's API. The latter is better for ad-blockers and consent enforcement.
-- Where customers' event data lives in hosted multi-tenant ClickStack: per-project database or table, and how tenancy is enforced.
+- Where customers' event data lives in the shared hosted ClickStack: per-project database or table, and how one project is kept from reading another's events.
 - Pseudonymous subject ids (salted hash) versus raw user ids for option 2.
 
 ## References

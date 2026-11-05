@@ -37,7 +37,7 @@ type Runtime = OnHost | OnCompose | OnCluster | OnHosted | OnExternal | BuildOnl
 - recorded last-good tags to `.forge/state/external-<env>-<service>.json`
 - rendered zero Kubernetes objects, so no cluster or kubectl context was required
 
-`rollback_cmd` was later removed with every other rollback path (roll-forward policy). It should **not** come back.
+Its rollback hook was later removed with every other rollback path (roll-forward policy). It should **not** come back.
 
 ## Design points to settle
 

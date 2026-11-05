@@ -21,7 +21,7 @@ The release (images, plus the static artifact) was cut and pushed; only the bund
 - forge's deploy path already knows "mixed" (`deploy.go` applyPath `mixed…`, `envAppliesLocally`), but the ledger and the server model do not.
 
 ## Options
-1. **Separate envs (status quo, shipped).** The hosted part is its own persistent env in the same project. No model change, and it is the customer path today. Cost: two deploys per release, plus a guard against them drifting (cp: `cut-release.sh` deploys both; `check-web-version.sh` compares the served `/version.json` with the pin).
+1. **Separate envs (status quo, shipped).** The hosted part is its own persistent env in the same project. No model change, and it is the customer path today. Cost: two deploys per release, plus a guard against them drifting (cp: its release script deploys both; `check-web-version.sh` compares the served `/version.json` with the pin).
 2. **First-class mixed env.** A `self_managed` env that may ALSO hold placed static sites (and maybe hosted workloads):
    - cp: relax `ck_cp_deploy_envs_placement` so a self_managed env may carry a namespace + host cluster used ONLY for its placed items; triggers that forbid deployment rows in self_managed envs must admit StaticSite deployments; the converger must apply the hosted half while forge keeps applying the cluster half (the `hub_converged` / `forge_applies` split already exists per env and would become per item or per tree).
    - forge: the kind predicate becomes `self_managed` when anything runs on an own cluster, even if something is also hosted. The hosted publish path must accept a self_managed env with placement. `env shape` / admission / capacity must account for the hosted half.

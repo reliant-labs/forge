@@ -182,6 +182,31 @@ func TestCreateRequestFactory_UnownedKeepsPlainSignature(t *testing.T) {
 	}
 }
 
+// A table owned by its own key (COMMENT ON COLUMN tenants.id IS
+// 'forge:owner') with no FK parents is owner-aware, but its factory has no
+// parents to seed and no owner field to set. It must not declare an unused
+// owner variable, which failed `forge generate`'s compile check:
+// "declared and not used: owner".
+func TestCreateRequestFactory_SelfOwnedWithoutParentsCompiles(t *testing.T) {
+	spec := createRequestSpec{
+		funcName: "NewCreateTenantRequest", inputType: "CreateTenantRequest", entity: "Tenant",
+		ownerAware: true,
+		fields:     []CRUDTestFieldData{{ProtoName: "Slug", TestValue: `"a"`, TestValue2: `"b"`}},
+	}
+	out := string(renderEntityFactoryFile("example.com/test/internal/db", factoryGroup{
+		pkg: "tenants", pbImport: "example.com/test/gen/tenants/v1", creates: []createRequestSpec{spec},
+	}))
+	if !strings.Contains(out, "func NewCreateTenantRequest(t testing.TB, database orm.Context, variant int, opts ...FactoryOption) *pb.CreateTenantRequest {") {
+		t.Fatalf("self-owned factory must still take FactoryOwner:\n%s", out)
+	}
+	if strings.Contains(out, "owner := factoryOwner(opts)") {
+		t.Errorf("a factory with no parents and no owner field must not declare owner:\n%s", out)
+	}
+	if _, err := format.Source([]byte(out)); err != nil {
+		t.Errorf("rendered factory file does not parse: %v\n%s", err, out)
+	}
+}
+
 // FactoryOwner rewrites owner cells, not owner-shaped text: a cell outside
 // the owner-linked columns keeps its value even when it equals a planned
 // owner (a tenant whose slug is its id), and a literal with an owner value

@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/topology"
 )
 
 // The console contract for WHERE an environment runs.
@@ -42,14 +43,14 @@ import (
 //     deployment — name, tier, url, hostname, verdict, verdict_reason,
 //     observed_state, observed_digest, desired_digest, drifted, last_error.
 
-// The destination vocabulary.
+// The destination vocabulary (forge/pkg/topology's).
 const (
-	destinationHosted  = "hosted"
-	destinationCluster = "cluster"
-	destinationCompose = "compose"
-	destinationHost    = "host"
-	destinationStatic  = "static"
-	destinationMixed   = "mixed"
+	destinationHosted  = topology.DestinationHosted
+	destinationCluster = topology.DestinationCluster
+	destinationCompose = topology.DestinationCompose
+	destinationHost    = topology.DestinationHost
+	destinationStatic  = topology.DestinationStatic
+	destinationMixed   = topology.DestinationMixed
 )
 
 // envDestination is where one env runs, as the contract above reports it.

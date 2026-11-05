@@ -13,6 +13,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/topology"
 )
 
 // ─── Shared fakes ────────────────────────────────────────────────────────────
@@ -131,7 +132,7 @@ func (m *memReleaseLedger) List(context.Context) ([]release.Release, error) {
 	for _, r := range m.releases {
 		out = append(out, r)
 	}
-	sortReleasesNewestFirst(out)
+	topology.SortReleasesNewestFirst(out)
 	return out, nil
 }
 

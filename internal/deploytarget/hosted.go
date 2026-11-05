@@ -46,6 +46,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/topology"
 )
 
 // HostedProviderID is the registry id of the hosted provider.
@@ -1849,34 +1850,9 @@ func printHostedPlan(group ServiceGroup, plan []hostedPlanItem) {
 // ─── Status (shared by Observe and the CLI's topology/status JSON) ───────────
 
 // HostedWorkloadStatus is one deployment as the console contract reports it.
-type HostedWorkloadStatus struct {
-	Name string `json:"name"`
-	// Tier is workload | database | static.
-	Tier string `json:"tier,omitempty"`
-	// URL is the platform-allocated public URL, once one exists.
-	URL string `json:"url,omitempty"`
-	// Hostname is URL's host, for a badge that has no room for a scheme.
-	Hostname string `json:"hostname,omitempty"`
-	// ServingPath is where Hostname's DNS sends its traffic, as the control
-	// plane resolves it: edge | ingress | elsewhere, or empty when it did
-	// not say (ServingPathName).
-	ServingPath string `json:"serving_path,omitempty"`
-	// Verdict is the control plane's lower-case deploystate verdict:
-	// unknown | converging | converged | diverged | degraded.
-	Verdict       string `json:"verdict"`
-	VerdictReason string `json:"verdict_reason,omitempty"`
-	// ObservedState is the observation vocabulary: pending | progressing |
-	// ready | degraded | suspended | deleted | unknown.
-	ObservedState  string `json:"observed_state"`
-	ObservedDigest string `json:"observed_digest,omitempty"`
-	DesiredDigest  string `json:"desired_digest,omitempty"`
-	Drifted        bool   `json:"drifted,omitempty"`
-	LastError      string `json:"last_error,omitempty"`
-	// Domains is the per-domain state of every custom hostname this
-	// deployment declares — what it is doing, and what DNS the author
-	// still owes. Empty for a deployment that declares none.
-	Domains []HostedCustomDomain `json:"domains,omitempty"`
-}
+// The type is forge/pkg/topology's, so a control plane assembling the same
+// report names it without reaching into forge's internals.
+type HostedWorkloadStatus = topology.Workload
 
 // HostedEnvStatus is one environment's hosted status.
 type HostedEnvStatus struct {

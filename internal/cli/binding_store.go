@@ -37,6 +37,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/topology"
 )
 
 // bindingStore is the promotion ledger as its CONSUMERS need it: what one env
@@ -708,7 +709,7 @@ func (l machineReleaseLedger) List(_ context.Context) ([]release.Release, error)
 	if err != nil {
 		return nil, err
 	}
-	sortReleasesNewestFirst(all)
+	topology.SortReleasesNewestFirst(all)
 	return all, nil
 }
 

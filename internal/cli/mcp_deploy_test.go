@@ -39,7 +39,7 @@ func (p *progressLog) joined() string {
 	return strings.Join(p.messages, "\n")
 }
 
-func callMCPStructured(t *testing.T, ctx context.Context, cs *mcp.ClientSession, name string, args map[string]any, token any) (string, map[string]any, bool, error) {
+func callMCPStructured(ctx context.Context, t *testing.T, cs *mcp.ClientSession, name string, args map[string]any, token any) (string, map[string]any, bool, error) {
 	t.Helper()
 	params := &mcp.CallToolParams{Name: name, Arguments: args}
 	if token != nil {
@@ -76,7 +76,7 @@ func TestMCP_DeployClaimable_StreamsProgressAndReturnsTheClaim(t *testing.T) {
 	progress := newProgressLog()
 	cs, _ := connectMCPWith(t, dir, &mcp.ClientOptions{ProgressNotificationHandler: progress.handler})
 
-	text, doc, isErr, err := callMCPStructured(t, context.Background(), cs, "deploy_claimable",
+	text, doc, isErr, err := callMCPStructured(context.Background(), t, cs, "deploy_claimable",
 		map[string]any{"env": "hosted", "no_wait": true}, "deploy-1")
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestMCP_DeployClaimable_StreamsProgressAndReturnsTheClaim(t *testing.T) {
 		t.Errorf("starts = %d, want 1", fake.starts)
 	}
 
-	text, doc, isErr, err = callMCPStructured(t, context.Background(), cs, "deploy_status", map[string]any{"env": "hosted"}, nil)
+	text, doc, isErr, err = callMCPStructured(context.Background(), t, cs, "deploy_status", map[string]any{"env": "hosted"}, nil)
 	if err != nil || isErr {
 		t.Fatalf("deploy_status: %v\n%s", err, text)
 	}
@@ -141,7 +141,7 @@ func TestMCP_DeployClaimable_CancelStopsTheDeploy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, _, _, err := callMCPStructured(t, ctx, cs, "deploy_claimable", map[string]any{"env": "hosted", "no_wait": true}, "deploy-2")
+		_, _, _, err := callMCPStructured(ctx, t, cs, "deploy_claimable", map[string]any{"env": "hosted", "no_wait": true}, "deploy-2")
 		done <- err
 	}()
 	// Wait until the deploy is in flight (its first progress line), then
@@ -199,7 +199,7 @@ func TestMCP_DeployClaimable_RefusesWhatItCannotAdopt(t *testing.T) {
 		empty: "project new " + adoptionName(empty, "") + " --kind site",
 		goMod: "project new " + adoptionName(goMod, "") + " --service api --claimable",
 	} {
-		text, doc, isErr, err := callMCPStructured(t, context.Background(), cs, "deploy_claimable", map[string]any{"dir": dir}, nil)
+		text, doc, isErr, err := callMCPStructured(context.Background(), t, cs, "deploy_claimable", map[string]any{"dir": dir}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -368,7 +368,7 @@ func TestExplainForgeError(t *testing.T) {
 
 func TestMCP_ExplainError(t *testing.T) {
 	cs := connectMCP(t, t.TempDir())
-	text, doc, isErr, err := callMCPStructured(t, context.Background(), cs, "explain_error",
+	text, doc, isErr, err := callMCPStructured(context.Background(), t, cs, "explain_error",
 		map[string]any{"exit_code": 4, "error_reason": "claimable_throttled", "env": "staging"}, nil)
 	if err != nil || isErr {
 		t.Fatalf("explain_error: %v\n%s", err, text)

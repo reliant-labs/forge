@@ -25,4 +25,24 @@ The engine is library code (`@reliantlabs/forge-web-runtime/mock-transport`, a s
 
 Dispatch: scenario handler → hybrid passthrough → fixtures → `Unimplemented`. A Get miss is `NotFound`. Writes persist until reload. A fixture List mirrors the backend's: each SET `optional` request field filters by equality (enums by value), `search` matches strings and enum names, `order_by`/`descending` sort, `page_size` pages, and `total_count` is the filtered count. Custom RPCs need a scenario.
 
-To stub an RPC, run `forge scaffold scenario <name>` and add a typed handler — do NOT edit `mock-transport_gen.ts`. Activate with `?scenario=<name>`; it is read once at module init, so client-side navigation keeps it active until a full reload.
+To stub an RPC, run `forge scaffold scenario <name>` and add a typed handler — do NOT edit `mock-transport_gen.ts`. Activate with `?scenario=<name>`; it is read once at module init, so client-side navigation keeps it active until a full reload. A handler may return a plain object (`{ items }`): the engine completes it against the RPC's response schema, so omitted fields read as their zero values, as from a server.
+
+## A mock transport in production: demos and previews
+
+The build-time `mock_api` is for development. To run a page on mocks in a PRODUCTION bundle (a public demo host, a sandbox preview), build the transport yourself, behind your own runtime switch, and import the engine only from that page's lazy chunk:
+
+```ts
+import { createMockTransport, resolveActiveScenario } from "@reliantlabs/forge-web-runtime/mock-transport";
+
+const scenario = resolveActiveScenario(scenarios, { name: "demo" }); // the app chooses; ?scenario= is not read
+const transport = createMockTransport({
+  scenario: { ...scenario, passthrough: liveUrl ? "first" : false },
+  fallback: liveUrl ? createConnectTransport({ baseUrl: liveUrl }) : undefined,
+  readOnly: true,                // refuse anything not `idempotency_level = NO_SIDE_EFFECTS`
+  passthroughTimeoutMs: 4000,    // "first": the backend's deadline before the scenario answers
+  onPassthroughFallback: () => showSampleDataBanner(),
+});
+```
+
+- `readOnly` refuses every non-read with `PermissionDenied` BEFORE any handler, fixture or backend sees it. `true` reads the proto's idempotency; pass a function for a contract that does not annotate it.
+- `passthrough: "first"` sends EVERY RPC to `fallback` first and answers from the scenario, then the fixtures, only when it fails or times out — live data that degrades to sample data, not to an error page. A caller's own abort is never masked. Swapping mocks for a real endpoint is then config, not code.

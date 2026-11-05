@@ -261,7 +261,7 @@ without hunting generator source. For your generated stores,
 | Command | What it does |
 |---|---|
 | `forge env up` | Host services + frontends; auto-seeds a fresh dev DB on first boot |
-| `forge env up dev` | Full stack: host infra (postgres, dev IdP) + the API (air, hot reload) + frontends. Holds the foreground, TTY or not, and tears the stack down on SIGINT/SIGTERM/SIGHUP — an agent runs it in its harness's background and stops it with a signal. `--background` detaches and returns instead; `forge env down dev` stops that stack |
+| `forge env up dev` | Full stack: host infra (postgres, dev IdP) + the API (air, hot reload) + frontends |
 | `forge env up <env>` | Build + deploy + host launch + frontend dev — reads `deploy/kcl/<env>/` |
 | `forge env deploy dev` | Deploy to local k3d (or whatever dev's KCL targets) |
 | `forge generate` | Re-project from protos + applied migrations. Safe anytime; never touches business logic |

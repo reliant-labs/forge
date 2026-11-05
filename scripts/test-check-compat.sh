@@ -16,6 +16,8 @@ cat >"$T/gh" <<EOF
 f=""; src=""
 while [ \$# -gt 0 ]; do case "\$1" in --jq) f="\$2"; shift 2 ;; */labels) src="$T/labels.json"; shift ;; */events) src="$T/events.json"; shift ;; *) shift ;; esac; done
 jq -r "\$f" "\$src"
+# GH_EVENTS_FAIL: print the events page, then fail as a later page would.
+if [ -n "\${GH_EVENTS_FAIL:-}" ] && [ "\$src" = "$T/events.json" ]; then exit 1; fi
 EOF
 chmod +x "$T/gh"
 labels() { printf '%s\n' "$1" >"$T/labels.json"; }
@@ -39,6 +41,7 @@ events '[{"event":"labeled","label":{"name":"migration:breaks-rollback-approved"
 check "the label applied by a bot does not count" 1 CI_PR=7
 events '[{"event":"labeled","label":{"name":"migration:breaks-rollback-approved"},"actor":{"login":"reliant-01"}}]'
 check "the owner's label passes" 0 CI_PR=7
+check "an owner's event on a page before a failed one does not count" 1 CI_PR=7 GH_EVENTS_FAIL=1
 labels '[]'
 check "the owner's label, since removed, does not" 1 CI_PR=7
 CMD=proto check "no buf.yaml: proto has nothing to judge" 0

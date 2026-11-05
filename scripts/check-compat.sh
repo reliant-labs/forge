@@ -45,8 +45,10 @@ owner_approved() {
   local has actor
   has="$("$GH" api "repos/$repo/issues/$CI_PR/labels" --jq "[.[] | select(.name == \"$1\")] | length" 2>/dev/null || echo 0)"
   [ "$has" -gt 0 ] 2>/dev/null || return 1
+  # Fail closed on a partial read: refuse calls this in an `if`, where errexit is
+  # off, so a later page failing after an owner's event must not leave that actor.
   actor="$("$GH" api --paginate "repos/$repo/issues/$CI_PR/events" \
-    --jq ".[] | select(.event == \"labeled\" and .label.name == \"$1\") | .actor.login" 2>/dev/null | tail -1)"
+    --jq ".[] | select(.event == \"labeled\" and .label.name == \"$1\") | .actor.login" 2>/dev/null | tail -1)" || return 1
   [ -n "$actor" ] && tr ', ' '\n\n' <<<"$OWNERS" | grep -qxF "$actor"
 }
 

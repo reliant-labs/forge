@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cli"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // TestShippedSkillPathsAreWellFormed keeps a split skill reachable: every
@@ -119,6 +120,19 @@ func TestShippedSkillsFitLoadBudget(t *testing.T) {
 	// The production renderer resolves user/project overrides. Neither belongs
 	// in a guard for shipped content; no project root also avoids version skew.
 	t.Setenv("HOME", t.TempDir())
+	// Subtests run sequentially (t.Setenv forbids t.Parallel), so the
+	// warnings are collected without a lock and reported once, largest first.
+	type nearCap struct {
+		size int
+		line string
+	}
+	var warnings []nearCap
+	defer func() {
+		sort.Slice(warnings, func(i, j int) bool { return warnings[i].size > warnings[j].size })
+		for _, w := range warnings {
+			t.Log(w.line)
+		}
+	}()
 	for rel := range shippedSkills(t) {
 		skillPath := strings.TrimSuffix(rel, "/SKILL.md")
 		skillPath = strings.TrimPrefix(skillPath, "general/")
@@ -139,6 +153,9 @@ func TestShippedSkillsFitLoadBudget(t *testing.T) {
 					over, formatLargestSections(string(content), 5))
 			}
 			t.Logf("%d rendered bytes; %d bytes of body margin", len(content), maxRenderedSkillBytes-len(content))
+			if w := templates.SkillHeadroomWarning(skillPath, len(content), maxRenderedSkillBytes); w != "" {
+				warnings = append(warnings, nearCap{len(content), w})
+			}
 
 			// Pin the reserve to Reliant's complete-delivery formats. Five-digit
 			// catalog counts are conservative; the current catalog is hundreds.

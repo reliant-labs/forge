@@ -67,7 +67,7 @@ func TestTooltipReachesDisabledTriggers(t *testing.T) {
 	src := tooltipSource(t)
 	for _, want := range []string{
 		`host.querySelector<HTMLElement>(FOCUSABLE)`,
-		`host.tabIndex = 0`,
+		`host.setAttribute("tabindex", "0")`,
 		`focus-visible:outline-accent`,
 	} {
 		if !strings.Contains(src, want) {

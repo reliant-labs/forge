@@ -1,6 +1,6 @@
 ---
 name: deploy/build
-description: Before and during the build of an env's artifacts — the pre-flight checks (lint, tests, validate-kcl, doctor), `forge build <env>` / `forge env build <env> --push` and their flags, the one project image and how `args` pick its subcommand, the hosted registry login, the boot config check before a push, and Docker build contexts.
+description: Before and during the build of an env's artifacts — the pre-flight checks (lint, tests, validate-kcl, doctor), `forge env build <env> --push` and `forge build <env>` with their flags, the one project image and how `args` pick its subcommand, the hosted registry login, the boot config check before a push, and Docker build contexts.
 ---
 
 # Pre-flight and build

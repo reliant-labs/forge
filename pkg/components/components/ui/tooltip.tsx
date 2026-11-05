@@ -257,11 +257,14 @@ export default function Tooltip({
   }, [active, host, clearTimers, describedElement, setOpen]);
 
   // Listeners read the latest callbacks through refs, so they attach once
-  // per trigger element rather than on every render of the caller.
+  // per trigger element rather than on every render of the caller. The refs
+  // are updated after commit, never during render.
   const showRef = useRef(show);
   const hideRef = useRef(hide);
-  showRef.current = show;
-  hideRef.current = hide;
+  useIsomorphicLayoutEffect(() => {
+    showRef.current = show;
+    hideRef.current = hide;
+  });
 
   // One visible tooltip; the warm-up window starts when it hides.
   const me = useRef(Symbol("tooltip"));
@@ -305,7 +308,7 @@ export default function Tooltip({
     if (cur && (cur.el !== target || cur.attr !== attr)) detach();
     if (!attached.current) {
       const madeFocusable = !inner && focusable && !host.hasAttribute("tabindex");
-      if (madeFocusable) host.tabIndex = 0;
+      if (madeFocusable) host.setAttribute("tabindex", "0");
       attached.current = { el: target, attr, madeFocusable };
     }
     // A re-render of the child may have rewritten its own aria-describedby.

@@ -69,23 +69,11 @@ export default function ArchitectureDiagram({
 }: ArchitectureDiagramProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const [serviceRects, setServiceRects] = useState<Map<string, Rect>>(new Map());
-  const [containerRect, setContainerRect] = useState<Rect>({
-    x: 0,
-    y: 0,
-    width: 0,
-    height: 0,
-  });
 
   const measurePositions = useCallback(() => {
     if (!containerRef.current) return;
 
     const cRect = containerRef.current.getBoundingClientRect();
-    setContainerRect({
-      x: cRect.left,
-      y: cRect.top,
-      width: cRect.width,
-      height: cRect.height,
-    });
 
     const rects = new Map<string, Rect>();
     const elements = containerRef.current.querySelectorAll<HTMLElement>("[data-service]");

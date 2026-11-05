@@ -63,7 +63,7 @@ return <DataList items={query.data} />;
 A generated hook's `error` is a `ConnectClientError`, so `userMessage(err)`
 renders it without the backend framing, and `err.reason` / `err.codeName` are
 there when a failure needs its own branch. Never render `err.message` and
-never `switch` on its text — see the `frontend-runtime` skill.
+never `switch` on its text — see the `frontend-runtime/transport` skill.
 
 ## Real-time server data (streams, websockets, subscriptions)
 

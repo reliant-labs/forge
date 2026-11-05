@@ -190,9 +190,13 @@ func TestFrontendSkillStaysUnderCap(t *testing.T) {
 	t.Parallel()
 
 	const workingCap = 18_000
-	if n := len(frontendSkill(t)); n >= workingCap {
+	n := len(frontendSkill(t))
+	if n >= workingCap {
 		t.Errorf("frontend SKILL.md is %d bytes, over the %d-byte working cap. "+
 			"Cut something before raising this — and check TestShippedSkillsFitDeliveryBudget, "+
 			"which is the ceiling that actually truncates in the field", n, workingCap)
+	}
+	if w := SkillHeadroomWarning("frontend (working cap)", n, workingCap); w != "" {
+		t.Log(w)
 	}
 }

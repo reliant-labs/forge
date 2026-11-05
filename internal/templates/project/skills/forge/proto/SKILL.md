@@ -248,7 +248,8 @@ other rpc is custom, including ones that start with a CRUD verb:
 
 A custom rpc gets a pb-through stub in `rpc_<name>.go`, no scaffolded page, and
 a mutation hook that invalidates every query on its service (a CRUD mutation
-invalidates only its entity's). So name rpcs for the domain operation; renaming
+invalidates only its entity's). While the stub stands, the hooks file's
+`<svc>Implemented.<rpc>` is `false`: gate the UI on it. So name rpcs for the domain operation; renaming
 `UpdateJobStatus` to `ChangeJobStatus` buys nothing. The one real collision is
 an rpc whose remainder IS another entity's name — `UpdateJobNote` where
 `JobNote` is an entity is that entity's Update.

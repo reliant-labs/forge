@@ -300,7 +300,9 @@ export default function Popover({
   // The panel's own keys and focus loss. Native listeners rather than JSX
   // handlers: the panel is a dialog/menu container, not a control.
   const panelKeyDown = useRef(onPanelKeyDown);
-  panelKeyDown.current = onPanelKeyDown;
+  useIsomorphicLayoutEffect(() => {
+    panelKeyDown.current = onPanelKeyDown;
+  });
   useEffect(() => {
     const panel = panelRef.current;
     if (!open || !panel) return;

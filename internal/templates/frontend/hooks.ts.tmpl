@@ -37,6 +37,11 @@
 //
 // Success-side UX stays yours via options.onSuccess — the generator never
 // defaults it, because "{{.ServiceName}} succeeded" leaks RPC names into the UI.
+//
+// An rpc whose server handler is still forge's Unimplemented placeholder has
+// a hook like any other, and every call fails with Code.Unimplemented.
+// {{.ServiceNameCamel}}Implemented below says which ones, so a UI can hide the
+// control rather than learn it from an error.
 
 import {
 {{- if .HasPaged}}
@@ -108,6 +113,24 @@ export const {{.ServiceNameCamel}}Keys = {
 {{- end}}
 {{- end}}
 };
+
+/**
+ * {{.ServiceNameCamel}}Implemented — whether each rpc's server handler is
+ * written. `false` means it is still forge's placeholder (a method stamped
+ * `// forge:gen unwired-stub`), which answers Code.Unimplemented: its hook
+ * type-checks, and every call fails. Gate the UI on it:
+ *
+ *   if (!{{.ServiceNameCamel}}Implemented.<method>) return null;
+ *
+ * Read from the handler package by `forge generate`: an entry turns true on
+ * the first generate after the handler is written and its marker removed.
+ * `forge lint` reports the same placeholders.
+ */
+export const {{.ServiceNameCamel}}Implemented = {
+{{- range .Methods}}
+  {{.NameCamel}}: {{if .Unimplemented}}false{{else}}true{{end}},
+{{- end}}
+};
 {{- if .HasQueries}}
 
 /**
@@ -140,6 +163,9 @@ export const {{.ServiceNameCamel}}Queries = {
 };
 {{- end}}
 {{range .Methods}}
+{{- if .Unimplemented}}
+/** Not implemented on the server yet: its handler is forge's Unimplemented placeholder ({{$.ServiceNameCamel}}Implemented). */
+{{- end}}
 {{- if .IsQuery}}
 export const use{{.Name}} = createQueryHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
   {{$.ServiceNameCamel}}Queries.{{.NameCamel}},

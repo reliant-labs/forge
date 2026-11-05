@@ -184,7 +184,8 @@ type Policy struct {
 	// identity (roles from the DB, org membership, feature flags) onto
 	// the validated claims. Returning an error rejects the request: a
 	// *connect.Error is passed through verbatim, anything else becomes
-	// CodeUnauthenticated.
+	// CodeUnauthenticated. Returning nil claims with no error rejects it
+	// too (CodeUnauthenticated): no principal is a failed request.
 	Enrich func(ctx context.Context, claims *auth.Claims) (*auth.Claims, error)
 
 	// ContextWithClaims stashes validated claims on the context.
@@ -431,6 +432,10 @@ func (p Policy) validate(ctx context.Context, token string) (*auth.Claims, error
 // neither claims nor an error. See authenticate.
 var errNoClaims = errors.New("validator returned no claims")
 
+// errEnrichNoClaims is the enrichment failure for an Enrich hook that
+// returned neither claims nor an error. See authenticate.
+var errEnrichNoClaims = errors.New("enrich returned no claims")
+
 // allowUnauthenticated reports whether the procedure is on the explicit
 // allow-list. Exact match only — see Policy.Unauthenticated.
 func (a *interceptor) allowUnauthenticated(procedure string) bool {
@@ -503,7 +508,13 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 			}
 			return ctx, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("identity enrichment failed: %w", err))
 		}
-		if claims != nil && claims.Credential != credential {
+		if claims == nil {
+			// The validator's no-claims rule, applied to the enricher: an
+			// enricher answering a deleted identity with (nil, nil) has
+			// found no principal, and no principal is a failed request.
+			return ctx, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("identity enrichment failed: %w", errEnrichNoClaims))
+		}
+		if claims.Credential != credential {
 			enriched := *claims
 			enriched.Credential = credential
 			claims = &enriched

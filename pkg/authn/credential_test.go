@@ -2,7 +2,10 @@ package authn
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/auth"
 )
@@ -63,6 +66,35 @@ func TestAuthenticate_EnrichCannotChangeTheCredential(t *testing.T) {
 				t.Fatalf("Enrich's other fields were lost: %+v", got)
 			}
 		})
+	}
+}
+
+// An enricher answering a validated key's (deleted) identity with
+// (nil, nil) has found no principal: the request fails Unauthenticated
+// and never reaches the handler, as a validator's (nil, nil) does.
+func TestAuthenticate_EnrichNoClaimsRejects(t *testing.T) {
+	t.Parallel()
+	p := validatePolicy(func(string) (*auth.Claims, error) {
+		return &auth.Claims{UserID: "apikey:abcd1234", Credential: auth.APIKeyCredential("abcd1234")}, nil
+	})
+	p.ContextWithClaims = ContextWithClaims
+	p.Enrich = func(context.Context, *auth.Claims) (*auth.Claims, error) { return nil, nil }
+	a := &interceptor{policy: p}
+
+	called := false
+	wrapped := a.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		called = true
+		return nil, nil
+	})
+	req := &fakeReq{procedure: "/svc.v1.Keys/DeleteKey"}
+	req.Header().Set("Authorization", "Bearer key")
+	_, err := wrapped(context.Background(), req)
+	var cerr *connect.Error
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeUnauthenticated {
+		t.Fatalf("want Unauthenticated, got %v", err)
+	}
+	if called {
+		t.Fatal("an enricher's (nil, nil) must not reach the handler")
 	}
 }
 

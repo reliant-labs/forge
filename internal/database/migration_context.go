@@ -51,6 +51,10 @@ type MigrationContext struct {
 type ParsedTable struct {
 	Name    string
 	Columns []ParsedColumn
+	// Comment is the table's last `COMMENT ON TABLE ... IS '...'` (the
+	// forge:entity-name / forge:no-entity markers live there), "" when none
+	// or when set to NULL.
+	Comment string
 }
 
 // ParsedColumn represents a column extracted from a CREATE TABLE or ALTER TABLE statement.
@@ -76,6 +80,8 @@ var (
 	alterTableRe  = regexp.MustCompile(`(?i)ALTER\s+TABLE\s+(?:ONLY\s+)?(` + sqlident.Qualified + `)\s+ADD\s+(?:COLUMN\s+)?(` + sqlident.Part + `)\s+(.+?)(?:;|$)`)
 	dropTableRe   = regexp.MustCompile(`(?i)DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(` + sqlident.Qualified + `)`)
 	columnLineRe  = regexp.MustCompile(`^\s*(\w+)\s+(\S+(?:\s+\S+)?)\s*(.*?)(?:,?\s*)$`)
+	// A standard string literal ('' escapes a quote) or NULL.
+	commentOnTableRe = regexp.MustCompile(`(?i)COMMENT\s+ON\s+TABLE\s+(` + sqlident.Qualified + `)\s+IS\s+(?:'((?:[^']|'')*)'|(NULL))`)
 )
 
 // ParseMigrationsForSchema reads all .up.sql files in dir (sorted by name) and
@@ -161,6 +167,19 @@ func parseSQL(content string, tableMap map[string]*ParsedTable) {
 			Type:       colType,
 			Constraint: constraint,
 		})
+	}
+
+	// Handle COMMENT ON TABLE — the last one wins, as in postgres.
+	for _, match := range commentOnTableRe.FindAllStringSubmatch(content, -1) {
+		t, ok := tableMap[sqlident.Last(match[1])]
+		if !ok {
+			continue
+		}
+		if match[3] != "" {
+			t.Comment = ""
+		} else {
+			t.Comment = strings.ReplaceAll(match[2], "''", "'")
+		}
 	}
 }
 

@@ -105,7 +105,7 @@ func runEntityFromProto(args []string, fromProto string, opts entityOpts) error 
 	}
 
 	migDir := filepath.Join(root, "db", "migrations")
-	applied, existing := appliedSchema(migDir)
+	applied, existing, _ := appliedSchema(migDir)
 	fkReg := newFKRegistry(existing)
 
 	// ── batch form: --from-proto <svc>, no message, no name ─────────
@@ -247,14 +247,18 @@ func birthListedEntityFromProto(bc birthContext, msgName, name string, opts enti
 // author believes it is protected — the worst possible failure mode, and the
 // one this refusal makes impossible. Nothing has been written when it fires:
 // fix the marker, re-run, get the entity.
+//
+// A `// forge:owner` marker no field took is refused the same way: dropped,
+// the table is born unowned and handlers_crud.go unscoped.
 func readOnlyMarkerRefusal(m codegen.RawProtoMessage) error {
-	if len(m.UnappliedReadOnlyMarkers) == 0 {
+	sites := append(append([]codegen.RawProtoMarkerSite(nil), m.UnappliedReadOnlyMarkers...), m.UnappliedOwnerMarkers...)
+	if len(sites) == 0 {
 		return nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "message %s carries a field marker (%s) that attaches to no field:",
-		m.Name, strings.Join(codegen.ReadOnlyProtoMarkers, " / "))
-	for _, site := range m.UnappliedReadOnlyMarkers {
+		m.Name, strings.Join(append(append([]string(nil), codegen.ReadOnlyProtoMarkers...), codegen.ProtoMarkerOwner), " / "))
+	for _, site := range sites {
 		fmt.Fprintf(&b, "\n    %s", site)
 	}
 	b.WriteString("\n  put the marker on the field's own line (trailing) or on the line directly above it, and re-run")
@@ -859,26 +863,28 @@ func markersFromScan(scan *codegen.RawProtoScan, msgName string) entityBirthMark
 	return entityBirthMarkers{}
 }
 
-// appliedSchema returns both views of the applied schema a birth needs:
-// the table-name set (the one-time-birth guard, the FK referent registry)
-// and the per-table reference columns still missing a FOREIGN KEY — the
+// appliedSchema returns the views of the applied schema a birth needs:
+// the table-name set (the one-time-birth guard, the FK referent registry),
+// the per-table reference columns still missing a FOREIGN KEY — the
 // columns a newly born table may be able to constrain from its own
-// migration, once it creates the table they point at.
+// migration, once it creates the table they point at — and the tables
+// themselves, for the sweep's CRUD-rpc pre-flight (which reads their
+// `forge:entity-name` / `forge:no-entity` comments).
 //
 // The reference-column view needs real introspection; the regex fallback
-// recovers table names only. When it is all we have the back-fill is
-// simply empty, which loses a constraint but never emits a broken one.
-func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTable) {
+// (parsedSchema) recovers table names and table comments only. When it is
+// all we have the back-fill is simply empty, which loses a constraint but
+// never emits a broken one.
+func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTable, []schemadef.Table) {
 	out := map[string]bool{}
 	projectDir := filepath.Dir(filepath.Dir(migDir))
 	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
-		if parsed, perr := database.ParseMigrationsForSchema(migDir); perr == nil {
-			for _, t := range parsed {
-				out[t.Name] = true
-			}
+		named := parsedSchema(migDir)
+		for _, t := range named {
+			out[t.Name] = true
 		}
-		return out, nil
+		return out, nil, named
 	}
 	existing := make([]entityscaffold.ExistingTable, 0, len(tables))
 	for _, t := range tables {
@@ -888,7 +894,23 @@ func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTab
 			UnconstrainedRefColumns: unconstrainedRefColumns(t),
 		})
 	}
-	return out, existing
+	return out, existing, tables
+}
+
+// parsedSchema is appliedSchema's fallback when shadow introspection is
+// unavailable: the tables the migrations' regex parse finds, each with its
+// COMMENT ON TABLE, so the CRUD-rpc pre-flight still honors
+// `forge:entity-name` / `forge:no-entity` the way the generator's join does.
+func parsedSchema(migDir string) []schemadef.Table {
+	parsed, err := database.ParseMigrationsForSchema(migDir)
+	if err != nil {
+		return nil
+	}
+	named := make([]schemadef.Table, 0, len(parsed))
+	for _, t := range parsed {
+		named = append(named, schemadef.Table{Name: t.Name, Comment: t.Comment})
+	}
+	return named
 }
 
 // unconstrainedRefColumns lists a table's TEXT `<x>_id` columns that carry

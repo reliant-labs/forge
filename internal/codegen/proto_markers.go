@@ -122,6 +122,28 @@ const (
 	// vocabulary of any single scanner.
 	ProtoMarkerSecret = "forge:secret"
 
+	// ProtoMarkerOwner declares, at birth, that a field's column names WHO
+	// a row belongs to: the born create-table migration carries
+	// `COMMENT ON COLUMN <table>.<col> IS 'forge:owner'`
+	// (schemadef.ColumnMarkerOwner, the same spelling one layer down).
+	//
+	// It exists because the catalog marker alone could not be declared in
+	// time. The owner-scoping wrapper is scaffolded into handlers_crud.go
+	// only when that file is born, and bare `forge scaffold` births the
+	// migration and generates the file in one run — so a column marked by a
+	// later migration always met a file that already existed, and every
+	// scoped handler had to be pasted from `forge project audit` by hand.
+	// Declared on the field, the comment is in the schema before phase 2
+	// runs, and the file is born scoped.
+	//
+	// Birth-only, like ProtoMarkerEntity: after birth the catalog comment
+	// is the truth, evolved by a new migration. Read by BOTH extractors, as
+	// ProtoMarkerReadOnly is — the raw scanner for a brand-new
+	// `// forge:entity` message, the descriptor path for `forge scaffold
+	// entity --from-proto`. It may follow another field marker on one
+	// comment line (`// forge:read-only forge:owner`); see OwnerMarkerLineRE.
+	ProtoMarkerOwner = "forge:owner"
+
 	// ProtoMarkerGuards declares that a CUSTOM RPC owns a column's writes,
 	// naming the column as `<table>.<column>`. Written on a FIELD of that
 	// rpc's request message; the field it sits on is incidental — it is the
@@ -252,6 +274,7 @@ var KnownProtoMarkers = []string{
 	ProtoMarkerComputed,
 	ProtoMarkerGenerated,
 	ProtoMarkerSecret,
+	ProtoMarkerOwner,
 	ProtoMarkerGuards,
 	ProtoMarkerMutation,
 	ProtoMarkerQueryScope,
@@ -590,6 +613,21 @@ func GeneratedMarkerExpr(comment string) (expr string, found bool) {
 // reports, even when it can recover no expression from it.
 var generatedMarkerPresentRE = regexp.MustCompile(`(?m)^[ \t]*(?://+[ \t]*)?` +
 	regexp.QuoteMeta(ProtoMarkerGenerated) + `(\s|$|[^\w])`)
+
+// ownerMarkerAfterMarkers is the tail both owner recognizers share: any run
+// of other `forge:*` tokens (each with an optional `=value`), then the owner
+// marker itself. So `forge:owner` is read at the start of a comment, and
+// also after the field markers it most often sits beside (`forge:read-only
+// forge:owner`) — but never out of prose that merely mentions it.
+const ownerMarkerAfterMarkers = `(?:forge:[\w-]+(?:=\S*)?[ \t]+)*` + `forge:owner` + `(?:\s|$|[^\w-])`
+
+// OwnerMarkerLineRE recognizes ProtoMarkerOwner in a `//`-prefixed proto
+// comment — a full line above the field, or a trailing comment after it.
+var OwnerMarkerLineRE = regexp.MustCompile(`//+[ \t]*` + ownerMarkerAfterMarkers)
+
+// OwnerMarkerCommentRE is OwnerMarkerLineRE for comment text buf has already
+// stripped the `//` from — the descriptor path's shape, any line of a block.
+var OwnerMarkerCommentRE = regexp.MustCompile(`(?m)^[ \t]*` + ownerMarkerAfterMarkers)
 
 // ProtoMarkerAnyLineRE builds a recognizer matching ANY of markers in a
 // `//`-prefixed proto comment, with the same spacing/trailing-prose rules as

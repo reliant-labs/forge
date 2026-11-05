@@ -758,6 +758,37 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 	}
 	b.WriteString(");\n")
 
+	// `// forge:owner` — declared in the catalog in the SAME migration that
+	// creates the column, so the comment is in the applied schema before
+	// the first `forge generate` births handlers_crud.go, and that file is
+	// born with the owner-scoping wrapper. A marker on a field birth gave
+	// no column (a TODO) has nothing to declare; the note says so.
+	bornCols := map[string]bool{}
+	for _, it := range items {
+		if !it.comment {
+			name, _, _ := strings.Cut(it.text, " ")
+			bornCols[name] = true
+		}
+	}
+	var owners []string
+	for _, f := range spec.Fields {
+		switch {
+		case !f.Owner:
+		case bornCols[f.Name]:
+			owners = append(owners, f.Name)
+		default:
+			notes = append(notes, fmt.Sprintf("field %s: marked %s but born with no column — nothing to declare; "+
+				"add the column and its COMMENT ON COLUMN by hand", f.Name, codegen.ProtoMarkerOwner))
+		}
+	}
+	if len(owners) > 0 {
+		fmt.Fprintf(&b, "\n-- %s — the column naming who a row belongs to. handlers_crud.go is born\n", schemadef.ColumnMarkerOwner)
+		b.WriteString("-- with the owner-scoping wrapper for every authenticated CRUD rpc.\n")
+		for _, c := range owners {
+			fmt.Fprintf(&b, "COMMENT ON COLUMN %s.%s IS '%s';\n", spec.Table, c, schemadef.ColumnMarkerOwner)
+		}
+	}
+
 	// forge:append-only — the STORAGE half of the marker (the wire half omits
 	// the Update/Delete RPCs): a trigger that rejects every UPDATE/DELETE so
 	// no bug or compromised caller can rewrite or erase a ledger row. LOUD

@@ -24,7 +24,7 @@ func TestFindUnsatisfiableColumns_FiresOnTheUnsatisfiableShape(t *testing.T) {
 	entity := unsatisfiableEntity(EntityColumn{
 		Name: "company_id", Type: "string", NotNull: true, DeclType: "TEXT",
 	})
-	got := FindUnsatisfiableColumns(entity)
+	got := FindUnsatisfiableColumns(entity, "")
 	if len(got) != 1 {
 		t.Fatalf("NOT NULL + no DEFAULT + forge:read-only + no forge:fill must be flagged; got %+v", got)
 	}
@@ -40,7 +40,7 @@ func TestFindUnsatisfiableColumns_DoesNotFireWithADefault(t *testing.T) {
 	entity := unsatisfiableEntity(EntityColumn{
 		Name: "status", Type: "string", NotNull: true, DeclType: "TEXT", Default: "'ACTIVE'::text",
 	})
-	if got := FindUnsatisfiableColumns(entity); len(got) != 0 {
+	if got := FindUnsatisfiableColumns(entity, ""); len(got) != 0 {
 		t.Errorf("a column with a DB DEFAULT is satisfiable; got %+v", got)
 	}
 }
@@ -49,7 +49,7 @@ func TestFindUnsatisfiableColumns_DoesNotFireWhenNullable(t *testing.T) {
 	entity := unsatisfiableEntity(EntityColumn{
 		Name: "archived_reason", Type: "string", DeclType: "TEXT",
 	})
-	if got := FindUnsatisfiableColumns(entity); len(got) != 0 {
+	if got := FindUnsatisfiableColumns(entity, ""); len(got) != 0 {
 		t.Errorf("a nullable column is satisfiable (NULL is a legal insert); got %+v", got)
 	}
 }
@@ -62,7 +62,7 @@ func TestFindUnsatisfiableColumns_SuppressedByForgeFill(t *testing.T) {
 			Name: "company_id", Type: "string", NotNull: true, DeclType: "TEXT",
 			FillStrategy: strategy,
 		})
-		if got := FindUnsatisfiableColumns(entity); len(got) != 0 {
+		if got := FindUnsatisfiableColumns(entity, ""); len(got) != 0 {
 			t.Errorf("forge:fill=%s must suppress the finding; got %+v", strategy, got)
 		}
 	}
@@ -77,18 +77,18 @@ func TestFindUnsatisfiableColumns_IgnoresColumnsThatArentReadOnly(t *testing.T) 
 		},
 		Columns: []EntityColumn{{Name: "name", Type: "string", NotNull: true, DeclType: "TEXT"}},
 	}
-	if got := FindUnsatisfiableColumns(entity); len(got) != 0 {
+	if got := FindUnsatisfiableColumns(entity, ""); len(got) != 0 {
 		t.Errorf("a client-settable (non-read-only) column is filled by the request itself; got %+v", got)
 	}
 }
 
 func TestFindUnsatisfiableColumns_IgnoresPKAndGeneratedColumns(t *testing.T) {
 	pk := unsatisfiableEntity(EntityColumn{Name: "company_id", Type: "string", NotNull: true, IsPK: true})
-	if got := FindUnsatisfiableColumns(pk); len(got) != 0 {
+	if got := FindUnsatisfiableColumns(pk, ""); len(got) != 0 {
 		t.Errorf("a PK is filled by ULID generation, not the create request; got %+v", got)
 	}
 	generated := unsatisfiableEntity(EntityColumn{Name: "company_id", Type: "string", NotNull: true, IsGenerated: true})
-	if got := FindUnsatisfiableColumns(generated); len(got) != 0 {
+	if got := FindUnsatisfiableColumns(generated, ""); len(got) != 0 {
 		t.Errorf("a GENERATED ALWAYS column is computed by postgres, not inserted; got %+v", got)
 	}
 }

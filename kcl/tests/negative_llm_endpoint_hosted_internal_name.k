@@ -4,7 +4,7 @@ platform service, so an LLMEndpoint naming one is refused for a hosted
 referrer.
 """
 
-# expect: names a host that is not on the public internet
+# expect: names a host that is not a public DNS name
 # expect: http://litellm.platform.svc:4000
 
 import forge

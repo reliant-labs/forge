@@ -167,12 +167,11 @@ gets its key on the normal hosted network.
   `http://` URL whose host is exactly `localhost`, `127.0.0.1`, `[::1]`,
   `host.docker.internal` or `host.k3d.internal`);
 - an endpoint URL with user info, a query or a trailing slash;
-- an endpoint read by a hosted workload whose host is not public (loopback,
-  private, link-local, CGNAT, an IPv4 address spelled any way but the
-  canonical dotted quad (`0177.0.0.1`, `0x7f.1`, `2130706433`), an IPv6
-  literal, a single-label name, or
-  `*.localhost` / `*.local` / `*.internal` / `*.svc` / `*.lan` /
-  `*.home.arpa`): from Reliant's network that host is the platform's;
+- an endpoint read by a hosted workload whose host is not a public DNS name:
+  any IP literal (IPv4 or IPv6, public or private, in any spelling such as
+  `0177.0.0.1` or `2130706433`), a single-label name, or `*.localhost` /
+  `*.local` / `*.internal` / `*.svc` / `*.lan` / `*.home.arpa`. From
+  Reliant's network such a host may be the platform's;
 - an endpoint read by a hosted workload over plaintext `http://` (either
   `base_url` or `openai_base_url`): the key would cross the internet in the
   clear;

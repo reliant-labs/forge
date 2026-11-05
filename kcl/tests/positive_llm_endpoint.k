@@ -9,7 +9,6 @@ gateway with your own token, or a local Ollama).
   3. a declared openai_base_url replaces the derived one;
   4. a compose container gets literals (a local endpoint's literal key).
   5. a workload you run reaches a private endpoint; [::1] takes a literal key.
-  6. a hosted referrer may name a public IPv4 in its canonical dotted quad.
 """
 
 import forge
@@ -85,18 +84,6 @@ _v6 = forge.render(forge.Bundle {
     }]
 })
 
-_public_ip = forge.render(forge.Bundle {
-    project = "acme"
-    control_plane = forge.ControlPlane {endpoint = "https://api.example.com"}
-    llm = forge.LLM {runtime = forge.LLMEndpoint {base_url = "https://203.0.113.7:8443", api_key = forge.ManagedSecret {name = "LLM_KEY"}}}
-    workloads = [fw.Workload {
-        name = "api"
-        image = _img
-        env = forge.llm_env()
-        runtime = forge.OnHosted {}
-    }]
-})
-
 _h = {e.name: e for e in _host.workloads[0].spec.env}
 _d = {e.name: e for e in _hosted.workloads[0].spec.env}
 _c = _compose.workloads[0].runtime.env
@@ -117,6 +104,3 @@ assert_compose_literals = _c.OPENAI_BASE_URL == "http://host.docker.internal:114
 #    and a literal key is accepted for an exact local host, IPv6 loopback too.
 assert_lan_private = {e.name: e for e in _lan.workloads[0].spec.env}.OPENAI_BASE_URL.value == "http://10.0.0.5:4000/v1"
 assert_v6_literal = {e.name: e for e in _v6.workloads[0].spec.env}.OPENAI_API_KEY.value == "ollama"
-
-# 6. A canonical public IPv4 is classified, not refused as a numeric spelling.
-assert_hosted_public_ip = {e.name: e for e in _public_ip.workloads[0].spec.env}.OPENAI_BASE_URL.value == "https://203.0.113.7:8443/v1"

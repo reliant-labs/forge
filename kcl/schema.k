@@ -1332,14 +1332,12 @@ schema LLMEndpoint:
     it (a local Ollama): its host must be exactly localhost, 127.0.0.1,
     [::1], host.docker.internal or host.k3d.internal.
 
-    A hosted workload reaches only a public https:// endpoint (plaintext
-    http:// would expose the key it sends): a URL whose host is
-    loopback, private, link-local or carrier-grade-NAT, an IPv4 address in
-    any spelling but the canonical dotted quad (0177.0.0.1, 0x7f.1,
-    2130706433), an IPv6 literal, or
-    an internal name (one label, *.localhost, *.local, *.internal, *.svc) is
-    refused at render for it, because from Reliant's network that host is
-    the platform's, not yours. A workload you run (host, compose, your
+    A hosted workload reaches only a public https:// endpoint named by a DNS
+    name (plaintext http:// would expose the key it sends). An IP literal in
+    any spelling (IPv4 or IPv6, public or not) and an internal name (one
+    label, *.localhost, *.local, *.internal, *.svc, *.lan, *.home.arpa) are
+    refused at render for it, because from Reliant's network such a host may
+    be the platform's, not yours. A workload you run (host, compose, your
     cluster) may name any host: its network is yours.
     """
     type: "endpoint" = "endpoint"
@@ -1370,27 +1368,21 @@ _llm_url_host = lambda u: str -> str {
     regex.replace(u, r"^https?://(\[[^\]]*\]|[^/:]*)(:[0-9]+)?(/.*)?$", "$1").lower()
 }
 
-# Whether an LLMEndpoint URL names a host that is not on the public internet:
-# loopback, RFC 1918, link-local (the cloud metadata service), CGNAT, the
-# unspecified address, any IPv6 literal, a single-label name, or a name under
-# a non-public suffix. Decided on the declared host, the only thing a render
-# can see; the hosted network's egress policy is what holds it at runtime.
-# A host whose last label is numeric (decimal or 0x hex) is an IPv4 address
-# to a URL parser (WHATWG), which also reads 0177.0.0.1, 0x7f.1 and 127.1 as
-# loopback; the ranges below match only the canonical dotted quad, so any
-# other numeric spelling counts as internal rather than be classified.
+# Whether an LLMEndpoint URL's host is anything but a public DNS name: an IP
+# literal (a bracketed IPv6, or any host whose last label is not a TLD, which
+# is every IPv4 spelling a URL parser accepts: 127.0.0.1, 0177.0.0.1, 0x7f.1,
+# 2130706433), a single-label name, or a name under a non-public suffix. IP
+# literals are refused rather than classified: a render has no IP parser, and
+# an LLM endpoint with a certificate for a bare address is not a case worth a
+# classifier that can be wrong. Decided on the declared host, the only thing a
+# render can see; the hosted network's egress policy is what holds it at
+# runtime (a public name that resolves to a private address).
 _llm_url_is_internal = lambda u: str -> bool {
     _h = _llm_url_host(u)
     _h.startswith("[") or "." not in _h \
-        or (regex.match(_h, r"^.*\.(0x[0-9a-f]*|[0-9]+)$") and not regex.match(_h, _LLM_CANONICAL_IPV4)) \
-        or regex.match(_h, r"^(0|10|127)\.[0-9.]+$") \
-        or regex.match(_h, r"^(169\.254|192\.168|172\.(1[6-9]|2[0-9]|3[01])|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]))\.[0-9.]+$") \
+        or not regex.match(_h, r"^.*\.([a-z]{2,63}|xn--[a-z0-9-]{1,59})$") \
         or regex.match(_h, r"^([a-z0-9-]+\.)*(localhost|local|internal|svc|lan|home\.arpa)$")
 }
-
-# An IPv4 address in its one canonical spelling: four decimal octets, 0-255,
-# no leading zeros.
-_LLM_CANONICAL_IPV4 = r"^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$"
 
 # Every LLMRef key of an endpoint, as declared.
 _llm_endpoint_values = lambda e: any -> {str:} {

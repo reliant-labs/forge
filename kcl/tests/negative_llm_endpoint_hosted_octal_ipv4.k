@@ -1,11 +1,11 @@
 """
 Negative test — a URL parser reads 0177.0.0.1 (octal octets) as 127.0.0.1
 and 2130706433 (one decimal number) as the same address, so a hosted
-workload may not send an LLMEndpoint's requests and key to either: only the
-canonical dotted quad is classified, every other numeric spelling is refused.
+workload may not send an LLMEndpoint's requests and key to either: a hosted
+endpoint is named by a DNS name, and every IP literal is refused.
 """
 
-# expect: names a host that is not on the public internet
+# expect: names a host that is not a public DNS name
 # expect: https://0177.0.0.1
 # expect: https://2130706433/v1
 

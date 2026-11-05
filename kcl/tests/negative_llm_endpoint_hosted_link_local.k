@@ -4,7 +4,7 @@ platform's (169.254.169.254 is the cloud metadata service), so a hosted
 workload may not send an LLMEndpoint's requests and key there.
 """
 
-# expect: names a host that is not on the public internet
+# expect: names a host that is not a public DNS name
 # expect: http://169.254.169.254
 
 import forge

@@ -135,8 +135,9 @@ func (u *graphUniverse) rootFieldType(root, field string) types.Type {
 // lifecycleOf reads the lifecycle methods off t's method set: Run, Drain,
 // Close and Ready shaped func(context.Context) error, and — for a value that
 // implements serverkit.Worker (Name() string, Start and Stop) — RunContext or
-// Start as its Run and Stop as its Close, which is what the worker contract
-// already promises: Start blocks until its context ends, Stop runs after.
+// Start as its Run (even when it also has a Run method) and Stop as its
+// Close, which is what the worker contract already promises: Start blocks
+// until its context ends, Stop runs after.
 func lifecycleOf(t types.Type) lifecycle {
 	ms := types.NewMethodSet(t)
 	has := func(name string) bool {
@@ -151,13 +152,17 @@ func lifecycleOf(t types.Type) lifecycle {
 	}
 	var l lifecycle
 	worker := hasNameString(ms) && has("Start") && has("Stop")
+	// A worker's Start (or RunContext) is its lifetime, and it wins over a
+	// Run of the same shape: a --kind cron worker's Run(ctx) error is ONE
+	// tick, which cronkit calls from inside Start. Supervising Run instead
+	// fired one tick at boot and never scheduled another.
 	switch {
-	case has("Run"):
-		l.Run = "Run"
 	case worker && has("RunContext"):
 		l.Run = "RunContext"
 	case worker:
 		l.Run = "Start"
+	case has("Run"):
+		l.Run = "Run"
 	}
 	if has("Drain") {
 		l.Drain = "Drain"

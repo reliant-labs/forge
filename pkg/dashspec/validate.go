@@ -322,20 +322,60 @@ func (v *validator) filters(fs []any) {
 		if !ok {
 			continue
 		}
-		v.known(p, f, "id", "label", "field", "signal", "panelIds")
-		if id := v.str(p, f, "id", true); id != "" {
+		v.known(p, f, "id", "label", "field", "signal", "panelIds", "kind", "default")
+		id := v.str(p, f, "id", true)
+		if id != "" {
 			if ids[id] {
 				v.add(childPath(p, "id"), "duplicate filter id %q", id)
 			}
 			ids[id] = true
 		}
 		v.str(p, f, "label", true)
+		if v.oneOf(p, f, "kind", false, string(FilterToggle)) == string(FilterToggle) {
+			v.toggle(p, f, id)
+			continue
+		}
+		if _, ok := f["default"]; ok {
+			v.add(childPath(p, "default"), "only a toggle filter (kind %q) takes a default", FilterToggle)
+		}
 		sig := v.oneOf(p, f, "signal", false, string(Traces), string(Metrics), string(Logs))
 		if sig == "" {
 			sig = string(Traces)
 		}
 		v.fieldOn(p, f, "field", Signal(sig))
 	}
+}
+
+// toggle checks a FilterToggle: its id is a parameter name no built-in
+// parameter uses, it has no field or signal, and its default is a boolean.
+func (v *validator) toggle(path string, f map[string]any, id string) {
+	if id != "" {
+		switch {
+		case !toggleID.MatchString(id):
+			v.add(childPath(path, "id"), "a toggle's id is its sql parameter name: it must match %s", ToggleIDPattern)
+		case builtinSQLParams[id]:
+			v.add(childPath(path, "id"), "%q is a built-in sql parameter; name the toggle something else", id)
+		}
+	}
+	for _, k := range []string{"field", "signal", "panelIds"} {
+		if _, ok := f[k]; ok {
+			v.add(childPath(path, k), "a toggle filter takes no %s: sql panels read it as {%s:Bool}", k, id)
+		}
+	}
+	if raw, ok := f["default"]; ok {
+		if _, isBool := raw.(bool); !isBool {
+			v.add(childPath(path, "default"), "must be a boolean")
+		}
+	}
+}
+
+var toggleID = regexp.MustCompile(ToggleIDPattern)
+
+// builtinSQLParams are the parameters a reader binds from the scope, which a
+// toggle may not shadow.
+var builtinSQLParams = map[string]bool{
+	SQLParamFrom: true, SQLParamTo: true, SQLParamStep: true, SQLParamEnvIDs: true,
+	SQLParamEnvs: true, SQLParamServices: true, "reliant_env_id": true,
 }
 
 // fieldOn checks that the field named by obj[key] exists on sig.

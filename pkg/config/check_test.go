@@ -272,3 +272,66 @@ func TestParseCheckResultTakesTheLastLine(t *testing.T) {
 		t.Fatal("found a result in output with none")
 	}
 }
+
+// runCheckVariables runs CheckVariables(names...) under the check with env as
+// the process environment and returns the exit code and the result.
+func runCheckVariables(t *testing.T, env map[string]string, names ...string) (int, CheckResult) {
+	t.Helper()
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+	var out bytes.Buffer
+	code := -1
+	prevExit, prevOut := checkExit, checkOut
+	checkExit, checkOut = func(c int) { code = c }, &out
+	checkOnce, checkActive = sync.Once{}, nil
+	t.Cleanup(func() {
+		checkExit, checkOut = prevExit, prevOut
+		checkOnce, checkActive = sync.Once{}, nil
+	})
+	CheckVariables(names...)
+	r, ok := ParseCheckResult(out.String())
+	if !ok {
+		t.Fatalf("no %s line in %q", CheckResultPrefix, out.String())
+	}
+	return code, r
+}
+
+// A command that reads its settings from the environment (the scaffolded
+// `db migrate`) answers the check: ok with each variable wired, a problem
+// naming each one the env left unset or empty.
+func TestCheckVariables(t *testing.T) {
+	t.Run("wired", func(t *testing.T) {
+		code, r := runCheckVariables(t, map[string]string{
+			CheckEnv: "1", CheckPresentEnv: "CHK_DSN", "CHK_DSN": CheckPlaceholder,
+		}, "CHK_DSN")
+		if code != 0 || !r.OK || len(r.Problems) != 0 {
+			t.Fatalf("exit %d, result %+v, want exit 0 and ok", code, r)
+		}
+	})
+	t.Run("unwired", func(t *testing.T) {
+		code, r := runCheckVariables(t, map[string]string{CheckEnv: "1", "CHK_EMPTY": ""}, "CHK_DSN", "CHK_EMPTY")
+		if code != 1 || r.OK || len(r.Problems) != 2 ||
+			!strings.Contains(r.Problems[0], "CHK_DSN is not set") || !strings.Contains(r.Problems[1], "CHK_EMPTY is not set") {
+			t.Fatalf("exit %d, result %+v, want exit 1 naming both", code, r)
+		}
+	})
+}
+
+// Outside the check CheckVariables does nothing: the command runs on.
+func TestCheckVariablesIsInertOutsideTheCheck(t *testing.T) {
+	t.Setenv(CheckEnv, "")
+	var out bytes.Buffer
+	exited := false
+	prevExit, prevOut := checkExit, checkOut
+	checkExit, checkOut = func(int) { exited = true }, &out
+	checkOnce, checkActive = sync.Once{}, nil
+	t.Cleanup(func() {
+		checkExit, checkOut = prevExit, prevOut
+		checkOnce, checkActive = sync.Once{}, nil
+	})
+	CheckVariables("CHK_DSN")
+	if exited || out.Len() != 0 {
+		t.Fatalf("CheckVariables acted outside the check: exited=%v out=%q", exited, out.String())
+	}
+}

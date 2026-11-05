@@ -322,6 +322,9 @@ _channel = lambda v: any -> str {
         "DatabaseRef" = "databaseRef"
         "WorkloadURL" = "workloadURL"
         "IdentityRef" = "identityRef"
+        # Resolved by _bucket_resolve before lowering; named here for the
+        # checks that read a workload's env before it is lowered.
+        "BucketRef" = "bucketRef"
     }[typeof(v)]
 }
 
@@ -331,7 +334,7 @@ _channel = lambda v: any -> str {
 # the WorkloadURL, through its cluster's host gateway when it is a pod.
 _env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any {
     hosted = rt.type == "hosted"
-    v = _idn_resolve(v0, where, rt, bundle) if typeof(v0) == "IdentityRef" else v0
+    v = _idn_resolve(v0, where, rt, bundle) if typeof(v0) == "IdentityRef" else (_bucket_resolve(v0, where, rt, bundle) if typeof(v0) == "BucketRef" else v0)
     _c = _channel(v)
     _TEnvVar {
         name = name
@@ -354,6 +357,23 @@ _env_var = lambda name: str, v0: any, where: str, rt: any, bundle: Bundle -> any
         if _c == "workloadURL" and not hosted:
             value = _require_workload_url(v.name, where, bundle, rt.target.host_gateway if rt.type == "cluster" else "localhost")
     }
+}
+
+# A BucketRef as the value its referrer reads: a literal, or (a BucketOnS3
+# credential) the SecretRef / ManagedSecret it declares, which then lowers
+# through its own channel above. A dev MinIO is reached through the
+# cluster's host gateway from a pod and on localhost from a host process; a
+# hosted workload cannot reach it at all.
+_bucket_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
+    _bs = [b for b in bundle.buckets if b.name == v.name]
+    assert _bs, "${where}: forge.BucketRef names bucket '${v.name}', which this environment does not declare. Declared buckets: ${[b.name for b in bundle.buckets]}. Declare it in Bundle.buckets (forge.Bucket)"
+    _b = _bs[0]
+    assert not (_b.runtime.type == "minio" and rt.type == "hosted"), \
+        "${where}: forge.BucketRef '${v.name}' is on forge.BucketOnMinIO, the env's local MinIO, which a hosted workload cannot reach. Bind the bucket to forge.BucketOnS3 in this env"
+    _val = (_bucket_minio_values(_b, rt.target.host_gateway if rt.type == "cluster" else "localhost") if _b.runtime.type == "minio" else _bucket_s3_values(_b))[v.key]
+    assert not (rt.type == "hosted" and typeof(_val) == "SecretRef"), \
+        "${where}: forge.BucketRef '${v.name}' ${v.key} is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} on the bucket's forge.BucketOnS3 (the env's secret store: `forge secret set --env <env> <NAME>`)"
+    _val
 }
 
 # ---------------------------------------------------------------------------

@@ -379,7 +379,9 @@ func TestObsCheckGateJSONRoundTrip(t *testing.T) {
 // ── local ───────────────────────────────────────────────────────────────
 
 // healthRunner answers a local check: the per-service RED statement is run
-// once per window (before, then after), and the issues statement last.
+// once per window (before, then after), then RED by endpoint per window
+// (answered with no rows, so latency is judged per service), and the issues
+// statement last.
 type healthRunner struct {
 	before, after, issues obsbackend.Result
 	ran                   []obsquery.Stmt
@@ -391,6 +393,8 @@ func (h *healthRunner) Run(_ context.Context, st obsquery.Stmt, _ obsbackend.Lim
 	switch {
 	case strings.Contains(st.SQL, "first_seen"):
 		return h.issues, nil
+	case strings.Contains(st.SQL, "GROUP BY ServiceName, endpoint"):
+		return obsbackend.Result{}, nil
 	case strings.Contains(st.SQL, "quantilesExactWeighted"):
 		h.reds++
 		if h.reds == 1 {

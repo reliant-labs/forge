@@ -296,6 +296,31 @@ func TestCRUDTestFixtures_LifecycleTestCarriesNoFixtures(t *testing.T) {
 	}
 }
 
+// TestCRUDTestFixtures_LifecycleTestReadsTheClientCode pins how the
+// scaffold-once lifecycle test reads an error's code. It calls the handler
+// directly, without the svcerr interceptor, so the generated CRUD paths hand
+// it a *connect.Error while an owner-written handler hands it a bare kind
+// (`svcerr.PermissionDenied(…)`). connect.CodeOf reads the second as Unknown;
+// svcerr.Code reads both as the client will be told.
+func TestCRUDTestFixtures_LifecycleTestReadsTheClientCode(t *testing.T) {
+	fx := fixtureModel(t, fixtureSchema(), "products")
+	svc, methods := productSvcAndMethods()
+	data := buildCRUDTestTemplateData(svc, methods, "example.com/test", "", fx)
+	data.Package = "shop"
+	data.ServiceImportPath = "shop"
+	rendered, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	content := string(rendered)
+	if !strings.Contains(content, "svcerr.Code(err)") || !strings.Contains(content, `"github.com/reliant-labs/forge/pkg/svcerr"`) {
+		t.Errorf("lifecycle test does not read the code with svcerr.Code\n----\n%s", content)
+	}
+	if strings.Contains(content, "connect.CodeOf(") {
+		t.Errorf("lifecycle test reads the code with connect.CodeOf, which reads a bare svcerr kind as Unknown\n----\n%s", content)
+	}
+}
+
 // TestCRUDTestFixtures_NilModelKeepsLegacyValues pins the degradation
 // contract: with no schema model the values are the type-blind legacy ones and
 // there is no parent SQL. The two variants still differ — that property is

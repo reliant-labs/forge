@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -19,13 +18,18 @@ import (
 type ScaffoldMode int
 
 const (
-	// ScaffoldFail is the default: writes unconditionally. Callers are
-	// expected to have done their own up-front "does this name conflict"
-	// check (forge.yaml services: list). Equivalent to pre-resume behavior.
+	// ScaffoldFail is the default: it writes every output file that is
+	// missing and keeps every one that exists, saying which. The caller has
+	// already refused a name the project declares as a service; a handler
+	// directory that holds hand-written files is not such a service, and its
+	// files are the author's — so each owned file is decided on its own,
+	// never the directory as a whole, and nothing is overwritten.
 	ScaffoldFail ScaffoldMode = iota
 	// ScaffoldResume skips any output file that already exists on disk.
 	// Use this to recover from a partial scaffold where buf generate (or a
 	// later pipeline step) failed mid-flight and left some files written.
+	// It writes what ScaffoldFail writes; the two differ only in the
+	// caller's conflict check (--resume accepts a declared service).
 	ScaffoldResume
 	// ScaffoldForce overwrites every output file, even when present. The
 	// proto file is included — the only file the default codepath
@@ -86,17 +90,7 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 	connectService := naming.ConnectServiceGoName(handlerName + "Service")
 
 	// -- service.go (via service/service.go.tmpl) --
-	svcData := struct {
-		ServiceName         string
-		ServicePackage      string
-		Module              string
-		ProtoImportPath     string
-		ProtoConnectPackage string
-		ProtoFileSymbol     string
-		HandlerName         string
-		Methods             []string
-		HasConfig           bool
-	}{
+	svcData := serviceGoData{
 		ServiceName:         serviceName,
 		ServicePackage:      servicePackage,
 		Module:              modulePath,
@@ -109,7 +103,7 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 	}
 
 	svcPath := filepath.Join(svcDir, "service.go")
-	if err := renderAndWriteWithMode(svcPath, "service/service.go.tmpl", svcData, mode, progress); err != nil {
+	if err := writeServiceGo(svcDir, svcPath, svcData, mode, progress); err != nil {
 		return err
 	}
 
@@ -190,13 +184,51 @@ service %sService {
 	return reconcileSharedPackageBuf(root, protoPath, progress)
 }
 
+// writeServiceGo writes service.go unless the handler directory already
+// holds it, or (short of --force) declares one of the symbols it would — a
+// Service, Deps or New written by hand in another file, which the scaffold
+// must not redeclare. A hand-written package started before the scaffold is
+// thereby completed, not clobbered: the files it lacks are written and the
+// ones it has are left alone.
+func writeServiceGo(svcDir, svcPath string, data serviceGoData, mode ScaffoldMode, progress io.Writer) error {
+	if mode != ScaffoldForce {
+		if _, err := os.Stat(svcPath); os.IsNotExist(err) {
+			if pkg, declared, derr := codegen.HandlerPackageDecls(svcDir, codegen.ServiceFileSymbols...); derr == nil {
+				if len(declared) > 0 {
+					fmt.Fprintf(progressOrDiscard(progress), "  ✓ kept: %s declares %s by hand, so service.go was not written\n",
+						svcDir, codegen.DescribeDecls(declared))
+					return nil
+				}
+				// Join the package the directory's files already declare.
+				if pkg != "" {
+					data.ServicePackage = pkg
+				}
+			}
+		}
+	}
+	return renderAndWriteWithMode(svcPath, "service/service.go.tmpl", data, mode, progress)
+}
+
+// serviceGoData is service/service.go.tmpl's data.
+type serviceGoData struct {
+	ServiceName         string
+	ServicePackage      string
+	Module              string
+	ProtoImportPath     string
+	ProtoConnectPackage string
+	ProtoFileSymbol     string
+	HandlerName         string
+	Methods             []string
+	HasConfig           bool
+}
+
 // renderAndWriteWithMode renders a service template then delegates the
 // write decision to writeBytesWithMode.
 func renderAndWriteWithMode(path, tmplName string, data any, mode ScaffoldMode, progress io.Writer) error {
 	// Honor skip BEFORE rendering — rendering some templates depends on
 	// codegen helpers that walk the project tree, so skipping early keeps
-	// --resume cheap.
-	if mode == ScaffoldResume {
+	// a re-run cheap.
+	if mode != ScaffoldForce {
 		if _, err := os.Stat(path); err == nil {
 			emitProgress(progress, "skipped", path)
 			return nil
@@ -210,43 +242,34 @@ func renderAndWriteWithMode(path, tmplName string, data any, mode ScaffoldMode, 
 }
 
 // writeBytesWithMode writes `content` to `path` honoring the scaffold mode:
-//   - ScaffoldFail: always write (preserves pre-resume default semantics).
-//     The one historical exception is the proto file; callers that need to
-//     preserve it pass ScaffoldFail and inspect existence themselves, but
-//     this helper centralizes the existence check so the proto path can
-//     simply call through with the default mode and rely on protected
-//     handling here.
-//   - ScaffoldResume: skip if path exists.
+//   - ScaffoldFail, ScaffoldResume: write a missing file; keep an existing
+//     one and say so. A scaffold never overwrites a file it did not just
+//     create — the proto carries hand-written rpcs, a handler file
+//     hand-written logic.
 //   - ScaffoldForce: always write; emit an "overwriting" notice when the
 //     file already exists.
 //
-// In ScaffoldFail mode we preserve an existing proto file at the only
-// historically-protected location by skipping when the file exists AND
-// looks like a proto stub the user may have edited. Other files clobber
-// as before.
+// Every file it writes is reported, so the caller can say which of the
+// service's files this run created.
 func writeBytesWithMode(path string, content []byte, mode ScaffoldMode, progress io.Writer) error {
 	exists := false
 	if _, err := os.Stat(path); err == nil {
 		exists = true
 	}
-	switch mode {
-	case ScaffoldResume:
-		if exists {
-			emitProgress(progress, "skipped", path)
-			return nil
-		}
-	case ScaffoldForce:
-		if exists {
-			emitProgress(progress, "overwriting", path)
-		}
-	case ScaffoldFail:
-		// Preserve the historical "don't clobber an existing proto file"
-		// guard. Detect by suffix to keep the rule simple and visible.
-		if exists && strings.HasSuffix(path, ".proto") {
-			return nil
-		}
+	switch {
+	case exists && mode != ScaffoldForce:
+		emitProgress(progress, "skipped", path)
+		return nil
+	case exists:
+		emitProgress(progress, "overwriting", path)
 	}
-	return atomicfile.WriteFile(path, content, 0644)
+	if err := atomicfile.WriteFile(path, content, 0644); err != nil {
+		return err
+	}
+	if !exists {
+		emitProgress(progress, "wrote", path)
+	}
+	return nil
 }
 
 // progressOrDiscard lets a nil progress writer be passed straight to Fprintf.
@@ -264,8 +287,10 @@ func emitProgress(w io.Writer, kind, path string) {
 		return
 	}
 	switch kind {
+	case "wrote":
+		fmt.Fprintf(w, "  ✓ wrote: %s\n", path)
 	case "skipped":
-		fmt.Fprintf(w, "  ✓ skipped: %s\n", path)
+		fmt.Fprintf(w, "  ✓ skipped: %s (exists; kept as it is)\n", path)
 	case "overwriting":
 		fmt.Fprintf(w, "  ⚠ overwriting: %s\n", path)
 	}

@@ -23,7 +23,7 @@ import (
 // apart — they are the same bytes from the same file.
 
 func TestRenderScopedCRUDShim_GetScopesTheFetch(t *testing.T) {
-	got, err := RenderScopedCRUDShim("GetCustomer", "GetCustomerRequest", "GetCustomerResponse", "Customer", "company_id")
+	got, err := RenderScopedCRUDShim("GetCustomer", "GetCustomerRequest", "GetCustomerResponse", "Customer", "company_id", false)
 	if err != nil {
 		t.Fatalf("RenderScopedCRUDShim: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestRenderScopedCRUDShim_GetScopesTheFetch(t *testing.T) {
 }
 
 func TestRenderScopedCRUDShim_CreateStampsTheOwner(t *testing.T) {
-	got, err := RenderScopedCRUDShim("CreateCustomer", "CreateCustomerRequest", "CreateCustomerResponse", "Customer", "company_id")
+	got, err := RenderScopedCRUDShim("CreateCustomer", "CreateCustomerRequest", "CreateCustomerResponse", "Customer", "company_id", false)
 	if err != nil {
 		t.Fatalf("RenderScopedCRUDShim: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestRenderScopedCRUDShim_CreateStampsTheOwner(t *testing.T) {
 }
 
 func TestRenderScopedCRUDShim_ListScopesTheQueryNotThePage(t *testing.T) {
-	got, err := RenderScopedCRUDShim("ListCustomers", "ListCustomersRequest", "ListCustomersResponse", "Customer", "company_id")
+	got, err := RenderScopedCRUDShim("ListCustomers", "ListCustomersRequest", "ListCustomersResponse", "Customer", "company_id", false)
 	if err != nil {
 		t.Fatalf("RenderScopedCRUDShim: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestRenderScopedCRUDShim_ListScopesTheQueryNotThePage(t *testing.T) {
 }
 
 func TestRenderScopedCRUDShim_UpdateGuardsTheStoredRow(t *testing.T) {
-	got, err := RenderScopedCRUDShim("UpdateCustomer", "UpdateCustomerRequest", "UpdateCustomerResponse", "Customer", "company_id")
+	got, err := RenderScopedCRUDShim("UpdateCustomer", "UpdateCustomerRequest", "UpdateCustomerResponse", "Customer", "company_id", false)
 	if err != nil {
 		t.Fatalf("RenderScopedCRUDShim: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestRenderScopedCRUDShim_UpdateGuardsTheStoredRow(t *testing.T) {
 }
 
 func TestRenderScopedCRUDShim_DeleteScopesThePersist(t *testing.T) {
-	got, err := RenderScopedCRUDShim("DeleteCustomer", "DeleteCustomerRequest", "DeleteCustomerResponse", "Customer", "company_id")
+	got, err := RenderScopedCRUDShim("DeleteCustomer", "DeleteCustomerRequest", "DeleteCustomerResponse", "Customer", "company_id", false)
 	if err != nil {
 		t.Fatalf("RenderScopedCRUDShim: %v", err)
 	}
@@ -95,13 +95,13 @@ func TestRenderScopedCRUDShim_DeleteScopesThePersist(t *testing.T) {
 // block is the point: a remediation that does not apply is how this
 // finding became a dead end in the first place.
 func TestRenderScopedCRUDShim_RejectsNonCRUDMethod(t *testing.T) {
-	if _, err := RenderScopedCRUDShim("TransferOrder", "TransferOrderRequest", "TransferOrderResponse", "Order", "company_id"); err == nil {
+	if _, err := RenderScopedCRUDShim("TransferOrder", "TransferOrderRequest", "TransferOrderResponse", "Order", "company_id", false); err == nil {
 		t.Fatal("want an error for a non-CRUD RPC — forge has no op seam to wrap, so it must not invent a snippet")
 	}
 }
 
 func TestRenderScopedCRUDShim_RejectsEmptyOwnerColumn(t *testing.T) {
-	if _, err := RenderScopedCRUDShim("GetCustomer", "GetCustomerRequest", "GetCustomerResponse", "Customer", ""); err == nil {
+	if _, err := RenderScopedCRUDShim("GetCustomer", "GetCustomerRequest", "GetCustomerResponse", "Customer", "", false); err == nil {
 		t.Fatal("want an error with no owner column — the predicate has nothing to name")
 	}
 }
@@ -120,7 +120,7 @@ func TestRenderScopedCRUDShim_MatchesTheBirthScaffold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render birth scaffold: %v", err)
 	}
-	snippet, err := RenderScopedCRUDShim("GetCustomer", "GetCustomerRequest", "GetCustomerResponse", "Customer", "company_id")
+	snippet, err := RenderScopedCRUDShim("GetCustomer", "GetCustomerRequest", "GetCustomerResponse", "Customer", "company_id", false)
 	if err != nil {
 		t.Fatalf("RenderScopedCRUDShim: %v", err)
 	}

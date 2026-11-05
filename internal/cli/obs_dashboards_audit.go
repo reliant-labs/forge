@@ -414,16 +414,14 @@ func runObsDashboardsAudit(ctx context.Context, d obsDeps, env string, o obsDash
 			With(obsbackend.Cmd("forge", "obs", "dashboards", "check", "--against", env)))
 	}
 
-	// Dashboards and panel scopes name the project by the control plane's id,
-	// which need not be its local name.
+	// Dashboards and panel scopes name the project as the deploy ledger keys
+	// it: the project's NAME, the namespace its environments and releases are
+	// recorded under (ListDashboards' index joins deploy_environments.project).
+	// Never the hosted project's id (ResolveHostedProject): that is the
+	// target a request is authorized against (the Forge-Project-ID header),
+	// and an index filtered by it matches no environment, so every dashboard
+	// the env's release carries read as missing.
 	project := hostedProjectName()
-	if r, ok := b.(projectIDResolver); ok {
-		id, err := r.ResolveProjectID(ctx, project)
-		if err != nil {
-			return fail(err)
-		}
-		project = id
-	}
 	narrow := obsbackend.Narrow{Range: rng}
 	doc := obsDashboardsAuditDoc{
 		Scope: obsScope(b.Info(), narrow), QueryMode: QueryModeStructured, Project: project,
@@ -538,12 +536,6 @@ func (a *dashAudit) run(picked []obsbackend.DashboardInfo) []auditDashboard {
 	}
 	wg.Wait()
 	return out
-}
-
-// projectIDResolver is the backend that knows the control plane's id for a
-// project name.
-type projectIDResolver interface {
-	ResolveProjectID(ctx context.Context, name string) (string, error)
 }
 
 func (a *dashAudit) dashboard(di obsbackend.DashboardInfo) auditDashboard {

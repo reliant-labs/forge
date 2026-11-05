@@ -174,6 +174,9 @@ export interface CreateMockTransportOptions {
   /**
    * With `passthrough: "first"`: the forwarded call's deadline in ms, after
    * which the scenario answers instead. Default: the caller's own timeout.
+   * Enforced by the mock transport itself, so a fallback transport that
+   * ignores its timeout cannot hold the call open; a server stream must END
+   * within it to count as the backend's answer.
    */
   passthroughTimeoutMs?: number;
   /**
@@ -313,7 +316,10 @@ function makeUnaryResponse<T>(
  * method's output schema here; without that, `res.items.map` on a field the
  * handler left out throws in the UI and nowhere near the scenario.
  */
-function asResponseMessage(output: DescMessage | undefined, value: unknown): unknown {
+function asResponseMessage(
+  output: DescMessage | undefined,
+  value: unknown,
+): unknown {
   if (!output || value == null || typeof value !== "object") return value;
   if (isMessage(value)) return value;
   return create(output, value as MessageInitShape<DescMessage>);
@@ -712,17 +718,55 @@ export function createMockTransport(
     }
   };
   // "first": the backend's answer, or undefined when the mock should answer.
+  //
+  // The deadline is enforced HERE, not left to the fallback transport: the
+  // attempt gets its own signal (aborted by the caller's signal or by the
+  // timer) and is raced against that signal, so a transport that ignores
+  // both its timeout and its signal still cannot hold the call open. A
+  // caller's own abort is rethrown; only the deadline or a failure falls back.
   const tryBackend = async <R>(
     key: string,
     signal: AbortSignal | undefined,
-    call: () => Promise<R>,
+    timeoutMs: number | undefined,
+    call: (signal: AbortSignal) => Promise<R>,
   ): Promise<R | undefined> => {
+    const attempt = new AbortController();
+    const abortAttempt = () => attempt.abort(signal?.reason);
+    if (signal?.aborted) abortAttempt();
+    signal?.addEventListener("abort", abortAttempt, { once: true });
+    const timer =
+      timeoutMs != null && timeoutMs > 0
+        ? setTimeout(
+            () =>
+              attempt.abort(
+                new ConnectError(
+                  `mock-transport: ${key} exceeded ${timeoutMs}ms`,
+                  Code.DeadlineExceeded,
+                ),
+              ),
+            timeoutMs,
+          )
+        : undefined;
+    const abandoned = new Promise<never>((_, reject) => {
+      const fail = () => reject(attempt.signal.reason);
+      if (attempt.signal.aborted) fail();
+      else attempt.signal.addEventListener("abort", fail, { once: true });
+    });
+    // The race observes it; this keeps the release below from surfacing as
+    // an unhandled rejection after the race has settled.
+    abandoned.catch(() => undefined);
     try {
-      return await call();
+      return await Promise.race([call(attempt.signal), abandoned]);
     } catch (err) {
       if (signal?.aborted) throw err;
       onPassthroughFallback?.(key, ConnectError.from(err));
       return undefined;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", abortAttempt);
+      // Release whatever the backend attempt still holds (a pending fetch,
+      // an unread stream) once it has been answered or abandoned.
+      attempt.abort();
     }
   };
 
@@ -743,11 +787,12 @@ export function createMockTransport(
 
       // 0b) "first": the backend answers unless it fails.
       if (first) {
-        const live = await tryBackend(key, signal, () =>
+        const deadline = passthroughTimeoutMs ?? timeoutMs;
+        const live = await tryBackend(key, signal, deadline, (attempt) =>
           fallback!.unary(
             method,
-            signal,
-            passthroughTimeoutMs ?? timeoutMs,
+            attempt,
+            deadline,
             header,
             input,
             contextValues,
@@ -814,16 +859,34 @@ export function createMockTransport(
       guard(method, key);
       // "first" forwards server streams only: a client-streaming request is
       // consumed by the attempt and could not be replayed to the handler.
+      //
+      // The backend's stream is read to its END, within the deadline, before
+      // it counts as an answer, then replayed: a stream that fails or stalls
+      // after its headers arrived still falls back to the mock, as a unary
+      // call does. So "first" suits finite server streams; a stream that
+      // never ends always answers from the mock once the deadline passes.
       if (first && method.methodKind === "server_streaming") {
-        const live = await tryBackend(key, signal, () =>
-          fallback!.stream(
-            method,
-            signal,
-            passthroughTimeoutMs ?? timeoutMs,
-            header,
-            input,
-            contextValues,
-          ),
+        const deadline = passthroughTimeoutMs ?? timeoutMs;
+        const live = await tryBackend(
+          key,
+          signal,
+          deadline,
+          async (attempt) => {
+            const res = await fallback!.stream(
+              method,
+              attempt,
+              deadline,
+              header,
+              input,
+              contextValues,
+            );
+            const messages: unknown[] = [];
+            for await (const m of res.message) messages.push(m);
+            return {
+              ...res,
+              message: toAsyncIterable(messages) as typeof res.message,
+            };
+          },
         );
         if (live) return live;
       }

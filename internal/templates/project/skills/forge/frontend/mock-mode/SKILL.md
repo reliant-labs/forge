@@ -45,4 +45,4 @@ const transport = createMockTransport({
 ```
 
 - `readOnly` refuses every non-read with `PermissionDenied` BEFORE any handler, fixture or backend sees it. `true` reads the proto's idempotency; pass a function for a contract that does not annotate it.
-- `passthrough: "first"` sends EVERY RPC to `fallback` first and answers from the scenario, then the fixtures, only when it fails or times out — live data that degrades to sample data, not to an error page. A caller's own abort is never masked. Swapping mocks for a real endpoint is then config, not code.
+- `passthrough: "first"` sends EVERY RPC to `fallback` first and answers from the scenario, then the fixtures, only when it fails or times out — live data that degrades to sample data, not to an error page. The deadline is enforced by the mock transport, not left to `fallback`. A server stream is read to its end within the deadline, then replayed, so a stream that fails midway still falls back; a stream that never ends always ends up on the mock. A caller's own abort is never masked. Swapping mocks for a real endpoint is then config, not code.

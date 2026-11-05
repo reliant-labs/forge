@@ -968,8 +968,12 @@ describe("resolveActiveScenario: chosen by the app", () => {
 
   it("an explicit null or unknown name is the default, and the URL is still not read", () => {
     vi.stubGlobal("location", { search: "?scenario=demo" } as Location);
-    expect(resolveActiveScenario(registry, { name: null }).name).toBe("default");
-    expect(resolveActiveScenario(registry, { name: "nope" }).name).toBe("default");
+    expect(resolveActiveScenario(registry, { name: null }).name).toBe(
+      "default",
+    );
+    expect(resolveActiveScenario(registry, { name: "nope" }).name).toBe(
+      "default",
+    );
   });
 });
 
@@ -982,7 +986,11 @@ describe("handler results", () => {
       }),
     });
     const res = await transport.unary(
-      { name: "ListItems", parent: { typeName: SERVICE }, output: ListItemsResponseSchema } as never,
+      {
+        name: "ListItems",
+        parent: { typeName: SERVICE },
+        output: ListItemsResponseSchema,
+      } as never,
       undefined as never,
       undefined as never,
       {} as never,
@@ -990,14 +998,27 @@ describe("handler results", () => {
       undefined as never,
     );
     // A real client never sees a missing repeated field; neither does a mock's.
-    expect(msg<{ items: unknown[]; $typeName: string }>(res)).toMatchObject({ items: [], $typeName: `${PACKAGE}.ListItemsResponse` });
+    expect(msg<{ items: unknown[]; $typeName: string }>(res)).toMatchObject({
+      items: [],
+      $typeName: `${PACKAGE}.ListItemsResponse`,
+    });
   });
 
   it("passes a built message through untouched", async () => {
-    const built = create(ListItemsResponseSchema, { items: [create(ItemSchema, { id: "1", name: "x" })] });
-    const transport = createMockTransport({ scenario: scenario({ handlers: { [`${SERVICE}/ListItems`]: () => built } }) });
+    const built = create(ListItemsResponseSchema, {
+      items: [create(ItemSchema, { id: "1", name: "x" })],
+    });
+    const transport = createMockTransport({
+      scenario: scenario({
+        handlers: { [`${SERVICE}/ListItems`]: () => built },
+      }),
+    });
     const res = await transport.unary(
-      { name: "ListItems", parent: { typeName: SERVICE }, output: ListItemsResponseSchema } as never,
+      {
+        name: "ListItems",
+        parent: { typeName: SERVICE },
+        output: ListItemsResponseSchema,
+      } as never,
       undefined as never,
       undefined as never,
       {} as never,
@@ -1010,16 +1031,35 @@ describe("handler results", () => {
 
 describe("read-only guard", () => {
   const NO_SIDE_EFFECTS = 1;
-  const read = (name: string) => ({ name, parent: { typeName: SERVICE }, idempotency: NO_SIDE_EFFECTS }) as never;
-  const write = (name: string) => ({ name, parent: { typeName: SERVICE }, idempotency: 0 }) as never;
+  const read = (name: string) =>
+    ({
+      name,
+      parent: { typeName: SERVICE },
+      idempotency: NO_SIDE_EFFECTS,
+    }) as never;
+  const write = (name: string) =>
+    ({ name, parent: { typeName: SERVICE }, idempotency: 0 }) as never;
   const call = (transport: Transport, m: never) =>
-    transport.unary(m, undefined as never, undefined as never, {} as never, {} as never, undefined as never);
+    transport.unary(
+      m,
+      undefined as never,
+      undefined as never,
+      {} as never,
+      {} as never,
+      undefined as never,
+    );
 
   it("refuses a method not marked NO_SIDE_EFFECTS before any handler, fixture or backend sees it", async () => {
     const handler = vi.fn(() => ({}));
-    const fallback = { unary: vi.fn(), stream: vi.fn() } as unknown as Transport;
+    const fallback = {
+      unary: vi.fn(),
+      stream: vi.fn(),
+    } as unknown as Transport;
     const transport = createMockTransport({
-      scenario: scenario({ passthrough: true, handlers: { [`${SERVICE}/DeleteItem`]: handler } }),
+      scenario: scenario({
+        passthrough: true,
+        handlers: { [`${SERVICE}/DeleteItem`]: handler },
+      }),
       entities: [itemsDescriptor()],
       fallback,
       readOnly: true,
@@ -1042,7 +1082,10 @@ describe("read-only guard", () => {
       readOnly: (m) => m.name.startsWith("List"),
       readOnlyMessage: "This is a demo.",
     });
-    expect(msg<{ items: unknown[] }>(await call(transport, write("ListItems"))).items).toHaveLength(2);
+    expect(
+      msg<{ items: unknown[] }>(await call(transport, write("ListItems")))
+        .items,
+    ).toHaveLength(2);
     const err = await rejection(call(transport, read("CreateItem")));
     expect(err.code).toBe(Code.PermissionDenied);
     expect(err.rawMessage).toBe("This is a demo.");
@@ -1050,18 +1093,40 @@ describe("read-only guard", () => {
 });
 
 describe('passthrough: "first"', () => {
-  const stub = () => create(ListItemsResponseSchema, { items: [create(ItemSchema, { id: "s", name: "Sample" })] });
-  const callWith = (transport: Transport, signal?: AbortSignal, timeoutMs?: number) =>
-    transport.unary(method("ListItems"), signal as never, timeoutMs as never, {} as never, {} as never, undefined as never);
+  const stub = () =>
+    create(ListItemsResponseSchema, {
+      items: [create(ItemSchema, { id: "s", name: "Sample" })],
+    });
+  const callWith = (
+    transport: Transport,
+    signal?: AbortSignal,
+    timeoutMs?: number,
+  ) =>
+    transport.unary(
+      method("ListItems"),
+      signal as never,
+      timeoutMs as never,
+      {} as never,
+      {} as never,
+      undefined as never,
+    );
 
   it("asks the backend first and uses its answer", async () => {
     const handler = vi.fn(stub);
-    const fallback = { unary: vi.fn(async () => ({ message: { from: "backend" } })), stream: vi.fn() } as unknown as Transport;
+    const fallback = {
+      unary: vi.fn(async () => ({ message: { from: "backend" } })),
+      stream: vi.fn(),
+    } as unknown as Transport;
     const transport = createMockTransport({
-      scenario: scenario({ passthrough: "first", handlers: { [`${SERVICE}/ListItems`]: handler } }),
+      scenario: scenario({
+        passthrough: "first",
+        handlers: { [`${SERVICE}/ListItems`]: handler },
+      }),
       fallback,
     });
-    expect(msg<{ from: string }>(await callWith(transport)).from).toBe("backend");
+    expect(msg<{ from: string }>(await callWith(transport)).from).toBe(
+      "backend",
+    );
     expect(handler).not.toHaveBeenCalled();
   });
 
@@ -1074,26 +1139,41 @@ describe('passthrough: "first"', () => {
       stream: vi.fn(),
     } as unknown as Transport;
     const transport = createMockTransport({
-      scenario: scenario({ passthrough: "first", handlers: { [`${SERVICE}/ListItems`]: stub } }),
+      scenario: scenario({
+        passthrough: "first",
+        handlers: { [`${SERVICE}/ListItems`]: stub },
+      }),
       fallback,
       passthroughTimeoutMs: 1234,
       onPassthroughFallback,
     });
     const res = await callWith(transport, undefined, 30_000);
-    expect(msg<{ items: { name: string }[] }>(res).items[0]?.name).toBe("Sample");
+    expect(msg<{ items: { name: string }[] }>(res).items[0]?.name).toBe(
+      "Sample",
+    );
     // The backend got the shorter deadline.
-    expect((fallback.unary as ReturnType<typeof vi.fn>).mock.calls[0]?.[2]).toBe(1234);
-    expect(onPassthroughFallback).toHaveBeenCalledWith(`${SERVICE}/ListItems`, expect.objectContaining({ code: Code.Unavailable }));
+    expect(
+      (fallback.unary as ReturnType<typeof vi.fn>).mock.calls[0]?.[2],
+    ).toBe(1234);
+    expect(onPassthroughFallback).toHaveBeenCalledWith(
+      `${SERVICE}/ListItems`,
+      expect.objectContaining({ code: Code.Unavailable }),
+    );
   });
 
   it("falls through to the fixtures when no handler matches", async () => {
-    const fallback = { unary: vi.fn(async () => Promise.reject(new Error("network"))), stream: vi.fn() } as unknown as Transport;
+    const fallback = {
+      unary: vi.fn(async () => Promise.reject(new Error("network"))),
+      stream: vi.fn(),
+    } as unknown as Transport;
     const transport = createMockTransport({
       scenario: scenario({ passthrough: "first" }),
       entities: [itemsDescriptor()],
       fallback,
     });
-    expect(msg<{ items: unknown[] }>(await callWith(transport)).items).toHaveLength(2);
+    expect(
+      msg<{ items: unknown[] }>(await callWith(transport)).items,
+    ).toHaveLength(2);
   });
 
   it("never masks the caller's own abort", async () => {
@@ -1107,7 +1187,10 @@ describe('passthrough: "first"', () => {
       stream: vi.fn(),
     } as unknown as Transport;
     const transport = createMockTransport({
-      scenario: scenario({ passthrough: "first", handlers: { [`${SERVICE}/ListItems`]: stub } }),
+      scenario: scenario({
+        passthrough: "first",
+        handlers: { [`${SERVICE}/ListItems`]: stub },
+      }),
       fallback,
       onPassthroughFallback,
     });
@@ -1116,10 +1199,166 @@ describe('passthrough: "first"', () => {
     expect(onPassthroughFallback).not.toHaveBeenCalled();
   });
 
+  it("enforces the deadline itself when the backend never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const onPassthroughFallback = vi.fn();
+      // Ignores its timeout and its signal: only the mock's own timer ends it.
+      const fallback = {
+        unary: vi.fn(() => new Promise(() => {})),
+        stream: vi.fn(),
+      } as unknown as Transport;
+      const transport = createMockTransport({
+        scenario: scenario({
+          passthrough: "first",
+          handlers: { [`${SERVICE}/ListItems`]: stub },
+        }),
+        fallback,
+        passthroughTimeoutMs: 50,
+        onPassthroughFallback,
+      });
+      const pending = callWith(transport);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(
+        msg<{ items: { name: string }[] }>(await pending).items[0]?.name,
+      ).toBe("Sample");
+      expect(onPassthroughFallback).toHaveBeenCalledWith(
+        `${SERVICE}/ListItems`,
+        expect.objectContaining({ code: Code.DeadlineExceeded }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rethrows the caller's abort even when the backend never settles", async () => {
+    const controller = new AbortController();
+    const onPassthroughFallback = vi.fn();
+    const fallback = {
+      unary: vi.fn(() => new Promise(() => {})),
+      stream: vi.fn(),
+    } as unknown as Transport;
+    const transport = createMockTransport({
+      scenario: scenario({
+        passthrough: "first",
+        handlers: { [`${SERVICE}/ListItems`]: stub },
+      }),
+      fallback,
+      onPassthroughFallback,
+    });
+    const pending = callWith(transport, controller.signal);
+    controller.abort(new ConnectError("caller left", Code.Canceled));
+    const err = await rejection(pending);
+    expect(err.code).toBe(Code.Canceled);
+    expect(onPassthroughFallback).not.toHaveBeenCalled();
+  });
+
+  describe("server streams", () => {
+    const streamMethod = {
+      name: "WatchItems",
+      parent: { typeName: SERVICE },
+      methodKind: "server_streaming",
+    } as never;
+    const callStream = (transport: Transport) =>
+      transport.stream(
+        streamMethod,
+        undefined as never,
+        undefined as never,
+        {} as never,
+        {} as never,
+        undefined as never,
+      );
+    const drain = async (res: { message: AsyncIterable<unknown> }) => {
+      const out: unknown[] = [];
+      for await (const m of res.message) out.push(m);
+      return out;
+    };
+    const backendStream = (messages: AsyncIterable<unknown>) =>
+      ({
+        unary: vi.fn(),
+        stream: vi.fn(async () => ({
+          stream: true,
+          header: new Headers(),
+          trailer: new Headers(),
+          message: messages,
+        })),
+      }) as unknown as Transport;
+
+    it("replays the backend's complete stream", async () => {
+      const handler = vi.fn(() => [{ from: "mock" }]);
+      const transport = createMockTransport({
+        scenario: scenario({
+          passthrough: "first",
+          handlers: { [`${SERVICE}/WatchItems`]: handler },
+        }),
+        fallback: backendStream(
+          toAsyncIterable([{ from: "backend" }, { from: "backend" }]),
+        ),
+      });
+      expect(await drain(await callStream(transport))).toEqual([
+        { from: "backend" },
+        { from: "backend" },
+      ]);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it("falls back when the stream fails after its headers arrived", async () => {
+      const onPassthroughFallback = vi.fn();
+      async function* failing() {
+        yield { from: "backend" };
+        throw new ConnectError("stream reset", Code.Unavailable);
+      }
+      const transport = createMockTransport({
+        scenario: scenario({
+          passthrough: "first",
+          handlers: { [`${SERVICE}/WatchItems`]: () => [{ from: "mock" }] },
+        }),
+        fallback: backendStream(failing()),
+        onPassthroughFallback,
+      });
+      expect(await drain(await callStream(transport))).toEqual([
+        { from: "mock" },
+      ]);
+      expect(onPassthroughFallback).toHaveBeenCalledWith(
+        `${SERVICE}/WatchItems`,
+        expect.objectContaining({ code: Code.Unavailable }),
+      );
+    });
+
+    it("falls back when the stream stalls past the deadline", async () => {
+      vi.useFakeTimers();
+      try {
+        async function* stalled() {
+          yield { from: "backend" };
+          await new Promise(() => {});
+        }
+        const transport = createMockTransport({
+          scenario: scenario({
+            passthrough: "first",
+            handlers: { [`${SERVICE}/WatchItems`]: () => [{ from: "mock" }] },
+          }),
+          fallback: backendStream(stalled()),
+          passthroughTimeoutMs: 50,
+        });
+        const pending = callStream(transport);
+        await vi.advanceTimersByTimeAsync(50);
+        expect(await drain(await pending)).toEqual([{ from: "mock" }]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("is plain mock mode without a fallback transport", async () => {
     const transport = createMockTransport({
-      scenario: scenario({ passthrough: "first", handlers: { [`${SERVICE}/ListItems`]: stub } }),
+      scenario: scenario({
+        passthrough: "first",
+        handlers: { [`${SERVICE}/ListItems`]: stub },
+      }),
     });
-    expect(msg<{ items: { name: string }[] }>(await callWith(transport)).items[0]?.name).toBe("Sample");
+    expect(
+      msg<{ items: { name: string }[] }>(await callWith(transport)).items[0]
+        ?.name,
+    ).toBe("Sample");
   });
 });

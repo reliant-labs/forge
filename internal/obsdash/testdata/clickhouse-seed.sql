@@ -30,7 +30,14 @@ INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attri
 SELECT map('deployment.environment.name','prod','service.instance.id','p1'), 'healthy', 'rpc.server.errors', map('procedure','/h.v1.H/Get','error_class','server'), now() - INTERVAL (5-n) MINUTE, n*1000, 2, true FROM (SELECT number n FROM numbers(6));
 
 -- silence: stopped = counter moved every 5 min from 25h ago to 30 min ago; healthy moves to now;
--- sparse = four active hours; young = 2h of history that ended 30 min ago.
+-- sparse = four active hours; young = 2h of history that ended 30 min ago;
+-- bursty = exported every 5 min for a day, but the counter moves only every 30 min (every hour active,
+-- silent 30 min at a time: the unchanged snapshots in between are the gaps), last move 30 min ago;
+-- lulls = moves every 5 min with exactly two 20-min gaps (unexported samples), the most max_prior_silences allows.
+INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)
+SELECT map('deployment.environment.name','dev','service.instance.id','b1'), 'bursty', 'rpc.server.calls', map('procedure','/b.v1.B/Get'), now() - INTERVAL (n*5) MINUTE, 1000 - intDiv(n + 5, 6), 2, true FROM (SELECT number n FROM numbers(6, 288));
+INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)
+SELECT map('deployment.environment.name','dev','service.instance.id','l1'), 'lulls', 'rpc.server.calls', map('procedure','/l.v1.L/Get'), now() - INTERVAL (n*5) MINUTE, 1000 - n, 2, true FROM (SELECT number n FROM numbers(6, 288)) WHERE n NOT IN (100, 101, 102, 200, 201, 202);
 INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)
 SELECT map('deployment.environment.name','dev','service.instance.id','s1'), 'stopped', 'rpc.server.calls', map('procedure','/s.v1.T/Get'), now() - INTERVAL (n*5) MINUTE, 1000 - n, 2, true FROM (SELECT number n FROM numbers(6, 294));
 INSERT INTO otel_metrics_sum (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality, IsMonotonic)

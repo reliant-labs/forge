@@ -66,6 +66,11 @@ const (
 //     NEVER A SECRET, so the set of things it can resolve to is closed by
 //     construction.
 //
+//   - BucketRef — one connection fact (endpoint, bucket, access key, ...)
+//     of a ManagedBucket in the same namespace, the hosted lowering of a
+//     forge.BucketRef. It mirrors DatabaseRef: it NAMES A BUCKET, never a
+//     Secret, and resolves to the Secret the platform writes for it.
+//
 //   - WorkloadURL — the public URL of a sibling workload (a backend's
 //     CORS_ORIGINS naming its StaticSite). Added with StaticSite runtime
 //     config, which uses the same reference kind. Like DatabaseRef it NAMES
@@ -121,6 +126,11 @@ type EnvVar struct {
 	// DatabaseRef projects a ManagedDatabase's credential.
 	// +optional
 	DatabaseRef *DatabaseRef `json:"databaseRef,omitempty"`
+
+	// BucketRef projects one connection fact of a ManagedBucket, read from
+	// the Secret the platform writes for it (BucketCredentialSecretName).
+	// +optional
+	BucketRef *BucketRef `json:"bucketRef,omitempty"`
 
 	// WorkloadURL is the public URL of another workload in the SAME
 	// environment — the canonical case is a backend's CORS_ORIGINS naming

@@ -102,6 +102,9 @@ func TestSilentDefaultNeedsSteadyTraffic(t *testing.T) {
 		if !strings.Contains(r.Expr, "uniqExactIf(toStartOfHour(t)") || !strings.Contains(r.Expr, ">= 18") {
 			t.Errorf("service-silent must require 18 active hours of the previous 24h inside the SQL: %s", r.Expr)
 		}
+		if !strings.Contains(r.Expr, "arrayCount(d -> d >= 10 * 60") || !strings.Contains(r.Expr, ")))))) <= 2") {
+			t.Errorf("service-silent must refuse a service that was silent this long more than twice in the previous 24h (a bursty service is not steady): %s", r.Expr)
+		}
 		if r.For != "0s" {
 			t.Errorf("service-silent for = %q: the silence window is in the SQL, so the hold time is 0s", r.For)
 		}

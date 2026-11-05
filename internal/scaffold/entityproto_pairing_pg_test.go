@@ -58,6 +58,15 @@ func TestBirthColumns_HaveAConversion(t *testing.T) {
 		codegen.SchemaFieldDef{Name: "s_stamp", Kind: "message", TypeName: "google.protobuf.Timestamp"},
 		codegen.SchemaFieldDef{Name: "r_stamp", Kind: "message", TypeName: "google.protobuf.Timestamp", Repeated: true},
 	)
+	// The JSON well-knowns, singular and optional: each is born as a JSONB
+	// column, so each must pair with the pkg/orm message encoder.
+	for _, wkt := range []string{"Struct", "ListValue", "Value"} {
+		name := strings.ToLower(wkt)
+		fields = append(fields,
+			codegen.SchemaFieldDef{Name: "s_" + name, Kind: "message", TypeName: "google.protobuf." + wkt},
+			codegen.SchemaFieldDef{Name: "o_" + name, Kind: "message", TypeName: "google.protobuf." + wkt, Optional: true},
+		)
+	}
 
 	mig := RenderEntityMigrationFromProto(EntityFromProtoSpec{
 		Table:     "shapes",

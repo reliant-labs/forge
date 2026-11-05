@@ -262,6 +262,9 @@ func TestProtoSQLMappings_MatchTheRenderer(t *testing.T) {
 		{"google.protobuf.Timestamp", codegen.SchemaFieldDef{Name: "scheduled_at", Kind: "message", TypeName: "google.protobuf.Timestamp"}, "scheduled_at TIMESTAMPTZ\n"},
 		{"nested message (same package)", codegen.SchemaFieldDef{Name: "shipping", Kind: "message", TypeName: entityProtoPkg + ".Address"}, "shipping JSONB NOT NULL DEFAULT '{}'"},
 		{"map<K, scalar>", codegen.SchemaFieldDef{Name: "attrs", Kind: "map", MapKeyKind: "string", MapValueKind: "int64"}, "attrs JSONB NOT NULL DEFAULT '{}'"},
+		{"google.protobuf.Struct", codegen.SchemaFieldDef{Name: "evidence", Kind: "message", TypeName: "google.protobuf.Struct"}, "evidence JSONB NOT NULL DEFAULT '{}'"},
+		{"google.protobuf.ListValue", codegen.SchemaFieldDef{Name: "steps", Kind: "message", TypeName: "google.protobuf.ListValue"}, "steps JSONB NOT NULL DEFAULT '[]'"},
+		{"google.protobuf.Value", codegen.SchemaFieldDef{Name: "answer", Kind: "message", TypeName: "google.protobuf.Value"}, "answer JSONB\n"},
 		{"<field> // forge:generated <expr>", codegen.SchemaFieldDef{Name: "line_total", Kind: "int64", Generated: "quantity * 2"},
 			"line_total BIGINT NOT NULL GENERATED ALWAYS AS (quantity * 2) STORED"},
 	}

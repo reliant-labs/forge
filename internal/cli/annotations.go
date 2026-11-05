@@ -125,8 +125,10 @@ Use --kind to limit the dump to one annotation level, and --json for a
 machine-readable dump that tools can query instead of re-deriving the spec.
 --kind column is the forge:* markers declared as a postgres catalog COMMENT
 in a migration rather than a proto/Go comment (forge:immutable on a column,
-forge:ref on a foreign-key constraint); --kind table is the same mechanism one
-level up, on the table itself (forge:append-only). --kind go is the wiring/observability
+forge:ref on a foreign-key constraint). Postgres keeps ONE comment per object,
+so several markers share it, space-separated, in any order:
+COMMENT ON COLUMN t.tenant_id IS 'forge:owner forge:immutable'. --kind table is
+the same mechanism one level up, on the table itself (forge:append-only). --kind go is the wiring/observability
 /contract vocabulary forge reads out of .go files (forge:optional-dep,
 forge:constructor, forge:no-observe, forge:exclude-contract, ...) — the
 markers you meet in scaffolded code.
@@ -302,6 +304,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "int64 line_total_cents = 9; // forge:generated round(quantity * unit_price_cents)::BIGINT",
 		},
 		{
+			Name:      codegen.ProtoMarkerOwner,
+			AppliesTo: "field",
+			Effect:    "Declares at BIRTH that this field's column names who a row belongs to: the born create-table migration carries `COMMENT ON COLUMN <table>.<col> IS 'forge:owner'` (see the column marker of the same name), so the first `forge generate` — the one `forge scaffold` runs right after the birth — births handlers_crud.go with the owner-scoping wrapper on every authenticated CRUD rpc. Without it the owner can only be declared by a later migration, which meets a handlers_crud.go that already exists. On `id`, it declares a table owned by itself. Commonly paired with forge:read-only, so the column is off the Create request and stamped from the caller instead. Birth-only, like forge:entity: afterwards the catalog comment is the truth. A marker no field consumes REFUSES the birth, naming file and line.",
+			Placement: "leading full-line comment above the field, or a trailing comment after its `;` — alone, or after another field marker on the same line (`// forge:read-only forge:owner`)",
+			Example:   "// forge:read-only forge:owner\nstring tenant_id = 2;",
+		},
+		{
 			Name:      codegen.ProtoMarkerGuards,
 			AppliesTo: "field",
 			Effect:    "Declares that THIS rpc owns the named column's writes, so the scaffolded CRUD edit page drops that column from its update_mask and renders it as a disabled row naming this rpc instead. Written on a field of a CUSTOM rpc's request message; the field it sits on is only the attachment point — the subject is the `<table>.<column>` it names, which is frequently on another message entirely. Without it the page generator reasons from the entity's column list alone, knows nothing of what your rpcs enforce, and writes the column raw: lower an invoice's amount_cents below its amount_paid_cents through the scaffolded form and the raw CHECK surfaces as a 500, with the state machine RecordPayment implements bypassed entirely. The target is EXPLICIT because it cannot be inferred — RecordPaymentRequest guards invoices.amount_paid_cents, a column its request never names, while the field it does share a name with (amount_cents) is a freely editable column on a different table. Scaffolded pages are written once and never regenerated, so `forge lint --guarded-fields` reports pages that predate the marker.",
@@ -453,8 +462,8 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      schemadef.ColumnMarkerOwner,
 			AppliesTo: "column",
-			Effect:    "Declares this column as the one naming WHO a row belongs to. Changes NO codegen — forge ships no ownership of its own and never injects a WHERE clause for you, because only your app knows how a caller's claims map onto this column's values. What it changes is what forge lets ship: it ARMS the `unscoped_auth` audit category for this table, so an authenticated RPC over this entity whose handler never resolves the caller stops being a warning and becomes an ERROR, failing `forge project audit`. Declare nothing and the category behaves exactly as before (warn, exit 0), which is why a fresh scaffold is unaffected. The gate arms PER TABLE — declaring an owner on customers does not fail an unscoped RPC over a global product catalog — and `// forge:auth-unscoped-ok: <reason>` above the handler suppresses the error for a legitimately global RPC (the reason is mandatory; a bare directive does not count). Pairs naturally with forge:immutable on the same column, since an owner column is exactly the kind a full-replace Update must not zero.",
-			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:owner'; in a migration",
+			Effect:    "Declares this column as the one naming WHO a row belongs to. forge never injects a WHERE clause at runtime, because only your app knows how a caller's claims map onto this column's values; what it scaffolds is the wrapper that applies one. When handlers_crud.go is BORN after the declaration, every authenticated CRUD rpc over the table is scoped to the column: claims resolved, the predicate in the query (Get/List/Update/Delete), the column stamped from the caller on Create and Update, and one FORGE_SCAFFOLD expression left for the claims-to-owner mapping. An owner column that is also the primary key (a table owned by itself) is predicated, never stamped, on Update. The stamped column counts as filled: a forge:read-only NOT NULL owner column needs no forge:fill=handler while its Create is authenticated. Declare it at birth with `// forge:owner` on the proto field, so `forge scaffold` writes this comment before it generates handlers_crud.go; declared later, the file already exists and `forge project audit` prints each wrapper to paste. It also changes what forge lets ship: it ARMS the `unscoped_auth` audit category for this table, so an authenticated RPC over this entity whose handler never resolves the caller stops being a warning and becomes an ERROR, failing `forge project audit`. Declare nothing and the category behaves exactly as before (warn, exit 0), which is why a fresh scaffold is unaffected. The gate arms PER TABLE — declaring an owner on customers does not fail an unscoped RPC over a global product catalog — and `// forge:auth-unscoped-ok: <reason>` above the handler suppresses the error for a legitimately global RPC (the reason is mandatory; a bare directive does not count). Pairs naturally with forge:immutable on the same column, since an owner column is exactly the kind a full-replace Update must not zero.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:owner'; in a migration — beside other markers in the same comment, space-separated ('forge:owner forge:immutable'). Born from a `// forge:owner` proto field marker.",
 			Example:   "COMMENT ON COLUMN customers.company_id IS 'forge:owner';",
 		},
 

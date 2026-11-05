@@ -45,9 +45,8 @@ func discoverCIHostedEnvs(projectDir string) ciHostedTopology {
 	}
 	var out ciHostedTopology
 	envs, _ := ListEnvs(projectDir)
-	for _, env := range envs {
-		entities, restored, err := renderKCLPure(context.Background(), projectDir, env)
-		reportImpureRender(env, restored)
+	for _, r := range renderEnvsPure(context.Background(), projectDir, envs) {
+		env, entities, err := r.env, r.entities, r.err
 		if err != nil || entities == nil {
 			out.Unrendered = append(out.Unrendered, env)
 			continue

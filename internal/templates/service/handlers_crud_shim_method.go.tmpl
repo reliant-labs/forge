@@ -150,6 +150,12 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 {{- else if eq .Operation "update"}}
 {{- if .Scoped}}
+{{- if .OwnerIsPK}}
+	// {{.OwnerColumn}} is both the key and the owner, so the predicate alone
+	// scopes the write: an update aimed at another row matches nothing and
+	// reports NotFound. It is never stamped — stamping the key would move
+	// the write onto the caller's own row instead.
+{{- else}}
 	// Two halves, and both are needed. The predicate is checked against the
 	// STORED row, so a caller cannot take ownership by rewriting
 	// {{.OwnerColumn}} in the request they send; the stamp then keeps the
@@ -164,6 +170,7 @@ func (s *Service) {{.MethodName}}(
 		e.{{.OwnerField}} = owner
 		return e, nil
 	}
+{{- end}}
 	persist := op.Persist
 	op.Persist = func(ctx context.Context, e *db.{{.EntityName}}, opts ...orm.QueryOption) error {
 		return persist(ctx, e, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)

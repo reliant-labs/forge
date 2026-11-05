@@ -1,6 +1,6 @@
 ---
 name: storage/blobstore
-description: File uploads and downloads (images, documents, attachments) — declare a forge.Bucket per env, hand a workload its connection with forge.bucket_env, presign an upload in a handler with forge/pkg/blobstore, PUT it straight from the browser, confirm it with Stat. Dev runs MinIO; staging/prod use any S3-compatible bucket (S3, R2, GCS).
+description: File uploads and downloads (images, documents, attachments) — declare a forge.Bucket per env, hand a workload its connection with forge.bucket_env, presign an upload in a handler with forge/pkg/blobstore, PUT it straight from the browser, confirm it with Stat. Dev runs MinIO; Reliant hosting provisions the bucket (forge.OnHosted); anywhere else use any S3-compatible bucket (S3, R2, GCS).
 ---
 
 # File uploads: forge.Bucket + forge/pkg/blobstore
@@ -46,7 +46,8 @@ service: copy it, and its `minio_data` volume, from a fresh
 |---|---|
 | `name` | how `forge.BucketRef` names it, and the real bucket name unless the runtime says otherwise (3..63 of `a-z0-9-`) |
 | `public_read` | every object readable without a signature (avatars, a public gallery). Off for anything private: hand out `PresignGet` URLs |
-| `cors_origins` | the browser origins that upload directly. The dev MinIO applies them (none declared = any origin). On `forge.BucketOnS3` forge does not manage the bucket: set its CORS where it lives, allowing `PUT` and `GET` and the `Content-Type` header |
+| `cors_origins` | the browser origins that upload directly. The dev MinIO applies them (none declared = any origin). On `forge.OnHosted` the platform adds the env's own hosted frontends and custom domains, so list only OTHER origins. On `forge.BucketOnS3` forge does not manage the bucket: set its CORS where it lives, allowing `PUT` and `GET` and the `Content-Type` header |
+| `deletion_policy` | `"retain"` (default) or `"delete"`: what removing the declaration does to a bucket forge manages (`forge.OnHosted`). Retain leaves the bucket and every object; delete is irreversible and only happens because someone typed it |
 | `runtime` | where it lives — required, no default |
 
 Runtimes:
@@ -73,9 +74,85 @@ Runtimes:
   (a Kubernetes Secret on a cluster you operate). GCS: endpoint
   `https://storage.googleapis.com` and an HMAC key of a service account that
   holds only `roles/storage.objectAdmin` on that one bucket.
-- **`forge.OnHosted {}`** is refused for now: the control plane does not
-  provision buckets yet. On a hosted env, use `forge.BucketOnS3` with managed
-  secrets, as above.
+- **`forge.OnHosted {}`**: Reliant hosting provisions it. See "On Reliant
+  hosting" below.
+
+### On Reliant hosting
+
+```kcl
+# deploy/kcl/prod/main.k
+_buckets: [forge.Bucket] = [forge.Bucket {name = "uploads", runtime = forge.OnHosted {}}]
+```
+
+The env publishes the bucket to the control plane as a `forge.dev/v1alpha1
+ManagedBucket`, next to its Workloads, and the platform:
+
+- creates one cloud bucket for this env (Google Cloud Storage; its real name
+  is the platform's, `UPLOADS_BUCKET` carries it), with uniform access and
+  public access prevented unless `public_read`;
+- creates a service account that can read, write, list and delete objects in
+  **that bucket only**, and an HMAC key for it;
+- writes the Secret `forge-bucket-uploads` in the env's namespace, one key per
+  `BucketRef.key`: `endpoint` and `public_endpoint` are
+  `https://storage.googleapis.com`, `region` is `auto`, `path_style` is
+  `true`, and the two credentials are the HMAC key;
+- sets the bucket's CORS (`PUT`, `GET`, `HEAD`; `Content-Type`) to your
+  `cors_origins` plus the env's hosted frontend origins and bound custom
+  domains.
+
+A hosted workload's `forge.bucket_env("UPLOADS", "uploads")` then lowers to
+`bucketRef` env values, which become `secretKeyRef`s on that Secret. The pod
+does not start until the Secret exists, so a deploy that reports the workload
+ready also proved the bucket. Nothing changes in your code: the same seven
+variables fill `blobstore.S3Config`. The browser talks to GCS directly, so
+uploads never touch the cluster.
+
+What is refused, at render:
+
+- a workload on a cluster or host reading a hosted bucket (its credential
+  exists only in the control plane's namespace): bind the bucket to
+  `forge.BucketOnS3` in that env, or run the workload on `forge.OnHosted`;
+- a hosted bucket name over 40 characters (the platform prefixes it);
+- a hosted bucket in a Bundle with no `control_plane`.
+
+Removing the declaration leaves the bucket and its objects in place unless
+`deletion_policy = "delete"`.
+
+#### Verify a hosted bucket
+
+`forge env deploy` publishes the bucket but cannot observe it: the control
+plane reports no status for a ManagedBucket, so the deploy lists it as
+`not_waited` (in `--json` too), never as ready. A workload that reads it
+turning ready proves only that the credential Secret exists. A bucket no
+workload reads (a bucket-only env) is proved by nothing. After the first
+deploy of a hosted bucket, and after any change to its `public_read` or
+`cors_origins`, check it from the deployed app, through the same handlers your
+users hit:
+
+1. **Upload**: from a page served on one of the bucket's origins, presign a
+   PUT (section 4) and send it from the browser (section 5). A CORS error in
+   the browser console means the origin is missing from `cors_origins` or the
+   platform has not applied it yet.
+2. **Confirm and download**: `Stat` the key (section 6), then fetch a
+   presigned GET and compare the bytes.
+3. **Private stays private**: fetch the object's plain URL,
+   `https://storage.googleapis.com/<UPLOADS_BUCKET>/<key>`, with no signature.
+   It must be refused (403) unless the bucket is `public_read`, and must
+   succeed when it is.
+
+For a bucket-only env, run the check once a workload that reads the bucket is
+deployed; until then nothing has used the credential.
+
+**Recovering** from a bad bucket change rolls forward, as every forge deploy
+does (`deploy`, "Verify + recover"): restore the previous declaration (or
+drop the bucket's referrers) in the tree and `forge env deploy <env>` again;
+binding the env to an older release is the same promote. Either keeps the
+bucket, its objects and its credential: a bucket is never release-bound, and
+the default `deletion_policy = "retain"` leaves it in place even when the
+declaration is removed. Never set `deletion_policy = "delete"` to
+undo a change; it destroys every object. Do not delete the `forge-bucket-<name>`
+Secret to "reset" a credential: the platform owns it, and the workloads that
+read it stop starting until it is rewritten.
 
 Every env a workload runs in must declare each bucket the workload references;
 the render names a missing one.
@@ -92,8 +169,11 @@ That is seven `forge.BucketRef`s: `UPLOADS_ENDPOINT`, `UPLOADS_PUBLIC_ENDPOINT`,
 `UPLOADS_REGION`, `UPLOADS_BUCKET`, `UPLOADS_ACCESS_KEY_ID`,
 `UPLOADS_SECRET_ACCESS_KEY`, `UPLOADS_PATH_STYLE`, which are the fields of
 `blobstore.S3Config`. Each lowers per env and per runtime. For a dev MinIO
-bucket they are literals, and the endpoint is `localhost` for a host process
-but the cluster's host gateway for a k3d pod. `PUBLIC_ENDPOINT` stays
+bucket they are literals, and the endpoint is `localhost` for a host process,
+the cluster's host gateway for a k3d pod, and `http://minio:9000` (the compose
+service, on the compose network) for a container in the MinIO's own compose
+file, whose compose process env carries them for the file to pass through
+(`UPLOADS_ENDPOINT: ${UPLOADS_ENDPOINT}`). `PUBLIC_ENDPOINT` stays
 `localhost`, because the browser is on this machine and the presigned URL has
 to be signed for the host the browser actually dials. For a `BucketOnS3`
 bucket you get the declared values, and the credentials go through their own

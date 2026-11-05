@@ -84,6 +84,12 @@ func (e EnvVar) Validate() error {
 			errs = append(errs, fmt.Errorf("env var %s: databaseRef.key %q must be one of uri, host, port, dbname, username, password", e.Name, e.DatabaseRef.Key))
 		}
 	}
+	if e.BucketRef != nil {
+		set++
+		if err := e.BucketRef.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("env var %s: %w", e.Name, err))
+		}
+	}
 	if e.WorkloadURL != nil {
 		set++
 		if err := e.WorkloadURL.Validate(); err != nil {
@@ -103,7 +109,7 @@ func (e EnvVar) Validate() error {
 		}
 	}
 	if set > 1 {
-		errs = append(errs, fmt.Errorf("env var %s sets more than one of value / secretRef / managedSecret / databaseRef / workloadURL / configMapRef / fieldRef: a spec that says two things has no correct reading", e.Name))
+		errs = append(errs, fmt.Errorf("env var %s sets more than one of value / secretRef / managedSecret / databaseRef / bucketRef / workloadURL / configMapRef / fieldRef: a spec that says two things has no correct reading", e.Name))
 	}
 	return errors.Join(errs...)
 }

@@ -143,7 +143,7 @@ defaults = {
 }
 ```
 
-`params` per default: `uptime-check-failing` `failures`, `critical_failures`, `window_minutes`; `certificate-expiring` `warn_days`, `critical_days`, `window_minutes`; `error-rate` `threshold`, `window_minutes`, `min_requests`; `p95-latency` `threshold_seconds`, `window_minutes`, `min_requests`; `service-silent` `silent_minutes`, `min_active_hours`; `frontend-js-errors` `spike_factor`, `window_minutes`, `baseline_minutes`, `min_errors`; `crash-loop` `min_restarts`, `window_minutes`; `oom-killed` `window_minutes`; `memory-near-limit` `threshold`, `window_minutes`; `image-pull-failed` and `evicted` `min_events`, `window_minutes`. The two platform ids take `enabled`, `labels` and `for` and no params. To write a variant, copy a default's SQL from `forge env shape <env> --json` into your own rule (under another name).
+`params` per default: `uptime-check-failing` `failures`, `critical_failures`, `window_minutes`; `certificate-expiring` `warn_days`, `critical_days`, `window_minutes`; `error-rate` `threshold`, `window_minutes`, `min_requests`; `p95-latency` `threshold_seconds`, `window_minutes`, `min_requests`; `service-silent` `silent_minutes`, `min_active_hours`, `max_prior_silences`; `frontend-js-errors` `spike_factor`, `window_minutes`, `baseline_minutes`, `min_errors`; `crash-loop` `min_restarts`, `window_minutes`; `oom-killed` `window_minutes`; `memory-near-limit` `threshold`, `window_minutes`; `image-pull-failed` and `evicted` `min_events`, `window_minutes`. The two platform ids take `enabled`, `labels` and `for` and no params. To write a variant, copy a default's SQL from `forge env shape <env> --json` into your own rule (under another name).
 
 ### Customer-metadata rules and the opt-out
 

@@ -689,7 +689,10 @@ services:
   # the compose environment: the published port, the root credentials, the
   # buckets to create, the ones anyone may read, and the CORS origins the
   # browser uploads from. A bucket is created at start and never deleted;
-  # the data persists in the minio_data volume.
+  # the data persists in the minio_data volume. Anonymous access is
+  # reconciled on every start, for every bucket: download for a public_read
+  # one, none for the rest, so a bucket declared private again closes even
+  # though the volume kept the policy it had.
   #
   # Upstream MinIO stopped publishing images in 2025. Chainguard builds it
   # from source, with the `mc` client beside it, which is what creates the
@@ -707,7 +710,11 @@ services:
         trap 'kill -TERM $$pid; wait $$pid; exit 0' TERM INT
         until mc alias set local http://127.0.0.1:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do sleep 0.5; done
         for b in $$MINIO_BUCKETS; do mc mb --ignore-existing --region "$$MINIO_REGION" "local/$$b" || exit 1; done
-        for b in $$MINIO_PUBLIC_BUCKETS; do mc anonymous set download "local/$$b" || exit 1; done
+        for b in $$MINIO_BUCKETS; do
+          access=none
+          for p in $$MINIO_PUBLIC_BUCKETS; do [ "$$p" = "$$b" ] && access=download; done
+          mc anonymous set "$$access" "local/$$b" || exit 1
+        done
         touch /tmp/buckets-ready
         wait $$pid
     environment:

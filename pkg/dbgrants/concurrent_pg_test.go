@@ -140,57 +140,120 @@ func TestApplySucceedsWhenAConcurrentRunSetTheRoleSettingFirst(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := context.Background()
-			winner, err := f.db.BeginTx(ctx, nil)
-			if err != nil {
+			race := stageLostRace(t, f, script)
+			if err := race.winner.Commit(); err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = winner.Rollback() }()
-			if _, err := winner.ExecContext(ctx, fmt.Sprintf(`ALTER ROLE %s SET default_transaction_read_only = on`, f.role)); err != nil {
-				t.Fatal(err)
-			}
-
-			loser, err := f.db.Conn(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = loser.Close() }()
-			var pid int
-			if err := loser.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
-				t.Fatal(err)
-			}
-			done := make(chan error, 1)
-			go func() { done <- Apply(ctx, loser, script) }()
-
-			// The loser has checked, found the setting missing (the winner has
-			// not committed), and is waiting on the winner's catalog row.
-			deadline := time.Now().Add(30 * time.Second)
-			for {
-				var waiting bool
-				if err := f.db.QueryRowContext(ctx,
-					`SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND NOT granted)`, pid).Scan(&waiting); err != nil {
-					t.Fatal(err)
-				}
-				if waiting {
-					break
-				}
-				select {
-				case err := <-done:
-					t.Fatalf("the run finished without waiting on the concurrent write (err=%v); the race was not staged", err)
-				default:
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("the run never waited on the concurrent write")
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
-			if err := winner.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			if err := <-done; err != nil {
+			if err := <-race.done; err != nil {
 				t.Fatalf("a run that lost the race to set the same value failed: %v", err)
 			}
 		})
+	}
+}
+
+// lostRace is a run of the script blocked on another transaction's
+// uncommitted write of the role setting.
+type lostRace struct {
+	winner *sql.Tx
+	done   <-chan error
+	// release unblocks and reaps the run on every exit path: it cancels the
+	// run, rolls the winner back (a no-op once committed), waits for the run
+	// to return, and only then closes its connection. Closing the connection
+	// first would wait on the blocked query, which waits on the winner's
+	// rollback: a deadlock that hangs a failing test until the suite timeout.
+	release func()
+}
+
+// stageLostRace opens a winner transaction that sets the role setting without
+// committing, starts Apply on another connection, and returns once that run is
+// waiting on the winner's catalog row. Whatever happens, release runs at the
+// end of the test.
+func stageLostRace(t *testing.T, f *pgFixture, script string) *lostRace {
+	t.Helper()
+	ctx := context.Background()
+	winner, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loser, err := f.db.Conn(ctx)
+	if err != nil {
+		_ = winner.Rollback()
+		t.Fatal(err)
+	}
+	applyCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	exited := make(chan struct{})
+	started := false
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			cancel()
+			_ = winner.Rollback()
+			if started {
+				<-exited
+			}
+			_ = loser.Close()
+		})
+	}
+	t.Cleanup(release)
+	if _, err := winner.ExecContext(ctx, fmt.Sprintf(`ALTER ROLE %s SET default_transaction_read_only = on`, f.role)); err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if err := loser.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	started = true
+	go func() {
+		defer close(exited)
+		done <- Apply(applyCtx, loser, script)
+	}()
+
+	// The loser has checked, found the setting missing (the winner has not
+	// committed), and is waiting on the winner's catalog row. The deadline
+	// only bounds the poll; the pg_locks observation is what orders the test.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var waiting bool
+		if err := f.db.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND NOT granted)`, pid).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the run finished without waiting on the concurrent write (err=%v); the race was not staged", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run never waited on the concurrent write")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return &lostRace{winner: winner, done: done, release: release}
+}
+
+// A test that fails while the run is still blocked must fail, not hang:
+// release, the path every t.Fatal after staging takes, returns with the
+// winner neither committed nor rolled back first.
+func TestLostRaceReleaseReturnsWhileTheRunIsBlocked(t *testing.T) {
+	f := newPGFixture(t, convergeSchemaSQL)
+	script, err := RenderFor(f.role, eventsTable(Column{Name: "id"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	race := stageLostRace(t, f, script)
+	released := make(chan struct{})
+	go func() {
+		race.release()
+		close(released)
+	}()
+	select {
+	case <-released:
+	case <-time.After(30 * time.Second):
+		t.Fatal("release did not return while the run was blocked on the winner's write")
 	}
 }
 

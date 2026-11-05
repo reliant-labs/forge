@@ -490,6 +490,11 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 	}
 
 	if a.policy.Enrich != nil {
+		// The credential is the validator's finding, not the enricher's:
+		// Enrich reads it, and whatever claims it returns carry the one
+		// validated here, so an enricher that builds fresh claims cannot
+		// drop a key's marker and one that copies claims cannot mint it.
+		credential := claims.Credential
 		claims, err = a.policy.Enrich(ctx, claims)
 		if err != nil {
 			var ce *connect.Error
@@ -497,6 +502,11 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 				return ctx, err
 			}
 			return ctx, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("identity enrichment failed: %w", err))
+		}
+		if claims != nil && claims.Credential != credential {
+			enriched := *claims
+			enriched.Credential = credential
+			claims = &enriched
 		}
 	}
 

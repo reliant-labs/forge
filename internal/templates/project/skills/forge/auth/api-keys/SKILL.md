@@ -1,6 +1,6 @@
 ---
 name: api-keys
-description: API keys as a credential — what every scaffold already wires (`X-API-Key` or `Bearer fk_…`, routed by shape to a key validator installed after `OpenInfra`), the `APIKeyValidator` seam you fill in over your own table on the handlers' pool, and `forge/pkg/apikey`'s Generate/Hash/LookupPrefix/Verify.
+description: API keys as a credential — what every scaffold already wires (`X-API-Key` or `Bearer fk_…`, routed by shape to a key validator installed after `OpenInfra`), the `APIKeyValidator` seam you fill in over your own table on the handlers' pool, `forge/pkg/apikey`'s Generate/Hash/LookupPrefix/Verify, and `Claims.Credential` (`IsAPIKey`), the unforgeable mark of a key-authenticated call.
 ---
 
 # API keys
@@ -75,7 +75,24 @@ On an rpc without `auth_required: false`:
    }
    ```
 
-   Return errors freely. The caller only reads `invalid API key`, and your error, including a store failure's text, reaches the log as the cause. To let handlers tell a key-authenticated call apart (for example, to refuse key management made with a key), set `Claims.Raw["auth_method"] = "api_key"` here. `enrichClaims` in `pkg/middleware/middleware.go` still runs after this, as it does for a JWT.
+   Return errors freely. The caller only reads `invalid API key`, and your error, including a store failure's text, reaches the log as the cause. `enrichClaims` in `pkg/middleware/middleware.go` (or your `ClaimsEnricher`) still runs after this, as it does for a JWT.
+
+   **You don't mark the claims as a key's; forge does.** The Authenticator stamps every claims set your validator returns with `Claims.Credential = auth.APIKeyCredential(<lookup prefix>)`, and every token's with `auth.TokenCredential()`. The marker is unforgeable by a token. Its fields are unexported and the field is `json:"-"`, so no JWT payload, and no `UserResolver` that decodes one, can set it. The token path overwrites whatever its validator returned, and the auth interceptor restores it after Enrich. Never mark a key in `Claims.Raw`: `Raw` also holds a token's decoded claims, so anyone who can get a token issued with that claim can forge it.
+
+   A key with no person behind it (a per-tenant key) can return its tenant and role on the claims, for example `&auth.Claims{UserID: "apikey:" + prefix, OrgID: tenantID, Role: role}`. Your enricher then trusts those fields only for a key:
+
+   ```go
+   func (s *service) EnrichClaims(ctx context.Context, claims *auth.Claims) (*auth.Claims, error) {
+       if claims.IsAPIKey() {
+           return claims, nil // OrgID and Role are the key row's, checked by APIKeyValidator
+       }
+       // A person: map claims.UserID through your members table. A token's own
+       // org_id / role claims are never trusted here.
+       ...
+   }
+   ```
+
+   `claims.Credential.KeyPrefix()` is the key's lookup prefix, its row's primary key. Use it to record `last_used_at` or to name the key in an audit entry.
 
 3. **Issuing.** Use a custom rpc. Do not name it `CreateApiKey`, which forge would read as CRUD. Name it `IssueApiKey`, generate the key server-side, store its prefix and hash, and return the plaintext **once**:
 
@@ -99,6 +116,16 @@ On an rpc without `auth_required: false`:
    return connect.NewResponse(&pb.IssueApiKeyResponse{Key: key}), nil
    ```
 
+   **Refuse key management made with a key.** A leaked key must not mint more keys or revoke its owner's. At the top of `IssueApiKey` and `RevokeApiKey`:
+
+   ```go
+   if authn.IsAPIKey(ctx) { // github.com/reliant-labs/forge/pkg/authn
+       return nil, svcerr.Wrap(svcerr.PermissionDenied("not allowed with an API key; sign in"))
+   }
+   ```
+
+   In a handler test, build a key caller with `middleware.ContextWithClaims(ctx, &middleware.Claims{UserID: "apikey:abcd1234", Credential: auth.APIKeyCredential("abcd1234")})`.
+
    **Revoking** sets `revoked_at`. The validator's `WHERE` clause is where revocation and expiry are enforced. `pkg/apikey` knows nothing about your rows.
 
 4. **Check it.** `middleware_test.go`'s `TestAuthWiring_APIKeyAndBearer` covers the credential channels and precedence. Exercise your own table end to end with `curl -H 'X-API-Key: fk_…'` against an auth-required rpc.
@@ -117,3 +144,4 @@ On an rpc without `auth_required: false`:
 - Compare with `apikey.Verify` (constant time), never `==`. A byte-by-byte compare leaks the hash through timing.
 - Check keys on the pool `OpenInfra` opened, inside `APIKeyValidator`. Never open a second `sql.Open` pool in `SetupAuth`.
 - Revocation and expiry belong in your lookup's `WHERE` clause.
+- Tell a key from a person with `claims.IsAPIKey()` or `authn.IsAPIKey(ctx)`, never with a value in `Claims.Raw`.

@@ -932,6 +932,23 @@ func lintPipeline() []linterStep {
 			collect: collectTracingJSON,
 		},
 
+		// 14a-bis. Open sign-up — a login broker that mounts POST
+		// /auth/register with no condition, so every deployed env serves
+		// public sign-up (see lint_open_signup.go). ADVISORY: warnings, and
+		// a scan that cannot run degrades to one.
+		{
+			name:  "open-signup lint",
+			gates: false,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, "internal")), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectOpenSignupJSON(rc.cwd)
+				return fs, false, err
+			},
+		},
+
 		// 14b. No-dotenv — forge projects declare config in KCL and keep
 		// secret VALUES in the secret store. A .env file bypasses
 		// both (it is injected wholesale, so nothing has to be

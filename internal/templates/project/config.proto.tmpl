@@ -485,6 +485,21 @@ message AppConfig {
     description: "Path to a file holding the login broker's token, read on every use so the issuer-side credential can rotate WITHOUT a restart (a mounted Secret volume updates in place). Takes precedence over idp_broker_token while the file yields a token; idp_broker_token stays supported and is the fallback. A missing or empty file never stops the app: the last token read keeps being used and a warning is logged. The path is not a secret, so this field is not sensitive — the file's content is."
   }];
 
+  // ── Public sign-up: an explicit opt-in outside development ────────────
+  //
+  // OFF by default. The scaffolded broker serves POST /auth/register in
+  // development, and in a deployed environment only when this is true.
+  // Public sign-up creates accounts under addresses nobody has verified, so
+  // turning it on is safe only once every place the app binds something to a
+  // user BY EMAIL requires the address verified first.
+
+  bool auth_self_signup = 48 [(forge.v1.config) = {
+    env_var: "AUTH_SELF_SIGNUP"
+    flag: "auth-self-signup"
+    default_value: "false"
+    description: "Serve public sign-up (POST /auth/register) in a deployed environment; development always serves it. OFF by default, so a deployed app is invite-only until it opts in. A self-registered account's email is UNVERIFIED — the person typed it, and is signed in before proving it — so before setting this, make every invitation, membership or record the app binds to a user BY EMAIL require the address verified (devidp.User.EmailVerified via FindUserByID); otherwise registering someone else's address claims what was waiting for them. The sign-in screen offers \"Create an account\" only when this deployment serves it (GET /auth/options)."
+  }];
+
   // ── Roles and key fallback for the token validator ────────────────────
 
   string jwt_roles_claim = 42 [(forge.v1.config) = {

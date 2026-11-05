@@ -22,6 +22,7 @@ import Input from "@/components/ui/input";
 import Label from "@/components/ui/label";
 import { AuthError, signIn, signUp, type PasswordRule } from "@/lib/auth/native-login";
 import { useAuth } from "@/lib/auth/use-auth";
+import { useAuthOptions } from "@/lib/auth/use-auth-options";
 import { usePasswordPolicy } from "@/lib/auth/use-password-policy";
 import { joinBasePath } from "@/lib/basepath_gen";
 
@@ -41,8 +42,13 @@ function SignIn() {
       ? requested
       : "/";
 
+  // Whether this deployment serves sign-up at all: off outside development
+  // unless the server's config sets auth_self_signup (see
+  // internal/app/login_broker.go). The screen follows the server, so the two
+  // cannot disagree.
+  const { selfSignup } = useAuthOptions();
   const [mode, setMode] = useState<"signIn" | "signUp">("signIn");
-  const signingUp = mode === "signUp";
+  const signingUp = selfSignup && mode === "signUp";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -188,24 +194,27 @@ function SignIn() {
             place, so a second route would add a page transition and
             nothing else.
 
-            Delete this block for an invite-only product, and delete the
-            /auth/register route in internal/app/login_broker.go with it
-            (that file explains how an invite-only app gets its users).
+            Shown only when the server serves /auth/register — a deployed
+            app is invite-only until its config sets auth_self_signup
+            (internal/app/login_broker.go explains how an invite-only app
+            gets its users).
           */}
-          <p className="mt-4 text-center text-sm text-ink-muted">
-            {signingUp ? "Already have an account?" : "New here?"}{" "}
-            <button
-              type="button"
-              className="font-medium text-accent underline"
-              onClick={() => {
-                setMode(signingUp ? "signIn" : "signUp");
-                setError(null);
-                setServerUnmet([]);
-              }}
-            >
-              {signingUp ? "Sign in" : "Create an account"}
-            </button>
-          </p>
+          {selfSignup ? (
+            <p className="mt-4 text-center text-sm text-ink-muted">
+              {signingUp ? "Already have an account?" : "New here?"}{" "}
+              <button
+                type="button"
+                className="font-medium text-accent underline"
+                onClick={() => {
+                  setMode(signingUp ? "signIn" : "signUp");
+                  setError(null);
+                  setServerUnmet([]);
+                }}
+              >
+                {signingUp ? "Sign in" : "Create an account"}
+              </button>
+            </p>
+          ) : null}
         </form>
       </div>
     </main>

@@ -1,6 +1,6 @@
 ---
 name: authorization
-description: Turning an IdP identity into an application principal — the enrichClaims DB-backed seam and its rejection codes, why request validation belongs to protovalidate instead, app-owned provisioning via a public Register RPC, and declaring an owner column so forge fails a build that ships unscoped.
+description: Turning an IdP identity into an application principal — the enrichClaims DB-backed seam and its rejection codes, why request validation belongs to protovalidate instead, app-owned provisioning via a public Register RPC, why binding an invitation or membership by email must require devidp.User.EmailVerified, and declaring an owner column so forge fails a build that ships unscoped.
 ---
 
 # From identity to principal
@@ -47,6 +47,30 @@ rpc Register(RegisterRequest) returns (RegisterResponse) {
 ```
 
 `auth_required: false` here does NOT mean unauthenticated — it means the allow-list lets the call through so the handler can do the credential work itself, because `enrichClaims` would reject the caller for having no local row and the request would never arrive. The handler validates the presented token (the same validator `SetupAuth` built), takes the **`sub` the IdP asserted**, and inserts on that. Trust the `sub` from the verified token; never a `user_id` from the request body, which is a caller-supplied string and an account-takeover primitive. Make the insert idempotent on `sub` — a retried or double-clicked registration must not create a second account.
+
+## Binding by email requires a verified address
+
+The common invite pattern — an owner adds `alice@example.com` to a tenant, and the first account that signs in with that address claims the membership — is an **account-takeover primitive unless the address is verified**. Whoever registers `alice@example.com` first gets Alice's membership, because the address on an account is whatever was typed when it was created. Public sign-up (`auth_self_signup`, off outside development) creates exactly such accounts: unverified, and signed in immediately.
+
+So every place that binds something to a user BY EMAIL — accepting an invitation, attaching a tenant membership, merging a pre-created record — must first ask the issuer whether this account's address is verified, by the token's `sub`, and refuse otherwise:
+
+```go
+// Resolve the caller by the IdP's stable id, never by an email the request
+// or the token carries. idp is a devidp.Client built like the broker's.
+user, err := idp.FindUserByID(ctx, claims.Subject)
+if err != nil {
+    return nil, err // ErrUserNotFound is a machine account or a deleted user
+}
+if !user.EmailVerified {
+    return nil, connect.NewError(connect.CodePermissionDenied,
+        errors.New("verify your email address before accepting an invitation"))
+}
+invite, err := invites.PendingFor(ctx, tenantID, user.Email)
+```
+
+- Read `EmailVerified` from the issuer at bind time. A boolean you cached at sign-up goes stale the moment the person changes their address.
+- Bind ONCE, then key on `sub`. After the membership row holds the subject, later requests hydrate by `sub` (above), and the email is only display data.
+- An account created by an invitation (`forge cloud identity invite`, `IdentityService.InviteUser`) or a dev seed is verified by whoever created it. One created through `POST /auth/register` outside development is not, until its owner verifies it.
 
 ## Authenticated is not scoped
 

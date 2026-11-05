@@ -4,7 +4,8 @@ Positive test — forge.Bucket and forge.BucketRef.
 A BucketRef lowers by where the bucket lives and where the referrer runs:
 
   1. a bucket on the env's MinIO is a literal: the endpoint through the
-     cluster's host gateway for a pod, localhost for a host process, and
+     cluster's host gateway for a pod, localhost for a host process, the
+     MinIO compose service for a compose container, and
      localhost as the PUBLIC endpoint either way (the browser is on this
      machine), path-style, with the dev MinIO's credentials;
   2. a bucket on forge.BucketOnS3 carries its declared values, and its two
@@ -68,6 +69,12 @@ output = forge.render(forge.Bundle {
             env = forge.bucket_env("MEDIA", "media")
             runtime = forge.OnHosted {}
         }
+        fw.Workload {
+            name = "indexer"
+            kind = "worker"
+            env = forge.bucket_env("UPLOADS", "uploads")
+            runtime = forge.OnCompose {}
+        }
         forge.minio_workload(_minio, _buckets)
     ]
 })
@@ -79,6 +86,7 @@ _env = lambda name: str -> {str:} {
 _host = _env("api")
 _pod = _env("thumbnailer")
 _hosted = _env("web")
+_compose = _w["indexer"].runtime.env
 
 # 3. The seven names, in S3Config's order.
 assert_bucket_env_names = [e.name for e in _w["api"].spec.env][:7] == ["UPLOADS_ENDPOINT", "UPLOADS_PUBLIC_ENDPOINT", "UPLOADS_REGION", "UPLOADS_BUCKET", "UPLOADS_ACCESS_KEY_ID", "UPLOADS_SECRET_ACCESS_KEY", "UPLOADS_PATH_STYLE"]
@@ -86,6 +94,9 @@ assert_bucket_env_names = [e.name for e in _w["api"].spec.env][:7] == ["UPLOADS_
 # 1. MinIO: a literal per referrer.
 assert_minio_host_endpoint = _host["UPLOADS_ENDPOINT"].value == "http://localhost:9123"
 assert_minio_pod_endpoint = _pod["UPLOADS_ENDPOINT"].value == "http://host.k3d.internal:9123"
+# A compose container's localhost is itself: it dials the MinIO service on
+# the compose network, at the container's API port.
+assert_minio_compose_endpoint = _compose.UPLOADS_ENDPOINT == "http://minio:9000" and _compose.UPLOADS_PUBLIC_ENDPOINT == "http://localhost:9123"
 assert_minio_public_endpoint = _host["UPLOADS_PUBLIC_ENDPOINT"].value == "http://localhost:9123" and _pod["UPLOADS_PUBLIC_ENDPOINT"].value == "http://localhost:9123"
 assert_minio_bucket = _host["UPLOADS_BUCKET"].value == "uploads" and _host["UPLOADS_REGION"].value == "us-east-1"
 assert_minio_credentials = _pod["UPLOADS_ACCESS_KEY_ID"].value == "minioadmin" and _pod["UPLOADS_SECRET_ACCESS_KEY"].value == "minioadmin"

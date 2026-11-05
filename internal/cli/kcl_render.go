@@ -177,6 +177,10 @@ type KCLEntities struct {
 	// does not run (forge.ExternalDatabase): routes for `forge db query`,
 	// never rendered. See ExternalDatabaseEntity.
 	ExternalDatabases []ExternalDatabaseEntity `json:"external_databases,omitempty"`
+	// Buckets are the env's buckets forge manages (a forge.Bucket on
+	// forge.OnHosted), each published as a ManagedBucket. A MinIO or
+	// BucketOnS3 bucket is not one: it reaches its workloads as literals.
+	Buckets []BucketEntity `json:"buckets,omitempty"`
 	// SecretProvider is the bundle-level secret provider declaration
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider.
@@ -1147,6 +1151,17 @@ type DatabaseEntity struct {
 // Hosted reports whether the control plane runs this database.
 func (d DatabaseEntity) Hosted() bool { return d.Runtime == RuntimeHosted }
 
+// BucketEntity is one hosted forge.Bucket: the ManagedBucket the hosted
+// provider publishes under Name.
+type BucketEntity struct {
+	Name    string                           `json:"name"`
+	Runtime string                           `json:"runtime,omitempty"`
+	Spec    deployv1alpha1.ManagedBucketSpec `json:"spec"`
+}
+
+// Hosted reports whether the control plane provisions this bucket.
+func (b BucketEntity) Hosted() bool { return b.Runtime == RuntimeHosted }
+
 // ExternalDatabaseEntity is one forge.ExternalDatabase: a Postgres forge does
 // not run, reached through Service in Namespace on Cluster (a kube context),
 // signed in to as Username with the password at PasswordKey of the
@@ -1494,6 +1509,7 @@ type kclRenderRaw struct {
 	GRPCRoutes               []GRPCRouteEntity                         `json:"grpc_routes,omitempty"`
 	Databases                []DatabaseEntity                          `json:"databases,omitempty"`
 	ExternalDatabases        []ExternalDatabaseEntity                  `json:"external_databases,omitempty"`
+	Buckets                  []BucketEntity                            `json:"buckets,omitempty"`
 	HelmCharts               []HelmChartEntity                         `json:"helm_charts,omitempty"`
 	SecretProvider           *SecretProviderEntity                     `json:"secret_provider,omitempty"`
 	RenderedSecrets          []RenderedSecretEntity                    `json:"rendered_secrets,omitempty"`
@@ -1868,6 +1884,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		HelmCharts:               raw.HelmCharts,
 		Databases:                raw.Databases,
 		ExternalDatabases:        raw.ExternalDatabases,
+		Buckets:                  raw.Buckets,
 		SecretProvider:           raw.SecretProvider,
 		Observability:            raw.Observability,
 		DeliveryPolicy:           raw.DeliveryPolicy,
@@ -2318,6 +2335,11 @@ func (e *KCLEntities) HasHosted() bool {
 	}
 	for _, d := range e.Databases {
 		if d.Hosted() {
+			return true
+		}
+	}
+	for _, b := range e.Buckets {
+		if b.Hosted() {
 			return true
 		}
 	}

@@ -3,7 +3,6 @@ package cronkit
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -20,15 +19,31 @@ const Table = "forge_cron_ticks"
 // outlast the spread between replicas waking for the same tick.
 const DefaultRetention = 24 * time.Hour
 
-// schemaSQL is the claims table. The primary key IS the claim: the first
-// INSERT of (job, tick) lands and every later one conflicts.
-const schemaSQL = `CREATE TABLE IF NOT EXISTS ` + Table + ` (
-    job        text        NOT NULL,
-    tick       timestamptz NOT NULL,
-    claimed_by text        NOT NULL DEFAULT '',
-    claimed_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (job, tick)
-)`
+// schemaSQL creates the claims table. The primary key IS the claim: the
+// first INSERT of (job, tick) lands and every later one conflicts.
+//
+// CREATE TABLE IF NOT EXISTS is not atomic against itself: two sessions
+// that both find no table both create it, and the loser fails on the
+// catalog — 42710 (the row type exists), 23505 (pg_type's unique index) or
+// 42P07 — depending on where their timing collides. So the creation runs
+// under a transaction-scoped advisory lock: the second creator waits for the
+// first to commit, then finds the table and does nothing. A DO block is one
+// statement and so one transaction, which is what lets the lock work
+// through Exec alone and behind a transaction-pooling PgBouncer; the lock
+// releases at its commit. The lock key sits beside migratekit's
+// (7250513029716893481…3), so forge's own locks share one range.
+const schemaSQL = `DO $cronkit$
+BEGIN
+    PERFORM pg_advisory_xact_lock(7250513029716893490);
+    CREATE TABLE IF NOT EXISTS ` + Table + ` (
+        job        text        NOT NULL,
+        tick       timestamptz NOT NULL,
+        claimed_by text        NOT NULL DEFAULT '',
+        claimed_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (job, tick)
+    );
+END
+$cronkit$`
 
 // DB is what [Postgres] needs from a pool. A forge app's ORM handle
 // (orm.Context, *orm.Client) satisfies it; wrap a *sql.DB with [SQLDB].
@@ -65,10 +80,12 @@ type PostgresOptions struct {
 // DATABASE_URL), so [Run] falls back to firing on every replica with its boot
 // warning.
 //
-// The claims table is created on first use (CREATE TABLE IF NOT EXISTS), so
-// the database role the app runs as needs CREATE on its schema, as it does to
-// run its own migrations at boot. Any pool works, including one behind a
-// transaction-pooling PgBouncer: each claim is one autocommit statement.
+// The claims table is created on first use (CREATE TABLE IF NOT EXISTS,
+// serialized across replicas by an advisory lock), so the database role the
+// app runs as needs CREATE on its schema, as it does to run its own
+// migrations at boot. Any pool works, including one behind a
+// transaction-pooling PgBouncer: the creation and each claim are one
+// autocommit statement apiece.
 func Postgres(db DB, opts ...PostgresOptions) Claims {
 	if isNil(db) {
 		return nil
@@ -131,32 +148,18 @@ func (p *pgClaims) Claim(ctx context.Context, job string, tick time.Time) (bool,
 	return true, nil
 }
 
-// ensure creates the table once per process. Replicas racing to create it
-// can see a duplicate-object error from the one that lost; the table exists
-// either way.
+// ensure creates the table once per process; [schemaSQL] serializes the
+// replicas that create it at once. A failure leaves ready unset, so the next
+// claim tries again.
 func (p *pgClaims) ensure(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.ready {
 		return nil
 	}
-	if _, err := p.db.Exec(ctx, schemaSQL); err != nil && !duplicateObject(err) {
+	if _, err := p.db.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("create %s: %w", Table, err)
 	}
 	p.ready = true
 	return nil
-}
-
-// duplicateObject reports a concurrent CREATE TABLE IF NOT EXISTS losing its
-// race: unique_violation on the catalog, or duplicate_table.
-func duplicateObject(err error) bool {
-	var st interface{ SQLState() string }
-	if !errors.As(err, &st) {
-		return false
-	}
-	switch st.SQLState() {
-	case "23505", "42P07":
-		return true
-	}
-	return false
 }

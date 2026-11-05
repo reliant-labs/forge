@@ -16,6 +16,17 @@
 //      NEXT_PUBLIC_MOCK_API=hybrid), unmatched RPCs are forwarded to the
 //      real backend. This lets one scenario stub a single endpoint while
 //      everything else exercises the live server.
+//
+//      `passthrough: "first"` turns that around: EVERY RPC goes to the
+//      backend first, and the scenario (then the fixtures) answer only when
+//      it fails or exceeds `passthroughTimeoutMs`. That is a demo or a
+//      preview on live data that degrades to sample data instead of to an
+//      error page — and `onPassthroughFallback` lets the UI say so.
+//
+//   0. Before any of it, `readOnly` refuses every RPC that is not a read
+//      (by default: not marked `idempotency_level = NO_SIDE_EFFECTS`) with
+//      PermissionDenied, so neither a handler, a fixture nor the backend
+//      ever sees a write — a public demo's guarantee.
 //   3. Otherwise RPCs not overridden fall through to the deterministic
 //      per-entity fixtures described by the entity descriptors.
 //   4. Anything else rejects with Code.Unimplemented so callers see a
@@ -34,11 +45,14 @@
 // env var.
 import {
   create,
+  isMessage,
   ScalarType,
   type DescField,
   type DescMessage,
+  type DescMethod,
   type MessageInitShape,
 } from "@bufbuild/protobuf";
+import { MethodOptions_IdempotencyLevel } from "@bufbuild/protobuf/wkt";
 import {
   Code,
   ConnectError,
@@ -56,8 +70,12 @@ export interface MockScenario {
   name: string;
   /** Per-RPC overrides keyed by `${serviceTypeName}/${methodName}`. */
   handlers: Record<string, ((req: never) => unknown) | undefined>;
-  /** Forward unmatched RPCs to the real backend (hybrid mode only). */
-  passthrough?: boolean;
+  /**
+   * `true`: forward RPCs no handler matches to the real backend (hybrid mode
+   * only). `"first"`: forward EVERY RPC, and answer from the handlers and
+   * fixtures only when the backend fails — see the dispatch notes above.
+   */
+  passthrough?: boolean | "first";
   /** Non-RPC side effects, run once before the first RPC fires. */
   setup?: () => void;
 }
@@ -144,6 +162,39 @@ export interface CreateMockTransportOptions {
    * forwarded here instead of falling through to the fixtures.
    */
   fallback?: Transport;
+  /**
+   * Refuse every RPC that is not a read, with PermissionDenied, before any
+   * handler, fixture or backend sees it. `true` classifies by the proto's
+   * `idempotency_level = NO_SIDE_EFFECTS`; a function classifies itself (a
+   * contract that does not annotate idempotency, e.g. by method name).
+   */
+  readOnly?: boolean | ((method: DescMethod) => boolean);
+  /** The message a refused write carries. Default names the RPC. */
+  readOnlyMessage?: string;
+  /**
+   * With `passthrough: "first"`: the forwarded call's deadline in ms, after
+   * which the scenario answers instead. Default: the caller's own timeout.
+   * Enforced by the mock transport itself, so a fallback transport that
+   * ignores its timeout cannot hold the call open; a server stream must END
+   * within it to count as the backend's answer.
+   */
+  passthroughTimeoutMs?: number;
+  /**
+   * With `passthrough: "first"`: called each time the backend failed (or
+   * timed out) and the mock answered instead. A caller's own abort is never
+   * a fallback: it rejects as it would against the backend.
+   */
+  onPassthroughFallback?: (key: string, error: ConnectError) => void;
+}
+
+/** Options for {@link resolveActiveScenario}. */
+export interface ResolveScenarioOptions {
+  /**
+   * The scenario to run, chosen by the app (its host, its runtime config)
+   * instead of the URL. When the key is present — even as null or "" — the
+   * `?scenario=` parameter is NOT read; null/""/unknown select the default.
+   */
+  name?: string | null;
 }
 
 /**
@@ -189,11 +240,14 @@ const initialized = new WeakSet<MockScenario>();
  */
 export function resolveActiveScenario(
   registry: MockScenarioRegistry,
+  options: ResolveScenarioOptions = {},
 ): MockScenario {
   const requested =
-    typeof globalThis !== "undefined" && globalThis.location
-      ? new URLSearchParams(globalThis.location.search).get("scenario")
-      : null;
+    "name" in options
+      ? (options.name ?? null)
+      : typeof globalThis !== "undefined" && globalThis.location
+        ? new URLSearchParams(globalThis.location.search).get("scenario")
+        : null;
   // A ternary, not `&&`: with `??` alone the empty-string falsy branch leaks
   // '' into the inferred union, and '' survives `??` (which only replaces
   // null/undefined), so downstream access on .setup / .handlers would fail
@@ -241,7 +295,7 @@ export async function* toAsyncIterable(value: unknown): AsyncIterable<unknown> {
 }
 
 function makeUnaryResponse<T>(
-  method: { name: string; parent: { typeName: string } },
+  method: { name: string; parent: { typeName: string }; output?: DescMessage },
   message: T,
 ): UnaryResponse<never, never> {
   return {
@@ -249,9 +303,31 @@ function makeUnaryResponse<T>(
     method: method as never,
     stream: false,
     header: new Headers(),
-    message: message as never,
+    message: asResponseMessage(method.output, message) as never,
     trailer: new Headers(),
   };
+}
+
+/**
+ * A handler may return the response as a plain init object
+ * (`{ items: [...] }`) instead of `create(Schema, {...})`. A real client
+ * always receives a full message — every repeated field an array, every
+ * scalar its zero value — so a plain object is completed against the
+ * method's output schema here; without that, `res.items.map` on a field the
+ * handler left out throws in the UI and nowhere near the scenario.
+ */
+function asResponseMessage(
+  output: DescMessage | undefined,
+  value: unknown,
+): unknown {
+  if (!output || value == null || typeof value !== "object") return value;
+  if (isMessage(value)) return value;
+  return create(output, value as MessageInitShape<DescMessage>);
+}
+
+/** The default read-only classification: the proto says the method has no side effects. */
+function isRead(method: DescMethod): boolean {
+  return method.idempotency === MethodOptions_IdempotencyLevel.NO_SIDE_EFFECTS;
 }
 
 /**
@@ -618,9 +694,81 @@ function buildFixtureTable(
 export function createMockTransport(
   options: CreateMockTransportOptions,
 ): Transport {
-  const { scenario, entities = [], fallback } = options;
+  const {
+    scenario,
+    entities = [],
+    fallback,
+    readOnly,
+    passthroughTimeoutMs,
+    onPassthroughFallback,
+  } = options;
   const passthrough = scenario.passthrough === true && fallback != null;
+  const first = scenario.passthrough === "first" && fallback != null;
   const fixtures = buildFixtureTable(entities);
+  const readsOnly = typeof readOnly === "function" ? readOnly : isRead;
+
+  // 0) The read-only guard: before any dispatch, so a write never reaches a
+  //    handler, a fixture store or the backend.
+  const guard = (method: DescMethod, key: string) => {
+    if (readOnly && !readsOnly(method)) {
+      throw new ConnectError(
+        options.readOnlyMessage ?? `mock-transport: ${key} is not a read`,
+        Code.PermissionDenied,
+      );
+    }
+  };
+  // "first": the backend's answer, or undefined when the mock should answer.
+  //
+  // The deadline is enforced HERE, not left to the fallback transport: the
+  // attempt gets its own signal (aborted by the caller's signal or by the
+  // timer) and is raced against that signal, so a transport that ignores
+  // both its timeout and its signal still cannot hold the call open. A
+  // caller's own abort is rethrown; only the deadline or a failure falls back.
+  const tryBackend = async <R>(
+    key: string,
+    signal: AbortSignal | undefined,
+    timeoutMs: number | undefined,
+    call: (signal: AbortSignal) => Promise<R>,
+  ): Promise<R | undefined> => {
+    const attempt = new AbortController();
+    const abortAttempt = () => attempt.abort(signal?.reason);
+    if (signal?.aborted) abortAttempt();
+    signal?.addEventListener("abort", abortAttempt, { once: true });
+    const timer =
+      timeoutMs != null && timeoutMs > 0
+        ? setTimeout(
+            () =>
+              attempt.abort(
+                new ConnectError(
+                  `mock-transport: ${key} exceeded ${timeoutMs}ms`,
+                  Code.DeadlineExceeded,
+                ),
+              ),
+            timeoutMs,
+          )
+        : undefined;
+    const abandoned = new Promise<never>((_, reject) => {
+      const fail = () => reject(attempt.signal.reason);
+      if (attempt.signal.aborted) fail();
+      else attempt.signal.addEventListener("abort", fail, { once: true });
+    });
+    // The race observes it; this keeps the release below from surfacing as
+    // an unhandled rejection after the race has settled.
+    abandoned.catch(() => undefined);
+    try {
+      return await Promise.race([call(attempt.signal), abandoned]);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      onPassthroughFallback?.(key, ConnectError.from(err));
+      return undefined;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", abortAttempt);
+      // Release whatever the backend attempt still holds (a pending fetch,
+      // an unread stream) once it has been answered or abandoned.
+      attempt.abort();
+    }
+  };
 
   // Bind the object literal to a Transport-typed variable rather than
   // casting at the return site. A trailing assertion cast does not propagate
@@ -635,6 +783,23 @@ export function createMockTransport(
     // fixture keys are matched against.
     async unary(method, signal, timeoutMs, header, input, contextValues) {
       const key = `${method.parent.typeName}/${method.name}`;
+      guard(method, key);
+
+      // 0b) "first": the backend answers unless it fails.
+      if (first) {
+        const deadline = passthroughTimeoutMs ?? timeoutMs;
+        const live = await tryBackend(key, signal, deadline, (attempt) =>
+          fallback!.unary(
+            method,
+            attempt,
+            deadline,
+            header,
+            input,
+            contextValues,
+          ),
+        );
+        if (live) return live;
+      }
 
       // 1) Scenario overlay.
       const handler = scenario.handlers[key];
@@ -691,6 +856,40 @@ export function createMockTransport(
     // ill-typed (TS2322) because fallback.stream returns StreamResponse<I,O>.
     async stream(method, signal, timeoutMs, header, input, contextValues) {
       const key = `${method.parent.typeName}/${method.name}`;
+      guard(method, key);
+      // "first" forwards server streams only: a client-streaming request is
+      // consumed by the attempt and could not be replayed to the handler.
+      //
+      // The backend's stream is read to its END, within the deadline, before
+      // it counts as an answer, then replayed: a stream that fails or stalls
+      // after its headers arrived still falls back to the mock, as a unary
+      // call does. So "first" suits finite server streams; a stream that
+      // never ends always answers from the mock once the deadline passes.
+      if (first && method.methodKind === "server_streaming") {
+        const deadline = passthroughTimeoutMs ?? timeoutMs;
+        const live = await tryBackend(
+          key,
+          signal,
+          deadline,
+          async (attempt) => {
+            const res = await fallback!.stream(
+              method,
+              attempt,
+              deadline,
+              header,
+              input,
+              contextValues,
+            );
+            const messages: unknown[] = [];
+            for await (const m of res.message) messages.push(m);
+            return {
+              ...res,
+              message: toAsyncIterable(messages) as typeof res.message,
+            };
+          },
+        );
+        if (live) return live;
+      }
       const handler = scenario.handlers[key];
       if (!handler) {
         // Passthrough mirrors the unary path: in hybrid mode, unmatched

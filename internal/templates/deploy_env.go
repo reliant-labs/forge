@@ -34,7 +34,10 @@ type EnvTemplateData struct {
 	HasFrontend    bool
 	// DatabaseDisabled omits database infrastructure in a database-free project.
 	DatabaseDisabled bool
-	FrontendName     string
+	// DatabaseName is the cloud env's ManagedDatabase name. withDefaults
+	// derives it from ProjectName (scaffoldDatabaseName).
+	DatabaseName string
+	FrontendName string
 	// FrontendIdent is the KCL identifier of that frontend: the cloud env
 	// declares it once as `_<ident>_frontend` and binds it on one line
 	// (`_hosted_frontend(_<ident>_frontend)`), the line `forge env new
@@ -91,6 +94,9 @@ func (d EnvTemplateData) withDefaults() interface{} {
 	if d.PrimaryWorkload == "" {
 		d.PrimaryWorkload = "api" // codegen.APIWorkloadName; codegen imports this package
 	}
+	if d.DatabaseName == "" {
+		d.DatabaseName = scaffoldDatabaseName(d.ProjectName, d.PrimaryWorkload)
+	}
 	if d.FrontendIdent == "" {
 		d.FrontendIdent = strings.NewReplacer("-", "_", ".", "_").Replace(d.FrontendName)
 	}
@@ -120,6 +126,21 @@ func (d EnvTemplateData) withDefaults() interface{} {
 		}
 	}
 	return d
+}
+
+// scaffoldDatabaseName names a cloud env's managed database: the project,
+// unless that is the name of a workload the same env scaffolds — the API
+// (`api`, codegen.APIWorkloadName, or the caller's primary workload) or the
+// migration job (`migrate`, codegen.MigrateWorkloadName). A Workload and a
+// ManagedDatabase of one name would share a ServiceAccount, and the platform
+// refuses the pair (deploy.CheckDatabaseIdentityNames), so a project named
+// `api` gets the database `api-db`.
+func scaffoldDatabaseName(project, primaryWorkload string) string {
+	switch project {
+	case "api", "migrate", primaryWorkload:
+		return project + "-db"
+	}
+	return project
 }
 
 // claimableDBPool is the pool a workload of an anonymous deploy may hold

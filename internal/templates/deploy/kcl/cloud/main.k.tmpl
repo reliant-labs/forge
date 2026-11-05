@@ -74,7 +74,7 @@ import .config as appcfg
 # `databases` and the DATABASE_URL line in `_hosted`, then
 # `forge secret set --env {{.EnvName}} DATABASE_URL`.
 {{if not .DatabaseDisabled}}_db = forge.ManagedDatabase {
-    name = "{{.ProjectName}}"
+    name = "{{.DatabaseName}}"
     runtime = forge.OnHosted {}
 {{- if .Claimable}}
     # The claimable plan's database (the platform sizes its server and

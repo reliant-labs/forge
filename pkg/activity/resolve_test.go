@@ -106,6 +106,58 @@ func TestResolve_Malformed(t *testing.T) {
 	}
 }
 
+// TestResolve_RequestPrefix pins `request.` as the mirror of `response.`: a
+// path written `request.release_id` resolves against the request, exactly as
+// the bare `release_id` does, and reads the same value.
+func TestResolve_RequestPrefix(t *testing.T) {
+	opt := &forgepb.ActivityOptions{
+		Verb:   "promote",
+		Target: &forgepb.ActivityTarget{Kind: "release", Id: "request.release_id", Label: "request.release.version"},
+		Env:    "request.to_env",
+		Detail: []string{"request.from_env"},
+	}
+	md := fixtureRPC(t, fixtureMethod{name: "Promote", activity: opt})
+	d, err := Resolve(md)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, p := range []Path{d.TargetID, d.TargetLabel, d.Env, d.Detail[0]} {
+		if p.Response {
+			t.Errorf("%q resolved against the response, want the request", p.Spec)
+		}
+	}
+	if got := d.Detail[0].Key(); got != "from_env" {
+		t.Errorf("detail key = %q, want from_env", got)
+	}
+	req := dynamicpb.NewMessage(md.Input())
+	req.Set(md.Input().Fields().ByName("release_id"), protoValue("rel_1"))
+	if got := d.TargetID.value(req); got != "rel_1" {
+		t.Errorf("target id = %q, want rel_1", got)
+	}
+
+	// The error names the request message, not a phantom "request" field.
+	bad := &forgepb.ActivityOptions{Verb: "promote", Target: &forgepb.ActivityTarget{Kind: "release", Id: "request.publication_id"}}
+	_, err = Resolve(fixtureRPC(t, fixtureMethod{name: "Promote", activity: bad}))
+	if err == nil || !strings.Contains(err.Error(), `fixture.v1.PromoteRequest has no field "publication_id"`) {
+		t.Errorf("Resolve error = %v, want it to name publication_id on PromoteRequest", err)
+	}
+}
+
+// TestResolve_RequestPrefixYieldsToARealField: a request that has its own
+// field named `request` keeps the literal meaning, so no existing declaration
+// changes what it reads.
+func TestResolve_RequestPrefixYieldsToARealField(t *testing.T) {
+	opt := &forgepb.ActivityOptions{Verb: "wrap", Target: &forgepb.ActivityTarget{Kind: "release", Id: "request.id"}}
+	md := fixtureRPC(t, fixtureMethod{name: "Wrap", in: "EnvelopeRequest", out: "PromoteResponse", activity: opt})
+	d, err := Resolve(md)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(d.TargetID.fields) != 2 || d.TargetID.fields[0].Name() != "request" {
+		t.Errorf("target id walked %v, want request.id through the request field", d.TargetID.fields)
+	}
+}
+
 func TestResolve_StreamingHandlerWriterIsValid(t *testing.T) {
 	opt := &forgepb.ActivityOptions{
 		Verb: "tail", Target: &forgepb.ActivityTarget{Kind: "release", Id: "release_id"},

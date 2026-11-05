@@ -279,7 +279,9 @@ env and adds the control plane):
 
 1. In the Bundle: `control_plane = forge.ControlPlane {}`, `secret_provider =
    forge.HostedSecrets {}`, `databases = [_db]` with `_db =
-   forge.ManagedDatabase {name = "<project>", runtime = forge.OnHosted {}}`.
+   forge.ManagedDatabase {name = "<project>", runtime = forge.OnHosted {}}`
+   (`<project>-db` when the project is named `api` or `migrate`: a workload
+   and a database may not share a name).
 2. In `_hosted`: `image = w.image[w.image.rfind("/") + 1:] if w.image else
    w.image`, and `DATABASE_URL = forge.DatabaseRef {name = _db.name}` in its
    env (or keep your own Postgres: `forge secret set --env <env> DATABASE_URL`).

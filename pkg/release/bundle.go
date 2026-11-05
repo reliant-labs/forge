@@ -215,8 +215,17 @@ type BundleDoc struct {
 	// deploy` syncs them to the cluster itself, before pointing the
 	// reconciler at this bundle; a hub-reconciled env reads this list to
 	// know what its clusters must already hold.
-	Secrets   []BundleSecretRef `json:"secrets,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
+	Secrets []BundleSecretRef `json:"secrets,omitempty"`
+	// DeclaredEnvs is the project's declared-environment catalog at this
+	// bundle's commit: every env under deploy/kcl/, its lifecycle, where it
+	// runs and its control-plane binding — names and closed vocabularies
+	// only ([DeclaredEnv], bundle_catalog.go). It is what lets a control
+	// plane list the envs the source declares that never recorded anything
+	// on it. Written only to a control plane that names
+	// [BundleFeatureDeclaredEnvs], and only on a released bundle; empty
+	// otherwise.
+	DeclaredEnvs []DeclaredEnv `json:"declared_envs,omitempty"`
+	CreatedAt    time.Time     `json:"created_at"`
 }
 
 // BundleSecretRef is one Secret the env requires: where it lives and what it
@@ -307,6 +316,9 @@ func (d BundleDoc) Validate() error {
 		if strings.TrimSpace(sec.Name) == "" {
 			return fmt.Errorf("%w: bundle names a Secret with no name", ErrInvalid)
 		}
+	}
+	if err := ValidateDeclaredEnvs(d.DeclaredEnvs); err != nil {
+		return fmt.Errorf("bundle: %w", err)
 	}
 	return nil
 }
@@ -556,6 +568,14 @@ type Shape struct {
 	// It is a DECLARATION about who applies, so it is not part of the config
 	// digest: moving a unit onto the hub changes nobody's configuration.
 	Units []ShapeUnit `json:"units,omitempty"`
+	// HostInfra is true when the env declares host infrastructure (a
+	// process forge runs on the developer's machine beside its workloads).
+	// It is the one placement vote the workloads cannot express: an env
+	// whose only deployable thing is host infra runs on a machine, and one
+	// that also deploys to a cluster is "mixed". Omitted when false, so
+	// every shape recorded before the field encodes and hashes as it did.
+	// A [BundleFeatureShapePlacement] part.
+	HostInfra bool `json:"host_infra,omitempty"`
 }
 
 // ApplierForge is [Shape.Applier] for an env forge applies by declaration. It is
@@ -596,6 +616,14 @@ type ShapeWorkload struct {
 	// Artifact is the release artifact key its image comes from, if any.
 	Artifact string `json:"artifact,omitempty"`
 	Replicas *int   `json:"replicas,omitempty"`
+	// Unit is the delivery unit a cluster workload's objects belong to
+	// (DefaultDeliveryUnit when it names none), recorded only for an env
+	// that declares a unit split ([Shape.Units]), so a reader can tell
+	// which workloads the hub converges and which forge applies without
+	// re-rendering. Empty otherwise — and for every shape recorded before
+	// the field — in which case a cluster workload's applier in a split env
+	// is unknown, never guessed. A [BundleFeatureShapePlacement] part.
+	Unit string `json:"unit,omitempty"`
 }
 
 // ShapeSecret is one declared secret: a NAME, never a value.
@@ -1051,6 +1079,9 @@ func (s Shape) Validate() error {
 	for _, w := range s.Workloads {
 		if strings.TrimSpace(w.Name) == "" || strings.TrimSpace(w.Runtime) == "" {
 			return fmt.Errorf("%w: shape workload needs a name and a runtime", ErrInvalid)
+		}
+		if w.Unit != "" && strings.TrimSpace(w.Unit) != w.Unit {
+			return fmt.Errorf("%w: shape workload %q unit %q has surrounding space", ErrInvalid, w.Name, w.Unit)
 		}
 	}
 	if s.Applier != "" && s.Applier != ApplierForge && s.Applier != ApplierFlux {

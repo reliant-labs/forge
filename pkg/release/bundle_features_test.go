@@ -23,6 +23,8 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureDataAccess:             {"shape.data_access"},
 	BundleFeatureDatabaseDashboards:     {"shape.databases"},
 	BundleFeatureHealthGate:             {"shape.delivery_policy.health_gate"},
+	BundleFeatureDeclaredEnvs:           {"declared_envs"},
+	BundleFeatureShapePlacement:         {"shape.workloads[].unit", "shape.host_infra"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -104,6 +106,9 @@ func fullBundleDoc() BundleDoc {
 		},
 		Shape: Shape{
 			Kind: EnvSelfManaged, Objects: []ShapeObject{api},
+			Workloads:           []ShapeWorkload{{Name: "api", Runtime: "cluster", Cluster: "ctx", Unit: "base"}},
+			Units:               []ShapeUnit{{Name: "base", Applier: UnitApplierHub}},
+			HostInfra:           true,
 			ObservabilityPolicy: &ShapeObservabilityPolicy{Enabled: true, Retention: &ShapeRetention{ReplayDays: 7, ErrorsDays: 30, ProductEventsDays: 90}},
 			FrontendTelemetry: []ShapeFrontendTelemetry{{
 				Frontend: "web", Sourcemaps: SourcemapsOff, ErrorsIgnore: []string{"AbortError"},
@@ -120,7 +125,11 @@ func fullBundleDoc() BundleDoc {
 			Databases:                []ShapeDatabase{{Name: "orders", Dashboards: &ShapeDatabaseDashboards{Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1}}},
 			DeliveryPolicy:           healthGatedPolicy(),
 		},
-		Objects:   []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
+		Objects: []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
+		DeclaredEnvs: []DeclaredEnv{
+			{Name: "dev", Lifecycle: DeclaredLifecycleLocal, Destination: DeclaredDestinationCompose},
+			{Name: "prod", Destination: DeclaredDestinationCluster, ControlPlaneKind: string(EnvSelfManaged)},
+		},
 		CreatedAt: time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC),
 	}
 }
@@ -146,7 +155,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	for _, p := range strays {
 		strayRoots[p] = true
 	}
-	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.databases", "shape.delivery_policy.health_gate"} {
+	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.databases", "shape.delivery_policy.health_gate", "declared_envs", "shape.workloads[].unit", "shape.host_infra"} {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
@@ -185,6 +194,9 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.UptimeChecks = nil
 	wantShape.DataAccess = nil
 	wantShape.Databases = nil
+	wantShape.HostInfra = false
+	wantShape.Workloads = []ShapeWorkload{full.Shape.Workloads[0]}
+	wantShape.Workloads[0].Unit = ""
 	gateless := *full.Shape.DeliveryPolicy
 	gateless.HealthGate = nil
 	wantShape.DeliveryPolicy = &gateless
@@ -196,7 +208,11 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	if limited.Provenance.Commit != full.Provenance.Commit || !reflect.DeepEqual(limited.Shape, wantShape) {
 		t.Fatalf("Limit removed more than the optional features:\n got %+v\nwant %+v", limited.Shape, wantShape)
 	}
-	if full.Shape.FrontendTelemetry == nil || full.Shape.ObservabilityPolicy.Retention == nil || full.Shape.DeliveryPolicy.HealthGate == nil {
+	if limited.DeclaredEnvs != nil {
+		t.Errorf("a reader with no features was sent the declared-env catalog: %+v", limited.DeclaredEnvs)
+	}
+	if full.Shape.FrontendTelemetry == nil || full.Shape.ObservabilityPolicy.Retention == nil || full.Shape.DeliveryPolicy.HealthGate == nil ||
+		full.Shape.Workloads[0].Unit == "" || !full.Shape.HostInfra || len(full.DeclaredEnvs) != 2 {
 		t.Fatal("Limit modified the document it was given")
 	}
 }
@@ -247,6 +263,14 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	access := (&BundleReader{Features: []string{BundleFeatureDataAccess}}).Limit(full)
 	if access.Shape.DataAccess == nil || access.Shape.DataAccess.DBQuery != DBQueryDeny || access.Shape.StoreSecrets != nil || access.Shape.FrontendTelemetry != nil || access.Shape.ReleaseHealth != nil {
 		t.Errorf("a reader of data access only: %+v", access)
+	}
+	catalog := (&BundleReader{Features: []string{BundleFeatureDeclaredEnvs}}).Limit(full)
+	if len(catalog.DeclaredEnvs) != 2 || catalog.Objects != nil || catalog.Shape.HostInfra || catalog.Shape.Workloads[0].Unit != "" {
+		t.Errorf("a reader of the declared-env catalog only: %+v", catalog)
+	}
+	placement := (&BundleReader{Features: []string{BundleFeatureShapePlacement}}).Limit(full)
+	if !placement.Shape.HostInfra || placement.Shape.Workloads[0].Unit != "base" || placement.DeclaredEnvs != nil || placement.Shape.StoreSecrets != nil {
+		t.Errorf("a reader of shape placement only: %+v", placement.Shape)
 	}
 	if full.Shape.ControlPlaneSecrets[0].Delivery != ControlPlaneSecretDeliveryStore {
 		t.Fatal("Limit modified the control-plane secrets of the document it was given")

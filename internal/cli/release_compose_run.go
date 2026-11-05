@@ -354,6 +354,9 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 		return err
 	}
 	input := bundle.BuildInput{Project: cfg.Name, Env: opts.env, Release: opts.release, Provenance: doc.Provenance, Shape: bundleShapeInputOf(doc), CreatedAt: now, Units: doc.units, Reconciled: doc.reconciled(), ReconciledUnits: doc.reconciledUnits(), Observability: assets, Placements: placements, Reader: reader}
+	if sealsDeclaredEnvs(opts.release, run.Ledger, reader) {
+		input.DeclaredEnvs = declaredEnvCatalogFn(ctx, projectDirForKCL(), os.Stderr)
+	}
 	candidate, err = bundle.SnapshotInventory(pinned, input, candidate)
 	if err != nil {
 		return err

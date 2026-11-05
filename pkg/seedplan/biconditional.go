@@ -179,7 +179,7 @@ func biconditionalAdvice(rewrite, discriminator string) string {
 			"This requires %s to declare its values with a single-column `CHECK (%s IN (…))` — a column born from a "+
 			"proto enum has one already. The implication is deliberately weaker: it keeps \"this status requires the "+
 			"column\" and drops the reverse, \"only this status may set it\" — enforce that direction in the writer that "+
-			"owns the transition. See the db/seeding skill",
+			"owns the transition. See the db/seeding/constraints skill",
 		rewrite, discriminator, discriminator)
 }
 

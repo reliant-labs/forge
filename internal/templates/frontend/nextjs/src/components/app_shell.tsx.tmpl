@@ -38,6 +38,11 @@ import { AppHeader } from "@/components/app_header";
 import { MobileNav } from "@/components/mobile_nav";
 import { Nav } from "@/components/nav";
 
+// Credit link, shown at the bottom of every page. Yours to edit or delete:
+// remove this constant and the footer element below. Forge never re-adds it.
+const BUILT_WITH_FORGE_URL =
+  "https://reliantlabs.io/?utm_source=forge&utm_medium=app-footer&utm_campaign=built-with-forge";
+
 /**
  * Route prefixes that render WITHOUT the app chrome.
  *
@@ -115,6 +120,22 @@ export function AppShell({
             */}
             <div className="mx-auto max-w-7xl p-6 lg:p-8">{children}</div>
           </main>
+          {/*
+            The credit is a SIBLING of the scroll container, like the header:
+            it stays at the bottom of the shell while the page scrolls, and
+            sits outside the main landmark.
+          */}
+          <footer className="shrink-0 bg-surface-muted px-6 py-2 text-center text-xs text-ink-muted lg:px-8">
+            Built with ❤️ using{" "}
+            <a
+              href={BUILT_WITH_FORGE_URL}
+              target="_blank"
+              rel="noopener"
+              className="rounded-sm underline underline-offset-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+            >
+              Forge
+            </a>
+          </footer>
         </div>
       </div>
     </div>

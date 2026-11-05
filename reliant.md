@@ -127,11 +127,12 @@ gate runs. To retire something:
   that warns);
 - leave its removal to a future major.
 
-The gates hold this line. `internal/apigate` fails an incompatible `pkg/` change,
-and `scripts/check-compat.sh proto` fails a `buf breaking` one, unless the owner
-applied the `breaking:approved` label. pr-review treats any other break as a
-blocker. A new or stricter lint rule is not a break, because it still warns before
-it gates (below).
+The gates hold this line. `internal/apigate` fails an incompatible `pkg/` change
+that the PR does not declare (the `api-break` label or an `API-BREAK:` line) and
+ship a codemod or migration playbook for; pr-review treats any break as a blocker;
+and `scripts/semver-next.sh` refuses to cut a release over a breaking title. A new
+or stricter lint rule is not a break, because it still warns before it gates
+(below).
 
 ## Format with `task fmt:web`, never a bare `npx prettier`
 

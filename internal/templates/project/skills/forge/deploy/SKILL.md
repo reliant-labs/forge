@@ -225,6 +225,7 @@ image it pins. The first line says which: `reusing release <v>` or
 nothing — it deploys a release that is already cut, which is also how you make
 a spec-change deploy: name the version the env already runs. A version nobody
 cut errors with `forge env deploy <env>` as the fix, never `--no-build`.
+A cut that pushed and died before its record: re-run it (`deploy/interrupted-cut`).
 
 **Nothing is written until you confirm.** A promotion IS the deploy — the
 converger picks it up within minutes — so the plan is printed and approved

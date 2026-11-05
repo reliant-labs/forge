@@ -33,6 +33,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&Workload{}, &WorkloadList{},
 		&StaticSite{}, &StaticSiteList{},
 		&ManagedDatabase{}, &ManagedDatabaseList{},
+		&ManagedBucket{}, &ManagedBucketList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

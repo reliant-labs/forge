@@ -115,6 +115,8 @@ func gradableRules() []string {
 		"hosted-image-base/host-bearing-image", pdbRuleID,
 		release.RuleJobTTL, release.RuleJobUnhashed, release.RuleForceData,
 		"identity-share-with", "shellbuild-tokens/retired-token", "no-dotenv",
+		// auth scaffold
+		ruleOpenSignup,
 		// secrets
 		secrets.RuleClusterKind, secrets.RuleESPolicy, secrets.RuleKeyCoverage, secrets.RuleUnreferenced,
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,

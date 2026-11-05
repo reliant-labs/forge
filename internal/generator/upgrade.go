@@ -255,6 +255,17 @@ func cmdTreePath(binName string, segs ...string) string {
 // per declared frontend (frontendManagedFiles), so it can only be built
 // from a config that names them.
 func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
+	// A static site (`forge project new --kind site`: frontends and their
+	// deploy envs, no go.mod) has none of the Go project's frozen files. Its
+	// deploy/kcl tree makes the kind derive as "service", so without this the
+	// upgrade wrote a Connect-server skeleton (cmd/, pkg/middleware,
+	// internal/metrics, Dockerfile, buf.yaml, Taskfile, docker-compose) into
+	// the site, and lint then failed on a buf module with no protos. Only its
+	// frontends' managed files apply — the same set `project new --kind site`
+	// would have written.
+	if cfg != nil && !cfg.HasGoModule() {
+		return frontendManagedFiles(cfg)
+	}
 	binary := config.ProjectBinaryPerService
 	kind := config.ProjectKindService
 	binName := ""

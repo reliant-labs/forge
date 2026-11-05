@@ -96,9 +96,9 @@ Where the link points: an explicit `login_uri` on the application always wins. W
 
 The code is a credential: never print it into a shared log or return it from an endpoint anyone can call. **forge scaffolds no invite UI**; an admin screen of your own calls `IdentityService.InviteUser` / `SendPasswordReset` with `return_code`, or mints a code from the app's broker with `devidp.MintPasswordResetCode(ctx, userID)`.
 
-### Public sign-up is on by default
+### Public sign-up is off outside development
 
-The scaffolded broker mounts `POST /auth/register`, so **anyone who can reach the app can create an account** and is signed in. For an invite-only app, delete that route in `internal/app/login_broker.go` and the "Create an account" toggle in the sign-in screen, then invite as above.
+The scaffolded broker serves `POST /auth/register` in development only, so a deployed app is **invite-only** until the env's config sets `auth_self_signup: true`; invite as above. Opting in lets anyone who can reach the app create an account under an address nobody verified and be signed straight in, so first make every bind-by-email check `devidp.User.EmailVerified` (`auth/authorization`). The sign-in screen offers "Create an account" only when the broker serves it (`GET /auth/options`).
 
 ## The issuer
 

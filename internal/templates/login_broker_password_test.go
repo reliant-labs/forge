@@ -74,7 +74,7 @@ func TestLoginBrokerScaffoldServesThePasswordRoutes(t *testing.T) {
 			}
 
 			// Honest about delivery, and about how sign-up is turned off.
-			for _, truth := range []string{"forge.ManagedIdentity.smtp", "PUBLIC BY DEFAULT", "INVITE-ONLY"} {
+			for _, truth := range []string{"forge.ManagedIdentity.smtp", "OFF OUTSIDE DEVELOPMENT", "INVITE-ONLY"} {
 				if !strings.Contains(strings.ToUpper(src), strings.ToUpper(truth)) {
 					t.Errorf("the broker's guidance no longer mentions %q", truth)
 				}

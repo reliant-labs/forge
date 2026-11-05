@@ -22,7 +22,7 @@ Every 10 minutes it reads the three mains; when a main moved and 2h passed, or a
 labelled `release:asap` merged, it cuts a release-candidate set — a forge commit
 `F` and matching reliant and control-plane commits — gates it, and promotes the
 first green set. Promotion pushes the final tags, forge's with
-`scripts/release-forge.sh --commit F` (the release `NEXT_VERSION` names at `F`; see
+`scripts/release-forge.sh --commit F vX.Y.Z` (the version the train computed for `F`; see
 below), then opens one pull request per consumer moving its pin to the promoted
 set. It replaced the `release`, `release-forge` and `pin-bot` workflows.
 
@@ -72,7 +72,7 @@ what an owner-authorized hand release runs.
 ```sh
 cd forge
 task release:forge -- --dry-run   # optional: every validation, no side effects
-task release:forge                # cuts the version NEXT_VERSION names
+task release:forge                # cuts the version the PR titles compute
 task release:forge -- --commit <sha>   # a specific green commit of main instead
 ```
 
@@ -104,15 +104,27 @@ which refusal it was: origin already has the tag (another cut released it: fetch
 it, do not re-cut), a `release/vX.Y.Z` branch is left from an earlier attempt, or
 the push itself was refused (a ruleset, a permission, the network).
 
-**`NEXT_VERSION` declares the next release.** It is not always the last tag's
-patch+1: v0.1.46 was followed by v1.0.0. Lint rollout rows (`IntroducedIn`),
-codemods (`Version`) and migration playbooks (`migrations/<version>/`) for
-unreleased work are keyed to it, and their tests fail a key that is neither
-shipped (at or before `VERSION`) nor `NEXT_VERSION`. The script refuses a version
-that is not `NEXT_VERSION` or a pre-release of it (`vX.Y.Z-rc.1`); to cut a
-minor or major release, change `NEXT_VERSION` (and those keys) in a pull request
-first. A final release writes `NEXT_VERSION`'s next patch in the bookkeeping
-commit. `NEXT_VERSION` is read at the commit being tagged.
+**The version is computed: real semver, major locked at 1** (owner, 2026-11-05).
+`scripts/semver-next.sh` reads the squash commits (the merged PR titles) since
+the newest final `vX.Y.Z` tag: any `feat` makes the release a minor (`vX.Y+1.0`),
+anything else a patch (`vX.Y.Z+1`), and a breaking change (`feat!:`, `fix!:`, a
+`BREAKING CHANGE:` footer) **refuses the release**, naming the PR. Within v1 a
+public surface (`pkg/` API, CLI command or flag, `forge.yaml`/KCL schema, proto
+annotation, generated-code contract) is never removed or changed incompatibly:
+deprecate it, keep the old path working, and remove it only in a future major,
+which only the owner cuts (`--owner-override vX.Y.Z`). The same script, and the
+same rules, cut reliant and control-plane.
+
+**`NEXT_VERSION` names the next feature release (the next minor).** Lint rollout
+rows (`IntroducedIn`), codemods (`Version`) and migration playbooks
+(`migrations/<version>/`) for unreleased work are keyed to it, and their tests
+fail a key that is neither shipped (at or before `VERSION`) nor `NEXT_VERSION`.
+They arrive with `feat` PRs, so the release that carries them is the minor
+`NEXT_VERSION` names. A fix-only patch release leaves `NEXT_VERSION` alone; a
+final release at or past it writes the minor after it in the bookkeeping commit.
+An explicit version must be the computed one, `NEXT_VERSION` (what the release
+train passes, having computed and refused at its own cut), or a pre-release of
+either; anything else needs `--owner-override`.
 
 What it does, in order:
 

@@ -136,11 +136,18 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	// column, a one-way status CHECK — flows into it instead of breaking this
 	// file. Variants 0 and 1 are distinct rows; override any field you assert
 	// on (`req.Name = "..."`) after the call.
-	first, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.New{{.CreateMethod.InputType}}(t, db, 0)))
+{{- if .CreateMethod.Scoped}}
+	//
+	// {{.CreateMethod.MethodName}} is scoped to {{.CreateMethod.OwnerColumn}} (forge:owner): it stamps the row
+	// with the owner it maps crudTestCtx()'s claims to — "test-user" while
+	// handlers_crud.go keeps its claims.UserID placeholder. FactoryOwner seeds
+	// the parents under that same owner; change both together.
+{{- end}}
+	first, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.New{{.CreateMethod.InputType}}(t, db, 0{{if .CreateMethod.Scoped}}, {{$.Package}}.FactoryOwner("test-user"){{end}})))
 	if err != nil {
 		t.Fatalf("create #1: %v", err)
 	}
-	second, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.New{{.CreateMethod.InputType}}(t, db, 1)))
+	second, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.New{{.CreateMethod.InputType}}(t, db, 1{{if .CreateMethod.Scoped}}, {{$.Package}}.FactoryOwner("test-user"){{end}})))
 	if err != nil {
 		t.Fatalf("create #2: %v", err)
 	}

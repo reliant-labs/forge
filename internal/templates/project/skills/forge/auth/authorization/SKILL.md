@@ -27,6 +27,8 @@ func enrichClaims(ctx context.Context, claims *Claims) (*Claims, error) {
 
 Enrichment runs on every authenticated request, so a query here is on the hot path: index the subject lookup, and cache if it shows up in traces.
 
+**The first sign-in of an invited person is the one time email matters.** The person has a subject the app has never seen and an invitation keyed by address, so `enrichClaims` binds that subject to the invitation once and uses the subject from then on. A managed identity's access token (Zitadel) carries **no `email`**: only `sub`, the audience and roles. The scaffolded `SetupAuth` (`internal/app/auth.go`) therefore installs `authenticator.UseUserInfo(auth.NewUserInfo(...))`, which fills `claims.Email` from the issuer's OIDC userinfo endpoint. It fills only a **verified** address (`email_verified`), looks up only tokens whose `iss` is the configured issuer (a subject is unique only within its issuer), sends the access token over HTTPS only (plain HTTP to a loopback dev issuer excepted, redirects included), caches the answer per subject for five minutes, and leaves `Email` empty instead of failing the request when the lookup fails. A token that carries its own `email` is left as it is, and API keys are never looked up. A project scaffolded before this existed can add the same lines after `auth.NewAuthenticator(validator.Validate)`. Bind on `claims.Email` only when no row has the subject yet; after that, the subject is the key.
+
 **Request VALIDATION is not `Enrich`'s job.** Field-level input checking is already handled, separately and earlier in the chain, by protovalidate from the `buf.validate` rules on your proto messages:
 
 ```proto
@@ -102,7 +104,7 @@ COMMENT ON COLUMN crews.company_id IS 'forge:owner';
   an owner on `crews` does not fail an unscoped RPC over a global product
   catalog; the gate arms per table.
 
-`forge:owner` changes no codegen. Forge ships no ownership of its own and will not inject a `WHERE` clause for
+Forge ships no ownership of its own and will not inject a `WHERE` clause at runtime for
 you, because only your app knows how a caller's claims map onto that column's
 values — a direct user id, a company id read from a membership table, an org
 resolved from a subdomain. The marker is a declaration, and what it buys is that
@@ -110,9 +112,24 @@ forge stops letting you ship the handler unfinished.
 
 ### Scoping a generated CRUD op
 
-**Where the wrapper comes from depends on when you declared the owner column,
-and on most projects it will NOT be written for you.** Read this before you go
-looking for generated code that is not there.
+**Where the wrapper comes from depends on when you declared the owner column.**
+Declare it on the proto field at birth and forge writes it for you:
+
+```proto
+// forge:entity
+message Crew {
+  string id = 1;
+  // forge:read-only forge:owner
+  string company_id = 2;
+}
+```
+
+`forge scaffold` births the table with `COMMENT ON COLUMN crews.company_id IS
+'forge:owner'` and only then generates `handlers_crud.go`, so the file is born
+scoped. `forge:read-only` keeps the column off the Create request; the wrapper
+stamps it from the caller, so it needs no `forge:fill=handler`. On `id`
+(`string id = 1; // forge:owner`) the marker declares a table owned by itself,
+and its Update predicates on the key without stamping it.
 
 The handler file is scaffold-once: forge writes
 `internal/handlers/<service>/handlers_crud.go` when it does not yet exist, and
@@ -124,9 +141,8 @@ two cases:
   marker existed at the entity's first `forge generate`). Forge scaffolds the
   whole wrapper — the `GetUser` call, the op-seam override, the column named in
   the predicate — leaving one placeholder expression.
-- **The owner column was declared later** — which is the normal order of work,
-  because `forge:owner` is a `COMMENT ON COLUMN` in a migration and you usually
-  discover the need for scoping after the handlers exist. The wrapper is **not**
+- **The owner column was declared later** — a `COMMENT ON COLUMN` in a
+  migration written after the handlers existed. The wrapper is **not**
   written, and re-running `forge generate` will not add it: the file is already
   there, and the method is already in it. This is not a bug you can generate your
   way out of.

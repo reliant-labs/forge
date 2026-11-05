@@ -491,6 +491,8 @@ func TestEnvChannels(t *testing.T) {
 		{Name: "MANAGED_OPT", ManagedSecret: &v1alpha1.ManagedSecretRef{Name: "SENTRY_DSN", Optional: true}},
 		{Name: "DB", DatabaseRef: &v1alpha1.DatabaseRef{Name: "orders"}},
 		{Name: "DBPASS", DatabaseRef: &v1alpha1.DatabaseRef{Name: "orders", Key: v1alpha1.DatabaseKeyPassword}},
+		{Name: "UPLOADS_BUCKET", BucketRef: &v1alpha1.BucketRef{Name: "uploads", Key: v1alpha1.BucketKeyBucket}},
+		{Name: "UPLOADS_SECRET_ACCESS_KEY", BucketRef: &v1alpha1.BucketRef{Name: "uploads", Key: v1alpha1.BucketKeySecretAccessKey}},
 		{Name: "CM", ConfigMapRef: &v1alpha1.ConfigMapKeyRef{Name: "features", Key: "map"}},
 		{Name: "POD_IP", FieldRef: &v1alpha1.FieldRef{FieldPath: "status.podIP"}},
 	}
@@ -504,6 +506,8 @@ func TestEnvChannels(t *testing.T) {
 		map[string]any{"name": "MANAGED_OPT", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": v1alpha1.ManagedSecretsSecretName, "key": "SENTRY_DSN", "optional": true}}},
 		map[string]any{"name": "DB", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "orders-app", "key": "uri"}}},
 		map[string]any{"name": "DBPASS", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "orders-app", "key": "password"}}},
+		map[string]any{"name": "UPLOADS_BUCKET", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "forge-bucket-uploads", "key": "bucket"}}},
+		map[string]any{"name": "UPLOADS_SECRET_ACCESS_KEY", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "forge-bucket-uploads", "key": "secret_access_key"}}},
 		map[string]any{"name": "CM", "valueFrom": map[string]any{"configMapKeyRef": map[string]any{"name": "features", "key": "map"}}},
 		map[string]any{"name": "POD_IP", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "status.podIP"}}},
 	}
@@ -1115,6 +1119,31 @@ func TestRenderManagedDatabase(t *testing.T) {
 	}
 	if DatabaseCredentialSecretName("order-db") != "order-db-app" {
 		t.Error("CNPG publishes <cluster>-app; DatabaseRef reads it")
+	}
+}
+
+// TestRenderManagedBucket: a ManagedBucket renders nothing (the control
+// plane's operator is its executor) but is still validated, and the Secret a
+// bucketRef reads is the one name the operator writes.
+func TestRenderManagedBucket(t *testing.T) {
+	ok := &v1alpha1.ManagedBucket{Spec: v1alpha1.ManagedBucketSpec{CORSOrigins: []string{"https://app.acme.com"}}}
+	ok.Name = "uploads"
+	objs, err := Render(ok, Context{Namespace: "acme-prod"})
+	if err != nil || len(objs) != 0 {
+		t.Fatalf("Render(ManagedBucket) = %v, %v; want no objects and no error", objs, err)
+	}
+	bad := ok.DeepCopy()
+	bad.Spec.CORSOrigins = []string{"https://app.acme.com/upload"}
+	if _, err := Render(bad, Context{Namespace: "acme-prod"}); err == nil || !strings.Contains(err.Error(), "corsOrigins") {
+		t.Fatalf("an invalid spec must be refused, got %v", err)
+	}
+	long := ok.DeepCopy()
+	long.Name = strings.Repeat("a", v1alpha1.MaxBucketNameLength+1)
+	if _, err := Render(long, Context{Namespace: "acme-prod"}); err == nil {
+		t.Fatal("an over-long bucket name must be refused, never truncated")
+	}
+	if BucketCredentialSecretName("uploads") != "forge-bucket-uploads" {
+		t.Error("the managedbucket operator writes forge-bucket-<name>; BucketRef reads it")
 	}
 }
 

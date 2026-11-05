@@ -23,9 +23,11 @@ var changelogGuardScript = filepath.Join("..", "..", "scripts", "check-changelog
 type stepsWorkflow struct {
 	Jobs map[string]struct {
 		Steps []struct {
-			Name string `yaml:"name"`
-			If   string `yaml:"if"`
-			Run  string `yaml:"run"`
+			Name string            `yaml:"name"`
+			If   string            `yaml:"if"`
+			Run  string            `yaml:"run"`
+			Uses string            `yaml:"uses"`
+			With map[string]string `yaml:"with"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
 }

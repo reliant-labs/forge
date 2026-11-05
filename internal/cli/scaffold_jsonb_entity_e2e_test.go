@@ -44,6 +44,8 @@ func TestE2EJSONBEntityConversion(t *testing.T) {
 
 	protoPath := filepath.Join(projectDir, "proto", "services", "orders", "v1", "orders.proto")
 	proto := readFileE2E(t, protoPath)
+	proto = strings.Replace(proto, `import "forge/v1/forge.proto";`,
+		"import \"forge/v1/forge.proto\";\nimport \"google/protobuf/struct.proto\";", 1)
 	proto += `
 message OrderLineItem {
   string product_id = 1;
@@ -64,6 +66,9 @@ message Order {
   optional ShippingAddress gift_to = 5;
   map<string, string> labels = 6;
   map<string, OrderLineItem> item_index = 7;
+  google.protobuf.Struct evidence = 8;
+  google.protobuf.ListValue steps = 9;
+  google.protobuf.Value answer = 10;
 }
 `
 	if err := os.WriteFile(protoPath, []byte(proto), 0o644); err != nil {
@@ -81,6 +86,9 @@ message Order {
 		"ship_to JSONB NOT NULL DEFAULT '{}'",    // singular message
 		"gift_to JSONB",                          // optional message -> nullable
 		"labels JSONB NOT NULL DEFAULT '{}'",     // map of scalars
+		"evidence JSONB NOT NULL DEFAULT '{}'",   // google.protobuf.Struct
+		"steps JSONB NOT NULL DEFAULT '[]'",      // google.protobuf.ListValue
+		"answer JSONB",                           // google.protobuf.Value: always nullable
 	} {
 		if !strings.Contains(ordersUp, want) {
 			t.Errorf("orders birth migration should contain %q; got:\n%s", want, ordersUp)
@@ -105,6 +113,9 @@ message Order {
 		"orm.MarshalJSONBMap(m.Labels)",                             // map of scalars
 		"orm.UnmarshalJSONBMap(string(e.Labels), &m.Labels)",        //
 		"orm.MarshalJSONBList(req.LineItems)",                       // the CREATE path, too
+		"orm.MarshalJSONBMessage(m.Evidence)",                       // Struct: the object itself
+		"orm.UnmarshalJSONBMessage(string(e.Evidence), &m.Evidence)",
+		"if m.Answer != nil {", // Value: an absent one is SQL NULL, never marshalled
 	} {
 		if !strings.Contains(ops, want) {
 			t.Errorf("ops file should contain %q; got:\n%s", want, ops)
@@ -234,6 +245,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "%s"
 	%s "%s"
@@ -244,7 +256,15 @@ func TestJSONBStructuredRoundTrip(t *testing.T) {
 	svc := %s.NewTest%s(t, %s.WithDB(db))
 	ctx := crudTestCtx()
 
+	evidence, err := structpb.NewStruct(map[string]any{
+		"source": "survey",
+		"links":  []any{"https://a.example", "https://b.example"},
+	})
+	if err != nil {
+		t.Fatalf("build evidence: %%v", err)
+	}
 	created, err := svc.CreateOrder(ctx, connect.NewRequest(&pb.CreateOrderRequest{
+		Evidence: evidence,
 		Name: "jsonb-roundtrip",
 		LineItems: []*pb.OrderLineItem{
 			{ProductId: "prod-1", Quantity: 3},
@@ -287,6 +307,12 @@ func TestJSONBStructuredRoundTrip(t *testing.T) {
 	if l := got.Msg.GetOrder().GetLabels()["channel"]; l != "web" {
 		t.Errorf("map did not survive create->get: labels = %%v", got.Msg.GetOrder().GetLabels())
 	}
+	if s := got.Msg.GetOrder().GetEvidence().GetFields()["source"].GetStringValue(); s != "survey" {
+		t.Errorf("Struct did not survive create->get: evidence = %%v", got.Msg.GetOrder().GetEvidence())
+	}
+	if got.Msg.GetOrder().GetAnswer() != nil {
+		t.Errorf("an absent Value must read back nil, got %%v", got.Msg.GetOrder().GetAnswer())
+	}
 
 	// LIST is the half a hand-patch always misses: the measured fix
 	// patched Create/Get/Update and left List returning empty arrays.
@@ -318,6 +344,22 @@ func TestJSONBStructuredRoundTrip(t *testing.T) {
 	}
 	if productID != "prod-1" {
 		t.Errorf("stored document uses unexpected keys: product_id = %%q", productID)
+	}
+
+	// A Struct is stored as the object itself — no fields/kind wrapper —
+	// and an absent Value as SQL NULL.
+	var link string
+	var answerIsNull bool
+	row = db.QueryRow(context.Background(),
+		"SELECT evidence -> 'links' ->> 1, answer IS NULL FROM orders WHERE id = $1", id)
+	if err := row.Scan(&link, &answerIsNull); err != nil {
+		t.Fatalf("read the raw evidence/answer columns: %%v", err)
+	}
+	if link != "https://b.example" {
+		t.Errorf("stored Struct is not the plain JSON object: evidence -> 'links' ->> 1 = %%q", link)
+	}
+	if !answerIsNull {
+		t.Errorf("an absent Value must be stored as SQL NULL")
 	}
 }
 `, pbImport[1], pkgAlias, svcImport[1], pkgAlias, helper, pkgAlias)

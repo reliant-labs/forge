@@ -131,16 +131,14 @@ type renderedEnvironments struct {
 
 func renderEnvironments(projectDir string) renderedEnvironments {
 	var out renderedEnvironments
-	for _, env := range deployEnvNames(projectDir) {
-		entities, restored, err := renderKCLPure(context.Background(), projectDir, env)
-		if err != nil || entities == nil {
+	for _, r := range renderEnvsPure(context.Background(), projectDir, deployEnvNames(projectDir)) {
+		if r.err != nil || r.entities == nil {
 			continue
 		}
-		reportImpureRender(env, restored)
-		for _, fe := range entities.Frontends {
-			out.frontends = append(out.frontends, renderedEnvFrontend{Env: env, Frontend: fe})
+		for _, fe := range r.entities.Frontends {
+			out.frontends = append(out.frontends, renderedEnvFrontend{Env: r.env, Frontend: fe})
 		}
-		out.workloads = append(out.workloads, entities.Workloads...)
+		out.workloads = append(out.workloads, r.entities.Workloads...)
 	}
 	return out
 }

@@ -380,8 +380,12 @@ func renderEntityFactoryFile(dbImportPath string, g factoryGroup) []byte {
 	b.WriteString("package " + pkgName + "\n\n")
 
 	needTimestamppb, needTime := createSpecsNeed(g.creates)
+	ownerAware := createSpecsOwnerAware(g.creates)
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
+	if ownerAware {
+		b.WriteString("\t\"strings\"\n")
+	}
 	b.WriteString("\t\"testing\"\n")
 	if needTime {
 		b.WriteString("\t\"time\"\n")
@@ -409,6 +413,9 @@ func renderEntityFactoryFile(dbImportPath string, g factoryGroup) []byte {
 	b.WriteString(")\n\n")
 
 	b.WriteString(entityFactoryHelperSource)
+	if ownerAware {
+		b.WriteString("\n" + factoryOwnerHelperSource)
+	}
 
 	for _, s := range g.specs {
 		renderRowFactory(&b, s)

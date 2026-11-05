@@ -899,6 +899,8 @@ func renderEnv(env []v1alpha1.EnvVar) []corev1.EnvVar {
 			}
 		case e.DatabaseRef != nil:
 			ev.ValueFrom = secretKey(DatabaseCredentialSecretName(e.DatabaseRef.Name), string(e.DatabaseRef.EffectiveKey()))
+		case e.BucketRef != nil:
+			ev.ValueFrom = secretKey(BucketCredentialSecretName(e.BucketRef.Name), string(e.BucketRef.Key))
 		case e.ConfigMapRef != nil:
 			ev.ValueFrom = &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: e.ConfigMapRef.Name}, Key: e.ConfigMapRef.Key,

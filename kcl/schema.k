@@ -1154,13 +1154,25 @@ schema Bucket:
         operate or buy (AWS S3, Cloudflare R2, GCS with an HMAC key, a MinIO
         of your own). forge renders the connection and never creates,
         configures or deletes the bucket.
-      * `forge.OnHosted {}` — not supported yet: the control plane does not
-        provision buckets. Use forge.BucketOnS3 with the credentials as
-        managed secrets until it does.
+      * `forge.OnHosted {}` — Reliant hosting provisions it: one bucket per
+        env, with a credential that reaches that bucket alone, published as
+        a forge.dev ManagedBucket. A hosted workload's BucketRef reads the
+        Secret the platform writes for it (`forge-bucket-<name>`), and the
+        bucket's CORS also allows the env's own hosted frontends and custom
+        domains, so `cors_origins` lists only OTHER origins. `name` is at most
+        40 characters here: the cloud bucket's name is a platform prefix
+        plus it. Only a hosted workload can reach it.
+
+    `deletion_policy` is what removing the declaration does to the objects
+    of a bucket forge manages (forge.OnHosted): "retain" (the default) leaves
+    the bucket and every object in place, "delete" deletes them. Deleting a
+    declaration says nothing about whether the uploads should exist, which
+    is why deleting them must be typed.
     """
     name: str
     public_read: bool = False
     cors_origins: [str] = []
+    deletion_policy: "retain" | "delete" = "retain"
     runtime: BucketOnMinIO | BucketOnS3 | OnHosted
 
     check:
@@ -1168,8 +1180,10 @@ schema Bucket:
             "Bucket.name '${name}' must be 3..63 lowercase letters, digits and hyphens, starting and ending with a letter or digit: it is the bucket's name on S3"
         all o in cors_origins { o == "*" or regex.match(o, r"^https?://[^/]+$") }, \
             "Bucket '${name}'.cors_origins ${cors_origins} must each be an origin (scheme://host[:port], no path) or \"*\""
-        runtime.type != "hosted", \
-            "Bucket '${name}' is on forge.OnHosted, which does not provision buckets yet (the control plane's half is a follow-up). Until then bind it to forge.BucketOnS3 {endpoint, region, access_key_id, secret_access_key} with an S3, R2 or GCS (HMAC) bucket of your own, its keys as forge.ManagedSecret values (`forge secret set --env <env> <KEY>`). See `forge skill load storage/blobstore`"
+        runtime.type != "hosted" or len(name) <= 40, \
+            "Bucket.name '${name}' is ${len(name)} characters; on forge.OnHosted it must be at most 40: the platform prefixes it to make the cloud bucket's name, which is at most 63"
+        len(cors_origins) <= 32, "Bucket '${name}'.cors_origins declares ${len(cors_origins)} origins; at most 32"
+        len(_duplicates(cors_origins)) == 0, "Bucket '${name}'.cors_origins lists ${_duplicates(cors_origins)} more than once"
 
 schema BucketOnMinIO:
     """A bucket on the env's MinIO: the docker-compose service `service`
@@ -1231,11 +1245,12 @@ schema BucketOnS3:
         not bucket or regex.match(bucket, r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"), "BucketOnS3.bucket '${bucket}' is not an S3 bucket name"
 
 # Every BucketRef key of a bucket on its MinIO, for a referrer reaching the
-# MinIO host through `host` ("localhost" for a host process, the cluster's
-# host gateway for a pod). The browser always uses localhost.
-_bucket_minio_values = lambda b: Bucket, host: str -> {str:} {
+# S3 API at `endpoint` (render.k's _bucket_minio_endpoint: localhost for a
+# host process, the cluster's host gateway for a pod, the compose service
+# for a compose container). The browser always uses localhost.
+_bucket_minio_values = lambda b: Bucket, endpoint: str -> {str:} {
     {
-        "endpoint" = "http://${host}:${b.runtime.port}"
+        "endpoint" = endpoint
         "public_endpoint" = "http://localhost:${b.runtime.port}"
         "region" = b.runtime.region
         "bucket" = b.name
@@ -7273,8 +7288,8 @@ schema Bundle:
             "Bundle.frontends ${[f.name for f in frontends if not f.runtime]} bind no runtime: every frontend states where it runs — bind it in this env, e.g. `runtime = forge.OnHost {} | forge.OnHosted {} | forge.OnBucket {bucket = ...} | forge.OnFirebase {project = ..., site = ...} | forge.BuildOnly {}`"
         # HOSTED IS PER WORKLOAD / FRONTEND, and it needs a control plane to
         # publish to.
-        control_plane or not _hosted_names(workloads, databases, frontends), \
-            "${_hosted_names(workloads, databases, frontends)} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
+        control_plane or not _hosted_names(workloads, databases + buckets, frontends), \
+            "${_hosted_names(workloads, databases + buckets, frontends)} run on the hosted runtime (forge.OnHosted), which needs control_plane = forge.ControlPlane {} on the Bundle (Reliant cloud, or set endpoint): that is where they are published"
         # A database binds a runtime, or lands on the env's cluster_target.
         all db in databases { _db_runtime(db) or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
             "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"

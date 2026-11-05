@@ -1,8 +1,8 @@
 ---
 name: v1.0.16
-description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth. Also: the scaffolded login broker no longer serves public sign-up (POST /auth/register) outside development unless the config sets auth_self_signup, because a self-registered address is unverified and an app that binds invitations by email is open to account takeover; a broker scaffolded earlier mounts it everywhere and must be edited by hand (forge lint warns: forgeconv-open-signup). Use when internal/app/login_broker.go mounts RegisterPath unconditionally.
+description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth. Also: a scaffolded UpdateX over a table owned by its own primary key (COMMENT ON COLUMN <t>.id IS 'forge:owner') stamped the key, moving an update aimed at another row onto the caller's; use when a migration declares forge:owner on an id column. Also: create-request factories over a table whose row or FK parents declare forge:owner take FactoryOwner(owner), seeding the parents under the owner a scoped handler stamps; use when a migration declares forge:owner. Also: the scaffolded login broker no longer serves public sign-up (POST /auth/register) outside development unless the config sets auth_self_signup, because a self-registered address is unverified and an app that binds invitations by email is open to account takeover; a broker scaffolded earlier mounts it everywhere and must be edited by hand (forge lint warns: forgeconv-open-signup). Use when internal/app/login_broker.go mounts RegisterPath unconditionally.
 version: v1.0.16
-detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; grep -qs 'mux.Handle(RegisterPath' internal/app/login_broker.go && ! grep -qs 'if broker.selfSignup' internal/app/login_broker.go && exit 0; exit 1
+detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; grep -rqs --include='*.up.sql' 'forge:owner' db/migrations && exit 0; grep -qs 'mux.Handle(RegisterPath' internal/app/login_broker.go && ! grep -qs 'if broker.selfSignup' internal/app/login_broker.go && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.16
@@ -118,7 +118,72 @@ or keys a map by one; the compiler names each such site. Compare the fields
 you mean instead (`a.Service == b.Service`), or `reflect.DeepEqual` in a test.
 Leaving `Endpoints` nil keeps the old service-level latency verdict.
 
-## 3. Public sign-up is off outside development
+## 3. A table owned by its own key: UpdateX stamped the key
+
+**Use when** a migration declares the primary key as the owner column, e.g.
+`COMMENT ON COLUMN tenants.id IS 'forge:owner'` (a table whose rows are owned by
+themselves).
+
+### What changed
+
+The owner-scoping wrapper forge scaffolds into `handlers_crud.go` stamps the
+owner column onto an Update's entity, `e.<Owner> = owner`. When the owner column
+is the key, that line is `e.ID = owner`: an update aimed at another row was
+silently moved onto the caller's own, and came back as that row's constraint
+error (`already_exists … tenants_slug_key`) rather than NotFound. A newly
+scaffolded Update over such a table predicates on the key and never stamps it.
+
+`handlers_crud.go` is yours, so forge does not rewrite an existing one.
+
+### What to do
+
+In each `Update<Entity>` of such a table, delete the `op.Entity` override that
+assigns `e.ID = owner`, together with its `build := op.Entity` line. Keep the
+`op.Persist` (and `op.PersistMasked`) override: its `orm.WhereEq("id", owner)`
+is what scopes the write. `forge project audit` prints the corrected wrapper
+for an unscoped one.
+
+### Also new: declaring the owner at birth
+
+`// forge:owner` on a proto field (`// forge:read-only forge:owner` above
+`string tenant_id = 2;`) writes the `COMMENT ON COLUMN … IS 'forge:owner'` into
+the entity's birth migration, so `forge scaffold` births `handlers_crud.go`
+already scoped. A `forge:read-only` NOT NULL owner column no longer needs
+`forge:fill=handler` while its Create is authenticated (the wrapper stamps it);
+a `forge:fill=handler` added only to get past "can never be populated" can stay
+or go.
+
+## 4. Create-request factories seed parents under the caller's owner
+
+**Use when** a migration declares `forge:owner` on a column.
+
+### What changed
+
+A scoped Create stamps its row's owner from the caller, while
+`New<Create>Request` seeded the row's FK parents under owners the seed planner
+invented. With a tenants table, the created row referenced a tenant that did not
+exist; with a same-owner guard (a composite `(tenant_id, id)` key, a trigger),
+it crossed owners. A factory whose table or parents declare `forge:owner` now
+takes `FactoryOwner(owner)`: every parent's owner column, and every reference to
+one, is seeded under that owner, and the request's own owner field is set to it.
+Without the option it seeds exactly as before, and existing calls compile
+unchanged.
+
+### What to do
+
+`handlers_crud_test.go` is yours, so forge does not edit an existing one. Where
+a lifecycle test creates a row through a scoped handler, pass the owner the
+handler derives from the test's claims:
+
+```go
+req := orders.NewCreateOrderRequest(t, db, 0, orders.FactoryOwner("test-user"))
+```
+
+"test-user" is what the scaffolded wrapper's `claims.UserID` placeholder yields
+for `crudTestCtx()`. If you disabled a same-owner guard in the lifecycle test to
+get past this, you can turn it back on.
+
+## 5. Public sign-up is off outside development
 
 **Use when** `internal/app/login_broker.go` mounts `RegisterPath` with no `if`
 around it (`forge lint` reports `forgeconv-open-signup` at the line).

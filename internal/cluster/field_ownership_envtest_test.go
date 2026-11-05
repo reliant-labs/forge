@@ -384,3 +384,27 @@ func TestFieldOwnership_SharedObjectKeepsOtherWritersFields(t *testing.T) {
 		t.Errorf("a shared object's hand-set env var was removed: %v", env)
 	}
 }
+
+// A Secret declared with stringData is converged after one apply: a re-apply
+// of the same declaration writes nothing (TestE2EDirectApplySecretsLandAndStayOutOfTheBundle
+// on main since #1721: "a re-deploy rewrote an unchanged Secret").
+func TestFieldOwnership_UnchangedStringDataSecretIsNotRewritten(t *testing.T) {
+	e := startOwnershipEnvtest(t)
+	const secret = `apiVersion: v1
+kind: Secret
+metadata:
+  name: store-creds
+  namespace: prod
+type: Opaque
+stringData:
+  token: s3cret
+`
+	e.forgeApply(secret)
+	before := e.get("secret", "store-creds")["metadata"].(map[string]any)["resourceVersion"]
+	e.forgeApply(secret)
+	after := e.get("secret", "store-creds")
+	if rv := after["metadata"].(map[string]any)["resourceVersion"]; rv != before {
+		raw, _ := json.MarshalIndent(after["metadata"].(map[string]any)["managedFields"], "", "  ")
+		t.Errorf("a re-apply rewrote an unchanged Secret (resourceVersion %v -> %v); managedFields:\n%s", before, rv, raw)
+	}
+}

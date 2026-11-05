@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"go/format"
 	"go/parser"
 	"go/token"
@@ -131,71 +132,78 @@ func TestWorkerTemplatesRenderTest(t *testing.T) {
 // --- Worker-cron templates ---
 
 func TestWorkerCronTemplatesRender(t *testing.T) {
-	data := struct {
-		Name           string
-		Package        string
-		Module         string
-		HasDatabase    bool
-		DatabaseDriver string
-		OrmEnabled     bool
-		Schedule       string
-		HasConfig      bool
-	}{
-		HasConfig: true,
-		Name:      "cleanup",
-		Package:   "cleanup",
-		Module:    "example.com/myapp",
-		Schedule:  "0 * * * *",
-	}
+	for _, hasDB := range []bool{true, false} {
+		t.Run(fmt.Sprintf("database=%v", hasDB), func(t *testing.T) {
+			data := struct {
+				Name           string
+				Package        string
+				Module         string
+				HasDatabase    bool
+				DatabaseDriver string
+				OrmEnabled     bool
+				Schedule       string
+				HasConfig      bool
+			}{
+				HasConfig:   true,
+				HasDatabase: hasDB,
+				Name:        "cleanup",
+				Package:     "cleanup",
+				Module:      "example.com/myapp",
+				Schedule:    "0 * * * *",
+			}
 
-	content, err := WorkerCronTemplates().Render("worker.go.tmpl", data)
-	if err != nil {
-		t.Fatalf("render worker-cron/worker.go.tmpl: %v", err)
-	}
+			content, err := WorkerCronTemplates().Render("worker.go.tmpl", data)
+			if err != nil {
+				t.Fatalf("render worker-cron/worker.go.tmpl: %v", err)
+			}
 
-	s := string(content)
-	if !strings.Contains(s, "package cleanup") {
-		t.Error("cron worker.go should have package cleanup")
+			s := string(content)
+			if !strings.Contains(s, "package cleanup") {
+				t.Error("cron worker.go should have package cleanup")
+			}
+			if !strings.Contains(s, `Schedule = "0 * * * *"`) {
+				t.Error("cron worker should embed the schedule constant")
+			}
+			// The schedule runs on cronkit, which claims each tick so it
+			// fires on one replica; robfig/cron is cronkit's parser now.
+			if strings.Contains(s, "robfig/cron") || !strings.Contains(s, "forge/pkg/cronkit") {
+				t.Errorf("cron worker should run its schedule on forge/pkg/cronkit, not robfig/cron directly; got:\n%s", s)
+			}
+			if !strings.Contains(s, "return cronkit.Run(ctx, cronkit.Options{") {
+				t.Errorf("cron worker Start should block in cronkit.Run; got:\n%s", s)
+			}
+			// Single-firing is the default; the opt-out is a declaration.
+			if !strings.Contains(s, "const PerReplica = false") || !strings.Contains(s, "PerReplica: PerReplica,") {
+				t.Errorf("cron worker should declare PerReplica = false and pass it; got:\n%s", s)
+			}
+			claims := strings.Contains(s, "Claims:     cronkit.Postgres(w.deps.DB),")
+			optionalDB := strings.Contains(s, "\t// forge:optional-dep\n\tDB orm.Context\n")
+			if claims != hasDB || optionalDB != hasDB {
+				t.Errorf("database=%v: claims over Deps.DB = %v, optional DB field = %v; got:\n%s", hasDB, claims, optionalDB, s)
+			}
+			if !strings.Contains(s, "func (w *Worker) Run(ctx context.Context) error") {
+				t.Error("cron worker should have Run(ctx) error — the context-aware signature lets Run observe shutdown via ctx.Done(), and cronkit logs the error")
+			}
+			// Rendered output must parse as valid Go syntax — catches template
+			// reshuffling regressions. We can't resolve imports in the test, but
+			// parser.ParseFile checks the structural shape.
+			if _, err := parser.ParseFile(token.NewFileSet(), "worker.go", s, parser.SkipObjectResolution); err != nil {
+				t.Errorf("cron worker.go template did not parse as valid Go: %v\n----\n%s", err, s)
+			}
+			// Run() body should log "schedule", Schedule so a fresh scaffold is
+			// useful in logs / OTel traces without the user hand-editing the
+			// log line. Friction surfaced by kalshi-trader migration round —
+			// the prior body logged only `"worker", w.Name()` so log scrapers
+			// had no way to tell two workers apart by cadence.
+			if !strings.Contains(s, `"schedule", Schedule`) {
+				t.Errorf("cron worker Run() body should log the cron schedule. Got:\n%s", s)
+			}
+			if strings.Contains(s, "//go:build ignore") {
+				t.Error("rendered output should not retain //go:build ignore")
+			}
+			assertGofmtClean(t, "worker-cron/worker.go.tmpl", s)
+		})
 	}
-	if !strings.Contains(s, `Schedule = "0 * * * *"`) {
-		t.Error("cron worker should embed the schedule constant")
-	}
-	if !strings.Contains(s, "robfig/cron") {
-		t.Error("cron worker should import robfig/cron")
-	}
-	if !strings.Contains(s, "func (w *Worker) Run(ctx context.Context)") {
-		t.Error("cron worker should have Run(ctx) method — the context-aware signature lets Run observe Stop/shutdown via ctx.Done()")
-	}
-	// Start must wire baseCtx so per-tick contexts derive from the
-	// caller's lifecycle; Stop must cancel it so in-flight Run sees
-	// ctx.Done() immediately.
-	if !strings.Contains(s, "w.baseCtx, w.baseCancel = context.WithCancel(ctx)") {
-		t.Errorf("cron worker Start should set up baseCtx via context.WithCancel(ctx); got:\n%s", s)
-	}
-	if !strings.Contains(s, "w.baseCancel()") {
-		t.Errorf("cron worker Stop should cancel baseCtx; got:\n%s", s)
-	}
-	if !strings.Contains(s, "w.Run(w.baseCtx)") {
-		t.Errorf("cron closure should pass baseCtx to Run; got:\n%s", s)
-	}
-	// Rendered output must parse as valid Go syntax — catches template
-	// reshuffling regressions. We can't resolve imports in the test, but
-	// parser.ParseFile checks the structural shape.
-	if _, err := parser.ParseFile(token.NewFileSet(), "worker.go", s, parser.SkipObjectResolution); err != nil {
-		t.Errorf("cron worker.go template did not parse as valid Go: %v\n----\n%s", err, s)
-	}
-	// Run() body should log "schedule", Schedule so a fresh scaffold is
-	// useful in logs / OTel traces without the user hand-editing the
-	// log line. Friction surfaced by kalshi-trader migration round —
-	// the prior body logged only `"worker", w.Name()` so log scrapers
-	// had no way to tell two workers apart by cadence.
-	if !strings.Contains(s, `"schedule", Schedule`) {
-		t.Errorf("cron worker Run() body should log the cron schedule. Got:\n%s", s)
-	}
-	if strings.Contains(s, "//go:build ignore") {
-		t.Error("rendered output should not retain //go:build ignore")
-	}
-	assertGofmtClean(t, "worker-cron/worker.go.tmpl", s)
 }
 
 func TestWorkerCronTemplatesRenderTest(t *testing.T) {

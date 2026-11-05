@@ -167,6 +167,33 @@ func TestLocalBackendAgainstClickHouse(t *testing.T) {
 		}
 	})
 
+	t.Run("release health: per-endpoint figures that add up to the service's", func(t *testing.T) {
+		res, err := l.ReleaseHealth(ctx, obsbackend.HealthRequest{PromotedAt: now.Add(-9 * time.Minute), Now: now.Add(time.Minute)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range res.Report.Services {
+			if s.Service != "api" {
+				continue
+			}
+			var before, after int64
+			eps := map[string]bool{}
+			for _, e := range s.Endpoints {
+				before += e.Before.Requests
+				after += e.After.Requests
+				eps[e.Endpoint] = true
+			}
+			if before != s.Before.Requests || after != s.After.Requests {
+				t.Errorf("endpoint requests %d/%d, service %d/%d", before, after, s.Before.Requests, s.After.Requests)
+			}
+			if !eps["GET /healthz"] || !eps["GET /v1/jobs"] || !eps["POST /v1/jobs"] {
+				t.Errorf("endpoints = %+v", s.Endpoints)
+			}
+			return
+		}
+		t.Fatalf("no api service: %+v", res.Report.Services)
+	})
+
 	t.Run("metrics: catalog, a counter by attribute over the evaluator, a gauge, a refused percentile", func(t *testing.T) {
 		list, err := l.MetricsList(ctx, obsbackend.MetricsListRequest{Narrow: n, Limit: 10})
 		if err != nil || len(list.Metrics) != 2 {

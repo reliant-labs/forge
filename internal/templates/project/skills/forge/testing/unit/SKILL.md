@@ -64,8 +64,10 @@ Always verify the correct Connect error code is returned, not just that an error
 ```go
 _, err := handler.CreateUser(ctx, req)
 require.Error(t, err)
-assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+assert.Equal(t, connect.CodeInvalidArgument, svcerr.Code(err))
 ```
+
+Read the code with `svcerr.Code`, not `connect.CodeOf`. A test calls the handler directly, so the svcerr interceptor never runs: a handler returning a bare kind (`return nil, svcerr.PermissionDenied("admin only")`) hands the test no `*connect.Error`, and `connect.CodeOf` reads it as `Unknown`. `svcerr.Code` is the code the client is sent — it reads a `*connect.Error` exactly as `connect.CodeOf` does, and a bare kind as the interceptor will wrap it.
 
 ## Rules
 

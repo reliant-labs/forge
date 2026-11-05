@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -202,6 +204,53 @@ func TestUnmatchedCRUDRPCs(t *testing.T) {
 	}
 	if UnmatchedCRUDRPCsError(nil) != nil {
 		t.Error("no unmatched rpcs must be no error")
+	}
+}
+
+// The raw-proto reading (forge scaffold's pre-flight) reaches the same
+// answer from source, before any descriptor exists: a table this run
+// births counts, as does a `forge:entity-name` one, and forge:custom,
+// streaming and unmanaged-service rpcs are not CRUD.
+func TestRawUnmatchedCRUDRPCs(t *testing.T) {
+	dir := t.TempDir()
+	src := `syntax = "proto3";
+package app.v1;
+
+service ChannelsService {
+  rpc ListDueReads(ListDueReadsRequest) returns (ListDueReadsResponse);
+  // forge:custom
+  rpc GetDueRead(GetDueReadRequest) returns (GetDueReadResponse);
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+  rpc GetAttachment(GetAttachmentRequest) returns (GetAttachmentResponse);
+  rpc TailDueRead(TailDueReadRequest) returns (stream DueRead);
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
+}
+
+// forge:unmanaged
+service LegacyService {
+  rpc GetDueRead(GetDueReadRequest) returns (GetDueReadResponse);
+}
+
+message DueRead { string channel = 1; }
+// forge:entity
+message Channel { string id = 1; }
+message Attachment { string id = 1; }
+`
+	if err := os.WriteFile(filepath.Join(dir, "channels.proto"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scan, err := ScanRawProtoDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tables := []schemadef.Table{{Name: "daemon_files", Comment: "forge:entity-name=Attachment"}}
+
+	got := RawUnmatchedCRUDRPCs(tables, []string{"channels"}, []*RawProtoScan{scan})
+	if len(got) != 1 || got[0].Service != "ChannelsService" || got[0].RPC != "ListDueReads" || got[0].Entity != "DueRead" {
+		t.Fatalf("unmatched = %+v, want exactly ChannelsService.ListDueReads (entity DueRead)", got)
+	}
+	if got[0].GoName != "ListDueReads" || strings.Join(got[0].Looked, ",") != "due_reads,due_read" {
+		t.Errorf("unmatched = %+v, want GoName ListDueReads and looked-for tables due_reads, due_read", got[0])
 	}
 }
 

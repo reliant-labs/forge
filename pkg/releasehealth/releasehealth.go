@@ -332,6 +332,62 @@ type ServiceHealth struct {
 	// the judged version: rollout and canary progress. Nil when unknown (a
 	// local env has no promoted version).
 	VersionShare *float64 `json:"version_share,omitempty"`
+	// Endpoints are the service's figures per endpoint (server span name).
+	// When set, latency is judged endpoint by endpoint (LatencyRatio), so a
+	// change in which endpoints were called cannot pass for a regression.
+	// Empty = judge the service-level p95.
+	Endpoints []EndpointHealth `json:"endpoints,omitempty"`
+}
+
+// EndpointHealth is one endpoint's before and after.
+type EndpointHealth struct {
+	Endpoint string      `json:"endpoint"`
+	Before   WindowStats `json:"before"`
+	After    WindowStats `json:"after"`
+}
+
+// LatencyRatio is how much slower the service got, and whether there is a
+// comparison at all. With per-endpoint figures it is the after-window
+// request-weighted mean of each endpoint's after/before p95, over the
+// endpoints with a p95 in both windows: a window filled with one client's
+// fast calls (a deploy polling its own release) and then emptied of them
+// moves the service-level p95 without any endpoint getting slower
+// (forge#1728). An endpoint with no p95 before the promotion (new in the
+// after window) is judged against the service-level before p95: an unknown
+// baseline is never read as safe, so a new, slow endpoint counts. An endpoint
+// gone from the after window has nothing to judge. Without per-endpoint
+// figures it is the service-level ratio.
+func (s ServiceHealth) LatencyRatio() (float64, bool) {
+	if len(s.Endpoints) == 0 {
+		if s.Before.P95Ms <= 0 {
+			return 0, false
+		}
+		return s.After.P95Ms / s.Before.P95Ms, true
+	}
+	var sum, weight float64
+	for _, e := range s.Endpoints {
+		// An after p95 of zero is no measurement, not a 0x ratio: counted as
+		// zero, a busy fast route would add weight and nothing else, diluting
+		// a slow route beside it below the limit. Skipping it can only raise
+		// the ratio, never hide a slow endpoint.
+		if e.After.P95Ms <= 0 || e.After.Requests <= 0 {
+			continue
+		}
+		base := e.Before.P95Ms
+		if base <= 0 {
+			base = s.Before.P95Ms
+		}
+		if base <= 0 {
+			continue
+		}
+		w := float64(e.After.Requests)
+		sum += w * e.After.P95Ms / base
+		weight += w
+	}
+	if weight == 0 {
+		return 0, false
+	}
+	return sum / weight, true
 }
 
 // Issue is an error group a release opened or regressed.
@@ -463,12 +519,14 @@ func Evaluate(in Input) Report {
 				Message: fmt.Sprintf("%s: error rate %s -> %s (+%s, limit +%s)", s.Service,
 					pct(s.Before.ErrorRate), pct(s.After.ErrorRate), pct(inc), pct(t.MaxErrorRateIncrease))})
 		}
-		if s.Before.P95Ms > 0 {
-			if ratio := s.After.P95Ms / s.Before.P95Ms; ratio > t.MaxP95Ratio {
-				add(Finding{Code: release.HealthLatency, Service: s.Service, Value: ratio, Threshold: t.MaxP95Ratio,
-					Message: fmt.Sprintf("%s: p95 %s -> %s (%.2fx, limit %.2gx)", s.Service,
-						ms(s.Before.P95Ms), ms(s.After.P95Ms), ratio, t.MaxP95Ratio)})
+		if ratio, ok := s.LatencyRatio(); ok && ratio > t.MaxP95Ratio {
+			per := ""
+			if len(s.Endpoints) > 0 {
+				per = " per endpoint"
 			}
+			add(Finding{Code: release.HealthLatency, Service: s.Service, Value: ratio, Threshold: t.MaxP95Ratio,
+				Message: fmt.Sprintf("%s: p95 %s -> %s (%.2fx%s, limit %.2gx)", s.Service,
+					ms(s.Before.P95Ms), ms(s.After.P95Ms), ratio, per, t.MaxP95Ratio)})
 		}
 	}
 

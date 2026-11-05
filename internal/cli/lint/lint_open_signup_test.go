@@ -17,7 +17,7 @@ func writeOpenSignupFile(t *testing.T, root, rel, src string) {
 	}
 }
 
-// A broker scaffolded before v1.1.0 mounts sign-up unconditionally; one
+// A broker scaffolded before v1.0.16 mounts sign-up unconditionally; one
 // scaffolded since mounts it behind its switch. Only the first is flagged.
 func TestOpenSignupFlagsOnlyAnUnconditionalMount(t *testing.T) {
 	for _, tc := range []struct {
@@ -26,7 +26,7 @@ func TestOpenSignupFlagsOnlyAnUnconditionalMount(t *testing.T) {
 		want []int
 	}{
 		{
-			name: "pre-v1.1.0 broker",
+			name: "pre-v1.0.16 broker",
 			src: `package app
 
 const RegisterPath = "POST /auth/register"

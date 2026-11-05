@@ -1,6 +1,6 @@
 ---
 name: migration-upgrade
-description: Upgrade a forge project to a newer forge binary version — version pinning in forge.yaml, the per-version migration skills, the supported upgrade window (N minors back), and the deprecation cycle policy.
+description: Upgrade a forge project to a newer forge binary version — version pinning in forge.yaml, the per-version migration skills, the supported upgrade window (N minors back), and the compatibility policy (semver at major 1; what a major owes you).
 ---
 
 # Upgrading a forge project
@@ -236,13 +236,17 @@ Once you've finished a migration's steps:
 forge project upgrade apply <version>   # records it in .forge/migrations.json
 ```
 
-## Currently shipped migrations
+## Which migrations ship
 
-**None.** forge ships no migration skills right now — no release inside
-the supported window carries a breaking change that a project can still
-be on the wrong side of.
+The registry is the binary's own, so this skill does not list it: a list here
+goes stale the release after it is written. Ask the forge you are upgrading to:
 
-An empty registry is the normal steady state, not a gap. `forge project
+```bash
+forge project upgrade list                   # the ones THIS project still needs, in order
+forge skill list --include-migrations        # every playbook this binary ships
+```
+
+An empty worklist is the normal steady state, not a gap. `forge project
 upgrade list` says so directly:
 
 ```text
@@ -365,17 +369,30 @@ vX first" — the only answer that path can give.
 
 <!-- @forge-only:end -->
 
-## Deprecation cycle policy
+## Compatibility policy
 
-When forge changes the shape of a generated artifact:
+forge follows semver, and its major is 1. What that promises a project that
+pins it:
 
-- **Old shape works for N versions with warnings.** N is at least 2
-  minor versions (e.g. an old shape introduced before 1.4 stays
-  buildable, with deprecation warnings, through 1.5 and 1.6). This is the
-  same 2 the upgrade window uses, and not a coincidence: a project inside
-  the window is a project whose shapes forge still supports.
-- **Old shape removed in next major.** A 2.0 release is allowed to
-  delete the old shape entirely.
+- **Nothing public breaks within a major.** The public surfaces are CLI
+  commands, flags, exit codes and `--json` document shapes (what a pin bot or
+  script calls); the `pkg/` Go API; the `forge.yaml` and KCL schemas; the proto
+  options under `proto/forge`; generated-code contracts; and the lint rules your
+  gate runs. A new or stricter lint rule is not a break: it warns before it
+  gates (`ci` skill).
+- **Retiring something is a deprecation, not a removal.** The old command, flag,
+  field, API or shape keeps working beside its replacement and warns, naming the
+  replacement (a `Deprecated:` doc comment, `[deprecated = true]`, a hidden flag
+  that prints a warning). It stays for at least 2 minor releases (the same 2 the
+  upgrade window uses: a project inside the window is one whose shapes forge
+  still supports) and is removed only in a major.
+- **A major may break, and its contract is its upgrade instructions.** Only
+  forge's owner cuts one. forge is upgraded by agents, so what a major owes you
+  is not stability but a complete path: every break ships a migration playbook
+  under `migrations/<version>` that `forge project upgrade list` surfaces, the
+  mechanical part registered as a codemod or playbook `automation:` step that
+  `forge project upgrade` applies itself, and the manual part written as steps
+  an agent can follow. A break with no playbook is a forge bug: report it.
 - **Behavioural fingerprints preserved across the cycle.** Mock
   not-set error strings, slog attribute keys, span names, and metric
   names are locked by fingerprint tests. A migration that breaks one

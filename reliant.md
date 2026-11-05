@@ -118,14 +118,23 @@ names the next minor, and the lint rollout table, codemods and playbooks are key
 to it (`docs/releasing.md`).
 
 A public surface never changes incompatibly within v1. The public surfaces are the
-`pkg/` Go API, CLI commands and flags, the `forge.yaml` and KCL schemas, the proto
+`pkg/` Go API, CLI commands, flags, exit codes and `--json` document shapes (pin bots
+and consumer scripts branch on them), the `forge.yaml` and KCL schemas, the proto
 options under `proto/forge`, generated-code contracts, and lint rules a consumer's
 gate runs. To retire something:
 
 - keep the old path working beside the new one;
 - mark it deprecated (`// Deprecated: use X.`, `[deprecated = true]`, a hidden flag
-  that warns);
+  that warns and names the replacement), for at least 2 minors;
 - leave its removal to a future major.
+
+A major (v2) stays possible, and only the owner cuts one. forge is upgraded by
+agents, so a major's contract is its upgrade path, not stability: every break it
+carries ships a `migrations/<version>` playbook that `forge project upgrade list`
+surfaces, with the mechanical part as a codemod (or playbook `automation:` step)
+that `forge project upgrade` applies itself, and the rest written as steps an agent
+can follow. The consumer-facing statement of this policy is the `migration-upgrade`
+skill's "Compatibility policy"; keep the two in step.
 
 The gates hold this line. `internal/apigate` fails an incompatible `pkg/` change
 that the PR does not declare (the `api-break` label or an `API-BREAK:` line) and

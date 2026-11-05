@@ -94,12 +94,18 @@ type claimableDeployResult struct {
 	// Adopted is true when this call added the forge files to an app that
 	// had none (forge.yaml, deploy/kcl/).
 	Adopted bool `json:"adopted,omitempty"`
-	// The claim, as `forge env deploy --claimable --json` reports it.
-	State      string `json:"state,omitempty"`
-	URL        string `json:"url,omitempty"`
-	ClaimURL   string `json:"claim_url,omitempty"`
-	ExpiresAt  string `json:"expires_at,omitempty"`
-	PurgeAfter string `json:"purge_after,omitempty"`
+	// The claim, as `forge env deploy --claimable --json` reports it. State
+	// is the claim's lifetime (live, suspended, claimed, expired), not the
+	// rollout's: "live" means the unclaimed window is open.
+	State string `json:"state,omitempty"`
+	// RolloutVerified is true only when this call waited for the rollout and
+	// it came up healthy. A no_wait deploy and deploy_status leave it false:
+	// the URL is not proven to answer, and the tool never calls it live.
+	RolloutVerified bool   `json:"rollout_verified"`
+	URL             string `json:"url,omitempty"`
+	ClaimURL        string `json:"claim_url,omitempty"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
+	PurgeAfter      string `json:"purge_after,omitempty"`
 	// Limits is the claimable plan, to relay; NoOutboundInternet is true when
 	// the deploy runs a service.
 	Limits             string `json:"limits"`
@@ -259,6 +265,9 @@ func (r *mcpRunner) deployClaimable(ctx context.Context, progress *progressSink,
 		return res, nil
 	}
 	res.OK = true
+	// Without --no-wait a successful deploy passed the health gate; with it,
+	// the control plane only accepted the deploy.
+	res.RolloutVerified = !in.NoWait
 	res.NextSteps = claimNextSteps(res)
 	return res, nil
 }
@@ -343,14 +352,9 @@ func (r *mcpRunner) deployStatus(ctx context.Context, in deployStatusInput) (*cl
 	}
 	fillClaim(res, doc.Claim)
 	res.OK = true
-	switch res.State {
-	case "claimed":
-		res.NextSteps = fmt.Sprintf("This deploy was claimed and belongs to your user's account now. To deploy again, they sign in: %s", loginThenDeploy(env))
-	case "expired":
-		res.NextSteps = fmt.Sprintf("This deploy was deleted. Deploy again with deploy_claimable (or: %s env deploy %s --claimable).", Name(), env)
-	default:
-		res.NextSteps = claimNextSteps(res)
-	}
+	// The status document reports the claim's lifetime, never the rollout's,
+	// so RolloutVerified stays false and claimNextSteps says so.
+	res.NextSteps = claimNextSteps(res)
 	return res, nil
 }
 
@@ -384,11 +388,32 @@ func failedResult(res *claimableDeployResult, code int, msg, reason string, next
 	return res
 }
 
-// claimNextSteps is what the agent tells its user about a live claim.
+// claimNextSteps is what the agent tells its user about a claim. It announces
+// the app live only when the claim's window is open AND this call verified
+// the rollout; every other state says what is true instead.
 func claimNextSteps(res *claimableDeployResult) string {
+	switch res.State {
+	case "claimed":
+		return fmt.Sprintf("This deploy was claimed and belongs to your user's account now. To deploy again, they sign in: %s",
+			loginThenDeploy(res.Env))
+	case "expired":
+		return fmt.Sprintf("This deploy was deleted and is not online. Deploy again with deploy_claimable (or: %s env deploy %s --claimable).",
+			Name(), res.Env)
+	case "suspended":
+		return fmt.Sprintf("This deploy is OFFLINE: its unclaimed window ended at %s. Do not tell your user it is live. "+
+			"Give them the claim link %s: opening it signs them up for free, makes this deploy theirs and brings it back; "+
+			"unclaimed, it is deleted at %s. Treat the link like a password: do not post it anywhere public.",
+			res.ExpiresAt, res.ClaimURL, res.PurgeAfter)
+	}
 	var b strings.Builder
 	if res.URL != "" {
-		fmt.Fprintf(&b, "Tell your user it is live at %s. ", res.URL)
+		if res.RolloutVerified {
+			fmt.Fprintf(&b, "Tell your user it is live at %s. ", res.URL)
+		} else {
+			fmt.Fprintf(&b, "The deploy's address is %s, but its rollout is not verified: the control plane accepted it "+
+				"and it may still be starting. Do not tell your user it is live until that URL answers: fetch it, or "+
+				"call deploy_claimable again without no_wait, which waits until the rollout is healthy. ", res.URL)
+		}
 	}
 	fmt.Fprintf(&b, "Give them the claim link %s and tell them it expires at %s: opening it signs them up for free and "+
 		"makes this deploy theirs; unclaimed, it goes offline then and is deleted at %s. Treat the link like a password: "+
@@ -415,11 +440,21 @@ func directLLMNote(calls []string) string {
 func claimableToolResult(res *claimableDeployResult) *mcp.CallToolResult {
 	var b strings.Builder
 	if res.OK {
-		if res.URL != "" {
-			fmt.Fprintf(&b, "Live:       %s\n", res.URL)
+		switch res.State {
+		case "claimed", "expired":
+			fmt.Fprintf(&b, "State:      %s\n", res.State)
+		case "suspended":
+			fmt.Fprintf(&b, "Offline:    %s (since %s; deleted %s unless claimed)\nClaim link: %s\nState:      %s\n",
+				res.URL, res.ExpiresAt, res.PurgeAfter, res.ClaimURL, res.State)
+		default:
+			if res.URL != "" && res.RolloutVerified {
+				fmt.Fprintf(&b, "Live:       %s\n", res.URL)
+			} else if res.URL != "" {
+				fmt.Fprintf(&b, "URL:        %s (rollout not verified yet)\n", res.URL)
+			}
+			fmt.Fprintf(&b, "Claim link: %s\nState:      %s\nOffline at: %s (deleted %s unless claimed)\n",
+				res.ClaimURL, res.State, res.ExpiresAt, res.PurgeAfter)
 		}
-		fmt.Fprintf(&b, "Claim link: %s\nState:      %s\nOffline at: %s (deleted %s unless claimed)\n",
-			res.ClaimURL, res.State, res.ExpiresAt, res.PurgeAfter)
 		if res.Adopted {
 			b.WriteString("Adopted:    added forge.yaml and deploy/kcl/ to the app (its own files were not changed)\n")
 		}

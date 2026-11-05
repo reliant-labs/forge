@@ -85,7 +85,7 @@ func TestMCP_DeployClaimable_StreamsProgressAndReturnsTheClaim(t *testing.T) {
 		t.Fatalf("deploy_claimable failed:\n%s", text)
 	}
 	for k, want := range map[string]any{
-		"ok": true, "env": "hosted", "state": "live", "claim_url": "https://app.reliant.dev/claim#rcl_9f3KQe",
+		"ok": true, "env": "hosted", "state": "live", "rollout_verified": false, "claim_url": "https://app.reliant.dev/claim#rcl_9f3KQe",
 		"expires_at": "2026-10-29T14:02:00Z", "purge_after": "2026-11-05T14:02:00Z", "exit_code": float64(0),
 	} {
 		if doc[k] != want {
@@ -378,6 +378,73 @@ func TestMCP_ExplainError(t *testing.T) {
 	}
 	if doc["retry"] != "later" {
 		t.Errorf("retry = %v", doc["retry"])
+	}
+}
+
+// The tools call a deploy live only when the claim's window is open AND the
+// call verified the rollout: an accepted (no_wait) deploy, a status read, and
+// a suspended, claimed or expired claim each say what is true instead.
+func TestClaimableResultSaysLiveOnlyWhenVerified(t *testing.T) {
+	base := claimableDeployResult{
+		OK: true, Env: "prod", URL: "https://acme.reliant.app", ClaimURL: "https://app.reliant.dev/claim#rcl_x",
+		ExpiresAt: "2026-10-29T14:02:00Z", PurgeAfter: "2026-11-05T14:02:00Z", Limits: claimableLimitsSummary,
+	}
+	for _, tc := range []struct {
+		name     string
+		state    string
+		verified bool
+		wantText []string
+		wantNext []string
+		noText   []string
+		noNext   []string
+	}{
+		{"live and verified", "live", true,
+			[]string{"Live:       https://acme.reliant.app"}, []string{"it is live at https://acme.reliant.app", "Give them the claim link"},
+			nil, []string{"not verified"}},
+		{"accepted, not ready", "live", false,
+			[]string{"URL:        https://acme.reliant.app (rollout not verified yet)"},
+			[]string{"rollout is not verified", "Do not tell your user it is live", "Give them the claim link"},
+			[]string{"Live:"}, []string{"it is live at"}},
+		{"suspended", "suspended", false,
+			[]string{"Offline:    https://acme.reliant.app", "Claim link: https://app.reliant.dev/claim#rcl_x"},
+			[]string{"OFFLINE", "Do not tell your user it is live", "deleted at 2026-11-05T14:02:00Z"},
+			[]string{"Live:"}, []string{"it is live at"}},
+		{"suspended though verified", "suspended", true,
+			[]string{"Offline:"}, []string{"OFFLINE"}, []string{"Live:"}, []string{"it is live at"}},
+		{"claimed", "claimed", false,
+			[]string{"State:      claimed"}, []string{"was claimed", "forge login"},
+			[]string{"Live:", "Claim link:"}, []string{"it is live at", "Give them the claim link"}},
+		{"expired", "expired", false,
+			[]string{"State:      expired"}, []string{"was deleted", "--claimable"},
+			[]string{"Live:", "Claim link:"}, []string{"it is live at", "Give them the claim link"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := base
+			res.State, res.RolloutVerified = tc.state, tc.verified
+			res.NextSteps = claimNextSteps(&res)
+			out := claimableToolResult(&res)
+			text := out.Content[0].(*mcp.TextContent).Text
+			for _, want := range tc.wantText {
+				if !strings.Contains(text, want) {
+					t.Errorf("text lacks %q:\n%s", want, text)
+				}
+			}
+			for _, bad := range tc.noText {
+				if strings.Contains(text, bad) {
+					t.Errorf("text has %q:\n%s", bad, text)
+				}
+			}
+			for _, want := range tc.wantNext {
+				if !strings.Contains(res.NextSteps, want) {
+					t.Errorf("next_steps lacks %q:\n%s", want, res.NextSteps)
+				}
+			}
+			for _, bad := range tc.noNext {
+				if strings.Contains(res.NextSteps, bad) {
+					t.Errorf("next_steps has %q:\n%s", bad, res.NextSteps)
+				}
+			}
+		})
 	}
 }
 

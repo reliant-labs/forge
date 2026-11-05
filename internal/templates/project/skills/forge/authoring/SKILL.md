@@ -118,4 +118,3 @@ The application lives under `internal/`, nested by role: `internal/handlers/<svc
 `internal/operators/<name>/`, `internal/app/` (owned `providers.go` + owned,
 reconciled `compose.go`), `internal/db/`. `pkg/` is the generated substrate the app imports;
 `cmd/` is entrypoints only. Full tree and the composition root: `architecture`.
-

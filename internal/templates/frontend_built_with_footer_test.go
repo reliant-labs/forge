@@ -98,6 +98,14 @@ func TestBuiltWithForgeCreditUsesTokensInApps(t *testing.T) {
 		if !strings.Contains(footer, "focus-visible:ring-2") {
 			t.Errorf("%s: credit link has no visible focus style", shell)
 		}
+		// The credit is a shell sibling of the scrolling <main>, not part of
+		// the main landmark or its scroll: it opens after </main> closes.
+		if end := strings.Index(src, "</main>"); end < 0 || i < end {
+			t.Errorf("%s: the credit footer must sit outside the <main> scroller", shell)
+		}
+		if !strings.Contains(footer, "shrink-0") {
+			t.Errorf("%s: the shell footer must not shrink in the flex column", shell)
+		}
 	}
 }
 

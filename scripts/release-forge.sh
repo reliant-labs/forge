@@ -286,11 +286,19 @@ git fetch -q origin 'refs/tags/v*:refs/tags/v*' 2>/dev/null \
 # allowed, which an explicit version (the train's, the owner's) is checked against.
 # A break the newest release candidate (rc/ tag) already carried was refused or
 # overridden at that cut, so it does not refuse again.
-COMPUTED="" COMPUTE_ERR="" BUMPED=""
+# A commit older than a release (a final tag on a later commit) is refused
+# whatever version is asked for: it would publish older source as a newer release.
+COMPUTED="" COMPUTE_ERR="" COMPUTE_RC=0 BUMPED=""
 git fetch -q origin 'refs/tags/rc/*:refs/tags/rc/*' 2>/dev/null || true
 SINCE_RC="$(git tag -l 'rc/v*' --sort=-v:refname | head -1)"
-if ! COMPUTED="$(bash "$RELEASE_SCRIPT_DIR/semver-next.sh" --repo . --head "$COMMIT" ${SINCE_RC:+--breaking-since "refs/tags/$SINCE_RC"} 2>"$RELEASE_WORKTREE_PARENT/semver.err")"; then
+COMPUTED="$(bash "$RELEASE_SCRIPT_DIR/semver-next.sh" --repo . --head "$COMMIT" ${SINCE_RC:+--breaking-since "refs/tags/$SINCE_RC"} 2>"$RELEASE_WORKTREE_PARENT/semver.err")" || COMPUTE_RC=$?
+if [ "$COMPUTE_RC" != 0 ]; then
   COMPUTED=""; COMPUTE_ERR="$(cat "$RELEASE_WORKTREE_PARENT/semver.err")"
+fi
+if [ "$COMPUTE_RC" = 4 ] && [ -n "$VERSION" ] && [ "$OWNER_OVERRIDE" != 1 ]; then
+  echo "error: a release of a later commit than $COMMIT already exists; $VERSION would publish older source as a newer release:" >&2
+  printf '%s\n' "$COMPUTE_ERR" >&2
+  exit 1
 fi
 BUMPED="$(bash "$RELEASE_SCRIPT_DIR/semver-next.sh" --repo . --head "$COMMIT" --allow-breaking 2>/dev/null || true)"
 if [ -z "$VERSION" ]; then
@@ -301,7 +309,7 @@ if [ -z "$VERSION" ]; then
     exit 1
   fi
   VERSION="$COMPUTED"
-  echo "→ releasing $VERSION (computed from the PR titles since $(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1))"
+  echo "→ releasing $VERSION (computed from the PR titles since $(git tag -l 'v*' --merged "$COMMIT" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1))"
 elif [ "${VERSION%%-*}" = "$BUMPED" ] || [ "${VERSION%%-*}" = "$NEXT" ]; then
   [ -z "$COMPUTE_ERR" ] || { echo "  note: releasing the version the caller chose over a refusal it already judged:" >&2; printf '%s\n' "$COMPUTE_ERR" >&2; }
 elif [ "$OWNER_OVERRIDE" = 1 ]; then
@@ -310,6 +318,16 @@ else
   echo "error: $VERSION is not the next release: the PR titles compute ${BUMPED:-no version} and $NEXT_FILE names $NEXT." >&2
   [ -z "$COMPUTE_ERR" ] || printf '%s\n' "$COMPUTE_ERR" >&2
   echo "hint: omit the version to cut the computed one; only the owner cuts another (--owner-override)." >&2
+  exit 1
+fi
+# A release past NEXT_VERSION would ship the lint rollout rows, codemods and
+# playbooks keyed to NEXT_VERSION under a later version than they name, and a
+# rule's grace period (gates_from, the release after NEXT_VERSION) would be
+# spent before any consumer could pin it. Move NEXT_VERSION, and those keys, in
+# a pull request first.
+if [ "$OWNER_OVERRIDE" != 1 ] && [ "$(printf '%s\n%s\n' "${VERSION%%-*}" "$NEXT" | sort -V | tail -1)" != "$NEXT" ]; then
+  echo "error: $VERSION is past $NEXT_FILE ($NEXT): the unreleased lint rollout rows, codemods and migration playbooks keyed to $NEXT would ship under $VERSION." >&2
+  echo "hint: move $NEXT_FILE (and the keys its tests check) to ${VERSION%%-*} in a pull request first." >&2
   exit 1
 fi
 RELEASE_TAG="$VERSION"

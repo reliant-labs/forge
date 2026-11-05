@@ -3,6 +3,7 @@ package lint
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +114,43 @@ func TestRolloutRowsNameTheNextRelease(t *testing.T) {
 		if semver.Compare(ro.IntroducedIn, last) > 0 && ro.IntroducedIn != next {
 			t.Errorf("%s: introduced_in %s is neither shipped (VERSION is %s) nor the next release "+
 				"(NEXT_VERSION is %s)", rule, ro.IntroducedIn, last, next)
+		}
+	}
+}
+
+// The version a release gets is computed (scripts/semver-next.sh): a fix-only
+// range is VERSION's next patch, a feat the minor NEXT_VERSION names. An
+// unreleased rule ships in whichever comes first, so a consumer pinned to
+// either still sees its findings as warnings: NEXT_VERSION is a minor, and
+// every unreleased row gates only after it.
+func TestFirstComputedReleaseCarryingARuleWarns(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", "..", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	last, next := read("VERSION"), read("NEXT_VERSION")
+	if !strings.HasSuffix(next, ".0") {
+		t.Fatalf("NEXT_VERSION %s must be a minor (vX.Y.0): a feat release is computed as the next minor", next)
+	}
+	var maj, min, patch int
+	if _, err := fmt.Sscanf(last, "v%d.%d.%d", &maj, &min, &patch); err != nil {
+		t.Fatalf("VERSION %q: %v", last, err)
+	}
+	firstReleases := []string{fmt.Sprintf("v%d.%d.%d", maj, min, patch+1), next}
+	for rule, ro := range lintRollouts {
+		if semver.Compare(ro.IntroducedIn, last) <= 0 {
+			continue
+		}
+		for _, pin := range firstReleases {
+			f := lintJSONFinding{File: "x", Line: 1, Severity: lintSevError, Rule: rule, Message: "m"}
+			got, gated := gradeProjectLaneWith(map[string]ruleRollout{rule: ro}, pinnedCfg(pin, nil), []lintJSONFinding{f}, true)
+			if len(got) != 1 || got[0].Severity != lintSevWarning || gated {
+				t.Errorf("%s (introduced %s, gates from %s): a project pinned to %s, a first release carrying it, "+
+					"must see a warning; got %+v gated=%v", rule, ro.IntroducedIn, ro.GatesFrom, pin, got, gated)
+			}
 		}
 	}
 }

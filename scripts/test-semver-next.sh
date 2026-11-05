@@ -38,4 +38,19 @@ expect "" 3 --breaking-since HEAD~1
 c "feat: mentions BREAKING CHANGE: in prose only (#7)"
 expect v1.6.0 0 --base-rev HEAD~1
 expect "" 2 --base v9
+
+# The base is a release the head descends from, never the newest tag anywhere.
+c "fix: y (#8)"; g tag v1.6.0
+expect v1.6.1 0 --head HEAD                    # the head itself is the base
+expect "" 4 --head HEAD~1                      # an older head: a descendant shipped
+grep -q 'v1.6.0' "$T.err" || { echo "FAIL: descendant refusal does not name v1.6.0"; fail=1; }
+c "fix: z (#9)"
+g checkout -q -b side HEAD~2                   # beside v1.6.0, off #7
+c "feat: elsewhere (#10)"; g tag v9.0.0
+g checkout -q -b side2 side~1
+c "feat: again (#11)"
+g checkout -q main
+expect v1.6.1 0                                # v9.0.0 is on another branch: not the base
+expect "" 4 --head side2 --allow-breaking      # computes v1.6.0, already another commit's
+grep -q 'v1.6.0 is already released' "$T.err" || { echo "FAIL: collision refusal does not name v1.6.0"; fail=1; }
 exit "$fail"

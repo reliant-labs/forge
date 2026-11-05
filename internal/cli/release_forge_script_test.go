@@ -328,6 +328,42 @@ func TestReleaseForgeScript_CutsTheComputedRelease(t *testing.T) {
 	}
 }
 
+// A computed release past NEXT_VERSION is refused: the lint rollout rows keyed
+// to NEXT_VERSION would ship under a later version, and a consumer pinning it
+// would meet their gates_from at once instead of a release of warnings. And a
+// commit older than a release (one tagged on a later commit) is refused
+// whatever version is asked for: it would publish older source as newer.
+func TestReleaseForgeScript_RefusesPastNextVersionAndReleasedSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script, which builds the fixture module")
+	}
+	repo := newForgeFixtureRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "NEXT_VERSION"), []byte("v0.1.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "commit", "-q", "-am", "feat(cli): a feature (#21)")
+	gitIn(t, repo, "push", "-q", "origin", "HEAD:main")
+	out, err := runForgeScript(t, repo, "--dry-run")
+	if err == nil || !strings.Contains(out, "v0.2.0 is past NEXT_VERSION (v0.1.1)") {
+		t.Errorf("a computed minor past NEXT_VERSION: want a refusal, got err=%v:\n%s", err, out)
+	}
+
+	repo = newForgeFixtureRepo(t)
+	for _, s := range []string{"fix(cli): one (#22)", "fix(cli): two (#23)"} {
+		gitIn(t, repo, "commit", "-q", "--allow-empty", "-m", s)
+	}
+	gitIn(t, repo, "push", "-q", "origin", "HEAD:main")
+	gitIn(t, repo, "tag", "v0.1.1")
+	gitIn(t, repo, "push", "-q", "origin", "v0.1.1")
+	older := gitOut(t, repo, "rev-parse", "HEAD~1")
+	if out, err := runForgeScript(t, repo, "--dry-run", "--commit", older); err == nil || !strings.Contains(out, "older than a release") {
+		t.Errorf("an older commit than a release: want a refusal, got err=%v:\n%s", err, out)
+	}
+	if out, err := runForgeScript(t, repo, "--dry-run", "--commit", older, "v0.2.0"); err == nil || !strings.Contains(out, "already exists") {
+		t.Errorf("an older commit than a release, at NEXT_VERSION: want a refusal, got err=%v:\n%s", err, out)
+	}
+}
+
 // TestReleaseForgeScript_TagsOriginsCommitAndNeverPushesMain: one module, one
 // tag, on the commit origin/main already has; the bookkeeping that syncs the
 // version files is pushed to release/v0.2.0, a child of the tagged commit, for

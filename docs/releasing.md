@@ -124,7 +124,13 @@ They arrive with `feat` PRs, so the release that carries them is the minor
 final release at or past it writes the minor after it in the bookkeeping commit.
 An explicit version must be the computed one, `NEXT_VERSION` (what the release
 train passes, having computed and refused at its own cut), or a pre-release of
-either; anything else needs `--owner-override`.
+either; anything else needs `--owner-override`. A release past `NEXT_VERSION` is
+refused (the keys above would ship under a version they do not name, and a lint
+rule's `GatesFrom`, the release after `NEXT_VERSION`, could be reached the day it
+ships): move `NEXT_VERSION` and the keys first. The base is the newest final tag
+the released commit descends from, never a tag on another branch, and a commit
+older than a release (a final tag on a later commit) is refused whatever version
+is asked for: it would publish older source under a newer version.
 
 What it does, in order:
 

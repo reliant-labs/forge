@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -302,6 +303,67 @@ func TestIdPSecretRotationAndRemoval(t *testing.T) {
 	quiet(t, f, r, spec)
 }
 
+// A populated store with a provider list that hides the key is converged as
+// it is: the first pass after the key was stored writes nothing.
+func TestAHiddenSigningKeyTheStoreHoldsIsNotRotated(t *testing.T) {
+	f := newFake(t)
+	r, keys := newRec(t, f, nil)
+	ctx := context.Background()
+	spec := v2Spec()
+	if _, err := r.Reconcile(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	key := f.smtp[0].SigningKey
+	f.hideSigningKey = true
+	quiet(t, f, r, spec)
+	if f.smtp[0].SigningKey != key {
+		t.Errorf("signing key rotated")
+	}
+	if k, _ := keys.Load(ctx, KeyMailSigning); string(k) != key {
+		t.Errorf("stored key = %q, want %q", k, key)
+	}
+}
+
+// failingKeys fails every Load of one name, as a store outage would.
+type failingKeys struct {
+	*MemKeyStore
+	name string
+}
+
+func (k failingKeys) Load(ctx context.Context, name string) ([]byte, error) {
+	if name == k.name {
+		return nil, errors.New("store unavailable")
+	}
+	return k.MemKeyStore.Load(ctx, name)
+}
+
+// A declared, linked IdP whose reconciliation fails stays linked.
+func TestAFailedIdPReconciliationKeepsItsLink(t *testing.T) {
+	f := newFake(t)
+	r, keys := newRec(t, f, nil)
+	ctx := context.Background()
+	spec := v2Spec()
+	if _, err := r.Reconcile(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	google := f.idp("forge:google")
+
+	broken, _ := newRec(t, f, func(o *Options) {
+		o.Keys = failingKeys{MemKeyStore: keys, name: keyIdPPrefix + "forge:google"}
+	})
+	if _, err := broken.Reconcile(ctx, spec); err == nil || !strings.Contains(err.Error(), "store unavailable") {
+		t.Fatalf("err = %v, want the store failure", err)
+	}
+	if !contains(f.loginIDPs, google.ID) {
+		t.Errorf("a declared IdP was unlinked after a store failure: %v", f.loginIDPs)
+	}
+	for _, l := range f.log {
+		if strings.Contains(l, "DELETE") && strings.Contains(l, "/policies/login/idps") {
+			t.Errorf("unlink issued: %s", l)
+		}
+	}
+}
+
 func TestMailProviderSwitchesAndRepairsItsKey(t *testing.T) {
 	f := newFake(t)
 	r, keys := newRec(t, f, nil)
@@ -331,6 +393,15 @@ func TestMailProviderSwitchesAndRepairsItsKey(t *testing.T) {
 	}
 	if k, _ := keys.Load(ctx, KeyMailSigning); string(k) != httpProvider.SigningKey {
 		t.Errorf("rotated key not stored: %q", k)
+	}
+	// Once recovered, a hidden key the store holds is kept: no rotation, no write.
+	rotated := httpProvider.SigningKey
+	quiet(t, f, r, spec)
+	if httpProvider.SigningKey != rotated {
+		t.Errorf("a stored key was rotated again")
+	}
+	if k, _ := keys.Load(ctx, KeyMailSigning); string(k) != rotated {
+		t.Errorf("stored key changed: %q", k)
 	}
 	f.hideSigningKey = false
 

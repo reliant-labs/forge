@@ -132,6 +132,9 @@ func (p *run) ensureHTTPEmail(ctx context.Context, all []emailProviderObj) error
 				return err
 			}
 		}
+	case len(stored) > 0:
+		// The instance does not show the key, but the store has it: keep it.
+		// Rotating here would rewrite a working key on every pass.
 	default:
 		p.rep.change(Updated, "mail provider", want.Endpoint, "signing key rotated")
 		if !p.dry() {

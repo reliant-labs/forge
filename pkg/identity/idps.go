@@ -112,17 +112,25 @@ func (p *run) ensureIdPs(ctx context.Context) error {
 	}
 
 	var errs []error
+	// failed holds the ids of declared providers whose reconciliation failed
+	// this pass. They are still declared, so their existing policy link is
+	// kept (a transient store or update failure must not unlink a provider
+	// people sign in with), but no new link is made for them.
+	failed := map[string]bool{}
 	for _, want := range p.spec.IdPs {
 		id, err := p.ensureIdP(ctx, want, byName)
 		if err != nil {
 			errs = append(errs, objErr("identity provider", want.Name, err))
+			if cur, ok := byName[want.Name]; ok {
+				failed[cur.ID] = true
+			}
 			continue
 		}
 		if id != "" {
 			p.idpIDs[want.Name] = id
 		}
 	}
-	if err := p.ensureIdPLinks(ctx); err != nil {
+	if err := p.ensureIdPLinks(ctx, failed); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -203,8 +211,9 @@ func idpSecretDigest(i IdP) string {
 
 // ensureIdPLinks makes the login policy list exactly the declared managed
 // IdPs: each declared one is linked, each managed one no longer declared is
-// unlinked.
-func (p *run) ensureIdPLinks(ctx context.Context) error {
+// unlinked. A link to a provider in keep (declared, but its reconciliation
+// failed this pass) is left as it is.
+func (p *run) ensureIdPLinks(ctx context.Context, keep map[string]bool) error {
 	var resp struct {
 		Policy struct {
 			IdPs []struct {
@@ -225,7 +234,7 @@ func (p *run) ensureIdPLinks(ctx context.Context) error {
 	const path = "/admin/v1/policies/login/idps"
 	for _, l := range resp.Policy.IdPs {
 		linked[l.IdPID] = true
-		if declared[l.IdPID] || !strings.HasPrefix(l.IdPName, IdPNamePrefix) {
+		if declared[l.IdPID] || keep[l.IdPID] || !strings.HasPrefix(l.IdPName, IdPNamePrefix) {
 			continue
 		}
 		p.rep.change(Revoked, "login policy identity provider", l.IdPName, "no longer declared; kept, not deleted")
@@ -237,7 +246,10 @@ func (p *run) ensureIdPLinks(ctx context.Context) error {
 		}
 	}
 	for _, want := range p.spec.IdPs {
-		id := p.idpIDs[want.Name]
+		id, ok := p.idpIDs[want.Name]
+		if !ok && !p.dry() {
+			continue // its reconciliation failed; reported above
+		}
 		if linked[id] {
 			continue
 		}

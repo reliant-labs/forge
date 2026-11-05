@@ -261,6 +261,13 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 		// db.Update{{.EntityName}}Masked.
 		ReadOnly: []string{ {{- range $i, $c := .ReadOnlyColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} },
 {{- end}}
+{{- if .UnmaskableColumns}}
+		// The `forge:immutable` columns (set once, at Create) and those with
+		// no wire field (a client cannot send their value): an update_mask
+		// naming one is InvalidArgument too. The code that owns them writes
+		// them with db.Update{{.EntityName}}Masked.
+		Unmaskable: []string{ {{- range $i, $c := .UnmaskableColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} },
+{{- end}}
 		Entity: func(_ context.Context, req *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
 			if req.{{.UpdateEntityField}} == nil {
 				return nil, crud.ErrEntityRequired
@@ -289,8 +296,9 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 		// AIP-134: concrete update_mask paths write ONLY those columns; an
 		// absent/empty/"*" mask is a full replace via Persist above.
 		// db.Update{{.EntityName}}Masked rejects unknown/immutable paths.
-{{- if .ReadOnlyColumns}}
-		// Read-only paths never reach it: HandleUpdate refuses them first.
+{{- if or .ReadOnlyColumns .UnmaskableColumns}}
+		// Read-only and unmaskable paths never reach it: HandleUpdate
+		// refuses them first.
 {{- end}}
 		Mask: func(req *pb.{{.InputType}}) []string { return req.Get{{.UpdateMaskField}}().GetPaths() },
 		PersistMasked: func(ctx context.Context, entity *db.{{.EntityName}}, fields []string, opts ...orm.QueryOption) error {

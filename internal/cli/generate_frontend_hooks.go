@@ -153,7 +153,29 @@ func serviceHookData(svc codegen.ServiceDef, projectDir string) (codegen.Fronten
 	if err := codegen.ApplyQueryScopes(&data, svc, markers.QueryScope); err != nil {
 		return data, fmt.Errorf("%s: %w", svc.ProtoFile, err)
 	}
+	applyUnwiredStubs(&data, projectDir, svc.Name)
 	return data, nil
+}
+
+// applyUnwiredStubs marks every hook whose rpc's handler is still forge's
+// Unimplemented placeholder, read off the service's handler package the
+// same way `forge lint` and `forge project audit` read it
+// (codegen.ScanUnwiredStubMethods). It reads the tree AFTER this run's
+// service-stub and CRUD steps — the frontend hooks step is ordered behind
+// them — so a new rpc's stub is in the table on the run that writes it,
+// and an rpc CRUD gen just implemented is not.
+//
+// A service with no handler package on disk (its backend lives in another
+// repository) marks nothing: there is no placeholder here to read.
+func applyUnwiredStubs(data *codegen.FrontendHookTemplateData, projectDir, serviceName string) {
+	comp, err := codegen.ResolveServiceComponent(projectDir, serviceName)
+	if err != nil || !comp.FromDisk {
+		return
+	}
+	stubs := codegen.ScanUnwiredStubMethods(comp.Dir)
+	for i := range data.Methods {
+		data.Methods[i].Unimplemented = stubs[data.Methods[i].Name]
+	}
 }
 
 // applyMutationMarkers rewrites hook classification for RPCs the proto marked

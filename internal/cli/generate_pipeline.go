@@ -398,13 +398,16 @@ func generateSteps() []GenStep {
 		// Services is empty). Codegen-disabled projects skip it: the
 		// consumers of ctx.Services are all themselves codegen-gated.
 		{Name: "parse services + module path", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasAnyEntrypoint), GateReason: "no services/workers/operators or features.codegen=false", Run: stepParseServicesAndModule, Tag: "codegen"},
-		{Name: "frontend hooks", Gate: gateFrontendHasServices, GateReason: "no services or no frontends, or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
 		{Name: "ensure frontend components", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendComponents, Tag: "frontend"},
 		{Name: "frontend CRUD pages", Gate: gateFrontendHasServices, GateReason: "no services or no frontends, or features.frontend=false", Run: stepFrontendPages, Tag: "frontend"},
 		{Name: "frontend nav + dashboard", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendNav, Tag: "frontend"},
 		{Name: "service stubs", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceStubs, Tag: "codegen"},
 		{Name: "internal/db/ ORM (entity-driven)", Gate: gateORMHasServices, GateReason: "no services/workers/operators or features.orm=false", Run: stepInternalDBORM, Tag: "codegen"},
 		{Name: "CRUD handlers", Gate: gateCRUDProjection, GateReason: "no Connect services defined, features.codegen=false, or features.orm=false", Run: stepCRUDHandlers, Tag: "codegen"},
+		// AFTER service stubs and CRUD handlers: each hook file's
+		// <service>Implemented table is read off the handler packages, so it
+		// must see the stubs this run writes and the ones CRUD gen excises.
+		{Name: "frontend hooks", Gate: gateFrontendHasServices, GateReason: "no services or no frontends, or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
 		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: and(gateContractsEnabled, hasGoModule), GateReason: "features.contracts=false, or " + noGoModuleReason, Run: stepInternalContracts, Tag: "codegen"},
 		// Auth is owned code now (internal/app/auth.go's SetupAuth),

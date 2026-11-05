@@ -241,9 +241,9 @@ var protoSQLStructuralMappings = []ProtoSQLMapping{
 	{Proto: "repeated enum E", SQL: "TEXT[] NOT NULL DEFAULT '{}'", Notes: "elements take the value names"},
 	{Proto: "google.protobuf.Timestamp", SQL: "TIMESTAMPTZ", Notes: "nullable; the REPEATED form is refused — an array of instants is an event list, give it its own table. BUCKETING WARNING: two-argument `date_trunc('day', col)` truncates a TIMESTAMPTZ in the SESSION timezone, which the driver sets from the client host — so every bucketed total moves with the deploy host, silently. Pin the zone: `date_trunc('day', col, 'UTC')`. See `forge lint --time-bucketing` and the `db` skill"},
 	{Proto: "nested message (same package)", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "'[]' when repeated; plain JSONB when optional"},
-	{Proto: "google.protobuf.Struct", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "the column holds the JSON object itself (protojson's Struct encoding); plain JSONB when optional; the repeated form is refused — use ListValue"},
-	{Proto: "google.protobuf.ListValue", SQL: "JSONB NOT NULL DEFAULT '[]'", Notes: "the column holds the JSON array itself; plain JSONB when optional"},
-	{Proto: "google.protobuf.Value", SQL: "JSONB", Notes: "always nullable: an unset Value has no JSON encoding, so absent is stored as SQL NULL"},
+	{Proto: "google.protobuf.Struct", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "plain JSONB when optional; a list is a ListValue"},
+	{Proto: "google.protobuf.ListValue", SQL: "JSONB NOT NULL DEFAULT '[]'", Notes: "plain JSONB when optional"},
+	{Proto: "google.protobuf.Value", SQL: "JSONB", Notes: "always nullable: unset has no JSON encoding"},
 	{Proto: "map<K, scalar>", SQL: "JSONB NOT NULL DEFAULT '{}'", Notes: "maps with message or enum VALUES are refused — the CRUD generator emits no conversion for them"},
 	{Proto: "<field> // forge:generated <expr>", SQL: "<type> NOT NULL GENERATED ALWAYS AS (<expr>) STORED", Notes: "the expression is copied verbatim and applied to the shadow database before birth writes anything — postgres rejecting it fails the birth naming the marker's file and line; no DEFAULT; nullable when the field is optional (and for a Timestamp); an enum keeps its CHECK; single-valued scalar, enum and Timestamp fields only; the field is read-only (omitted from the born Create request)"},
 }

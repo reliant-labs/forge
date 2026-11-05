@@ -41,11 +41,11 @@ import (
 // sub-skill is still loadable by its exact path.
 
 // startHereSkills is the short ordered list a reader loads BEFORE choosing
-// from the rest of the catalog: the entry skill (which carries the whole
-// greenfield walkthrough) and the map of where code goes. They lead the
-// default listing and are excluded from the alphabetical body, so the head
-// section is never a duplicate of a row further down.
-var startHereSkills = []string{entryPointSkillPath, "architecture"}
+// from the rest of the catalog: the entry skill, the greenfield walkthrough
+// it routes an app with an API to, and the map of where code goes. They lead
+// the default listing and are excluded from the alphabetical body, so the
+// head section is never a duplicate of a row further down.
+var startHereSkills = []string{entryPointSkillPath, "greenfield", "architecture"}
 
 // descWidth is the column budget for a description in the grouped view. The
 // listing is an index, not the content: a reader picks from a short label and

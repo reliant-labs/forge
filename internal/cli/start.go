@@ -20,8 +20,8 @@
 // composed at run time from the source that already owns it:
 //
 //   - the sequence, the three authoring rules and the shape          the
-//     embedded skills/forge/SKILL.md, extracted by heading. A retitled or
-//     deleted heading is a hard error, never a silent omission.
+//     embedded `greenfield` and `authoring` skills, extracted by heading. A
+//     retitled or deleted heading is a hard error, never a silent omission.
 //   - the `project new` flags     looked up on the real cobra command, so a
 //     renamed flag fails loudly instead of advertising one that is gone.
 //   - the proto→column vocabulary  scaffold.ProtoSQLMappings(), the same
@@ -45,20 +45,18 @@ import (
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
 )
 
-// briefSkillPath is the skill whose prose this brief composes from.
-const briefSkillPath = "forge"
-
-// briefSections are the headings lifted verbatim from briefSkillPath, in
-// output order. They are the pre-first-proto half of that skill: the
-// sequence, the three authoring rules, and the two-truths shape.
+// briefSections are the headings lifted verbatim from the skills that own
+// them, in output order: the sequence (`greenfield`), then the three
+// authoring rules and the two-truths shape (`authoring`) — the
+// pre-first-proto material the entry skill `forge` routes to.
 //
 // Extraction is by exact heading text. That is deliberately brittle:
 // renaming a heading in the skill must break this command loudly rather
 // than quietly ship a brief with a hole where the custom-rpc rule was.
-var briefSections = []string{
-	"Greenfield, end to end",
-	"Authoring a service proto",
-	"The shape, in four lines",
+var briefSections = []struct{ skill, heading string }{
+	{"greenfield", "Greenfield, end to end"},
+	{"authoring", "Authoring a service proto"},
+	{"authoring", "The shape, in four lines"},
 }
 
 // briefNewFlags are the `forge project new` flags a greenfield invocation
@@ -124,21 +122,26 @@ func runStart(w io.Writer) error {
 
 // buildStartBrief assembles the whole document.
 func buildStartBrief() (string, error) {
-	skill, err := loadForgeShippedSkill(briefSkillPath)
-	if err != nil {
-		return "", fmt.Errorf("load the %q skill this brief composes from: %w", briefSkillPath, err)
-	}
-
+	skills := map[string]string{}
 	sections := make(map[string]string, len(briefSections))
-	for _, heading := range briefSections {
-		body, ok := extractMarkdownSection(string(skill), heading)
+	for _, s := range briefSections {
+		doc, loaded := skills[s.skill]
+		if !loaded {
+			raw, err := loadForgeShippedSkill(s.skill)
+			if err != nil {
+				return "", fmt.Errorf("load the %q skill this brief composes from: %w", s.skill, err)
+			}
+			doc = string(raw)
+			skills[s.skill] = doc
+		}
+		body, ok := extractMarkdownSection(doc, s.heading)
 		if !ok {
 			return "", fmt.Errorf(
 				"the %q skill no longer has a %q section, so `forge start` cannot compose the brief from it "+
 					"(fix: restore the heading, or update briefSections in internal/cli/start.go to the new one)",
-				briefSkillPath, heading)
+				s.skill, s.heading)
 		}
-		sections[heading] = body
+		sections[s.heading] = body
 	}
 
 	flags, err := newProjectFlagLines()
@@ -176,7 +179,8 @@ this binary ships, which is authoritative over any copy on disk.
 
 | Load | When |
 |---|---|
-| ` + "`forge`" + ` | the entry skill in full: the scaffold noun catalog, running the stack, the pre-flight checklist |
+| ` + "`forge`" + ` | the entry skill: the two paths, the surface commands, the pre-flight checklist, the rules |
+| ` + "`greenfield`" + ` | evolving the schema, running the stack, shipping it |
 | ` + "`proto`" + ` | the full proto ruleset: field numbering, ` + "`optional`" + ` on list filters, one service per file |
 | ` + "`db`" + ` | migrations, evolving a schema, queries the generated CRUD cannot express |
 | ` + "`db/seeding`" + ` | FK diamonds in depth, and ` + "`forge db seed`" + ` |

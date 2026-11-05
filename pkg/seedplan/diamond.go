@@ -364,6 +364,11 @@ func (p *Plan) findDiamonds() []diamond {
 		}
 
 		for _, direct := range edges {
+			if _, placed := p.compositeOwnerOf(tp.table.Name, direct.col.Name); placed {
+				// A composite foreign key already settles this column from
+				// one parent row; no declaration can move it.
+				continue
+			}
 			for _, via := range edges {
 				if via.col.Name == direct.col.Name {
 					continue

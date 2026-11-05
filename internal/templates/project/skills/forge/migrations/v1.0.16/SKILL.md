@@ -1,8 +1,8 @@
 ---
 name: v1.0.16
-description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth. Also: a scaffolded UpdateX over a table owned by its own primary key (COMMENT ON COLUMN <t>.id IS 'forge:owner') stamped the key, moving an update aimed at another row onto the caller's; use when a migration declares forge:owner on an id column. Also: create-request factories over a table whose row or FK parents declare forge:owner take FactoryOwner(owner), seeding the parents under the owner a scoped handler stamps; use when a migration declares forge:owner. Also: the scaffolded login broker no longer serves public sign-up (POST /auth/register) outside development unless the config sets auth_self_signup, because a self-registered address is unverified and an app that binds invitations by email is open to account takeover; a broker scaffolded earlier mounts it everywhere and must be edited by hand (forge lint warns: forgeconv-open-signup). Use when internal/app/login_broker.go mounts RegisterPath unconditionally. Also: a client update_mask naming a forge:immutable column, or a column with no wire field, is now InvalidArgument instead of writing it (an OAuth subject rewritten, a sealed secret reset to NULL); use when a migration declares forge:immutable or a CRUD Update overrides op.ReadOnly.
+description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth. Also: a scaffolded UpdateX over a table owned by its own primary key (COMMENT ON COLUMN <t>.id IS 'forge:owner') stamped the key, moving an update aimed at another row onto the caller's; use when a migration declares forge:owner on an id column. Also: create-request factories over a table whose row or FK parents declare forge:owner take FactoryOwner(owner), seeding the parents under the owner a scoped handler stamps; use when a migration declares forge:owner. Also: the scaffolded login broker no longer serves public sign-up (POST /auth/register) outside development unless the config sets auth_self_signup, because a self-registered address is unverified and an app that binds invitations by email is open to account takeover; a broker scaffolded earlier mounts it everywhere and must be edited by hand (forge lint warns: forgeconv-open-signup). Use when internal/app/login_broker.go mounts RegisterPath unconditionally. Also: a client update_mask naming a forge:immutable column, or a column with no wire field, is now InvalidArgument instead of writing it (an OAuth subject rewritten, a sealed secret reset to NULL); use when a migration declares forge:immutable or a CRUD Update overrides op.ReadOnly. Also: forge/pkg/schemadef.ForeignKey gained KeyColumns / RefKeyColumns slices (a composite foreign key's whole key), so it is no longer comparable with ==; use when Go code imports forge/pkg/schemadef.
 version: v1.0.16
-detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; grep -rqs --include='*.up.sql' 'forge:owner' db/migrations && exit 0; grep -qs 'mux.Handle(RegisterPath' internal/app/login_broker.go && ! grep -qs 'if broker.selfSignup' internal/app/login_broker.go && exit 0; grep -rqs --include='*.up.sql' 'forge:immutable' db/migrations && exit 0; exit 1
+detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; grep -rqs --include='*.up.sql' 'forge:owner' db/migrations && exit 0; grep -qs 'mux.Handle(RegisterPath' internal/app/login_broker.go && ! grep -qs 'if broker.selfSignup' internal/app/login_broker.go && exit 0; grep -rqs --include='*.up.sql' 'forge:immutable' db/migrations && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/schemadef"' . && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.16
@@ -348,3 +348,27 @@ one as its mutation target.
 4. If a client was meant to set an immutable column through Update (an admin
    reassigning an owner), remove it from `op.Unmaskable` in that op's override
    (`db/crud-overrides`).
+
+## 7. `schemadef.ForeignKey` is no longer comparable
+
+**Use when** Go code imports `github.com/reliant-labs/forge/pkg/schemadef`.
+
+### What changed
+
+`ForeignKey` gained `KeyColumns []string` and `RefKeyColumns []string`: a
+composite constraint (`FOREIGN KEY (tenant_id, strategy_id) REFERENCES
+strategies (tenant_id, id)`) is still reported as one entry per column, and
+each entry now carries the whole key, so a reader can tell that all its columns
+name the same parent row. Both are nil for a single-column reference.
+Introspection also pairs the key's columns by position: a composite used to
+come back as the cross product of its columns (strategy_id → strategies.tenant_id
+as well as → strategies.id), and now yields exactly one entry per column. A
+struct with a slice field cannot be compared with `==` or used as a map key.
+
+### What to do
+
+Nothing, unless your code compares two `ForeignKey` values with `==`/`!=` or
+keys a map by one; the compiler names each such site. Compare the fields you
+mean instead (`a.Column == b.Column && a.RefTable == b.RefTable`), or
+`reflect.DeepEqual` in a test. Code that deduplicated the old cross-product
+rows of a composite can drop that workaround.

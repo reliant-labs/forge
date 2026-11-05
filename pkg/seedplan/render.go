@@ -258,6 +258,17 @@ func (p *Plan) fkParentRow(tp tablePlan, cp columnPlan, i int) (int, bool) {
 }
 
 func (p *Plan) fkParentRowAt(tp tablePlan, cp columnPlan, i, depth int) (int, bool) {
+	// A composite FOREIGN KEY places its columns from one parent row (see
+	// composite_fk.go); that is the schema's own statement of which values
+	// go together, so nothing below may re-pick one of them.
+	if ci, ok := p.compositeOwnerOf(tp.table.Name, cp.col.Name); ok && !cp.forceNull {
+		return p.compositeMemberRow(tp, ci, cp.col.Name, i, depth)
+	}
+	// A circular column of a self-referencing composite tree takes its
+	// tree root's value, so every node agrees with its parent on it.
+	if root, ok := p.selfTreeCircularRow(tp.table.Name, cp.col.Name, i); ok && !cp.forceNull {
+		i = root
+	}
 	// A composite UNIQUE index over this column has already dealt it a parent
 	// (see tuple.go), and that assignment is a PROOF the tuple does not
 	// repeat. Nothing below may re-pick it — resolveDiamonds declines to claim

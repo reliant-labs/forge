@@ -1701,6 +1701,42 @@ func attachGuardedFields(page *PageTemplateData, tableName string, guards map[st
 	}
 }
 
+// dropImmutableEditFields takes the entity's `forge:immutable` columns off the
+// edit form. The generated Update refuses an update_mask naming one
+// (UpdateOp.Unmaskable), and the form's mask names every field it renders, so
+// leaving one on would make every save fail. The value is set once, at Create,
+// and the detail page still shows it.
+func dropImmutableEditFields(page *PageTemplateData, entity EntityDef) {
+	immutable := make(map[string]bool)
+	for _, c := range entity.Columns {
+		if c.Immutable {
+			immutable[c.Name] = true
+		}
+	}
+	if page == nil || len(immutable) == 0 {
+		return
+	}
+	kept := page.UpdateFields[:0]
+	for _, f := range page.UpdateFields {
+		if !immutable[f.ProtoName] {
+			kept = append(kept, f)
+		}
+	}
+	if len(kept) == len(page.UpdateFields) {
+		return
+	}
+	page.UpdateFields = kept
+	// The edit form's import block is gated on these, derived from the list
+	// just shortened (see attachGuardedFields).
+	page.UpdateEnumImports = collectEnumImports(page.UpdateFields)
+	page.HasDateUpdateFields = false
+	for _, f := range page.UpdateFields {
+		if f.Type == "date" {
+			page.HasDateUpdateFields = true
+		}
+	}
+}
+
 // AttachEntityMeta enriches a PageTemplateData with typed field metadata
 // from the matched proto entity definition. The page generator calls this
 // after pairing a CRUD RPC group with its EntityDef — the same pairing
@@ -1714,6 +1750,7 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) 
 	// metadata below is derived, so the guarded rows are already parked on
 	// GuardedFields when the template asks for them.
 	attachGuardedFields(page, entity.TableName, guardedColumns(svc))
+	dropImmutableEditFields(page, entity)
 
 	importSource := entity.ProtoFile
 	if importSource == "" {

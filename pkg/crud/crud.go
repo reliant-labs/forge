@@ -108,8 +108,10 @@ const (
 	// ReasonUnknownField — an update_mask path names a field the caller
 	// may not update: not a column at all, a column the repository owns
 	// (forge:version, GENERATED), or a field the wire declares read-only
-	// (forge:read-only / forge:computed, see UpdateOp.ReadOnly). One code
-	// for all three because the caller's move is the same — drop the path.
+	// (forge:read-only / forge:computed, see UpdateOp.ReadOnly) or that only
+	// the server may write (forge:immutable, or no wire field: see
+	// UpdateOp.Unmaskable). One code for all of them because the caller's
+	// move is the same — drop the path.
 	// Wire code: InvalidArgument.
 	ReasonUnknownField = "unknown_field"
 
@@ -554,6 +556,30 @@ type UpdateOp[Req, Resp, Ent any] struct {
 	// that wants AIP-203's "silently ignore output-only paths" instead
 	// can set it to nil and filter in PersistMasked.
 	ReadOnly []string
+
+	// Unmaskable names the columns, beyond ReadOnly, that a CLIENT's
+	// update_mask may not name: those declared `forge:immutable`, and those
+	// with no field on the entity's wire message (a SQL-spelled
+	// `forge:secret` such as a sealed credential, an internal stamp).
+	// HandleUpdate refuses a path naming one exactly as it refuses a
+	// ReadOnly path.
+	//
+	// It is what keeps a masked write to the policy a full replace already
+	// follows. A full replace never rewrites an immutable column
+	// (,skipupdate), and a client cannot send a value for a column the wire
+	// does not carry, so a mask naming either could only do what the full
+	// replace forbids: rewrite a column set once at Create, or reset a
+	// stored value to the zero the request was left holding.
+	//
+	// Unlike ReadOnly these are NOT passed to crud.Preserve. A full replace
+	// already skips the immutable ones, and a column with no wire field is
+	// the app's own to write from an op.Entity hook. App code still writes
+	// any of them through db.Update<Entity>Masked: the repository's masked
+	// path is not where a client is told apart from the code that owns the
+	// column, the op is.
+	//
+	// Generated from the migration and the proto on every `forge generate`.
+	Unmaskable []string
 }
 
 // HandleUpdate runs validate-required -> persist -> pack.
@@ -566,8 +592,9 @@ type UpdateOp[Req, Resp, Ent any] struct {
 //     partial update MUST send a mask.
 //   - mask with concrete paths → op.PersistMasked writes only those
 //     fields. Paths are proto field names (snake_case, == column names).
-//   - a path named in op.ReadOnly → CodeInvalidArgument naming the path,
-//     refused before the entity is even built. Nothing is written.
+//   - a path named in op.ReadOnly or op.Unmaskable → CodeInvalidArgument
+//     naming the path, refused before the entity is even built. Nothing is
+//     written.
 //   - unknown or immutable path → CodeInvalidArgument naming the path
 //     (mapped from orm.UnknownFieldError by mapRepoErr).
 //
@@ -586,7 +613,7 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 			masked = !full
 		}
 		if masked {
-			if err := refuseReadOnlyPaths(op.EntityLower, op.ReadOnly, paths); err != nil {
+			if err := refuseReadOnlyPaths(op.EntityLower, op.ReadOnly, op.Unmaskable, paths); err != nil {
 				return nil, err
 			}
 		}
@@ -675,11 +702,20 @@ func orderKeysetSafe(clause string, descending bool, pkColumn string) bool {
 // is changing status, and a 200 that changed nothing is exactly the silent
 // non-write this op exists to stop. The reason matches the one a
 // forge:version path already gets, since the caller's move is the same.
-func refuseReadOnlyPaths(entityLower string, readOnly, paths []string) error {
+//
+// readOnly is op.ReadOnly and unmaskable is op.Unmaskable; they differ only in
+// the message, so a caller told "read-only" is not also told that a column
+// with no wire field exists under that name.
+func refuseReadOnlyPaths(entityLower string, readOnly, unmaskable, paths []string) error {
 	for _, p := range paths {
 		if slices.Contains(readOnly, p) {
 			return clientErr(svcerr.InvalidArgument(fmt.Sprintf(
 				"update %s: update_mask path %q is read-only", entityLower, p)),
+				ReasonUnknownField)
+		}
+		if slices.Contains(unmaskable, p) {
+			return clientErr(svcerr.InvalidArgument(fmt.Sprintf(
+				"update %s: update_mask path %q is not client-writable", entityLower, p)),
 				ReasonUnknownField)
 		}
 	}

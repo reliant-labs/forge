@@ -1,8 +1,8 @@
 ---
 name: v1.0.16
-description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth. Also: a scaffolded UpdateX over a table owned by its own primary key (COMMENT ON COLUMN <t>.id IS 'forge:owner') stamped the key, moving an update aimed at another row onto the caller's; use when a migration declares forge:owner on an id column. Also: create-request factories over a table whose row or FK parents declare forge:owner take FactoryOwner(owner), seeding the parents under the owner a scoped handler stamps; use when a migration declares forge:owner.
+description: Upgrade a project to forge v1.0.16. A `--kind cron` worker now runs its schedule on forge/pkg/cronkit, which claims each tick in the app's Postgres (table forge_cron_ticks, created on first use) so it fires on ONE replica instead of on every replica; `const PerReplica = true` opts a worker back into running everywhere. Workers scaffolded earlier keep firing on every replica until converted. Use when internal/workers/*/worker.go imports github.com/robfig/cron/v3. Also: forge/pkg/releasehealth.ServiceHealth gained an Endpoints slice, so it is no longer comparable with ==; use when Go code imports forge/pkg/releasehealth. Also: a scaffolded UpdateX over a table owned by its own primary key (COMMENT ON COLUMN <t>.id IS 'forge:owner') stamped the key, moving an update aimed at another row onto the caller's; use when a migration declares forge:owner on an id column. Also: create-request factories over a table whose row or FK parents declare forge:owner take FactoryOwner(owner), seeding the parents under the owner a scoped handler stamps; use when a migration declares forge:owner. Also: a client update_mask naming a forge:immutable column, or a column with no wire field, is now InvalidArgument instead of writing it (an OAuth subject rewritten, a sealed secret reset to NULL); use when a migration declares forge:immutable or a CRUD Update overrides op.ReadOnly.
 version: v1.0.16
-detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; grep -rqs --include='*.up.sql' 'forge:owner' db/migrations && exit 0; exit 1
+detection: grep -rqs --include='*.go' --exclude='*_test.go' 'github.com/robfig/cron/v3' internal/workers && exit 0; grep -rqs --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules 'forge/pkg/releasehealth"' . && exit 0; grep -rqs --include='*.up.sql' 'forge:owner' db/migrations && exit 0; grep -rqs --include='*.up.sql' 'forge:immutable' db/migrations && exit 0; exit 1
 ---
 
 # Upgrading to v1.0.16
@@ -182,3 +182,34 @@ req := orders.NewCreateOrderRequest(t, db, 0, orders.FactoryOwner("test-user"))
 "test-user" is what the scaffolded wrapper's `claims.UserID` placeholder yields
 for `crudTestCtx()`. If you disabled a same-owner guard in the lifecycle test to
 get past this, you can turn it back on.
+
+## 5. A client update_mask can no longer write an immutable or wire-less column
+
+**Use when** a migration declares `forge:immutable`, or a CRUD Update override
+appends to `op.ReadOnly`.
+
+### What changed
+
+A full-replace `Update<Entity>` keeps a `forge:immutable` column as stored, but
+a client `update_mask` naming it was accepted and wrote it — `NULL` or `""` when
+the request did not carry it. The same held for a column with no wire field (a
+SQL-spelled `forge:secret`): the client could not send its value, so naming it
+reset the stored one. The generated Update op now lists both in a new
+`op.Unmaskable`, and `crud.HandleUpdate` refuses a mask path naming one with
+`InvalidArgument` (reason `unknown_field`) before anything is written.
+`db.Update<Entity>Masked` from app code still writes them. The scaffolded edit
+form leaves immutable fields off, and the born lifecycle test no longer picks
+one as its mutation target.
+
+### What to do
+
+1. Run `forge generate`: `handlers_crud_ops_gen.go` gains the `Unmaskable` line.
+2. Remove the hand-written `op.ReadOnly = append(op.ReadOnly, "<col>")` lines
+   that worked around this from `handlers_crud.go`; they are now redundant.
+3. An edit page scaffolded earlier is yours and still renders an immutable
+   field and names it in its `update_mask`, so saving it now fails with
+   `InvalidArgument`. Delete that field from the edit form's schema, default
+   values and mask paths.
+4. If a client was meant to set an immutable column through Update (an admin
+   reassigning an owner), remove it from `op.Unmaskable` in that op's override
+   (`db/crud-overrides`).

@@ -114,6 +114,49 @@ func TestGenerateCRUDHandlers_UpdateOpRefusesReadOnlyColumns(t *testing.T) {
 	}
 }
 
+// unmaskableTestEntity is readOnlyTestEntity plus a `forge:immutable` column
+// on the wire (an OAuth subject) and a `forge:immutable` column with none.
+func unmaskableTestEntity() EntityDef {
+	e := readOnlyTestEntity()
+	e.Fields = append(e.Fields, EntityField{Name: "subject", GoName: "Subject", ProtoType: "string", GoType: "string", Kind: FieldKindScalar})
+	e.Columns = append(e.Columns,
+		EntityColumn{Name: "subject", Type: "string", NotNull: true, Immutable: true},
+		EntityColumn{Name: "sealed_secret", Type: "bytes", Immutable: true},
+	)
+	return e
+}
+
+func TestUnmaskableColumns(t *testing.T) {
+	got := UnmaskableColumns(unmaskableTestEntity())
+	want := []string{"internal_notes", "subject", "sealed_secret"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("UnmaskableColumns = %v, want %v (column order; PK and read-only excluded)", got, want)
+	}
+	// An entity with no wire fields at all says nothing about the wire, so
+	// only its immutable columns are reported — never every column.
+	bare := unmaskableTestEntity()
+	bare.Fields = nil
+	if got, want := UnmaskableColumns(bare), []string{"subject", "sealed_secret"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("no wire fields: UnmaskableColumns = %v, want %v", got, want)
+	}
+}
+
+// A client update_mask naming a forge:immutable column, or a column with no
+// wire field, was accepted and wrote it — an OAuth subject rewritten, a
+// sealed credential reset to NULL from a value the client never sent. The
+// generated op now names them for HandleUpdate to refuse, and
+// leaves the full replace's Preserve (the read-only columns) unchanged.
+func TestGenerateCRUDHandlers_UpdateOpRefusesUnmaskableColumns(t *testing.T) {
+	ops := generateReadOnlyOps(t, unmaskableTestEntity())
+
+	if !strings.Contains(ops, `Unmaskable: []string{"internal_notes", "subject", "sealed_secret"},`) {
+		t.Errorf("update op must declare its immutable and wire-less columns for HandleUpdate's mask check:\n%s", ops)
+	}
+	if !strings.Contains(ops, `crud.Preserve("status", "total"))`) {
+		t.Errorf("full replace must preserve only the read-only columns:\n%s", ops)
+	}
+}
+
 // An entity with no read-only fields generates exactly the op it always
 // did: no ReadOnly declaration and a plain full replace.
 func TestGenerateCRUDHandlers_UpdateOpWithoutReadOnlyColumnsUnchanged(t *testing.T) {

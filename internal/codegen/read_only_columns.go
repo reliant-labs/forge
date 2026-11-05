@@ -54,3 +54,54 @@ func ReadOnlyColumns(entity EntityDef) []string {
 	}
 	return out
 }
+
+// UnmaskableColumns returns, in column order, the columns of entity a CLIENT's
+// update_mask may not name although their wire field is not read-only — the
+// generated UpdateOp's Unmaskable, which HandleUpdate refuses exactly as it
+// refuses ReadOnly:
+//
+//   - a `forge:immutable` column. A full replace never rewrites it
+//     (,skipupdate), so the only client write is Create; a mask naming it
+//     would rewrite what the full replace keeps.
+//   - a column with no wire field (a SQL-spelled `forge:secret`, an internal
+//     stamp). The client cannot send its value, so a mask naming it could
+//     only reset it to the zero the request was left holding.
+//
+// The primary key and the read-only columns are left out: the repository
+// refuses the first, ReadOnlyColumns covers the second. An entity with no wire
+// fields at all says nothing about the wire, so only its immutable columns are
+// reported rather than every column.
+//
+// These are not passed to crud.Preserve. Whether a full replace writes a
+// column is storage's call (,skipupdate) for the immutable ones, and a column
+// with no wire field is the app's to set from an op.Entity hook.
+func UnmaskableColumns(entity EntityDef) []string {
+	wire := make(map[string]bool, len(entity.Fields))
+	readOnly := make(map[string]bool, len(entity.Fields))
+	for _, f := range entity.Fields {
+		wire[f.Name] = true
+		if f.ReadOnly {
+			readOnly[f.Name] = true
+		}
+	}
+	var out []string
+	for _, col := range entity.Columns {
+		if col.IsPK || col.Name == entity.PkField || readOnly[col.Name] {
+			continue
+		}
+		if col.Immutable || (len(wire) > 0 && !wire[col.Name]) {
+			out = append(out, col.Name)
+		}
+	}
+	return out
+}
+
+// immutableColumn reports whether entity declares column `forge:immutable`.
+func immutableColumn(entity EntityDef, column string) bool {
+	for _, c := range entity.Columns {
+		if c.Name == column {
+			return c.Immutable
+		}
+	}
+	return false
+}

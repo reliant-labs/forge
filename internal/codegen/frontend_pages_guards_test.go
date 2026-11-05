@@ -285,3 +285,28 @@ func TestGuardsMarkerIsRegistered(t *testing.T) {
 		t.Fatalf("%s is not in KnownProtoMarkers — `forge lint --proto-markers` would flag every real use of it as a typo", ProtoMarkerGuards)
 	}
 }
+
+// A `forge:immutable` column comes off the edit form: the form's update_mask
+// names every field it renders, and the generated Update refuses a mask
+// naming an immutable column, so leaving one on would fail every save.
+func TestDropImmutableEditFields(t *testing.T) {
+	page := PageTemplateData{
+		UpdateFields: []PageField{
+			{Name: "title", ProtoName: "title", Type: "text"},
+			{Name: "subject", ProtoName: "subject", Type: "text"},
+			{Name: "issuedAt", ProtoName: "issued_at", Type: "date"},
+		},
+		HasDateUpdateFields: true,
+	}
+	dropImmutableEditFields(&page, EntityDef{Columns: []EntityColumn{
+		{Name: "title"},
+		{Name: "subject", Immutable: true},
+		{Name: "issued_at", Immutable: true},
+	}})
+	if len(page.UpdateFields) != 1 || page.UpdateFields[0].ProtoName != "title" {
+		t.Fatalf("UpdateFields = %+v, want only title", page.UpdateFields)
+	}
+	if page.HasDateUpdateFields {
+		t.Error("HasDateUpdateFields must be recomputed from the shortened list, or the form imports what it no longer uses")
+	}
+}

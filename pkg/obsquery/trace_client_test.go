@@ -6,8 +6,8 @@ import (
 )
 
 // A trace's page row names its client, its frontend build and its backend
-// builds after the location, before any RED group column, so a reader that
-// scans by position (the local backend, the control plane) keeps working.
+// builds after the location, before any RED group column, so the columns
+// before them keep their positions too.
 func TestTraceRowsNameTheClientAndBuilds(t *testing.T) {
 	st, err := (TraceQuery{Scope: scope(), Limit: 10, GroupBy: []string{"service.name"}}).CompileREDGroups()
 	if err != nil {
@@ -39,6 +39,72 @@ func TestTraceRowsNameTheClientAndBuilds(t *testing.T) {
 			t.Errorf("missing %q:\n%s", want, page.SQL)
 		}
 	}
+}
+
+// The page statement is read by column name (perTrace's contract): every
+// column it returned before the client and build columns were added is still
+// returned, once, under the same name and in the same order, with and without
+// RED group columns. A reader written against the 16-column page (the control
+// plane's ListTraces, via scanByName) therefore still finds each of its
+// columns.
+func TestTracePageKeepsEveryColumnItReturnedBefore(t *testing.T) {
+	before := []string{"trace_id", "start", "dur_ms", "root_service", "root_name", "root_dur_ms", "span_count",
+		"error_count", "tw", "services", "source", "user_id", "session_id", "country", "region", "city"}
+	page, err := (TraceQuery{Scope: scope(), Limit: 10}).Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := (TraceQuery{Scope: scope(), Limit: 10, GroupBy: []string{"service.name"}}).CompileREDGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, sql := range map[string]string{"page": page.SQL, "red groups": groups.SQL} {
+		got := selectAliases(t, sql)
+		at := map[string]int{}
+		for i, a := range got {
+			if _, dup := at[a]; dup {
+				t.Errorf("%s: column %q returned twice: %v", name, a, got)
+			}
+			at[a] = i
+		}
+		last := -1
+		for _, col := range before {
+			i, ok := at[col]
+			if !ok {
+				t.Errorf("%s: column %q is no longer returned: %v", name, col, got)
+				continue
+			}
+			if i < last {
+				t.Errorf("%s: column %q moved before an earlier column: %v", name, col, got)
+			}
+			last = i
+		}
+	}
+}
+
+// selectAliases returns the aliases of the per-trace SELECT in sql, in order:
+// each `AS <name>` between its `SELECT TraceId AS trace_id` and its FROM.
+func selectAliases(t *testing.T, sql string) []string {
+	t.Helper()
+	start := strings.Index(sql, "SELECT TraceId AS trace_id")
+	if start < 0 {
+		t.Fatalf("no per-trace SELECT in:\n%s", sql)
+	}
+	body := sql[start:]
+	end := strings.Index(body, "\nFROM ")
+	if end < 0 {
+		t.Fatalf("no FROM after the per-trace SELECT in:\n%s", sql)
+	}
+	var out []string
+	for _, line := range strings.Split(body[:end], "\n") {
+		line = strings.TrimSuffix(strings.TrimSpace(line), ",")
+		i := strings.LastIndex(line, " AS ")
+		if i < 0 {
+			t.Fatalf("select line without an alias: %q", line)
+		}
+		out = append(out, line[i+len(" AS "):])
+	}
+	return out
 }
 
 // Each client and build filter narrows the candidate traces to those with a

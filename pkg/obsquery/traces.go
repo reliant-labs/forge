@@ -201,6 +201,12 @@ const (
 // device_type, desktop_version (one browser span's, traceClientExpr),
 // frontend_version, backend_services and backend_versions (two parallel arrays,
 // the same pairs in the same order).
+//
+// The page statement's columns are a NAMED contract, not a positional one: a
+// column, once returned, keeps its name, and new ones are added as obsquery
+// learns them. Read the page by column name (the control plane's ListTraces
+// does, scanByName); a strict positional Scan breaks on every addition.
+// TestTracePageKeepsEveryColumnItReturnedBefore pins the names.
 func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, error) {
 	if err := checkRumValue("user_id", q.UserID); err != nil {
 		return "", err

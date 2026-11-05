@@ -2,9 +2,9 @@
 
 package {{.Package}}
 
-// MIGRATION (forge v1.1.0): the schedule runs on forge/pkg/cronkit, and each
+// MIGRATION (forge v1.0.16): the schedule runs on forge/pkg/cronkit, and each
 // tick fires on ONE replica (the one that claims it in the app's database)
-// instead of on every replica. See the forge `migrations/v1.1.0` skill to
+// instead of on every replica. See the forge `migrations/v1.0.16` skill to
 // convert a cron worker scaffolded before it.
 
 import (

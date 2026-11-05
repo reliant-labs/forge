@@ -207,7 +207,7 @@ var newRules = []rolloutGroup{
 	// A login broker that mounts public sign-up in every environment. The
 	// lane is advisory (its findings are warnings at any pin); the row is
 	// what lets lint.rules raise it.
-	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{ruleOpenSignup}},
+	{IntroducedIn: "v1.0.16", GatesFrom: "v1.0.17", Rules: []string{ruleOpenSignup}},
 	// Commit policy: the birth ledger and the other committed .forge/ state
 	// must not be gitignored (a `.forge/` line voids the scaffold's
 	// re-includes, and deleted scaffolds come back in every fresh clone).

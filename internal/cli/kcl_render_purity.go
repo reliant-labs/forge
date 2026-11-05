@@ -48,7 +48,8 @@
 // hand during the render looks exactly like the render's write. growth lost
 // two edited test files that way (restoreImpureKCLWrites has the details).
 // So the guard restores only a file the module's KCL names alongside a
-// file.write call, and keeps a copy of everything it reverts.
+// file.write call, and only once a second render proves the dirty bytes are
+// the render's own output.
 //
 // The render's VALUE is kept. The write is what gets undone, not the query
 // that needed the render, so k3d-ports.yaml and the frontend config still
@@ -62,6 +63,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -118,18 +120,11 @@ func dirtyTrackedFiles(projectDir string) map[string]bool {
 // than the one file, and forge has no business running a mutating git
 // porcelain command inside someone's checkout.
 func restoreTrackedFileFromHEAD(projectDir, rel string) error {
-	cmd := exec.Command("git", "show", "HEAD:"+rel)
-	cmd.Dir = projectDir
-	blob, err := cmd.Output()
+	blob, err := committedContent(projectDir, rel)
 	if err != nil {
-		return fmt.Errorf("read committed content of %s: %w", rel, err)
+		return err
 	}
-	abs := filepath.Join(projectDir, filepath.FromSlash(rel))
-	mode := os.FileMode(0o644)
-	if info, statErr := os.Stat(abs); statErr == nil {
-		mode = info.Mode().Perm()
-	}
-	return atomicfile.WriteFile(abs, blob, mode)
+	return writeKeepingMode(filepath.Join(projectDir, filepath.FromSlash(rel)), blob)
 }
 
 // renderKCLPure is RenderKCL for the generate path: it runs the render, then
@@ -155,7 +150,9 @@ func renderKCLPure(ctx context.Context, projectDir, env string) (*KCLEntities, [
 	if err != nil {
 		return nil, nil, err
 	}
-	restored := restoreImpureKCLWrites(projectDir, before)
+	restored := restoreImpureKCLWrites(projectDir, before, func() {
+		_, _ = RenderKCL(ctx, projectDir, env)
+	})
 	if memo {
 		kclRenderMemoPut(key, kclRenderMemoEntry{entities: entities})
 	}
@@ -201,18 +198,24 @@ func renderEnvsPure(ctx context.Context, projectDir string, envs []string) []env
 	}
 
 	before := dirtyTrackedFiles(projectDir)
-	sem := make(chan struct{}, renderEnvsParallelism)
-	var wg sync.WaitGroup
-	for _, i := range misses {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			out[i].entities, out[i].err = RenderKCL(ctx, projectDir, envs[i])
-		}(i)
+	renderEach := func(store bool) {
+		sem := make(chan struct{}, renderEnvsParallelism)
+		var wg sync.WaitGroup
+		for _, i := range misses {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				entities, err := RenderKCL(ctx, projectDir, envs[i])
+				if store {
+					out[i].entities, out[i].err = entities, err
+				}
+			}(i)
+		}
+		wg.Wait()
 	}
-	wg.Wait()
+	renderEach(true)
 	rendered := make([]string, 0, len(misses))
 	for _, i := range misses {
 		rendered = append(rendered, envs[i])
@@ -224,7 +227,7 @@ func renderEnvsPure(ctx context.Context, projectDir string, envs []string) []env
 			kclRenderMemoPut(keys[i], kclRenderMemoEntry{entities: out[i].entities})
 		}
 	}
-	reportImpureRender(strings.Join(rendered, ", "), restoreImpureKCLWrites(projectDir, before))
+	reportImpureRender(strings.Join(rendered, ", "), restoreImpureKCLWrites(projectDir, before, func() { renderEach(false) }))
 	return out
 }
 
@@ -243,10 +246,19 @@ func renderEnvsPure(ctx context.Context, projectDir string, envs []string) []env
 //   - a module that does write files can only have written a path it names,
 //     so a file no string literal in its KCL names is someone else's edit
 //     and is left alone, whatever else the module writes.
-//   - a file the module does name is still repaired, but losslessly: the
-//     bytes it reverts are kept under .forge/kcl-reverted/ first, and the
-//     report names them.
-func restoreImpureKCLWrites(projectDir string, before map[string]bool) []string {
+//   - a path literal is not proof, though: the module may only mention the
+//     path. So a named file is reverted only once the render is PROVEN to
+//     have written its bytes. Its dirty bytes are kept aside, the file is put
+//     back to HEAD and the render runs again (rerender). If the render writes
+//     the same bytes again, they are its output and the file stays at HEAD.
+//     If the file is still at HEAD, the render does not write it and the
+//     dirty bytes were someone's edit: they go back. Anything else is
+//     unproven, and the newest bytes stay on disk.
+//
+// The dirty bytes are copied under .forge/kcl-reverted/ before the file is
+// touched, under a name no later run reuses, and the copy is removed once
+// their fate is decided, so an edit survives even a crash mid-proof.
+func restoreImpureKCLWrites(projectDir string, before map[string]bool, rerender func()) []string {
 	if before == nil {
 		return nil
 	}
@@ -260,46 +272,123 @@ func restoreImpureKCLWrites(projectDir string, before map[string]bool) []string 
 		return nil
 	}
 	targets := kclFileWriteTargets(projectDir)
-	var restored []string
+
+	type candidate struct {
+		path, stash string
+		dirty       []byte
+		head        []byte
+	}
+	var candidates []candidate
 	for _, path := range dirtied {
 		if !targets[path] {
 			continue // the module never names it: someone else's edit
 		}
-		if serr := stashKCLReverted(projectDir, path); serr != nil {
-			// Without a copy, a revert could be the only record of a
-			// concurrent edit lost. Leave the file as it is.
-			fmt.Fprintf(os.Stderr, "⚠️  %s changed during a KCL render; left as is (could not keep a copy before reverting: %v)\n", path, serr)
+		abs := filepath.Join(projectDir, filepath.FromSlash(path))
+		dirty, rerr := os.ReadFile(abs)
+		if rerr != nil {
+			continue // gone or unreadable: nothing forge could put back either
+		}
+		head, herr := committedContent(projectDir, path)
+		if herr != nil {
 			continue
 		}
-		if rerr := restoreTrackedFileFromHEAD(projectDir, path); rerr != nil {
-			// Reporting the path still beats silence: the user can revert it
-			// by hand, and the diagnostic below names why it is dirty.
-			fmt.Fprintf(os.Stderr, "⚠️  could not restore %s after an impure KCL render: %v\n", path, rerr)
+		stash, serr := stashKCLReverted(projectDir, path, dirty)
+		if serr != nil {
+			// Without a copy, the proof below could be the only record of a
+			// concurrent edit lost. Leave the file as it is.
+			fmt.Fprintf(os.Stderr, "⚠️  %s changed during a KCL render; left as is (could not keep a copy: %v)\n", path, serr)
+			continue
 		}
-		restored = append(restored, path)
+		if werr := writeKeepingMode(abs, head); werr != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  %s changed during a KCL render; left as is (could not reset it to HEAD: %v)\n", path, werr)
+			continue
+		}
+		candidates = append(candidates, candidate{path: path, stash: stash, dirty: dirty, head: head})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	rerender()
+
+	var restored []string
+	for _, c := range candidates {
+		abs := filepath.Join(projectDir, filepath.FromSlash(c.path))
+		again, rerr := os.ReadFile(abs)
+		switch {
+		case rerr == nil && bytes.Equal(again, c.dirty):
+			// The render wrote these bytes twice: they are its output.
+			if werr := writeKeepingMode(abs, c.head); werr != nil {
+				// Reporting the path still beats silence: the user can revert
+				// it by hand, and the diagnostic names why it is dirty.
+				fmt.Fprintf(os.Stderr, "⚠️  could not restore %s after an impure KCL render: %v\n", c.path, werr)
+			}
+			restored = append(restored, c.path)
+			_ = os.Remove(c.stash)
+		case rerr == nil && bytes.Equal(again, c.head):
+			// The render left it at HEAD: the dirty bytes were someone's edit.
+			if werr := writeKeepingMode(abs, c.dirty); werr != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  %s was edited during a KCL render and could not be put back (%v); the edit is kept at %s\n", c.path, werr, c.stash)
+				continue
+			}
+			_ = os.Remove(c.stash)
+		default:
+			// Neither: a render that writes different bytes each time, or an
+			// edit landing during the proof. Nothing proves the bytes on disk
+			// are the render's, so they stay; the earlier bytes stay kept.
+			fmt.Fprintf(os.Stderr, "⚠️  %s changed during a KCL render and forge could not prove the render wrote it; left as is (the earlier bytes are kept at %s)\n", c.path, c.stash)
+		}
 	}
 	sort.Strings(restored)
 	return restored
 }
 
-// kclRevertedDir keeps the bytes restoreImpureKCLWrites reverted, by
-// project-relative path, so a concurrent edit the guard took for the
-// render's write can be copied back.
+// committedContent returns rel's bytes at HEAD.
+func committedContent(projectDir, rel string) ([]byte, error) {
+	cmd := exec.Command("git", "show", "HEAD:"+rel)
+	cmd.Dir = projectDir
+	blob, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("read committed content of %s: %w", rel, err)
+	}
+	return blob, nil
+}
+
+// writeKeepingMode writes data to abs with abs's current permissions.
+func writeKeepingMode(abs string, data []byte) error {
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(abs); err == nil {
+		mode = info.Mode().Perm()
+	}
+	return atomicfile.WriteFile(abs, data, mode)
+}
+
+// kclRevertedDir keeps the bytes of a file restoreImpureKCLWrites is
+// deciding about, by project-relative path, so an edit survives a run that
+// dies mid-proof, and an unproven one stays recoverable.
 const kclRevertedDir = ".forge/kcl-reverted"
 
-// stashKCLReverted copies projectDir/rel's current bytes to
-// kclRevertedDir/rel.
-func stashKCLReverted(projectDir, rel string) error {
-	src := filepath.Join(projectDir, filepath.FromSlash(rel))
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
+// stashKCLReverted writes data to a new file beside kclRevertedDir/rel,
+// named so that no later run overwrites it, and returns its path.
+func stashKCLReverted(projectDir, rel string, data []byte) (string, error) {
 	dst := filepath.Join(projectDir, filepath.FromSlash(kclRevertedDir), filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+		return "", err
 	}
-	return atomicfile.WriteFile(dst, data, 0o644)
+	f, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 // kclFileWriteRE matches a call to KCL's file.write.
@@ -319,9 +408,10 @@ var kclStringLiteralRE = regexp.MustCompile(`"([^"\\\n]*)"|'([^'\\\n]*)'`)
 // code) are skipped, and so is a file forge cannot read: a path no literal
 // names is never restored, so missing evidence keeps the bytes on disk.
 //
-// A literal naming the path is not proof the render wrote it, but it is the
-// positive evidence a revert needs: a tracked file the module never names
-// cannot be its write, and is someone else's edit.
+// A literal naming the path is not proof the render wrote it (that proof is a
+// second render, in restoreImpureKCLWrites), only a precondition: a tracked
+// file the module never names cannot be its write, and is someone else's
+// edit, so it is never touched at all.
 func kclFileWriteTargets(projectDir string) map[string]bool {
 	writes := false
 	targets := map[string]bool{}
@@ -396,6 +486,5 @@ func reportImpureRender(env string, restored []string) {
 	fmt.Println("    on the same commit generate different bytes and CI fails for one of them.")
 	fmt.Println("    Move the file.write behind a flag the dev render sets and generate does not,")
 	fmt.Println("    or generate the file from committed inputs only. `forge env up` still runs it.")
-	fmt.Printf("    The reverted bytes are kept under %s/. If you edited one of these files\n", kclRevertedDir)
-	fmt.Println("    while generate ran, that was your edit: copy it back from there.")
+	fmt.Println("    Each was reverted only after a second render wrote the same bytes again.")
 }

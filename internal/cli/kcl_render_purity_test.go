@@ -148,7 +148,7 @@ func TestRestoreImpureKCLWrites_PureModuleLeavesConcurrentEdits(t *testing.T) {
 	const realTests = "package content_test\n\n// real assertions\n"
 	writeGuardFile(t, dir, "internal/handlers/content/handlers_scaffold_draft_post_test.go", realTests)
 
-	if restored := restoreImpureKCLWrites(dir, before); len(restored) != 0 {
+	if restored := restoreImpureKCLWrites(dir, before, func() {}); len(restored) != 0 {
 		t.Errorf("restored %v from a module that cannot write files", restored)
 	}
 	if got := readGuardFile(t, dir, "internal/handlers/content/handlers_scaffold_draft_post_test.go"); got != realTests {
@@ -156,13 +156,11 @@ func TestRestoreImpureKCLWrites_PureModuleLeavesConcurrentEdits(t *testing.T) {
 	}
 }
 
-// TestRestoreImpureKCLWrites_WritingModuleStashesWhatItReverts keeps the
+// TestRestoreImpureKCLWrites_WritingModuleRevertsProvenWrite keeps the
 // control-plane repair (a file.write leaking into a tracked conf is undone)
-// while making it lossless: what a module that does write files could
-// have clobbered is still reverted, but its bytes are kept under
-// .forge/kcl-reverted/ first, since a concurrent edit to the same file is
-// indistinguishable from the render's write.
-func TestRestoreImpureKCLWrites_WritingModuleStashesWhatItReverts(t *testing.T) {
+// while making it lossless: a named file is reverted only once a second
+// render writes the same bytes again, which proves they are its output.
+func TestRestoreImpureKCLWrites_WritingModuleRevertsProvenWrite(t *testing.T) {
 	dir := t.TempDir()
 	const committed = "accounts { CP_DEFAULT: {} }\n"
 	initGitRepo(t, dir, map[string]string{
@@ -171,17 +169,76 @@ func TestRestoreImpureKCLWrites_WritingModuleStashesWhatItReverts(t *testing.T) 
 	})
 	before := dirtyTrackedFiles(dir)
 	const leaked = "accounts { CP_DEFAULT: {} CP_prod_: {} }\n"
-	writeGuardFile(t, dir, "deploy/nats/nats.conf", leaked)
+	render := func() { writeGuardFile(t, dir, "deploy/nats/nats.conf", leaked) }
+	render()
 
-	restored := restoreImpureKCLWrites(dir, before)
+	restored := restoreImpureKCLWrites(dir, before, render)
 	if len(restored) != 1 || restored[0] != "deploy/nats/nats.conf" {
 		t.Fatalf("restored = %v, want [deploy/nats/nats.conf]", restored)
 	}
 	if got := readGuardFile(t, dir, "deploy/nats/nats.conf"); got != committed {
 		t.Errorf("not restored to HEAD:\n%s", got)
 	}
-	if got := readGuardFile(t, dir, ".forge/kcl-reverted/deploy/nats/nats.conf"); got != leaked {
-		t.Errorf("reverted bytes not kept: %q", got)
+	if kept, _ := filepath.Glob(filepath.Join(dir, ".forge/kcl-reverted/deploy/nats/nats.conf.*")); len(kept) != 0 {
+		t.Errorf("proven render output still kept aside: %v", kept)
+	}
+}
+
+// TestRestoreImpureKCLWrites_NamedButUnwrittenEditSurvives is the review's
+// case: a module that calls file.write and also MENTIONS a tracked path (a
+// constant, a doc string) that it never writes. A concurrent edit to that
+// file during the render must survive: the second render leaves it at HEAD,
+// which proves the dirty bytes were not the render's.
+func TestRestoreImpureKCLWrites_NamedButUnwrittenEditSurvives(t *testing.T) {
+	dir := t.TempDir()
+	const committed = "# docs\n"
+	initGitRepo(t, dir, map[string]string{
+		"deploy/kcl/dev/main.k": "import file\n\n_DOC = \"docs/nats.md\"\n_w = file.write(\"deploy/nats/nats.conf\", _conf)\n",
+		"deploy/nats/nats.conf": "accounts {}\n",
+		"docs/nats.md":          committed,
+	})
+	before := dirtyTrackedFiles(dir)
+	const edit = "# docs\n\nhand-written while generate ran\n"
+	writeGuardFile(t, dir, "docs/nats.md", edit)
+
+	restored := restoreImpureKCLWrites(dir, before, func() {})
+	if len(restored) != 0 {
+		t.Errorf("restored %v; the render never wrote them", restored)
+	}
+	if got := readGuardFile(t, dir, "docs/nats.md"); got != edit {
+		t.Errorf("a concurrent edit to a merely named file was reverted:\n--- got ---\n%s\n--- want ---\n%s", got, edit)
+	}
+	if kept, _ := filepath.Glob(filepath.Join(dir, ".forge/kcl-reverted/docs/nats.md.*")); len(kept) != 0 {
+		t.Errorf("a returned edit is still kept aside: %v", kept)
+	}
+}
+
+// TestRestoreImpureKCLWrites_UnprovenBytesStay: when the second render writes
+// different bytes (a render that is not deterministic, or an edit landing
+// mid-proof), nothing proves what is on disk is the render's, so it stays and
+// the first bytes are kept aside.
+func TestRestoreImpureKCLWrites_UnprovenBytesStay(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir, map[string]string{
+		"deploy/kcl/dev/main.k": "import file\n\n_w = file.write(\"out.conf\", _conf)\n",
+		"out.conf":              "v0\n",
+	})
+	before := dirtyTrackedFiles(dir)
+	writeGuardFile(t, dir, "out.conf", "v1\n")
+
+	restored := restoreImpureKCLWrites(dir, before, func() { writeGuardFile(t, dir, "out.conf", "v2\n") })
+	if len(restored) != 0 {
+		t.Errorf("restored %v without proof", restored)
+	}
+	if got := readGuardFile(t, dir, "out.conf"); got != "v2\n" {
+		t.Errorf("out.conf = %q, want the newest bytes left on disk", got)
+	}
+	kept, _ := filepath.Glob(filepath.Join(dir, ".forge/kcl-reverted/out.conf.*"))
+	if len(kept) != 1 {
+		t.Fatalf("kept = %v, want one copy of the first bytes", kept)
+	}
+	if b, _ := os.ReadFile(kept[0]); string(b) != "v1\n" {
+		t.Errorf("kept copy = %q, want v1", b)
 	}
 }
 
@@ -199,11 +256,12 @@ func TestRestoreImpureKCLWrites_WritingModuleLeavesUnnamedEdits(t *testing.T) {
 		"internal/handlers/content/handlers_scaffold_draft_post_test.go": scaffold,
 	})
 	before := dirtyTrackedFiles(dir)
-	writeGuardFile(t, dir, "deploy/nats/nats.conf", "accounts { CP_DEFAULT: {} CP_prod_: {} }\n")
+	render := func() { writeGuardFile(t, dir, "deploy/nats/nats.conf", "accounts { CP_DEFAULT: {} CP_prod_: {} }\n") }
+	render()
 	const realTests = "package content_test\n\n// real assertions\n"
 	writeGuardFile(t, dir, "internal/handlers/content/handlers_scaffold_draft_post_test.go", realTests)
 
-	restored := restoreImpureKCLWrites(dir, before)
+	restored := restoreImpureKCLWrites(dir, before, render)
 	if len(restored) != 1 || restored[0] != "deploy/nats/nats.conf" {
 		t.Fatalf("restored = %v, want [deploy/nats/nats.conf] only", restored)
 	}

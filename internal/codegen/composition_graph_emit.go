@@ -928,6 +928,11 @@ type providersGraphData struct {
 	// NoProjectAuthInterceptor: the project's pkg/middleware declares no
 	// NewAuthInterceptor (projectDeclaresAuthInterceptor).
 	NoProjectAuthInterceptor bool
+	// ClaimsEnricher: the project's pkg/middleware declares the
+	// ClaimsEnricher seam (and AuthDeps.Enrich beside it), so UserAuthDeps
+	// can take an enricher component. A middleware.go scaffolded before the
+	// seam existed has neither, and naming them would not compile.
+	ClaimsEnricher bool
 }
 
 // projectAuthInterceptorDecl matches the auth interceptor the scaffolded
@@ -940,6 +945,23 @@ var projectAuthInterceptorDecl = regexp.MustCompile(`(?m)^func NewAuthIntercepto
 // builds forge's authn interceptor instead of calling a function that is not
 // there. A project with no pkg/middleware yet is about to get forge's.
 func projectDeclaresAuthInterceptor(projectDir string) bool {
+	return projectMiddlewareDeclares(projectDir, projectAuthInterceptorDecl)
+}
+
+// projectClaimsEnricherDecl matches the enricher seam the scaffolded
+// pkg/middleware/middleware.go declares.
+var projectClaimsEnricherDecl = regexp.MustCompile(`(?m)^type ClaimsEnricher interface\b`)
+
+// projectDeclaresClaimsEnricher reports whether the project's pkg/middleware
+// declares the ClaimsEnricher seam; like projectDeclaresAuthInterceptor, a
+// project with no pkg/middleware yet is about to get forge's, which does.
+func projectDeclaresClaimsEnricher(projectDir string) bool {
+	return projectMiddlewareDeclares(projectDir, projectClaimsEnricherDecl)
+}
+
+// projectMiddlewareDeclares reports whether a non-generated file of the
+// project's pkg/middleware matches decl, or the package is not scaffolded yet.
+func projectMiddlewareDeclares(projectDir string, decl *regexp.Regexp) bool {
 	dir := filepath.Join(projectDir, "pkg", "middleware")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -954,7 +976,7 @@ func projectDeclaresAuthInterceptor(projectDir string) bool {
 		if !strings.HasSuffix(n, "_gen.go") {
 			scaffolded = true
 		}
-		if src, err := os.ReadFile(filepath.Join(dir, n)); err == nil && projectAuthInterceptorDecl.Match(src) {
+		if src, err := os.ReadFile(filepath.Join(dir, n)); err == nil && decl.Match(src) {
 			return true
 		}
 	}
@@ -981,7 +1003,7 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 	}
 	data := providersGraphData{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields,
 		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker,
-		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptor(projectDir)}
+		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptor(projectDir), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir)}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render providers-graph.go.tmpl: %w", err)

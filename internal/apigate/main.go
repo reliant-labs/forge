@@ -132,37 +132,12 @@ func declarationInputs(root, base, pr, bodyFile string, labels []string) (string
 	}
 	switch {
 	case pr != "":
-		repo := os.Getenv("GITHUB_REPOSITORY")
-		if repo == "" {
-			repo = "reliant-labs/forge"
-		}
-		cmd := exec.Command("gh", "api", fmt.Sprintf("repos/%s/pulls/%s", repo, pr))
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		out, err := cmd.Output()
+		body, prLabels, approved, err := prDeclaration(pr)
 		if err != nil {
-			return "", nil, false, fmt.Errorf("read PR %s from GitHub: %w\n%s", pr, err, strings.TrimSpace(stderr.String()))
+			return "", nil, false, err
 		}
-		var p struct {
-			Body   string
-			Labels []struct{ Name string }
-		}
-		if err := json.Unmarshal(out, &p); err != nil {
-			return "", nil, false, fmt.Errorf("decode PR %s: %w", pr, err)
-		}
-		text.WriteString("\n" + p.Body)
-		approved := false
-		for _, l := range p.Labels {
-			labels = append(labels, l.Name)
-			approved = approved || l.Name == ApprovedLabel
-		}
-		if approved {
-			var aerr error
-			if approved, aerr = ownerApplied(repo, pr, ApprovedLabel); aerr != nil {
-				return "", nil, false, aerr
-			}
-		}
-		return text.String(), labels, approved, nil
+		text.WriteString("\n" + body)
+		return text.String(), append(labels, prLabels...), approved, nil
 	case bodyFile != "":
 		b, err := os.ReadFile(bodyFile)
 		if err != nil {
@@ -173,19 +148,81 @@ func declarationInputs(root, base, pr, bodyFile string, labels []string) (string
 	return text.String(), labels, false, nil
 }
 
-// ownerApplied reports whether the last account to apply label to the PR is
-// one of APIGATE_OWNERS (default reliant-01, the owner).
-func ownerApplied(repo, pr, label string) (bool, error) {
-	cmd := exec.Command("gh", "api", "--paginate", fmt.Sprintf("repos/%s/issues/%s/events", repo, pr),
-		"--jq", fmt.Sprintf(`.[] | select(.event == "labeled" and .label.name == %q) | .actor.login`, label))
+// prDeclaration reads pull request pr's body and labels from GitHub, and
+// whether the owner applied ApprovedLabel: the label is on the PR now, and the
+// last account to apply it is an owner.
+func prDeclaration(pr string) (string, []string, bool, error) {
+	repo := os.Getenv("GITHUB_REPOSITORY")
+	if repo == "" {
+		repo = "reliant-labs/forge"
+	}
+	out, err := ghAPI(fmt.Sprintf("repos/%s/pulls/%s", repo, pr))
+	if err != nil {
+		return "", nil, false, fmt.Errorf("read PR %s from GitHub: %w", pr, err)
+	}
+	var p struct {
+		Body   string
+		Labels []struct{ Name string }
+	}
+	if err := json.Unmarshal(out, &p); err != nil {
+		return "", nil, false, fmt.Errorf("decode PR %s: %w", pr, err)
+	}
+	var labels []string
+	approved := false
+	for _, l := range p.Labels {
+		labels = append(labels, l.Name)
+		approved = approved || l.Name == ApprovedLabel
+	}
+	if approved {
+		if approved, err = ownerApplied(repo, pr, ApprovedLabel); err != nil {
+			return "", nil, false, err
+		}
+	}
+	return p.Body, labels, approved, nil
+}
+
+// ghAPI runs `gh api <args>` and returns its stdout; tests replace it with a
+// fake GitHub.
+var ghAPI = func(args ...string) ([]byte, error) {
+	cmd := exec.Command("gh", append([]string{"api"}, args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return false, fmt.Errorf("read PR %s's label events from GitHub: %w\n%s", pr, err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("%w\n%s", err, strings.TrimSpace(stderr.String()))
 	}
-	lines := strings.Fields(string(out))
-	if len(lines) == 0 {
+	return out, nil
+}
+
+// ownerApplied reports whether the last account to apply label to the PR is
+// one of APIGATE_OWNERS (default reliant-01, the owner). It reads every page of
+// the PR's events: `gh api --paginate` prints one JSON array per page.
+func ownerApplied(repo, pr, label string) (bool, error) {
+	out, err := ghAPI("--paginate", fmt.Sprintf("repos/%s/issues/%s/events", repo, pr))
+	if err != nil {
+		return false, fmt.Errorf("read PR %s's label events from GitHub: %w", pr, err)
+	}
+	type event struct {
+		Event string
+		Label struct{ Name string }
+		Actor struct{ Login string }
+	}
+	last := ""
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var page []event
+		if err := dec.Decode(&page); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return false, fmt.Errorf("decode PR %s's label events: %w", pr, err)
+		}
+		for _, e := range page {
+			if e.Event == "labeled" && e.Label.Name == label {
+				last = e.Actor.Login
+			}
+		}
+	}
+	if last == "" {
 		return false, nil
 	}
 	owners := os.Getenv("APIGATE_OWNERS")
@@ -193,7 +230,7 @@ func ownerApplied(repo, pr, label string) (bool, error) {
 		owners = "reliant-01"
 	}
 	for _, o := range strings.FieldsFunc(owners, func(r rune) bool { return r == ',' || r == ' ' }) {
-		if o == lines[len(lines)-1] {
+		if o == last {
 			return true, nil
 		}
 	}

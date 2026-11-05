@@ -61,4 +61,21 @@ if command -v buf >/dev/null; then
 else
   echo "skip: buf is not on PATH, so the proto cases did not run"
 fi
+
+# Deleting buf.yaml must not switch the proto check off (refused before buf runs).
+mkdir -p "$T/r/proto/x/v1"
+printf 'version: v2\nmodules:\n  - path: proto\nbreaking:\n  use:\n    - FILE\n' >"$T/r/buf.yaml"
+printf 'syntax = "proto3";\npackage x.v1;\nmessage M {\n  string a = 1;\n  string b = 2;\n}\n' >"$T/r/proto/x/v1/x.proto"
+g add -A; g commit -q --allow-empty -m "proto base"; g tag -f base >/dev/null
+g rm -q buf.yaml
+printf 'syntax = "proto3";\npackage x.v1;\nmessage M {\n  string a = 1;\n}\n' >"$T/r/proto/x/v1/x.proto"
+g add -A; g commit -qm "drop buf.yaml and a field"
+labels '[]'; events '[]'
+CMD=proto check "deleting buf.yaml beside a breaking change fails" 1 CI_PR=9
+grep -q 'buf.yaml' "$T/out" || { echo "FAIL: the refusal does not name buf.yaml"; fail=1; }
+labels '[{"name":"breaking:approved"}]'
+events '[{"event":"labeled","label":{"name":"breaking:approved"},"actor":{"login":"reliant-labs[bot]"}}]'
+CMD=proto check "a bot's breaking:approved does not accept it" 1 CI_PR=9
+events '[{"event":"labeled","label":{"name":"breaking:approved"},"actor":{"login":"reliant-01"}}]'
+CMD=proto check "the owner's breaking:approved accepts it" 0 CI_PR=9
 exit "$fail"

@@ -69,7 +69,16 @@ changed() { git diff --name-only --diff-filter="${2:-ACMRD}" "$base" HEAD -- "$1
 
 case "${1:-}" in
   proto)
-    [ -f buf.yaml ] || { echo "check-compat: no buf.yaml; nothing to judge"; exit 0; }
+    if [ ! -f buf.yaml ]; then
+      # Fail closed: deleting the configuration must not switch the check off for
+      # a base that publishes proto under it.
+      if git cat-file -e "$base:buf.yaml" 2>/dev/null; then
+        refuse breaking:approved "buf.yaml, which ${base:0:12} has, was removed, so its proto cannot be judged" \
+          "Keep buf.yaml (and the proto under it); deprecate what should go instead of removing it (the proto-breaking skill)."
+        exit
+      fi
+      echo "check-compat: no buf.yaml here or at ${base:0:12}; nothing to judge"; exit 0
+    fi
     if [ -z "$(changed proto)$(changed buf.yaml)" ]; then echo "check-compat: proto unchanged since ${base:0:12}"; exit 0; fi
     command -v buf >/dev/null || die "buf is not on PATH (task tools installs the pinned one)"
     old="$(mktemp -d)"; trap 'rm -rf "$old"' EXIT

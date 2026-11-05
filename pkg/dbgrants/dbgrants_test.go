@@ -72,7 +72,9 @@ func TestRenderNeverGrantsMoreThanColumnSelect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	upper := strings.ToUpper(script)
+	// The one statement-free mention: the server's error text for a lost
+	// concurrent catalog update, which the role-setting block recognises.
+	upper := strings.ToUpper(strings.ReplaceAll(script, "'tuple concurrently updated'", "''"))
 	for _, bad := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "WITH GRANT", "GRANT ALL", "PG_READ_ALL", "SUPERUSER", "BYPASSRLS", "CREATEROLE"} {
 		if strings.Contains(upper, bad) {
 			t.Errorf("the script mentions %s:\n%s", bad, script)

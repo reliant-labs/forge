@@ -163,6 +163,13 @@ gets its key on the normal hosted network.
 - an `LLMRef` with no `Bundle.llm`;
 - a hosted `forge.LLM` read from a host, compose or cluster workload;
 - an `LLMRef` on a hosted LLM under a non-canonical name;
-- a literal `api_key` for an endpoint that is not on this machine;
+- a literal `api_key` for an endpoint that is not on this machine (an
+  `http://` URL whose host is exactly `localhost`, `127.0.0.1`, `[::1]`,
+  `host.docker.internal` or `host.k3d.internal`);
+- an endpoint URL with user info, a query or a trailing slash;
+- an endpoint read by a hosted workload whose host is not public (loopback,
+  private, link-local, CGNAT, an IPv6 literal, a single-label name, or
+  `*.localhost` / `*.local` / `*.internal` / `*.svc` / `*.lan` /
+  `*.home.arpa`): from Reliant's network that host is the platform's;
 - a `forge.SecretRef` key on an endpoint read by a hosted workload (use
   `forge.ManagedSecret`).

@@ -1329,7 +1329,15 @@ schema LLMEndpoint:
     for base_url + "/v1". `api_key` is a reference (forge.ManagedSecret, the
     env's secret store; forge.SecretRef, a Kubernetes Secret on a cluster you
     operate), or a literal only for an endpoint on this machine that ignores
-    it (a local Ollama).
+    it (a local Ollama): its host must be exactly localhost, 127.0.0.1,
+    [::1], host.docker.internal or host.k3d.internal.
+
+    A hosted workload reaches only a public endpoint: a URL whose host is
+    loopback, private, link-local or carrier-grade-NAT, an IPv6 literal, or
+    an internal name (one label, *.localhost, *.local, *.internal, *.svc) is
+    refused at render for it, because from Reliant's network that host is
+    the platform's, not yours. A workload you run (host, compose, your
+    cluster) may name any host: its network is yours.
     """
     type: "endpoint" = "endpoint"
     base_url: str
@@ -1337,11 +1345,39 @@ schema LLMEndpoint:
     api_key: SecretRef | ManagedSecret | str
 
     check:
-        regex.match(base_url, r"^https?://[^/]+(/[^?#]*[^/?#])?$"), "LLMEndpoint.base_url '${base_url}' must be a URL like https://host[:port][/path], with no trailing slash"
-        not openai_base_url or regex.match(openai_base_url, r"^https?://[^/]+(/[^?#]*[^/?#])?$"), \
-            "LLMEndpoint.openai_base_url '${openai_base_url}' must be a URL like https://host[:port]/v1, with no trailing slash"
-        typeof(api_key) != "str" or regex.match(base_url, r"^http://(localhost|127\.0\.0\.1|host\.docker\.internal|host\.k3d\.internal)(:[0-9]+)?(/.*)?$"), \
-            "LLMEndpoint.api_key is a literal: a key in a committed file is a leaked key. Use forge.ManagedSecret {name = ...} (`forge secret set --env <env> <NAME>`); a literal is accepted only for an endpoint on this machine (http://localhost:...) that ignores it"
+        regex.match(base_url, _LLM_URL_PATTERN), "LLMEndpoint.base_url '${base_url}' must be a URL like https://host[:port][/path], with no user info, query or trailing slash"
+        not openai_base_url or regex.match(openai_base_url, _LLM_URL_PATTERN), \
+            "LLMEndpoint.openai_base_url '${openai_base_url}' must be a URL like https://host[:port]/v1, with no user info, query or trailing slash"
+        typeof(api_key) != "str" or (base_url.startswith("http://") and _llm_url_host(base_url) in _LLM_LOCAL_LITERAL_HOSTS), \
+            "LLMEndpoint.api_key is a literal: a key in a committed file is a leaked key. Use forge.ManagedSecret {name = ...} (`forge secret set --env <env> <NAME>`); a literal is accepted only for an endpoint on this machine that ignores it, an http:// URL whose host is exactly one of ${_LLM_LOCAL_LITERAL_HOSTS}"
+
+# An LLMEndpoint URL: scheme, a host that is a DNS name, an IPv4 address or
+# a bracketed IPv6 literal (no user info, which would let `localhost@evil`
+# read as one host and dial another), an optional port, and an optional path
+# with no query, fragment or trailing slash.
+_LLM_URL_PATTERN = r"^https?://([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?(/[^?#@]*[^/?#@])?$"
+
+# The exact hosts whose endpoint may take a literal api_key: this machine,
+# as a host process, a compose container or a k3d pod reaches it.
+_LLM_LOCAL_LITERAL_HOSTS: [str] = ["localhost", "127.0.0.1", "[::1]", "host.docker.internal", "host.k3d.internal"]
+
+# The host of an LLMEndpoint URL (one _LLM_URL_PATTERN accepts), lowercased;
+# an IPv6 literal keeps its brackets.
+_llm_url_host = lambda u: str -> str {
+    regex.replace(u, r"^https?://(\[[^\]]*\]|[^/:]*)(:[0-9]+)?(/.*)?$", "$1").lower()
+}
+
+# Whether an LLMEndpoint URL names a host that is not on the public internet:
+# loopback, RFC 1918, link-local (the cloud metadata service), CGNAT, the
+# unspecified address, any IPv6 literal, a single-label name, or a name under
+# a non-public suffix. Decided on the declared host, the only thing a render
+# can see; the hosted network's egress policy is what holds it at runtime.
+_llm_url_is_internal = lambda u: str -> bool {
+    _h = _llm_url_host(u)
+    _h.startswith("[") or "." not in _h or regex.match(_h, r"^(0|10|127)\.[0-9.]+$") \
+        or regex.match(_h, r"^(169\.254|192\.168|172\.(1[6-9]|2[0-9]|3[01])|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]))\.[0-9.]+$") \
+        or regex.match(_h, r"^([a-z0-9-]+\.)*(localhost|local|internal|svc|lan|home\.arpa)$")
+}
 
 # Every LLMRef key of an endpoint, as declared.
 _llm_endpoint_values = lambda e: any -> {str:} {

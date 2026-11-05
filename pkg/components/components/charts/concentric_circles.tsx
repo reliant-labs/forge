@@ -90,8 +90,8 @@ export default function ConcentricCircles({
 
         {/* Draw rings outermost to innermost so inner rings paint on top */}
         {rings.map((ring, i) => {
-          const outerR = radii[i];
-          const innerR = radii[i + 1];
+          const outerR = radii[i] ?? 0;
+          const innerR = radii[i + 1] ?? 0;
           const bandMidR = (outerR + innerR) / 2;
           const bandThickness = outerR - innerR;
 

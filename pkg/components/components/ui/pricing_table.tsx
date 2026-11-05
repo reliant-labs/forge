@@ -7,7 +7,18 @@ interface PricingTableProps {
     highlight?: boolean;
     badge?: string;
     cta?: string;
+    /** Where the call to action goes. Without one it renders a button that calls onSelect. */
+    href?: string;
+    onSelect?: () => void;
   }>;
+}
+
+function ctaClass(highlight?: boolean): string {
+  return `mt-8 rounded-lg px-4 py-3 text-center text-sm font-semibold transition ${
+    highlight
+      ? "bg-accent text-on-accent hover:bg-accent"
+      : "bg-surface-muted text-ink ring-1 ring-inset ring-border hover:bg-surface-muted"
+  }`;
 }
 
 export default function PricingTable({ tiers }: PricingTableProps) {
@@ -72,16 +83,19 @@ export default function PricingTable({ tiers }: PricingTableProps) {
             ))}
           </ul>
 
-          <a
-            href="#"
-            className={`mt-8 block rounded-lg px-4 py-3 text-center text-sm font-semibold transition ${
-              tier.highlight
-                ? "bg-accent text-on-accent hover:bg-accent"
-                : "bg-surface-muted text-ink ring-1 ring-inset ring-border hover:bg-surface-muted"
-            }`}
-          >
-            {tier.cta ?? "Get started"}
-          </a>
+          {tier.href ? (
+            <a href={tier.href} className={`block ${ctaClass(tier.highlight)}`}>
+              {tier.cta ?? "Get started"}
+            </a>
+          ) : (
+            <button
+              type="button"
+              onClick={tier.onSelect}
+              className={`block w-full ${ctaClass(tier.highlight)}`}
+            >
+              {tier.cta ?? "Get started"}
+            </button>
+          )}
         </div>
       ))}
     </div>

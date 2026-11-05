@@ -425,6 +425,12 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	// `required config field database_url is not set` while both the KCL
 	// and `forge env config` plainly showed the DSN.
 	jobSecrets := scopeSecretsToEnvVars(secretsLayer, j.EnvVars())
+	for k, v := range scopeManagedSecretsToService(secretsLayer, &j) {
+		if jobSecrets == nil {
+			jobSecrets = map[string]string{}
+		}
+		jobSecrets[k] = v
+	}
 	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, jobSecrets, j.HostEnv())
 
 	// What this job gates, for the human reading the log. The raw

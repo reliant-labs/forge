@@ -64,9 +64,6 @@ export default function FlowHorizontal({
           const s = statusStyles[status];
           const isEven = i % 2 === 0;
 
-          const boxBg =
-            accentColor && isEven ? undefined : secondaryColor && !isEven ? undefined : undefined;
-
           const inlineStyle: React.CSSProperties = {};
           if (accentColor && isEven) {
             inlineStyle.borderColor = accentColor;
@@ -119,12 +116,12 @@ export default function FlowHorizontal({
                       y1="12"
                       x2="36"
                       y2="12"
-                      className={statusStyles[getStatus(steps[i + 1])].line}
+                      className={statusStyles[getStatus(steps[i + 1] ?? step)].line}
                       strokeWidth="2"
                     />
                     <polygon
                       points="36,6 48,12 36,18"
-                      className={statusStyles[getStatus(steps[i + 1])].line}
+                      className={statusStyles[getStatus(steps[i + 1] ?? step)].line}
                       style={{ fill: "currentColor" }}
                       fill="currentColor"
                     />

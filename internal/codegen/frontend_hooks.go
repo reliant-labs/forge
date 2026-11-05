@@ -105,6 +105,12 @@ type FrontendHookMethod struct {
 	OutputTypeRef  string
 	// inputPath / outputPath are the TS modules declaring them.
 	inputPath, outputPath string
+	// Unimplemented reports that the rpc's server handler is still forge's
+	// placeholder — a method stamped `// forge:gen unwired-stub`
+	// (UnwiredStubMarkerRE) that answers Code.Unimplemented. The hook still
+	// type-checks; the file's `<service>Implemented` table says it will
+	// fail, so a UI can gate the control instead of learning it at runtime.
+	Unimplemented bool
 }
 
 // queryPrefixes are the read-only verbs an RPC name may start with.

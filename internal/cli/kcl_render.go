@@ -2210,9 +2210,9 @@ func (w WorkloadEntity) EnvVars() []KCLEnvVar {
 // HostEnv is the literal env a HOST launch of this workload receives from its
 // declaration: every spec.env value channel, with the runtime's per-run
 // LaunchEnv layered on top. Secret channels resolve separately (scoped
-// through the secret provider), and a reference with no host literal
-// (ConfigMapRef, FieldRef, DatabaseRef, ManagedSecret, WorkloadURL) has
-// nothing to contribute here.
+// through the secret provider: a SecretRef, and a ManagedSecret by its store
+// name), and a reference with no host literal (ConfigMapRef, FieldRef,
+// DatabaseRef, WorkloadURL) has nothing to contribute here.
 func (w WorkloadEntity) HostEnv() map[string]string {
 	out := map[string]string{}
 	for _, ev := range w.EnvVars() {

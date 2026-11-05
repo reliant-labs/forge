@@ -1286,6 +1286,131 @@ bucket_env = lambda prefix: str, name: str -> {str:} {
     {"${prefix}_${k.upper()}": BucketRef {name = name, key = k} for k in BUCKET_REF_KEYS}
 }
 
+# ---------------------------------------------------------------------------
+# LLMs: forge.LLM, where the model gateway is, and how a workload reaches it.
+# ---------------------------------------------------------------------------
+
+schema LLM:
+    """The env's LLM gateway, as `Bundle.llm`. A workload is handed it
+    through `forge.llm_env()`, six variables the OpenAI and Anthropic SDKs
+    read by themselves, so `new OpenAI()` / `new Anthropic()` work with no
+    configuration in code:
+
+        llm = forge.LLM {runtime = forge.OnHosted {}}
+        ...
+        env = forge.llm_env()
+
+    WHERE IT IS is its `runtime`, and there is no default:
+
+      * `forge.OnHosted {}` — Reliant's gateway (OpenAI-compatible
+        /v1/chat/completions, Anthropic-compatible /v1/messages). The
+        platform mints one key per environment, with a per-env spend cap,
+        and fills the variables of every hosted workload that declares them,
+        billed to the org. An unclaimed claimable deploy gets a small
+        platform-funded cap on the cheap model tier. Only a hosted workload
+        can read it.
+      * `forge.LLMEndpoint {base_url, api_key}` — any OpenAI/Anthropic-
+        compatible endpoint: Reliant's public gateway with your own
+        `llm:invoke` token (the dev loop), a local Ollama or LiteLLM, or a
+        provider directly.
+    """
+    runtime: OnHosted | LLMEndpoint
+
+schema LLMEndpoint:
+    """An OpenAI/Anthropic-compatible endpoint forge does not run.
+
+        forge.LLMEndpoint {
+            base_url = "https://admin.reliantapi.com"
+            api_key = forge.ManagedSecret {name = "RELIANT_LLM_API_KEY"}
+        }
+
+    `base_url` is the root an Anthropic client takes (it appends
+    /v1/messages); `openai_base_url` is what an OpenAI client takes, empty
+    for base_url + "/v1". `api_key` is a reference (forge.ManagedSecret, the
+    env's secret store; forge.SecretRef, a Kubernetes Secret on a cluster you
+    operate), or a literal only for an endpoint on this machine that ignores
+    it (a local Ollama): its host must be exactly localhost, 127.0.0.1,
+    [::1], host.docker.internal or host.k3d.internal.
+
+    A hosted workload reaches only a public https:// endpoint named by a DNS
+    name (plaintext http:// would expose the key it sends). An IP literal in
+    any spelling (IPv4 or IPv6, public or not) and an internal name (one
+    label, *.localhost, *.local, *.internal, *.svc, *.lan, *.home.arpa) are
+    refused at render for it, because from Reliant's network such a host may
+    be the platform's, not yours. A workload you run (host, compose, your
+    cluster) may name any host: its network is yours.
+
+    A compose workload takes literals only: with a referenced key, give it
+    the URL variables and let the compose file read the key from the store
+    (`OPENAI_API_KEY: ${RELIANT_LLM_API_KEY}`); a host process and a pod
+    receive the reference through their runtime.
+    """
+    type: "endpoint" = "endpoint"
+    base_url: str
+    openai_base_url: str = ""
+    api_key: SecretRef | ManagedSecret | str
+
+    check:
+        regex.match(base_url, _LLM_URL_PATTERN), "LLMEndpoint.base_url '${base_url}' must be a URL like https://host[:port][/path], with no user info, query or trailing slash"
+        not openai_base_url or regex.match(openai_base_url, _LLM_URL_PATTERN), \
+            "LLMEndpoint.openai_base_url '${openai_base_url}' must be a URL like https://host[:port]/v1, with no user info, query or trailing slash"
+        typeof(api_key) != "str" or (base_url.startswith("http://") and _llm_url_host(base_url) in _LLM_LOCAL_LITERAL_HOSTS), \
+            "LLMEndpoint.api_key is a literal: a key in a committed file is a leaked key. Use forge.ManagedSecret {name = ...} (`forge secret set --env <env> <NAME>`); a literal is accepted only for an endpoint on this machine that ignores it, an http:// URL whose host is exactly one of ${_LLM_LOCAL_LITERAL_HOSTS}"
+
+# An LLMEndpoint URL: scheme, a host that is a DNS name, an IPv4 address or
+# a bracketed IPv6 literal (no user info, which would let `localhost@evil`
+# read as one host and dial another), an optional port, and an optional path
+# with no query, fragment or trailing slash.
+_LLM_URL_PATTERN = r"^https?://([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?(/[^?#@]*[^/?#@])?$"
+
+# The exact hosts whose endpoint may take a literal api_key: this machine,
+# as a host process, a compose container or a k3d pod reaches it.
+_LLM_LOCAL_LITERAL_HOSTS: [str] = ["localhost", "127.0.0.1", "[::1]", "host.docker.internal", "host.k3d.internal"]
+
+# The host of an LLMEndpoint URL (one _LLM_URL_PATTERN accepts), lowercased;
+# an IPv6 literal keeps its brackets.
+_llm_url_host = lambda u: str -> str {
+    regex.replace(u, r"^https?://(\[[^\]]*\]|[^/:]*)(:[0-9]+)?(/.*)?$", "$1").lower()
+}
+
+# Whether an LLMEndpoint URL's host is anything but a public DNS name: an IP
+# literal (a bracketed IPv6, or any host whose last label is not a TLD, which
+# is every IPv4 spelling a URL parser accepts: 127.0.0.1, 0177.0.0.1, 0x7f.1,
+# 2130706433), a single-label name, or a name under a non-public suffix. IP
+# literals are refused rather than classified: a render has no IP parser, and
+# an LLM endpoint with a certificate for a bare address is not a case worth a
+# classifier that can be wrong. Decided on the declared host, the only thing a
+# render can see; the hosted network's egress policy is what holds it at
+# runtime (a public name that resolves to a private address).
+_llm_url_is_internal = lambda u: str -> bool {
+    _h = _llm_url_host(u)
+    _h.startswith("[") or "." not in _h \
+        or not regex.match(_h, r"^.*\.([a-z]{2,63}|xn--[a-z0-9-]{1,59})$") \
+        or regex.match(_h, r"^([a-z0-9-]+\.)*(localhost|local|internal|svc|lan|home\.arpa)$")
+}
+
+# Every LLMRef key of an endpoint, as declared.
+_llm_endpoint_values = lambda e: any -> {str:} {
+    {
+        "base_url" = e.base_url
+        "openai_base_url" = e.openai_base_url or e.base_url + "/v1"
+        "api_key" = e.api_key
+    }
+}
+
+llm_env = lambda -> {str:} {
+    """The env a workload reads the env's forge.LLM from: the six variables
+    of LLM_ENV_KEYS, one forge.LLMRef each. OPENAI_* and ANTHROPIC_* are what
+    the official SDKs read when constructed with no arguments; RELIANT_LLM_*
+    are the same facts for any other client (RELIANT_LLM_BASE_URL is the root:
+    an OpenAI-compatible client takes it plus /v1).
+
+        env = forge.llm_env()
+        env = forge.llm_env() | {PORT = "8080"}
+    """
+    {k: LLMRef {key = x} for k, x in LLM_ENV_KEYS}
+}
+
 minio_workload = lambda minio: BucketOnMinIO, buckets: [Bucket] -> Workload {
     """The docker-compose workload that runs the env's MinIO for `buckets`
     (those of them on `minio`): it publishes the S3 API on `minio.port`,
@@ -7045,6 +7170,9 @@ schema Bundle:
     # Object-storage buckets (forge.Bucket): where each lives, reached by a
     # workload through forge.BucketRef / forge.bucket_env. See Bucket.
     buckets: [Bucket] = []
+    # The env's LLM gateway (forge.LLM), reached by a workload through
+    # forge.LLMRef / forge.llm_env. See LLM.
+    llm?: LLM
     # Platform dependencies rendered from helm charts (helm-as-a-RENDERER:
     # `helm template --skip-crds` → manifests folded into the normal apply
     # pipeline; NO `helm install`). Each is a renderable with a NAME the

@@ -153,6 +153,22 @@ func TestPrePushHook_LintsOnlyWhatThePushChanges(t *testing.T) {
 	if want := "lint --quiet --scope internal/café/café.go"; got != want {
 		t.Errorf("an update ran forge %q, want %q", got, want)
 	}
+
+	// A ref that is not checked out: the working tree forge lint reads is
+	// another commit's, so the hook refuses the push rather than lint it.
+	git("checkout", "-q", "main")
+	_ = os.Remove(argsLog)
+	cmd := exec.Command("sh", "-c", prePushHook, "pre-push", "origin", "https://example.com/r.git")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "FORGE_PRE_PUSH_FULL=")
+	cmd.Stdin = strings.NewReader("refs/heads/topic " + topic + " refs/heads/topic " + zero + "\n")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "is not the checked-out commit") {
+		t.Errorf("pushing topic with main checked out: err=%v, output:\n%s\nwant a refusal naming the checked-out commit", err, out)
+	}
+	if got, _ := os.ReadFile(argsLog); len(got) != 0 {
+		t.Errorf("pushing a ref that is not checked out ran forge %q, want nothing", got)
+	}
 }
 
 // A project's own hook — what `project new --in-place` keeps — is never

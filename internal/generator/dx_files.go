@@ -690,6 +690,11 @@ fi
 //     merge's resolution edits are listed too. A push to a bare URL has no
 //     tracking refs, so it lints every file the history touched.
 //
+// forge lint reads the working tree, not a commit, so every ref pushed must
+// be the checked-out commit: pushing another ref (`git push origin topic`
+// with main checked out) is refused with guidance rather than linting main's
+// files and reporting the topic's as checked.
+//
 // Paths are read NUL-separated (-z), so a name git would quote (non-ASCII,
 // a space) reaches --scope as it is on disk. A file the push deletes
 // has nothing to lint, so only paths that still exist are passed: --scope
@@ -714,13 +719,20 @@ if [ -n "${FORGE_PRE_PUSH_FULL:-}" ]; then
 fi
 
 remote=${1:-}
+head=$(git rev-parse --verify -q HEAD || true)
 changed=$(mktemp)
 trap 'rm -f "$changed" "$changed.sorted"' EXIT
-while read -r _ local_sha _ remote_sha; do
+while read -r local_ref local_sha _ remote_sha; do
 	case "$local_sha" in
 	*[!0]*) ;;
 	*) continue ;;
 	esac
+	if [ "$local_sha" != "$head" ]; then
+		echo "pre-push: $local_ref ($local_sha) is not the checked-out commit ($head)." >&2
+		echo "pre-push: forge lint reads the working tree, so it cannot check a ref you have not checked out." >&2
+		echo "pre-push: check it out and push again, or bypass with git push --no-verify." >&2
+		exit 1
+	fi
 	case "$remote_sha" in
 	*[!0]*)
 		if git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then

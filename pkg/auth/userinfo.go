@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -28,6 +30,17 @@ import (
 // that string first. A token that carries an `email` claim itself is left as
 // it is.
 //
+// A UserInfo answers for ONE issuer. A subject is unique only within its
+// issuer, and an Authenticator may validate tokens from several (see
+// [NewMultiValidator]): a token whose `iss` claim is not that issuer — or
+// carries none — is never looked up and never read from the cache, so issuer
+// B's subject "123" cannot receive issuer A's subject "123"'s address.
+//
+// The bearer token is sent only over HTTPS. A plain-HTTP userinfo URL is
+// refused before any request is made unless its host is loopback (a local
+// development issuer), and a redirect to an insecure URL is refused the same
+// way, whatever client was supplied.
+//
 // The answer is cached per subject for [UserInfoTTL], so a signed-in user
 // costs one userinfo request per TTL, not one per request. A failed or
 // unanswerable lookup never fails authentication — the token was valid —
@@ -35,6 +48,7 @@ import (
 // the first lookup, so a server whose issuer is unreachable at boot still
 // starts; it is retried the same way until it resolves.
 type UserInfo struct {
+	issuer   string
 	endpoint func(ctx context.Context) (string, error)
 	client   *http.Client
 	now      func() time.Time
@@ -63,14 +77,55 @@ const (
 	userInfoMaxEntries = 10000
 )
 
-// NewUserInfo returns a UserInfo whose endpoint is the URL endpoint returns
-// — typically the `userinfo_endpoint` of the issuer's OIDC discovery
-// document. client nil uses http.DefaultClient.
-func NewUserInfo(endpoint func(ctx context.Context) (string, error), client *http.Client) *UserInfo {
+// NewUserInfo returns a UserInfo for tokens issued by issuer (compared with
+// the token's `iss` claim exactly), whose endpoint is the URL endpoint
+// returns — typically the `userinfo_endpoint` of issuer's OIDC discovery
+// document. An empty issuer matches no token. client nil uses
+// http.DefaultClient; either way, redirects to an insecure URL are refused.
+func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, error), client *http.Client) *UserInfo {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &UserInfo{endpoint: endpoint, client: client, now: time.Now, cache: map[string]userInfoEntry{}}
+	secured := *client
+	next := client.CheckRedirect
+	secured.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := secureEndpoint(req.URL); err != nil {
+			return fmt.Errorf("userinfo: refusing redirect: %w", err)
+		}
+		if next != nil {
+			return next(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("userinfo: stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &UserInfo{issuer: issuer, endpoint: endpoint, client: &secured, now: time.Now, cache: map[string]userInfoEntry{}}
+}
+
+// secureEndpoint reports whether a bearer token may be sent to u: HTTPS, or
+// plain HTTP to a loopback host only.
+func secureEndpoint(u *url.URL) error {
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" {
+			return nil
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+		return fmt.Errorf("userinfo URL %q is plain HTTP to a non-loopback host", u.Redacted())
+	}
+	return fmt.Errorf("userinfo URL %q is not HTTPS", u.Redacted())
+}
+
+// issuerOf returns the token's `iss` claim, "" when it carries none.
+func issuerOf(claims *Claims) string {
+	iss, _ := claims.Raw["iss"].(string)
+	return iss
 }
 
 // fill sets claims.Email from the subject's userinfo answer when the token
@@ -78,6 +133,10 @@ func NewUserInfo(endpoint func(ctx context.Context) (string, error), client *htt
 // is asked with it, so the answer is the token holder's own.
 func (u *UserInfo) fill(ctx context.Context, token string, claims *Claims) {
 	if claims == nil || claims.Email != "" || claims.UserID == "" {
+		return
+	}
+	// The endpoint and the cache answer for u.issuer's subjects only.
+	if u.issuer == "" || issuerOf(claims) != u.issuer {
 		return
 	}
 	now := u.now()
@@ -172,6 +231,12 @@ func (u *UserInfo) resolve(ctx context.Context) (string, error) {
 	endpoint, err := u.endpoint(ctx)
 	if err == nil && endpoint == "" {
 		err = errors.New("userinfo: the issuer publishes no userinfo_endpoint")
+	}
+	if err == nil {
+		var parsed *url.URL
+		if parsed, err = url.Parse(endpoint); err == nil {
+			err = secureEndpoint(parsed)
+		}
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()

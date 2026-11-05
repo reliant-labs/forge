@@ -4,9 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/pkg/orm"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // google.protobuf.Struct is the natural wire type for a JSONB column —

@@ -13,6 +13,7 @@ func RevokeIdentity(ctx context.Context, ep Endpoint, token string) error {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	setClientIdentity(req.Header)
 	resp, err := NewClient(ep, Credential{}).httpClient().Do(req)
 	if err != nil {
 		return err

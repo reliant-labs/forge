@@ -459,6 +459,9 @@ CHANGELOG_FILE="CHANGELOG.md"
 NPM_MANIFEST="npm/package.json"
 TOUCHED=("${VERSION_FILES[@]}" "$NEXT_FILE" "$CHANGELOG_FILE")
 [ -f "$NPM_MANIFEST" ] && TOUCHED+=("$NPM_MANIFEST")
+# The MCP registry listing (npm/server.json) names the npm package's version.
+MCP_SERVER_JSON="npm/server.json"
+[ -f "$MCP_SERVER_JSON" ] && TOUCHED+=("$MCP_SERVER_JSON")
 # The web runtime's bookkeeping (step 8c): its manifests' versions and the
 # scaffold floor that names it.
 WR_MANIFEST="web-runtime/package.json"
@@ -569,6 +572,17 @@ if [ -f "$NPM_MANIFEST" ]; then
   fi
   cat "$BACKUP_DIR/npm-package.json.new" >"$NPM_MANIFEST"
 fi
+# The MCP registry listing carries the same version twice: the server's (two
+# spaces) and its npm package's (six). Both move with the package.
+if [ -f "$MCP_SERVER_JSON" ]; then
+  echo "→ syncing $MCP_SERVER_JSON to ${VERSION#v}"
+  sed -E 's/^( {2}| {6})"version": ".*"/\1"version": "'"${VERSION#v}"'"/' "$MCP_SERVER_JSON" >"$BACKUP_DIR/mcp-server.json.new"
+  if [ "$(grep -c "^ *\"version\": \"${VERSION#v}\"" "$BACKUP_DIR/mcp-server.json.new")" != "2" ]; then
+    echo "error: could not set both versions in $MCP_SERVER_JSON (expected a two- and a six-space-indented \"version\" line)" >&2
+    exit 1
+  fi
+  cat "$BACKUP_DIR/mcp-server.json.new" >"$MCP_SERVER_JSON"
+fi
 
 # ── 7b. CHANGELOG.md ────────────────────────────────────────────────
 # Written only here, from the merged PR titles since the previous tag. The
@@ -657,8 +671,8 @@ go build ./...
 # ── 8b. Release archives ────────────────────────────────────────────
 # Built before the bookkeeping commit exists, so a build failure leaves no
 # commit or tag behind. The stamped commit is the tagged one (HEAD here); the
-# bookkeeping commit changes only VERSION, NEXT_VERSION, npm/package.json and
-# CHANGELOG.md, so the compiled source is the tagged source.
+# bookkeeping commit changes only VERSION, NEXT_VERSION, npm/package.json,
+# npm/server.json and CHANGELOG.md, so the compiled source is the tagged source.
 ASSETS_DIR="$BACKUP_DIR/assets"
 echo "→ building release archives"
 FORGE_RELEASE_COMMIT="$(git rev-parse HEAD)" "$RELEASE_SCRIPT_DIR/build-release-assets.sh" "$VERSION" "$ASSETS_DIR"

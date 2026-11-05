@@ -1,8 +1,14 @@
 package cli
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // TestResolveUpLifecycle pins the pure TTY-aware lifecycle decision behind
@@ -47,6 +53,33 @@ func TestResolveUpLifecycle(t *testing.T) {
 	}
 }
 
+// TestUpTeardownSignals pins the signals a supervising `forge env up` tears its
+// stack down on. SIGTERM is how a harness or a supervisor stops a command, and
+// SIGHUP is its terminal closing; catching only Ctrl-C left both to kill forge
+// alone, orphaning children that run in process groups of their own.
+func TestUpTeardownSignals(t *testing.T) {
+	for _, want := range []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP} {
+		if !slices.Contains(upTeardownSignals, want) {
+			t.Errorf("upTeardownSignals = %v, missing %v", upTeardownSignals, want)
+		}
+	}
+}
+
+// TestProcRegistryStoppedAfterShutdown pins the guard that keeps the deferred
+// startup teardown from stopping a stack the hold already stopped.
+func TestProcRegistryStoppedAfterShutdown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p := newProcRegistry("proj-stopped", t.TempDir(), "dev")
+	if p.stopped() {
+		t.Fatal("a fresh registry reports stopped")
+	}
+	p.shutdown()
+	if !p.stopped() {
+		t.Fatal("registry does not report stopped after shutdown")
+	}
+}
+
 // TestUpWatchFlagRegistered confirms `forge env up --watch` is wired with help
 // text that names the force-supervise / no-TTY intent — the surface a human
 // piping output relies on, and the documented counterpart to the non-TTY
@@ -84,5 +117,90 @@ func TestUpWatchBackgroundMutuallyExclusive(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Errorf("error should mention mutual exclusion, got %v", err)
+	}
+}
+
+// TestTeardownSupervisedExitStopsChildrenOnAnOrdinaryError pins the exit a
+// supervising `forge env up` takes when a startup step (the readiness gate,
+// the cluster gate) returns an error after children started, with no signal:
+// the children it owns stop with it, rather than outliving the command in
+// process groups of their own. A run that started nothing stops nothing.
+func TestTeardownSupervisedExitStopsChildrenOnAnOrdinaryError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts and stops a real child process; runs in task test")
+	}
+	dir, projectID, env := testStack(t)
+	t.Chdir(dir)
+
+	idle := newProcRegistry(projectID, dir, env)
+	teardownSupervisedExit(context.Background(), idle)
+	if idle.stopped() {
+		t.Error("a run that started nothing tore a stack down")
+	}
+
+	reg := newProcRegistry(projectID, dir, env)
+	if err := reg.start("api", exec.Command("sleep", "60"), false); err != nil {
+		t.Fatal(err)
+	}
+	mp := reg.processes[0]
+	t.Cleanup(func() { _ = killProcessTree(mp.pid, syscall.SIGKILL) })
+
+	teardownSupervisedExit(context.Background(), reg)
+	if !reg.stopped() {
+		t.Fatal("an error return after a child started did not tear the stack down")
+	}
+	select {
+	case <-mp.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the child outlived the supervising run's error return")
+	}
+}
+
+// TestTeardownSupervisedExitStopsChildrenOnASignalMidStartup pins the other
+// early exit of a holding run (a TTY, or --watch): a signal that arrives
+// while the stack is still starting cancels the run's context, and the
+// children it already started stop with it instead of being orphaned in
+// process groups of their own.
+func TestTeardownSupervisedExitStopsChildrenOnASignalMidStartup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts and stops a real child process; runs in task test")
+	}
+	dir, projectID, env := testStack(t)
+	t.Chdir(dir)
+
+	reg := newProcRegistry(projectID, dir, env)
+	if err := reg.start("api", exec.Command("sleep", "60"), false); err != nil {
+		t.Fatal(err)
+	}
+	mp := reg.processes[0]
+	t.Cleanup(func() { _ = killProcessTree(mp.pid, syscall.SIGKILL) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // what signal.NotifyContext does on SIGTERM
+	teardownSupervisedExit(ctx, reg)
+	if !reg.stopped() {
+		t.Fatal("a signal mid-startup did not tear the stack down")
+	}
+	select {
+	case <-mp.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the child outlived the signal")
+	}
+
+	// The hold's own teardown already ran: a second one is a no-op.
+	teardownSupervisedExit(ctx, reg)
+}
+
+// TestNonTTYWatchHint pins the line the non-TTY default prints after it
+// returns with the stack running: it names --watch, the way an agent or
+// daemon holds the stack under a process it tracks. An explicit --background
+// asked for the detached stack and is told nothing more.
+func TestNonTTYWatchHint(t *testing.T) {
+	hint := nonTTYWatchHint("dev", false)
+	if !strings.Contains(hint, "forge env up dev --watch") || strings.Contains(hint, "\n") {
+		t.Errorf("the non-TTY return must print one line naming `forge env up dev --watch`, got %q", hint)
+	}
+	if got := nonTTYWatchHint("dev", true); got != "" {
+		t.Errorf("--background must print no hint, got %q", got)
 	}
 }

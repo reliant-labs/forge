@@ -163,6 +163,10 @@ func (*CtxWorker) RunContext(context.Context) error { return nil }
 
 type Handler struct{}
 func (*Handler) Start(context.Context) error { return nil } // not a Worker: no Name/Stop
+
+// A --kind cron worker: Run is one tick, called by cronkit from Start.
+type CronWorker struct{ Worker }
+func (*CronWorker) Run(context.Context) error { return nil }
 `
 	cases := map[string]lifecycle{
 		"Listener":  {Run: "Run", Drain: "Drain", Close: "Close", Ready: "Ready"},
@@ -170,6 +174,9 @@ func (*Handler) Start(context.Context) error { return nil } // not a Worker: no 
 		"Worker":    {Run: "Start", Close: "Stop"},
 		"CtxWorker": {Run: "RunContext", Close: "Stop"},
 		"Handler":   {},
+		// Supervising Run would fire one tick at boot and never schedule
+		// another.
+		"CronWorker": {Run: "Start", Close: "Stop"},
 	}
 	for name, want := range cases {
 		if got := lifecycleOf(lifecycleFixture(t, src, name)); got != want {

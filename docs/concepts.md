@@ -607,4 +607,5 @@ copying their tables.
 **Non-TTY is a first-class mode.** Without a terminal, `forge env up` starts
 everything, prints a summary, and returns. It does not hang waiting for an
 interaction that will never come. That is what makes Forge drivable by an
-agent unattended.
+agent unattended. An agent that wants the stack tied to a process it tracks
+runs `forge env up <env> --watch` in the background; SIGTERM stops the stack.

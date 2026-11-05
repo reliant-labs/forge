@@ -66,7 +66,7 @@ type upOptions struct {
 	noBuild          bool
 	noDeploy         bool
 	background       bool          // detach and write PID files; use `forge env down <env>` to teardown
-	watch            bool          // force supervise (hold + Ctrl-C teardown) even without a TTY
+	watch            bool          // force supervise (hold + teardown on SIGINT/SIGTERM/SIGHUP) even without a TTY
 	noGenerate       bool          // skip the pre-build "ensure generated code" step (--no-generate)
 	noInstall        bool          // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
 	noSeed           bool          // skip the first-boot dev auto-seed (--no-seed)
@@ -148,11 +148,17 @@ Lifecycle (what happens after host services + frontends start):
     prints the summary (URLs + per-service log paths), and RETURNS,
     leaving the processes running — the same end-state as --background.
     This is what keeps ` + "`forge env up <env>`" + ` from hanging an agent.
-  * --watch forces the hold-and-teardown lifecycle even without a TTY
-    (for a human piping the output through a tool).
+  * --watch holds the foreground even without a TTY. It is THE way for an
+    agent or a daemon to run the stack under a process it tracks: start
+    ` + "`forge env up <env> --watch`" + ` as a background process of the
+    harness (never nohup or &), and stop it with a signal.
   * --background always detaches and returns immediately, regardless of
-    the TTY. If both --watch and --background are passed, --background
-    wins (detach + return).
+    the TTY. --watch and --background cannot be combined.
+
+A holding run (a TTY, or --watch) owns its children from the moment the
+first one starts: SIGINT, SIGTERM or SIGHUP — even one that arrives while
+the stack is still starting — and a failed readiness or cluster gate stop
+them, so nothing it started outlives it.
 
 Either way the long-running children are tracked under
 ~/.cache/forge/up/<project-id>/; stop a detached / non-TTY stack with
@@ -186,7 +192,7 @@ Examples:
   forge env up dev
   forge env up dev --no-build
   forge env up dev --target admin-server -D host_runner=go-run
-  forge env up dev --watch        # hold + Ctrl-C teardown even when piped
+  forge env up dev --watch        # hold + teardown on a signal, even without a TTY (agents)
   forge env up dev --background
   forge env up dev -- --host 0.0.0.0   # forward flags to the dev servers
   forge env down dev
@@ -271,8 +277,8 @@ func newEnvUpCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&opts.hostReadyTimeout, "host-ready-timeout", hostReadyTimeout, "Maximum wait for host services to bind their ports, including compilation; exited runners fail immediately")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
-	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with 'forge env down <env>'). Beats --watch and the TTY default.")
-	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Force the hold-and-teardown lifecycle (block until Ctrl-C, then cascade-stop) even without a TTY. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
+	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with 'forge env down <env>'). Cannot be combined with --watch.")
+	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Hold the foreground and tear the stack down on SIGINT/SIGTERM/SIGHUP even without a TTY: the way an agent or daemon runs env up as a tracked background process. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default 'forge env up' runs 'forge generate' when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default 'forge env up' installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
 	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default 'forge env up' seeds a dev database once when it is reachable and all seedable tables are empty.")
@@ -1093,28 +1099,48 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		return err
 	}
 
-	// Resolve the lifecycle (Part B): supervise (hold + Ctrl-C teardown)
-	// vs once (start, persist PIDs, return). `up`'s default is auto —
+	// Resolve the lifecycle (Part B): supervise (hold + teardown on a
+	// signal) vs once (start, persist PIDs, return). `up`'s default is auto —
 	// resolved here by the TTY check so an agent / CI `forge env up` doesn't
 	// hang on the interactive hold. --background and --watch override the
-	// default (--background wins if somehow both set; rejected upstream).
+	// default (they are mutually exclusive; rejected upstream).
 	// `detach` collapses the lifecycle to the single behaviour the host
 	// phase + summary need: a "once" run detaches every child (log files,
-	// no foreground hold) so the stack OUTLIVES this
-	// process, exactly as --background always has; a "supervise" run keeps
-	// the live prefixed streams and holds. detach is true for BOTH the
-	// explicit --background and the non-TTY default — they share the
-	// return path verbatim.
+	// no foreground hold) so the stack OUTLIVES this process, exactly as
+	// --background always has; a "supervise" run keeps the live prefixed
+	// streams and holds. detach is true for BOTH the explicit --background
+	// and the non-TTY default — they share the return path verbatim.
 	lifecycle := resolveUpLifecycle(cliutil.StdinIsTTY(), opts.watch, opts.background)
 	detach := lifecycle == lifecycleOnce
 
+	// A supervising run owns its children from the moment the first one
+	// starts, not from the moment the hold begins. The host phase and the
+	// readiness gate can take minutes (a first compile), and every child runs
+	// in its own process group, so a SIGTERM that arrived then used to kill
+	// forge alone and orphan everything it had started. Catching the signals
+	// here makes a signal at any point after this line cancel the phases below
+	// and tear the stack down: SIGINT (Ctrl-C), SIGTERM (a harness or a
+	// supervisor stopping the command) and SIGHUP (its terminal closing).
+	// A detached run hands its children to `forge env down` instead, so it
+	// keeps the default dispositions.
+	//
 	// Host phases — host services + frontends. These are tracked under
-	// the orchestrator's child-process registry so Ctrl-C tears them
+	// the orchestrator's child-process registry so a signal tears them
 	// all down together. The registry writes its ledger + this project's path
 	// record on every start, so a child is on disk — and therefore reachable by
 	// `forge env down` / `forge env ps` — from the moment it exists, however
 	// this process returns.
 	procs := newProcRegistry(projectID, projectDir, opts.env)
+	if !detach {
+		sigCtx, stopSignals := signal.NotifyContext(ctx, upTeardownSignals...)
+		defer stopSignals()
+		ctx = sigCtx
+		// The hold below tears down itself; this covers every other way out
+		// of a supervising run — a signal that cut a phase short, and an
+		// ordinary error (a failed readiness or cluster gate) after children
+		// started. Only --background leaves a stack running.
+		defer func() { teardownSupervisedExit(ctx, procs) }()
+	}
 
 	// Phase 3: host-mode services.
 	if err := upHostPhase(ctx, hostPhase{
@@ -1225,15 +1251,18 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		// text says so.
 		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
+		if hint := nonTTYWatchHint(opts.env, opts.background); hint != "" {
+			fmt.Println(hint)
+		}
 		return clusterErr
 	}
 
 	if clusterErr != nil {
 		// Do NOT hold the foreground on an env that is not up: the hold
 		// exits 0 on Ctrl-C, which is the green-exit-over-a-crashloop this
-		// gate exists to end. Nothing is killed — the host children are in
-		// the ledger, so `forge env down` still reaches them.
-		fmt.Printf("[up] host/frontend process(es) from this run are still running — stop them with `forge env down %s`.\n", opts.env)
+		// gate exists to end. Nor leave the host children behind: this run
+		// owns them, so the deferred teardown stops them as it returns.
+		session.stop(time.Now().UTC())
 		return clusterErr
 	}
 
@@ -1250,9 +1279,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	defer stopBeat()
 	go session.heartbeatUntil(beatCtx)
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	<-ctx.Done()
 	fmt.Println("\n[up] shutting down...")
 	// Stop the heartbeat BEFORE the teardown report, so a beat in flight
 	// cannot land after the stopped row and resurrect the session as
@@ -1262,6 +1289,42 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	procs.shutdown()
 	return nil
 }
+
+// teardownSupervisedExit stops a supervising run's children on any return
+// that did not already tear them down: a signal before the hold, or an error
+// returned after the first child started. The children run in process groups
+// of their own, so without it they would outlive the command that owns them.
+func teardownSupervisedExit(ctx context.Context, procs *procRegistry) {
+	if procs.stopped() {
+		return
+	}
+	switch {
+	case ctx.Err() != nil:
+		fmt.Println("\n[up] interrupted while starting — shutting down...")
+	case procs.count() > 0:
+		fmt.Println("[up] startup failed — stopping the process(es) this run started...")
+	default:
+		// Nothing started and nothing interrupted: no stack of this run's
+		// to stop, and its records are not this run's to remove.
+		return
+	}
+	procs.shutdown()
+}
+
+// nonTTYWatchHint is the one line the non-TTY default prints after it
+// returns with the stack still running: an agent or daemon that wanted the
+// stack to live and die with a process it tracks asks for --watch. Empty for
+// an explicit --background, which asked for exactly this.
+func nonTTYWatchHint(env string, background bool) string {
+	if background {
+		return ""
+	}
+	return fmt.Sprintf("[up] no TTY, so this run returned with the stack running. To hold it under a process you track (an agent or daemon), run `forge env up %s --watch` in the background instead; it stops the stack on SIGTERM.", env)
+}
+
+// upTeardownSignals stop a supervising `forge env up` and tear its stack
+// down: Ctrl-C, a harness or supervisor's SIGTERM, and the terminal closing.
+var upTeardownSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 
 // hostPhase is the state upHostPhase needs to converge the host world and
 // start the host-mode services in it.
@@ -3390,6 +3453,15 @@ type procRegistry struct {
 	env        string
 	mu         sync.Mutex
 	processes  []*managedProcess
+	isStopped  bool // shutdown has run
+}
+
+// stopped reports whether shutdown has run, so a second teardown path (a
+// deferred one, beside the hold's own) does not stop the stack twice.
+func (p *procRegistry) stopped() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.isStopped
 }
 
 func newProcRegistry(projectID, projectDir, env string) *procRegistry {
@@ -3747,6 +3819,7 @@ func procPID(mp *managedProcess) int {
 // SIGKILLed. State file is removed on success.
 func (p *procRegistry) shutdown() {
 	p.mu.Lock()
+	p.isStopped = true
 	procs := make([]*managedProcess, len(p.processes))
 	copy(procs, p.processes)
 	p.mu.Unlock()

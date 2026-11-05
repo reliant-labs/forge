@@ -715,9 +715,12 @@ to run `forge skill load forge`, `forge skill search <query>` and
 
 Any MCP-capable harness can skip the instruction file entirely: `forge mcp`
 serves the introspection verbs, the skills, lint and generate as tools, with
-instructions that say what forge is and to load the `forge` skill first.
+instructions that say what forge is and to load the `forge` skill first. Its
+`deploy_claimable` tool puts an app live with no account (adopting an existing
+Vite or Next.js app in place) and returns a URL and a claim link for the user.
 
 ```bash
+claude mcp add forge -- npx -y @reliantlabs/forge mcp   # no install
 claude mcp add forge -- forge mcp      # Codex: codex mcp add forge -- forge mcp
 ```
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/credentials"
 	"github.com/reliant-labs/forge/pkg/oauth2"
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // ClientID is forge's OAuth client id at a control plane.
@@ -74,6 +75,7 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 		OpenURL:           open,
 		Out:               b.Out,
 		Timeout:           timeout,
+		HTTPClient:        identifiedDoer{next: observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: oauth2.DefaultExchangeTimeout})},
 	}.Run(ctx)
 	if err != nil {
 		if refused := humanLoginRefusal(err); refused != "" {

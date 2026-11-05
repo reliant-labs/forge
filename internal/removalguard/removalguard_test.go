@@ -48,16 +48,30 @@ var removals = []removal{
 		Why: "Multi-tenancy was removed from forge. Tenant scoping is application-owned " +
 			"domain policy now; forge ships no tenant column, header, context key or helper.",
 		Patterns: []*regexp.Regexp{
-			// tenant, tenants, tenancy, TenantID, tenant_id, X-Tenant-Id,
-			// multi-tenant, --tenant. The leading \b keeps "lieutenant" and
-			// "maintenance" out.
-			regexp.MustCompile(`(?i)\btenan[tc]`),
-			// camelCase-embedded forms the \b above cannot see:
-			// WithTestTenant, testTenant, scopeTenant. Case-SENSITIVE, so the
-			// lowercase-t English words can never reach it.
-			regexp.MustCompile(`[a-z0-9]Tenant`),
-			// multitenant / multitenancy written without a separator.
-			regexp.MustCompile(`(?i)multitenan`),
+			// SCOPE — read before widening. These are the removed feature's own
+			// identifiers, taken from the tree before #94 deleted it. The plain
+			// word "tenant" is NOT among them: an application's own `tenant_id`
+			// column is exactly the application-owned scoping that replaced the
+			// feature, and forge's docs, seed tests and forge:owner examples use
+			// it as the canonical example. Matching the word failed hundreds of
+			// such lines and taught nothing (owner decision, 2026-11-05).
+			//
+			// The annotation, FieldOptions.tenant, in the forms it shipped in.
+			regexp.MustCompile(`\btenant:\s*true\b|\bbool tenant = \d+;`),
+			// The Go API: the claims field and its context key, the helpers,
+			// the CRUD hook and interceptor, the generator and its config.
+			// A bare TenantID is NOT here: it is the Go field forge generates for
+			// an application's own tenant_id column. Only the claims field the
+			// feature added to the authenticated caller is.
+			regexp.MustCompile(`\b[Cc]laims\.TenantID\b|\b(?:tenantIDKey|TenantKey|TenantIDFromContext|GetTenantID|` +
+				`ContextWithTenantID|WithTenantID|RequireTenantID|RequireTenant|TenantInterceptor|` +
+				`TenantColumn|TenantColumnName|TenantGoName|HasTenant|MultiTenant|MultiTenantEnabled|` +
+				`MultiTenantConfig|WithTestTenant|GenerateTenantMiddleware|GenerateTenantMiddlewareFunc|` +
+				`TenantTemplateData)\b`),
+			// The header, the proto/config keys and the generated file.
+			regexp.MustCompile(`(?i)\bX-Tenant-Id\b|\btenant_key\b|\bmulti_tenant\b|\btenant_gen\b`),
+			// The CLI flag.
+			regexp.MustCompile(`--tenant\b`),
 		},
 		Allowances: []allowance{
 			{
@@ -1929,7 +1943,7 @@ var removals = []removal{
 					"it would delete the explanation. Scoped to the negating phrasings.",
 				Token: regexp.MustCompile("no `--rollback`,\\s*|no `rollback_cmd`|no `kubectl rollout undo` path|There is no rollback_cmd|There is no `rollback_cmd`"),
 				Paths: []string{
-					"internal/templates/project/skills/forge/deploy/SKILL.md",
+					"internal/templates/project/skills/forge/deploy/release/SKILL.md",
 					"internal/deploytarget/external.go",
 					".claude/skills/",
 				},
@@ -1963,7 +1977,9 @@ var removals = []removal{
 			"mode) and `forge project map`/`graph`.\n" +
 			"This removal does NOT touch MCP as a CLIENT: .mcp.json / .mcp.json.example and " +
 			"their templates configure chrome-devtools and reliant-docs MCP servers that " +
-			"agents consume, and those stay.",
+			"agents consume, and those stay. Nor does it cover the live `forge mcp` command " +
+			"(internal/cli/mcp.go), forge's own stdio MCP server over its fixed CLI " +
+			"capabilities (report_bug, deploy_claimable, ...), which generates no manifest.",
 		Patterns: []*regexp.Regexp{
 			// SCOPE — read before widening. This entry forbids the generated
 			// MANIFEST, the bridge package, and the hosts. It deliberately does
@@ -1981,19 +1997,26 @@ var removals = []removal{
 			// "forge-mcp" and "mcpbridge" share no substring with the live
 			// chrome-devtools config.
 			regexp.MustCompile(`\bmcpbridge\b|\bforge-mcp\b`),
-			// The CLI host: the `forge mcp` command and its token env var.
-			// The space is what keeps this off ".mcp.json" and "internal/mcp/".
-			regexp.MustCompile(`\bforge mcp\b|\bFORGE_MCP_TOKEN\b|\bnewMCPCmd\b|\bnewMCPServeCmd\b`),
+			// The CLI host: the `forge mcp serve` subcommand, its constructor
+			// and its token env var. The space is what keeps this off
+			// ".mcp.json" and "internal/mcp/".
+			//
+			// NARROWED, not widened: this alternative used to be the bare
+			// `\bforge mcp\b` (and `\bnewMCPCmd\b`), back when `forge mcp` was
+			// only the manifest host's parent. `forge mcp` is a live command
+			// again — forge's own MCP server (internal/cli/mcp.go), whose
+			// tools are fixed CLI capabilities and which generates nothing per
+			// API — so the bare spelling now names a supported feature and
+			// is named in the npm shim, its MCP registry listing and their
+			// tests. A path allowance for it had to grow with every new
+			// mention. What was removed is still forbidden: `serve`, the token
+			// and newMCPServeCmd above, the manifest, bridge and binary.
+			// `\bserve\b` does not match "forge mcp serves …" prose.
+			regexp.MustCompile(`\bforge mcp serve\b|\bFORGE_MCP_TOKEN\b|\bnewMCPServeCmd\b`),
 			// The audit field that existed only to tell an agent what the
 			// bridge could dispatch. Streaming mode survives it.
 			regexp.MustCompile(`\bmcp_callable\b|\bMCPCallable\b`),
 		},
-		Allowances: []allowance{{
-			Name:   "owned CLI capability MCP server, not a generated per-API manifest",
-			Reason: "The new stdio host exposes forge's fixed CLI capabilities and explicit report tool. It emits no generated per-service API manifest. Only the reused command/constructor spellings are permitted in its owned implementation, docs and license record; old manifest/bridge/token identifiers remain forbidden.",
-			Token:  regexp.MustCompile(`\bforge mcp\b|\bnewMCPCmd\b`),
-			Paths:  []string{".license-allowlist", "README.md", "docs/mcp.md", "internal/cli/mcp.go", "internal/cli/mcp_test.go", "internal/cli/root.go", "internal/cli/forge_pin_delegate.go", "internal/cli/forge_pin_marker_test.go", "internal/templates/project/reliant.md.tmpl", "internal/templates/project/skills/forge/SKILL.md", "internal/templates/project/skills/forge/debug/SKILL.md"},
-		}},
 	},
 	{
 		Name: "passing an image registry to forge instead of declaring it",
@@ -2627,13 +2650,18 @@ func TestTenancyAzureAllowanceStaysNarrow(t *testing.T) {
 
 		// The rest of the removed feature, inside the proposal. The
 		// carve-out excuses spans, not the file.
-		{"a tenant context key", proposal, "TenantID string", true},
+		{"the tenant context helper", proposal, "ctx = middleware.ContextWithTenantID(ctx, id)", true},
+		{"the claims field", proposal, "if claims.TenantID == \"\" {", true},
 		{"a tenant header", proposal, "X-Tenant-Id: acme", true},
 		{"the generated CRUD tenant hook", proposal, "Tenant: middleware.RequireTenantID,", true},
 
-		// Azure's spelling outside the proposal is not excused.
-		{"the Azure field in a file the carve-out does not name", "kcl/lib/desktop.k",
-			"    tenant_id: str", true},
+		// An application's own tenant_id column is the scoping that replaced
+		// the feature, so the plain column name passes anywhere; the removed
+		// annotation on it does not.
+		{"an application's own tenant_id column", "kcl/lib/desktop.k",
+			"    tenant_id: str", false},
+		{"the removed annotation in a file the carve-out does not name", "kcl/lib/desktop.k",
+			"    tenant_id: str  # tenant: true", true},
 	}
 
 	root := repoRoot(t)
@@ -2658,8 +2686,8 @@ func TestExternalProtocolAndReplacementAllowancesStayNarrow(t *testing.T) {
 		wantHit             bool
 	}{
 		{"tenancy", "docs/design/per-workload-placement.md", "tenant_cluster_id", false},
-		{"tenancy", "docs/design/per-workload-placement.md", "TenantID string", true},
-		{"tenancy", "internal/templates/project/skills/forge/db/SKILL.md", "tenant_cluster_id", true},
+		{"tenancy", "docs/design/per-workload-placement.md", "middleware.RequireTenantID", true},
+		{"tenancy", "internal/templates/project/skills/forge/db/SKILL.md", "X-Tenant-Id: acme", true},
 		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "Kubernetes RBAC", false},
 		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "AuthorizeHook", true},
 		{"the raw-curl cut-release CI job and `forge reconcile`", "docs/design/per-workload-placement.md", "cut-release.sh", false},
@@ -2668,7 +2696,9 @@ func TestExternalProtocolAndReplacementAllowancesStayNarrow(t *testing.T) {
 		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "integerLiteral", true},
 		{"the generated per-API MCP manifest and its bridge", "internal/cli/mcp.go", "newMCPCmd forge mcp", false},
 		{"the generated per-API MCP manifest and its bridge", "internal/cli/mcp.go", "GenerateMCPManifest gen/mcp/manifest.json FORGE_MCP_TOKEN newMCPServeCmd", true},
-		{"the generated per-API MCP manifest and its bridge", "internal/templates/ci/github/ci.yml.tmpl", "forge mcp", true},
+		{"the generated per-API MCP manifest and its bridge", "npm/smithery.yaml", "Smithery listing for `forge mcp`", false},
+		{"the generated per-API MCP manifest and its bridge", "internal/cli/forge_pin_marker_test.go", "forge mcp serves every tool call", false},
+		{"the generated per-API MCP manifest and its bridge", "internal/templates/ci/github/ci.yml.tmpl", "forge mcp serve", true},
 	}
 	for _, tc := range cases {
 		rm := removalNamed(t, tc.removal)

@@ -45,6 +45,9 @@ type fakeClaimableControlPlane struct {
 	// availability is GetClaimableAvailability's answer; nil is "available".
 	availability      *cloud.ClaimableAvailability
 	availabilityCalls int
+	// holdChallenge, when set, makes GetClaimableChallenge wait until the
+	// request is cancelled (or the channel closes): a deploy in flight.
+	holdChallenge chan struct{}
 }
 
 func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +66,15 @@ func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Req
 	case "/" + cloud.ProcGetClaimableChallenge:
 		f.mu.Lock()
 		f.challenges++
+		hold := f.holdChallenge
 		f.mu.Unlock()
+		if hold != nil {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-hold:
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"challenge":"signed-challenge","difficultyBits":8,"expiresAt":"2030-01-01T00:00:00Z"}`))
 		return

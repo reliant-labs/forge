@@ -3,9 +3,11 @@ package cronkit_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,6 +93,55 @@ func TestPostgresClaimsHaveOneWinnerPerTick(t *testing.T) {
 	}
 	if won, err := c.Claim(ctx, "poll-hn", tick); err != nil || !won {
 		t.Fatalf("another job's same tick = %v, %v; want won (the key is job AND tick)", won, err)
+	}
+}
+
+// Replicas that boot together create the claims table at the same instant.
+// Postgres's CREATE TABLE IF NOT EXISTS is not atomic against itself: the
+// loser of that race fails with 42710 (type exists), 23505 (unique violation
+// on pg_type) or 42P07 (relation exists) — and a claim that errors skips its
+// tick on that replica. Each round starts every replica's first claim on a
+// warm connection at one barrier against a database with no table, and every
+// claim must return without error, with exactly one winner (#1773).
+func TestPostgresReplicasCreatingTheTableAtOnceAllClaim(t *testing.T) {
+	const replicas, rounds = 16, 5
+	ctx := context.Background()
+	tick := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	for round := range rounds {
+		dsn := testDSN(t)
+		claims := make([]cronkit.Claims, replicas)
+		for i := range claims {
+			db := pool(t, dsn)
+			if err := db.PingContext(ctx); err != nil {
+				t.Fatal(err)
+			}
+			claims[i] = cronkit.Postgres(cronkit.SQLDB(db), cronkit.PostgresOptions{Replica: fmt.Sprintf("r%d", i)})
+		}
+		var (
+			start = make(chan struct{})
+			wg    sync.WaitGroup
+			wins  atomic.Int32
+		)
+		for _, c := range claims {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				won, err := c.Claim(ctx, "poll", tick)
+				if err != nil {
+					t.Errorf("round %d: claim: %v", round, err)
+					return
+				}
+				if won {
+					wins.Add(1)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if n := wins.Load(); n != 1 {
+			t.Fatalf("round %d: %d replicas won the tick, want exactly 1", round, n)
+		}
 	}
 }
 

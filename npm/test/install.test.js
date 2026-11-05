@@ -101,13 +101,15 @@ test("package.json is publishable as @reliantlabs/forge", () => {
   assert.equal(pkg.dependencies, undefined, "the shim has no dependencies");
 });
 
-// serves a fake release for `version`; sumOverride corrupts the checksum, and
-// redirects maps a URL path to the Location it answers 302 with.
-function serve(version, { sumOverride, redirects = {} } = {}) {
+// serves a fake release for `version`; sumOverride corrupts the checksum,
+// redirects maps a URL path to the Location it answers 302 with, and
+// shScript replaces the fake binary's body (POSIX only).
+function serve(version, { sumOverride, redirects = {}, shScript } = {}) {
   const { asset, binary } = platformAsset();
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-fixture-"));
-  const script =
-    binary === "forge.exe"
+  const script = shScript
+    ? shScript
+    : binary === "forge.exe"
       ? "@echo off\r\necho forge fake %*\r\n"
       : '#!/bin/sh\necho "forge fake $*"\nexit 3\n';
   fs.writeFileSync(path.join(stage, binary), script, { mode: 0o755 });
@@ -348,6 +350,52 @@ test(
       });
       assert.equal(res.stdout.trim(), "forge fake version --short");
       assert.equal(res.code, 3, "the binary's exit code must be forwarded");
+    } finally {
+      server.close();
+    }
+  },
+);
+
+// `npx -y @reliantlabs/forge mcp` is an MCP stdio server: stdout belongs to
+// the protocol, so on the very first run (the download) the shim must write
+// nothing to stdout but the binary's own bytes, and pass stdin through.
+test(
+  "bin/forge.js keeps stdout to the binary's bytes, for `forge mcp` over stdio",
+  { skip: process.platform === "win32" },
+  async () => {
+    const { server, base } = await serve(pkg.version, {
+      shScript: '#!/bin/sh\n[ "$1" = mcp ] || exit 9\ncat\n',
+    });
+    const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
+    const request =
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n';
+    try {
+      const res = await new Promise((resolve) => {
+        const child = spawn(
+          process.execPath,
+          [path.join(__dirname, "..", "bin", "forge.js"), "mcp"],
+          {
+            env: {
+              ...process.env,
+              FORGE_RELEASE_BASE_URL: base,
+              FORGE_NPM_CACHE_DIR: cache,
+            },
+          },
+        );
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (d) => (stdout += d));
+        child.stderr.on("data", (d) => (stderr += d));
+        child.on("close", (code) => resolve({ code, stdout, stderr }));
+        child.stdin.end(request);
+      });
+      assert.equal(res.code, 0, res.stderr);
+      assert.equal(res.stdout, request, "stdout must carry the protocol alone");
+      assert.match(
+        res.stderr,
+        /downloading/,
+        "the download notice goes to stderr",
+      );
     } finally {
       server.close();
     }

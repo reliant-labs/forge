@@ -160,6 +160,9 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 	// (ReasonClientUpgradeRequired) instead of running a request whose
 	// meaning has changed since this forge was built.
 	httpReq.Header.Set(VersionHeader, buildinfo.Version())
+	// User-Agent and X-Forge-Client name the release, platform and driving
+	// agent harness, for the control plane's product analytics.
+	setClientIdentity(httpReq.Header)
 
 	resp, err := c.httpClientFor(procedure).Do(httpReq)
 	if err != nil {

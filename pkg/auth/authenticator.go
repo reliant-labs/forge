@@ -94,8 +94,9 @@ func (f KeyValidatorFunc) ValidateKey(ctx context.Context, key string) (*Claims,
 //
 // The zero value is not usable; construct with [NewAuthenticator].
 type Authenticator struct {
-	tokens func(token string) (*Claims, error)
-	keys   atomic.Pointer[keyValidatorSlot]
+	tokens   func(token string) (*Claims, error)
+	keys     atomic.Pointer[keyValidatorSlot]
+	userInfo atomic.Pointer[UserInfo]
 }
 
 // keyValidatorSlot boxes the installed KeyValidator: atomic.Pointer needs a
@@ -124,6 +125,15 @@ func (a *Authenticator) UseKeyValidator(kv KeyValidator) {
 	a.keys.Store(&keyValidatorSlot{kv: kv})
 }
 
+// UseUserInfo installs the [UserInfo] that fills [Claims.Email] for a bearer
+// token that carries no email (a managed identity's access token carries
+// none). nil uninstalls it. API keys are never looked up: a key's claims are
+// the application's own. Safe to call concurrently with
+// [Authenticator.Authenticate].
+func (a *Authenticator) UseUserInfo(u *UserInfo) {
+	a.userInfo.Store(u)
+}
+
 // Authenticate checks credential — the raw value, with no "Bearer "
 // scheme — and returns the claims of the principal it proves. ctx is the
 // request's context; it reaches the key validator. See [Authenticator] for
@@ -141,6 +151,9 @@ func (a *Authenticator) Authenticate(ctx context.Context, credential string) (*C
 	}
 	if claims == nil {
 		return nil, errors.New("token validator returned no claims")
+	}
+	if u := a.userInfo.Load(); u != nil {
+		u.fill(ctx, credential, claims)
 	}
 	return claims, nil
 }

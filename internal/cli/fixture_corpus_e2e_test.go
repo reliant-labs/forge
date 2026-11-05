@@ -1595,7 +1595,8 @@ func corpusSkipDir(name string) bool {
 // cache's manifest (generateCacheRel). The manifest is machine-local
 // bookkeeping, not output: run 2 is the run that verifies the fixed point,
 // so it is the run that records it — generateTwiceIdempotent then checks the
-// record works with a third run. The lock is not output either: it is the
+// record works with a third run. The go tools' memo (generateMemoRel) is the
+// same kind of bookkeeping. The lock is not output either: it is the
 // OS lock every run takes, and the holder writes its pid
 // and start time into it on every acquisition (recordGenerateLockHolder)
 // so a waiting run can name it. Two runs therefore always differ there,
@@ -1620,7 +1621,7 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 		if rerr != nil {
 			return rerr
 		}
-		if filepath.ToSlash(rel) == generateLockRel || filepath.ToSlash(rel) == generateCacheRel {
+		if filepath.ToSlash(rel) == generateLockRel || filepath.ToSlash(rel) == generateCacheRel || filepath.ToSlash(rel) == generateMemoRel {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)

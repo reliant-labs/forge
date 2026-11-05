@@ -95,6 +95,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/mod/modfile"
@@ -215,11 +216,16 @@ func saveGenerateCacheManifest(root string, m *generateCacheManifest) error {
 	if err != nil {
 		return err
 	}
+	return writeForgeStateFile(root, generateCacheRel, data)
+}
+
+// writeForgeStateFile replaces the .forge/ state file rel atomically.
+func writeForgeStateFile(root, rel string, data []byte) error {
 	dir := filepath.Join(root, ".forge")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".forge-tmp-generate-cache-*")
+	tmp, err := os.CreateTemp(dir, ".forge-tmp-"+strings.TrimSuffix(filepath.Base(rel), ".json")+"-*")
 	if err != nil {
 		return err
 	}
@@ -238,7 +244,7 @@ func saveGenerateCacheManifest(root string, m *generateCacheManifest) error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
-	if err := os.Rename(tmp.Name(), filepath.Join(root, generateCacheRel)); err != nil {
+	if err := os.Rename(tmp.Name(), filepath.Join(root, rel)); err != nil {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
@@ -615,11 +621,13 @@ func pathIdentity(abs string) (string, error) {
 }
 
 // generateCacheIgnoredState are .forge/ files that are not inputs: the lock
-// (it holds a pid), this cache's own manifest, and the friction log, which
-// nothing in generate reads.
+// (it holds a pid), this cache's own manifest, the go tools' memo (a skip it
+// allows is a call that would have changed nothing; generate_go_memo.go), and
+// the friction log, which nothing in generate reads.
 var generateCacheIgnoredState = map[string]bool{
 	"forge.lock":          true,
 	"generate-cache.json": true,
+	"generate-memo.json":  true,
 	"friction.jsonl":      true,
 }
 
@@ -696,10 +704,66 @@ func generateCacheExtraFiles(root string, snap *workTreeSnapshot) []string {
 	return out
 }
 
+// withGitListingsPrefetched runs fn — a work-tree snapshot followed by a
+// fingerprint — with the fingerprint's two other git listings (gitlinks and
+// ignored files) already running beside the snapshot's own. Each is a `git
+// ls-files` over the whole tree; one after another they were most of a cached
+// no-op's wall time on a loaded machine (about 4s apiece at load 100). A
+// prefetched listing is taken at most once, by the first fingerprint of root
+// inside fn, and whatever fn did not take is dropped when it returns, so no
+// later caller ever reads a listing older than its own work.
+func withGitListingsPrefetched(root string, fn func()) {
+	gitPrefetch.mu.Lock()
+	gitPrefetch.root = root
+	gitPrefetch.pending = map[string]chan []string{}
+	for name, list := range map[string]func(string) []string{
+		"submodules": listGitSubmodules,
+		"ignored":    listGitIgnoredFiles,
+	} {
+		ch := make(chan []string, 1)
+		gitPrefetch.pending[name] = ch
+		go func() { ch <- list(root) }()
+	}
+	gitPrefetch.mu.Unlock()
+	defer func() {
+		gitPrefetch.mu.Lock()
+		gitPrefetch.root, gitPrefetch.pending = "", nil
+		gitPrefetch.mu.Unlock()
+	}()
+	fn()
+}
+
+var gitPrefetch struct {
+	mu      sync.Mutex
+	root    string
+	pending map[string]chan []string
+}
+
+// prefetchedGitListing takes the prefetched listing name of root, if one is
+// pending.
+func prefetchedGitListing(root, name string) ([]string, bool) {
+	gitPrefetch.mu.Lock()
+	ch, ok := gitPrefetch.pending[name]
+	if !ok || gitPrefetch.root != root {
+		gitPrefetch.mu.Unlock()
+		return nil, false
+	}
+	delete(gitPrefetch.pending, name)
+	gitPrefetch.mu.Unlock()
+	return <-ch, true
+}
+
 // gitIgnoredFiles lists the gitignored files under root, with every wholly
 // ignored directory collapsed to one "dir/" entry and dropped. nil outside a
 // git work tree, where snapshotWorkTree already walked every file.
 func gitIgnoredFiles(root string) []string {
+	if files, ok := prefetchedGitListing(root, "ignored"); ok {
+		return files
+	}
+	return listGitIgnoredFiles(root)
+}
+
+func listGitIgnoredFiles(root string) []string {
 	cmd := exec.Command("git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
 	cmd.Dir = root
 	out, err := cmd.Output()
@@ -736,6 +800,13 @@ func gitListTracked(root string) (map[string]bool, bool) {
 // gitSubmodules lists the project-relative paths of root's gitlinks
 // (submodules, and nested repositories added as one).
 func gitSubmodules(root string) []string {
+	if subs, ok := prefetchedGitListing(root, "submodules"); ok {
+		return subs
+	}
+	return listGitSubmodules(root)
+}
+
+func listGitSubmodules(root string) []string {
 	cmd := exec.Command("git", "ls-files", "-z", "--stage")
 	cmd.Dir = root
 	out, err := cmd.Output()
@@ -1325,11 +1396,13 @@ func generateCachedNoop(projectDir string, flags pipelineFlags) (bool, error) {
 	}
 	skipped := false
 	err = withGenerateLock(projectDir, func() error {
-		c := openGenerateCache(abs, flags, snapshotWorkTree(abs), generateCacheSystem())
-		if ok, _ := c.verdict(); ok {
-			c.printSkip(os.Stdout)
-			skipped = true
-		}
+		withGitListingsPrefetched(abs, func() {
+			c := openGenerateCache(abs, flags, snapshotWorkTree(abs), generateCacheSystem())
+			if ok, _ := c.verdict(); ok {
+				c.printSkip(os.Stdout)
+				skipped = true
+			}
+		})
 		return nil
 	})
 	return skipped, err
@@ -1375,7 +1448,11 @@ func (c *generateCacheRun) record(w io.Writer, pctx *pipelineContext, ran []GenS
 	// binary there is not this one.
 	postSys := c.sys
 	postSys.runningForge = c.pre.env["forge"]
-	post, err := fingerprintGenerate(c.root, snapshotWorkTree(c.root), outputs, dirs, c.pre.execs, postSys)
+	var post *generateFingerprint
+	var err error
+	withGitListingsPrefetched(c.root, func() {
+		post, err = fingerprintGenerate(c.root, snapshotWorkTree(c.root), outputs, dirs, c.pre.execs, postSys)
+	})
 	if err != nil {
 		fmt.Fprintf(w, "ℹ️  not recorded as a verified fixed point (%v); the next run runs every step.\n", err)
 		return false

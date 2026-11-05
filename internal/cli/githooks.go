@@ -92,8 +92,19 @@ func gitHooksOptOut() string {
 //
 // root is the project root (the directory holding forge.yaml).
 func ensureGitHooksActivated(root string) {
+	if activate := gitHooksActivation(root); activate != nil {
+		activate()
+	}
+}
+
+// gitHooksActivation is ensureGitHooksActivated's read half: everything it
+// checks, ending in the one `git config` read, and the write to make when
+// that read says the hooks are not active yet (nil when there is none). The
+// split lets a caller run the read beside other git reads and keep the
+// writes to .git/config one at a time.
+func gitHooksActivation(root string) (activate func()) {
 	if gitHooksOptOut() != "" {
-		return
+		return nil
 	}
 	// Only when the tracked hook is present AND forge wrote it. This gates
 	// the whole feature on the generator having written .githooks/ —
@@ -101,25 +112,27 @@ func ensureGitHooksActivated(root string) {
 	// leaves a project's own hooks to the project.
 	script, err := os.ReadFile(filepath.Join(root, ".githooks", "pre-commit"))
 	if err != nil || !generator.IsForgeManagedGitHook(script) {
-		return
+		return nil
 	}
 	// Must be a git repo. In a linked worktree .git is a file (a gitdir
 	// pointer), not a directory, so Stat (not a dir check) is correct.
 	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
-		return
+		return nil
 	}
 	// Respect an existing setting at any level — if the user (or a prior
 	// run) already pointed core.hooksPath somewhere, leave it alone. Only
 	// an unset value is ours to fill.
 	cur, _ := exec.CommandContext(context.Background(), "git", "-C", root, "config", "--get", "core.hooksPath").Output()
 	if strings.TrimSpace(string(cur)) != "" {
-		return
+		return nil
 	}
-	// --local writes the repository config (the shared .git/config for
-	// worktrees), so one write covers every linked worktree.
-	if err := exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", "core.hooksPath", ".githooks").Run(); err != nil {
-		return
+	return func() {
+		// --local writes the repository config (the shared .git/config for
+		// worktrees), so one write covers every linked worktree.
+		if err := exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", "core.hooksPath", ".githooks").Run(); err != nil {
+			return
+		}
+		fmt.Fprintln(os.Stderr,
+			"forge: activated git hooks (.githooks) — 'git push' now runs 'forge lint' + 'forge project audit'. Disable with "+gitHooksOptOutEnv+"=1.")
 	}
-	fmt.Fprintln(os.Stderr,
-		"forge: activated git hooks (.githooks) — 'git push' now runs 'forge lint' + 'forge project audit'. Disable with "+gitHooksOptOutEnv+"=1.")
 }

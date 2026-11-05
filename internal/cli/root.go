@@ -181,8 +181,17 @@ from an empty directory to authored protos, in one call.`,
 			// skipHookActivationAnnotation opts a writing command back out.
 			if cmdutil.ConfiguresCloneFor(cmd) && !hookActivationSkipped(cmd) {
 				if root, err := cmdutil.FindProjectRoot(); err == nil && root != "" {
-					ensureGitHooksActivated(root)
+					// Each check is a few `git config` reads, a process
+					// spawn apiece (seconds each on a loaded machine, in
+					// front of every generate, a cached no-op's included):
+					// the hooks read runs beside the merge driver's, and
+					// its write, when there is one, waits for the driver's.
+					hooks := make(chan func(), 1)
+					go func() { hooks <- gitHooksActivation(root) }()
 					ensureGeneratedMergeDriver(root)
+					if activate := <-hooks; activate != nil {
+						activate()
+					}
 				}
 			}
 

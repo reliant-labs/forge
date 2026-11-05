@@ -11,18 +11,45 @@ import (
 	"time"
 )
 
-// TestResolveUpLifecycle pins the lifecycle decision behind `forge env up`:
-// it supervises — holds the foreground and tears the stack down on a signal —
-// unless --background asked it to detach. A missing TTY no longer detaches: an
-// agent harness runs the command in its own background and stops it with a
-// signal, and a stack that outlived the command would be one the harness can
-// neither see nor stop.
+// TestResolveUpLifecycle pins the pure TTY-aware lifecycle decision behind
+// `forge env up` (Part B, the LLM-first fix): an agent / CI invocation with no
+// TTY and no explicit flag must resolve to `once` (start + return), never
+// `supervise` (the interactive Ctrl-C hold that would hang forever). The
+// explicit --watch / --background flags override the TTY default, with
+// --background the documented winner when both are somehow set.
+//
+// Pure-decision test style: inject isTTY and the two flags, assert the
+// resolved lifecycle, no real stdin manipulation.
 func TestResolveUpLifecycle(t *testing.T) {
-	if got := resolveUpLifecycle(false); got != lifecycleSupervise {
-		t.Errorf("resolveUpLifecycle(background=false) = %v, want supervise (TTY or not)", got)
+	cases := []struct {
+		name       string
+		isTTY      bool
+		watch      bool
+		background bool
+		want       reconcileLifecycle
+	}{
+		// The load-bearing case: no TTY, no flag -> once (don't hang an agent).
+		{"no tty, no flags -> once (agent/CI)", false, false, false, lifecycleOnce},
+		// TTY, no flag -> supervise (today's interactive behaviour).
+		{"tty, no flags -> supervise (interactive)", true, false, false, lifecycleSupervise},
+		// --watch forces supervise even without a TTY (human piping output).
+		{"no tty, --watch -> supervise", false, true, false, lifecycleSupervise},
+		{"tty, --watch -> supervise", true, true, false, lifecycleSupervise},
+		// --background always detaches + returns, regardless of the TTY.
+		{"tty, --background -> once", true, false, true, lifecycleOnce},
+		{"no tty, --background -> once", false, false, true, lifecycleOnce},
+		// Precedence: --background beats --watch when both are set.
+		{"--background beats --watch (no tty)", false, true, true, lifecycleOnce},
+		{"--background beats --watch (tty)", true, true, true, lifecycleOnce},
 	}
-	if got := resolveUpLifecycle(true); got != lifecycleOnce {
-		t.Errorf("resolveUpLifecycle(background=true) = %v, want once (detach + return)", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveUpLifecycle(tc.isTTY, tc.watch, tc.background)
+			if got != tc.want {
+				t.Errorf("resolveUpLifecycle(isTTY=%v, watch=%v, background=%v) = %v, want %v",
+					tc.isTTY, tc.watch, tc.background, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -53,8 +80,10 @@ func TestProcRegistryStoppedAfterShutdown(t *testing.T) {
 	}
 }
 
-// TestUpWatchFlagRegistered confirms `forge env up --watch` is still wired —
-// scripts pass it — and that its help says the hold is now the default.
+// TestUpWatchFlagRegistered confirms `forge env up --watch` is wired with help
+// text that names the force-supervise / no-TTY intent — the surface a human
+// piping output relies on, and the documented counterpart to the non-TTY
+// "return after start" default.
 func TestUpWatchFlagRegistered(t *testing.T) {
 	cmd := newEnvUpCmd()
 	f := cmd.Flags().Lookup("watch")
@@ -67,8 +96,10 @@ func TestUpWatchFlagRegistered(t *testing.T) {
 	if f.Value.Type() != "bool" {
 		t.Errorf("--watch should be a bool flag, got %q", f.Value.Type())
 	}
-	if !strings.Contains(strings.ToLower(f.Usage), "default") {
-		t.Errorf("--watch usage should say the hold is the default, got %q", f.Usage)
+	// The help must point at the TTY-aware lifecycle so a reader of
+	// `forge env up --help` understands when the hold happens vs the return.
+	if !strings.Contains(strings.ToLower(f.Usage), "tty") {
+		t.Errorf("--watch usage should explain the TTY-aware default, got %q", f.Usage)
 	}
 }
 
@@ -95,6 +126,9 @@ func TestUpWatchBackgroundMutuallyExclusive(t *testing.T) {
 // the children it owns stop with it, rather than outliving the command in
 // process groups of their own. A run that started nothing stops nothing.
 func TestTeardownSupervisedExitStopsChildrenOnAnOrdinaryError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts and stops a real child process; runs in task test")
+	}
 	dir, projectID, env := testStack(t)
 	t.Chdir(dir)
 
@@ -119,5 +153,54 @@ func TestTeardownSupervisedExitStopsChildrenOnAnOrdinaryError(t *testing.T) {
 	case <-mp.done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the child outlived the supervising run's error return")
+	}
+}
+
+// TestTeardownSupervisedExitStopsChildrenOnASignalMidStartup pins the other
+// early exit of a holding run (a TTY, or --watch): a signal that arrives
+// while the stack is still starting cancels the run's context, and the
+// children it already started stop with it instead of being orphaned in
+// process groups of their own.
+func TestTeardownSupervisedExitStopsChildrenOnASignalMidStartup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts and stops a real child process; runs in task test")
+	}
+	dir, projectID, env := testStack(t)
+	t.Chdir(dir)
+
+	reg := newProcRegistry(projectID, dir, env)
+	if err := reg.start("api", exec.Command("sleep", "60"), false); err != nil {
+		t.Fatal(err)
+	}
+	mp := reg.processes[0]
+	t.Cleanup(func() { _ = killProcessTree(mp.pid, syscall.SIGKILL) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // what signal.NotifyContext does on SIGTERM
+	teardownSupervisedExit(ctx, reg)
+	if !reg.stopped() {
+		t.Fatal("a signal mid-startup did not tear the stack down")
+	}
+	select {
+	case <-mp.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the child outlived the signal")
+	}
+
+	// The hold's own teardown already ran: a second one is a no-op.
+	teardownSupervisedExit(ctx, reg)
+}
+
+// TestNonTTYWatchHint pins the line the non-TTY default prints after it
+// returns with the stack running: it names --watch, the way an agent or
+// daemon holds the stack under a process it tracks. An explicit --background
+// asked for the detached stack and is told nothing more.
+func TestNonTTYWatchHint(t *testing.T) {
+	hint := nonTTYWatchHint("dev", false)
+	if !strings.Contains(hint, "forge env up dev --watch") || strings.Contains(hint, "\n") {
+		t.Errorf("the non-TTY return must print one line naming `forge env up dev --watch`, got %q", hint)
+	}
+	if got := nonTTYWatchHint("dev", true); got != "" {
+		t.Errorf("--background must print no hint, got %q", got)
 	}
 }

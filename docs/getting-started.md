@@ -212,13 +212,13 @@ A cluster is involved only when something in `dev` is bound to one (an
 operator, say); then the same command creates the local k3d cluster and
 applies to it.
 
-One detail that matters if you drive Forge from a script or an agent: `env up`
-holds the foreground, terminal or not, and tears the stack down on Ctrl-C,
-SIGTERM or SIGHUP. Run it the way you run any long-lived server — in your
-harness's background, stopped with a signal — and the stack never outlives
-the command that owns it. `forge env up dev --background` is the other choice:
-it starts everything, prints a summary, and **returns**, leaving the stack for
-`forge env down dev` to stop.
+One detail that matters if you drive Forge from a script or an agent: with a
+terminal attached, `env up` holds the foreground and tears the stack down on
+Ctrl-C. Without one, it starts everything, prints a summary, and **returns**.
+It will not hang waiting for a TTY that is not there. An agent or daemon that
+wants the stack to live and die with a process it tracks runs `forge env up
+dev --watch` in the background instead: it holds without a TTY and stops the
+stack on SIGTERM.
 
 Host readiness includes compilation: Forge waits up to two minutes for the
 declared ports, prints progress, and reports a runner's exit immediately.

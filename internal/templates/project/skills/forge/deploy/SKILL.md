@@ -318,6 +318,7 @@ deploy/statefulset-volumes.
 forge env up dev              # build + cluster apply + host launch + frontend dev
 forge env up dev --target item
 forge env up dev -D name=value    # a render option the env's KCL declares (forge env options dev)
+forge env up dev --watch      # agents/daemons: hold under a tracked background process; SIGTERM stops it
 ```
 
 Host workloads start in `before` order (`migrate` to completion first),

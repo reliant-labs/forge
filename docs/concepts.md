@@ -604,10 +604,8 @@ command tree, recognizers and descriptors. They cannot drift from behavior
 the way a document can — which is why this page points at them rather than
 copying their tables.
 
-**Non-TTY is a first-class mode.** Nothing in `forge env up` waits on an
-interaction: with a terminal or without one it starts everything, prints a
-summary, and holds the foreground until a signal (SIGINT, SIGTERM, SIGHUP)
-tears the stack down. An agent's harness runs it in the background and stops
-it like any server it started, so no stack is left running that the harness
-cannot see. `--background` detaches and returns instead, for a stack meant to
-outlive the command; `forge env down` stops it.
+**Non-TTY is a first-class mode.** Without a terminal, `forge env up` starts
+everything, prints a summary, and returns. It does not hang waiting for an
+interaction that will never come. That is what makes Forge drivable by an
+agent unattended. An agent that wants the stack tied to a process it tracks
+runs `forge env up <env> --watch` in the background; SIGTERM stops the stack.

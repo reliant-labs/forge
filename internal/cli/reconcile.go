@@ -23,20 +23,23 @@
 //
 //	lifecycle — what a run does once everything is started:
 //	              * once      — reconcile and RETURN. `forge env deploy` is
-//	                            always `once`; so is `forge env up --background`
+//	                            always `once`; so is the non-TTY `forge env up`
 //	                            (start host/frontend processes, persist
 //	                            their PIDs, print the summary, return —
 //	                            stop later via `forge env down`).
 //	              * supervise — start the long-lived host/frontend
 //	                            processes, HOLD on a signal channel, and
-//	                            cascade-teardown on SIGINT / SIGTERM / SIGHUP.
-//	                            `forge env up`'s default, TTY or not
-//	                            (resolveUpLifecycle).
+//	                            cascade-teardown on Ctrl-C. The interactive
+//	                            `forge env up` lifecycle.
+//	              * auto      — defer the once-vs-supervise choice to a
+//	                            TTY check at runtime (resolveUpLifecycle).
+//	                            `forge env up`'s default when neither --watch
+//	                            nor --background is given.
 //
 // In this vocabulary:
 //
 //	forge env deploy <env> = lifecycle=once, opts=<from flags>
-//	forge env up <env>     = lifecycle=supervise (once with --background), opts={skipFrontend: true}
+//	forge env up <env>     = lifecycle=auto, opts={skipFrontend: true}
 //
 // The surgical knobs (tag / prune / dry-run / context override /
 // targets / skip-frontend) live on deployOptions — the cluster reconcile's
@@ -47,40 +50,53 @@
 package cli
 
 // reconcileLifecycle is the post-start behaviour: return immediately (once)
-// or hold + teardown on signal (supervise). `forge env up` resolves its flags
-// to one of these two (resolveUpLifecycle) at the call site before the host
-// phase, so no un-resolved lifecycle ever flows downstream.
+// or hold + teardown on signal (supervise). `forge env up`'s "auto" default —
+// supervise in a TTY, once otherwise — is not a third enum value; it is
+// resolved to one of these two by resolveUpLifecycle at the call site before
+// the host phase, so no un-resolved lifecycle ever flows downstream.
 type reconcileLifecycle int
 
 const (
-	// lifecycleOnce reconciles and returns. `forge env deploy` always;
-	// `forge env up --background` after persisting PIDs + printing the summary.
+	// lifecycleOnce reconciles and returns. `forge env deploy` always; the
+	// non-TTY `forge env up` after persisting PIDs + printing the summary.
 	lifecycleOnce reconcileLifecycle = iota
 	// lifecycleSupervise holds the foreground on a signal channel and
-	// cascade-tears-down the host/frontend processes on SIGINT, SIGTERM or
-	// SIGHUP. `forge env up` without --background, TTY or not.
+	// cascade-tears-down the host/frontend processes on Ctrl-C. The
+	// interactive `forge env up`.
 	lifecycleSupervise
 )
 
-// resolveUpLifecycle is the lifecycle decision for `forge env up`: it
-// supervises unless --background asked it to detach.
-//
-// It used to supervise only with a TTY and detach otherwise, so that an agent
-// or CI step running `forge env up <env>` would not hang on the hold. That
-// traded one agent problem for a worse one: the stack outlived the command
-// that started it, in process groups nothing tracked, so the harness running
-// the agent could neither see nor stop it — the shape a harness's "never
-// detach long work" rule exists to forbid. A harness runs a long-lived
-// command in the background and stops it with a signal; supervising does
-// exactly what that needs (SIGTERM, SIGINT or SIGHUP tears the stack down).
-// Wanting the stack to outlive the command is now said out loud, with
+// resolveUpLifecycle is the pure TTY-aware lifecycle decision for
+// `forge env up`. It is the LLM-first fix: an agent / CI invocation of
+// `forge env up <env>` must NOT hang on the interactive Ctrl-C hold, so
+// the DEFAULT (neither --watch nor --background) supervises only when a TTY
+// is present and otherwise returns after detaching — the same end-state as
 // --background.
 //
-// --watch forced supervise without a TTY. That is now the default, so it no
-// longer changes anything; the flag stays so scripts that pass it keep working.
-func resolveUpLifecycle(background bool) reconcileLifecycle {
-	if background {
+// Precedence (explicit flags beat the TTY default):
+//
+//   - --background wins outright: the user explicitly asked to detach and
+//     return, so lifecycle=once regardless of --watch or the TTY. (When
+//     both --watch and --background are set, --background is the documented
+//     winner — "detach and return" is the more conservative, non-blocking
+//     outcome, and matches the flag's long-standing "return immediately"
+//     contract.)
+//   - --watch forces supervise (hold + Ctrl-C teardown) even without a
+//     TTY, for a human who pipes `forge env up` output through a tool.
+//   - Otherwise the TTY decides: a terminal → supervise (today's
+//     interactive behaviour); no terminal → once (return after start).
+//
+// Split out from runUp so the decision is unit-tested by injecting isTTY
+// and the two flags.
+func resolveUpLifecycle(isTTY, watch, background bool) reconcileLifecycle {
+	switch {
+	case background:
+		return lifecycleOnce
+	case watch:
+		return lifecycleSupervise
+	case isTTY:
+		return lifecycleSupervise
+	default:
 		return lifecycleOnce
 	}
-	return lifecycleSupervise
 }

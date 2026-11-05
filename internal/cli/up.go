@@ -66,7 +66,7 @@ type upOptions struct {
 	noBuild          bool
 	noDeploy         bool
 	background       bool          // detach and write PID files; use `forge env down <env>` to teardown
-	watch            bool          // the default hold, asked for explicitly; kept for scripts that pass it
+	watch            bool          // force supervise (hold + teardown on SIGINT/SIGTERM/SIGHUP) even without a TTY
 	noGenerate       bool          // skip the pre-build "ensure generated code" step (--no-generate)
 	noInstall        bool          // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
 	noSeed           bool          // skip the first-boot dev auto-seed (--no-seed)
@@ -142,20 +142,26 @@ service, both scope the same way.
 
 Lifecycle (what happens after host services + frontends start):
 
-  * By default — with a TTY or without one — forge holds the foreground,
-    streaming every child's [name]-prefixed output, and tears the whole
-    stack down on SIGINT (Ctrl-C), SIGTERM or SIGHUP, including one that
-    arrives while the stack is still starting. An agent or CI step runs it
-    the way it runs any long-lived server: in the background of its own
-    harness, stopped with a signal, so the stack never outlives the command
-    that owns it.
-  * --background detaches and returns once the stack is up, leaving the
-    processes running for ` + "`forge env down <env>`" + ` to stop.
-  * --watch asks for the default hold; it is kept so scripts that pass it
-    keep working, and cannot be combined with --background.
+  * With a TTY (interactive shell): forge holds the foreground and
+    tears the whole stack down on Ctrl-C.
+  * Without a TTY (agent / CI / piped): forge brings everything up,
+    prints the summary (URLs + per-service log paths), and RETURNS,
+    leaving the processes running — the same end-state as --background.
+    This is what keeps ` + "`forge env up <env>`" + ` from hanging an agent.
+  * --watch holds the foreground even without a TTY. It is THE way for an
+    agent or a daemon to run the stack under a process it tracks: start
+    ` + "`forge env up <env> --watch`" + ` as a background process of the
+    harness (never nohup or &), and stop it with a signal.
+  * --background always detaches and returns immediately, regardless of
+    the TTY. --watch and --background cannot be combined.
+
+A holding run (a TTY, or --watch) owns its children from the moment the
+first one starts: SIGINT, SIGTERM or SIGHUP — even one that arrives while
+the stack is still starting — and a failed readiness or cluster gate stop
+them, so nothing it started outlives it.
 
 Either way the long-running children are tracked under
-~/.cache/forge/up/<project-id>/; stop a detached stack with
+~/.cache/forge/up/<project-id>/; stop a detached / non-TTY stack with
 ` + "`forge env down <env>`" + `. That is safe to run from anywhere, including
 from inside the stack: it never stops the process running it or any of its
 ancestors (see ` + "`forge env down --help`" + `).
@@ -186,6 +192,7 @@ Examples:
   forge env up dev
   forge env up dev --no-build
   forge env up dev --target admin-server -D host_runner=go-run
+  forge env up dev --watch        # hold + teardown on a signal, even without a TTY (agents)
   forge env up dev --background
   forge env up dev -- --host 0.0.0.0   # forward flags to the dev servers
   forge env down dev
@@ -270,8 +277,8 @@ func newEnvUpCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&opts.hostReadyTimeout, "host-ready-timeout", hostReadyTimeout, "Maximum wait for host services to bind their ports, including compilation; exited runners fail immediately")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
-	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return once the stack is up (stop with 'forge env down <env>'). Without it forge holds the foreground, TTY or not, and tears the stack down on SIGINT/SIGTERM/SIGHUP.")
-	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Hold the foreground and tear the stack down on SIGINT/SIGTERM/SIGHUP. This is the default with or without a TTY; the flag is kept for scripts that pass it.")
+	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with 'forge env down <env>'). Cannot be combined with --watch.")
+	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Hold the foreground and tear the stack down on SIGINT/SIGTERM/SIGHUP even without a TTY: the way an agent or daemon runs env up as a tracked background process. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default 'forge env up' runs 'forge generate' when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default 'forge env up' installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
 	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default 'forge env up' seeds a dev database once when it is reachable and all seedable tables are empty.")
@@ -1092,13 +1099,18 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		return err
 	}
 
-	// Resolve the lifecycle: supervise (hold + teardown on a signal), TTY or
-	// not, unless --background asked for once (start, persist PIDs, return).
+	// Resolve the lifecycle (Part B): supervise (hold + teardown on a
+	// signal) vs once (start, persist PIDs, return). `up`'s default is auto —
+	// resolved here by the TTY check so an agent / CI `forge env up` doesn't
+	// hang on the interactive hold. --background and --watch override the
+	// default (they are mutually exclusive; rejected upstream).
 	// `detach` collapses the lifecycle to the single behaviour the host
 	// phase + summary need: a "once" run detaches every child (log files,
-	// no foreground hold) so the stack OUTLIVES this process; a "supervise"
-	// run keeps the live prefixed streams and holds.
-	lifecycle := resolveUpLifecycle(opts.background)
+	// no foreground hold) so the stack OUTLIVES this process, exactly as
+	// --background always has; a "supervise" run keeps the live prefixed
+	// streams and holds. detach is true for BOTH the explicit --background
+	// and the non-TTY default — they share the return path verbatim.
+	lifecycle := resolveUpLifecycle(cliutil.StdinIsTTY(), opts.watch, opts.background)
 	detach := lifecycle == lifecycleOnce
 
 	// A supervising run owns its children from the moment the first one
@@ -1239,6 +1251,9 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		// text says so.
 		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
+		if hint := nonTTYWatchHint(opts.env, opts.background); hint != "" {
+			fmt.Println(hint)
+		}
 		return clusterErr
 	}
 
@@ -1294,6 +1309,17 @@ func teardownSupervisedExit(ctx context.Context, procs *procRegistry) {
 		return
 	}
 	procs.shutdown()
+}
+
+// nonTTYWatchHint is the one line the non-TTY default prints after it
+// returns with the stack still running: an agent or daemon that wanted the
+// stack to live and die with a process it tracks asks for --watch. Empty for
+// an explicit --background, which asked for exactly this.
+func nonTTYWatchHint(env string, background bool) string {
+	if background {
+		return ""
+	}
+	return fmt.Sprintf("[up] no TTY, so this run returned with the stack running. To hold it under a process you track (an agent or daemon), run `forge env up %s --watch` in the background instead; it stops the stack on SIGTERM.", env)
 }
 
 // upTeardownSignals stop a supervising `forge env up` and tear its stack

@@ -122,11 +122,20 @@ forge cluster up --wait
 forge env deploy dev
 
 # Terminal 2: the API (every service; air reloads it as you edit)
-forge env up dev --target api                  # foreground, TTY or not; Ctrl-C / SIGTERM to stop
+forge env up dev --target api                  # foreground; Ctrl-C to stop
 # or detach + tail logs separately:
 forge env up dev --target api --background     # detach; PIDs tracked per env
 forge env down dev                                     # later teardown
 ```
+
+**Agents: run `forge env up <env> --watch` with the shell tool's
+`run_in_background`; never `nohup` or `&`.** Without a TTY, a plain `forge env
+up` brings the stack up, prints the summary and RETURNS, leaving the processes
+running for `forge env down` — and the harness cannot see or stop what it left.
+`--watch` holds the foreground without a TTY: the harness tracks the one
+process, and SIGTERM (or SIGINT/SIGHUP) stops the whole stack, even mid-startup.
+A failed readiness or cluster gate stops the children it started too. Read
+output from `.forge/logs/<env>/` (below) rather than scrollback.
 
 The host child process also inherits the host shell's env, so anything already
 exported wins over both the injected `secret_provider` layer and the workload's `env`.

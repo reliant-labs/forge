@@ -266,6 +266,9 @@ func TestFindUserByID(t *testing.T) {
 		wantErr error
 	}{
 		{"human", 200, `{"user":{"userId":"u1","preferredLoginName":"a@b.test","human":{"email":{"email":"a@b.test"}}}}`, User{ID: "u1", LoginName: "a@b.test", Email: "a@b.test"}, nil},
+		// The issuer's verdict on the address is carried through, so an app
+		// can refuse to bind an invitation to an address nobody proved.
+		{"verified human", 200, `{"user":{"userId":"u1","preferredLoginName":"a@b.test","human":{"email":{"email":"a@b.test","isVerified":true}}}}`, User{ID: "u1", LoginName: "a@b.test", Email: "a@b.test", EmailVerified: true}, nil},
 		{"machine", 200, `{"user":{"userId":"m1","preferredLoginName":"svc"}}`, User{}, ErrUserNotFound},
 		{"missing", 404, `{"code":5,"message":"User not found"}`, User{}, ErrUserNotFound},
 	} {

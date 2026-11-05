@@ -258,6 +258,38 @@ export async function resetPassword(reset: PasswordReset): Promise<Identity> {
   return post("/auth/reset", reset);
 }
 
+/** Which optional sign-in routes this deployment serves (GET /auth/options). */
+export interface AuthOptions {
+  /**
+   * Whether POST /auth/register is served. Off in every deployed environment
+   * unless its config sets auth_self_signup, so an app is invite-only until
+   * it opts in.
+   */
+  selfSignup: boolean;
+}
+
+/**
+ * Reads which optional sign-in routes the server serves.
+ *
+ * FAILS CLOSED: an older server with no /auth/options, a network error, or
+ * any answer but `selfSignup: true` reads as "sign-up is not offered". A
+ * hidden button costs an invited user nothing; a shown one that answers 404
+ * is a broken screen.
+ */
+export async function fetchAuthOptions(): Promise<AuthOptions> {
+  try {
+    const response = await fetch(`${apiOrigin()}/auth/options`, {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) return { selfSignup: false };
+    const body = (await response.json()) as Partial<AuthOptions> | null;
+    return { selfSignup: body?.selfSignup === true };
+  } catch {
+    return { selfSignup: false };
+  }
+}
+
 /**
  * Reads what a password must contain, or null when the server cannot say.
  *

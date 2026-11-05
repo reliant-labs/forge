@@ -1,6 +1,6 @@
 ---
 name: authorization
-description: Turning an IdP identity into an application principal — the enrichClaims DB-backed seam and its rejection codes, why request validation belongs to protovalidate instead, app-owned provisioning via a public Register RPC, and declaring an owner column so forge fails a build that ships unscoped.
+description: Turning an IdP identity into an application principal — the enrichClaims DB-backed seam and its rejection codes, why request validation belongs to protovalidate instead, app-owned provisioning via a public Register RPC, why binding an invitation or membership by email must require devidp.User.EmailVerified, and declaring an owner column so forge fails a build that ships unscoped.
 ---
 
 # From identity to principal
@@ -27,6 +27,24 @@ func enrichClaims(ctx context.Context, claims *Claims) (*Claims, error) {
 
 Enrichment runs on every authenticated request, so a query here is on the hot path: index the subject lookup, and cache if it shows up in traces.
 
+**The first sign-in of an invited person is the one time email matters.** The person has a subject the app has never seen and an invitation keyed by address, so `enrichClaims` binds that subject to the invitation once and uses the subject from then on. A managed identity's access token (Zitadel) carries **no `email`**: only `sub`, the audience and roles. The scaffolded `SetupAuth` (`internal/app/auth.go`) therefore installs `authenticator.UseUserInfo(auth.NewUserInfo(...))`, which fills `claims.Email` from the issuer's OIDC userinfo endpoint. It fills only a **verified** address (`email_verified`), looks up only tokens whose `iss` is the configured issuer (a subject is unique only within its issuer), sends the access token over HTTPS only (plain HTTP to a loopback dev issuer excepted, redirects included), caches the answer per subject for five minutes, and leaves `Email` empty instead of failing the request when the lookup fails. A token that carries its own `email` is left as it is, and API keys are never looked up. A project scaffolded before this existed can add the same lines after `auth.NewAuthenticator(validator.Validate)`. Bind on `claims.Email` only when no row has the subject yet; after that, the subject is the key.
+
+**Enrichment that reads the database is a component, not an edit to `enrichClaims`.** The function above is a package function with no `Deps`, so it has no way to reach a store. A package that does database I/O must be a composed component: `requirecontract` refuses a plain helper, and `//forge:exclude-contract` is refused for outbound I/O. So the seam is a component:
+
+1. `forge scaffold package membership`, then put the method on its `Service` interface and implement it over the store:
+
+   ```go
+   // internal/membership/contract.go
+   type Service interface {
+       EnrichClaims(ctx context.Context, claims *auth.Claims) (*auth.Claims, error)
+   }
+   ```
+
+   `middleware.Claims` is an alias of `github.com/reliant-labs/forge/pkg/auth.Claims`, so the package does not need to import `pkg/middleware`.
+2. Run `forge generate`. `UserAuthDeps.Enrich` (`internal/app/providers.go`) is a `// forge:optional-dep` field of type `middleware.ClaimsEnricher`. The graph fills it with the one component whose value implements that interface, and `NewAuthInterceptor` uses `AuthDeps.Enrich` in place of `enrichClaims`. You register nothing, and the component's `Deps` brings the database the way every other component's does. With no such component the field stays nil and `enrichClaims` runs. If two components implement it, generate stops with an ambiguity error; settle it by naming one in `compose.go`.
+
+Projects scaffolded before this have no `ClaimsEnricher` in `pkg/middleware/middleware.go`. Add the interface, the `Enrich ClaimsEnricher` field on `AuthDeps`, and the `deps.Enrich` branch in `NewAuthInterceptor` by hand, then wire `Enrich: d.Enrich` in `NewUserAuth`.
+
 **Request VALIDATION is not `Enrich`'s job.** Field-level input checking is already handled, separately and earlier in the chain, by protovalidate from the `buf.validate` rules on your proto messages:
 
 ```proto
@@ -47,6 +65,30 @@ rpc Register(RegisterRequest) returns (RegisterResponse) {
 ```
 
 `auth_required: false` here does NOT mean unauthenticated — it means the allow-list lets the call through so the handler can do the credential work itself, because `enrichClaims` would reject the caller for having no local row and the request would never arrive. The handler validates the presented token (the same validator `SetupAuth` built), takes the **`sub` the IdP asserted**, and inserts on that. Trust the `sub` from the verified token; never a `user_id` from the request body, which is a caller-supplied string and an account-takeover primitive. Make the insert idempotent on `sub` — a retried or double-clicked registration must not create a second account.
+
+## Binding by email requires a verified address
+
+The common invite pattern — an owner adds `alice@example.com` to a tenant, and the first account that signs in with that address claims the membership — is an **account-takeover primitive unless the address is verified**. Whoever registers `alice@example.com` first gets Alice's membership, because the address on an account is whatever was typed when it was created. Public sign-up (`auth_self_signup`, off outside development) creates exactly such accounts: unverified, and signed in immediately.
+
+So every place that binds something to a user BY EMAIL — accepting an invitation, attaching a tenant membership, merging a pre-created record — must first ask the issuer whether this account's address is verified, by the token's `sub`, and refuse otherwise:
+
+```go
+// Resolve the caller by the IdP's stable id, never by an email the request
+// or the token carries. idp is a devidp.Client built like the broker's.
+user, err := idp.FindUserByID(ctx, claims.Subject)
+if err != nil {
+    return nil, err // ErrUserNotFound is a machine account or a deleted user
+}
+if !user.EmailVerified {
+    return nil, connect.NewError(connect.CodePermissionDenied,
+        errors.New("verify your email address before accepting an invitation"))
+}
+invite, err := invites.PendingFor(ctx, tenantID, user.Email)
+```
+
+- Read `EmailVerified` from the issuer at bind time. A boolean you cached at sign-up goes stale the moment the person changes their address.
+- Bind ONCE, then key on `sub`. After the membership row holds the subject, later requests hydrate by `sub` (above), and the email is only display data.
+- An account created by an invitation (`forge cloud identity invite`, `IdentityService.InviteUser`) or a dev seed is verified by whoever created it. One created through `POST /auth/register` outside development is not, until its owner verifies it.
 
 ## Authenticated is not scoped
 

@@ -59,8 +59,14 @@ func TestFreshScaffold_GoIsFormattedAndTakesContextFirst(t *testing.T) {
 				if err := codegen.GenerateLoginBroker("example.com/"+name, name, root); err != nil {
 					t.Fatalf("GenerateLoginBroker: %v", err)
 				}
-				if _, err := os.Stat(filepath.Join(root, "internal", "app", "login_broker.go")); err != nil {
+				broker, err := os.ReadFile(filepath.Join(root, "internal", "app", "login_broker.go"))
+				if err != nil {
 					t.Fatalf("the login broker was not scaffolded, so this test would not cover it: %v", err)
+				}
+				// The scaffolded config declares auth_self_signup, so a
+				// deployed env can opt in to public sign-up — and only by it.
+				if !bytes.Contains(broker, []byte(`selfSignup: cfg.Environment == "development" || cfg.AuthSelfSignup,`)) {
+					t.Error("a fresh scaffold's broker does not read auth_self_signup from the config that declares it")
 				}
 			}
 			checkScaffoldedGo(t, root)

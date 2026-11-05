@@ -82,6 +82,43 @@ type User struct {
 	// rather than passing a typed email to CreateSession.
 	LoginName string
 	Email     string
+	// EmailVerified is the issuer's own verdict on Email
+	// (human.email.isVerified): true only once the address was proven
+	// reachable, by a verification code or by whoever created the account
+	// saying so. An account created through public sign-up holds an address
+	// the person TYPED, so this is false until they verify it.
+	//
+	// Check it before binding anything to Email — an invitation, a tenant
+	// membership, an account merge. Without it, registering someone else's
+	// address is enough to claim whatever was waiting for them.
+	EmailVerified bool
+}
+
+// humanUser is the part of a v2 user resource User is read from, shared by
+// the search and the get so the two cannot disagree about a field.
+type humanUser struct {
+	UserID             string `json:"userId"`
+	PreferredLoginName string `json:"preferredLoginName"`
+	Human              *struct {
+		Email struct {
+			Email      string `json:"email"`
+			IsVerified bool   `json:"isVerified"`
+		} `json:"email"`
+	} `json:"human"`
+}
+
+// user converts a resource into a User; ok is false for a machine account
+// (no human part) or one with no id.
+func (h humanUser) user() (User, bool) {
+	if h.Human == nil || h.UserID == "" {
+		return User{}, false
+	}
+	return User{
+		ID:            h.UserID,
+		LoginName:     h.PreferredLoginName,
+		Email:         h.Human.Email.Email,
+		EmailVerified: h.Human.Email.IsVerified,
+	}, true
 }
 
 // FindUserByEmail resolves an email address to the one human user that has
@@ -108,15 +145,7 @@ func (c *Client) FindUserByEmail(ctx context.Context, email string) (User, error
 	}
 
 	var out struct {
-		Result []struct {
-			UserID             string `json:"userId"`
-			PreferredLoginName string `json:"preferredLoginName"`
-			Human              *struct {
-				Email struct {
-					Email string `json:"email"`
-				} `json:"email"`
-			} `json:"human"`
-		} `json:"result"`
+		Result []humanUser `json:"result"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return User{}, fmt.Errorf("decode user search: %w", err)
@@ -124,14 +153,11 @@ func (c *Client) FindUserByEmail(ctx context.Context, email string) (User, error
 
 	var matches []User
 	for _, r := range out.Result {
-		if r.Human == nil || r.UserID == "" {
+		u, ok := r.user()
+		if !ok {
 			continue // machine accounts have no email and cannot reset one
 		}
-		matches = append(matches, User{
-			ID:        r.UserID,
-			LoginName: r.PreferredLoginName,
-			Email:     r.Human.Email.Email,
-		})
+		matches = append(matches, u)
 	}
 	if len(matches) != 1 {
 		// Zitadel does not enforce email uniqueness by default. Zero and
@@ -157,23 +183,16 @@ func (c *Client) FindUserByID(ctx context.Context, id string) (User, error) {
 		return User{}, fmt.Errorf("get user: %w", err)
 	}
 	var out struct {
-		User struct {
-			UserID             string `json:"userId"`
-			PreferredLoginName string `json:"preferredLoginName"`
-			Human              *struct {
-				Email struct {
-					Email string `json:"email"`
-				} `json:"email"`
-			} `json:"human"`
-		} `json:"user"`
+		User humanUser `json:"user"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return User{}, fmt.Errorf("decode user: %w", err)
 	}
-	if out.User.Human == nil || out.User.UserID == "" {
+	u, ok := out.User.user()
+	if !ok {
 		return User{}, ErrUserNotFound
 	}
-	return User{ID: out.User.UserID, LoginName: out.User.PreferredLoginName, Email: out.User.Human.Email.Email}, nil
+	return u, nil
 }
 
 // loginNameFor resolves what a person typed into the login name the issuer

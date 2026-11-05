@@ -170,6 +170,13 @@ func TestFindUserByEmail(t *testing.T) {
 			body: `{"result":[{"userId":"u1","preferredLoginName":"admin@reliant-labs.localhost","human":{"email":{"email":"admin@reliantlabs.io"}}}]}`,
 			want: User{ID: "u1", LoginName: "admin@reliant-labs.localhost", Email: "admin@reliantlabs.io"},
 		},
+		{
+			// A self-registered address is unverified until its owner proves
+			// it; the zero value must not read as verified.
+			name: "verified and unverified are distinguished",
+			body: `{"result":[{"userId":"u1","preferredLoginName":"a","human":{"email":{"email":"admin@reliantlabs.io","isVerified":true}}}]}`,
+			want: User{ID: "u1", LoginName: "a", Email: "admin@reliantlabs.io", EmailVerified: true},
+		},
 		{name: "none", body: `{"result":[]}`, wantErr: ErrUserNotFound},
 		{
 			name:    "ambiguous",

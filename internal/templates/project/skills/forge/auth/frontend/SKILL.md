@@ -12,12 +12,13 @@ browser  ── email + password ──▶  your server ──▶ identity provi
          ◀── HttpOnly cookie ───┘                (the whole OIDC flow)
 ```
 
-Seven endpoints, and that is the entire contract the browser knows about:
+Eight endpoints, and that is the entire contract the browser knows about:
 
 | call | endpoint | answers with |
 | --- | --- | --- |
 | sign in | `POST /auth/login` | cookie set, identity returned |
-| sign up | `POST /auth/register` | account created **and** signed in, in one call. **Public by default** (see below) |
+| sign up | `POST /auth/register` | account created **and** signed in, in one call. **Served in development only, unless the env opts in** (see below) |
+| sign-in options | `GET /auth/options` | `{selfSignup}`: whether this deployment serves sign-up, so the screen offers "Create an account" only when it does |
 | who am I | `GET /auth/session` | the identity, or not-authenticated |
 | sign out | `POST /auth/logout` | cookie cleared |
 | password rules | `GET /auth/password-policy` | `{min_length, has_uppercase, has_lowercase, has_number, has_symbol}`, the identity provider's own policy |
@@ -43,9 +44,13 @@ The provider's complexity policy is **per instance**, so the app asks rather tha
 
 `POST /auth/forgot` asks the provider to **email** a link to `/auth/reset`. A customer instance sends mail **only if the environment declares `smtp`** (`forge.ManagedIdentity.smtp`); without it the request succeeds and nothing is delivered, and the provider does not tell the app. The forgot screen says so. It answers identically for an unknown address (no account oracle) and is limited to 3 requests per address and 10 per client IP per hour, in process. In development (no mail server) the broker mints the code and logs the link; it never returns the code. To deliver by another channel, swap `SendPasswordResetLink` for `devidp.MintPasswordResetCode` in `handleForgot`; the code is the credential, so send it only to the address on file. To turn reset off, delete the two broker routes, the routes/pages and the "Forgot your password?" link.
 
-## Invite-only apps
+## Sign-up is off outside development: invite-only by default
 
-`POST /auth/register` is mounted by default, so **anyone who reaches the app can create an account**. For an invite-only product delete that route in `login_broker.go` and the "Create an account" toggle in the sign-in screen. There is **no scaffolded invite flow**; see `deploy/managed-identity` for how to build one.
+The broker serves `POST /auth/register` in development, and in a deployed environment **only when its config sets `auth_self_signup: true`** (`AUTH_SELF_SIGNUP`). The sign-in screen reads `GET /auth/options` and shows the "Create an account" toggle only when sign-up is served; it fails closed, so an older server or an outage hides it.
+
+**Before opting in, read this.** A self-registered account's email is **unverified**: the person typed it and is signed in before proving it is theirs. Anything the app binds to a user *by email* (an invitation, a tenant membership, a pre-created record) must require `devidp.User.EmailVerified` first, or registering someone else's address claims what was waiting for them (`auth/authorization` has the check). `forge lint` warns (`forgeconv-open-signup`) about a broker that mounts the route with no condition, as brokers scaffolded before v1.0.16 do; `migrations/v1.0.16` has the edit.
+
+There is **no scaffolded invite flow**; see `deploy/managed-identity` for how to build one.
 
 ## Why the token is not in JavaScript, and what you get instead
 

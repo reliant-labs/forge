@@ -202,6 +202,25 @@ managed_database_json = lambda v: ManagedDatabase -> {str:} {
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }
 
+schema BucketRef:
+    """BucketRef names a ManagedBucket, in the workload's own namespace, and one connection fact of it to project. Like DatabaseRef it NAMES A BUCKET, NEVER A SECRET, so what it can resolve to is closed by construction."""
+    key: str
+    name: str
+
+    check:
+        key in ["endpoint", "public_endpoint", "region", "bucket", "access_key_id", "secret_access_key", "path_style"], "BucketRef.key must be one of \"endpoint\", \"public_endpoint\", \"region\", \"bucket\", \"access_key_id\", \"secret_access_key\", \"path_style\""
+        regex.match(name, "^[a-z0-9][a-z0-9-]*[a-z0-9]$"), "BucketRef.name must match ^[a-z0-9][a-z0-9-]*[a-z0-9]$"
+        len(name) >= 3, "BucketRef.name must be at least 3 characters"
+        len(name) <= 40, "BucketRef.name must be at most 40 characters"
+
+bucket_ref_json = lambda v: BucketRef -> {str:} {
+    _d = {
+        "key": v.key
+        "name": v.name
+    }
+    {k: _v for k, _v in _d if _v != Undefined and _v != None}
+}
+
 schema ConfigMapKeyRef:
     """ConfigMapKeyRef names one key of a ConfigMap in the workload's own namespace."""
     key: str
@@ -354,6 +373,7 @@ empty_dir_volume_source_json = lambda v: EmptyDirVolumeSource -> {str:} {
 
 schema EnvVar:
     """EnvVar is one container environment variable."""
+    bucketRef?: BucketRef
     configMapRef?: ConfigMapKeyRef
     databaseRef?: DatabaseRef
     fieldRef?: FieldRef
@@ -371,6 +391,7 @@ schema EnvVar:
 
 env_var_json = lambda v: EnvVar -> {str:} {
     _d = {
+        "bucketRef": bucket_ref_json(v.bucketRef) if v.bucketRef else Undefined
         "configMapRef": config_map_key_ref_json(v.configMapRef) if v.configMapRef else Undefined
         "databaseRef": database_ref_json(v.databaseRef) if v.databaseRef else Undefined
         "fieldRef": field_ref_json(v.fieldRef) if v.fieldRef else Undefined

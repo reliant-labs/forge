@@ -354,6 +354,43 @@ func TestMemoizedGoValidateRerunsWhenPackageSelectionMoves(t *testing.T) {
 	}
 }
 
+// TestGoValidateMemoKeyFollowsWorkspaceSelection: GOWORK chooses which
+// go.work the build uses, and two with the same bytes in different places
+// resolve their relative use paths to different modules, so moving the
+// selection must change the key even when the contents match. A relative
+// GOWORK, whose meaning depends on the working directory, is not keyed.
+func TestGoValidateMemoKeyFollowsWorkspaceSelection(t *testing.T) {
+	root := goMemoFixture(t)
+	m := newTestGoMemo(t, root, pipelineFlags{Cache: true})
+	work := "go 1.22\n\nuse ./mod\n"
+	var works []string
+	for _, dir := range []string{t.TempDir(), t.TempDir()} {
+		writeTestFile(t, filepath.Join(dir, "go.work"), work)
+		writeTestFile(t, filepath.Join(dir, "mod", "go.mod"), "module example.com/mod\n\ngo 1.22\n")
+		works = append(works, filepath.Join(dir, "go.work"))
+	}
+	key := func(env ...string) string {
+		t.Helper()
+		k, ok := m.goValidateMemoKey(env)
+		if !ok {
+			t.Fatalf("env %v could not be keyed", env)
+		}
+		return k
+	}
+	none := key()
+	first := key("GOWORK=" + works[0])
+	second := key("GOWORK=" + works[1])
+	if first == none || first == second {
+		t.Error("selecting another go.work with the same contents kept the key")
+	}
+	if key("GOWORK=off") == first {
+		t.Error("GOWORK=off kept the key of a selected workspace")
+	}
+	if _, ok := m.goValidateMemoKey([]string{"GOWORK=go.work"}); ok {
+		t.Error("a relative GOWORK was keyed; it resolves against the working directory")
+	}
+}
+
 // TestGoMemoKeysConcurrently: the tidy and validate wrappers may key and
 // record from several goroutines; the shared identity cache and the record
 // are touched only under the memo's lock (run under -race to see it).

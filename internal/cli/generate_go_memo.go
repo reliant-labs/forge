@@ -84,7 +84,7 @@ const (
 
 	// generateMemoVersion is part of every key's meaning: bump it when a key
 	// covers something different, so no record is read under new rules.
-	generateMemoVersion = 2
+	generateMemoVersion = 3
 )
 
 // errGoMemoUnsupported says a tree's inputs cannot be enumerated (cgo, a
@@ -294,7 +294,15 @@ func (m *generateMemo) toolchain(h *memoHasher, env []string) error {
 		}
 		h.add("cc:"+cc, p)
 	}
-	if work := effectiveGoWork(m.root, env); work != "" {
+	work, err := goWorkSelection(m.root, env)
+	if err != nil {
+		return err
+	}
+	// Which workspace is in effect, not only what it says: two go.work files
+	// with the same bytes in different places resolve their relative use and
+	// replace paths to different modules.
+	h.add("gowork.selected", work)
+	if work != "" {
 		if err := h.file("gowork", work); err != nil {
 			return err
 		}
@@ -303,6 +311,22 @@ func (m *generateMemo) toolchain(h *memoHasher, env []string) error {
 		}
 	}
 	return nil
+}
+
+// goWorkSelection is the absolute path of the go.work a go command run in
+// root would use ("" for none): $GOWORK when set (off selects none), else the
+// first go.work found walking up from root, as cmd/go discovers it. A $GOWORK
+// that is not an absolute path is one cmd/go refuses, and its meaning would
+// depend on the working directory, so it makes the inputs unsupported.
+func goWorkSelection(root string, env []string) (string, error) {
+	if v, ok := environLookup(env, "GOWORK"); ok && v != "" && v != "off" && !filepath.IsAbs(v) {
+		return "", errGoMemoUnsupported
+	}
+	work := effectiveGoWork(root, env)
+	if work == "" {
+		return "", nil
+	}
+	return filepath.Clean(work), nil
 }
 
 // goRootFor is the GOROOT the go binary at goBin runs with: $GOROOT when set,
@@ -426,7 +450,9 @@ func memoizedGoTidy(moduleDir, name, done string, tidy func() error) error {
 // not move while it ran.
 func memoizedGoValidate(projectDir string, validate func() error) error {
 	m := goMemoFor(projectDir)
-	if m == nil {
+	if m == nil || !sameDirectory(projectDir, m.root) {
+		// The key discovers the workspace from the memo's root; a build run
+		// elsewhere could select another go.work.
 		return validate()
 	}
 	env := goexec.CheckEnv()
@@ -458,7 +484,11 @@ func (m *generateMemo) goValidateMemoKey(env []string) (string, bool) {
 		if err != nil {
 			return err
 		}
-		if work := effectiveGoWork(m.root, env); work != "" {
+		work, err := goWorkSelection(m.root, env)
+		if err != nil {
+			return err
+		}
+		if work != "" {
 			uses, err := goWorkUses(work)
 			if err != nil {
 				return err

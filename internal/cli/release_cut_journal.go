@@ -24,6 +24,7 @@ import (
 
 	"oras.land/oras-go/v2/content"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cutjournal"
@@ -484,7 +485,7 @@ func restoreCutJournal(projectDir, outputDir, env string, j cutjournal.Journal) 
 		return err
 	}
 	for _, f := range j.State {
-		if err := os.WriteFile(filepath.Join(stateDir, f.Name), f.Data, 0o644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(stateDir, f.Name), f.Data, 0o644); err != nil {
 			return err
 		}
 	}
@@ -494,7 +495,7 @@ func restoreCutJournal(projectDir, outputDir, env string, j cutjournal.Journal) 
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(dest, f.Data, 0o644); err != nil {
+		if err := atomicfile.WriteFile(dest, f.Data, 0o644); err != nil {
 			return err
 		}
 	}

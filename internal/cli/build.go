@@ -611,6 +611,23 @@ func preflightBuildCapacity(ctx context.Context, opts buildOptions, entities *KC
 	return nil
 }
 
+// refuseUnbuildableRelease refuses, before anything is built or pushed, a
+// build that cannot produce a usable release.
+func refuseUnbuildableRelease(entities *KCLEntities, targets buildTargetSet, opts buildOptions, resolvedTag string) error {
+	// A release that can only come out empty is refused now, not after the
+	// build (a frontend build alone is minutes).
+	if why, empty := releaseCapturesNothing(projectDirForKCL(), entities, targets, opts); empty {
+		return errEmptyRelease(why, opts)
+	}
+	// Refuse conflicting writers, and built_images edges that cannot be
+	// scheduled, before ANY build or push, not after earlier lanes have
+	// published images. The dispatcher and --plan use this too.
+	if _, _, err := externalBuildSchedule(externalBuildServices(entities), opts, resolvedTag, projectDirForKCL()); err != nil {
+		return err
+	}
+	return nil
+}
+
 func runBuild(ctx context.Context, opts buildOptions) error {
 	cfg, err := prepareBuild(opts)
 	if err != nil {
@@ -715,15 +732,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if resumed, err := resumeInterruptedCut(ctx, entities, opts); resumed || err != nil {
 		return err
 	}
-	// A release that can only come out empty is refused now, not after the
-	// build (a frontend build alone is minutes).
-	if why, empty := releaseCapturesNothing(projectDirForKCL(), entities, targets, opts); empty {
-		return errEmptyRelease(why, opts)
-	}
-	// Refuse conflicting writers, and built_images edges that cannot be
-	// scheduled, before ANY build or push, not after earlier lanes have
-	// published images. The dispatcher and --plan use this too.
-	if _, _, err := externalBuildSchedule(externalBuildServices(entities), opts, resolvedTag, projectDirForKCL()); err != nil {
+	if err := refuseUnbuildableRelease(entities, targets, opts, resolvedTag); err != nil {
 		return err
 	}
 	registerBuildStorage(ctx, projectDirForKCL(), entities, push)

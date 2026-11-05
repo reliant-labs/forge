@@ -46,6 +46,15 @@ type fakeZitadel struct {
 	cmplx    map[string]any
 	lockout  map[string]any
 	smtp     []*fSMTP
+	idps     []*fIdP
+	// loginIDPs and secondFactors are the login policy's lists, which have
+	// their own endpoints and are not part of the policy's PUT.
+	loginIDPs     []string
+	secondFactors []string
+	generators    map[string]map[string]any
+	// hideSigningKey makes the email provider list omit the HTTP signing key.
+	hideSigningKey bool
+	invites        map[string]int // user id -> invite codes sent
 
 	keyOwner  map[string]string // key id -> user id
 	patOwner  map[string]string // token -> user id
@@ -105,6 +114,15 @@ type fGrant struct {
 type fSMTP struct {
 	ID, Sender, SenderName, Host, User, Desc, ReplyTo, Password, State string
 	TLS                                                                bool
+	// HTTP marks an HTTP email provider (Endpoint, SigningKey).
+	HTTP                 bool
+	Endpoint, SigningKey string
+}
+
+type fIdP struct {
+	ID, Name, Type, ClientID, Secret string
+	Scopes                           []string
+	Options                          map[string]any
 }
 
 var (
@@ -135,6 +153,12 @@ func newFake(t *testing.T) *fakeZitadel {
 		cmplx:   map[string]any{"minLength": "8", "hasUppercase": true, "hasLowercase": true, "hasNumber": true, "hasSymbol": true},
 		lockout: map[string]any{},
 		signKey: sharedKey(t),
+		// A fresh Zitadel instance enables these second factors at setup.
+		secondFactors: []string{"SECOND_FACTOR_TYPE_OTP", "SECOND_FACTOR_TYPE_U2F", "SECOND_FACTOR_TYPE_OTP_EMAIL"},
+		generators: map[string]map[string]any{
+			"SECRET_GENERATOR_TYPE_OTP_EMAIL": {"length": float64(8), "expiry": "300s", "includeDigits": true},
+		},
+		invites: map[string]int{},
 	}
 	// The ZITADEL system project every instance has.
 	f.projects["sys"] = &fProject{ID: "sys", Name: "ZITADEL"}
@@ -320,6 +344,12 @@ func (f *fakeZitadel) serve(w http.ResponseWriter, r *http.Request) {
 		f.policyAPI(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/v1/smtp"):
 		f.smtpAPI(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/v1/email"):
+		f.emailAPI(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/v1/idps"):
+		f.idpAPI(w, r)
+	case strings.HasPrefix(r.URL.Path, "/admin/v1/secretgenerators/"):
+		f.generatorAPI(w, r)
 	case strings.HasPrefix(r.URL.Path, "/v2/users"):
 		f.v2Users(w, r)
 	default:
@@ -901,6 +931,10 @@ func omitZero(m map[string]any) map[string]any {
 }
 
 func (f *fakeZitadel) policyAPI(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.URL.Path, "/policies/login/") {
+		f.loginListAPI(w, r)
+		return
+	}
 	var target *map[string]any
 	notChangedID := ""
 	switch {
@@ -918,10 +952,35 @@ func (f *fakeZitadel) policyAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" {
-		reply(w, 200, map[string]any{"policy": omitZero(*target)})
+		pol := omitZero(*target)
+		if target == &f.login {
+			if len(f.secondFactors) > 0 {
+				pol["secondFactors"] = append([]string{}, f.secondFactors...)
+			}
+			var links []any
+			for _, id := range f.loginIDPs {
+				for _, i := range f.idps {
+					if i.ID == id {
+						links = append(links, map[string]any{"idpId": i.ID, "idpName": i.Name, "idpType": "IDP_TYPE_OIDC"})
+					}
+				}
+			}
+			if links != nil {
+				pol["idps"] = links
+			}
+		}
+		reply(w, 200, map[string]any{"policy": pol})
 		return
 	}
 	body := decode(r)
+	if target == &f.login {
+		for _, k := range []string{"idps", "secondFactors", "multiFactors"} {
+			if _, ok := body[k]; ok {
+				zerr(w, 400, 3, "GATEWAY-1", "unknown field "+k)
+				return
+			}
+		}
+	}
 	// The gateway renders lockout numbers back as strings; normalize both sides.
 	next := map[string]any{}
 	for k, v := range body {
@@ -1067,8 +1126,281 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(path, "/password_reset"):
 		f.mutate("password reset")
 		reply(w, 200, map[string]any{"verificationCode": "ABC123"})
+	case strings.HasSuffix(path, "/invite_code") && r.Method == "POST":
+		id := strings.Trim(strings.TrimSuffix(path, "/invite_code"), "/")
+		u := f.users[id]
+		if u == nil {
+			zerr(w, 400, 9, "COMMAND-Wgvn4", "Errors.User.NotFound")
+			return
+		}
+		if len(u.AuthMethods) > 0 {
+			zerr(w, 400, 9, "COMMAND-EF34g", "Errors.User.AlreadyInitialised")
+			return
+		}
+		send, _ := body["sendCode"].(map[string]any)
+		if send == nil {
+			f.t.Errorf("fake: invite_code without sendCode: %v", body)
+		}
+		f.invites[id]++
+		f.mutate("invite code " + u.UserName)
+		reply(w, 200, map[string]any{"details": details()})
 	default:
 		f.t.Errorf("fake: unhandled v2 path %s %s", r.Method, r.URL.Path)
 		zerr(w, 404, 5, "FAKE-1", "unhandled")
 	}
+}
+
+// --- email providers, IdPs, login policy lists, secret generators ----------
+
+func (f *fakeZitadel) emailJSON(s *fSMTP) map[string]any {
+	state := "EMAIL_PROVIDER_INACTIVE"
+	if s.State == "SMTP_CONFIG_ACTIVE" {
+		state = "EMAIL_PROVIDER_ACTIVE"
+	}
+	m := map[string]any{"id": s.ID, "state": state, "description": s.Desc}
+	if s.HTTP {
+		h := map[string]any{"endpoint": s.Endpoint}
+		if !f.hideSigningKey {
+			h["signingKey"] = s.SigningKey
+		}
+		m["http"] = h
+	} else {
+		m["smtp"] = map[string]any{"senderAddress": s.Sender, "senderName": s.SenderName, "tls": s.TLS,
+			"host": s.Host, "user": s.User, "replyToAddress": s.ReplyTo}
+	}
+	return m
+}
+
+func (f *fakeZitadel) emailAPI(w http.ResponseWriter, r *http.Request) {
+	body := decode(r)
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/v1/email"), "/")
+	parts := strings.Split(rest, "/")
+	find := func(id string) *fSMTP {
+		for _, x := range f.smtp {
+			if x.ID == id {
+				return x
+			}
+		}
+		return nil
+	}
+	switch {
+	case rest == "_search":
+		var all []any
+		for _, s := range f.smtp {
+			all = append(all, f.emailJSON(s))
+		}
+		lo, hi := f.pageOf(body, len(all))
+		reply(w, 200, map[string]any{"result": all[lo:hi]})
+	case rest == "http" && r.Method == "POST":
+		s := &fSMTP{ID: f.id(), State: "SMTP_CONFIG_INACTIVE", HTTP: true, SigningKey: "sk-" + strconv.Itoa(f.seq)}
+		s.Endpoint, _ = body["endpoint"].(string)
+		s.Desc, _ = body["description"].(string)
+		f.smtp = append(f.smtp, s)
+		f.mutate("create email http")
+		reply(w, 200, map[string]any{"id": s.ID, "signingKey": s.SigningKey, "details": details()})
+	case len(parts) == 2 && parts[0] == "http" && r.Method == "PUT":
+		s := find(parts[1])
+		if s == nil || !s.HTTP {
+			zerr(w, 404, 5, "COMMAND-xIrdledqv4", "Errors.SMTPConfig.NotFound")
+			return
+		}
+		ep, _ := body["endpoint"].(string)
+		d, _ := body["description"].(string)
+		out := map[string]any{"details": details()}
+		changed := ep != s.Endpoint || d != s.Desc
+		s.Endpoint, s.Desc = ep, d
+		if body["expirationSigningKey"] != nil {
+			f.seq++
+			s.SigningKey = "sk-rotated-" + strconv.Itoa(f.seq)
+			out["signingKey"] = s.SigningKey
+			changed = true
+		}
+		if changed {
+			f.mutate("update email http")
+		}
+		reply(w, 200, out)
+	case len(parts) == 2 && (parts[1] == "_activate" || parts[1] == "_deactivate"):
+		s := find(parts[0])
+		if s == nil {
+			zerr(w, 404, 5, "COMMAND-E9K20hxOS9", "Errors.SMTPConfig.NotFound")
+			return
+		}
+		if parts[1] == "_deactivate" {
+			if s.State != "SMTP_CONFIG_ACTIVE" {
+				zerr(w, 400, 9, "COMMAND-km8g3", "Errors.SMTPConfig.AlreadyDeactivated")
+				return
+			}
+			s.State = "SMTP_CONFIG_INACTIVE"
+			f.mutate("deactivate email")
+			return200(w)
+			return
+		}
+		if s.State == "SMTP_CONFIG_ACTIVE" {
+			zerr(w, 400, 9, "COMMAND-vUHBSmBzaw", "Errors.SMTPConfig.AlreadyActive")
+			return
+		}
+		for _, x := range f.smtp {
+			x.State = "SMTP_CONFIG_INACTIVE"
+		}
+		s.State = "SMTP_CONFIG_ACTIVE"
+		f.mutate("activate email")
+		return200(w)
+	default:
+		f.t.Errorf("fake: unhandled email path %s %s", r.Method, r.URL.Path)
+		zerr(w, 404, 5, "FAKE-1", "unhandled")
+	}
+}
+
+var fakeProviderType = map[string]string{"google": "PROVIDER_TYPE_GOOGLE", "github": "PROVIDER_TYPE_GITHUB"}
+
+func (f *fakeZitadel) idp(name string) *fIdP {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, i := range f.idps {
+		if i.Name == name {
+			return i
+		}
+	}
+	return nil
+}
+
+func (f *fakeZitadel) idpAPI(w http.ResponseWriter, r *http.Request) {
+	body := decode(r)
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/v1/idps"), "/")
+	parts := strings.Split(rest, "/")
+	switch {
+	case rest == "templates/_search":
+		var all []any
+		for _, i := range f.idps {
+			opts := map[string]any{}
+			for k, v := range i.Options {
+				if b, ok := v.(bool); ok && !b {
+					continue // the gateway omits zero values
+				}
+				if v == "AUTO_LINKING_OPTION_UNSPECIFIED" {
+					continue
+				}
+				opts[k] = v
+			}
+			all = append(all, map[string]any{"id": i.ID, "name": i.Name, "state": "IDP_STATE_ACTIVE",
+				"type": fakeProviderType[i.Type], "config": map[string]any{"options": opts,
+					i.Type: map[string]any{"clientId": i.ClientID, "scopes": i.Scopes}}})
+		}
+		lo, hi := f.pageOf(body, len(all))
+		reply(w, 200, map[string]any{"result": all[lo:hi]})
+	case len(parts) == 1 && r.Method == "POST" && fakeProviderType[parts[0]] != "":
+		i := &fIdP{ID: f.id(), Type: parts[0]}
+		i.Name, _ = body["name"].(string)
+		i.ClientID, _ = body["clientId"].(string)
+		i.Secret, _ = body["clientSecret"].(string)
+		i.Scopes = strs(body["scopes"])
+		i.Options, _ = body["providerOptions"].(map[string]any)
+		if i.Secret == "" {
+			zerr(w, 400, 3, "IDP-1", "client secret required")
+			return
+		}
+		f.idps = append(f.idps, i)
+		f.mutate("create idp " + i.Name)
+		reply(w, 200, map[string]any{"id": i.ID, "details": details()})
+	case len(parts) == 2 && r.Method == "PUT":
+		var i *fIdP
+		for _, x := range f.idps {
+			if x.ID == parts[1] && x.Type == parts[0] {
+				i = x
+			}
+		}
+		if i == nil {
+			zerr(w, 404, 5, "IDP-2", "not found")
+			return
+		}
+		before := fmt.Sprint(i.Name, i.ClientID, i.Scopes, normalize(i.Options))
+		i.Name, _ = body["name"].(string)
+		i.ClientID, _ = body["clientId"].(string)
+		i.Scopes = strs(body["scopes"])
+		i.Options, _ = body["providerOptions"].(map[string]any)
+		changed := fmt.Sprint(i.Name, i.ClientID, i.Scopes, normalize(i.Options)) != before
+		if sec, _ := body["clientSecret"].(string); sec != "" {
+			i.Secret, changed = sec, true // a re-applied secret is still a write
+		}
+		if changed {
+			f.mutate("update idp " + i.Name)
+		}
+		reply(w, 200, map[string]any{"details": details()}) // an unchanged update answers 200
+	default:
+		f.t.Errorf("fake: unhandled idp path %s %s", r.Method, r.URL.Path)
+		zerr(w, 404, 5, "FAKE-1", "unhandled")
+	}
+}
+
+func (f *fakeZitadel) loginListAPI(w http.ResponseWriter, r *http.Request) {
+	body := decode(r)
+	rest := strings.TrimPrefix(r.URL.Path, "/admin/v1/policies/login/")
+	switch {
+	case rest == "idps" && r.Method == "POST":
+		id, _ := body["idpId"].(string)
+		if contains(f.loginIDPs, id) {
+			zerr(w, 409, 6, "INSTANCE-2B0ps", "Errors.Instance.LoginPolicy.IDP.AlreadyExists")
+			return
+		}
+		f.loginIDPs = append(f.loginIDPs, id)
+		f.mutate("link idp " + id)
+		return200(w)
+	case strings.HasPrefix(rest, "idps/") && r.Method == "DELETE":
+		id := strings.TrimPrefix(rest, "idps/")
+		for i, x := range f.loginIDPs {
+			if x == id {
+				f.loginIDPs = append(f.loginIDPs[:i], f.loginIDPs[i+1:]...)
+				f.mutate("unlink idp " + id)
+				return200(w)
+				return
+			}
+		}
+		zerr(w, 404, 5, "INSTANCE-39fjs", "Errors.Instance.LoginPolicy.IDP.NotExisting")
+	case rest == "second_factors" && r.Method == "POST":
+		t, _ := body["type"].(string)
+		if contains(f.secondFactors, t) {
+			zerr(w, 409, 6, "INSTANCE-2B0ps", "Errors.Instance.MFA.AlreadyExists")
+			return
+		}
+		f.secondFactors = append(f.secondFactors, t)
+		f.mutate("add second factor " + t)
+		return200(w)
+	case strings.HasPrefix(rest, "second_factors/") && r.Method == "DELETE":
+		t := strings.TrimPrefix(rest, "second_factors/")
+		for i, x := range f.secondFactors {
+			if x == t {
+				f.secondFactors = append(f.secondFactors[:i], f.secondFactors[i+1:]...)
+				f.mutate("remove second factor " + t)
+				return200(w)
+				return
+			}
+		}
+		zerr(w, 404, 5, "INSTANCE-3M9od", "Errors.Instance.LoginPolicy.MFA.NotExisting")
+	default:
+		f.t.Errorf("fake: unhandled login policy path %s %s", r.Method, r.URL.Path)
+		zerr(w, 404, 5, "FAKE-1", "unhandled")
+	}
+}
+
+func (f *fakeZitadel) generatorAPI(w http.ResponseWriter, r *http.Request) {
+	typ := strings.TrimPrefix(r.URL.Path, "/admin/v1/secretgenerators/")
+	if r.Method == "GET" {
+		g := map[string]any{"generatorType": typ}
+		for k, v := range f.generators[typ] {
+			if b, ok := v.(bool); ok && !b {
+				continue
+			}
+			g[k] = v
+		}
+		reply(w, 200, map[string]any{"secretGenerator": g})
+		return
+	}
+	body := decode(r)
+	if reflect.DeepEqual(omitZero(body), omitZero(f.generators[typ])) {
+		notChanged(w, "COMMAND-m0o3f")
+		return
+	}
+	f.generators[typ] = body
+	f.mutate("update secret generator " + typ)
+	return200(w)
 }

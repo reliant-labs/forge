@@ -185,25 +185,58 @@ func TestRestoreImpureKCLWrites_WritingModuleStashesWhatItReverts(t *testing.T) 
 	}
 }
 
-func TestKCLModuleCanWriteFiles(t *testing.T) {
+// TestRestoreImpureKCLWrites_WritingModuleLeavesUnnamedEdits: a module that
+// does call file.write can only have written a path it names. A concurrent
+// edit to any other tracked file during the render is someone else's work,
+// so it is left as is while the named write beside it is still undone.
+func TestRestoreImpureKCLWrites_WritingModuleLeavesUnnamedEdits(t *testing.T) {
+	dir := t.TempDir()
+	const committed = "accounts { CP_DEFAULT: {} }\n"
+	const scaffold = "package content_test\n\n// WantScaffoldStub row\n"
+	initGitRepo(t, dir, map[string]string{
+		"deploy/kcl/lib/nats.k": "import file\n\n_OUT = \"deploy/nats/nats.conf\"\n_w = file.write(_OUT, _conf)\n",
+		"deploy/nats/nats.conf": committed,
+		"internal/handlers/content/handlers_scaffold_draft_post_test.go": scaffold,
+	})
+	before := dirtyTrackedFiles(dir)
+	writeGuardFile(t, dir, "deploy/nats/nats.conf", "accounts { CP_DEFAULT: {} CP_prod_: {} }\n")
+	const realTests = "package content_test\n\n// real assertions\n"
+	writeGuardFile(t, dir, "internal/handlers/content/handlers_scaffold_draft_post_test.go", realTests)
+
+	restored := restoreImpureKCLWrites(dir, before)
+	if len(restored) != 1 || restored[0] != "deploy/nats/nats.conf" {
+		t.Fatalf("restored = %v, want [deploy/nats/nats.conf] only", restored)
+	}
+	if got := readGuardFile(t, dir, "deploy/nats/nats.conf"); got != committed {
+		t.Errorf("the named write was not undone:\n%s", got)
+	}
+	if got := readGuardFile(t, dir, "internal/handlers/content/handlers_scaffold_draft_post_test.go"); got != realTests {
+		t.Errorf("a concurrent edit to a file the module never names was reverted:\n--- got ---\n%s\n--- want ---\n%s", got, realTests)
+	}
+}
+
+func TestKCLFileWriteTargets(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		files map[string]string
+		path  string
 		want  bool
 	}{
-		{"no file.write", map[string]string{"deploy/kcl/dev/main.k": "_x = 1\n"}, false},
-		{"commented out", map[string]string{"deploy/kcl/dev/main.k": "# _w = file.write(\"a\", \"b\")\n"}, false},
-		{"a write", map[string]string{"deploy/kcl/dev/main.k": "_w = file.write(\"a\", \"b\")\n"}, true},
-		{"a write in a shared module", map[string]string{"deploy/kcl/dev/main.k": "_x = 1\n", "deploy/kcl/nats.k": "  _w = file.write (p, body)\n"}, true},
-		{"node_modules is not the module", map[string]string{"frontends/web/node_modules/x/y.k": "file.write(\"a\", \"b\")\n"}, false},
+		{"no file.write", map[string]string{"deploy/kcl/dev/main.k": "_p = \"a.conf\"\n"}, "a.conf", false},
+		{"commented out", map[string]string{"deploy/kcl/dev/main.k": "# _w = file.write(\"a.conf\", \"b\")\n"}, "a.conf", false},
+		{"a named write", map[string]string{"deploy/kcl/dev/main.k": "_w = file.write(\"a.conf\", \"b\")\n"}, "a.conf", true},
+		{"an unnamed path", map[string]string{"deploy/kcl/dev/main.k": "_w = file.write(\"a.conf\", \"b\")\n"}, "internal/x_test.go", false},
+		{"named in a shared module", map[string]string{"deploy/kcl/dev/main.k": "_w = file.write (p, body)\n", "deploy/kcl/nats.k": "_OUT = './deploy/nats/nats.conf'\n"}, "deploy/nats/nats.conf", true},
+		{"relative to the .k file", map[string]string{"deploy/kcl/dev/main.k": "_w = file.write(\"out.yaml\", b)\n"}, "deploy/kcl/dev/out.yaml", true},
+		{"node_modules is not the module", map[string]string{"frontends/web/node_modules/x/y.k": "file.write(\"a.conf\", \"b\")\n"}, "a.conf", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			for rel, body := range tc.files {
 				writeGuardFile(t, dir, rel, body)
 			}
-			if got := kclModuleCanWriteFiles(dir); got != tc.want {
-				t.Errorf("kclModuleCanWriteFiles = %v, want %v", got, tc.want)
+			if got := kclFileWriteTargets(dir)[tc.path]; got != tc.want {
+				t.Errorf("kclFileWriteTargets(...)[%q] = %v, want %v", tc.path, got, tc.want)
 			}
 		})
 	}

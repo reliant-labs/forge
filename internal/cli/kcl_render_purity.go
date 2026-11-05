@@ -47,8 +47,8 @@
 // this checkout is routinely shared with other agents, so a file edited by
 // hand during the render looks exactly like the render's write. growth lost
 // two edited test files that way (restoreImpureKCLWrites has the details).
-// So the guard restores only when the module can write files at all, and
-// keeps a copy of everything it reverts.
+// So the guard restores only a file the module's KCL names alongside a
+// file.write call, and keeps a copy of everything it reverts.
 //
 // The render's VALUE is kept. The write is what gets undone, not the query
 // that needed the render, so k3d-ports.yaml and the frontend config still
@@ -67,6 +67,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -239,7 +240,10 @@ func renderEnvsPure(ctx context.Context, projectDir string, envs []string) []env
 //
 //   - a module with no file.write cannot have written anything, and every
 //     such file is someone else's edit. Nothing is restored.
-//   - a module that does write files is still repaired, but losslessly: the
+//   - a module that does write files can only have written a path it names,
+//     so a file no string literal in its KCL names is someone else's edit
+//     and is left alone, whatever else the module writes.
+//   - a file the module does name is still repaired, but losslessly: the
 //     bytes it reverts are kept under .forge/kcl-reverted/ first, and the
 //     report names them.
 func restoreImpureKCLWrites(projectDir string, before map[string]bool) []string {
@@ -252,11 +256,15 @@ func restoreImpureKCLWrites(projectDir string, before map[string]bool) []string 
 			dirtied = append(dirtied, path)
 		}
 	}
-	if len(dirtied) == 0 || !kclModuleCanWriteFiles(projectDir) {
+	if len(dirtied) == 0 {
 		return nil
 	}
+	targets := kclFileWriteTargets(projectDir)
 	var restored []string
 	for _, path := range dirtied {
+		if !targets[path] {
+			continue // the module never names it: someone else's edit
+		}
 		if serr := stashKCLReverted(projectDir, path); serr != nil {
 			// Without a copy, a revert could be the only record of a
 			// concurrent edit lost. Leave the file as it is.
@@ -297,42 +305,77 @@ func stashKCLReverted(projectDir, rel string) error {
 // kclFileWriteRE matches a call to KCL's file.write.
 var kclFileWriteRE = regexp.MustCompile(`\bfile\.write\s*\(`)
 
-// kclModuleCanWriteFiles reports whether any KCL source in the project calls
-// file.write, the only way a render writes a file. Comment lines do not
-// count. Directories that hold no project KCL (VCS, forge state, installed
-// packages, generated code) are skipped. A walk error reads as "can write",
-// so a tree forge cannot read keeps the historical repair.
-func kclModuleCanWriteFiles(projectDir string) bool {
-	found := false
-	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+// kclStringLiteralRE matches a single-line KCL string literal, double- or
+// single-quoted.
+var kclStringLiteralRE = regexp.MustCompile(`"([^"\\\n]*)"|'([^'\\\n]*)'`)
+
+// kclFileWriteTargets returns the project-relative paths the project's KCL
+// could name as a file.write target: every string literal in its sources,
+// read as a path both from the project root (file.write resolves a relative
+// path against the process's working directory, the project) and from the
+// .k file's own directory. It is nil when no source calls file.write, the
+// only way a render writes a file. Comment lines do not count. Directories
+// that hold no project KCL (VCS, forge state, installed packages, generated
+// code) are skipped, and so is a file forge cannot read: a path no literal
+// names is never restored, so missing evidence keeps the bytes on disk.
+//
+// A literal naming the path is not proof the render wrote it, but it is the
+// positive evidence a revert needs: a tracked file the module never names
+// cannot be its write, and is someone else's edit.
+func kclFileWriteTargets(projectDir string) map[string]bool {
+	writes := false
+	targets := map[string]bool{}
+	_ = filepath.WalkDir(projectDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			switch d.Name() {
 			case ".git", ".forge", "node_modules", "vendor", "gen":
-				if path != projectDir {
+				if p != projectDir {
 					return filepath.SkipDir
 				}
 			}
 			return nil
 		}
-		if filepath.Ext(path) != ".k" {
+		if filepath.Ext(p) != ".k" {
 			return nil
 		}
-		data, rerr := os.ReadFile(path)
+		data, rerr := os.ReadFile(p)
 		if rerr != nil {
-			return rerr
+			return nil
 		}
+		relDir, rerr := filepath.Rel(projectDir, filepath.Dir(p))
+		if rerr != nil {
+			relDir = "."
+		}
+		relDir = filepath.ToSlash(relDir)
 		for _, line := range strings.Split(string(data), "\n") {
-			if t := strings.TrimSpace(line); !strings.HasPrefix(t, "#") && kclFileWriteRE.MatchString(t) {
-				found = true
-				return filepath.SkipAll
+			t := strings.TrimSpace(line)
+			if strings.HasPrefix(t, "#") {
+				continue
+			}
+			if kclFileWriteRE.MatchString(t) {
+				writes = true
+			}
+			for _, m := range kclStringLiteralRE.FindAllStringSubmatch(t, -1) {
+				lit := m[1] + m[2]
+				if lit == "" || path.IsAbs(lit) {
+					continue
+				}
+				targets[path.Clean(lit)] = true
+				targets[path.Join(relDir, lit)] = true
 			}
 		}
 		return nil
 	})
-	return found || err != nil
+	if !writes {
+		return nil
+	}
+	return targets
 }
 
 // reportImpureRender explains a restored write. The message has to carry the

@@ -122,13 +122,12 @@ func stepKCLLoadable(ctx *pipelineContext) error {
 
 	var broken []string
 	var skipped int
-	for _, env := range envs {
-		// renderKCLPure, not RenderKCL: evaluating a module fires any
-		// file.write in it, and a write that lands on a tracked file makes
-		// `forge generate` non-reproducible. See kcl_render_purity.go.
-		_, restored, rerr := renderKCLPure(context.Background(), ctx.ProjectDir, env)
+	// renderEnvsPure, not RenderKCL: evaluating a module fires any
+	// file.write in it, and a write that lands on a tracked file makes
+	// `forge generate` non-reproducible. See kcl_render_purity.go.
+	for _, r := range renderEnvsPure(context.Background(), ctx.ProjectDir, envs) {
+		env, rerr := r.env, r.err
 		if rerr == nil {
-			reportImpureRender(env, restored)
 			continue
 		}
 		fatal, _ := classifyKCLLoadError(rerr)

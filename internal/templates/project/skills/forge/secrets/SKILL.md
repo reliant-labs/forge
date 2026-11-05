@@ -388,6 +388,12 @@ bundle provider is the single-source model now — prefer it.
   `required: true` and `optional: true` together are refused at generate
   time rather than resolved by precedence.
 
+  An optional credential still goes in the workload's `config_secrets`:
+  that is what delivers it. Leaving it out to get past the pre-flight means
+  no env ever receives it, even after `forge secret set`. Listed and
+  `optional: true`, turning the feature on in an env is one `forge secret
+  set --env <env> <KEY>`.
+
   All of this is the DEPLOY pre-flight, over the refs a workload declares
   in `config_secrets`. At runtime `sensitive` does not make a field
   required: a field the process cannot start without says `required: true`

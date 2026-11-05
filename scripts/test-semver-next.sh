@@ -35,22 +35,34 @@ grep -q '(#6)' "$T.err" || { echo "FAIL: footer refusal does not name #6"; fail=
 expect v1.6.0 0 --allow-breaking
 expect v1.6.0 0 --breaking-since HEAD
 expect "" 3 --breaking-since HEAD~1
+c "fix(pkg): x (#6b)" -m "API-BREAK: codemod=x"
+expect "" 3 --base-rev HEAD~1
 c "feat: mentions BREAKING CHANGE: in prose only (#7)"
 expect v1.6.0 0 --base-rev HEAD~1
 expect "" 2 --base v9
 
-# The base is a release the head descends from, never the newest tag anywhere.
+# A release of a later commit refuses an older head; a tag beside the head's history
+# (a release train's pin commit) is still the last release; a version already taken
+# by other source refuses.
 c "fix: y (#8)"; g tag v1.6.0
 expect v1.6.1 0 --head HEAD                    # the head itself is the base
 expect "" 4 --head HEAD~1                      # an older head: a descendant shipped
 grep -q 'v1.6.0' "$T.err" || { echo "FAIL: descendant refusal does not name v1.6.0"; fail=1; }
+expect v1.6.1 0 --head HEAD~1 --no-older-check # the release train's opt-out
 c "fix: z (#9)"
-g checkout -q -b side HEAD~2                   # beside v1.6.0, off #7
-c "feat: elsewhere (#10)"; g tag v9.0.0
-g checkout -q -b side2 side~1
-c "feat: again (#11)"
-g checkout -q main
-expect v1.6.1 0                                # v9.0.0 is on another branch: not the base
-expect "" 4 --head side2 --allow-breaking      # computes v1.6.0, already another commit's
+g checkout -q -b pin HEAD; c "chore(rc): pin (#10)"; g tag v1.6.1   # the release, beside main
+g checkout -q main; c "feat: after the release (#11)"
+expect v1.7.0 0                                # counts from v1.6.1, on the pin commit
+g checkout -q -b side2 HEAD~3; c "feat: again (#12)"; g checkout -q main
+expect "" 4 --base v1.5.0 --head side2 --allow-breaking   # computes v1.6.0, already another commit's
 grep -q 'v1.6.0 is already released' "$T.err" || { echo "FAIL: collision refusal does not name v1.6.0"; fail=1; }
+# A git log that fails after both ends resolve (a history object is missing) is a
+# git error, never a silent patch.
+B="$T/broken"; mkdir "$B"
+gb() { git -C "$B" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+gb init -q -b main; gb commit -q --allow-empty -m "chore: init"; gb tag v2.0.0
+gb commit -q --allow-empty -m "feat: lost (#8)"; mid="$(gb rev-parse HEAD)"
+gb commit -q --allow-empty -m "fix: tip (#9)"
+rm -f "$B/.git/objects/${mid:0:2}/${mid:2}"
+expect "" 2 --repo "$B"
 exit "$fail"

@@ -130,13 +130,16 @@ func Worktree(projectDir string) string {
 	// Normalize commonDir to absolute so the comparison is exact:
 	// --git-common-dir can come back relative (e.g. ".git"), and it is
 	// relative to the command's working dir (projectDir), NOT the process
-	// cwd — so resolve it against projectDir, not via filepath.Abs.
+	// cwd — so resolve it against projectDir. projectDir may itself be
+	// relative ("." from a command run at the project root, or "" for the
+	// cwd), and is then resolved against the cwd as git resolved it. Joining
+	// a relative projectDir as-is left commonDir relative (".git"), which
+	// never equals the absolute gitDir, so a PRIMARY checkout rendered as a
+	// linked worktree keyed on its own directory name.
 	if !filepath.IsAbs(commonDir) {
 		base := projectDir
-		if base == "" {
-			if wd, err := os.Getwd(); err == nil {
-				base = wd
-			}
+		if abs, err := filepath.Abs(base); err == nil {
+			base = abs
 		}
 		commonDir = filepath.Join(base, commonDir)
 	}

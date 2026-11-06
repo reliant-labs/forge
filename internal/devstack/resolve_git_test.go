@@ -2,6 +2,7 @@ package devstack
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -33,6 +34,46 @@ func initRepoOnBranch(t *testing.T, dir string) {
 	git(t, dir, "config", "user.name", "test")
 	git(t, dir, "checkout", "-q", "-b", "chore/bump-forge-93067142")
 	git(t, dir, "commit", "-q", "--allow-empty", "-m", "init")
+}
+
+// TestRelativeProjectDirResolvesLikeAbsolute: forge's commands pass the
+// project dir as "." when run from its root (`forge env deploy` renders the
+// release bundle from "."), and Worktree must give the answer it gives for the
+// absolute path. It used to resolve git's relative --git-common-dir (".git")
+// against the relative "." and compare that with the absolute git dir, so a
+// PRIMARY checkout came back as a linked worktree keyed on its own basename,
+// and every render of that command left the default stack.
+func TestRelativeProjectDirResolvesLikeAbsolute(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	gitAvailable(t)
+	primary := filepath.Join(t.TempDir(), "primary-checkout")
+	if err := os.MkdirAll(primary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initRepoOnBranch(t, primary)
+	wt := filepath.Join(t.TempDir(), "wt-feature")
+	git(t, primary, "worktree", "add", "-q", "-b", "feature-x", wt)
+
+	for _, tc := range []struct {
+		name, cwd, want string
+	}{
+		{"primary checkout", primary, ""},
+		{"linked worktree", wt, "wt-feature"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Worktree(tc.cwd); got != tc.want {
+				t.Fatalf("Worktree(%q) = %q, want %q", tc.cwd, got, tc.want)
+			}
+			t.Chdir(tc.cwd)
+			for _, rel := range []string{".", ""} {
+				if got := Worktree(rel); got != tc.want {
+					t.Errorf("Worktree(%q) from %s = %q, want %q (what the absolute path gives)", rel, tc.cwd, got, tc.want)
+				}
+			}
+		})
+	}
 }
 
 // TestPrimaryCheckoutOnNamedBranchWorktreeEmpty is THE regression-lock: a

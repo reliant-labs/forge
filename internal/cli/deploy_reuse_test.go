@@ -52,6 +52,9 @@ func TestDeployNoVersion_ReusesTheReleaseEnvBuildCut(t *testing.T) {
 		{name: "machine ledger", render: deployTestEnvRender},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The commands arm the render-context globals (devstack.SetActive
+			// and the port resolvers); put them back for the next test.
+			resetDevStackGlobals(t)
 			// A clean checkout. .forge/ is ignored, as it is in every forge
 			// project, so the build state and bundles the commands write do
 			// not dirty it. ensureLedgerReady names the project in forge.yaml

@@ -23,6 +23,7 @@ var envExempt = map[string]string{
 	// honours the caller's GOFLAGS inside one. It is a checker, not a
 	// generator: nothing it writes is diffed against a CI regenerate.
 	"internal/cli/lint/contract_inprocess.go:loadPackagesForAnalysis": "lint's loader (contract and slow-tests lanes) sets its own -mod policy",
+	"internal/cli/lint/contract_inprocess.go:listPackagePaths":        "lists packages with the analysis loader's env (analysisEnv), so it agrees with loadPackagesForAnalysis",
 	// The guard recognises the qualified goexec.Env; inside package goexec the
 	// same call is spelled Env(), and a nil env defaults to it.
 	"internal/goexec/pkgpatterns.go:ExcludeNodeModules": "defaults to Env() (unqualified inside goexec); callers pass their own",

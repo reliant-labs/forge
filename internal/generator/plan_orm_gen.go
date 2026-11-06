@@ -566,7 +566,7 @@ func renderORMEntity(pkgName string, ent config.PlanEntity, hasExtra bool) []byt
 	writeORMImports(&b, needsTime, needsJSON, overrideImports)
 
 	// The entity struct: a projection of the APPLIED schema, with Bun tags.
-	writeEntityStruct(&b, msgName, tableName, fields, hasExtra)
+	writeEntityStruct(&b, msgName, tableName, ent.Schema, fields, hasExtra)
 
 	// Field name constants. Doc comments start with the declared name so
 	// the emitted file satisfies `revive: exported` — see
@@ -1124,6 +1124,21 @@ func structTag(f ormField) string {
 	}
 }
 
+// qualifiedTableName is how the store names a table in SQL: bare for a table
+// in public (or of unknown schema), "<schema>.<table>" otherwise. A table the
+// migrations put in another schema is addressed there explicitly rather than
+// through the connection's search_path: behind a transaction-pooling
+// PgBouncer a server connection can carry whatever search_path another
+// client's session SET, so a bare name can miss the table or find another.
+// A project that selects tenants by search_path writes unqualified
+// migrations, which land in public on the shadow database and stay bare.
+func qualifiedTableName(schema, table string) string {
+	if schema == "" || schema == "public" {
+		return table
+	}
+	return schema + "." + table
+}
+
 // writeEntityStruct emits the entity row type with Bun struct tags. Field
 // types come from the APPLIED schema's columns: time.Time for timestamps
 // (never timestamppb — the wire seam converts), pointers for nullable
@@ -1138,7 +1153,7 @@ func structTag(f ormField) string {
 // skipped before it ever reaches the embedding walk), so the seam is
 // invisible to every generated CRUD path unless and until the user adds
 // a field to it.
-func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []ormField, hasExtra bool) {
+func writeEntityStruct(b *strings.Builder, msgName, tableName, schema string, fields []ormField, hasExtra bool) {
 	fmt.Fprintf(b, "// %s is the %s row type — a projection of the APPLIED schema\n", msgName, tableName)
 	b.WriteString("// (db/migrations). Evolve it by writing migrations; `forge generate`\n")
 	b.WriteString("// regenerates this struct from the introspected schema. The bun tags\n")
@@ -1146,7 +1161,7 @@ func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []o
 	b.WriteString("// bun.BaseModel pins the table name and its alias (alias == table so\n")
 	b.WriteString("// Bun's column qualification matches the FROM clause).\n")
 	fmt.Fprintf(b, "type %s struct {\n", msgName)
-	fmt.Fprintf(b, "\tbun.BaseModel `bun:%q`\n", fmt.Sprintf("table:%s,alias:%s", tableName, tableName))
+	fmt.Fprintf(b, "\tbun.BaseModel `bun:%q`\n", fmt.Sprintf("table:%s,alias:%s", qualifiedTableName(schema, tableName), tableName))
 	for _, f := range fields {
 		fmt.Fprintf(b, "\t%s %s %s\n", f.goName, f.structGoType(), structTag(f))
 	}

@@ -571,6 +571,7 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 	e := EntityDef{
 		Name:          name,
 		TableName:     table.Name,
+		Schema:        table.Schema,
 		ProtoFile:     protoFile,
 		SoftDelete:    conv.SoftDelete,
 		Timestamps:    conv.Timestamps,

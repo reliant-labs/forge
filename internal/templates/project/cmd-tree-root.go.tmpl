@@ -115,7 +115,17 @@ func newRootCmd(deps Deps) *cobra.Command {
 	root := &cobra.Command{
 		Use:   ServiceName,
 		Short: ServiceName + " service",
+		// Usage is for a mistyped command line, not a runtime failure: a
+		// server or operator that exits on an error (a lost leader election,
+		// say) would otherwise print every flag after it, burying the error
+		// in the pod log. Flag errors still print usage (SetFlagErrorFunc
+		// below; every subcommand inherits it).
+		SilenceUsage: true,
 	}
+	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		c.PrintErrln(c.UsageString())
+		return err
+	})
 
 	// One command per root of the composition graph (roots_gen.go): `server`
 	// runs the default root, and every //forge:root you declare adds its own.

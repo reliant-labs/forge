@@ -939,6 +939,29 @@ type providersGraphData struct {
 	DevSessionCookie bool
 }
 
+// configTypeDeclares reports whether the config typeName — "" is the root
+// config, whose fields are rootFields — declares goName at its own top level
+// (the same reading configDeclaringIn makes of a command config). UserAuth
+// reads AuthDeps.DevSessionCookie's Environment from the config SetupAuth
+// takes, which a binary_config project's command config may or may not
+// declare.
+func configTypeDeclares(messages []ConfigMessage, typeName string, rootFields map[string]bool, goName string) bool {
+	if typeName == "" {
+		return rootFields[goName]
+	}
+	for _, m := range messages {
+		if m.Name != typeName {
+			continue
+		}
+		for _, f := range m.Fields {
+			if f.GoName == goName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // projectDevSessionCookieDecl matches AuthDeps.DevSessionCookie.
 var projectDevSessionCookieDecl = regexp.MustCompile(`(?m)^\s*DevSessionCookie\s+bool\b`)
 
@@ -1005,13 +1028,14 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 	}
 	rel := filepath.Join("internal", "app", "providers.go")
 	configFields := DefaultConfigFieldNames()
-	if msgs, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config")); err == nil && len(msgs) > 0 {
+	msgs, err := ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
+	if err == nil && len(msgs) > 0 {
 		configFields = RootConfigFieldNames(msgs, projectDir)
 	}
 	data := providersGraphData{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields,
 		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker,
 		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptor(projectDir), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir),
-		DevSessionCookie: projectMiddlewareDeclares(projectDir, projectDevSessionCookieDecl) && authConfig == "" && configFields["Environment"]}
+		DevSessionCookie: projectMiddlewareDeclares(projectDir, projectDevSessionCookieDecl) && configTypeDeclares(msgs, authConfig, configFields, "Environment")}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render providers-graph.go.tmpl: %w", err)

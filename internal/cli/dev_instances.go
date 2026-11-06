@@ -13,8 +13,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 func newDevInstancesCmd() *cobra.Command {

@@ -13,8 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 // newSmokeCmd builds `forge env smoke <env>` — a post-deploy ingress

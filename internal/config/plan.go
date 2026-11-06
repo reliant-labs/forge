@@ -48,8 +48,12 @@ type PlanFrontend struct {
 
 // PlanEntity describes a database entity to scaffold.
 type PlanEntity struct {
-	Name       string `yaml:"name" json:"name"`                                 // PascalCase message name, e.g. "Project"
-	TableName  string `yaml:"table_name,omitempty" json:"table_name,omitempty"` // override; defaults to pluralized snake_case
+	Name      string `yaml:"name" json:"name"`                                 // PascalCase message name, e.g. "Project"
+	TableName string `yaml:"table_name,omitempty" json:"table_name,omitempty"` // override; defaults to pluralized snake_case
+	// Schema is the postgres schema the table lives in. A table outside
+	// public is addressed schema-qualified by the generated store, because a
+	// pooled connection's search_path is not something the store can trust.
+	Schema     string `yaml:"schema,omitempty" json:"schema,omitempty"`
 	SoftDelete bool   `yaml:"soft_delete,omitempty" json:"soft_delete,omitempty"`
 	Timestamps bool   `yaml:"timestamps,omitempty" json:"timestamps,omitempty"`
 	// AppendOnly marks an immutable ledger: the table is declared

@@ -410,7 +410,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	}
 	shape, err := bundle.ProjectShape(bundle.ShapeInput{
 		Kind:              shapeEnvKindOf(entities),
-		Workloads:         shapeWorkloadsOf(entities),
+		Workloads:         withShapeWorkloadUnits(shapeWorkloadsOf(entities), entities, split),
 		Secrets:           shapeSecretsOf(entities),
 		Domains:           shapeDomainsOf(entities),
 		Clusters:          clusters,
@@ -431,6 +431,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Databases:           shapeDatabasesOf(entities),
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
+		HostInfra:           len(entities.Infra) > 0,
 		Store:               store,
 	})
 	if err != nil {
@@ -542,6 +543,31 @@ func shapeWorkloadsOf(e *KCLEntities) []release.ShapeWorkload {
 		out = append(out, release.ShapeWorkload{Name: d.Name, Runtime: d.Runtime, Cluster: d.Cluster})
 	}
 	return out
+}
+
+// withShapeWorkloadUnits records each cluster workload's delivery unit, for an
+// env that declares a unit split (split.ShapeUnits() non-empty): with
+// Shape.Units it is what places a workload on the hub or on forge from the
+// shape alone, the way placementsOf does from the render. An env with no split
+// records none, so its shape — and every bundle digest over it — is
+// unchanged. ws is shapeWorkloadsOf(e): its first len(e.Workloads) entries are
+// e.Workloads, in order.
+func withShapeWorkloadUnits(ws []release.ShapeWorkload, e *KCLEntities, split unitSplit) []release.ShapeWorkload {
+	if e == nil || len(split.ShapeUnits()) == 0 {
+		return ws
+	}
+	for i := range e.Workloads {
+		w := &e.Workloads[i]
+		if i >= len(ws) || w.Runtime.Type != RuntimeCluster {
+			continue
+		}
+		unit := w.DeliveryUnit
+		if unit == "" {
+			unit = release.DefaultDeliveryUnit
+		}
+		ws[i].Unit = unit
+	}
+	return ws
 }
 
 // shapeSecretsOf projects the env's declared secrets: NAMES, their provider,

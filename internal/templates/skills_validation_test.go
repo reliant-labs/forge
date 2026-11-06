@@ -693,6 +693,7 @@ func annotationDescriptors() map[string]protoreflect.MessageDescriptor {
 		"config":          (&forgev1.ConfigFieldOptions{}).ProtoReflect().Descriptor(),
 		"binary_config":   (&forgev1.BinaryConfigOptions{}).ProtoReflect().Descriptor(),
 		"frontend_config": (&forgev1.FrontendConfigOptions{}).ProtoReflect().Descriptor(),
+		"filter":          (&forgev1.ListFilterOptions{}).ProtoReflect().Descriptor(),
 	}
 }
 
@@ -972,7 +973,7 @@ func scanAnnotationRegion(region string, descs map[string]protoreflect.MessageDe
 		if !ok {
 			out = append(out, annViolation{
 				claim:  "(forge.v1." + ext + ")",
-				reason: "no such forge.v1 extension (valid: entity, field, service, method, config, binary_config, frontend_config)",
+				reason: "no such forge.v1 extension (valid: entity, field, service, method, config, binary_config, frontend_config, filter)",
 			})
 			continue
 		}
@@ -986,7 +987,7 @@ func scanAnnotationRegion(region string, descs map[string]protoreflect.MessageDe
 		if !ok {
 			out = append(out, annViolation{
 				claim:  "(forge.v1." + ext + ")",
-				reason: "no such forge.v1 extension (valid: entity, field, service, method, config, binary_config, frontend_config)",
+				reason: "no such forge.v1 extension (valid: entity, field, service, method, config, binary_config, frontend_config, filter)",
 			})
 			continue
 		}

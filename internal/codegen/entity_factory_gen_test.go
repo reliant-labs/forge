@@ -102,6 +102,24 @@ func TestEntityFromStruct(t *testing.T) {
 	}
 }
 
+// A table outside public is tagged schema-qualified; the factory still keys
+// it by the bare table name, which is what every CRUD entity carries.
+func TestEntityFromStruct_SchemaQualifiedTable(t *testing.T) {
+	q := "`"
+	name, st := structFromSrc(t, "package db\n"+
+		"type Order struct {\n"+
+		"\tbun.BaseModel "+q+`bun:"table:controlplane.orders,alias:orders"`+q+"\n"+
+		"\tId string "+q+`bun:"id,pk"`+q+"\n"+
+		"}")
+	ent, ok := entityFromStruct(name, st)
+	if !ok {
+		t.Fatal("expected Order to be recognized as an entity")
+	}
+	if ent.table != "orders" {
+		t.Errorf("table = %q, want the bare name orders", ent.table)
+	}
+}
+
 func TestEntityFromStruct_NonStringPKSkipped(t *testing.T) {
 	q := "`"
 	name, st := structFromSrc(t, "package db\n"+

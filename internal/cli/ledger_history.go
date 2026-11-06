@@ -14,6 +14,7 @@ import (
 	"fmt"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/topology"
 )
 
 // historyQuery is one page request.
@@ -114,33 +115,8 @@ func (s *hostedStore) HistoryPage(ctx context.Context, env string, q historyQuer
 
 // gatesSummary is the one-line count of a promotion's evidence, both halves:
 // what was claimed at promote time and what was recorded afterwards.
-type gatesSummary struct {
-	Passed  int `json:"passed"`
-	Failed  int `json:"failed"`
-	Skipped int `json:"skipped"`
-	Errored int `json:"errored"`
-}
+type gatesSummary = topology.GatesSummary
 
 func summarizeGates(groups ...[]release.Gate) *gatesSummary {
-	var s gatesSummary
-	n := 0
-	for _, gates := range groups {
-		for _, g := range gates {
-			n++
-			switch release.StageStatusOfGate(g) {
-			case release.StagePassed:
-				s.Passed++
-			case release.StageFailed:
-				s.Failed++
-			case release.StageSkipped:
-				s.Skipped++
-			default:
-				s.Errored++
-			}
-		}
-	}
-	if n == 0 {
-		return nil
-	}
-	return &s
+	return topology.SummarizeGates(groups...)
 }

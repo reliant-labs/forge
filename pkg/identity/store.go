@@ -38,7 +38,14 @@ const (
 	keyBrokerPrefix  = "broker-token:"
 	keySecretPrefix  = "client-secret:"
 	keySMTPDigest    = "smtp-password-digest"
+	keyIdPPrefix     = "idp-secret-digest:"
+	keyOwnerPrefix   = "owner-invite:"
 )
+
+// KeyMailSigning is the KeyStore entry holding the signing key of the HTTP
+// email provider (Spec.EmailHTTP). The receiving endpoint verifies each
+// notification's ZITADEL-Signature with it, so it reads the key from here.
+const KeyMailSigning = "mail-signing-key"
 
 // MachineKeyEntry is the KeyStore name of a machine user's key document.
 func MachineKeyEntry(username string) string { return keyMachinePrefix + username }
@@ -172,6 +179,70 @@ type Output struct {
 	Apps map[string]AppOutput `json:"apps,omitempty"`
 	// Machine are the machine users by username.
 	Machine map[string]MachineOutput `json:"machine,omitempty"`
+	// IdPIDs maps each declared identity provider's name to its Zitadel id,
+	// which is what a broker starts a social sign-in with.
+	IdPIDs map[string]string `json:"idp_ids,omitempty"`
+	// LoginPolicy is the document the app's login broker enforces, built from
+	// Spec.SignIn. Nil when the spec declares no SignIn. Its Mail is left
+	// empty: only the caller knows how the instance's mail is delivered, so
+	// it sets it with WithMail before delivering the document.
+	LoginPolicy *LoginPolicyDoc `json:"login_policy,omitempty"`
+}
+
+// LoginPolicyVersion is the LoginPolicyDoc schema version this library emits.
+const LoginPolicyVersion = 1
+
+// LoginPolicyDoc is the delivered LOGIN_POLICY document (version 1).
+type LoginPolicyDoc struct {
+	Version       int                 `json:"version"`
+	Signup        string              `json:"signup"`
+	SignupDomains []string            `json:"signup_domains"`
+	SignupRole    string              `json:"signup_role"`
+	Methods       []string            `json:"methods"`
+	PasskeyRPID   string              `json:"passkey_rp_id"`
+	Social        []LoginPolicySocial `json:"social"`
+	// Mail is how the instance's mail is delivered: platform, smtp, dev,
+	// sandbox, paused or none.
+	Mail string `json:"mail"`
+	// RequireVerifiedEmail gates every session on a verified address. It is
+	// false only when nothing can deliver the verification mail.
+	RequireVerifiedEmail bool `json:"require_verified_email"`
+	// Password is the instance password complexity policy as last converged.
+	Password *LoginPolicyPassword `json:"password,omitempty"`
+}
+
+// Mail delivery states of LoginPolicyDoc.Mail.
+const (
+	MailPlatform = "platform"
+	MailSMTP     = "smtp"
+	MailDev      = "dev"
+	MailSandbox  = "sandbox"
+	MailPaused   = "paused"
+	MailNone     = "none"
+)
+
+// WithMail returns a copy of the document with its mail state set, and with
+// RequireVerifiedEmail following from it.
+func (d LoginPolicyDoc) WithMail(mail string) LoginPolicyDoc {
+	d.Mail = mail
+	d.RequireVerifiedEmail = mail != MailNone
+	return d
+}
+
+// LoginPolicySocial is one sign-in button.
+type LoginPolicySocial struct {
+	Type  string `json:"type"`
+	IdPID string `json:"idp_id"`
+	Label string `json:"label"`
+}
+
+// LoginPolicyPassword is the password complexity a sign-up form checks.
+type LoginPolicyPassword struct {
+	MinLength int  `json:"min_length"`
+	Uppercase bool `json:"uppercase"`
+	Lowercase bool `json:"lowercase"`
+	Number    bool `json:"number"`
+	Symbol    bool `json:"symbol"`
 }
 
 // AppOutput is one application's published values.

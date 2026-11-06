@@ -268,34 +268,99 @@ func TestReleaseForgeScript_DryRunLeavesNoTrace(t *testing.T) {
 	}
 }
 
-// The release to cut is declared in NEXT_VERSION, not computed from the last
-// tag (v0.1.46 was followed by v1.0.0): no version argument cuts it, and any
-// version but it (or a pre-release of it) is refused.
-func TestReleaseForgeScript_CutsTheReleaseNextVersionNames(t *testing.T) {
+// The release is computed from the PR titles since the last final tag (real
+// semver, majors locked; owner, 2026-11-05): a fix-only range is a patch that
+// leaves NEXT_VERSION alone, a feat makes it the minor NEXT_VERSION names (and
+// moves NEXT_VERSION to the minor after), a breaking change is refused, and
+// only --owner-override cuts a version that is neither computed nor declared.
+func TestReleaseForgeScript_CutsTheComputedRelease(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the release script, which builds the fixture module")
 	}
 	repo := newForgeFixtureRepo(t)
+	land := func(subject string, body ...string) {
+		t.Helper()
+		args := []string{"commit", "-q", "--allow-empty", "-m", subject}
+		for _, b := range body {
+			args = append(args, "-m", b)
+		}
+		gitIn(t, repo, args...)
+		gitIn(t, repo, "push", "-q", "origin", "HEAD:main")
+	}
+	land("fix(cli): a fix (#11)")
 	out, err := runForgeScript(t, repo, "--dry-run")
 	if err != nil {
 		t.Fatalf("dry-run with no version failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "releasing v0.2.0 (from NEXT_VERSION)") || !strings.Contains(out, "NEXT_VERSION: v0.2.0 → v0.2.1") {
-		t.Errorf("dry run did not cut NEXT_VERSION's release and name the one after it:\n%s", out)
+	if !strings.Contains(out, "releasing v0.1.1 (computed") || strings.Contains(out, "NEXT_VERSION: v0.2.0 →") {
+		t.Errorf("a fix-only range did not cut the patch and leave NEXT_VERSION alone:\n%s", out)
+	}
+	land("feat(cli): a feature (#12)")
+	if out, err = runForgeScript(t, repo, "--dry-run"); err != nil {
+		t.Fatalf("dry-run with no version failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "releasing v0.2.0 (computed") || !strings.Contains(out, "NEXT_VERSION: v0.2.0 → v0.3.0") {
+		t.Errorf("a feat did not cut the minor and move NEXT_VERSION to the minor after:\n%s", out)
 	}
 	if out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0-rc.1"); err != nil {
-		t.Errorf("a pre-release of NEXT_VERSION was refused: %v\n%s", err, out)
+		t.Errorf("a pre-release of the computed version was refused: %v\n%s", err, out)
 	} else if strings.Contains(out, "NEXT_VERSION: v0.2.0 →") {
 		t.Errorf("a pre-release moved NEXT_VERSION:\n%s", out)
 	}
 	for _, v := range []string{"v0.1.1", "v0.3.0"} {
 		out, err := runForgeScript(t, repo, "--dry-run", v)
-		if err == nil || !strings.Contains(out, "is not the next release: NEXT_VERSION names v0.2.0") {
-			t.Errorf("version %s: want a refusal naming NEXT_VERSION, got err=%v:\n%s", v, err, out)
+		if err == nil || !strings.Contains(out, "is not the next release: the PR titles compute v0.2.0 and NEXT_VERSION names v0.2.0") {
+			t.Errorf("version %s: want a refusal naming the computed version, got err=%v:\n%s", v, err, out)
 		}
+	}
+	if out, err := runForgeScript(t, repo, "--dry-run", "--owner-override", "v0.3.0"); err != nil || !strings.Contains(out, "NEXT_VERSION: v0.2.0 → v0.4.0") {
+		t.Errorf("--owner-override v0.3.0: want it cut with NEXT_VERSION moved past it, got err=%v:\n%s", err, out)
+	}
+	land("refactor(pkg)!: remove a function (#13)")
+	if out, err := runForgeScript(t, repo, "--dry-run"); err == nil || !strings.Contains(out, "(#13)") || !strings.Contains(out, "majors are locked") {
+		t.Errorf("a breaking change: want the release refused naming #13, got err=%v:\n%s", err, out)
+	}
+	if out, err := runForgeScript(t, repo, "--dry-run", "v0.2.0"); err != nil {
+		t.Errorf("NEXT_VERSION, passed explicitly as the release train does, was refused: %v\n%s", err, out)
 	}
 	if status := gitOut(t, repo, "status", "--porcelain"); status != "" {
 		t.Errorf("dry runs left the tree dirty:\n%s", status)
+	}
+}
+
+// A computed release past NEXT_VERSION is refused: the lint rollout rows keyed
+// to NEXT_VERSION would ship under a later version, and a consumer pinning it
+// would meet their gates_from at once instead of a release of warnings. And a
+// commit older than a release (one tagged on a later commit) is refused
+// whatever version is asked for: it would publish older source as newer.
+func TestReleaseForgeScript_RefusesPastNextVersionAndReleasedSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script, which builds the fixture module")
+	}
+	repo := newForgeFixtureRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "NEXT_VERSION"), []byte("v0.1.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "commit", "-q", "-am", "feat(cli): a feature (#21)")
+	gitIn(t, repo, "push", "-q", "origin", "HEAD:main")
+	out, err := runForgeScript(t, repo, "--dry-run")
+	if err == nil || !strings.Contains(out, "v0.2.0 is past NEXT_VERSION (v0.1.1)") {
+		t.Errorf("a computed minor past NEXT_VERSION: want a refusal, got err=%v:\n%s", err, out)
+	}
+
+	repo = newForgeFixtureRepo(t)
+	for _, s := range []string{"fix(cli): one (#22)", "fix(cli): two (#23)"} {
+		gitIn(t, repo, "commit", "-q", "--allow-empty", "-m", s)
+	}
+	gitIn(t, repo, "push", "-q", "origin", "HEAD:main")
+	gitIn(t, repo, "tag", "v0.1.1")
+	gitIn(t, repo, "push", "-q", "origin", "v0.1.1")
+	older := gitOut(t, repo, "rev-parse", "HEAD~1")
+	if out, err := runForgeScript(t, repo, "--dry-run", "--commit", older); err == nil || !strings.Contains(out, "older than a release") {
+		t.Errorf("an older commit than a release: want a refusal, got err=%v:\n%s", err, out)
+	}
+	if out, err := runForgeScript(t, repo, "--dry-run", "--commit", older, "v0.2.0"); err == nil || !strings.Contains(out, "already exists") {
+		t.Errorf("an older commit than a release, at NEXT_VERSION: want a refusal, got err=%v:\n%s", err, out)
 	}
 }
 
@@ -361,8 +426,8 @@ func TestReleaseForgeScript_TagsOriginsCommitAndNeverPushesMain(t *testing.T) {
 		t.Errorf("VERSION (%q) and internal/buildinfo/VERSION (%q) diverged", rootV, embeddedV)
 	}
 	// The bookkeeping names the release after it.
-	if next := bookkeepingFile(t, origin, "v0.2.0", "NEXT_VERSION"); strings.TrimSpace(next) != "v0.2.1" {
-		t.Errorf("NEXT_VERSION = %q after releasing v0.2.0, want v0.2.1", strings.TrimSpace(next))
+	if next := bookkeepingFile(t, origin, "v0.2.0", "NEXT_VERSION"); strings.TrimSpace(next) != "v0.3.0" {
+		t.Errorf("NEXT_VERSION = %q after releasing v0.2.0, want the next minor v0.3.0", strings.TrimSpace(next))
 	}
 	// A local origin gets no pull request: the script says to merge by hand.
 	if !strings.Contains(out, "merge release/v0.2.0 into main by hand") {
@@ -639,6 +704,24 @@ func TestReleaseLockScript(t *testing.T) {
 	cmd := exec.Command("bash", filepath.Join(root, "scripts", "test-release-lock.sh"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("scripts/test-release-lock.sh: %v\n%s", err, out)
+	}
+}
+
+// TestSemverNextScript runs scripts/test-semver-next.sh, the hermetic self-test of the
+// version computation every release script uses (the same file in forge, reliant and
+// control-plane): feat is a minor, anything else a patch, a breaking change is refused
+// naming its PR, and rc/ and pre-release tags are never the base.
+func TestSemverNextScript(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a throwaway git repository; runs in task test")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "test-semver-next.sh"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("scripts/test-semver-next.sh: %v\n%s", err, out)
 	}
 }
 

@@ -38,10 +38,15 @@
 #   scripts/release-forge.sh [--dry-run] [--repo <dir>] [--branch <name>]
 #                            [--commit <sha>] [--skip-proxy-check] [vX.Y.Z]
 #
-#   vX.Y.Z        the release to cut. Defaults to NEXT_VERSION's (read at the
-#                 commit being released), and must be it or a pre-release of
-#                 it (step 2b); a final release moves NEXT_VERSION to its
-#                 next patch.
+#   vX.Y.Z        the release to cut. Defaults to the version computed from
+#                 the PR titles since the last final tag (scripts/semver-next.sh:
+#                 feat → minor, else patch, a breaking change refused); an
+#                 explicit one must be that, NEXT_VERSION, or a pre-release of
+#                 either (step 2b). A final release at or past NEXT_VERSION
+#                 moves NEXT_VERSION to the next minor.
+#   --owner-override
+#                 the owner's: cut the explicit version even when it is not
+#                 the computed one, or over a breaking change.
 #   --dry-run     run every validation and every file edit, print the plan,
 #                 and create no commit, tag, push or pull request.
 #   --repo DIR    operate on DIR instead of the enclosing git repo (tests).
@@ -109,16 +114,18 @@ SKIP_PROXY_CHECK=0
 PROXY_BASE="${FORGE_RELEASE_PROXY_BASE:-https://proxy.golang.org}"
 
 COMMIT=""
+OWNER_OVERRIDE=0
 
 usage() {
-  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--commit <sha>] [--skip-proxy-check] [vX.Y.Z]" >&2
-  echo "       the version defaults to NEXT_VERSION's, and must be it (or a pre-release of it)" >&2
+  echo "usage: $0 [--dry-run] [--repo <dir>] [--branch <name>] [--commit <sha>] [--skip-proxy-check] [--owner-override] [vX.Y.Z]" >&2
+  echo "       the version defaults to the one computed from the PR titles since the last release (scripts/semver-next.sh)" >&2
   exit 2
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
+    --owner-override) OWNER_OVERRIDE=1; shift ;;
     --skip-proxy-check) SKIP_PROXY_CHECK=1; shift ;;
     --repo)    [ $# -ge 2 ] || usage; REPO_ROOT="$2"; shift 2 ;;
     --branch)  [ $# -ge 2 ] || usage; BRANCH="$2"; shift 2 ;;
@@ -243,18 +250,29 @@ if [ ! -f CHANGELOG.md ]; then
   exit 1
 fi
 
-# ── 2b. The next release is declared, not computed ──────────────────
-# NEXT_VERSION names the release main is building toward. It is not always
-# VERSION's patch+1 (v0.1.46 was followed by v1.0.0), and the lint rollout
-# rows, codemods and migration playbooks on main are keyed to it — their tests
-# fail a key that is neither shipped nor NEXT_VERSION — so cutting any other
-# version would ship them under a release they do not name. Omit the version
-# to cut NEXT_VERSION; a pre-release of it (vX.Y.Z-rc.1) is allowed. To cut a
-# different release, change NEXT_VERSION in a pull request first. A final
-# release moves NEXT_VERSION to its next patch in the release commit.
+# ── 2b. The release is computed: real semver, majors locked ─────────
+# Owner decision, 2026-11-05: forge follows semver at major 1. The version is
+# computed by scripts/semver-next.sh from the squash commits (the merged PR
+# titles) since the newest final vX.Y.Z tag: any `feat` makes it a minor
+# (vX.Y+1.0), anything else a patch (vX.Y.Z+1), and a breaking change
+# (`type!:`, a `BREAKING CHANGE:` footer) refuses the release, naming the PR:
+# within a major, deprecate and keep the old path.
+#
+# NEXT_VERSION names the next FEATURE release (the next minor). The lint
+# rollout rows, codemods and migration playbooks on main are keyed to it —
+# their tests fail a key that is neither shipped nor NEXT_VERSION — and they
+# arrive with `feat` PRs, so a release that carries them is the minor
+# NEXT_VERSION names. A fix-only patch release leaves NEXT_VERSION alone; a
+# final release at or past NEXT_VERSION moves it to the minor after.
+#
+# An explicit version is accepted when it is the computed one, NEXT_VERSION, or
+# a pre-release of either: the release train passes the version it computed,
+# having refused a breaking change at its own cut (or the owner overrode it
+# there). With no version, a breaking change refuses here. Any other version
+# needs --owner-override: only the owner cuts those.
 NEXT_FILE="NEXT_VERSION"
 if [ ! -f "$NEXT_FILE" ]; then
-  echo "error: expected $NEXT_FILE not found — it names the release to cut" >&2
+  echo "error: expected $NEXT_FILE not found — it names the next feature release" >&2
   exit 1
 fi
 NEXT="$(tr -d '[:space:]' <"$NEXT_FILE")"
@@ -262,21 +280,64 @@ if ! echo "$NEXT" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
   echo "error: $NEXT_FILE must hold one vX.Y.Z release (got: $NEXT)" >&2
   exit 1
 fi
-if [ -z "$VERSION" ]; then
-  VERSION="$NEXT"
-  echo "→ releasing $VERSION (from $NEXT_FILE)"
+git fetch -q origin 'refs/tags/v*:refs/tags/v*' 2>/dev/null \
+  || echo "  note: could not fetch origin's tags; counting from the local ones" >&2
+# COMPUTED refuses a breaking change; BUMPED is the same count with the break
+# allowed, which an explicit version (the train's, the owner's) is checked against.
+# A break the newest release candidate (rc/ tag) already carried was refused or
+# overridden at that cut, so it does not refuse again.
+# A commit older than a release (a final tag on a later commit) is refused
+# whatever version is asked for: it would publish older source as a newer release.
+COMPUTED="" COMPUTE_ERR="" COMPUTE_RC=0 BUMPED=""
+git fetch -q origin 'refs/tags/rc/*:refs/tags/rc/*' 2>/dev/null || true
+SINCE_RC="$(git tag -l 'rc/v*' --sort=-v:refname | head -1)"
+COMPUTED="$(bash "$RELEASE_SCRIPT_DIR/semver-next.sh" --repo . --head "$COMMIT" ${SINCE_RC:+--breaking-since "refs/tags/$SINCE_RC"} 2>"$RELEASE_WORKTREE_PARENT/semver.err")" || COMPUTE_RC=$?
+if [ "$COMPUTE_RC" != 0 ]; then
+  COMPUTED=""; COMPUTE_ERR="$(cat "$RELEASE_WORKTREE_PARENT/semver.err")"
 fi
-if [ "${VERSION%%-*}" != "$NEXT" ]; then
-  echo "error: $VERSION is not the next release: $NEXT_FILE names $NEXT." >&2
-  echo "hint: omit the version to cut $NEXT, or change $NEXT_FILE in a pull request first." >&2
+if [ "$COMPUTE_RC" = 4 ] && [ -n "$VERSION" ] && [ "$OWNER_OVERRIDE" != 1 ]; then
+  echo "error: a release of a later commit than $COMMIT already exists; $VERSION would publish older source as a newer release:" >&2
+  printf '%s\n' "$COMPUTE_ERR" >&2
+  exit 1
+fi
+BUMPED="$(bash "$RELEASE_SCRIPT_DIR/semver-next.sh" --repo . --head "$COMMIT" --allow-breaking 2>/dev/null || true)"
+if [ -z "$VERSION" ]; then
+  if [ -z "$COMPUTED" ]; then
+    echo "error: cannot compute the release version:" >&2
+    printf '%s\n' "$COMPUTE_ERR" >&2
+    echo "hint: the owner may cut an explicit version: $0 --owner-override vX.Y.Z" >&2
+    exit 1
+  fi
+  VERSION="$COMPUTED"
+  echo "→ releasing $VERSION (computed from the PR titles since $(git tag -l 'v*' --merged "$COMMIT" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1))"
+elif [ "${VERSION%%-*}" = "$BUMPED" ] || [ "${VERSION%%-*}" = "$NEXT" ]; then
+  [ -z "$COMPUTE_ERR" ] || { echo "  note: releasing the version the caller chose over a refusal it already judged:" >&2; printf '%s\n' "$COMPUTE_ERR" >&2; }
+elif [ "$OWNER_OVERRIDE" = 1 ]; then
+  echo "→ releasing $VERSION by the owner's --owner-override (computed: ${COMPUTED:-refused}; $NEXT_FILE: $NEXT)"
+else
+  echo "error: $VERSION is not the next release: the PR titles compute ${BUMPED:-no version} and $NEXT_FILE names $NEXT." >&2
+  [ -z "$COMPUTE_ERR" ] || printf '%s\n' "$COMPUTE_ERR" >&2
+  echo "hint: omit the version to cut the computed one; only the owner cuts another (--owner-override)." >&2
+  exit 1
+fi
+# A release past NEXT_VERSION would ship the lint rollout rows, codemods and
+# playbooks keyed to NEXT_VERSION under a later version than they name, and a
+# rule's grace period (gates_from, the release after NEXT_VERSION) would be
+# spent before any consumer could pin it. Move NEXT_VERSION, and those keys, in
+# a pull request first.
+if [ "$OWNER_OVERRIDE" != 1 ] && [ "$(printf '%s\n%s\n' "${VERSION%%-*}" "$NEXT" | sort -V | tail -1)" != "$NEXT" ]; then
+  echo "error: $VERSION is past $NEXT_FILE ($NEXT): the unreleased lint rollout rows, codemods and migration playbooks keyed to $NEXT would ship under $VERSION." >&2
+  echo "hint: move $NEXT_FILE (and the keys its tests check) to ${VERSION%%-*} in a pull request first." >&2
   exit 1
 fi
 RELEASE_TAG="$VERSION"
 NEXT_AFTER="$NEXT"
 case "$VERSION" in
   *-*) ;; # a pre-release: the final release is still next
-  *) IFS=. read -r next_major next_minor next_patch <<<"${NEXT#v}"
-     NEXT_AFTER="v$next_major.$next_minor.$((next_patch + 1))" ;;
+  *) if [ "$(printf '%s\n%s\n' "$VERSION" "$NEXT" | sort -V | tail -1)" = "$VERSION" ]; then
+       IFS=. read -r rel_major rel_minor _ <<<"${VERSION#v}"
+       NEXT_AFTER="v$rel_major.$((rel_minor + 1)).0"
+     fi ;;
 esac
 
 # ── 3. Clean tree ───────────────────────────────────────────────────

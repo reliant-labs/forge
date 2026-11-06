@@ -110,7 +110,7 @@ func TestRemovalWithoutDeclarationFails(t *testing.T) {
 func TestRemovalDeclaredButNoCodemodFails(t *testing.T) {
 	slow(t)
 	repo := prRepo(t, "removal")
-	_, stderr, err := gate(t, repo, "-label", "api-break")
+	_, stderr, err := gate(t, repo, "-label", "api-break", "-owner-approved")
 	if err == nil {
 		t.Fatal("a label alone, with no codemod or playbook in the diff, must fail")
 	}
@@ -132,9 +132,12 @@ func TestRemovalDeclaredWithCodemodPasses(t *testing.T) {
 	if err := os.WriteFile(body, []byte("Drop widget.Close.\n\nAPI-BREAK: codemod=widget-close\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, err := gate(t, repo, "-body-file", body)
+	if _, stderr, err := gate(t, repo, "-body-file", body); err == nil || !strings.Contains(stderr, "breaking:approved") {
+		t.Fatalf("declared + codemod without the owner's approval must fail naming breaking:approved: %v\n%s", err, stderr)
+	}
+	stdout, stderr, err := gate(t, repo, "-body-file", body, "-owner-approved")
 	if err != nil {
-		t.Fatalf("declared + codemod must pass: %v\n%s", err, stderr)
+		t.Fatalf("owner-approved + declared + codemod must pass: %v\n%s", err, stderr)
 	}
 	if !strings.Contains(stdout, "declared and shipped") || !strings.Contains(stdout, "Close") {
 		t.Errorf("stdout should name the declared break: %s", stdout)

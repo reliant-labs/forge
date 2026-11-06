@@ -17,6 +17,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/topology"
 )
 
 const hostedTestDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -325,7 +326,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 		t.Fatalf("all-envs status: %v\n%s", err, topoOut)
 	}
 	var topo struct {
-		Environments []topologyEnv `json:"environments"`
+		Environments []topology.Env `json:"environments"`
 	}
 	if err := json.Unmarshal([]byte(topoOut), &topo); err != nil {
 		t.Fatalf("topology --json: %v\n%s", err, topoOut)

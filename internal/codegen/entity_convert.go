@@ -19,6 +19,7 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 	pe := config.PlanEntity{
 		Name:       entity.Name,
 		TableName:  entity.TableName,
+		Schema:     entity.Schema,
 		SoftDelete: entity.SoftDelete,
 		Timestamps: entity.Timestamps,
 		AppendOnly: entity.AppendOnly,

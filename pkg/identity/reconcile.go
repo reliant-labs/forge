@@ -193,6 +193,12 @@ type Report struct {
 	// holds for them is spent or moot. A member whose check failed is in
 	// neither this list nor SignInCodes.
 	Credentialed []string
+	// OwnersInvited lists the owners sent an invitation this pass.
+	OwnersInvited []string
+	// OwnersPending lists the owners who hold no credential and were NOT
+	// invited this pass: there is no mail (Owner.Invite is nil), they were
+	// invited recently, or they reached OwnerInviteLimit.
+	OwnersPending []string
 	// Output is the published view, filled even when Options.Outputs is nil.
 	Output Output
 	DryRun bool
@@ -229,6 +235,7 @@ type run struct {
 	apps0         []appObj // applications present when the pass began
 	machine       map[string]MachineOutput
 	apps          map[string]AppOutput
+	idpIDs        map[string]string // identity provider name -> Zitadel id
 }
 
 func (p *run) dry() bool { return p.o.DryRun }
@@ -249,6 +256,14 @@ func (s Spec) requiresKeys() bool {
 	for _, m := range s.MachineUsers {
 		if m.Key || m.Token {
 			return true
+		}
+	}
+	if s.EmailHTTP != nil || len(s.IdPs) > 0 {
+		return true // the provider's signing key; the client secrets' digests
+	}
+	for _, o := range s.Owners {
+		if o.Invite != nil {
+			return true // when each owner was last invited
 		}
 	}
 	return s.SMTP != nil && s.SMTP.Password != ""
@@ -273,14 +288,14 @@ func (r *Reconciler) reconcile(ctx context.Context, spec Spec, force []RotateTar
 		return nil, errors.New("identity: the spec declares seed users but Options.AllowSeedUsers is not set; seed users are for local and ephemeral instances only")
 	}
 	if spec.requiresKeys() && r.opts.Keys == nil {
-		return nil, errors.New("identity: the spec generates credentials (machine keys, tokens, client secrets or an SMTP password) but Options.Keys is nil; there would be nowhere to keep them")
+		return nil, errors.New("identity: the spec generates or remembers credentials (machine keys, tokens, client secrets, an SMTP password, a mail signing key, IdP secret digests or owner invitations) but Options.Keys is nil; there would be nowhere to keep them")
 	}
 
 	rep := &Report{DryRun: r.opts.DryRun}
 	p := &run{
 		r: r, c: r.c, o: r.opts, rep: rep, spec: spec, force: force,
 		roles: map[string]Role{}, users: map[string]string{}, createdHumans: map[string]bool{},
-		machine: map[string]MachineOutput{}, apps: map[string]AppOutput{},
+		machine: map[string]MachineOutput{}, apps: map[string]AppOutput{}, idpIDs: map[string]string{},
 	}
 	for _, t := range force {
 		if t.Application == "" && t.MachineUser == "" {
@@ -320,11 +335,16 @@ func (r *Reconciler) reconcile(ctx context.Context, spec Spec, force []RotateTar
 	}
 	step(p.ensureRoles)
 	step(p.ensurePolicies)
-	step(p.ensureSMTP)
+	step(p.ensureMail)
+	// IdPs follow the login policy: linking one into it needs the policy.
+	step(p.ensureIdPs)
 	// Machine users precede applications: a broker account is a machine user.
 	step(p.ensureMachineUsers)
 	step(p.ensureApplications)
 	step(p.ensureMembers)
+	// Owners follow members (a declared member may also be an owner) and
+	// precede seed users, whose grants are read afresh.
+	step(p.ensureOwners)
 	step(p.ensureSeedUsers)
 
 	if len(errs) > 0 {

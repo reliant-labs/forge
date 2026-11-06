@@ -303,29 +303,105 @@ func (p *run) ensureLoginPolicy(ctx context.Context, want LoginPolicy) error {
 			drift = append(drift, k)
 		}
 	}
-	if len(drift) == 0 {
+	if len(drift) > 0 {
+		p.rep.change(Updated, "login policy", "instance", strings.Join(drift, ", "))
+		if !p.dry() {
+			// PUT replaces the policy. Send back everything read (check
+			// lifetimes, default redirect, ...) with only the managed fields
+			// overlaid, and drop the read-only ones (the factor and IdP lists
+			// have their own endpoints).
+			body := map[string]any{}
+			for k, v := range cur {
+				switch k {
+				case "details", "isDefault", "secondFactors", "multiFactors", "idps":
+				default:
+					body[k] = v
+				}
+			}
+			for k, v := range wantFields {
+				body[k] = v
+			}
+			if err := p.c.call(ctx, http.MethodPut, path, body, nil, idem); err != nil && !isNoChange(err) {
+				return objErr("login policy", "instance", err)
+			}
+		}
+	}
+	if want.OTPEmail == nil {
 		return nil
 	}
-	p.rep.change(Updated, "login policy", "instance", strings.Join(drift, ", "))
+	if err := p.ensureSecondFactor(ctx, cur, secondFactorOTPEmail, *want.OTPEmail); err != nil {
+		return err
+	}
+	if *want.OTPEmail {
+		return p.ensureOTPEmailGenerator(ctx)
+	}
+	return nil
+}
+
+const secondFactorOTPEmail = "SECOND_FACTOR_TYPE_OTP_EMAIL"
+
+// ensureSecondFactor adds or removes one factor of the login policy's
+// second-factor list, as read in policy.
+func (p *run) ensureSecondFactor(ctx context.Context, policy map[string]any, factor string, want bool) error {
+	have := false
+	if list, ok := policy["secondFactors"].([]any); ok {
+		for _, f := range list {
+			if f == factor {
+				have = true
+			}
+		}
+	}
+	if have == want {
+		return nil
+	}
+	const path = "/admin/v1/policies/login/second_factors"
+	if want {
+		p.rep.change(Updated, "login policy", "instance", "second factor "+factor+" added")
+		if p.dry() {
+			return nil
+		}
+		if err := p.c.call(ctx, http.MethodPost, path, map[string]any{"type": factor}, nil, idem); err != nil && !isAlreadyExists(err) {
+			return objErr("login policy", "instance", fmt.Errorf("add second factor %s: %w", factor, err))
+		}
+		return nil
+	}
+	p.rep.change(Updated, "login policy", "instance", "second factor "+factor+" removed")
 	if p.dry() {
 		return nil
 	}
-	// PUT replaces the policy. Send back everything read (check lifetimes,
-	// default redirect, ...) with only the managed fields overlaid, and drop
-	// the read-only ones.
-	body := map[string]any{}
-	for k, v := range cur {
-		switch k {
-		case "details", "isDefault", "secondFactors", "multiFactors":
-		default:
-			body[k] = v
-		}
+	if err := p.c.call(ctx, http.MethodDelete, path+"/"+url.PathEscape(factor), nil, nil, idem); err != nil && !isNotFound(err) {
+		return objErr("login policy", "instance", fmt.Errorf("remove second factor %s: %w", factor, err))
 	}
-	for k, v := range wantFields {
-		body[k] = v
+	return nil
+}
+
+// ensureOTPEmailGenerator converges the instance's OTP-email code generator:
+// the code a magic-link mail carries.
+func (p *run) ensureOTPEmailGenerator(ctx context.Context) error {
+	const path = "/admin/v1/secretgenerators/SECRET_GENERATOR_TYPE_OTP_EMAIL"
+	var cur struct {
+		SecretGenerator map[string]any `json:"secretGenerator"`
 	}
-	if err := p.c.call(ctx, http.MethodPut, path, body, nil, idem); err != nil && !isNoChange(err) {
-		return objErr("login policy", "instance", err)
+	if err := p.c.call(ctx, http.MethodGet, path, nil, &cur, noOrg); err != nil && !isNotFound(err) {
+		return objErr("secret generator", "otp email", err)
+	}
+	g := cur.SecretGenerator
+	flag := func(k string) bool { b, _ := g[k].(bool); return b }
+	expiry := strconv.FormatInt(int64(OTPEmailCodeExpiry/time.Second), 10) + "s"
+	if num(g["length"]) == OTPEmailCodeLength && durationSeconds(fmt.Sprint(g["expiry"])) == durationSeconds(expiry) &&
+		flag("includeDigits") && !flag("includeLowerLetters") && !flag("includeUpperLetters") && !flag("includeSymbols") {
+		return nil
+	}
+	p.rep.change(Updated, "secret generator", "otp email", "")
+	if p.dry() {
+		return nil
+	}
+	err := p.c.call(ctx, http.MethodPut, path, map[string]any{
+		"length": OTPEmailCodeLength, "expiry": expiry,
+		"includeLowerLetters": false, "includeUpperLetters": false, "includeDigits": true, "includeSymbols": false,
+	}, nil, idem)
+	if err != nil && !isNoChange(err) {
+		return objErr("secret generator", "otp email", err)
 	}
 	return nil
 }

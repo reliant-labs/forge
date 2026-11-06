@@ -6,8 +6,9 @@
 //	consumercanary [-forge .] [-base origin/main] [-consumer name=source[@ref]]...
 //	               [-cache DIR] [-force] [-plan] [-no-test]
 //
-// WHY. forge may break its consumers' build freely (it is pre-1.0), but the
-// PR that does so pays for it: fixes forge, or ships the codemod. Without this
+// WHY. forge is semver at major 1 and must not break its consumers' build; a
+// PR that does anyway (an owner-accepted break, or one nobody noticed) pays for
+// it: fixes forge, or ships the codemod. Without this
 // check the cost surfaces at pin time, on whoever pins next (research/pinning,
 // failure classes F1/F2). This runs the consumers' own build against the PR's
 // forge, on the PR.

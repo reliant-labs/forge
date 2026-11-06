@@ -261,7 +261,9 @@ func isNoChange(err error) bool {
 		"COMMAND-Rs8fy",      // user grant
 		"INSTANCE-9jlsf",     // password complexity
 		"INSTANCE-0psjF",     // lockout
-		"COMMAND-vUHBSmBzaw": // SMTP already active
+		"COMMAND-vUHBSmBzaw", // SMTP already active
+		"COMMAND-km8g3",      // email provider already inactive
+		"COMMAND-m0o3f":      // secret generator
 		return true
 	}
 	m := strings.ToLower(ae.Message)

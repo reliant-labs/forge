@@ -70,7 +70,9 @@ an `OnCluster` API beside an `OnHosted` static site is one env, one release and
 one deploy. `forge env status --json` lists every part under `placements[]`
 with its placement (`hosted`, `cluster`, `bucket`, `firebase`, `compose`,
 `host`, `build-only`) and who applies it (`platform`, `hub`, `forge`,
-`machine`, `none`).
+`machine`, `none`). The all-envs document's schema and assembly are
+`forge/pkg/topology`: a control plane serving the same picture from its own
+records runs that code, so its report and the CLI's never disagree.
 
 One `forge env deploy` runs the parts forge applies, the hosted parts and the
 frontends forge ships in the order their declared `release_dependencies`
@@ -269,3 +271,40 @@ An ensure that has NOT rendered the env — `forge secret set`, a promote —
 sends no shape at all, and an absent shape leaves the stored one untouched.
 That is load-bearing rather than tidy: an inferred shape from a command that
 could not render would erase the declaration a build recorded.
+
+## The released bundle names every env the source declares
+
+A control plane can derive the release/environment topology (the console's
+roster, the all-envs `forge env status --json` document) from what it
+records. What it cannot see is an env that never recorded anything on it: one
+added under `deploy/kcl/` and never built, and every env with no
+`control_plane` (a file ledger). So a **released** bundle recorded on a control plane carries the
+project's declared-environment catalog (`declared_envs`): one entry per
+`deploy/kcl/<env>/main.k` at the release's commit, with its `lifecycle`,
+`destination` and `control_plane_kind`. The console reads it from the newest
+released bundle and lists those envs as "declared, outside the control plane".
+
+- **Names and closed vocabularies only.** No values, no paths, no free text. An
+  env whose KCL does not render is listed by name with `render_error:
+  render_failed | render_timeout`, never the error message.
+- **It never fails a build.** Every env renders once per build invocation, in
+  parallel, under a two-minute budget. A directory whose name is not an env
+  name is left out with a note.
+- **Feature-negotiated.** It is written only to a control plane that names
+  `doc-declared-envs` in its capabilities, and never into an unreleased or
+  machine-ledger bundle. Those bundles' digests do not change.
+
+The shape gains two placement facts under the `shape-placement` feature, both
+omitted when empty:
+- `workloads[].unit`: a cluster workload's delivery unit, recorded only for an
+  env that declares a unit split. With `units[]` it says whether the hub or
+  forge applies the workload.
+- `host_infra`: the env declares host infrastructure.
+
+A shape recorded before these existed says nothing about them. A reader treats
+a split env's cluster-workload applier as unknown, not as forge. A control plane
+that does not name `shape-placement` is sent neither field. The machine ledger
+decodes every feature, so a local bundle of an env with host infra or a unit
+split gets a new digest once, on its first build after upgrading. Nothing
+compares local digests across forge versions: a release's bundle of record is
+matched by its objects.

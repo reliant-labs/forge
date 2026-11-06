@@ -3,6 +3,7 @@ package lint
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,11 +89,12 @@ func TestRolloutRowsAreWellFormed(t *testing.T) {
 	}
 }
 
-// A row is for a release that shipped (at or before VERSION) or for the one
-// NEXT_VERSION names. The next release is not always VERSION's patch+1
-// (v0.1.46 was followed by v1.0.0), so a row written by guessing it would
-// date its rule to a release that never ships, and the rule would gate early
-// or never.
+// A row is for a release that shipped (at or before VERSION), for the minor
+// NEXT_VERSION names, or for a patch release between them: the version is
+// computed (scripts/semver-next.sh), so a fix-only release can ship before
+// the next minor, and one already cut (an RC set in flight) carries its own
+// rows. A row past NEXT_VERSION dates its rule to a release that may never
+// ship, and the rule would gate early or never.
 func TestRolloutRowsNameTheNextRelease(t *testing.T) {
 	read := func(name string) string {
 		b, err := os.ReadFile(filepath.Join("..", "..", "..", name))
@@ -110,9 +112,50 @@ func TestRolloutRowsNameTheNextRelease(t *testing.T) {
 		t.Fatalf("NEXT_VERSION %s must be later than VERSION %s", next, last)
 	}
 	for rule, ro := range lintRollouts {
-		if semver.Compare(ro.IntroducedIn, last) > 0 && ro.IntroducedIn != next {
-			t.Errorf("%s: introduced_in %s is neither shipped (VERSION is %s) nor the next release "+
-				"(NEXT_VERSION is %s)", rule, ro.IntroducedIn, last, next)
+		if semver.Compare(ro.IntroducedIn, next) > 0 {
+			t.Errorf("%s: introduced_in %s is past the next feature release (VERSION is %s, "+
+				"NEXT_VERSION is %s)", rule, ro.IntroducedIn, last, next)
+		}
+	}
+}
+
+// The version a release gets is computed (scripts/semver-next.sh): a fix-only
+// range is VERSION's next patch, a feat the minor NEXT_VERSION names. A rule
+// keyed to NEXT_VERSION ships in whichever comes first, so a consumer pinned
+// to either still sees its findings as warnings. A rule keyed to a patch
+// release before NEXT_VERSION (one an RC set already carries) warns at that
+// release and gates from the one after it, as every rollout row does.
+func TestFirstComputedReleaseCarryingARuleWarns(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", "..", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	last, next := read("VERSION"), read("NEXT_VERSION")
+	if !strings.HasSuffix(next, ".0") {
+		t.Fatalf("NEXT_VERSION %s must be a minor (vX.Y.0): a feat release is computed as the next minor", next)
+	}
+	var maj, min, patch int
+	if _, err := fmt.Sscanf(last, "v%d.%d.%d", &maj, &min, &patch); err != nil {
+		t.Fatalf("VERSION %q: %v", last, err)
+	}
+	for rule, ro := range lintRollouts {
+		if semver.Compare(ro.IntroducedIn, last) <= 0 {
+			continue
+		}
+		firstReleases := []string{ro.IntroducedIn}
+		if ro.IntroducedIn == next {
+			firstReleases = append(firstReleases, fmt.Sprintf("v%d.%d.%d", maj, min, patch+1))
+		}
+		for _, pin := range firstReleases {
+			f := lintJSONFinding{File: "x", Line: 1, Severity: lintSevError, Rule: rule, Message: "m"}
+			got, gated := gradeProjectLaneWith(map[string]ruleRollout{rule: ro}, pinnedCfg(pin, nil), []lintJSONFinding{f}, true)
+			if len(got) != 1 || got[0].Severity != lintSevWarning || gated {
+				t.Errorf("%s (introduced %s, gates from %s): a project pinned to %s, a first release carrying it, "+
+					"must see a warning; got %+v gated=%v", rule, ro.IntroducedIn, ro.GatesFrom, pin, got, gated)
+			}
 		}
 	}
 }

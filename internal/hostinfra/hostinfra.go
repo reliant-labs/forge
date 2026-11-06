@@ -80,7 +80,7 @@ import (
 )
 
 // EnginePostgres is the first engine forge supervises natively (the others:
-// zitadel.go, nats.go, temporal.go). It matches the `engine` discriminator on
+// zitadel.go, nats.go, temporal.go, mailpit.go). It matches the `engine` discriminator on
 // the KCL HostInfra schema.
 const EnginePostgres = "postgres"
 
@@ -102,7 +102,7 @@ type Spec struct {
 	// logs and, by default, its data directory.
 	Name string
 	// Engine selects the implementation: EnginePostgres, EngineZitadel,
-	// EngineNATS or EngineTemporal.
+	// EngineNATS, EngineTemporal or EngineMailpit.
 	Engine string
 	// Port is the loopback port the server binds — the same number the app's
 	// DSN dials, which is why the environment declares it once and hands it
@@ -166,8 +166,8 @@ type Spec struct {
 // unsupportedEngine is Start/StatusOf's answer for an engine forge has no
 // implementation of.
 func unsupportedEngine(spec Spec) error {
-	return fmt.Errorf("host-infra %s: unsupported engine %q (forge supervises %q, %q, %q and %q natively): %w",
-		spec.Name, spec.Engine, EnginePostgres, EngineZitadel, EngineNATS, EngineTemporal, ErrUnsupportedEngine)
+	return fmt.Errorf("host-infra %s: unsupported engine %q (forge supervises %q, %q, %q, %q and %q natively): %w",
+		spec.Name, spec.Engine, EnginePostgres, EngineZitadel, EngineNATS, EngineTemporal, EngineMailpit, ErrUnsupportedEngine)
 }
 
 // dataDir resolves the instance's data directory against the project root.
@@ -247,6 +247,15 @@ func Start(ctx context.Context, projectDir string, spec Spec) error {
 		return natsEngine.start(ctx, projectDir, spec)
 	case EngineTemporal:
 		return temporalEngine.start(ctx, projectDir, spec)
+	case EngineMailpit:
+		if err := validateMailpit(spec); err != nil {
+			return err
+		}
+		if err := mailpitEngine.start(ctx, projectDir, spec); err != nil {
+			return err
+		}
+		fmt.Printf("  %s: mail UI at %s\n", spec.Name, MailpitUIURL(spec))
+		return nil
 	default:
 		return unsupportedEngine(spec)
 	}
@@ -485,6 +494,8 @@ func StopReport(projectDir string, spec Spec) (stopped bool, err error) {
 		return natsEngine.stop(projectDir, spec)
 	case EngineTemporal:
 		return temporalEngine.stop(projectDir, spec)
+	case EngineMailpit:
+		return mailpitEngine.stop(projectDir, spec)
 	}
 	dataDir := spec.dataDir(projectDir)
 	pgCtl := filepath.Join(dataDir, "runtime", "bin", "pg_ctl")

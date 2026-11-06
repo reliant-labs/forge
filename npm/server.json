@@ -9,13 +9,13 @@
     "source": "github",
     "subfolder": "npm"
   },
-  "version": "1.0.15",
+  "version": "1.0.16",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@reliantlabs/forge",
-      "version": "1.0.15",
+      "version": "1.0.16",
       "transport": {
         "type": "stdio"
       },

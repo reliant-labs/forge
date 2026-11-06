@@ -1141,7 +1141,7 @@ func promoteAncestryOf(ctx context.Context, git promoteGitReader, dir string, cu
 // from, so the direction and the range cannot disagree. When it cannot (a
 // dirty cut, a commit this checkout lacks, diverged histories) the release
 // list's own newest-first order decides: that order is by cut time
-// (sortReleasesNewestFirst), never by comparing version labels, which do not
+// (topology.SortReleasesNewestFirst), never by comparing version labels, which do not
 // share one scheme — v1.7.40 and 20261014.042859-cd678a0d6531 have no
 // meaningful string or semver order, and treating them as if they did is what
 // reported a forward move as "67 releases OLDER".

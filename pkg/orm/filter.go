@@ -1,6 +1,10 @@
 package orm
 
-import "github.com/uptrace/bun"
+import (
+	"strings"
+
+	"github.com/uptrace/bun"
+)
 
 // Filter convenience functions that return QueryOption.
 // Each wraps WithWhere using the appropriate Operator.
@@ -52,6 +56,26 @@ func WhereIsNull(column string) QueryOption {
 func WhereIsNotNull(column string) QueryOption {
 	return WithWhere(column, IsNotNull, nil)
 }
+
+// WherePrefix matches the rows whose column starts with prefix, taken
+// literally: `column LIKE '<escaped prefix>%' ESCAPE '\'`. The %, _ and \ in
+// prefix match themselves (EscapeLike), so a key prefix "weekly_" does not
+// also match "weeklyX". It is the mapping for a List request field declared
+// `(forge.v1.filter) = {op: LIST_FILTER_OP_PREFIX}`.
+func WherePrefix(column, prefix string) QueryOption {
+	return func(q *bun.SelectQuery) {
+		q.Where(`? LIKE ? ESCAPE '\'`, bun.Ident(column), Arg(EscapeLike(prefix)+"%"))
+	}
+}
+
+// likeEscaper backslash-escapes LIKE's two wildcards and its escape
+// character itself.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// EscapeLike returns s with LIKE's wildcards (% and _) and the escape
+// character (\) escaped, for a pattern that must match s literally under
+// `ESCAPE '\'`.
+func EscapeLike(s string) string { return likeEscaper.Replace(s) }
 
 // WhereILikeAny matches value case-insensitively against ANY of the
 // given columns: (c1 ILIKE ? OR c2 ILIKE ? ...), AND-ed with the other

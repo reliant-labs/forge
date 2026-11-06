@@ -1498,6 +1498,12 @@ schema HostInfra:
     the server picks, and the Web UI is off unless `temporal_ui_port` is set.
     Both engines pin their version in forge: `version`, if set, must equal it.
 
+    `mailpit` runs Mailpit, the dev mail catcher: `port` is its SMTP port on
+    loopback, and every mail the env's dev identity sends (invitations,
+    verification, password reset, magic links) lands in its web UI instead of
+    a real inbox. A `forge.IdentityOnHost` identity delivers to it (see
+    `IdentityOnHost.mail`).
+
     A zitadel instance's `port` should come from `allocate_port`, not
     `resolve_port`. Zitadel derives the `iss` claim of every token from the
     origin it is reached on, and routes by Host header, so a port that
@@ -1570,8 +1576,8 @@ schema HostInfra:
 
     check:
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "HostInfra.name '${name}' must be an RFC-1123 label"
-        engine in ["postgres", "zitadel", "nats", "temporal"], \
-            "HostInfra.engine must be 'postgres', 'zitadel', 'nats' or 'temporal' (the engines forge supervises natively)"
+        engine in ["postgres", "zitadel", "nats", "temporal", "mailpit"], \
+            "HostInfra.engine must be 'postgres', 'zitadel', 'nats', 'temporal' or 'mailpit' (the engines forge supervises natively)"
         engine == "nats" or not nats_monitor_port, \
             "HostInfra.nats_monitor_port is for engine 'nats' only ('${name}' is '${engine}')"
         not nats_monitor_port or (nats_monitor_port > 0 and nats_monitor_port < 65536 and nats_monitor_port != port), \
@@ -6718,7 +6724,8 @@ schema IdentityFields:
     client_id -> oidc_client_id, redirect_uri -> oidc_redirect_uri,
     login_uri -> idp_login_uri, idp_base -> idp_base, broker_token ->
     idp_broker_token, jwks -> jwt_jwks_snapshot, roles_claim ->
-    jwt_roles_claim. The env var is the upper-cased field name."""
+    jwt_roles_claim, login_policy -> idp_login_policy. The env var is the
+    upper-cased field name."""
     issuer?: str
     audience?: str
     scopes?: str
@@ -6729,9 +6736,10 @@ schema IdentityFields:
     broker_token?: str
     jwks?: str
     roles_claim?: str
+    login_policy?: str
 
     check:
-        all v in [issuer, audience, scopes, client_id, redirect_uri, login_uri, idp_base, broker_token, jwks, roles_claim] { not v or regex.match(v, r"^[a-z][a-z0-9_]*$") }, \
+        all v in [issuer, audience, scopes, client_id, redirect_uri, login_uri, idp_base, broker_token, jwks, roles_claim, login_policy] { not v or regex.match(v, r"^[a-z][a-z0-9_]*$") }, \
             "IdentityFields: every value must be a config field name (lower snake case)"
 
 schema IdentityConsumer:
@@ -6751,8 +6759,8 @@ schema IdentityConsumer:
     deliver_only: bool = False
     # Outputs NOT to project into this workload: for an app whose config has no
     # field for them (a standard output is otherwise always projected, under
-    # its standard name, as env nothing reads). Only jwks, login_uri,
-    # roles_claim and scopes may be omitted: the others define the identity
+    # its standard name, as env nothing reads). Only jwks, login_policy,
+    # login_uri, roles_claim and scopes may be omitted: the others define the identity
     # (use deliver_only to project none). The Secrets still carry every key.
     omit: [str] = []
 
@@ -6769,6 +6777,7 @@ schema IdentityConsumer:
             "idp_base" = fields.idp_base
             "issuer" = fields.issuer
             "jwks" = fields.jwks
+            "login_policy" = fields.login_policy
             "login_uri" = fields.login_uri
             "redirect_uri" = fields.redirect_uri
             "roles_claim" = fields.roles_claim
@@ -6819,18 +6828,92 @@ schema IdentitySeedUser:
         regex.match(email, r"^[^@\s]+@[^@\s]+\.[^@\s]+$"), "IdentitySeedUser.email '${email}' must be an email address"
 
 schema IdentitySocialProvider:
-    """RESERVED. Social identity providers are not supported yet: declaring
-    one is refused at render."""
+    """Deprecated: declare `forge.IdentityGoogle` or `forge.IdentityGitHub` in
+    `ManagedIdentity.social`. This was the reserved placeholder; it was always
+    refused at render and `social` no longer accepts it."""
     provider: str
+
+# A first-factor sign-in method (ManagedIdentity.methods).
+type IdentityMethod = "password" | "passkey" | "magic_link"
+
+# The DNS names the identity's v2 fields accept (signup_domains,
+# passkey_rp_id): lower case, no wildcard, no trailing dot.
+_IDN_DNS_RE = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$"
+_IDN_EMAIL_RE = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+schema IdentityGoogle:
+    """Sign in with Google, through the APP'S OWN OAuth client. Register the
+    callback `reliant forge cloud identity status` prints (hosted) or `forge
+    env up` prints (dev, with a separate dev OAuth client) at Google.
+
+    `client_secret` is a ManagedSecret: a NAME in the env's secret store,
+    never the secret. Only the identity reconciler reads it; no workload is
+    handed it. `client_id` is public, so a literal is fine; a ManagedSecret
+    works too."""
+    type: "google" = "google"
+    client_id: str | ManagedSecret
+    client_secret: ManagedSecret
+    scopes: [str] = ["openid", "profile", "email"]
+
+    check:
+        typeof(client_id) != "str" or client_id, "IdentityGoogle.client_id is required: the OAuth client id (a literal, or a forge.ManagedSecret name)"
+        len(scopes) > 0, "IdentityGoogle.scopes must not be empty"
+
+schema IdentityGitHub:
+    """Sign in with GitHub, through the APP'S OWN OAuth app. As
+    forge.IdentityGoogle: `client_secret` is a ManagedSecret NAME, and the
+    callback to register is printed by `reliant forge cloud identity status`
+    (hosted) or `forge env up` (dev)."""
+    type: "github" = "github"
+    client_id: str | ManagedSecret
+    client_secret: ManagedSecret
+    scopes: [str] = ["read:user", "user:email"]
+
+    check:
+        typeof(client_id) != "str" or client_id, "IdentityGitHub.client_id is required: the OAuth client id (a literal, or a forge.ManagedSecret name)"
+        len(scopes) > 0, "IdentityGitHub.scopes must not be empty"
+
+schema IdentityEmail:
+    """How the instance's mail (invitations, verification, password reset,
+    magic links) is addressed. Hosted: delivered by the platform's identity
+    mail relay unless `smtp` is declared; the sending DOMAIN is assigned by
+    the platform, so only the local part is yours. Dev: delivered to the
+    env's Mailpit (a HostInfra with engine "mailpit").
+
+    Omitted, a hosted instance behaves as `forge.IdentityEmail {}`: platform
+    delivery. `delivery = "none"` sends nothing (the pre-v2 behaviour)."""
+    # "platform" (the control plane's identity mail relay) or "none". Ignored
+    # when `smtp` is declared.
+    delivery: "platform" | "none" = "platform"
+    # The From display name. "" = the project.
+    from_name: str = ""
+    # The From local part. With `smtp`, smtp.sender is the From: leave this
+    # at its default.
+    from_local: str = "no-reply"
+    reply_to: str = ""
+
+    check:
+        regex.match(from_local, r"^[a-z0-9][a-z0-9._-]{0,63}$"), \
+            "IdentityEmail.from_local '${from_local}' must match ^[a-z0-9][a-z0-9._-]{0,63}$ (the local part of the From address; the domain is assigned)"
+        len(from_name) <= 64 and len(regex.findall(from_name, r"[\r\n<>]")) == 0, \
+            "IdentityEmail.from_name must be at most 64 characters with no CR, LF, '<' or '>' (it is a mail header)"
+        not reply_to or regex.match(reply_to, _IDN_EMAIL_RE), \
+            "IdentityEmail.reply_to '${reply_to}' must be an email address"
 
 schema IdentityOnHost:
     """The identity runs as the env's own host-run IdP: a `forge.HostInfra`
     with `engine = "zitadel"`, named by `infra`. It is the dev loop's
     runtime. Locally the env lands in that server's default instance (the dev
     IdP answers only to localhost), so one instance per env is true per
-    machine, not per instance id."""
+    machine, not per instance id.
+
+    Its mail goes to a `forge.HostInfra` with `engine = "mailpit"`: the one
+    named by `mail`, or, when `mail` is empty, the env's only mailpit."""
     type: "host" = "host"
     infra: str
+    # The mailpit HostInfra dev mail goes to. "" = the env's only mailpit
+    # HostInfra, if it has exactly one.
+    mail: str = ""
 
     check:
         infra, "IdentityOnHost.infra is required: name the HostInfra (engine 'zitadel') the identity runs on"
@@ -6882,7 +6965,38 @@ schema ManagedIdentity:
     and consumers; roles, smtp, seed users, machine users, domain and
     project name are the owner's.
 
-    NOT BUILT YET: `login.mode = "hosted"` (phase 2) and `social`.
+    WHO GETS IN. `owners` are seeded on every pass: created (email
+    verified), granted `owner_role`, and invited once by email while they
+    have no credential. Owners are ADDITIVE AND STICKY: removing an address
+    revokes nothing, so `owner_role` must be a console role (a declared
+    role's members are a converged set). `signup` says who may create an
+    account from the sign-in screen: "invite" (the default: owners, declared
+    members and invitations), "open" (anyone, after verifying the address)
+    or "domain" (anyone whose VERIFIED address is in `signup_domains`).
+
+    HOW THEY SIGN IN. `methods` are the first factors the sign-in screen
+    offers ("password", "passkey", "magic_link"), `social` adds Google /
+    GitHub with the app's own OAuth client, and `passkey_rp_id` pins the
+    WebAuthn relying party (default: the host of the app's sign-in origin;
+    passkeys are bound to it forever). Open signup and magic links need mail:
+    `smtp`, platform delivery on a hosted instance (`email`, on by default),
+    or a mailpit HostInfra in dev.
+
+        IDENTITY = forge.ManagedIdentity {
+            roles = [forge.IdentityRole {key = "owner"}, forge.IdentityRole {key = "member"}]
+            owners = ["founder@acme.com"]
+            methods = ["password", "passkey", "magic_link"]
+            social = [forge.IdentityGoogle {
+                client_id = "1234.apps.googleusercontent.com"
+                client_secret = forge.ManagedSecret {name = "GOOGLE_CLIENT_SECRET"}
+            }]
+        }
+
+    Leaving `methods`, `signup` and `social` at their defaults leaves the
+    instance's login policy exactly as it is, and the app's sign-in broker
+    keeps its legacy behaviour.
+
+    NOT BUILT YET: `login.mode = "hosted"` (phase 2).
     """
     name: str = "identity"
     runtime?: OnHosted | IdentityOnHost
@@ -6900,15 +7014,77 @@ schema ManagedIdentity:
     share_with: str = ""
     smtp?: IdentitySMTP
     seed_users: [IdentitySeedUser] = []
-    social: [IdentitySocialProvider] = []
+
+    # OWNERS: people who must be able to get in, seeded on every pass. Each is
+    # created (email verified: the address is reviewed config), granted
+    # `owner_role`, and, while they have no credential, sent ONE invitation.
+    # ADDITIVE AND STICKY: removing an address revokes nothing, and the
+    # reconciler never demotes, locks or deletes an owner. Manage them in the
+    # console after that. Unlike IdentityRole.members_from = "declared", which
+    # is a converged SET.
+    owners: [str] = []
+    owner_role: str = "owner"
+
+    # Who may create an account from the sign-in screen.
+    #   invite  only owners, declared members and invitations (the default,
+    #           and today's deployed behaviour)
+    #   open    anyone; the address must be verified before a session is issued
+    #   domain  anyone whose VERIFIED address is in signup_domains
+    signup: "invite" | "open" | "domain" = "invite"
+    signup_domains: [str] = []
+    # The role a self-signed-up account gets. "" = none (the app decides).
+    signup_role: str = ""
+
+    # First-factor methods the sign-in screen offers.
+    methods: [IdentityMethod] = ["password"]
+    # The WebAuthn relying-party id. "" = the host of the app's sign-in
+    # origin. Passkeys are bound to it FOREVER: set a parent domain
+    # ("acme.com") to make them survive a move from app.acme.com to
+    # www.acme.com.
+    passkey_rp_id: str = ""
+
+    # Google / GitHub sign-in with the APP'S OWN OAuth app.
+    social: [IdentityGoogle | IdentityGitHub] = []
+
+    # How the instance's mail (invitations, verification, reset, magic links)
+    # is addressed. Hosted: delivered by the platform relay unless `smtp` is
+    # declared. Dev: delivered to Mailpit.
+    email?: IdentityEmail
 
     check:
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 40, \
             "ManagedIdentity.name '${name}' must be an RFC-1123 label of at most 40 characters: it names the delivered Secret forge-identity-<name>"
         len({r.key: 0 for r in roles}) == len(roles), \
             "ManagedIdentity.roles: a role key is declared twice: ${_duplicates([r.key for r in roles])}"
-        len(social) == 0, \
-            "ManagedIdentity.social: social identity providers are not supported yet, so ${[p.provider for p in social]} cannot be declared"
+        # V1-V14 of the identity v2 contract (V5, V6 and V15 need the Bundle).
+        (signup == "domain") == (len(signup_domains) > 0), \
+            "ManagedIdentity.signup = \"domain\" needs signup_domains, and signup_domains need signup = \"domain\" (signup is '${signup}', signup_domains ${signup_domains})"
+        all d in signup_domains { regex.match(d, _IDN_DNS_RE) }, \
+            "ManagedIdentity.signup_domains ${[d for d in signup_domains if not regex.match(d, _IDN_DNS_RE)]} must be lower-case DNS names with no wildcard: a subdomain matches only if it is listed itself"
+        len({d: 0 for d in signup_domains}) == len(signup_domains), \
+            "ManagedIdentity.signup_domains: a domain is listed twice: ${_duplicates(signup_domains)}"
+        not signup_role or signup_role in [r.key for r in roles if r.members_from == "console"], \
+            "ManagedIdentity.signup_role '${signup_role}' must be a declared role with members_from = \"console\": a declared role is a converged set, so self-signups would be revoked. Console roles: ${[r.key for r in roles if r.members_from == 'console']}"
+        len({m: 0 for m in methods}) == len(methods), \
+            "ManagedIdentity.methods: a method is listed twice: ${_duplicates(methods)}"
+        len(methods) + len(social) > 0, \
+            "ManagedIdentity.methods and social are both empty: someone must be able to sign in"
+        all o in owners { regex.match(o, _IDN_EMAIL_RE) }, \
+            "ManagedIdentity.owners ${[o for o in owners if not regex.match(o, _IDN_EMAIL_RE)]} must be email addresses"
+        len({o.lower(): 0 for o in owners}) == len(owners), \
+            "ManagedIdentity.owners: an address is listed twice (compared case-insensitively): ${_duplicates([o.lower() for o in owners])}"
+        len(owners) == 0 or owner_role in [r.key for r in roles if r.members_from == "console"], \
+            "ManagedIdentity.owner_role '${owner_role}' must be a declared role with members_from = \"console\": owners are never demoted, which is impossible on a declared (converged) role. Use IdentityRole.members for a converged set. Console roles: ${[r.key for r in roles if r.members_from == 'console']}"
+        len({s.type: 0 for s in social}) == len(social), \
+            "ManagedIdentity.social: at most one provider per type, and ${_duplicates([s.type for s in social])} is declared twice"
+        not passkey_rp_id or regex.match(passkey_rp_id, _IDN_DNS_RE), \
+            "ManagedIdentity.passkey_rp_id '${passkey_rp_id}' must be a lower-case DNS name (the sign-in host or a parent of it)"
+        not passkey_rp_id or "passkey" in methods, \
+            "ManagedIdentity.passkey_rp_id is set but methods do not offer \"passkey\": add it to methods, or drop passkey_rp_id"
+        not smtp or not email or email.from_local == "no-reply", \
+            "ManagedIdentity.email.from_local applies to platform delivery only: with smtp, smtp.sender is the From. Leave from_local unset (from_name and reply_to still apply)"
+        not share_with or (len(owners) == 0 and owner_role == "owner" and signup == "invite" and len(signup_domains) == 0 and not signup_role and methods == ["password"] and not passkey_rp_id and len(social) == 0 and not email), \
+            "ManagedIdentity.share_with '${share_with}' reuses that env's instance, so owners, signup, signup_domains, signup_role, methods, passkey_rp_id, social and email belong to the owner and must be at their defaults here"
         all m in machine_users { all r in m.roles { r in [x.key for x in roles] } }, \
             "ManagedIdentity.machine_users hold roles that are not declared: ${[r for m in machine_users for r in m.roles if r not in [x.key for x in roles]]}"
         all u in seed_users { all r in u.roles { r in [x.key for x in roles] } }, \
@@ -7584,6 +7760,19 @@ schema Bundle:
             "Bundle.identity.runtime = IdentityOnHost names infra '${identity.runtime.infra if identity and identity.runtime and identity.runtime.type == 'host' else ''}', which is not a forge.HostInfra with engine 'zitadel' in Bundle.infra. Declared infra: ${[i.name for i in infra]}"
         len(identity.seed_users if identity else []) == 0 or lifecycle in ["local", "ephemeral"], \
             "Bundle.identity.seed_users create users with known passwords, so they are only allowed in an env that declares `lifecycle = \"local\"` or \"ephemeral\" (a real environment's users sign up or are invited). Remove them from this env, or declare the lifecycle if it really is scratch"
+        # V15: a named dev mail server is a mailpit HostInfra.
+        not (identity and identity.runtime and identity.runtime.type == "host" and identity.runtime.mail) or any i in infra { i.name == identity.runtime.mail and i.engine == "mailpit" }, \
+            "Bundle.identity.runtime = IdentityOnHost names mail '${identity.runtime.mail if identity and identity.runtime and identity.runtime.type == 'host' else ''}', which is not a forge.HostInfra with engine 'mailpit' in Bundle.infra. Declared infra: ${[i.name for i in infra]}"
+        # V5 / V6: a magic link is an email, and open or domain signup verifies
+        # the address by email before any session.
+        not identity or "magic_link" not in identity.methods or _idn_mail_available(identity, infra), \
+            "Bundle.identity.methods offer \"magic_link\", but the identity can send no mail: ${_idn_no_mail_msg(identity)}"
+        not identity or identity.signup == "invite" or _idn_mail_available(identity, infra), \
+            "Bundle.identity.signup = \"${identity.signup if identity else ''}\" verifies every new address by email before a session, but the identity can send no mail: ${_idn_no_mail_msg(identity)}"
+        # A social client secret is read only by the identity reconciler: no
+        # workload is handed it.
+        len(_idn_social_secret_readers(workloads, identity)) == 0, \
+            "${_idn_social_secret_readers(workloads, identity)} read a secret that Bundle.identity.social names as an OAuth client secret. Only the identity reconciler reads it (it is stored in the identity provider), so drop it from the workload's env"
         not identity or not identity.share_with or identity.share_with != env, \
             "Bundle.identity.share_with '${identity.share_with if identity else ''}' is this env itself: share_with names ANOTHER env of the same project that owns the instance"
         len(_idn_bad_apps(workloads, identity, env, project)) == 0, \

@@ -22,9 +22,11 @@ package devidentity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -70,8 +72,14 @@ type Input struct {
 	// Refs are the identity-backed env vars of the env's host workloads.
 	Refs []Ref
 	// Secret resolves a value from the env's secret store by name (seed-user
-	// and SMTP passwords).
+	// and SMTP passwords, social client secrets).
 	Secret func(name string) (string, bool)
+
+	// MailpitPort is the SMTP port of the env's Mailpit (the HostInfra the
+	// declaration's dev_mail names); zero when the env has none. The dev IdP
+	// then mails invitations, verification codes and magic links to it,
+	// unless the declaration brings its own smtp.
+	MailpitPort int
 
 	// StorePath is the local secret store credentials are written to.
 	StorePath string
@@ -94,6 +102,11 @@ type Result struct {
 	StoreKeys []string
 	// Warnings are things the pass left alone on purpose.
 	Warnings []string
+	// SocialCallbackURL is the redirect URI to register on the dev OAuth
+	// app of each social provider; empty when none is declared.
+	SocialCallbackURL string
+	// Mail is the LOGIN_POLICY mail state: dev (Mailpit), smtp or none.
+	Mail string
 }
 
 // Converge makes the dev instance match the declaration and publishes its
@@ -103,13 +116,17 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	mail := MailState(in)
 	keys := identity.DirKeyStore{Dir: in.KeysDir}
+	files := identity.FileOutputs{Path: in.OutputsPath}
 	rec, err := identity.New(identity.Options{
-		BaseURL:        in.BaseURL,
-		Issuer:         in.BaseURL,
-		Credential:     identity.PATFile(in.PATPath),
-		Keys:           keys,
-		Outputs:        identity.FileOutputs{Path: in.OutputsPath},
+		BaseURL:    in.BaseURL,
+		Issuer:     in.BaseURL,
+		Credential: identity.PATFile(in.PATPath),
+		Keys:       keys,
+		Outputs: identity.OutputsFunc(func(ctx context.Context, out identity.Output) error {
+			return files.Publish(ctx, withMail(out, mail))
+		}),
 		AllowSeedUsers: true,
 		SignInCodes:    hasDeclaredMembers(spec),
 		ReadyTimeout:   readyTimeout,
@@ -118,22 +135,50 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	res := &Result{Warnings: warnings, Mail: mail}
+	if len(spec.IdPs) > 0 {
+		res.SocialCallbackURL = strings.TrimRight(in.BaseURL, "/") + "/idps/callback"
+	}
 	rep, err := rec.Reconcile(ctx, spec)
+	res.Report = rep
 	if err != nil {
-		return &Result{Report: rep, Warnings: warnings}, fmt.Errorf("converge identity %q: %w", in.Identity.Name, err)
+		return res, fmt.Errorf("converge identity %q: %w", in.Identity.Name, err)
 	}
 
-	values, err := StoreValues(in, rep.Output, func(user string) ([]byte, error) {
+	values, err := StoreValues(in, withMail(rep.Output, mail), func(user string) ([]byte, error) {
 		return keys.Load(ctx, identity.MachineKeyEntry(user))
 	})
 	if err != nil {
-		return &Result{Report: rep, Warnings: warnings}, err
+		return res, err
 	}
-	written, err := writeStore(in.StorePath, values)
-	if err != nil {
-		return &Result{Report: rep, Warnings: warnings}, err
+	if res.StoreKeys, err = writeStore(in.StorePath, values); err != nil {
+		return res, err
 	}
-	return &Result{Report: rep, StoreKeys: written, Warnings: warnings}, nil
+	return res, nil
+}
+
+// MailState is how the dev instance's mail is delivered, as the LOGIN_POLICY
+// document reports it: the declaration's own smtp, else the env's Mailpit,
+// else nothing.
+func MailState(in Input) string {
+	switch {
+	case in.Identity != nil && in.Identity.SMTP != nil:
+		return identity.MailSMTP
+	case in.MailpitPort > 0:
+		return identity.MailDev
+	default:
+		return identity.MailNone
+	}
+}
+
+// withMail fills the login policy document's mail state, which only the
+// caller of the library knows.
+func withMail(out identity.Output, mail string) identity.Output {
+	if out.LoginPolicy != nil {
+		d := out.LoginPolicy.WithMail(mail)
+		out.LoginPolicy = &d
+	}
+	return out
 }
 
 func hasDeclaredMembers(s identity.Spec) bool {
@@ -228,15 +273,86 @@ func Spec(in Input) (identity.Spec, []string, error) {
 		spec.SeedUsers = append(spec.SeedUsers, identity.SeedUser{Email: u.Email, Password: pw, Roles: u.Roles})
 	}
 
-	if s := id.SMTP; s != nil {
+	var fromName, replyTo, fromLocal string
+	if e := id.Email; e != nil {
+		fromName, replyTo, fromLocal = e.FromName, e.ReplyTo, e.FromLocal
+	}
+	switch s := id.SMTP; {
+	case s != nil:
 		pw, _ := secret(in, s.PasswordSecret)
 		if pw == "" {
 			warnings = append(warnings, fmt.Sprintf("smtp: secret %s is not in the env's store, so the relay is configured without a password", s.PasswordSecret))
 		}
 		spec.SMTP = &identity.SMTP{
 			Host: fmt.Sprintf("%s:%d", s.Host, s.Port), User: s.User, Password: pw,
-			SenderAddress: s.Sender,
+			SenderAddress: s.Sender, SenderName: fromName, ReplyTo: replyTo,
 		}
+	case in.MailpitPort > 0:
+		// Mailpit on loopback: plain SMTP, no credentials. The sender is a
+		// name under .localhost, which no real mailbox can own.
+		spec.SMTP = &identity.SMTP{
+			Host:          fmt.Sprintf("127.0.0.1:%d", in.MailpitPort),
+			SenderAddress: firstNonEmpty(fromLocal, "no-reply") + "@" + mailDomain(spec.Project.Name),
+			SenderName:    firstNonEmpty(fromName, in.Project),
+			ReplyTo:       replyTo,
+		}
+	}
+	mailAvailable := spec.SMTP != nil
+
+	// The sign-in origin the invitation and sign-in links land on.
+	loginOrigin := in.FrontendOrigin
+	for _, a := range id.Applications {
+		if loginOrigin == "" && a.Kind == release.IdentityAppNativeBroker {
+			loginOrigin = in.WorkloadOrigins[a.Workload]
+		}
+	}
+
+	if len(id.Owners) > 0 {
+		var invite *identity.Invite
+		if mailAvailable && loginOrigin != "" {
+			invite = &identity.Invite{
+				URLTemplate:     loginOrigin + "/auth/invite?userID={{.UserID}}&code={{.Code}}&orgID={{.OrgID}}",
+				ApplicationName: firstNonEmpty(fromName, in.Project),
+			}
+		}
+		var roles []string
+		if id.OwnerRole != "" {
+			roles = []string{id.OwnerRole}
+		}
+		for _, email := range id.Owners {
+			spec.Owners = append(spec.Owners, identity.Owner{Email: email, Roles: roles, Invite: invite})
+		}
+	}
+
+	for _, s := range id.Social {
+		idp, warn := socialIdP(in, s)
+		if warn != "" {
+			warnings = append(warnings, warn)
+			continue
+		}
+		spec.IdPs = append(spec.IdPs, idp)
+	}
+
+	if id.DeclaresLoginPolicy() {
+		si := identity.SignIn{Signup: identity.SignupMode(id.SignupMode())}
+		if s := id.Signup; s != nil {
+			si.SignupDomains, si.SignupRole = s.Domains, s.Role
+		}
+		for _, m := range id.SignInMethods() {
+			si.Methods = append(si.Methods, identity.Method(m))
+		}
+		// A passkey is bound to the host the browser is on. In dev that is
+		// the loopback host, whatever relying party the declaration names
+		// for its hosted envs.
+		if containsMethod(si.Methods, identity.MethodPasskey) {
+			si.PasskeyRPID = originHost(loginOrigin)
+		}
+		if len(si.Methods) == 0 && len(spec.IdPs) == 0 {
+			errs = append(errs, errors.New("social sign-in is the only method declared, and no provider's secrets are in the env's store (see the warnings above), so nobody could sign in"))
+		}
+		login := identity.LoginPolicyFor(si, len(spec.IdPs) > 0)
+		spec.Policies.Login = &login
+		spec.SignIn = &si
 	}
 
 	if len(errs) > 0 {
@@ -246,6 +362,56 @@ func Spec(in Input) (identity.Spec, []string, error) {
 		return identity.Spec{}, warnings, fmt.Errorf("devidentity: %w", err)
 	}
 	return spec, warnings, nil
+}
+
+// socialIdP resolves one social provider's client from the env's store. A
+// provider whose secret is missing is left out with a warning rather than
+// failing the whole pass: dev sign-in through the other methods still works.
+func socialIdP(in Input, s release.ShapeIdentitySocial) (identity.IdP, string) {
+	t := identity.IdPType(s.Type)
+	clientID := s.ClientID
+	if s.ClientIDSecret != "" {
+		v, ok := secret(in, s.ClientIDSecret)
+		if !ok {
+			return identity.IdP{}, missingSocialSecret(s.Type, s.ClientIDSecret)
+		}
+		clientID = v
+	}
+	clientSecret, ok := secret(in, s.ClientSecretSecret)
+	if !ok {
+		return identity.IdP{}, missingSocialSecret(s.Type, s.ClientSecretSecret)
+	}
+	return identity.IdP{Name: identity.IdPName(t), Type: t, ClientID: clientID, ClientSecret: clientSecret, Scopes: s.Scopes}, ""
+}
+
+func missingSocialSecret(typ, name string) string {
+	return fmt.Sprintf("social %s: secret %s is not in the env's store, so %s sign-in is off in this env. Create a DEV OAuth app (its callback is printed below), then `forge secret set --env <env> %s`", typ, name, typ, name)
+}
+
+func containsMethod(ms []identity.Method, m identity.Method) bool {
+	for _, x := range ms {
+		if x == m {
+			return true
+		}
+	}
+	return false
+}
+
+// originHost is the host of an origin URL, "localhost" when it has none.
+func originHost(origin string) string {
+	if u, err := url.Parse(origin); err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return "localhost"
+}
+
+// mailDomain is the dev sender's domain: the project under .localhost.
+func mailDomain(project string) string {
+	label := strings.Trim(nonAlnum.ReplaceAllString(strings.ToUpper(project), "-"), "-")
+	if label == "" {
+		label = "forge"
+	}
+	return strings.ToLower(label) + ".localhost"
 }
 
 func secret(in Input, name string) (string, bool) {
@@ -285,6 +451,11 @@ func OutputKeys(out identity.Output) map[string]string {
 	}
 	if len(out.JWKS) > 0 {
 		kv["JWKS"] = string(out.JWKS)
+	}
+	if out.LoginPolicy != nil {
+		if raw, err := json.Marshal(out.LoginPolicy); err == nil {
+			kv[release.IdentityLoginPolicyKey] = string(raw)
+		}
 	}
 	for name, a := range out.Apps {
 		t := Token(name)

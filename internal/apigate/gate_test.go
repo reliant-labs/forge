@@ -74,17 +74,30 @@ func TestEvaluateUndeclaredBreakFails(t *testing.T) {
 	if v.OK {
 		t.Fatal("an undeclared break must fail")
 	}
-	for _, want := range []string{"pkg/widget: Close: removed", "API-BREAK:", "api-break", "codemod"} {
+	for _, want := range []string{"pkg/widget: Close: removed", "Deprecated", "breaking:approved", "API-BREAK:", "api-break", "codemod"} {
 		if !strings.Contains(v.Reason, want) {
 			t.Errorf("reason does not mention %q:\n%s", want, v.Reason)
 		}
 	}
 }
 
+// Semver at major 1 (owner, 2026-11-05): a declared break that ships its
+// codemod still fails until the owner accepts it.
+func TestEvaluateDeclaredBreakWithoutOwnerApprovalFails(t *testing.T) {
+	v := Evaluate(oneBreak, Declaration{Declared: true},
+		[]string{"pkg/widget/widget.go", "internal/codemod/widgetclose.go"}, t.TempDir())
+	if v.OK {
+		t.Fatal("a declared break with its codemod, but no owner approval, must fail")
+	}
+	if !strings.Contains(v.Reason, "breaking:approved") || !strings.Contains(v.Reason, "Deprecated") {
+		t.Errorf("reason must give the deprecation path and the owner's label:\n%s", v.Reason)
+	}
+}
+
 func TestEvaluateDeclaredWithoutRemedyFails(t *testing.T) {
 	root := t.TempDir()
 	changed := []string{"pkg/widget/widget.go", "internal/codemod/helper_test.go", "docs/x.md"}
-	v := Evaluate(oneBreak, Declaration{Declared: true}, changed, root)
+	v := Evaluate(oneBreak, Declaration{Declared: true, OwnerApproved: true}, changed, root)
 	if v.OK {
 		t.Fatal("declared but shipping no codemod or playbook must fail")
 	}
@@ -94,7 +107,7 @@ func TestEvaluateDeclaredWithoutRemedyFails(t *testing.T) {
 }
 
 func TestEvaluateLabelWithCodemodInDiffPasses(t *testing.T) {
-	v := Evaluate(oneBreak, Declaration{Declared: true},
+	v := Evaluate(oneBreak, Declaration{Declared: true, OwnerApproved: true},
 		[]string{"pkg/widget/widget.go", "internal/codemod/widgetclose.go"}, t.TempDir())
 	if !v.OK {
 		t.Fatalf("label + a codemod in the diff must pass: %s", v.Reason)
@@ -102,7 +115,7 @@ func TestEvaluateLabelWithCodemodInDiffPasses(t *testing.T) {
 }
 
 func TestEvaluateLabelWithPlaybookInDiffPasses(t *testing.T) {
-	v := Evaluate(oneBreak, Declaration{Declared: true},
+	v := Evaluate(oneBreak, Declaration{Declared: true, OwnerApproved: true},
 		[]string{"pkg/widget/widget.go", "internal/templates/project/skills/forge/migrations/v0.1.48/SKILL.md"}, t.TempDir())
 	if !v.OK {
 		t.Fatalf("label + a playbook entry in the diff must pass: %s", v.Reason)
@@ -112,7 +125,7 @@ func TestEvaluateLabelWithPlaybookInDiffPasses(t *testing.T) {
 func TestEvaluateNamedCodemodMustBeRegisteredAndInDiff(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "internal/codemod/widgetclose.go", "package codemod\n\nfunc init() {\n\tregister(Codemod{\n\t\tName: \"widget-close\",\n\t})\n}\n")
-	decl := Declaration{Declared: true, Remedies: []Remedy{{Kind: "codemod", Value: "widget-close"}}}
+	decl := Declaration{Declared: true, OwnerApproved: true, Remedies: []Remedy{{Kind: "codemod", Value: "widget-close"}}}
 
 	v := Evaluate(oneBreak, decl, []string{"pkg/widget/widget.go", "internal/codemod/widgetclose.go"}, root)
 	if !v.OK {
@@ -135,7 +148,7 @@ func TestEvaluateNamedPlaybookMustExistAndBeInDiff(t *testing.T) {
 	root := t.TempDir()
 	rel := "internal/templates/project/skills/forge/migrations/v0.1.48/SKILL.md"
 	writeFile(t, root, rel, "# v0.1.48\n")
-	decl := Declaration{Declared: true, Remedies: []Remedy{{Kind: "playbook", Value: "migrations/v0.1.48"}}}
+	decl := Declaration{Declared: true, OwnerApproved: true, Remedies: []Remedy{{Kind: "playbook", Value: "migrations/v0.1.48"}}}
 
 	if v := Evaluate(oneBreak, decl, []string{rel}, root); !v.OK {
 		t.Fatalf("an existing playbook in the diff must pass: %s", v.Reason)
@@ -143,18 +156,18 @@ func TestEvaluateNamedPlaybookMustExistAndBeInDiff(t *testing.T) {
 	if v := Evaluate(oneBreak, decl, []string{"pkg/widget/widget.go"}, root); v.OK {
 		t.Fatal("a playbook this PR did not touch is not shipped by it")
 	}
-	missing := Declaration{Declared: true, Remedies: []Remedy{{Kind: "playbook", Value: "migrations/v9.9.9"}}}
+	missing := Declaration{Declared: true, OwnerApproved: true, Remedies: []Remedy{{Kind: "playbook", Value: "migrations/v9.9.9"}}}
 	if v := Evaluate(oneBreak, missing, []string{rel}, root); v.OK {
 		t.Fatal("a playbook that does not exist must fail")
 	}
-	escape := Declaration{Declared: true, Remedies: []Remedy{{Kind: "playbook", Value: "../../../etc/passwd"}}}
+	escape := Declaration{Declared: true, OwnerApproved: true, Remedies: []Remedy{{Kind: "playbook", Value: "../../../etc/passwd"}}}
 	if v := Evaluate(oneBreak, escape, []string{rel}, root); v.OK {
 		t.Fatal("a playbook path must stay inside the migrations skill directory")
 	}
 }
 
 func TestUnknownRemedyKindFails(t *testing.T) {
-	decl := Declaration{Declared: true, Remedies: []Remedy{{Kind: "vibes", Value: "x"}}}
+	decl := Declaration{Declared: true, OwnerApproved: true, Remedies: []Remedy{{Kind: "vibes", Value: "x"}}}
 	if v := Evaluate(oneBreak, decl, []string{"internal/codemod/a.go"}, t.TempDir()); v.OK {
 		t.Fatal("an unknown remedy kind must fail rather than be ignored")
 	}

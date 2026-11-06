@@ -97,7 +97,7 @@ var reAllocatePortCall = regexp.MustCompile(`\ballocate_port\s*\(\s*(\d+)\s*,`)
 // allocatePortCall is one allocate_port(base, ...) call site.
 type allocatePortCall struct {
 	Base int
-	File string // relative to rootDir
+	File string // relative to rootDir, slash-separated
 	Line int    // 1-indexed
 }
 
@@ -154,7 +154,10 @@ func LintAllocatePortSpacing(rootDir string, maxStacks, blockSize int) (Result, 
 		if relErr != nil {
 			rel = f
 		}
-		calls := scanAllocatePortCalls(rel, string(content))
+		// Findings carry slash-separated paths on every OS, like every other
+		// forgeconv rule: suppression, --scope and the JSON report match on
+		// that form, and a Windows `deploy\kcl\dev\main.k` would miss them.
+		calls := scanAllocatePortCalls(filepath.ToSlash(rel), string(content))
 		result.Findings = append(result.Findings, findCollidingPairs(calls, maxStacks, blockSize)...)
 	}
 

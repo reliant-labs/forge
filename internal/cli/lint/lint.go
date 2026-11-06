@@ -458,27 +458,79 @@ func anchorProtoConventionFindings(findings []forgeconv.Finding) {
 // informational skip notes ("No proto/ directory found — …"), and
 // hasAny=false when none of the lintable trees (proto/, internal/,
 // handlers/, workers/, operators/) exist at all.
+//
+// Each tree is collected by its own function below; this one only fixes
+// their order in the report and folds their "was there anything to lint"
+// answers into hasAny.
 func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []string, bool, error) {
 	combined := forgeconv.Result{}
 	var notes []string
-	hasProto := false
 
-	if _, err := os.Stat("proto"); err == nil {
-		hasProto = true
-		res, err := forgeconv.LintProtoTreeOpts("proto", opts)
-		if err != nil {
-			return combined, notes, false, fmt.Errorf("forge convention lint (proto) failed: %w", err)
-		}
-		// forgeconv reports proto paths relative to proto/ (its suppression
-		// engine works in that frame), while every other finding here is
-		// project-relative. Re-anchor them so the whole report is one frame:
-		// a "services/x/v1/x.proto" path is not openable from the project
-		// root, and `forge lint --scope proto/services/x` could not match it.
-		anchorProtoConventionFindings(res.Findings)
-		combined.Findings = append(combined.Findings, res.Findings...)
-	} else {
+	protoFindings, hasProto, err := collectProtoConventionFindings(opts)
+	if err != nil {
+		return combined, notes, false, err
+	}
+	if !hasProto {
 		notes = append(notes, "No proto/ directory found — skipping proto convention lint")
 	}
+	combined.Findings = append(combined.Findings, protoFindings...)
+
+	goFindings, goTrees, err := collectGoTreeConventionFindings(opts)
+	if err != nil {
+		return combined, notes, false, err
+	}
+	combined.Findings = append(combined.Findings, goFindings...)
+
+	feFindings, hasFrontends, err := collectFrontendConventionFindings()
+	if err != nil {
+		return combined, notes, false, err
+	}
+	combined.Findings = append(combined.Findings, feFindings...)
+
+	portFindings, err := collectAllocatePortSpacingFindings()
+	if err != nil {
+		return combined, notes, false, err
+	}
+	combined.Findings = append(combined.Findings, portFindings...)
+	hasPortFindings := len(portFindings) > 0
+
+	// If none of proto/, internal/, handlers/, workers/, operators/, or a
+	// frontend dir exist, there's nothing to lint.
+	hasAny := hasProto || goTrees.internal || goTrees.componentTree || hasFrontends || hasPortFindings
+	return combined, notes, hasAny, nil
+}
+
+// collectProtoConventionFindings runs the proto convention rules over
+// proto/, when it exists, and returns their findings in the project frame.
+func collectProtoConventionFindings(opts forgeconv.LintOptions) ([]forgeconv.Finding, bool, error) {
+	if _, err := os.Stat("proto"); err != nil {
+		return nil, false, nil
+	}
+	res, err := forgeconv.LintProtoTreeOpts("proto", opts)
+	if err != nil {
+		return nil, true, fmt.Errorf("forge convention lint (proto) failed: %w", err)
+	}
+	// forgeconv reports proto paths relative to proto/ (its suppression
+	// engine works in that frame), while every other finding here is
+	// project-relative. Re-anchor them so the whole report is one frame:
+	// a "services/x/v1/x.proto" path is not openable from the project
+	// root, and `forge lint --scope proto/services/x` could not match it.
+	anchorProtoConventionFindings(res.Findings)
+	return res.Findings, true, nil
+}
+
+// goConventionTrees records which Go trees the convention lane found, for
+// collectConventionFindings' hasAny.
+type goConventionTrees struct {
+	internal      bool // internal/
+	componentTree bool // internal/handlers, internal/workers or internal/operators
+}
+
+// collectGoTreeConventionFindings runs every Go-tree rule and returns the
+// findings that survive `forge:lint-disable`, kept findings first, then
+// the suppression engine's own violations.
+func collectGoTreeConventionFindings(opts forgeconv.LintOptions) ([]forgeconv.Finding, goConventionTrees, error) {
+	var trees goConventionTrees
 
 	// Findings from the Go-tree rules below, whose File is relative to the
 	// project root. They pass through the shared suppression engine once,
@@ -487,79 +539,18 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	// paths are relative to proto/).
 	var goFindings []forgeconv.Finding
 
-	// Internal-package contract shape, plus the dep-interface rule and
-	// the `// forge:outbound-io` convention `--type=adapter` stamps. All
-	// three rules live in internal/contractcheck and ship through one
-	// Inspect call so the engine controls ordering and de-dup; the
-	// per-rule severity / gating discipline is preserved (contract-names
-	// is an error; the other two are warnings). contract-names reports as
-	// a warning where there is no forge.yaml (codegenUnavailable): its
-	// error severity exists to protect a bootstrap that is never generated
-	// there.
-	//
-	// Runs whether or not proto/ exists — CLI/library projects without
-	// proto can still ship internal/ packages whose bootstrap codegen
-	// would silently break on a wrong-named contract.
-	hasInternal := false
-	if _, err := os.Stat("internal"); err == nil {
-		hasInternal = true
-		store, cfgErr := loadProjectStore()
-		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
-			return combined, notes, false, fmt.Errorf("failed to load project config for contract-shape lint: %w", cfgErr)
-		}
-		var cfg *config.ProjectConfig
-		if store != nil {
-			cfg = store.Config()
-		}
-		// The convention lint is not (yet) ctx-aware; the engine's
-		// inter-rule cancellation hook is a forward-looking concern.
-		// Using context.Background() preserves today's behavior; threading
-		// the cobra cmd.Context() through is a separate cleanup.
-		fs, err := contractcheck.Inspect(context.Background(), ".", contractcheck.Options{
-			Excludes:           contractExcludesFromConfig(cfg),
-			CodegenUnavailable: codegenUnavailable(cfg, opts.Strict),
-		})
-		if err != nil {
-			return combined, notes, false, fmt.Errorf("forge convention lint (contract-shape) failed: %w", err)
-		}
-		goFindings = append(goFindings, fs...)
+	contractFindings, hasInternal, err := collectContractShapeFindings(opts)
+	if err != nil {
+		return nil, trees, err
 	}
+	trees.internal = hasInternal
+	goFindings = append(goFindings, contractFindings...)
 
-	// Handler-tree analyzers — only run when handlers/ exists. The
-	// no-handler-error-mapping rule catches per-service `toConnectError`
-	// / `mapServiceError` re-rolls; canonical replacement is
-	// `svcerr.Wrap(err)` from forge/pkg/svcerr. Warnings only — false-
-	// positive risk is real (some projects have legitimate custom mapping
-	// for project-specific sentinels), and the build should not gate on a
-	// hand-rolled helper that hasn't been migrated yet.
-	hasHandlers := false
-	if _, err := os.Stat("internal/handlers"); err == nil {
-		hasHandlers = true
-		res, err := forgeconv.LintHandlerErrorMapping(".")
-		if err != nil {
-			return combined, notes, false, fmt.Errorf("forge convention lint (handler error mapping) failed: %w", err)
-		}
-		goFindings = append(goFindings, res.Findings...)
-
-		// Handler-file size — warns when any handlers/<svc>/*.go grows
-		// past lint.handler_file_max_loc (default 1000). The threshold
-		// is project-configurable via forge.yaml. Warnings only — the
-		// nudge points at the future `forge scaffold handler-file` split
-		// subcommand rather than blocking on file size.
-		store, cfgErr := loadProjectStore()
-		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
-			return combined, notes, false, fmt.Errorf("failed to load project config for handler-file-size lint: %w", cfgErr)
-		}
-		threshold := config.DefaultHandlerFileMaxLOC
-		if store != nil {
-			threshold = store.Lint().EffectiveHandlerFileMaxLOC()
-		}
-		sizeRes, err := forgeconv.LintHandlerFileSize(".", threshold)
-		if err != nil {
-			return combined, notes, false, fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
-		}
-		goFindings = append(goFindings, sizeRes.Findings...)
+	handlerFindings, hasHandlers, err := collectHandlerTreeFindings()
+	if err != nil {
+		return nil, trees, err
 	}
+	goFindings = append(goFindings, handlerFindings...)
 
 	// Component-tree analyzers — also run on workers/ and operators/
 	// (which have the same Deps-struct shape as handlers/). The
@@ -568,19 +559,116 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	// than a field, or onto a non-Deps type) — the marker has no
 	// effect when it's not on a Deps field, and silent failure is
 	// exactly the kind of bug a lint rule earns its keep on.
-	hasComponentTree := hasHandlers
+	trees.componentTree = hasHandlers
 	for _, sub := range []string{"internal/workers", "internal/operators"} {
 		if _, err := os.Stat(sub); err == nil {
-			hasComponentTree = true
+			trees.componentTree = true
 		}
 	}
-	if hasComponentTree {
+	if trees.componentTree {
 		res, err := forgeconv.LintOptionalDepMarkerPosition(".")
 		if err != nil {
-			return combined, notes, false, fmt.Errorf("forge convention lint (optional-dep marker position) failed: %w", err)
+			return nil, trees, fmt.Errorf("forge convention lint (optional-dep marker position) failed: %w", err)
 		}
 		goFindings = append(goFindings, res.Findings...)
 	}
+
+	codeFindings, err := collectGoCodeConventionFindings(opts)
+	if err != nil {
+		return nil, trees, err
+	}
+	goFindings = append(goFindings, codeFindings...)
+
+	applied := suppress.ApplyFiles("", goFindings, os.ReadFile)
+	findings := make([]forgeconv.Finding, 0, len(applied.Kept)+len(applied.Violations))
+	findings = append(findings, applied.Kept...)
+	findings = append(findings, applied.Violations...)
+	return findings, trees, nil
+}
+
+// collectContractShapeFindings runs the internal-package contract-shape
+// rules, when internal/ exists.
+//
+// Internal-package contract shape, plus the dep-interface rule and
+// the `// forge:outbound-io` convention `--type=adapter` stamps. All
+// three rules live in internal/contractcheck and ship through one
+// Inspect call so the engine controls ordering and de-dup; the
+// per-rule severity / gating discipline is preserved (contract-names
+// is an error; the other two are warnings). contract-names reports as
+// a warning where there is no forge.yaml (codegenUnavailable): its
+// error severity exists to protect a bootstrap that is never generated
+// there.
+//
+// Runs whether or not proto/ exists — CLI/library projects without
+// proto can still ship internal/ packages whose bootstrap codegen
+// would silently break on a wrong-named contract.
+func collectContractShapeFindings(opts forgeconv.LintOptions) ([]forgeconv.Finding, bool, error) {
+	if _, err := os.Stat("internal"); err != nil {
+		return nil, false, nil
+	}
+	store, cfgErr := loadProjectStore()
+	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
+		return nil, true, fmt.Errorf("failed to load project config for contract-shape lint: %w", cfgErr)
+	}
+	var cfg *config.ProjectConfig
+	if store != nil {
+		cfg = store.Config()
+	}
+	// The convention lint is not (yet) ctx-aware; the engine's
+	// inter-rule cancellation hook is a forward-looking concern.
+	// Using context.Background() preserves today's behavior; threading
+	// the cobra cmd.Context() through is a separate cleanup.
+	fs, err := contractcheck.Inspect(context.Background(), ".", contractcheck.Options{
+		Excludes:           contractExcludesFromConfig(cfg),
+		CodegenUnavailable: codegenUnavailable(cfg, opts.Strict),
+	})
+	if err != nil {
+		return nil, true, fmt.Errorf("forge convention lint (contract-shape) failed: %w", err)
+	}
+	return fs, true, nil
+}
+
+// collectHandlerTreeFindings runs the handler-tree analyzers, only when
+// internal/handlers exists. The no-handler-error-mapping rule catches
+// per-service `toConnectError` / `mapServiceError` re-rolls; canonical
+// replacement is `svcerr.Wrap(err)` from forge/pkg/svcerr. Warnings only —
+// false-positive risk is real (some projects have legitimate custom
+// mapping for project-specific sentinels), and the build should not gate
+// on a hand-rolled helper that hasn't been migrated yet.
+func collectHandlerTreeFindings() ([]forgeconv.Finding, bool, error) {
+	if _, err := os.Stat("internal/handlers"); err != nil {
+		return nil, false, nil
+	}
+	res, err := forgeconv.LintHandlerErrorMapping(".")
+	if err != nil {
+		return nil, true, fmt.Errorf("forge convention lint (handler error mapping) failed: %w", err)
+	}
+	findings := res.Findings
+
+	// Handler-file size — warns when any handlers/<svc>/*.go grows
+	// past lint.handler_file_max_loc (default 1000). The threshold
+	// is project-configurable via forge.yaml. Warnings only — the
+	// nudge points at the future `forge scaffold handler-file` split
+	// subcommand rather than blocking on file size.
+	store, cfgErr := loadProjectStore()
+	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
+		return nil, true, fmt.Errorf("failed to load project config for handler-file-size lint: %w", cfgErr)
+	}
+	threshold := config.DefaultHandlerFileMaxLOC
+	if store != nil {
+		threshold = store.Lint().EffectiveHandlerFileMaxLOC()
+	}
+	sizeRes, err := forgeconv.LintHandlerFileSize(".", threshold)
+	if err != nil {
+		return nil, true, fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
+	}
+	return append(findings, sizeRes.Findings...), true, nil
+}
+
+// collectGoCodeConventionFindings runs the rules that read Go code
+// wherever it lives, rather than one component tree.
+func collectGoCodeConventionFindings(opts forgeconv.LintOptions) ([]forgeconv.Finding, error) {
+	var findings []forgeconv.Finding
 	// Least knowledge (composition graph §2): what every component's Deps
 	// declares against what the package uses through it — wide foreign
 	// interfaces, containers, downcasts, environment reads, the root config.
@@ -589,9 +677,9 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	if _, err := os.Stat("internal"); err == nil {
 		res, err := forgeconv.LintLeastKnowledge(".", opts)
 		if err != nil {
-			return combined, notes, false, fmt.Errorf("forge convention lint (least knowledge) failed: %w", err)
+			return nil, fmt.Errorf("forge convention lint (least knowledge) failed: %w", err)
 		}
-		goFindings = append(goFindings, res.Findings...)
+		findings = append(findings, res.Findings...)
 	}
 	// SQL written for the wrong placeholder dialect: `$N` in a
 	// bun-formatted query (NewRaw, the builders, db.Bun().ExecContext), or
@@ -600,21 +688,24 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	// _repo_ext.go seams, workers and handlers alike.
 	bunRes, err := forgeconv.LintBunPlaceholders(".")
 	if err != nil {
-		return combined, notes, false, fmt.Errorf("forge convention lint (bun placeholders) failed: %w", err)
+		return nil, fmt.Errorf("forge convention lint (bun placeholders) failed: %w", err)
 	}
-	goFindings = append(goFindings, bunRes.Findings...)
+	findings = append(findings, bunRes.Findings...)
 	// A SERIALIZABLE transaction that takes a lock (FOR UPDATE, an advisory
 	// lock, LOCK TABLE): the waiter wakes into a stale snapshot and fails
 	// 40001. Warning; an error under --strict.
 	txLockRes, err := forgeconv.LintTxLockUnderSerializable(".", opts)
 	if err != nil {
-		return combined, notes, false, fmt.Errorf("forge convention lint (tx lock under serializable) failed: %w", err)
+		return nil, fmt.Errorf("forge convention lint (tx lock under serializable) failed: %w", err)
 	}
-	goFindings = append(goFindings, txLockRes.Findings...)
+	return append(findings, txLockRes.Findings...), nil
+}
 
-	applied := suppress.ApplyFiles("", goFindings, os.ReadFile)
-	combined.Findings = append(combined.Findings, applied.Kept...)
-	combined.Findings = append(combined.Findings, applied.Violations...)
+// collectFrontendConventionFindings runs the frontend rules. hasFrontends
+// reports a frontend dir, or a hook-test-shape finding under
+// packages/hooks.
+func collectFrontendConventionFindings() ([]forgeconv.Finding, bool, error) {
+	var findings []forgeconv.Finding
 
 	// Frontend forge-owned-dotenv hygiene — a committed .env.local / .env*
 	// under a frontend that hard-codes a forge-owned variable
@@ -626,7 +717,7 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	if feDirs := frontendDirsForLint(); len(feDirs) > 0 {
 		hasFrontends = true
 		res := forgeconv.LintFrontendEnvFiles(".", feDirs, forgeconv.SeverityWarning)
-		combined.Findings = append(combined.Findings, res.Findings...)
+		findings = append(findings, res.Findings...)
 
 		// Raw process.env / import.meta.env reads in frontend source —
 		// the frontend mirror of the backend's os.Getenv guardrail. The
@@ -650,7 +741,7 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 		// other forge rule — no second implementation of the same
 		// three-state dial to drift out of step.
 		peRes := forgeconv.LintFrontendProcessEnv(".", feDirs, forgeconv.SeverityWarning)
-		combined.Findings = append(combined.Findings, peRes.Findings...)
+		findings = append(findings, peRes.Findings...)
 	}
 
 	// A scaffold-once hook test row asserting the opposite kind from the
@@ -663,18 +754,22 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	// packages/hooks too, so it is not under the frontend-dirs gate.
 	shapeRes, err := forgeconv.LintFrontendHookTestShape(".")
 	if err != nil {
-		return combined, notes, false, fmt.Errorf("forge convention lint (frontend hook test shape) failed: %w", err)
+		return nil, hasFrontends, fmt.Errorf("forge convention lint (frontend hook test shape) failed: %w", err)
 	}
-	combined.Findings = append(combined.Findings, shapeRes.Findings...)
+	findings = append(findings, shapeRes.Findings...)
 	hasFrontends = hasFrontends || len(shapeRes.Findings) > 0
+	return findings, hasFrontends, nil
+}
 
-	// Two allocate_port(base, ...) calls in one deploy/kcl file whose bases
-	// are congruent mod dev_stack.block_size collide at a stack block below
-	// dev_stack.max_stacks: two listeners on one host port.
+// collectAllocatePortSpacingFindings flags two allocate_port(base, ...)
+// calls in one deploy/kcl file whose bases are congruent mod
+// dev_stack.block_size: they collide at a stack block below
+// dev_stack.max_stacks, two listeners on one host port.
+func collectAllocatePortSpacingFindings() ([]forgeconv.Finding, error) {
 	maxStacks, blockSize := 0, 0
 	portStore, cfgErr := loadProjectStore()
 	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
-		return combined, notes, false, fmt.Errorf("failed to load project config for allocate-port-spacing lint: %w", cfgErr)
+		return nil, fmt.Errorf("failed to load project config for allocate-port-spacing lint: %w", cfgErr)
 	}
 	if portStore != nil && portStore.Config() != nil {
 		ds := portStore.Config().DevStack
@@ -682,15 +777,9 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	}
 	portRes, err := forgeconv.LintAllocatePortSpacing(".", maxStacks, blockSize)
 	if err != nil {
-		return combined, notes, false, fmt.Errorf("forge convention lint (allocate-port spacing) failed: %w", err)
+		return nil, fmt.Errorf("forge convention lint (allocate-port spacing) failed: %w", err)
 	}
-	combined.Findings = append(combined.Findings, portRes.Findings...)
-	hasPortFindings := len(portRes.Findings) > 0
-
-	// If none of proto/, internal/, handlers/, workers/, operators/, or a
-	// frontend dir exist, there's nothing to lint.
-	hasAny := hasProto || hasInternal || hasComponentTree || hasFrontends || hasPortFindings
-	return combined, notes, hasAny, nil
+	return portRes.Findings, nil
 }
 
 // frontendDirsForLint resolves the frontend source dirs the forge-owned

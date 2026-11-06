@@ -1,6 +1,6 @@
 ---
 name: frontend-testing
-description: Frontend testing methodology for forge — what to test, what NOT to test, recipes for utilities/pages/stores, mockTransport seam, and anti-patterns to forbid.
+description: Frontend testing methodology for forge — what to test, what NOT to test, recipes for utilities/pages/stores, the mockTransport seam (with generated service defaults + mockService overrides), and anti-patterns to forbid.
 ---
 
 # Frontend Testing
@@ -112,7 +112,27 @@ describe("ui-store", () => {
 - Runner: **Vitest** (matches Next.js / Tailwind v4 / forge's TS toolchain)
 - DOM: `jsdom` or `happy-dom`
 - React: `@testing-library/react` + `@testing-library/user-event`
-- Network: forge ships a `mockTransport()` helper in `src/lib/test-utils.tsx` (see the file). Like a real transport it `create()`s both directions: a handler receives the full request (an unset repeated field is `[]`), and a fixture may be a partial init shape, returned as the full response.
+- Network: forge ships a `mockTransport()` helper in `src/lib/test-utils.tsx` (see the file). Like a real transport it `create()`s both directions: a handler receives the full request (an unset repeated field is `[]`), and a fixture may be a partial init shape, returned as the full response. Unmatched RPCs are `Unimplemented`, so a test names every RPC its page reads.
+- A page that reads many RPCs, where the test cares about one: start from the generated service defaults (`src/mocks/services/<service>_gen.ts`, deterministic and schema-valid, see `frontend/mock-mode`) and override only what the assertion is about. `mockService` handlers are keyed like `mockTransport`'s, so they spread into it; for "defaults for everything else", use the engine's transport:
+
+  ```tsx
+  import { createMockTransport, mockService, patch } from "@reliantlabs/forge-web-runtime/mock-transport";
+  import { ReportService } from "@/gen/services/reports/v1/reports_pb";
+  import { reportServiceDefaults } from "@/mocks/services/report-service_gen";
+
+  const transport = createMockTransport({
+    scenario: {
+      name: "test",
+      handlers: mockService(ReportService, {
+        listReports: (req, d) => patch(d.listReports(req), { reports: [] }), // the empty state
+      }),
+    },
+    services: [reportServiceDefaults],
+  });
+  renderWithTransport(<ReportsPage />, { transport });
+  ```
+
+  Assert on what the override says, not on default values: they are stable for a given request and forge version, not a contract.
 - Coverage target: utilities + stores + page integrations. **NOT** 100% coverage; aim for behavioral coverage of the four states (loading / error / empty / success) per page.
 
 ## File layout

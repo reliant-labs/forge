@@ -15,5 +15,6 @@
     "sourceMap": true,
     "inlineSources": true
   },
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+  "// exclude note": "src/testdata holds sample protoc-gen-es output the tests compile against; it is not part of the package.",
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/testdata/**"]
 }

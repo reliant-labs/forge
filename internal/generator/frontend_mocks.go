@@ -183,7 +183,17 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 		}
 	}
 
+	// One default-mock module per service the frontend has TypeScript for —
+	// its own protos and any vendored contract alike — gathered by the
+	// bundler from src/mocks/services/, as the entity rows are. A dropped
+	// service's module is reclaimed by the stale-file sweep.
+	serviceModules, err := EmitServiceDefaults(root, feRel, cs)
+	if err != nil {
+		return 0, err
+	}
+
 	transportData := codegen.NewMockTransportTemplateData(transportEntities)
+	transportData.ServiceDefaults = serviceModules > 0
 
 	var buf bytes.Buffer
 	if err := mockTransportTmpl.Execute(&buf, transportData); err != nil {
@@ -229,6 +239,50 @@ func buildEntityServiceMap(services []codegen.ServiceDef, entities []codegen.Ent
 		}
 	}
 	return result
+}
+
+// EmitServiceDefaults writes src/mocks/services/<service>_gen.ts for every
+// Connect service exported by the frontend's generated TypeScript
+// (<feRel>/src/gen/**/*_pb.ts, whichever buf template wrote it) and returns
+// how many it wrote. Each module is one serviceDefaults(Service) call in its
+// own forge:section; the values come from the service's embedded descriptor
+// at runtime (see codegen.ScanTSServices for why the generator reads the
+// TypeScript rather than the protos).
+//
+// Before the frontend's stubs exist (the scaffold-time call) there are none,
+// and the transport is rendered without the services registry.
+func EmitServiceDefaults(root, feRel string, cs *FileChecksums) (int, error) {
+	services, err := codegen.ScanTSServices(filepath.Join(root, feRel, "src", "gen"))
+	if err != nil {
+		return 0, err
+	}
+	if len(services) == 0 {
+		return 0, nil
+	}
+	content, err := templates.FrontendTemplates().Get(filepath.Join("mocks", "service-defaults.ts.tmpl"))
+	if err != nil {
+		return 0, fmt.Errorf("read service-defaults template: %w", err)
+	}
+	tmpl, err := template.New("service-defaults.ts.tmpl").Funcs(templates.FuncMap()).Parse(string(content))
+	if err != nil {
+		return 0, fmt.Errorf("parse service-defaults template: %w", err)
+	}
+	servicesRel := filepath.Join(feRel, "src", "mocks", "services")
+	if err := os.MkdirAll(filepath.Join(root, servicesRel), 0o755); err != nil {
+		return 0, fmt.Errorf("create mock services directory: %w", err)
+	}
+	modules := codegen.PlanServiceDefaults(services)
+	for _, m := range modules {
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, m); err != nil {
+			return 0, fmt.Errorf("render mock defaults for %s: %w", m.TypeName, err)
+		}
+		rel := filepath.Join(servicesRel, m.Slug+"_gen.ts")
+		if _, err := WriteGeneratedFileTier1(root, rel, buf.Bytes(), cs, true); err != nil {
+			return 0, fmt.Errorf("write mock defaults for %s: %w", m.TypeName, err)
+		}
+	}
+	return len(modules), nil
 }
 
 // retireMocksIndex reclaims the mocks barrel, which forge no longer emits.

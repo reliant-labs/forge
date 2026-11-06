@@ -485,6 +485,21 @@ message AppConfig {
     description: "Path to a file holding the login broker's token, read on every use so the issuer-side credential can rotate WITHOUT a restart (a mounted Secret volume updates in place). Takes precedence over idp_broker_token while the file yields a token; idp_broker_token stays supported and is the fallback. A missing or empty file never stops the app: the last token read keeps being used and a warning is logged. The path is not a secret, so this field is not sensitive — the file's content is."
   }];
 
+  // ── The sign-in methods and sign-up mode the broker enforces ──────────
+  //
+  // DELIVERED, never hand-written: whoever converges the identity instance
+  // (the control plane for a hosted one, `forge env up` for the dev one)
+  // writes it from forge.ManagedIdentity's signup / methods / social fields.
+  // EMPTY is normal and means the legacy policy: password only, sign-up as
+  // auth_self_signup and development decide.
+
+  string idp_login_policy = 49 [(forge.v1.config) = {
+    env_var: "IDP_LOGIN_POLICY"
+    flag: "idp-login-policy"
+    sensitive: true
+    description: "The LOGIN_POLICY document (JSON, version 1) the login broker enforces: the signup mode (invite, open, domain) and its domains and role, the first-factor methods (password, passkey, magic_link), the passkey relying-party id, the social providers with their issuer ids, the mail state, whether a session requires a verified address, and the password complexity. Delivered by the identity converge from forge.ManagedIdentity; do not write it by hand. EMPTY keeps the legacy policy (password only; sign-up in development or with auth_self_signup). When PRESENT it is the only source, and auth_self_signup is ignored. Malformed or an unknown version also yields the legacy policy, logged at ERROR: the broker fails closed to what it served before. Marked sensitive because it names the instance's identity-provider ids."
+  }];
+
   // ── Public sign-up: an explicit opt-in outside development ────────────
   //
   // OFF by default. The scaffolded broker serves POST /auth/register in

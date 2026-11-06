@@ -157,7 +157,7 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 {{- range .FilterFields}}
 {{- if .IsTimestamp}}
 			if req.{{.GoName}} != nil {
-				opts = append(opts, orm.{{.RangeFunc}}("{{.ColumnName}}", req.{{.GoName}}.AsTime()))
+				opts = append(opts, orm.{{if eq .FilterType "exact"}}WhereEq{{else}}{{.RangeFunc}}{{end}}("{{.ColumnName}}", req.{{.GoName}}.AsTime()))
 			}
 {{- else if .IsOptional}}
 			if req.{{.GoName}} != nil {

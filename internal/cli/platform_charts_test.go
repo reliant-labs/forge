@@ -24,6 +24,9 @@ func platformTestEnv() (*KCLEntities, []ClusterEntity) {
 func captureChartInstalls(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
+	restoreRender := renderPlatformPrerequisitesFn
+	renderPlatformPrerequisitesFn = func(context.Context, string, *KCLEntities) (string, error) { return "", nil }
+	t.Cleanup(func() { renderPlatformPrerequisitesFn = restoreRender })
 	restore := applyPlatformChartFn
 	applyPlatformChartFn = func(_ context.Context, kctx string, spec cluster.HelmChartSpec) error {
 		got = append(got, spec.Name+"@"+kctx)

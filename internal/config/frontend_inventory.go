@@ -480,6 +480,11 @@ func frontendTypeFromMarkers(dir string) string {
 			return m.feType
 		}
 	}
+	// app.json remains a legacy marker. Dynamic config filenames are too
+	// generic on their own, so admit them only with Expo package evidence.
+	if (fileExists(filepath.Join(dir, "app.config.ts")) || fileExists(filepath.Join(dir, "app.config.js"))) && hasExpoDependency(dir) {
+		return "react-native"
+	}
 	return ""
 }
 
@@ -511,7 +516,7 @@ func DeriveFrontendsFromKCL(projectDir string, kcl []KCLFrontend) []FrontendConf
 		}
 		derived := FrontendConfig{
 			Name:      fe.Name,
-			Type:      normalizeKCLFrontendType(fe.Type),
+			Type:      NormalizeFrontendKind(fe.Type),
 			Port:      fe.Port,
 			DevRunner: fe.DevRunner,
 			BasePath:  basePath,
@@ -600,17 +605,4 @@ func devRunnerFromLockfile(projectDir, feDir string) string {
 		}
 	}
 	return ""
-}
-
-// normalizeKCLFrontendType maps KCL's Frontend.type spellings (nextjs | vite |
-// rn) onto the inventory's (nextjs | vite-spa | react-native), which is what
-// every generator compares against.
-func normalizeKCLFrontendType(t string) string {
-	switch strings.ToLower(strings.TrimSpace(t)) {
-	case "vite":
-		return "vite-spa"
-	case "rn":
-		return "react-native"
-	}
-	return t
 }

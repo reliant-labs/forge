@@ -1,8 +1,9 @@
+// Keep this value import until userMessage ships through /interceptors.
 import { userMessage } from "@reliantlabs/forge-web-runtime";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
-import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime/interceptors";
 import type { UseMutationOptions } from "@tanstack/react-query";
 
 /**

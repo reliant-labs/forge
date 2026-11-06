@@ -1,4 +1,5 @@
 import { Code, ConnectError } from "@connectrpc/connect";
+// Keep this value import until userMessage ships through /interceptors.
 import { userMessage } from "@reliantlabs/forge-web-runtime";
 import { MutationCache, QueryClient, type QueryKey } from "@tanstack/react-query";
 

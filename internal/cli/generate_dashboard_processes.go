@@ -72,7 +72,7 @@ func dashboardSpecForEntities(projectDir string, entities *KCLEntities) (*obsdas
 func frontendIdentities(project string, frontends []FrontendEntity) (names, services []string) {
 	seenName, seenService := map[string]bool{}, map[string]bool{}
 	for _, fe := range frontends {
-		if fe.Type == "react-native" {
+		if config.NormalizeFrontendKind(fe.Type) == "react-native" {
 			continue
 		}
 		if !seenName[fe.Name] {

@@ -420,14 +420,22 @@ export function getApiTransport(): Transport {
   return _transport;
 }
 
+// Resolve at RPC invocation, not client construction: service modules create
+// clients while the root barrel is still loading, before frontend bootstrap.
+// Swaps affect subsequent calls; already-started calls keep their transport.
+const forwardingTransport: Transport = {
+  unary: (...args) => getApiTransport().unary(...args),
+  stream: (...args) => getApiTransport().stream(...args),
+};
+
 /**
- * connectClient creates a typed Connect client against the currently-
- * registered Transport. Mirrors the per-frontend connectClient() helper
+ * connectClient creates a typed Connect client that resolves the registered
+ * Transport on each call. Mirrors the per-frontend connectClient() helper
  * so generated hooks can call ` + "`connectClient(UserService)`" + ` exactly
  * like they do in the non-workspace layout.
  */
 export function connectClient<S extends DescService>(service: S) {
-  return createClient(service, getApiTransport());
+  return createClient(service, forwardingTransport);
 }
 `
 	if err := writeIfMissing(filepath.Join(hooksDir, "src", "transport.ts"), transportTS); err != nil {
@@ -436,7 +444,7 @@ export function connectClient<S extends DescService>(service: S) {
 
 	useAPIQuery := `import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
 
-import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime/interceptors";
 
 /**
  * useApiQuery wraps a Connect client promise-returning call in a
@@ -475,7 +483,7 @@ export function useApiQuery<TData, TError = ConnectClientError>(
 
 	useAPIMutation := `import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 
-import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime/interceptors";
 
 /**
  * useApiMutation wraps a Connect client promise-returning call in a

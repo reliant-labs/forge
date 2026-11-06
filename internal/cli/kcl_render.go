@@ -1359,7 +1359,9 @@ func (f FrontendEntity) EffectiveEnvVars() []KCLEnvVar {
 	}
 	for _, ev := range f.EnvVars {
 		if i, ok := idx[ev.Name]; ok {
-			fmt.Printf("  ⚠️  frontend %s: env_vars sets %q, overriding the typed config value for that variable.\n", f.Name, ev.Name)
+			// stderr: a render feeds `forge env config --json` and the
+			// other documents on stdout (forge report 2186e95b).
+			fmt.Fprintf(os.Stderr, "  ⚠️  frontend %s: env_vars sets %q, overriding the typed config value for that variable.\n", f.Name, ev.Name)
 			out[i] = ev
 			continue
 		}

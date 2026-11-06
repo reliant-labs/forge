@@ -305,6 +305,8 @@ func TestChooseDeployRelease_CutsANewReleaseAndSaysWhy(t *testing.T) {
 	unhashed.Tree = ""
 	cutFromDirty := deployTestProvenance()
 	cutFromDirty.Dirty = true
+	dirtyForge := deployTestProvenance()
+	dirtyForge.ForgeVersion = "v0.1.43-0.20261009203931-bc24a9963fd6+dirty"
 
 	twoImages := `{"output":{"workloads":[` +
 		`{"name":"api","kind":"service","image":"` + deployTestImage + `","build":{"type":"go","cmd":"./cmd/api"},"runtime":{"type":"cluster","cluster":"k3d-dev","namespace":"dev"},"spec":{"kind":"service"}},` +
@@ -335,6 +337,12 @@ func TestChooseDeployRelease_CutsANewReleaseAndSaysWhy(t *testing.T) {
 		{
 			name: "a different forge version", checkout: otherForge,
 			want: []string{"built by forge " + deployTestForge, "this is forge v0.1.45"},
+		},
+		{
+			// The same +dirty version string on both sides names two working
+			// trees, not one source: it never licenses reuse.
+			name: "both built by a forge from a dirty tree", checkout: dirtyForge, recorded: dirtyForge,
+			want: []string{"built by forge " + dirtyForge.ForgeVersion},
 		},
 		{
 			name: "the env now declares an artifact the release lacks", render: twoImages,

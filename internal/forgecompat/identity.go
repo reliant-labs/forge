@@ -35,7 +35,8 @@ import (
 // same string, or two names of one commit. A pseudo-version names its commit
 // itself; a release tag is resolved through the Go module cache, where the go
 // command records the commit of every version it fetched. A version carrying
-// +dirty names a working tree, not a commit, so it matches only itself; and a
+// +dirty names a working tree, not a commit, so it matches nothing, not even
+// itself (two dirty trees of one commit share the name); and a
 // version that resolves to no commit (an unfetched tag, "(devel)") matches
 // only itself too — an unproven identity is a different forge.
 func SameForge(a, b string) bool {
@@ -43,11 +44,14 @@ func SameForge(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	if a == b {
-		return true
-	}
+	// Dirty first: two forges built from dirty trees of one commit report
+	// the same string, yet their working trees (and so their output) may
+	// differ, so not even an identical dirty version proves one source.
 	if isDirty(a) || isDirty(b) {
 		return false
+	}
+	if a == b {
+		return true
 	}
 	ca, cb := VersionCommit(a), VersionCommit(b)
 	return sameRevision(ca, cb)

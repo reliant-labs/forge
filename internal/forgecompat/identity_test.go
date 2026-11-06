@@ -45,6 +45,7 @@ func TestSameForge(t *testing.T) {
 		{"two tags", "v1.0.9", "v1.0.10", false},
 		{"an unfetched tag proves nothing", "v1.0.8", "v1.0.8-0.20261030224330-36d0220bfb60", false},
 		{"a dirty tree is not its commit", "v1.0.15-0.20261102231925-a88d3c30f302+dirty", "v1.0.14-0.20261102231925-a88d3c30f302", false},
+		{"an identical dirty version proves no source", "v1.0.15-0.20261102231925-a88d3c30f302+dirty", "v1.0.15-0.20261102231925-a88d3c30f302+dirty", false},
 		{"unknown", "", "v1.0.9", false},
 		{"devel", "(devel)", "v1.0.9", false},
 	}

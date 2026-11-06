@@ -171,11 +171,11 @@ func envDeclared(projectDir, env string) bool {
 }
 
 // resolveUndeclaredLifecycleTarget finds env by name on a control plane when
-// the project no longer declares it. The control plane is endpoint when given;
-// otherwise the one this project is bound to in .forge/hosted-projects.json —
-// the record of where its hosted envs were created — and only when there is
-// exactly one, so nothing is ever sent to a control plane the project has not
-// used.
+// the project no longer declares it, on a control plane this project has used:
+// one it is bound to in .forge/hosted-projects.json (the record of where its
+// hosted envs were created), or Reliant cloud, forge's default control plane.
+// endpoint picks among those; without it the project must be bound to exactly
+// one. Nothing — not the credential, not the lookup — is sent to any other host.
 func resolveUndeclaredLifecycleTarget(ctx context.Context, projectDir, env, flagToken, endpoint string) (lifecycleTarget, error) {
 	url := strings.TrimSpace(endpoint)
 	if url != "" {
@@ -183,11 +183,16 @@ func resolveUndeclaredLifecycleTarget(ctx context.Context, projectDir, env, flag
 			return lifecycleTarget{}, err
 		}
 	}
-	if url == "" {
-		bound, err := boundHostedEndpoints(projectDir)
-		if err != nil {
+	bound, err := boundHostedEndpoints(projectDir)
+	if err != nil {
+		return lifecycleTarget{}, err
+	}
+	if url != "" {
+		if err := checkEndpointUsedByProject(url, bound); err != nil {
 			return lifecycleTarget{}, err
 		}
+	}
+	if url == "" {
 		switch len(bound) {
 		case 1:
 			url = bound[0]
@@ -240,6 +245,31 @@ func checkLifecycleEndpoint(raw string) error {
 	default:
 		return fmt.Errorf("--endpoint %q has scheme %q; a control plane is reached over https\nfix: name it as https://<host>, e.g. %s", raw, u.Scheme, cloud.DefaultEndpoint)
 	}
+}
+
+// checkEndpointUsedByProject refuses an --endpoint that is neither one of the
+// control planes this project is bound to nor Reliant cloud. A typo'd or
+// planted URL would otherwise receive the bearer token and could delete an
+// unrelated project's env of the same name. It runs before any credential is
+// resolved.
+func checkEndpointUsedByProject(url string, bound []string) error {
+	norm := func(s string) string { return strings.TrimRight(strings.TrimSpace(s), "/") }
+	want := norm(url)
+	if want == norm(cloud.DefaultEndpoint) {
+		return nil
+	}
+	for _, b := range bound {
+		if norm(b) == want {
+			return nil
+		}
+	}
+	known := "none"
+	if len(bound) > 0 {
+		known = strings.Join(bound, ", ")
+	}
+	return fmt.Errorf("--endpoint %q is not a control plane this project has used (bound in %s: %s; or Reliant cloud, %s); refusing to send your credential to it\n"+
+		"fix: name one of those control planes; a control plane the project was never bound to cannot hold its envs",
+		url, hostedProjectBindingFile, known, cloud.DefaultEndpoint)
 }
 
 // isLoopbackEndpointHost reports whether host names this machine's loopback
@@ -541,7 +571,8 @@ the project, not the environment, and other environments promote them.
 
 An env no longer declared under deploy/kcl/ (its directory was removed but the
 hosted env lives on) is looked up by name on the control plane this project is
-bound to (.forge/hosted-projects.json), or on the one --endpoint names:
+bound to (.forge/hosted-projects.json), or on the one --endpoint names, which
+must be one of those bindings or Reliant cloud:
 
   forge env delete prod-web --endpoint https://admin.reliantapi.com
 
@@ -567,7 +598,7 @@ deletes anything on a control plane and which this command never uses.`,
 	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm the deletion without the typed-name prompt (required when non-interactive)")
 	cmd.Flags().BoolVar(&keepData, "keep-data", false, "Keep the environment's managed databases (retained, still billed as storage) instead of destroying them")
 	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
-	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Control plane holding an env that is no longer declared under deploy/kcl/: an https URL, or http to localhost only (default: the one this project is bound to)")
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Control plane holding an env that is no longer declared under deploy/kcl/: one this project is bound to (.forge/hosted-projects.json) or Reliant cloud; https, or http to localhost only (default: the one this project is bound to)")
 	return cmd
 }
 

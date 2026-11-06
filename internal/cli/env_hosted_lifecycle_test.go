@@ -342,8 +342,8 @@ func TestEnvDelete_ResolvesAnUndeclaredEnvByName(t *testing.T) {
 			t.Fatalf("target = %+v, %v; want env_9 on %s", got, err, srv.URL)
 		}
 	})
-	t.Run("on --endpoint", func(t *testing.T) {
-		undeclaredDeleteProject(t)
+	t.Run("on --endpoint, one of several bound", func(t *testing.T) {
+		undeclaredDeleteProject(t, srv.URL, "https://other.example")
 		got, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", srv.URL)
 		if err != nil || got.EnvironmentID != "env_9" {
 			t.Fatalf("target = %+v, %v; want env_9", got, err)
@@ -385,6 +385,22 @@ func TestEnvDelete_UndeclaredEnvNeedsOneControlPlane(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "--endpoint") {
 				t.Fatalf("endpoint %q: err = %v; want it refused before any credential is sent", ep, err)
 			}
+		}
+	})
+	t.Run("--endpoint the project was never bound to", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(srv.Close)
+		undeclaredDeleteProject(t, "https://a.example")
+		_, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", srv.URL)
+		if err == nil || !strings.Contains(err.Error(), "not a control plane this project has used") {
+			t.Fatalf("err = %v; want an unbound --endpoint refused", err)
+		}
+		if called {
+			t.Fatal("an unbound --endpoint was contacted; nothing may be sent to it")
 		}
 	})
 	t.Run("--endpoint on a declared env", func(t *testing.T) {

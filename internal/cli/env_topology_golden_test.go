@@ -172,14 +172,32 @@ func goldenTopologyOpts(t *testing.T) (envTopologyOptions, []string) {
 
 var generatedAtRE = regexp.MustCompile(`("generated_at": )"[^"]*"`)
 
+// placeholderPathRE matches a path rooted at a normalized temp directory: the
+// placeholder, then separator-and-name segments in either the raw form or the
+// JSON-escaped one (`\\`).
+var placeholderPathRE = regexp.MustCompile(`(?:<project>|<ledger-home>)(?:(?:\\\\|\\|/)[\w.~-]+)*`)
+
 // normalizeTopologyOutput replaces what is not the assembly's output: the
-// clock and the fixture's temp directories.
+// clock and the fixture's temp directories. On Windows those directories and
+// the paths under them use `\` (escaped as `\\` in JSON); the goldens are
+// written with `/`, so the separators under a placeholder are made `/`.
 func normalizeTopologyOutput(out, projectDir string) string {
 	out = generatedAtRE.ReplaceAllString(out, `$1"<generated_at>"`)
-	out = strings.ReplaceAll(out, projectDir, "<project>")
+	roots := [][2]string{{projectDir, "<project>"}}
 	// The machine ledger lives under a per-test ledger home.
 	if home, err := ledgerHome(); err == nil {
-		out = strings.ReplaceAll(out, home, "<ledger-home>")
+		roots = append(roots, [2]string{home, "<ledger-home>"})
+	}
+	for _, r := range roots {
+		out = strings.ReplaceAll(out, r[0], r[1])
+		if filepath.Separator == '\\' {
+			out = strings.ReplaceAll(out, strings.ReplaceAll(r[0], `\`, `\\`), r[1])
+		}
+	}
+	if filepath.Separator == '\\' {
+		out = placeholderPathRE.ReplaceAllStringFunc(out, func(p string) string {
+			return strings.ReplaceAll(strings.ReplaceAll(p, `\\`, "/"), `\`, "/")
+		})
 	}
 	return out
 }

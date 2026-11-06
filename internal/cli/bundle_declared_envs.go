@@ -76,6 +76,9 @@ func computeDeclaredEnvCatalog(ctx context.Context, projectDir string, w io.Writ
 	ctx, cancel := context.WithTimeout(ctx, declaredEnvCatalogBudget)
 	defer cancel()
 
+	// Read the seam once, here: a render that outlives the budget keeps running
+	// after this function returns, so it must not read the package var then.
+	render := declaredEnvRenderFn
 	out := make([]release.DeclaredEnv, len(names))
 	sem := make(chan struct{}, declaredEnvCatalogParallelism)
 	var wg sync.WaitGroup
@@ -83,7 +86,7 @@ func computeDeclaredEnvCatalog(ctx context.Context, projectDir string, w io.Writ
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()
-			out[i] = declaredEnvEntry(ctx, sem, projectDir, name)
+			out[i] = declaredEnvEntry(ctx, sem, render, projectDir, name)
 		}(i, name)
 	}
 	wg.Wait()
@@ -98,7 +101,7 @@ func computeDeclaredEnvCatalog(ctx context.Context, projectDir string, w io.Writ
 // declaredEnvEntry renders one env and projects it. The render runs in its own
 // goroutine so the budget bounds the wait even when the renderer does not
 // observe ctx; its result is then discarded.
-func declaredEnvEntry(ctx context.Context, sem chan struct{}, projectDir, name string) release.DeclaredEnv {
+func declaredEnvEntry(ctx context.Context, sem chan struct{}, render func(context.Context, string, string) (*KCLEntities, error), projectDir, name string) release.DeclaredEnv {
 	entry := release.DeclaredEnv{Name: name}
 	select {
 	case sem <- struct{}{}:
@@ -113,7 +116,7 @@ func declaredEnvEntry(ctx context.Context, sem chan struct{}, projectDir, name s
 	done := make(chan result, 1)
 	go func() {
 		defer func() { <-sem }()
-		e, err := declaredEnvRenderFn(ctx, projectDir, name)
+		e, err := render(ctx, projectDir, name)
 		done <- result{e, err}
 	}()
 	select {

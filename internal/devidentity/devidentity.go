@@ -212,47 +212,8 @@ func Spec(in Input) (identity.Spec, []string, error) {
 		})
 	}
 
-	var errs []error
-	for _, a := range id.Applications {
-		origin := in.FrontendOrigin
-		if origin == "" {
-			origin = in.WorkloadOrigins[a.Workload]
-		}
-		app := identity.Application{
-			Name:           a.Name,
-			DevMode:        true,
-			RedirectURIs:   a.RedirectURIs,
-			PostLogoutURIs: a.LogoutURIs,
-			LoginURI:       a.LoginURI,
-		}
-		if len(app.RedirectURIs) == 0 {
-			if origin == "" {
-				errs = append(errs, fmt.Errorf("application %q: no frontend origin and workload %q binds no port, so its redirect URI cannot be derived; set redirect_uris", a.Name, a.Workload))
-				continue
-			}
-			app.RedirectURIs = []string{origin + "/auth/callback"}
-		}
-		if len(app.PostLogoutURIs) == 0 && origin != "" {
-			app.PostLogoutURIs = []string{origin}
-		}
-		switch a.Kind {
-		case release.IdentityAppNativeBroker:
-			app.Kind = identity.AppNativeBroker
-			if app.LoginURI == "" {
-				if origin == "" {
-					errs = append(errs, fmt.Errorf("application %q: no frontend origin, so its sign-in route cannot be derived; set login_uri", a.Name))
-					continue
-				}
-				app.LoginURI = origin + "/auth/sign-in"
-			}
-		case release.IdentityAppOIDCWeb:
-			app.Kind = identity.AppWeb
-		default:
-			errs = append(errs, fmt.Errorf("application %q: unknown kind %q", a.Name, a.Kind))
-			continue
-		}
-		spec.Applications = append(spec.Applications, app)
-	}
+	apps, errs := applicationsSpec(in, id)
+	spec.Applications = apps
 
 	for _, m := range id.MachineUsers {
 		spec.MachineUsers = append(spec.MachineUsers, identity.MachineUser{
@@ -325,7 +286,7 @@ func Spec(in Input) (identity.Spec, []string, error) {
 	}
 
 	for _, s := range id.Social {
-		idp, warn := socialIdP(in, s)
+		idp, warn := socialIDP(in, s)
 		if warn != "" {
 			warnings = append(warnings, warn)
 			continue
@@ -364,10 +325,57 @@ func Spec(in Input) (identity.Spec, []string, error) {
 	return spec, warnings, nil
 }
 
-// socialIdP resolves one social provider's client from the env's store. A
+// applicationsSpec derives each declared application's client, filling the
+// redirect, logout and sign-in URIs from the env's origins unless the
+// declaration gives a literal.
+func applicationsSpec(in Input, id *release.ShapeIdentity) (apps []identity.Application, errs []error) {
+	for _, a := range id.Applications {
+		origin := in.FrontendOrigin
+		if origin == "" {
+			origin = in.WorkloadOrigins[a.Workload]
+		}
+		app := identity.Application{
+			Name:           a.Name,
+			DevMode:        true,
+			RedirectURIs:   a.RedirectURIs,
+			PostLogoutURIs: a.LogoutURIs,
+			LoginURI:       a.LoginURI,
+		}
+		if len(app.RedirectURIs) == 0 {
+			if origin == "" {
+				errs = append(errs, fmt.Errorf("application %q: no frontend origin and workload %q binds no port, so its redirect URI cannot be derived; set redirect_uris", a.Name, a.Workload))
+				continue
+			}
+			app.RedirectURIs = []string{origin + "/auth/callback"}
+		}
+		if len(app.PostLogoutURIs) == 0 && origin != "" {
+			app.PostLogoutURIs = []string{origin}
+		}
+		switch a.Kind {
+		case release.IdentityAppNativeBroker:
+			app.Kind = identity.AppNativeBroker
+			if app.LoginURI == "" {
+				if origin == "" {
+					errs = append(errs, fmt.Errorf("application %q: no frontend origin, so its sign-in route cannot be derived; set login_uri", a.Name))
+					continue
+				}
+				app.LoginURI = origin + "/auth/sign-in"
+			}
+		case release.IdentityAppOIDCWeb:
+			app.Kind = identity.AppWeb
+		default:
+			errs = append(errs, fmt.Errorf("application %q: unknown kind %q", a.Name, a.Kind))
+			continue
+		}
+		apps = append(apps, app)
+	}
+	return apps, errs
+}
+
+// socialIDP resolves one social provider's client from the env's store. A
 // provider whose secret is missing is left out with a warning rather than
 // failing the whole pass: dev sign-in through the other methods still works.
-func socialIdP(in Input, s release.ShapeIdentitySocial) (identity.IdP, string) {
+func socialIDP(in Input, s release.ShapeIdentitySocial) (identity.IdP, string) {
 	t := identity.IdPType(s.Type)
 	clientID := s.ClientID
 	if s.ClientIDSecret != "" {

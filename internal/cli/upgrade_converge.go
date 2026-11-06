@@ -108,6 +108,18 @@ type upgradeReport struct {
 	// TemplateDrift are frozen files you modified that a newer template
 	// changed; upgrade never overwrites them without --force.
 	TemplateDrift []string `json:"template_drift"`
+	// Offers are scaffold-once files this project never had whose
+	// templates are not new across the range: upgrade did not add them,
+	// and Command does.
+	Offers []upgradeOffer `json:"offers"`
+}
+
+// upgradeOffer is one scaffold-once file upgrade offers instead of writing.
+type upgradeOffer struct {
+	Path string `json:"path"`
+	// Since is the release whose templates first shipped it.
+	Since   string `json:"since,omitempty"`
+	Command string `json:"command"`
 }
 
 type upgradePhase struct {
@@ -184,6 +196,7 @@ func newUpgradeReport(opts upgradeOptions) *upgradeReport {
 		Phases: []upgradePhase{}, Codemods: []upgradeCodemodRun{}, Locks: []upgradeLockRun{},
 		Playbooks: []upgradePlaybookRun{}, Vendored: []upgradeVendoredRun{},
 		NeedsHuman: []upgradeHumanItem{}, Upcoming: []upgradeUpcoming{}, TemplateDrift: []string{},
+		Offers: []upgradeOffer{},
 	}
 }
 
@@ -468,7 +481,9 @@ func (r *upgradeRun) phaseTemplates() error {
 	if err != nil {
 		return err
 	}
-	results, err := generator.UpgradeSelection(r.projectDir, r.cfg, selection, r.check)
+	results, err := generator.UpgradeWith(r.projectDir, r.cfg, generator.UpgradeOptions{
+		Force: selection, CheckOnly: r.check, NewSince: r.newAcrossRange,
+	})
 	if err != nil {
 		return err
 	}
@@ -476,12 +491,20 @@ func (r *upgradeRun) phaseTemplates() error {
 	printSkippedPaths(counts, r.opts.showAll)
 	printUserModifiedRemedies(counts, r.opts.showAll)
 	r.rep.TemplateDrift = append(r.rep.TemplateDrift, counts.userModifiedPaths...)
+	r.rep.Offers = append(r.rep.Offers, counts.offers...)
 	if _, err := runAdvisoryPass(r.projectDir, r.cfg, selection, r.check, r.opts.showAll); err != nil {
 		return err
 	}
 	r.setPhase("templates", map[bool]string{true: "planned", false: "done"}[r.check],
 		fmt.Sprintf("%d updated, %d modified by you (kept), %d up to date", counts.updated, counts.userModified, counts.upToDate))
 	return nil
+}
+
+// newAcrossRange reports whether a template first shipped in release v is new
+// to this project: after its old pin, and reached by the target. An unknown
+// baseline makes nothing new — "never had it" cannot be told from "deleted it".
+func (r *upgradeRun) newAcrossRange(v string) bool {
+	return !baselineIsUnknown(r.from) && baselinePrecedes(r.from, v) && targetReaches(r.target, v)
 }
 
 func (r *upgradeRun) phasePin() error {

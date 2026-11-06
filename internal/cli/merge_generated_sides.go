@@ -21,7 +21,8 @@ package cli
 //     driver runs. MERGE_HEAD is written only afterwards.
 //   - `git rebase` (the merge backend) appends the pick it is applying to
 //     rebase-merge/done before applying it, and HEAD is the side it applies
-//     onto.
+//     onto. Its bases are the pick's parent (the base git merges against)
+//     and every fork point of HEAD and the pick.
 //
 // Every other operation (a cherry-pick, `git merge-tree`, `git am`) names
 // nothing, so the conflict stays, as before. A named commit is trusted only
@@ -36,6 +37,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -134,12 +136,31 @@ func currentMergeSides(ctx context.Context) (theirs string, bases []string, ok b
 	if !ok {
 		return "", nil, false
 	}
-	// A pick applies the commit's change against its parent: that is its base.
+	// A pick applies the commit's change against its parent: that is the
+	// base git hands the driver. The onto history may have diverged from
+	// that parent, so the fork point(s) of HEAD and the pick are bases too:
+	// a catalog disowned there may still hold a person's content, and every
+	// base must be read before the conflict is settled.
 	out, err := exec.CommandContext(ctx, "git", "rev-list", "--parents", "-n", "1", theirs).Output()
 	if err != nil {
 		return "", nil, false
 	}
-	return theirs, strings.Fields(string(out))[1:], true
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return "", nil, false
+	}
+	bases = fields[1:]
+	forks, err := exec.CommandContext(ctx, "git", "merge-base", "--all", "HEAD", theirs).Output()
+	var exitErr *exec.ExitError
+	if err != nil && (!errors.As(err, &exitErr) || exitErr.ExitCode() != 1) {
+		return "", nil, false
+	}
+	for _, f := range strings.Fields(string(forks)) {
+		if !slices.Contains(bases, f) {
+			bases = append(bases, f)
+		}
+	}
+	return theirs, bases, true
 }
 
 // rebasePickInProgress is the commit a merge-backend rebase is applying: the
@@ -153,7 +174,11 @@ func rebasePickInProgress(ctx context.Context) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return "", false // no pick recorded yet
+	}
+	lines := strings.Split(trimmed, "\n")
 	fields := strings.Fields(lines[len(lines)-1])
 	if len(fields) < 2 {
 		return "", false

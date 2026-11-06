@@ -740,6 +740,28 @@ func TestMergeGenerated_ServiceCatalogRealMerge(t *testing.T) {
 		dir := setupWith(t, catalog("billing+a", "users"), catalog("billing+b", "users"), disown, undisown, undisown)
 		keepsConflict(t, dir, "merge", "--no-edit", "theirs")
 	})
+	t.Run("a rebase whose fork point disowned it: the conflict stays", func(t *testing.T) {
+		undisown := func(t *testing.T, dir string) {
+			t.Helper()
+			if err := os.Remove(filepath.Join(dir, checksums.DisownedFile)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The fork point disowns the catalog. theirs un-disowns it in one
+		// commit and changes it in the next, so the pick's parent (the base
+		// git merges against) no longer disowns it, while the onto history
+		// diverged from that parent at a base that does.
+		undisownTheirs := func(t *testing.T, dir string) {
+			t.Helper()
+			undisown(t, dir)
+			writeTreeFileT(t, filepath.Join(dir, "notes.txt"), "theirs\n")
+		}
+		dir := setupWith(t, catalog("billing+a", "users"), catalog("billing", "users"), disown, undisownTheirs, undisown)
+		gitT(t, dir, "checkout", "-q", "theirs")
+		writeTreeFileT(t, filepath.Join(dir, rel), catalog("billing+b", "users"))
+		gitT(t, dir, "commit", "-qam", "theirs: change the catalog")
+		keepsConflict(t, dir, "rebase", "main")
+	})
 	t.Run("a cherry-pick names no other side: the conflict stays", func(t *testing.T) {
 		dir := setup(t, catalog("billing+a", "users"), catalog("billing+b", "users"))
 		keepsConflict(t, dir, "cherry-pick", "theirs")

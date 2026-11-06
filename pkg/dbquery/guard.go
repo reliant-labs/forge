@@ -21,9 +21,8 @@ var explainable = map[string]bool{"SELECT": true, "WITH": true, "TABLE": true, "
 // Check is the lexical guard: the first line of defence, and the source of
 // good error messages. It accepts exactly one statement that starts with
 // SELECT, WITH, TABLE, VALUES, SHOW or EXPLAIN, and refuses EXPLAIN ANALYZE
-// over a statement that names INSERT, UPDATE, DELETE or MERGE (a WITH with a
-// data-modifying CTE, a SELECT ... FOR UPDATE), because ANALYZE executes what
-// it explains.
+// over a write (a WITH with a data-modifying CTE, a SELECT ... FOR UPDATE),
+// because ANALYZE executes what it explains. See [dataModifyingWord].
 //
 // It also refuses SET and RESET by name, and any identifier that names a
 // function in [deniedFunctions]: the ones that change the session (set_config,
@@ -133,20 +132,113 @@ func Check(sql string) (leader string, err error) {
 	return leader, nil
 }
 
-// dataModifyingWords are the keywords that make a statement a write: a WITH's
-// data-modifying CTE, or SELECT ... FOR UPDATE.
-var dataModifyingWords = map[string]bool{"INSERT": true, "UPDATE": true, "DELETE": true, "MERGE": true}
-
 // dataModifyingWord returns the first keyword in stmt that makes it a write,
-// "" when it has none. A keyword inside a string literal, a quoted identifier
-// or a comment is not a token word, so it never matches.
+// "" when it has none: an INSERT, UPDATE, DELETE or MERGE where a statement
+// starts (a WITH's data-modifying CTE), or the UPDATE of a FOR UPDATE / FOR NO
+// KEY UPDATE locking clause.
+//
+// Postgres lets those keywords name a column, a table or an alias (SELECT
+// update FROM t), so a keyword counts only in its syntactic role: in statement
+// position (right after a "(", or after the ")" that closes a CTE body, which
+// is where a nested WITH's main statement starts) and followed by what that
+// statement requires (INSERT INTO, DELETE FROM, MERGE INTO, UPDATE name SET).
+// A keyword inside a string literal, a quoted identifier or a comment is not a
+// token word, so it never matches.
 func dataModifyingWord(stmt []token) string {
-	for _, t := range stmt {
-		if t.kind == tokWord && dataModifyingWords[t.text] {
+	for i, t := range stmt {
+		if t.kind != tokWord {
+			continue
+		}
+		switch t.text {
+		case "INSERT", "DELETE", "MERGE", "UPDATE":
+		default:
+			continue
+		}
+		if t.text == "UPDATE" && lockingUpdate(stmt, i) {
+			return t.text
+		}
+		if statementStart(stmt, i) && dmlFollows(stmt, i) {
 			return t.text
 		}
 	}
 	return ""
+}
+
+// lockingUpdate reports whether the UPDATE at stmt[i] ends FOR UPDATE or FOR
+// NO KEY UPDATE.
+func lockingUpdate(stmt []token, i int) bool {
+	word := func(j int, w string) bool { return j >= 0 && stmt[j].kind == tokWord && stmt[j].text == w }
+	return word(i-1, "FOR") || (word(i-1, "KEY") && word(i-2, "NO") && word(i-3, "FOR"))
+}
+
+// statementStart reports whether stmt[i] is where a statement can start: after
+// a "(", or after the ")" closing a CTE body (AS [NOT] MATERIALIZED ( ... )).
+func statementStart(stmt []token, i int) bool {
+	if i == 0 {
+		return true
+	}
+	prev := stmt[i-1]
+	if prev.kind != tokPunct {
+		return false
+	}
+	if prev.text == "(" {
+		return true
+	}
+	if prev.text != ")" {
+		return false
+	}
+	depth := 0
+	for j := i - 1; j >= 0; j-- {
+		if stmt[j].kind != tokPunct {
+			continue
+		}
+		switch stmt[j].text {
+		case ")":
+			depth++
+		case "(":
+			depth--
+		}
+		if depth == 0 {
+			return j > 0 && stmt[j-1].kind == tokWord && (stmt[j-1].text == "AS" || stmt[j-1].text == "MATERIALIZED")
+		}
+	}
+	return false
+}
+
+// dmlFollows reports whether the tokens after the keyword at stmt[i] are the
+// ones its statement requires: INSERT INTO, DELETE FROM, MERGE INTO, or
+// UPDATE [ONLY] name[.name...] [*] [[AS] alias] SET.
+func dmlFollows(stmt []token, i int) bool {
+	at := func(j int, w string) bool { return j < len(stmt) && stmt[j].kind == tokWord && stmt[j].text == w }
+	name := func(j int) bool {
+		return j < len(stmt) && (stmt[j].kind == tokWord || stmt[j].kind == tokQuotedIdent || stmt[j].kind == tokUnicodeIdent)
+	}
+	punct := func(j int, p string) bool { return j < len(stmt) && stmt[j].kind == tokPunct && stmt[j].text == p }
+	switch stmt[i].text {
+	case "INSERT", "MERGE":
+		return at(i+1, "INTO")
+	case "DELETE":
+		return at(i+1, "FROM")
+	}
+	j := i + 1
+	if at(j, "ONLY") {
+		j++
+	}
+	if !name(j) {
+		return false
+	}
+	for j++; punct(j, ".") && name(j+1); j += 2 {
+	}
+	if punct(j, "*") {
+		j++
+	}
+	if at(j, "AS") {
+		j++
+	}
+	if !at(j, "SET") && name(j) {
+		j++
+	}
+	return at(j, "SET")
 }
 
 // MaxParams is the most $n parameters a statement may reference; Postgres'

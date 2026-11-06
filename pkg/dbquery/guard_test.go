@@ -97,6 +97,11 @@ func TestCheck_Refuses(t *testing.T) {
 		{"EXPLAIN ANALYSE WITH u AS (UPDATE t SET a = 1 RETURNING a) SELECT 1", "explain_analyze"},
 		{"EXPLAIN (ANALYZE) WITH m AS (MERGE INTO t USING s ON true WHEN MATCHED THEN DELETE) SELECT 1", "explain_analyze"},
 		{"EXPLAIN ANALYZE SELECT * FROM t FOR UPDATE", "explain_analyze"},
+		{"EXPLAIN ANALYZE SELECT * FROM t FOR NO KEY UPDATE", "explain_analyze"},
+		{"EXPLAIN ANALYZE WITH u AS (UPDATE ONLY public.t AS x SET a = 1) SELECT 1", "explain_analyze"},
+		{"EXPLAIN ANALYZE WITH u AS MATERIALIZED (DELETE FROM t) SELECT 1", "explain_analyze"},
+		{"EXPLAIN ANALYZE WITH d AS (WITH s AS (SELECT 1) DELETE FROM t) SELECT 1", "explain_analyze"},
+		{"EXPLAIN ANALYZE WITH s AS (SELECT 1) DELETE FROM t", "explain_analyze"},
 		{"SELECT 'unterminated", "unterminated"},
 		{`SELECT "unterminated`, "unterminated"},
 		{"SELECT $$unterminated", "unterminated"},
@@ -122,6 +127,28 @@ func TestCheck_Refuses(t *testing.T) {
 				t.Fatalf("Check(%q) = %v; want refused/%s", name, err, tc.reason)
 			}
 		})
+	}
+}
+
+// INSERT, UPDATE, DELETE and MERGE are unreserved: unquoted, they can name a
+// column, a table or an alias. EXPLAIN ANALYZE refuses them only as syntax.
+func TestCheck_ExplainAnalyzeAllowsKeywordIdentifiers(t *testing.T) {
+	t.Parallel()
+	for _, sql := range []string{
+		"EXPLAIN ANALYZE SELECT update FROM t",
+		"EXPLAIN ANALYZE SELECT delete FROM t",
+		"EXPLAIN ANALYZE SELECT insert, merge FROM t",
+		"EXPLAIN ANALYZE SELECT * FROM update",
+		"EXPLAIN ANALYZE SELECT * FROM delete AS d JOIN insert i ON d.id = i.id",
+		"EXPLAIN ANALYZE SELECT a AS update FROM t WHERE delete > 0",
+		"EXPLAIN (ANALYZE) SELECT * FROM (SELECT update FROM t) s",
+		"EXPLAIN ANALYZE WITH update AS (SELECT delete FROM merge) SELECT * FROM update",
+		"EXPLAIN ANALYZE SELECT t.update, count(*) AS delete FROM t GROUP BY t.update",
+		"EXPLAIN ANALYZE SELECT (update) FROM t",
+	} {
+		if _, err := Check(sql); err != nil {
+			t.Errorf("Check(%q) = %v", sql, err)
+		}
 	}
 }
 

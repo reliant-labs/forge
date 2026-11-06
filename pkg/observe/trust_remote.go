@@ -6,7 +6,7 @@
 // starts a new trace and links the caller's). A server reachable from the
 // internet needs the default; a server whose real callers are mostly our own
 // services wants the first. With only those two answers the control plane chose
-// safety, and every workspace-proxy → admin-server request became two
+// safety, and every workspace-proxy → platform-api request became two
 // unrelated traces — and every console click became a browser trace with the
 // server's spans filed under another one.
 //

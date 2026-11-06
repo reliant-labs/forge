@@ -17,7 +17,7 @@ type SessionInfo struct {
 	// is an ATTACH (`forge debug --attach <pid>`) onto a process forge does
 	// not own: `stop` MUST detach the debugger and leave the target alive.
 	// Killing an attached target is a data-loss-class bug — it terminated a
-	// live admin-server in the field.
+	// live platform-api in the field.
 	Owned   bool      `json:"owned"`
 	Started time.Time `json:"started"`
 }

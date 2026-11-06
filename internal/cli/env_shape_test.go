@@ -832,3 +832,41 @@ func TestEnvBuildDeclaration_UndeliverableWarnsRefusedFails(t *testing.T) {
 		})
 	}
 }
+
+// A build its own flags make impossible is a usage error, and it must leave the
+// control plane as it found it: `forge env build demo` with no --push, on an env
+// binding a frontend to forge.OnHosted, is refused before the declaration is
+// recorded. (It used to record the env first and refuse after, so a dry attempt
+// at a build created the env on the control plane.) With --push the same env
+// is declared as before.
+func TestEnvBuildRefusesAnUnpushedHostedSiteBeforeDeclaring(t *testing.T) {
+	entities := &KCLEntities{
+		ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example.test"},
+		Frontends:    []FrontendEntity{{Name: "site", Type: "vite", Runtime: FrontendRuntime{Type: FrontendRuntimeHosted}}},
+	}
+
+	fake := withDeclarationRecorder(t, declarationFixtureShape())
+	withProjectName(t, "acme")
+	withDeclaredEntities(t, entities)
+	withBuildableProject(t)
+
+	cmd := newEnvBuildCmd()
+	cmd.SetArgs([]string{"demo"})
+	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "the build must push") {
+		t.Fatalf("`forge env build demo` with a hosted site and no --push: err = %v, want the must-push refusal", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("a refused build reached the control plane: %v", procNames(fake.calls))
+	}
+
+	if err := hostedSitesNeedPush(entities, buildOptions{env: "demo", push: true}); err != nil {
+		t.Fatalf("with --push the hosted site is buildable: %v", err)
+	}
+	if err := hostedSitesNeedPush(entities, buildOptions{env: "demo", buildTarget: "api"}); err != nil {
+		t.Fatalf("--target narrowing the site away needs no push: %v", err)
+	}
+}

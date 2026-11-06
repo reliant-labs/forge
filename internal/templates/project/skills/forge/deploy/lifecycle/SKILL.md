@@ -30,6 +30,12 @@ forge env delete preview [--yes] [--keep-data] # tear the env down, data include
   managed database instead: it keeps running and billing as storage and is
   listed as a retained database until purged; a re-deploy creates a NEW env and
   does not reattach it. The project's registry images are kept either way.
+- `delete` also removes a hosted env whose `deploy/kcl/<env>/` is gone: it is
+  looked up by name on the control plane the project is bound to
+  (`.forge/hosted-projects.json`), or on the one `--endpoint <url>` names when
+  the project is bound to none or several. `--endpoint` must be one of those
+  bindings or Reliant cloud; any other host is refused before a credential is
+  sent.
 - All three refuse an env that is not hosted. `forge env down` only stops local
   host processes and never touches a control plane.
 

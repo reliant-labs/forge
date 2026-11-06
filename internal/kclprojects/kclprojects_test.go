@@ -237,6 +237,21 @@ func TestResolveRefusesForgeVersionSkew(t *testing.T) {
 	}
 }
 
+// Pins are compared by the commit they name: two pseudo-versions of pinA's
+// commit with different bases are one forge, not a skew (forge report
+// 304e886b; the tag case is forgecompat.TestSameForge's).
+func TestResolveAcceptsTwoNamesOfOneForgeCommit(t *testing.T) {
+	t.Setenv(forgecompat.SkewOverrideEnv, "")
+	root := t.TempDir()
+	sameCommit := "v0.1.46-0.20261023173404-df09b730b6b6"
+	write(t, filepath.Join(root, "producer"), producerFiles(producerMod, sameCommit))
+	kclRoot := importer(t, root, "require "+producerMod+" v1.2.3\n\nreplace "+producerMod+" => ../producer\n", pinA)
+
+	if _, err := Resolve(kclRoot); err != nil {
+		t.Fatalf("pins %s and %s name one commit, so the import must resolve: %v", sameCommit, pinA, err)
+	}
+}
+
 func TestResolveRefusesNonForgeProjectsAndMissingPackages(t *testing.T) {
 	root := t.TempDir()
 	files := producerFiles(producerMod, pinA)

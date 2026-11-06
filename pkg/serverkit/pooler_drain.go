@@ -193,15 +193,30 @@ func retryIfPoolerDraining(err error) error {
 	return err
 }
 
-// isPoolerDraining reports whether err is PgBouncer refusing a client because
-// it is shutting down. Matched exactly: the same SQLSTATE carries every other
-// PgBouncer refusal too, and most of those are not safe to retry.
+// isPoolerDraining reports whether err is a PgBouncer refusal that is safe and
+// useful to run again on another connection. Matched exactly: the same
+// SQLSTATE carries every other PgBouncer refusal too, and most of those are not
+// safe to retry. Two qualify, both FATAL (the connection is gone, nothing ran):
+//
+//   - "server shutting down": the pooler is draining (see above).
+//   - "prepared statement name is already in use": PgBouncer, tracking
+//     protocol-level prepared statements (max_prepared_statements), refused a
+//     Parse whose name it still holds for this client. pgx names its cached
+//     statements by their SQL, so a connection whose cache lost track of one —
+//     a prepare cut short when the pooler's own server login was failing
+//     (prod, 2026-11-02 ~17:00) — re-prepares the same name and is
+//     disconnected. The refusal comes at Parse, before anything executes, and
+//     a fresh connection starts with an empty cache.
 func isPoolerDraining(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) &&
-		pgErr.Severity == "FATAL" &&
-		pgErr.Code == "08P01" &&
-		pgErr.Message == "server shutting down"
+	if !errors.As(err, &pgErr) || pgErr.Severity != "FATAL" || pgErr.Code != "08P01" {
+		return false
+	}
+	switch pgErr.Message {
+	case "server shutting down", "prepared statement name is already in use":
+		return true
+	}
+	return false
 }
 
 // withoutPeerClosedErrors drops, from a close error, the parts that only say

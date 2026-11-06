@@ -63,7 +63,7 @@ Invitations, address verification, password reset and magic links are EMAIL. In 
 forge.HostInfra {name = "mail", engine = "mailpit", port = _mail_port}
 ```
 
-Mailpit is a pinned, checksummed binary supervised as a host process, like Zitadel. `port` is its SMTP port (plain, loopback, no auth); its web UI is on **port + 7000** (1025 → `http://localhost:8025`), and `forge env up` prints it as `Mail: …`. Messages persist in `.forge/hostinfra/mail/`. The identity step points the dev IdP's SMTP at it (`IdentityOnHost.mail` names the entry; with exactly one mailpit it is found on its own). A declaration's own `smtp` still wins. Compose users: `docker-compose.yml` has a digest-pinned `mailpit` service.
+Mailpit is a pinned, checksummed binary supervised as a host process, like Zitadel. `port` is its SMTP port (plain, loopback, no auth); its web UI is on **port + 7000** (1025 → `http://localhost:8025`), and `forge env up` prints it as `Mail: …`. Messages persist in `mailpit.db` under the entry's data directory (`.forge/hostinfra/<name>/` unless it sets `data_dir`). The identity step points the dev IdP's SMTP at it (`IdentityOnHost.mail` names the entry; with exactly one mailpit it is found on its own). A declaration's own `smtp` still wins. Compose users: `docker-compose.yml` has a digest-pinned `mailpit` service.
 
 With mail available, the dev env gets the SAME policies a hosted env gets from the same `identity.k`:
 

@@ -455,3 +455,77 @@ func TestPendingMigrationsRefusesWithoutGitHistory(t *testing.T) {
 		t.Errorf("error should tell the user to name files explicitly; got: %v", err)
 	}
 }
+
+// After the default branch is merged in, the merge-base is its tip, so a
+// branch migration allocated before main's newest one sorts below the
+// merge-base high-water mark. It is still this branch's: --all-pending must
+// re-version it with the rest, in one batch that keeps their order. Red
+// before: PendingMigrations compared versions with the merge-base max and
+// skipped exactly the files migration-version-below-merged-head flags.
+func TestPendingMigrationsIncludesBranchFilesBelowAMergedHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a real git repository and merges; runs in task test")
+	}
+	repoRoot, migDir := gitRepo(t,
+		[]string{"20261001000000_base.up.sql"},
+		[]string{
+			"20261031041553_create_tiers.up.sql",
+			"20261101033740_seed_tiers.up.sql",
+		},
+	)
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	// main moves on with a migration between the branch's two, and the
+	// branch merges it.
+	git("checkout", "-q", "main")
+	if err := os.WriteFile(filepath.Join(migDir, "20261101000000_main_later.up.sql"), []byte("SELECT 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "a later migration on main")
+	git("checkout", "-q", "feature")
+	git("merge", "-q", "--no-edit", "main")
+
+	pending, err := PendingMigrations(migDir)
+	if err != nil {
+		t.Fatalf("PendingMigrations: %v", err)
+	}
+	var got []string
+	for _, p := range pending {
+		got = append(got, filepath.Base(p))
+	}
+	want := []string{"20261031041553_create_tiers.up.sql", "20261101033740_seed_tiers.up.sql"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("pending = %v, want both branch migrations %v (and neither main file)", got, want)
+	}
+
+	results, err := RebaseMigrations(migDir, pending)
+	if err != nil {
+		t.Fatalf("RebaseMigrations: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d renames, want 2", len(results))
+	}
+	mainHead := versionOf(t, "20261101000000_main_later.up.sql")
+	var createV, seedV uint64
+	for _, r := range results {
+		if r.NewVersion <= mainHead {
+			t.Errorf("%s rebased to %d, not above main's head %d", filepath.Base(r.OldPath), r.NewVersion, mainHead)
+		}
+		switch {
+		case strings.HasSuffix(r.NewPath, "_create_tiers.up.sql"):
+			createV = r.NewVersion
+		case strings.HasSuffix(r.NewPath, "_seed_tiers.up.sql"):
+			seedV = r.NewVersion
+		}
+	}
+	if createV == 0 || seedV == 0 || createV >= seedV {
+		t.Errorf("create_tiers=%d seed_tiers=%d: the batch must keep its order", createV, seedV)
+	}
+}

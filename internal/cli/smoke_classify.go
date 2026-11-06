@@ -332,7 +332,7 @@ func transportErrorDetail(err error) string {
 // problem is the Go default mux 404 — a *plain* `404 text/plain` body of
 // "404 page not found" — at a path the route deliberately points at: the
 // host reached *a* backend that doesn't serve that path (the reliant.v1.*
-// → admin-server misroute). That's a WARN: routing works but points
+// → platform-api misroute). That's a WARN: routing works but points
 // somewhere wrong.
 //
 // Everything else — 200/401/403/415, a Connect error envelope, a

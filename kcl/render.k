@@ -1461,6 +1461,9 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         securityContext = w.securityContext
         terminationGracePeriodSeconds = w.terminationGracePeriodSeconds
         activeDeadlineSeconds = w.activeDeadlineSeconds
+        successfulJobsHistoryLimit = w.successfulJobsHistoryLimit
+        failedJobsHistoryLimit = w.failedJobsHistoryLimit
+        ttlSecondsAfterFinished = w.ttlSecondsAfterFinished
     }
 }
 

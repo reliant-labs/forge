@@ -3,7 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -1297,7 +1296,7 @@ func (r *deployReport) emit() error {
 	if r == nil {
 		return nil
 	}
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(jsonStdout())
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(r.document()); err != nil {
 		return fmt.Errorf("write deploy report: %w", err)

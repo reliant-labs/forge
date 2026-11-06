@@ -132,6 +132,35 @@ func RefreshLock(ctx context.Context, lock Lock, manifestDir string) error {
 	return err
 }
 
+// unpublishedVersionSignatures are how npm, pnpm and yarn report a range the
+// registry has no version for (as opposed to an unreachable registry).
+var unpublishedVersionSignatures = []string{
+	"ERR_PNPM_NO_MATCHING_VERSION", // pnpm
+	"ETARGET",                      // npm
+	"No matching version found",    // npm, pnpm
+	"Couldn't find any versions",   // yarn
+}
+
+// UnpublishedVersion reports whether err is a package manager saying the
+// registry has no version of pkg satisfying the requested range — the error a
+// lockfile refresh gets while a range names a release nobody has published
+// yet. Any other failure (no network, no package manager) is false.
+func UnpublishedVersion(err error, pkg string) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, pkg) {
+		return false
+	}
+	for _, sig := range unpublishedVersionSignatures {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return false
+}
+
 // keepHiddenLockfile snapshots npm's hidden lockfile,
 // node_modules/.package-lock.json, and returns the func that puts it back.
 //

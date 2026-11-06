@@ -30,6 +30,7 @@ schema Workload:
     deployPhase?: str
     enableServiceLinks?: bool
     env?: [EnvVar]
+    failedJobsHistoryLimit?: int
     group?: str
     image: str
     kind: str = "service"
@@ -49,8 +50,10 @@ schema Workload:
     sidecars?: [Container]
     storageGiB?: int
     strategy?: str
+    successfulJobsHistoryLimit?: int
     terminationGracePeriodSeconds?: int
     tolerations?: [Toleration]
+    ttlSecondsAfterFinished?: int
     version?: str
     volumes?: [Volume]
 
@@ -65,6 +68,8 @@ schema Workload:
         crds == Undefined or len(crds) <= 64, "Workload.crds allows at most 64 entries"
         crds == Undefined or all _x in crds { regex.match(_x, "^[A-Z][A-Za-z0-9]*$") }, "Workload.crds[] must match ^[A-Z][A-Za-z0-9]*$"
         deployPhase == Undefined or deployPhase in ["pre-rollout", "post-rollout"], "Workload.deployPhase must be one of \"pre-rollout\", \"post-rollout\""
+        failedJobsHistoryLimit == Undefined or failedJobsHistoryLimit >= 0, "Workload.failedJobsHistoryLimit must be at least 0"
+        failedJobsHistoryLimit == Undefined or failedJobsHistoryLimit <= 100, "Workload.failedJobsHistoryLimit must be at most 100"
         group == Undefined or regex.match(group, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"), "Workload.group must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
         group == Undefined or len(group) <= 253, "Workload.group must be at most 253 characters"
         len(image) >= 1, "Workload.image must be at least 1 characters"
@@ -84,9 +89,12 @@ schema Workload:
         sidecars == Undefined or len(sidecars) <= 8, "Workload.sidecars allows at most 8 entries"
         storageGiB == Undefined or storageGiB >= 0, "Workload.storageGiB must be at least 0"
         strategy == Undefined or strategy in ["RollingUpdate", "Recreate"], "Workload.strategy must be one of \"RollingUpdate\", \"Recreate\""
+        successfulJobsHistoryLimit == Undefined or successfulJobsHistoryLimit >= 0, "Workload.successfulJobsHistoryLimit must be at least 0"
+        successfulJobsHistoryLimit == Undefined or successfulJobsHistoryLimit <= 100, "Workload.successfulJobsHistoryLimit must be at most 100"
         terminationGracePeriodSeconds == Undefined or terminationGracePeriodSeconds >= 0, "Workload.terminationGracePeriodSeconds must be at least 0"
         terminationGracePeriodSeconds == Undefined or terminationGracePeriodSeconds <= 3600, "Workload.terminationGracePeriodSeconds must be at most 3600"
         tolerations == Undefined or len(tolerations) <= 32, "Workload.tolerations allows at most 32 entries"
+        ttlSecondsAfterFinished == Undefined or ttlSecondsAfterFinished >= 0, "Workload.ttlSecondsAfterFinished must be at least 0"
         version == Undefined or regex.match(version, "^v[0-9]+((alpha|beta)[0-9]+)?$"), "Workload.version must match ^v[0-9]+((alpha|beta)[0-9]+)?$"
         version == Undefined or len(version) <= 63, "Workload.version must be at most 63 characters"
         volumes == Undefined or len(volumes) <= 32, "Workload.volumes allows at most 32 entries"
@@ -102,6 +110,7 @@ workload_json = lambda v: Workload -> {str:} {
         "deployPhase": v.deployPhase
         "enableServiceLinks": v.enableServiceLinks
         "env": [env_var_json(_i) for _i in v.env] if v.env else Undefined
+        "failedJobsHistoryLimit": v.failedJobsHistoryLimit
         "group": v.group
         "image": v.image
         "kind": v.kind
@@ -121,8 +130,10 @@ workload_json = lambda v: Workload -> {str:} {
         "sidecars": [container_json(_i) for _i in v.sidecars] if v.sidecars else Undefined
         "storageGiB": v.storageGiB
         "strategy": v.strategy
+        "successfulJobsHistoryLimit": v.successfulJobsHistoryLimit
         "terminationGracePeriodSeconds": v.terminationGracePeriodSeconds
         "tolerations": [toleration_json(_i) for _i in v.tolerations] if v.tolerations else Undefined
+        "ttlSecondsAfterFinished": v.ttlSecondsAfterFinished
         "version": v.version
         "volumes": [volume_json(_i) for _i in v.volumes] if v.volumes else Undefined
     }

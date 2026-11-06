@@ -73,6 +73,21 @@
 // as they are while the SDK loads. A page that never becomes visible sends
 // nothing.
 //
+// ── Paint vitals are dropped for a page first shown late ─────────────────
+//
+// web-vitals reports no FCP or LCP painted after the page was first hidden,
+// but it learns of hiding only from the moment it registers, and it registers
+// inside the SDK, which starts only once the page is visible. So a page loaded
+// in the background would report, as its FCP and LCP, the time from navigation
+// until it was first SHOWN: a tab opened behind another for a minute reported
+// a 60 s LCP. The runtime records when the page was first hidden (the browser's
+// `visibility-state` entries where it has them, else from startup on) and
+// drops an FCP or LCP painted at or after that moment. The paint time is the
+// metric's value (web-vitals times it from navigation, less a prerendered
+// page's activationStart); a back/forward-cache restore, timed from the
+// restore, is kept. TTFB, CLS and INP are kept: being hidden does not change
+// them.
+//
 // ── Network URLs carry no query string ───────────────────────────────────
 //
 // fetch/XHR spans record the request URL, and a query string is where tokens,
@@ -361,10 +376,14 @@ async function start(
   config: BrowserTelemetryConfig,
   ingest: string,
 ): Promise<boolean> {
+  // Before the first await: until web-vitals registers in hdx.init, only this
+  // watch sees the page hidden (see "Paint vitals" in the header).
+  const hidden = watchFirstHidden();
   try {
     await firstVisible();
     const hdx = resolveClient(await import("@hyperdx/browser"));
     if (!hdx || isTelemetryDisabled()) {
+      hidden.stop();
       setTelemetrySink(null);
       return false;
     }
@@ -379,6 +398,9 @@ async function start(
         pageClientResourceAttributes(),
       ),
     );
+    // From here web-vitals watches visibility itself.
+    hidden.stop();
+    dropBackgroundPaintVitals(hidden.at());
     // After init: both hook what the SDK RECORDS, never what the app sees.
     const benign = benignFilter(config, hdx);
     filterSdkErrorSpans(benign);
@@ -442,6 +464,7 @@ async function start(
   } catch (err) {
     // Blocked chunk, ad-blocker, SDK throw: telemetry must never break the app.
     // A startup that failed after the hooks went in takes them out again.
+    hidden.stop();
     removeBenignFilter();
     console.debug("[telemetry] disabled:", err);
     setTelemetrySink(null);
@@ -470,6 +493,168 @@ function firstVisible(): Promise<void> {
       }
     };
     document.addEventListener("visibilitychange", onChange);
+  });
+}
+
+/** When the page was first hidden, as watchFirstHidden saw it. */
+interface HiddenWatch {
+  /** ms since the time origin, or Infinity while the page has not been hidden. */
+  at(): number;
+  stop(): void;
+}
+
+/**
+ * Watches for the page's first hidden moment from now until stop(). The
+ * browser's `visibility-state` entries (Chromium) go back to navigation; where
+ * there are none, a page hidden now counts as hidden from now on, and a later
+ * visibilitychange to hidden from then. See "Paint vitals" in the header.
+ */
+function watchFirstHidden(): HiddenWatch {
+  let at = Number.POSITIVE_INFINITY;
+  const now = () =>
+    typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now()
+      : 0;
+  try {
+    const entries =
+      typeof performance !== "undefined" &&
+      typeof performance.getEntriesByType === "function"
+        ? performance.getEntriesByType("visibility-state")
+        : [];
+    // A prerendered page is hidden until it is activated, as web-vitals
+    // also ignores: only hiding after activation counts.
+    const activated = activationStart();
+    for (const e of entries) {
+      if (e.name === "hidden" && e.startTime >= activated) {
+        at = Math.min(at, e.startTime);
+      }
+    }
+  } catch {
+    // No such entry type here: the document's state below decides.
+  }
+  if (typeof document === "undefined") {
+    return { at: () => at, stop: () => {} };
+  }
+  const hiddenNow = () =>
+    document.visibilityState === "hidden" &&
+    !(document as { prerendering?: boolean }).prerendering;
+  if (hiddenNow()) {
+    at = Math.min(at, now());
+  }
+  if (typeof document.addEventListener !== "function") {
+    return { at: () => at, stop: () => {} };
+  }
+  const onChange = () => {
+    if (hiddenNow()) {
+      at = Math.min(at, now());
+    }
+  };
+  document.addEventListener("visibilitychange", onChange);
+  return {
+    at: () => at,
+    stop: () => document.removeEventListener?.("visibilitychange", onChange),
+  };
+}
+
+/** The tracer (name) the SDK's web-vitals instrumentation records under. */
+const SDK_WEBVITALS_SCOPE = "webvitals";
+
+/** The web vitals timed from navigation to a paint: wrong for a hidden page. */
+const PAINT_VITALS = ["fcp", "lcp"] as const;
+
+/** The span attribute the SDK copies web-vitals' metric.navigationType into. */
+const SDK_WEBVITALS_NAV_TYPE = "webvitals.navigation_type";
+
+/**
+ * When an FCP or LCP span's paint happened, in ms since the time origin (the
+ * coordinates of hiddenAt), or undefined when its value is not timed from
+ * navigation. The SDK (@hyperdx/otel-web webvitals.js) sets the attribute to
+ * web-vitals' metric.value, which web-vitals 3 computes as the paint entry's
+ * startTime minus activationStart (0 except for a prerendered page); so the
+ * paint time is the value plus activationStart. A page restored from the
+ * back/forward cache instead reports the time since the restore, which says
+ * nothing about when the first load was hidden.
+ */
+function paintTime(
+  value: number,
+  attributes: Record<string, unknown>,
+): number | undefined {
+  const navigationType = attributes[SDK_WEBVITALS_NAV_TYPE];
+  if (navigationType === "back-forward-cache") {
+    return undefined;
+  }
+  return navigationType === "prerender" ? value + activationStart() : value;
+}
+
+/** The navigation's activationStart (a prerendered page), else 0. */
+function activationStart(): number {
+  try {
+    const [nav] =
+      typeof performance !== "undefined" &&
+      typeof performance.getEntriesByType === "function"
+        ? (performance.getEntriesByType("navigation") as Array<{
+            activationStart?: unknown;
+          }>)
+        : [];
+    const at = nav?.activationStart;
+    return typeof at === "number" && Number.isFinite(at) ? at : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Drops an FCP or LCP span whose paint came at or after hiddenAt (ms since the
+ * time origin): it measured how long the page waited to be shown. A no-op for
+ * a page that was never hidden.
+ */
+function dropBackgroundPaintVitals(hiddenAt: number): void {
+  if (!Number.isFinite(hiddenAt)) {
+    return;
+  }
+  const proxy = trace.getTracerProvider() as { getDelegate?: () => unknown };
+  const provider = (proxy.getDelegate?.() ?? proxy) as {
+    getTracer?: (name: string, version?: string) => unknown;
+  };
+  const tracer = provider.getTracer?.(SDK_WEBVITALS_SCOPE) as
+    | StartSpanTracer
+    | undefined;
+  if (!tracer || typeof tracer.startSpan !== "function") {
+    return;
+  }
+  const original = tracer.startSpan;
+  const startSpan = function (
+    this: unknown,
+    name: string,
+    ...rest: unknown[]
+  ): unknown {
+    const span = original.call(this, name, ...rest) as RecordingSpan;
+    if (typeof span?.end !== "function") {
+      return span;
+    }
+    const end = span.end;
+    span.end = function (this: unknown, ...args: unknown[]) {
+      const attributes = span.attributes ?? {};
+      for (const vital of PAINT_VITALS) {
+        const value = attributes[vital];
+        if (typeof value !== "number") {
+          continue;
+        }
+        const paintedAt = paintTime(value, attributes);
+        if (paintedAt !== undefined && paintedAt >= hiddenAt) {
+          // Never ended, so never exported.
+          return undefined;
+        }
+      }
+      return end.apply(this, args);
+    };
+    return span;
+  };
+  tracer.startSpan = startSpan;
+  benignTeardown.push(() => {
+    if (tracer.startSpan === startSpan) {
+      tracer.startSpan = original;
+    }
   });
 }
 

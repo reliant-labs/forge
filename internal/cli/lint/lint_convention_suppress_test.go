@@ -203,3 +203,32 @@ func TestConventionLane_LintRulesRegradesEveryRule(t *testing.T) {
 		t.Errorf("lint.rules warn must downgrade deps-are-interfaces: %+v", deps)
 	}
 }
+
+// The conventions lane runs forgeconv-allocate-port-spacing over deploy/kcl.
+// Red before: the analyzer had no caller, so the graded rule never fired.
+func TestConventionLaneRunsAllocatePortSpacing(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "deploy", "kcl", "dev")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "_a = fp.allocate_port(38080, _key)\n_b = fp.allocate_port(38280, _key)\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.k"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
+		return nil, ErrProjectConfigNotFound
+	})
+	res, _, hasAny, err := collectConventionFindings(forgeconv.LintOptions{})
+	if err != nil {
+		t.Fatalf("collectConventionFindings: %v", err)
+	}
+	f, ok := findingFor(res.Findings, "forgeconv-allocate-port-spacing")
+	if !ok || !hasAny {
+		t.Fatalf("want a forgeconv-allocate-port-spacing finding (hasAny=%v), got %+v", hasAny, res.Findings)
+	}
+	if f.File != "deploy/kcl/dev/main.k" {
+		t.Errorf("finding file = %q, want deploy/kcl/dev/main.k", f.File)
+	}
+}

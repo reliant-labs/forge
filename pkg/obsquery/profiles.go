@@ -57,16 +57,37 @@ func (q Flamegraph) Compile() (Stmt, error) {
 	return Stmt{SQL: sql + "\nLIMIT " + strconv.Itoa(MaxStacks+1), Params: params}, nil
 }
 
-// ProfileTypes lists the sample types a service has in the range. Columns:
-// SampleType.
+// ProfileTypes lists the sample types a service has in the range, and the
+// gauge types (profilequery.IsSnapshot) it snapshotted in the
+// profilequery.SnapshotLookback before the range's end: Compile reads a gauge
+// as its newest snapshot, so a range with no snapshot of its own still has
+// one to show. Columns: SampleType.
 func (q Flamegraph) ProfileTypes() (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeProfiles); err != nil {
 		return Stmt{}, err
 	}
 	b := newBuilder(q.Scope)
-	conds := []string{b.rangeCondSec("Minute", q.Scope), "ServiceName = " + b.str(q.Service)}
+	since := q.Scope.Start
+	if s := q.Scope.End.Add(-profilequery.SnapshotLookback); s.Before(since) {
+		since = s
+	}
+	inRange := b.rangeCondSec("Minute", q.Scope)
+	lookback := "Minute >= " + b.secTime(since) + " AND Minute < " + b.secTime(q.Scope.End) +
+		" AND SampleType IN (" + strings.Join(snapshotTypes(b), ", ") + ")"
+	conds := []string{"ServiceName = " + b.str(q.Service), "((" + inRange + ") OR (" + lookback + "))"}
 	return b.stmt("SELECT DISTINCT SampleType FROM " + b.table(q.Scope, "profile_samples_1m") + "\n" +
 		where(conds) + "\nORDER BY SampleType LIMIT 50"), nil
+}
+
+// snapshotTypes binds the gauge sample types profilequery reads as snapshots.
+func snapshotTypes(b *builder) []string {
+	var out []string
+	for _, t := range []string{"goroutine", "inuse_objects", "inuse_space"} {
+		if profilequery.IsSnapshot(t) {
+			out = append(out, b.str(t))
+		}
+	}
+	return out
 }
 
 // ProfileRange is the half-open range a profile covers, for the Profile value.

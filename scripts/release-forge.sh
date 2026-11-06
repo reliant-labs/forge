@@ -808,7 +808,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "DRY RUN: web runtime: $WEB_RUNTIME_SUMMARY"
   echo "DRY RUN: would tag $RELEASE_TAG at $COMMIT (already on origin/$BRANCH)"
   echo "DRY RUN: would push:   git push --atomic origin refs/tags/$RELEASE_TAG <bookkeeping commit>:refs/heads/release/$VERSION"
-  echo "DRY RUN: would open:   a pull request release/$VERSION -> $BRANCH, set to auto-merge (nothing is pushed to $BRANCH)"
+  echo "DRY RUN: would open:   a pull request release/$VERSION -> $BRANCH for pr-review (nothing is pushed to $BRANCH)"
   echo ""
   echo "DRY RUN: removing the release worktree; no commit, tag, push or pull request was created."
   exit 0
@@ -878,11 +878,16 @@ fi
 # The bookkeeping commit is pushed; the worktree holding it can go on exit.
 RESTORE_ON_EXIT=0
 
+# The PR is opened non-draft and left there: the PR pipeline's pr-review reviews
+# its exact head and, on a pass, arms auto-merge with --match-head-commit as the
+# Reliant bot. Arming it here, as whoever runs this script, put an unreviewed
+# head into the merge queue, where the review-marker check failed it (forge#1570).
 if [ -z "$GITHUB_REPO" ]; then
   echo "→ origin is not on github.com; merge $BOOKKEEPING_BRANCH into $BRANCH by hand"
-elif ! { "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "$BOOKKEEPING_BRANCH" \
-      --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT." &&
-    "$GH_BIN" pr merge --repo "$GITHUB_REPO" --squash --auto "$BOOKKEEPING_BRANCH"; }; then
+elif "$GH_BIN" pr create --repo "$GITHUB_REPO" --base "$BRANCH" --head "$BOOKKEEPING_BRANCH" \
+      --title "chore: release $VERSION" --body "Bookkeeping for $RELEASE_TAG, tagged at $COMMIT."; then
+  echo "→ opened the $BOOKKEEPING_BRANCH bookkeeping PR; pr-review reviews it and queues it on a pass"
+else
   echo "⚠️  open the $BOOKKEEPING_BRANCH bookkeeping PR into $BRANCH by hand; $RELEASE_TAG is pushed" >&2
 fi
 

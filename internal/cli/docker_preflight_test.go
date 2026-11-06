@@ -151,3 +151,35 @@ func TestFormatCommandStderr(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// A healthy daemon on a loaded machine can take tens of seconds to answer
+// (b8882151): the bound is overridable, and the timeout message says how.
+func TestDockerPreflightBudget_EnvOverride(t *testing.T) {
+	t.Setenv(dockerPreflightTimeoutEnv, "")
+	if got := dockerPreflightBudget(); got != dockerPreflightTimeout {
+		t.Errorf("default budget = %s, want %s", got, dockerPreflightTimeout)
+	}
+	if dockerPreflightTimeout < 30*time.Second {
+		t.Errorf("default budget %s refuses a healthy daemon that answers in 25s under load", dockerPreflightTimeout)
+	}
+	t.Setenv(dockerPreflightTimeoutEnv, "2m")
+	if got := dockerPreflightBudget(); got != 2*time.Minute {
+		t.Errorf("override budget = %s, want 2m", got)
+	}
+	for _, bad := range []string{"soon", "-5s", "0"} {
+		t.Setenv(dockerPreflightTimeoutEnv, bad)
+		if got := dockerPreflightBudget(); got != dockerPreflightTimeout {
+			t.Errorf("%s=%q: budget = %s, want the default", dockerPreflightTimeoutEnv, bad, got)
+		}
+	}
+
+	withDockerProbe(t, func(ctx context.Context) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	t.Setenv(dockerPreflightTimeoutEnv, "20ms")
+	err := ensureDockerDaemon(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "within 20ms") || !strings.Contains(err.Error(), dockerPreflightTimeoutEnv) {
+		t.Fatalf("timeout message = %v; want the budget used and the override named", err)
+	}
+}

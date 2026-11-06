@@ -196,8 +196,16 @@ func RebaseMigrations(dir string, paths []string) ([]RebaseResult, error) {
 }
 
 // PendingMigrations returns the *.up.sql files in dir that are new on this
-// branch — above the default branch's merge-base high-water mark — which is
-// what `--all-pending` means.
+// branch — on neither the default branch's tip nor the merge-base with it —
+// which is what `--all-pending` means.
+//
+// NEWNESS IS FILE PRESENCE, NOT A VERSION COMPARISON, for the reason the
+// migration-version-below-merged-head lint gives: once the default branch is
+// merged in, the merge-base IS its tip, and a branch migration allocated
+// before the latest merged one sorts below the merge-base's high-water mark.
+// A version test called it history and skipped exactly the files the lint
+// flags and names this flag to fix. A file the default branch never had is
+// this branch's, whatever its number.
 //
 // Without git, newness is unknowable and this returns nothing rather than
 // guessing. Offering to rename every migration in a directory, including
@@ -205,8 +213,9 @@ func RebaseMigrations(dir string, paths []string) ([]RebaseResult, error) {
 // an empty answer with an explanation is the honest version of "cannot tell".
 func PendingMigrations(dir string) ([]string, error) {
 	repoRoot := migrationgit.RepoRoot(dir)
-	mergeBaseMax, haveMergeBase := migrationgit.MergeBaseMax(repoRoot, dir)
-	if !haveMergeBase {
+	onDefault, _, haveDefault := migrationgit.DefaultBranchFiles(repoRoot, dir)
+	atMergeBase, haveMergeBase := migrationgit.MergeBaseFiles(repoRoot, dir)
+	if !haveDefault || !haveMergeBase {
 		return nil, fmt.Errorf("cannot determine which migrations are new without git history "+
 			"(no default branch, or %s is not in a git repository) — name the files to rebase explicitly", dir)
 	}
@@ -216,8 +225,8 @@ func PendingMigrations(dir string) ([]string, error) {
 	}
 	var pending []string
 	for _, path := range entries {
-		v, ok := migrationver.ParseVersion(filepath.Base(path))
-		if !ok || v <= mergeBaseMax {
+		base := filepath.Base(path)
+		if _, ok := migrationver.ParseVersion(base); !ok || onDefault[base] || atMergeBase[base] {
 			continue
 		}
 		pending = append(pending, path)

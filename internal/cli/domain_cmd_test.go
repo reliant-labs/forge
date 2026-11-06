@@ -150,6 +150,84 @@ func TestRunDomainList_NamesWhatEachDomainServes(t *testing.T) {
 	}
 }
 
+// ls (table and --json) carries each binding's HSTS includeSubDomains flag,
+// so an operator can verify it, and notice when a rebind dropped it, without
+// curling the live header (forge bug 684c50d2).
+func TestRunDomainList_CarriesHSTSIncludeSubdomains(t *testing.T) {
+	const list = `{"domains":[
+      {"id":"d1","hostname":"hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_LIVE",
+       "binding":{"id":"b1","domainId":"d1","environmentId":"env-1","target":"web","hstsIncludeSubdomains":true}},
+      {"id":"d2","hostname":"www.hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_LIVE",
+       "binding":{"id":"b2","domainId":"d2","environmentId":"env-1","redirectTo":"hounders.club"}},
+      {"id":"d3","hostname":"shop.hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_PENDING_DNS"}]}`
+	f := newFakeDomainCP(t, map[string]string{"ListDomains": list})
+	var out bytes.Buffer
+	if err := runDomainList(context.Background(), domainTestClient(t, f), false, &out); err != nil {
+		t.Fatalf("runDomainList: %v", err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	cell := func(host string) string {
+		for _, l := range lines {
+			if fields := strings.Fields(l); len(fields) > 0 && fields[0] == host {
+				return l
+			}
+		}
+		return ""
+	}
+	if !strings.Contains(lines[0], "HSTS") {
+		t.Errorf("ls header has no HSTS column:\n%s", out.String())
+	}
+	if l := cell("hounders.club"); !strings.HasSuffix(strings.TrimSpace(l), "includeSubDomains") {
+		t.Errorf("hounders.club row should end includeSubDomains: %q", l)
+	}
+	if l := cell("www.hounders.club"); !strings.HasSuffix(strings.TrimSpace(l), "host only") {
+		t.Errorf("www.hounders.club row should end host only: %q", l)
+	}
+
+	var js bytes.Buffer
+	if err := runDomainList(context.Background(), domainTestClient(t, f), true, &js); err != nil {
+		t.Fatalf("runDomainList --json: %v", err)
+	}
+	var got struct {
+		Domains []domainWire `json:"domains"`
+	}
+	if err := json.Unmarshal(js.Bytes(), &got); err != nil {
+		t.Fatalf("decode --json: %v\n%s", err, js.String())
+	}
+	if len(got.Domains) != 3 || got.Domains[0].Binding == nil || !got.Domains[0].Binding.HSTSIncludeSubdomains {
+		t.Errorf("--json dropped hstsIncludeSubdomains:\n%s", js.String())
+	}
+	if got.Domains[1].Binding == nil || got.Domains[1].Binding.HSTSIncludeSubdomains {
+		t.Errorf("--json invented hstsIncludeSubdomains on a binding without it:\n%s", js.String())
+	}
+}
+
+// A rebind without --hsts-include-subdomains turns the flag off. The bind
+// says so instead of dropping a security header silently.
+func TestRunDomainBind_SaysWhenARebindDropsHSTSIncludeSubdomains(t *testing.T) {
+	prev := hostedProjectName
+	hostedProjectName = func() string { return "hounders" }
+	t.Cleanup(func() { hostedProjectName = prev })
+
+	for _, keep := range []bool{false, true} {
+		f := newFakeDomainCP(t, map[string]string{
+			"GetDomain": `{"domain":{"id":"dom_01","hostname":"hounders.club","state":"DEPLOY_CUSTOM_DOMAIN_STATE_LIVE",
+          "binding":{"id":"b1","domainId":"dom_01","environmentId":"env-7","target":"web","hstsIncludeSubdomains":true}}}`,
+			"ListEnvironments":    `{"environments":[{"id":"env-7","name":"prod","project":"hounders"}]}`,
+			"CreateDomainBinding": `{"binding":{"id":"b2","domainId":"dom_01","environmentId":"env-7","target":"web"}}`,
+		})
+		var out bytes.Buffer
+		if err := runDomainBind(context.Background(), domainTestClient(t, f), "prod", "hounders.club",
+			domainBindOptions{target: "web", hstsIncludeSubdomains: keep}, &out); err != nil {
+			t.Fatalf("runDomainBind: %v", err)
+		}
+		warned := strings.Contains(out.String(), "includeSubDomains is now OFF")
+		if warned == keep {
+			t.Errorf("keep=%v: warned=%v, want %v:\n%s", keep, warned, !keep, out.String())
+		}
+	}
+}
+
 // An org with no domains is a normal state, not a failure — and the empty
 // line says how to get one.
 func TestRunDomainList_EmptyIsNotAnError(t *testing.T) {

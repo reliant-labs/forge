@@ -121,6 +121,12 @@ func TestORMEntities_TwoTablesOneNameIsAnError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "person and persons both project to the entity Person") {
 		t.Fatalf("err = %v", err)
 	}
+	// The error is the whole fix: both per-table markers that resolve it.
+	for _, want := range []string{"COMMENT ON TABLE persons IS 'forge:entity-name=<Name>'", "COMMENT ON TABLE person IS 'forge:no-entity'"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("collision error should offer %q:\n%v", want, err)
+		}
+	}
 }
 
 func TestTableEntityName(t *testing.T) {

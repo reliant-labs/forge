@@ -22,7 +22,9 @@ anything else. Point the www name at the same records as its apex (the
 static-site edge serves redirects too). `--hsts-include-subdomains` on a bind
 adds `includeSubDomains` to that hostname's `Strict-Transport-Security`; it is
 off by default because it breaks every subdomain still on plain HTTP for as
-long as a browser remembers it (a year), and a rebind without it turns it off.
+long as a browser remembers it (a year), and a rebind without it turns it off
+(the bind says so). `ls` (HSTS column), `show` and `--json`
+(`binding.hstsIncludeSubdomains`) report the current setting.
 
 `ls`, `show`, `verify` (check DNS now), `unbind` (stop serving, keep the
 verification) and `rm` (give the hostname up) complete the group; every read

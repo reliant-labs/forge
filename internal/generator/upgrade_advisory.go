@@ -172,6 +172,16 @@ func AdvisoryFilesFor(projectDir string, cfg *config.ProjectConfig) ([]AdvisoryF
 	if cfg == nil {
 		return nil, nil
 	}
+	// A static site (no Go module) was scaffolded from none of these
+	// templates: its frontend is the site starter or an adopted app, never
+	// the app frontend tree, and `project new --kind site` writes no .github
+	// starters. Comparing it against them reported every app module (auth
+	// screens, typed config, event context …) as "absent here", the
+	// starter's own layout.tsx / next.config.ts as hundreds of lines behind,
+	// and a PR template it never had — on a site forge had just scaffolded.
+	if !cfg.HasGoModule() {
+		return nil, nil
+	}
 	rows, err := frontendAdvisoryFiles(projectDir, cfg)
 	if err != nil {
 		return nil, err

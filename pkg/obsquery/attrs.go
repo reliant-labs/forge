@@ -114,6 +114,14 @@ func hasAttrPrefix(k string) bool {
 const (
 	statusExpr = "lower(replaceOne(StatusCode, 'STATUS_CODE_', ''))"
 	envIDExpr  = "ResourceAttributes['reliant.env.id']"
+	// workloadNameExpr is a span's or log's workload: k8s.workload.name where
+	// the node agent stamped it, else the kind-specific name the k8sattributes
+	// processor set (see keyExpr).
+	workloadNameExpr = "multiIf(ResourceAttributes['k8s.workload.name'] != '', ResourceAttributes['k8s.workload.name'], " +
+		"ResourceAttributes['k8s.deployment.name'] != '', ResourceAttributes['k8s.deployment.name'], " +
+		"ResourceAttributes['k8s.statefulset.name'] != '', ResourceAttributes['k8s.statefulset.name'], " +
+		"ResourceAttributes['k8s.daemonset.name'] != '', ResourceAttributes['k8s.daemonset.name'], " +
+		"ResourceAttributes['k8s.job.name'])"
 )
 
 // classify validates a key against the allowlist (and, for metrics, the
@@ -217,6 +225,15 @@ func (b *builder) keyExpr(sig Signal, key string) (string, bool, error) {
 		if sig == SigTraces {
 			return statusExpr, false, nil
 		}
+	}
+	if key == "k8s.workload.name" && sig != SigMetrics {
+		// The node agent stamps k8s.workload.name on what it collects (logs and
+		// metrics it derived); an app's own OTLP spans and logs are enriched by
+		// the k8sattributes processor, which names the workload by its kind:
+		// k8s.deployment.name, .statefulset.name, .daemonset.name, .job.name.
+		// Prod spans carry k8s.deployment.name and never k8s.workload.name, so
+		// a Workload filter on traces matched nothing.
+		return workloadNameExpr, true, nil
 	}
 	k := b.str(key)
 	if cls == classResource {
@@ -372,6 +389,8 @@ func (b *builder) existsCond(sig Signal, f AttrFilter) (string, bool, error) {
 		return b.envNameExpr() + " != ''", true, nil
 	case f.Key == "status" && sig == SigTraces:
 		return "StatusCode != ''", false, nil
+	case f.Key == "k8s.workload.name" && sig != SigMetrics:
+		return workloadNameExpr + " != ''", true, nil
 	case cls == classResource:
 		return "mapContains(ResourceAttributes, " + b.str(f.Key) + ")", true, nil
 	}

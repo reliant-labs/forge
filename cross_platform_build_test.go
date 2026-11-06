@@ -71,6 +71,11 @@ func TestCrossPlatformBuild(t *testing.T) {
 				"CGO_ENABLED=0",
 			)
 			out, err := cmd.CombinedOutput()
+			if err != nil && hostOutOfDisk(string(out)) {
+				// Two whole-module builds need several GB of build cache; a
+				// runner that runs out says nothing about portability (forge #1777).
+				t.Skipf("the %s/%s build ran out of disk on this host (build cache): %s", target.goos, target.goarch, diskFailureLine(out))
+			}
 			if err != nil {
 				t.Fatalf("forge must cross-compile for %s/%s — a downstream project cannot ship a %s binary otherwise.\n"+
 					"Guard the platform-specific call behind a build tag (see pkg/pgtest/pool_lock_%s.go for the pattern).\n\n%s",
@@ -129,4 +134,20 @@ func crossPlatformTargets(t *testing.T) []string {
 		}
 	}
 	return pkgs
+}
+
+// hostOutOfDisk reports whether a build failed because the host's disk or
+// quota was full, not because of the code.
+func hostOutOfDisk(out string) bool {
+	return strings.Contains(out, "disk quota exceeded") || strings.Contains(out, "no space left on device")
+}
+
+// diskFailureLine is the first line of out that names the disk failure.
+func diskFailureLine(out []byte) string {
+	for _, l := range strings.Split(string(out), "\n") {
+		if hostOutOfDisk(l) {
+			return strings.TrimSpace(l)
+		}
+	}
+	return ""
 }

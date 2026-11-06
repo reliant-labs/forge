@@ -574,7 +574,7 @@ func withShapeWorkloadUnits(ws []release.ShapeWorkload, e *KCLEntities, split un
 // and which workloads read each one.
 //
 // This is what #353's set-secret form reads, which is why declared_by matters
-// — "DATABASE_URL, needed by admin-server and the workers" is the sentence a
+// — "DATABASE_URL, needed by platform-api and the workers" is the sentence a
 // user needs when the form asks them for a value, and it is a fact only the
 // render knows.
 //

@@ -342,7 +342,57 @@ func TestReconcileDeclaredClusters_StoppedClusterStartFailureStopsReconcile(t *t
 	}
 }
 
+// withReadyNewNodes stubs the node-Ready wait a fresh create now runs, so a
+// create-path test never shells out to kubectl.
+func withReadyNewNodes(t *testing.T) {
+	t.Helper()
+	orig := waitDeclaredClusterReadyFn
+	t.Cleanup(func() { waitDeclaredClusterReadyFn = orig })
+	waitDeclaredClusterReadyFn = func(context.Context, string) error { return nil }
+}
+
+// A fresh create waits for the API and nodes before the host-gateway DNS
+// step reads CoreDNS: a create whose wedged k3d client forge cancelled
+// returns while the serverlb still refuses connections (forge reports
+// edff3a54, 0ee81d13). And a wait that fails stops the reconcile there.
+func TestEnsureDeclaredCluster_NewClusterWaitsForNodesBeforeHostGatewayDNS(t *testing.T) {
+	origState, origCreate, origWait, origHostDNS := clusterRuntimeStateFn, createDeclaredClusterFn, waitDeclaredClusterReadyFn, ensureClusterHostGatewayDNSFn
+	t.Cleanup(func() {
+		clusterRuntimeStateFn, createDeclaredClusterFn, waitDeclaredClusterReadyFn, ensureClusterHostGatewayDNSFn = origState, origCreate, origWait, origHostDNS
+	})
+	var calls []string
+	clusterRuntimeStateFn = func(context.Context, string) (k3dClusterRuntimeState, error) { return k3dClusterRuntimeState{}, nil }
+	createDeclaredClusterFn = func(context.Context, string, []string) error { calls = append(calls, "create"); return nil }
+	ensureClusterHostGatewayDNSFn = func(context.Context, string) error { calls = append(calls, "hostDNS"); return nil }
+	waitErr := error(nil)
+	waitDeclaredClusterReadyFn = func(_ context.Context, name string) error {
+		if name != "fresh" {
+			t.Fatalf("wait cluster = %q; want fresh", name)
+		}
+		calls = append(calls, "wait")
+		return waitErr
+	}
+	c := ClusterEntity{Name: "fresh", Servers: 1}
+
+	if err := ensureDeclaredCluster(t.Context(), c, nil, "", "dev"); err != nil {
+		t.Fatalf("ensureDeclaredCluster: %v", err)
+	}
+	if got := strings.Join(calls, ","); got != "create,wait,hostDNS" {
+		t.Fatalf("calls = %s; want create,wait,hostDNS", got)
+	}
+
+	calls, waitErr = nil, errors.New("connection refused")
+	err := ensureDeclaredCluster(t.Context(), c, nil, "", "dev")
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("err = %v; want the wait's failure", err)
+	}
+	if got := strings.Join(calls, ","); got != "create,wait" {
+		t.Fatalf("calls = %s; want create,wait (nothing after a failed wait)", got)
+	}
+}
+
 func TestEnsureDeclaredCluster_PassesPinnedK3sImage(t *testing.T) {
+	withReadyNewNodes(t)
 	origState := clusterRuntimeStateFn
 	origCreate := createDeclaredClusterFn
 	origHostDNS := ensureClusterHostGatewayDNSFn

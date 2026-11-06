@@ -1,0 +1,191 @@
+{{if eq .Platform "nextjs"}}"use client";
+
+{{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
+//
+// AcceptInviteForm — the /auth/invite page an invitation email opens
+// (owners, declared members, `forge cloud identity invite`).
+//
+// The invitee picks how they will sign in, from the methods this deployment
+// offers (GET /auth/options): a password, a passkey on this device, or an
+// emailed link. The invitation code is single-use; the server spends it only
+// once the choice is made, and checks a chosen password against the policy
+// BEFORE spending it, so a weak password does not burn the invitation.
+//
+// A passkey takes two prompts: one to create it, one to sign in with it.
+
+import { useState } from "react";
+
+import { PasswordRequirements } from "@/components/password-requirements";
+import { NoCodeHint } from "@/components/sign-in-methods";
+import Button from "@/components/ui/button";
+import Input from "@/components/ui/input";
+import Label from "@/components/ui/label";
+import {
+  AuthError,
+  acceptInvite,
+  passkeySignIn,
+  passkeysSupported,
+  registerPasskey,
+  type PasswordRule,
+  type SignInMethod,
+} from "@/lib/auth/native-login";
+import { useAuthOptions } from "@/lib/auth/use-auth-options";
+import { usePasswordPolicy } from "@/lib/auth/use-password-policy";
+
+export interface AcceptInviteFormProps {
+  userID: string | null;
+  code: string | null;
+  orgID: string | null;
+  signInHref: string;
+  onSignedIn: () => void | Promise<void>;
+}
+
+const labels: Record<SignInMethod, string> = {
+  password: "Choose a password",
+  passkey: "Use a passkey on this device",
+  magic_link: "Email me a sign-in link each time",
+};
+
+export function AcceptInviteForm({
+  userID,
+  code,
+  orgID,
+  signInHref,
+  onSignedIn,
+}: AcceptInviteFormProps) {
+  const options = useAuthOptions();
+  const policy = usePasswordPolicy();
+  const offered = options.methods.filter(
+    (m) => (m !== "passkey" || passkeysSupported()) && (m !== "magic_link" || options.mail),
+  );
+  const [method, setMethod] = useState<SignInMethod | null>(null);
+  const chosen = method ?? offered[0] ?? "password";
+  const [password, setPassword] = useState("");
+  const [serverUnmet, setServerUnmet] = useState<PasswordRule[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [sent, setSent] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  if (!userID || !code) {
+    return (
+      <div className="rounded-xl border border-border bg-surface p-8 shadow-sm">
+        <h1 className="text-xl font-semibold tracking-tight text-ink">Accept your invitation</h1>
+        <p role="alert" className="mt-4 text-sm text-ink">
+          This invitation link is incomplete. Open the link from the email again.
+        </p>
+      </div>
+    );
+  }
+
+  async function onSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!userID || !code) return;
+    setSubmitting(true);
+    setError(null);
+    setServerUnmet([]);
+    try {
+      const result = await acceptInvite({
+        userID,
+        code,
+        ...(orgID ? { orgID } : {}),
+        method: chosen,
+        ...(chosen === "password" ? { password } : {}),
+      });
+      if ("enroll" in result) {
+        await registerPasskey();
+        await passkeySignIn();
+        await onSignedIn();
+        return;
+      }
+      if ("message" in result) {
+        setSent(result.message);
+        setSubmitting(false);
+        return;
+      }
+      await onSignedIn();
+    } catch (err) {
+      setError(err instanceof AuthError ? err.message : "The invitation could not be accepted.");
+      setServerUnmet(err instanceof AuthError ? err.unmet : []);
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="rounded-xl border border-border bg-surface p-8 shadow-sm">
+      <h1 className="text-xl font-semibold tracking-tight text-ink">Join {{.ProjectName}}</h1>
+
+      {sent ? (
+        <>
+          <p role="status" className="mt-4 text-sm text-ink">
+            {sent} Open it in this browser to finish.
+          </p>
+          <NoCodeHint />
+        </>
+      ) : (
+        <>
+          {offered.length > 1 ? (
+            <fieldset className="mt-6 space-y-2">
+              <legend className="text-sm font-medium text-ink">How will you sign in?</legend>
+              {offered.map((m) => (
+                <label key={m} className="flex items-center gap-2 text-sm text-ink">
+                  <input
+                    type="radio"
+                    name="method"
+                    value={m}
+                    checked={chosen === m}
+                    onChange={() => setMethod(m)}
+                  />
+                  {labels[m]}
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
+
+          {chosen === "password" ? (
+            <>
+              <Label className="mt-6" htmlFor="password">
+                Password
+              </Label>
+              <Input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                required
+                aria-describedby="password-requirements"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <PasswordRequirements
+                id="password-requirements"
+                policy={policy}
+                password={password}
+                serverUnmet={serverUnmet}
+              />
+            </>
+          ) : null}
+
+          {error ? (
+            <p
+              role="alert"
+              className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
+            >
+              {error}
+            </p>
+          ) : null}
+
+          <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
+            {submitting ? "Setting up…" : "Accept invitation"}
+          </Button>
+        </>
+      )}
+
+      <p className="mt-4 text-center text-sm text-ink-muted">
+        Already set up?{" "}
+        <a className="font-medium text-accent underline" href={signInHref}>
+          Sign in
+        </a>
+      </p>
+    </form>
+  );
+}

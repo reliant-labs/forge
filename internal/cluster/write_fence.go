@@ -70,15 +70,28 @@ func KubectlCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// kubectlGlobalFlagsWithValue are the kubectl global flags whose value is the
-// NEXT argument when written without `=`. The verb is the first positional
-// argument after them.
-var kubectlGlobalFlagsWithValue = map[string]bool{
-	"--context": true, "-n": true, "--namespace": true, "--kubeconfig": true,
-	"--cluster": true, "--user": true, "-s": true, "--server": true,
-	"--token": true, "--request-timeout": true, "--as": true, "--as-group": true,
-	"--certificate-authority": true, "--client-certificate": true, "--client-key": true,
-	"--tls-server-name": true, "--cache-dir": true, "-v": true, "--v": true,
+// kubectlGlobalFlags is every global flag kubectl accepts before the verb
+// (`kubectl options`, v1.36), mapped to whether it takes a value. A
+// value-taking flag written without `=` consumes the NEXT argument; a boolean
+// one never does. The verb is the first positional argument after them.
+//
+// The list is complete on purpose, and kubectlVerb fails closed on anything
+// missing from it: if an unknown flag that takes a value came before the verb,
+// skipping it would read its value as the verb, so `kubectl --unknown get
+// apply` would pass as a read. A flag kubectl adds later is refused until it
+// is listed here.
+var kubectlGlobalFlags = map[string]bool{
+	"--as": true, "--as-group": true, "--as-uid": true, "--as-user-extra": true,
+	"--cache-dir": true, "--certificate-authority": true, "--client-certificate": true,
+	"--client-key": true, "--cluster": true, "--context": true,
+	"--kubeconfig": true, "--kuberc": true, "--log-flush-frequency": true,
+	"-n": true, "--namespace": true, "--password": true, "--profile": true,
+	"--profile-output": true, "--request-timeout": true, "-s": true, "--server": true,
+	"--tls-server-name": true, "--token": true, "--user": true, "--username": true,
+	"-v": true, "--v": true, "--vmodule": true,
+	// Booleans: true only as `--flag` or `--flag=<bool>`.
+	"--disable-compression": false, "--insecure-skip-tls-verify": false,
+	"--match-server-version": false, "--warnings-as-errors": false,
 }
 
 // kubectlReadVerbs never change cluster state.
@@ -97,10 +110,15 @@ var kubectlDryRunnableVerbs = map[string]bool{
 }
 
 // kubectlWrites reports the verb of a kubectl argument list and whether it can
-// change cluster state. Unknown verbs count as writes: the fence fails closed.
+// change cluster state. Unknown verbs, and leading flags the parser cannot
+// account for, count as writes: the fence fails closed.
 func kubectlWrites(args []string) (string, bool) {
-	verb, rest := kubectlVerb(args)
+	verb, rest, ok := kubectlVerb(args)
+	if !ok {
+		return strings.Join(args, " "), true
+	}
 	if verb == "" {
+		// No verb at all: kubectl prints its help and changes nothing.
 		return "", false
 	}
 	switch {
@@ -108,26 +126,46 @@ func kubectlWrites(args []string) (string, bool) {
 		return verb, false
 	case verb == "rollout":
 		// rollout status / history read; restart, undo, pause, resume write.
-		sub, _ := kubectlVerb(rest)
-		return "rollout " + sub, sub != "status" && sub != "history"
+		sub, _, subOK := kubectlVerb(rest)
+		return "rollout " + sub, !subOK || (sub != "status" && sub != "history")
 	case kubectlDryRunnableVerbs[verb]:
 		return verb, !kubectlDryRun(rest)
 	}
 	return verb, true
 }
 
-// kubectlVerb returns the first positional argument and what follows it.
-func kubectlVerb(args []string) (string, []string) {
+// kubectlVerb returns the first positional argument and what follows it. ok
+// is false when a flag before the verb is not a known kubectl global flag, or
+// a value-taking flag has no value: the verb cannot then be told apart from a
+// flag's value.
+func kubectlVerb(args []string) (verb string, rest []string, ok bool) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if !strings.HasPrefix(a, "-") {
-			return a, args[i+1:]
+		if a == "--" {
+			return "", nil, false
 		}
-		if !strings.Contains(a, "=") && kubectlGlobalFlagsWithValue[a] {
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			return a, args[i+1:], true
+		}
+		name, _, hasValue := strings.Cut(a, "=")
+		takesValue, known := kubectlGlobalFlags[name]
+		if !known && !strings.HasPrefix(a, "--") && len(a) > 2 {
+			// A short flag with its value attached: -nfoo, -v5.
+			if kubectlGlobalFlags[a[:2]] {
+				continue
+			}
+		}
+		if !known {
+			return "", nil, false
+		}
+		if takesValue && !hasValue {
+			if i+1 >= len(args) {
+				return "", nil, false
+			}
 			i++
 		}
 	}
-	return "", nil
+	return "", nil, true
 }
 
 // kubectlDryRun reports whether the arguments ask for a server or client dry

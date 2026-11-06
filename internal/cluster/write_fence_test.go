@@ -31,6 +31,19 @@ func TestKubectlWritesClassifiesEveryVerbForgeRuns(t *testing.T) {
 		{[]string{"--context", "prod", "label", "ns", "x", "a=b"}, true},
 		// Unknown verbs fail closed.
 		{[]string{"--context", "prod", "frobnicate"}, true},
+		// Boolean globals never consume the next argument.
+		{[]string{"--insecure-skip-tls-verify", "get", "ns"}, false},
+		{[]string{"--warnings-as-errors", "apply", "-f", "-"}, true},
+		// Attached short values.
+		{[]string{"-nkube-system", "get", "pods"}, false},
+		{[]string{"-v5", "apply", "-f", "-"}, true},
+		// An unknown flag before the verb fails closed: its value could be
+		// read as the verb.
+		{[]string{"--some-future-flag", "get", "apply", "-f", "-"}, true},
+		{[]string{"--some-future-flag", "get", "ns"}, true},
+		{[]string{"--context"}, true},
+		{[]string{"--", "get", "ns"}, true},
+		{[]string{"--context", "prod", "rollout", "--unknown", "x", "status"}, true},
 	}
 	for _, c := range cases {
 		verb, writes := kubectlWrites(c.args)
@@ -75,6 +88,27 @@ func TestWriteFenceRefusesApplyWithoutRunningKubectl(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); statErr != nil {
 		t.Fatal("a fenced read did not run kubectl")
+	}
+}
+
+// Every value-taking global flag, given a read verb as its value and followed
+// by apply, must classify as a write: the value is never mistaken for the verb.
+func TestKubectlWritesNeverReadsAFlagValueAsTheVerb(t *testing.T) {
+	for flag, takesValue := range kubectlGlobalFlags {
+		if !takesValue {
+			continue
+		}
+		for _, args := range [][]string{
+			{flag, "get", "apply", "-f", "-"},
+			{flag + "=get", "apply", "-f", "-"},
+		} {
+			if verb, writes := kubectlWrites(args); !writes {
+				t.Errorf("kubectlWrites(%q) = (%q, false), want a write", args, verb)
+			}
+		}
+		if verb, writes := kubectlWrites([]string{flag, "x", "get", "ns"}); writes {
+			t.Errorf("kubectlWrites(%s x get ns) = (%q, true), want a read", flag, verb)
+		}
 	}
 }
 

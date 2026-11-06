@@ -62,6 +62,9 @@ var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"strategy":                      deploymentKinds,
 	"terminationGracePeriodSeconds": scheduledKinds,
 	"activeDeadlineSeconds":         {KindJob: true, KindCron: true},
+	"successfulJobsHistoryLimit":    {KindCron: true},
+	"failedJobsHistoryLimit":        {KindCron: true},
+	"ttlSecondsAfterFinished":       {KindCron: true},
 	"securityContext":               scheduledKinds,
 }
 
@@ -101,6 +104,9 @@ var kindCapabilityReasons = map[string]string{
 	"strategy":                      "only a Deployment rolls its pods out; a batch kind (job/cron) replaces them by creating a new Job, and a tool is never scheduled",
 	"terminationGracePeriodSeconds": "a tool is never scheduled, so there is no pod to stop",
 	"activeDeadlineSeconds":         "a deadline bounds a run to completion; a long-running kind never completes, so use probes, and a tool is never scheduled",
+	"successfulJobsHistoryLimit":    "only a cron keeps a history of finished Jobs",
+	"failedJobsHistoryLimit":        "only a cron keeps a history of finished Jobs",
+	"ttlSecondsAfterFinished":       "only a cron's Jobs expire: a kind=job Job is applied by every release, so expiring it would run it again",
 	"securityContext":               "a tool is never scheduled, so there is no pod to run",
 }
 
@@ -145,7 +151,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 			"version", "leaderElection", "schedule", "before", "deployPhase", "serviceAccountAnnotations",
 			"sidecars", "volumes", "serviceAccount", "nodeSelector", "tolerations", "podAnnotations",
 			"priorityClassName", "enableServiceLinks", "strategy", "terminationGracePeriodSeconds", "activeDeadlineSeconds",
-			"securityContext",
+			"successfulJobsHistoryLimit", "failedJobsHistoryLimit", "ttlSecondsAfterFinished", "securityContext",
 		} {
 			if s.declares(field) && !kindCapabilities[field][kind] {
 				errs = append(errs, fmt.Errorf("%s is not supported for kind %q: %s", field, kind, kindCapabilityReasons[field]))
@@ -292,6 +298,17 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	if d := s.ActiveDeadlineSeconds; d != nil && *d < 1 {
 		errs = append(errs, fmt.Errorf("activeDeadlineSeconds must be positive (got %d): omit it for no deadline", *d))
 	}
+	for _, h := range []struct {
+		field string
+		v     *int32
+	}{{"successfulJobsHistoryLimit", s.SuccessfulJobsHistoryLimit}, {"failedJobsHistoryLimit", s.FailedJobsHistoryLimit}} {
+		if h.v != nil && (*h.v < 0 || *h.v > 100) {
+			errs = append(errs, fmt.Errorf("%s must be 0-100 (got %d)", h.field, *h.v))
+		}
+	}
+	if t := s.TTLSecondsAfterFinished; t != nil && *t < 0 {
+		errs = append(errs, fmt.Errorf("ttlSecondsAfterFinished must not be negative (got %d): omit it to keep finished Jobs until the history limit removes them", *t))
+	}
 	if sc := s.SecurityContext; sc != nil {
 		for _, id := range []struct {
 			field string
@@ -388,6 +405,12 @@ func (s WorkloadSpec) declares(field string) bool {
 		return s.TerminationGracePeriodSeconds != nil
 	case "activeDeadlineSeconds":
 		return s.ActiveDeadlineSeconds != nil
+	case "successfulJobsHistoryLimit":
+		return s.SuccessfulJobsHistoryLimit != nil
+	case "failedJobsHistoryLimit":
+		return s.FailedJobsHistoryLimit != nil
+	case "ttlSecondsAfterFinished":
+		return s.TTLSecondsAfterFinished != nil
 	case "securityContext":
 		return s.SecurityContext != nil
 	}

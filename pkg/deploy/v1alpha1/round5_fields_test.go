@@ -144,3 +144,27 @@ func TestEnableServiceLinks(t *testing.T) {
 		"enableServiceLinks is not allowed on a job with before")
 	mustPass(t, WorkloadSpec{Kind: KindWorker, Image: pinnedImage}, ProfileRestricted)
 }
+
+// TestCronJobHistory: a cron's finished-Job history limits (0-100) and TTL
+// (>= 0) are cron-only, and Restricted-allowed for when cron is. A kind=job is applied by every
+// release, so a TTL on it would re-run it on the next apply.
+func TestCronJobHistory(t *testing.T) {
+	cron := WorkloadSpec{Kind: KindCron, Image: pinnedImage, Args: []string{"x"}, Schedule: "@daily",
+		SuccessfulJobsHistoryLimit: ptr(int32(0)), FailedJobsHistoryLimit: ptr(int32(1)), TTLSecondsAfterFinished: ptr(int32(604800))}
+	mustPass(t, cron, ProfileFull)
+	for _, field := range []string{"successfulJobsHistoryLimit", "failedJobsHistoryLimit", "ttlSecondsAfterFinished"} {
+		if FieldProfiles[field] != ProfileRestricted {
+			t.Errorf("%s must be Restricted-allowed, got %s", field, FieldProfiles[field])
+		}
+	}
+	mustFail(t, WorkloadSpec{Kind: KindJob, Image: pinnedImage, Args: []string{"x"}, TTLSecondsAfterFinished: ptr(int32(60))}.Validate(ProfileFull),
+		`ttlSecondsAfterFinished is not supported for kind "job"`)
+	mustFail(t, WorkloadSpec{Kind: KindWorker, Image: pinnedImage, FailedJobsHistoryLimit: ptr(int32(1))}.Validate(ProfileFull),
+		`failedJobsHistoryLimit is not supported for kind "worker"`)
+	bad := cron
+	bad.FailedJobsHistoryLimit = ptr(int32(101))
+	mustFail(t, bad.Validate(ProfileFull), "failedJobsHistoryLimit must be 0-100")
+	bad = cron
+	bad.TTLSecondsAfterFinished = ptr(int32(-1))
+	mustFail(t, bad.Validate(ProfileFull), "ttlSecondsAfterFinished must not be negative")
+}

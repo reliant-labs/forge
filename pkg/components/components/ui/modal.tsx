@@ -25,11 +25,22 @@ import { createPortal } from "react-dom";
  *     `portal={false}` renders it in place (a preview harness pinning it in a
  *     box).
  *
- * Layout: the panel is at most 90% of the dynamic viewport tall and the body
+ * Layout: the panel is at most 90% of the visible viewport tall and the body
  * scrolls, so a long form's footer — its primary action — never scrolls out
  * of reach. `sheetOnMobile` (default on for lg and wider, whose forms are too
  * tall for a floating card on a phone) makes it a full-screen sheet below
  * the `sm` breakpoint.
+ *
+ * "Visible" means the VISUAL viewport, not `dvh`. A phone's software
+ * keyboard shrinks (and on iOS pans) the visual viewport only; `100dvh` and
+ * a fixed `inset-0` box keep the layout viewport's size, so a sheet sized
+ * with them leaves its footer and focused field under the keyboard. While
+ * open, the overlay follows `window.visualViewport` (its height and offset,
+ * as the `--modal-vv-height` / `--modal-vv-top` custom properties), and falls
+ * back to `100dvh` where the API is missing. Edges respect the device's
+ * safe-area insets (notch, home indicator) once the page opts into them with
+ * `viewport-fit=cover`. `overlayClassName` is the seam for anything else
+ * about the overlay's geometry.
  */
 
 const FOCUSABLE_SELECTOR =
@@ -52,6 +63,11 @@ export interface ModalProps {
   sheetOnMobile?: boolean;
   /** Extra classes on the dialog panel. */
   className?: string;
+  /**
+   * Extra classes on the overlay (the scrim that positions the panel):
+   * its padding, alignment or backdrop.
+   */
+  overlayClassName?: string;
   /** Where focus goes on close when the element that had it is gone. */
   fallbackFocus?: () => void;
   /** Render in place instead of in a portal on <body>. Defaults to true. */
@@ -85,6 +101,26 @@ function unlockScroll() {
   if (--lockCount === 0) document.body.style.overflow = savedOverflow;
 }
 
+// Pins `el` to the visual viewport: the custom properties the overlay's
+// classes read, kept current as the keyboard opens, closes or pans the page.
+// Set on the element directly rather than through state, so a keyboard
+// animation's stream of resize events never re-renders the dialog's content.
+function trackVisualViewport(el: HTMLElement): () => void {
+  const vv = typeof window === "undefined" ? undefined : window.visualViewport;
+  if (!vv) return () => {};
+  const sync = () => {
+    el.style.setProperty("--modal-vv-height", `${vv.height}px`);
+    el.style.setProperty("--modal-vv-top", `${vv.offsetTop}px`);
+  };
+  sync();
+  vv.addEventListener("resize", sync);
+  vv.addEventListener("scroll", sync);
+  return () => {
+    vv.removeEventListener("resize", sync);
+    vv.removeEventListener("scroll", sync);
+  };
+}
+
 export default function Modal({
   open,
   onClose,
@@ -98,6 +134,7 @@ export default function Modal({
   hideCloseButton = false,
   sheetOnMobile,
   className,
+  overlayClassName,
   fallbackFocus,
   portal = true,
 }: ModalProps) {
@@ -122,6 +159,12 @@ export default function Modal({
     onCloseRef.current = onClose;
     fallbackFocusRef.current = fallbackFocus;
   });
+
+  // A layout effect, so the overlay has its visible size before first paint.
+  useLayoutEffect(() => {
+    if (!open || !overlayRef.current) return;
+    return trackVisualViewport(overlayRef.current);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -198,15 +241,18 @@ export default function Modal({
     // dismissal, which is the Escape handler above; without that handler a
     // backdrop-click-to-close modal would be a keyboard trap.
     //
-    // h-[100dvh] alongside inset-0: a fixed inset-0 box resolves against the
-    // LARGEST mobile viewport, so centring in it alone puts the panel below
-    // the visible centre while browser chrome is showing.
+    // Top and height follow the visual viewport (trackVisualViewport), not
+    // inset-0: a fixed inset-0 box resolves against the LARGEST mobile
+    // viewport, so centring in it puts the panel below the visible centre
+    // while browser chrome is showing, and under the keyboard while one is
+    // open. 100dvh is the fallback before the first measurement, and where
+    // there is no visualViewport.
     <div
       ref={overlayRef}
       role="presentation"
-      className={`fixed inset-0 z-50 flex h-[100dvh] items-center justify-center bg-black/50 p-4 backdrop-blur-sm sm:p-6 ${
+      className={`fixed inset-x-0 top-[var(--modal-vv-top,0px)] z-50 flex h-[var(--modal-vv-height,100dvh)] items-center justify-center bg-black/50 px-[max(1rem,env(safe-area-inset-left),env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-sm sm:p-6 ${
         sheet ? "max-sm:p-0" : ""
-      }`}
+      } ${overlayClassName ?? ""}`}
       onClick={(e) => {
         if (closeOnOverlay && e.target === overlayRef.current) onCloseRef.current();
       }}
@@ -214,9 +260,9 @@ export default function Modal({
       <div
         ref={panelRef}
         tabIndex={-1}
-        className={`flex max-h-[90dvh] w-full ${sizeStyles[size]} flex-col overflow-hidden rounded-xl bg-surface shadow-2xl focus:outline-none ${
+        className={`flex max-h-[min(calc(var(--modal-vv-height,100dvh)*0.9),100%)] w-full ${sizeStyles[size]} flex-col overflow-hidden rounded-xl bg-surface shadow-2xl focus:outline-none ${
           sheet
-            ? "max-sm:h-[100dvh] max-sm:max-h-[100dvh] max-sm:max-w-none max-sm:rounded-none"
+            ? "max-sm:h-full max-sm:max-h-full max-sm:max-w-none max-sm:rounded-none max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[env(safe-area-inset-bottom)]"
             : ""
         } ${className ?? ""}`}
         role="dialog"

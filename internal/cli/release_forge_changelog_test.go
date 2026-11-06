@@ -312,7 +312,6 @@ func TestReleaseForgeScript_WritesChangelogCommitsItAndCreatesTheGitHubRelease(t
 		"ARGS: release create v0.2.0 --repo reliant-labs/forge --verify-tag --title v0.2.0 --notes-file",
 		// The bookkeeping lands through a pull request, never a push to main.
 		"ARGS: pr create --repo reliant-labs/forge --base main --head release/v0.2.0 --title chore: release v0.2.0",
-		"ARGS: pr merge --repo reliant-labs/forge --squash --auto release/v0.2.0",
 		"NOTES-BEGIN",
 		"a new thing",
 		"an incompatible change",
@@ -321,6 +320,11 @@ func TestReleaseForgeScript_WritesChangelogCommitsItAndCreatesTheGitHubRelease(t
 		if !strings.Contains(log, want) {
 			t.Errorf("gh was not called as expected; missing %q in:\n%s", want, log)
 		}
+	}
+	// pr-review arms auto-merge on a pass, as the bot; the script never does, or an
+	// unreviewed head rides into the merge queue (forge#1570).
+	if strings.Contains(log, "pr merge") {
+		t.Errorf("the script armed a merge of the bookkeeping PR itself:\n%s", log)
 	}
 	// The notes are the section's body: no version heading of their own (the
 	// release title carries it).

@@ -87,8 +87,8 @@ task release:forge -- --commit <sha>   # a specific green commit of main instead
 - the **bookkeeping** — `VERSION`, `internal/buildinfo/VERSION`, `NEXT_VERSION`,
   `CHANGELOG.md`, `npm/package.json` — is committed on top of that commit, pushed to
   `release/vX.Y.Z` together with the tag (one atomic push), and lands as the pull
-  request `chore: release vX.Y.Z`, set to auto-merge, through review and the merge
-  queue like any other change.
+  request `chore: release vX.Y.Z`, through review and the merge queue like any
+  other change: the script never arms auto-merge; pr-review does, on a pass.
 
 So the tagged tree still names the previous version in `VERSION`. Nothing reads that
 file for a release: the archives are stamped with `-X main.Version=vX.Y.Z`
@@ -152,12 +152,24 @@ What it does, in order:
 6. commits the bookkeeping, tags `vX.Y.Z` at the commit `main` already has, and
    pushes the tag and `release/vX.Y.Z` in a single atomic `git push` — never
    `main`;
-7. opens the `chore: release vX.Y.Z` pull request from `release/vX.Y.Z` and sets
-   it to auto-merge;
+7. opens the `chore: release vX.Y.Z` pull request from `release/vX.Y.Z`, non-draft,
+   and stops there: pr-review reviews its head and queues it on a pass;
 8. creates the GitHub release (`gh release create`) with that section as its notes.
 
 `--dry-run` runs every validation and every file edit in the private worktree,
 prints the plan, then removes it — no commit, no tag, no push, no pull request.
+
+**Checking the bookkeeping PR after a release.** pr-review starts on
+`pull_request.opened` for any non-draft PR without `hold`, and passes only a
+trusted author (its `trusted_authors`: `reliant-labs[bot]` and the org members). So
+within a few minutes of a release the `chore: release vX.Y.Z` PR carries
+`review:pending`, then `review:passed` + `merge:queue` with auto-merge armed by
+`reliant-labs[bot]` at its reviewed head (`gh pr view <n> --json labels,autoMergeRequest`).
+If it sits unlabelled, pr-review never saw it: add `review:pending` to re-request a
+review. The tag and the GitHub release are already published by then, so a stuck
+bookkeeping PR delays only `VERSION`/`CHANGELOG.md` on main, never the release.
+Rolling this change back is reverting it, which brings back the script's own
+`gh pr merge --squash --auto`.
 
 ### CHANGELOG.md and the GitHub release notes
 

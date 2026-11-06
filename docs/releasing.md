@@ -159,6 +159,18 @@ What it does, in order:
 `--dry-run` runs every validation and every file edit in the private worktree,
 prints the plan, then removes it — no commit, no tag, no push, no pull request.
 
+**Checking the bookkeeping PR after a release.** pr-review starts on
+`pull_request.opened` for any non-draft PR without `hold`, and passes only a
+trusted author (its `trusted_authors`: `reliant-labs[bot]` and the org members). So
+within a few minutes of a release the `chore: release vX.Y.Z` PR carries
+`review:pending`, then `review:passed` + `merge:queue` with auto-merge armed by
+`reliant-labs[bot]` at its reviewed head (`gh pr view <n> --json labels,autoMergeRequest`).
+If it sits unlabelled, pr-review never saw it: add `review:pending` to re-request a
+review. The tag and the GitHub release are already published by then, so a stuck
+bookkeeping PR delays only `VERSION`/`CHANGELOG.md` on main, never the release.
+Rolling this change back is reverting it, which brings back the script's own
+`gh pr merge --squash --auto`.
+
 ### CHANGELOG.md and the GitHub release notes
 
 `CHANGELOG.md` is written **only here**, never in a pull request —

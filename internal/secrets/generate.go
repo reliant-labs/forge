@@ -37,10 +37,12 @@ func (g GenerateSpec) Generate() (string, error) {
 }
 
 // EnsureGenerated mints a value for every key in `wanted` that has a
-// generate spec and is absent from BOTH `present` (the provider's resolved
-// view, which may layer another checkout's store) and the file at path. It
-// never overwrites: an existing value — even an empty one — is left alone,
-// because replacing an encryption key destroys the data it protects. The
+// generate spec and no value in EITHER `present` (the provider's resolved
+// view, which may layer another checkout's store) or the file at path. It
+// never overwrites a value, because replacing an encryption key destroys the
+// data it protects. An EMPTY slot is not a value: `forge generate` scaffolds
+// every sensitive key as "" so the store lists what wants one, and skipping
+// those would leave a fresh project's generated keys unminted forever. The
 // store is written 0600 only when something was generated. It returns the
 // generated key NAMES, never values.
 func EnsureGenerated(path string, specs map[string]GenerateSpec, wanted []string, present map[string]string) ([]string, error) {
@@ -60,10 +62,7 @@ func EnsureGenerated(path string, specs map[string]GenerateSpec, wanted []string
 		if !ok {
 			continue
 		}
-		if _, ok := values[key]; ok {
-			continue
-		}
-		if _, ok := present[key]; ok {
+		if values[key] != "" || present[key] != "" {
 			continue
 		}
 		v, err := spec.Generate()

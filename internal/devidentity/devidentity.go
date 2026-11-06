@@ -22,6 +22,8 @@ package devidentity
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,15 +109,27 @@ type Result struct {
 	SocialCallbackURL string
 	// Mail is the LOGIN_POLICY mail state: dev (Mailpit), smtp or none.
 	Mail string
+	// SeedPasswords are the seed-user passwords this pass generated into the
+	// store: where each lives, never the password.
+	SeedPasswords []SeedPassword
+}
+
+// SeedPassword names a seed user's password that a pass generated.
+type SeedPassword struct {
+	Email string
+	// Secret is the store key holding it: the seed user's password_secret.
+	Secret string
 }
 
 // Converge makes the dev instance match the declaration and publishes its
 // outputs.
 func Converge(ctx context.Context, in Input) (*Result, error) {
+	in, seedPasswords, seedWarnings := ensureSeedPasswords(in)
 	spec, warnings, err := Spec(in)
 	if err != nil {
 		return nil, err
 	}
+	warnings = append(seedWarnings, warnings...)
 	mail := MailState(in)
 	keys := identity.DirKeyStore{Dir: in.KeysDir}
 	files := identity.FileOutputs{Path: in.OutputsPath}
@@ -135,7 +149,7 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Warnings: warnings, Mail: mail}
+	res := &Result{Warnings: warnings, Mail: mail, SeedPasswords: seedPasswords}
 	if len(spec.IdPs) > 0 {
 		res.SocialCallbackURL = strings.TrimRight(in.BaseURL, "/") + "/idps/callback"
 	}
@@ -155,6 +169,81 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 		return res, err
 	}
 	return res, nil
+}
+
+// ensureSeedPasswords generates a password for every seed user whose
+// password_secret has no value in the env's store, writes it to the store, and
+// returns an Input that resolves it. A seed user is a throwaway account on the
+// env's own IdP and nothing else can produce its password, so without this a
+// fresh project's first `forge env up` created no seed user at all.
+//
+// It runs only for a host-run identity with a local store to write to: a
+// hosted env's seed users never get a generated password. The store is THIS
+// checkout's, like every credential the pass writes, and a value already in
+// it is never replaced. A password that cannot be generated or written is a
+// warning; Spec then leaves that seed user out and says how to fix it.
+func ensureSeedPasswords(in Input) (Input, []SeedPassword, []string) {
+	id := in.Identity
+	if id == nil || id.Runtime != release.IdentityRuntimeHost || in.StorePath == "" {
+		return in, nil, nil
+	}
+	store := secretFile{Path: in.StorePath}
+	resolved := map[string]string{}
+	var made []SeedPassword
+	var warnings []string
+	for _, u := range id.SeedUsers {
+		name := u.PasswordSecret
+		if name == "" {
+			continue
+		}
+		if _, ok := resolved[name]; ok {
+			// Two seed users sharing one secret share the password too.
+			made = append(made, SeedPassword{Email: u.Email, Secret: name})
+			continue
+		}
+		if _, ok := secret(in, name); ok {
+			continue
+		}
+		pw, err := store.get(name)
+		if err == nil && pw == "" {
+			if pw, err = seedPassword(); err == nil {
+				err = store.set(name, pw)
+			}
+			if err == nil {
+				made = append(made, SeedPassword{Email: u.Email, Secret: name})
+			}
+		}
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("seed user %q: could not generate a password into %s in %s: %v", u.Email, name, in.StorePath, err))
+			continue
+		}
+		resolved[name] = pw
+	}
+	if len(resolved) > 0 {
+		next := in.Secret
+		in.Secret = func(name string) (string, bool) {
+			if v, ok := resolved[name]; ok {
+				return v, true
+			}
+			if next == nil {
+				return "", false
+			}
+			return next(name)
+		}
+	}
+	return in, made, warnings
+}
+
+// seedPassword is 24 random URL-safe characters followed by one character of
+// each class, so it passes the IdP's default complexity policy (upper, lower,
+// number and symbol required) whatever the random part drew, and stays far
+// below bcrypt's 72-byte limit.
+func seedPassword() (string, error) {
+	buf := make([]byte, 18)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("read random bytes: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf) + "-Aa1", nil
 }
 
 // MailState is how the dev instance's mail is delivered, as the LOGIN_POLICY
@@ -221,14 +310,18 @@ func Spec(in Input) (identity.Spec, []string, error) {
 		})
 	}
 
+	// A seed user that cannot be created is left out with a warning rather
+	// than failing the pass: failing it would also withhold the application,
+	// broker token and client ID the app's sign-in routes are mounted from,
+	// taking every other way of signing in down with one throwaway account.
 	for _, u := range id.SeedUsers {
 		if u.PasswordSecret == "" {
-			errs = append(errs, fmt.Errorf("seed user %q: declare password_secret, the store entry holding the password", u.Email))
+			warnings = append(warnings, fmt.Sprintf("seed user %q was NOT created: declare password_secret, the store entry holding its password", u.Email))
 			continue
 		}
 		pw, ok := secret(in, u.PasswordSecret)
 		if !ok {
-			errs = append(errs, fmt.Errorf("seed user %q: secret %s is not in the env's store: `forge secret set --env <env> %s`", u.Email, u.PasswordSecret, u.PasswordSecret))
+			warnings = append(warnings, fmt.Sprintf("seed user %q was NOT created: secret %s is not in the env's store: `forge secret set --env <env> %s`", u.Email, u.PasswordSecret, u.PasswordSecret))
 			continue
 		}
 		spec.SeedUsers = append(spec.SeedUsers, identity.SeedUser{Email: u.Email, Password: pw, Roles: u.Roles})

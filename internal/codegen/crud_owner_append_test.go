@@ -490,3 +490,101 @@ func TestOwnerSourceFor_BorrowedEvidenceMustBeUnanimous(t *testing.T) {
 		t.Errorf("unanimous other entities are the evidence: %+v", d)
 	}
 }
+
+// TestOwnerSourceFor_BorrowedSourcesCompareByPackage: two files may bind
+// one alias to different packages, so evidence read across files is
+// compared by import path, never by spelling; and a function another file
+// binds without an import cannot be called from this one.
+func TestOwnerSourceFor_BorrowedSourcesCompareByPackage(t *testing.T) {
+	target := ownerTarget{entity: "Crew", column: "tenant_id", field: "TenantID", read: true}
+	resolver := func(fn, imp string) CRUDOwnerSource {
+		return CRUDOwnerSource{Kind: CRUDOwnerFromResolver, Func: fn, Import: imp}
+	}
+
+	sameAlias := []CRUDOwnerUse{
+		{Method: "GetChannel", Entity: "Channel", Read: true, Column: "tenant_id", Dir: "internal/handlers/channels",
+			Source: resolver("tenancy.TenantID", "tenancy example.com/test/internal/tenancy")},
+		{Method: "GetNote", Entity: "Note", Read: true, Column: "tenant_id", Dir: "internal/handlers/notes",
+			Source: resolver("tenancy.TenantID", "tenancy example.com/test/internal/usertenancy")},
+	}
+	d, ok := ownerSourceFor(sameAlias, target)
+	if !ok || d.Source != nil || d.Undetermined == "" {
+		t.Fatalf("one alias bound to two packages must be undetermined: %+v", d)
+	}
+	for _, want := range []string{"(example.com/test/internal/tenancy)", "(example.com/test/internal/usertenancy)"} {
+		if !strings.Contains(d.Undetermined, want) {
+			t.Errorf("the disagreement must name package %s: %s", want, d.Undetermined)
+		}
+	}
+
+	// One package under two aliases is one resolver.
+	twoAliases := []CRUDOwnerUse{
+		{Method: "GetChannel", Entity: "Channel", Read: true, Column: "tenant_id", Dir: "internal/handlers/channels",
+			Source: resolver("tenancy.TenantID", "example.com/test/internal/tenancy")},
+		{Method: "GetNote", Entity: "Note", Read: true, Column: "tenant_id", Dir: "internal/handlers/notes",
+			Source: resolver("tn.TenantID", "tn example.com/test/internal/tenancy")},
+	}
+	if d, ok := ownerSourceFor(twoAliases, target); !ok || d.Source == nil {
+		t.Errorf("one package under two aliases is one resolver: %+v", d)
+	}
+
+	// Not an imported package's function: bound in the other file's package.
+	local := []CRUDOwnerUse{
+		{Method: "GetChannel", Entity: "Channel", Read: true, Column: "tenant_id", Dir: "internal/handlers/channels",
+			Source: resolver("tenancy.TenantID", "")},
+	}
+	if d, ok := ownerSourceFor(local, target); !ok || d.Source != nil || d.Undetermined == "" {
+		t.Errorf("a resolver another file binds without an import must not be borrowed: %+v", d)
+	}
+}
+
+// TestAppendedShim_SameAliasDifferentPackagesIsUndetermined is the
+// cross-file case end to end: two other handler files spell their resolver
+// tenancy.TenantID but bind tenancy to different packages, so the new
+// wrapper borrows neither.
+func TestAppendedShim_SameAliasDifferentPackagesIsUndetermined(t *testing.T) {
+	projectDir, shimPath := bornOwnerShim(t)
+	write := func(svc, entity, imp string) {
+		dir := filepath.Join(projectDir, "internal", "handlers", svc)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		src := `package ` + svc + `
+
+import (
+	"context"
+
+	"connectrpc.com/connect"
+	"github.com/reliant-labs/forge/pkg/orm"
+
+	tenancy "` + imp + `"
+	pb "example.com/test/gen/services/` + svc + `/v1"
+)
+
+func (s *Service) Get` + entity + `(ctx context.Context, req *connect.Request[pb.Get` + entity + `Request]) (*connect.Response[pb.Get` + entity + `Response], error) {
+	tenantID, err := tenancy.TenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.get(ctx, req, orm.WhereEq("company_id", tenantID))
+}
+`
+		if err := os.WriteFile(filepath.Join(dir, "handlers_crud.go"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("fleets", "Fleet", "example.com/test/internal/tenancy")
+	write("depots", "Depot", "example.com/test/internal/usertenancy")
+
+	src := deleteMethods(t, readShim(t, shimPath), "CreateCrew", "GetCrew", "ListCrews", "UpdateCrew", "DeleteCrew")
+	got := regenerateAfter(t, projectDir, shimPath, src)
+	list := methodSource(t, got, "ListCrews")
+	if !strings.Contains(list, "owner, err := FORGE_TODO_choose_company_id_resolver(ctx)") {
+		t.Errorf("ListCrews must be undetermined, not borrow either package's resolver:\n%s", list)
+	}
+	for _, imp := range []string{"example.com/test/internal/tenancy", "example.com/test/internal/usertenancy"} {
+		if n := importCount(t, got, imp); n != 0 {
+			t.Errorf("neither resolver's package may be imported (%s):\n%s", imp, got)
+		}
+	}
+}

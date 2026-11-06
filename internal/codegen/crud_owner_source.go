@@ -93,6 +93,29 @@ func (s CRUDOwnerSource) String() string {
 	}
 }
 
+// identity is the function the source calls, independent of how one file
+// spells it: the import PATH (never the alias, which each file chooses)
+// plus the selected name and claims field. String is only a spelling — two
+// handler files can bind `tenancy` to different packages — so evidence
+// gathered across files is compared by identity. A source whose package
+// the file does not import (a local value, a dot import) is bound in its
+// own package, so its identity carries the directory it was read in.
+func (s CRUDOwnerSource) identity(dir string) string {
+	if s.Kind == CRUDOwnerUnknown {
+		return "unknown\x00" + dir + "\x00" + s.Expr
+	}
+	pkg := "local:" + dir
+	if s.Import != "" {
+		f := strings.Fields(s.Import)
+		pkg = "import:" + f[len(f)-1]
+	}
+	name := s.Func
+	if i := strings.Index(name, "."); i >= 0 {
+		name = name[i+1:]
+	}
+	return strconv.Itoa(int(s.Kind)) + "\x00" + pkg + "\x00" + name + "\x00" + s.Field
+}
+
 // isPlaceholder reports the birth scaffold's own owner expression: the
 // auth seam's claims, read at UserID. It is forge's guess, not the app's
 // decision, so it is never evidence of what the policy is.
@@ -123,6 +146,9 @@ type CRUDOwnerUse struct {
 	Source CRUDOwnerSource
 	// Line is the handler's declaration line.
 	Line int
+	// Dir is the project-relative directory of the file the use was read
+	// in, set for evidence gathered across files ("" within one file).
+	Dir string
 }
 
 // matches reports whether the use scopes the owner column column, whose
@@ -567,7 +593,14 @@ func projectCRUDOwnerUses(projectDir, skip string) []CRUDOwnerUse {
 		if perr != nil {
 			return nil //nolint:nilerr // a file that does not parse is no evidence
 		}
-		uses = append(uses, ScanCRUDOwnerSources(fset, f)...)
+		dir := filepath.Dir(p)
+		if rel, rerr := filepath.Rel(projectDir, dir); rerr == nil {
+			dir = filepath.ToSlash(rel)
+		}
+		for _, u := range ScanCRUDOwnerSources(fset, f) {
+			u.Dir = dir
+			uses = append(uses, u)
+		}
 		return nil
 	})
 	return uses
@@ -673,18 +706,41 @@ func ownerSourceFor(uses []CRUDOwnerUse, target ownerTarget) (crudOwnerDecision,
 	if len(sameClass) > 0 && !borrowed {
 		pool = sameClass
 	}
-	distinct := map[string]CRUDOwnerSource{}
+	// Sources are told apart by identity, not spelling: another file's
+	// `tenancy.TenantID(ctx)` may bind `tenancy` to another package.
+	distinct := map[string]CRUDOwnerUse{}
 	for _, u := range pool {
-		distinct[u.Source.String()] = u.Source
+		distinct[u.Source.identity(u.Dir)] = u
 	}
 	if len(distinct) == 1 {
-		for _, s := range distinct {
-			s := s
+		for _, u := range distinct {
+			s := u.Source
+			if u.Dir != "" && s.Import == "" {
+				// Bound in another file's package (a local value, a dot
+				// import): the target file cannot name the same function.
+				return crudOwnerDecision{Undetermined: "other entities' " + column +
+					" wrappers read their owner from " + s.String() + " in " + u.Dir +
+					", which is not an imported package's function, so this file cannot call it"}, true
+			}
 			return crudOwnerDecision{Source: &s}, true
 		}
 	}
+	// Name each source by its spelling, adding its package where two
+	// files spell different functions alike.
+	spellings := map[string]int{}
+	for _, u := range distinct {
+		spellings[u.Source.String()]++
+	}
 	names := make([]string, 0, len(distinct))
-	for n := range distinct {
+	for _, u := range distinct {
+		n := u.Source.String()
+		if spellings[n] > 1 {
+			pkg := "local to " + u.Dir
+			if f := strings.Fields(u.Source.Import); len(f) > 0 {
+				pkg = f[len(f)-1]
+			}
+			n += " (" + pkg + ")"
+		}
 		names = append(names, n)
 	}
 	sort.Strings(names)

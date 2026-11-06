@@ -58,7 +58,7 @@ production bundle sends nothing, rather than POSTing to a 404.
 | ingest path (`off` or empty disables) | `NEXT_PUBLIC_OTEL_ENDPOINT` | `VITE_OTEL_ENDPOINT` | `/_otel` in dev, **empty in a production build** |
 | `service.version` | `NEXT_PUBLIC_APP_VERSION` | `VITE_APP_VERSION` | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 | `deployment.environment` | `NEXT_PUBLIC_ENVIRONMENT` | `VITE_ENVIRONMENT` | none |
-| session replay | `NEXT_PUBLIC_OTEL_REPLAY=true` | `VITE_OTEL_REPLAY=true` | **off** |
+| session replay | `NEXT_PUBLIC_OTEL_REPLAY=true` | `VITE_OTEL_REPLAY=true` | **off**; runtime key `OTEL_REPLAY = "true"` wins |
 
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the
 frontend's KCL `config` block. A project with a typed frontend config message

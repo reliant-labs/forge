@@ -607,6 +607,12 @@ type ownerTarget struct {
 //     every sibling: exactly one distinct source is reused, more than one
 //     is undetermined (forge will not pick a principal for an access check).
 //   - Only placeholders: keep the placeholder, as the siblings do.
+//
+// Evidence borrowed from other entities is held to more: every one of
+// their wrappers, of either class, must agree on one decided source. A
+// placeholder beside a resolver, or reads that agree while writes do not,
+// is undetermined — the column may not mean the same principal on every
+// table, and only an unanimous project says it does.
 func ownerSourceFor(uses []CRUDOwnerUse, target ownerTarget) (crudOwnerDecision, bool) {
 	var sameEntity, sameColumn []CRUDOwnerUse
 	for _, u := range uses {
@@ -620,25 +626,38 @@ func ownerSourceFor(uses []CRUDOwnerUse, target ownerTarget) (crudOwnerDecision,
 		}
 	}
 	relevant := sameEntity
+	borrowed := false
 	if len(relevant) == 0 {
 		relevant = sameColumn
+		borrowed = true
 	}
 	if len(relevant) == 0 {
 		return crudOwnerDecision{}, false
 	}
 	column := target.column
 	var decided []CRUDOwnerUse
+	placeholders := 0
 	for _, u := range relevant {
 		if u.Source.Kind == CRUDOwnerUnknown {
 			return crudOwnerDecision{Undetermined: "the " + column + " wrapper " + u.Method +
 				" reads its owner from `" + u.Source.Expr + "`, which forge cannot trace to a resolver"}, true
 		}
-		if !u.Source.isPlaceholder() {
+		if u.Source.isPlaceholder() {
+			placeholders++
+		} else {
 			decided = append(decided, u)
 		}
 	}
 	if len(decided) == 0 {
 		return crudOwnerDecision{}, true
+	}
+	if borrowed && placeholders > 0 {
+		// Another entity still on the placeholder may have kept it on
+		// purpose (its column means the user); beside one that resolved
+		// it, the column's meaning across tables is not settled.
+		return crudOwnerDecision{Undetermined: "other entities' " + column +
+			" wrappers disagree on its owner: some keep forge's placeholder " +
+			crudAuthSeam + "(ctx).UserID, some resolve it"}, true
 	}
 	pool := decided
 	var sameClass []CRUDOwnerUse
@@ -647,7 +666,11 @@ func ownerSourceFor(uses []CRUDOwnerUse, target ownerTarget) (crudOwnerDecision,
 			sameClass = append(sameClass, u)
 		}
 	}
-	if len(sameClass) > 0 {
+	// Class affinity is a reading of ONE entity's policy (its writes may
+	// need a stricter principal than its reads). Borrowed from other
+	// entities, every class must agree, or the read-only subset could
+	// hide a table whose wrappers use another principal.
+	if len(sameClass) > 0 && !borrowed {
 		pool = sameClass
 	}
 	distinct := map[string]CRUDOwnerSource{}

@@ -199,7 +199,9 @@ owner from the resolver the file's other wrappers on that column already call
 — `owner, err := tenancy.TenantID(ctx)`, not the placeholder. A read copies the
 reads and a write the writes, so a write behind `tenancy.RequireAdmin` does not
 leak onto a List. A column the file never scopes borrows the project's other
-`handlers_crud.go` files. When the siblings disagree, or read the owner from
+`handlers_crud.go` files. A new entity borrows other entities' wrappers on
+the column only when every one of them, reads and writes, agrees on one
+resolver. When the siblings disagree, or read the owner from
 something forge cannot trace, the appended wrapper calls
 `FORGE_TODO_choose_<column>_resolver(ctx)`, declared nowhere, so the build
 fails on the line you must decide rather than shipping a guessed principal.

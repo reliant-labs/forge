@@ -443,3 +443,50 @@ func TestOwnerSourceFor_EntityAndKeyEvidence(t *testing.T) {
 		t.Errorf("other entities disagreeing on the column must be undetermined: %+v", d)
 	}
 }
+
+// TestOwnerSourceFor_BorrowedEvidenceMustBeUnanimous: another entity's
+// wrappers are borrowed only when all of them agree. Class affinity and
+// setting placeholders aside are readings of one entity's policy; across
+// entities they would hide a table that scopes the column differently.
+func TestOwnerSourceFor_BorrowedEvidenceMustBeUnanimous(t *testing.T) {
+	src := func(fn string) CRUDOwnerSource { return CRUDOwnerSource{Kind: CRUDOwnerFromResolver, Func: fn} }
+	placeholder := CRUDOwnerSource{Kind: CRUDOwnerFromClaims, Func: crudAuthSeam, Field: "UserID"}
+	target := ownerTarget{entity: "Crew", column: "tenant_id", field: "TenantID", read: true}
+
+	// Reads agree, but another table's write uses another principal.
+	byClass := []CRUDOwnerUse{
+		{Method: "GetChannel", Entity: "Channel", Read: true, Column: "tenant_id", Source: src("tenancy.TenantID")},
+		{Method: "CreateNote", Entity: "Note", Read: false, Field: "TenantID", Source: src("tenancy.UserID")},
+	}
+	if d, ok := ownerSourceFor(byClass, target); !ok || d.Undetermined == "" {
+		t.Errorf("borrowed reads must not hide another entity's disagreeing write: %+v", d)
+	}
+
+	// One table resolved the column, another kept the placeholder.
+	mixed := []CRUDOwnerUse{
+		{Method: "GetChannel", Entity: "Channel", Read: true, Column: "tenant_id", Source: src("tenancy.TenantID")},
+		{Method: "GetNote", Entity: "Note", Read: true, Column: "tenant_id", Source: placeholder},
+	}
+	if d, ok := ownerSourceFor(mixed, target); !ok || d.Undetermined == "" {
+		t.Errorf("a placeholder beside a resolver on other entities must be undetermined: %+v", d)
+	}
+
+	// The same mix within the target's own entity: its placeholders are
+	// leftovers of the file it sits in, and its own resolver decides.
+	own := []CRUDOwnerUse{
+		{Method: "GetCrew", Entity: "Crew", Read: true, Column: "tenant_id", Source: src("tenancy.TenantID")},
+		{Method: "UpdateCrew", Entity: "Crew", Read: false, Column: "tenant_id", Source: placeholder},
+	}
+	if d, ok := ownerSourceFor(own, ownerTarget{entity: "Crew", column: "tenant_id", field: "TenantID", read: false}); !ok || d.Source == nil || d.Source.Func != "tenancy.TenantID" {
+		t.Errorf("the entity's own decided resolver is reused: %+v", d)
+	}
+
+	// Unanimous other entities are still borrowed.
+	agree := []CRUDOwnerUse{
+		{Method: "GetChannel", Entity: "Channel", Read: true, Column: "tenant_id", Source: src("tenancy.TenantID")},
+		{Method: "CreateNote", Entity: "Note", Read: false, Field: "TenantID", Source: src("tenancy.TenantID")},
+	}
+	if d, ok := ownerSourceFor(agree, target); !ok || d.Source == nil || d.Source.Func != "tenancy.TenantID" {
+		t.Errorf("unanimous other entities are the evidence: %+v", d)
+	}
+}

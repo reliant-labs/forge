@@ -66,6 +66,11 @@ func fullyDeclaredShape() release.Shape {
 		Databases: []release.ShapeDatabase{{Name: "app-db", Dashboards: &release.ShapeDatabaseDashboards{
 			Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1,
 		}}},
+		ExternalDatabases: []release.ShapeExternalDatabase{{
+			Name: "ledger", Cluster: "prod-ctx", Namespace: "app", Service: "pgbouncer", Database: "ledger_prod",
+			Username: "ledger_ro", PasswordSecret: "ledger-ro", PasswordKey: "password", SSLMode: release.ExternalDatabaseSSLRequire,
+			Reach: release.ExternalDatabaseReachDirect, Port: 6432,
+		}},
 		UptimeChecks: []release.ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: release.UptimeSourceDefault}},
 		ReleaseHealth: &release.ShapeReleaseHealth{
 			WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2,

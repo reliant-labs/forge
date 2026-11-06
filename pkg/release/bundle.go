@@ -552,6 +552,18 @@ type Shape struct {
 	// predates it refuses the whole shape, so it is a bundle-document feature
 	// ([BundleFeatureDatabaseDashboards]).
 	Databases []ShapeDatabase `json:"databases,omitempty"`
+	// ExternalDatabases are the databases the env's workloads use but forge
+	// does not run (forge.ExternalDatabase): where each one's Service is, the
+	// database and role, and the NAME of the Secret holding the role's
+	// password. forge renders nothing for them, so this is the only place a
+	// reader (the control plane's database selector) learns they exist; a
+	// managed database is still known by its ManagedDatabase object
+	// ([Shape.DatabaseKindOf]). Sorted by name. Omitted when the env declares
+	// none, so every shape recorded before the field encodes and hashes
+	// exactly as it did. A control plane that predates it refuses the whole
+	// shape, so it is a bundle-document feature
+	// ([BundleFeatureExternalDatabases]).
+	ExternalDatabases []ShapeExternalDatabase `json:"external_databases,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment none of whose delivery units has moved onto the hub yet (a
 	// transitional state, see [ApplierForge]), or "flux" for one an in-cluster
@@ -1168,6 +1180,9 @@ func (s Shape) Validate() error {
 	if err := validateShapeDatabases(s.Databases); err != nil {
 		return err
 	}
+	if err := s.validateExternalDatabases(); err != nil {
+		return err
+	}
 	delivered := map[string]bool{}
 	for _, c := range s.ControlPlaneSecrets {
 		if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Namespace) == "" || strings.TrimSpace(c.Cluster) == "" {
@@ -1351,6 +1366,7 @@ func (s Shape) Canonical() Shape {
 	}
 	out.UptimeChecks = canonicalUptimeChecks(s.UptimeChecks)
 	out.Databases = canonicalShapeDatabases(s.Databases)
+	out.ExternalDatabases = canonicalExternalDatabases(s.ExternalDatabases)
 	if s.Identity != nil {
 		id := s.Identity.canonical()
 		out.Identity = &id

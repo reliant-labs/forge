@@ -1286,10 +1286,11 @@ func TestMagicLink_AttemptExhaustionDoesNotTellTheOutcome(t *testing.T) {
 			status, body := b.post("/auth/magic/consume", map[string]any{"code": "guess"})
 			seq = append(seq, fmt.Sprintf("%d %v", status, body))
 		}
-		return strings.Join(seq, "; ")
+		// Newline-separated: the error text itself contains "; ".
+		return strings.Join(seq, "\n")
 	}
 	known := run("known@acme.com")
-	if !strings.HasPrefix(strings.Split(known, "; ")[5], "429") {
+	if !strings.HasPrefix(strings.Split(known, "\n")[5], "429") {
 		t.Fatalf("a known address was not rate limited after five wrong codes: %s", known)
 	}
 	for _, email := range []string{"nobody@acme.com", "unverified@acme.com"} {

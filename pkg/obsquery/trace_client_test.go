@@ -1,6 +1,7 @@
 package obsquery
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -207,6 +208,78 @@ func TestTraceWideFiltersIgnoreTheServiceNarrowing(t *testing.T) {
 	}
 	if sub := prefilterOf(t, st.SQL); !strings.Contains(sub, "ServiceName IN") {
 		t.Errorf("errors-only lost the service narrowing its HAVING relies on:\n%s", sub)
+	}
+}
+
+// Dropping the service narrowing from the trace-wide candidate sets must not
+// drop the tenant or the environment: a span of another org's database, or of
+// an environment the caller may not read, never makes a trace match "from
+// Chrome" or "user u1". Each candidate subquery reads the scope's database and
+// the bound authorized environment ids, and a restricted scope with no
+// environments matches nothing (1 = 0), on the page and both RED statements.
+func TestTraceWideFiltersKeepTheTenantAndEnvironment(t *testing.T) {
+	envs := map[string]struct {
+		mut  func(*Scope)
+		want func(t *testing.T, sub string, params map[string]string)
+	}{
+		"one env": {
+			mut: func(s *Scope) { s.EnvRestricted, s.EnvIDs = true, []string{"env-prod"} },
+			want: func(t *testing.T, sub string, params map[string]string) {
+				m := regexp.MustCompile(`ResourceAttributes\['reliant\.env\.id'\] = \{([a-z0-9]+):String\}`).FindStringSubmatch(sub)
+				if m == nil || params[m[1]] != "env-prod" {
+					t.Errorf("candidate traces are not bound to env-prod (%v):\n%s", params, sub)
+				}
+			},
+		},
+		"two envs": {
+			mut: func(s *Scope) { s.EnvRestricted, s.EnvIDs = true, []string{"env-prod", "env-staging"} },
+			want: func(t *testing.T, sub string, params map[string]string) {
+				m := regexp.MustCompile(`has\(\{([a-z0-9]+):Array\(String\)\}, ResourceAttributes\['reliant\.env\.id'\]\)`).FindStringSubmatch(sub)
+				if m == nil || params[m[1]] != "['env-prod','env-staging']" {
+					t.Errorf("candidate traces are not bound to the authorized envs (%v):\n%s", params, sub)
+				}
+			},
+		},
+		"restricted, empty": {
+			mut: func(s *Scope) { s.EnvRestricted = true },
+			want: func(t *testing.T, sub string, _ map[string]string) {
+				if !strings.Contains(sub, "1 = 0") {
+					t.Errorf("a restricted scope with no environments does not fail closed:\n%s", sub)
+				}
+			},
+		},
+	}
+	filters := map[string]TraceQuery{
+		"user":     {UserID: "u1"},
+		"session":  {SessionID: "0123456789abcdef0123456789abcdef"},
+		"browser":  {Browser: "Chrome"},
+		"os":       {OS: "macOS"},
+		"frontend": {FrontendVersion: "f72e604bef0c"},
+		"backend":  {BackendVersion: "v1.7.96"},
+	}
+	for envName, e := range envs {
+		for fName, q := range filters {
+			sc := scope()
+			sc.Services = []string{"api"}
+			sc.Filters = []AttrFilter{{Key: "k8s.workload.name", Value: "api"}}
+			e.mut(&sc)
+			q.Scope, q.Limit, q.GroupBy = sc, 10, []string{"service.name"}
+			for stName, compile := range map[string]func() (Stmt, error){
+				"page": q.Compile, "red": q.CompileRED, "red groups": q.CompileREDGroups,
+			} {
+				name := envName + "/" + fName + "/" + stName
+				st, err := compile()
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				assertParameterized(t, st)
+				sub := prefilterOf(t, st.SQL)
+				if !strings.Contains(sub, "SELECT TraceId FROM t_org_a.otel_traces ") {
+					t.Errorf("%s: the candidate traces are not read from the scope's database:\n%s", name, sub)
+				}
+				e.want(t, sub, st.Params)
+			}
+		}
 	}
 }
 

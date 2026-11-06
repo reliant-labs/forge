@@ -331,6 +331,32 @@ type CRUDMethodTemplateData struct {
 	// callers the proto advertises as welcome, which is forge quietly
 	// overruling a declaration the author made.
 	Scoped bool
+	// OwnerResolver, OwnerClaimsField and OwnerUndetermined replace the
+	// scoped wrapper's FORGE_SCAFFOLD placeholder when it is APPENDED to a
+	// handlers_crud.go whose other wrappers already scope OwnerColumn
+	// (crud_owner_source.go). At most one is set; none keeps the
+	// placeholder, which is all a file's birth ever renders.
+	//
+	// OwnerResolver is a function the siblings call as
+	// `owner, err := <OwnerResolver>(ctx)` ("tenancy.TenantID").
+	OwnerResolver string
+	// OwnerClaimsField is the claims field the siblings read off AuthSeam
+	// (`owner := claims.<OwnerClaimsField>`) when they map the owner that
+	// way; AuthSeam is then the seam they call.
+	OwnerClaimsField string
+	// OwnerUndetermined says why forge could not tell which source the
+	// siblings use. The wrapper is then rendered NOT to compile, naming
+	// the choice, rather than as a working wrapper on a guessed principal.
+	OwnerUndetermined string
+	// OwnerImport is the import spec OwnerResolver's (or a sibling-chosen
+	// AuthSeam's) package needs, "" for the forge seam.
+	OwnerImport string
+}
+
+// OwnerTODOIdent is the identifier an undetermined owner wrapper calls. It
+// is declared nowhere, so the build fails on a line that names the fix.
+func (m CRUDMethodTemplateData) OwnerTODOIdent() string {
+	return "FORGE_TODO_choose_" + m.OwnerColumn + "_resolver"
 }
 
 // OwnerColumn returns the entity's `forge:owner` column name, or "" when
@@ -906,6 +932,8 @@ func crudShimImports(data CRUDTemplateData) []string {
 	hasReal := false
 	needsDB := false
 	scoped := false
+	usesSeam := false
+	var ownerImports []string
 	hasCreate := false
 	for _, m := range data.CRUDMethods {
 		if !m.ShapeMismatch && m.Operation == "create" {
@@ -929,6 +957,16 @@ func crudShimImports(data CRUDTemplateData) []string {
 			if m.Operation != "delete" {
 				needsDB = true
 			}
+			// The owner comes from forge's seam unless the method reuses a
+			// sibling's source (its own import) or is an undetermined stub
+			// (no import: the call it makes is declared nowhere). An
+			// unused seam import would not compile.
+			switch {
+			case m.OwnerImport != "":
+				ownerImports = append(ownerImports, m.OwnerImport)
+			case m.OwnerResolver == "" && m.OwnerUndetermined == "":
+				usesSeam = true
+			}
 		}
 	}
 	if hasReal {
@@ -939,9 +977,16 @@ func crudShimImports(data CRUDTemplateData) []string {
 		// (internal/metrics/metrics.go, born with the command tree).
 		imports = append(imports, data.Module+"/internal/metrics")
 	}
-	if scoped {
+	if usesSeam {
 		// The GetUser call the scoping scaffold opens with.
 		imports = append(imports, data.Module+"/pkg/"+crudAuthSeamPkg)
+	}
+	seenOwnerImport := map[string]bool{}
+	for _, imp := range ownerImports {
+		if !seenOwnerImport[imp] {
+			seenOwnerImport[imp] = true
+			imports = append(imports, imp)
+		}
 	}
 	if hasMismatch {
 		// The WIRED custom-read-shape body runs a real query: it builds
@@ -1054,6 +1099,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 	if len(missing) == 0 {
 		return nil
 	}
+	missing = resolveAppendedOwners(projectDir, shimRel, existing, missing)
 	blocks, err := renderCRUDShimMethods(missing)
 	if err != nil {
 		return err

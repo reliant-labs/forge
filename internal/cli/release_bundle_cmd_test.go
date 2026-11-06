@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -123,5 +124,85 @@ func TestReleaseBundle_IsAReleaseSubcommand(t *testing.T) {
 	}
 	if cmd.Flags().Lookup("live-diff") == nil || cmd.Flags().Lookup("dir") == nil {
 		t.Error("forge release bundle must take --dir and --live-diff")
+	}
+}
+
+// One object kubectl cannot diff client-side — an env var moving from
+// valueFrom to value on an object forge applied server-side (ae15fc11) — must
+// not hide the rest of the cluster's diff behind COULD NOT DIFF. The cluster is
+// re-diffed object by object: the changed objects are still listed, and only
+// the undiffable one is named, with kubectl's reason.
+func TestLiveDiff_OneUndiffableObjectDoesNotHideTheCluster(t *testing.T) {
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "manifests", "prod-ctx")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"apps.v1.Deployment.cp.workers.yaml", "apps.v1.Deployment.cp.api.yaml", "v1.ConfigMap.cp.flags.yaml"} {
+		if err := os.WriteFile(filepath.Join(tree, f), []byte("kind: x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const invalid = `The Deployment "control-plane-workers" is invalid: spec.template.spec.containers[0].env[26].valueFrom: Invalid value: "": may not be specified when ` + "`value`" + ` is not empty`
+	prev := kubectlLiveDiff
+	kubectlLiveDiff = func(_ context.Context, _, path string) (string, int, error) {
+		switch filepath.Base(path) {
+		case "prod-ctx", "apps.v1.Deployment.cp.workers.yaml":
+			return "", -1, errors.New(invalid)
+		case "apps.v1.Deployment.cp.api.yaml":
+			return "+++ /tmp/MERGED-2/apps.v1.Deployment.cp.api\n-  replicas: 1\n+  replicas: 2\n", 1, nil
+		}
+		return "", 0, nil
+	}
+	t.Cleanup(func() { kubectlLiveDiff = prev })
+
+	diffs, err := liveDiffBundle(context.Background(), dir, []release.BundleClusterTree{{Cluster: "prod-ctx", Path: "manifests/prod-ctx"}})
+	if err == nil {
+		t.Error("a partly diffed cluster must still be reported as not fully diffed")
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("diffs = %+v", diffs)
+	}
+	d := diffs[0]
+	if d.Error != "" {
+		t.Fatalf("the whole cluster was reported as COULD NOT DIFF: %s", d.Error)
+	}
+	if len(d.Changed) != 1 || d.Changed[0] != "apps.v1.Deployment.cp.api" {
+		t.Errorf("changed = %v, want the api Deployment", d.Changed)
+	}
+	if len(d.Undiffable) != 1 || d.Undiffable[0].File != "apps.v1.Deployment.cp.workers.yaml" || !strings.Contains(d.Undiffable[0].Error, "valueFrom") {
+		t.Errorf("undiffable = %+v, want only the workers Deployment with kubectl's reason", d.Undiffable)
+	}
+	var buf bytes.Buffer
+	renderLiveDiff(&buf, diffs)
+	for _, want := range []string{"1 object(s) would change", "~ apps.v1.Deployment.cp.api", "? apps.v1.Deployment.cp.workers.yaml"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("render is missing %q:\n%s", want, buf.String())
+		}
+	}
+	if strings.Contains(buf.String(), "COULD NOT DIFF:") {
+		t.Errorf("render still hides the cluster:\n%s", buf.String())
+	}
+}
+
+// A cluster where every object fails (unreachable, no credentials) is still
+// one COULD NOT DIFF line, not a list of every object.
+func TestLiveDiff_UnreachableClusterIsOneError(t *testing.T) {
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "manifests", "prod-ctx")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "v1.ConfigMap.cp.flags.yaml"), []byte("kind: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := kubectlLiveDiff
+	kubectlLiveDiff = func(context.Context, string, string) (string, int, error) {
+		return "", -1, errors.New("dial tcp 10.0.0.1:443: i/o timeout")
+	}
+	t.Cleanup(func() { kubectlLiveDiff = prev })
+	diffs, err := liveDiffBundle(context.Background(), dir, []release.BundleClusterTree{{Cluster: "prod-ctx", Path: "manifests/prod-ctx"}})
+	if err == nil || len(diffs) != 1 || !strings.Contains(diffs[0].Error, "i/o timeout") || len(diffs[0].Undiffable) != 0 {
+		t.Fatalf("diffs = %+v, err = %v; want one cluster error", diffs, err)
 	}
 }

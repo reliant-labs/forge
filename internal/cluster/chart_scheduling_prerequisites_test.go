@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestChartSchedulingPrerequisitesScope(t *testing.T) {
@@ -37,9 +39,7 @@ metadata:
 }
 
 func TestApplyRenderedSchedulingPrerequisitesBeforeChartWait(t *testing.T) {
-	if testing.Short() {
-		t.Skip("fake helm/kubectl subprocess recording; runs in task test")
-	}
+	testkit.Slow(t, "records fake helm/kubectl subprocesses")
 	for _, kctx := range []string{"hub", "tenant"} {
 		t.Run(kctx, func(t *testing.T) {
 			readCalls := fakeKubectlRecorder(t)

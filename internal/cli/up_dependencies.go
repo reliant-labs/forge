@@ -157,15 +157,21 @@ func launchStartupPlan(ctx context.Context, nodes []startupNode, start func(star
 // another wait budget. A ready dependency that regressed must not launch a
 // consumer against stale evidence.
 func checkStartupDependencies(deps []startupNode, e *KCLEntities, projectID, env string, procs *procRegistry) error {
-	var rows []hostReadyResult
 	facts := newOSProcFacts()
+	return checkStartupDependencySnapshot(deps, e, projectID, env, procs, facts, func(name string, port int) hostReadyResult {
+		return probeFrontendStartup(name, port, procs, portInUse, portListenerPID, facts)
+	})
+}
+
+func checkStartupDependencySnapshot(deps []startupNode, e *KCLEntities, projectID, env string, procs *procRegistry, facts procFacts, frontendProbe func(string, int) hostReadyResult) error {
+	var rows []hostReadyResult
 	for _, dep := range deps {
 		name := dep.name
 		if dep.frontend {
 			name = "frontend:" + name
 			for _, fe := range e.Frontends {
 				if fe.Name == dep.name {
-					rows = append(rows, hostReadyResult{name: name, port: fe.Port, state: classifyPortReadiness(fe.Port, projectID, env, portInUse, portListenerPID, facts), exited: procs.exitReason(name)})
+					rows = append(rows, frontendProbe(dep.name, fe.Port))
 				}
 			}
 		} else {
@@ -194,8 +200,33 @@ func waitStartupDependency(ctx context.Context, n startupNode, e *KCLEntities, p
 		return waitHostServicesReady(ctx, e, projectID, env, []string{n.name}, timeout, hostReadyPoll, procs)
 	}
 	return waitFrontendStartup(ctx, n.name, e, env, timeout, hostReadyPoll, func(name string, port int) hostReadyResult {
-		return hostReadyResult{name: "frontend:" + name, port: port, state: classifyPortReadiness(port, projectID, env, portInUse, portListenerPID, newOSProcFacts()), exited: procs.exitReason("frontend:" + name)}
+		return probeFrontendStartup(name, port, procs, portInUse, portListenerPID, newOSProcFacts())
 	})
+}
+
+// probeFrontendStartup requires this invocation's runner, not merely a reusable
+// project/env marker. npm/pnpm may spawn the listener several descendants deep.
+// Unknown ancestry stays unready; an unrelated known listener fails closed.
+func probeFrontendStartup(name string, port int, procs *procRegistry, listening func(int) bool, listenerPID func(int) int, facts procFacts) hostReadyResult {
+	r := hostReadyResult{name: "frontend:" + name, port: port, state: portReadyNobody}
+	r.exited = procs.exitReason(r.name)
+	runner := procs.runningPID(r.name)
+	if runner <= 0 || r.exited != "" || port <= 0 || !listening(port) {
+		return r
+	}
+	pid := listenerPID(port)
+	if pid <= 0 {
+		return r
+	}
+	if pid == runner || (facts != nil && insideTree(pid, map[int]bool{runner: true}, facts)) {
+		r.state = portReadyOurs
+	} else {
+		r.state = portReadyForeign
+		r.holderPID = pid
+	}
+	// Wait may have observed an exit while the OS probes were in flight.
+	r.exited = procs.exitReason(r.name)
+	return r
 }
 
 func waitFrontendStartup(ctx context.Context, name string, e *KCLEntities, env string, timeout, poll time.Duration, probe func(string, int) hostReadyResult) error {

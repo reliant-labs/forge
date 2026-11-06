@@ -1105,8 +1105,9 @@ describe("no session before the page is first visible", () => {
       .then((ok) => (running = ok));
 
     // Startup is parked on the visibility listener: once it is registered,
-    // nothing but a visibilitychange can move it on.
-    await vi.waitFor(() => expect(doc.waiting()).toBe(1));
+    // nothing but a visibilitychange can move it on. (The second listener
+    // only notes when the page was hidden, for the paint vitals.)
+    await vi.waitFor(() => expect(doc.waiting()).toBe(2));
     expect(init).not.toHaveBeenCalled();
     expect(running).toBeUndefined();
     // Nothing to record yet: the caller falls back to the console.
@@ -1144,6 +1145,196 @@ describe("no session before the page is first visible", () => {
     doc.show();
     expect(await started).toBe(false);
     expect(init).not.toHaveBeenCalled();
+  });
+});
+
+describe("paint vitals of a page first shown late", () => {
+  // A fake of the SDK's web-vitals instrumentation, shaped like the real one
+  // (@hyperdx/otel-web webvitals.js): it holds the `webvitals` tracer from
+  // init, and reports each vital as a span with one attribute, exported only
+  // once it is ENDED.
+  type Vital = { name: string; value: number };
+  const exported: Vital[] = [];
+  let report: (name: string, value: number) => void = () => {};
+
+  function fakeProvider() {
+    const tracers = new Map<string, { startSpan(name: string): unknown }>();
+    return {
+      getTracer(name: string, version?: string) {
+        const key = `${name}@${version ?? ""}`;
+        if (!tracers.has(key)) {
+          tracers.set(key, {
+            startSpan() {
+              const span = {
+                attributes: {} as Record<string, number>,
+                setAttribute(k: string, v: number) {
+                  span.attributes[k] = v;
+                  return span;
+                },
+                end() {
+                  for (const [k, v] of Object.entries(span.attributes)) {
+                    exported.push({ name: k, value: v });
+                  }
+                },
+              };
+              return span;
+            },
+          });
+        }
+        return tracers.get(key)!;
+      },
+    };
+  }
+
+  function stubDocument(state: DocumentVisibilityState) {
+    const docListeners: Listener[] = [];
+    const doc = {
+      visibilityState: state,
+      addEventListener: (type: string, fn: Listener) => {
+        if (type === "visibilitychange") docListeners.push(fn);
+      },
+      removeEventListener: (type: string, fn: Listener) => {
+        const i = docListeners.indexOf(fn);
+        if (type === "visibilitychange" && i >= 0) docListeners.splice(i, 1);
+      },
+    };
+    vi.stubGlobal("document", doc);
+    return {
+      waiting: () => docListeners.length,
+      set(next: DocumentVisibilityState) {
+        doc.visibilityState = next;
+        for (const fn of [...docListeners]) fn({});
+      },
+    };
+  }
+
+  function stubPerformance(
+    now: () => number,
+    visibility: Array<{ name: string; startTime: number }> = [],
+  ) {
+    vi.stubGlobal("performance", {
+      now,
+      getEntriesByType: (type: string) =>
+        type === "visibility-state" ? visibility : [],
+    });
+  }
+
+  async function load2() {
+    stubDom();
+    const { trace } = await import("@opentelemetry/api");
+    trace.disable();
+    trace.setGlobalTracerProvider(fakeProvider() as never);
+    init.mockImplementation(() => {
+      const provider = trace.getTracerProvider() as unknown as {
+        getDelegate(): ReturnType<typeof fakeProvider>;
+      };
+      // Held once, as the real instrumentation holds its tracer.
+      const tracer = provider.getDelegate().getTracer("webvitals") as {
+        startSpan(name: string): {
+          setAttribute(k: string, v: number): unknown;
+          end(): void;
+        };
+      };
+      report = (name, value) => {
+        const span = tracer.startSpan("webvitals");
+        span.setAttribute(name, value);
+        span.end();
+      };
+    });
+    return load();
+  }
+
+  function reportAll() {
+    report("ttfb", 300);
+    report("fcp", 61_000);
+    report("lcp", 61_200);
+    report("cls", 0.01);
+  }
+
+  beforeEach(() => {
+    exported.length = 0;
+    report = () => {};
+  });
+
+  afterEach(async () => {
+    const { trace } = await import("@opentelemetry/api");
+    trace.disable();
+  });
+
+  it("drops the FCP and LCP of a page loaded in the background, and keeps the rest", async () => {
+    let clock = 250;
+    stubPerformance(() => clock);
+    const doc = stubDocument("hidden");
+    const { t } = await load2();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    await vi.waitFor(() => expect(doc.waiting()).toBeGreaterThan(0));
+    clock = 61_000;
+    doc.set("visible");
+    expect(await started).toBe(true);
+
+    reportAll();
+    expect(exported.map((v) => v.name).sort()).toEqual(["cls", "ttfb"]);
+  });
+
+  it("keeps every vital of a page that was visible from the start", async () => {
+    stubPerformance(() => 250, [{ name: "visible", startTime: 0 }]);
+    stubDocument("visible");
+    const { t } = await load2();
+    expect(
+      await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" }),
+    ).toBe(true);
+
+    reportAll();
+    expect(exported.map((v) => v.name).sort()).toEqual([
+      "cls",
+      "fcp",
+      "lcp",
+      "ttfb",
+    ]);
+  });
+
+  it("keeps a paint from before the browser's first hidden entry, and drops one after it", async () => {
+    stubPerformance(
+      () => 9_000,
+      [
+        { name: "visible", startTime: 0 },
+        { name: "hidden", startTime: 5_000 },
+        { name: "visible", startTime: 8_000 },
+      ],
+    );
+    stubDocument("visible");
+    const { t } = await load2();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    report("fcp", 1_200);
+    report("lcp", 6_000);
+    expect(exported).toEqual([{ name: "fcp", value: 1_200 }]);
+  });
+
+  it("drops a paint after the page was hidden while the SDK loaded", async () => {
+    let clock = 100;
+    stubPerformance(() => clock);
+    const doc = stubDocument("visible");
+    const { t } = await load2();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    // Startup is parked on the SDK import: hide the page and show it again
+    // before init runs, so web-vitals registers on a visible page.
+    expect(init).not.toHaveBeenCalled();
+    clock = 400;
+    doc.set("hidden");
+    clock = 3_000;
+    doc.set("visible");
+    expect(await started).toBe(true);
+
+    report("lcp", 2_500);
+    report("ttfb", 90);
+    expect(exported).toEqual([{ name: "ttfb", value: 90 }]);
   });
 });
 

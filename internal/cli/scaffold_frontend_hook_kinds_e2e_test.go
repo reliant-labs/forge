@@ -52,6 +52,10 @@ import (
 // inferred, and — under vitest — a fetchQuery fills the very cache entry the
 // generated hook then reads, with one transport call.
 //
+// WRITES OUTSIDE REACT: `itemServiceMutations(qc).createItem(req)` typechecks
+// with the response type, carries no read (listItems is rejected), and —
+// under vitest — refetches the item-scoped read, as useCreateItem does.
+//
 // And one RUNTIME property, under the project's own vitest: the scaffolded
 // mockTransport create()s both directions, like a real transport — a
 // handler sees the full request and a partial fixture comes back as the full
@@ -229,6 +233,9 @@ message Item {
 	if !strings.Contains(out, "This expression is not callable") {
 		t.Errorf("tsc accepted a call of itemServiceKeys.itemStats.all — the rpc scope is untyped:\n%s", out)
 	}
+	if !strings.Contains(out, "Property 'listItems' does not exist") {
+		t.Errorf("tsc accepted itemServiceMutations(qc).listItems — the writes table is untyped, or carries a read:\n%s", out)
+	}
 }
 
 // hookKindsPositiveFixture uses useVersion as a read (request in, data out)
@@ -238,7 +245,7 @@ const hookKindsPositiveFixture = `"use client";
 
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 
-import { itemServiceKeys, itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+import { itemServiceKeys, itemServiceMutations, itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
 
 // The rpc scope as a filter: every request of one rpc, with no predicate.
 async function refreshStats(qc: ReturnType<typeof useQueryClient>): Promise<void> {
@@ -256,6 +263,9 @@ async function warm(qc: ReturnType<typeof useQueryClient>): Promise<number> {
   const pages = await qc.fetchInfiniteQuery(itemServiceQueries.listItemsInfinite({ pageSize: 20 }));
   await qc.prefetchInfiniteQuery(itemServiceQueries.listItemsInfinite({}));
   const cached = qc.getQueryData(itemServiceQueries.itemStats({}).queryKey);
+  // A write outside React, typed by its rpc.
+  const created = await itemServiceMutations(qc).createItem({ name: "x" }, { signal: new AbortController().signal });
+  void created;
   return stats.count + pages.pages.flatMap((p) => p.items).length + label.length + (cached?.count ?? 0);
 }
 
@@ -293,12 +303,14 @@ export default function HookKindsPage() {
 // generated hooks module specifier.
 const hookKindsNegativeFixture = `import { QueryClient } from "@tanstack/react-query";
 
-import { itemServiceKeys, itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
+import { itemServiceKeys, itemServiceMutations, itemServiceQueries, useCreateItem, useListItems, useListItemsInfinite, useVersion } from "%[1]s";
 
 export async function bogusFetch(qc: QueryClient) {
   const notAString: string = (await qc.fetchQuery(itemServiceQueries.itemStats({}))).count;
   return notAString;
 }
+
+export const bogusWrite = (qc: QueryClient) => itemServiceMutations(qc).listItems({});
 
 export const bogusScope = itemServiceKeys.itemStats.all({});
 
@@ -328,7 +340,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { setTransport } from "@/lib/connect";
 import { mockTransport } from "@/lib/test-utils";
 
-import { itemServiceKeys, useCreateItem, useItemStats, useListItems, useListItemsInfinite } from "%[1]s";
+import { itemServiceKeys, itemServiceMutations, useCreateItem, useItemStats, useListItems, useListItemsInfinite } from "%[1]s";
 
 import type { ReactNode } from "react";
 
@@ -395,6 +407,37 @@ describe("forge:query-scope", () => {
     await waitFor(() => expect(stats.result.current.data?.count).toBe(1));
     const create = renderHook(() => useCreateItem(), { wrapper });
     await create.result.current.mutateAsync({ name: "x" } as never);
+    await waitFor(() => expect(stats.result.current.data?.count).toBe(2));
+    client.clear();
+  });
+});
+
+describe("<svc>Mutations", () => {
+  it("a write outside React refetches what the same write through its hook does", async () => {
+    let reads = 0;
+    let creates = 0;
+    setTransport(
+      mockTransport({
+        "ItemService.ItemStats": () => {
+          reads += 1;
+          return { count: reads };
+        },
+        "ItemService.CreateItem": () => {
+          creates += 1;
+          return {};
+        },
+      }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const stats = renderHook(() => useItemStats({}), { wrapper });
+    await waitFor(() => expect(stats.result.current.data?.count).toBe(1));
+
+    await itemServiceMutations(client).createItem({ name: "x" } as never);
+
+    expect(creates).toBe(1);
     await waitFor(() => expect(stats.result.current.data?.count).toBe(2));
     client.clear();
   });

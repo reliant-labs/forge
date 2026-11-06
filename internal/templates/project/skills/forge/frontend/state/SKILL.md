@@ -17,6 +17,7 @@ Use the simplest scope that solves the problem:
 | Shared client UI state | Zustand store (`src/stores/`) | `sidebarCollapsed`, `commandPaletteOpen`, `activeModal` |
 | Cross-page selection (survives reload) | Zustand `persist` store (`src/stores/`) | `currentOrgId`, `currentTeamId`, `currentWorkspaceId` |
 | Server/backend data | Generated React Query hooks | workflows, users, runs — from `src/hooks/*-hooks.ts` |
+| Server writes outside React (stores, sync, OAuth) | `<svc>Mutations(queryClient).<rpc>(req)` | invalidates what the rpc's hook does; reads go through `fetchQuery(<svc>Queries.<rpc>(req))` |
 | Real-time / streamed server data | React Query cache, patched via `setQueryData` from the stream | live chat messages, statuses, approvals pushed over a websocket/gRPC stream |
 | Durable navigation | URL (route params, search params) | current project, selected run, active tab, filters |
 | Imperative cross-cutting actions | Event bus (`src/lib/events.ts`) | `toast:show`, `navigate`, `auth:expired` |

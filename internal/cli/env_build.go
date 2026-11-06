@@ -166,8 +166,18 @@ Examples:
 			// --plan is excluded: it preflights a build and writes
 			// nothing, so recording a declaration from it would make a
 			// dry run the thing that changed the world.
+			//
+			// A build its own flags make impossible is refused BEFORE the
+			// declaration, though: that is a usage error, not a build that
+			// failed half-way, and it must leave the control plane exactly
+			// as it found it. Today that is one case, a hosted static site
+			// with no --push (hostedSitesNeedPush).
 			if !opts.plan {
-				if err := recordEnvBuildDeclaration(cmd.Context(), opts.env); err != nil {
+				var precheck func(*KCLEntities) error
+				if !noBuild && !composing {
+					precheck = func(entities *KCLEntities) error { return hostedSitesNeedPush(entities, opts) }
+				}
+				if err := recordEnvBuildDeclarationChecked(cmd.Context(), opts.env, precheck); err != nil {
 					return err
 				}
 			}
@@ -240,9 +250,21 @@ Examples:
 // change, a credential it rejected. Those are facts about the env or its
 // configuration, and a green build over them would leave Live wrong.
 func recordEnvBuildDeclaration(ctx context.Context, envName string) error {
+	return recordEnvBuildDeclarationChecked(ctx, envName, nil)
+}
+
+// recordEnvBuildDeclarationChecked is recordEnvBuildDeclaration with a
+// precheck run on the rendered env before anything is recorded: an error from
+// it is returned and nothing reaches the control plane.
+func recordEnvBuildDeclarationChecked(ctx context.Context, envName string, precheck func(*KCLEntities) error) error {
 	entities, err := renderKCLForDeclaration(ctx, projectDirForKCL(), envName)
 	if err != nil || entities == nil {
 		return nil
+	}
+	if precheck != nil {
+		if err := precheck(entities); err != nil {
+			return err
+		}
 	}
 	err = recordEnvDeclaration(ctx, envName, entities)
 	if err != nil && declarationUndeliverable(err) {

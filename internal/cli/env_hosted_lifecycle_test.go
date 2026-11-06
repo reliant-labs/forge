@@ -373,6 +373,20 @@ func TestEnvDelete_UndeclaredEnvNeedsOneControlPlane(t *testing.T) {
 			t.Fatalf("err = %v; want both control planes named", err)
 		}
 	})
+	t.Run("--endpoint that would leak the credential", func(t *testing.T) {
+		undeclaredDeleteProject(t)
+		for _, ep := range []string{
+			"http://admin.example.com",
+			"ftp://admin.example.com",
+			"admin.example.com",
+			"https://user:pw@admin.example.com",
+		} {
+			_, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", ep)
+			if err == nil || !strings.Contains(err.Error(), "--endpoint") {
+				t.Fatalf("endpoint %q: err = %v; want it refused before any credential is sent", ep, err)
+			}
+		}
+	})
 	t.Run("--endpoint on a declared env", func(t *testing.T) {
 		undeclaredDeleteProject(t)
 		_, err := resolveDeclaredLifecycleTarget(t.Context(), "prod", "delete", "tok", "https://a.example")

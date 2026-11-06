@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -176,6 +178,11 @@ func envDeclared(projectDir, env string) bool {
 // used.
 func resolveUndeclaredLifecycleTarget(ctx context.Context, projectDir, env, flagToken, endpoint string) (lifecycleTarget, error) {
 	url := strings.TrimSpace(endpoint)
+	if url != "" {
+		if err := checkLifecycleEndpoint(url); err != nil {
+			return lifecycleTarget{}, err
+		}
+	}
 	if url == "" {
 		bound, err := boundHostedEndpoints(projectDir)
 		if err != nil {
@@ -206,6 +213,43 @@ func resolveUndeclaredLifecycleTarget(ctx context.Context, projectDir, env, flag
 			env, env, ep.URL, ep.ProjectName)
 	}
 	return t, err
+}
+
+// checkLifecycleEndpoint refuses an --endpoint that the user's credential must
+// not be sent to: anything but https, except plain http to a loopback host (a
+// control plane running on this machine, as in dev and tests). It runs before
+// any credential is resolved, so a typo'd or cleartext URL never receives the
+// bearer token.
+func checkLifecycleEndpoint(raw string) error {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Host == "" || u.Hostname() == "" {
+		return fmt.Errorf("--endpoint %q is not an absolute URL\nfix: name the control plane as https://<host>, e.g. %s", raw, cloud.DefaultEndpoint)
+	}
+	if u.User != nil {
+		return fmt.Errorf("--endpoint %q carries credentials in the URL; refusing to use it\nfix: drop the user:password@ part and pass the credential with --token", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackEndpointHost(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("--endpoint %q is plain http to a non-loopback host: your credential would be sent in cleartext\n"+
+			"fix: use https://%s (plain http is accepted only for localhost, 127.0.0.0/8 and ::1)", raw, u.Host)
+	default:
+		return fmt.Errorf("--endpoint %q has scheme %q; a control plane is reached over https\nfix: name it as https://<host>, e.g. %s", raw, u.Scheme, cloud.DefaultEndpoint)
+	}
+}
+
+// isLoopbackEndpointHost reports whether host names this machine's loopback
+// interface: localhost or a loopback IP literal.
+func isLoopbackEndpointHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // boundHostedEndpoints lists the control planes this project is bound to: the
@@ -523,7 +567,7 @@ deletes anything on a control plane and which this command never uses.`,
 	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm the deletion without the typed-name prompt (required when non-interactive)")
 	cmd.Flags().BoolVar(&keepData, "keep-data", false, "Keep the environment's managed databases (retained, still billed as storage) instead of destroying them")
 	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
-	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Control plane holding an env that is no longer declared under deploy/kcl/ (default: the one this project is bound to)")
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Control plane holding an env that is no longer declared under deploy/kcl/: an https URL, or http to localhost only (default: the one this project is bound to)")
 	return cmd
 }
 

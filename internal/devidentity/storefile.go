@@ -71,13 +71,22 @@ func (s secretFile) set(key, value string) error {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(s.Path), err)
 	}
-	if err := atomicfile.WriteFile(s.Path, []byte(buf.String()), 0o600); err != nil {
-		return err
+	// atomicfile keeps an existing file's mode and ignores perm, so a store
+	// someone created 0644 would publish the new value world-readable — in
+	// the sibling temp file and then the replaced store. Narrow it first:
+	// the temp file inherits 0600, so the value is never readable by others,
+	// not even before the rename.
+	if fi, err := os.Stat(s.Path); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm() != 0o600 {
+		if err := os.Chmod(s.Path, 0o600); err != nil {
+			return fmt.Errorf("restrict %s to 0600: %w", s.Path, err)
+		}
 	}
-	// WriteFile keeps an existing file's mode; a store is a credential
-	// file whatever it was created with.
-	return os.Chmod(s.Path, 0o600)
+	return writeStoreFile(s.Path, []byte(buf.String()), 0o600)
 }
+
+// writeStoreFile is the store's atomic writer; a test swaps it to observe
+// the store's mode at the moment the new bytes are written.
+var writeStoreFile = atomicfile.WriteFile
 
 // read parses the store into its document node and the top-level mapping
 // inside it. A missing or empty file yields an empty mapping, so Set can

@@ -229,6 +229,46 @@ func TestEnsureSeedPasswords_GeneratesIntoTheStore(t *testing.T) {
 	}
 }
 
+// A store created 0644 (by hand, or by an older scaffold) is narrowed to 0600
+// BEFORE the generated password is written: atomicfile keeps the existing
+// mode for its temp file, so a chmod after the write would leave the password
+// world-readable until it ran.
+func TestEnsureSeedPasswords_RestrictsALooseStoreBeforeWriting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes do not apply on Windows")
+	}
+	in := storeInput(t)
+	if err := os.MkdirAll(filepath.Dir(in.StorePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(in.StorePath, []byte("DEV_PASSWORD: \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(in.StorePath, 0o644); err != nil { // umask-proof
+		t.Fatal(err)
+	}
+	var modeAtWrite os.FileMode
+	orig := writeStoreFile
+	t.Cleanup(func() { writeStoreFile = orig })
+	writeStoreFile = func(path string, data []byte, perm os.FileMode) error {
+		if fi, err := os.Stat(path); err == nil {
+			modeAtWrite = fi.Mode().Perm()
+		}
+		return orig(path, data, perm)
+	}
+
+	_, made, warnings := ensureSeedPasswords(in)
+	if len(warnings) != 0 || len(made) != 1 {
+		t.Fatalf("made %+v, warnings %v", made, warnings)
+	}
+	if modeAtWrite != 0o600 {
+		t.Errorf("store mode when the password was written = %v, want 0600", modeAtWrite)
+	}
+	if fi, _ := os.Stat(in.StorePath); fi.Mode().Perm() != 0o600 {
+		t.Errorf("store mode = %v, want 0600", fi.Mode().Perm())
+	}
+}
+
 func TestEnsureSeedPasswords_NeverReplacesAStoredValue(t *testing.T) {
 	in := storeInput(t)
 	// The resolver missed it (a stale snapshot), but the store has it.

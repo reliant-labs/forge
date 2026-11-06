@@ -197,6 +197,50 @@ func ScanCRUDOwnerSources(fset *token.FileSet, file *ast.File) []CRUDOwnerUse {
 	return uses
 }
 
+// ScanCRUDOpKeyColumns maps each RPC whose op a parsed
+// handlers_crud_ops_gen.go wires to its entity's primary-key column, read
+// off the generated op (`crud.ScopedGet(ctx, "<pk>", …)`, `PkColumnName:
+// "<pk>"`): the schema's own key, which the handler file alone cannot
+// tell apart from an owner column of the same name. A Create's op names no
+// key, so it has no entry.
+func ScanCRUDOpKeyColumns(file *ast.File) map[string]string {
+	out := map[string]string{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || fn.Body == nil {
+			continue
+		}
+		name := fn.Name.Name
+		if !strings.HasPrefix(name, "crud") || !strings.HasSuffix(name, "Op") || len(name) <= len("crudOp") {
+			continue
+		}
+		method := name[len("crud") : len(name)-len("Op")]
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			var lit ast.Expr
+			switch n := n.(type) {
+			case *ast.CallExpr:
+				for _, f := range []string{"ScopedGet", "ScopedUpdate", "ScopedUpdateMasked", "ScopedDelete"} {
+					if isSelectorCall(n.Fun, "crud", f) && len(n.Args) > 1 {
+						lit = n.Args[1]
+					}
+				}
+			case *ast.KeyValueExpr:
+				if k, ok := n.Key.(*ast.Ident); ok && k.Name == "PkColumnName" {
+					lit = n.Value
+				}
+			}
+			if bl, ok := lit.(*ast.BasicLit); ok && bl.Kind == token.STRING {
+				if col, err := strconv.Unquote(bl.Value); err == nil && col != "" {
+					out[method] = col
+					return false
+				}
+			}
+			return true
+		})
+	}
+	return out
+}
+
 // rpcHandlerCtxParam reports whether fn is a connect RPC handler — a method
 // taking (ctx context.Context, req *connect.Request[T]) — and returns its
 // context parameter's name.

@@ -21,8 +21,9 @@
 //
 // Per handler file, per owner column, using codegen.ScanCRUDOwnerSources,
 // against the wrappers of the same entity (or, when the entity has no
-// other, every entity's on that column — except `id`, which names a
-// different principal on every table): a wrapper is flagged when
+// other, every entity's on that column — except a column that is a table's
+// primary key, which names a different principal on every table): a
+// wrapper is flagged when
 //
 //   - it is on forge's placeholder (`middleware.GetUser(ctx).UserID`) while
 //     a sibling on the same column resolves the owner some other way — the
@@ -34,6 +35,11 @@
 //     tenancy.UserID among tenancy.TenantID reads is. "Agrees" takes two
 //     siblings: one against one is a disagreement with no side to take.
 //
+// Which column is a table's key comes from the package's generated
+// handlers_crud_ops_gen.go (codegen.ScanCRUDOpKeyColumns), the schema's
+// projection; an entity it names no key for is taken to be keyed by `id`,
+// forge's default key.
+//
 // An owner forge cannot trace (read off the request, computed) is not
 // judged either way. A deliberate exception takes
 // `// forge:lint-disable-next-line forgeconv-crud-owner-resolver: <why>`
@@ -43,6 +49,7 @@ package forgeconv
 import (
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"sort"
 	"strings"
@@ -54,14 +61,35 @@ import (
 const crudOwnerResolverRule = "forgeconv-crud-owner-resolver"
 
 // lintCRUDOwnerResolverFile reports the wrappers in one parsed handler file
-// whose owner source disagrees with their siblings'.
-func lintCRUDOwnerResolverFile(relPath string, fset *token.FileSet, file *ast.File) []Finding {
+// whose owner source disagrees with their siblings'. keyColumns maps an
+// RPC to its entity's primary-key column (codegen.ScanCRUDOpKeyColumns);
+// it is called only for a file with owner uses.
+func lintCRUDOwnerResolverFile(relPath string, fset *token.FileSet, file *ast.File, keyColumns func() map[string]string) []Finding {
 	if ast.IsGenerated(file) {
 		return nil
 	}
 	uses := codegen.ScanCRUDOwnerSources(fset, file)
 	if len(uses) == 0 {
 		return nil
+	}
+
+	// A key-owner column (users.id, or a table keyed by user_id) names a
+	// different principal on every table, so only its own entity's
+	// wrappers are evidence for it.
+	entityKey := map[string]string{}
+	if keyColumns != nil {
+		keys := keyColumns()
+		for _, u := range uses {
+			if pk, ok := keys[u.Method]; ok && u.Entity != "" {
+				entityKey[u.Entity] = pk
+			}
+		}
+	}
+	isKey := func(entity, col string) bool {
+		if pk, ok := entityKey[entity]; ok {
+			return col == pk
+		}
+		return col == "id"
 	}
 
 	// A create's stamp names the entity FIELD (`e.TenantID = owner`), a
@@ -116,14 +144,17 @@ func lintCRUDOwnerResolverFile(relPath string, fset *token.FileSet, file *ast.Fi
 			}
 			// The decided sources of the OTHER wrappers on this column:
 			// the same entity's when it has any, else (for a column that
-			// is not the conventional key, whose meaning differs per
-			// table) every entity's; same class first, every class when
-			// the class has none.
+			// is neither this table's key nor the other table's, whose
+			// meaning differs per table) every entity's; same class
+			// first, every class when the class has none.
 			collect := func(sameEntity bool) (sameClass, anyClass map[string]int) {
 				sameClass, anyClass = map[string]int{}, map[string]int{}
 				for _, o := range ms {
 					if o.method == m.method || (o.entity == m.entity) != sameEntity ||
 						o.src.Kind == codegen.CRUDOwnerUnknown || o.src.IsPlaceholder() {
+						continue
+					}
+					if !sameEntity && isKey(o.entity, col) {
 						continue
 					}
 					anyClass[o.src.String()]++
@@ -135,7 +166,7 @@ func lintCRUDOwnerResolverFile(relPath string, fset *token.FileSet, file *ast.Fi
 			}
 			scope := m.entity + "." + col
 			sameClass, anyClass := collect(true)
-			if len(anyClass) == 0 && col != "id" {
+			if len(anyClass) == 0 && !isKey(m.entity, col) {
 				sameClass, anyClass = collect(false)
 				scope = col
 			}
@@ -189,4 +220,14 @@ func sortedKeys(m map[string]int) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// crudOpKeyColumns reads a package's generated CRUD ops file for each
+// RPC's primary-key column; a missing or unparsable file names none.
+func crudOpKeyColumns(opsPath string) map[string]string {
+	f, err := parser.ParseFile(token.NewFileSet(), opsPath, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	return codegen.ScanCRUDOpKeyColumns(f)
 }

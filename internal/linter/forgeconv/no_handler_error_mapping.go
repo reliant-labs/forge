@@ -144,7 +144,9 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 		result.Findings = append(result.Findings, lintHandlerErrorMappingFile(rel, fset, parsed)...)
 		result.Findings = append(result.Findings, lintUnwrappedDomainErrorFile(rel, fset, parsed)...)
 		result.Findings = append(result.Findings, lintHandlerConnectErrorFile(rel, fset, parsed)...)
-		result.Findings = append(result.Findings, lintCRUDOwnerResolverFile(rel, fset, parsed)...)
+		result.Findings = append(result.Findings, lintCRUDOwnerResolverFile(rel, fset, parsed, func() map[string]string {
+			return crudOpKeyColumns(filepath.Join(filepath.Dir(p), "handlers_crud_ops_gen.go"))
+		})...)
 	}
 
 	sort.SliceStable(result.Findings, func(i, j int) bool {

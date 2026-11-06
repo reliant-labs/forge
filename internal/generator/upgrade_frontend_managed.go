@@ -99,6 +99,7 @@ func frontendManagedFiles(cfg *config.ProjectConfig) []managedFile {
 		out = append(out, managedFile{
 			destPath: filepath.Join(filepath.FromSlash(dir), frontendManagedRel),
 			tier:     Tier2,
+			since:    "v0.0.4",
 			render: func() ([]byte, error) {
 				return templates.FrontendTemplates().Get(tmplPath)
 			},

@@ -100,6 +100,17 @@ func printManagedDetail(r generator.UpgradeResult) {
 	case r.Status == generator.UpgradeUpToDate:
 		fmt.Println("  Up to date with the current template.")
 		return
+	case r.Offered:
+		fmt.Printf("  %s\n", detailMeasure(r.Missing, r.Local, true))
+		printIndentedDiff(r.Diff)
+		fmt.Println()
+		fmt.Println("  This project never had it, so upgrade offers it rather than adding it:")
+		fmt.Printf("    %s project rescaffold %s\n", Name(), r.Path)
+		return
+	case r.Equivalent != "":
+		fmt.Printf("  Absent: this project has %s, which stands in for it, so upgrade does not add a second.\n", r.Equivalent)
+		fmt.Printf("  Add the template's anyway: %s project rescaffold %s\n", Name(), r.Path)
+		return
 	case r.Absent:
 		// Checked before the Skipped arm: a file that is merely MISSING
 		// is reported as skipped under --check (nothing was written),
@@ -112,6 +123,9 @@ func printManagedDetail(r generator.UpgradeResult) {
 		return
 	case r.LeftDeleted:
 		fmt.Println("  A scaffold-once file you deleted, declined or disowned: upgrade leaves it absent.")
+		if r.DeletedIn != "" {
+			fmt.Printf("  Deleted in commit %s.\n", r.DeletedIn)
+		}
 		fmt.Printf("  Bring it back fresh: %s project rescaffold %s\n", Name(), r.Path)
 		return
 	case r.Status == generator.UpgradeSkipped:

@@ -669,3 +669,52 @@ func TestUpgradeConverge_LeavesLedgerDeletedScaffoldOnceFilesDeleted(t *testing.
 	}
 
 }
+
+// reliant#2327: the templates phase wrote every scaffold-once file the ledger
+// did not record — docker-compose.yml, which reliant had deleted, among them.
+// Across v0.1.44 → v1.0.0 only the files whose templates first shipped inside
+// that range may be added (metrics.go, v0.1.45); docker-compose.yml's template
+// is years older, so the project going without it is the project's choice, and
+// upgrade offers it instead, naming the command that adds it.
+func TestUpgradeConverge_AddsOnlyScaffoldsNewAcrossTheRangeAndOffersTheRest(t *testing.T) {
+	dir := newTestProjectWithVersion(t, "v0.1.44")
+	checksums.ResetScaffoldLedgerCache()
+	t.Cleanup(checksums.ResetScaffoldLedgerCache)
+
+	rec := &recordedSteps{}
+	var rep *upgradeReport
+	var err error
+	var out string
+	withCwd(t, dir, func() {
+		out = captureStdout(t, func() {
+			rep, err = runUpgradeConverge(upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps(), metas: []migrationMeta{}})
+		})
+	})
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "docker-compose.yml")); !os.IsNotExist(statErr) {
+		t.Errorf("upgrade wrote docker-compose.yml, a template older than the range (stat err %v)", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "internal", "metrics", "metrics.go")); statErr != nil {
+		t.Errorf("upgrade did not add internal/metrics/metrics.go, new in v0.1.45: %v", statErr)
+	}
+	var offer *upgradeOffer
+	for i := range rep.Offers {
+		if rep.Offers[i].Path == "docker-compose.yml" {
+			offer = &rep.Offers[i]
+		}
+		if rep.Offers[i].Path == "internal/metrics/metrics.go" {
+			t.Errorf("a file upgrade added is also offered: %+v", rep.Offers[i])
+		}
+	}
+	if offer == nil || offer.Since != "v0.0.2" || offer.Command != Name()+" project rescaffold docker-compose.yml" {
+		t.Fatalf("offers = %+v, want docker-compose.yml since v0.0.2 with its rescaffold command", rep.Offers)
+	}
+	if want := "in templates since v0.0.2: docker-compose.yml — `" + offer.Command + "` to add it"; !strings.Contains(out, want) {
+		t.Errorf("output does not offer docker-compose.yml as %q:\n%s", want, out)
+	}
+	if !rep.Converged {
+		t.Errorf("an offer is not work for a person: %+v", rep.NeedsHuman)
+	}
+}

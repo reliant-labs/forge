@@ -206,3 +206,50 @@ func TestLiveDiff_UnreachableClusterIsOneError(t *testing.T) {
 		t.Fatalf("diffs = %+v, err = %v; want one cluster error", diffs, err)
 	}
 }
+
+// The object-by-object fallback diffs only what `kubectl diff -R -f` reads
+// (.json, .yaml, .yml): an ancillary file in the tree is never handed to
+// kubectl, so it can neither be named undiffable nor make a diffable cluster
+// look unreachable.
+func TestLiveDiff_FallbackSkipsAncillaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "manifests", "prod-ctx")
+	if err := os.MkdirAll(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"apps.v1.Deployment.cp.api.yaml", "README.md", "metadata.txt"} {
+		if err := os.WriteFile(filepath.Join(tree, f), []byte("kind: x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var asked []string
+	prev := kubectlLiveDiff
+	kubectlLiveDiff = func(_ context.Context, _, path string) (string, int, error) {
+		base := filepath.Base(path)
+		asked = append(asked, base)
+		switch base {
+		case "prod-ctx":
+			return "", -1, errors.New("forced recursive failure")
+		case "apps.v1.Deployment.cp.api.yaml":
+			return "+++ /tmp/MERGED-2/apps.v1.Deployment.cp.api\n-  replicas: 1\n+  replicas: 2\n", 1, nil
+		}
+		return "", -1, errors.New("error: unable to decode " + base)
+	}
+	t.Cleanup(func() { kubectlLiveDiff = prev })
+
+	diffs, err := liveDiffBundle(context.Background(), dir, []release.BundleClusterTree{{Cluster: "prod-ctx", Path: "manifests/prod-ctx"}})
+	if err != nil {
+		t.Errorf("a cluster whose every manifest diffed must not be reported as failed: %v", err)
+	}
+	if len(diffs) != 1 || diffs[0].Error != "" || len(diffs[0].Undiffable) != 0 {
+		t.Fatalf("diffs = %+v; want a clean diff with no undiffable objects", diffs)
+	}
+	if len(diffs[0].Changed) != 1 || diffs[0].Changed[0] != "apps.v1.Deployment.cp.api" {
+		t.Errorf("changed = %v, want the api Deployment", diffs[0].Changed)
+	}
+	for _, a := range asked {
+		if a == "README.md" || a == "metadata.txt" {
+			t.Errorf("kubectl was asked to diff ancillary file %s", a)
+		}
+	}
+}

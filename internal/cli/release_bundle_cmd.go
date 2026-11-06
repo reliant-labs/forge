@@ -386,20 +386,10 @@ func liveDiffBundle(ctx context.Context, dir string, clusters []release.BundleCl
 // diff cannot be computed client-side, and the owner's rule keeps the live
 // diff client-side (see the file comment).
 func diffObjectByObject(ctx context.Context, kubeContext, tree string) (string, []undiffableObject, error) {
-	var files []string
-	err := filepath.WalkDir(tree, func(path string, e os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !e.IsDir() {
-			files = append(files, path)
-		}
-		return nil
-	})
+	files, err := manifestFiles(tree)
 	if err != nil {
 		return "", nil, err
 	}
-	sort.Strings(files)
 	var text strings.Builder
 	var undiffable []undiffableObject
 	for _, f := range files {
@@ -418,14 +408,32 @@ func diffObjectByObject(ctx context.Context, kubeContext, tree string) (string, 
 // the cluster itself could not be diffed (unreachable, no credentials), and it
 // is reported as one error rather than as a list of every object.
 func allUndiffable(tree string, undiffable []undiffableObject) bool {
-	n := 0
-	_ = filepath.WalkDir(tree, func(_ string, e os.DirEntry, err error) error {
-		if err == nil && !e.IsDir() {
-			n++
+	files, _ := manifestFiles(tree)
+	return len(undiffable) >= len(files)
+}
+
+// manifestFiles lists, sorted, the files under tree that `kubectl diff -R -f`
+// reads: the ones with a .json, .yaml or .yml extension. Anything else in the
+// tree (metadata, docs) is skipped by the recursive diff, so the
+// object-by-object fallback must skip it too, or a file kubectl never treated
+// as a manifest would be named undiffable.
+func manifestFiles(tree string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(tree, func(path string, e os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if e.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".json", ".yaml", ".yml":
+			files = append(files, path)
 		}
 		return nil
 	})
-	return len(undiffable) >= n
+	sort.Strings(files)
+	return files, err
 }
 
 // printPlanLiveDiff is `forge env deploy <env> <v> --live-diff`: the release's

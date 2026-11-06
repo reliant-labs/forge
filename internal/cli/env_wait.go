@@ -47,7 +47,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -897,7 +896,7 @@ func emitWatchLine(report envWaitReport, at time.Time, phase string) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintln(os.Stdout, string(raw))
+	fmt.Fprintln(jsonStdout(), string(raw))
 }
 
 // renderEnvWaitText is the human report.

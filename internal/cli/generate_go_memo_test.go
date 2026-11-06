@@ -198,6 +198,23 @@ func TestGoValidateMemoKeyCoversWhatABuildReads(t *testing.T) {
 	if got := key(); got == prev {
 		t.Error("deleting a file under a package did not change the validate key")
 	}
+	prev = key()
+
+	// `//go:embed all:assets` reaches every descendant of the package's
+	// directory, however deep, including directories that hold no .go file.
+	// It reaches nothing else: Go refuses a pattern with `..` ("invalid
+	// pattern syntax") and a file in another module. So a directory with no Go
+	// file is an embed input exactly when it sits below a package.
+	const deep = "internal/a/assets/img/icons/logo.svg"
+	editMemoFixture(t, root, deep, "<svg/>\n")
+	if got := key(); got == prev {
+		t.Errorf("creating %s, deep under a package, did not change the validate key", deep)
+	}
+	prev = key()
+	editMemoFixture(t, root, deep, "<svg viewBox=\"0 0 1 1\"/>\n")
+	if got := key(); got == prev {
+		t.Errorf("editing %s, deep under a package, did not change the validate key", deep)
+	}
 }
 
 func TestGoValidateMemoKeyRefusesWhatItCannotEnumerate(t *testing.T) {

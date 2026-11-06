@@ -160,7 +160,17 @@ func TestGaugeTypesReadTheNewestSnapshot(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"FROM default.otel_profiles", "argMax(ProfileId, Timestamp)", "GROUP BY instance", "service.instance.id"} {
+	for _, want := range []string{
+		"FROM default.otel_profiles", "argMax(ProfileId, Timestamp)", "service.instance.id",
+		// An instance is its environment and its id: with no Env filter, one
+		// instance id reused in two environments keeps each one's newest snapshot.
+		"(ResourceAttributes['deployment.environment.name'], ResourceAttributes['service.instance.id'], ProfileId) IN (",
+		"GROUP BY environment, instance",
+		// The window is the range itself whenever the range holds a snapshot, so
+		// an instance whose newest snapshot predates it is not mixed in; only an
+		// empty range falls back to the newest snapshot before it.
+		"if(max(Timestamp) >= toDateTime({from:UInt32}), toDateTime({from:UInt32}),",
+	} {
 		if !strings.Contains(SnapshotSQL, want) {
 			t.Errorf("SnapshotSQL lacks %q", want)
 		}

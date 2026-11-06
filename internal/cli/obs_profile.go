@@ -77,9 +77,9 @@ Sample types: cpu (nanoseconds) and inuse_space / inuse_objects (live heap) by
 default; alloc_space / alloc_objects and goroutine only from a workload whose
 profiling block turns them on (see forge skill load observability/profiles).
 CPU and the other accumulated types are summed over the range. The live heap
-and the goroutines are gauges: each instance's newest snapshot before the
-range ends, so a range shorter than the heap interval still shows the heap as
-last measured. Raw samples (so --trace and the heap) are kept 24h; the
+and the goroutines are gauges: each instance's newest snapshot in the range,
+or, when the range holds none, the newest before it, so a range shorter than
+the heap interval still shows the heap as last measured. Raw samples (so --trace and the heap) are kept 24h; the
 per-minute aggregate behind --since is kept 30 days. --sql prints the query so
 you can run it yourself against the ClickStack ClickHouse.
 

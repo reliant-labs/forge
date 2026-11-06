@@ -120,31 +120,36 @@ func IsSnapshot(sampleType string) bool {
 }
 
 // SnapshotSQL reads a gauge sample type (IsSnapshot) as each instance's newest
-// snapshot before {to}, from the raw tier (one ProfileId per snapshot). The
-// instances read are the ones that sent a snapshot in the range; when the
-// range holds none, the range is moved back to end at the newest snapshot of
-// the last SnapshotLookback ({since}), so a 1h window against a 2h cadence
-// still answers with the heap as last measured. Output columns match RangeSQL.
+// snapshot in the range, from the raw tier (one ProfileId per snapshot). An
+// instance is keyed by its environment AND its instance id, so with no Env
+// filter each environment keeps its own newest snapshot. Only instances that
+// sent a snapshot in the range are read; an instance whose newest snapshot
+// predates {from} is not mixed in beside current ones. Only when the range
+// holds no snapshot at all is the window moved back to end at the newest
+// snapshot of the last SnapshotLookback ({since}), so a 1h window against a 2h
+// cadence still answers with the heap as last measured. Output columns match
+// RangeSQL.
 const SnapshotSQL = `SELECT arrayReverse(FunctionNames) AS frames, any(SampleUnit) AS unit, sum(arraySum(Values)) AS value
 FROM default.otel_profiles
 WHERE ServiceName = {svc:String}
   AND SampleType = {type:String}
   AND Timestamp >= toDateTime({since:UInt32}) AND Timestamp < toDateTime({to:UInt32})
   AND ({env:String} = '' OR ResourceAttributes['deployment.environment.name'] = {env:String})
-  AND (ResourceAttributes['service.instance.id'], ProfileId) IN (
-    SELECT ResourceAttributes['service.instance.id'] AS instance, argMax(ProfileId, Timestamp)
+  AND (ResourceAttributes['deployment.environment.name'], ResourceAttributes['service.instance.id'], ProfileId) IN (
+    SELECT ResourceAttributes['deployment.environment.name'] AS environment, ResourceAttributes['service.instance.id'] AS instance, argMax(ProfileId, Timestamp)
     FROM default.otel_profiles
     WHERE ServiceName = {svc:String}
       AND SampleType = {type:String}
-      AND Timestamp >= greatest(toDateTime({since:UInt32}), least(toDateTime({from:UInt32}), (
-        SELECT max(Timestamp) FROM default.otel_profiles
+      AND Timestamp >= greatest(toDateTime({since:UInt32}), (
+        SELECT if(max(Timestamp) >= toDateTime({from:UInt32}), toDateTime({from:UInt32}), toDateTime(max(Timestamp)) - toIntervalSecond({width:UInt32}))
+        FROM default.otel_profiles
         WHERE ServiceName = {svc:String} AND SampleType = {type:String}
           AND Timestamp >= toDateTime({since:UInt32}) AND Timestamp < toDateTime({to:UInt32})
           AND ({env:String} = '' OR ResourceAttributes['deployment.environment.name'] = {env:String})
-      ) - toIntervalSecond({width:UInt32})))
+      ))
       AND Timestamp < toDateTime({to:UInt32})
       AND ({env:String} = '' OR ResourceAttributes['deployment.environment.name'] = {env:String})
-    GROUP BY instance
+    GROUP BY environment, instance
   )
 GROUP BY frames
 HAVING value > 0

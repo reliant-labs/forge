@@ -424,6 +424,11 @@ var coreComponents = []string{
 	"select",
 	"chip",
 	"row_actions_menu",
+	// The user menu (src/components/session_nav.tsx) and the theme toggle
+	// beside it; dropdown_menu imports "./popover".
+	"popover",
+	"dropdown_menu",
+	"tooltip",
 	"progress_bar",
 	"status",
 	"tag",

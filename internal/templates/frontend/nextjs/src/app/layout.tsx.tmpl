@@ -50,7 +50,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={fontVariables}>
+    // suppressHydrationWarning: the theme script below sets data-theme on
+    // this element before React hydrates, so the server's root element and the
+    // client's differ by exactly that attribute, on purpose. It silences
+    // this one element's own attributes, not its children.
+    <html lang="en" className={fontVariables} suppressHydrationWarning>
       <head>
         {/*
           Runtime configuration, rendered by KCL for THIS environment and

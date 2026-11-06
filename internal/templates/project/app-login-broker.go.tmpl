@@ -47,6 +47,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -357,6 +358,10 @@ type loginBroker struct {
 
 	passwordRules policyCache
 
+	// identities caches who each session is, for GET /auth/session (see
+	// sessionIdentity).
+	identities identityCache
+
 	// Reset-flow limits. In process: with N replicas the budgets are N times
 	// larger, which is still small (see attemptLimiter).
 	forgotByAddress *attemptLimiter
@@ -460,10 +465,17 @@ func (b *loginBroker) mountSignInMethods(mux *devidp.GuardedMux, cfg *config.{{o
 
 // identity is the ONLY thing the browser learns about the session: who is
 // signed in, for rendering. Never a token.
+//
+// Name is the best display name the issuer has: `name`, else given and
+// family name, else `preferred_username` when it is not just the address
+// again. Picture is the `picture` claim, http(s) only. The header's user
+// menu renders Name and Email and falls back to Subject only when both are
+// empty.
 type identity struct {
 	Authenticated bool   `json:"authenticated"`
 	Email         string `json:"email,omitempty"`
 	Name          string `json:"name,omitempty"`
+	Picture       string `json:"picture,omitempty"`
 	Subject       string `json:"subject,omitempty"`
 }
 
@@ -600,7 +612,128 @@ func (b *loginBroker) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeAuthJSON(w, http.StatusOK, identity{Authenticated: false})
 		return
 	}
-	writeAuthJSON(w, http.StatusOK, identityFrom(cookie.Value))
+	writeAuthJSON(w, http.StatusOK, b.sessionIdentity(r.Context(), cookie.Value))
+}
+
+// sessionIdentity is who the session's access token belongs to, with the
+// name and address filled from the issuer's userinfo endpoint when the token
+// does not carry them.
+//
+// ── Why the lookup ─────────────────────────────────────────────────────
+//
+// The cookie holds the ACCESS token, and Zitadel's access tokens carry a
+// subject, an audience and roles but no `email` or `name`: those are profile
+// claims, served at userinfo. Decoding the cookie alone gives the UI nothing
+// but a numeric subject id to show.
+//
+// ── Why it is safe ─────────────────────────────────────────────────────
+//
+// Userinfo is asked WITH the token, so the issuer validates it and answers
+// for the token's own holder; a forged or expired cookie gets an error and
+// keeps the decoded claims it brought, exactly what it got before. The answer
+// is cached under a hash of the whole token, never under the subject, so a
+// forged token naming someone else's subject never reads their entry. A
+// failed lookup is remembered for identityRetry, so an unreachable issuer
+// costs one request per session per interval, not one per page load.
+func (b *loginBroker) sessionIdentity(ctx context.Context, token string) identity {
+	claims, ok := presentationClaimsFrom(token)
+	if !ok {
+		return identity{Authenticated: false}
+	}
+	id := claims.identity()
+	if id.Email != "" && id.Name != "" {
+		return id
+	}
+	now := time.Now()
+	expires := now.Add(identityTTL)
+	if claims.Exp > 0 {
+		exp := time.Unix(claims.Exp, 0)
+		if !now.Before(exp) {
+			// Expired: the next RPC is a 401 whatever this says.
+			return id
+		}
+		if exp.Before(expires) {
+			expires = exp
+		}
+	}
+	key := sha256.Sum256([]byte(token))
+	if cached, ok := b.identities.get(key, now); ok {
+		return cached
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, identityLookupTimeout)
+	defer cancel()
+	info, err := b.client.UserInfo(lookupCtx, token)
+	if err == nil && info.Subject != claims.Sub {
+		err = errors.New("userinfo answered for a different subject")
+	}
+	if err != nil {
+		b.logger.DebugContext(ctx, "userinfo lookup failed; the session shows the token's own claims", "error", err)
+		b.identities.put(key, id, now.Add(identityRetry))
+		return id
+	}
+	id = presentationClaims{
+		Sub:               claims.Sub,
+		Email:             firstNonEmpty(claims.Email, info.Email),
+		Name:              firstNonEmpty(claims.Name, info.Name),
+		GivenName:         firstNonEmpty(claims.GivenName, info.GivenName),
+		FamilyName:        firstNonEmpty(claims.FamilyName, info.FamilyName),
+		PreferredUsername: firstNonEmpty(claims.PreferredUsername, info.PreferredUsername),
+		Picture:           firstNonEmpty(claims.Picture, info.Picture),
+	}.identity()
+	b.identities.put(key, id, expires)
+	return id
+}
+
+const (
+	// identityTTL is how long a session's userinfo answer is reused: a
+	// renamed account shows its new name within this long.
+	identityTTL = 5 * time.Minute
+	// identityRetry is how long a failed lookup is remembered.
+	identityRetry = 30 * time.Second
+	// identityLookupTimeout bounds one userinfo request.
+	identityLookupTimeout = 3 * time.Second
+	// identityMaxEntries bounds the cache; past it the cache starts over.
+	identityMaxEntries = 10000
+)
+
+// identityCache holds userinfo answers, keyed by a hash of the access token.
+type identityCache struct {
+	mu      sync.Mutex
+	entries map[[sha256.Size]byte]identityEntry
+}
+
+type identityEntry struct {
+	id      identity
+	expires time.Time
+}
+
+func (c *identityCache) get(key [sha256.Size]byte, now time.Time) (identity, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok || !now.Before(e.expires) {
+		return identity{}, false
+	}
+	return e.id, true
+}
+
+func (c *identityCache) put(key [sha256.Size]byte, id identity, expires time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil || len(c.entries) >= identityMaxEntries {
+		c.entries = map[[sha256.Size]byte]identityEntry{}
+	}
+	c.entries[key] = identityEntry{id: id, expires: expires}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (b *loginBroker) handleLogout(w http.ResponseWriter, _ *http.Request) {
@@ -657,28 +790,69 @@ func (b *loginBroker) setSession(w http.ResponseWriter, tokens devidp.Tokens) {
 // token was also just received from the issuer over TLS by this process,
 // not supplied by a caller.
 func identityFrom(token string) identity {
+	claims, ok := presentationClaimsFrom(token)
+	if !ok {
+		return identity{Authenticated: false}
+	}
+	return claims.identity()
+}
+
+// presentationClaims are the claims an identity is built from, as a JWT or
+// the userinfo endpoint spells them.
+type presentationClaims struct {
+	Sub               string `json:"sub"`
+	Email             string `json:"email"`
+	Name              string `json:"name"`
+	GivenName         string `json:"given_name"`
+	FamilyName        string `json:"family_name"`
+	PreferredUsername string `json:"preferred_username"`
+	Picture           string `json:"picture"`
+	Exp               int64  `json:"exp"`
+}
+
+// presentationClaimsFrom decodes a JWT's claims WITHOUT verifying it — see
+// identityFrom for why that is safe here.
+func presentationClaimsFrom(token string) (presentationClaims, bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
-		return identity{Authenticated: false}
+		return presentationClaims{}, false
 	}
 	raw, err := decodeSegment(parts[1])
 	if err != nil {
-		return identity{Authenticated: false}
+		return presentationClaims{}, false
 	}
-	var claims struct {
-		Sub   string `json:"sub"`
-		Email string `json:"email"`
-		Name  string `json:"name"`
-	}
+	var claims presentationClaims
 	if err := json.Unmarshal(raw, &claims); err != nil {
-		return identity{Authenticated: false}
+		return presentationClaims{}, false
+	}
+	return claims, true
+}
+
+func (c presentationClaims) identity() identity {
+	email := strings.TrimSpace(c.Email)
+	name := firstNonEmpty(c.Name, strings.TrimSpace(c.GivenName)+" "+strings.TrimSpace(c.FamilyName))
+	if name == "" && !strings.EqualFold(strings.TrimSpace(c.PreferredUsername), email) {
+		// Zitadel's preferred_username is the login name, usually the
+		// address itself; only a different one is worth showing as a name.
+		name = strings.TrimSpace(c.PreferredUsername)
 	}
 	return identity{
 		Authenticated: true,
-		Email:         claims.Email,
-		Name:          claims.Name,
-		Subject:       claims.Sub,
+		Email:         email,
+		Name:          name,
+		Picture:       pictureURL(c.Picture),
+		Subject:       c.Sub,
 	}
+}
+
+// pictureURL keeps a `picture` claim only when it is an absolute http(s) URL:
+// it lands in an <img src>, and nothing else belongs there.
+func pictureURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return ""
+	}
+	return u.String()
 }
 
 func writeAuthJSON(w http.ResponseWriter, status int, body any) {

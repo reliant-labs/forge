@@ -101,7 +101,7 @@ Load `auth/shared-issuer` for the document format, the exact trust rules and the
 
 ## The Claims struct
 
-`Claims` is the canonical auth payload — `UserID` / `Email` / `OrgID` / `Role` / `Roles` — defined in `forge/pkg/auth` and aliased in the owned `pkg/middleware/middleware.go` (`type Claims = auth.Claims`), so library and project code name ONE type.
+`Claims` is the canonical auth payload — `UserID` / `Email` / `EmailVerified` (bind by email only when true) / `OrgID` / `Role` / `Roles` — defined in `forge/pkg/auth` and aliased in the owned `pkg/middleware/middleware.go` (`type Claims = auth.Claims`), so library and project code name ONE type.
 
 Read it with `middleware.ClaimsFromContext(ctx)` (`(*Claims, ok)`) on an RPC that may be anonymous, or `middleware.GetUser(ctx)` (`(*Claims, error)` — `CodeUnauthenticated` when none) on one that requires a principal. Additional claim DATA rides the `enrichClaims` hook; additional claim FIELDS go on `forge/pkg/auth.Claims`, never a parallel type.
 

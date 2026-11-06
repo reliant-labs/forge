@@ -50,7 +50,19 @@ The broker serves `POST /auth/register` in development, and in a deployed enviro
 
 **Before opting in, read this.** A self-registered account's email is **unverified**: the person typed it and is signed in before proving it is theirs. Anything the app binds to a user *by email* (an invitation, a tenant membership, a pre-created record) must require `devidp.User.EmailVerified` first, or registering someone else's address claims what was waiting for them (`auth/authorization` has the check). `forge lint` warns (`forgeconv-open-signup`) about a broker that mounts the route with no condition, as brokers scaffolded before v1.0.16 do; `migrations/v1.0.16` has the edit.
 
-There is **no scaffolded invite flow**; see `deploy/managed-identity` for how to build one.
+Under a delivered LOGIN_POLICY (below) the declaration decides instead, and `auth_self_signup` is ignored.
+
+## Passkeys, magic links, social sign-in and invitations (LOGIN_POLICY)
+
+`forge.ManagedIdentity`'s `signup`, `methods` (`password`, `passkey`, `magic_link`) and `social` (Google, GitHub) reach the broker as one delivered document, `idp_login_policy` (`IDP_LOGIN_POLICY`). **Absent** is the legacy policy (password only, sign-up as above). **Malformed or a future version** is the legacy policy too, logged at ERROR. Present, the broker mounts each method's routes only when offered (`mountSignInMethods`), and `GET /auth/options` grows to `{selfSignup, signup, methods, social, mail}`. The handlers are `devidp.SignInRoutes`; the screen reads the options and renders `src/components/sign-in-methods.tsx` beside the password.
+
+- **No session for an unverified address.** With `require_verified_email`, every route refuses one: `403 {code: "email_unverified"}` after a correct password, and the screen offers "Send a new link". Open and domain sign-up answer `202 {verify: "sent"}` with no session, identically for a taken address; `/auth/verify` confirms it and grants `signup_role` then, never before.
+- **Passkeys:** the broker checks `clientDataJSON` origin (the app's origin from `idp_login_uri`) and type before the provider sees it, because the provider accepts any origin. The RP id is `passkey_rp_id`, else the app's host. An unknown address gets a decoy challenge. Registration takes the user from the session token, never the body. `src/components/passkeys-panel.tsx` is the account panel.
+- **Magic links** work only in the browser that asked (a sealed binding cookie); the email also carries the code to type there from another device. `/auth/magic` does nothing until its button is pressed, so a mail scanner spends nothing. "Didn't get a code? …" appears after a resend or a minute, the same words for every address.
+- **Social:** the provider round trip returns to `/auth/social/callback`, which posts `{id, token}`; the broker requires the binding cookie set at start. An account is linked only when the provider **and** the account both have the address verified (GitHub's empty address counts as unverified); otherwise `409 social_link_required`.
+- **Invitations** land on `/auth/invite?userID&code&orgID`; the invitee picks a password, a passkey or a link. A weak password is refused before the single-use code is spent.
+
+Pages: `/auth/{magic,invite,verify,social/callback}`, public in the route guard. Copy never says whether an address has an account. `forge lint` (`forgeconv-identity-methods`) flags a declaration the broker does not serve; `migrations/v1.1.0/identity-v2` upgrades a broker scaffolded earlier.
 
 ## Why the token is not in JavaScript, and what you get instead
 

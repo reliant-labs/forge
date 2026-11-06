@@ -381,6 +381,31 @@ type WorkloadSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	ActiveDeadlineSeconds *int64 `json:"activeDeadlineSeconds,omitempty"`
 
+	// SuccessfulJobsHistoryLimit and FailedJobsHistoryLimit are how many
+	// finished Jobs a cron keeps (CronJob.spec.successfulJobsHistoryLimit /
+	// failedJobsHistoryLimit). Unset keeps Kubernetes' defaults, 3 and 1;
+	// 0 keeps none. Cron only. Allowed under every profile: they only ever
+	// remove finished objects.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	SuccessfulJobsHistoryLimit *int32 `json:"successfulJobsHistoryLimit,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	FailedJobsHistoryLimit *int32 `json:"failedJobsHistoryLimit,omitempty"`
+
+	// TTLSecondsAfterFinished deletes each of a cron's Jobs, with its pods,
+	// this long after it finishes (Job.spec.ttlSecondsAfterFinished). The
+	// history limits bound HOW MANY finished Jobs stay; this bounds how
+	// LONG, so a failure stays inspectable for a while and is not kept
+	// forever by a later run that succeeded. Cron only: a kind=job Workload
+	// is applied by every release, so expiring its Job would make the next
+	// apply run it again. Allowed under every profile.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
+
 	// SecurityContext loosens forge's pod identity defaults for an image
 	// that needs it: a Next.js standalone image that runs as uid 1000 and
 	// writes into its own tree. Full profile only. It is deliberately

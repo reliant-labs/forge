@@ -588,10 +588,11 @@ func (set *workloadSet) renderJob(w *workload, ctx Context) ([]runtime.Object, e
 	return objs, nil
 }
 
-// renderCron renders a CronJob (expand.k:536-619). expand.k sets no
-// concurrencyPolicy, startingDeadlineSeconds or history limits, and neither
-// does this: Kubernetes' defaults (Allow, none, 3/1) apply. A cron is never
-// gated (capabilities.k:188-190).
+// renderCron renders a CronJob (expand.k:536-619). It sets no
+// concurrencyPolicy or startingDeadlineSeconds: Kubernetes' defaults (Allow,
+// none) apply. The history limits and the finished-Job TTL are the
+// workload's own, and unset leaves Kubernetes' defaults (3/1, no expiry).
+// A cron is never gated (capabilities.k:188-190).
 func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 	pod := set.podSpec(w, ctx, nil)
 	pod.RestartPolicy = corev1.RestartPolicyOnFailure
@@ -600,9 +601,12 @@ func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 		TypeMeta:   metav1.TypeMeta{APIVersion: "batch/v1", Kind: "CronJob"},
 		ObjectMeta: objectMeta(w.name, ctx.Namespace, labels),
 		Spec: batchv1.CronJobSpec{
-			Schedule: w.spec.Schedule,
+			Schedule:                   w.spec.Schedule,
+			SuccessfulJobsHistoryLimit: w.spec.SuccessfulJobsHistoryLimit,
+			FailedJobsHistoryLimit:     w.spec.FailedJobsHistoryLimit,
 			JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{
-				ActiveDeadlineSeconds: w.spec.ActiveDeadlineSeconds,
+				ActiveDeadlineSeconds:   w.spec.ActiveDeadlineSeconds,
+				TTLSecondsAfterFinished: w.spec.TTLSecondsAfterFinished,
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels), Annotations: w.spec.PodAnnotations},
 					Spec:       pod,

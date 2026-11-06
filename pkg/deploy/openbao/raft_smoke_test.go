@@ -28,6 +28,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 func TestSmoke_RaftAutoJoinThreeNodes(t *testing.T) {
@@ -97,21 +99,18 @@ func TestSmoke_RaftAutoJoinThreeNodes(t *testing.T) {
 	for i := range ports {
 		pod := fmt.Sprintf("%s-%d", spec.Name, i)
 		fqdn := fmt.Sprintf("%s.%s.%s.svc", pod, spec.internalName(), spec.Namespace)
-		l, _ := net.Listen("tcp", "127.0.0.1:0")
-		ports[i] = l.Addr().(*net.TCPAddr).Port
-		_ = l.Close()
 		name := fmt.Sprintf("%s-%s", pod, sfx)
 		containers = append(containers, name)
-		out, err := exec.Command("docker", "run", "-d", "--name", name, "--network", network, "--network-alias", fqdn,
-			"-p", fmt.Sprintf("127.0.0.1:%d:8200", ports[i]),
+		out, err := exec.Command("docker", append(append([]string{"run", "-d", "--name", name, "--network", network, "--network-alias", fqdn}, testdocker.Publish(8200)...),
 			"--tmpfs", "/openbao/data:uid=100,gid=1000", "--tmpfs", "/openbao/audit:uid=100,gid=1000",
 			"-v", tlsDir+":/openbao/tls:ro", "-v", filepath.Join(dir, "config.hcl")+":/etc/bao/config.hcl:ro",
 			"-e", "BAO_STATIC_KEY="+key, "-e", "BAO_RAFT_NODE_ID="+pod,
 			"-e", "BAO_API_ADDR=https://"+fqdn+":8200", "-e", "BAO_CLUSTER_ADDR=https://"+fqdn+":8201",
-			smokeOpenBaoImage, "server", "-config=/etc/bao/config.hcl").CombinedOutput()
+			smokeOpenBaoImage, "server", "-config=/etc/bao/config.hcl")...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("docker run %s: %v\n%s", pod, err, out)
 		}
+		ports[i] = testdocker.PublishedPort(t, name, 8200)
 	}
 
 	get := func(i int, token, path string) (int, map[string]any) {

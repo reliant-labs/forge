@@ -842,7 +842,45 @@ func applyChartRidingManifests(ctx context.Context, chartCtx string, rc rendered
 	if err := applyRidingManifestsWithRetry(ctx, chartCtx, rc.spec.Namespace, rc.extra); err != nil {
 		return fmt.Errorf("platform dependency %q manifests: %w", rc.spec.Name, err)
 	}
+	// A FluxInstance riding the Flux Operator chart is Flux itself: the
+	// operator installs source- and kustomize-controller from it AFTER the
+	// apply returns. Until it reports Ready there is no reconciler, and a
+	// pointer written at it converges nothing, so the chart is not installed
+	// until its Flux is.
+	for _, inst := range ridingFluxInstances(rc.extra, rc.spec.Namespace) {
+		if !quiet {
+			fmt.Printf("Waiting for FluxInstance %s/%s to be Ready...\n", inst.namespace, inst.name)
+		}
+		if err := waitFluxInstanceReady(ctx, chartCtx, inst.namespace, inst.name, fluxInstanceReadyTimeout); err != nil {
+			return fmt.Errorf("platform dependency %q: wait FluxInstance %s/%s Ready: %w", rc.spec.Name, inst.namespace, inst.name, err)
+		}
+	}
 	return nil
+}
+
+// fluxInstanceReadyTimeout bounds the wait for a riding FluxInstance: the
+// operator pulls and starts each controller image, which on a cold node is
+// the slow part.
+const fluxInstanceReadyTimeout = 5 * time.Minute
+
+type namespacedName struct{ namespace, name string }
+
+// ridingFluxInstances names the FluxInstance documents in a chart's riding
+// manifests. One with no namespace lands in the chart's (the apply's `-n`).
+func ridingFluxInstances(manifests, chartNamespace string) []namespacedName {
+	var out []namespacedName
+	for _, doc := range splitDocs(manifests) {
+		m, ok := parseDoc(doc)
+		if !ok || m.Kind != "FluxInstance" || m.Metadata.Name == "" {
+			continue
+		}
+		ns := m.Metadata.Namespace
+		if ns == "" {
+			ns = chartNamespace
+		}
+		out = append(out, namespacedName{namespace: ns, name: m.Metadata.Name})
+	}
+	return out
 }
 
 // renderApplyManifests renders the env's KCL bundle, wrapping a failure in the

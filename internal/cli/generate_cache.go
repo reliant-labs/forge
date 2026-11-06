@@ -411,9 +411,13 @@ func fingerprintGenerate(root string, snap *workTreeSnapshot, outputs, outputDir
 	}
 	for _, kv := range environ {
 		name, val, ok := strings.Cut(kv, "=")
-		if ok && generateCacheEnvRelevant(name) {
-			fp.env["env:"+name] = shortSum([]byte(val))
+		if !ok || !generateCacheEnvRelevant(name) {
+			continue
 		}
+		if def, set := generateCacheEnvForgeDefaults[name]; set && val == def {
+			continue
+		}
+		fp.env["env:"+name] = shortSum([]byte(val))
 	}
 	// Which postgres hosts the shadow schema the ORM and fixtures are
 	// projected from: the dev stack's server when it is up, embedded
@@ -1060,6 +1064,17 @@ func generateHookCommands(forgeYAML string) []string {
 // contain), runtime tuning, and this cache's own switches. Every other FORGE_,
 // GO, CGO_ and KCL_ variable is part of the key, so an unknown one costs a
 // run rather than risking a skip.
+// generateCacheEnvForgeDefaults are variables forge sets in its own process,
+// to the value named here, when they are absent (kclplugin's KCL_FILE_SCOPE).
+// Children inherit that value, so a run started by a process that already
+// rendered KCL (`forge env up`, a test binary running forge in-process) sees
+// it set while a run from a fresh shell does not. Both runs behave the same,
+// so an inherited default fingerprints like an absent variable; any other
+// value is still an input.
+var generateCacheEnvForgeDefaults = map[string]string{
+	"KCL_FILE_SCOPE": "off",
+}
+
 var generateCacheEnvIgnored = map[string]bool{
 	generateTimingsEnv:           true,
 	generateNoCacheEnv:           true,

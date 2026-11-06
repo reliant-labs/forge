@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -28,6 +27,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/reliant-labs/forge/internal/testdocker"
 	"github.com/reliant-labs/forge/pkg/lease"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 
@@ -51,19 +51,14 @@ func startClickHouse(t *testing.T) (addr string) {
 			t.Skipf("cannot pull %s: %v\n%s", chImage, err, out)
 		}
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
 	name := fmt.Sprintf("alerting-it-ch-%d", time.Now().UnixNano())
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", name).Run() })
-	if out, err := exec.Command("docker", "run", "-d", "--name", name, "-p", fmt.Sprintf("127.0.0.1:%d:9000", port),
-		"-e", "CLICKHOUSE_USER=alerts", "-e", "CLICKHOUSE_PASSWORD=pw", "-e", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1", chImage).CombinedOutput(); err != nil {
+	args := append([]string{"run", "-d", "--name", name}, testdocker.Publish(9000)...)
+	if out, err := exec.Command("docker", append(args,
+		"-e", "CLICKHOUSE_USER=alerts", "-e", "CLICKHOUSE_PASSWORD=pw", "-e", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1", chImage)...).CombinedOutput(); err != nil {
 		t.Fatalf("docker run: %v\n%s", err, out)
 	}
-	addr = fmt.Sprintf("127.0.0.1:%d", port)
+	addr = fmt.Sprintf("127.0.0.1:%d", testdocker.PublishedPort(t, name, 9000))
 	deadline := time.Now().Add(90 * time.Second)
 	for {
 		c, err := openCH(addr, "default")

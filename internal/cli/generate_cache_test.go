@@ -251,6 +251,7 @@ func TestGenerateCacheEveryInputClassInvalidates(t *testing.T) {
 		{"FORGE_ variable changed", func(t *testing.T, f *cacheFixture) { f.setEnv("FORGE_X", "2") }, "$FORGE_X"},
 		{"GOFLAGS set", func(t *testing.T, f *cacheFixture) { f.setEnv("GOFLAGS", "-tags=integration") }, "$GOFLAGS"},
 		{"CI set", func(t *testing.T, f *cacheFixture) { f.setEnv("CI", "true") }, "$CI"},
+		{"KCL_FILE_SCOPE turned on", func(t *testing.T, f *cacheFixture) { f.setEnv("KCL_FILE_SCOPE", "on") }, "$KCL_FILE_SCOPE"},
 		{"file behind a symlinked dir edited", func(t *testing.T, f *cacheFixture) {
 			if runtime.GOOS == "windows" {
 				t.Skip("the fixture creates no symlink on Windows")
@@ -299,6 +300,13 @@ func TestGenerateCacheIrrelevantChangesStillMatch(t *testing.T) {
 		{"generate's own switches set", func(t *testing.T, f *cacheFixture) {
 			f.setEnv(generateTimingsEnv, "1")
 			f.setEnv("FORGE_SILENCE_EXPERIMENTAL", "1")
+		}},
+		// forge sets KCL_FILE_SCOPE=off in its own process on the first KCL
+		// render, and its children inherit it. The forge e2e corpus missed
+		// the cache on it: another parallel test's in-process render set it
+		// in the test binary between two `forge generate` children.
+		{"KCL_FILE_SCOPE=off inherited from a process that rendered KCL", func(t *testing.T, f *cacheFixture) {
+			f.setEnv("KCL_FILE_SCOPE", "off")
 		}},
 		{"file rewritten with identical bytes", func(t *testing.T, f *cacheFixture) {
 			later := time.Now().Add(time.Hour)

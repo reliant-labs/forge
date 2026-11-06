@@ -21,7 +21,9 @@ var explainable = map[string]bool{"SELECT": true, "WITH": true, "TABLE": true, "
 // Check is the lexical guard: the first line of defence, and the source of
 // good error messages. It accepts exactly one statement that starts with
 // SELECT, WITH, TABLE, VALUES, SHOW or EXPLAIN, and refuses EXPLAIN ANALYZE
-// over anything but a SELECT, because ANALYZE executes what it explains.
+// over a statement that names INSERT, UPDATE, DELETE or MERGE (a WITH with a
+// data-modifying CTE, a SELECT ... FOR UPDATE), because ANALYZE executes what
+// it explains.
 //
 // It also refuses SET and RESET by name, and any identifier that names a
 // function in [deniedFunctions]: the ones that change the session (set_config,
@@ -123,10 +125,28 @@ func Check(sql string) (leader string, err error) {
 	if !explainable[inner] {
 		return "", refused("not_read_only", fmt.Sprintf("EXPLAIN may only describe SELECT, WITH, TABLE or VALUES; got %s", inner))
 	}
-	if analyze && inner != "SELECT" {
-		return "", refused("explain_analyze", fmt.Sprintf("EXPLAIN ANALYZE runs the statement it describes; it is only allowed over a SELECT, got %s", inner))
+	if analyze {
+		if w := dataModifyingWord(stmt[i:]); w != "" {
+			return "", refused("explain_analyze", fmt.Sprintf("EXPLAIN ANALYZE runs the statement it describes; it is only allowed over a read, and this %s names %s", inner, w))
+		}
 	}
 	return leader, nil
+}
+
+// dataModifyingWords are the keywords that make a statement a write: a WITH's
+// data-modifying CTE, or SELECT ... FOR UPDATE.
+var dataModifyingWords = map[string]bool{"INSERT": true, "UPDATE": true, "DELETE": true, "MERGE": true}
+
+// dataModifyingWord returns the first keyword in stmt that makes it a write,
+// "" when it has none. A keyword inside a string literal, a quoted identifier
+// or a comment is not a token word, so it never matches.
+func dataModifyingWord(stmt []token) string {
+	for _, t := range stmt {
+		if t.kind == tokWord && dataModifyingWords[t.text] {
+			return t.text
+		}
+	}
+	return ""
 }
 
 // MaxParams is the most $n parameters a statement may reference; Postgres'

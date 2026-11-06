@@ -95,6 +95,7 @@ hand-wrote and then deleted.
 | **read a forge library's API** | `forge project libraries <pkg>` prints every signature in one call — never `find`, never `grep`, and not `go doc <pkg>`, which shows no methods | `forge-libraries` |
 | **see what a generated store offers** | `go doc ./internal/db <Entity>Store` (interfaces render in full), or `forge project shapes --kind store` for the list. Never forge's generator source | `db`, `service-layer` |
 | accept **file uploads** | `forge/pkg/blobstore` presigns them into a `forge.Bucket` (MinIO in dev) | `storage/blobstore` |
+| call an **LLM** from the backend | declare `forge.LLM` + `forge.llm_env()`, use the official anthropic-go / openai-go clients unmodified; agentic work goes to a Reliant workflow instead | `llm`, `deploy/llm` |
 | need **dev data** | `forge db seed apply` derives FK-coherent rows from the applied schema; teach it your domain nouns in `db/seeds/vocab.yaml` | `db/seeding` |
 
 `forge scaffold` also births a `worker`, `operator`, `crd`, `binary`, `adapter`,

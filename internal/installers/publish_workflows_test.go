@@ -2,7 +2,9 @@ package installers
 
 import (
 	"os"
+	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -132,4 +134,30 @@ func actionRef(line string) (string, bool) {
 		rest = rest[:i]
 	}
 	return strings.Trim(strings.TrimSpace(rest), `"'`), true
+}
+
+// homebrew-watch.yml's decision and issue lifecycle live in
+// scripts/homebrew-watch.sh; its hermetic self-test drives them with a fake gh
+// and a fixed clock: current, within grace, overdue (opens the issue once),
+// a further release (one comment), recovery (closes it), a missing formula
+// (raises the same issue) and an API failure (touches no issue).
+func TestHomebrewWatchScript(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execs bash and jq subprocesses; runs in task test")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("the watcher runs on ubuntu-latest and uses GNU date -d")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not on PATH")
+	}
+	// Read both here so a cached PASS is invalidated by an edit.
+	repoFile(t, "scripts/homebrew-watch.sh")
+	if !strings.Contains(readRepoFile(t, ".github/workflows/homebrew-watch.yml"), "bash scripts/homebrew-watch.sh") {
+		t.Error("homebrew-watch.yml no longer runs scripts/homebrew-watch.sh; the tested logic is not what runs")
+	}
+	cmd := exec.Command("bash", repoFile(t, "scripts/test-homebrew-watch.sh"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("scripts/test-homebrew-watch.sh: %v\n%s", err, out)
+	}
 }

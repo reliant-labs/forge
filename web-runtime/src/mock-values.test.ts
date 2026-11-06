@@ -377,10 +377,26 @@ describe("echo meets the response's rules", () => {
   const probe = serviceDefaults(ProbeService, opts);
 
   it("echoes a request value only when the response field's rules accept it", () => {
-    const ok = probe.echoProbe({ tier: "pro", sku: "ABC-1234", bounded: 1005, region: Region.EU });
-    expect(ok).toMatchObject({ tier: "pro", sku: "ABC-1234", bounded: 1005, region: Region.EU });
+    const ok = probe.echoProbe({
+      tier: "pro",
+      sku: "ABC-1234",
+      bounded: 1005,
+      region: Region.EU,
+    });
+    expect(ok).toMatchObject({
+      tier: "pro",
+      sku: "ABC-1234",
+      bounded: 1005,
+      region: Region.EU,
+    });
 
-    const bad = probe.echoProbe({ tier: "platinum", sku: "nope", bounded: 7, region: Region.US, code: "other" });
+    const bad = probe.echoProbe({
+      tier: "platinum",
+      sku: "nope",
+      bounded: 7,
+      region: Region.US,
+      code: "other",
+    });
     expect(["free", "pro", "enterprise"]).toContain(bad.tier);
     expect(bad.sku).toMatch(/^[A-Z]{3}-[0-9]{4}$/);
     expect(bad.bounded).toBeGreaterThan(1000);
@@ -390,24 +406,34 @@ describe("echo meets the response's rules", () => {
   });
 
   it("keeps the oneof case the request selected, with its value when the rules allow", () => {
-    const host = probe.echoProbe({ target: { case: "host", value: "api.example.com" } });
+    const host = probe.echoProbe({
+      target: { case: "host", value: "api.example.com" },
+    });
     expect(host.target).toEqual({ case: "host", value: "api.example.com" });
 
-    const status = probe.echoProbe({ target: { case: "httpStatus", value: 9999 } });
+    const status = probe.echoProbe({
+      target: { case: "httpStatus", value: 9999 },
+    });
     expect(status.target.case).toBe("httpStatus");
     const code = status.target.value as number;
     expect(code).toBeGreaterThanOrEqual(100);
     expect(code).toBeLessThanOrEqual(599);
 
-    const badHost = probe.echoProbe({ target: { case: "host", value: "not a host!" } });
+    const badHost = probe.echoProbe({
+      target: { case: "host", value: "not a host!" },
+    });
     expect(badHost.target.case).toBe("host");
     expect(badHost.target.value).toMatch(/^[a-z0-9.-]+$/);
   });
 
   it("chooses by seed when the requested case is not one of the response's members", () => {
-    const res = probe.echoProbe({ target: { case: "unknownCase", value: "x" } });
+    const res = probe.echoProbe({
+      target: { case: "unknownCase", value: "x" },
+    });
     expect(["host", "httpStatus", "other"]).toContain(res.target.case);
-    expect(probe.echoProbe({ target: { case: "unknownCase", value: "x" } })).toEqual(res);
+    expect(
+      probe.echoProbe({ target: { case: "unknownCase", value: "x" } }),
+    ).toEqual(res);
   });
 });
 
@@ -427,7 +453,9 @@ describe("patterns the cheap generator cannot build", () => {
   });
 
   it("refuses a pattern it cannot build rather than emit a value that does not match", () => {
-    expect(() => mockValue(UncheapPatternSchema, opts)).toThrow(/sample\.v1\.UncheapPattern\.word has string rules/);
+    expect(() => mockValue(UncheapPatternSchema, opts)).toThrow(
+      /sample\.v1\.UncheapPattern\.word has string rules/,
+    );
   });
 });
 

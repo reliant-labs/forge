@@ -554,9 +554,14 @@ const FORMAT_CHECKS: Record<StrFormat, (s: string) => boolean> = {
   ipv6: (s) => IPV6.test(s),
   ipPrefix: (s) => {
     const m = /^(.+)\/(\d{1,3})$/.exec(s);
-    return !!m && ((IPV4.test(m[1]!) && Number(m[2]) <= 32) || (IPV6.test(m[1]!) && Number(m[2]) <= 128));
+    return (
+      !!m &&
+      ((IPV4.test(m[1]!) && Number(m[2]) <= 32) ||
+        (IPV6.test(m[1]!) && Number(m[2]) <= 128))
+    );
   },
-  uuid: (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s),
+  uuid: (s) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s),
   tuuid: (s) => /^[0-9a-f]{32}$/i.test(s),
   ulid: (s) => /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(s),
 };
@@ -589,14 +594,20 @@ function satisfiesNum(v: number, r: NumRules): boolean {
   if (r.notIn?.includes(v)) return false;
   const lo = r.gt ?? r.gte;
   const hi = r.lt ?? r.lte;
-  const lowOk = (r.gt === undefined || v > r.gt) && (r.gte === undefined || v >= r.gte);
-  const highOk = (r.lt === undefined || v < r.lt) && (r.lte === undefined || v <= r.lte);
+  const lowOk =
+    (r.gt === undefined || v > r.gt) && (r.gte === undefined || v >= r.gte);
+  const highOk =
+    (r.lt === undefined || v < r.lt) && (r.lte === undefined || v <= r.lte);
   if (lo !== undefined && hi !== undefined && lo > hi) return lowOk || highOk;
   return lowOk && highOk;
 }
 
 /** Whether `v` is one of the enum's values and meets its rules. */
-function satisfiesEnum(e: DescEnum, v: number, r: EnumRules | undefined): boolean {
+function satisfiesEnum(
+  e: DescEnum,
+  v: number,
+  r: EnumRules | undefined,
+): boolean {
   if (!e.values.some((d) => d.number === v)) return false;
   if (!r) return true;
   if (r.const !== undefined) return v === r.const;

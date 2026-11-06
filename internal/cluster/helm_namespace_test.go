@@ -98,7 +98,7 @@ func fakeKubectlRecorder(t *testing.T) func() []kubectlCall {
 		"cat > \"$tmp\"\n" +
 		"{ printf '<<<ARGS>>> %s\\n' \"$*\"; printf '<<<STDIN>>>\\n'; cat \"$tmp\"; printf '\\n<<<END>>>\\n'; } >> " + logPath + "\n" +
 		"case \" $* \" in *' apply '*) " +
-		"awk '/^kind:/{k=tolower($2)} /^  name:/{if(k!=\"\"&&n==\"\"){n=$2}} " +
+		"awk '/^kind:/{k=tolower($2)} /^[[:space:]]+name:/{if(k!=\"\"&&n==\"\"){n=$2}} " +
 		"/^---$/{if(k!=\"\"&&n!=\"\")print k\"/\"n\" serverside-applied\"; k=\"\"; n=\"\"} " +
 		"END{if(k!=\"\"&&n!=\"\")print k\"/\"n\" serverside-applied\"}' \"$tmp\" ;; \n" +
 		"esac\n" +

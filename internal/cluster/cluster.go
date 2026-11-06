@@ -1025,6 +1025,15 @@ func applyRendered(ctx context.Context, opts ApplyOpts, manifests string) error 
 // applyRenderedNoWait is ApplyNoWait after the KCL render: select, scope and
 // apply, returning the rollout still to be awaited.
 func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) (*PendingRollout, error) {
+	// Charts can target a secondary context even when this apply's app stream
+	// is scoped to the primary. Keep their prerequisites before that narrowing,
+	// but honour the same target and delivery-unit selection.
+	chartPrerequisites := manifests
+	if len(opts.Targets) > 0 {
+		chartPrerequisites = SelectManifestsByGroup(chartPrerequisites, opts.Targets)
+	}
+	chartPrerequisites = DropDeliveryUnits(chartPrerequisites, opts.SkipUnits)
+	chartPrerequisites = StampOwnership(chartPrerequisites, ObjectOwner(opts.Project, opts.Env))
 	selectedCharts, manifests, crdOwner := selectAndScope(opts, manifests)
 	// What the render holds for this cluster, before the hub's units are taken
 	// out: the prunes below compare the cluster against THIS, never against
@@ -1110,6 +1119,27 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	// chart applies in CRD-first order (forge-supplied CRDs → wait
 	// Established → the --skip-crds controllers). When this apply also
 	// carries app manifests (a mixed --target), the charts land before them.
+	// Controllers can reference PriorityClasses declared outside their chart.
+	// Send these before any controller wait, to each chart's actual context.
+	// The stream has already passed target, cluster and delivery-unit filters.
+	seenChartContexts := map[string]bool{}
+	for _, rc := range renderedCharts {
+		kctx := chartContext(opts.Context, rc.spec)
+		if seenChartContexts[kctx] {
+			continue
+		}
+		seenChartContexts[kctx] = true
+		preStream := manifests
+		if kctx != opts.Context {
+			preStream = chartPrerequisitesForSecondary(chartPrerequisites, kctx)
+		}
+		prereqs := ChartSchedulingPrerequisites(preStream)
+		if strings.TrimSpace(prereqs) != "" {
+			if err := KubectlApply(ctx, kctx, prereqs); err != nil {
+				return nil, fmt.Errorf("apply chart scheduling prerequisites to %q: %w", kctx, err)
+			}
+		}
+	}
 	if err := applyRenderedCharts(ctx, opts.Context, renderedCharts, opts.Quiet); err != nil {
 		return nil, err
 	}

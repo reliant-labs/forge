@@ -139,6 +139,9 @@ func ensureEnvPlatformChartsInstalled(ctx context.Context, env, project string, 
 		return nil
 	}
 	fmt.Printf("\n[up] platform phase — installing %d declared chart(s) for env %s\n", len(installs), env)
+	if err := applyPlatformPrerequisites(ctx, env, project, entities, installs); err != nil {
+		return err
+	}
 	return installPlatformCharts(ctx, entities, installs, cluster.ChartOwner(project, env))
 }
 

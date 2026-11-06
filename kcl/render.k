@@ -1484,6 +1484,7 @@ _render_runtime = lambda w: any, rt: any, bundle: Bundle -> any {
         # `is not Undefined`, NOT truthiness: an explicitly EMPTY list means
         # "binds nothing" and must reach Go distinct from "not declared".
         "listen_ports": rt.listen_ports if rt.listen_ports is not Undefined else None
+        "startup_after": rt.startup_after
         "delve_port": rt.delve_port
     } if rt.type == "host" else ({
         "type": "compose"
@@ -2553,6 +2554,7 @@ _frontend_violations = lambda f: Frontend -> [str] {
     _t = _rt.type
     _host = _t == "host"
     (["runner '${_rt.runner}': a frontend's dev server is `<dev_runner> dev`; set Frontend.dev_runner, not OnHost.runner"] if _host and _rt.runner != "go-run" else []) \
+        + (["startup_after: only host workloads declare startup dependencies; frontends can be dependency targets"] if _host and _rt.startup_after else []) \
         + (["air_config: a frontend's dev server has no air config"] if _host and _rt.air_config else []) \
         + (["working_dir: a frontend's dev server runs in its own path"] if _host and _rt.working_dir else []) \
         + (["listen_ports: a frontend's dev server binds Frontend.port; set that"] if _host and _rt.listen_ports is not Undefined else []) \

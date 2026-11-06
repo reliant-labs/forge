@@ -22,6 +22,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -95,70 +96,40 @@ func (d contractDiagnostic) String() string {
 // diagnostics. A load or analyzer failure is an error; diagnostics are
 // findings, not errors. gate tunes the exclusion gate to the tree (see
 // codegenUnavailable).
+//
+// Memory follows the request, not the module. The analyzers carry no facts,
+// so they need source for the requested packages alone: their dependencies
+// come from the compiler's export data. Measured on reliant's merge-gate
+// scope (14 packages), the old load type-checked all 2,658 packages in their
+// graph from source — the standard library and 2,099 third-party packages
+// included — and peaked at 5.5 GiB of heap. The exclusion gate's
+// multi-implementation search is the one consumer that needs more than the
+// requested packages: it reads every main-module package they reach from
+// source, because export data drops unexported types. When a requested
+// package carries `//forge:exclude-contract` and the analysis load did not
+// already parse that whole set, the gate gets a second load of exactly it,
+// made after the first has been released (excludeGateLoad).
 func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string, gate contract.ExcludeGateOptions) ([]contractDiagnostic, error) {
 	// The exclude list mirrors forge.yaml's contracts.exclude — same
 	// registration cmd/contractlint performs before multichecker.Main.
 	contract.SetExcludes(excludes)
 
-	pkgs, err := loadPackagesForAnalysis(ctx, paths)
+	cwd, _ := os.Getwd()
+	out, deferred, err := analyzeContractPackages(ctx, cwd, paths, gate)
 	if err != nil {
 		return nil, err
 	}
-
-	graph, err := checker.Analyze(contractAnalyzers(), pkgs, nil)
-	if err != nil {
-		return nil, fmt.Errorf("contract analysis: %w", err)
-	}
-
-	cwd, _ := os.Getwd()
-	seen := map[string]bool{}
-	var out []contractDiagnostic
-	for act := range graph.All() {
-		if !act.IsRoot {
-			continue
+	if deferred != nil {
+		// The analysis load is garbage now, but the GC's next target is
+		// still twice its live heap: without a collection here, the gate's
+		// load grows into that headroom and the two peaks stack (measured:
+		// 3.8 GiB against 1.8 GiB with it).
+		runtime.GC()
+		gateFindings, err := deferred.check(ctx, gate)
+		if err != nil {
+			return nil, err
 		}
-		if act.Err != nil {
-			return nil, fmt.Errorf("%s on %s: %w", act.Analyzer.Name, act.Package.PkgPath, act.Err)
-		}
-		for _, d := range act.Diagnostics {
-			pos := act.Package.Fset.Position(d.Pos)
-			if cwd != "" {
-				if rel, rerr := filepath.Rel(cwd, pos.Filename); rerr == nil && !strings.HasPrefix(rel, "..") {
-					pos.Filename = rel
-				}
-			}
-			// Tests:true loads each package again as its test variant;
-			// dedupe the identical diagnostics that produces.
-			key := fmt.Sprintf("%s|%d|%d|%s|%s", pos.Filename, pos.Line, pos.Column, act.Analyzer.Name, d.Message)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			out = append(out, contractDiagnostic{Analyzer: act.Analyzer.Name, Pos: pos, Message: d.Message})
-		}
-	}
-
-	// The exclusion gate: what `//forge:exclude-contract` costs (a reason,
-	// and not being an outbound boundary or a multi-impl contract). A module
-	// pass over the same loaded packages — see
-	// internal/linter/contract/exclude_directive.go for why it is not an
-	// analyzer. The forge.yaml contracts.exclude list does not silence it: that
-	// list excludes paths, and the gate is about a marker in the source.
-	// The not-a-component gate rides the same pass: a reason, and a marker
-	// placed where composition reads it (not_a_component_directive.go).
-	gateFindings := contract.CheckExcludeDirectives(pkgs, gate)
-	gateFindings = append(gateFindings, contract.CheckNotAComponentDirectives(pkgs, gate)...)
-	for _, f := range gateFindings {
-		pos := token.Position{Filename: f.File, Line: f.Line}
-		if cwd != "" {
-			if rel, rerr := filepath.Rel(cwd, pos.Filename); rerr == nil && !strings.HasPrefix(rel, "..") {
-				pos.Filename = rel
-			}
-		}
-		out = append(out, contractDiagnostic{
-			Analyzer: f.Rule, Pos: pos, Message: f.Message, FixHint: f.FixHint,
-			Warning: f.Severity != "" && f.Severity != finding.SeverityError,
-		})
+		out = append(out, gateDiagnostics(cwd, gateFindings)...)
 	}
 
 	sort.Slice(out, func(i, j int) bool {
@@ -177,6 +148,165 @@ func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string,
 	return out, nil
 }
 
+// analyzeContractPackages runs the analyzers and the gates over one load of
+// paths (test variants included, dependencies from export data). When that
+// load cannot serve the exclusion gate's search (see excludeGateFor), the
+// gate is left out and returned as the load it needs instead; the packages
+// are unreachable once this returns, so the caller's second load does not
+// stack on top of them.
+func analyzeContractPackages(ctx context.Context, cwd string, paths []string, gate contract.ExcludeGateOptions) ([]contractDiagnostic, *excludeGateLoad, error) {
+	pkgs, err := loadPackagesForAnalysis(ctx, paths, analysisLoad{tests: true})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	graph, err := checker.Analyze(contractAnalyzers(), pkgs, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("contract analysis: %w", err)
+	}
+
+	seen := map[string]bool{}
+	var out []contractDiagnostic
+	for act := range graph.All() {
+		if !act.IsRoot {
+			continue
+		}
+		if act.Err != nil {
+			return nil, nil, fmt.Errorf("%s on %s: %w", act.Analyzer.Name, act.Package.PkgPath, act.Err)
+		}
+		for _, d := range act.Diagnostics {
+			pos := act.Package.Fset.Position(d.Pos)
+			pos.Filename = cwdRelative(cwd, pos.Filename)
+			// Tests:true loads each package again as its test variant;
+			// dedupe the identical diagnostics that produces.
+			key := fmt.Sprintf("%s|%d|%d|%s|%s", pos.Filename, pos.Line, pos.Column, act.Analyzer.Name, d.Message)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, contractDiagnostic{Analyzer: act.Analyzer.Name, Pos: pos, Message: d.Message})
+		}
+	}
+
+	// The exclusion gate: what `//forge:exclude-contract` costs (a reason,
+	// and not being an outbound boundary or a multi-impl contract). A module
+	// pass over loaded packages — see
+	// internal/linter/contract/exclude_directive.go for why it is not an
+	// analyzer. The forge.yaml contracts.exclude list does not silence it: that
+	// list excludes paths, and the gate is about a marker in the source.
+	// The not-a-component gate rides along: a reason, and a marker placed
+	// where composition reads it (not_a_component_directive.go). It reads the
+	// requested packages alone, so this load always serves it.
+	gateFindings := contract.CheckNotAComponentDirectives(pkgs, gate)
+	deferred := excludeGateFor(pkgs)
+	if deferred == nil {
+		gateFindings = append(contract.CheckExcludeDirectives(pkgs, gate), gateFindings...)
+	}
+	return append(out, gateDiagnostics(cwd, gateFindings)...), deferred, nil
+}
+
+// excludeGateLoad is the load the exclusion gate needs when the analysis load
+// cannot serve it: every main-module package the requested packages reach
+// (their test files' imports included), type-checked from source so that the
+// multi-implementation search sees unexported types too, with roots naming
+// the requested packages among them. It holds import paths, not packages, so
+// nothing of the analysis load survives into it.
+type excludeGateLoad struct {
+	roots  []string
+	search []string
+}
+
+// excludeGateFor returns the load the exclusion gate needs beyond pkgs, or
+// nil when pkgs serves it: no requested package declares
+// `//forge:exclude-contract` (so the gate has nothing to judge), or every
+// main-module package the requested packages reach was already parsed — an
+// unscoped `forge lint` requests them all.
+func excludeGateFor(pkgs []*packages.Package) *excludeGateLoad {
+	if !contract.DeclaresExcludeContract(pkgs) {
+		return nil
+	}
+	roots, search := map[string]bool{}, map[string]bool{}
+	for _, p := range pkgs {
+		if plainPackage(p) {
+			roots[p.PkgPath] = true
+			search[p.PkgPath] = true
+		}
+	}
+	parsed := true
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Module == nil || !p.Module.Main || !plainPackage(p) {
+			return
+		}
+		search[p.PkgPath] = true
+		if p.TypesInfo == nil {
+			parsed = false // from export data: its unexported types are missing
+		}
+	})
+	if parsed {
+		return nil
+	}
+	return &excludeGateLoad{roots: sortedSet(roots), search: sortedSet(search)}
+}
+
+// check runs the exclusion gate over its own load. Tests are not loaded: the
+// gate judges a package's non-test source and searches plain packages only,
+// and the requested packages' test-only imports are already in search.
+func (l *excludeGateLoad) check(ctx context.Context, gate contract.ExcludeGateOptions) ([]contract.ExcludeFinding, error) {
+	pkgs, err := loadPackagesForAnalysis(ctx, l.search, analysisLoad{})
+	if err != nil {
+		return nil, err
+	}
+	want := map[string]bool{}
+	for _, r := range l.roots {
+		want[r] = true
+	}
+	var roots []*packages.Package
+	for _, p := range pkgs {
+		if want[p.PkgPath] {
+			roots = append(roots, p)
+		}
+	}
+	return contract.CheckExcludeDirectivesIn(roots, pkgs, gate), nil
+}
+
+// plainPackage reports whether p is a package as it builds outside tests: not
+// a test variant (`p [p.test]`), an external test package or a test main.
+func plainPackage(p *packages.Package) bool {
+	return p.ID == p.PkgPath && !strings.HasSuffix(p.PkgPath, "_test") && !strings.HasSuffix(p.PkgPath, ".test")
+}
+
+func sortedSet(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// gateDiagnostics maps the module-pass gates' findings onto diagnostics.
+func gateDiagnostics(cwd string, fs []contract.ExcludeFinding) []contractDiagnostic {
+	out := make([]contractDiagnostic, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, contractDiagnostic{
+			Analyzer: f.Rule, Pos: token.Position{Filename: cwdRelative(cwd, f.File), Line: f.Line},
+			Message: f.Message, FixHint: f.FixHint,
+			Warning: f.Severity != "" && f.Severity != finding.SeverityError,
+		})
+	}
+	return out
+}
+
+// cwdRelative is file relative to cwd when it lies under it, else file.
+func cwdRelative(cwd, file string) string {
+	if cwd != "" {
+		if rel, err := filepath.Rel(cwd, file); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	return file
+}
+
 // analysisEnv is the loader's environment: base, plus GOWORK=off and
 // -mod=mod outside a go.work workspace, with -trimpath merged into GOFLAGS.
 // An environment GOFLAGS replaces the go env file's, so setting -mod=mod alone
@@ -192,30 +322,51 @@ func analysisEnv(base []string, inWorkspace bool) []string {
 	return goexec.WithTrimpath(env)
 }
 
-// loadPackagesForAnalysis loads paths, test variants included, with the full
-// syntax and type information go/analysis's checker needs. Shared by the
-// in-process analyzer lanes (contract, slow-tests). A package that fails to
-// load is an error: half-typed packages would yield half-analyzed results.
-func loadPackagesForAnalysis(ctx context.Context, paths []string) ([]*packages.Package, error) {
+// analysisLoad is how much of the import graph loadPackagesForAnalysis
+// type-checks from source.
+type analysisLoad struct {
+	// depsFromSource type-checks every dependency from source too
+	// (go/packages NeedDeps), which an analyzer with facts needs:
+	// checker.Analyze runs it over each dependency to produce them. Without
+	// it a dependency's types come from the compiler's export data out of
+	// the build cache, and only the requested packages — and any package on
+	// an import path between two of them, without function bodies — are
+	// parsed. That is what keeps a scoped lint's memory proportional to its
+	// scope: the standard library and every third-party module stay out.
+	depsFromSource bool
+	// tests loads each requested package's test variants as well.
+	tests bool
+}
+
+// loadPackagesForAnalysis loads paths with the syntax and type information
+// go/analysis's checker needs for them, and for their dependencies as far as
+// load says. Shared by the in-process analyzer lanes (contract, slow-tests).
+// A package that fails to load is an error: half-typed packages would yield
+// half-analyzed results.
+func loadPackagesForAnalysis(ctx context.Context, paths []string, load analysisLoad) ([]*packages.Package, error) {
 	// Same module-resolution discipline the subprocess used: outside a
 	// go.work workspace, pin GOWORK=off and -mod=mod so the loader can
 	// fetch missing modules; inside one (forge itself), honour the
 	// workspace so the local pkg/ checkout resolves.
 	env := analysisEnv(os.Environ(), hasWorkspaceGoMod())
 
+	mode := packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
+		packages.NeedImports | packages.NeedTypes |
+		packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedTypesSizes |
+		packages.NeedModule
+	if load.depsFromSource {
+		mode |= packages.NeedDeps // checker.Analyze's LoadAllSyntax, for facts
+	}
 	cfg := &packages.Config{
 		Context: ctx,
-		// checker.Analyze requires LoadAllSyntax-equivalent data.
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
-			packages.NeedImports | packages.NeedDeps | packages.NeedTypes |
-			packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedTypesSizes |
-			packages.NeedModule,
-		Env: env,
+		Mode:    mode,
+		Env:     env,
 		// Parity with the retired multichecker driver (-test=true) and
-		// `go vet -vettool`: test variants are loaded too. The analyzers
-		// skip test files themselves (contract/testfiles.go) — a test
-		// file is not a package's API — so every driver agrees.
-		Tests: true,
+		// `go vet -vettool`: the analyzer lanes load test variants too.
+		// The contract analyzers skip test files themselves
+		// (contract/testfiles.go) — a test file is not a package's API — so
+		// every driver agrees.
+		Tests: load.tests,
 	}
 	// A node_modules package that ships Go source is a package of this
 	// module as far as ./... is concerned, and not the project's to lint.

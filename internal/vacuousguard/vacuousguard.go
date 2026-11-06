@@ -578,12 +578,26 @@ func checkSkips(fset *token.FileSet, fd *ast.FuncDecl, key string) []Finding {
 	return out
 }
 
-// enclosingGuard returns the innermost conditional construct around the node on
-// top of stack, stopping at the function boundary.
-// afterEarlyReturn reports whether a statement before the skip, in any block
-// between the function boundary and the skip, can return: the skip then runs
-// only when that return did not.
+// afterEarlyReturn reports whether the skip is the fallback of a search: it
+// sits in a value-returning function (a helper such as pickFreePortOrSkip),
+// and a loop before it, in a block between the function boundary and the
+// skip, returns a value. The skip then runs only when the search found
+// nothing. Any other preceding return proves nothing: a test function has no
+// value to return, and `if false { return }` or an early bare return in a
+// test still leaves a skip that disables every path that reaches it.
 func afterEarlyReturn(stack []ast.Node) bool {
+	var fnType *ast.FuncType
+	for i := len(stack) - 1; i >= 0 && fnType == nil; i-- {
+		switch fn := stack[i].(type) {
+		case *ast.FuncDecl:
+			fnType = fn.Type
+		case *ast.FuncLit:
+			fnType = fn.Type
+		}
+	}
+	if fnType == nil || fnType.Results == nil || len(fnType.Results.List) == 0 {
+		return false
+	}
 	for i := len(stack) - 1; i > 0; i-- {
 		switch stack[i].(type) {
 		case *ast.FuncDecl, *ast.FuncLit:
@@ -597,30 +611,38 @@ func afterEarlyReturn(stack []ast.Node) bool {
 			if st == stack[i] {
 				break
 			}
-			if containsReturn(st) {
-				return true
+			switch st.(type) {
+			case *ast.ForStmt, *ast.RangeStmt:
+				if containsValueReturn(st) {
+					return true
+				}
 			}
 		}
 	}
 	return false
 }
 
-// containsReturn reports whether n holds a return of its own function (one
-// inside a nested function literal returns from that literal instead).
-func containsReturn(n ast.Node) bool {
+// containsValueReturn reports whether n holds a return of a value from its own
+// function (one inside a nested function literal returns from that literal
+// instead).
+func containsValueReturn(n ast.Node) bool {
 	found := false
 	ast.Inspect(n, func(n ast.Node) bool {
-		switch n.(type) {
+		switch n := n.(type) {
 		case *ast.FuncLit:
 			return false
 		case *ast.ReturnStmt:
-			found = true
+			if len(n.Results) > 0 {
+				found = true
+			}
 		}
 		return !found
 	})
 	return found
 }
 
+// enclosingGuard returns the innermost conditional construct around the node on
+// top of stack, stopping at the function boundary.
 func enclosingGuard(stack []ast.Node) ast.Node {
 	for i := len(stack) - 1; i >= 0; i-- {
 		switch stack[i].(type) {

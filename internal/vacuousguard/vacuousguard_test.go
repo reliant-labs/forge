@@ -229,6 +229,8 @@ func TestRulesFireOnPlantedDefects(t *testing.T) {
 
 	want := []string{
 		"dead-skip|TestPermanentlySkipped",
+		"dead-skip|TestSkipAfterEarlyReturn",
+		"dead-skip|TestSkipAfterUnreachableReturn",
 		"dead-skip|TestSkipOnRepoFixture",
 		"silent-capability|TestCapabilityBailsMidTest",
 		"silent-capability|TestCapabilityGuardedLint",

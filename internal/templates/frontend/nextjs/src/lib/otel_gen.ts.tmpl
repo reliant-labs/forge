@@ -46,8 +46,15 @@
 // auth must have the proxy in front of it strip that header or replace it
 // with the real key — never the bundle.
 //
-// Session replay is OFF. NEXT_PUBLIC_OTEL_REPLAY=true enables it, and then
-// masks every input and all text; there is no setting that records unmasked.
+// Session replay is OFF. `OTEL_REPLAY = "true"` in the runtime config (a
+// `runtime_config` entry, so each environment decides without a rebuild) or
+// NEXT_PUBLIC_OTEL_REPLAY=true at build time enables it, and then masks every
+// input and all text; there is no setting that records unmasked.
+//
+// Every value below reads the runtime config first. The NEXT_PUBLIC_* build
+// variable is the fallback for a key config.js does not carry; it is baked
+// into the bundle, so it follows that build into every environment it is
+// promoted to. Prefer the runtime key.
 //
 // Distributed tracing itself — the traceparent attached to every RPC, which
 // is what makes browser spans join the backend's trace — is always on, needs
@@ -119,7 +126,7 @@ export function initTelemetry(): void {
     apiOrigins: [
       text(cfg.API_URL) || process.env.NEXT_PUBLIC_API_URL || DEV_API_URL,
     ],
-    replay: process.env.NEXT_PUBLIC_OTEL_REPLAY === "true",
+    replay: (text(cfg.OTEL_REPLAY) || process.env.NEXT_PUBLIC_OTEL_REPLAY) === "true",
   });
 }
 

@@ -268,6 +268,24 @@ func TestChooseDeployRelease_ReusesAReleaseOfThisCheckoutWhateverItIsNamed(t *te
 	}
 }
 
+// One forge commit has several names. A forge built in a clone that had
+// fetched a newer tag derives another pseudo-version base for the commit a
+// go.mod pinned (forge reports fca68889, a68a8644); the release that commit
+// cut is still this forge's, so it is reused rather than cut again.
+func TestChooseDeployRelease_ReusesAReleaseBuiltByTheSameForgeCommitUnderAnotherName(t *testing.T) {
+	dir := deployAllProject(t)
+	recorded := deployTestProvenance()
+	recorded.ForgeVersion = "v0.1.43-0.20261009203931-bc24a9963fd6" // deployTestForge's commit, an older base
+	stubDeployCheckout(t, deployTestProvenance(), deployTestEnvRender)
+	cutTestRelease(t, dir, "20261009.205925-d29da50b", recorded, map[string]string{deployTestImage: sha("1")})
+	releaseImageResolves = func(context.Context, string) (bool, error) { return true, nil }
+
+	got := chooseFor(t, dir, deployTestProvenance())
+	if got.Reuse == nil || got.Reuse.Version != "20261009.205925-d29da50b" {
+		t.Fatalf("choice = %+v, want reuse of 20261009.205925-d29da50b", got)
+	}
+}
+
 // Each of these must CUT a new release, and say why. The checkout always
 // holds a release cut by `forge env build --release` for deployTestTree; each
 // case changes one thing about the checkout, the env or the world.

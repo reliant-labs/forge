@@ -154,6 +154,11 @@ type pipelineContext struct {
 	// emit or claim output built on an ORM that was never written.
 	ORMFailure error
 
+	// ormPlan is the ORM's entity set as stepPlanORMEntities computed it
+	// (nil until it runs), so the ORM step projects exactly what was
+	// planned and the schema is introspected once.
+	ormPlan *ormEntityPlan
+
 	// SkipPreChecks bypasses the pre-codegen Step 0c contract-shape
 	// check (LintInternalContracts). Same motivation as SkipValidate:
 	// during parallel-lane work an unrelated `internal/<other-lane>/
@@ -388,6 +393,12 @@ func generateSteps() []GenStep {
 		{Name: "ensure gen/go.mod", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepEnsureGenModule, Tag: "config", Writes: writesGenGoMod},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto", Writes: writesBufGo},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepDescriptorGenerate, Tag: "proto", Writes: writesDescriptor},
+		// The ORM's entity set, planned as soon as the descriptor it joins
+		// against is fresh, so a schema that cannot project (two tables, one
+		// entity name) is refused here — not after the frontend installs,
+		// codegen, tidies and validation build that used to run first. See
+		// generate_orm_plan.go.
+		{Name: planORMEntitiesStep, Gate: gateORMHasServices, GateReason: "no services/workers/operators or features.orm=false", Run: stepPlanORMEntities, Tag: "validate"},
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto", Writes: writesOpenAPI},
 		{Name: "frontend workspaces scaffold", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
 		{Name: "TypeScript stubs (frontends)", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend", Writes: writesFrontendTS},
@@ -2058,7 +2069,7 @@ func stepServiceStubs(ctx *pipelineContext) error {
 // The entity set is every applied table (codegen.ParseORMEntities), not the
 // CRUD join: CRUD wiring keys on CRUD rpcs, the store does not.
 func stepInternalDBORM(ctx *pipelineContext) error {
-	entities, entErr := codegen.ParseORMEntities(ctx.ProjectDir)
+	entities, entErr := ctx.ormEntities()
 	if entErr != nil {
 		ctx.ORMFailure = entErr
 		return ctx.warnOrFail("entity parsing for ORM generation", entErr)

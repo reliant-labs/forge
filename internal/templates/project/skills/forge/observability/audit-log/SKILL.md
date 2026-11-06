@@ -51,9 +51,11 @@ app-specific read-side (the table + the RPC) is code you own.
    COMMENT ON TABLE audit_log IS 'forge:no-entity — written and read through forge/pkg/audit';
    ```
 
-   The ORM projects every applied table unless it says otherwise, so the
-   `forge:no-entity` comment is what keeps this one out. Drop it only if you
-   deliberately want a generated store over the table as well.
+   forge recognizes this table as forge/pkg/audit's (by its name and these
+   columns) and leaves it off the ORM on its own, so the comment states
+   what forge already does. It also keeps the table off on a forge older than
+   that recognition. If you deliberately want a generated store over the
+   table as well, say `forge:entity` instead.
 
 2. **Wire the DB-backed interceptor** from the library — one line. Construct
    the store and set the `Audit` slot of `cmd serve.go`'s

@@ -10,10 +10,12 @@
 // Everything APP-SPECIFIC about audit is code you own, not library code:
 //
 //   - the audit_log TABLE — a migration you own; the columns this store
-//     reads/writes are documented on [Entry]. Mark it
-//     `COMMENT ON TABLE audit_log IS 'forge:no-entity'` so forge's ORM does
-//     not project a second store over it. If the migration puts it in a
-//     schema, tell the store which one with [WithSchema].
+//     reads/writes are documented on [Entry]. forge's ORM recognizes it by
+//     that name and those columns and projects no second store over it;
+//     `COMMENT ON TABLE audit_log IS 'forge:no-entity'` says so explicitly
+//     (and keeps it off under a forge that predates the recognition). If the
+//     migration puts it in a schema, tell the store which one with
+//     [WithSchema].
 //   - the READ-SIDE ListAuditEvents RPC + its Connect handler — own the proto
 //     and the handler, backing it with this [Store].
 //

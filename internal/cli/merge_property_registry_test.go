@@ -98,6 +98,7 @@ var mergeCases = map[string]mergeCase{
 	"ensure gen/go.mod":                          scaffoldOnce("written when absent"),
 	"buf generate (Go stubs)":                    perInput("one stub file per .proto"),
 	"descriptor extraction":                      noOutput("gen/forge_descriptor/ is derived on demand and never committed (#1572)"),
+	planORMEntitiesStep:                          noOutput("plans the ORM's entity set in memory; writes nothing"),
 	"OpenAPI specs (protoc-gen-connect-openapi)": perInput("one spec per service"),
 	"frontend workspaces scaffold":               scaffoldOnce("workspace root written once"),
 	"TypeScript stubs (frontends)":               perInput("one _pb.ts per .proto"),

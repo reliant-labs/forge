@@ -52,7 +52,13 @@ var google = LoginPolicySocial{Type: "google", IdPID: "idp-google", Label: "Goog
 
 func newHarness(t *testing.T, p LoginPolicy, opts ...func(*SignInRoutesConfig)) *harness {
 	t.Helper()
-	z := newFakeZitadel(t)
+	return newHarnessOn(t, newFakeZitadel(t), p, opts...)
+}
+
+// newHarnessOn serves the routes against an existing fake issuer: a second
+// call on the same z is a second replica of the broker.
+func newHarnessOn(t *testing.T, z *fakeZitadel, p LoginPolicy, opts ...func(*SignInRoutesConfig)) *harness {
+	t.Helper()
 	cfg := SignInRoutesConfig{
 		Client:        z.client(),
 		Flow:          FlowConfig{ClientID: "client", RedirectURI: testAppBase + "/cb"},

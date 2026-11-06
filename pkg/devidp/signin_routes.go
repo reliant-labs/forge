@@ -56,6 +56,9 @@ type SignInRoutes struct {
 	codeByIP        *limiter
 	registerByIP    *limiter
 	socialStartByIP *limiter
+
+	// proofs runs address proofs of one account one at a time (proveAddress).
+	proofs keyedMutex
 }
 
 // The routes. The scaffolded broker mounts each with
@@ -861,7 +864,7 @@ func (r *SignInRoutes) HandleMagicConsume(w http.ResponseWriter, req *http.Reque
 // sessionFromVerification turns a proven email-verification code into a
 // session. PROOF FIRST: VerifyEmail must succeed for this user in this
 // request. Then any credential the account held from before the proof is
-// revoked (afterProof): nothing proves who set it. Only then does the broker
+// revoked (proveAddress): nothing proves who set it. Only then does the broker
 // mint a one-time code with its own credential and redeem it at once — the
 // address is now verified, so the issuer allows the method, and the person
 // already proved the inbox.
@@ -1597,7 +1600,7 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 	case err == nil:
 		// NEVER touch an existing account here. This registrant's password
 		// waits, sealed in their own browser, for their proof; whatever the
-		// account held from before is revoked then (afterProof).
+		// account held from before is revoked then (proveAddress).
 		if !user.EmailVerified {
 			pending.UserID = user.ID
 			if err := c.ResendEmailCode(ctx, user.ID, r.verifyTemplate()); err != nil {

@@ -2,6 +2,7 @@ package devidp
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,8 +25,18 @@ func raceProof(t *testing.T, h *harness, proof func()) int64 {
 	h.z.mu.Lock()
 	h.z.proofDelay = 150 * time.Millisecond
 	h.z.mu.Unlock()
+	stop := plantedSignIns(h)
+	proof()
+	time.Sleep(20 * time.Millisecond)
+	return stop()
+}
+
+// plantedSignIns signs in to victim@acme.com with the planted password as
+// fast as it can until the returned stop is called, which reports how many
+// of those sign-ins got tokens.
+func plantedSignIns(h *harness) (stop func() int64) {
 	var got atomic.Int64
-	stop := make(chan struct{})
+	done := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
@@ -34,7 +45,7 @@ func raceProof(t *testing.T, h *harness, proof func()) int64 {
 			cfg := FlowConfig{ClientID: "c", RedirectURI: "r", RequireVerifiedEmail: true}
 			for {
 				select {
-				case <-stop:
+				case <-done:
 					return
 				default:
 				}
@@ -44,11 +55,11 @@ func raceProof(t *testing.T, h *harness, proof func()) int64 {
 			}
 		}()
 	}
-	proof()
-	time.Sleep(20 * time.Millisecond)
-	close(stop)
-	wg.Wait()
-	return got.Load()
+	return func() int64 {
+		close(done)
+		wg.Wait()
+		return got.Load()
+	}
 }
 
 func TestTakeover_NoTokensWhileTheProofIsInFlight(t *testing.T) {
@@ -107,6 +118,115 @@ func TestProof_AWrongCodeUnlocksAndAPreviouslyLockedAccountStaysLocked(t *testin
 	}
 	if !h.z.user(u.id).locked {
 		t.Fatal("a proof unlocked an account the issuer had locked")
+	}
+}
+
+// The security re-review at 9703d20c: an attacker who knows the user id (the
+// legacy sign-up answers it as `subject`) keeps a WRONG-code proof in flight
+// while the owner proves the address. The failing proof must not lift the
+// lock under the succeeding one — on one replica (the per-account proof
+// lock) or across two (the MetaProofLock mark).
+func TestTakeover_AConcurrentFailedProofNeverUnlocksTheRealOne(t *testing.T) {
+	owner := map[string]func(*testing.T, *harness, string){
+		"verify": func(t *testing.T, h *harness, code string) {
+			if status, body := h.browser().post("/auth/verify", map[string]any{"userID": h.z.userByEmail("victim@acme.com").id, "code": code}); status != 200 {
+				t.Errorf("owner's verify: %d %v", status, body)
+			}
+		},
+		"magic link": func(t *testing.T, h *harness, _ string) {
+			b := h.browser()
+			b.post("/auth/magic/request", map[string]any{"email": "victim@acme.com"})
+			if status, body := b.post("/auth/magic/consume", map[string]any{"code": h.z.lastMail(t).code}); status != 200 {
+				t.Errorf("owner's magic link: %d %v", status, body)
+			}
+		},
+	}
+	for _, replicas := range []int{1, 2} {
+		for name, prove := range owner {
+			t.Run(fmt.Sprintf("%d replica(s)/%s", replicas, name), func(t *testing.T) {
+				policy := policyWith(SignupOpen, allMethods)
+				attacker := newHarness(t, policy)
+				ownerSide := attacker
+				if replicas == 2 {
+					ownerSide = newHarnessOn(t, attacker.z, policy)
+				}
+				u := preRegister(t, attacker)
+				code := attacker.z.lastMail(t).code
+				attacker.z.mu.Lock()
+				attacker.z.refusedProofDelay = 150 * time.Millisecond
+				attacker.z.proofDelay = 150 * time.Millisecond
+				attacker.z.mu.Unlock()
+
+				stop := plantedSignIns(attacker)
+				var wg sync.WaitGroup
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if status, _ := attacker.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": "wrong"}); status != 401 {
+						t.Errorf("attacker's wrong code: %d, want 401", status)
+					}
+				}()
+				time.Sleep(60 * time.Millisecond)
+				prove(t, ownerSide, code)
+				wg.Wait()
+				time.Sleep(20 * time.Millisecond)
+				if n := stop(); n != 0 {
+					t.Fatalf("TAKEOVER RACE: the planted password got tokens %d time(s) while a failed proof ran beside the real one", n)
+				}
+				got := attacker.z.user(u.id)
+				if !got.verified {
+					t.Fatal("the owner's proof did not verify the address")
+				}
+				if got.locked {
+					t.Fatal("the account was left locked after the owner's proof")
+				}
+				if _, marked := got.metadata[MetaProofLock]; marked {
+					t.Error("the proof lock mark survived a successful proof")
+				}
+				if signsIn(t, attacker, "victim@acme.com", attackerPassword) {
+					t.Fatal("the planted password works after the proof: revocation did not run")
+				}
+			})
+		}
+	}
+}
+
+// A lock with no mark is the issuer's (or a failed revocation's): neither a
+// wrong code nor a proof lifts it.
+func TestProof_AnUnmarkedLockIsNeverLifted(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods))
+	u := preRegister(t, h)
+	h.z.mu.Lock()
+	u.locked = true
+	h.z.mu.Unlock()
+	if status, _ := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": "wrong"}); status != 401 {
+		t.Fatalf("wrong code: %d", status)
+	}
+	if !h.z.user(u.id).locked {
+		t.Fatal("a wrong code lifted a lock that was not a proof's")
+	}
+	// A stale mark from a proof that died mid-way is a proof's lock: the
+	// next failed proof takes it over and may lift it.
+	h.z.mu.Lock()
+	u.metadata = map[string]string{MetaProofLock: "stale"}
+	h.z.mu.Unlock()
+	if status, _ := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": "wrong"}); status != 401 {
+		t.Fatalf("wrong code: %d", status)
+	}
+	if h.z.user(u.id).locked {
+		t.Fatal("a stale proof lock was never lifted")
+	}
+}
+
+func TestRevokeCredentials_AnyOtherRefusalFailsTheRevocation(t *testing.T) {
+	if !isAbsent(&apiError{status: 404, body: `{"code":5,"details":[{"id":"COMMAND-Hd9sd"}]}`}) ||
+		!isAbsent(&apiError{status: 404, body: `{"code":5,"details":[{"id":"COMMAND-Sr3h3"}]}`}) {
+		t.Fatal("the issuer's \"no such factor\" is not read as absent")
+	}
+	for _, body := range []string{`{"code":3,"details":[{"id":"COMMAND-SF3fg"}]}`, `{"code":9}`, `not json`} {
+		if isAbsent(&apiError{status: 400, body: body}) {
+			t.Errorf("isAbsent(400 %s) = true: an unrelated refusal would pass for \"no factor\"", body)
+		}
 	}
 }
 
@@ -240,5 +360,32 @@ func TestClientKeyCutsIPv6ToItsSlash64(t *testing.T) {
 	}
 	if got := key("198.51.100.7:443"); got != "198.51.100.7" {
 		t.Fatalf("IPv4 key %q", got)
+	}
+}
+
+func TestKeyedMutex_SerialisesAKeyAndForgetsIt(t *testing.T) {
+	var k keyedMutex
+	release, err := k.lock(context.Background(), "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := k.lock(context.Background(), "u2")
+	if err != nil {
+		t.Fatal("another key waited on u1")
+	}
+	other()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := k.lock(ctx, "u1"); err == nil {
+		t.Fatal("a second holder of u1 got in while the first held it")
+	}
+	release()
+	again, err := k.lock(context.Background(), "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again()
+	if len(k.keys) != 0 {
+		t.Fatalf("keys outlive their holders: %v", k.keys)
 	}
 }

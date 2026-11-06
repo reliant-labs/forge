@@ -21,7 +21,7 @@ import (
 // magic link, a verification link, an invitation), that password must not
 // become valid with it. RevokeCredentials is the undo: it is called after the
 // proof, for credentials the proving browser cannot vouch for (see
-// SignInRoutes.afterProof).
+// SignInRoutes.proveAddress).
 
 // Account metadata keys this package writes.
 const (
@@ -33,6 +33,12 @@ const (
 	// re-verification (an address change) does not grant it again after an
 	// owner revoked it.
 	MetaSignupRoleGranted = "forge.signup_role_granted"
+	// MetaProofLock names the proof that holds an account locked across
+	// its address proof: a random nonce, written before the lock. Only
+	// the proof whose nonce is still current may lift a lock after a
+	// failed proof; a lock with no marker (the issuer's, or one a failed
+	// revocation left) is never lifted by a proof. See proveAddress.
+	MetaProofLock = "forge.proof_lock"
 )
 
 // RevokeCredentials removes every credential on an account: the password is
@@ -65,8 +71,9 @@ func (c *Client) RevokeCredentials(ctx context.Context, userID string) (int, err
 		n++
 	}
 	// Second factors: a planted TOTP or SMS number is someone else's way
-	// past a future password check. Absent ones answer an error the issuer
-	// spells as not-found or a failed precondition; both mean "none".
+	// past a future password check. An absent one answers the issuer's
+	// "not existing" error for that factor (isAbsent); any other refusal
+	// fails the revocation.
 	for _, factor := range []string{"totp", "otp_sms"} {
 		path := "/v2/users/" + url.PathEscape(userID) + "/" + factor
 		if _, err := c.sendJSON(ctx, http.MethodDelete, path, map[string]any{}); err == nil {
@@ -117,19 +124,51 @@ func (c *Client) EndSessions(ctx context.Context, userID string) (int, error) {
 	return n, nil
 }
 
-// UnlockUser lifts LockUser.
+// UnlockUser lifts LockUser. An account that is not locked is left as it
+// is: the issuer's "not locked" refusal is success here.
 func (c *Client) UnlockUser(ctx context.Context, userID string) error {
-	if _, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/unlock", map[string]any{}); err != nil {
+	if _, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/unlock", map[string]any{}); err != nil && !hasErrorID(err, notLockedID) {
 		return fmt.Errorf("unlock user: %w", err)
 	}
 	return nil
 }
 
-// isAbsent reports a refusal that means "there is none to remove".
+// Zitadel's stable error ids for the refusals this file treats as "already
+// so" (v4.19.5, internal/command/user_v2.go and user_human_otp.go):
+//
+//   - COMMAND-lgws8wtsqf "Errors.User.ShouldBeActiveOrInitial": LockUser on
+//     an account that is not active — already locked, for one.
+//   - COMMAND-olb9vb0oca "Errors.User.NotLocked": UnlockUser on an account
+//     that is not locked.
+//   - COMMAND-Hd9sd / COMMAND-Sr3h3 "Errors.User.MFA.OTP.NotExisting":
+//     removing a TOTP / OTP-SMS factor the account does not have.
+const (
+	notActiveID = "COMMAND-lgws8wtsqf"
+	notLockedID = "COMMAND-olb9vb0oca"
+	noTOTPID    = "COMMAND-Hd9sd"
+	noOTPSMSID  = "COMMAND-Sr3h3"
+)
+
+// isAbsent reports the issuer's refusal to remove a second factor the
+// account does not have — that factor's own "not existing" error and
+// nothing broader: a 400 for any other reason fails the revocation.
 func isAbsent(err error) bool {
+	return hasErrorID(err, noTOTPID, noOTPSMSID)
+}
+
+// hasErrorID reports whether err is an issuer refusal carrying one of ids.
+func hasErrorID(err error, ids ...string) bool {
 	var apiErr *apiError
-	return errors.As(err, &apiErr) && (apiErr.status == http.StatusNotFound || apiErr.status == http.StatusBadRequest ||
-		apiErr.status == http.StatusPreconditionFailed)
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	id, _ := apiErr.errorID()
+	for _, want := range ids {
+		if id != "" && id == want {
+			return true
+		}
+	}
+	return false
 }
 
 // unguessablePassword satisfies any complexity policy (upper, lower, digit,
@@ -151,10 +190,11 @@ func (c *Client) SetPassword(ctx context.Context, userID, password string) error
 	return c.ResetPassword(ctx, PasswordReset{UserID: userID, Code: code, NewPassword: password})
 }
 
-// LockUser locks an account so nothing can sign in to it: the fail-closed
-// answer when its unproven credentials could not be revoked.
+// LockUser locks an account so nothing can sign in to it. An account that
+// is locked already stays so: the issuer's "should be active" refusal is
+// success here, which is what lets a proof re-lock unconditionally.
 func (c *Client) LockUser(ctx context.Context, userID string) error {
-	if _, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/lock", map[string]any{}); err != nil {
+	if _, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/lock", map[string]any{}); err != nil && !hasErrorID(err, notActiveID) {
 		return fmt.Errorf("lock user: %w", err)
 	}
 	return nil
@@ -185,26 +225,43 @@ func (c *Client) ListIDPLinks(ctx context.Context, userID string) ([]IDPLink, er
 
 // HasMetadata reports whether an account carries a metadata key.
 func (c *Client) HasMetadata(ctx context.Context, userID, key string) (bool, error) {
+	_, ok, err := c.Metadata(ctx, userID, key)
+	return ok, err
+}
+
+// Metadata reads one metadata key of an account: its value, and whether
+// the account carries it.
+func (c *Client) Metadata(ctx context.Context, userID, key string) (string, bool, error) {
 	body, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/metadata/search", map[string]any{
 		"filters": []any{map[string]any{"keyFilter": map[string]any{"key": key}}},
 	})
 	if err != nil {
-		return false, fmt.Errorf("read account metadata: %w", err)
+		return "", false, fmt.Errorf("read account metadata: %w", err)
 	}
 	var out struct {
 		Metadata []struct {
-			Key string `json:"key"`
+			Key   string `json:"key"`
+			Value []byte `json:"value"` // the API's bytes: standard base64 in JSON
 		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return false, fmt.Errorf("decode account metadata: %w", err)
+		return "", false, fmt.Errorf("decode account metadata: %w", err)
 	}
 	for _, m := range out.Metadata {
 		if m.Key == key {
-			return true, nil
+			return string(m.Value), true, nil
 		}
 	}
-	return false, nil
+	return "", false, nil
+}
+
+// DeleteMetadata removes one metadata key from an account.
+func (c *Client) DeleteMetadata(ctx context.Context, userID, key string) error {
+	path := "/v2/users/" + url.PathEscape(userID) + "/metadata?keys=" + url.QueryEscape(key)
+	if _, err := c.sendJSON(ctx, http.MethodDelete, path, map[string]any{}); err != nil && !isNotFound(err) {
+		return fmt.Errorf("delete account metadata: %w", err)
+	}
+	return nil
 }
 
 // SetMetadata writes one metadata key on an account.

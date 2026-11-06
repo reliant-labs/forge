@@ -42,6 +42,9 @@ type fakeZitadel struct {
 	// proof for this long AFTER the address is marked verified: the window
 	// a concurrent sign-in races.
 	proofDelay time.Duration
+	// refusedProofDelay holds the answer to a REFUSED email proof (a
+	// wrong code) for this long: a failing proof kept in flight.
+	refusedProofDelay time.Duration
 }
 
 type fakeUser struct {
@@ -87,14 +90,18 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
-		delay := f.proofDelay
+		delay, refusedDelay := f.proofDelay, f.refusedProofDelay
 		f.mu.Unlock()
 		rec := &statusRecorder{ResponseWriter: w}
 		mux.ServeHTTP(rec, r)
 		// The answer is buffered until the handler returns, so the state
 		// change is visible to other requests during the sleep.
-		if delay > 0 && rec.status < 300 && (strings.HasSuffix(r.URL.Path, "/email/verify") || strings.HasSuffix(r.URL.Path, "/invite_code/verify")) {
+		isProof := strings.HasSuffix(r.URL.Path, "/email/verify") || strings.HasSuffix(r.URL.Path, "/invite_code/verify")
+		if isProof && rec.status < 300 && delay > 0 {
 			time.Sleep(delay)
+		}
+		if isProof && rec.status >= 400 && refusedDelay > 0 {
+			time.Sleep(refusedDelay)
 		}
 	}))
 	t.Cleanup(f.srv.Close)
@@ -609,19 +616,23 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/unlock", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
+		if !u.locked {
+			zerr(w, 400, "COMMAND-olb9vb0oca", "Errors.User.NotLocked")
+			return
+		}
 		u.locked = false
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("DELETE /v2/users/{id}/totp", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
 		if !u.totp {
-			zerr(w, 400, "COMMAND-totpnr", "Errors.User.MFA.OTP.NotReady")
+			zerr(w, 404, "COMMAND-Hd9sd", "Errors.User.MFA.OTP.NotExisting")
 			return
 		}
 		u.totp = false
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("DELETE /v2/users/{id}/otp_sms", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
-		zerr(w, 400, "COMMAND-smsnr", "Errors.User.MFA.OTP.NotReady")
+		zerr(w, 404, "COMMAND-Sr3h3", "Errors.User.MFA.OTP.NotExisting")
 	}))
 	mux.HandleFunc("POST /v2/sessions/search", func(w http.ResponseWriter, r *http.Request) {
 		b := readBody(r)
@@ -641,6 +652,10 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{"sessions": res})
 	})
 	mux.HandleFunc("POST /v2/users/{id}/lock", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
+		if u.locked {
+			zerr(w, 400, "COMMAND-lgws8wtsqf", "Errors.User.ShouldBeActiveOrInitial")
+			return
+		}
 		u.locked = true
 		ok(w, map[string]any{})
 	}))
@@ -657,6 +672,12 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 			}
 		}
 		ok(w, map[string]any{"metadata": res})
+	}))
+	mux.HandleFunc("DELETE /v2/users/{id}/metadata", withUser(func(w http.ResponseWriter, r *http.Request, u *fakeUser, _ map[string]any) {
+		for _, k := range r.URL.Query()["keys"] {
+			delete(u.metadata, k)
+		}
+		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/metadata", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
 		if u.metadata == nil {

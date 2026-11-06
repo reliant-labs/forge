@@ -59,16 +59,18 @@ func (c *Client) RevokeCredentials(ctx context.Context, userID string) (int, err
 		}
 		n++
 	}
-	links, err := c.ListIDPLinks(ctx, userID)
+	removed, err := drain(func() ([]IDPLink, error) { return c.ListIDPLinks(ctx, userID) },
+		func(l IDPLink) string { return l.IdPID + "/" + l.UserID },
+		func(l IDPLink) error {
+			path := "/v2/users/" + url.PathEscape(userID) + "/links/" + url.PathEscape(l.IdPID) + "/" + url.PathEscape(l.UserID)
+			if _, err := c.sendJSON(ctx, http.MethodDelete, path, map[string]any{}); err != nil && !isNotFound(err) {
+				return fmt.Errorf("remove the %s link: %w", l.IdPID, err)
+			}
+			return nil
+		})
+	n += removed
 	if err != nil {
 		return n, err
-	}
-	for _, l := range links {
-		path := "/v2/users/" + url.PathEscape(userID) + "/links/" + url.PathEscape(l.IdPID) + "/" + url.PathEscape(l.UserID)
-		if _, err := c.sendJSON(ctx, http.MethodDelete, path, map[string]any{}); err != nil && !isNotFound(err) {
-			return n, fmt.Errorf("remove the %s link: %w", l.IdPID, err)
-		}
-		n++
 	}
 	// Second factors: a planted TOTP or SMS number is someone else's way
 	// past a future password check. An absent one answers the issuer's
@@ -82,16 +84,18 @@ func (c *Client) RevokeCredentials(ctx context.Context, userID string) (int, err
 			return n, fmt.Errorf("remove the %s factor: %w", factor, err)
 		}
 	}
-	keys, err := c.listPasskeys(ctx, userID, true)
+	removed, err = drain(func() ([]Passkey, error) { return c.listPasskeys(ctx, userID, true) },
+		func(k Passkey) string { return k.ID },
+		func(k Passkey) error {
+			path := "/v2/users/" + url.PathEscape(userID) + "/passkeys/" + url.PathEscape(k.ID)
+			if _, err := c.sendJSON(ctx, http.MethodDelete, path, map[string]any{}); err != nil && !isNotFound(err) {
+				return fmt.Errorf("remove passkey %s: %w", k.ID, err)
+			}
+			return nil
+		})
+	n += removed
 	if err != nil {
 		return n, err
-	}
-	for _, k := range keys {
-		path := "/v2/users/" + url.PathEscape(userID) + "/passkeys/" + url.PathEscape(k.ID)
-		if _, err := c.sendJSON(ctx, http.MethodDelete, path, map[string]any{}); err != nil && !isNotFound(err) {
-			return n, fmt.Errorf("remove passkey %s: %w", k.ID, err)
-		}
-		n++
 	}
 	ended, err := c.EndSessions(ctx, userID)
 	return n + ended, err
@@ -100,11 +104,23 @@ func (c *Client) RevokeCredentials(ctx context.Context, userID string) (int, err
 // EndSessions deletes every issuer session of a user, so nothing created
 // before a revocation can be finalized into tokens after it.
 func (c *Client) EndSessions(ctx context.Context, userID string) (int, error) {
+	return drain(func() ([]string, error) { return c.searchSessions(ctx, userID) },
+		func(id string) string { return id },
+		func(id string) error {
+			if _, err := c.sendJSON(ctx, http.MethodDelete, "/v2/sessions/"+url.PathEscape(id), map[string]any{}); err != nil && !isNotFound(err) {
+				return fmt.Errorf("end session %s: %w", id, err)
+			}
+			return nil
+		})
+}
+
+// searchSessions returns the ids of one page of a user's issuer sessions.
+func (c *Client) searchSessions(ctx context.Context, userID string) ([]string, error) {
 	body, err := c.postJSON(ctx, "/v2/sessions/search", map[string]any{
 		"queries": []any{map[string]any{"userIdQuery": map[string]any{"id": userID}}},
 	})
 	if err != nil {
-		return 0, fmt.Errorf("list sessions: %w", err)
+		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	var out struct {
 		Sessions []struct {
@@ -112,16 +128,55 @@ func (c *Client) EndSessions(ctx context.Context, userID string) (int, error) {
 		} `json:"sessions"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return 0, fmt.Errorf("decode sessions: %w", err)
+		return nil, fmt.Errorf("decode sessions: %w", err)
 	}
-	n := 0
+	ids := make([]string, 0, len(out.Sessions))
 	for _, s := range out.Sessions {
-		if _, err := c.sendJSON(ctx, http.MethodDelete, "/v2/sessions/"+url.PathEscape(s.ID), map[string]any{}); err != nil && !isNotFound(err) {
-			return n, fmt.Errorf("end session %s: %w", s.ID, err)
-		}
-		n++
+		ids = append(ids, s.ID)
 	}
-	return n, nil
+	return ids, nil
+}
+
+// maxDrainRounds bounds drain: far more pages than any account holds, so
+// reaching it means the issuer keeps listing what was removed.
+const maxDrainRounds = 1000
+
+// drain removes everything a search finds, then searches again, until a
+// search comes back empty. The issuer answers a search with ONE page (its
+// default page size), so a single search-and-delete would leave whatever
+// sits on a later page — a session or a planted credential that survives a
+// revocation reported complete. Re-searching from the start after each
+// round needs no paging contract: what was removed is gone from the next
+// page. A page that lists only what this drain already removed means the
+// removal did not take, and fails the drain rather than loop on it.
+func drain[T any](list func() ([]T, error), key func(T) string, remove func(T) error) (int, error) {
+	done := map[string]bool{}
+	n := 0
+	for range maxDrainRounds {
+		page, err := list()
+		if err != nil {
+			return n, err
+		}
+		if len(page) == 0 {
+			return n, nil
+		}
+		progressed := false
+		for _, item := range page {
+			k := key(item)
+			if done[k] {
+				continue
+			}
+			if err := remove(item); err != nil {
+				return n, err
+			}
+			done[k], progressed = true, true
+			n++
+		}
+		if !progressed {
+			return n, fmt.Errorf("the issuer still lists %q after it was removed", key(page[0]))
+		}
+	}
+	return n, fmt.Errorf("still finding more to remove after %d rounds", maxDrainRounds)
 }
 
 // UnlockUser lifts LockUser. An account that is not locked is left as it

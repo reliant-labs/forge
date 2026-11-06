@@ -49,6 +49,9 @@ type fakeZitadel struct {
 	failUnlock bool
 	// failMetadataDeletes makes that many metadata deletes fail (500).
 	failMetadataDeletes int
+	// pageSize, when set, caps every session, link and passkey search at
+	// that many results, as the real issuer's default page size does.
+	pageSize int
 	// beforeRequest, when set, runs before every request is served, with
 	// mu released: a test pauses one request there to force an interleaving.
 	beforeRequest func(*http.Request)
@@ -116,6 +119,14 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// page cuts a search result to the first page (pageSize; the caller holds mu).
+func (f *fakeZitadel) page(res []any) []any {
+	if f.pageSize > 0 && len(res) > f.pageSize {
+		return res[:f.pageSize]
+	}
+	return res
 }
 
 func (f *fakeZitadel) client() *Client { return &Client{Base: f.srv.URL, Token: "broker-token"} }
@@ -566,7 +577,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		for _, p := range u.passkeys {
 			res = append(res, map[string]any{"id": p.ID, "name": p.Name, "state": "AUTH_FACTOR_STATE_READY"})
 		}
-		ok(w, map[string]any{"result": res})
+		ok(w, map[string]any{"result": f.page(res)})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/passkeys", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
 		if c := sub(b, "code"); c != nil {
@@ -603,7 +614,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		for _, l := range u.links {
 			res = append(res, map[string]any{"idpId": l.IdPID, "userId": l.UserID, "userName": l.UserName})
 		}
-		ok(w, map[string]any{"result": res})
+		ok(w, map[string]any{"result": f.page(res)})
 	}))
 	mux.HandleFunc("DELETE /v2/users/{id}/links/{idp}/{linked}", withUser(func(w http.ResponseWriter, r *http.Request, u *fakeUser, _ map[string]any) {
 		kept := u.links[:0]
@@ -663,7 +674,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 				res = append(res, map[string]any{"id": id})
 			}
 		}
-		ok(w, map[string]any{"sessions": res})
+		ok(w, map[string]any{"sessions": f.page(res)})
 	})
 	mux.HandleFunc("POST /v2/users/{id}/lock", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
 		if u.locked {

@@ -184,13 +184,16 @@ func (p LoginPolicy) SelfSignup() bool {
 // "paused"), only an open sign-up with a password and no verified-email gate
 // can complete: the account is signed in at once, as before the document. A
 // domain sign-up never runs without mail, because a typed address proves no
-// domain. Social sign-up is not the form, and SelfSignup governs it.
+// domain. Where mail arrives, the form still needs a first factor to enrol:
+// a password, or a passkey or magic link after the mailed code. A social-only
+// policy offers none, so it gets no form. Social sign-up is not the form,
+// and SelfSignup governs it.
 func (p LoginPolicy) RegisterServed() bool {
 	switch {
 	case !p.SelfSignup():
 		return false
 	case p.MailDelivers():
-		return true
+		return p.Offers(MethodPassword) || p.Offers(MethodPasskey) || p.Offers(MethodMagicLink)
 	}
 	return p.Signup == SignupOpen && !p.RequireVerifiedEmail && p.Offers(MethodPassword)
 }

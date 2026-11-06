@@ -528,3 +528,55 @@ func TestSafeReturnToRefusesWhatABrowserReadsAsAnotherSite(t *testing.T) {
 		}
 	}
 }
+
+// The issuer answers a search with one page. A revocation that read only the
+// first page would leave a session, link or passkey on a later one, and the
+// proof would still verify and unlock the account.
+func TestTakeover_RevocationReachesEveryIssuerPage(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods, google))
+	u := preRegister(t, h)
+	const planted = 5
+	h.z.mu.Lock()
+	h.z.pageSize = 2
+	var sessions []string
+	for i := range planted {
+		u.links = append(u.links, IDPLink{IdPID: "idp-google", UserID: fmt.Sprintf("g-%d", i), UserName: "victim@acme.com"})
+		u.passkeys = append(u.passkeys, Passkey{ID: fmt.Sprintf("planted-pk-%d", i), Name: "attacker"})
+		sid := fmt.Sprintf("planted-session-%d", i)
+		// An authenticated session: its password factor is verified.
+		h.z.sessions[sid] = &fakeSession{token: "st-" + sid, userID: u.id, verified: []string{"password"}}
+		sessions = append(sessions, sid)
+	}
+	h.z.mu.Unlock()
+	victim := h.browser()
+	if status, body := victim.post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code}); status != 200 {
+		t.Fatalf("victim verify: %d %v", status, body)
+	}
+	h.z.mu.Lock()
+	defer h.z.mu.Unlock()
+	if n := len(u.links); n != 0 {
+		t.Fatalf("TAKEOVER: %d identity-provider link(s) on a later page survived the proof", n)
+	}
+	if n := len(u.passkeys); n != 0 {
+		t.Fatalf("TAKEOVER: %d passkey(s) on a later page survived the proof", n)
+	}
+	for _, sid := range sessions {
+		if !h.z.sessions[sid].deleted {
+			t.Fatalf("TAKEOVER: authenticated session %s on a later page survived the proof", sid)
+		}
+	}
+	if u.locked {
+		t.Fatal("a complete revocation left the account locked")
+	}
+}
+
+// A removal the issuer acknowledges but does not apply must fail the drain,
+// not loop on it or report it removed.
+func TestDrain_FailsWhenTheIssuerKeepsListingARemovedItem(t *testing.T) {
+	calls := 0
+	n, err := drain(func() ([]string, error) { calls++; return []string{"stuck"}, nil },
+		func(s string) string { return s }, func(string) error { return nil })
+	if err == nil || n != 1 || calls != 2 {
+		t.Fatalf("drain = %d, %v after %d searches; want an error after the second search", n, err, calls)
+	}
+}

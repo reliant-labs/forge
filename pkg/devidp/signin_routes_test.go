@@ -1118,6 +1118,39 @@ func TestRegister_RefusedWhereItCouldNeverComplete(t *testing.T) {
 	}
 }
 
+// A social-only open or domain policy has no first factor the form could
+// enrol, so it must not offer the form (the sign-in screens read
+// options.selfSignup to show "Create account" and hide the social buttons
+// in sign-up mode). Sign-up goes through the providers instead.
+func TestRegister_SocialOnlyPolicyOffersNoFormButSocialSignup(t *testing.T) {
+	for _, signup := range []string{SignupOpen, SignupDomain} {
+		t.Run(signup, func(t *testing.T) {
+			p := policyWith(signup, nil, google)
+			o := OptionsFor(p, true)
+			if p.RegisterServed() || o.SelfSignup {
+				t.Fatal("a social-only policy offers a sign-up form that cannot complete")
+			}
+			if len(o.Social) != 1 || o.Social[0].Type != "google" {
+				t.Fatalf("options lost the social buttons: %+v", o.Social)
+			}
+			h := newHarness(t, p)
+			status, body := h.browser().post("/auth/register", map[string]any{"email": "new@acme.com"})
+			want(t, status, body, 403, CodeSignupNotAllowed)
+			if h.z.userByEmail("new@acme.com") != nil {
+				t.Fatal("the form created an account")
+			}
+			b := h.browser()
+			id := startSocial(t, b)
+			h.z.addIntent(id, "tok", intentResult("new@acme.com", true))
+			status, body = b.post("/auth/social/callback", map[string]any{"id": id, "token": "tok"})
+			want(t, status, body, 200, "")
+			if h.z.userByEmail("new@acme.com") == nil || b.signedIn() == "" {
+				t.Fatal("social sign-up did not create and sign in the account")
+			}
+		})
+	}
+}
+
 func socialOnlyInvitePolicy() LoginPolicy {
 	return policyWith(SignupInvite, nil, google)
 }

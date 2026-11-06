@@ -194,10 +194,20 @@ func (c *Client) SetPassword(ctx context.Context, userID, password string) error
 // is locked already stays so: the issuer's "should be active" refusal is
 // success here, which is what lets a proof re-lock unconditionally.
 func (c *Client) LockUser(ctx context.Context, userID string) error {
-	if _, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/lock", map[string]any{}); err != nil && !hasErrorID(err, notActiveID) {
-		return fmt.Errorf("lock user: %w", err)
+	_, err := c.lockUser(ctx, userID)
+	return err
+}
+
+// lockUser is LockUser that also reports whether this call locked the
+// account (false: it was locked, or otherwise not active, already).
+func (c *Client) lockUser(ctx context.Context, userID string) (locked bool, err error) {
+	if _, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/lock", map[string]any{}); err != nil {
+		if hasErrorID(err, notActiveID) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lock user: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // ListIDPLinks returns the identity-provider links of an account.

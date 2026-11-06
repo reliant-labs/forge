@@ -45,6 +45,10 @@ type fakeZitadel struct {
 	// refusedProofDelay holds the answer to a REFUSED email proof (a
 	// wrong code) for this long: a failing proof kept in flight.
 	refusedProofDelay time.Duration
+	// failUnlock makes every unlock fail at the issuer (500).
+	failUnlock bool
+	// failMetadataDeletes makes that many metadata deletes fail (500).
+	failMetadataDeletes int
 }
 
 type fakeUser struct {
@@ -616,6 +620,10 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/unlock", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
+		if f.failUnlock {
+			zerr(w, 500, "COMMAND-fake", "unlock failed")
+			return
+		}
 		if !u.locked {
 			zerr(w, 400, "COMMAND-olb9vb0oca", "Errors.User.NotLocked")
 			return
@@ -674,6 +682,11 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{"metadata": res})
 	}))
 	mux.HandleFunc("DELETE /v2/users/{id}/metadata", withUser(func(w http.ResponseWriter, r *http.Request, u *fakeUser, _ map[string]any) {
+		if f.failMetadataDeletes > 0 {
+			f.failMetadataDeletes--
+			zerr(w, 500, "COMMAND-fake", "metadata delete failed")
+			return
+		}
 		for _, k := range r.URL.Query()["keys"] {
 			delete(u.metadata, k)
 		}

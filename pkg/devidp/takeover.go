@@ -6,7 +6,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 )
 
 // ── Pre-registration takeover, closed ────────────────────────────────────
@@ -57,25 +60,33 @@ var errRevokeFailed = errors.New("the proof succeeded but credentials set before
 // who knows the user id keeps a wrong-code proof in flight while the owner
 // proves the address — so "was it locked when I looked" cannot say whose
 // lock it is: the wrong-code proof would lift the lock under the owner's
-// succeeding one. Ownership is explicit instead:
+// succeeding one. Ownership is explicit instead, and it is what THIS CALL
+// did, never what a first read suggested:
 //
 //   - In this process, proofs of one account run one at a time (proofs).
-//   - Across replicas, the proof writes its own nonce to MetaProofLock
-//     before it locks. A FAILED proof clears the mark and unlocks only
-//     while its nonce is still the current one; a later proof that took
-//     the lock over owns it.
-//   - A SUCCESSFUL proof always re-locks (LockUser treats "already locked"
-//     as done), whatever a concurrent failed proof did, then revokes,
-//     unlocks and clears the mark.
-//   - A lock with no mark is not a proof's: the issuer's own lockout, or
-//     one a failed revocation left. No proof lifts it.
+//   - Across replicas, the proof writes a fresh mark — the time and its own
+//     nonce — to MetaProofLock before it locks. A FAILED proof clears the
+//     mark and unlocks only while the mark is still its own; a later proof
+//     that took the lock over owns it.
+//   - A SUCCESSFUL proof always re-locks, whatever a concurrent failed proof
+//     did, then revokes. It unlocks when this call locked the account: it
+//     wrote its mark and locked, or its re-lock found the account unlocked.
+//     The mark it wrote may have been cleared by another replica meanwhile;
+//     that does not make the lock anyone else's.
+//   - A lock with no FRESH mark (proofLockTTL) is not a proof's: the
+//     issuer's own lockout, one a failed revocation left, or one under a
+//     mark some earlier proof failed to clear. No proof lifts it.
+//
+// Everything after a successful proof runs detached from the request
+// (proofCleanupTimeout): a client that hangs up then must not leave the
+// account verified, locked and marked. So does the cleanup of a failed one.
 //
 // A revocation that fails leaves the account locked, clears the mark so the
 // lock reads as one nothing lifts, and returns errRevokeFailed. revoked
 // reports that credentials were taken back.
 //
 // What remains across replicas, without a compare-and-swap at the issuer: a
-// failed proof that reads its own nonce and then, two round-trips later,
+// failed proof that reads its own mark and then, two round-trips later,
 // unlocks, can land that unlock after another replica's proof has marked,
 // locked and verified — until that proof's re-lock. Within one process the
 // proofs lock closes it entirely.
@@ -106,46 +117,49 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 		if err != nil {
 			return false, fmt.Errorf("read the account's proof lock: %w", err)
 		}
-		held = mark == ""
+		held = !freshProofMark(mark, time.Now())
 	}
-	nonce := ""
+	// owned: this call locked the account, so this call unlocks it.
+	mark, owned := "", false
 	if !held {
-		nonce = proofNonce()
-		if err := c.SetMetadata(ctx, userID, MetaProofLock, nonce); err != nil {
+		mark = newProofMark(time.Now())
+		if err := c.SetMetadata(ctx, userID, MetaProofLock, mark); err != nil {
 			return false, fmt.Errorf("mark the account's proof lock: %w", err)
 		}
-		if err := c.LockUser(ctx, userID); err != nil {
+		if _, err := c.lockUser(ctx, userID); err != nil {
 			// Not proven yet: refuse rather than verify an account that
 			// cannot be held still, and take the mark back.
-			if derr := c.DeleteMetadata(ctx, userID, MetaProofLock); derr != nil {
-				r.cfg.Logger.WarnContext(ctx, "could not clear the proof lock of an account that would not lock", "user_id", userID, "error", derr)
-			}
+			r.clearProofMark(context.WithoutCancel(ctx), userID, "an account that would not lock")
 			return false, fmt.Errorf("lock the account for its proof: %w", err)
 		}
+		owned = true
 	}
 	// releaseFailed lifts this proof's lock after it failed — only while
 	// the mark is still this proof's, and clearing the mark first: a mark
 	// left on an unlocked account would make a later issuer lockout look
-	// like a proof's. Unsure is locked: fail closed (a later proof takes a
-	// marked lock over).
+	// like a proof's. Unsure is locked: fail closed. An unlock that fails
+	// puts the mark back, so the next proof can take the lock over.
 	releaseFailed := func(why string) {
-		if held {
+		if !owned {
 			return
 		}
-		mark, _, err := c.Metadata(ctx, userID, MetaProofLock)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proofCleanupTimeout)
+		defer cancel()
+		current, _, err := c.Metadata(ctx, userID, MetaProofLock)
 		if err != nil {
 			r.cfg.Logger.ErrorContext(ctx, "could not read the proof lock after "+why+"; the account stays locked", "user_id", userID, "error", err)
 			return
 		}
-		if mark != nonce {
+		if current != mark {
 			return // a later proof owns the lock now
 		}
-		if err := c.DeleteMetadata(ctx, userID, MetaProofLock); err != nil {
-			r.cfg.Logger.ErrorContext(ctx, "could not clear the proof lock after "+why+"; the account stays locked", "user_id", userID, "error", err)
-			return
+		if !r.clearProofMark(ctx, userID, why) {
+			return // still marked, so still a proof's lock: the next proof takes it over
 		}
 		if err := c.UnlockUser(ctx, userID); err != nil {
-			r.cfg.Logger.ErrorContext(ctx, "could not unlock an account after "+why, "user_id", userID, "error", err)
+			restored := c.SetMetadata(ctx, userID, MetaProofLock, mark) == nil
+			r.cfg.Logger.ErrorContext(ctx, "ALERT: an account locked for its proof could not be unlocked after "+why,
+				"user_id", userID, "error", err, "mark_restored", restored, "alert", "identity.revoke_failed")
 		}
 	}
 	// End every session first. One created a moment before the lock
@@ -160,39 +174,85 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 		releaseFailed("a refused proof")
 		return false, err
 	}
-	// Proven. Re-lock whatever a concurrent failed proof on another
-	// replica did to the lock; a failure here must not stop the revocation.
-	if err := c.LockUser(ctx, userID); err != nil {
+
+	// Proven: the address is verified now, so nothing below may stop
+	// halfway because the client went away.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proofCleanupTimeout)
+	defer cancel()
+	// Re-lock whatever a concurrent failed proof on another replica did to
+	// the lock; a failure here must not stop the revocation. Finding the
+	// account unlocked makes this call's lock the one to lift.
+	if locked, err := c.lockUser(ctx, userID); err != nil {
 		r.cfg.Logger.ErrorContext(ctx, "could not re-lock a proven account before revoking its credentials", "user_id", userID, "error", err)
+	} else if locked {
+		owned = true
 	}
 	n, err := r.revoke(ctx, userID)
 	if err != nil {
 		if !held {
-			if derr := c.DeleteMetadata(ctx, userID, MetaProofLock); derr != nil {
-				r.cfg.Logger.ErrorContext(ctx, "could not clear the proof lock of an account left locked", "user_id", userID, "error", derr)
-			}
+			r.clearProofMark(ctx, userID, "an account left locked")
 		}
 		return false, err
 	}
-	if held {
+	if !owned {
 		return n > 0, nil
 	}
 	if err := c.UnlockUser(ctx, userID); err != nil {
 		r.cfg.Logger.ErrorContext(ctx, "address proven and credentials revoked, but the account could not be unlocked", "user_id", userID, "error", err)
 		return n > 0, fmt.Errorf("unlock the account after its proof: %w", err)
 	}
-	if err := c.DeleteMetadata(ctx, userID, MetaProofLock); err != nil {
-		// Inert on an unlocked, verified account.
-		r.cfg.Logger.WarnContext(ctx, "could not clear the proof lock of a proven account", "user_id", userID, "error", err)
+	if mark != "" {
+		r.clearProofMark(ctx, userID, "a proven account") // inert on an unlocked, verified account if it fails
 	}
 	return n > 0, nil
 }
 
-// proofNonce names one proof in MetaProofLock.
-func proofNonce() string {
+const (
+	// proofLockTTL is how long a proof's mark names the lock under it. A
+	// proof takes seconds; a mark older than this (or from a clock this far
+	// ahead) is left over, and the lock under it is treated as the issuer's.
+	proofLockTTL = 5 * time.Minute
+	// proofCleanupTimeout bounds the steps after a proof, which run
+	// detached from the request.
+	proofCleanupTimeout = 30 * time.Second
+)
+
+// newProofMark is a MetaProofLock value: "<unix seconds>.<nonce>".
+func newProofMark(at time.Time) string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	return strconv.FormatInt(at.Unix(), 10) + "." + base64.RawURLEncoding.EncodeToString(b)
+}
+
+// freshProofMark reports whether mark is a proof's mark written within
+// proofLockTTL of now. An empty, malformed or stale mark is not.
+func freshProofMark(mark string, now time.Time) bool {
+	secs, nonce, ok := strings.Cut(mark, ".")
+	if !ok || nonce == "" {
+		return false
+	}
+	at, err := strconv.ParseInt(secs, 10, 64)
+	if err != nil {
+		return false
+	}
+	age := now.Sub(time.Unix(at, 0))
+	return age < proofLockTTL && age > -proofLockTTL
+}
+
+// clearProofMark deletes MetaProofLock, retrying once: a mark left on an
+// account that is later locked by the issuer would read as a proof's lock
+// while it is fresh. It reports whether the mark is gone.
+func (r *SignInRoutes) clearProofMark(ctx context.Context, userID, what string) bool {
+	c := r.cfg.Client
+	err := c.DeleteMetadata(ctx, userID, MetaProofLock)
+	if err != nil {
+		err = c.DeleteMetadata(ctx, userID, MetaProofLock)
+	}
+	if err != nil {
+		r.cfg.Logger.ErrorContext(ctx, "could not clear the proof lock of "+what, "user_id", userID, "error", err)
+		return false
+	}
+	return true
 }
 
 // keyedMutex serialises work per key — here, address proofs per user id —

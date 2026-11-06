@@ -205,16 +205,154 @@ func TestProof_AnUnmarkedLockIsNeverLifted(t *testing.T) {
 	if !h.z.user(u.id).locked {
 		t.Fatal("a wrong code lifted a lock that was not a proof's")
 	}
-	// A stale mark from a proof that died mid-way is a proof's lock: the
+	// A FRESH mark from a proof that died mid-way is a proof's lock: the
 	// next failed proof takes it over and may lift it.
 	h.z.mu.Lock()
-	u.metadata = map[string]string{MetaProofLock: "stale"}
+	u.metadata = map[string]string{MetaProofLock: newProofMark(time.Now().Add(-time.Minute))}
 	h.z.mu.Unlock()
 	if status, _ := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": "wrong"}); status != 401 {
 		t.Fatalf("wrong code: %d", status)
 	}
 	if h.z.user(u.id).locked {
-		t.Fatal("a stale proof lock was never lifted")
+		t.Fatal("a fresh proof lock was never lifted")
+	}
+}
+
+// The re-review at ce91073b, finding 4: a mark some earlier proof failed to
+// clear must not make a later issuer lockout look like a proof's. A mark
+// older than proofLockTTL names no proof; the lock under it stays, through
+// a wrong code and through a successful proof alike.
+func TestProof_AStaleMarkLeavesTheIssuersLockoutInPlace(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods))
+	u := preRegister(t, h)
+	h.z.mu.Lock()
+	u.locked = true
+	u.metadata = map[string]string{MetaProofLock: newProofMark(time.Now().Add(-proofLockTTL - time.Minute))}
+	h.z.mu.Unlock()
+	if status, _ := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": "wrong"}); status != 401 {
+		t.Fatalf("wrong code: %d", status)
+	}
+	if !h.z.user(u.id).locked {
+		t.Fatal("a wrong code lifted an issuer lockout under a stale mark")
+	}
+	if status, _ := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code}); status != 200 {
+		t.Fatalf("verify: %d", status)
+	}
+	if !h.z.user(u.id).locked {
+		t.Fatal("a proof lifted an issuer lockout under a stale mark")
+	}
+	for mark, fresh := range map[string]bool{
+		"": false, "stale": false, "x.nonce": false, "123.": false,
+		newProofMark(time.Now()): true, newProofMark(time.Now().Add(-proofLockTTL)): false,
+		newProofMark(time.Now().Add(time.Minute)): true, newProofMark(time.Now().Add(proofLockTTL + time.Minute)): false,
+	} {
+		if got := freshProofMark(mark, time.Now()); got != fresh {
+			t.Errorf("freshProofMark(%q) = %v, want %v", mark, got, fresh)
+		}
+	}
+}
+
+// Finding 4, the other half: a mark that fails to clear once is retried.
+func TestProof_AMarkThatFailsToClearOnceIsRetried(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods))
+	u := preRegister(t, h)
+	h.z.mu.Lock()
+	h.z.failMetadataDeletes = 1
+	h.z.mu.Unlock()
+	if status, _ := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code}); status != 200 {
+		t.Fatalf("verify: %d", status)
+	}
+	if _, marked := h.z.user(u.id).metadata[MetaProofLock]; marked {
+		t.Fatal("one failed delete left the proof lock mark on the account")
+	}
+}
+
+// Finding 1: on another replica, a failed proof cleared its mark, this
+// proof read "locked, no mark" (so not its lock to lift), and then the
+// failed proof's unlock landed before this proof's re-lock. The re-lock
+// locked the account, so this call lifts it: before, it stayed locked for
+// good (locked, unmarked — read by every later proof as the issuer's).
+func TestProof_ARelockThatLockedTheAccountIsLiftedAfterwards(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods))
+	u := preRegister(t, h)
+	code := h.z.lastMail(t).code
+	h.z.mu.Lock()
+	u.locked = true // the other replica's lock, its mark already cleared
+	h.z.mu.Unlock()
+	c := h.z.client()
+	ctx := context.Background()
+	before, err := c.FindUserByID(ctx, u.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.routes.proveAddress(ctx, before, func() error {
+		if err := c.UnlockUser(ctx, u.id); err != nil { // the other replica's unlock lands
+			return err
+		}
+		return c.VerifyEmail(ctx, u.id, code)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := h.z.user(u.id)
+	if got.locked {
+		t.Fatal("OWNER LOCKED OUT: the proof re-locked the account and never lifted that lock")
+	}
+	if !got.verified || signsIn(t, h, "victim@acme.com", attackerPassword) {
+		t.Fatal("the proof did not verify and revoke")
+	}
+}
+
+// Finding 1, the other half: an unlock that fails after a refused proof puts
+// the mark back, so the lock stays a proof's and the owner's proof lifts it.
+func TestProof_AFailedUnlockPutsTheMarkBack(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods))
+	u := preRegister(t, h)
+	h.z.mu.Lock()
+	h.z.failUnlock = true
+	h.z.mu.Unlock()
+	if status, _ := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": "wrong"}); status != 401 {
+		t.Fatalf("wrong code: %d", status)
+	}
+	got := h.z.user(u.id)
+	if !got.locked || !freshProofMark(got.metadata[MetaProofLock], time.Now()) {
+		t.Fatalf("after a failed unlock: locked=%v mark=%q; want locked under a fresh mark", got.locked, got.metadata[MetaProofLock])
+	}
+	h.z.mu.Lock()
+	h.z.failUnlock = false
+	h.z.mu.Unlock()
+	if status, _ := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code}); status != 200 {
+		t.Fatalf("verify: %d", status)
+	}
+	if h.z.user(u.id).locked {
+		t.Fatal("OWNER LOCKED OUT: the owner's proof did not lift a lock a failed unlock left")
+	}
+}
+
+// Finding 2: a client that hangs up right after the proof succeeded must not
+// leave the account verified, locked and marked: the steps after the proof
+// run detached from the request.
+func TestProof_TheCleanupOutlivesTheRequest(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods))
+	u := preRegister(t, h)
+	code := h.z.lastMail(t).code
+	c := h.z.client()
+	before, err := c.FindUserByID(context.Background(), u.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := h.routes.proveAddress(ctx, before, func() error {
+		defer cancel() // the client goes away the moment the proof lands
+		return c.VerifyEmail(ctx, u.id, code)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := h.z.user(u.id)
+	if _, marked := got.metadata[MetaProofLock]; got.locked || marked {
+		t.Fatalf("after a cancelled request: locked=%v marked=%v; want neither", got.locked, marked)
+	}
+	if signsIn(t, h, "victim@acme.com", attackerPassword) {
+		t.Fatal("the planted password survived: the revocation stopped with the request")
 	}
 }
 

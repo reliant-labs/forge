@@ -183,12 +183,20 @@ func renderLiveDiff(out io.Writer, diffs []clusterLiveDiff) {
 		switch {
 		case d.Error != "":
 			fmt.Fprintf(out, "  %s  COULD NOT DIFF: %s\n", d.Cluster, d.Error)
-		case len(d.Changed) == 0:
+		case len(d.Changed) == 0 && len(d.Undiffable) == 0:
 			fmt.Fprintf(out, "  %s  no changes\n", d.Cluster)
+		case len(d.Changed) == 0:
+			fmt.Fprintf(out, "  %s  no changes among the objects that could be diffed\n", d.Cluster)
 		default:
 			fmt.Fprintf(out, "  %s  %d object(s) would change  (%s)\n", d.Cluster, len(d.Changed), d.DiffFile)
 			for _, obj := range d.Changed {
 				fmt.Fprintf(out, "    ~ %s\n", obj)
+			}
+		}
+		if d.Error == "" && len(d.Undiffable) > 0 {
+			fmt.Fprintf(out, "  %s  %d object(s) COULD NOT BE DIFFED client-side; review them by hand:\n", d.Cluster, len(d.Undiffable))
+			for _, u := range d.Undiffable {
+				fmt.Fprintf(out, "    ? %s: %s\n", u.File, u.Error)
 			}
 		}
 	}
@@ -275,6 +283,15 @@ type clusterLiveDiff struct {
 	Changed  []string `json:"changed"`
 	DiffFile string   `json:"diff_file,omitempty"`
 	Error    string   `json:"error,omitempty"`
+	// Undiffable names the objects whose own diff failed when the rest of
+	// the cluster's could still be computed (diffObjectByObject).
+	Undiffable []undiffableObject `json:"undiffable,omitempty"`
+}
+
+// undiffableObject is one manifest the client-side diff could not compute.
+type undiffableObject struct {
+	File  string `json:"file"`
+	Error string `json:"error"`
 }
 
 // kubectlLiveDiff runs one cluster's client-side diff: no --server-side, no
@@ -317,12 +334,27 @@ func liveDiffBundle(ctx context.Context, dir string, clusters []release.BundleCl
 			continue // the unclustered tree: nothing applies it
 		}
 		d := clusterLiveDiff{Cluster: c.Cluster, Changed: []string{}}
-		text, _, err := kubectlLiveDiff(ctx, c.Cluster, filepath.Join(dir, filepath.FromSlash(c.Path)))
+		tree := filepath.Join(dir, filepath.FromSlash(c.Path))
+		text, _, err := kubectlLiveDiff(ctx, c.Cluster, tree)
 		if err != nil {
-			d.Error = oneLine(err.Error(), 300)
-			failed = append(failed, c.Cluster)
-			out = append(out, d)
-			continue
+			// One object kubectl cannot diff fails the whole run, and a
+			// cluster reported as COULD NOT DIFF hides every other change
+			// from the reviewer. Diff object by object instead, so only the
+			// objects that genuinely cannot be diffed are named.
+			var undiffable []undiffableObject
+			var werr error
+			text, undiffable, werr = diffObjectByObject(ctx, c.Cluster, tree)
+			d.Undiffable = undiffable
+			if werr != nil || (text == "" && len(undiffable) > 0 && allUndiffable(tree, undiffable)) {
+				d.Error = oneLine(err.Error(), 300)
+				d.Undiffable = nil
+				failed = append(failed, c.Cluster)
+				out = append(out, d)
+				continue
+			}
+			if len(undiffable) > 0 {
+				failed = append(failed, c.Cluster)
+			}
 		}
 		for _, m := range diffHeader.FindAllStringSubmatch(text, -1) {
 			d.Changed = append(d.Changed, m[1])
@@ -340,6 +372,68 @@ func liveDiffBundle(ctx context.Context, dir string, clusters []release.BundleCl
 		return out, fmt.Errorf("the live diff could not run against %s", strings.Join(failed, ", "))
 	}
 	return out, nil
+}
+
+// diffObjectByObject diffs every manifest under tree on its own, returning the
+// concatenated diff of the objects that could be diffed and the ones that
+// could not, each with kubectl's reason.
+//
+// The case that needs it: an env var whose source moves from valueFrom to
+// value on an object forge applied server-side. A client-side diff merges the
+// live valueFrom into the declared value (the object carries no
+// last-applied annotation for it to subtract), and the API server rejects the
+// result. The apply itself removes valueFrom, so the object is fine; only its
+// diff cannot be computed client-side, and the owner's rule keeps the live
+// diff client-side (see the file comment).
+func diffObjectByObject(ctx context.Context, kubeContext, tree string) (string, []undiffableObject, error) {
+	files, err := manifestFiles(tree)
+	if err != nil {
+		return "", nil, err
+	}
+	var text strings.Builder
+	var undiffable []undiffableObject
+	for _, f := range files {
+		out, _, err := kubectlLiveDiff(ctx, kubeContext, f)
+		if err != nil {
+			rel, _ := filepath.Rel(tree, f)
+			undiffable = append(undiffable, undiffableObject{File: filepath.ToSlash(rel), Error: oneLine(err.Error(), 300)})
+			continue
+		}
+		text.WriteString(out)
+	}
+	return text.String(), undiffable, nil
+}
+
+// allUndiffable reports whether every manifest under tree failed to diff: then
+// the cluster itself could not be diffed (unreachable, no credentials), and it
+// is reported as one error rather than as a list of every object.
+func allUndiffable(tree string, undiffable []undiffableObject) bool {
+	files, _ := manifestFiles(tree)
+	return len(undiffable) >= len(files)
+}
+
+// manifestFiles lists, sorted, the files under tree that `kubectl diff -R -f`
+// reads: the ones with a .json, .yaml or .yml extension. Anything else in the
+// tree (metadata, docs) is skipped by the recursive diff, so the
+// object-by-object fallback must skip it too, or a file kubectl never treated
+// as a manifest would be named undiffable.
+func manifestFiles(tree string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(tree, func(path string, e os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if e.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".json", ".yaml", ".yml":
+			files = append(files, path)
+		}
+		return nil
+	})
+	sort.Strings(files)
+	return files, err
 }
 
 // printPlanLiveDiff is `forge env deploy <env> <v> --live-diff`: the release's

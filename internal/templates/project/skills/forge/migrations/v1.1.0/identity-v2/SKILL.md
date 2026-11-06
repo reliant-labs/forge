@@ -190,19 +190,34 @@ line names it.
     const SecureSessionCookieName = "__Host-" + SessionCookieName
     ```
 
-    and make `credentialFrom` read it first, ignoring the plain name over
-    HTTPS (only a sibling site could have planted one there):
+    Outside local development read ONLY that name: a plain-named session
+    cookie there can only have been planted by a sibling site. Decide it from
+    config, never from a request header (a proxy may not send
+    `X-Forwarded-Proto`). Add to `AuthDeps`:
 
     ```go
-    req := &http.Request{Header: h}
-    if cookie, err := req.Cookie(SecureSessionCookieName); err == nil {
-    	return cookie.Value
-    }
-    if strings.EqualFold(h.Get("X-Forwarded-Proto"), "https") {
-    	return ""
-    }
-    cookie, err := req.Cookie(SessionCookieName)
+    // The plain-named session cookie is read only when this is true
+    // (local development, where the broker serves plain http).
+    DevSessionCookie bool
     ```
+
+    make `credentialFrom` read `SecureSessionCookieName` instead of
+    `SessionCookieName`, add a `devCredentialFrom` that falls back to the
+    plain name (copy it from the scratch project), and in
+    `NewAuthInterceptor` pick the reader:
+
+    ```go
+    extract := credentialFrom
+    if deps.DevSessionCookie {
+    	extract = devCredentialFrom
+    }
+    // … ExtractToken: extract,
+    ```
+
+    `forge generate` then sets `authDeps.DevSessionCookie = d.Config.Environment == "development"`
+    in the generated providers (graph projects). In an owned
+    `cmd/<bin>/cmd/serve.go`, add after `authDeps.Validate = …`:
+    `authDeps.DevSessionCookie = cfg.Environment == serverkit.EnvDevelopment`.
 
     In the broker add `const SecureSessionCookieName = middleware.SecureSessionCookieName`
     and a `sessionCookie()` method returning it when `b.secureCookie`, and use

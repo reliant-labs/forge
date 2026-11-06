@@ -128,6 +128,11 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	}
 	if authenticator != nil {
 		authDeps.Validate = authenticator.Authenticate
+{{- if .DevSessionCookie}}
+		// The plain-named session cookie only in local development, where
+		// the login broker cannot set a __Host- one (plain http).
+		authDeps.DevSessionCookie = cfg.Environment == serverkit.EnvDevelopment
+{{- end}}
 	}
 
 	// Built UP FRONT so a server with no validator REFUSES TO START:

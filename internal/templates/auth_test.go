@@ -190,9 +190,10 @@ func protoFieldBlock(t *testing.T, proto, decl string) string {
 // GeneratedAuthInterceptor surface.
 func TestCmdServeTemplate_CallsSetupAuth(t *testing.T) {
 	data := struct {
-		Module       string
-		ConfigFields map[string]bool
-		RESTEnabled  bool
+		Module           string
+		ConfigFields     map[string]bool
+		RESTEnabled      bool
+		DevSessionCookie bool
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},
@@ -242,9 +243,10 @@ func TestCmdServeTemplate_CallsSetupAuth(t *testing.T) {
 func TestCmdServeTemplate_InstallsAPIKeyValidatorAfterOpenInfra(t *testing.T) {
 	for _, fields := range []map[string]bool{{}, {"DatabaseUrl": true, "AutoMigrate": true}} {
 		content, err := ProjectTemplates().Render("cmd-tree-serve.go.tmpl", struct {
-			Module       string
-			ConfigFields map[string]bool
-			RESTEnabled  bool
+			Module           string
+			ConfigFields     map[string]bool
+			RESTEnabled      bool
+			DevSessionCookie bool
 		}{Module: "example.com/myproject", ConfigFields: fields})
 		if err != nil {
 			t.Fatalf("render cmd-tree-serve.go.tmpl: %v", err)
@@ -368,10 +370,11 @@ func TestMiddlewareTemplate_ReadsTheAPIKeyHeader(t *testing.T) {
 }
 
 // Sibling sites under a shared parent domain (one not on the Public Suffix
-// List) are same-site and can plant a cookie for the parent. Over HTTPS the
-// interceptor therefore reads only the __Host- session cookie, which only
-// this host can set.
-func TestMiddlewareTemplate_ReadsOnlyTheHostCookieOverHTTPS(t *testing.T) {
+// List) are same-site and can plant a cookie for the parent. Outside
+// development the interceptor therefore reads only the __Host- session
+// cookie, and the switch is the server's config (AuthDeps.DevSessionCookie),
+// never a request header such as X-Forwarded-Proto.
+func TestMiddlewareTemplate_ReadsOnlyTheHostCookieOutsideDevelopment(t *testing.T) {
 	content, err := ProjectTemplates().Render("middleware.go.tmpl", struct{ Name string }{Name: "myproject"})
 	if err != nil {
 		t.Fatal(err)
@@ -379,16 +382,30 @@ func TestMiddlewareTemplate_ReadsOnlyTheHostCookieOverHTTPS(t *testing.T) {
 	src := string(content)
 	for _, want := range []string{
 		`const SecureSessionCookieName = "__Host-" + SessionCookieName`,
-		"req.Cookie(SecureSessionCookieName)",
-		`strings.EqualFold(h.Get("X-Forwarded-Proto"), "https")`,
+		"DevSessionCookie bool",
+		"extract = devCredentialFrom",
+		"ExtractToken:        extract,",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("middleware.go lacks %q", want)
 		}
 	}
-	host, xfp, plain := strings.Index(src, "req.Cookie(SecureSessionCookieName)"), strings.Index(src, `h.Get("X-Forwarded-Proto")`), strings.Index(src, "req.Cookie(SessionCookieName)")
-	if !(host < xfp && xfp < plain) {
-		t.Error("credentialFrom must read the __Host- cookie first, and the plain one only off HTTPS")
+	if strings.Contains(src, "X-Forwarded-Proto") {
+		t.Error("credentialFrom decides on X-Forwarded-Proto, which a proxy may not send")
+	}
+	start := strings.Index(src, "func credentialFrom(")
+	end := strings.Index(src[start:], "\n}\n")
+	if body := src[start : start+end]; strings.Contains(body, "Cookie(SessionCookieName)") {
+		t.Error("credentialFrom (the deployed reader) reads the plain-named session cookie")
+	}
+	for _, tmpl := range []string{"providers-graph.go.tmpl", "cmd-tree-serve.go.tmpl"} {
+		raw, err := ProjectTemplates().Get(tmpl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), "authDeps.DevSessionCookie = ") {
+			t.Errorf("%s never sets AuthDeps.DevSessionCookie from the environment", tmpl)
+		}
 	}
 }
 
@@ -421,9 +438,10 @@ func TestAPIKeysSkillDescribesTheScaffold(t *testing.T) {
 			AuthConfigType     string
 		}{Module: "example.com/demo"}),
 		"cmd/<bin>/cmd/serve.go": render("cmd-tree-serve.go.tmpl", struct {
-			Module       string
-			ConfigFields map[string]bool
-			RESTEnabled  bool
+			Module           string
+			ConfigFields     map[string]bool
+			RESTEnabled      bool
+			DevSessionCookie bool
 		}{Module: "example.com/demo", ConfigFields: map[string]bool{}}),
 	}
 

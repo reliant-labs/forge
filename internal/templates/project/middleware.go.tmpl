@@ -142,6 +142,16 @@ type AuthDeps struct {
 	// implements ClaimsEnricher — so the database reaches it the way it
 	// reaches every other component, through Deps.
 	Enrich ClaimsEnricher
+
+	// DevSessionCookie reads the native sign-in session from its PLAIN
+	// name (SessionCookieName). Set it only in local development
+	// (environment "development"), where the login broker serves plain http
+	// and so sets the plain-named cookie. Everywhere else it is false and
+	// only the __Host- name (SecureSessionCookieName) counts: a plain-named
+	// cookie there can only have been planted by a sibling site — and the
+	// decision must not rest on a forwarded-protocol request header, which
+	// a proxy may not send and a client may forge.
+	DevSessionCookie bool
 }
 
 // ClaimsEnricher is a component that hydrates validated claims before any
@@ -224,10 +234,10 @@ const APIKeyHeader = "X-API-Key"
 // SAME-SITE siblings — see SecureSessionCookieName — which is why the login
 // broker also refuses any request from another origin.)
 //
-// Over HTTPS only the __Host- cookie counts. A plain-named one there can
-// only have been planted by a sibling site (cookie tossing) to sign the
-// browser in as someone else, so it is ignored; the plain name is read only
-// on plain HTTP (local development).
+// Only the __Host- cookie counts, except in local development
+// (devCredentialFrom, chosen by AuthDeps.DevSessionCookie): a plain-named one
+// outside development can only have been planted by a sibling site (cookie
+// tossing) to sign the browser in as someone else, so it is ignored.
 //
 // Return "" for "no credential presented"; it is treated exactly like a
 // missing Authorization header. This changes only WHERE the credential is
@@ -247,14 +257,20 @@ func credentialFrom(h http.Header) string {
 	if len(h.Values(APIKeyHeader)) != 0 {
 		return strings.TrimSpace(h.Get(APIKeyHeader))
 	}
-	req := &http.Request{Header: h}
-	if cookie, err := req.Cookie(SecureSessionCookieName); err == nil {
-		return cookie.Value
-	}
-	if strings.EqualFold(h.Get("X-Forwarded-Proto"), "https") {
+	cookie, err := (&http.Request{Header: h}).Cookie(SecureSessionCookieName)
+	if err != nil {
 		return ""
 	}
-	cookie, err := req.Cookie(SessionCookieName)
+	return cookie.Value
+}
+
+// devCredentialFrom is credentialFrom for local development, where the
+// session cookie is plain-named (AuthDeps.DevSessionCookie).
+func devCredentialFrom(h http.Header) string {
+	if v := credentialFrom(h); v != "" || len(h.Values("Authorization")) != 0 || len(h.Values(APIKeyHeader)) != 0 {
+		return v
+	}
+	cookie, err := (&http.Request{Header: h}).Cookie(SessionCookieName)
 	if err != nil {
 		return ""
 	}
@@ -283,6 +299,10 @@ func NewAuthInterceptor(deps AuthDeps) (connect.Interceptor, error) {
 	if deps.Enrich != nil {
 		enrich = deps.Enrich.EnrichClaims
 	}
+	extract := credentialFrom
+	if deps.DevSessionCookie {
+		extract = devCredentialFrom
+	}
 	return authn.NewInterceptor(authn.Policy{
 		ValidatorConfigured: deps.Validate != nil,
 		ExternalAuth:        deps.ExternalAuth,
@@ -290,6 +310,6 @@ func NewAuthInterceptor(deps AuthDeps) (connect.Interceptor, error) {
 		ValidateContext:     deps.Validate,
 		Unauthenticated:     UnauthenticatedProcedures,
 		Enrich:              enrich,
-		ExtractToken:        credentialFrom,
+		ExtractToken:        extract,
 	})
 }

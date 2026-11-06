@@ -933,7 +933,14 @@ type providersGraphData struct {
 	// can take an enricher component. A middleware.go scaffolded before the
 	// seam existed has neither, and naming them would not compile.
 	ClaimsEnricher bool
+	// DevSessionCookie: the project's AuthDeps has DevSessionCookie (the
+	// plain-named session cookie read in development only), and the auth
+	// config has Environment to decide it from.
+	DevSessionCookie bool
 }
+
+// projectDevSessionCookieDecl matches AuthDeps.DevSessionCookie.
+var projectDevSessionCookieDecl = regexp.MustCompile(`(?m)^\s*DevSessionCookie\s+bool\b`)
 
 // projectAuthInterceptorDecl matches the auth interceptor the scaffolded
 // pkg/middleware/middleware.go declares.
@@ -1003,7 +1010,8 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 	}
 	data := providersGraphData{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields,
 		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker,
-		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptor(projectDir), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir)}
+		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptor(projectDir), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir),
+		DevSessionCookie: projectMiddlewareDeclares(projectDir, projectDevSessionCookieDecl) && authConfig == "" && configFields["Environment"]}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render providers-graph.go.tmpl: %w", err)

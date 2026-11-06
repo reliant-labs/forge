@@ -77,10 +77,16 @@ unavailable") when `ANTHROPIC_API_KEY` is empty, never to crash at startup.
 | 401 / 403 naming a model | the key's tier does not list that model | change the model |
 | 401 `unauthorized` | key missing or revoked | check the workload has `forge.llm_env()` |
 
-Both SDKs retry a 429 by default, which wastes calls on `insufficient_quota`:
-`option.WithMaxRetries(0)` on the request and handle it yourself.
+Both SDKs retry a 429 twice by default, which repeats a billed call that
+`insufficient_quota` will refuse again. Turn retries off and handle the 429
+yourself. `option.WithMaxRetries` (each SDK's own `option` package) is a
+`RequestOption`: pass it to `NewClient` for every call, or as the trailing
+argument of one call to override it there:
 
 ```go
+client := anthropic.NewClient(option.WithMaxRetries(0)) // every call
+msg, err := client.Messages.New(ctx, params, option.WithMaxRetries(0)) // or just this one
+
 var apierr *anthropic.Error
 if errors.As(err, &apierr) && apierr.StatusCode == http.StatusTooManyRequests &&
     strings.Contains(apierr.RawJSON(), "insufficient_quota") {

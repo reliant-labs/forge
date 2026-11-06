@@ -528,3 +528,46 @@ func TestSafeReturnToRefusesWhatABrowserReadsAsAnotherSite(t *testing.T) {
 		}
 	}
 }
+
+// Two replicas of the broker (one issuer, one broker token) answer an unknown
+// address with the same decoy credential ids, as they would a real account's,
+// while each challenge stays fresh. A per-process decoy secret would let
+// requests that land on different replicas, or straddle a restart, tell an
+// unknown address from a real one by its changing ids.
+func TestDecoyCredentialsAreStableAcrossReplicas(t *testing.T) {
+	z := newFakeZitadel(t)
+	a := newHarnessOn(t, z, policyWith(SignupInvite, allMethods))
+	b := newHarnessOn(t, z, policyWith(SignupInvite, allMethods))
+	parse := func(raw json.RawMessage) (creds, challenge string) {
+		var doc struct {
+			PublicKey struct {
+				Challenge        string          `json:"challenge"`
+				AllowCredentials json.RawMessage `json:"allowCredentials"`
+			} `json:"publicKey"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		return string(doc.PublicKey.AllowCredentials), doc.PublicKey.Challenge
+	}
+	for _, email := range []string{"nobody@acme.com", "ghost@acme.com"} {
+		ca, cha := parse(a.routes.decoyOptions(email))
+		cb, chb := parse(b.routes.decoyOptions(email))
+		if ca != cb {
+			t.Errorf("%s: replicas name different decoy credentials: %s vs %s", email, ca, cb)
+		}
+		if cha == chb {
+			t.Errorf("%s: two decoys share a challenge", email)
+		}
+		if a.routes.magicAttemptKey(email) != b.routes.magicAttemptKey(email) {
+			t.Errorf("%s: replicas key the magic-link budget differently", email)
+		}
+	}
+	other := newHarnessOn(t, z, policyWith(SignupInvite, allMethods), func(c *SignInRoutesConfig) {
+		c.Client = &Client{Base: z.srv.URL, Token: "another-token"}
+	})
+	mine, _ := parse(a.routes.decoyOptions("nobody@acme.com"))
+	if theirs, _ := parse(other.routes.decoyOptions("nobody@acme.com")); mine == theirs {
+		t.Error("the decoy secret does not depend on the broker token")
+	}
+}

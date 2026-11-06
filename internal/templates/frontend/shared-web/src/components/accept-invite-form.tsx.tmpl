@@ -15,12 +15,13 @@
 //
 // A passkey takes two prompts: one to create it, one to sign in with it.
 
-import { useState } from "react";
+import { KeyRound, LockKeyhole, Mail } from "lucide-react";
+import { useRef, useState } from "react";
 
+import { AuthAlert, AuthCard, AuthDivider, AuthLink, PasswordInput } from "@/components/auth-ui";
 import { PasswordRequirements } from "@/components/password-requirements";
 import { NoCodeHint } from "@/components/sign-in-methods";
 import Button from "@/components/ui/button";
-import Input from "@/components/ui/input";
 import Label from "@/components/ui/label";
 import {
   AuthError,
@@ -28,6 +29,7 @@ import {
   passkeySignIn,
   passkeysSupported,
   registerPasskey,
+  unmetRules,
   type PasswordRule,
   type SignInMethod,
 } from "@/lib/auth/native-login";
@@ -46,6 +48,12 @@ const labels: Record<SignInMethod, string> = {
   password: "Choose a password",
   passkey: "Use a passkey on this device",
   magic_link: "Email me a sign-in link each time",
+};
+
+const icons: Record<SignInMethod, typeof Mail> = {
+  password: LockKeyhole,
+  passkey: KeyRound,
+  magic_link: Mail,
 };
 
 export function AcceptInviteForm({
@@ -69,17 +77,25 @@ export function AcceptInviteForm({
   const [sent, setSent] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [leaving, setLeaving] = useState<string | null>(null);
+  const [attempted, setAttempted] = useState(false);
+  const passwordRef = useRef<HTMLInputElement>(null);
 
   if (!userID || !code) {
     return (
-      <div className="rounded-xl border border-border bg-surface p-8 shadow-sm">
-        <h1 className="text-xl font-semibold tracking-tight text-ink">Accept your invitation</h1>
-        <p role="alert" className="mt-4 text-sm text-ink">
+      <AuthCard
+        title="Accept your invitation"
+        footer={<AuthLink href={signInHref}>Go to sign in</AuthLink>}
+      >
+        <AuthAlert tone="error" className="mt-6">
           This invitation link is incomplete. Open the link from the email again.
-        </p>
-      </div>
+        </AuthAlert>
+      </AuthCard>
     );
   }
+
+  // Whether the chosen password misses a rule the policy states. Drawn red
+  // only once the person has tried to submit (`attempted`).
+  const passwordUnmet = policy !== null && unmetRules(policy, password).length > 0;
 
   async function acceptWithSocial(provider: string) {
     if (!userID || !code) return;
@@ -103,6 +119,15 @@ export function AcceptInviteForm({
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!userID || !code || !chosen) return;
+    // A password that misses a stated rule would only come back refused (the
+    // server checks it before spending the invitation): say so at the
+    // checklist, without the round trip. The server still checks.
+    if (chosen === "password" && passwordUnmet) {
+      setAttempted(true);
+      setError("Your password doesn't meet every requirement yet.");
+      passwordRef.current?.focus();
+      return;
+    }
     setSubmitting(true);
     setError(null);
     setServerUnmet([]);
@@ -130,114 +155,138 @@ export function AcceptInviteForm({
     } catch (err) {
       setError(err instanceof AuthError ? err.message : "The invitation could not be accepted.");
       setServerUnmet(err instanceof AuthError ? err.unmet : []);
+      if (err instanceof AuthError && err.unmet.length > 0) setAttempted(true);
       setSubmitting(false);
     }
   }
 
   return (
-    <form onSubmit={onSubmit} className="rounded-xl border border-border bg-surface p-8 shadow-sm">
-      <h1 className="text-xl font-semibold tracking-tight text-ink">Join {{.ProjectName}}</h1>
-
+    <AuthCard
+      title="Join {{.ProjectName}}"
+      description={
+        sent ? undefined : "You've been invited. Finish setting up your account to get started."
+      }
+      footer={
+        <p>
+          Already set up? <AuthLink href={signInHref}>Sign in</AuthLink>
+        </p>
+      }
+    >
       {sent ? (
         <>
-          <p role="status" className="mt-4 text-sm text-ink">
+          <AuthAlert tone="success" className="mt-6">
             {sent} Open it in this browser to finish.
-          </p>
+          </AuthAlert>
           <NoCodeHint />
         </>
       ) : (
-        <>
+        <form onSubmit={onSubmit} aria-busy={submitting} className="mt-6">
           {offered.length > 1 ? (
-            <fieldset className="mt-6 space-y-2">
-              <legend className="text-sm font-medium text-ink">How will you sign in?</legend>
-              {offered.map((m) => (
-                <label key={m} className="flex items-center gap-2 text-sm text-ink">
-                  <input
-                    type="radio"
-                    name="method"
-                    value={m}
-                    checked={chosen === m}
-                    onChange={() => setMethod(m)}
-                  />
-                  {labels[m]}
-                </label>
-              ))}
+            <fieldset>
+              <legend className="mb-2 text-sm font-medium text-ink">How will you sign in?</legend>
+              <div className="grid gap-2">
+                {offered.map((m) => {
+                  const Icon = icons[m];
+                  return (
+                    // The whole row is the label, so the touch target is the
+                    // row; the native radio keeps arrow-key navigation and
+                    // its announcement.
+                    <label
+                      key={m}
+                      className={[
+                        "flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border px-3.5 py-2.5 text-sm text-ink transition-colors",
+                        "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent",
+                        chosen === m
+                          ? "border-accent bg-accent-surface"
+                          : "border-border hover:bg-surface-muted",
+                      ].join(" ")}
+                    >
+                      <input
+                        type="radio"
+                        name="method"
+                        value={m}
+                        checked={chosen === m}
+                        onChange={() => setMethod(m)}
+                        className="size-4 shrink-0 accent-accent"
+                      />
+                      <Icon aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />
+                      {labels[m]}
+                    </label>
+                  );
+                })}
+              </div>
             </fieldset>
           ) : null}
 
           {chosen === "password" ? (
-            <>
-              <Label className="mt-6" htmlFor="password">
-                Password
-              </Label>
-              <Input
+            <div className={offered.length > 1 ? "mt-5" : undefined}>
+              <Label htmlFor="password">Password</Label>
+              <PasswordInput
+                ref={passwordRef}
                 id="password"
                 name="password"
-                type="password"
                 autoComplete="new-password"
                 required
-                aria-describedby="password-requirements"
+                aria-describedby={policy ? "password-requirements" : undefined}
+                invalid={serverUnmet.length > 0 || (attempted && passwordUnmet)}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  // A changed password is a new one: the server's verdict on
+                  // the last one no longer applies to it.
+                  if (serverUnmet.length > 0 || attempted) {
+                    setServerUnmet([]);
+                    setError(null);
+                  }
+                }}
               />
               <PasswordRequirements
                 id="password-requirements"
                 policy={policy}
                 password={password}
                 serverUnmet={serverUnmet}
+                attempted={attempted}
               />
-            </>
+            </div>
           ) : null}
 
-          {error ? (
-            <p
-              role="alert"
-              className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
-            >
-              {error}
-            </p>
-          ) : null}
+          {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
 
           {chosen ? (
-            <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
+            <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6 h-11">
               {submitting ? "Setting up…" : "Accept invitation"}
             </Button>
           ) : null}
 
           {options.social.length > 0 ? (
-            <div className="mt-6 space-y-2">
-              {chosen ? (
-                <p className="text-center text-sm text-ink-muted">Or sign in with</p>
-              ) : null}
-              {options.social.map((provider) => (
-                <Button
-                  key={provider.type}
-                  type="button"
-                  variant="outline"
-                  fullWidth
-                  loading={leaving === provider.type}
-                  onClick={() => void acceptWithSocial(provider.type)}
-                >
-                  Continue with {provider.label}
-                </Button>
-              ))}
-            </div>
+            <>
+              {chosen ? <AuthDivider /> : null}
+              <div className={chosen ? "space-y-3" : "mt-6 space-y-3"}>
+                {options.social.map((provider) => (
+                  <Button
+                    key={provider.type}
+                    type="button"
+                    variant="outline"
+                    size="xl"
+                    fullWidth
+                    className="h-11"
+                    loading={leaving === provider.type}
+                    onClick={() => void acceptWithSocial(provider.type)}
+                  >
+                    Continue with {provider.label}
+                  </Button>
+                ))}
+              </div>
+            </>
           ) : null}
 
           {!chosen && options.social.length === 0 ? (
-            <p role="status" className="mt-6 text-sm text-ink-muted">
+            <AuthAlert tone="info">
               No way to sign in is offered here yet. Ask whoever invited you.
-            </p>
+            </AuthAlert>
           ) : null}
-        </>
+        </form>
       )}
-
-      <p className="mt-4 text-center text-sm text-ink-muted">
-        Already set up?{" "}
-        <a className="font-medium text-accent underline" href={signInHref}>
-          Sign in
-        </a>
-      </p>
-    </form>
+    </AuthCard>
   );
 }

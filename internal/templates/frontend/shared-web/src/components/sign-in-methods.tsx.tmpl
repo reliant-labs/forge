@@ -24,8 +24,8 @@
 
 import { useEffect, useState } from "react";
 
+import { AuthAlert, AuthDivider, AuthInput } from "@/components/auth-ui";
 import Button from "@/components/ui/button";
-import Input from "@/components/ui/input";
 import Label from "@/components/ui/label";
 import {
   AuthError,
@@ -37,10 +37,6 @@ import {
   socialStart,
   type AuthOptions,
 } from "@/lib/auth/native-login";
-
-const alertClass =
-  "mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink";
-const statusClass = "mt-4 rounded-md border border-border bg-surface-muted p-3 text-sm text-ink";
 
 /** One sentence for every address, whatever happened to the mail. */
 const NO_CODE_HINT =
@@ -60,7 +56,7 @@ export function NoCodeHint({ resent = false }: { resent?: boolean }) {
     return () => clearTimeout(timer);
   }, []);
   if (!resent && !waited) return null;
-  return <p className="mt-2 text-xs text-ink-muted">{NO_CODE_HINT}</p>;
+  return <p className="mt-2 text-sm text-ink-muted">{NO_CODE_HINT}</p>;
 }
 
 export interface SignInMethodsProps {
@@ -106,115 +102,120 @@ export function SignInMethods({ options, email, returnTo, onSignedIn }: SignInMe
   }
 
   return (
-    <div className="mt-6 space-y-3">
-      {options.methods.includes("password") ? (
-        <p className="text-center text-xs uppercase tracking-wide text-ink-muted">or</p>
-      ) : null}
-
-      {offersPasskey ? (
-        <Button
-          type="button"
-          variant="outline"
-          fullWidth
-          loading={busy === "passkey"}
-          onClick={() => {
-            if (needEmail()) return;
-            void run("passkey", async () => {
-              await passkeySignIn(email.trim());
-              await onSignedIn();
-            });
-          }}
-        >
-          Continue with passkey
-        </Button>
-      ) : null}
-
-      {offersLink && sent === null ? (
-        <Button
-          type="button"
-          variant="outline"
-          fullWidth
-          loading={busy === "link"}
-          onClick={() => {
-            if (needEmail()) return;
-            void run("link", async () => {
-              setSent(await requestMagicLink(email.trim()));
-            });
-          }}
-        >
-          Email me a link
-        </Button>
-      ) : null}
-
-      {sent !== null ? (
-        // A div, not a form: this renders inside the sign-in screen's form.
-        <div>
-          <p role="status" className={statusClass}>
-            {sent} Open the link in this browser, or type the code from the email here. Never share
-            this code: {{.ProjectName}} will never ask you for it.
-          </p>
-          <Label className="mt-3" htmlFor="magic-code">
-            Code from the email
-          </Label>
-          <Input
-            id="magic-code"
-            name="code"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-          />
-          <Button
-            type="button"
-            fullWidth
-            loading={busy === "code"}
-            className="mt-3"
-            onClick={() =>
-              void run("code", async () => {
-                await consumeMagicLink(code.trim());
-                await onSignedIn();
-              })
-            }
-          >
-            Sign in with the code
-          </Button>
+    <div className={options.methods.includes("password") ? "" : "mt-6"}>
+      {options.methods.includes("password") ? <AuthDivider /> : null}
+      <div className="space-y-3">
+        {offersPasskey ? (
           <Button
             type="button"
             variant="outline"
+            size="xl"
             fullWidth
-            loading={busy === "resend"}
-            className="mt-2"
-            onClick={() =>
-              void run("resend", async () => {
-                setSent(await requestMagicLink(email.trim()));
-                setResent(true);
-              })
-            }
+            className="h-11"
+            loading={busy === "passkey"}
+            onClick={() => {
+              if (needEmail()) return;
+              void run("passkey", async () => {
+                await passkeySignIn(email.trim());
+                await onSignedIn();
+              });
+            }}
           >
-            Send a new link
+            Continue with passkey
           </Button>
-          <NoCodeHint resent={resent} />
-        </div>
-      ) : null}
+        ) : null}
 
-      {options.social.map((provider) => (
-        <Button
-          key={provider.type}
-          type="button"
-          variant="outline"
-          fullWidth
-          loading={busy === provider.type}
-          onClick={() => void run(provider.type, () => socialStart(provider.type, returnTo))}
-        >
-          Continue with {provider.label}
-        </Button>
-      ))}
+        {offersLink && sent === null ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="xl"
+            fullWidth
+            className="h-11"
+            loading={busy === "link"}
+            onClick={() => {
+              if (needEmail()) return;
+              void run("link", async () => {
+                setSent(await requestMagicLink(email.trim()));
+              });
+            }}
+          >
+            Email me a link
+          </Button>
+        ) : null}
 
-      {error ? (
-        <p role="alert" className={alertClass}>
-          {error}
-        </p>
-      ) : null}
+        {sent !== null ? (
+          // A div, not a form: this renders inside the sign-in screen's form.
+          <div>
+            <AuthAlert tone="success" className="mt-0">
+              <p>{sent}</p>
+              <p>
+                Open the link in this browser, or type the code from the email here. Never share
+                this code: {{.ProjectName}} will never ask you for it.
+              </p>
+            </AuthAlert>
+            <Label className="mt-4" htmlFor="magic-code">
+              Code from the email
+            </Label>
+            <AuthInput
+              id="magic-code"
+              name="code"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+            <Button
+              type="button"
+              size="xl"
+              fullWidth
+              loading={busy === "code"}
+              className="mt-3 h-11"
+              onClick={() =>
+                void run("code", async () => {
+                  await consumeMagicLink(code.trim());
+                  await onSignedIn();
+                })
+              }
+            >
+              Sign in with the code
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              fullWidth
+              loading={busy === "resend"}
+              className="mt-2"
+              onClick={() =>
+                void run("resend", async () => {
+                  setSent(await requestMagicLink(email.trim()));
+                  setResent(true);
+                })
+              }
+            >
+              Send a new link
+            </Button>
+            <NoCodeHint resent={resent} />
+          </div>
+        ) : null}
+
+        {options.social.map((provider) => (
+          <Button
+            key={provider.type}
+            type="button"
+            variant="outline"
+            size="xl"
+            fullWidth
+            className="h-11"
+            loading={busy === provider.type}
+            onClick={() => void run(provider.type, () => socialStart(provider.type, returnTo))}
+          >
+            Continue with {provider.label}
+          </Button>
+        ))}
+      </div>
+
+      {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
       {unverified ? <UnverifiedNotice email={email} /> : null}
     </div>
   );
@@ -225,17 +226,18 @@ export function UnverifiedNotice({ email }: { email: string }) {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   return (
-    <div role="status" className={statusClass}>
+    <AuthAlert tone="info">
       <p>This address is not confirmed yet. Use the link we emailed, or ask for a new one.</p>
       {message ? (
         <>
-          <p className="mt-2 text-ink-muted">{message}</p>
+          <p className="text-ink-muted">{message}</p>
           <NoCodeHint resent />
         </>
       ) : (
         <Button
           type="button"
           variant="outline"
+          size="sm"
           className="mt-2"
           loading={busy}
           onClick={() => {
@@ -249,6 +251,6 @@ export function UnverifiedNotice({ email }: { email: string }) {
           Send a new link
         </Button>
       )}
-    </div>
+    </AuthAlert>
   );
 }

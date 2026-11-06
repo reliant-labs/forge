@@ -9,23 +9,32 @@
 // (internal/app/login_broker.go) and answers with an HttpOnly session
 // cookie. See src/lib/auth/native-login.ts for why that split matters.
 //
-// This is starter code. It is deliberately plain — most products restyle
-// their sign-in heavily, and an opinionated design here would be harder to
-// replace than a neutral one.
+// This is starter code in the theme's neutral tokens. The frame, card, alerts
+// and password field come from src/components/auth-ui.tsx, which every /auth
+// screen shares — restyle sign-in there, once, rather than per screen.
 
 import { useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 
+import {
+  AuthAlert,
+  AuthCard,
+  AuthInput,
+  AuthLink,
+  AuthPage,
+  AuthTextButton,
+  PasswordInput,
+} from "@/components/auth-ui";
 import { PasswordRequirements } from "@/components/password-requirements";
 import { SignInMethods, UnverifiedNotice } from "@/components/sign-in-methods";
 import Button from "@/components/ui/button";
-import Input from "@/components/ui/input";
 import Label from "@/components/ui/label";
 import {
   AuthError,
   isVerifySent,
   signIn,
   signUp,
+  unmetRules,
   type PasswordRule,
 } from "@/lib/auth/native-login";
 import { safeReturnTo } from "@/lib/auth/return-to";
@@ -78,9 +87,23 @@ function SignIn() {
   // What a password must contain. Only shown when signing up: signing in
   // takes whatever the account already has.
   const policy = usePasswordPolicy();
+  // Whether the typed password misses a rule the policy states. Drawn red
+  // only once the person has tried to submit (`attempted`).
+  const passwordUnmet = policy !== null && unmetRules(policy, password).length > 0;
+  const [attempted, setAttempted] = useState(false);
+  const passwordRef = useRef<HTMLInputElement>(null);
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
+    // A new password that misses a rule the server's policy states would only
+    // come back refused: say so here, at the checklist, without the round
+    // trip. The server still checks every password it is sent.
+    if (signingUp && offersPassword && passwordUnmet) {
+      setAttempted(true);
+      setError("Your password doesn't meet every requirement yet.");
+      passwordRef.current?.focus();
+      return;
+    }
     setSubmitting(true);
     setError(null);
     setServerUnmet([]);
@@ -112,125 +135,140 @@ function SignIn() {
       setError(message);
       setUnverified(err instanceof AuthError && err.code === "email_unverified");
       setServerUnmet(err instanceof AuthError ? err.unmet : []);
+      if (err instanceof AuthError && err.unmet.length > 0) setAttempted(true);
       setSubmitting(false);
     }
   }
 
+  // The footer's toggle: sign in and sign up share ONE screen, swapping
+  // behaviour rather than navigating. Both post to the same API and land
+  // in the same place, so a second route would add a page transition and
+  // nothing else.
+  //
+  // Shown only when the server serves /auth/register — a deployed app is
+  // invite-only until its config sets auth_self_signup
+  // (internal/app/login_broker.go explains how an invite-only app gets
+  // its users).
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-surface-muted p-6">
-      <div className="w-full max-w-sm">
-        <form
-          onSubmit={onSubmit}
-          className="rounded-xl border border-border bg-surface p-8 shadow-sm"
-        >
-          <h1 className="text-xl font-semibold tracking-tight text-ink">
-            {signingUp ? "Create your {{.ProjectName}} account" : "Sign in to {{.ProjectName}}"}
-          </h1>
-
-          <Label className="mt-6" htmlFor="email">
-            Email
-          </Label>
-          <Input
-            id="email"
-            name="email"
-            type="email"
-            autoComplete="username"
-            required
-            autoFocus
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-
-          {offersPassword ? (
-            <>
-              <Label className="mt-4" htmlFor="password">
-                Password
-              </Label>
-              <Input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete={signingUp ? "new-password" : "current-password"}
-                required
-                aria-describedby={signingUp ? "password-requirements" : undefined}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-
-              {signingUp ? (
-                <PasswordRequirements
-                  id="password-requirements"
-                  policy={policy}
-                  password={password}
-                  serverUnmet={serverUnmet}
-                />
-              ) : (
-                /*
-                  Self-serve reset. The link is emailed only if this app's
-                  identity has SMTP configured (forge.ManagedIdentity.smtp) —
-                  the /auth/forgot screen says so. Delete this link and the
-                  /auth/forgot and /auth/reset routes in login_broker.go to
-                  turn password reset off.
-                */
-                <p className="mt-1 text-right text-xs">
-                  <a
-                    className="font-medium text-accent underline"
-                    href={joinBasePath("/auth/forgot")}
-                  >
-                    Forgot your password?
-                  </a>
-                </p>
-              )}
-            </>
-          ) : null}
-
-          {!signingUp && needsTotp ? (
-            <>
-              <Label className="mt-4" htmlFor="totp">
-                Authentication code
-              </Label>
-              <Input
-                id="totp"
-                name="totp"
-                type="text"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                value={totp}
-                onChange={(e) => setTotp(e.target.value)}
-              />
-            </>
-          ) : null}
-
-          {error ? (
-            <p
-              role="alert"
-              className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
-            >
-              {error}
+    <AuthPage>
+      <AuthCard
+        title={signingUp ? "Create your account" : "Sign in"}
+        description={signingUp ? "Get started with {{.ProjectName}}." : "Welcome back."}
+        footer={
+          selfSignup ? (
+            <p>
+              {signingUp ? "Already have an account?" : "New here?"}{" "}
+              <AuthTextButton
+                onClick={() => {
+                  setMode(signingUp ? "signIn" : "signUp");
+                  setError(null);
+                  setServerUnmet([]);
+                  setAttempted(false);
+                }}
+              >
+                {signingUp ? "Sign in" : "Create an account"}
+              </AuthTextButton>
             </p>
-          ) : null}
+          ) : null
+        }
+      >
+        <form onSubmit={onSubmit} aria-busy={submitting} className="mt-6">
           {socialFailed && !error ? (
-            <p
-              role="alert"
-              className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
-            >
+            <AuthAlert tone="error" className="mb-5">
               That sign-in did not complete. Please try again.
-            </p>
+            </AuthAlert>
           ) : null}
+
+          <div className="space-y-5">
+            <div>
+              <Label htmlFor="email">Email</Label>
+              <AuthInput
+                id="email"
+                name="email"
+                type="email"
+                autoComplete="username"
+                placeholder="you@example.com"
+                required
+                autoFocus
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+
+            {offersPassword ? (
+              <div>
+                <Label htmlFor="password">Password</Label>
+                <PasswordInput
+                  ref={passwordRef}
+                  id="password"
+                  name="password"
+                  autoComplete={signingUp ? "new-password" : "current-password"}
+                  required
+                  aria-describedby={signingUp && policy ? "password-requirements" : undefined}
+                  invalid={signingUp && (serverUnmet.length > 0 || (attempted && passwordUnmet))}
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    // A changed password is a new one: the server's verdict
+                    // on the last one no longer applies to it.
+                    if (signingUp && (serverUnmet.length > 0 || attempted)) {
+                      setServerUnmet([]);
+                      setError(null);
+                    }
+                  }}
+                />
+
+                {signingUp ? (
+                  <PasswordRequirements
+                    id="password-requirements"
+                    policy={policy}
+                    password={password}
+                    serverUnmet={serverUnmet}
+                    attempted={attempted}
+                  />
+                ) : (
+                  /*
+                    Self-serve reset. The link is emailed only if this app's
+                    identity has SMTP configured (forge.ManagedIdentity.smtp) —
+                    the /auth/forgot screen says so. Delete this link and the
+                    /auth/forgot and /auth/reset routes in login_broker.go to
+                    turn password reset off.
+                  */
+                  <p className="mt-2 text-right text-sm">
+                    <AuthLink href={joinBasePath("/auth/forgot")}>Forgot your password?</AuthLink>
+                  </p>
+                )}
+              </div>
+            ) : null}
+
+            {!signingUp && needsTotp ? (
+              <div>
+                <Label htmlFor="totp">Authentication code</Label>
+                <AuthInput
+                  id="totp"
+                  name="totp"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  value={totp}
+                  onChange={(e) => setTotp(e.target.value)}
+                />
+                <p className="mt-2 text-sm text-ink-muted">
+                  Enter the 6-digit code from your authenticator app.
+                </p>
+              </div>
+            ) : null}
+          </div>
+
+          {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
 
           {unverified ? <UnverifiedNotice email={email} /> : null}
 
-          {notice ? (
-            <p
-              role="status"
-              className="mt-4 rounded-md border border-border bg-surface-muted p-3 text-sm text-ink"
-            >
-              {notice}
-            </p>
-          ) : null}
+          {notice ? <AuthAlert tone="success">{notice}</AuthAlert> : null}
 
           {offersPassword || signingUp ? (
-            <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
+            <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6 h-11">
               {submitting
                 ? signingUp
                   ? "Creating your account…"
@@ -256,37 +294,9 @@ function SignIn() {
               }}
             />
           )}
-
-          {/*
-            Sign in and sign up on ONE screen, swapping behaviour rather
-            than navigating: both post to the same API and land in the same
-            place, so a second route would add a page transition and
-            nothing else.
-
-            Shown only when the server serves /auth/register — a deployed
-            app is invite-only until its config sets auth_self_signup
-            (internal/app/login_broker.go explains how an invite-only app
-            gets its users).
-          */}
-          {selfSignup ? (
-            <p className="mt-4 text-center text-sm text-ink-muted">
-              {signingUp ? "Already have an account?" : "New here?"}{" "}
-              <button
-                type="button"
-                className="font-medium text-accent underline"
-                onClick={() => {
-                  setMode(signingUp ? "signIn" : "signUp");
-                  setError(null);
-                  setServerUnmet([]);
-                }}
-              >
-                {signingUp ? "Sign in" : "Create an account"}
-              </button>
-            </p>
-          ) : null}
         </form>
-      </div>
-    </main>
+      </AuthCard>
+    </AuthPage>
   );
 }
 

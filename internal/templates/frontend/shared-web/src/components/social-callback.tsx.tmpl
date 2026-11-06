@@ -10,8 +10,10 @@
 // Unlike the emailed-link pages it acts on load: nothing mails this URL, so
 // no scanner opens it, and the person already clicked "Continue with …".
 
+import { LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { AuthAlert, AuthCard, AuthLink } from "@/components/auth-ui";
 import { AuthError, isVerifySent, socialComplete } from "@/lib/auth/native-login";
 import { safeReturnTo } from "@/lib/auth/return-to";
 
@@ -56,18 +58,20 @@ export function SocialCallback({ id, token, signInHref, onSignedIn }: SocialCall
   }, [id, token, onSignedIn]);
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-8 shadow-sm">
-      <h1 className="text-xl font-semibold tracking-tight text-ink">Signing in to {{.ProjectName}}</h1>
-      <p role={failed ? "alert" : "status"} className="mt-4 text-sm text-ink">
-        {message ?? "One moment…"}
-      </p>
+    <AuthCard
+      title="Signing in to {{.ProjectName}}"
+      footer={message ? <AuthLink href={signInHref}>Back to sign in</AuthLink> : null}
+    >
       {message ? (
-        <p className="mt-4 text-center text-sm text-ink-muted">
-          <a className="font-medium text-accent underline" href={signInHref}>
-            Back to sign in
-          </a>
+        <AuthAlert tone={failed ? "error" : "success"} className="mt-6">
+          {message}
+        </AuthAlert>
+      ) : (
+        <p role="status" className="mt-6 flex items-center gap-3 text-sm text-ink-muted">
+          <LoaderCircle aria-hidden="true" className="size-4 shrink-0 motion-safe:animate-spin" />
+          One moment…
         </p>
-      ) : null}
-    </div>
+      )}
+    </AuthCard>
   );
 }

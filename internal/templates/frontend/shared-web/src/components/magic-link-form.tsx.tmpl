@@ -17,8 +17,8 @@
 
 import { useState } from "react";
 
+import { AuthAlert, AuthCard, AuthInput, AuthLink } from "@/components/auth-ui";
 import Button from "@/components/ui/button";
-import Input from "@/components/ui/input";
 import Label from "@/components/ui/label";
 import { AuthError, consumeMagicLink } from "@/lib/auth/native-login";
 
@@ -51,29 +51,29 @@ export function MagicLinkForm({ code: linked, signInHref, onSignedIn }: MagicLin
   }
 
   return (
-    <form onSubmit={onSubmit} className="rounded-xl border border-border bg-surface p-8 shadow-sm">
-      <h1 className="text-xl font-semibold tracking-tight text-ink">Sign in to {{.ProjectName}}</h1>
-
+    <AuthCard
+      title="Sign in to {{.ProjectName}}"
+      description={
+        otherBrowser
+          ? undefined
+          : `${linked ? "Press the button to finish signing in." : "Type the code from the email."} Never share this code: {{.ProjectName}} will never ask you for it.`
+      }
+      footer={<AuthLink href={signInHref}>Back to sign in</AuthLink>}
+    >
       {otherBrowser ? (
-        <div role="alert" className="mt-4 space-y-2 text-sm text-ink">
+        <AuthAlert tone="error" className="mt-6">
           <p>This link only works in the browser where you asked for it.</p>
-          <p className="text-ink-muted">
+          <p>
             Go back to that browser and type the code from the email there, or ask for a new link
             here.
           </p>
-        </div>
+        </AuthAlert>
       ) : (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">
-            {linked ? "Press the button to finish signing in." : "Type the code from the email."}{" "}
-            Never share this code: {{.ProjectName}} will never ask you for it.
-          </p>
+        <form onSubmit={onSubmit} aria-busy={submitting} className="mt-6">
           {linked ? null : (
             <>
-              <Label className="mt-6" htmlFor="code">
-                Code
-              </Label>
-              <Input
+              <Label htmlFor="code">Code</Label>
+              <AuthInput
                 id="code"
                 name="code"
                 inputMode="numeric"
@@ -86,26 +86,19 @@ export function MagicLinkForm({ code: linked, signInHref, onSignedIn }: MagicLin
             </>
           )}
 
-          {error ? (
-            <p
-              role="alert"
-              className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
-            >
-              {error}
-            </p>
-          ) : null}
+          {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
 
-          <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
+          <Button
+            type="submit"
+            size="xl"
+            fullWidth
+            loading={submitting}
+            className={linked && !error ? "h-11" : "mt-6 h-11"}
+          >
             {submitting ? "Signing in…" : "Sign in"}
           </Button>
-        </>
+        </form>
       )}
-
-      <p className="mt-4 text-center text-sm text-ink-muted">
-        <a className="font-medium text-accent underline" href={signInHref}>
-          Back to sign in
-        </a>
-      </p>
-    </form>
+    </AuthCard>
   );
 }

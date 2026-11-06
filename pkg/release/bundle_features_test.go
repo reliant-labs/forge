@@ -25,6 +25,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureHealthGate:             {"shape.delivery_policy.health_gate"},
 	BundleFeatureDeclaredEnvs:           {"declared_envs"},
 	BundleFeatureShapePlacement:         {"shape.workloads[].unit", "shape.host_infra"},
+	BundleFeatureExternalDatabases:      {"shape.external_databases"},
 	BundleFeatureIdentitySignIn: {
 		"shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods",
 		"shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email", "shape.identity.dev_mail",
@@ -143,6 +144,7 @@ func fullBundleDoc() BundleDoc {
 			ReleaseHealth:            &ShapeReleaseHealth{WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2, NewIssueMinEvents: 5, FailOn: []string{HealthErrorRate}},
 			UptimeChecks:             []ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: UptimeSourceDefault}},
 			Databases:                []ShapeDatabase{{Name: "orders", Dashboards: &ShapeDatabaseDashboards{Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1}}},
+			ExternalDatabases:        []ShapeExternalDatabase{{Name: "ledger", Cluster: "ctx", Namespace: "app", Service: "pgbouncer", Database: "ledger", Username: "ledger_ro", PasswordSecret: "ledger-ro", PasswordKey: "password", SSLMode: ExternalDatabaseSSLRequire}},
 			DeliveryPolicy:           healthGatedPolicy(),
 			Identity:                 signInIdentity(),
 		},
@@ -176,7 +178,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	for _, p := range strays {
 		strayRoots[p] = true
 	}
-	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.databases", "shape.delivery_policy.health_gate", "declared_envs", "shape.workloads[].unit", "shape.host_infra", "shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods", "shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email"} {
+	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.databases", "shape.external_databases", "shape.delivery_policy.health_gate", "declared_envs", "shape.workloads[].unit", "shape.host_infra", "shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods", "shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email"} {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
@@ -215,6 +217,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.UptimeChecks = nil
 	wantShape.DataAccess = nil
 	wantShape.Databases = nil
+	wantShape.ExternalDatabases = nil
 	wantShape.HostInfra = false
 	wantShape.Workloads = []ShapeWorkload{full.Shape.Workloads[0]}
 	wantShape.Workloads[0].Unit = ""
@@ -270,6 +273,10 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	dashboards := (&BundleReader{Features: []string{BundleFeatureDatabaseDashboards}}).Limit(full)
 	if len(dashboards.Shape.Databases) != 1 || dashboards.Shape.UptimeChecks != nil || dashboards.Shape.StoreSecrets != nil || dashboards.Shape.DataAccess != nil {
 		t.Errorf("a reader of database dashboards only: %+v", dashboards)
+	}
+	external := (&BundleReader{Features: []string{BundleFeatureExternalDatabases}}).Limit(full)
+	if len(external.Shape.ExternalDatabases) != 1 || external.Shape.Databases != nil || external.Shape.DataAccess != nil {
+		t.Errorf("a reader of external databases only: %+v", external.Shape)
 	}
 	signIn := (&BundleReader{Features: []string{BundleFeatureIdentitySignIn}}).Limit(full)
 	if !reflect.DeepEqual(signIn.Shape.Identity, full.Shape.Identity) || signIn.Shape.StoreSecrets != nil || signIn.Shape.HostInfra {

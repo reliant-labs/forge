@@ -1176,6 +1176,12 @@ type ExternalDatabaseEntity struct {
 	PasswordSecret string `json:"password_secret"`
 	PasswordKey    string `json:"password_key"`
 	SSLMode        string `json:"sslmode"`
+	// Reach is how a control plane dials it: "port_forward" (the default,
+	// through the kube API) or "direct" (<service>.<namespace>.svc:<port>
+	// from inside the cluster). forge db query always port-forwards.
+	Reach string `json:"reach,omitempty"`
+	// Port is the Service port, 0 when undeclared.
+	Port int `json:"port,omitempty"`
 }
 
 // BuildOnlyDeploy is the forge.BuildOnly runtime: the workload is built and

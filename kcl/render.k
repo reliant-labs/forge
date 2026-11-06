@@ -2141,6 +2141,8 @@ _render_external_database = lambda x: any, bundle: Bundle -> any {
         "password_secret": x.password_secret
         "password_key": x.password_key
         "sslmode": x.sslmode
+        "reach": x.reach
+        "port": x.port
     }
 }
 

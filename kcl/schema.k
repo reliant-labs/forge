@@ -1053,6 +1053,7 @@ schema ManagedDatabase:
             "ManagedDatabase.namespace must NOT be set on the hosted runtime ('${name}'): the control plane allocates it. Remove it"
 
 _EXTERNAL_DATABASE_SSLMODES = ["require", "disable"]
+_EXTERNAL_DATABASE_REACHES = ["port_forward", "direct"]
 
 schema ExternalDatabase:
     """A Postgres the env's workloads use but forge does not run (Cloud SQL,
@@ -1095,6 +1096,24 @@ schema ExternalDatabase:
     set. TLS is `sslmode`: `require` (the default: encrypted, not verified,
     since the tunnel ends at a pod rather than a name a certificate carries)
     or `disable`.
+
+    HOW A CONTROL PLANE DIALS IT is its `reach` (the env's recorded shape
+    carries it, so the control plane can list and read the database too):
+
+      * `port_forward` (the default): the control plane opens a
+        pods/portforward stream through the kube API to a ready pod behind
+        `service`, under the env's cluster credential, the same way
+        `forge db query` does with yours. It needs no network path from the
+        control plane to the pod, so it is the one that works for any
+        cluster the env is bound to.
+      * `direct`: the control plane dials `<service>.<namespace>.svc:<port>`
+        itself, with no kube credential at all. Valid only when the control
+        plane runs IN that cluster (a pooler in the control plane's own
+        namespace, say); anywhere else the name does not resolve.
+
+    `port` is the Service port. Unset, a port-forward picks the Service's
+    Postgres port (5432) or its only port, and `direct` dials 5432, so set it
+    for a pooler (`port = 6432`).
     """
     name: str
     runtime?: OnCluster
@@ -1108,10 +1127,18 @@ schema ExternalDatabase:
     password_secret: str
     password_key: str = "password"
     sslmode: str = "require"
+    # How a control plane dials it: "port_forward" (default) or "direct".
+    reach: str = "port_forward"
+    # The Service port; unset picks 5432 or the Service's only port.
+    port?: int
 
     check:
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 63, \
             "ExternalDatabase.name '${name}' must be an RFC-1123 label of at most 63 characters: `forge db query --database` names it"
+        reach in _EXTERNAL_DATABASE_REACHES, \
+            "ExternalDatabase '${name}'.reach '${reach}' is not one of ${_EXTERNAL_DATABASE_REACHES}: port_forward (the control plane tunnels through the kube API with the env's cluster credential) or direct (the control plane runs in that cluster and dials <service>.<namespace>.svc itself)"
+        port == Undefined or port == None or 1 <= port <= 65535, \
+            "ExternalDatabase '${name}'.port ${port} must be between 1 and 65535"
         service and database and username and password_secret, \
             "ExternalDatabase '${name}' needs service, database, username and password_secret: they are how forge db query reaches it"
         sslmode in _EXTERNAL_DATABASE_SSLMODES, \

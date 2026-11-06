@@ -89,6 +89,10 @@ type ShapeInput struct {
 	// Databases is what the env declares about its managed databases beyond
 	// their workload entries (live dashboards), or nil when it declares none.
 	Databases []release.ShapeDatabase
+	// ExternalDatabases are the databases the env uses but forge does not run
+	// (forge.ExternalDatabase), as routes: names, never a password. Nil when
+	// it declares none.
+	ExternalDatabases []release.ShapeExternalDatabase
 
 	// Applier is the env's declared applier (release.ApplierForge or
 	// release.ApplierFlux), or "".
@@ -150,6 +154,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		UptimeChecks:        in.UptimeChecks,
 		Identity:            in.Identity,
 		Databases:           in.Databases,
+		ExternalDatabases:   in.ExternalDatabases,
 		Applier:             in.Applier,
 		Units:               in.Units,
 		HostInfra:           in.HostInfra,

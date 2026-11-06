@@ -423,6 +423,15 @@ func WriteSecretFile(path string, values map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	// atomicfile keeps an existing file's mode and ignores perm, so a store
+	// someone created 0644 would stay world-readable with new key material in
+	// it. Narrow it first: the temp file then inherits 0600 too, so the values
+	// are never readable by others, not even before the rename.
+	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm() != 0o600 {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return fmt.Errorf("restrict %s to 0600: %w", path, err)
+		}
+	}
 	return atomicfile.WriteFile(path, []byte(b.String()), 0o600)
 }
 

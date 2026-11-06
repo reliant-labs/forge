@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -72,6 +73,36 @@ func TestEnsureGeneratedFillsEmptyScaffoldedSlots(t *testing.T) {
 
 // An empty slot in the file does not shadow a value the provider resolves
 // from another layer (a worktree inheriting the primary checkout's store).
+// A store created with a looser mode than 0600 (by hand, or a scaffold under a
+// permissive umask) must not keep it once a generated key is written into it.
+func TestEnsureGeneratedRestrictsALooseStoreTo0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not apply on windows")
+	}
+	path := filepath.Join(t.TempDir(), "dev.yaml")
+	if err := os.WriteFile(path, []byte("CONNECTION_KEYRING: \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	specs := map[string]GenerateSpec{"CONNECTION_KEYRING": {Bytes: 32, Encoding: "base64"}}
+	got, err := EnsureGenerated(path, specs, []string{"CONNECTION_KEYRING"}, map[string]string{"CONNECTION_KEYRING": ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("generated %v, want [CONNECTION_KEYRING]", got)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("store holding a generated key has mode %o, want 600", perm)
+	}
+}
+
 func TestEnsureGeneratedKeepsInheritedValueOverEmptySlot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dev.yaml")
 	if err := os.WriteFile(path, []byte("K: \"\"\n"), 0o600); err != nil {

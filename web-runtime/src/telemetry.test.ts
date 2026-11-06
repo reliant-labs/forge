@@ -1105,8 +1105,9 @@ describe("no session before the page is first visible", () => {
       .then((ok) => (running = ok));
 
     // Startup is parked on the visibility listener: once it is registered,
-    // nothing but a visibilitychange can move it on.
-    await vi.waitFor(() => expect(doc.waiting()).toBe(1));
+    // nothing but a visibilitychange can move it on. (The second listener
+    // only notes when the page was hidden, for the paint vitals.)
+    await vi.waitFor(() => expect(doc.waiting()).toBe(2));
     expect(init).not.toHaveBeenCalled();
     expect(running).toBeUndefined();
     // Nothing to record yet: the caller falls back to the console.
@@ -1144,6 +1145,272 @@ describe("no session before the page is first visible", () => {
     doc.show();
     expect(await started).toBe(false);
     expect(init).not.toHaveBeenCalled();
+  });
+});
+
+describe("paint vitals of a page first shown late", () => {
+  // The SDK's own web-vitals instrumentation (@hyperdx/otel-web webvitals.js,
+  // the version @hyperdx/browser pins), run over a fake tracer provider and
+  // driven through its injectable web-vitals callbacks: it holds the
+  // `webvitals` tracer from init and reports each vital as a span carrying
+  // the metric value and navigation type, exported only once it is ENDED.
+  type Vital = { name: string; value: number };
+  type NavigationType = "navigate" | "prerender" | "back-forward-cache";
+  const exported: Vital[] = [];
+  let report: (
+    name: string,
+    value: number,
+    navigationType?: NavigationType,
+  ) => void = () => {};
+
+  function fakeProvider() {
+    const tracers = new Map<string, { startSpan(name: string): unknown }>();
+    return {
+      getTracer(name: string, version?: string) {
+        const key = `${name}@${version ?? ""}`;
+        if (!tracers.has(key)) {
+          tracers.set(key, {
+            startSpan() {
+              const span = {
+                attributes: {} as Record<string, unknown>,
+                setAttribute(k: string, v: unknown) {
+                  span.attributes[k] = v;
+                  return span;
+                },
+                end() {
+                  for (const [k, v] of Object.entries(span.attributes)) {
+                    if (typeof v === "number") {
+                      exported.push({ name: k, value: v });
+                    }
+                  }
+                },
+              };
+              return span;
+            },
+          });
+        }
+        return tracers.get(key)!;
+      },
+    };
+  }
+
+  function stubDocument(state: DocumentVisibilityState) {
+    const docListeners: Listener[] = [];
+    const doc = {
+      visibilityState: state,
+      addEventListener: (type: string, fn: Listener) => {
+        if (type === "visibilitychange") docListeners.push(fn);
+      },
+      removeEventListener: (type: string, fn: Listener) => {
+        const i = docListeners.indexOf(fn);
+        if (type === "visibilitychange" && i >= 0) docListeners.splice(i, 1);
+      },
+    };
+    vi.stubGlobal("document", doc);
+    return {
+      waiting: () => docListeners.length,
+      set(next: DocumentVisibilityState) {
+        doc.visibilityState = next;
+        for (const fn of [...docListeners]) fn({});
+      },
+    };
+  }
+
+  function stubPerformance(
+    now: () => number,
+    visibility: Array<{ name: string; startTime: number }> = [],
+    activationStart = 0,
+  ) {
+    vi.stubGlobal("performance", {
+      now,
+      getEntriesByType: (type: string) =>
+        type === "visibility-state"
+          ? visibility
+          : type === "navigation"
+            ? [{ activationStart }]
+            : [],
+    });
+  }
+
+  async function load2() {
+    stubDom();
+    const { trace } = await import("@opentelemetry/api");
+    // The real instrumentation; the package's exports map hides the file.
+    const { initWebVitals } = await import(
+      "../node_modules/@hyperdx/otel-web/dist/esm/webvitals.js"
+    );
+    trace.disable();
+    trace.setGlobalTracerProvider(fakeProvider() as never);
+    init.mockImplementation(() => {
+      const provider = trace.getTracerProvider() as unknown as {
+        getDelegate(): ReturnType<typeof fakeProvider>;
+      };
+      type Callback = (metric: {
+        value: number;
+        id: string;
+        navigationType: NavigationType;
+      }) => void;
+      const callbacks = new Map<string, Callback>();
+      const on = (name: string) => (fn: Callback) => {
+        callbacks.set(name, fn);
+      };
+      initWebVitals(
+        provider.getDelegate() as never,
+        {
+          onFID: on("fid"),
+          onCLS: on("cls"),
+          onLCP: on("lcp"),
+          onINP: on("inp"),
+          onFCP: on("fcp"),
+          onTTFB: on("ttfb"),
+        } as never,
+      );
+      let id = 0;
+      report = (name, value, navigationType = "navigate") =>
+        callbacks.get(name)?.({ value, id: `v${++id}`, navigationType });
+    });
+    return load();
+  }
+
+  function reportAll() {
+    report("ttfb", 300);
+    report("fcp", 61_000);
+    report("lcp", 61_200);
+    report("cls", 0.01);
+  }
+
+  beforeEach(() => {
+    exported.length = 0;
+    report = () => {};
+  });
+
+  afterEach(async () => {
+    const { trace } = await import("@opentelemetry/api");
+    trace.disable();
+  });
+
+  it("drops the FCP and LCP of a page loaded in the background, and keeps the rest", async () => {
+    let clock = 250;
+    stubPerformance(() => clock);
+    const doc = stubDocument("hidden");
+    const { t } = await load2();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    await vi.waitFor(() => expect(doc.waiting()).toBeGreaterThan(0));
+    clock = 61_000;
+    doc.set("visible");
+    expect(await started).toBe(true);
+
+    reportAll();
+    expect(exported.map((v) => v.name).sort()).toEqual(["cls", "ttfb"]);
+  });
+
+  it("keeps every vital of a page that was visible from the start", async () => {
+    stubPerformance(() => 250, [{ name: "visible", startTime: 0 }]);
+    stubDocument("visible");
+    const { t } = await load2();
+    expect(
+      await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" }),
+    ).toBe(true);
+
+    reportAll();
+    expect(exported.map((v) => v.name).sort()).toEqual([
+      "cls",
+      "fcp",
+      "lcp",
+      "ttfb",
+    ]);
+  });
+
+  it("keeps a paint from before the browser's first hidden entry, and drops one after it", async () => {
+    stubPerformance(
+      () => 9_000,
+      [
+        { name: "visible", startTime: 0 },
+        { name: "hidden", startTime: 5_000 },
+        { name: "visible", startTime: 8_000 },
+      ],
+    );
+    stubDocument("visible");
+    const { t } = await load2();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    report("fcp", 1_200);
+    report("lcp", 6_000);
+    expect(exported).toEqual([{ name: "fcp", value: 1_200 }]);
+  });
+
+  it("drops a paint after the page was hidden while the SDK loaded", async () => {
+    let clock = 100;
+    stubPerformance(() => clock);
+    const doc = stubDocument("visible");
+    const { t } = await load2();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    // Startup is parked on the SDK import: hide the page and show it again
+    // before init runs, so web-vitals registers on a visible page.
+    expect(init).not.toHaveBeenCalled();
+    clock = 400;
+    doc.set("hidden");
+    clock = 3_000;
+    doc.set("visible");
+    expect(await started).toBe(true);
+
+    report("lcp", 2_500);
+    report("ttfb", 90);
+    expect(exported).toEqual([{ name: "ttfb", value: 90 }]);
+  });
+
+  it("keeps the paints of a back/forward-cache restore, timed from the restore", async () => {
+    // Loaded in the background, so the first load's paints are dropped; a
+    // restore's value is the time since the restore, never since navigation.
+    let clock = 250;
+    stubPerformance(() => clock);
+    const doc = stubDocument("hidden");
+    const { t } = await load2();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    await vi.waitFor(() => expect(doc.waiting()).toBeGreaterThan(0));
+    clock = 61_000;
+    doc.set("visible");
+    expect(await started).toBe(true);
+
+    report("fcp", 61_000);
+    report("fcp", 40, "back-forward-cache");
+    report("lcp", 55, "back-forward-cache");
+    expect(exported).toEqual([
+      { name: "fcp", value: 40 },
+      { name: "lcp", value: 55 },
+    ]);
+  });
+
+  it("times a prerendered page's paints from its activation", async () => {
+    // Hidden while prerendering (ignored, as web-vitals ignores it), shown at
+    // activation (2 s), hidden again at 5 s. web-vitals reports a paint at
+    // 3 s as 1 s after activation: kept; one at 6 s as 4 s: dropped.
+    stubPerformance(
+      () => 9_000,
+      [
+        { name: "hidden", startTime: 0 },
+        { name: "visible", startTime: 2_000 },
+        { name: "hidden", startTime: 5_000 },
+        { name: "visible", startTime: 8_000 },
+      ],
+      2_000,
+    );
+    stubDocument("visible");
+    const { t } = await load2();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    report("fcp", 1_000, "prerender");
+    report("lcp", 4_000, "prerender");
+    expect(exported).toEqual([{ name: "fcp", value: 1_000 }]);
   });
 });
 

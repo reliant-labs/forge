@@ -655,25 +655,38 @@ export async function socialComplete(id: string, token: string): Promise<SocialR
   return (await request("/auth/social/callback", { id, token })) as SocialResult;
 }
 
-/** An invitation being accepted, with the method the invitee chose. */
+/**
+ * An invitation being accepted, with the method the invitee chose. "social"
+ * connects one of the deployment's social accounts (`provider` is its type).
+ */
 export interface InviteAcceptance {
   userID: string;
   code: string;
   orgID?: string;
-  method: SignInMethod;
+  method: SignInMethod | "social";
   password?: string;
+  provider?: string;
 }
 
 /** What accepting an invitation led to. */
-export type InviteResult = Identity | { enroll: true } | { message: string };
+export type InviteResult =
+  | Identity
+  | { enroll: true }
+  | { message: string }
+  | { redirect: string };
 
 /**
  * Accepts an invitation. With a password: signed in (an Identity). With a
  * passkey: `{enroll: true}`, then registerPasskey() and passkeySignIn().
  * With a magic link: `{message}`, and the link is on its way to this browser.
+ * With a social account: `{redirect}`, and this leaves for the provider; the
+ * invitation is redeemed when the provider comes back to
+ * /auth/social/callback, in this browser.
  */
 export async function acceptInvite(invite: InviteAcceptance): Promise<InviteResult> {
-  return (await request("/auth/invite/accept", invite)) as InviteResult;
+  const result = (await request("/auth/invite/accept", invite)) as InviteResult;
+  if ("redirect" in result) window.location.assign(result.redirect);
+  return result;
 }
 
 /** Confirms an address from its verification link. `enroll`: a passkey may be added now. */

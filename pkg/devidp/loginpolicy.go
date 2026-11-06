@@ -24,8 +24,11 @@ import (
 // legacy policy: password only, sign-up only where it always was (development,
 // or auth_self_signup). A document that is PRESENT but unreadable — malformed,
 // or a version this package does not know — also yields the legacy policy,
-// with an error the broker logs: it fails closed to what it served before,
-// never open to something nobody converged.
+// with an error. The broker must then fail CLOSED, not back to the legacy
+// switches: whatever the document restricted (invite-only, verified email) is
+// unknown, so the scaffolded broker turns sign-up off and requires a verified
+// address until the document is fixed. Never open to something nobody
+// converged, and never more open than what was.
 
 // LoginPolicyVersion is the only LOGIN_POLICY version this package reads.
 const LoginPolicyVersion = 1
@@ -43,6 +46,11 @@ const (
 	MethodPasskey   = "passkey"
 	MethodMagicLink = "magic_link"
 )
+
+// InviteMethodSocial is the method an invitee names to accept an invitation
+// by connecting one of the policy's social accounts. It is not a first-factor
+// method of the document: the social buttons are its Social list.
+const InviteMethodSocial = "social"
 
 // Mail delivery states the document reports.
 const (
@@ -168,6 +176,23 @@ func (p LoginPolicy) Offers(method string) bool {
 // from the sign-in screen (open, or domain-gated).
 func (p LoginPolicy) SelfSignup() bool {
 	return p.Present && (p.Signup == SignupOpen || p.Signup == SignupDomain)
+}
+
+// RegisterServed reports whether the sign-up FORM (POST /auth/register) can
+// end in a session under this policy, which is when it is offered at all.
+// Sign-up by mail needs mail that arrives. Where none does (mail "none" or
+// "paused"), only an open sign-up with a password and no verified-email gate
+// can complete: the account is signed in at once, as before the document. A
+// domain sign-up never runs without mail, because a typed address proves no
+// domain. Social sign-up is not the form, and SelfSignup governs it.
+func (p LoginPolicy) RegisterServed() bool {
+	switch {
+	case !p.SelfSignup():
+		return false
+	case p.MailDelivers():
+		return true
+	}
+	return p.Signup == SignupOpen && !p.RequireVerifiedEmail && p.Offers(MethodPassword)
 }
 
 // SignupAllows reports whether an address may create an account under this

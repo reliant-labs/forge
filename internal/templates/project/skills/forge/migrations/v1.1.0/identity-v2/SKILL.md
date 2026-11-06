@@ -69,9 +69,9 @@ Run `forge generate`. The identity fills it; no `config.k` line names it.
 2. **Parse the policy** — first lines of `RegisterLoginBroker`:
 
    ```go
-   policy, err := devidp.ParseLoginPolicy(cfg.IdpLoginPolicy)
-   if err != nil {
-   	logger.Error("idp_login_policy is unusable; serving the legacy sign-in policy", "error", err)
+   policy, policyErr := devidp.ParseLoginPolicy(cfg.IdpLoginPolicy)
+   if policyErr != nil {
+   	logger.Error("idp_login_policy is unusable; sign-up is OFF and every session needs a verified address until it is fixed", "error", policyErr)
    }
    ```
 
@@ -87,13 +87,16 @@ Run `forge generate`. The identity fills it; no `config.k` line names it.
 
 4. **Construction** — in the `&loginBroker{...}` literal: rename
    `selfSignup:` to `legacySelfSignup:`, add `policy: policy,`, and add
-   `RequireVerifiedEmail: policy.RequireVerifiedEmail,` to the
+   `RequireVerifiedEmail: policy.RequireVerifiedEmail || policyErr != nil,` to the
    `devidp.FlowConfig`. After the literal, before the first `mux.Handle`:
 
    ```go
    broker.selfSignup = broker.legacySelfSignup
+   if policyErr != nil {
+   	broker.selfSignup = false // an unusable policy fails closed
+   }
    if policy.Present {
-   	broker.selfSignup = policy.SelfSignup()
+   	broker.selfSignup = policy.RegisterServed()
    }
    broker.mountSignInMethods(mux, cfg)
    ```
@@ -110,7 +113,7 @@ Run `forge generate`. The identity fills it; no `config.k` line names it.
 6. **Options** — `handleOptions` becomes:
 
    ```go
-   opts := devidp.OptionsFor(b.policy, b.legacySelfSignup)
+   opts := devidp.OptionsFor(b.policy, b.selfSignup)
    opts.SelfSignup = b.selfSignup
    writeAuthJSON(w, http.StatusOK, opts)
    ```

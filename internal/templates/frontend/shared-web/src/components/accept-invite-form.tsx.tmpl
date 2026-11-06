@@ -6,10 +6,12 @@
 // (owners, declared members, `forge cloud identity invite`).
 //
 // The invitee picks how they will sign in, from the methods this deployment
-// offers (GET /auth/options): a password, a passkey on this device, or an
-// emailed link. The invitation code is single-use; the server spends it only
-// once the choice is made, and checks a chosen password against the policy
-// BEFORE spending it, so a weak password does not burn the invitation.
+// offers (GET /auth/options): a password, a passkey on this device, an
+// emailed link, or one of its social accounts (Google, GitHub). The
+// invitation code is single-use; the server spends it only once the choice is
+// made, and checks a chosen password against the policy BEFORE spending it, so
+// a weak password does not burn the invitation. A social account spends it
+// only when the provider comes back and the account is connected.
 //
 // A passkey takes two prompts: one to create it, one to sign in with it.
 
@@ -59,12 +61,14 @@ export function AcceptInviteForm({
     (m) => (m !== "passkey" || passkeysSupported()) && (m !== "magic_link" || options.mail),
   );
   const [method, setMethod] = useState<SignInMethod | null>(null);
-  const chosen = method ?? offered[0] ?? "password";
+  // null: no first-factor method is offered (a social-only deployment).
+  const chosen: SignInMethod | null = method ?? offered[0] ?? null;
   const [password, setPassword] = useState("");
   const [serverUnmet, setServerUnmet] = useState<PasswordRule[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [leaving, setLeaving] = useState<string | null>(null);
 
   if (!userID || !code) {
     return (
@@ -77,9 +81,28 @@ export function AcceptInviteForm({
     );
   }
 
+  async function acceptWithSocial(provider: string) {
+    if (!userID || !code) return;
+    setLeaving(provider);
+    setError(null);
+    try {
+      // Leaves for the provider; /auth/social/callback finishes the acceptance.
+      await acceptInvite({
+        userID,
+        code,
+        ...(orgID ? { orgID } : {}),
+        method: "social",
+        provider,
+      });
+    } catch (err) {
+      setError(err instanceof AuthError ? err.message : "The invitation could not be accepted.");
+      setLeaving(null);
+    }
+  }
+
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (!userID || !code) return;
+    if (!userID || !code || !chosen) return;
     setSubmitting(true);
     setError(null);
     setServerUnmet([]);
@@ -102,6 +125,7 @@ export function AcceptInviteForm({
         setSubmitting(false);
         return;
       }
+      if ("redirect" in result) return;
       await onSignedIn();
     } catch (err) {
       setError(err instanceof AuthError ? err.message : "The invitation could not be accepted.");
@@ -174,9 +198,37 @@ export function AcceptInviteForm({
             </p>
           ) : null}
 
-          <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
-            {submitting ? "Setting up…" : "Accept invitation"}
-          </Button>
+          {chosen ? (
+            <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
+              {submitting ? "Setting up…" : "Accept invitation"}
+            </Button>
+          ) : null}
+
+          {options.social.length > 0 ? (
+            <div className="mt-6 space-y-2">
+              {chosen ? (
+                <p className="text-center text-sm text-ink-muted">Or sign in with</p>
+              ) : null}
+              {options.social.map((provider) => (
+                <Button
+                  key={provider.type}
+                  type="button"
+                  variant="outline"
+                  fullWidth
+                  loading={leaving === provider.type}
+                  onClick={() => void acceptWithSocial(provider.type)}
+                >
+                  Continue with {provider.label}
+                </Button>
+              ))}
+            </div>
+          ) : null}
+
+          {!chosen && options.social.length === 0 ? (
+            <p role="status" className="mt-6 text-sm text-ink-muted">
+              No way to sign in is offered here yet. Ask whoever invited you.
+            </p>
+          ) : null}
         </>
       )}
 

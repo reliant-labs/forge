@@ -672,7 +672,13 @@ func TestSocial_NoAccountPerSignupMode(t *testing.T) {
 			if (u != nil) != tc.wantUser {
 				t.Fatalf("account created = %v, want %v", u != nil, tc.wantUser)
 			}
-			if u != nil && (u.verified != tc.verified || len(u.links) != 1) {
+			// A provider link is persisted at creation only for an address the
+			// provider asserted; an unverified one waits for the address's code.
+			wantLinks := 0
+			if tc.verified {
+				wantLinks = 1
+			}
+			if u != nil && (u.verified != tc.verified || len(u.links) != wantLinks) {
 				t.Fatalf("account %+v", u)
 			}
 			if (b.signedIn() != "") != (tc.wantStatus == 200) {
@@ -925,6 +931,236 @@ func TestBuildChecks_IDPIntentIsVerifyingAndUserIDIsExclusive(t *testing.T) {
 	if _, err := buildChecks(Credentials{UserID: "u1", LoginName: "x", Password: "p"}); err == nil {
 		t.Error("a user check by both id and login name was accepted")
 	}
+}
+
+// ── Review regressions ─────────────────────────────────────────────────
+
+func (b *browser) cookie(name string) string {
+	u, _ := url.Parse(b.h.srv.URL)
+	for _, c := range b.client.Jar.Cookies(u) {
+		if c.Name == name {
+			return c.Value
+		}
+	}
+	return ""
+}
+
+// Pre-registration takeover: an attacker whose provider reports a victim's
+// address UNVERIFIED creates the account; the victim later confirms the
+// address from their own browser. The attacker's provider account must not be
+// linked, or it signs the attacker into the now-verified account.
+func TestSocial_UnverifiedSignupLinksOnlyInTheBrowserThatProvesTheAddress(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods, google))
+	attacker := h.browser()
+	id := startSocial(t, attacker)
+	h.z.addIntent(id, "tok", intentResult("victim@else.com", false))
+	status, body := attacker.post("/auth/social/callback", map[string]any{"id": id, "token": "tok"})
+	if status != 202 || body["verify"] != "sent" {
+		t.Fatalf("callback: %d %v", status, body)
+	}
+	u := h.z.userByEmail("victim@else.com")
+	if u == nil || len(u.links) != 0 {
+		t.Fatalf("the unverified provider account was linked at creation: %+v", u)
+	}
+	// The victim confirms the address in their own browser.
+	victim := h.browser()
+	mail := h.z.lastMail(t)
+	if status, body = victim.post("/auth/verify", map[string]any{"userID": u.id, "code": mail.code}); status != 200 {
+		t.Fatalf("verify: %d %v", status, body)
+	}
+	if len(h.z.user(u.id).links) != 0 {
+		t.Fatal("a verification in another browser attached the pending link")
+	}
+	// The attacker comes back through the provider: no link, so no way in.
+	id = startSocial(t, attacker)
+	h.z.addIntent(id, "tok2", intentResult("victim@else.com", false))
+	status, body = attacker.post("/auth/social/callback", map[string]any{"id": id, "token": "tok2"})
+	want(t, status, body, 409, CodeSocialLinkRequired)
+	if attacker.signedIn() != "" {
+		t.Fatal("the attacker signed into the victim's account")
+	}
+}
+
+func TestSocial_UnverifiedSignupLinksOnceThisBrowserProvesTheAddress(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods, google))
+	b := h.browser()
+	id := startSocial(t, b)
+	h.z.addIntent(id, "tok", intentResult("me@else.com", false))
+	if status, body := b.post("/auth/social/callback", map[string]any{"id": id, "token": "tok"}); status != 202 {
+		t.Fatalf("callback: %d %v", status, body)
+	}
+	u := h.z.userByEmail("me@else.com")
+	if status, body := b.post("/auth/verify", map[string]any{"userID": u.id, "code": "wrong"}); status != 401 || len(u.links) != 0 {
+		t.Fatalf("a wrong code: %d %v, links %v", status, body, u.links)
+	}
+	if status, body := b.post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code}); status != 200 {
+		t.Fatalf("verify: %d %v", status, body)
+	}
+	if links := h.z.user(u.id).links; len(links) != 1 || links[0].UserID != "g-123" {
+		t.Fatalf("links after this browser verified: %+v", links)
+	}
+	// Now the provider account signs in.
+	id = startSocial(t, b)
+	h.z.addIntent(id, "tok2", intentResult("me@else.com", false))
+	status, body := b.post("/auth/social/callback", map[string]any{"id": id, "token": "tok2"})
+	if status != 200 || body["identity"].(map[string]any)["subject"] != u.id {
+		t.Fatalf("sign-in after the link: %d %v", status, body)
+	}
+}
+
+// Sealing hides content, not length: every outcome of a ceremony must seal
+// to the same cookie length.
+func TestBindingCookie_LengthDoesNotTellTheOutcome(t *testing.T) {
+	h := newHarness(t, policyWith(SignupInvite, allMethods))
+	h.z.addUser("known@acme.com", true, "")
+	h.z.addUser("pending@acme.com", false, "")
+	magic := func(email string, times int) int {
+		b := h.browser()
+		for i := 0; i < times; i++ {
+			if status, _ := b.post("/auth/magic/request", map[string]any{"email": email}); status != 202 {
+				t.Fatalf("%s: %d", email, status)
+			}
+		}
+		v := b.cookie("app" + cookieMagic)
+		if v == "" {
+			t.Fatalf("%s: no binding cookie", email)
+		}
+		return len(v)
+	}
+	lengths := map[string]int{
+		"known":        magic("known@acme.com", 1),
+		"unknown":      magic("nobody@acme.com", 1),
+		"unverified":   magic("pending@acme.com", 1),
+		"rate-limited": magic("known@acme.com", 3), // the 4th request for the address
+	}
+	for name, n := range lengths {
+		if n != lengths["known"] {
+			t.Errorf("magic-link cookie lengths differ by outcome: %v (%s)", lengths, name)
+		}
+	}
+
+	seedPasskeyUser(h, true)
+	real, decoy := h.browser(), h.browser()
+	real.post("/auth/passkey/begin", map[string]any{"email": "pk@acme.com"})
+	decoy.post("/auth/passkey/begin", map[string]any{"email": "nobody@acme.com"})
+	if r, d := len(real.cookie("app"+cookiePasskey)), len(decoy.cookie("app"+cookiePasskey)); r == 0 || r != d {
+		t.Errorf("passkey cookie lengths: real %d, decoy %d", r, d)
+	}
+}
+
+// mail "none": nothing can deliver a verification link, and the converged
+// policy does not require one. The sign-up form must still end in a session.
+func TestRegister_NoMailSignsInAtOnce(t *testing.T) {
+	p := LoginPolicy{Present: true, Version: 1, Signup: SignupOpen, SignupRole: "member",
+		Methods: []string{MethodPassword}, Mail: MailNone, RequireVerifiedEmail: false}
+	if !p.RegisterServed() || !OptionsFor(p, false).SelfSignup {
+		t.Fatal("the no-mail open policy does not offer its sign-up form")
+	}
+	h := newHarness(t, p)
+	b := h.browser()
+	status, body := b.post("/auth/register", map[string]any{"email": "new@else.com", "password": "a-long-password"})
+	u := h.z.userByEmail("new@else.com")
+	if status != 200 || u == nil || body["subject"] != u.id || b.signedIn() == "" {
+		t.Fatalf("register: %d %v", status, body)
+	}
+	if u.verified || len(h.z.grants) != 1 || h.z.grants[0] != u.id+":member" {
+		t.Fatalf("verified=%v grants=%v", u.verified, h.z.grants)
+	}
+	status, body = h.browser().post("/auth/register", map[string]any{"email": "new@else.com", "password": "a-long-password"})
+	want(t, status, body, 409, CodeAccountExists)
+	status, body = h.browser().post("/auth/register", map[string]any{"email": "other@else.com"})
+	want(t, status, body, 400, CodePasswordRequired)
+}
+
+func TestRegister_RefusedWhereItCouldNeverComplete(t *testing.T) {
+	for name, p := range map[string]LoginPolicy{
+		"no mail, verified email required": {Present: true, Version: 1, Signup: SignupOpen,
+			Methods: []string{MethodPassword}, Mail: MailNone, RequireVerifiedEmail: true},
+		"no mail, passwordless": {Present: true, Version: 1, Signup: SignupOpen,
+			Methods: []string{MethodPasskey, MethodMagicLink}, Mail: MailNone},
+		"no mail, domain": {Present: true, Version: 1, Signup: SignupDomain, SignupDomains: []string{"acme.com"},
+			Methods: []string{MethodPassword}, Mail: MailPaused},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if p.RegisterServed() || OptionsFor(p, true).SelfSignup {
+				t.Fatal("a sign-up form that cannot complete is offered")
+			}
+			h := newHarness(t, p)
+			status, body := h.browser().post("/auth/register", map[string]any{"email": "new@acme.com", "password": "a-long-password"})
+			want(t, status, body, 403, CodeSignupNotAllowed)
+			if h.z.userByEmail("new@acme.com") != nil {
+				t.Fatal("an account was created")
+			}
+		})
+	}
+}
+
+func socialOnlyInvitePolicy() LoginPolicy {
+	return policyWith(SignupInvite, nil, google)
+}
+
+func startInviteSocial(t *testing.T, b *browser, userID, code string) string {
+	t.Helper()
+	status, body := b.post("/auth/invite/accept", map[string]any{"userID": userID, "code": code, "method": "social", "provider": "google"})
+	if status != 200 {
+		t.Fatalf("accept: %d %v", status, body)
+	}
+	u, _ := url.Parse(body["redirect"].(string))
+	return u.Query().Get("state")
+}
+
+func TestInvite_SocialOnlyPolicyAcceptsByConnectingAProvider(t *testing.T) {
+	h := newHarness(t, socialOnlyInvitePolicy())
+	u := invitee(h)
+	b := h.browser()
+	id := startInviteSocial(t, b, u.id, "inv-1")
+	if u.inviteCode != "inv-1" {
+		t.Fatal("the invitation was spent before the provider round trip")
+	}
+	// The provider's address need not match: the invitation is the proof.
+	h.z.addIntent(id, "tok", intentResult("someone@gmail.com", false))
+	status, body := b.post("/auth/social/callback", map[string]any{"id": id, "token": "tok"})
+	if status != 200 || body["identity"].(map[string]any)["subject"] != u.id {
+		t.Fatalf("callback: %d %v", status, body)
+	}
+	if u.inviteCode != "" || !u.verified || len(u.links) != 1 || u.links[0].UserID != "g-123" {
+		t.Fatalf("after acceptance: %+v", u)
+	}
+	// Another browser cannot finish this acceptance.
+	id = startInviteSocial(t, b, u.id, "inv-1")
+	h.z.addIntent(id, "tok2", intentResult("someone@gmail.com", true))
+	status, body = h.browser().post("/auth/social/callback", map[string]any{"id": id, "token": "tok2"})
+	want(t, status, body, 401, CodeSocialFailed)
+}
+
+func TestInvite_SocialChecksTheCodeBeforeLinking(t *testing.T) {
+	h := newHarness(t, socialOnlyInvitePolicy())
+	u := invitee(h)
+	b := h.browser()
+	id := startInviteSocial(t, b, u.id, "guess")
+	h.z.addIntent(id, "tok", intentResult("someone@gmail.com", true))
+	status, body := b.post("/auth/social/callback", map[string]any{"id": id, "token": "tok"})
+	want(t, status, body, 401, CodeInvalidCode)
+	if len(u.links) != 0 || b.signedIn() != "" {
+		t.Fatal("a provider account was linked without a valid invitation")
+	}
+}
+
+func TestInvite_SocialRefusesAProviderAccountOfAnotherUser(t *testing.T) {
+	h := newHarness(t, socialOnlyInvitePolicy())
+	u := invitee(h)
+	other := h.z.addUser("other@acme.com", true, "")
+	other.links = []IDPLink{{IdPID: "idp-google", UserID: "g-123"}}
+	b := h.browser()
+	id := startInviteSocial(t, b, u.id, "inv-1")
+	h.z.addIntent(id, "tok", intentResult("other@acme.com", true))
+	status, body := b.post("/auth/social/callback", map[string]any{"id": id, "token": "tok"})
+	want(t, status, body, 409, CodeSocialTaken)
+	if u.inviteCode != "inv-1" || b.signedIn() != "" {
+		t.Fatal("the invitation was spent, or a session issued, for another user's provider account")
+	}
+	status, body = b.post("/auth/invite/accept", map[string]any{"userID": u.id, "code": "inv-1", "method": "social", "provider": "github"})
+	want(t, status, body, 400, CodeMethodNotOffered)
 }
 
 func sortStrings(s []string) []string {

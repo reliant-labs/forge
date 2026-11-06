@@ -91,6 +91,8 @@ const (
 	CodeMethodNotOffered   = "method_not_offered"
 	CodeUnknownProvider    = "unknown_provider"
 	CodeRateLimited        = "rate_limited"
+	CodeAccountExists      = "account_exists"
+	CodeSocialTaken        = "social_taken"
 )
 
 // The sentences the browser is shown. None says whether an address has an
@@ -111,6 +113,8 @@ const (
 	msgUnavailable   = "Sign-in is unavailable right now. Please try again."
 	msgNotSignedIn   = "Sign in first."
 	msgMethod        = "That sign-in method is not offered here."
+	msgAccountExists = "That address already has an account. Sign in instead."
+	msgSocialTaken   = "That %s account is already connected to another user. Use another one, or another way to sign in."
 )
 
 // SignInRoutesConfig is what the app's broker supplies.
@@ -224,7 +228,7 @@ func OptionsFor(p LoginPolicy, legacySelfSignup bool) Options {
 		}
 		return Options{SelfSignup: legacySelfSignup, Signup: signup, Methods: []string{MethodPassword}, Social: []OptionsSocial{}}
 	}
-	o := Options{SelfSignup: p.SelfSignup(), Signup: p.Signup, Methods: append([]string{}, p.Methods...),
+	o := Options{SelfSignup: p.RegisterServed(), Signup: p.Signup, Methods: append([]string{}, p.Methods...),
 		Social: []OptionsSocial{}, Mail: p.MailDelivers()}
 	for _, s := range p.Social {
 		label := s.Label
@@ -244,6 +248,7 @@ const (
 	cookieMagic    = "_ml"
 	cookieSocial   = "_sx"
 	cookieEnroll   = "_enroll"
+	cookieLink     = "_sxl"
 )
 
 type cookieSpec struct {
@@ -258,6 +263,10 @@ var (
 	magicCookie    = cookieSpec{cookieMagic, 10 * time.Minute, http.SameSiteLaxMode}
 	socialCookie   = cookieSpec{cookieSocial, 10 * time.Minute, http.SameSiteLaxMode}
 	enrollCookie   = cookieSpec{cookieEnroll, 10 * time.Minute, http.SameSiteStrictMode}
+	// linkCookie holds a social account waiting for its new account's
+	// address to be proven: the verification link is opened from a mail
+	// client, so Lax, and it lives as long as a person takes to read mail.
+	linkCookie = cookieSpec{cookieLink, time.Hour, http.SameSiteLaxMode}
 )
 
 // setBinding writes a sealed binding cookie. Path=/ because the dev server
@@ -318,9 +327,25 @@ type registerBinding struct {
 	PasskeyID string `json:"p"`
 }
 
+// socialBinding is a social sign-in in flight. InviteUserID and InviteCode
+// are set when it accepts an invitation: the code is checked at the callback,
+// in the same request that links the provider account, and never before, so
+// an abandoned provider round trip spends nothing.
 type socialBinding struct {
-	IntentID string `json:"i"`
-	ReturnTo string `json:"r"`
+	IntentID     string `json:"i"`
+	ReturnTo     string `json:"r"`
+	InviteUserID string `json:"u,omitempty"`
+	InviteCode   string `json:"c,omitempty"`
+}
+
+// pendingLinkBinding is a provider account that asserted an UNVERIFIED
+// address for a new account. It is linked only when the browser that holds
+// it proves that address's code (HandleVerify); linking at creation would let
+// whoever's provider reports a victim's address keep a way into the account
+// once the victim confirms it.
+type pendingLinkBinding struct {
+	UserID string  `json:"u"`
+	Link   IDPLink `json:"l"`
 }
 
 // ── Passkey sign-in ────────────────────────────────────────────────────
@@ -810,6 +835,10 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 			writeJSON(w, http.StatusOK, map[string]any{"identity": r.cfg.SignedIn(w, tokens), "returnTo": b.ReturnTo})
 		})
 	}
+	if b.InviteUserID != "" {
+		r.acceptInviteBySocial(w, req, b, res, social, signIn)
+		return
+	}
 	if res.LinkedUserID != "" {
 		signIn(res.LinkedUserID)
 		return
@@ -841,20 +870,70 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 	case !r.cfg.Policy.SignupAllows(email) || (r.cfg.Policy.Signup == SignupDomain && !res.EmailVerified):
 		writeErr(w, http.StatusForbidden, CodeSignupNotAllowed, msgSignupDomain)
 	default:
-		id, err := c.CreateUser(ctx, NewUser{Email: email, GivenName: res.GivenName, FamilyName: res.FamilyName,
-			EmailVerified: res.EmailVerified, VerifyURLTemplate: r.verifyTemplate(), IDPLinks: []IDPLink{res.Link}})
+		// The provider account is linked at creation only when the provider
+		// asserted the address. Otherwise the account is created bare and
+		// the link waits, sealed in THIS browser, for the address's code.
+		nu := NewUser{Email: email, GivenName: res.GivenName, FamilyName: res.FamilyName,
+			EmailVerified: res.EmailVerified, VerifyURLTemplate: r.verifyTemplate()}
+		if res.EmailVerified {
+			nu.IDPLinks = []IDPLink{res.Link}
+		}
+		id, err := c.CreateUser(ctx, nu)
 		if err != nil {
 			r.unavailable(ctx, w, "social sign-in: create account", err)
 			return
 		}
 		r.cfg.Logger.InfoContext(ctx, "account created from a social sign-in", "user_id", id, "provider", social.Type, "verified", res.EmailVerified)
 		if !res.EmailVerified {
+			if err := r.setBinding(w, linkCookie, pendingLinkBinding{UserID: id, Link: res.Link}); err != nil {
+				r.cfg.Logger.ErrorContext(ctx, "social sign-in: the pending link could not be sealed", "user_id", id, "error", err)
+			}
 			writeJSON(w, http.StatusAccepted, map[string]string{"verify": "sent", "message": msgVerifySent})
 			return
 		}
 		r.grantSignupRole(ctx, id)
 		signIn(id)
 	}
+}
+
+// acceptInviteBySocial finishes a social invitation acceptance. PROOF FIRST:
+// the invitation code sealed at the start is checked HERE, in the request
+// that links the provider account, for the user the invitation names. A
+// provider account already linked to someone else is refused before the
+// invitation is spent.
+func (r *SignInRoutes) acceptInviteBySocial(w http.ResponseWriter, req *http.Request, b socialBinding, res IDPResult,
+	social LoginPolicySocial, signIn func(string)) {
+	ctx := req.Context()
+	c := r.cfg.Client
+	userID := b.InviteUserID
+	if res.LinkedUserID != "" && res.LinkedUserID != userID {
+		r.cfg.Logger.WarnContext(ctx, "invitation: the provider account belongs to another user", "user_id", userID, "provider", social.Type)
+		writeErr(w, http.StatusConflict, CodeSocialTaken, fmt.Sprintf(msgSocialTaken, social.Label))
+		return
+	}
+	if !r.codeByUser.reserve(userID) {
+		writeErr(w, http.StatusTooManyRequests, CodeRateLimited, msgTooMany)
+		return
+	}
+	if err := c.VerifyInviteCode(ctx, userID, b.InviteCode); err != nil {
+		if errors.Is(err, ErrInvalidCode) {
+			r.cfg.Logger.WarnContext(ctx, "invitation rejected", "user_id", userID, "error", err)
+			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
+			return
+		}
+		r.codeByUser.refund(userID)
+		r.unavailable(ctx, w, "invitation could not be checked", err)
+		return
+	}
+	r.codeByUser.forget(userID)
+	if res.LinkedUserID == "" {
+		if err := c.AddIDPLink(ctx, userID, res.Link); err != nil {
+			r.unavailable(ctx, w, "invitation: link the provider account", err)
+			return
+		}
+	}
+	r.cfg.Logger.InfoContext(ctx, "invitation accepted", "user_id", userID, "method", InviteMethodSocial, "provider", social.Type)
+	signIn(userID)
 }
 
 // ── Invitations ────────────────────────────────────────────────────────
@@ -865,6 +944,8 @@ type inviteRequest struct {
 	OrgID    string `json:"orgID,omitempty"`
 	Method   string `json:"method"`
 	Password string `json:"password,omitempty"`
+	// Provider is the social button's type, for method "social".
+	Provider string `json:"provider,omitempty"`
 }
 
 // HandleInviteAccept redeems an invitation and sets the invitee up with the
@@ -879,6 +960,10 @@ func (r *SignInRoutes) HandleInviteAccept(w http.ResponseWriter, req *http.Reque
 	userID, code := strings.TrimSpace(body.UserID), strings.TrimSpace(body.Code)
 	if userID == "" || code == "" {
 		writeErr(w, http.StatusBadRequest, CodeInvalidCode, msgInvalidCode)
+		return
+	}
+	if body.Method == InviteMethodSocial {
+		r.startInviteSocial(w, req, userID, code, body.Provider)
 		return
 	}
 	if !r.cfg.Policy.Offers(body.Method) {
@@ -931,6 +1016,36 @@ func (r *SignInRoutes) HandleInviteAccept(w http.ResponseWriter, req *http.Reque
 		}
 		writeJSON(w, http.StatusAccepted, map[string]string{"message": "A sign-in link is on its way to your email."})
 	}
+}
+
+// startInviteSocial begins accepting an invitation by connecting a social
+// account — the only way in for an invite-only policy that offers social
+// sign-in alone. The invitation is NOT checked here: its code is sealed into
+// the social binding cookie and checked at the callback, in the request that
+// links the account (acceptInviteBySocial).
+func (r *SignInRoutes) startInviteSocial(w http.ResponseWriter, req *http.Request, userID, code, provider string) {
+	ctx := req.Context()
+	social, ok := r.cfg.Policy.SocialByType(strings.TrimSpace(provider))
+	if !ok {
+		writeErr(w, http.StatusBadRequest, CodeMethodNotOffered, msgMethod)
+		return
+	}
+	if !r.socialStartByIP.reserve(clientIP(req)) {
+		writeErr(w, http.StatusTooManyRequests, CodeRateLimited, msgTooMany)
+		return
+	}
+	back := url.Values{"userID": {userID}, "code": {code}, "error": {"social"}}
+	authURL, intentID, err := r.cfg.Client.StartIDPIntent(ctx, social.IdPID,
+		r.cfg.AppBase+"/auth/social/callback", r.cfg.AppBase+"/auth/invite?"+back.Encode())
+	if err != nil {
+		r.unavailable(ctx, w, "invitation: social sign-in could not start", err)
+		return
+	}
+	if err := r.setBinding(w, socialCookie, socialBinding{IntentID: intentID, ReturnTo: "/", InviteUserID: userID, InviteCode: code}); err != nil {
+		r.unavailable(ctx, w, "invitation: seal", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"redirect": authURL})
 }
 
 // setPasswordAndSignIn sets an invitee's first password: the broker mints a
@@ -1022,6 +1137,7 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 	}
 	r.codeByUser.forget(userID)
 	r.cfg.Logger.InfoContext(ctx, "email address verified", "user_id", userID)
+	r.attachPendingLink(w, req, userID)
 	if r.cfg.Policy.SelfSignup() {
 		if u, err := c.FindUserByID(ctx, userID); err == nil && r.cfg.Policy.SignupAllows(u.Email) {
 			r.grantSignupRole(ctx, userID)
@@ -1041,6 +1157,23 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"verified": true, "enroll": false})
+}
+
+// attachPendingLink links the provider account a social sign-up left waiting,
+// now that THIS browser proved the address of the account it created. A
+// verification opened in any other browser links nothing.
+func (r *SignInRoutes) attachPendingLink(w http.ResponseWriter, req *http.Request, userID string) {
+	ctx := req.Context()
+	var pl pendingLinkBinding
+	if !r.readBinding(req, linkCookie, &pl) || pl.UserID != userID {
+		return
+	}
+	r.clearBinding(w, linkCookie)
+	if err := r.cfg.Client.AddIDPLink(ctx, userID, pl.Link); err != nil {
+		r.cfg.Logger.ErrorContext(ctx, "verification: the pending social link could not be added", "user_id", userID, "error", err)
+		return
+	}
+	r.cfg.Logger.InfoContext(ctx, "social account linked after verification", "user_id", userID)
 }
 
 // HandleVerifyResend mails a fresh verification link. Always 202.
@@ -1074,6 +1207,10 @@ type registerRequest struct {
 // answers 202 with NO session, identically whether or not the address
 // already has an account: the verification mail is what proves the address,
 // and the session comes after it.
+//
+// Where no mail can arrive, the policy decides (RegisterServed): sign-up is
+// refused unless it is open, with a password, and the policy does not
+// require a verified address — then registerWithoutMail signs in at once.
 func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) {
 	var body registerRequest
 	if !decode(w, req, &body) {
@@ -1086,11 +1223,17 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	p := r.cfg.Policy
+	if !p.RegisterServed() {
+		writeErr(w, http.StatusForbidden, CodeSignupNotAllowed, "Accounts cannot be created here.")
+		return
+	}
 	if !p.SignupAllows(email) {
 		writeErr(w, http.StatusForbidden, CodeSignupNotAllowed, msgSignupDomain)
 		return
 	}
-	passwordless := p.Offers(MethodPasskey) || p.Offers(MethodMagicLink)
+	// Without mail, a password is the only credential a new account can
+	// have: passkey enrolment and magic links both follow a mailed code.
+	passwordless := p.MailDelivers() && (p.Offers(MethodPasskey) || p.Offers(MethodMagicLink))
 	switch {
 	case body.Password == "" && !passwordless:
 		writeErr(w, http.StatusBadRequest, CodePasswordRequired, "Choose a password.")
@@ -1106,6 +1249,10 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 	}
 	if !r.registerByIP.reserve(clientIP(req)) {
 		writeErr(w, http.StatusTooManyRequests, CodeRateLimited, msgTooMany)
+		return
+	}
+	if !p.MailDelivers() {
+		r.registerWithoutMail(w, req, email, body)
 		return
 	}
 	c := r.cfg.Client
@@ -1136,6 +1283,43 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"verify": "sent", "message": msgVerifySent})
+}
+
+// registerWithoutMail is the sign-up of a policy whose mail reaches nobody
+// and which therefore does not require a verified address (mail "none"):
+// open sign-up, with a password. No mail means no "check your email" answer
+// can be uniform, so this is the legacy broker's sign-up: the account is
+// created and signed in at once, and an address that already has an account
+// is told to sign in. The address stays unverified, as the policy accepts.
+func (r *SignInRoutes) registerWithoutMail(w http.ResponseWriter, req *http.Request, email string, body registerRequest) {
+	ctx := req.Context()
+	c := r.cfg.Client
+	if _, err := c.FindUserByEmail(ctx, email); err == nil {
+		writeErr(w, http.StatusConflict, CodeAccountExists, msgAccountExists)
+		return
+	} else if !errors.Is(err, ErrUserNotFound) {
+		r.unavailable(ctx, w, "sign-up: user lookup", err)
+		return
+	}
+	id, err := c.CreateUser(ctx, NewUser{Email: email, Password: body.Password, GivenName: body.GivenName,
+		FamilyName: body.FamilyName})
+	var policyErr *PasswordPolicyError
+	if errors.As(err, &policyErr) {
+		r.rejectPassword(ctx, w, body.Password, policyErr)
+		return
+	}
+	if err != nil {
+		r.unavailable(ctx, w, "sign-up: create account", err)
+		return
+	}
+	r.cfg.Logger.InfoContext(ctx, "account created (no mail delivery; signed in unverified)", "user_id", id)
+	r.grantSignupRole(ctx, id)
+	tokens, err := c.SignIn(ctx, r.cfg.Flow, Credentials{LoginName: email, Password: body.Password})
+	if err != nil {
+		r.unavailable(ctx, w, "sign-up: sign in", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, r.cfg.SignedIn(w, tokens))
 }
 
 // rejectWeak answers (and reports true) when password breaks the known

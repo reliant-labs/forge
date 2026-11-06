@@ -69,19 +69,30 @@ func TestLoginBrokerScaffoldMountsEachMethodOnlyWhenOffered(t *testing.T) {
 	}
 	for _, want := range []string{
 		"devidp.ParseLoginPolicy(cfg.IdpLoginPolicy)",
-		`logger.Error("idp_login_policy is unusable; serving the legacy sign-in policy"`,
-		"RequireVerifiedEmail: policy.RequireVerifiedEmail",
-		"broker.selfSignup = policy.SelfSignup()",
+		`logger.Error("idp_login_policy is unusable; sign-up is OFF and every session needs a verified address until it is fixed"`,
+		// An unusable policy fails closed: the gate on, sign-up off.
+		"RequireVerifiedEmail: policy.RequireVerifiedEmail || policyErr != nil",
+		"if policyErr != nil {\n\t\tbroker.selfSignup = false\n\t}",
+		"broker.selfSignup = policy.RegisterServed()",
+		"b.policy, b.selfSignup = devidp.LegacyLoginPolicy(), false\n\t\tb.flow.RequireVerifiedEmail = true",
 		"errors.Is(err, devidp.ErrEmailUnverified)",
 		`"code":  "email_unverified"`,
 		"ProjectID: cfg.JwtAudience",
 		"b.methods.HandleRegister(w, r)",
-		"devidp.OptionsFor(b.policy, b.legacySelfSignup)",
+		"devidp.OptionsFor(b.policy, b.selfSignup)",
 		// §5.7: the delivered password rules come before the Settings API.
 		"if p, ok := b.policy.PasswordPolicy(); ok {",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the broker lacks %q", want)
+		}
+	}
+	// A policy that cannot be served never falls back to the legacy
+	// switches: that would reopen sign-up and drop the verified-email gate.
+	for _, never := range []string{"b.flow.RequireVerifiedEmail = false",
+		"b.policy, b.selfSignup = devidp.LegacyLoginPolicy(), b.legacySelfSignup"} {
+		if strings.Contains(src, never) {
+			t.Errorf("the broker fails open: %q", never)
 		}
 	}
 }
@@ -187,8 +198,18 @@ func TestMountsPerPolicy(t *testing.T) {
 		signup   string
 	}{
 		"absent: legacy, auth_self_signup decides": {"", nil, true, "open"},
-		"malformed: legacy":                        {"{", nil, true, "open"},
-		"future version: legacy":                   {`+"`"+`{"version":9,"signup":"open","methods":["passkey"]}`+"`"+`, nil, true, "open"},
+		// Present but unusable fails CLOSED even with auth_self_signup on:
+		// no sign-up, nothing v2 mounted.
+		"malformed: closed":      {"{", nil, false, "invite"},
+		"future version: closed": {`+"`"+`{"version":9,"signup":"open","methods":["passkey"]}`+"`"+`, nil, false, "invite"},
+		"unservable (foreign passkey_rp_id): closed": {`+"`"+`{"version":1,"signup":"open","methods":["password","passkey"],"passkey_rp_id":"other.test","mail":"platform","require_verified_email":true}`+"`"+`,
+			nil, false, "invite"},
+		// No mail and no verified-email gate: the form signs in at once.
+		"open, no mail, password": {`+"`"+`{"version":1,"signup":"open","methods":["password"],"mail":"none","require_verified_email":false}`+"`"+`,
+			[]string{InviteAcceptPath, VerifyPath, VerifyResendPath}, true, "open"},
+		// No mail, passwordless: the form could never complete, so it is not offered.
+		"open, no mail, passkey only": {`+"`"+`{"version":1,"signup":"open","methods":["passkey"],"mail":"none","require_verified_email":false}`+"`"+`,
+			[]string{PasskeyBeginPath, PasskeyFinishPath, PasskeyRegisterBeginPath, PasskeyRegisterFinishPath, PasskeysPath, InviteAcceptPath, VerifyPath, VerifyResendPath}, false, "open"},
 		"invite, passkey": {`+"`"+`{"version":1,"signup":"invite","methods":["password","passkey"],"mail":"platform","require_verified_email":true}`+"`"+`,
 			[]string{PasskeyBeginPath, PasskeyFinishPath, PasskeyRegisterBeginPath, PasskeyRegisterFinishPath, PasskeysPath, InviteAcceptPath, VerifyPath, VerifyResendPath}, false, "invite"},
 		"open, everything": {`+"`"+`{"version":1,"signup":"open","methods":["password","passkey","magic_link"],"social":[{"type":"google","idp_id":"1","label":"Google"}],"mail":"platform","require_verified_email":true}`+"`"+`,

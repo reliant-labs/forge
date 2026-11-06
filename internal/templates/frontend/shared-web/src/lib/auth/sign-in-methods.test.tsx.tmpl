@@ -533,6 +533,38 @@ describe("AcceptInviteForm", () => {
     await screen.findByText("That code or link is not valid.");
   });
 
+  it("accepts with a social account when no other method is offered", async () => {
+    const fetchMock = stubRoutes({
+      ...options([]),
+      "/auth/password-policy": { status: 204 },
+      "/auth/invite/accept": {
+        status: 200,
+        body: { redirect: "https://accounts.example/authorize?state=i1" },
+      },
+    });
+    render(
+      <AcceptInviteForm
+        userID="u1"
+        code="inv"
+        orgID={null}
+        signInHref="/auth/sign-in"
+        onSignedIn={() => {}}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Continue with Google" }));
+    // acceptInvite then leaves for the provider (window.location.assign).
+    await waitFor(() => expect(calls(fetchMock, "/auth/invite/accept")).toHaveLength(1));
+    expect(bodyOf(fetchMock, "/auth/invite/accept")).toEqual({
+      userID: "u1",
+      code: "inv",
+      method: "social",
+      provider: "google",
+    });
+    // Nothing defaults to a password the server would refuse.
+    expect(screen.queryByLabelText("Password")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Accept invitation" })).toBeNull();
+  });
+
   it("refuses an incomplete link", () => {
     stubRoutes(options(["password"]));
     render(

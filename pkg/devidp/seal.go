@@ -79,6 +79,32 @@ func (s *sealer) aead() (cipher.AEAD, error) {
 	return a, nil
 }
 
+// sealPadBlock is the size every sealed plaintext is padded up to a multiple
+// of. AES-GCM hides a payload's content but not its length, and the payloads
+// of one ceremony differ in length by outcome — a real challenge session
+// carries an id and a token, a decoy or an unknown address a flag — so an
+// unpadded cookie's length would be the enumeration oracle the sealing exists
+// to close. Every binding this package seals fits one block (ids, tokens and
+// codes are tens of bytes), so every outcome of a ceremony seals to the same
+// length.
+const sealPadBlock = 512
+
+// padPlaintext pads a JSON envelope with trailing spaces up to the next
+// multiple of sealPadBlock. JSON ignores trailing whitespace, so open needs
+// no unpadding step.
+func padPlaintext(plain []byte) []byte {
+	n := (len(plain)/sealPadBlock + 1) * sealPadBlock
+	if len(plain)%sealPadBlock == 0 {
+		n = len(plain)
+	}
+	out := make([]byte, n)
+	copy(out, plain)
+	for i := len(plain); i < n; i++ {
+		out[i] = ' '
+	}
+	return out
+}
+
 // seal encodes payload under kind, valid for ttl. The kind is bound into the
 // envelope so a cookie of one ceremony cannot be replayed as another's.
 func (s *sealer) seal(kind string, payload any, ttl time.Duration) (string, error) {
@@ -94,6 +120,7 @@ func (s *sealer) seal(kind string, payload any, ttl time.Duration) (string, erro
 	if err != nil {
 		return "", err
 	}
+	plain = padPlaintext(plain)
 	nonce := make([]byte, a.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err

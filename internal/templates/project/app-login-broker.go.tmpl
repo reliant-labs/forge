@@ -130,13 +130,16 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 	// Delivered by the identity converge into idp_login_policy. ABSENT is
 	// the legacy policy, today's exact behaviour: password only, sign-up as
 	// development and auth_self_signup decide. PRESENT, it is the only
-	// source. Unreadable (malformed, or a version this forge does not know)
-	// is the legacy policy too, logged at ERROR: the broker fails closed to
-	// what it served before, never open to something nobody converged.
+	// source. PRESENT BUT UNUSABLE (malformed, a version this forge does not
+	// know, or methods this broker cannot serve) fails CLOSED, logged at
+	// ERROR: password sign-in only, NO sign-up, and a verified address for
+	// every session, whatever development and auth_self_signup say. What the
+	// document restricted is unknown, so nothing it might have restricted is
+	// opened.
 {{- if .LoginPolicyField}}
-	policy, err := devidp.ParseLoginPolicy(cfg.IdpLoginPolicy)
-	if err != nil {
-		logger.Error("idp_login_policy is unusable; serving the legacy sign-in policy", "error", err)
+	policy, policyErr := devidp.ParseLoginPolicy(cfg.IdpLoginPolicy)
+	if policyErr != nil {
+		logger.Error("idp_login_policy is unusable; sign-up is OFF and every session needs a verified address until it is fixed", "error", policyErr)
 	}
 {{- else}}
 	//
@@ -160,8 +163,9 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 		flow: devidp.FlowConfig{
 			ClientID:    cfg.OidcClientId,
 			RedirectURI: cfg.OidcRedirectUri,
-			// No session for an unverified address, when the policy says so.
-			RequireVerifiedEmail: policy.RequireVerifiedEmail,
+			// No session for an unverified address, when the policy says so
+			// or when a delivered policy could not be read.
+			RequireVerifiedEmail: policy.RequireVerifiedEmail{{if .LoginPolicyField}} || policyErr != nil{{end}},
 		},
 		policy: policy,
 		logger: logger,
@@ -190,10 +194,16 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 		forgotByIP:      newAttemptLimiter(10, time.Hour),
 		resetByUser:     newAttemptLimiter(5, time.Hour),
 	}
-	// With a policy, it alone decides sign-up (open or domain).
+	// With a policy, it alone decides sign-up (open or domain, and only
+	// where the form can end in a session). An unusable one allows none.
 	broker.selfSignup = broker.legacySelfSignup
+{{- if .LoginPolicyField}}
+	if policyErr != nil {
+		broker.selfSignup = false
+	}
+{{- end}}
 	if policy.Present {
-		broker.selfSignup = policy.SelfSignup()
+		broker.selfSignup = policy.RegisterServed()
 {{- if .SelfSignupField}}
 		if cfg.AuthSelfSignup {
 			logger.Warn("auth_self_signup is ignored: idp_login_policy decides sign-up (forge.ManagedIdentity.signup)")
@@ -365,10 +375,13 @@ func (b *loginBroker) mountSignInMethods(mux *http.ServeMux, cfg *config.{{or .C
 		RejectPassword: b.writePasswordRejection,
 	})
 	if err != nil {
-		// Fail closed to the legacy policy rather than serve half a policy.
-		b.logger.Error("the LOGIN_POLICY sign-in methods are OFF; serving the legacy policy", "error", err)
-		b.policy, b.selfSignup = devidp.LegacyLoginPolicy(), b.legacySelfSignup
-		b.flow.RequireVerifiedEmail = false
+		// Fail CLOSED rather than serve half a policy: password sign-in
+		// only, no sign-up, and the verified-email gate kept on. Never the
+		// legacy switches — they would open sign-up an invite-only policy
+		// closed, and drop the gate a verified-email policy set.
+		b.logger.Error("the LOGIN_POLICY sign-in methods are OFF: sign-up is OFF and every session needs a verified address until the policy is fixed", "error", err)
+		b.policy, b.selfSignup = devidp.LegacyLoginPolicy(), false
+		b.flow.RequireVerifiedEmail = true
 		return
 	}
 	b.methods = methods
@@ -449,7 +462,7 @@ func (b *loginBroker) handleLogin(w http.ResponseWriter, r *http.Request) {
 // delivered, so the screen offers passkeys, "email me a link" and "continue
 // with Google" only where they work.
 func (b *loginBroker) handleOptions(w http.ResponseWriter, _ *http.Request) {
-	opts := devidp.OptionsFor(b.policy, b.legacySelfSignup)
+	opts := devidp.OptionsFor(b.policy, b.selfSignup)
 	opts.SelfSignup = b.selfSignup
 	writeAuthJSON(w, http.StatusOK, opts)
 }

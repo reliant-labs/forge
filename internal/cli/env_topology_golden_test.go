@@ -176,13 +176,29 @@ var generatedAtRE = regexp.MustCompile(`("generated_at": )"[^"]*"`)
 // clock and the fixture's temp directories.
 func normalizeTopologyOutput(out, projectDir string) string {
 	out = generatedAtRE.ReplaceAllString(out, `$1"<generated_at>"`)
-	out = strings.ReplaceAll(out, projectDir, "<project>")
+	dirs := [][2]string{{projectDir, "<project>"}}
 	// The machine ledger lives under a per-test ledger home.
 	if home, err := ledgerHome(); err == nil {
-		out = strings.ReplaceAll(out, home, "<ledger-home>")
+		dirs = append(dirs, [2]string{home, "<ledger-home>"})
+	}
+	for _, d := range dirs {
+		out = strings.ReplaceAll(out, d[0], d[1])
+		// A JSON document escapes a Windows path's separators.
+		out = strings.ReplaceAll(out, strings.ReplaceAll(d[0], `\`, `\\`), d[1])
+	}
+	// The goldens spell the paths under those directories with '/', which is
+	// what every platform but Windows prints.
+	if filepath.Separator == '\\' {
+		out = placeholderPathRE.ReplaceAllStringFunc(out, func(p string) string {
+			return strings.ReplaceAll(strings.ReplaceAll(p, `\\`, "/"), `\`, "/")
+		})
 	}
 	return out
 }
+
+// placeholderPathRE is a path under a normalized directory, up to the next
+// space or quote.
+var placeholderPathRE = regexp.MustCompile(`<(project|ledger-home)>[^\s"]*`)
 
 func assertTopologyGolden(t *testing.T, name, got string) {
 	t.Helper()

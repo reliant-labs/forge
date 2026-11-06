@@ -163,6 +163,18 @@ func TestSkipOnPlatform(t *testing.T) {
 	}
 }
 
+// pickFreePortOrSkip is legitimate: the skip is the fallback of a search
+// whose success returns first.
+func pickFreePortOrSkip(t *testing.T) int {
+	for i := 0; i < 50; i++ {
+		if p := 40000 + i; p%7 == 0 {
+			return p
+		}
+	}
+	t.Skip("no free port")
+	return 0
+}
+
 // TestSkipOnSiblingCheckout is legitimate: the path is derived from the
 // environment, so it is genuinely outside this repository.
 func TestSkipOnSiblingCheckout(t *testing.T) {

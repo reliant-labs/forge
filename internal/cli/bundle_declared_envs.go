@@ -110,10 +110,13 @@ func declaredEnvEntry(ctx context.Context, sem chan struct{}, projectDir, name s
 		e   *KCLEntities
 		err error
 	}
+	// Read the seam here, not in the goroutine: a render the budget abandoned
+	// outlives this call, and must not read the variable after it returned.
+	render := declaredEnvRenderFn
 	done := make(chan result, 1)
 	go func() {
 		defer func() { <-sem }()
-		e, err := declaredEnvRenderFn(ctx, projectDir, name)
+		e, err := render(ctx, projectDir, name)
 		done <- result{e, err}
 	}()
 	select {

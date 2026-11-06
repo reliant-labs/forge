@@ -546,6 +546,12 @@ func checkSkips(fset *token.FileSet, fd *ast.FuncDecl, key string) []Finding {
 
 		line := fset.Position(call.Pos()).Line
 		guard := enclosingGuard(stack)
+		if guard == nil && afterEarlyReturn(stack) {
+			// A skip that only a path past a return reaches is the
+			// fallback of a search (a helper that returns what it found
+			// and skips when nothing was), not a disabled test.
+			return true
+		}
 		if guard == nil {
 			out = append(out, Finding{
 				Rule: RuleDeadSkip, Key: key, Line: line,
@@ -574,6 +580,47 @@ func checkSkips(fset *token.FileSet, fd *ast.FuncDecl, key string) []Finding {
 
 // enclosingGuard returns the innermost conditional construct around the node on
 // top of stack, stopping at the function boundary.
+// afterEarlyReturn reports whether a statement before the skip, in any block
+// between the function boundary and the skip, can return: the skip then runs
+// only when that return did not.
+func afterEarlyReturn(stack []ast.Node) bool {
+	for i := len(stack) - 1; i > 0; i-- {
+		switch stack[i].(type) {
+		case *ast.FuncDecl, *ast.FuncLit:
+			return false
+		}
+		block, ok := stack[i-1].(*ast.BlockStmt)
+		if !ok {
+			continue
+		}
+		for _, st := range block.List {
+			if st == stack[i] {
+				break
+			}
+			if containsReturn(st) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsReturn reports whether n holds a return of its own function (one
+// inside a nested function literal returns from that literal instead).
+func containsReturn(n ast.Node) bool {
+	found := false
+	ast.Inspect(n, func(n ast.Node) bool {
+		switch n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.ReturnStmt:
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
 func enclosingGuard(stack []ast.Node) ast.Node {
 	for i := len(stack) - 1; i >= 0; i-- {
 		switch stack[i].(type) {

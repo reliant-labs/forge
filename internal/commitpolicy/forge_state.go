@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// RuleForgeStateIgnored: forge state that must travel with the repository,
+// RuleForgeStateIgnored is forge state that must travel with the repository,
 // excluded from git.
 const RuleForgeStateIgnored = "forge-state-ignored"
 

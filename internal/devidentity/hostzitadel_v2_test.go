@@ -132,7 +132,7 @@ func TestConverge_V2AgainstTheRealHostZitadelAndMailpit(t *testing.T) {
 	}
 
 	// The invitation arrives in Mailpit, linking to the app's invite page.
-	body := waitForMail(t, ctx, mailSpec, "owner@acme.test")
+	body := waitForMail(ctx, t, mailSpec, "owner@acme.test")
 	if !strings.Contains(body, frontend+"/auth/invite?userID=") || !strings.Contains(body, "code=") {
 		t.Errorf("the invitation does not link to the app's invite page:\n%s", body)
 	}
@@ -192,7 +192,7 @@ func TestConverge_V2AgainstTheRealHostZitadelAndMailpit(t *testing.T) {
 	if len(signingKey) == 0 {
 		t.Fatal("no signing key in the store")
 	}
-	ownerID := findUserID(t, ctx, in, "owner@acme.test")
+	ownerID := findUserID(ctx, t, in, "owner@acme.test")
 	resetReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, in.BaseURL+"/v2/users/"+ownerID+"/password_reset", strings.NewReader(`{"sendLink":{}}`))
 	resetReq.Header.Set("Authorization", "Bearer "+readPAT(t, in.PATPath))
 	resetReq.Header.Set("Content-Type", "application/json")
@@ -243,7 +243,7 @@ func verifyZitadelSignature(payload []byte, header, key string) error {
 	return fmt.Errorf("no v1 signature matches")
 }
 
-func waitForMail(t *testing.T, ctx context.Context, mail hostinfra.Spec, to string) string {
+func waitForMail(ctx context.Context, t *testing.T, mail hostinfra.Spec, to string) string {
 	t.Helper()
 	api := "http://127.0.0.1:" + strconv.Itoa(hostinfra.MailpitUIPort(mail)) + "/api/v1"
 	deadline := time.Now().Add(2 * time.Minute)
@@ -293,7 +293,7 @@ func readPAT(t *testing.T, path string) string {
 	return strings.TrimSpace(string(b))
 }
 
-func findUserID(t *testing.T, ctx context.Context, in Input, email string) string {
+func findUserID(ctx context.Context, t *testing.T, in Input, email string) string {
 	t.Helper()
 	body := `{"queries":[{"emailQuery":{"emailAddress":"` + email + `","method":"TEXT_QUERY_METHOD_EQUALS_IGNORE_CASE"}}]}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, in.BaseURL+"/v2/users", strings.NewReader(body))

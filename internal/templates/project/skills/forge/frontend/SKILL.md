@@ -23,7 +23,7 @@ prefix; hand-built URLs then go through `joinBasePath`. Both are in
 
 ## Generated TypeScript hooks
 
-`forge generate` writes per-service React Query hooks to `src/hooks/`: reads get `useQuery`, paged reads also `use<Rpc>Infinite`, writes `useMutation`; outside React, `fetchQuery(<svc>Queries.<rpc>(req))`. Import from `@/hooks`. `useApiQuery` / `useApiMutation` cover composite operations. Kinds, `select`, paging, rollback: `proto`.
+`forge generate` writes per-service React Query hooks to `src/hooks/`: reads get `useQuery`, paged reads also `use<Rpc>Infinite`, writes `useMutation`; outside React, `fetchQuery(<svc>Queries.<rpc>(req))` reads and `<svc>Mutations(queryClient).<rpc>(req)` writes (invalidating what the hook does). Import from `@/hooks`. `useApiQuery` / `useApiMutation` cover composite operations. Kinds, `select`, paging, rollback, `<svc>Mutations`: `proto/hooks`.
 
 ## The component library
 

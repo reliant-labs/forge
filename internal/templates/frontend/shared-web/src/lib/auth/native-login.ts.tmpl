@@ -669,11 +669,7 @@ export interface InviteAcceptance {
 }
 
 /** What accepting an invitation led to. */
-export type InviteResult =
-  | Identity
-  | { enroll: true }
-  | { message: string }
-  | { redirect: string };
+export type InviteResult = Identity | { enroll: true } | { message: string } | { redirect: string };
 
 /**
  * Accepts an invitation. With a password: signed in (an Identity). With a

@@ -258,7 +258,9 @@ var onDelete = map[string]string{
 // table described for another role is an allow-list for the wrong reader.
 //
 // It reads only the catalogs, in a READ ONLY transaction under
-// [DescribeTimeout], and changes nothing.
+// [DescribeTimeout], and changes nothing. A failure is a *[dbquery.Error],
+// classified as [dbquery.Run]'s are (a timeout, an unreachable database, a
+// privilege error), so one switch on its Kind serves Describe and Run alike.
 func Describe(ctx context.Context, db dbquery.Beginner) (*Database, error) {
 	ctx, cancel := context.WithTimeout(ctx, DescribeTimeout+2*time.Second)
 	defer cancel()
@@ -266,7 +268,7 @@ func Describe(ctx context.Context, db dbquery.Beginner) (*Database, error) {
 	// key could name a column the first query never listed.
 	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return nil, fmt.Errorf("dbbrowse: describe: %w", err)
+		return nil, describeErr(err)
 	}
 	defer func() {
 		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -275,14 +277,14 @@ func Describe(ctx context.Context, db dbquery.Beginner) (*Database, error) {
 	}()
 	if _, err := tx.Exec(ctx, `SELECT pg_catalog.set_config('statement_timeout', $1, true)`,
 		strconv.FormatInt(DescribeTimeout.Milliseconds(), 10)+"ms"); err != nil {
-		return nil, fmt.Errorf("dbbrowse: describe: %w", err)
+		return nil, describeErr(err)
 	}
 
 	d := &Database{Tables: []Table{}}
 	tables := map[[2]string]int{}
 	rows, err := tx.Query(ctx, columnsQuery, bookkeeping)
 	if err != nil {
-		return nil, fmt.Errorf("dbbrowse: describe columns: %w", err)
+		return nil, describeErr(err)
 	}
 	for rows.Next() {
 		var (
@@ -293,7 +295,7 @@ func Describe(ctx context.Context, db dbquery.Beginner) (*Database, error) {
 		if err := rows.Scan(&schema, &name, &kind, &est, &comment,
 			&col.Name, &col.Ordinal, &col.Type, &col.Nullable, &col.Comment, &col.Sortable); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("dbbrowse: describe columns: %w", err)
+			return nil, describeErr(err)
 		}
 		key := [2]string{schema, name}
 		i, ok := tables[key]
@@ -306,7 +308,7 @@ func Describe(ctx context.Context, db dbquery.Beginner) (*Database, error) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("dbbrowse: describe columns: %w", err)
+		return nil, describeErr(err)
 	}
 	for i := range d.Tables {
 		d.Tables[i].index()
@@ -329,7 +331,7 @@ func Describe(ctx context.Context, db dbquery.Beginner) (*Database, error) {
 
 	rows, err = tx.Query(ctx, keysQuery)
 	if err != nil {
-		return nil, fmt.Errorf("dbbrowse: describe keys: %w", err)
+		return nil, describeErr(err)
 	}
 	for rows.Next() {
 		var (
@@ -339,7 +341,7 @@ func Describe(ctx context.Context, db dbquery.Beginner) (*Database, error) {
 		if err := rows.Scan(&contype, &fk.Name, &fk.Schema, &fk.Table, &fk.RefSchema, &fk.RefTable,
 			&fk.Columns, &fk.RefColumns, &del); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("dbbrowse: describe keys: %w", err)
+			return nil, describeErr(err)
 		}
 		from, ok := readable([2]string{fk.Schema, fk.Table}, fk.Columns)
 		if !ok {
@@ -359,7 +361,7 @@ func Describe(ctx context.Context, db dbquery.Beginner) (*Database, error) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("dbbrowse: describe keys: %w", err)
+		return nil, describeErr(err)
 	}
 	for i := range d.Tables {
 		refs := d.Tables[i].ReferencedBy
@@ -374,4 +376,12 @@ func Describe(ctx context.Context, db dbquery.Beginner) (*Database, error) {
 		})
 	}
 	return d, nil
+}
+
+// describeErr is a Describe failure as a *dbquery.Error, its Message saying
+// what was being read. A new *Error wrapping err: one already in err's chain
+// lends its Kind and is not written to.
+func describeErr(err error) error {
+	c := dbquery.Classify(err)
+	return &dbquery.Error{Kind: c.Kind, Reason: c.Reason, Message: "reading the database's tables: " + c.Error(), Err: err}
 }

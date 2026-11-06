@@ -202,7 +202,7 @@ func TestClassify(t *testing.T) {
 		{"canceled", context.Canceled, KindCanceled, ""},
 		{"dial", errors.New("dial tcp: connection refused"), KindUnavailable, ""},
 	} {
-		got := classify(tc.err)
+		got := Classify(tc.err)
 		if got.Kind != tc.kind || got.Reason != tc.reason {
 			t.Errorf("%s: got %s/%s, want %s/%s", tc.name, got.Kind, got.Reason, tc.kind, tc.reason)
 		}
@@ -210,8 +210,11 @@ func TestClassify(t *testing.T) {
 			t.Errorf("%s: cause not preserved", tc.name)
 		}
 	}
-	if k := KindOf(classify(refused("x", "y"))); k != KindRefused {
-		t.Errorf("an *Error passes through classify unchanged, got %s", k)
+	if k := KindOf(Classify(fmt.Errorf("wrapped: %w", refused("x", "y")))); k != KindRefused {
+		t.Errorf("an *Error passes through Classify unchanged, got %s", k)
+	}
+	if Classify(nil) != nil {
+		t.Error("Classify(nil) must be nil")
 	}
 	if KindOf(errors.New("plain")) != "" {
 		t.Error("KindOf of a foreign error must be empty")

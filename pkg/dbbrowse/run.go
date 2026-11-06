@@ -28,10 +28,15 @@ type Page struct {
 	TotalIsEstimate bool  `json:"total_is_estimate,omitempty"`
 	TotalAtLeast    bool  `json:"total_at_least,omitempty"`
 	// Truncated is true when dbquery's byte cap, not the page size, ended the
-	// page; CellsTruncated counts cells cut to dbquery.MaxCellBytes.
-	Truncated      bool  `json:"truncated,omitempty"`
-	CellsTruncated int   `json:"cells_truncated,omitempty"`
-	DurationMS     int64 `json:"duration_ms"`
+	// page; CellsTruncated counts the page's cells cut to
+	// dbquery.MaxCellBytes, and TruncatedCells says which: nil when none was,
+	// otherwise one entry per row, aligned with Rows, listing the 0-based
+	// column indexes of that row's cut cells (see
+	// [dbquery.Result.TruncatedCells]).
+	Truncated      bool    `json:"truncated,omitempty"`
+	CellsTruncated int     `json:"cells_truncated,omitempty"`
+	TruncatedCells [][]int `json:"truncated_cells,omitempty"`
+	DurationMS     int64   `json:"duration_ms"`
 }
 
 // Run executes c through [dbquery.Run]: each statement in a READ ONLY
@@ -58,10 +63,22 @@ func Run(ctx context.Context, db dbquery.Beginner, c *Compiled, opts dbquery.Opt
 		Total:          -1,
 		Truncated:      res.TruncatedBy == "bytes",
 		CellsTruncated: res.CellsTruncated,
+		TruncatedCells: res.TruncatedCells,
 		DurationMS:     res.DurationMS,
 	}
 	if len(p.Rows) > c.Limit {
 		p.Rows, p.HasMore = p.Rows[:c.Limit], true
+		if p.TruncatedCells != nil {
+			// The extra row is not shown: neither are its cut cells.
+			p.TruncatedCells = p.TruncatedCells[:c.Limit]
+			p.CellsTruncated = 0
+			for _, cut := range p.TruncatedCells {
+				p.CellsTruncated += len(cut)
+			}
+			if p.CellsTruncated == 0 {
+				p.TruncatedCells = nil
+			}
+		}
 	}
 	if p.Truncated {
 		p.HasMore = true

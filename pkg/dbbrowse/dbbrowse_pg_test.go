@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -73,6 +74,7 @@ CREATE TABLE app.sessions (
 	FOREIGN KEY (org_id, user_id) REFERENCES app.users (org_id, id)
 );
 CREATE TABLE app.events (id int PRIMARY KEY);
+CREATE TABLE app.notes (id int PRIMARY KEY, body text, title text);
 CREATE VIEW app.post_titles AS SELECT id, title FROM app.posts;
 CREATE TABLE app."we""ird; DROP TABLE app.orgs; --" (id int PRIMARY KEY, "col; --" text);
 CREATE TABLE schema_migrations (version bigint NOT NULL PRIMARY KEY, dirty boolean NOT NULL);
@@ -87,6 +89,7 @@ INSERT INTO app.users VALUES
 	('00000000-0000-0000-0000-00000000000b', 1, 'dee@globex.io', 'h4', NULL, NULL,    '{b}',   '{"k": 2}', NULL);
 INSERT INTO app.posts SELECT g, '00000000-0000-0000-0000-00000000000a', 1 + g % 3, 'post ' || g FROM generate_series(1, 120) g;
 INSERT INTO app.events SELECT generate_series(1, 10050);
+INSERT INTO app.notes VALUES (1, 'short', 'short'), (2, repeat('b', 5000), 'short'), (3, repeat('b', 5000), repeat('t', 5000));
 INSERT INTO app."we""ird; DROP TABLE app.orgs; --" VALUES (1, 'x'), (2, NULL);
 ANALYZE;
 `
@@ -118,7 +121,7 @@ func newFixture(t *testing.T) *fixture {
 	for _, s := range []string{
 		`CREATE ROLE %[1]s LOGIN PASSWORD 'pw'`,
 		`GRANT USAGE ON SCHEMA app TO %[1]s`,
-		`GRANT SELECT ON app.orgs, app.posts, app.events, app.post_titles, app."we""ird; DROP TABLE app.orgs; --", schema_migrations TO %[1]s`,
+		`GRANT SELECT ON app.orgs, app.posts, app.events, app.notes, app.post_titles, app."we""ird; DROP TABLE app.orgs; --", schema_migrations TO %[1]s`,
 		`GRANT SELECT (org_id, id, email, manager_id, mood, tags, meta, doc) ON app.users TO %[1]s`,
 		`GRANT SELECT (id, note, org_id) ON app.sessions TO %[1]s`,
 	} {
@@ -195,7 +198,7 @@ func TestDbbrowse(t *testing.T) {
 		for _, tb := range f.db.Tables {
 			got = append(got, tb.QualifiedName())
 		}
-		want := []string{"app.events", "app.orgs", "app.post_titles", "app.posts", "app.sessions", "app.users", `app.we"ird; DROP TABLE app.orgs; --`}
+		want := []string{"app.events", "app.notes", "app.orgs", "app.post_titles", "app.posts", "app.sessions", "app.users", `app.we"ird; DROP TABLE app.orgs; --`}
 		if !slices.Equal(got, want) {
 			t.Errorf("tables = %q\nwant     %q", got, want)
 		}
@@ -392,6 +395,50 @@ func TestDbbrowse(t *testing.T) {
 		}
 		if p := f.browse(t, Request{Table: "app.events", Limit: 1}); p.Total != -1 {
 			t.Errorf("no count: Total = %d, want -1", p.Total)
+		}
+	})
+
+	t.Run("truncated cells are reported per row for the rows shown", func(t *testing.T) {
+		for _, tc := range []struct {
+			limit int
+			want  [][]int
+			count int
+		}{
+			// Columns are id, body, title. The page statement fetches one
+			// row past the limit; that row's cut cells are not the page's.
+			{10, [][]int{{}, {1}, {1, 2}}, 3},
+			{2, [][]int{{}, {1}}, 1},
+			{1, nil, 0},
+		} {
+			p := f.browse(t, Request{Table: "app.notes", Limit: tc.limit})
+			if !reflect.DeepEqual(p.TruncatedCells, tc.want) || p.CellsTruncated != tc.count {
+				t.Errorf("limit %d: truncated_cells = %v (count %d), want %v (count %d)", tc.limit, p.TruncatedCells, p.CellsTruncated, tc.want, tc.count)
+			}
+			if p.TruncatedCells != nil && len(p.TruncatedCells) != len(p.Rows) {
+				t.Errorf("limit %d: %d truncated_cells entries for %d rows", tc.limit, len(p.TruncatedCells), len(p.Rows))
+			}
+		}
+	})
+
+	t.Run("describe failures are typed", func(t *testing.T) {
+		// Connections of their own: pgx closes one a canceled call was using.
+		connect := func() *pgx.Conn {
+			c, err := pgx.Connect(context.Background(), f.reader.Config().ConnString())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = c.Close(context.Background()) })
+			return c
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := Describe(ctx, connect()); dbquery.KindOf(err) != dbquery.KindCanceled {
+			t.Errorf("canceled: err = %v (kind %q), want canceled", err, dbquery.KindOf(err))
+		}
+		closed := connect()
+		_ = closed.Close(context.Background())
+		if _, err := Describe(context.Background(), closed); dbquery.KindOf(err) != dbquery.KindUnavailable {
+			t.Errorf("closed connection: err = %v (kind %q), want unavailable", err, dbquery.KindOf(err))
 		}
 	})
 

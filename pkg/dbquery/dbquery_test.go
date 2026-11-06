@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -494,6 +495,48 @@ func TestRun_CellTruncation(t *testing.T) {
 	}
 	if res.CellsTruncated != 2 || res.Truncated {
 		t.Errorf("cells_truncated=%d truncated=%v: a cut cell is not a cut result", res.CellsTruncated, res.Truncated)
+	}
+	if want := [][]int{{0, 2}}; !reflect.DeepEqual(res.TruncatedCells, want) {
+		t.Errorf("truncated_cells = %v, want %v", res.TruncatedCells, want)
+	}
+}
+
+func TestRun_TruncatedCellsNameEachRowsCutColumns(t *testing.T) {
+	conn := newConn(t)
+	const sql = `SELECT g,
+		CASE WHEN g = 2 THEN repeat('a', 5000) ELSE 'a' END AS a,
+		CASE WHEN g >= 2 THEN repeat('b', 5000) ELSE 'b' END AS b
+		FROM generate_series(1, 4) g ORDER BY g`
+
+	res, err := Run(context.Background(), conn, sql, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Row 1 had nothing cut, so it is an empty entry: the slice is aligned
+	// with Rows from the first row, not from the first cut.
+	if want := [][]int{{}, {1, 2}, {2}, {2}}; !reflect.DeepEqual(res.TruncatedCells, want) || res.CellsTruncated != 4 {
+		t.Errorf("truncated_cells = %v (count %d), want %v (count 4)", res.TruncatedCells, res.CellsTruncated, want)
+	}
+	if got := mustJSON(t, res); !strings.Contains(got, `"truncated_cells":[[],[1,2],[2],[2]]`) {
+		t.Errorf("json = %.300s", got)
+	}
+
+	// A row the row cap drops takes its cut cells with it.
+	res, err = Run(context.Background(), conn, sql, Options{MaxRows: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := [][]int{{}, {1, 2}}; !reflect.DeepEqual(res.TruncatedCells, want) || res.CellsTruncated != 2 {
+		t.Errorf("capped: truncated_cells = %v (count %d), want %v (count 2)", res.TruncatedCells, res.CellsTruncated, want)
+	}
+
+	// No cut cell: nil, and absent from the JSON.
+	res, err = Run(context.Background(), conn, `SELECT 'x' AS a FROM generate_series(1, 3)`, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TruncatedCells != nil || strings.Contains(mustJSON(t, res), "truncated_cells") {
+		t.Errorf("uncut result: truncated_cells = %v", res.TruncatedCells)
 	}
 }
 

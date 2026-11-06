@@ -367,6 +367,31 @@ func TestMiddlewareTemplate_ReadsTheAPIKeyHeader(t *testing.T) {
 	}
 }
 
+// Sibling sites under a shared parent domain (one not on the Public Suffix
+// List) are same-site and can plant a cookie for the parent. Over HTTPS the
+// interceptor therefore reads only the __Host- session cookie, which only
+// this host can set.
+func TestMiddlewareTemplate_ReadsOnlyTheHostCookieOverHTTPS(t *testing.T) {
+	content, err := ProjectTemplates().Render("middleware.go.tmpl", struct{ Name string }{Name: "myproject"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(content)
+	for _, want := range []string{
+		`const SecureSessionCookieName = "__Host-" + SessionCookieName`,
+		"req.Cookie(SecureSessionCookieName)",
+		`strings.EqualFold(h.Get("X-Forwarded-Proto"), "https")`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("middleware.go lacks %q", want)
+		}
+	}
+	host, xfp, plain := strings.Index(src, "req.Cookie(SecureSessionCookieName)"), strings.Index(src, `h.Get("X-Forwarded-Proto")`), strings.Index(src, "req.Cookie(SessionCookieName)")
+	if !(host < xfp && xfp < plain) {
+		t.Error("credentialFrom must read the __Host- cookie first, and the plain one only off HTTPS")
+	}
+}
+
 // TestAPIKeysSkillDescribesTheScaffold keeps the auth/api-keys skill's
 // "What the scaffold wires" table honest (issue #746: the skill described a
 // SetupAuth wiring the scaffold had no place for, and the header name was

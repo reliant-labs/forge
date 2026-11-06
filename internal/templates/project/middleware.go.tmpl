@@ -179,6 +179,15 @@ func enrichClaims(_ context.Context, claims *Claims) (*Claims, error) {
 // file READS it, so it is declared once, here, and the broker names it.
 const SessionCookieName = "{{.Name}}_session"
 
+// SecureSessionCookieName is the session cookie's name wherever it is Secure
+// (every deployed environment). The __Host- prefix makes the browser accept
+// it only from this exact host, Secure, Path=/ and with no Domain, so a
+// SIBLING site cannot plant or overwrite it. That matters because sibling
+// sites can be same-site: tenants under a shared parent domain that is not
+// on the Public Suffix List (e.g. <name>.sites.reliantlabs.dev) can each set
+// a cookie for the parent, which the browser then sends here.
+const SecureSessionCookieName = "__Host-" + SessionCookieName
+
 // APIKeyHeader is the request header an API key is read from — "X-API-Key",
 // the same default forge/pkg/auth's APIKeyConfig uses. Rename it here to
 // take keys on another header. A browser client sending it cross-origin also
@@ -211,7 +220,14 @@ const APIKeyHeader = "X-API-Key"
 //
 // It is not a CSRF opening: the cookie is SameSite=Lax, so a cross-site page
 // cannot make the browser send it on a fetch, and a Connect call needs a
-// Content-Type an HTML form cannot produce.
+// Content-Type an HTML form cannot produce. (SameSite does not separate
+// SAME-SITE siblings — see SecureSessionCookieName — which is why the login
+// broker also refuses any request from another origin.)
+//
+// Over HTTPS only the __Host- cookie counts. A plain-named one there can
+// only have been planted by a sibling site (cookie tossing) to sign the
+// browser in as someone else, so it is ignored; the plain name is read only
+// on plain HTTP (local development).
 //
 // Return "" for "no credential presented"; it is treated exactly like a
 // missing Authorization header. This changes only WHERE the credential is
@@ -231,7 +247,14 @@ func credentialFrom(h http.Header) string {
 	if len(h.Values(APIKeyHeader)) != 0 {
 		return strings.TrimSpace(h.Get(APIKeyHeader))
 	}
-	cookie, err := (&http.Request{Header: h}).Cookie(SessionCookieName)
+	req := &http.Request{Header: h}
+	if cookie, err := req.Cookie(SecureSessionCookieName); err == nil {
+		return cookie.Value
+	}
+	if strings.EqualFold(h.Get("X-Forwarded-Proto"), "https") {
+		return ""
+	}
+	cookie, err := req.Cookie(SessionCookieName)
 	if err != nil {
 		return ""
 	}

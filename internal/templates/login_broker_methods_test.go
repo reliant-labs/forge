@@ -146,10 +146,12 @@ type Config struct {
 	Environment, IdpBase, IdpHost, IdpBrokerToken, IdpBrokerTokenFile string
 	OidcClientId, OidcRedirectUri, IdpLoginUri, IdpLoginPolicy, JwtAudience string
 	AuthSelfSignup bool
+	TrustedProxyHops int32
 }
 `)
-	write("pkg/middleware/middleware.go", "package middleware\n\nconst SessionCookieName = \"app_session\"\n")
-	write("internal/app/login_broker.go", renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true, "AudienceField": true})))
+	write("pkg/middleware/middleware.go", "package middleware\n\nconst SessionCookieName = \"app_session\"\n\nconst SecureSessionCookieName = \"__Host-\" + SessionCookieName\n")
+	write("internal/app/login_broker.go", renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true, "AudienceField": true, "TrustedProxyHopsField": true,
+		"MiddlewareDeclaresSecureSessionCookie": true})))
 	write("internal/app/login_broker_mount_test.go", `package app
 
 import (
@@ -286,6 +288,42 @@ func TestPasswordResetFollowsThePolicy(t *testing.T) {
 	// 502, not the policy's 403.
 	if status, code, _ := post("", "/auth/reset", reset); status == 403 || code == "method_not_offered" {
 		t.Errorf("legacy policy: reset refused as not offered (%d %q)", status, code)
+	}
+}
+
+// A Secure deployment reads only the __Host- session cookie: a plain-named
+// one could have been planted by a sibling site under a shared parent domain.
+func TestSecureSessionCookieIsHostPrefixed(t *testing.T) {
+	mux, _ := mounted(t, "")
+	claims := "e30." + "eyJzdWIiOiJ1MSJ9" + ".s" // {} . {"sub":"u1"}
+	for name, want := range map[string]bool{"__Host-app_session": true, "app_session": false} {
+		req := httptest.NewRequest("GET", "/auth/session", nil)
+		req.AddCookie(&http.Cookie{Name: name, Value: claims})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		var id map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &id)
+		if id["authenticated"] != want {
+			t.Errorf("cookie %s: authenticated = %v, want %v", name, id["authenticated"], want)
+		}
+	}
+}
+
+// Every broker route refuses a cross-site POST: a text/plain form from
+// another site needs no preflight, and would otherwise create an account.
+func TestEveryRouteRefusesCrossSite(t *testing.T) {
+	mux, _ := mounted(t, `+"`"+`{"version":1,"signup":"open","methods":["password","passkey","magic_link"],"social":[{"type":"google","idp_id":"1","label":"Google"}],"mail":"platform","require_verified_email":true}`+"`"+`)
+	for _, p := range []string{LoginPath, RegisterPath, LogoutPath, ForgotPath, ResetPath, PasskeyBeginPath, MagicRequestPath,
+		SocialStartPath, InviteAcceptPath, VerifyPath, VerifyResendPath} {
+		req := httptest.NewRequest("POST", p[len("POST "):], strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "text/plain")
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		req.Header.Set("Origin", "https://evil.test")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != 403 {
+			t.Errorf("%s answered a cross-site POST with %d, want 403", p, rec.Code)
+		}
 	}
 }
 `)

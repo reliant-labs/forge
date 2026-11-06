@@ -24,6 +24,10 @@ type LoginBrokerTemplateData struct {
 	// one keeps a local constant so this file still compiles against the
 	// middleware it actually has.
 	MiddlewareDeclaresSessionCookie bool
+	// MiddlewareDeclaresSecureSessionCookie reports whether it also declares
+	// SecureSessionCookieName (the __Host- name it reads first). Without it
+	// the broker keeps the plain name, which that middleware reads.
+	MiddlewareDeclaresSecureSessionCookie bool
 	// ConfigType is the pkg/config type the broker reads its idp_* / oidc_*
 	// settings from — the config that declares them; "" is Config.
 	ConfigType string
@@ -39,6 +43,10 @@ type LoginBrokerTemplateData struct {
 	// AudienceField reports whether that config declares jwt_audience, the
 	// identity project a self-signed-up account's signup_role is granted on.
 	AudienceField bool
+	// TrustedProxyHopsField reports whether that config declares
+	// trusted_proxy_hops, how many proxies' X-Forwarded-For entries the
+	// broker's rate limits may trust.
+	TrustedProxyHopsField bool
 }
 
 // Go names of the optional broker fields.
@@ -46,11 +54,15 @@ const (
 	selfSignupConfigField  = "AuthSelfSignup"
 	loginPolicyConfigField = "IdpLoginPolicy"
 	audienceConfigField    = "JwtAudience"
+	proxyHopsConfigField   = "TrustedProxyHops"
 )
 
 // middlewareSessionCookieDecl matches the constant the scaffolded
 // pkg/middleware/middleware.go declares.
-var middlewareSessionCookieDecl = regexp.MustCompile(`(?m)^const SessionCookieName\b`)
+var (
+	middlewareSessionCookieDecl       = regexp.MustCompile(`(?m)^const SessionCookieName\b`)
+	middlewareSecureSessionCookieDecl = regexp.MustCompile(`(?m)^const SecureSessionCookieName\b`)
+)
 
 // GenerateLoginBroker scaffolds internal/app/login_broker.go ONCE — the
 // OWNED server half of the API-only sign-in flow, which lets an app render
@@ -100,13 +112,15 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 	}
 	mw, _ := os.ReadFile(filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
 	content, err := templates.ProjectTemplates().Render("app-login-broker.go.tmpl", LoginBrokerTemplateData{
-		Module:                          modulePath,
-		Name:                            projectName,
-		MiddlewareDeclaresSessionCookie: middlewareSessionCookieDecl.Match(mw),
-		ConfigType:                      configType,
-		SelfSignupField:                 declares(selfSignupConfigField),
-		LoginPolicyField:                declares(loginPolicyConfigField),
-		AudienceField:                   declares(audienceConfigField),
+		Module:                                modulePath,
+		Name:                                  projectName,
+		MiddlewareDeclaresSessionCookie:       middlewareSessionCookieDecl.Match(mw),
+		MiddlewareDeclaresSecureSessionCookie: middlewareSecureSessionCookieDecl.Match(mw),
+		ConfigType:                            configType,
+		SelfSignupField:                       declares(selfSignupConfigField),
+		LoginPolicyField:                      declares(loginPolicyConfigField),
+		AudienceField:                         declares(audienceConfigField),
+		TrustedProxyHopsField:                 declares(proxyHopsConfigField),
 	})
 	if err != nil {
 		return fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

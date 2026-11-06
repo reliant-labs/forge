@@ -52,7 +52,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -114,6 +113,21 @@ const (
 // so they cannot drift apart into a sign-in that succeeds and an API that
 // still answers 401.
 const SessionCookieName = middleware.SessionCookieName
+{{- if .MiddlewareDeclaresSecureSessionCookie}}
+
+// SecureSessionCookieName is the name the cookie has when it is Secure: the
+// __Host- prefix keeps a sibling site from planting or overwriting it (see
+// pkg/middleware). The interceptor reads it first.
+const SecureSessionCookieName = middleware.SecureSessionCookieName
+{{- else}}
+
+// Your pkg/middleware reads only the plain name, so the cookie keeps it even
+// when Secure. Declare `SecureSessionCookieName = "__Host-" + SessionCookieName`
+// there and read it first (`forge skill load migrations/v1.1.0/identity-v2`),
+// then point this at it: until then a sibling site under a shared parent
+// domain can plant a session cookie.
+const SecureSessionCookieName = SessionCookieName
+{{- end}}
 {{- else}}
 //
 // Your pkg/middleware predates the session-cookie channel, so its auth
@@ -121,10 +135,35 @@ const SessionCookieName = middleware.SessionCookieName
 // sign-in answers 401. Declare this name there and read it (`forge upgrade
 // list` names the playbook), then point this constant at it.
 const SessionCookieName = "{{.Name}}_session"
+
+// SecureSessionCookieName: see the note above; there is no prefixed name to
+// read until pkg/middleware reads the cookie at all.
+const SecureSessionCookieName = SessionCookieName
 {{- end}}
 
+// sessionCookie is the session cookie's name as this deployment sets it:
+// __Host- prefixed wherever it is Secure, so it is host-only and no sibling
+// site can set one the browser would send here.
+func (b *loginBroker) sessionCookie() string {
+	if b.secureCookie {
+		return SecureSessionCookieName
+	}
+	return SessionCookieName
+}
+
 // RegisterLoginBroker mounts the native sign-in API.
-func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Config"}}, logger *slog.Logger) {
+func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Config"}}, logger *slog.Logger) {
+	// ── Every route below refuses a cross-site request ───────────────────
+	//
+	// A page on another site can POST to these routes from the victim's
+	// browser — as text/plain, which needs no CORS preflight — and create an
+	// account, request mail, or sign the browser into the attacker's
+	// account. devidp.GuardMux mounts each handler behind net/http's
+	// CrossOriginProtection (Sec-Fetch-Site, else Origin against Host),
+	// trusting this app's own public origin (from idp_login_uri) for a
+	// frontend served from another origin than this API. Mount new auth
+	// routes through `mux` too.
+	mux := devidp.GuardMux(appMux, appBaseFrom(cfg.IdpLoginUri))
 	// ── Which sign-in methods and sign-up mode: the LOGIN_POLICY ─────────
 	//
 	// Delivered by the identity converge into idp_login_policy. ABSENT is
@@ -169,6 +208,11 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 		},
 		policy: policy,
 		logger: logger,
+{{- if .TrustedProxyHopsField}}
+		// Rate limits key on the client address the outermost trusted
+		// proxy saw (trusted_proxy_hops; 0 is the connection's peer).
+		proxyHops: int(cfg.TrustedProxyHops),
+{{- end}}
 		// Marks a new account's address verified without a mail round trip.
 		// A dev stack has no mail server, so an unverified address strands
 		// the account behind a step nothing can deliver.
@@ -298,6 +342,12 @@ type loginBroker struct {
 	policy  devidp.LoginPolicy
 	methods *devidp.SignInRoutes
 
+	// proxyHops is how many trusted reverse proxies append to
+	// X-Forwarded-For (devidp.ClientIP). 0 keys rate limits on the
+	// connection's peer, which behind a proxy makes every per-IP budget a
+	// global one: safe, if blunt.
+	proxyHops int
+
 	// appBase is the app's public origin plus any base path, with no trailing
 	// slash — the prefix of every link this app emails. Derived from
 	// idp_login_uri (the converged "<app>/auth/sign-in"), never from a request
@@ -345,7 +395,7 @@ type registration struct {
 // handlers follow one rule worth keeping if you replace one: every privileged
 // call follows a proof (an emailed code, a passkey assertion, a provider
 // intent, a validated session) for the same user in the same request.
-func (b *loginBroker) mountSignInMethods(mux *http.ServeMux, cfg *config.{{or .ConfigType "Config"}}) {
+func (b *loginBroker) mountSignInMethods(mux *devidp.GuardedMux, cfg *config.{{or .ConfigType "Config"}}) {
 	if !b.policy.Present {
 		return
 	}
@@ -358,15 +408,16 @@ func (b *loginBroker) mountSignInMethods(mux *http.ServeMux, cfg *config.{{or .C
 		// The identity project, which a signup_role is granted on.
 		ProjectID: cfg.JwtAudience,
 {{- end}}
-		CookiePrefix: "{{.Name}}",
-		SecureCookie: b.secureCookie,
-		Logger:       b.logger,
+		CookiePrefix:     "{{.Name}}",
+		SecureCookie:     b.secureCookie,
+		Logger:           b.logger,
+		TrustedProxyHops: b.proxyHops,
 		SignedIn: func(w http.ResponseWriter, tokens devidp.Tokens) any {
 			b.setSession(w, tokens)
 			return identityFrom(tokens.IDToken)
 		},
 		SessionToken: func(r *http.Request) string {
-			if c, err := r.Cookie(SessionCookieName); err == nil {
+			if c, err := r.Cookie(b.sessionCookie()); err == nil {
 				return c.Value
 			}
 			return ""
@@ -544,7 +595,7 @@ func (b *loginBroker) handleRegister(w http.ResponseWriter, r *http.Request) {
 // It exists so the app can decide what to show without reading a cookie it
 // deliberately cannot read. The answer is an identity, never a token.
 func (b *loginBroker) handleSession(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(SessionCookieName)
+	cookie, err := r.Cookie(b.sessionCookie())
 	if err != nil || cookie.Value == "" {
 		writeAuthJSON(w, http.StatusOK, identity{Authenticated: false})
 		return
@@ -554,7 +605,7 @@ func (b *loginBroker) handleSession(w http.ResponseWriter, r *http.Request) {
 
 func (b *loginBroker) handleLogout(w http.ResponseWriter, _ *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     SessionCookieName,
+		Name:     b.sessionCookie(),
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
@@ -582,7 +633,9 @@ func (b *loginBroker) setSession(w http.ResponseWriter, tokens devidp.Tokens) {
 		maxAge = int(time.Hour.Seconds())
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:  SessionCookieName,
+		// Host-only: no Domain, ever, so the cookie goes to this host
+		// alone; __Host- prefixed when Secure (sessionCookie).
+		Name:  b.sessionCookie(),
 		Value: tokens.AccessToken,
 		Path:  "/",
 		// HttpOnly is the whole point — see SessionCookieName.
@@ -854,7 +907,7 @@ func (b *loginBroker) handleForgot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if !b.forgotByIP.reserve(clientIP(r)) || !b.forgotByAddress.reserve(email) {
+	if !b.forgotByIP.reserve(devidp.ClientIP(r, b.proxyHops)) || !b.forgotByAddress.reserve(email) {
 		b.logger.WarnContext(ctx, "password reset request refused: rate limited")
 		writeAuthError(w, http.StatusTooManyRequests, forgotBusy)
 		return
@@ -996,20 +1049,6 @@ func appBaseFrom(loginURI string) string {
 	return u.Scheme + "://" + u.Host + strings.TrimRight(path, "/")
 }
 
-// clientIP is the address to rate-limit by: the connection's peer.
-//
-// Deliberately NOT X-Forwarded-For. A header the caller can set is a header an
-// attacker rotates to get a fresh budget on every request. Behind a reverse
-// proxy every client then shares the proxy's address, and the per-IP budget
-// becomes a global one — safe, if blunt. If your proxy is trusted and you want
-// the real client, read the header HERE, and only from a peer you trust.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
 
 // attemptLimiter is a fixed-window budget of attempts per key, in memory.
 //

@@ -604,3 +604,56 @@ func TestKeyedMutex_SerialisesAKeyAndForgetsIt(t *testing.T) {
 		t.Fatalf("keys outlive their holders: %v", k.keys)
 	}
 }
+
+// The re-review at 832d5afc, B1: with mail "none" and no verified-email
+// requirement, an unverified account is a working one. A wrong verification
+// or invitation code — from anyone who knows the user id — must leave its
+// password, passkeys, links, second factor and sessions exactly as they were.
+func TestProof_AWrongCodeLeavesAWorkingUnverifiedAccountIntact(t *testing.T) {
+	p := LoginPolicy{Present: true, Version: 1, Signup: SignupOpen,
+		Methods: []string{MethodPassword}, Mail: MailNone, RequireVerifiedEmail: false}
+	h := newHarness(t, p)
+	owner := h.browser()
+	if status, body := owner.post("/auth/register", map[string]any{"email": "owner@else.com", "password": "owner-password-1"}); status != 200 {
+		t.Fatalf("register: %d %v", status, body)
+	}
+	u := h.z.userByEmail("owner@else.com")
+	h.z.mu.Lock()
+	u.passkeys = []Passkey{{ID: "pk-1", Name: "laptop"}}
+	u.links = []IDPLink{{IdPID: "idp-google", UserID: "g-1", UserName: "owner@else.com"}}
+	u.totp = true
+	h.z.sessions["s-owner"] = &fakeSession{token: "s-owner-token", userID: u.id}
+	h.z.mu.Unlock()
+
+	for _, attempt := range []struct{ path, proof string }{
+		{"/auth/verify", "/email/verify"},
+		{"/auth/invite/accept", "/invite_code/verify"},
+	} {
+		proofs := h.z.callCount("POST /v2/users/" + u.id + attempt.proof)
+		status, body := h.browser().post(attempt.path, map[string]any{
+			"userID": u.id, "code": "a-wrong-code", "method": MethodPassword, "password": "attacker-password-9"})
+		want(t, status, body, 401, CodeInvalidCode)
+		if h.z.callCount("POST /v2/users/"+u.id+attempt.proof) == proofs {
+			t.Fatalf("%s: the issuer never checked the code, so this proves nothing", attempt.path)
+		}
+	}
+
+	if !signsIn(t, h, "owner@else.com", "owner-password-1") {
+		t.Fatal("a wrong code replaced the owner's password")
+	}
+	got := h.z.user(u.id)
+	h.z.mu.Lock()
+	defer h.z.mu.Unlock()
+	if got.verified || got.locked {
+		t.Errorf("verified=%v locked=%v, want unverified and unlocked", got.verified, got.locked)
+	}
+	if len(got.passkeys) != 1 || len(got.links) != 1 || !got.totp {
+		t.Errorf("a wrong code took credentials: passkeys=%v links=%v totp=%v", got.passkeys, got.links, got.totp)
+	}
+	if h.z.sessions["s-owner"].deleted {
+		t.Error("a wrong code ended the owner's session")
+	}
+	if got.metadata[MetaProofLock] != "" {
+		t.Errorf("a wrong code left a proof mark: %q", got.metadata[MetaProofLock])
+	}
+}

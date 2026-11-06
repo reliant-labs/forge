@@ -53,8 +53,10 @@ var errRevokeFailed = errors.New("the proof succeeded but credentials set before
 // between "verified" and "revoked" (once VerifyEmail succeeds, a password
 // planted before it would otherwise work until the revocation lands):
 //
-//	mark → lock → end every session → revoke credentials → proof → re-lock
-//	→ revoke credentials → end every session → unlock → clear the mark
+//	mark → lock → [end every session → revoke credentials] → proof
+//	→ re-lock → revoke credentials → end every session → unlock → clear the mark
+//
+// The bracketed steps run only under RequireVerifiedEmail (see below).
 //
 // WHO MAY UNLOCK. Two proofs of one account can run at once — an attacker
 // who knows the user id keeps a wrong-code proof in flight while the owner
@@ -89,13 +91,19 @@ var errRevokeFailed = errors.New("the proof succeeded but credentials set before
 // Without a compare-and-swap at the issuer, a failed proof that reads its
 // own mark and then, two round-trips later, unlocks, can land that unlock
 // after another replica's proof has marked, locked and verified — until that
-// proof's re-lock. So every proof revokes BEFORE it verifies as well as
+// proof's re-lock. So where an unverified account cannot sign in
+// (RequireVerifiedEmail), every proof revokes BEFORE it verifies as well as
 // after: by the time any proof marks the address verified, the account holds
 // nothing set before it, and an unlock landing in that window exposes no
 // unproven credential. (Nothing can add one to an unverified account
 // meanwhile: the sign-up routes keep a pending password or link sealed in
-// the browser until its proof.) Within one process the proofs lock also
-// closes the window itself.
+// the browser until its proof.) That revocation takes nothing usable even
+// when the proof then fails — an unverified account's credentials sign in to
+// nothing there, and any successful proof would revoke them. Where an
+// unverified account CAN sign in (mail "none"), its credentials and sessions
+// are its holder's working ones, so nothing is touched before a proof
+// succeeds; a late unlock there exposes nothing the account did not already
+// allow. Within one process the proofs lock also closes the window itself.
 func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func() error) (revoked bool, err error) {
 	if before.EmailVerified {
 		return false, proof()
@@ -168,29 +176,41 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 				"user_id", userID, "error", err, "mark_restored", restored, "alert", "identity.revoke_failed")
 		}
 	}
-	// End every session first. One created a moment before the lock
-	// already carries a passed password check; the verified-email gate
-	// would let it through the moment proof() marks the address verified,
-	// before the revocation below could end it.
-	if _, err := c.EndSessions(ctx, userID); err != nil {
-		releaseFailed("a failed session cleanup")
-		return false, fmt.Errorf("end the account's sessions before its proof: %w", err)
-	}
-	// Take the unproven credentials back BEFORE the proof too, so the
-	// address is never verified while one survives. The lock alone cannot
-	// promise that across replicas: a failed proof elsewhere can lift it
-	// between this proof's VerifyEmail and its re-lock (see WHO MAY UNLOCK).
-	// Nothing on an unverified account is anyone's proven credential, so a
-	// proof that then fails has taken nothing legitimate. Detached: a client
-	// that hangs up must not leave a half-done revocation behind.
-	rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), proofCleanupTimeout)
-	pre, err := r.revoke(rctx, userID)
-	rcancel()
-	if err != nil {
-		if !held {
-			r.clearProofMark(context.WithoutCancel(ctx), userID, "an account left locked")
+	// The pre-proof cleanup runs only where an unverified account cannot
+	// sign in (RequireVerifiedEmail). There, its sessions and credentials
+	// authenticate nothing until a proof, and any successful proof revokes
+	// them anyway, so taking them before the proof — even one that then
+	// fails — takes nothing a caller could use. Without that gate (mail
+	// "none"), an unverified account is a working one: its password,
+	// passkeys, links and sessions are its holder's, and a wrong code must
+	// leave every one of them intact. Nothing new is exposed there by a
+	// late unlock either: the account's credentials sign in unverified.
+	pre := 0
+	if r.cfg.Flow.RequireVerifiedEmail {
+		// End every session first. One created a moment before the lock
+		// already carries a passed password check; the verified-email gate
+		// would let it through the moment proof() marks the address
+		// verified, before the revocation below could end it.
+		if _, err := c.EndSessions(ctx, userID); err != nil {
+			releaseFailed("a failed session cleanup")
+			return false, fmt.Errorf("end the account's sessions before its proof: %w", err)
 		}
-		return false, err
+		// Take the unproven credentials back BEFORE the proof too, so the
+		// address is never verified while one survives. The lock alone
+		// cannot promise that across replicas: a failed proof elsewhere can
+		// lift it between this proof's VerifyEmail and its re-lock (see WHO
+		// MAY UNLOCK). Detached: a client that hangs up must not leave a
+		// half-done revocation behind.
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), proofCleanupTimeout)
+		n, err := r.revoke(rctx, userID)
+		rcancel()
+		if err != nil {
+			if !held {
+				r.clearProofMark(context.WithoutCancel(ctx), userID, "an account left locked")
+			}
+			return false, err
+		}
+		pre = n
 	}
 	if err := proof(); err != nil {
 		releaseFailed("a refused proof")

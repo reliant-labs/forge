@@ -73,6 +73,13 @@ CREATE TABLE app.sessions (
 	note    text,
 	FOREIGN KEY (org_id, user_id) REFERENCES app.users (org_id, id)
 );
+-- Its key has a column the reader may not read.
+CREATE TABLE app.memberships (
+	org_id  uuid NOT NULL,
+	user_id int NOT NULL,
+	role    text NOT NULL,
+	PRIMARY KEY (org_id, user_id)
+);
 CREATE TABLE app.events (id int PRIMARY KEY);
 CREATE TABLE app.notes (id int PRIMARY KEY, body text, title text);
 CREATE VIEW app.post_titles AS SELECT id, title FROM app.posts;
@@ -88,6 +95,10 @@ INSERT INTO app.users VALUES
 	('00000000-0000-0000-0000-00000000000a', 3, 'cy@ACME.io',    'h3', 1,    'sad',   NULL,    '[1, 2]',   '[1,2]'),
 	('00000000-0000-0000-0000-00000000000b', 1, 'dee@globex.io', 'h4', NULL, NULL,    '{b}',   '{"k": 2}', NULL);
 INSERT INTO app.posts SELECT g, '00000000-0000-0000-0000-00000000000a', 1 + g % 3, 'post ' || g FROM generate_series(1, 120) g;
+INSERT INTO app.memberships VALUES
+	('00000000-0000-0000-0000-00000000000a', 2, 'member'),
+	('00000000-0000-0000-0000-00000000000b', 1, 'owner'),
+	('00000000-0000-0000-0000-00000000000a', 1, 'owner');
 INSERT INTO app.events SELECT generate_series(1, 10050);
 INSERT INTO app.notes VALUES (1, 'short', 'short'), (2, repeat('b', 5000), 'short'), (3, repeat('b', 5000), repeat('t', 5000));
 INSERT INTO app."we""ird; DROP TABLE app.orgs; --" VALUES (1, 'x'), (2, NULL);
@@ -124,6 +135,7 @@ func newFixture(t *testing.T) *fixture {
 		`GRANT SELECT ON app.orgs, app.posts, app.events, app.notes, app.post_titles, app."we""ird; DROP TABLE app.orgs; --", schema_migrations TO %[1]s`,
 		`GRANT SELECT (org_id, id, email, manager_id, mood, tags, meta, doc) ON app.users TO %[1]s`,
 		`GRANT SELECT (id, note, org_id) ON app.sessions TO %[1]s`,
+		`GRANT SELECT (user_id, role) ON app.memberships TO %[1]s`,
 	} {
 		if _, err := admin.Exec(ctx, fmt.Sprintf(s, role)); err != nil {
 			t.Fatalf("%s: %v", s, err)
@@ -198,7 +210,7 @@ func TestDbbrowse(t *testing.T) {
 		for _, tb := range f.db.Tables {
 			got = append(got, tb.QualifiedName())
 		}
-		want := []string{"app.events", "app.notes", "app.orgs", "app.post_titles", "app.posts", "app.sessions", "app.users", `app.we"ird; DROP TABLE app.orgs; --`}
+		want := []string{"app.events", "app.memberships", "app.notes", "app.orgs", "app.post_titles", "app.posts", "app.sessions", "app.users", `app.we"ird; DROP TABLE app.orgs; --`}
 		if !slices.Equal(got, want) {
 			t.Errorf("tables = %q\nwant     %q", got, want)
 		}
@@ -299,6 +311,27 @@ func TestDbbrowse(t *testing.T) {
 		}
 		if !slices.Contains(names, "app.posts.posts_author_fkey") {
 			t.Errorf("keysQuery as the reader = %v, want posts_author_fkey among them", names)
+		}
+	})
+
+	// memberships' key includes org_id, which the reader cannot read: the
+	// key is not described, and browsing orders by the readable columns
+	// instead of failing on a hidden one.
+	t.Run("a key with an unreadable column does not order the page", func(t *testing.T) {
+		m := f.table(t, "app.memberships")
+		if m.PrimaryKey != nil {
+			t.Errorf("memberships PK = %v, want none (org_id is ungranted)", m.PrimaryKey)
+		}
+		c, err := Compile(f.db, Request{Table: "app.memberships", Columns: []string{"role"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sql := c.Page().SQL; strings.Contains(sql, "org_id") {
+			t.Errorf("SQL names the hidden key column: %s", sql)
+		}
+		p := f.browse(t, Request{Table: "app.memberships", Columns: []string{"role"}})
+		if got, want := cells(p, 0), []string{"owner", "owner", "member"}; !slices.Equal(got, want) {
+			t.Errorf("roles = %v, want %v (ordered by user_id, role)", got, want)
 		}
 	})
 

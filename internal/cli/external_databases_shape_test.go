@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // externalDatabasesMain is an env with one managed database and two external
@@ -53,9 +54,7 @@ output = forge.render(forge.Bundle {
 
 func renderExternalDatabases(t *testing.T) *KCLEntities {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("-short: renders KCL; runs in task test")
-	}
+	testkit.Slow(t, "renders KCL")
 	dir := t.TempDir()
 	files := map[string]string{
 		"kcl.mod": "[package]\nname = \"extdb\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",

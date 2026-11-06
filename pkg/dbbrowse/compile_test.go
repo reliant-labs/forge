@@ -80,6 +80,27 @@ func TestCompileNoPrimaryKey(t *testing.T) {
 	}
 }
 
+// A key naming a column the role cannot read never reaches ORDER BY: the
+// readable sortable columns order the page instead.
+func TestCompileKeyWithHiddenColumn(t *testing.T) {
+	db := &Database{Tables: []Table{{
+		Schema: "app", Name: "memberships", Kind: KindTable,
+		Columns: []Column{
+			{Name: "user_id", Type: "integer", Ordinal: 2, Sortable: true},
+			{Name: "role", Type: "text", Ordinal: 3, Sortable: true},
+		},
+		PrimaryKey: []string{"org_id", "user_id"},
+	}}}
+	c, err := Compile(db, Request{Table: "app.memberships"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `SELECT "user_id", "role" FROM "app"."memberships" ORDER BY "user_id", "role" LIMIT 51 OFFSET 0`
+	if got := c.Page().SQL; got != want {
+		t.Errorf("SQL\n got: %s\nwant: %s", got, want)
+	}
+}
+
 func TestCompileEstimatedCount(t *testing.T) {
 	c, err := Compile(fixtureDB(), Request{Table: "app.users", Count: CountEstimated})
 	if err != nil {

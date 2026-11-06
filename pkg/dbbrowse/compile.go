@@ -324,7 +324,17 @@ func compileOrder(t *Table, sorts []Sort) (string, error) {
 		}
 		keys = append(keys, k)
 	}
+	// The key orders only when the role can read every column of it: a
+	// hidden column in ORDER BY is a permission error, and part of a key is
+	// not unique. Describe already leaves such a key out; a hand-built Table
+	// gets the same rule here.
 	tiebreak := t.PrimaryKey
+	for _, name := range tiebreak {
+		if col, ok := t.Column(name); !ok || !col.Sortable {
+			tiebreak = nil
+			break
+		}
+	}
 	if len(tiebreak) == 0 {
 		for _, col := range t.Columns {
 			if col.Sortable {

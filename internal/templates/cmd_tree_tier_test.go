@@ -262,3 +262,17 @@ func itoa(n int) string {
 	}
 	return string(digits)
 }
+
+// TestCmdTreeRootSilencesUsageOnRuntimeErrors: a server or operator that exits
+// on a runtime error printed its whole flag list after the error (control-plane
+// workspace-controller on "leader election lost": ~300 lines per restart). The
+// root silences usage, and a flag error still prints it through the inherited
+// FlagErrorFunc.
+func TestCmdTreeRootSilencesUsageOnRuntimeErrors(t *testing.T) {
+	out := renderCmdTree(t, "cmd-tree-root.go.tmpl", cmdTreeData{Module: "example.com/demo", Name: "demo"})
+	for _, want := range []string{"SilenceUsage: true", "root.SetFlagErrorFunc("} {
+		if !strings.Contains(out, want) {
+			t.Errorf("cmd-tree-root.go does not carry %q", want)
+		}
+	}
+}

@@ -54,7 +54,14 @@ runtime loop lives in internal/{{.Package}}/. Hand-edit
 internal/{{.Package}}/{{.Package}}.go to implement the actual logic;
 this file is the thin entry point.`,
 		RunE: run{{.Package | pascalCase}},
+		// Usage is for a mistyped command line, not a runtime failure: the
+		// process's exit error is printed alone. Flag errors still print it.
+		SilenceUsage: true,
 	}
+	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		c.PrintErrln(c.UsageString())
+		return err
+	})
 	// Register the standard env-var driven config flag set (DATABASE_URL,
 	// NATS, log level, OTel, etc.) so this binary loads the same Config as
 	// the server. Drop this if your binary takes a strict subset; add

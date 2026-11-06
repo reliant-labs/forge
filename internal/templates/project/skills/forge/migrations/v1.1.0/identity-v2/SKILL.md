@@ -43,7 +43,12 @@ In the config proto that declares `idp_broker_token` (usually
   }];
 ```
 
-Run `forge generate`. The identity fills it; no `config.k` line names it.
+Add `int32 trusted_proxy_hops = 50` the same way (env `TRUSTED_PROXY_HOPS`,
+default `0`): how many reverse proxies in front of the server append to
+`X-Forwarded-For`, so per-client rate limits see the client, not the proxy.
+
+Run `forge generate`. The identity fills `idp_login_policy`; no `config.k`
+line names it.
 
 ## 2. Edit `internal/app/login_broker.go`
 
@@ -66,9 +71,14 @@ Run `forge generate`. The identity fills it; no `config.k` line names it.
    )
    ```
 
-2. **Parse the policy** — first lines of `RegisterLoginBroker`:
+2. **Guard every route, then parse the policy** — rename
+   `RegisterLoginBroker`'s `mux *http.ServeMux` parameter to `appMux`, and
+   make its first lines:
 
    ```go
+   // Every route refuses a cross-site request (a text/plain POST from
+   // another site needs no preflight and would create accounts).
+   mux := devidp.GuardMux(appMux, appBaseFrom(cfg.IdpLoginUri))
    policy, policyErr := devidp.ParseLoginPolicy(cfg.IdpLoginPolicy)
    if policyErr != nil {
    	logger.Error("idp_login_policy is unusable; sign-up is OFF and every session needs a verified address until it is fixed", "error", policyErr)
@@ -83,7 +93,12 @@ Run `forge generate`. The identity fills it; no `config.k` line names it.
    	legacySelfSignup bool
    	policy           devidp.LoginPolicy
    	methods          *devidp.SignInRoutes
+   	proxyHops        int
    ```
+
+   and set `proxyHops: int(cfg.TrustedProxyHops),` in the literal. Replace
+   `clientIP(r)` in `handleForgot` with `devidp.ClientIP(r, b.proxyHops)` and
+   delete the local `clientIP`.
 
 4. **Construction** — in the `&loginBroker{...}` literal: rename
    `selfSignup:` to `legacySelfSignup:`, add `policy: policy,`, and add
@@ -104,8 +119,9 @@ Run `forge generate`. The identity fills it; no `config.k` line names it.
 5. **`mountSignInMethods`** — copy the method of that name from the scratch
    project's `internal/app/login_broker.go`. It builds
    `devidp.NewSignInRoutes` from the broker's client, flow, policy and
-   `appBase`, with `SignedIn` calling `b.setSession` and `SessionToken`
-   reading `SessionCookieName`, and mounts each route inside
+   `appBase`, with `SignedIn` calling `b.setSession`, `SessionToken`
+   reading `SessionCookieName` and `TrustedProxyHops: b.proxyHops`; it takes
+   `mux *devidp.GuardedMux` and mounts each route inside
    `if b.policy.Offers(...)` / `if len(b.policy.Social) > 0`. Set
    `ProjectID: cfg.JwtAudience` if your config declares `jwt_audience`
    (the project a `signup_role` is granted on).
@@ -167,6 +183,32 @@ Run `forge generate`. The identity fills it; no `config.k` line names it.
     `/auth/login` leaves a password sign-in a passkey-only or social-only
     policy excluded.
 
+11. **A host-only session cookie.** In `pkg/middleware/middleware.go` add,
+    beside `SessionCookieName`:
+
+    ```go
+    const SecureSessionCookieName = "__Host-" + SessionCookieName
+    ```
+
+    and make `credentialFrom` read it first, ignoring the plain name over
+    HTTPS (only a sibling site could have planted one there):
+
+    ```go
+    req := &http.Request{Header: h}
+    if cookie, err := req.Cookie(SecureSessionCookieName); err == nil {
+    	return cookie.Value
+    }
+    if strings.EqualFold(h.Get("X-Forwarded-Proto"), "https") {
+    	return ""
+    }
+    cookie, err := req.Cookie(SessionCookieName)
+    ```
+
+    In the broker add `const SecureSessionCookieName = middleware.SecureSessionCookieName`
+    and a `sessionCookie()` method returning it when `b.secureCookie`, and use
+    `b.sessionCookie()` wherever the session cookie is set, read or cleared.
+    Signed-in users sign in once more after the deploy.
+
 ## 3. Add the frontend pages
 
 From the scratch project's frontend (same kind), copy:
@@ -181,6 +223,8 @@ From the scratch project's frontend (same kind), copy:
   `socialCallbackRoute` blocks of `src/routes.tsx`, and their entries in
   `addChildren`;
 - `src/lib/auth/route-guard.tsx`'s `EMAIL_LINK_PATHS` (the pages are public);
+- `src/lib/auth/return-to.ts` (every navigation to a returned path goes
+  through `safeReturnTo`);
 - in the sign-in screen: render `<SignInMethods options={options} …/>`, hide
   the password field when `options.methods` lacks `"password"`, show
   `created.message` when `isVerifySent(created)`, and `<UnverifiedNotice>`

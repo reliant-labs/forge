@@ -25,6 +25,7 @@ function Page() {
           userID={searchParams?.get("userID") ?? null}
           code={searchParams?.get("code") ?? null}
           signInHref={joinBasePath("/auth/sign-in")}
+          forgotHref={joinBasePath("/auth/forgot")}
           onSignedIn={async () => {
             // A full navigation, as the sign-in screen does: every provider
             // re-initialises with the session in place.

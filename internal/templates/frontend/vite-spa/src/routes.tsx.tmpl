@@ -51,6 +51,7 @@ import {
   signUp,
   type PasswordRule,
 } from "@/lib/auth/native-login";
+import { safeReturnTo } from "@/lib/auth/return-to";
 import { RouteGuard } from "@/lib/auth/route-guard";
 import { safeReturnTo } from "@/lib/auth/return-to";
 import { useAuth } from "@/lib/auth/use-auth";
@@ -553,6 +554,7 @@ const verifyRoute = createRoute({
           userID={query("userID")}
           code={query("code")}
           signInHref="/auth/sign-in"
+          forgotHref="/auth/forgot"
           onSignedIn={() => landSignedIn(refresh)}
         />
       </AuthCard>

@@ -700,6 +700,12 @@ export interface VerifyResult {
   enroll: boolean;
   password?: "not_set";
   reset?: { userID: string; code: string };
+  /**
+   * Sign-in methods the account held from before the address was confirmed
+   * were removed: nothing proves the address owner set them. Choose a
+   * password ("Forgot password") or add a passkey.
+   */
+  credentialsReset?: boolean;
 }
 
 /** Confirms an address from its verification link. */

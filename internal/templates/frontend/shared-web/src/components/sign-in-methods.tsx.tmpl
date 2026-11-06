@@ -150,7 +150,8 @@ export function SignInMethods({ options, email, returnTo, onSignedIn }: SignInMe
         // A div, not a form: this renders inside the sign-in screen's form.
         <div>
           <p role="status" className={statusClass}>
-            {sent} Open the link in this browser, or type the code from the email here.
+            {sent} Open the link in this browser, or type the code from the email here. Never share
+            this code: {{.ProjectName}} will never ask you for it.
           </p>
           <Label className="mt-3" htmlFor="magic-code">
             Code from the email

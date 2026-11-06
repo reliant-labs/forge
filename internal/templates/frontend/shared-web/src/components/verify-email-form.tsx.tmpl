@@ -22,6 +22,8 @@ export interface VerifyEmailFormProps {
   userID: string | null;
   code: string | null;
   signInHref: string;
+  /** The "Forgot password" page, offered when earlier sign-in methods were removed. */
+  forgotHref: string;
   onSignedIn: () => void | Promise<void>;
 }
 
@@ -29,9 +31,18 @@ export interface VerifyEmailFormProps {
 // "noPassword": it was not saved and none did.
 type VerifyState = "ready" | "verified" | "enroll" | "password" | "noPassword";
 
-export function VerifyEmailForm({ userID, code, signInHref, onSignedIn }: VerifyEmailFormProps) {
+export function VerifyEmailForm({
+  userID,
+  code,
+  signInHref,
+  forgotHref,
+  onSignedIn,
+}: VerifyEmailFormProps) {
   const [state, setState] = useState<VerifyState>("ready");
   const [reset, setReset] = useState<{ userID: string; code: string } | null>(null);
+  // Methods set from another browser before the address was confirmed were
+  // removed: nothing proved they were the owner's.
+  const [removed, setRemoved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -92,6 +103,7 @@ export function VerifyEmailForm({ userID, code, signInHref, onSignedIn }: Verify
           onClick={() =>
             void act(async () => {
               const result = await verifyEmail(userID, code);
+              setRemoved(result.credentialsReset === true);
               if (result.password === "not_set") {
                 setReset(result.reset ?? null);
                 setState(result.reset ? "password" : "noPassword");
@@ -105,10 +117,25 @@ export function VerifyEmailForm({ userID, code, signInHref, onSignedIn }: Verify
         </Button>
       ) : null}
 
-      {state === "verified" ? (
+      {state === "verified" && !removed ? (
         <p role="status" className="mt-4 text-sm text-ink">
           Your email is confirmed. You can sign in now.
         </p>
+      ) : null}
+
+      {(state === "verified" || state === "enroll") && removed ? (
+        <div role="status" className="mt-4 space-y-2 text-sm text-ink">
+          <p>
+            Your email is confirmed. For your security, sign-in methods set before it was confirmed
+            have been removed.
+          </p>
+          <p>
+            <a className="font-medium text-accent underline" href={forgotHref}>
+              Choose a password
+            </a>
+            {state === "enroll" ? ", or create a passkey below." : "."}
+          </p>
+        </div>
       ) : null}
 
       {state === "noPassword" ? (
@@ -120,9 +147,11 @@ export function VerifyEmailForm({ userID, code, signInHref, onSignedIn }: Verify
 
       {state === "enroll" ? (
         <>
-          <p role="status" className="mt-4 text-sm text-ink">
-            Your email is confirmed. Create a passkey to sign in with this device.
-          </p>
+          {removed ? null : (
+            <p role="status" className="mt-4 text-sm text-ink">
+              Your email is confirmed. Create a passkey to sign in with this device.
+            </p>
+          )}
           <Button
             type="button"
             size="xl"

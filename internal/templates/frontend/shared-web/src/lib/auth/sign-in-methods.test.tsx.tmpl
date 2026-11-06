@@ -382,7 +382,7 @@ describe("VerifyEmailForm", () => {
   it("refuses an incomplete link without calling the server", () => {
     const fetchMock = stubRoutes({});
     render(
-      <VerifyEmailForm userID={null} code="c" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
+      <VerifyEmailForm forgotHref="/auth/forgot" userID={null} code="c" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
     );
     expect(screen.getByRole("alert").textContent).toMatch(/incomplete/);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -393,7 +393,7 @@ describe("VerifyEmailForm", () => {
       "/auth/verify": { status: 200, body: { verified: true, enroll: false } },
     });
     render(
-      <VerifyEmailForm userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
+      <VerifyEmailForm forgotHref="/auth/forgot" userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
     );
     expect(fetchMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Confirm my email" }));
@@ -404,7 +404,7 @@ describe("VerifyEmailForm", () => {
   it("offers a passkey when the account has no password", async () => {
     stubRoutes({ "/auth/verify": { status: 200, body: { verified: true, enroll: true } } });
     render(
-      <VerifyEmailForm userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
+      <VerifyEmailForm forgotHref="/auth/forgot" userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Confirm my email" }));
     expect(await screen.findByRole("button", { name: "Create a passkey" })).toBeTruthy();
@@ -431,7 +431,7 @@ describe("VerifyEmailForm", () => {
     };
     render(
       <AuthContext.Provider value={auth}>
-        <VerifyEmailForm userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />
+        <VerifyEmailForm forgotHref="/auth/forgot" userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />
       </AuthContext.Provider>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Confirm my email" }));
@@ -446,10 +446,31 @@ describe("VerifyEmailForm", () => {
       "/auth/verify": { status: 200, body: { verified: true, enroll: false, password: "not_set" } },
     });
     render(
-      <VerifyEmailForm userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
+      <VerifyEmailForm forgotHref="/auth/forgot" userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Confirm my email" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/Forgot your\s+password\?/);
+    expect(screen.queryByText(/You can sign in now/)).toBeNull();
+  });
+
+  it("says when earlier sign-in methods were removed, and offers a password", async () => {
+    stubRoutes({
+      "/auth/verify": { status: 200, body: { verified: true, enroll: false, credentialsReset: true } },
+    });
+    render(
+      <VerifyEmailForm
+        forgotHref="/auth/forgot"
+        userID="u1"
+        code="c1"
+        signInHref="/auth/sign-in"
+        onSignedIn={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm my email" }));
+    await screen.findByText(/sign-in methods set before it was confirmed have been removed/);
+    expect(screen.getByRole("link", { name: "Choose a password" }).getAttribute("href")).toBe(
+      "/auth/forgot",
+    );
     expect(screen.queryByText(/You can sign in now/)).toBeNull();
   });
 
@@ -461,7 +482,7 @@ describe("VerifyEmailForm", () => {
       },
     });
     render(
-      <VerifyEmailForm userID="u1" code="bad" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
+      <VerifyEmailForm forgotHref="/auth/forgot" userID="u1" code="bad" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Confirm my email" }));
     await screen.findByText("That code or link is not valid.");
@@ -668,6 +689,18 @@ describe("SocialCallback", () => {
     });
     render(<SocialCallback id="i1" token="t1" signInHref="/auth/sign-in" onSignedIn={() => {}} />);
     await screen.findByText("Sign in another way, then connect Google from your account.");
+  });
+
+  it("lands home when the returned path would leave the site", async () => {
+    stubRoutes({
+      "/auth/social/callback": {
+        status: 200,
+        body: { identity: { authenticated: true }, returnTo: "/a/..//evil.com" },
+      },
+    });
+    const onSignedIn = vi.fn();
+    render(<SocialCallback id="i1" token="t1" signInHref="/auth/sign-in" onSignedIn={onSignedIn} />);
+    await waitFor(() => expect(onSignedIn).toHaveBeenCalledWith("/"));
   });
 
   it("does not call the server without the id and token", async () => {

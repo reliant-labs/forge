@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { AuthError, isVerifySent, socialComplete } from "@/lib/auth/native-login";
+import { safeReturnTo } from "@/lib/auth/return-to";
 
 export interface SocialCallbackProps {
   id: string | null;
@@ -40,7 +41,9 @@ export function SocialCallback({ id, token, signInHref, onSignedIn }: SocialCall
           setMessage(result.message);
           return;
         }
-        await onSignedIn(result.returnTo || "/");
+        // The server checked it too; the browser checks again, as it would
+        // any path it is handed (src/lib/auth/return-to.ts).
+        await onSignedIn(safeReturnTo(result.returnTo));
       })
       .catch((err: unknown) => {
         setFailed(true);

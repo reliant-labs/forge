@@ -65,7 +65,8 @@ export function MagicLinkForm({ code: linked, signInHref, onSignedIn }: MagicLin
       ) : (
         <>
           <p className="mt-2 text-sm text-ink-muted">
-            {linked ? "Press the button to finish signing in." : "Type the code from the email."}
+            {linked ? "Press the button to finish signing in." : "Type the code from the email."}{" "}
+            Never share this code: {{.ProjectName}} will never ask you for it.
           </p>
           {linked ? null : (
             <>

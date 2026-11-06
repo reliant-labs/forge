@@ -172,22 +172,28 @@ func goldenTopologyOpts(t *testing.T) (envTopologyOptions, []string) {
 
 var generatedAtRE = regexp.MustCompile(`("generated_at": )"[^"]*"`)
 
+// placeholderPathRE matches a path rooted at a normalized temp directory: the
+// placeholder, then separator-and-name segments in either the raw form or the
+// JSON-escaped one (`\\`).
+var placeholderPathRE = regexp.MustCompile(`(?:<project>|<ledger-home>)(?:(?:\\\\|\\|/)[\w.~-]+)*`)
+
 // normalizeTopologyOutput replaces what is not the assembly's output: the
-// clock and the fixture's temp directories.
+// clock and the fixture's temp directories. On Windows those directories and
+// the paths under them use `\` (escaped as `\\` in JSON); the goldens are
+// written with `/`, so the separators under a placeholder are made `/`.
 func normalizeTopologyOutput(out, projectDir string) string {
 	out = generatedAtRE.ReplaceAllString(out, `$1"<generated_at>"`)
-	dirs := [][2]string{{projectDir, "<project>"}}
+	roots := [][2]string{{projectDir, "<project>"}}
 	// The machine ledger lives under a per-test ledger home.
 	if home, err := ledgerHome(); err == nil {
-		dirs = append(dirs, [2]string{home, "<ledger-home>"})
+		roots = append(roots, [2]string{home, "<ledger-home>"})
 	}
-	for _, d := range dirs {
-		out = strings.ReplaceAll(out, d[0], d[1])
-		// A JSON document escapes a Windows path's separators.
-		out = strings.ReplaceAll(out, strings.ReplaceAll(d[0], `\`, `\\`), d[1])
+	for _, r := range roots {
+		out = strings.ReplaceAll(out, r[0], r[1])
+		if filepath.Separator == '\\' {
+			out = strings.ReplaceAll(out, strings.ReplaceAll(r[0], `\`, `\\`), r[1])
+		}
 	}
-	// The goldens spell the paths under those directories with '/', which is
-	// what every platform but Windows prints.
 	if filepath.Separator == '\\' {
 		out = placeholderPathRE.ReplaceAllStringFunc(out, func(p string) string {
 			return strings.ReplaceAll(strings.ReplaceAll(p, `\\`, "/"), `\`, "/")
@@ -195,10 +201,6 @@ func normalizeTopologyOutput(out, projectDir string) string {
 	}
 	return out
 }
-
-// placeholderPathRE is a path under a normalized directory, up to the next
-// space or quote.
-var placeholderPathRE = regexp.MustCompile(`<(project|ledger-home)>[^\s"]*`)
 
 func assertTopologyGolden(t *testing.T, name, got string) {
 	t.Helper()

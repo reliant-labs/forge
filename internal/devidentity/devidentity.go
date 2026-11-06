@@ -308,13 +308,10 @@ func Spec(in Input) (identity.Spec, []string, error) {
 	return spec, warnings, nil
 }
 
-// applicationsSpec derives each declared application, its redirect, logout and
-// login URIs from the env's origins unless the declaration gives a literal.
-func applicationsSpec(in Input, id *release.ShapeIdentity) ([]identity.Application, []error) {
-	var (
-		apps []identity.Application
-		errs []error
-	)
+// applicationsSpec derives each declared application's client, filling the
+// redirect, logout and sign-in URIs from the env's origins unless the
+// declaration gives a literal.
+func applicationsSpec(in Input, id *release.ShapeIdentity) (apps []identity.Application, errs []error) {
 	for _, a := range id.Applications {
 		origin := in.FrontendOrigin
 		if origin == "" {

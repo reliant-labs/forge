@@ -207,7 +207,11 @@ const (
 // learns them. Read the page by column name (the control plane's ListTraces
 // does, scanByName); a strict positional Scan breaks on every addition.
 // TestTracePageKeepsEveryColumnItReturnedBefore pins the names.
-func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, error) {
+//
+// With page false (the RED statements) it returns only trace_id, dur_ms,
+// root_name, error_count and tw, plus the group columns: the summaries read
+// nothing else, and nothing reads that subquery by name.
+func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) {
 	if err := checkRumValue("user_id", q.UserID); err != nil {
 		return "", err
 	}
@@ -236,33 +240,47 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 	// these candidate sets are supersets of what the HAVING keeps and the
 	// result is unchanged. (A root is the earliest parentless span, or the
 	// earliest span of an orphaned trace, so the name test is over any span.)
-	prefilter := func(pred string) {
-		sub := append([]string{b.rangeCond("Timestamp", q.Scope), pred}, sc...)
+	prefilter := func(pred string, narrow []string) {
+		sub := append([]string{b.rangeCond("Timestamp", q.Scope), pred}, narrow...)
 		conds = append(conds, "TraceId IN (SELECT TraceId FROM "+b.table(q.Scope, "otel_traces")+" "+where(sub)+")")
 	}
 	if q.ErrorsOnly {
-		prefilter(spanErrorExpr)
+		prefilter(spanErrorExpr, sc)
 	}
 	if q.RootSpanName != "" {
-		prefilter("positionCaseInsensitive(SpanName, " + b.str(q.RootSpanName) + ") > 0")
+		prefilter("positionCaseInsensitive(SpanName, "+b.str(q.RootSpanName)+") > 0", sc)
+	}
+	// Who made the call and on which builds are facts of the WHOLE trace, held
+	// by spans the scope's service and resource filters do not pick: a
+	// browser's client and build are on its browser spans, a user on the
+	// browser's or the server's, a backend build on the server's. So these
+	// candidate sets are narrowed to the environment only. Narrowed like the
+	// two above, "the api's traces from Chrome" looked for Chrome on the api's
+	// own spans, which never carry it, and matched nothing.
+	var traceWide []string
+	if q.UserID != "" || q.SessionID != "" || q.Browser != "" || q.OS != "" || q.FrontendVersion != "" || q.BackendVersion != "" {
+		// Bound only when a filter uses it: an unused parameter is refused.
+		if e := b.envCond(q.Scope); e != "" {
+			traceWide = []string{e}
+		}
 	}
 	if q.UserID != "" {
-		prefilter(traceUserExpr + " = " + b.str(q.UserID))
+		prefilter(traceUserExpr+" = "+b.str(q.UserID), traceWide)
 	}
 	if q.SessionID != "" {
-		prefilter(traceSessionExpr + " = " + b.str(q.SessionID))
+		prefilter(traceSessionExpr+" = "+b.str(q.SessionID), traceWide)
 	}
 	if q.Browser != "" {
-		prefilter(traceBrowserSpan + " AND " + traceBrowserNameExpr + " = " + b.str(q.Browser))
+		prefilter(traceBrowserSpan+" AND "+traceBrowserNameExpr+" = "+b.str(q.Browser), traceWide)
 	}
 	if q.OS != "" {
-		prefilter(traceBrowserSpan + " AND " + traceOSNameExpr + " = " + b.str(q.OS))
+		prefilter(traceBrowserSpan+" AND "+traceOSNameExpr+" = "+b.str(q.OS), traceWide)
 	}
 	if q.FrontendVersion != "" {
-		prefilter(traceBrowserSpan + " AND " + traceVersionExpr + " = " + b.str(q.FrontendVersion))
+		prefilter(traceBrowserSpan+" AND "+traceVersionExpr+" = "+b.str(q.FrontendVersion), traceWide)
 	}
 	if q.BackendVersion != "" {
-		prefilter(traceServerSpan + " AND " + traceVersionExpr + " = " + b.str(q.BackendVersion))
+		prefilter(traceServerSpan+" AND "+traceVersionExpr+" = "+b.str(q.BackendVersion), traceWide)
 	}
 
 	having := append([]string{}, spanHaving...)
@@ -275,7 +293,7 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 	if q.RootSpanName != "" {
 		having = append(having, "positionCaseInsensitive(root_name, "+b.str(q.RootSpanName)+") > 0")
 	}
-	if withCursor && q.Cursor != nil {
+	if page && q.Cursor != nil {
 		if q.Cursor.Finger != q.Fingerprint() {
 			return "", invalid("page_token does not belong to this query")
 		}
@@ -295,6 +313,24 @@ func (q TraceQuery) perTrace(b *builder, withCursor, withGroups bool) (string, e
 			}
 			groupCols += ",\n       argMin(toString(" + e + "), (ParentSpanId != '', Timestamp)) AS g" + strconv.Itoa(i)
 		}
+	}
+	if !page {
+		// A RED summary reads four facts per trace. The page's who/where/client
+		// columns (each an aggregate over every span) cost it most of its time:
+		// over 24h of prod traffic the full row set ran past the gateway's 15s
+		// and the list answered 504, so the summary aggregates only what it
+		// reads (and what the HAVING above names).
+		sql := "SELECT TraceId AS trace_id,\n" +
+			"       toFloat64(" + traceDurNanoExpr + ") / 1000000 AS dur_ms,\n" +
+			"       argMin(SpanName, (ParentSpanId != '', Timestamp)) AS root_name,\n" +
+			"       countIf(" + spanErrorExpr + ") AS error_count,\n" +
+			"       max(" + spanWeightExpr + ") AS tw" + groupCols + "\n" +
+			"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
+			"GROUP BY trace_id"
+		if len(having) > 0 {
+			sql += "\nHAVING " + strings.Join(having, "\n   AND ")
+		}
+		return sql, nil
 	}
 	sql := "SELECT TraceId AS trace_id,\n" +
 		"       min(Timestamp) AS start,\n" +

@@ -370,7 +370,9 @@ func TestPanelGroupByAllowlistedKey(t *testing.T) {
 	sc := scopeWith(func(s *Scope) { s.Filters = []AttrFilter{{Key: "k8s.workload.name", Value: "api"}} })
 	p.GroupBy = nil
 	st, _, err = PanelQuery{Scope: sc, Panel: p, StepSeconds: 60}.Compile()
-	if err != nil || !strings.Contains(st.SQL, "ResourceAttributes[{") {
+	// k8s.workload.name on traces reads the workload under either name it is
+	// stamped with (workloadNameExpr).
+	if err != nil || !strings.Contains(st.SQL, workloadNameExpr+" = {") {
 		t.Errorf("scope filter not applied to the panel: %v\n%s", err, st.SQL)
 	}
 }

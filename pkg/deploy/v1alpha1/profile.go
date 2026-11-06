@@ -153,6 +153,10 @@ var FieldProfiles = map[string]Profile{
 
 	// A timeout only ever shortens what runs, so it is not an escalation.
 	"activeDeadlineSeconds": ProfileRestricted,
+	// A cron's Job history and expiry only ever remove finished objects.
+	"successfulJobsHistoryLimit": ProfileRestricted,
+	"failedJobsHistoryLimit":     ProfileRestricted,
+	"ttlSecondsAfterFinished":    ProfileRestricted,
 	// The rollout strategy trades the author's OWN availability against
 	// running one version at a time. It reaches nothing outside their
 	// workload, so a hosted user decides it.

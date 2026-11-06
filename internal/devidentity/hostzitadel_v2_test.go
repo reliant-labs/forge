@@ -315,20 +315,22 @@ func findUserID(ctx context.Context, t *testing.T, in Input, email string) strin
 	return out.Result[0].UserID
 }
 
-// mailpitPort finds a free SMTP port whose UI port is free too.
+// mailpitPort finds a free SMTP port whose UI port is free too. A host with no
+// free pair in 50 tries is out of ports, so the test skips.
 func mailpitPort(t *testing.T) int {
 	t.Helper()
-	for i := 0; i < 50; i++ {
-		p := freeLoopbackPort(t)
+	p, found := 0, false
+	for i := 0; i < 50 && !found; i++ {
+		p = freeLoopbackPort(t)
 		if p > 50000 {
 			p -= 20000
 		}
-		if freePort(p) && freePort(hostinfra.MailpitUIPort(hostinfra.Spec{Port: p})) {
-			return p
-		}
+		found = freePort(p) && freePort(hostinfra.MailpitUIPort(hostinfra.Spec{Port: p}))
 	}
-	t.Skip("no free port pair for mailpit")
-	return 0
+	if !found {
+		t.Skip("no free loopback port pair for mailpit (SMTP port and its UI port) in 50 tries")
+	}
+	return p
 }
 
 func freePort(p int) bool {

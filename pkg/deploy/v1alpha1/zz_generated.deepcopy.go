@@ -1129,6 +1129,21 @@ func (in *WorkloadSpec) DeepCopyInto(out *WorkloadSpec) {
 		*out = new(int64)
 		**out = **in
 	}
+	if in.SuccessfulJobsHistoryLimit != nil {
+		in, out := &in.SuccessfulJobsHistoryLimit, &out.SuccessfulJobsHistoryLimit
+		*out = new(int32)
+		**out = **in
+	}
+	if in.FailedJobsHistoryLimit != nil {
+		in, out := &in.FailedJobsHistoryLimit, &out.FailedJobsHistoryLimit
+		*out = new(int32)
+		**out = **in
+	}
+	if in.TTLSecondsAfterFinished != nil {
+		in, out := &in.TTLSecondsAfterFinished, &out.TTLSecondsAfterFinished
+		*out = new(int32)
+		**out = **in
+	}
 	if in.SecurityContext != nil {
 		in, out := &in.SecurityContext, &out.SecurityContext
 		*out = new(PodSecurity)

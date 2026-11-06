@@ -600,6 +600,11 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) (e
 	// A preview writes nothing to any cluster, and that is enforced, not
 	// just intended: see cluster.WithWritesFenced and deploy_write_fence.go.
 	ctx = fenceDeployPreview(ctx, f)
+	// Under --json stdout carries the one document and nothing else, whatever
+	// a phase or a subprocess prints on the way to it.
+	if f.jsonOut {
+		defer reserveStdoutForJSON()()
+	}
 	if err := refuseDeployRenderOptions(envName, f.renderOptions); err != nil {
 		return err
 	}
@@ -4690,7 +4695,7 @@ func runDeployPreflight(ctx context.Context, in deployPreflightInput) error {
 		Manifests: manifests,
 		Namespace: in.namespace,
 		Images:    cluster.RegistryImageChecker{},
-		ImageArch: cluster.DockerImageArchChecker{},
+		ImageArch: cluster.RegistryImageArchChecker{},
 		// One recheck for a miss or an inconclusive lookup, a moment apart:
 		// a registry having a bad minute answers wrongly in bursts.
 		ImageRecheckDelay: 2 * time.Second,

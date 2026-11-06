@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -2731,61 +2730,9 @@ func kubectlDataKeys(ctx context.Context, kctx, namespace, kind, name string) (m
 	return keys, true, nil
 }
 
-// DockerImageArchChecker is the live ImageArchChecker: it reads an image's
-// advertised architecture(s) via `docker manifest inspect <ref>` against the
-// registry. It parses BOTH shapes the command can return:
-//
-//   - a manifest LIST / OCI index — `.manifests[].platform.architecture`,
-//     one entry per platform (a multi-arch image). "unknown" attestation
-//     entries (buildx provenance/SBOM) are dropped — they aren't runnable.
-//   - a single image manifest — the top-level `.architecture` field.
-//
-// A lookup that can't reach the registry (transport failure, image absent,
-// daemon down) is returned as ErrImageCheckInconclusive so the gate WARNS
-// rather than blocking — a mismatch can only be asserted on a known arch.
-//
-// DockerConfigDir mirrors RegistryImageChecker: set it (via WithDockerConfigDir)
-// to read the manifest with the CLUSTER's pull creds when the local daemon
-// lacks access to a private registry.
-type DockerImageArchChecker struct {
-	// DockerConfigDir overrides DOCKER_CONFIG for the docker invocation. Empty
-	// inherits the process environment.
-	DockerConfigDir string
-}
-
-// WithDockerConfigDir returns a copy that runs docker with DOCKER_CONFIG=dir.
-// Implements CredentialedImageArchChecker.
-func (c DockerImageArchChecker) WithDockerConfigDir(dir string) ImageArchChecker {
-	c.DockerConfigDir = dir
-	return c
-}
-
-// ImageArchitectures returns the distinct architectures ref advertises. See
-// the type doc for the two manifest shapes handled.
-func (c DockerImageArchChecker) ImageArchitectures(ctx context.Context, ref string) ([]string, error) {
-	args := []string{"manifest", "inspect"}
-	if registryRefIsInsecure(ref) {
-		args = append(args, "--insecure")
-	}
-	args = append(args, ref)
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	withDockerConfig(cmd, c.DockerConfigDir)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		reason := strings.TrimSpace(string(out))
-		if reason == "" {
-			reason = err.Error()
-		}
-		// Any non-zero exit leaves the arch UNKNOWN — existence is the
-		// existence check's job; here we only fail open so the gate warns.
-		return nil, fmt.Errorf("%w: %s", ErrImageCheckInconclusive, reason)
-	}
-	return parseManifestArchitectures(out)
-}
-
 // parseManifestArchitectures extracts the distinct architectures from a
-// `docker manifest inspect` JSON blob — a manifest list (`.manifests[].
-// platform.architecture`) or a single image (`.architecture`). "unknown"
+// manifest list or OCI index (`.manifests[].platform.architecture`), or a
+// document carrying a top-level `.architecture`. "unknown"
 // platforms (buildx attestation entries) are dropped. Order is stable
 // (sorted) so the report message is deterministic.
 func parseManifestArchitectures(raw []byte) ([]string, error) {
@@ -2848,34 +2795,12 @@ func LocalImageRef(ref string) bool {
 	return registryRefIsInsecure(ref)
 }
 
-// withDockerConfig points a docker *exec.Cmd at a DOCKER_CONFIG dir when dir
-// is non-empty, so the lookup authenticates with the credentials materialised
-// there (the cluster's pull creds) instead of the ambient docker login. A
-// no-op for an empty dir (inherit the process environment). It seeds Env from
-// os.Environ() once so the docker binary still finds PATH/HOME etc.
-func withDockerConfig(cmd *exec.Cmd, dir string) {
-	if strings.TrimSpace(dir) == "" {
-		return
-	}
-	env := os.Environ()
-	// Drop any inherited DOCKER_CONFIG so ours is authoritative, then set it.
-	filtered := env[:0:0]
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "DOCKER_CONFIG=") {
-			continue
-		}
-		filtered = append(filtered, kv)
-	}
-	filtered = append(filtered, "DOCKER_CONFIG="+dir)
-	cmd.Env = filtered
-}
-
 // KubectlPullCredsResolver is the live PullCredsResolver: it reads the
 // `.dockerconfigjson` of each named imagePullSecret from the TARGET cluster
 // (via `kubectl --context <ctx> get secret <name> -n <ns> -o json`) and MERGES
 // their `auths` maps into a single docker config.json document. That document
 // is what the image-verification path materialises into a temp DOCKER_CONFIG so
-// `docker manifest inspect` authenticates with the cluster's pull creds.
+// the registry checkers authenticate with the cluster's pull creds.
 //
 // A secret that is absent, isn't a dockerconfigjson Secret, or has an
 // unparseable blob is SKIPPED (best-effort) rather than failing the resolve —

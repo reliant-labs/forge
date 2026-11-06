@@ -236,11 +236,14 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 		if unstampableRenderOfOurs(relPath, ours) {
 			return ours, true, keep, nil
 		}
-		// The service catalog is not settled here: it is disownable, and a
-		// merge driver cannot see the other side's ownership record (git
-		// runs it before MERGE_HEAD exists), so a line both sides changed
-		// stays a conflict.
-		// Its disjoint changes merge as lines, which is the common case.
+		// An output nothing certifies (the service catalog) merges its
+		// disjoint changes as lines. A line both sides changed is two of
+		// forge's projections disagreeing, so it is regenerated, not merged:
+		// keep ours, unless a side disowned the file and its content may be
+		// a person's (merge_generated_sides.go).
+		if !clean && uncertifiedConflictKeepsOurs(ctx, relPath, ours, theirs) {
+			return ours, true, regenerateNote, nil
+		}
 	case !clean && checksums.Verify(ours) == checksums.Pristine && checksums.Verify(theirs) == checksums.Pristine:
 		// Two pristine renders still conflicting: both are pure functions
 		// of inputs that merged, so the conflict holds no human content.

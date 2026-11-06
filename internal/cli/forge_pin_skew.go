@@ -173,7 +173,38 @@ func pinSkew(pin, binary, binaryCommit string) (skewed, ok bool) {
 	if want == "" || have == "" {
 		return false, false
 	}
-	return want != have, true
+	if want == have {
+		return false, true
+	}
+	// A tag and a pseudo-version can name one commit (go collapses a commit
+	// pin to the tag on it): resolve the tag side through the module cache
+	// before calling them different forges.
+	if wc, hc := identityCommit(pin, want), identityCommit(binary, have); len(wc) >= 12 && len(hc) >= 12 {
+		return !strings.HasPrefix(wc, hc[:12]) && !strings.HasPrefix(hc, wc[:12]), true
+	}
+	return true, true
+}
+
+// identityCommit is the commit behind forgeIdentity's answer id for version
+// v: id itself when it is already a commit, else the commit the module cache
+// recorded for the tag (forgecompat.VersionCommit).
+func identityCommit(v, id string) string {
+	if pseudoCommitRE.MatchString(strings.TrimSpace(v)) || isHexCommit(id) {
+		return id
+	}
+	return forgecompat.VersionCommit(id)
+}
+
+func isHexCommit(s string) bool {
+	if len(s) < 12 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // pinSkewFor reports the pin and the running binary's version when they are

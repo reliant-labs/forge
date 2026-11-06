@@ -260,11 +260,15 @@ func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
 	// deploy/kcl tree makes the kind derive as "service", so without this the
 	// upgrade wrote a Connect-server skeleton (cmd/, pkg/middleware,
 	// internal/metrics, Dockerfile, buf.yaml, Taskfile, docker-compose) into
-	// the site, and lint then failed on a buf module with no protos. Only its
-	// frontends' managed files apply — the same set `project new --kind site`
-	// would have written.
+	// the site, and lint then failed on a buf module with no protos. Nor does
+	// the app frontend's lint config apply: a site's frontend is the site
+	// starter or an adopted app (WriteSiteStarter / WriteSiteScaffold), never
+	// the app frontend tree, and neither `project new --kind site` nor
+	// `forge generate` writes eslint.config.mjs into it — so upgrade adding
+	// one would not converge, and it lints against plugins the site never
+	// installed.
 	if cfg != nil && !cfg.HasGoModule() {
-		return frontendManagedFiles(cfg)
+		return nil
 	}
 	binary := config.ProjectBinaryPerService
 	kind := config.ProjectKindService

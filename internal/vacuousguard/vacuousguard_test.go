@@ -229,6 +229,8 @@ func TestRulesFireOnPlantedDefects(t *testing.T) {
 
 	want := []string{
 		"dead-skip|TestPermanentlySkipped",
+		"dead-skip|TestSkipAfterEarlyReturn",
+		"dead-skip|TestSkipAfterUnreachableReturn",
 		"dead-skip|TestSkipOnRepoFixture",
 		"silent-capability|TestCapabilityBailsMidTest",
 		"silent-capability|TestCapabilityGuardedLint",
@@ -258,6 +260,7 @@ func TestLegitimateShapesAreNeverFlagged(t *testing.T) {
 		{"TestSkipOnMissingToolchain", "no checkout can supply kcl"},
 		{"TestSkipOnShort", "testing.Short() is the caller's explicit choice"},
 		{"TestSkipOnPlatform", "runtime.GOOS is a fact about the machine"},
+		{"pickFreePortOrSkip", "the skip is a search's fallback; finding one returns before it"},
 		{"TestSkipOnSiblingCheckout", "the path comes from $HOME / an env var, so it is outside this repo"},
 		{"TestSkipOnMissingHome", "a container may genuinely have no home directory"},
 		{"TestProbeThenSkip", "the tool probe SKIPS, so the machine's gap is reported instead of swallowed"},

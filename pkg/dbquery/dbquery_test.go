@@ -499,15 +499,20 @@ func TestRun_CellTruncation(t *testing.T) {
 
 // --- explain ---------------------------------------------------------------
 
-func TestRun_ExplainAnalyzeOnlyOverSelect(t *testing.T) {
+func TestRun_ExplainAnalyzeOnlyOverReads(t *testing.T) {
 	conn := newConn(t)
-	if _, err := Run(context.Background(), conn, `EXPLAIN ANALYZE SELECT * FROM people`, Options{}); err != nil {
-		t.Fatalf("EXPLAIN ANALYZE SELECT: %v", err)
+	for _, sql := range []string{
+		`EXPLAIN ANALYZE SELECT * FROM people`,
+		`EXPLAIN (ANALYZE, BUFFERS) WITH p AS (SELECT * FROM people) SELECT * FROM p`,
+		`EXPLAIN (ANALYZE) TABLE people`,
+	} {
+		if _, err := Run(context.Background(), conn, sql, Options{}); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
 	}
 	for _, sql := range []string{
 		`EXPLAIN ANALYZE INSERT INTO counted VALUES (1)`,
 		`EXPLAIN ANALYZE WITH d AS (DELETE FROM people RETURNING id) SELECT * FROM d`,
-		`EXPLAIN (ANALYZE) TABLE people`,
 	} {
 		_, err := Run(context.Background(), conn, sql, Options{})
 		wantKind(t, err, KindRefused)

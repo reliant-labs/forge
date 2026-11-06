@@ -238,26 +238,9 @@ func Spec(in Input) (identity.Spec, []string, error) {
 	if e := id.Email; e != nil {
 		fromName, replyTo, fromLocal = e.FromName, e.ReplyTo, e.FromLocal
 	}
-	switch s := id.SMTP; {
-	case s != nil:
-		pw, _ := secret(in, s.PasswordSecret)
-		if pw == "" {
-			warnings = append(warnings, fmt.Sprintf("smtp: secret %s is not in the env's store, so the relay is configured without a password", s.PasswordSecret))
-		}
-		spec.SMTP = &identity.SMTP{
-			Host: fmt.Sprintf("%s:%d", s.Host, s.Port), User: s.User, Password: pw,
-			SenderAddress: s.Sender, SenderName: fromName, ReplyTo: replyTo,
-		}
-	case in.MailpitPort > 0:
-		// Mailpit on loopback: plain SMTP, no credentials. The sender is a
-		// name under .localhost, which no real mailbox can own.
-		spec.SMTP = &identity.SMTP{
-			Host:          fmt.Sprintf("127.0.0.1:%d", in.MailpitPort),
-			SenderAddress: firstNonEmpty(fromLocal, "no-reply") + "@" + mailDomain(spec.Project.Name),
-			SenderName:    firstNonEmpty(fromName, in.Project),
-			ReplyTo:       replyTo,
-		}
-	}
+	smtp, smtpWarnings := smtpSpec(in, id, spec.Project.Name, fromName, replyTo, fromLocal)
+	spec.SMTP = smtp
+	warnings = append(warnings, smtpWarnings...)
 	mailAvailable := spec.SMTP != nil
 
 	// The sign-in origin the invitation and sign-in links land on.
@@ -370,6 +353,32 @@ func applicationsSpec(in Input, id *release.ShapeIdentity) (apps []identity.Appl
 		apps = append(apps, app)
 	}
 	return apps, errs
+}
+
+// smtpSpec is the dev IdP's mail relay: the declaration's own smtp, else the
+// env's host Mailpit, else none.
+func smtpSpec(in Input, id *release.ShapeIdentity, project, fromName, replyTo, fromLocal string) (smtp *identity.SMTP, warnings []string) {
+	switch s := id.SMTP; {
+	case s != nil:
+		pw, _ := secret(in, s.PasswordSecret)
+		if pw == "" {
+			warnings = append(warnings, fmt.Sprintf("smtp: secret %s is not in the env's store, so the relay is configured without a password", s.PasswordSecret))
+		}
+		smtp = &identity.SMTP{
+			Host: fmt.Sprintf("%s:%d", s.Host, s.Port), User: s.User, Password: pw,
+			SenderAddress: s.Sender, SenderName: fromName, ReplyTo: replyTo,
+		}
+	case in.MailpitPort > 0:
+		// Mailpit on loopback: plain SMTP, no credentials. The sender is a
+		// name under .localhost, which no real mailbox can own.
+		smtp = &identity.SMTP{
+			Host:          fmt.Sprintf("127.0.0.1:%d", in.MailpitPort),
+			SenderAddress: firstNonEmpty(fromLocal, "no-reply") + "@" + mailDomain(project),
+			SenderName:    firstNonEmpty(fromName, in.Project),
+			ReplyTo:       replyTo,
+		}
+	}
+	return smtp, warnings
 }
 
 // socialIDP resolves one social provider's client from the env's store. A

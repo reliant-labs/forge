@@ -40,12 +40,12 @@ func TestTelemetryConfigIsSameOriginAndSecretFree(t *testing.T) {
 		"nextjs": {
 			tmpl:       "nextjs/src/lib/otel_gen.ts.tmpl",
 			devDefault: "`${BASE_PATH}/_otel`",
-			replay:     `process.env.NEXT_PUBLIC_OTEL_REPLAY === "true"`,
+			replay:     `(text(cfg.OTEL_REPLAY) || process.env.NEXT_PUBLIC_OTEL_REPLAY) === "true"`,
 		},
 		"vite-spa": {
 			tmpl:       "vite-spa/src/lib/otel_gen.ts.tmpl",
 			devDefault: `"/_otel"`,
-			replay:     `import.meta.env.VITE_OTEL_REPLAY === "true"`,
+			replay:     `(text(cfg.OTEL_REPLAY) || (import.meta.env.VITE_OTEL_REPLAY as string | undefined)) ===`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

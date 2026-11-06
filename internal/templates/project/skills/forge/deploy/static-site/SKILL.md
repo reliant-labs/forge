@@ -294,11 +294,16 @@ file itself is never served.
 - The platform always sends `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: strict-origin-when-cross-origin` (yours replaces it) and
   `Strict-Transport-Security: max-age=31536000` (`includeSubDomains` is a
-  per-domain flag: `deploy/domains`).
+  per-domain flag: `deploy/domains`). It sends NO anti-framing header:
+  framing is the site's policy. A scaffolded app frontend (Next.js, Vite)
+  ships `public/_headers` with `frame-ancestors 'self'` and
+  `X-Frame-Options: SAMEORIGIN`; a site created before that, or a site
+  without the file, can be framed by any origin until it declares one.
 - Refused, and logged: the headers the platform owns (`Set-Cookie`,
   `Cache-Control`, `Content-Type`, `Strict-Transport-Security`,
-  `X-Content-Type-Options`, `Access-Control-Allow-Credentials`, framing and
-  hop-by-hop headers), invalid names or values, and anything past the caps —
+  `X-Content-Type-Options`, `Access-Control-Allow-Credentials`, HTTP
+  message-framing headers such as `Content-Length` and `Transfer-Encoding`,
+  and hop-by-hop headers), invalid names or values, and anything past the caps —
   100 rules, 50 headers per rule, 4 KiB per value, 64 KiB per file, 16 KiB of
   file headers per response. A bad line is skipped; the rest still apply.
 - On an unclaimed preview, CORS stays the platform's (`*`) and the

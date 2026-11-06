@@ -264,3 +264,49 @@ func TestObsTargetIsNotTrustedPastItsAgeOrWithAPathDependency(t *testing.T) {
 		t.Error("kclModHasPathDependency misreads kcl.mod")
 	}
 }
+
+// The release lookup `forge obs trace` and `forge db query` stamp onto their
+// answer reads the env's ledger through the stamped target: a cold process
+// renders once, and a stamped one not at all. Red before: openReleasesBackend
+// rendered twice per lookup (ledger selection, then the control plane),
+// inside a 10s budget a large env's render alone could exceed.
+func TestReleasesBackendReadsTheStampedTarget(t *testing.T) {
+	srv, _ := obsCloudForbidden(t)
+	obsTargetProject(t, srv.URL)
+	fresh := func() {
+		obsTargetMu.Lock()
+		clear(obsTargetLast)
+		obsTargetMu.Unlock()
+	}
+	fresh()
+	renders := stubObsRender(t, srv.URL, nil)
+
+	b, err := openReleasesBackend(context.Background(), "prod")
+	if err != nil {
+		t.Fatalf("openReleasesBackend: %v", err)
+	}
+	if b.Name != backendCloud || b.Ledger != srv.URL {
+		t.Fatalf("want the declared control plane's ledger, got %s at %q", b.Name, b.Ledger)
+	}
+	if n := renders.Load(); n != 1 {
+		t.Fatalf("a cold lookup rendered %d times, want 1", n)
+	}
+
+	fresh() // a new process: only the stamp on disk remains
+	if _, err := openReleasesBackend(context.Background(), "prod"); err != nil {
+		t.Fatalf("openReleasesBackend: %v", err)
+	}
+	if n := renders.Load(); n != 1 {
+		t.Errorf("a stamped lookup rendered again (%d renders)", n)
+	}
+
+	// FORGE_LEDGER=machine still overrides the declaration.
+	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+	b, err = openReleasesBackend(context.Background(), "prod")
+	if err != nil {
+		t.Fatalf("openReleasesBackend under %s=machine: %v", ledgerSelectionEnv, err)
+	}
+	if b.Name != backendLocal {
+		t.Errorf("%s=machine: want the machine ledger, got %s", ledgerSelectionEnv, b.Name)
+	}
+}

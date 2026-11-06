@@ -170,3 +170,57 @@ service TelemetryService {
 message ImpossibleBytes {
   bytes blob = 1 [(buf.validate.field).bytes = {min_len: 9, max_len: 3}];
 }
+
+// Echo against rules: the request carries values the response's rules would
+// reject (an echoed value is a value the engine emits, so the rules apply to
+// it), and selects a oneof case the response must keep.
+message EchoProbeRequest {
+  string tier = 1;
+  string sku = 2;
+  int32 bounded = 3;
+  Region region = 4;
+  string code = 5;
+  oneof target {
+    string host = 6;
+    int32 http_status = 7;
+    string unknown_case = 8;
+  }
+}
+
+message EchoProbeResponse {
+  string tier = 1 [(buf.validate.field).string = {in: ["free", "pro", "enterprise"]}];
+  string sku = 2 [(buf.validate.field).string.pattern = "^[A-Z]{3}-[0-9]{4}$"];
+  int32 bounded = 3 [(buf.validate.field).int32 = {gt: 1000, lt: 1010}];
+  Region region = 4 [(buf.validate.field).enum = {in: [2, 3]}];
+  string code = 5 [(buf.validate.field).string.const = "fixed"];
+  oneof target {
+    string host = 6 [(buf.validate.field).string.hostname = true];
+    int32 http_status = 7 [(buf.validate.field).int32 = {gte: 100, lte: 599}];
+    string other = 9;
+  }
+}
+
+// Patterns the engine's cheap generator cannot build: a value that satisfies
+// the field or an error naming it, never a value the server would reject.
+message PatternProbe {
+  // Satisfiable, but only by retrying: a pattern up to 6 long under max_len 3.
+  string short_word = 1 [(buf.validate.field).string = {pattern: "^[a-z]{1,6}$", max_len: 3}];
+  // RE2's leading case-insensitive flag, which JavaScript spells as a flag.
+  string ci = 2 [(buf.validate.field).string.pattern = "(?i)^ab[0-9]$"];
+  // Word boundaries: zero-width, so the generator skips them and the result is checked.
+  string boundary = 3 [(buf.validate.field).string.pattern = "^\\bfoo\\b$"];
+}
+
+message UnsatisfiablePattern {
+  string word = 1 [(buf.validate.field).string = {pattern: "^[a-z]{5}$", max_len: 3}];
+}
+
+message UncheapPattern {
+  string word = 1 [(buf.validate.field).string.pattern = "^\\p{Lu}{2}$"];
+}
+
+service ProbeService {
+  rpc EchoProbe(EchoProbeRequest) returns (EchoProbeResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}

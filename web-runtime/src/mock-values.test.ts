@@ -33,7 +33,12 @@ import {
 } from "./testdata/mockgen/gen/acme/v1/billing_pb.js";
 import {
   GetTraceResponseSchema,
+  EchoProbeResponseSchema,
   ImpossibleBytesSchema,
+  PatternProbeSchema,
+  ProbeService,
+  UncheapPatternSchema,
+  UnsatisfiablePatternSchema,
   ListTracesRequestSchema,
   ListTracesResponseSchema,
   Region,
@@ -365,6 +370,64 @@ describe("determinism", () => {
     );
     const billing = serviceDefaults(BillingService, opts);
     expect(billing.getInvoice({ id: "inv-7" }).invoice!.id).toBe("inv-7");
+  });
+});
+
+describe("echo meets the response's rules", () => {
+  const probe = serviceDefaults(ProbeService, opts);
+
+  it("echoes a request value only when the response field's rules accept it", () => {
+    const ok = probe.echoProbe({ tier: "pro", sku: "ABC-1234", bounded: 1005, region: Region.EU });
+    expect(ok).toMatchObject({ tier: "pro", sku: "ABC-1234", bounded: 1005, region: Region.EU });
+
+    const bad = probe.echoProbe({ tier: "platinum", sku: "nope", bounded: 7, region: Region.US, code: "other" });
+    expect(["free", "pro", "enterprise"]).toContain(bad.tier);
+    expect(bad.sku).toMatch(/^[A-Z]{3}-[0-9]{4}$/);
+    expect(bad.bounded).toBeGreaterThan(1000);
+    expect(bad.bounded).toBeLessThan(1010);
+    expect([Region.EU, Region.APAC]).toContain(bad.region);
+    expect(bad.code).toBe("fixed");
+  });
+
+  it("keeps the oneof case the request selected, with its value when the rules allow", () => {
+    const host = probe.echoProbe({ target: { case: "host", value: "api.example.com" } });
+    expect(host.target).toEqual({ case: "host", value: "api.example.com" });
+
+    const status = probe.echoProbe({ target: { case: "httpStatus", value: 9999 } });
+    expect(status.target.case).toBe("httpStatus");
+    const code = status.target.value as number;
+    expect(code).toBeGreaterThanOrEqual(100);
+    expect(code).toBeLessThanOrEqual(599);
+
+    const badHost = probe.echoProbe({ target: { case: "host", value: "not a host!" } });
+    expect(badHost.target.case).toBe("host");
+    expect(badHost.target.value).toMatch(/^[a-z0-9.-]+$/);
+  });
+
+  it("chooses by seed when the requested case is not one of the response's members", () => {
+    const res = probe.echoProbe({ target: { case: "unknownCase", value: "x" } });
+    expect(["host", "httpStatus", "other"]).toContain(res.target.case);
+    expect(probe.echoProbe({ target: { case: "unknownCase", value: "x" } })).toEqual(res);
+  });
+});
+
+describe("patterns the cheap generator cannot build", () => {
+  it("meets a pattern and max_len together, a leading (?i), and word boundaries", () => {
+    const v = mockValue(PatternProbeSchema, opts);
+    expect(v.shortWord).toMatch(/^[a-z]{1,3}$/);
+    expect(v.ci).toMatch(/^ab[0-9]$/i);
+    expect(v.boundary).toBe("foo");
+    expect(mockValue(PatternProbeSchema, opts)).toEqual(v);
+  });
+
+  it("refuses rules no value meets, naming the field", () => {
+    expect(() => mockValue(UnsatisfiablePatternSchema, opts)).toThrow(
+      /sample\.v1\.UnsatisfiablePattern\.word has string rules no generated value satisfies \(pattern "\^\[a-z\]\{5\}\$", max_len 3\)/,
+    );
+  });
+
+  it("refuses a pattern it cannot build rather than emit a value that does not match", () => {
+    expect(() => mockValue(UncheapPatternSchema, opts)).toThrow(/sample\.v1\.UncheapPattern\.word has string rules/);
   });
 });
 

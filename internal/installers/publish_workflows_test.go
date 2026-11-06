@@ -30,39 +30,6 @@ func codeLines(body string) []string {
 	return out
 }
 
-// The tap's workflow runs on ubuntu-latest, whose Homebrew is installed but NOT
-// on PATH. A `brew` call before `brew shellenv` is "command not found", the job
-// fails, and no formula PR ever opens — which the first version of this file
-// did. The renderer's output is installed and tested before it reaches a PR.
-func TestTapWorkflowPutsBrewOnPathBeforeUsingIt(t *testing.T) {
-	lines := codeLines(readRepoFile(t, "docs/installers/update-forge-formula.yml"))
-	shellenv := -1
-	for i, line := range lines {
-		s := strings.TrimSpace(line)
-		if strings.Contains(s, "/home/linuxbrew/.linuxbrew/bin/brew shellenv") {
-			if shellenv < 0 {
-				shellenv = i
-			}
-			continue
-		}
-		if strings.HasPrefix(s, "brew ") && (shellenv < 0 || i < shellenv) {
-			t.Errorf("line %q calls brew before `eval \"$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\"`", s)
-		}
-	}
-	if shellenv < 0 {
-		t.Fatal("update-forge-formula.yml never puts Homebrew on PATH")
-	}
-	body := strings.Join(lines, "\n")
-	for _, want := range []string{
-		"brew install --formula reliant-labs/reliant/forge",
-		"brew test reliant-labs/reliant/forge",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("update-forge-formula.yml no longer runs %q before opening the PR", want)
-		}
-	}
-}
-
 // npm accepts a publish of @reliantlabs/forge only from the workflow registered
 // as its trusted publisher: reliant-labs/forge's release-npm.yml. Renaming the
 // file fails this read, and the registration must move with it

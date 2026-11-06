@@ -13,10 +13,13 @@
 # stanza that repeats it ("version ... is redundant with version scanned from
 # URL"). The tap's workflow audits every formula it renders.
 #
-# The tap (reliant-labs/homebrew-reliant) runs this from its
-# update-forge-formula.yml, triggered by release-forge.sh's dispatch. It lives
-# here, beside build-release-assets.sh, because the formula names those
-# archives; changing one means changing the other, in one pull request.
+# The tap (reliant-labs/homebrew-reliant) runs this, fetched from the release's
+# tag, from its update-forge-formula.yml (triggered by release-forge.sh's
+# dispatch, and every 30 minutes), after verifying the release's signature. It
+# lives here, beside build-release-assets.sh, because the formula names those
+# archives; changing one means changing the other, in one pull request. The tap
+# re-checks every url/sha256 pair this prints against the signed checksums.txt,
+# so keep each `url` line directly followed by its `sha256` line.
 set -euo pipefail
 
 [ $# -eq 2 ] || {

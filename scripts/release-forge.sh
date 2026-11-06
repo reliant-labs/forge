@@ -914,9 +914,11 @@ else
 fi
 
 # ── 9c. Homebrew ────────────────────────────────────────────────────
-# The tap's update-forge-formula.yml regenerates Formula/forge.rb from this
-# release's checksums.txt and opens a PR. Best effort: the release is already
-# out, and the tap can be dispatched by hand (docs/releasing.md, "Installers").
+# The tap's update-forge-formula.yml verifies this release against its
+# signature, renders Formula/forge.rb from its checksums.txt, installs and tests
+# it, and pushes it to the tap's main with no human step. Best effort: the
+# release is already out, and the tap's own 30-minute schedule publishes any
+# release a lost dispatch missed (docs/releasing.md, "Installers").
 case "$VERSION" in
   *-*) ;; # a prerelease is not offered through brew
   *)

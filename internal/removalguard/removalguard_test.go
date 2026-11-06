@@ -1698,6 +1698,18 @@ var removals = []removal{
 				},
 			},
 			{
+				Name: "google.protobuf.Value's oneof case in the service mock generator",
+				Reason: "web-runtime/src/mock-values.ts (#1874) builds a default for the well-known " +
+					"types google.protobuf.Value and ListValue as protobuf-es messages, whose `kind` " +
+					"oneof selects a member by its generated case name: `{case: \"stringValue\", ...}`. " +
+					"The name is fixed by struct.proto and cannot be renamed.\n" +
+					"It is a wire identifier, unrelated to the seeder heuristic the pattern bans. Scoped " +
+					"to the `case: \"stringValue\"` spelling in that one file, so a `stringValue` helper " +
+					"landing there, or anywhere else, still fails.",
+				Token: regexp.MustCompile(`case:\s*"stringValue"`),
+				Paths: []string{"web-runtime/src/mock-values.ts"},
+			},
+			{
 				Name: "seedplan's DECLARED-type date check",
 				Reason: "pkg/seedplan/synth.go has an `isDateColumn(col)` that reads col.DeclType and " +
 					"reports whether the column was DECLARED `DATE` — the one time type with no " +
@@ -2694,6 +2706,9 @@ func TestExternalProtocolAndReplacementAllowancesStayNarrow(t *testing.T) {
 		{"the raw-curl cut-release CI job and `forge reconcile`", "docs/design/per-workload-placement.md", "DEPLOY_TOKEN", true},
 		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "stringValue", false},
 		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "integerLiteral", true},
+		{"the seeder's column-name domain heuristics", "web-runtime/src/mock-values.ts", `kind: { case: "stringValue", value: v }`, false},
+		{"the seeder's column-name domain heuristics", "web-runtime/src/mock-values.ts", "function stringValue(col: string) {", true},
+		{"the seeder's column-name domain heuristics", "web-runtime/src/other.ts", `kind: { case: "stringValue", value: v }`, true},
 		{"the generated per-API MCP manifest and its bridge", "internal/cli/mcp.go", "newMCPCmd forge mcp", false},
 		{"the generated per-API MCP manifest and its bridge", "internal/cli/mcp.go", "GenerateMCPManifest gen/mcp/manifest.json FORGE_MCP_TOKEN newMCPServeCmd", true},
 		{"the generated per-API MCP manifest and its bridge", "npm/smithery.yaml", "Smithery listing for `forge mcp`", false},

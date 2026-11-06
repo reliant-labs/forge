@@ -300,7 +300,13 @@ func entityFromStruct(goName string, st *ast.StructType) (dbEntity, bool) {
 		parts := strings.Split(bunTag, ",")
 		for _, p := range parts {
 			if strings.HasPrefix(p, "table:") {
+				// A table outside public is tagged schema-qualified
+				// (`table:controlplane.items`); entities are keyed by
+				// the bare table name.
 				ent.table = strings.TrimPrefix(p, "table:")
+				if i := strings.LastIndexByte(ent.table, '.'); i >= 0 {
+					ent.table = ent.table[i+1:]
+				}
 				found = true
 			}
 		}

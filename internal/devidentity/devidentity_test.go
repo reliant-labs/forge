@@ -113,21 +113,6 @@ func TestSpec_RefusesWhatItCannotDerive(t *testing.T) {
 			t.Fatalf("err = %v, want it to name the application", err)
 		}
 	})
-	t.Run("missing seed password", func(t *testing.T) {
-		in := baseInput()
-		in.Secret = func(string) (string, bool) { return "", false }
-		_, _, err := Spec(in)
-		if err == nil || !strings.Contains(err.Error(), "forge secret set --env <env> DEV_PASSWORD") {
-			t.Fatalf("err = %v, want the command that fixes it", err)
-		}
-	})
-	t.Run("seed user without a password secret", func(t *testing.T) {
-		in := baseInput()
-		in.Identity.SeedUsers[0].PasswordSecret = ""
-		if _, _, err := Spec(in); err == nil {
-			t.Fatal("a seed user with no password source must be refused")
-		}
-	})
 	t.Run("hosted identity", func(t *testing.T) {
 		in := baseInput()
 		in.Identity.Runtime = release.IdentityRuntimeHosted
@@ -142,6 +127,222 @@ func TestSpec_RefusesWhatItCannotDerive(t *testing.T) {
 			t.Fatal("expected an error")
 		}
 	})
+}
+
+// A seed user that cannot be created is a warning, never the end of the pass:
+// the application, broker and machine users still converge, because the app's
+// sign-in routes are mounted from them.
+func TestSpec_SeedUserFailureIsNotFatal(t *testing.T) {
+	t.Run("missing seed password", func(t *testing.T) {
+		in := baseInput()
+		in.Secret = func(string) (string, bool) { return "", false }
+		spec, warnings, err := Spec(in)
+		if err != nil {
+			t.Fatalf("err = %v: one seed user must not fail the whole identity", err)
+		}
+		if len(spec.SeedUsers) != 0 {
+			t.Errorf("seed users = %+v, want the one without a password left out", spec.SeedUsers)
+		}
+		if len(spec.Applications) != 1 || len(spec.MachineUsers) != 1 {
+			t.Errorf("applications = %+v, machine users = %+v: the rest must still converge", spec.Applications, spec.MachineUsers)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "dev@acme.test") ||
+			!strings.Contains(warnings[0], "forge secret set --env <env> DEV_PASSWORD") {
+			t.Fatalf("warnings = %v, want one naming the seed user and the command that fixes it", warnings)
+		}
+	})
+	t.Run("seed user without a password secret", func(t *testing.T) {
+		in := baseInput()
+		in.Identity.SeedUsers[0].PasswordSecret = ""
+		spec, warnings, err := Spec(in)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if len(spec.SeedUsers) != 0 || len(spec.Applications) != 1 {
+			t.Errorf("seed users = %+v, applications = %+v", spec.SeedUsers, spec.Applications)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "password_secret") {
+			t.Fatalf("warnings = %v, want one asking for password_secret", warnings)
+		}
+	})
+}
+
+func storeInput(t *testing.T) Input {
+	t.Helper()
+	in := baseInput()
+	in.StorePath = filepath.Join(t.TempDir(), "secrets", "dev.yaml")
+	in.Secret = func(string) (string, bool) { return "", false }
+	return in
+}
+
+func TestEnsureSeedPasswords_GeneratesIntoTheStore(t *testing.T) {
+	in := storeInput(t)
+	if err := os.MkdirAll(filepath.Dir(in.StorePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The scaffolded store: a header, an empty slot, a developer's value.
+	if err := os.WriteFile(in.StorePath, []byte("# keep me\nDEV_PASSWORD: \"\"\nSTRIPE_KEY: sk\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in.Identity.SeedUsers = append(in.Identity.SeedUsers,
+		release.ShapeIdentitySeedUser{Email: "ops@acme.test", PasswordSecret: "DEV_PASSWORD"})
+
+	got, made, warnings := ensureSeedPasswords(in)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	if len(made) != 2 || made[0] != (SeedPassword{Email: "dev@acme.test", Secret: "DEV_PASSWORD"}) || made[1].Email != "ops@acme.test" {
+		t.Fatalf("made = %+v, want both seed users reported against DEV_PASSWORD", made)
+	}
+	stored, err := secretFile{Path: in.StorePath}.get("DEV_PASSWORD")
+	if err != nil || stored == "" {
+		t.Fatalf("store holds %q, err %v", stored, err)
+	}
+	if !policyCompliant(stored) {
+		t.Errorf("generated password %q does not meet the default complexity policy", stored)
+	}
+	raw, _ := os.ReadFile(in.StorePath)
+	if !strings.Contains(string(raw), "# keep me") || !strings.Contains(string(raw), "STRIPE_KEY: sk") {
+		t.Errorf("the store lost its comment or another key:\n%s", raw)
+	}
+
+	spec, warnings, err := Spec(got)
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("spec err %v warnings %v", err, warnings)
+	}
+	if len(spec.SeedUsers) != 2 || spec.SeedUsers[0].Password != stored || spec.SeedUsers[1].Password != stored {
+		t.Fatalf("seed users = %+v: both must get the generated password", spec.SeedUsers)
+	}
+
+	// The next pass resolves it from the store and generates nothing.
+	again := storeInput(t)
+	again.StorePath = in.StorePath
+	again.Secret = func(n string) (string, bool) {
+		v, _ := secretFile{Path: in.StorePath}.get(n)
+		return v, v != ""
+	}
+	if _, made, _ := ensureSeedPasswords(again); len(made) != 0 {
+		t.Fatalf("second pass generated %+v", made)
+	}
+	if v, _ := (secretFile{Path: in.StorePath}).get("DEV_PASSWORD"); v != stored {
+		t.Fatal("second pass replaced the password")
+	}
+}
+
+// A store created 0644 (by hand, or by an older scaffold) is narrowed to 0600
+// BEFORE the generated password is written: atomicfile keeps the existing
+// mode for its temp file, so a chmod after the write would leave the password
+// world-readable until it ran.
+func TestEnsureSeedPasswords_RestrictsALooseStoreBeforeWriting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes do not apply on Windows")
+	}
+	in := storeInput(t)
+	if err := os.MkdirAll(filepath.Dir(in.StorePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(in.StorePath, []byte("DEV_PASSWORD: \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(in.StorePath, 0o644); err != nil { // umask-proof
+		t.Fatal(err)
+	}
+	var modeAtWrite os.FileMode
+	orig := writeStoreFile
+	t.Cleanup(func() { writeStoreFile = orig })
+	writeStoreFile = func(path string, data []byte, perm os.FileMode) error {
+		if fi, err := os.Stat(path); err == nil {
+			modeAtWrite = fi.Mode().Perm()
+		}
+		return orig(path, data, perm)
+	}
+
+	_, made, warnings := ensureSeedPasswords(in)
+	if len(warnings) != 0 || len(made) != 1 {
+		t.Fatalf("made %+v, warnings %v", made, warnings)
+	}
+	if modeAtWrite != 0o600 {
+		t.Errorf("store mode when the password was written = %v, want 0600", modeAtWrite)
+	}
+	if fi, _ := os.Stat(in.StorePath); fi.Mode().Perm() != 0o600 {
+		t.Errorf("store mode = %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestEnsureSeedPasswords_NeverReplacesAStoredValue(t *testing.T) {
+	in := storeInput(t)
+	// The resolver missed it (a stale snapshot), but the store has it.
+	if err := (secretFile{Path: in.StorePath}).set("DEV_PASSWORD", "Mine-Password1"); err != nil {
+		t.Fatal(err)
+	}
+	got, made, _ := ensureSeedPasswords(in)
+	if len(made) != 0 {
+		t.Fatalf("made = %+v", made)
+	}
+	if v, _ := got.Secret("DEV_PASSWORD"); v != "Mine-Password1" {
+		t.Fatalf("resolved %q, want the stored value", v)
+	}
+	if v, _ := (secretFile{Path: in.StorePath}).get("DEV_PASSWORD"); v != "Mine-Password1" {
+		t.Fatalf("store holds %q", v)
+	}
+}
+
+func TestEnsureSeedPasswords_OnlyForAHostRunIdentityWithALocalStore(t *testing.T) {
+	t.Run("hosted identity", func(t *testing.T) {
+		in := storeInput(t)
+		in.Identity.Runtime = release.IdentityRuntimeHosted
+		if _, made, _ := ensureSeedPasswords(in); len(made) != 0 {
+			t.Fatalf("generated %+v for a hosted identity", made)
+		}
+		if _, err := os.Stat(in.StorePath); err == nil {
+			t.Fatal("wrote a store for a hosted identity")
+		}
+	})
+	t.Run("no local store", func(t *testing.T) {
+		in := storeInput(t)
+		in.StorePath = ""
+		if _, made, _ := ensureSeedPasswords(in); len(made) != 0 {
+			t.Fatalf("generated %+v with no store to keep it in", made)
+		}
+	})
+	t.Run("already resolved", func(t *testing.T) {
+		in := storeInput(t)
+		in.Secret = baseInput().Secret
+		if _, made, _ := ensureSeedPasswords(in); len(made) != 0 {
+			t.Fatalf("generated %+v over a value the store already has", made)
+		}
+	})
+}
+
+func TestEnsureSeedPasswords_UnwritableStoreWarns(t *testing.T) {
+	in := storeInput(t)
+	if err := os.MkdirAll(in.StorePath, 0o700); err != nil { // a directory, not a file
+		t.Fatal(err)
+	}
+	got, made, warnings := ensureSeedPasswords(in)
+	if len(made) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0], "dev@acme.test") {
+		t.Fatalf("made %+v warnings %v, want one warning naming the seed user", made, warnings)
+	}
+	if _, _, err := Spec(got); err != nil {
+		t.Fatalf("spec err %v: the seed user is left out, not fatal", err)
+	}
+}
+
+func policyCompliant(pw string) bool {
+	var upper, lower, digit, symbol bool
+	for _, r := range pw {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		case r >= 'a' && r <= 'z':
+			lower = true
+		case r >= '0' && r <= '9':
+			digit = true
+		default:
+			symbol = true
+		}
+	}
+	return len(pw) >= 8 && len(pw) <= 72 && upper && lower && digit && symbol
 }
 
 func TestSpec_SMTPWithoutPasswordWarns(t *testing.T) {

@@ -82,6 +82,34 @@ func TestSecretEnsure_GeneratesMissingValue(t *testing.T) {
 	}
 }
 
+// The `forge generate` → `forge env up` path: generate scaffolds every
+// sensitive slot as "", and env up hands the provider's view of that store to
+// generateMissingSecrets. The empty slot must be minted, not taken as a value.
+func TestGenerateMissingSecrets_MintsScaffoldedEmptySlot(t *testing.T) {
+	e, store := generateFixture(t, &SecretProviderEntity{Type: "file", Generate: vaultSpec})
+	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store, []byte("RELIANT_VAULT_KEY: \"\"\nSTRIPE_KEY: \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prov, err := secretProviderFromEntities(e, filepath.Dir(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := generateMissingSecrets(e, store, prov.All(), &bytes.Buffer{})
+	if err != nil || len(got) != 1 || got[0] != "RELIANT_VAULT_KEY" {
+		t.Fatalf("generated %v, err %v; want [RELIANT_VAULT_KEY]", got, err)
+	}
+	vals, err := secrets.ReadSecretFile(store)
+	if err != nil || !strings.HasPrefix(vals["RELIANT_VAULT_KEY"], "v1:") {
+		t.Fatalf("store holds %q, err %v", vals["RELIANT_VAULT_KEY"], err)
+	}
+	if v, ok := vals["STRIPE_KEY"]; !ok || v != "" {
+		t.Fatalf("a non-generatable slot was touched: STRIPE_KEY = %q (present %v)", v, ok)
+	}
+}
+
 func TestSecretEnsure_NeverOverwritesAndIsIdempotent(t *testing.T) {
 	_, store := generateFixture(t, &SecretProviderEntity{Type: "file", Generate: vaultSpec})
 	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {

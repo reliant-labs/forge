@@ -183,7 +183,10 @@ func convergeHostIdentity(ctx context.Context, e *KCLEntities, projectDir string
 		return
 	}
 	for _, w := range res.Warnings {
-		fmt.Printf("[up] identity %s: %s\n", id.Name, w)
+		fmt.Printf("[up] identity %s: warning: %s\n", id.Name, w)
+	}
+	for _, p := range res.SeedPasswords {
+		fmt.Printf("[up] identity %s: seed user %s password: generated and stored as %s in %s\n", id.Name, p.Email, p.Secret, relTo(projectDir, in.StorePath))
 	}
 	for _, code := range res.Report.SignInCodes {
 		fmt.Printf("[up] identity %s: one-time sign-in code for %s: %s\n", id.Name, code.Email, code.Code)

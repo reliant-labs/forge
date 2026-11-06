@@ -192,6 +192,20 @@ The marker fails `forge lint --scaffolds` and `forge project audit` until you do
 so the gate cannot be satisfied by ignoring it — but satisfying it is one line,
 not ten.
 
+**Wrappers appended later follow their siblings.** Once you have replaced the
+placeholder, a CRUD RPC that `forge generate` appends to the same
+`handlers_crud.go` (a new rpc, or a hand-written method you deleted) reads its
+owner from the resolver the file's other wrappers on that column already call
+— `owner, err := tenancy.TenantID(ctx)`, not the placeholder. A read copies the
+reads and a write the writes, so a write behind `tenancy.RequireAdmin` does not
+leak onto a List. A column the file never scopes borrows the project's other
+`handlers_crud.go` files. When the siblings disagree, or read the owner from
+something forge cannot trace, the appended wrapper calls
+`FORGE_TODO_choose_<column>_resolver(ctx)`, declared nowhere, so the build
+fails on the line you must decide rather than shipping a guessed principal.
+`forge lint` (`forgeconv-crud-owner-resolver`) flags any wrapper whose owner
+source disagrees with its siblings'.
+
 One gap worth knowing: a **custom** RPC (`TransferOrder`, `ArchiveWorkspace`)
 delegates to no generated op, so there is no `Fetch`/`Filters`/`Persist` seam to
 wrap and forge offers no wrapper for it. Such an RPC is reported as a warning and

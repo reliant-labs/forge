@@ -72,6 +72,9 @@ import (
 //     which publishes its error's text unredacted
 //     (handler_connect_error.go). Warning; a project flips it to error
 //     once migrated.
+//   - forgeconv-crud-owner-resolver — an owner-scoping wrapper whose
+//     owner source disagrees with its siblings' (crud_owner_resolver.go).
+//     Error.
 //
 // Returns findings in deterministic order.
 //
@@ -141,6 +144,7 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 		result.Findings = append(result.Findings, lintHandlerErrorMappingFile(rel, fset, parsed)...)
 		result.Findings = append(result.Findings, lintUnwrappedDomainErrorFile(rel, fset, parsed)...)
 		result.Findings = append(result.Findings, lintHandlerConnectErrorFile(rel, fset, parsed)...)
+		result.Findings = append(result.Findings, lintCRUDOwnerResolverFile(rel, fset, parsed)...)
 	}
 
 	sort.SliceStable(result.Findings, func(i, j int) bool {

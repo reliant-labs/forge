@@ -346,3 +346,37 @@ func TestRenderKCLPure_LeavesPreexistingEditsAlone(t *testing.T) {
 			"agent's work:\n--- got ---\n%s\n--- want ---\n%s", got, inFlight)
 	}
 }
+
+// TestRestoreImpureKCLWrites_EditAfterTheReadIsNeverOverwritten is the
+// review's race: the guard read a named file's dirty bytes and kept a copy,
+// and before it reset the file to HEAD someone edited it again. That newer
+// edit is in neither the read nor the copy, so the reset must not happen.
+func TestRestoreImpureKCLWrites_EditAfterTheReadIsNeverOverwritten(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir, map[string]string{
+		"deploy/kcl/dev/main.k": "import file\n\n_w = file.write(\"deploy/nats/nats.conf\", _conf)\n",
+		"deploy/nats/nats.conf": "accounts {}\n",
+	})
+	before := dirtyTrackedFiles(dir)
+	writeGuardFile(t, dir, "deploy/nats/nats.conf", "accounts { leaked: {} }\n")
+
+	const newer = "accounts { hand-edited after the read: {} }\n"
+	prev := kclResetHook
+	kclResetHook = func(string) { writeGuardFile(t, dir, "deploy/nats/nats.conf", newer) }
+	t.Cleanup(func() { kclResetHook = prev })
+
+	rerendered := false
+	restored := restoreImpureKCLWrites(dir, before, func() { rerendered = true })
+	if len(restored) != 0 {
+		t.Errorf("restored %v; the file changed again before the reset", restored)
+	}
+	if got := readGuardFile(t, dir, "deploy/nats/nats.conf"); got != newer {
+		t.Errorf("the edit made after the read was overwritten:\n--- got ---\n%s\n--- want ---\n%s", got, newer)
+	}
+	if rerendered {
+		t.Error("the proof rerendered with no candidate left to decide about")
+	}
+	if kept, _ := filepath.Glob(filepath.Join(dir, ".forge/kcl-reverted/deploy/nats/nats.conf.*")); len(kept) != 0 {
+		t.Errorf("the older bytes are still kept aside although the file was left untouched: %v", kept)
+	}
+}

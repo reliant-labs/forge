@@ -65,6 +65,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -299,7 +300,16 @@ func restoreImpureKCLWrites(projectDir string, before map[string]bool, rerender 
 			fmt.Fprintf(os.Stderr, "⚠️  %s changed during a KCL render; left as is (could not keep a copy: %v)\n", path, serr)
 			continue
 		}
-		if werr := writeKeepingMode(abs, head); werr != nil {
+		kclResetHook(abs)
+		if werr := replaceIfUnchanged(abs, dirty, head); werr != nil {
+			if errors.Is(werr, errChangedUnderUs) {
+				// Edited again since it was read: those bytes are newer than
+				// anything the proof could decide about, so they stay, and
+				// the copy of the older ones is no longer needed.
+				_ = os.Remove(stash)
+				fmt.Fprintf(os.Stderr, "⚠️  %s changed again during a KCL render; left as is\n", path)
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "⚠️  %s changed during a KCL render; left as is (could not reset it to HEAD: %v)\n", path, werr)
 			continue
 		}
@@ -318,7 +328,7 @@ func restoreImpureKCLWrites(projectDir string, before map[string]bool, rerender 
 		switch {
 		case rerr == nil && bytes.Equal(again, c.dirty):
 			// The render wrote these bytes twice: they are its output.
-			if werr := writeKeepingMode(abs, c.head); werr != nil {
+			if werr := replaceIfUnchanged(abs, again, c.head); werr != nil {
 				// Reporting the path still beats silence: the user can revert
 				// it by hand, and the diagnostic names why it is dirty.
 				fmt.Fprintf(os.Stderr, "⚠️  could not restore %s after an impure KCL render: %v\n", c.path, werr)
@@ -327,7 +337,7 @@ func restoreImpureKCLWrites(projectDir string, before map[string]bool, rerender 
 			_ = os.Remove(c.stash)
 		case rerr == nil && bytes.Equal(again, c.head):
 			// The render left it at HEAD: the dirty bytes were someone's edit.
-			if werr := writeKeepingMode(abs, c.dirty); werr != nil {
+			if werr := replaceIfUnchanged(abs, again, c.dirty); werr != nil {
 				fmt.Fprintf(os.Stderr, "⚠️  %s was edited during a KCL render and could not be put back (%v); the edit is kept at %s\n", c.path, werr, c.stash)
 				continue
 			}
@@ -352,6 +362,31 @@ func committedContent(projectDir, rel string) ([]byte, error) {
 		return nil, fmt.Errorf("read committed content of %s: %w", rel, err)
 	}
 	return blob, nil
+}
+
+// errChangedUnderUs is replaceIfUnchanged's answer when the file no longer
+// holds the bytes the caller decided about.
+var errChangedUnderUs = errors.New("file changed since it was read")
+
+// kclResetHook runs just before restoreImpureKCLWrites resets a candidate to
+// HEAD. Tests set it to land an edit in that window; it is a no-op otherwise.
+var kclResetHook = func(string) {}
+
+// replaceIfUnchanged writes next to abs only if abs still holds expected,
+// re-read immediately before the write. Every write restoreImpureKCLWrites
+// makes goes through it, so an edit that lands after the file was read (an
+// editor, another agent) is never overwritten by bytes chosen from an older
+// read. What remains is the instant between this re-read and the atomic
+// rename, which no in-process check can close against an outside writer.
+func replaceIfUnchanged(abs string, expected, next []byte) error {
+	cur, err := os.ReadFile(abs)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(cur, expected) {
+		return errChangedUnderUs
+	}
+	return writeKeepingMode(abs, next)
 }
 
 // writeKeepingMode writes data to abs with abs's current permissions.

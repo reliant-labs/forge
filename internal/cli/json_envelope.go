@@ -73,7 +73,44 @@ func exitCodeForError(err error) int { return exitcode.Of(err) }
 // stdout would produce a stream no `jq` invocation can read, and the failure
 // looks like malformed JSON rather than like misrouted logging.
 func emitJSONDocument(doc any) error {
-	return writeJSONDocument(os.Stdout, doc)
+	return writeJSONDocument(jsonStdout(), doc)
+}
+
+// reservedJSONStdout is the real stdout while a verb holds it for its JSON
+// document (reserveStdoutForJSON), else nil.
+var reservedJSONStdout *os.File
+
+// jsonStdout is where a JSON document goes: the stdout reserveStdoutForJSON
+// set aside, or os.Stdout when nothing is reserved.
+func jsonStdout() io.Writer {
+	if reservedJSONStdout != nil {
+		return reservedJSONStdout
+	}
+	return os.Stdout
+}
+
+// reserveStdoutForJSON makes stdout carry ONLY the JSON document for the rest
+// of a verb: os.Stdout is pointed at stderr, so every fmt.Printf and every
+// subprocess that inherits os.Stdout (docker login's "Login Succeeded", buf's
+// descriptor run, the build log) lands on stderr, while emitJSONDocument and
+// the deploy report write to the stdout it set aside. Call the returned func
+// to restore both.
+//
+// It is the structural form of progressWriter: a verb as long as `forge env
+// deploy` reaches hundreds of print sites in code it does not own, and a
+// first-run-only line from any one of them (a registry login, a descriptor
+// derived on demand) used to put prose above the document and make it
+// unparseable (forge reports ea6e3b48, 8721487f).
+func reserveStdoutForJSON() (restore func()) {
+	realStdout, prevReserved := os.Stdout, reservedJSONStdout
+	if prevReserved == nil {
+		reservedJSONStdout = realStdout
+	}
+	os.Stdout = os.Stderr
+	return func() {
+		os.Stdout = realStdout
+		reservedJSONStdout = prevReserved
+	}
 }
 
 // writeJSONDocument is emitJSONDocument to a caller-chosen writer, for a verb

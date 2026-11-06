@@ -2644,7 +2644,9 @@ func waitHostServicesReady(ctx context.Context, e *KCLEntities, projectID, envNa
 	return waitHostReadiness(ctx, envName, e, timeout, poll, os.Stdout, func() []hostReadyResult {
 		rs := evalHostReadiness(e, projectID, envName, targets, portInUse, portListenerPID, newOSProcFacts())
 		for _, w := range e.WorkloadsOn(RuntimeHost) {
-			if w.LongRunning() && inTargetSet(targets, w.Name) && len(w.HostPorts()) == 0 {
+			// A nil registry retains the port-only helper contract. env up always
+			// supplies one, so production portless readiness requires a live runner.
+			if procs != nil && w.LongRunning() && inTargetSet(targets, w.Name) && len(w.HostPorts()) == 0 {
 				state := portReadyNobody
 				if procs.hasRunning(w.Name) {
 					state = portReadyOurs

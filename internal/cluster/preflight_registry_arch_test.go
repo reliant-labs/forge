@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // archRegistry serves one repository per manifest shape the arch gate must
@@ -98,5 +101,32 @@ func TestRegistryImageArchChecker_ReadsEveryManifestShape(t *testing.T) {
 	}
 	if _, err := checker.ImageArchitectures(context.Background(), host+"/acme/absent:v1"); !errors.Is(err, ErrImageCheckInconclusive) {
 		t.Errorf("absent image: %v; want inconclusive (existence is the existence check's)", err)
+	}
+}
+
+// An oversized manifest or config is inconclusive, never parsed from its
+// first maxManifestBytes: a truncated manifest list can name a subset of its
+// platforms, and a truncated config can still carry an architecture.
+func TestReadBounded_OversizedDocumentIsInconclusive(t *testing.T) {
+	entry := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:` + strings.Repeat("1", 64) + `","size":1,"platform":{"architecture":"amd64","os":"linux"}},`
+	list := `{"schemaVersion":2,"mediaType":"` + mediaTypeOCIIndex + `","manifests":[` +
+		strings.Repeat(entry, maxManifestBytes/len(entry)+1) +
+		`{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:` + strings.Repeat("2", 64) + `","size":1,"platform":{"architecture":"arm64","os":"linux"}}]}`
+	if _, err := readBounded(io.NopCloser(strings.NewReader(list))); !errors.Is(err, ErrImageCheckInconclusive) {
+		t.Errorf("oversized manifest list: %v; want inconclusive", err)
+	}
+
+	config := `{"architecture":"amd64","os":"linux"}` + strings.Repeat(" ", maxManifestBytes)
+	manifest := `{"schemaVersion":2,"mediaType":"` + mediaTypeOCIManifest + `","config":{"mediaType":"application/vnd.oci.image.config.v1+json","size":1,"digest":"sha256:` + strings.Repeat("3", 64) + `"}}`
+	_, err := archsFromManifest(mediaTypeOCIManifest, []byte(manifest), func(ocispec.Descriptor) ([]byte, error) {
+		return readBounded(io.NopCloser(strings.NewReader(config)))
+	})
+	if !errors.Is(err, ErrImageCheckInconclusive) {
+		t.Errorf("oversized config: %v; want inconclusive", err)
+	}
+
+	exact := strings.Repeat(" ", maxManifestBytes)
+	if body, err := readBounded(io.NopCloser(strings.NewReader(exact))); err != nil || len(body) != maxManifestBytes {
+		t.Errorf("a document of exactly the limit: %d bytes, %v; want it read whole", len(body), err)
 	}
 }

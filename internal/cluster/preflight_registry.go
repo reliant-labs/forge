@@ -267,9 +267,19 @@ func archInconclusive(err error) error {
 	return fmt.Errorf("%w: %v", ErrImageCheckInconclusive, err)
 }
 
+// readBounded reads at most maxManifestBytes and fails on anything longer: a
+// truncated document can still parse (a JSON prefix, a manifest list cut short)
+// into an incomplete architecture set, which the gate would take as conclusive.
 func readBounded(rc io.ReadCloser) ([]byte, error) {
 	defer func() { _ = rc.Close() }()
-	return io.ReadAll(io.LimitReader(rc, maxManifestBytes))
+	body, err := io.ReadAll(io.LimitReader(rc, maxManifestBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxManifestBytes {
+		return nil, fmt.Errorf("%w: the document exceeds %d bytes", ErrImageCheckInconclusive, maxManifestBytes)
+	}
+	return body, nil
 }
 
 func emptyMediaType(mt string) string {

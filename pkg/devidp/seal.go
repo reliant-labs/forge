@@ -1,6 +1,7 @@
 package devidp
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -60,6 +61,21 @@ type sealedEnvelope struct {
 
 var errSealed = errors.New("binding cookie is missing, expired or not ours")
 
+// marshalPlain is json.Marshal without HTML escaping and without the
+// trailing newline an Encoder adds.
+func marshalPlain(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(b.Bytes(), "\n"), nil
+}
+
+// errPayloadTooLarge: the payload does not fit a binding cookie.
+var errPayloadTooLarge = errors.New("binding cookie payload is too large")
+
 // sealedPlainSize is the padded plaintext size: every binding cookie of every
 // kind and state seals to the same length. A payload that does not fit is an
 // error, never a longer cookie.
@@ -68,7 +84,7 @@ const sealedPlainSize = 512
 // pad frames plain as [2-byte length][plain][zeros] of sealedPlainSize bytes.
 func pad(plain []byte) ([]byte, error) {
 	if len(plain) > sealedPlainSize-2 {
-		return nil, fmt.Errorf("binding cookie payload is %d bytes, more than %d", len(plain), sealedPlainSize-2)
+		return nil, fmt.Errorf("%w: %d bytes, more than %d", errPayloadTooLarge, len(plain), sealedPlainSize-2)
 	}
 	out := make([]byte, sealedPlainSize)
 	binary.BigEndian.PutUint16(out, uint16(len(plain)))
@@ -120,11 +136,14 @@ func (s *sealer) seal(kind string, payload any, ttl time.Duration) (string, erro
 	if err != nil {
 		return "", err
 	}
-	p, err := json.Marshal(payload)
+	// Not json.Marshal: it escapes <, > and & to six bytes each, so a
+	// payload's sealed size would depend on its characters (a password with
+	// HTML in it), not just its length.
+	p, err := marshalPlain(payload)
 	if err != nil {
 		return "", err
 	}
-	env, err := json.Marshal(sealedEnvelope{Kind: kind, Expires: s.now().Add(ttl).UnixMilli(), Payload: p})
+	env, err := marshalPlain(sealedEnvelope{Kind: kind, Expires: s.now().Add(ttl).UnixMilli(), Payload: p})
 	if err != nil {
 		return "", err
 	}

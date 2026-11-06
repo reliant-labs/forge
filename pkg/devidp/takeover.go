@@ -2,6 +2,8 @@ package devidp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 )
 
 // ── Pre-registration takeover, closed ────────────────────────────────────
@@ -31,20 +33,76 @@ import (
 // binding that carries one keeps its fixed size.
 const maxPasswordBytes = 256
 
-// afterProof applies the rule once a proof verified userID's address.
-// wasVerified is the address state BEFORE the proof: an address already
-// verified decides nothing. revoked reports that credentials were taken back
-// (the UI then offers to set a password or a passkey).
-func (r *SignInRoutes) afterProof(ctx context.Context, userID string, wasVerified bool) (revoked bool, err error) {
-	if wasVerified {
-		return false, nil
+// errRevokeFailed marks a proof that succeeded but whose unproven
+// credentials could not be taken back: the account is left locked.
+var errRevokeFailed = errors.New("the proof succeeded but credentials set before it could not be revoked; the account is locked")
+
+// proveAddress runs proof — the issuer's check of an emailed code that also
+// verifies the address — and applies the rule above. before is the account
+// as read before the proof.
+//
+// An address already verified decides nothing: proof runs alone. Otherwise
+// the account is LOCKED FIRST, so nothing can sign in to it in the window
+// between "verified" and "revoked" (once VerifyEmail succeeds, a password
+// planted before it would otherwise work until the revocation lands):
+//
+//	lock → end every session → proof → revoke credentials → end every session → unlock
+//
+// A proof that fails (a wrong code) unlocks again: an unverified account
+// cannot sign in anyway. A revocation that fails leaves the account locked
+// and returns errRevokeFailed. An account the issuer had locked already is
+// never unlocked here. revoked reports that credentials were taken back.
+func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func() error) (revoked bool, err error) {
+	if before.EmailVerified {
+		return false, proof()
+	}
+	c := r.cfg.Client
+	userID := before.ID
+	if !before.Locked {
+		if err := c.LockUser(ctx, userID); err != nil {
+			// Not proven yet: refuse rather than verify an account that
+			// cannot be held still.
+			return false, fmt.Errorf("lock the account for its proof: %w", err)
+		}
+	}
+	unlock := func() error {
+		if before.Locked {
+			return nil
+		}
+		return c.UnlockUser(ctx, userID)
+	}
+	// End every session first. One created a moment before the lock
+	// already carries a passed password check; the verified-email gate
+	// would let it through the moment proof() marks the address verified,
+	// before the revocation below could end it.
+	if _, err := c.EndSessions(ctx, userID); err != nil {
+		if uerr := unlock(); uerr != nil {
+			r.cfg.Logger.ErrorContext(ctx, "could not unlock an account after a failed session cleanup", "user_id", userID, "error", uerr)
+		}
+		return false, fmt.Errorf("end the account's sessions before its proof: %w", err)
+	}
+	if err := proof(); err != nil {
+		if uerr := unlock(); uerr != nil {
+			r.cfg.Logger.ErrorContext(ctx, "could not unlock an account after a refused proof", "user_id", userID, "error", uerr)
+		}
+		return false, err
 	}
 	n, err := r.revoke(ctx, userID)
-	return n > 0, err
+	if err != nil {
+		return false, err
+	}
+	if err := unlock(); err != nil {
+		r.cfg.Logger.ErrorContext(ctx, "address proven and credentials revoked, but the account could not be unlocked", "user_id", userID, "error", err)
+		return n > 0, fmt.Errorf("unlock the account after its proof: %w", err)
+	}
+	return n > 0, nil
 }
 
-// revoke takes back an account's unproven credentials, retrying once, and
-// locks the account if it cannot. It returns how many were taken back.
+// revoke takes back an account's unproven credentials and ends its
+// sessions, retrying once. The caller holds the account locked. If both
+// tries fail it makes one last attempt at the password alone (the credential
+// a planted sign-up most likely set) and raises an alert: the account stays
+// locked until someone resets it by hand.
 func (r *SignInRoutes) revoke(ctx context.Context, userID string) (int, error) {
 	c := r.cfg.Client
 	n, err := c.RevokeCredentials(ctx, userID)
@@ -57,12 +115,10 @@ func (r *SignInRoutes) revoke(ctx context.Context, userID string) (int, error) {
 		}
 		return n, nil
 	}
-	r.cfg.Logger.ErrorContext(ctx, "could not revoke unproven credentials; locking the account", "user_id", userID, "error", err)
-	if lerr := c.LockUser(ctx, userID); lerr != nil {
-		r.cfg.Logger.ErrorContext(ctx, "could not lock the account either: unlock nothing until its credentials are reset by hand",
-			"user_id", userID, "error", lerr)
-	}
-	return 0, err
+	pwErr := c.SetPassword(ctx, userID, unguessablePassword())
+	r.cfg.Logger.ErrorContext(ctx, "ALERT: unproven credentials could not be revoked; the account stays LOCKED until its credentials are reset by hand",
+		"user_id", userID, "error", err, "password_replaced", pwErr == nil, "alert", "identity.revoke_failed")
+	return 0, fmt.Errorf("%w: %v", errRevokeFailed, err)
 }
 
 // grantSignupRoleIfSelfSignup grants signup_role to an account public

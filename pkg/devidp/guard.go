@@ -102,6 +102,18 @@ func ClientIP(r *http.Request, trustedHops int) string {
 	return peer
 }
 
+// ClientKey is the key a per-client rate limit counts under: ClientIP, with
+// an IPv6 address cut to its /64. One subscriber is routinely handed a whole
+// /64, so a key per full address would give them 2^64 fresh budgets.
+func ClientKey(r *http.Request, trustedHops int) string {
+	ip := ClientIP(r, trustedHops)
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() != nil {
+		return ip
+	}
+	return parsed.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
 // ── Limiters ─────────────────────────────────────────────────────────────
 
 // limiter is a fixed-window attempt budget per key, in memory: the same

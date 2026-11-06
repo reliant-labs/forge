@@ -907,7 +907,7 @@ func (b *loginBroker) handleForgot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if !b.forgotByIP.reserve(devidp.ClientIP(r, b.proxyHops)) || !b.forgotByAddress.reserve(email) {
+	if !b.forgotByIP.reserve(devidp.ClientKey(r, b.proxyHops)) || !b.forgotByAddress.reserve(email) {
 		b.logger.WarnContext(ctx, "password reset request refused: rate limited")
 		writeAuthError(w, http.StatusTooManyRequests, forgotBusy)
 		return

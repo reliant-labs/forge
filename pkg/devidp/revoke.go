@@ -64,6 +64,17 @@ func (c *Client) RevokeCredentials(ctx context.Context, userID string) (int, err
 		}
 		n++
 	}
+	// Second factors: a planted TOTP or SMS number is someone else's way
+	// past a future password check. Absent ones answer an error the issuer
+	// spells as not-found or a failed precondition; both mean "none".
+	for _, factor := range []string{"totp", "otp_sms"} {
+		path := "/v2/users/" + url.PathEscape(userID) + "/" + factor
+		if _, err := c.sendJSON(ctx, http.MethodDelete, path, map[string]any{}); err == nil {
+			n++
+		} else if !isAbsent(err) {
+			return n, fmt.Errorf("remove the %s factor: %w", factor, err)
+		}
+	}
 	keys, err := c.listPasskeys(ctx, userID, true)
 	if err != nil {
 		return n, err
@@ -75,7 +86,50 @@ func (c *Client) RevokeCredentials(ctx context.Context, userID string) (int, err
 		}
 		n++
 	}
+	ended, err := c.EndSessions(ctx, userID)
+	return n + ended, err
+}
+
+// EndSessions deletes every issuer session of a user, so nothing created
+// before a revocation can be finalized into tokens after it.
+func (c *Client) EndSessions(ctx context.Context, userID string) (int, error) {
+	body, err := c.postJSON(ctx, "/v2/sessions/search", map[string]any{
+		"queries": []any{map[string]any{"userIdQuery": map[string]any{"id": userID}}},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list sessions: %w", err)
+	}
+	var out struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, fmt.Errorf("decode sessions: %w", err)
+	}
+	n := 0
+	for _, s := range out.Sessions {
+		if _, err := c.sendJSON(ctx, http.MethodDelete, "/v2/sessions/"+url.PathEscape(s.ID), map[string]any{}); err != nil && !isNotFound(err) {
+			return n, fmt.Errorf("end session %s: %w", s.ID, err)
+		}
+		n++
+	}
 	return n, nil
+}
+
+// UnlockUser lifts LockUser.
+func (c *Client) UnlockUser(ctx context.Context, userID string) error {
+	if _, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/unlock", map[string]any{}); err != nil {
+		return fmt.Errorf("unlock user: %w", err)
+	}
+	return nil
+}
+
+// isAbsent reports a refusal that means "there is none to remove".
+func isAbsent(err error) bool {
+	var apiErr *apiError
+	return errors.As(err, &apiErr) && (apiErr.status == http.StatusNotFound || apiErr.status == http.StatusBadRequest ||
+		apiErr.status == http.StatusPreconditionFailed)
 }
 
 // unguessablePassword satisfies any complexity policy (upper, lower, digit,

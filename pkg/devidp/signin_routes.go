@@ -306,8 +306,8 @@ func (r *SignInRoutes) cookieName(c cookieSpec) string {
 	return r.cfg.CookiePrefix + c.suffix
 }
 
-// ip is the client address rate limits key on.
-func (r *SignInRoutes) ip(req *http.Request) string { return ClientIP(req, r.cfg.TrustedProxyHops) }
+// ip is the key per-client rate limits count under (ClientKey).
+func (r *SignInRoutes) ip(req *http.Request) string { return ClientKey(req, r.cfg.TrustedProxyHops) }
 
 // admit refuses a cross-site request before anything else runs. The
 // scaffolded broker also mounts every route behind the same guard (GuardMux);
@@ -409,9 +409,17 @@ type pendingLinkBinding struct {
 // the victim confirms it. UserID is "" when the address already has a
 // verified account: nothing is pending, but the cookie is set alike.
 type pendingPasswordBinding struct {
-	UserID   string `json:"u"`
-	Password string `json:"p"`
+	UserID string `json:"u"`
+	// Password is sealed as bytes (base64 in the envelope): its sealed size
+	// is then a function of its length alone, whatever characters it holds.
+	Password []byte `json:"p"`
 }
+
+// placeholderUserID stands in for an account id when a sign-up's binding is
+// trial-sealed before the address is looked up. Longer than any issuer id
+// (Zitadel's are 18 digits), so a binding that seals with it seals with the
+// real one.
+const placeholderUserID = "000000000000000000000000000000"
 
 // ── Passkey sign-in ────────────────────────────────────────────────────
 
@@ -868,10 +876,7 @@ func (r *SignInRoutes) sessionFromVerification(ctx context.Context, userID, code
 	if err != nil {
 		return Session{}, err
 	}
-	if err := c.VerifyEmail(ctx, userID, code); err != nil {
-		return Session{}, err
-	}
-	if _, err := r.afterProof(ctx, userID, before.EmailVerified); err != nil {
+	if _, err := r.proveAddress(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) }); err != nil {
 		return Session{}, err
 	}
 	r.grantSignupRoleIfSelfSignup(ctx, userID, before.Email)
@@ -1097,17 +1102,29 @@ func (r *SignInRoutes) acceptInviteBySocial(w http.ResponseWriter, req *http.Req
 		writeErr(w, http.StatusConflict, CodeSocialTaken, fmt.Sprintf(msgSocialTaken, social.Label))
 		return
 	}
-	if !r.codeByUser.reserve(userID) {
+	if !r.codeByIP.reserve(r.ip(req)) || !r.codeByUser.reserve(userID) {
 		writeErr(w, http.StatusTooManyRequests, CodeRateLimited, msgTooMany)
 		return
 	}
-	if err := c.VerifyInviteCode(ctx, userID, b.InviteCode); err != nil {
+	before, err := c.FindUserByID(ctx, userID)
+	if errors.Is(err, ErrUserNotFound) {
+		writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
+		return
+	}
+	if err != nil {
+		r.codeByUser.refund(userID)
+		r.unavailable(ctx, w, "invitation: read account", err)
+		return
+	}
+	if _, err := r.proveAddress(ctx, before, func() error { return c.VerifyInviteCode(ctx, userID, b.InviteCode) }); err != nil {
 		if errors.Is(err, ErrInvalidCode) {
 			r.cfg.Logger.WarnContext(ctx, "invitation rejected", "user_id", userID, "error", err)
 			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
 			return
 		}
-		r.codeByUser.refund(userID)
+		if !errors.Is(err, errRevokeFailed) {
+			r.codeByUser.refund(userID)
+		}
 		r.unavailable(ctx, w, "invitation could not be checked", err)
 		return
 	}
@@ -1183,24 +1200,22 @@ func (r *SignInRoutes) HandleInviteAccept(w http.ResponseWriter, req *http.Reque
 		r.unavailable(ctx, w, "invitation: read account", err)
 		return
 	}
-	if err := c.VerifyInviteCode(ctx, userID, code); err != nil {
+	// Someone may have registered this address before the invitation: what
+	// they set must not survive the invitee's proof (proveAddress).
+	if _, err := r.proveAddress(ctx, before, func() error { return c.VerifyInviteCode(ctx, userID, code) }); err != nil {
 		if errors.Is(err, ErrInvalidCode) {
 			r.cfg.Logger.WarnContext(ctx, "invitation rejected", "user_id", userID, "error", err)
 			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
 			return
 		}
-		r.codeByUser.refund(userID)
+		if !errors.Is(err, errRevokeFailed) {
+			r.codeByUser.refund(userID)
+		}
 		r.unavailable(ctx, w, "invitation could not be checked", err)
 		return
 	}
 	r.codeByUser.forget(userID)
 	r.cfg.Logger.InfoContext(ctx, "invitation accepted", "user_id", userID, "method", body.Method)
-	// Someone may have registered this address before the invitation: what
-	// they set must not survive the invitee's proof.
-	if _, err := r.afterProof(ctx, userID, before.EmailVerified); err != nil {
-		r.unavailable(ctx, w, "invitation: revoke unproven credentials", err)
-		return
-	}
 
 	switch body.Method {
 	case MethodPassword:
@@ -1339,25 +1354,24 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 		r.unavailable(ctx, w, "verification: read account", err)
 		return
 	}
-	if err := c.VerifyEmail(ctx, userID, code); err != nil {
+	// Order matters: the proof takes back whatever the account held from
+	// before it (nothing proves who set it) with the account locked
+	// throughout (proveAddress), THEN this browser's pending social link and
+	// password are attached.
+	reset, err := r.proveAddress(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) })
+	if err != nil {
 		if errors.Is(err, ErrInvalidCode) {
 			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
 			return
 		}
-		r.codeByUser.refund(userID)
-		r.unavailable(ctx, w, "verification could not be checked", err)
+		if !errors.Is(err, errRevokeFailed) {
+			r.codeByUser.refund(userID)
+		}
+		r.unavailable(ctx, w, "verification could not be completed", err)
 		return
 	}
 	r.codeByUser.forget(userID)
 	r.cfg.Logger.InfoContext(ctx, "email address verified", "user_id", userID)
-	// Order matters: first take back whatever the account held from before
-	// this proof (nothing proves who set it), THEN attach what this browser
-	// set aside for it (its pending social link and password).
-	reset, err := r.afterProof(ctx, userID, before.EmailVerified)
-	if err != nil {
-		r.unavailable(ctx, w, "verification: revoke unproven credentials", err)
-		return
-	}
 	r.attachPendingLink(w, req, userID)
 	pw := r.setPendingPassword(w, req, userID)
 	r.grantSignupRoleIfSelfSignup(ctx, userID, before.Email)
@@ -1377,7 +1391,6 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusOK, body)
 		return
 	}
-	r.grantSignupRoleIfSelfSignup(ctx, userID, before.Email)
 	if r.cfg.Policy.Offers(MethodPasskey) {
 		if has, err := c.HasPassword(ctx, userID); err == nil && (reset || !has) {
 			code, err := c.MintPasskeyRegistrationCode(ctx, userID)
@@ -1448,14 +1461,14 @@ type pendingPasswordOutcome struct {
 func (r *SignInRoutes) setPendingPassword(w http.ResponseWriter, req *http.Request, userID string) pendingPasswordOutcome {
 	ctx := req.Context()
 	var pp pendingPasswordBinding
-	if !r.readBinding(req, passwordCookie, &pp) || pp.UserID != userID || pp.Password == "" {
+	if !r.readBinding(req, passwordCookie, &pp) || pp.UserID != userID || len(pp.Password) == 0 {
 		return pendingPasswordOutcome{}
 	}
 	r.clearBinding(w, passwordCookie)
 	c := r.cfg.Client
 	code, err := c.MintPasswordResetCode(ctx, userID)
 	if err == nil {
-		err = c.ResetPassword(ctx, PasswordReset{UserID: userID, Code: code, NewPassword: pp.Password})
+		err = c.ResetPassword(ctx, PasswordReset{UserID: userID, Code: code, NewPassword: string(pp.Password)})
 	}
 	if err == nil {
 		r.cfg.Logger.InfoContext(ctx, "sign-up password set after verification", "user_id", userID)
@@ -1479,6 +1492,8 @@ func (r *SignInRoutes) HandleVerifyResend(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	ctx := req.Context()
+	// A pending address costs a resend the others do not: hide it.
+	defer holdUntil(ctx, time.Now(), r.cfg.ResponseFloor)
 	email := normalizeEmail(body.Email)
 	if email != "" && r.verifyResendIP.reserve(r.ip(req)) && r.verifyResendBy.reserve(email) {
 		if u, err := r.cfg.Client.FindUserByEmail(ctx, email); err == nil && !u.EmailVerified {
@@ -1548,6 +1563,20 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 	if body.Password != "" && r.rejectWeak(ctx, w, body.Password) {
 		return
 	}
+	// And it must fit the sealed binding it will wait in — checked with a
+	// stand-in id, before the lookup, so "too long" is one answer for every
+	// address rather than depending on which account it has.
+	if body.Password != "" {
+		_, err := r.seal.seal(passwordCookie.suffix, pendingPasswordBinding{UserID: placeholderUserID, Password: []byte(body.Password)}, passwordCookie.ttl)
+		switch {
+		case errors.Is(err, errPayloadTooLarge):
+			writeErr(w, http.StatusBadRequest, CodePasswordTooLong, "That password is too long.")
+			return
+		case err != nil:
+			r.unavailable(ctx, w, "sign-up: the password cannot be sealed", err)
+			return
+		}
+	}
 	defer holdUntil(ctx, time.Now(), r.cfg.ResponseFloor)
 	if !r.registerByIP.reserve(r.ip(req)) {
 		writeErr(w, http.StatusTooManyRequests, CodeRateLimited, msgTooMany)
@@ -1562,7 +1591,7 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 	// whoever registered a victim's address would keep a way in once the
 	// victim confirmed it.
 	c := r.cfg.Client
-	pending := pendingPasswordBinding{Password: body.Password}
+	pending := pendingPasswordBinding{Password: []byte(body.Password)}
 	user, err := c.FindUserByEmail(ctx, email)
 	switch {
 	case err == nil:
@@ -1590,8 +1619,11 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	if body.Password != "" {
+		// Never "check your email" without the password the person chose:
+		// they would confirm the address and have no way in.
 		if err := r.setBinding(w, passwordCookie, pending); err != nil {
-			r.cfg.Logger.ErrorContext(ctx, "sign-up: the password could not be sealed", "error", err)
+			r.unavailable(ctx, w, "sign-up: the password could not be sealed", err)
+			return
 		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"verify": "sent", "message": msgVerifySent})

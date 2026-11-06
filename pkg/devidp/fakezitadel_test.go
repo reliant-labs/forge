@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeZitadel is an in-memory stand-in for the parts of Zitadel's v2 API the
@@ -37,6 +38,10 @@ type fakeZitadel struct {
 	// failLinks makes the link listing fail (a revocation that cannot
 	// complete).
 	failLinks bool
+	// proofDelay holds the answer to a successful email or invitation
+	// proof for this long AFTER the address is marked verified: the window
+	// a concurrent sign-in races.
+	proofDelay time.Duration
 }
 
 type fakeUser struct {
@@ -53,6 +58,7 @@ type fakeUser struct {
 	links                []IDPLink
 	metadata             map[string]string
 	locked               bool
+	totp                 bool
 }
 
 type fakeSession struct {
@@ -81,14 +87,45 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+		delay := f.proofDelay
 		f.mu.Unlock()
-		mux.ServeHTTP(w, r)
+		rec := &statusRecorder{ResponseWriter: w}
+		mux.ServeHTTP(rec, r)
+		// The answer is buffered until the handler returns, so the state
+		// change is visible to other requests during the sleep.
+		if delay > 0 && rec.status < 300 && (strings.HasSuffix(r.URL.Path, "/email/verify") || strings.HasSuffix(r.URL.Path, "/invite_code/verify")) {
+			time.Sleep(delay)
+		}
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
 }
 
 func (f *fakeZitadel) client() *Client { return &Client{Base: f.srv.URL, Token: "broker-token"} }
+
+// statusRecorder notes the status a handler answered with.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+// userID is an id shaped like Zitadel's: 18 digits.
+func (f *fakeZitadel) userID() string {
+	f.nextID++
+	return fmt.Sprintf("3%017d", f.nextID)
+}
 
 func (f *fakeZitadel) id(prefix string) string {
 	f.nextID++
@@ -99,7 +136,7 @@ func (f *fakeZitadel) id(prefix string) string {
 func (f *fakeZitadel) addUser(email string, verified bool, password string) *fakeUser {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	u := &fakeUser{id: f.id("u"), email: email, loginName: email, verified: verified, password: password}
+	u := &fakeUser{id: f.userID(), email: email, loginName: email, verified: verified, password: password}
 	f.users[u.id] = u
 	return u
 }
@@ -203,7 +240,11 @@ func (f *fakeZitadel) render(tmpl string, u *fakeUser, code, sessionID string) s
 }
 
 func humanJSON(u *fakeUser) map[string]any {
-	return map[string]any{"userId": u.id, "preferredLoginName": u.loginName,
+	state := "USER_STATE_ACTIVE"
+	if u.locked {
+		state = "USER_STATE_LOCKED"
+	}
+	return map[string]any{"userId": u.id, "preferredLoginName": u.loginName, "state": state,
 		"human": map[string]any{"email": map[string]any{"email": u.email, "isVerified": u.verified}}}
 }
 
@@ -258,6 +299,10 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		sess := &fakeSession{token: f.id("st"), userID: u.id}
 		if pw := sub(b, "checks", "password"); pw != nil {
+			if u.locked {
+				zerr(w, 400, "COMMAND-JLK35", "Errors.User.Locked")
+				return
+			}
 			if str(pw, "password") != u.password {
 				zerr(w, 400, "COMMAND-3M0fs", "Password is invalid")
 				return
@@ -395,7 +440,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		u := &fakeUser{id: f.id("u"), email: str(em, "email"), loginName: str(em, "email"), password: pw}
+		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: str(em, "email"), password: pw}
 		u.verified, _ = em["isVerified"].(bool)
 		if sc := sub(em, "sendCode"); sc != nil {
 			u.emailCode = f.id("ev")
@@ -563,6 +608,38 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		u.passkeys = kept
 		ok(w, map[string]any{})
 	}))
+	mux.HandleFunc("POST /v2/users/{id}/unlock", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
+		u.locked = false
+		ok(w, map[string]any{})
+	}))
+	mux.HandleFunc("DELETE /v2/users/{id}/totp", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
+		if !u.totp {
+			zerr(w, 400, "COMMAND-totpnr", "Errors.User.MFA.OTP.NotReady")
+			return
+		}
+		u.totp = false
+		ok(w, map[string]any{})
+	}))
+	mux.HandleFunc("DELETE /v2/users/{id}/otp_sms", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
+		zerr(w, 400, "COMMAND-smsnr", "Errors.User.MFA.OTP.NotReady")
+	}))
+	mux.HandleFunc("POST /v2/sessions/search", func(w http.ResponseWriter, r *http.Request) {
+		b := readBody(r)
+		var uid string
+		if qs, _ := b["queries"].([]any); len(qs) > 0 {
+			q, _ := qs[0].(map[string]any)
+			uid = str(sub(q, "userIdQuery"), "id")
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		res := []any{}
+		for id, sess := range f.sessions {
+			if sess.userID == uid && !sess.deleted {
+				res = append(res, map[string]any{"id": id})
+			}
+		}
+		ok(w, map[string]any{"sessions": res})
+	})
 	mux.HandleFunc("POST /v2/users/{id}/lock", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
 		u.locked = true
 		ok(w, map[string]any{})

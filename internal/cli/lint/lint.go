@@ -668,9 +668,28 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	combined.Findings = append(combined.Findings, shapeRes.Findings...)
 	hasFrontends = hasFrontends || len(shapeRes.Findings) > 0
 
+	// Two allocate_port(base, ...) calls in one deploy/kcl file whose bases
+	// are congruent mod dev_stack.block_size collide at a stack block below
+	// dev_stack.max_stacks: two listeners on one host port.
+	maxStacks, blockSize := 0, 0
+	portStore, cfgErr := loadProjectStore()
+	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
+		return combined, notes, false, fmt.Errorf("failed to load project config for allocate-port-spacing lint: %w", cfgErr)
+	}
+	if portStore != nil && portStore.Config() != nil {
+		ds := portStore.Config().DevStack
+		maxStacks, blockSize = ds.EffectiveMaxStacks(), ds.EffectiveBlockSize()
+	}
+	portRes, err := forgeconv.LintAllocatePortSpacing(".", maxStacks, blockSize)
+	if err != nil {
+		return combined, notes, false, fmt.Errorf("forge convention lint (allocate-port spacing) failed: %w", err)
+	}
+	combined.Findings = append(combined.Findings, portRes.Findings...)
+	hasPortFindings := len(portRes.Findings) > 0
+
 	// If none of proto/, internal/, handlers/, workers/, operators/, or a
 	// frontend dir exist, there's nothing to lint.
-	hasAny := hasProto || hasInternal || hasComponentTree || hasFrontends
+	hasAny := hasProto || hasInternal || hasComponentTree || hasFrontends || hasPortFindings
 	return combined, notes, hasAny, nil
 }
 

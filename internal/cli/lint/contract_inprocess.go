@@ -104,11 +104,13 @@ func (d contractDiagnostic) String() string {
 // graph from source — the standard library and 2,099 third-party packages
 // included — and peaked at 5.5 GiB of heap. The exclusion gate's
 // multi-implementation search is the one consumer that needs more than the
-// requested packages: it reads every main-module package they reach from
-// source, because export data drops unexported types. When a requested
-// package carries `//forge:exclude-contract` and the analysis load did not
-// already parse that whole set, the gate gets a second load of exactly it,
-// made after the first has been released (excludeGateLoad).
+// requested packages: it reads every package of their main module from
+// source, because export data drops unexported types and an implementation
+// wired in by dependency injection sits outside the marked package's import
+// closure. When a requested package carries `//forge:exclude-contract` and
+// the analysis load did not already parse the whole module, the gate gets a
+// second load of the module's packages alone (their dependencies still from
+// export data), made after the first has been released (excludeGateLoad).
 func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string, gate contract.ExcludeGateOptions) ([]contractDiagnostic, error) {
 	// The exclude list mirrors forge.yaml's contracts.exclude — same
 	// registration cmd/contractlint performs before multichecker.Main.
@@ -198,7 +200,10 @@ func analyzeContractPackages(ctx context.Context, cwd string, paths []string, ga
 	// where composition reads it (not_a_component_directive.go). It reads the
 	// requested packages alone, so this load always serves it.
 	gateFindings := contract.CheckNotAComponentDirectives(pkgs, gate)
-	deferred := excludeGateFor(pkgs)
+	deferred, err := excludeGateFor(ctx, pkgs)
+	if err != nil {
+		return nil, nil, err
+	}
 	if deferred == nil {
 		gateFindings = append(contract.CheckExcludeDirectives(pkgs, gate), gateFindings...)
 	}
@@ -206,11 +211,14 @@ func analyzeContractPackages(ctx context.Context, cwd string, paths []string, ga
 }
 
 // excludeGateLoad is the load the exclusion gate needs when the analysis load
-// cannot serve it: every main-module package the requested packages reach
-// (their test files' imports included), type-checked from source so that the
-// multi-implementation search sees unexported types too, with roots naming
-// the requested packages among them. It holds import paths, not packages, so
-// nothing of the analysis load survives into it.
+// cannot serve it: every package of the main module(s) the requested packages
+// belong to, type-checked from source so that the multi-implementation search
+// sees unexported types too, with roots naming the requested packages among
+// them. The search spans the whole module, not the requested packages' import
+// closure: an implementation wired in only by dependency injection lives in a
+// package the marked package never imports, and a scoped run must refuse the
+// marker exactly as an unscoped one does. It holds import paths and patterns,
+// not packages, so nothing of the analysis load survives into it.
 type excludeGateLoad struct {
 	roots  []string
 	search []string
@@ -218,39 +226,71 @@ type excludeGateLoad struct {
 
 // excludeGateFor returns the load the exclusion gate needs beyond pkgs, or
 // nil when pkgs serves it: no requested package declares
-// `//forge:exclude-contract` (so the gate has nothing to judge), or every
-// main-module package the requested packages reach was already parsed — an
-// unscoped `forge lint` requests them all.
-func excludeGateFor(pkgs []*packages.Package) *excludeGateLoad {
+// `//forge:exclude-contract` (so the gate has nothing to judge), or the
+// analysis load already parsed every package of the requested packages'
+// main modules — an unscoped `forge lint` requests them all.
+func excludeGateFor(ctx context.Context, pkgs []*packages.Package) (*excludeGateLoad, error) {
 	if !contract.DeclaresExcludeContract(pkgs) {
-		return nil
+		return nil, nil
 	}
-	roots, search := map[string]bool{}, map[string]bool{}
+	roots, modules := map[string]bool{}, map[string]bool{}
 	for _, p := range pkgs {
-		if plainPackage(p) {
-			roots[p.PkgPath] = true
-			search[p.PkgPath] = true
+		if !plainPackage(p) {
+			continue
+		}
+		roots[p.PkgPath] = true
+		if p.Module != nil && p.Module.Main {
+			modules[p.Module.Path+"/..."] = true
 		}
 	}
-	parsed := true
+	if len(modules) == 0 {
+		return nil, nil // no requested package is in a main module: nothing to search
+	}
+	parsed := map[string]bool{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		if p.Module == nil || !p.Module.Main || !plainPackage(p) {
-			return
-		}
-		search[p.PkgPath] = true
-		if p.TypesInfo == nil {
-			parsed = false // from export data: its unexported types are missing
+		if plainPackage(p) && p.TypesInfo != nil {
+			parsed[p.PkgPath] = true
 		}
 	})
-	if parsed {
-		return nil
+	search := sortedSet(modules)
+	inModule, err := listPackagePaths(ctx, search)
+	if err != nil {
+		return nil, err
 	}
-	return &excludeGateLoad{roots: sortedSet(roots), search: sortedSet(search)}
+	covered := true
+	for _, path := range inModule {
+		if !parsed[path] {
+			covered = false // not loaded, or from export data: its unexported types are missing
+			break
+		}
+	}
+	if covered {
+		return nil, nil
+	}
+	return &excludeGateLoad{roots: sortedSet(roots), search: search}, nil
+}
+
+// listPackagePaths names the packages patterns match (go list, no type
+// checking), with the analysis loader's environment and node_modules
+// exclusion, so it agrees with what loadPackagesForAnalysis would load.
+func listPackagePaths(ctx context.Context, patterns []string) ([]string, error) {
+	env := analysisEnv(os.Environ(), hasWorkspaceGoMod())
+	if cwd, werr := os.Getwd(); werr == nil {
+		patterns = goexec.ExcludeNodeModules(ctx, cwd, env, patterns)
+	}
+	pkgs, err := packages.Load(&packages.Config{Context: ctx, Mode: packages.NeedName, Env: env}, patterns...)
+	if err != nil {
+		return nil, fmt.Errorf("list packages %v: %w", patterns, err)
+	}
+	out := make([]string, 0, len(pkgs))
+	for _, p := range pkgs {
+		out = append(out, p.PkgPath)
+	}
+	return out, nil
 }
 
 // check runs the exclusion gate over its own load. Tests are not loaded: the
-// gate judges a package's non-test source and searches plain packages only,
-// and the requested packages' test-only imports are already in search.
+// gate judges a package's non-test source and searches plain packages only.
 func (l *excludeGateLoad) check(ctx context.Context, gate contract.ExcludeGateOptions) ([]contract.ExcludeFinding, error) {
 	pkgs, err := loadPackagesForAnalysis(ctx, l.search, analysisLoad{})
 	if err != nil {

@@ -15,18 +15,21 @@ import (
 // The contract lane under --scope loads the scope, not the module: the
 // analyzers read the requested packages from source and every dependency from
 // export data, and the exclusion gate's multi-implementation search gets a
-// load of just the main-module packages the scope reaches (see
+// load of the main module's packages from source (see
 // runContractAnalysisInProcess). These tests pin both halves: a scoped run
 // reports exactly what an unscoped run reports about the scoped package —
-// including implementations that only a source load can see — and the
-// analysis load really leaves dependencies to export data.
+// including implementations that only a source load can see, and one in a
+// package the scoped package never imports — and the analysis load really
+// leaves dependencies to export data.
 
 // writeScopedGateFixture writes a module whose internal/kv excludes itself
 // from the contract system while owning an interface with three
 // implementations: one in kv, an UNEXPORTED one in kvdisk (a dependency of
 // kv, so export data would not carry it) and an unexported one in kvfake,
-// which only kv's tests import. kvdisk carries a bare marker of its own, which
-// is a finding about kvdisk alone.
+// which only kv's tests import, plus an unexported one in kvwire, which nothing
+// kv reaches imports: it implements Getter for dependency injection, the way a
+// wiring package does. kvdisk carries a bare marker of its own, which is a
+// finding about kvdisk alone.
 func writeScopedGateFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -68,6 +71,15 @@ func (disk) Get(string) string { return "disk" }
 
 func Open() { _ = disk{} }
 `,
+		"internal/kvwire/kvwire.go": `// Package kvwire wires a Getter in by dependency injection.
+package kvwire
+
+type wired struct{}
+
+func (wired) Get(string) string { return "wired" }
+
+func Provide() any { return wired{} }
+`,
 		"internal/kvfake/kvfake.go": `// Package kvfake fakes values for tests.
 package kvfake
 
@@ -104,7 +116,7 @@ func gateFindingsIn(ds []contractDiagnostic, pkgDir string) []contractDiagnostic
 
 func TestContractLane_ScopedRunReportsWhatTheModuleRunDoes(t *testing.T) {
 	if testing.Short() {
-		t.Skip("loads a module with go/packages twice; skipped under -short")
+		t.Skip("loads a module with go/packages twice; runs in task test")
 	}
 	t.Chdir(writeScopedGateFixture(t))
 	ctx := context.Background()
@@ -123,7 +135,7 @@ func TestContractLane_ScopedRunReportsWhatTheModuleRunDoes(t *testing.T) {
 	if len(wantKV) != 1 || wantKV[0].Analyzer != "forge-exclude-contract-multi-impl" {
 		t.Fatalf("fixture drifted: the unscoped run should refuse kv's marker for its multi-impl interface, got %+v", wantKV)
 	}
-	for _, impl := range []string{"Memory", "kvdisk.disk", "kvfake.fake"} {
+	for _, impl := range []string{"Memory", "kvdisk.disk", "kvfake.fake", "kvwire.wired"} {
 		if !strings.Contains(wantKV[0].Message, impl) {
 			t.Errorf("unscoped run missed implementation %s: %s", impl, wantKV[0].Message)
 		}
@@ -147,7 +159,7 @@ func TestContractLane_ScopedRunReportsWhatTheModuleRunDoes(t *testing.T) {
 // scope of reliant parsed 2,658 packages and peaked at 5.5 GiB.
 func TestAnalysisLoadLeavesDependenciesToExportData(t *testing.T) {
 	if testing.Short() {
-		t.Skip("loads a module with go/packages; skipped under -short")
+		t.Skip("loads a module with go/packages; runs in task test")
 	}
 	t.Chdir(writeScopedGateFixture(t))
 
@@ -175,16 +187,19 @@ func TestAnalysisLoadLeavesDependenciesToExportData(t *testing.T) {
 		t.Error("no dependency came from export data")
 	}
 
-	// The gate needs kvdisk and kvfake from source, so the lane asks for a
-	// second load of exactly the main-module packages kv reaches.
-	load := excludeGateFor(pkgs)
+	// The gate needs kvdisk, kvfake and kvwire from source, so the lane asks
+	// for a second load of the whole main module.
+	load, err := excludeGateFor(context.Background(), pkgs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if load == nil {
 		t.Fatal("excludeGateFor: kv declares a marker and its main-module dependencies came from export data, so the gate needs its own load")
 	}
 	if got, want := strings.Join(load.roots, ","), "example.com/m/internal/kv"; got != want {
 		t.Errorf("gate roots = %s, want %s", got, want)
 	}
-	if got, want := strings.Join(load.search, ","), "example.com/m/internal/kv,example.com/m/internal/kvdisk,example.com/m/internal/kvfake"; got != want {
+	if got, want := strings.Join(load.search, ","), "example.com/m/..."; got != want {
 		t.Errorf("gate search = %s, want %s", got, want)
 	}
 }

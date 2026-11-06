@@ -57,6 +57,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/reliant-labs/forge/internal/testdocker"
 	"github.com/reliant-labs/forge/pkg/secretaccess"
 )
 
@@ -473,22 +474,16 @@ func (s *smoke) badToken() string { return "" }
 
 func (s *smoke) start() {
 	s.t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	s.port = l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	out, err := exec.Command("docker", "run", "-d", "--name", s.server, "--network", s.net,
-		"-p", fmt.Sprintf("127.0.0.1:%d:8200", s.port),
+	out, err := exec.Command("docker", append(append([]string{"run", "-d", "--name", s.server, "--network", s.net}, testdocker.Publish(8200)...),
 		"--tmpfs", "/openbao/data:uid=100,gid=1000", "--tmpfs", "/openbao/audit:uid=100,gid=1000",
 		"-v", s.tlsDir+":/openbao/tls:ro", "-v", filepath.Join(s.dir, "config.hcl")+":/etc/bao/config.hcl:ro",
 		"-e", "BAO_STATIC_KEY="+s.hexKey, "-e", "BAO_API_ADDR=https://"+s.server+":8200",
 		"-e", "BAO_CLUSTER_ADDR=https://127.0.0.1:8201", "-e", "BAO_RAFT_NODE_ID=n0",
-		smokeOpenBaoImage, "server", "-config=/etc/bao/config.hcl").CombinedOutput()
+		smokeOpenBaoImage, "server", "-config=/etc/bao/config.hcl")...).CombinedOutput()
 	if err != nil {
 		s.t.Fatalf("docker run openbao: %v\n%s", err, out)
 	}
+	s.port = testdocker.PublishedPort(s.t, s.server, 8200)
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		if code, _ := s.api("", http.MethodGet, "sys/health?uninitcode=200&sealedcode=200", nil); code == 200 {

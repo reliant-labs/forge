@@ -39,6 +39,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 // The proxy image Envoy Gateway v1.9.2 deploys (api/v1alpha1.DefaultEnvoyProxyImage).
@@ -181,11 +183,6 @@ func TestPublicSmoke_EnvoyAndOpenBao(t *testing.T) {
 	otherDER, _ := x509.CreateCertificate(rand.Reader, otherT, otherT, &otherKey.PublicKey, otherKey)
 	otherPEM := enc("CERTIFICATE", otherDER)
 
-	free := func() int {
-		l, _ := net.Listen("tcp", "127.0.0.1:0")
-		defer func() { _ = l.Close() }()
-		return l.Addr().(*net.TCPAddr).Port
-	}
 	run := func(name string, args ...string) {
 		t.Helper()
 		out, err := exec.Command("docker", append([]string{"run", "-d", "--name", name}, args...)...).CombinedOutput()
@@ -198,14 +195,14 @@ func TestPublicSmoke_EnvoyAndOpenBao(t *testing.T) {
 	kb := make([]byte, 32)
 	_, _ = rand.Read(kb)
 	baoName := "bao-pub-" + sfx
-	baoPort, pubPort := free(), free()
-	run(baoName, "--network", network, "--network-alias", spec.Host(),
-		"-p", fmt.Sprintf("127.0.0.1:%d:8200", baoPort), "-p", fmt.Sprintf("127.0.0.1:%d:%d", pubPort, spec.Public.Port),
+	run(baoName, append(append([]string{"--network", network, "--network-alias", spec.Host()},
+		append(testdocker.Publish(8200), testdocker.Publish(spec.Public.Port)...)...),
 		"--tmpfs", "/openbao/data:uid=100,gid=1000", "--tmpfs", "/openbao/audit:uid=100,gid=1000",
 		"-v", tlsDir+":/openbao/tls:ro", "-v", filepath.Join(dir, "config.hcl")+":/etc/bao/config.hcl:ro",
 		"-e", "BAO_STATIC_KEY="+hex.EncodeToString(kb), "-e", "BAO_API_ADDR=https://"+spec.Host()+":8200",
 		"-e", "BAO_CLUSTER_ADDR=https://127.0.0.1:8201", "-e", "BAO_RAFT_NODE_ID=n0",
-		smokeOpenBaoImage, "server", "-config=/etc/bao/config.hcl")
+		smokeOpenBaoImage, "server", "-config=/etc/bao/config.hcl")...)
+	baoPort, pubPort := testdocker.PublishedPort(t, baoName, 8200), testdocker.PublishedPort(t, baoName, spec.Public.Port)
 
 	direct := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "localhost"}}}
 	do := func(c *http.Client, method, url string, hdr map[string]string, body string) (int, string, http.Header) {
@@ -249,14 +246,13 @@ func TestPublicSmoke_EnvoyAndOpenBao(t *testing.T) {
 		cfgPath := filepath.Join(dir, "envoy-"+tag+".json")
 		mustWrite(t, cfgPath, envoyConfig(t, spec, spec.Host(), sni, caPEM, sans), 0o644)
 		name := "envoy-pub-" + tag + "-" + sfx
-		port := free()
 		ip := envoyIP
 		if tag != "good" {
 			ip = fmt.Sprintf("%s%d", strings.TrimSuffix(subnet, "0/24"), 20+len(containers))
 		}
-		run(name, "--network", network, "--ip", ip, "-p", fmt.Sprintf("127.0.0.1:%d:18080", port),
-			"-v", cfgPath+":/c.json:ro", smokeEnvoyImage, "-c", "/c.json")
-		url := fmt.Sprintf("http://127.0.0.1:%d", port)
+		run(name, append(append([]string{"--network", network, "--ip", ip}, testdocker.Publish(18080)...),
+			"-v", cfgPath+":/c.json:ro", smokeEnvoyImage, "-c", "/c.json")...)
+		url := fmt.Sprintf("http://127.0.0.1:%d", testdocker.PublishedPort(t, name, 18080))
 		wait("Envoy "+tag, func() bool { c, _, _ := do(http.DefaultClient, "GET", url+"/", nil, ""); return c != 0 })
 		return url
 	}

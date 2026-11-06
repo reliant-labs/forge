@@ -41,6 +41,7 @@ import Input from "@/components/ui/input";
 import Label from "@/components/ui/label";
 import { AuthError, signIn, signUp, type PasswordRule } from "@/lib/auth/native-login";
 import { RouteGuard } from "@/lib/auth/route-guard";
+import { safeReturnTo } from "@/lib/auth/return-to";
 import { useAuth } from "@/lib/auth/use-auth";
 import { useAuthOptions } from "@/lib/auth/use-auth-options";
 import { usePasswordPolicy } from "@/lib/auth/use-password-policy";
@@ -168,15 +169,12 @@ const signInRoute = createRoute({
     // guard writes this param only when it redirects, so it is often absent
     // and a schema would reject the bare /auth/sign-in navigation.
     //
-    // Same-origin, absolute-path only: this is attacker-supplied input, and
-    // handing it to a navigation unchecked is an open redirect. `//evil.com`
-    // is a protocol-relative URL, so the second character matters as much as
-    // the first.
+    // Same-origin only: this is attacker-supplied input, and handing it to
+    // a navigation unchecked is an open redirect. safeReturnTo parses it the
+    // way the browser will (so `/\evil.com` and `/%09/evil.com` are caught)
+    // and keeps it only on this origin.
     const requested = new URLSearchParams(window.location.search).get("returnTo");
-    const returnTo =
-      requested !== null && requested.startsWith("/") && !requested.startsWith("//")
-        ? requested
-        : "/";
+    const returnTo = safeReturnTo(requested);
 
     // Whether this deployment serves sign-up at all: off outside development
     // unless the server's config sets auth_self_signup (see

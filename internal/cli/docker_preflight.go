@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -31,13 +32,29 @@ import (
 )
 
 // dockerPreflightTimeout bounds the daemon probe. A warm, healthy daemon
-// answers `docker version` in well under a second; the headroom covers a
-// cold Docker Desktop still bringing its VM up. Past this, "not responding"
-// is the honest verdict — the cluster phase cannot proceed either way, and
-// the caller should not inherit the daemon's own multi-minute stall.
-// It is a var, not a const, purely so tests can shorten it; nothing in
-// production reassigns it.
-var dockerPreflightTimeout = 10 * time.Second
+// answers `docker version` in well under a second, but a healthy daemon on a
+// LOADED machine does not: on a shared host at load ~100 it answered in 6s, 9s
+// and 25s (forge report b8882151), and a 10s bound refused a deploy whose
+// daemon was fine. A dead daemon does not cost this budget — a missing socket
+// is refused at once, and Docker Desktop's proxy returns its own 500 after
+// ~20s — so the bound is sized for a slow answer, not for a wedged one.
+// FORGE_DOCKER_PREFLIGHT_TIMEOUT (a Go duration) overrides it.
+// It is a var, not a const, so tests can shorten it.
+var dockerPreflightTimeout = 45 * time.Second
+
+// dockerPreflightTimeoutEnv names the override of dockerPreflightTimeout.
+const dockerPreflightTimeoutEnv = "FORGE_DOCKER_PREFLIGHT_TIMEOUT"
+
+// dockerPreflightBudget is the probe's bound: the env override when it parses
+// as a positive duration, else dockerPreflightTimeout.
+func dockerPreflightBudget() time.Duration {
+	if v := strings.TrimSpace(os.Getenv(dockerPreflightTimeoutEnv)); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return dockerPreflightTimeout
+}
 
 // dockerDaemonProbeFn is the seam production wires to the real probe and
 // tests replace, so preflight branches are exercised without a daemon.
@@ -59,7 +76,8 @@ func probeDockerDaemon(ctx context.Context) (string, error) {
 // docker absent, daemon unreachable, daemon unresponsive. Returning a plain
 // error (rather than printing) keeps the phase's error path single-exit.
 func ensureDockerDaemon(ctx context.Context) error {
-	probeCtx, cancel := context.WithTimeout(ctx, dockerPreflightTimeout)
+	budget := dockerPreflightBudget()
+	probeCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	out, err := dockerDaemonProbeFn(probeCtx)
@@ -77,8 +95,9 @@ func ensureDockerDaemon(ctx context.Context) error {
 	// OURS; a cancelled parent means the user interrupted, not a wedged
 	// daemon, and must not be reported as one.
 	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-		return fmt.Errorf("the Docker daemon did not respond within %s.%s%s",
-			dockerPreflightTimeout, formatCommandStderr(out), dockerRestartHint())
+		return fmt.Errorf("the Docker daemon did not respond within %s.%s%s"+
+			"\n  hint: a healthy daemon on a heavily loaded machine can be this slow; allow it longer with %s=2m",
+			budget, formatCommandStderr(out), dockerRestartHint(), dockerPreflightTimeoutEnv)
 	}
 
 	return fmt.Errorf("cannot reach the Docker daemon: %w%s%s",

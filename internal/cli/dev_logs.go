@@ -11,8 +11,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 func newDevLogsCmd() *cobra.Command {

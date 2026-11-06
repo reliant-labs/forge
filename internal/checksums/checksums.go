@@ -518,6 +518,23 @@ func (cs *FileChecksums) IsDisowned(relPath string) bool {
 	return ok
 }
 
+// DisownedIn reports whether data, the bytes of a .forge/disowned.json (from
+// any commit, not only the work tree), disowns relPath. nil data is a commit
+// with no disown record, which disowns nothing. ok is false when data does
+// not parse: a caller deciding whether it may discard the file's content must
+// then treat the path as disowned.
+func DisownedIn(data []byte, relPath string) (disowned, ok bool) {
+	if data == nil {
+		return false, true
+	}
+	var d disownedJSON
+	if err := json.Unmarshal(data, &d); err != nil {
+		return false, false
+	}
+	_, disowned = slashKeys(d.Files)[slashKey(relPath)]
+	return disowned, true
+}
+
 // disownedJSON / hashesJSON are the wire shapes of the two state files.
 //
 // NO forge_version field. It used to carry one, and it was WRITE-ONLY: Load

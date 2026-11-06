@@ -125,6 +125,19 @@ message Ping%[2]sResponse {
 	mustGit("add", "-A")
 	mustGit("commit", "-q", "--no-verify", "--no-edit")
 
+	// Both branches added a service to the service catalog's lists, so the
+	// driver kept this side's catalog for generate to rebuild, and said so.
+	// Until it is rebuilt the merge is not green: verify-generated names it.
+	const catalogPath = "gen/forge_service_catalog.json"
+	if !strings.Contains(out, catalogPath+": "+regenerateNote) {
+		t.Errorf("the merge did not say it kept the catalog for a regenerate:\n%s", out)
+	}
+	verify := exec.Command(forgeBin, "ci", "verify-generated")
+	verify.Dir = projectDir
+	if vout, err := verify.CombinedOutput(); err == nil || !strings.Contains(string(vout), catalogPath) {
+		t.Errorf("verify-generated must fail on the merged, not yet regenerated catalog (err=%v):\n%s", err, vout)
+	}
+
 	// Adding an RPC changes the process that mounts it. Its part is rebuilt
 	// from both branches, while independent alert inputs merge unchanged.
 	runCmd(t, projectDir, forgeBin, "generate")
@@ -145,6 +158,12 @@ message Ping%[2]sResponse {
 			t.Errorf("routes_gen.go after generate does not carry %s", svc)
 		}
 		readFileE2E(t, filepath.Join(projectDir, "deploy", "observability", "spec", "alert-service-"+svc+"_gen.json"))
+	}
+	catalog := readFileE2E(t, filepath.Join(projectDir, catalogPath))
+	for _, want := range []string{"services.alpha.v1.AlphaService", "services.beta.v1.BetaService"} {
+		if !strings.Contains(catalog, want) {
+			t.Errorf("the regenerated service catalog lacks %s", want)
+		}
 	}
 	commit("regenerate")
 

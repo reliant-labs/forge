@@ -1270,3 +1270,85 @@ func sortStrings(s []string) []string {
 	}
 	return s
 }
+
+// A magic-link binding is charged its attempt budget whatever it holds, so
+// exhausting it does not tell a known address from an unknown or unverified
+// one: every outcome answers 401 five times, then 429.
+func TestMagicLink_AttemptExhaustionDoesNotTellTheOutcome(t *testing.T) {
+	h := newHarness(t, policyWith(SignupInvite, allMethods))
+	h.z.addUser("known@acme.com", true, "")
+	h.z.addUser("unverified@acme.com", false, "")
+	run := func(email string) string {
+		b := h.browser()
+		b.post("/auth/magic/request", map[string]any{"email": email})
+		var seq []string
+		for i := 0; i < 7; i++ {
+			status, body := b.post("/auth/magic/consume", map[string]any{"code": "guess"})
+			seq = append(seq, fmt.Sprintf("%d %v", status, body))
+		}
+		return strings.Join(seq, "; ")
+	}
+	known := run("known@acme.com")
+	if !strings.HasPrefix(strings.Split(known, "; ")[5], "429") {
+		t.Fatalf("a known address was not rate limited after five wrong codes: %s", known)
+	}
+	for _, email := range []string{"nobody@acme.com", "unverified@acme.com"} {
+		if got := run(email); got != known {
+			t.Errorf("%s answered\n  %s\nknown answered\n  %s", email, got, known)
+		}
+	}
+	// A second link for the same address does not buy fresh guesses, for a
+	// decoy as for a real account.
+	for _, email := range []string{"known@acme.com", "nobody@acme.com"} {
+		b := h.browser()
+		b.post("/auth/magic/request", map[string]any{"email": email})
+		if status, body := b.post("/auth/magic/consume", map[string]any{"code": "guess"}); status != 429 {
+			t.Errorf("%s: a replacement link answered %d %v, want 429", email, status, body)
+		}
+	}
+}
+
+// Password-only open sign-up: when the issuer refuses the chosen password
+// at verification (a rule the broker cannot see) or fails to set it, the
+// answer says the password was not set and hands this browser a reset code
+// to choose another; the refused password is not kept.
+func TestVerify_APasswordTheIssuerDoesNotSetIsRecoverable(t *testing.T) {
+	for name, setup := range map[string]func(z *fakeZitadel){
+		"issuer refuses": func(z *fakeZitadel) { z.refusedPassword = "no-symbol-password" },
+		"issuer fails":   func(z *fakeZitadel) { z.passwordSetFails = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, policyWith(SignupOpen, []string{MethodPassword}))
+			h.z.mu.Lock()
+			setup(h.z)
+			h.z.mu.Unlock()
+			b := h.browser()
+			if status, body := b.post("/auth/register", map[string]any{"email": "pw@else.com", "password": "no-symbol-password"}); status != 202 {
+				t.Fatalf("register: %d %v", status, body)
+			}
+			u := h.z.userByEmail("pw@else.com")
+			status, body := b.post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code})
+			if status != 200 || body["verified"] != true || body["password"] != passwordNotSet {
+				t.Fatalf("verify: %d %v, want verified with password %q", status, body, passwordNotSet)
+			}
+			if h.z.user(u.id).password != "" {
+				t.Fatal("the refused password was set")
+			}
+			reset, _ := body["reset"].(map[string]any)
+			if reset == nil || reset["userID"] != u.id || reset["code"] == "" {
+				t.Fatalf("no reset continuation: %v", body)
+			}
+			// The continuation sets a password chosen again.
+			h.z.mu.Lock()
+			h.z.refusedPassword, h.z.passwordSetFails = "", false
+			h.z.mu.Unlock()
+			if err := h.z.client().ResetPassword(context.Background(), PasswordReset{UserID: u.id,
+				Code: reset["code"].(string), NewPassword: "a-better-password!"}); err != nil {
+				t.Fatalf("the continuation's code does not set a password: %v", err)
+			}
+			if !passwordSignsIn(h, "pw@else.com", "a-better-password!") {
+				t.Fatal("the password chosen again does not sign in")
+			}
+		})
+	}
+}

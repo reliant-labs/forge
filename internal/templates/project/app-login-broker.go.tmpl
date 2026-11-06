@@ -425,11 +425,7 @@ func (b *loginBroker) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// A LOGIN_POLICY that does not offer passwords refuses them here, not
 	// only in the UI: an account that has a password must not sign in with
 	// the method the policy excluded. The legacy policy offers passwords.
-	if b.policy.Present && !b.policy.Offers(devidp.MethodPassword) {
-		writeAuthJSON(w, http.StatusForbidden, map[string]string{
-			"error": "That sign-in method is not offered here.",
-			"code":  devidp.CodeMethodNotOffered,
-		})
+	if b.refusePassword(w) {
 		return
 	}
 
@@ -460,6 +456,23 @@ func (b *loginBroker) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	b.setSession(w, tokens)
 	writeAuthJSON(w, http.StatusOK, identityFrom(tokens.IDToken))
+}
+
+// refusePassword answers 403 method_not_offered, and reports true, when the
+// LOGIN_POLICY in force excludes passwords. Every route that authenticates
+// with a password, or sets one, calls it: /auth/login, and /auth/forgot and
+// /auth/reset, whose reset signs the person in with the password it just set.
+// Guarding only /auth/login would leave reset as a password sign-in the
+// policy excluded. The legacy policy offers passwords.
+func (b *loginBroker) refusePassword(w http.ResponseWriter) bool {
+	if !b.policy.Present || b.policy.Offers(devidp.MethodPassword) {
+		return false
+	}
+	writeAuthJSON(w, http.StatusForbidden, map[string]string{
+		"error": "That sign-in method is not offered here.",
+		"code":  devidp.CodeMethodNotOffered,
+	})
+	return true
 }
 
 // handleOptions reports which optional sign-in routes are served, so the
@@ -824,6 +837,11 @@ const (
 // addresses. Both are charged BEFORE the account lookup and whether or not the
 // address exists, so exhausting a budget tells a guesser nothing.
 func (b *loginBroker) handleForgot(w http.ResponseWriter, r *http.Request) {
+	// No password to reset under a policy that excludes them: the same
+	// answer for every address, so it says nothing about any account.
+	if b.refusePassword(w) {
+		return
+	}
 	var req forgotRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
 		writeAuthError(w, http.StatusBadRequest, "malformed request")
@@ -894,6 +912,11 @@ func (b *loginBroker) handleForgot(w http.ResponseWriter, r *http.Request) {
 //     spent, even the right code is refused until the window passes.
 //  4. A wrong, expired and used code are one indistinguishable answer.
 func (b *loginBroker) handleReset(w http.ResponseWriter, r *http.Request) {
+	// A reset sets a password and signs in with it, so a policy that
+	// excludes passwords refuses it before the code is judged or charged.
+	if b.refusePassword(w) {
+		return
+	}
 	var req resetRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
 		writeAuthError(w, http.StatusBadRequest, "malformed request")

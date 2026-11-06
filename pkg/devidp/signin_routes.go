@@ -312,11 +312,17 @@ type sessionBinding struct {
 // magicBinding is a pending magic link: a one-time-code session ("s"), an
 // email-verification code for an unverified account ("v"), or nothing ("n",
 // the address cannot sign in — indistinguishable from outside).
+//
+// Attempts is the key its consume attempts are charged to, set for EVERY
+// kind (see magicAttemptKey): a decoy that answered 401 forever, while a real
+// link answered 429 after five wrong codes, would say which addresses have
+// an account.
 type magicBinding struct {
-	Kind   string `json:"k"`
-	ID     string `json:"i,omitempty"`
-	Token  string `json:"t,omitempty"`
-	UserID string `json:"u,omitempty"`
+	Kind     string `json:"k"`
+	ID       string `json:"i,omitempty"`
+	Token    string `json:"t,omitempty"`
+	UserID   string `json:"u,omitempty"`
+	Attempts string `json:"a,omitempty"`
 }
 
 type enrollBinding struct {
@@ -612,10 +618,23 @@ func (r *SignInRoutes) HandleMagicRequest(w http.ResponseWriter, req *http.Reque
 	} else {
 		binding = r.startMagic(ctx, email)
 	}
+	binding.Attempts = r.magicAttemptKey(email)
 	if err := r.setBinding(w, magicCookie, binding); err != nil {
 		r.cfg.Logger.ErrorContext(ctx, "magic link: seal", "error", err)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": msgMagicSent})
+}
+
+// magicAttemptKey is the consume-attempt budget of a magic link for an
+// address: an HMAC of the address under the decoy secret, so it is the same
+// for every outcome (verified, unverified, unknown, rate-limited) and every
+// link requested for that address, and it names no account. Charging by
+// address rather than by link also keeps a fresh link from buying fresh
+// guesses at an unverified account's verification code.
+func (r *SignInRoutes) magicAttemptKey(email string) string {
+	m := hmac.New(sha256.New, r.decoy)
+	m.Write([]byte("magic-link attempts\x00" + email))
+	return "m:" + base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }
 
 func (r *SignInRoutes) startMagic(ctx context.Context, email string) magicBinding {
@@ -685,10 +704,16 @@ func (r *SignInRoutes) HandleMagicConsume(w http.ResponseWriter, req *http.Reque
 		writeErr(w, http.StatusBadRequest, CodeInvalidCode, msgInvalidCode)
 		return
 	}
-	key := b.ID + b.UserID
-	if b.Kind == "n" {
-		writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
-		return
+	// Every binding, a decoy included, is charged to its address's budget
+	// BEFORE its kind is looked at, so exhausting it answers 429 alike.
+	key := b.Attempts
+	if key == "" {
+		// A link requested before Attempts existed; its life is minutes.
+		key = b.ID + b.UserID
+		if b.Kind == "n" {
+			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
+			return
+		}
 	}
 	if !r.magicByCode.reserve(key) {
 		writeErr(w, http.StatusTooManyRequests, CodeRateLimited, msgTooMany)
@@ -1176,8 +1201,21 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 	r.codeByUser.forget(userID)
 	r.cfg.Logger.InfoContext(ctx, "email address verified", "user_id", userID)
 	r.attachPendingLink(w, req, userID)
-	r.setPendingPassword(w, req, userID)
+	pw := r.setPendingPassword(w, req, userID)
 	r.grantSignupRoleOnVerify(ctx, userID)
+	if pw.failed {
+		// The address is proven, but the password the sign-up chose was not
+		// set: say so rather than "you can sign in now" to an account with
+		// no credential. The continuation is a reset code minted for THIS
+		// browser, which just proved the address, so the person chooses a
+		// password again on the reset form; the chosen one is not kept.
+		body := map[string]any{"verified": true, "enroll": false, "password": passwordNotSet}
+		if pw.reset != nil {
+			body["reset"] = pw.reset
+		}
+		writeJSON(w, http.StatusOK, body)
+		return
+	}
 	if r.cfg.Policy.Offers(MethodPasskey) {
 		if has, err := c.HasPassword(ctx, userID); err == nil && !has {
 			code, err := c.MintPasskeyRegistrationCode(ctx, userID)
@@ -1211,17 +1249,42 @@ func (r *SignInRoutes) attachPendingLink(w http.ResponseWriter, req *http.Reques
 	r.cfg.Logger.InfoContext(ctx, "social account linked after verification", "user_id", userID)
 }
 
+// passwordNotSet is HandleVerify's "password" field when the address was
+// proven but the password its sign-up chose could not be set.
+const passwordNotSet = "not_set"
+
+// passwordContinuation is a reset code for a proven account whose sign-up
+// password could not be set: the browser redeems it at the reset route with
+// a password chosen again.
+type passwordContinuation struct {
+	UserID string `json:"userID"`
+	Code   string `json:"code"`
+}
+
+// pendingPasswordOutcome is what setPendingPassword did. failed: a pending
+// password existed for this user and was not set; reset, when not nil, is the
+// way to set one now.
+type pendingPasswordOutcome struct {
+	failed bool
+	reset  *passwordContinuation
+}
+
 // setPendingPassword sets the password a sign-up chose, now that THIS
 // browser proved the address of the account it registered. PROOF FIRST: the
 // broker mints the reset code with its own credential only after VerifyEmail
 // succeeded for this user in this request. A verification opened in any
 // other browser sets nothing: the account then has no password until its
 // owner sets one (a passkey, a magic link, or a reset).
-func (r *SignInRoutes) setPendingPassword(w http.ResponseWriter, req *http.Request, userID string) {
+//
+// When the issuer refuses the password (a rule rejectWeak could not see) or
+// fails, the chosen password is dropped and a FRESH reset code is minted for
+// this same proven browser, so the person can choose another at once. If even
+// that cannot be minted, failed alone tells them to use "forgot password".
+func (r *SignInRoutes) setPendingPassword(w http.ResponseWriter, req *http.Request, userID string) pendingPasswordOutcome {
 	ctx := req.Context()
 	var pp pendingPasswordBinding
 	if !r.readBinding(req, passwordCookie, &pp) || pp.UserID != userID || pp.Password == "" {
-		return
+		return pendingPasswordOutcome{}
 	}
 	r.clearBinding(w, passwordCookie)
 	c := r.cfg.Client
@@ -1229,11 +1292,19 @@ func (r *SignInRoutes) setPendingPassword(w http.ResponseWriter, req *http.Reque
 	if err == nil {
 		err = c.ResetPassword(ctx, PasswordReset{UserID: userID, Code: code, NewPassword: pp.Password})
 	}
-	if err != nil {
-		r.cfg.Logger.ErrorContext(ctx, "verification: the sign-up password could not be set", "user_id", userID, "error", err)
-		return
+	if err == nil {
+		r.cfg.Logger.InfoContext(ctx, "sign-up password set after verification", "user_id", userID)
+		return pendingPasswordOutcome{}
 	}
-	r.cfg.Logger.InfoContext(ctx, "sign-up password set after verification", "user_id", userID)
+	r.cfg.Logger.ErrorContext(ctx, "verification: the sign-up password could not be set", "user_id", userID, "error", err)
+	out := pendingPasswordOutcome{failed: true}
+	next, err := c.MintPasswordResetCode(ctx, userID)
+	if err != nil {
+		r.cfg.Logger.ErrorContext(ctx, "verification: no reset code for choosing the password again", "user_id", userID, "error", err)
+		return out
+	}
+	out.reset = &passwordContinuation{UserID: userID, Code: next}
+	return out
 }
 
 // HandleVerifyResend mails a fresh verification link. Always 202.

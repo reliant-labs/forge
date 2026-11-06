@@ -28,6 +28,12 @@ type fakeZitadel struct {
 	mails    []fakeMail // what the issuer "sent"
 	calls    []string   // "METHOD /path", every call
 	grants   []string   // "userID:role"
+
+	// refusedPassword is a password the issuer's policy refuses although it
+	// meets every rule the broker can see (DOMAIN-ZDLwA, "no symbol").
+	refusedPassword string
+	// passwordSetFails makes setting a password fail at the issuer (500).
+	passwordSetFails bool
 }
 
 type fakeUser struct {
@@ -455,6 +461,14 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		pw := str(sub(b, "newPassword"), "password")
 		if len(pw) < 8 {
 			zerr(w, 400, "DOMAIN-HuJf6", "Password is too short")
+			return
+		}
+		if f.refusedPassword != "" && pw == f.refusedPassword {
+			zerr(w, 400, "DOMAIN-ZDLwA", "Password must contain a symbol")
+			return
+		}
+		if f.passwordSetFails {
+			zerr(w, 500, "INTERNAL", "the issuer is down")
 			return
 		}
 		u.password, u.resetCode = pw, ""

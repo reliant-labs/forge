@@ -689,15 +689,22 @@ export async function acceptInvite(invite: InviteAcceptance): Promise<InviteResu
   return result;
 }
 
-/** Confirms an address from its verification link. `enroll`: a passkey may be added now. */
-export async function verifyEmail(
-  userID: string,
-  code: string,
-): Promise<{ verified: boolean; enroll: boolean }> {
-  return (await request("/auth/verify", { userID, code })) as {
-    verified: boolean;
-    enroll: boolean;
-  };
+/**
+ * What confirming an address answers. `enroll`: a passkey may be added now.
+ * `password: "not_set"`: the address is confirmed, but the password chosen at
+ * sign-up could not be saved; `reset`, when present, is a reset code for
+ * choosing one again right away (resetPassword).
+ */
+export interface VerifyResult {
+  verified: boolean;
+  enroll: boolean;
+  password?: "not_set";
+  reset?: { userID: string; code: string };
+}
+
+/** Confirms an address from its verification link. */
+export async function verifyEmail(userID: string, code: string): Promise<VerifyResult> {
+  return (await request("/auth/verify", { userID, code })) as VerifyResult;
 }
 
 /** Mails a fresh verification link. The same answer for every address. */

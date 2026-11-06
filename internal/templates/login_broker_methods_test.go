@@ -83,7 +83,7 @@ func TestLoginBrokerScaffoldMountsEachMethodOnlyWhenOffered(t *testing.T) {
 		// §5.7: the delivered password rules come before the Settings API.
 		"if p, ok := b.policy.PasswordPolicy(); ok {",
 		// A policy without passwords refuses them at the endpoint too.
-		"if b.policy.Present && !b.policy.Offers(devidp.MethodPassword) {",
+		"if !b.policy.Present || b.policy.Offers(devidp.MethodPassword) {",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the broker lacks %q", want)
@@ -255,6 +255,37 @@ func TestPasswordLoginFollowsThePolicy(t *testing.T) {
 	}
 	if status, code := login(""); status == 403 || code == "method_not_offered" {
 		t.Errorf("legacy policy: password login refused as not offered (%d %q)", status, code)
+	}
+}
+
+// A reset sets a password and signs in with it, so a policy without
+// passwords refuses /auth/reset (and /auth/forgot) before the issuer is
+// asked: no password-authenticated session through the back door.
+func TestPasswordResetFollowsThePolicy(t *testing.T) {
+	post := func(policy, path, body string) (int, string, bool) {
+		mux, _ := mounted(t, policy)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(body)))
+		var got map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &got)
+		return rec.Code, got["code"], len(rec.Result().Cookies()) > 0
+	}
+	reset := `+"`"+`{"userID":"u1","code":"ABCDEF","password":"a-long-password"}`+"`"+`
+	forgot := `+"`"+`{"email":"pw@app.test"}`+"`"+`
+	for _, policy := range []string{
+		`+"`"+`{"version":1,"signup":"invite","methods":["passkey"],"mail":"platform","require_verified_email":true}`+"`"+`,
+		`+"`"+`{"version":1,"signup":"invite","methods":["magic_link"],"social":[{"type":"google","idp_id":"1","label":"Google"}],"mail":"platform","require_verified_email":true}`+"`"+`,
+	} {
+		for path, body := range map[string]string{"/auth/reset": reset, "/auth/forgot": forgot} {
+			if status, code, cookie := post(policy, path, body); status != 403 || code != "method_not_offered" || cookie {
+				t.Errorf("%s under %s answered %d %q (cookie %v), want 403 method_not_offered and no session", path, policy, status, code, cookie)
+			}
+		}
+	}
+	// The legacy policy still serves reset: the unreachable issuer answers
+	// 502, not the policy's 403.
+	if status, code, _ := post("", "/auth/reset", reset); status == 403 || code == "method_not_offered" {
+		t.Errorf("legacy policy: reset refused as not offered (%d %q)", status, code)
 	}
 }
 `)

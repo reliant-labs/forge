@@ -8,10 +8,13 @@
 //
 // Confirming issues no session by itself. An account created without a
 // password (where passkeys are offered) may add one right here; anyone else
-// signs in as usual.
+// signs in as usual. If the password chosen at sign-up could not be saved,
+// the server says so and hands this browser a reset code, so the person
+// chooses another here instead of being told to sign in with none.
 
 import { useState } from "react";
 
+import { ResetPasswordForm } from "@/components/reset-password-form";
 import Button from "@/components/ui/button";
 import { AuthError, passkeySignIn, registerPasskey, verifyEmail } from "@/lib/auth/native-login";
 
@@ -22,8 +25,13 @@ export interface VerifyEmailFormProps {
   onSignedIn: () => void | Promise<void>;
 }
 
+// "password": the sign-up password was not saved and a reset code came back;
+// "noPassword": it was not saved and none did.
+type VerifyState = "ready" | "verified" | "enroll" | "password" | "noPassword";
+
 export function VerifyEmailForm({ userID, code, signInHref, onSignedIn }: VerifyEmailFormProps) {
-  const [state, setState] = useState<"ready" | "verified" | "enroll">("ready");
+  const [state, setState] = useState<VerifyState>("ready");
+  const [reset, setReset] = useState<{ userID: string; code: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -52,6 +60,24 @@ export function VerifyEmailForm({ userID, code, signInHref, onSignedIn }: Verify
     }
   }
 
+  if (state === "password" && reset) {
+    return (
+      <>
+        <p role="status" className="mb-4 text-sm text-ink">
+          Your email is confirmed, but your password could not be saved. Choose a password to
+          finish.
+        </p>
+        <ResetPasswordForm
+          userID={reset.userID}
+          code={reset.code}
+          signInHref={signInHref}
+          forgotHref={signInHref}
+          onDone={(signedIn) => (signedIn ? void onSignedIn() : window.location.assign(signInHref))}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="rounded-xl border border-border bg-surface p-8 shadow-sm">
       <h1 className="text-xl font-semibold tracking-tight text-ink">Confirm your email</h1>
@@ -66,6 +92,11 @@ export function VerifyEmailForm({ userID, code, signInHref, onSignedIn }: Verify
           onClick={() =>
             void act(async () => {
               const result = await verifyEmail(userID, code);
+              if (result.password === "not_set") {
+                setReset(result.reset ?? null);
+                setState(result.reset ? "password" : "noPassword");
+                return;
+              }
               setState(result.enroll ? "enroll" : "verified");
             })
           }
@@ -77,6 +108,13 @@ export function VerifyEmailForm({ userID, code, signInHref, onSignedIn }: Verify
       {state === "verified" ? (
         <p role="status" className="mt-4 text-sm text-ink">
           Your email is confirmed. You can sign in now.
+        </p>
+      ) : null}
+
+      {state === "noPassword" ? (
+        <p role="alert" className="mt-4 text-sm text-ink">
+          Your email is confirmed, but your password could not be saved. Use &ldquo;Forgot your
+          password?&rdquo; on the sign-in screen to choose one.
         </p>
       ) : null}
 

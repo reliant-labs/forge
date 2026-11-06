@@ -13,6 +13,7 @@ import { MagicLinkForm } from "@/components/magic-link-form";
 import { NoCodeHint, SignInMethods, UnverifiedNotice } from "@/components/sign-in-methods";
 import { SocialCallback } from "@/components/social-callback";
 import { VerifyEmailForm } from "@/components/verify-email-form";
+import { AuthContext } from "@/lib/auth/use-auth";
 
 import {
   AuthError,
@@ -407,6 +408,49 @@ describe("VerifyEmailForm", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Confirm my email" }));
     expect(await screen.findByRole("button", { name: "Create a passkey" })).toBeTruthy();
+  });
+
+  it("asks for a password again when the sign-up password could not be saved", async () => {
+    const fetchMock = stubRoutes({
+      "/auth/verify": {
+        status: 200,
+        body: {
+          verified: true,
+          enroll: false,
+          password: "not_set",
+          reset: { userID: "u1", code: "r1" },
+        },
+      },
+    });
+    const auth = {
+      identity: { authenticated: false },
+      isAuthenticated: false,
+      isLoading: false,
+      refresh: async () => {},
+      logout: async () => {},
+    };
+    render(
+      <AuthContext.Provider value={auth}>
+        <VerifyEmailForm userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />
+      </AuthContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm my email" }));
+    await screen.findByText(/your password could not be saved/);
+    expect(screen.queryByText(/You can sign in now/)).toBeNull();
+    expect(screen.getByText("Choose a new password")).toBeTruthy();
+    expect(bodyOf(fetchMock, "/auth/verify")).toEqual({ userID: "u1", code: "c1" });
+  });
+
+  it("points to a reset when the password could not be saved and no code came back", async () => {
+    stubRoutes({
+      "/auth/verify": { status: 200, body: { verified: true, enroll: false, password: "not_set" } },
+    });
+    render(
+      <VerifyEmailForm userID="u1" code="c1" signInHref="/auth/sign-in" onSignedIn={() => {}} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm my email" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Forgot your\s+password\?/);
+    expect(screen.queryByText(/You can sign in now/)).toBeNull();
   });
 
   it("shows a rejected code", async () => {

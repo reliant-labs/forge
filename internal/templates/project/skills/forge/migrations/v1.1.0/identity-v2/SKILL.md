@@ -153,6 +153,20 @@ Run `forge generate`. The identity fills it; no `config.k` line names it.
    If you carry a text-matching workaround for the 404 from before v1.1.0,
    drop it: `errors.Is(err, devidp.ErrPasswordPolicyUnavailable)` is the check.
 
+10. **Passwords follow the policy** — copy `refusePassword` from the scratch
+    project's broker, and call it first in `handleLogin`, `handleForgot` and
+    `handleReset`:
+
+    ```go
+    if b.refusePassword(w) {
+    	return
+    }
+    ```
+
+    A reset sets a password and signs in with it, so guarding only
+    `/auth/login` leaves a password sign-in a passkey-only or social-only
+    policy excluded.
+
 ## 3. Add the frontend pages
 
 From the scratch project's frontend (same kind), copy:

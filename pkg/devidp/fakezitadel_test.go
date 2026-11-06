@@ -34,6 +34,9 @@ type fakeZitadel struct {
 	refusedPassword string
 	// passwordSetFails makes setting a password fail at the issuer (500).
 	passwordSetFails bool
+	// failLinks makes the link listing fail (a revocation that cannot
+	// complete).
+	failLinks bool
 }
 
 type fakeUser struct {
@@ -48,6 +51,8 @@ type fakeUser struct {
 	pkRegCode            PasskeyRegistrationCode
 	resetCode            string
 	links                []IDPLink
+	metadata             map[string]string
+	locked               bool
 }
 
 type fakeSession struct {
@@ -396,6 +401,14 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 			u.emailCode = f.id("ev")
 			f.mails = append(f.mails, fakeMail{userID: u.id, kind: "verify", code: u.emailCode, link: f.render(str(sc, "urlTemplate"), u, u.emailCode, "")})
 		}
+		if md, _ := b["metadata"].([]any); len(md) > 0 {
+			u.metadata = map[string]string{}
+			for _, e := range md {
+				m, _ := e.(map[string]any)
+				v, _ := base64.StdEncoding.DecodeString(str(m, "value"))
+				u.metadata[str(m, "key")] = string(v)
+			}
+		}
 		if links, _ := b["idpLinks"].([]any); len(links) > 0 {
 			l, _ := links[0].(map[string]any)
 			u.links = append(u.links, IDPLink{IdPID: str(l, "idpId"), UserID: str(l, "userId"), UserName: str(l, "userName")})
@@ -517,6 +530,67 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v2/users/{id}/links", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
 		l := sub(b, "idpLink")
 		u.links = append(u.links, IDPLink{IdPID: str(l, "idpId"), UserID: str(l, "userId"), UserName: str(l, "userName")})
+		ok(w, map[string]any{})
+	}))
+	mux.HandleFunc("POST /v2/users/{id}/links/_search", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
+		if f.failLinks {
+			zerr(w, 503, "INTERNAL-x", "unavailable")
+			return
+		}
+		res := []any{}
+		for _, l := range u.links {
+			res = append(res, map[string]any{"idpId": l.IdPID, "userId": l.UserID, "userName": l.UserName})
+		}
+		ok(w, map[string]any{"result": res})
+	}))
+	mux.HandleFunc("DELETE /v2/users/{id}/links/{idp}/{linked}", withUser(func(w http.ResponseWriter, r *http.Request, u *fakeUser, _ map[string]any) {
+		kept := u.links[:0]
+		for _, l := range u.links {
+			if l.IdPID != r.PathValue("idp") || l.UserID != r.PathValue("linked") {
+				kept = append(kept, l)
+			}
+		}
+		u.links = kept
+		ok(w, map[string]any{})
+	}))
+	mux.HandleFunc("DELETE /v2/users/{id}/passkeys/{pid}", withUser(func(w http.ResponseWriter, r *http.Request, u *fakeUser, _ map[string]any) {
+		kept := u.passkeys[:0]
+		for _, p := range u.passkeys {
+			if p.ID != r.PathValue("pid") {
+				kept = append(kept, p)
+			}
+		}
+		u.passkeys = kept
+		ok(w, map[string]any{})
+	}))
+	mux.HandleFunc("POST /v2/users/{id}/lock", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
+		u.locked = true
+		ok(w, map[string]any{})
+	}))
+	mux.HandleFunc("POST /v2/users/{id}/metadata/search", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		want := ""
+		if fs, _ := b["filters"].([]any); len(fs) > 0 {
+			f, _ := fs[0].(map[string]any)
+			want = str(sub(f, "keyFilter"), "key")
+		}
+		res := []any{}
+		for k, v := range u.metadata {
+			if want == "" || k == want {
+				res = append(res, map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString([]byte(v))})
+			}
+		}
+		ok(w, map[string]any{"metadata": res})
+	}))
+	mux.HandleFunc("POST /v2/users/{id}/metadata", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		if u.metadata == nil {
+			u.metadata = map[string]string{}
+		}
+		md, _ := b["metadata"].([]any)
+		for _, e := range md {
+			m, _ := e.(map[string]any)
+			v, _ := base64.StdEncoding.DecodeString(str(m, "value"))
+			u.metadata[str(m, "key")] = string(v)
+		}
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /management/v1/users/{id}/grants", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {

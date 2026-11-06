@@ -185,6 +185,12 @@ type Passkey struct {
 
 // ListPasskeys returns a user's ready passkeys.
 func (c *Client) ListPasskeys(ctx context.Context, userID string) ([]Passkey, error) {
+	return c.listPasskeys(ctx, userID, false)
+}
+
+// listPasskeys returns a user's passkeys; all includes ones whose
+// registration was started and never finished.
+func (c *Client) listPasskeys(ctx context.Context, userID string, all bool) ([]Passkey, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("a user id is required")
 	}
@@ -204,7 +210,7 @@ func (c *Client) ListPasskeys(ctx context.Context, userID string) ([]Passkey, er
 	}
 	keys := []Passkey{}
 	for _, p := range out.Result {
-		if p.State != "" && p.State != "AUTH_FACTOR_STATE_READY" {
+		if !all && p.State != "" && p.State != "AUTH_FACTOR_STATE_READY" {
 			continue
 		}
 		keys = append(keys, Passkey{ID: p.ID, Name: p.Name})

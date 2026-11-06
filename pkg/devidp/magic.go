@@ -100,6 +100,9 @@ type NewUser struct {
 	VerifyURLTemplate string
 	// IDPLinks links social accounts at creation.
 	IDPLinks []IDPLink
+	// SelfSignup marks the account as created by public sign-up
+	// (MetaSelfSignup), which is what entitles it to signup_role.
+	SelfSignup bool
 }
 
 // CreateUser creates a human account and returns its id. A rejected
@@ -126,6 +129,9 @@ func (c *Client) CreateUser(ctx context.Context, u NewUser) (string, error) {
 	}
 	if u.Password != "" {
 		req["password"] = map[string]any{"password": u.Password, "changeRequired": false}
+	}
+	if u.SelfSignup {
+		req["metadata"] = []any{metadataEntry(MetaSelfSignup, "1")}
 	}
 	if len(u.IDPLinks) > 0 {
 		links := make([]any, 0, len(u.IDPLinks))

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,12 @@ import (
 //     enumeration oracle the uniform responses exist to close.
 //   - INTEGRITY. A forged cookie naming another user is refused before the
 //     issuer is called, rather than relying only on the issuer's own check.
+//
+// AES-GCM keeps the plaintext's length, so the plaintext is PADDED to a fixed
+// size (sealedPlainSize) first: otherwise the cookie's length alone says which
+// kind of binding it holds — a real challenge session against a decoy, a
+// one-time-code session against "nothing to send" — which is the enumeration
+// oracle again, read from the Set-Cookie header.
 //
 // The key is derived from the broker's own token, which every replica shares
 // and nobody else holds, so no new secret has to be provisioned. Rotating the
@@ -52,6 +59,33 @@ type sealedEnvelope struct {
 }
 
 var errSealed = errors.New("binding cookie is missing, expired or not ours")
+
+// sealedPlainSize is the padded plaintext size: every binding cookie of every
+// kind and state seals to the same length. A payload that does not fit is an
+// error, never a longer cookie.
+const sealedPlainSize = 512
+
+// pad frames plain as [2-byte length][plain][zeros] of sealedPlainSize bytes.
+func pad(plain []byte) ([]byte, error) {
+	if len(plain) > sealedPlainSize-2 {
+		return nil, fmt.Errorf("binding cookie payload is %d bytes, more than %d", len(plain), sealedPlainSize-2)
+	}
+	out := make([]byte, sealedPlainSize)
+	binary.BigEndian.PutUint16(out, uint16(len(plain)))
+	copy(out[2:], plain)
+	return out, nil
+}
+
+func unpad(padded []byte) ([]byte, bool) {
+	if len(padded) != sealedPlainSize {
+		return nil, false
+	}
+	n := int(binary.BigEndian.Uint16(padded))
+	if n > sealedPlainSize-2 {
+		return nil, false
+	}
+	return padded[2 : 2+n], true
+}
 
 func (s *sealer) aead() (cipher.AEAD, error) {
 	material := s.key()
@@ -79,32 +113,6 @@ func (s *sealer) aead() (cipher.AEAD, error) {
 	return a, nil
 }
 
-// sealPadBlock is the size every sealed plaintext is padded up to a multiple
-// of. AES-GCM hides a payload's content but not its length, and the payloads
-// of one ceremony differ in length by outcome — a real challenge session
-// carries an id and a token, a decoy or an unknown address a flag — so an
-// unpadded cookie's length would be the enumeration oracle the sealing exists
-// to close. Every binding this package seals fits one block (ids, tokens and
-// codes are tens of bytes), so every outcome of a ceremony seals to the same
-// length.
-const sealPadBlock = 512
-
-// padPlaintext pads a JSON envelope with trailing spaces up to the next
-// multiple of sealPadBlock. JSON ignores trailing whitespace, so open needs
-// no unpadding step.
-func padPlaintext(plain []byte) []byte {
-	n := (len(plain)/sealPadBlock + 1) * sealPadBlock
-	if len(plain)%sealPadBlock == 0 {
-		n = len(plain)
-	}
-	out := make([]byte, n)
-	copy(out, plain)
-	for i := len(plain); i < n; i++ {
-		out[i] = ' '
-	}
-	return out
-}
-
 // seal encodes payload under kind, valid for ttl. The kind is bound into the
 // envelope so a cookie of one ceremony cannot be replayed as another's.
 func (s *sealer) seal(kind string, payload any, ttl time.Duration) (string, error) {
@@ -116,11 +124,14 @@ func (s *sealer) seal(kind string, payload any, ttl time.Duration) (string, erro
 	if err != nil {
 		return "", err
 	}
-	plain, err := json.Marshal(sealedEnvelope{Kind: kind, Expires: s.now().Add(ttl).UnixMilli(), Payload: p})
+	env, err := json.Marshal(sealedEnvelope{Kind: kind, Expires: s.now().Add(ttl).UnixMilli(), Payload: p})
 	if err != nil {
 		return "", err
 	}
-	plain = padPlaintext(plain)
+	plain, err := pad(env)
+	if err != nil {
+		return "", err
+	}
 	nonce := make([]byte, a.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
@@ -141,8 +152,12 @@ func (s *sealer) open(kind, value string, out any) error {
 	if err != nil || len(raw) < a.NonceSize() {
 		return errSealed
 	}
-	plain, err := a.Open(nil, raw[:a.NonceSize()], raw[a.NonceSize():], []byte(kind))
+	padded, err := a.Open(nil, raw[:a.NonceSize()], raw[a.NonceSize():], []byte(kind))
 	if err != nil {
+		return errSealed
+	}
+	plain, ok := unpad(padded)
+	if !ok {
 		return errSealed
 	}
 	var env sealedEnvelope

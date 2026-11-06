@@ -50,17 +50,18 @@ var allMethods = []string{MethodPassword, MethodPasskey, MethodMagicLink}
 
 var google = LoginPolicySocial{Type: "google", IdPID: "idp-google", Label: "Google"}
 
-func newHarness(t *testing.T, p LoginPolicy) *harness {
+func newHarness(t *testing.T, p LoginPolicy, opts ...func(*SignInRoutesConfig)) *harness {
 	t.Helper()
 	z := newFakeZitadel(t)
-	routes, err := NewSignInRoutes(SignInRoutesConfig{
-		Client:       z.client(),
-		Flow:         FlowConfig{ClientID: "client", RedirectURI: testAppBase + "/cb"},
-		Policy:       p,
-		AppBase:      testAppBase,
-		ProjectID:    "proj",
-		CookiePrefix: "app",
-		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	cfg := SignInRoutesConfig{
+		Client:        z.client(),
+		Flow:          FlowConfig{ClientID: "client", RedirectURI: testAppBase + "/cb"},
+		Policy:        p,
+		AppBase:       testAppBase,
+		ProjectID:     "proj",
+		CookiePrefix:  "app",
+		ResponseFloor: -1,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		SignedIn: func(w http.ResponseWriter, tokens Tokens) any {
 			http.SetCookie(w, &http.Cookie{Name: "app_session", Value: tokens.AccessToken, Path: "/"})
 			return map[string]any{"authenticated": true, "subject": strings.TrimPrefix(tokens.AccessToken, "at-")}
@@ -75,7 +76,11 @@ func newHarness(t *testing.T, p LoginPolicy) *harness {
 		PasswordPolicy: func(context.Context) (PasswordPolicy, error) {
 			return PasswordPolicy{MinLength: 8}, nil
 		},
-	})
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	routes, err := NewSignInRoutes(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +107,13 @@ func (h *harness) browser() *browser {
 
 func (b *browser) do(method, path string, body any) (int, map[string]any) {
 	b.h.t.Helper()
+	return b.doWith(method, path, body, nil)
+}
+
+// doWith sends a request with extra headers (a "Content-Type" among them
+// replaces the JSON default).
+func (b *browser) doWith(method, path string, body any, headers map[string]string) (int, map[string]any) {
+	b.h.t.Helper()
 	var rd io.Reader = http.NoBody
 	if body != nil {
 		raw, _ := json.Marshal(body)
@@ -109,6 +121,9 @@ func (b *browser) do(method, path string, body any) (int, map[string]any) {
 	}
 	req, _ := http.NewRequest(method, b.h.srv.URL+path, rd)
 	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	resp, err := b.client.Do(req)
 	if err != nil {
 		b.h.t.Fatal(err)

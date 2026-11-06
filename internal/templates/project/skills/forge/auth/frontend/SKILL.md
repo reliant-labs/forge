@@ -38,7 +38,7 @@ There is no `/auth/callback`. It belonged to the browser redirect flow — the i
 
 ## Password requirements
 
-The provider's complexity policy is **per instance**, so the app asks rather than guessing: the broker reads `GET /v2/settings/password/complexity` (readable with the broker's own token) and serves it, cached for a minute, at the unauthenticated `GET /auth/password-policy`. The sign-up and reset forms render it as a checklist **before** the person types, tick rules off as they type, and on a rejection the server answers `400 {error, code: "password_policy", unmet: [...]}` naming **every** rule broken (the provider itself reports only the first). The client checks are guidance; the provider decides. If the policy cannot be read the forms still work, without the checklist.
+The provider's complexity policy is **per instance**, so the app asks rather than guessing: the broker reads `GET /v2/settings/password/complexity` (readable with the broker's own token) and serves it, cached for a minute, at the unauthenticated `GET /auth/password-policy`. The sign-up and reset forms render it as a checklist **before** the person types, tick rules off as they type, and on a rejection the server answers `400 {error, code: "password_policy", unmet: [...]}` naming **every** rule broken (the provider itself reports only the first). The client checks are guidance; the provider decides. If the policy cannot be read the forms still work, without the checklist. A hosted identity instance does not publish its policy (its gateway answers 404 for the Settings API), so there the route answers `204` and logs at DEBUG: no checklist, nothing wrong, and the rejection still names the rule the provider refused.
 
 ## Password reset, and when the email actually arrives
 

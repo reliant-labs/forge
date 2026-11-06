@@ -34,6 +34,10 @@
 //	                                    advisory lock, LOCK TABLE); warning,
 //	                                    error under --strict
 //	                                    (see tx_lock_under_serializable.go)
+//	forgeconv-crud-owner-resolver       an owner-scoping handler whose
+//	                                    owner source disagrees with its
+//	                                    siblings' on the same column
+//	                                    (see crud_owner_resolver.go)
 //	forgeconv-deps-surface              a Deps interface field declares
 //	                                    methods the package never calls
 //	forgeconv-no-container-deps         a Deps field holds a container

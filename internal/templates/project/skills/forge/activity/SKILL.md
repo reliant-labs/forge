@@ -43,7 +43,8 @@ rpc PromoteRelease(PromoteReleaseRequest) returns (PromoteReleaseResponse) {
 
 **Field paths** are dotted proto field names. They resolve against the
 request. A path that starts with `response.` resolves against the response,
-which is where a created object's id is. A path must end on a scalar or an
+which is where a created object's id is. `request.publication_id` and
+`publication_id` are the same path. A path must end on a scalar or an
 enum.
 
 **CRUD needs nothing.** The following rpcs record activity without any option,

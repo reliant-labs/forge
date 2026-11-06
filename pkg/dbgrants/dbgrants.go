@@ -303,7 +303,7 @@ func RenderFilesFor(role string, tables []Table) (Files, error) {
 	var b strings.Builder
 	b.WriteString("-- The read-only role's grants: a convergence, not a delta. See pkg/dbgrants.\n")
 	b.WriteString("DO " + dollarTag + "\n")
-	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\nBEGIN\n")
+	b.WriteString("DECLARE\n  r record;\n  readable text;\n  leftover text;\n  declared text[] := ARRAY[]::text[];\n  role_oid oid;\n  failed_index text;\nBEGIN\n")
 	fmt.Fprintf(&b, "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN\n", quoteLiteral(role))
 	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n    RETURN;\n  END IF;\n\n", quoteLiteral("role "+role+" does not exist: read-only grants not applied"))
 
@@ -437,9 +437,33 @@ func RenderFilesFor(role string, tables []Table) (Files, error) {
 	// role's settings needs superuser or CREATEROLE with admin option on it,
 	// which the application's owner role does not have (and CNPG's managed-role
 	// stanza has no per-role setting), so an insufficient privilege is a notice.
-	fmt.Fprintf(&b, "\n  BEGIN\n    ALTER ROLE %s SET default_transaction_read_only = on;\n", quoteIdent(role))
-	b.WriteString("  EXCEPTION WHEN insufficient_privilege THEN\n")
-	fmt.Fprintf(&b, "    RAISE NOTICE %s;\n  END;\n", quoteLiteral("could not set default_transaction_read_only on "+role+": the migrating role may not alter it"))
+	//
+	// A role setting is CLUSTER-WIDE (pg_db_role_setting, setdatabase = 0), so
+	// every database on one server that migrates writes the same catalog row,
+	// and two at once collide: the loser's update fails "tuple concurrently
+	// updated" (XX000), or its first insert a unique violation. So the setting
+	// is written only when it is not already in place, and the steady state
+	// never touches the shared catalog. A concurrent first write that loses is
+	// a notice: the winner set the same value. Those two errors are caught
+	// only by their exact identity: an XX000 is any internal error, so its
+	// message must match too, and a unique violation must be the settings
+	// catalog's own index.
+	b.WriteString("\n  -- role setting: cluster-wide, so written only when missing (other databases on the server share it)\n")
+	b.WriteString("  IF NOT EXISTS (SELECT 1 FROM pg_db_role_setting s JOIN pg_roles o ON o.oid = s.setrole\n")
+	fmt.Fprintf(&b, "                  WHERE s.setdatabase = 0 AND o.rolname = %s\n", quoteLiteral(role))
+	b.WriteString("                    AND 'default_transaction_read_only=on' = ANY (s.setconfig)) THEN\n")
+	fmt.Fprintf(&b, "    BEGIN\n      ALTER ROLE %s SET default_transaction_read_only = on;\n", quoteIdent(role))
+	b.WriteString("    EXCEPTION\n")
+	b.WriteString("      WHEN insufficient_privilege THEN\n")
+	fmt.Fprintf(&b, "        RAISE NOTICE %s;\n", quoteLiteral("could not set default_transaction_read_only on "+role+": the migrating role may not alter it"))
+	b.WriteString("      WHEN unique_violation OR internal_error THEN\n")
+	b.WriteString("        GET STACKED DIAGNOSTICS failed_index = CONSTRAINT_NAME;\n")
+	b.WriteString("        IF NOT (SQLSTATE = 'XX000' AND SQLERRM = 'tuple concurrently updated'\n")
+	b.WriteString("                OR SQLSTATE = '23505' AND failed_index = 'pg_db_role_setting_databaseid_rol_index') THEN\n")
+	b.WriteString("          RAISE;\n")
+	b.WriteString("        END IF;\n")
+	fmt.Fprintf(&b, "        RAISE NOTICE %s;\n", quoteLiteral("default_transaction_read_only on "+role+" was set by a concurrent migration of another database on this server"))
+	b.WriteString("    END;\n  END IF;\n")
 	b.WriteString("END\n" + dollarTag + ";\n")
 
 	out := Files{Main: b.String()}

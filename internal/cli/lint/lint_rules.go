@@ -83,7 +83,7 @@ func gradableRules() []string {
 		// forge conventions (proto, Go tree, frontend env)
 		"forgeconv-activity-declared", "forgeconv-allocate-port-spacing",
 		"forgeconv-bun-dollar-placeholder", "forgeconv-bun-literal-question-mark",
-		"forgeconv-config-service-name", "forgeconv-contract-names",
+		"forgeconv-config-service-name", "forgeconv-contract-names", "forgeconv-crud-owner-resolver",
 		"forgeconv-deps-no-downcast", "forgeconv-deps-root-config", "forgeconv-deps-surface",
 		"forgeconv-frontend-env-forge-owned", "forgeconv-frontend-process-env",
 		"forgeconv-handler-connect-error", "forgeconv-handler-file-size",

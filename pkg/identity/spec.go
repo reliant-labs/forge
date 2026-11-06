@@ -19,12 +19,175 @@ type Spec struct {
 	Applications []Application
 	MachineUsers []MachineUser
 	Policies     Policies
-	// SMTP is the instance mail relay. Nil leaves the instance's mail
-	// configuration alone.
+	// SMTP is the instance mail relay. SMTP, EmailHTTP and EmailNone are
+	// exclusive; all three unset leaves the instance's mail configuration
+	// alone.
 	SMTP *SMTP
+	// EmailHTTP points the instance's mail at an HTTP endpoint (Zitadel's HTTP
+	// email provider): every notification is POSTed there as JSON, signed with
+	// a key the instance generates and the KeyStore keeps (KeyMailSigning).
+	EmailHTTP *HTTPEmail
+	// EmailNone deactivates the mail provider this library manages, if one is
+	// active: the instance then sends nothing. A provider someone else made is
+	// left alone.
+	EmailNone bool
+	// IdPs are the social sign-in providers (the app's own OAuth apps). Each is
+	// created or updated by name and linked into the login policy. One that is
+	// no longer declared is unlinked from the policy, never deleted: deleting
+	// it would destroy every user's link to it.
+	IdPs []IdP
+	// Owners are people who must be able to get in. Unlike Role.Members they
+	// are ADDITIVE AND STICKY: each is created and granted on every pass, and
+	// invited while they hold no credential, but an owner removed from the
+	// declaration keeps their account and their roles.
+	Owners []Owner
+	// SignIn is what the app's sign-in screen offers. It is PUBLISHED as
+	// Output.LoginPolicy for the login broker to enforce; what the instance
+	// itself is told is Policies.Login, which LoginPolicyFor derives from it.
+	// Nil publishes no document, and the broker keeps its legacy policy.
+	SignIn *SignIn
 	// SeedUsers are throwaway accounts for local and ephemeral environments.
 	// Reconcile refuses them unless Options.AllowSeedUsers is set.
 	SeedUsers []SeedUser
+}
+
+// HTTPEmail is Zitadel's HTTP email provider.
+type HTTPEmail struct {
+	// Endpoint receives every notification as a signed JSON POST.
+	Endpoint string
+}
+
+// IdPType is a social sign-in provider kind.
+type IdPType string
+
+const (
+	IdPGoogle IdPType = "google"
+	IdPGitHub IdPType = "github"
+)
+
+// IdPNamePrefix marks the identity providers this library manages. An IdP
+// whose name lacks it is someone else's and is never touched.
+const IdPNamePrefix = "forge:"
+
+// IdPName is the natural key of the managed IdP of type t: "forge:google".
+func IdPName(t IdPType) string { return IdPNamePrefix + string(t) }
+
+// IdP is a social sign-in provider backed by the app's own OAuth app.
+type IdP struct {
+	// Name is the natural key; it must start with IdPNamePrefix (IdPName).
+	Name string
+	Type IdPType
+	// ClientID is the OAuth app's client id.
+	ClientID string
+	// ClientSecret is never readable back from Zitadel, so a digest of the
+	// last value applied is kept in the KeyStore to detect a rotation.
+	ClientSecret string `json:"-"`
+	Scopes       []string
+}
+
+// Owner is a person who must be able to get in.
+type Owner struct {
+	Email string
+	// Roles are granted ADDITIVELY and never revoked. They must not be
+	// Declared roles: a declared role's holders are a converged set, which
+	// would revoke an owner who is not also a listed member.
+	Roles []string
+	// Invite, when set, sends ONE invitation (Zitadel's invite code) to an
+	// owner who has no credential, re-sent only after OwnerInviteInterval and
+	// at most OwnerInviteLimit times. Nil creates and grants only: use it
+	// where nothing can deliver mail.
+	Invite *Invite
+}
+
+// Invite configures the invitation mail.
+type Invite struct {
+	// URLTemplate is the link the mail carries. Zitadel fills {{.UserID}},
+	// {{.OrgID}} and {{.Code}}. At most 200 characters (Zitadel's limit).
+	URLTemplate string
+	// ApplicationName names the app in the mail. At most 200 characters.
+	ApplicationName string
+}
+
+const (
+	// OwnerInviteInterval is how long an unanswered owner invitation is left
+	// before another is sent.
+	OwnerInviteInterval = 7 * 24 * time.Hour
+	// OwnerInviteLimit caps the invitations one owner is ever sent: an
+	// address nobody reads must not be mailed forever.
+	OwnerInviteLimit = 3
+)
+
+// SignupMode is who may create an account from the sign-in screen.
+type SignupMode string
+
+const (
+	// SignupInvite: only owners, declared members and invitations.
+	SignupInvite SignupMode = "invite"
+	// SignupOpen: anyone, once their address is verified.
+	SignupOpen SignupMode = "open"
+	// SignupDomain: anyone whose VERIFIED address is in SignupDomains.
+	SignupDomain SignupMode = "domain"
+)
+
+// Method is a first-factor sign-in method.
+type Method string
+
+const (
+	MethodPassword  Method = "password"
+	MethodPasskey   Method = "passkey"
+	MethodMagicLink Method = "magic_link"
+)
+
+// SignIn is the sign-in declaration the app's login broker enforces.
+type SignIn struct {
+	// Signup is who may create an account. Empty means SignupInvite.
+	Signup        SignupMode
+	SignupDomains []string
+	// SignupRole is the role a self-signed-up account gets; "" leaves it to
+	// the app. Like an owner role it must not be Declared.
+	SignupRole string
+	// Methods are the first factors offered. Empty offers none, which is
+	// valid only with an IdP to sign in through (social sign-in only).
+	Methods []Method
+	// PasskeyRPID is the WebAuthn relying-party id; "" means the host of the
+	// app's sign-in origin, which the broker knows and this library does not.
+	PasskeyRPID string
+}
+
+func (s SignIn) has(m Method) bool {
+	for _, x := range s.Methods {
+		if x == m {
+			return true
+		}
+	}
+	return false
+}
+
+func (s SignIn) mode() SignupMode {
+	if s.Signup == "" {
+		return SignupInvite
+	}
+	return s.Signup
+}
+
+// LoginPolicyFor is the instance login policy a sign-in declaration implies.
+// Both halves of managed identity (dev and the control plane) derive
+// Policies.Login through it, so the two cannot disagree on the mapping.
+// social reports whether any IdP is declared.
+func LoginPolicyFor(s SignIn, social bool) LoginPolicy {
+	otpEmail := s.has(MethodMagicLink)
+	lp := LoginPolicy{
+		AllowUsernamePassword: s.has(MethodPassword),
+		AllowRegister:         s.mode() != SignupInvite,
+		AllowExternalIDP:      social,
+		HidePasswordReset:     !s.has(MethodPassword),
+		PasswordlessType:      "PASSWORDLESS_TYPE_NOT_ALLOWED",
+		OTPEmail:              &otpEmail,
+	}
+	if s.has(MethodPasskey) {
+		lp.PasswordlessType = "PASSWORDLESS_TYPE_ALLOWED"
+	}
+	return lp
 }
 
 // ProjectSpec is the Zitadel project. Its generated id is the token audience,
@@ -166,7 +329,20 @@ type LoginPolicy struct {
 	// MFAInitSkipLifetime is how long a user may skip enrolling a second
 	// factor; zero never prompts.
 	MFAInitSkipLifetime time.Duration
+	// OTPEmail adds (true) or removes (false) the OTP-email factor in the
+	// policy's second-factor list; nil leaves the list alone. The session
+	// OTP-email check is what a magic link redeems, so true also converges
+	// the OTP-email code generator (OTPEmailCodeLength, OTPEmailCodeExpiry).
+	OTPEmail *bool
 }
+
+const (
+	// OTPEmailCodeLength and OTPEmailCodeExpiry are the instance's OTP-email
+	// code generator settings when OTPEmail is on: digits only, so the code
+	// a magic-link mail shows can be typed on another device.
+	OTPEmailCodeLength = 8
+	OTPEmailCodeExpiry = 10 * time.Minute
+)
 
 // PasswordComplexity is the instance password complexity policy.
 type PasswordComplexity struct {
@@ -241,6 +417,9 @@ var (
 	roleKeyRE  = regexp.MustCompile(`^[a-z][a-z0-9_.:-]{0,63}$`)
 	usernameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{1,61}[a-z0-9]$`)
 	emailRE    = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+	// dnsNameRE is a lower-case DNS name with at least two labels and no
+	// wildcard.
+	dnsNameRE = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$|^localhost$`)
 )
 
 // ValidMachineUsername reports why name cannot be a machine user's username.
@@ -390,6 +569,125 @@ func (s Spec) Validate() error {
 		}
 		if !emailRE.MatchString(m.SenderAddress) {
 			bad("smtp", m.Host, "sender address %q is not an email address", m.SenderAddress)
+		}
+		if m.ReplyTo != "" && !emailRE.MatchString(m.ReplyTo) {
+			bad("smtp", m.Host, "reply-to %q is not an email address", m.ReplyTo)
+		}
+	}
+	mailModes := 0
+	for _, set := range []bool{s.SMTP != nil, s.EmailHTTP != nil, s.EmailNone} {
+		if set {
+			mailModes++
+		}
+	}
+	if mailModes > 1 {
+		bad("mail provider", "", "SMTP, EmailHTTP and EmailNone are exclusive; set one")
+	}
+	if h := s.EmailHTTP; h != nil {
+		if u, err := url.Parse(h.Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			bad("mail provider", h.Endpoint, "the HTTP endpoint must be an absolute http(s) URL")
+		}
+	}
+
+	idps := map[string]bool{}
+	for _, p := range s.IdPs {
+		switch {
+		case !strings.HasPrefix(p.Name, IdPNamePrefix) || len(p.Name) == len(IdPNamePrefix):
+			bad("identity provider", p.Name, "the name must start with %q (IdPName)", IdPNamePrefix)
+		case idps[p.Name]:
+			bad("identity provider", p.Name, "declared twice")
+		}
+		idps[p.Name] = true
+		if p.Type != IdPGoogle && p.Type != IdPGitHub {
+			bad("identity provider", p.Name, "type %q is not one of google, github", p.Type)
+		}
+		if strings.TrimSpace(p.ClientID) == "" || p.ClientSecret == "" {
+			bad("identity provider", p.Name, "a client id and a client secret are required")
+		}
+		if len(p.Scopes) == 0 {
+			bad("identity provider", p.Name, "at least one scope is required")
+		}
+	}
+
+	// A role granted additively (owners, self-signups) must not be a Declared
+	// one: its holders are a converged set, so the next pass would revoke it.
+	additiveRole := func(kind, name, role string) {
+		r, ok := roles[role]
+		switch {
+		case !ok:
+			bad(kind, name, "refers to role %q, which is not declared in Spec.Roles", role)
+		case r.Declared:
+			bad(kind, name, "role %q is Declared, so its holders are a converged set and this grant would be revoked on the next pass; use a role managed in the console", role)
+		}
+	}
+	owners := map[string]bool{}
+	for _, o := range s.Owners {
+		key := strings.ToLower(strings.TrimSpace(o.Email))
+		switch {
+		case !emailRE.MatchString(o.Email):
+			bad("owner", o.Email, "not an email address")
+		case owners[key]:
+			bad("owner", o.Email, "declared twice")
+		}
+		owners[key] = true
+		for _, r := range o.Roles {
+			additiveRole("owner", o.Email, r)
+		}
+		if inv := o.Invite; inv != nil {
+			if !strings.Contains(inv.URLTemplate, "://") || len(inv.URLTemplate) > 200 {
+				bad("owner", o.Email, "the invitation URL template must be an absolute URL of at most 200 characters")
+			}
+			if len(inv.ApplicationName) > 200 {
+				bad("owner", o.Email, "the invitation application name is longer than 200 characters")
+			}
+		}
+	}
+
+	if si := s.SignIn; si != nil {
+		switch si.mode() {
+		case SignupInvite, SignupOpen:
+			if len(si.SignupDomains) > 0 {
+				bad("sign-in", "signup", "signup domains are listed but the mode is %q, not domain", si.mode())
+			}
+		case SignupDomain:
+			if len(si.SignupDomains) == 0 {
+				bad("sign-in", "signup", "domain signup needs at least one signup domain")
+			}
+		default:
+			bad("sign-in", "signup", "mode %q is not one of invite, open, domain", si.Signup)
+		}
+		seenDomain := map[string]bool{}
+		for _, d := range si.SignupDomains {
+			if !dnsNameRE.MatchString(d) || seenDomain[d] {
+				bad("sign-in", "signup", "signup domain %q is not a unique lower-case DNS name", d)
+			}
+			seenDomain[d] = true
+		}
+		if si.SignupRole != "" {
+			additiveRole("sign-in", "signup", si.SignupRole)
+		}
+		seenMethod := map[Method]bool{}
+		for _, m := range si.Methods {
+			switch m {
+			case MethodPassword, MethodPasskey, MethodMagicLink:
+			default:
+				bad("sign-in", "methods", "method %q is not one of password, passkey, magic_link", m)
+			}
+			if seenMethod[m] {
+				bad("sign-in", "methods", "method %q is listed twice", m)
+			}
+			seenMethod[m] = true
+		}
+		if len(si.Methods) == 0 && len(s.IdPs) == 0 {
+			bad("sign-in", "methods", "no method and no identity provider is declared, so nobody could sign in")
+		}
+		if si.PasskeyRPID != "" {
+			if !dnsNameRE.MatchString(si.PasskeyRPID) {
+				bad("sign-in", "passkey", "relying-party id %q is not a lower-case DNS name", si.PasskeyRPID)
+			}
+			if !si.has(MethodPasskey) {
+				bad("sign-in", "passkey", "a relying-party id is set but passkey is not a method")
+			}
 		}
 	}
 

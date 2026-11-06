@@ -33,7 +33,7 @@ func fullyDeclaredShape() release.Shape {
 	}
 	return release.Shape{
 		Kind:      release.EnvPersistent,
-		Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster", Cluster: "prod-ctx", Artifact: "api", Replicas: &replicas}},
+		Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster", Cluster: "prod-ctx", Artifact: "api", Replicas: &replicas, Unit: "reliant"}},
 		Secrets:   []release.ShapeSecret{{Name: "DATABASE_URL", Provider: "external", DeclaredBy: []string{"api"}}},
 		Domains:   []string{"api.acme.test"},
 		Clusters:  []string{"prod-ctx"},
@@ -96,6 +96,7 @@ func fullyDeclaredShape() release.Shape {
 			{Name: "base", Applier: release.UnitApplierForge},
 			{Name: "reliant", Applier: release.UnitApplierHub},
 		},
+		HostInfra: true,
 	}
 }
 

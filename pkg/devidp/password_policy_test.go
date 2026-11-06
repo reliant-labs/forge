@@ -53,8 +53,41 @@ func TestPasswordPolicy_ErrorsArePropagated(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"code":7,"message":"permission denied"}`))
 	})
-	if _, err := client.PasswordPolicy(context.Background()); err == nil {
+	_, err := client.PasswordPolicy(context.Background())
+	if err == nil {
 		t.Fatal("a refused policy read was reported as success")
+	}
+	// A refusal is a failure to read, not an issuer that has no policy to serve.
+	if errors.Is(err, ErrPasswordPolicyUnavailable) {
+		t.Errorf("a 403 was reported as ErrPasswordPolicyUnavailable: %v", err)
+	}
+}
+
+// A hosted instance's gateway routes only the sign-in APIs and answers 404 for
+// the Settings API. That is "no policy to show", which a caller must be able to
+// tell from an outage, with the issuer's answer still in the error.
+func TestPasswordPolicy_AMissingEndpointIsUnavailable(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented} {
+		client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte("route not found"))
+		})
+		_, err := client.PasswordPolicy(context.Background())
+		if !errors.Is(err, ErrPasswordPolicyUnavailable) {
+			t.Errorf("HTTP %d: err = %v, want ErrPasswordPolicyUnavailable", status, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), "route not found") {
+			t.Errorf("HTTP %d: the issuer's answer was dropped: %v", status, err)
+		}
+	}
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable} {
+		client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+		})
+		if _, err := client.PasswordPolicy(context.Background()); err == nil || errors.Is(err, ErrPasswordPolicyUnavailable) {
+			t.Errorf("HTTP %d: err = %v, want a plain read failure", status, err)
+		}
 	}
 }
 

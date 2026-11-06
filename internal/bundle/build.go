@@ -125,6 +125,11 @@ type BuildInput struct {
 	// document, so a field it predates fails the whole record. Nil writes
 	// every part — the machine ledger is read by this same forge.
 	Reader *release.BundleReader
+	// DeclaredEnvs is the project's declared-environment catalog at this
+	// commit (release.DeclaredEnv), sealed into the document. Nil leaves it
+	// out; Reader drops it for a backend that does not name
+	// release.BundleFeatureDeclaredEnvs.
+	DeclaredEnvs []release.DeclaredEnv
 	// Shape is the declaration half of the projection, exactly as
 	// [ProjectShape] takes it. Build runs the projection ITSELF, from the
 	// same parse it packages, rather than accepting a finished shape —
@@ -376,6 +381,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		ClusterPaths: clusterTrees,
 		Trees:        trees,
 		Secrets:      secretRefs,
+		DeclaredEnvs: in.DeclaredEnvs,
 		CreatedAt:    in.CreatedAt.UTC(),
 	}
 	doc = in.Reader.Limit(doc)

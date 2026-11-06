@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.16] - 2026-11-05
+
+### Added
+
+- **release:** every forge release publishes @reliantlabs/forge-web-runtime, with a computed version ([#1723](https://github.com/reliant-labs/forge/pull/1723))
+- **deploy:** a mixed env's deploy records the cluster-rollout gate before its hosted stage, and the rollout wait judges StatefulSets and DaemonSets ([#1725](https://github.com/reliant-labs/forge/pull/1725))
+- **obsquery:** Workloads.LatestVersions, the version each workload reported last ([#1726](https://github.com/reliant-labs/forge/pull/1726))
+- **login:** forge login asks for a human identity (credential_kind=human) ([#1731](https://github.com/reliant-labs/forge/pull/1731))
+- **obs:** obs check --early-pass passes a clean, rolled-out release before the window ends ([#1735](https://github.com/reliant-labs/forge/pull/1735))
+- **dashspec:** toggle filters, bound to sql panels as a Bool parameter ([#1746](https://github.com/reliant-labs/forge/pull/1746))
+- **blobstore:** presigned object storage over the S3 API (pkg/blobstore) ([#1745](https://github.com/reliant-labs/forge/pull/1745))
+- **components:** markdown_editor, calendar, upload_dropzone, time_series_chart, cohort_grid ([#1747](https://github.com/reliant-labs/forge/pull/1747))
+- **workers:** cron workers fire each tick on one replica by default (pkg/cronkit) ([#1749](https://github.com/reliant-labs/forge/pull/1749))
+- **kcl:** forge.Bucket / forge.BucketRef, MinIO as dev object storage, storage/blobstore skill ([#1750](https://github.com/reliant-labs/forge/pull/1750))
+- **migratekit:** every run creates forge_ro NOLOGIN, so its grants converge on a database forge does not run ([#1752](https://github.com/reliant-labs/forge/pull/1752))
+- **pkg/approval:** pending items that wait for a person, expire, and hand off once ([#1753](https://github.com/reliant-labs/forge/pull/1753))
+- **scaffold:** forge:owner works at birth — a proto field marker, read-only owners, self-owned tables ([#1760](https://github.com/reliant-labs/forge/pull/1760))
+- **auth:** Claims.Email is filled from the issuer's userinfo when a managed identity's token carries none ([#1762](https://github.com/reliant-labs/forge/pull/1762))
+- **hosted:** forge.Bucket on OnHosted publishes a ManagedBucket; hosted workloads read it via bucketRef (stacked on #1750) ([#1751](https://github.com/reliant-labs/forge/pull/1751))
+- **release:** resume a cut interrupted between its pushes and its record ([#1740](https://github.com/reliant-labs/forge/pull/1740))
+- **scaffold:** entity birth maps google.protobuf.Struct, ListValue and Value to JSONB ([#1755](https://github.com/reliant-labs/forge/pull/1755))
+- **codegen:** create-request factories seed FK parents under the caller's owner (FactoryOwner) ([#1766](https://github.com/reliant-labs/forge/pull/1766))
+- **auth:** a DB-backed enrich seam is an ordinary component the graph wires into the auth interceptor ([#1765](https://github.com/reliant-labs/forge/pull/1765))
+- **accesstoken:** runs and triggers scopes + RequireScope ([#1757](https://github.com/reliant-labs/forge/pull/1757))
+- **obsquery:** sessions and traces name their client and builds; filter by browser, OS, device and version ([#1710](https://github.com/reliant-labs/forge/pull/1710))
+- **cloud:** name forge's release, platform and agent harness on every control-plane call ([#1771](https://github.com/reliant-labs/forge/pull/1771))
+- **scaffold:** "Built with ❤️ using Forge" footer credit in new apps ([#1772](https://github.com/reliant-labs/forge/pull/1772))
+- **mcp:** deploy_claimable, deploy_status and explain_error tools; zero-install npx listing ([#1775](https://github.com/reliant-labs/forge/pull/1775))
+- **kcl:** forge.LLM + forge.llm_env(), Reliant's LLM gateway for hosted apps; skill deploy/llm ([#1770](https://github.com/reliant-labs/forge/pull/1770))
+- **frontend:** generated hooks mark rpcs whose handler is still forge's Unimplemented stub ([#1787](https://github.com/reliant-labs/forge/pull/1787))
+
+### Changed
+
+- **e2e:** two main-red e2e guards judge what forge controls (testing import by module; flux kubeconfig by this test's context) ([#1720](https://github.com/reliant-labs/forge/pull/1720))
+- **serverkit:** a deterministic boot-progress log test, driven tick by tick (replaces the flake deleted in #1632) ([#1736](https://github.com/reliant-labs/forge/pull/1736))
+- **generate:** a deterministic interrupt-rollback test; the run's interrupt source is a seam (replaces the flake deleted in #1632) ([#1738](https://github.com/reliant-labs/forge/pull/1738))
+- **templates:** every forge command a scaffold template runs exists in the release a checkout-built forge pins ([#1748](https://github.com/reliant-labs/forge/pull/1748))
+- **generate:** one KCL evaluation per env per input state, and the env walks run concurrently ([#1763](https://github.com/reliant-labs/forge/pull/1763))
+- **proposals:** move four open design notes out of the issue tracker ([#1734](https://github.com/reliant-labs/forge/pull/1734))
+- **skills:** split deploy into a router plus deploy/model, deploy/build and deploy/release ([#1781](https://github.com/reliant-labs/forge/pull/1781))
+- **skills:** split frontend-runtime into a router plus five sub-skills ([#1783](https://github.com/reliant-labs/forge/pull/1783))
+- **skills:** split db into a router plus db/birth, db/constraints and db/generated-orm ([#1785](https://github.com/reliant-labs/forge/pull/1785))
+- **skills:** warn when a shipped skill passes 85% of its size cap ([#1791](https://github.com/reliant-labs/forge/pull/1791))
+- **skills:** split the forge entry skill into a router plus greenfield and authoring ([#1784](https://github.com/reliant-labs/forge/pull/1784))
+- **skills:** split frontend into a router plus four sub-skills ([#1789](https://github.com/reliant-labs/forge/pull/1789))
+- **skills:** split db/seeding into a router plus db/seeding/vocab and db/seeding/constraints ([#1790](https://github.com/reliant-labs/forge/pull/1790))
+
+### Fixed
+
+- **deploy:** forge's apply converges every object to its declaration — fields a kubectl hand edit or no owner left behind are removed ([#1721](https://github.com/reliant-labs/forge/pull/1721))
+- **cluster:** field-ownership fixtures and docs name no removed knob (main red since #1721) ([#1729](https://github.com/reliant-labs/forge/pull/1729))
+- **obs:** ServiceSilent counts every call a service serves, not only the project's own rpcs ([#1730](https://github.com/reliant-labs/forge/pull/1730))
+- **obs:** a client-cancelled request is not a server error in error_rate or any error count ([#1733](https://github.com/reliant-labs/forge/pull/1733))
+- **mocks:** a referenced table's fixtures are all its dataset rows, so two branches adding children of one parent merge with plain git ([#1739](https://github.com/reliant-labs/forge/pull/1739))
+- **scaffold:** a hand-started handler directory gets its missing service.go, and nothing in it is overwritten ([#1742](https://github.com/reliant-labs/forge/pull/1742))
+- **deploy:** a Secret declared through stringData is converged after one apply, not rewritten on every deploy ([#1743](https://github.com/reliant-labs/forge/pull/1743))
+- **obs:** dashboards audit lists by the ledger's project name, not the hosted project id ([#1741](https://github.com/reliant-labs/forge/pull/1741))
+- **config-check:** a fresh project's migration job answers the boot config check, so its first push is not refused ([#1737](https://github.com/reliant-labs/forge/pull/1737))
+- **obs:** obs check judges p95 per endpoint, so a deploy's own polling cannot read as a latency regression ([#1732](https://github.com/reliant-labs/forge/pull/1732))
+- **svcerr:** the scaffolded lifecycle test reads a handler's code with svcerr.Code, so a bare svcerr kind is not Unknown ([#1754](https://github.com/reliant-labs/forge/pull/1754))
+- **scaffold:** refuse a CRUD-named rpc with no table before phase 1, in --dry-run too ([#1758](https://github.com/reliant-labs/forge/pull/1758))
+- **env:** forge env up tears its stack down on every exit when it holds; --watch is how agents hold it without a TTY ([#1759](https://github.com/reliant-labs/forge/pull/1759))
+- **obs:** ServiceSilent pages only for a service that is steady, not one that is often this quiet ([#1722](https://github.com/reliant-labs/forge/pull/1722))
+- **ci:** judge every pull request for committed binaries, without file(1) ([#1744](https://github.com/reliant-labs/forge/pull/1744))
+- **upgrade:** a site with no go.mod gets no Go project files ([#1695](https://github.com/reliant-labs/forge/pull/1695))
+- **auth:** scaffolded login broker serves public sign-up only in development unless auth_self_signup opts in ([#1764](https://github.com/reliant-labs/forge/pull/1764))
+- **crud:** a client update_mask can no longer write a forge:immutable or wire-less column ([#1767](https://github.com/reliant-labs/forge/pull/1767))
+- **seed:** a composite foreign key beside a single-column one seeds from one parent row ([#1756](https://github.com/reliant-labs/forge/pull/1756))
+- **codegen:** a self-owned create factory with no parents declares no unused owner ([#1768](https://github.com/reliant-labs/forge/pull/1768))
+- **hooks:** the scaffolded pre-push hook lints only what the push changes ([#1761](https://github.com/reliant-labs/forge/pull/1761))
+- **removalguard:** the tenancy entry matches the removed feature's identifiers, not the word "tenant" ([#1769](https://github.com/reliant-labs/forge/pull/1769))
+- **graph:** a cron worker is supervised through Start, not its per-tick Run ([#1774](https://github.com/reliant-labs/forge/pull/1774))
+- **lint:** green main's golangci-lint — runBuild under funlen, goimports grouping in a scaffold test ([#1776](https://github.com/reliant-labs/forge/pull/1776))
+- **cronkit:** replicas that create the claims table at once no longer fail a claim ([#1778](https://github.com/reliant-labs/forge/pull/1778))
+- **ci:** green main after #1775 — revive context-first in an MCP test helper; the removal guard no longer matches the live forge mcp command ([#1779](https://github.com/reliant-labs/forge/pull/1779))
+- **component:** install finds the project's frontend without --dir ([#1780](https://github.com/reliant-labs/forge/pull/1780))
+- **components:** kanban_board embeds in a page and moves cards; funnel_chart draws with theme tokens ([#1782](https://github.com/reliant-labs/forge/pull/1782))
+- **skills:** green main's removal guard after the deploy split — name forge env build --push before forge build ([#1786](https://github.com/reliant-labs/forge/pull/1786))
+- **components:** every library component passes the scaffold's own eslint and tsc; e2e gate keeps it so ([#1788](https://github.com/reliant-labs/forge/pull/1788))
+- **gitignore:** an adopted repo's .forge/ ignore no longer voids the birth ledger; forge lint warns when it is ignored ([#1792](https://github.com/reliant-labs/forge/pull/1792))
+- **env up:** the first-boot dev seed applies db/seeds/custom/ too ([#1793](https://github.com/reliant-labs/forge/pull/1793))
+- **activity:** a field path may name the request explicitly with request.<field> ([#1794](https://github.com/reliant-labs/forge/pull/1794))
+- **project new:** a project named api gets a database the platform admits ([#1795](https://github.com/reliant-labs/forge/pull/1795))
+- **secrets:** the missing-secret refusal names the optional exemption ([#1797](https://github.com/reliant-labs/forge/pull/1797))
+- **dbgrants:** concurrent migrations on one server no longer fail setting forge_ro's read-only default ([#1796](https://github.com/reliant-labs/forge/pull/1796))
+
 ## [v1.0.15] - 2026-11-04
 
 ### Breaking changes
@@ -8512,7 +8598,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.15...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.0.16...HEAD
+[v1.0.16]: https://github.com/reliant-labs/forge/compare/v1.0.15...v1.0.16
 [v1.0.15]: https://github.com/reliant-labs/forge/compare/v1.0.14...v1.0.15
 [v1.0.14]: https://github.com/reliant-labs/forge/compare/v1.0.13...v1.0.14
 [v1.0.13]: https://github.com/reliant-labs/forge/compare/v1.0.12...v1.0.13

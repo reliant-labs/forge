@@ -519,6 +519,14 @@ func MissingRefsError(p Provider, missing []SecretRef, storePath string) error {
 	// adding a secret is a forge command, not a hand-edit of a file that
 	// gets injected everywhere.
 	fmt.Fprintf(&b, "fix: forge secret set --env <env> <KEY>   (writes into %s)\n", storePath)
+	// An env that may run without the value (a feature's off-switch) says so
+	// on the declaration. Without this line the refusal offered only "set it"
+	// or "remove it", and authors dropped an optional credential from
+	// config_secrets, so no env could ever turn its feature on.
+	fmt.Fprint(&b, "     …or, if this env may run without it, declare it optional: `optional: true` in the sensitive field's\n"+
+		"     (forge.v1.config) annotation, or `optional = True` on a hand-written forge.SecretRef\n"+
+		"     (`secret_optional = True` on a forge.EnvVar). The workload then starts with the var unset and reads\n"+
+		"     the value once the store has it (forge skill load secrets).\n")
 	fmt.Fprint(&b, "     …or remove the secret_ref from the EnvVar if it is no longer needed.")
 	return errors.New(b.String())
 }

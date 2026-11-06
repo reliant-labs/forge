@@ -799,9 +799,39 @@ func extractMessageFields(messages map[string][]codegen.MessageFieldDef, msg *pr
 		if f.Desc.Kind() == protoreflect.MessageKind && !f.Desc.IsMap() {
 			fd.MessageType = string(f.Desc.Message().FullName())
 		}
+		fd.Filter = listFilterOf(f)
 		fields = append(fields, fd)
 	}
 	messages[name] = fields
+}
+
+// listFilterOps maps forge.v1.ListFilterOp onto codegen's FilterOp values.
+var listFilterOps = map[forgev1.ListFilterOp]string{
+	forgev1.ListFilterOp_LIST_FILTER_OP_UNSPECIFIED: "",
+	forgev1.ListFilterOp_LIST_FILTER_OP_GT:          codegen.FilterOpGT,
+	forgev1.ListFilterOp_LIST_FILTER_OP_GTE:         codegen.FilterOpGTE,
+	forgev1.ListFilterOp_LIST_FILTER_OP_LT:          codegen.FilterOpLT,
+	forgev1.ListFilterOp_LIST_FILTER_OP_LTE:         codegen.FilterOpLTE,
+	forgev1.ListFilterOp_LIST_FILTER_OP_PREFIX:      codegen.FilterOpPrefix,
+}
+
+// listFilterOf reads a field's `(forge.v1.filter)` facet, nil when it sets
+// none. An op this forge does not know is carried through by number, so
+// the CRUD generator refuses it by name rather than reading it as equality.
+func listFilterOf(f *protogen.Field) *codegen.ListFilterDef {
+	opts, ok := f.Desc.Options().(*descriptorpb.FieldOptions)
+	if !ok || opts == nil || !proto.HasExtension(opts, forgev1.E_Filter) {
+		return nil
+	}
+	lf, ok := proto.GetExtension(opts, forgev1.E_Filter).(*forgev1.ListFilterOptions)
+	if !ok || lf == nil {
+		return nil
+	}
+	op, known := listFilterOps[lf.GetOp()]
+	if !known {
+		op = fmt.Sprintf("%d", lf.GetOp())
+	}
+	return &codegen.ListFilterDef{Column: lf.GetColumn(), Op: op}
 }
 
 // noticeLegacyEntityAnnotation prints a one-line migration notice for

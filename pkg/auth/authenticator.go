@@ -152,6 +152,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, credential string) (*C
 	if claims == nil {
 		return nil, errors.New("token validator returned no claims")
 	}
+	claims = withCredential(claims, TokenCredential())
 	if u := a.userInfo.Load(); u != nil {
 		u.fill(ctx, credential, claims)
 	}
@@ -163,7 +164,8 @@ func (a *Authenticator) authenticateKey(ctx context.Context, key string) (*Claim
 	if slot == nil {
 		return nil, ErrAPIKeysDisabled
 	}
-	if _, err := apikey.LookupPrefix(key); err != nil {
+	prefix, err := apikey.LookupPrefix(key)
+	if err != nil {
 		return nil, ErrMalformedAPIKey
 	}
 	claims, err := slot.kv.ValidateKey(ctx, key)
@@ -173,5 +175,5 @@ func (a *Authenticator) authenticateKey(ctx context.Context, key string) (*Claim
 	if claims == nil {
 		return nil, svcerr.WithCause(ErrInvalidAPIKey, errors.New("key validator returned no claims"))
 	}
-	return claims, nil
+	return withCredential(claims, APIKeyCredential(prefix)), nil
 }

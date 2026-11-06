@@ -211,7 +211,10 @@ var newRules = []rolloutGroup{
 	// Commit policy: the birth ledger and the other committed .forge/ state
 	// must not be gitignored (a `.forge/` line voids the scaffold's
 	// re-includes, and deleted scaffolds come back in every fresh clone).
-	{IntroducedIn: "v1.0.16", GatesFrom: "v1.0.17", Rules: []string{"forge-state-ignored"}},
+	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{"forge-state-ignored"}},
+	// An owner-scoping wrapper whose owner source disagrees with its
+	// siblings' (growth: appended Lists scoped tenant_id by claims.UserID).
+	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{"forgeconv-crud-owner-resolver"}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

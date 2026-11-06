@@ -37,6 +37,15 @@ func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
 	return claims, ok
 }
 
+// IsAPIKey reports whether the request's caller authenticated with an API
+// key rather than a person's token — for example, to refuse key management
+// made with a key. It is false when the context carries no principal. The
+// marker is [auth.Claims.Credential], which no token's contents can set.
+func IsAPIKey(ctx context.Context) bool {
+	claims, _ := ClaimsFromContext(ctx)
+	return claims.IsAPIKey()
+}
+
 // GetUser resolves the signed-in caller, or returns CodeUnauthenticated
 // when the context carries no principal.
 //

@@ -155,9 +155,17 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 		Filters: func(_ context.Context, req *pb.{{.InputType}}) ([]orm.QueryOption, error) {
 			var opts []orm.QueryOption
 {{- range .FilterFields}}
-{{- if .IsOptional}}
+{{- if .IsTimestamp}}
 			if req.{{.GoName}} != nil {
-{{- if eq .FilterType "search"}}
+				opts = append(opts, orm.{{if eq .FilterType "exact"}}WhereEq{{else}}{{.RangeFunc}}{{end}}("{{.ColumnName}}", req.{{.GoName}}.AsTime()))
+			}
+{{- else if .IsOptional}}
+			if req.{{.GoName}} != nil {
+{{- if eq .FilterType "range"}}
+				opts = append(opts, orm.{{.RangeFunc}}("{{.ColumnName}}", *req.{{.GoName}}))
+{{- else if eq .FilterType "prefix"}}
+				opts = append(opts, orm.WherePrefix("{{.ColumnName}}", *req.{{.GoName}}))
+{{- else if eq .FilterType "search"}}
 				opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+*req.{{.GoName}}+"%"))
 {{- else if .EnumNumber}}
 				// Integer column stores the proto WIRE NUMBER, so bind the
@@ -175,7 +183,19 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 {{- end}}
 			}
 {{- else}}
-{{- if eq .FilterType "search"}}
+{{- if eq .FilterType "prefix"}}
+			if req.{{.GoName}} != "" {
+				opts = append(opts, orm.WherePrefix("{{.ColumnName}}", req.{{.GoName}}))
+			}
+{{- else if and (eq .FilterType "range") (eq .FieldType "string")}}
+			if req.{{.GoName}} != "" {
+				opts = append(opts, orm.{{.RangeFunc}}("{{.ColumnName}}", req.{{.GoName}}))
+			}
+{{- else if eq .FilterType "range"}}
+			if req.{{.GoName}} != 0 {
+				opts = append(opts, orm.{{.RangeFunc}}("{{.ColumnName}}", req.{{.GoName}}))
+			}
+{{- else if eq .FilterType "search"}}
 			if req.{{.GoName}} != "" {
 				opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+req.{{.GoName}}+"%"))
 			}

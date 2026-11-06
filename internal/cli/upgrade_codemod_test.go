@@ -43,9 +43,11 @@ func TestUpgradeCodemods_KeyedByRelease(t *testing.T) {
 }
 
 // Codemods and migration playbooks are keyed to a release that shipped (at or
-// before VERSION) or to the one NEXT_VERSION names — never to a guess at
-// VERSION's patch+1, which is not always the next release (v0.1.46 was
-// followed by v1.0.0).
+// before VERSION), to the minor NEXT_VERSION names, or to a patch release
+// between them: the version is computed (scripts/semver-next.sh), so a
+// fix-only release can ship before the next minor, and one already cut (an RC
+// set in flight) carries its own playbooks. One keyed past NEXT_VERSION names
+// a release that may never ship (v0.1.46 was followed by v1.0.0).
 func TestReleaseKeyedUpgradesNameTheNextRelease(t *testing.T) {
 	read := func(name string) string {
 		b, err := os.ReadFile(filepath.Join("..", "..", name))
@@ -56,8 +58,8 @@ func TestReleaseKeyedUpgradesNameTheNextRelease(t *testing.T) {
 	}
 	last, next := read("VERSION"), read("NEXT_VERSION")
 	check := func(what, version string) {
-		if semver.Compare(version, last) > 0 && version != next {
-			t.Errorf("%s is keyed to %s, neither shipped (VERSION is %s) nor the next release (NEXT_VERSION is %s)",
+		if semver.Compare(version, next) > 0 {
+			t.Errorf("%s is keyed to %s, past the next feature release (VERSION is %s, NEXT_VERSION is %s)",
 				what, version, last, next)
 		}
 	}

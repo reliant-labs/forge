@@ -965,13 +965,52 @@ _idn_app_keys = lambda a: any -> [str] {
     ["${_t}_CLIENT_ID", "${_t}_REDIRECT_URI"] + (["${_t}_BROKER_TOKEN", "${_t}_LOGIN_URI"] if a.kind == "native_broker" else [])
 }
 
-# The outputs one consumer is handed.
-_idn_outputs = lambda c: any, apps: [any] -> [str] {
+# Whether the declaration takes over the instance's login policy: methods,
+# signup or social away from their defaults. Otherwise the control plane
+# leaves the policy alone and delivers no `login_policy`, and the broker keeps
+# its legacy behaviour. pkg/release.ShapeIdentity.DeclaresLoginPolicy is the
+# same predicate over the shape.
+_idn_declares_login_policy = lambda id: any -> bool {
+    True if id and (id.methods != ["password"] or _idn_declares_signup(id) or len(id.social) > 0) else False
+}
+_idn_declares_signup = lambda id: any -> bool {
+    True if id.signup != "invite" or id.signup_role else False
+}
+
+# The outputs one consumer is handed. `login_policy` is the native broker's,
+# and only when the declaration takes over the login policy: a v1
+# declaration renders exactly as it did.
+_idn_outputs = lambda c: any, apps: [any], id: any -> [str] {
     _app = [a for a in apps if a.name == c.application]
     _inst = ["audience", "issuer", "jwks", "roles_claim", "scopes"]
     _web = ["client_id", "redirect_uri"]
-    _native = ["broker_token", "idp_base", "login_uri"]
+    _native = ["broker_token", "idp_base", "login_uri"] + (["login_policy"] if _idn_declares_login_policy(id) else [])
     [o for o in _inst + (_web + (_native if _app[0].kind == "native_broker" else []) if _app else []) if o not in c.omit]
+}
+
+# --- v2: mail, and the social secrets no workload reads ----------------------
+
+# The mailpit HostInfra a host-run identity's mail goes to: the one
+# IdentityOnHost.mail names, else the env's only mailpit. "" = none.
+_idn_dev_mail = lambda id: any, infra: [any] -> str {
+    _mp = [i.name for i in infra if i.engine == "mailpit"]
+    _named = id.runtime.mail if id and id.runtime and id.runtime.type == "host" else ""
+    "" if not id or _idn_rt(id) != "host" else (_named if _named in _mp else ("" if _named else (_mp[0] if len(_mp) == 1 else "")))
+}
+
+# "Mail available" (M): BYO smtp; a hosted instance whose email delivery is not
+# "none" (platform delivery is the default); or a host-run one with a mailpit.
+_idn_mail_available = lambda id: any, infra: [any] -> bool {
+    True if id.smtp or (_idn_rt(id) == "hosted" and (not id.email or id.email.delivery != "none")) or _idn_dev_mail(id, infra) else False
+}
+_idn_no_mail_msg = lambda id: any -> str {
+    ("declare smtp, or a forge.HostInfra with engine 'mailpit' (named by IdentityOnHost.mail when the env has several)" if _idn_rt(id) == "host" else "declare smtp, or drop email.delivery = \"none\" to use platform delivery") if id else ""
+}
+
+# The workloads whose env reads a social client secret by its store name.
+_idn_social_secret_readers = lambda workloads: [any], id: any -> [str] {
+    _names = [s.client_secret.name for s in id.social] if id else []
+    [w.name for w in workloads if _names and w.env and any _, v in w.env { (typeof(v) == "ManagedSecret" and v.name in _names) or (typeof(v) == "SecretRef" and v.store_key and v.store_key in _names) }]
 }
 
 # The config field an output fills for c, and its env var.
@@ -983,6 +1022,7 @@ _idn_field = lambda c: any, o: str -> str {
         "idp_base" = c.fields.idp_base
         "issuer" = c.fields.issuer
         "jwks" = c.fields.jwks
+        "login_policy" = c.fields.login_policy
         "login_uri" = c.fields.login_uri
         "redirect_uri" = c.fields.redirect_uri
         "roles_claim" = c.fields.roles_claim
@@ -1011,7 +1051,7 @@ _idn_cps = lambda workloads: [any], id: any, env: str, project: str -> [ControlP
     _cc = _idn_cluster_consumers(workloads, id, env, project) if _idn_rt(id) == "hosted" else []
     _targets = {"${_idn_workload(workloads, c.workload).runtime.target.cluster}/${_idn_workload(workloads, c.workload).runtime.target.namespace}": _idn_workload(workloads, c.workload).runtime.target for c in _cc}
     _keys = lambda t: any -> [str] {
-        sorted({k: 0 for k in ["AUDIENCE", "ISSUER", "SCOPES"] + [k for c in _cc for a in _apps if c.application == a.name and "${_idn_workload(workloads, c.workload).runtime.target.cluster}/${_idn_workload(workloads, c.workload).runtime.target.namespace}" == "${t.cluster}/${t.namespace}" for k in _idn_app_keys(a)]})
+        sorted({k: 0 for k in ["AUDIENCE", "ISSUER", "SCOPES"] + [k for c in _cc for a in _apps if c.application == a.name and "${_idn_workload(workloads, c.workload).runtime.target.cluster}/${_idn_workload(workloads, c.workload).runtime.target.namespace}" == "${t.cluster}/${t.namespace}" for k in _idn_app_keys(a) + (["LOGIN_POLICY"] if a.kind == "native_broker" and _idn_declares_login_policy(id) else [])]})
     }
     ([ControlPlaneSecret {
         name = _idn_secret(id)
@@ -1045,7 +1085,7 @@ _cps_decl = lambda workloads: [any], id: any, env: str, project: str, declared: 
 # --- lowering: an output as an env value ------------------------------------
 
 _idn_key = lambda o: str, app: str -> str {
-    "JWKS" if o == "jwks" else ({
+    "JWKS" if o == "jwks" else ("LOGIN_POLICY" if o == "login_policy" else {
         "audience" = "AUDIENCE"
         "issuer" = "ISSUER"
         "idp_base" = "ISSUER"
@@ -1069,12 +1109,16 @@ _idn_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
     _kind = _idn_lowering(_id, rt)
     _k = _idn_key(v.output, _app)
     _snap = v.output == "jwks"
+    # OPTIONAL outputs: the snapshot is a fallback, and the login policy is
+    # the expand step (a control plane that does not write it yet must not
+    # keep the broker from starting; the broker then serves the legacy policy).
+    _opt = _snap or v.output == "login_policy"
     _name = IDENTITY_MANAGED_PREFIX + _idn_tok(_id.name) + "_" + _k
     _secret = _idn_secret(_id) + ("-jwks" if _snap else "")
     _skey = "jwks.json" if _snap else _k
-    _managed = _TManagedIdSecret {name = _name, optional = True if _snap else Undefined}
-    _cluster = _TIdSecretRef {name = _secret, key = _skey, optional = True if _snap else Undefined}
-    _store = _TIdSecretRef {name = _idn_secret(_id), key = _k, optional = True if _snap else Undefined}
+    _managed = _TManagedIdSecret {name = _name, optional = True if _opt else Undefined}
+    _cluster = _TIdSecretRef {name = _secret, key = _skey, optional = True if _opt else Undefined}
+    _store = _TIdSecretRef {name = _idn_secret(_id), key = _k, optional = True if _opt else Undefined}
     "auto" if v.output == "roles_claim" else (_managed if _kind == "managed" else (_cluster if _kind == "secret" else _store))
 }
 
@@ -1087,7 +1131,7 @@ _idn_hand_set = lambda env: {str:}, k: str -> bool {
 _idn_entries = lambda c: any, rt: any, bundle: Bundle -> {str:} {
     _id = bundle.identity
     _apps = _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)
-    _outs = _idn_outputs(c, _apps)
+    _outs = _idn_outputs(c, _apps, _id)
     _files = ["broker_token", "jwks"] if _idn_lowering(_id, rt) == "secret" else []
     {
         _idn_envname(c, o): ("auto" if o == "roles_claim" else IdentityRef {output = o, application = c.application}) for o in _outs if o not in _files
@@ -1102,7 +1146,7 @@ _idn_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only] if _id else []
     _c = _cs[0] if _cs else Undefined
     _env = w.env if w.env else {}
-    _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)) if _c else []
+    _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project), _id) if _c else []
     _clash = ["${_idn_envname(_c, o)} (config field ${_idn_field(_c, o)})" for o in _outs if o in IDENTITY_CONFLICT_OUTPUTS and _idn_hand_set(_env, _idn_envname(_c, o))] if _c else []
     assert len(_clash) == 0, "workload '${w.name}' sets ${_clash} by hand AND Bundle.identity fills it. One source per field: drop the value from the workload's env / deploy/kcl/${bundle.env or '<env>'}/config.k and let the identity supply it, or remove Bundle.identity to bring your own issuer"
     _idn_entries(_c, rt, bundle) if _c else {}
@@ -1114,7 +1158,7 @@ _idn_shadowed = lambda w: any, rt: any, bundle: Bundle -> [str] {
     _id = bundle.identity
     _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only] if _id else []
     _c = _cs[0] if _cs else Undefined
-    _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)) if _c else []
+    _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project), _id) if _c else []
     [_idn_envname(_c, o) for o in ["broker_token", "jwks"] if o in _outs] if _c and _idn_lowering(_id, rt) == "secret" else []
 }
 
@@ -1127,7 +1171,7 @@ _idn_volumes = lambda w: any, rt: any, bundle: Bundle -> [tiers.Volume] {
     _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only] if _id and rt.type == "cluster" and _idn_rt(_id) == "hosted" else []
     _c = _cs[0] if _cs else Undefined
     _apps = _idn_apps(bundle.workloads, _id, bundle.env, bundle.project) if _c else []
-    _outs = _idn_outputs(_c, _apps) if _c else []
+    _outs = _idn_outputs(_c, _apps, _id) if _c else []
     ([tiers.Volume {
         name = "forge-identity"
         mountPath = IDENTITY_DIR
@@ -1154,7 +1198,7 @@ _idn_managed_names = lambda b: Bundle -> [str] {
     _id = b.identity
     _apps = _idn_apps(b.workloads, _id, b.env, b.project)
     _hosted = [c for c in _idn_consumers(b.workloads, _id, b.env, b.project) if _idn_workload(b.workloads, c.workload) and _idn_workload(b.workloads, c.workload).runtime.type == "hosted"] if _idn_rt(_id) == "hosted" else []
-    sorted({IDENTITY_MANAGED_PREFIX + _idn_tok(_id.name) + "_" + _idn_key(o, c.application): 0 for c in _hosted for o in _idn_outputs(c, _apps) if o != "roles_claim"})
+    sorted({IDENTITY_MANAGED_PREFIX + _idn_tok(_id.name) + "_" + _idn_key(o, c.application): 0 for c in _hosted for o in _idn_outputs(c, _apps, _id) if o != "roles_claim"})
 }
 
 _render_identity = lambda b: Bundle -> any {
@@ -1221,6 +1265,42 @@ _render_identity = lambda b: Bundle -> any {
             "connected_cluster": _cps_connected(s.cluster.cluster, s.cluster, b.workloads, b.cluster_target, b.connected_clusters)
         } for s in _dl]
         "managed_secrets": _idn_managed_names(b) or None
+        # v2. Each key is emitted only when its field leaves the default, so a
+        # declaration that uses none of them renders, and hashes, exactly as
+        # it did before they existed.
+        if _id.owners:
+            "owners": sorted({o.lower(): 0 for o in _id.owners})
+            "owner_role": _id.owner_role
+        if _idn_declares_signup(_id):
+            "signup": {
+                "mode": _id.signup
+                "domains": _id.signup_domains if _id.signup_domains else None
+                "role": _id.signup_role if _id.signup_role else None
+            }
+        # Whenever the declaration takes over the login policy, so `[]` with
+        # social (social sign-in only) is told apart from the default.
+        if _idn_declares_login_policy(_id):
+            "methods": _id.methods
+        if _id.passkey_rp_id:
+            "passkey_rp_id": _id.passkey_rp_id
+        if _id.social:
+            "social": [{
+                "type": s.type
+                "client_id": s.client_id if typeof(s.client_id) == "str" else None
+                "client_id_secret": s.client_id.name if typeof(s.client_id) != "str" else None
+                "client_secret_secret": s.client_secret.name
+                "scopes": s.scopes
+            } for s in _id.social]
+        if _id.email:
+            "email": {
+                "delivery": _id.email.delivery
+                "from_name": _id.email.from_name if _id.email.from_name else None
+                # With smtp, smtp.sender is the From (V13).
+                "from_local": _id.email.from_local if not _id.smtp else None
+                "reply_to": _id.email.reply_to if _id.email.reply_to else None
+            }
+        if _idn_dev_mail(_id, b.infra):
+            "dev_mail": _idn_dev_mail(_id, b.infra)
     }
 }
 

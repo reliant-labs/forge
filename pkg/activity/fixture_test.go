@@ -58,6 +58,9 @@ func fixtureMessages() []*descriptorpb.DescriptorProto {
 		{Name: proto.String("UpdateWidgetResponse"), Field: []*descriptorpb.FieldDescriptorProto{msgField("widget", 1, "Widget")}},
 		{Name: proto.String("DeleteWidgetRequest"), Field: []*descriptorpb.FieldDescriptorProto{str("id", 1)}},
 		{Name: proto.String("DeleteWidgetResponse"), Field: []*descriptorpb.FieldDescriptorProto{str("id", 1)}},
+		// A request whose own field is named "request": a `request.` path
+		// walks that field, as it did before the prefix existed.
+		{Name: proto.String("EnvelopeRequest"), Field: []*descriptorpb.FieldDescriptorProto{msgField("request", 1, "Release")}},
 	}
 }
 

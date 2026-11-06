@@ -166,16 +166,21 @@ IDENTITY_JWKS_DIR: str = "/var/run/secrets/forge/identity-jwks"
 
 # What an identity can hand a workload. The APPLICATION outputs below belong
 # to the application a consumer brokers for; the rest are the instance's.
+# `login_policy` is the versioned LOGIN_POLICY document the control plane
+# delivers for the sign-in broker: projected only into a native broker's
+# consumer, only when the declaration takes over the login policy (methods,
+# signup or social), and always OPTIONAL (key LOGIN_POLICY), so a control
+# plane that does not write it yet never keeps the broker from starting.
 IDENTITY_OUTPUTS: [str] = [
     "audience", "broker_token", "client_id", "idp_base", "issuer",
-    "jwks", "login_uri", "redirect_uri", "roles_claim", "scopes",
+    "jwks", "login_policy", "login_uri", "redirect_uri", "roles_claim", "scopes",
 ]
 # The outputs a consumer may decline to have projected (IdentityConsumer.omit).
 # Never the ones that DEFINE the identity: without issuer and audience a
 # validator has nothing to pin tokens to, and a native broker cannot sign in
 # without its token, client id, redirect URI and base. A consumer that does not
 # want those projected is a deliver_only consumer.
-IDENTITY_OMITTABLE_OUTPUTS: [str] = ["jwks", "login_uri", "roles_claim", "scopes"]
+IDENTITY_OMITTABLE_OUTPUTS: [str] = ["jwks", "login_policy", "login_uri", "roles_claim", "scopes"]
 IDENTITY_APP_OUTPUTS: [str] = ["broker_token", "client_id", "login_uri", "redirect_uri"]
 
 # The typed-config field each output fills, unless a consumer remaps it
@@ -190,6 +195,7 @@ IDENTITY_FIELDS: {str: str} = {
     "idp_base" = "idp_base"
     "issuer" = "jwt_issuer"
     "jwks" = "jwt_jwks_snapshot"
+    "login_policy" = "idp_login_policy"
     "login_uri" = "idp_login_uri"
     "redirect_uri" = "oidc_redirect_uri"
     "roles_claim" = "jwt_roles_claim"

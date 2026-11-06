@@ -166,6 +166,31 @@ func TestValidateDeclaredRefs_SomeMissing_ListsAll(t *testing.T) {
 	}
 }
 
+// TestValidateDeclaredRefs_NamesTheOptionalExemption pins the refusal's
+// second fix. A credential an env may deliberately leave unset (a feature's
+// off-switch) is declared optional, not left out of config_secrets: growth
+// dropped two tokens from its workload because the refusal offered only
+// "set it" or "remove the secret_ref", and the optional exemption it needed
+// was never named.
+func TestValidateDeclaredRefs_NamesTheOptionalExemption(t *testing.T) {
+	path := writeDotenv(t, "")
+	p, _ := NewProvider(&ProviderConfig{Type: "file", Path: path})
+	err := ValidateDeclaredRefs(p, []SecretRef{{EnvName: "OBS_READ_TOKEN", SecretName: "growth-secrets", SecretKey: "obs_read_token"}}, path)
+	if err == nil {
+		t.Fatal("expected a refusal for the missing ref")
+	}
+	for _, want := range []string{
+		"optional: true",           // the sensitive config field's annotation
+		"(forge.v1.config)",        // where that annotation goes
+		"optional = True",          // a hand-written forge.SecretRef
+		"forge skill load secrets", // where the rule is explained
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q:\n%s", want, err)
+		}
+	}
+}
+
 func TestValidateDeclaredRefs_DefaultsKeyToEnvName(t *testing.T) {
 	path := writeDotenv(t, "")
 	p, _ := NewProvider(&ProviderConfig{Type: "file", Path: path})

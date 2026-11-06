@@ -187,6 +187,28 @@ const (
 	// triggers:fire: managing what runs unattended and running it now are
 	// different authorities.
 	ScopeTriggersManage Scope = "triggers:manage"
+
+	// The four scopes below narrow the reliant API for callers that act on
+	// the person's inbox: they see what is waiting on the person, dismiss it,
+	// decide approvals and answer an agent's questions. Like the runs and
+	// triggers scopes they are PRODUCT scopes for a Reliant API (InboxService,
+	// ApprovalService, QuestionService), checked by that API with
+	// RequireScope. See inbox.go for the rpc mapping.
+	//
+	// Every one acts as a person (RequiresActingUser) and none is bindable to
+	// a resource. reliant:api permits all four (Permits).
+
+	// ScopeInboxRead lists the person's inbox.
+	ScopeInboxRead Scope = "inbox:read"
+	// ScopeInboxManage dismisses and restores inbox items. Implies
+	// inbox:read at the point of use.
+	ScopeInboxManage Scope = "inbox:manage"
+	// ScopeApprovalsDecide approves or denies a pending approval, one or in a
+	// batch. It implies nothing and is implied by nothing but reliant:api:
+	// seeing an approval (inbox:read) is not deciding it.
+	ScopeApprovalsDecide Scope = "approvals:decide"
+	// ScopeQuestionsAnswer answers a question an agent asked the person.
+	ScopeQuestionsAnswer Scope = "questions:answer"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -219,6 +241,10 @@ var AllScopes = []Scope{
 	ScopeRunsControl,
 	ScopeTriggersFire,
 	ScopeTriggersManage,
+	ScopeInboxRead,
+	ScopeInboxManage,
+	ScopeApprovalsDecide,
+	ScopeQuestionsAnswer,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an
@@ -298,13 +324,15 @@ func (s Set) Permits(want Scope) bool {
 	if s.Has(want) {
 		return true
 	}
-	// reliant:api is the person's whole API, and the runs and triggers scopes
-	// are slices of it: a token minted before they existed keeps every
+	// reliant:api is the person's whole API, and the runs, triggers and inbox
+	// scopes are slices of it: a token minted before they existed keeps every
 	// permission it had.
-	if s.Has(ScopeReliantAPI) && isRunsOrTriggersScope(want) {
+	if s.Has(ScopeReliantAPI) && (isRunsOrTriggersScope(want) || isInboxScope(want)) {
 		return true
 	}
 	switch want {
+	case ScopeInboxRead:
+		return s.Has(ScopeInboxManage)
 	case ScopeRunsRead:
 		return s.Has(ScopeRunsStart) || s.Has(ScopeRunsControl)
 	case ScopeDeployRead:

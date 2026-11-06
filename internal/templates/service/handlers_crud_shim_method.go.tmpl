@@ -78,7 +78,13 @@ func (s *Service) {{.MethodName}}(
   that predates this wording.
 */}}
 // {{.MethodName}} delegates CRUD {{.Operation}} to pkg/crud.
-{{- if .Scoped}}
+{{- if and .Scoped .OwnerResolver}}
+// Auth: SCOPED to {{.OwnerColumn}} (forge:owner) via {{.OwnerResolver}}(ctx), the resolver this file's other {{.OwnerColumn}} wrappers call.
+{{- else if and .Scoped .OwnerClaimsField}}
+// Auth: SCOPED to {{.OwnerColumn}} (forge:owner) via {{.AuthSeam}}(ctx).{{.OwnerClaimsField}}, the mapping this file's other {{.OwnerColumn}} wrappers use.
+{{- else if and .Scoped .OwnerUndetermined}}
+// Auth: SCOPED to {{.OwnerColumn}} (forge:owner) — DOES NOT COMPILE until you choose its owner resolver below.
+{{- else if .Scoped}}
 // Auth: SCOPED to {{.OwnerColumn}} (forge:owner) via {{.AuthSeam}}(ctx) — finish the FORGE_SCAFFOLD owner mapping below.
 {{- else if .AuthRequired}}
 // Auth: AUTHENTICATED, UNSCOPED — nothing reads the caller; scope with {{.AuthSeam}}(ctx) (see file header).
@@ -100,7 +106,29 @@ func (s *Service) {{.MethodName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],
 ) (*connect.Response[pb.{{.OutputType}}], error) {
-{{- if .Scoped}}
+{{- if and .Scoped .OwnerResolver}}
+	owner, err := {{.OwnerResolver}}(ctx)
+	if err != nil {
+		return nil, err
+	}
+{{- else if and .Scoped .OwnerClaimsField}}
+	claims, err := {{.AuthSeam}}(ctx)
+	if err != nil {
+		return nil, err // connect.CodeUnauthenticated
+	}
+	owner := claims.{{.OwnerClaimsField}}
+{{- else if and .Scoped .OwnerUndetermined}}
+	// FORGE_SCAFFOLD: forge will not guess whose rows this is. It reads the
+	// owner off this file's other {{.OwnerColumn}} wrappers, and here
+	// {{.OwnerUndetermined}}.
+	// So this line names no real function and the build fails on it: replace
+	// it with the resolver that maps this caller to {{.EntityName}}.{{.OwnerColumn}},
+	// as `owner, err := <pkg>.<Func>(ctx)`, then remove this comment.
+	owner, err := {{.OwnerTODOIdent}}(ctx)
+	if err != nil {
+		return nil, err
+	}
+{{- else if .Scoped}}
 	claims, err := {{.AuthSeam}}(ctx)
 	if err != nil {
 		return nil, err // connect.CodeUnauthenticated

@@ -1,6 +1,6 @@
 ---
 name: deploy/managed-identity
-description: forge.ManagedIdentity, an env's users declared in KCL — roles, the applications that sign users in, the workloads that read tokens, share_with, SMTP, seed users — administering a hosted env's users with `forge cloud identity` (verbs, the identity:read/manage scopes, password-set codes), how forge fills each consumer's typed config (jwt_issuer, oidc_client_id, ...) with no app code change, what it delivers per runtime, what is refused, and what is not built yet (hosted login, social).
+description: forge.ManagedIdentity, an env's users declared in KCL — roles, the applications that sign users in, the workloads that read tokens, share_with, SMTP, seed users — administering a hosted env's users with `forge cloud identity` (verbs, the identity:read/manage scopes, password-set codes), how forge fills each consumer's typed config (jwt_issuer, oidc_client_id, ...) with no app code change, what it delivers per runtime, what is refused, sign-in (owners, signup modes, passkeys, magic links, Google/GitHub with your own OAuth client, mail addressing, the optional login_policy output), and what is not built yet (hosted login).
 ---
 
 # Managed identity
@@ -36,20 +36,56 @@ identity = forge.ManagedIdentity {share_with = "staging"}
 | `applications` | derived when empty: one `native_broker` named `<env>:api` for the workload `api`, else one per service workload. `redirect_uris`, `logout_uris`, `login_uri` are literal overrides |
 | `consumers` | derived when empty: every service workload on a runtime that can reach the instance. `fields = forge.IdentityFields {...}` remaps an output to a non-standard config field (an app validating two issuers); `deliver_only = True` is the general "deliver, I will read the Secret myself" escape hatch: the control plane still writes `forge-identity-<name>` (+ `-jwks`) to the workload's cluster, but forge projects nothing into the workload (no env, no volumes) and does not refuse hand-set values. Use it for a workload that reads the Secret itself, or while adopting an identity whose workload still reads legacy config; flip it off to let forge fill the typed config |
 | `machine_users` | `name`, `roles`, `key_secret` + `cluster`: where its key is delivered (hosted instance); a host-run one keeps the key in the env's secret store |
-| `smtp` | `host`, `port`, `user`, `sender`, `password = forge.ManagedSecret {name = ...}`: a **name**, never the password. **Omit it and the instance sends no mail at all**: there is no platform relay |
+| `smtp` | `host`, `port`, `user`, `sender`, `password = forge.ManagedSecret {name = ...}`: a **name**, never the password. Omitted, a hosted instance uses platform delivery (`email`), a dev one its mailpit |
 | `seed_users` | only in an env that declares `lifecycle = "local"` or `"ephemeral"` |
 | `domain` | your own issuer domain; needs `public = True` (or hosted login) |
 | `public` | ask for a public route. **Private by default** |
 | `project_name` | the identity project's name (default: `Bundle.project`); settable so an adopted instance keeps its legacy name |
 | `share_with` | a bare env name **of the same project**. The owner must declare an identity and not itself be a sharer: no chains. A sharer declares only applications and consumers |
-| `social` | **reserved**; refused at render |
+| `owners`, `owner_role` | people who must be able to get in (see Sign-in below) |
+| `signup`, `signup_domains`, `signup_role` | who may create an account: `invite` (default), `open`, `domain` |
+| `methods`, `passkey_rp_id` | first factors offered: `password` (default), `passkey`, `magic_link` |
+| `social` | `forge.IdentityGoogle` / `forge.IdentityGitHub` with your own OAuth client |
+| `email` | `forge.IdentityEmail {delivery, from_name, from_local, reply_to}`: how the instance's mail is addressed |
+
+## Sign-in: owners, signup, methods, social, mail
+
+```python
+IDENTITY = forge.ManagedIdentity {
+    roles = [forge.IdentityRole {key = "owner"}, forge.IdentityRole {key = "member"}]
+    owners = ["founder@acme.com"]                 # seeded every pass; additive and sticky
+    signup = "domain"                             # invite (default) | open | domain
+    signup_domains = ["acme.com"]                 # a subdomain matches only if listed
+    signup_role = "member"
+    methods = ["password", "passkey", "magic_link"]
+    social = [forge.IdentityGoogle {
+        client_id = "1234.apps.googleusercontent.com"                       # public: a literal is fine
+        client_secret = forge.ManagedSecret {name = "GOOGLE_CLIENT_SECRET"} # a NAME in the env's store
+    }]
+    email = forge.IdentityEmail {from_name = "Acme", reply_to = "help@acme.com"}
+}
+```
+
+- **Owners** are created email-verified, granted `owner_role` and invited once while they have no credential. Removing one revokes nothing, so `owner_role` (default `owner`) must be a declared role with `members_from = "console"`.
+- **Leaving `methods`, `signup` and `social` at their defaults leaves the instance's login policy alone** and delivers no `login_policy`: the broker keeps its legacy behaviour (password, sign-up only in development or with `auth_self_signup`). Owners and `email` alone change neither.
+- **Mail is required** for `magic_link` and for `open`/`domain` signup: `smtp`, a hosted instance whose `email.delivery` is not `"none"` (platform delivery is the default; the sending domain is assigned, so `from_local` is only the local part), or a `forge.HostInfra {engine = "mailpit"}` in dev (`IdentityOnHost.mail` names it; empty = the env's only one).
+- **Social client secrets never reach a pod**: the shape records the secret's NAME, only the reconciler reads it, and a workload whose env reads that name is refused. Set it with `reliant forge secret set --env <env> GOOGLE_CLIENT_SECRET`; a rotation takes effect on the next reconcile pass. Use a separate dev OAuth client with the dev secret store.
+- **`passkey_rp_id`** (needs `passkey` in `methods`) pins the WebAuthn relying party. Default: the host of the app's sign-in origin (`localhost` in dev). Passkeys are bound to it forever.
+
+| | hosted | dev (`IdentityOnHost`) |
+|---|---|---|
+| mail | platform relay, or BYO `smtp` | Mailpit (`engine = "mailpit"` HostInfra) |
+| social callback to register | `https://<slug>.reliantidentity.com/idps/callback` (`forge cloud identity status`) | `http://localhost:<idp port>/idps/callback` (`forge env up`) |
+| passkey RP id | the sign-in host | `localhost` |
+
+These fields are recorded in the shape (`shape.identity.owners`, `signup`, `methods`, `passkey_rp_id`, `social`, `email`, `dev_mail`) as the bundle feature `shape-identity-signin`. A control plane that does not advertise it is sent the declaration without them and converges the identity as before, so nothing is enabled that nobody converged.
 
 ## Administer a hosted env's users
 
 After deploying the environment, use the public control-plane management API (`controlplane.v1.IdentityService`) through Forge:
 
 ```bash
-forge cloud identity status prod                  # state, issuer, apps, deliveries, Mail: none|smtp
+forge cloud identity status prod                  # state, issuer, apps, deliveries, Mail: none|smtp|platform|sandbox, social callback, owners pending
 forge cloud identity users prod --query person@example.com --page-size 20 --json
 forge cloud identity invite prod --email person@example.com --role member [--role operator] [--return-code]
 forge cloud identity set-roles prod --user person@example.com --role member   # --none removes every console role
@@ -90,7 +126,7 @@ A person's session is checked against their org role and their identity grants (
 
 `invite` creates the account (or grants roles to an existing one, `created=false`). An account with no credential yet is issued a one-time **password-set code**, which the scaffolded `/auth/reset` page redeems (it sets the password and signs the person in). `reset` issues one for any account; their current password keeps working until it is redeemed. Codes are single use and expire within the hour.
 
-**No mail is sent unless the environment declares `smtp`**; there is no platform relay, `GetIdentityStatus` reports `mail_delivery: IDENTITY_MAIL_DELIVERY_NONE`, and `status` shows `Mail: none`. Then the control plane **refuses** `invite` (for an account that needs a code) and `reset` with FailedPrecondition naming `smtp`, rather than succeed and send nothing. An `identity:manage` caller passes `--return-code` (`return_code` on the rpc): the code comes back, with the env's reset link already filled in (`<app>/auth/reset?userID=…&code=…&orgID=…`, built from the application's `login_uri`), and you deliver it over a channel you control (your own mailer, a message, an admin screen). Declare `smtp` and the code is emailed instead.
+**Without mail** (no `smtp`, and the control plane's platform delivery is not on for the env, or `email.delivery = "none"`), `GetIdentityStatus` reports `mail_delivery: IDENTITY_MAIL_DELIVERY_NONE` and `status` shows `Mail: none`; with platform delivery it shows `Mail: platform` (or `sandbox` for an unclaimed org, whose mail is captured, not sent). Then the control plane **refuses** `invite` (for an account that needs a code) and `reset` with FailedPrecondition naming `smtp`, rather than succeed and send nothing. An `identity:manage` caller passes `--return-code` (`return_code` on the rpc): the code comes back, with the env's reset link already filled in (`<app>/auth/reset?userID=…&code=…&orgID=…`, built from the application's `login_uri`), and you deliver it over a channel you control (your own mailer, a message, an admin screen). With mail, the code is emailed instead.
 
 Where the link points: an explicit `login_uri` on the application always wins. Without one, the deployed control plane builds it from the first bound domain, and an env that has neither gets the bare code with no link. **Once control-plane #1115 is deployed** (merged, not yet in a prod release), an identity's `login_uri` and its reset links default to the env's single hosted frontend, at its oldest live custom domain or else its platform hostname. An env with several hosted frontends must still declare `login_uri`.
 
@@ -125,13 +161,14 @@ The consumer's typed config fields are filled; the env var is the upper-cased fi
 | broker_token | `idp_broker_token` | managed secret | **file** `IDP_BROKER_TOKEN_FILE` (re-read on change) | store key |
 | jwks | `jwt_jwks_snapshot` | optional managed secret | **file** `JWT_JWKS_SNAPSHOT_FILE`, optional Secret | store key |
 | roles_claim | `jwt_roles_claim` | literal `auto` | literal `auto` | literal `auto` |
+| login_policy | `idp_login_policy` | optional managed secret `..._LOGIN_POLICY` | key `LOGIN_POLICY`, **optional** | optional store key `LOGIN_POLICY` |
 
-`<APP>` is the application name upper-cased with other runs folded to `_` (`prod:api` is `PROD_API`). A cluster consumer waits (`CreateContainerConfigError`) for the first delivery of the `identity` Secret rather than crash-looping on an empty issuer, and starts by itself when it lands. The JWKS snapshot Secret is optional: it is a fallback.
+`<APP>` is the application name upper-cased with other runs folded to `_` (`prod:api` is `PROD_API`). A cluster consumer waits (`CreateContainerConfigError`) for the first delivery of the `identity` Secret rather than crash-looping on an empty issuer, and starts by itself when it lands. The JWKS snapshot Secret is optional: it is a fallback. `login_policy` (the versioned `LOGIN_POLICY` document the sign-in broker enforces) goes only to a native broker's consumer, only when the declaration sets `methods`, `signup` or `social`, and is always optional: until the control plane writes it the broker serves its legacy policy.
 
 **Escape hatches on a consumer** (`forge.IdentityConsumer`):
 
 - `fields = forge.IdentityFields {...}` remaps an output to a non-standard config field.
-- `omit = ["scopes", "roles_claim", "login_uri", "jwks"]` declines outputs the app's config has no field for. Without it every standard output is projected under its standard name, as env nothing reads. Only those four may be omitted: issuer, audience and the native-broker outputs define the identity (use `deliver_only` to project none). An output cannot be both mapped in `fields` and omitted, and one omitted twice is refused. The delivered Secrets still carry every key, and the shape records `omit` (absent when empty, so existing shapes hash unchanged).
+- `omit = ["scopes", "roles_claim", "login_uri", "jwks", "login_policy"]` declines outputs the app's config has no field for. Without it every standard output is projected under its standard name, as env nothing reads. Only those five may be omitted: issuer, audience and the native-broker outputs define the identity (use `deliver_only` to project none). An output cannot be both mapped in `fields` and omitted, and one omitted twice is refused. The delivered Secrets still carry every key, and the shape records `omit` (absent when empty, so existing shapes hash unchanged).
 - `deliver_only = True` delivers the Secrets and projects nothing, for a workload still on its legacy config.
 
 The control plane is the only writer of `forge-identity-*` and `RELIANT_IDENTITY_*`; nobody sets them, and `forge secret` never asks.
@@ -146,6 +183,7 @@ The control plane is the only writer of `forge-identity-*` and `RELIANT_IDENTITY
 - `seed_users` outside a `local`/`ephemeral` env; `domain` on a private instance;
 - `share_with` that is not a bare env name (so never another project), is this env, or sits beside roles/smtp/seed users/machine users/domain/project name; sharing a host-run IdP;
 - duplicate roles, applications, consumers; undeclared roles on a machine or seed user; a consumer naming an undeclared application or a non-service workload;
+- sign-in rules: `domain` signup without `signup_domains` (or the reverse), a wildcard or duplicate signup domain, a `signup_role` or `owner_role` that is not a console role, a duplicate method, no method and no social provider, `magic_link` or open/domain signup with no mail, an owner that is not an email (or listed twice in any case), two providers of one type, an empty client id or a literal client secret, `passkey_rp_id` without `passkey`, header characters in `email`, `email.from_local` beside `smtp`, sign-in fields on a `share_with` sharer, `IdentityOnHost.mail` naming something that is not a mailpit;
 - **a hand-set field the identity fills**: a workload that sets `JWT_ISSUER`, `JWT_AUDIENCE`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI` or `IDP_BASE` (literal or secret ref) beside `Bundle.identity` is refused, naming both. An empty value is the unset default and gives way. To bring your own issuer for an env, declare no identity there.
 
 `share_with` ownership (the owner declares an identity, is not a sharer, same org and project) is judged where both envs are visible: the control plane at admission, since one env's render cannot see another's.
@@ -160,4 +198,4 @@ The primitive the projection is made of; write it yourself for an output the pro
 
 ## Not built yet
 
-`login.mode = "hosted"` (accepted, recorded, unconverged), `social` (refused).
+`login.mode = "hosted"` (accepted, recorded, unconverged).

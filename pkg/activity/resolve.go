@@ -76,8 +76,12 @@ func (p Path) Key() string {
 	return p.Spec
 }
 
-// responsePrefix marks a path resolved against the response.
-const responsePrefix = "response."
+// responsePrefix marks a path resolved against the response; requestPrefix,
+// its mirror, says explicitly what a bare path already means.
+const (
+	responsePrefix = "response."
+	requestPrefix  = "request."
+)
 
 // readPrefixes are the rpc-name verbs that read. A name starting with one,
 // followed by an upper-case letter or nothing, is not a mutation.
@@ -183,15 +187,20 @@ func resolveExplicit(md protoreflect.MethodDescriptor, opt *forgepb.ActivityOpti
 }
 
 // resolvePath walks spec through md's request (or, with the response.
-// prefix, its response) message.
+// prefix, its response) message. A request. prefix names the request
+// explicitly, unless the request has a field of its own named `request`: then
+// the path walks that field, as it always has.
 func resolvePath(md protoreflect.MethodDescriptor, spec string) (Path, error) {
 	p := Path{Spec: spec}
 	msg := md.Input()
 	rest := spec
-	if strings.HasPrefix(spec, responsePrefix) {
+	switch {
+	case strings.HasPrefix(spec, responsePrefix):
 		p.Response = true
 		msg = md.Output()
 		rest = strings.TrimPrefix(spec, responsePrefix)
+	case strings.HasPrefix(spec, requestPrefix) && msg.Fields().ByName("request") == nil:
+		rest = strings.TrimPrefix(spec, requestPrefix)
 	}
 	segs := strings.Split(rest, ".")
 	for i, seg := range segs {

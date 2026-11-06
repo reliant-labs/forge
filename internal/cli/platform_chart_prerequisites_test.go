@@ -3,12 +3,45 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cluster"
 )
+
+func TestPlatformPrerequisitesRenderHonorsProjectDir(t *testing.T) {
+	clearProjectDir(t)
+	root := writeProjectDirFixture(t, "bootstrap-project")
+	t.Chdir(t.TempDir())
+	if err := cmdutil.SetProjectDir(root); err != nil {
+		t.Fatal(err)
+	}
+	mainK := filepath.Join(root, "deploy", "kcl", "proof", "main.k")
+	if err := os.MkdirAll(filepath.Dir(mainK), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mainK, []byte("# fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldRender := renderPlatformPrerequisiteManifestsFn
+	t.Cleanup(func() { renderPlatformPrerequisiteManifestsFn = oldRender })
+	called := false
+	renderPlatformPrerequisiteManifestsFn = func(_ context.Context, path, imageTag, namespace, env string, _, _ map[string]string) (string, error) {
+		called = true
+		if path != mainK || env != "proof" || namespace != "bootstrap-project-proof" || imageTag != "dev" {
+			t.Fatalf("unexpected render inputs: %q %q %q %q", path, imageTag, namespace, env)
+		}
+		return "rendered", nil
+	}
+	got, err := renderPlatformPrerequisitesFn(context.Background(), "proof", &KCLEntities{ImageTag: "dev"})
+	if err != nil || got != "rendered" || !called {
+		t.Fatalf("render = %q, %v, called=%v", got, err, called)
+	}
+}
 
 func TestPlatformPrerequisitesBeforeChartsAcrossClusters(t *testing.T) {
 	for _, fail := range []bool{false, true} {

@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cluster"
@@ -15,16 +17,28 @@ var renderPlatformPrerequisitesFn = func(ctx context.Context, env string, entiti
 	if err != nil {
 		return "", err
 	}
-	mainK, err := resolveEnvMainK(store, env)
-	if err != nil {
-		return "", err
+	// -C changes config resolution, not the process working directory. Resolve
+	// the entrypoint against that same project root before checking/rendering it.
+	projectDir := projectDirForKCL()
+	kclDir := store.K8s().KCLDir
+	if kclDir == "" {
+		kclDir = "deploy/kcl"
+	}
+	if !filepath.IsAbs(kclDir) {
+		kclDir = filepath.Join(projectDir, kclDir)
+	}
+	mainK := filepath.Join(kclDir, env, "main.k")
+	if _, err := os.Stat(mainK); err != nil {
+		return "", fmt.Errorf("environment %q entrypoint %s: %w", env, mainK, err)
 	}
 	namespace := k8sClusterFieldFromEntities(entities, "namespace")
 	if namespace == "" {
 		namespace = store.Meta().Name + "-" + env
 	}
-	return cluster.RenderManifests(ctx, mainK, entities.ImageTag, namespace, env, loadDeployEnvConfigKV(projectDirForKCL(), env), nil)
+	return renderPlatformPrerequisiteManifestsFn(ctx, mainK, entities.ImageTag, namespace, env, loadDeployEnvConfigKV(projectDir, env), nil)
 }
+
+var renderPlatformPrerequisiteManifestsFn = cluster.RenderManifests
 
 var applyPlatformPrerequisitesFn = cluster.KubectlApply
 

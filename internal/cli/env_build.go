@@ -152,34 +152,8 @@ Examples:
 			}
 			opts.parallelSet = cmd.Flags().Changed("parallel")
 
-			// Record what the env DECLARES before producing anything.
-			//
-			// This is the whole point of the slice, and the ordering is
-			// the contract: `forge env build <env>` with no --release and
-			// even with --no-build still tells the control plane what the
-			// env is, because every other surface — the Live view, the
-			// set-secret form, a deploy plan — needs that and nothing
-			// else. A build that fails half-way has still answered "what
-			// kind, which secrets, which provider", which is the question
-			// that previously required a daemon and a checkout.
-			//
-			// --plan is excluded: it preflights a build and writes
-			// nothing, so recording a declaration from it would make a
-			// dry run the thing that changed the world.
-			//
-			// A build its own flags make impossible is refused BEFORE the
-			// declaration, though: that is a usage error, not a build that
-			// failed half-way, and it must leave the control plane exactly
-			// as it found it. Today that is one case, a hosted static site
-			// with no --push (hostedSitesNeedPush).
-			if !opts.plan {
-				var precheck func(*KCLEntities) error
-				if !noBuild && !composing {
-					precheck = func(entities *KCLEntities) error { return hostedSitesNeedPush(entities, opts) }
-				}
-				if err := recordEnvBuildDeclarationChecked(cmd.Context(), opts.env, precheck); err != nil {
-					return err
-				}
+			if err := recordDeclarationBeforeBuild(cmd.Context(), opts, noBuild, composing); err != nil {
+				return err
 			}
 
 			if noBuild {
@@ -224,6 +198,38 @@ Examples:
 	registerRunFlags(cmd.Flags(), &opts.run)
 
 	return cmd
+}
+
+// recordDeclarationBeforeBuild records what the env DECLARES before producing
+// anything.
+//
+// This is the whole point of the slice, and the ordering is
+// the contract: `forge env build <env>` with no --release and
+// even with --no-build still tells the control plane what the
+// env is, because every other surface — the Live view, the
+// set-secret form, a deploy plan — needs that and nothing
+// else. A build that fails half-way has still answered "what
+// kind, which secrets, which provider", which is the question
+// that previously required a daemon and a checkout.
+//
+// --plan is excluded: it preflights a build and writes
+// nothing, so recording a declaration from it would make a
+// dry run the thing that changed the world.
+//
+// A build its own flags make impossible is refused BEFORE the
+// declaration, though: that is a usage error, not a build that
+// failed half-way, and it must leave the control plane exactly
+// as it found it. Today that is one case, a hosted static site
+// with no --push (hostedSitesNeedPush).
+func recordDeclarationBeforeBuild(ctx context.Context, opts buildOptions, noBuild, composing bool) error {
+	if opts.plan {
+		return nil
+	}
+	var precheck func(*KCLEntities) error
+	if !noBuild && !composing {
+		precheck = func(entities *KCLEntities) error { return hostedSitesNeedPush(entities, opts) }
+	}
+	return recordEnvBuildDeclarationChecked(ctx, opts.env, precheck)
 }
 
 // recordEnvBuildDeclaration is `forge env build`'s declaration step: render

@@ -2909,5 +2909,7 @@ func stepPostGenValidate(ctx *pipelineContext) error {
 // (forge/pkg pin skew / pkg/config) on failure to nudge the user
 // toward the most likely fix.
 func stepGoBuildValidate(ctx *pipelineContext) error {
-	return runGoBuildValidate(ctx.ProjectDir)
+	// Skipped when the tree's build inputs are ones it already passed on
+	// (generate_go_memo.go).
+	return memoizedGoValidate(ctx.ProjectDir, func() error { return runGoBuildValidate(ctx.ProjectDir) })
 }

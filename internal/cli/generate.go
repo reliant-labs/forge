@@ -133,6 +133,10 @@ Skipping:
   environment that steers them — prints one line saying so and stops, in
   about a second instead of minutes. Any change runs every step. --no-cache
   (or FORGE_GENERATE_NO_CACHE=1) always runs every step.
+  Inside a run that does run, go mod tidy is skipped for a module whose
+  go.mod, go.sum and imports are what its last tidy left, and the validate
+  build for a tree whose Go build inputs are ones it last passed on
+  (.forge/generate-memo.json; --no-cache runs both).
 
 Examples:
   forge generate            # Generate all code
@@ -553,18 +557,37 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// run's "N changed" (taken under --no-revert too: agents read that line
 	// as the fixed-point check, so it must count every write, whatever made
 	// it), and the generate cache's "nothing changed since a verified run".
-	preRun := snapshotWorkTree(ctx.AbsPath)
-
+	//
 	// The whole-run skip (generate_cache.go): when this exact tree, binary,
 	// toolset and environment were already verified as a fixed point,
-	// running the pipeline again can only reproduce them.
-	cache := openGenerateCache(ctx.AbsPath, flags, preRun, generateCacheSystem())
+	// running the pipeline again can only reproduce them. A run that may use
+	// the cache fingerprints the tree right after the snapshot, so the
+	// fingerprint's own git listings start beside the snapshot's.
+	var preRun *workTreeSnapshot
+	var cache *generateCacheRun
+	snapshotAndOpen := func() {
+		preRun = snapshotWorkTree(ctx.AbsPath)
+		cache = openGenerateCache(ctx.AbsPath, flags, preRun, generateCacheSystem())
+	}
+	if mode := generateCacheModeFor(flags); mode.consult || mode.record {
+		withGitListingsPrefetched(ctx.AbsPath, snapshotAndOpen)
+	} else {
+		snapshotAndOpen()
+	}
 	if cache.skip(os.Stdout) {
 		return nil
 	}
 
 	announceSkippedChecks(flags)
 	resetChecksumRunState(flags)
+
+	// The run has work to do; the go tools whose inputs it leaves as their
+	// last run left them are skipped (generate_go_memo.go).
+	memoSys := generateCacheSystem()
+	if cache.pre != nil {
+		memoSys.runningForge = cache.pre.env["forge"] // already hashed for the fingerprint
+	}
+	defer beginGenerateMemo(ctx.AbsPath, flags, memoSys)()
 
 	// Arm the stage-then-validate rollback journal (fr-40f7ec9bd9). From
 	// here on, every forge write captures its target's pre-run bytes so a

@@ -286,6 +286,13 @@ func newLayeredProvider(shared, local map[string]string, sharedPath, localPath s
 	}
 	var overridden int
 	for k, v := range local {
+		// An EMPTY local slot is not a value (`forge generate` scaffolds
+		// every sensitive key as ""), so it must not hide a value the
+		// shared store holds: shadowing an inherited encryption key would
+		// make the worktree mint a different one and fork the key material.
+		if sv := shared[k]; v == "" && sv != "" {
+			continue
+		}
 		if _, inShared := shared[k]; inShared {
 			overridden++
 		}

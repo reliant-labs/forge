@@ -6,9 +6,13 @@
 // document load and web vitals — lives in
 // @reliantlabs/forge-web-runtime/telemetry.
 //
-// What stays here is the part that CANNOT move: the `import.meta.env.VITE_*`
-// reads, which Vite inlines at BUILD time only where they are written out
-// verbatim in application code.
+// What stays here is the part that CANNOT move: the reads of this frontend's
+// configuration. A value that differs per environment comes from the runtime
+// config document (config.js, `window.__FORGE_CONFIG__`), never from an
+// `import.meta.env.VITE_*` build variable: Vite inlines those at BUILD time,
+// so the value would follow that build into every environment it is
+// promoted to. Only build facts — the version (VITE_APP_VERSION, forge's
+// build id) and whether this is the dev server — are read from the build.
 //
 // ── Where telemetry goes: same-origin `/_otel` ───────────────────────────
 //
@@ -28,9 +32,9 @@
 //     nothing (the default is empty there) rather than POSTing to a 404.
 //
 // Declare the endpoint for a deployed environment in the frontend's KCL
-// `config` block (`otel_endpoint = "/_otel"`), which reaches this module at
-// RUNTIME through config.js (or as VITE_OTEL_ENDPOINT at build time). An empty
-// value, or "off", disables it.
+// `config` block (`otel_endpoint = "/_otel"`) or its `runtime_config`
+// (`OTEL_ENDPOINT = "/_otel"`); either reaches this module at RUNTIME through
+// config.js. An empty value, or "off", disables it.
 //
 // `forge.Frontend.telemetry` reaches this module the same way:
 // `console_capture = False` arrives as CONSOLE_CAPTURE and
@@ -43,14 +47,14 @@
 // with the real key — never the bundle.
 //
 // Session replay is OFF. `OTEL_REPLAY = "true"` in the runtime config (a
-// `runtime_config` entry, so each environment decides without a rebuild) or
-// VITE_OTEL_REPLAY=true at build time enables it, and then masks every input
-// and all text; there is no setting that records unmasked.
+// `runtime_config` entry, so each environment decides without a rebuild)
+// enables it, and then masks every input and all text; there is no setting
+// that records unmasked.
 //
-// Every value below reads the runtime config first. The VITE_* build
-// variable is the fallback for a key config.js does not carry; it is baked
-// into the bundle, so it follows that build into every environment it is
-// promoted to. Prefer the runtime key.
+// The VITE_OTEL_ENDPOINT / VITE_ENVIRONMENT / VITE_OTEL_REPLAY build
+// variables are not read here. A frontend's KCL that declares one (in
+// `config` or `env_vars`) gets the same value in its runtime config instead,
+// so it keeps working and now varies per environment as it should.
 //
 // Distributed tracing itself — the traceparent attached to every RPC, which
 // is what makes browser spans join the backend's trace — is always on, needs
@@ -60,7 +64,8 @@ import { initBrowserTelemetry } from "@reliantlabs/forge-web-runtime/telemetry";
 import { DEV_API_URL } from "./apiurl_gen";
 
 // The runtime config document (config.js) assigns this before any bundle code
-// runs, for projects that declare a frontend config message.
+// runs. Read directly, not through config_gen, so this module has no
+// dependency on whether the project adopted typed config.
 function runtimeConfig(): Record<string, unknown> {
   if (typeof window === "undefined") {
     return {};
@@ -105,26 +110,20 @@ export function initTelemetry(): void {
   void initBrowserTelemetry({
     serviceName: SERVICE_NAME,
     serviceVersion: (import.meta.env.VITE_APP_VERSION as string | undefined) || undefined,
-    environment:
-      text(cfg.ENVIRONMENT) ||
-      (import.meta.env.VITE_ENVIRONMENT as string | undefined) ||
-      undefined,
+    environment: text(cfg.ENVIRONMENT) || undefined,
     serviceNamespace: '{{.ProjectName}}',
     frontend: '{{.FrontendName}}',
     consoleCapture: text(cfg.CONSOLE_CAPTURE) !== "false",
     replaySampleRate: rate(cfg.REPLAY_SAMPLE_RATE),
-    endpoint:
-      text(cfg.OTEL_ENDPOINT) ||
-      (import.meta.env.VITE_OTEL_ENDPOINT as string | undefined) ||
-      (import.meta.env.DEV ? "/_otel" : ""),
+    endpoint: text(cfg.OTEL_ENDPOINT) || (import.meta.env.DEV ? "/_otel" : ""),
+    // The origin RPCs go to, resolved as src/lib/connect.ts resolves it — so
+    // the traceparent rides on exactly the requests the transport sends.
     apiOrigins: [
       text(cfg.API_URL) ||
         (import.meta.env.VITE_API_URL as string | undefined) ||
         DEV_API_URL,
     ],
-    replay:
-      (text(cfg.OTEL_REPLAY) || (import.meta.env.VITE_OTEL_REPLAY as string | undefined)) ===
-      "true",
+    replay: text(cfg.OTEL_REPLAY) === "true",
   });
 }
 

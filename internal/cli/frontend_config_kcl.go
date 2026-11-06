@@ -112,14 +112,23 @@ func renderFrontendRuntimeDocs(projectDir, envName string) (map[string]string, e
 // lowered to URLs by the render) keyed by frontend name. Empty on a hosted
 // env: the render leaves references unresolved there, and the control plane
 // writes the document.
+//
+// Every web frontend forge writes the document for is listed, even with no
+// runtime_config: its document still names the environment (ENVIRONMENT, see
+// renderFrontendRuntimeDocsWith), which the generated otel_gen.ts reports as
+// deployment.environment.name and reads from config.js only — a build
+// variable would freeze one environment's name into a promoted bundle.
 func frontendRuntimeOverlays(entities *KCLEntities) map[string]map[string]string {
 	if entities == nil {
 		return nil
 	}
 	out := map[string]map[string]string{}
 	for _, f := range entities.Frontends {
-		if len(f.RuntimeConfig) > 0 {
+		switch {
+		case len(f.RuntimeConfig) > 0:
 			out[f.Name] = f.RuntimeConfig
+		case f.Runtime.Type != FrontendRuntimeHosted && frontendStaticDir(f.Type) != "":
+			out[f.Name] = map[string]string{}
 		}
 	}
 	return out
@@ -135,7 +144,9 @@ func frontendRuntimeOverlays(entities *KCLEntities) map[string]map[string]string
 //
 // A frontend with runtime_config but NO typed config message still gets a
 // document holding just those keys. Rendering nothing would make the
-// declaration a silent no-op, and the bundle would read undefined.
+// declaration a silent no-op, and the bundle would read undefined. A web
+// frontend frontendRuntimeOverlays lists with no keys at all gets one too,
+// holding ENVIRONMENT alone.
 func renderFrontendRuntimeDocsWith(projectDir, envName string, overlays map[string]map[string]string) (map[string]string, error) {
 	out := map[string]string{}
 	typed, err := renderTypedFrontendRuntimeValues(projectDir, envName)
@@ -157,6 +168,10 @@ func renderFrontendRuntimeDocsWith(projectDir, envName string, overlays map[stri
 		for k, v := range overlays[name] {
 			merged[k] = v
 		}
+		// Every document names its environment, as the typed layer's
+		// already does and the control plane's does for a hosted site: a
+		// declared ENVIRONMENT (typed config.k, runtime_config) wins.
+		merged = withRuntimeEnvironment(merged, envName)
 		encoded, err := json.MarshalIndent(merged, "", "  ")
 		if err != nil {
 			return nil, fmt.Errorf("encode runtime config for %s: %w", name, err)

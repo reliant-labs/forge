@@ -40,12 +40,12 @@ func TestTelemetryConfigIsSameOriginAndSecretFree(t *testing.T) {
 		"nextjs": {
 			tmpl:       "nextjs/src/lib/otel_gen.ts.tmpl",
 			devDefault: "`${BASE_PATH}/_otel`",
-			replay:     `(text(cfg.OTEL_REPLAY) || process.env.NEXT_PUBLIC_OTEL_REPLAY) === "true"`,
+			replay:     `replay: text(cfg.OTEL_REPLAY) === "true",`,
 		},
 		"vite-spa": {
 			tmpl:       "vite-spa/src/lib/otel_gen.ts.tmpl",
 			devDefault: `"/_otel"`,
-			replay:     `(text(cfg.OTEL_REPLAY) || (import.meta.env.VITE_OTEL_REPLAY as string | undefined)) ===`,
+			replay:     `replay: text(cfg.OTEL_REPLAY) === "true",`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -72,6 +72,50 @@ func TestTelemetryConfigIsSameOriginAndSecretFree(t *testing.T) {
 				t.Errorf("must import the SDK wiring from the /telemetry subpath:\n%s", s)
 			}
 			for _, want := range []string{"initTelemetry", "export const SERVICE_NAME = 'shop-web';", "serviceName: SERVICE_NAME,"} {
+				if !strings.Contains(s, want) {
+					t.Errorf("missing %q:\n%s", want, s)
+				}
+			}
+		})
+	}
+}
+
+// TestTelemetryReadsPerEnvValuesFromRuntimeConfigOnly pins the promotion
+// contract: a value that differs per environment (the ingest endpoint, the
+// environment name, session replay) is read from the runtime config document
+// alone. A build-variable fallback is baked into the bundle at build time and
+// follows that build into every environment it is promoted to — the defect
+// this pins against. Build facts (the version, dev vs build) stay build reads.
+func TestTelemetryReadsPerEnvValuesFromRuntimeConfigOnly(t *testing.T) {
+	for name, tc := range map[string]struct {
+		tmpl, prefix, envRead, version string
+	}{
+		"nextjs": {
+			tmpl:    "nextjs/src/lib/otel_gen.ts.tmpl",
+			prefix:  "NEXT_PUBLIC_",
+			envRead: `process\.env\.`,
+			version: "process.env.NEXT_PUBLIC_APP_VERSION",
+		},
+		"vite-spa": {
+			tmpl:    "vite-spa/src/lib/otel_gen.ts.tmpl",
+			prefix:  "VITE_",
+			envRead: `import\.meta\.env\.`,
+			version: "import.meta.env.VITE_APP_VERSION",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := stripTelemetryComments(renderTelemetryTmpl(t, tc.tmpl, telemetryData("static")))
+			for _, key := range []string{"OTEL_ENDPOINT", "ENVIRONMENT", "OTEL_REPLAY"} {
+				if regexp.MustCompile(tc.envRead + tc.prefix + key + `\b`).MatchString(s) {
+					t.Errorf("reads the build variable %s%s; a per-environment value must come from config.js only:\n%s", tc.prefix, key, s)
+				}
+			}
+			for _, want := range []string{
+				`environment: text(cfg.ENVIRONMENT) || undefined,`,
+				`text(cfg.OTEL_ENDPOINT) ||`,
+				`replay: text(cfg.OTEL_REPLAY) === "true",`,
+				tc.version,
+			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("missing %q:\n%s", want, s)
 				}

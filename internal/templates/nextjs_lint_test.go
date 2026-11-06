@@ -61,7 +61,7 @@ func TestNextJSESLintConfig_ExemptsScenariosAndConfigs(t *testing.T) {
 // TestNextJSOtelKeepsEnvReadsInProjectCode pins the one thing the scaffolded
 // `lib/otel_gen.ts` must keep now that the SDK wiring itself lives in
 // @reliantlabs/forge-web-runtime/telemetry: the `process.env.NEXT_PUBLIC_*`
-// reads.
+// reads of the build facts it still takes from the build.
 //
 // Next.js inlines those literals at BUILD time, and it can only do that where
 // they are written out verbatim in application code. A library reading
@@ -81,11 +81,13 @@ func TestNextJSOtelKeepsEnvReadsInProjectCode(t *testing.T) {
 	}
 	s := string(content)
 
+	// Only the BUILD facts are build variables: the version, and the API
+	// origin the transport (connect.ts) itself resolves from one. Every
+	// per-environment value is read from the runtime config document
+	// (TestTelemetryReadsPerEnvValuesFromRuntimeConfigOnly).
 	for _, envVar := range []string{
-		"process.env.NEXT_PUBLIC_OTEL_ENDPOINT",
 		"process.env.NEXT_PUBLIC_APP_VERSION",
 		"process.env.NEXT_PUBLIC_API_URL",
-		"process.env.NEXT_PUBLIC_OTEL_REPLAY",
 	} {
 		if !strings.Contains(s, envVar) {
 			t.Errorf("otel_gen.ts no longer reads %s in project code — Next.js can only inline that literal where it is written verbatim, so telemetry would silently no-op; got:\n%s", envVar, s)

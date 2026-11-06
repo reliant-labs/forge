@@ -223,13 +223,19 @@ func stripKCLComment(line string) string {
 // in ascending-line order (scanAllocatePortCalls's contract), which
 // makes calls[i].Line <= calls[j].Line for i < j — used to pick a stable
 // finding line without an extra sort.
+//
+// A base read more than once (a listener, and a URL that names the same
+// port) is one port: it never collides with itself, and a collision with
+// another base is reported once, at the base's first site.
 func findCollidingPairs(calls []allocatePortCall, maxStacks, blockSize int) []Finding {
 	var findings []Finding
+	reported := map[[2]int]bool{}
 	for i := 0; i < len(calls); i++ {
 		for j := i + 1; j < len(calls); j++ {
 			a, b := calls[i], calls[j]
-			if a.Base == b.Base && a.Line == b.Line {
-				continue // same literal call matched twice by an odd line shape; not two sites
+			pair := [2]int{min(a.Base, b.Base), max(a.Base, b.Base)}
+			if a.Base == b.Base || reported[pair] {
+				continue
 			}
 
 			small, large := a, b
@@ -247,6 +253,7 @@ func findCollidingPairs(calls []allocatePortCall, maxStacks, blockSize int) []Fi
 			}
 
 			collidingPort := small.Base + deltaBlocks*blockSize // == large.Base, by construction
+			reported[pair] = true
 
 			findings = append(findings, Finding{
 				Rule:     "forgeconv-allocate-port-spacing",

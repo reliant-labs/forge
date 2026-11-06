@@ -346,7 +346,7 @@ func kubectlConfigRenameContext(ctx context.Context, kubeconfigPath, from, to st
 // are actionable: "no cluster named X").
 func runKubectlConfig(ctx context.Context, kubeconfigPath string, args ...string) error {
 	all := append([]string{"config", "--kubeconfig", kubeconfigPath}, args...)
-	cmd := exec.CommandContext(ctx, "kubectl", all...)
+	cmd := cluster.KubectlCommand(ctx, all...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

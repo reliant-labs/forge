@@ -41,7 +41,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -632,7 +631,7 @@ func waitFluxDeliveryRetired(ctx context.Context, fd FluxDeliveryEntity, names [
 // or carries the retire the renderer renders (suspended, orphaning). A var so
 // the writer is testable without a cluster.
 var fluxDeliveryRetireApplied = func(ctx context.Context, fd FluxDeliveryEntity, names []string) (bool, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "--context", fd.Cluster, "-n", fd.Namespace,
+	out, err := cluster.KubectlCommand(ctx, "--context", fd.Cluster, "-n", fd.Namespace,
 		"get", "kustomizations.kustomize.toolkit.fluxcd.io", "-o", "json").Output()
 	if err != nil {
 		return false, fmt.Errorf("read env %s's Kustomizations on %s: %w", fd.Env, fd.Cluster, kubectlErr(err))
@@ -715,7 +714,7 @@ var fluxDeliveryPointerIO = struct {
 	update func(ctx context.Context, fd FluxDeliveryEntity, pointer map[string]any) error
 }{
 	read: func(ctx context.Context, fd FluxDeliveryEntity) (*unstructured.Unstructured, error) {
-		out, err := exec.CommandContext(ctx, "kubectl", "--context", fd.Cluster, "-n", fd.Namespace, "get",
+		out, err := cluster.KubectlCommand(ctx, "--context", fd.Cluster, "-n", fd.Namespace, "get",
 			"resourcesetinputproviders.fluxcd.controlplane.io", fluxdelivery.InputProviderName(fd.Env, ""),
 			"-o", "json", "--ignore-not-found").Output()
 		if err != nil {
@@ -747,7 +746,7 @@ func kubectlWritePointer(ctx context.Context, fd FluxDeliveryEntity, verb string
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", fd.Cluster, verb,
+	cmd := cluster.KubectlCommand(ctx, "--context", fd.Cluster, verb,
 		"--field-manager", fluxDeliveryFieldManager, "-f", "-")
 	cmd.Stdin = bytes.NewReader(body)
 	var stderr bytes.Buffer

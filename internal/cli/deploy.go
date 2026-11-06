@@ -597,6 +597,9 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) (e
 	// recorded on its env's control plane, best-effort, from here to exit.
 	ctx, attempt := beginDeployAttempt(ctx, envName, f)
 	defer func() { attempt.finish(ctx, err) }()
+	// A preview writes nothing to any cluster, and that is enforced, not
+	// just intended: see cluster.WithWritesFenced and deploy_write_fence.go.
+	ctx = fenceDeployPreview(ctx, f)
 	// Under --json stdout carries the one document and nothing else, whatever
 	// a phase or a subprocess prints on the way to it.
 	if f.jsonOut {
@@ -4962,7 +4965,7 @@ func verifyKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envNam
 // that into a clear deploy-time failure rather than silently applying
 // to whatever's active.
 func kubectlContextNames(ctx context.Context) ([]string, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "config", "get-contexts", "-o", "name").Output()
+	out, err := cluster.KubectlCommand(ctx, "config", "get-contexts", "-o", "name").Output()
 	if err != nil {
 		return nil, fmt.Errorf("kubectl config get-contexts: %w (is kubectl installed and configured?)", err)
 	}

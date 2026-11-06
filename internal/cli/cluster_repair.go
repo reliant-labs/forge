@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 const k3sNodeIPDriftFailure = "failed to find interface with specified node ip"
@@ -179,7 +181,7 @@ func clusterNodesReadyOnce(ctx context.Context, clusterName string) (bool, error
 	defer cancel()
 
 	kctx := "k3d-" + clusterName
-	out, err := exec.CommandContext(probeCtx, "kubectl", "--context", kctx,
+	out, err := cluster.KubectlCommand(probeCtx, "--context", kctx,
 		"wait", "--for=condition=Ready", "nodes", "--all",
 		"--timeout="+nodeReadyProbeCondition.String()).CombinedOutput()
 	if err == nil {
@@ -253,7 +255,7 @@ func staleReadyNodes(heartbeats, started map[string]time.Time) []string {
 // kubectlNodeReadyHeartbeats reads every node's Ready-condition
 // lastHeartbeatTime. A node without one maps to the zero time.
 func kubectlNodeReadyHeartbeats(ctx context.Context, kctx string) (map[string]time.Time, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx, "get", "nodes", "-o",
+	out, err := cluster.KubectlCommand(ctx, "--context", kctx, "get", "nodes", "-o",
 		`jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].lastHeartbeatTime}{"\n"}{end}`).
 		CombinedOutput()
 	if err != nil {
@@ -596,7 +598,7 @@ func waitForK3sNodeInternalIP(ctx context.Context, clusterName, node, wantIP str
 	kctx := "k3d-" + clusterName
 
 	for {
-		out, err := exec.CommandContext(ctx, "kubectl", "--request-timeout=2s", "--context", kctx,
+		out, err := cluster.KubectlCommand(ctx, "--request-timeout=2s", "--context", kctx,
 			"get", "node", node,
 			"-o", "jsonpath={.status.addresses[?(@.type==\"InternalIP\")].address}").Output()
 		if err == nil && strings.TrimSpace(string(out)) == wantIP {

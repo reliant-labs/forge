@@ -50,6 +50,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/fluxdelivery"
 )
 
@@ -352,7 +353,7 @@ func (e *fluxDeliveryGrantRefusal) Error() string {
 // record is Found=false, never an error: an env bootstrapped before forge
 // recorded its grants is an env whose grants are unknown.
 var fluxDeliveryReadGrants = func(ctx context.Context, fd FluxDeliveryEntity) (fluxDeliveryGrantsRecord, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "--context", fd.Cluster, "-n", fd.Namespace,
+	out, err := cluster.KubectlCommand(ctx, "--context", fd.Cluster, "-n", fd.Namespace,
 		"get", "configmap", fluxdelivery.GrantsRecord, "-o", "json", "--ignore-not-found").Output()
 	if err != nil {
 		return fluxDeliveryGrantsRecord{}, fmt.Errorf("read the delivery grants record %s/%s on %s: %w",
@@ -450,7 +451,7 @@ var fluxDeliveryAccessReview = func(ctx context.Context, kubeContext string, che
 		}
 		// --validate=false: client-side validation lists CRDs first, which a
 		// pointer-only credential may not, and a review is never persisted.
-		cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeContext, "create", "--validate=false", "-f", "-", "-o", "json")
+		cmd := cluster.KubectlCommand(ctx, "--context", kubeContext, "create", "--validate=false", "-f", "-", "-o", "json")
 		cmd.Stdin = strings.NewReader(string(body))
 		out, err := cmd.Output()
 		if err != nil {

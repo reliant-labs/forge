@@ -22,7 +22,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -39,7 +38,7 @@ var (
 )
 
 func kubectlNamespaceExists(ctx context.Context, kctx, name string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", cluster.KubectlArgs(kctx, "get", "namespace", name, "-o", "name", "--ignore-not-found")...)
+	cmd := cluster.KubectlCommand(ctx, cluster.KubectlArgs(kctx, "get", "namespace", name, "-o", "name", "--ignore-not-found")...)
 	scrubSubprocessLogEnv(cmd)
 	out, err := cmd.Output()
 	if err != nil {

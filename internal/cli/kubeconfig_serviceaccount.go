@@ -29,7 +29,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -179,7 +178,7 @@ func readerServer(ctx context.Context, k KubeconfigSecretEntity, targetContext s
 // operator's kubeconfig. Only the ADDRESS is taken: an exec-plugin user
 // entry beside it is exactly what this mint exists to avoid copying.
 func kubectlContextServer(ctx context.Context, kctx string) (string, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", "config", "view", "--minify",
+	cmd := cluster.KubectlCommand(ctx, "config", "view", "--minify",
 		"--context", kctx, "-o", "jsonpath={.clusters[0].cluster.server}")
 	scrubSubprocessLogEnv(cmd)
 	out, err := cmd.Output()
@@ -384,7 +383,7 @@ func refuseUnmanagedAdoption(ctx context.Context, kctx, kind, name, namespace st
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
-	cmd := exec.CommandContext(ctx, "kubectl", cluster.KubectlArgs(kctx, args...)...)
+	cmd := cluster.KubectlCommand(ctx, cluster.KubectlArgs(kctx, args...)...)
 	scrubSubprocessLogEnv(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -455,7 +454,7 @@ func readServiceAccountToken(ctx context.Context, kctx, namespace, secret string
 // kubectlSecretField reads one base64 field from a Secret, returning "" for
 // any failure (not found, not yet populated) so the caller can retry.
 func kubectlSecretField(ctx context.Context, kctx, namespace, secret, field string) string {
-	cmd := exec.CommandContext(ctx, "kubectl", cluster.KubectlArgs(kctx,
+	cmd := cluster.KubectlCommand(ctx, cluster.KubectlArgs(kctx,
 		"get", "secret", secret, "-n", namespace, "-o", "jsonpath={.data."+field+"}")...)
 	scrubSubprocessLogEnv(cmd)
 	out, err := cmd.Output()

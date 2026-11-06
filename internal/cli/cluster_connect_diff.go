@@ -119,7 +119,7 @@ func (r connectRBAC) bindingSelector() string {
 
 // connectReadLive is the cluster read, a seam so tests supply a cluster.
 var connectReadLive = func(ctx context.Context, kctx string, r connectRBAC) ([]liveObject, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", cluster.KubectlArgs(kctx, "get",
+	cmd := cluster.KubectlCommand(ctx, cluster.KubectlArgs(kctx, "get",
 		"clusterrole,clusterrolebinding,role,rolebinding", "--all-namespaces",
 		"-l", r.bindingSelector(), "-o", "json")...)
 	scrubSubprocessLogEnv(cmd)
@@ -445,7 +445,7 @@ func stalePrune(desired []rbacObject, live []liveObject) []liveObject {
 // runKubectl runs kubectl with the given arguments and returns stdout; a
 // failure carries stderr.
 func runKubectl(ctx context.Context, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd := cluster.KubectlCommand(ctx, args...)
 	scrubSubprocessLogEnv(cmd)
 	out, err := cmd.Output()
 	if err != nil {

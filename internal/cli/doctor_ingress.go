@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/doctor"
 )
@@ -93,7 +94,7 @@ func kubectlGet(ctx context.Context, kind, name string) resourceLookupStatus {
 	if _, err := exec.LookPath("kubectl"); err != nil {
 		return resourceKubectlMissing
 	}
-	cmd := exec.CommandContext(ctx, "kubectl", "get", kind, name, "-o", "jsonpath={.metadata.name}")
+	cmd := cluster.KubectlCommand(ctx, "get", kind, name, "-o", "jsonpath={.metadata.name}")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		// Empty stdout with exit 0 shouldn't happen for a real resource;

@@ -33,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 // reconcileDeclaredClusters ensures every cluster the env declares exists
@@ -866,7 +868,7 @@ func ensureMSSClamp(ctx context.Context, node string) error {
 // readCoreDNSNodeHosts returns the kube-system/coredns ConfigMap's
 // NodeHosts data for the given kubectl context (empty string when unset).
 func readCoreDNSNodeHosts(ctx context.Context, kctx string) (string, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	out, err := cluster.KubectlCommand(ctx, "--context", kctx,
 		"get", "configmap", "coredns", "-n", "kube-system",
 		"-o", "jsonpath={.data.NodeHosts}").CombinedOutput()
 	if err != nil {
@@ -940,7 +942,7 @@ func patchCoreDNSNodeHosts(ctx context.Context, kctx, newHosts string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	cmd := cluster.KubectlCommand(ctx, "--context", kctx,
 		"patch", "configmap", "coredns", "-n", "kube-system",
 		"--type", "merge", "-p", string(body))
 	cmd.Stderr = os.Stderr
@@ -950,13 +952,13 @@ func patchCoreDNSNodeHosts(ctx context.Context, kctx, newHosts string) error {
 // rolloutRestartCoreDNS bounces the coredns deployment so it reloads the
 // patched NodeHosts.
 func rolloutRestartCoreDNS(ctx context.Context, kctx string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	cmd := cluster.KubectlCommand(ctx, "--context", kctx,
 		"rollout", "restart", "deployment/coredns", "-n", "kube-system")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return err
 	}
-	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	out, err := cluster.KubectlCommand(ctx, "--context", kctx,
 		"rollout", "status", "deployment/coredns", "-n", "kube-system",
 		"--timeout=60s").CombinedOutput()
 	if err != nil {
@@ -1027,7 +1029,7 @@ var nodeReadyAttemptFn = kubectlWaitNodesReady
 func kubectlWaitNodesReady(ctx context.Context, kctx string, budget time.Duration) (string, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	out, err := exec.CommandContext(attemptCtx, "kubectl", "--context", kctx,
+	out, err := cluster.KubectlCommand(attemptCtx, "--context", kctx,
 		"wait", "--for=condition=Ready", "nodes", "--all",
 		"--timeout="+budget.String()).CombinedOutput()
 	if err != nil {

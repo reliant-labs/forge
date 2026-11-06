@@ -65,7 +65,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // refuses a range the computed version does not satisfy.
 // TestWebRuntimePublishedRangeTracksPackage
 // holds its major.minor to package.json's.
-const webRuntimePublishedRange = "^0.13.0"
+const webRuntimePublishedRange = "^0.13.3"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a

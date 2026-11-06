@@ -539,7 +539,7 @@ describe("AcceptInviteForm", () => {
       "/auth/password-policy": { status: 204 },
       "/auth/invite/accept": {
         status: 200,
-        body: { redirect: "https://accounts.example/authorize?state=i1" },
+        body: { redirect: "https://provider.example/start?state=i1" },
       },
     });
     render(

@@ -100,22 +100,18 @@ func (c *Client) RevokeCredentials(ctx context.Context, userID string) (int, err
 // EndSessions deletes every issuer session of a user, so nothing created
 // before a revocation can be finalized into tokens after it.
 func (c *Client) EndSessions(ctx context.Context, userID string) (int, error) {
-	body, err := c.postJSON(ctx, "/v2/sessions/search", map[string]any{
+	// Every page is read before any session is ended: ending them while
+	// paging would shift the offsets under the search.
+	sessions, err := searchAll[struct {
+		ID string `json:"id"`
+	}](ctx, c, "/v2/sessions/search", map[string]any{
 		"queries": []any{map[string]any{"userIdQuery": map[string]any{"id": userID}}},
-	})
+	}, "sessions", true)
 	if err != nil {
 		return 0, fmt.Errorf("list sessions: %w", err)
 	}
-	var out struct {
-		Sessions []struct {
-			ID string `json:"id"`
-		} `json:"sessions"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return 0, fmt.Errorf("decode sessions: %w", err)
-	}
 	n := 0
-	for _, s := range out.Sessions {
+	for _, s := range sessions {
 		if _, err := c.sendJSON(ctx, http.MethodDelete, "/v2/sessions/"+url.PathEscape(s.ID), map[string]any{}); err != nil && !isNotFound(err) {
 			return n, fmt.Errorf("end session %s: %w", s.ID, err)
 		}
@@ -210,24 +206,19 @@ func (c *Client) lockUser(ctx context.Context, userID string) (locked bool, err 
 	return true, nil
 }
 
-// ListIDPLinks returns the identity-provider links of an account.
+// ListIDPLinks returns every identity-provider link of an account, across
+// all of the issuer's result pages.
 func (c *Client) ListIDPLinks(ctx context.Context, userID string) ([]IDPLink, error) {
-	body, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/links/_search", map[string]any{})
+	result, err := searchAll[struct {
+		IdPID    string `json:"idpId"`
+		UserID   string `json:"userId"`
+		UserName string `json:"userName"`
+	}](ctx, c, "/v2/users/"+url.PathEscape(userID)+"/links/_search", map[string]any{}, "result", true)
 	if err != nil {
 		return nil, fmt.Errorf("list identity provider links: %w", err)
 	}
-	var out struct {
-		Result []struct {
-			IdPID    string `json:"idpId"`
-			UserID   string `json:"userId"`
-			UserName string `json:"userName"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("decode identity provider links: %w", err)
-	}
-	links := make([]IDPLink, 0, len(out.Result))
-	for _, l := range out.Result {
+	links := make([]IDPLink, 0, len(result))
+	for _, l := range result {
 		links = append(links, IDPLink{IdPID: l.IdPID, UserID: l.UserID, UserName: l.UserName})
 	}
 	return links, nil

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -45,6 +47,9 @@ type fakeZitadel struct {
 	// refusedProofDelay holds the answer to a REFUSED email proof (a
 	// wrong code) for this long: a failing proof kept in flight.
 	refusedProofDelay time.Duration
+	// pageLimit caps every paged search answer at this many results, as
+	// the real issuer's maximum does (0: the requested limit only).
+	pageLimit int
 	// failUnlock makes every unlock fail at the issuer (500).
 	failUnlock bool
 	// failMetadataDeletes makes that many metadata deletes fail (500).
@@ -227,6 +232,32 @@ func zerr(w http.ResponseWriter, status int, id, msg string) {
 func ok(w http.ResponseWriter, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// page answers one page of a paged search the way the issuer does: the
+// request's {offset, limit} query (capped at pageLimit) picks the results,
+// and details.totalResult (a protojson uint64: a string) counts them all.
+func (f *fakeZitadel) page(b map[string]any, resultKey string, all []any) map[string]any {
+	q := sub(b, "query")
+	offset := 0
+	switch v := q["offset"].(type) {
+	case string:
+		offset, _ = strconv.Atoi(v)
+	case float64:
+		offset = int(v)
+	}
+	limit := len(all)
+	if v, ok := q["limit"].(float64); ok && v > 0 {
+		limit = int(v)
+	}
+	if f.pageLimit > 0 && limit > f.pageLimit {
+		limit = f.pageLimit
+	}
+	res := []any{}
+	if offset < len(all) {
+		res = all[offset:min(offset+limit, len(all))]
+	}
+	return map[string]any{resultKey: res, "details": map[string]any{"totalResult": strconv.Itoa(len(all))}}
 }
 
 func readBody(r *http.Request) map[string]any {
@@ -566,7 +597,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		for _, p := range u.passkeys {
 			res = append(res, map[string]any{"id": p.ID, "name": p.Name, "state": "AUTH_FACTOR_STATE_READY"})
 		}
-		ok(w, map[string]any{"result": res})
+		ok(w, map[string]any{"result": res, "details": map[string]any{"totalResult": strconv.Itoa(len(res))}})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/passkeys", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
 		if c := sub(b, "code"); c != nil {
@@ -594,7 +625,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		u.links = append(u.links, IDPLink{IdPID: str(l, "idpId"), UserID: str(l, "userId"), UserName: str(l, "userName")})
 		ok(w, map[string]any{})
 	}))
-	mux.HandleFunc("POST /v2/users/{id}/links/_search", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
+	mux.HandleFunc("POST /v2/users/{id}/links/_search", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
 		if f.failLinks {
 			zerr(w, 503, "INTERNAL-x", "unavailable")
 			return
@@ -603,7 +634,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		for _, l := range u.links {
 			res = append(res, map[string]any{"idpId": l.IdPID, "userId": l.UserID, "userName": l.UserName})
 		}
-		ok(w, map[string]any{"result": res})
+		ok(w, f.page(b, "result", res))
 	}))
 	mux.HandleFunc("DELETE /v2/users/{id}/links/{idp}/{linked}", withUser(func(w http.ResponseWriter, r *http.Request, u *fakeUser, _ map[string]any) {
 		kept := u.links[:0]
@@ -657,13 +688,18 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		res := []any{}
+		ids := []string{}
 		for id, sess := range f.sessions {
 			if sess.userID == uid && !sess.deleted {
-				res = append(res, map[string]any{"id": id})
+				ids = append(ids, id)
 			}
 		}
-		ok(w, map[string]any{"sessions": res})
+		sort.Strings(ids) // a stable order, so offsets mean the same on every page
+		res := []any{}
+		for _, id := range ids {
+			res = append(res, map[string]any{"id": id})
+		}
+		ok(w, f.page(b, "sessions", res))
 	})
 	mux.HandleFunc("POST /v2/users/{id}/lock", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, _ map[string]any) {
 		if u.locked {

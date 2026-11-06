@@ -233,6 +233,15 @@ From the scratch project's frontend (same kind), copy:
   `VerifySent`; the passkey, magic-link, social, invite and verify calls are
   appended) and `src/lib/auth/use-auth-options.ts`;
 - `src/components/{sign-in-methods,magic-link-form,verify-email-form,accept-invite-form,social-callback,passkeys-panel}.tsx`;
+- the shared components those import that an older scaffold lacks or has
+  in an older shape: `src/components/auth-ui.tsx` (new: `AuthCard`,
+  `AuthInput`, `PasswordInput`, `AuthAlert`, `AuthDivider`, `AuthLink`,
+  imported by every component above but `passkeys-panel`) and
+  `src/components/password-requirements.tsx` (`PasswordRequirements` grew
+  the `attempted` prop `accept-invite-form` passes). Both need only
+  `lucide-react` and `@/components/ui/input`, which every scaffold has.
+  After copying, the frontend's typecheck (`npx tsc --noEmit`) must pass:
+  an unresolved `@/components/…` import names a file still to copy;
 - Next.js: `src/app/auth/{magic,invite,verify,social/callback}/page.tsx`.
   Vite: the `magicRoute`, `inviteRoute`, `verifyRoute` and
   `socialCallbackRoute` blocks of `src/routes.tsx`, and their entries in

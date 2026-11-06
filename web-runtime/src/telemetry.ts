@@ -82,8 +82,11 @@
 // until it was first SHOWN: a tab opened behind another for a minute reported
 // a 60 s LCP. The runtime records when the page was first hidden (the browser's
 // `visibility-state` entries where it has them, else from startup on) and
-// drops an FCP or LCP painted at or after that moment. TTFB, CLS and INP are
-// kept: being hidden does not change them.
+// drops an FCP or LCP painted at or after that moment. The paint time is the
+// metric's value (web-vitals times it from navigation, less a prerendered
+// page's activationStart); a back/forward-cache restore, timed from the
+// restore, is kept. TTFB, CLS and INP are kept: being hidden does not change
+// them.
 //
 // ── Network URLs carry no query string ───────────────────────────────────
 //
@@ -518,8 +521,11 @@ function watchFirstHidden(): HiddenWatch {
       typeof performance.getEntriesByType === "function"
         ? performance.getEntriesByType("visibility-state")
         : [];
+    // A prerendered page is hidden until it is activated, as web-vitals
+    // also ignores: only hiding after activation counts.
+    const activated = activationStart();
     for (const e of entries) {
-      if (e.name === "hidden") {
+      if (e.name === "hidden" && e.startTime >= activated) {
         at = Math.min(at, e.startTime);
       }
     }
@@ -529,14 +535,17 @@ function watchFirstHidden(): HiddenWatch {
   if (typeof document === "undefined") {
     return { at: () => at, stop: () => {} };
   }
-  if (document.visibilityState === "hidden") {
+  const hiddenNow = () =>
+    document.visibilityState === "hidden" &&
+    !(document as { prerendering?: boolean }).prerendering;
+  if (hiddenNow()) {
     at = Math.min(at, now());
   }
   if (typeof document.addEventListener !== "function") {
     return { at: () => at, stop: () => {} };
   }
   const onChange = () => {
-    if (document.visibilityState === "hidden") {
+    if (hiddenNow()) {
       at = Math.min(at, now());
     }
   };
@@ -552,6 +561,47 @@ const SDK_WEBVITALS_SCOPE = "webvitals";
 
 /** The web vitals timed from navigation to a paint: wrong for a hidden page. */
 const PAINT_VITALS = ["fcp", "lcp"] as const;
+
+/** The span attribute the SDK copies web-vitals' metric.navigationType into. */
+const SDK_WEBVITALS_NAV_TYPE = "webvitals.navigation_type";
+
+/**
+ * When an FCP or LCP span's paint happened, in ms since the time origin (the
+ * coordinates of hiddenAt), or undefined when its value is not timed from
+ * navigation. The SDK (@hyperdx/otel-web webvitals.js) sets the attribute to
+ * web-vitals' metric.value, which web-vitals 3 computes as the paint entry's
+ * startTime minus activationStart (0 except for a prerendered page); so the
+ * paint time is the value plus activationStart. A page restored from the
+ * back/forward cache instead reports the time since the restore, which says
+ * nothing about when the first load was hidden.
+ */
+function paintTime(
+  value: number,
+  attributes: Record<string, unknown>,
+): number | undefined {
+  const navigationType = attributes[SDK_WEBVITALS_NAV_TYPE];
+  if (navigationType === "back-forward-cache") {
+    return undefined;
+  }
+  return navigationType === "prerender" ? value + activationStart() : value;
+}
+
+/** The navigation's activationStart (a prerendered page), else 0. */
+function activationStart(): number {
+  try {
+    const [nav] =
+      typeof performance !== "undefined" &&
+      typeof performance.getEntriesByType === "function"
+        ? (performance.getEntriesByType("navigation") as Array<{
+            activationStart?: unknown;
+          }>)
+        : [];
+    const at = nav?.activationStart;
+    return typeof at === "number" && Number.isFinite(at) ? at : 0;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Drops an FCP or LCP span whose paint came at or after hiddenAt (ms since the
@@ -584,9 +634,14 @@ function dropBackgroundPaintVitals(hiddenAt: number): void {
     }
     const end = span.end;
     span.end = function (this: unknown, ...args: unknown[]) {
+      const attributes = span.attributes ?? {};
       for (const vital of PAINT_VITALS) {
-        const value = span.attributes?.[vital];
-        if (typeof value === "number" && value >= hiddenAt) {
+        const value = attributes[vital];
+        if (typeof value !== "number") {
+          continue;
+        }
+        const paintedAt = paintTime(value, attributes);
+        if (paintedAt !== undefined && paintedAt >= hiddenAt) {
           // Never ended, so never exported.
           return undefined;
         }

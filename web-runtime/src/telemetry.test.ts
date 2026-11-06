@@ -1149,13 +1149,19 @@ describe("no session before the page is first visible", () => {
 });
 
 describe("paint vitals of a page first shown late", () => {
-  // A fake of the SDK's web-vitals instrumentation, shaped like the real one
-  // (@hyperdx/otel-web webvitals.js): it holds the `webvitals` tracer from
-  // init, and reports each vital as a span with one attribute, exported only
-  // once it is ENDED.
+  // The SDK's own web-vitals instrumentation (@hyperdx/otel-web webvitals.js,
+  // the version @hyperdx/browser pins), run over a fake tracer provider and
+  // driven through its injectable web-vitals callbacks: it holds the
+  // `webvitals` tracer from init and reports each vital as a span carrying
+  // the metric value and navigation type, exported only once it is ENDED.
   type Vital = { name: string; value: number };
+  type NavigationType = "navigate" | "prerender" | "back-forward-cache";
   const exported: Vital[] = [];
-  let report: (name: string, value: number) => void = () => {};
+  let report: (
+    name: string,
+    value: number,
+    navigationType?: NavigationType,
+  ) => void = () => {};
 
   function fakeProvider() {
     const tracers = new Map<string, { startSpan(name: string): unknown }>();
@@ -1166,14 +1172,16 @@ describe("paint vitals of a page first shown late", () => {
           tracers.set(key, {
             startSpan() {
               const span = {
-                attributes: {} as Record<string, number>,
-                setAttribute(k: string, v: number) {
+                attributes: {} as Record<string, unknown>,
+                setAttribute(k: string, v: unknown) {
                   span.attributes[k] = v;
                   return span;
                 },
                 end() {
                   for (const [k, v] of Object.entries(span.attributes)) {
-                    exported.push({ name: k, value: v });
+                    if (typeof v === "number") {
+                      exported.push({ name: k, value: v });
+                    }
                   }
                 },
               };
@@ -1211,35 +1219,55 @@ describe("paint vitals of a page first shown late", () => {
   function stubPerformance(
     now: () => number,
     visibility: Array<{ name: string; startTime: number }> = [],
+    activationStart = 0,
   ) {
     vi.stubGlobal("performance", {
       now,
       getEntriesByType: (type: string) =>
-        type === "visibility-state" ? visibility : [],
+        type === "visibility-state"
+          ? visibility
+          : type === "navigation"
+            ? [{ activationStart }]
+            : [],
     });
   }
 
   async function load2() {
     stubDom();
     const { trace } = await import("@opentelemetry/api");
+    // The real instrumentation; the package's exports map hides the file.
+    const { initWebVitals } = await import(
+      "../node_modules/@hyperdx/otel-web/dist/esm/webvitals.js"
+    );
     trace.disable();
     trace.setGlobalTracerProvider(fakeProvider() as never);
     init.mockImplementation(() => {
       const provider = trace.getTracerProvider() as unknown as {
         getDelegate(): ReturnType<typeof fakeProvider>;
       };
-      // Held once, as the real instrumentation holds its tracer.
-      const tracer = provider.getDelegate().getTracer("webvitals") as {
-        startSpan(name: string): {
-          setAttribute(k: string, v: number): unknown;
-          end(): void;
-        };
+      type Callback = (metric: {
+        value: number;
+        id: string;
+        navigationType: NavigationType;
+      }) => void;
+      const callbacks = new Map<string, Callback>();
+      const on = (name: string) => (fn: Callback) => {
+        callbacks.set(name, fn);
       };
-      report = (name, value) => {
-        const span = tracer.startSpan("webvitals");
-        span.setAttribute(name, value);
-        span.end();
-      };
+      initWebVitals(
+        provider.getDelegate() as never,
+        {
+          onFID: on("fid"),
+          onCLS: on("cls"),
+          onLCP: on("lcp"),
+          onINP: on("inp"),
+          onFCP: on("fcp"),
+          onTTFB: on("ttfb"),
+        } as never,
+      );
+      let id = 0;
+      report = (name, value, navigationType = "navigate") =>
+        callbacks.get(name)?.({ value, id: `v${++id}`, navigationType });
     });
     return load();
   }
@@ -1335,6 +1363,54 @@ describe("paint vitals of a page first shown late", () => {
     report("lcp", 2_500);
     report("ttfb", 90);
     expect(exported).toEqual([{ name: "ttfb", value: 90 }]);
+  });
+
+  it("keeps the paints of a back/forward-cache restore, timed from the restore", async () => {
+    // Loaded in the background, so the first load's paints are dropped; a
+    // restore's value is the time since the restore, never since navigation.
+    let clock = 250;
+    stubPerformance(() => clock);
+    const doc = stubDocument("hidden");
+    const { t } = await load2();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    await vi.waitFor(() => expect(doc.waiting()).toBeGreaterThan(0));
+    clock = 61_000;
+    doc.set("visible");
+    expect(await started).toBe(true);
+
+    report("fcp", 61_000);
+    report("fcp", 40, "back-forward-cache");
+    report("lcp", 55, "back-forward-cache");
+    expect(exported).toEqual([
+      { name: "fcp", value: 40 },
+      { name: "lcp", value: 55 },
+    ]);
+  });
+
+  it("times a prerendered page's paints from its activation", async () => {
+    // Hidden while prerendering (ignored, as web-vitals ignores it), shown at
+    // activation (2 s), hidden again at 5 s. web-vitals reports a paint at
+    // 3 s as 1 s after activation: kept; one at 6 s as 4 s: dropped.
+    stubPerformance(
+      () => 9_000,
+      [
+        { name: "hidden", startTime: 0 },
+        { name: "visible", startTime: 2_000 },
+        { name: "hidden", startTime: 5_000 },
+        { name: "visible", startTime: 8_000 },
+      ],
+      2_000,
+    );
+    stubDocument("visible");
+    const { t } = await load2();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    report("fcp", 1_000, "prerender");
+    report("lcp", 4_000, "prerender");
+    expect(exported).toEqual([{ name: "fcp", value: 1_000 }]);
   });
 });
 

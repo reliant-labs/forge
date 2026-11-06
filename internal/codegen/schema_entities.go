@@ -221,8 +221,9 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (enti
 		key := strings.ToLower(e.Name)
 		if prev, dup := owner[key]; dup {
 			return nil, notes, fmt.Errorf("tables %s and %s both project to the entity %s, and one package cannot declare it twice: "+
-				"opt one out with `COMMENT ON TABLE %s IS '%s'`, or rename it",
-				prev, t.Name, e.Name, t.Name, schemadef.TableMarkerNoEntity)
+				"name one with `COMMENT ON TABLE %s IS '%s=<Name>'`, opt one out of the ORM with `COMMENT ON TABLE %s IS '%s'` "+
+				"(the usual answer for a table a library writes, such as forge/pkg/audit's audit_log), or rename it",
+				prev, t.Name, e.Name, t.Name, schemadef.TableMarkerEntityName, prev, schemadef.TableMarkerNoEntity)
 		}
 		owner[key] = t.Name
 		entities = append(entities, e)

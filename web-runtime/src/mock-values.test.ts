@@ -33,6 +33,7 @@ import {
 } from "./testdata/mockgen/gen/acme/v1/billing_pb.js";
 import {
   GetTraceResponseSchema,
+  ImpossibleBytesSchema,
   ListTracesRequestSchema,
   ListTracesResponseSchema,
   Region,
@@ -216,6 +217,45 @@ describe("protovalidate rules", () => {
     ],
     ["bool const", () => expect(r.must).toBe(true)],
     ["bytes len", () => expect(r.digest.length).toBe(32)],
+    ["bytes min_len above the default", () => expect(r.salt.length).toBe(24)],
+    [
+      "bytes min_len/max_len",
+      () => {
+        expect(r.nonce.length).toBeGreaterThanOrEqual(4);
+        expect(r.nonce.length).toBeLessThanOrEqual(8);
+      },
+    ],
+    [
+      "int32 map values gte/lte",
+      () => {
+        const vs = Object.values(r.quotas);
+        expect(vs.length).toBeGreaterThan(0);
+        for (const v of vs) {
+          expect(typeof v).toBe("number");
+          expect(v).toBeGreaterThanOrEqual(500);
+          expect(v).toBeLessThanOrEqual(510);
+        }
+      },
+    ],
+    [
+      "enum map values in",
+      () => {
+        const vs = Object.values(r.homeRegions);
+        expect(vs.length).toBeGreaterThan(0);
+        expect(vs.every((v) => v === Region.EU)).toBe(true);
+      },
+    ],
+    [
+      "message map values",
+      () => {
+        const vs = Object.values(r.errorsByCode);
+        expect(vs.length).toBeGreaterThan(0);
+        for (const v of vs) {
+          expect(isMessage(v)).toBe(true);
+          expect(v.message).not.toBe("");
+        }
+      },
+    ],
     ["min_items/max_items", () => expect(r.labels).toHaveLength(12)],
     [
       "min_pairs/max_pairs",
@@ -250,6 +290,12 @@ describe("protovalidate rules", () => {
       },
     ],
   ])("%s", (_name, check) => check());
+
+  it("refuses bytes bounds no value satisfies, naming the field", () => {
+    expect(() => mockValue(ImpossibleBytesSchema, opts)).toThrow(
+      /sample\.v1\.ImpossibleBytes\.blob has bytes rules no value satisfies/,
+    );
+  });
 
   it("applies enum `in` on list items", () => {
     const traces = defaults.listTraces({}).traces;

@@ -125,6 +125,11 @@ message RuleShowcase {
   string host = 20 [(buf.validate.field).string.hostname = true];
   string addr = 21 [(buf.validate.field).string.ipv4 = true];
   repeated int32 scores = 22 [(buf.validate.field).repeated.items.int32 = {gte: 90, lte: 99}];
+  bytes salt = 23 [(buf.validate.field).bytes.min_len = 24];
+  bytes nonce = 24 [(buf.validate.field).bytes = {min_len: 4, max_len: 8}];
+  map<string, int32> quotas = 25 [(buf.validate.field).map.values.int32 = {gte: 500, lte: 510}];
+  map<string, Region> home_regions = 26 [(buf.validate.field).map.values.enum = {in: [2]}];
+  map<string, SpanError> errors_by_code = 27;
 }
 
 message GetRuleShowcaseRequest {}
@@ -159,4 +164,9 @@ service TelemetryService {
   rpc Watch(WatchRequest) returns (stream WatchEvent);
   rpc Upload(stream UploadChunk) returns (UploadSummary);
   rpc Chat(stream WatchRequest) returns (stream WatchEvent);
+}
+
+// Bytes bounds no value satisfies: the engine refuses rather than emit one.
+message ImpossibleBytes {
+  bytes blob = 1 [(buf.validate.field).bytes = {min_len: 9, max_len: 3}];
 }

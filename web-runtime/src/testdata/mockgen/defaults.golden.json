@@ -1067,7 +1067,42 @@
       92,
       97,
       91
-    ]
+    ],
+    "salt": "Fw8zwqD1FaondhSuntBAOoRWSHY4rdPK",
+    "nonce": "L0GqIxXi+fU=",
+    "quotas": {
+      "quota-1": 503,
+      "quota-2": 505,
+      "quota-3": 500,
+      "quota-4": 507
+    },
+    "homeRegions": {
+      "home-region-1": "REGION_EU",
+      "home-region-2": "REGION_EU",
+      "home-region-3": "REGION_EU"
+    },
+    "errorsByCode": {
+      "errors-by-code-1": {
+        "message": "Sample span error message 1.",
+        "type": "type-1"
+      },
+      "errors-by-code-2": {
+        "message": "Sample span error message 2.",
+        "type": "type-2"
+      },
+      "errors-by-code-3": {
+        "message": "Sample span error message 3.",
+        "type": "type-3"
+      },
+      "errors-by-code-4": {
+        "message": "Sample span error message 4.",
+        "type": "type-4"
+      },
+      "errors-by-code-5": {
+        "message": "Sample span error message 5.",
+        "type": "type-5"
+      }
+    }
   },
   "watch": [
     {

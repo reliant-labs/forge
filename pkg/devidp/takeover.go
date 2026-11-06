@@ -53,8 +53,8 @@ var errRevokeFailed = errors.New("the proof succeeded but credentials set before
 // between "verified" and "revoked" (once VerifyEmail succeeds, a password
 // planted before it would otherwise work until the revocation lands):
 //
-//	mark → lock → end every session → proof → re-lock → revoke credentials
-//	→ end every session → unlock → clear the mark
+//	mark → lock → end every session → revoke credentials → proof → re-lock
+//	→ revoke credentials → end every session → unlock → clear the mark
 //
 // WHO MAY UNLOCK. Two proofs of one account can run at once — an attacker
 // who knows the user id keeps a wrong-code proof in flight while the owner
@@ -85,11 +85,17 @@ var errRevokeFailed = errors.New("the proof succeeded but credentials set before
 // lock reads as one nothing lifts, and returns errRevokeFailed. revoked
 // reports that credentials were taken back.
 //
-// What remains across replicas, without a compare-and-swap at the issuer: a
-// failed proof that reads its own mark and then, two round-trips later,
-// unlocks, can land that unlock after another replica's proof has marked,
-// locked and verified — until that proof's re-lock. Within one process the
-// proofs lock closes it entirely.
+// The lock is not what keeps a planted credential out across replicas.
+// Without a compare-and-swap at the issuer, a failed proof that reads its
+// own mark and then, two round-trips later, unlocks, can land that unlock
+// after another replica's proof has marked, locked and verified — until that
+// proof's re-lock. So every proof revokes BEFORE it verifies as well as
+// after: by the time any proof marks the address verified, the account holds
+// nothing set before it, and an unlock landing in that window exposes no
+// unproven credential. (Nothing can add one to an unverified account
+// meanwhile: the sign-up routes keep a pending password or link sealed in
+// the browser until its proof.) Within one process the proofs lock also
+// closes the window itself.
 func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func() error) (revoked bool, err error) {
 	if before.EmailVerified {
 		return false, proof()
@@ -170,6 +176,22 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 		releaseFailed("a failed session cleanup")
 		return false, fmt.Errorf("end the account's sessions before its proof: %w", err)
 	}
+	// Take the unproven credentials back BEFORE the proof too, so the
+	// address is never verified while one survives. The lock alone cannot
+	// promise that across replicas: a failed proof elsewhere can lift it
+	// between this proof's VerifyEmail and its re-lock (see WHO MAY UNLOCK).
+	// Nothing on an unverified account is anyone's proven credential, so a
+	// proof that then fails has taken nothing legitimate. Detached: a client
+	// that hangs up must not leave a half-done revocation behind.
+	rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), proofCleanupTimeout)
+	pre, err := r.revoke(rctx, userID)
+	rcancel()
+	if err != nil {
+		if !held {
+			r.clearProofMark(context.WithoutCancel(ctx), userID, "an account left locked")
+		}
+		return false, err
+	}
 	if err := proof(); err != nil {
 		releaseFailed("a refused proof")
 		return false, err
@@ -194,6 +216,7 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 		}
 		return false, err
 	}
+	n += pre
 	if !owned {
 		return n > 0, nil
 	}

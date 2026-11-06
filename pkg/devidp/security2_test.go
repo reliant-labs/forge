@@ -2,6 +2,7 @@ package devidp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -188,6 +189,82 @@ func TestTakeover_AConcurrentFailedProofNeverUnlocksTheRealOne(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The re-review at dbbe6f9a, B1, forced deterministically: replica A's
+// failed proof reads its own mark and pauses there; replica B's proof marks,
+// locks and verifies; only then does A clear the mark and unlock — so the
+// account is verified and unlocked before B re-locks and revokes. No lock
+// ordering can prevent that without a compare-and-swap at the issuer, so the
+// planted password must already be gone at that moment.
+func TestTakeover_AFailedProofsLateUnlockExposesNoPlantedCredential(t *testing.T) {
+	policy := policyWith(SignupOpen, allMethods)
+	a := newHarness(t, policy)
+	b := newHarnessOn(t, a.z, policy)
+	u := preRegister(t, a)
+	code := a.z.lastMail(t).code
+	c := a.z.client()
+	ctx := context.Background()
+	before, err := c.FindUserByID(ctx, u.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A's first metadata delete is releaseFailed's, right after it read
+	// its own mark: hold it until B has verified the address.
+	paused, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	a.z.mu.Lock()
+	a.z.beforeRequest = func(r *http.Request) {
+		if r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/metadata") {
+			once.Do(func() { close(paused); <-resume })
+		}
+	}
+	a.z.mu.Unlock()
+
+	aDone := make(chan error, 1)
+	go func() {
+		_, err := a.routes.proveAddress(ctx, before, func() error { return ErrInvalidCode })
+		aDone <- err
+	}()
+	select {
+	case <-paused:
+	case err := <-aDone:
+		t.Fatalf("A's failed proof never reached its unlock (returned %v)", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("A's failed proof never reached its unlock")
+	}
+
+	exposed := false
+	if _, err := b.routes.proveAddress(ctx, before, func() error {
+		if err := c.VerifyEmail(ctx, u.id, code); err != nil {
+			close(resume)
+			return err
+		}
+		close(resume) // A's unlock lands now, before B re-locks and revokes
+		if err := <-aDone; !errors.Is(err, ErrInvalidCode) {
+			t.Errorf("A's proof returned %v, want ErrInvalidCode", err)
+		}
+		a.z.mu.Lock()
+		verified, locked := u.verified, u.locked
+		a.z.mu.Unlock()
+		if !verified || locked {
+			t.Errorf("interleaving not forced: verified=%v locked=%v, want verified and unlocked", verified, locked)
+		}
+		exposed = signsIn(t, a, "victim@acme.com", attackerPassword)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if exposed {
+		t.Fatal("TAKEOVER RACE: the planted password signed in to the verified account while A's late unlock held it open")
+	}
+	got := a.z.user(u.id)
+	a.z.mu.Lock()
+	defer a.z.mu.Unlock()
+	if !got.verified || got.locked {
+		t.Fatalf("after both proofs: verified=%v locked=%v, want verified and unlocked", got.verified, got.locked)
 	}
 }
 

@@ -49,6 +49,9 @@ type fakeZitadel struct {
 	failUnlock bool
 	// failMetadataDeletes makes that many metadata deletes fail (500).
 	failMetadataDeletes int
+	// beforeRequest, when set, runs before every request is served, with
+	// mu released: a test pauses one request there to force an interleaving.
+	beforeRequest func(*http.Request)
 }
 
 type fakeUser struct {
@@ -94,8 +97,11 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
-		delay, refusedDelay := f.proofDelay, f.refusedProofDelay
+		delay, refusedDelay, hook := f.proofDelay, f.refusedProofDelay, f.beforeRequest
 		f.mu.Unlock()
+		if hook != nil {
+			hook(r)
+		}
 		rec := &statusRecorder{ResponseWriter: w}
 		mux.ServeHTTP(rec, r)
 		// The answer is buffered until the handler returns, so the state

@@ -741,7 +741,8 @@ func TestInvite_WrongCodeMintsNothing(t *testing.T) {
 	}
 	status, body = h.browser().post("/auth/invite/accept", map[string]any{"userID": u.id, "code": "guess", "method": "passkey"})
 	want(t, status, body, 401, CodeInvalidCode)
-	if h.z.callCount("POST /v2/users/"+u.id+"/passkeys") != 0 {
+	// Listing passkeys is the proof's revocation (proveAddress), not a mint.
+	if h.z.callCount("POST /v2/users/"+u.id+"/passkeys") != h.z.callCount("POST /v2/users/"+u.id+"/passkeys/_search") {
 		t.Fatal("a passkey registration code was minted without a valid invitation")
 	}
 }

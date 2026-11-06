@@ -2276,7 +2276,7 @@ func portInUse(port int) bool {
 //     is false — the frontend feature is gated off).
 //
 // Only entities in the --target set are checked (inTargetSet), so
-// `forge env up --target reliant-web` next to a running admin-server is fine
+// `forge env up --target reliant-web` next to a running platform-api is fine
 // — the guard only fires for a service THIS run is about to start.
 func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe func(int) bool) []portConflict {
 	if e == nil {

@@ -23,7 +23,7 @@
 //
 // WHY THE CLIENT LEVEL. The endpoint is the server a token is PRESENTED to.
 // Two CLIs can present tokens to the same origin with different scopes: in a
-// dev stack one admin-server serves both forge's deploy API and reliant's
+// dev stack one platform-api serves both forge's deploy API and reliant's
 // proxied API. Keyed by endpoint alone, each CLI's login would silently
 // replace the other's token with one that lacks its scopes. A client id is not
 // a "current" selection; each CLI always reads its own.

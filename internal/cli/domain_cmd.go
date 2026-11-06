@@ -84,6 +84,11 @@ type domainWireBinding struct {
 	EnvironmentID string `json:"environmentId,omitempty"`
 	Target        string `json:"target,omitempty"`
 	RedirectTo    string `json:"redirectTo,omitempty"`
+	// HSTSIncludeSubdomains is whether the hostname's Strict-Transport-Security
+	// carries includeSubDomains. Carried for the same reason as Resolved
+	// above: forge re-encodes the response, so a field absent here is absent
+	// from `--json` too, and a rebind that dropped the flag was invisible.
+	HSTSIncludeSubdomains bool `json:"hstsIncludeSubdomains,omitempty"`
 }
 
 type domainWire struct {
@@ -136,6 +141,19 @@ func bindingSummary(b *domainWireBinding) string {
 		return "→ " + b.RedirectTo + " (redirect)"
 	default:
 		return b.Target + " in " + b.EnvironmentID
+	}
+}
+
+// hstsCell is a binding's HSTS policy for the ls table and show: whether
+// includeSubDomains is on, "-" when the domain is unbound.
+func hstsCell(b *domainWireBinding) string {
+	switch {
+	case b == nil:
+		return "-"
+	case b.HSTSIncludeSubdomains:
+		return "includeSubDomains"
+	default:
+		return "host only"
 	}
 }
 
@@ -276,6 +294,9 @@ func writeDomainDetail(out io.Writer, d domainWire) {
 	fmt.Fprintf(out, "  state:   %s\n", deploytarget.DomainStateName(d.State))
 	fmt.Fprintf(out, "  source:  %s\n", domainSourceName(d.Source))
 	fmt.Fprintf(out, "  serving: %s\n", bindingSummary(d.Binding))
+	if d.Binding != nil {
+		fmt.Fprintf(out, "  hsts:    %s\n", hstsCell(d.Binding))
+	}
 	if path := deploytarget.DescribeServingPath(deploytarget.ServingPathName(d.ServingPath)); path != "" {
 		fmt.Fprintf(out, "  path:    %s\n", path)
 	}
@@ -392,10 +413,10 @@ func runDomainList(ctx context.Context, c cloudCaller, jsonOutput bool, out io.W
 		return nil
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "HOSTNAME\tSTATE\tSERVING\tPATH")
+	fmt.Fprintln(tw, "HOSTNAME\tSTATE\tSERVING\tPATH\tHSTS")
 	for _, d := range resp.Domains {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", d.Hostname, deploytarget.DomainStateName(d.State), bindingSummary(d.Binding),
-			servingPathCell(d.ServingPath))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", d.Hostname, deploytarget.DomainStateName(d.State), bindingSummary(d.Binding),
+			servingPathCell(d.ServingPath), hstsCell(d.Binding))
 	}
 	return tw.Flush()
 }
@@ -633,6 +654,11 @@ func runDomainBind(ctx context.Context, c cloudCaller, envName, hostname string,
 		fmt.Fprintf(out, "Bound %s → %s (permanent redirect), in %s.\n", hostname, redirectTo, envName)
 	} else {
 		fmt.Fprintf(out, "Bound %s → %s, in %s.\n", hostname, target, envName)
+	}
+	// A rebind replaces the whole binding, so leaving the flag off turns
+	// includeSubDomains off. Say so: it is a security header going away.
+	if d.Binding != nil && d.Binding.HSTSIncludeSubdomains && !opts.hstsIncludeSubdomains {
+		fmt.Fprintf(out, "HSTS includeSubDomains is now OFF for %s (it was on); rebind with --hsts-include-subdomains to keep it.\n", hostname)
 	}
 	// State, not silence: a bound domain that is not live yet is waiting
 	// on the author's DNS, and that is the next thing they need told.

@@ -367,7 +367,8 @@ type FilterFieldData struct {
 	// WhereLt or WhereLte.
 	RangeFunc string
 	// IsTimestamp marks a google.protobuf.Timestamp field, bound as
-	// req.<F>.AsTime() and skipped while nil.
+	// req.<F>.AsTime() and skipped while nil: compared by RangeFunc on a
+	// "range" filter, by equality on an "exact" one.
 	IsTimestamp bool
 	// IsEnum marks a pb-enum-typed filter field. Enum entity columns
 	// store the proto enum VALUE NAMES as TEXT (CHECK (col IN (...))),
@@ -2317,12 +2318,39 @@ func classifyEntityFilterField(mf MessageFieldDef, entity EntityDef) (FilterFiel
 	}
 	for _, c := range entity.Columns {
 		if c.Name == mf.Name {
-			return ff, nil
+			return ff, classifyExactFilterType(&ff, mf, c.Name, c.Type)
 		}
 	}
 	return ff, fmt.Errorf(
 		"list filter field %q has no matching column on entity %s in the applied schema (columns: %s); rename the request field to a real column (or add the column via a migration), or implement the RPC by hand — a method, in any file of the handler package, that does not call its generated crud<Rpc>Op",
 		mf.Name, entity.Name, entityColumnList(entity))
+}
+
+// classifyExactFilterType checks that an equality filter's field can be
+// compared, and marks a google.protobuf.Timestamp one (bound as
+// req.<F>.AsTime(), skipped while nil) — growth's ListMetricSnapshots
+// takes one week by `google.protobuf.Timestamp week_start`.
+//
+// The ops template binds a string, number, bool or enum; anything else —
+// a repeated field, bytes, a map, a message other than Timestamp — used to
+// reach it anyway and fail generate's own validate build on a
+// `req.F != ""` it could never compile. It is refused here instead, naming
+// the field.
+func classifyExactFilterType(ff *FilterFieldData, mf MessageFieldDef, column, colType string) error {
+	switch {
+	case mf.ProtoType == "message" && mf.MessageType == timestampMessage:
+		if colType != "time" {
+			return fmt.Errorf("list filter %q: a google.protobuf.Timestamp compares against a time column, and column %q is %s", mf.Name, column, colType)
+		}
+		ff.IsTimestamp = true
+		return nil
+	case mf.ProtoType == "string", mf.ProtoType == "bool", mf.ProtoType == "enum", isNumericProtoScalar(mf.ProtoType):
+		return nil
+	}
+	return fmt.Errorf(
+		"list filter %q: equality compares a string, number, bool, enum or google.protobuf.Timestamp field, not %s; "+
+			"change the field's type, or implement the RPC by hand — a method, in any file of the handler package, that does not call its generated crud<Rpc>Op",
+		mf.Name, describeFilterFieldType(mf))
 }
 
 // rangeFuncs maps a range facet's op to the orm comparison it applies.
@@ -2339,8 +2367,10 @@ const timestampMessage = "google.protobuf.Timestamp"
 // the applied schema does not declare fails the generate; so does an op the
 // field cannot take:
 //
-//   - equality and the range ops: a string or number field, or (ranges
-//     only) a google.protobuf.Timestamp against a time column;
+//   - equality: a string, number, bool or enum field, or a
+//     google.protobuf.Timestamp against a time column;
+//   - the range ops: a string or number field, or a
+//     google.protobuf.Timestamp against a time column;
 //   - prefix: a string field against a text column.
 func classifyFilterFacet(mf MessageFieldDef, entity EntityDef) (FilterFieldData, error) {
 	column := mf.Filter.Column
@@ -2404,8 +2434,8 @@ func classifyFilterFacet(mf MessageFieldDef, entity EntityDef) (FilterFieldData,
 		ff.FilterType = "range"
 		ff.RangeFunc = rangeFuncs[op]
 	case op == "":
-		if !scalar && mf.ProtoType != "bool" && mf.ProtoType != "enum" {
-			return ff, fmt.Errorf("list filter %q: equality needs a scalar or enum field, not %s", mf.Name, describeFilterFieldType(mf))
+		if err := classifyExactFilterType(&ff, mf, column, colType); err != nil {
+			return ff, err
 		}
 	default:
 		return ff, fmt.Errorf("list filter %q: unknown (forge.v1.filter) op %q", mf.Name, op)
@@ -2415,8 +2445,13 @@ func classifyFilterFacet(mf MessageFieldDef, entity EntityDef) (FilterFieldData,
 
 // describeFilterFieldType names a request field's type for a facet error.
 func describeFilterFieldType(mf MessageFieldDef) string {
-	if mf.ProtoType == "message" && mf.MessageType != "" {
+	switch {
+	case strings.HasPrefix(mf.ProtoType, "[]"):
+		return "repeated " + strings.TrimPrefix(mf.ProtoType, "[]")
+	case mf.ProtoType == "message" && mf.MessageType != "":
 		return mf.MessageType
+	case mf.ProtoType == "message":
+		return "a map"
 	}
 	return mf.ProtoType
 }

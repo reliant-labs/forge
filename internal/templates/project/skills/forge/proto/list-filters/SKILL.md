@@ -28,7 +28,7 @@ Empty means the field's own name. `op` is the comparison:
 
 | `op` | SQL | Field types |
 |---|---|---|
-| unset | `col = v` | any exact-filter type |
+| unset | `col = v` | string, number, bool, enum, `google.protobuf.Timestamp` |
 | `LIST_FILTER_OP_GT` / `GTE` | `col > v` / `col >= v` | string, number, `google.protobuf.Timestamp` |
 | `LIST_FILTER_OP_LT` / `LTE` | `col < v` / `col <= v` | string, number, `google.protobuf.Timestamp` |
 | `LIST_FILTER_OP_PREFIX` | `col LIKE 'v%'` | string, against a text column |
@@ -39,12 +39,16 @@ Empty means the field's own name. `op` is the comparison:
   real bounds.
 - **A prefix is literal.** `orm.WherePrefix` escapes `%`, `_` and `\`, so
   `weekly_` does not match `weeklyX`.
-- **A Timestamp compares against a time column**, bound as `AsTime()`.
+- **A Timestamp compares against a time column**, bound as `AsTime()`, by
+  range or by equality. Equality needs no facet when the field is named for
+  its column: `google.protobuf.Timestamp week_start = 9;` takes one week
+  exactly, beside a `week_start_from` / `week_start_before` window.
 - **`forge generate` refuses** a column the applied schema does not declare,
   a prefix on a non-string field or non-text column, a range on a bool, enum
-  or message other than Timestamp, a Timestamp against a non-time
-  column, and a facet on `search`, `query` or `q` (those names are the
-  free-text search box). Each refusal names the field.
+  or message other than Timestamp, equality on a repeated field, bytes, a
+  map or a message other than Timestamp (facet or not), a Timestamp against
+  a non-time column, and a facet on `search`, `query` or `q` (those names
+  are the free-text search box). Each refusal names the field.
 
 Two fields can bound one column: `_from` (`GTE`) with `_before` (`LT`)
 makes a half-open window. The custom-read-shape skeleton (`proto` has it)

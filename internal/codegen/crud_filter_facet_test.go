@@ -75,6 +75,11 @@ func TestGenerateCRUDHandlers_FilterFacets(t *testing.T) {
 		MessageFieldDef{Name: "max_value", ProtoType: "int64", IsOptional: true, Filter: &ListFilterDef{Column: "value", Op: FilterOpLTE}},
 		// An annotation with no op is the exact match, on the named column.
 		MessageFieldDef{Name: "metric", ProtoType: "string", Filter: &ListFilterDef{Column: "key"}},
+		// Equality on a Timestamp, with and without a facet (growth's
+		// ListMetricSnapshots takes one week as `week_start`).
+		MessageFieldDef{Name: "published_on", ProtoType: "message", MessageType: "google.protobuf.Timestamp",
+			Filter: &ListFilterDef{Column: "published_at"}},
+		MessageFieldDef{Name: "published_at", ProtoType: "message", MessageType: "google.protobuf.Timestamp"},
 	)
 	if _, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, []EntityDef{facetEntity()}), "example.com/test", projectDir, nil); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
@@ -92,13 +97,15 @@ func TestGenerateCRUDHandlers_FilterFacets(t *testing.T) {
 		"if req.MinValue != 0 {\n\t\t\t\topts = append(opts, orm.WhereGt(\"value\", req.MinValue))",
 		"if req.MaxValue != nil {\n\t\t\t\topts = append(opts, orm.WhereLte(\"value\", *req.MaxValue))",
 		"if req.Metric != \"\" {\n\t\t\t\topts = append(opts, orm.WhereEq(\"key\", req.Metric))",
+		"if req.PublishedOn != nil {\n\t\t\t\topts = append(opts, orm.WhereEq(\"published_at\", req.PublishedOn.AsTime()))",
+		"if req.PublishedAt != nil {\n\t\t\t\topts = append(opts, orm.WhereEq(\"published_at\", req.PublishedAt.AsTime()))",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("ops file lacks\n%s\n--- got:\n%s", want, content)
 		}
 	}
 	// No facet field may leak through as an exact match on its own name.
-	for _, phantom := range []string{`"key_prefix"`, `"week_start_from"`, `"published_after"`, `"min_value"`, `"metric"`} {
+	for _, phantom := range []string{`"key_prefix"`, `"week_start_from"`, `"published_after"`, `"min_value"`, `"metric"`, `"published_on"`} {
 		if strings.Contains(content, phantom) {
 			t.Errorf("ops file binds the phantom column %s", phantom)
 		}
@@ -140,6 +147,44 @@ func TestBuildCRUDTemplateData_FilterFacetErrors(t *testing.T) {
 			name:  "Timestamp against a non-time column",
 			field: MessageFieldDef{Name: "week_after", ProtoType: "message", MessageType: "google.protobuf.Timestamp", Filter: &ListFilterDef{Column: "week_start", Op: FilterOpGTE}},
 			want:  []string{"week_after", "week_start", "time"},
+		},
+		{
+			name:  "Timestamp equality against a non-time column",
+			field: MessageFieldDef{Name: "week_start", ProtoType: "message", MessageType: "google.protobuf.Timestamp"},
+			want:  []string{`"week_start"`, "time", "string"},
+		},
+		{
+			name:  "Timestamp equality facet against a non-time column",
+			field: MessageFieldDef{Name: "week_on", ProtoType: "message", MessageType: "google.protobuf.Timestamp", Filter: &ListFilterDef{Column: "week_start"}},
+			want:  []string{`"week_on"`, "week_start", "time"},
+		},
+		// Each of these used to reach the ops template and fail the
+		// generate's own validate build (`req.F != ""` on a slice, a
+		// message, bytes); the refusal names the field instead.
+		{
+			name:  "equality on a repeated field",
+			field: MessageFieldDef{Name: "key", ProtoType: "[]string"},
+			want:  []string{`"key"`, "repeated string"},
+		},
+		{
+			name:  "equality on bytes",
+			field: MessageFieldDef{Name: "key", ProtoType: "bytes"},
+			want:  []string{`"key"`, "bytes"},
+		},
+		{
+			name:  "equality on a message other than Timestamp",
+			field: MessageFieldDef{Name: "published_at", ProtoType: "message", MessageType: "google.protobuf.Duration"},
+			want:  []string{`"published_at"`, "google.protobuf.Duration"},
+		},
+		{
+			name:  "equality on a map",
+			field: MessageFieldDef{Name: "key", ProtoType: "message"},
+			want:  []string{`"key"`, "a map"},
+		},
+		{
+			name:  "equality facet on a repeated field",
+			field: MessageFieldDef{Name: "keys", ProtoType: "[]string", Filter: &ListFilterDef{Column: "key"}},
+			want:  []string{`"keys"`, "repeated string"},
 		},
 		// A facet on a reserved free-text name must not silently fall
 		// back to the broad ILIKE search across every string column.

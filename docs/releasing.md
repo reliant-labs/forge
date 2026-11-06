@@ -87,8 +87,8 @@ task release:forge -- --commit <sha>   # a specific green commit of main instead
 - the **bookkeeping** — `VERSION`, `internal/buildinfo/VERSION`, `NEXT_VERSION`,
   `CHANGELOG.md`, `npm/package.json` — is committed on top of that commit, pushed to
   `release/vX.Y.Z` together with the tag (one atomic push), and lands as the pull
-  request `chore: release vX.Y.Z`, set to auto-merge, through review and the merge
-  queue like any other change.
+  request `chore: release vX.Y.Z`, through review and the merge queue like any
+  other change: the script never arms auto-merge; pr-review does, on a pass.
 
 So the tagged tree still names the previous version in `VERSION`. Nothing reads that
 file for a release: the archives are stamped with `-X main.Version=vX.Y.Z`
@@ -152,8 +152,8 @@ What it does, in order:
 6. commits the bookkeeping, tags `vX.Y.Z` at the commit `main` already has, and
    pushes the tag and `release/vX.Y.Z` in a single atomic `git push` — never
    `main`;
-7. opens the `chore: release vX.Y.Z` pull request from `release/vX.Y.Z` and sets
-   it to auto-merge;
+7. opens the `chore: release vX.Y.Z` pull request from `release/vX.Y.Z`, non-draft,
+   and stops there: pr-review reviews its head and queues it on a pass;
 8. creates the GitHub release (`gh release create`) with that section as its notes.
 
 `--dry-run` runs every validation and every file edit in the private worktree,

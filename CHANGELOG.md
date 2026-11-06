@@ -9,10 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v1.0.16] - 2026-11-05
 
-### Breaking changes
-
-- **fix(env):** forge env up tears its stack down on every exit when it holds; --watch is how agents hold it without a TTY ([#1759](https://github.com/reliant-labs/forge/pull/1759))
-
 ### Added
 
 - **release:** every forge release publishes @reliantlabs/forge-web-runtime, with a computed version ([#1723](https://github.com/reliant-labs/forge/pull/1723))
@@ -72,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **obs:** obs check judges p95 per endpoint, so a deploy's own polling cannot read as a latency regression ([#1732](https://github.com/reliant-labs/forge/pull/1732))
 - **svcerr:** the scaffolded lifecycle test reads a handler's code with svcerr.Code, so a bare svcerr kind is not Unknown ([#1754](https://github.com/reliant-labs/forge/pull/1754))
 - **scaffold:** refuse a CRUD-named rpc with no table before phase 1, in --dry-run too ([#1758](https://github.com/reliant-labs/forge/pull/1758))
+- **env:** forge env up tears its stack down on every exit when it holds; --watch is how agents hold it without a TTY ([#1759](https://github.com/reliant-labs/forge/pull/1759))
 - **obs:** ServiceSilent pages only for a service that is steady, not one that is often this quiet ([#1722](https://github.com/reliant-labs/forge/pull/1722))
 - **ci:** judge every pull request for committed binaries, without file(1) ([#1744](https://github.com/reliant-labs/forge/pull/1744))
 - **upgrade:** a site with no go.mod gets no Go project files ([#1695](https://github.com/reliant-labs/forge/pull/1695))

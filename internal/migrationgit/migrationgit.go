@@ -174,6 +174,25 @@ func DefaultBranchFiles(repoRoot, migrationsDir string) (files map[string]bool, 
 	return files, ref, true
 }
 
+// MergeBaseFiles lists the file names in migrationsDir at the merge-base
+// between HEAD and the default branch — the history this branch started
+// from. False when the merge-base cannot be read.
+func MergeBaseFiles(repoRoot, migrationsDir string) (map[string]bool, bool) {
+	rev, ok := mergeBaseRev(repoRoot)
+	if !ok {
+		return nil, false
+	}
+	names, ok := FilesAt(repoRoot, migrationsDir, rev)
+	if !ok {
+		return nil, false
+	}
+	files := make(map[string]bool, len(names))
+	for _, n := range names {
+		files[n] = true
+	}
+	return files, true
+}
+
 // IsTracked reports whether path is tracked by git, which decides whether a
 // rename goes through `git mv` or a plain filesystem rename.
 func IsTracked(repoRoot, path string) bool {

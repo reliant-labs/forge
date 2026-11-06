@@ -11,7 +11,6 @@ import nextTypeScript from "eslint-config-next/typescript";
 import importPlugin from "eslint-plugin-import";
 import react from "eslint-plugin-react";
 import unicorn from "eslint-plugin-unicorn";
-import tseslint from "typescript-eslint";
 
 // ── Accessibility (jsx-a11y) ───────────────────────────────────────────
 //
@@ -249,13 +248,20 @@ const config = [
     ],
   },
   js.configs.recommended,
-  ...tseslint.configs.recommended,
   // eslint-config-next 16 ships a NATIVE flat config, so these are imported
   // and spread directly. Through 15 it was eslintrc-only and had to come in
   // via FlatCompat (`compat.extends("next/core-web-vitals", …)`); on 16 that
   // shim throws "Converting circular structure to JSON" inside
   // @eslint/eslintrc, because it tries to validate an already-flat config
   // against the legacy schema. Keep these as direct imports.
+  //
+  // typescript-eslint comes from HERE and nowhere else: next/typescript is
+  // `tseslint.configs.recommended` built from eslint-config-next's own
+  // typescript-eslint, and next/core-web-vitals registers that same plugin
+  // for .ts/.tsx. Do not also spread the project's `typescript-eslint`
+  // package: the day the two copies resolve to different versions (a
+  // dependency bump the lockfile does not dedupe), ESLint refuses the whole
+  // config with `Cannot redefine plugin "@typescript-eslint"`.
   ...nextCoreWebVitals,
   ...nextTypeScript,
   {

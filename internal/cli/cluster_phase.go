@@ -357,6 +357,18 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, declared []Clus
 	if err := createDeclaredClusterFn(ctx, c.Name, args); err != nil {
 		return err
 	}
+	// Wait for the API and nodes BEFORE anything below talks to the cluster,
+	// as the start path does. A create whose k3d client wedged after the
+	// containers were up returns as soon as forge cancels that client
+	// (runK3dClusterLifecycle), and on a loaded machine the serverlb is not
+	// yet accepting connections then: the host-gateway DNS step's CoreDNS
+	// read failed the whole `cluster up` with "connection refused" (forge
+	// reports edff3a54, 0ee81d13). On a create k3d finished itself this is
+	// one kubectl call.
+	fmt.Printf("  waiting for cluster %q nodes to report Ready...\n", c.Name)
+	if err := waitDeclaredClusterReadyFn(ctx, c.Name); err != nil {
+		return fmt.Errorf("wait for new cluster %q: %w", c.Name, err)
+	}
 
 	if c.RegistryInherit {
 		if c.Network == "" {

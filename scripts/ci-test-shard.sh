@@ -72,7 +72,7 @@ fi
 # (`::warning title=<what>::<message>`, e.g. the skill-headroom guard in
 # internal/templates). Its output is otherwise dropped with the rest of a
 # passing test's, so echo each such line to make it an annotation.
-jq -r 'select(.Action == "output" and .Test != null) | .Output | select(contains("::warning title=")) | .[index("::warning title="):] | rtrimstr("\n")' "$json" | sort -u
+jq -r 'select(.Action == "output" and .Test != null) | .Output | select(contains("::warning title=")) | .[index("::warning title="):] | rtrimstr("\n")' "$json" | tr -d '\r' | sort -u
 
 top='select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null and (.Test | contains("/") | not))'
 count() { jq -r "$top | select(.Action == \"$1\") | .Test" "$json" | grep -c . || true; }

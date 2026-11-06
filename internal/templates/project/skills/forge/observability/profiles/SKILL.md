@@ -52,6 +52,8 @@ Locally, the `otel-profiles` compose service (stock contrib collector **v0.162.0
 | `default.profile_stacks` | distinct stacks per service (`FunctionNames` leaf first) | 30d |
 | `default.profile_samples_1m` | per-minute totals per `(service, env, type, stack)` | 30d |
 
+**A heap is a snapshot, not a sum.** CPU time (and alloc, contentions, delay) accumulates, so a flamegraph over a range adds up its samples. The live heap (`inuse_*`) and `goroutine` are gauges: `forge obs profile`, the console's Profiles page and `GetFlamegraph` read each instance's **newest snapshot before the range ends**, from the raw tier, looking back up to 24h (`profilequery.SnapshotLookback`). So the default 1h window still shows the heap when the 2h cadence put no snapshot inside it, and two snapshots of one heap are never counted twice. A heap older than 24h is not shown; shorten `heap_interval` if you need more frequent snapshots.
+
 **HyperDX cannot draw flamegraphs**, so export and open them elsewhere:
 
 ```bash

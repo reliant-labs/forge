@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -133,5 +134,46 @@ func TestSQLBindsParametersAndNeverInterpolates(t *testing.T) {
 	tsql, tparams := Query{TraceID: "abc", SampleType: "cpu"}.SQL()
 	if !strings.Contains(tsql, "otel_profiles") || tparams["trace"] != "abc" {
 		t.Errorf("a trace query reads the raw tier: %q %v", tsql, tparams)
+	}
+}
+
+// The live heap and the goroutines are gauges: a range of them is each
+// instance's newest snapshot, read from the raw tier, never a sum. With the
+// default 2h heap cadence, the default 1h window summed over the per-minute
+// tier held no heap at all for half of every day.
+func TestGaugeTypesReadTheNewestSnapshot(t *testing.T) {
+	to := time.Unix(100_000, 0)
+	for _, typ := range []string{"inuse_space", "inuse_objects", "goroutine"} {
+		if !IsSnapshot(typ) {
+			t.Errorf("%s is not read as a snapshot", typ)
+		}
+		sql, p := Query{Service: "api", SampleType: typ, Env: "prod", From: to.Add(-time.Hour), To: to}.SQL()
+		if sql != SnapshotSQL {
+			t.Fatalf("%s reads %q", typ, sql)
+		}
+		if p["since"] != fmt.Sprint(to.Add(-SnapshotLookback).Unix()) || p["width"] != "3600" || p["from"] != "96400" || p["to"] != "100000" || p["env"] != "prod" {
+			t.Errorf("%s params = %v", typ, p)
+		}
+		for name := range p {
+			if !strings.Contains(sql, "{"+name+":") {
+				t.Errorf("param %s is bound but unused", name)
+			}
+		}
+	}
+	for _, want := range []string{"FROM default.otel_profiles", "argMax(ProfileId, Timestamp)", "GROUP BY instance", "service.instance.id"} {
+		if !strings.Contains(SnapshotSQL, want) {
+			t.Errorf("SnapshotSQL lacks %q", want)
+		}
+	}
+	for _, typ := range []string{"cpu", "alloc_space", "alloc_objects", "contentions", "delay"} {
+		if IsSnapshot(typ) {
+			t.Errorf("%s is accumulated over time, not a snapshot", typ)
+		}
+		if sql, _ := (Query{Service: "api", SampleType: typ, From: to.Add(-time.Hour), To: to}).SQL(); sql != RangeSQL {
+			t.Errorf("%s does not read the range", typ)
+		}
+	}
+	if sql, _ := (Query{SampleType: "inuse_space", TraceID: "abc"}).SQL(); sql != TraceSQL {
+		t.Error("a trace's heap samples read the trace's rows")
 	}
 }

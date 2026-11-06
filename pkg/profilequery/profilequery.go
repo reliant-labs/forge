@@ -100,10 +100,73 @@ WHERE Minute >= toDateTime({from:UInt32}) AND Minute < toDateTime({to:UInt32})
 GROUP BY service ORDER BY rows DESC
 FORMAT JSONEachRow`
 
-// SQL returns the statement for q and the parameter values it binds.
+// SnapshotLookback is how far before a range's end a snapshot read looks for
+// the newest snapshot: the raw tier's retention, and the longest heap
+// interval a workload may declare (forge.Profiling heap_interval, 1m-24h).
+const SnapshotLookback = 24 * time.Hour
+
+// IsSnapshot reports whether a sample type is a point-in-time GAUGE (the live
+// heap, the goroutines), as opposed to a quantity accumulated over time (CPU
+// time, contentions). A gauge is read as each instance's newest snapshot
+// (SnapshotSQL), never summed over a range: two snapshots of one heap are the
+// same bytes counted twice, and a range that holds no snapshot (the default
+// hour, against the default 2h heap cadence) would hold no heap at all.
+func IsSnapshot(sampleType string) bool {
+	switch sampleType {
+	case "inuse_space", "inuse_objects", "goroutine":
+		return true
+	}
+	return false
+}
+
+// SnapshotSQL reads a gauge sample type (IsSnapshot) as each instance's newest
+// snapshot before {to}, from the raw tier (one ProfileId per snapshot). The
+// instances read are the ones that sent a snapshot in the range; when the
+// range holds none, the range is moved back to end at the newest snapshot of
+// the last SnapshotLookback ({since}), so a 1h window against a 2h cadence
+// still answers with the heap as last measured. Output columns match RangeSQL.
+const SnapshotSQL = `SELECT arrayReverse(FunctionNames) AS frames, any(SampleUnit) AS unit, sum(arraySum(Values)) AS value
+FROM default.otel_profiles
+WHERE ServiceName = {svc:String}
+  AND SampleType = {type:String}
+  AND Timestamp >= toDateTime({since:UInt32}) AND Timestamp < toDateTime({to:UInt32})
+  AND ({env:String} = '' OR ResourceAttributes['deployment.environment.name'] = {env:String})
+  AND (ResourceAttributes['service.instance.id'], ProfileId) IN (
+    SELECT ResourceAttributes['service.instance.id'] AS instance, argMax(ProfileId, Timestamp)
+    FROM default.otel_profiles
+    WHERE ServiceName = {svc:String}
+      AND SampleType = {type:String}
+      AND Timestamp >= greatest(toDateTime({since:UInt32}), least(toDateTime({from:UInt32}), (
+        SELECT max(Timestamp) FROM default.otel_profiles
+        WHERE ServiceName = {svc:String} AND SampleType = {type:String}
+          AND Timestamp >= toDateTime({since:UInt32}) AND Timestamp < toDateTime({to:UInt32})
+          AND ({env:String} = '' OR ResourceAttributes['deployment.environment.name'] = {env:String})
+      ) - toIntervalSecond({width:UInt32})))
+      AND Timestamp < toDateTime({to:UInt32})
+      AND ({env:String} = '' OR ResourceAttributes['deployment.environment.name'] = {env:String})
+    GROUP BY instance
+  )
+GROUP BY frames
+HAVING value > 0
+ORDER BY value DESC
+FORMAT JSONEachRow`
+
+// SQL returns the statement for q and the parameter values it binds: the
+// trace's samples, a gauge's newest snapshot (IsSnapshot), or a range's sum.
 func (q Query) SQL() (string, map[string]string) {
 	if q.TraceID != "" {
 		return TraceSQL, map[string]string{"trace": q.TraceID, "span": q.SpanID, "svc": q.Service, "type": q.SampleType}
+	}
+	if IsSnapshot(q.SampleType) {
+		width := q.To.Sub(q.From)
+		if width < 0 {
+			width = 0
+		}
+		return SnapshotSQL, map[string]string{
+			"svc": q.Service, "type": q.SampleType, "env": q.Env,
+			"from": fmt.Sprint(q.From.Unix()), "to": fmt.Sprint(q.To.Unix()),
+			"since": fmt.Sprint(q.To.Add(-SnapshotLookback).Unix()), "width": fmt.Sprint(int64(width.Seconds())),
+		}
 	}
 	return RangeSQL, map[string]string{
 		"svc": q.Service, "type": q.SampleType, "env": q.Env,

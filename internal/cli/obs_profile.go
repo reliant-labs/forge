@@ -60,8 +60,8 @@ func newObsProfileCmd() *cobra.Command {
 		Long: `Export the continuous profile the local ClickStack collected, for a service
 over a time range or for one trace.
 
-Apps push a 10s CPU profile plus heap and goroutine snapshots about once a
-minute (pkg/observe, on by default whenever an OTLP endpoint is set). They land
+Apps push a 5s CPU profile every 5 minutes and a live-heap snapshot every 2
+hours (pkg/observe, on by default whenever an OTLP endpoint is set). They land
 in ClickHouse; HyperDX cannot draw flamegraphs, so this exports them:
 
   forge obs profile --service api --since 30m -o api.pb.gz
@@ -75,7 +75,11 @@ in ClickHouse; HyperDX cannot draw flamegraphs, so this exports them:
 
 Sample types: cpu (nanoseconds) and inuse_space / inuse_objects (live heap) by
 default; alloc_space / alloc_objects and goroutine only from a workload whose
-profiling block turns them on (see forge skill load observability/profiles). Raw samples (and so --trace) are kept 24h; the
+profiling block turns them on (see forge skill load observability/profiles).
+CPU and the other accumulated types are summed over the range. The live heap
+and the goroutines are gauges: each instance's newest snapshot before the
+range ends, so a range shorter than the heap interval still shows the heap as
+last measured. Raw samples (so --trace and the heap) are kept 24h; the
 per-minute aggregate behind --since is kept 30 days. --sql prints the query so
 you can run it yourself against the ClickStack ClickHouse.
 

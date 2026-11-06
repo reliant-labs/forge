@@ -403,6 +403,27 @@ func TestEnvDelete_UndeclaredEnvNeedsOneControlPlane(t *testing.T) {
 			t.Fatal("an unbound --endpoint was contacted; nothing may be sent to it")
 		}
 	})
+	t.Run("an env name that escapes deploy/kcl", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(srv.Close)
+		undeclaredDeleteProject(t, srv.URL)
+		// deploy/kcl/prod/../prod exists, so a traversal name would stat as declared.
+		for _, env := range []string{"../kcl/prod", "prod/../prod", "..", ".", "", `..\prod`} {
+			for _, verb := range []string{"delete", "stop"} {
+				_, err := resolveDeclaredLifecycleTarget(t.Context(), env, verb, "tok", "")
+				if err == nil || !strings.Contains(err.Error(), "is not an environment name") {
+					t.Fatalf("%s %q: err = %v; want the name refused before rendering", verb, env, err)
+				}
+			}
+		}
+		if called {
+			t.Fatal("a traversal env name reached the control plane; nothing may be sent")
+		}
+	})
 	t.Run("--endpoint on a declared env", func(t *testing.T) {
 		undeclaredDeleteProject(t)
 		_, err := resolveDeclaredLifecycleTarget(t.Context(), "prod", "delete", "tok", "https://a.example")

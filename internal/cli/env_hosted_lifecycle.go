@@ -140,6 +140,9 @@ func noteUnownedParts(w io.Writer, verb string, e *KCLEntities) {
 // the one named by endpoint (--endpoint) or, without it, on the one control
 // plane this project is bound to (resolveUndeclaredLifecycleTarget).
 func resolveDeclaredLifecycleTarget(ctx context.Context, env, verb, flagToken, endpoint string) (lifecycleTarget, error) {
+	if err := checkLifecycleEnvName(env); err != nil {
+		return lifecycleTarget{}, err
+	}
 	projectDir := projectDirForKCL()
 	declared := envDeclared(projectDir, env)
 	if verb == "delete" && !declared {
@@ -162,6 +165,19 @@ func resolveDeclaredLifecycleTarget(ctx context.Context, env, verb, flagToken, e
 		return lifecycleTarget{}, err
 	}
 	return lifecycleTargetAt(ctx, env, ep, flagToken)
+}
+
+// checkLifecycleEnvName refuses an env that is not a single directory name
+// under deploy/kcl/. A name such as `../other` would otherwise make
+// envDeclared and RenderKCL resolve a directory outside deploy/kcl/, whose KCL
+// could name another control plane and receive the user's credential. It runs
+// before anything is read, rendered or sent.
+func checkLifecycleEnvName(env string) error {
+	if env == "" || env == "." || env == ".." || strings.ContainsAny(env, `/\`) || filepath.Base(env) != env {
+		return fmt.Errorf("env %q is not an environment name: it must be one directory name under deploy/kcl/ (no path separators, `.` or `..`)\n"+
+			"fix: name the env as it appears in deploy/kcl/<env>/, e.g. prod", env)
+	}
+	return nil
 }
 
 // envDeclared reports whether projectDir declares env: deploy/kcl/<env>/.

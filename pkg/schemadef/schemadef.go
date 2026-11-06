@@ -334,10 +334,16 @@ var entityNameTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerEnt
 // when the view has one, or the one `forge:entity key=<column>` names. No
 // write is generated: a view is a derived read. Views are opt-in because
 // most are reporting conveniences nothing in Go reads.
+//
+// On a BASE TABLE it opts in the one kind of table forge leaves off the ORM
+// by default: a table a forge library reads and writes through its own
+// store (forge/pkg/audit's audit_log, forge/pkg/activity's
+// activity_events). On any other table it states the default.
 const ViewMarkerEntity = "forge:entity"
 
-// DeclaresEntity reports whether a view's comment opts it in with
-// ViewMarkerEntity, and the key column a `key=<column>` names ("" for none).
+// DeclaresEntity reports whether a view's (or table's) comment opts it in
+// with ViewMarkerEntity, and the key column a `key=<column>` names ("" for
+// none; a table's key is its primary key, so it ignores one).
 func (t Table) DeclaresEntity() (ok bool, key string) {
 	m := viewEntityMarkerRE.FindStringSubmatch(t.Comment)
 	if m == nil {

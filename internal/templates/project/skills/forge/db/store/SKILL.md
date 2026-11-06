@@ -36,7 +36,8 @@ spells a message (`message_content_blocks` → `MessageContentBlock`,
 `daemon_attachment` → `DaemonAttachment`). `COMMENT ON TABLE t IS
 'forge:entity-name=<Name>'` declares another name for a table whose name
 derives to the wrong thing. Two tables that project to one name fail
-generate, naming both.
+generate while it plans, before any slow step runs, naming both tables and
+the marker that resolves each.
 
 A CRUD rpc's entity `<E>` finds its table by that name, then by the plural
 (`bookmarks`) and the singular (`daemon_attachment`) of `<E>`; the claimed
@@ -53,6 +54,14 @@ anything, counting the tables that run births.
 
 - One table: `COMMENT ON TABLE t IS 'forge:no-entity'` in a migration. No
   store, and no CRUD wiring over it either (a CRUD-named rpc over it is custom).
+- Tables a forge library owns are off by default: `audit_log`
+  (forge/pkg/audit), `activity_events` (forge/pkg/activity), `alert_instances`
+  and `alert_events` (forge/pkg/alerting/pgstore). The library's own store is
+  their data path. A table counts as the library's only when it has that name
+  AND every column the library reads and writes, so an app table that only
+  shares the name keeps its store. One is projected anyway when a CRUD rpc
+  names it or its comment says `forge:entity`. Generate prints a note for each
+  one it leaves off; `forge:no-entity` on the table silences it.
 - The whole data layer: `//forge:no-orm: <why>` in `internal/db`'s package doc
   (`db/orm-and-safety`).
 

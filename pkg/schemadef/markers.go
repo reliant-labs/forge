@@ -40,7 +40,10 @@ const (
 func SiteMarkers(site MarkerSite) []string {
 	switch site {
 	case SiteTable:
-		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName}
+		// ViewMarkerEntity on a base table projects a table a forge library
+		// owns (forge/pkg/audit's audit_log), which forge otherwise leaves
+		// off the ORM; on any other table it states the default.
+		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity}
 	case SiteView:
 		return []string{ViewMarkerEntity, TableMarkerEntityName}
 	case SiteColumn:

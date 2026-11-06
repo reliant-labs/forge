@@ -64,6 +64,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -213,7 +214,7 @@ func kubeContextArgs(kctx string) []string {
 // pinned context (caller pins it via pinKubectlContext first).
 func kubectlApplyBytes(ctx context.Context, kctx string, yamlBytes []byte) error {
 	args := append(kubeContextArgs(kctx), "apply", "-f", "-")
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd := cluster.KubectlCommand(ctx, args...)
 	cmd.Stdin = strings.NewReader(string(yamlBytes))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

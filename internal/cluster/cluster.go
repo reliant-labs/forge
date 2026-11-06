@@ -1963,9 +1963,10 @@ func KubectlArgs(kctx string, args ...string) []string {
 
 // kubectlCmd builds an *exec.Cmd for `kubectl <args>` with the context
 // flag threaded in via KubectlArgs. The single construction point keeps
-// the per-command `--context` invariant in one place (and testable).
+// the per-command `--context` invariant in one place (and testable), and
+// honours the write fence (KubectlCommand).
 func kubectlCmd(ctx context.Context, kctx string, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, "kubectl", KubectlArgs(kctx, args...)...)
+	return KubectlCommand(ctx, KubectlArgs(kctx, args...)...)
 }
 
 // KubectlApply pipes the rendered YAML document stream into

@@ -35,7 +35,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strings"
@@ -43,6 +42,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/fluxdelivery"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -299,7 +299,7 @@ func fluxDeliveryForbidden(message string) []fluxDeliveryPermission {
 // delivery namespace and returns its stdout. A var so the reader is testable
 // down to the arguments it passes, without a cluster.
 var fluxDeliveryKubectl = func(ctx context.Context, fd FluxDeliveryEntity, args ...string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", append([]string{"--context", fd.Cluster, "-n", fd.Namespace}, args...)...).Output()
+	out, err := cluster.KubectlCommand(ctx, append([]string{"--context", fd.Cluster, "-n", fd.Namespace}, args...)...).Output()
 	if err != nil {
 		return nil, kubectlErr(err)
 	}

@@ -33,6 +33,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -283,7 +284,7 @@ type clusterLiveDiff struct {
 // so a test states what a cluster answers; the package's tests never reach
 // kubectl.
 var kubectlLiveDiff = func(ctx context.Context, kubeContext, dir string) (string, int, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeContext, "diff", "-R", "-f", dir)
+	cmd := cluster.KubectlCommand(ctx, "--context", kubeContext, "diff", "-R", "-f", dir)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

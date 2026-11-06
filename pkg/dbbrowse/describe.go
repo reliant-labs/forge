@@ -210,9 +210,12 @@ SELECT n.nspname::text, c.relname::text, c.relkind::text,
 
 // keysQuery lists every primary key and foreign key of a user relation, each
 // key's columns in key order. conparentid = 0 keeps a partitioned table's
-// constraint and drops the copies Postgres makes on each partition. Both
-// sides are filtered against the readable columns in Go, where the readable
-// set is already in hand.
+// constraint and drops the copies Postgres makes on each partition. A key
+// leaves the server only when the role has USAGE on the schema and SELECT on
+// some column of every relation it names (the referencing relation and, for a
+// foreign key, the referenced one), so a relation the role cannot inspect is
+// never named in the result. Both sides are then filtered against the
+// readable columns in Go, where the readable set is already in hand.
 const keysQuery = `
 SELECT con.contype::text, con.conname::text, n.nspname::text, c.relname::text,
        coalesce(rn.nspname::text, ''), coalesce(rc.relname::text, ''),
@@ -233,6 +236,11 @@ SELECT con.contype::text, con.conname::text, n.nspname::text, c.relname::text,
    AND n.nspname NOT IN ('pg_catalog', 'information_schema')
    AND n.nspname !~ '^pg_toast'
    AND n.nspname !~ '^pg_temp_'
+   AND pg_catalog.has_schema_privilege(n.oid, 'USAGE')
+   AND pg_catalog.has_any_column_privilege(c.oid, 'SELECT')
+   AND (con.contype = 'p' OR (
+        pg_catalog.has_schema_privilege(rn.oid, 'USAGE')
+    AND pg_catalog.has_any_column_privilege(rc.oid, 'SELECT')))
  ORDER BY n.nspname::text COLLATE "C", c.relname::text COLLATE "C", con.conname::text COLLATE "C"`
 
 var relkinds = map[string]TableKind{

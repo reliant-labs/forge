@@ -273,6 +273,35 @@ func TestDbbrowse(t *testing.T) {
 		}
 	})
 
+	// audit is ungranted but references users, which the reader can read:
+	// the server must not name it, its key or its columns to the reader at
+	// all, not merely have Describe drop the row afterwards.
+	t.Run("key metadata omits relations the role cannot inspect", func(t *testing.T) {
+		rows, err := f.reader.Query(context.Background(), keysQuery)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var names []string
+		for rows.Next() {
+			var contype, name, schema, table, refSchema, refTable, del string
+			var cols, refCols []string
+			if err := rows.Scan(&contype, &name, &schema, &table, &refSchema, &refTable, &cols, &refCols, &del); err != nil {
+				t.Fatal(err)
+			}
+			names = append(names, schema+"."+table+"."+name)
+			if table == "audit" || refTable == "audit" {
+				t.Errorf("keysQuery as the reader returned %s.%s.%s, on a relation it cannot inspect", schema, table, name)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(names, "app.posts.posts_author_fkey") {
+			t.Errorf("keysQuery as the reader = %v, want posts_author_fkey among them", names)
+		}
+	})
+
 	t.Run("each operator", func(t *testing.T) {
 		const acme = "00000000-0000-0000-0000-00000000000a"
 		for _, tc := range []struct {

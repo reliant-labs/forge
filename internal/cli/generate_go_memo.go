@@ -733,7 +733,9 @@ type memoHasher struct{ h hash.Hash }
 
 func (h *memoHasher) add(label, value string) {
 	fmt.Fprintf(h.h, "%d:%s%d:", len(label), label, len(value))
-	io.WriteString(h.h, value)
+	// hash.Hash's Write "never returns an error" (its documented contract),
+	// so there is no failure here to handle or report.
+	_, _ = io.WriteString(h.h, value)
 }
 
 // file adds a file's mode and content under label, or that it is absent.

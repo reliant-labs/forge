@@ -652,51 +652,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		defer timer.print(os.Stderr)
 	}
 
-	// onlyReadOnlyRan stays true while every step that has RUN is declared
-	// ReadOnly. Together with an empty journal it is the evidence behind a
-	// failure's "No files were changed" — see rollbackGeneratedTree.
-	onlyReadOnlyRan := true
 	// ran is the steps whose gate passed: the cache records the outputs
-	// their external tools declare.
-	var ran []GenStep
-	for _, step := range steps {
-		if !step.Gate(ctx) {
-			// Verbose mode prints one line per gate-off skip so the user
-			// can answer "why didn't generate touch X?" without --plan.
-			// Default (silent) preserves the historical low-noise output.
-			if ctx.Verbose {
-				fmt.Fprintf(os.Stderr, "⏩ skipped: %s (%s)\n", step.Name, gateSkipReason(step))
-			}
-			continue
-		}
-		ran = append(ran, step)
-		if !step.ReadOnly {
-			onlyReadOnlyRan = false
-		}
-		// An external tool's outputs join the rollback set before the
-		// tool runs, exactly as a forge write captures its target.
-		if step.Writes != nil {
-			checksums.CaptureExternalWrites(ctx.AbsPath, step.Writes(ctx)...)
-		}
-		stepStart := time.Now()
-		// A step that outlives the 15s heartbeat interval says which one it is, on
-		// stderr, so a caller with a no-output cut-off sees the run is alive.
-		stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
-		err := step.Run(ctx)
-		stopBeat()
-		if timer != nil {
-			timer.record(step.Name, time.Since(stepStart))
-		}
-		select {
-		case sig := <-interrupts:
-			stopInterrupts()
-			err = &generateInterruptedError{signal: sig, stepErr: err}
-		default:
-		}
-		if err != nil {
-			rolledBack = cleanUpFailedStep(ctx, flags, err, onlyReadOnlyRan, preRun)
-			return fmt.Errorf("step %q: %w", step.Name, err)
-		}
+	// their external tools declare. rolledBack is the deferred checksum
+	// saver's guard, so it is assigned before the failure returns.
+	ran, rolledBack, err := runPipelineSteps(ctx, flags, steps, preRun, timer, interrupts, stopInterrupts)
+	if err != nil {
+		return err
 	}
 	reportGenerateHooksNotRun(os.Stdout, ctx, steps, flags)
 
@@ -749,6 +710,57 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// produced, let alone checked.
 	cache.record(os.Stdout, ctx, ran, summary)
 	return softFailureOutcome(os.Stdout, ctx.SoftFailures)
+}
+
+// runPipelineSteps runs, in order, every step whose gate passes and returns
+// those steps. When a step fails — or a SIGINT/SIGTERM arrives while it
+// runs — it cleans up the failed run (cleanUpFailedStep) and reports whether
+// the tree was rolled back to its pre-run state.
+func runPipelineSteps(ctx *pipelineContext, flags pipelineFlags, steps []GenStep, preRun *workTreeSnapshot, timer *stepTimer, interrupts <-chan os.Signal, stopInterrupts func()) (ran []GenStep, rolledBack bool, err error) {
+	// onlyReadOnlyRan stays true while every step that has RUN is declared
+	// ReadOnly. Together with an empty journal it is the evidence behind a
+	// failure's "No files were changed" — see rollbackGeneratedTree.
+	onlyReadOnlyRan := true
+	for _, step := range steps {
+		if !step.Gate(ctx) {
+			// Verbose mode prints one line per gate-off skip so the user
+			// can answer "why didn't generate touch X?" without --plan.
+			// Default (silent) preserves the historical low-noise output.
+			if ctx.Verbose {
+				fmt.Fprintf(os.Stderr, "⏩ skipped: %s (%s)\n", step.Name, gateSkipReason(step))
+			}
+			continue
+		}
+		ran = append(ran, step)
+		if !step.ReadOnly {
+			onlyReadOnlyRan = false
+		}
+		// An external tool's outputs join the rollback set before the
+		// tool runs, exactly as a forge write captures its target.
+		if step.Writes != nil {
+			checksums.CaptureExternalWrites(ctx.AbsPath, step.Writes(ctx)...)
+		}
+		stepStart := time.Now()
+		// A step that outlives the 15s heartbeat interval says which one it is, on
+		// stderr, so a caller with a no-output cut-off sees the run is alive.
+		stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
+		err = step.Run(ctx)
+		stopBeat()
+		if timer != nil {
+			timer.record(step.Name, time.Since(stepStart))
+		}
+		select {
+		case sig := <-interrupts:
+			stopInterrupts()
+			err = &generateInterruptedError{signal: sig, stepErr: err}
+		default:
+		}
+		if err != nil {
+			rolledBack = cleanUpFailedStep(ctx, flags, err, onlyReadOnlyRan, preRun)
+			return ran, rolledBack, fmt.Errorf("step %q: %w", step.Name, err)
+		}
+	}
+	return ran, false, nil
 }
 
 // cleanUpFailedStep finishes a run whose step failed mid-pipeline and

@@ -29,14 +29,19 @@
 //      ever sees a write — a public demo's guarantee.
 //   3. Otherwise RPCs not overridden fall through to the deterministic
 //      per-entity fixtures described by the entity descriptors.
-//   4. Anything else rejects with Code.Unimplemented so callers see a
+//   4. Then to the service DEFAULTS (`services`, see mock-values.ts): a
+//      deterministic, schema-valid response built from the RPC's descriptor,
+//      for any RPC of any service the app's generated TypeScript covers —
+//      custom reads, vendored contracts and streams included.
+//   5. Anything else rejects with Code.Unimplemented so callers see a
 //      clear error instead of a silent empty response.
 //
 // A fixture List answers the way the backend's generated CRUD List does
 // (pkg/crud HandleList), so a filtered table, a paged table and a "how many"
 // tile read the same against fixtures as against a server — see
 // `serveList` for the exact contract. Custom (non-CRUD) RPCs are not
-// interpreted at all; they stay hand-written scenario handlers.
+// interpreted: their defaults are shape-valid sample data, and what a page
+// needs to SAY is a scenario override (`mockService`, mock-values.ts).
 //
 // Imported through the "@reliantlabs/forge-web-runtime/mock-transport" subpath,
 // never the barrel: a production bundle must be able to shake the fixtures
@@ -59,6 +64,29 @@ import {
   type Transport,
   type UnaryResponse,
 } from "@connectrpc/connect";
+
+import type { AnyServiceDefaults } from "./mock-values.js";
+
+export {
+  isServiceDefaults,
+  mockFactory,
+  mockService,
+  mockValue,
+  patch,
+  serviceDefaults,
+  type AnyServiceDefaults,
+  type DefaultHandler,
+  type MockFactory,
+  type MockFactoryContext,
+  type MockHandlers,
+  type MockOverride,
+  type MockOverrides,
+  type MockRequest,
+  type MockResult,
+  type MockValueOptions,
+  type PatchShape,
+  type ServiceDefaults,
+} from "./mock-values.js";
 
 /**
  * The shape the generated scenario files satisfy. Structural on purpose: the
@@ -156,6 +184,12 @@ export interface CreateMockTransportOptions {
   scenario: MockScenario;
   /** Per-entity fixture dispatch. Omit for a scenario-only project. */
   entities?: readonly MockEntityDescriptor[];
+  /**
+   * Default handlers per service (`serviceDefaults(Service)`, one per
+   * generated `src/mocks/services/*_gen.ts`): the answer for any RPC that no
+   * scenario handler, passthrough or entity fixture took.
+   */
+  services?: readonly AnyServiceDefaults[];
   /**
    * Optional real Connect transport. When the active scenario declares
    * `passthrough: true`, any RPC not matched by a scenario handler is
@@ -685,6 +719,29 @@ function buildFixtureTable(
 }
 
 /**
+ * Compile service defaults into the same flat `${service}/${rpc}` → handler
+ * map the fixtures use. The first service object for a name wins, so an app
+ * that lists one twice (a hand-built list beside the generated one) keeps
+ * the earlier entry's options.
+ */
+function buildDefaultsTable(
+  services: readonly AnyServiceDefaults[],
+): Map<string, (input: unknown) => unknown> {
+  const table = new Map<string, (input: unknown) => unknown>();
+  for (const defaults of services) {
+    const service = defaults.$service;
+    for (const method of service.methods) {
+      const key = `${service.typeName}/${method.name}`;
+      const handler = (
+        defaults as unknown as Record<string, (input: unknown) => unknown>
+      )[method.localName];
+      if (handler && !table.has(key)) table.set(key, handler);
+    }
+  }
+  return table;
+}
+
+/**
  * Create the mock transport.
  *
  * The generated `src/lib/mock-transport.ts` supplies the resolved scenario
@@ -705,6 +762,7 @@ export function createMockTransport(
   const passthrough = scenario.passthrough === true && fallback != null;
   const first = scenario.passthrough === "first" && fallback != null;
   const fixtures = buildFixtureTable(entities);
+  const defaults = buildDefaultsTable(options.services ?? []);
   const readsOnly = typeof readOnly === "function" ? readOnly : isRead;
 
   // 0) The read-only guard: before any dispatch, so a write never reaches a
@@ -833,10 +891,16 @@ export function createMockTransport(
         return makeUnaryResponse(method, fixture(input, requestSchema));
       }
 
-      // 4) Nothing matched. Surface a clear error instead of hanging.
+      // 4) The service's default: a schema-valid answer for any RPC.
+      const fallbackDefault = defaults.get(key);
+      if (fallbackDefault) {
+        return makeUnaryResponse(method, fallbackDefault(input));
+      }
+
+      // 5) Nothing matched. Surface a clear error instead of hanging.
       return Promise.reject(
         new ConnectError(
-          `mock-transport: no scenario handler or entity fixture for ${key}`,
+          `mock-transport: no scenario handler, entity fixture or service default for ${key}`,
           Code.Unimplemented,
         ),
       );
@@ -844,10 +908,10 @@ export function createMockTransport(
 
     // Streaming: a scenario handler can return an array, iterable, async
     // iterable, or a Promise resolving to any of those. The transport adapts
-    // it into the AsyncIterable<Response> shape Connect expects. If no
-    // handler matches, reject with Unimplemented — base-fixture streaming is
-    // intentionally not served (there is no canonical "list of N messages"
-    // shape for an arbitrary streaming RPC).
+    // it into the AsyncIterable<Response> shape Connect expects. With no
+    // handler, the service default answers (a short deterministic stream for
+    // server and bidi streams, one message for client streams); with neither,
+    // reject with Unimplemented. Entity fixtures never stream.
     //
     // No explicit return-type annotation: the outer `const transport:
     // Transport` binding lets tsc infer the per-callback signature from
@@ -890,23 +954,24 @@ export function createMockTransport(
         );
         if (live) return live;
       }
-      const handler = scenario.handlers[key];
+      const scenarioHandler = scenario.handlers[key];
+      // Passthrough mirrors the unary path: in hybrid mode, unmatched
+      // streaming RPCs go to the real backend, ahead of the defaults.
+      if (!scenarioHandler && passthrough) {
+        return fallback!.stream(
+          method,
+          signal,
+          timeoutMs,
+          header,
+          input,
+          contextValues,
+        );
+      }
+      const handler = scenarioHandler ?? defaults.get(key);
       if (!handler) {
-        // Passthrough mirrors the unary path: in hybrid mode, unmatched
-        // streaming RPCs go to the real backend.
-        if (passthrough) {
-          return fallback!.stream(
-            method,
-            signal,
-            timeoutMs,
-            header,
-            input,
-            contextValues,
-          );
-        }
         return Promise.reject(
           new ConnectError(
-            `mock-transport: no scenario handler for streaming RPC ${key}`,
+            `mock-transport: no scenario handler or service default for streaming RPC ${key}`,
             Code.Unimplemented,
           ),
         );

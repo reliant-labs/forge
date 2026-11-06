@@ -139,7 +139,7 @@ var mergeCases = map[string]mergeCase{
 	"ingress k3d ports fragment":        perInput("a function of the env's ports"),
 	"CRD KCL manifests (api/ Go types)": perInput("one manifest per CRD"),
 	"entity-aware seed data":            perInput("one seed file per table"),
-	"frontend mocks + transport": proved("scenario-rpcs_gen.ts is one named section per service (#1582, named headers in v1.0.12); one fixture module and one dispatch-row module (src/mocks/entities/<slug>_gen.ts) per entity, gathered by the bundler, so mock-transport_gen.ts names no entity; the fixture fingerprint is out of git (#1585)",
+	"frontend mocks + transport": proved("scenario-rpcs_gen.ts is one named section per service (#1582, named headers in v1.0.12); one fixture module and one dispatch-row module (src/mocks/entities/<slug>_gen.ts) per entity, and one defaults module (src/mocks/services/<service>_gen.ts) per service, gathered by the bundler, so mock-transport_gen.ts names no entity or service; the fixture fingerprint is out of git (#1585)",
 		"TestMergeProperty_ScenarioRpcs", "TestE2EMergeProperty"),
 	"repoint renamed *_gen frontend imports":                    perInput("rewrites import lines in the files that name a renamed module"),
 	"retire delivered agent skills":                             noOutput("removes retired files"),

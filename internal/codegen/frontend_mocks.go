@@ -45,6 +45,11 @@ type MockFieldValue struct {
 // MockTransportTemplateData holds data for rendering the mock-transport.ts file.
 type MockTransportTemplateData struct {
 	Entities []MockTransportEntity
+	// ServiceDefaults reports that src/mocks/services/ holds at least one
+	// generated service-defaults module, which the transport then gathers.
+	// Gated so a frontend without stubs yet renders no directory context
+	// over a directory that does not exist.
+	ServiceDefaults bool
 	// SchemaImportGroups carries the per-ImportPath aggregation of
 	// response-schema imports the mock-transport template needs. The
 	// template iterates these to emit ONE merged `import { ... } from

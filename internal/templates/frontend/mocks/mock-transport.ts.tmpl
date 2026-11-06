@@ -21,20 +21,22 @@
 //      real backend.
 //   3. Otherwise unmatched RPCs fall through to the deterministic per-entity
 //      fixtures described by the descriptors below.
-//   4. Anything else rejects with Code.Unimplemented.
+//   4. Then to the service defaults in src/mocks/services/ — a schema-valid
+//      answer for every RPC of every service the frontend has TypeScript for.
+//   5. Anything else rejects with Code.Unimplemented.
 //
 // The engine arrives through the "/mock-transport" SUBPATH, never the
 // barrel: a production bundle must be able to shake the fixtures and the
 // engine out entirely, which is why connect.ts reaches this module through
 // a dynamic `require()` gated on the mock-mode env var.
-{{- if .Entities }}
+{{- if or .Entities .ServiceDefaults }}
 // import.meta.glob (the vitest branch below) is typed by Vite's ImportMeta
 // augmentation, which a Next app does not load: reference it, and only it
 // (vite/client's asset modules collide with Next's). vite is a devDependency
 // of every forge frontend: vitest runs on it.
 /// <reference types="vite/types/importMeta.d.ts" />
 {{- end }}
-import { createMockTransport as createEngineTransport, resolveActiveScenario } from "@reliantlabs/forge-web-runtime/mock-transport";
+import { createMockTransport as createEngineTransport, {{ if .ServiceDefaults }}isServiceDefaults, {{ end }}resolveActiveScenario } from "@reliantlabs/forge-web-runtime/mock-transport";
 {{- /*
   Import order matters: the emitted file must pass the scaffold's
   import/order rule (external, then parent `../`, then type-only imports
@@ -47,8 +49,12 @@ import { createMockTransport as createEngineTransport, resolveActiveScenario } f
 import * as scenarios from "../mocks/scenarios/index_gen";
 
 import type { Transport } from "@connectrpc/connect";
-{{- if .Entities }}
+{{- if and .Entities .ServiceDefaults }}
+import type { AnyServiceDefaults, MockEntityDescriptor } from "@reliantlabs/forge-web-runtime/mock-transport";
+{{- else if .Entities }}
 import type { MockEntityDescriptor } from "@reliantlabs/forge-web-runtime/mock-transport";
+{{- else if .ServiceDefaults }}
+import type { AnyServiceDefaults } from "@reliantlabs/forge-web-runtime/mock-transport";
 {{- end }}
 
 // Resolve the active scenario once at module init, and run its `setup()`
@@ -57,27 +63,13 @@ import type { MockEntityDescriptor } from "@reliantlabs/forge-web-runtime/mock-t
 // matching the agent-driven flow where the URL is the single source of
 // truth.
 const active = resolveActiveScenario(scenarios);
-{{- if .Entities }}
+{{- if or .Entities .ServiceDefaults }}
 
-// The per-entity dispatch table: one module per entity under
-// src/mocks/entities/ (`<slug>_gen.ts`, exporting that entity's rows), which
-// the BUNDLER gathers, so no file lists the entities. Entities born on
-// different branches are then two new files, which merge, where a list in
-// this file conflicted whenever both sorted to the same place.
-//
 // webpack (next dev and next build, which forge pins to webpack) has a
 // directory context; Vite and vitest have import.meta.glob. Neither knows the
 // other's, so the branch is chosen by `typeof __webpack_require__`, which
 // webpack folds at compile time — the Vite branch is dropped from its bundle
 // unparsed — and which is undefined at runtime under Vite.
-//
-// Module-level, deliberately: the engine keys each entity's mutable session
-// store off the descriptor's identity, so building the transport twice
-// (hybrid mode, a test swapping transports) shares one store rather than
-// silently forking the data. Create/Update/Delete round-trip within one
-// browser session and reset to the fixtures on reload.
-type EntityModule = { descriptors: readonly MockEntityDescriptor[] };
-
 declare const __webpack_require__: unknown;
 
 // Declared identically by every forge registry that gathers a directory
@@ -88,6 +80,21 @@ declare global {
     webpackContext?: (dir: string, opts: { recursive: boolean; regExp: RegExp }) => { keys(): string[]; (id: string): unknown };
   }
 }
+{{- end }}
+{{- if .Entities }}
+
+// The per-entity dispatch table: one module per entity under
+// src/mocks/entities/ (`<slug>_gen.ts`, exporting that entity's rows), which
+// the BUNDLER gathers, so no file lists the entities. Entities born on
+// different branches are then two new files, which merge, where a list in
+// this file conflicted whenever both sorted to the same place.
+//
+// Module-level, deliberately: the engine keys each entity's mutable session
+// store off the descriptor's identity, so building the transport twice
+// (hybrid mode, a test swapping transports) shares one store rather than
+// silently forking the data. Create/Update/Delete round-trip within one
+// browser session and reset to the fixtures on reload.
+type EntityModule = { descriptors: readonly MockEntityDescriptor[] };
 
 function entityModules(): EntityModule[] {
   let mods: Array<[string, EntityModule]>;
@@ -102,6 +109,27 @@ function entityModules(): EntityModule[] {
 }
 
 const entities: readonly MockEntityDescriptor[] = entityModules().flatMap((m) => m.descriptors);
+{{- end }}
+{{- if .ServiceDefaults }}
+
+// The service defaults: one module per service under src/mocks/services/
+// (`<service>_gen.ts`, exporting `serviceDefaults(Service)`), gathered the
+// same way, so a service added on one branch and another on a second merge
+// as two files. Every export that is a service's defaults is kept.
+function serviceModules(): AnyServiceDefaults[] {
+  let mods: Array<[string, Record<string, unknown>]>;
+  if (typeof __webpack_require__ === "function") {
+    const ctx = import.meta.webpackContext!("../mocks/services", { recursive: false, regExp: /_gen\.ts$/ });
+    mods = ctx.keys().map((k) => [k, ctx(k) as Record<string, unknown>]);
+  } else {
+    mods = Object.entries(import.meta.glob<Record<string, unknown>>("../mocks/services/*_gen.ts", { eager: true }));
+  }
+  return mods
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .flatMap(([, m]) => Object.values(m).filter(isServiceDefaults));
+}
+
+const services: readonly AnyServiceDefaults[] = serviceModules();
 {{- end }}
 
 /**
@@ -118,6 +146,9 @@ export function createMockTransport(fallback?: Transport): Transport {
     scenario: active,
 {{- if .Entities }}
     entities,
+{{- end }}
+{{- if .ServiceDefaults }}
+    services,
 {{- end }}
     fallback,
   });

@@ -1,8 +1,8 @@
 ---
 name: v1.1.0
-description: Upgrade a project to forge v1.1.0. A List request field can declare a range or prefix filter with (forge.v1.filter) = {column, op}, which the generated List op applies, so a List hand-written only to filter by a time window or a key prefix can go back to the generated op; use when a handler file builds its own crud.ListOp. Also: against a hosted identity instance, whose gateway answers 404 for the Settings API, the scaffolded login broker's GET /auth/password-policy answered 502 and logged an ERROR on every sign-up form load; devidp.PasswordPolicy now wraps ErrPasswordPolicyUnavailable and a new broker answers 204 (no checklist) at DEBUG, while a broker scaffolded earlier must be edited by hand. Use when internal/app/login_broker.go serves PasswordPolicyPath without ErrPasswordPolicyUnavailable.
+description: Upgrade a project to forge v1.1.0. A List request field can declare a range or prefix filter with (forge.v1.filter) = {column, op}, which the generated List op applies, so a List hand-written only to filter by a time window or a key prefix can go back to the generated op; use when a handler file builds its own crud.ListOp. Also: against a hosted identity instance, whose gateway answers 404 for the Settings API, the scaffolded login broker's GET /auth/password-policy answered 502 and logged an ERROR on every sign-up form load; devidp.PasswordPolicy now wraps ErrPasswordPolicyUnavailable and a new broker answers 204 (no checklist) at DEBUG, while a broker scaffolded earlier must be edited by hand. Use when internal/app/login_broker.go serves PasswordPolicyPath without ErrPasswordPolicyUnavailable. Also: the scaffolded sign-in screen's returnTo check let `/%5Cevil.com` and `/%09/evil.com` through (an open redirect after sign-in); use when a frontend's sign-in screen still checks `requested.startsWith("//")`.
 version: v1.1.0
-detection: grep -qs 'PasswordPolicyPath' internal/app/login_broker.go && ! grep -qs 'ErrPasswordPolicyUnavailable' internal/app/login_broker.go && exit 0; exit 1
+detection: grep -qs 'PasswordPolicyPath' internal/app/login_broker.go && ! grep -qs 'ErrPasswordPolicyUnavailable' internal/app/login_broker.go && exit 0; grep -rqs --include='*.tsx' 'requested.startsWith("//")' frontends && exit 0; exit 1
 ---
 
 # Upgrading to v1.1.0
@@ -104,3 +104,42 @@ func (b *loginBroker) handlePasswordPolicy(w http.ResponseWriter, r *http.Reques
 `errors` is already imported by the scaffolded broker. A frontend you have
 rewritten must treat a `204` from `/auth/password-policy` as "no checklist"
 (an empty body, so do not call `response.json()` on it).
+
+## 3. The sign-in screen's returnTo was an open redirect
+
+**Use when** a frontend's sign-in screen (`src/app/auth/sign-in/page.tsx` in
+Next.js, the sign-in route in `src/routes.tsx` in Vite) checks
+`requested.startsWith("/") && !requested.startsWith("//")`.
+
+### What changed
+
+That check let a crafted sign-in link send someone to another site after they
+signed in: `returnTo=/%5Cevil.com` (a backslash) and `returnTo=/%09/evil.com`
+(a tab) pass it, and the browser's URL parser turns both into `//evil.com`.
+A screen scaffolded since v1.1.0 parses the value the way the browser will and
+keeps it only on the page's own origin, with a path that does not start with
+`//` (dot segments can resolve to one: `/a/..//evil.com`). The sign-in screen
+is yours, so forge does not rewrite it.
+
+### Edit
+
+Add `src/lib/auth/return-to.ts` (copy it from a scratch project, or write it):
+
+```ts
+export function safeReturnTo(requested: string | null | undefined): string {
+  if (!requested || typeof window === "undefined") return "/";
+  let url: URL;
+  try {
+    url = new URL(requested, window.location.origin);
+  } catch {
+    return "/";
+  }
+  if (url.origin !== window.location.origin || url.pathname.startsWith("//")) return "/";
+  return url.pathname + url.search + url.hash;
+}
+```
+
+and in the sign-in screen replace the `const returnTo = requested !== null &&
+…` expression with `const returnTo = safeReturnTo(requested);` (import it from
+`@/lib/auth/return-to`). Any other place your app navigates to a
+query-supplied path needs the same check.

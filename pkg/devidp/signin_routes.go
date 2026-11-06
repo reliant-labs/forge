@@ -249,6 +249,7 @@ const (
 	cookieSocial   = "_sx"
 	cookieEnroll   = "_enroll"
 	cookieLink     = "_sxl"
+	cookiePassword = "_pwp"
 )
 
 type cookieSpec struct {
@@ -267,6 +268,9 @@ var (
 	// address to be proven: the verification link is opened from a mail
 	// client, so Lax, and it lives as long as a person takes to read mail.
 	linkCookie = cookieSpec{cookieLink, time.Hour, http.SameSiteLaxMode}
+	// passwordCookie holds the password a sign-up chose, waiting, like
+	// linkCookie, for the address's code to be proven in this browser.
+	passwordCookie = cookieSpec{cookiePassword, time.Hour, http.SameSiteLaxMode}
 )
 
 // setBinding writes a sealed binding cookie. Path=/ because the dev server
@@ -313,7 +317,6 @@ type magicBinding struct {
 	ID     string `json:"i,omitempty"`
 	Token  string `json:"t,omitempty"`
 	UserID string `json:"u,omitempty"`
-	New    bool   `json:"n,omitempty"`
 }
 
 type enrollBinding struct {
@@ -346,6 +349,17 @@ type socialBinding struct {
 type pendingLinkBinding struct {
 	UserID string  `json:"u"`
 	Link   IDPLink `json:"l"`
+}
+
+// pendingPasswordBinding is the password a sign-up chose. The account is
+// created WITHOUT it, and it is set only when the browser that holds it
+// proves the address's code (HandleVerify): a password set at creation would
+// let whoever registered a victim's address keep a way into the account once
+// the victim confirms it. UserID is "" when the address already has a
+// verified account: nothing is pending, but the cookie is set alike.
+type pendingPasswordBinding struct {
+	UserID   string `json:"u"`
+	Password string `json:"p"`
 }
 
 // ── Passkey sign-in ────────────────────────────────────────────────────
@@ -427,6 +441,11 @@ type credentialRequest struct {
 // HandlePasskeyFinish checks a passkey assertion and signs in. The origin and
 // ceremony type are checked HERE, before the issuer, because the issuer
 // accepts whatever origin the client reports.
+//
+// A decoy and a real binding are answered identically on every failure:
+// the binding is cleared first, whatever follows, and the assertion is
+// checked before the binding is looked at, so neither the status, the body
+// nor a Set-Cookie header says whether the address got a real challenge.
 func (r *SignInRoutes) HandlePasskeyFinish(w http.ResponseWriter, req *http.Request) {
 	var body credentialRequest
 	if !decode(w, req, &body) {
@@ -434,17 +453,17 @@ func (r *SignInRoutes) HandlePasskeyFinish(w http.ResponseWriter, req *http.Requ
 	}
 	ctx := req.Context()
 	var b sessionBinding
-	if !r.readBinding(req, passkeyCookie, &b) || b.Decoy {
-		r.clearBinding(w, passkeyCookie)
-		writeErr(w, http.StatusUnauthorized, CodePasskeyFailed, msgPasskeyFailed)
-		return
-	}
+	bound := r.readBinding(req, passkeyCookie, &b)
+	r.clearBinding(w, passkeyCookie)
 	if err := CheckClientData(body.Credential, r.origin, WebAuthnGet); err != nil {
 		r.cfg.Logger.WarnContext(ctx, "passkey sign-in refused before the issuer", "error", err)
 		writeErr(w, http.StatusUnauthorized, CodePasskeyFailed, msgPasskeyFailed)
 		return
 	}
-	r.clearBinding(w, passkeyCookie)
+	if !bound || b.Decoy {
+		writeErr(w, http.StatusUnauthorized, CodePasskeyFailed, msgPasskeyFailed)
+		return
+	}
 	session, err := r.cfg.Client.SetSession(ctx, ChallengeSession{ID: b.ID, Token: b.Token}, Answer{WebAuthnAssertion: body.Credential})
 	if err != nil {
 		r.cfg.Logger.WarnContext(ctx, "passkey sign-in rejected", "error", err)
@@ -618,7 +637,7 @@ func (r *SignInRoutes) startMagic(ctx context.Context, email string) magicBindin
 			return magicBinding{Kind: "n"}
 		}
 		r.cfg.Logger.InfoContext(ctx, "account created (unverified) for a magic link", "user_id", id)
-		return magicBinding{Kind: "v", UserID: id, New: true}
+		return magicBinding{Kind: "v", UserID: id}
 	case errors.Is(err, ErrUserNotFound):
 		r.cfg.Logger.InfoContext(ctx, "magic link requested for an address with no single account")
 	default:
@@ -682,7 +701,7 @@ func (r *SignInRoutes) HandleMagicConsume(w http.ResponseWriter, req *http.Reque
 	case "s":
 		session, err = c.SetSession(ctx, ChallengeSession{ID: b.ID, Token: b.Token}, Answer{OTPEmailCode: code})
 	case "v":
-		session, err = r.sessionFromVerification(ctx, b.UserID, code, b.New)
+		session, err = r.sessionFromVerification(ctx, b.UserID, code)
 	default:
 		err = ErrInvalidCode
 	}
@@ -704,14 +723,16 @@ func (r *SignInRoutes) HandleMagicConsume(w http.ResponseWriter, req *http.Reque
 // request. Only then does the broker mint a one-time code with its own
 // credential and redeem it at once — the address is now verified, so the
 // issuer allows the method, and the person already proved the inbox.
-func (r *SignInRoutes) sessionFromVerification(ctx context.Context, userID, code string, isNew bool) (Session, error) {
+//
+// The signup_role follows the address's first proof, as in HandleVerify:
+// it is derived here, not carried in the browser binding, so a replacement
+// link (a second request before the first was used) grants it too.
+func (r *SignInRoutes) sessionFromVerification(ctx context.Context, userID, code string) (Session, error) {
 	c := r.cfg.Client
 	if err := c.VerifyEmail(ctx, userID, code); err != nil {
 		return Session{}, err
 	}
-	if isNew {
-		r.grantSignupRole(ctx, userID)
-	}
+	r.grantSignupRoleOnVerify(ctx, userID)
 	if err := c.EnsureOTPEmail(ctx, userID); err != nil {
 		return Session{}, err
 	}
@@ -720,6 +741,23 @@ func (r *SignInRoutes) sessionFromVerification(ctx context.Context, userID, code
 		return Session{}, err
 	}
 	return c.SetSession(ctx, cs, Answer{OTPEmailCode: cs.OTPEmailCode})
+}
+
+// grantSignupRoleOnVerify grants the signup_role to an account whose address
+// was just proven for the first time, when self sign-up would have let that
+// address create it.
+func (r *SignInRoutes) grantSignupRoleOnVerify(ctx context.Context, userID string) {
+	if !r.cfg.Policy.SelfSignup() {
+		return
+	}
+	u, err := r.cfg.Client.FindUserByID(ctx, userID)
+	if err != nil {
+		r.cfg.Logger.ErrorContext(ctx, "sign-up role: user lookup failed", "user_id", userID, "error", err)
+		return
+	}
+	if r.cfg.Policy.SignupAllows(u.Email) {
+		r.grantSignupRole(ctx, userID)
+	}
 }
 
 func (r *SignInRoutes) grantSignupRole(ctx context.Context, userID string) {
@@ -1138,11 +1176,8 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 	r.codeByUser.forget(userID)
 	r.cfg.Logger.InfoContext(ctx, "email address verified", "user_id", userID)
 	r.attachPendingLink(w, req, userID)
-	if r.cfg.Policy.SelfSignup() {
-		if u, err := c.FindUserByID(ctx, userID); err == nil && r.cfg.Policy.SignupAllows(u.Email) {
-			r.grantSignupRole(ctx, userID)
-		}
-	}
+	r.setPendingPassword(w, req, userID)
+	r.grantSignupRoleOnVerify(ctx, userID)
 	if r.cfg.Policy.Offers(MethodPasskey) {
 		if has, err := c.HasPassword(ctx, userID); err == nil && !has {
 			code, err := c.MintPasskeyRegistrationCode(ctx, userID)
@@ -1176,6 +1211,31 @@ func (r *SignInRoutes) attachPendingLink(w http.ResponseWriter, req *http.Reques
 	r.cfg.Logger.InfoContext(ctx, "social account linked after verification", "user_id", userID)
 }
 
+// setPendingPassword sets the password a sign-up chose, now that THIS
+// browser proved the address of the account it registered. PROOF FIRST: the
+// broker mints the reset code with its own credential only after VerifyEmail
+// succeeded for this user in this request. A verification opened in any
+// other browser sets nothing: the account then has no password until its
+// owner sets one (a passkey, a magic link, or a reset).
+func (r *SignInRoutes) setPendingPassword(w http.ResponseWriter, req *http.Request, userID string) {
+	ctx := req.Context()
+	var pp pendingPasswordBinding
+	if !r.readBinding(req, passwordCookie, &pp) || pp.UserID != userID || pp.Password == "" {
+		return
+	}
+	r.clearBinding(w, passwordCookie)
+	c := r.cfg.Client
+	code, err := c.MintPasswordResetCode(ctx, userID)
+	if err == nil {
+		err = c.ResetPassword(ctx, PasswordReset{UserID: userID, Code: code, NewPassword: pp.Password})
+	}
+	if err != nil {
+		r.cfg.Logger.ErrorContext(ctx, "verification: the sign-up password could not be set", "user_id", userID, "error", err)
+		return
+	}
+	r.cfg.Logger.InfoContext(ctx, "sign-up password set after verification", "user_id", userID)
+}
+
 // HandleVerifyResend mails a fresh verification link. Always 202.
 func (r *SignInRoutes) HandleVerifyResend(w http.ResponseWriter, req *http.Request) {
 	var body emailRequest
@@ -1206,7 +1266,8 @@ type registerRequest struct {
 // HandleRegister creates an account under an open or domain sign-up. It
 // answers 202 with NO session, identically whether or not the address
 // already has an account: the verification mail is what proves the address,
-// and the session comes after it.
+// and the session comes after it. A chosen password is set only when the
+// browser that registered proves the address (setPendingPassword).
 //
 // Where no mail can arrive, the policy decides (RegisterServed): sign-up is
 // refused unless it is open, with a password, and the policy does not
@@ -1255,32 +1316,39 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 		r.registerWithoutMail(w, req, email, body)
 		return
 	}
+	// The account is created WITHOUT the password: it waits, sealed in THIS
+	// browser, for the address's code (setPendingPassword). Set at creation,
+	// whoever registered a victim's address would keep a way in once the
+	// victim confirmed it.
 	c := r.cfg.Client
+	pending := pendingPasswordBinding{Password: body.Password}
 	user, err := c.FindUserByEmail(ctx, email)
 	switch {
 	case err == nil:
 		if !user.EmailVerified {
+			pending.UserID = user.ID
 			if err := c.ResendEmailCode(ctx, user.ID, r.verifyTemplate()); err != nil {
 				r.cfg.Logger.ErrorContext(ctx, "sign-up: resend for an existing account failed", "user_id", user.ID, "error", err)
 			}
 		}
 		r.cfg.Logger.InfoContext(ctx, "sign-up for an address that already has an account", "user_id", user.ID)
 	case errors.Is(err, ErrUserNotFound):
-		id, err := c.CreateUser(ctx, NewUser{Email: email, Password: body.Password, GivenName: body.GivenName,
+		id, err := c.CreateUser(ctx, NewUser{Email: email, GivenName: body.GivenName,
 			FamilyName: body.FamilyName, VerifyURLTemplate: r.verifyTemplate()})
-		var policyErr *PasswordPolicyError
-		if errors.As(err, &policyErr) {
-			r.rejectPassword(ctx, w, body.Password, policyErr)
-			return
-		}
 		if err != nil {
 			r.unavailable(ctx, w, "sign-up: create account", err)
 			return
 		}
+		pending.UserID = id
 		r.cfg.Logger.InfoContext(ctx, "account created (unverified)", "user_id", id)
 	default:
 		r.unavailable(ctx, w, "sign-up: user lookup", err)
 		return
+	}
+	if body.Password != "" {
+		if err := r.setBinding(w, passwordCookie, pending); err != nil {
+			r.cfg.Logger.ErrorContext(ctx, "sign-up: the password could not be sealed", "error", err)
+		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"verify": "sent", "message": msgVerifySent})
 }

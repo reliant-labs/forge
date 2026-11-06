@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1161,6 +1162,102 @@ func TestInvite_SocialRefusesAProviderAccountOfAnotherUser(t *testing.T) {
 	}
 	status, body = b.post("/auth/invite/accept", map[string]any{"userID": u.id, "code": "inv-1", "method": "social", "provider": "github"})
 	want(t, status, body, 400, CodeMethodNotOffered)
+}
+
+// passwordSignsIn reports whether email and password sign in at the issuer.
+func passwordSignsIn(h *harness, email, password string) bool {
+	_, err := h.z.client().SignIn(context.Background(), FlowConfig{ClientID: "c", RedirectURI: "r", RequireVerifiedEmail: true},
+		Credentials{LoginName: email, Password: password})
+	return err == nil
+}
+
+// Pre-registration takeover by password: an attacker registers a victim's
+// address with a password they know; the victim confirms the address from
+// their own browser. The attacker's password must not open the account.
+func TestRegister_PasswordIsSetOnlyInTheBrowserThatProvesTheAddress(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods))
+	attacker := h.browser()
+	if status, body := attacker.post("/auth/register", map[string]any{"email": "victim@else.com", "password": "attacker-password"}); status != 202 {
+		t.Fatalf("register: %d %v", status, body)
+	}
+	u := h.z.userByEmail("victim@else.com")
+	if u == nil || u.password != "" {
+		t.Fatalf("the sign-up password was set before the address was proven: %+v", u)
+	}
+	victim := h.browser()
+	if status, body := victim.post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code}); status != 200 {
+		t.Fatalf("verify: %d %v", status, body)
+	}
+	if h.z.user(u.id).password != "" || passwordSignsIn(h, "victim@else.com", "attacker-password") {
+		t.Fatal("the attacker's password opens the account the victim verified")
+	}
+
+	// The victim registering the pending address in their own browser
+	// sets THEIR password once that browser proves it.
+	h2 := newHarness(t, policyWith(SignupOpen, allMethods))
+	h2.browser().post("/auth/register", map[string]any{"email": "victim@else.com", "password": "attacker-password"})
+	mine := h2.browser()
+	if status, body := mine.post("/auth/register", map[string]any{"email": "victim@else.com", "password": "victim-password"}); status != 202 {
+		t.Fatalf("register: %d %v", status, body)
+	}
+	u = h2.z.userByEmail("victim@else.com")
+	if status, body := mine.post("/auth/verify", map[string]any{"userID": u.id, "code": h2.z.lastMail(t).code}); status != 200 {
+		t.Fatalf("verify: %d %v", status, body)
+	}
+	if !passwordSignsIn(h2, "victim@else.com", "victim-password") || passwordSignsIn(h2, "victim@else.com", "attacker-password") {
+		t.Fatalf("after this browser verified, password is %q", h2.z.user(u.id).password)
+	}
+}
+
+// A passkey finish fails alike for a decoy and a real challenge: status,
+// body and Set-Cookie must not say which the address got.
+func TestPasskeySignIn_FailuresDoNotTellADecoyFromARealChallenge(t *testing.T) {
+	h := newHarness(t, policyWith(SignupInvite, allMethods))
+	seedPasskeyUser(h, true)
+	finish := func(email string, cred any) string {
+		b := h.browser()
+		b.post("/auth/passkey/begin", map[string]any{"email": email})
+		raw, _ := json.Marshal(map[string]any{"credential": cred})
+		req, _ := http.NewRequest(http.MethodPost, h.srv.URL+"/auth/passkey/finish", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := b.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Sprintf("%d %s %q", resp.StatusCode, body, resp.Header.Values("Set-Cookie"))
+	}
+	for name, cred := range map[string]any{
+		"malformed":    "not a credential",
+		"wrong origin": credential("https://phish.test", WebAuthnGet, "good"),
+		"wrong type":   credential(testAppBase, WebAuthnCreate, "good"),
+	} {
+		if r, d := finish("pk@acme.com", cred), finish("nobody@acme.com", cred); r != d {
+			t.Errorf("%s: real %s, decoy %s", name, r, d)
+		}
+	}
+	if n := h.z.callCount("PATCH /v2/sessions"); n != 0 {
+		t.Fatalf("a refused assertion reached the issuer %d times", n)
+	}
+}
+
+// A magic-link sign-up asked for twice before the first link is used still
+// gets its signup_role from the replacement link, in any browser that asked.
+func TestMagicLink_AReplacementLinkStillGrantsTheSignupRole(t *testing.T) {
+	h := newHarness(t, LoginPolicy{Present: true, Version: 1, Signup: SignupOpen, SignupRole: "member",
+		Methods: []string{MethodMagicLink}, Mail: MailDev, RequireVerifiedEmail: true})
+	h.browser().post("/auth/magic/request", map[string]any{"email": "new@else.com"})
+	b := h.browser()
+	b.post("/auth/magic/request", map[string]any{"email": "new@else.com"})
+	u := h.z.userByEmail("new@else.com")
+	status, body := b.post("/auth/magic/consume", map[string]any{"code": h.z.lastMail(t).code})
+	if status != 200 || body["subject"] != u.id {
+		t.Fatalf("consume: %d %v", status, body)
+	}
+	if len(h.z.grants) != 1 || h.z.grants[0] != u.id+":member" {
+		t.Fatalf("grants %v, want %s:member", h.z.grants, u.id)
+	}
 }
 
 func sortStrings(s []string) []string {

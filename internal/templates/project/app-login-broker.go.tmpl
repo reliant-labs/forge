@@ -422,6 +422,16 @@ func (b *loginBroker) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusBadRequest, "malformed request")
 		return
 	}
+	// A LOGIN_POLICY that does not offer passwords refuses them here, not
+	// only in the UI: an account that has a password must not sign in with
+	// the method the policy excluded. The legacy policy offers passwords.
+	if b.policy.Present && !b.policy.Offers(devidp.MethodPassword) {
+		writeAuthJSON(w, http.StatusForbidden, map[string]string{
+			"error": "That sign-in method is not offered here.",
+			"code":  devidp.CodeMethodNotOffered,
+		})
+		return
+	}
 
 	tokens, err := b.client.SignIn(r.Context(), b.flow, devidp.Credentials{
 		LoginName: strings.TrimSpace(req.Email),

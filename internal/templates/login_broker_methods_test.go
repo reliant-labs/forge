@@ -82,6 +82,8 @@ func TestLoginBrokerScaffoldMountsEachMethodOnlyWhenOffered(t *testing.T) {
 		"devidp.OptionsFor(b.policy, b.selfSignup)",
 		// §5.7: the delivered password rules come before the Settings API.
 		"if p, ok := b.policy.PasswordPolicy(); ok {",
+		// A policy without passwords refuses them at the endpoint too.
+		"if b.policy.Present && !b.policy.Offers(devidp.MethodPassword) {",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the broker lacks %q", want)
@@ -156,6 +158,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"example.com/app/pkg/config"
@@ -231,6 +234,27 @@ func TestMountsPerPolicy(t *testing.T) {
 		if opts["signup"] != tc.signup || opts["selfSignup"] != tc.register {
 			t.Errorf("%s: options %v", name, opts)
 		}
+	}
+}
+
+// A passkey-only policy refuses a password at /auth/login before the issuer
+// is asked; the legacy policy still takes one (the issuer here is
+// unreachable, so it answers 401, not the policy's 403).
+func TestPasswordLoginFollowsThePolicy(t *testing.T) {
+	login := func(policy string) (int, string) {
+		mux, _ := mounted(t, policy)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/auth/login",
+			strings.NewReader(`+"`"+`{"email":"pw@app.test","password":"a-long-password"}`+"`"+`)))
+		var body map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body["code"]
+	}
+	if status, code := login(`+"`"+`{"version":1,"signup":"invite","methods":["passkey"],"mail":"platform","require_verified_email":true}`+"`"+`); status != 403 || code != "method_not_offered" {
+		t.Errorf("passkey-only policy: password login answered %d %q, want 403 method_not_offered", status, code)
+	}
+	if status, code := login(""); status == 403 || code == "method_not_offered" {
+		t.Errorf("legacy policy: password login refused as not offered (%d %q)", status, code)
 	}
 }
 `)

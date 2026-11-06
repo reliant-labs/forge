@@ -16,13 +16,21 @@
 // Every lookup degrades instead of failing: a project mid-edit loads with
 // type errors, and a field or node whose type did not check is simply not
 // matched by type (resolution falls back to the string-keyed paths).
+//
+// The one exception is a module download that failed in transport (fetchErr):
+// that says nothing about the tree, only about the network, and the graph it
+// leaves is not a degraded version of the project's but a wrong one (see
+// loadGraphPackages).
 
 package codegen
 
 import (
+	"fmt"
 	"go/types"
 	"path"
 	"path/filepath"
+	"regexp"
+	"time"
 
 	"golang.org/x/tools/go/packages"
 
@@ -36,6 +44,74 @@ type graphUniverse struct {
 	compDir  func(c BuildComponent) string
 	produced map[string]types.Type // node Name → produced type
 	deps     map[string]map[string]types.Type
+
+	// fetchErr is a module download that still failed in transport after
+	// every attempt: the universe is missing packages because the network
+	// failed, not because the tree is mid-edit. assembleGraph refuses it.
+	fetchErr error
+}
+
+// graphLoadAttempts bounds the loads loadGraphPackages makes while a module
+// download keeps failing in transport, and graphLoadBackoff is the wait
+// before the second (doubling after). Variables so a test can shrink them.
+var (
+	graphLoadAttempts = 3
+	graphLoadBackoff  = 2 * time.Second
+)
+
+// loadGraphPackages is packages.Load, retried while a module download fails
+// in transport.
+//
+// On a cold module cache — a new machine, a clean HOME, the very first
+// `forge project new` — this load is the first thing in the pipeline that
+// needs the project's dependencies, so go list downloads them here. cmd/go
+// does not retry a failed fetch, and a single "TLS handshake timeout" left
+// the packages that import that module untyped. The graph did not degrade
+// gracefully from that: no node was typed, so the server root held no
+// listener and no database, graph_gen.go served nothing, and config_gen.k's
+// ROOTS refused the scaffold's own `config_secrets = ["DATABASE_URL"]`
+// ("which root \"server\" does not reach (it reaches [])"). A second
+// generate found the modules cached and was right — output that depended on
+// the network at the moment of the first run, not on the tree.
+//
+// Each attempt keeps what earlier ones downloaded, so a flaky network
+// converges. The last attempt's transport failure is returned; the caller
+// must not project a graph from it.
+func loadGraphPackages(cfg *packages.Config, patterns ...string) ([]*packages.Package, error, error) {
+	wait := graphLoadBackoff
+	for attempt := 1; ; attempt++ {
+		pkgs, err := packages.Load(cfg, patterns...)
+		fetchErr := moduleFetchError(pkgs)
+		if fetchErr == nil || attempt >= graphLoadAttempts {
+			return pkgs, err, fetchErr
+		}
+		time.Sleep(wait)
+		wait *= 2
+	}
+}
+
+// transportFailure matches cmd/go's report of a module fetch that failed
+// below HTTP — `<mod>@<v>: Get "<url>": <net error>` (net/http's url.Error) —
+// or that a proxy answered 5xx. A 404/410 (no such module or version) is a
+// fact about the tree, not the network, and is not matched.
+var transportFailure = regexp.MustCompile(`Get "[^"]+": |reading https?://\S+: 5\d\d `)
+
+// moduleFetchError is the first go list error, anywhere in pkgs' import
+// closure, that is a module download failing in transport; nil when none is.
+func moduleFetchError(pkgs []*packages.Package) error {
+	var found error
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if found != nil {
+			return
+		}
+		for _, e := range p.Errors {
+			if e.Kind == packages.ListError && transportFailure.MatchString(e.Msg) {
+				found = fmt.Errorf("%s", e.Msg)
+				return
+			}
+		}
+	})
+	return found
 }
 
 // loadGraphUniverse loads internal/app plus every component package. It
@@ -61,7 +137,8 @@ func loadGraphUniverse(projectDir string, comps []BuildComponent) *graphUniverse
 		Dir: absProject,
 		Env: goexec.Env(),
 	}
-	pkgs, err := packages.Load(cfg, patterns...)
+	pkgs, err, fetchErr := loadGraphPackages(cfg, patterns...)
+	u.fetchErr = fetchErr
 	if err != nil || len(pkgs) == 0 {
 		return u
 	}

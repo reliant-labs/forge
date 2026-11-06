@@ -3,6 +3,7 @@ package lint
 import (
 	"go/ast"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -167,6 +168,97 @@ func TestLintRulesOutcome(t *testing.T) {
 	}
 	if got := lintRulesOutcomes(rulesCfg(map[string]string{"forge-config-deps": "error"})); len(got) != 0 {
 		t.Errorf("a clean dial must add nothing to the report, got %+v", got)
+	}
+}
+
+// A rule lint.rules was renamed away from keeps grading its replacement, and
+// the entry is a warning that names the new key, never a failing run.
+func TestLintRulesRenamedRule(t *testing.T) {
+	cfg := rulesCfg(map[string]string{"forgeconv-contract-names": "warn"})
+	o := lintRulesOutcome(cfg)
+	if !o.ran || o.gated || len(o.findings) != 1 {
+		t.Fatalf("a renamed key must report one non-gating finding, got ran=%v gated=%v %+v", o.ran, o.gated, o.findings)
+	}
+	if f := o.findings[0]; f.Severity != lintSevWarning || !strings.Contains(f.FixHint, "forgeconv-internal-package-contract-names") {
+		t.Errorf("want a warning naming the new key, got %+v", f)
+	}
+	rules := effectiveRules(cfg)
+	if got := rules["forgeconv-internal-package-contract-names"]; got != "warn" {
+		t.Errorf("the old key must grade the new rule, got %q in %v", got, rules)
+	}
+	if _, ok := rules["forgeconv-contract-names"]; ok {
+		t.Errorf("the old key must not linger as its own entry: %v", rules)
+	}
+	// The new key, when both are set, wins.
+	both := effectiveRules(rulesCfg(map[string]string{"forgeconv-contract-names": "off", "forgeconv-internal-package-contract-names": "error"}))
+	if got := both["forgeconv-internal-package-contract-names"]; got != "error" {
+		t.Errorf("the new key must win over the old, got %q", got)
+	}
+	for old, current := range renamedRules {
+		if gradableRuleSet()[old] || !gradableRuleSet()[current] {
+			t.Errorf("renamed %q -> %q: the old ID must not be gradable and the new one must be", old, current)
+		}
+	}
+}
+
+// The reverse of TestEveryEmittedRuleIsGradable: every rule lint.rules grades
+// is spelled somewhere outside the catalog and the rollout table, so a rule
+// cannot be graded (and dialled, to no effect) when no code names it.
+func TestEveryGradableRuleIsNamedByCode(t *testing.T) {
+	root := moduleRootForTest(t)
+	catalog := map[string]bool{
+		filepath.Join(root, "internal/cli/lint/lint_rules.go"):         true,
+		filepath.Join(root, "internal/cli/lint/lint_rollout_table.go"): true,
+	}
+	literals := map[string]bool{}
+	for _, dir := range []string{"internal", "pkg"} {
+		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "testdata" || d.Name() == "node_modules" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || catalog[path] {
+				return nil
+			}
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			var sc scanner.Scanner
+			sc.Init(token.NewFileSet().AddFile(path, -1, len(src)), src, nil, 0)
+			for {
+				_, tok, lit := sc.Scan()
+				if tok == token.EOF {
+					break
+				}
+				if tok == token.STRING {
+					if v, err := strconv.Unquote(lit); err == nil {
+						literals[v] = true
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var unnamed []string
+	for _, r := range gradableRules() {
+		if !literals[r] {
+			unnamed = append(unnamed, r)
+		}
+	}
+	sort.Strings(unnamed)
+	if len(unnamed) > 0 {
+		t.Errorf("rules lint.rules grades that no code outside the catalog names — wire an emitter, or remove "+
+			"each from gradableRules and the rollout table (renamedRules keeps an old key working):\n  %s",
+			strings.Join(unnamed, "\n  "))
 	}
 }
 

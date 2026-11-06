@@ -1,6 +1,7 @@
 package forgeconv
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -228,5 +229,40 @@ func TestLintAllocatePortSpacing_MessageNamesArithmetic(t *testing.T) {
 	}
 	if hit.Remediation == "" {
 		t.Error("expected a non-empty remediation pointing at moving one base off the congruence")
+	}
+}
+
+// TestLintAllocatePortSpacing_SameBaseIsOnePort pins that one base read twice
+// in a file (a listener, and a URL naming the same port for another key) is
+// one port, not a collision at block 0 — control-plane's dev main.k reads
+// allocate_port(38080, ...) both ways.
+func TestLintAllocatePortSpacing_SameBaseIsOnePort(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dir := filepath.Join(root, "deploy", "kcl", "dev")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "_http = fp.allocate_port(38080, _key)\n" +
+		"_grpc = fp.allocate_port(39190, _key)\n" +
+		"_url = \"http://x.localhost:${fp.allocate_port(38080, '')}\"\n" +
+		"_clash = fp.allocate_port(38280, _key)\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.k"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := LintAllocatePortSpacing(root, config.DefaultMaxStacks, config.DefaultBlockSize)
+	if err != nil {
+		t.Fatalf("LintAllocatePortSpacing: %v", err)
+	}
+	got := findingsForRule(res.Findings, "forgeconv-allocate-port-spacing")
+	// 38280 collides with 38080 at block 2, reported once; the two 38080
+	// reads do not collide with each other.
+	if len(got) != 1 {
+		t.Fatalf("want the 38080/38280 collision once, got %d:\n%s", len(got), res.FormatText())
+	}
+	for _, f := range got {
+		if !strings.Contains(f.Message, "allocate_port(38280)") {
+			t.Errorf("every finding must be the 38080/38280 collision, got: %s", f.Message)
+		}
 	}
 }

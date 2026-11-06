@@ -297,6 +297,17 @@ func TestPoolerDrain_ErrorKeepsItsMessageWhenRetriesRunOut(t *testing.T) {
 	}
 }
 
+// A Parse PgBouncer refused because the name is still held for this client ran
+// nothing, so it is retried on a fresh connection, whose statement cache is
+// empty.
+func TestPoolerDrain_ReusedPreparedStatementNameIsRetried(t *testing.T) {
+	t.Parallel()
+	refusal := &pgconn.PgError{Severity: "FATAL", Code: "08P01", Message: "prepared statement name is already in use"}
+	if err := retryIfPoolerDraining(refusal); !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("%v must tell database/sql to retry on another connection", err)
+	}
+}
+
 // Only the drain refusal is retried. PgBouncer uses the same SQLSTATE for
 // refusals that are not safe or not useful to repeat, and a Postgres error
 // means the statement ran.
@@ -306,6 +317,7 @@ func TestPoolerDrain_OtherErrorsAreNotRetried(t *testing.T) {
 		&pgconn.PgError{Severity: "FATAL", Code: "08P01", Message: "query_wait_timeout"},
 		&pgconn.PgError{Severity: "FATAL", Code: "08P01", Message: "server conn crashed?"},
 		&pgconn.PgError{Severity: "ERROR", Code: "08P01", Message: "server shutting down"},
+		&pgconn.PgError{Severity: "FATAL", Code: "08P01", Message: "server login has been failing, cached error: server conn crashed? (server_login_retry)"},
 		&pgconn.PgError{Severity: "ERROR", Code: "23505", Message: "duplicate key value violates unique constraint"},
 		errors.New("server shutting down"),
 		nil,

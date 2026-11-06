@@ -80,6 +80,7 @@ func TestClusterCreateFlags_CIDRsIndependentlyOptional(t *testing.T) {
 // at the flag builder. clusterCreateFlags returning the right strings proves
 // nothing if ensureDeclaredCluster never calls it on this path.
 func TestEnsureDeclaredCluster_CIDRsReachTheCreateCall(t *testing.T) {
+	withReadyNewNodes(t)
 	origState := clusterRuntimeStateFn
 	origCreate := createDeclaredClusterFn
 	origHostDNS := ensureClusterHostGatewayDNSFn

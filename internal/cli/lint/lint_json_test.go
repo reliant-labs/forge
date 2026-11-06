@@ -19,7 +19,7 @@ func TestLintJSONReportShape(t *testing.T) {
 			Line:     42,
 			Col:      7,
 			Severity: lintSevError,
-			Rule:     "forgeconv-contract-names",
+			Rule:     "forgeconv-internal-package-contract-names",
 			Message:  "contract.go declares 'Sender', expected 'Service'",
 			FixHint:  "rename the interface to Service",
 		},
@@ -48,7 +48,7 @@ func TestLintJSONReportShape(t *testing.T) {
       "line": 42,
       "col": 7,
       "severity": "error",
-      "rule": "forgeconv-contract-names",
+      "rule": "forgeconv-internal-package-contract-names",
       "message": "contract.go declares 'Sender', expected 'Service'",
       "fix_hint": "rename the interface to Service"
     },

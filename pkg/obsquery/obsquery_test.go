@@ -540,6 +540,19 @@ func TestFlamegraphUsesForgesSQLOnTheOrgDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertParameterized(t, pt, h)
+	// A gauge is read as its newest snapshot, so the types list offers one
+	// snapshotted before the range too (the default 2h heap against a 1h range).
+	if !strings.Contains(pt.SQL, "AND SampleType IN (") || strings.Count(pt.SQL, "Minute >=") != 2 {
+		t.Errorf("types do not look back for snapshots:\n%s", pt.SQL)
+	}
+	heap, err := Flamegraph{Scope: scope(), Service: "api", SampleType: "inuse_space"}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertParameterized(t, heap)
+	if !strings.Contains(heap.SQL, "t_org_a.otel_profiles") || strings.Contains(heap.SQL, "default.") || !strings.Contains(heap.SQL, "argMax(ProfileId, Timestamp)") {
+		t.Errorf("the heap is not read as its newest snapshot on the org database:\n%s", heap.SQL)
+	}
 }
 
 func TestOperatorSource(t *testing.T) {

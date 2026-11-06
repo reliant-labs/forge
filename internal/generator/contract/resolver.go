@@ -200,7 +200,20 @@ func embedsSiblingInterface(fset *token.FileSet, contractPath string) bool {
 
 // importPathOf is the import path of the package in dir, inside the module
 // rooted at moduleRoot (the inverse of packageDir); "" when dir is outside it.
+//
+// dir may be relative to the working directory: findModule returns an
+// absolute moduleRoot, and filepath.Rel refuses to relate an absolute path
+// to a relative one. `forge generate` passes relative component dirs while
+// `forge scaffold` passes absolute ones, so without this the two rendered
+// different middleware_gen.go files (generate silently dropped the
+// WithMethodIDs map).
 func importPathOf(moduleRoot, modulePath, dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if abs, err := filepath.Abs(moduleRoot); err == nil {
+		moduleRoot = abs
+	}
 	rel, err := filepath.Rel(moduleRoot, dir)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return ""

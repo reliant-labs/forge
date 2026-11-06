@@ -7,6 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -201,7 +204,7 @@ func TestEnvDelete_NonInteractiveWithoutYesFailsFastBeforeAnyNetwork(t *testing.
 	oldResolve, oldInteractive := resolveLifecycleTarget, lifecycleInteractive
 	t.Cleanup(func() { resolveLifecycleTarget, lifecycleInteractive = oldResolve, oldInteractive })
 	resolved := false
-	resolveLifecycleTarget = func(context.Context, string, string, string) (lifecycleTarget, error) {
+	resolveLifecycleTarget = func(context.Context, string, string, string, string) (lifecycleTarget, error) {
 		resolved = true
 		return lifecycleTarget{}, errors.New("must not be reached")
 	}
@@ -278,3 +281,103 @@ func TestLifecycle_RealClientSendsProto3JSON(t *testing.T) {
 }
 
 func jsonUnmarshalString(s string, out any) error { return json.Unmarshal([]byte(s), out) }
+
+// undeclaredDeleteProject is a project whose hosted env prod-web is no longer
+// declared (no deploy/kcl/prod-web/), bound to the control planes named.
+func undeclaredDeleteProject(t *testing.T, bound ...string) {
+	t.Helper()
+	isolatedCredentials(t)
+	t.Setenv("FORGE_CREDENTIAL_HELPER", "")
+	t.Setenv(cloud.DefaultTokenEnv, "")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte("name: shop\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "deploy", "kcl", "prod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if len(bound) > 0 {
+		ids := map[string]string{}
+		for i, url := range bound {
+			ids[url] = "project-" + strconv.Itoa(i)
+		}
+		raw, _ := json.Marshal(ids)
+		if err := os.MkdirAll(filepath.Join(root, ".forge"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, hostedProjectBindingFile), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(root)
+	withProjectName(t, "shop")
+}
+
+// envListServer is a control plane holding hosted env prod-web.
+func envListServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/controlplane.v1.DeployService/ListEnvironments" {
+			t.Errorf("unexpected call %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"environments":[{"id":"env_9","name":"prod-web","project":"shop"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A hosted env that outlived its deploy/kcl/<env>/ is still deletable: it is
+// looked up by name on the control plane the project is bound to, or the one
+// --endpoint names (forge reports b9f2c42c, 8bc7f067).
+func TestEnvDelete_ResolvesAnUndeclaredEnvByName(t *testing.T) {
+	srv := envListServer(t)
+
+	t.Run("on the one bound control plane", func(t *testing.T) {
+		undeclaredDeleteProject(t, srv.URL)
+		got, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", "")
+		if err != nil || got.EnvironmentID != "env_9" || got.Endpoint != srv.URL {
+			t.Fatalf("target = %+v, %v; want env_9 on %s", got, err, srv.URL)
+		}
+	})
+	t.Run("on --endpoint", func(t *testing.T) {
+		undeclaredDeleteProject(t)
+		got, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", srv.URL)
+		if err != nil || got.EnvironmentID != "env_9" {
+			t.Fatalf("target = %+v, %v; want env_9", got, err)
+		}
+	})
+	t.Run("an env the control plane does not have either", func(t *testing.T) {
+		undeclaredDeleteProject(t, srv.URL)
+		_, err := resolveDeclaredLifecycleTarget(t.Context(), "gone", "delete", "tok", "")
+		if err == nil || !strings.Contains(err.Error(), "nothing to delete") {
+			t.Fatalf("err = %v; want nothing to delete", err)
+		}
+	})
+}
+
+func TestEnvDelete_UndeclaredEnvNeedsOneControlPlane(t *testing.T) {
+	t.Run("none bound", func(t *testing.T) {
+		undeclaredDeleteProject(t)
+		_, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", "")
+		if err == nil || !strings.Contains(err.Error(), "--endpoint "+cloud.DefaultEndpoint) {
+			t.Fatalf("err = %v; want an --endpoint fix", err)
+		}
+	})
+	t.Run("several bound", func(t *testing.T) {
+		undeclaredDeleteProject(t, "https://a.example", "https://b.example")
+		_, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", "")
+		if err == nil || !strings.Contains(err.Error(), "https://a.example, https://b.example") {
+			t.Fatalf("err = %v; want both control planes named", err)
+		}
+	})
+	t.Run("--endpoint on a declared env", func(t *testing.T) {
+		undeclaredDeleteProject(t)
+		_, err := resolveDeclaredLifecycleTarget(t.Context(), "prod", "delete", "tok", "https://a.example")
+		if err == nil || !strings.Contains(err.Error(), "drop --endpoint") {
+			t.Fatalf("err = %v; want --endpoint refused for a declared env", err)
+		}
+	})
+}

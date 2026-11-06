@@ -140,6 +140,25 @@ func TestPermanentlySkipped(t *testing.T) {
 	t.Log("unreachable")
 }
 
+// TestSkipAfterUnreachableReturn can never run: the return before the skip
+// never fires, so every path reaches it.
+func TestSkipAfterUnreachableReturn(t *testing.T) {
+	if false {
+		return
+	}
+	t.Skip("disabled")
+}
+
+// TestSkipAfterEarlyReturn tests nothing on either path: one returns early,
+// the other skips.
+func TestSkipAfterEarlyReturn(t *testing.T) {
+	if runtime.GOOS == "plan9" {
+		return
+	}
+	t.Skip("disabled")
+	t.Log("unreachable")
+}
+
 // ── dead-skip: must NOT fire ─────────────────────────────────────────────────
 
 // TestSkipOnMissingToolchain is legitimate: no checkout can supply kcl.
@@ -161,6 +180,18 @@ func TestSkipOnPlatform(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix-only signal model")
 	}
+}
+
+// pickFreePortOrSkip is legitimate: the skip is the fallback of a search
+// whose success returns first.
+func pickFreePortOrSkip(t *testing.T) int {
+	for i := 0; i < 50; i++ {
+		if p := 40000 + i; p%7 == 0 {
+			return p
+		}
+	}
+	t.Skip("no free port")
+	return 0
 }
 
 // TestSkipOnSiblingCheckout is legitimate: the path is derived from the

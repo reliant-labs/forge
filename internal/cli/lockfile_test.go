@@ -400,13 +400,11 @@ func TestGenerateCmd_WaitsForConcurrentRun(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 	}
 	release()
-	select {
-	case err := <-done:
-		if err != nil && strings.Contains(err.Error(), "another forge process") {
-			t.Fatalf("forge generate still reports a lock conflict after the holder released: %v", err)
-		}
-	case <-time.After(60 * time.Second):
-		t.Fatal("forge generate did not proceed within 60s of the lock being released")
+	// No deadline here: how long the pipeline runs once it holds the lock is
+	// the host's, not the lock's (a 60s bound flaked on a loaded runner, forge
+	// #1813). A run that never returns fails the package's -timeout instead.
+	if err := <-done; err != nil && strings.Contains(err.Error(), "another forge process") {
+		t.Fatalf("forge generate still reports a lock conflict after the holder released: %v", err)
 	}
 }
 

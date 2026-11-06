@@ -57,12 +57,13 @@ func serveRenderCases() map[string]map[string]bool {
 func renderServe(t *testing.T, configFields map[string]bool) *ast.File {
 	t.Helper()
 	data := struct {
-		Module         string
-		HasDatabase    bool
-		DatabaseDriver string
-		OrmEnabled     bool
-		ConfigFields   map[string]bool
-		RESTEnabled    bool
+		Module           string
+		HasDatabase      bool
+		DatabaseDriver   string
+		OrmEnabled       bool
+		ConfigFields     map[string]bool
+		RESTEnabled      bool
+		DevSessionCookie bool
 	}{
 		Module:       "example.com/myproject",
 		HasDatabase:  true,

@@ -949,6 +949,23 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 14a-ter. Identity sign-in methods — a forge.ManagedIdentity that
+		// declares passkeys, magic links, social sign-in or an open/domain
+		// sign-up the login broker does not serve (see
+		// lint_identity_methods.go). Errors, graded by the rollout table.
+		{
+			name:  "identity-methods lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, "deploy", "kcl")) && dirExists(filepath.Join(rc.cwd, "internal")), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectIdentityMethodsJSON(rc.cwd)
+				return fs, len(fs) > 0, err
+			},
+		},
+
 		// 14b. No-dotenv — forge projects declare config in KCL and keep
 		// secret VALUES in the secret store. A .env file bypasses
 		// both (it is injected wholesale, so nothing has to be

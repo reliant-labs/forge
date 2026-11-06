@@ -21,14 +21,14 @@ func TestLoginBrokerScaffoldServesSignUpOnlyWhenOptedIn(t *testing.T) {
 		{
 			name:       "config declares auth_self_signup",
 			data:       map[string]any{"Module": "example.com/app", "Name": "app", "MiddlewareDeclaresSessionCookie": true, "SelfSignupField": true},
-			selfSignup: `selfSignup: cfg.Environment == "development" || cfg.AuthSelfSignup,`,
+			selfSignup: `legacySelfSignup: cfg.Environment == "development" || cfg.AuthSelfSignup,`,
 		},
 		{
 			// An older config with no such field must still compile, and must
 			// not serve sign-up anywhere but development.
 			name:       "config predates auth_self_signup",
 			data:       map[string]any{"Module": "example.com/app", "Name": "app", "MiddlewareDeclaresSessionCookie": true},
-			selfSignup: `selfSignup: cfg.Environment == "development",`,
+			selfSignup: `legacySelfSignup: cfg.Environment == "development",`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,7 +65,7 @@ func TestLoginBrokerScaffoldServesSignUpOnlyWhenOptedIn(t *testing.T) {
 				!strings.Contains(src, "mux.Handle(OptionsPath, http.HandlerFunc(broker.handleOptions))") {
 				t.Error("broker does not serve GET /auth/options")
 			}
-			if !strings.Contains(src, "authOptions{SelfSignup: b.selfSignup}") {
+			if !strings.Contains(src, "opts.SelfSignup = b.selfSignup") {
 				t.Error("GET /auth/options does not report the broker's own switch")
 			}
 		})
@@ -93,7 +93,8 @@ func TestSignInScreensFollowTheServersSignUpSwitch(t *testing.T) {
 			src := renderFrontend(t, tmpl, kind)
 			for _, want := range []string{
 				`import { useAuthOptions } from "@/lib/auth/use-auth-options";`,
-				"const { selfSignup } = useAuthOptions();",
+				"const options = useAuthOptions();",
+				"const { selfSignup } = options;",
 				`const signingUp = selfSignup && mode === "signUp";`,
 				"{selfSignup ? (",
 			} {

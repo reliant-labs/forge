@@ -69,8 +69,13 @@ import (
 // a case to buildChecks. Do not reach around them.
 type Credentials struct {
 	// LoginName identifies the account: the username, email or other
-	// login name the issuer knows. Required.
+	// login name the issuer knows. Required unless UserID is set.
 	LoginName string
+
+	// UserID identifies the account by its issuer id instead, for a flow
+	// that learned the id from a proof (a social intent the issuer
+	// resolved to a linked user). Exclusive with LoginName.
+	UserID string
 
 	// Password is the user's password. Required unless another verifying
 	// factor is set — see buildChecks.
@@ -81,13 +86,38 @@ type Credentials struct {
 	// separately on the session, so a second factor adds to the password
 	// check rather than replacing it.
 	TOTP string
+
+	// IDPIntent is a social sign-in the issuer completed: the intent id and
+	// token its callback handed back. Verifying on its own — the issuer
+	// checks that the intent succeeded, has not expired, and belongs to the
+	// user checked.
+	IDPIntent *IDPIntent
+}
+
+// IDPIntent is a completed identity-provider intent.
+type IDPIntent struct {
+	ID    string
+	Token string
 }
 
 // verifying reports whether these credentials carry at least one factor
 // that actually PROVES anything. A login name alone identifies an account;
 // it does not authenticate one.
+//
+// A passkey assertion and an emailed one-time code are verifying too, but
+// they answer a CHALLENGE, so they reach the issuer through SetSession on a
+// challenge session (session.go), never through this struct.
 func (c Credentials) verifying() bool {
-	return c.Password != "" || c.TOTP != ""
+	return c.Password != "" || c.TOTP != "" ||
+		(c.IDPIntent != nil && c.IDPIntent.ID != "" && c.IDPIntent.Token != "")
+}
+
+// who is the account the credentials name, for messages.
+func (c Credentials) who() string {
+	if c.LoginName != "" {
+		return c.LoginName
+	}
+	return "user " + c.UserID
 }
 
 // Session is an authenticated session at the issuer: the handle that
@@ -119,7 +149,7 @@ func (c *Client) CreateSession(ctx context.Context, creds Credentials) (Session,
 
 	body, err := c.postJSON(ctx, "/v2/sessions", map[string]any{"checks": checks})
 	if err != nil {
-		return Session{}, fmt.Errorf("authenticate %q: %w", creds.LoginName, err)
+		return Session{}, fmt.Errorf("authenticate %q: %w", creds.who(), err)
 	}
 
 	var out Session
@@ -131,7 +161,7 @@ func (c *Client) CreateSession(ctx context.Context, creds Credentials) (Session,
 		// an auth request, and returning one would surface later as an
 		// opaque failure at the callback rather than here, where the
 		// cause is visible.
-		return Session{}, fmt.Errorf("the issuer returned an incomplete session for %q", creds.LoginName)
+		return Session{}, fmt.Errorf("the issuer returned an incomplete session for %q", creds.who())
 	}
 	return out, nil
 }
@@ -150,27 +180,43 @@ func (c *Client) CreateSession(ctx context.Context, creds Credentials) (Session,
 // The refusals are errors rather than "add a default", because there is no
 // safe default for "which credential did this person present".
 func buildChecks(creds Credentials) (map[string]any, error) {
-	if strings.TrimSpace(creds.LoginName) == "" {
-		return nil, fmt.Errorf("a login name is required")
+	user, err := userCheck(creds.LoginName, creds.UserID)
+	if err != nil {
+		return nil, err
 	}
 	if !creds.verifying() {
 		// The bypass, refused at the only place it could be constructed.
 		return nil, fmt.Errorf(
 			"refusing to create a session for %q with no verifying factor: "+
 				"the issuer would accept it and mint real tokens for an unauthenticated user",
-			creds.LoginName)
+			creds.who())
 	}
 
-	checks := map[string]any{
-		"user": map[string]any{"loginName": creds.LoginName},
-	}
+	checks := map[string]any{"user": user}
 	if creds.Password != "" {
 		checks["password"] = map[string]any{"password": creds.Password}
 	}
 	if creds.TOTP != "" {
 		checks["totp"] = map[string]any{"code": creds.TOTP}
 	}
+	if i := creds.IDPIntent; i != nil && i.ID != "" && i.Token != "" {
+		checks["idpIntent"] = map[string]any{"idpIntentId": i.ID, "idpIntentToken": i.Token}
+	}
 	return checks, nil
+}
+
+// userCheck is the issuer's user check: by login name or by id, exactly one.
+func userCheck(loginName, userID string) (map[string]any, error) {
+	loginName, userID = strings.TrimSpace(loginName), strings.TrimSpace(userID)
+	switch {
+	case loginName != "" && userID != "":
+		return nil, fmt.Errorf("a session names its user by login name or by id, not both")
+	case loginName != "":
+		return map[string]any{"loginName": loginName}, nil
+	case userID != "":
+		return map[string]any{"userId": userID}, nil
+	}
+	return nil, fmt.Errorf("a login name is required")
 }
 
 // FinalizeAuthRequest completes an OIDC authorization request with an

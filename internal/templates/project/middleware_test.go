@@ -224,7 +224,7 @@ func TestClaimsReExportsReachTheLibraryStash(t *testing.T) {
 // over an API key: a caller that sends one means that credential.
 func TestCredentialFrom_ReadsBearerThenAPIKeyThenTheSessionCookie(t *testing.T) {
 	t.Parallel()
-	cookie := (&http.Cookie{Name: SessionCookieName, Value: "from-cookie"}).String()
+	cookie := (&http.Cookie{Name: SecureSessionCookieName, Value: "from-cookie"}).String()
 
 	cases := []struct {
 		name   string
@@ -251,5 +251,31 @@ func TestCredentialFrom_ReadsBearerThenAPIKeyThenTheSessionCookie(t *testing.T) 
 		if got := credentialFrom(h); got != tc.want {
 			t.Errorf("%s: credentialFrom = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// Outside development only the __Host- session cookie is a credential: a
+// plain-named one can only have been planted by a sibling site. In
+// development (AuthDeps.DevSessionCookie) the plain name is read too, because
+// the broker cannot set a __Host- cookie over plain http.
+func TestCredentialFrom_PlainSessionCookieOnlyInDevelopment(t *testing.T) {
+	t.Parallel()
+	plain := http.Header{}
+	plain.Set("Cookie", (&http.Cookie{Name: SessionCookieName, Value: "planted"}).String())
+	if got := credentialFrom(plain); got != "" {
+		t.Errorf("deployed: a plain-named session cookie was read (%q)", got)
+	}
+	plain.Set("X-Forwarded-Proto", "http")
+	if got := credentialFrom(plain); got != "" {
+		t.Errorf("deployed, no https header: a plain-named session cookie was read (%q)", got)
+	}
+	if got := devCredentialFrom(plain); got != "planted" {
+		t.Errorf("development: the plain-named session cookie was not read (%q)", got)
+	}
+	blocked := http.Header{}
+	blocked.Set("Authorization", "")
+	blocked.Set("Cookie", (&http.Cookie{Name: SessionCookieName, Value: "x"}).String())
+	if got := devCredentialFrom(blocked); got != "" {
+		t.Errorf("development: an empty Authorization header fell through to the cookie (%q)", got)
 	}
 }

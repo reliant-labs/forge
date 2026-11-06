@@ -1,0 +1,111 @@
+{{if eq .Platform "nextjs"}}"use client";
+
+{{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
+//
+// MagicLinkForm — the /auth/magic page an emailed sign-in link opens.
+//
+// ── Why opening the link does not sign anyone in ──────────────────────
+//
+// Mail scanners (SafeLinks and friends) open every link in an email. If the
+// page signed in on load, the scanner would spend the single-use code — or a
+// lockout attempt — before the person ever clicked. So this page does NOTHING
+// until the person presses the button, which POSTs the code.
+//
+// The link also works only in the browser that asked for it: the server
+// bound the request to a cookie there. Opened on another device, the page
+// says so and asks for the code to be typed into the waiting tab instead.
+
+import { useState } from "react";
+
+import Button from "@/components/ui/button";
+import Input from "@/components/ui/input";
+import Label from "@/components/ui/label";
+import { AuthError, consumeMagicLink } from "@/lib/auth/native-login";
+
+export interface MagicLinkFormProps {
+  /** The code from the link's query string, if it carried one. */
+  code: string | null;
+  signInHref: string;
+  onSignedIn: () => void | Promise<void>;
+}
+
+export function MagicLinkForm({ code: linked, signInHref, onSignedIn }: MagicLinkFormProps) {
+  const [code, setCode] = useState(linked ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [otherBrowser, setOtherBrowser] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function onSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await consumeMagicLink(code.trim());
+      await onSignedIn();
+    } catch (err) {
+      const authErr = err instanceof AuthError ? err : null;
+      setOtherBrowser(authErr?.code === "magic_other_browser");
+      setError(authErr ? authErr.message : "Sign-in failed. Please try again.");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="rounded-xl border border-border bg-surface p-8 shadow-sm">
+      <h1 className="text-xl font-semibold tracking-tight text-ink">Sign in to {{.ProjectName}}</h1>
+
+      {otherBrowser ? (
+        <div role="alert" className="mt-4 space-y-2 text-sm text-ink">
+          <p>This link only works in the browser where you asked for it.</p>
+          <p className="text-ink-muted">
+            Go back to that browser and type the code from the email there, or ask for a new link
+            here.
+          </p>
+        </div>
+      ) : (
+        <>
+          <p className="mt-2 text-sm text-ink-muted">
+            {linked ? "Press the button to finish signing in." : "Type the code from the email."}{" "}
+            Never share this code: {{.ProjectName}} will never ask you for it.
+          </p>
+          {linked ? null : (
+            <>
+              <Label className="mt-6" htmlFor="code">
+                Code
+              </Label>
+              <Input
+                id="code"
+                name="code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                required
+                autoFocus
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+              />
+            </>
+          )}
+
+          {error ? (
+            <p
+              role="alert"
+              className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
+            >
+              {error}
+            </p>
+          ) : null}
+
+          <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
+            {submitting ? "Signing in…" : "Sign in"}
+          </Button>
+        </>
+      )}
+
+      <p className="mt-4 text-center text-sm text-ink-muted">
+        <a className="font-medium text-accent underline" href={signInHref}>
+          Back to sign in
+        </a>
+      </p>
+    </form>
+  );
+}

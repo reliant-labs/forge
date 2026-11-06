@@ -485,6 +485,33 @@ message AppConfig {
     description: "Path to a file holding the login broker's token, read on every use so the issuer-side credential can rotate WITHOUT a restart (a mounted Secret volume updates in place). Takes precedence over idp_broker_token while the file yields a token; idp_broker_token stays supported and is the fallback. A missing or empty file never stops the app: the last token read keeps being used and a warning is logged. The path is not a secret, so this field is not sensitive — the file's content is."
   }];
 
+  // ── The sign-in methods and sign-up mode the broker enforces ──────────
+  //
+  // DELIVERED, never hand-written: whoever converges the identity instance
+  // (the control plane for a hosted one, `forge env up` for the dev one)
+  // writes it from forge.ManagedIdentity's signup / methods / social fields.
+  // EMPTY is normal and means the legacy policy: password only, sign-up as
+  // auth_self_signup and development decide.
+
+  string idp_login_policy = 49 [(forge.v1.config) = {
+    env_var: "IDP_LOGIN_POLICY"
+    flag: "idp-login-policy"
+    sensitive: true
+    description: "The LOGIN_POLICY document (JSON, version 1) the login broker enforces: the signup mode (invite, open, domain) and its domains and role, the first-factor methods (password, passkey, magic_link), the passkey relying-party id, the social providers with their issuer ids, the mail state, whether a session requires a verified address, and the password complexity. Delivered by the identity converge from forge.ManagedIdentity; do not write it by hand. EMPTY keeps the legacy policy (password only; sign-up in development or with auth_self_signup). When PRESENT it is the only source, and auth_self_signup is ignored. Malformed or an unknown version also yields the legacy policy, logged at ERROR: the broker fails closed to what it served before. Marked sensitive because it names the instance's identity-provider ids."
+  }];
+
+  // How many reverse proxies in front of this server append the client's
+  // address to X-Forwarded-For. The sign-in routes' per-client rate limits
+  // read the address the outermost of them saw; 0 reads the connection's
+  // peer (with a proxy in front, every client then shares one budget).
+
+  int32 trusted_proxy_hops = 50 [(forge.v1.config) = {
+    env_var: "TRUSTED_PROXY_HOPS"
+    flag: "trusted-proxy-hops"
+    default_value: "0"
+    description: "How many trusted reverse proxies in front of this server each append the address they received a request from to X-Forwarded-For. The login broker's per-client rate limits key on the Nth address from the right (the client as the outermost trusted proxy saw it); entries left of it are the client's to forge and are ignored. 0 (the default) ignores the header and uses the connection's peer, which behind a proxy makes every per-client budget one shared budget. Set it to exactly the number of proxies that append: one too many lets a client pick its own address."
+  }];
+
   // ── Public sign-up: an explicit opt-in outside development ────────────
   //
   // OFF by default. The scaffolded broker serves POST /auth/register in

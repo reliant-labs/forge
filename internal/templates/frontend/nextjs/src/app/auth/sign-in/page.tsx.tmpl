@@ -17,10 +17,17 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { PasswordRequirements } from "@/components/password-requirements";
+import { SignInMethods, UnverifiedNotice } from "@/components/sign-in-methods";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import Label from "@/components/ui/label";
-import { AuthError, signIn, signUp, type PasswordRule } from "@/lib/auth/native-login";
+import {
+  AuthError,
+  isVerifySent,
+  signIn,
+  signUp,
+  type PasswordRule,
+} from "@/lib/auth/native-login";
 import { safeReturnTo } from "@/lib/auth/return-to";
 import { useAuth } from "@/lib/auth/use-auth";
 import { useAuthOptions } from "@/lib/auth/use-auth-options";
@@ -44,7 +51,12 @@ function SignIn() {
   // unless the server's config sets auth_self_signup (see
   // internal/app/login_broker.go). The screen follows the server, so the two
   // cannot disagree.
-  const { selfSignup } = useAuthOptions();
+  // Which methods this deployment offers — password, passkeys, emailed
+  // links, Google/GitHub — from the identity's LOGIN_POLICY. Legacy
+  // servers say password only.
+  const options = useAuthOptions();
+  const { selfSignup } = options;
+  const offersPassword = options.methods.includes("password");
   const [mode, setMode] = useState<"signIn" | "signUp">("signIn");
   const signingUp = selfSignup && mode === "signUp";
 
@@ -57,6 +69,12 @@ function SignIn() {
   // checklist marks exactly those.
   const [serverUnmet, setServerUnmet] = useState<PasswordRule[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  // The password was right but the address is unconfirmed: offer a new link.
+  const [unverified, setUnverified] = useState(false);
+  // "Check your email": an open sign-up mails a link before any session.
+  const [notice, setNotice] = useState<string | null>(null);
+  // The provider round trip came back failed (Google/GitHub sign-in).
+  const socialFailed = searchParams?.get("error") === "social";
   // What a password must contain. Only shown when signing up: signing in
   // takes whatever the account already has.
   const policy = usePasswordPolicy();
@@ -66,9 +84,17 @@ function SignIn() {
     setSubmitting(true);
     setError(null);
     setServerUnmet([]);
+    setUnverified(false);
+    setNotice(null);
     try {
       if (signingUp) {
-        await signUp({ email, password });
+        const created = await signUp({ email, ...(offersPassword ? { password } : {}) });
+        if (isVerifySent(created)) {
+          // No session yet: the address is confirmed from the email first.
+          setNotice(created.message);
+          setSubmitting(false);
+          return;
+        }
       } else {
         await signIn({ email, password, ...(totp ? { totp } : {}) });
       }
@@ -84,6 +110,7 @@ function SignIn() {
       // the field on the retry turns a dead end into a completable form.
       if (/(totp|factor|otp)/i.test(message)) setNeedsTotp(true);
       setError(message);
+      setUnverified(err instanceof AuthError && err.code === "email_unverified");
       setServerUnmet(err instanceof AuthError ? err.unmet : []);
       setSubmitting(false);
     }
@@ -114,41 +141,48 @@ function SignIn() {
             onChange={(e) => setEmail(e.target.value)}
           />
 
-          <Label className="mt-4" htmlFor="password">
-            Password
-          </Label>
-          <Input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete={signingUp ? "new-password" : "current-password"}
-            required
-            aria-describedby={signingUp ? "password-requirements" : undefined}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          {offersPassword ? (
+            <>
+              <Label className="mt-4" htmlFor="password">
+                Password
+              </Label>
+              <Input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete={signingUp ? "new-password" : "current-password"}
+                required
+                aria-describedby={signingUp ? "password-requirements" : undefined}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
 
-          {signingUp ? (
-            <PasswordRequirements
-              id="password-requirements"
-              policy={policy}
-              password={password}
-              serverUnmet={serverUnmet}
-            />
-          ) : (
-            /*
-              Self-serve reset. The link is emailed only if this app's
-              identity has SMTP configured (forge.ManagedIdentity.smtp) —
-              the /auth/forgot screen says so. Delete this link and the
-              /auth/forgot and /auth/reset routes in login_broker.go to
-              turn password reset off.
-            */
-            <p className="mt-1 text-right text-xs">
-              <a className="font-medium text-accent underline" href={joinBasePath("/auth/forgot")}>
-                Forgot your password?
-              </a>
-            </p>
-          )}
+              {signingUp ? (
+                <PasswordRequirements
+                  id="password-requirements"
+                  policy={policy}
+                  password={password}
+                  serverUnmet={serverUnmet}
+                />
+              ) : (
+                /*
+                  Self-serve reset. The link is emailed only if this app's
+                  identity has SMTP configured (forge.ManagedIdentity.smtp) —
+                  the /auth/forgot screen says so. Delete this link and the
+                  /auth/forgot and /auth/reset routes in login_broker.go to
+                  turn password reset off.
+                */
+                <p className="mt-1 text-right text-xs">
+                  <a
+                    className="font-medium text-accent underline"
+                    href={joinBasePath("/auth/forgot")}
+                  >
+                    Forgot your password?
+                  </a>
+                </p>
+              )}
+            </>
+          ) : null}
 
           {!signingUp && needsTotp ? (
             <>
@@ -175,16 +209,53 @@ function SignIn() {
               {error}
             </p>
           ) : null}
+          {socialFailed && !error ? (
+            <p
+              role="alert"
+              className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
+            >
+              That sign-in did not complete. Please try again.
+            </p>
+          ) : null}
 
-          <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
-            {submitting
-              ? signingUp
-                ? "Creating your account…"
-                : "Signing in…"
-              : signingUp
-                ? "Create account"
-                : "Sign in"}
-          </Button>
+          {unverified ? <UnverifiedNotice email={email} /> : null}
+
+          {notice ? (
+            <p
+              role="status"
+              className="mt-4 rounded-md border border-border bg-surface-muted p-3 text-sm text-ink"
+            >
+              {notice}
+            </p>
+          ) : null}
+
+          {offersPassword || signingUp ? (
+            <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
+              {submitting
+                ? signingUp
+                  ? "Creating your account…"
+                  : "Signing in…"
+                : signingUp
+                  ? "Create account"
+                  : "Sign in"}
+            </Button>
+          ) : null}
+
+          {/*
+            Passkeys, an emailed link and Google/GitHub, each shown only when the
+            identity's LOGIN_POLICY offers it (GET /auth/options).
+          */}
+          {signingUp ? null : (
+            <SignInMethods
+              options={options}
+              email={email}
+              returnTo={returnTo}
+              onSignedIn={async () => {
+                await refresh();
+                window.location.assign(returnTo);
+              }}
+            />
+          )}
 
           {/*
             Sign in and sign up on ONE screen, swapping behaviour rather

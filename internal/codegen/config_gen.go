@@ -686,6 +686,9 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 // auth-provider field is threaded here.
 type CmdServerTemplateData struct {
 	Module string
+	// DevSessionCookie: the project's middleware.AuthDeps has
+	// DevSessionCookie, so serve.go sets it from cfg.Environment.
+	DevSessionCookie bool
 	// ConfigFields are the root config's own fields (RootConfigFieldNames):
 	// the `cfg.<X>` reads the templates may make.
 	ConfigFields map[string]bool
@@ -767,6 +770,7 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 	}
 	data.Module = modulePath
 	data.RESTEnabled = projectAPIRESTEnabled(targetDir)
+	data.DevSessionCookie = projectMiddlewareDeclares(targetDir, projectDevSessionCookieDecl) && data.ConfigFields["Environment"]
 
 	// The SCAFFOLD-ONCE half of the command tree. Each of these files is
 	// all decisions and no ceremony, so forge writes each exactly once and

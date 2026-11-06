@@ -65,7 +65,7 @@ func TestFreshScaffold_GoIsFormattedAndTakesContextFirst(t *testing.T) {
 				}
 				// The scaffolded config declares auth_self_signup, so a
 				// deployed env can opt in to public sign-up — and only by it.
-				if !bytes.Contains(broker, []byte(`selfSignup: cfg.Environment == "development" || cfg.AuthSelfSignup,`)) {
+				if !bytes.Contains(broker, []byte(`legacySelfSignup: cfg.Environment == "development" || cfg.AuthSelfSignup,`)) {
 					t.Error("a fresh scaffold's broker does not read auth_self_signup from the config that declares it")
 				}
 			}

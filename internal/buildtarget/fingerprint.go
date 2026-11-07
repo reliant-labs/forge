@@ -169,21 +169,36 @@ func (p inputPattern) namesSegment(seg string) bool {
 	return false
 }
 
-// ExpandInputs resolves patterns against cwd and returns the selected files,
-// each as a slash-separated path relative to cwd, sorted.
+// InputScope is where a ShellBuild's inputs may come from.
+type InputScope struct {
+	// Cwd is the directory patterns are relative to: the build's resolved
+	// working directory.
+	Cwd string
+	// Roots are the directories a pattern may reach outside Cwd into — for
+	// a project build, the directory holding the project and its sibling
+	// checkouts, the same reach a ShellBuild's cwd already has. Cwd itself
+	// is always allowed. A pattern whose walk starts outside every root, or
+	// a selected file whose resolved path (symlinks followed) lies outside
+	// every root, is refused.
+	Roots []string
+}
+
+// ExpandInputs resolves patterns against scope.Cwd and returns the selected
+// files, each as a slash-separated path relative to it, sorted.
 //
 // Patterns are slash-separated and relative to cwd; a leading `../` reaches a
-// sibling checkout. `*`, `?` and `[...]` match within one path segment and a
-// whole `**` segment matches any number of segments. A pattern without
-// metacharacters naming a directory selects every file beneath it. A pattern
-// starting with `!` excludes what it matches from every other pattern's
-// selection, whatever their order. Walks never descend into `.git` or
-// `node_modules` unless a pattern names that directory literally.
+// sibling checkout inside one of scope.Roots. `*`, `?` and `[...]` match
+// within one path segment and a whole `**` segment matches any number of
+// segments. A pattern without metacharacters naming a directory selects every
+// file beneath it. A pattern starting with `!` excludes what it matches from
+// every other pattern's selection, whatever their order. Walks never descend
+// into `.git` or `node_modules` unless a pattern names that directory
+// literally, and never follow a symlink out of the allowed roots.
 //
 // An including pattern that selects no file is an error: a typo would
 // otherwise silently drop an input, and the build would be skipped when the
 // file it meant changed.
-func ExpandInputs(cwd string, patterns []string) ([]string, error) {
+func ExpandInputs(scope InputScope, patterns []string) ([]string, error) {
 	var includes, excludes []inputPattern
 	for _, raw := range patterns {
 		p, err := parseInputPattern(raw)
@@ -199,14 +214,18 @@ func ExpandInputs(cwd string, patterns []string) ([]string, error) {
 	if len(includes) == 0 {
 		return nil, errors.New("inputs declares only exclusions (`!…`); name at least one pattern that selects files")
 	}
+	b, err := newBoundary(scope)
+	if err != nil {
+		return nil, err
+	}
 	selected := map[string]bool{}
 	for _, p := range includes {
-		n, err := walkPattern(cwd, p, selected)
+		n, err := walkPattern(b, p, selected)
 		if err != nil {
 			return nil, err
 		}
 		if n == 0 {
-			return nil, fmt.Errorf("inputs entry %q matches no file under %s", p.raw, cwd)
+			return nil, fmt.Errorf("inputs entry %q matches no file under %s", p.raw, b.cwd)
 		}
 	}
 	out := make([]string, 0, len(selected))
@@ -226,15 +245,86 @@ func ExpandInputs(cwd string, patterns []string) ([]string, error) {
 	return out, nil
 }
 
+// boundary is a resolved InputScope: every directory both as written
+// (absolute, cleaned) and as resolved (symlinks followed), so a lexical path
+// and a resolved one can each be checked against the form it compares to.
+type boundary struct {
+	cwd      string
+	lexical  []string
+	resolved []string
+}
+
+func newBoundary(scope InputScope) (boundary, error) {
+	cwd, err := filepath.Abs(scope.Cwd)
+	if err != nil {
+		return boundary{}, err
+	}
+	b := boundary{cwd: cwd}
+	for _, r := range append([]string{cwd}, scope.Roots...) {
+		if r == "" {
+			continue
+		}
+		abs, err := filepath.Abs(r)
+		if err != nil {
+			return boundary{}, err
+		}
+		b.lexical = append(b.lexical, abs)
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			b.resolved = append(b.resolved, real)
+		}
+	}
+	return b, nil
+}
+
+// within reports whether p is root or beneath it.
+func within(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func withinAny(roots []string, p string) bool {
+	for _, r := range roots {
+		if within(r, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// describe names the allowed roots for a refusal.
+func (b boundary) describe() string { return strings.Join(b.lexical, ", ") }
+
+// checkResolved refuses a path whose resolved location (every symlink
+// followed) lies outside the allowed roots: a link inside the tree must not
+// make forge read, and key a skip on, a file outside it.
+func (b boundary) checkResolved(raw, abs string) error {
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return err
+	}
+	if !withinAny(b.resolved, real) {
+		return fmt.Errorf("inputs entry %q selects %s, which resolves to %s, outside the allowed roots (%s); exclude it with `!` or keep inputs inside them", raw, abs, real, b.describe())
+	}
+	return nil
+}
+
 // walkPattern adds every file p selects to selected and returns how many it
 // matched (including ones another pattern already selected).
-func walkPattern(cwd string, p inputPattern, selected map[string]bool) (int, error) {
-	start := filepath.Join(cwd, filepath.FromSlash(p.root))
+func walkPattern(b boundary, p inputPattern, selected map[string]bool) (int, error) {
+	start := filepath.Join(b.cwd, filepath.FromSlash(p.root))
+	// A root may be named through a symlink (macOS's /var is /private/var)
+	// while cwd arrives resolved, or the reverse: either spelling counts.
+	if !withinAny(b.lexical, start) && !withinAny(b.resolved, start) {
+		return 0, fmt.Errorf("inputs entry %q reaches %s, outside the allowed roots (%s)", p.raw, start, b.describe())
+	}
 	info, err := os.Stat(start)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
 	}
 	if err != nil {
+		return 0, err
+	}
+	if err := b.checkResolved(p.raw, start); err != nil {
 		return 0, err
 	}
 	if !info.IsDir() {
@@ -267,17 +357,29 @@ func walkPattern(cwd string, p inputPattern, selected map[string]bool) (int, err
 			}
 			return nil
 		}
-		if p.matches(rel) {
-			selected[rel] = true
-			n++
+		if !p.matches(rel) {
+			return nil
 		}
+		// WalkDir never descends a symlinked directory, but a symlinked FILE
+		// is read through its link: it must resolve inside the roots. A link
+		// to a directory or a dangling link is hashed as its link text and
+		// never read, so it needs no check.
+		if d.Type()&fs.ModeSymlink != 0 {
+			if st, serr := os.Stat(abs); serr == nil && st.Mode().IsRegular() {
+				if err := b.checkResolved(p.raw, abs); err != nil {
+					return err
+				}
+			}
+		}
+		selected[rel] = true
+		n++
 		return nil
 	})
 	return n, err
 }
 
 // FingerprintInputs hashes recipe together with every file patterns select
-// under cwd (see ExpandInputs). recipe carries everything else the command's
+// in scope (see ExpandInputs). recipe carries everything else the command's
 // output depends on — the command itself, its environment, platform and
 // destination — so two builds with equal fingerprints ran the same command
 // over the same bytes.
@@ -285,12 +387,12 @@ func walkPattern(cwd string, p inputPattern, selected map[string]bool) (int, err
 // Contents are hashed, not mtimes: a fresh checkout or a `git switch` there
 // and back rewrites mtimes without changing a byte, and a same-second edit
 // can leave an mtime unchanged.
-func FingerprintInputs(cwd string, patterns []string, recipe []byte) (Fingerprint, error) {
-	files, err := ExpandInputs(cwd, patterns)
+func FingerprintInputs(scope InputScope, patterns []string, recipe []byte) (Fingerprint, error) {
+	files, err := ExpandInputs(scope, patterns)
 	if err != nil {
 		return Fingerprint{}, err
 	}
-	entries, total, err := hashFiles(cwd, files)
+	entries, total, err := hashFiles(scope.Cwd, files)
 	if err != nil {
 		return Fingerprint{}, err
 	}

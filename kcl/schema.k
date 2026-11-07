@@ -3073,7 +3073,15 @@ schema ShellBuild(Build):
         never enter `.git` or `node_modules` unless a pattern names them.
         A pattern that selects no file makes the build run (and says so):
         a typo must not silently drop an input.
-      * fingerprint — sha256 over the command, the resolved cwd, `env`
+      * reach — a pattern may leave cwd only into the directory that holds
+        the project (the workspace of sibling checkouts a `cwd` like
+        `../reliant` already reaches). A pattern reaching past it, or a
+        selected file whose symlink resolves outside both it and cwd, is
+        refused: the build runs and says why, and nothing outside is read
+        or keyed on.
+      * fingerprint — sha256 over everything that identifies the build's
+        artifact (the command, the resolved cwd, the declared `source`,
+        `inputs_file` and its content, `unit`, `output_name`), `env`
         (with every built_images value, so a rebuilt parent rebuilds its
         children), the platform, the pushed image and tag, the patterns,
         and every selected file's path, size, executable bit and CONTENT.

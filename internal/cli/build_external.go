@@ -354,7 +354,7 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 		fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", pushedRef, derr)
 	}
 
-	warnSelfModifiedInputs(svc, spec, cwd, opts, inputs.fp)
+	warnSelfModifiedInputs(svc, spec, cwd, projectDir, opts, inputs.fp)
 
 	// Success path: persist the per-service state file so
 	// `forge env deploy <env>` reads the exact tag forge build just

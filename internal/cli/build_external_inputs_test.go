@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 const (
@@ -297,7 +298,7 @@ func TestShellBuildFingerprint_RecipeSensitivity(t *testing.T) {
 	fp := func(svc WorkloadEntity, opts buildOptions, tag string) string {
 		t.Helper()
 		spec := externalBuildSpec(svc, opts, tag, projDir)
-		got, err := shellBuildFingerprint(svc, spec, cwd, opts)
+		got, err := shellBuildFingerprint(svc, spec, cwd, projDir, opts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -325,5 +326,102 @@ func TestShellBuildFingerprint_RecipeSensitivity(t *testing.T) {
 		if got == want {
 			t.Errorf("changing the %s left the fingerprint unchanged", name)
 		}
+	}
+}
+
+// sourceSvc is a ShellBuild whose cwd comes from a declared GitSource, already
+// materialized into dir (as resolveShellBuildSource leaves it).
+func sourceSvc(name, ref, dir string) WorkloadEntity {
+	w := inputsSvc(name, "**")
+	w.Build.Shell.Cwd = ""
+	w.Build.Shell.Source = &config.GitSource{Repo: "github.com/acme/api", Ref: ref}
+	w.Build.Shell.SourceDir = dir
+	return w
+}
+
+// TestBuildExternalServices_InputsCoverTheArtifactIdentity is the regression
+// for a skip keyed on less than the artifact identity: a build whose declared
+// source or inputs_file changed must run even when every input file is
+// byte-identical.
+func TestBuildExternalServices_InputsCoverTheArtifactIdentity(t *testing.T) {
+	projDir := t.TempDir()
+	writeInput(t, projDir, "src/main.go", "package main")
+	srcDir := filepath.Join(projDir, "src")
+
+	t.Run("declared source", func(t *testing.T) {
+		h := newInputsHarness(t, "api")
+		h.build(t, projDir, buildOptions{}, sourceSvc("api", "v1.0.0", srcDir))
+		if r := h.build(t, projDir, buildOptions{}, sourceSvc("api", "v1.0.0", srcDir))["api"]; !r.upToDate {
+			t.Fatal("an unchanged declared source did not skip")
+		}
+		r := h.build(t, projDir, buildOptions{}, sourceSvc("api", "v2.0.0", srcDir))["api"]
+		if r.upToDate || h.runs["api"].Load() != 2 {
+			t.Fatalf("a changed declared source (same files) skipped the command: upToDate=%v runs=%d", r.upToDate, h.runs["api"].Load())
+		}
+	})
+	t.Run("inputs_file content", func(t *testing.T) {
+		h := newInputsHarness(t, "gw")
+		svc := inputsSvc("gw", "**/*.go")
+		svc.Build.InputsFile = "build-inputs.json"
+		writeInput(t, projDir, "build-inputs.json", `{"recipe":"a"}`)
+		h.build(t, projDir, buildOptions{}, svc)
+		if r := h.build(t, projDir, buildOptions{}, svc)["gw"]; !r.upToDate {
+			t.Fatal("an unchanged inputs_file did not skip")
+		}
+		writeInput(t, projDir, "build-inputs.json", `{"recipe":"b"}`)
+		if r := h.build(t, projDir, buildOptions{}, svc)["gw"]; r.upToDate || h.runs["gw"].Load() != 2 {
+			t.Fatalf("a changed inputs_file skipped the command (runs=%d)", h.runs["gw"].Load())
+		}
+		// An inputs_file that cannot be read cannot be hashed: reuse is refused.
+		if err := os.Remove(filepath.Join(projDir, "build-inputs.json")); err != nil {
+			t.Fatal(err)
+		}
+		for i := int32(3); i <= 4; i++ {
+			if r := h.build(t, projDir, buildOptions{}, svc)["gw"]; r.upToDate || h.runs["gw"].Load() != i {
+				t.Fatalf("build %d with an unreadable inputs_file skipped the command", i)
+			}
+		}
+	})
+	t.Run("recipe name and output name", func(t *testing.T) {
+		base := inputsSvc("api", "**")
+		fp := func(svc WorkloadEntity) string {
+			t.Helper()
+			got, err := shellBuildFingerprint(svc, externalBuildSpec(svc, buildOptions{}, "dev", projDir), srcDir, projDir, buildOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return got.Digest
+		}
+		unit := inputsSvc("api", "**")
+		unit.Build.Unit = "other-recipe"
+		out := inputsSvc("api", "**")
+		out.Build.Shell.OutputName = "api-bin"
+		if fp(unit) == fp(base) || fp(out) == fp(base) {
+			t.Fatal("unit or output_name left the fingerprint unchanged")
+		}
+	})
+}
+
+// TestShellBuildInputs_EscapingPatternRefusesReuse: a pattern reaching past
+// the project's parent directory is refused, and the build runs (and says
+// why) rather than keying a skip on files outside the workspace.
+func TestShellBuildInputs_EscapingPatternRefusesReuse(t *testing.T) {
+	ws := t.TempDir()
+	projDir := filepath.Join(ws, "proj")
+	writeInput(t, projDir, "src/main.go", "package main")
+	writeInput(t, ws, "sibling/lib.go", "package lib")
+
+	h := newInputsHarness(t, "api", "far")
+	sib := inputsSvc("api", "**", "../../sibling/**")
+	h.build(t, projDir, buildOptions{}, sib)
+	if r := h.build(t, projDir, buildOptions{}, sib)["api"]; !r.upToDate {
+		t.Fatal("a sibling under the project's parent should be a valid input")
+	}
+
+	far := inputsSvc("far", "**", "../../../**")
+	v := checkShellBuildInputs(context.Background(), far, externalBuildSpec(far, buildOptions{env: "dev"}, "dev", projDir),
+		filepath.Join(projDir, "src"), buildOptions{env: "dev"}, projDir)
+	if v.reuse != nil || v.fp != nil || !strings.Contains(v.reason, "outside the allowed roots") {
+		t.Fatalf("verdict = %+v, want reuse refused naming the roots", v)
 	}
 }

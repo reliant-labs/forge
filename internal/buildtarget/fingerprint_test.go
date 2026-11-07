@@ -47,6 +47,12 @@ func fixture(t *testing.T) (cwd string) {
 	return filepath.Join(root, "app")
 }
 
+// scopeOf is the scope a project build has: cwd, plus the directory holding
+// it and its siblings.
+func scopeOf(cwd string) InputScope {
+	return InputScope{Cwd: cwd, Roots: []string{filepath.Dir(cwd)}}
+}
+
 func TestExpandInputs_Patterns(t *testing.T) {
 	cwd := fixture(t)
 	cases := []struct {
@@ -74,7 +80,7 @@ func TestExpandInputs_Patterns(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ExpandInputs(cwd, tc.patterns)
+			got, err := ExpandInputs(scopeOf(cwd), tc.patterns)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -101,7 +107,7 @@ func TestExpandInputs_Refusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ExpandInputs(cwd, tc.patterns)
+			_, err := ExpandInputs(scopeOf(cwd), tc.patterns)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("ExpandInputs(%q) error = %v, want one containing %q", tc.patterns, err, tc.want)
 			}
@@ -111,7 +117,7 @@ func TestExpandInputs_Refusals(t *testing.T) {
 
 func mustFingerprint(t *testing.T, cwd string, patterns []string, recipe string) Fingerprint {
 	t.Helper()
-	fp, err := FingerprintInputs(cwd, patterns, []byte(recipe))
+	fp, err := FingerprintInputs(scopeOf(cwd), patterns, []byte(recipe))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,4 +184,69 @@ func TestFingerprintInputs_StableAndSensitive(t *testing.T) {
 	if got := mustFingerprint(t, cwd, patterns, "recipe"); got.Digest == added.Digest {
 		t.Fatal("making an input executable left the fingerprint unchanged")
 	}
+}
+
+// TestExpandInputs_StaysInsideTheRoots pins the reach policy: a pattern may
+// leave cwd only into a declared root (the directory of sibling checkouts a
+// cwd can already be), and no symlink may carry a read outside it.
+func TestExpandInputs_StaysInsideTheRoots(t *testing.T) {
+	cwd := fixture(t)
+	root := filepath.Dir(cwd)
+	outside := t.TempDir() // not beneath root
+	writeTree(t, outside, map[string]string{"secret.txt": "s", "tree/x.go": "package x"})
+
+	t.Run("a sibling inside the root is reachable", func(t *testing.T) {
+		if _, err := ExpandInputs(scopeOf(cwd), []string{"../lib/go.mod"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("traversal past the root is refused", func(t *testing.T) {
+		for _, pat := range []string{"../../x/**", "../../" + filepath.Base(outside) + "/secret.txt", "../lib/../../etc"} {
+			_, err := ExpandInputs(scopeOf(cwd), []string{pat})
+			if err == nil || !strings.Contains(err.Error(), "outside the allowed roots") {
+				t.Errorf("ExpandInputs(%q) error = %v, want a refusal naming the roots", pat, err)
+			}
+		}
+	})
+	t.Run("without roots only cwd is reachable", func(t *testing.T) {
+		_, err := ExpandInputs(InputScope{Cwd: cwd}, []string{"../lib/**"})
+		if err == nil || !strings.Contains(err.Error(), "outside the allowed roots") {
+			t.Fatalf("error = %v, want a refusal", err)
+		}
+	})
+	t.Run("a symlinked file pointing outside is refused", func(t *testing.T) {
+		dir := filepath.Join(root, "linkfile")
+		writeTree(t, dir, map[string]string{"real.go": "package l"})
+		if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(dir, "secret.go")); err != nil {
+			t.Fatal(err)
+		}
+		for _, pat := range []string{"../linkfile/**", "../linkfile/secret.go"} {
+			_, err := ExpandInputs(scopeOf(cwd), []string{pat})
+			if err == nil || !strings.Contains(err.Error(), "outside the allowed roots") {
+				t.Errorf("ExpandInputs(%q) error = %v, want a symlink-escape refusal", pat, err)
+			}
+		}
+		// Excluded, it is never read.
+		if got, err := ExpandInputs(scopeOf(cwd), []string{"../linkfile/real.go"}); err != nil || len(got) != 1 {
+			t.Fatalf("a sibling of the escaping link: %q, %v", got, err)
+		}
+	})
+	t.Run("a symlinked directory pointing outside is refused", func(t *testing.T) {
+		if err := os.Symlink(filepath.Join(outside, "tree"), filepath.Join(root, "linkdir")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := ExpandInputs(scopeOf(cwd), []string{"../linkdir/**"})
+		if err == nil || !strings.Contains(err.Error(), "outside the allowed roots") {
+			t.Fatalf("error = %v, want a symlink-escape refusal", err)
+		}
+	})
+	t.Run("a symlink that stays inside the root is followed", func(t *testing.T) {
+		if err := os.Symlink(filepath.Join(root, "lib"), filepath.Join(root, "liblink")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ExpandInputs(scopeOf(cwd), []string{"../liblink/pkg/*.go"})
+		if err != nil || len(got) != 2 {
+			t.Fatalf("ExpandInputs through an in-root link = %q, %v; want its two files", got, err)
+		}
+	})
 }

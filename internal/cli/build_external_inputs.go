@@ -7,8 +7,11 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -46,32 +49,64 @@ func externalBuildInputs(svc WorkloadEntity) []string {
 }
 
 // shellBuildFingerprint fingerprints the inputs together with everything
-// else the command's output depends on. spec.BuildEnv must already carry the
-// built_images overlay, so a parent rebuilt to a new digest changes every
-// child's fingerprint.
-func shellBuildFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd string, opts buildOptions) (buildtarget.Fingerprint, error) {
-	canonical := cwd
-	if abs, err := filepath.Abs(cwd); err == nil {
-		canonical = abs
-		if real, err := filepath.EvalSymlinks(abs); err == nil {
-			canonical = real
-		}
+// else the command's output depends on. It is a SUPERSET of the artifact
+// identity (externalArtifactIdentity, embedded whole), plus what only an
+// execution knows: the pushed reference, the effective environment
+// (spec.BuildEnv, which must already carry the built_images overlay, so a
+// parent rebuilt to a new digest changes every child's fingerprint), the
+// recipe name and output name, and the CONTENT of a declared inputs_file. A
+// field that cannot be hashed — an unreadable inputs_file — is an error,
+// which refuses reuse and runs the command.
+func shellBuildFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd, projectDir string, opts buildOptions) (buildtarget.Fingerprint, error) {
+	canonical, err := filepath.Abs(cwd)
+	if err != nil {
+		return buildtarget.Fingerprint{}, err
+	}
+	if canonical, err = filepath.EvalSymlinks(canonical); err != nil {
+		return buildtarget.Fingerprint{}, err
 	}
 	env := spec.BuildEnv
 	if env == nil {
 		env = map[string]string{}
 	}
+	inputsFileDigest := ""
+	if f := svc.Build.InputsFile; f != "" {
+		data, err := os.ReadFile(resolveProjectPath(projectDir, f))
+		if err != nil {
+			return buildtarget.Fingerprint{}, fmt.Errorf("inputs_file: %w", err)
+		}
+		sum := sha256.Sum256(data)
+		inputsFileDigest = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	outputName := ""
+	if sh := svc.shell(); sh != nil {
+		outputName = sh.OutputName
+	}
 	recipe, err := json.Marshal(struct {
-		Cmd      string            `json:"cmd"`
-		Cwd      string            `json:"cwd"`
-		Platform string            `json:"platform"`
-		Ref      string            `json:"ref"`
-		Env      map[string]string `json:"env"`
-	}{spec.BuildCmd, canonical, externalBuildPlatform(svc, opts), externalPushedRef(svc, spec.Tag, opts.pushPlan.pushBase), env})
+		Identity         externalArtifactIdentity `json:"identity"`
+		Ref              string                   `json:"ref"`
+		Env              map[string]string        `json:"env"`
+		Unit             string                   `json:"unit"`
+		OutputName       string                   `json:"output_name"`
+		InputsFileDigest string                   `json:"inputs_file_digest"`
+	}{externalBuildIdentity(svc, canonical, opts), externalPushedRef(svc, spec.Tag, opts.pushPlan.pushBase), env,
+		svc.Build.Unit, outputName, inputsFileDigest})
 	if err != nil {
 		return buildtarget.Fingerprint{}, err
 	}
-	return buildtarget.FingerprintInputs(cwd, externalBuildInputs(svc), recipe)
+	return buildtarget.FingerprintInputs(shellBuildInputScope(canonical, projectDir), externalBuildInputs(svc), recipe)
+}
+
+// shellBuildInputScope is where a ShellBuild's inputs may come from: its cwd,
+// and the directory holding the project — the workspace of sibling
+// checkouts a ShellBuild's own cwd already reaches (`cwd = "../reliant"`).
+// Nothing beyond it is read, and no symlink carries a read out of it.
+func shellBuildInputScope(cwd, projectDir string) buildtarget.InputScope {
+	scope := buildtarget.InputScope{Cwd: cwd}
+	if abs, err := filepath.Abs(projectDir); err == nil {
+		scope.Roots = []string{filepath.Dir(abs)}
+	}
+	return scope
 }
 
 // checkShellBuildInputs fingerprints a ShellBuild's declared inputs and
@@ -87,7 +122,7 @@ func checkShellBuildInputs(ctx context.Context, svc WorkloadEntity, spec buildta
 	}
 	start := time.Now()
 	v := shellInputsVerdict{}
-	fp, err := shellBuildFingerprint(svc, spec, cwd, opts)
+	fp, err := shellBuildFingerprint(svc, spec, cwd, projectDir, opts)
 	if err != nil {
 		v.reason = fmt.Sprintf("could not fingerprint its inputs (%v)", err)
 		v.took = time.Since(start)
@@ -172,11 +207,11 @@ func describeFingerprint(fp *buildtarget.Fingerprint, took time.Duration) string
 // warnSelfModifiedInputs re-fingerprints after a successful run and warns when
 // the command changed its own declared inputs. Such a build can never be
 // skipped: the next run sees inputs that differ from the ones it recorded.
-func warnSelfModifiedInputs(svc WorkloadEntity, spec buildtarget.Spec, cwd string, opts buildOptions, before *buildtarget.Fingerprint) {
+func warnSelfModifiedInputs(svc WorkloadEntity, spec buildtarget.Spec, cwd, projectDir string, opts buildOptions, before *buildtarget.Fingerprint) {
 	if before == nil {
 		return
 	}
-	after, err := shellBuildFingerprint(svc, spec, cwd, opts)
+	after, err := shellBuildFingerprint(svc, spec, cwd, projectDir, opts)
 	if err != nil || after.Digest == before.Digest {
 		return
 	}

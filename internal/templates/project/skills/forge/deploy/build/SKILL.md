@@ -47,7 +47,10 @@ build = forge.ShellBuild {
 }
 ```
 
-Globs are relative to `cwd` (`../` reaches a sibling; `!` excludes). It skips
+Globs are relative to `cwd` (`../` reaches a sibling; `!` excludes). They
+may reach only into the directory holding the project, where its sibling
+checkouts live; a pattern or symlink that leads further is refused and the
+build runs. It skips
 only when the content fingerprint of the inputs, `cmd`, `env`, platform and
 destination match the last SUCCESSFUL build in this env, and the registry
 still serves that build's digest at the tag; deploy then pins that digest.

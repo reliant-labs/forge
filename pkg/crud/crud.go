@@ -135,9 +135,10 @@ const (
 	ReasonInvalidOrderBy = "invalid_order_by"
 
 	// ReasonPageTokenOrderConflict — a page_token was combined with an
-	// order_by that the keyset cursor cannot page. The caller's move is
-	// to drop one of the two, which is neither "bad token" nor "bad
-	// order" — hence its own code. Wire code: InvalidArgument.
+	// order_by that the keyset cursor cannot page, or that order overflowed
+	// a first page. Use primary-key ascending order to fetch all pages;
+	// another order can only be used when all results fit in one page.
+	// Wire code: InvalidArgument.
 	ReasonPageTokenOrderConflict = "page_token_order_conflict"
 
 	// ReasonInternal — the server failed for a reason it did not
@@ -854,7 +855,11 @@ type ListOp[Req, Resp, Ent any] struct {
 }
 
 // HandleList runs page/order/filter assembly ->
-// repository call -> trim -> pack.
+// repository call -> trim -> pack. Cursor pagination requires primary-key
+// ascending order. Other orders are accepted only when the matching rows fit
+// in one page; overflow returns InvalidArgument rather than a partial list
+// with no continuation. Fetch all pages in primary-key order before sorting
+// locally when a different ordering is needed across multiple pages.
 func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
 		// Filter opts (the WHERE clauses) are computed ONCE and shared by the
@@ -923,9 +928,9 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 				// paging a set sorted one way while filtering by `pk >
 				// cursor` duplicates and skips rows across pages. The two
 				// can't both be honored, so reject the combination LOUDLY
-				// rather than silently returning wrong pages. (A composite
-				// cursor would lift this; until then ordered lists are
-				// single-page — see the token-emit guard below.)
+				// rather than silently returning wrong pages. First pages
+				// with this order are allowed only if all results fit;
+				// overflow is rejected below.
 				if !keysetSafe {
 					return nil, clientErr(connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
 						"order_by on a non-primary-key column cannot be combined with a page_token; keyset pagination requires ordering by %q ascending", op.PkColumnName)),
@@ -961,13 +966,16 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 
 		var nextPageToken string
 		if op.HasPagination && len(results) > pageSize {
+			// A successful response with no token would falsely signal the
+			// end of the list. Preserve single-page sorts, but fail explicitly
+			// when the extra row proves this order needs an unsupported cursor.
+			if !keysetSafe {
+				return nil, clientErr(connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
+					"results exceed page_size for the requested order_by; keyset pagination requires ordering by %q ascending; use that order and sort locally after fetching all pages", op.PkColumnName)),
+					ReasonPageTokenOrderConflict)
+			}
 			results = results[:pageSize]
-			// Only mint a next-page cursor when the order is keyset-safe (PK
-			// ASC). For a non-PK / DESC order the cursor would be unusable
-			// (and a client sending it back is rejected above), so ordered
-			// lists are single-page until composite cursors land. The extra
-			// fetched row is still trimmed off either way.
-			if keysetSafe && op.EntityID != nil {
+			if op.EntityID != nil {
 				nextPageToken = orm.EncodeCursor(op.EntityID(results[pageSize-1]))
 			}
 		}

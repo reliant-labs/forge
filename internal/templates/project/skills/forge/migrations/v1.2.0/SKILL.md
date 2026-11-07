@@ -64,7 +64,8 @@ handlers no longer need the untyped `"pkg.v1.Svc/Method"` escape hatch.
 ## 2. Native frontend foundation repairs
 
 **Use when** the project has an Expo frontend or a shared hooks workspace package.
-These repairs do not upgrade the Expo SDK or add native authentication, signing,
+These repairs are independent of the Expo SDK version (section 3 covers the SDK
+upgrade) and do not add native authentication, signing,
 store publication or OTA support. Existing owned code is preserved by generation;
 review the following adaptations rather than deleting customized files.
 
@@ -103,15 +104,15 @@ current scaffold only when absent, reviewing any custom dev entrypoint. Preserve
 The native `build` script is an **Expo web static export** into `dist`, not an IPA
 or Android package. Add it only if that is the app's declared output; keep custom
 builds and do not mistake a successful Metro/web export for native device evidence.
-For SDK 52's advertised web output, declare `react-dom: "18.3.1"` directly when
-absent, matching the SDK's React renderer matrix; review customized existing
+For the advertised web output, declare `react-dom` directly when absent at the
+version your SDK pins (18.3.1 on SDK 52, 19.3.0 on SDK 58; expo lists it only as an
+optional peer); review customized existing
 versions rather than overwriting them. Reinstall the frontend lockfile.
 
 The old runtime range `^0.2.0` cannot resolve from the observed public registry.
 Generation reconciles the dependency with Forge's supported published range;
 review the package.json/lockfile diff and reinstall with the project's package
-manager. Keep compatible newer custom ranges. SDK 52 remains unchanged by these
-repairs; SDK migration requires its own validated dependency matrix.
+manager. Keep compatible newer custom ranges. These repairs do not change the SDK.
 
 ### Native typed public configuration
 
@@ -153,7 +154,7 @@ scaffold, but must preserve customized lint/test configurations and app config
 formats. The test is a Router/identity configuration smoke test, not native UI,
 secure-storage or device coverage; adapt it if moving to dynamic Expo config.
 
-For the retained SDK 52 matrix, use React/React DOM 18.3.1, Jest/jest-expo 29/52,
+If you stay on SDK 52, use React/React DOM 18.3.1, Jest/jest-expo 29/52,
 `@jest/globals` 29 and the tested ESLint 9 flat configuration dependency
 `eslint-config-expo` 9.2.0. Do not assume that package's major implies an Expo SDK
 upgrade. Reinstall with the declared package manager and verify `lint`, `typecheck`
@@ -164,10 +165,10 @@ Native apps also declare `@babel/runtime: "^7.25.0"` as a direct runtime depende
 Babel-generated helper imports cannot rely on a transitive/hoisted copy in isolated
 pnpm workspaces. Add it when missing and reinstall the workspace lockfile.
 
-The SDK-wide upgrade remains a separate validated slice. These harness files are
-scaffold-once owned code; generation must not replace application edits.
+These harness files are scaffold-once owned code; generation must not replace
+application edits.
 
-For SDK 52, add `"moduleResolution": "bundler"` to the owned native tsconfig's
+On SDK 52, add `"moduleResolution": "bundler"` to the owned native tsconfig's
 `compilerOptions` when absent. Its inherited legacy resolver cannot resolve the
 runtime's export-map subpaths used by generated hooks (`/service-hooks` and
 `/mock-transport`). Review an existing explicit resolver choice rather than
@@ -190,3 +191,77 @@ Jest retains Expo's native transform exceptions and additionally transforms the
 runtime/Connect/protobuf ESM modules, including nested pnpm paths. Existing owned
 Jest configs need an equivalent narrow allowance to exercise real generated hooks;
 config-only smoke tests do not expose this module-loading requirement.
+
+## 3. Expo SDK 52 to 58
+
+**Use when** an Expo frontend's `package.json` declares `expo` below `~58`. New
+scaffolds are generated on SDK 58 (`expo ~58.0.23`, React and React DOM 19.3.0,
+React Native 0.88.1, Router `~58.0.30`); forge never rewrites an existing app's
+`package.json`, `app.json`, `metro.config.js`, `tsconfig.json`, Jest or ESLint files.
+The SDK versions below are Expo's `bundledNativeModules.json` (sdk-58 branch), not
+`npm latest`.
+
+### Upgrade one SDK at a time
+
+Expo recommends upgrading **one SDK at a time** so a breakage has one cause. Do not
+jump 52 to 58 blindly: no direct 52-to-58 path is validated here, only a fresh SDK 58
+scaffold. For each of 53, 54, 55, 56, 57 and 58, read that release's changelog
+(expo.dev/changelog/sdk-N), then:
+
+```bash
+pnpm add expo@^N.0.0        # N = the next SDK
+npx expo install --fix      # aligns every Expo-managed dependency to that SDK
+npx expo-doctor             # must be clean before moving on
+```
+
+then run `typecheck`, `lint`, `test` and an `expo export` for each platform. Delete
+generated `ios/` and `android/` directories (or run `npx pod-install` and apply the
+native upgrade helper if you keep them) and rebuild any development build.
+
+What each step changes for the forge starter:
+
+| SDK | Template-relevant change |
+| --- | --- |
+| 53 | React 19 and React Native 0.79. Metro enables package.json `exports` by default, so `unstable_enablePackageExports` is no longer needed. New Architecture on by default. `eslint-config-expo` flat config. Node 18 dropped. |
+| 54 | React Native 0.81, React 19.1. Last SDK with the Legacy Architecture. Isolated pnpm installs and monorepos are supported, so `nodeLinker: hoisted` is no longer required. `SafeAreaView` from react-native deprecated (the starter uses `react-native-safe-area-context`). |
+| 55 | Legacy Architecture removed: delete `newArchEnabled` from `app.json` (expo-doctor fails the schema otherwise). `edgeToEdgeEnabled` removed. Node 20.19.4+. |
+| 56 | React Native 0.85, React 19.2. `expo/fetch` becomes `globalThis.fetch` (opt out: `EXPO_PUBLIC_USE_RN_FETCH=1`). TypeScript 6.0.3 is pulled in by `expo install --fix`; `baseUrl` then fails with TS5101, so use `paths` alone. Expo Router drops its React Navigation dependency. On-demand file system: `watchFolders` no longer load-bearing. |
+| 57 | React Native 0.86, no breaking changes. |
+| 58 | React Native 0.88, React 19.3. Node `^22.13 \|\| ^24.3 \|\| ^26 \|\| >=27`. Router defaults `web.output` to `server` (set `"static"` to keep a static export, which the starter does). `jest-expo` needs `@react-native/jest-preset` and Jest 30. Strict TypeScript API for React Native. Safe-area handling on web moves to CSS `env()`. |
+
+### Owned files to adapt by hand
+
+- `package.json`: let `expo install --fix` move Expo-managed packages. Add
+  `@react-native/jest-preset` (`~0.88.1`) and move `jest`/`@jest/globals` to `^30` when
+  you adopt `jest-expo ~58`. Raise `@types/react` to `~19.3.0` and `typescript` to
+  `~6.0.3`; add `engines.node` if you want the Expo range enforced. Remove
+  `query-string` if it was only there for Router's SDK 52 hoisting failure.
+  Keep `@babel/runtime`: Expo declares it only as a dependency of its own packages,
+  and under isolated pnpm it is not importable from the app.
+- `app.json`: delete `newArchEnabled`; run `npx expo-doctor` to catch other removed
+  fields. Router's `web.output` stays `"static"` if you export a static site.
+- `tsconfig.json`: delete `baseUrl` (TypeScript 6) and, once `expo/tsconfig.base` is
+  SDK 58's, the explicit `moduleResolution`; keep `paths`.
+- `metro.config.js`: remove `unstable_enablePackageExports` and the workspace-root
+  `nodeModulesPaths` / `watchFolders` additions only after a bundle passes without
+  them. Keep the local runtime bridge block (`watchFolders` for a symlinked
+  `@reliantlabs/forge-web-runtime`): it is a forge dev-build concern, not an SDK one.
+- `pnpm-workspace.yaml`: `nodeLinker: hoisted` may be removed after SDK 54; in a
+  workspace layout the project root file is shared with the web frontends, so
+  validate the native bundle in that layout before changing it. Add
+  `"@parcel/watcher": false` to `allowBuilds` (Jest 30's watcher; its install script
+  only builds from source when asked).
+- `jest.config.cjs`: `jest-expo ~58` rewrites `transformIgnorePatterns`; re-check
+  that the runtime/Connect/protobuf allowance still matches.
+- Shared `ui-native` package: newly generated packages declare `@types/react ~19.3.0`.
+  Existing owned packages are unchanged; align them with the native app's React
+  type major when upgrading so one `@types/react` major is installed. A new
+  ui-native package beside an SDK 52 app should use `~18.3.0` until that app is
+  upgraded. Generated hooks/api packages declare no React types.
+- `ui-native` Input now types its ref as `React.ComponentRef<typeof TextInput>`
+  (`InputRef`), which works with React Native's legacy and SDK 58 strict APIs.
+
+Verify with `expo install --check`, `expo-doctor`, the app and shared-package
+typechecks, one executed generated-hook test, and iOS and Android `expo export`. These
+checks are JS-level evidence only: a device build, Hermes streaming and native auth
+are separate gates.

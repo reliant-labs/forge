@@ -25,7 +25,7 @@ func TestMobileInventoryDynamicExpoMarkers(t *testing.T) {
 			name, pkg string
 			want      bool
 		}{
-			{"dependency", `{"dependencies":{"expo":"~52.0.0"}}`, true},
+			{"dependency", `{"dependencies":{"expo":"~58.0.23"}}`, true},
 			{"dev dependency", `{"devDependencies":{"expo":"workspace:*"}}`, true},
 			{"missing package", "", false},
 			{"malformed package", "{", false},

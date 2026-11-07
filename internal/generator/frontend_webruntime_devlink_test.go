@@ -154,8 +154,8 @@ func TestEnsureDevWebRuntimeLink_LeavesNativeAppsStandalone(t *testing.T) {
 	bridgeProject(t, projectDir, forgeRoot)
 	writeFrontendManifest(t, projectDir, "web", `"react": "^19.1.0"`)
 	writeFrontendManifest(t, projectDir, "spa", `"react": "^19.1.0"`)
-	writeFrontendManifest(t, projectDir, "mobile", `"expo": "~52.0.0", "react": "^18.3.0"`)
-	writeFrontendManifest(t, projectDir, "bare", `"react-native": "0.76.9"`)
+	writeFrontendManifest(t, projectDir, "mobile", `"expo": "~58.0.23", "react": "19.3.0"`)
+	writeFrontendManifest(t, projectDir, "bare", `"react-native": "0.88.1"`)
 
 	EnsureDevWebRuntimeLink(projectDir)
 
@@ -185,7 +185,7 @@ func TestEnsureDevWebRuntimeLink_ReconcilesItsOwnRoot(t *testing.T) {
 	projectDir := filepath.Join(base, "app")
 	bridgeProject(t, projectDir, forgeRoot)
 	writeFrontendManifest(t, projectDir, "web", "")
-	writeFrontendManifest(t, projectDir, "mobile", `"expo": "~52.0.0"`)
+	writeFrontendManifest(t, projectDir, "mobile", `"expo": "~58.0.23"`)
 	legacy := `{"name":"` + devWorkspaceRootName + `","private":true,"workspaces":["frontends/*",".forge-link/*"]}`
 	if err := os.WriteFile(filepath.Join(projectDir, "package.json"), []byte(legacy), 0o644); err != nil {
 		t.Fatal(err)

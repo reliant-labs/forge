@@ -45,12 +45,21 @@ func TestNativeLifecycleManifest(t *testing.T) {
 				t.Errorf("runtime range %s != %s %s", got, web, want)
 			}
 		}
-		// SDK 52's web renderer is React DOM 18.3.1, compatible with the
-		// existing React 18 range; do not rely on a transitive peer install.
-		for name, want := range map[string]string{"expo": "~52.0.0", "react": "18.3.1", "react-dom": "18.3.1", "react-native": "0.76.9", "react-native-web": "~0.19.0"} {
+		// Expo SDK 58 bundledNativeModules.json (sdk-58 branch, expo@58.0.23).
+		// react-dom stays direct: expo declares it only as an optional peer.
+		for name, want := range map[string]string{
+			"expo": "~58.0.23", "expo-asset": "~58.0.20", "expo-constants": "~58.0.15", "expo-linking": "~58.0.16",
+			"expo-router": "~58.0.30", "expo-status-bar": "~58.0.4", "react": "19.3.0", "react-dom": "19.3.0",
+			"react-native": "0.88.1", "react-native-web": "~0.21.4", "react-native-safe-area-context": "~5.11.1",
+			"react-native-screens": "~4.30.1",
+		} {
 			if got := m.Dependencies[name]; got != want {
-				t.Errorf("SDK 52 dependency %s = %q, want %q", name, got, want)
+				t.Errorf("SDK 58 dependency %s = %q, want %q", name, got, want)
 			}
+		}
+		// Workarounds the SDK 52 matrix needed that SDK 58 makes redundant.
+		if _, ok := m.Dependencies["query-string"]; ok {
+			t.Error("query-string was an SDK 52 expo-router hoisting workaround")
 		}
 	}
 	b, err := FrontendTemplates().Render("react-native/app.json.tmpl", FrontendTemplateData{FrontendName: "mobile", ProjectName: "demo"})

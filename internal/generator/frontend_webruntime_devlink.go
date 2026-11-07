@@ -393,7 +393,8 @@ func devWebRuntimeCheckout(projectDir string) (string, bool) {
 // Every frontend with a package.json is a member EXCEPT a React Native / Expo
 // app, which stays a standalone install with its own node_modules. The reason
 // is measured, not taste. One workspace means one hoisted tree, and the web
-// kinds (React 19) and an Expo app (React 18) cannot share one: whichever
+// kinds and an Expo app cannot share one (their React versions agree at 19
+// since SDK 58, but the split below was not re-measured): whichever
 // installs first claims the root, and in the usual order — web, then mobile —
 // npm nests the Expo app's react, expo and expo-router under
 // frontends/<app>/node_modules while hoisting babel-preset-expo to the root.

@@ -203,6 +203,10 @@ allowBuilds:
   esbuild: true
   unrs-resolver: true
   protobufjs: false
+  # Jest 30's file watcher (jest-expo 58, the Expo app's test runner): its
+  # install script only runs node-gyp when npm_config_build_from_source=true;
+  # the prebuilt binary arrives through a platform optional dependency.
+  "@parcel/watcher": false
 `
 	return writeIfMissing(path, body)
 }
@@ -866,8 +870,8 @@ func WriteUINativePackageFiles(projectDir string, layout FrontendWorkspaceLayout
     "react-native-safe-area-context": "*"
   },
   "devDependencies": {
-    "@types/react": "~18.3.0",
-    "typescript": "^5.8.0"
+    "@types/react": "~19.3.0",
+    "typescript": "~6.0.3"
   }
 }
 `, layout.UINativePackage)

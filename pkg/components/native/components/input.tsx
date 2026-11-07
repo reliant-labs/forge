@@ -35,64 +35,69 @@ export interface InputProps extends Omit<TextInputProps, "style"> {
   inputStyle?: StyleProp<TextStyle>;
 }
 
-const Input = React.forwardRef<TextInput, InputProps>(function Input(
-  {
-    inputSize = "md",
-    invalid,
-    label,
-    errorText,
-    required,
-    containerStyle,
-    inputStyle,
-    editable,
-    ...rest
-  },
-  ref,
-) {
-  const scheme = useColorScheme() ?? "light";
-  const palette = colors[scheme];
+// Derived from TextInput rather than naming RN 0.87+'s TextInputInstance, so
+// the same owned component typechecks for React Native's legacy and strict APIs.
+export type InputRef = React.ComponentRef<typeof TextInput>;
 
-  const isInvalid = invalid || !!errorText;
-  const borderColor = isInvalid ? palette.destructive : palette.border;
+const Input: React.ForwardRefExoticComponent<InputProps & React.RefAttributes<InputRef>> =
+  React.forwardRef<InputRef, InputProps>(function Input(
+    {
+      inputSize = "md",
+      invalid,
+      label,
+      errorText,
+      required,
+      containerStyle,
+      inputStyle,
+      editable,
+      ...rest
+    },
+    ref,
+  ) {
+    const scheme = useColorScheme() ?? "light";
+    const palette = colors[scheme];
 
-  const size = sizeStyles[inputSize];
+    const isInvalid = invalid || !!errorText;
+    const borderColor = isInvalid ? palette.destructive : palette.border;
 
-  return (
-    <View style={[styles.wrapper, containerStyle]}>
-      {label ? (
-        <Text style={[styles.label, { color: palette.foreground }]}>
-          {label}
-          {required ? <Text style={{ color: palette.destructive }}> *</Text> : null}
-        </Text>
-      ) : null}
-      <TextInput
-        ref={ref}
-        editable={editable}
-        accessibilityLabel={label}
-        accessibilityState={{ disabled: editable === false }}
-        placeholderTextColor={palette.mutedForeground}
-        style={[
-          styles.input,
-          size,
-          {
-            color: palette.foreground,
-            backgroundColor: palette.background,
-            borderColor,
-          },
-          editable === false && {
-            backgroundColor: palette.muted,
-            color: palette.mutedForeground,
-          },
-          inputStyle,
-        ]}
-        {...rest}
-      />
-      {errorText ? (
-        <Text style={[styles.error, { color: palette.destructive }]}>{errorText}</Text>
-      ) : null}
-    </View>
-  );
-});
+    const size = sizeStyles[inputSize];
+
+    return (
+      <View style={[styles.wrapper, containerStyle]}>
+        {label ? (
+          <Text style={[styles.label, { color: palette.foreground }]}>
+            {label}
+            {required ? <Text style={{ color: palette.destructive }}> *</Text> : null}
+          </Text>
+        ) : null}
+        <TextInput
+          ref={ref}
+          editable={editable}
+          accessibilityLabel={label}
+          accessibilityState={{ disabled: editable === false }}
+          placeholderTextColor={palette.mutedForeground}
+          style={[
+            styles.input,
+            size,
+            {
+              color: palette.foreground,
+              backgroundColor: palette.background,
+              borderColor,
+            },
+            editable === false && {
+              backgroundColor: palette.muted,
+              color: palette.mutedForeground,
+            },
+            inputStyle,
+          ]}
+          {...rest}
+        />
+        {errorText ? (
+          <Text style={[styles.error, { color: palette.destructive }]}>{errorText}</Text>
+        ) : null}
+      </View>
+    );
+  });
 
 export default Input;
 

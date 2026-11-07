@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // Build the rendered production stage verbatim, supplying a tiny probe in
@@ -49,7 +51,7 @@ func main() {
 		t.Fatal(err)
 	}
 	build := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", filepath.Join(dir, "demo"), filepath.Join(dir, "probe.go"))
-	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH, "GOWORK=off", "GOFLAGS=")
+	build.Env = goexec.WithTrimpath(append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH, "GOWORK=off", "GOFLAGS="))
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build timezone probe: %v\n%s", err, out)
 	}

@@ -20,7 +20,7 @@ const schemaObsSession = "forge.obs.session/v1"
 var obsSessionSchema = obsout.Schema{
 	Name: schemaObsSession,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode",
 		"session", "session.id", "session.service", "session.version", "session.user_id", "session.entry_path",
 		"session.started", "session.ended", "session.duration_ms", "session.page_views", "session.interactions",
@@ -181,7 +181,7 @@ func runObsSession(ctx context.Context, d obsDeps, id, env string, o obsSessionO
 		doc.Timeline = append(doc.Timeline, timelineDoc(e, res.Session.Started))
 	}
 	doc.Page = obsout.Page{Truncated: res.NextPageToken != "", NextPageToken: res.NextPageToken}
-	doc.Suggested = sessionSuggestions(env, id, res)
+	doc.Suggested = o.inst.carrySuggested(sessionSuggestions(env, id, res))
 	doc.Stamp(schemaObsSession, nil)
 	if done, err := o.out.Emit(d.Stdout, obsSessionSchema, doc, fields); done || err != nil {
 		return err

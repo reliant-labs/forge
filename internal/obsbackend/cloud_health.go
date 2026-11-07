@@ -233,7 +233,7 @@ func (c Cloud) Changes(ctx context.Context, req ChangesRequest) (ChangesResult, 
 	var act struct {
 		Events []wireActivityEvent `json:"events"`
 	}
-	if err := c.call(ctx, procListActivity, body, &act); err != nil {
+	if err := c.callEnvWide(ctx, procListActivity, body, &act); err != nil {
 		note := fmt.Sprintf("activity unreadable, only the deploy ledger is shown: %v", err)
 		if unimplemented(err) {
 			note = "the control plane does not serve activity yet; only the deploy ledger is shown"

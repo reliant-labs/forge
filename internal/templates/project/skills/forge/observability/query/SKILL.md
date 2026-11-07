@@ -39,9 +39,12 @@ No deploy to judge, just "something is wrong"? Start with `forge obs status prod
 | no destination (host processes, the local ClickStack) | **local**: queries the ClickStack `forge env up` started. Down: exit 2 with `forge env up <env>` |
 | hosted workloads, `destination.token_from_control_plane`, or cluster-only workloads with a declared `control_plane` | **cloud**: the env's control plane's ObservabilityService / IssuesService, with your credential (under Reliant, the helper; never `forge login`). A cluster runtime remains self-managed, not hosted |
 | a third-party destination | exit 2: forge queries only the local ClickStack or the control plane |
-| observability off | exit 2 |
+| a local env whose `forge env up` sent telemetry to the hosted store (`dev_telemetry`, recorded in `.forge/obs/backend-<env>.json`) | **cloud**, bound to the record's org, env and instance |
+| observability off | exit 2, naming the KCL to add |
 
 Choose the env, not a backend: env names are arbitrary (`prod` does not imply hosting). A missing runtime/remote endpoint, or mixed local and cluster workloads without a destination or explicit local/ephemeral lifecycle, exits 2 rather than guessing local. A local lifecycle with host processes and local k3d workloads keeps using the local ClickStack. `--backend local|cloud` remains a diagnostic override. Every document names `scope.env`, `scope.backend` and, for cloud, `scope.env_id`.
+
+A hosted-dev env is shared by every `forge env up` stack of it (your worktrees, your teammates'), so its reads default to THIS checkout's instance: `scope.instance {id,label,user}`. `--instance <id|label>` reads another (an id is the control plane's `scope.instance.id`; a label resolves only through the records `forge env up` wrote on this machine), `--all-instances` the whole env, `--user <user>` every instance of one user (`--instance-user` on `sessions`). `suggested[]` repeats a non-default choice. A control plane that does not acknowledge the narrowing is exit 2, never the whole env shown as the instance. Raw SQL (`query --sql`, sql panels) cannot be narrowed: it is refused until you pass `--all-instances`, and `status` lists the env-wide alerts and deliveries under `not_evaluated`. `obs changes dev` still reads the local ledger.
 
 Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a query that works locally means the same against prod. Local issues are grouped at query time with the same fingerprint (sfp2) the control plane computes at ingest. They carry no state: resolve and ignore exist only on cloud, and `--since-release` / `--since-deploy` need a hosted env.
 

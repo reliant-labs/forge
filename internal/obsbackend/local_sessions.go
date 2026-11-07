@@ -24,11 +24,13 @@ const (
 	timelineTail = 5 * time.Minute
 )
 
-// localSessionScope is the scope of a local session read. The env is not a
+// sessionScope is the scope of a local session read. The env is not a
 // filter: browser rows carry the control plane's env id, which a local stack
 // does not have.
-func localSessionScope(n Narrow) obsquery.Scope {
-	return obsquery.Scope{Database: obsquery.LocalDatabase, Local: true, Services: n.Services, Start: n.Range.From, End: n.Range.To}
+func (l Local) sessionScope(n Narrow) obsquery.Scope {
+	sc := obsquery.Scope{Database: obsquery.LocalDatabase, Local: true, Services: n.Services, Start: n.Range.From, End: n.Range.To}
+	l.Instances.apply(&sc)
+	return sc
 }
 
 // errSessionNotFound is exit 1: the session id names nothing the scope can see.
@@ -77,7 +79,7 @@ func (l Local) ListSessions(ctx context.Context, req ListSessionsRequest) (ListS
 		return ListSessionsResult{}, compileErr(err)
 	}
 	q := obsquery.SessionQuery{
-		Scope: localSessionScope(req.Narrow), HasError: req.HasError, HasReplay: req.HasReplay,
+		Scope: l.sessionScope(req.Narrow), HasError: req.HasError, HasReplay: req.HasReplay,
 		UserID: req.UserID, PathContains: req.PathContains, Limit: req.Limit, Cursor: cursor,
 	}
 	st, err := q.Compile()
@@ -116,7 +118,7 @@ func (l Local) GetSession(ctx context.Context, req GetSessionRequest) (GetSessio
 	}
 	n := req.Narrow
 	n.Range = rng
-	lookup := obsquery.SessionLookup{Scope: localSessionScope(n), SessionID: req.ID}
+	lookup := obsquery.SessionLookup{Scope: l.sessionScope(n), SessionID: req.ID}
 	lst, err := lookup.Compile()
 	if err != nil {
 		return GetSessionResult{}, compileErr(err)

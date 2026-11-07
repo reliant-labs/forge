@@ -21,7 +21,7 @@ const schemaObsIssue = "forge.obs.issue/v1"
 var obsIssueSchema = obsout.Schema{
 	Name: schemaObsIssue,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode",
 		"issue", "issue.id", "issue.platform", "issue.service", "issue.title", "issue.culprit", "issue.exception_type",
 		"issue.status", "issue.first_seen", "issue.last_seen", "issue.first_version", "issue.last_version",
@@ -253,7 +253,7 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 		commitRange = doc.FirstRelease.CommitRange
 	}
 	doc.Suspects, doc.SuspectNote = suspectCommits(ctx, d.Stderr, res, commitRange)
-	doc.Suggested = issueSuggestions(env, res)
+	doc.Suggested = o.inst.carrySuggested(issueSuggestions(env, res))
 	doc.Stamp(schemaObsIssue, nil)
 	if done, err := o.out.Emit(d.Stdout, obsIssueSchema, doc, fields); done || err != nil {
 		return err

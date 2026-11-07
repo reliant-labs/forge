@@ -93,6 +93,16 @@ type Scope struct {
 	// environment of the org, and rows that carry no environment at all.
 	EnvIDs        []string
 	EnvRestricted bool
+	// InstanceIDs narrows to these dev instances (reliant.instance.id: the
+	// local session id the gateway stamps on telemetry sent with a dev token);
+	// empty = every instance, and rows that carry none. InstanceUsers narrows
+	// to the instances of these users (reliant.instance.user: the user id the
+	// gateway stamps beside it). Both AND with the environments, and narrow a
+	// local scope exactly as a hosted one. A browser table, which keeps no
+	// resource attributes, is narrowed to the sessions the instances' spans
+	// carry; a sql panel's statement is its author's and is not narrowed.
+	InstanceIDs   []string
+	InstanceUsers []string
 	// Envs are the environments in scope, for resolving
 	// deployment.environment.name to the Reliant environment's name.
 	Envs []Env
@@ -128,6 +138,13 @@ type Scope struct {
 func (s Scope) Fingerprint() []string {
 	out := []string{s.Database, strconv.FormatBool(s.EnvRestricted)}
 	out = append(out, s.EnvIDs...)
+	// Only when set, so a cursor minted before instances existed still fits.
+	if len(s.InstanceIDs) > 0 {
+		out = append(append(out, "inst"), s.InstanceIDs...)
+	}
+	if len(s.InstanceUsers) > 0 {
+		out = append(append(out, "iusr"), s.InstanceUsers...)
+	}
 	out = append(out, "svc")
 	out = append(out, s.Services...)
 	out = append(out, "flt")
@@ -165,6 +182,12 @@ func (s Scope) validate(max time.Duration) error {
 	if len(s.EnvIDs) > MaxScopeEnvs {
 		return invalid("at most %d environments", MaxScopeEnvs)
 	}
+	if len(s.InstanceIDs) > MaxScopeInstances {
+		return invalid("at most %d instances", MaxScopeInstances)
+	}
+	if len(s.InstanceUsers) > MaxScopeInstances {
+		return invalid("at most %d instance users", MaxScopeInstances)
+	}
 	return CheckRange(s.Start, s.End, max)
 }
 
@@ -184,6 +207,8 @@ func (s Scope) checkDatabase() error {
 const (
 	MaxScopeFilters = 20
 	MaxScopeEnvs    = 500
+	// MaxScopeInstances caps InstanceIDs and, separately, InstanceUsers.
+	MaxScopeInstances = 50
 )
 
 // builder allocates parameter names and collects their values. It carries the
@@ -247,10 +272,39 @@ func (b *builder) envCond(s Scope) string {
 	return "has(" + b.strArray(s.EnvIDs) + ", " + envIDExpr + ")"
 }
 
-// scopeBase is the environment and service predicates shared by every signal.
+// instanceCond restricts to the scope's instances and instance users, or
+// returns "" when it does not. Like envCond it is a resource predicate, so it
+// holds for every row of an instance's telemetry: its spans, logs and metrics.
+func (b *builder) instanceCond(s Scope) string {
+	var c []string
+	if e := b.anyOf(instanceIDExpr, s.InstanceIDs); e != "" {
+		c = append(c, e)
+	}
+	if e := b.anyOf(instanceUserExpr, s.InstanceUsers); e != "" {
+		c = append(c, e)
+	}
+	return strings.Join(c, " AND ")
+}
+
+// anyOf matches expr against vals, or returns "" when vals is empty.
+func (b *builder) anyOf(expr string, vals []string) string {
+	switch len(vals) {
+	case 0:
+		return ""
+	case 1:
+		return expr + " = " + b.str(vals[0])
+	}
+	return "has(" + b.strArray(vals) + ", " + expr + ")"
+}
+
+// scopeBase is the environment, instance and service predicates shared by
+// every signal.
 func (b *builder) scopeBase(s Scope) []string {
 	var c []string
 	if e := b.envCond(s); e != "" {
+		c = append(c, e)
+	}
+	if e := b.instanceCond(s); e != "" {
 		c = append(c, e)
 	}
 	if sv := b.serviceIn(s.Services); sv != "" {

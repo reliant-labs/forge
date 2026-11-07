@@ -34,7 +34,7 @@ func (l Local) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 	if req.SincePromotion != "" {
 		return ListIssuesResult{}, errLocalOnly("--since-deploy")
 	}
-	q := obsquery.ServerIssues{Scope: LocalScope(req.Narrow, l.Env), Source: req.Source, Limit: req.Limit, Sort: req.Sort}
+	q := obsquery.ServerIssues{Scope: l.scope(req.Narrow), Source: req.Source, Limit: req.Limit, Sort: req.Sort}
 	st, err := q.Compile()
 	if err != nil {
 		return ListIssuesResult{}, compileErr(err)
@@ -93,7 +93,7 @@ func (l Local) ListIssues(ctx context.Context, req ListIssuesRequest) (ListIssue
 // related to one you did not.
 func (l Local) incidentStmt(n Narrow) (obsquery.Stmt, error) {
 	n.Services = nil
-	st, err := obsquery.ServerIssueIncidents{Scope: LocalScope(n, l.Env)}.Compile()
+	st, err := obsquery.ServerIssueIncidents{Scope: l.scope(n)}.Compile()
 	if err != nil {
 		return obsquery.Stmt{}, compileErr(err)
 	}
@@ -150,7 +150,7 @@ func (l Local) GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResul
 	if err != nil {
 		return GetIssueResult{}, compileErr(err)
 	}
-	scope := LocalScope(req.Narrow, l.Env)
+	scope := l.scope(req.Narrow)
 	one, err := obsquery.ServerIssues{Scope: scope, Fingerprint: fp, Limit: 1}.Compile()
 	if err != nil {
 		return GetIssueResult{}, compileErr(err)
@@ -252,7 +252,7 @@ func (l Local) ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) 
 	if err != nil {
 		return ListIssueEventsResult{}, compileErr(err)
 	}
-	st, err := obsquery.ServerIssueEvents{Scope: LocalScope(req.Narrow, l.Env), Fingerprint: fp, Limit: req.Limit}.Compile()
+	st, err := obsquery.ServerIssueEvents{Scope: l.scope(req.Narrow), Fingerprint: fp, Limit: req.Limit}.Compile()
 	if err != nil {
 		return ListIssueEventsResult{}, compileErr(err)
 	}

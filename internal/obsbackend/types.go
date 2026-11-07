@@ -24,6 +24,8 @@ type Info struct {
 	Backend string
 	// EnvID is the control plane's id for the env, on the cloud backend.
 	EnvID string
+	// Instances is the dev-instance narrowing every read applies.
+	Instances Instances
 }
 
 // Range is the half-open time range of a query, in UTC.

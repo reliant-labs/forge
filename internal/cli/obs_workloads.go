@@ -25,7 +25,7 @@ const schemaObsWorkloads = "forge.obs.workloads/v1"
 var obsWorkloadsSchema = obsout.Schema{
 	Name: schemaObsWorkloads,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "summary", "summary.workloads", "summary.unhealthy", "summary.crash_looping", "summary.restarts", "summary.failed_jobs",
 		"workloads", "workloads.workload", "workloads.namespace", "workloads.kind", "workloads.health", "workloads.cause",
 		"workloads.reason", "workloads.detail", "workloads.since", "workloads.ready", "workloads.desired", "workloads.restarts",
@@ -163,7 +163,7 @@ func runObsWorkloads(ctx context.Context, d obsDeps, env string, o obsWorkloadsO
 			doc.Jobs = append(doc.Jobs, j)
 		}
 	}
-	doc.Suggested = workloadSuggestions(env, n, doc)
+	doc.Suggested = o.inst.carrySuggested(workloadSuggestions(env, n, doc))
 	doc.Stamp(schemaObsWorkloads, nil)
 	if done, err := o.out.Emit(d.Stdout, obsWorkloadsSchema, doc, fields); done || err != nil {
 		return err

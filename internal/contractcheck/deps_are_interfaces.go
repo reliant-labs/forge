@@ -380,7 +380,7 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 		// with 173 that reach a database. See concreteTypeIsData for what
 		// the syntactic purity test can and cannot see, and which way it
 		// errs when it cannot see.
-		if l.concreteTypeIsData(field.Type, fileImports) {
+		if l.localTypeIsData(field.Type, pkgDir, fileImports) || l.concreteTypeIsData(field.Type, fileImports) {
 			continue
 		}
 		remediation := depsRemediation
@@ -1874,6 +1874,10 @@ type typeDecls struct {
 	// ask what a type HOLDS rather than only what its methods do. See
 	// structFieldsAreInert.
 	structs map[string]*ast.StructType
+	// types retains local aliases/defined collections for the bounded local
+	// inert-data walk. Imports belong to the declaration, not the Deps file.
+	types       map[string]ast.Expr
+	typeImports map[string]map[string]string
 	// funcDecls carries the BODY of each package-level func, so a call to
 	// one can be judged on what it actually does instead of being assumed
 	// impure. See funcIsPure.
@@ -1904,15 +1908,17 @@ func (l *depsLinter) packageTypeDecls(dir string) typeDecls {
 		return got
 	}
 	out := typeDecls{
-		interfaces: map[string]bool{},
-		declared:   map[string]bool{},
-		methods:    map[string][]methodDecl{},
-		embeds:     map[string]bool{},
-		funcs:      map[string]bool{},
-		vars:       map[string]bool{},
-		funcDecls:  map[string]methodDecl{},
-		structs:    map[string]*ast.StructType{},
-		dir:        dir,
+		interfaces:  map[string]bool{},
+		declared:    map[string]bool{},
+		methods:     map[string][]methodDecl{},
+		embeds:      map[string]bool{},
+		funcs:       map[string]bool{},
+		vars:        map[string]bool{},
+		funcDecls:   map[string]methodDecl{},
+		structs:     map[string]*ast.StructType{},
+		types:       map[string]ast.Expr{},
+		typeImports: map[string]map[string]string{},
+		dir:         dir,
 	}
 	l.declCache[dir] = out
 
@@ -1941,6 +1947,8 @@ func (l *depsLinter) packageTypeDecls(dir string) typeDecls {
 							continue
 						}
 						out.declared[ts.Name.Name] = true
+						out.types[ts.Name.Name] = ts.Type
+						out.typeImports[ts.Name.Name] = fileImports
 						if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
 							out.interfaces[ts.Name.Name] = true
 						}

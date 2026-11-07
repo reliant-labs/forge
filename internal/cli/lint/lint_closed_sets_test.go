@@ -50,7 +50,7 @@ COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set
 		}
 	}
 	if !strings.Contains(f.FixHint, "forge db migration new --closed-set access_tokens_scopes") ||
-		!strings.Contains(f.FixHint, "ADD CONSTRAINT access_tokens_scopes CHECK (scopes <@ ARRAY['deploy:read', 'deploy:write', 'billing:read', 'cluster:manage'") {
+		!strings.Contains(f.FixHint, "ADD CONSTRAINT access_tokens_scopes CHECK (scopes <@ ARRAY['deploy:read', 'deploy:write', 'deploy:config:read', 'billing:read', 'cluster:manage'") {
 		t.Errorf("fix hint: %s", f.FixHint)
 	}
 

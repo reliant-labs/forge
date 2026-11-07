@@ -43,7 +43,7 @@ func (f *fakeMintCaller) Call(_ context.Context, procedure string, req, out any)
 	}
 	reply := fmt.Sprintf(`{"processToken":"proc-%d","browserToken":"browser-%d","expiresAt":%q,
 		"endpoint":"https://otlp.example.com/","orgId":"org-1","environmentId":"env-1",
-		"instance":{"id":"sess-x","label":"alice/fix-login","user":"alice@x"},
+		"instance":{"id":"inst-row-42","label":"alice/fix-login","user":"alice@x"},
 		"retention":{"tracesDays":3,"metricsDays":3,"logsDays":3,"browserDays":3}}`,
 		n, n, f.now.Add(time.Hour).Format(time.RFC3339))
 	return json.Unmarshal([]byte(reply), out)
@@ -133,6 +133,9 @@ func TestDecideDevTelemetryMatrix(t *testing.T) {
 		{"gate excludes org", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
 			m.err = cerr(cloud.CodeFailedPrecondition, reasonDevTelemetryNotEnabled, "")
 		}, false, reasonDevTelemetryNotEnabled},
+		{"instance limit", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
+			m.err = cerr(cloud.CodeFailedPrecondition, reasonDevInstanceLimit, "")
+		}, false, reasonDevInstanceLimit},
 		{"session not live (reason in message only)", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
 			m.err = cerr(cloud.CodeFailedPrecondition, "", "refused: session_not_live")
 		}, false, reasonSessionNotLive},
@@ -289,6 +292,45 @@ func TestDevTelemetryFilesAndRenewal(t *testing.T) {
 	}
 }
 
+// TestDevTelemetryRecordKeysOnTheServersInstanceID: backend-<env>.json's
+// instance_id is the mint response's instance.id (the control plane's row id,
+// which the tokens' sid carries), never forge's local session id, which
+// repeats across runs and orgs.
+func TestDevTelemetryRecordKeysOnTheServersInstanceID(t *testing.T) {
+	dir := t.TempDir()
+	caller := &fakeMintCaller{now: devTelNow}
+	f := liveFacts(devTelemetryAuto, caller, &fakeSessionReporter{})
+	d, err := decideDevTelemetry(context.Background(), f, devTelNow)
+	if err != nil || !d.Hosted {
+		t.Fatalf("decision %+v err %v", d, err)
+	}
+	if err := recordDevTelemetryDecision(dir, "dev", d, devTelNow); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, _ := devtelemetry.Read(dir, "dev")
+	if rec.InstanceID != "inst-row-42" || rec.InstanceID == f.Session.session.ID {
+		t.Errorf("instance_id = %q, want the server's instance.id (local session id is %q)", rec.InstanceID, f.Session.session.ID)
+	}
+	// An answer with no instance id cannot key anything: not hosted.
+	if _, err := mintDevTelemetry(context.Background(), noInstanceCaller{}, "s", "p", "dev", nil, devTelNow); err == nil {
+		t.Error("a grant without instance.id was accepted")
+	}
+	// protojson Timestamps carry fractional seconds.
+	if _, err := mintDevTelemetry(context.Background(), noInstanceCaller{instance: "i", expires: "2026-11-07T13:00:00.123456789Z"}, "s", "p", "dev", nil, devTelNow); err != nil {
+		t.Errorf("fractional expiresAt refused: %v", err)
+	}
+}
+
+type noInstanceCaller struct{ instance, expires string }
+
+func (c noInstanceCaller) Call(_ context.Context, _ string, _, out any) error {
+	exp := c.expires
+	if exp == "" {
+		exp = "2026-11-07T13:00:00Z"
+	}
+	return json.Unmarshal([]byte(fmt.Sprintf(`{"processToken":"p","browserToken":"b","expiresAt":%q,"endpoint":"https://e","instance":{"id":%q}}`, exp, c.instance)), out)
+}
+
 func TestHostedTelemetryLaunchEnv(t *testing.T) {
 	const ep, hf = "https://otlp.example.com", "/p/.forge/obs/otlp-headers"
 	derived := map[string]string{
@@ -433,5 +475,164 @@ func TestUpSessionEnsuresTheLocalEnvironmentFirst(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "control plane unavailable") {
 		t.Errorf("the ensure failure was not noted: %q", log.String())
+	}
+}
+
+// keeperSpecForTest is a keeper spec whose tokens were minted at devTelNow.
+func keeperSpecForTest(dir string) devTelemetryKeeperSpec {
+	var log strings.Builder
+	sess := testUpSession(&fakeSessionReporter{}, &log, time.Hour).session
+	return devTelemetryKeeperSpec{
+		ProjectDir: dir, Env: "dev", Project: "demo",
+		Endpoint: cloud.Endpoint{URL: "https://cp.example.com", Env: "dev"},
+		Session:  sess, MintedAt: devTelNow, ExpiresAt: devTelNow.Add(time.Hour),
+		Granted: devtelemetry.Retention{TracesDays: 3, MetricsDays: 3, LogsDays: 3, BrowserDays: 3},
+	}
+}
+
+// stepClock returns devTelNow + n*step on its n-th call.
+func stepClock(step time.Duration) func() time.Time {
+	var mu sync.Mutex
+	n := 0
+	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		return devTelNow.Add(time.Duration(n) * step)
+	}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestDevTelemetryKeeperRenewsADetachedStack is the detached stack's whole
+// lifetime: with no `env up` process left, the keeper alone reports the
+// session live every beat and replaces the tokens at half-life.
+//
+// MUTATION: drop the onBeat renewal, or the initial beat, and no second
+// token is ever written.
+func TestDevTelemetryKeeperRenewsADetachedStack(t *testing.T) {
+	dir := t.TempDir()
+	spec := keeperSpecForTest(dir)
+	caller := &fakeMintCaller{now: devTelNow}
+	reporter := &fakeSessionReporter{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	var log strings.Builder
+	go func() {
+		defer close(done)
+		// 31 minutes pass per beat: every beat is past the half-life.
+		runDevTelemetryKeeper(ctx, spec, caller, reporter, 2*time.Millisecond, stepClock(31*time.Minute), &log)
+	}()
+	waitFor(t, "three renewals", func() bool { return caller.count() >= 3 })
+	waitFor(t, "three live reports", func() bool { return len(reporter.snapshot()) >= 3 })
+	for _, r := range reporter.snapshot() {
+		if r.ID != spec.Session.ID || r.StoppedAt != nil {
+			t.Fatalf("the keeper reported %+v; want the stack's session, running", r)
+		}
+	}
+	cancel()
+	<-done
+	if body := caller.calls[0]; body["sessionId"] != spec.Session.ID || body["project"] != "demo" {
+		t.Errorf("mint request %v", body)
+	}
+	b, err := os.ReadFile(devtelemetry.HeadersPath(dir))
+	if err != nil || !strings.HasPrefix(string(b), "authorization=Bearer proc-") {
+		t.Fatalf("headers file %q, %v", b, err)
+	}
+	st, ok, _ := devtelemetry.ReadState(dir, "dev")
+	if !ok || st.RenewError != "" {
+		t.Errorf("state %+v", st)
+	}
+}
+
+// TestDevTelemetryKeeperStopsWithTheStack: stopping the stack signals the
+// keeper, whose signal context cancels — and after that nothing is minted or
+// reported, and the session is NOT reported stopped by the keeper (whoever
+// stopped the stack reports that, after the keeper is gone).
+func TestDevTelemetryKeeperStopsWithTheStack(t *testing.T) {
+	dir := t.TempDir()
+	caller := &fakeMintCaller{now: devTelNow}
+	reporter := &fakeSessionReporter{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var log strings.Builder
+	go func() {
+		defer close(done)
+		runDevTelemetryKeeper(ctx, keeperSpecForTest(dir), caller, reporter, 2*time.Millisecond, stepClock(31*time.Minute), &log)
+	}()
+	waitFor(t, "a renewal", func() bool { return caller.count() >= 1 })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the keeper did not stop when the stack stopped")
+	}
+	mints, reports := caller.count(), len(reporter.snapshot())
+	time.Sleep(20 * time.Millisecond) // ten beats' worth
+	if caller.count() != mints || len(reporter.snapshot()) != reports {
+		t.Errorf("work after stop: mints %d→%d, reports %d→%d", mints, caller.count(), reports, len(reporter.snapshot()))
+	}
+	for _, r := range reporter.snapshot() {
+		if r.StoppedAt != nil {
+			t.Errorf("the keeper reported the session stopped")
+		}
+	}
+	// A keeper whose stack is already stopping does nothing at all.
+	before := caller.count()
+	runDevTelemetryKeeper(ctx, keeperSpecForTest(dir), caller, reporter, time.Millisecond, stepClock(time.Hour), &log)
+	if caller.count() != before {
+		t.Errorf("a keeper started on a stopped stack minted")
+	}
+}
+
+// TestDevTelemetryKeeperCmd: the keeper is this forge binary running
+// `env telemetry-keeper <spec>`, with a spec that holds no token.
+func TestDevTelemetryKeeperCmd(t *testing.T) {
+	dir := t.TempDir()
+	spec := keeperSpecForTest(dir)
+	cmd, err := devTelemetryKeeperCmd(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := devTelemetryKeeperSpecPath(dir, "dev")
+	if n := len(cmd.Args); n < 3 || cmd.Args[n-3] != "env" || cmd.Args[n-2] != devTelemetryKeeperName || cmd.Args[n-1] != path {
+		t.Errorf("argv %v", cmd.Args)
+	}
+	if cmd.Dir != dir {
+		t.Errorf("dir %q", cmd.Dir)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "Bearer") || strings.Contains(string(b), "proc-") {
+		t.Errorf("the keeper spec carries a token: %s", b)
+	}
+	var back devTelemetryKeeperSpec
+	if err := json.Unmarshal(b, &back); err != nil || back.Session.ID != spec.Session.ID || back.Endpoint.URL != spec.Endpoint.URL || !back.ExpiresAt.Equal(spec.ExpiresAt) {
+		t.Errorf("spec round trip: %+v, %v", back, err)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Errorf("spec mode %v", fi.Mode().Perm())
+	}
+	// The command is registered (hidden) under `forge env`.
+	found := false
+	for _, c := range newEnvCmd().Commands() {
+		if c.Name() == devTelemetryKeeperName && c.Hidden {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("forge env telemetry-keeper is not registered as a hidden command")
 	}
 }

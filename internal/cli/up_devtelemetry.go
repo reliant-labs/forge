@@ -43,6 +43,7 @@ import (
 	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/devtelemetry"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // The dev_telemetry values.
@@ -62,6 +63,7 @@ const (
 	reasonDevTelemetryDisabled   = "dev_telemetry_disabled"
 	reasonDevTelemetryNotEnabled = "dev_telemetry_not_enabled"
 	reasonSessionNotLive         = "session_not_live"
+	reasonDevInstanceLimit       = "dev_instance_limit"
 )
 
 // frontendOTLPHeadersFileEnv names, for a frontend dev server, the file
@@ -189,10 +191,14 @@ func mintDevTelemetry(ctx context.Context, client cloudCaller, sessionID, projec
 	if err := client.Call(ctx, procMintLocalTelemetryToken, req, &g); err != nil {
 		return devTelemetryGrant{}, err
 	}
-	if g.ProcessToken == "" || g.BrowserToken == "" || g.Endpoint == "" {
-		return devTelemetryGrant{}, fmt.Errorf("%s answered without a token or an endpoint", procMintLocalTelemetryToken)
+	// instance.id is the control plane's id for this instance (its session
+	// row), which the tokens' `sid` carries and every telemetry row is keyed
+	// on — NOT the session id forge sent, which repeats across runs and
+	// orgs. Without it nothing could be scoped to this instance.
+	if g.ProcessToken == "" || g.BrowserToken == "" || g.Endpoint == "" || g.Instance.ID == "" {
+		return devTelemetryGrant{}, fmt.Errorf("%s answered without a token, an endpoint or an instance id", procMintLocalTelemetryToken)
 	}
-	exp, err := time.Parse(time.RFC3339, g.ExpiresAt)
+	exp, err := time.Parse(time.RFC3339Nano, g.ExpiresAt)
 	if err != nil {
 		return devTelemetryGrant{}, fmt.Errorf("%s answered an unreadable expiresAt %q: %w", procMintLocalTelemetryToken, g.ExpiresAt, err)
 	}
@@ -212,7 +218,7 @@ func mintRefusal(err error) string {
 	if reason == "" {
 		// A reason sent only in the message (or a detail's debug JSON)
 		// still names the refusal.
-		for _, r := range []string{reasonDevTelemetryDisabled, reasonDevTelemetryNotEnabled, reasonSessionNotLive} {
+		for _, r := range []string{reasonDevTelemetryDisabled, reasonDevTelemetryNotEnabled, reasonSessionNotLive, reasonDevInstanceLimit} {
 			if strings.Contains(ce.Message, r) {
 				reason = r
 			}
@@ -225,6 +231,8 @@ func mintRefusal(err error) string {
 		return "an org admin switched dev telemetry off for this org (" + reason + ")"
 	case reason == reasonDevTelemetryNotEnabled:
 		return "hosted dev telemetry is not enabled for this org yet (" + reason + ")"
+	case reason == reasonDevInstanceLimit:
+		return "you already run as many live dev instances as the org allows; stop one (`" + Name() + " env down <env>` in its checkout) (" + reason + ")"
 	case reason == reasonSessionNotLive:
 		return "the control plane does not see this stack's session as live (" + reason + ")"
 	case ce.HasCode(cloud.CodeNotFound):
@@ -311,6 +319,10 @@ type devTelemetryRun struct {
 	client                   cloudCaller
 	sessionID                string
 	retention                *devTelemetryRetention
+	// endpoint and session are what the keeper (devtelemetry_keeper.go)
+	// needs to keep the stack's session live and its tokens current.
+	endpoint cloud.Endpoint
+	session  release.LocalSession
 
 	mu    sync.Mutex
 	grant devTelemetryGrant
@@ -362,6 +374,8 @@ func (r *devTelemetryRun) renew(now time.Time) {
 
 // recordDevTelemetryDecision writes .forge/obs/backend-<env>.json.
 func recordDevTelemetryDecision(projectDir, env string, d devTelemetryDecision, now time.Time) error {
+	// InstanceID is the control plane's instance id from the mint response,
+	// never forge's local session id (see mintDevTelemetry).
 	rec := devtelemetry.Record{Env: env, Backend: "local", Reason: d.Reason, DecidedAt: now}
 	if d.Hosted {
 		g := d.Grant
@@ -557,7 +571,7 @@ func devTelemetryStatusLine(projectDir, env string, now time.Time) string {
 		if st.RenewError != "" {
 			why += "; " + st.RenewError
 		} else {
-			why += "; renewed only while a holding `" + Name() + " env up` runs"
+			why += "; the stack is not running, or its " + devTelemetryKeeperName + " is not (see .forge/logs/" + env + "/" + devTelemetryKeeperName + ".log)"
 		}
 		return "telemetry: not delivering (" + why + ")"
 	}
@@ -608,10 +622,16 @@ func setupDevTelemetry(ctx context.Context, projectDir, env, flag string, e *KCL
 		}
 		return nil, nil
 	}
+	session.mu.Lock()
+	snapshot := session.session
+	session.mu.Unlock()
 	run := &devTelemetryRun{
 		projectDir: projectDir, env: env, project: target.Project,
-		client: target.Client, sessionID: session.session.ID,
-		retention: facts.Retention, grant: d.Grant,
+		client: target.Client, sessionID: snapshot.ID,
+		retention: facts.Retention, grant: d.Grant, session: snapshot,
+	}
+	if ep, eerr := projectEndpoint(env, decl); eerr == nil {
+		run.endpoint = ep
 	}
 	if err := run.write(d.Grant, now); err != nil {
 		if mode.Value == devTelemetryHosted {
@@ -631,7 +651,8 @@ func setupDevTelemetry(ctx context.Context, projectDir, env, flag string, e *KCL
 	if len(skipped) > 0 {
 		fmt.Fprintf(w, "[up]   not starting the local observability service(s) %s: nothing is stored locally in this mode\n", strings.Join(skipped, ", "))
 	}
-	session.onBeat = run.renew
+	// The keeper (devtelemetry_keeper.go) heartbeats the session and renews
+	// the tokens from here on; runUp starts it with the stack's processes.
 	return run, nil
 }
 

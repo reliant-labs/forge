@@ -26,6 +26,7 @@ func newEnvCmd() *cobra.Command {
 	cmd.AddCommand(newEnvUpCmd())
 	cmd.AddCommand(newEnvBuildCmd())
 	cmd.AddCommand(newEnvDownCmd())
+	cmd.AddCommand(newEnvTelemetryKeeperCmd())
 	cmd.AddCommand(newEnvStopCmd())
 	cmd.AddCommand(newEnvStartCmd())
 	cmd.AddCommand(newEnvDeleteCmd())

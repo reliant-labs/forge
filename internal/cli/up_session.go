@@ -93,6 +93,9 @@ type upSession struct {
 	// the dev-telemetry token renewal (up_devtelemetry.go) rides it, so the
 	// session it renews against is the one the beat just kept live.
 	onBeat func(now time.Time)
+	// now is the heartbeat's clock; nil is time.Now. A seam so a test can
+	// drive a renewal past a token's half-life without waiting half an hour.
+	now func() time.Time
 }
 
 // newUpSessionFor mints the session for this stack, or returns nil when there is
@@ -297,6 +300,9 @@ func (s *upSession) heartbeatUntil(ctx context.Context) {
 			return
 		case <-ticker.C:
 			now := time.Now().UTC()
+			if s.now != nil {
+				now = s.now().UTC()
+			}
 			s.report(now, false)
 			if s.onBeat != nil {
 				s.onBeat(now)

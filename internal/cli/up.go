@@ -254,9 +254,10 @@ TELEMETRY (where this stack's traces, metrics and logs are stored)
   and "local" from any of them wins.
 
   A hosted stack is keyed by its session (above), which is then reported
-  before the services start. Its tokens live in .forge/obs/ and are renewed
-  while a holding run supervises; no local collector starts, so the stack needs
-  no Docker for telemetry. ` + "`forge env status <env>`" + ` says where telemetry goes.`
+  before the services start. Its tokens live in .forge/obs/; a telemetry
+  keeper, one of the stack's tracked processes in either lifecycle, keeps the
+  session live and renews them until ` + "`forge env down`" + `. No local
+  collector starts, so the stack needs no Docker for telemetry. ` + "`forge env status <env>`" + ` says where telemetry goes.`
 
 func newEnvUpCmd() *cobra.Command {
 	var opts upOptions
@@ -1323,14 +1324,11 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		// server GCs the row after 24 h and a reader greys it out long
 		// before that; `forge env down` reports it stopped. The help
 		// text says so.
+		// A hosted stack's telemetry keeper goes with the stack: a tracked
+		// child, stopped by `forge env down` (devtelemetry_keeper.go).
+		devTelemetry.startKeeper(procs, true, os.Stdout)
 		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
-		if devTelemetry != nil {
-			// The tokens renew on the heartbeat, and a detached stack has
-			// none: its hosted telemetry stops when they expire.
-			fmt.Printf("[up] telemetry: tokens are renewed only while a holding run supervises; this stack stops delivering telemetry at %s. Use `forge env up %s --watch` to keep it delivering.\n",
-				devTelemetry.grant.expires.Local().Format(time.Kitchen), opts.env)
-		}
 		if hint := nonTTYWatchHint(opts.env, opts.background); hint != "" {
 			fmt.Println(hint)
 		}
@@ -1354,19 +1352,24 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// Heartbeat for as long as this run holds the foreground. Cancelled by
 	// the defer below, which is what makes "the heartbeat stops when the
 	// stack stops" true on every exit path out of the hold rather than
-	// only on the Ctrl-C one.
+	// only on the Ctrl-C one. A hosted stack's keeper is that heartbeat
+	// (and its token renewal), in this mode as in a detached one, so the
+	// in-process beat runs only without one.
 	beatCtx, stopBeat := context.WithCancel(ctx)
 	defer stopBeat()
-	go session.heartbeatUntil(beatCtx)
+	if !devTelemetry.startKeeper(procs, false, os.Stdout) {
+		go session.heartbeatUntil(beatCtx)
+	}
 
 	<-ctx.Done()
 	fmt.Println("\n[up] shutting down...")
-	// Stop the heartbeat BEFORE the teardown report, so a beat in flight
-	// cannot land after the stopped row and resurrect the session as
-	// running.
+	// Stop every heartbeat BEFORE the teardown report — the in-process one
+	// and the keeper, which procs.shutdown stops with the other children —
+	// so a beat in flight cannot land after the stopped row and resurrect
+	// the session as running.
 	stopBeat()
-	session.stop(time.Now().UTC())
 	procs.shutdown()
+	session.stop(time.Now().UTC())
 	return nil
 }
 

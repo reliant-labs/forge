@@ -89,13 +89,13 @@ A LOCAL env's stack (`forge env up`) can store its telemetry in the org's hosted
 
 | Value | Meaning |
 |---|---|
-| `"auto"` (default) | hosted when the env declares a `control_plane` AND a Reliant credential exists; otherwise local. Any failure on the way (control plane unreachable, `Unimplemented`, the org switch off, the gate excluding the org, a session it does not see live) falls back to local with the reason printed |
+| `"auto"` (default) | hosted when the env declares a `control_plane` AND a Reliant credential exists; otherwise local. Any failure on the way (control plane unreachable, `Unimplemented`, the org switch off, the gate excluding the org, the per-user instance cap (`dev_instance_limit`), a session it does not see live) falls back to local with the reason printed |
 | `"hosted"` | the same, but a failure fails `env up` instead of falling back |
 | `"local"` | always the local ClickStack |
 
 `forge env up --telemetry=auto|hosted|local` and `FORGE_DEV_TELEMETRY` override the declaration, and `local` from any of the three wins: it is the opt-out. An org admin can also switch dev telemetry off for the org.
 
-The stack is the **instance**: its session (one per env, host and worktree) is reported live, the control plane mints two 1-hour tokens for it (`MintLocalTelemetryToken`), and forge writes them to `.forge/obs/otlp-headers` and `.forge/obs/otlp-headers-browser` (0600, gitignored). They are renewed at half-life on the session heartbeat, so only a holding run (`--watch` or a TTY) keeps a stack delivering past the first hour. A failed renewal is silent: the app is never affected, and exports are dropped once the token expires. The decision is recorded in `.forge/obs/backend-<env>.json` for `forge obs`, and `forge env status <env>` prints `telemetry: hosted (org …, instance …, 3d)`, `local (<reason>)` or `not delivering (…)`. The first hosted run in a project prints what is sent, where, for how long, and how to opt out.
+The stack is the **instance**: its session (one per env, host and worktree) is reported live, the control plane mints two 1-hour tokens for it (`MintLocalTelemetryToken`), and forge writes them to `.forge/obs/otlp-headers` and `.forge/obs/otlp-headers-browser` (0600, gitignored). The instance id in the record is the control plane's (the mint response's `instance.id`), not forge's local session id. A **telemetry keeper** (`forge env telemetry-keeper`, `.forge/logs/<env>/telemetry-keeper.log`) runs as one of the stack's tracked processes, detached or not: it heartbeats the session every minute and renews both tokens at half-life, and `forge env down` stops it with the stack. A failed renewal is silent: the app is never affected, and exports are dropped once the token expires. The decision is recorded in `.forge/obs/backend-<env>.json` for `forge obs`, and `forge env status <env>` prints `telemetry: hosted (org …, instance …, 3d)`, `local (<reason>)` or `not delivering (…)`. The first hosted run in a project prints what is sent, where, for how long, and how to opt out.
 
 In hosted mode:
 

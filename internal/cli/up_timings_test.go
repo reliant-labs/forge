@@ -143,7 +143,7 @@ func TestUpTimingsWithoutRecorderIsNoOp(t *testing.T) {
 	}
 	s.end(errors.New("x"))
 	s.discard()
-	recordUpSpan(ctx, "x", time.Now(), "", nil)
+	recordUpSpan(ctx, "x", time.Time{}, "", nil)
 	markUpLaunched(ctx, "api")
 	r := timedBuild(ctx, func() buildResult { return buildResult{name: "api"} })
 	if r.name != "api" {

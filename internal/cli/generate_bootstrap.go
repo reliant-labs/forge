@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -236,7 +237,7 @@ func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, 
 	// No worker/operator inputs: testing.go is service+package scoped (it never
 	// reads Workers/Operators), and generate performs zero worker/operator
 	// discovery.
-	if err := codegen.GenerateBootstrapTesting(codegen.BootstrapTestingGenInput{
+	err = codegen.GenerateBootstrapTesting(codegen.BootstrapTestingGenInput{
 		GenContext: codegen.GenContext{
 			ProjectDir: projectDir,
 			ModulePath: modulePath,
@@ -244,12 +245,16 @@ func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, 
 		},
 		Services: services,
 		Packages: packages,
-	}); err != nil {
+	})
+	// A factories failure comes back as is: the helpers were written, and
+	// the step grades that one emitter's failure (stepBootstrapTesting).
+	var factoriesErr *codegen.EntityFactoriesError
+	if err != nil && !errors.As(err, &factoriesErr) {
 		return fmt.Errorf("failed to generate bootstrap testing: %w", err)
 	}
 
 	fmt.Println("  ✅ Generated per-service test helpers")
-	return nil
+	return err
 }
 
 // generateMigrate writes db/embed.go — the project's embedded migration set.

@@ -64,9 +64,15 @@ func TestEmbeddedBootRetriesOccupiedCandidate(t *testing.T) {
 	if err != nil || ep != want || gotPort != port+1 || reserved != 2 || starts != 2 {
 		t.Fatalf("got ep=%p port=%d err=%v reserves=%d starts=%d", ep, gotPort, err, reserved, starts)
 	}
+	if _, err := os.Stat(bootClaimPath(dirFor(port))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the failed attempt's boot claim file was left behind: %v", err)
+	}
 	claim.release()
 	if _, err := os.Stat(dirFor(port)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("empty failed claim left behind: %v", err)
+	}
+	if _, err := os.Stat(bootClaimPath(dirFor(port + 1))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a released boot claim file was left behind: %v", err)
 	}
 	assertBootListenerAlive(t, ln)
 }
@@ -96,6 +102,11 @@ func TestEmbeddedBootCollisionExhaustion(t *testing.T) {
 	}
 	if !reflect.DeepEqual(exhausted.ports, ports) || !strings.Contains(err.Error(), EnvBaseURL) {
 		t.Fatalf("not actionable: %v", err)
+	}
+	// Every collision releases its claim, and a released claim leaves no
+	// sibling file: repeated collisions must not accumulate artifacts.
+	if leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(dirFor(ports[0])), "*.boot")); len(leftovers) != 0 {
+		t.Fatalf("collided attempts left boot claim files: %v", leftovers)
 	}
 	for _, ln := range listeners {
 		assertBootListenerAlive(t, ln)

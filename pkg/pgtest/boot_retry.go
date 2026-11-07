@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -120,14 +121,19 @@ func claimBootDir(dir string) (*bootClaim, error) {
 
 // release unlinks the claim while still holding it, so a contender that
 // opened it meanwhile fails the SameFile check above. Where an open file
-// cannot be unlinked (Windows) the empty file stays, and is reused. A nil
-// claim is a no-op, so error paths can release unconditionally.
+// cannot be unlinked (Windows) the unlink is retried after Close: there a
+// contender that has the file open makes that unlink fail too, so it never
+// removes a lock somebody holds, and an unopened claim file is not left
+// behind. A nil claim is a no-op, so error paths can release unconditionally.
 func (c *bootClaim) release() {
 	if c == nil {
 		return
 	}
-	_ = os.Remove(c.path)
+	removeErr := os.Remove(c.path)
 	_ = c.f.Close()
+	if removeErr != nil && runtime.GOOS == "windows" {
+		_ = os.Remove(c.path)
+	}
 }
 
 // bootClaimHeld reports whether a boot into dir is in progress. A claim that

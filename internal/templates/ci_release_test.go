@@ -1,6 +1,11 @@
 package templates
 
 import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -203,7 +208,7 @@ func TestForgeDeployAction_StepsInOrder(t *testing.T) {
 	if doc.Runs.Using != "composite" {
 		t.Fatalf("runs.using = %q", doc.Runs.Using)
 	}
-	order := []string{`forge "${args[@]}" > deploy.json`, "forge gate record", "forge ci summarize"}
+	order := []string{`forge "${args[@]}" > deploy.json || code=$?`, "forge gate record", "forge ci summarize"}
 	idx := 0
 	for _, s := range doc.Runs.Steps {
 		if idx < len(order) && strings.Contains(s.Run, order[idx]) {
@@ -246,4 +251,91 @@ func between(t *testing.T, s, from, to string) string {
 		t.Fatalf("markers %q..%q not found in order", from, to)
 	}
 	return s[i:j]
+}
+
+// A deploy that exits nonzero after recording its promotion — a red or
+// timed-out rollout — must still write promotion-id and exit-code, because
+// the evidence step runs only when promotion-id is set. GitHub runs
+// `shell: bash` as `bash --noprofile --norc -eo pipefail {0}`, so the deploy
+// step's script runs that way here, against a fake forge on PATH; then the
+// evidence step runs with the output it wrote.
+func TestForgeDeployAction_FailedDeployKeepsItsEvidence(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not on PATH")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not on PATH")
+	}
+	out := renderCIText(t, "forge-deploy-action.yml.tmpl", releaseFixture())
+	var doc struct {
+		Runs struct {
+			Steps []struct {
+				ID   string `yaml:"id"`
+				Name string `yaml:"name"`
+				If   string `yaml:"if"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var deployRun, evidenceRun, evidenceIf string
+	for _, s := range doc.Runs.Steps {
+		switch {
+		case s.ID == "deploy":
+			deployRun = s.Run
+		case strings.Contains(s.Run, "forge gate record"):
+			evidenceRun, evidenceIf = s.Run, s.If
+		}
+	}
+	if deployRun == "" || evidenceRun == "" {
+		t.Fatalf("no deploy or evidence step:\n%s", out)
+	}
+	if !strings.Contains(evidenceIf, "steps.deploy.outputs.promotion-id != ''") {
+		t.Fatalf("the evidence step must run on the deploy's promotion-id, got if=%q", evidenceIf)
+	}
+
+	for _, code := range []int{0, 1, 8} {
+		t.Run(fmt.Sprintf("exit %d", code), func(t *testing.T) {
+			dir := t.TempDir()
+			fake := fmt.Sprintf("#!/usr/bin/env bash\necho \"$*\" >> %q\nif [ \"$1 $2\" = \"env deploy\" ]; then echo '{\"recorded\":{\"id\":\"promo-123\"},\"exit_code\":%d}'; exit %d; fi\nexit 0\n", filepath.Join(dir, "forge.log"), code, code)
+			if err := os.WriteFile(filepath.Join(dir, "forge"), []byte(fake), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			output := filepath.Join(dir, "output")
+			env := append(os.Environ(),
+				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"GITHUB_OUTPUT="+output,
+				"ENV=prod", "VERSION=v1.2.3", "FROM=", "FROM_PROMOTION=", "EXPECT_CURRENT=", "GATES=", "TIMEOUT=15m",
+			)
+			run := func(script string, extra ...string) (int, string) {
+				cmd := exec.Command("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script)
+				cmd.Dir, cmd.Env = dir, append(env, extra...)
+				b, err := cmd.CombinedOutput()
+				var exit *exec.ExitError
+				if errors.As(err, &exit) {
+					return exit.ExitCode(), string(b)
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				return 0, string(b)
+			}
+			if got, log := run(deployRun); got != code {
+				t.Fatalf("deploy step exited %d, want forge's %d:\n%s", got, code, log)
+			}
+			written, _ := os.ReadFile(output)
+			want := fmt.Sprintf("promotion-id=promo-123\nexit-code=%d\n", code)
+			if string(written) != want {
+				t.Fatalf("GITHUB_OUTPUT = %q, want %q", written, want)
+			}
+			if got, log := run(evidenceRun, "PROMOTION_ID=promo-123"); got != 0 {
+				t.Fatalf("evidence step exited %d:\n%s", got, log)
+			}
+			calls, _ := os.ReadFile(filepath.Join(dir, "forge.log"))
+			if !strings.Contains(string(calls), "gate record prod --promotion promo-123 --from deploy.json --name rollout") {
+				t.Fatalf("the evidence step did not record the promotion:\n%s", calls)
+			}
+		})
+	}
 }

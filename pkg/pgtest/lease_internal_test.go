@@ -63,7 +63,13 @@ func TestLeases_CountTheHeldAndPruneTheAbandoned(t *testing.T) {
 
 // A user's lease is released by the kernel when its process dies, however it
 // dies: a SIGKILLed user never pins the server open.
-func TestLeases_AKilledHoldersLeaseIsNotLive(t *testing.T) {
+//
+// flock(1) forks its command with a copy of the locked descriptor, and the
+// child closes that copy (--close) only after the fork, so the lock can still
+// be held for an instant after the flock process itself is reaped. The
+// release is therefore awaited, bounded, rather than sampled once: the
+// sampled version failed on CI (liveLeases = 1).
+func TestLeases_AKilledHoldersLeaseIsReleased(t *testing.T) {
 	privatePool(t)
 	if err := os.MkdirAll(poolRoot(), 0o755); err != nil {
 		t.Fatal(err)
@@ -91,8 +97,16 @@ func TestLeases_AKilledHoldersLeaseIsNotLive(t *testing.T) {
 	}
 	_ = holder.Process.Kill()
 	_ = holder.Wait()
-	if n := liveLeases(scope, "", true); n != 0 {
-		t.Errorf("liveLeases after its holder was killed = %d, want 0", n)
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		n := liveLeases(scope, "", true)
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("liveLeases 10s after its holder was killed = %d, want 0", n)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

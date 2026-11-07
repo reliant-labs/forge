@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
+	"sync"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -702,6 +703,27 @@ func listSkillsAt(projectRoot string) ([]skillMeta, error) {
 // overrides the directory-derived default; this is how `debug` (under
 // skills/forge/) declares emit:both to surface in non-forge projects too.
 func listForgeShippedSkills() ([]skillMeta, error) {
+	shippedSkillsOnce.Do(func() { shippedSkills, shippedSkillsErr = readForgeShippedSkills() })
+	if shippedSkillsErr != nil {
+		return nil, shippedSkillsErr
+	}
+	// A copy: callers filter and append, and must never reach the shared one.
+	return append([]skillMeta(nil), shippedSkills...), nil
+}
+
+// The shipped skills are the binary's embedded templates, so the listing
+// cannot change during a process: it is read once. Each read parses every
+// SKILL.md's YAML frontmatter, about a second and a half of CPU, and a
+// process that lists skills then renders one (RenderSkillContentAt resolves
+// through the listing too) paid it twice. reliant's skill catalog does that
+// for every forge skill it surfaces.
+var (
+	shippedSkillsOnce sync.Once
+	shippedSkills     []skillMeta
+	shippedSkillsErr  error
+)
+
+func readForgeShippedSkills() ([]skillMeta, error) {
 	const (
 		forgeDir   = "forge"
 		generalDir = "general"

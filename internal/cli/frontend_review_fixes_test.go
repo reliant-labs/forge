@@ -144,7 +144,10 @@ func TestFrontendLintConfigConsistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read query-client: %v", err)
 	}
-	for _, want := range []string{"MutationCache", "silenceErrorToast", "emitToast({ message: userMessage(error)"} {
+	// The toast text comes from a local userFacingMessage over the portable
+	// /interceptors normalizeError (the root barrel ships browser-only modules
+	// into native bundles).
+	for _, want := range []string{"MutationCache", "silenceErrorToast", "message: userFacingMessage(error)"} {
 		if !strings.Contains(string(qc), want) {
 			t.Errorf("query-client missing %q", want)
 		}

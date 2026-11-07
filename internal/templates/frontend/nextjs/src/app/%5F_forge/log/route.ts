@@ -89,11 +89,24 @@ interface DevLogResult {
   lines: string[];
 }
 
+/** Strip ANSI escapes and control characters except \n and \t. Keep identical to the native receiver in metro.config.js. */
+function sanitize(s: string): string {
+  return s
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+}
+
 function formatEntry(entry: DevLogEntry): string {
   const level = typeof entry.level === "string" && LEVELS.has(entry.level) ? entry.level : "log";
-  const msg = typeof entry.msg === "string" ? entry.msg : "";
+  const msg = sanitize(typeof entry.msg === "string" ? entry.msg : "");
   const line = msg.length > MAX_LINE ? `${msg.slice(0, MAX_LINE)}… (truncated)` : msg;
-  return `[browser:${level}] ${line}`;
+  // Prefix EVERY line: a client-supplied \n must not be able to forge a line
+  // of its own (e.g. a fake `[up] …` or `[browser:error] …`), and a stack
+  // trace stays grep-able by level.
+  return line
+    .split("\n")
+    .map((l) => `[browser:${level}] ${l}`)
+    .join("\n");
 }
 
 /**

@@ -4,6 +4,15 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "../src/lib/query-client";
 import { EventBusProvider } from "../src/lib/event-context";
 import { AuthContextProvider } from "../src/lib/auth/context";
+import { setupQueryLifecycle } from "../src/lib/query-lifecycle";
+import { useEffect } from "react";
+
+// Dev only: forward console output and uncaught errors to Metro, which prints
+// them as `[browser:<level>]` lines into .forge/logs/<env>/frontend_<name>.log.
+// A require inside `if (__DEV__)` is dropped from production bundles, so the
+// forwarder is not even included there. Delete the next two lines to turn it off.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- the require is what keeps this out of production bundles
+if (__DEV__) require("../src/lib/devlog").installNativeDevLogging();
 
 // There is no token bridge here, and that is the honest state rather than a
 // gap. This tree ships the mock session provider (see src/lib/auth/context),
@@ -23,6 +32,8 @@ import { AuthContextProvider } from "../src/lib/auth/context";
 
 export default function RootLayout() {
   const isDev = process.env.NODE_ENV === "development";
+  // AppState -> focusManager, network state -> onlineManager (see query-lifecycle).
+  useEffect(() => setupQueryLifecycle(queryClient), []);
 
   return (
     <QueryClientProvider client={queryClient}>

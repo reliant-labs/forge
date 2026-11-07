@@ -265,3 +265,13 @@ Verify with `expo install --check`, `expo-doctor`, the app and shared-package
 typechecks, one executed generated-hook test, and iOS and Android `expo export`. These
 checks are JS-level evidence only: a device build, Hermes streaming and native auth
 are separate gates.
+
+## 4. Native dev loop
+
+**Use when** the project has an Expo frontend. New scaffolds include all of it;
+existing apps own the affected files and adapt them by hand: the
+`babel-preset-expo` dependency, the `expo/fetch` streaming transport and Jest
+mapping, the Metro `.js`→`.ts` resolver fallback for generated clients, portable
+runtime imports in shared helpers, device-reachable API and Metro origins, native
+dev-log forwarding, focus/connectivity adapters and the mutation `networkMode`
+default. Load `forge skill load migrations/v1.2.0/native-dev-loop`.

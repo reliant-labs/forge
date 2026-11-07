@@ -1,7 +1,11 @@
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { createClient, type Transport } from "@connectrpc/connect";
+import { fetch as expoFetch } from "expo/fetch";
 import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime/interceptors";
 import type { DescService } from "@bufbuild/protobuf";
+{{- if .Workspaces}}
+import { setApiTransport } from "{{.HooksPackage}}";
+{{- end}}
 import { DEV_API_URL } from "./apiurl_gen";
 
 // The API URL is read from the EXPO_PUBLIC_API_URL environment variable.
@@ -44,21 +48,38 @@ const interceptors = buildRuntimeInterceptors({
   getToken: () => _getToken(),
 });
 
-function buildTransport(): Transport {
+// Hermes' built-in fetch (React Native's XHR-backed polyfill) buffers the whole
+// response, so a server-streaming RPC would deliver nothing until the stream
+// ends. expo/fetch is Expo's native fetch: its Response.body is a real
+// ReadableStream fed chunk by chunk from the platform networking stack, which
+// is what connect-web's streaming path reads. It is passed explicitly, rather
+// than relying on the global, so streaming does not depend on
+// EXPO_PUBLIC_USE_RN_FETCH (which swaps the global back to React Native's).
+// On web, expo/fetch resolves to the browser's own fetch.
+//
+// Unary calls go through it too, so every call has one network layer and the
+// same AbortSignal semantics: aborting cancels the native request and errors
+// the body stream.
+//
+// createTransport takes the fetch implementation as a parameter only so tests
+// can drive the real transport with a fake network; the app uses `transport`
+// below, which always gets expo/fetch.
+export function createTransport(fetchImpl: typeof globalThis.fetch = expoFetch): Transport {
   return createConnectTransport({
     baseUrl,
     interceptors,
+    fetch: fetchImpl,
   });
 }
 
-export const transport = buildTransport();
+export const transport = createTransport();
 {{- if .Workspaces}}
 
 // Wire the workspace-shared hooks package to this frontend's Transport.
 // The hooks package is DOM-free; each frontend hands its Transport over
 // once at module load so generated hooks resolve against the right
-// network layer.
-import { setApiTransport } from "{{.HooksPackage}}";
+// network layer. (Hooks resolve the transport at call time, so importing
+// setApiTransport before `transport` exists is safe.)
 setApiTransport(transport);
 {{- end}}
 

@@ -85,6 +85,51 @@ A one-off scaffolded standalone app reported `expo install --check` up to date a
 The SDK 52-to-58 migration path for existing apps was not executed: guidance
 requires one SDK at a time and does not claim a validated direct jump.
 
+## Native dev-loop slice
+
+The stacked dev-loop slice makes a fresh SDK 58 app usable against a running
+forge stack:
+
+- **Transport.** The native Connect transport fetches through `expo/fetch`, so
+  server streams arrive incrementally on Hermes and abort cancels them (Jest
+  maps `expo/fetch` to the global fetch).
+- **Device origin.** `forge env up --device-host` (or `FORGE_DEV_DEVICE_HOST`)
+  sets the host a device or simulator uses to reach the API. Metro prefers 8081
+  and falls back to an ephemeral port when another process holds it; `env up`
+  injects `EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN` with the port it chose.
+- **Dev logs.** `src/lib/devlog.ts` forwards `console.*`, uncaught errors and
+  unhandled rejections to Metro's `/__forge/log`, which writes them into
+  `.forge/logs/<env>/` as `[browser:<level>]` lines, the same shape as the web
+  dev servers. All three receivers (Vite, Next.js, Metro) sanitize input, and the
+  forwarder masks obvious credentials before sending. Production bundles contain
+  none of it.
+- **Lifecycle.** `query-lifecycle.ts` drives React Query's focus and online
+  managers from `AppState` and `expo-network`. Mutations use
+  `networkMode: "always"` in the shared query client.
+- **Generated clients.** A Metro `resolveRequest` fallback (`.js` → `.ts`) lets
+  generated `_pb` clients bundle with buf's `import_extension=.js` unchanged.
+
+All five consumer cases passed on the final tree, along with the scoped
+template, generator, codegen, config and component suites and focused
+`internal/cli` tests. An iOS simulator acceptance run (Xcode 27.3 beta,
+iPhone 18 Pro, Expo 58.0.23 / RN 0.88.1, Debug build) passed:
+
+- a screen calling a generated client bundled with no redbox;
+- a server stream delivered messages about 700 ms apart with 0–11 ms lag, and
+  cancel surfaced `Canceled` on the client and `context canceled` on the server;
+- focus toggled through inactive, background and active;
+- the forwarder attached, multi-line errors arrived one prefixed line each, and
+  an unhandled rejection arrived with its stack while the app stayed alive;
+- without the origin variable the app warned once and kept running;
+- the production export contained no dev-log code;
+- `tsconfig.json` stayed byte-identical through generate, prebuild, dev and
+  export.
+
+The 8081 path itself was substituted: a non-forge process held 8081, so the
+build pinned `RCT_METRO_PORT` to the fallback port. Stack frames from rejections
+are bundle URLs, not symbolicated source. Existing apps adopt the slice through
+the `migrations/v1.2.0/native-dev-loop` playbook; that path was not executed.
+
 ## Explicit remaining gates
 
 - True adopted-app ingress: a customized scaffold is preservation coverage, not
@@ -94,8 +139,9 @@ requires one SDK at a time and does not claim a validated direct jump.
 - Backend-only `project new --frontend-workspaces` does not persist a complete
   workspace before a frontend exists; this fixture initializes the canonical
   workspace emitter explicitly. It does not certify that CLI onboarding path.
-- Executed existing-app SDK migration, automated Expo Doctor, native Xcode/Gradle
-  builds, Hermes on device, streaming/cancellation and network/lifecycle behavior.
+- Executed existing-app SDK and dev-loop migrations, automated Expo Doctor,
+  Android/Gradle builds, and Hermes, streaming/cancellation and network/lifecycle
+  behavior on a physical device (the iOS simulator is covered above).
 - Real native identity, secure storage/account isolation, device logs/crashes,
   store publication, signed OTA and health/recovery evidence.
 

@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Record is .forge/obs/backend-<env>.json.
@@ -55,9 +57,5 @@ func Write(projectDir string, rec Record) error {
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, p)
+	return atomicfile.WriteFile(p, append(b, '\n'), 0o600)
 }

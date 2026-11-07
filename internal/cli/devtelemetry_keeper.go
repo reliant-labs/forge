@@ -50,6 +50,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/devtelemetry"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -103,7 +104,7 @@ func devTelemetryKeeperCmd(spec devTelemetryKeeperSpec) (*exec.Cmd, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+	if err := atomicfile.WriteFile(path, append(b, '\n'), 0o600); err != nil {
 		return nil, err
 	}
 	argv := selfForgeCommand([]string{"forge", "env", devTelemetryKeeperName, path})

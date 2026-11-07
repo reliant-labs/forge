@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // HeadersPath is the process token's headers file, in the
@@ -112,7 +114,7 @@ func writeAtomic(p string, b []byte) error {
 	}
 	ignore := filepath.Join(dir, ".gitignore")
 	if _, err := os.Stat(ignore); errors.Is(err, os.ErrNotExist) {
-		if err := os.WriteFile(ignore, []byte("*\n"), 0o600); err != nil {
+		if err := atomicfile.WriteFile(ignore, []byte("*\n"), 0o600); err != nil {
 			return err
 		}
 	}

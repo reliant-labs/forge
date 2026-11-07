@@ -55,6 +55,10 @@ import {
   resetInteractions,
 } from "./interaction.js";
 import { buildRuntimeInterceptors, traceInterceptor } from "./interceptors.js";
+import {
+  registerTelemetryStartup,
+  resetTelemetryGate,
+} from "./telemetry-gate.js";
 import { disableTelemetry, resetTrackState } from "./track.js";
 import { injectTraceContext, traceIdFrom, TRACEPARENT_RE } from "./trace.js";
 
@@ -426,6 +430,26 @@ describe("interaction() with an SDK", () => {
       { name: "snapshot_received", attributes: { "chat.messages": 12 } },
     ]);
     expect(span?.attributes["chat.messages"]).toBe(12);
+  });
+
+  it("keeps an RPC in the interaction open when it was made, however long the telemetry gate holds it", async () => {
+    // The interceptor waits for telemetry startup before it calls next().
+    // The context must be chosen when the call ENTERS, not after that wait:
+    // by then the user may have started another interaction.
+    let finish!: () => void;
+    registerTelemetryStartup(new Promise<void>((r) => (finish = r)));
+    try {
+      const older = interaction("chat.open", { "chat.id": "a" });
+      const pending = rpcTraceparent();
+      const newer = interaction("chat.open", { "chat.id": "b" });
+      finish();
+      const tp = await pending;
+      expect(traceIdFrom(tp)).toBe(older.traceId);
+      expect(traceIdFrom(tp)).not.toBe(newer.traceId);
+      expect(parentOf(tp)).toBe(spanNamed("chat.open")[0]?.spanId);
+    } finally {
+      resetTelemetryGate();
+    }
   });
 
   it("parents an RPC with no active span on the interaction", () => {

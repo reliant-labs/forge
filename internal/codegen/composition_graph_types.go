@@ -131,9 +131,15 @@ func loadGraphUniverse(projectDir string, comps []BuildComponent) *graphUniverse
 	for _, c := range comps {
 		patterns = append(patterns, "./"+path.Join(filepath.ToSlash(c.compRoleRoot), filepath.ToSlash(c.compImportLeaf)))
 	}
+	// No NeedDeps: the graph reads syntax and types of the packages it names,
+	// and go/types reads their dependencies from export data. With NeedDeps,
+	// go/packages type-checked the whole transitive closure from source — on
+	// reliant 24.7s of a 115s generate, against 6.1s without it, with
+	// byte-identical output. The fetch-retry below still sees every module
+	// download: go list -export -deps runs the same downloads.
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedTypes |
-			packages.NeedDeps | packages.NeedImports | packages.NeedSyntax | packages.NeedTypesInfo,
+			packages.NeedImports | packages.NeedSyntax | packages.NeedTypesInfo,
 		Dir: absProject,
 		Env: goexec.Env(),
 	}

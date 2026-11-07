@@ -32,7 +32,7 @@ func TestLooksSecret(t *testing.T) {
 		{"key in a camelCase name", "signingKey", "v", true},
 		{"passwd name", "SMTP_PASSWD", "p", true},
 		{"a name with nothing to hide", "DB_PASSWORD", "", false},
-		{"already redacted", "DB_PASSWORD", RedactedDigest("hunter2"), false},
+		{"already redacted", "DB_PASSWORD", RedactedWithheld, false},
 		{"the withheld marker", "API_TOKEN", RedactedWithheld, false},
 
 		// By shape, under an innocent name.
@@ -82,7 +82,7 @@ func TestRedactedDigest(t *testing.T) {
 		t.Fatalf("RedactedDigest is not idempotent: %q -> %q", got, again)
 	}
 	if RedactedDigest("hunter2") == RedactedDigest("hunter3") {
-		t.Fatal("two values redacted to one digest: a diff could not see the change")
+		t.Fatal("explicit digest utility did not distinguish values")
 	}
 	if !IsRedacted(got) || !IsRedacted(RedactedWithheld) {
 		t.Fatal("IsRedacted must recognize every redaction this package writes")
@@ -226,13 +226,13 @@ func TestRedactObject_WorkloadEnv(t *testing.T) {
 				if got := envValue(t, c, "LOG_LEVEL"); got != "info" {
 					t.Errorf("%s: a plain value was withheld: %v", list, got)
 				}
-				if got := envValue(t, c, "DB_PASSWORD"); got != RedactedDigest("hunter2") {
+				if got := envValue(t, c, "DB_PASSWORD"); got != RedactedWithheld {
 					t.Errorf("%s: DB_PASSWORD = %v, want its digest", list, got)
 				}
-				if got := envValue(t, c, "DATABASE_URL"); got != RedactedDigest("postgres://app:s3cr3t@db:5432/shop") {
+				if got := envValue(t, c, "DATABASE_URL"); got != RedactedWithheld {
 					t.Errorf("%s: a DSN with a password was shown: %v", list, got)
 				}
-				if got := envValue(t, c, "UPSTREAM"); got != RedactedDigest(testToken) {
+				if got := envValue(t, c, "UPSTREAM"); got != RedactedWithheld {
 					t.Errorf("%s: a generated token was shown: %v", list, got)
 				}
 				if c["image"] != testImageRef {
@@ -246,13 +246,13 @@ func TestRedactObject_WorkloadEnv(t *testing.T) {
 				if !reflect.DeepEqual(c["envFrom"], wantEnvFrom) {
 					t.Errorf("%s: envFrom refs changed: %v", list, c["envFrom"])
 				}
-				wantArgs := []any{"serve", "--port=8080", "--db-password=" + RedactedDigest("hunter2"),
-					"--api-token", RedactedDigest("abc"), "--verbose", RedactedDigest(testPEM)}
+				wantArgs := []any{"serve", "--port=8080", "--db-password=" + RedactedWithheld,
+					"--api-token", RedactedWithheld, "--verbose", RedactedWithheld}
 				if !reflect.DeepEqual(c["args"], wantArgs) {
 					t.Errorf("%s: args = %v, want %v", list, c["args"], wantArgs)
 				}
 				header := c["readinessProbe"].(map[string]any)["httpGet"].(map[string]any)["httpHeaders"].([]any)[0].(map[string]any)
-				if header["value"] != RedactedDigest("Bearer abcdef0123456789") {
+				if header["value"] != RedactedWithheld {
 					t.Errorf("%s: a probe's Authorization header was shown: %v", list, header["value"])
 				}
 			}
@@ -308,13 +308,13 @@ func TestRedactObject_ConfigMap(t *testing.T) {
 	if data["LOG_LEVEL"] != "info" || data["config.yaml"] != "listen: :8080\n" {
 		t.Errorf("plain ConfigMap data was withheld: %v", data)
 	}
-	if data["API_TOKEN"] != RedactedDigest("abc") {
+	if data["API_TOKEN"] != RedactedWithheld {
 		t.Errorf("a credential-named ConfigMap key was shown: %v", data["API_TOKEN"])
 	}
-	if data["upstream.url"] != RedactedDigest("https://user:pw@upstream.example.com") {
+	if data["upstream.url"] != RedactedWithheld {
 		t.Errorf("a URL with userinfo was shown: %v", data["upstream.url"])
 	}
-	if got := out["binaryData"].(map[string]any)["keystore.p12"]; got != RedactedDigest("MIIKAgIBAzCCCcgGCSqGSIb3") {
+	if got := out["binaryData"].(map[string]any)["keystore.p12"]; got != RedactedWithheld {
 		t.Errorf("binaryData was shown: %v", got)
 	}
 }
@@ -332,7 +332,7 @@ func TestRedactObject_ForgeWorkloadAndExternalSecret(t *testing.T) {
 		}},
 	}
 	env := RedactObject(wl).(map[string]any)["spec"].(map[string]any)["env"].([]any)
-	if env[0].(map[string]any)["value"] != RedactedDigest("s3cr3t") || env[1].(map[string]any)["value"] != "8080" {
+	if env[0].(map[string]any)["value"] != RedactedWithheld || env[1].(map[string]any)["value"] != "8080" {
 		t.Errorf("Workload env = %v", env)
 	}
 	if !reflect.DeepEqual(env[2], wl["spec"].(map[string]any)["env"].([]any)[2]) {

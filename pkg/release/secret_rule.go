@@ -27,7 +27,7 @@ package release
 // open, a build that refused it would refuse a legitimate deploy on a guess,
 // and the bundle is not where it leaks from: the manifests layer is readable
 // only by the deploy path. Where it would leak from is a screen, so the
-// viewer withholds it (RedactObject) and shows a short digest instead.
+// viewer withholds it (RedactObject) without exposing a value-derived digest.
 //
 // One file, so a change to either half is a change to both consumers: the
 // build and the viewer cannot drift into disagreeing about what a Secret's
@@ -50,9 +50,8 @@ import (
 // it alone.
 const RedactedWithheld = RedactedSecretPrefix + "withheld"
 
-// redactedDigestHexLen is how much of a withheld plain value's SHA-256
-// RedactedDigest shows: enough that two releases' values compare equal or
-// different at a glance, short enough not to be mistaken for an identity.
+// redactedDigestHexLen is retained for the explicit RedactedDigest utility.
+// RedactObject never uses this value-derived fingerprint for viewer output.
 const redactedDigestHexLen = 12
 
 // IsSecretObject reports whether a decoded rendered document is a Secret: the
@@ -108,15 +107,11 @@ func IsRedacted(value any) bool {
 	return ok && strings.HasPrefix(s, RedactedSecretPrefix)
 }
 
-// RedactedDigest is what a withheld plain value becomes:
-// `forge.dev/redacted: sha256:<first 12 hex>`. The digest keeps a diff
-// working (equal values redact equally, a changed value visibly changes)
-// without showing the value. The prefix keeps a redaction from reading as a
-// literal `sha256:…` value, which an image digest can be. Idempotent.
-//
-// A short unsalted digest hides a value from a glance, not from an offline
-// guess at a low-entropy one: it is shown only to people already granted
-// deploy:config:read, behind an audit, never stored in a record.
+// RedactedDigest returns an unsalted, truncated SHA-256 fingerprint.
+// It is not safe redaction for secret values: it permits offline dictionary
+// tests, even behind a config-read grant. RedactObject never uses it.
+// Secret comparisons require a separately keyed digest supplied by the backend;
+// without that key, viewers must omit secret value diffs. Idempotent.
 func RedactedDigest(value string) string {
 	if IsRedacted(value) {
 		return value
@@ -255,15 +250,17 @@ func shannonEntropy(s string) float64 {
 //     volume's secretName, an ExternalSecret) is a name, not a value, and
 //     stays as it is.
 //   - A named plain value (any {name, value} pair: a container's env, a
-//     probe's httpHeaders, a forge Workload's env) is RedactedDigest'd when
-//     LooksSecret(name, value). So are a ConfigMap's data values, by key.
-//   - A ConfigMap's binaryData is always digested: it is not text a person
+//     probe's httpHeaders, a forge Workload's env) becomes RedactedWithheld
+//     when LooksSecret(name, value). So do a ConfigMap's data values, by key.
+//   - A ConfigMap's binaryData is always withheld: it is not text a person
 //     reads, and a keystore is binary.
 //   - A container's args and command are judged per element: `--flag=value`
 //     and `--flag value` by the flag's name and the value, anything else by
 //     shape.
-//   - Every other string is digested when it has a credential's shape.
+//   - Every other string is withheld when it has a credential's shape.
 //
+// No value-derived fingerprint is exposed. Secret changes simply read as
+// redacted; comparisons require a separately keyed backend digest in the future.
 // The rendered YAML a viewer shows must be produced from this output, never
 // from the raw layer bytes.
 func RedactObject(doc any) any {
@@ -295,12 +292,8 @@ func RedactObject(doc any) any {
 		}
 		if values, ok := body["binaryData"].(map[string]any); ok {
 			binary := make(map[string]any, len(values))
-			for key, value := range values {
-				if s, isString := value.(string); isString {
-					binary[key] = RedactedDigest(s)
-				} else {
-					binary[key] = RedactedWithheld
-				}
+			for key := range values {
+				binary[key] = RedactedWithheld
 			}
 			out["binaryData"] = binary
 		}
@@ -344,8 +337,8 @@ func redactTree(v any) any {
 		}
 		return out
 	case string:
-		if hasCredentialShape(t) {
-			return RedactedDigest(t)
+		if IsRedacted(t) || hasCredentialShape(t) {
+			return RedactedWithheld
 		}
 		return t
 	default:
@@ -361,7 +354,7 @@ func redactNamed(name string, value any) any {
 		return redactTree(value)
 	}
 	if LooksSecret(name, s) {
-		return RedactedDigest(s)
+		return RedactedWithheld
 	}
 	return s
 }
@@ -394,7 +387,7 @@ func redactArgs(v any) any {
 		switch {
 		case hasValue && flagRE.MatchString(name):
 			if LooksSecret(strings.TrimLeft(name, "-"), value) {
-				out[i] = name + "=" + RedactedDigest(value)
+				out[i] = name + "=" + RedactedWithheld
 			} else {
 				out[i] = s
 			}
@@ -404,7 +397,7 @@ func redactArgs(v any) any {
 			flag = strings.TrimLeft(s, "-")
 		default:
 			if LooksSecret(flag, s) {
-				out[i] = RedactedDigest(s)
+				out[i] = RedactedWithheld
 			} else {
 				out[i] = s
 			}

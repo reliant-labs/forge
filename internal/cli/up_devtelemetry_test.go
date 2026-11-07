@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -260,8 +261,9 @@ func TestDevTelemetryFilesAndRenewal(t *testing.T) {
 			if string(b) != "authorization=Bearer "+tok+"\n" {
 				t.Errorf("%s = %q, want the %s token", filepath.Base(path), b, tok)
 			}
+			// Windows has no POSIX permission bits: every file reads 0666.
 			fi, _ := os.Stat(path)
-			if fi.Mode().Perm() != 0o600 {
+			if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 				t.Errorf("%s mode %v, want 0600", filepath.Base(path), fi.Mode().Perm())
 			}
 		}
@@ -792,7 +794,8 @@ func TestDevTelemetryKeeperCmd(t *testing.T) {
 	if err := json.Unmarshal(b, &back); err != nil || back.Session.ID != spec.Session.ID || back.Endpoint.URL != spec.Endpoint.URL || !back.ExpiresAt.Equal(spec.ExpiresAt) {
 		t.Errorf("spec round trip: %+v, %v", back, err)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits: every file reads 0666.
+	if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("spec mode %v", fi.Mode().Perm())
 	}
 	// The command is registered (hidden) under `forge env`.

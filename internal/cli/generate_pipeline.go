@@ -2069,7 +2069,8 @@ func stepServiceStubs(ctx *pipelineContext) error {
 // The entity set is every applied table (codegen.ParseORMEntities), not the
 // CRUD join: CRUD wiring keys on CRUD rpcs, the store does not.
 func stepInternalDBORM(ctx *pipelineContext) error {
-	entities, entErr := ctx.ormEntities()
+	orm := config.ORMPackage(ctx.Cfg)
+	entities, entErr := ctx.ormEntities(orm.PackageDir())
 	if entErr != nil {
 		ctx.ORMFailure = entErr
 		return ctx.warnOrFail("entity parsing for ORM generation", entErr)
@@ -2078,7 +2079,6 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 		return nil
 	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
-	orm := config.ORMPackage(ctx.Cfg)
 	if err := generator.GeneratePlanORM(ctx.ProjectDir, orm, planEntities, ctx.Checksums); err != nil {
 		// Recorded whether or not --strict makes it fatal: without --strict
 		// the run continues, and every step that consumes the ORM must say

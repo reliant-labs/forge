@@ -16,6 +16,8 @@ import type { Identity } from "./native-login";
 {{- end}}
 {{- if eq .Platform "react-native"}}
 
+import type { AuthUser } from "./provider";
+
 /** Who is signed in. Presentation only. */
 export interface Identity {
   authenticated: boolean;
@@ -34,6 +36,27 @@ export interface AuthContextValue {
   /** Re-read the session from the server. Call after signing in. */
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
+{{- if eq .Platform "react-native"}}
+  /**
+   * True when this build signs in against an identity provider
+   * (EXPO_PUBLIC_FORGE_OIDC_* is set — even if wrongly, see `configError`).
+   * False in mock mode, where there is nothing to sign in to and the app opens
+   * straight to its screens.
+   */
+  requiresSignIn: boolean;
+  /**
+   * Set when EXPO_PUBLIC_FORGE_OIDC_* is present but invalid. The app does NOT
+   * fall back to the mock then: it stays signed out and says why.
+   */
+  configError: Error | null;
+  /**
+   * Interactive sign-in through the system browser. Resolves to the user, or
+   * null when the person cancelled (not an error). Rejects with a typed error
+   * (OfflineError, StorageUnavailableError, BrowserBusyError, ...) — see
+   * ./sign-in-error for a ready mapping to screen copy.
+   */
+  signIn: () => Promise<AuthUser | null>;
+{{- end}}
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null);

@@ -3360,6 +3360,7 @@ func upFrontends(ctx context.Context, fl frontendLaunch) int {
 		}
 		cmd := buildFrontendDevCmd(ctx, fl, fe, os.Environ())
 		announceNativeAPIOrigin(os.Stdout, fl, fe, cmd.Env)
+		announceNativeOIDC(os.Stdout, fe.Name, readNativeOIDC(fl.projectDir, fl.entities, fe), cmd.Env, fl.deviceHost)
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++
@@ -3377,6 +3378,9 @@ func buildFrontendDevCmd(ctx context.Context, fl frontendLaunch, fe FrontendEnti
 	if origin := nativeDevlogOrigin(fe, fl.deviceHost); origin != "" && envLookupLastOr(cmd.Env, devlogOriginEnv) == "" {
 		cmd.Env = withForcedEnv(cmd.Env, devlogOriginEnv, origin)
 	}
+	// A native frontend of a managed-identity env signs in at the env's IdP:
+	// hand it the converged client (shell, KCL and .env win, per variable).
+	cmd.Env = withNativeOIDCEnv(cmd.Env, readNativeOIDC(fl.projectDir, fl.entities, fe))
 	// Declared secrets, scoped to this frontend's own secret_ref
 	// declarations, layered over the dev server's env. In memory:
 	// the value reaches the child process environment only.

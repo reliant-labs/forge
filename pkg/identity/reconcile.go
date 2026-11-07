@@ -185,7 +185,10 @@ type Report struct {
 	Changes []Change
 	// Warnings are things left alone on purpose: a role nobody declared, a
 	// credential that cannot be recovered.
-	Warnings    []string
+	Warnings []string
+	// Skipped lists the Optional objects the instance refused: each is also
+	// in Warnings, and is absent from Output.
+	Skipped     []Skipped
 	Retiring    []Retiring
 	SignInCodes []SignInCode
 	// Credentialed lists the declared members this pass CONFIRMED hold a
@@ -207,6 +210,13 @@ type Report struct {
 // Changed reports whether the pass wrote (or, in a dry run, would write)
 // anything.
 func (r *Report) Changed() bool { return len(r.Changes) > 0 }
+
+// Skipped is an Optional object the instance refused. Err is an *ObjectError.
+type Skipped struct {
+	Kind string
+	Name string
+	Err  error
+}
 
 func (r *Report) change(a Action, kind, name, detail string) {
 	r.Changes = append(r.Changes, Change{Action: a, Kind: kind, Name: name, Detail: detail})

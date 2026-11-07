@@ -277,6 +277,16 @@ type Application struct {
 
 	// Broker configures the broker account of an AppNativeBroker.
 	Broker *BrokerAccount
+
+	// Optional makes the application best-effort: when the instance refuses
+	// to register or update it, the pass records the refusal in
+	// Report.Skipped (and Report.Warnings), leaves the application out of
+	// Output.Apps and carries on, instead of failing and withholding the
+	// whole Output. For a client that is an addition to the product's sign-in
+	// rather than part of it (a mobile app beside the web app): its rejection
+	// by the identity provider must not take the others' sign-in down. An
+	// interrupted pass (a cancelled context) still fails.
+	Optional bool
 }
 
 // BrokerAccount is the machine account the login broker authenticates as. It is

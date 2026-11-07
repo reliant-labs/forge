@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -254,6 +255,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	}
 	// The service catalog is a layer artifact with the same rule: a control
 	// plane whose layer validator predates it refuses the WHOLE bundle.
+	deploytarget.NoteNativeAppsWithheld(in.errWriter(), env, reader.WithheldNativeApplications(doc.Shape))
 	var withheld bool
 	observability, withheld = withholdServiceCatalog(observability, reader)
 	if withheld {

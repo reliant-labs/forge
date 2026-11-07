@@ -128,6 +128,24 @@ const (
 	// written only to one that names the feature. A shape that declares none
 	// carries no key, so it needs nothing of the reader.
 	BundleFeatureExternalDatabases = "shape-external-databases"
+	// BundleFeatureIdentityNativeApp is ShapeIdentityApplication.Frontend and
+	// the application kind "native": a mobile app's own public OIDC client. A
+	// reader without the feature is sent the identity without its native
+	// applications, which is the fail-closed reading (no client is registered
+	// that nobody converged).
+	//
+	// NOT ADVERTISED. [BundleDocFeatures] lists what this version's decoder
+	// accepts, and a control plane built from it would otherwise claim this
+	// feature merely by decoding the field, then be sent native applications
+	// it cannot register. The feature means "can REGISTER", so it is withheld
+	// from the advertised list until a control plane implements hosted
+	// registration of native clients: that change adds the constant to
+	// BundleDocFeatures, lifts the hosted refusal in validateApplication and
+	// the KCL schema, and a control plane then names it in GetCapabilities
+	// only if it registers. Until then every real reader lacks it, so
+	// [BundleReader.LimitShape] withholds native applications from all of
+	// them (only a nil reader, the machine ledger, keeps them).
+	BundleFeatureIdentityNativeApp = "shape-identity-native-app"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -137,6 +155,12 @@ const (
 func BundleDocFeatures() []string {
 	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases}
 }
+
+// unadvertisedBundleFeatures are features this version defines and gates in
+// [BundleReader.LimitShape] but does not advertise (see
+// [BundleFeatureIdentityNativeApp]). They still own their document keys, so a
+// field they gate cannot reach a reader unannounced.
+var unadvertisedBundleFeatures = []string{BundleFeatureIdentityNativeApp}
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
 // optional document features it named. A nil *BundleReader is this forge's
@@ -149,6 +173,23 @@ type BundleReader struct {
 // every feature this forge writes.
 func (r *BundleReader) Supports(feature string) bool {
 	return r == nil || slices.Contains(r.Features, feature)
+}
+
+// WithheldNativeApplications names the kind-native applications of s that
+// LimitShape removes for this reader, so a caller can say so: they are left
+// out silently otherwise, and a developer would wonder why a declared client
+// never registered. Empty for a reader that supports the feature.
+func (r *BundleReader) WithheldNativeApplications(s Shape) []string {
+	if r.Supports(BundleFeatureIdentityNativeApp) || s.Identity == nil {
+		return nil
+	}
+	var names []string
+	for _, a := range s.Identity.Applications {
+		if a.Kind == IdentityAppNative {
+			names = append(names, a.Name)
+		}
+	}
+	return names
 }
 
 // Limit removes optional browse-only parts the reader does not decode.
@@ -240,6 +281,14 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		// The login_policy output is a sign-in addition too: a reader predating
 		// it rejects a consumer that maps or omits it as an unknown output.
 		id.Consumers = withoutLoginPolicyOutput(id.Consumers)
+		s.Identity = &id
+	}
+	if !r.Supports(BundleFeatureIdentityNativeApp) && s.Identity != nil && slices.ContainsFunc(s.Identity.Applications, func(a ShapeIdentityApplication) bool { return a.Kind == IdentityAppNative }) {
+		id := *s.Identity
+		id.Applications = slices.DeleteFunc(slices.Clone(id.Applications), func(a ShapeIdentityApplication) bool { return a.Kind == IdentityAppNative })
+		if len(id.Applications) == 0 {
+			id.Applications = nil
+		}
 		s.Identity = &id
 	}
 	if !r.Supports(BundleFeatureHealthGate) && s.DeliveryPolicy != nil && s.DeliveryPolicy.HealthGate != nil {

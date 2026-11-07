@@ -26,6 +26,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureDeclaredEnvs:           {"declared_envs"},
 	BundleFeatureShapePlacement:         {"shape.workloads[].unit", "shape.host_infra"},
 	BundleFeatureExternalDatabases:      {"shape.external_databases"},
+	BundleFeatureIdentityNativeApp:      {"shape.identity.applications[].frontend"},
 	BundleFeatureIdentitySignIn: {
 		"shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods",
 		"shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email", "shape.identity.dev_mail",
@@ -77,7 +78,7 @@ func underAny(path string, prefixes []string) bool {
 func TestEveryBundleDocAdditionIsAFeature(t *testing.T) {
 	legacy := legacyBundleDocKeys(t)
 	var owned []string
-	for _, f := range BundleDocFeatures() {
+	for _, f := range append(BundleDocFeatures(), unadvertisedBundleFeatures...) {
 		keys, ok := bundleFeatureKeys[f]
 		if !ok {
 			t.Errorf("feature %q has no key paths in bundleFeatureKeys", f)

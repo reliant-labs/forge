@@ -524,10 +524,23 @@ func TestReactNativeShipsNoBrowserSignIn(t *testing.T) {
 
 	tree := authTreeFor(t, "react-native")
 
-	excluded := append([]string{
+	// React Native's own token-based OIDC client (oidc.ts, oidc-provider.ts —
+	// system browser + PKCE, tokens in the OS keystore, never a cookie) shares
+	// two filenames with the retired BROWSER flow. Those two are allowed here;
+	// the browser kinds above still must not compose them.
+	nativeOIDC := map[string]bool{
+		"src/lib/auth/oidc.ts":          true,
+		"src/lib/auth/oidc-provider.ts": true,
+	}
+	excluded := []string{
 		"src/lib/auth/native-login.ts",
 		"src/lib/auth/route-guard.tsx",
-	}, deletedBrowserOIDCModules...)
+	}
+	for _, rel := range deletedBrowserOIDCModules {
+		if !nativeOIDC[rel] {
+			excluded = append(excluded, rel)
+		}
+	}
 	for _, rel := range excluded {
 		if _, ok := tree[rel]; ok {
 			t.Errorf("react-native composed %s — it is written against the browser's cookie and routing model, neither of which exists on this platform", rel)
@@ -589,7 +602,16 @@ func TestAuthContextReadsIdentityFromTheServer(t *testing.T) {
 		// HttpOnly cookie, and React Native ships a mock whose token is a
 		// fixture no server accepts — so a getToken on this context would be
 		// a null-returning method that callers build on.
-		if m := regexp.MustCompile(`\bgetToken\b`).FindString(code); m != "" {
+		//
+		// React Native's context DOES call a provider's getToken() — to hand
+		// the transport a token getter — so a member call on a provider is
+		// allowed there. What stays banned everywhere is getToken as part of
+		// what the context EXPOSES: any other occurrence of the word.
+		tokenScan := code
+		if kind == "react-native" {
+			tokenScan = regexp.MustCompile(`\.getToken\(\)`).ReplaceAllString(code, "")
+		}
+		if m := regexp.MustCompile(`\bgetToken\b`).FindString(tokenScan); m != "" {
 			t.Errorf("%s %s exposes getToken. The session cookie is HttpOnly, so there is no token to return — the only implementation is one that answers null, and every caller that trusts it is broken by construction.",
 				kind, rel)
 		}
@@ -598,10 +620,36 @@ func TestAuthContextReadsIdentityFromTheServer(t *testing.T) {
 			if importsNativeLogin {
 				t.Errorf("react-native %s imports ./native-login, which is not emitted for this platform — the generated project will not build", rel)
 			}
-			if !strings.Contains(code, "createSessionAuthProvider") {
-				t.Errorf("react-native %s must fall back to the mock provider — it is the only implementation this tree ships", rel)
+			// Two providers, one rule. The OIDC provider is chosen ONLY when
+			// readOidcConfig() returns a config; without one the mock is the
+			// fallback; and a config that is present but invalid must reach
+			// neither — silently mocking a mistyped issuer would render a
+			// signed-in UI over an app that is not.
+			for _, want := range []string{"readOidcConfig()", "createNativeAuthProvider(", "createSessionAuthProvider()"} {
+				if !strings.Contains(code, want) {
+					t.Errorf("react-native %s must contain %s — the provider choice (OIDC when configured, else the mock) lives here", rel, want)
+				}
+			}
+			if !regexp.MustCompile(`(?s)catch\s*\(\w+\)\s*\{.{0,600}?kind:\s*"invalid"`).MatchString(code) {
+				t.Errorf("react-native %s must turn a readOidcConfig() failure into an explicit invalid state, not a fallback to the mock", rel)
+			}
+			if n := strings.Count(code, "createSessionAuthProvider()"); n != 1 {
+				t.Errorf("react-native %s constructs the mock provider %d times; it must be exactly once, as the not-configured fallback", rel, n)
+			}
+			mockAt := strings.Index(code, "createSessionAuthProvider()")
+			oidcAt := strings.Index(code, "createNativeAuthProvider(")
+			if oidcAt < 0 || mockAt < oidcAt {
+				t.Errorf("react-native %s must test for an OIDC config BEFORE falling back to the mock", rel)
 			}
 			continue
+		}
+
+		// The native sign-in surface is React Native's alone. A browser tree
+		// importing it would pull expo modules into a web bundle.
+		for _, rnOnly := range []string{"readOidcConfig", "createNativeAuthProvider", "requiresSignIn", "setTokenRejectedHandler", "useQueryClient"} {
+			if strings.Contains(code, rnOnly) {
+				t.Errorf("%s %s mentions %s, which belongs to the React Native tree only", kind, rel, rnOnly)
+			}
 		}
 
 		if !importsNativeLogin {

@@ -130,6 +130,101 @@ build pinned `RCT_METRO_PORT` to the fallback port. Stack frames from rejections
 are bundle URLs, not symbolicated source. Existing apps adopt the slice through
 the `migrations/v1.2.0/native-dev-loop` playbook; that path was not executed.
 
+## Native auth slice
+
+The stacked native-auth slice gives a fresh SDK 58 app real sign-in against the
+env's identity provider. Research and design notes are in
+`docs/proposals/mobile-native-auth/`.
+
+- **Client.** The app is an OAuth public client using authorization code +
+  PKCE (S256):
+  - Sign-in runs in the system browser (`expo-web-browser`, ephemeral session on
+    iOS), and tokens come from the issuer's own endpoints. There is no broker and
+    no secret.
+  - Tokens live in `expo-secure-store` (`AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`).
+    They are namespaced by issuer and client, and wiped on the first launch after
+    a reinstall. Store operations are serialized, so a sign-out racing a refresh
+    cannot leave a token behind, and an incomplete stored record loads as signed
+    out.
+  - Refresh is single-flight. A dead refresh grant ends the session once, with no
+    loop. That covers `invalid_grant` and any non-retryable 4xx, including
+    Zitadel's `400 invalid_request`. An offline or 5xx failure keeps the session.
+  - Sign-out, and any change of `sub`, bumps an identity epoch. The epoch aborts
+    in-flight requests, drops late responses and clears the query cache.
+- **Server half.**
+  - Every `rn` frontend on a host-run identity gets a derived `kind = "native"`
+    application (public PKCE, IdP-hosted login). `Frontend.native_sign_in = False`
+    opts a frontend out.
+  - `forge env up` reads the callback scheme from `app.json`'s `expo.scheme` and
+    injects `EXPO_PUBLIC_FORGE_OIDC_*`. `--device-host` does not move the issuer.
+  - KCL and `pkg/release` accept private-use or https callbacks, so adding
+    universal links later is an additive change.
+  - On a hosted identity, native applications are refused for now.
+  - If the IdP refuses a native application, it is skipped with a warning, and
+    the web app's sign-in still publishes.
+  - A project created without a frontend gains the dev identity when its first
+    frontend is scaffolded.
+  - The dev IdP's instance name is now a valid DNS label, so a project named
+    `My_App` boots.
+- **Scaffold.**
+  - New owned files under `src/lib/auth/`, three routes (`sign-in`,
+    `oauthredirect`, `signedout`), and a `Stack.Protected` guard in `_layout.tsx`.
+  - The transport stack is `[authExpired, epoch, tokenRejected, ...runtime]`. A
+    401 renews the token once and replays a unary call once, and only for methods
+    declared `NO_SIDE_EFFECTS` or `IDEMPOTENT`.
+  - `expo.scheme` is one sanitised reverse-DNS id, also used as the bundle id and
+    Android package.
+  - Absent variables keep the mock provider. Invalid ones leave the app signed
+    out with a visible `configError`.
+  - `jest.config.cjs` no longer Babel-transforms `@connectrpc/connect`, which had
+    turned every Connect error-path test into `Code.Unknown`.
+- **Existing apps** adopt it through `migrations/v1.2.0/native-auth`. That path
+  was not executed.
+
+Automated validation on the final tree:
+
+- `TestE2EMobileConsumerConformance`: all five cases passed. Each case ran Jest
+  (294 tests, including every auth suite), typecheck, lint with
+  `--max-warnings 0`, iOS and Android `expo export` and the dev-server bundle.
+  - The fixture fails if a native-auth file or passing auth suite is missing, or
+    if `app.json` lacks the secure-store plugin or the reverse-DNS scheme.
+  - The customized case shows `generate` preserving owned edits.
+  - Both production exports are free of test fakes.
+- Short suites pass for `internal/cli`, `internal/devidentity`, `internal/templates`,
+  `internal/generator`, `internal/codegen`, `internal/config`, `internal/deploytarget`,
+  `internal/bundle`, `pkg/release`, `pkg/identity` and `pkg/components`. The
+  full-mode KCL corpus and identity tests also pass.
+  - `go vet` and `gofmt` are clean.
+  - The `pkg/` API gate reports 10 changes, all compatible.
+  - A real-Zitadel test registers private-use and https callbacks and converges
+    idempotently.
+- An independent review requested changes (one high, four medium, seven low).
+  All of them were fixed, with regression tests that fail on the pre-fix code.
+
+**iOS simulator acceptance** (Xcode 27.3 beta, iPhone 18 Pro, local Zitadel from
+`forge env up dev`, driven by XCUITest). Two runs; the second was on the final
+tree, with a mobile-only project. All checks passed with no substitutions:
+
+- **Guard and config:** a fresh launch showed the sign-in screen, with the
+  injected variables using the single sanitised id.
+- **Sign-in:** user A signed in through the system browser and came back via
+  `com.<project>.<frontend>:/oauthredirect`. An authenticated RPC returned 200,
+  so the server accepts the native JWT and its project audience.
+- **Cancel:** cancelling in the browser returned to a usable sign-in screen.
+- **Restore:** kill and relaunch restored the session with no IdP call.
+- **Refresh:** expired and rejected tokens each produced exactly one refresh, and
+  the read call was replayed.
+- **Logout:** the token was revoked (reuse was refused), the cache cleared, and
+  the next sign-in sent `prompt=login`.
+- **Isolation:** user B saw none of user A's data.
+- **Revocation at the IdP:** one refresh, after which the session ended and stayed
+  ended across relaunch.
+- **Mock and production:** with no OIDC variables the app ran on the mock
+  provider with one warning, and the production export contains no dev-log code.
+
+Physical devices, Android, hosted (control-plane) registration and universal
+links were not exercised.
+
 ## Explicit remaining gates
 
 - True adopted-app ingress: a customized scaffold is preservation coverage, not
@@ -142,8 +237,12 @@ the `migrations/v1.2.0/native-dev-loop` playbook; that path was not executed.
 - Executed existing-app SDK and dev-loop migrations, automated Expo Doctor,
   Android/Gradle builds, and Hermes, streaming/cancellation and network/lifecycle
   behavior on a physical device (the iOS simulator is covered above).
-- Real native identity, secure storage/account isolation, device logs/crashes,
-  store publication, signed OTA and health/recovery evidence.
+- Real native identity is partly covered: the client, token storage and account
+  isolation are tested against fakes, and the iOS simulator run is pending (above).
+  Still open: registering native clients with a hosted control plane, Android
+  (the emulator needs `adb reverse` for the issuer), a physical device, and
+  universal links.
+- Device logs/crashes, store publication, signed OTA and health/recovery evidence.
 
 No scenario above certifies physical-device compatibility or production readiness.
 The integration PR remains draft until the foundation milestone's broader gates

@@ -158,7 +158,11 @@ func mobileConsumerFixture(t *testing.T, bin, shape, source string) {
 		body := readFileE2E(t, path) + "\n// App-owned Metro customization.\nmodule.exports.resolver.assetExts.push('fixtureasset');\n"
 		writeFileE2E(t, path, body)
 		owned[path] = body
-		for _, rel := range []string{"eslint.config.cjs", "jest.config.cjs", "tests/app-config.test.ts"} {
+		// The native-auth files are owned too: an app that edited them keeps its edits.
+		for _, rel := range []string{
+			"eslint.config.cjs", "jest.config.cjs", "tests/app-config.test.ts",
+			"src/lib/auth/config.ts", "app/sign-in.tsx", "tests/auth-config.test.ts",
+		} {
 			path := filepath.Join(mobile, rel)
 			body := readFileE2E(t, path) + "\n// App-owned conformance customization.\n"
 			writeFileE2E(t, path, body)
@@ -247,11 +251,14 @@ export default function GeneratedClient() {
 		}
 		r.run(t, filepath.Join(project, "frontends", "web"), "pnpm", "run", "typecheck")
 	}
-	r.run(t, mobile, "pnpm", "run", "test")
+	assertNativeAuthScaffold(t, mobile)
+	jestOut := r.run(t, mobile, "pnpm", "run", "test")
+	assertNativeAuthSuitesPassed(t, jestOut)
 	for _, platform := range []string{"ios", "android"} {
 		outDir := filepath.Join(t.TempDir(), platform)
 		r.run(t, mobile, "pnpm", "exec", "expo", "export", "--platform", platform, "--output-dir", outDir)
 		assertNoDevlogInExport(t, outDir)
+		assertNoAuthFakesInExport(t, outDir)
 	}
 	// `pnpm run dev` starts Expo, which rewrites a tsconfig.json it finds
 	// non-canonical (typed routes). The scaffold already ships Expo's canonical
@@ -281,6 +288,95 @@ export default function GeneratedClient() {
 		}
 	}
 	r.run(t, mobile, "pnpm", "run", "typecheck")
+}
+
+// nativeAuthSuites are the Jest suites the native-auth slice scaffolds; the
+// consumer's `pnpm run test` must run every one of them.
+var nativeAuthSuites = []string{
+	"auth-config", "auth-oidc", "auth-store-session", "auth-provider",
+	"auth-context", "auth-sign-in-error", "connect-transport",
+}
+
+// assertNativeAuthScaffold fails when a native-auth file is missing, so a
+// scaffold that silently dropped one cannot pass on the suites that remain.
+func assertNativeAuthScaffold(t *testing.T, mobile string) {
+	t.Helper()
+	files := []string{
+		"app/sign-in.tsx", "app/oauthredirect.tsx", "app/signedout.tsx", "tests/auth-fakes.ts",
+	}
+	for _, name := range []string{"config", "oidc", "token-store", "oidc-provider", "session", "native", "transport", "sign-in-error"} {
+		files = append(files, "src/lib/auth/"+name+".ts")
+	}
+	for _, suite := range nativeAuthSuites {
+		ext := ".test.ts"
+		if suite == "auth-context" {
+			ext = ".test.tsx"
+		}
+		files = append(files, "tests/"+suite+ext)
+	}
+	for _, rel := range files {
+		if _, err := os.Stat(filepath.Join(mobile, rel)); err != nil {
+			t.Errorf("native auth scaffold is missing %s: %v", rel, err)
+		}
+	}
+	app := readFileE2E(t, filepath.Join(mobile, "app.json"))
+	for _, want := range []string{"expo-secure-store", "com.consumer.mobile"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.json does not mention %q:\n%s", want, app)
+		}
+	}
+}
+
+// assertNativeAuthSuitesPassed reads Jest's own report: each auth suite must
+// have run and passed (a testMatch regression would drop them silently).
+func assertNativeAuthSuitesPassed(t *testing.T, out string) {
+	t.Helper()
+	for _, suite := range nativeAuthSuites {
+		if !strings.Contains(out, "PASS tests/"+suite+".test.") {
+			t.Errorf("jest did not report a passing tests/%s suite:\n%s", suite, out)
+		}
+	}
+	if strings.Contains(out, "FAIL ") {
+		t.Errorf("jest reported a failing suite:\n%s", out)
+	}
+}
+
+// authFakeMarkers are literals that exist only in tests/auth-fakes.ts. Test
+// fakes live outside app/ and src/, so a production bundle containing one means
+// app code imported them.
+var authFakeMarkers = []string{"https://idp.example.com", "com.acme.app:/oauthredirect", "FakeSecureStore", "FakeIdp"}
+
+// assertNoAuthFakesInExport proves the production bundle carries no test
+// fakes, and that the search can see the bundle: the real redirect route name
+// must be present, or an unreadable bundle would pass vacuously.
+func assertNoAuthFakesInExport(t *testing.T, outDir string) {
+	t.Helper()
+	sawRoute := false
+	err := filepath.WalkDir(outDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		body := string(b)
+		for _, marker := range authFakeMarkers {
+			if strings.Contains(body, marker) {
+				t.Errorf("production export %s contains test fake %q", path, marker)
+			}
+		}
+		if strings.Contains(body, "oauthredirect") {
+			sawRoute = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawRoute {
+		t.Errorf("production export %s has no oauthredirect route: the fake search cannot see the bundle", outDir)
+	}
 }
 
 // assertNoDevlogInExport proves the production bundle carries no dev-log

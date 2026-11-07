@@ -6,7 +6,14 @@ import type { DescService } from "@bufbuild/protobuf";
 {{- if .Workspaces}}
 import { setApiTransport } from "{{.HooksPackage}}";
 {{- end}}
+import {
+  authExpiredInterceptor,
+  epochInterceptor,
+  tokenRejectedInterceptor,
+} from "./auth/transport";
+import { currentEpoch, currentSignal, isCurrent } from "./auth/session";
 import { DEV_API_URL } from "./apiurl_gen";
+import { emitAuthExpired } from "./events";
 
 // The API URL is read from the EXPO_PUBLIC_API_URL environment variable.
 // In dev it falls back to DEV_API_URL — regenerated on every `forge
@@ -22,15 +29,29 @@ import { DEV_API_URL } from "./apiurl_gen";
 // reach (the dev machine's LAN IP, or a tunnel to the API port).
 const baseUrl = process.env.EXPO_PUBLIC_API_URL ?? DEV_API_URL;
 
-// Module-level token getter. Nothing wires it by default: this tree ships
-// the mock session provider, whose fixture token no server accepts, so the
-// scaffold sends NO Authorization header rather than one that is guaranteed
-// to be rejected. Call this from app/_layout.tsx once you have implemented
-// AuthProvider (src/lib/auth/provider) over a real identity source.
+// Module-level token getter. With native sign-in configured
+// (EXPO_PUBLIC_FORGE_OIDC_*), src/lib/auth/context wires it to the OIDC
+// provider's getToken() — which renews the token when it is about to expire —
+// and unwires it on sign-out. In mock mode nothing wires it: the mock's
+// fixture token is accepted by no server, so the scaffold sends NO
+// Authorization header rather than one that is guaranteed to be rejected. If
+// you implement your own AuthProvider (src/lib/auth/provider), feed its token
+// here.
 let _getToken: () => Promise<string | null> = async () => null;
 
 export function setAuthTokenGetter(fn: () => Promise<string | null>) {
   _getToken = fn;
+}
+
+// Called when the API answers Unauthenticated: renew the token and resolve
+// true to have the request replayed once (see src/lib/auth/transport). Unset
+// by default, so an app that never wires it never replays.
+let _onTokenRejected: ((rejectedToken: string | null) => Promise<boolean>) | null = null;
+
+export function setTokenRejectedHandler(
+  fn: ((rejectedToken: string | null) => Promise<boolean>) | null,
+) {
+  _onTokenRejected = fn;
 }
 
 // The forge frontend runtime owns the interceptor stack: auth-token attach,
@@ -44,9 +65,25 @@ export function setAuthTokenGetter(fn: () => Promise<string | null>) {
 // The import is the runtime's DOM-free entry point, not its "." barrel: the
 // barrel also carries browser UI components that native transport does not
 // need. "/interceptors" reaches only the transport layer.
-const interceptors = buildRuntimeInterceptors({
-  getToken: () => _getToken(),
-});
+//
+// Wrapped around it, outermost first (src/lib/auth/transport):
+//   - authExpired:   a call that ENDS Unauthenticated emits `auth:expired`, as
+//                    the browser transports do, so the auth context re-checks
+//                    the session. (Without it that listener is dead code here.)
+//   - epoch:         requests run under the identity epoch and abort on
+//                    sign-out; a response that lands for a previous identity is
+//                    dropped, so it cannot repopulate the cache.
+//   - tokenRejected: on Unauthenticated, renew the token once and replay a
+//                    unary call once.
+const identity = { currentEpoch, currentSignal, isCurrent };
+const interceptors = [
+  authExpiredInterceptor(emitAuthExpired),
+  epochInterceptor(identity),
+  tokenRejectedInterceptor({ session: identity, handler: () => _onTokenRejected }),
+  ...buildRuntimeInterceptors({
+    getToken: () => _getToken(),
+  }),
+];
 
 // Hermes' built-in fetch (React Native's XHR-backed polyfill) buffers the whole
 // response, so a server-streaming RPC would deliver nothing until the stream

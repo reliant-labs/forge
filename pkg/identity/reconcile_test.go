@@ -529,3 +529,74 @@ func TestReadinessNeedsTheManagementGatewayToo(t *testing.T) {
 		t.Errorf("the pass started after %d gateway probes; it must wait for the gateway", healthz)
 	}
 }
+
+func nativeRejectedSpec() Spec {
+	s := fullSpec()
+	s.Applications = append(s.Applications, Application{
+		Name: "dev:mobile", Kind: AppNative, Optional: true,
+		RedirectURIs: []string{"com.acme.mobile:/oauthredirect"}, PostLogoutURIs: []string{"com.acme.mobile:/signedout"},
+	})
+	return s
+}
+
+// An Optional application the instance refuses is skipped with a warning, and
+// the pass still publishes every other application's Output.
+func TestOptionalApplicationRefusedByTheInstanceIsSkipped(t *testing.T) {
+	f := newFake(t)
+	f.rejectApp = func(cfg map[string]any) bool { return cfg["appType"] == "OIDC_APP_TYPE_NATIVE" }
+	var published []Output
+	r, _ := newRec(t, f, func(o *Options) {
+		o.Outputs = OutputsFunc(func(_ context.Context, out Output) error { published = append(published, out); return nil })
+	})
+
+	rep, err := r.Reconcile(context.Background(), nativeRejectedSpec())
+	if err != nil {
+		t.Fatalf("the pass failed over an optional application: %v", err)
+	}
+	if len(published) != 1 {
+		t.Fatalf("published %d outputs, want 1: the web apps' output must still be published", len(published))
+	}
+	out := published[0]
+	if _, ok := out.Apps["dev:mobile"]; ok {
+		t.Error("the refused application is in the output")
+	}
+	for _, name := range []string{"prod:api", "console", "server"} {
+		if out.Apps[name].ClientID == "" {
+			t.Errorf("application %q is missing from the output: %+v", name, out.Apps)
+		}
+	}
+	if len(rep.Skipped) != 1 || rep.Skipped[0].Name != "dev:mobile" {
+		t.Fatalf("skipped = %+v", rep.Skipped)
+	}
+	var oe *ObjectError
+	if !errors.As(rep.Skipped[0].Err, &oe) || oe.Name != "dev:mobile" {
+		t.Errorf("skipped error = %v, want an ObjectError naming the application", rep.Skipped[0].Err)
+	}
+	if !strings.Contains(strings.Join(rep.Warnings, "\n"), `optional application "dev:mobile" was NOT registered`) {
+		t.Errorf("warnings = %v", rep.Warnings)
+	}
+	for _, c := range rep.Changes {
+		if c.Kind == "application" && c.Name == "dev:mobile" {
+			t.Errorf("a refused create was reported as a change: %v", c)
+		}
+	}
+}
+
+// The same refusal on a required application still fails the pass and
+// publishes nothing: Optional is the only thing that changes the outcome.
+func TestRequiredApplicationRefusedByTheInstanceStillFailsThePass(t *testing.T) {
+	f := newFake(t)
+	f.rejectApp = func(cfg map[string]any) bool { return cfg["appType"] == "OIDC_APP_TYPE_NATIVE" }
+	var published int
+	r, _ := newRec(t, f, func(o *Options) {
+		o.Outputs = OutputsFunc(func(context.Context, Output) error { published++; return nil })
+	})
+	s := nativeRejectedSpec()
+	s.Applications[len(s.Applications)-1].Optional = false
+	if _, err := r.Reconcile(context.Background(), s); err == nil {
+		t.Fatal("a refused required application did not fail the pass")
+	}
+	if published != 0 {
+		t.Errorf("published %d outputs after a failed pass", published)
+	}
+}

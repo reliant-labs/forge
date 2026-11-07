@@ -30,6 +30,7 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -70,6 +71,17 @@ type Input struct {
 	// WorkloadOrigins maps a workload to the origin it listens on, for an
 	// application whose sign-in route has no frontend to live on.
 	WorkloadOrigins map[string]string
+
+	// NativeAppSchemes maps a native frontend's name to its callback scheme:
+	// the reverse-DNS entry of its app.json expo.scheme (RFC 8252 section
+	// 7.1), which names the callbacks of its native application when the
+	// declaration gives no literal. It is not the bundle id, whose rules
+	// differ. A frontend with no entry cannot have them derived.
+	NativeAppSchemes map[string]string
+	// NativeAppWarnings are problems found reading those schemes (an app.json
+	// with no usable expo.scheme); they are reported with the pass's other
+	// warnings.
+	NativeAppWarnings []string
 
 	// Refs are the identity-backed env vars of the env's host workloads.
 	Refs []Ref
@@ -157,6 +169,9 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	res.Report = rep
 	if err != nil {
 		return res, fmt.Errorf("converge identity %q: %w", in.Identity.Name, err)
+	}
+	for _, s := range rep.Skipped {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("%s %q was NOT registered: the identity provider refused it, so its app runs without sign-in this run and everything else is unaffected: %v", s.Kind, s.Name, s.Err))
 	}
 
 	values, err := StoreValues(in, withMail(rep.Output, mail), func(user string) ([]byte, error) {
@@ -290,7 +305,7 @@ func Spec(in Input) (identity.Spec, []string, error) {
 	if id.Runtime != release.IdentityRuntimeHost {
 		return identity.Spec{}, nil, fmt.Errorf("devidentity: identity %q runs on %q, not on the host IdP", id.Name, id.Runtime)
 	}
-	var warnings []string
+	warnings := slices.Clone(in.NativeAppWarnings)
 	spec := identity.Spec{Project: identity.ProjectSpec{Name: firstNonEmpty(id.ProjectName, in.Project)}}
 
 	for _, r := range id.Roles {
@@ -301,8 +316,9 @@ func Spec(in Input) (identity.Spec, []string, error) {
 		})
 	}
 
-	apps, errs := applicationsSpec(in, id)
+	apps, appWarnings, errs := applicationsSpec(in, id)
 	spec.Applications = apps
+	warnings = append(warnings, appWarnings...)
 
 	for _, m := range id.MachineUsers {
 		spec.MachineUsers = append(spec.MachineUsers, identity.MachineUser{
@@ -404,8 +420,20 @@ func Spec(in Input) (identity.Spec, []string, error) {
 // applicationsSpec derives each declared application's client, filling the
 // redirect, logout and sign-in URIs from the env's origins unless the
 // declaration gives a literal.
-func applicationsSpec(in Input, id *release.ShapeIdentity) (apps []identity.Application, errs []error) {
+func applicationsSpec(in Input, id *release.ShapeIdentity) (apps []identity.Application, warnings []string, errs []error) {
 	for _, a := range id.Applications {
+		if a.Kind == release.IdentityAppNative {
+			// A native app that cannot be derived is left out with a warning
+			// rather than failing the pass: failing it would withhold the
+			// web app's sign-in and the API's config over a mobile glitch.
+			app, warn := nativeApplication(in, a)
+			if warn != "" {
+				warnings = append(warnings, warn)
+				continue
+			}
+			apps = append(apps, app)
+			continue
+		}
 		origin := in.FrontendOrigin
 		if origin == "" {
 			origin = in.WorkloadOrigins[a.Workload]
@@ -445,7 +473,71 @@ func applicationsSpec(in Input, id *release.ShapeIdentity) (apps []identity.Appl
 		}
 		apps = append(apps, app)
 	}
-	return apps, errs
+	return apps, warnings, errs
+}
+
+// Callback paths of a native app. They are the same under every scheme, so a
+// private-use `<scheme>:/oauthredirect` today and an https universal link
+// `https://<domain>/oauthredirect` later are served by the app's one route.
+const (
+	nativeRedirectPath   = "oauthredirect"
+	nativeSignedOutPath  = "signedout"
+	nativeRedirectSuffix = ":/" + nativeRedirectPath
+)
+
+// nativeApplication derives a kind-native application's client.
+//
+// It is a public PKCE client at the identity provider's own hosted sign-in
+// pages: no LoginURI (that would bounce /authorize to the web sign-in, which
+// cannot finish a flow it did not start) and no broker account. The callbacks
+// are the declared literals, in the declared order, else the reverse-DNS
+// scheme read from its app.json's expo.scheme: `<scheme>:/oauthredirect`. A post-logout URI the
+// declaration omits is the paired `/signedout` beside each redirect.
+func nativeApplication(in Input, a release.ShapeIdentityApplication) (identity.Application, string) {
+	app := identity.Application{
+		Name:           a.Name,
+		Kind:           identity.AppNative,
+		RedirectURIs:   slices.Clone(a.RedirectURIs),
+		PostLogoutURIs: slices.Clone(a.LogoutURIs),
+		// The ID token carries the profile claims, so the app shows who is
+		// signed in without a userinfo round trip.
+		IDTokenUserinfoAssertion: true,
+		// Locally visible problems are caught below; this covers the IdP
+		// itself refusing the client, which must cost the app its sign-in
+		// and nobody else's.
+		Optional: true,
+	}
+	if len(app.RedirectURIs) == 0 {
+		scheme := in.NativeAppSchemes[a.Frontend]
+		if scheme == "" {
+			return identity.Application{}, fmt.Sprintf("application %q was NOT registered: frontend %q has no callback scheme (a reverse-DNS entry such as \"com.acme.app\" in its app.json expo.scheme). Add one, or declare redirect_uris = [\"com.acme.app:/oauthredirect\"]", a.Name, a.Frontend)
+		}
+		app.RedirectURIs = []string{scheme + nativeRedirectSuffix}
+	}
+	if len(app.PostLogoutURIs) == 0 {
+		for _, r := range app.RedirectURIs {
+			app.PostLogoutURIs = append(app.PostLogoutURIs, signedOutBeside(r))
+		}
+	}
+	for _, u := range append(slices.Clone(app.RedirectURIs), app.PostLogoutURIs...) {
+		if err := release.ValidateNativeCallbackURI(u, true); err != nil {
+			return identity.Application{}, fmt.Sprintf("application %q was NOT registered: %v", a.Name, err)
+		}
+		// Plain http is the dev loop's (a loopback callback): the IdP wants
+		// devMode to accept it.
+		app.DevMode = app.DevMode || strings.HasPrefix(u, "http://")
+	}
+	return app, ""
+}
+
+// signedOutBeside is the post-logout URI paired with a redirect URI: the same
+// scheme, authority and directory, with the final path segment `signedout`.
+func signedOutBeside(redirect string) string {
+	i := strings.LastIndex(redirect, "/")
+	if i < 0 {
+		return redirect
+	}
+	return redirect[:i+1] + nativeSignedOutPath
 }
 
 // smtpSpec is the dev IdP's mail relay: the declaration's own smtp, else the

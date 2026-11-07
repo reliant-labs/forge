@@ -3,7 +3,14 @@ import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { createFileRegistry, fromJson, type DescService } from "@bufbuild/protobuf";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
-import { createTransport, setAuthTokenGetter, transport } from "../src/lib/connect";
+import {
+  createTransport,
+  setAuthTokenGetter,
+  setTokenRejectedHandler,
+  transport,
+} from "../src/lib/connect";
+import { getEventBus, initEventBus } from "../src/lib/events";
+import { currentEpoch, session } from "../src/lib/auth/session";
 
 // The production default must be expo/fetch, not the global. The suite-wide
 // setup (tests/setup/expo-fetch.ts) maps `expo/fetch` onto globalThis.fetch so
@@ -34,7 +41,20 @@ const file = fromJson(FileDescriptorProtoSchema, {
     {
       name: "EchoService",
       method: [
+        // No idempotency declared: a write, never replayed after a 401.
         { name: "Say", inputType: ".test.v1.EchoRequest", outputType: ".test.v1.EchoReply" },
+        {
+          name: "Read",
+          inputType: ".test.v1.EchoRequest",
+          outputType: ".test.v1.EchoReply",
+          options: { idempotencyLevel: "NO_SIDE_EFFECTS" },
+        },
+        {
+          name: "Put",
+          inputType: ".test.v1.EchoRequest",
+          outputType: ".test.v1.EchoReply",
+          options: { idempotencyLevel: "IDEMPOTENT" },
+        },
         {
           name: "Watch",
           inputType: ".test.v1.EchoRequest",
@@ -51,6 +71,8 @@ const service: DescService = createFileRegistry(file, () => undefined).getServic
 
 interface Echo {
   say(req: { text: string }, opts?: { signal?: AbortSignal }): Promise<{ text: string }>;
+  read(req: { text: string }, opts?: { signal?: AbortSignal }): Promise<{ text: string }>;
+  put(req: { text: string }, opts?: { signal?: AbortSignal }): Promise<{ text: string }>;
   watch(req: { text: string }, opts?: { signal?: AbortSignal }): AsyncIterable<{ text: string }>;
 }
 
@@ -147,6 +169,7 @@ function client(fetchImpl: typeof globalThis.fetch): Echo {
 
 afterEach(() => {
   setAuthTokenGetter(async () => null);
+  setTokenRejectedHandler(null);
 });
 
 describe("app transport over an injected fetch", () => {
@@ -276,5 +299,327 @@ describe("app transport over an injected fetch", () => {
     } finally {
       globalFetch.mockRestore();
     }
+  });
+});
+
+function errorResponse(status: number, code: string) {
+  const body = { code, message: `${code} from the server` };
+  return {
+    status,
+    headers: new Headers({ "content-type": "application/json" }),
+    json: async () => body,
+    arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(body)).buffer,
+    body: null,
+  };
+}
+
+const unauthenticated = () => errorResponse(401, "unauthenticated");
+
+async function rejection(p: Promise<unknown>): Promise<ConnectError> {
+  const e = await p.then(
+    () => null,
+    (err: unknown) => err,
+  );
+  expect(e).not.toBeNull();
+  return ConnectError.from(e);
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+function listenForAuthExpired() {
+  initEventBus();
+  const seen: number[] = [];
+  const off = getEventBus().on("auth:expired", () => seen.push(1));
+  return { seen, off };
+}
+
+describe("auth:expired", () => {
+  it("is emitted when a call ends Unauthenticated, as the browser transports do", async () => {
+    const { seen, off } = listenForAuthExpired();
+    try {
+      const echo = client(fakeFetch(async () => unauthenticated()));
+      expect((await rejection(echo.say({ text: "x" }))).code).toBe(Code.Unauthenticated);
+      expect(seen).toHaveLength(1);
+    } finally {
+      off();
+    }
+  });
+
+  it("is not emitted for other failures", async () => {
+    const { seen, off } = listenForAuthExpired();
+    try {
+      const echo = client(fakeFetch(async () => errorResponse(503, "unavailable")));
+      expect((await rejection(echo.say({ text: "x" }))).code).toBe(Code.Unavailable);
+      expect(seen).toHaveLength(0);
+    } finally {
+      off();
+    }
+  });
+});
+
+describe("401 -> renew the token once -> replay once", () => {
+  it("replays a unary call with the renewed token, passing the refused token to the handler", async () => {
+    let token = "stale";
+    setAuthTokenGetter(async () => token);
+    const handler = jest.fn(async (rejected: string | null) => {
+      expect(rejected).toBe("stale");
+      token = "fresh";
+      return true;
+    });
+    setTokenRejectedHandler(handler);
+    const auths: (string | null)[] = [];
+    const echo = client(
+      fakeFetch(async (call) => {
+        auths.push(call.headers.get("authorization"));
+        return call.headers.get("authorization") === "Bearer fresh"
+          ? jsonResponse({ text: "ok" })
+          : unauthenticated();
+      }),
+    );
+
+    await expect(echo.read({ text: "x" })).resolves.toMatchObject({ text: "ok" });
+    expect(auths).toEqual(["Bearer stale", "Bearer fresh"]);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay, and still emits auth:expired, when the handler says no", async () => {
+    const { seen, off } = listenForAuthExpired();
+    setAuthTokenGetter(async () => "stale");
+    setTokenRejectedHandler(async () => false);
+    let calls = 0;
+    const echo = client(
+      fakeFetch(async () => {
+        calls++;
+        return unauthenticated();
+      }),
+    );
+    try {
+      expect((await rejection(echo.read({ text: "x" }))).code).toBe(Code.Unauthenticated);
+      expect(calls).toBe(1);
+      expect(seen).toHaveLength(1);
+    } finally {
+      off();
+    }
+  });
+
+  it("replays at most once: a second 401 is final", async () => {
+    setAuthTokenGetter(async () => "t");
+    const handler = jest.fn(async () => true);
+    setTokenRejectedHandler(handler);
+    let calls = 0;
+    const echo = client(
+      fakeFetch(async () => {
+        calls++;
+        return unauthenticated();
+      }),
+    );
+    expect((await rejection(echo.read({ text: "x" }))).code).toBe(Code.Unauthenticated);
+    expect(calls).toBe(2);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the original 401 when the handler itself fails", async () => {
+    setTokenRejectedHandler(async () => {
+      throw new Error("offline");
+    });
+    let calls = 0;
+    const echo = client(
+      fakeFetch(async () => {
+        calls++;
+        return unauthenticated();
+      }),
+    );
+    expect((await rejection(echo.read({ text: "x" }))).code).toBe(Code.Unauthenticated);
+    expect(calls).toBe(1);
+  });
+
+  it("replays an IDEMPOTENT method too", async () => {
+    let token = "stale";
+    setAuthTokenGetter(async () => token);
+    setTokenRejectedHandler(async () => {
+      token = "fresh";
+      return true;
+    });
+    const auths: (string | null)[] = [];
+    const echo = client(
+      fakeFetch(async (call) => {
+        auths.push(call.headers.get("authorization"));
+        return call.headers.get("authorization") === "Bearer fresh"
+          ? jsonResponse({ text: "ok" })
+          : unauthenticated();
+      }),
+    );
+    await expect(echo.put({ text: "x" })).resolves.toMatchObject({ text: "ok" });
+    expect(auths).toEqual(["Bearer stale", "Bearer fresh"]);
+  });
+
+  it("never replays a non-idempotent write: the token is renewed, the 401 stands, and auth:expired fires", async () => {
+    // forge's authn answers a bare Unauthenticated with no distinguishing
+    // x-forge-error-reason, so a 401 cannot prove the handler never ran.
+    const { seen, off } = listenForAuthExpired();
+    let token = "stale";
+    setAuthTokenGetter(async () => token);
+    const handler = jest.fn(async () => {
+      token = "fresh";
+      return true;
+    });
+    setTokenRejectedHandler(handler);
+    let calls = 0;
+    const echo = client(
+      fakeFetch(async () => {
+        calls++;
+        return unauthenticated();
+      }),
+    );
+    try {
+      expect((await rejection(echo.say({ text: "write" }))).code).toBe(Code.Unauthenticated);
+      expect(calls).toBe(1);
+      expect(handler).toHaveBeenCalledTimes(1); // renewed for the NEXT call
+      expect(seen).toHaveLength(1);
+      // ...and the next call carries the renewed token.
+      const auths: (string | null)[] = [];
+      const next = client(
+        fakeFetch(async (call) => {
+          auths.push(call.headers.get("authorization"));
+          return jsonResponse({ text: "ok" });
+        }),
+      );
+      await next.say({ text: "again" });
+      expect(auths).toEqual(["Bearer fresh"]);
+    } finally {
+      off();
+    }
+  });
+
+  it("never replays when no handler is wired (the scaffold default)", async () => {
+    let calls = 0;
+    const echo = client(
+      fakeFetch(async () => {
+        calls++;
+        return unauthenticated();
+      }),
+    );
+    expect((await rejection(echo.read({ text: "x" }))).code).toBe(Code.Unauthenticated);
+    expect(calls).toBe(1);
+  });
+
+  it("never replays a server stream", async () => {
+    const handler = jest.fn(async () => true);
+    setTokenRejectedHandler(handler);
+    let calls = 0;
+    const echo = client(
+      fakeFetch(async () => {
+        calls++;
+        return unauthenticated();
+      }),
+    );
+    const iterator = echo.watch({ text: "go" })[Symbol.asyncIterator]();
+    await rejection(iterator.next());
+    expect(calls).toBe(1);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("does not replay when the identity changed while it was renewing, and does not emit", async () => {
+    const { seen, off } = listenForAuthExpired();
+    setTokenRejectedHandler(async () => {
+      session.bumpEpoch(); // the user signed out while the renewal ran
+      return true;
+    });
+    let calls = 0;
+    const echo = client(
+      fakeFetch(async () => {
+        calls++;
+        return unauthenticated();
+      }),
+    );
+    try {
+      expect((await rejection(echo.read({ text: "x" }))).code).toBe(Code.Canceled);
+      expect(calls).toBe(1);
+      expect(seen).toHaveLength(0);
+    } finally {
+      off();
+    }
+  });
+});
+
+describe("identity epoch", () => {
+  it("aborts an in-flight unary call when the epoch bumps", async () => {
+    let seen: AbortSignal | undefined;
+    const echo = client(
+      fakeFetch(
+        (call) =>
+          new Promise((_, reject) => {
+            seen = call.signal;
+            call.signal?.addEventListener("abort", () => reject(call.signal?.reason));
+          }),
+      ),
+    );
+    const result = rejection(echo.say({ text: "write" }));
+    await tick();
+    session.bumpEpoch();
+    expect((await result).code).toBe(Code.Canceled);
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it("drops a response that lands after the epoch moved, even from a fetch that ignores abort", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const echo = client(
+      fakeFetch(async () => {
+        await gate; // does not look at the signal
+        return jsonResponse({ text: "previous account's data" });
+      }),
+    );
+    const result = rejection(echo.say({ text: "x" }));
+    await tick();
+    const before = currentEpoch();
+    session.bumpEpoch();
+    expect(currentEpoch()).toBe(before + 1);
+    release();
+    expect((await result).code).toBe(Code.Canceled);
+  });
+
+  it("lets a request started under the new epoch through", async () => {
+    session.bumpEpoch();
+    const echo = client(fakeFetch(async () => jsonResponse({ text: "mine" })));
+    await expect(echo.say({ text: "x" })).resolves.toMatchObject({ text: "mine" });
+  });
+
+  it("stops delivering stream messages once the epoch moves", async () => {
+    let stream!: ReturnType<typeof streamingResponse>;
+    const echo = client(
+      fakeFetch(async () => {
+        stream = streamingResponse(undefined); // ignores abort: the guard must still hold
+        return stream.response;
+      }),
+    );
+    const iterator = echo.watch({ text: "go" })[Symbol.asyncIterator]();
+    const first = iterator.next();
+    await tick();
+    stream.push(message("one"));
+    expect((await first).value).toMatchObject({ text: "one" });
+
+    session.bumpEpoch();
+    const next = iterator.next();
+    stream.push(message("previous account's second message"));
+    expect((await rejection(next)).code).toBe(Code.Canceled);
+  });
+
+  it("still honours the caller's own signal, and a caller abort is not an identity change", async () => {
+    const echo = client(
+      fakeFetch(
+        (call) =>
+          new Promise((_, reject) => {
+            call.signal?.addEventListener("abort", () => reject(call.signal?.reason));
+          }),
+      ),
+    );
+    const controller = new AbortController();
+    const result = rejection(echo.say({ text: "x" }, { signal: controller.signal }));
+    await tick();
+    const epoch = currentEpoch();
+    controller.abort();
+    expect((await result).code).toBe(Code.Canceled);
+    expect(currentEpoch()).toBe(epoch);
   });
 });

@@ -65,9 +65,9 @@ func TestNativeHarnessComposes(t *testing.T) {
 		}
 		for name, fragments := range map[string][]string{
 			"eslint.config.cjs":         {`require("eslint-config-expo/flat")`, "...expo"},
-			"jest.config.cjs":           {`preset: "jest-expo"`, `require("jest-expo/jest-preset")`, `expo.transformIgnorePatterns.map`, `setupFiles: ["<rootDir>/tests/setup/expo-fetch.ts"]`, `@reliantlabs/forge-web-runtime/|@connectrpc/(connect|connect-web)/|@bufbuild/protobuf/`, `\\.pnpm/|${esmPackages}`, `testMatch: ["<rootDir>/tests/**/*.test.[jt]s?(x)"]`, "watch: false", "maxWorkers: 2"},
+			"jest.config.cjs":           {`preset: "jest-expo"`, `require("jest-expo/jest-preset")`, `expo.transformIgnorePatterns.map`, `setupFiles: ["<rootDir>/tests/setup/expo-fetch.ts"]`, `@reliantlabs/forge-web-runtime/|@connectrpc/connect-web/|@bufbuild/protobuf/`, `\\.pnpm/|${esmPackages}`, `testMatch: ["<rootDir>/tests/**/*.test.[jt]s?(x)"]`, "watch: false", "maxWorkers: 2"},
 			"tests/setup/expo-fetch.ts": {`jest.mock("expo/fetch"`, `globalThis.fetch(...args)`},
-			"tests/app-config.test.ts":  {`from "@jest/globals"`, `from "../app.json"`, `from "../package.json"`, `expect(manifest.main)`, `expect(app.expo.scheme)`},
+			"tests/app-config.test.ts":  {`from "@jest/globals"`, `from "../app.json"`, `from "../package.json"`, `expect(manifest.main)`, `[app.expo.scheme].flat()`, `expect(schemes).toContain(app.expo.ios.bundleIdentifier)`},
 		} {
 			content := rendered[name]
 			for _, fragment := range append(fragments, "Yours to own", "forge will not overwrite this file") {

@@ -14,7 +14,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
@@ -123,4 +126,24 @@ func putNonEmpty(fields map[string]any, key, value string) {
 	if value != "" {
 		fields[key] = value
 	}
+}
+
+// nativeAppsWithheldNoted holds the envs whose note this process printed: a
+// deploy declares and builds the env more than once, and the fact is worth
+// saying once.
+var nativeAppsWithheldNoted sync.Map
+
+// NoteNativeAppsWithheld says, once per env, that the control plane was not
+// sent the env's native (mobile) identity applications. Hosted registration of
+// a native client is not built yet, so [release.BundleReader.LimitShape]
+// withholds them from every control plane; the dev loop (forge env up) is
+// unaffected. names empty prints nothing.
+func NoteNativeAppsWithheld(w io.Writer, env string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	if _, seen := nativeAppsWithheldNoted.LoadOrStore(env, true); seen {
+		return
+	}
+	fmt.Fprintf(w, "Note: env %s declares native identity application(s) %s, which this control plane cannot register yet (native identity applications are not yet supported on hosted identity), so they were left out of what it was sent. The deploy is unaffected; `forge env up` still registers them on the dev IdP. See `forge skill load deploy/managed-identity/mobile`.\n", env, strings.Join(names, ", "))
 }

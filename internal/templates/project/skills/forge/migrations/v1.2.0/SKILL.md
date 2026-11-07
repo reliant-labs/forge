@@ -275,3 +275,12 @@ mapping, the Metro `.js`→`.ts` resolver fallback for generated clients, portab
 runtime imports in shared helpers, device-reachable API and Metro origins, native
 dev-log forwarding, focus/connectivity adapters and the mutation `networkMode`
 default. Load `forge skill load migrations/v1.2.0/native-dev-loop`.
+
+## 5. Native auth
+
+**Use when** the project has an Expo frontend and wants system-browser sign-in
+(OAuth code + PKCE, keystore tokens). Owned files, so adapt by hand: new
+dependencies, the `expo-secure-store` plugin, the `scheme` array, `src/lib/auth/*`,
+the context, transport and layout edits and the Jest config. Existing apps keep
+working until `EXPO_PUBLIC_FORGE_OIDC_*` is set. Load
+`forge skill load migrations/v1.2.0/native-auth`.

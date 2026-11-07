@@ -113,6 +113,12 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 		if f.Runtime.Type != "" && f.Runtime.Type != FrontendRuntimeHost {
 			continue
 		}
+		// A native app's port is Metro's, and it serves no sign-in or
+		// callback route: the origin the web app's routes are derived from
+		// is a browser frontend's.
+		if isNativeFrontend(f.Type) {
+			continue
+		}
 		if f.Port > 0 {
 			in.FrontendOrigin = fmt.Sprintf("http://localhost:%d%s", f.Port, strings.TrimSuffix(f.BasePath, "/"))
 			break
@@ -125,6 +131,7 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 			}
 		}
 	}
+	in.NativeAppSchemes, in.NativeAppWarnings = nativeAppSchemes(e, id, projectDir)
 	mail, err := devMailInfra(e, id)
 	if err != nil {
 		return devidentity.Input{}, err

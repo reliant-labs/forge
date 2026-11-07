@@ -50,6 +50,7 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
+	"github.com/reliant-labs/forge/internal/secrets"
 )
 
 // validateServiceName / validateIdentifier / validateProjectName /
@@ -1837,12 +1838,6 @@ func runFrontend(ctx context.Context, f *factory.Factory, a frontendArgs) error 
 	if err := requireServiceKind(root, "frontend"); err != nil {
 		return err
 	}
-	// React Native has no browser route guard to omit — it ships the mock
-	// auth provider either way — so the public/gated choice is web-only.
-	if kind != "mobile" {
-		authMode = resolveFrontendAuthMode(root, authMode)
-	}
-
 	cfg, _, err := readProject(root, ctxLabel)
 	if err != nil {
 		return err
@@ -1850,6 +1845,18 @@ func runFrontend(ctx context.Context, f *factory.Factory, a frontendArgs) error 
 
 	if err := checkFrontendNameConflict(ctxLabel, name, cfg.Frontends); err != nil {
 		return err
+	}
+
+	// The project's first frontend brings the dev identity with it when its
+	// env KCL has none (reconcileFirstFrontendIdentity, below), so the sign-in
+	// default follows the identity the project is about to have.
+	firstFrontend := len(cfg.Frontends) == 0
+	identityComing := devIdentityWillBeAdded(root, firstFrontend)
+
+	// React Native has no browser route guard to omit — it ships the mock
+	// auth provider either way — so the public/gated choice is web-only.
+	if kind != "mobile" {
+		authMode = resolveFrontendAuthMode(root, authMode, identityComing)
 	}
 
 	// Port 0 = EPHEMERAL, and it stays that way. `forge project new` already
@@ -1982,6 +1989,13 @@ func runFrontend(ctx context.Context, f *factory.Factory, a frontendArgs) error 
 	// frontend lands — see generator/scaffold_vuln_exemptions.go.
 	generator.EnsureScaffoldNPMExemptions(root, frontendType, time.Now())
 
+	// A project born without a frontend has no dev IdP, mail catcher or
+	// identity declared; its first frontend gets the same ones `forge project
+	// new --frontend` renders, so sign-in works instead of silently staying on
+	// the mock provider. Before the frontend's own declaration: "no frontend
+	// declared yet" is how the env says this is the project's first.
+	reconcileFirstFrontendIdentity(root, cfg.Name, firstFrontend)
+
 	// Declare the frontend where the environments are declared, exactly as
 	// `forge project new --frontend` does: without this the dev loop has no
 	// KCL-resolved port for it and `forge env up` falls back to a literal.
@@ -2033,40 +2047,72 @@ func runFrontend(ctx context.Context, f *factory.Factory, a frontendArgs) error 
 	return nil
 }
 
-// reportFrontendAuthNextStep points at the dev IdP when the project has no
-// OIDC issuer configured yet.
+// reportFrontendAuthNextStep says what signs the new frontend in, truthfully
+// for the project as it is now.
 //
-// Auth is fail-closed in every mode. Bringing the environment up configures
-// sign-in automatically — the IdP is declared infrastructure and the
-// application registration is converged during bring-up — so this says where
-// to sign in rather than handing over a setup procedure. Without the line, the
-// cheap-looking move is to hand-roll an AuthProvider that injects a pasted
-// token, which is a credential in a repo and a file that has to be deleted
-// later; the native sign-in the scaffold already ships needs no code.
+// Auth is fail-closed in every mode. When the dev env declares an identity
+// provider, bringing the environment up (`forge env up dev`) starts it,
+// converges the declared users and this frontend's application, and fills the
+// API's issuer — so this says where to sign in rather than handing over a setup
+// procedure. Without the line, the cheap-looking move is to hand-roll an
+// AuthProvider that injects a pasted token, which is a credential in a repo and
+// a file that has to be deleted later.
+//
+// A project already pointed at an issuer (dev secrets store or config.k) needs
+// no advice. One with no provider and no issuer is told so, not promised a
+// provider that nothing will start.
 func reportFrontendAuthNextStep(root string) {
-	// Only speak up when nothing is configured. A project already pointed at
-	// an issuer (dev IdP or hosted) needs no advice. The DirSecrets store is
-	// one file per secret, so presence of a non-empty file IS the answer —
-	// no parsing, and nothing to read out of the value.
-	for _, key := range []string{"JWT_JWKS_URL", "JWT_ISSUER"} {
-		info, err := os.Stat(filepath.Join(root, "secrets", "dev", key))
-		if err == nil && info.Size() > 0 {
-			return
-		}
+	if devIssuerConfigured(root) {
+		return
+	}
+	if !projectDeclaresDevIDP(root) {
+		fmt.Print(`
+🔑 Auth is fail-closed: every RPC that needs a caller answers 401 until you
+   sign in — and this project's dev env declares no identity provider and no
+   issuer, so this frontend has nothing to sign in against yet. Declare an
+   identity (deploy/kcl/identity.k, bound in deploy/kcl/dev/main.k) or point
+   the API at your own issuer:
+
+       forge skill load auth/dev-loop
+`)
+		return
 	}
 	fmt.Print(`
 🔑 Auth is fail-closed: every RPC that needs a caller answers 401 until you
    sign in. Nothing to set up —
 
-       forge run
+       forge env up dev
 
-   brings up the identity provider this project declares, registers this
-   frontend with it, and prints the sign-in URL and the dev credentials.
-   Details, including the traps (opaque-vs-JWT access tokens, and pointing a
-   real deployment at your own issuer):
+   starts the identity provider this project declares (deploy/kcl/dev/main.k),
+   registers this frontend with it, and prints how to sign in. Details,
+   including the traps (opaque-vs-JWT access tokens, and pointing a real
+   deployment at your own issuer):
 
        forge skill load auth/dev-loop
 `)
+}
+
+// jwtIssuerKCLRE matches a non-comment `jwt_issuer = ...` / `jwt_jwks_url = ...`
+// assignment in an env's config.k.
+var jwtIssuerKCLRE = regexp.MustCompile(`(?m)^\s*(?:jwt_issuer|jwt_jwks_url)\s*=\s*\S`)
+
+// devIssuerConfigured reports whether the dev env already names an OIDC issuer:
+// a non-empty JWT_ISSUER / JWT_JWKS_URL in the dev secret store
+// (secrets/dev.yaml, a flat env-var-name map), or a jwt_issuer / jwt_jwks_url
+// set in deploy/kcl/dev/config.k. The scaffolded store lists the slot with an
+// empty value, which is "not configured".
+func devIssuerConfigured(root string) bool {
+	if values, err := secrets.ReadSecretFile(filepath.Join(root, "secrets", "dev.yaml")); err == nil {
+		for _, key := range []string{"JWT_JWKS_URL", "JWT_ISSUER"} {
+			if strings.TrimSpace(values[key]) != "" {
+				return true
+			}
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "deploy", "kcl", "dev", "config.k")); err == nil {
+		return jwtIssuerKCLRE.MatchString(codegen.StripKCLProse(string(b)))
+	}
+	return false
 }
 
 // runFrontendNpmInstall runs `npm install` in the freshly scaffolded
@@ -2411,14 +2457,14 @@ func projectDeclaresDevIDP(root string) bool {
 //
 // An explicit --auth-mode always wins; native without an IdP is allowed (the
 // user may be about to point it at a hosted issuer) but called out.
-func resolveFrontendAuthMode(root, requested string) string {
+func resolveFrontendAuthMode(root, requested string, identityComing bool) string {
 	if requested != "" {
-		if requested == authModeNative && !projectDeclaresDevIDP(root) {
+		if requested == authModeNative && !identityComing && !projectDeclaresDevIDP(root) {
 			fmt.Println("⚠️  --auth-mode native: deploy/kcl/dev/main.k declares no identity provider, so the sign-in gate has no issuer to sign in against until you configure one (`forge skill load auth/dev-loop`).")
 		}
 		return requested
 	}
-	if projectDeclaresDevIDP(root) {
+	if identityComing || projectDeclaresDevIDP(root) {
 		return authModeNative
 	}
 	return authModeNone

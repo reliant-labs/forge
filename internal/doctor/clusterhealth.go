@@ -67,6 +67,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -206,6 +207,9 @@ type podView struct {
 		Name              string            `json:"name"`
 		Labels            map[string]string `json:"labels"`
 		CreationTimestamp time.Time         `json:"creationTimestamp"`
+		// DeletionTimestamp is set once the pod is Terminating. A replica
+		// controller stops counting it at that instant (see currentPods).
+		DeletionTimestamp *time.Time `json:"deletionTimestamp"`
 		OwnerReferences   []struct {
 			Kind       string `json:"kind"`
 			Name       string `json:"name"`
@@ -213,7 +217,10 @@ type podView struct {
 		} `json:"ownerReferences"`
 	} `json:"metadata"`
 	Status struct {
-		Phase      string `json:"phase"`
+		Phase string `json:"phase"`
+		// Reason is the kubelet's word for why a pod went terminal —
+		// "Evicted" under DiskPressure, "Terminated" on node shutdown.
+		Reason     string `json:"reason"`
 		Conditions []struct {
 			Type               string    `json:"type"`
 			Status             string    `json:"status"`
@@ -513,7 +520,8 @@ type targetResult struct {
 	// renders. It is what the report counts, never len(pods): the namespace
 	// legitimately holds other envs' pods (control-plane-dev holds `dev`'s
 	// and `dev-k8s`'s at once), and counting those would claim forge
-	// inspected work it deliberately ignored.
+	// inspected work it deliberately ignored. Pods a controller already
+	// replaced are excluded for the same reason (see currentPods).
 	matched int
 	// healthy is one evidence line per workload that had nothing wrong with
 	// it, naming its pods. `-v` means "show me what you looked at": a
@@ -563,9 +571,11 @@ type workloadFinding struct {
 	oom bool
 }
 
-// judgeTarget matches the target's pods to its workloads and judges each.
-// The second return is how many pods matched — the count the report uses,
-// because the unmatched ones are not this env's to speak for — the third
+// judgeTarget matches the target's pods to its workloads and judges each
+// workload by its CURRENT pods (currentPods). The second return is how many
+// current pods matched — the count the report uses, because the unmatched
+// ones are not this env's to speak for and the replaced ones no longer
+// speak for anything — the third
 // is an evidence line per clean workload, and the fourth is the same
 // matched pods as structured [PodState]s for the JSON inventory.
 func judgeTarget(t probeTarget, pods []podView, now time.Time) ([]workloadFinding, int, []string, map[*clusterWorkload][]PodState) {
@@ -579,12 +589,19 @@ func judgeTarget(t probeTarget, pods []podView, now time.Time) ([]workloadFindin
 	}
 
 	owned := map[*clusterWorkload][]podView{}
-	matched := 0
 	for _, p := range pods {
 		if w := matchWorkload(p, byName, byApp); w != nil {
 			owned[w] = append(owned[w], p)
-			matched++
 		}
+	}
+	// From here on a workload's pods are its CURRENT ones. What its
+	// controller already replaced is neither judged, counted, nor listed in
+	// the inventory — only named, by count, in the healthy roster.
+	matched := 0
+	replaced := map[*clusterWorkload]int{}
+	for w, mine := range owned {
+		owned[w], replaced[w] = currentPods(w, mine)
+		matched += len(owned[w])
 	}
 
 	var findings []workloadFinding
@@ -609,9 +626,22 @@ func judgeTarget(t probeTarget, pods []podView, now time.Time) ([]workloadFindin
 				clean = false
 			}
 		}
+		if clean && !w.ephemeral && !slices.ContainsFunc(mine, podActive) {
+			// Every pod is terminal or Terminating and none of them said
+			// why on its own — a pod that exited 0 is no finding for a Job,
+			// but a Deployment's only pod having exited means nothing runs.
+			if f, bad := judgeNoLivePods(t, w, mine); bad {
+				f.kind = w.kind
+				findings = append(findings, f)
+				clean = false
+			}
+		}
 		if clean {
-			healthy = append(healthy, fmt.Sprintf("%s (%s)  %s",
-				w.name, strings.ToLower(w.kind), podRoster(mine)))
+			line := fmt.Sprintf("%s (%s)  %s", w.name, strings.ToLower(w.kind), podRoster(mine))
+			if n := replaced[w]; n > 0 {
+				line += fmt.Sprintf("  (+%d replaced pod(s) not judged)", n)
+			}
+			healthy = append(healthy, line)
 		}
 	}
 	states := make(map[*clusterWorkload][]PodState, len(t.workloads))
@@ -714,6 +744,90 @@ func judgeMissing(t probeTarget, w *clusterWorkload) (workloadFinding, bool) {
 	}
 }
 
+// judgeNoLivePods is judgeMissing's verdict for a replicated workload whose
+// pods all exist but none is live: every one is terminal or Terminating, and
+// none failed loudly enough to be its own finding (it exited 0, or it is
+// still being deleted). Nothing is serving, which is exactly "no pods" to
+// whoever depends on it — but the pods are named, because "NO PODS" would be
+// a lie the reader can disprove with one kubectl.
+func judgeNoLivePods(t probeTarget, w *clusterWorkload, pods []podView) (workloadFinding, bool) {
+	f, bad := judgeMissing(t, w)
+	if !bad {
+		return f, false
+	}
+	f.detail = fmt.Sprintf("NO LIVE PODS — every pod has exited or is being deleted, and none has replaced them: %s",
+		podRoster(pods))
+	return f, true
+}
+
+// currentPods splits a workload's pods into the ones that speak for its
+// health NOW and a count of the ones its controller has already replaced.
+//
+// A pod in a terminal phase is history. Kubernetes keeps it until the
+// terminated-pod GC threshold (12500 pods by default), so on a dev cluster
+// it effectively never goes away on its own — and judging it made every
+// routine event fail `forge env up`. Measured on control-plane: after a
+// Docker Desktop restart and kubelet DiskPressure evictions, 21 workloads
+// were reported "0/1 Ready  Succeeded … OOMKilled" from ContainerStatusUnknown
+// / Evicted / Completed leftovers while each Deployment's replacement pod had
+// been 1/1 Running for 21 minutes.
+//
+// The rule mirrors each controller's own bookkeeping rather than inventing
+// one:
+//
+//   - Deployment / StatefulSet / DaemonSet. A replica controller counts only
+//     ACTIVE pods — not Succeeded, not Failed, not being deleted (k8s
+//     controller.FilterActivePods) — and replaces the rest. So when any pod
+//     is active, the inactive ones are replaced and not judged. When NONE is,
+//     the controller has nothing running: every pod is returned so its own
+//     diagnosis (OOMKilled, Evicted, the exit code) still reaches the
+//     report, and judgeTarget fails the workload if none of them did.
+//   - Job / CronJob. Succeeded is how a Job pod ends well, so it stays. A
+//     Failed pod is superseded only by a NEWER pod of the same workload that
+//     did not fail — the Job controller's retry, or a later CronJob run.
+//     "Newer" is load-bearing: an older success must never hide the most
+//     recent failure, and a Job that exhausted its retries has no newer
+//     pod, so every attempt is still reported.
+func currentPods(w *clusterWorkload, pods []podView) (current []podView, replaced int) {
+	if !w.ephemeral {
+		for _, p := range pods {
+			if podActive(p) {
+				current = append(current, p)
+			}
+		}
+		if len(current) == 0 {
+			return pods, 0
+		}
+		return current, len(pods) - len(current)
+	}
+	for _, p := range pods {
+		if p.Status.Phase == "Failed" && retriedLater(p, pods) {
+			replaced++
+			continue
+		}
+		current = append(current, p)
+	}
+	return current, replaced
+}
+
+// podActive is k8s' controller.IsPodActive: the pods a replica controller
+// counts toward its replicas.
+func podActive(p podView) bool {
+	return p.Status.Phase != "Succeeded" && p.Status.Phase != "Failed" &&
+		p.Metadata.DeletionTimestamp == nil
+}
+
+// retriedLater reports whether a pod created after failed — its retry, or a
+// later scheduled run — has not itself failed.
+func retriedLater(failed podView, pods []podView) bool {
+	for _, q := range pods {
+		if q.Status.Phase != "Failed" && q.Metadata.CreationTimestamp.After(failed.Metadata.CreationTimestamp) {
+			return true
+		}
+	}
+	return false
+}
+
 // judgePod is the diagnosis. It reads the fields a human would read, in the
 // order that ends the investigation soonest.
 func judgePod(t probeTarget, w *clusterWorkload, p podView, now time.Time) (workloadFinding, bool) {
@@ -776,7 +890,11 @@ func judgePod(t probeTarget, w *clusterWorkload, p podView, now time.Time) (work
 		}
 	}
 	if phase == "Failed" {
-		reasons = append(reasons, "pod phase Failed")
+		why := "pod phase Failed"
+		if r := strings.TrimSpace(p.Status.Reason); r != "" {
+			why += " (" + r + ")"
+		}
+		reasons = append(reasons, why)
 		hard = true
 	}
 

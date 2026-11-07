@@ -22,6 +22,11 @@ import Popover, { type PopoverOpenVia, type PopoverTriggerProps } from "./popove
  * item closes the menu and returns focus to the trigger BEFORE its onClick
  * runs, so a dialog the item opens restores focus to the trigger on close.
  *
+ * `header` puts non-interactive content above the groups — who a user
+ * menu belongs to, what a row menu acts on. It is not an item: the arrow
+ * keys skip it, and a screen reader in the menu does not read it, so say
+ * what it says in `label` (or the trigger's name) too.
+ *
  * With `anchor` and no trigger it opens at a point instead: that is how
  * context_menu is built.
  */
@@ -57,6 +62,8 @@ export interface DropdownMenuProps {
   /** How an `anchor` open was triggered (see popover). */
   openVia?: PopoverOpenVia;
   groups: MenuGroup[];
+  /** Non-interactive content above the groups (see the note above). */
+  header?: React.ReactNode;
   /** Which trigger edge the menu lines up with. Defaults to "right". */
   align?: "left" | "right";
   /** Accessible name of the menu. Defaults to being labelled by the trigger. */
@@ -99,6 +106,7 @@ export default function DropdownMenu({
   anchor,
   openVia,
   groups,
+  header,
   align = "right",
   label,
   open,
@@ -182,9 +190,9 @@ export default function DropdownMenu({
         if (empty && emptyMessage) {
           return <div className="px-3 py-2 text-sm text-ink-muted">{emptyMessage}</div>;
         }
-        return groups.map((group, gi) => (
+        const menu = groups.map((group, gi) => (
           <div key={gi} role="group" aria-label={group.label}>
-            {gi > 0 && <div role="separator" className="my-1 border-t border-border" />}
+            {(gi > 0 || header) && <div role="separator" className="my-1 border-t border-border" />}
             {group.label && (
               <div
                 aria-hidden
@@ -254,6 +262,13 @@ export default function DropdownMenu({
             })}
           </div>
         ));
+        if (!header) return menu;
+        return (
+          <>
+            <div className={compact ? "px-2.5 py-1.5" : "px-3 py-2"}>{header}</div>
+            {menu}
+          </>
+        );
       }}
     </Popover>
   );

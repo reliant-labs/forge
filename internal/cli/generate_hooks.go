@@ -52,8 +52,20 @@ func writesGenerateHooks(ctx *pipelineContext) []string {
 	if ctx.Cfg == nil {
 		return nil
 	}
+	return hookWritePaths(ctx.Cfg.Generate.Hooks)
+}
+
+func writesGenerateInputHooks(ctx *pipelineContext) []string {
+	return hookWritePaths(generateHooksForPhase(ctx, "input"))
+}
+
+func writesGeneratePostHooks(ctx *pipelineContext) []string {
+	return hookWritePaths(generateHooksForPhase(ctx, "post"))
+}
+
+func hookWritePaths(hooks []config.GenerateHook) []string {
 	var out []string
-	for _, h := range ctx.Cfg.Generate.Hooks {
+	for _, h := range hooks {
 		for _, w := range h.Writes {
 			if p := cleanProjectRel(w); p != "" {
 				out = append(out, p)
@@ -63,8 +75,39 @@ func writesGenerateHooks(ctx *pipelineContext) []string {
 	return dedupeSorted(out)
 }
 
+const generateInputHooksStep = "generate input hooks (forge.yaml)"
+
+func generateHooksForPhase(ctx *pipelineContext, phase string) []config.GenerateHook {
+	var hooks []config.GenerateHook
+	if ctx.Cfg == nil {
+		return hooks
+	}
+	for _, h := range ctx.Cfg.Generate.Hooks {
+		p := h.Phase
+		if p == "" {
+			p = "post"
+		}
+		if p == phase {
+			hooks = append(hooks, h)
+		}
+	}
+	return hooks
+}
+
+func hasGenerateInputHooks(ctx *pipelineContext) bool {
+	return len(generateHooksForPhase(ctx, "input")) > 0
+}
+
+func hasGeneratePostHooks(ctx *pipelineContext) bool {
+	return len(generateHooksForPhase(ctx, "post")) > 0
+}
+
+func stepGenerateInputHooks(ctx *pipelineContext) error {
+	return runGenerateHooks(ctx.ProjectDir, generateHooksForPhase(ctx, "input"), os.Stdout, os.Stderr)
+}
+
 func stepGenerateHooks(ctx *pipelineContext) error {
-	return runGenerateHooks(ctx.ProjectDir, ctx.Cfg.Generate.Hooks, os.Stdout, os.Stderr)
+	return runGenerateHooks(ctx.ProjectDir, generateHooksForPhase(ctx, "post"), os.Stdout, os.Stderr)
 }
 
 // generateHooksLogDir holds each hook's full combined output from the most
@@ -303,10 +346,13 @@ func reportGenerateHooksNotRun(w io.Writer, ctx *pipelineContext, steps []GenSte
 	if !hasGenerateHooks(ctx) {
 		return
 	}
+	present := map[string]bool{}
 	for _, s := range steps {
-		if s.Name == generateHooksStep {
-			return
-		}
+		present[s.Name] = true
+	}
+	if (!hasGenerateInputHooks(ctx) || present[generateInputHooksStep]) &&
+		(!hasGeneratePostHooks(ctx) || present[generateHooksStep]) {
+		return
 	}
 	var writes string
 	if paths := writesGenerateHooks(ctx); len(paths) > 0 {

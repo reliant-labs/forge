@@ -82,9 +82,13 @@ func TestNextJSOtelKeepsEnvReadsInProjectCode(t *testing.T) {
 	s := string(content)
 
 	for _, envVar := range []string{
-		"process.env.NEXT_PUBLIC_OTEL_ENDPOINT",
 		"process.env.NEXT_PUBLIC_APP_VERSION",
 		"process.env.NEXT_PUBLIC_API_URL",
+		// The deprecated build fallbacks of the per-environment values
+		// (TestTelemetryPerEnvValuesPreferRuntimeConfig): still read, and so
+		// still written out verbatim, until the next major removes them.
+		"process.env.NEXT_PUBLIC_OTEL_ENDPOINT",
+		"process.env.NEXT_PUBLIC_ENVIRONMENT",
 		"process.env.NEXT_PUBLIC_OTEL_REPLAY",
 	} {
 		if !strings.Contains(s, envVar) {

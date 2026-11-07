@@ -334,10 +334,16 @@ var entityNameTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerEnt
 // when the view has one, or the one `forge:entity key=<column>` names. No
 // write is generated: a view is a derived read. Views are opt-in because
 // most are reporting conveniences nothing in Go reads.
+//
+// On a BASE TABLE it opts in the one kind of table forge leaves off the ORM
+// by default: a table a forge library reads and writes through its own
+// store (forge/pkg/audit's audit_log, forge/pkg/activity's
+// activity_events). On any other table it states the default.
 const ViewMarkerEntity = "forge:entity"
 
-// DeclaresEntity reports whether a view's comment opts it in with
-// ViewMarkerEntity, and the key column a `key=<column>` names ("" for none).
+// DeclaresEntity reports whether a view's (or table's) comment opts it in
+// with ViewMarkerEntity, and the key column a `key=<column>` names ("" for
+// none; a table's key is its primary key, so it ignores one).
 func (t Table) DeclaresEntity() (ok bool, key string) {
 	m := viewEntityMarkerRE.FindStringSubmatch(t.Comment)
 	if m == nil {
@@ -424,7 +430,74 @@ var appendOnlyTableMarkerRE = regexp.MustCompile(regexp.QuoteMeta(TableMarkerApp
 // maintaining its own copy, which is exactly the discoverability gap
 // forge:ref fell into (undiscoverable outside two skill files) that this
 // registry exists to close.
-var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerClosedSet, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete, ColumnMarkerSecret, ColumnMarkerReadable}
+var KnownColumnMarkers = []string{ColumnMarkerImmutable, ColumnMarkerRef, ColumnMarkerClosedSet, ColumnMarkerVersion, ColumnMarkerFill, ColumnMarkerOwner, ColumnMarkerGoType, ColumnMarkerNoSoftDelete, ColumnMarkerSecret, ColumnMarkerReadable, ColumnMarkerIdentitySubject}
+
+// ColumnMarkerIdentitySubject declares a column that holds the subject of the
+// environment's managed identity, so a console can link a row to the identity
+// user it belongs to, and an identity user to their rows:
+//
+//	COMMENT ON COLUMN users.external_id IS 'forge:identity-subject';        -- the IdP user id (the token's sub)
+//	COMMENT ON COLUMN members.login     IS 'forge:identity-subject=email';  -- the login email
+//
+// The argument says which of the user's attributes the column holds:
+// IdentitySubjectID (the default, so the bare marker) or IdentitySubjectEmail.
+// Any other argument is a CommentMarkerProblems sentence. The marker names no
+// identity provider: the column is the subject of whichever identity the
+// environment declares (forge.ManagedIdentity), and where it declares none the
+// marker draws nothing. So mark a column only when the environment's managed
+// identity is the one that issued its values; a subject of some other IdP
+// would link to the wrong person, or to nobody. Read with
+// Column.IdentitySubject.
+const ColumnMarkerIdentitySubject = "forge:identity-subject"
+
+// The values a ColumnMarkerIdentitySubject column may hold, named by its
+// argument.
+const (
+	// IdentitySubjectID is the identity user's id: the token's `sub`.
+	IdentitySubjectID = "id"
+	// IdentitySubjectEmail is the identity user's login email.
+	IdentitySubjectEmail = "email"
+)
+
+// identitySubjectMarkerRE finds each declaration, with its `=<kind>` argument
+// when it has one. The trailing guard makes it a whole-token match, so
+// `forge:identity-subjects` is not this marker.
+var identitySubjectMarkerRE = regexp.MustCompile(regexp.QuoteMeta(ColumnMarkerIdentitySubject) + `(?:=([A-Za-z0-9_-]*))?(?:[^\w=-]|$)`)
+
+// IdentitySubject returns what a ColumnMarkerIdentitySubject column holds —
+// IdentitySubjectID or IdentitySubjectEmail — and whether the column declares
+// one. A declaration with an argument it does not know, or two declarations
+// that disagree, reports ok=false: it is a CommentMarkerProblems sentence,
+// and a link drawn from it could open the wrong person.
+func (c Column) IdentitySubject() (kind string, ok bool) {
+	kind, declared, problem := identitySubject(c.Comment)
+	if !declared || problem != "" {
+		return "", false
+	}
+	return kind, true
+}
+
+// identitySubject parses every ColumnMarkerIdentitySubject declaration in
+// comment: the kind they declare, whether there is one, and the sentence
+// saying what is wrong with them ("" when nothing is).
+func identitySubject(comment string) (kind string, declared bool, problem string) {
+	for _, m := range identitySubjectMarkerRE.FindAllStringSubmatchIndex(comment, -1) {
+		k := IdentitySubjectID
+		if m[2] >= 0 {
+			k = comment[m[2]:m[3]]
+		}
+		if k != IdentitySubjectID && k != IdentitySubjectEmail {
+			return "", true, fmt.Sprintf("%s=%s names no attribute of an identity user — write %s (or %s=%s) for the user id, the token's sub, or %s=%s for the login email",
+				ColumnMarkerIdentitySubject, k, ColumnMarkerIdentitySubject, ColumnMarkerIdentitySubject, IdentitySubjectID, ColumnMarkerIdentitySubject, IdentitySubjectEmail)
+		}
+		if declared && k != kind {
+			return "", true, fmt.Sprintf("%s is declared twice, once as %s and once as %s — a column holds one of them; keep the one it holds",
+				ColumnMarkerIdentitySubject, kind, k)
+		}
+		kind, declared = k, true
+	}
+	return kind, declared, ""
+}
 
 // ColumnMarkerSecret declares a column the database's read-only role (pkg/dbgrants)
 // must never read: `COMMENT ON COLUMN git_credentials.access_token IS

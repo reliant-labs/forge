@@ -57,11 +57,12 @@ func TestUpgrade_SiteWithoutGoModuleWritesNoGoProjectFiles(t *testing.T) {
 		return dir, cfg
 	}
 
-	// The writing run: not --check, and --force over everything, so no
-	// managed file the project's shape selects is held back.
+	// The writing run: not --check, --force over everything, and every
+	// template new across the range, so no managed file the project's shape
+	// selects is held back.
 	upgrade := func(t *testing.T, dir string, cfg *config.ProjectConfig) []UpgradeResult {
 		t.Helper()
-		results, err := UpgradeSelection(dir, cfg, ForceAll(), false)
+		results, err := UpgradeWith(dir, cfg, UpgradeOptions{Force: ForceAll(), NewSince: func(string) bool { return true }})
 		if err != nil {
 			t.Fatalf("UpgradeSelection: %v", err)
 		}

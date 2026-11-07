@@ -506,20 +506,25 @@ func kclFileWriteTargets(projectDir string) map[string]bool {
 // reportImpureRender explains a restored write. The message has to carry the
 // diagnosis, because the symptom (a tracked file forge never wrote turning up
 // dirty) points at forge rather than at the KCL that actually wrote it.
+//
+// On stderr: the renders this guards also run under commands whose stdout a
+// script reads (`forge ci gate --list` discovers frontends through them), and
+// a warning there is not output (forge report 2186e95b).
 func reportImpureRender(env string, restored []string) {
 	if len(restored) == 0 {
 		return
 	}
-	fmt.Printf("⚠️  The %s KCL render wrote %d tracked file(s); forge reverted them:\n", env, len(restored))
+	w := os.Stderr
+	fmt.Fprintf(w, "⚠️  The %s KCL render wrote %d tracked file(s); forge reverted them:\n", env, len(restored))
 	for _, path := range restored {
-		fmt.Printf("   • %s\n", path)
+		fmt.Fprintf(w, "   • %s\n", path)
 	}
-	fmt.Println("    `forge generate` renders KCL only to READ from it, so a file.write in the")
-	fmt.Println("    module fires during generate as a side effect. That makes generate's output")
-	fmt.Println("    depend on whatever the write derives from — and when that is machine-local")
-	fmt.Println("    state (.forge/blocks.json, a port store, anything gitignored), two developers")
-	fmt.Println("    on the same commit generate different bytes and CI fails for one of them.")
-	fmt.Println("    Move the file.write behind a flag the dev render sets and generate does not,")
-	fmt.Println("    or generate the file from committed inputs only. `forge env up` still runs it.")
-	fmt.Println("    Each was reverted only after a second render wrote the same bytes again.")
+	fmt.Fprintln(w, "    `forge generate` renders KCL only to READ from it, so a file.write in the")
+	fmt.Fprintln(w, "    module fires during generate as a side effect. That makes generate's output")
+	fmt.Fprintln(w, "    depend on whatever the write derives from — and when that is machine-local")
+	fmt.Fprintln(w, "    state (.forge/blocks.json, a port store, anything gitignored), two developers")
+	fmt.Fprintln(w, "    on the same commit generate different bytes and CI fails for one of them.")
+	fmt.Fprintln(w, "    Move the file.write behind a flag the dev render sets and generate does not,")
+	fmt.Fprintln(w, "    or generate the file from committed inputs only. `forge env up` still runs it.")
+	fmt.Fprintln(w, "    Each was reverted only after a second render wrote the same bytes again.")
 }

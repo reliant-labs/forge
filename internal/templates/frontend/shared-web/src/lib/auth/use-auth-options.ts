@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { fetchAuthOptions, type AuthOptions } from "./native-login";
+import { fetchAuthOptions, LEGACY_AUTH_OPTIONS, type AuthOptions } from "./native-login";
 
 /**
  * Loads which optional sign-in routes the server serves, once per mount.
@@ -9,7 +9,7 @@ import { fetchAuthOptions, type AuthOptions } from "./native-login";
  * refuse it.
  */
 export function useAuthOptions(): AuthOptions {
-  const [options, setOptions] = useState<AuthOptions>({ selfSignup: false });
+  const [options, setOptions] = useState<AuthOptions>(LEGACY_AUTH_OPTIONS);
   useEffect(() => {
     let live = true;
     void fetchAuthOptions().then((o) => {

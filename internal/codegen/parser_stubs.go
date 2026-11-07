@@ -329,7 +329,8 @@ func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
 // where a managed service claims the table. Unlike ParseEntityProtos it
 // needs no descriptor — a project whose protos have not been compiled yet
 // still has a schema, and the store is a projection of the schema alone.
-func ParseORMEntities(projectDir string) ([]EntityDef, error) {
+// ormDir is the ORM package's project-relative directory.
+func ParseORMEntities(projectDir, ormDir string) ([]EntityDef, error) {
 	desc, err := LoadDescriptor(projectDir)
 	if err != nil {
 		return nil, err
@@ -338,7 +339,7 @@ func ParseORMEntities(projectDir string) ([]EntityDef, error) {
 	if desc != nil {
 		services = ManagedServices(desc.Services)
 	}
-	return BuildORMEntities(projectDir, services)
+	return BuildORMEntities(projectDir, ormDir, services)
 }
 
 // ParseUnmatchedCRUDRPCs lists the managed services' CRUD-named rpcs whose

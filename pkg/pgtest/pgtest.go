@@ -426,22 +426,30 @@ func reapStaleInstances() {
 		pidFile := filepath.Join(dir, "data", "postmaster.pid")
 		pid, alive := postmaster(pidFile)
 		if alive {
-			// Only reap a still-running postmaster once it's clearly orphaned
-			// (older than staleInstanceAge). Recently-started ones belong to
-			// live concurrent runs.
-			if info, statErr := os.Stat(pidFile); statErr != nil || time.Since(info.ModTime()) < staleInstanceAge {
-				continue
-			}
-			// pid came from a pidfile that may be hours old: only signal it if
-			// it is provably the postgres this runtime dir launched. Foreign
-			// (recycled pid) means the postmaster is already gone, so the dir
-			// is still reaped; unreadable means leave everything alone.
-			switch verifyRecordedPid(pid, pidFile, postgresBinary(dir)) {
-			case verdictUnknown:
-				continue
-			case verdictOurs:
-				forceKill(pid)
-			case verdictForeign:
+			// NEVER remove the dir of a live postmaster: a postgres whose
+			// data directory is deleted under it keeps answering and fails
+			// every CREATE DATABASE (health.go). So a live one is identified
+			// by its executable alone — the start-time check verifyRecordedPid
+			// adds moves when the wall clock is stepped, and once called this
+			// runtime dir's own server "foreign" — and it is STOPPED before
+			// its dir goes.
+			if !isPostgresOf(pid, dir) {
+				if f := readProcFacts(pid); !f.exeOK {
+					continue // cannot tell what it is: leave everything alone
+				}
+				// A recycled pid: the postmaster is already gone.
+			} else {
+				healthy := dataIntactAt(dir) == nil && !cwdDeleted(pid)
+				// A healthy one is reaped only once it is clearly orphaned
+				// (older than staleInstanceAge); recently-started ones belong
+				// to live concurrent runs. A broken one is stopped at once:
+				// it can serve nobody.
+				if info, statErr := os.Stat(pidFile); healthy && (statErr != nil || time.Since(info.ModTime()) < staleInstanceAge) {
+					continue
+				}
+				if !stopPid(pid) {
+					continue
+				}
 			}
 		} else {
 			// No live postmaster is NOT enough to reap: a sibling process
@@ -602,13 +610,10 @@ func NewClone(template string) (*sql.DB, func(), error) {
 // newOnShared creates the scratch database on the shared server, empty or as
 // a copy of template.
 func newOnShared(template string) (*sql.DB, func(), error) {
-	s, err := boot()
-	if err != nil {
-		return nil, nil, err
-	}
 	name := scratchName(scratchTestPrefix)
-	if _, err := s.baseDB.Exec(createDatabaseSQL(name, template)); err != nil {
-		return nil, nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
+	s, err := createOnShared(createDatabaseSQL(name, template))
+	if err != nil {
+		return nil, nil, wrapCreate(name, err)
 	}
 
 	dsn := replaceDBName(s.baseURL, name)
@@ -648,6 +653,49 @@ func newOnShared(template string) (*sql.DB, func(), error) {
 	return db, cleanup, nil
 }
 
+// createOnShared runs stmt (a CREATE DATABASE) on this process's shared
+// server, booting it on first use. When the server fails it for a reason a
+// fresh server fixes (brokenServerError: its data directory lost a file, or
+// it is shutting down), the binding is dropped and the create retried ONCE
+// on a re-attached server: the attach replaces a broken shared server under
+// the pool lock (health.go). An external FORGE_TEST_POSTGRES_URL server is
+// never retried; its owner fixes it.
+func createOnShared(stmt string) (*server, error) {
+	s, err := boot()
+	if err != nil {
+		return nil, bootError{err}
+	}
+	_, err = s.baseDB.Exec(stmt)
+	if err == nil || !brokenServerError(err) || !healShared() {
+		return s, err
+	}
+	s, err = boot()
+	if err != nil {
+		return nil, bootError{err}
+	}
+	if _, err := s.baseDB.Exec(stmt); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// bootError marks a createOnShared failure that happened before any
+// CREATE DATABASE ran, so callers report it as the boot error it is.
+type bootError struct{ err error }
+
+func (e bootError) Error() string { return e.err.Error() }
+func (e bootError) Unwrap() error { return e.err }
+
+// wrapCreate reports a createOnShared failure: a boot error as itself, as
+// before createOnShared existed; a failed CREATE DATABASE under its name.
+func wrapCreate(name string, err error) error {
+	var be bootError
+	if errors.As(err, &be) {
+		return be.err
+	}
+	return fmt.Errorf("pgtest: create database %s: %w", name, err)
+}
+
 // NewURL creates a fresh, uniquely-named, empty database on the shared
 // server like New, but returns its connection DSN (a postgres:// URL)
 // instead of an open *sql.DB. Use this when the consumer is a separate
@@ -655,13 +703,10 @@ func newOnShared(template string) (*sql.DB, func(), error) {
 // boots a generated server. The returned cleanup drops the database; the
 // caller must not hold connections past it.
 func NewURL() (dsn string, cleanup func(), err error) {
-	s, err := boot()
-	if err != nil {
-		return "", nil, err
-	}
 	name := scratchName(scratchTestPrefix)
-	if _, err := s.baseDB.Exec("CREATE DATABASE " + name); err != nil {
-		return "", nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
+	s, err := createOnShared("CREATE DATABASE " + name)
+	if err != nil {
+		return "", nil, wrapCreate(name, err)
 	}
 	cleanup = func() {
 		_, _ = s.baseDB.Exec(

@@ -136,7 +136,7 @@ func TestDisplayStylesNameEachKindsDefaultFirst(t *testing.T) {
 			t.Errorf("DisplayStyles(%s) = %v, want %s first", kind, got, want)
 		}
 	}
-	for _, kind := range []PanelKind{KindTable, KindSearch, KindHeatmap, KindIssues, KindSessions, KindFunnel, KindPostgres, KindText} {
+	for _, kind := range []PanelKind{KindTable, KindSearch, KindHeatmap, KindIssues, KindSessions, KindFunnel, KindPostgres, KindText, KindBrowse} {
 		if got := DisplayStyles(kind); got != nil {
 			t.Errorf("DisplayStyles(%s) = %v, want none", kind, got)
 		}

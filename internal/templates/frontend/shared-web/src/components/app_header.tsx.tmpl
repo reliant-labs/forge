@@ -18,7 +18,6 @@
 import { Menu } from "lucide-react";
 
 import { SessionNav } from "@/components/session_nav";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { useUiStore } from "@/stores/ui-store";
 
 export function AppHeader({ children }: { children?: React.ReactNode }) {
@@ -50,8 +49,11 @@ export function AppHeader({ children }: { children?: React.ReactNode }) {
 
       <div className="min-w-0 flex-1">{children}</div>
 
+      {/*
+        One control: the user menu, which holds the theme too. Signed out it
+        renders the compact theme toggle instead (see session_nav.tsx).
+      */}
       <div className="flex shrink-0 items-center gap-2">
-        <ThemeToggle />
         <SessionNav />
       </div>
     </header>

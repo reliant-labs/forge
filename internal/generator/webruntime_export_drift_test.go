@@ -27,7 +27,7 @@ import (
 //	'installDevLogging'.
 //
 // So this test deliberately reaches for the PUBLISHED artifact — the same
-// tarball npm would hand a user resolving webRuntimePublishedRange — and
+// tarball at the minimum admitted by webRuntimePublishedRange — and
 // asserts the templates only name symbols it actually exports.
 //
 // NETWORK. It shells out to `npm view`/`npm pack`, needs no credentials (the
@@ -49,7 +49,12 @@ func TestTemplatesOnlyImportPublishedWebRuntimeExports(t *testing.T) {
 			"the scanner has drifted from the template layout and this guard is now inert")
 	}
 
-	exported := publishedWebRuntimeExports(t, webRuntimePublishedRange)
+	// A lockfile may retain the oldest admitted release, not today's latest.
+	floor, ok := minimumVersion(webRuntimePublishedRange)
+	if !ok {
+		t.Fatalf("invalid runtime floor %q", webRuntimePublishedRange)
+	}
+	exported := publishedWebRuntimeExports(t, strings.TrimPrefix(floor, "v"))
 
 	var missing []string
 	for _, sym := range imported {
@@ -66,6 +71,83 @@ func TestTemplatesOnlyImportPublishedWebRuntimeExports(t *testing.T) {
 			"to it, is what fixes this — adding the export locally is not enough, which is\n"+
 			"the exact trap this test exists to catch.",
 			len(missing), webRuntimePublishedRange, missing)
+	}
+}
+
+// TestHooksOnlyImportMinimumPublishedWebRuntimeExports checks the subpath used
+// by generated hooks against the FLOOR, not the newest version in the range.
+// 0.13.3/0.13.4 lacked createMutationCall even though ^0.13.3 could install
+// 0.13.5: existing lockfiles kept the incompatible version indefinitely.
+func TestHooksOnlyImportMinimumPublishedWebRuntimeExports(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network + npm; runs in the full suite")
+	}
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm not on PATH")
+	}
+	floor, ok := minimumVersion(webRuntimePublishedRange)
+	if !ok {
+		t.Fatalf("invalid runtime floor %q", webRuntimePublishedRange)
+	}
+	exported := publishedWebRuntimeExports(t, strings.TrimPrefix(floor, "v"), "service-hooks")
+	for _, sym := range hookRuntimeImports(t) {
+		if !exported[sym] {
+			t.Errorf("generated hooks import %s but published service-hooks at floor %s does not export it", sym, floor)
+		}
+	}
+}
+
+// Read all conditional imports: any generated service may need them. Removing
+// template actions retains their bodies, unlike rendering just one service.
+func hookRuntimeImports(t *testing.T) []string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "templates", "frontend", "hooks.ts.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := regexp.MustCompile(`(?s)\{\{.*?\}\}`).ReplaceAllString(string(body), "")
+	re := regexp.MustCompile(`import\s*\{([^{}]*)\}\s*from\s*"@reliantlabs/forge-web-runtime/service-hooks"`)
+	var symbols []string
+	for _, match := range re.FindAllStringSubmatch(text, -1) {
+		for _, raw := range strings.Split(match[1], ",") {
+			if sym := normalizeImportedSymbol(raw); sym != "" {
+				symbols = append(symbols, sym)
+			}
+		}
+	}
+	if len(symbols) == 0 {
+		t.Fatal("no hook runtime imports found; scanner drifted")
+	}
+	return symbols
+}
+
+// Keep the known published API requirement covered in offline/short gates too.
+// The registry test above checks every template import as the API evolves.
+func TestHookRuntimeExportFloor(t *testing.T) {
+	if !specSatisfiesFloor(webRuntimePublishedRange, "0.13.5") {
+		t.Fatalf("runtime floor %s predates createMutationCall/createServiceMutations (0.13.5)", webRuntimePublishedRange)
+	}
+	decision := decideWebRuntimeDependency("")
+	for _, old := range []string{"0.13.3", "^0.13.3", "~0.13.4"} {
+		if got := reconcileSpec(old, decision); !specSatisfiesFloor(got, "0.13.5") {
+			t.Errorf("old consumer %s remains incompatible after reconciliation: %s", old, got)
+		}
+	}
+	if got := reconcileSpec("0.13.6", decision); got != "0.13.6" {
+		t.Errorf("newer consumer was rewritten: %s", got)
+	}
+}
+
+func TestHookRuntimeImportScanner(t *testing.T) {
+	imports := hookRuntimeImports(t)
+	for _, want := range []string{"createMutationCall", "createServiceMutations", "createQueryHook", "createInfiniteQueryHook", "serviceKeys"} {
+		found := false
+		for _, got := range imports {
+			found = found || got == want
+		}
+		if !found {
+			t.Errorf("scanner missed conditional hook import %s: %v", want, imports)
+		}
 	}
 }
 
@@ -142,7 +224,7 @@ func normalizeImportedSymbol(clause string) string {
 
 // publishedWebRuntimeExports downloads the version npm resolves for the given
 // range and returns the symbols its dist/index.d.ts declares.
-func publishedWebRuntimeExports(t *testing.T, semverRange string) map[string]bool {
+func publishedWebRuntimeExports(t *testing.T, semverRange string, entrypoints ...string) map[string]bool {
 	t.Helper()
 
 	const pkg = "@reliantlabs/forge-web-runtime"
@@ -177,7 +259,11 @@ func publishedWebRuntimeExports(t *testing.T, semverRange string) map[string]boo
 		t.Fatalf("extract %s: %v", tarball, err)
 	}
 
-	dts := filepath.Join(dir, "package", "dist", "index.d.ts")
+	entrypoint := "index"
+	if len(entrypoints) > 0 {
+		entrypoint = entrypoints[0]
+	}
+	dts := filepath.Join(dir, "package", "dist", entrypoint+".d.ts")
 	body, err := os.ReadFile(dts)
 	if err != nil {
 		t.Fatalf("published tarball has no dist/index.d.ts (%v) — the build emitted "+

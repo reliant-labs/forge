@@ -19,7 +19,7 @@ const schemaObsSessions = "forge.obs.sessions/v1"
 var obsSessionsSchema = obsout.Schema{
 	Name: schemaObsSessions,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode",
 		"sessions", "sessions.id", "sessions.service", "sessions.version", "sessions.user_id", "sessions.entry_path",
 		"sessions.started", "sessions.ended", "sessions.duration_ms", "sessions.page_views", "sessions.interactions",
@@ -95,6 +95,7 @@ ClickStack has no session tables, so a local env answers "could not look".
 			return runObsSessions(cmd.Context(), defaultObsDeps(cmd), obsEnvArg(args, 0), o)
 		},
 	}
+	o.inst.userFlag = "instance-user" // --user is the app's user id here
 	o.register(cmd, 24*time.Hour, obsquery.DefaultSessionLimit)
 	f := cmd.Flags()
 	f.BoolVar(&o.hasError, "has-error", false, "only sessions with at least one browser error")
@@ -174,7 +175,7 @@ func runObsSessions(ctx context.Context, d obsDeps, env string, o obsSessionsOpt
 	}
 	res.NextPageToken = wrapPageToken(n.Range, res.NextPageToken)
 	doc.Page = obsout.Page{Truncated: res.NextPageToken != "", NextPageToken: res.NextPageToken}
-	doc.Suggested = sessionsSuggestions(env, res.Sessions)
+	doc.Suggested = o.inst.carrySuggested(sessionsSuggestions(env, res.Sessions))
 	doc.Stamp(schemaObsSessions, nil)
 	if done, err := o.out.Emit(d.Stdout, obsSessionsSchema, doc, fields); done || err != nil {
 		return err

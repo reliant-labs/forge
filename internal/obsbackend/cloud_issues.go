@@ -27,6 +27,9 @@ type wireIssueScope struct {
 	EnvIDs    []string      `json:"envIds,omitempty"`
 	Services  []string      `json:"services,omitempty"`
 	TimeRange wireTimeRange `json:"timeRange"`
+	// InstanceIDs and InstanceUsers are IssueScope's instance narrowing.
+	InstanceIDs   []string `json:"instanceIds,omitempty"`
+	InstanceUsers []string `json:"instanceUsers,omitempty"`
 }
 
 func (c Cloud) issueScope(n Narrow) (wireIssueScope, error) {
@@ -34,7 +37,8 @@ func (c Cloud) issueScope(n Narrow) (wireIssueScope, error) {
 		return wireIssueScope{}, Wrong("--filter narrows telemetry attributes and does not apply to issues; use --service")
 	}
 	s := c.scope(n)
-	return wireIssueScope{OrgID: s.OrgID, EnvIDs: s.EnvIDs, Services: s.Services, TimeRange: s.TimeRange}, nil
+	return wireIssueScope{OrgID: s.OrgID, EnvIDs: s.EnvIDs, Services: s.Services, TimeRange: s.TimeRange,
+		InstanceIDs: s.InstanceIDs, InstanceUsers: s.InstanceUsers}, nil
 }
 
 // callIssues is call with the one answer an issues read must not blur: a

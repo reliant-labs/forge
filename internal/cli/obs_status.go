@@ -35,7 +35,7 @@ const schemaObsStatus = "forge.obs.status/v1"
 var obsStatusSchema = obsout.Schema{
 	Name: schemaObsStatus,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode",
 		"services", "services.service", "services.requests", "services.rate_per_second", "services.errors", "services.error_rate",
 		"services.p50_ms", "services.p95_ms", "services.p99_ms", "services.error_logs",
@@ -136,6 +136,7 @@ type obsStatusOpts struct {
 	since    time.Duration
 	from, to string
 	services []string
+	inst     obsInstanceFlags
 }
 
 func newObsStatusCmd() *cobra.Command {
@@ -175,6 +176,7 @@ A complete read exits 0; this is not a health verdict (use
 	f.StringVar(&o.from, "from", "", "range start, RFC 3339")
 	f.StringVar(&o.to, "to", "", "range end, RFC 3339 (default now)")
 	f.StringArrayVar(&o.services, "service", nil, "only this service.name (repeatable)")
+	o.inst.register(f)
 	return cmd
 }
 
@@ -198,7 +200,8 @@ func runObsStatus(ctx context.Context, d obsDeps, env string, o obsStatusOpts) e
 	if err != nil {
 		return fail(err)
 	}
-	b, _, err := (&obsCommon{backend: o.backend}).open(ctx, d, env, "status")
+	c := &obsCommon{backend: o.backend, inst: o.inst}
+	b, _, err := c.open(ctx, d, env, "status")
 	if err != nil {
 		return fail(err)
 	}
@@ -237,7 +240,7 @@ func runObsStatus(ctx context.Context, d obsDeps, env string, o obsStatusOpts) e
 	if read == 0 {
 		return fail(obsbackend.Undetermined("nothing about %s could be read", env).Cause(first).With(obsbackend.SuggestedOf(first)...))
 	}
-	doc.Suggested = statusSuggestions(env, doc)
+	doc.Suggested = c.inst.carrySuggested(statusSuggestions(env, doc))
 	var partial error
 	if len(doc.Unread) > 0 || len(doc.Warnings) > 0 {
 		partial = obsbackend.Undetermined("status for %s is partial: some evidence could not be read (see unread and warnings)", env)
@@ -466,6 +469,9 @@ func statusSuggestions(env string, doc obsStatusDoc) []string {
 func writeStatusText(w io.Writer, now time.Time, doc obsStatusDoc) {
 	fmt.Fprintf(w, "%s (%s backend), %s .. %s\n", doc.Scope.Env, doc.Scope.Backend,
 		doc.Scope.From.Format(time.RFC3339), doc.Scope.To.Format(time.RFC3339))
+	if in := doc.Scope.Instance; in != nil {
+		fmt.Fprintf(w, "instance %s\n", instanceName(*in))
+	}
 
 	if r := doc.CurrentRelease; r != nil {
 		line := fmt.Sprintf("release %s, promoted %s ago", r.Version, ago(now, r.PromotedAt))

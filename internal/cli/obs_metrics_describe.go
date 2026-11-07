@@ -19,7 +19,7 @@ const schemaObsMetric = "forge.obs.metric/v1"
 var obsMetricSchema = obsout.Schema{
 	Name: schemaObsMetric,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "metric",
 		"metric.name", "metric.type", "metric.unit", "metric.description", "metric.monotonic", "metric.temporality",
 		"metric.services", "metric.service_count", "metric.last_seen", "metric.series_estimate", "metric.queryable",
@@ -141,7 +141,7 @@ func runObsMetricsDescribe(ctx context.Context, d obsDeps, env, metric string, o
 	for _, a := range attrs {
 		doc.Attributes = append(doc.Attributes, obsAttributeDoc{Key: a.Key, Resource: a.Resource, DistinctEstimate: a.DistinctEstimate, Enumerated: a.Enumerated, HighCardinality: a.HighCardinality})
 	}
-	doc.Suggested = obsout.Suggest(describeSuggestions(env, res)...)
+	doc.Suggested = o.inst.carrySuggested(obsout.Suggest(describeSuggestions(env, res)...))
 	doc.Stamp(schemaObsMetric, nil)
 	if done, err := o.out.Emit(d.Stdout, obsMetricSchema, doc, fields); done || err != nil {
 		return err

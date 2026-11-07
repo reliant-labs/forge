@@ -12,7 +12,7 @@ import (
 // records), merged by service. A service that only logged has zero request
 // figures, as on the control plane.
 func (l Local) Overview(ctx context.Context, req OverviewRequest) (OverviewResult, error) {
-	q := obsquery.Overview{Scope: LocalScope(req.Narrow, l.Env)}
+	q := obsquery.Overview{Scope: l.scope(req.Narrow)}
 	red, err := q.RED()
 	if err != nil {
 		return OverviewResult{}, compileErr(err)

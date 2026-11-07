@@ -47,10 +47,35 @@ type Cloud struct {
 	EnvID  string
 	OrgID  string
 	Caller Caller
+	// Instances narrows every read to dev instances of the env; the zero
+	// value reads the whole env.
+	Instances Instances
+}
+
+// Instances narrows a backend's reads to dev instances: the `forge env up`
+// sessions whose telemetry the gateway stamped with reliant.instance.id and
+// reliant.instance.user (obsquery.Scope.InstanceIDs / InstanceUsers). Empty
+// IDs and Users narrow nothing.
+type Instances struct {
+	IDs   []string
+	Users []string
+	// Label and Owner describe the one instance IDs names ("alice/fix-login",
+	// "alice@x"), for a document's scope; "" when unknown.
+	Label, Owner string
+}
+
+// Narrows reports whether i narrows anything.
+func (i Instances) Narrows() bool { return len(i.IDs)+len(i.Users) > 0 }
+
+// apply sets i on a compiler scope.
+func (i Instances) apply(sc *obsquery.Scope) {
+	sc.InstanceIDs, sc.InstanceUsers = i.IDs, i.Users
 }
 
 // Info implements Backend.
-func (c Cloud) Info() Info { return Info{Env: c.Env, Backend: BackendCloud, EnvID: c.EnvID} }
+func (c Cloud) Info() Info {
+	return Info{Env: c.Env, Backend: BackendCloud, EnvID: c.EnvID, Instances: c.Instances}
+}
 
 // call invokes procedure and maps a failure onto the exit table. Every cloud
 // read in this package (the Backend methods, and the issue and release-health
@@ -110,12 +135,17 @@ type wireAttrFilter struct {
 }
 
 type wireScope struct {
-	OrgID     string           `json:"orgId"`
-	ProjectID string           `json:"projectId,omitempty"`
-	EnvIDs    []string         `json:"envIds,omitempty"`
-	Services  []string         `json:"services,omitempty"`
-	TimeRange wireTimeRange    `json:"timeRange"`
-	Filters   []wireAttrFilter `json:"filters,omitempty"`
+	OrgID     string   `json:"orgId"`
+	ProjectID string   `json:"projectId,omitempty"`
+	EnvIDs    []string `json:"envIds,omitempty"`
+	// InstanceIDs and InstanceUsers are QueryScope's instance_ids and
+	// instance_users: sent only when set, so a whole-env read is the request
+	// every control plane already knew.
+	InstanceIDs   []string         `json:"instanceIds,omitempty"`
+	InstanceUsers []string         `json:"instanceUsers,omitempty"`
+	Services      []string         `json:"services,omitempty"`
+	TimeRange     wireTimeRange    `json:"timeRange"`
+	Filters       []wireAttrFilter `json:"filters,omitempty"`
 }
 
 // scope is the QueryScope of a request narrowed by n, bounded to this env.
@@ -127,6 +157,7 @@ func (c Cloud) scope(n Narrow) wireScope {
 	if c.EnvID != "" {
 		s.EnvIDs = []string{c.EnvID}
 	}
+	s.InstanceIDs, s.InstanceUsers = c.Instances.IDs, c.Instances.Users
 	for _, f := range n.Filters {
 		op := "ATTRIBUTE_OP_EQ"
 		if f.Not {
@@ -142,7 +173,7 @@ func (c Cloud) scope(n Narrow) wireScope {
 // compiler produces, against the local database name (the control plane
 // substitutes the org's own).
 func (c Cloud) explainer() Local {
-	return Local{Env: c.Env, Runner: refuseRun{}}
+	return Local{Env: c.Env, Runner: refuseRun{}, Instances: c.Instances}
 }
 
 // refuseRun is the Runner of an explain-only compile: nothing may run.

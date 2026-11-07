@@ -329,6 +329,15 @@ type ScenarioRPCData struct {
 // Streaming RPCs are reachable through the map's string index signature —
 // there is no canonical typed return shape for an arbitrary stream.
 func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
+	return BuildScenarioRPCDataWithImportBase(services, "@/gen")
+}
+
+// BuildScenarioRPCDataWithImportBase uses the consumer's actual protobuf package
+// location, which is a shared API package rather than @/gen in a workspace.
+func BuildScenarioRPCDataWithImportBase(services []ServiceDef, importBase string) ScenarioRPCData {
+	inlineImport := func(protoFile, symbol string) string {
+		return fmt.Sprintf("import(%q).%s", strings.TrimRight(importBase, "/")+"/"+ProtoFileToTSImportPath(protoFile), symbol)
+	}
 	var data ScenarioRPCData
 	for _, svc := range services {
 		group := ScenarioRPCService{Name: svc.Package + "." + svc.Name}
@@ -346,8 +355,8 @@ func BuildScenarioRPCData(services []ServiceDef) ScenarioRPCData {
 			}
 			group.Entries = append(group.Entries, ScenarioRPCEntry{
 				Key:            svc.Package + "." + svc.Name + "/" + m.Name,
-				RequestType:    tsInlineImport(inPath, m.InputType),
-				ResponseSchema: tsInlineImport(outPath, m.OutputType+"Schema"),
+				RequestType:    inlineImport(inPath, m.InputType),
+				ResponseSchema: inlineImport(outPath, m.OutputType+"Schema"),
 			})
 		}
 		if len(group.Entries) > 0 {

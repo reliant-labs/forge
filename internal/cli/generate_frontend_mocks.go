@@ -57,7 +57,11 @@ func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.Service
 			continue
 		}
 
-		count, err := generator.EmitFrontendMockSurface(projectDir, feDir, services, entities, seed, cs)
+		apiImportBase := "@/gen"
+		if cfg.IsFrontendWorkspacesEnabled() {
+			apiImportBase = generator.NewFrontendWorkspaceLayout(cfg.Name).APIPackage
+		}
+		count, err := generator.EmitFrontendMockSurface(projectDir, feDir, services, entities, seed, cs, apiImportBase)
 		if err != nil {
 			return err
 		}

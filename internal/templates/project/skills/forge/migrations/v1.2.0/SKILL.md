@@ -144,3 +144,49 @@ transport registration, subsequent transport replacement, allocated Expo port,
 non-default native config, and any advertised static build. Preserve owned edits
 across two generations. Actual native auth/streaming/device checks remain separate
 foundation gates; these repairs alone do not establish production readiness.
+
+### Native lint and unit-test harness
+
+New Expo scaffolds include owned `eslint.config.cjs`, `jest.config.cjs` and
+`tests/app-config.test.ts`. Existing apps may add missing files from the current
+scaffold, but must preserve customized lint/test configurations and app config
+formats. The test is a Router/identity configuration smoke test, not native UI,
+secure-storage or device coverage; adapt it if moving to dynamic Expo config.
+
+For the retained SDK 52 matrix, use React/React DOM 18.3.1, Jest/jest-expo 29/52,
+`@jest/globals` 29 and the tested ESLint 9 flat configuration dependency
+`eslint-config-expo` 9.2.0. Do not assume that package's major implies an Expo SDK
+upgrade. Reinstall with the declared package manager and verify `lint`, `typecheck`
+and at least one executed test. Native config bounds Jest workers and disables
+watching; CLI worker flags may override the defaults for local diagnosis.
+
+Native apps also declare `@babel/runtime: "^7.25.0"` as a direct runtime dependency.
+Babel-generated helper imports cannot rely on a transitive/hoisted copy in isolated
+pnpm workspaces. Add it when missing and reinstall the workspace lockfile.
+
+The SDK-wide upgrade remains a separate validated slice. These harness files are
+scaffold-once owned code; generation must not replace application edits.
+
+For SDK 52, add `"moduleResolution": "bundler"` to the owned native tsconfig's
+`compilerOptions` when absent. Its inherited legacy resolver cannot resolve the
+runtime's export-map subpaths used by generated hooks (`/service-hooks` and
+`/mock-transport`). Review an existing explicit resolver choice rather than
+replacing customized settings blindly. Typecheck a real generated service and
+bundle with Metro; a no-service starter can miss this failure entirely.
+
+If an existing owned `packages/ui-web/src/index.ts` aliases `ButtonClasses` or
+`FormFieldContext` from a default export, replace those two lines with named
+re-exports (`export * from "./components/ui/button_classes"` and
+`export * from "./components/ui/form_field_context"`). These helpers have no default
+export. Fresh workspace barrels now distinguish default components from named-only
+helpers; customized existing barrels remain owned and are never overwritten.
+
+Workspace scenario RPC type maps now import protobuf messages from the shared API
+package rather than nonexistent app-local `@/gen` modules. Run `forge generate`
+and browser/native/shared-package typechecks; do not hand-edit the generated
+scenario-rpcs file to repair imports. Standalone import behavior is unchanged.
+
+Jest retains Expo's native transform exceptions and additionally transforms the
+runtime/Connect/protobuf ESM modules, including nested pnpm paths. Existing owned
+Jest configs need an equivalent narrow allowance to exercise real generated hooks;
+config-only smoke tests do not expose this module-loading requirement.

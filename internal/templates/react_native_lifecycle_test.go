@@ -47,7 +47,7 @@ func TestNativeLifecycleManifest(t *testing.T) {
 		}
 		// SDK 52's web renderer is React DOM 18.3.1, compatible with the
 		// existing React 18 range; do not rely on a transitive peer install.
-		for name, want := range map[string]string{"expo": "~52.0.0", "react": "^18.3.0", "react-dom": "18.3.1", "react-native": "0.76.9", "react-native-web": "~0.19.0"} {
+		for name, want := range map[string]string{"expo": "~52.0.0", "react": "18.3.1", "react-dom": "18.3.1", "react-native": "0.76.9", "react-native-web": "~0.19.0"} {
 			if got := m.Dependencies[name]; got != want {
 				t.Errorf("SDK 52 dependency %s = %q, want %q", name, got, want)
 			}

@@ -55,13 +55,7 @@ func externalBuildArtifacts(services []WorkloadEntity, opts buildOptions, tag, p
 			return nil, fmt.Errorf("ShellBuild %s: resolve cwd: %w", svc.Name, err)
 		}
 		spec.BuildCwd = cwd
-		platform := opts.targetArch
-		if platform == "" && svc.Runtime.Cluster != nil {
-			platform = svc.Runtime.Cluster.Platform
-		}
-		if platform == "" && svc.Runtime.Type == RuntimeHosted {
-			platform = svc.Runtime.HostedPlatform()
-		}
+		platform := externalBuildPlatform(svc, opts)
 		// JSON sorts map keys and preserves recipe bytes. Nil and empty env
 		// overlays have the same execution semantics.
 		env := spec.BuildEnv
@@ -79,7 +73,8 @@ func externalBuildArtifacts(services []WorkloadEntity, opts buildOptions, tag, p
 			Env                            map[string]string
 			BuiltImages                    map[string]string
 			Source                         any
-		}{spec.BuildCmd, cwd, platform, svc.Build.InputsFile, env, builtImages, externalDeclaredSource(svc)})
+			Inputs                         []string `json:",omitempty"`
+		}{spec.BuildCmd, cwd, platform, svc.Build.InputsFile, env, builtImages, externalDeclaredSource(svc), externalBuildInputs(svc)})
 		if err != nil {
 			return nil, err
 		}
@@ -101,6 +96,19 @@ func externalBuildArtifacts(services []WorkloadEntity, opts buildOptions, tag, p
 		artifacts = append(artifacts, externalBuildArtifact{services: []WorkloadEntity{svc}, spec: spec})
 	}
 	return artifacts, nil
+}
+
+// externalBuildPlatform is the platform a ShellBuild builds for: --target-arch,
+// else the cluster runtime's platform, else the hosted runtime's.
+func externalBuildPlatform(svc WorkloadEntity, opts buildOptions) string {
+	platform := opts.targetArch
+	if platform == "" && svc.Runtime.Cluster != nil {
+		platform = svc.Runtime.Cluster.Platform
+	}
+	if platform == "" && svc.Runtime.Type == RuntimeHosted {
+		platform = svc.Runtime.HostedPlatform()
+	}
+	return platform
 }
 
 func externalDeclaredSource(svc WorkloadEntity) any {

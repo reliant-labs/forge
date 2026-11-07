@@ -2856,6 +2856,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         "env": b.env if b.env else {}
         if b.built_images:
             "built_images": b.built_images
+        if b.inputs:
+            "inputs": b.inputs
     }
 }
 

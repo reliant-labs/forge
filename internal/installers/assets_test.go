@@ -210,6 +210,9 @@ func TestRenderHomebrewFormula(t *testing.T) {
 		t.Fatalf("render failed: %v\n%s", err, out)
 	}
 	f := string(out)
+	// Each url line is followed directly by its sha256 line: the tap's
+	// render-forge-formula.sh re-checks those pairs against the signed
+	// checksums.txt, and refuses a formula it cannot pair.
 	for _, want := range []string{
 		`class Forge < Formula`,
 		`releases/download/v1.2.3/forge_darwin_arm64.tar.gz"` + "\n      sha256 \"" + sum("1") + `"`,

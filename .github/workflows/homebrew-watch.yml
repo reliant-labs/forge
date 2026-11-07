@@ -1,0 +1,50 @@
+# Watches that `brew install reliant-labs/reliant/forge` hands out forge's latest
+# release, from outside the tap that publishes it.
+#
+# The tap (reliant-labs/homebrew-reliant) publishes every release itself, with
+# no human step: its update-forge-formula.yml runs on release-forge.sh's
+# dispatch and every 30 minutes, and its own staleness job raises an issue
+# THERE after 3 hours behind. This is the independent second alarm, in the
+# repository people watch: if the tap's Actions are disabled, its deploy key
+# was revoked, or its gate keeps refusing a release, this opens the issue
+# "Homebrew formula is behind the latest forge release" HERE after GRACE_HOURS,
+# comments once per release it falls further behind, and closes it once the
+# tap catches up. A tap with no Formula/forge.rb at all raises the same issue
+# (scripts/homebrew-watch.sh; tested by scripts/test-homebrew-watch.sh). A red run alone is not the signal: nobody watches scheduled
+# runs (nightly.yml says the same), so the issue is.
+#
+# Read-only against the tap; it needs no credential beyond this repository's
+# GITHUB_TOKEN (issues: write here, public reads there).
+name: Homebrew watch
+
+on:
+  schedule:
+    # Every 2 hours, off the top of the hour.
+    - cron: "41 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: homebrew-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Tap formula is current
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GRACE_HOURS: "4"
+      TITLE: Homebrew formula is behind the latest forge release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The decision and the issue lifecycle live in the script, so
+      # scripts/test-homebrew-watch.sh can exercise them without GitHub.
+      - name: Compare the tap's formula with the latest release
+        run: bash scripts/homebrew-watch.sh

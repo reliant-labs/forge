@@ -2,7 +2,9 @@ package installers
 
 import (
 	"os"
+	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -28,39 +30,6 @@ func codeLines(body string) []string {
 		}
 	}
 	return out
-}
-
-// The tap's workflow runs on ubuntu-latest, whose Homebrew is installed but NOT
-// on PATH. A `brew` call before `brew shellenv` is "command not found", the job
-// fails, and no formula PR ever opens — which the first version of this file
-// did. The renderer's output is installed and tested before it reaches a PR.
-func TestTapWorkflowPutsBrewOnPathBeforeUsingIt(t *testing.T) {
-	lines := codeLines(readRepoFile(t, "docs/installers/update-forge-formula.yml"))
-	shellenv := -1
-	for i, line := range lines {
-		s := strings.TrimSpace(line)
-		if strings.Contains(s, "/home/linuxbrew/.linuxbrew/bin/brew shellenv") {
-			if shellenv < 0 {
-				shellenv = i
-			}
-			continue
-		}
-		if strings.HasPrefix(s, "brew ") && (shellenv < 0 || i < shellenv) {
-			t.Errorf("line %q calls brew before `eval \"$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\"`", s)
-		}
-	}
-	if shellenv < 0 {
-		t.Fatal("update-forge-formula.yml never puts Homebrew on PATH")
-	}
-	body := strings.Join(lines, "\n")
-	for _, want := range []string{
-		"brew install --formula reliant-labs/reliant/forge",
-		"brew test reliant-labs/reliant/forge",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("update-forge-formula.yml no longer runs %q before opening the PR", want)
-		}
-	}
 }
 
 // npm accepts a publish of @reliantlabs/forge only from the workflow registered
@@ -165,4 +134,30 @@ func actionRef(line string) (string, bool) {
 		rest = rest[:i]
 	}
 	return strings.Trim(strings.TrimSpace(rest), `"'`), true
+}
+
+// homebrew-watch.yml's decision and issue lifecycle live in
+// scripts/homebrew-watch.sh; its hermetic self-test drives them with a fake gh
+// and a fixed clock: current, within grace, overdue (opens the issue once),
+// a further release (one comment), recovery (closes it), a missing formula
+// (raises the same issue) and an API failure (touches no issue).
+func TestHomebrewWatchScript(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execs bash and jq subprocesses; runs in task test")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("the watcher runs on ubuntu-latest and uses GNU date -d")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not on PATH")
+	}
+	// Read both here so a cached PASS is invalidated by an edit.
+	repoFile(t, "scripts/homebrew-watch.sh")
+	if !strings.Contains(readRepoFile(t, ".github/workflows/homebrew-watch.yml"), "bash scripts/homebrew-watch.sh") {
+		t.Error("homebrew-watch.yml no longer runs scripts/homebrew-watch.sh; the tested logic is not what runs")
+	}
+	cmd := exec.Command("bash", repoFile(t, "scripts/test-homebrew-watch.sh"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("scripts/test-homebrew-watch.sh: %v\n%s", err, out)
+	}
 }

@@ -631,8 +631,9 @@ The npm package is checked against the release checksums pinned into it at
 publish time, and `release-npm.yml` pins them only after it has verified the
 signature. A release asset swapped after that cannot reach an `npx` user.
 `FORGE_REQUIRE_SIGNATURE=1` makes the shim refuse to run from a copy that
-carries no pin. `install.ps1` and the Homebrew formula still check only the
-sha256.
+carries no pin. The Homebrew formula is pinned the same way: the tap publishes
+it only after verifying the release's archives against the signature.
+`install.ps1` still checks only the sha256.
 
 ### From a clone
 

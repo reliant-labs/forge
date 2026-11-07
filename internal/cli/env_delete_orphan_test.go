@@ -141,6 +141,16 @@ func TestEnvDelete_ResolvesByID(t *testing.T) {
 			t.Fatalf("err = %v; want a declared env sent to delete-by-name", err)
 		}
 	})
+	t.Run("a reply that omits the env's name", func(t *testing.T) {
+		nameless := controlPlaneServer(t, map[string]string{
+			"GetEnvironment": `{"environment":{"id":"env_7","project":"shop"}}`,
+		})
+		undeclaredDeleteProject(t, nameless.URL)
+		_, err := resolveLifecycleTargetFromID(t.Context(), "env_7", "", "tok", "")
+		if err == nil || !strings.Contains(err.Error(), "no usable name") {
+			t.Fatalf("err = %v; want a nameless env refused before the declaration check", err)
+		}
+	})
 	t.Run("an id the control plane does not hold", func(t *testing.T) {
 		missing := controlPlaneServer(t, map[string]string{"GetEnvironment": ""})
 		undeclaredDeleteProject(t, missing.URL)

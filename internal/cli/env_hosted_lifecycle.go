@@ -294,6 +294,12 @@ func resolveLifecycleTargetFromID(ctx context.Context, id, env, flagToken, endpo
 	if err != nil {
 		return lifecycleTarget{}, err
 	}
+	// The declaration check below probes deploy/kcl/<name>: a reply with no
+	// usable name would probe deploy/kcl/ itself and pass every env, so the
+	// lookup fails closed on one.
+	if err := checkLifecycleEnvName(he.Name); err != nil {
+		return lifecycleTarget{}, fmt.Errorf("%s answered environment %q with no usable name (%q), so this project cannot check it does not still declare it; nothing was deleted", ep.URL, id, he.Name)
+	}
 	if project := hostedProjectName(); he.Project != "" && he.Project != project {
 		return lifecycleTarget{}, fmt.Errorf("environment %q (%s) belongs to project %q, not this project (%q); nothing was deleted\n"+
 			"fix: run `forge env delete --id %s` from that project's checkout", id, he.Name, he.Project, project, id)

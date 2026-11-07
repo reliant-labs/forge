@@ -17,7 +17,8 @@
 //	      "severity": "error",                 // "error" | "warning" | "info"
 //	      "rule": "forge-config-deps",         // rule id; "external" for raw sub-tool lines
 //	      "message": "...",
-//	      "fix_hint": "..."                    // omitted when the rule has none
+//	      "fix_hint": "...",                   // omitted when the rule has none
+//	      "lane": "golangci-lint"              // the lane that reported it; omitted by single-lane drivers
 //	    }
 //	  ],
 //	  "summary": { "errors": 1, "warnings": 3, "infos": 0, "total": 4 },
@@ -126,6 +127,12 @@ type lintJSONFinding struct {
 	// warning because the project's pinned forge has not been through a
 	// release with its rule yet (lint_rollout.go).
 	Grace *ruleGrace `json:"grace,omitempty"`
+	// Lane names the lint lane that reported the finding ("golangci-lint",
+	// "format", …). A raw sub-tool line (rule "external", no file) belongs
+	// to the anchored finding before it IN THE SAME LANE — its source
+	// snippet, diff or summary — so a consumer grouping findings into
+	// issues needs the boundary. Omitted where a driver runs one lane.
+	Lane string `json:"lane,omitempty"`
 	// rollout is the pseudo-rule key of a pass whose findings carry another
 	// tool's rule IDs (the golangci-lint build-tag passes). Internal.
 	rollout string
@@ -951,6 +958,11 @@ func externalLinesToFindings(output, rule, severity string) []lintJSONFinding {
 			if rule == "golangci-lint" {
 				if lm := reTrailingLinter.FindStringSubmatch(m[4]); lm != nil {
 					f.Rule = lm[1]
+				}
+				// forge's own format pass applies exactly what these
+				// two formatters gate on (lint_format.go).
+				if f.Rule == "gofmt" || f.Rule == "goimports" {
+					f.FixHint = formatFixHint
 				}
 			}
 			out = append(out, f)

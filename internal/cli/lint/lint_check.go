@@ -196,7 +196,12 @@ func runPrettierStdin(ctx context.Context, bin, feDir, rel string, src []byte) (
 }
 
 // formatFindings turns pending rewrites into findings for the structured
-// (--quiet / --scope) report: one anchored finding per file, then the diffs.
+// (--quiet / --scope / --json) report: each file's anchored finding, then its
+// diff as the raw line under it. The diff follows ITS file, the shape every
+// raw sub-tool line has, so a consumer grouping raw lines with the finding
+// before them (forge project upgrade's needs_human) pairs each diff with the
+// right file. Listing every file first and every diff after paired them all
+// with the last file.
 func formatFindings(pending []formatPending) []lintJSONFinding {
 	var fs []lintJSONFinding
 	for _, p := range pending {
@@ -205,14 +210,15 @@ func formatFindings(pending []formatPending) []lintJSONFinding {
 			Severity: lintSevError,
 			Rule:     "format",
 			Message:  p.Tool + " would reformat this file (nothing was written; the diff follows)",
-			FixHint:  "run `forge lint --fix` to apply it",
-		})
-	}
-	for _, p := range pending {
-		fs = append(fs, lintJSONFinding{Severity: lintSevError, Rule: "external", Message: strings.TrimRight(p.Diff, "\n")})
+			FixHint:  formatFixHint,
+		}, lintJSONFinding{Severity: lintSevError, Rule: "external", Message: strings.TrimRight(p.Diff, "\n")})
 	}
 	return fs
 }
+
+// formatFixHint is the remedy for a file the project's Go or frontend
+// formatting gate would rewrite, from either lane that reports one.
+const formatFixHint = "run `forge lint --fix` to apply it"
 
 // formatOutcome is the report-only lane in the structured drivers' terms.
 func formatOutcome(ctx context.Context, root string, cfg *config.ProjectConfig, scope *lintScope, paths []string, skipFrontends bool) lintStepOutcome {

@@ -231,6 +231,64 @@ func TestUpgradeConverge_LintFindingsAreWhatIsLeftForAHuman(t *testing.T) {
 	}
 }
 
+// reliant#2327: one goimports finding arrived as seven needs_human items — the
+// issue, its source line, its caret, golangci-lint's "1 issues:" and "*
+// goimports: 1", the format lane's finding for the same file, and that lane's
+// diff. This is the `forge lint --json` document for that project (one
+// misgrouped import in cmd/demo/cmd/db.go), plus a second file only the format
+// lane flags and a lane that failed before reporting anything anchored.
+const goimportsLintDoc = `{"findings":[
+  {"file":"cmd/demo/cmd/db.go","line":53,"col":1,"severity":"error","rule":"goimports","message":"File is not properly formatted (goimports)","fix_hint":"run ` + "`forge lint --fix`" + ` to apply it","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"\tforgedb \"example.com/demo/db\"","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"^","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"1 issues:","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"* goimports: 1","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"web: npm run lint exited 2","lane":"frontend-lint"},
+  {"severity":"error","rule":"external","message":"sh: eslint: not found","lane":"frontend-lint"},
+  {"file":"cmd/demo/cmd/db.go","severity":"error","rule":"format","message":"gofmt/goimports would reformat this file (nothing was written; the diff follows)","fix_hint":"run ` + "`forge lint --fix`" + ` to apply it","lane":"format"},
+  {"severity":"error","rule":"external","message":"--- a/cmd/demo/cmd/db.go\n+++ b/cmd/demo/cmd/db.go\n@@ -50,10 +50,11 @@\n-\tforgedb \"example.com/demo/db\"\n+\n+\tforgedb \"example.com/demo/db\"","lane":"format"},
+  {"file":"internal/x.go","severity":"error","rule":"format","message":"gofmt would reformat this file (nothing was written; the diff follows)","fix_hint":"run ` + "`forge lint --fix`" + ` to apply it","lane":"format"},
+  {"severity":"error","rule":"external","message":"--- a/internal/x.go\n+++ b/internal/x.go","lane":"format"}
+],"summary":{"errors":11,"warnings":0,"infos":0,"total":11},"ok":false}`
+
+func TestUpgradeConverge_OneLintFindingIsOneItemForAHuman(t *testing.T) {
+	dir := newConvergeFixture(t)
+	fakeUpgradeNPM(t)
+	rec := &recordedSteps{lint: goimportsLintDoc}
+
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
+	if exitCodeForError(err) != exitNeedsHuman {
+		t.Fatalf("exit = %d (%v), want exitNeedsHuman", exitCodeForError(err), err)
+	}
+	if len(rep.NeedsHuman) != 3 {
+		t.Fatalf("needs_human has %d items, want 3 (the goimports issue, x.go's formatting, the frontend lane):\n%+v", len(rep.NeedsHuman), rep.NeedsHuman)
+	}
+	gi := rep.NeedsHuman[0]
+	if gi.Rule != "goimports" || gi.File != "cmd/demo/cmd/db.go" || gi.Line != 53 || gi.Fix != "run `forge lint --fix` to apply it" {
+		t.Errorf("goimports item = %+v, want cmd/demo/cmd/db.go:53 with the fix", gi)
+	}
+	ctx := strings.Join(gi.Context, "\n")
+	if !strings.Contains(ctx, `forgedb "example.com/demo/db"`) || !strings.Contains(ctx, "+++ b/cmd/demo/cmd/db.go") {
+		t.Errorf("goimports item context lacks its snippet or the format lane's diff:\n%s", ctx)
+	}
+	if strings.Contains(ctx, "issues:") || strings.Contains(ctx, "* goimports") || strings.Contains(ctx, "eslint") {
+		t.Errorf("goimports item carries the run summary or another lane's output:\n%s", ctx)
+	}
+	if fe := rep.NeedsHuman[1]; fe.Message != "web: npm run lint exited 2" || len(fe.Context) != 1 || fe.Context[0] != "sh: eslint: not found" {
+		t.Errorf("frontend lane item = %+v, want its failure with the cause as context", fe)
+	}
+	if x := rep.NeedsHuman[2]; x.Rule != "format" || x.File != "internal/x.go" || len(x.Context) != 2 || x.Context[1] != "+++ b/internal/x.go" {
+		t.Errorf("x.go item = %+v, want the format finding with its own diff", x)
+	}
+
+	var out bytes.Buffer
+	printUpgradeSummary(&out, rep)
+	if !strings.Contains(out.String(), "Still needs a person (3):") ||
+		!strings.Contains(out.String(), "lint-error goimports (cmd/demo/cmd/db.go:53): File is not properly formatted") {
+		t.Errorf("summary:\n%s", out.String())
+	}
+}
+
 func TestUpgradeConverge_AFailedGenerateIsAFailureNotAHandoff(t *testing.T) {
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)

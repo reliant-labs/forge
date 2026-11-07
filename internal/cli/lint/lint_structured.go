@@ -362,7 +362,12 @@ func flattenLintOutcomes(outcomes []lintStepOutcome) ([]lintJSONFinding, bool) {
 				findings = append(findings, skippedFinding(o.skipMsg))
 			}
 		default:
-			findings = append(findings, o.findings...)
+			for _, f := range o.findings {
+				if f.Lane == "" {
+					f.Lane = o.name
+				}
+				findings = append(findings, f)
+			}
 			gated = gated || o.gated
 		}
 	}

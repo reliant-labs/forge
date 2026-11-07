@@ -136,18 +136,65 @@ func brokenServerError(err error) bool {
 	return false
 }
 
-// healShared drops this process's binding to the shared server after a
-// create failed with brokenServerError, so the next boot re-attaches: under
-// the pool lock, attachEmbedded's probe then sees the broken server, stops
-// it and boots a fresh one. It reports whether a retry is worth making (the
-// server is the pooled embedded one, not an external FORGE_TEST_POSTGRES_URL).
+// healShared runs after a create failed with brokenServerError. It reports
+// whether a retry is worth making (the server is the pooled embedded one, not
+// an external FORGE_TEST_POSTGRES_URL).
+//
+// One SQL error is not proof the server is broken: 57P01/57P03 can be a
+// transient restart, and another process may already have replaced it. So a
+// pooled binding is dropped only when, under the pool lock, the recorded
+// server is re-probed and proven unusable (pooledServerReplaceable); the next
+// boot then re-attaches, and attachEmbedded's probe replaces a broken server
+// under the same lock. A server not proven broken keeps every user's binding,
+// this one's included: the retry waits for it to answer and runs on it. A
+// standalone server is this process's alone, so dropping it harms nobody.
 func healShared() bool {
 	localMu.Lock()
 	external := poolMode == poolModeExternal && poolURL != ""
+	mode, port, url := poolMode, poolPort, poolURL
 	localMu.Unlock()
 	if external || strings.TrimSpace(os.Getenv(EnvBaseURL)) != "" {
 		return false
 	}
+	if mode == poolModePooled && !pooledServerReplaceable(port) {
+		waitReachable(url, sharedPatience)
+		return true
+	}
 	Shutdown()
 	return true
+}
+
+// pooledServerReplaceable reports, under the pool lock, whether this
+// process's pooled server on port is proven unusable, so dropping the
+// binding cannot take a working server from anyone: the pool already records
+// another server (it was replaced; detachEmbedded leaves a server it is not
+// bound to alone), its postmaster is gone, or it is broken
+// (sharedBrokenReason). Without the lock nothing is proven: false.
+func pooledServerReplaceable(port uint32) bool {
+	unlock, err := lockPool()
+	if err != nil {
+		return false
+	}
+	defer unlock()
+	st := readPoolState()
+	if st.Port != port {
+		return true
+	}
+	pid, alive := postmaster(filepath.Join(runtimeDir(port), "data", "postmaster.pid"))
+	if !alive {
+		pid = 0
+	}
+	if sharedBrokenReason(st, pid) != "" {
+		return true
+	}
+	return pid == 0
+}
+
+// waitReachable waits up to patience (on the monotonic clock) for the server
+// at url to answer.
+func waitReachable(url string, patience time.Duration) {
+	start := time.Now()
+	for !CanReach(url) && time.Since(start) < patience {
+		time.Sleep(500 * time.Millisecond)
+	}
 }

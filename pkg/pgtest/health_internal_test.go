@@ -5,6 +5,7 @@ package pgtest
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -151,5 +152,79 @@ func TestReap_NeverRemovesALiveServersDir(t *testing.T) {
 		t.Errorf("the reaper left the broken server %d running", brokenPid)
 	} else if dirErr == nil {
 		t.Errorf("the reaper stopped the broken server but left its dir %s", runtimeDir(brokenPort))
+	}
+}
+
+// fakeServerDir lays out runtimeDir(port) as a live, intact server: a pid
+// file naming this test process (alive, and in a directory that exists) and
+// the data files dataIntact checks. No postgres runs.
+func fakeServerDir(t *testing.T, port uint32) {
+	t.Helper()
+	data := filepath.Join(runtimeDir(port), "data")
+	for _, rel := range []string{"PG_VERSION", "global/pg_filenode.map", "base/1/pg_filenode.map"} {
+		p := filepath.Join(data, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(data, "postmaster.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A failed CREATE alone never drops a pooled binding: under the pool lock the
+// recorded server is re-probed, and only one proven unusable (replaced,
+// gone, or broken) is let go. A healthy one keeps every user's binding.
+func TestPooledServerReplaceable_OnlyWhenProvenUnusable(t *testing.T) {
+	privatePool(t)
+	if err := os.MkdirAll(poolRoot(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const port = 54999
+	fakeServerDir(t, port)
+	writePoolState(poolState{URL: "postgres://x", Port: port, Users: []int{os.Getpid()}})
+
+	if pooledServerReplaceable(port) {
+		t.Error("a live, intact recorded server was judged replaceable from one SQL error")
+	}
+	if !pooledServerReplaceable(port + 1) {
+		t.Error("a binding to a server the pool no longer records was judged not replaceable")
+	}
+	if err := os.RemoveAll(filepath.Join(runtimeDir(port), "data", "base", "1")); err != nil {
+		t.Fatal(err)
+	}
+	if !pooledServerReplaceable(port) {
+		t.Error("a server whose data directory lost template1 was judged not replaceable")
+	}
+	if err := os.RemoveAll(runtimeDir(port)); err != nil {
+		t.Fatal(err)
+	}
+	if !pooledServerReplaceable(port) {
+		t.Error("a server whose postmaster is gone was judged not replaceable")
+	}
+}
+
+// A process whose server was replaced detaches without touching the server
+// the pool now records, even when it finds no other user registered: that
+// server is not the one it was bound to.
+func TestDetach_LeavesAReplacementServerAlone(t *testing.T) {
+	privatePool(t)
+	if err := os.MkdirAll(poolRoot(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const oldPort, newPort = 54997, 54998
+	fakeServerDir(t, newPort)
+	writePoolState(poolState{URL: "postgres://new", Port: newPort})
+
+	detachEmbedded(oldPort)
+
+	if st := readPoolState(); st.Port != newPort {
+		t.Errorf("pool state %+v after a stale detach, want the replacement on %d kept", st, newPort)
+	}
+	if _, err := os.Stat(filepath.Join(runtimeDir(newPort), "data")); err != nil {
+		t.Errorf("a stale detach removed the replacement server's dir: %v", err)
 	}
 }

@@ -224,6 +224,12 @@ func detachEmbedded(port uint32) {
 
 	st := readPoolState()
 	st.Users = removePID(prunePIDs(st.Users), os.Getpid())
+	if st.Port != 0 && st.Port != port {
+		// The pool records another server: ours was replaced (health.go)
+		// and the recorded one is not this process's to stop.
+		writePoolState(st)
+		return
+	}
 	if len(st.Users) == 0 {
 		p := st.Port
 		if p == 0 {

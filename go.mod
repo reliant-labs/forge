@@ -9,6 +9,7 @@ require (
 	buf.build/go/protovalidate v1.4.0
 	cel.dev/cel-go v0.33.2
 	cloud.google.com/go/auth v0.24.2
+	cloud.google.com/go/compute/metadata v0.10.0
 	cloud.google.com/go/storage v1.68.0
 	connectrpc.com/connect v1.21.1
 	connectrpc.com/connect/v2 v2.0.2
@@ -77,6 +78,7 @@ require (
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba
 	golang.org/x/mod v0.42.0
 	golang.org/x/net v0.62.0
+	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
 	golang.org/x/text v0.43.0
@@ -108,7 +110,6 @@ require (
 	cel.dev/expr v0.25.3 // indirect
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
-	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	cloud.google.com/go/iam v1.14.0 // indirect
 	cloud.google.com/go/monitoring v1.30.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
@@ -322,7 +323,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/arch v0.30.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/telemetry v0.0.0-20261009151841-97e8ea77aa2a // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect

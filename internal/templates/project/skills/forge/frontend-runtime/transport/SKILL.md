@@ -42,6 +42,12 @@ the same distributed trace**. When browser telemetry is also running (`frontend-
 the active browser span's context is propagated instead, stitching the browser
 and server spans into one trace.
 
+Which trace a call joins (the caller's active span, else the open
+`interaction()`) is decided when the call ENTERS the chain, before any stage
+awaits. Every runtime interceptor makes that choice on entry if no earlier
+one has, so keep a runtime interceptor outermost, or put
+`interactionContextInterceptor()` first when your own awaiting stages lead.
+
 ## Typed errors
 
 Failures are normalized to `ConnectClientError`, a **subclass of

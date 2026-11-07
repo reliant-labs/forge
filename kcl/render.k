@@ -2591,22 +2591,32 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 #   ENVIRONMENT     config.environment, or {NEXT_PUBLIC_,VITE_}ENVIRONMENT
 #   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY
 #
-# otel_gen.ts reads these from the runtime config ONLY: a build variable is
-# baked into the bundle and follows that build into every environment it is
-# promoted to. So each declaration is carried into the runtime config too
-# (the build variable still renders, for code that reads it). An env_vars
-# literal outranks `config`, as it does for the build variable; a secret or
-# config-map entry is never carried, because config.js is public. React
-# Native has no runtime config document, so it gets nothing.
+# otel_gen.ts reads these from the runtime config first (a build variable is
+# only its deprecated fallback): a build variable is baked into the bundle and
+# follows that build into every environment it is promoted to. So each
+# declaration is carried into the runtime config too (the build variable still
+# renders, for code that reads it). An env_vars literal outranks `config`, as
+# it does for the build variable; a secret or config-map entry is never
+# carried, because config.js is public. React Native has no runtime config
+# document, so it gets nothing.
+#
+# A HOSTED frontend gets OTEL_ENDPOINT alone. Its document is written by the
+# control plane, which sets ENVIRONMENT to the environment it actually serves;
+# a literal published in the StaticSite spec would override that (and a fixed
+# OTEL_REPLAY would apply the same replay choice wherever the spec lands), so
+# those stay out of the spec. The ingest path is the author's explicit choice
+# for that environment, and the spec already carries an author's
+# runtime_config the same way.
 _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     _c = f.config
     _endpoint = _build_var_literal(f, "OTEL_ENDPOINT", _c.otel_endpoint if _c and _c.otel_endpoint else None)
     _environment = _build_var_literal(f, "ENVIRONMENT", _c.environment if _c and _c.environment else None)
     _replay = _build_var_literal(f, "OTEL_REPLAY", None)
+    _hosted = _frontend_hosted(f)
     {} if f.type not in ["nextjs", "vite"] else \
         ({OTEL_ENDPOINT = _endpoint} if _endpoint is not None else {}) \
-        | ({ENVIRONMENT = _environment} if _environment is not None else {}) \
-        | ({OTEL_REPLAY = _replay} if _replay is not None else {})
+        | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {}) \
+        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted else {})
 }
 
 # The value of the last env_vars entry that sets the frontend's build variable

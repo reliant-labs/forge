@@ -11,7 +11,8 @@ the build variables:
   * an author's own runtime_config entry outranks both;
   * a secret-backed build variable is never carried (config.js is public);
   * React Native, which has no runtime config document, gets nothing;
-  * a hosted frontend's spec carries the same keys.
+  * a hosted frontend's spec carries OTEL_ENDPOINT alone: the control plane
+    writes its ENVIRONMENT, and a fixed spec literal would override it.
 """
 
 import forge
@@ -58,6 +59,12 @@ _all = forge.render(forge.Bundle {
             name = "hosted", image = "ghcr.io/acme/hosted", path = "hosted", type = "vite"
             runtime = forge.OnHosted {}
             config = forge.FrontendConfig {environment = "prod"}
+            env_vars = [forge.EnvVar {name = "VITE_OTEL_REPLAY", value = "true"}]
+        }
+        forge.Frontend {
+            name = "hostedingest", image = "ghcr.io/acme/hostedingest", path = "hostedingest", type = "vite"
+            runtime = forge.OnHosted {}
+            config = forge.FrontendConfig {otel_endpoint = "/ingest"}
         }
     ]
 })
@@ -77,5 +84,7 @@ assert_env_var_replay_carried = _rc("vars").OTEL_REPLAY == "true"
 assert_author_outranks_derived = _rc("own").ENVIRONMENT == "mine" and _rc("own").OTEL_REPLAY == "false"
 assert_secret_never_carried = "ENVIRONMENT" not in _rc("secret")
 assert_react_native_gets_nothing = "OTEL_ENDPOINT" not in _rc("mobile") and "ENVIRONMENT" not in _rc("mobile")
-assert_hosted_spec_carries_environment = _by.hosted.runtime_config_spec.ENVIRONMENT.value == "prod"
+assert_hosted_spec_leaves_environment_to_the_control_plane = "ENVIRONMENT" not in _by.hosted.runtime_config_spec
+assert_hosted_spec_publishes_no_replay_literal = "OTEL_REPLAY" not in _by.hosted.runtime_config_spec
 assert_hosted_still_defaults_ingest = _by.hosted.runtime_config_spec.OTEL_ENDPOINT.value == "/_otel"
+assert_hosted_carries_a_declared_ingest = _by.hostedingest.runtime_config_spec.OTEL_ENDPOINT.value == "/ingest"

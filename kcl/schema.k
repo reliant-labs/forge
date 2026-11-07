@@ -3486,7 +3486,9 @@ schema FrontendConfig:
     frontend's value (from `config`, or a literal in `env_vars`) is also
     carried into its runtime config as OTEL_ENDPOINT / ENVIRONMENT, which is
     where the generated otel_gen.ts reads them: a build variable would follow
-    one build into every environment it is promoted to.
+    one build into every environment it is promoted to. On forge.OnHosted only
+    otel_endpoint is carried: the control plane writes the hosted document's
+    ENVIRONMENT for the environment it serves.
 
     mock is the load-bearing knob. On a deployable frontend (a `deploy`
     target, or a build-only frontend bundled into a deployable site) forge

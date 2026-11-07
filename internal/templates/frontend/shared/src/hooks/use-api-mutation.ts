@@ -1,6 +1,6 @@
 import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 
-import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime/interceptors";
 
 /**
  * useApiMutation wraps a Connect client promise-returning call in a

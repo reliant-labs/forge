@@ -38,8 +38,8 @@ export function setAuthTokenGetter(fn: () => Promise<string | null>) {
 // no captured value to go stale.
 //
 // The import is the runtime's DOM-free entry point, not its "." barrel: the
-// barrel also carries React components typed against React 19, which Expo's
-// React 18 types reject. "/interceptors" reaches only the transport layer.
+// barrel also carries browser UI components that native transport does not
+// need. "/interceptors" reaches only the transport layer.
 const interceptors = buildRuntimeInterceptors({
   getToken: () => _getToken(),
 });

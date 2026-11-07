@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime/interceptors";
 import type { UseQueryResult } from "@tanstack/react-query";
 
 /**

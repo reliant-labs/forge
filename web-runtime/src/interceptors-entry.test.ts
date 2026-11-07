@@ -23,6 +23,9 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { userMessage as errorUserMessage } from "./errors.js";
+import { userMessage } from "./interceptors.js";
+
 const srcDir = dirname(fileURLToPath(import.meta.url));
 const pkgDir = resolve(srcDir, "..");
 
@@ -103,6 +106,11 @@ function moduleGraph(entry: string): { files: string[]; bare: string[] } {
 }
 
 describe("the ./interceptors entry point", () => {
+  it("exports the same error formatter without a browser barrel dependency", () => {
+    expect(userMessage).toBe(errorUserMessage);
+    expect(userMessage(new Error("unavailable"))).toBe("unavailable");
+  });
+
   it("reaches no React anywhere in its import graph", () => {
     const { files, bare } = moduleGraph(ENTRY_SRC);
 

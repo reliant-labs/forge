@@ -1,6 +1,6 @@
 import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
 
-import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime/interceptors";
 
 /**
  * useApiQuery wraps a Connect client promise-returning call in a

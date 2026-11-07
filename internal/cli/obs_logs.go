@@ -20,7 +20,7 @@ const schemaObsLogs = "forge.obs.logs/v1"
 var obsLogsSchema = obsout.Schema{
 	Name: schemaObsLogs,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query", "query_mode",
 		"logs", "logs.time", "logs.severity", "logs.service", "logs.body", "logs.trace_id", "logs.span_id", "logs.attributes.*",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
@@ -169,7 +169,7 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 		doc.Logs = append(doc.Logs, logDoc(r))
 	}
 	doc.Page = obsout.Page{Truncated: res.NextPageToken != "", NextPageToken: res.NextPageToken}
-	doc.Suggested = logsSuggestions(env, o, res)
+	doc.Suggested = o.inst.carrySuggested(logsSuggestions(env, o, res))
 	doc.Stamp(schemaObsLogs, nil)
 	if done, err := o.out.Emit(d.Stdout, obsLogsSchema, doc, fields); done || err != nil {
 		return err

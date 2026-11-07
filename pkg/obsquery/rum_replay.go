@@ -142,6 +142,9 @@ func (q ReplayQuery) Compile() (Stmt, error) {
 	if e := b.browserEnvCond("EnvId", q.Scope); e != "" {
 		conds = append(conds, e)
 	}
+	if e := b.browserInstanceCond(q.Scope); e != "" {
+		conds = append(conds, e)
+	}
 	if sv := b.serviceIn(q.Scope.Services); sv != "" {
 		conds = append(conds, sv)
 	}

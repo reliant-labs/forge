@@ -117,7 +117,7 @@ func (l Local) windowStats(ctx context.Context, r releasehealth.Range, out *Heal
 	if r.To.Sub(r.From) < time.Second {
 		return stats, nil // a window the compiler refuses as empty has no traffic to count
 	}
-	st, err := obsquery.Overview{Scope: LocalScope(Narrow{Range: Range{From: r.From, To: r.To}}, l.Env)}.RED()
+	st, err := obsquery.Overview{Scope: l.scope(Narrow{Range: Range{From: r.From, To: r.To}})}.RED()
 	if err != nil {
 		return nil, compileErr(err)
 	}
@@ -151,7 +151,7 @@ func (l Local) endpointStats(ctx context.Context, r releasehealth.Range, out *He
 	if r.To.Sub(r.From) < time.Second {
 		return stats, true, nil
 	}
-	st, err := obsquery.Overview{Scope: LocalScope(Narrow{Range: Range{From: r.From, To: r.To}}, l.Env)}.REDByEndpoint()
+	st, err := obsquery.Overview{Scope: l.scope(Narrow{Range: Range{From: r.From, To: r.To}})}.REDByEndpoint()
 	if err != nil {
 		return nil, false, compileErr(err)
 	}
@@ -206,6 +206,9 @@ func (l Local) newIssues(ctx context.Context, win releasehealth.Windows, out *He
 	end := win.After.To
 	if end.Sub(win.Before.From) < time.Second {
 		return nil, nil
+	}
+	if err := l.Instances.RefuseSQL("release health's new-issue read"); err != nil {
+		return nil, err
 	}
 	sc := l.sqlScope(Narrow{Range: Range{From: win.Before.From, To: end}})
 	st, err := obsquery.SQLPanel{Scope: sc, SQL: localNewIssuesSQL, StepSeconds: 60}.Compile()

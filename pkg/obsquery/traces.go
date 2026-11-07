@@ -254,7 +254,7 @@ func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) 
 	// by spans the scope's service and resource filters do not pick: a
 	// browser's client and build are on its browser spans, a user on the
 	// browser's or the server's, a backend build on the server's. So these
-	// candidate sets are narrowed to the environment only. Narrowed like the
+	// candidate sets are narrowed to the environment and instance only. Narrowed like the
 	// two above, "the api's traces from Chrome" looked for Chrome on the api's
 	// own spans, which never carry it, and matched nothing.
 	var traceWide []string
@@ -262,6 +262,10 @@ func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) 
 		// Bound only when a filter uses it: an unused parameter is refused.
 		if e := b.envCond(q.Scope); e != "" {
 			traceWide = []string{e}
+		}
+		// An instance stamps every span it sends, its browser's included.
+		if e := b.instanceCond(q.Scope); e != "" {
+			traceWide = append(traceWide, e)
 		}
 	}
 	if q.UserID != "" {
@@ -453,6 +457,9 @@ func (q TraceSpans) Compile() (Stmt, error) {
 	b := newBuilder(q.Scope)
 	conds := []string{b.rangeCond("Timestamp", q.Scope), "TraceId = " + b.str(id)}
 	if e := b.envCond(q.Scope); e != "" {
+		conds = append(conds, e)
+	}
+	if e := b.instanceCond(q.Scope); e != "" {
 		conds = append(conds, e)
 	}
 	return b.stmt("SELECT Timestamp, SpanId, ParentSpanId, SpanName, SpanKind, ServiceName, Duration, StatusCode, StatusMessage,\n" +

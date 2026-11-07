@@ -36,7 +36,7 @@ const schemaObsMetricsList = "forge.obs.metrics_list/v1"
 var obsMetricsListSchema = obsout.Schema{
 	Name: schemaObsMetricsList,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode",
 		"metrics", "metrics.name", "metrics.type", "metrics.unit", "metrics.description",
 		"metrics.monotonic", "metrics.temporality", "metrics.services", "metrics.service_count", "metrics.last_seen",
@@ -158,6 +158,7 @@ func runObsMetricsList(ctx context.Context, d obsDeps, env string, o obsMetricsL
 		doc.Suggested = obsout.Suggest(
 			obsout.Command("forge", "obs", "metrics", "describe", env, first.Name),
 			obsout.Command("forge", "obs", "metrics", "query", env, first.Name))
+		doc.Suggested = o.inst.carrySuggested(doc.Suggested)
 	}
 	doc.Stamp(schemaObsMetricsList, nil)
 	if done, err := o.out.Emit(d.Stdout, obsMetricsListSchema, doc, fields); done || err != nil {
@@ -185,7 +186,7 @@ const schemaObsMetricsQuery = "forge.obs.metrics_query/v2"
 var obsMetricsQuerySchema = obsout.Schema{
 	Name: schemaObsMetricsQuery,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "panel", "step_seconds",
 		"meta", "meta.label", "meta.metric", "meta.type", "meta.monotonic", "meta.temporality", "meta.agg", "meta.quantile", "meta.value_unit",
 		"series", "series.label", "series.labels.*", "series.reduced",
@@ -545,7 +546,7 @@ func runObsMetricsQuery(ctx context.Context, d obsDeps, env, metric string, o ob
 	}
 	omitted := max(res.SeriesTotal-maxLabelCount(res.Series), 0)
 	doc.Page = obsout.Page{Truncated: res.Truncated, Omitted: omitted}
-	doc.Suggested = obsout.Suggest(metricsQuerySuggestions(env, metric, res)...)
+	doc.Suggested = o.inst.carrySuggested(obsout.Suggest(metricsQuerySuggestions(env, metric, res)...))
 	doc.Stamp(schemaObsMetricsQuery, nil)
 	if done, err := o.out.Emit(d.Stdout, obsMetricsQuerySchema, doc, fields); done || err != nil {
 		return err

@@ -131,7 +131,7 @@ func (c Cloud) ListIssueTimeline(ctx context.Context, req ListIssueTimelineReque
 			NextPageToken string                   `json:"nextPageToken"`
 			IssueID       string                   `json:"issueId"`
 		}
-		if err := c.callIssues(ctx, procListIssueTimeline, in, &out); err != nil {
+		if err := c.callIssuesEnvWide(ctx, procListIssueTimeline, in, &out); err != nil {
 			return ListIssueTimelineResult{}, err
 		}
 		if out.IssueID != "" {
@@ -167,7 +167,7 @@ func (c Cloud) AddIssueComment(ctx context.Context, req AddIssueCommentRequest) 
 	var out struct {
 		Comment wireComment `json:"comment"`
 	}
-	if err := c.callIssues(ctx, procAddIssueComment, in, &out); err != nil {
+	if err := c.callIssuesEnvWide(ctx, procAddIssueComment, in, &out); err != nil {
 		return AddIssueCommentResult{}, err
 	}
 	return AddIssueCommentResult{Comment: out.Comment.comment()}, nil
@@ -194,7 +194,7 @@ func (c Cloud) AssignIssue(ctx context.Context, req AssignIssueRequest) (AssignI
 	var out struct {
 		Issue wireIssue `json:"issue"`
 	}
-	if err := c.callIssues(ctx, procAssignIssue, in, &out); err != nil {
+	if err := c.callIssuesEnvWide(ctx, procAssignIssue, in, &out); err != nil {
 		var ce *cloud.Error
 		if errors.As(err, &ce) && ce.HasCode("aborted") {
 			return AssignIssueResult{}, Wrong("issue %s changed since you read it (version %d); read it again before assigning", req.ID, cur.Issue.Version).Cause(err)

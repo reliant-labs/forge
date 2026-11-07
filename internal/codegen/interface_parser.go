@@ -114,6 +114,16 @@ type InterfaceMethod struct {
 // — callers treat the absent case the same as "no local interfaces
 // to stub" and fall back to nil for that field.
 func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
+	return parseLocalInterfaces(dir, nil)
+}
+
+// parseLocalInterfaces is ParseLocalInterfaces reading cross-package embeds
+// through resolver, so a caller resolving many directories (the harness step,
+// one per service) shares one typesResolver and its loads. A nil resolver
+// gets a private one. Each private resolver is a `go list -export -deps` of
+// its own: on reliant, 13 of them cost 30s of the harness step, several
+// re-loading the same package.
+func parseLocalInterfaces(dir string, resolver *typesResolver) (map[string]LocalInterface, error) {
 	out := make(map[string]LocalInterface)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -226,7 +236,11 @@ func ParseLocalInterfaces(dir string) (map[string]LocalInterface, error) {
 		return methods
 	}
 
-	resolver := newTypesResolver(dir, sortedPathSet(foreignPaths))
+	if resolver == nil {
+		resolver = newTypesResolver(dir, sortedPathSet(foreignPaths))
+	} else {
+		resolver.load(sortedPathSet(foreignPaths)) // loads only paths it has not tried
+	}
 	for _, e := range entries2 {
 		needed := map[string]string{}
 		var pending []foreignEmbed
@@ -275,6 +289,34 @@ type ifaceDecl struct {
 // clause. ownPkg is the package clause: an import alias equal to it is taken
 // for the package's own import and dropped from the stub's file (see
 // extraImportsExcluding), so a cross-package embed must not choose it.
+// localEmbedImports returns the import path of every cross-package
+// interface (`pkg.Iface`) that an interface declared in dir embeds — the
+// paths parseLocalInterfaces asks its resolver for — so a caller can load
+// them in one batch with everything else it needs.
+func localEmbedImports(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	decls, _ := collectInterfaceDecls(token.NewFileSet(), dir, entries)
+	set := map[string]bool{}
+	for _, d := range decls {
+		if d.ifaceAt.Methods == nil {
+			continue
+		}
+		for _, field := range d.ifaceAt.Methods.List {
+			sel, ok := field.Type.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			if alias, ok := sel.X.(*ast.Ident); ok && d.fileImports[alias.Name] != "" {
+				set[d.fileImports[alias.Name]] = true
+			}
+		}
+	}
+	return sortedPathSet(set)
+}
+
 func collectInterfaceDecls(fset *token.FileSet, dir string, entries []os.DirEntry) (decls []ifaceDecl, ownPkg string) {
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {

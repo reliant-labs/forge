@@ -29,6 +29,7 @@ Owned scaffold (not `ui/`), composing the base primitives — yours to edit or d
 
 - **`status-badge.tsx`** / **`enum-select.tsx`** — proto-enum badge + select. See `frontend`, **Formatting**, for the enum-object rule and status colors.
 - **`entity-picker.tsx`** / **`entity-name.tsx`** — the foreign-key pair: searchable select over a generated LIST hook, id→display-name over a GET hook. Never hand-roll a per-entity picker. See `frontend/pages`.
-- **`src/components/session_nav.tsx`** (Next.js) — signed-in user + sign-out, on `useAuth()`. No login form or `/login` route ships; sign-in is your IdP's. See `auth`.
+- **`src/components/session_nav.tsx`** — the user menu, on `useAuth()` and the library `dropdown_menu`: who is signed in, the theme, sign-out. Add your own pages (an account page) as a group in its `groups`. See `auth/frontend`.
+- **`src/components/theme-toggle.tsx`** — one icon button cycling light / dark / system, with a `tooltip` that is also its name. The user menu holds the theme when someone is signed in; this is the signed-out stand-in.
 
 Typed list views are NOT owned scaffold: the generated CRUD pages import `<Resource>` from `@reliantlabs/forge-web-runtime`, which owns the loading/error/empty/data ladder and cursor pagination (`frontend-runtime/resource`).

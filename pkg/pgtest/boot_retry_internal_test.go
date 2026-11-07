@@ -47,7 +47,7 @@ func TestEmbeddedBootRetriesOccupiedCandidate(t *testing.T) {
 		Username("forge").Password("forge").Database("postgres").Locale("C").Encoding("UTF8").
 		StartParameters(startParameters("linux"))
 	reserved, starts := 0, 0
-	ep, gotPort, err := startEmbeddedOnFreshPort(cfg, func() (uint32, error) {
+	ep, gotPort, claim, err := startEmbeddedOnFreshPort(cfg, func() (uint32, error) {
 		reserved++
 		return port + uint32(reserved-1), nil
 	}, dirFor, func(got embeddedpostgres.Config) (*Embedded, error) {
@@ -61,12 +61,10 @@ func TestEmbeddedBootRetriesOccupiedCandidate(t *testing.T) {
 		}
 		return want, nil
 	})
-	if ep != nil {
-		defer ep.releaseBootClaim()
-	}
 	if err != nil || ep != want || gotPort != port+1 || reserved != 2 || starts != 2 {
 		t.Fatalf("got ep=%p port=%d err=%v reserves=%d starts=%d", ep, gotPort, err, reserved, starts)
 	}
+	claim.release()
 	if _, err := os.Stat(dirFor(port)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("empty failed claim left behind: %v", err)
 	}
@@ -83,7 +81,7 @@ func TestEmbeddedBootCollisionExhaustion(t *testing.T) {
 	}
 	reserves, starts := 0, 0
 	var last error
-	ep, port, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+	ep, port, claim, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 		p := ports[reserves]
 		reserves++
 		return p, nil
@@ -93,7 +91,7 @@ func TestEmbeddedBootCollisionExhaustion(t *testing.T) {
 		return nil, last
 	})
 	var exhausted *portBootError
-	if ep != nil || port != 0 || !errors.As(err, &exhausted) || !errors.Is(err, last) || starts != embeddedBootAttempts || reserves != embeddedBootAttempts {
+	if ep != nil || port != 0 || claim != nil || !errors.As(err, &exhausted) || !errors.Is(err, last) || starts != embeddedBootAttempts || reserves != embeddedBootAttempts {
 		t.Fatalf("got ep=%p port=%d err=%v starts=%d reserves=%d", ep, port, err, starts, reserves)
 	}
 	if !reflect.DeepEqual(exhausted.ports, ports) || !strings.Contains(err.Error(), EnvBaseURL) {
@@ -114,7 +112,7 @@ func TestEmbeddedBootDoesNotRetryOtherFailures(t *testing.T) {
 	} {
 		t.Run(cause.Error(), func(t *testing.T) {
 			starts, reserves := 0, 0
-			_, _, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+			_, _, _, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 				reserves++
 				return 0, nil
 			}, bootDirs(t), func(embeddedpostgres.Config) (*Embedded, error) {
@@ -131,7 +129,7 @@ func TestEmbeddedBootDoesNotRetryOtherFailures(t *testing.T) {
 func TestEmbeddedBootReserveFailure(t *testing.T) {
 	cause := errors.New("socket budget exhausted")
 	starts, reserves := 0, 0
-	_, _, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+	_, _, _, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 		reserves++
 		return 0, cause
 	}, bootDirs(t), func(embeddedpostgres.Config) (*Embedded, error) {
@@ -154,19 +152,17 @@ func TestEmbeddedBootSkipsForeignRuntimeDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	reserves, starts := 0, 0
-	ep, gotPort, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+	_, gotPort, claim, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 		reserves++
 		return port + uint32(reserves-1), nil
 	}, dirFor, func(embeddedpostgres.Config) (*Embedded, error) {
 		starts++
 		return &Embedded{}, nil
 	})
-	if ep != nil {
-		defer ep.releaseBootClaim()
-	}
 	if err != nil || gotPort != port+1 || starts != 1 || reserves != 2 {
 		t.Fatalf("port=%d err=%v starts=%d reserves=%d", gotPort, err, starts, reserves)
 	}
+	claim.release()
 	if b, err := os.ReadFile(marker); err != nil || string(b) != "not ours" {
 		t.Fatalf("foreign data changed: %q %v", b, err)
 	}
@@ -179,7 +175,7 @@ func TestEmbeddedBootPreservesUncertainPartialStart(t *testing.T) {
 	starts := 0
 	cause := fmt.Errorf("process already listening on port %d", p)
 	pidFile := filepath.Join(dirFor(p), "data", "postmaster.pid")
-	_, _, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+	_, _, _, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 		return p, nil
 	}, dirFor, func(embeddedpostgres.Config) (*Embedded, error) {
 		starts++
@@ -221,13 +217,14 @@ func TestEmbeddedBindCollisionDiagnostics(t *testing.T) {
 }
 
 // The claim must exclude a contender for the whole boot, even though the
-// dependency RemoveAlls RuntimePath first, and must be gone afterwards.
+// dependency RemoveAlls RuntimePath first, and must outlive start: the caller
+// releases it only once the server is owned.
 func TestEmbeddedBootClaimSurvivesRuntimeRemoval(t *testing.T) {
 	port, _ := occupiedBootPort(t)
 	dirFor := bootDirs(t)
 	dir := dirFor(port)
 	want := &Embedded{}
-	ep, gotPort, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+	ep, gotPort, claim, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 		return port, nil
 	}, dirFor, func(embeddedpostgres.Config) (*Embedded, error) {
 		_ = os.RemoveAll(dir) // what StartEmbedded does before extracting
@@ -242,12 +239,15 @@ func TestEmbeddedBootClaimSurvivesRuntimeRemoval(t *testing.T) {
 		}
 		return want, nil
 	})
-	if err != nil || ep != want || gotPort != port {
-		t.Fatalf("ep=%p port=%d err=%v", ep, gotPort, err)
+	if err != nil || ep != want || gotPort != port || claim == nil {
+		t.Fatalf("ep=%p port=%d claim=%v err=%v", ep, gotPort, claim, err)
 	}
-	defer ep.releaseBootClaim()
 	if !bootClaimHeld(dir) {
-		t.Fatal("boot claim released before normal ownership handoff")
+		t.Fatal("boot claim released before the caller established ownership")
+	}
+	claim.release()
+	if bootClaimHeld(dir) {
+		t.Fatal("boot claim still held after release")
 	}
 	if c, err := claimBootDir(dir); c != nil || err != nil {
 		t.Fatalf("contender claimed a booted server's dir: %v %v", c, err)
@@ -266,18 +266,16 @@ func TestEmbeddedBootSkipsClaimedCandidate(t *testing.T) {
 	}
 	defer other.release()
 	reserves, starts := 0, 0
-	ep, gotPort, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+	_, gotPort, claim, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 		reserves++
 		return port + uint32(reserves-1), nil
 	}, dirFor, func(embeddedpostgres.Config) (*Embedded, error) {
 		starts++
 		return &Embedded{}, nil
 	})
-	if ep != nil {
-		defer ep.releaseBootClaim()
-	}
 	if err != nil || gotPort != port+1 || starts != 1 || reserves != 2 {
 		t.Fatalf("port=%d err=%v starts=%d reserves=%d", gotPort, err, starts, reserves)
 	}
+	claim.release()
 	assertBootListenerAlive(t, ln)
 }

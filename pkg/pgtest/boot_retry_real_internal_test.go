@@ -42,7 +42,7 @@ func TestEmbeddedBootRealCollisionThenStart(t *testing.T) {
 		cfg = cfg.CachePath(cache)
 	}
 	reserves := 0
-	ep, gotPort, err := startEmbeddedOnFreshPort(cfg, func() (uint32, error) {
+	ep, gotPort, claim, err := startEmbeddedOnFreshPort(cfg, func() (uint32, error) {
 		reserves++
 		if reserves == 1 {
 			return port, nil
@@ -52,7 +52,7 @@ func TestEmbeddedBootRealCollisionThenStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ep.releaseBootClaim()
+	claim.release()
 	defer func() {
 		if err := ep.Stop(); err != nil {
 			t.Errorf("stop our postgres: %v", err)

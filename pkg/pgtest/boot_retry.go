@@ -29,27 +29,32 @@ func (e *portBootError) Unwrap() error { return e.err }
 // startEmbeddedOnFreshPort retries only a confirmed bind collision. Dependencies
 // are per-call so deterministic tests never replace process-global functions.
 // Config is copied unchanged except for the port and its runtime directory.
-func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint32, error), dirFor func(uint32) string, start func(embeddedpostgres.Config) (*Embedded, error)) (*Embedded, uint32, error) {
+//
+// On success the runtime directory's boot claim is returned STILL HELD: the
+// server has neither an owner lock nor a pool record yet, so the claim is all
+// that keeps another process's reaper (portsInUse) off it. The caller
+// releases it once the server's lasting ownership is established.
+func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint32, error), dirFor func(uint32) string, start func(embeddedpostgres.Config) (*Embedded, error)) (*Embedded, uint32, *bootClaim, error) {
 	var ports []uint32
 	var last error
 	for range embeddedBootAttempts {
 		port, err := reserve()
 		if err != nil {
-			return nil, 0, fmt.Errorf("pgtest: reserve port: %w", err)
+			return nil, 0, nil, fmt.Errorf("pgtest: reserve port: %w", err)
 		}
 		ports = append(ports, port)
 		dir := dirFor(port)
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-			return nil, 0, fmt.Errorf("pgtest: create runtime parent: %w", err)
+			return nil, 0, nil, fmt.Errorf("pgtest: create runtime parent: %w", err)
 		}
 		// The dependency unconditionally RemoveAlls RuntimePath before
 		// extraction, so a claim INSIDE dir would be deleted mid-boot. The
-		// claim is a sibling lock file held until ownership handoff; a held
+		// claim is a sibling lock file held until start returns; a held
 		// claim or an existing dir (somebody else's, even if the port
 		// currently looks free) means the candidate is skipped.
 		claim, err := claimBootDir(dir)
 		if err != nil {
-			return nil, 0, fmt.Errorf("pgtest: claim runtime directory: %w", err)
+			return nil, 0, nil, fmt.Errorf("pgtest: claim runtime directory: %w", err)
 		}
 		if claim == nil {
 			last = fmt.Errorf("runtime directory %s already claimed", dir)
@@ -57,10 +62,7 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 		}
 		ep, err := start(cfg.Port(port).RuntimePath(dir))
 		if err == nil {
-			// Transfer, don't release: post-start checks and normal pool/owner
-			// registration still need protection from every other reaper.
-			ep.bootClaim = claim
-			return ep, port, nil
+			return ep, port, claim, nil
 		}
 		// No Stop/stopSharedByPort here: the listener that won the race is
 		// NOT ours. StartEmbedded owns its failed-start logs. Remove only an
@@ -68,16 +70,16 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 		_ = os.Remove(dir)
 		claim.release()
 		if !embeddedBindCollision(err, port, dir) {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 		last = err
 	}
-	return nil, 0, &portBootError{ports: ports, err: last}
+	return nil, 0, nil, &portBootError{ports: ports, err: last}
 }
 
-// bootClaim is an exclusive kernel lock on bootClaimPath(dir), held from
-// before extraction through post-start checks and ownership publication.
-// Reapers take the same lock before checking ownership. Kernel locks belong to the open file, so the
+// bootClaim is an exclusive kernel lock on bootClaimPath(dir), held while
+// StartEmbedded populates dir and until the booted server's owner (a pool
+// record with a live lease, or an owner lock) is in place. Kernel locks belong to the open file, so the
 // claim means the same thing across pid namespaces, and a holder that dies
 // releases it.
 type bootClaim struct {
@@ -101,9 +103,10 @@ func claimBootDir(dir string) (*bootClaim, error) {
 	return claim, nil
 }
 
-// lockBootDir serializes boot/handoff with a reaper's ownership check and
-// removal. Its inode is persistent: unlinking a lock permits a second inode
-// to be locked while the first is still in use.
+// lockBootDir serializes boot/handoff with reaper ownership checks and removal.
+// The sibling inode persists: unlinking permits two independently locked inodes.
+// There is one zero-byte reusable file per TCP port per version root (at most
+// 65535), not one per attempt, process or invocation.
 func lockBootDir(dir string) (*bootClaim, error) {
 	path := bootClaimPath(dir)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
@@ -115,8 +118,9 @@ func lockBootDir(dir string) (*bootClaim, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	// Older versions unlinked on release. Reject an orphaned inode if a
-	// concurrent older holder removed the path between our open and lock.
+	// A previous holder unlinks the file before unlocking (release). If it
+	// did so between our open and our lock, we locked an orphaned inode
+	// that no contender can see: treat the candidate as taken.
 	ours, statErr := f.Stat()
 	onDisk, pathErr := os.Stat(path)
 	if statErr != nil || pathErr != nil || !os.SameFile(ours, onDisk) {
@@ -126,8 +130,12 @@ func lockBootDir(dir string) (*bootClaim, error) {
 	return &bootClaim{f: f, path: path}, nil
 }
 
-// release leaves the stable sibling inode in place for future boots/reapers.
+// release leaves the stable sibling inode for future boots and reapers.
+// A nil claim is a no-op, so error paths can release unconditionally.
 func (c *bootClaim) release() {
+	if c == nil {
+		return
+	}
 	_ = c.f.Close()
 }
 

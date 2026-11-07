@@ -212,6 +212,9 @@ func Shutdown() {
 // DSN, port, and handle. Only the pool (attachEmbedded) calls it, under the
 // pool lock; every other caller shares the instance it boots. It reaps
 // orphaned instances first so a past crash's leftovers do not accumulate.
+// The returned boot claim is still held (startEmbeddedOnFreshPort): the
+// caller releases it once the server is recorded in the pool or owner-locked,
+// so no reaper ever sees the live server unowned.
 // startParameters is the shared server's postgresql.conf overrides for a
 // host running goos.
 //
@@ -245,7 +248,7 @@ func startParameters(goos string) map[string]string {
 	return params
 }
 
-func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
+func bootEmbedded() (baseURL string, port uint32, ep *Embedded, claim *bootClaim, err error) {
 	// Reap instances orphaned by SIGKILLed processes before booting a fresh
 	// one — otherwise they accumulate across runs and exhaust the kernel's
 	// shared-memory/semaphore tables (see reapStaleInstances).
@@ -253,7 +256,7 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 
 	choice := serverVersion()
 	if choice.err != nil {
-		return "", 0, nil, choice.err
+		return "", 0, nil, nil, choice.err
 	}
 
 	const (
@@ -287,23 +290,16 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 	// StartEmbedded, not NewDatabase+Start: a cold cache downloads the
 	// binary, and the library reports ANY failed download as "no version
 	// found matching X". See fetch.go.
-	ep, port, err = startEmbeddedOnFreshPort(cfg, freePort, runtimeDir, StartEmbedded)
+	ep, port, claim, err = startEmbeddedOnFreshPort(cfg, freePort, runtimeDir, StartEmbedded)
 	if err != nil {
-		return "", 0, nil, fmt.Errorf("pgtest: start embedded postgres %s: %w", choice.version, err)
+		return "", 0, nil, nil, fmt.Errorf("pgtest: start embedded postgres %s: %w", choice.version, err)
 	}
-	started := ep
-	defer func() {
-		if err != nil {
-			// All post-start failures retain the claim during owned cleanup.
-			// Success transfers it to attachEmbedded/bootStandalone.
-			started.releaseBootClaim()
-		}
-	}()
 	// Windows: the server pg_ctl just started holds THIS process's working
 	// directory for its whole life. See cwd_windows.go.
 	if err := releaseCallerCwd(runtimeDir(port), port, startParameters(runtime.GOOS)); err != nil {
 		stopSharedByPort(port)
-		return "", 0, nil, fmt.Errorf("pgtest: restart embedded postgres outside the caller's directory: %w", err)
+		claim.release()
+		return "", 0, nil, nil, fmt.Errorf("pgtest: restart embedded postgres outside the caller's directory: %w", err)
 	}
 
 	base := fmt.Sprintf("postgres://%s:%s@localhost:%d/postgres?sslmode=disable", user, pass, port)
@@ -313,7 +309,8 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 	if err != nil {
 		_ = ep.Stop()
 		ep.Detach()
-		return "", 0, nil, fmt.Errorf("pgtest: connect to embedded postgres: %w", err)
+		claim.release()
+		return "", 0, nil, nil, fmt.Errorf("pgtest: connect to embedded postgres: %w", err)
 	}
 	_ = db.Close()
 	// Every database this server creates is copied from template1, so
@@ -327,7 +324,7 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 	// again: release the file now. The running postmaster keeps its own
 	// descriptor.
 	ep.Detach()
-	return base, port, ep, nil
+	return base, port, ep, claim, nil
 }
 
 // revokePublicCreate takes CREATE on the public schema away from PUBLIC, as

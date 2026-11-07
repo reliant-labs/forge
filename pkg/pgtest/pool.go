@@ -227,24 +227,22 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 	if st.Port != 0 {
 		stopSharedByPort(st.Port)
 	}
-	u, p, ep, berr := bootEmbedded()
+	u, p, ep, claim, berr := bootEmbedded()
 	if berr != nil {
 		_ = os.Remove(poolStatePath()) // let the next attach retry cleanly
 		poolLease.release()
 		poolLease = nil
 		return "", 0, 0, berr
 	}
-	defer ep.releaseBootClaim()
 	retainEmbedded(ep)
 	pid, _ := postmaster(filepath.Join(runtimeDir(p), "data", "postmaster.pid"))
-	if err := writePoolState(poolState{URL: u, Port: p, PID: pid}); err != nil {
-		stopSharedByPort(p) // ours, still protected by ep's boot claim
+	if err := publishBootedPool(poolState{URL: u, Port: p, PID: pid}, claim, func() { stopSharedByPort(p) }); err != nil {
 		poolLease.release()
 		poolLease = nil
 		return "", 0, 0, fmt.Errorf("pgtest: publish shared server ownership: %w", err)
 	}
-	// The scope lease was taken before boot. Publish its port before giving
-	// up the boot claim, so reapers always see at least one form of ownership.
+	// Recorded with our live lease, the server is in use (portsInUse):
+	// only now may its boot claim go (publishBootedPool).
 	return u, p, poolModePooled, nil
 }
 
@@ -286,11 +284,13 @@ func detachEmbedded(port uint32) {
 // bootStandalone boots an embedded server for this process alone and marks
 // it as this process's (ownerFile), so no other process's reaper takes it.
 func bootStandalone() (url string, port uint32, mode int, err error) {
-	u, p, ep, berr := bootEmbedded()
+	u, p, ep, claim, berr := bootEmbedded()
 	if berr != nil {
 		return "", 0, 0, berr
 	}
-	defer ep.releaseBootClaim()
+	// Held until the owner lock replaces it, so no reaper sees the server
+	// unowned in between.
+	defer claim.release()
 	retainEmbedded(ep)
 	// The owner lock is what keeps every other process's reaper off this
 	// server, in any pid namespace: a standalone server is the fallback when
@@ -523,6 +523,17 @@ func readLegacyPoolState() legacyPoolState {
 	}
 	_ = json.Unmarshal(b, &st)
 	return st
+}
+
+// publishBootedPool releases the boot claim only after atomic registration or
+// owned cleanup. stop is injected so failure ordering has a deterministic proof.
+func publishBootedPool(st poolState, claim *bootClaim, stop func()) error {
+	defer claim.release()
+	if err := writePoolState(st); err != nil {
+		stop()
+		return err
+	}
+	return nil
 }
 
 func writePoolState(st poolState) error {

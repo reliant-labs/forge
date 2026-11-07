@@ -73,16 +73,6 @@ var startMu sync.Mutex
 type Embedded struct {
 	ep   *embeddedpostgres.EmbeddedPostgres
 	logs []string
-	// Only automatic-port boots carry this private claim. It survives Detach
-	// (log ownership is independent) until pool/standalone ownership exists.
-	bootClaim *bootClaim
-}
-
-func (e *Embedded) releaseBootClaim() {
-	if e.bootClaim != nil {
-		e.bootClaim.release()
-		e.bootClaim = nil
-	}
 }
 
 // Stop stops the server, then removes the log file this instance created. The

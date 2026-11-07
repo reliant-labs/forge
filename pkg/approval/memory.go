@@ -17,6 +17,9 @@ import (
 // concurrent use. A follow-up must not call back into the same MemoryStore:
 // Decide and Redrive hold its lock while the follow-up runs, which is what
 // makes the transition and the follow-up one atomic step.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type MemoryStore struct {
 	mu    sync.Mutex
 	cfg   config
@@ -28,6 +31,9 @@ var _ Approvals = (*MemoryStore)(nil)
 
 // NewMemoryStore returns an empty MemoryStore. [WithNow] applies; [WithSchema]
 // is ignored.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func NewMemoryStore(opts ...StoreOption) *MemoryStore {
 	return &MemoryStore{cfg: newConfig(opts), items: map[string]*Item{}}
 }

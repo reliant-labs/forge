@@ -8,6 +8,9 @@ import (
 // Approvals is the surface an app's handlers and sweepers depend on. [Store]
 // is the Postgres implementation and [MemoryStore] the in-memory one for
 // tests; take the interface where you want to swap them.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type Approvals interface {
 	// Propose records a pending item; idempotent on (Scope, Kind, SubjectRef).
 	Propose(ctx context.Context, it Item) (Item, error)

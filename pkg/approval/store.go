@@ -13,6 +13,9 @@ import (
 )
 
 // Store is the Postgres [Approvals] over the approvals table ([SchemaSQL]).
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type Store struct {
 	db  DB
 	cfg config
@@ -24,6 +27,9 @@ var _ Approvals = (*Store)(nil)
 // and Redrive open their transaction through it, and the follow-up's own
 // writes join that transaction when they go through the same client with the
 // ctx the follow-up receives.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func NewStore(db DB, opts ...StoreOption) *Store {
 	return &Store{db: db, cfg: newConfig(opts)}
 }

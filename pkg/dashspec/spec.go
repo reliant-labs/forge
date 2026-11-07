@@ -68,13 +68,18 @@ const (
 	// no query (a heading over a row of panels, a runbook link, what a
 	// dashboard is for). It takes no signal, series or group-by.
 	KindText PanelKind = "text"
+	// KindBrowse is a saved data-browser view: one table of one database,
+	// with columns, filters and sort, drawn as the browser's grid (see
+	// BrowseView). The console runs it through the data browser's own read;
+	// HyperDX cannot.
+	KindBrowse PanelKind = "browse"
 )
 
 // IsConsoleKind reports whether k is drawn only by the Reliant console, so the
 // HyperDX renderer has nothing to emit for it.
 func IsConsoleKind(k PanelKind) bool {
 	switch k {
-	case KindIssues, KindSessions, KindFunnel, KindPostgres, KindText:
+	case KindIssues, KindSessions, KindFunnel, KindPostgres, KindText, KindBrowse:
 		return true
 	}
 	return false
@@ -344,6 +349,13 @@ type Panel struct {
 	// Postgres is the query a KindPostgres panel draws; only that kind takes
 	// it, and it takes no Signal, Series or SQL.
 	Postgres *PostgresQuery `json:"postgres,omitempty"`
+	// Browse is the view a KindBrowse panel draws; only that kind takes it,
+	// and it takes no Signal, Series or query.
+	Browse *BrowseView `json:"browse,omitempty"`
+	// Link makes each row of a table or bar panel, or of a postgres panel
+	// drawn as one, open the data browser (see PanelLink). Only the console
+	// follows it.
+	Link *PanelLink `json:"link,omitempty"`
 	// HasError narrows a KindSessions panel to sessions that hit an error;
 	// only that kind takes it.
 	HasError bool `json:"hasError,omitempty"`

@@ -612,10 +612,19 @@ func collectConfigDepsJSON(projectDir string) ([]lintJSONFinding, error) {
 	return out, nil
 }
 
+// columnMarkerMessage is the finding's headline.
+func columnMarkerMessage(f columnMarkerFinding) string {
+	if f.rule() == ruleIdentitySubjectUnreadable {
+		return fmt.Sprintf("%s on %s is a column the read-only role cannot read", f.Marker, f.Object)
+	}
+	return fmt.Sprintf("%s on %s does nothing", f.Marker, f.Object)
+}
+
 // collectColumnMarkersJSON maps column-markers findings onto the JSON
 // contract. Severity error across the board: a forge:* marker forge does not
 // read where it is declared does nothing, and `forge generate` refuses the
-// same catalog comment (schemadef.CheckMarkers).
+// same catalog comment (schemadef.CheckMarkers). The identity-subject finding
+// is an error too, softened to a warning by its rollout row until it gates.
 func collectColumnMarkersJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, error) {
 	findings, err := collectColumnMarkerFindings(migrationsDirFor(cfg))
 	if err != nil {
@@ -627,8 +636,8 @@ func collectColumnMarkersJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, err
 			File:     f.File,
 			Line:     f.Line,
 			Severity: lintSevError,
-			Rule:     "forge-column-markers",
-			Message:  fmt.Sprintf("%s on %s does nothing", f.Marker, f.Object),
+			Rule:     f.rule(),
+			Message:  columnMarkerMessage(f),
 			FixHint:  columnMarkerFixHint(f),
 		})
 	}

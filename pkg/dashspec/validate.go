@@ -96,7 +96,7 @@ func ParseDashboard(name string, raw []byte) (Dashboard, error) {
 	if err := json.Unmarshal(raw, &tree); err != nil {
 		return Dashboard{}, &problemsError{file: name, problems: []Problem{ix.syntaxProblem(err)}}
 	}
-	v := &validator{ix: ix}
+	v := &validator{ix: ix, filterIDs: map[string]bool{}}
 	root, ok := tree.(map[string]any)
 	if !ok {
 		v.add("", "a dashboard file is one JSON object ({\"id\", \"title\", \"panels\", ...})")
@@ -138,6 +138,9 @@ func LooksLikeHyperDXDashboard(raw []byte) bool {
 type validator struct {
 	ix       *jsonIndex
 	problems []Problem
+	// filterIDs are the ids of the dashboard's filters, which a browse
+	// filter's value may reference.
+	filterIDs map[string]bool
 }
 
 func (v *validator) add(path, format string, args ...any) {
@@ -329,6 +332,7 @@ func (v *validator) filters(fs []any) {
 				v.add(childPath(p, "id"), "duplicate filter id %q", id)
 			}
 			ids[id] = true
+			v.filterIDs[id] = true
 		}
 		v.str(p, f, "label", true)
 		if v.oneOf(p, f, "kind", false, string(FilterToggle)) == string(FilterToggle) {
@@ -411,7 +415,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "postgres", "section", "minStep", "markdown", "display")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "postgres", "section", "minStep", "markdown", "display", "browse", "link")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -423,7 +427,10 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	v.str(path, o, "title", true)
 	v.str(path, o, "description", false)
-	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres), string(KindText))
+	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres), string(KindText), string(KindBrowse))
+	if raw, has := o["link"]; has && kind != "" {
+		v.link(path, o, PanelKind(kind), raw)
+	}
 	if kind == string(KindText) {
 		v.textPanel(path, o)
 		return
@@ -431,7 +438,7 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	if _, has := o["markdown"]; has {
 		v.add(childPath(path, "markdown"), "only a text panel takes \"markdown\"")
 	}
-	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL) && kind != string(KindPostgres), string(Traces), string(Metrics), string(Logs))
+	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL) && kind != string(KindPostgres) && kind != string(KindBrowse), string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)
 	if raw, has := o["display"]; has && kind != "" {
 		v.display(path, o, PanelKind(kind), raw)
@@ -465,11 +472,15 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 		v.postgresPanel(path, o)
 		return
 	}
+	if kind == string(KindBrowse) {
+		v.browsePanel(path, o)
+		return
+	}
 	if IsConsoleKind(PanelKind(kind)) {
 		v.consolePanel(path, o, PanelKind(kind), sig)
 		return
 	}
-	for _, only := range []string{"funnel", "hasError", "postgres"} {
+	for _, only := range []string{"funnel", "hasError", "postgres", "browse"} {
 		if _, has := o[only]; has {
 			v.add(childPath(path, only), "only a %s panel takes %q", consoleKindFor(only), only)
 		}
@@ -594,7 +605,7 @@ func (v *validator) sqlPanel(path string, o map[string]any) {
 // textPanel validates a KindText panel: Markdown is all it carries, besides
 // the common presentation fields.
 func (v *validator) textPanel(path string, o map[string]any) {
-	v.refuse(path, o, KindText, "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "funnel", "hasError", "sql", "postgres", "minStep", "display")
+	v.refuse(path, o, KindText, "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "funnel", "hasError", "sql", "postgres", "minStep", "display", "browse")
 	raw, present := o["markdown"]
 	if !present {
 		v.add(path, "a text panel needs \"markdown\"")
@@ -737,6 +748,8 @@ func consoleKindFor(field string) PanelKind {
 		return KindFunnel
 	case "postgres":
 		return KindPostgres
+	case "browse":
+		return KindBrowse
 	}
 	return KindSessions
 }
@@ -745,7 +758,7 @@ func consoleKindFor(field string) PanelKind {
 // (issues, sessions, funnel). They carry no query: a series, a ratio, columns
 // or a group-by would be silently ignored, so each is refused.
 func (v *validator) consolePanel(path string, o map[string]any, kind PanelKind, sig Signal) {
-	for _, no := range []string{"series", "ratio", "formula", "limit", "columns", "groupBy", "unit", "sql", "postgres"} {
+	for _, no := range []string{"series", "ratio", "formula", "limit", "columns", "groupBy", "unit", "sql", "postgres", "browse"} {
 		if _, has := o[no]; has {
 			v.add(childPath(path, no), "a %s panel is drawn by the console and takes no %q", kind, no)
 		}
@@ -781,7 +794,7 @@ func (v *validator) consolePanel(path string, o map[string]any, kind PanelKind, 
 // postgresPanel validates a KindPostgres panel: its postgres block is all it
 // carries, besides the common presentation fields and a unit.
 func (v *validator) postgresPanel(path string, o map[string]any) {
-	v.refuse(path, o, KindPostgres, "signal", "series", "sql", "ratio", "formula", "limit", "where", "groupBy", "columns", "funnel", "hasError")
+	v.refuse(path, o, KindPostgres, "signal", "series", "sql", "ratio", "formula", "limit", "where", "groupBy", "columns", "funnel", "hasError", "browse")
 	raw, present := o["postgres"]
 	if !present {
 		v.add(path, "a postgres panel needs a \"postgres\" block: {\"database\", \"sql\"}")
@@ -794,11 +807,7 @@ func (v *validator) postgresPanel(path string, o map[string]any) {
 	}
 	v.known(pp, q, "database", "sql", "draw", "time", "values", "group")
 
-	if db := v.str(pp, q, "database", true); db != "" {
-		if len(db) > MaxPostgresDatabaseLen || !postgresDatabasePattern.MatchString(db) {
-			v.add(childPath(pp, "database"), "%q is not a database name: lowercase letters, digits, '-' and '_', starting and ending with a letter or digit, at most %d characters", db, MaxPostgresDatabaseLen)
-		}
-	}
+	v.databaseName(pp, q)
 
 	if sraw, has := q["sql"]; !has {
 		v.add(pp, "a postgres panel needs \"sql\": one read-only statement")
@@ -853,6 +862,16 @@ func (v *validator) postgresColumns(path string, obj map[string]any, key string,
 		out = append(out, s)
 	}
 	return out
+}
+
+// databaseName validates obj's required "database": a database name, as
+// `forge db query` takes it.
+func (v *validator) databaseName(path string, obj map[string]any) {
+	if db := v.str(path, obj, "database", true); db != "" {
+		if len(db) > MaxPostgresDatabaseLen || !postgresDatabasePattern.MatchString(db) {
+			v.add(childPath(path, "database"), "%q is not a database name: lowercase letters, digits, '-' and '_', starting and ending with a letter or digit, at most %d characters", db, MaxPostgresDatabaseLen)
+		}
+	}
 }
 
 func (v *validator) columnName(path, name string) {

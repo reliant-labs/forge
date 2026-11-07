@@ -115,8 +115,8 @@ var (
 )
 
 // freePort asks the OS for an unused TCP port, in the uint32 shape
-// embedded-postgres's Port option takes. Binding :0 and reading it back
-// avoids collisions when several processes boot instances concurrently.
+// embedded-postgres's Port option takes. The reservation is released before
+// postgres binds; startEmbeddedOnFreshPort handles collisions in that gap.
 func freePort() (uint32, error) {
 	p, err := ReserveLoopbackPort()
 	if err != nil {
@@ -256,11 +256,6 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 		return "", 0, nil, choice.err
 	}
 
-	port, err = freePort()
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("pgtest: reserve port: %w", err)
-	}
-
 	const (
 		user = "forge"
 		pass = "forge"
@@ -280,8 +275,6 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 		// C otherwise defaults to SQL_ASCII. Keep the database encoding aligned
 		// with production and preserve validation of non-ASCII application data.
 		Encoding("UTF8").
-		Port(port).
-		RuntimePath(runtimeDir(port)).
 		StartParameters(startParameters(runtime.GOOS)).
 		// CachePath defaults under the user cache dir; the downloaded
 		// binary is reused across runs. StartTimeout is generous for the
@@ -294,7 +287,7 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 	// StartEmbedded, not NewDatabase+Start: a cold cache downloads the
 	// binary, and the library reports ANY failed download as "no version
 	// found matching X". See fetch.go.
-	ep, err = StartEmbedded(cfg)
+	ep, port, err = startEmbeddedOnFreshPort(cfg, freePort, runtimeDir, StartEmbedded)
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("pgtest: start embedded postgres %s: %w", choice.version, err)
 	}

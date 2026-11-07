@@ -502,6 +502,11 @@ func portsInUse() map[string]bool {
 			in[e.Name()] = true
 			continue
 		}
+		// A server mid-boot has neither an owner nor a postmaster yet.
+		if bootClaimHeld(filepath.Join(instanceRoot(), e.Name())) {
+			in[e.Name()] = true
+			continue
+		}
 		b, err := os.ReadFile(filepath.Join(instanceRoot(), e.Name(), ownerFile))
 		if err != nil {
 			continue

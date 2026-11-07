@@ -213,3 +213,61 @@ func TestEmbeddedBindCollisionDiagnostics(t *testing.T) {
 		})
 	}
 }
+
+// The claim must exclude a contender for the whole boot, even though the
+// dependency RemoveAlls RuntimePath first, and must be gone afterwards.
+func TestEmbeddedBootClaimSurvivesRuntimeRemoval(t *testing.T) {
+	port, _ := occupiedBootPort(t)
+	dirFor := bootDirs(t)
+	dir := dirFor(port)
+	want := &Embedded{}
+	ep, gotPort, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+		return port, nil
+	}, dirFor, func(embeddedpostgres.Config) (*Embedded, error) {
+		_ = os.RemoveAll(dir) // what StartEmbedded does before extracting
+		if err := os.MkdirAll(filepath.Join(dir, "data"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if !bootClaimHeld(dir) {
+			t.Fatal("boot claim not held while starting")
+		}
+		if c, err := claimBootDir(dir); c != nil || err != nil {
+			t.Fatalf("contender claimed a dir mid-boot: %v %v", c, err)
+		}
+		return want, nil
+	})
+	if err != nil || ep != want || gotPort != port {
+		t.Fatalf("ep=%p port=%d err=%v", ep, gotPort, err)
+	}
+	if bootClaimHeld(dir) {
+		t.Fatal("boot claim still held after start returned")
+	}
+	if c, err := claimBootDir(dir); c != nil || err != nil {
+		t.Fatalf("contender claimed a booted server's dir: %v %v", c, err)
+	}
+}
+
+func TestEmbeddedBootSkipsClaimedCandidate(t *testing.T) {
+	port, ln := occupiedBootPort(t)
+	dirFor := bootDirs(t)
+	if err := os.MkdirAll(filepath.Dir(dirFor(port)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other, err := claimBootDir(dirFor(port))
+	if err != nil || other == nil {
+		t.Fatalf("claim: %v %v", other, err)
+	}
+	defer other.release()
+	reserves, starts := 0, 0
+	_, gotPort, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+		reserves++
+		return port + uint32(reserves-1), nil
+	}, dirFor, func(embeddedpostgres.Config) (*Embedded, error) {
+		starts++
+		return &Embedded{}, nil
+	})
+	if err != nil || gotPort != port+1 || starts != 1 || reserves != 2 {
+		t.Fatalf("port=%d err=%v starts=%d reserves=%d", gotPort, err, starts, reserves)
+	}
+	assertBootListenerAlive(t, ln)
+}

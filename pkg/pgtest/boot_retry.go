@@ -43,29 +43,94 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 			return nil, 0, fmt.Errorf("pgtest: create runtime parent: %w", err)
 		}
 		// The dependency unconditionally RemoveAlls RuntimePath before
-		// extraction. Never give it a directory somebody else already owns,
-		// even if the port currently looks free (e.g. a sibling mid-boot).
-		if err := os.Mkdir(dir, 0o755); err != nil {
-			if !errors.Is(err, os.ErrExist) {
-				return nil, 0, fmt.Errorf("pgtest: claim runtime directory: %w", err)
-			}
-			last = fmt.Errorf("runtime directory %s already claimed: %w", dir, err)
+		// extraction, so a claim INSIDE dir would be deleted mid-boot. The
+		// claim is a sibling lock file held until start returns; a held
+		// claim or an existing dir (somebody else's, even if the port
+		// currently looks free) means the candidate is skipped.
+		claim, err := claimBootDir(dir)
+		if err != nil {
+			return nil, 0, fmt.Errorf("pgtest: claim runtime directory: %w", err)
+		}
+		if claim == nil {
+			last = fmt.Errorf("runtime directory %s already claimed", dir)
 			continue
 		}
 		ep, err := start(cfg.Port(port).RuntimePath(dir))
 		if err == nil {
+			claim.release()
 			return ep, port, nil
 		}
 		// No Stop/stopSharedByPort here: the listener that won the race is
 		// NOT ours. StartEmbedded owns its failed-start logs. Remove only an
-		// empty claim; partial extraction/data is left intact, never swept.
+		// empty dir; partial extraction/data is left intact, never swept.
 		_ = os.Remove(dir)
+		claim.release()
 		if !embeddedBindCollision(err, port, dir) {
 			return nil, 0, err
 		}
 		last = err
 	}
 	return nil, 0, &portBootError{ports: ports, err: last}
+}
+
+// bootClaim is an exclusive kernel lock on bootClaimPath(dir), held while
+// StartEmbedded populates dir. Kernel locks belong to the open file, so the
+// claim means the same thing across pid namespaces, and a holder that dies
+// releases it.
+type bootClaim struct {
+	f    *os.File
+	path string
+}
+
+func bootClaimPath(dir string) string { return dir + ".boot" }
+
+// claimBootDir takes dir's boot claim. It returns (nil, nil) when another
+// process holds the claim or dir already exists: the candidate is not ours.
+func claimBootDir(dir string) (*bootClaim, error) {
+	path := bootClaimPath(dir)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	held, err := tryLockFileExclusive(f)
+	if err != nil || !held {
+		_ = f.Close()
+		return nil, err
+	}
+	// A previous holder unlinks the file before unlocking (release). If it
+	// did so between our open and our lock, we locked an orphaned inode
+	// that no contender can see: treat the candidate as taken.
+	ours, statErr := f.Stat()
+	onDisk, pathErr := os.Stat(path)
+	if statErr != nil || pathErr != nil || !os.SameFile(ours, onDisk) {
+		_ = f.Close()
+		return nil, nil
+	}
+	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+		(&bootClaim{f: f, path: path}).release()
+		return nil, nil
+	}
+	return &bootClaim{f: f, path: path}, nil
+}
+
+// release unlinks the claim while still holding it, so a contender that
+// opened it meanwhile fails the SameFile check above. Where an open file
+// cannot be unlinked (Windows) the empty file stays, and is reused.
+func (c *bootClaim) release() {
+	_ = os.Remove(c.path)
+	_ = c.f.Close()
+}
+
+// bootClaimHeld reports whether a boot into dir is in progress. A claim that
+// cannot be tested counts as held: a dir is never reaped on doubt.
+func bootClaimHeld(dir string) bool {
+	f, err := os.Open(bootClaimPath(dir))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	held, err := tryLockFileExclusive(f)
+	return err != nil || !held
 }
 
 func embeddedBindCollision(err error, port uint32, dir string) bool {

@@ -29,18 +29,23 @@ func (e *portBootError) Unwrap() error { return e.err }
 // startEmbeddedOnFreshPort retries only a confirmed bind collision. Dependencies
 // are per-call so deterministic tests never replace process-global functions.
 // Config is copied unchanged except for the port and its runtime directory.
-func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint32, error), dirFor func(uint32) string, start func(embeddedpostgres.Config) (*Embedded, error)) (*Embedded, uint32, error) {
+//
+// On success the runtime directory's boot claim is returned STILL HELD: the
+// server has neither an owner lock nor a pool record yet, so the claim is all
+// that keeps another process's reaper (portsInUse) off it. The caller
+// releases it once the server's lasting ownership is established.
+func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint32, error), dirFor func(uint32) string, start func(embeddedpostgres.Config) (*Embedded, error)) (*Embedded, uint32, *bootClaim, error) {
 	var ports []uint32
 	var last error
 	for range embeddedBootAttempts {
 		port, err := reserve()
 		if err != nil {
-			return nil, 0, fmt.Errorf("pgtest: reserve port: %w", err)
+			return nil, 0, nil, fmt.Errorf("pgtest: reserve port: %w", err)
 		}
 		ports = append(ports, port)
 		dir := dirFor(port)
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-			return nil, 0, fmt.Errorf("pgtest: create runtime parent: %w", err)
+			return nil, 0, nil, fmt.Errorf("pgtest: create runtime parent: %w", err)
 		}
 		// The dependency unconditionally RemoveAlls RuntimePath before
 		// extraction, so a claim INSIDE dir would be deleted mid-boot. The
@@ -49,7 +54,7 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 		// currently looks free) means the candidate is skipped.
 		claim, err := claimBootDir(dir)
 		if err != nil {
-			return nil, 0, fmt.Errorf("pgtest: claim runtime directory: %w", err)
+			return nil, 0, nil, fmt.Errorf("pgtest: claim runtime directory: %w", err)
 		}
 		if claim == nil {
 			last = fmt.Errorf("runtime directory %s already claimed", dir)
@@ -57,8 +62,7 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 		}
 		ep, err := start(cfg.Port(port).RuntimePath(dir))
 		if err == nil {
-			claim.release()
-			return ep, port, nil
+			return ep, port, claim, nil
 		}
 		// No Stop/stopSharedByPort here: the listener that won the race is
 		// NOT ours. StartEmbedded owns its failed-start logs. Remove only an
@@ -66,15 +70,16 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 		_ = os.Remove(dir)
 		claim.release()
 		if !embeddedBindCollision(err, port, dir) {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 		last = err
 	}
-	return nil, 0, &portBootError{ports: ports, err: last}
+	return nil, 0, nil, &portBootError{ports: ports, err: last}
 }
 
 // bootClaim is an exclusive kernel lock on bootClaimPath(dir), held while
-// StartEmbedded populates dir. Kernel locks belong to the open file, so the
+// StartEmbedded populates dir and until the booted server's owner (a pool
+// record with a live lease, or an owner lock) is in place. Kernel locks belong to the open file, so the
 // claim means the same thing across pid namespaces, and a holder that dies
 // releases it.
 type bootClaim struct {
@@ -115,8 +120,12 @@ func claimBootDir(dir string) (*bootClaim, error) {
 
 // release unlinks the claim while still holding it, so a contender that
 // opened it meanwhile fails the SameFile check above. Where an open file
-// cannot be unlinked (Windows) the empty file stays, and is reused.
+// cannot be unlinked (Windows) the empty file stays, and is reused. A nil
+// claim is a no-op, so error paths can release unconditionally.
 func (c *bootClaim) release() {
+	if c == nil {
+		return
+	}
 	_ = os.Remove(c.path)
 	_ = c.f.Close()
 }

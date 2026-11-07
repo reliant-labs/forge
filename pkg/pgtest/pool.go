@@ -227,7 +227,7 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 	if st.Port != 0 {
 		stopSharedByPort(st.Port)
 	}
-	u, p, ep, berr := bootEmbedded()
+	u, p, ep, claim, berr := bootEmbedded()
 	if berr != nil {
 		_ = os.Remove(poolStatePath()) // let the next attach retry cleanly
 		poolLease.release()
@@ -237,6 +237,9 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 	retainEmbedded(ep)
 	pid, _ := postmaster(filepath.Join(runtimeDir(p), "data", "postmaster.pid"))
 	writePoolState(poolState{URL: u, Port: p, PID: pid})
+	// Recorded with our live lease, the server is in use (portsInUse):
+	// only now may its boot claim go.
+	claim.release()
 	return u, p, poolModePooled, nil
 }
 
@@ -278,10 +281,13 @@ func detachEmbedded(port uint32) {
 // bootStandalone boots an embedded server for this process alone and marks
 // it as this process's (ownerFile), so no other process's reaper takes it.
 func bootStandalone() (url string, port uint32, mode int, err error) {
-	u, p, ep, berr := bootEmbedded()
+	u, p, ep, claim, berr := bootEmbedded()
 	if berr != nil {
 		return "", 0, 0, berr
 	}
+	// Held until the owner lock replaces it, so no reaper sees the server
+	// unowned in between.
+	defer claim.release()
 	retainEmbedded(ep)
 	// The owner lock is what keeps every other process's reaper off this
 	// server, in any pid namespace: a standalone server is the fallback when

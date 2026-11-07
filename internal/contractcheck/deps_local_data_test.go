@@ -14,6 +14,9 @@ func TestDepsLocalDataSettingsAndHiddenCollaborators(t *testing.T) {
 	must(t, mkdirAll(filepath.Join(root, "internal", "consumer")))
 	must(t, writeFile(filepath.Join(root, "internal", "consumer", "service.go"), `package consumer
 
+type Enum int32
+func (e Enum) String() string { return "enum" }
+func (e Enum) Validate() error { return nil }
 type Limits struct { Rows int; Enabled bool }
 type Datasource struct { Name string; Limits Limits }
 func (d Datasource) Label() string { return d.Name }
@@ -36,7 +39,7 @@ type ReadsGlobal struct { Name string }
 func (r ReadsGlobal) Label() string { return singleton[r.Name] }
 
 type Deps struct {
- Good map[string]Datasource
+ Good map[Enum]Datasource
  GoodAlias []Alias
  GoodRows []Rows
  GoodIndex []Index

@@ -24,6 +24,12 @@ func (l *depsLinter) localDataExpr(expr ast.Expr, decls typeDecls, imports map[s
 		if !ok || visiting[key] || decls.embeds[t.Name] {
 			return false
 		}
+		// Named scalar aliases (including protobuf enum map keys) carry
+		// no substitutable state. Their generated methods are not invoked
+		// when this field is used as a value; structs retain method checks.
+		if scalar, ok := underlying.(*ast.Ident); ok && isPrimitiveType(scalar) {
+			return true
+		}
 		for _, m := range decls.methods[t.Name] {
 			if !methodSignatureIsAccessorShaped(m, decls) {
 				return false

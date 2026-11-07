@@ -1017,8 +1017,9 @@ jobs:
       # forge is semver at major 1: an incompatible change to pkg/ fails unless
       # the owner applied `breaking:approved`, and an accepted break must still
       # declare itself (the `api-break` label, or an `API-BREAK:` line in its
-      # body) and ship the codemod or migration playbook in the same diff. A diff that
-      # cannot change pkg/'s API exits in about a second.
+      # body) and ship the codemod or migration playbook in the same diff. An
+      # `API-BREAK:` line with no break behind it fails too (the release refuses
+      # on it). A diff that cannot change pkg/'s API exits in about a second.
       # dev-docs/api-breaks.md. Pull requests only: it reads the pull
       # request's labels and body, and a push to main is already merged.
       - name: pkg/ API compatibility (breaks fail unless the owner accepted them)

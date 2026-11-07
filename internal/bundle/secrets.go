@@ -133,30 +133,29 @@ func refuseInConfig(configBlob []byte) error {
 // checkSecretDocument is the actual F-13 predicate: in a `kind: Secret`, every
 // value under data/stringData must be the redaction marker.
 //
+// What a Secret is, where its values sit and what the marker is come from the
+// shared secret rule in pkg/release (IsSecretObject, SecretObjectValues,
+// IsRedacted), the same rule the control plane's config viewer redacts with,
+// so the two can never disagree about a Secret's values.
+//
 // It checks for the MARKER rather than scanning for things that look
 // secret-ish. An allow-list of one exact shape is decidable; a blocklist of
 // "what a password looks like" is not, and would pass the first value nobody
-// thought of.
+// thought of. That is why the rule's other half, release.LooksSecret, never
+// refuses a build: it withholds a plain value from a screen, it does not
+// overrule what the author declared in the open.
 func checkSecretDocument(where string, body any) error {
-	doc, ok := body.(map[string]any)
-	if !ok || doc["kind"] != "Secret" {
+	if !release.IsSecretObject(body) {
 		return nil
 	}
-	name, _ := doc["metadata"].(map[string]any)["name"].(string)
-	for _, field := range secretValueFields {
-		values, ok := doc[field].(map[string]any)
-		if !ok {
+	name, _ := body.(map[string]any)["metadata"].(map[string]any)["name"].(string)
+	for _, v := range release.SecretObjectValues(body) {
+		if release.IsRedacted(v.Value) {
 			continue
 		}
-		for key, value := range values {
-			s, isString := value.(string)
-			if isString && strings.HasPrefix(s, release.RedactedSecretPrefix) {
-				continue
-			}
-			return fmt.Errorf("%w: %s: Secret %q key %s.%s is not redacted "+
-				"(a bundle is pushed, cached and kept forever, so the value would leak permanently)",
-				ErrSecretValue, where, name, field, key)
-		}
+		return fmt.Errorf("%w: %s: Secret %q key %s.%s is not redacted "+
+			"(a bundle is pushed, cached and kept forever, so the value would leak permanently)",
+			ErrSecretValue, where, name, v.Field, v.Key)
 	}
 	// Redacted or not, a Secret does not belong in the layer: the reconciler
 	// would apply the marker over the cluster's real value and own the
@@ -164,6 +163,3 @@ func checkSecretDocument(where string, body any) error {
 	return fmt.Errorf("%w: %s: Secret %q is in the manifest layer; Secrets are synced by forge, never reconciled from a bundle",
 		ErrSecretValue, where, name)
 }
-
-// secretValueFields are the two places a Kubernetes Secret holds a value.
-var secretValueFields = []string{"data", "stringData"}

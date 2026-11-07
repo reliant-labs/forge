@@ -1762,3 +1762,28 @@ describe("initBrowserTelemetry on an origin that drops cookies", () => {
     expect(store.get(t.RUM_SESSION_STORAGE_KEY)).toContain('"v":"abc"');
   });
 });
+
+describe("the fetch context shim", () => {
+  it("wraps the fetch the SDK patched, and delegates to it", async () => {
+    stubDom();
+    const sdkPatched = vi.fn(async () => new Response("ok"));
+    vi.stubGlobal("fetch", async () => new Response("native"));
+    init.mockImplementation(() => {
+      // HyperDX's fetch instrumentation patches the global during init.
+      globalThis.fetch = sdkPatched as unknown as typeof fetch;
+    });
+    const { t } = await load();
+    await expect(
+      t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" }),
+    ).resolves.toBe(true);
+
+    // The shim sits OVER the SDK's fetch, so a call it re-enters a context
+    // for still opens the SDK's span inside that context.
+    expect(globalThis.fetch).not.toBe(sdkPatched);
+    const res = await globalThis.fetch("http://api.test/x", { method: "POST" });
+    expect(await res.text()).toBe("ok");
+    expect(sdkPatched).toHaveBeenCalledWith("http://api.test/x", {
+      method: "POST",
+    });
+  });
+});

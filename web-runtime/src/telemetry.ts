@@ -143,6 +143,7 @@ import {
   watchViewport,
 } from "./client-context.js";
 import { setExceptionReporter } from "./error-reporter.js";
+import { installFetchContext } from "./interaction-context.js";
 import { installSessionCookieFallback } from "./session-cookie-fallback.js";
 import {
   registerRumSession,
@@ -398,6 +399,10 @@ async function start(
         pageClientResourceAttributes(),
       ),
     );
+    // Over the SDK's patched fetch, so an RPC whose fetch() runs after an
+    // await (a server stream) still opens its span under the context the
+    // trace interceptor chose. See interaction-context.ts.
+    installFetchContext();
     // From here web-vitals watches visibility itself.
     hidden.stop();
     dropBackgroundPaintVitals(hidden.at());

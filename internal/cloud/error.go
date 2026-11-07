@@ -337,7 +337,11 @@ func credentialProblem(reason string) string {
 	return ""
 }
 
-var missingScopeRe = regexp.MustCompile(`\b([a-z]+:(?:read|write|manage|triage|query|invoke|connect))\b scope`)
+// missingScopeRe captures the WHOLE colon-delimited scope a refusal names: a
+// scope may have more than two components (deploy:config:read), and capturing
+// only the last two would name a scope that does not exist (config:read), so
+// elevation would ask the helper and the exchange for the wrong thing.
+var missingScopeRe = regexp.MustCompile(`\b([a-z]+(?::[a-z]+)*:(?:read|write|manage|triage|query|invoke|connect))\b scope`)
 
 // authFix is the remedy for a rejected credential. When the server names a
 // missing scope the generic "log in again" is wrong advice on its own — a

@@ -217,6 +217,9 @@ func TestEmbeddedBootReaperProcess(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if len(entries) == 0 {
+			t.Fatal("instance root is empty; the runtime directory must already exist when the snapshot is taken")
+		}
 		// This snapshot precedes the publication and is deliberately ignored
 		// by the guarded per-entry reaper after it obtains the boot lock.
 		_ = portsInUse()

@@ -24,6 +24,7 @@ export {
   buildRuntimeInterceptors,
   errorNormalizeInterceptor,
   headerInterceptor,
+  interactionContextInterceptor,
   retryInterceptor,
   traceInterceptor,
   type RuntimeInterceptorConfig,
@@ -88,6 +89,26 @@ export {
   TRACEPARENT_RE,
   TRACERESPONSE_HEADER,
 } from "./trace.js";
+
+/**
+ * Interactions: one root span for an operation the user perceives — click to
+ * usable — that the RPCs made while it is open join as children. Framework-
+ * free; `useInteractionEnd` is the React end. Safe with telemetry off (the
+ * RPCs still share one trace id) and never throws.
+ */
+export {
+  currentInteraction,
+  DEFAULT_INTERACTION_SCOPE,
+  DEFAULT_INTERACTION_TIMEOUT_MS,
+  interaction,
+  type Interaction,
+  type InteractionAttributes,
+  type InteractionEndAttributes,
+  type InteractionOptions,
+} from "./interaction.js";
+
+/** The React end of an interaction: endAfterPaint() on the first ready commit. */
+export { useInteractionEnd } from "./interaction-hooks.js";
 
 /** Session: the signed-in user, derived from the app's auth state and JWT claims. */
 export {

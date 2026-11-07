@@ -83,6 +83,30 @@ If the node agent (cluster) or the local collector (host) ships logs, leave `OTE
 
 A line read from stdout has no SDK resource of its own, so every JSON line carries the process resource under `"resource"`: `service.name`, `service.version`, `service.namespace`, `deployment.environment.name` and `service.instance.id`. These are the values the traces and metrics carry (Setup's resource), pre-encoded once per logger. The collectors forge renders (node agent, local forwarder, `deploy/observability/otel-collector.yaml`) lift those keys into the log record's **resource**. A key a trusted source already set wins: the pod's labels on a cluster, the file's path locally. A line without the object is unchanged and has **no version**: a panic, a runtime fatal error, plain text, an image forge did not build. Text output (`LOG_FORMAT=text`) is not stamped. Pass `observe.NewLogHandler` the `Config` you pass `Setup`.
 
+## Hosted dev telemetry (`dev_telemetry`)
+
+A LOCAL env's stack (`forge env up`) can store its telemetry in the org's hosted store instead of the local ClickStack. `observability.dev_telemetry` declares it:
+
+| Value | Meaning |
+|---|---|
+| `"auto"` (default) | hosted when the env declares a `control_plane` AND a Reliant credential exists; otherwise local. Any failure on the way (control plane unreachable, `Unimplemented`, the org switch off, the gate excluding the org, the per-user instance cap (`dev_instance_limit`), a session it does not see live) falls back to local with the reason printed |
+| `"hosted"` | the same, but a failure fails `env up` instead of falling back |
+| `"local"` | always the local ClickStack |
+
+`forge env up --telemetry=auto|hosted|local` and `FORGE_DEV_TELEMETRY` override the declaration, and `local` from any of the three wins: it is the opt-out. An org admin can also switch dev telemetry off for the org.
+
+The stack is the **instance**: its session (one per env, host and worktree) is reported live, the control plane mints two 1-hour tokens for it (`MintLocalTelemetryToken`), and forge writes them to `.forge/obs/otlp-headers` and `.forge/obs/otlp-headers-browser` (0600, gitignored). The instance id in the record is the control plane's (the mint response's `instance.id`), not forge's local session id. A **telemetry keeper** (`forge env telemetry-keeper`, `.forge/logs/<env>/telemetry-keeper.log`) runs as one of the stack's tracked processes, detached or not: it heartbeats the session every minute and, on its own timer, renews both tokens at half-life (a refusal is retried from 15s, doubling to 5m), and `forge env down` stops it with the stack. A run that ends local (by choice, fallback or a failed `hosted` setup) first stops the env's running keeper and waits for it, then records `local` and removes any token a previous hosted run left; a keeper also stops itself once `backend-<env>.json` no longer records its instance. A failed renewal is silent: the app is never affected, and exports are dropped once the token expires. The decision is recorded in `.forge/obs/backend-<env>.json` for `forge obs`, and `forge env status <env>` prints `telemetry: hosted (org …, instance …, 3d)`, `local (<reason>)` or `not delivering (…)`. The first hosted run in a project prints what is sent, where, for how long, and how to opt out.
+
+In hosted mode:
+
+- No local collector, forwarder, profiles collector or Alertmanager starts, so a host-only env needs no Docker.
+- Host processes get `OTEL_EXPORTER_OTLP_ENDPOINT=<hosted edge>`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_EXPORTER_OTLP_HEADERS_FILE=<abs>/.forge/obs/otlp-headers` and `OTEL_LOGS_EXPORTER=otlp` (no collector tails log files). A transport you exported or declared wins whole. Infra processes' logs (postgres, nats) are not collected. Profiles are off.
+- Frontend dev servers get the edge as `OTEL_EXPORTER_OTLP_ENDPOINT` and the browser token file as `FORGE_OTEL_HEADERS_FILE`. The scaffolded `/_otel` proxy attaches it per request, server side (Vite: a `proxyReq` hook; Next.js: a loopback relay behind the rewrite), and drops the page's cookies. A frontend scaffolded before this has no hook: copy the `FORGE_OTEL_HEADERS_FILE` block from a freshly scaffolded `vite.config.ts` / `next.config.ts`, or its browser telemetry is refused.
+
+Retention is declared on the same `retention` block: `traces_days`, `metrics_days`, `logs_days`, `browser_days`, and per-service `overrides = [forge.RetentionOverride {service = "worker", signal = "logs", days = 1}]` (`signal` is traces, metrics, logs or browser; `days` ≥ 1). The control plane clamps each to [1, the plan cap], and 0 means its dev default (3 days).
+
+Database spans never record bind values: the driver tracer (`pkg/observe/dbtrace`) replaces every literal with `?`, and the ORM's own spans record the statement with `?` placeholders. A literal you write into SQL text by hand reaches an ORM span on a pool that is not driver-traced. Anything your code logs is sent as is, scrubbed for credential shapes at the gateway.
+
 ## Recipes
 
 - **Local only (the scaffold default):** `observability = forge.Observability {local_port = _otlp_http_port}`.

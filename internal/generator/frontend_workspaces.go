@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -718,6 +719,27 @@ func writeUIWebPackage(projectDir string, layout FrontendWorkspaceLayout) error 
 // you add a new component and want it re-exported, edit the barrel —
 // `forge generate` won't fight you. Stable sorted on the first emit
 // so initial diffs are clean.
+// This recognizes the supported scaffold's export declarations, not arbitrary
+// TypeScript semantics. The seeded barrel is owned after birth; custom module
+// shapes can be re-exported explicitly by the app without a parser in Forge.
+var uiWebDefaultExport = regexp.MustCompile(`(?m)^\s*export\s+default\b`)
+var uiWebNamedExports = regexp.MustCompile(`(?ms)^\s*export\s*\{([^}]*)\}`)
+
+func uiWebHasDefaultExport(source string) bool {
+	if uiWebDefaultExport.MatchString(source) {
+		return true
+	}
+	for _, block := range uiWebNamedExports.FindAllStringSubmatch(source, -1) {
+		for _, entry := range strings.Split(block[1], ",") {
+			fields := strings.Fields(entry)
+			if len(fields) == 1 && fields[0] == "default" || len(fields) == 3 && fields[1] == "as" && fields[2] == "default" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func writeUIWebBarrel(uiDir string) error {
 	indexPath := filepath.Join(uiDir, "src", "index.ts")
 	if _, err := os.Stat(indexPath); err == nil {
@@ -748,12 +770,20 @@ func writeUIWebBarrel(uiDir string) error {
 	b.WriteString("// Add/remove exports below as you add/remove components; subsequent\n")
 	b.WriteString("// `forge generate` runs will NOT clobber edits to this file.\n")
 	b.WriteString("//\n")
-	b.WriteString("// Each component file exports its component as default; the barrel\n")
-	b.WriteString("// re-names it to PascalCase for ergonomic named imports:\n")
+	b.WriteString("// Default components are exposed as PascalCase named imports. Helper\n")
+	b.WriteString("// modules without a default retain their named exports.\n")
 	b.WriteString("//   import { Button, DataTable } from \"@<scope>/ui-web\";\n\n")
 	for _, name := range names {
-		pascal := toPascalCase(name)
-		fmt.Fprintf(&b, "export { default as %s } from \"./components/ui/%s\";\n", pascal, name)
+		body, err := os.ReadFile(filepath.Join(componentsDir, name+".tsx"))
+		if err != nil {
+			return fmt.Errorf("read ui-web export %s: %w", name, err)
+		}
+		if uiWebHasDefaultExport(string(body)) {
+			pascal := toPascalCase(name)
+			fmt.Fprintf(&b, "export { default as %s } from \"./components/ui/%s\";\n", pascal, name)
+		} else {
+			fmt.Fprintf(&b, "export * from \"./components/ui/%s\";\n", name)
+		}
 	}
 	if len(names) == 0 {
 		// Keep the file a valid module even when there are no components.

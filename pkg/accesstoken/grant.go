@@ -25,8 +25,9 @@ const (
 	// ResourceConnector binds to one MCP connector grant id.
 	ResourceConnector ResourceKind = "connector"
 	// ResourceEnvironment binds to one environment id: a CI token that may
-	// read one env's telemetry (obs:read), triage its issues (obs:triage) or
-	// query its database (db:query), and no other env of the org.
+	// read one env's telemetry (obs:read), triage its issues (obs:triage),
+	// query its database (db:query) or read its object storage
+	// (storage:read), and no other env of the org.
 	ResourceEnvironment ResourceKind = "environment"
 )
 
@@ -73,6 +74,9 @@ var scopeResourceRules = map[Scope]struct {
 	ScopeObsRead:   {kind: ResourceEnvironment, required: false},
 	ScopeObsTriage: {kind: ResourceEnvironment, required: false},
 	ScopeDBQuery:   {kind: ResourceEnvironment, required: false},
+	// storage:read is db:query's twin for object storage: an org-wide token
+	// or one confined to one env's buckets.
+	ScopeStorageRead: {kind: ResourceEnvironment, required: false},
 }
 
 // admitsOnDaemon reports whether scope may ride a token bound to a DAEMON:

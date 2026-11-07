@@ -156,6 +156,19 @@ const (
 	// further restrict it to people (audited); the scope alone never opens
 	// one.
 	ScopeDBQuery Scope = "db:query"
+	// ScopeStorageRead reads an environment's object storage: lists a
+	// bucket's prefixes and objects, reads an object's metadata, previews it
+	// and mints a short-lived download URL. Read-only; nothing it permits
+	// writes, renames or deletes an object.
+	//
+	// ITS OWN SCOPE, NOT db:query. Uploads are a different class of data from
+	// rows (users' documents, images, exports) and are often more sensitive,
+	// so an org can let support read rows without reading files. Not implied
+	// by any other scope and implying none. Like db:query it may be confined
+	// to one environment, and a real environment's policy
+	// (data_access.storage) may further restrict it to people; the scope
+	// alone never opens one.
+	ScopeStorageRead Scope = "storage:read"
 
 	// The five scopes below narrow the reliant API for SDK callers: an app
 	// that starts runs, or fires a trigger, need not hold the person's whole
@@ -236,6 +249,7 @@ var AllScopes = []Scope{
 	ScopeObsTriage,
 	ScopeObsWrite,
 	ScopeDBQuery,
+	ScopeStorageRead,
 	ScopeRunsStart,
 	ScopeRunsRead,
 	ScopeRunsControl,

@@ -181,6 +181,11 @@ type KCLEntities struct {
 	// forge.OnHosted), each published as a ManagedBucket. A MinIO or
 	// BucketOnS3 bucket is not one: it reaches its workloads as literals.
 	Buckets []BucketEntity `json:"buckets,omitempty"`
+	// DeclaredBuckets are EVERY bucket the env declares (forge.Bucket on any
+	// runtime), already in release-shape vocabulary: what the shape records
+	// for the control plane's storage browser. Names only. Unlike Buckets,
+	// which drives provisioning, nothing deploys from it.
+	DeclaredBuckets []release.ShapeBucket `json:"declared_buckets,omitempty"`
 	// SecretProvider is the bundle-level secret provider declaration
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider.
@@ -193,8 +198,9 @@ type KCLEntities struct {
 	DeliveryPolicy *release.ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
 	// DataAccess is Bundle.data_access, resolved: the declared db_query
 	// policy, else the default the env's lifecycle implies (open for a local
-	// or ephemeral env, audited otherwise). Nil when that is audited, the
-	// default: absence means audited, never open.
+	// or ephemeral env, audited otherwise), and the storage policy where it
+	// differs from db_query. Nil when both are audited, the default: absence
+	// means audited, never open.
 	DataAccess *release.ShapeDataAccess `json:"data_access,omitempty"`
 	// ReleaseHealth is Bundle.release_health, resolved. Nil when the env
 	// declares none (the defaults).
@@ -1521,6 +1527,7 @@ type kclRenderRaw struct {
 	Databases                []DatabaseEntity                          `json:"databases,omitempty"`
 	ExternalDatabases        []ExternalDatabaseEntity                  `json:"external_databases,omitempty"`
 	Buckets                  []BucketEntity                            `json:"buckets,omitempty"`
+	DeclaredBuckets          []release.ShapeBucket                     `json:"declared_buckets,omitempty"`
 	HelmCharts               []HelmChartEntity                         `json:"helm_charts,omitempty"`
 	SecretProvider           *SecretProviderEntity                     `json:"secret_provider,omitempty"`
 	RenderedSecrets          []RenderedSecretEntity                    `json:"rendered_secrets,omitempty"`
@@ -1896,6 +1903,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Databases:                raw.Databases,
 		ExternalDatabases:        raw.ExternalDatabases,
 		Buckets:                  raw.Buckets,
+		DeclaredBuckets:          raw.DeclaredBuckets,
 		SecretProvider:           raw.SecretProvider,
 		Observability:            raw.Observability,
 		DeliveryPolicy:           raw.DeliveryPolicy,

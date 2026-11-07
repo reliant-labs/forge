@@ -128,6 +128,15 @@ const (
 	// written only to one that names the feature. A shape that declares none
 	// carries no key, so it needs nothing of the reader.
 	BundleFeatureExternalDatabases = "shape-external-databases"
+	// BundleFeatureStorage is Shape.Buckets and ShapeDataAccess.Storage: the
+	// env's buckets as the storage browser lists them, and the policy it
+	// browses them under. A control plane that predates it browses nothing,
+	// so a shape carrying either is written only to one that names the
+	// feature; one that does not reads the storage policy as db_query's,
+	// which is the fallback the field defines. A shape that declares no
+	// bucket and no separate policy carries no key, so it needs nothing of
+	// the reader.
+	BundleFeatureStorage = "shape-storage"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -135,7 +144,6 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -246,6 +254,14 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		pol := *s.DeliveryPolicy
 		pol.HealthGate = nil
 		s.DeliveryPolicy = &pol
+	}
+	if !r.Supports(BundleFeatureStorage) {
+		s.Buckets = nil
+		if s.DataAccess != nil && s.DataAccess.Storage != "" {
+			da := *s.DataAccess
+			da.Storage = ""
+			s.DataAccess = &da
+		}
 	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
 		return s

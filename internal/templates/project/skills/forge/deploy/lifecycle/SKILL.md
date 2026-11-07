@@ -74,6 +74,7 @@ authority: none implies another product's, and `forge cloud token create
 | `obs:triage` | changing an issue's triage state (resolve, ignore, unresolve) | implies `obs:read` at the point of use; a read-only token cannot silence an issue |
 | `obs:write` | authoring the org's observability workspace (dashboards: save, restore, archive, promote) | implies `obs:read` at the point of use; implies nothing else (not `obs:triage`); cannot be bound to one environment |
 | `db:query` | one read-only query against an env's database | implies nothing and is implied by nothing: app data is not telemetry. A real env may restrict it further to people |
+| `storage:read` | reading an env's object storage: list a bucket, read an object's metadata, preview it, mint a short-lived download URL | implies nothing and is implied by nothing, `db:query` included: uploads are not rows. May be bound to one environment; a real env may restrict it further to people (`data_access.storage`) |
 
 `accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK must
 list every member (`db/closed-sets`).

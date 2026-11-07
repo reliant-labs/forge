@@ -2128,6 +2128,20 @@ _render_bucket = lambda b: Bucket -> any {
     }
 }
 
+# A forge.Bucket as release.ShapeBucket: its name, its runtime kind, and for a
+# BucketOnS3 the real bucket (the declared one, else the name) and endpoint. A
+# MinIO bucket is its name on a loopback server, and a hosted one's cloud name
+# is the platform's (ManagedBucket status), so neither records more.
+_render_declared_bucket = lambda b: Bucket -> any {
+    {k: _v for k, _v in {
+        "name": b.name
+        "runtime_kind": b.runtime.type
+        "public_read": True if b.public_read else Undefined
+        "bucket": (b.runtime.bucket or b.name) if b.runtime.type == "s3" else Undefined
+        "endpoint": b.runtime.endpoint.rstrip("/") if b.runtime.type == "s3" else Undefined
+    } if _v != Undefined}
+}
+
 # An ExternalDatabase as `forge db query` reads it: where its Service is and
 # how to sign in. Nothing is deployed for it, so it reaches no manifest.
 _render_external_database = lambda x: any, bundle: Bundle -> any {
@@ -2314,12 +2328,13 @@ render = lambda bundle: Bundle -> any {
         # defaults.
         if bundle.delivery_policy:
             "delivery_policy": _render_delivery_policy(bundle.delivery_policy, bool(bundle.control_plane))
-        # How the env's data may be read (forge db query), resolved: the
-        # declaration, else what the lifecycle implies. Present only when it
-        # is not "audited", the default of an env with no lifecycle: absence
-        # means audited, never open, so a real env's render is unchanged.
-        if _data_access_db_query(bundle.data_access, bundle.lifecycle or "") != "audited":
-            "data_access": {"db_query": _data_access_db_query(bundle.data_access, bundle.lifecycle or "")}
+        # How the env's data may be read (forge db query, the storage
+        # browser), resolved: the declaration, else what the lifecycle
+        # implies. Present only when it is not "audited" for both, the
+        # default of an env with no lifecycle: absence means audited, never
+        # open, so a real env's render is unchanged.
+        if _render_data_access(bundle.data_access, bundle.lifecycle or ""):
+            "data_access": _render_data_access(bundle.data_access, bundle.lifecycle or "")
         # The env's uptime checks, resolved: declared ones plus the ones forge
         # derives for a hosted env. Go records them in the release shape.
         if _render_uptime_checks(bundle):
@@ -2341,6 +2356,12 @@ render = lambda bundle: Bundle -> any {
         # a BucketOnS3 is not forge's, so neither is an entry.
         if any b in bundle.buckets { b.runtime.type == "hosted" }:
             "buckets": [_render_bucket(b) for b in bundle.buckets if b.runtime.type == "hosted"]
+        # EVERY bucket the env declares, whatever its runtime, in the release
+        # shape's vocabulary (release.ShapeBucket): what the control plane's
+        # storage browser lists. Names and where an unmanaged bucket is;
+        # never a credential.
+        if bundle.buckets:
+            "declared_buckets": [_render_declared_bucket(b) for b in bundle.buckets]
         if bundle.external_databases:
             "external_databases": [_render_external_database(x, bundle) for x in bundle.external_databases]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]

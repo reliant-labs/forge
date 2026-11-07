@@ -70,17 +70,38 @@ func TestRunEnvDelete_PreviewShowsWhatWillBeDeleted(t *testing.T) {
 	}
 }
 
-func TestRunEnvDelete_PreviewSurvivesAnUnreadableDomainList(t *testing.T) {
+// A domain list that cannot be read leaves the preview incomplete, so the
+// delete stops before confirming and never calls DeleteEnvironment.
+func TestRunEnvDelete_UnreadableDomainListStopsTheDelete(t *testing.T) {
+	f := &fakeLifecycleCaller{errs: map[string]error{"ListDomains": &cloud.Error{Code: cloud.CodeUnavailable, Message: "domain service down"}}}
+	var out bytes.Buffer
+	err := runEnvDelete(context.Background(), f, "env_1", "prod-web", envDeleteOptions{Yes: true}, strings.NewReader(""), &out)
+	if err == nil || !strings.Contains(err.Error(), "nothing was deleted") {
+		t.Fatalf("err = %v; want the delete refused for an incomplete preview", err)
+	}
+	if !strings.Contains(out.String(), "custom domains: could not be read") {
+		t.Errorf("preview should say the domains could not be read:\n%s", out.String())
+	}
+	for _, c := range f.calls {
+		if c.proc == procDeleteEnvironment {
+			t.Fatal("an unreadable domain list must stop the delete before DeleteEnvironment")
+		}
+	}
+}
+
+// A control plane with no domain service has no domain to bind: its preview
+// is complete, and the delete proceeds.
+func TestRunEnvDelete_NoDomainServiceMeansNoDomains(t *testing.T) {
 	f := &fakeLifecycleCaller{errs: map[string]error{"ListDomains": &cloud.Error{Code: cloud.CodeUnimplemented, Message: "no domain service"}}}
 	var out bytes.Buffer
 	if err := runEnvDelete(context.Background(), f, "env_1", "prod-web", envDeleteOptions{Yes: true}, strings.NewReader(""), &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "custom domains: could not be read") {
-		t.Errorf("preview should say the domains could not be read:\n%s", out.String())
+	if !strings.Contains(out.String(), "custom domains: none (this control plane has no domain service)") {
+		t.Errorf("preview should say the control plane has no domain service:\n%s", out.String())
 	}
 	if last := f.calls[len(f.calls)-1]; last.proc != procDeleteEnvironment {
-		t.Errorf("an unreadable domain list must not stop the delete; last call %s", last.proc)
+		t.Errorf("no domain service must not stop the delete; last call %s", last.proc)
 	}
 }
 

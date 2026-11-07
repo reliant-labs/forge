@@ -42,7 +42,8 @@ forge env delete preview [--yes] [--keep-data] # tear the env down, data include
 - Before confirming, `delete` shows the env's id, project, control plane,
   deployment count and bound custom domains. The control plane refuses to
   delete an env while a custom domain is bound to it: `forge domain unbind`
-  each first.
+  each first. If the bound domains cannot be read, `delete` stops before
+  confirming and deletes nothing.
 - All three refuse an env that is not hosted. `forge env down` only stops local
   host processes and never touches a control plane.
 

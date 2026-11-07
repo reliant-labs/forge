@@ -802,8 +802,11 @@ deletes anything on a control plane and which this command never uses.`,
 // writeEnvDeleteSummary is the head of the delete preview: which env, exactly,
 // and what is bound to it. A bound custom domain is listed with the fix,
 // because the control plane refuses the delete while it stays bound (control
-// plane #1547); a control plane that cannot list domains is said, not fatal.
-func writeEnvDeleteSummary(ctx context.Context, c cloudCaller, out io.Writer, envID string, opts envDeleteOptions, deployments int) {
+// plane #1547). A domain list that cannot be read is an error: the preview
+// would be incomplete right before an irreversible act, so the delete stops
+// before confirming. A control plane with no domain service (Unimplemented)
+// has no domain to bind, so its preview is complete.
+func writeEnvDeleteSummary(ctx context.Context, c cloudCaller, out io.Writer, envID string, opts envDeleteOptions, deployments int) error {
 	fmt.Fprintf(out, "  id:             %s\n", envID)
 	if opts.Project != "" {
 		fmt.Fprintf(out, "  project:        %s\n", opts.Project)
@@ -814,8 +817,12 @@ func writeEnvDeleteSummary(ctx context.Context, c cloudCaller, out io.Writer, en
 	fmt.Fprintf(out, "  deployments:    %d\n", deployments)
 	hosts, err := boundDomainHostnames(ctx, c, envID)
 	switch {
+	case err != nil && hostedErrorHasCode(err, cloud.CodeUnimplemented):
+		fmt.Fprintln(out, "  custom domains: none (this control plane has no domain service)")
 	case err != nil:
 		fmt.Fprintf(out, "  custom domains: could not be read (%v)\n", err)
+		return fmt.Errorf("could not list the custom domains bound to env %s, so the delete preview is incomplete; nothing was deleted: %w\n"+
+			"fix: re-run once the control plane's domain service answers (`forge domain list` checks it)", envID, err)
 	case len(hosts) == 0:
 		fmt.Fprintln(out, "  custom domains: none bound")
 	default:
@@ -825,6 +832,7 @@ func writeEnvDeleteSummary(ctx context.Context, c cloudCaller, out io.Writer, en
 			fmt.Fprintf(out, "    forge domain unbind %s --env <env>   (<env>: any env this project declares on this control plane)\n", h)
 		}
 	}
+	return nil
 }
 
 // boundDomainHostnames lists, sorted, the custom domains bound to envID.
@@ -862,7 +870,9 @@ func runEnvDelete(ctx context.Context, c cloudCaller, envID, env string, opts en
 		return err
 	}
 	fmt.Fprintf(out, "This will delete hosted env %q from the control plane:\n", env)
-	writeEnvDeleteSummary(ctx, c, out, envID, opts, len(ds))
+	if err := writeEnvDeleteSummary(ctx, c, out, envID, opts, len(ds)); err != nil {
+		return err
+	}
 	writeDeploymentStates(out, ds)
 	if opts.KeepData {
 		fmt.Fprintln(out, "\nRemoved: the environment, its deployments, workloads, URLs, Flux objects, custom resources and namespaces.")

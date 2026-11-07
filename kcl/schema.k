@@ -3075,10 +3075,12 @@ schema ShellBuild(Build):
         a typo must not silently drop an input.
       * reach — a pattern may leave cwd only into the directory that holds
         the project (the workspace of sibling checkouts a `cwd` like
-        `../reliant` already reaches). A pattern reaching past it, or a
-        selected file whose symlink resolves outside both it and cwd, is
-        refused: the build runs and says why, and nothing outside is read
-        or keyed on.
+        `../reliant` already reaches). Symlinks are followed, directories
+        included (a symlink cycle is walked once), but only inside it: a
+        pattern reaching past it, or a file or directory symlink it could
+        select through that resolves outside both it and cwd, is refused —
+        the build runs and says why (`!` the link to exclude it), and
+        nothing outside is read or keyed on.
       * fingerprint — sha256 over everything that identifies the build's
         artifact (the command, the resolved cwd, the declared `source`,
         `inputs_file` and its content, `unit`, `output_name`), `env`

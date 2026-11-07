@@ -123,9 +123,20 @@ func RedactedDigest(value string) string {
 // credentialNameWords are the words that make a NAME a credential's: an env
 // var or config key containing any of them, in any case, is withheld whatever
 // its value. A substring match, so it over-withholds (TOKENIZER, KEYCLOAK_URL)
-// rather than miss DB_PASSWORD_PROD; over-withholding costs a digest where a
-// value would have been, under-withholding a leak.
-var credentialNameWords = []string{"SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY", "DSN", "CREDENTIAL"}
+// rather than miss DB_PASSWORD_PROD; over-withholding costs a visible value,
+// under-withholding a leak. AUTH includes Authorization, Proxy-Authorization
+// and X-Auth headers; COOKIE and SESSION protect low-entropy session values.
+var credentialNameWords = []string{"SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY", "DSN", "CREDENTIAL", "AUTH", "COOKIE", "SESSION"}
+
+func secretName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, word := range credentialNameWords {
+		if strings.Contains(upper, word) {
+			return true
+		}
+	}
+	return false
+}
 
 // contentDigestRE matches a content digest (`sha256:<64 hex>`, as in an image
 // reference `repo@sha256:…`). It names content, not a credential, and
@@ -151,7 +162,7 @@ var gitCommitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // from a person reading config: the "looks secret" half of the rule.
 //
 //   - by NAME: name contains one of SECRET, TOKEN, PASSWORD, PASSWD, KEY,
-//     DSN, CREDENTIAL (any case);
+//     DSN, CREDENTIAL, AUTH, COOKIE or SESSION (any case);
 //   - by SHAPE: value holds a credential's written form, judged by the
 //     patterns pkg/redact removes from text that leaves a process (URL
 //     userinfo, a PEM private key, a JWT, a bearer or basic credential, a
@@ -167,13 +178,7 @@ func LooksSecret(name, value string) bool {
 	if value == "" || IsRedacted(value) {
 		return false
 	}
-	upper := strings.ToUpper(name)
-	for _, word := range credentialNameWords {
-		if strings.Contains(upper, word) {
-			return true
-		}
-	}
-	return hasCredentialShape(value) || isHighEntropyToken(value)
+	return secretName(name) || hasCredentialShape(value) || isHighEntropyToken(value)
 }
 
 // hasCredentialShape is the SHAPE test alone, for a string with no name of
@@ -258,13 +263,16 @@ func shannonEntropy(s string) float64 {
 //     and `--flag value` by the flag's name and the value, anything else by
 //     shape.
 //   - Every other string is withheld when it has a credential's shape.
+//   - Sensitive names carry their policy through malformed values: a nested
+//     map/list, number or nil is withheld as a whole, not recursively exposed.
+//     Malformed names and non-sequence args/command fields fail closed too.
 //
 // No value-derived fingerprint is exposed. Secret changes simply read as
 // redacted; comparisons require a separately keyed backend digest in the future.
 // The rendered YAML a viewer shows must be produced from this output, never
 // from the raw layer bytes.
 func RedactObject(doc any) any {
-	body, ok := doc.(map[string]any)
+	body, ok := stringMap(doc)
 	if !ok {
 		return redactTree(doc)
 	}
@@ -272,8 +280,13 @@ func RedactObject(doc any) any {
 	switch {
 	case IsSecretObject(body):
 		for _, field := range secretValueFields {
-			values, ok := body[field].(map[string]any)
+			raw, present := body[field]
+			if !present {
+				continue
+			}
+			values, ok := stringMap(raw)
 			if !ok {
+				out[field] = RedactedWithheld
 				continue
 			}
 			withheld := make(map[string]any, len(values))
@@ -283,34 +296,64 @@ func RedactObject(doc any) any {
 			out[field] = withheld
 		}
 	case body["kind"] == "ConfigMap":
-		if values, ok := body["data"].(map[string]any); ok {
+		if values, ok := stringMap(body["data"]); ok {
 			data := make(map[string]any, len(values))
 			for key, value := range values {
 				data[key] = redactNamed(key, value)
 			}
 			out["data"] = data
+		} else if _, present := body["data"]; present {
+			out["data"] = RedactedWithheld
 		}
-		if values, ok := body["binaryData"].(map[string]any); ok {
+		if values, ok := stringMap(body["binaryData"]); ok {
 			binary := make(map[string]any, len(values))
 			for key := range values {
 				binary[key] = RedactedWithheld
 			}
 			out["binaryData"] = binary
+		} else if _, present := body["binaryData"]; present {
+			out["binaryData"] = RedactedWithheld
 		}
 	}
 	return out
+}
+
+// stringMap accepts the string-keyed map forms callers and YAML/JSON decoders
+// produce. Conversion is a copy, never a mutation of the input.
+func stringMap(v any) (map[string]any, bool) {
+	switch m := v.(type) {
+	case map[string]any:
+		return m, true
+	case map[string]string:
+		out := make(map[string]any, len(m))
+		for key, value := range m {
+			out[key] = value
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 // redactTree copies v, withholding by the named-value, args and shape rules.
 func redactTree(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
-		name, named := t["name"].(string)
+		rawName, hasName := t["name"]
+		name, named := rawName.(string)
 		out := make(map[string]any, len(t))
 		for key, child := range t {
 			switch {
-			case named && key == "value":
-				out[key] = redactNamed(name, child)
+			case hasName && key == "value":
+				if !named {
+					out[key] = RedactedWithheld
+				} else {
+					out[key] = redactNamed(name, child)
+				}
+			case key == "value" && !hasName:
+				out[key] = RedactedWithheld
+			case key == "env" || key == "httpHeaders":
+				out[key] = redactNamedValues(child)
 			case key == "args" || key == "command":
 				out[key] = redactArgs(child)
 			default:
@@ -346,9 +389,34 @@ func redactTree(v any) any {
 	}
 }
 
-// redactNamed withholds a value whose name is known. A non-string value (a
-// number in a ConfigMap read loosely) is judged by its name and text alike.
+// redactNamedValues handles env/header arrays without trusting malformed ASTs.
+func redactNamedValues(v any) any {
+	items, ok := v.([]any)
+	if !ok {
+		return RedactedWithheld
+	}
+	out := make([]any, len(items))
+	for i, item := range items {
+		entry, ok := stringMap(item)
+		if !ok {
+			out[i] = RedactedWithheld
+			continue
+		}
+		if _, named := entry["name"].(string); !named {
+			out[i] = RedactedWithheld
+			continue
+		}
+		out[i] = redactTree(entry)
+	}
+	return out
+}
+
+// redactNamed withholds the entire value of a sensitive name, regardless of
+// its AST type. Recursing would lose the name's secret context.
 func redactNamed(name string, value any) any {
+	if secretName(name) || IsRedacted(value) {
+		return RedactedWithheld
+	}
 	s, ok := value.(string)
 	if !ok {
 		return redactTree(value)
@@ -372,11 +440,20 @@ func redactArgs(v any) any {
 			items = append(items, s)
 		}
 	default:
-		return redactTree(v)
+		// args/command must be a sequence. An arbitrary malformed tree has
+		// no reliable flag/value boundary, so do not expose any of it.
+		return RedactedWithheld
 	}
 	out := make([]any, len(items))
 	flag := ""
 	for i, item := range items {
+		if secretName(flag) {
+			// Consume the value before parsing it, including nil, a nested AST
+			// or a flag-looking string. Malformation cannot escape the context.
+			out[i] = RedactedWithheld
+			flag = ""
+			continue
+		}
 		s, ok := item.(string)
 		if !ok {
 			out[i] = redactTree(item)
@@ -386,7 +463,7 @@ func redactArgs(v any) any {
 		name, value, hasValue := strings.Cut(s, "=")
 		switch {
 		case hasValue && flagRE.MatchString(name):
-			if LooksSecret(strings.TrimLeft(name, "-"), value) {
+			if secretName(strings.TrimLeft(name, "-")) || IsRedacted(value) || LooksSecret(strings.TrimLeft(name, "-"), value) {
 				out[i] = name + "=" + RedactedWithheld
 			} else {
 				out[i] = s
@@ -396,7 +473,7 @@ func redactArgs(v any) any {
 			out[i] = s
 			flag = strings.TrimLeft(s, "-")
 		default:
-			if LooksSecret(flag, s) {
+			if IsRedacted(s) || LooksSecret(flag, s) {
 				out[i] = RedactedWithheld
 			} else {
 				out[i] = s

@@ -35,7 +35,11 @@ func NewMemory() *Memory {
 	return &Memory{objects: map[string]memObject{}, now: time.Now}
 }
 
-var _ Store = (*Memory)(nil)
+var (
+	_ Store             = (*Memory)(nil)
+	_ LevelLister       = (*Memory)(nil)
+	_ DownloadPresigner = (*Memory)(nil)
+)
 
 // Put stores data at key, as a completed upload would. It is the test's
 // stand-in for the browser's PUT.
@@ -147,6 +151,65 @@ func (m *Memory) List(_ context.Context, prefix string, opts ListOptions) (ListP
 		page.Objects = append(page.Objects, m.objects[k].info(k))
 	}
 	return page, nil
+}
+
+// ListLevel implements LevelLister. Its page token's cursor is the last
+// entry (key or common prefix) the previous page returned.
+func (m *Memory) ListLevel(_ context.Context, prefix string, opts LevelOptions) (LevelPage, error) {
+	if err := validatePrefix(prefix); err != nil {
+		return LevelPage{}, err
+	}
+	cursor, err := decodePageToken("memory", "", prefix, opts.PageToken)
+	if err != nil {
+		return LevelPage{}, err
+	}
+	limit := listLimit(opts.Limit)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := make([]string, 0, len(m.objects))
+	for k := range m.objects {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	// Over sorted keys the entries (a key, or its common prefix) never
+	// decrease, and the keys under one common prefix are contiguous, so a
+	// page resumes at the first entry past the cursor.
+	var page LevelPage
+	last, n := "", 0
+	for _, k := range keys {
+		entry, isPrefix := k, false
+		if i := strings.IndexByte(k[len(prefix):], '/'); i >= 0 {
+			entry, isPrefix = k[:len(prefix)+i+1], true
+		}
+		if entry <= cursor || entry == last {
+			continue
+		}
+		if n == limit {
+			page.Next = encodePageToken("memory", "", prefix, last)
+			break
+		}
+		n, last = n+1, entry
+		if isPrefix {
+			page.Prefixes = append(page.Prefixes, entry)
+		} else {
+			page.Objects = append(page.Objects, m.objects[k].info(k))
+		}
+	}
+	return page, nil
+}
+
+// PresignDownload implements DownloadPresigner.
+func (m *Memory) PresignDownload(_ context.Context, key string, opts DownloadOptions) (PresignedRequest, error) {
+	if err := ValidateKey(key); err != nil {
+		return PresignedRequest{}, err
+	}
+	d, q, err := downloadParams(key, opts)
+	if err != nil {
+		return PresignedRequest{}, err
+	}
+	return m.presigned("GET", key, d, q), nil
 }
 
 func (o memObject) info(key string) Object {

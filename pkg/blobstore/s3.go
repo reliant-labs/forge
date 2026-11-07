@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -77,7 +78,11 @@ type S3 struct {
 	chain        *observe.ComponentChain
 }
 
-var _ Store = (*S3)(nil)
+var (
+	_ Store             = (*S3)(nil)
+	_ LevelLister       = (*S3)(nil)
+	_ DownloadPresigner = (*S3)(nil)
+)
 
 // NewS3 validates cfg and builds the store. It makes no network call: a
 // wrong credential or a missing bucket surfaces on the first Stat, Delete or
@@ -103,21 +108,25 @@ func NewS3(cfg S3Config) (*S3, error) {
 			return nil, fmt.Errorf("blobstore: S3Config.PublicEndpoint: %w", err)
 		}
 	}
-	chain := cfg.Chain
-	if chain == nil {
-		logger := cfg.Logger
-		if logger == nil {
-			logger = slog.Default()
-		}
-		chain = observe.NewComponentChain(
-			observe.RecoverMiddleware(logger),
-			observe.TraceMiddleware(otel.Tracer(scope)),
-			observe.MetricsMiddleware(otel.Meter(scope), "blobstore"),
-			// A missing object is the answer a 404 is built from, not a failure.
-			observe.LogMiddleware(logger, slog.LevelDebug, observe.WithExpectedErrors(ErrNotFound)),
-		)
+	return &S3{bucket: cfg.Bucket, api: api, presign: presign, chain: instrumentation(cfg.Chain, cfg.Logger)}, nil
+}
+
+// instrumentation is chain, or the default one: a span, the
+// blobstore.{calls,errors,duration} metrics and a log record per call.
+func instrumentation(chain *observe.ComponentChain, logger *slog.Logger) *observe.ComponentChain {
+	if chain != nil {
+		return chain
 	}
-	return &S3{bucket: cfg.Bucket, api: api, presign: presign, chain: chain}, nil
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return observe.NewComponentChain(
+		observe.RecoverMiddleware(logger),
+		observe.TraceMiddleware(otel.Tracer(scope)),
+		observe.MetricsMiddleware(otel.Meter(scope), "blobstore"),
+		// A missing object is the answer a 404 is built from, not a failure.
+		observe.LogMiddleware(logger, slog.LevelDebug, observe.WithExpectedErrors(ErrNotFound)),
+	)
 }
 
 // newMinioClient builds a client for endpoint, a base URL with scheme.
@@ -258,6 +267,90 @@ func (s *S3) List(ctx context.Context, prefix string, opts ListOptions) (ListPag
 			page.Objects = append(page.Objects, object(info))
 		}
 		return page, nil
+	})
+}
+
+// ListLevel implements LevelLister: one ListObjectsV2 request with
+// delimiter "/" and max-keys Limit. Its page token wraps the service's own
+// continuation token, so a page never re-reads what an earlier one returned,
+// even when it ended on a common prefix.
+func (s *S3) ListLevel(ctx context.Context, prefix string, opts LevelOptions) (LevelPage, error) {
+	return s.chain.Around(ctx, "blobstore.ListLevel", func(ctx context.Context) (LevelPage, error) {
+		if err := validatePrefix(prefix); err != nil {
+			return LevelPage{}, err
+		}
+		cont, err := decodePageToken("s3", s.bucket, prefix, opts.PageToken)
+		if err != nil {
+			return LevelPage{}, err
+		}
+		res, err := s.listObjectsV2(ctx, prefix, cont, listLimit(opts.Limit))
+		if err != nil {
+			if resp := minio.ToErrorResponse(err); cont != "" && (resp.Code == "InvalidArgument" || resp.StatusCode == http.StatusBadRequest) {
+				return LevelPage{}, errorf(ErrInvalidPageToken, "list level %q in bucket %q: the service refused the continuation token: %v", prefix, s.bucket, err)
+			}
+			return LevelPage{}, fmt.Errorf("blobstore: list level %q in bucket %q: %w", prefix, s.bucket, err)
+		}
+		var page LevelPage
+		for _, info := range res.Contents {
+			if isFolderPlaceholder(info.Key, prefix) {
+				continue
+			}
+			info.ETag = strings.Trim(info.ETag, `"`)
+			page.Objects = append(page.Objects, object(info))
+		}
+		for _, p := range res.CommonPrefixes {
+			page.Prefixes = append(page.Prefixes, p.Prefix)
+		}
+		if res.IsTruncated {
+			if res.NextContinuationToken == "" {
+				return LevelPage{}, fmt.Errorf("blobstore: list level %q in bucket %q: the service truncated the listing without a continuation token", prefix, s.bucket)
+			}
+			page.Next = encodePageToken("s3", s.bucket, prefix, res.NextContinuationToken)
+		}
+		return page, nil
+	})
+}
+
+// listObjectsV2 is one delimited ListObjectsV2 request. minio-go exposes a
+// single request with its continuation token only through Core, whose
+// ListObjectsV2 takes no context, so it runs aside and the caller's
+// cancellation and deadline still end the call. (Its iterator takes a
+// context but hides the token, and resuming it by start-after re-reads a
+// common prefix the previous page ended on.)
+func (s *S3) listObjectsV2(ctx context.Context, prefix, cont string, maxKeys int) (minio.ListBucketV2Result, error) {
+	type result struct {
+		res minio.ListBucketV2Result
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		res, err := minio.Core{Client: s.api}.ListObjectsV2(s.bucket, prefix, "", cont, "/", maxKeys)
+		done <- result{res, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return minio.ListBucketV2Result{}, ctx.Err()
+	case r := <-done:
+		return r.res, r.err
+	}
+}
+
+// PresignDownload implements DownloadPresigner.
+func (s *S3) PresignDownload(ctx context.Context, key string, opts DownloadOptions) (PresignedRequest, error) {
+	return s.chain.Around(ctx, "blobstore.PresignDownload", func(ctx context.Context) (PresignedRequest, error) {
+		if err := ValidateKey(key); err != nil {
+			return PresignedRequest{}, err
+		}
+		d, params, err := downloadParams(key, opts)
+		if err != nil {
+			return PresignedRequest{}, err
+		}
+		now := time.Now()
+		u, err := s.presign.PresignedGetObject(ctx, s.bucket, key, d, params)
+		if err != nil {
+			return PresignedRequest{}, fmt.Errorf("blobstore: presign download %q: %w", key, err)
+		}
+		return PresignedRequest{Method: http.MethodGet, URL: u.String(), ExpiresAt: now.Add(d)}, nil
 	})
 }
 

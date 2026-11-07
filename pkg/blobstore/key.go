@@ -226,6 +226,42 @@ func (s *scoped) List(ctx context.Context, prefix string, opts ListOptions) (Lis
 	return page, nil
 }
 
+// ListLevel implements LevelLister when the wrapped store does (otherwise
+// ErrUnsupported). The page token passes through untouched: the inner store
+// bound it to the scoped prefix, so a token from outside the scope is
+// refused there.
+func (s *scoped) ListLevel(ctx context.Context, prefix string, opts LevelOptions) (LevelPage, error) {
+	if err := validatePrefix(prefix); err != nil {
+		return LevelPage{}, err
+	}
+	page, err := ListLevel(ctx, s.inner, s.prefix+prefix, opts)
+	if err != nil {
+		return LevelPage{}, err
+	}
+	for i := range page.Objects {
+		if page.Objects[i].Key, err = s.unscope(page.Objects[i].Key); err != nil {
+			return LevelPage{}, err
+		}
+	}
+	for i := range page.Prefixes {
+		if page.Prefixes[i], err = s.unscope(page.Prefixes[i]); err != nil {
+			return LevelPage{}, err
+		}
+	}
+	return page, nil
+}
+
+// PresignDownload implements DownloadPresigner when the wrapped store does
+// (otherwise ErrUnsupported). The default download name is the key's last
+// segment either way, so the scope prefix never shows in it.
+func (s *scoped) PresignDownload(ctx context.Context, key string, opts DownloadOptions) (PresignedRequest, error) {
+	k, err := s.key(key)
+	if err != nil {
+		return PresignedRequest{}, err
+	}
+	return PresignDownload(ctx, s.inner, k, opts)
+}
+
 // unscope removes the scope prefix from a key the inner store reported, and
 // refuses one that is not under it.
 func (s *scoped) unscope(key string) (string, error) {

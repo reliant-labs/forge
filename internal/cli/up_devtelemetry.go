@@ -329,6 +329,12 @@ type devTelemetryRun struct {
 	// needs to keep the stack's session live and its tokens current.
 	endpoint cloud.Endpoint
 	session  release.LocalSession
+	// stillHosted, when set, is asked before each renewal and before the
+	// renewed tokens are written: false means this env's telemetry was
+	// decided again (local, or another instance) and this run must stop
+	// rather than restore a grant the decision withdrew. The keeper sets it
+	// (devTelemetryKeeperOwns); nil means always.
+	stillHosted func() bool
 
 	mu    sync.Mutex
 	grant devTelemetryGrant
@@ -371,9 +377,25 @@ func (r *devTelemetryRun) renewAt() time.Time {
 // renewNow replaces both tokens. On failure the old tokens stay (they work
 // until they expire) and the reason is recorded for `forge env status` —
 // never printed into the stack's output.
+// errDevTelemetrySuperseded is renewNow's answer when the env's telemetry was
+// decided again while it ran: nothing was written, and the run must stop.
+var errDevTelemetrySuperseded = errors.New("this env's telemetry was decided again; the grant is withdrawn")
+
+func (r *devTelemetryRun) superseded() bool {
+	return r.stillHosted != nil && !r.stillHosted()
+}
+
 func (r *devTelemetryRun) renewNow(ctx context.Context, now time.Time) error {
+	if r.superseded() {
+		return errDevTelemetrySuperseded
+	}
 	g, err := mintDevTelemetry(ctx, r.client, r.sessionID, r.project, r.env, r.retention, now)
 	if err == nil {
+		// Asked again after the mint: a decision taken while it was in
+		// flight must not see its cleared tokens written back.
+		if r.superseded() {
+			return errDevTelemetrySuperseded
+		}
 		err = r.write(g, now)
 	}
 	if err != nil {
@@ -414,7 +436,7 @@ func (r *devTelemetryRun) renewUntil(ctx context.Context, clock devTelemetryCloc
 		case <-clock.After(wait):
 		}
 		if err := r.renewNow(ctx, clock.Now()); err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, errDevTelemetrySuperseded) {
 				return
 			}
 			switch {
@@ -726,6 +748,17 @@ func setupDevTelemetry(ctx context.Context, projectDir, env, flag string, e *KCL
 // env status` and `forge obs` read "local" and the reason, and a local stack
 // keeps no usable hosted token on disk.
 func settleDevTelemetryLocal(projectDir, env, reason string, now time.Time, w io.Writer) {
+	// A keeper a previous hosted run left running would renew the tokens
+	// and recreate the files cleared below, and keep the session live: stop
+	// it first, through the ledger and the stop path `forge env down` uses,
+	// and wait for it to exit. (Should that fail, the keeper still stops
+	// itself at its next beat or renewal: it re-reads the record written
+	// below — devTelemetryKeeperOwns.)
+	if devTelemetryKeeperMayRun(projectDir, env) {
+		if err := stopDevTelemetryKeeper(projectDir, env); err != nil {
+			fmt.Fprintf(w, "[up] note: could not stop the previous telemetry keeper: %v\n", err)
+		}
+	}
 	if err := recordDevTelemetryDecision(projectDir, env, devTelemetryDecision{Reason: reason}, now); err != nil {
 		fmt.Fprintf(w, "[up] note: could not record the telemetry decision in %s: %v\n", devtelemetry.Path(projectDir, env), err)
 	}

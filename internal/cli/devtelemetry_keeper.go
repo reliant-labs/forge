@@ -74,6 +74,9 @@ type devTelemetryKeeperSpec struct {
 	MintedAt  time.Time              `json:"minted_at"`
 	ExpiresAt time.Time              `json:"expires_at"`
 	Granted   devtelemetry.Retention `json:"granted"`
+	// InstanceID is the control plane's instance id of the grant. The keeper
+	// runs only while backend-<env>.json still records it (cloud).
+	InstanceID string `json:"instance_id"`
 }
 
 func devTelemetryKeeperSpecPath(projectDir, env string) string {
@@ -89,6 +92,7 @@ func (r *devTelemetryRun) keeperSpec() devTelemetryKeeperSpec {
 		ProjectDir: r.projectDir, Env: r.env, Project: r.project,
 		Endpoint: r.endpoint, Session: r.session, Retention: r.retention,
 		MintedAt: g.mintedAt, ExpiresAt: g.expires, Granted: g.Retention,
+		InstanceID: g.Instance.ID,
 	}
 }
 
@@ -127,7 +131,7 @@ func (r *devTelemetryRun) startKeeper(procs *procRegistry, background bool, w io
 	// run's keeper can still be running: stop it (by its service marker,
 	// like any scoped stop) rather than leave two keepers, one of them no
 	// longer in the ledger. A no-op after an unscoped run's reclaim.
-	if _, err := stopStackScopedWithFacts(procs.projectID, procs.env, []string{devTelemetryKeeperName}, newOSProcFacts()); err != nil {
+	if err := stopDevTelemetryKeeper(r.projectDir, r.env); err != nil {
 		fmt.Fprintf(w, "[up] note: could not stop the previous telemetry keeper: %v\n", err)
 	}
 	cmd, err := devTelemetryKeeperCmd(r.keeperSpec())
@@ -167,14 +171,19 @@ func runDevTelemetryKeeper(ctx context.Context, spec devTelemetryKeeperSpec, cal
 	if ctx.Err() != nil {
 		return
 	}
+	// The keeper stops itself the moment the env's telemetry is decided
+	// again (local, or another instance), even if nothing signalled it.
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	owns := func() bool { return devTelemetryKeeperOwns(spec) }
 	run := &devTelemetryRun{
 		projectDir: spec.ProjectDir, env: spec.Env, project: spec.Project,
 		client: caller, sessionID: spec.Session.ID, retention: spec.Retention,
-		endpoint: spec.Endpoint, session: spec.Session,
+		endpoint: spec.Endpoint, session: spec.Session, stillHosted: owns,
 		grant: devTelemetryGrant{mintedAt: spec.MintedAt, expires: spec.ExpiresAt, Retention: spec.Granted},
 	}
 	sess := &upSession{
-		reporter:       reporter,
+		reporter:       ownedReporter{inner: reporter, owns: owns, stop: stop},
 		session:        spec.Session,
 		log:            log,
 		hosted:         true,
@@ -186,6 +195,7 @@ func runDevTelemetryKeeper(ctx context.Context, spec devTelemetryKeeperSpec, cal
 	go func() {
 		defer wg.Done()
 		run.renewUntil(ctx, clock)
+		stop() // superseded: the heartbeat goes too
 	}()
 	go func() {
 		defer wg.Done()
@@ -195,6 +205,54 @@ func runDevTelemetryKeeper(ctx context.Context, spec devTelemetryKeeperSpec, cal
 		sess.heartbeatUntil(ctx)
 	}()
 	wg.Wait()
+}
+
+// devTelemetryKeeperOwns reports whether backend-<env>.json still records the
+// keeper's grant: backend cloud, same instance. Anything else — local, another
+// instance, no record, an unreadable one — means the keeper must stop.
+func devTelemetryKeeperOwns(spec devTelemetryKeeperSpec) bool {
+	rec, ok, err := devtelemetry.Read(spec.ProjectDir, spec.Env)
+	return err == nil && ok && rec.Backend == "cloud" && rec.InstanceID == spec.InstanceID
+}
+
+// ownedReporter reports presence only while the keeper still owns the env's
+// telemetry; otherwise it stops the keeper and reports nothing.
+type ownedReporter struct {
+	inner sessionReporter
+	owns  func() bool
+	stop  context.CancelFunc
+}
+
+func (o ownedReporter) ReportSession(ctx context.Context, s release.LocalSession) error {
+	if !o.owns() {
+		o.stop()
+		return nil
+	}
+	return o.inner.ReportSession(ctx, s)
+}
+
+// stopDevTelemetryKeeper stops env's telemetry keeper — by its service
+// marker, through the ledger and the stop path `forge env down` uses — and
+// returns once it has exited. A seam: tests state the stop.
+var stopDevTelemetryKeeper = func(projectDir, env string) error {
+	_, err := stopStackScopedWithFacts(projectIDForDir(projectDir), env, []string{devTelemetryKeeperName}, newOSProcFacts())
+	return err
+}
+
+// devTelemetryKeeperMayRun reports whether env may have a keeper running, so
+// a project that never went hosted pays no process-table scan: the ledger
+// names one, its spec is on disk, or the env is recorded hosted.
+func devTelemetryKeeperMayRun(projectDir, env string) bool {
+	for _, p := range trackedStack(projectIDForDir(projectDir), env) {
+		if p.name == devTelemetryKeeperName {
+			return true
+		}
+	}
+	if _, err := os.Stat(devTelemetryKeeperSpecPath(projectDir, env)); err == nil {
+		return true
+	}
+	rec, ok, err := devtelemetry.Read(projectDir, env)
+	return err == nil && ok && rec.Backend == "cloud"
 }
 
 // newEnvTelemetryKeeperCmd is `forge env telemetry-keeper <spec>`. Hidden:

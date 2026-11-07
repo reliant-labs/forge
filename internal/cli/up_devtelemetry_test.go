@@ -30,6 +30,8 @@ type fakeMintCaller struct {
 	clock func() time.Time
 	// minted, when set, receives one value per call (after its answer).
 	minted chan struct{}
+	// during, when set, runs inside each call before it answers.
+	during func()
 }
 
 func (f *fakeMintCaller) setErr(err error) {
@@ -56,6 +58,9 @@ func (f *fakeMintCaller) Call(_ context.Context, procedure string, req, out any)
 	f.mu.Unlock()
 	if f.minted != nil {
 		defer func() { f.minted <- struct{}{} }()
+	}
+	if f.during != nil {
+		f.during()
 	}
 	if err != nil {
 		return err
@@ -497,14 +502,20 @@ func TestUpSessionEnsuresTheLocalEnvironmentFirst(t *testing.T) {
 }
 
 // keeperSpecForTest is a keeper spec whose tokens were minted at devTelNow.
+// It also records the env as hosted on that instance, as `env up` does
+// before it starts a keeper: a keeper runs only while that record stands.
 func keeperSpecForTest(dir string) devTelemetryKeeperSpec {
 	var log strings.Builder
 	sess := testUpSession(&fakeSessionReporter{}, &log, time.Hour).session
+	if err := devtelemetry.Write(dir, devtelemetry.Record{Env: "dev", Backend: "cloud", InstanceID: "inst-row-42", DecidedAt: devTelNow}); err != nil {
+		panic(err)
+	}
 	return devTelemetryKeeperSpec{
 		ProjectDir: dir, Env: "dev", Project: "demo",
 		Endpoint: cloud.Endpoint{URL: "https://cp.example.com", Env: "dev"},
 		Session:  sess, MintedAt: devTelNow, ExpiresAt: devTelNow.Add(time.Hour),
-		Granted: devtelemetry.Retention{TracesDays: 3, MetricsDays: 3, LogsDays: 3, BrowserDays: 3},
+		Granted:    devtelemetry.Retention{TracesDays: 3, MetricsDays: 3, LogsDays: 3, BrowserDays: 3},
+		InstanceID: "inst-row-42",
 	}
 }
 
@@ -579,12 +590,19 @@ func recv[T any](t *testing.T, what string, ch <-chan T) T {
 // startKeeper runs the keeper until the returned stop is called; stop waits
 // for it to return.
 func startTestKeeper(t *testing.T, spec devTelemetryKeeperSpec, caller cloudCaller, reporter sessionReporter, clock devTelemetryClock) (stop func()) {
+	stop, _ = startTestKeeperDone(t, spec, caller, reporter, clock)
+	return stop
+}
+
+// startTestKeeperDone is startTestKeeper, also returning the channel that
+// closes when the keeper returns (on its own, or stopped).
+func startTestKeeperDone(t *testing.T, spec devTelemetryKeeperSpec, caller cloudCaller, reporter sessionReporter, clock devTelemetryClock) (stop func(), done <-chan struct{}) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	finished := make(chan struct{})
 	var log strings.Builder
 	go func() {
-		defer close(done)
+		defer close(finished)
 		// The heartbeat ticker is an hour: the only beat is the first.
 		runDevTelemetryKeeper(ctx, spec, caller, reporter, time.Hour, clock, &log)
 	}()
@@ -592,11 +610,11 @@ func startTestKeeper(t *testing.T, spec devTelemetryKeeperSpec, caller cloudCall
 	stop = func() {
 		once.Do(func() {
 			cancel()
-			recv(t, "the keeper to return", done)
+			recv(t, "the keeper to return", finished)
 		})
 	}
 	t.Cleanup(stop)
-	return stop
+	return stop, finished
 }
 
 // TestDevTelemetryKeeperRenewsADetachedStack is the detached stack's whole
@@ -799,6 +817,7 @@ func TestDevTelemetrySetupFallbackLeavesNoHostedState(t *testing.T) {
 	prev := devTelemetryCredential
 	devTelemetryCredential = func(string, *cloud.Declaration) error { return nil }
 	t.Cleanup(func() { devTelemetryCredential = prev })
+	stubKeeperStop(t, func(string, string) error { return nil })
 
 	dir := t.TempDir()
 	caller := &fakeMintCaller{now: devTelNow}
@@ -900,4 +919,173 @@ func TestClearCredentialsKeepsAnotherHostedEnvsHeaders(t *testing.T) {
 	if _, err := os.Stat(devtelemetry.HeadersPath(dir)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("headers survived with no env hosted: %v", err)
 	}
+}
+
+// stubKeeperStop replaces the stop of env's tracked keeper for one test.
+func stubKeeperStop(t *testing.T, stop func(projectDir, env string) error) {
+	t.Helper()
+	prev := stopDevTelemetryKeeper
+	stopDevTelemetryKeeper = stop
+	t.Cleanup(func() { stopDevTelemetryKeeper = prev })
+}
+
+// TestDevTelemetryLocalDecisionStopsTheRunningKeeper: a stack that went
+// hosted has a keeper running. The next setup decides local — by auto
+// fallback, or because a hosted setup failed — and must stop that keeper
+// (through the ledger's stop path) and wait for it BEFORE it records the
+// decision and clears the tokens; afterwards no renewal, no token file and
+// no presence report can come from it, however much time passes.
+func TestDevTelemetryLocalDecisionStopsTheRunningKeeper(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag string
+		wantErr    bool
+	}{
+		{"auto fallback", "", false},
+		{"failed hosted setup", devTelemetryHosted, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(devTelemetryEnvVar, "")
+			prev := devTelemetryCredential
+			devTelemetryCredential = func(string, *cloud.Declaration) error { return nil }
+			t.Cleanup(func() { devTelemetryCredential = prev })
+
+			dir := t.TempDir()
+			clock := newFakeDevClock(devTelNow)
+			caller := &fakeMintCaller{clock: clock.Now, minted: make(chan struct{}, 16)}
+			target := sessionTarget{Report: true, Hosted: true, Client: caller, Project: "demo"}
+			entities := func() *KCLEntities {
+				return &KCLEntities{
+					ControlPlane:  &ControlPlaneEntity{Endpoint: "https://cp.example.com"},
+					Observability: &ObservabilityEntity{Enabled: true, LocalEndpoint: "http://127.0.0.1:4318"},
+				}
+			}
+			setup := func(flag string) (*devTelemetryRun, error) {
+				var log, out strings.Builder
+				return setupDevTelemetry(context.Background(), dir, "dev", flag, entities(), testUpSession(&fakeSessionReporter{}, &log, time.Hour), target, &out, devTelNow)
+			}
+
+			// A hosted run, and its keeper (the stack's tracked child).
+			run, err := setup("")
+			if err != nil || run == nil {
+				t.Fatalf("hosted run: %v %v", run, err)
+			}
+			recv(t, "the setup's mint", caller.minted)
+			reporter := &fakeSessionReporter{}
+			stopKeeper, keeperDone := startTestKeeperDone(t, run.keeperSpec(), caller, reporter, clock)
+			recv(t, "the keeper's renewal timer", clock.armed)
+
+			stops := 0
+			stubKeeperStop(t, func(projectDir, env string) error {
+				stops++
+				if rec, _, _ := devtelemetry.Read(projectDir, env); rec.Backend != "cloud" {
+					t.Errorf("the keeper was stopped after the local decision was recorded (%+v)", rec)
+				}
+				if _, err := os.Stat(devtelemetry.HeadersPath(projectDir)); err != nil {
+					t.Errorf("the tokens were cleared before the keeper was stopped: %v", err)
+				}
+				stopKeeper() // the ledger stop: signal, then wait for the exit
+				return nil
+			})
+
+			caller.setErr(&cloud.Error{Code: cloud.CodeUnimplemented})
+			if _, err := setup(tc.flag); (err != nil) != tc.wantErr {
+				t.Fatalf("local setup: err = %v, want error %v", err, tc.wantErr)
+			}
+			if stops != 1 {
+				t.Fatalf("the running keeper was stopped %d times, want once", stops)
+			}
+			recv(t, "the keeper to have exited", keeperDone)
+			recv(t, "the failed setup's mint", caller.minted)
+
+			mints, reports := caller.count(), len(reporter.snapshot())
+			caller.setErr(nil)
+			clock.Advance(5 * time.Hour)
+			if caller.count() != mints || len(reporter.snapshot()) != reports {
+				t.Errorf("the stopped keeper still worked: mints %d→%d, reports %d→%d", mints, caller.count(), reports, len(reporter.snapshot()))
+			}
+			for _, p := range []string{devtelemetry.HeadersPath(dir), devtelemetry.BrowserHeadersPath(dir), devtelemetry.StatePath(dir, "dev")} {
+				if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("%s exists after the local decision (%v)", filepath.Base(p), err)
+				}
+			}
+			if rec, _, _ := devtelemetry.Read(dir, "dev"); rec.Backend != "local" {
+				t.Errorf("record %+v, want local", rec)
+			}
+		})
+	}
+}
+
+// TestDevTelemetryKeeperStopsItselfWhenSuperseded is the defence in depth: a
+// keeper nothing managed to signal still stops once backend-<env>.json no
+// longer records its grant (local, or another instance), and never writes a
+// token or reports presence after that.
+func TestDevTelemetryKeeperStopsItselfWhenSuperseded(t *testing.T) {
+	for name, supersede := range map[string]func(dir string){
+		"decided local": func(dir string) {
+			_ = devtelemetry.Write(dir, devtelemetry.Record{Env: "dev", Backend: "local", Reason: "dev_telemetry=local"})
+		},
+		"another instance": func(dir string) {
+			_ = devtelemetry.Write(dir, devtelemetry.Record{Env: "dev", Backend: "cloud", InstanceID: "inst-row-99"})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			clock := newFakeDevClock(devTelNow)
+			caller := &fakeMintCaller{clock: clock.Now, minted: make(chan struct{}, 16)}
+			reporter := &notifyingReporter{seen: make(chan struct{}, 16)}
+			_, done := startTestKeeperDone(t, keeperSpecForTest(dir), caller, reporter, clock)
+			recv(t, "the renewal timer", clock.armed)
+			recv(t, "the keeper's first beat", reporter.seen)
+			reports := len(reporter.snapshot())
+
+			supersede(dir)
+			_ = devtelemetry.ClearCredentials(dir, "dev")
+			clock.Advance(30 * time.Minute) // the half-life: it would renew now
+			recv(t, "the keeper to stop itself", done)
+			if caller.count() != 0 {
+				t.Errorf("a superseded keeper minted %d time(s)", caller.count())
+			}
+			if len(reporter.snapshot()) != reports {
+				t.Errorf("a superseded keeper reported presence")
+			}
+			if _, err := os.Stat(devtelemetry.HeadersPath(dir)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("a superseded keeper recreated the tokens (%v)", err)
+			}
+		})
+	}
+}
+
+// TestDevTelemetryKeeperDiscardsAMintRacingALocalDecision: a decision taken
+// while a renewal's mint is in flight wins — the minted tokens are dropped,
+// not written over the cleared files, and the keeper stops.
+func TestDevTelemetryKeeperDiscardsAMintRacingALocalDecision(t *testing.T) {
+	dir := t.TempDir()
+	clock := newFakeDevClock(devTelNow)
+	caller := &fakeMintCaller{clock: clock.Now, minted: make(chan struct{}, 16)}
+	caller.during = func() {
+		_ = devtelemetry.Write(dir, devtelemetry.Record{Env: "dev", Backend: "local", Reason: "fallback"})
+		_ = devtelemetry.ClearCredentials(dir, "dev")
+	}
+	_, done := startTestKeeperDone(t, keeperSpecForTest(dir), caller, &fakeSessionReporter{}, clock)
+	recv(t, "the renewal timer", clock.armed)
+	clock.Advance(30 * time.Minute)
+	recv(t, "the mint", caller.minted)
+	recv(t, "the keeper to stop itself", done)
+	for _, p := range []string{devtelemetry.HeadersPath(dir), devtelemetry.BrowserHeadersPath(dir), devtelemetry.StatePath(dir, "dev")} {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s was written after the local decision (%v)", filepath.Base(p), err)
+		}
+	}
+}
+
+// notifyingReporter is a fakeSessionReporter that says when each report is in.
+type notifyingReporter struct {
+	fakeSessionReporter
+	seen chan struct{}
+}
+
+func (n *notifyingReporter) ReportSession(ctx context.Context, sess release.LocalSession) error {
+	err := n.fakeSessionReporter.ReportSession(ctx, sess)
+	n.seen <- struct{}{}
+	return err
 }

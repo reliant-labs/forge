@@ -300,7 +300,14 @@ func resolveLifecycleTargetFromID(ctx context.Context, id, env, flagToken, endpo
 	if err := checkLifecycleEnvName(he.Name); err != nil {
 		return lifecycleTarget{}, fmt.Errorf("%s answered environment %q with no usable name (%q), so this project cannot check it does not still declare it; nothing was deleted", ep.URL, id, he.Name)
 	}
-	if project := hostedProjectName(); he.Project != "" && he.Project != project {
+	// Ownership must be positive: a reply that names no project (an older or
+	// malformed control plane) cannot show the env is this project's, so it
+	// is refused like another project's, as the list API's filter does.
+	project := hostedProjectName()
+	if strings.TrimSpace(he.Project) == "" {
+		return lifecycleTarget{}, fmt.Errorf("%s answered environment %q (%s) with no project, so this checkout cannot check it belongs to project %q; nothing was deleted", ep.URL, id, he.Name, project)
+	}
+	if he.Project != project {
 		return lifecycleTarget{}, fmt.Errorf("environment %q (%s) belongs to project %q, not this project (%q); nothing was deleted\n"+
 			"fix: run `forge env delete --id %s` from that project's checkout", id, he.Name, he.Project, project, id)
 	}

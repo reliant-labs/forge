@@ -58,7 +58,7 @@ func TestDevAPIProxy_NextConfig(t *testing.T) {
 			}
 			// The /_api rewrite sits in the same dev-gated rewrites() as
 			// /_otel — the shape `forge lint --static-export` recognises.
-			gated := regexp.MustCompile(`process\.env\.NODE_ENV === "development"\s*\?\s*\{\s*async rewrites\(\)\s*\{\s*return \[\s*\{ source: "/_otel/:path\*"[^\n]*\n\s*\.\.\.\(devApiProxy\s*\?\s*\[\{ source: ` + "`" + `\$\{devApiProxy\}/:path\*` + "`")
+			gated := regexp.MustCompile(`process\.env\.NODE_ENV === "development"\s*\?\s*\{\s*async rewrites\(\)\s*\{\s*(?:const otel = await devOtelUpstream\(\);\s*)?return \[\s*\{ source: "/_otel/:path\*"[^\n]*\n\s*\.\.\.\(devApiProxy\s*\?\s*\[\{ source: ` + "`" + `\$\{devApiProxy\}/:path\*` + "`")
 			if !gated.MatchString(s) {
 				t.Errorf("next.config.ts (%s): the /_api rewrite must live in the dev-gated rewrites() beside /_otel", output)
 			}

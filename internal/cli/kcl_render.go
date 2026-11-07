@@ -1417,6 +1417,14 @@ type ObservabilityEntity struct {
 	Enabled       bool   `json:"enabled"`
 	LocalPort     int    `json:"local_port,omitempty"`
 	LocalEndpoint string `json:"local_endpoint,omitempty"`
+	// DevTelemetry is where a LOCAL stack's telemetry is stored: "auto"
+	// (the schema default), "hosted" or "local". "" from a render that
+	// predates the field, which reads as "auto".
+	DevTelemetry string `json:"dev_telemetry,omitempty"`
+	// DevBrowserHeadersFile is not rendered: `forge env up` sets it when
+	// this run's telemetry goes to the hosted store, naming the file that
+	// holds the browser token the frontend dev server's /_otel proxy sends.
+	DevBrowserHeadersFile string `json:"-"`
 	// ProfilesEndpoint is the full URL of the local profiles collector host
 	// processes push to; "" when profiles are off or go to a destination.
 	ProfilesEndpoint string `json:"profiles_endpoint,omitempty"`
@@ -1439,6 +1447,10 @@ type ObservabilityEntity struct {
 		TracesDays  int `json:"traces_days"`
 		MetricsDays int `json:"metrics_days"`
 		LogsDays    int `json:"logs_days"`
+		// BrowserDays and Overrides are the hosted dev store's: sent with
+		// the dev stack's token request (MintLocalTelemetryToken).
+		BrowserDays int                       `json:"browser_days"`
+		Overrides   []RetentionOverrideEntity `json:"overrides,omitempty"`
 		// The browser-telemetry tables' TTLs, in days (always rendered,
 		// defaulted by the schema).
 		ReplayDays        int `json:"replay_days"`
@@ -1452,6 +1464,13 @@ type ObservabilityEntity struct {
 	} `json:"agent"`
 	// Alerts is Observability.alerts as the author declared it; nil when none.
 	Alerts *AlertsEntity `json:"alerts,omitempty"`
+}
+
+// RetentionOverrideEntity is one forge.RetentionOverride.
+type RetentionOverrideEntity struct {
+	Service string `json:"service"`
+	Signal  string `json:"signal"`
+	Days    int    `json:"days"`
 }
 
 // ObservabilityDestEntity is Observability.destination.

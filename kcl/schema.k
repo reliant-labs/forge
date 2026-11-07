@@ -6179,15 +6179,41 @@ schema ObservabilitySampling:
             "ObservabilitySampling: traces_ratio < 1 with errors_always = True needs tail sampling, which forge does not render (head sampling in the SDK cannot know a trace will fail). Either set errors_always = False (errors are sampled like everything else), or, if the destination's gateway keeps error traces itself, say so with destination_tail_samples = True"
         not destination_tail_samples or errors_always, "ObservabilitySampling.destination_tail_samples only qualifies errors_always = True"
 
+schema RetentionOverride:
+    """One service's retention for one signal, in days. Honored by the hosted
+    store for a dev stack's telemetry (`dev_telemetry`), where the control
+    plane clamps it to [1, the plan's cap]: a declaration can only lower what
+    the tenant keeps.
+
+        forge.RetentionOverride {service = "worker", signal = "logs", days = 1}
+    """
+    service: str
+    signal: str
+    days: int
+
+    check:
+        service != "", "RetentionOverride.service must name a service"
+        signal in ["traces", "metrics", "logs", "browser"], "RetentionOverride.signal '${signal}' must be traces, metrics, logs or browser"
+        days >= 1, "RetentionOverride.days must be >= 1"
+
 schema ObservabilityRetention:
     """Retention hints in days; 0 = the backend's default. Passed through
     only where the runtime can apply them: local ClickStack takes ONE table
     TTL (the longest hint). A node agent has no storage and ignores them; the
     hint is carried in `output.observability.retention` for whatever runs the
-    backend."""
+    backend.
+
+    A dev stack whose telemetry goes to the hosted store
+    (Observability.dev_telemetry) sends traces/metrics/logs/browser_days and
+    `overrides` when it asks for its token; the control plane clamps each to
+    [1, the plan's cap], and 0 there means its dev default (3 days)."""
     traces_days: int = 0
     metrics_days: int = 0
     logs_days: int = 0
+    # The browser's spans and logs (session replay keeps replay_days).
+    browser_days: int = 0
+    # Per service and signal, for the hosted dev store.
+    overrides: [RetentionOverride] = []
     # Browser telemetry on the hosted platform, in days (the platform's browser
     # telemetry tables' TTLs). Unlike the hints above these are never "backend default": each
     # has a stated default, recorded in the release shape only when it moves.
@@ -6198,7 +6224,9 @@ schema ObservabilityRetention:
     product_events_days: int = 90
 
     check:
-        traces_days >= 0 and metrics_days >= 0 and logs_days >= 0, "ObservabilityRetention days must be >= 0"
+        traces_days >= 0 and metrics_days >= 0 and logs_days >= 0 and browser_days >= 0, "ObservabilityRetention days must be >= 0"
+        len({"${o.service}/${o.signal}": 1 for o in overrides}) == len(overrides), \
+            "ObservabilityRetention.overrides names one service and signal twice: each (service, signal) has one retention"
         replay_days >= 1 and replay_days <= 30, "ObservabilityRetention.replay_days must be 1..30 (session replay is retained at most 30 days)"
         errors_days >= 1 and errors_days <= 365, "ObservabilityRetention.errors_days must be 1..365"
         product_events_days >= 1 and product_events_days <= 400, "ObservabilityRetention.product_events_days must be 1..400"
@@ -6498,6 +6526,16 @@ schema Observability:
 
         observability = forge.Observability {local_port = _otlp_http_port, profiles_port = _profiles_otlp_port}
 
+    `dev_telemetry` says where a LOCAL stack's telemetry (`forge env up`) is
+    stored: "local" (the local ClickStack), "hosted" (the org's hosted store,
+    through a per-stack token the control plane mints; fails instead of falling
+    back) or "auto" (the default: hosted when the env declares a control_plane
+    and a Reliant credential exists, else local). `forge env up --telemetry`
+    and FORGE_DEV_TELEMETRY override it, and "local" anywhere wins. In hosted
+    mode no local collector runs, so the stack needs no Docker for telemetry.
+
+        observability = forge.Observability {dev_telemetry = "local"}   # never send dev telemetry
+
     `alertmanager_port` and `alerts_port` close the alerting loop locally:
     the loopback port of the local Alertmanager (docker-compose.yml's
     `alertmanager`) and the port of the local evaluator
@@ -6511,6 +6549,7 @@ schema Observability:
     """
     enabled: bool = True
     destination?: ObservabilityDestination
+    dev_telemetry: str = "auto"
     local_port: int = 0
     profiles_port: int = 0
     alertmanager_port: int = 0
@@ -6524,6 +6563,7 @@ schema Observability:
     check:
         enabled or (len(alerts.rules) == 0 and len(alerts.defaults) == 0 and len(alerts.routes) == 0 and len(alerts.receivers) == 0), \
             "Observability.alerts is declared with enabled = False: alerts evaluate the telemetry, and there is none. Drop the alerts or set enabled = True"
+        dev_telemetry in ["auto", "hosted", "local"], "Observability.dev_telemetry '${dev_telemetry}' must be auto, hosted or local"
         local_port >= 0 and local_port < 65536, "Observability.local_port must be 0..65535"
         profiles_port >= 0 and profiles_port < 65536, "Observability.profiles_port must be 0..65535"
         alertmanager_port >= 0 and alertmanager_port < 65536, "Observability.alertmanager_port must be 0..65535"

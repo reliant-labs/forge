@@ -55,7 +55,7 @@ func (f *fakeSessionReporter) snapshot() []release.LocalSession {
 }
 
 // testUpSession builds a session around a fake reporter, bypassing the
-// render-and-capture construction newUpSession does. The lifecycle is what is
+// render-and-capture construction newUpSessionFor does. The lifecycle is what is
 // under test here, not the minting.
 func testUpSession(reporter sessionReporter, log *strings.Builder, heartbeat time.Duration) *upSession {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
@@ -255,7 +255,7 @@ func TestUpSessionStopReportsThroughACancelledContext(t *testing.T) {
 	}
 }
 
-// TestUpSessionNilIsInert pins the nil-receiver contract. newUpSession
+// TestUpSessionNilIsInert pins the nil-receiver contract. newUpSessionFor
 // returns nil for a non-local env, an unrenderable project and an
 // unopenable ledger, and up.go calls these methods unconditionally — so a
 // nil that panicked would turn a cosmetic loss into a crashed `forge env up`.

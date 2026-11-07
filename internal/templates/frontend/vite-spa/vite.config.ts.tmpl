@@ -88,6 +88,36 @@ const webRuntimePeers: string[] = readWebRuntimePeers();
 const OTEL_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318";
 const OTEL_UPSTREAM = OTEL_ENDPOINT.replace(/\/+$/, "");
 
+// A HOSTED dev stack (observability.dev_telemetry): `forge env up` points
+// OTEL_EXPORTER_OTLP_ENDPOINT at the org's hosted edge and
+// FORGE_OTEL_HEADERS_FILE at the file holding this stack's browser token,
+// which forge renews in place. The proxy reads the file on EVERY request and
+// attaches what it holds (`authorization=Bearer …`) server-side, so the token
+// never reaches the bundle; the browser's cookies for this origin are not
+// forwarded to the edge. Unset (the local ClickStack), nothing is added.
+const OTEL_HEADERS_FILE = process.env.FORGE_OTEL_HEADERS_FILE ?? "";
+const readOtelHeaders = (): Array<[string, string]> => {
+  let text = "";
+  try {
+    text = fs.readFileSync(OTEL_HEADERS_FILE, "utf8");
+  } catch {
+    return []; // not written yet, or removed: send nothing extra
+  }
+  const out: Array<[string, string]> = [];
+  for (const pair of text.split(/[\n,]/)) {
+    const i = pair.indexOf("=");
+    if (i <= 0) continue;
+    let value = pair.slice(i + 1).trim();
+    try {
+      value = decodeURIComponent(value);
+    } catch {
+      // Not percent-encoded: use it as written.
+    }
+    out.push([pair.slice(0, i).trim(), value]);
+  }
+  return out;
+};
+
 // ── API proxy (DEV ONLY) ────────────────────────────────────────────────
 //
 // Under the dev server the browser calls the API on ITS OWN origin, at
@@ -200,6 +230,16 @@ export default defineConfig(({ command, mode }) => {
           target: OTEL_UPSTREAM,
           changeOrigin: true,
           rewrite: (p: string) => p.replace(/^\/_otel/, ""),
+          ...(OTEL_HEADERS_FILE
+            ? {
+                configure: (proxy) => {
+                  proxy.on("proxyReq", (proxyReq) => {
+                    proxyReq.removeHeader("cookie");
+                    for (const [name, value] of readOtelHeaders()) proxyReq.setHeader(name, value);
+                  });
+                },
+              }
+            : {}),
         },
         ...(devApiProxy
           ? {

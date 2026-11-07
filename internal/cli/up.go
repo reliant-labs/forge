@@ -89,6 +89,10 @@ type upOptions struct {
 	// agent-driven preview flow reaches Vite
 	// (`forge env up dev -- --host 0.0.0.0`). Empty (no `--`) is a no-op.
 	frontendArgs []string
+	// telemetry is --telemetry: where this stack's telemetry is stored
+	// (auto|hosted|local), over FORGE_DEV_TELEMETRY and the env's
+	// observability.dev_telemetry. See up_devtelemetry.go.
+	telemetry string
 }
 
 // inTargetSet reports whether name should run given the --target filter.
@@ -238,7 +242,21 @@ LOCAL SESSIONS (what this reports about itself)
 
   Only LOCAL environments report. An environment whose workloads run on the
   platform or on a cluster has no local presence to describe, and forge says
-  which when it declines.`
+  which when it declines.
+
+TELEMETRY (where this stack's traces, metrics and logs are stored)
+
+  observability.dev_telemetry decides: "local" stores them in the local
+  ClickStack; "auto" (the default) sends them to your org's hosted store when
+  the env declares a control_plane and you are signed in to Reliant, and falls
+  back to local, saying why, when anything on the way fails; "hosted" fails
+  instead of falling back. --telemetry and ` + devTelemetryEnvVar + ` override it,
+  and "local" from any of them wins.
+
+  A hosted stack is keyed by its session (above), which is then reported
+  before the services start. Its tokens live in .forge/obs/ and are renewed
+  while a holding run supervises; no local collector starts, so the stack needs
+  no Docker for telemetry. ` + "`forge env status <env>`" + ` says where telemetry goes.`
 
 func newEnvUpCmd() *cobra.Command {
 	var opts upOptions
@@ -281,6 +299,7 @@ func newEnvUpCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Hold the foreground and tear the stack down on SIGINT/SIGTERM/SIGHUP even without a TTY: the way an agent or daemon runs env up as a tracked background process. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default 'forge env up' runs 'forge generate' when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default 'forge env up' installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
+	cmd.Flags().StringVar(&opts.telemetry, "telemetry", "", "Where this stack's telemetry is stored: auto (hosted when the env declares a control_plane and you are signed in to Reliant, else local), hosted (fail instead of falling back) or local (the local ClickStack). Overrides "+devTelemetryEnvVar+" and observability.dev_telemetry; local anywhere wins.")
 	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default 'forge env up' seeds a dev database once when it is reachable and all seedable tables are empty.")
 	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the whole run — build, deploy, host and frontend phases — to specific services/operators/frontends by name (repeatable). Targeting only host/frontend apps builds no images. An unknown name is an error listing the env's app names. Default: everything.")
 	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
@@ -447,6 +466,9 @@ func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) 
 		probeRowsListening(compose, portInUse)
 		renderUpSummary(os.Stdout, env, append(rows, compose...), "down", true, nil, nil)
 	}
+	if line := devTelemetryStatusLine(read.projectDir, env, time.Now()); line != "" {
+		fmt.Println(line)
+	}
 	// A hosted env's URLs and custom domains. Printed here rather than
 	// folded into a runtime check because neither is a pass/fail signal:
 	// a URL is an answer, and a domain waiting on DNS is waiting on the
@@ -503,6 +525,7 @@ func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServ
 	if !in.headCommit.IsZero() {
 		rep.HeadCommitAt = in.headCommit.UTC().Format(time.RFC3339)
 	}
+	rep.Telemetry = devTelemetryStatusLine(in.projectDir, in.env, time.Now())
 	if in.entities != nil {
 		rep.Lifecycle = in.entities.Lifecycle
 	}
@@ -979,6 +1002,19 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if err := validateDeployTargets(entities, opts.targets); err != nil {
 		return err
 	}
+	// WHERE THIS STACK'S TELEMETRY GOES (up_devtelemetry.go). Decided
+	// before the Docker check below: a stack whose telemetry is hosted runs
+	// no local collector, so it needs no Docker for it. The session is
+	// minted here, not after readiness, because the hosted store keys the
+	// telemetry on it and the control plane mints a token only for a live
+	// session; without a control plane it is just constructed early, and
+	// still first reported once the stack is up.
+	sessTarget, sessErr := sessionTargetForEntities(opts.env, entities, projectDir)
+	session := newUpSessionFor(ctx, projectDir, opts.env, sessTarget, sessErr, os.Stdout, time.Now().UTC())
+	devTelemetry, err := setupDevTelemetry(ctx, projectDir, opts.env, opts.telemetry, entities, session, sessTarget, os.Stdout, time.Now().UTC())
+	if err != nil {
+		return err
+	}
 	// No Docker daemon: drop what the env declares optional (local
 	// observability) and say so once, or fail naming Docker if something
 	// required needs it. Before the plan, the pre-flights and every phase
@@ -1274,8 +1310,8 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// written before the readiness gate would say it of a stack that had
 	// not bound its ports yet. Best-effort throughout: a nil session, an
 	// unreachable control plane and a non-local env all cost nothing but a
-	// note — see up_session.go.
-	session := newUpSession(ctx, projectDir, opts.env, os.Stdout, time.Now().UTC())
+	// note — see up_session.go. The session itself was built before the
+	// launch (see the telemetry decision above).
 	session.start(time.Now().UTC())
 
 	if detach {
@@ -1289,6 +1325,12 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		// text says so.
 		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
+		if devTelemetry != nil {
+			// The tokens renew on the heartbeat, and a detached stack has
+			// none: its hosted telemetry stops when they expire.
+			fmt.Printf("[up] telemetry: tokens are renewed only while a holding run supervises; this stack stops delivering telemetry at %s. Use `forge env up %s --watch` to keep it delivering.\n",
+				devTelemetry.grant.expires.Local().Format(time.Kitchen), opts.env)
+		}
 		if hint := nonTTYWatchHint(opts.env, opts.background); hint != "" {
 			fmt.Println(hint)
 		}
@@ -1906,6 +1948,11 @@ type servingProc struct {
 // shape keeps working.
 type upServicesReport struct {
 	Env string `json:"env"`
+	// Telemetry is where this env's dev telemetry goes, as the last
+	// `forge env up` of it here decided: "telemetry: hosted (org …,
+	// instance …, 3d)", "telemetry: local (<reason>)" or "telemetry: not
+	// delivering (…)". Omitted when no such decision was recorded.
+	Telemetry string `json:"telemetry,omitempty"`
 	// DatabaseURL is the DSN the live stack's services dial, captured by
 	// `forge env up` at launch (resolveSeedDSN) and persisted alongside the
 	// PID ledger. Empty/omitted when no stack has been brought up for this env

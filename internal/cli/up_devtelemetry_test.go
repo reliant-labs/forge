@@ -1,0 +1,437 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/reliant-labs/forge/internal/clickstack"
+	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/devtelemetry"
+)
+
+// fakeMintCaller answers MintLocalTelemetryToken (and nothing else) with a
+// grant numbered by call, or with err.
+type fakeMintCaller struct {
+	mu    sync.Mutex
+	err   error
+	calls []map[string]any
+	now   time.Time
+}
+
+func (f *fakeMintCaller) Call(_ context.Context, procedure string, req, out any) error {
+	if procedure != procMintLocalTelemetryToken {
+		return fmt.Errorf("unexpected call %s", procedure)
+	}
+	b, _ := json.Marshal(req)
+	var body map[string]any
+	_ = json.Unmarshal(b, &body)
+	f.mu.Lock()
+	f.calls = append(f.calls, body)
+	n := len(f.calls)
+	err := f.err
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	reply := fmt.Sprintf(`{"processToken":"proc-%d","browserToken":"browser-%d","expiresAt":%q,
+		"endpoint":"https://otlp.example.com/","orgId":"org-1","environmentId":"env-1",
+		"instance":{"id":"sess-x","label":"alice/fix-login","user":"alice@x"},
+		"retention":{"tracesDays":3,"metricsDays":3,"logsDays":3,"browserDays":3}}`,
+		n, n, f.now.Add(time.Hour).Format(time.RFC3339))
+	return json.Unmarshal([]byte(reply), out)
+}
+
+func (f *fakeMintCaller) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+var devTelNow = time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+
+func TestResolveDevTelemetryMode(t *testing.T) {
+	cases := []struct {
+		flag, env, declared string
+		want, source        string
+		wantErr             bool
+	}{
+		{"", "", "", "auto", "default", false},
+		{"", "", "hosted", "hosted", "observability.dev_telemetry", false},
+		{"", "auto", "hosted", "auto", devTelemetryEnvVar, false},
+		{"hosted", "auto", "", "hosted", "--telemetry", false},
+		// "local" anywhere is the opt-out, and wins over a higher source.
+		{"hosted", "", "local", "local", "observability.dev_telemetry", false},
+		{"", "local", "hosted", "local", devTelemetryEnvVar, false},
+		{"local", "hosted", "hosted", "local", "--telemetry", false},
+		{"cloud", "", "", "", "", true},
+		{"", "", "remote", "", "", true},
+	}
+	for _, c := range cases {
+		got, err := resolveDevTelemetryMode(c.flag, c.env, c.declared)
+		if (err != nil) != c.wantErr {
+			t.Errorf("(%q,%q,%q): err = %v, want error %v", c.flag, c.env, c.declared, err, c.wantErr)
+			continue
+		}
+		if !c.wantErr && (got.Value != c.want || got.Source != c.source) {
+			t.Errorf("(%q,%q,%q) = %+v, want %s from %s", c.flag, c.env, c.declared, got, c.want, c.source)
+		}
+	}
+}
+
+func liveFacts(mode string, caller cloudCaller, reporter sessionReporter) devTelemetryFacts {
+	var log strings.Builder
+	return devTelemetryFacts{
+		Env:          "dev",
+		Mode:         devTelemetryMode{Value: mode, Source: "test"},
+		TelemetryOn:  true,
+		ControlPlane: true,
+		Session:      testUpSession(reporter, &log, time.Hour),
+		Client:       caller,
+		Project:      "demo",
+	}
+}
+
+func TestDecideDevTelemetryMatrix(t *testing.T) {
+	cerr := func(code, reason, msg string) error {
+		return &cloud.Error{Code: code, Reason: reason, Message: msg, Procedure: procMintLocalTelemetryToken}
+	}
+	type mut func(*devTelemetryFacts, *fakeMintCaller, *fakeSessionReporter)
+	cases := []struct {
+		name   string
+		mutate mut
+		// wantHosted under auto; under hosted a non-hosted outcome is an
+		// error and under local nothing is ever asked.
+		wantHosted bool
+		reason     string
+	}{
+		{"success", nil, true, ""},
+		{"telemetry off", func(f *devTelemetryFacts, _ *fakeMintCaller, _ *fakeSessionReporter) { f.TelemetryOn = false }, false, "observability is off"},
+		{"no control plane", func(f *devTelemetryFacts, _ *fakeMintCaller, _ *fakeSessionReporter) { f.ControlPlane = false }, false, "no control_plane"},
+		{"no credential", func(f *devTelemetryFacts, _ *fakeMintCaller, _ *fakeSessionReporter) {
+			f.CredentialErr = errors.New("not signed in\nrun forge login")
+		}, false, "no Reliant credential (not signed in)"},
+		{"no session", func(f *devTelemetryFacts, _ *fakeMintCaller, _ *fakeSessionReporter) {
+			f.Session, f.SessionSkip = nil, "FORGE_LEDGER=machine"
+		}, false, "FORGE_LEDGER=machine"},
+		{"session report fails", func(_ *devTelemetryFacts, _ *fakeMintCaller, r *fakeSessionReporter) {
+			r.err = errors.New("dial tcp: connection refused")
+		}, false, "did not take this stack's session"},
+		{"unimplemented", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
+			m.err = cerr(cloud.CodeUnimplemented, "", "")
+		}, false, "predates hosted dev telemetry"},
+		{"org switch off", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
+			m.err = cerr(cloud.CodeFailedPrecondition, reasonDevTelemetryDisabled, "")
+		}, false, reasonDevTelemetryDisabled},
+		{"gate excludes org", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
+			m.err = cerr(cloud.CodeFailedPrecondition, reasonDevTelemetryNotEnabled, "")
+		}, false, reasonDevTelemetryNotEnabled},
+		{"session not live (reason in message only)", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
+			m.err = cerr(cloud.CodeFailedPrecondition, "", "refused: session_not_live")
+		}, false, reasonSessionNotLive},
+		{"not found", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
+			m.err = cerr(cloud.CodeNotFound, "", "")
+		}, false, "not_found"},
+		{"permission denied", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
+			m.err = cerr(cloud.CodePermissionDenied, "", "")
+		}, false, "permission_denied"},
+		{"unreachable", func(_ *devTelemetryFacts, m *fakeMintCaller, _ *fakeSessionReporter) {
+			m.err = errors.New("dial tcp: i/o timeout")
+		}, false, "unreachable"},
+	}
+	for _, mode := range []string{devTelemetryAuto, devTelemetryHosted, devTelemetryLocal} {
+		for _, c := range cases {
+			t.Run(mode+"/"+c.name, func(t *testing.T) {
+				caller := &fakeMintCaller{now: devTelNow}
+				reporter := &fakeSessionReporter{}
+				f := liveFacts(mode, caller, reporter)
+				if c.mutate != nil {
+					c.mutate(&f, caller, reporter)
+				}
+				d, err := decideDevTelemetry(context.Background(), f, devTelNow)
+				switch {
+				case mode == devTelemetryLocal:
+					if err != nil || d.Hosted || caller.count() != 0 || len(reporter.snapshot()) != 0 {
+						t.Fatalf("local: decision %+v err %v, %d mint(s), %d report(s); want local with no control-plane traffic", d, err, caller.count(), len(reporter.snapshot()))
+					}
+					if !strings.Contains(d.Reason, "dev_telemetry=local") {
+						t.Errorf("reason %q does not name the opt-out", d.Reason)
+					}
+				case c.wantHosted:
+					if err != nil || !d.Hosted {
+						t.Fatalf("decision %+v err %v, want hosted", d, err)
+					}
+					if d.Grant.ProcessToken != "proc-1" || d.Grant.Endpoint != "https://otlp.example.com" || d.Grant.Instance.Label != "alice/fix-login" {
+						t.Errorf("grant %+v", d.Grant)
+					}
+					if len(reporter.snapshot()) != 1 {
+						t.Errorf("the session must be reported live before the mint, got %d reports", len(reporter.snapshot()))
+					}
+				case mode == devTelemetryHosted:
+					if err == nil || !strings.Contains(err.Error(), c.reason) {
+						t.Fatalf("hosted: err = %v, want a failure naming %q (no fallback)", err, c.reason)
+					}
+				default:
+					if err != nil || d.Hosted {
+						t.Fatalf("auto: decision %+v err %v, want a local fallback", d, err)
+					}
+					if !strings.Contains(d.Reason, c.reason) {
+						t.Errorf("auto: reason %q does not name %q", d.Reason, c.reason)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDecideDevTelemetrySendsSessionAndRetention(t *testing.T) {
+	caller := &fakeMintCaller{now: devTelNow}
+	f := liveFacts(devTelemetryAuto, caller, &fakeSessionReporter{})
+	o := &ObservabilityEntity{Enabled: true}
+	o.Retention.TracesDays, o.Retention.BrowserDays = 3, 2
+	o.Retention.Overrides = []RetentionOverrideEntity{{Service: "worker", Signal: "logs", Days: 1}}
+	f.Retention = devTelemetryRetentionOf(o)
+	if _, err := decideDevTelemetry(context.Background(), f, devTelNow); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(caller.calls[0])
+	want := fmt.Sprintf(`{"environment":"dev","project":"demo","retention":{"browserDays":2,"overrides":[{"days":1,"service":"worker","signal":"logs"}],"tracesDays":3},"sessionId":%q}`, f.Session.session.ID)
+	if string(got) != want {
+		t.Errorf("mint request\n got %s\nwant %s", got, want)
+	}
+	// Nothing declared: retention is omitted (the server's 3-day default).
+	if r := devTelemetryRetentionOf(&ObservabilityEntity{Enabled: true}); r != nil {
+		t.Errorf("an undeclared retention must be omitted, got %+v", r)
+	}
+}
+
+func TestDevTelemetryFilesAndRenewal(t *testing.T) {
+	dir := t.TempDir()
+	caller := &fakeMintCaller{now: devTelNow}
+	g, err := mintDevTelemetry(context.Background(), caller, "sess-x", "demo", "dev", nil, devTelNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &devTelemetryRun{projectDir: dir, env: "dev", project: "demo", client: caller, sessionID: "sess-x", grant: g}
+	if err := run.write(g, devTelNow); err != nil {
+		t.Fatal(err)
+	}
+	assertHeaders := func(proc, browser string) {
+		t.Helper()
+		for path, tok := range map[string]string{devtelemetry.HeadersPath(dir): proc, devtelemetry.BrowserHeadersPath(dir): browser} {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != "authorization=Bearer "+tok+"\n" {
+				t.Errorf("%s = %q, want the %s token", filepath.Base(path), b, tok)
+			}
+			fi, _ := os.Stat(path)
+			if fi.Mode().Perm() != 0o600 {
+				t.Errorf("%s mode %v, want 0600", filepath.Base(path), fi.Mode().Perm())
+			}
+		}
+	}
+	assertHeaders("proc-1", "browser-1")
+	if b, err := os.ReadFile(filepath.Join(dir, ".forge", "obs", ".gitignore")); err != nil || string(b) != "*\n" {
+		t.Errorf(".forge/obs/.gitignore = %q, %v; want it to ignore every token file", b, err)
+	}
+
+	// Before half-life: nothing is asked.
+	run.renew(devTelNow.Add(29 * time.Minute))
+	if caller.count() != 1 {
+		t.Fatalf("renewed before half-life (%d mints)", caller.count())
+	}
+	// At half-life: both files are replaced.
+	caller.now = devTelNow.Add(30 * time.Minute)
+	run.renew(devTelNow.Add(30 * time.Minute))
+	if caller.count() != 2 {
+		t.Fatalf("did not renew at half-life (%d mints)", caller.count())
+	}
+	assertHeaders("proc-2", "browser-2")
+	st, ok, _ := devtelemetry.ReadState(dir, "dev")
+	if !ok || !st.ExpiresAt.Equal(devTelNow.Add(90*time.Minute)) || st.RenewError != "" {
+		t.Errorf("state after renewal = %+v", st)
+	}
+
+	// A failed renewal is silent: the old tokens stay, the reason is recorded.
+	caller.err = errors.New("dial tcp: connection refused")
+	run.renew(devTelNow.Add(70 * time.Minute))
+	assertHeaders("proc-2", "browser-2")
+	st, _, _ = devtelemetry.ReadState(dir, "dev")
+	if !strings.Contains(st.RenewError, "unreachable") {
+		t.Errorf("renew error not recorded: %+v", st)
+	}
+	if line := devTelemetryStatusLine(dir, "dev", devTelNow.Add(70*time.Minute)); line != "" {
+		t.Errorf("no decision recorded yet, status line = %q", line)
+	}
+	_ = recordDevTelemetryDecision(dir, "dev", devTelemetryDecision{Hosted: true, Reason: "auto", Grant: g}, devTelNow)
+	if line := devTelemetryStatusLine(dir, "dev", devTelNow.Add(70*time.Minute)); line != "telemetry: hosted (org org-1, instance alice/fix-login, 3d)" {
+		t.Errorf("status line = %q", line)
+	}
+	if line := devTelemetryStatusLine(dir, "dev", devTelNow.Add(2*time.Hour)); !strings.HasPrefix(line, "telemetry: not delivering (token expired; the control plane is unreachable") {
+		t.Errorf("expired status line = %q", line)
+	}
+	_ = recordDevTelemetryDecision(dir, "dev", devTelemetryDecision{Reason: "the env declares no control_plane"}, devTelNow)
+	if line := devTelemetryStatusLine(dir, "dev", devTelNow); line != "telemetry: local (the env declares no control_plane)" {
+		t.Errorf("local status line = %q", line)
+	}
+	rec, ok, _ := devtelemetry.Read(dir, "dev")
+	if !ok || rec.Backend != "local" {
+		t.Errorf("record = %+v", rec)
+	}
+}
+
+func TestHostedTelemetryLaunchEnv(t *testing.T) {
+	const ep, hf = "https://otlp.example.com", "/p/.forge/obs/otlp-headers"
+	derived := map[string]string{
+		clickstack.EnvOTLPEndpoint:         "http://127.0.0.1:4318",
+		clickstack.EnvOTLPProtocol:         "http/protobuf",
+		clickstack.EnvOTLPProfilesEndpoint: "http://127.0.0.1:4328/v1development/profiles",
+	}
+	got := hostedTelemetryLaunchEnv(derived, nil, ep, hf)
+	want := map[string]string{
+		clickstack.EnvOTLPEndpoint:         ep,
+		clickstack.EnvOTLPProtocol:         "http/protobuf",
+		"OTEL_EXPORTER_OTLP_HEADERS_FILE":  hf,
+		"OTEL_LOGS_EXPORTER":               "otlp",
+		clickstack.EnvOTLPProfilesEndpoint: "",
+		"OTEL_PROFILES_EXPORTER":           "none",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("derived loopback:\n got %v\nwant %v", got, want)
+	}
+	// No local endpoint was derived at all: still exported, as a unit.
+	if got := hostedTelemetryLaunchEnv(map[string]string{}, nil, ep, hf); got[clickstack.EnvOTLPEndpoint] != ep || got["OTEL_EXPORTER_OTLP_HEADERS_FILE"] != hf {
+		t.Errorf("nothing derived: %v", got)
+	}
+	// Logs switched off by the env stay off.
+	if got := hostedTelemetryLaunchEnv(map[string]string{"OTEL_LOGS_EXPORTER": "none"}, nil, ep, hf); got["OTEL_LOGS_EXPORTER"] != "" {
+		t.Errorf("a declared OTEL_LOGS_EXPORTER=none was overridden: %v", got)
+	}
+	// A user-set transport wins whole.
+	for name, c := range map[string]struct {
+		declared map[string]string
+		shell    []string
+	}{
+		"author's endpoint":      {map[string]string{clickstack.EnvOTLPEndpoint: "https://my.collector"}, nil},
+		"author's headers file":  {map[string]string{"OTEL_EXPORTER_OTLP_HEADERS_FILE": "/mine"}, nil},
+		"shell endpoint":         {derived, []string{"OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317"}},
+		"shell protocol":         {derived, []string{"OTEL_EXPORTER_OTLP_PROTOCOL=grpc"}},
+		"shell per-signal":       {derived, []string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://x"}},
+		"shell headers":          {derived, []string{"OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer mine"}},
+		"author's logs endpoint": {map[string]string{"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://x"}, nil},
+	} {
+		if got := hostedTelemetryLaunchEnv(c.declared, c.shell, ep, hf); len(got) != 0 {
+			t.Errorf("%s: forge overrode a user-set transport: %v", name, got)
+		}
+	}
+	// An empty shell value is unset.
+	if got := hostedTelemetryLaunchEnv(derived, []string{"OTEL_EXPORTER_OTLP_ENDPOINT="}, ep, hf); got[clickstack.EnvOTLPEndpoint] != ep {
+		t.Errorf("an empty shell endpoint blocked the hosted one: %v", got)
+	}
+}
+
+func TestApplyHostedDevTelemetry(t *testing.T) {
+	compose := func(name, svc string, requires ...string) WorkloadEntity {
+		w := WorkloadEntity{Name: name, Requires: requires}
+		w.Runtime.Type = RuntimeCompose
+		w.Runtime.Compose = &ComposeRuntime{Service: svc, Optional: true}
+		return w
+	}
+	host := func(name string, env map[string]string) WorkloadEntity {
+		w := WorkloadEntity{Name: name}
+		w.Runtime.Type = RuntimeHost
+		w.Runtime.Host = &HostRuntime{LaunchEnv: env}
+		return w
+	}
+	e := &KCLEntities{
+		Workloads: []WorkloadEntity{
+			compose("clickstack", clickstack.Service),
+			compose("otel-profiles", clickstack.ProfilesService),
+			compose("alertmanager", clickstack.AlertmanagerService),
+			compose("redis", "redis"),
+			host("api", map[string]string{clickstack.EnvOTLPEndpoint: "http://127.0.0.1:4318"}),
+			host("custom", map[string]string{clickstack.EnvOTLPEndpoint: "https://mine"}),
+			func() WorkloadEntity {
+				w := host("alerts", nil)
+				w.Requires = []string{"clickstack", "alertmanager"}
+				return w
+			}(),
+		},
+		Observability: &ObservabilityEntity{Enabled: true, LocalEndpoint: "http://127.0.0.1:4318", AlertmanagerPort: 9093, AlertsPort: 9095},
+	}
+	g := devTelemetryGrant{Endpoint: "https://otlp.example.com"}
+	skipped := applyHostedDevTelemetry(e, "/p", g, nil)
+	if want := "[alertmanager alerts clickstack otel-profiles]"; fmt.Sprint(skipped) != want {
+		t.Errorf("skipped %v, want %s", skipped, want)
+	}
+	var names []string
+	for _, w := range e.Workloads {
+		names = append(names, w.Name)
+	}
+	if fmt.Sprint(names) != "[redis api custom]" {
+		t.Errorf("kept %v", names)
+	}
+	if fmt.Sprint(e.OptionalSkipped) != fmt.Sprint(skipped) {
+		t.Errorf("OptionalSkipped %v: the deploy phase must drop the same", e.OptionalSkipped)
+	}
+	api := e.Workloads[1].HostEnv()
+	if api[clickstack.EnvOTLPEndpoint] != g.Endpoint || api["OTEL_EXPORTER_OTLP_HEADERS_FILE"] != filepath.Join("/p", ".forge", "obs", "otlp-headers") || api["OTEL_LOGS_EXPORTER"] != "otlp" {
+		t.Errorf("api env = %v", api)
+	}
+	if e.Workloads[2].HostEnv()[clickstack.EnvOTLPEndpoint] != "https://mine" {
+		t.Errorf("an author's endpoint was replaced")
+	}
+	fe := frontendOTLPEnv(e)
+	if fe[clickstack.EnvOTLPEndpoint] != g.Endpoint || fe[frontendOTLPHeadersFileEnv] != filepath.Join("/p", ".forge", "obs", "otlp-headers-browser") {
+		t.Errorf("frontend env = %v", fe)
+	}
+	if e.Observability.AlertsPort != 0 || e.Observability.AlertmanagerPort != 0 {
+		t.Errorf("the local alerting loop must be off: %+v", e.Observability)
+	}
+	// A developer's exported endpoint wins whole for a dev server too.
+	env := withDefaultEnv([]string{"OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318"}, fe)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, frontendOTLPHeadersFileEnv+"=") {
+			t.Errorf("the browser token was pointed at a developer's own endpoint: %v", env)
+		}
+	}
+}
+
+// TestUpSessionEnsuresTheLocalEnvironmentFirst: ReportLocalSession answers
+// NotFound for an environment nothing created, so a hosted session ensures it
+// before its first report — retried until it succeeds, never on teardown.
+func TestUpSessionEnsuresTheLocalEnvironmentFirst(t *testing.T) {
+	var log strings.Builder
+	reporter := &fakeSessionReporter{}
+	s := testUpSession(reporter, &log, time.Hour)
+	ensures := 0
+	s.ensure = func(context.Context) error {
+		ensures++
+		if ensures == 1 {
+			return errors.New("control plane unavailable")
+		}
+		return nil
+	}
+	_ = s.reportLive(devTelNow)
+	_ = s.reportLive(devTelNow)
+	_ = s.reportLive(devTelNow)
+	s.stop(devTelNow)
+	if ensures != 2 {
+		t.Errorf("ensure ran %d times, want 2 (once failing, once succeeding, then never again)", ensures)
+	}
+	if n := len(reporter.snapshot()); n != 4 {
+		t.Errorf("%d reports, want 4: a failed ensure must not drop the report", n)
+	}
+	if !strings.Contains(log.String(), "control plane unavailable") {
+		t.Errorf("the ensure failure was not noted: %q", log.String())
+	}
+}

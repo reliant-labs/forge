@@ -309,3 +309,42 @@ func TestTelemetryHeaderNamesTheHostedDefault(t *testing.T) {
 		}
 	}
 }
+
+// TestTelemetryDevProxyHostedToken pins the hosted dev stack's half of the
+// /_otel proxy (forge env up, dev_telemetry): with FORGE_OTEL_HEADERS_FILE set,
+// both dev servers attach that file's headers upstream, re-reading it on every
+// request (forge renews the token in place), and never forward the page's
+// cookies to the hosted edge. Unset, the proxy is the local one.
+func TestTelemetryDevProxyHostedToken(t *testing.T) {
+	for _, output := range []string{"static", "standalone", "server"} {
+		t.Run("nextjs/"+output, func(t *testing.T) {
+			s := renderTelemetryTmpl(t, "nextjs/next.config.ts.tmpl", telemetryData(output))
+			for _, want := range []string{
+				"process.env.FORGE_OTEL_HEADERS_FILE",
+				"if (!otelHeadersFile) return Promise.resolve(otelUpstream);",
+				"for (const [k, v] of readOtelHeaders()) headers[k] = v;",
+				"delete headers.cookie;",
+				"const otel = await devOtelUpstream();",
+				"destination: `${otel}/:path*`",
+			} {
+				if !strings.Contains(s, want) {
+					t.Errorf("next.config.ts (%s) missing %q", output, want)
+				}
+			}
+		})
+	}
+	t.Run("vite-spa", func(t *testing.T) {
+		s := renderTelemetryTmpl(t, "vite-spa/vite.config.ts.tmpl", telemetryData("static"))
+		for _, want := range []string{
+			"process.env.FORGE_OTEL_HEADERS_FILE",
+			`proxy.on("proxyReq", (proxyReq) => {`,
+			`proxyReq.removeHeader("cookie");`,
+			"for (const [name, value] of readOtelHeaders()) proxyReq.setHeader(name, value);",
+			"...(OTEL_HEADERS_FILE",
+		} {
+			if !strings.Contains(s, want) {
+				t.Errorf("vite.config.ts missing %q", want)
+			}
+		}
+	})
+}

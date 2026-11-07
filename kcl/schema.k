@@ -5839,17 +5839,47 @@ schema DataAccess:
     Whatever the policy, the query runs as a read-only role that Postgres itself
     bars from `forge:secret` columns and from every write; this governs who may
     ask, not what the role can see.
+
+    `storage` is the same policy for browsing the env's buckets (forge.Bucket)
+    from the console: listing, previewing and downloading objects, under the
+    `storage:read` grant instead of `db:query`. The same three values. UNSET
+    IT FOLLOWS `db_query`, declared or defaulted, so an env that denies SQL is
+    not opened to file browsing by leaving this out:
+
+        data_access = forge.DataAccess {db_query = "audited", storage = "deny"}
+
+    Uploads are often more sensitive than rows; set `storage` when they should
+    be treated differently.
     """
     db_query?: str
+    storage?: str
 
     check:
         not db_query or db_query in _DB_QUERY_POLICIES, \
             "DataAccess.db_query '${db_query}' is not one of ${_DB_QUERY_POLICIES}: open (anyone with the env), audited (a person with the db:query grant, naming the env and a reason) or deny (nobody)"
+        not storage or storage in _DB_QUERY_POLICIES, \
+            "DataAccess.storage '${storage}' is not one of ${_DB_QUERY_POLICIES}: open (anyone with the env), audited (a person with the storage:read grant, naming the env and a reason) or deny (nobody); leave it unset to follow db_query"
 
 # The db_query policy an env resolves to: what it declared, else open for a
 # local or ephemeral env and audited for every other one.
 _data_access_db_query = lambda data_access: DataAccess, lifecycle: str -> str {
     data_access.db_query if data_access and data_access.db_query else ("open" if lifecycle in ["local", "ephemeral"] else "audited")
+}
+
+# The storage policy an env resolves to: what it declared, else its db_query
+# policy (declared or defaulted).
+_data_access_storage = lambda data_access: DataAccess, lifecycle: str -> str {
+    data_access.storage if data_access and data_access.storage else _data_access_db_query(data_access, lifecycle)
+}
+
+# Bundle.data_access as the render records it: empty when both policies are
+# audited, the default of an env with no lifecycle, so a real env's render is
+# unchanged; else db_query, plus storage only where it differs from db_query
+# (absence means "the same as db_query", never open).
+_render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str} {
+    _q = _data_access_db_query(data_access, lifecycle)
+    _s = _data_access_storage(data_access, lifecycle)
+    ({"db_query": _q} | ({"storage": _s} if _s != _q else {})) if _q != "audited" or _s != _q else {}
 }
 
 # The release-health finding codes (pkg/release Health*).

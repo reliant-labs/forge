@@ -444,6 +444,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		Applier:             doc.Shape.Applier,
 		Units:               doc.Shape.Units,
 		HostInfra:           doc.Shape.HostInfra,
+		Buckets:             doc.Shape.Buckets,
 		Store: release.StoreProjection{
 			StoreSecrets: doc.Shape.StoreSecrets, GeneratedSecrets: doc.Shape.GeneratedSecrets,
 			OpenBao: doc.Shape.OpenBao, ExternalSecretsOperators: doc.Shape.ExternalSecretsOperators,

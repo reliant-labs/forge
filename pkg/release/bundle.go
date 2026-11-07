@@ -588,6 +588,14 @@ type Shape struct {
 	// every shape recorded before the field encodes and hashes as it did.
 	// A [BundleFeatureShapePlacement] part.
 	HostInfra bool `json:"host_infra,omitempty"`
+	// Buckets are the env's object-storage buckets (forge.Bucket), every
+	// runtime, sorted by name: what the control plane's storage browser
+	// lists. Names, runtime kinds and where an unmanaged bucket is; never a
+	// credential. Omitted when the env declares none, so every shape
+	// recorded before the field encodes and hashes exactly as it did; a
+	// control plane that predates it refuses the whole shape, so it is a
+	// bundle-document feature ([BundleFeatureStorage]).
+	Buckets []ShapeBucket `json:"buckets,omitempty"`
 }
 
 // ApplierForge is [Shape.Applier] for an env forge applies by declaration. It is
@@ -1169,6 +1177,9 @@ func (s Shape) Validate() error {
 			return err
 		}
 	}
+	if err := validateShapeBuckets(s.Buckets); err != nil {
+		return err
+	}
 	if s.ReleaseHealth != nil {
 		if err := s.ReleaseHealth.canonical().validate(); err != nil {
 			return err
@@ -1352,11 +1363,12 @@ func (s Shape) Canonical() Shape {
 		}
 	}
 	if !s.DataAccess.IsDefault() {
-		da := *s.DataAccess
+		da := s.DataAccess.canonical()
 		out.DataAccess = &da
 	} else {
 		out.DataAccess = nil
 	}
+	out.Buckets = canonicalShapeBuckets(s.Buckets)
 	if s.ReleaseHealth != nil {
 		if h := s.ReleaseHealth.canonical(); !s.ReleaseHealth.IsDefault() {
 			out.ReleaseHealth = &h

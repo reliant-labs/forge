@@ -101,6 +101,9 @@ type ShapeInput struct {
 	Units []release.ShapeUnit
 	// HostInfra is whether the env declares host infrastructure.
 	HostInfra bool
+	// Buckets are every bucket the env declares, in shape vocabulary, or nil
+	// when it declares none.
+	Buckets []release.ShapeBucket
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -158,6 +161,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		Applier:             in.Applier,
 		Units:               in.Units,
 		HostInfra:           in.HostInfra,
+		Buckets:             in.Buckets,
 	}.WithStoreSecrets(in.Store).Canonical()
 }
 

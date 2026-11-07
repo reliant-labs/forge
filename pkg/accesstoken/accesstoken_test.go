@@ -264,7 +264,7 @@ func TestFeedbackLoopScopes_AreTheirOwnAuthority(t *testing.T) {
 // an org automation token carries it without acting as a person; a Reliant
 // agent's daemon-bound session credential can carry all three.
 func TestFeedbackLoopScopes_NeedNoActingUserAndRideADaemon(t *testing.T) {
-	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery} {
+	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead} {
 		if RequiresActingUser(s) {
 			t.Errorf("%s must not require an acting user", s)
 		}
@@ -277,6 +277,56 @@ func TestFeedbackLoopScopes_NeedNoActingUserAndRideADaemon(t *testing.T) {
 		if err := g.Validate(time.Now()); err != nil {
 			t.Errorf("a daemon-bound token carrying %s: %v", s, err)
 		}
+	}
+}
+
+// TestStorageRead_IsItsOwnAuthority pins storage:read: it parses, it is
+// neither implied by nor implies any other scope (db:query above all: files
+// are not rows), Covers stays exact membership, and it binds to one
+// environment and to nothing else but the acting user's daemon.
+func TestStorageRead_IsItsOwnAuthority(t *testing.T) {
+	got, ok := ParseScope("storage:read")
+	if !ok || got != ScopeStorageRead {
+		t.Fatalf("ParseScope(storage:read) = %q, %v", got, ok)
+	}
+	if _, err := NewSet([]string{"storage:read"}); err != nil {
+		t.Errorf("NewSet(storage:read): %v", err)
+	}
+	if !SetOf(ScopeStorageRead).Permits(ScopeStorageRead) {
+		t.Error("storage:read must permit itself")
+	}
+	for _, other := range AllScopes {
+		if other == ScopeStorageRead {
+			continue
+		}
+		if SetOf(other).Permits(ScopeStorageRead) {
+			t.Errorf("%s permitted storage:read", other)
+		}
+		if SetOf(ScopeStorageRead).Permits(other) {
+			t.Errorf("storage:read permitted %s", other)
+		}
+	}
+	if SetOf(ScopeDBQuery).Covers(SetOf(ScopeStorageRead)) || SetOf(ScopeStorageRead).Covers(SetOf(ScopeDBQuery)) {
+		t.Error("db:query and storage:read must not let a holder mint the other")
+	}
+	if !SetOf(ScopeTokenWrite, ScopeStorageRead).Covers(SetOf(ScopeStorageRead)) {
+		t.Error("a holder of storage:read cannot grant it")
+	}
+	now := time.Now()
+	env := &Resource{Kind: ResourceEnvironment, ID: "env-prod"}
+	bound := Grant{OrgID: "org", Name: "support", Scopes: SetOf(ScopeStorageRead), Resource: env}
+	if err := bound.Validate(now); err != nil {
+		t.Errorf("storage:read bound to an environment was refused: %v", err)
+	}
+	for _, kind := range []ResourceKind{ResourcePort, ResourceConnector} {
+		g := Grant{OrgID: "org", Name: "x", Scopes: SetOf(ScopeStorageRead), ActingUserID: "u", Resource: &Resource{Kind: kind, ID: "r"}}
+		if err := g.Validate(now); err == nil {
+			t.Errorf("storage:read accepted a %s binding", kind)
+		}
+	}
+	p := &Principal{Scopes: SetOf(ScopeStorageRead), Resource: env}
+	if !p.MayReadEnvironment("env-prod") || p.MayReadEnvironment("env-staging") {
+		t.Error("an env-bound storage:read token escaped its environment")
 	}
 }
 
@@ -598,7 +648,7 @@ func TestDaemonResume_IsOneDaemonActingAsOnePerson(t *testing.T) {
 func TestEnvironmentBinding(t *testing.T) {
 	now := time.Now()
 	env := &Resource{Kind: ResourceEnvironment, ID: "env-prod"}
-	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery} {
+	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead} {
 		bound := Grant{OrgID: "org", Name: "ci", Scopes: SetOf(s), Resource: env}
 		if err := bound.Validate(now); err != nil {
 			t.Errorf("%s bound to an environment was refused: %v", s, err)
@@ -612,7 +662,7 @@ func TestEnvironmentBinding(t *testing.T) {
 	// to an env would claim a confinement deploy does not enforce.
 	for _, s := range AllScopes {
 		switch s {
-		case ScopeObsRead, ScopeObsTriage, ScopeDBQuery:
+		case ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead:
 			continue
 		}
 		g := Grant{OrgID: "org", Name: "x", Scopes: SetOf(s), ActingUserID: "user", Resource: env}

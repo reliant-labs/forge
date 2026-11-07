@@ -30,6 +30,7 @@ var bundleFeatureKeys = map[string][]string{
 		"shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods",
 		"shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email", "shape.identity.dev_mail",
 	},
+	BundleFeatureStorage: {"shape.buckets", "shape.data_access.storage"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -140,13 +141,14 @@ func fullBundleDoc() BundleDoc {
 			OpenBao:                  &ShapeOpenBao{Name: "openbao", Namespace: "openbao", Cluster: "ctx", Image: "openbao:2"},
 			ExternalSecretsOperators: []ShapeExternalSecretsOperator{{Cluster: "ctx", Namespace: "external-secrets", Version: "2.13.0"}},
 			ControlPlaneSecrets:      []ShapeControlPlaneSecret{{Name: "reliant-otel-auth", Namespace: "app", Cluster: "ctx", ConnectedCluster: "c", Kind: ControlPlaneSecretTelemetryToken, Delivery: ControlPlaneSecretDeliveryStore}},
-			DataAccess:               &ShapeDataAccess{DBQuery: DBQueryDeny},
+			DataAccess:               &ShapeDataAccess{DBQuery: DBQueryDeny, Storage: StorageAudited},
 			ReleaseHealth:            &ShapeReleaseHealth{WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2, NewIssueMinEvents: 5, FailOn: []string{HealthErrorRate}},
 			UptimeChecks:             []ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: UptimeSourceDefault}},
 			Databases:                []ShapeDatabase{{Name: "orders", Dashboards: &ShapeDatabaseDashboards{Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1}}},
 			ExternalDatabases:        []ShapeExternalDatabase{{Name: "ledger", Cluster: "ctx", Namespace: "app", Service: "pgbouncer", Database: "ledger", Username: "ledger_ro", PasswordSecret: "ledger-ro", PasswordKey: "password", SSLMode: ExternalDatabaseSSLRequire}},
 			DeliveryPolicy:           healthGatedPolicy(),
 			Identity:                 signInIdentity(),
+			Buckets:                  []ShapeBucket{{Name: "uploads", RuntimeKind: BucketRuntimeHosted}},
 		},
 		Objects: []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		DeclaredEnvs: []DeclaredEnv{
@@ -182,6 +184,9 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
+	}
+	if !strayRoots["shape.buckets"] {
+		t.Fatalf("the full document does not stray at shape.buckets (strays %v): the fixture no longer exercises it", strays)
 	}
 
 	limited := (&BundleReader{}).Limit(full)
@@ -221,6 +226,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.HostInfra = false
 	wantShape.Workloads = []ShapeWorkload{full.Shape.Workloads[0]}
 	wantShape.Workloads[0].Unit = ""
+	wantShape.Buckets = nil
 	gateless := *full.Shape.DeliveryPolicy
 	gateless.HealthGate = nil
 	wantShape.DeliveryPolicy = &gateless
@@ -304,6 +310,20 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	placement := (&BundleReader{Features: []string{BundleFeatureShapePlacement}}).Limit(full)
 	if !placement.Shape.HostInfra || placement.Shape.Workloads[0].Unit != "base" || placement.DeclaredEnvs != nil || placement.Shape.StoreSecrets != nil {
 		t.Errorf("a reader of shape placement only: %+v", placement.Shape)
+	}
+	storage := (&BundleReader{Features: []string{BundleFeatureStorage, BundleFeatureDataAccess}}).Limit(full)
+	if len(storage.Shape.Buckets) != 1 || storage.Shape.DataAccess == nil || storage.Shape.DataAccess.Storage != StorageAudited || storage.Shape.Databases != nil {
+		t.Errorf("a reader of storage and data access: %+v", storage.Shape)
+	}
+	// A reader of data access that predates storage gets db_query alone: its
+	// strict decoder refuses the storage key, and an absent one reads as
+	// db_query's, the fallback the field defines.
+	if access := (&BundleReader{Features: []string{BundleFeatureDataAccess}}).Limit(full); access.Shape.Buckets != nil ||
+		access.Shape.DataAccess == nil || access.Shape.DataAccess.Storage != "" || access.Shape.DataAccess.DBQuery != DBQueryDeny {
+		t.Errorf("a reader of data access without storage: buckets %+v, data access %+v", access.Shape.Buckets, access.Shape.DataAccess)
+	}
+	if full.Shape.DataAccess.Storage != StorageAudited {
+		t.Fatal("Limit modified the data access of the document it was given")
 	}
 	if full.Shape.ControlPlaneSecrets[0].Delivery != ControlPlaneSecretDeliveryStore {
 		t.Fatal("Limit modified the control-plane secrets of the document it was given")

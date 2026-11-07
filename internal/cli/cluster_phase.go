@@ -1100,7 +1100,7 @@ func waitNodeReadyWhile(ctx context.Context, clusterName string, alive func(cont
 		}
 		// An untrusted certificate means the port ANSWERED, with someone
 		// else's CA: no amount of waiting changes which server that is.
-		if strings.Contains(lastOut, k3sUntrustedAPICertificate) || apiCertificateUntrusted(err) {
+		if serverCertificateUntrusted(lastOut) || apiCertificateUntrusted(err) {
 			return fmt.Errorf("%w (context %s)%s\n%s", errAPICertificateUntrusted, kctx,
 				formatCommandStderr(lastOut), untrustedAPICertificateRemedy(clusterName))
 		}

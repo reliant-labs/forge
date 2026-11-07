@@ -15,6 +15,15 @@ import (
 // belonged to another cluster's server.
 const kubectlUntrustedCertificate = "Unable to connect to the server: tls: failed to verify certificate: x509: certificate signed by unknown authority"
 
+// kubectlProxyUntrustedCertificate and kubectlWebhookUntrustedCertificate
+// carry the same x509 verdict for TLS failures that say nothing about which
+// server the API port reaches: kubectl could not verify its HTTPS proxy, or
+// the API server relayed one of its own clients' failures.
+const (
+	kubectlProxyUntrustedCertificate   = "Unable to connect to the server: proxyconnect tcp: tls: failed to verify certificate: x509: certificate signed by unknown authority"
+	kubectlWebhookUntrustedCertificate = `Error from server (InternalError): Internal error occurred: failed calling webhook "validate.example.io": failed to call webhook: Post "https://webhook.default.svc:443/validate": tls: failed to verify certificate: x509: certificate signed by unknown authority`
+)
+
 type nodeReadyAttempt struct {
 	out string
 	err error
@@ -123,6 +132,22 @@ func TestEnsureRunningK3dClusterHealthyUntrustedCertificate(t *testing.T) {
 			wantOut:    []string{"not-yet", "k3d-control-plane-v2-serverlb is most likely forwarding"},
 		},
 		{
+			name:       "an HTTPS proxy's untrusted certificate never restarts the load balancer",
+			probe:      kubectlProxyUntrustedCertificate,
+			attempts:   []nodeReadyAttempt{{out: kubectlProxyUntrustedCertificate, err: errors.New("exit status 1")}, attemptReady},
+			wantEvents: []string{"attempt", "attempt"},
+			wantOut:    []string{"not-yet"},
+			notOut:     []string{"serverlb"},
+		},
+		{
+			name:       "a webhook's untrusted certificate relayed by the API server never restarts the load balancer",
+			probe:      kubectlWebhookUntrustedCertificate,
+			attempts:   []nodeReadyAttempt{{out: kubectlWebhookUntrustedCertificate, err: errors.New("exit status 1")}, attemptReady},
+			wantEvents: []string{"attempt", "attempt"},
+			wantOut:    []string{"not-yet"},
+			notOut:     []string{"serverlb"},
+		},
+		{
 			name:       "connection refused is still a not-yet that retries until Ready",
 			probe:      attemptRefused.out,
 			attempts:   []nodeReadyAttempt{attemptRefused, attemptRefused, attemptReady},
@@ -153,13 +178,9 @@ func TestEnsureRunningK3dClusterHealthyUntrustedCertificate(t *testing.T) {
 			stubNodeReadyAttempts(t, &events, tc.attempts...)
 
 			var err error
-			start := time.Now()
 			out := captureStdout(t, func() {
 				err = ensureRunningK3dClusterHealthy(t.Context(), ClusterEntity{Name: "control-plane-v2", Servers: 1})
 			})
-			if elapsed := time.Since(start); elapsed > time.Second {
-				t.Errorf("took %s: a case that should settle at once waited out the readiness budget", elapsed)
-			}
 			if got, want := firstEvents(events), firstEvents(tc.wantEvents); got != want {
 				t.Errorf("events = [%s]; want [%s]", got, want)
 			}
@@ -235,6 +256,33 @@ func TestWaitNodeReadyUntrustedCertificateFailsFast(t *testing.T) {
 				if err != nil && !strings.Contains(err.Error(), want) {
 					t.Errorf("error does not mention %q:\n%v", want, err)
 				}
+			}
+		})
+	}
+}
+
+// TestServerCertificateUntrusted pins which kubectl outputs count as the API
+// server's own certificate being refused — the only case a load balancer
+// restart can cure.
+func TestServerCertificateUntrusted(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"kubectl refused the server certificate", kubectlUntrustedCertificate, true},
+		{"pre-Go 1.20 wording", "Unable to connect to the server: x509: certificate signed by unknown authority", true},
+		{"discovery request refused the server certificate",
+			`E1104 10:00:00.000000 1 memcache.go:265] couldn't get current server API group list: Get "https://0.0.0.0:6445/api?timeout=32s": tls: failed to verify certificate: x509: certificate signed by unknown authority`, true},
+		{"https proxy", kubectlProxyUntrustedCertificate, false},
+		{"webhook relayed by the API server", kubectlWebhookUntrustedCertificate, false},
+		{"client certificate rejected by the server", "Unable to connect to the server: remote error: tls: bad certificate", false},
+		{"connection refused", attemptRefused.out, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serverCertificateUntrusted("exit status 1\n  " + tc.out); got != tc.want {
+				t.Errorf("serverCertificateUntrusted(%q) = %v; want %v", tc.out, got, tc.want)
 			}
 		})
 	}

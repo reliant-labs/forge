@@ -193,7 +193,34 @@ func apiCertificateUntrusted(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errors.Is(err, errAPICertificateUntrusted) || strings.Contains(err.Error(), k3sUntrustedAPICertificate)
+	return errors.Is(err, errAPICertificateUntrusted) || serverCertificateUntrusted(err.Error())
+}
+
+// serverCertificateUntrusted reports whether kubectl's output says that
+// kubectl ITSELF refused the API server's certificate. The x509 verdict alone
+// is not enough: kubectl prints the same text for TLS failures that say
+// nothing about which server the API port reaches — an HTTPS proxy it could
+// not verify ("proxyconnect tcp: ..."), or an error the API server relayed
+// from one of its own TLS clients, such as a webhook ("Error from server
+// ..."). Restarting the load balancer cures neither, so only a line whose
+// verdict follows kubectl's own connection failure, or Go's server-certificate
+// verification, counts.
+func serverCertificateUntrusted(out string) bool {
+	for line := range strings.SplitSeq(out, "\n") {
+		i := strings.Index(line, k3sUntrustedAPICertificate)
+		if i < 0 {
+			continue
+		}
+		prefix := line[:i]
+		if strings.Contains(prefix, "proxyconnect") || strings.Contains(prefix, "Error from server") {
+			continue
+		}
+		if strings.HasSuffix(prefix, "Unable to connect to the server: ") ||
+			strings.HasSuffix(prefix, "tls: failed to verify certificate: ") {
+			return true
+		}
+	}
+	return false
 }
 
 // untrustedAPICertificateRemedy names both causes of errAPICertificateUntrusted

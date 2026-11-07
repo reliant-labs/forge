@@ -64,7 +64,8 @@ points back into `src/`, or if `src` reappears in `files`.
 ### One `.d.ts` for React 18 and 19
 
 `peerDependencies` declares `react: "^18.3.0 || ^19.0.0"`, and both halves are
-real: forge's Next.js and Vite scaffolds are on 19, its Expo scaffold on 18.3.
+real: forge's Next.js, Vite and Expo (SDK 58) scaffolds are on 19; an Expo
+app still on SDK 52 pins 18.3 and keeps working until it migrates.
 
 The two `@types/react` majors disagree about where `JSX.Element` lives — 19
 declares it inside the `react` module, 18.3 declares it globally and
@@ -313,12 +314,13 @@ when the package published its sources. That is no longer why it exists — see
 now. It stays because dead components in a mobile bundle is a separate and
 still-real cost.)
 
-React Native resolvers predate `exports`: Expo SDK 52 / React Native 0.76 runs
+Older React Native resolvers predate `exports`: Expo SDK 52 / React Native 0.76 runs
 Metro with `unstable_enablePackageExports` off, and `expo/tsconfig.base` sets
 `moduleResolution: node10`. Neither reads the `exports` map. The
 `interceptors/package.json` directory shim is what they resolve instead — same
-build output, reached the old way. Delete it and mobile breaks while web keeps
-working.
+build output, reached the old way. Expo SDK 53+ (React Native 0.79) resolves
+`exports` natively, so the forge SDK 58 scaffold no longer needs it, but apps still
+on SDK 52 do: delete it and they break while web keeps working.
 
 ## Money and basis points
 

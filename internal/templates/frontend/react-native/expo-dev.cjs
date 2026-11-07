@@ -1,5 +1,5 @@
 // App-owned Forge dev entrypoint. Customize here; regeneration leaves it alone.
-// Expo SDK 52 reads --port / RCT_METRO_PORT, not Forge's PORT.
+// Expo reads --port / RCT_METRO_PORT, not Forge's PORT (verified in @expo/cli 58.1.19).
 function devArgs(args, port) {
   if (!port) return ["start", ...args];
   if (!/^[0-9]+$/.test(port) || Number(port) < 1 || Number(port) > 65535) {

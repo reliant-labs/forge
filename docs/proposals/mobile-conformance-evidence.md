@@ -65,6 +65,26 @@ be claimed as a pass. Independent source review found no remaining concrete
 blockers after its request-assertion, export-alias and packed-workspace findings
 were addressed.
 
+## SDK 58 upgrade slice
+
+The stacked SDK slice moves fresh native scaffolds to Expo 58.0.23's bundled
+matrix (React/React DOM 19.3.0, React Native 0.88.1, Router ~58.0.30), with
+TypeScript ~6.0.3, Jest 30 and `@react-native/jest-preset` per Expo's SDK 58
+template and peers. Workarounds were removed only with evidence: Metro package
+exports and workspace-root resolution are SDK defaults; `query-string`,
+`newArchEnabled`, `baseUrl`/explicit resolver and hoisted linking are obsolete.
+`@babel/runtime`, the runtime devlink Metro block and direct `react-dom` remain.
+The ui-native Input ref is derived from `TextInput`, verified to typecheck against
+both React Native 0.76.9 and 0.88.1 types, so new shared packages do not break
+apps still on SDK 52.
+
+On final SDK 58 source all five consumer cases passed (146.246 seconds), with the
+scoped config/codegen/generator/template/component suites and `go build ./...`.
+A one-off scaffolded standalone app reported `expo install --check` up to date and
+`expo-doctor` 20/20; those Expo checks are not yet part of the automated fixture.
+The SDK 52-to-58 migration path for existing apps was not executed: guidance
+requires one SDK at a time and does not claim a validated direct jump.
+
 ## Explicit remaining gates
 
 - True adopted-app ingress: a customized scaffold is preservation coverage, not
@@ -74,8 +94,8 @@ were addressed.
 - Backend-only `project new --frontend-workspaces` does not persist a complete
   workspace before a frontend exists; this fixture initializes the canonical
   workspace emitter explicitly. It does not certify that CLI onboarding path.
-- Latest SDK selection/upgrade, Expo Doctor, native Xcode/Gradle builds, Hermes on
-  device, streaming/cancellation and network/lifecycle behavior.
+- Executed existing-app SDK migration, automated Expo Doctor, native Xcode/Gradle
+  builds, Hermes on device, streaming/cancellation and network/lifecycle behavior.
 - Real native identity, secure storage/account isolation, device logs/crashes,
   store publication, signed OTA and health/recovery evidence.
 

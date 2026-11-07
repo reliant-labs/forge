@@ -23,6 +23,27 @@ const (
 	// ScopeDeployWrite mutates it (releases, environments, publish,
 	// promote). Implies deploy:read at the point of use.
 	ScopeDeployWrite Scope = "deploy:write"
+	// ScopeDeployConfigRead reads the VALUES of a release's rendered
+	// configuration: a workload's plain env var values and its rendered
+	// manifest, read on demand from the bundle that applied and redacted
+	// (release.RedactObject) before it leaves the server. deploy:read sees
+	// the same configuration by NAME only.
+	//
+	// ITS OWN SCOPE, NOT A DEPLOY READ. A plain env value can be sensitive by
+	// accident (a DSN with a password, a token pasted into `value:`), which
+	// is why every ledger row, shape and summary keeps names only; showing
+	// values is a deliberate widening, granted and audited. So it implies
+	// nothing and nothing implies it:
+	//
+	//   - not deploy:write. Shipping a release is not reading what it
+	//     carries, and the org CI token that deploys every env must not
+	//     become a way to read every env's config. Every write path reads
+	//     deploy STATE first (hence write-implies-read); none reads values.
+	//   - not deploy:read either way. deploy:read is org-wide and has no
+	//     environment confinement to honour, while this scope may be bound to
+	//     one environment (like db:query); implying deploy:read would let an
+	//     env-confined token read every env's deploy state.
+	ScopeDeployConfigRead Scope = "deploy:config:read"
 
 	// ScopeBillingRead reads the org's billing-backed cost and usage. It grants
 	// no billing management rights and is not implied by deploy or telemetry
@@ -228,6 +249,7 @@ const (
 var AllScopes = []Scope{
 	ScopeDeployRead,
 	ScopeDeployWrite,
+	ScopeDeployConfigRead,
 	ScopeBillingRead,
 	ScopeClusterManage,
 	ScopeTokenRead,

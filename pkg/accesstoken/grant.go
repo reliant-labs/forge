@@ -26,8 +26,9 @@ const (
 	ResourceConnector ResourceKind = "connector"
 	// ResourceEnvironment binds to one environment id: a CI token that may
 	// read one env's telemetry (obs:read), triage its issues (obs:triage),
-	// query its database (db:query) or read its object storage
-	// (storage:read), and no other env of the org.
+	// query its database (db:query), read its object storage
+	// (storage:read) or read its rendered config values
+	// (deploy:config:read), and no other env of the org.
 	ResourceEnvironment ResourceKind = "environment"
 )
 
@@ -77,6 +78,9 @@ var scopeResourceRules = map[Scope]struct {
 	// storage:read is db:query's twin for object storage: an org-wide token
 	// or one confined to one env's buckets.
 	ScopeStorageRead: {kind: ResourceEnvironment, required: false},
+	// deploy:config:read reads one env's config values when bound: a
+	// support token can see prod's config without seeing staging's.
+	ScopeDeployConfigRead: {kind: ResourceEnvironment, required: false},
 }
 
 // admitsOnDaemon reports whether scope may ride a token bound to a DAEMON:

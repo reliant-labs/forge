@@ -78,11 +78,17 @@ type lifecycleTarget struct {
 	Client        cloudCaller
 	EnvironmentID string
 	Endpoint      string
+	// Name and Project are the control plane's record of the env, shown
+	// before a delete. Name is "" when the resolver did not read it.
+	Name, Project string
 }
 
 // resolveLifecycleTarget is a seam so tests drive the verbs against a fake
 // control plane without rendering KCL.
 var resolveLifecycleTarget = resolveDeclaredLifecycleTarget
+
+// resolveLifecycleTargetByID is resolveLifecycleTarget for `env delete --id`.
+var resolveLifecycleTargetByID = resolveLifecycleTargetFromID
 
 // lifecycleInteractive reports whether forge may prompt. A seam for tests.
 var lifecycleInteractive = func() bool { return cliutil.StdinIsTTY() && !buildinfo.IsCI() }
@@ -193,35 +199,11 @@ func envDeclared(projectDir, env string) bool {
 // endpoint picks among those; without it the project must be bound to exactly
 // one. Nothing — not the credential, not the lookup — is sent to any other host.
 func resolveUndeclaredLifecycleTarget(ctx context.Context, projectDir, env, flagToken, endpoint string) (lifecycleTarget, error) {
-	url := strings.TrimSpace(endpoint)
-	if url != "" {
-		if err := checkLifecycleEndpoint(url); err != nil {
-			return lifecycleTarget{}, err
-		}
-	}
-	bound, err := boundHostedEndpoints(projectDir)
+	url, err := undeclaredControlPlane(projectDir, endpoint,
+		fmt.Sprintf("env %q is not declared (no deploy/kcl/%s/)", env, env), "forge env delete "+env,
+		fmt.Sprintf("; if %q is a typo, the declared envs are the directories under deploy/kcl/", env))
 	if err != nil {
 		return lifecycleTarget{}, err
-	}
-	if url != "" {
-		if err := checkEndpointUsedByProject(url, bound); err != nil {
-			return lifecycleTarget{}, err
-		}
-	}
-	if url == "" {
-		switch len(bound) {
-		case 1:
-			url = bound[0]
-		case 0:
-			return lifecycleTarget{}, fmt.Errorf("env %q is not declared (no deploy/kcl/%s/), and this project records no hosted control plane (%s) to look it up on\n"+
-				"fix: name the control plane that holds it: `forge env delete %s --endpoint %s` (Reliant cloud); "+
-				"if %q is a typo, the declared envs are the directories under deploy/kcl/",
-				env, env, hostedProjectBindingFile, env, cloud.DefaultEndpoint, env)
-		default:
-			return lifecycleTarget{}, fmt.Errorf("env %q is not declared (no deploy/kcl/%s/), and this project is bound to %d control planes (%s): %s\n"+
-				"fix: name the one that holds it: `forge env delete %s --endpoint <url>`",
-				env, env, len(bound), hostedProjectBindingFile, strings.Join(bound, ", "), env)
-		}
 	}
 	fmt.Fprintf(os.Stderr, "  note: env %q is not declared (no deploy/kcl/%s/); looking it up by name on %s\n", env, env, url)
 	ep, err := projectEndpoint(env, &cloud.Declaration{Endpoint: url})
@@ -234,6 +216,167 @@ func resolveUndeclaredLifecycleTarget(ctx context.Context, projectDir, env, flag
 			env, env, ep.URL, ep.ProjectName)
 	}
 	return t, err
+}
+
+// undeclaredControlPlane picks the control plane to look an env up on when no
+// KCL names it: endpoint (--endpoint), which must be a control plane this
+// project has used, or else the one control plane the project is bound to.
+// lead says why there is no declaration, retry is the command a fix re-runs
+// with --endpoint, and hint ends the no-binding fix. Nothing is contacted.
+func undeclaredControlPlane(projectDir, endpoint, lead, retry, hint string) (string, error) {
+	url := strings.TrimSpace(endpoint)
+	if url != "" {
+		if err := checkLifecycleEndpoint(url); err != nil {
+			return "", err
+		}
+	}
+	bound, err := boundHostedEndpoints(projectDir)
+	if err != nil {
+		return "", err
+	}
+	if url != "" {
+		if err := checkEndpointUsedByProject(url, bound); err != nil {
+			return "", err
+		}
+		return url, nil
+	}
+	switch len(bound) {
+	case 1:
+		return bound[0], nil
+	case 0:
+		return "", fmt.Errorf("%s, and this project records no hosted control plane (%s) to look it up on\n"+
+			"fix: name the control plane that holds it: `%s --endpoint %s` (Reliant cloud)%s",
+			lead, hostedProjectBindingFile, retry, cloud.DefaultEndpoint, hint)
+	default:
+		return "", fmt.Errorf("%s, and this project is bound to %d control planes (%s): %s\n"+
+			"fix: name the one that holds it: `%s --endpoint <url>`",
+			lead, len(bound), hostedProjectBindingFile, strings.Join(bound, ", "), retry)
+	}
+}
+
+// resolveLifecycleTargetFromID resolves `forge env delete --id <id>`: the
+// environment the control plane knows by that id, read with GetEnvironment on
+// the control plane undeclaredControlPlane picks. An id names the env exactly
+// where a name may not (a typo, a recreated env), and it is what the Reliant
+// UI shows.
+//
+// It is refused, before anything is deleted, when the env belongs to another
+// project, when env (the optional name argument) is not its name, and when
+// this project still declares it: a declared env is deleted by name, through
+// its KCL, which is what refuses an env with cluster parts.
+func resolveLifecycleTargetFromID(ctx context.Context, id, env, flagToken, endpoint string) (lifecycleTarget, error) {
+	id = strings.TrimSpace(id)
+	if env != "" {
+		if err := checkLifecycleEnvName(env); err != nil {
+			return lifecycleTarget{}, err
+		}
+	}
+	projectDir := projectDirForKCL()
+	url, err := undeclaredControlPlane(projectDir, endpoint,
+		fmt.Sprintf("environment %q is looked up by id", id), "forge env delete --id "+id, "")
+	if err != nil {
+		return lifecycleTarget{}, err
+	}
+	fmt.Fprintf(os.Stderr, "  note: looking up environment id %q on %s\n", id, url)
+	ep, err := projectEndpoint(env, &cloud.Declaration{Endpoint: url})
+	if err != nil {
+		return lifecycleTarget{}, err
+	}
+	cred, err := cloud.ResolveCredential(flagToken, ep)
+	if err != nil {
+		return lifecycleTarget{}, err
+	}
+	client := cloud.NewClient(ep, cred)
+	he, err := deploytarget.GetHostedEnvironment(ctx, client, id)
+	if errors.Is(err, deploytarget.ErrHostedEnvironmentNotFound) {
+		return lifecycleTarget{}, fmt.Errorf("%s has no hosted env with id %q in your organization: nothing to delete", ep.URL, id)
+	}
+	if err != nil {
+		return lifecycleTarget{}, err
+	}
+	if project := hostedProjectName(); he.Project != "" && he.Project != project {
+		return lifecycleTarget{}, fmt.Errorf("environment %q (%s) belongs to project %q, not this project (%q); nothing was deleted\n"+
+			"fix: run `forge env delete --id %s` from that project's checkout", id, he.Name, he.Project, project, id)
+	}
+	if env != "" && he.Name != env {
+		return lifecycleTarget{}, fmt.Errorf("environment %q is named %q on %s, not %q; nothing was deleted\n"+
+			"fix: drop the name, or name the env the id belongs to", id, he.Name, ep.URL, env)
+	}
+	if envDeclared(projectDir, he.Name) {
+		return lifecycleTarget{}, fmt.Errorf("environment %q is env %q, which this project still declares (deploy/kcl/%s/)\n"+
+			"fix: delete a declared env by name: `forge env delete %s`", id, he.Name, he.Name, he.Name)
+	}
+	return lifecycleTarget{Client: client, EnvironmentID: he.ID, Endpoint: ep.URL, Name: he.Name, Project: he.Project}, nil
+}
+
+// runEnvListOrphaned is `forge env list --orphaned`: the hosted envs of this
+// project, on the control planes it has used, that deploy/kcl/ does not
+// declare. Those are what `forge env delete <env>` reaches by name alone.
+func runEnvListOrphaned(ctx context.Context, projectDir, flagToken, endpoint string, out io.Writer) error {
+	var urls []string
+	if url := strings.TrimSpace(endpoint); url != "" {
+		if err := checkLifecycleEndpoint(url); err != nil {
+			return err
+		}
+		bound, err := boundHostedEndpoints(projectDir)
+		if err != nil {
+			return err
+		}
+		if err := checkEndpointUsedByProject(url, bound); err != nil {
+			return err
+		}
+		urls = []string{url}
+	} else {
+		bound, err := boundHostedEndpoints(projectDir)
+		if err != nil {
+			return err
+		}
+		if len(bound) == 0 {
+			return fmt.Errorf("this project records no hosted control plane (%s) to ask for its envs\n"+
+				"fix: name one: `forge env list --orphaned --endpoint %s` (Reliant cloud)", hostedProjectBindingFile, cloud.DefaultEndpoint)
+		}
+		urls = bound
+	}
+	project := hostedProjectName()
+	tw := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
+	found := 0
+	for _, url := range urls {
+		ep, err := projectEndpoint("", &cloud.Declaration{Endpoint: url})
+		if err != nil {
+			return err
+		}
+		cred, err := cloud.ResolveCredential(flagToken, ep)
+		if err != nil {
+			return err
+		}
+		envs, err := deploytarget.ListHostedEnvironments(ctx, cloud.NewClient(ep, cred), project)
+		if err != nil {
+			return fmt.Errorf("%s: %w", url, err)
+		}
+		for _, e := range envs {
+			if envDeclared(projectDir, e.Name) {
+				continue
+			}
+			if found == 0 {
+				fmt.Fprintln(tw, "ENV\tID\tCONTROL PLANE")
+			}
+			found++
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", e.Name, e.ID, url)
+		}
+	}
+	if found == 0 {
+		fmt.Fprintf(out, "no orphaned hosted envs: every env of project %q on %s is declared under deploy/kcl/\n", project, strings.Join(urls, ", "))
+		return nil
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	retry := "forge env delete <env>"
+	if len(urls) > 1 {
+		retry += " --endpoint <control plane>"
+	}
+	fmt.Fprintf(out, "\n%d hosted env(s) of project %q are not declared under deploy/kcl/. Delete one: %s\n", found, project, retry)
+	return nil
 }
 
 // checkLifecycleEndpoint refuses an --endpoint that the user's credential must
@@ -322,11 +465,11 @@ func lifecycleTargetAt(ctx context.Context, env string, ep cloud.Endpoint, flagT
 		return lifecycleTarget{}, err
 	}
 	client := cloud.NewClient(ep, cred)
-	id, err := deploytarget.LookupHostedEnvironment(ctx, client, hostedProjectName(), env)
+	he, err := deploytarget.FindHostedEnvironment(ctx, client, hostedProjectName(), env)
 	if err != nil {
 		return lifecycleTarget{}, err
 	}
-	return lifecycleTarget{Client: client, EnvironmentID: id, Endpoint: ep.URL}, nil
+	return lifecycleTarget{Client: client, EnvironmentID: he.ID, Endpoint: ep.URL, Name: he.Name, Project: he.Project}, nil
 }
 
 func listLifecycleDeployments(ctx context.Context, c cloudCaller, envID string) ([]lifecycleDeployment, error) {
@@ -565,9 +708,9 @@ An env that is not hosted is refused.`)
 
 func newEnvDeleteCmd() *cobra.Command {
 	var yes, keepData bool
-	var token, endpoint string
+	var token, endpoint, id string
 	cmd := &cobra.Command{
-		Use:   "delete <environment>",
+		Use:   "delete <environment> | --id <environment-id>",
 		Short: "Tear down a HOSTED environment on the control plane (destructive)",
 		Long: `Delete a hosted environment and everything it runs on the control plane: its
 deployments, workloads, URLs, Flux objects, custom resources, namespaces AND
@@ -592,30 +735,108 @@ must be one of those bindings or Reliant cloud:
 
   forge env delete prod-web --endpoint https://admin.reliantapi.com
 
+--id names the environment by the control plane's id instead (the Reliant UI
+shows it), for an undeclared env whose name is ambiguous or unknown. It is
+looked up the same way, on a control plane this project has used; a name given
+beside it must match. ` + "`forge env list --orphaned`" + ` lists the hosted envs this
+project no longer declares.
+
+Before asking for confirmation it shows what will be deleted: the env's id,
+project, control plane, deployments and bound custom domains. The control
+plane refuses to delete an env while a custom domain is bound to it.
+
 Only hosted environments: for a local stack use ` + "`forge env down`" + `, which never
 deletes anything on a control plane and which this command never uses.`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			env := args[0]
+			var env string
+			if len(args) == 1 {
+				env = args[0]
+			}
+			id = strings.TrimSpace(id)
+			if env == "" && id == "" {
+				return fmt.Errorf("name the environment to delete\n" +
+					"fix: `forge env delete <environment>`, or `forge env delete --id <environment-id>`")
+			}
+			subject := env
+			if subject == "" {
+				subject = id
+			}
 			// Fail fast, before any network: a non-interactive run without
 			// --yes must never hang on a prompt.
 			if !yes && !lifecycleInteractive() {
 				return fmt.Errorf("refusing to delete env %q without confirmation: no interactive terminal (or CI is set)\n"+
-					"fix: re-run with `--yes` to confirm non-interactively", env)
+					"fix: re-run with `--yes` to confirm non-interactively", subject)
 			}
-			t, err := resolveLifecycleTarget(cmd.Context(), env, "delete", token, endpoint)
+			var t lifecycleTarget
+			var err error
+			if id != "" {
+				t, err = resolveLifecycleTargetByID(cmd.Context(), id, env, token, endpoint)
+			} else {
+				t, err = resolveLifecycleTarget(cmd.Context(), env, "delete", token, endpoint)
+			}
 			if err != nil {
 				return err
 			}
+			if t.Name != "" {
+				env = t.Name
+			}
 			return runEnvDelete(cmd.Context(), t.Client, t.EnvironmentID, env,
-				envDeleteOptions{Yes: yes, KeepData: keepData}, lifecycleStdin, cmd.OutOrStdout())
+				envDeleteOptions{Yes: yes, KeepData: keepData, Project: t.Project, Endpoint: t.Endpoint}, lifecycleStdin, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm the deletion without the typed-name prompt (required when non-interactive)")
 	cmd.Flags().BoolVar(&keepData, "keep-data", false, "Keep the environment's managed databases (retained, still billed as storage) instead of destroying them")
 	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Control plane holding an env that is no longer declared under deploy/kcl/: one this project is bound to (.forge/hosted-projects.json) or Reliant cloud; https, or http to localhost only (default: the one this project is bound to)")
+	cmd.Flags().StringVar(&id, "id", "", "Delete the hosted environment with this control-plane id (an env no longer declared under deploy/kcl/); a name given beside it must match")
 	return cmd
+}
+
+// writeEnvDeleteSummary is the head of the delete preview: which env, exactly,
+// and what is bound to it. A bound custom domain is listed with the fix,
+// because the control plane refuses the delete while it stays bound (control
+// plane #1547); a control plane that cannot list domains is said, not fatal.
+func writeEnvDeleteSummary(ctx context.Context, c cloudCaller, out io.Writer, envID string, opts envDeleteOptions, deployments int) {
+	fmt.Fprintf(out, "  id:             %s\n", envID)
+	if opts.Project != "" {
+		fmt.Fprintf(out, "  project:        %s\n", opts.Project)
+	}
+	if opts.Endpoint != "" {
+		fmt.Fprintf(out, "  control plane:  %s\n", opts.Endpoint)
+	}
+	fmt.Fprintf(out, "  deployments:    %d\n", deployments)
+	hosts, err := boundDomainHostnames(ctx, c, envID)
+	switch {
+	case err != nil:
+		fmt.Fprintf(out, "  custom domains: could not be read (%v)\n", err)
+	case len(hosts) == 0:
+		fmt.Fprintln(out, "  custom domains: none bound")
+	default:
+		fmt.Fprintf(out, "  custom domains: %s\n", strings.Join(hosts, ", "))
+		fmt.Fprintln(out, "  note: the control plane refuses to delete an env while a custom domain is bound to it; unbind each first:")
+		for _, h := range hosts {
+			fmt.Fprintf(out, "    forge domain unbind %s --env <env>   (<env>: any env this project declares on this control plane)\n", h)
+		}
+	}
+}
+
+// boundDomainHostnames lists, sorted, the custom domains bound to envID.
+func boundDomainHostnames(ctx context.Context, c cloudCaller, envID string) ([]string, error) {
+	var resp struct {
+		Domains []domainWire `json:"domains"`
+	}
+	if err := c.Call(ctx, procListDomains, map[string]any{}, &resp); err != nil {
+		return nil, err
+	}
+	var hosts []string
+	for _, d := range resp.Domains {
+		if d.Binding != nil && d.Binding.EnvironmentID == envID && d.Hostname != "" {
+			hosts = append(hosts, d.Hostname)
+		}
+	}
+	slices.Sort(hosts)
+	return hosts, nil
 }
 
 // envDeleteOptions are the caller's decisions about one `forge env delete`.
@@ -625,6 +846,8 @@ type envDeleteOptions struct {
 	// KeepData retains the environment's managed databases. Off, the control
 	// plane destroys them with everything else.
 	KeepData bool
+	// Project and Endpoint describe the env in the preview; "" omits them.
+	Project, Endpoint string
 }
 
 func runEnvDelete(ctx context.Context, c cloudCaller, envID, env string, opts envDeleteOptions, in io.Reader, out io.Writer) error {
@@ -633,6 +856,7 @@ func runEnvDelete(ctx context.Context, c cloudCaller, envID, env string, opts en
 		return err
 	}
 	fmt.Fprintf(out, "This will delete hosted env %q from the control plane:\n", env)
+	writeEnvDeleteSummary(ctx, c, out, envID, opts, len(ds))
 	writeDeploymentStates(out, ds)
 	if opts.KeepData {
 		fmt.Fprintln(out, "\nRemoved: the environment, its deployments, workloads, URLs, Flux objects, custom resources and namespaces.")

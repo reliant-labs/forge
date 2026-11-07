@@ -50,11 +50,26 @@ func newEnvCmd() *cobra.Command {
 // newEnvListCmd enumerates the environments declared under deploy/kcl/ —
 // one directory per env, each carrying a main.k.
 func newEnvListCmd() *cobra.Command {
+	var orphaned bool
+	var token, endpoint string
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List the environments declared in deploy/kcl/",
-		Args:  cobra.NoArgs,
+		Long: `List the environments declared in deploy/kcl/: one directory per env, each
+carrying a main.k. Reads nothing but the checkout.
+
+--orphaned asks the control plane instead: it lists the hosted envs of this
+project that deploy/kcl/ no longer declares (an env outlives its directory),
+on each control plane this project is bound to (.forge/hosted-projects.json),
+or on the one --endpoint names. Each is deletable with ` + "`forge env delete <env>`" + `.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if orphaned {
+				return runEnvListOrphaned(cmd.Context(), projectDirForKCL(), token, endpoint, cmd.OutOrStdout())
+			}
+			if token != "" || endpoint != "" {
+				return fmt.Errorf("--token and --endpoint apply only with --orphaned, which asks a control plane\nfix: add --orphaned, or drop them")
+			}
 			base := filepath.Join(projectDirForKCL(), "deploy", "kcl")
 			entries, err := os.ReadDir(base)
 			if err != nil {
@@ -80,5 +95,8 @@ func newEnvListCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&orphaned, "orphaned", false, "List the hosted envs on the control plane that deploy/kcl/ no longer declares")
+	cmd.Flags().StringVar(&token, "token", "", "With --orphaned: credential to use, ahead of the env var and the credentials file")
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "With --orphaned: the control plane to ask, one this project is bound to or Reliant cloud (default: every one it is bound to)")
 	return cmd
 }

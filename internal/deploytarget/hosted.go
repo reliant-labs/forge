@@ -181,6 +181,7 @@ const (
 	procEnsureEnvironment = "controlplane.v1.DeployService/EnsureEnvironment"
 	procGetStatus         = "controlplane.v1.DeployService/GetStatus"
 	procListEnvironments  = "controlplane.v1.DeployService/ListEnvironments"
+	procGetEnvironment    = "controlplane.v1.DeployService/GetEnvironment"
 )
 
 type wireEnvironment struct {
@@ -408,6 +409,60 @@ func (r HostedEnvRef) DeclaresShape() bool { return r.Shape != nil }
 func LookupHostedEnvironment(ctx context.Context, c HostedCaller, project, envName string) (string, error) {
 	env, err := lookupHostedEnvironment(ctx, c, project, envName)
 	return env.ID, err
+}
+
+// HostedEnvironment is a control-plane environment's identity: what a verb
+// that acts on it shows the user before it does.
+type HostedEnvironment struct {
+	ID      string
+	Name    string
+	Project string
+}
+
+// FindHostedEnvironment is LookupHostedEnvironment with the environment's
+// identity, not only its id.
+func FindHostedEnvironment(ctx context.Context, c HostedCaller, project, envName string) (HostedEnvironment, error) {
+	env, err := lookupHostedEnvironment(ctx, c, project, envName)
+	return HostedEnvironment{ID: env.ID, Name: env.Name, Project: env.Project}, err
+}
+
+// GetHostedEnvironment reads one environment by the control plane's id. An
+// id the caller's org does not hold is ErrHostedEnvironmentNotFound.
+func GetHostedEnvironment(ctx context.Context, c HostedCaller, id string) (HostedEnvironment, error) {
+	var resp struct {
+		Environment wireEnvironment `json:"environment"`
+	}
+	if err := c.Call(ctx, procGetEnvironment, map[string]any{"environmentId": id}, &resp); err != nil {
+		var cerr *cloud.Error
+		if errors.As(err, &cerr) && cerr.HasCode(cloud.CodeNotFound) {
+			return HostedEnvironment{}, fmt.Errorf("%w with id %q", ErrHostedEnvironmentNotFound, id)
+		}
+		return HostedEnvironment{}, fmt.Errorf("read hosted environment %q: %w", id, err)
+	}
+	e := resp.Environment
+	if strings.TrimSpace(e.ID) == "" {
+		return HostedEnvironment{}, fmt.Errorf("%w with id %q", ErrHostedEnvironmentNotFound, id)
+	}
+	return HostedEnvironment{ID: e.ID, Name: e.Name, Project: e.Project}, nil
+}
+
+// ListHostedEnvironments lists the caller's environments of project. Rows
+// that state another project, or none, are left out: a row with no project
+// predates the dimension and cannot be shown to be this project's.
+func ListHostedEnvironments(ctx context.Context, c HostedCaller, project string) ([]HostedEnvironment, error) {
+	var resp struct {
+		Environments []wireEnvironment `json:"environments"`
+	}
+	if err := c.Call(ctx, procListEnvironments, map[string]any{"project": project}, &resp); err != nil {
+		return nil, fmt.Errorf("list hosted environments: %w", err)
+	}
+	out := make([]HostedEnvironment, 0, len(resp.Environments))
+	for _, e := range resp.Environments {
+		if e.Project == project && strings.TrimSpace(e.ID) != "" {
+			out = append(out, HostedEnvironment{ID: e.ID, Name: e.Name, Project: e.Project})
+		}
+	}
+	return out, nil
 }
 
 func lookupHostedEnvironment(ctx context.Context, c HostedCaller, project, envName string) (wireEnvironment, error) {

@@ -35,7 +35,14 @@ forge env delete preview [--yes] [--keep-data] # tear the env down, data include
   (`.forge/hosted-projects.json`), or on the one `--endpoint <url>` names when
   the project is bound to none or several. `--endpoint` must be one of those
   bindings or Reliant cloud; any other host is refused before a credential is
-  sent.
+  sent. `--id <environment-id>` names such an env by the control plane's id
+  instead (refused if the env belongs to another project, or is still
+  declared). `forge env list --orphaned` lists the hosted envs this project no
+  longer declares.
+- Before confirming, `delete` shows the env's id, project, control plane,
+  deployment count and bound custom domains. The control plane refuses to
+  delete an env while a custom domain is bound to it: `forge domain unbind`
+  each first.
 - All three refuse an env that is not hosted. `forge env down` only stops local
   host processes and never touches a control plane.
 

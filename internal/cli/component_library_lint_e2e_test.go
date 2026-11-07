@@ -20,14 +20,11 @@ import (
 // with the reason it stays. Errors are never allowed: they fail the
 // project's own `npm run lint`. Delete an entry once the warning is gone; add
 // one only with a reason a reviewer would accept.
-var componentLintWarningAllowlist = map[string]string{
-	// The trigger render prop and the children render prop receive callbacks
-	// that close over refs (the trigger's callback ref, close() restoring
-	// focus to triggerRef). The React Compiler's heuristic reports any ref
-	// reachable from a function argument; neither callback reads a ref during
-	// render.
-	"popover.tsx react-hooks/refs": "render props receive callbacks that close over refs; none is read during render",
-}
+//
+// Empty on purpose: popover.tsx's react-hooks/refs warnings were allowed here
+// until #1871 put the popover into every scaffold (the header user menu),
+// where TestE2EFreshScaffoldFrontendLintClean allows no warning at all.
+var componentLintWarningAllowlist = map[string]string{}
 
 // TestE2EComponentLibraryLintsCleanInEveryScaffold installs EVERY library
 // component into a fresh scaffold of each browser frontend kind and runs that

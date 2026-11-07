@@ -303,7 +303,14 @@ func (l *depsLinter) lintPkg(pkgDir string) ([]forgeconv.Finding, error) {
 			}
 		}
 		if isLikelyInterfaceType(field.Type) {
-			continue
+			// Bare local names historically include interfaces. A resolved
+			// defined scalar is not one: its methods can provide dependency
+			// behavior, so apply the value checks rather than assuming a seam.
+			decls := l.packageTypeDecls(pkgDir)
+			if !l.scalarMapKey(field.Type, decls, fileImports, map[string]bool{}, 0) ||
+				l.localTypeIsData(field.Type, pkgDir, fileImports) {
+				continue
+			}
 		}
 		// A FUNCTION-typed field is already a substitution seam, so there
 		// is nothing for this rule to demand. See isFuncSeam.

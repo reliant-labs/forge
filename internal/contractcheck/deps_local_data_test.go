@@ -17,6 +17,13 @@ func TestDepsLocalDataSettingsAndHiddenCollaborators(t *testing.T) {
 type Enum int32
 func (e Enum) String() string { return "enum" }
 func (e Enum) Validate() error { return nil }
+type ClientID int
+func (ClientID) Call() error { return connectToService() }
+func connectToService() error { return nil }
+type GlobalID int
+func (GlobalID) Label() string { return singleton["key"] }
+type BehavioralAlias = ClientID
+
 type Limits struct { Rows int; Enabled bool }
 type Datasource struct { Name string; Limits Limits }
 func (d Datasource) Label() string { return d.Name }
@@ -40,6 +47,11 @@ func (r ReadsGlobal) Label() string { return singleton[r.Name] }
 
 type Deps struct {
  Good map[Enum]Datasource
+ GoodPrimitiveValues map[Enum]string
+ BadScalar ClientID
+ BadScalarMap map[string]ClientID
+ BadScalarAlias BehavioralAlias
+ BadScalarGlobal map[string]GlobalID
  GoodAlias []Alias
  GoodRows []Rows
  GoodIndex []Index
@@ -57,8 +69,8 @@ type Deps struct {
 		t.Fatal(err)
 	}
 	got := findingsForRule(findings, string(RuleDepsAreInterfaces))
-	if len(got) != 7 {
-		t.Fatalf("want seven live/recursive shapes rejected, got %d:\n%s", len(got), AsResult(findings).FormatText())
+	if len(got) != 11 {
+		t.Fatalf("want eleven live/recursive shapes rejected, got %d:\n%s", len(got), AsResult(findings).FormatText())
 	}
 	for _, f := range got {
 		if strings.Contains(f.Message, `"Good`) {

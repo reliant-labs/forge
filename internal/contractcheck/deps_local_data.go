@@ -24,12 +24,6 @@ func (l *depsLinter) localDataExpr(expr ast.Expr, decls typeDecls, imports map[s
 		if !ok || visiting[key] || decls.embeds[t.Name] {
 			return false
 		}
-		// Named scalar aliases (including protobuf enum map keys) carry
-		// no substitutable state. Their generated methods are not invoked
-		// when this field is used as a value; structs retain method checks.
-		if scalar, ok := underlying.(*ast.Ident); ok && isPrimitiveType(scalar) {
-			return true
-		}
 		for _, m := range decls.methods[t.Name] {
 			if !methodSignatureIsAccessorShaped(m, decls) {
 				return false
@@ -51,7 +45,7 @@ func (l *depsLinter) localDataExpr(expr ast.Expr, decls typeDecls, imports map[s
 	case *ast.ArrayType:
 		return l.localDataExpr(t.Elt, decls, imports, visiting, depth+1)
 	case *ast.MapType:
-		return l.localDataExpr(t.Key, decls, imports, visiting, depth+1) &&
+		return l.scalarMapKey(t.Key, decls, imports, map[string]bool{}, depth+1) &&
 			l.localDataExpr(t.Value, decls, imports, visiting, depth+1)
 	case *ast.SelectorExpr:
 		if isInertStdlibValueType(t) {
@@ -69,5 +63,37 @@ func (l *depsLinter) localDataExpr(expr ast.Expr, decls typeDecls, imports map[s
 	}
 	// A pointer, callback, interface or channel is a collaborator, even when
 	// wrapped in a named alias or collection. No live-handle fallback here.
+	return false
+}
+
+// scalarMapKey checks only scalar identity, not methods: map indexing never
+// invokes a key's methods. This exemption is never used for dependency values.
+func (l *depsLinter) scalarMapKey(expr ast.Expr, decls typeDecls, imports map[string]string, visiting map[string]bool, depth int) bool {
+	if depth > inertFieldDepth*4 {
+		return false
+	}
+	switch t := expr.(type) {
+	case *ast.Ident:
+		if isPrimitiveType(t) {
+			return true
+		}
+		underlying, ok := decls.types[t.Name]
+		key := decls.dir + "\x00" + t.Name
+		if !ok || visiting[key] {
+			return false
+		}
+		visiting[key] = true
+		defer delete(visiting, key)
+		return l.scalarMapKey(underlying, decls, decls.typeImports[t.Name], visiting, depth+1)
+	case *ast.SelectorExpr:
+		qualifier, ok := t.X.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		dir := l.dirForQualifier(qualifier.Name, imports)
+		if dir != "" {
+			return l.scalarMapKey(ast.NewIdent(t.Sel.Name), l.packageTypeDecls(dir), nil, visiting, depth+1)
+		}
+	}
 	return false
 }

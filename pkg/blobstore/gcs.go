@@ -18,6 +18,7 @@ import (
 	iamcredentials "google.golang.org/api/iamcredentials/v1"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/api/option/internaloption"
 
 	"github.com/reliant-labs/forge/pkg/observe"
 )
@@ -67,6 +68,7 @@ type GCS struct {
 	signerEmail     string
 	signBytes       func([]byte) ([]byte, error)
 	iamSigner       *iamcredentials.Service
+	clientOptions   []option.ClientOption
 	allowOpaqueKeys bool
 	chain           *observe.ComponentChain
 }
@@ -88,7 +90,10 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 	if cfg.SignBytes != nil && cfg.SignerEmail == "" {
 		return nil, errors.New("blobstore: GCSConfig.SignBytes needs SignerEmail, the account it signs as")
 	}
-	client, err := storage.NewClient(ctx, cfg.ClientOptions...)
+	// The new auth implementation preserves ADC discovery but performs token
+	// provider HTTP on the request context rather than a cached OAuth context.
+	opts := append([]option.ClientOption{internaloption.EnableNewAuthLibrary()}, cfg.ClientOptions...)
+	client, err := storage.NewClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("blobstore: building the Cloud Storage client: %w", err)
 	}
@@ -96,7 +101,7 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 	if cfg.SignerEmail != "" && cfg.SignBytes == nil {
 		// An explicit principal must use IAM, not a private key belonging to
 		// the client's ADC account. The storage SDK otherwise prefers that key.
-		iamSigner, err = iamcredentials.NewService(ctx, cfg.ClientOptions...)
+		iamSigner, err = iamcredentials.NewService(ctx, opts...)
 		if err != nil {
 			_ = client.Close()
 			return nil, fmt.Errorf("blobstore: building the IAM signer: %w", err)
@@ -105,6 +110,7 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 	return &GCS{
 		bucket:          client.Bucket(cfg.Bucket),
 		iamSigner:       iamSigner,
+		clientOptions:   opts,
 		allowOpaqueKeys: cfg.AllowOpaqueKeys,
 		name:            cfg.Bucket,
 		signerEmail:     cfg.SignerEmail,
@@ -120,9 +126,25 @@ func (g *GCS) signedURL(ctx context.Context, key, method string, d time.Duration
 		return PresignedRequest{}, err
 	}
 	signBytes := g.signBytes
-	if g.iamSigner != nil {
+	email := g.signerEmail
+	var privateKey []byte
+	signer := g.iamSigner
+	if email == "" {
+		var err error
+		email, privateKey, err = g.defaultSigner(ctx)
+		if err != nil {
+			return PresignedRequest{}, err
+		}
+		if len(privateKey) == 0 {
+			signer, err = iamcredentials.NewService(ctx, g.clientOptions...)
+			if err != nil {
+				return PresignedRequest{}, fmt.Errorf("blobstore: default IAM signer: %w", err)
+			}
+		}
+	}
+	if signer != nil {
 		signBytes = func(payload []byte) ([]byte, error) {
-			resp, err := g.iamSigner.Projects.ServiceAccounts.SignBlob("projects/-/serviceAccounts/"+g.signerEmail,
+			resp, err := signer.Projects.ServiceAccounts.SignBlob("projects/-/serviceAccounts/"+email,
 				&iamcredentials.SignBlobRequest{Payload: base64.StdEncoding.EncodeToString(payload)}).Context(ctx).Do()
 			if err != nil {
 				return nil, err
@@ -138,7 +160,8 @@ func (g *GCS) signedURL(ctx context.Context, key, method string, d time.Duration
 		// clock reading, a moment after this one: the half second keeps
 		// that exactly d (and still inside V4's 7 days + 1s at MaxTTL).
 		Expires:         now.Add(d + time.Second/2),
-		GoogleAccessID:  g.signerEmail,
+		GoogleAccessID:  email,
+		PrivateKey:      privateKey,
 		SignBytes:       signBytes,
 		ContentType:     contentType,
 		Headers:         headers,

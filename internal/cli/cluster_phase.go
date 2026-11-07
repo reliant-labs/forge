@@ -643,6 +643,16 @@ func loadBalancerNeedsRefresh(lbStarted, nodeStarted time.Time) bool {
 //
 // Self-limiting, so warm runs stay quiet: refreshing makes the LB the newer
 // container, and the check does not fire again until the node next restarts.
+//
+// Start order cannot see every stale upstream: after a Docker restart the LB
+// may well be the newer container and still hold an address that now belongs
+// to ANOTHER cluster's server. That case is not intermittent — the API answers,
+// with the wrong cluster's certificate — and healUntrustedAPICertificate
+// repairs it from that evidence.
+//
+// The LB's own configuration cannot show the stale address either: confd
+// names each upstream by container name (/etc/confd/values.yaml), and the
+// address nginx resolved from it lives only in the worker's memory.
 func ensureClusterLoadBalancerFresh(ctx context.Context, clusterName string) error {
 	lb := "k3d-" + clusterName + "-serverlb"
 	node := "k3d-" + clusterName + "-server-0"
@@ -1087,6 +1097,12 @@ func waitNodeReadyWhile(ctx context.Context, clusterName string, alive func(cont
 		lastOut = out
 		if lastOut == "" {
 			lastOut = err.Error()
+		}
+		// An untrusted certificate means the port ANSWERED, with someone
+		// else's CA: no amount of waiting changes which server that is.
+		if strings.Contains(lastOut, k3sUntrustedAPICertificate) || apiCertificateUntrusted(err) {
+			return fmt.Errorf("%w (context %s)%s\n%s", errAPICertificateUntrusted, kctx,
+				formatCommandStderr(lastOut), untrustedAPICertificateRemedy(clusterName))
 		}
 		if alive != nil {
 			if running, aliveErr := alive(ctx); aliveErr == nil && !running {

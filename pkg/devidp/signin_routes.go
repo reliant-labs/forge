@@ -43,7 +43,7 @@ type SignInRoutes struct {
 	origin string // scheme://host[:port] of AppBase: the only origin a passkey may come from
 	rpID   string
 	seal   *sealer
-	decoy  []byte
+	decoy  func() []byte
 	guard  *http.CrossOriginProtection
 
 	magicByAddress  *limiter
@@ -192,17 +192,13 @@ func NewSignInRoutes(cfg SignInRoutesConfig) (*SignInRoutes, error) {
 	if host != rpID && !strings.HasSuffix(host, "."+rpID) {
 		return nil, fmt.Errorf("passkey_rp_id %q is not %q or a parent domain of it", rpID, host)
 	}
-	decoy := make([]byte, 32)
-	if _, err := rand.Read(decoy); err != nil {
-		return nil, err
-	}
 	client := cfg.Client
 	r := &SignInRoutes{
 		cfg:    cfg,
 		origin: u.Scheme + "://" + u.Host,
 		rpID:   rpID,
 		seal:   &sealer{key: func() []byte { return []byte(client.bearer()) }, now: time.Now},
-		decoy:  decoy,
+		decoy:  func() []byte { return decoyKey(client.bearer()) },
 		guard:  NewCrossOriginProtection(cfg.AppBase),
 
 		// Per address and per user: small, because they guard one inbox or
@@ -513,11 +509,25 @@ func (r *SignInRoutes) decoyOptions(email string) json.RawMessage {
 	return normalizeJSON(b)
 }
 
+// decoyKey keys the decoy credential ids. It is derived from the broker's
+// issuer credential, the key material every replica shares (the sealer keys
+// on it too), under a label of its own: a key random per instance gave the
+// same unknown address different ids on each replica and after each restart,
+// while a real account's registered ids are stable, so comparing two answers
+// told a real account from a decoy. A rotation of that credential changes
+// every replica's decoys at once, the same as a deploy.
+func decoyKey(bearer string) []byte {
+	m := hmac.New(sha256.New, []byte(bearer))
+	m.Write([]byte("forge devidp: passkey decoy credential ids v1"))
+	return m.Sum(nil)
+}
+
 // decoyBytes is n bytes keyed by the address and an index.
 func (r *SignInRoutes) decoyBytes(email string, index, n int) []byte {
+	key := r.decoy()
 	var out []byte
 	for block := 0; len(out) < n; block++ {
-		m := hmac.New(sha256.New, r.decoy)
+		m := hmac.New(sha256.New, key)
 		fmt.Fprintf(m, "%d\x00%d\x00%s", index, block, email)
 		out = m.Sum(out)
 	}
@@ -750,7 +760,7 @@ func (r *SignInRoutes) HandleMagicRequest(w http.ResponseWriter, req *http.Reque
 // address rather than by link also keeps a fresh link from buying fresh
 // guesses at an unverified account's verification code.
 func (r *SignInRoutes) magicAttemptKey(email string) string {
-	m := hmac.New(sha256.New, r.decoy)
+	m := hmac.New(sha256.New, r.decoy())
 	m.Write([]byte("magic-link attempts\x00" + email))
 	return "m:" + base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }

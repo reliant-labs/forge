@@ -3,7 +3,8 @@
 // This module is also the package's SECOND ENTRY POINT, published as
 // "@reliantlabs/forge-web-runtime/interceptors". It is the DOM-free, React-free
 // half of the runtime: the transport layer and nothing else. Importing it
-// pulls in exactly ./errors and ./trace — no React, no @types/react, no
+// pulls in exactly ./errors, ./trace, ./telemetry-gate and
+// ./interaction-context — no React, no @types/react, no
 // window/document. That matters for React Native, where Expo pins React 18
 // while the package's components are typed against React 19: a mobile app
 // importing the full barrel would typecheck the components it never renders
@@ -36,6 +37,10 @@ import { MethodOptions_IdempotencyLevel } from "@bufbuild/protobuf/wkt";
 import { context } from "@opentelemetry/api";
 
 import { ConnectClientError, normalizeError } from "./errors.js";
+import {
+  outgoingContext,
+  rememberRequestContext,
+} from "./interaction-context.js";
 import { telemetryReady } from "./telemetry-gate.js";
 import { injectTraceContext, traceIdFrom } from "./trace.js";
 
@@ -97,13 +102,22 @@ export function headerInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
  * While browser telemetry is still starting it waits (bounded; see
  * telemetry-gate.ts) so the call is made through the SDK's patched fetch and
  * its traceparent names a span the browser really exports.
+ *
+ * The call is parented on the context it entered with (the caller's, which
+ * authInterceptor carried across its own await) — or, when no span is active
+ * there, on the open interaction (interaction.ts). That context is restored
+ * around next() so the SDK's fetch span, opened synchronously when fetch() is
+ * called, is its child. A call whose fetch() comes after an await (a server
+ * stream: connect-web awaits the body first) is carried the rest of the way by
+ * the fetch shim the `/telemetry` subpath installs; see interaction-context.ts.
  */
 export function traceInterceptor(): Interceptor {
   return (next) => async (req) => {
-    const parent = context.active();
+    const parent = outgoingContext();
     await telemetryReady();
     return context.with(parent, () => {
-      injectTraceContext(req.header);
+      injectTraceContext(req.header, parent);
+      rememberRequestContext(req.header, parent);
       return next(req);
     });
   };

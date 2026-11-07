@@ -63,7 +63,7 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
   const requests = [];
   const backend = createServer((req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "traceparent,tracestate,content-type");
+    res.setHeader("Access-Control-Allow-Headers", "traceparent,tracestate,baggage,content-type");
     if (req.method !== "OPTIONS") requests.push(req.headers.traceparent);
     res.end("{}");
   });
@@ -392,5 +392,123 @@ window.mark = (name) => trace.getTracer('viewport-proof').startSpan(name).end();
   } finally {
     await browser?.close();
     await close(server);
+  }
+});
+
+// interaction(): RPCs made while it is open — after the click handler has
+// returned, with no span active, as an effect or a stream hook makes them —
+// are children of the interaction in the REAL SDK's export. The two terminal
+// `next`s are connect-web's two shapes: unary calls fetch() synchronously
+// inside next(); a server stream awaits its request body first, which a stack
+// context manager does not survive, so only the runtime's fetch shim carries
+// the interaction to the SDK's fetch span.
+test("interaction(): unary and stream fetch spans made after the click are the interaction's children", { timeout: 30000 }, async () => {
+  const traces = [];
+  const requests = [];
+  const backend = createServer((req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "traceparent,tracestate,baggage,content-type");
+    if (req.method !== "OPTIONS") requests.push(req.headers.traceparent);
+    res.end("{}");
+  });
+  const backendOrigin = await listen(backend);
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (url.startsWith("/_otel/")) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
+        res.setHeader("content-type", "application/json");
+        res.end("{}");
+      } else if (url === "/sdk.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await readFile(sdk));
+      } else if (url === "/hyperdx.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end("export default globalThis.HyperDX;");
+      } else if (url === "/") {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html><button id="open">Open</button>
+<script src="/sdk.js"></script>
+<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
+<script type="module">
+import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
+import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
+import { interaction } from '/runtime/interaction.js';
+window.tracing = trace;
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
+const chain = (terminal) => buildRuntimeInterceptors({ getToken: async () => null })
+  .reduceRight((next, interceptor) => interceptor(next), terminal);
+const unary = chain((req) => fetch(${JSON.stringify(`${backendOrigin}/chat.v1.ChatService/GetChat`)}, { method: 'POST', headers: req.header }));
+const stream = chain(async (req) => {
+  await Promise.resolve(); // connect-web: await createRequestBody(...)
+  return fetch(${JSON.stringify(`${backendOrigin}/chat.v1.ChatService/StreamChat`)}, { method: 'POST', headers: req.header });
+});
+document.querySelector('#open').addEventListener('click', () => {
+  const op = interaction('chat.open', { 'chat.id': 'c1' });
+  window.traceId = op.traceId;
+  // Outside the handler: no span is active when these calls are made.
+  setTimeout(() => {
+    window.finished = Promise.all([
+      unary({ header: new Headers(), stream: false }),
+      stream({ header: new Headers(), stream: true }),
+    ]).finally(() => op.end({ outcome: 'ok' }));
+  }, 50);
+});
+</script>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(origin);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    await page.locator("#open").click();
+    await page.waitForFunction(() => window.finished !== undefined, undefined, { timeout: 5000 });
+    await page.evaluate(() => window.finished);
+    await page.waitForFunction(() => {
+      const provider = window.tracing.getTracerProvider().getDelegate();
+      return provider._activeSpanProcessor._spanProcessors.some((processor) =>
+        (processor._finishedSpans ?? []).filter((span) => span.name.includes("chat.v1.ChatService")).length === 2);
+    }, undefined, { timeout: 5000 });
+    await page.evaluate(() => window.tracing.getTracerProvider().getDelegate().forceFlush());
+
+    assert.deepEqual(errors, []);
+    const spans = traces.flatMap((batch) => batch.resourceSpans ?? [])
+      .flatMap((resource) => resource.scopeSpans ?? [])
+      .flatMap((scope) => scope.spans ?? []);
+    const root = spans.find((span) => span.name === "chat.open");
+    assert.ok(root, `the interaction is exported: ${JSON.stringify(spans.map((s) => s.name))}`);
+    assert.equal(root.traceId, await page.evaluate(() => window.traceId));
+    assert.ok(!root.parentSpanId, "the interaction is a root span");
+    const fetches = spans.filter((span) => span.name.includes("chat.v1.ChatService"));
+    assert.equal(fetches.length, 2, JSON.stringify(spans.map((s) => s.name)));
+    for (const fetch of fetches) {
+      assert.equal(fetch.traceId, root.traceId, `${fetch.name} is in the interaction's trace`);
+      assert.equal(fetch.parentSpanId, root.spanId, `${fetch.name} is the interaction's child`);
+    }
+    assert.deepEqual(
+      [...requests].sort(),
+      fetches.map((fetch) => `00-${fetch.traceId}-${fetch.spanId}-01`).sort(),
+      "the server is handed each exported fetch span as its parent",
+    );
+  } finally {
+    await browser?.close();
+    await close(server);
+    await close(backend);
   }
 });

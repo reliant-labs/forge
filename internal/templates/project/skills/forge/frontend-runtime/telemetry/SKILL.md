@@ -1,6 +1,6 @@
 ---
 name: frontend-runtime/telemetry
-description: Browser telemetry in forge frontends — the HyperDX SDK forge scaffolds and initialises (otel_gen.ts, SERVICE_NAME), the same-origin /_otel route and who forwards it, the env knobs, source maps extracted to a registry sidecar and never served, replay shipped off and always masked, and reportException for caught errors.
+description: Browser telemetry in forge frontends — the HyperDX SDK forge scaffolds and initialises (otel_gen.ts, SERVICE_NAME), the same-origin /_otel route and who forwards it, the env knobs, source maps extracted to a registry sidecar and never served, replay shipped off and always masked, reportException for caught errors, and interaction() spans timing a user operation from click to usable.
 ---
 
 # Browser telemetry (HyperDX SDK)
@@ -126,6 +126,27 @@ try {
   throw err;
 }
 ```
+
+## Interactions: click to usable
+
+A fetch span times one RPC. To time what the user waits for — several RPCs,
+a stream's first frame, a render — open an `interaction` (barrel) on intent
+and end it when the screen is usable:
+
+```ts
+const op = interaction("chat.open", { "chat.id": id }); // in the click handler
+useInteractionEnd(op, loaded); // endAfterPaint() on the first ready commit
+```
+
+It is one root span (`interaction.name|scope|outcome`), and every RPC made
+while it is open is its child, server spans included — no `context.with`,
+which a browser loses at the first `await`. A span the caller has active when
+it makes the call still wins. One interaction is open per `scope` (default
+`foreground`); a new one ends the old as `superseded`. `endAfterPaint()` waits
+two animation frames; ends are idempotent; unended ones end as `timeout` after
+60s; a page hidden while open stamps `page.hidden`. `mark(name)` adds a phase
+event; `currentInteraction()` finds the open one. With telemetry off it records
+nothing but its RPCs still share one trace id; it never throws.
 
 Custom spans: `getTracer("checkout")` from `@/lib/otel_gen`.
 

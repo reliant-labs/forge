@@ -116,8 +116,10 @@ span's context to configured API origins.
 
 The real Chromium SDK contract test is a separate slow tier:
 `npm run build && npx playwright install chromium && npm run test:browser`.
-It verifies exact action → fetch parent IDs and wire `traceparent`, retains
-mouse events in replay, and checks private text/input sentinels are masked.
+It verifies exact action → fetch parent IDs and wire `traceparent`, that the
+fetch spans of unary and stream calls made while an `interaction()` is open
+are its children, retains mouse events in replay, and checks private
+text/input sentinels are masked.
 
 `initBrowserTelemetry` starts the HyperDX browser SDK once per page load
 (errors, console, fetch/XHR, page loads, web vitals, optional replay) and ships
@@ -219,6 +221,70 @@ are masked, canvas is never recorded, `img, picture, video, audio, iframe,
 object, embed` are blocked, images are not inlined and fonts are not collected.
 fetch/XHR spans have their `http.url` / `url.full` stripped of query string and
 fragment; request and response bodies and headers are not captured.
+
+## Interactions: click to usable
+
+The SDK times each RPC. What the user waits for is usually several RPCs, a
+stream's first frame and a render: "open a chat" is a click, a stream, a
+snapshot, a React commit and a paint. `interaction()` (barrel) is one span for
+that whole operation:
+
+```ts
+import { interaction, useInteractionEnd } from "@reliantlabs/forge-web-runtime";
+
+const op = interaction("chat.open", { "chat.id": chatId }); // on intent
+op.mark("snapshot_received"); // optional phase markers (span events)
+op.endAfterPaint({ outcome: "ok" }); // when the screen is usable
+// or, in the component that knows: useInteractionEnd(op, transcriptLoaded);
+```
+
+The result is one root span `chat.open` (kind INTERNAL, attributes
+`interaction.name`, `interaction.scope`, `interaction.outcome`) whose children
+are the browser fetch spans of every RPC made while it was open, which in turn
+parent the server spans.
+
+```ts
+interaction(name: string, attributes?: InteractionAttributes, options?: { scope?: string; timeoutMs?: number }): Interaction
+currentInteraction(scope?: string): Interaction | undefined
+useInteractionEnd(op: Interaction | null | undefined, ready: boolean, attributes?: InteractionEndAttributes): void
+
+interface Interaction {
+  readonly name: string; readonly scope: string;
+  readonly traceId: string; readonly ended: boolean;
+  setAttributes(attributes: InteractionAttributes): void;
+  mark(name: string, attributes?: InteractionAttributes): void;
+  end(attributes?: InteractionEndAttributes): void;          // { outcome?: string, ...attrs }
+  endAfterPaint(attributes?: InteractionEndAttributes): void;
+  run<T>(fn: () => T): T;
+}
+```
+
+- **Foreground, not async context.** A browser has no async context:
+  `context.with` holds a span only until the first `await`. The interceptor
+  stack already carries the CALLER's context across its own awaits, so a span
+  the caller had active when it made the call (an explicitly traced action,
+  or `op.run()`) stays the parent. Most RPCs of an operation, though, start in
+  effects, query functions and stream hooks with no span active at all. So the
+  runtime holds the open interactions, at most one per `scope` (default
+  `foreground`), and the trace interceptor parents a call that enters it with
+  no active span on the most recently started one. Starting an interaction in
+  a busy scope ends the old one with outcome `superseded`.
+- **The fetch span is the child, not just the traceparent.** The SDK opens
+  its fetch span from `context.active()` at the instant `fetch()` is called.
+  The interceptor calls `next()` inside the interaction's context, which
+  covers connect-web's unary path (fetch is synchronous with `next()`); a
+  server stream awaits its request body first, so `initBrowserTelemetry`
+  installs a thin wrapper over the SDK's patched fetch that re-enters the
+  context the interceptor recorded for that request.
+- **Ending.** `end()` ends now; `endAfterPaint()` ends after the next painted
+  frame (two `requestAnimationFrame`s), or at once with
+  `interaction.paint: "skipped"` when the page is hidden or there is no rAF.
+  The first end wins. `outcome` defaults to `ok`; `error` also sets the span
+  status. An interaction nobody ends ends after `timeoutMs` (default 60s) as
+  `timeout`. A page hidden while one is open stamps `page.hidden: true`.
+- **Telemetry off.** With no SDK it records nothing, but carries a real
+  synthesized trace id, so its RPCs still share one trace on the server. After
+  `disableTelemetry()` it records nothing either. Nothing here throws.
 
 ## Node and Electron-main telemetry (`/node`)
 

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -284,4 +285,108 @@ func TestFingerprintInputs_RetargetedSymlink(t *testing.T) {
 	if edited := mustFingerprint(t, cwd, patterns, "recipe"); edited.Digest == after.Digest {
 		t.Fatal("editing a symlinked input's target left the fingerprint unchanged")
 	}
+}
+
+// TestFingerprintInputs_DirectorySymlinks: a broad walk descends an in-root
+// directory symlink under its lexical path, so an edit reachable only through
+// it changes the fingerprint; retargeting it changes it too; a cycle
+// terminates; and one leading outside the roots refuses the fingerprint
+// unless excluded or out of every pattern's reach.
+func TestFingerprintInputs_DirectorySymlinks(t *testing.T) {
+	cwd := fixture(t)
+	root := filepath.Dir(cwd)
+	writeTree(t, root, map[string]string{
+		"shared/v1/api.go": "package api",
+		"shared/v2/api.go": "package api",
+	})
+	if err := os.Symlink(filepath.Join(root, "shared", "v1"), filepath.Join(cwd, "vendored")); err != nil {
+		t.Fatal(err)
+	}
+	patterns := []string{"**"}
+
+	t.Run("an edit beneath a directory symlink changes the fingerprint", func(t *testing.T) {
+		got, err := ExpandInputs(scopeOf(cwd), patterns)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(got, "vendored/api.go") {
+			t.Fatalf("ExpandInputs(**) = %q, want the file reached through the link", got)
+		}
+		before := mustFingerprint(t, cwd, patterns, "recipe")
+		writeTree(t, root, map[string]string{"shared/v1/api.go": "package api // edited"})
+		after := mustFingerprint(t, cwd, patterns, "recipe")
+		if after.Digest == before.Digest {
+			t.Fatal("editing a file beneath a directory symlink left the fingerprint unchanged")
+		}
+		if c := after.Changed(before); !reflect.DeepEqual(c, []string{"vendored/api.go"}) {
+			t.Fatalf("Changed = %q, want the file under its lexical path", c)
+		}
+	})
+	t.Run("retargeting a directory symlink between equal trees changes it", func(t *testing.T) {
+		writeTree(t, root, map[string]string{"shared/v1/api.go": "same", "shared/v2/api.go": "same"})
+		before := mustFingerprint(t, cwd, patterns, "recipe")
+		link := filepath.Join(cwd, "vendored")
+		if err := os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(root, "shared", "v2"), link); err != nil {
+			t.Fatal(err)
+		}
+		if after := mustFingerprint(t, cwd, patterns, "recipe"); after.Digest == before.Digest {
+			t.Fatal("retargeting a directory symlink left the fingerprint unchanged")
+		}
+	})
+	t.Run("a symlink cycle terminates", func(t *testing.T) {
+		loopy := filepath.Join(root, "loopy")
+		writeTree(t, loopy, map[string]string{"a/f.txt": "f"})
+		if err := os.Symlink("..", filepath.Join(loopy, "a", "up")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("a", filepath.Join(loopy, "self")); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		var got []string
+		var err error
+		go func() {
+			defer close(done)
+			got, err = ExpandInputs(scopeOf(loopy), []string{"**"})
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("ExpandInputs did not terminate on a symlink cycle")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(got, "a/f.txt") {
+			t.Fatalf("ExpandInputs over a cycle = %q, want a/f.txt", got)
+		}
+		again, _ := ExpandInputs(scopeOf(loopy), []string{"**"})
+		if !reflect.DeepEqual(got, again) {
+			t.Fatalf("selection over a cycle is not deterministic: %q vs %q", got, again)
+		}
+	})
+	t.Run("a directory symlink leading outside the roots", func(t *testing.T) {
+		outside := t.TempDir()
+		writeTree(t, outside, map[string]string{"x.go": "package x"})
+		dir := filepath.Join(root, "escapes")
+		writeTree(t, dir, map[string]string{"main.go": "package main"})
+		if err := os.MkdirAll(filepath.Join(dir, "deep"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir, "deep", "out")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ExpandInputs(scopeOf(dir), []string{"**"}); err == nil || !strings.Contains(err.Error(), "through the directory symlink deep/out") {
+			t.Fatalf("a broad walk over an escaping directory link: error = %v, want a refusal naming it", err)
+		}
+		if _, err := ExpandInputs(scopeOf(dir), []string{"**", "!deep/out/**"}); err != nil {
+			t.Fatalf("an excluded escaping link should not refuse: %v", err)
+		}
+		if _, err := ExpandInputs(scopeOf(dir), []string{"*.go"}); err != nil {
+			t.Fatalf("a pattern that cannot reach beneath the link should not refuse: %v", err)
+		}
+	})
 }

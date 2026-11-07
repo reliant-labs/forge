@@ -220,7 +220,7 @@ func ExpandInputs(scope InputScope, patterns []string) ([]string, error) {
 	}
 	selected := map[string]bool{}
 	for _, p := range includes {
-		n, err := walkPattern(b, p, selected)
+		n, err := walkPattern(b, p, excludes, selected)
 		if err != nil {
 			return nil, err
 		}
@@ -310,7 +310,7 @@ func (b boundary) checkResolved(raw, abs string) error {
 
 // walkPattern adds every file p selects to selected and returns how many it
 // matched (including ones another pattern already selected).
-func walkPattern(b boundary, p inputPattern, selected map[string]bool) (int, error) {
+func walkPattern(b boundary, p inputPattern, excludes []inputPattern, selected map[string]bool) (int, error) {
 	start := filepath.Join(b.cwd, filepath.FromSlash(p.root))
 	// A root may be named through a symlink (macOS's /var is /private/var)
 	// while cwd arrives resolved, or the reverse: either spelling counts.
@@ -341,41 +341,152 @@ func walkPattern(b boundary, p inputPattern, selected map[string]bool) (int, err
 	if err != nil {
 		return 0, err
 	}
-	n := 0
-	err = filepath.WalkDir(real, func(abs string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		sub, err := filepath.Rel(real, abs)
-		if err != nil {
-			return err
-		}
-		rel := path.Clean(path.Join(p.root, filepath.ToSlash(sub)))
-		if d.IsDir() {
-			if abs != real && prunedDirs[d.Name()] && !p.namesSegment(d.Name()) {
-				return filepath.SkipDir
+	w := &inputWalker{b: b, p: p, excludes: excludes, selected: selected, visited: map[string]bool{}}
+	err = w.dir(real, p.root)
+	return w.n, err
+}
+
+// inputWalker walks one including pattern's tree.
+//
+// Unlike filepath.WalkDir it DESCENDS a symlinked directory, under the link's
+// lexical path: a link inside the tree is how a monorepo or a vendored
+// checkout often shares sources, and treating it as an opaque link text left
+// every edit beneath it invisible to the fingerprint — a stale skip. A
+// directory symlink is followed only when it resolves inside the allowed
+// roots; one that leads outside them, where a file the pattern could select
+// lies, refuses the fingerprint (the build runs and says to exclude it), the
+// same fail-safe rule a symlinked file follows.
+//
+// Every resolved directory is walked at most once per pattern, so a symlink
+// cycle terminates and fan-in through several links costs one walk. A tree
+// reached by a second lexical path is therefore keyed under the first (in
+// sorted walk order, so deterministically); its content is hashed either way.
+type inputWalker struct {
+	b        boundary
+	p        inputPattern
+	excludes []inputPattern
+	selected map[string]bool
+	visited  map[string]bool
+	n        int
+}
+
+func (w *inputWalker) dir(real, rel string) error {
+	if w.visited[real] {
+		return nil
+	}
+	w.visited[real] = true
+	entries, err := os.ReadDir(real)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		childReal := filepath.Join(real, name)
+		childRel := path.Clean(path.Join(rel, name))
+		if e.Type()&fs.ModeSymlink != 0 {
+			st, err := os.Stat(childReal)
+			if err == nil && st.IsDir() {
+				if !w.descends(name, childRel) {
+					continue
+				}
+				target, err := filepath.EvalSymlinks(childReal)
+				if err != nil {
+					return err
+				}
+				if !withinAny(w.b.resolved, target) {
+					return fmt.Errorf("inputs entry %q reaches %s through the directory symlink %s, outside the allowed roots (%s); exclude it with `!%s/**` or keep inputs inside them",
+						w.p.raw, target, childRel, w.b.describe(), childRel)
+				}
+				// The link's own text is an input too: retargeting it between
+				// two equal trees is still a change.
+				w.selected[childRel] = true
+				if err := w.dir(target, childRel); err != nil {
+					return err
+				}
+				continue
 			}
-			return nil
+			// A link to a file (or a dangling link) is a file entry below.
+		} else if e.IsDir() {
+			if w.descends(name, childRel) {
+				if err := w.dir(childReal, childRel); err != nil {
+					return err
+				}
+			}
+			continue
 		}
-		if !p.matches(rel) {
-			return nil
+		if !w.p.matches(childRel) {
+			continue
 		}
-		// WalkDir never descends a symlinked directory, but a symlinked FILE
-		// is read through its link: it must resolve inside the roots. A link
-		// to a directory or a dangling link is hashed as its link text and
-		// never read, so it needs no check.
-		if d.Type()&fs.ModeSymlink != 0 {
-			if st, serr := os.Stat(abs); serr == nil && st.Mode().IsRegular() {
-				if err := b.checkResolved(p.raw, abs); err != nil {
+		// A symlinked FILE is read through its link: it must resolve inside
+		// the roots. A dangling link is hashed as its link text and never
+		// read, so it needs no check.
+		if e.Type()&fs.ModeSymlink != 0 {
+			if st, serr := os.Stat(childReal); serr == nil && st.Mode().IsRegular() {
+				if err := w.b.checkResolved(w.p.raw, childReal); err != nil {
 					return err
 				}
 			}
 		}
-		selected[rel] = true
-		n++
-		return nil
-	})
-	return n, err
+		w.selected[childRel] = true
+		w.n++
+	}
+	return nil
+}
+
+// descends reports whether the walk enters directory rel: not a pruned
+// directory the pattern does not name, not a tree an exclusion removes
+// whole, and a tree in which the pattern could still select a file.
+func (w *inputWalker) descends(name, rel string) bool {
+	if prunedDirs[name] && !w.p.namesSegment(name) {
+		return false
+	}
+	for _, x := range w.excludes {
+		if x.coversDir(rel) {
+			return false
+		}
+	}
+	return w.p.mayMatchBelow(rel)
+}
+
+// mayMatchBelow reports whether some file beneath directory rel could match
+// the pattern. A literal pattern selects everything beneath it, so it reads
+// as if it ended in `**`.
+func (p inputPattern) mayMatchBelow(rel string) bool {
+	segs := p.segs
+	if p.literal {
+		segs = append(append([]string(nil), segs...), "**")
+	}
+	return matchPrefix(segs, strings.Split(rel, "/"))
+}
+
+// matchPrefix reports whether pat could match some path that extends dir by
+// at least one segment.
+func matchPrefix(pat, dir []string) bool {
+	for len(dir) > 0 {
+		if len(pat) == 0 {
+			return false
+		}
+		if pat[0] == "**" {
+			return true
+		}
+		if ok, _ := path.Match(pat[0], dir[0]); !ok {
+			return false
+		}
+		pat, dir = pat[1:], dir[1:]
+	}
+	return len(pat) > 0
+}
+
+// coversDir reports whether the exclusion removes directory rel and
+// everything beneath it, so the walk need not enter it. Conservative: an
+// exclusion it cannot prove covers the whole tree returns false, and the
+// walk enters (matching files are still dropped afterwards).
+func (p inputPattern) coversDir(rel string) bool {
+	if p.literal {
+		return p.matches(rel)
+	}
+	n := len(p.segs)
+	return n > 0 && p.segs[n-1] == "**" && matchSegments(p.segs[:n-1], strings.Split(rel, "/"))
 }
 
 // FingerprintInputs hashes recipe together with every file patterns select

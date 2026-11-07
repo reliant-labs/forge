@@ -1031,25 +1031,50 @@ func TestEvalHostReadiness(t *testing.T) {
 	}
 }
 
-// TestWaitHostServicesReady_NoPortsIsInstantPass pins the fast path: when no
-// host service declares a bind port there is nothing to gate, so the wrapper
-// returns nil immediately without any real socket/lsof work or polling.
+// A portless registered runner passes on the first snapshot, without polling.
+// Nil registry retains the legacy port-only contract; production env up always
+// supplies its registry and therefore requires evidence of a live runner.
 func TestWaitHostServicesReady_NoPortsIsInstantPass(t *testing.T) {
 	e := &KCLEntities{Workloads: []WorkloadEntity{
 		hostWL("noport"),
 		clusterWL("cluster-svc", "k3d-x", "ns", withPorts(9999)),
 	}}
-	done := make(chan error, 1)
-	go func() {
-		done <- waitHostServicesReady(context.Background(), e, testProj, "dev", nil, hostReadyTimeout, hostReadyPoll, nil)
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("no declared ports: want nil, got %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("waitHostServicesReady did not return promptly when no ports are declared")
+	live := &procRegistry{processes: []*managedProcess{{name: "noport", done: make(chan struct{})}}}
+	for _, tc := range []struct {
+		name     string
+		registry *procRegistry
+	}{
+		{"registered running", live},
+		{"nil registry port-only compatibility", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A first-snapshot success wins before the already-expired timer;
+			// anything that tries to poll fails, without a goroutine or 2s sleep.
+			if err := waitHostServicesReady(t.Context(), e, testProj, "dev", nil, time.Nanosecond, time.Hour, tc.registry); err != nil {
+				t.Fatalf("no declared ports: want first-snapshot success, got %v", err)
+			}
+		})
+	}
+}
+
+func TestWaitHostServicesReady_PortlessRequiresRegisteredRunner(t *testing.T) {
+	e := &KCLEntities{Workloads: []WorkloadEntity{hostWL("noport")}}
+	done := make(chan struct{})
+	close(done)
+	for _, tc := range []struct {
+		name     string
+		registry *procRegistry
+		want     string
+	}{
+		{"missing runner", &procRegistry{}, "no live runner observed"},
+		{"exited runner", &procRegistry{processes: []*managedProcess{{name: "noport", done: done}}}, "exit status 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := waitHostServicesReady(t.Context(), e, testProj, "dev", nil, time.Nanosecond, time.Hour, tc.registry)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 

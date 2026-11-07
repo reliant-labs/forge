@@ -735,7 +735,7 @@ func k3dEntrypointLog(ctx context.Context, node string) string {
 func pinKubectlContext(ctx context.Context, clusterName string) error {
 	target := "k3d-" + clusterName
 	return withKubeconfigLock(func() error {
-		cmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", target)
+		cmd := cluster.KubectlCommand(ctx, "config", "use-context", target)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -748,7 +748,7 @@ func pinKubectlContext(ctx context.Context, clusterName string) error {
 // currentKubectlContext returns the current kubectl context name, or ""
 // on error. Used for non-fatal display in `status` / `info`.
 func currentKubectlContext(ctx context.Context) string {
-	out, err := exec.CommandContext(ctx, "kubectl", "config", "current-context").Output()
+	out, err := cluster.KubectlCommand(ctx, "config", "current-context").Output()
 	if err != nil {
 		return ""
 	}
@@ -858,7 +858,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 
 	if wait {
 		fmt.Println("Waiting for cluster nodes to report Ready...")
-		waitCmd := exec.CommandContext(ctx, "kubectl", "wait", "--for=condition=Ready",
+		waitCmd := cluster.KubectlCommand(ctx, "wait", "--for=condition=Ready",
 			"nodes", "--all", "--timeout=120s")
 		waitCmd.Stdout = os.Stdout
 		waitCmd.Stderr = os.Stderr

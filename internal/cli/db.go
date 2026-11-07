@@ -682,7 +682,7 @@ Examples:
 		},
 	}
 	cmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
-	cmd.Flags().BoolVar(&allPending, "all-pending", false, "Re-version every migration added on this branch (above the default branch's merge-base)")
+	cmd.Flags().BoolVar(&allPending, "all-pending", false, "Re-version every migration added on this branch (every file the default branch does not have)")
 
 	return cmd
 }

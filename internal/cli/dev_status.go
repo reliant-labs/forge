@@ -12,10 +12,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 func newDevStatusCmd() *cobra.Command {
@@ -333,7 +334,7 @@ func devNamespace(clusterName string) string {
 // and an ISO timestamp for AGE, both visually noisy. Standard kubectl
 // output gives exactly five columns: NAME READY STATUS RESTARTS AGE.
 func listPodsInNamespace(ctx context.Context, ns string) []podStatusEntry {
-	cmd := exec.CommandContext(ctx, "kubectl", "get", "pods", "-n", ns, "--no-headers")
+	cmd := cluster.KubectlCommand(ctx, "get", "pods", "-n", ns, "--no-headers")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -367,7 +368,7 @@ func listPodsInNamespace(ctx context.Context, ns string) []podStatusEntry {
 // surface the multi-worktree workflow (each worktree gets its own
 // namespace via the env override).
 func listSiblingNamespaces(ctx context.Context, clusterName, primary string) []string {
-	cmd := exec.CommandContext(ctx, "kubectl", "get", "namespaces",
+	cmd := cluster.KubectlCommand(ctx, "get", "namespaces",
 		"-l", "app.kubernetes.io/managed-by=forge",
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
 	out, err := cmd.Output()

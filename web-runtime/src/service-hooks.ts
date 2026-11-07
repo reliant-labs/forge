@@ -53,6 +53,7 @@ import {
   useQueryClient,
   type DataTag,
   type InfiniteData,
+  type QueryClient,
   type UseInfiniteQueryOptions,
   type UseInfiniteQueryResult,
   type UseMutationOptions,
@@ -589,5 +590,87 @@ export function createMutationHook<Schema extends DescMessage, Response>(
       },
       ...rest,
     });
+  };
+}
+
+/** What a generated imperative write takes beside its request. */
+export interface ServiceMutationCallOptions {
+  /** Aborts the RPC. An aborted write rejects and invalidates nothing. */
+  signal?: AbortSignal;
+}
+
+/**
+ * A generated imperative write:
+ * `orderServiceMutations(queryClient).createOrder(req, options?)`. It
+ * resolves with the response and rejects with the ConnectClientError the
+ * transport throws.
+ */
+export type ServiceMutationCall<Schema extends DescMessage, Response> = (
+  req: MessageInitShape<Schema>,
+  options?: ServiceMutationCallOptions,
+) => Promise<Response>;
+
+/**
+ * One write's definition, before it is bound to a QueryClient — an entry of
+ * the table a generated `<service>Mutations` is built from.
+ */
+export type ServiceMutationDefinition<Schema extends DescMessage, Response> = (
+  queryClient: QueryClient,
+) => ServiceMutationCall<Schema, Response>;
+
+/**
+ * createMutationCall builds one write for code outside React — a store, a
+ * sync service, an OAuth callback, a stream handler — where
+ * createMutationHook's hook cannot run.
+ *
+ * It is the hook's contract without the hook: call the rpc, and on success
+ * invalidate `invalidateKey`, the same scope the generated file hands the
+ * rpc's createMutationHook. So a write made here refetches exactly the reads
+ * a write made through the hook would, and code outside React never copies a
+ * client call and an invalidateQueries that then drift from the hook's.
+ *
+ * Like the hook, it does not wait for the refetch: the promise settles with
+ * the rpc, and the invalidated reads refetch behind it. A failed write
+ * invalidates nothing. It does NOT run through React Query's MutationCache,
+ * so an app-wide MutationCache onError (the scaffold's error toast) does not
+ * see it: the rejection is the caller's to handle, which is what a
+ * background caller wants.
+ */
+export function createMutationCall<Schema extends DescMessage, Response>(
+  invalidateKey: ServiceQueryKey,
+  call: ServiceCall<Schema, Response>,
+): ServiceMutationDefinition<Schema, Response> {
+  return (queryClient) => async (req, options) => {
+    const response = await call(req, options?.signal);
+    void queryClient.invalidateQueries({ queryKey: invalidateKey });
+    return response;
+  };
+}
+
+/**
+ * The writes of one `<service>Mutations(queryClient)`: each definition bound
+ * to that client.
+ */
+export type ServiceMutations<
+  Definitions extends Record<string, (queryClient: QueryClient) => unknown>,
+> = { [K in keyof Definitions]: ReturnType<Definitions[K]> };
+
+/**
+ * createServiceMutations builds a generated `<service>Mutations` from its
+ * table of createMutationCall definitions: a function of the QueryClient
+ * whose invalidations the writes should reach — the app's, normally the
+ * singleton in src/lib/query-client.ts.
+ */
+export function createServiceMutations<
+  Definitions extends Record<string, (queryClient: QueryClient) => unknown>,
+>(
+  definitions: Definitions,
+): (queryClient: QueryClient) => ServiceMutations<Definitions> {
+  return (queryClient) => {
+    const bound: Record<string, unknown> = {};
+    for (const [name, define] of Object.entries(definitions)) {
+      bound[name] = define(queryClient);
+    }
+    return bound as ServiceMutations<Definitions>;
   };
 }

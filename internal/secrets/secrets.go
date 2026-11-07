@@ -286,6 +286,13 @@ func newLayeredProvider(shared, local map[string]string, sharedPath, localPath s
 	}
 	var overridden int
 	for k, v := range local {
+		// An EMPTY local slot is not a value (`forge generate` scaffolds
+		// every sensitive key as ""), so it must not hide a value the
+		// shared store holds: shadowing an inherited encryption key would
+		// make the worktree mint a different one and fork the key material.
+		if sv := shared[k]; v == "" && sv != "" {
+			continue
+		}
 		if _, inShared := shared[k]; inShared {
 			overridden++
 		}
@@ -415,6 +422,15 @@ func WriteSecretFile(path string, values map[string]string) error {
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
+	}
+	// atomicfile keeps an existing file's mode and ignores perm, so a store
+	// someone created 0644 would stay world-readable with new key material in
+	// it. Narrow it first: the temp file then inherits 0600 too, so the values
+	// are never readable by others, not even before the rename.
+	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm() != 0o600 {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return fmt.Errorf("restrict %s to 0600: %w", path, err)
+		}
 	}
 	return atomicfile.WriteFile(path, []byte(b.String()), 0o600)
 }

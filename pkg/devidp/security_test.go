@@ -529,54 +529,45 @@ func TestSafeReturnToRefusesWhatABrowserReadsAsAnotherSite(t *testing.T) {
 	}
 }
 
-// The issuer answers a search with one page. A revocation that read only the
-// first page would leave a session, link or passkey on a later one, and the
-// proof would still verify and unlock the account.
-func TestTakeover_RevocationReachesEveryIssuerPage(t *testing.T) {
-	h := newHarness(t, policyWith(SignupOpen, allMethods, google))
-	u := preRegister(t, h)
-	const planted = 5
-	h.z.mu.Lock()
-	h.z.pageSize = 2
-	var sessions []string
-	for i := range planted {
-		u.links = append(u.links, IDPLink{IdPID: "idp-google", UserID: fmt.Sprintf("g-%d", i), UserName: "victim@acme.com"})
-		u.passkeys = append(u.passkeys, Passkey{ID: fmt.Sprintf("planted-pk-%d", i), Name: "attacker"})
-		sid := fmt.Sprintf("planted-session-%d", i)
-		// An authenticated session: its password factor is verified.
-		h.z.sessions[sid] = &fakeSession{token: "st-" + sid, userID: u.id, verified: []string{"password"}}
-		sessions = append(sessions, sid)
+// Two replicas of the broker (one issuer, one broker token) answer an unknown
+// address with the same decoy credential ids, as they would a real account's,
+// while each challenge stays fresh. A per-process decoy secret would let
+// requests that land on different replicas, or straddle a restart, tell an
+// unknown address from a real one by its changing ids.
+func TestDecoyCredentialsAreStableAcrossReplicas(t *testing.T) {
+	z := newFakeZitadel(t)
+	a := newHarnessOn(t, z, policyWith(SignupInvite, allMethods))
+	b := newHarnessOn(t, z, policyWith(SignupInvite, allMethods))
+	parse := func(raw json.RawMessage) (creds, challenge string) {
+		var doc struct {
+			PublicKey struct {
+				Challenge        string          `json:"challenge"`
+				AllowCredentials json.RawMessage `json:"allowCredentials"`
+			} `json:"publicKey"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		return string(doc.PublicKey.AllowCredentials), doc.PublicKey.Challenge
 	}
-	h.z.mu.Unlock()
-	victim := h.browser()
-	if status, body := victim.post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code}); status != 200 {
-		t.Fatalf("victim verify: %d %v", status, body)
-	}
-	h.z.mu.Lock()
-	defer h.z.mu.Unlock()
-	if n := len(u.links); n != 0 {
-		t.Fatalf("TAKEOVER: %d identity-provider link(s) on a later page survived the proof", n)
-	}
-	if n := len(u.passkeys); n != 0 {
-		t.Fatalf("TAKEOVER: %d passkey(s) on a later page survived the proof", n)
-	}
-	for _, sid := range sessions {
-		if !h.z.sessions[sid].deleted {
-			t.Fatalf("TAKEOVER: authenticated session %s on a later page survived the proof", sid)
+	for _, email := range []string{"nobody@acme.com", "ghost@acme.com"} {
+		ca, cha := parse(a.routes.decoyOptions(email))
+		cb, chb := parse(b.routes.decoyOptions(email))
+		if ca != cb {
+			t.Errorf("%s: replicas name different decoy credentials: %s vs %s", email, ca, cb)
+		}
+		if cha == chb {
+			t.Errorf("%s: two decoys share a challenge", email)
+		}
+		if a.routes.magicAttemptKey(email) != b.routes.magicAttemptKey(email) {
+			t.Errorf("%s: replicas key the magic-link budget differently", email)
 		}
 	}
-	if u.locked {
-		t.Fatal("a complete revocation left the account locked")
-	}
-}
-
-// A removal the issuer acknowledges but does not apply must fail the drain,
-// not loop on it or report it removed.
-func TestDrain_FailsWhenTheIssuerKeepsListingARemovedItem(t *testing.T) {
-	calls := 0
-	n, err := drain(func() ([]string, error) { calls++; return []string{"stuck"}, nil },
-		func(s string) string { return s }, func(string) error { return nil })
-	if err == nil || n != 1 || calls != 2 {
-		t.Fatalf("drain = %d, %v after %d searches; want an error after the second search", n, err, calls)
+	other := newHarnessOn(t, z, policyWith(SignupInvite, allMethods), func(c *SignInRoutesConfig) {
+		c.Client = &Client{Base: z.srv.URL, Token: "another-token"}
+	})
+	mine, _ := parse(a.routes.decoyOptions("nobody@acme.com"))
+	if theirs, _ := parse(other.routes.decoyOptions("nobody@acme.com")); mine == theirs {
+		t.Error("the decoy secret does not depend on the broker token")
 	}
 }

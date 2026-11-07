@@ -28,7 +28,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -36,6 +35,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 // openbaoImage is the version control-plane runs in prod.
@@ -61,23 +61,16 @@ func startOpenBao(t *testing.T) *bao {
 			t.Skipf("cannot pull %s: %v\n%s", openbaoImage, err, out)
 		}
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-
-	out, err := exec.Command("docker", "run", "-d", "--rm",
-		"-p", fmt.Sprintf("127.0.0.1:%d:8200", port),
+	out, err := exec.Command("docker", append(append([]string{"run", "-d", "--rm"}, testdocker.Publish(8200)...),
 		"-e", "BAO_DEV_ROOT_TOKEN_ID="+rootToken,
 		"-e", "BAO_DEV_LISTEN_ADDRESS=0.0.0.0:8200",
-		openbaoImage, "server", "-dev").CombinedOutput()
+		openbaoImage, "server", "-dev")...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker run: %v\n%s", err, out)
 	}
 	id := strings.TrimSpace(string(out))
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", id).Run() })
+	port := testdocker.PublishedPort(t, id, 8200)
 
 	b := &bao{t: t, base: fmt.Sprintf("http://127.0.0.1:%d/v1/", port)}
 	deadline := time.Now().Add(60 * time.Second)

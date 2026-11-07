@@ -1461,6 +1461,9 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         securityContext = w.securityContext
         terminationGracePeriodSeconds = w.terminationGracePeriodSeconds
         activeDeadlineSeconds = w.activeDeadlineSeconds
+        successfulJobsHistoryLimit = w.successfulJobsHistoryLimit
+        failedJobsHistoryLimit = w.failedJobsHistoryLimit
+        ttlSecondsAfterFinished = w.ttlSecondsAfterFinished
     }
 }
 
@@ -1481,6 +1484,7 @@ _render_runtime = lambda w: any, rt: any, bundle: Bundle -> any {
         # `is not Undefined`, NOT truthiness: an explicitly EMPTY list means
         # "binds nothing" and must reach Go distinct from "not declared".
         "listen_ports": rt.listen_ports if rt.listen_ports is not Undefined else None
+        "startup_after": rt.startup_after
         "delve_port": rt.delve_port
     } if rt.type == "host" else ({
         "type": "compose"
@@ -2138,6 +2142,8 @@ _render_external_database = lambda x: any, bundle: Bundle -> any {
         "password_secret": x.password_secret
         "password_key": x.password_key
         "sslmode": x.sslmode
+        "reach": x.reach
+        "port": x.port
     }
 }
 
@@ -2548,6 +2554,7 @@ _frontend_violations = lambda f: Frontend -> [str] {
     _t = _rt.type
     _host = _t == "host"
     (["runner '${_rt.runner}': a frontend's dev server is `<dev_runner> dev`; set Frontend.dev_runner, not OnHost.runner"] if _host and _rt.runner != "go-run" else []) \
+        + (["startup_after: only host workloads declare startup dependencies; frontends can be dependency targets"] if _host and _rt.startup_after else []) \
         + (["air_config: a frontend's dev server has no air config"] if _host and _rt.air_config else []) \
         + (["working_dir: a frontend's dev server runs in its own path"] if _host and _rt.working_dir else []) \
         + (["listen_ports: a frontend's dev server binds Frontend.port; set that"] if _host and _rt.listen_ports is not Undefined else []) \
@@ -2576,8 +2583,52 @@ _frontend_violations = lambda f: Frontend -> [str] {
 _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
     # What forge derives from the frontend's own declarations comes FIRST, so
     # an author's runtime_config entry for the same key always wins.
-    _merged = _telemetry_runtime_config(f, bundle) | f.runtime_config
+    _merged = _telemetry_runtime_config(f, bundle) | _env_scoped_runtime_config(f) | f.runtime_config
     (_merged | {OTEL_ENDPOINT = "off"}) if _obs_browser_off(bundle) else _merged
+}
+
+# The keys whose value differs per environment that a web frontend's
+# generated src/lib/otel_gen.ts reads, and that a frontend may also declare
+# through its typed `config` block or a build variable in `env_vars`:
+#
+#   OTEL_ENDPOINT   config.otel_endpoint, or {NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT
+#   ENVIRONMENT     config.environment, or {NEXT_PUBLIC_,VITE_}ENVIRONMENT
+#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY
+#
+# otel_gen.ts reads these from the runtime config first (a build variable is
+# only its deprecated fallback): a build variable is baked into the bundle and
+# follows that build into every environment it is promoted to. So each
+# declaration is carried into the runtime config too (the build variable still
+# renders, for code that reads it). An env_vars literal outranks `config`, as
+# it does for the build variable; a secret or config-map entry is never
+# carried, because config.js is public. React Native has no runtime config
+# document, so it gets nothing.
+#
+# A HOSTED frontend gets OTEL_ENDPOINT alone. Its document is written by the
+# control plane, which sets ENVIRONMENT to the environment it actually serves;
+# a literal published in the StaticSite spec would override that (and a fixed
+# OTEL_REPLAY would apply the same replay choice wherever the spec lands), so
+# those stay out of the spec. The ingest path is the author's explicit choice
+# for that environment, and the spec already carries an author's
+# runtime_config the same way.
+_env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
+    _c = f.config
+    _endpoint = _build_var_literal(f, "OTEL_ENDPOINT", _c.otel_endpoint if _c and _c.otel_endpoint else None)
+    _environment = _build_var_literal(f, "ENVIRONMENT", _c.environment if _c and _c.environment else None)
+    _replay = _build_var_literal(f, "OTEL_REPLAY", None)
+    _hosted = _frontend_hosted(f)
+    {} if f.type not in ["nextjs", "vite"] else \
+        ({OTEL_ENDPOINT = _endpoint} if _endpoint is not None else {}) \
+        | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {}) \
+        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted else {})
+}
+
+# The value of the last env_vars entry that sets the frontend's build variable
+# for `key` to a literal, else `fallback`.
+_build_var_literal = lambda f: Frontend, key: str, fallback: any -> any {
+    _name = ("NEXT_PUBLIC_" if f.type == "nextjs" else "VITE_") + key
+    _vals = [e.value for e in f.env_vars if e.name == _name and e.value is not None and e.value is not Undefined]
+    _vals[-1] if _vals else fallback
 }
 
 # The ingest path the platform answers on a hosted site's own origin.

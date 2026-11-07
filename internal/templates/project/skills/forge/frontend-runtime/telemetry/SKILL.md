@@ -53,21 +53,30 @@ production bundle sends nothing, rather than POSTing to a 404.
 
 ## Turning it on, and the knobs
 
-| Knob | Next.js | Vite | Default |
+A value that differs per environment is read from the runtime config document
+(`config.js`): a build variable is inlined at build time and follows that bundle
+into every environment it is promoted to.
+
+| Knob | Runtime key (`config.js`) | Declared by | Default |
 |---|---|---|---|
-| ingest path (`off` or empty disables) | `NEXT_PUBLIC_OTEL_ENDPOINT` | `VITE_OTEL_ENDPOINT` | `/_otel` in dev, **empty in a production build** |
-| `service.version` | `NEXT_PUBLIC_APP_VERSION` | `VITE_APP_VERSION` | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
-| `deployment.environment` | `NEXT_PUBLIC_ENVIRONMENT` | `VITE_ENVIRONMENT` | none |
-| session replay | `NEXT_PUBLIC_OTEL_REPLAY=true` | `VITE_OTEL_REPLAY=true` | **off** |
+| ingest path (`off` or empty disables) | `OTEL_ENDPOINT` | KCL `config.otel_endpoint` or `runtime_config` | `/_otel` in dev and on `forge.OnHosted`, **empty elsewhere** |
+| `deployment.environment` | `ENVIRONMENT` | KCL `config.environment` or `runtime_config` | the forge env name |
+| session replay | `OTEL_REPLAY = "true"` | `runtime_config` | **off** |
+| `service.version` | — (a build fact: `NEXT_PUBLIC_APP_VERSION` / `VITE_APP_VERSION`) | the deploy | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the
-frontend's KCL `config` block. A project with a typed frontend config message
-(the scaffolded `OTEL_ENDPOINT` / `API_URL` fields) receives it at runtime
-through `config.js`, so one build promotes across environments; otherwise forge
-passes it as the build-time variable above. `api_url` feeds
-`tracePropagationTargets`, so a cross-origin API still gets a `traceparent`.
-`environment` (KCL `config.environment`) is the build-time variable and is
-emitted as both `deployment.environment.name` and the legacy
+frontend's KCL `config` block. Every web frontend's `config.js` names its
+environment, so `ENVIRONMENT` needs no declaration. A literal
+`{NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT` / `ENVIRONMENT` / `OTEL_REPLAY` in the
+frontend's `env_vars` is carried into the runtime config as well, so older
+declarations keep working (on `forge.OnHosted`, only the ingest path: the
+control plane writes that document's `ENVIRONMENT`). A build variable only exported in the shell at
+`npm run build` is a **deprecated** fallback: used when `config.js` lacks the
+key, with one `console.warn` per page load naming the KCL field to move it to;
+it is removed in the next major.
+The API origin (`API_URL`) feeds `tracePropagationTargets`, resolved as
+`connect.ts` resolves it, so a cross-origin API still gets a `traceparent`.
+`environment` is emitted as both `deployment.environment.name` and the legacy
 `deployment.environment` that HyperDX's default sources key on.
 
 ## Source maps are extracted, never served

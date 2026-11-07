@@ -42,7 +42,8 @@ func TestShardSurfacesPassingTestWarnings(t *testing.T) {
 			}
 			var hits int
 			for _, line := range strings.Split(out, "\n") {
-				if line == warning {
+				// Windows' bash ends a line with \r\n.
+				if strings.TrimSuffix(line, "\r") == warning {
 					hits++
 				}
 			}

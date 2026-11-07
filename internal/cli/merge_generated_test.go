@@ -602,10 +602,12 @@ func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T
 	}
 }
 
-// gen/forge_service_catalog.json, through the installed driver in a real
-// `git merge`: two branches' disjoint changes merge cleanly into both, and a
-// line both changed stays a conflict (the catalog is disownable, and a driver
-// cannot see the other side's ownership while git runs it).
+// gen/forge_service_catalog.json, through the installed driver in real
+// merges and rebases: two branches' disjoint changes merge cleanly into both.
+// A line both changed is two projections disagreeing, so the driver keeps
+// this side for `forge generate` to rebuild, but only when it can read every
+// side's disown record and none disowns the catalog: a disowned side, or an
+// operation that names no other side (a cherry-pick), keeps the conflict.
 func TestMergeGenerated_ServiceCatalogRealMerge(t *testing.T) {
 	if testing.Short() {
 		t.Skip("-short: runs real git merges that exec the test binary as the driver; runs in task test")
@@ -617,7 +619,13 @@ func TestMergeGenerated_ServiceCatalogRealMerge(t *testing.T) {
 	catalog := func(a, b string) string {
 		return "{\n  \"services\": [\n    \"" + a + "\",\n    \"x1\",\n    \"x2\",\n    \"x3\",\n    \"" + b + "\"\n  ]\n}\n"
 	}
-	setup := func(t *testing.T, ours, theirs string) string {
+	disown := func(t *testing.T, dir string) {
+		t.Helper()
+		writeTreeFileT(t, filepath.Join(dir, checksums.DisownedFile), `{"files": {"`+rel+`": {"reason": "hand-curated"}}}`+"\n")
+	}
+	// setup commits base, then theirs and ours on their branches; each
+	// side's hook runs before its commit (to disown the catalog there).
+	setupWith := func(t *testing.T, ours, theirs string, onBase, onTheirs, onOurs func(*testing.T, string)) string {
 		t.Helper()
 		dir := t.TempDir()
 		gitT(t, dir, "init", "-q", "-b", "main")
@@ -630,16 +638,53 @@ func TestMergeGenerated_ServiceCatalogRealMerge(t *testing.T) {
 		if _, ok := writeMergeAttributes(dir); !ok {
 			t.Fatal("precondition: the attributes block was written")
 		}
+		step := func(hook func(*testing.T, string)) {
+			if hook != nil {
+				hook(t, dir)
+			}
+		}
 		writeTreeFileT(t, filepath.Join(dir, rel), catalog("billing", "users"))
+		step(onBase)
 		gitT(t, dir, "add", "-A")
 		gitT(t, dir, "commit", "-qm", "base")
 		gitT(t, dir, "checkout", "-qb", "theirs")
 		writeTreeFileT(t, filepath.Join(dir, rel), theirs)
-		gitT(t, dir, "commit", "-qam", "theirs")
+		step(onTheirs)
+		gitT(t, dir, "add", "-A")
+		gitT(t, dir, "commit", "-qm", "theirs")
 		gitT(t, dir, "checkout", "-q", "main")
 		writeTreeFileT(t, filepath.Join(dir, rel), ours)
-		gitT(t, dir, "commit", "-qam", "ours")
+		step(onOurs)
+		gitT(t, dir, "add", "-A")
+		gitT(t, dir, "commit", "-qm", "ours")
 		return dir
+	}
+	setup := func(t *testing.T, ours, theirs string) string {
+		t.Helper()
+		return setupWith(t, ours, theirs, nil, nil, nil)
+	}
+	gitRun := func(dir string, args ...string) (string, error) {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	readCatalog := func(t *testing.T, dir string) string {
+		t.Helper()
+		got, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(got)
+	}
+	keepsConflict := func(t *testing.T, dir string, args ...string) {
+		t.Helper()
+		if out, err := gitRun(dir, args...); err == nil {
+			t.Fatalf("a catalog line both sides changed merged silently:\n%s", out)
+		}
+		if got := readCatalog(t, dir); !strings.Contains(got, "billing+b") || !strings.Contains(got, "billing+a") {
+			t.Fatalf("a side's line was dropped:\n%s", got)
+		}
 	}
 	t.Run("disjoint lines merge clean", func(t *testing.T) {
 		dir := setup(t, catalog("billing+list", "users"), catalog("billing", "users+list"))
@@ -652,16 +697,73 @@ func TestMergeGenerated_ServiceCatalogRealMerge(t *testing.T) {
 			t.Fatalf("merged catalog:\n%s", got)
 		}
 	})
-	t.Run("a line both changed stays a conflict", func(t *testing.T) {
+	t.Run("a line both changed keeps ours in a merge", func(t *testing.T) {
 		dir := setup(t, catalog("billing+a", "users"), catalog("billing+b", "users"))
-		cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@t", "merge", "--no-edit", "theirs")
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err == nil {
-			t.Fatalf("a catalog line both sides changed merged silently:\n%s", out)
+		out, err := gitRun(dir, "merge", "--no-edit", "theirs")
+		if err != nil {
+			t.Fatalf("the merge should settle the catalog: %v\n%s", err, out)
 		}
-		got, _ := os.ReadFile(filepath.Join(dir, rel))
-		if !strings.Contains(string(got), "billing+b") {
-			t.Fatalf("the incoming side's line was dropped:\n%s", got)
+		if got := readCatalog(t, dir); got != catalog("billing+a", "users") {
+			t.Fatalf("want this side's catalog:\n%s", got)
 		}
+		if !strings.Contains(out, rel+": "+regenerateNote) {
+			t.Errorf("the merge output must name the file and say to regenerate:\n%s", out)
+		}
+	})
+	t.Run("a line both changed keeps ours in a rebase", func(t *testing.T) {
+		dir := setup(t, catalog("billing+a", "users"), catalog("billing+b", "users"))
+		gitT(t, dir, "checkout", "-q", "theirs")
+		// Rebasing theirs onto main: HEAD is main's side, the pick is theirs.
+		out, err := gitRun(dir, "rebase", "main")
+		if err != nil {
+			t.Fatalf("the rebase should settle the catalog: %v\n%s", err, out)
+		}
+		if got := readCatalog(t, dir); got != catalog("billing+a", "users") {
+			t.Fatalf("want the onto side's catalog:\n%s", got)
+		}
+	})
+	t.Run("theirs disowned it: the conflict stays", func(t *testing.T) {
+		dir := setupWith(t, catalog("billing+a", "users"), catalog("billing+b", "users"), nil, disown, nil)
+		keepsConflict(t, dir, "merge", "--no-edit", "theirs")
+	})
+	t.Run("ours disowned it: the conflict stays", func(t *testing.T) {
+		dir := setupWith(t, catalog("billing+a", "users"), catalog("billing+b", "users"), nil, nil, disown)
+		keepsConflict(t, dir, "merge", "--no-edit", "theirs")
+	})
+	t.Run("the base disowned it: the conflict stays", func(t *testing.T) {
+		undisown := func(t *testing.T, dir string) {
+			t.Helper()
+			if err := os.Remove(filepath.Join(dir, checksums.DisownedFile)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dir := setupWith(t, catalog("billing+a", "users"), catalog("billing+b", "users"), disown, undisown, undisown)
+		keepsConflict(t, dir, "merge", "--no-edit", "theirs")
+	})
+	t.Run("a rebase whose fork point disowned it: the conflict stays", func(t *testing.T) {
+		undisown := func(t *testing.T, dir string) {
+			t.Helper()
+			if err := os.Remove(filepath.Join(dir, checksums.DisownedFile)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The fork point disowns the catalog. theirs un-disowns it in one
+		// commit and changes it in the next, so the pick's parent (the base
+		// git merges against) no longer disowns it, while the onto history
+		// diverged from that parent at a base that does.
+		undisownTheirs := func(t *testing.T, dir string) {
+			t.Helper()
+			undisown(t, dir)
+			writeTreeFileT(t, filepath.Join(dir, "notes.txt"), "theirs\n")
+		}
+		dir := setupWith(t, catalog("billing+a", "users"), catalog("billing", "users"), disown, undisownTheirs, undisown)
+		gitT(t, dir, "checkout", "-q", "theirs")
+		writeTreeFileT(t, filepath.Join(dir, rel), catalog("billing+b", "users"))
+		gitT(t, dir, "commit", "-qam", "theirs: change the catalog")
+		keepsConflict(t, dir, "rebase", "main")
+	})
+	t.Run("a cherry-pick names no other side: the conflict stays", func(t *testing.T) {
+		dir := setup(t, catalog("billing+a", "users"), catalog("billing+b", "users"))
+		keepsConflict(t, dir, "cherry-pick", "theirs")
 	})
 }

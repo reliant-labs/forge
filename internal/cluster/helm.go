@@ -1094,6 +1094,20 @@ func waitChartDeploymentsAvailable(ctx context.Context, kctx, namespace string, 
 	return cmd.Run()
 }
 
+// waitFluxInstanceReady waits for the Flux Operator to report a FluxInstance
+// Ready: every Flux component it declares is installed and healthy.
+func waitFluxInstanceReady(ctx context.Context, kctx, namespace, name string, timeout time.Duration) error {
+	cmd := kubectlCmd(ctx, kctx,
+		"wait", "--for=condition=Ready",
+		"fluxinstance/"+name,
+		"-n", namespace,
+		"--timeout="+timeout.String(),
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // applyRidingManifestsWithRetry applies a chart's riding manifests (the
 // GatewayClass / ClusterIssuers stamped with the chart's group) with a
 // bounded retry. Even after the chart's webhook Deployment reports Available,

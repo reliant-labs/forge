@@ -1608,7 +1608,7 @@ func computeDepsDoubles(handlerDir string, resolver *typesResolver) ([]DepsAutoS
 	if err != nil || len(fields) == 0 {
 		return nil, nil, nil
 	}
-	locals, _ := ParseLocalInterfaces(handlerDir)
+	locals, _ := parseLocalInterfaces(handlerDir, resolver)
 	imports, _ := collectImports(handlerDir)
 	var stubs []DepsAutoStub
 	var mocks []DepsAutoMock

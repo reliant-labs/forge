@@ -14,6 +14,7 @@
 
 import { useState } from "react";
 
+import { AuthAlert, AuthCard, AuthLink } from "@/components/auth-ui";
 import { ResetPasswordForm } from "@/components/reset-password-form";
 import Button from "@/components/ui/button";
 import { AuthError, passkeySignIn, registerPasskey, verifyEmail } from "@/lib/auth/native-login";
@@ -48,14 +49,15 @@ export function VerifyEmailForm({
 
   if (!userID || !code) {
     return (
-      <div className="rounded-xl border border-border bg-surface p-8 shadow-sm">
-        <h1 className="text-xl font-semibold tracking-tight text-ink">Confirm your email</h1>
-        <p role="alert" className="mt-4 text-sm text-ink">
+      <AuthCard
+        title="Confirm your email"
+        footer={<AuthLink href={signInHref}>Go to sign in</AuthLink>}
+      >
+        <AuthAlert tone="error" className="mt-6">
           This link is incomplete. Open the link from the email again, or ask for a new one from the
           sign-in screen.
-        </p>
-        <SignInLink href={signInHref} />
-      </div>
+        </AuthAlert>
+      </AuthCard>
     );
   }
 
@@ -74,10 +76,10 @@ export function VerifyEmailForm({
   if (state === "password" && reset) {
     return (
       <>
-        <p role="status" className="mb-4 text-sm text-ink">
+        <AuthAlert tone="info" className="mb-4">
           Your email is confirmed, but your password could not be saved. Choose a password to
           finish.
-        </p>
+        </AuthAlert>
         <ResetPasswordForm
           userID={reset.userID}
           code={reset.code}
@@ -90,16 +92,20 @@ export function VerifyEmailForm({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-8 shadow-sm">
-      <h1 className="text-xl font-semibold tracking-tight text-ink">Confirm your email</h1>
-
+    <AuthCard
+      title="Confirm your email"
+      description={
+        state === "ready" ? "Press the button to confirm this address belongs to you." : undefined
+      }
+      footer={<AuthLink href={signInHref}>Go to sign in</AuthLink>}
+    >
       {state === "ready" ? (
         <Button
           type="button"
           size="xl"
           fullWidth
           loading={busy}
-          className="mt-6"
+          className="mt-6 h-11"
           onClick={() =>
             void act(async () => {
               const result = await verifyEmail(userID, code);
@@ -118,46 +124,44 @@ export function VerifyEmailForm({
       ) : null}
 
       {state === "verified" && !removed ? (
-        <p role="status" className="mt-4 text-sm text-ink">
+        <AuthAlert tone="success" className="mt-6">
           Your email is confirmed. You can sign in now.
-        </p>
+        </AuthAlert>
       ) : null}
 
       {(state === "verified" || state === "enroll") && removed ? (
-        <div role="status" className="mt-4 space-y-2 text-sm text-ink">
+        <AuthAlert tone="info" className="mt-6">
           <p>
             Your email is confirmed. For your security, sign-in methods set before it was confirmed
             have been removed.
           </p>
           <p>
-            <a className="font-medium text-accent underline" href={forgotHref}>
-              Choose a password
-            </a>
+            <AuthLink href={forgotHref}>Choose a password</AuthLink>
             {state === "enroll" ? ", or create a passkey below." : "."}
           </p>
-        </div>
+        </AuthAlert>
       ) : null}
 
       {state === "noPassword" ? (
-        <p role="alert" className="mt-4 text-sm text-ink">
+        <AuthAlert tone="error" className="mt-6">
           Your email is confirmed, but your password could not be saved. Use &ldquo;Forgot your
           password?&rdquo; on the sign-in screen to choose one.
-        </p>
+        </AuthAlert>
       ) : null}
 
       {state === "enroll" ? (
         <>
           {removed ? null : (
-            <p role="status" className="mt-4 text-sm text-ink">
+            <AuthAlert tone="success" className="mt-6">
               Your email is confirmed. Create a passkey to sign in with this device.
-            </p>
+            </AuthAlert>
           )}
           <Button
             type="button"
             size="xl"
             fullWidth
             loading={busy}
-            className="mt-6"
+            className="mt-6 h-11"
             onClick={() =>
               void act(async () => {
                 await registerPasskey();
@@ -171,25 +175,7 @@ export function VerifyEmailForm({
         </>
       ) : null}
 
-      {error ? (
-        <p
-          role="alert"
-          className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
-        >
-          {error}
-        </p>
-      ) : null}
-      <SignInLink href={signInHref} />
-    </div>
-  );
-}
-
-function SignInLink({ href }: { href: string }) {
-  return (
-    <p className="mt-4 text-center text-sm text-ink-muted">
-      <a className="font-medium text-accent underline" href={href}>
-        Go to sign in
-      </a>
-    </p>
+      {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
+    </AuthCard>
   );
 }

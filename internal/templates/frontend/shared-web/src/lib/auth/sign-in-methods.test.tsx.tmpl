@@ -589,6 +589,65 @@ describe("AcceptInviteForm", () => {
     expect(screen.getByRole("button", { name: "Accept invitation" })).toBeTruthy();
   });
 
+  it("checks a chosen password against the stated policy before it spends the invitation", async () => {
+    const fetchMock = stubRoutes({
+      ...options(["password"]),
+      "/auth/password-policy": {
+        status: 200,
+        body: {
+          min_length: 8,
+          has_uppercase: true,
+          has_lowercase: true,
+          has_number: true,
+          has_symbol: true,
+        },
+      },
+      "/auth/invite/accept": { status: 200, body: { authenticated: true } },
+    });
+    const onSignedIn = vi.fn();
+    render(
+      <AcceptInviteForm
+        userID="u1"
+        code="inv"
+        orgID={null}
+        signInHref="/auth/sign-in"
+        onSignedIn={onSignedIn}
+      />,
+    );
+    await screen.findByText("Your password needs");
+    const field = screen.getByLabelText("Password");
+    fireEvent.change(field, { target: { value: "short" } });
+    fireEvent.click(screen.getByRole("button", { name: "Accept invitation" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/every requirement/);
+    expect(calls(fetchMock, "/auth/invite/accept")).toHaveLength(0);
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+
+    fireEvent.change(field, { target: { value: "Passw0rd!" } });
+    fireEvent.click(screen.getByRole("button", { name: "Accept invitation" }));
+    await waitFor(() => expect(onSignedIn).toHaveBeenCalledOnce());
+  });
+
+  it("lets the person see the password they typed", async () => {
+    stubRoutes({ ...options(["password"]), "/auth/password-policy": { status: 204 } });
+    render(
+      <AcceptInviteForm
+        userID="u1"
+        code="inv"
+        orgID={null}
+        signInHref="/auth/sign-in"
+        onSignedIn={() => {}}
+      />,
+    );
+    const field = screen.getByLabelText("Password");
+    const toggle = screen.getByRole("button", { name: "Show password" });
+    expect(field.getAttribute("type")).toBe("password");
+    fireEvent.click(toggle);
+    expect(field.getAttribute("type")).toBe("text");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(toggle);
+    expect(field.getAttribute("type")).toBe("password");
+  });
+
   it("offers the policy's methods and mails a link for magic_link", async () => {
     const fetchMock = stubRoutes({
       ...options(["password", "magic_link"]),

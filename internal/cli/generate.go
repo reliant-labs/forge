@@ -133,6 +133,10 @@ Skipping:
   environment that steers them — prints one line saying so and stops, in
   about a second instead of minutes. Any change runs every step. --no-cache
   (or FORGE_GENERATE_NO_CACHE=1) always runs every step.
+  Inside a run that does run, go mod tidy is skipped for a module whose
+  go.mod, go.sum and imports are what its last tidy left, and the validate
+  build for a tree whose Go build inputs are ones it last passed on
+  (.forge/generate-memo.json; --no-cache runs both).
 
 Examples:
   forge generate            # Generate all code
@@ -553,18 +557,37 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// run's "N changed" (taken under --no-revert too: agents read that line
 	// as the fixed-point check, so it must count every write, whatever made
 	// it), and the generate cache's "nothing changed since a verified run".
-	preRun := snapshotWorkTree(ctx.AbsPath)
-
+	//
 	// The whole-run skip (generate_cache.go): when this exact tree, binary,
 	// toolset and environment were already verified as a fixed point,
-	// running the pipeline again can only reproduce them.
-	cache := openGenerateCache(ctx.AbsPath, flags, preRun, generateCacheSystem())
+	// running the pipeline again can only reproduce them. A run that may use
+	// the cache fingerprints the tree right after the snapshot, so the
+	// fingerprint's own git listings start beside the snapshot's.
+	var preRun *workTreeSnapshot
+	var cache *generateCacheRun
+	snapshotAndOpen := func() {
+		preRun = snapshotWorkTree(ctx.AbsPath)
+		cache = openGenerateCache(ctx.AbsPath, flags, preRun, generateCacheSystem())
+	}
+	if mode := generateCacheModeFor(flags); mode.consult || mode.record {
+		withGitListingsPrefetched(ctx.AbsPath, snapshotAndOpen)
+	} else {
+		snapshotAndOpen()
+	}
 	if cache.skip(os.Stdout) {
 		return nil
 	}
 
 	announceSkippedChecks(flags)
 	resetChecksumRunState(flags)
+
+	// The run has work to do; the go tools whose inputs it leaves as their
+	// last run left them are skipped (generate_go_memo.go).
+	memoSys := generateCacheSystem()
+	if cache.pre != nil {
+		memoSys.runningForge = cache.pre.env["forge"] // already hashed for the fingerprint
+	}
+	defer beginGenerateMemo(ctx.AbsPath, flags, memoSys)()
 
 	// Arm the stage-then-validate rollback journal (fr-40f7ec9bd9). From
 	// here on, every forge write captures its target's pre-run bytes so a
@@ -629,51 +652,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		defer timer.print(os.Stderr)
 	}
 
-	// onlyReadOnlyRan stays true while every step that has RUN is declared
-	// ReadOnly. Together with an empty journal it is the evidence behind a
-	// failure's "No files were changed" — see rollbackGeneratedTree.
-	onlyReadOnlyRan := true
 	// ran is the steps whose gate passed: the cache records the outputs
-	// their external tools declare.
-	var ran []GenStep
-	for _, step := range steps {
-		if !step.Gate(ctx) {
-			// Verbose mode prints one line per gate-off skip so the user
-			// can answer "why didn't generate touch X?" without --plan.
-			// Default (silent) preserves the historical low-noise output.
-			if ctx.Verbose {
-				fmt.Fprintf(os.Stderr, "⏩ skipped: %s (%s)\n", step.Name, gateSkipReason(step))
-			}
-			continue
-		}
-		ran = append(ran, step)
-		if !step.ReadOnly {
-			onlyReadOnlyRan = false
-		}
-		// An external tool's outputs join the rollback set before the
-		// tool runs, exactly as a forge write captures its target.
-		if step.Writes != nil {
-			checksums.CaptureExternalWrites(ctx.AbsPath, step.Writes(ctx)...)
-		}
-		stepStart := time.Now()
-		// A step that outlives the 15s heartbeat interval says which one it is, on
-		// stderr, so a caller with a no-output cut-off sees the run is alive.
-		stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
-		err := step.Run(ctx)
-		stopBeat()
-		if timer != nil {
-			timer.record(step.Name, time.Since(stepStart))
-		}
-		select {
-		case sig := <-interrupts:
-			stopInterrupts()
-			err = &generateInterruptedError{signal: sig, stepErr: err}
-		default:
-		}
-		if err != nil {
-			rolledBack = cleanUpFailedStep(ctx, flags, err, onlyReadOnlyRan, preRun)
-			return fmt.Errorf("step %q: %w", step.Name, err)
-		}
+	// their external tools declare. rolledBack is the deferred checksum
+	// saver's guard, so it is assigned before the failure returns.
+	ran, rolledBack, err := runPipelineSteps(ctx, flags, steps, preRun, timer, interrupts, stopInterrupts)
+	if err != nil {
+		return err
 	}
 	reportGenerateHooksNotRun(os.Stdout, ctx, steps, flags)
 
@@ -726,6 +710,57 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// produced, let alone checked.
 	cache.record(os.Stdout, ctx, ran, summary)
 	return softFailureOutcome(os.Stdout, ctx.SoftFailures)
+}
+
+// runPipelineSteps runs, in order, every step whose gate passes and returns
+// those steps. When a step fails — or a SIGINT/SIGTERM arrives while it
+// runs — it cleans up the failed run (cleanUpFailedStep) and reports whether
+// the tree was rolled back to its pre-run state.
+func runPipelineSteps(ctx *pipelineContext, flags pipelineFlags, steps []GenStep, preRun *workTreeSnapshot, timer *stepTimer, interrupts <-chan os.Signal, stopInterrupts func()) (ran []GenStep, rolledBack bool, err error) {
+	// onlyReadOnlyRan stays true while every step that has RUN is declared
+	// ReadOnly. Together with an empty journal it is the evidence behind a
+	// failure's "No files were changed" — see rollbackGeneratedTree.
+	onlyReadOnlyRan := true
+	for _, step := range steps {
+		if !step.Gate(ctx) {
+			// Verbose mode prints one line per gate-off skip so the user
+			// can answer "why didn't generate touch X?" without --plan.
+			// Default (silent) preserves the historical low-noise output.
+			if ctx.Verbose {
+				fmt.Fprintf(os.Stderr, "⏩ skipped: %s (%s)\n", step.Name, gateSkipReason(step))
+			}
+			continue
+		}
+		ran = append(ran, step)
+		if !step.ReadOnly {
+			onlyReadOnlyRan = false
+		}
+		// An external tool's outputs join the rollback set before the
+		// tool runs, exactly as a forge write captures its target.
+		if step.Writes != nil {
+			checksums.CaptureExternalWrites(ctx.AbsPath, step.Writes(ctx)...)
+		}
+		stepStart := time.Now()
+		// A step that outlives the 15s heartbeat interval says which one it is, on
+		// stderr, so a caller with a no-output cut-off sees the run is alive.
+		stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
+		err = step.Run(ctx)
+		stopBeat()
+		if timer != nil {
+			timer.record(step.Name, time.Since(stepStart))
+		}
+		select {
+		case sig := <-interrupts:
+			stopInterrupts()
+			err = &generateInterruptedError{signal: sig, stepErr: err}
+		default:
+		}
+		if err != nil {
+			rolledBack = cleanUpFailedStep(ctx, flags, err, onlyReadOnlyRan, preRun)
+			return ran, rolledBack, fmt.Errorf("step %q: %w", step.Name, err)
+		}
+	}
+	return ran, false, nil
 }
 
 // cleanUpFailedStep finishes a run whose step failed mid-pipeline and

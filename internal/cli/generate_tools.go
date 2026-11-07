@@ -364,19 +364,22 @@ func runGoModTidyGen(projectDir string) error {
 		return tidyBridgedModule(genDir, "gen/ tidy")
 	}
 
-	fmt.Println("🔨 Running go mod tidy in gen/...")
-	cmd := exec.Command("go", "mod", "tidy")
-	cmd.Dir = genDir
-	cmd.Env = goexec.Env()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Skipped when gen/ is what a tidy already left (generate_go_memo.go).
+	return memoizedGoTidy(genDir, "tidy:gen", "✅ gen/go.mod already tidy (go.mod, go.sum and every import are what the last tidy left)", func() error {
+		fmt.Println("🔨 Running go mod tidy in gen/...")
+		cmd := exec.Command("go", "mod", "tidy")
+		cmd.Dir = genDir
+		cmd.Env = goexec.Env()
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("go mod tidy in gen/ failed: %w", err)
-	}
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("go mod tidy in gen/ failed: %w", err)
+		}
 
-	fmt.Println("  ✅ gen/go.mod tidied")
-	return nil
+		fmt.Println("  ✅ gen/go.mod tidied")
+		return nil
+	})
 }
 
 func runGoModTidyRoot(projectDir string) error {
@@ -392,25 +395,28 @@ func runGoModTidyRoot(projectDir string) error {
 		return tidyBridgedModule(projectDir, "root tidy")
 	}
 
-	fmt.Println("🔨 Running go mod tidy in project root...")
-	cmd := exec.Command("go", "mod", "tidy")
-	cmd.Dir = projectDir
-	cmd.Env = goexec.Env()
-	cmd.Stdout = os.Stdout
-	// Streamed as before, and kept, so a failure can name its cause.
-	var stderr bytes.Buffer
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	// Skipped when the module is what a tidy already left (generate_go_memo.go).
+	return memoizedGoTidy(projectDir, "tidy:.", "✅ go.mod already tidy (go.mod, go.sum and every import are what the last tidy left)", func() error {
+		fmt.Println("🔨 Running go mod tidy in project root...")
+		cmd := exec.Command("go", "mod", "tidy")
+		cmd.Dir = projectDir
+		cmd.Env = goexec.Env()
+		cmd.Stdout = os.Stdout
+		// Streamed as before, and kept, so a failure can name its cause.
+		var stderr bytes.Buffer
+		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 
-	if err := cmd.Run(); err != nil {
-		modulePath, _ := codegen.GetModulePath(projectDir)
-		if cause := tidyFailureCause(stderr.String(), modulePath); cause != "" {
-			return &tidyImportError{cause: cause, err: err}
+		if err := cmd.Run(); err != nil {
+			modulePath, _ := codegen.GetModulePath(projectDir)
+			if cause := tidyFailureCause(stderr.String(), modulePath); cause != "" {
+				return &tidyImportError{cause: cause, err: err}
+			}
+			return fmt.Errorf("%w (fix go.mod or go.sum; go's output is above)", err)
 		}
-		return fmt.Errorf("%w (fix go.mod or go.sum; go's output is above)", err)
-	}
 
-	fmt.Println("  ✅ go.mod tidied")
-	return nil
+		fmt.Println("  ✅ go.mod tidied")
+		return nil
+	})
 }
 
 // runGoimportsOnGenerated runs goimports over the Go files forge WROTE this

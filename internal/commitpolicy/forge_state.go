@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-// RuleForgeStateIgnored: forge state that must travel with the repository,
-// excluded from git.
+// RuleForgeStateIgnored names the finding for forge state that must travel
+// with the repository but is excluded from git.
 const RuleForgeStateIgnored = "forge-state-ignored"
 
 // forgeStateProbe is the file name probed under a committed .forge/

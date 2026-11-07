@@ -96,14 +96,14 @@ func TestSignInScreensFollowTheServersSignUpSwitch(t *testing.T) {
 				"const options = useAuthOptions();",
 				"const { selfSignup } = options;",
 				`const signingUp = selfSignup && mode === "signUp";`,
-				"{selfSignup ? (",
+				"selfSignup ? (",
 			} {
 				if !strings.Contains(src, want) {
 					t.Errorf("%s lacks %q", path, want)
 				}
 			}
 			toggle := strings.Index(src, `"Create an account"`)
-			gate := strings.Index(src, "{selfSignup ? (")
+			gate := strings.Index(src, "selfSignup ? (")
 			if toggle < 0 || gate < 0 || gate > toggle {
 				t.Errorf("the \"Create an account\" toggle in %s is not inside the selfSignup gate", path)
 			}

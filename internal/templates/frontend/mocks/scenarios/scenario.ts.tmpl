@@ -6,7 +6,8 @@
 {{- end }}
 //
 // Edit this file to add typed RPC handler overrides. Anything not listed
-// in `handlers` falls through to the base fixture transport.
+// in `handlers` falls through to the entity fixtures, then to the generated
+// service defaults (src/mocks/services/*_gen.ts) — every RPC already answers.
 //
 // To activate this scenario, append `?scenario={{ .Name }}` to the URL.
 //
@@ -14,14 +15,16 @@
 
 import { defineScenario } from "../scenario-types_gen";
 
-// TODO: import the proto schemas you want to override and add typed handlers, e.g.
+// TODO: override the RPCs this scenario is about, starting from their
+// defaults, e.g.
 //
-//   import { create } from "@bufbuild/protobuf";
-//   import { GetThingResponseSchema } from "@/gen/.../thing_pb";
+//   import { mockService, patch } from "@reliantlabs/forge-web-runtime/mock-transport";
+//   import { ThingService } from "@/gen/.../thing_pb";
 //
 //   handlers: {
-//     "myproject.v1.ThingService/GetThing": (req) =>
-//       create(GetThingResponseSchema, { id: "thing-1", name: "Sample" }),
+//     ...mockService(ThingService, {
+//       getThing: (req, defaults) => patch(defaults.getThing(req), { thing: { name: "Sample" } }),
+//     }),
 //   },
 
 export default defineScenario({

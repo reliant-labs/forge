@@ -305,6 +305,11 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 
 	// Types: what each node produces, its Deps field types, its lifecycle.
 	m.u = loadGraphUniverse(in.ProjectDir, comps)
+	if m.u.fetchErr != nil {
+		return nil, fmt.Errorf("the composition graph cannot be typed, because a Go module it imports could not be downloaded (%v, after %d attempts). "+
+			"Without types forge cannot tell what each root reaches, and the graph it would write is wrong, not degraded — a server root that reaches no listener and no database — so nothing in internal/app was written. "+
+			"Fix: check the network or GOPROXY (`go mod download` shows the failure on its own), then run `forge generate` again", m.u.fetchErr, graphLoadAttempts)
+	}
 	m.u.typeNodes(m.nodes)
 	for _, n := range m.nodes {
 		if n.Kind == nodeRoutes || n.Kind == nodeOperators {

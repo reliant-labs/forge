@@ -247,6 +247,10 @@ schema OnHost:
     # relative to a sibling repo. Default: the project root.
     working_dir?: str
     listen_ports?: [int]
+    # env up only: wait for these host workloads / frontend dev servers before
+    # launching this workload. Names must be selected together by --target.
+    # An empty list preserves the usual host-then-frontend startup order.
+    startup_after: [str] = []
     delve_port: int = 2345
 
     check:
@@ -600,6 +604,11 @@ schema Workload:
     # A job or cron run's deadline. On the host runtime it is the process
     # timeout.
     activeDeadlineSeconds?: int
+    # How many finished Jobs a cron keeps (Kubernetes' defaults: 3 and 1),
+    # and how long each finished Job is kept. Cron only.
+    successfulJobsHistoryLimit?: int
+    failedJobsHistoryLimit?: int
+    ttlSecondsAfterFinished?: int
 
     check:
         not delivery_unit or regex.match(delivery_unit, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), \
@@ -659,6 +668,8 @@ schema Workload:
             "Workload.clusterRBAC is not supported for kind='${kind}' — a tool is never scheduled, so it has no pod to grant permission to."
         not activeDeadlineSeconds or kind in ["job", "cron"], \
             "Workload.activeDeadlineSeconds bounds a run to completion — only kind='job' or 'cron' completes; '${name}' is a '${kind}'"
+        (successfulJobsHistoryLimit == Undefined and failedJobsHistoryLimit == Undefined and ttlSecondsAfterFinished == Undefined) or kind == "cron", \
+            "Workload.successfulJobsHistoryLimit, failedJobsHistoryLimit and ttlSecondsAfterFinished keep or expire a cron's finished Jobs — only kind='cron' has a Job history; '${name}' is a '${kind}'"
         not ports or caps.supports(kind, caps.CAP_PORTS), \
             "Workload.ports is not supported for kind='${kind}' — a tool is never scheduled and a batch kind (cron/job) runs to completion, so there is no pod anything can dial. Use kind='service'."
         replicas == 1 or caps.supports(kind, caps.CAP_REPLICAS), \

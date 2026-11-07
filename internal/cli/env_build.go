@@ -152,24 +152,8 @@ Examples:
 			}
 			opts.parallelSet = cmd.Flags().Changed("parallel")
 
-			// Record what the env DECLARES before producing anything.
-			//
-			// This is the whole point of the slice, and the ordering is
-			// the contract: `forge env build <env>` with no --release and
-			// even with --no-build still tells the control plane what the
-			// env is, because every other surface — the Live view, the
-			// set-secret form, a deploy plan — needs that and nothing
-			// else. A build that fails half-way has still answered "what
-			// kind, which secrets, which provider", which is the question
-			// that previously required a daemon and a checkout.
-			//
-			// --plan is excluded: it preflights a build and writes
-			// nothing, so recording a declaration from it would make a
-			// dry run the thing that changed the world.
-			if !opts.plan {
-				if err := recordEnvBuildDeclaration(cmd.Context(), opts.env); err != nil {
-					return err
-				}
+			if err := recordDeclarationBeforeBuild(cmd.Context(), opts, noBuild, composing); err != nil {
+				return err
 			}
 
 			if noBuild {
@@ -216,6 +200,38 @@ Examples:
 	return cmd
 }
 
+// recordDeclarationBeforeBuild records what the env DECLARES before producing
+// anything.
+//
+// This is the whole point of the slice, and the ordering is
+// the contract: `forge env build <env>` with no --release and
+// even with --no-build still tells the control plane what the
+// env is, because every other surface — the Live view, the
+// set-secret form, a deploy plan — needs that and nothing
+// else. A build that fails half-way has still answered "what
+// kind, which secrets, which provider", which is the question
+// that previously required a daemon and a checkout.
+//
+// --plan is excluded: it preflights a build and writes
+// nothing, so recording a declaration from it would make a
+// dry run the thing that changed the world.
+//
+// A build its own flags make impossible is refused BEFORE the
+// declaration, though: that is a usage error, not a build that
+// failed half-way, and it must leave the control plane exactly
+// as it found it. Today that is one case, a hosted static site
+// with no --push (hostedSitesNeedPush).
+func recordDeclarationBeforeBuild(ctx context.Context, opts buildOptions, noBuild, composing bool) error {
+	if opts.plan {
+		return nil
+	}
+	var precheck func(*KCLEntities) error
+	if !noBuild && !composing {
+		precheck = func(entities *KCLEntities) error { return hostedSitesNeedPush(entities, opts) }
+	}
+	return recordEnvBuildDeclarationChecked(ctx, opts.env, precheck)
+}
+
 // recordEnvBuildDeclaration is `forge env build`'s declaration step: render
 // the env and, if it declares a control plane, ensure it there with its shape
 // and that render's provenance.
@@ -240,9 +256,21 @@ Examples:
 // change, a credential it rejected. Those are facts about the env or its
 // configuration, and a green build over them would leave Live wrong.
 func recordEnvBuildDeclaration(ctx context.Context, envName string) error {
+	return recordEnvBuildDeclarationChecked(ctx, envName, nil)
+}
+
+// recordEnvBuildDeclarationChecked is recordEnvBuildDeclaration with a
+// precheck run on the rendered env before anything is recorded: an error from
+// it is returned and nothing reaches the control plane.
+func recordEnvBuildDeclarationChecked(ctx context.Context, envName string, precheck func(*KCLEntities) error) error {
 	entities, err := renderKCLForDeclaration(ctx, projectDirForKCL(), envName)
 	if err != nil || entities == nil {
 		return nil
+	}
+	if precheck != nil {
+		if err := precheck(entities); err != nil {
+			return err
+		}
 	}
 	err = recordEnvDeclaration(ctx, envName, entities)
 	if err != nil && declarationUndeliverable(err) {

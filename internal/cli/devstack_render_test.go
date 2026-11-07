@@ -211,6 +211,7 @@ func TestArmingThePortStoreDoesNotOutliveTheTest(t *testing.T) {
 // visible inside the render — the user's hard requirement (push the raw git
 // facts INTO KCL and let the author key on whichever they want).
 func TestGitFactsReachKCL(t *testing.T) {
+	resetDevStackGlobals(t)
 	kdir := t.TempDir()
 	src := `wt = option("worktree")
 br = option("branch")
@@ -246,6 +247,10 @@ ns = "control-plane-dev" + suffix
 // options, so option("worktree") is None (KCL default) and the namespace
 // composition collapses to today's single-stack value.
 func TestDefaultGitFactsRenderByteIdentical(t *testing.T) {
+	// The render appends the PROCESS's active git facts (devstack.SetActive)
+	// to the args passed here, and any earlier test that drives a command
+	// arms them. Start from the unarmed default this test is about.
+	resetDevStackGlobals(t)
 	kdir := t.TempDir()
 	src := `wt = option("worktree") or ""
 key = wt

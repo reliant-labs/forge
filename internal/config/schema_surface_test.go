@@ -176,7 +176,7 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 		{
 			name: "GenerateHook",
 			typ:  reflect.TypeFor[GenerateHook](),
-			want: []string{"command", "dir", "name", "writes"},
+			want: []string{"command", "dir", "name", "phase", "writes"},
 		},
 	}
 

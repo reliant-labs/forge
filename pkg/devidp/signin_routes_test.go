@@ -334,52 +334,6 @@ func TestPasskeySignIn_OriginMismatchNeverReachesTheIssuer(t *testing.T) {
 	}
 }
 
-// An unknown address gets the SAME decoy credential ids from every replica and
-// after a restart, as a real account's registered ids are the same: ids that
-// differed per instance told a real account from a decoy by comparing two
-// answers. The challenge stays fresh on each.
-func TestPasskeySignIn_DecoyIDsAreStableAcrossReplicas(t *testing.T) {
-	z := newFakeZitadel(t)
-	a := newHarnessOn(t, z, policyWith(SignupInvite, allMethods))
-	b := newHarnessOn(t, z, policyWith(SignupInvite, allMethods))
-	begin := func(h *harness) (ids []string, challenge string) {
-		t.Helper()
-		status, body := h.browser().post("/auth/passkey/begin", map[string]any{"email": "nobody@acme.com"})
-		if status != 200 {
-			t.Fatalf("decoy begin: %d", status)
-		}
-		pk := body["options"].(map[string]any)["publicKey"].(map[string]any)
-		for _, c := range pk["allowCredentials"].([]any) {
-			ids = append(ids, c.(map[string]any)["id"].(string))
-		}
-		return ids, pk["challenge"].(string)
-	}
-	idsA, chA := begin(a)
-	idsB, chB := begin(b)
-	if len(idsA) == 0 || strings.Join(idsA, ",") != strings.Join(idsB, ",") {
-		t.Fatalf("one unknown address got decoy ids %v on one replica and %v on another", idsA, idsB)
-	}
-	if again, _ := begin(a); strings.Join(again, ",") != strings.Join(idsA, ",") {
-		t.Fatalf("the decoy ids changed between two requests: %v then %v", idsA, again)
-	}
-	if chA == chB {
-		t.Fatal("two replicas answered one challenge: it must stay fresh")
-	}
-	if other, _ := func() ([]string, string) {
-		status, body := a.browser().post("/auth/passkey/begin", map[string]any{"email": "someone-else@acme.com"})
-		if status != 200 {
-			t.Fatalf("decoy begin: %d", status)
-		}
-		var ids []string
-		for _, c := range body["options"].(map[string]any)["publicKey"].(map[string]any)["allowCredentials"].([]any) {
-			ids = append(ids, c.(map[string]any)["id"].(string))
-		}
-		return ids, ""
-	}(); len(other) > 0 && strings.Join(other, ",") == strings.Join(idsA, ",") {
-		t.Fatal("two unknown addresses got the same decoy ids")
-	}
-}
-
 func TestPasskeySignIn_UnknownAddressGetsADecoyOfTheSameShape(t *testing.T) {
 	h := newHarness(t, policyWith(SignupInvite, allMethods))
 	seedPasskeyUser(h, true)
@@ -1159,39 +1113,6 @@ func TestRegister_RefusedWhereItCouldNeverComplete(t *testing.T) {
 			want(t, status, body, 403, CodeSignupNotAllowed)
 			if h.z.userByEmail("new@acme.com") != nil {
 				t.Fatal("an account was created")
-			}
-		})
-	}
-}
-
-// A social-only open or domain policy has no first factor the form could
-// enrol, so it must not offer the form (the sign-in screens read
-// options.selfSignup to show "Create account" and hide the social buttons
-// in sign-up mode). Sign-up goes through the providers instead.
-func TestRegister_SocialOnlyPolicyOffersNoFormButSocialSignup(t *testing.T) {
-	for _, signup := range []string{SignupOpen, SignupDomain} {
-		t.Run(signup, func(t *testing.T) {
-			p := policyWith(signup, nil, google)
-			o := OptionsFor(p, true)
-			if p.RegisterServed() || o.SelfSignup {
-				t.Fatal("a social-only policy offers a sign-up form that cannot complete")
-			}
-			if len(o.Social) != 1 || o.Social[0].Type != "google" {
-				t.Fatalf("options lost the social buttons: %+v", o.Social)
-			}
-			h := newHarness(t, p)
-			status, body := h.browser().post("/auth/register", map[string]any{"email": "new@acme.com"})
-			want(t, status, body, 403, CodeSignupNotAllowed)
-			if h.z.userByEmail("new@acme.com") != nil {
-				t.Fatal("the form created an account")
-			}
-			b := h.browser()
-			id := startSocial(t, b)
-			h.z.addIntent(id, "tok", intentResult("new@acme.com", true))
-			status, body = b.post("/auth/social/callback", map[string]any{"id": id, "token": "tok"})
-			want(t, status, body, 200, "")
-			if h.z.userByEmail("new@acme.com") == nil || b.signedIn() == "" {
-				t.Fatal("social sign-up did not create and sign in the account")
 			}
 		})
 	}

@@ -51,5 +51,5 @@ something else while you were offline, the record is refused, reported and
 stays queued, never overwriting them. Several offline deploys in one outage
 replay in order.
 
-Rehearse it on dev: stop dev's admin-server, then `forge env deploy dev-k8s
+Rehearse it on dev: stop dev's platform-api, then `forge env deploy dev-k8s
 --offline-ledger --to previous`. It is a release-checklist item.

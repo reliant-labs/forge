@@ -11,7 +11,6 @@ package obsquery_test
 import (
 	"context"
 	"fmt"
-	"net"
 	"os/exec"
 	"strings"
 	"testing"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 
+	"github.com/reliant-labs/forge/internal/testdocker"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
@@ -38,19 +38,14 @@ func startClickHouse(t *testing.T) clickhouse.Conn {
 			t.Skipf("cannot pull %s: %v\n%s", chImage, err, out)
 		}
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
 	name := fmt.Sprintf("obsquery-sfp1-ch-%d", time.Now().UnixNano())
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", name).Run() })
-	if out, err := exec.Command("docker", "run", "-d", "--name", name, "-p", fmt.Sprintf("127.0.0.1:%d:9000", port),
-		"-e", "CLICKHOUSE_USER=fp", "-e", "CLICKHOUSE_PASSWORD=pw", chImage).CombinedOutput(); err != nil {
+	args := append([]string{"run", "-d", "--name", name}, testdocker.Publish(9000)...)
+	if out, err := exec.Command("docker", append(args,
+		"-e", "CLICKHOUSE_USER=fp", "-e", "CLICKHOUSE_PASSWORD=pw", chImage)...).CombinedOutput(); err != nil {
 		t.Fatalf("docker run: %v\n%s", err, out)
 	}
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	addr := fmt.Sprintf("127.0.0.1:%d", testdocker.PublishedPort(t, name, 9000))
 	deadline := time.Now().Add(90 * time.Second)
 	for {
 		c, err := clickhouse.Open(&clickhouse.Options{Addr: []string{addr}, Auth: clickhouse.Auth{Database: "default", Username: "fp", Password: "pw"}, DialTimeout: 5 * time.Second})

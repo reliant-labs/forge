@@ -64,8 +64,10 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // release ships this range from the commit it tags; release-web-runtime.sh
 // refuses a range the computed version does not satisfy.
 // TestWebRuntimePublishedRangeTracksPackage
-// holds its major.minor to package.json's.
-const webRuntimePublishedRange = "^0.13.0"
+// holds its major.minor to package.json's. Generated service-hooks require
+// createMutationCall/createServiceMutations, first published in 0.13.5; a
+// compatible latest release is insufficient when a lockfile retains the floor.
+const webRuntimePublishedRange = "^0.13.5"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a
@@ -508,6 +510,19 @@ func SyncFrontendLock(projectDir, feRelDir string) error {
 	}
 	fmt.Printf("  ↻ %s: refreshing %s for the dependency ranges forge changed in package.json\n", feRelDir, lock.File)
 	if err := frontenddeps.RefreshLock(context.Background(), lock, manifestDir); err != nil {
+		if devWebRuntimeBridged(projectDir) && frontenddeps.UnpublishedVersion(err, WebRuntimePackage) {
+			// A dev build of forge raised the range to the runtime its own
+			// checkout ships, which is published only when that forge is
+			// released. The project already installs that runtime through the
+			// .forge-link bridge, so nothing local is broken; only the tracked
+			// lockfile cannot record a version the registry does not have yet.
+			// Failing generate here left a dev build unable to generate at all.
+			fmt.Fprintf(os.Stderr, "warning: %s/package.json asks for a %s range the registry has not published yet "+
+				"(this dev build of forge ships it; the project uses it through the %s/ bridge), so %s was not refreshed. "+
+				"Frozen installs (CI) will fail until that runtime is published; then run %s\n",
+				feRelDir, WebRuntimePackage, devLinkDir, lock.File, cmd)
+			return nil
+		}
 		return fmt.Errorf("%s/package.json changed but %s could not be refreshed, so `%s ci`-style frozen installs will fail until it is — run %s: %w",
 			feRelDir, lock.File, lock.Runner, cmd, err)
 	}

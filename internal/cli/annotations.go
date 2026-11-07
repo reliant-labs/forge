@@ -424,6 +424,13 @@ func markerSpecs() []MarkerSpec {
 			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:readable <why this is not a credential>'; in a migration",
 			Example:   "COMMENT ON COLUMN usage_events.token_hash IS 'forge:readable — SHA-256 of the prompt, a dedupe key, not of a credential';",
 		},
+		{
+			Name:      schemadef.ColumnMarkerIdentitySubject,
+			AppliesTo: "column",
+			Effect:    "Declares the column holds the subject of the environment's managed identity (forge.ManagedIdentity), so the console links a row to its identity user and an identity user to their rows. The bare marker (or `=id`) means the identity user id, the token's `sub`; `=email` means the login email; any other argument fails `forge generate` and `forge lint`. It names no identity provider: the subject is the env's, and an env with no managed identity draws no link. Mark a column only when that identity issued its values — a subject of another IdP (Supabase, say) would open the wrong person, or nobody. The console reads through the read-only role, so a column that role cannot read (forge:secret, or a credential-shaped name with no forge:readable) draws nothing, and `forge lint` says so.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:identity-subject'; or 'forge:identity-subject=email'; in a migration",
+			Example:   "COMMENT ON COLUMN users.external_id IS 'forge:identity-subject — the Zitadel user id';",
+		},
 		// ── Table-comment markers ──
 		//
 		// The same catalog-comment mechanism as the column markers above,
@@ -441,7 +448,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      schemadef.TableMarkerNoEntity,
 			AppliesTo: "table",
-			Effect:    "Keeps the TABLE out of the generated data layer: no <entity>_orm_gen.go struct, no <Entity>Store, no delegates, no factory — and no CRUD wiring, since a CRUD-named rpc over it has no store to call (it is custom, as if the table did not exist). Without it every applied BASE TABLE is projected, whether or not any service declares a CRUD rpc for it: the store follows the schema, not the wire, so `// forge:custom` rpcs do not take a table off the store. Declare it on a table hand-written SQL owns (another tool's bookkeeping, a partition parent), or on one whose projected name collides with a declaration of yours while you port onto the store. `//forge:no-orm` is the same opt-out for the whole data layer.",
+			Effect:    "Keeps the TABLE out of the generated data layer: no <entity>_orm_gen.go struct, no <Entity>Store, no delegates, no factory — and no CRUD wiring, since a CRUD-named rpc over it has no store to call (it is custom, as if the table did not exist). Without it every applied BASE TABLE is projected, whether or not any service declares a CRUD rpc for it: the store follows the schema, not the wire, so `// forge:custom` rpcs do not take a table off the store. Declare it on a table hand-written SQL owns (another tool's bookkeeping, a partition parent), or on one whose projected name collides with a declaration of yours while you port onto the store. A table a forge library owns (audit_log, activity_events, alert_instances, alert_events, recognized by name AND the library's columns) is already off; the marker says so explicitly and silences generate's note. A library table whose store the project already generates keeps it until the next major, with a deprecation warning on every generate: this marker is the opt-out to apply now. `//forge:no-orm` is the same opt-out for the whole data layer.",
 			Placement: "COMMENT ON TABLE <table> IS 'forge:no-entity'; in a migration — on the TABLE, not a column.",
 			Example:   "COMMENT ON TABLE goose_db_version IS 'forge:no-entity — goose owns it';",
 		},
@@ -455,8 +462,8 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      schemadef.ViewMarkerEntity,
 			AppliesTo: "table", // on a VIEW — the table-level catalog comment of a relation that is not a base table
-			Effect:    "Opts a VIEW (regular or materialized) into the generated data layer as a READ-ONLY entity: the row struct (named from the view: `chats_with_activity` → ChatsWithActivity), List<E>/Count<E>, and Get<E>ByID by its key column — `id` when the view has one, or the column `forge:entity key=<column>` names; a keyless view gets List/Count only. Nothing writes: no Create/Update/Delete delegate or store method is generated, so a write through a view is a compile error. The catalog cannot say whether a view column is nullable, so every column but the key projects as a pointer (the key must never be NULL). Views without the marker are not projected — most are reporting conveniences nothing in Go reads.",
-			Placement: "COMMENT ON VIEW <view> IS 'forge:entity'; (or COMMENT ON MATERIALIZED VIEW) in a migration, optionally 'forge:entity key=<column>'.",
+			Effect:    "Opts a VIEW (regular or materialized) into the generated data layer as a READ-ONLY entity: the row struct (named from the view: `chats_with_activity` → ChatsWithActivity), List<E>/Count<E>, and Get<E>ByID by its key column — `id` when the view has one, or the column `forge:entity key=<column>` names; a keyless view gets List/Count only. Nothing writes: no Create/Update/Delete delegate or store method is generated, so a write through a view is a compile error. The catalog cannot say whether a view column is nullable, so every column but the key projects as a pointer (the key must never be NULL). Views without the marker are not projected — most are reporting conveniences nothing in Go reads. On a BASE TABLE (COMMENT ON TABLE) it projects a table a forge library owns — audit_log (forge/pkg/audit), activity_events (forge/pkg/activity), alert_instances and alert_events (forge/pkg/alerting/pgstore) — which forge otherwise leaves off the ORM because the library's own store is its data path; on any other table it states the default.",
+			Placement: "COMMENT ON VIEW <view> IS 'forge:entity'; (or COMMENT ON MATERIALIZED VIEW) in a migration, optionally 'forge:entity key=<column>'; on a library-owned table, COMMENT ON TABLE <table> IS 'forge:entity'.",
 			Example:   "COMMENT ON VIEW chats_with_activity IS 'forge:entity — the sidebar row';",
 		},
 		{

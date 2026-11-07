@@ -2,6 +2,7 @@ package frontenddeps
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -250,4 +251,22 @@ func TestRefreshLockKeepsNPMHiddenLockfileTruthful(t *testing.T) {
 			t.Errorf("the refresh left a hidden lockfile behind where none existed: %v", err)
 		}
 	})
+}
+
+func TestUnpublishedVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"pnpm", errors.New(" ERR_PNPM_NO_MATCHING_VERSION  No matching version found for " + runtimePkg + "@^0.99.0"), true},
+		{"npm", errors.New("npm error code ETARGET\nnpm error notarget No matching version found for " + runtimePkg + "@^0.99.0."), true},
+		{"another package", errors.New("ERR_PNPM_NO_MATCHING_VERSION No matching version found for react@^99"), false},
+		{"unreachable registry", errors.New("npm error code ENOTFOUND registry.npmjs.org " + runtimePkg), false},
+		{"nil", nil, false},
+	} {
+		if got := UnpublishedVersion(tc.err, runtimePkg); got != tc.want {
+			t.Errorf("%s: UnpublishedVersion = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }

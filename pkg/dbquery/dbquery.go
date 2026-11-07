@@ -165,8 +165,14 @@ type Result struct {
 	Truncated   bool   `json:"truncated"`
 	TruncatedBy string `json:"truncated_by,omitempty"`
 	// CellsTruncated counts cells cut to MaxCellBytes.
-	CellsTruncated int   `json:"cells_truncated,omitempty"`
-	DurationMS     int64 `json:"duration_ms"`
+	CellsTruncated int `json:"cells_truncated,omitempty"`
+	// TruncatedCells says which cells CellsTruncated counts. It is nil when
+	// no cell was cut; otherwise it has one entry per row, aligned with Rows,
+	// listing the 0-based column indexes of that row's cut cells in
+	// ascending order (empty for a row with none). A cut cell's text also
+	// ends with a "…[truncated: N of M bytes shown]" marker.
+	TruncatedCells [][]int `json:"truncated_cells,omitempty"`
+	DurationMS     int64   `json:"duration_ms"`
 	// Bytes is the encoded size of the cells kept, the figure the response
 	// cap counts.
 	Bytes int `json:"bytes"`
@@ -371,13 +377,13 @@ func run(ctx context.Context, db Beginner, sql string, opts Options, lim bounds,
 		raw := rows.RawValues()
 		row := make([]any, len(raw))
 		size := 0
-		cut := 0
+		var cut []int
 		for i, cell := range raw {
 			v, n, wasCut := encodeCell(oids[i], cell)
 			row[i] = v
 			size += n
 			if wasCut {
-				cut++
+				cut = append(cut, i)
 			}
 		}
 		if res.Bytes+size > lim.maxBytes {
@@ -385,7 +391,20 @@ func run(ctx context.Context, db Beginner, sql string, opts Options, lim bounds,
 			break
 		}
 		res.Bytes += size
-		res.CellsTruncated += cut
+		res.CellsTruncated += len(cut)
+		if cut != nil && res.TruncatedCells == nil {
+			// The first cut cell: the rows before it had none.
+			res.TruncatedCells = make([][]int, len(res.Rows))
+			for i := range res.TruncatedCells {
+				res.TruncatedCells[i] = []int{}
+			}
+		}
+		if res.TruncatedCells != nil {
+			if cut == nil {
+				cut = []int{}
+			}
+			res.TruncatedCells = append(res.TruncatedCells, cut)
+		}
 		res.Rows = append(res.Rows, row)
 	}
 	// Close drains whatever the cap left unread, bounded by the statement

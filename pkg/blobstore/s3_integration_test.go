@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -27,6 +26,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
+	"github.com/reliant-labs/forge/internal/testdocker"
 	"github.com/reliant-labs/forge/pkg/blobstore"
 )
 
@@ -55,19 +55,15 @@ func startMinIO(t *testing.T) int {
 			t.Skipf("cannot pull %s: %v\n%s", minioImage, err, out)
 		}
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
 	name := fmt.Sprintf("blobstore-minio-%d", time.Now().UnixNano())
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", name).Run() })
-	if out, err := exec.Command("docker", "run", "-d", "--name", name, "-p", fmt.Sprintf("127.0.0.1:%d:9000", port),
+	args := append([]string{"run", "-d", "--name", name}, testdocker.Publish(9000)...)
+	if out, err := exec.Command("docker", append(args,
 		"-e", "MINIO_ROOT_USER="+minioUser, "-e", "MINIO_ROOT_PASSWORD="+minioSecret,
-		minioImage, "server", "/data").CombinedOutput(); err != nil {
+		minioImage, "server", "/data")...).CombinedOutput(); err != nil {
 		t.Fatalf("docker run: %v\n%s", err, out)
 	}
+	port := testdocker.PublishedPort(t, name, 9000)
 	admin, err := minio.New(fmt.Sprintf("127.0.0.1:%d", port), &minio.Options{
 		Creds:  credentials.NewStaticV4(minioUser, minioSecret, ""),
 		Region: "us-east-1",

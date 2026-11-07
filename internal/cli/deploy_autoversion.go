@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -247,7 +248,9 @@ func releaseReuseRefusal(ctx context.Context, q deployReuseQuery, rel release.Re
 	switch {
 	case recorded.Dirty:
 		return fmt.Sprintf("release %s records this tree, but it was cut from a checkout with uncommitted changes, whose tree hash git cannot check", rel.Version)
-	case q.Provenance.ForgeVersion == "" || recorded.ForgeVersion != q.Provenance.ForgeVersion:
+	// The same forge SOURCE, not the same version string: one commit has a
+	// tag and pseudo-versions of several bases (forgecompat.SameForge).
+	case !forgecompat.SameForge(recorded.ForgeVersion, q.Provenance.ForgeVersion):
 		return fmt.Sprintf("release %s records this tree but was built by forge %s, and this is forge %s — a different forge can render and build different bytes",
 			rel.Version, emptyAs(recorded.ForgeVersion, "(unrecorded)"), emptyAs(q.Provenance.ForgeVersion, "(unknown)"))
 	}

@@ -42,7 +42,9 @@ const slowTestsFixHint = "call testkit.Slow(t, \"<what makes it slow>\") first (
 // runSlowTestAnalysis loads paths and runs the slowtest analyzer in-process,
 // returning position-sorted findings with suppression directives applied.
 func runSlowTestAnalysis(ctx context.Context, paths []string) ([]finding.Finding, error) {
-	pkgs, err := loadPackagesForAnalysis(ctx, paths)
+	// The analyzer's facts flow from callee to caller across packages, so
+	// every dependency is analyzed too, from source.
+	pkgs, err := loadPackagesForAnalysis(ctx, paths, analysisLoad{depsFromSource: true, tests: true})
 	if err != nil {
 		return nil, err
 	}

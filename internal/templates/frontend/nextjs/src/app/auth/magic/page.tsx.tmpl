@@ -11,6 +11,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 
+import { AuthPage } from "@/components/auth-ui";
 import { MagicLinkForm } from "@/components/magic-link-form";
 import { useAuth } from "@/lib/auth/use-auth";
 import { joinBasePath } from "@/lib/basepath_gen";
@@ -19,20 +20,18 @@ function Page() {
   const searchParams = useSearchParams();
   const { refresh } = useAuth();
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-surface-muted p-6">
-      <div className="w-full max-w-sm">
-        <MagicLinkForm
-          code={searchParams?.get("code") ?? null}
-          signInHref={joinBasePath("/auth/sign-in")}
-          onSignedIn={async () => {
-            // A full navigation, as the sign-in screen does: every provider
-            // re-initialises with the session in place.
-            await refresh();
-            window.location.assign(joinBasePath("/"));
-          }}
-        />
-      </div>
-    </main>
+    <AuthPage>
+      <MagicLinkForm
+        code={searchParams?.get("code") ?? null}
+        signInHref={joinBasePath("/auth/sign-in")}
+        onSignedIn={async () => {
+          // A full navigation, as the sign-in screen does: every provider
+          // re-initialises with the session in place.
+          await refresh();
+          window.location.assign(joinBasePath("/"));
+        }}
+      />
+    </AuthPage>
   );
 }
 

@@ -290,9 +290,10 @@ func (r *resolver) checkName(imp Import) error {
 
 // checkForgeSkew refuses an imported project that pins a different forge
 // than the importer: its `import forge` would resolve to the importer's
-// module, not the one it was written against.
+// module, not the one it was written against. Pins are compared by the
+// commit they name, so a tag and a pseudo-version of one commit agree.
 func (r *resolver) checkForgeSkew(res Resolved, at string) error {
-	if res.ForgePin == "" || r.importerPin == "" || res.ForgePin == r.importerPin {
+	if res.ForgePin == "" || r.importerPin == "" || forgecompat.SameForge(res.ForgePin, r.importerPin) {
 		return nil
 	}
 	if forgecompat.SkewOverridden() {

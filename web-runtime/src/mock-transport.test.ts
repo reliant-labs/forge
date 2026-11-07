@@ -344,7 +344,7 @@ describe("entity fixture dispatch", () => {
     const err = await rejection(callUnary(transport, "Unknown", {}));
     expect(err.code).toBe(Code.Unimplemented);
     expect(err.message).toContain(
-      `no scenario handler or entity fixture for ${SERVICE}/Unknown`,
+      `no scenario handler, entity fixture or service default for ${SERVICE}/Unknown`,
     );
   });
 });
@@ -866,7 +866,7 @@ describe("streaming", () => {
     );
     expect(err.code).toBe(Code.Unimplemented);
     expect(err.message).toContain(
-      `no scenario handler for streaming RPC ${SERVICE}/Watch`,
+      `no scenario handler or service default for streaming RPC ${SERVICE}/Watch`,
     );
   });
 });

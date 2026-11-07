@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"sort"
@@ -2260,6 +2261,41 @@ func TestLabelValue(t *testing.T) {
 	} {
 		if got := labelValue(in); got != want {
 			t.Errorf("labelValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestCronJobHistoryRenders: the cron's history limits land on the CronJob
+// and its TTL on the Job template; unset leaves Kubernetes' defaults. A zero
+// limit is a real value (keep none), not an absent one.
+func TestCronJobHistoryRenders(t *testing.T) {
+	zero, one, week := int32(0), int32(1), int32(604800)
+	set := wl("prune", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"x"},
+		SuccessfulJobsHistoryLimit: &zero, FailedJobsHistoryLimit: &one, TTLSecondsAfterFinished: &week})
+	unset := wl("plain", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"x"}})
+	o := objects(t, render(t, v1alpha1.ProfileFull, set, unset))
+
+	cj := o["CronJob/prune"]
+	for path, want := range map[string]any{
+		"spec.successfulJobsHistoryLimit":               int64(0),
+		"spec.failedJobsHistoryLimit":                   int64(1),
+		"spec.jobTemplate.spec.ttlSecondsAfterFinished": int64(604800),
+	} {
+		var keys []any
+		for _, k := range strings.Split(path, ".") {
+			keys = append(keys, k)
+		}
+		if got := get(cj, keys...); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("CronJob/prune %s = %v, want %v", path, got, want)
+		}
+	}
+	plain := o["CronJob/plain"]
+	for _, keys := range [][]any{
+		{"spec", "successfulJobsHistoryLimit"}, {"spec", "failedJobsHistoryLimit"},
+		{"spec", "jobTemplate", "spec", "ttlSecondsAfterFinished"},
+	} {
+		if got := get(plain, keys...); got != nil {
+			t.Errorf("CronJob/plain %v = %v, want unset (Kubernetes' default)", keys, got)
 		}
 	}
 }

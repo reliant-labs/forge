@@ -82,6 +82,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -235,11 +236,14 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 		if unstampableRenderOfOurs(relPath, ours) {
 			return ours, true, keep, nil
 		}
-		// The service catalog is not settled here: it is disownable, and a
-		// merge driver cannot see the other side's ownership record (git
-		// runs it before MERGE_HEAD exists), so a line both sides changed
-		// stays a conflict.
-		// Its disjoint changes merge as lines, which is the common case.
+		// An output nothing certifies (the service catalog) merges its
+		// disjoint changes as lines. A line both sides changed is two of
+		// forge's projections disagreeing, so it is regenerated, not merged:
+		// keep ours, unless a side disowned the file and its content may be
+		// a person's (merge_generated_sides.go).
+		if !clean && uncertifiedConflictKeepsOurs(ctx, relPath, ours, theirs) {
+			return ours, true, regenerateNote, nil
+		}
 	case !clean && checksums.Verify(ours) == checksums.Pristine && checksums.Verify(theirs) == checksums.Pristine:
 		// Two pristine renders still conflicting: both are pure functions
 		// of inputs that merged, so the conflict holds no human content.
@@ -435,7 +439,29 @@ func ensureGeneratedMergeDriverTo(w io.Writer, root string) {
 // tree merely contains the project: `forge merge-driver install`, which a
 // script that otherwise opts out runs on purpose, passes true.
 func wireGeneratedMergeDriver(w io.Writer, root string, enclosing bool) {
-	top := gitTrimmed(root, "rev-parse", "--show-toplevel")
+	key := "merge." + generatedMergeDriver + ".driver"
+	nameKey := "merge." + generatedMergeDriver + ".name"
+	// The reads are independent, so they run side by side: on a loaded
+	// machine each is seconds of process spawn, and they stand in front of
+	// every writing command. Outside a git work tree they all just fail.
+	var (
+		top, worktreeConfig, current string
+		registered                   string
+		haveRegistered               bool
+		reads                        sync.WaitGroup
+	)
+	reads.Add(4)
+	go func() { defer reads.Done(); top = gitTrimmed(root, "rev-parse", "--show-toplevel") }()
+	go func() {
+		defer reads.Done()
+		worktreeConfig = gitTrimmed(root, "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
+	}()
+	go func() { defer reads.Done(); current = gitTrimmed(root, "config", "--get", key) }()
+	go func() {
+		defer reads.Done()
+		registered, haveRegistered = pinnedDriverCommand(root, mergeDriverIdentity())
+	}()
+	reads.Wait()
 	if top == "" {
 		return // not in a git work tree
 	}
@@ -457,20 +483,20 @@ func wireGeneratedMergeDriver(w io.Writer, root string, enclosing bool) {
 			changes = append(changes, fmt.Sprintf("%s: routes forge's generated and state files to the driver", file))
 		}
 	}
-	key := "merge." + generatedMergeDriver + ".driver"
-	nameKey := "merge." + generatedMergeDriver + ".name"
 	// A per-worktree command an earlier forge wrote (config.worktree) would
 	// shadow the shared one in this worktree forever; it is forge's own
 	// state, so it goes. Only read with the extension on: without it,
 	// `--worktree` means the shared config.
-	if gitTrimmed(root, "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig") == "true" {
+	if worktreeConfig == "true" {
 		if old := gitTrimmed(root, "config", "--worktree", "--get", key); old != "" &&
 			exec.CommandContext(context.Background(), "git", "-C", root, "config", "--worktree", "--unset", key).Run() == nil {
 			_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--worktree", "--unset", nameKey).Run()
 			changes = append(changes, fmt.Sprintf("removed this worktree's own %s (%s): the shared command applies, and hands each merge to the forge the project pins", key, old))
+			// The value read above was the worktree's; the shared one
+			// applies now.
+			current = gitTrimmed(root, "config", "--get", key)
 		}
 	}
-	current := gitTrimmed(root, "config", "--get", key)
 	// A forge that is not the project's pin never installs itself, and an
 	// unusable command is replaced by whatever forge runs. The pinned forge
 	// also replaces a command that cannot hand a merge to it — that is what
@@ -479,7 +505,7 @@ func wireGeneratedMergeDriver(w io.Writer, root string, enclosing bool) {
 	_, _, skewed := mergeDriverPinCheck(root)
 	var command string
 	var ok bool
-	if registered, have := pinnedDriverCommand(root, mergeDriverIdentity()); have && !skewed {
+	if haveRegistered && !skewed {
 		// A binary of this same pinned identity already registered itself
 		// and is still on disk: it IS the pinned forge, so keep it. Without
 		// this, every copy of the pin at a different path — each worktree's

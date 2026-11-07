@@ -75,9 +75,10 @@ func TestUpgrade_NeverRecreatesADisownedAbsentScaffoldOnceFile(t *testing.T) {
 	}
 }
 
-// The other side: a scaffold-once file forge has never written is still born by
-// upgrade (that is how an older project gains a newer scaffold), and the birth
-// is recorded so deleting it afterwards sticks.
+// The other side: a scaffold-once file whose template is new across the
+// upgrade's range, and that forge has never written, is born by upgrade (that
+// is how an older project gains a newer scaffold), and the birth is recorded
+// so deleting it afterwards sticks.
 func TestUpgrade_BirthsAnUnrecordedScaffoldOnceFileAndRecordsIt(t *testing.T) {
 	cfg := testProjectConfig()
 	dir := t.TempDir()
@@ -85,8 +86,9 @@ func TestUpgrade_BirthsAnUnrecordedScaffoldOnceFileAndRecordsIt(t *testing.T) {
 	t.Cleanup(checksums.ResetScaffoldLedgerCache)
 
 	rel := cmdTreePath(cfg.Name, "metrics.go")
-	if _, err := UpgradeSelection(dir, cfg, ForceNone(), false); err != nil {
-		t.Fatalf("UpgradeSelection: %v", err)
+	opts := UpgradeOptions{NewSince: func(v string) bool { return v == "v0.1.45" }}
+	if _, err := UpgradeWith(dir, cfg, opts); err != nil {
+		t.Fatalf("UpgradeWith: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 		t.Fatalf("upgrade did not birth %s: %v", rel, err)
@@ -98,8 +100,8 @@ func TestUpgrade_BirthsAnUnrecordedScaffoldOnceFileAndRecordsIt(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, rel)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := UpgradeSelection(dir, cfg, ForceNone(), false); err != nil {
-		t.Fatalf("UpgradeSelection (second): %v", err)
+	if _, err := UpgradeWith(dir, cfg, opts); err != nil {
+		t.Fatalf("UpgradeWith (second): %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
 		t.Fatalf("a deletion after upgrade's birth did not stick (stat err %v)", err)

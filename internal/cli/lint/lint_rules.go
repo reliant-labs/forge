@@ -83,7 +83,7 @@ func gradableRules() []string {
 		// forge conventions (proto, Go tree, frontend env)
 		"forgeconv-activity-declared", "forgeconv-allocate-port-spacing",
 		"forgeconv-bun-dollar-placeholder", "forgeconv-bun-literal-question-mark",
-		"forgeconv-config-service-name", "forgeconv-contract-names", "forgeconv-crud-owner-resolver",
+		"forgeconv-config-service-name", "forgeconv-crud-owner-resolver",
 		"forgeconv-deps-no-downcast", "forgeconv-deps-root-config", "forgeconv-deps-surface",
 		"forgeconv-frontend-env-forge-owned", "forgeconv-frontend-process-env",
 		"forgeconv-handler-connect-error", "forgeconv-handler-file-size",
@@ -122,7 +122,7 @@ func gradableRules() []string {
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,
 		secrets.RuleSingleOwner, ruleSecretsNotRendered,
 		// schema markers
-		"forge-column-markers", "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule,
+		"forge-column-markers", ruleIdentitySubjectUnreadable, "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule,
 		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, "forge-vendored-proto-drift",
 		// write policy
 		ruleCreateRequestNullability, computedFieldRuleID, readOnlyFieldRuleID, "forgeconv-guarded-field-written",
@@ -171,6 +171,15 @@ var ownedElsewhere = map[string]string{
 	ruleTypedAccessGuardUnavailable:  "a lane that could not run is governed by lint.allow_skip (or --allow-skip)",
 }
 
+// renamedRules maps a rule ID lint.rules used to accept to the rule that
+// replaced it. The old key keeps grading the new rule, so a forge.yaml that
+// names it keeps working; lintRulesOutcome warns that it should be renamed.
+var renamedRules = map[string]string{
+	// The contract-name check has always emitted the long form; the short
+	// one was graded but never emitted, so dialling it did nothing.
+	"forgeconv-contract-names": string(contractcheck.RuleInternalPackageContractNames),
+}
+
 // gradableRuleSet is gradableRules as a lookup.
 func gradableRuleSet() map[string]bool {
 	set := map[string]bool{}
@@ -185,7 +194,18 @@ func effectiveRules(cfg *config.ProjectConfig) suppress.RuleSeverities {
 	if cfg == nil {
 		return nil
 	}
-	return cfg.Lint.EffectiveRules()
+	rules := cfg.Lint.EffectiveRules()
+	for old, current := range renamedRules {
+		spec, ok := rules[old]
+		if !ok {
+			continue
+		}
+		delete(rules, old)
+		if _, set := rules[current]; !set {
+			rules[current] = spec
+		}
+	}
+	return rules
 }
 
 // gradeLane applies lint.rules to one lane's findings and re-derives whether
@@ -260,6 +280,14 @@ func lintRulesOutcome(cfg *config.ProjectConfig) lintStepOutcome {
 		if rule == suppress.Wildcard || gradable[rule] {
 			continue
 		}
+		if current, ok := renamedRules[rule]; ok {
+			o.findings = append(o.findings, lintJSONFinding{
+				Severity: lintSevWarning, Rule: ruleLintRules,
+				Message: fmt.Sprintf("forge.yaml lint.rules[%q]: this rule was renamed to %q; the entry grades it under the old name", key, current),
+				FixHint: fmt.Sprintf("rename the key to %q", current),
+			})
+			continue
+		}
 		f := lintJSONFinding{Severity: lintSevError, Rule: ruleLintRules}
 		switch why, ok := ownedElsewhere[rule]; {
 		case ok:
@@ -279,6 +307,6 @@ func lintRulesOutcome(cfg *config.ProjectConfig) lintStepOutcome {
 		o.findings = append(o.findings, f)
 	}
 	o.ran = len(o.findings) > 0
-	o.gated = o.ran
+	o.gated = anyErrorFinding(o.findings)
 	return o
 }

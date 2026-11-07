@@ -18,29 +18,34 @@ func TestCheck_Accepts(t *testing.T) {
 		"  \n\t SELECT 1 ;  ;  ":       "SELECT",
 		"/* lead */ SELECT 1 -- trail": "SELECT",
 		"-- note\nSELECT 1":            "SELECT",
-		"/* a /* nested */ still comment */ SELECT 1":      "SELECT",
-		"(SELECT 1) UNION (SELECT 2)":                      "SELECT",
-		"WITH x AS (SELECT 1) SELECT * FROM x":             "WITH",
-		"TABLE users":                                      "TABLE",
-		"VALUES (1), (2)":                                  "VALUES",
-		"SHOW statement_timeout":                           "SHOW",
-		"EXPLAIN SELECT 1":                                 "EXPLAIN",
-		"EXPLAIN (FORMAT JSON) SELECT 1":                   "EXPLAIN",
-		"EXPLAIN ANALYZE SELECT 1":                         "EXPLAIN",
-		"EXPLAIN (ANALYZE, BUFFERS) SELECT 1":              "EXPLAIN",
-		"EXPLAIN (ANALYZE true) (SELECT 1)":                "EXPLAIN",
-		"EXPLAIN ANALYZE VERBOSE SELECT 1":                 "EXPLAIN",
-		"EXPLAIN VERBOSE WITH x AS (SELECT 1) SELECT 1":    "EXPLAIN",
-		"EXPLAIN WITH x AS (SELECT 1) SELECT * FROM x":     "EXPLAIN",
-		"SELECT ';' , 'it''s ; fine'":                      "SELECT",
-		`SELECT ";" FROM "a;b"`:                            "SELECT",
-		"SELECT E'a\\';b'":                                 "SELECT",
-		"SELECT $$a;b$$, $tag$ ; $$ ; $tag$":               "SELECT",
-		"SELECT $1, $2":                                    "SELECT",
-		"SELECT 'a' -- ; DROP TABLE x":                     "SELECT",
-		"SELECT 1 /* ; DROP TABLE x */":                    "SELECT",
-		"SELECT 'é;ü', 1":                                  "SELECT",
-		"select * from public.t where a = 'delete from x'": "SELECT",
+		"/* a /* nested */ still comment */ SELECT 1":          "SELECT",
+		"(SELECT 1) UNION (SELECT 2)":                          "SELECT",
+		"WITH x AS (SELECT 1) SELECT * FROM x":                 "WITH",
+		"TABLE users":                                          "TABLE",
+		"VALUES (1), (2)":                                      "VALUES",
+		"SHOW statement_timeout":                               "SHOW",
+		"EXPLAIN SELECT 1":                                     "EXPLAIN",
+		"EXPLAIN (FORMAT JSON) SELECT 1":                       "EXPLAIN",
+		"EXPLAIN ANALYZE SELECT 1":                             "EXPLAIN",
+		"EXPLAIN (ANALYZE, BUFFERS) SELECT 1":                  "EXPLAIN",
+		"EXPLAIN (ANALYZE true) (SELECT 1)":                    "EXPLAIN",
+		"EXPLAIN ANALYZE VERBOSE SELECT 1":                     "EXPLAIN",
+		"EXPLAIN ANALYZE WITH x AS (SELECT 1) SELECT * FROM x": "EXPLAIN",
+		"EXPLAIN (ANALYZE, BUFFERS) WITH RECURSIVE h AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM h WHERE n < 3) SELECT * FROM h": "EXPLAIN",
+		"EXPLAIN (ANALYZE) TABLE t":                                                 "EXPLAIN",
+		"EXPLAIN (ANALYZE, VERBOSE) VALUES (1)":                                     "EXPLAIN",
+		"EXPLAIN ANALYZE WITH x AS (SELECT 'DELETE' AS \"update\") SELECT * FROM x": "EXPLAIN",
+		"EXPLAIN VERBOSE WITH x AS (SELECT 1) SELECT 1":                             "EXPLAIN",
+		"EXPLAIN WITH x AS (SELECT 1) SELECT * FROM x":                              "EXPLAIN",
+		"SELECT ';' , 'it''s ; fine'":                                               "SELECT",
+		`SELECT ";" FROM "a;b"`:                                                     "SELECT",
+		"SELECT E'a\\';b'":                                                          "SELECT",
+		"SELECT $$a;b$$, $tag$ ; $$ ; $tag$":                                        "SELECT",
+		"SELECT $1, $2":                                                             "SELECT",
+		"SELECT 'a' -- ; DROP TABLE x":                                              "SELECT",
+		"SELECT 1 /* ; DROP TABLE x */":                                             "SELECT",
+		"SELECT 'é;ü', 1":                                                           "SELECT",
+		"select * from public.t where a = 'delete from x'":                          "SELECT",
 	} {
 		sql, leader := sql, leader
 		t.Run(sql, func(t *testing.T) {
@@ -87,10 +92,16 @@ func TestCheck_Refuses(t *testing.T) {
 		{"EXPLAIN INSERT INTO t VALUES (1)", "not_read_only"},
 		{"EXPLAIN (ANALYZE) DELETE FROM t", "not_read_only"},
 		{"EXPLAIN", "not_read_only"},
-		{"EXPLAIN ANALYZE WITH x AS (SELECT 1) SELECT * FROM x", "explain_analyze"},
-		{"EXPLAIN (ANALYZE) TABLE t", "explain_analyze"},
-		{"EXPLAIN (ANALYZE, VERBOSE) VALUES (1)", "explain_analyze"},
-		{"EXPLAIN ANALYSE WITH x AS (SELECT 1) SELECT 1", "explain_analyze"},
+		{"EXPLAIN ANALYZE WITH d AS (DELETE FROM t RETURNING id) SELECT * FROM d", "explain_analyze"},
+		{"EXPLAIN (ANALYZE) WITH i AS (INSERT INTO t VALUES (1) RETURNING id) SELECT 1", "explain_analyze"},
+		{"EXPLAIN ANALYSE WITH u AS (UPDATE t SET a = 1 RETURNING a) SELECT 1", "explain_analyze"},
+		{"EXPLAIN (ANALYZE) WITH m AS (MERGE INTO t USING s ON true WHEN MATCHED THEN DELETE) SELECT 1", "explain_analyze"},
+		{"EXPLAIN ANALYZE SELECT * FROM t FOR UPDATE", "explain_analyze"},
+		{"EXPLAIN ANALYZE SELECT * FROM t FOR NO KEY UPDATE", "explain_analyze"},
+		{"EXPLAIN ANALYZE WITH u AS (UPDATE ONLY public.t AS x SET a = 1) SELECT 1", "explain_analyze"},
+		{"EXPLAIN ANALYZE WITH u AS MATERIALIZED (DELETE FROM t) SELECT 1", "explain_analyze"},
+		{"EXPLAIN ANALYZE WITH d AS (WITH s AS (SELECT 1) DELETE FROM t) SELECT 1", "explain_analyze"},
+		{"EXPLAIN ANALYZE WITH s AS (SELECT 1) DELETE FROM t", "explain_analyze"},
 		{"SELECT 'unterminated", "unterminated"},
 		{`SELECT "unterminated`, "unterminated"},
 		{"SELECT $$unterminated", "unterminated"},
@@ -116,6 +127,28 @@ func TestCheck_Refuses(t *testing.T) {
 				t.Fatalf("Check(%q) = %v; want refused/%s", name, err, tc.reason)
 			}
 		})
+	}
+}
+
+// INSERT, UPDATE, DELETE and MERGE are unreserved: unquoted, they can name a
+// column, a table or an alias. EXPLAIN ANALYZE refuses them only as syntax.
+func TestCheck_ExplainAnalyzeAllowsKeywordIdentifiers(t *testing.T) {
+	t.Parallel()
+	for _, sql := range []string{
+		"EXPLAIN ANALYZE SELECT update FROM t",
+		"EXPLAIN ANALYZE SELECT delete FROM t",
+		"EXPLAIN ANALYZE SELECT insert, merge FROM t",
+		"EXPLAIN ANALYZE SELECT * FROM update",
+		"EXPLAIN ANALYZE SELECT * FROM delete AS d JOIN insert i ON d.id = i.id",
+		"EXPLAIN ANALYZE SELECT a AS update FROM t WHERE delete > 0",
+		"EXPLAIN (ANALYZE) SELECT * FROM (SELECT update FROM t) s",
+		"EXPLAIN ANALYZE WITH update AS (SELECT delete FROM merge) SELECT * FROM update",
+		"EXPLAIN ANALYZE SELECT t.update, count(*) AS delete FROM t GROUP BY t.update",
+		"EXPLAIN ANALYZE SELECT (update) FROM t",
+	} {
+		if _, err := Check(sql); err != nil {
+			t.Errorf("Check(%q) = %v", sql, err)
+		}
 	}
 }
 
@@ -169,7 +202,7 @@ func TestClassify(t *testing.T) {
 		{"canceled", context.Canceled, KindCanceled, ""},
 		{"dial", errors.New("dial tcp: connection refused"), KindUnavailable, ""},
 	} {
-		got := classify(tc.err)
+		got := Classify(tc.err)
 		if got.Kind != tc.kind || got.Reason != tc.reason {
 			t.Errorf("%s: got %s/%s, want %s/%s", tc.name, got.Kind, got.Reason, tc.kind, tc.reason)
 		}
@@ -177,8 +210,11 @@ func TestClassify(t *testing.T) {
 			t.Errorf("%s: cause not preserved", tc.name)
 		}
 	}
-	if k := KindOf(classify(refused("x", "y"))); k != KindRefused {
-		t.Errorf("an *Error passes through classify unchanged, got %s", k)
+	if k := KindOf(Classify(fmt.Errorf("wrapped: %w", refused("x", "y")))); k != KindRefused {
+		t.Errorf("an *Error passes through Classify unchanged, got %s", k)
+	}
+	if Classify(nil) != nil {
+		t.Error("Classify(nil) must be nil")
 	}
 	if KindOf(errors.New("plain")) != "" {
 		t.Error("KindOf of a foreign error must be empty")

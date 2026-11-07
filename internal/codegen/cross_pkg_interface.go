@@ -142,14 +142,20 @@ func resolveCrossPkgInterface(handlerDir, pkgAlias, typeName string, resolver *t
 }
 
 // depsSelectorImports returns the import path of every `<pkg>.<Type>` a
-// Deps struct in dirs names, deduplicated and sorted: what
-// newTypesResolver should load up front for those directories' stubs.
+// Deps struct in dirs names, and of every cross-package interface a local
+// interface in those dirs embeds (parseLocalInterfaces reads both),
+// deduplicated and sorted: what newTypesResolver should load up front for
+// those directories' doubles. A path missing here still resolves, but in a
+// load of its own.
 func depsSelectorImports(dirs []string) []string {
 	set := map[string]bool{}
 	for _, dir := range dirs {
 		fields, err := ParseServiceDeps(dir)
 		if err != nil || len(fields) == 0 {
 			continue
+		}
+		for _, p := range localEmbedImports(dir) {
+			set[p] = true
 		}
 		imports, err := collectImports(dir)
 		if err != nil {

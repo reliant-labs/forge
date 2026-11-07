@@ -104,7 +104,14 @@ knows for the range the pin crosses, in this order:
    release's codemods too.
 3. **templates** — frozen Tier-2 files diffed against the latest templates;
    unmodified files are auto-updated, modified ones are reported and kept
-   (`--force` adopts them).
+   (`--force` adopts them). A Tier-2 file the project does NOT have is added
+   only when its template is new across the range (first shipped after the
+   old pin) and nothing stands in for it. It is never added when the project
+   deleted it (the scaffold ledger, `forge project disown --absent`, or git
+   history says so) or has its own variant beside it (`eslint.config.js` for
+   `eslint.config.mjs`, `compose.yaml` for `docker-compose.yml`). An older
+   template the project never had is offered, not written:
+   ``in templates since vX: <file> — `forge project rescaffold <file>` to add it``.
 4. **pin** — `forge_version` in `forge.yaml` moves to the target.
 5. **playbooks** — each crossed playbook's `automation:` steps (a playbook
    declares `fix:<codemod>` for the steps that are mechanical). A playbook
@@ -164,7 +171,9 @@ was applied before the failure. Schema `forge-project-upgrade/v1`:
                    "line": 7, "message": "…", "fix": "…"}],
   "upcoming": [{"rule": "forge-frontend-lock-drift", "count": 1, "introduced_in": "v1.0.0",
                 "gates_from": "v1.0.1", "fix": "…", "examples": ["…"]}],
-  "template_drift": ["Dockerfile"]
+  "template_drift": ["Dockerfile"],
+  "offers": [{"path": "docker-compose.yml", "since": "v0.0.2",
+              "command": "forge project rescaffold docker-compose.yml"}]
 }
 ```
 
@@ -174,8 +183,14 @@ was applied before the failure. Schema `forge-project-upgrade/v1`:
 - `phases[].status` is `done`, `skipped`, `planned` (`--check`) or `failed`.
 - `needs_human[].kind` is `lint-error`, `playbook`, `codemod-blocked`,
   `codemod-skipped`, `lock-drift` or `vendored-contract`. Each carries `fix`:
-  the command or skill that clears it.
+  the command or skill that clears it. One lint finding is one item: the tool
+  output under it (golangci-lint's source snippet, a formatter's diff) is its
+  `context`, and the format lane's finding for a file golangci-lint's
+  gofmt/goimports also flagged folds into that item.
 - `upcoming` is informational and never changes the exit code.
+- `offers` are scaffold-once files the project never had whose templates are
+  not new across the range; upgrade did not add them, and `command` does. They
+  never change the exit code.
 
 ### Re-vendoring a contract the project copies from another repository
 

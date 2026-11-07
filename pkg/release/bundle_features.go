@@ -121,6 +121,13 @@ const (
 	// policy. That is the fail-closed reading: nothing is enabled that nobody
 	// converged.
 	BundleFeatureIdentitySignIn = "shape-identity-signin"
+	// BundleFeatureExternalDatabases is Shape.ExternalDatabases: the
+	// databases the env uses but forge does not run, as routes (Service,
+	// database, role, password Secret name). A control plane that predates it
+	// lists only the env's managed databases, so a shape carrying them is
+	// written only to one that names the feature. A shape that declares none
+	// carries no key, so it needs nothing of the reader.
+	BundleFeatureExternalDatabases = "shape-external-databases"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -128,7 +135,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -212,6 +219,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureDatabaseDashboards) {
 		s.Databases = nil
+	}
+	if !r.Supports(BundleFeatureExternalDatabases) {
+		s.ExternalDatabases = nil
 	}
 	if !r.Supports(BundleFeatureShapePlacement) {
 		s.HostInfra = false

@@ -381,8 +381,13 @@ func (s ServiceDef) GoName() string { return naming.ConnectServiceGoName(s.Name)
 // Timestamps are conventions read off real columns
 // (deleted_at, created_at+updated_at) — never annotations.
 type EntityDef struct {
-	Name      string        // "Patient"
-	TableName string        // "patients"
+	Name      string // "Patient"
+	TableName string // "patients"
+	// Schema is the postgres schema the applied table lives in ("public",
+	// "controlplane", …; "" when unknown). The ORM qualifies the table with
+	// it when it is not public, so the store reaches the table whatever the
+	// connection's search_path says.
+	Schema    string        `json:",omitempty"`
 	PkField   string        // "id"
 	PkGoType  string        // "string"
 	Fields    []EntityField // wire-message fields (service proto)

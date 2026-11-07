@@ -14,7 +14,7 @@ import (
 // process is exiting, its last batch is lost, and nobody can act on this one
 // line — a collector that stays unreachable is caught by the telemetry-arrival
 // checks, which see every process go quiet, not one. As an ERROR it opened an
-// issue on every rollout (control-plane prod, 2026-10-23..25: admin-server,
+// issue on every rollout (control-plane prod, 2026-10-23..25: platform-api,
 // reliant-api-server, daemon-gateway and the workers, each on pod
 // termination). Any other flush failure — an exporter that refused the data —
 // stays an ERROR.

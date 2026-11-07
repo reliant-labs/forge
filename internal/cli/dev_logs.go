@@ -10,9 +10,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 func newDevLogsCmd() *cobra.Command {
@@ -71,7 +72,7 @@ func runDevLogs(ctx context.Context, configPath, service string, tail int, follo
 		args = append(args, "--max-log-requests=20", "-l", "app.kubernetes.io/managed-by=forge")
 	}
 
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd := cluster.KubectlCommand(ctx, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

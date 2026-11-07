@@ -33,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 // reconcileDeclaredClusters ensures every cluster the env declares exists
@@ -356,6 +358,18 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, declared []Clus
 	fmt.Printf("  creating k3d cluster %q (%s)...\n", c.Name, strings.Join(args[2:], " "))
 	if err := createDeclaredClusterFn(ctx, c.Name, args); err != nil {
 		return err
+	}
+	// Wait for the API and nodes BEFORE anything below talks to the cluster,
+	// as the start path does. A create whose k3d client wedged after the
+	// containers were up returns as soon as forge cancels that client
+	// (runK3dClusterLifecycle), and on a loaded machine the serverlb is not
+	// yet accepting connections then: the host-gateway DNS step's CoreDNS
+	// read failed the whole `cluster up` with "connection refused" (forge
+	// reports edff3a54, 0ee81d13). On a create k3d finished itself this is
+	// one kubectl call.
+	fmt.Printf("  waiting for cluster %q nodes to report Ready...\n", c.Name)
+	if err := waitDeclaredClusterReadyFn(ctx, c.Name); err != nil {
+		return fmt.Errorf("wait for new cluster %q: %w", c.Name, err)
 	}
 
 	if c.RegistryInherit {
@@ -854,7 +868,7 @@ func ensureMSSClamp(ctx context.Context, node string) error {
 // readCoreDNSNodeHosts returns the kube-system/coredns ConfigMap's
 // NodeHosts data for the given kubectl context (empty string when unset).
 func readCoreDNSNodeHosts(ctx context.Context, kctx string) (string, error) {
-	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	out, err := cluster.KubectlCommand(ctx, "--context", kctx,
 		"get", "configmap", "coredns", "-n", "kube-system",
 		"-o", "jsonpath={.data.NodeHosts}").CombinedOutput()
 	if err != nil {
@@ -928,7 +942,7 @@ func patchCoreDNSNodeHosts(ctx context.Context, kctx, newHosts string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	cmd := cluster.KubectlCommand(ctx, "--context", kctx,
 		"patch", "configmap", "coredns", "-n", "kube-system",
 		"--type", "merge", "-p", string(body))
 	cmd.Stderr = os.Stderr
@@ -938,13 +952,13 @@ func patchCoreDNSNodeHosts(ctx context.Context, kctx, newHosts string) error {
 // rolloutRestartCoreDNS bounces the coredns deployment so it reloads the
 // patched NodeHosts.
 func rolloutRestartCoreDNS(ctx context.Context, kctx string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	cmd := cluster.KubectlCommand(ctx, "--context", kctx,
 		"rollout", "restart", "deployment/coredns", "-n", "kube-system")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return err
 	}
-	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	out, err := cluster.KubectlCommand(ctx, "--context", kctx,
 		"rollout", "status", "deployment/coredns", "-n", "kube-system",
 		"--timeout=60s").CombinedOutput()
 	if err != nil {
@@ -1015,7 +1029,7 @@ var nodeReadyAttemptFn = kubectlWaitNodesReady
 func kubectlWaitNodesReady(ctx context.Context, kctx string, budget time.Duration) (string, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	out, err := exec.CommandContext(attemptCtx, "kubectl", "--context", kctx,
+	out, err := cluster.KubectlCommand(attemptCtx, "--context", kctx,
 		"wait", "--for=condition=Ready", "nodes", "--all",
 		"--timeout="+budget.String()).CombinedOutput()
 	if err != nil {

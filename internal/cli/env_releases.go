@@ -26,6 +26,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -77,13 +79,21 @@ type releasesBackend struct {
 // openReleasesBackend resolves env's ledger. A failure to reach or
 // authenticate is "could not look" (exit 2): the timeline neither confirms
 // nor denies anything.
+//
+// The declaration comes from the env's stamped target (obs_target.go), not a
+// render of its own: the release lookup that `forge obs trace` and `forge db
+// query` add to their answer used to render the env's KCL twice (ledger
+// selection, then the control plane) inside a 10s budget, and a large env's
+// render alone can take longer, so the release was "unknown" whenever the
+// machine was busy. A stamped target costs no render, and an unstamped one
+// costs one that every later command reuses.
 var openReleasesBackend = func(ctx context.Context, env string) (releasesBackend, error) {
 	projectDir := projectDirForKCL()
-	l, err := selectLedger(ctx, projectDir, env)
+	decl, err := releasesLedgerDeclaration(ctx, projectDir, env)
 	if err != nil {
 		return releasesBackend{}, undeterminedf("choose the ledger of %s: %v", env, err)
 	}
-	if !l.Hosted {
+	if decl == nil {
 		store, err := openMachineLedger(projectDir)
 		if err != nil {
 			return releasesBackend{}, undeterminedf("open this machine's ledger: %v", err)
@@ -93,12 +103,34 @@ var openReleasesBackend = func(ctx context.Context, env string) (releasesBackend
 			Bundle: store.Bundle,
 		}, nil
 	}
-	ep, cred, err := resolveCloudTarget(ctx, env, "")
+	ep, cred, err := resolveCloudTargetFor(env, decl, "")
 	if err != nil {
 		return releasesBackend{}, undeterminedf("reach the control plane of %s: %v", env, err)
 	}
 	c := releasetimeline.NewCloud(cloud.NewClient(ep, cred), hostedProjectName())
 	return releasesBackend{Name: backendCloud, Source: c, Cloud: &c, Ledger: ep.URL}, nil
+}
+
+// releasesLedgerDeclaration is the control plane that keeps env's release
+// ledger, nil when the ledger is this machine's: the choice selectLedger
+// makes, read from the stamped target. An env with no deploy/kcl/<env>/main.k
+// declares nothing, and FORGE_LEDGER=machine overrides a declaration.
+func releasesLedgerDeclaration(ctx context.Context, projectDir, env string) (*cloud.Declaration, error) {
+	selection, err := ledgerSelectionFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")); err != nil {
+		return nil, nil
+	}
+	t, err := resolveObsTarget(ctx, env)
+	if err != nil {
+		return nil, fmt.Errorf("render deploy/kcl/%s: %w", env, err)
+	}
+	if selection == ledgerSelectMachine {
+		return nil, nil
+	}
+	return t.Declaration(), nil
 }
 
 // releasesDeps are the seams a test replaces: the backend, the clock, and the

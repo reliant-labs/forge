@@ -361,7 +361,7 @@ the rewrite alternative.
    in either env changes.
 2. **Declare the SPA in prod.** `deploy/kcl/prod/main.k` adds `frontends = [rw.reliant_web]` and carries
    prod-web's `observability.signals.replay = True`. `reliant-web` declares `release_dependencies =
-{"reliant-api-server": "<contract>"}` (and admin-server, if it calls it), so it ships after the API. prod-web
+{"reliant-api-server": "<contract>"}` (and platform-api, if it calls it), so it ships after the API. prod-web
    stays declared.
 3. **Cut and promote prod** with `scripts/cut-release.sh --promote prod` as usual. One release carries the API
    and the SPA. The first hosted ensure gives prod a hosted slot and its StaticSite publishes to

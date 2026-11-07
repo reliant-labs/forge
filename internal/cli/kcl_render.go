@@ -915,7 +915,10 @@ type HostRuntime struct {
 	// app) declares `listen_ports = []`; forge must then allocate nothing
 	// and gate on nothing.
 	ListenPorts *[]int `json:"listen_ports,omitempty"`
-	DelvePort   int    `json:"delve_port,omitempty"` // runner delve; default 2345
+	// StartupAfter names host workloads or frontend dev servers that env up
+	// must observe ready before launching this workload. Empty preserves order.
+	StartupAfter []string `json:"startup_after,omitempty"`
+	DelvePort    int      `json:"delve_port,omitempty"` // runner delve; default 2345
 
 	// LaunchEnv is RUN state, not contract: env forge decides for this one
 	// launch (the ephemeral PORT resolveEphemeralHostPorts allocates) and
@@ -1176,6 +1179,12 @@ type ExternalDatabaseEntity struct {
 	PasswordSecret string `json:"password_secret"`
 	PasswordKey    string `json:"password_key"`
 	SSLMode        string `json:"sslmode"`
+	// Reach is how a control plane dials it: "port_forward" (the default,
+	// through the kube API) or "direct" (<service>.<namespace>.svc:<port>
+	// from inside the cluster). forge db query always port-forwards.
+	Reach string `json:"reach,omitempty"`
+	// Port is the Service port, 0 when undeclared.
+	Port int `json:"port,omitempty"`
 }
 
 // BuildOnlyDeploy is the forge.BuildOnly runtime: the workload is built and
@@ -1353,7 +1362,9 @@ func (f FrontendEntity) EffectiveEnvVars() []KCLEnvVar {
 	}
 	for _, ev := range f.EnvVars {
 		if i, ok := idx[ev.Name]; ok {
-			fmt.Printf("  ⚠️  frontend %s: env_vars sets %q, overriding the typed config value for that variable.\n", f.Name, ev.Name)
+			// stderr: a render feeds `forge env config --json` and the
+			// other documents on stdout (forge report 2186e95b).
+			fmt.Fprintf(os.Stderr, "  ⚠️  frontend %s: env_vars sets %q, overriding the typed config value for that variable.\n", f.Name, ev.Name)
 			out[i] = ev
 			continue
 		}

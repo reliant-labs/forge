@@ -423,7 +423,7 @@ func preflightBeforeRecord(ctx context.Context, env, version string, ledger envL
 	// deploy which is not happening. Only the preflight's own advisory
 	// lines are worth showing; a refusal carries its whole report.
 	out, err := captureProcessStdout(func() error {
-		return runPromoteClientDeploy(withHostedPinRelease(ctx, version), env, opts)
+		return runPromoteClientDeploy(fencePreflight(withHostedPinRelease(ctx, version)), env, opts)
 	})
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "preflight:") {

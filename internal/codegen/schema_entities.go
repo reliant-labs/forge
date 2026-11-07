@@ -3,6 +3,7 @@ package codegen
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -142,8 +143,13 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 //
 // A table opts out with `COMMENT ON TABLE t IS 'forge:no-entity'`
 // (schemadef.TableMarkerNoEntity); the project opts out with
-// `//forge:no-orm`.
-func BuildORMEntities(projectDir string, services []ServiceDef) ([]EntityDef, error) {
+// `//forge:no-orm`. A table a forge library owns (libraryTables) is out by
+// default; see ormEntitiesForTables.
+//
+// ormDir is the ORM package's directory relative to projectDir
+// (config.ORMPackage's PackageDir, "internal/db" by default): the stores it
+// already holds decide which library tables keep theirs, deprecated.
+func BuildORMEntities(projectDir, ormDir string, services []ServiceDef) ([]EntityDef, error) {
 	tables, err := shadowdb.Tables(projectDir, filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
 		return nil, err
@@ -158,9 +164,13 @@ func BuildORMEntities(projectDir string, services []ServiceDef) ([]EntityDef, er
 	if err := schemadef.CheckMarkers(append(tables, views...)); err != nil {
 		return nil, err
 	}
-	entities, notes, err := ormEntitiesForTables(append(tables, views...), services)
+	projected := existingORMProjection(filepath.Join(projectDir, filepath.FromSlash(ormDir)), ormDir)
+	entities, notes, deprecations, err := ormEntitiesForTables(append(tables, views...), services, projected)
 	for _, n := range notes {
 		fmt.Println("ℹ️  " + n)
+	}
+	for _, d := range deprecations {
+		fmt.Fprintln(os.Stderr, "⚠️  "+d)
 	}
 	return entities, err
 }
@@ -173,8 +183,19 @@ func BuildORMEntities(projectDir string, services []ServiceDef) ([]EntityDef, er
 //
 // notes are one-line reasons for tables left out of the projection; err
 // names two tables that would project to the same Go name, which cannot
-// both be declared in one package.
-func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (entities []EntityDef, notes []string, err error) {
+// both be declared in one package (an *EntityCollisionError).
+//
+// A table a forge library owns (libraryOwning: forge/pkg/audit's audit_log,
+// …) is left out: the library's own store is its data path, and a second,
+// generated one is how its entity name came to collide with the app's
+// audit_logs. It is projected when something declares it should be: a CRUD
+// rpc names it (the CRUD wiring compiles against its store), or its comment
+// says `forge:entity`. It is also kept, with a deprecation in deprecations,
+// when projected reports the project already generates its store: generated
+// code is public within major 1, so that store goes only in the next major.
+// The kept store never wins a collision: a projection that collides with
+// another table's could not have compiled, so the library table yields.
+func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef, projected ormProjected) (entities []EntityDef, notes, deprecations []string, err error) {
 	var baseTables []schemadef.Table
 	for _, t := range tables {
 		if !t.IsView { // a view is never a CRUD entity
@@ -186,7 +207,62 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (enti
 		byTable[e.TableName] = e
 	}
 
-	owner := map[string]string{} // entity name (lowercased) → table
+	// An existing library-table store is kept only if no other relation
+	// projects to its name; those names are known before the loop.
+	other := map[string]bool{}
+	for _, t := range tables {
+		if t.NoEntity() {
+			continue
+		}
+		if _, lib := libraryOwning(t); lib {
+			continue
+		}
+		if t.IsView {
+			if e, ok := viewEntityDef(t); ok {
+				other[strings.ToLower(e.Name)] = true
+			}
+			continue
+		}
+		name := TableEntityName(t)
+		if e, joined := byTable[t.Name]; joined {
+			name = e.Name
+		}
+		other[strings.ToLower(name)] = true
+	}
+
+	owner := map[string]schemadef.Table{} // entity name (lowercased) → table
+	add := func(t schemadef.Table, e EntityDef) error {
+		key := strings.ToLower(e.Name)
+		if prev, dup := owner[key]; dup {
+			return &EntityCollisionError{First: prev, Second: t, Entity: e.Name}
+		}
+		owner[key] = t
+		entities = append(entities, e)
+		return nil
+	}
+	// skipLibraryTable reports whether a forge library's table that no entity
+	// declares is left off the ORM (noting why). One a previous generate
+	// projected keeps its store, deprecated, until the next major.
+	skipLibraryTable := func(t schemadef.Table) bool {
+		lib, ok := libraryOwning(t)
+		if !ok {
+			return false
+		}
+		if declared, _ := t.DeclaresEntity(); declared {
+			return false
+		}
+		name := TableEntityName(t)
+		file, had := "", false
+		if projected != nil && !other[strings.ToLower(name)] {
+			file, had = projected(t, name)
+		}
+		if !had {
+			notes = append(notes, libraryTableNote(t, lib))
+			return true
+		}
+		deprecations = append(deprecations, libraryTableDeprecation(t, lib, file))
+		return false
+	}
 	sorted := append([]schemadef.Table(nil), tables...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, t := range sorted {
@@ -198,17 +274,16 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (enti
 			if !ok {
 				continue
 			}
-			key := strings.ToLower(e.Name)
-			if prev, dup := owner[key]; dup {
-				return nil, notes, fmt.Errorf("%s and the view %s both project to the entity %s, and one package cannot declare it twice: rename one",
-					prev, t.Name, e.Name)
+			if err := add(t, e); err != nil {
+				return nil, notes, deprecations, err
 			}
-			owner[key] = t.Name
-			entities = append(entities, e)
 			continue
 		}
 		e, joined := byTable[t.Name]
 		if !joined {
+			if skipLibraryTable(t) {
+				continue
+			}
 			// A composite key projects too: its store addresses a row by
 			// the whole key (Get<E>ByPK / Delete<E>ByPK / Upsert<E>). Only
 			// the CRUD join, whose rpcs take ONE id, leaves it out.
@@ -218,17 +293,37 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (enti
 			}
 			e = buildEntityDef(TableEntityName(t), t, ServiceDef{})
 		}
-		key := strings.ToLower(e.Name)
-		if prev, dup := owner[key]; dup {
-			return nil, notes, fmt.Errorf("tables %s and %s both project to the entity %s, and one package cannot declare it twice: "+
-				"opt one out with `COMMENT ON TABLE %s IS '%s'`, or rename it",
-				prev, t.Name, e.Name, t.Name, schemadef.TableMarkerNoEntity)
+		if err := add(t, e); err != nil {
+			return nil, notes, deprecations, err
 		}
-		owner[key] = t.Name
-		entities = append(entities, e)
 	}
 	sort.Slice(entities, func(i, j int) bool { return entities[i].Name < entities[j].Name })
-	return entities, notes, nil
+	return entities, notes, deprecations, nil
+}
+
+// EntityCollisionError is two relations of the applied schema that project
+// to the same entity name: one Go package cannot declare its struct, store
+// and delegates twice. It is known as soon as the schema is applied, so
+// `forge generate` refuses it while planning, before any slow step runs.
+type EntityCollisionError struct {
+	First, Second schemadef.Table // in name order
+	Entity        string
+}
+
+func (e *EntityCollisionError) Error() string {
+	if e.First.IsView || e.Second.IsView {
+		view, other := e.Second, e.First
+		if e.First.IsView {
+			view, other = e.First, e.Second
+		}
+		return fmt.Sprintf("%s and the view %s both project to the entity %s, and one package cannot declare it twice: "+
+			"name the view's entity with `COMMENT ON VIEW %s IS '%s %s=<Name>'`, or rename one",
+			other.Name, view.Name, e.Entity, tableRef(view), schemadef.ViewMarkerEntity, schemadef.TableMarkerEntityName)
+	}
+	return fmt.Sprintf("tables %s and %s both project to the entity %s, and one package cannot declare it twice: "+
+		"name one with `COMMENT ON TABLE %s IS '%s=<Name>'`, opt one out of the ORM with `COMMENT ON TABLE %s IS '%s'` "+
+		"(the usual answer for a table hand-written SQL owns), or rename it",
+		e.First.Name, e.Second.Name, e.Entity, tableRef(e.Second), schemadef.TableMarkerEntityName, tableRef(e.First), schemadef.TableMarkerNoEntity)
 }
 
 // viewEntityDef projects a VIEW opted in with `forge:entity` as a read-only
@@ -571,6 +666,7 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 	e := EntityDef{
 		Name:          name,
 		TableName:     table.Name,
+		Schema:        table.Schema,
 		ProtoFile:     protoFile,
 		SoftDelete:    conv.SoftDelete,
 		Timestamps:    conv.Timestamps,

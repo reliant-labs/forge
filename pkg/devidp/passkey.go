@@ -194,22 +194,18 @@ func (c *Client) listPasskeys(ctx context.Context, userID string, all bool) ([]P
 	if strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("a user id is required")
 	}
-	body, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/passkeys/_search", map[string]any{})
+	// The issuer's passkey search takes no paging: it answers every passkey
+	// at once, and searchAll fails if its total says otherwise.
+	result, err := searchAll[struct {
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		State string `json:"state"`
+	}](ctx, c, "/v2/users/"+url.PathEscape(userID)+"/passkeys/_search", map[string]any{}, "result", false)
 	if err != nil {
 		return nil, fmt.Errorf("list passkeys: %w", err)
 	}
-	var out struct {
-		Result []struct {
-			ID    string `json:"id"`
-			Name  string `json:"name"`
-			State string `json:"state"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("decode passkeys: %w", err)
-	}
 	keys := []Passkey{}
-	for _, p := range out.Result {
+	for _, p := range result {
 		if !all && p.State != "" && p.State != "AUTH_FACTOR_STATE_READY" {
 			continue
 		}

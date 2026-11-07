@@ -437,7 +437,7 @@ _lookup_gateway = lambda gateways: [any], gateway_name: str -> any {
 # WORKLOAD (resolved per env from the runtime that env binds it to). The
 # workload case is the ADR-0003 F2 primitive: control-plane declares
 # `/auth/token -> admin-server` ONCE and it renders as the Service in prod,
-# where admin-server is cluster-bound, and as the HOST PROCESS in dev,
+# where platform-api is cluster-bound, and as the HOST PROCESS in dev,
 # where it is not.
 #
 # WHY A `Backend` CRD FOR THE HOST CASE. Envoy Gateway refuses an

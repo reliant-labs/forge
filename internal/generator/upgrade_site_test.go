@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -56,11 +57,12 @@ func TestUpgrade_SiteWithoutGoModuleWritesNoGoProjectFiles(t *testing.T) {
 		return dir, cfg
 	}
 
-	// The writing run: not --check, and --force over everything, so no
-	// managed file the project's shape selects is held back.
+	// The writing run: not --check, --force over everything, and every
+	// template new across the range, so no managed file the project's shape
+	// selects is held back.
 	upgrade := func(t *testing.T, dir string, cfg *config.ProjectConfig) []UpgradeResult {
 		t.Helper()
-		results, err := UpgradeSelection(dir, cfg, ForceAll(), false)
+		results, err := UpgradeWith(dir, cfg, UpgradeOptions{Force: ForceAll(), NewSince: func(string) bool { return true }})
 		if err != nil {
 			t.Fatalf("UpgradeSelection: %v", err)
 		}
@@ -97,4 +99,65 @@ func TestUpgrade_SiteWithoutGoModuleWritesNoGoProjectFiles(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A static site's frontend is the site starter or an adopted app, never the
+// app frontend tree. `forge project upgrade --check` compared it against that
+// tree anyway and, on a site forge had just scaffolded, listed ~70 app
+// modules as "absent here", the starter's layout.tsx and next.config.ts as
+// hundreds of lines behind, and an eslint.config.mjs to add that neither
+// `project new --kind site` nor `forge generate` ever writes. The Go control
+// proves the same frontend does get those rows in a project with a go.mod.
+func TestUpgrade_SiteFrontendIsNotComparedAgainstTheAppFrontend(t *testing.T) {
+	t.Parallel()
+	load := func(t *testing.T, goModule bool) (string, *config.ProjectConfig) {
+		t.Helper()
+		dir := t.TempDir()
+		yaml := "name: landing\nforge_version: v1.0.14\n"
+		if goModule {
+			yaml += "module_path: example.com/landing\n"
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/landing\n\ngo 1.24\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "frontends", "web"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.LoadProjectDir(dir)
+		if err != nil {
+			t.Fatalf("LoadProjectDir: %v", err)
+		}
+		cfg.Frontends = []config.FrontendConfig{{Name: "web", Type: "nextjs"}}
+		return dir, cfg
+	}
+	frontendRows := func(t *testing.T, dir string, cfg *config.ProjectConfig) (advisory, managed int) {
+		t.Helper()
+		rows, err := AdvisoryFilesFor(dir, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if strings.HasPrefix(filepath.ToSlash(r.Path), "frontends/web/") {
+				advisory++
+			}
+		}
+		for _, p := range ManagedPathsFor(cfg) {
+			if strings.HasPrefix(filepath.ToSlash(p), "frontends/web/") {
+				managed++
+			}
+		}
+		return advisory, managed
+	}
+
+	goDir, goCfg := load(t, true)
+	if a, m := frontendRows(t, goDir, goCfg); a == 0 || m == 0 {
+		t.Fatalf("Go control: frontend advisory rows = %d, managed = %d; want both > 0, or the site case passes vacuously", a, m)
+	}
+	siteDir, siteCfg := load(t, false)
+	if a, m := frontendRows(t, siteDir, siteCfg); a != 0 || m != 0 {
+		t.Errorf("static site: frontend advisory rows = %d, managed = %d; want 0 (its frontend is not the app frontend)", a, m)
+	}
 }

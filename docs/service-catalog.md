@@ -64,9 +64,15 @@ conflicted on its hashes.json line, and git's server-side merge runs no merge
 driver to settle it. Two such branches now merge as plain lines into exactly
 forge's render of the merged inputs. The forge merge driver routes the file
 (`.gitattributes`: `forge_service_catalog.json merge=forge-generated`). A line
-both sides changed stays a conflict: the catalog is disownable, and a merge
-driver cannot see the other side's ownership record while git runs it.
-Regenerating on the merged tree settles it.
+both sides changed (two branches that each add a service append to the same
+lists) is two projections disagreeing, so the driver keeps this side's copy
+and says so: run `forge generate` to rebuild it, and `forge ci
+verify-generated` fails until you do. It does that only when it can read the
+disown record of the base, this side and the other side, and none of them
+disowns the catalog. A disowned catalog may hold a person's edits, so that
+conflict stays, as does one in an operation that does not name the other side
+to the driver (a cherry-pick, `git merge-tree`); `git merge`, `git pull` and
+`git rebase` do.
 
 The bundle copy (`forge/service-catalog.json`) carries the line its readers
 expect, `{"path": ..., "line": N}`: the build resolves each symbol against the

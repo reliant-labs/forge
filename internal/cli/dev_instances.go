@@ -11,10 +11,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 func newDevInstancesCmd() *cobra.Command {
@@ -95,7 +96,7 @@ func runDevInstances(ctx context.Context, jsonOut bool) error {
 // forge-managed namespaces. Failures (cluster down, context missing)
 // return nil so the caller can keep walking remaining clusters.
 func listForgeNamespaces(ctx context.Context, kubeCtx string) []string {
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeCtx,
+	cmd := cluster.KubectlCommand(ctx, "--context", kubeCtx,
 		"get", "namespaces",
 		"-l", "app.kubernetes.io/managed-by=forge",
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
@@ -116,7 +117,7 @@ func listForgeNamespaces(ctx context.Context, kubeCtx string) []string {
 // podCount returns the number of pods in a namespace via the given
 // context. Best-effort: failures return 0.
 func podCount(ctx context.Context, kubeCtx, namespace string) int {
-	cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeCtx, "get", "pods",
+	cmd := cluster.KubectlCommand(ctx, "--context", kubeCtx, "get", "pods",
 		"-n", namespace, "--no-headers",
 		"-o", "name")
 	out, err := cmd.Output()

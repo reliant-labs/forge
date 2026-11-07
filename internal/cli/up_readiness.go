@@ -48,6 +48,48 @@ func waitHostReadiness(ctx context.Context, env string, e *KCLEntities, timeout,
 	}
 }
 
+// hasRunning proves a portless runner was started and has not been reaped.
+// This is process liveness, not application readiness.
+func (p *procRegistry) hasRunning(name string) bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, mp := range p.processes {
+		if mp.name != name || mp.done == nil {
+			continue
+		}
+		select {
+		case <-mp.done:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// runningPID identifies a live runner registered by this invocation. Ownership
+// markers alone cannot distinguish two launches of the same project and env.
+func (p *procRegistry) runningPID(name string) int {
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, mp := range p.processes {
+		if mp.name != name || mp.done == nil {
+			continue
+		}
+		select {
+		case <-mp.done:
+		default:
+			return mp.pid
+		}
+	}
+	return 0
+}
+
 // exitReason only reports exits observed by Wait. An uninspectable process
 // or an empty OS process snapshot is not proof that a runner died.
 func (p *procRegistry) exitReason(name string) string {

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -753,6 +754,11 @@ func TestMergeExtraImports(t *testing.T) {
 // each field's package from source, separately — 72s of reliant's 74s
 // `generate --steps harness`. The stubs must be exactly the ones a
 // per-directory resolution produces.
+//
+// A local interface embedding a cross-package one (invoice's Notifier) is
+// read through the same resolver and prefetched in the same batch: its
+// embeds used to get a private resolver per service, one `go list -export
+// -deps` each — 13 loads and 30s of reliant's harness step.
 func TestTypesResolver_OneLoadForEveryService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("type-checks fixture modules via the go toolchain; runs in task test")
@@ -767,17 +773,32 @@ type Log interface {
 	Record(action string) error
 }
 `,
+		"internal/events/events.go": `package events
+
+// Sink receives domain events.
+type Sink interface {
+	Emit(name string) error
+}
+`,
 		"internal/handlers/invoice/service.go": `package invoice
 
 import (
 	"example.com/proj/internal/audit"
+	"example.com/proj/internal/events"
 	"example.com/proj/internal/repo"
 )
 
+// Notifier is an event sink the invoice service can flush.
+type Notifier interface {
+	events.Sink
+	Flush() error
+}
+
 // Deps is the invoice service's dependency graph.
 type Deps struct {
-	Repo  repo.Repository
-	Audit audit.Log
+	Repo   repo.Repository
+	Audit  audit.Log
+	Notify Notifier
 }
 `,
 	} {
@@ -792,7 +813,7 @@ type Deps struct {
 	invoiceDir := filepath.Join(root, "internal", "handlers", "invoice")
 	dirs := []string{billingDir, invoiceDir}
 
-	if got, want := depsSelectorImports(dirs), []string{"example.com/proj/internal/audit", "example.com/proj/internal/repo"}; !reflect.DeepEqual(got, want) {
+	if got, want := depsSelectorImports(dirs), []string{"example.com/proj/internal/audit", "example.com/proj/internal/events", "example.com/proj/internal/repo"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("depsSelectorImports = %v, want %v", got, want)
 	}
 	shared := newTypesResolver(root, depsSelectorImports(dirs))
@@ -802,6 +823,21 @@ type Deps struct {
 		if len(got) == 0 || !reflect.DeepEqual(got, want) || !reflect.DeepEqual(gotUnresolved, wantUnresolved) {
 			t.Errorf("%s: shared resolver stubs = %+v (unresolved %v), per-directory = %+v (unresolved %v)",
 				filepath.Base(dir), got, gotUnresolved, want, wantUnresolved)
+		}
+		if dir != invoiceDir {
+			continue
+		}
+		var notifier []string
+		for _, s := range got {
+			if s.FieldName == "Notify" {
+				for _, m := range s.Methods {
+					notifier = append(notifier, m.Name)
+				}
+			}
+		}
+		sort.Strings(notifier)
+		if !reflect.DeepEqual(notifier, []string{"Emit", "Flush"}) {
+			t.Errorf("invoice's Notifier stub has methods %v, want [Emit Flush] (Emit is embedded from events.Sink)", notifier)
 		}
 	}
 	if shared.loads != 1 {

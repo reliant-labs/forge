@@ -81,6 +81,7 @@ func TestRegistryFactsFromConfig_CreateIsNoop(t *testing.T) {
 // config names reach the policy as a side effect of the cluster phase, with no
 // `forge storage register` anywhere.
 func TestEnsureDeclaredCluster_ConvergesStorageFacts(t *testing.T) {
+	withReadyNewNodes(t)
 	origState := clusterRuntimeStateFn
 	origCreate := createDeclaredClusterFn
 	origHostDNS := ensureClusterHostGatewayDNSFn

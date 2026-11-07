@@ -989,6 +989,14 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// --target: the optional infra (local observability) runs only when a
 	// target names or requires it, and the plan says what starts and why.
 	scopeOptionalInfra(ctx, entities, projectDirForKCL(), opts.env, opts.targets, os.Stdout)
+	startupPlan, err := hostStartupPlan(entities, opts.targets)
+	if err != nil {
+		return err
+	}
+	orderedStartup := false
+	for _, node := range startupPlan {
+		orderedStartup = orderedStartup || len(node.after) > 0
+	}
 	planEntities := entities
 	if len(opts.targets) > 0 {
 		planEntities = filterEntitiesByTarget(entities, opts.targets)
@@ -1147,6 +1155,36 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		cfg: cfg, entities: entities, prov: prov, opts: opts,
 		projectDir: projectDir, detach: detach, procs: procs,
 		infraConverged: infraConverged,
+		launch: func(provider secrets.Provider) error {
+			if !orderedStartup {
+				if failures := upHostServices(ctx, cfg, entities, provider, opts.env, detach, opts.targets, procs); failures > 0 {
+					fmt.Printf("[up] %d host service(s) failed to start (see above)\n", failures)
+				}
+				return nil
+			}
+			timeout := opts.hostReadyTimeout
+			if timeout == 0 {
+				timeout = hostReadyTimeout
+			}
+			return launchStartupPlan(ctx, startupPlan, func(n startupNode) error {
+				failures := 0
+				if n.frontend {
+					failures = upFrontends(ctx, frontendLaunch{entities: entities, env: opts.env, background: detach,
+						noInstall: opts.noInstall, targets: []string{n.name}, frontendArgs: opts.frontendArgs,
+						apiBaseURL: apiBaseURL, procs: procs, projectDir: projectDir, secrets: provider.All()})
+				} else {
+					failures = upHostServices(ctx, cfg, entities, provider, opts.env, detach, []string{n.name}, procs)
+				}
+				if failures > 0 {
+					return fmt.Errorf("[up] %s failed to start (see above)", n.name)
+				}
+				return nil
+			}, func(n startupNode) error {
+				return waitStartupDependency(ctx, n, entities, projectID, opts.env, timeout, procs)
+			}, func(deps []startupNode) error {
+				return checkStartupDependencies(deps, entities, projectID, opts.env, procs)
+			})
+		},
 	}); err != nil {
 		return err
 	}
@@ -1157,7 +1195,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// is printed only when the render actually declares frontends: on a
 	// backend-only project there is nothing to elide and the line was
 	// pure noise.
-	if frontendPhaseEnabled(entities) {
+	if !orderedStartup && frontendPhaseEnabled(entities) {
 		feFailures := upFrontends(ctx, frontendLaunch{
 			entities: entities, env: opts.env, background: detach,
 			noInstall: opts.noInstall, targets: opts.targets,
@@ -1167,7 +1205,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
 		}
-	} else if len(entities.Frontends) > 0 {
+	} else if !orderedStartup && len(entities.Frontends) > 0 {
 		fmt.Printf("[up:frontend] feature 'frontend' is disabled in forge.yaml — skipping %d frontend(s)\n",
 			len(entities.Frontends))
 	}
@@ -1217,7 +1255,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// the summary lists exactly the frontends this run actually started.
 	// The cluster verdict rides in the same box: the half of "what came up"
 	// that runs in Kubernetes was missing from it entirely.
-	printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn, clusterHealth)
+	printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn, clusterHealth, procs)
 
 	clusterErr := clusterWorkloadError(opts.env, clusterHealth)
 
@@ -1339,6 +1377,8 @@ type hostPhase struct {
 	// infraConverged: this run's infra pre-warm already converged the
 	// env's infrastructure (see upClusterInput.infraConverged).
 	infraConverged bool
+	// launch runs after jobs and secret refresh, allowing explicit local dependencies.
+	launch func(secrets.Provider) error
 }
 
 // upHostPhase runs phase 3 of `forge env up`: converge the host world, then
@@ -1442,6 +1482,9 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 			fmt.Printf("[up] frontend runtime config: %v (serving the previously generated config.js)\n", err)
 		} else if changed > 0 {
 			fmt.Printf("[up] frontend runtime config: refreshed %d config.js from converged identity\n", changed)
+		}
+		if p.launch != nil {
+			return p.launch(p.prov)
 		}
 		hostFailures := upHostServices(ctx, cfg, entities, p.prov, opts.env, p.detach, opts.targets, p.procs)
 		if hostFailures > 0 {
@@ -1767,11 +1810,12 @@ func targetPhaseRequirements(e *KCLEntities, targets []string) upPhaseRequiremen
 // output. The JSON tags are the `--json` contract (kept additive so
 // dashboards/agents stay stable as fields are added).
 type upServiceRow struct {
-	Name string `json:"name"`
-	Kind string `json:"kind"`           // "host" | "frontend"
-	URL  string `json:"url,omitempty"`  // browser-reachable URL; empty when no port is declared
-	Port int    `json:"port,omitempty"` // declared listen port; 0 when unknown
-	Log  string `json:"log"`            // project-relative log path (tail/grep target)
+	ProcessStatus string `json:"process_status,omitempty"` // portless liveness, never application readiness
+	Name          string `json:"name"`
+	Kind          string `json:"kind"`           // "host" | "frontend"
+	URL           string `json:"url,omitempty"`  // browser-reachable URL; empty when no port is declared
+	Port          int    `json:"port,omitempty"` // declared listen port; 0 when unknown
+	Log           string `json:"log"`            // project-relative log path (tail/grep target)
 	// Listening is a point-in-time port probe: true when a TCP listener is
 	// accepting on Port. False for a not-yet-bound (booting) or dead service,
 	// and always false when Port is 0.
@@ -2030,8 +2074,16 @@ func enrichOwnership(rows []upServiceRow, projectID, env string) {
 // It is what makes the box tell the truth about BOTH halves of what was
 // brought up; a box that lists only host processes is the same silence the
 // exit code used to keep.
-func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary) {
+func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary, registries ...*procRegistry) {
 	rows := collectUpServices(e, env, targets, frontendsOn, portInUse)
+	for i := range rows {
+		if rows[i].Port <= 0 && len(registries) > 0 {
+			rows[i].ProcessStatus = "not running"
+			if registries[0].hasRunning(rows[i].Name) {
+				rows[i].ProcessStatus = "running (process only)"
+			}
+		}
+	}
 	compose := composeRows(context.Background(), e, projectDirForKCL(), env, targets, composePublishersFn)
 	probeRowsListening(compose, portInUse)
 	rows = append(rows, compose...)
@@ -2218,7 +2270,7 @@ func statusGlyph(r upServiceRow, _ string) string {
 // signal reused from the reclaim guard.
 func rowStatus(r upServiceRow, notReadyLabel string, showOwner bool) string {
 	if r.Port <= 0 {
-		return ""
+		return r.ProcessStatus
 	}
 	if !r.Listening {
 		return notReadyLabel
@@ -2276,7 +2328,7 @@ func portInUse(port int) bool {
 //     is false — the frontend feature is gated off).
 //
 // Only entities in the --target set are checked (inTargetSet), so
-// `forge env up --target reliant-web` next to a running admin-server is fine
+// `forge env up --target reliant-web` next to a running platform-api is fine
 // — the guard only fires for a service THIS run is about to start.
 func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe func(int) bool) []portConflict {
 	if e == nil {
@@ -2469,7 +2521,7 @@ func evalHostReadiness(e *KCLEntities, projectID, envName string, targets []stri
 func hostReadyUnready(rs []hostReadyResult) []hostReadyResult {
 	var out []hostReadyResult
 	for _, r := range rs {
-		if r.state != portReadyOurs {
+		if r.state != portReadyOurs || r.exited != "" {
 			out = append(out, r)
 		}
 	}
@@ -2490,7 +2542,14 @@ func hostReadyError(envName string, unready []hostReadyResult, e *KCLEntities) e
 		} else if r.exited != "" {
 			reason = "runner exited before readiness (" + r.exited + ")"
 		}
-		fmt.Fprintf(&b, "       %-14s :%d  %s\n", r.name, r.port, reason)
+		if r.port > 0 {
+			fmt.Fprintf(&b, "       %-14s :%d  %s\n", r.name, r.port, reason)
+		} else {
+			if r.exited == "" {
+				reason = "no live runner observed (portless process)"
+			}
+			fmt.Fprintf(&b, "       %-14s (no port)  %s\n", r.name, reason)
+		}
 		fmt.Fprintf(&b, "       %-14s   log: %s/%s.log\n", "", upLogDir(envName), r.name)
 		if r.holderPID > 0 {
 			fmt.Fprintf(&b, "       %-14s   holder: pid %d%s\n", "", r.holderPID, holderCmdSuffix(r.holderCmd))
@@ -2584,10 +2643,19 @@ const (
 func waitHostServicesReady(ctx context.Context, e *KCLEntities, projectID, envName string, targets []string, timeout, poll time.Duration, procs *procRegistry) error {
 	return waitHostReadiness(ctx, envName, e, timeout, poll, os.Stdout, func() []hostReadyResult {
 		rs := evalHostReadiness(e, projectID, envName, targets, portInUse, portListenerPID, newOSProcFacts())
-		for i := range rs {
-			if rs[i].state == portReadyNobody {
-				rs[i].exited = procs.exitReason(rs[i].name)
+		for _, w := range e.WorkloadsOn(RuntimeHost) {
+			// A nil registry retains the port-only helper contract. env up always
+			// supplies one, so production portless readiness requires a live runner.
+			if procs != nil && w.LongRunning() && inTargetSet(targets, w.Name) && len(w.HostPorts()) == 0 {
+				state := portReadyNobody
+				if procs.hasRunning(w.Name) {
+					state = portReadyOurs
+				}
+				rs = append(rs, hostReadyResult{name: w.Name, state: state})
 			}
+		}
+		for i := range rs {
+			rs[i].exited = procs.exitReason(rs[i].name)
 		}
 		return rs
 	})

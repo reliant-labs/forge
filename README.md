@@ -375,7 +375,11 @@ invariant is what tests are for.
   Connect-RPC handler overlay you reach with `?scenario=<name>` in the URL —
   so an agent can teleport the UI into a specific server-state shape (an empty
   list, a revoked token, a failing payment) without touching the backend.
-  Anything a scenario doesn't override falls through to the base transport.
+  Anything a scenario doesn't override falls through to the base transport,
+  where every RPC of every service the frontend has TypeScript for —
+  vendored contracts included — already answers deterministic, schema-valid
+  data built from its descriptor and protovalidate rules, so a scenario says
+  only what it is about (`mockService(Svc, { rpc: (req, d) => patch(d.rpc(req), …) })`).
 
 ### Two more that don't fit in a table
 

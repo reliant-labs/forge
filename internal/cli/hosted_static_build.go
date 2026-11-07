@@ -167,6 +167,25 @@ func hostedStaticSites(entities *KCLEntities, opts buildOptions) []FrontendEntit
 	return sites
 }
 
+// hostedSitesNeedPush is the build's refusal of a hosted static site it would
+// not push (errHostedSiteMustPush), as a check on the rendered env, so
+// `forge env build` can make it before it records anything on the control
+// plane. --release implies --push, and the caller has already folded it in.
+func hostedSitesNeedPush(entities *KCLEntities, opts buildOptions) error {
+	if opts.push || opts.pushIfDeclared {
+		return nil
+	}
+	sites := hostedStaticSites(entities, opts)
+	if len(sites) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(sites))
+	for _, f := range sites {
+		names = append(names, f.Name)
+	}
+	return errHostedSiteMustPush(opts.env, names)
+}
+
 // errHostedSiteMustPush is the refusal a build without --push hits when the
 // env binds a frontend to forge.OnHosted. Shared with the plan so the two
 // report the same remedy.

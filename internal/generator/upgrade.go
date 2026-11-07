@@ -55,6 +55,19 @@ type UpgradeResult struct {
 	// LeftDeleted marks a scaffold-once file that is absent because the
 	// project deleted, declined or disowned it. Upgrade leaves it so.
 	LeftDeleted bool
+	// DeletedIn is the commit that deleted a LeftDeleted file, when git
+	// history is what says so (the ledger did not record it).
+	DeletedIn string
+	// Equivalent is the project's own file that stands in for an absent
+	// one (eslint.config.js for the template's eslint.config.mjs). Upgrade
+	// does not add the template's beside it.
+	Equivalent string
+	// Offered marks an absent scaffold-once file this project never had
+	// that is not new across the upgrade's range. Upgrade does not add it;
+	// `forge project rescaffold <path>` does (upgrade_absent.go).
+	Offered bool
+	// Since is the release whose templates first shipped an Offered file.
+	Since string
 }
 
 // ForceSelection names which user-modified files an upgrade run is allowed to
@@ -157,6 +170,13 @@ type managedFile struct {
 	// (it depends on which frontends the project declares), so the entries
 	// are generated per frontend with their render attached.
 	render func() ([]byte, error)
+	// since is the forge release whose upgrade first ships this file. A
+	// Tier-2 file absent from a project is written only when since is new
+	// across the upgrade's range; an older one is offered instead, because
+	// a project that has gone without it has done so on purpose or by
+	// another name (upgrade_absent.go). Every Tier-2 entry declares it
+	// (TestEveryTier2ManagedFileDeclaresSince).
+	since string
 }
 
 // cfgIsService reports whether the project config is a service-kind project
@@ -260,11 +280,15 @@ func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
 	// deploy/kcl tree makes the kind derive as "service", so without this the
 	// upgrade wrote a Connect-server skeleton (cmd/, pkg/middleware,
 	// internal/metrics, Dockerfile, buf.yaml, Taskfile, docker-compose) into
-	// the site, and lint then failed on a buf module with no protos. Only its
-	// frontends' managed files apply — the same set `project new --kind site`
-	// would have written.
+	// the site, and lint then failed on a buf module with no protos. Nor does
+	// the app frontend's lint config apply: a site's frontend is the site
+	// starter or an adopted app (WriteSiteStarter / WriteSiteScaffold), never
+	// the app frontend tree, and neither `project new --kind site` nor
+	// `forge generate` writes eslint.config.mjs into it — so upgrade adding
+	// one would not converge, and it lints against plugins the site never
+	// installed.
 	if cfg != nil && !cfg.HasGoModule() {
-		return frontendManagedFiles(cfg)
+		return nil
 	}
 	binary := config.ProjectBinaryPerService
 	kind := config.ProjectKindService
@@ -382,18 +406,18 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// stomp), not Tier-1. A pristine buf.yaml still tracks the derived dep;
 		// a customized one is left alone (the Tier-2 stomp-guard exemption in
 		// generate_tier_migrate.go keeps `forge generate` from aborting on it).
-		{templateName: "buf.yaml.tmpl", destPath: "buf.yaml", templated: true, tier: Tier2},
+		{templateName: "buf.yaml.tmpl", destPath: "buf.yaml", templated: true, tier: Tier2, since: "v0.0.2"},
 
 		// Templated config files
-		{templateName: taskfileTmpl, destPath: "Taskfile.yml", templated: true, tier: Tier2},
-		{templateName: "Dockerfile.tmpl", destPath: "Dockerfile", templated: true, tier: Tier2, enabledFor: enabledForService},
-		{templateName: "docker-compose.yml.tmpl", destPath: "docker-compose.yml", templated: true, tier: Tier2, enabledFor: enabledForService},
-		{templateName: "idp-steps.yaml.tmpl", destPath: "idp-steps.yaml", templated: true, tier: Tier2, enabledFor: enabledForService},
+		{templateName: taskfileTmpl, destPath: "Taskfile.yml", templated: true, tier: Tier2, since: "v0.0.2"},
+		{templateName: "Dockerfile.tmpl", destPath: "Dockerfile", templated: true, tier: Tier2, enabledFor: enabledForService, since: "v0.0.2"},
+		{templateName: "docker-compose.yml.tmpl", destPath: "docker-compose.yml", templated: true, tier: Tier2, enabledFor: enabledForService, since: "v0.0.2"},
+		{templateName: "idp-steps.yaml.tmpl", destPath: "idp-steps.yaml", templated: true, tier: Tier2, enabledFor: enabledForService, since: "v0.0.4"},
 
 		// Static config files
-		{templateName: "golangci.yml.tmpl", destPath: ".golangci.yml", templated: true, tier: Tier2},
-		{templateName: ".gitignore", destPath: ".gitignore", templated: false, tier: Tier2},
-		{templateName: ".gitattributes", destPath: ".gitattributes", templated: false, tier: Tier2},
+		{templateName: "golangci.yml.tmpl", destPath: ".golangci.yml", templated: true, tier: Tier2, since: "v0.0.2"},
+		{templateName: ".gitignore", destPath: ".gitignore", templated: false, tier: Tier2, since: "v0.0.2"},
+		{templateName: ".gitattributes", destPath: ".gitattributes", templated: false, tier: Tier2, since: "v0.1.44"},
 
 		// Middleware — the thin auth-policy file + its policy-wiring
 		// test. Scaffolded once, then owned by the user; committed to
@@ -405,30 +429,30 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// pkg/middleware/*.go copies; those files are user-owned and
 		// simply stop being managed here. Adopting the library
 		// (pkg/authn, pkg/middleware, pkg/observe) is a hand-migration.
-		{templateName: "middleware.go.tmpl", destPath: "pkg/middleware/middleware.go", templated: true, tier: Tier2, enabledFor: enabledForService},
-		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "middleware.go.tmpl", destPath: "pkg/middleware/middleware.go", templated: true, tier: Tier2, enabledFor: enabledForService, since: "v0.0.2"},
+		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2, enabledFor: enabledForService, since: "v0.0.2"},
 
 		// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point the
 		// Tier-1 cmd/<bin>/cmd/root.go consumes (userCommands(deps)).
 		// Scaffolded once, then owned by the user; listed here so `forge
 		// upgrade` CREATES it and never stomps an edited copy.
-		{templateName: "cmd-tree-commands.go.tmpl", destPath: cmdTreePath(binName, "commands.go"), templated: true, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "cmd-tree-commands.go.tmpl", destPath: cmdTreePath(binName, "commands.go"), templated: true, tier: Tier2, enabledFor: enabledForService, since: "v0.0.2"},
 
 		// `<bin> metrics schema` and the package whose declarations it prints.
 		// Scaffolded once and owned; listed so `forge upgrade` CREATES them for
 		// an older project and never stomps an edited copy. They are a pair:
 		// metrics.go imports internal/metrics.
-		{templateName: "cmd-tree-metrics.go.tmpl", destPath: cmdTreePath(binName, "metrics.go"), templated: true, tier: Tier2, enabledFor: enabledForService},
-		{templateName: "internal-metrics.go.tmpl", destPath: "internal/metrics/metrics.go", templated: true, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "cmd-tree-metrics.go.tmpl", destPath: cmdTreePath(binName, "metrics.go"), templated: true, tier: Tier2, enabledFor: enabledForService, since: "v0.1.45"},
+		{templateName: "internal-metrics.go.tmpl", destPath: "internal/metrics/metrics.go", templated: true, tier: Tier2, enabledFor: enabledForService, since: "v0.1.45"},
 
 		// Local observability. Both are Tier 2: constant text the user is
 		// expected to edit (add a log pipeline, tune the collector), not a
 		// function of anything they declare. Gated on service-kind AND
 		// observability being enabled.
-		{templateName: "otel-collector.yaml.tmpl", destPath: "deploy/observability/otel-collector.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability},
-		{templateName: "dashboards-README.md.tmpl", destPath: "deploy/observability/dashboards/README.md", templated: true, tier: Tier2, enabledFor: enabledForObservability},
-		{templateName: "otel-profiles.yaml.tmpl", destPath: "deploy/observability/otel-profiles.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability},
-		{templateName: "profiles-schema.sql.tmpl", destPath: "deploy/observability/profiles-schema.sql", templated: true, tier: Tier2, enabledFor: enabledForObservability},
+		{templateName: "otel-collector.yaml.tmpl", destPath: "deploy/observability/otel-collector.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.44"},
+		{templateName: "dashboards-README.md.tmpl", destPath: "deploy/observability/dashboards/README.md", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.44"},
+		{templateName: "otel-profiles.yaml.tmpl", destPath: "deploy/observability/otel-profiles.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.45"},
+		{templateName: "profiles-schema.sql.tmpl", destPath: "deploy/observability/profiles-schema.sql", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.45"},
 	}
 }
 
@@ -920,16 +944,22 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 	return UpgradeSelection(projectDir, cfg, selection, checkOnly)
 }
 
-// upgradeAbsentManagedFile treats a missing file as a pure addition, except
-// that a Tier-2 scaffold's recorded absence belongs to the project. Check-only
-// reports the same delta without writing the file or recording its birth.
-func upgradeAbsentManagedFile(projectDir string, f managedFile, expected []byte, cs *FileChecksums, checkOnly bool) (UpgradeResult, error) {
-	if f.tier == Tier2 && !checksums.ScaffoldMayBeBorn(projectDir, f.destPath) {
-		return UpgradeResult{
-			Path:        f.destPath,
-			Status:      UpgradeSkipped,
-			LeftDeleted: true,
-		}, nil
+// upgradeAbsentManagedFile treats a missing Tier-1 file as a pure addition. A
+// missing Tier-2 (scaffold-once) file is added only when absentScaffold says
+// the project has not already gone without it (upgrade_absent.go); otherwise
+// it is reported, and an offered one carries the diff adding it would apply.
+// Check-only reports the same delta without writing the file or recording its
+// birth.
+func upgradeAbsentManagedFile(projectDir string, f managedFile, expected []byte, cs *FileChecksums, opts UpgradeOptions, deleted map[string]string) (UpgradeResult, error) {
+	checkOnly := opts.CheckOnly
+	if f.tier == Tier2 {
+		if res, keep := absentScaffold(projectDir, f, opts, deleted); keep {
+			if res.Offered {
+				res.Diff = simpleDiff(f.destPath, nil, expected)
+				res.Missing = len(lineBag(expected))
+			}
+			return res, nil
+		}
 	}
 	// The whole template is missing: a zero-line delta would misleadingly
 	// describe a safe first adoption as having nothing to adopt.
@@ -959,13 +989,27 @@ func upgradeAbsentManagedFile(projectDir string, f managedFile, expected []byte,
 // A disowned file is never written regardless of the selection — ownership
 // transfer outranks force, which is the whole reason `forge project disown` is
 // the durable answer to "this file is mine now".
+//
+// It knows no version range, so nothing is new to it: an absent scaffold-once
+// file is offered, never written, unless force names it. `forge project
+// upgrade` calls UpgradeWith with its range.
 func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceSelection, checkOnly bool) ([]UpgradeResult, error) {
+	return UpgradeWith(projectDir, cfg, UpgradeOptions{Force: force, CheckOnly: checkOnly})
+}
+
+// UpgradeWith is UpgradeSelection over an upgrade range: opts.NewSince lets
+// a scaffold-once file whose template is new across the range be added.
+func UpgradeWith(projectDir string, cfg *config.ProjectConfig, opts UpgradeOptions) ([]UpgradeResult, error) {
+	force, checkOnly := opts.Force, opts.CheckOnly
 	data := buildTemplateData(cfg, projectDir)
 
 	cs, err := LoadChecksums(projectDir)
 	if err != nil {
 		return nil, fmt.Errorf("load checksums: %w", err)
 	}
+
+	files := filterManagedFiles(managedFilesForCfg(cfg), cfg)
+	deleted := deletedInGit(projectDir, absentScaffoldCandidates(projectDir, files, cs))
 
 	var results []UpgradeResult
 
@@ -978,7 +1022,7 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 	// never an upgrade side effect.
 	legacyMiddleware := hasLegacyMiddlewareLayout(projectDir)
 
-	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
+	for _, f := range files {
 		if legacyMiddleware && strings.HasPrefix(f.destPath, "pkg/middleware/") {
 			results = append(results, UpgradeResult{
 				Path:   f.destPath,
@@ -1014,7 +1058,7 @@ func UpgradeSelection(projectDir string, cfg *config.ProjectConfig, force ForceS
 			if !os.IsNotExist(err) {
 				return nil, fmt.Errorf("read %s: %w", f.destPath, err)
 			}
-			result, err := upgradeAbsentManagedFile(projectDir, f, expected, cs, checkOnly)
+			result, err := upgradeAbsentManagedFile(projectDir, f, expected, cs, opts, deleted)
 			if err != nil {
 				return nil, err
 			}

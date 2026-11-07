@@ -98,6 +98,13 @@ import (
 // symlinks. Dot-prefixed because it is machine-local scaffolding, not source.
 const devLinkDir = ".forge-link"
 
+// devWebRuntimeBridged reports whether projectDir installs the web-runtime
+// from a local checkout through the dev bridge (.forge-link/web-runtime).
+func devWebRuntimeBridged(projectDir string) bool {
+	_, err := os.Lstat(filepath.Join(projectDir, devLinkDir, "web-runtime"))
+	return err == nil
+}
+
 // devWorkspaceRootName is the name the bridge's root manifest carries. It is
 // how forge recognises a root package.json as its OWN (and so safe to
 // reconcile) rather than one a user wrote, which forge never touches.

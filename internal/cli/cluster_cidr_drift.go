@@ -21,8 +21,9 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"os/exec"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 // liveClusterCIDRs is what the LIVE cluster actually uses, as opposed to
@@ -58,7 +59,7 @@ var liveClusterCIDRsFn = readLiveClusterCIDRs
 func readLiveClusterCIDRs(ctx context.Context, kctx string) (liveClusterCIDRs, error) {
 	var live liveClusterCIDRs
 
-	out, err := exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	out, err := cluster.KubectlCommand(ctx, "--context", kctx,
 		"get", "nodes", "-o", `jsonpath={range .items[*]}{.spec.podCIDR}{"\n"}{end}`).CombinedOutput()
 	if err != nil {
 		return live, fmt.Errorf("kubectl read %s node podCIDRs: %w: %s", kctx, err, strings.TrimSpace(string(out)))
@@ -69,7 +70,7 @@ func readLiveClusterCIDRs(ctx context.Context, kctx string) (liveClusterCIDRs, e
 		}
 	}
 
-	out, err = exec.CommandContext(ctx, "kubectl", "--context", kctx,
+	out, err = cluster.KubectlCommand(ctx, "--context", kctx,
 		"get", "svc", "kubernetes", "-n", "default", "-o", "jsonpath={.spec.clusterIP}").CombinedOutput()
 	if err != nil {
 		return live, fmt.Errorf("kubectl read %s default/kubernetes ClusterIP: %w: %s", kctx, err, strings.TrimSpace(string(out)))

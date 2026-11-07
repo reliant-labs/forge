@@ -44,6 +44,7 @@ var FrontendRuntimeKeys = []string{
 	"CONSOLE_CAPTURE",
 	"ENVIRONMENT",
 	"OTEL_ENDPOINT",
+	"OTEL_REPLAY",
 	"REPLAY_SAMPLE_RATE",
 }
 

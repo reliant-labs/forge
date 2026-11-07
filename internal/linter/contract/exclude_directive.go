@@ -145,7 +145,19 @@ func outboundIOSignals() []outboundIOSignal {
 		{label: "a network dial (net)", pkgPath: "net", funcs: []string{"Dial", "DialTimeout", "DialTCP", "DialUDP", "DialUnix"}},
 		{label: "a network dial (net)", pkgPath: "net", recv: []string{"Dialer"}},
 		{label: "a database call (database/sql)", pkgPath: "database/sql", recv: []string{"DB", "Tx", "Conn", "Stmt"}},
-		{label: "a database call (pgx)", pkgPath: "github.com/jackc/pgx", prefix: true},
+		// pgx: the connection, pool, transaction and result types, and the
+		// functions that connect or run a query. Not every pgx function: an
+		// error check (pgconn.SafeToRetry, pgconn.Timeout), ParseConfig, a
+		// pgtype codec or pgx.Identifier never leaves the process.
+		{label: "a database call (pgx)", pkgPath: "github.com/jackc/pgx", prefix: true, recv: []string{
+			"Conn", "Pool", "Tx", "Rows", "Row", "Batch", "BatchResults", "PgConn",
+			"ResultReader", "MultiResultReader", "LargeObjects", "LargeObject",
+		}},
+		{label: "a database call (pgx)", pkgPath: "github.com/jackc/pgx", prefix: true, funcs: []string{
+			"Connect", "ConnectConfig", "ConnectWithOptions", "New", "NewWithConfig",
+			"BeginFunc", "BeginTxFunc", "CollectRows", "CollectOneRow", "CollectExactlyOneRow",
+			"ForEachRow", "AppendRows",
+		}},
 		{label: "a Kubernetes API call (controller-runtime client)", pkgPath: "sigs.k8s.io/controller-runtime/pkg/client", recv: []string{"Client", "Reader", "Writer", "StatusWriter", "SubResourceClient", "SubResourceWriter"}},
 		{label: "a Kubernetes API call (client-go)", pkgPath: "k8s.io/client-go/kubernetes", prefix: true},
 		{label: "a Kubernetes API call (client-go)", pkgPath: "k8s.io/client-go/dynamic", prefix: true},
@@ -257,11 +269,23 @@ const codegenUnavailableNote = " (Reported as a warning: this tree has no forge.
 // load the whole module (`./...`) for an accurate answer; a narrower load can
 // only miss an implementation, never invent one.
 func CheckExcludeDirectives(pkgs []*packages.Package, opts ExcludeGateOptions) []ExcludeFinding {
+	return CheckExcludeDirectivesIn(pkgs, pkgs, opts)
+}
+
+// CheckExcludeDirectivesIn is CheckExcludeDirectives with its two package sets
+// apart: roots are the packages whose markers are judged, and universe (with
+// everything it imports) is what the multi-implementation search spans. The
+// search reads each main-module package's type declarations from source
+// (TypesInfo), so a package of the universe loaded from export data — which
+// carries no unexported type — contributes no candidate. The caller loads the
+// main-module packages it wants searched as source; roots must come from the
+// same load as universe, or no candidate can satisfy a root's interface.
+func CheckExcludeDirectivesIn(rootPkgs, universe []*packages.Package, opts ExcludeGateOptions) []ExcludeFinding {
 	// De-duplicate test variants: `Tests: true` loads `p`, `p [p.test]` and
 	// `p_test`; the gate is about the package's own non-test source, which
 	// the plain variant carries.
 	roots := map[string]*packages.Package{}
-	for _, p := range pkgs {
+	for _, p := range rootPkgs {
 		if p.Types == nil || strings.HasSuffix(p.PkgPath, "_test") || strings.HasSuffix(p.PkgPath, ".test") {
 			continue
 		}
@@ -280,7 +304,7 @@ func CheckExcludeDirectives(pkgs []*packages.Package, opts ExcludeGateOptions) [
 	// each declaration once.
 	var candidates []*types.TypeName
 	seen := map[string]bool{}
-	packages.Visit(pkgs, nil, func(p *packages.Package) {
+	packages.Visit(universe, nil, func(p *packages.Package) {
 		if p.Types == nil || p.TypesInfo == nil || p.Module == nil || !p.Module.Main || p.ID != p.PkgPath {
 			return
 		}
@@ -342,6 +366,22 @@ func CheckExcludeDirectives(pkgs []*packages.Package, opts ExcludeGateOptions) [
 		}
 	}
 	return applyDirectiveSuppressions(out)
+}
+
+// DeclaresExcludeContract reports whether any root package in pkgs carries a
+// `//forge:exclude-contract` marker — whether CheckExcludeDirectives has
+// anything to judge there. Without one, the gate reports nothing whatever its
+// universe holds, so a caller can skip loading one.
+func DeclaresExcludeContract(pkgs []*packages.Package) bool {
+	for _, p := range pkgs {
+		if p.Types == nil || strings.HasSuffix(p.PkgPath, "_test") || strings.HasSuffix(p.PkgPath, ".test") {
+			continue
+		}
+		if dir := pkgDir(p); dir != "" && len(codegen.FindExcludeContractMarkers(dir)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candidates []*types.TypeName) []ExcludeFinding {

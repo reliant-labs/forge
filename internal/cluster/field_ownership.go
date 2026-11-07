@@ -12,7 +12,7 @@ package cluster
 //
 //   - a hand edit: `kubectl set env`, `kubectl edit`, `kubectl patch`, `kubectl
 //     label` each write as their own manager (kubectl-set, kubectl-edit, ...),
-//     with operation Update. Prod's admin-server kept an env var
+//     with operation Update. Prod's platform-api kept an env var
 //     a `kubectl` Update had added, through every later deploy.
 //   - an OWNERLESS field: one no managedFields entry claims. They are left
 //     behind when ownership history is lost (managedFields cleared or edited

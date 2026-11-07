@@ -15,6 +15,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 
+import { AuthPage } from "@/components/auth-ui";
 import { ResetPasswordForm } from "@/components/reset-password-form";
 import { joinBasePath } from "@/lib/basepath_gen";
 
@@ -38,12 +39,10 @@ function Reset() {
 // be explicit. Scoping the boundary here keeps the bailout to this component.
 export default function ResetPasswordPage() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-surface-muted p-6">
-      <div className="w-full max-w-sm">
-        <Suspense fallback={null}>
-          <Reset />
-        </Suspense>
-      </div>
-    </main>
+    <AuthPage>
+      <Suspense fallback={null}>
+        <Reset />
+      </Suspense>
+    </AuthPage>
   );
 }

@@ -59,9 +59,7 @@ var shippedRules = []rolloutGroup{
 		"forge-proto-options",
 		"forge-time-bucket-session-tz",
 		"forge-vendored-proto-drift",
-		"forgeconv-allocate-port-spacing",
 		"forgeconv-computed-field-unwritten",
-		"forgeconv-contract-names",
 		"forgeconv-create-request-nullability",
 		"forgeconv-deps-are-interfaces",
 		"forgeconv-frontend-env-forge-owned",
@@ -208,6 +206,9 @@ var newRules = []rolloutGroup{
 	// lane is advisory (its findings are warnings at any pin); the row is
 	// what lets lint.rules raise it.
 	{IntroducedIn: "v1.0.16", GatesFrom: "v1.0.17", Rules: []string{ruleOpenSignup}},
+	// forgeconv-allocate-port-spacing: graded since v0.1.40 but no lane ran
+	// it until the conventions lane did (bug 13245924), so it warns first.
+	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{"forgeconv-allocate-port-spacing"}},
 	// Commit policy: the birth ledger and the other committed .forge/ state
 	// must not be gitignored (a `.forge/` line voids the scaffold's
 	// re-includes, and deleted scaffolds come back in every fresh clone).
@@ -218,6 +219,10 @@ var newRules = []rolloutGroup{
 	// Identity v2: a declared sign-in method or sign-up mode the login
 	// broker does not serve, which would be converged and silently ignored.
 	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{ruleIdentityMethods}},
+	// A forge:identity-subject column the read-only role cannot read
+	// (forge:secret, or a credential-shaped name with no forge:readable): the
+	// console never sees it, so the identity link is never drawn.
+	{IntroducedIn: "v1.2.0", GatesFrom: "v1.2.1", Rules: []string{ruleIdentitySubjectUnreadable}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

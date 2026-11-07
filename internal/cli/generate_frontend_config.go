@@ -187,8 +187,9 @@ func frontendRuntimeValues(fc codegen.FrontendConfig, envValues map[string]any) 
 }
 
 // frontendEnvironmentKey is the runtime-document key that carries the forge env
-// name. src/lib/otel_gen.ts reads it first and reports it as the browser's
-// deployment.environment.name, the key the backend uses too.
+// name. src/lib/otel_gen.ts reads it as the browser's
+// deployment.environment.name, the key the backend uses too (a build variable
+// is only its deprecated fallback).
 const frontendEnvironmentKey = "ENVIRONMENT"
 
 // withRuntimeEnvironment adds the env name the document is rendered for, unless

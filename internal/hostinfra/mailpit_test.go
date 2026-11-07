@@ -49,25 +49,27 @@ func TestMailpitBanner(t *testing.T) {
 	}
 }
 
-// mailpitPort finds a free SMTP port whose UI port (port+7000) is free too.
+// mailpitPort finds a free SMTP port whose UI port (port+7000) is free too. A
+// host with no free pair in 50 tries is out of ports, so the test skips.
 func mailpitPort(t *testing.T) int {
 	t.Helper()
-	for i := 0; i < 50; i++ {
+	p, found := 0, false
+	for i := 0; i < 50 && !found; i++ {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
-		p := ln.Addr().(*net.TCPAddr).Port
+		p = ln.Addr().(*net.TCPAddr).Port
 		_ = ln.Close()
 		if p > 65535-mailpitUIPortOffset {
 			p -= 20000 // ephemeral ports run high; try below them
 		}
-		if !portListening(p) && !portListening(p+mailpitUIPortOffset) {
-			return p
-		}
+		found = !portListening(p) && !portListening(p+mailpitUIPortOffset)
 	}
-	t.Skip("no free port pair for mailpit")
-	return 0
+	if !found {
+		t.Skip("no free loopback port pair for mailpit (SMTP port and port+7000) in 50 tries")
+	}
+	return p
 }
 
 // The real thing: fetch the pinned Mailpit, start it, deliver a message over

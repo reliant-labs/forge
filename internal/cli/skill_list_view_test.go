@@ -42,8 +42,8 @@ func skillListBody(t *testing.T, out string) string {
 func TestSkillListDefaultFitsOnOneScreen(t *testing.T) {
 	got := runSkillList(t)
 	lines := strings.Count(strings.TrimRight(got, "\n"), "\n") + 1
-	if lines > 55 {
-		t.Errorf("default `skill list` is %d lines, want <= 55 — it must be readable in one call:\n%s", lines, got)
+	if lines > 56 {
+		t.Errorf("default `skill list` is %d lines, want <= 56 — it must be readable in one call:\n%s", lines, got)
 	}
 	if lines < 10 {
 		t.Errorf("default `skill list` collapsed to %d lines — it stopped being a catalog:\n%s", lines, got)

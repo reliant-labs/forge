@@ -130,6 +130,40 @@ func TestSyncFrontendLock_FailureNamesFrontendAndCommand(t *testing.T) {
 	}
 }
 
+// A dev build raises the range to the runtime its own checkout ships, which
+// the registry has not published yet. When the project installs that runtime
+// through the .forge-link bridge, the refresh's "no matching version" is a
+// warning, not a failed generate; without the bridge it still fails.
+func TestSyncFrontendLock_UnpublishedRangeWarnsOnlyWhenBridged(t *testing.T) {
+	t.Setenv("FORGE_SKIP_NPM_INSTALL", "")
+	etarget := "echo 'npm error code ETARGET' >&2; echo 'npm error notarget No matching version found for " +
+		WebRuntimePackage + "@^9.9.0.' >&2; exit 1"
+
+	t.Run("bridged", func(t *testing.T) {
+		projectDir, feRel, lockPath := staleFrontend(t)
+		fakeNPMOnPath(t, etarget)
+		EnsureWebRuntimeDependency(projectDir, feRel, "web")
+		if err := os.MkdirAll(filepath.Join(projectDir, devLinkDir, "web-runtime"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := SyncFrontendLock(projectDir, feRel); err != nil {
+			t.Fatalf("a bridged project must not fail generate on an unpublished runtime range: %v", err)
+		}
+		if got, _ := os.ReadFile(lockPath); string(got) != lockWithRuntimeRange("0.1.0") {
+			t.Errorf("the lockfile must be left as it was, got %s", got)
+		}
+	})
+	t.Run("not bridged", func(t *testing.T) {
+		projectDir, feRel, _ := staleFrontend(t)
+		fakeNPMOnPath(t, etarget)
+		EnsureWebRuntimeDependency(projectDir, feRel, "web")
+		err := SyncFrontendLock(projectDir, feRel)
+		if err == nil || !strings.Contains(err.Error(), "ETARGET") {
+			t.Fatalf("without the bridge an unpublished range must still fail loudly, got %v", err)
+		}
+	})
+}
+
 func TestSyncFrontendLock_SkipEnvPrintsCommandInsteadOfRunning(t *testing.T) {
 	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
 	projectDir, feRel, _ := staleFrontend(t)

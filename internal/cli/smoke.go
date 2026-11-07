@@ -9,12 +9,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 // newSmokeCmd builds `forge env smoke <env>` — a post-deploy ingress
@@ -361,7 +362,7 @@ func resolveGatewayIP(ctx context.Context, kubeContext, namespace, gateway strin
 	}
 	args = append(args, "get", "gateway", gateway,
 		"-o", "jsonpath={.status.addresses[0].value}")
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd := cluster.KubectlCommand(ctx, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("kubectl get gateway %s: %w (is the context %q reachable / creds valid?)", gateway, err, kubeContext)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/shadowdb"
@@ -78,6 +79,17 @@ func (t *stepTimer) print(w io.Writer) {
 		fmt.Fprintf(w, "   %8s  %5.1f%%  (outside any step: setup, snapshots, state save)\n", other.Round(10*time.Millisecond), pct(other, total))
 	}
 	printShadowSchemaLine(w, shadowdb.StatsSince(t.shadow))
+	printGoMemoLine(w, goMemoSkipped())
+}
+
+// printGoMemoLine names the go tool calls the run skipped because their
+// inputs were what their last run left (generate_go_memo.go). Silent when it
+// skipped none.
+func printGoMemoLine(w io.Writer, skipped []string) {
+	if len(skipped) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "   go tools skipped, inputs unchanged since their last run: %d× (%s)\n", len(skipped), strings.Join(skipped, ", "))
 }
 
 // printShadowSchemaLine says how many times this run applied the migrations

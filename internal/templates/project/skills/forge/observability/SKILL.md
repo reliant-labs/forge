@@ -254,8 +254,9 @@ observability = forge.Observability {                        # per category
 | `browser` | the frontend SDK: `OTEL_ENDPOINT=off` in every frontend's runtime config (and its build variable), over anything you set |
 
 **Session replay is the one opt-IN category** (`signals.replay`, default `False`). The
-browser SDK records DOM events only when the frontend is built with
-`NEXT_PUBLIC_OTEL_REPLAY` / `VITE_OTEL_REPLAY`, and the platform drops them (browser logs of
+browser SDK records DOM events only when the frontend's runtime config carries
+`OTEL_REPLAY = "true"` (a `runtime_config` entry; a `NEXT_PUBLIC_OTEL_REPLAY` /
+`VITE_OTEL_REPLAY` in `env_vars` is carried there too), and the platform drops them (browser logs of
 scope `rum.rr-web`) unless `replay = True`. It is recorded in the shape as
 `observability_policy.opt_in = ["replay"]`.
 

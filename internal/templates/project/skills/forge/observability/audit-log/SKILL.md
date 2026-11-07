@@ -23,19 +23,39 @@ through, plus an admin `ListAuditEvents` RPC), there is **no pack to install**.
 The mechanical write-side is the versioned `forge/pkg/audit` library; the
 app-specific read-side (the table + the RPC) is code you own.
 
-1. **Own the `audit_log` table** with the normal entity flow — no bespoke
-   migration path:
+1. **Own the `audit_log` table** in a plain migration
+   (`forge db migration new audit_log`). Its columns are what the library
+   store reads/writes (see `audit.Entry`):
 
-   ```bash
-   # declare `// forge:entity message AuditEvent` in the service proto, then:
-   forge scaffold
+   ```sql
+   CREATE TABLE audit_log (
+       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+       timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       user_id VARCHAR(255),
+       email VARCHAR(255),
+       procedure VARCHAR(512) NOT NULL,
+       peer_address VARCHAR(255),
+       duration_ms INTEGER,
+       status VARCHAR(50) NOT NULL DEFAULT 'success',
+       error_code VARCHAR(50),
+       error_message TEXT,
+       metadata JSONB DEFAULT '{}',
+       created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+   );
+   CREATE INDEX audit_log_user_id_idx ON audit_log (user_id);
+   CREATE INDEX audit_log_procedure_idx ON audit_log (procedure);
+   CREATE INDEX audit_log_timestamp_idx ON audit_log (timestamp);
+   -- Written and read through forge/pkg/audit, so keep it off the ORM: a
+   -- generated AuditLog store would be a second, unaudited write path, and
+   -- its entity name collides with any app table named audit_logs.
+   COMMENT ON TABLE audit_log IS 'forge:no-entity — written and read through forge/pkg/audit';
    ```
 
-   Then edit the birth migration so the table matches what the library
-   store reads/writes (see `audit.Entry`): `id`, `timestamp`, `user_id`,
-   `email`, `procedure`, `peer_address`, `duration_ms`, `status`, `error_code`,
-   `error_message`, `metadata` (JSONB), `created_at`. Index `user_id`,
-   `procedure`, and `timestamp` for the query filters.
+   forge recognizes this table as forge/pkg/audit's (by its name and these
+   columns) and leaves it off the ORM on its own, so the comment states
+   what forge already does. It also keeps the table off on a forge older than
+   that recognition. If you deliberately want a generated store over the
+   table as well, say `forge:entity` instead.
 
 2. **Wire the DB-backed interceptor** from the library — one line. Construct
    the store and set the `Audit` slot of `cmd serve.go`'s

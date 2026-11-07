@@ -15,6 +15,7 @@ func TestScanTSServices_SampleGenDir(t *testing.T) {
 	want := []TSService{
 		{TypeName: "acme.v1.BillingService", Export: "BillingService", ImportPath: "acme/v1/billing_pb", FirstMethod: "getInvoice"},
 		{TypeName: "acme.v1.TelemetryService", Export: "TelemetryService", ImportPath: "acme/v1/billing_pb", FirstMethod: "ping"},
+		{TypeName: "sample.v1.ProbeService", Export: "ProbeService", ImportPath: "sample/v1/telemetry_pb", FirstMethod: "echoProbe"},
 		{TypeName: "sample.v1.TelemetryService", Export: "TelemetryService", ImportPath: "sample/v1/telemetry_pb", FirstMethod: "listTraces"},
 	}
 	if !reflect.DeepEqual(got, want) {

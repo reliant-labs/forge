@@ -54,7 +54,15 @@
 // request always gets the same answer, and a field added to a message does not
 // reshuffle the others. Scalar fields that the REQUEST also carries (by name
 // and type) echo the request — `GetWorkload{id}` answers that id, and a filter
-// field reads back as filtered — except paging and query controls.
+// field reads back as filtered — except paging and query controls. An echoed
+// value is still a value the engine emits, so it must pass the RESPONSE
+// field's rules; one that does not is generated instead. A oneof case the
+// request selected is the case the response's same-named oneof takes, when it
+// has a member of that name.
+//
+// A string the rules cannot be met for (a pattern the cheap generator cannot
+// build, or rules that contradict one another) throws, naming the field,
+// rather than emit a value the server's protovalidate would reject.
 import {
   create,
   isMessage,
@@ -72,6 +80,7 @@ import {
 } from "@bufbuild/protobuf";
 import {
   rulesOf,
+  type EnumRules,
   type FieldRules,
   type NumRules,
   type StrFormat,
@@ -351,10 +360,129 @@ function stringByName(
   return `${kebab(listItem ? singularOf(name) : name)}-${n}`;
 }
 
-/** The smallest string matching a cheap regex, or undefined when it is not cheap. */
+/** RE2's leading inline flags (`(?i)`, `(?s)`, `(?m)`), which JavaScript spells as RegExp flags. */
+const INLINE_FLAGS = /^\(\?([ims]+)\)/;
+
+/** RE2's `\s`: ASCII whitespace only (JavaScript's also matches \v and Unicode spaces). */
+const RE2_SPACE = "\\t\\n\\f\\r ";
+
+/**
+ * An RE2 pattern body rewritten as JavaScript RegExp source that matches the
+ * same strings, or null when it uses a construct the two engines read
+ * differently (or that RE2 rejects outright): lookarounds, backreferences,
+ * `\c`/`\u`/`\0` escapes, `\p{Key=Value}` properties, mid-pattern flags and
+ * repeats over 1000. Null means "never satisfied", so a JavaScript-only match
+ * is never taken for one the server's validator accepts.
+ *
+ * Under a leading `(?i)` (`fold`), `\w` and `\W` pass through unchanged: RE2
+ * folds them exactly as JavaScript's `iu` does, so both match the Kelvin sign
+ * and the long s. `\b` and `\B` do not: RE2's stay ASCII while JavaScript's
+ * follow its folded `\w`, so they are null there (and in a class, where RE2
+ * rejects them and JavaScript reads `\b` as a backspace).
+ */
+function re2Source(src: string, fold: boolean): string | null {
+  let out = "";
+  let inClass = false;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i] as string;
+    if (c === "\\") {
+      const e = src[++i];
+      if (e === undefined) return null;
+      if (/[0-9kcu]/.test(e)) return null;
+      if ((e === "b" || e === "B") && (fold || inClass)) return null;
+      if (e === "s") {
+        out += inClass ? RE2_SPACE : `[${RE2_SPACE}]`;
+        continue;
+      }
+      if (e === "S") {
+        if (inClass) return null;
+        out += `[^${RE2_SPACE}]`;
+        continue;
+      }
+      if ((e === "p" || e === "P") && src[i + 1] === "{") {
+        const end = src.indexOf("}", i);
+        if (end < 0 || src.slice(i, end).includes("=")) return null;
+        out += src.slice(i - 1, end + 1);
+        i = end;
+        continue;
+      }
+      out += c + e;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]") inClass = false;
+      out += c;
+      continue;
+    }
+    if (c === "[") {
+      inClass = true;
+      out += c;
+      if (src[i + 1] === "^") out += src[++i];
+      // RE2 reads a `]` first in a class as a literal; JavaScript as the end.
+      if (src[i + 1] === "]") {
+        out += "\\]";
+        i++;
+      }
+      continue;
+    }
+    if (c === "(" && src[i + 1] === "?") {
+      const rest = src.slice(i + 2);
+      if (rest.startsWith("P<")) {
+        out += "(?<";
+        i += 3;
+        continue;
+      }
+      if (rest.startsWith(":") || /^<[A-Za-z_]/.test(rest)) {
+        out += c;
+        continue;
+      }
+      // Lookarounds (RE2 has none) and mid-pattern flag groups.
+      return null;
+    }
+    if (c === "{") {
+      const m = /^\{(\d+)(,(\d*))?\}/.exec(src.slice(i));
+      if (m && (Number(m[1]) > 1000 || Number(m[3] ?? 0) > 1000)) return null;
+    }
+    out += c;
+  }
+  return inClass ? null : out;
+}
+
+/**
+ * A protovalidate (RE2) pattern as a JavaScript RegExp with RE2's semantics,
+ * leading inline flags included. Null when JavaScript cannot express it.
+ */
+function patternRegExp(pattern: string): RegExp | null {
+  const m = INLINE_FLAGS.exec(pattern);
+  let flags = "u";
+  for (const f of m?.[1] ?? "") if (!flags.includes(f)) flags += f;
+  const src = re2Source(
+    m ? pattern.slice(m[0].length) : pattern,
+    flags.includes("i"),
+  );
+  if (src === null) return null;
+  try {
+    return new RegExp(src, flags);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether `s` matches an RE2 pattern compiled by patternRegExp. In multiline
+ * mode JavaScript also ends lines at \r, U+2028 and U+2029 and RE2 only at
+ * \n, so a string holding one of those is not taken as a match.
+ */
+function re2Test(re: RegExp | null, s: string): boolean {
+  if (!re) return false;
+  if (re.multiline && /[\r\u2028\u2029]/.test(s)) return false;
+  return re.test(s);
+}
+
+/** A string matching a cheap regex, or undefined when it is not cheap. */
 function fromPattern(pattern: string, rng: Rng): string | undefined {
   let i = 0;
-  const src = pattern;
+  const src = pattern.replace(INLINE_FLAGS, "");
 
   type Node = () => string;
 
@@ -434,7 +562,10 @@ function fromPattern(pattern: string, rng: Rng): string | undefined {
       if (e === "d") return () => String(rng.int(0, 9));
       if (e === "w") return () => String.fromCharCode(rng.int(97, 122));
       if (e === "s") return () => " ";
-      if (/[A-Za-z]/.test(e)) return undefined; // \b, \p{..}, ...: not cheap
+      // Word boundaries match no characters: emit none, and let the final
+      // test against the whole pattern decide.
+      if (e === "b" || e === "B") return () => "";
+      if (/[A-Za-z]/.test(e)) return undefined; // \p{..}, \A, ...: not cheap
       return () => e;
     }
     i++;
@@ -489,18 +620,105 @@ function fromPattern(pattern: string, rng: Rng): string | undefined {
     return () => rng.pick(branches)();
   };
 
+  const re = patternRegExp(pattern);
+  // An RE2 construct JavaScript does not accept: not cheap.
+  if (!re) return undefined;
   try {
-    const re = new RegExp(pattern, "u");
     const node = alternation();
     if (!node || i < src.length) return undefined;
     for (let attempt = 0; attempt < 8; attempt++) {
       const s = node();
-      if (re.test(s)) return s;
+      if (re2Test(re, s)) return s;
     }
   } catch {
-    // An RE2 construct JavaScript does not accept: not cheap.
+    // A construct the walk above misreads: not cheap.
   }
   return undefined;
+}
+
+/** What a `format` rule accepts, as cheap checks of the shapes `formatted` emits and servers accept. */
+const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+const IPV6 = /^(?=.*:)[0-9a-f:]{2,39}$/i;
+const HOSTNAME =
+  /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+const FORMAT_CHECKS: Record<StrFormat, (s: string) => boolean> = {
+  email: (s) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s),
+  uri: (s) => /^[a-z][a-z0-9+.-]*:\S+$/i.test(s),
+  hostname: (s) => HOSTNAME.test(s),
+  address: (s) => HOSTNAME.test(s) || IPV4.test(s) || IPV6.test(s),
+  hostAndPort: (s) => {
+    const m = /^(.+):(\d{1,5})$/.exec(s);
+    return !!m && HOSTNAME.test(m[1]!) && Number(m[2]) <= 65535;
+  },
+  ip: (s) => IPV4.test(s) || IPV6.test(s),
+  ipv4: (s) => IPV4.test(s),
+  ipv6: (s) => IPV6.test(s),
+  ipPrefix: (s) => {
+    const m = /^(.+)\/(\d{1,3})$/.exec(s);
+    return (
+      !!m &&
+      ((IPV4.test(m[1]!) && Number(m[2]) <= 32) ||
+        (IPV6.test(m[1]!) && Number(m[2]) <= 128))
+    );
+  },
+  uuid: (s) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s),
+  tuuid: (s) => /^[0-9a-f]{32}$/i.test(s),
+  ulid: (s) => /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(s),
+};
+
+/** Whether `s` meets every string rule the engine reads. A pattern JavaScript cannot express is never met. */
+function satisfiesStr(s: string, r: StrRules): boolean {
+  if (r.const !== undefined) return s === r.const;
+  if (r.in?.length && !r.in.includes(s)) return false;
+  if (r.notIn?.includes(s)) return false;
+  const len = [...s].length;
+  if (r.len !== undefined && len !== r.len) return false;
+  if (r.minLen !== undefined && len < r.minLen) return false;
+  if (r.maxLen !== undefined && len > r.maxLen) return false;
+  if (r.prefix && !s.startsWith(r.prefix)) return false;
+  if (r.suffix && !s.endsWith(r.suffix)) return false;
+  if (r.contains && !s.includes(r.contains)) return false;
+  if (r.format && !FORMAT_CHECKS[r.format](s)) return false;
+  if (r.pattern && !re2Test(patternRegExp(r.pattern), s)) return false;
+  return true;
+}
+
+/** Exact equality of a value (a bigint for 64-bit integers) and a rule's number. */
+const numEq = (v: number | bigint, x: number) =>
+  typeof v === "bigint" ? Number.isInteger(x) && v === BigInt(x) : v === x;
+
+/**
+ * Whether `v` meets a number's rules; gt above lt is protovalidate's exclusive
+ * range (outside the band). A bigint is compared exactly: JavaScript's
+ * relational operators order a bigint and a number by their true values.
+ */
+function satisfiesNum(v: number | bigint, r: NumRules): boolean {
+  if (typeof v === "number" && !Number.isFinite(v)) return false;
+  if (r.const !== undefined) return numEq(v, r.const);
+  if (r.in?.length && !r.in.some((x) => numEq(v, x))) return false;
+  if (r.notIn?.some((x) => numEq(v, x))) return false;
+  const lo = r.gt ?? r.gte;
+  const hi = r.lt ?? r.lte;
+  const lowOk =
+    (r.gt === undefined || v > r.gt) && (r.gte === undefined || v >= r.gte);
+  const highOk =
+    (r.lt === undefined || v < r.lt) && (r.lte === undefined || v <= r.lte);
+  if (lo !== undefined && hi !== undefined && lo > hi) return lowOk || highOk;
+  return lowOk && highOk;
+}
+
+/** Whether `v` is one of the enum's values and meets its rules. */
+function satisfiesEnum(
+  e: DescEnum,
+  v: number,
+  r: EnumRules | undefined,
+): boolean {
+  if (!e.values.some((d) => d.number === v)) return false;
+  if (!r) return true;
+  if (r.const !== undefined && v !== r.const) return false;
+  if (r.in?.length && !r.in.includes(v)) return false;
+  return !r.notIn?.includes(v);
 }
 
 function applyStringRules(
@@ -508,19 +726,14 @@ function applyStringRules(
   rules: StrRules,
   rng: Rng,
   n: number,
+  where: string,
 ): string {
   if (rules.const !== undefined) return rules.const;
   if (rules.in?.length) return rng.pick(rules.in);
   let s = value;
   if (rules.format) s = formatted(rules.format, rng, n);
-  if (rules.pattern) {
-    let ok = false;
-    try {
-      ok = new RegExp(rules.pattern, "u").test(s);
-    } catch {
-      ok = true; // not JavaScript-parsable: leave the value alone
-    }
-    if (!ok) s = fromPattern(rules.pattern, rng) ?? s;
+  if (rules.pattern && !re2Test(patternRegExp(rules.pattern), s)) {
+    s = fromPattern(rules.pattern, rng) ?? s;
   }
   if (rules.prefix && !s.startsWith(rules.prefix)) s = rules.prefix + s;
   if (rules.suffix && !s.endsWith(rules.suffix)) s = s + rules.suffix;
@@ -534,7 +747,30 @@ function applyStringRules(
   } else if (min !== undefined && chars.length < min) {
     s = s + "x".repeat(min - chars.length);
   }
-  return s;
+  if (satisfiesStr(s, rules)) return s;
+  // The steps above can undo one another (a pattern's string cut to
+  // max_len): look among the pattern's strings for one that meets them all.
+  if (rules.pattern) {
+    for (let attempt = 0; attempt < 32; attempt++) {
+      const candidate = fromPattern(rules.pattern, rng);
+      if (candidate === undefined) break;
+      if (satisfiesStr(candidate, rules)) return candidate;
+    }
+  }
+  const said = [
+    rules.pattern !== undefined && `pattern ${JSON.stringify(rules.pattern)}`,
+    rules.format && `format ${rules.format}`,
+    rules.len !== undefined && `len ${rules.len}`,
+    rules.minLen !== undefined && `min_len ${rules.minLen}`,
+    rules.maxLen !== undefined && `max_len ${rules.maxLen}`,
+    rules.prefix && `prefix ${JSON.stringify(rules.prefix)}`,
+    rules.suffix && `suffix ${JSON.stringify(rules.suffix)}`,
+    rules.contains && `contains ${JSON.stringify(rules.contains)}`,
+  ].filter(Boolean);
+  throw new Error(
+    `mock values: ${where} has string rules no generated value satisfies (${said.join(", ")}); ` +
+      "answer it from a scenario (mockService) or a mockFactory",
+  );
 }
 
 // ── Numbers ─────────────────────────────────────────────────────────────
@@ -718,6 +954,8 @@ interface Ctx {
   baseTime: number;
   stack: readonly string[];
   echo: ReadonlyMap<string, Echo>;
+  /** The request's selected oneof cases: oneof name → member field name. */
+  cases: ReadonlyMap<string, string>;
   factories: ReadonlyMap<string, MockFactory<DescMessage>>;
 }
 
@@ -737,16 +975,30 @@ const ordinal = (ctx: Ctx, rng: Rng) =>
 /** Schemas the engine has walked, so `patch` can rebuild a nested message. */
 const knownSchemas = new Map<string, DescMessage>();
 
-function collectEcho(schema: DescMessage, message: Message): Map<string, Echo> {
+function collectEcho(
+  schema: DescMessage,
+  message: Message,
+): { echo: Map<string, Echo>; cases: Map<string, string> } {
   const out = new Map<string, Echo>();
+  const cases = new Map<string, string>();
   const walk = (
     desc: DescMessage,
     msg: Record<string, unknown>,
     depth: number,
   ) => {
     for (const f of desc.fields) {
-      if (f.oneof) continue;
-      const v = msg[f.localName];
+      let v: unknown;
+      if (f.oneof) {
+        // A oneof member is echoed only when it is the selected case.
+        const selected = msg[f.oneof.localName] as
+          | { case?: string; value?: unknown }
+          | undefined;
+        if (selected?.case !== f.localName) continue;
+        if (!cases.has(f.oneof.name)) cases.set(f.oneof.name, f.name);
+        v = selected.value;
+      } else {
+        v = msg[f.localName];
+      }
       if (v == null) continue;
       if (f.fieldKind === "scalar") {
         if (f.scalar === ScalarType.BOOL || f.scalar === ScalarType.BYTES)
@@ -764,7 +1016,7 @@ function collectEcho(schema: DescMessage, message: Message): Map<string, Echo> {
     }
   };
   walk(schema, message as unknown as Record<string, unknown>, 0);
-  return out;
+  return { echo: out, cases };
 }
 
 function echoFor(
@@ -806,12 +1058,17 @@ function scalarValue(
   const rng = rngAt(ctx, name);
   const n = ordinal(ctx, rng);
   const echo = echoFor(ctx, name, scalar);
-  if (echo) return coerceScalar(scalar, echo.value, longAsString);
+  if (echo) {
+    const v = coerceScalar(scalar, echo.value, longAsString);
+    if (echoMeetsRules(scalar, v, rules)) return v;
+  }
 
   switch (scalar) {
     case ScalarType.STRING: {
       const s = stringByName(name, owner, n, rng, ctx.index >= 0);
-      return rules?.str ? applyStringRules(s, rules.str, rng, n) : s;
+      return rules?.str
+        ? applyStringRules(s, rules.str, rng, n, `${owner.typeName}.${name}`)
+        : s;
     }
     case ScalarType.BOOL: {
       if (rules?.bool !== undefined) return rules.bool;
@@ -904,36 +1161,96 @@ function bytesLength(
   return Math.min(Math.max(16, min), max);
 }
 
+/** Whether an echoed request value may stand in the response: it fits the field's type and meets its rules. */
+function echoMeetsRules(
+  scalar: ScalarType,
+  v: unknown,
+  rules: FieldRules | undefined,
+): boolean {
+  if (scalar === ScalarType.STRING) {
+    return !rules?.str || satisfiesStr(String(v), rules.str);
+  }
+  let num: number | bigint;
+  if (is64(scalar)) {
+    // Exact: a 64-bit value past 2^53 keeps every digit, and is checked
+    // against the field type's own range, not JavaScript's safe one.
+    const big = exactBigInt(v);
+    const range = INT64_RANGE[scalar];
+    if (big === undefined || !range || big < range[0] || big > range[1])
+      return false;
+    num = big;
+  } else {
+    if (typeof v !== "number" || !Number.isFinite(v)) return false;
+    const limits = INT_LIMITS[scalar];
+    if (limits && (!Number.isInteger(v) || v < limits[0] || v > limits[1]))
+      return false;
+    // A float field holds 32 bits: a double it cannot represent would reach
+    // the client rounded, a different value from the one checked here.
+    if (scalar === ScalarType.FLOAT && Math.fround(v) !== v) return false;
+    num = v;
+  }
+  return !rules?.num || satisfiesNum(num, rules.num);
+}
+
+/** The protobuf range of each 64-bit integer type. */
+const INT64_RANGE: Partial<Record<ScalarType, [bigint, bigint]>> = {
+  [ScalarType.INT64]: [-(2n ** 63n), 2n ** 63n - 1n],
+  [ScalarType.SINT64]: [-(2n ** 63n), 2n ** 63n - 1n],
+  [ScalarType.SFIXED64]: [-(2n ** 63n), 2n ** 63n - 1n],
+  [ScalarType.UINT64]: [0n, 2n ** 64n - 1n],
+  [ScalarType.FIXED64]: [0n, 2n ** 64n - 1n],
+};
+
+/** `v` as a bigint without rounding, or undefined when it is not an integer. */
+function exactBigInt(v: unknown): bigint | undefined {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "string" && /^-?\d+$/.test(v)) return BigInt(v);
+  if (typeof v === "number" && Number.isSafeInteger(v)) return BigInt(v);
+  return undefined;
+}
+
 function coerceScalar(
   scalar: ScalarType,
   v: unknown,
   longAsString: boolean,
 ): unknown {
   if (is64(scalar)) {
-    const big = typeof v === "bigint" ? v : BigInt(Math.round(Number(v)));
+    const big = exactBigInt(v) ?? BigInt(Math.round(Number(v)));
     return longAsString ? big.toString() : big;
   }
   if (scalar === ScalarType.STRING) return String(v);
-  if (typeof v === "bigint") return Number(v);
+  if (typeof v === "bigint" || typeof v === "string") return Number(v);
   return v;
 }
 
 function enumValue(
   e: DescEnum,
   name: string,
+  owner: DescMessage,
   rules: FieldRules | undefined,
   ctx: Ctx,
 ): number {
   const echo = echoFor(ctx, name, undefined, e.typeName);
-  if (echo) return echo.value as number;
+  if (echo && satisfiesEnum(e, echo.value as number, rules?.enm))
+    return echo.value as number;
   const r = rules?.enm;
-  if (r?.const !== undefined) return r.const;
-  let values = e.values.map((v) => v.number);
-  // Skip the proto3 zero ("UNSPECIFIED") when anything else is defined.
+  // Every candidate is a declared value that meets every rule, const included.
+  let values = e.values
+    .map((v) => v.number)
+    .filter((v) => satisfiesEnum(e, v, r));
+  if (values.length === 0) {
+    const said = [
+      r?.const !== undefined && `const ${r.const}`,
+      r?.in?.length && `in [${r.in.join(", ")}]`,
+      r?.notIn?.length && `not_in [${r.notIn.join(", ")}]`,
+    ].filter(Boolean);
+    throw new Error(
+      `mock values: ${owner.typeName}.${name} (${e.typeName}) has enum rules no declared value satisfies ` +
+        `(${said.join(", ")}); answer it from a scenario (mockService) or a mockFactory`,
+    );
+  }
+  // Skip the proto3 zero ("UNSPECIFIED") when anything else is allowed.
   if (values.length > 1) values = values.filter((v) => v !== 0);
-  if (r?.in?.length) values = values.filter((v) => r.in!.includes(v));
-  if (r?.notIn?.length) values = values.filter((v) => !r.notIn!.includes(v));
-  if (values.length === 0) return r?.in?.[0] ?? e.values[0]?.number ?? 0;
   // Cycle across a list: item i takes value (offset + i), so a list of n
   // items shows every value once before any repeats.
   const offset = new Rng(
@@ -1172,7 +1489,7 @@ function singular(
         f.longAsString ?? false,
       );
     case "enum":
-      return enumValue(f.enum as DescEnum, field.name, rules, at);
+      return enumValue(f.enum as DescEnum, field.name, owner, rules, at);
     default: {
       const msg = f.message as DescMessage;
       const c: Ctx = {
@@ -1218,9 +1535,16 @@ function buildMessage(desc: DescMessage, ctx: Ctx): MessageShape<DescMessage> {
     if (member.kind === "oneof") {
       const fields = member.fields;
       if (fields.length === 0) continue;
-      const pick = fields[
-        rngAt(here, `${member.name}#case`).int(0, fields.length - 1)
-      ] as DescField;
+      // The case the request selected, when this oneof has a member of that
+      // name; otherwise one chosen by the seed.
+      const requested = here.cases.get(member.name);
+      const pick =
+        (requested !== undefined
+          ? fields.find((f) => f.name === requested)
+          : undefined) ??
+        (fields[
+          rngAt(here, `${member.name}#case`).int(0, fields.length - 1)
+        ] as DescField);
       const value = singular(pick, desc, rulesOf(pick), here, -1, false);
       if (value !== undefined)
         init[member.localName] = { case: pick.localName, value };
@@ -1260,7 +1584,13 @@ function buildMessage(desc: DescMessage, ctx: Ctx): MessageShape<DescMessage> {
         if (field.mapKey === ScalarType.STRING) {
           key = `${stem}-${i + 1}`;
           if (r?.keys?.str)
-            key = applyStringRules(key, r.keys.str, mrng, i + 1);
+            key = applyStringRules(
+              key,
+              r.keys.str,
+              mrng,
+              i + 1,
+              `${desc.typeName}.${field.name} (map key)`,
+            );
         } else if (field.mapKey === ScalarType.BOOL) {
           if (i > 1) break;
           key = String(i === 0);
@@ -1275,6 +1605,7 @@ function buildMessage(desc: DescMessage, ctx: Ctx): MessageShape<DescMessage> {
                 r?.values?.str ?? {},
                 rngAt(at, "value"),
                 i + 1,
+                `${desc.typeName}.${field.name} (map value)`,
               )
             : singular(field, desc, r?.values, at, i, false);
         if (v !== undefined) out[key] = v;
@@ -1355,7 +1686,9 @@ function buildValue<Desc extends DescMessage>(
     now,
     baseTime: now,
     stack: [schema.typeName],
-    echo: echo ? collectEcho(echo.schema, echo.message) : new Map(),
+    ...(echo
+      ? collectEcho(echo.schema, echo.message)
+      : { echo: new Map(), cases: new Map() }),
     factories: new Map(
       (options.factories ?? []).map((f) => [f.schema.typeName, f]),
     ),

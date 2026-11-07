@@ -72,6 +72,7 @@ func TestServiceDefaults_Golden(t *testing.T) {
 	want := []string{
 		"acme-v1-telemetry-service_gen.ts",
 		"billing-service_gen.ts",
+		"probe-service_gen.ts",
 		"sample-v1-telemetry-service_gen.ts",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

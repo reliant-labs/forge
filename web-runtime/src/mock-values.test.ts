@@ -33,7 +33,18 @@ import {
 } from "./testdata/mockgen/gen/acme/v1/billing_pb.js";
 import {
   GetTraceResponseSchema,
+  ContradictoryEnumSchema,
+  EchoProbeResponseSchema,
+  FoldedBoundaryPatternSchema,
   ImpossibleBytesSchema,
+  LookaheadPatternSchema,
+  PatternProbeSchema,
+  SpacePatternSchema,
+  UndeclaredEnumConstSchema,
+  ZeroOnlyEnumSchema,
+  ProbeService,
+  UncheapPatternSchema,
+  UnsatisfiablePatternSchema,
   ListTracesRequestSchema,
   ListTracesResponseSchema,
   Region,
@@ -365,6 +376,155 @@ describe("determinism", () => {
     );
     const billing = serviceDefaults(BillingService, opts);
     expect(billing.getInvoice({ id: "inv-7" }).invoice!.id).toBe("inv-7");
+  });
+});
+
+describe("echo meets the response's rules", () => {
+  const probe = serviceDefaults(ProbeService, opts);
+
+  it("echoes a request value only when the response field's rules accept it", () => {
+    const ok = probe.echoProbe({
+      tier: "pro",
+      sku: "ABC-1234",
+      bounded: 1005,
+      region: Region.EU,
+    });
+    expect(ok).toMatchObject({
+      tier: "pro",
+      sku: "ABC-1234",
+      bounded: 1005,
+      region: Region.EU,
+    });
+
+    const bad = probe.echoProbe({
+      tier: "platinum",
+      sku: "nope",
+      bounded: 7,
+      region: Region.US,
+      code: "other",
+    });
+    expect(["free", "pro", "enterprise"]).toContain(bad.tier);
+    expect(bad.sku).toMatch(/^[A-Z]{3}-[0-9]{4}$/);
+    expect(bad.bounded).toBeGreaterThan(1000);
+    expect(bad.bounded).toBeLessThan(1010);
+    expect([Region.EU, Region.APAC]).toContain(bad.region);
+    expect(bad.code).toBe("fixed");
+  });
+
+  // Checked against Go's regexp (RE2): `(?i)^\w+$` matches the Kelvin sign
+  // and the long s, as JavaScript's /^\w+$/iu does, and rejects "a-b".
+  it("reads \\w under (?i) as RE2 does: case-folded", () => {
+    expect(probe.echoProbe({ word: "\u212A\u017F" }).word).toBe("\u212A\u017F");
+    expect(probe.echoProbe({ word: "a-b" }).word).toMatch(/^[A-Za-z0-9_]+$/);
+  });
+
+  it("keeps the oneof case the request selected, with its value when the rules allow", () => {
+    const host = probe.echoProbe({
+      target: { case: "host", value: "api.example.com" },
+    });
+    expect(host.target).toEqual({ case: "host", value: "api.example.com" });
+
+    const status = probe.echoProbe({
+      target: { case: "httpStatus", value: 9999 },
+    });
+    expect(status.target.case).toBe("httpStatus");
+    const code = status.target.value as number;
+    expect(code).toBeGreaterThanOrEqual(100);
+    expect(code).toBeLessThanOrEqual(599);
+
+    const badHost = probe.echoProbe({
+      target: { case: "host", value: "not a host!" },
+    });
+    expect(badHost.target.case).toBe("host");
+    expect(badHost.target.value).toMatch(/^[a-z0-9.-]+$/);
+  });
+
+  it("checks numeric echoes exactly, in the response field's own type", () => {
+    // 2^53 + 1: Number() rounds it to 2^53, which lte 2^53 would accept.
+    const past = probe.echoProbe({ big: 9007199254740993n });
+    expect(past.big).not.toBe(9007199254740993n);
+    expect(past.big).toBeLessThanOrEqual(9007199254740992n);
+    expect(past.big).not.toBe(9007199254740992n);
+
+    // Below -2^53, inside int64 and the rules: echoed digit for digit.
+    const low = -(2n ** 62n) - 1n;
+    expect(probe.echoProbe({ big: low }).big).toBe(low);
+
+    // A uint64 past int32's range does not echo into an int32.
+    const huge = probe.echoProbe({ huge: 2n ** 40n }).huge;
+    expect(huge).toBeLessThanOrEqual(2147483647);
+    expect(probe.echoProbe({ huge: 42n }).huge).toBe(42);
+
+    // A double a float field cannot hold exactly is not echoed; one it can is.
+    expect(probe.echoProbe({ ratio: 0.1 }).ratio).not.toBe(0.1);
+    expect(probe.echoProbe({ ratio: 0.5 }).ratio).toBe(0.5);
+  });
+
+  it("chooses by seed when the requested case is not one of the response's members", () => {
+    const res = probe.echoProbe({
+      target: { case: "unknownCase", value: "x" },
+    });
+    expect(["host", "httpStatus", "other"]).toContain(res.target.case);
+    expect(
+      probe.echoProbe({ target: { case: "unknownCase", value: "x" } }),
+    ).toEqual(res);
+  });
+});
+
+describe("patterns the cheap generator cannot build", () => {
+  it("meets a pattern and max_len together, a leading (?i), and word boundaries", () => {
+    const v = mockValue(PatternProbeSchema, opts);
+    expect(v.shortWord).toMatch(/^[a-z]{1,3}$/);
+    expect(v.ci).toMatch(/^ab[0-9]$/i);
+    expect(v.boundary).toBe("foo");
+    expect(mockValue(PatternProbeSchema, opts)).toEqual(v);
+  });
+
+  it("refuses rules no value meets, naming the field", () => {
+    expect(() => mockValue(UnsatisfiablePatternSchema, opts)).toThrow(
+      /sample\.v1\.UnsatisfiablePattern\.word has string rules no generated value satisfies \(pattern "\^\[a-z\]\{5\}\$", max_len 3\)/,
+    );
+  });
+
+  it("refuses a pattern it cannot build rather than emit a value that does not match", () => {
+    expect(() => mockValue(UncheapPatternSchema, opts)).toThrow(
+      /sample\.v1\.UncheapPattern\.word has string rules/,
+    );
+  });
+
+  it("refuses a construct RE2 rejects even though JavaScript accepts it", () => {
+    expect(() => mockValue(LookaheadPatternSchema, opts)).toThrow(
+      /sample\.v1\.LookaheadPattern\.word has string rules/,
+    );
+  });
+
+  // Checked against Go's regexp (RE2): `(?i)^\b\w$` rejects "\u212A" (its
+  // \b is ASCII), while JavaScript's /^\b\w$/iu accepts it.
+  it("refuses a word boundary under (?i), which RE2 and JavaScript read differently", () => {
+    expect(() => mockValue(FoldedBoundaryPatternSchema, opts)).toThrow(
+      /sample\.v1\.FoldedBoundaryPattern\.word has string rules/,
+    );
+  });
+
+  it("reads \\s as RE2 does: ASCII whitespace, not a no-break space", () => {
+    const v = mockValue(SpacePatternSchema, opts);
+    expect(v.gap).toMatch(/^a[\t\n\f\r ]b$/);
+    expect(mockValue(SpacePatternSchema, opts)).toEqual(v);
+  });
+});
+
+describe("enum rules", () => {
+  it("chooses the zero value when the rules allow only it", () => {
+    expect(mockValue(ZeroOnlyEnumSchema, opts).region).toBe(Region.UNSPECIFIED);
+  });
+
+  it("refuses rules no declared value meets, naming the field", () => {
+    expect(() => mockValue(UndeclaredEnumConstSchema, opts)).toThrow(
+      /sample\.v1\.UndeclaredEnumConst\.region \(sample\.v1\.Region\) has enum rules no declared value satisfies \(const 99\)/,
+    );
+    expect(() => mockValue(ContradictoryEnumSchema, opts)).toThrow(
+      /sample\.v1\.ContradictoryEnum\.region \(sample\.v1\.Region\) has enum rules no declared value satisfies \(const 2, not_in \[2\]\)/,
+    );
   });
 });
 

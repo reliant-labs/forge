@@ -18,7 +18,7 @@ import type { JsonObject, Message } from "@bufbuild/protobuf";
  * Describes the file sample/v1/telemetry.proto.
  */
 export const file_sample_v1_telemetry: GenFile = /*@__PURE__*/
-  fileDesc("ChlzYW1wbGUvdjEvdGVsZW1ldHJ5LnByb3RvEglzYW1wbGUudjEitwEKEUxpc3RUcmFjZXNSZXF1ZXN0EhsKCnByb2plY3RfaWQYASABKAlCB7pIBHICEAESGQoMcm9vdF9zZXJ2aWNlGAIgASgJSACIAQESHQoJcGFnZV9zaXplGAMgASgFQgq6SAcaBRj0AygAEhIKCnBhZ2VfdG9rZW4YBCABKAkSJgoGc3RhdHVzGAUgASgOMhYuc2FtcGxlLnYxLlRyYWNlU3RhdHVzQg8KDV9yb290X3NlcnZpY2UimwEKEkxpc3RUcmFjZXNSZXNwb25zZRIzCgZ0cmFjZXMYASADKAsyFy5zYW1wbGUudjEuVHJhY2VTdW1tYXJ5Qgq6SAeSAQQIARAyEhcKD25leHRfcGFnZV90b2tlbhgCIAEoCRITCgt0b3RhbF9jb3VudBgDIAEoAxIiCgNyZWQYBCABKAsyFS5zYW1wbGUudjEuUmVkU3VtbWFyeSLvAwoMVHJhY2VTdW1tYXJ5EhAKCHRyYWNlX2lkGAEgASgJEi4KCnN0YXJ0X3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiwKCGVuZF90aW1lGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBITCgtkdXJhdGlvbl9tcxgEIAEoARIUCgxyb290X3NlcnZpY2UYBSABKAkSFgoOcm9vdF9zcGFuX25hbWUYBiABKAkSHgoKc3Bhbl9jb3VudBgHIAEoDUIKukgHKgUYyAEoARImCgZzdGF0dXMYCCABKA4yFi5zYW1wbGUudjEuVHJhY2VTdGF0dXMSHAoIc2VydmljZXMYCSADKAlCCrpIB5IBBAgBEAMSOwoKYXR0cmlidXRlcxgKIAMoCzInLnNhbXBsZS52MS5UcmFjZVN1bW1hcnkuQXR0cmlidXRlc0VudHJ5Ei0KBnJlZ2lvbhgLIAEoDjIRLnNhbXBsZS52MS5SZWdpb25CCrpIB4IBBBgBGAISEgoKcHJvamVjdF9pZBgMIAEoCRITCgtlcnJvcnNfb25seRgNIAEoCBoxCg9BdHRyaWJ1dGVzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASJ4CgpSZWRTdW1tYXJ5EisKCmVycm9yX3JhdGUYASABKAFCF7pIFBISGQAAAAAAAPA/KQAAAAAAAAAAEhUKDXJlcXVlc3RfY291bnQYAiABKAMSJgoDcDk1GAMgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uIi0KD0dldFRyYWNlUmVxdWVzdBIaCgh0cmFjZV9pZBgBIAEoCUIIukgFcgOYASAiRAoQR2V0VHJhY2VSZXNwb25zZRIQCgh0cmFjZV9pZBgBIAEoCRIeCgVzcGFucxgCIAMoCzIPLnNhbXBsZS52MS5TcGFuIqcDCgRTcGFuEg8KB3NwYW5faWQYASABKAkSFgoOcGFyZW50X3NwYW5faWQYAiABKAkSDAoEbmFtZRgDIAEoCRIuCgpzdGFydF90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIrCghkdXJhdGlvbhgFIAEoCzIZLmdvb2dsZS5wcm90b2J1Zi5EdXJhdGlvbhIrCgphdHRyaWJ1dGVzGAYgASgLMhcuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdBIkCgZldmVudHMYByADKAsyFC5zYW1wbGUudjEuU3BhbkV2ZW50EiUKBWVycm9yGAggASgLMhQuc2FtcGxlLnYxLlNwYW5FcnJvckgAEhgKDnN0YXR1c19tZXNzYWdlGAkgASgJSAASFQoLaHR0cF9zdGF0dXMYCiABKAVIABIyCgxwZWVyX3NlcnZpY2UYCyABKAsyHC5nb29nbGUucHJvdG9idWYuU3RyaW5nVmFsdWUSIQoIY2hpbGRyZW4YDCADKAsyDy5zYW1wbGUudjEuU3BhbkIJCgdvdXRjb21lIpgBCglTcGFuRXZlbnQSDAoEbmFtZRgBIAEoCRIWCg50aW1lX3VuaXhfbmFubxgCIAEoAxI0Cghjb3VudGVycxgDIAMoCzIiLnNhbXBsZS52MS5TcGFuRXZlbnQuQ291bnRlcnNFbnRyeRovCg1Db3VudGVyc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoAzoCOAEiKgoJU3BhbkVycm9yEg8KB21lc3NhZ2UYASABKAkSDAoEdHlwZRgCIAEoCSL7CQoMUnVsZVNob3djYXNlEicKA3NrdRgBIAEoCUIaukgXchUyE15bQS1aXXszfS1bMC05XXs0fSQSHgoNY29udGFjdF9lbWFpbBgCIAEoCUIHukgEcgJgARIaCghob21lcGFnZRgDIAEoCUIIukgFcgOIAQESHgoMcmVxdWVzdF91dWlkGAQgASgJQgi6SAVyA7ABARIqCgR0aWVyGAUgASgJQhy6SBlyF1IEZnJlZVIDcHJvUgplbnRlcnByaXNlEhcKBGNvZGUYBiABKAlCCbpIBnIEEAwYEBIWCgVzaG9ydBgHIAEoCUIHukgEcgIYBBIdCgN0YWcYCCABKAlCELpIDXILOgR0YWdfQgNfdjESHAoHYm91bmRlZBgJIAEoBUILukgIGgYQ8gcg6AcSFgoFZml4ZWQYCiABKANCB7pIBCICCCoSGwoGY2hvaWNlGAsgASgEQgu6SAgyBjAHMAswDRIeCgVyYXRpbxgMIAEoAkIPukgMCgodAAAAPy0AAIA+EhUKBG11c3QYDSABKAhCB7pIBGoCCAESFwoGZGlnZXN0GA4gASgMQge6SAR6AmggEhoKBmxhYmVscxgPIAMoCUIKukgHkgEECAwQDBI9CgVwYWlycxgQIAMoCzIiLnNhbXBsZS52MS5SdWxlU2hvd2Nhc2UuUGFpcnNFbnRyeUIKukgHmgEECAEQAhI6Cgd0aW1lb3V0GBEgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uQg66SAuqAQgiAggFMgIIARI4CgpleHBpcmVzX2F0GBIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcEIIukgFsgECQAESLwoGcmVnaW9uGBMgASgOMhEuc2FtcGxlLnYxLlJlZ2lvbkIMukgJggEGIAEgAiADEhUKBGhvc3QYFCABKAlCB7pIBHICaAESFQoEYWRkchgVIAEoCUIHukgEcgJ4ARIeCgZzY29yZXMYFiADKAVCDrpIC5IBCCIGGgQYYyhaEhUKBHNhbHQYFyABKAxCB7pIBHoCEBgSGAoFbm9uY2UYGCABKAxCCbpIBnoEEAQYCBJFCgZxdW90YXMYGSADKAsyIy5zYW1wbGUudjEuUnVsZVNob3djYXNlLlF1b3Rhc0VudHJ5QhC6SA2aAQoqCBoGGP4DKPQDEk0KDGhvbWVfcmVnaW9ucxgaIAMoCzIoLnNhbXBsZS52MS5SdWxlU2hvd2Nhc2UuSG9tZVJlZ2lvbnNFbnRyeUINukgKmgEHKgWCAQIYAhJBCg5lcnJvcnNfYnlfY29kZRgbIAMoCzIpLnNhbXBsZS52MS5SdWxlU2hvd2Nhc2UuRXJyb3JzQnlDb2RlRW50cnkaLAoKUGFpcnNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBGi0KC1F1b3Rhc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoBToCOAEaRQoQSG9tZVJlZ2lvbnNFbnRyeRILCgNrZXkYASABKAkSIAoFdmFsdWUYAiABKA4yES5zYW1wbGUudjEuUmVnaW9uOgI4ARpJChFFcnJvcnNCeUNvZGVFbnRyeRILCgNrZXkYASABKAkSIwoFdmFsdWUYAiABKAsyFC5zYW1wbGUudjEuU3BhbkVycm9yOgI4ASIYChZHZXRSdWxlU2hvd2Nhc2VSZXF1ZXN0IiIKDFdhdGNoUmVxdWVzdBISCgpwcm9qZWN0X2lkGAEgASgJInEKCldhdGNoRXZlbnQSCgoCaWQYASABKAkSLwoLb2JzZXJ2ZWRfYXQYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiYKBnN0YXR1cxgDIAEoDjIWLnNhbXBsZS52MS5UcmFjZVN0YXR1cyIbCgtVcGxvYWRDaHVuaxIMCgRkYXRhGAEgASgMIjEKDVVwbG9hZFN1bW1hcnkSDQoFYnl0ZXMYASABKAMSEQoJdXBsb2FkX2lkGAIgASgJIioKD0ltcG9zc2libGVCeXRlcxIXCgRibG9iGAEgASgMQgm6SAZ6BBAJGAMqbwoLVHJhY2VTdGF0dXMSHAoYVFJBQ0VfU1RBVFVTX1VOU1BFQ0lGSUVEEAASEwoPVFJBQ0VfU1RBVFVTX09LEAESFgoSVFJBQ0VfU1RBVFVTX0VSUk9SEAISFQoRVFJBQ0VfU1RBVFVTX1NMT1cQAypeCgZSZWdpb24SFgoSUkVHSU9OX1VOU1BFQ0lGSUVEEAASDQoJUkVHSU9OX1VTEAESDQoJUkVHSU9OX0VVEAISDwoLUkVHSU9OX0FQQUMQAxINCglSRUdJT05fU0EQBDKwAwoQVGVsZW1ldHJ5U2VydmljZRJOCgpMaXN0VHJhY2VzEhwuc2FtcGxlLnYxLkxpc3RUcmFjZXNSZXF1ZXN0Gh0uc2FtcGxlLnYxLkxpc3RUcmFjZXNSZXNwb25zZSIDkAIBEkgKCEdldFRyYWNlEhouc2FtcGxlLnYxLkdldFRyYWNlUmVxdWVzdBobLnNhbXBsZS52MS5HZXRUcmFjZVJlc3BvbnNlIgOQAgESTQoPR2V0UnVsZVNob3djYXNlEiEuc2FtcGxlLnYxLkdldFJ1bGVTaG93Y2FzZVJlcXVlc3QaFy5zYW1wbGUudjEuUnVsZVNob3djYXNlEjkKBVdhdGNoEhcuc2FtcGxlLnYxLldhdGNoUmVxdWVzdBoVLnNhbXBsZS52MS5XYXRjaEV2ZW50MAESPAoGVXBsb2FkEhYuc2FtcGxlLnYxLlVwbG9hZENodW5rGhguc2FtcGxlLnYxLlVwbG9hZFN1bW1hcnkoARI6CgRDaGF0Ehcuc2FtcGxlLnYxLldhdGNoUmVxdWVzdBoVLnNhbXBsZS52MS5XYXRjaEV2ZW50KAEwAWIGcHJvdG8z", [file_buf_validate_validate, file_google_protobuf_duration, file_google_protobuf_struct, file_google_protobuf_timestamp, file_google_protobuf_wrappers]);
+  fileDesc("ChlzYW1wbGUvdjEvdGVsZW1ldHJ5LnByb3RvEglzYW1wbGUudjEitwEKEUxpc3RUcmFjZXNSZXF1ZXN0EhsKCnByb2plY3RfaWQYASABKAlCB7pIBHICEAESGQoMcm9vdF9zZXJ2aWNlGAIgASgJSACIAQESHQoJcGFnZV9zaXplGAMgASgFQgq6SAcaBRj0AygAEhIKCnBhZ2VfdG9rZW4YBCABKAkSJgoGc3RhdHVzGAUgASgOMhYuc2FtcGxlLnYxLlRyYWNlU3RhdHVzQg8KDV9yb290X3NlcnZpY2UimwEKEkxpc3RUcmFjZXNSZXNwb25zZRIzCgZ0cmFjZXMYASADKAsyFy5zYW1wbGUudjEuVHJhY2VTdW1tYXJ5Qgq6SAeSAQQIARAyEhcKD25leHRfcGFnZV90b2tlbhgCIAEoCRITCgt0b3RhbF9jb3VudBgDIAEoAxIiCgNyZWQYBCABKAsyFS5zYW1wbGUudjEuUmVkU3VtbWFyeSLvAwoMVHJhY2VTdW1tYXJ5EhAKCHRyYWNlX2lkGAEgASgJEi4KCnN0YXJ0X3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiwKCGVuZF90aW1lGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBITCgtkdXJhdGlvbl9tcxgEIAEoARIUCgxyb290X3NlcnZpY2UYBSABKAkSFgoOcm9vdF9zcGFuX25hbWUYBiABKAkSHgoKc3Bhbl9jb3VudBgHIAEoDUIKukgHKgUYyAEoARImCgZzdGF0dXMYCCABKA4yFi5zYW1wbGUudjEuVHJhY2VTdGF0dXMSHAoIc2VydmljZXMYCSADKAlCCrpIB5IBBAgBEAMSOwoKYXR0cmlidXRlcxgKIAMoCzInLnNhbXBsZS52MS5UcmFjZVN1bW1hcnkuQXR0cmlidXRlc0VudHJ5Ei0KBnJlZ2lvbhgLIAEoDjIRLnNhbXBsZS52MS5SZWdpb25CCrpIB4IBBBgBGAISEgoKcHJvamVjdF9pZBgMIAEoCRITCgtlcnJvcnNfb25seRgNIAEoCBoxCg9BdHRyaWJ1dGVzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASJ4CgpSZWRTdW1tYXJ5EisKCmVycm9yX3JhdGUYASABKAFCF7pIFBISGQAAAAAAAPA/KQAAAAAAAAAAEhUKDXJlcXVlc3RfY291bnQYAiABKAMSJgoDcDk1GAMgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uIi0KD0dldFRyYWNlUmVxdWVzdBIaCgh0cmFjZV9pZBgBIAEoCUIIukgFcgOYASAiRAoQR2V0VHJhY2VSZXNwb25zZRIQCgh0cmFjZV9pZBgBIAEoCRIeCgVzcGFucxgCIAMoCzIPLnNhbXBsZS52MS5TcGFuIqcDCgRTcGFuEg8KB3NwYW5faWQYASABKAkSFgoOcGFyZW50X3NwYW5faWQYAiABKAkSDAoEbmFtZRgDIAEoCRIuCgpzdGFydF90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIrCghkdXJhdGlvbhgFIAEoCzIZLmdvb2dsZS5wcm90b2J1Zi5EdXJhdGlvbhIrCgphdHRyaWJ1dGVzGAYgASgLMhcuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdBIkCgZldmVudHMYByADKAsyFC5zYW1wbGUudjEuU3BhbkV2ZW50EiUKBWVycm9yGAggASgLMhQuc2FtcGxlLnYxLlNwYW5FcnJvckgAEhgKDnN0YXR1c19tZXNzYWdlGAkgASgJSAASFQoLaHR0cF9zdGF0dXMYCiABKAVIABIyCgxwZWVyX3NlcnZpY2UYCyABKAsyHC5nb29nbGUucHJvdG9idWYuU3RyaW5nVmFsdWUSIQoIY2hpbGRyZW4YDCADKAsyDy5zYW1wbGUudjEuU3BhbkIJCgdvdXRjb21lIpgBCglTcGFuRXZlbnQSDAoEbmFtZRgBIAEoCRIWCg50aW1lX3VuaXhfbmFubxgCIAEoAxI0Cghjb3VudGVycxgDIAMoCzIiLnNhbXBsZS52MS5TcGFuRXZlbnQuQ291bnRlcnNFbnRyeRovCg1Db3VudGVyc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoAzoCOAEiKgoJU3BhbkVycm9yEg8KB21lc3NhZ2UYASABKAkSDAoEdHlwZRgCIAEoCSL7CQoMUnVsZVNob3djYXNlEicKA3NrdRgBIAEoCUIaukgXchUyE15bQS1aXXszfS1bMC05XXs0fSQSHgoNY29udGFjdF9lbWFpbBgCIAEoCUIHukgEcgJgARIaCghob21lcGFnZRgDIAEoCUIIukgFcgOIAQESHgoMcmVxdWVzdF91dWlkGAQgASgJQgi6SAVyA7ABARIqCgR0aWVyGAUgASgJQhy6SBlyF1IEZnJlZVIDcHJvUgplbnRlcnByaXNlEhcKBGNvZGUYBiABKAlCCbpIBnIEEAwYEBIWCgVzaG9ydBgHIAEoCUIHukgEcgIYBBIdCgN0YWcYCCABKAlCELpIDXILOgR0YWdfQgNfdjESHAoHYm91bmRlZBgJIAEoBUILukgIGgYQ8gcg6AcSFgoFZml4ZWQYCiABKANCB7pIBCICCCoSGwoGY2hvaWNlGAsgASgEQgu6SAgyBjAHMAswDRIeCgVyYXRpbxgMIAEoAkIPukgMCgodAAAAPy0AAIA+EhUKBG11c3QYDSABKAhCB7pIBGoCCAESFwoGZGlnZXN0GA4gASgMQge6SAR6AmggEhoKBmxhYmVscxgPIAMoCUIKukgHkgEECAwQDBI9CgVwYWlycxgQIAMoCzIiLnNhbXBsZS52MS5SdWxlU2hvd2Nhc2UuUGFpcnNFbnRyeUIKukgHmgEECAEQAhI6Cgd0aW1lb3V0GBEgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uQg66SAuqAQgiAggFMgIIARI4CgpleHBpcmVzX2F0GBIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcEIIukgFsgECQAESLwoGcmVnaW9uGBMgASgOMhEuc2FtcGxlLnYxLlJlZ2lvbkIMukgJggEGIAEgAiADEhUKBGhvc3QYFCABKAlCB7pIBHICaAESFQoEYWRkchgVIAEoCUIHukgEcgJ4ARIeCgZzY29yZXMYFiADKAVCDrpIC5IBCCIGGgQYYyhaEhUKBHNhbHQYFyABKAxCB7pIBHoCEBgSGAoFbm9uY2UYGCABKAxCCbpIBnoEEAQYCBJFCgZxdW90YXMYGSADKAsyIy5zYW1wbGUudjEuUnVsZVNob3djYXNlLlF1b3Rhc0VudHJ5QhC6SA2aAQoqCBoGGP4DKPQDEk0KDGhvbWVfcmVnaW9ucxgaIAMoCzIoLnNhbXBsZS52MS5SdWxlU2hvd2Nhc2UuSG9tZVJlZ2lvbnNFbnRyeUINukgKmgEHKgWCAQIYAhJBCg5lcnJvcnNfYnlfY29kZRgbIAMoCzIpLnNhbXBsZS52MS5SdWxlU2hvd2Nhc2UuRXJyb3JzQnlDb2RlRW50cnkaLAoKUGFpcnNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBGi0KC1F1b3Rhc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoBToCOAEaRQoQSG9tZVJlZ2lvbnNFbnRyeRILCgNrZXkYASABKAkSIAoFdmFsdWUYAiABKA4yES5zYW1wbGUudjEuUmVnaW9uOgI4ARpJChFFcnJvcnNCeUNvZGVFbnRyeRILCgNrZXkYASABKAkSIwoFdmFsdWUYAiABKAsyFC5zYW1wbGUudjEuU3BhbkVycm9yOgI4ASIYChZHZXRSdWxlU2hvd2Nhc2VSZXF1ZXN0IiIKDFdhdGNoUmVxdWVzdBISCgpwcm9qZWN0X2lkGAEgASgJInEKCldhdGNoRXZlbnQSCgoCaWQYASABKAkSLwoLb2JzZXJ2ZWRfYXQYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiYKBnN0YXR1cxgDIAEoDjIWLnNhbXBsZS52MS5UcmFjZVN0YXR1cyIbCgtVcGxvYWRDaHVuaxIMCgRkYXRhGAEgASgMIjEKDVVwbG9hZFN1bW1hcnkSDQoFYnl0ZXMYASABKAMSEQoJdXBsb2FkX2lkGAIgASgJIioKD0ltcG9zc2libGVCeXRlcxIXCgRibG9iGAEgASgMQgm6SAZ6BBAJGAMi8AEKEEVjaG9Qcm9iZVJlcXVlc3QSDAoEdGllchgBIAEoCRILCgNza3UYAiABKAkSDwoHYm91bmRlZBgDIAEoBRIhCgZyZWdpb24YBCABKA4yES5zYW1wbGUudjEuUmVnaW9uEgwKBGNvZGUYBSABKAkSCwoDYmlnGAogASgDEgwKBGh1Z2UYCyABKAQSDQoFcmF0aW8YDCABKAESDAoEd29yZBgNIAEoCRIOCgRob3N0GAYgASgJSAASFQoLaHR0cF9zdGF0dXMYByABKAVIABIWCgx1bmtub3duX2Nhc2UYCCABKAlIAEIICgZ0YXJnZXQiggMKEUVjaG9Qcm9iZVJlc3BvbnNlEioKBHRpZXIYASABKAlCHLpIGXIXUgRmcmVlUgNwcm9SCmVudGVycHJpc2USJwoDc2t1GAIgASgJQhq6SBdyFTITXltBLVpdezN9LVswLTldezR9JBIcCgdib3VuZGVkGAMgASgFQgu6SAgaBhDyByDoBxItCgZyZWdpb24YBCABKA4yES5zYW1wbGUudjEuUmVnaW9uQgq6SAeCAQQYAhgDEhoKBGNvZGUYBSABKAlCDLpICXIHCgVmaXhlZBIbCgNiaWcYCiABKANCDrpICyIJGICAgICAgIAQEgwKBGh1Z2UYCyABKAUSDQoFcmF0aW8YDCABKAISHgoEd29yZBgNIAEoCUIQukgNcgsyCSg/aSleXHcrJBIXCgRob3N0GAYgASgJQge6SARyAmgBSAASIQoLaHR0cF9zdGF0dXMYByABKAVCCrpIBxoFGNcEKGRIABIPCgVvdGhlchgJIAEoCUgAQggKBnRhcmdldCJ/CgxQYXR0ZXJuUHJvYmUSKQoKc2hvcnRfd29yZBgBIAEoCUIVukgSchAYAzIMXlthLXpdezEsNn0kEiAKAmNpGAIgASgJQhS6SBFyDzINKD9pKV5hYlswLTldJBIiCghib3VuZGFyeRgDIAEoCUIQukgNcgsyCV5cYmZvb1xiJCI5ChRVbnNhdGlzZmlhYmxlUGF0dGVybhIhCgR3b3JkGAEgASgJQhO6SBByDhgDMgpeW2Etel17NX0kIjIKDlVuY2hlYXBQYXR0ZXJuEiAKBHdvcmQYASABKAlCErpID3INMgteXHB7THV9ezJ9JCIxChBMb29rYWhlYWRQYXR0ZXJuEh0KBHdvcmQYASABKAlCD7pIDHIKMgheKD89YSlhJCIqCgxTcGFjZVBhdHRlcm4SGgoDZ2FwGAEgASgJQg26SApyCDIGXmFcc2IkIjsKFUZvbGRlZEJvdW5kYXJ5UGF0dGVybhIiCgR3b3JkGAEgASgJQhS6SBFyDzINKD9pKV5cYmZvb1xiJCJCChNVbmRlY2xhcmVkRW51bUNvbnN0EisKBnJlZ2lvbhgBIAEoDjIRLnNhbXBsZS52MS5SZWdpb25CCLpIBYIBAghjIkIKEUNvbnRyYWRpY3RvcnlFbnVtEi0KBnJlZ2lvbhgBIAEoDjIRLnNhbXBsZS52MS5SZWdpb25CCrpIB4IBBAgCIAIiOwoMWmVyb09ubHlFbnVtEisKBnJlZ2lvbhgBIAEoDjIRLnNhbXBsZS52MS5SZWdpb25CCLpIBYIBAhgAKm8KC1RyYWNlU3RhdHVzEhwKGFRSQUNFX1NUQVRVU19VTlNQRUNJRklFRBAAEhMKD1RSQUNFX1NUQVRVU19PSxABEhYKElRSQUNFX1NUQVRVU19FUlJPUhACEhUKEVRSQUNFX1NUQVRVU19TTE9XEAMqXgoGUmVnaW9uEhYKElJFR0lPTl9VTlNQRUNJRklFRBAAEg0KCVJFR0lPTl9VUxABEg0KCVJFR0lPTl9FVRACEg8KC1JFR0lPTl9BUEFDEAMSDQoJUkVHSU9OX1NBEAQysAMKEFRlbGVtZXRyeVNlcnZpY2USTgoKTGlzdFRyYWNlcxIcLnNhbXBsZS52MS5MaXN0VHJhY2VzUmVxdWVzdBodLnNhbXBsZS52MS5MaXN0VHJhY2VzUmVzcG9uc2UiA5ACARJICghHZXRUcmFjZRIaLnNhbXBsZS52MS5HZXRUcmFjZVJlcXVlc3QaGy5zYW1wbGUudjEuR2V0VHJhY2VSZXNwb25zZSIDkAIBEk0KD0dldFJ1bGVTaG93Y2FzZRIhLnNhbXBsZS52MS5HZXRSdWxlU2hvd2Nhc2VSZXF1ZXN0Ghcuc2FtcGxlLnYxLlJ1bGVTaG93Y2FzZRI5CgVXYXRjaBIXLnNhbXBsZS52MS5XYXRjaFJlcXVlc3QaFS5zYW1wbGUudjEuV2F0Y2hFdmVudDABEjwKBlVwbG9hZBIWLnNhbXBsZS52MS5VcGxvYWRDaHVuaxoYLnNhbXBsZS52MS5VcGxvYWRTdW1tYXJ5KAESOgoEQ2hhdBIXLnNhbXBsZS52MS5XYXRjaFJlcXVlc3QaFS5zYW1wbGUudjEuV2F0Y2hFdmVudCgBMAEyWwoMUHJvYmVTZXJ2aWNlEksKCUVjaG9Qcm9iZRIbLnNhbXBsZS52MS5FY2hvUHJvYmVSZXF1ZXN0Ghwuc2FtcGxlLnYxLkVjaG9Qcm9iZVJlc3BvbnNlIgOQAgFiBnByb3RvMw", [file_buf_validate_validate, file_google_protobuf_duration, file_google_protobuf_struct, file_google_protobuf_timestamp, file_google_protobuf_wrappers]);
 
 /**
  * @generated from message sample.v1.ListTracesRequest
@@ -626,6 +626,359 @@ export const ImpossibleBytesSchema: GenMessage<ImpossibleBytes> = /*@__PURE__*/
   messageDesc(file_sample_v1_telemetry, 15);
 
 /**
+ * Echo against rules: the request carries values the response's rules would
+ * reject (an echoed value is a value the engine emits, so the rules apply to
+ * it), and selects a oneof case the response must keep.
+ *
+ * @generated from message sample.v1.EchoProbeRequest
+ */
+export type EchoProbeRequest = Message<"sample.v1.EchoProbeRequest"> & {
+  /**
+   * @generated from field: string tier = 1;
+   */
+  tier: string;
+
+  /**
+   * @generated from field: string sku = 2;
+   */
+  sku: string;
+
+  /**
+   * @generated from field: int32 bounded = 3;
+   */
+  bounded: number;
+
+  /**
+   * @generated from field: sample.v1.Region region = 4;
+   */
+  region: Region;
+
+  /**
+   * @generated from field: string code = 5;
+   */
+  code: string;
+
+  /**
+   * @generated from field: int64 big = 10;
+   */
+  big: bigint;
+
+  /**
+   * @generated from field: uint64 huge = 11;
+   */
+  huge: bigint;
+
+  /**
+   * @generated from field: double ratio = 12;
+   */
+  ratio: number;
+
+  /**
+   * @generated from field: string word = 13;
+   */
+  word: string;
+
+  /**
+   * @generated from oneof sample.v1.EchoProbeRequest.target
+   */
+  target: {
+    /**
+     * @generated from field: string host = 6;
+     */
+    value: string;
+    case: "host";
+  } | {
+    /**
+     * @generated from field: int32 http_status = 7;
+     */
+    value: number;
+    case: "httpStatus";
+  } | {
+    /**
+     * @generated from field: string unknown_case = 8;
+     */
+    value: string;
+    case: "unknownCase";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message sample.v1.EchoProbeRequest.
+ * Use `create(EchoProbeRequestSchema)` to create a new message.
+ */
+export const EchoProbeRequestSchema: GenMessage<EchoProbeRequest> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 16);
+
+/**
+ * @generated from message sample.v1.EchoProbeResponse
+ */
+export type EchoProbeResponse = Message<"sample.v1.EchoProbeResponse"> & {
+  /**
+   * @generated from field: string tier = 1;
+   */
+  tier: string;
+
+  /**
+   * @generated from field: string sku = 2;
+   */
+  sku: string;
+
+  /**
+   * @generated from field: int32 bounded = 3;
+   */
+  bounded: number;
+
+  /**
+   * @generated from field: sample.v1.Region region = 4;
+   */
+  region: Region;
+
+  /**
+   * @generated from field: string code = 5;
+   */
+  code: string;
+
+  /**
+   * 64-bit echoes are checked exactly, past JavaScript's safe integers.
+   *
+   * @generated from field: int64 big = 10;
+   */
+  big: bigint;
+
+  /**
+   * @generated from field: int32 huge = 11;
+   */
+  huge: number;
+
+  /**
+   * @generated from field: float ratio = 12;
+   */
+  ratio: number;
+
+  /**
+   * RE2 folds \w under (?i) as JavaScript's `iu` does: the Kelvin sign matches.
+   *
+   * @generated from field: string word = 13;
+   */
+  word: string;
+
+  /**
+   * @generated from oneof sample.v1.EchoProbeResponse.target
+   */
+  target: {
+    /**
+     * @generated from field: string host = 6;
+     */
+    value: string;
+    case: "host";
+  } | {
+    /**
+     * @generated from field: int32 http_status = 7;
+     */
+    value: number;
+    case: "httpStatus";
+  } | {
+    /**
+     * @generated from field: string other = 9;
+     */
+    value: string;
+    case: "other";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message sample.v1.EchoProbeResponse.
+ * Use `create(EchoProbeResponseSchema)` to create a new message.
+ */
+export const EchoProbeResponseSchema: GenMessage<EchoProbeResponse> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 17);
+
+/**
+ * Patterns the engine's cheap generator cannot build: a value that satisfies
+ * the field or an error naming it, never a value the server would reject.
+ *
+ * @generated from message sample.v1.PatternProbe
+ */
+export type PatternProbe = Message<"sample.v1.PatternProbe"> & {
+  /**
+   * Satisfiable, but only by retrying: a pattern up to 6 long under max_len 3.
+   *
+   * @generated from field: string short_word = 1;
+   */
+  shortWord: string;
+
+  /**
+   * RE2's leading case-insensitive flag, which JavaScript spells as a flag.
+   *
+   * @generated from field: string ci = 2;
+   */
+  ci: string;
+
+  /**
+   * Word boundaries: zero-width, so the generator skips them and the result is checked.
+   *
+   * @generated from field: string boundary = 3;
+   */
+  boundary: string;
+};
+
+/**
+ * Describes the message sample.v1.PatternProbe.
+ * Use `create(PatternProbeSchema)` to create a new message.
+ */
+export const PatternProbeSchema: GenMessage<PatternProbe> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 18);
+
+/**
+ * @generated from message sample.v1.UnsatisfiablePattern
+ */
+export type UnsatisfiablePattern = Message<"sample.v1.UnsatisfiablePattern"> & {
+  /**
+   * @generated from field: string word = 1;
+   */
+  word: string;
+};
+
+/**
+ * Describes the message sample.v1.UnsatisfiablePattern.
+ * Use `create(UnsatisfiablePatternSchema)` to create a new message.
+ */
+export const UnsatisfiablePatternSchema: GenMessage<UnsatisfiablePattern> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 19);
+
+/**
+ * @generated from message sample.v1.UncheapPattern
+ */
+export type UncheapPattern = Message<"sample.v1.UncheapPattern"> & {
+  /**
+   * @generated from field: string word = 1;
+   */
+  word: string;
+};
+
+/**
+ * Describes the message sample.v1.UncheapPattern.
+ * Use `create(UncheapPatternSchema)` to create a new message.
+ */
+export const UncheapPatternSchema: GenMessage<UncheapPattern> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 20);
+
+/**
+ * A lookahead: JavaScript accepts it, RE2 (the server's validator) does not.
+ *
+ * @generated from message sample.v1.LookaheadPattern
+ */
+export type LookaheadPattern = Message<"sample.v1.LookaheadPattern"> & {
+  /**
+   * @generated from field: string word = 1;
+   */
+  word: string;
+};
+
+/**
+ * Describes the message sample.v1.LookaheadPattern.
+ * Use `create(LookaheadPatternSchema)` to create a new message.
+ */
+export const LookaheadPatternSchema: GenMessage<LookaheadPattern> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 21);
+
+/**
+ * RE2's \s is ASCII whitespace only; a no-break space does not match it.
+ *
+ * @generated from message sample.v1.SpacePattern
+ */
+export type SpacePattern = Message<"sample.v1.SpacePattern"> & {
+  /**
+   * @generated from field: string gap = 1;
+   */
+  gap: string;
+};
+
+/**
+ * Describes the message sample.v1.SpacePattern.
+ * Use `create(SpacePatternSchema)` to create a new message.
+ */
+export const SpacePatternSchema: GenMessage<SpacePattern> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 22);
+
+/**
+ * Word boundaries under a leading (?i): RE2's stay ASCII, JavaScript's follow
+ * its case-folded \w, so `(?i)^\b\w$` matches the Kelvin sign in JavaScript
+ * only. Refused rather than read the JavaScript way.
+ *
+ * @generated from message sample.v1.FoldedBoundaryPattern
+ */
+export type FoldedBoundaryPattern = Message<"sample.v1.FoldedBoundaryPattern"> & {
+  /**
+   * @generated from field: string word = 1;
+   */
+  word: string;
+};
+
+/**
+ * Describes the message sample.v1.FoldedBoundaryPattern.
+ * Use `create(FoldedBoundaryPatternSchema)` to create a new message.
+ */
+export const FoldedBoundaryPatternSchema: GenMessage<FoldedBoundaryPattern> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 23);
+
+/**
+ * Enum rules no declared value meets: an undeclared const, and a const the
+ * same field's not_in excludes.
+ *
+ * @generated from message sample.v1.UndeclaredEnumConst
+ */
+export type UndeclaredEnumConst = Message<"sample.v1.UndeclaredEnumConst"> & {
+  /**
+   * @generated from field: sample.v1.Region region = 1;
+   */
+  region: Region;
+};
+
+/**
+ * Describes the message sample.v1.UndeclaredEnumConst.
+ * Use `create(UndeclaredEnumConstSchema)` to create a new message.
+ */
+export const UndeclaredEnumConstSchema: GenMessage<UndeclaredEnumConst> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 24);
+
+/**
+ * @generated from message sample.v1.ContradictoryEnum
+ */
+export type ContradictoryEnum = Message<"sample.v1.ContradictoryEnum"> & {
+  /**
+   * @generated from field: sample.v1.Region region = 1;
+   */
+  region: Region;
+};
+
+/**
+ * Describes the message sample.v1.ContradictoryEnum.
+ * Use `create(ContradictoryEnumSchema)` to create a new message.
+ */
+export const ContradictoryEnumSchema: GenMessage<ContradictoryEnum> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 25);
+
+/**
+ * in: [0] alone: the zero value is the only allowed one, so it is chosen.
+ *
+ * @generated from message sample.v1.ZeroOnlyEnum
+ */
+export type ZeroOnlyEnum = Message<"sample.v1.ZeroOnlyEnum"> & {
+  /**
+   * @generated from field: sample.v1.Region region = 1;
+   */
+  region: Region;
+};
+
+/**
+ * Describes the message sample.v1.ZeroOnlyEnum.
+ * Use `create(ZeroOnlyEnumSchema)` to create a new message.
+ */
+export const ZeroOnlyEnumSchema: GenMessage<ZeroOnlyEnum> = /*@__PURE__*/
+  messageDesc(file_sample_v1_telemetry, 26);
+
+/**
  * @generated from enum sample.v1.TraceStatus
  */
 export enum TraceStatus {
@@ -746,4 +1099,19 @@ export const TelemetryService: GenService<{
   },
 }> = /*@__PURE__*/
   serviceDesc(file_sample_v1_telemetry, 0);
+
+/**
+ * @generated from service sample.v1.ProbeService
+ */
+export const ProbeService: GenService<{
+  /**
+   * @generated from rpc sample.v1.ProbeService.EchoProbe
+   */
+  echoProbe: {
+    methodKind: "unary";
+    input: typeof EchoProbeRequestSchema;
+    output: typeof EchoProbeResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_sample_v1_telemetry, 1);
 

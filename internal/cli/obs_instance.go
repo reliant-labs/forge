@@ -12,16 +12,24 @@ package cli
 //	--all-instances           the whole env
 //	--user <user>             every instance of one user
 //
+// An instance id is the control plane's: the deploy_local_sessions row id the
+// mint returned (a UUID; rows from before the server-minted ids keep the
+// client's sess-… id), which the token carries as `sid` and the gateway stamps
+// as reliant.instance.id. It is NOT forge's own session id (sessionIDFor),
+// which repeats across a worktree's runs. A label resolves through the records
+// `forge env up` wrote on this machine; the control plane's Live view reports
+// only the client's session id, so it cannot name another machine's instance.
+//
 // The narrowing is the backend's (obsbackend.Instances), so every read a verb
 // makes carries it, and the document's scope.instance says which it was.
 
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/spf13/pflag"
 
@@ -29,7 +37,6 @@ import (
 	"github.com/reliant-labs/forge/internal/devtelemetry"
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/obsout"
-	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // obsInstanceFlags are --instance, --all-instances and --user.
@@ -41,73 +48,26 @@ type obsInstanceFlags struct {
 	// (sessions: the app's user id) registers it as --instance-user.
 	userFlag string
 
-	// carry is what a suggested `forge obs` command repeats so it reads what
-	// this one read: set by resolve when the narrowing is not the default.
-	carry []string
+	// carry is the non-default narrowing a suggested `forge obs` read repeats
+	// so it reads what this one read; set by resolve.
+	carry instanceCarry
+}
+
+// instanceCarry is a narrowing by what it means, not by the flags that spelt
+// it: each destination verb spells the user selection its own way.
+type instanceCarry struct {
+	all  bool
+	id   string
+	user string
 }
 
 func (f *obsInstanceFlags) register(fs *pflag.FlagSet) {
 	if f.userFlag == "" {
 		f.userFlag = "user"
 	}
-	fs.StringVar(&f.instance, "instance", "", "read this dev `instance` of a hosted-dev env: its id (sess-…) or its label (alice/fix-login, or the branch alone), resolved through the control plane's Live view (default: this checkout's, as forge env up recorded it)")
+	fs.StringVar(&f.instance, "instance", "", "read this dev `instance` of a hosted-dev env: its id (scope.instance.id, the control plane's) or its label (alice/fix-login, or the branch alone) as forge env up recorded it on this machine (default: this checkout's)")
 	fs.BoolVar(&f.all, "all-instances", false, "read every dev instance of the env, not only this checkout's")
 	fs.StringVar(&f.user, f.userFlag, "", "read every dev instance of one `user` (the reliant.instance.user the gateway stamps; the control plane resolves an email)")
-}
-
-// sessionIDRe is the shape of sessionIDFor's ids.
-var sessionIDRe = regexp.MustCompile(`^sess-[0-9a-f]{24}$`)
-
-// instanceLister reads an env's live `forge env up` sessions, for resolving a
-// label; nil when there is no control plane to ask.
-type instanceLister func(ctx context.Context, env, environmentID string) ([]release.LocalSession, error)
-
-// resolve turns the flags into the narrowing a backend applies. rec is the
-// hosted-dev record the env resolved through (nil otherwise); list resolves a
-// label that is not the record's own.
-func (f *obsInstanceFlags) resolve(ctx context.Context, env string, rec *devtelemetry.Record, list instanceLister) (obsbackend.Instances, error) {
-	f.carry = nil
-	if f.all && (f.instance != "" || f.user != "") {
-		return obsbackend.Instances{}, obsbackend.Wrong("--all-instances reads every instance: drop --instance and --%s, or drop it", f.flagUser())
-	}
-	if f.all {
-		if rec != nil && rec.InstanceID != "" {
-			f.carry = []string{"--all-instances"}
-		}
-		return obsbackend.Instances{}, nil
-	}
-	var out obsbackend.Instances
-	if f.user != "" {
-		out.Users, out.Owner = []string{f.user}, f.user
-		f.carry = append(f.carry, "--"+f.flagUser(), f.user)
-	}
-	switch v := strings.TrimSpace(f.instance); {
-	case v == "":
-		// The default: this checkout's instance, unless --user widened it.
-		if f.user == "" && rec != nil && rec.InstanceID != "" {
-			out = recordInstance(rec)
-		}
-	case rec != nil && (v == rec.InstanceID || v == rec.InstanceLabel):
-		in := recordInstance(rec)
-		out.IDs, out.Label = in.IDs, in.Label
-		if out.Owner == "" {
-			out.Owner = in.Owner
-		}
-		if f.user != "" {
-			f.carry = append(f.carry, "--instance", rec.InstanceID)
-		}
-	case sessionIDRe.MatchString(v):
-		out.IDs = []string{v}
-		f.carry = append(f.carry, "--instance", v)
-	default:
-		s, err := instanceByLabel(ctx, env, v, rec, list)
-		if err != nil {
-			return obsbackend.Instances{}, err
-		}
-		out.IDs, out.Label = []string{s.ID}, v
-		f.carry = append(f.carry, "--instance", s.ID)
-	}
-	return out, nil
 }
 
 func (f *obsInstanceFlags) flagUser() string {
@@ -117,104 +77,200 @@ func (f *obsInstanceFlags) flagUser() string {
 	return f.userFlag
 }
 
-func recordInstance(rec *devtelemetry.Record) obsbackend.Instances {
+// instanceIDRe is the shape of a control-plane instance id: the server-minted
+// row id (a UUID), or the client id a row from before server-minted ids kept.
+var instanceIDRe = regexp.MustCompile(`^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|sess-[0-9a-f]{24})$`)
+
+// instanceRecords reads the hosted-dev records of env on this machine.
+type instanceRecords func(ctx context.Context, env string) ([]devtelemetry.Record, error)
+
+// resolve turns the flags into the narrowing a backend applies. rec is the
+// hosted-dev record the env resolved through (nil otherwise); records resolve
+// a label that is not the record's own.
+func (f *obsInstanceFlags) resolve(ctx context.Context, env string, rec *devtelemetry.Record, records instanceRecords) (obsbackend.Instances, error) {
+	f.carry = instanceCarry{}
+	if f.all && (f.instance != "" || f.user != "") {
+		return obsbackend.Instances{}, obsbackend.Wrong("--all-instances reads every instance: drop --instance and --%s, or drop it", f.flagUser())
+	}
+	if f.all {
+		f.carry.all = rec != nil
+		return obsbackend.Instances{}, nil
+	}
+	var out obsbackend.Instances
+	if f.user != "" {
+		out.Users, out.Owner = []string{f.user}, f.user
+		f.carry.user = f.user
+	}
+	switch v := strings.TrimSpace(f.instance); {
+	case v == "":
+		// The default: this checkout's instance, unless --user widened it.
+		if f.user == "" && rec != nil {
+			out = recordInstance(*rec)
+		}
+	case rec != nil && (v == rec.InstanceID || v == rec.InstanceLabel):
+		out = withInstance(out, recordInstance(*rec))
+		if f.user != "" {
+			f.carry.id = rec.InstanceID
+		}
+	case instanceIDRe.MatchString(v):
+		out.IDs = []string{v}
+		f.carry.id = v
+	default:
+		r, err := instanceByLabel(ctx, env, v, records)
+		if err != nil {
+			return obsbackend.Instances{}, err
+		}
+		out = withInstance(out, recordInstance(r))
+		f.carry.id = r.InstanceID
+	}
+	return out, nil
+}
+
+func recordInstance(rec devtelemetry.Record) obsbackend.Instances {
 	return obsbackend.Instances{IDs: []string{rec.InstanceID}, Label: rec.InstanceLabel, Owner: rec.InstanceUser}
 }
 
-// instanceByLabel finds the one live session of env whose worktree label is
-// label, or the part of it after the last "/" (an instance label is
-// "<user>/<worktree label>"; the Live view knows only the worktree's).
-func instanceByLabel(ctx context.Context, env, label string, rec *devtelemetry.Record, list instanceLister) (release.LocalSession, error) {
-	if list == nil {
-		return release.LocalSession{}, obsbackend.Wrong("--instance %q: a label is resolved through the control plane, which env %s is not read through; pass the instance's id (sess-…)", label, env)
+// withInstance narrows out to in's instance, keeping out's user selection.
+func withInstance(out, in obsbackend.Instances) obsbackend.Instances {
+	out.IDs, out.Label = in.IDs, in.Label
+	if out.Owner == "" {
+		out.Owner = in.Owner
 	}
-	envID := ""
-	if rec != nil {
-		envID = rec.EnvironmentID
+	return out
+}
+
+// instanceByLabel finds the one hosted-dev record of env on this machine
+// whose label is label. An instance label is "<user>/<worktree label>", and a
+// worktree label may itself hold a "/": a label matches in full, or the
+// worktree part alone (everything after the user) matches a bare one. A
+// qualified label never matches another user's instance.
+func instanceByLabel(ctx context.Context, env, label string, records instanceRecords) (devtelemetry.Record, error) {
+	if records == nil {
+		return devtelemetry.Record{}, obsbackend.Wrong("--instance %q: pass the instance's id (scope.instance.id)", label)
 	}
-	sessions, err := list(ctx, env, envID)
+	recs, err := records(ctx, env)
 	if err != nil {
-		return release.LocalSession{}, obsbackend.Undetermined("--instance %q: cannot list env %s's instances to resolve the label; pass the instance's id (sess-…)", label, env).Cause(err)
+		return devtelemetry.Record{}, obsbackend.Undetermined("--instance %q: cannot read this machine's records of env %s to resolve the label; pass the instance's id (scope.instance.id)", label, env).Cause(err)
 	}
-	branch := label
-	if i := strings.LastIndex(label, "/"); i >= 0 {
-		branch = label[i+1:]
-	}
-	var hits []release.LocalSession
+	var exact, bare []devtelemetry.Record
 	var known []string
-	for _, s := range sessions {
-		if s.Worktree.Label == label || s.Worktree.Label == branch {
-			hits = append(hits, s)
+	for _, r := range recs {
+		if r.InstanceID == "" || r.InstanceLabel == "" {
+			continue
 		}
-		if s.Worktree.Label != "" {
-			known = append(known, s.Worktree.Label)
+		known = append(known, r.InstanceLabel)
+		if r.InstanceLabel == label {
+			exact = append(exact, r)
+		}
+		if _, wt, ok := strings.Cut(r.InstanceLabel, "/"); ok && wt == label {
+			bare = append(bare, r)
 		}
 	}
-	slices.Sort(known)
+	hits := exact
+	if len(hits) == 0 {
+		hits = bare
+	}
+	hits = slices.CompactFunc(hits, func(a, b devtelemetry.Record) bool { return a.InstanceID == b.InstanceID })
 	switch len(hits) {
 	case 1:
 		return hits[0], nil
 	case 0:
-		hint := "it has none live"
+		hint := "none is recorded here"
 		if len(known) > 0 {
-			hint = "its live ones are " + strings.Join(slices.Compact(known), ", ")
+			slices.Sort(known)
+			hint = "recorded here: " + strings.Join(slices.Compact(known), ", ")
 		}
-		return release.LocalSession{}, obsbackend.Wrong("--instance %q names no live instance of env %s (%s); an instance that has stopped is read by its id (sess-…)", label, env, hint)
+		return devtelemetry.Record{}, obsbackend.Wrong("--instance %q names no instance of env %s that `forge env up` recorded on this machine (%s); another machine's instance is read by its id (scope.instance.id)", label, env, hint)
 	}
 	ids := make([]string, len(hits))
-	for i, s := range hits {
-		ids[i] = s.ID
+	for i, r := range hits {
+		ids[i] = r.InstanceID + " (" + r.InstanceLabel + ")"
 	}
-	return release.LocalSession{}, obsbackend.Wrong("--instance %q names %d instances of env %s; pick one by id: %s", label, len(hits), env, strings.Join(ids, ", "))
+	return devtelemetry.Record{}, obsbackend.Wrong("--instance %q names %d instances of env %s; pick one by id: %s", label, len(hits), env, strings.Join(ids, ", "))
 }
 
-// liveInstanceLister lists env's sessions from the Live view of the control
-// plane caller talks to.
-func liveInstanceLister(caller obsbackend.Caller, now time.Time) instanceLister {
-	return func(ctx context.Context, env, environmentID string) ([]release.LocalSession, error) {
-		envs, err := hostedLiveClient{client: caller}.GetLiveView(ctx, hostedProjectName(), false, now)
-		if err != nil {
-			return nil, err
-		}
-		for _, e := range envs {
-			if (environmentID != "" && e.EnvironmentID == environmentID) || (environmentID == "" && e.Env.Name == env) {
-				return e.Sessions, nil
+// machineInstanceRecords reads env's hosted-dev records from this checkout
+// and every other worktree of its repository: the instances `forge env up`
+// started on this machine.
+func machineInstanceRecords(ctx context.Context, env string) ([]devtelemetry.Record, error) {
+	projectDir := projectDirForKCL()
+	dirs := []string{projectDir}
+	if top, err := checkoutGit(ctx, projectDir, "rev-parse", "--show-toplevel"); err == nil {
+		rel, rerr := filepath.Rel(strings.TrimSpace(top), projectDir)
+		if wts, werr := listWorktrees(ctx, projectDir); werr == nil && rerr == nil {
+			for _, wt := range wts {
+				dirs = append(dirs, filepath.Join(wt.path, rel))
 			}
 		}
-		return nil, nil
 	}
+	var out []devtelemetry.Record
+	seen := map[string]bool{}
+	for _, d := range dirs {
+		abs, err := filepath.Abs(d)
+		if err != nil || seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		// An unreadable record names nothing; this checkout's own is warned
+		// about where the env resolves (readDevTelemetry).
+		rec, ok, err := devtelemetry.Read(abs, env)
+		if err == nil && ok && rec.Backend == "cloud" {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
 }
 
 // carrySuggested repeats a non-default instance narrowing on every suggested
-// `forge obs` read, so following a suggestion reads the same instance.
+// `forge obs` telemetry read, spelt as that read's verb takes it, so following
+// a suggestion reads the same instance.
 func (f *obsInstanceFlags) carrySuggested(cmds []string) []string {
-	if len(f.carry) == 0 {
+	if f.carry == (instanceCarry{}) {
 		return cmds
 	}
-	tail := " " + obsout.Command(f.carry...)
 	out := make([]string, len(cmds))
 	for i, c := range cmds {
 		out[i] = c
-		if instanceCarries(c) {
-			out[i] = c + tail
+		if verb, ok := instanceCarryVerb(c); ok {
+			out[i] = c + " " + obsout.Command(f.carry.args(verb)...)
 		}
 	}
 	return out
 }
 
-// instanceCarries reports whether a suggested command is a telemetry read
-// that takes the instance flags.
-func instanceCarries(cmd string) bool {
+// args spells the narrowing for verb: `sessions` takes the instance's user as
+// --instance-user (its --user is the app's user id), every other verb as --user.
+func (c instanceCarry) args(verb string) []string {
+	if c.all {
+		return []string{"--all-instances"}
+	}
+	var a []string
+	if c.user != "" {
+		flag := "--user"
+		if verb == "sessions" {
+			flag = "--instance-user"
+		}
+		a = append(a, flag, c.user)
+	}
+	if c.id != "" {
+		a = append(a, "--instance", c.id)
+	}
+	return a
+}
+
+// instanceCarryVerb is the verb of a suggested command that is a telemetry
+// read taking the instance flags; ok is false for anything else.
+func instanceCarryVerb(cmd string) (string, bool) {
 	rest, ok := strings.CutPrefix(cmd, "forge obs ")
 	if !ok || strings.Contains(cmd, " --help") || strings.Contains(cmd, "--instance") || strings.Contains(cmd, "--all-instances") {
-		return false
+		return "", false
 	}
 	verb, _, _ := strings.Cut(rest, " ")
 	switch verb {
 	case "changes", "check", "dashboards", "alerts", "profile":
-		return false
+		return "", false
 	}
-	return true
+	return verb, true
 }
 
 // obsScopeInstance is the document's scope.instance for i; nil for a read of

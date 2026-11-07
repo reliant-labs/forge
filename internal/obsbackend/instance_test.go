@@ -45,13 +45,22 @@ func TestResolveHostedDevRecord(t *testing.T) {
 	}{
 		"disabled wins over a stale record": {func() Facts { f := local; f.Declared = true; return f }(), "its observability is disabled"},
 		"no control plane to query":         {func() Facts { f := local; f.ControlPlane = ""; return f }(), "declares no control_plane to query it through"},
-		"incomplete record": {func() Facts {
+		"record without an environment": {func() Facts {
 			f := local
 			r := *hostedRecord()
 			r.EnvironmentID = ""
 			f.DevTelemetry = &r
 			return f
-		}(), "names no org or environment"},
+		}(), "names no org, environment or instance"},
+		// The default read is this checkout's instance: without one it would
+		// read every instance of the env.
+		"record without an instance": {func() Facts {
+			f := local
+			r := *hostedRecord()
+			r.InstanceID = ""
+			f.DevTelemetry = &r
+			return f
+		}(), "names no org, environment or instance"},
 	} {
 		if _, err := Resolve(c.f, ""); err == nil || !strings.Contains(err.Error(), c.errHas) || err.(*Error).ExitCode() != ExitUndetermined {
 			t.Errorf("%s: err = %v, want exit 2 containing %q", name, err, c.errHas)
@@ -96,7 +105,8 @@ func TestResolveOffNamesTheKCLToAdd(t *testing.T) {
 // The cloud backend sends its instance narrowing on every scope it builds:
 // telemetry, issues and sessions.
 func TestCloudSendsInstanceNarrowing(t *testing.T) {
-	f := &fakeCaller{replies: map[string]string{procSearchLogs: `{}`, procListIssues: `{}`, procListSessions: `{}`}}
+	echo := `{"instanceScope":{"instanceIds":["sess-1"],"instanceUsers":["u1"]}}`
+	f := &fakeCaller{replies: map[string]string{procSearchLogs: echo, procListIssues: echo, procListSessions: echo}}
 	c := cloudWith(f)
 	c.Instances = Instances{IDs: []string{"sess-1"}, Users: []string{"u1"}}
 	ctx := context.Background()
@@ -165,5 +175,48 @@ func TestLocalAndExplainNarrowByInstance(t *testing.T) {
 	}
 	if len(res.Statements) == 0 || !strings.Contains(res.Statements[0].SQL, "reliant.instance.id") {
 		t.Errorf("--explain on a cloud env omits the instance: %+v", res.Statements)
+	}
+}
+
+// An older control plane drops the instance fields it does not know and
+// answers for the whole env. Without its acknowledgement the answer is
+// refused (exit 2), never shown as the instance's.
+func TestCloudRefusesAnUnacknowledgedNarrowing(t *testing.T) {
+	ctx := context.Background()
+	wholeEnv := `{"logs":[{"timestamp":"2026-10-22T11:59:00Z","service":"api","body":"another stack's line"}]}`
+	for name, reply := range map[string]string{
+		"older server: no echo":       wholeEnv,
+		"echo of another instance":    `{"logs":[],"instanceScope":{"instanceIds":["sess-2"]}}`,
+		"echo that dropped the users": `{"logs":[],"instanceScope":{"instanceIds":["sess-1"]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := cloudWith(&fakeCaller{replies: map[string]string{procSearchLogs: reply, procListIssues: reply, procListSessions: reply}})
+			c.Instances = Instances{IDs: []string{"sess-1"}, Users: []string{"u1"}}
+			n := narrowC()
+			res, err := c.Logs(ctx, LogsRequest{Narrow: n, Limit: 5})
+			if err == nil || err.(*Error).ExitCode() != ExitUndetermined || len(res.Logs) != 0 {
+				t.Errorf("logs: %+v, %v; want exit 2 and nothing shown", res.Logs, err)
+			}
+			n.Filters = nil
+			if _, err := c.ListIssues(ctx, ListIssuesRequest{Narrow: n, Limit: 5}); err == nil || err.(*Error).ExitCode() != ExitUndetermined {
+				t.Errorf("issues: %v; want exit 2", err)
+			}
+			if _, err := c.ListSessions(ctx, ListSessionsRequest{Narrow: n, Limit: 5}); err == nil || err.(*Error).ExitCode() != ExitUndetermined {
+				t.Errorf("sessions: %v; want exit 2", err)
+			}
+		})
+	}
+
+	// The same older server answers a whole-env read as it always did.
+	c := cloudWith(&fakeCaller{replies: map[string]string{procSearchLogs: wholeEnv}})
+	res, err := c.Logs(ctx, LogsRequest{Narrow: narrowC(), Limit: 5})
+	if err != nil || len(res.Logs) != 1 {
+		t.Errorf("an unnarrowed read: %+v, %v", res.Logs, err)
+	}
+	// An acknowledged narrowing is read normally, in any order.
+	c = cloudWith(&fakeCaller{replies: map[string]string{procSearchLogs: `{"logs":[{"timestamp":"2026-10-22T11:59:00Z","service":"api","body":"mine"}],"instanceScope":{"instanceIds":["b","a"]}}`}})
+	c.Instances = Instances{IDs: []string{"a", "b"}}
+	if res, err := c.Logs(ctx, LogsRequest{Narrow: narrowC(), Limit: 5}); err != nil || len(res.Logs) != 1 {
+		t.Errorf("an acknowledged narrowing: %+v, %v", res.Logs, err)
 	}
 }

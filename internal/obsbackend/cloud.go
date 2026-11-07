@@ -14,6 +14,7 @@ package obsbackend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -85,7 +86,35 @@ func (c Cloud) call(ctx context.Context, procedure string, req, out any) error {
 	if c.Caller == nil {
 		return Undetermined("no control-plane client for env %s", c.Env)
 	}
-	err := c.Caller.Call(ctx, procedure, req, out)
+	sent, narrowed, err := sentInstances(req)
+	if err != nil {
+		return Undetermined("encode %s request", procedure[strings.LastIndex(procedure, "/")+1:]).Cause(err)
+	}
+	if !narrowed {
+		return c.mapCallErr(procedure, c.Caller.Call(ctx, procedure, req, out))
+	}
+	// A narrowed read is presented as narrowed only when the server says it
+	// applied the narrowing (cloud_instance.go): an older control plane drops
+	// the unknown scope fields and answers for the whole env.
+	var raw json.RawMessage
+	if err := c.mapCallErr(procedure, c.Caller.Call(ctx, procedure, req, &raw)); err != nil {
+		return err
+	}
+	if err := checkInstanceEcho(procedure, raw, sent); err != nil {
+		return err
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return Undetermined("the control plane's %s answer could not be read", procedure[strings.LastIndex(procedure, "/")+1:]).Cause(err)
+	}
+	return nil
+}
+
+// mapCallErr classifies one call's failure: an unimplemented procedure is
+// "could not look", the rest by MapCloudError.
+func (c Cloud) mapCallErr(procedure string, err error) error {
 	var ce *cloud.Error
 	if errors.As(err, &ce) && (ce.Code == cloud.CodeUnimplemented || ce.HTTPStatus == http.StatusNotImplemented) {
 		// An older control plane: a gate must never read this as a pass.

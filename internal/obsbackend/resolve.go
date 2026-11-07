@@ -85,8 +85,10 @@ func hostedDev(f Facts, r *devtelemetry.Record, prefix string) (Decision, error)
 	if f.ControlPlane == "" {
 		return Decision{}, Undetermined("env %s's telemetry goes to the hosted store (as `forge env up` recorded it) but the env declares no control_plane to query it through", f.Env)
 	}
-	if r.OrgID == "" || r.EnvironmentID == "" {
-		return Decision{}, Undetermined("the hosted-telemetry record of env %s (%s) names no org or environment", f.Env, ".forge/obs/backend-"+f.Env+".json").
+	// Every field the reads are bound by is required: a record without its
+	// instance would read every instance of the env instead of this one.
+	if r.OrgID == "" || r.EnvironmentID == "" || r.InstanceID == "" {
+		return Decision{}, Undetermined("the hosted-telemetry record of env %s (%s) names no org, environment or instance", f.Env, ".forge/obs/backend-"+f.Env+".json").
 			With(Cmd("forge", "env", "up", f.Env))
 	}
 	who := r.InstanceLabel

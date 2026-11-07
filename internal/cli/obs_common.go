@@ -41,9 +41,10 @@ type obsDeps struct {
 	// HostedDev builds the cloud backend of a local env whose telemetry
 	// `forge env up` sent to the hosted store, from its record.
 	HostedDev func(ctx context.Context, env string, rec devtelemetry.Record) (obsbackend.Cloud, error)
-	// Instances lists an env's live dev instances through caller, to resolve
-	// an --instance label.
-	Instances func(caller obsbackend.Caller) instanceLister
+	// InstanceRecords reads the hosted-dev records `forge env up` wrote for
+	// env on this machine (this checkout and its sibling worktrees), to
+	// resolve an --instance label.
+	InstanceRecords instanceRecords
 	// Release looks up the release live in env at a moment.
 	Release func(ctx context.Context, env string, at time.Time) (*liveRelease, error)
 	// Now is the clock.
@@ -60,13 +61,13 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		Local: func(env string) obsbackend.Backend {
 			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}, Ledger: openObsLedger, Declared: declaredMetricSchemas}
 		},
-		Cloud:     openObsCloud,
-		HostedDev: openObsHostedDev,
-		Instances: func(caller obsbackend.Caller) instanceLister { return liveInstanceLister(caller, time.Now().UTC()) },
-		Release:   liveReleaseAt,
-		Now:       time.Now,
-		Stdout:    cmd.OutOrStdout(),
-		Stderr:    cmd.ErrOrStderr(),
+		Cloud:           openObsCloud,
+		HostedDev:       openObsHostedDev,
+		InstanceRecords: machineInstanceRecords,
+		Release:         liveReleaseAt,
+		Now:             time.Now,
+		Stdout:          cmd.OutOrStdout(),
+		Stderr:          cmd.ErrOrStderr(),
 	}
 	if o := obsDepsOverride; o != nil {
 		if o.Facts != nil {
@@ -81,8 +82,8 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		if o.HostedDev != nil {
 			d.HostedDev = o.HostedDev
 		}
-		if o.Instances != nil {
-			d.Instances = o.Instances
+		if o.InstanceRecords != nil {
+			d.InstanceRecords = o.InstanceRecords
 		}
 		if o.Release != nil {
 			d.Release = o.Release
@@ -231,7 +232,7 @@ func (c *obsCommon) open(ctx context.Context, d obsDeps, env, _ string) (obsback
 	}
 	if dec.Backend == obsbackend.BackendLocal {
 		b := d.Local(env)
-		inst, err := c.inst.resolve(ctx, env, nil, nil)
+		inst, err := c.inst.resolve(ctx, env, nil, d.InstanceRecords)
 		if err != nil {
 			return nil, dec, err
 		}
@@ -250,11 +251,7 @@ func (c *obsCommon) open(ctx context.Context, d obsDeps, env, _ string) (obsback
 	if err != nil {
 		return nil, dec, err
 	}
-	var list instanceLister
-	if d.Instances != nil && cb.Caller != nil {
-		list = d.Instances(cb.Caller)
-	}
-	if cb.Instances, err = c.inst.resolve(ctx, env, dec.HostedDev, list); err != nil {
+	if cb.Instances, err = c.inst.resolve(ctx, env, dec.HostedDev, d.InstanceRecords); err != nil {
 		return nil, dec, err
 	}
 	if dec.HostedDev != nil {

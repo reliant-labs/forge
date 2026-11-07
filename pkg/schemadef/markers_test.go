@@ -80,6 +80,9 @@ func TestCommentMarkerProblems(t *testing.T) {
 		{SiteTable, "", "forge:append-only — a ledger", ""},
 		{SiteTable, "", "forge:entity-name=Widget", ""},
 		{SiteView, "", "forge:entity key=id", ""},
+		// On a table it projects one a forge library owns (audit_log), which
+		// the ORM otherwise leaves off.
+		{SiteTable, "", "forge:entity", ""},
 		{SiteColumn, "notes", "free-text notes, nothing special", ""},
 
 		{SiteColumn, "total", "forge:immutible", "did you mean forge:immutable?"},
@@ -88,7 +91,6 @@ func TestCommentMarkerProblems(t *testing.T) {
 		{SiteColumn, "id", "forge:append-only", "is a table marker"},
 		{SiteTable, "", "forge:immutable", "is a column marker"},
 		{SiteColumn, "patient_id", "forge:ref authoritative", "is a constraint marker"},
-		{SiteTable, "", "forge:entity", "is a view marker"},
 		{SiteConstraint, "", "forge:refactor later", "not a marker forge reads"},
 	}
 	for _, c := range cases {

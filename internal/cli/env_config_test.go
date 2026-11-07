@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,5 +293,50 @@ func TestEnvConfigTableIsGrouped(t *testing.T) {
 	}
 	if strings.Index(out, "DATABASE_URL") > strings.Index(out, "LOG_LEVEL") {
 		t.Errorf("variables should be sorted by name; got:\n%s", out)
+	}
+}
+
+// Forge report 2186e95b: `forge env config dev --json | jq` must read one
+// document. A frontend whose env_vars shadow a typed config value makes the
+// render warn, and that warning used to land on stdout above the JSON.
+func TestEnvConfigJSONStdoutIsTheDocumentAlone(t *testing.T) {
+	withKCLFixture(t, `{"output": {"frontends": [{
+	  "name": "web", "type": "vite-spa",
+	  "config": {"api_url": "http://localhost:8080"},
+	  "env_vars": [{"name": "VITE_API_URL", "value": "http://localhost:9090"}]
+	}]}}`)
+	stdout, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevOut, prevErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdout, stderr
+	cmd := newEnvConfigCmd()
+	cmd.SetArgs([]string{"dev", "--json"})
+	runErr := cmd.Execute()
+	os.Stdout, os.Stderr = prevOut, prevErr
+	// Closed before t.TempDir's cleanup: Windows refuses to remove an open file.
+	_ = stdout.Close()
+	_ = stderr.Close()
+	if runErr != nil {
+		t.Fatalf("env config dev --json: %v", runErr)
+	}
+	out, _ := os.ReadFile(stdout.Name())
+	diag, _ := os.ReadFile(stderr.Name())
+
+	var report envConfigReport
+	dec := json.NewDecoder(bytes.NewReader(out))
+	if err := dec.Decode(&report); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v\nstdout:\n%s", err, out)
+	}
+	if rest, _ := io.ReadAll(dec.Buffered()); len(bytes.TrimSpace(rest)) != 0 {
+		t.Errorf("stdout carries more than the document: %q", rest)
+	}
+	if !strings.Contains(string(diag), "overriding the typed config value") {
+		t.Errorf("the shadowing warning should be on stderr; stderr:\n%s", diag)
 	}
 }

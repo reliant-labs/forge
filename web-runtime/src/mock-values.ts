@@ -363,19 +363,110 @@ function stringByName(
 /** RE2's leading inline flags (`(?i)`, `(?s)`, `(?m)`), which JavaScript spells as RegExp flags. */
 const INLINE_FLAGS = /^\(\?([ims]+)\)/;
 
+/** RE2's `\s`: ASCII whitespace only (JavaScript's also matches \v and Unicode spaces). */
+const RE2_SPACE = "\\t\\n\\f\\r ";
+
 /**
- * A protovalidate (RE2) pattern as a JavaScript RegExp, leading inline flags
- * included. Null when JavaScript cannot express it.
+ * An RE2 pattern body rewritten as JavaScript RegExp source that matches the
+ * same strings, or null when it uses a construct the two engines read
+ * differently (or that RE2 rejects outright): lookarounds, backreferences,
+ * `\c`/`\u`/`\0` escapes, `\p{Key=Value}` properties, mid-pattern flags and
+ * repeats over 1000. Null means "never satisfied", so a JavaScript-only match
+ * is never taken for one the server's validator accepts.
+ */
+function re2Source(src: string): string | null {
+  let out = "";
+  let inClass = false;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i] as string;
+    if (c === "\\") {
+      const e = src[++i];
+      if (e === undefined) return null;
+      if (/[0-9kcu]/.test(e)) return null;
+      if (e === "s") {
+        out += inClass ? RE2_SPACE : `[${RE2_SPACE}]`;
+        continue;
+      }
+      if (e === "S") {
+        if (inClass) return null;
+        out += `[^${RE2_SPACE}]`;
+        continue;
+      }
+      if ((e === "p" || e === "P") && src[i + 1] === "{") {
+        const end = src.indexOf("}", i);
+        if (end < 0 || src.slice(i, end).includes("=")) return null;
+        out += src.slice(i - 1, end + 1);
+        i = end;
+        continue;
+      }
+      out += c + e;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]") inClass = false;
+      out += c;
+      continue;
+    }
+    if (c === "[") {
+      inClass = true;
+      out += c;
+      if (src[i + 1] === "^") out += src[++i];
+      // RE2 reads a `]` first in a class as a literal; JavaScript as the end.
+      if (src[i + 1] === "]") {
+        out += "\\]";
+        i++;
+      }
+      continue;
+    }
+    if (c === "(" && src[i + 1] === "?") {
+      const rest = src.slice(i + 2);
+      if (rest.startsWith("P<")) {
+        out += "(?<";
+        i += 3;
+        continue;
+      }
+      if (rest.startsWith(":") || /^<[A-Za-z_]/.test(rest)) {
+        out += c;
+        continue;
+      }
+      // Lookarounds (RE2 has none) and mid-pattern flag groups.
+      return null;
+    }
+    if (c === "{") {
+      const m = /^\{(\d+)(,(\d*))?\}/.exec(src.slice(i));
+      if (m && (Number(m[1]) > 1000 || Number(m[3] ?? 0) > 1000)) return null;
+    }
+    out += c;
+  }
+  return inClass ? null : out;
+}
+
+/**
+ * A protovalidate (RE2) pattern as a JavaScript RegExp with RE2's semantics,
+ * leading inline flags included. Null when JavaScript cannot express it.
  */
 function patternRegExp(pattern: string): RegExp | null {
   const m = INLINE_FLAGS.exec(pattern);
   let flags = "u";
   for (const f of m?.[1] ?? "") if (!flags.includes(f)) flags += f;
+  const src = re2Source(m ? pattern.slice(m[0].length) : pattern);
+  if (src === null) return null;
   try {
-    return new RegExp(m ? pattern.slice(m[0].length) : pattern, flags);
+    return new RegExp(src, flags);
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether `s` matches an RE2 pattern compiled by patternRegExp. In multiline
+ * mode JavaScript also ends lines at \r, U+2028 and U+2029 and RE2 only at
+ * \n, so a string holding one of those is not taken as a match.
+ */
+function re2Test(re: RegExp | null, s: string): boolean {
+  if (!re) return false;
+  if (re.multiline && /[\r\u2028\u2029]/.test(s)) return false;
+  return re.test(s);
 }
 
 /** A string matching a cheap regex, or undefined when it is not cheap. */
@@ -527,7 +618,7 @@ function fromPattern(pattern: string, rng: Rng): string | undefined {
     if (!node || i < src.length) return undefined;
     for (let attempt = 0; attempt < 8; attempt++) {
       const s = node();
-      if (re.test(s)) return s;
+      if (re2Test(re, s)) return s;
     }
   } catch {
     // A construct the walk above misreads: not cheap.
@@ -579,19 +670,24 @@ function satisfiesStr(s: string, r: StrRules): boolean {
   if (r.suffix && !s.endsWith(r.suffix)) return false;
   if (r.contains && !s.includes(r.contains)) return false;
   if (r.format && !FORMAT_CHECKS[r.format](s)) return false;
-  if (r.pattern) {
-    const re = patternRegExp(r.pattern);
-    if (!re || !re.test(s)) return false;
-  }
+  if (r.pattern && !re2Test(patternRegExp(r.pattern), s)) return false;
   return true;
 }
 
-/** Whether `v` meets a number's rules; gt above lt is protovalidate's exclusive range (outside the band). */
-function satisfiesNum(v: number, r: NumRules): boolean {
-  if (!Number.isFinite(v)) return false;
-  if (r.const !== undefined) return v === r.const;
-  if (r.in?.length && !r.in.includes(v)) return false;
-  if (r.notIn?.includes(v)) return false;
+/** Exact equality of a value (a bigint for 64-bit integers) and a rule's number. */
+const numEq = (v: number | bigint, x: number) =>
+  typeof v === "bigint" ? Number.isInteger(x) && v === BigInt(x) : v === x;
+
+/**
+ * Whether `v` meets a number's rules; gt above lt is protovalidate's exclusive
+ * range (outside the band). A bigint is compared exactly: JavaScript's
+ * relational operators order a bigint and a number by their true values.
+ */
+function satisfiesNum(v: number | bigint, r: NumRules): boolean {
+  if (typeof v === "number" && !Number.isFinite(v)) return false;
+  if (r.const !== undefined) return numEq(v, r.const);
+  if (r.in?.length && !r.in.some((x) => numEq(v, x))) return false;
+  if (r.notIn?.some((x) => numEq(v, x))) return false;
   const lo = r.gt ?? r.gte;
   const hi = r.lt ?? r.lte;
   const lowOk =
@@ -610,7 +706,7 @@ function satisfiesEnum(
 ): boolean {
   if (!e.values.some((d) => d.number === v)) return false;
   if (!r) return true;
-  if (r.const !== undefined) return v === r.const;
+  if (r.const !== undefined && v !== r.const) return false;
   if (r.in?.length && !r.in.includes(v)) return false;
   return !r.notIn?.includes(v);
 }
@@ -626,7 +722,7 @@ function applyStringRules(
   if (rules.in?.length) return rng.pick(rules.in);
   let s = value;
   if (rules.format) s = formatted(rules.format, rng, n);
-  if (rules.pattern && !patternRegExp(rules.pattern)?.test(s)) {
+  if (rules.pattern && !re2Test(patternRegExp(rules.pattern), s)) {
     s = fromPattern(rules.pattern, rng) ?? s;
   }
   if (rules.prefix && !s.startsWith(rules.prefix)) s = rules.prefix + s;
@@ -1064,10 +1160,43 @@ function echoMeetsRules(
   if (scalar === ScalarType.STRING) {
     return !rules?.str || satisfiesStr(String(v), rules.str);
   }
-  const num = Number(v);
-  const limits = INT_LIMITS[scalar];
-  if (limits && (num < limits[0] || num > limits[1])) return false;
+  let num: number | bigint;
+  if (is64(scalar)) {
+    // Exact: a 64-bit value past 2^53 keeps every digit, and is checked
+    // against the field type's own range, not JavaScript's safe one.
+    const big = exactBigInt(v);
+    const range = INT64_RANGE[scalar];
+    if (big === undefined || !range || big < range[0] || big > range[1])
+      return false;
+    num = big;
+  } else {
+    if (typeof v !== "number" || !Number.isFinite(v)) return false;
+    const limits = INT_LIMITS[scalar];
+    if (limits && (!Number.isInteger(v) || v < limits[0] || v > limits[1]))
+      return false;
+    // A float field holds 32 bits: a double it cannot represent would reach
+    // the client rounded, a different value from the one checked here.
+    if (scalar === ScalarType.FLOAT && Math.fround(v) !== v) return false;
+    num = v;
+  }
   return !rules?.num || satisfiesNum(num, rules.num);
+}
+
+/** The protobuf range of each 64-bit integer type. */
+const INT64_RANGE: Partial<Record<ScalarType, [bigint, bigint]>> = {
+  [ScalarType.INT64]: [-(2n ** 63n), 2n ** 63n - 1n],
+  [ScalarType.SINT64]: [-(2n ** 63n), 2n ** 63n - 1n],
+  [ScalarType.SFIXED64]: [-(2n ** 63n), 2n ** 63n - 1n],
+  [ScalarType.UINT64]: [0n, 2n ** 64n - 1n],
+  [ScalarType.FIXED64]: [0n, 2n ** 64n - 1n],
+};
+
+/** `v` as a bigint without rounding, or undefined when it is not an integer. */
+function exactBigInt(v: unknown): bigint | undefined {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "string" && /^-?\d+$/.test(v)) return BigInt(v);
+  if (typeof v === "number" && Number.isSafeInteger(v)) return BigInt(v);
+  return undefined;
 }
 
 function coerceScalar(
@@ -1076,17 +1205,18 @@ function coerceScalar(
   longAsString: boolean,
 ): unknown {
   if (is64(scalar)) {
-    const big = typeof v === "bigint" ? v : BigInt(Math.round(Number(v)));
+    const big = exactBigInt(v) ?? BigInt(Math.round(Number(v)));
     return longAsString ? big.toString() : big;
   }
   if (scalar === ScalarType.STRING) return String(v);
-  if (typeof v === "bigint") return Number(v);
+  if (typeof v === "bigint" || typeof v === "string") return Number(v);
   return v;
 }
 
 function enumValue(
   e: DescEnum,
   name: string,
+  owner: DescMessage,
   rules: FieldRules | undefined,
   ctx: Ctx,
 ): number {
@@ -1094,13 +1224,23 @@ function enumValue(
   if (echo && satisfiesEnum(e, echo.value as number, rules?.enm))
     return echo.value as number;
   const r = rules?.enm;
-  if (r?.const !== undefined) return r.const;
-  let values = e.values.map((v) => v.number);
-  // Skip the proto3 zero ("UNSPECIFIED") when anything else is defined.
+  // Every candidate is a declared value that meets every rule, const included.
+  let values = e.values
+    .map((v) => v.number)
+    .filter((v) => satisfiesEnum(e, v, r));
+  if (values.length === 0) {
+    const said = [
+      r?.const !== undefined && `const ${r.const}`,
+      r?.in?.length && `in [${r.in.join(", ")}]`,
+      r?.notIn?.length && `not_in [${r.notIn.join(", ")}]`,
+    ].filter(Boolean);
+    throw new Error(
+      `mock values: ${owner.typeName}.${name} (${e.typeName}) has enum rules no declared value satisfies ` +
+        `(${said.join(", ")}); answer it from a scenario (mockService) or a mockFactory`,
+    );
+  }
+  // Skip the proto3 zero ("UNSPECIFIED") when anything else is allowed.
   if (values.length > 1) values = values.filter((v) => v !== 0);
-  if (r?.in?.length) values = values.filter((v) => r.in!.includes(v));
-  if (r?.notIn?.length) values = values.filter((v) => !r.notIn!.includes(v));
-  if (values.length === 0) return r?.in?.[0] ?? e.values[0]?.number ?? 0;
   // Cycle across a list: item i takes value (offset + i), so a list of n
   // items shows every value once before any repeats.
   const offset = new Rng(
@@ -1339,7 +1479,7 @@ function singular(
         f.longAsString ?? false,
       );
     case "enum":
-      return enumValue(f.enum as DescEnum, field.name, rules, at);
+      return enumValue(f.enum as DescEnum, field.name, owner, rules, at);
     default: {
       const msg = f.message as DescMessage;
       const c: Ctx = {

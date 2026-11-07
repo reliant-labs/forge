@@ -14,6 +14,7 @@ func TestGenerateHooks_ValidLoads(t *testing.T) {
       command: [sqlc, generate]
       writes: [internal/db/postgres/generated]
     - name: docs
+      phase: input
       command: [sh, -c, "make docs"]
       dir: tools
 `
@@ -36,6 +37,11 @@ func TestGenerateHooks_Invalid(t *testing.T) {
 		hooks string
 		want  []string
 	}{
+		{
+			name:  "invalid phase",
+			hooks: "    - name: a\n      command: [x]\n      phase: before\n",
+			want:  []string{"generate.hooks[0].phase must be input or post"},
+		},
 		{
 			name:  "missing name",
 			hooks: "    - command: [sqlc, generate]\n",

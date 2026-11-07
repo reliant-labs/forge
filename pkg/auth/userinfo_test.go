@@ -59,8 +59,8 @@ func TestUserInfo_FillsAVerifiedEmailOncePerSubject(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if c.Email != "ann@example.com" {
-			t.Fatalf("Email = %q, want the userinfo address", c.Email)
+		if c.Email != "ann@example.com" || !c.EmailVerified {
+			t.Fatalf("Email = %q (verified %v), want the userinfo address, verified", c.Email, c.EmailVerified)
 		}
 	}
 	if n := calls.Load(); n != 1 {
@@ -83,8 +83,8 @@ func TestUserInfo_IgnoresAnUnverifiedEmail(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if c.Email != "" {
-			t.Errorf("%s: an unverified address was filled: %q", name, c.Email)
+		if c.Email != "" || c.EmailVerified {
+			t.Errorf("%s: an unverified address was filled: %q (verified %v)", name, c.Email, c.EmailVerified)
 		}
 	}
 }
@@ -244,5 +244,24 @@ func TestUserInfo_RefusesARedirectDowngrade(t *testing.T) {
 	}
 	if len(rt.urls) != 1 || rt.urls[0] != srv.URL {
 		t.Errorf("requests = %v, want only the HTTPS endpoint (the redirect to HTTP refused)", rt.urls)
+	}
+}
+
+// Claims.EmailVerified from a token's own claims: only an explicit
+// email_verified (bool, or the string some issuers send) alongside an email.
+func TestDefaultProjectClaims_EmailVerified(t *testing.T) {
+	for name, tc := range map[string]struct {
+		claims map[string]any
+		want   bool
+	}{
+		"verified":        {map[string]any{"sub": "u", "email": "a@b.c", "email_verified": true}, true},
+		"string verified": {map[string]any{"sub": "u", "email": "a@b.c", "email_verified": "true"}, true},
+		"unverified":      {map[string]any{"sub": "u", "email": "a@b.c", "email_verified": false}, false},
+		"absent":          {map[string]any{"sub": "u", "email": "a@b.c"}, false},
+		"no email":        {map[string]any{"sub": "u", "email_verified": true}, false},
+	} {
+		if got := defaultProjectClaims(tc.claims, claimOpts{}).EmailVerified; got != tc.want {
+			t.Errorf("%s: EmailVerified = %v, want %v", name, got, tc.want)
+		}
 	}
 }

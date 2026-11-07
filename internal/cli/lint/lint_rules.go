@@ -116,13 +116,13 @@ func gradableRules() []string {
 		release.RuleJobTTL, release.RuleJobUnhashed, release.RuleForceData,
 		"identity-share-with", "shellbuild-tokens/retired-token", "no-dotenv",
 		// auth scaffold
-		ruleOpenSignup,
+		ruleOpenSignup, ruleIdentityMethods,
 		// secrets
 		secrets.RuleClusterKind, secrets.RuleESPolicy, secrets.RuleKeyCoverage, secrets.RuleUnreferenced,
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,
 		secrets.RuleSingleOwner, ruleSecretsNotRendered,
 		// schema markers
-		"forge-column-markers", "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule,
+		"forge-column-markers", ruleIdentitySubjectUnreadable, "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule,
 		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, "forge-vendored-proto-drift",
 		// write policy
 		ruleCreateRequestNullability, computedFieldRuleID, readOnlyFieldRuleID, "forgeconv-guarded-field-written",

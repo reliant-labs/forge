@@ -16,7 +16,7 @@ type GenerateConfig struct {
 	Hooks []GenerateHook `yaml:"hooks,omitempty"`
 }
 
-// GenerateHook is one command `forge generate` runs, after every step that
+// GenerateHook is one command `forge generate` runs. By default it runs after every step that
 // writes forge's own output (proto stubs, ORM, mocks, composition, the
 // goimports pass, the stale-codegen sweep) — so a hook that compiles the
 // tree sees this run's output in its final form — and before the `go mod
@@ -39,6 +39,10 @@ type GenerateConfig struct {
 //	      command: [sqlc, generate]
 //	      writes: [internal/db/postgres/generated]
 type GenerateHook struct {
+	// Phase is "post" (also the default) or "input". Input hooks refresh
+	// external descriptors before frontend projections; they must not depend
+	// on the completed generated tree. Declaration order is kept per phase.
+	Phase string `yaml:"phase,omitempty"`
 	// Name labels the hook in generate's output and in errors. Required and
 	// unique.
 	Name string `yaml:"name"`
@@ -74,6 +78,12 @@ func validateGenerateHooks(cfg *ProjectConfig, root *yaml.Node) []validationIssu
 			return findNodePos(root, segs)
 		}
 		label := fmt.Sprintf("generate.hooks[%d]", i)
+		if h.Phase != "" && h.Phase != "post" && h.Phase != "input" {
+			line, col := at("phase")
+			out = append(out, validationIssue{line: line, column: col,
+				msg: label + ".phase must be input or post",
+				fix: "use input for descriptors consumed by frontend generation; omit phase (or use post) for commands requiring the completed tree."})
+		}
 		name := strings.TrimSpace(h.Name)
 		switch {
 		case name == "":

@@ -186,6 +186,11 @@ func NewUserAuth(d UserAuthDeps) (*UserAuth, error) {
 		policy.ValidatorConfigured, policy.ValidateContext = true, authenticator.Authenticate
 {{- else}}
 		authDeps.Validate = authenticator.Authenticate
+{{- if .DevSessionCookie}}
+		// The plain-named session cookie only in local development, where
+		// the login broker cannot set a __Host- one (plain http).
+		authDeps.DevSessionCookie = d.Config.Environment == "development"
+{{- end}}
 {{- end}}
 {{- if .HasDatabase}}
 		authenticator.UseKeyValidator(APIKeyValidator(d.DB))

@@ -180,6 +180,9 @@ message EchoProbeRequest {
   int32 bounded = 3;
   Region region = 4;
   string code = 5;
+  int64 big = 10;
+  uint64 huge = 11;
+  double ratio = 12;
   oneof target {
     string host = 6;
     int32 http_status = 7;
@@ -193,6 +196,10 @@ message EchoProbeResponse {
   int32 bounded = 3 [(buf.validate.field).int32 = {gt: 1000, lt: 1010}];
   Region region = 4 [(buf.validate.field).enum = {in: [2, 3]}];
   string code = 5 [(buf.validate.field).string.const = "fixed"];
+  // 64-bit echoes are checked exactly, past JavaScript's safe integers.
+  int64 big = 10 [(buf.validate.field).int64 = {lte: 9007199254740992}];
+  int32 huge = 11;
+  float ratio = 12;
   oneof target {
     string host = 6 [(buf.validate.field).string.hostname = true];
     int32 http_status = 7 [(buf.validate.field).int32 = {gte: 100, lte: 599}];
@@ -217,6 +224,31 @@ message UnsatisfiablePattern {
 
 message UncheapPattern {
   string word = 1 [(buf.validate.field).string.pattern = "^\\p{Lu}{2}$"];
+}
+
+// A lookahead: JavaScript accepts it, RE2 (the server's validator) does not.
+message LookaheadPattern {
+  string word = 1 [(buf.validate.field).string.pattern = "^(?=a)a$"];
+}
+
+// RE2's \s is ASCII whitespace only; a no-break space does not match it.
+message SpacePattern {
+  string gap = 1 [(buf.validate.field).string.pattern = "^a\\sb$"];
+}
+
+// Enum rules no declared value meets: an undeclared const, and a const the
+// same field's not_in excludes.
+message UndeclaredEnumConst {
+  Region region = 1 [(buf.validate.field).enum.const = 99];
+}
+
+message ContradictoryEnum {
+  Region region = 1 [(buf.validate.field).enum = {const: 2, not_in: [2]}];
+}
+
+// in: [0] alone: the zero value is the only allowed one, so it is chosen.
+message ZeroOnlyEnum {
+  Region region = 1 [(buf.validate.field).enum = {in: [0]}];
 }
 
 service ProbeService {

@@ -75,6 +75,23 @@ func refused(reason, msg string) *Error {
 	return &Error{Kind: KindRefused, Reason: reason, Message: msg}
 }
 
+// Classify returns err as the *Error [Run] would have returned for it, so a
+// caller that talks to Postgres itself (a catalog read, a dial) reports its
+// failures in the same Kinds: an *Error anywhere in err's chain is returned
+// as is; a context deadline is KindTimeout and a cancellation KindCanceled;
+// a *pgconn.PgError is classified by SQLSTATE (a privilege error is
+// KindPermission, a statement or lock timeout KindTimeout, a broken or
+// refused connection KindUnavailable, a rejected statement KindSQL);
+// anything else is KindUnavailable. Classify(nil) is nil; return
+// it as an error only when err is non-nil, since a nil *Error in an error
+// interface is not a nil error.
+func Classify(err error) *Error {
+	if err == nil {
+		return nil
+	}
+	return classify(err)
+}
+
 // classify turns whatever the driver returned into an *Error.
 func classify(err error) *Error {
 	var e *Error

@@ -117,6 +117,14 @@ fail here too.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			envName := args[0]
 			projectDir := projectDirForKCL()
+			out := cmd.OutOrStdout()
+			if jsonOut {
+				// stdout carries the document alone: the render below
+				// reaches print sites this command does not own, and one
+				// warning above the JSON makes `| jq` fail (forge report
+				// 2186e95b).
+				defer reserveStdoutForJSON()()
+			}
 
 			entities, err := readEnvConfigEntities(cmd.Context(), projectDir, envName)
 			if err != nil {
@@ -133,7 +141,7 @@ fail here too.`,
 			reportMissingSecrets(cmd.ErrOrStderr(), envName, report)
 
 			if jsonOut {
-				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc := json.NewEncoder(out)
 				enc.SetIndent("", "  ")
 				return enc.Encode(report)
 			}

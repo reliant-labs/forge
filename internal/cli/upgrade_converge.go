@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -108,6 +109,18 @@ type upgradeReport struct {
 	// TemplateDrift are frozen files you modified that a newer template
 	// changed; upgrade never overwrites them without --force.
 	TemplateDrift []string `json:"template_drift"`
+	// Offers are scaffold-once files this project never had whose
+	// templates are not new across the range: upgrade did not add them,
+	// and Command does.
+	Offers []upgradeOffer `json:"offers"`
+}
+
+// upgradeOffer is one scaffold-once file upgrade offers instead of writing.
+type upgradeOffer struct {
+	Path string `json:"path"`
+	// Since is the release whose templates first shipped it.
+	Since   string `json:"since,omitempty"`
+	Command string `json:"command"`
 }
 
 type upgradePhase struct {
@@ -163,6 +176,10 @@ type upgradeHumanItem struct {
 	Line    int    `json:"line,omitempty"`
 	Message string `json:"message"`
 	Fix     string `json:"fix,omitempty"`
+	// Context is the tool output that belongs to this item: the source
+	// snippet golangci-lint prints under an issue, the diff a formatter
+	// would apply. Lines, in order; omitted when there is none.
+	Context []string `json:"context,omitempty"`
 }
 
 type upgradeUpcoming struct {
@@ -184,6 +201,7 @@ func newUpgradeReport(opts upgradeOptions) *upgradeReport {
 		Phases: []upgradePhase{}, Codemods: []upgradeCodemodRun{}, Locks: []upgradeLockRun{},
 		Playbooks: []upgradePlaybookRun{}, Vendored: []upgradeVendoredRun{},
 		NeedsHuman: []upgradeHumanItem{}, Upcoming: []upgradeUpcoming{}, TemplateDrift: []string{},
+		Offers: []upgradeOffer{},
 	}
 }
 
@@ -468,7 +486,9 @@ func (r *upgradeRun) phaseTemplates() error {
 	if err != nil {
 		return err
 	}
-	results, err := generator.UpgradeSelection(r.projectDir, r.cfg, selection, r.check)
+	results, err := generator.UpgradeWith(r.projectDir, r.cfg, generator.UpgradeOptions{
+		Force: selection, CheckOnly: r.check, NewSince: r.newAcrossRange,
+	})
 	if err != nil {
 		return err
 	}
@@ -476,12 +496,20 @@ func (r *upgradeRun) phaseTemplates() error {
 	printSkippedPaths(counts, r.opts.showAll)
 	printUserModifiedRemedies(counts, r.opts.showAll)
 	r.rep.TemplateDrift = append(r.rep.TemplateDrift, counts.userModifiedPaths...)
+	r.rep.Offers = append(r.rep.Offers, counts.offers...)
 	if _, err := runAdvisoryPass(r.projectDir, r.cfg, selection, r.check, r.opts.showAll); err != nil {
 		return err
 	}
 	r.setPhase("templates", map[bool]string{true: "planned", false: "done"}[r.check],
 		fmt.Sprintf("%d updated, %d modified by you (kept), %d up to date", counts.updated, counts.userModified, counts.upToDate))
 	return nil
+}
+
+// newAcrossRange reports whether a template first shipped in release v is new
+// to this project: after its old pin, and reached by the target. An unknown
+// baseline makes nothing new — "never had it" cannot be told from "deleted it".
+func (r *upgradeRun) newAcrossRange(v string) bool {
+	return !baselineIsUnknown(r.from) && baselinePrecedes(r.from, v) && targetReaches(r.target, v)
 }
 
 func (r *upgradeRun) phasePin() error {
@@ -730,19 +758,97 @@ func (r *upgradeRun) phaseLocks() error {
 
 // lintDoc is the part of `forge lint --json` upgrade reads.
 type lintDoc struct {
-	Findings []struct {
-		Severity string `json:"severity"`
-		Rule     string `json:"rule"`
-		File     string `json:"file"`
-		Line     int    `json:"line"`
-		Message  string `json:"message"`
-		FixHint  string `json:"fix_hint"`
-		Grace    *struct {
-			IntroducedIn string `json:"introduced_in"`
-			GatesFrom    string `json:"gates_from"`
-			Fix          string `json:"fix"`
-		} `json:"grace"`
-	} `json:"findings"`
+	Findings []lintDocFinding `json:"findings"`
+}
+
+type lintDocFinding struct {
+	Severity string `json:"severity"`
+	Rule     string `json:"rule"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Message  string `json:"message"`
+	FixHint  string `json:"fix_hint"`
+	Lane     string `json:"lane"`
+	Grace    *struct {
+		IntroducedIn string `json:"introduced_in"`
+		GatesFrom    string `json:"gates_from"`
+		Fix          string `json:"fix"`
+	} `json:"grace"`
+}
+
+// golangciSummary matches the summary golangci-lint ends a run with ("1
+// issues:", "* goimports: 1"). It counts the issues already listed, so it
+// belongs to no one of them.
+var golangciSummary = regexp.MustCompile(`^(\d+ issues?[.:]?|\* [A-Za-z0-9_-]+: \d+)$`)
+
+// lintHumanItems turns lint's error findings into one needs_human item per
+// issue.
+//
+// `forge lint --json` keeps every line a sub-tool prints: a line that is not
+// `file:line: message` is a finding of rule "external" with no file. Those are
+// not issues. They are the output under the issue before them in the same lane
+// — golangci-lint's source snippet and caret, a formatter's diff — or the run
+// summary, and reading each as an item split one goimports finding into seven
+// (reliant#2327: the issue, its snippet, its caret, "1 issues:", "* goimports:
+// 1", the format lane's finding for the same file, and its diff). So:
+//
+//   - a raw line joins the item before it in its lane as Context;
+//   - golangci-lint's summary is dropped;
+//   - a raw line with no item before it in its lane (a tool that failed
+//     before reporting anything anchored) starts an item, and the lines
+//     after it join that one;
+//   - the format lane's finding for a file golangci-lint's gofmt or
+//     goimports also flagged is the same defect: it folds into that item,
+//     which keeps the file:line, and brings its diff and fix.
+func lintHumanItems(fs []lintDocFinding) []upgradeHumanItem {
+	var items []upgradeHumanItem
+	open, openLane := -1, ""
+	for _, f := range fs {
+		if f.File == "" && f.Rule == "external" {
+			msg := strings.TrimRight(f.Message, "\n")
+			if golangciSummary.MatchString(strings.TrimSpace(msg)) {
+				continue
+			}
+			if open >= 0 && openLane == f.Lane {
+				items[open].Context = append(items[open].Context, strings.Split(msg, "\n")...)
+				continue
+			}
+		}
+		items = append(items, upgradeHumanItem{Kind: "lint-error", Rule: f.Rule, File: f.File, Line: f.Line,
+			Message: strings.TrimRight(f.Message, "\n"), Fix: f.FixHint})
+		open, openLane = len(items)-1, f.Lane
+	}
+	return foldFormatItems(items)
+}
+
+// foldFormatItems merges each format-lane item into the gofmt/goimports item
+// golangci-lint reported for the same file (lintHumanItems).
+func foldFormatItems(items []upgradeHumanItem) []upgradeHumanItem {
+	formatter := map[string]int{}
+	for i, it := range items {
+		if (it.Rule == "gofmt" || it.Rule == "goimports") && it.File != "" {
+			if _, seen := formatter[it.File]; !seen {
+				formatter[it.File] = i
+			}
+		}
+	}
+	folded := map[int]bool{}
+	for j, it := range items {
+		if i, ok := formatter[it.File]; ok && it.Rule == "format" {
+			items[i].Context = append(items[i].Context, it.Context...)
+			if items[i].Fix == "" {
+				items[i].Fix = it.Fix
+			}
+			folded[j] = true
+		}
+	}
+	out := make([]upgradeHumanItem, 0, len(items)-len(folded))
+	for j, it := range items {
+		if !folded[j] {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func (r *upgradeRun) phaseLint() error {
@@ -760,10 +866,11 @@ func (r *upgradeRun) phaseLint() error {
 	}
 	upcoming := map[string]*upgradeUpcoming{}
 	var order []string
+	var errs []lintDocFinding
 	for _, f := range doc.Findings {
 		switch {
 		case f.Severity == "error":
-			r.human(upgradeHumanItem{Kind: "lint-error", Rule: f.Rule, File: f.File, Line: f.Line, Message: f.Message, Fix: f.FixHint})
+			errs = append(errs, f)
 		case f.Grace != nil:
 			u := upcoming[f.Rule]
 			if u == nil {
@@ -776,6 +883,9 @@ func (r *upgradeRun) phaseLint() error {
 				u.Examples = append(u.Examples, strings.TrimSuffix(fmt.Sprintf("%s:%d", f.File, f.Line), ":0"))
 			}
 		}
+	}
+	for _, it := range lintHumanItems(errs) {
+		r.human(it)
 	}
 	for _, rule := range order {
 		r.rep.Upcoming = append(r.rep.Upcoming, *upcoming[rule])
@@ -814,12 +924,27 @@ func printUpgradeSummary(w io.Writer, rep *upgradeReport) {
 				head += " (" + where + ")"
 			}
 			fmt.Fprintf(w, "  - %s: %s\n", head, it.Message)
+			printHumanContext(w, it.Context)
 			if it.Fix != "" {
 				fmt.Fprintf(w, "      fix: %s\n", it.Fix)
 			}
 		}
 	} else if rep.Converged {
 		fmt.Fprintln(w, "\nConverged: every mechanical fix applied and nothing is left for a person.")
+	}
+}
+
+// humanContextLines caps the context printed under one item; --json carries
+// all of it.
+const humanContextLines = 12
+
+func printHumanContext(w io.Writer, lines []string) {
+	for i, l := range lines {
+		if i == humanContextLines {
+			fmt.Fprintf(w, "      | … %d more line(s) (needs_human[].context in --json)\n", len(lines)-i)
+			return
+		}
+		fmt.Fprintf(w, "      | %s\n", l)
 	}
 }
 

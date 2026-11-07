@@ -9,15 +9,14 @@
 // arrives, lives in @/components/forgot-password-form. This file is the
 // framing; restyle it like the sign-in screen.
 
+import { AuthPage } from "@/components/auth-ui";
 import { ForgotPasswordForm } from "@/components/forgot-password-form";
 import { joinBasePath } from "@/lib/basepath_gen";
 
 export default function ForgotPasswordPage() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-surface-muted p-6">
-      <div className="w-full max-w-sm">
-        <ForgotPasswordForm signInHref={joinBasePath("/auth/sign-in")} />
-      </div>
-    </main>
+    <AuthPage>
+      <ForgotPasswordForm signInHref={joinBasePath("/auth/sign-in")} />
+    </AuthPage>
   );
 }

@@ -216,6 +216,13 @@ var newRules = []rolloutGroup{
 	// An owner-scoping wrapper whose owner source disagrees with its
 	// siblings' (growth: appended Lists scoped tenant_id by claims.UserID).
 	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{"forgeconv-crud-owner-resolver"}},
+	// Identity v2: a declared sign-in method or sign-up mode the login
+	// broker does not serve, which would be converged and silently ignored.
+	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{ruleIdentityMethods}},
+	// A forge:identity-subject column the read-only role cannot read
+	// (forge:secret, or a credential-shaped name with no forge:readable): the
+	// console never sees it, so the identity link is never drawn.
+	{IntroducedIn: "v1.2.0", GatesFrom: "v1.2.1", Rules: []string{ruleIdentitySubjectUnreadable}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

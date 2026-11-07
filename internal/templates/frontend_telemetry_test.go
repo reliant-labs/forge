@@ -40,12 +40,12 @@ func TestTelemetryConfigIsSameOriginAndSecretFree(t *testing.T) {
 		"nextjs": {
 			tmpl:       "nextjs/src/lib/otel_gen.ts.tmpl",
 			devDefault: "`${BASE_PATH}/_otel`",
-			replay:     `(text(cfg.OTEL_REPLAY) || process.env.NEXT_PUBLIC_OTEL_REPLAY) === "true"`,
+			replay:     `replay: replay === "true",`,
 		},
 		"vite-spa": {
 			tmpl:       "vite-spa/src/lib/otel_gen.ts.tmpl",
 			devDefault: `"/_otel"`,
-			replay:     `(text(cfg.OTEL_REPLAY) || (import.meta.env.VITE_OTEL_REPLAY as string | undefined)) ===`,
+			replay:     `replay: replay === "true",`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -72,6 +72,55 @@ func TestTelemetryConfigIsSameOriginAndSecretFree(t *testing.T) {
 				t.Errorf("must import the SDK wiring from the /telemetry subpath:\n%s", s)
 			}
 			for _, want := range []string{"initTelemetry", "export const SERVICE_NAME = 'shop-web';", "serviceName: SERVICE_NAME,"} {
+				if !strings.Contains(s, want) {
+					t.Errorf("missing %q:\n%s", want, s)
+				}
+			}
+		})
+	}
+}
+
+// TestTelemetryPerEnvValuesPreferRuntimeConfig pins the promotion contract
+// in the source: a value that differs per environment (the ingest endpoint,
+// the environment name, session replay) is read from the runtime config
+// document first, through runtimeOrBuild, and its build variable is only the
+// DEPRECATED fallback — written out verbatim, since the bundler inlines
+// nothing else, and announced by one console.warn. The behaviour of each path
+// is TestTelemetryBuildVariableFallbackBehaviour.
+func TestTelemetryPerEnvValuesPreferRuntimeConfig(t *testing.T) {
+	for name, tc := range map[string]struct {
+		tmpl, prefix, read string
+	}{
+		"nextjs":   {tmpl: "nextjs/src/lib/otel_gen.ts.tmpl", prefix: "NEXT_PUBLIC_", read: "process.env."},
+		"vite-spa": {tmpl: "vite-spa/src/lib/otel_gen.ts.tmpl", prefix: "VITE_", read: "import.meta.env."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Raw, not comment-stripped: the header's `/_otel/*` opens what
+			// stripTelemetryComments takes for a block comment.
+			s := renderTelemetryTmpl(t, tc.tmpl, telemetryData("static"))
+			for key, field := range map[string]string{
+				"OTEL_ENDPOINT": `"config.otel_endpoint"`,
+				"ENVIRONMENT":   `"config.environment"`,
+				"OTEL_REPLAY":   `'runtime_config.OTEL_REPLAY = "true"'`,
+			} {
+				build := tc.prefix + key
+				re := regexp.MustCompile(`runtimeOrBuild\(\s*used,\s*cfg\.` + key + `,\s*"` + build +
+					`",\s*` + regexp.QuoteMeta(tc.read+build) + `[^,]*,\s*` + regexp.QuoteMeta(field) + `,\s*\)`)
+				if !re.MatchString(s) {
+					t.Errorf("%s must be read runtime-first through runtimeOrBuild, with %s%s as the deprecated fallback naming %s:\n%s",
+						key, tc.read, build, field, s)
+				}
+				if n := strings.Count(s, tc.read+build); n != 1 {
+					t.Errorf("%s%s is read %d times; only the deprecated fallback may read it", tc.read, build, n)
+				}
+			}
+			for _, want := range []string{
+				"warnBuildFallback(used);",
+				"console.warn(",
+				"next major version of forge",
+				"environment: environment || undefined,",
+				`replay: replay === "true",`,
+			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("missing %q:\n%s", want, s)
 				}

@@ -231,6 +231,64 @@ func TestUpgradeConverge_LintFindingsAreWhatIsLeftForAHuman(t *testing.T) {
 	}
 }
 
+// reliant#2327: one goimports finding arrived as seven needs_human items — the
+// issue, its source line, its caret, golangci-lint's "1 issues:" and "*
+// goimports: 1", the format lane's finding for the same file, and that lane's
+// diff. This is the `forge lint --json` document for that project (one
+// misgrouped import in cmd/demo/cmd/db.go), plus a second file only the format
+// lane flags and a lane that failed before reporting anything anchored.
+const goimportsLintDoc = `{"findings":[
+  {"file":"cmd/demo/cmd/db.go","line":53,"col":1,"severity":"error","rule":"goimports","message":"File is not properly formatted (goimports)","fix_hint":"run ` + "`forge lint --fix`" + ` to apply it","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"\tforgedb \"example.com/demo/db\"","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"^","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"1 issues:","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"* goimports: 1","lane":"golangci-lint"},
+  {"severity":"error","rule":"external","message":"web: npm run lint exited 2","lane":"frontend-lint"},
+  {"severity":"error","rule":"external","message":"sh: eslint: not found","lane":"frontend-lint"},
+  {"file":"cmd/demo/cmd/db.go","severity":"error","rule":"format","message":"gofmt/goimports would reformat this file (nothing was written; the diff follows)","fix_hint":"run ` + "`forge lint --fix`" + ` to apply it","lane":"format"},
+  {"severity":"error","rule":"external","message":"--- a/cmd/demo/cmd/db.go\n+++ b/cmd/demo/cmd/db.go\n@@ -50,10 +50,11 @@\n-\tforgedb \"example.com/demo/db\"\n+\n+\tforgedb \"example.com/demo/db\"","lane":"format"},
+  {"file":"internal/x.go","severity":"error","rule":"format","message":"gofmt would reformat this file (nothing was written; the diff follows)","fix_hint":"run ` + "`forge lint --fix`" + ` to apply it","lane":"format"},
+  {"severity":"error","rule":"external","message":"--- a/internal/x.go\n+++ b/internal/x.go","lane":"format"}
+],"summary":{"errors":11,"warnings":0,"infos":0,"total":11},"ok":false}`
+
+func TestUpgradeConverge_OneLintFindingIsOneItemForAHuman(t *testing.T) {
+	dir := newConvergeFixture(t)
+	fakeUpgradeNPM(t)
+	rec := &recordedSteps{lint: goimportsLintDoc}
+
+	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps()})
+	if exitCodeForError(err) != exitNeedsHuman {
+		t.Fatalf("exit = %d (%v), want exitNeedsHuman", exitCodeForError(err), err)
+	}
+	if len(rep.NeedsHuman) != 3 {
+		t.Fatalf("needs_human has %d items, want 3 (the goimports issue, x.go's formatting, the frontend lane):\n%+v", len(rep.NeedsHuman), rep.NeedsHuman)
+	}
+	gi := rep.NeedsHuman[0]
+	if gi.Rule != "goimports" || gi.File != "cmd/demo/cmd/db.go" || gi.Line != 53 || gi.Fix != "run `forge lint --fix` to apply it" {
+		t.Errorf("goimports item = %+v, want cmd/demo/cmd/db.go:53 with the fix", gi)
+	}
+	ctx := strings.Join(gi.Context, "\n")
+	if !strings.Contains(ctx, `forgedb "example.com/demo/db"`) || !strings.Contains(ctx, "+++ b/cmd/demo/cmd/db.go") {
+		t.Errorf("goimports item context lacks its snippet or the format lane's diff:\n%s", ctx)
+	}
+	if strings.Contains(ctx, "issues:") || strings.Contains(ctx, "* goimports") || strings.Contains(ctx, "eslint") {
+		t.Errorf("goimports item carries the run summary or another lane's output:\n%s", ctx)
+	}
+	if fe := rep.NeedsHuman[1]; fe.Message != "web: npm run lint exited 2" || len(fe.Context) != 1 || fe.Context[0] != "sh: eslint: not found" {
+		t.Errorf("frontend lane item = %+v, want its failure with the cause as context", fe)
+	}
+	if x := rep.NeedsHuman[2]; x.Rule != "format" || x.File != "internal/x.go" || len(x.Context) != 2 || x.Context[1] != "+++ b/internal/x.go" {
+		t.Errorf("x.go item = %+v, want the format finding with its own diff", x)
+	}
+
+	var out bytes.Buffer
+	printUpgradeSummary(&out, rep)
+	if !strings.Contains(out.String(), "Still needs a person (3):") ||
+		!strings.Contains(out.String(), "lint-error goimports (cmd/demo/cmd/db.go:53): File is not properly formatted") {
+		t.Errorf("summary:\n%s", out.String())
+	}
+}
+
 func TestUpgradeConverge_AFailedGenerateIsAFailureNotAHandoff(t *testing.T) {
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
@@ -668,4 +726,53 @@ func TestUpgradeConverge_LeavesLedgerDeletedScaffoldOnceFilesDeleted(t *testing.
 		t.Errorf("a deleted scaffold is not work for a person: %+v", rep.NeedsHuman)
 	}
 
+}
+
+// reliant#2327: the templates phase wrote every scaffold-once file the ledger
+// did not record — docker-compose.yml, which reliant had deleted, among them.
+// Across v0.1.44 → v1.0.0 only the files whose templates first shipped inside
+// that range may be added (metrics.go, v0.1.45); docker-compose.yml's template
+// is years older, so the project going without it is the project's choice, and
+// upgrade offers it instead, naming the command that adds it.
+func TestUpgradeConverge_AddsOnlyScaffoldsNewAcrossTheRangeAndOffersTheRest(t *testing.T) {
+	dir := newTestProjectWithVersion(t, "v0.1.44")
+	checksums.ResetScaffoldLedgerCache()
+	t.Cleanup(checksums.ResetScaffoldLedgerCache)
+
+	rec := &recordedSteps{}
+	var rep *upgradeReport
+	var err error
+	var out string
+	withCwd(t, dir, func() {
+		out = captureStdout(t, func() {
+			rep, err = runUpgradeConverge(upgradeOptions{to: "v1.0.0", goRun: noGo, steps: rec.steps(), metas: []migrationMeta{}})
+		})
+	})
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "docker-compose.yml")); !os.IsNotExist(statErr) {
+		t.Errorf("upgrade wrote docker-compose.yml, a template older than the range (stat err %v)", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "internal", "metrics", "metrics.go")); statErr != nil {
+		t.Errorf("upgrade did not add internal/metrics/metrics.go, new in v0.1.45: %v", statErr)
+	}
+	var offer *upgradeOffer
+	for i := range rep.Offers {
+		if rep.Offers[i].Path == "docker-compose.yml" {
+			offer = &rep.Offers[i]
+		}
+		if rep.Offers[i].Path == "internal/metrics/metrics.go" {
+			t.Errorf("a file upgrade added is also offered: %+v", rep.Offers[i])
+		}
+	}
+	if offer == nil || offer.Since != "v0.0.2" || offer.Command != Name()+" project rescaffold docker-compose.yml" {
+		t.Fatalf("offers = %+v, want docker-compose.yml since v0.0.2 with its rescaffold command", rep.Offers)
+	}
+	if want := "in templates since v0.0.2: docker-compose.yml — `" + offer.Command + "` to add it"; !strings.Contains(out, want) {
+		t.Errorf("output does not offer docker-compose.yml as %q:\n%s", want, out)
+	}
+	if !rep.Converged {
+		t.Errorf("an offer is not work for a person: %+v", rep.NeedsHuman)
+	}
 }

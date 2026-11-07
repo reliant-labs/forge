@@ -372,6 +372,12 @@ type upgradeCounts struct {
 	// leftDeletedPaths are scaffold-once files the project deleted,
 	// declined or disowned: upgrade left them absent.
 	leftDeletedPaths []string
+	// equivalents are absent scaffold-once files the project has its own
+	// version of, as "<path> (you have <equivalent>)".
+	equivalents []string
+	// offers are absent scaffold-once files the project never had and
+	// whose templates are not new across the range: not written, offered.
+	offers []upgradeOffer
 	// upToDatePaths are the files that match their template. The
 	// summary carries them as a count — they need no action and listing
 	// them is what a report does when it has nothing to say — but
@@ -415,8 +421,20 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 			c.userModifiedPaths = append(c.userModifiedPaths, r.Path)
 			modifiedRows = append(modifiedRows, row)
 		case generator.UpgradeSkipped:
-			if r.LeftDeleted {
-				c.leftDeletedPaths = append(c.leftDeletedPaths, r.Path)
+			switch {
+			case r.Offered:
+				c.offers = append(c.offers, upgradeOffer{Path: filepath.ToSlash(r.Path), Since: r.Since,
+					Command: fmt.Sprintf("%s project rescaffold %s", Name(), filepath.ToSlash(r.Path))})
+				continue
+			case r.Equivalent != "":
+				c.equivalents = append(c.equivalents, fmt.Sprintf("%s (you have %s)", filepath.ToSlash(r.Path), r.Equivalent))
+				continue
+			case r.LeftDeleted:
+				p := r.Path
+				if r.DeletedIn != "" {
+					p += " (deleted in " + r.DeletedIn + ")"
+				}
+				c.leftDeletedPaths = append(c.leftDeletedPaths, p)
 				continue
 			}
 			c.skipped++
@@ -431,7 +449,10 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		countPart(c.upToDate, "up to date"),
 		countPart(c.skipped, "not upgrade-managed here"),
 		countPart(len(c.leftDeletedPaths), "deleted by you (left deleted)"),
+		countPart(len(c.equivalents), "kept your own version"),
+		countPart(len(c.offers), "offered (not added)"),
 	)
+	printScaffoldOffers(c.offers)
 
 	if len(updatedRows) > 0 {
 		// Files being ADDED are separated from files being refreshed:
@@ -565,6 +586,26 @@ func printSkippedPaths(c upgradeCounts, showAll bool) {
 	printNamedPathList("Up to date with the current template:", c.upToDatePaths)
 	printNamedPathList("Not upgrade-managed in this project (disowned, or a legacy layout):", c.skippedPaths)
 	printNamedPathList("Scaffold-once files you deleted, declined or disowned (left absent; `"+Name()+" project rescaffold <path>` brings one back):", c.leftDeletedPaths)
+	printNamedPathList("Scaffold-once files you have your own version of (not added beside it):", c.equivalents)
+}
+
+// printScaffoldOffers names each scaffold-once file upgrade did not add
+// because the project never had it, and the one command that adds it. Always
+// printed: it is the only place an upgrade says a template exists that the
+// project is going without.
+func printScaffoldOffers(offers []upgradeOffer) {
+	if len(offers) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println("  Offered, not added (this project never had them):")
+	for _, o := range offers {
+		lead := o.Path
+		if o.Since != "" {
+			lead = "in templates since " + o.Since + ": " + o.Path
+		}
+		fmt.Printf("    %s — `%s` to add it\n", lead, o.Command)
+	}
 }
 
 // printNamedPathList prints a titled, indented list of paths, or nothing.

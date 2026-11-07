@@ -38,6 +38,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/sqlident"
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
@@ -72,6 +73,24 @@ type columnMarkerFinding struct {
 	// Problem is schemadef's sentence: why the marker does nothing there,
 	// and the vocabulary that object does read.
 	Problem string
+	// Rule is the finding's rule ID; empty is ruleColumnMarkers.
+	Rule string
+}
+
+// ruleColumnMarkers is the lane's own rule: a marker the object does not read.
+const ruleColumnMarkers = "forge-column-markers"
+
+// ruleIdentitySubjectUnreadable is a forge:identity-subject column the
+// read-only role cannot read. The console reads the database as that role
+// (forge_ro), so the column never reaches it, and the link the marker asks for
+// is never drawn. Declaring both is a contradiction: one of them is wrong.
+const ruleIdentitySubjectUnreadable = "forge-identity-subject-unreadable"
+
+func (f columnMarkerFinding) rule() string {
+	if f.Rule != "" {
+		return f.Rule
+	}
+	return ruleColumnMarkers
 }
 
 // columnMarkerFixHint renders the remediation: schemadef's own sentence, so
@@ -155,7 +174,18 @@ func findUnknownColumnMarkers(file, content string) []columnMarkerFinding {
 
 	for _, m := range commentOnColumnRe.FindAllStringSubmatchIndex(content, -1) {
 		object := content[m[2]:m[3]]
-		add(m[0], object, schemadef.SiteColumn, sqlident.Last(object), content[m[4]:m[5]])
+		column, text := sqlident.Last(object), content[m[4]:m[5]]
+		add(m[0], object, schemadef.SiteColumn, column, text)
+		if problem := unreadableIdentitySubject(column, text); problem != "" {
+			findings = append(findings, columnMarkerFinding{
+				File:    file,
+				Line:    strings.Count(content[:m[0]], "\n") + 1,
+				Object:  object,
+				Marker:  schemadef.ColumnMarkerIdentitySubject,
+				Problem: problem,
+				Rule:    ruleIdentitySubjectUnreadable,
+			})
+		}
 	}
 	for _, m := range commentOnConstraintRe.FindAllStringSubmatchIndex(content, -1) {
 		name := content[m[2]:m[3]]
@@ -172,4 +202,30 @@ func findUnknownColumnMarkers(file, content string) []columnMarkerFinding {
 
 	sort.SliceStable(findings, func(i, j int) bool { return findings[i].Line < findings[j].Line })
 	return findings
+}
+
+// unreadableIdentitySubject is the sentence for a forge:identity-subject
+// column the read-only role is not granted, "" when the column carries no
+// valid declaration or the role may read it. The role's decision is
+// dbgrants.Column.Disposition over what the comment says: forge:secret
+// withholds the column, and a credential-shaped name withholds it until
+// forge:readable grants it. A forge:secret on the proto field is not in the
+// migration's text; `forge generate` and the grants see that one.
+func unreadableIdentitySubject(column, comment string) string {
+	c := schemadef.Column{Name: column, Comment: comment}
+	if _, ok := c.IdentitySubject(); !ok {
+		return ""
+	}
+	_, readable := c.ReadableReason()
+	switch (dbgrants.Column{Name: column, Secret: c.DeclaresSecret(), Readable: readable}).Disposition() {
+	case dbgrants.WithheldSecret:
+		return fmt.Sprintf("%s is also declared %s, so the read-only role the console reads through never sees it and no identity link is drawn — "+
+			"a subject id or email is not a credential: drop %s, or drop %s if the column really is secret",
+			schemadef.ColumnMarkerIdentitySubject, schemadef.ColumnMarkerSecret, schemadef.ColumnMarkerSecret, schemadef.ColumnMarkerIdentitySubject)
+	case dbgrants.WithheldUndecided:
+		return fmt.Sprintf("%s's name looks like a credential, so the read-only role the console reads through is not granted it and no identity link is drawn — "+
+			"add `%s <why it is not a credential>` to the comment",
+			column, schemadef.ColumnMarkerReadable)
+	}
+	return ""
 }

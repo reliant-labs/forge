@@ -58,6 +58,10 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"ensure gen/go.mod",
 		"buf generate (Go stubs)",
 		"descriptor extraction",
+		// As soon as the descriptor the CRUD join reads is fresh, before
+		// every slow step: a schema that cannot project is refused here.
+		// See generate_orm_plan.go.
+		"plan ORM entities",
 		"OpenAPI specs (protoc-gen-connect-openapi)",
 		"frontend workspaces scaffold",
 		"TypeScript stubs (frontends)",
@@ -71,6 +75,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"CRUD handlers",
 		// AFTER the stub and CRUD steps: the hooks' <service>Implemented
 		// table is read off the handler packages they write.
+		"generate input hooks (forge.yaml)",
 		"frontend hooks",
 		"service mocks",
 		"internal package contracts",

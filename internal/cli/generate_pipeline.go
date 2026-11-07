@@ -154,6 +154,11 @@ type pipelineContext struct {
 	// emit or claim output built on an ORM that was never written.
 	ORMFailure error
 
+	// ormPlan is the ORM's entity set as stepPlanORMEntities computed it
+	// (nil until it runs), so the ORM step projects exactly what was
+	// planned and the schema is introspected once.
+	ormPlan *ormEntityPlan
+
 	// SkipPreChecks bypasses the pre-codegen Step 0c contract-shape
 	// check (LintInternalContracts). Same motivation as SkipValidate:
 	// during parallel-lane work an unrelated `internal/<other-lane>/
@@ -388,6 +393,12 @@ func generateSteps() []GenStep {
 		{Name: "ensure gen/go.mod", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepEnsureGenModule, Tag: "config", Writes: writesGenGoMod},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto", Writes: writesBufGo},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepDescriptorGenerate, Tag: "proto", Writes: writesDescriptor},
+		// The ORM's entity set, planned as soon as the descriptor it joins
+		// against is fresh, so a schema that cannot project (two tables, one
+		// entity name) is refused here — not after the frontend installs,
+		// codegen, tidies and validation build that used to run first. See
+		// generate_orm_plan.go.
+		{Name: planORMEntitiesStep, Gate: gateORMHasServices, GateReason: "no services/workers/operators or features.orm=false", Run: stepPlanORMEntities, Tag: "validate"},
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto", Writes: writesOpenAPI},
 		{Name: "frontend workspaces scaffold", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
 		{Name: "TypeScript stubs (frontends)", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend", Writes: writesFrontendTS},
@@ -407,6 +418,9 @@ func generateSteps() []GenStep {
 		// AFTER service stubs and CRUD handlers: each hook file's
 		// <service>Implemented table is read off the handler packages, so it
 		// must see the stubs this run writes and the ones CRUD gen excises.
+		// Opt-in descriptor producers run before their frontend consumers.
+		// Legacy hooks remain late: they may compile the complete Go tree.
+		{Name: generateInputHooksStep, Gate: hasGenerateInputHooks, GateReason: "no generate.hooks with phase: input", Run: stepGenerateInputHooks, Tag: "tools", Writes: writesGenerateInputHooks},
 		{Name: "frontend hooks", Gate: gateFrontendHasServices, GateReason: "no services or no frontends, or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
 		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: and(gateContractsEnabled, hasGoModule), GateReason: "features.contracts=false, or " + noGoModuleReason, Run: stepInternalContracts, Tag: "codegen"},
@@ -531,7 +545,7 @@ func generateSteps() []GenStep {
 		// failure was blamed on the user's code. And a hand-edit the
 		// adjudication reports is the root cause, not whatever the hook
 		// tripped over first.
-		{Name: generateHooksStep, Gate: hasGenerateHooks, GateReason: "no generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGenerateHooks},
+		{Name: generateHooksStep, Gate: hasGeneratePostHooks, GateReason: "no post generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGeneratePostHooks},
 		// Before the validation build, so what a hook emits is tidied and
 		// compiled in this same run: into gen/ (a second buf template)…
 		{Name: "go mod tidy (gen/)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},
@@ -2058,7 +2072,8 @@ func stepServiceStubs(ctx *pipelineContext) error {
 // The entity set is every applied table (codegen.ParseORMEntities), not the
 // CRUD join: CRUD wiring keys on CRUD rpcs, the store does not.
 func stepInternalDBORM(ctx *pipelineContext) error {
-	entities, entErr := codegen.ParseORMEntities(ctx.ProjectDir)
+	orm := config.ORMPackage(ctx.Cfg)
+	entities, entErr := ctx.ormEntities(orm.PackageDir())
 	if entErr != nil {
 		ctx.ORMFailure = entErr
 		return ctx.warnOrFail("entity parsing for ORM generation", entErr)
@@ -2067,7 +2082,6 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 		return nil
 	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
-	orm := config.ORMPackage(ctx.Cfg)
 	if err := generator.GeneratePlanORM(ctx.ProjectDir, orm, planEntities, ctx.Checksums); err != nil {
 		// Recorded whether or not --strict makes it fatal: without --strict
 		// the run continues, and every step that consumes the ORM must say

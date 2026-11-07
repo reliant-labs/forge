@@ -92,12 +92,15 @@ type User struct {
 	// membership, an account merge. Without it, registering someone else's
 	// address is enough to claim whatever was waiting for them.
 	EmailVerified bool
+	// Locked: the issuer refuses every sign-in to the account.
+	Locked bool
 }
 
 // humanUser is the part of a v2 user resource User is read from, shared by
 // the search and the get so the two cannot disagree about a field.
 type humanUser struct {
 	UserID             string `json:"userId"`
+	State              string `json:"state"`
 	PreferredLoginName string `json:"preferredLoginName"`
 	Human              *struct {
 		Email struct {
@@ -118,6 +121,7 @@ func (h humanUser) user() (User, bool) {
 		LoginName:     h.PreferredLoginName,
 		Email:         h.Human.Email.Email,
 		EmailVerified: h.Human.Email.IsVerified,
+		Locked:        h.State == "USER_STATE_LOCKED",
 	}, true
 }
 

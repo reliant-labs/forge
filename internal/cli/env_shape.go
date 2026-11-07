@@ -429,6 +429,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		UptimeChecks:        shapeUptimeChecksOf(entities),
 		Identity:            shapeIdentityOf(entities),
 		Databases:           shapeDatabasesOf(entities),
+		ExternalDatabases:   shapeExternalDatabasesOf(entities),
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
 		HostInfra:           len(entities.Infra) > 0,
@@ -765,6 +766,28 @@ func shapeDatabasesOf(e *KCLEntities) []release.ShapeDatabase {
 	return out
 }
 
+// shapeExternalDatabasesOf projects the env's forge.ExternalDatabases as the
+// render resolved them (the cluster and namespace come from the database's
+// runtime, or the env's primary cluster target): the routes `forge db query`
+// reads, recorded so the control plane can list and reach them too. Names
+// only; the password stays in the Secret PasswordSecret names. Nil when the
+// env declares none, so the shape encodes as it did before the field.
+func shapeExternalDatabasesOf(e *KCLEntities) []release.ShapeExternalDatabase {
+	if e == nil || len(e.ExternalDatabases) == 0 {
+		return nil
+	}
+	out := make([]release.ShapeExternalDatabase, 0, len(e.ExternalDatabases))
+	for _, x := range e.ExternalDatabases {
+		out = append(out, release.ShapeExternalDatabase{
+			Name: x.Name, Cluster: x.Cluster, Namespace: x.Namespace,
+			Service: x.Service, Database: x.Database, Username: x.Username,
+			PasswordSecret: x.PasswordSecret, PasswordKey: x.PasswordKey, SSLMode: x.SSLMode,
+			Reach: x.Reach, Port: x.Port,
+		})
+	}
+	return out
+}
+
 // shapeReleaseHealthOf projects the env's release-health policy. Nil when the
 // env declares none or only the defaults, so the shape encodes as it did
 // before the field.
@@ -1018,6 +1041,12 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 	}
 	if id := doc.Shape.Identity; id != nil {
 		writeIdentitySummary(w, id)
+	}
+	if len(doc.Shape.ExternalDatabases) > 0 {
+		fmt.Fprintf(w, "  external databases: %d (routes only; forge runs none of them)\n", len(doc.Shape.ExternalDatabases))
+		for _, x := range doc.Shape.ExternalDatabases {
+			fmt.Fprintf(w, "    %s: %s as %s via %s/%s on %s\n", x.Name, x.Database, x.Username, emptyAs(x.Namespace, "(no namespace)"), x.Service, emptyAs(x.Cluster, "(no cluster)"))
+		}
 	}
 	if len(doc.Shape.Alerts) > 0 {
 		user := 0

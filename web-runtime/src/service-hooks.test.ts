@@ -33,9 +33,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createInfiniteQueryHook,
   createInfiniteQueryOptions,
+  createMutationCall,
   createMutationHook,
   createQueryHook,
   createQueryOptions,
+  createServiceMutations,
   requestKey,
   serviceKeys,
 } from "./service-hooks.js";
@@ -891,5 +893,120 @@ describe("createMutationHook", () => {
       id: "x",
     });
     expect(call).toHaveBeenCalledWith({ id: "x" });
+  });
+});
+
+describe("createMutationCall + createServiceMutations", () => {
+  const keys = serviceKeys("orderService");
+  type Order = { id: string };
+
+  // A real QueryClient: "a write outside React refetches the reads the hook's
+  // write would" is asserted on a real cache, not on a stubbed invalidate.
+  function seeded() {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const orderKey = keys.query(
+      "getOrder",
+      GetOrderRequestSchema,
+      "order",
+    )({
+      id: "a",
+    });
+    const otherKey = keys.query(
+      "getLine",
+      GetOrderRequestSchema,
+      "line",
+    )({
+      id: "a",
+    });
+    client.setQueryData(orderKey, { id: "a" });
+    client.setQueryData(otherKey, { id: "a" });
+    return { client, orderKey, otherKey };
+  }
+
+  it("calls the rpc with the request and signal, and resolves with its response", async () => {
+    const call = vi.fn(async () => ({ id: "new" }));
+    const mutations = createServiceMutations({
+      createOrder: createMutationCall<typeof GetOrderRequestSchema, Order>(
+        keys.entity("order"),
+        call,
+      ),
+    });
+    const signal = new AbortController().signal;
+
+    const got = await mutations(new QueryClient()).createOrder(
+      { id: "x" },
+      { signal },
+    );
+
+    expect(got).toEqual({ id: "new" });
+    expect(call).toHaveBeenCalledWith({ id: "x" }, signal);
+  });
+
+  it("invalidates the scope it was given on success, and nothing outside it", async () => {
+    const { client, orderKey, otherKey } = seeded();
+    const mutations = createServiceMutations({
+      createOrder: createMutationCall(keys.entity("order"), async () => ({})),
+    });
+
+    await mutations(client).createOrder({ id: "x" });
+
+    expect(client.getQueryState(orderKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(otherKey)?.isInvalidated).toBe(false);
+  });
+
+  it("invalidates exactly what createMutationHook invalidates for the same scope", async () => {
+    // The generated file hands both the same key expression; this pins that
+    // the two factories then do the same thing with it.
+    for (const scope of [keys.entity("order"), keys.all]) {
+      captured.invalidated = [];
+      const useWrite = createMutationHook(scope, async () => ({}));
+      useWrite();
+      (captured.mutation?.onSuccess as (...a: unknown[]) => void)(
+        {},
+        {},
+        undefined,
+      );
+
+      const invalidated: unknown[] = [];
+      const client = new QueryClient();
+      client.invalidateQueries = (async (filters: { queryKey: unknown }) => {
+        invalidated.push(filters.queryKey);
+      }) as QueryClient["invalidateQueries"];
+      await createServiceMutations({
+        write: createMutationCall(scope, async () => ({})),
+      })(client).write({});
+
+      expect(invalidated).toEqual(captured.invalidated);
+    }
+  });
+
+  it("rejects with the rpc's error and invalidates nothing", async () => {
+    const { client, orderKey } = seeded();
+    const boom = new Error("denied");
+    const mutations = createServiceMutations({
+      createOrder: createMutationCall(keys.entity("order"), async () => {
+        throw boom;
+      }),
+    });
+
+    await expect(mutations(client).createOrder({ id: "x" })).rejects.toBe(boom);
+    expect(client.getQueryState(orderKey)?.isInvalidated).toBe(false);
+  });
+
+  it("types each write by its table entry", () => {
+    const mutations = createServiceMutations({
+      createOrder: createMutationCall<typeof GetOrderRequestSchema, Order>(
+        keys.entity("order"),
+        async () => ({ id: "new" }),
+      ),
+    })(new QueryClient());
+    // Type-level only, never awaited.
+    const typed: () => Promise<Order> = () =>
+      mutations.createOrder({ id: "x" });
+    void typed;
+    // @ts-expect-error — the table declares no deleteOrder.
+    void (() => mutations.deleteOrder({ id: "x" }));
   });
 });

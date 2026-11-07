@@ -247,6 +247,10 @@ schema OnHost:
     # relative to a sibling repo. Default: the project root.
     working_dir?: str
     listen_ports?: [int]
+    # env up only: wait for these host workloads / frontend dev servers before
+    # launching this workload. Names must be selected together by --target.
+    # An empty list preserves the usual host-then-frontend startup order.
+    startup_after: [str] = []
     delve_port: int = 2345
 
     check:

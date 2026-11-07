@@ -87,6 +87,11 @@ type FlowConfig struct {
 	RedirectURI string
 	// Scopes requested. Empty defaults to the standard OIDC set.
 	Scopes []string
+	// RequireVerifiedEmail refuses to issue tokens for an account whose
+	// address is unverified (ErrEmailUnverified). The check runs after the
+	// credentials were verified and before the auth request is finalized,
+	// so only someone who proved the credentials learns the address state.
+	RequireVerifiedEmail bool
 }
 
 func (f FlowConfig) scopes() string {
@@ -290,20 +295,17 @@ func (c *Client) SignIn(ctx context.Context, cfg FlowConfig, creds Credentials) 
 	if err != nil {
 		return Tokens{}, err
 	}
-	creds.LoginName = c.loginNameFor(ctx, creds.LoginName)
+	if creds.LoginName != "" {
+		creds.LoginName = c.loginNameFor(ctx, creds.LoginName)
+	}
 	session, err := c.CreateSession(ctx, creds)
 	if err != nil {
 		return Tokens{}, err
 	}
-	callback, err := c.FinalizeAuthRequest(ctx, flow.AuthRequestID, session)
-	if err != nil {
+	if err := c.gate(ctx, cfg, session, creds.UserID); err != nil {
 		return Tokens{}, err
 	}
-	code, err := codeFromCallback(callback)
-	if err != nil {
-		return Tokens{}, err
-	}
-	return c.RedeemCode(ctx, cfg, code, flow.PKCE)
+	return c.finish(ctx, cfg, flow, session)
 }
 
 // SignUp registers an account and signs it in, in one call.

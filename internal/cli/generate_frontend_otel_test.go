@@ -136,8 +136,8 @@ func TestGenerateFrontendNav_OtelForNextJSAndViteNotNative(t *testing.T) {
 	}
 
 	for fe, want := range map[string]string{
-		"web":   "process.env.NEXT_PUBLIC_OTEL_ENDPOINT",
-		"admin": "import.meta.env.VITE_OTEL_ENDPOINT",
+		"web":   "process.env.NEXT_PUBLIC_APP_VERSION",
+		"admin": "import.meta.env.VITE_APP_VERSION",
 	} {
 		body, err := os.ReadFile(otel(fe))
 		if err != nil {

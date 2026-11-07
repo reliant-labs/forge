@@ -93,7 +93,7 @@ assert_replay_sample_rate = _spec("tuned").REPLAY_SAMPLE_RATE.value == "0.25"
 assert_tuned_still_gets_ingest = _spec("tuned").OTEL_ENDPOINT.value == "/_otel"
 assert_author_endpoint_wins = _spec("own").OTEL_ENDPOINT.value == "https://ingest.example/k/abc"
 assert_author_rate_wins = _spec("own").REPLAY_SAMPLE_RATE.value == "0.5"
-assert_typed_config_endpoint_blocks_the_default = "OTEL_ENDPOINT" not in _spec("viacfg")
+assert_typed_config_endpoint_blocks_the_default = _spec("viacfg").OTEL_ENDPOINT.value == "off"
 assert_default_telemetry_adds_nothing = len(_spec("dflt")) == 1
 assert_browser_off_wins_over_everything = _off.frontends[0].runtime_config_spec.OTEL_ENDPOINT.value == "off"
 assert_dev_resolved_config_carries_console_capture = _by.dev.runtime_config.CONSOLE_CAPTURE == "false"

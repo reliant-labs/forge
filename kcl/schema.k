@@ -3509,6 +3509,14 @@ schema FrontendConfig:
     (forge warns on the collision). `config` is additive/optional — a
     frontend that declares only `env_vars` renders byte-identically.
 
+    otel_endpoint and environment differ per environment, so a web
+    frontend's value (from `config`, or a literal in `env_vars`) is also
+    carried into its runtime config as OTEL_ENDPOINT / ENVIRONMENT, which is
+    where the generated otel_gen.ts reads them: a build variable would follow
+    one build into every environment it is promoted to. On forge.OnHosted only
+    otel_endpoint is carried: the control plane writes the hosted document's
+    ENVIRONMENT for the environment it serves.
+
     mock is the load-bearing knob. On a deployable frontend (a `deploy`
     target, or a build-only frontend bundled into a deployable site) forge
     FORCE-sets the mock variable to `mock` at build time, so an exported
@@ -6106,8 +6114,8 @@ schema ObservabilitySignals:
     # frontend's runtime config and the platform's /_otel ingest drops it.
     browser: bool = True
     # Session replay is OPT-IN (the only category that defaults off). The browser
-    # SDK records DOM events only when the frontend is built with
-    # {NEXT_PUBLIC_,VITE_}OTEL_REPLAY; the platform drops those events (browser
+    # SDK records DOM events only when the frontend's runtime config carries
+    # OTEL_REPLAY = "true"; the platform drops those events (browser
     # logs of instrumentation scope `rum.rr-web`) unless this is True.
     replay: bool = False
 

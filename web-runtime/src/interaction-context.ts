@@ -14,9 +14,9 @@
 // about wall-clock time, not about a call stack: those RPCs start in effects,
 // query functions and stream hooks that never ran inside the click handler,
 // with no span active at all. So interaction.ts registers each open
-// interaction here, and the trace interceptor asks outgoingContext() — the
-// caller's span if it has one, else the foreground interaction — at the
-// moment the call enters it, and holds that context until fetch() is called.
+// interaction here, and the choice — the caller's span if it has one, else
+// the foreground interaction (outgoingContext) — is made when the call enters
+// the interceptor chain and held until fetch() is called (see "Call entry").
 //
 // ── Carrying the context to the browser fetch span ───────────────────────
 //
@@ -26,11 +26,10 @@
 // The trace interceptor calls next() inside context.with(ctx), which covers a
 // call whose fetch() is synchronous with next() (connect-web's unary path).
 // A server stream is not: connect-web awaits the request body
-// before it calls fetch(), and the context is gone by then. So the
-// interceptor also records the context against the request's Headers object
-// (rememberRequestContext), which connect-web hands to fetch() as-is, and
-// the fetch shim telemetry.ts installs over the SDK's patched fetch
-// (installFetchContext) re-enters it for the duration of that call.
+// before it calls fetch(), and the context is gone by then. So the fetch
+// shim telemetry.ts installs over the SDK's patched fetch
+// (installFetchContext) looks up the call-entry stamp of the request's
+// Headers (below) and re-enters it for the duration of that call.
 //
 // This module imports nothing but @opentelemetry/api: the interceptors entry
 // point (React-free, DOM-free) reaches it through trace.ts.
@@ -77,20 +76,50 @@ export function outgoingContext(): Context {
   return span ? trace.setSpan(active, span) : active;
 }
 
-// Keyed by the request's Headers object. Weak, so an abandoned request leaves
-// nothing behind.
-const requestContexts = new WeakMap<object, Context>();
+// ── Call entry ───────────────────────────────────────────────────────────
+//
+// The choice has to be made when the CALL starts, not when the trace stage
+// is reached: an earlier stage that awaits (auth's getToken, an app's own
+// interceptor) can hold the call while the user starts another interaction,
+// and a choice made after that wait would put the RPC in the wrong operation.
+// connect-es runs the outermost interceptor synchronously inside the client
+// method call (createClient → transport.unary/stream → runUnaryCall /
+// runStreamingCall → the interceptor chain, with no await in between), so the
+// outermost stage IS call entry.
+//
+// So every runtime interceptor stamps the call on entry, synchronously, if no
+// earlier one has (stampCallEntry): whichever runtime stage is outermost —
+// errorNormalizeInterceptor in buildRuntimeInterceptors and in every chain
+// that starts with it — makes the choice, and the order of the rest does not
+// matter. A chain whose outermost stages are the app's own AND await before
+// any runtime stage runs puts interactionContextInterceptor() first.
+//
+// The stamp is keyed by the request's Headers object: connect builds a new
+// one for every call (requestHeader), interceptors mutate it in place, and
+// connect-web hands it to fetch() as-is — so the same entry carries the
+// context to the fetch shim below. (A caller-supplied contextValues object is
+// the alternative carrier, but an app may reuse one across calls.) A stage
+// that REPLACES req.header loses the stamp; the trace stage then stamps the
+// new object on its own entry.
+const callContexts = new WeakMap<object, Context>();
 
-/** Remember which context the request carrying `headers` was parented on. */
-export function rememberRequestContext(headers: Headers, ctx: Context): void {
-  if (trace.getSpan(ctx)) {
-    requestContexts.set(headers, ctx);
+/**
+ * The context this call joins: chosen (outgoingContext()) the first time a
+ * runtime stage sees the call, and the same answer for every later stage.
+ */
+export function stampCallEntry(headers: Headers): Context {
+  const stamped = callContexts.get(headers);
+  if (stamped) {
+    return stamped;
   }
+  const ctx = outgoingContext();
+  callContexts.set(headers, ctx);
+  return ctx;
 }
 
 function contextOfHeaders(headers: unknown): Context | undefined {
   return typeof headers === "object" && headers !== null
-    ? requestContexts.get(headers)
+    ? callContexts.get(headers)
     : undefined;
 }
 
@@ -125,7 +154,7 @@ export function installFetchContext(): void {
     } catch {
       ctx = undefined;
     }
-    if (!ctx || ctx === context.active()) {
+    if (!ctx || !trace.getSpan(ctx) || ctx === context.active()) {
       return inner.apply(this, args);
     }
     return context.with(ctx, () => inner.apply(this, args));

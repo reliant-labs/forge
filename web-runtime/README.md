@@ -246,6 +246,7 @@ parent the server spans.
 ```ts
 interaction(name: string, attributes?: InteractionAttributes, options?: { scope?: string; timeoutMs?: number }): Interaction
 currentInteraction(scope?: string): Interaction | undefined
+interactionContextInterceptor(): Interceptor // from the barrel or /interceptors
 useInteractionEnd(op: Interaction | null | undefined, ready: boolean, attributes?: InteractionEndAttributes): void
 
 interface Interaction {
@@ -266,9 +267,19 @@ interface Interaction {
   or `op.run()`) stays the parent. Most RPCs of an operation, though, start in
   effects, query functions and stream hooks with no span active at all. So the
   runtime holds the open interactions, at most one per `scope` (default
-  `foreground`), and the trace interceptor parents a call that enters it with
-  no active span on the most recently started one. Starting an interaction in
-  a busy scope ends the old one with outcome `superseded`.
+  `foreground`), and a call made with no active span joins the most recently
+  started one. Starting an interaction in a busy scope ends the old one with
+  outcome `superseded`.
+- **Chosen at call entry.** The choice is made when the call enters the
+  interceptor chain — connect-es runs the outermost interceptor synchronously
+  inside the client call — never after an await, so a call held by auth's
+  `getToken()` (or any awaiting stage) while the user opens something else
+  stays in the interaction it started under. Every runtime interceptor stamps
+  the call on entry if no earlier one has, so `buildRuntimeInterceptors()` and
+  any chain whose outermost stage is a runtime interceptor (e.g.
+  `errorNormalizeInterceptor`) are correct as they are. A chain whose
+  outermost stages are the app's own and await before any runtime stage runs
+  puts `interactionContextInterceptor()` first.
 - **The fetch span is the child, not just the traceparent.** The SDK opens
   its fetch span from `context.active()` at the instant `fetch()` is called.
   The interceptor calls `next()` inside the interaction's context, which

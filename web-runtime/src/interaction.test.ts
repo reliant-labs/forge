@@ -17,7 +17,7 @@ import {
   type DescService,
 } from "@bufbuild/protobuf";
 import { FileDescriptorProtoSchema } from "@bufbuild/protobuf/wkt";
-import { createClient } from "@connectrpc/connect";
+import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import {
   context,
@@ -54,7 +54,13 @@ import {
   interaction,
   resetInteractions,
 } from "./interaction.js";
-import { buildRuntimeInterceptors, traceInterceptor } from "./interceptors.js";
+import {
+  authInterceptor,
+  buildRuntimeInterceptors,
+  errorNormalizeInterceptor,
+  interactionContextInterceptor,
+  traceInterceptor,
+} from "./interceptors.js";
 import {
   registerTelemetryStartup,
   resetTelemetryGate,
@@ -603,7 +609,13 @@ describe("the browser fetch spans of RPCs made while an interaction is open", ()
   beforeAll(registerSdk);
   afterAll(unregisterSdk);
 
-  function chatClient(shim: boolean, seen: FetchSpan[]) {
+  function chatClient(
+    shim: boolean,
+    seen: FetchSpan[],
+    interceptors: Interceptor[] = buildRuntimeInterceptors({
+      getToken: async () => "token",
+    }),
+  ) {
     vi.stubGlobal("fetch", sdkFetch(seen));
     if (shim) installFetchContext();
     // A runtime-built descriptor carries no generated method types. An async
@@ -613,9 +625,7 @@ describe("the browser fetch spans of RPCs made while an interaction is open", ()
       testService(),
       createConnectTransport({
         baseUrl: "http://api.test",
-        interceptors: buildRuntimeInterceptors({
-          getToken: async () => "token",
-        }),
+        interceptors,
       }),
     ) as unknown as {
       getChat(req: object): Promise<unknown>;
@@ -689,5 +699,123 @@ describe("the browser fetch spans of RPCs made while an interaction is open", ()
     expect(stream?.parentSpanId).toBeUndefined();
     expect(stream?.traceId).not.toBe(op.traceId);
     op.end();
+  });
+
+  // ── Call entry: the choice is made when the call starts ────────────────
+
+  // A gate the test opens by hand: an auth provider still fetching a token, an
+  // app interceptor waiting on something of its own.
+  function gate(): { wait: () => Promise<void>; open: () => void } {
+    let open!: () => void;
+    const opened = new Promise<void>((r) => (open = r));
+    return { wait: () => opened, open };
+  }
+
+  const awaiting =
+    (g: { wait: () => Promise<void> }): Interceptor =>
+    (next) =>
+    async (req) => {
+      await g.wait();
+      return next(req);
+    };
+
+  // Start a unary and a stream call under the open interaction, start a newer
+  // one while `held` keeps both calls waiting, then let them go.
+  async function callsHeldAcrossANewInteraction(
+    interceptors: Interceptor[],
+    held: { open: () => void },
+  ): Promise<{ older: string; newer: string; seen: FetchSpan[] }> {
+    const seen: FetchSpan[] = [];
+    const client = chatClient(true, seen, interceptors);
+    const older = interaction("chat.open", { "chat.id": "a" });
+    const unary = client.getChat({});
+    const stream = (async () => {
+      for await (const _ of client.streamChat({})) {
+        // drain
+      }
+    })();
+    // The user opens another chat while both calls wait.
+    const newer = interaction("chat.open", { "chat.id": "b" });
+    held.open();
+    await Promise.all([unary, stream]);
+    newer.end();
+    return { older: older.traceId, newer: newer.traceId, seen };
+  }
+
+  it("enters the outermost interceptor synchronously inside the client call", () => {
+    // The premise of choosing at call entry: connect-es reaches the first
+    // interceptor with no await between the client method and it.
+    const entered: string[] = [];
+    const probe: Interceptor = (next) => (req) => {
+      entered.push(req.method.name);
+      return next(req);
+    };
+    const client = chatClient(true, [], [probe]);
+    const unary = client.getChat({});
+    const stream = client.streamChat({});
+    expect(entered).toEqual(["GetChat", "StreamChat"]);
+    return Promise.all([
+      unary,
+      (async () => {
+        for await (const _ of stream) {
+          // drain
+        }
+      })(),
+    ]);
+  });
+
+  it("keeps a call in the interaction it started under while auth awaits a token (the default chain)", async () => {
+    const token = gate();
+    const { older, newer, seen } = await callsHeldAcrossANewInteraction(
+      buildRuntimeInterceptors({
+        getToken: async () => {
+          await token.wait();
+          return "token";
+        },
+      }),
+      token,
+    );
+    expect(seen).toHaveLength(2);
+    for (const s of seen) {
+      expect(s.traceId, s.url).toBe(older);
+      expect(s.traceId, s.url).not.toBe(newer);
+      expect(traceIdFrom(s.sentTraceparent), s.url).toBe(older);
+    }
+  });
+
+  it("keeps it there through an app's awaiting stages inside the runtime's outermost one (reliant's chain shape)", async () => {
+    // error-normalize → (app stage that awaits) → auth (awaits) → trace
+    const app = gate();
+    const { older, seen } = await callsHeldAcrossANewInteraction(
+      [
+        errorNormalizeInterceptor({}),
+        awaiting(app),
+        authInterceptor({ getToken: async () => null }),
+        traceInterceptor(),
+      ],
+      app,
+    );
+    expect(seen.map((s) => s.traceId)).toEqual([older, older]);
+  });
+
+  it("needs interactionContextInterceptor() first when the app's own awaiting stage is outermost", async () => {
+    const app = gate();
+    const { older, seen } = await callsHeldAcrossANewInteraction(
+      [interactionContextInterceptor(), awaiting(app), traceInterceptor()],
+      app,
+    );
+    expect(seen.map((s) => s.traceId)).toEqual([older, older]);
+
+    // Without it, the first runtime stage the call reaches is after the
+    // app's await, and the choice is made there.
+    const late = gate();
+    const after = await callsHeldAcrossANewInteraction(
+      [awaiting(late), traceInterceptor()],
+      late,
+    );
+    expect(after.seen.map((s) => s.traceId)).toEqual([
+      after.newer,
+      after.newer,
+    ]);
   });
 });

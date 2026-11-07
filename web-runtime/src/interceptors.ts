@@ -37,10 +37,7 @@ import { MethodOptions_IdempotencyLevel } from "@bufbuild/protobuf/wkt";
 import { context } from "@opentelemetry/api";
 
 import { ConnectClientError, normalizeError } from "./errors.js";
-import {
-  outgoingContext,
-  rememberRequestContext,
-} from "./interaction-context.js";
+import { stampCallEntry } from "./interaction-context.js";
 import { telemetryReady } from "./telemetry-gate.js";
 import { injectTraceContext, traceIdFrom } from "./trace.js";
 
@@ -70,9 +67,27 @@ export interface RuntimeInterceptorConfig {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/**
+ * Chooses, at call entry, the trace this call joins: the caller's active span,
+ * or the open interaction (interaction.ts). Every runtime interceptor already
+ * does this on entry when no earlier stage has, so a chain whose outermost
+ * stage is one of them — buildRuntimeInterceptors, which starts with
+ * errorNormalizeInterceptor — needs nothing more. Put this one FIRST in a
+ * chain whose outer stages are the app's own and await before any runtime
+ * stage runs; a choice made after that await could put the call in an
+ * interaction the user started while it waited.
+ */
+export function interactionContextInterceptor(): Interceptor {
+  return (next) => (req) => {
+    stampCallEntry(req.header);
+    return next(req);
+  };
+}
+
 /** Attaches the bearer token from the app's auth provider. */
 export function authInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
   return (next) => async (req) => {
+    stampCallEntry(req.header);
     const parent = context.active();
     const token = cfg.getToken ? await cfg.getToken() : null;
     if (token) {
@@ -87,6 +102,7 @@ export function authInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
 /** Attaches brand context headers when the app supplies them. */
 export function headerInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
   return (next) => async (req) => {
+    stampCallEntry(req.header);
     const brand = cfg.getBrand?.();
     if (brand) {
       req.header.set("X-Brand", brand);
@@ -103,21 +119,19 @@ export function headerInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
  * telemetry-gate.ts) so the call is made through the SDK's patched fetch and
  * its traceparent names a span the browser really exports.
  *
- * The call is parented on the context it entered with (the caller's, which
- * authInterceptor carried across its own await) — or, when no span is active
- * there, on the open interaction (interaction.ts). That context is restored
- * around next() so the SDK's fetch span, opened synchronously when fetch() is
- * called, is its child. A call whose fetch() comes after an await (a server
+ * The call is parented on the context chosen when it entered the chain
+ * (interactionContextInterceptor): the caller's active span, or the open
+ * interaction (interaction.ts). That context is restored around next() so the
+ * SDK's fetch span, opened synchronously when fetch() is called, is its child. A call whose fetch() comes after an await (a server
  * stream: connect-web awaits the body first) is carried the rest of the way by
  * the fetch shim the `/telemetry` subpath installs; see interaction-context.ts.
  */
 export function traceInterceptor(): Interceptor {
   return (next) => async (req) => {
-    const parent = outgoingContext();
+    const parent = stampCallEntry(req.header);
     await telemetryReady();
     return context.with(parent, () => {
       injectTraceContext(req.header, parent);
-      rememberRequestContext(req.header, parent);
       return next(req);
     });
   };
@@ -128,6 +142,8 @@ export function errorNormalizeInterceptor(
   cfg: RuntimeInterceptorConfig,
 ): Interceptor {
   return (next) => async (req) => {
+    // Outermost in buildRuntimeInterceptors, so this is call entry.
+    stampCallEntry(req.header);
     try {
       return await next(req);
     } catch (err) {
@@ -174,6 +190,7 @@ export function retryInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
   const max = cfg.maxRetries ?? 2;
   const base = cfg.retryBaseMs ?? 200;
   return (next) => async (req) => {
+    stampCallEntry(req.header);
     if (req.stream || !retryEligible(req)) {
       return next(req);
     }

@@ -140,8 +140,11 @@ useInteractionEnd(op, loaded); // endAfterPaint() on the first ready commit
 
 It is one root span (`interaction.name|scope|outcome`), and every RPC made
 while it is open is its child, server spans included — no `context.with`,
-which a browser loses at the first `await`. A span the caller has active when
-it makes the call still wins. One interaction is open per `scope` (default
+which a browser loses at the first `await`. The choice is made when the call
+enters the interceptor chain, so a call held by auth's `getToken()` stays in
+its own interaction; a chain whose outermost stages are the app's own and
+await puts `interactionContextInterceptor()` first. A span the caller has
+active when it makes the call still wins. One interaction is open per `scope` (default
 `foreground`); a new one ends the old as `superseded`. `endAfterPaint()` waits
 two animation frames; ends are idempotent; unended ones end as `timeout` after
 60s; a page hidden while open stamps `page.hidden`. `mark(name)` adds a phase

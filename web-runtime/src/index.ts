@@ -24,6 +24,7 @@ export {
   buildRuntimeInterceptors,
   errorNormalizeInterceptor,
   headerInterceptor,
+  interactionContextInterceptor,
   retryInterceptor,
   traceInterceptor,
   type RuntimeInterceptorConfig,

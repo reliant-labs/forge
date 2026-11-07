@@ -402,7 +402,7 @@ window.mark = (name) => trace.getTracer('viewport-proof').startSpan(name).end();
 // inside next(); a server stream awaits its request body first, which a stack
 // context manager does not survive, so only the runtime's fetch shim carries
 // the interaction to the SDK's fetch span.
-test("interaction(): unary and stream fetch spans made after the click are the interaction's children", { timeout: 30000 }, async () => {
+test("interaction(): unary and stream fetch spans made after the click are the children of the interaction they started under, even when a newer one opens while auth waits", { timeout: 30000 }, async () => {
   const traces = [];
   const requests = [];
   const backend = createServer((req, res) => {
@@ -440,7 +440,11 @@ import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
 import { interaction } from '/runtime/interaction.js';
 window.tracing = trace;
 window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
-const chain = (terminal) => buildRuntimeInterceptors({ getToken: async () => null })
+// The token arrives only when the test says so: the calls wait in auth while a
+// second interaction opens, and must still belong to the first.
+let releaseToken;
+const token = new Promise((r) => (releaseToken = r));
+const chain = (terminal) => buildRuntimeInterceptors({ getToken: () => token })
   .reduceRight((next, interceptor) => interceptor(next), terminal);
 const unary = chain((req) => fetch(${JSON.stringify(`${backendOrigin}/chat.v1.ChatService/GetChat`)}, { method: 'POST', headers: req.header }));
 const stream = chain(async (req) => {
@@ -452,10 +456,14 @@ document.querySelector('#open').addEventListener('click', () => {
   window.traceId = op.traceId;
   // Outside the handler: no span is active when these calls are made.
   setTimeout(() => {
-    window.finished = Promise.all([
+    const calls = Promise.all([
       unary({ header: new Headers(), stream: false }),
       stream({ header: new Headers(), stream: true }),
-    ]).finally(() => op.end({ outcome: 'ok' }));
+    ]);
+    const next = interaction('chat.open', { 'chat.id': 'c2' }); // supersedes op
+    window.nextTraceId = next.traceId;
+    releaseToken(null);
+    window.finished = calls.finally(() => next.end({ outcome: 'ok' }));
   }, 50);
 });
 </script>`);
@@ -491,15 +499,19 @@ document.querySelector('#open').addEventListener('click', () => {
     const spans = traces.flatMap((batch) => batch.resourceSpans ?? [])
       .flatMap((resource) => resource.scopeSpans ?? [])
       .flatMap((scope) => scope.spans ?? []);
-    const root = spans.find((span) => span.name === "chat.open");
+    const chatId = (span) => span.attributes?.find((a) => a.key === "chat.id")?.value?.stringValue;
+    const root = spans.find((span) => span.name === "chat.open" && chatId(span) === "c1");
     assert.ok(root, `the interaction is exported: ${JSON.stringify(spans.map((s) => s.name))}`);
     assert.equal(root.traceId, await page.evaluate(() => window.traceId));
     assert.ok(!root.parentSpanId, "the interaction is a root span");
+    const superseding = spans.find((span) => span.name === "chat.open" && chatId(span) === "c2");
+    assert.ok(superseding, "the second interaction is exported");
+    assert.equal(superseding.traceId, await page.evaluate(() => window.nextTraceId));
     const fetches = spans.filter((span) => span.name.includes("chat.v1.ChatService"));
     assert.equal(fetches.length, 2, JSON.stringify(spans.map((s) => s.name)));
     for (const fetch of fetches) {
       assert.equal(fetch.traceId, root.traceId, `${fetch.name} is in the interaction's trace`);
-      assert.equal(fetch.parentSpanId, root.spanId, `${fetch.name} is the interaction's child`);
+      assert.equal(fetch.parentSpanId, root.spanId, `${fetch.name} is the child of the interaction it started under, not the one opened while auth waited`);
     }
     assert.deepEqual(
       [...requests].sort(),

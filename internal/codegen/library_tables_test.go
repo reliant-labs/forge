@@ -2,6 +2,8 @@ package codegen
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -42,7 +44,7 @@ func libTable(t *testing.T, name string) schemadef.Table {
 func TestORMEntities_LibraryTableIsLeftOffAndTheAppTableKeepsItsName(t *testing.T) {
 	auditLogs := pkTable("audit_logs", "id")
 	auditLogs.Schema = "controlplane"
-	got, notes, err := ormEntitiesForTables([]schemadef.Table{libTable(t, "audit_log"), auditLogs}, nil)
+	got, notes, _, err := ormEntitiesForTables([]schemadef.Table{libTable(t, "audit_log"), auditLogs}, nil, nil)
 	if err != nil {
 		t.Fatalf("a library table must not collide with the app's table: %v", err)
 	}
@@ -63,7 +65,7 @@ func TestORMEntities_EveryLibraryTableIsLeftOff(t *testing.T) {
 	for _, lt := range libraryTables {
 		tables = append(tables, libTable(t, lt.name))
 	}
-	got, notes, err := ormEntitiesForTables(tables, nil)
+	got, notes, _, err := ormEntitiesForTables(tables, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +80,7 @@ func TestORMEntities_EveryLibraryTableIsLeftOff(t *testing.T) {
 // The name alone does not make a table the library's: an app table called
 // alert_events with its own columns is the app's, and keeps its store.
 func TestORMEntities_ATableThatOnlySharesALibraryNameIsTheApps(t *testing.T) {
-	got, notes, err := ormEntitiesForTables([]schemadef.Table{pkTable("alert_events", "id")}, nil)
+	got, notes, _, err := ormEntitiesForTables([]schemadef.Table{pkTable("alert_events", "id")}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +98,7 @@ func TestORMEntities_LibraryTableProjectedWhenSomethingDependsOnIt(t *testing.T)
 	t.Run("forge:entity", func(t *testing.T) {
 		tbl := libTable(t, "audit_log")
 		tbl.Comment = "forge:entity — we read it through the generated store"
-		got, notes, err := ormEntitiesForTables([]schemadef.Table{tbl}, nil)
+		got, notes, _, err := ormEntitiesForTables([]schemadef.Table{tbl}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +109,7 @@ func TestORMEntities_LibraryTableProjectedWhenSomethingDependsOnIt(t *testing.T)
 	t.Run("a CRUD rpc", func(t *testing.T) {
 		svc := ServiceDef{Name: "ActivityService", Package: "app.v1", Methods: []Method{{Name: "ListActivityEvents"}},
 			Messages: map[string][]MessageFieldDef{"ActivityEvent": {{Name: "id", ProtoType: "string"}}}}
-		got, _, err := ormEntitiesForTables([]schemadef.Table{libTable(t, "activity_events")}, []ServiceDef{svc})
+		got, _, _, err := ormEntitiesForTables([]schemadef.Table{libTable(t, "activity_events")}, []ServiceDef{svc}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,12 +119,85 @@ func TestORMEntities_LibraryTableProjectedWhenSomethingDependsOnIt(t *testing.T)
 	})
 }
 
+// Generated code is public within major 1: a library table whose store the
+// project already generates keeps it, with a deprecation naming the table,
+// the next major, and the opt-out migration to apply now.
+func TestORMEntities_ExistingLibraryStoreIsKeptAndDeprecated(t *testing.T) {
+	had := func(tbl schemadef.Table, entity string) (string, bool) {
+		return "internal/store/alert_event_orm_gen.go", tbl.Name == "alert_events" && entity == "AlertEvent"
+	}
+	got, notes, deprecations, err := ormEntitiesForTables([]schemadef.Table{libTable(t, "alert_events"), libTable(t, "audit_log")}, nil, had)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := strings.Join(entityNames(got), ","); s != "AlertEvent=alert_events" {
+		t.Errorf("entities = %s; the store the project already generates must be kept, the new table excluded", s)
+	}
+	if len(deprecations) != 1 {
+		t.Fatalf("want one deprecation, got %q", deprecations)
+	}
+	for _, want := range []string{
+		"deprecated: alert_events is forge/pkg/alerting/pgstore's table",
+		"internal/store/alert_event_orm_gen.go",
+		"stops being generated in the next major version",
+		"`COMMENT ON TABLE controlplane.alert_events IS 'forge:no-entity'`",
+	} {
+		if !strings.Contains(deprecations[0], want) {
+			t.Errorf("deprecation should say %q:\n%s", want, deprecations[0])
+		}
+	}
+	// audit_log has no store yet: excluded at once, with the plain note.
+	if joined := strings.Join(notes, "\n"); !strings.Contains(joined, "audit_log is forge/pkg/audit's table") || strings.Contains(joined, "alert_events") {
+		t.Errorf("notes = %q; want only audit_log's exclusion note", notes)
+	}
+}
+
+// A kept store never beats another table's name: a projection that collides
+// could not have compiled, so the library table yields, without a warning.
+func TestORMEntities_ExistingLibraryStoreYieldsToTheAppsTable(t *testing.T) {
+	had := func(schemadef.Table, string) (string, bool) { return "internal/db/audit_log_orm_gen.go", true }
+	got, _, deprecations, err := ormEntitiesForTables([]schemadef.Table{libTable(t, "audit_log"), pkTable("audit_logs", "id")}, nil, had)
+	if err != nil {
+		t.Fatalf("the library table must yield, not collide: %v", err)
+	}
+	if s := strings.Join(entityNames(got), ","); s != "AuditLog=audit_logs" || len(deprecations) != 0 {
+		t.Errorf("entities = %s, deprecations = %q; want the app's audit_logs alone", s, deprecations)
+	}
+}
+
+func TestExistingORMProjection_ReadsTheSourceTable(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, table string) {
+		body := "// Code generated by forge. DO NOT EDIT.\n// Source: the APPLIED schema (db/migrations) of table " + table + ".\npackage store\n"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("audit_log_orm_gen.go", "audit_log")
+	write("alert_event_orm_gen.go", "controlplane.alert_events")
+	write("activity_event_orm_gen.go", "something_else")
+	projected := existingORMProjection(dir, "internal/store")
+
+	if file, ok := projected(schemadef.Table{Name: "audit_log", Schema: "controlplane"}, "AuditLog"); !ok || file != "internal/store/audit_log_orm_gen.go" {
+		t.Errorf("projected(audit_log) = %q, %v", file, ok)
+	}
+	if _, ok := projected(schemadef.Table{Name: "alert_events", Schema: "controlplane"}, "AlertEvent"); !ok {
+		t.Error("a schema-qualified source names the same table")
+	}
+	if _, ok := projected(schemadef.Table{Name: "activity_events"}, "ActivityEvent"); ok {
+		t.Error("a file projected from another table is not this table's store")
+	}
+	if _, ok := projected(schemadef.Table{Name: "alert_instances"}, "AlertInstance"); ok {
+		t.Error("no file, no store")
+	}
+}
+
 // Two tables one name is a typed error naming both tables and both fixes,
 // with the tables addressed the way a migration must spell them.
 func TestORMEntities_CollisionIsTypedAndSchemaQualified(t *testing.T) {
 	a, b := pkTable("widget", "id"), pkTable("widgets", "id")
 	a.Schema, b.Schema = "controlplane", "controlplane"
-	_, _, err := ormEntitiesForTables([]schemadef.Table{b, a}, nil)
+	_, _, _, err := ormEntitiesForTables([]schemadef.Table{b, a}, nil, nil)
 	var collision *EntityCollisionError
 	if !errors.As(err, &collision) {
 		t.Fatalf("err = %v (%T), want *EntityCollisionError", err, err)
@@ -143,7 +218,7 @@ func TestORMEntities_CollisionIsTypedAndSchemaQualified(t *testing.T) {
 	// A library table its project opted in collides like any other.
 	opted := libTable(t, "audit_log")
 	opted.Comment = "forge:entity"
-	if _, _, err := ormEntitiesForTables([]schemadef.Table{opted, pkTable("audit_logs", "id")}, nil); !errors.As(err, &collision) {
+	if _, _, _, err := ormEntitiesForTables([]schemadef.Table{opted, pkTable("audit_logs", "id")}, nil, nil); !errors.As(err, &collision) {
 		t.Errorf("an opted-in library table must still be refused on a collision, got %v", err)
 	}
 }

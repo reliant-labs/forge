@@ -413,8 +413,8 @@ func FingerprintInputs(scope InputScope, patterns []string, recipe []byte) (Fing
 	return fp, nil
 }
 
-// hashFiles returns one entry per file — "<size> <x|-> <sha256>" — in the
-// order given, hashing in parallel.
+// hashFiles returns one entry per file — "[link <sha256 of link text> ]<size>
+// <x|-> <sha256>" — in the order given, hashing in parallel.
 func hashFiles(cwd string, files []string) ([]string, int64, error) {
 	entries := make([]string, len(files))
 	sizes := make([]int64, len(files))
@@ -469,18 +469,23 @@ func hashFile(abs string) (string, int64, error) {
 	if err != nil {
 		return "", 0, err
 	}
+	// A symlink is always keyed on its link text, so retargeting it is a
+	// change even between two targets with equal content (a command can read
+	// the link itself, or resolve paths relative to its target). A link to a
+	// regular file is its text AND the target's content; anything else (a
+	// link to a directory, a dangling link) is its text alone.
+	link := ""
 	if li.Mode()&fs.ModeSymlink != 0 {
-		// A link to a regular file is its content; anything else (a link to a
-		// directory, a dangling link) is the link text, so retargeting it is
-		// still a change.
-		if st, err := os.Stat(abs); err != nil || !st.Mode().IsRegular() {
-			target, rerr := os.Readlink(abs)
-			if rerr != nil {
-				return "", 0, rerr
-			}
-			sum := sha256.Sum256([]byte(target))
-			return "link " + hex.EncodeToString(sum[:]), 0, nil
+		target, err := os.Readlink(abs)
+		if err != nil {
+			return "", 0, err
 		}
+		sum := sha256.Sum256([]byte(target))
+		link = "link " + hex.EncodeToString(sum[:])
+		if st, err := os.Stat(abs); err != nil || !st.Mode().IsRegular() {
+			return link, 0, nil
+		}
+		link += " "
 	}
 	f, err := os.Open(abs)
 	if err != nil {
@@ -500,5 +505,5 @@ func hashFile(abs string) (string, int64, error) {
 	if st.Mode()&0o111 != 0 {
 		exec = "x"
 	}
-	return fmt.Sprintf("%d %s %s", n, exec, hex.EncodeToString(h.Sum(nil))), n, nil
+	return fmt.Sprintf("%s%d %s %s", link, n, exec, hex.EncodeToString(h.Sum(nil))), n, nil
 }

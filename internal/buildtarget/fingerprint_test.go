@@ -250,3 +250,38 @@ func TestExpandInputs_StaysInsideTheRoots(t *testing.T) {
 		}
 	})
 }
+
+// TestFingerprintInputs_RetargetedSymlink: an input that is a symlink to a
+// regular file is keyed on its link text as well as its target's content, so
+// pointing it at another file with IDENTICAL content still changes the
+// fingerprint.
+func TestFingerprintInputs_RetargetedSymlink(t *testing.T) {
+	cwd := fixture(t)
+	writeTree(t, cwd, map[string]string{"cfg/a.yaml": "same", "cfg/b.yaml": "same"})
+	link := filepath.Join(cwd, "cfg", "current.yaml")
+	if err := os.Symlink("a.yaml", link); err != nil {
+		t.Fatal(err)
+	}
+	patterns := []string{"cfg/current.yaml"}
+	before := mustFingerprint(t, cwd, patterns, "recipe")
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("b.yaml", link); err != nil {
+		t.Fatal(err)
+	}
+	after := mustFingerprint(t, cwd, patterns, "recipe")
+	if after.Digest == before.Digest {
+		t.Fatal("retargeting an input symlink between equal-content files left the fingerprint unchanged")
+	}
+	if got := after.Changed(before); !reflect.DeepEqual(got, []string{"cfg/current.yaml"}) {
+		t.Fatalf("Changed = %q, want the retargeted link", got)
+	}
+
+	// Its target's content still counts, through an unchanged link.
+	writeTree(t, cwd, map[string]string{"cfg/b.yaml": "edited"})
+	if edited := mustFingerprint(t, cwd, patterns, "recipe"); edited.Digest == after.Digest {
+		t.Fatal("editing a symlinked input's target left the fingerprint unchanged")
+	}
+}

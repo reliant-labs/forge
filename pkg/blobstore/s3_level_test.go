@@ -107,17 +107,20 @@ func TestS3ListLevel(t *testing.T) {
 	}
 }
 
-// A listing whose caller gives up returns at once, though minio's
-// single-request listing takes no context.
+// A listing whose caller gives up cancels the request itself, though
+// minio's single-request listing takes no context: the server sees its
+// request cancelled, and nothing is retried after the deadline. The
+// handler is never released by the test; only the cancellation ends it.
 func TestS3ListLevelHonoursCancellation(t *testing.T) {
 	t.Parallel()
-	release := make(chan struct{})
+	var requests atomic.Int32
+	cancelled := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-release
-		w.WriteHeader(http.StatusForbidden) // not retried
+		requests.Add(1)
+		<-r.Context().Done()
+		cancelled <- struct{}{}
 	}))
 	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(release) })
 	s, err := blobstore.NewS3(s3Config(srv.URL))
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +129,40 @@ func TestS3ListLevelHonoursCancellation(t *testing.T) {
 	defer cancel()
 	if _, err := s.ListLevel(ctx, "", blobstore.LevelOptions{}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("ListLevel past its deadline = %v, want context.DeadlineExceeded", err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server's request was never cancelled: the listing outlived its caller")
+	}
+	if n := requests.Load(); n != 1 {
+		t.Fatalf("server saw %d requests, want 1: nothing is retried past the deadline", n)
+	}
+}
+
+// A transient server error is retried, on the caller's context.
+func TestS3ListLevelRetriesAServerError(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>uploads</Name><KeyCount>1</KeyCount><IsTruncated>false</IsTruncated><Contents><Key>a.txt</Key><Size>1</Size></Contents></ListBucketResult>`)
+	}))
+	t.Cleanup(srv.Close)
+	s, err := blobstore.NewS3(s3Config(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.ListLevel(context.Background(), "", blobstore.LevelOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Objects) != 1 || page.Objects[0].Key != "a.txt" || requests.Load() != 2 {
+		t.Fatalf("ListLevel = %+v after %d requests, want a.txt after 2", page, requests.Load())
 	}
 }
 

@@ -75,7 +75,11 @@ type S3 struct {
 	// api performs Stat, Delete and List against Endpoint; presign signs
 	// URLs for PublicEndpoint. They are the same client when the two match.
 	api, presign *minio.Client
-	chain        *observe.ComponentChain
+	// listClient builds a single-attempt client for Endpoint on the given
+	// transport; ListLevel binds the caller's context into it.
+	listClient func(http.RoundTripper) (*minio.Client, error)
+	transport  http.RoundTripper
+	chain      *observe.ComponentChain
 }
 
 var (
@@ -98,17 +102,27 @@ func NewS3(cfg S3Config) (*S3, error) {
 		cfg.Region = "us-east-1"
 	}
 	transport := observe.NewHTTPTransport(cfg.Transport)
-	api, err := newMinioClient(cfg, cfg.Endpoint, transport)
+	api, err := newMinioClient(cfg, cfg.Endpoint, transport, 0)
 	if err != nil {
 		return nil, fmt.Errorf("blobstore: S3Config.Endpoint: %w", err)
 	}
 	presign := api
 	if cfg.PublicEndpoint != "" && cfg.PublicEndpoint != cfg.Endpoint {
-		if presign, err = newMinioClient(cfg, cfg.PublicEndpoint, transport); err != nil {
+		if presign, err = newMinioClient(cfg, cfg.PublicEndpoint, transport, 0); err != nil {
 			return nil, fmt.Errorf("blobstore: S3Config.PublicEndpoint: %w", err)
 		}
 	}
-	return &S3{bucket: cfg.Bucket, api: api, presign: presign, chain: instrumentation(cfg.Chain, cfg.Logger)}, nil
+	listClient := func(rt http.RoundTripper) (*minio.Client, error) {
+		return newMinioClient(cfg, cfg.Endpoint, rt, 1)
+	}
+	return &S3{
+		bucket:     cfg.Bucket,
+		api:        api,
+		presign:    presign,
+		listClient: listClient,
+		transport:  transport,
+		chain:      instrumentation(cfg.Chain, cfg.Logger),
+	}, nil
 }
 
 // instrumentation is chain, or the default one: a span, the
@@ -130,7 +144,8 @@ func instrumentation(chain *observe.ComponentChain, logger *slog.Logger) *observ
 }
 
 // newMinioClient builds a client for endpoint, a base URL with scheme.
-func newMinioClient(cfg S3Config, endpoint string, transport http.RoundTripper) (*minio.Client, error) {
+// maxRetries caps minio's attempts per request; 0 keeps its default.
+func newMinioClient(cfg S3Config, endpoint string, transport http.RoundTripper, maxRetries int) (*minio.Client, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, err
@@ -148,6 +163,7 @@ func newMinioClient(cfg S3Config, endpoint string, transport http.RoundTripper) 
 		Transport:    transport,
 		Region:       cfg.Region,
 		BucketLookup: lookup,
+		MaxRetries:   maxRetries,
 	})
 }
 
@@ -311,28 +327,56 @@ func (s *S3) ListLevel(ctx context.Context, prefix string, opts LevelOptions) (L
 	})
 }
 
+// listAttempts bounds the attempts listObjectsV2 makes at one page.
+const listAttempts = 3
+
 // listObjectsV2 is one delimited ListObjectsV2 request. minio-go exposes a
 // single request with its continuation token only through Core, whose
-// ListObjectsV2 takes no context, so it runs aside and the caller's
-// cancellation and deadline still end the call. (Its iterator takes a
-// context but hides the token, and resuming it by start-after re-reads a
-// common prefix the previous page ended on.)
+// ListObjectsV2 takes no context. (Its iterator takes a context but hides
+// the token, and resuming it by start-after re-reads a common prefix the
+// previous page ended on.) So the request goes through a client built for
+// this call whose transport carries ctx: cancellation and the deadline end
+// the HTTP request itself, and its connection, not just the wait for it.
+// That client makes one attempt, because minio would retry on its own
+// background context; the retries of a transient failure run here, on ctx.
 func (s *S3) listObjectsV2(ctx context.Context, prefix, cont string, maxKeys int) (minio.ListBucketV2Result, error) {
-	type result struct {
-		res minio.ListBucketV2Result
-		err error
+	client, err := s.listClient(contextTransport{ctx: ctx, base: s.transport})
+	if err != nil {
+		return minio.ListBucketV2Result{}, err
 	}
-	done := make(chan result, 1)
-	go func() {
-		res, err := minio.Core{Client: s.api}.ListObjectsV2(s.bucket, prefix, "", cont, "/", maxKeys)
-		done <- result{res, err}
-	}()
-	select {
-	case <-ctx.Done():
-		return minio.ListBucketV2Result{}, ctx.Err()
-	case r := <-done:
-		return r.res, r.err
+	core := minio.Core{Client: client}
+	for attempt := 1; ; attempt++ {
+		res, err := core.ListObjectsV2(s.bucket, prefix, "", cont, "/", maxKeys)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return minio.ListBucketV2Result{}, ctxErr
+		}
+		if err == nil || attempt == listAttempts || !retryableList(err) {
+			return res, err
+		}
+		select {
+		case <-ctx.Done():
+			return minio.ListBucketV2Result{}, ctx.Err()
+		case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+		}
 	}
+}
+
+// retryableList reports whether a failed listing is worth another attempt:
+// no response at all, throttling, or a server error.
+func retryableList(err error) bool {
+	code := minio.ToErrorResponse(err).StatusCode
+	return code == 0 || code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
+}
+
+// contextTransport sends every request with ctx, for a client whose API
+// builds its requests on a background context.
+type contextTransport struct {
+	ctx  context.Context
+	base http.RoundTripper
+}
+
+func (t contextTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return t.base.RoundTrip(r.WithContext(t.ctx))
 }
 
 // PresignDownload implements DownloadPresigner.

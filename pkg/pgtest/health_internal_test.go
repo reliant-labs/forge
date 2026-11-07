@@ -116,10 +116,11 @@ func TestReap_NeverRemovesALiveServersDir(t *testing.T) {
 	}
 	privatePool(t)
 	boot := func() (uint32, int) {
-		_, port, ep, err := bootEmbedded()
+		_, port, ep, claim, err := bootEmbedded()
 		if err != nil {
 			t.Fatal(err)
 		}
+		claim.release()
 		retainEmbedded(ep)
 		t.Cleanup(func() { stopSharedByPort(port) })
 		pid, alive := postmaster(filepath.Join(runtimeDir(port), "data", "postmaster.pid"))

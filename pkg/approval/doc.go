@@ -126,4 +126,9 @@
 // a transaction the handler already holds, so the whole rpc can be one
 // transaction. Give the follow-up the ctx it receives and write through the
 // same *orm.Client, and its writes commit or roll back with the decision.
+//
+// Deprecated: approval is outside forge's scope (a pending-approval state
+// machine is application logic, not framework) and receives no further
+// changes. Copy it into your own module, as the v1.2.0 migration playbook
+// describes. It keeps working throughout v1 and is removed in the next major.
 package approval

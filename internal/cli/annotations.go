@@ -424,6 +424,13 @@ func markerSpecs() []MarkerSpec {
 			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:readable <why this is not a credential>'; in a migration",
 			Example:   "COMMENT ON COLUMN usage_events.token_hash IS 'forge:readable — SHA-256 of the prompt, a dedupe key, not of a credential';",
 		},
+		{
+			Name:      schemadef.ColumnMarkerIdentitySubject,
+			AppliesTo: "column",
+			Effect:    "Declares the column holds the subject of the environment's managed identity (forge.ManagedIdentity), so the console links a row to its identity user and an identity user to their rows. The bare marker (or `=id`) means the identity user id, the token's `sub`; `=email` means the login email; any other argument fails `forge generate` and `forge lint`. It names no identity provider: the subject is the env's, and an env with no managed identity draws no link. Mark a column only when that identity issued its values — a subject of another IdP (Supabase, say) would open the wrong person, or nobody. The console reads through the read-only role, so a column that role cannot read (forge:secret, or a credential-shaped name with no forge:readable) draws nothing, and `forge lint` says so.",
+			Placement: "COMMENT ON COLUMN <table>.<col> IS 'forge:identity-subject'; or 'forge:identity-subject=email'; in a migration",
+			Example:   "COMMENT ON COLUMN users.external_id IS 'forge:identity-subject — the Zitadel user id';",
+		},
 		// ── Table-comment markers ──
 		//
 		// The same catalog-comment mechanism as the column markers above,

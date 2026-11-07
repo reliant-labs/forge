@@ -88,8 +88,15 @@ func MarkerTokens(comment string) []string {
 func CommentMarkerProblems(site MarkerSite, column, comment string) []MarkerProblem {
 	var out []MarkerProblem
 	allowed := SiteMarkers(site)
+	identityChecked := false
 	for _, tok := range MarkerTokens(comment) {
 		if slices.Contains(allowed, tok) {
+			if tok == ColumnMarkerIdentitySubject && site == SiteColumn && !identityChecked {
+				identityChecked = true
+				if _, _, problem := identitySubject(comment); problem != "" {
+					out = append(out, MarkerProblem{Marker: tok, Problem: problem})
+				}
+			}
 			if tok == ColumnMarkerReadable && site == SiteColumn {
 				if reason, _ := readableReason(comment); reason == "" {
 					out = append(out, MarkerProblem{Marker: tok, Problem: fmt.Sprintf(

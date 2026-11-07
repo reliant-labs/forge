@@ -51,13 +51,20 @@ const (
 // Credential says which kind of credential proved the claims — a token or
 // an API key. Only forge's authenticators set it, never a token's contents;
 // see [Credential].
+//
+// EmailVerified is true only when the issuer vouched that Email is the
+// subject's verified address: the token's own `email_verified` claim, or an
+// Email filled from userinfo (which fills verified addresses only). Code that
+// binds anything to a user BY EMAIL — an invitation, a tenant membership —
+// must require it: an unverified address is one the person typed.
 type Claims struct {
-	UserID string         `json:"user_id"`
-	Email  string         `json:"email"`
-	OrgID  string         `json:"org_id"`
-	Role   string         `json:"role"`
-	Roles  []string       `json:"roles"`
-	Raw    map[string]any `json:"raw,omitempty"`
+	UserID        string         `json:"user_id"`
+	Email         string         `json:"email"`
+	EmailVerified bool           `json:"email_verified,omitempty"`
+	OrgID         string         `json:"org_id"`
+	Role          string         `json:"role"`
+	Roles         []string       `json:"roles"`
+	Raw           map[string]any `json:"raw,omitempty"`
 
 	Credential Credential `json:"-"`
 }
@@ -592,6 +599,7 @@ func defaultProjectClaims(mc map[string]any, opts claimOpts) *Claims {
 		Role:   getStringClaim(mapClaims, "role"),
 		Raw:    mc,
 	}
+	c.EmailVerified = c.Email != "" && verified(mc["email_verified"])
 	var derived bool
 	c.Roles, derived = extractRoles(mc, opts)
 	if derived && c.Role == "" && len(c.Roles) == 1 {

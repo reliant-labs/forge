@@ -52,7 +52,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -81,6 +80,25 @@ const (
 	ResetPath          = "POST /auth/reset"
 )
 
+// The sign-in methods a LOGIN_POLICY document turns on (identity v2). Each is
+// mounted only when the policy offers it — see mountSignInMethods. The
+// handlers are devidp.SignInRoutes, tested in forge against a fake issuer;
+// this file decides which are served and supplies the session cookie.
+const (
+	PasskeyBeginPath          = devidp.PasskeyBeginPath
+	PasskeyFinishPath         = devidp.PasskeyFinishPath
+	PasskeyRegisterBeginPath  = devidp.PasskeyRegisterBeginPath
+	PasskeyRegisterFinishPath = devidp.PasskeyRegisterFinishPath
+	PasskeysPath              = devidp.PasskeysPath
+	MagicRequestPath          = devidp.MagicRequestPath
+	MagicConsumePath          = devidp.MagicConsumePath
+	SocialStartPath           = devidp.SocialStartPath
+	SocialCallbackPath        = devidp.SocialCallbackPath
+	InviteAcceptPath          = devidp.InviteAcceptPath
+	VerifyPath                = devidp.VerifyPath
+	VerifyResendPath          = devidp.VerifyResendPath
+)
+
 // SessionCookieName holds the access token.
 //
 // A COOKIE, not a JSON field, and that is the load-bearing decision: it is
@@ -95,6 +113,21 @@ const (
 // so they cannot drift apart into a sign-in that succeeds and an API that
 // still answers 401.
 const SessionCookieName = middleware.SessionCookieName
+{{- if .MiddlewareDeclaresSecureSessionCookie}}
+
+// SecureSessionCookieName is the name the cookie has when it is Secure: the
+// __Host- prefix keeps a sibling site from planting or overwriting it (see
+// pkg/middleware). The interceptor reads it first.
+const SecureSessionCookieName = middleware.SecureSessionCookieName
+{{- else}}
+
+// Your pkg/middleware reads only the plain name, so the cookie keeps it even
+// when Secure. Declare `SecureSessionCookieName = "__Host-" + SessionCookieName`
+// there and read it first (`forge skill load migrations/v1.1.0/identity-v2`),
+// then point this at it: until then a sibling site under a shared parent
+// domain can plant a session cookie.
+const SecureSessionCookieName = SessionCookieName
+{{- end}}
 {{- else}}
 //
 // Your pkg/middleware predates the session-cookie channel, so its auth
@@ -102,10 +135,60 @@ const SessionCookieName = middleware.SessionCookieName
 // sign-in answers 401. Declare this name there and read it (`forge upgrade
 // list` names the playbook), then point this constant at it.
 const SessionCookieName = "{{.Name}}_session"
+
+// SecureSessionCookieName: see the note above; there is no prefixed name to
+// read until pkg/middleware reads the cookie at all.
+const SecureSessionCookieName = SessionCookieName
 {{- end}}
 
+// sessionCookie is the session cookie's name as this deployment sets it:
+// __Host- prefixed wherever it is Secure, so it is host-only and no sibling
+// site can set one the browser would send here.
+func (b *loginBroker) sessionCookie() string {
+	if b.secureCookie {
+		return SecureSessionCookieName
+	}
+	return SessionCookieName
+}
+
 // RegisterLoginBroker mounts the native sign-in API.
-func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Config"}}, logger *slog.Logger) {
+func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Config"}}, logger *slog.Logger) {
+	// ── Every route below refuses a cross-site request ───────────────────
+	//
+	// A page on another site can POST to these routes from the victim's
+	// browser — as text/plain, which needs no CORS preflight — and create an
+	// account, request mail, or sign the browser into the attacker's
+	// account. devidp.GuardMux mounts each handler behind net/http's
+	// CrossOriginProtection (Sec-Fetch-Site, else Origin against Host),
+	// trusting this app's own public origin (from idp_login_uri) for a
+	// frontend served from another origin than this API. Mount new auth
+	// routes through `mux` too.
+	mux := devidp.GuardMux(appMux, appBaseFrom(cfg.IdpLoginUri))
+	// ── Which sign-in methods and sign-up mode: the LOGIN_POLICY ─────────
+	//
+	// Delivered by the identity converge into idp_login_policy. ABSENT is
+	// the legacy policy, today's exact behaviour: password only, sign-up as
+	// development and auth_self_signup decide. PRESENT, it is the only
+	// source. PRESENT BUT UNUSABLE (malformed, a version this forge does not
+	// know, or methods this broker cannot serve) fails CLOSED, logged at
+	// ERROR: password sign-in only, NO sign-up, and a verified address for
+	// every session, whatever development and auth_self_signup say. What the
+	// document restricted is unknown, so nothing it might have restricted is
+	// opened.
+{{- if .LoginPolicyField}}
+	policy, policyErr := devidp.ParseLoginPolicy(cfg.IdpLoginPolicy)
+	if policyErr != nil {
+		logger.Error("idp_login_policy is unusable; sign-up is OFF and every session needs a verified address until it is fixed", "error", policyErr)
+	}
+{{- else}}
+	//
+	// Your config declares no idp_login_policy, so this broker always
+	// serves the legacy policy. Declare `string idp_login_policy` (sensitive)
+	// on it and parse it here with devidp.ParseLoginPolicy — `forge upgrade
+	// list` names the identity-v2 playbook.
+	policy := devidp.LegacyLoginPolicy()
+{{- end}}
+
 	broker := &loginBroker{
 		client: &devidp.Client{
 			Base: cfg.IdpBase,
@@ -119,8 +202,17 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 		flow: devidp.FlowConfig{
 			ClientID:    cfg.OidcClientId,
 			RedirectURI: cfg.OidcRedirectUri,
+			// No session for an unverified address, when the policy says so
+			// or when a delivered policy could not be read.
+			RequireVerifiedEmail: policy.RequireVerifiedEmail{{if .LoginPolicyField}} || policyErr != nil{{end}},
 		},
+		policy: policy,
 		logger: logger,
+{{- if .TrustedProxyHopsField}}
+		// Rate limits key on the client address the outermost trusted
+		// proxy saw (trusted_proxy_hops; 0 is the connection's peer).
+		proxyHops: int(cfg.TrustedProxyHops),
+{{- end}}
 		// Marks a new account's address verified without a mail round trip.
 		// A dev stack has no mail server, so an unverified address strands
 		// the account behind a step nothing can deliver.
@@ -129,13 +221,13 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 		// environment unless its config opts in. See the RegisterPath mount
 		// below before turning it on.
 {{- if .SelfSignupField}}
-		selfSignup: cfg.Environment == "development" || cfg.AuthSelfSignup,
+		legacySelfSignup: cfg.Environment == "development" || cfg.AuthSelfSignup,
 {{- else}}
 		//
 		// Your config declares no auth_self_signup, so sign-up is
 		// development-only. To let a deployed environment opt in, declare
 		// `bool auth_self_signup` on it and OR its value in here.
-		selfSignup: cfg.Environment == "development",
+		legacySelfSignup: cfg.Environment == "development",
 {{- end}}
 		// Secure cookies everywhere except local development, where the
 		// dev server is plain http and a Secure cookie would be dropped.
@@ -146,6 +238,23 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 		forgotByIP:      newAttemptLimiter(10, time.Hour),
 		resetByUser:     newAttemptLimiter(5, time.Hour),
 	}
+	// With a policy, it alone decides sign-up (open or domain, and only
+	// where the form can end in a session). An unusable one allows none.
+	broker.selfSignup = broker.legacySelfSignup
+{{- if .LoginPolicyField}}
+	if policyErr != nil {
+		broker.selfSignup = false
+	}
+{{- end}}
+	if policy.Present {
+		broker.selfSignup = policy.RegisterServed()
+{{- if .SelfSignupField}}
+		if cfg.AuthSelfSignup {
+			logger.Warn("auth_self_signup is ignored: idp_login_policy decides sign-up (forge.ManagedIdentity.signup)")
+		}
+{{- end}}
+	}
+	broker.mountSignInMethods(mux, cfg)
 	mux.Handle(LoginPath, http.HandlerFunc(broker.handleLogin))
 	mux.Handle(LogoutPath, http.HandlerFunc(broker.handleLogout))
 	mux.Handle(SessionPath, http.HandlerFunc(broker.handleSession))
@@ -174,22 +283,27 @@ func RegisterLoginBroker(mux *http.ServeMux, cfg *config.{{or .ConfigType "Confi
 	// "Create an account", so the screen follows this one switch.
 	//
 	// INVITE-ONLY IS THEREFORE THE DEPLOYED DEFAULT. The issuer still creates
-	// accounts — the control plane's invitation action does — just not from
-	// a public form. There is NO scaffolded invite flow, and an invitation
-	// does not email anyone unless the environment's identity declares
-	// `smtp` (forge.ManagedIdentity.smtp). Building one by hand is a small
-	// job: create the account (IdentityService.InviteUser, or
-	// `forge cloud identity invite`), then give the person a one-time code
-	// with devidp.MintPasswordResetCode and hand them
-	// <your app>/auth/reset?userID=<id>&code=<code> by any channel you
-	// control — your own mailer, a message, an admin screen. /auth/reset
-	// below redeems it. `forge skill load deploy/managed-identity` has the
-	// sketch.
+	// accounts — the control plane's invitation action and the identity's
+	// declared owners do — just not from a public form.
+	//
+	// WITH A LOGIN_POLICY (forge.ManagedIdentity.signup / methods), the
+	// policy decides instead: `signup = "open"` or `"domain"` serves this
+	// route, which then creates the account UNVERIFIED, mails a verification
+	// link and issues no session until the address is proven; invitations
+	// arrive by mail and land on /auth/invite (InviteAcceptPath).
+	//
+	// Under the legacy policy an invitation does not email anyone unless
+	// the environment's identity declares `smtp` (forge.ManagedIdentity.smtp)
+	// or the platform delivers its mail. To hand one over yourself, create
+	// the account (`forge cloud identity invite`), give the person a code
+	// from devidp.MintPasswordResetCode and send them
+	// <your app>/auth/reset?userID=<id>&code=<code> by a channel you control.
+	// `forge skill load deploy/managed-identity` has the sketch.
 	if broker.selfSignup {
 		mux.Handle(RegisterPath, http.HandlerFunc(broker.handleRegister))
 	}
-	// Which optional routes this deployment serves. Public by design — see
-	// handleOptions.
+	// Which optional routes and sign-in methods this deployment serves.
+	// Public by design — see handleOptions.
 	mux.Handle(OptionsPath, http.HandlerFunc(broker.handleOptions))
 
 	// ── Self-serve password reset ─────────────────────────────────────────
@@ -216,8 +330,23 @@ type loginBroker struct {
 	logger       *slog.Logger
 	devMode      bool
 	secureCookie bool
-	// selfSignup is whether RegisterPath is served at all.
-	selfSignup bool
+	// selfSignup is whether RegisterPath is served at all: the policy's
+	// signup mode when a policy is present, else legacySelfSignup
+	// (development, or auth_self_signup).
+	selfSignup       bool
+	legacySelfSignup bool
+
+	// policy is the LOGIN_POLICY in force (legacy when none was delivered),
+	// and methods the handlers for what it turns on; nil under the legacy
+	// policy.
+	policy  devidp.LoginPolicy
+	methods *devidp.SignInRoutes
+
+	// proxyHops is how many trusted reverse proxies append to
+	// X-Forwarded-For (devidp.ClientIP). 0 keys rate limits on the
+	// connection's peer, which behind a proxy makes every per-IP budget a
+	// global one: safe, if blunt.
+	proxyHops int
 
 	// appBase is the app's public origin plus any base path, with no trailing
 	// slash — the prefix of every link this app emails. Derived from
@@ -226,7 +355,7 @@ type loginBroker struct {
 	// victim a reset link that lands on a site they own.
 	appBase string
 
-	policy policyCache
+	passwordRules policyCache
 
 	// Reset-flow limits. In process: with N replicas the budgets are N times
 	// larger, which is still small (see attemptLimiter).
@@ -258,10 +387,75 @@ type registration struct {
 	FamilyName string `json:"familyName,omitempty"`
 }
 
-// authOptions is what the sign-in screen asks before it renders: which of
-// the broker's optional routes this deployment serves.
-type authOptions struct {
-	SelfSignup bool `json:"selfSignup"`
+// mountSignInMethods mounts the routes the LOGIN_POLICY turns on, each only
+// when it is offered: a declaration this broker did not converge is never
+// half-served. Under the legacy policy it mounts nothing.
+//
+// Drop a line to stop serving a method; wrap a handler to add to it. The
+// handlers follow one rule worth keeping if you replace one: every privileged
+// call follows a proof (an emailed code, a passkey assertion, a provider
+// intent, a validated session) for the same user in the same request.
+func (b *loginBroker) mountSignInMethods(mux *devidp.GuardedMux, cfg *config.{{or .ConfigType "Config"}}) {
+	if !b.policy.Present {
+		return
+	}
+	methods, err := devidp.NewSignInRoutes(devidp.SignInRoutesConfig{
+		Client:  b.client,
+		Flow:    b.flow,
+		Policy:  b.policy,
+		AppBase: b.appBase,
+{{- if .AudienceField}}
+		// The identity project, which a signup_role is granted on.
+		ProjectID: cfg.JwtAudience,
+{{- end}}
+		CookiePrefix:     "{{.Name}}",
+		SecureCookie:     b.secureCookie,
+		Logger:           b.logger,
+		TrustedProxyHops: b.proxyHops,
+		SignedIn: func(w http.ResponseWriter, tokens devidp.Tokens) any {
+			b.setSession(w, tokens)
+			return identityFrom(tokens.IDToken)
+		},
+		SessionToken: func(r *http.Request) string {
+			if c, err := r.Cookie(b.sessionCookie()); err == nil {
+				return c.Value
+			}
+			return ""
+		},
+		PasswordPolicy: b.passwordPolicy,
+		RejectPassword: b.writePasswordRejection,
+	})
+	if err != nil {
+		// Fail CLOSED rather than serve half a policy: password sign-in
+		// only, no sign-up, and the verified-email gate kept on. Never the
+		// legacy switches — they would open sign-up an invite-only policy
+		// closed, and drop the gate a verified-email policy set.
+		b.logger.Error("the LOGIN_POLICY sign-in methods are OFF: sign-up is OFF and every session needs a verified address until the policy is fixed", "error", err)
+		b.policy, b.selfSignup = devidp.LegacyLoginPolicy(), false
+		b.flow.RequireVerifiedEmail = true
+		return
+	}
+	b.methods = methods
+	if b.policy.Offers(devidp.MethodPasskey) {
+		mux.Handle(PasskeyBeginPath, http.HandlerFunc(methods.HandlePasskeyBegin))
+		mux.Handle(PasskeyFinishPath, http.HandlerFunc(methods.HandlePasskeyFinish))
+		mux.Handle(PasskeyRegisterBeginPath, http.HandlerFunc(methods.HandlePasskeyRegisterBegin))
+		mux.Handle(PasskeyRegisterFinishPath, http.HandlerFunc(methods.HandlePasskeyRegisterFinish))
+		mux.Handle(PasskeysPath, http.HandlerFunc(methods.HandlePasskeys))
+	}
+	if b.policy.Offers(devidp.MethodMagicLink) {
+		mux.Handle(MagicRequestPath, http.HandlerFunc(methods.HandleMagicRequest))
+		mux.Handle(MagicConsumePath, http.HandlerFunc(methods.HandleMagicConsume))
+	}
+	if len(b.policy.Social) > 0 {
+		mux.Handle(SocialStartPath, http.HandlerFunc(methods.HandleSocialStart))
+		mux.Handle(SocialCallbackPath, http.HandlerFunc(methods.HandleSocialCallback))
+	}
+	// Invitations (owners, declared members, `forge cloud identity invite`)
+	// and address verification work under every signup mode.
+	mux.Handle(InviteAcceptPath, http.HandlerFunc(methods.HandleInviteAccept))
+	mux.Handle(VerifyPath, http.HandlerFunc(methods.HandleVerify))
+	mux.Handle(VerifyResendPath, http.HandlerFunc(methods.HandleVerifyResend))
 }
 
 // identity is the ONLY thing the browser learns about the session: who is
@@ -279,12 +473,27 @@ func (b *loginBroker) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusBadRequest, "malformed request")
 		return
 	}
+	// A LOGIN_POLICY that does not offer passwords refuses them here, not
+	// only in the UI: an account that has a password must not sign in with
+	// the method the policy excluded. The legacy policy offers passwords.
+	if b.refusePassword(w) {
+		return
+	}
 
 	tokens, err := b.client.SignIn(r.Context(), b.flow, devidp.Credentials{
 		LoginName: strings.TrimSpace(req.Email),
 		Password:  req.Password,
 		TOTP:      strings.TrimSpace(req.TOTP),
 	})
+	if errors.Is(err, devidp.ErrEmailUnverified) {
+		// The password was RIGHT, so saying so leaks nothing: only someone
+		// holding it gets here. The screen offers to resend the link.
+		writeAuthJSON(w, http.StatusForbidden, map[string]string{
+			"error": "Confirm your email address first: use the link we sent, or ask for a new one.",
+			"code":  "email_unverified",
+		})
+		return
+	}
 	if err != nil {
 		// The issuer's message names precisely what it rejected — a bad
 		// password, a locked account, a missing second factor — and is
@@ -300,13 +509,36 @@ func (b *loginBroker) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeAuthJSON(w, http.StatusOK, identityFrom(tokens.IDToken))
 }
 
+// refusePassword answers 403 method_not_offered, and reports true, when the
+// LOGIN_POLICY in force excludes passwords. Every route that authenticates
+// with a password, or sets one, calls it: /auth/login, and /auth/forgot and
+// /auth/reset, whose reset signs the person in with the password it just set.
+// Guarding only /auth/login would leave reset as a password sign-in the
+// policy excluded. The legacy policy offers passwords.
+func (b *loginBroker) refusePassword(w http.ResponseWriter) bool {
+	if !b.policy.Present || b.policy.Offers(devidp.MethodPassword) {
+		return false
+	}
+	writeAuthJSON(w, http.StatusForbidden, map[string]string{
+		"error": "That sign-in method is not offered here.",
+		"code":  devidp.CodeMethodNotOffered,
+	})
+	return true
+}
+
 // handleOptions reports which optional sign-in routes are served, so the
 // screen offers only what will work rather than a button that answers 404.
 //
 // UNAUTHENTICATED, like the password policy: whether sign-up is open is
 // something anyone could learn by trying it.
+//
+// It also lists the sign-in methods, social buttons and whether mail is
+// delivered, so the screen offers passkeys, "email me a link" and "continue
+// with Google" only where they work.
 func (b *loginBroker) handleOptions(w http.ResponseWriter, _ *http.Request) {
-	writeAuthJSON(w, http.StatusOK, authOptions{SelfSignup: b.selfSignup})
+	opts := devidp.OptionsFor(b.policy, b.selfSignup)
+	opts.SelfSignup = b.selfSignup
+	writeAuthJSON(w, http.StatusOK, opts)
 }
 
 // handleRegister creates an account and signs it in. Mounted only when
@@ -315,7 +547,15 @@ func (b *loginBroker) handleOptions(w http.ResponseWriter, _ *http.Request) {
 // The new address is UNVERIFIED outside development: the person typed it,
 // and nothing has proven it is theirs. The session this hands back is
 // therefore proof of a password, not of an address.
+//
+// Under a LOGIN_POLICY (open or domain sign-up) the policy's handler answers
+// instead: the account is created unverified, a verification link is mailed,
+// and NO session is issued until the address is proven.
 func (b *loginBroker) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if b.methods != nil {
+		b.methods.HandleRegister(w, r)
+		return
+	}
 	var req registration
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
 		writeAuthError(w, http.StatusBadRequest, "malformed request")
@@ -355,7 +595,7 @@ func (b *loginBroker) handleRegister(w http.ResponseWriter, r *http.Request) {
 // It exists so the app can decide what to show without reading a cookie it
 // deliberately cannot read. The answer is an identity, never a token.
 func (b *loginBroker) handleSession(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(SessionCookieName)
+	cookie, err := r.Cookie(b.sessionCookie())
 	if err != nil || cookie.Value == "" {
 		writeAuthJSON(w, http.StatusOK, identity{Authenticated: false})
 		return
@@ -365,7 +605,7 @@ func (b *loginBroker) handleSession(w http.ResponseWriter, r *http.Request) {
 
 func (b *loginBroker) handleLogout(w http.ResponseWriter, _ *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     SessionCookieName,
+		Name:     b.sessionCookie(),
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
@@ -393,7 +633,9 @@ func (b *loginBroker) setSession(w http.ResponseWriter, tokens devidp.Tokens) {
 		maxAge = int(time.Hour.Seconds())
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:  SessionCookieName,
+		// Host-only: no Domain, ever, so the cookie goes to this host
+		// alone; __Host- prefixed when Secure (sessionCookie).
+		Name:  b.sessionCookie(),
 		Value: tokens.AccessToken,
 		Path:  "/",
 		// HttpOnly is the whole point — see SessionCookieName.
@@ -527,24 +769,32 @@ type policyCache struct {
 // passwordPolicy returns the issuer's password-complexity policy, cached for
 // policyTTL. Concurrent callers on a cold cache each wait on the one lock
 // rather than each calling the issuer.
+//
+// The LOGIN_POLICY's password rules come first: a hosted instance's gateway
+// does not route the Settings API, and the delivered document carries the
+// rules as last converged. Without them the Settings API is asked (the dev
+// IdP serves it), and without that the answer is "unavailable" (204).
 func (b *loginBroker) passwordPolicy(ctx context.Context) (devidp.PasswordPolicy, error) {
-	b.policy.mu.Lock()
-	defer b.policy.mu.Unlock()
-	if time.Now().Before(b.policy.expires) {
-		if b.policy.unavailable {
+	if p, ok := b.policy.PasswordPolicy(); ok {
+		return p, nil
+	}
+	b.passwordRules.mu.Lock()
+	defer b.passwordRules.mu.Unlock()
+	if time.Now().Before(b.passwordRules.expires) {
+		if b.passwordRules.unavailable {
 			return devidp.PasswordPolicy{}, devidp.ErrPasswordPolicyUnavailable
 		}
-		return b.policy.policy, nil
+		return b.passwordRules.policy, nil
 	}
 	p, err := b.client.PasswordPolicy(ctx)
 	if errors.Is(err, devidp.ErrPasswordPolicyUnavailable) {
-		b.policy.policy, b.policy.unavailable, b.policy.expires = devidp.PasswordPolicy{}, true, time.Now().Add(policyTTL)
+		b.passwordRules.policy, b.passwordRules.unavailable, b.passwordRules.expires = devidp.PasswordPolicy{}, true, time.Now().Add(policyTTL)
 		return devidp.PasswordPolicy{}, err
 	}
 	if err != nil {
 		return devidp.PasswordPolicy{}, err
 	}
-	b.policy.policy, b.policy.unavailable, b.policy.expires = p, false, time.Now().Add(policyTTL)
+	b.passwordRules.policy, b.passwordRules.unavailable, b.passwordRules.expires = p, false, time.Now().Add(policyTTL)
 	return p, nil
 }
 
@@ -640,6 +890,11 @@ const (
 // addresses. Both are charged BEFORE the account lookup and whether or not the
 // address exists, so exhausting a budget tells a guesser nothing.
 func (b *loginBroker) handleForgot(w http.ResponseWriter, r *http.Request) {
+	// No password to reset under a policy that excludes them: the same
+	// answer for every address, so it says nothing about any account.
+	if b.refusePassword(w) {
+		return
+	}
 	var req forgotRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
 		writeAuthError(w, http.StatusBadRequest, "malformed request")
@@ -652,7 +907,7 @@ func (b *loginBroker) handleForgot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if !b.forgotByIP.reserve(clientIP(r)) || !b.forgotByAddress.reserve(email) {
+	if !b.forgotByIP.reserve(devidp.ClientKey(r, b.proxyHops)) || !b.forgotByAddress.reserve(email) {
 		b.logger.WarnContext(ctx, "password reset request refused: rate limited")
 		writeAuthError(w, http.StatusTooManyRequests, forgotBusy)
 		return
@@ -710,6 +965,11 @@ func (b *loginBroker) handleForgot(w http.ResponseWriter, r *http.Request) {
 //     spent, even the right code is refused until the window passes.
 //  4. A wrong, expired and used code are one indistinguishable answer.
 func (b *loginBroker) handleReset(w http.ResponseWriter, r *http.Request) {
+	// A reset sets a password and signs in with it, so a policy that
+	// excludes passwords refuses it before the code is judged or charged.
+	if b.refusePassword(w) {
+		return
+	}
 	var req resetRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
 		writeAuthError(w, http.StatusBadRequest, "malformed request")
@@ -789,20 +1049,6 @@ func appBaseFrom(loginURI string) string {
 	return u.Scheme + "://" + u.Host + strings.TrimRight(path, "/")
 }
 
-// clientIP is the address to rate-limit by: the connection's peer.
-//
-// Deliberately NOT X-Forwarded-For. A header the caller can set is a header an
-// attacker rotates to get a fresh budget on every request. Behind a reverse
-// proxy every client then shares the proxy's address, and the per-IP budget
-// becomes a global one — safe, if blunt. If your proxy is trusted and you want
-// the real client, read the header HERE, and only from a peer you trust.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
 
 // attemptLimiter is a fixed-window budget of attempts per key, in memory.
 //

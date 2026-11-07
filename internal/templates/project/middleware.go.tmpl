@@ -142,6 +142,16 @@ type AuthDeps struct {
 	// implements ClaimsEnricher — so the database reaches it the way it
 	// reaches every other component, through Deps.
 	Enrich ClaimsEnricher
+
+	// DevSessionCookie reads the native sign-in session from its PLAIN
+	// name (SessionCookieName). Set it only in local development
+	// (environment "development"), where the login broker serves plain http
+	// and so sets the plain-named cookie. Everywhere else it is false and
+	// only the __Host- name (SecureSessionCookieName) counts: a plain-named
+	// cookie there can only have been planted by a sibling site — and the
+	// decision must not rest on a forwarded-protocol request header, which
+	// a proxy may not send and a client may forge.
+	DevSessionCookie bool
 }
 
 // ClaimsEnricher is a component that hydrates validated claims before any
@@ -179,6 +189,15 @@ func enrichClaims(_ context.Context, claims *Claims) (*Claims, error) {
 // file READS it, so it is declared once, here, and the broker names it.
 const SessionCookieName = "{{.Name}}_session"
 
+// SecureSessionCookieName is the session cookie's name wherever it is Secure
+// (every deployed environment). The __Host- prefix makes the browser accept
+// it only from this exact host, Secure, Path=/ and with no Domain, so a
+// SIBLING site cannot plant or overwrite it. That matters because sibling
+// sites can be same-site: tenants under a shared parent domain that is not
+// on the Public Suffix List (e.g. <name>.sites.reliantlabs.dev) can each set
+// a cookie for the parent, which the browser then sends here.
+const SecureSessionCookieName = "__Host-" + SessionCookieName
+
 // APIKeyHeader is the request header an API key is read from — "X-API-Key",
 // the same default forge/pkg/auth's APIKeyConfig uses. Rename it here to
 // take keys on another header. A browser client sending it cross-origin also
@@ -211,7 +230,14 @@ const APIKeyHeader = "X-API-Key"
 //
 // It is not a CSRF opening: the cookie is SameSite=Lax, so a cross-site page
 // cannot make the browser send it on a fetch, and a Connect call needs a
-// Content-Type an HTML form cannot produce.
+// Content-Type an HTML form cannot produce. (SameSite does not separate
+// SAME-SITE siblings — see SecureSessionCookieName — which is why the login
+// broker also refuses any request from another origin.)
+//
+// Only the __Host- cookie counts, except in local development
+// (devCredentialFrom, chosen by AuthDeps.DevSessionCookie): a plain-named one
+// outside development can only have been planted by a sibling site (cookie
+// tossing) to sign the browser in as someone else, so it is ignored.
 //
 // Return "" for "no credential presented"; it is treated exactly like a
 // missing Authorization header. This changes only WHERE the credential is
@@ -230,6 +256,19 @@ func credentialFrom(h http.Header) string {
 	}
 	if len(h.Values(APIKeyHeader)) != 0 {
 		return strings.TrimSpace(h.Get(APIKeyHeader))
+	}
+	cookie, err := (&http.Request{Header: h}).Cookie(SecureSessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
+// devCredentialFrom is credentialFrom for local development, where the
+// session cookie is plain-named (AuthDeps.DevSessionCookie).
+func devCredentialFrom(h http.Header) string {
+	if v := credentialFrom(h); v != "" || len(h.Values("Authorization")) != 0 || len(h.Values(APIKeyHeader)) != 0 {
+		return v
 	}
 	cookie, err := (&http.Request{Header: h}).Cookie(SessionCookieName)
 	if err != nil {
@@ -260,6 +299,10 @@ func NewAuthInterceptor(deps AuthDeps) (connect.Interceptor, error) {
 	if deps.Enrich != nil {
 		enrich = deps.Enrich.EnrichClaims
 	}
+	extract := credentialFrom
+	if deps.DevSessionCookie {
+		extract = devCredentialFrom
+	}
 	return authn.NewInterceptor(authn.Policy{
 		ValidatorConfigured: deps.Validate != nil,
 		ExternalAuth:        deps.ExternalAuth,
@@ -267,6 +310,6 @@ func NewAuthInterceptor(deps AuthDeps) (connect.Interceptor, error) {
 		ValidateContext:     deps.Validate,
 		Unauthenticated:     UnauthenticatedProcedures,
 		Enrich:              enrich,
-		ExtractToken:        credentialFrom,
+		ExtractToken:        extract,
 	})
 }

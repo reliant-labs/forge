@@ -144,6 +144,7 @@ func (u *UserInfo) fill(ctx context.Context, token string, claims *Claims) {
 	if e, ok := u.cache[claims.UserID]; ok && now.Before(e.expires) {
 		u.mu.Unlock()
 		claims.Email = e.email
+		claims.EmailVerified = e.email != ""
 		return
 	}
 	u.mu.Unlock()
@@ -160,6 +161,8 @@ func (u *UserInfo) fill(ctx context.Context, token string, claims *Claims) {
 	u.cache[claims.UserID] = userInfoEntry{email: email, expires: now.Add(ttl)}
 	u.mu.Unlock()
 	claims.Email = email
+	// Userinfo fills only a verified address (see lookup).
+	claims.EmailVerified = email != ""
 }
 
 // lookup asks the userinfo endpoint for subject's verified address.

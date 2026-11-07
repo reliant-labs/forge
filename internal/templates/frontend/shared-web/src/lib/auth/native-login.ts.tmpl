@@ -22,6 +22,15 @@
 //	forgot password              →  POST /auth/forgot  → reset link requested
 //	reset password               →  POST /auth/reset   → password set, signed in
 //
+// And the methods a LOGIN_POLICY turns on (GET /auth/options says which):
+//
+//	passkey        →  POST /auth/passkey/begin, /finish  (navigator.credentials.get)
+//	add a passkey  →  POST /auth/passkey/register/begin, /finish  (…credentials.create)
+//	magic link     →  POST /auth/magic/request, then /auth/magic/consume
+//	Google/GitHub  →  POST /auth/social/start → the provider → /auth/social/callback
+//	invitation     →  POST /auth/invite/accept
+//	verify address →  POST /auth/verify, /auth/verify/resend
+//
 // ── Why the token is not here ─────────────────────────────────────────
 //
 // The session cookie is HttpOnly, so this code CANNOT read it — and that
@@ -98,7 +107,8 @@ export interface Credentials {
 
 export interface Registration {
   email: string;
-  password: string;
+  /** Optional where passkeys or magic links are offered (GET /auth/options). */
+  password?: string;
   givenName?: string;
   familyName?: string;
 }
@@ -132,13 +142,33 @@ export interface PasswordPolicy {
 export class AuthError extends Error {
   readonly status: number;
   readonly unmet: PasswordRule[];
+  /**
+   * The server's machine-readable reason, when it gave one: "email_unverified"
+   * (offer to resend the link), "magic_other_browser", "invalid_code",
+   * "social_link_required", "social_no_account", "signup_not_allowed", …
+   */
+  readonly code: string;
 
-  constructor(message: string, status: number, unmet: PasswordRule[] = []) {
+  constructor(message: string, status: number, unmet: PasswordRule[] = [], code = "") {
     super(message);
     this.name = "AuthError";
     this.status = status;
     this.unmet = unmet;
+    this.code = code;
   }
+}
+
+/** The server accepted a sign-up and mailed a link to confirm the address. No session yet. */
+export interface VerifySent {
+  verify: "sent";
+  message: string;
+}
+
+/** True when a sign-up (or social sign-in) answer is "check your email", not a session. */
+export function isVerifySent(value: unknown): value is VerifySent {
+  return (
+    typeof value === "object" && value !== null && (value as { verify?: unknown }).verify === "sent"
+  );
 }
 
 /** Signs in. Resolves with the identity; the session cookie is already set. */
@@ -151,19 +181,22 @@ export async function signIn(credentials: Credentials): Promise<Identity> {
 }
 
 /**
- * Creates an account and signs in, in one call.
+ * Creates an account.
  *
- * The server does both, so there is no window where someone has an account
- * but no session — no bouncing back to a login form to retype the password
- * they just chose.
+ * Without a LOGIN_POLICY (development, or auth_self_signup) the server also
+ * signs in, so there is no bouncing back to a login form to retype the
+ * password just chosen, and this resolves with the identity. Under an open or
+ * domain sign-up it resolves with VerifySent instead: the address must be
+ * confirmed from the email first, and the answer is the same whether or not
+ * the address already had an account. Check with isVerifySent.
  */
-export async function signUp(details: Registration): Promise<Identity> {
-  return post("/auth/register", {
+export async function signUp(details: Registration): Promise<Identity | VerifySent> {
+  return (await request("/auth/register", {
     email: details.email,
-    password: details.password,
+    ...(details.password ? { password: details.password } : {}),
     ...(details.givenName ? { givenName: details.givenName } : {}),
     ...(details.familyName ? { familyName: details.familyName } : {}),
-  });
+  })) as Identity | VerifySent;
 }
 
 /** Clears the session cookie. */
@@ -258,15 +291,36 @@ export async function resetPassword(reset: PasswordReset): Promise<Identity> {
   return post("/auth/reset", reset);
 }
 
-/** Which optional sign-in routes this deployment serves (GET /auth/options). */
+/** A first-factor method the sign-in screen may offer. */
+export type SignInMethod = "password" | "passkey" | "magic_link";
+
+/** Which optional sign-in routes and methods this deployment serves (GET /auth/options). */
 export interface AuthOptions {
   /**
    * Whether POST /auth/register is served. Off in every deployed environment
-   * unless its config sets auth_self_signup, so an app is invite-only until
+   * unless its identity declares an open or domain sign-up (or, without
+   * one, its config sets auth_self_signup), so an app is invite-only until
    * it opts in.
    */
   selfSignup: boolean;
+  /** "invite" | "open" | "domain". */
+  signup: string;
+  /** The methods to offer, in the order to offer them. */
+  methods: SignInMethod[];
+  /** One button each. */
+  social: { type: string; label: string }[];
+  /** Whether the app's mail reaches anyone (magic links, verification). */
+  mail: boolean;
 }
+
+/** What the screen assumes until the server says otherwise: password only, invite-only. */
+export const LEGACY_AUTH_OPTIONS: AuthOptions = {
+  selfSignup: false,
+  signup: "invite",
+  methods: ["password"],
+  social: [],
+  mail: false,
+};
 
 /**
  * Reads which optional sign-in routes the server serves.
@@ -282,11 +336,25 @@ export async function fetchAuthOptions(): Promise<AuthOptions> {
       credentials: "include",
       headers: { Accept: "application/json" },
     });
-    if (!response.ok) return { selfSignup: false };
+    if (!response.ok) return LEGACY_AUTH_OPTIONS;
     const body = (await response.json()) as Partial<AuthOptions> | null;
-    return { selfSignup: body?.selfSignup === true };
+    // An older server answers only {selfSignup}; everything else stays legacy.
+    const known = new Set<string>(["password", "passkey", "magic_link"]);
+    const methods = Array.isArray(body?.methods)
+      ? body.methods.filter((m): m is SignInMethod => known.has(m))
+      : LEGACY_AUTH_OPTIONS.methods;
+    const social = Array.isArray(body?.social)
+      ? body.social.filter((s) => typeof s?.type === "string" && typeof s?.label === "string")
+      : [];
+    return {
+      selfSignup: body?.selfSignup === true,
+      signup: typeof body?.signup === "string" ? body.signup : "invite",
+      methods,
+      social,
+      mail: body?.mail === true,
+    };
   } catch {
-    return { selfSignup: false };
+    return LEGACY_AUTH_OPTIONS;
   }
 }
 
@@ -369,12 +437,17 @@ export function describeRule(policy: PasswordPolicy, rule: PasswordRule): string
  */
 async function rejection(response: Response): Promise<AuthError> {
   try {
-    const body = (await response.json()) as { error?: string; unmet?: PasswordRule[] };
+    const body = (await response.json()) as {
+      error?: string;
+      unmet?: PasswordRule[];
+      code?: string;
+    };
     if (body.error) {
       return new AuthError(
         body.error,
         response.status,
         Array.isArray(body.unmet) ? body.unmet : [],
+        typeof body.code === "string" ? body.code : "",
       );
     }
   } catch {
@@ -386,4 +459,258 @@ async function rejection(response: Response): Promise<AuthError> {
       : "Those credentials were not accepted.",
     response.status,
   );
+}
+
+// ── Passkeys, magic links, social sign-in, invitations ──────────────────
+//
+// Each is an ordinary POST to this app's API, like everything above. A
+// passkey's WebAuthn ceremony runs in the browser (it has to: the
+// authenticator is here), but the challenge comes from, and the answer goes
+// back to, this app's server, which checks the origin before the identity
+// provider sees it. The base64url conversions are inline: no dependency.
+
+/** base64url (padding optional) → bytes, for the WebAuthn options the server sends. */
+export function fromBase64url(value: string): ArrayBuffer {
+  const b64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob(padded);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes.buffer;
+}
+
+/** bytes → base64url without padding, for the credential the browser returns. */
+export function toBase64url(value: ArrayBuffer | ArrayBufferView): string {
+  const bytes = ArrayBuffer.isView(value)
+    ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+    : new Uint8Array(value);
+  let raw = "";
+  for (const b of bytes) raw += String.fromCharCode(b);
+  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+interface JSONCredentialDescriptor {
+  type: PublicKeyCredentialType;
+  id: string;
+  transports?: AuthenticatorTransport[];
+}
+
+function descriptors(list: unknown): PublicKeyCredentialDescriptor[] {
+  return ((list as JSONCredentialDescriptor[] | undefined) ?? []).map((c) => ({
+    ...c,
+    id: fromBase64url(c.id),
+  }));
+}
+
+/** The server's request options (`{publicKey: {...}}`, base64url fields) as WebAuthn wants them. */
+export function toRequestOptions(options: unknown): CredentialRequestOptions {
+  const pk = (options as { publicKey: Record<string, unknown> }).publicKey;
+  return {
+    publicKey: {
+      ...pk,
+      challenge: fromBase64url(String(pk.challenge)),
+      allowCredentials: descriptors(pk.allowCredentials),
+    } as PublicKeyCredentialRequestOptions,
+  };
+}
+
+/** The server's creation options as WebAuthn wants them. */
+export function toCreationOptions(options: unknown): CredentialCreationOptions {
+  const pk = (options as { publicKey: Record<string, unknown> }).publicKey;
+  const user = pk.user as { id: string; name: string; displayName: string };
+  return {
+    publicKey: {
+      ...pk,
+      challenge: fromBase64url(String(pk.challenge)),
+      user: { ...user, id: fromBase64url(user.id) },
+      excludeCredentials: descriptors(pk.excludeCredentials),
+    } as PublicKeyCredentialCreationOptions,
+  };
+}
+
+/** A PublicKeyCredential as the JSON the server expects (every buffer base64url). */
+export function credentialToJSON(credential: PublicKeyCredential): Record<string, unknown> {
+  const response = credential.response as unknown as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const key of [
+    "clientDataJSON",
+    "authenticatorData",
+    "signature",
+    "userHandle",
+    "attestationObject",
+  ]) {
+    const v = response[key];
+    // Not `instanceof ArrayBuffer`: a buffer from another realm (an iframe, a
+    // test environment) fails it.
+    if (ArrayBuffer.isView(v) || Object.prototype.toString.call(v) === "[object ArrayBuffer]") {
+      out[key] = toBase64url(v as ArrayBuffer);
+    }
+  }
+  return {
+    id: credential.id,
+    rawId: toBase64url(credential.rawId),
+    type: credential.type,
+    response: out,
+  };
+}
+
+/** Whether this browser can do passkeys at all. */
+export function passkeysSupported(): boolean {
+  return typeof window !== "undefined" && typeof window.PublicKeyCredential === "function";
+}
+
+/**
+ * Signs in with a passkey. `email` may be omitted right after an invitation
+ * or a verification enrolled one: the server remembers whom, in this browser.
+ */
+export async function passkeySignIn(email?: string): Promise<Identity> {
+  const begin = (await request("/auth/passkey/begin", email ? { email } : {})) as {
+    options: unknown;
+  };
+  let credential: PublicKeyCredential | null;
+  try {
+    credential = (await navigator.credentials.get(
+      toRequestOptions(begin.options),
+    )) as PublicKeyCredential | null;
+  } catch {
+    // The person cancelled, or this device holds no passkey for the account.
+    credential = null;
+  }
+  if (!credential) throw new AuthError("No passkey was used.", 0, [], "passkey_cancelled");
+  return post("/auth/passkey/finish", { credential: credentialToJSON(credential) });
+}
+
+/** Adds a passkey to the signed-in (or just-invited) account. */
+export async function registerPasskey(name?: string): Promise<void> {
+  const begin = (await request("/auth/passkey/register/begin", {})) as { options: unknown };
+  let credential: PublicKeyCredential | null;
+  try {
+    credential = (await navigator.credentials.create(
+      toCreationOptions(begin.options),
+    )) as PublicKeyCredential | null;
+  } catch {
+    credential = null;
+  }
+  if (!credential) throw new AuthError("No passkey was created.", 0, [], "passkey_cancelled");
+  await request("/auth/passkey/register/finish", {
+    credential: credentialToJSON(credential),
+    name: name ?? "",
+  });
+}
+
+/** One registered passkey. */
+export interface PasskeySummary {
+  id: string;
+  name: string;
+}
+
+/** The signed-in account's passkeys. */
+export async function listPasskeys(): Promise<PasskeySummary[]> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiOrigin()}/auth/passkeys`, {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    throw new AuthError("Could not reach the sign-in service.", 0);
+  }
+  if (!response.ok) throw await rejection(response);
+  const body = (await response.json()) as { passkeys?: PasskeySummary[] };
+  return body.passkeys ?? [];
+}
+
+/**
+ * Emails a sign-in link that works in THIS browser only. Resolves with the
+ * server's message, which is the same whether or not the address can sign in.
+ */
+export async function requestMagicLink(email: string): Promise<string> {
+  const body = (await request("/auth/magic/request", { email })) as { message?: string };
+  return body.message ?? "If that address can sign in, a sign-in link is on its way.";
+}
+
+/**
+ * Redeems the code from a magic link: clicked, or typed from the email on
+ * another device into the tab that asked. Rejects with code
+ * "magic_other_browser" when this browser did not ask for the link.
+ */
+export async function consumeMagicLink(code: string): Promise<Identity> {
+  return post("/auth/magic/consume", { code });
+}
+
+/** Starts a social sign-in and leaves for the provider. */
+export async function socialStart(provider: string, returnTo?: string): Promise<void> {
+  const body = (await request("/auth/social/start", {
+    provider,
+    ...(returnTo ? { returnTo } : {}),
+  })) as { redirect: string };
+  window.location.assign(body.redirect);
+}
+
+/** What a social sign-in came back to: a session, or "confirm your address first". */
+export type SocialResult = { identity: Identity; returnTo: string } | VerifySent;
+
+/** Completes a social sign-in with the id and token the provider round trip appended. */
+export async function socialComplete(id: string, token: string): Promise<SocialResult> {
+  return (await request("/auth/social/callback", { id, token })) as SocialResult;
+}
+
+/**
+ * An invitation being accepted, with the method the invitee chose. "social"
+ * connects one of the deployment's social accounts (`provider` is its type).
+ */
+export interface InviteAcceptance {
+  userID: string;
+  code: string;
+  orgID?: string;
+  method: SignInMethod | "social";
+  password?: string;
+  provider?: string;
+}
+
+/** What accepting an invitation led to. */
+export type InviteResult = Identity | { enroll: true } | { message: string } | { redirect: string };
+
+/**
+ * Accepts an invitation. With a password: signed in (an Identity). With a
+ * passkey: `{enroll: true}`, then registerPasskey() and passkeySignIn().
+ * With a magic link: `{message}`, and the link is on its way to this browser.
+ * With a social account: `{redirect}`, and this leaves for the provider; the
+ * invitation is redeemed when the provider comes back to
+ * /auth/social/callback, in this browser.
+ */
+export async function acceptInvite(invite: InviteAcceptance): Promise<InviteResult> {
+  const result = (await request("/auth/invite/accept", invite)) as InviteResult;
+  if ("redirect" in result) window.location.assign(result.redirect);
+  return result;
+}
+
+/**
+ * What confirming an address answers. `enroll`: a passkey may be added now.
+ * `password: "not_set"`: the address is confirmed, but the password chosen at
+ * sign-up could not be saved; `reset`, when present, is a reset code for
+ * choosing one again right away (resetPassword).
+ */
+export interface VerifyResult {
+  verified: boolean;
+  enroll: boolean;
+  password?: "not_set";
+  reset?: { userID: string; code: string };
+  /**
+   * Sign-in methods the account held from before the address was confirmed
+   * were removed: nothing proves the address owner set them. Choose a
+   * password ("Forgot password") or add a passkey.
+   */
+  credentialsReset?: boolean;
+}
+
+/** Confirms an address from its verification link. */
+export async function verifyEmail(userID: string, code: string): Promise<VerifyResult> {
+  return (await request("/auth/verify", { userID, code })) as VerifyResult;
+}
+
+/** Mails a fresh verification link. The same answer for every address. */
+export async function resendVerification(email: string): Promise<string> {
+  const body = (await request("/auth/verify/resend", { email })) as { message?: string };
+  return body.message ?? "If that address is waiting to be confirmed, a new link is on its way.";
 }

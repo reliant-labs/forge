@@ -668,9 +668,10 @@ func renderServeFor(t *testing.T, g *ProjectGenerator) string {
 			"assertion below would vacuously pass against a serve.go with no gated blocks at all")
 	}
 	out, err := templates.ProjectTemplates().Render("cmd-tree-serve.go.tmpl", struct {
-		Module       string
-		ConfigFields map[string]bool
-		RESTEnabled  bool
+		Module           string
+		ConfigFields     map[string]bool
+		RESTEnabled      bool
+		DevSessionCookie bool
 	}{Module: g.ModulePath, ConfigFields: fields})
 	if err != nil {
 		t.Fatalf("render cmd-tree-serve.go.tmpl: %v", err)

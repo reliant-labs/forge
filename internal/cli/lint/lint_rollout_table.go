@@ -216,6 +216,9 @@ var newRules = []rolloutGroup{
 	// An owner-scoping wrapper whose owner source disagrees with its
 	// siblings' (growth: appended Lists scoped tenant_id by claims.UserID).
 	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{"forgeconv-crud-owner-resolver"}},
+	// Identity v2: a declared sign-in method or sign-up mode the login
+	// broker does not serve, which would be converged and silently ignored.
+	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{ruleIdentityMethods}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

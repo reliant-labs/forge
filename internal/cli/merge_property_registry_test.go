@@ -150,6 +150,7 @@ var mergeCases = map[string]mergeCase{
 	"retire obsolete disowns":                                   perInput("one key per disowned path in .forge/disowned.json"),
 	"rehash tracked files":                                      noOutput("re-records hashes of files other steps wrote"),
 	"Tier-1 file-stomp guard: compare drift with fresh renders": noOutput("refusal check"),
+	"generate input hooks (forge.yaml)":                         external("the project's input descriptor hooks"),
 	"generate hooks (forge.yaml)":                               external("the project's own hooks"),
 	"go mod tidy (gen/)":                                        external("gen/go.mod / gen/go.sum"),
 	"go mod tidy (after generate hooks)":                        external("go.mod / go.sum"),

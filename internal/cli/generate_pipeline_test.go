@@ -75,6 +75,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"CRUD handlers",
 		// AFTER the stub and CRUD steps: the hooks' <service>Implemented
 		// table is read off the handler packages they write.
+		"generate input hooks (forge.yaml)",
 		"frontend hooks",
 		"service mocks",
 		"internal package contracts",

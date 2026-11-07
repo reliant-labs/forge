@@ -64,8 +64,10 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // release ships this range from the commit it tags; release-web-runtime.sh
 // refuses a range the computed version does not satisfy.
 // TestWebRuntimePublishedRangeTracksPackage
-// holds its major.minor to package.json's.
-const webRuntimePublishedRange = "^0.13.3"
+// holds its major.minor to package.json's. Generated service-hooks require
+// createMutationCall/createServiceMutations, first published in 0.13.5; a
+// compatible latest release is insufficient when a lockfile retains the floor.
+const webRuntimePublishedRange = "^0.13.5"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a

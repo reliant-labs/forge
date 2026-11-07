@@ -241,7 +241,7 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 // buildExternalUnit runs one ShellBuild unit and records its state. env is
 // consulted first for the images the unit is built FROM; it blocks until those
 // builds finish.
-func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOptions, tag, projectDir string, aliases map[string][]WorkloadEntity, builtImageEnv func(WorkloadEntity) (map[string]string, error)) buildResult {
+func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOptions, tag, projectDir string, aliases map[string][]WorkloadEntity, builtImageEnv func(WorkloadEntity) (map[string]string, error)) (result buildResult) {
 	// Per-service tag — see externalBuildTag for the precedence and for
 	// why a release build overrides it with the release version.
 	svcTag := externalBuildTag(svc, tag, opts)
@@ -262,8 +262,15 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 	}
 	builtEnv, err := builtImageEnv(svc)
 	if err != nil {
-		return buildResult{name: svc.Name + " (external)", kind: "external", err: err}
+		r := buildResult{name: svc.Name + " (external)", kind: "external", err: err}
+		recordBuildResult(ctx, upNow(ctx), r) // never started: a zero-length failed span
+		return r
 	}
+	// The unit's span starts HERE, after the wait for what it is built
+	// FROM: time spent queued behind a parent belongs to the parent's span,
+	// and counting it twice would hide which build is actually slow.
+	started := upNow(ctx)
+	defer func() { recordBuildResult(ctx, started, result) }()
 	if len(builtEnv) > 0 {
 		// A fresh map: the declared env is shared with every consumer of
 		// the workload entity and must never be written through.

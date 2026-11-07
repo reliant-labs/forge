@@ -83,7 +83,10 @@ func reconcileDeclaredClusters(ctx context.Context, clusters []ClusterEntity, pr
 		if err != nil {
 			return fmt.Errorf("cluster %q: %w", clusters[i].Name, err)
 		}
-		if err := provider.Ensure(ctx, clusters[i], clusters, projectDir, env); err != nil {
+		_, span := startUpSpan(ctx, clusters[i].Name)
+		err = provider.Ensure(ctx, clusters[i], clusters, projectDir, env)
+		span.end(err)
+		if err != nil {
 			return fmt.Errorf("ensure cluster %q: %w", clusters[i].Name, err)
 		}
 	}

@@ -98,7 +98,8 @@ CMD ["air", "-c", ".air.toml"]
 # ── Debug stage (use with: docker build --target debug) ──
 FROM alpine:3.21 AS debug
 
-RUN apk --no-cache add ca-certificates
+# Named time zones must work without the builder's GOROOT zoneinfo archive.
+RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 
@@ -123,7 +124,8 @@ CMD ["server"]
 # ── Production stage (default) ──
 FROM alpine:3.21 AS production
 
-RUN apk --no-cache add ca-certificates
+# Named time zones must work without the builder's GOROOT zoneinfo archive.
+RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 

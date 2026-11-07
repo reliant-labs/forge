@@ -74,6 +74,11 @@ type poolState struct {
 	URL   string `json:"url"`
 	Port  uint32 `json:"port"`
 	Users []int  `json:"users"`
+	// PID is the postmaster the booting process saw start, recorded so a
+	// server whose data directory (pid file included) was deleted under it
+	// can still be found and stopped (health.go). 0 in a state file an older
+	// forge wrote.
+	PID int `json:"pid,omitempty"`
 }
 
 // pool binding modes for the current process's single shared reference.
@@ -170,7 +175,7 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 	st := readPoolState()
 	st.Users = prunePIDs(st.Users)
 	if st.URL != "" && st.Port != 0 {
-		switch probeShared(st.Port, st.URL, len(st.Users) > 0) {
+		switch probeShared(st, len(st.Users) > 0) {
 		case sharedReady:
 			// Reuse the live shared server.
 			st.Users = addPID(st.Users, os.Getpid())
@@ -180,6 +185,12 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 			// Alive, in use, and still not answering: leave it to the
 			// processes using it and run on a server of our own.
 			return bootStandalone()
+		case sharedBroken:
+			// Alive but unable to create a database (health.go): it fails
+			// every user, so it is replaced even while others hold it. They
+			// re-attach on their next failed create (healShared).
+			stopBroken(st)
+			st.Port = 0
 		case sharedGone:
 		}
 	}
@@ -195,7 +206,8 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 		return "", 0, 0, berr
 	}
 	retainEmbedded(ep)
-	writePoolState(poolState{URL: u, Port: p, Users: []int{os.Getpid()}})
+	pid, _ := postmaster(filepath.Join(runtimeDir(p), "data", "postmaster.pid"))
+	writePoolState(poolState{URL: u, Port: p, Users: []int{os.Getpid()}, PID: pid})
 	return u, p, poolModePooled, nil
 }
 
@@ -257,6 +269,10 @@ const (
 	// sharedBusy: the postmaster is alive and in use but did not answer
 	// within sharedPatience — never stop it; run beside it.
 	sharedBusy
+	// sharedBroken: the postmaster is alive but its data directory cannot
+	// serve a CREATE DATABASE (health.go) — stop it and replace it, in use or
+	// not: it fails every caller.
+	sharedBroken
 )
 
 // probeShared decides what an attaching process may do with the shared server
@@ -271,14 +287,25 @@ const (
 // is gone at once; a live one is retried for sharedPatience (on the monotonic
 // clock, so a wall-clock jump neither shortens nor stretches the wait); and if
 // it still does not answer, it is stopped only when nobody else uses it.
-func probeShared(port uint32, url string, inUse bool) sharedVerdict {
-	pidFile := filepath.Join(runtimeDir(port), "data", "postmaster.pid")
+//
+// A server that answers is not therefore usable either: one whose data
+// directory was deleted under it answers a ping and fails every CREATE
+// DATABASE. That is sharedBroken, decided from the files before any ping.
+func probeShared(st poolState, inUse bool) sharedVerdict {
+	pidFile := filepath.Join(runtimeDir(st.Port), "data", "postmaster.pid")
 	start := time.Now()
 	for {
-		if _, alive := postmaster(pidFile); !alive {
+		pid, alive := postmaster(pidFile)
+		if !alive {
+			pid = 0
+		}
+		if sharedBrokenReason(st, pid) != "" {
+			return sharedBroken
+		}
+		if !alive {
 			return sharedGone
 		}
-		if CanReach(url) {
+		if CanReach(st.URL) {
 			return sharedReady
 		}
 		if time.Since(start) >= sharedPatience {

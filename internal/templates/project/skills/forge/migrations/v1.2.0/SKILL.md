@@ -1,6 +1,6 @@
 ---
 name: v1.2.0
-description: Upgrade a project to forge v1.2.0. In mock mode every RPC of every service a frontend has generated TypeScript for — custom reads, streams, vendored contracts — now answers a deterministic, schema-valid default instead of Unimplemented; forge generate writes src/mocks/services/<service>_gen.ts per service and mock-transport_gen.ts gathers them. Hand-written scenario handlers that only filled in a response shape can become mockService(Service, { rpc: (req, d) => patch(d.rpc(req), …) }) overrides, typed for vendored services too. Use when a browser frontend has src/lib/mock-transport_gen.ts. Also: forge/pkg/approval, added in v1.0.16, is removed (#1753 reverted); nothing in forge, reliant or control-plane imported it. Use when a Go file imports forge/pkg/approval.
+description: Upgrade a project to forge v1.2.0. In mock mode every RPC of every service a frontend has generated TypeScript for — custom reads, streams, vendored contracts — now answers a deterministic, schema-valid default instead of Unimplemented; forge generate writes src/mocks/services/<service>_gen.ts per service and mock-transport_gen.ts gathers them. Hand-written scenario handlers that only filled in a response shape can become mockService(Service, { rpc: (req, d) => patch(d.rpc(req), …) }) overrides, typed for vendored services too. Use when a browser frontend has src/lib/mock-transport_gen.ts. Also: forge/pkg/approval, added in v1.0.16, is deprecated (out of scope) and will be removed in the next major; nothing in forge, reliant or control-plane imported it. Use when a Go file imports forge/pkg/approval.
 version: v1.2.0
 detection: for f in frontends/*/src/lib/mock-transport_gen.ts; do [ -f "$f" ] && exit 0; done; grep -rqs --include='*.go' 'forge/pkg/approval"' . && exit 0; exit 1
 ---
@@ -61,20 +61,23 @@ handlers: {
 `mockService` is typed by the service descriptor, so a vendored service's
 handlers no longer need the untyped `"pkg.v1.Svc/Method"` escape hatch.
 
-## 2. `forge/pkg/approval` is removed
+## 2. `forge/pkg/approval` is deprecated
 
 **Use when** a Go file imports `github.com/reliant-labs/forge/pkg/approval`.
 
 ### What changed
 
 `pkg/approval` (`Propose`, `Decide`, `ExpireDue`, `Cancel`, `Redrive`,
-`SchemaSQL`), added in v1.0.16 by #1753, is removed. It was outside forge's
+`SchemaSQL`), added in v1.0.16 by #1753, is deprecated. It is outside forge's
 scope: a pending-approval state machine is application logic, not framework.
-Nothing in forge, its templates, reliant or control-plane imported it.
+Nothing in forge, its templates, reliant or control-plane imported it. It keeps
+working unchanged throughout v1 (no further fixes or features), and the next
+major removes it; staticcheck now flags each import (SA1019).
 
 ### What to do
 
-Copy the package from v1.1.0 into your own module (for example
+Nothing is required in v1. To stop depending on it, copy the package from
+v1.1.0 into your own module (for example
 `internal/approval/`) and change the import path:
 
 ```bash

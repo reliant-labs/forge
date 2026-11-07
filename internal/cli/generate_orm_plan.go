@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // planORMEntitiesStep is the pipeline step that plans the ORM's entity set.
@@ -12,6 +13,7 @@ const planORMEntitiesStep = "plan ORM entities"
 
 // ormEntityPlan is one computation of the ORM's entity set.
 type ormEntityPlan struct {
+	dir      string // the ORM package directory it was planned for
 	entities []codegen.EntityDef
 	err      error
 }
@@ -36,8 +38,9 @@ type ormEntityPlan struct {
 // report, exactly as before: this step only moves the one error that is
 // certain and costs the most to discover late.
 func stepPlanORMEntities(ctx *pipelineContext) error {
-	entities, err := codegen.ParseORMEntities(ctx.ProjectDir)
-	ctx.ormPlan = &ormEntityPlan{entities: entities, err: err}
+	dir := config.ORMPackage(ctx.Cfg).PackageDir()
+	entities, err := codegen.ParseORMEntities(ctx.ProjectDir, dir)
+	ctx.ormPlan = &ormEntityPlan{dir: dir, entities: entities, err: err}
 	var collision *codegen.EntityCollisionError
 	if errors.As(err, &collision) {
 		return fmt.Errorf("the applied schema cannot project to forge's ORM (refused before generating anything): %w", err)
@@ -45,12 +48,12 @@ func stepPlanORMEntities(ctx *pipelineContext) error {
 	return nil
 }
 
-// ormEntities returns the ORM's entity set: the plan when
-// stepPlanORMEntities made one, else a fresh computation (a step preset or a
-// test that runs the ORM step alone).
-func (ctx *pipelineContext) ormEntities() ([]codegen.EntityDef, error) {
-	if p := ctx.ormPlan; p != nil {
+// ormEntities returns the ORM's entity set for the package in dir: the plan
+// when stepPlanORMEntities made one for it, else a fresh computation (a step
+// preset or a test that runs the ORM step alone).
+func (ctx *pipelineContext) ormEntities(dir string) ([]codegen.EntityDef, error) {
+	if p := ctx.ormPlan; p != nil && p.dir == dir {
 		return p.entities, p.err
 	}
-	return codegen.ParseORMEntities(ctx.ProjectDir)
+	return codegen.ParseORMEntities(ctx.ProjectDir, dir)
 }

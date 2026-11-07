@@ -43,7 +43,7 @@ func TestORMEntities_EveryTableIndependentOfRPCs(t *testing.T) {
 	if crud := entitiesForTables(tables, []ServiceDef{allCustom}); len(crud) != 0 {
 		t.Fatalf("CRUD wiring must still key on CRUD rpcs; got %v", entityNames(crud))
 	}
-	got, notes, err := ormEntitiesForTables(tables, []ServiceDef{allCustom})
+	got, notes, _, err := ormEntitiesForTables(tables, []ServiceDef{allCustom}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestORMEntities_CRUDJoinedTableKeepsItsWireEntity(t *testing.T) {
 	people := pkTable("people", "id")
 	svc := ServiceDef{Name: "PersonService", Package: "app.v1", Methods: []Method{{Name: "GetPerson"}},
 		Messages: map[string][]MessageFieldDef{"Person": {{Name: "id", ProtoType: "string"}}}}
-	got, _, err := ormEntitiesForTables([]schemadef.Table{people}, []ServiceDef{svc})
+	got, _, _, err := ormEntitiesForTables([]schemadef.Table{people}, []ServiceDef{svc}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestORMEntities_OptOutsAndUnkeyedTables(t *testing.T) {
 		{Name: "audit_events", Columns: []schemadef.Column{{Name: "body", Type: schemadef.CanonicalType("string")}}},
 		pkTable("threads", "id"),
 	}
-	got, notes, err := ormEntitiesForTables(tables, nil)
+	got, notes, _, err := ormEntitiesForTables(tables, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestORMEntities_NoEntityAlsoLeavesTheCRUDJoin(t *testing.T) {
 }
 
 func TestORMEntities_TwoTablesOneNameIsAnError(t *testing.T) {
-	_, _, err := ormEntitiesForTables([]schemadef.Table{pkTable("person", "id"), pkTable("persons", "id")}, nil)
+	_, _, _, err := ormEntitiesForTables([]schemadef.Table{pkTable("person", "id"), pkTable("persons", "id")}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "person and persons both project to the entity Person") {
 		t.Fatalf("err = %v", err)
 	}
@@ -174,7 +174,7 @@ func TestEntities_DeclaredEntityName(t *testing.T) {
 	if s := strings.Join(entityNames(got), ","); s != "Widget=tbl_widget_v2" {
 		t.Fatalf("CRUD entities = %s, want Widget=tbl_widget_v2", s)
 	}
-	orm, _, err := ormEntitiesForTables([]schemadef.Table{legacy}, nil)
+	orm, _, _, err := ormEntitiesForTables([]schemadef.Table{legacy}, nil, nil)
 	if err != nil || len(orm) != 1 || orm[0].Name != "Widget" {
 		t.Fatalf("ORM entities = %v, %v; want Widget (the declared name, with no rpc at all)", entityNames(orm), err)
 	}
@@ -276,7 +276,7 @@ func TestORMEntities_OptedInViewsAreReadOnly(t *testing.T) {
 		view("totals", "forge:entity", "n"),
 		view("report_rows", "a reporting view", "x"),
 	}
-	got, _, err := ormEntitiesForTables(tables, nil)
+	got, _, _, err := ormEntitiesForTables(tables, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

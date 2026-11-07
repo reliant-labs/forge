@@ -15,7 +15,7 @@ require (
 	connectrpc.com/vanguard v0.5.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.50.0
-	github.com/MicahParks/keyfunc/v3 v3.8.2
+	github.com/MicahParks/keyfunc/v3 v3.9.1
 	github.com/XSAM/otelsql v0.44.0
 	github.com/brianvoe/gofakeit/v7 v7.18.1
 	github.com/ebitengine/purego v0.11.2
@@ -28,7 +28,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/pprof v0.0.0-20260604005048-7023385849c0
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jinzhu/inflection v1.0.0
 	github.com/lib/pq v1.12.3
 	github.com/mattn/go-sqlite3 v1.14.52
@@ -45,7 +45,7 @@ require (
 	github.com/prometheus/common v0.73.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	github.com/tdewolff/parse/v2 v2.8.20
 	github.com/uptrace/bun v1.3.0
 	github.com/uptrace/bun/dialect/pgdialect v1.3.0
@@ -116,7 +116,7 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.37.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.61.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.61.0 // indirect
-	github.com/MicahParks/jwkset v0.11.3 // indirect
+	github.com/MicahParks/jwkset v0.11.4 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b // indirect
@@ -235,7 +235,7 @@ require (
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jinzhu/copier v0.4.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect

@@ -184,6 +184,7 @@
             8080
           ],
           "runner": "binary",
+          "startup_after": [],
           "type": "host",
           "working_dir": null
         },

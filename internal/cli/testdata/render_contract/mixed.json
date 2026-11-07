@@ -242,6 +242,7 @@
             8080
           ],
           "runner": "air",
+          "startup_after": [],
           "type": "host",
           "working_dir": null
         },
@@ -310,6 +311,7 @@
           "delve_port": 2345,
           "listen_ports": null,
           "runner": "go-run",
+          "startup_after": [],
           "type": "host",
           "working_dir": null
         },

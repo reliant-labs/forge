@@ -319,6 +319,9 @@ func TestEnvConfigJSONStdoutIsTheDocumentAlone(t *testing.T) {
 	cmd.SetArgs([]string{"dev", "--json"})
 	runErr := cmd.Execute()
 	os.Stdout, os.Stderr = prevOut, prevErr
+	// Closed before t.TempDir's cleanup: Windows refuses to remove an open file.
+	_ = stdout.Close()
+	_ = stderr.Close()
 	if runErr != nil {
 		t.Fatalf("env config dev --json: %v", runErr)
 	}

@@ -168,7 +168,6 @@ func checkStartupDependencySnapshot(deps []startupNode, e *KCLEntities, projectI
 	for _, dep := range deps {
 		name := dep.name
 		if dep.frontend {
-			name = "frontend:" + name
 			for _, fe := range e.Frontends {
 				if fe.Name == dep.name {
 					rows = append(rows, frontendProbe(dep.name, fe.Port))

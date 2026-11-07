@@ -1122,23 +1122,8 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	// Controllers can reference PriorityClasses declared outside their chart.
 	// Send these before any controller wait, to each chart's actual context.
 	// The stream has already passed target, cluster and delivery-unit filters.
-	seenChartContexts := map[string]bool{}
-	for _, rc := range renderedCharts {
-		kctx := chartContext(opts.Context, rc.spec)
-		if seenChartContexts[kctx] {
-			continue
-		}
-		seenChartContexts[kctx] = true
-		preStream := manifests
-		if kctx != opts.Context {
-			preStream = chartPrerequisitesForSecondary(chartPrerequisites, kctx)
-		}
-		prereqs := ChartSchedulingPrerequisites(preStream)
-		if strings.TrimSpace(prereqs) != "" {
-			if err := KubectlApply(ctx, kctx, prereqs); err != nil {
-				return nil, fmt.Errorf("apply chart scheduling prerequisites to %q: %w", kctx, err)
-			}
-		}
+	if err := applyChartSchedulingPrerequisites(ctx, opts.Context, renderedCharts, manifests, chartPrerequisites); err != nil {
+		return nil, err
 	}
 	if err := applyRenderedCharts(ctx, opts.Context, renderedCharts, opts.Quiet); err != nil {
 		return nil, err
@@ -1265,6 +1250,32 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	}
 	pending.prune = ownedPruneFor(opts, desired)
 	return pending, nil
+}
+
+// applyChartSchedulingPrerequisites sends, once per chart context, the
+// PriorityClasses and other scheduling prerequisites the charts' controllers
+// reference: the scoped stream for the apply's own context, the
+// target-and-unit-filtered prerequisites for a secondary one.
+func applyChartSchedulingPrerequisites(ctx context.Context, primary string, renderedCharts []renderedChart, manifests, chartPrerequisites string) error {
+	seen := map[string]bool{}
+	for _, rc := range renderedCharts {
+		kctx := chartContext(primary, rc.spec)
+		if seen[kctx] {
+			continue
+		}
+		seen[kctx] = true
+		preStream := manifests
+		if kctx != primary {
+			preStream = chartPrerequisitesForSecondary(chartPrerequisites, kctx)
+		}
+		prereqs := ChartSchedulingPrerequisites(preStream)
+		if strings.TrimSpace(prereqs) != "" {
+			if err := KubectlApply(ctx, kctx, prereqs); err != nil {
+				return fmt.Errorf("apply chart scheduling prerequisites to %q: %w", kctx, err)
+			}
+		}
+	}
+	return nil
 }
 
 // pruneAfterApply runs the best-effort prunes after every apply pass succeeds,

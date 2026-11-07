@@ -35,6 +35,7 @@ import {
   GetTraceResponseSchema,
   ContradictoryEnumSchema,
   EchoProbeResponseSchema,
+  FoldedBoundaryPatternSchema,
   ImpossibleBytesSchema,
   LookaheadPatternSchema,
   PatternProbeSchema,
@@ -410,6 +411,13 @@ describe("echo meets the response's rules", () => {
     expect(bad.code).toBe("fixed");
   });
 
+  // Checked against Go's regexp (RE2): `(?i)^\w+$` matches the Kelvin sign
+  // and the long s, as JavaScript's /^\w+$/iu does, and rejects "a-b".
+  it("reads \\w under (?i) as RE2 does: case-folded", () => {
+    expect(probe.echoProbe({ word: "\u212A\u017F" }).word).toBe("\u212A\u017F");
+    expect(probe.echoProbe({ word: "a-b" }).word).toMatch(/^[A-Za-z0-9_]+$/);
+  });
+
   it("keeps the oneof case the request selected, with its value when the rules allow", () => {
     const host = probe.echoProbe({
       target: { case: "host", value: "api.example.com" },
@@ -487,6 +495,14 @@ describe("patterns the cheap generator cannot build", () => {
   it("refuses a construct RE2 rejects even though JavaScript accepts it", () => {
     expect(() => mockValue(LookaheadPatternSchema, opts)).toThrow(
       /sample\.v1\.LookaheadPattern\.word has string rules/,
+    );
+  });
+
+  // Checked against Go's regexp (RE2): `(?i)^\b\w$` rejects "\u212A" (its
+  // \b is ASCII), while JavaScript's /^\b\w$/iu accepts it.
+  it("refuses a word boundary under (?i), which RE2 and JavaScript read differently", () => {
+    expect(() => mockValue(FoldedBoundaryPatternSchema, opts)).toThrow(
+      /sample\.v1\.FoldedBoundaryPattern\.word has string rules/,
     );
   });
 

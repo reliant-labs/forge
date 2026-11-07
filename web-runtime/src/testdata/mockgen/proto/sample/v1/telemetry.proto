@@ -183,6 +183,7 @@ message EchoProbeRequest {
   int64 big = 10;
   uint64 huge = 11;
   double ratio = 12;
+  string word = 13;
   oneof target {
     string host = 6;
     int32 http_status = 7;
@@ -200,6 +201,8 @@ message EchoProbeResponse {
   int64 big = 10 [(buf.validate.field).int64 = {lte: 9007199254740992}];
   int32 huge = 11;
   float ratio = 12;
+  // RE2 folds \w under (?i) as JavaScript's `iu` does: the Kelvin sign matches.
+  string word = 13 [(buf.validate.field).string.pattern = "(?i)^\\w+$"];
   oneof target {
     string host = 6 [(buf.validate.field).string.hostname = true];
     int32 http_status = 7 [(buf.validate.field).int32 = {gte: 100, lte: 599}];
@@ -234,6 +237,13 @@ message LookaheadPattern {
 // RE2's \s is ASCII whitespace only; a no-break space does not match it.
 message SpacePattern {
   string gap = 1 [(buf.validate.field).string.pattern = "^a\\sb$"];
+}
+
+// Word boundaries under a leading (?i): RE2's stay ASCII, JavaScript's follow
+// its case-folded \w, so `(?i)^\b\w$` matches the Kelvin sign in JavaScript
+// only. Refused rather than read the JavaScript way.
+message FoldedBoundaryPattern {
+  string word = 1 [(buf.validate.field).string.pattern = "(?i)^\\bfoo\\b$"];
 }
 
 // Enum rules no declared value meets: an undeclared const, and a const the

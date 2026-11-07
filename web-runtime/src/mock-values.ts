@@ -373,8 +373,14 @@ const RE2_SPACE = "\\t\\n\\f\\r ";
  * `\c`/`\u`/`\0` escapes, `\p{Key=Value}` properties, mid-pattern flags and
  * repeats over 1000. Null means "never satisfied", so a JavaScript-only match
  * is never taken for one the server's validator accepts.
+ *
+ * Under a leading `(?i)` (`fold`), `\w` and `\W` pass through unchanged: RE2
+ * folds them exactly as JavaScript's `iu` does, so both match the Kelvin sign
+ * and the long s. `\b` and `\B` do not: RE2's stay ASCII while JavaScript's
+ * follow its folded `\w`, so they are null there (and in a class, where RE2
+ * rejects them and JavaScript reads `\b` as a backspace).
  */
-function re2Source(src: string): string | null {
+function re2Source(src: string, fold: boolean): string | null {
   let out = "";
   let inClass = false;
   for (let i = 0; i < src.length; i++) {
@@ -383,6 +389,7 @@ function re2Source(src: string): string | null {
       const e = src[++i];
       if (e === undefined) return null;
       if (/[0-9kcu]/.test(e)) return null;
+      if ((e === "b" || e === "B") && (fold || inClass)) return null;
       if (e === "s") {
         out += inClass ? RE2_SPACE : `[${RE2_SPACE}]`;
         continue;
@@ -449,7 +456,10 @@ function patternRegExp(pattern: string): RegExp | null {
   const m = INLINE_FLAGS.exec(pattern);
   let flags = "u";
   for (const f of m?.[1] ?? "") if (!flags.includes(f)) flags += f;
-  const src = re2Source(m ? pattern.slice(m[0].length) : pattern);
+  const src = re2Source(
+    m ? pattern.slice(m[0].length) : pattern,
+    flags.includes("i"),
+  );
   if (src === null) return null;
   try {
     return new RegExp(src, flags);

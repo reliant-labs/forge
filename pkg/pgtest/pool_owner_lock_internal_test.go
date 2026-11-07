@@ -65,6 +65,12 @@ func TestAttachWithoutALeaseRunsAnOwnerLockedStandaloneServer(t *testing.T) {
 		t.Skip("boots an embedded postgres; runs in task test (full mode)")
 	}
 	privatePool(t)
+	// An earlier test of this process can leave its lease behind, and attach
+	// takes a lease only when it holds none: clear it, or the injected
+	// failure never runs and the attach pools.
+	prev := poolLease
+	poolLease = nil
+	t.Cleanup(func() { poolLease = prev })
 	takeLeaseFn = func(string) (*lease, error) { return nil, errors.New("injected: cannot create a lease") }
 	t.Cleanup(func() { takeLeaseFn = takeLease })
 

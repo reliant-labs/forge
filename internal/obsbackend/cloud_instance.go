@@ -105,3 +105,26 @@ func sameSet(a, b []string) bool {
 	slices.Sort(b)
 	return slices.Equal(slices.Compact(a), slices.Compact(b))
 }
+
+// wireInstanceNarrowing is the narrowing of a read that has no scope of its
+// own (an issue read by id), as request fields beside its id: instanceIds and
+// instanceUsers, acknowledged like any other.
+type wireInstanceNarrowing struct {
+	InstanceIDs   []string `json:"instanceIds,omitempty"`
+	InstanceUsers []string `json:"instanceUsers,omitempty"`
+}
+
+func (c Cloud) instanceNarrowing() wireInstanceNarrowing {
+	return wireInstanceNarrowing{InstanceIDs: c.Instances.IDs, InstanceUsers: c.Instances.Users}
+}
+
+// RefuseSQL is the refusal of raw SQL (a --sql statement, a sql panel) on a
+// backend narrowed to dev instances: the statement is its author's, and
+// nothing narrows it, so its rows would be the whole env's under the
+// instance's scope. nil when i narrows nothing.
+func (i Instances) RefuseSQL(what string) error {
+	if !i.Narrows() {
+		return nil
+	}
+	return Wrong("%s runs its author's SQL, which forge cannot narrow to an instance; pass --all-instances to run it over the whole env", what)
+}

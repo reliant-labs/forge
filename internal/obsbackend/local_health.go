@@ -207,6 +207,9 @@ func (l Local) newIssues(ctx context.Context, win releasehealth.Windows, out *He
 	if end.Sub(win.Before.From) < time.Second {
 		return nil, nil
 	}
+	if err := l.Instances.RefuseSQL("release health's new-issue read"); err != nil {
+		return nil, err
+	}
 	sc := l.sqlScope(Narrow{Range: Range{From: win.Before.From, To: end}})
 	st, err := obsquery.SQLPanel{Scope: sc, SQL: localNewIssuesSQL, StepSeconds: 60}.Compile()
 	if err != nil {

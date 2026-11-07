@@ -349,3 +349,60 @@ func jsonList(v any) string {
 	}
 	return strings.Join(s, ",")
 }
+
+// Alerts and telemetry deliveries are the env's: an instance-scoped status
+// never asks for them, and never shows another stack's firing alert or failed
+// delivery under scope.instance. It names them not_evaluated instead.
+func TestObsStatusHostedDevLeavesEnvWideSectionsOut(t *testing.T) {
+	c := &echoingCaller{fakeCloudCaller: fakeCloudCaller{replies: map[string]string{
+		procSearchLogs: `{"logs":[{"timestamp":"2026-10-22T11:59:00Z","severityText":"INFO","service":"api","body":"ok"}]}`,
+		procTraces:     `{"traces":[{"traceId":"t1","startTime":"2026-10-22T11:59:30Z","durationMs":12}]}`,
+		procAlerts:     `{"alerts":[{"envId":"env-dev","rule":"BobsStackIsDown","state":"firing","activeAt":"2026-10-22T11:40:00Z"}]}`,
+		procDeliveries: `{"enabled":true,"deliveries":[{"environmentId":"env-dev","cluster":"bobs","name":"t","state":"DELIVERY_STATE_FAILING"}]}`,
+	}}}
+	out, _ := obsRunHostedDev(t, c, "status", "dev", "--json")
+	doc := decode(t, out)
+	if strings.Contains(out, "BobsStackIsDown") || strings.Contains(out, "DELIVERY_STATE_FAILING") || doc["alerts"] != nil {
+		t.Errorf("env-wide evidence shown under the instance's scope:\n%s", out)
+	}
+	if callTo(c.calls, procAlerts) != nil || callTo(c.calls, procDeliveries) != nil {
+		t.Errorf("an instance-scoped status read env-wide sections: %v", c.calls)
+	}
+	ne := jsonList(doc["not_evaluated"])
+	if !strings.Contains(ne, statusAlerts) || !strings.Contains(ne, statusDeliveries) {
+		t.Errorf("not_evaluated = %q; want alerts and telemetry.deliveries named", ne)
+	}
+	text, _ := obsRunHostedDev(t, c, "status", "dev")
+	if !strings.Contains(text, "not evaluated for an instance") {
+		t.Errorf("status text does not say why:\n%s", text)
+	}
+
+	// --all-instances reads the whole env, alerts included.
+	c.calls = nil
+	out, _ = obsRunHostedDev(t, c, "status", "dev", "--json", "--all-instances")
+	if !strings.Contains(out, "BobsStackIsDown") {
+		t.Errorf("--all-instances left the env's alerts out:\n%s", out)
+	}
+}
+
+// Raw SQL is its author's: an instance-scoped `obs query --sql` is refused
+// before anything runs, naming --all-instances, rather than returning the
+// whole env's rows under scope.instance.
+func TestObsQuerySQLRefusedUnderAnInstance(t *testing.T) {
+	const procQueryPanel = "controlplane.v1.ObservabilityService/QueryPanel"
+	c := &echoingCaller{fakeCloudCaller: fakeCloudCaller{replies: map[string]string{procQueryPanel: `{}`}}}
+	out, err := obsRunHostedDev(t, c, "query", "dev", "--sql", "SELECT count() AS n FROM otel_logs", "--json")
+	if exitCodeForError(err) != 1 {
+		t.Fatalf("exit = %d, want 1: %v\n%s", exitCodeForError(err), err, out)
+	}
+	if msg, _ := decode(t, out)["error"].(string); !strings.Contains(msg, "--all-instances") {
+		t.Errorf("the refusal does not name --all-instances: %q", msg)
+	}
+	if len(c.calls) != 0 {
+		t.Errorf("narrowed raw SQL reached the control plane: %v", c.calls)
+	}
+	_, _ = obsRunHostedDev(t, c, "query", "dev", "--sql", "SELECT count() AS n FROM otel_logs", "--json", "--all-instances")
+	if callTo(c.calls, procQueryPanel) == nil {
+		t.Error("--all-instances did not run the statement over the whole env")
+	}
+}

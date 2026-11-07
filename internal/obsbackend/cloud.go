@@ -83,12 +83,30 @@ func (c Cloud) Info() Info {
 // readers beside them) goes through it, so every one classifies its errors one
 // way.
 func (c Cloud) call(ctx context.Context, procedure string, req, out any) error {
+	return c.do(ctx, procedure, req, out, false)
+}
+
+// callEnvWide is call for a request that is about the env as a whole, never
+// about its telemetry: an issue's discussion or a change to it, the
+// dashboards' definitions, the activity feed. It runs whatever the instance
+// narrowing, because there is nothing in it to narrow.
+func (c Cloud) callEnvWide(ctx context.Context, procedure string, req, out any) error {
+	return c.do(ctx, procedure, req, out, true)
+}
+
+func (c Cloud) do(ctx context.Context, procedure string, req, out any, envWide bool) error {
 	if c.Caller == nil {
 		return Undetermined("no control-plane client for env %s", c.Env)
 	}
 	sent, narrowed, err := sentInstances(req)
 	if err != nil {
 		return Undetermined("encode %s request", procedure[strings.LastIndex(procedure, "/")+1:]).Cause(err)
+	}
+	// A telemetry read of a narrowed backend that carries no narrowing would
+	// answer for the whole env under the instance's scope: refuse it, so a
+	// read that forgot to narrow fails rather than widens.
+	if !narrowed && !envWide && c.Instances.Narrows() {
+		return Undetermined("%s reads the whole env and cannot be narrowed to the instance; --all-instances reads the whole env", procedure[strings.LastIndex(procedure, "/")+1:])
 	}
 	if !narrowed {
 		return c.mapCallErr(procedure, c.Caller.Call(ctx, procedure, req, out))

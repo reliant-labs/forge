@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/devtelemetry"
+	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
 func hostedRecord() *devtelemetry.Record {
@@ -218,5 +219,109 @@ func TestCloudRefusesAnUnacknowledgedNarrowing(t *testing.T) {
 	c.Instances = Instances{IDs: []string{"a", "b"}}
 	if res, err := c.Logs(ctx, LogsRequest{Narrow: narrowC(), Limit: 5}); err != nil || len(res.Logs) != 1 {
 		t.Errorf("an acknowledged narrowing: %+v, %v", res.Logs, err)
+	}
+}
+
+// A narrowed backend refuses a telemetry read that carries no narrowing (the
+// env's alerts, its telemetry deliveries): it would answer for the whole env
+// under the instance's scope. Reads about the env as a whole (an issue's
+// status, the activity feed, the dashboards' definitions) still run.
+func TestCloudRefusesEnvWideTelemetryUnderNarrowing(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeCaller{replies: map[string]string{
+		procListAlerts:              `{"alerts":[{"rule":"HighErrorRate","state":"firing"}]}`,
+		procListTelemetryDeliveries: `{"enabled":true}`,
+		procUpdateIssueStatus:       `{"issue":{"id":"i1","status":"ISSUE_STATUS_RESOLVED"}}`,
+		procGetIssue:                `{"issue":{"id":"i1","status":"ISSUE_STATUS_UNRESOLVED"}}`,
+		procListDashboards:          `{}`,
+	}}
+	c := cloudWith(f)
+	c.Instances = Instances{IDs: []string{"sess-1"}}
+	if alerts, err := c.Alerts(ctx); err == nil || err.(*Error).ExitCode() != ExitUndetermined || len(alerts) != 0 {
+		t.Errorf("alerts under an instance scope: %v, %v; want exit 2", alerts, err)
+	}
+	if _, err := c.TelemetryDeliveries(ctx); err == nil || err.(*Error).ExitCode() != ExitUndetermined {
+		t.Errorf("deliveries under an instance scope: %v; want exit 2", err)
+	}
+	if _, ok := f.reqs[procListAlerts]; ok {
+		t.Error("the env-wide alert read reached the control plane")
+	}
+	if _, err := c.UpdateIssueStatus(ctx, UpdateIssueStatusRequest{ID: "i1", Status: IssueResolved}); err != nil {
+		t.Errorf("an issue's status change is not telemetry: %v", err)
+	}
+	if _, err := c.ListDashboards(ctx, "p"); err != nil {
+		t.Errorf("the dashboards' definitions are not telemetry: %v", err)
+	}
+	// Unnarrowed, the same reads run as they always did.
+	if alerts, err := cloudWith(f).Alerts(ctx); err != nil || len(alerts) != 1 {
+		t.Errorf("unnarrowed alerts: %v, %v", alerts, err)
+	}
+}
+
+// An issue read by id carries the narrowing beside its id and must be
+// acknowledged like any other narrowed read.
+func TestCloudNarrowsAnIssueReadByID(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeCaller{replies: map[string]string{
+		procGetIssue:        `{"issue":{"id":"i1"},"instanceScope":{"instanceIds":["sess-1"]}}`,
+		procListIssueEvents: `{"events":[]}`,
+	}}
+	c := cloudWith(f)
+	c.Instances = Instances{IDs: []string{"sess-1"}}
+	if _, err := c.GetIssue(ctx, GetIssueRequest{Narrow: narrowC(), ID: "i1"}); err != nil {
+		t.Fatalf("an acknowledged issue read: %v", err)
+	}
+	if fmt.Sprint(f.reqs[procGetIssue]["instanceIds"]) != "[sess-1]" {
+		t.Errorf("GetIssue request = %v", f.reqs[procGetIssue])
+	}
+	if _, err := c.ListIssueEvents(ctx, ListIssueEventsRequest{Narrow: narrowC(), ID: "i1", Limit: 5}); err == nil || err.(*Error).ExitCode() != ExitUndetermined {
+		t.Errorf("an unacknowledged issue-event read: %v; want exit 2", err)
+	}
+}
+
+// Raw SQL (a --sql statement, a sql panel) is its author's: nothing narrows
+// it, so a narrowed backend refuses it (exit 1, naming --all-instances)
+// before anything runs, locally and hosted.
+func TestNarrowedBackendsRefuseRawSQL(t *testing.T) {
+	ctx := context.Background()
+	inst := Instances{IDs: []string{"sess-1"}}
+	sqlPanel := &obsquery.Panel{ID: "p", Kind: "sql", SQL: "SELECT count() FROM otel_logs"}
+
+	fr := &fakeRunner{}
+	l := Local{Env: "dev", Runner: fr, Instances: inst}
+	for name, req := range map[string]QueryRequest{
+		"--sql":       {Narrow: rng(), SQL: "SELECT count() FROM otel_logs", Limit: 5},
+		"a sql panel": {Narrow: rng(), Panel: sqlPanel, Limit: 5},
+	} {
+		if _, err := l.Query(ctx, req); err == nil || err.(*Error).ExitCode() != ExitWrong || !strings.Contains(err.Error(), "--all-instances") {
+			t.Errorf("local %s under an instance scope: %v; want exit 1 naming --all-instances", name, err)
+		}
+	}
+	if len(fr.ran) != 0 {
+		t.Errorf("narrowed raw SQL ran: %v", fr.ran)
+	}
+
+	f := &fakeCaller{}
+	c := cloudWith(f)
+	c.Instances = inst
+	for name, req := range map[string]QueryRequest{
+		"--sql":       {Narrow: rng(), SQL: "SELECT count() FROM otel_logs", Limit: 5},
+		"a sql panel": {Narrow: rng(), Panel: sqlPanel, Limit: 5},
+	} {
+		if _, err := c.Query(ctx, req); err == nil || err.(*Error).ExitCode() != ExitWrong || !strings.Contains(err.Error(), "--all-instances") {
+			t.Errorf("cloud %s under an instance scope: %v; want exit 1 naming --all-instances", name, err)
+		}
+	}
+	if _, err := c.QueryPanelReadout(ctx, PanelReadoutRequest{Narrow: rng(), Panel: *sqlPanel}); err == nil || err.(*Error).ExitCode() != ExitWrong {
+		t.Errorf("cloud sql panel readout under an instance scope: %v; want exit 1", err)
+	}
+	if len(f.reqs) != 0 {
+		t.Errorf("narrowed raw SQL reached the control plane: %v", f.reqs)
+	}
+
+	// The whole env (--all-instances) runs the same statement.
+	l.Instances = Instances{}
+	if _, err := l.Query(ctx, QueryRequest{Narrow: rng(), SQL: "SELECT count() FROM otel_logs", Limit: 5}); err != nil {
+		t.Errorf("unnarrowed raw SQL: %v", err)
 	}
 }

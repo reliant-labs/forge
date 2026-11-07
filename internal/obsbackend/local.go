@@ -732,6 +732,9 @@ func (l Local) Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 }
 
 func (l Local) querySQL(ctx context.Context, req QueryRequest, step int64) (QueryResult, error) {
+	if err := l.Instances.RefuseSQL("raw SQL (--sql, a sql panel)"); err != nil {
+		return QueryResult{}, err
+	}
 	st, err := obsquery.SQLPanel{Scope: l.sqlScope(req.Narrow), SQL: req.SQL, StepSeconds: step}.Compile()
 	if err != nil {
 		return QueryResult{}, compileErr(err)

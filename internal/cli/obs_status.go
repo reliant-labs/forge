@@ -294,7 +294,11 @@ func statusSections(b obsbackend.Backend, env string, n obsbackend.Narrow, issue
 	} else {
 		notEvaluated = append(notEvaluated, statusIssues)
 	}
-	if r, ok := b.(obsbackend.AlertReader); ok {
+	// Alerts and telemetry deliveries are the env's, not an instance's: an
+	// instance-scoped status leaves them out (not_evaluated) rather than
+	// presenting another stack's alert as evidence about this one.
+	narrowed := b.Info().Instances.Narrows()
+	if r, ok := b.(obsbackend.AlertReader); ok && !narrowed {
 		secs = append(secs, statusSection{statusAlerts, func(ctx context.Context, doc *obsStatusDoc) error {
 			alerts, err := r.Alerts(ctx)
 			if err != nil {
@@ -314,7 +318,10 @@ func statusSections(b obsbackend.Backend, env string, n obsbackend.Narrow, issue
 		doc.Telemetry, doc.Warnings = t, warnings
 		return nil
 	}})
-	if r, ok := b.(obsbackend.DeliveryReader); ok {
+	if _, ok := b.(obsbackend.DeliveryReader); ok && narrowed {
+		notEvaluated = append(notEvaluated, statusDeliveries)
+	}
+	if r, ok := b.(obsbackend.DeliveryReader); ok && !narrowed {
 		secs = append(secs, statusSection{statusDeliveries, func(ctx context.Context, doc *obsStatusDoc) error {
 			res, err := r.TelemetryDeliveries(ctx)
 			if err != nil {
@@ -543,7 +550,11 @@ func writeStatusText(w io.Writer, now time.Time, doc obsStatusDoc) {
 		obsout.Table(w, []string{"CHANGED", "WHAT", "BY"}, rows, 60)
 	}
 	if len(doc.NotEvaluated) > 0 {
-		fmt.Fprintf(w, "\nnot evaluated on this backend: %s\n", strings.Join(doc.NotEvaluated, ", "))
+		where := "on this backend"
+		if doc.Scope.Instance != nil {
+			where = "for an instance (env-wide sections; --all-instances reads them) or on this backend"
+		}
+		fmt.Fprintf(w, "\nnot evaluated %s: %s\n", where, strings.Join(doc.NotEvaluated, ", "))
 	}
 }
 

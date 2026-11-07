@@ -268,7 +268,7 @@ parent. Offsets, not a sum, because phases overlap: `infra` runs beside
 | `replace-stack` | stopping this project's previous host processes for the env |
 | `host/…` | `infra` (when the pre-warm did not converge), `database`, `identity`, `jobs`, `launch` |
 | `frontends` | dependency install and dev-server start |
-| `readiness/<workload>` | time-to-ready: from that workload's launch to its port bound by this run (so it can start before `readiness` does) |
+| `readiness/<workload>` | time-to-ready: from that workload's launch to its port bound by this run (so it can start before `readiness` does); `skipped` when this run never launched it |
 | `seed`, `cluster-health` | the first-boot seed; the one look at cluster workloads |
 
 A status column appears only when a row is not `ok`: `failed`, `skipped`, or

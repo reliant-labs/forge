@@ -572,7 +572,8 @@ func endBuildStage(s *upSpan, rs []buildResult, err error) {
 // poll that found every one of its ports bound by this run's child. That is
 // time-to-ready — compile plus startup — which is the number a dev-loop
 // change moves. A workload with no recorded launch is timed from the gate's
-// start. Its span is a child of the readiness span, so its start can lie
+// start and is never ok: the gate passing it is recorded as skipped (this run
+// did not launch it), giving up on it as failed. Its span is a child of the readiness span, so its start can lie
 // BEFORE its parent's: it began when the process did, not when the gate did.
 type upReadyTimer struct {
 	ctx     context.Context
@@ -614,7 +615,14 @@ func (r *upReadyTimer) observe(rs []hostReadyResult) {
 			continue
 		}
 		r.settled[res.name] = true
-		recordUpSpan(r.ctx, res.name, r.since(res.name), "", nil)
+		// A workload this run never launched (its build or launch failed
+		// before procs.start) has no time-to-ready to report: it is
+		// skipped, never credited as ready from the gate's start.
+		status := upSpanSkipped
+		if _, launched := upLaunchedAt(r.ctx, res.name); launched {
+			status = ""
+		}
+		recordUpSpan(r.ctx, res.name, r.since(res.name), status, nil)
 	}
 }
 

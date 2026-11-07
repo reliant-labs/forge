@@ -234,6 +234,33 @@ func TestUpReadyTimer(t *testing.T) {
 	}
 }
 
+// A workload the gate saw but this run never launched (its build or launch
+// failed before procs.start) is skipped, never credited as ready.
+func TestUpReadyTimerUnlaunchedIsNotReady(t *testing.T) {
+	clk := newFakeUpClock()
+	tm := newUpTimings(clk.now)
+	ctx := withUpTimings(context.Background(), tm)
+
+	markUpLaunched(ctx, "api")
+	readyCtx, gate := startUpSpan(ctx, "readiness")
+	rt := newUpReadyTimer(readyCtx)
+	clk.advance(time.Second)
+	rt.observe([]hostReadyResult{
+		{name: "api", state: portReadyOurs},
+		{name: "worker", state: portReadyOurs},
+	})
+	rt.close(nil)
+	gate.end(nil)
+
+	_, phases := tm.finish()
+	if p := phaseByName(t, phases, "readiness/api"); p.Status != upSpanOK {
+		t.Errorf("api = %+v, want ok", p)
+	}
+	if p := phaseByName(t, phases, "readiness/worker"); p.Status != upSpanSkipped {
+		t.Errorf("worker = %+v, want skipped: it was never launched", p)
+	}
+}
+
 // Each run appends ONE line to .forge/logs/<env>/up-timings.jsonl, in the
 // documented shape, and prints the table to stderr unless
 // FORGE_UP_TIMINGS=0.

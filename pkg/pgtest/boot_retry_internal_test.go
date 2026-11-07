@@ -61,6 +61,9 @@ func TestEmbeddedBootRetriesOccupiedCandidate(t *testing.T) {
 		}
 		return want, nil
 	})
+	if ep != nil {
+		defer ep.releaseBootClaim()
+	}
 	if err != nil || ep != want || gotPort != port+1 || reserved != 2 || starts != 2 {
 		t.Fatalf("got ep=%p port=%d err=%v reserves=%d starts=%d", ep, gotPort, err, reserved, starts)
 	}
@@ -151,13 +154,16 @@ func TestEmbeddedBootSkipsForeignRuntimeDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	reserves, starts := 0, 0
-	_, gotPort, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+	ep, gotPort, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 		reserves++
 		return port + uint32(reserves-1), nil
 	}, dirFor, func(embeddedpostgres.Config) (*Embedded, error) {
 		starts++
 		return &Embedded{}, nil
 	})
+	if ep != nil {
+		defer ep.releaseBootClaim()
+	}
 	if err != nil || gotPort != port+1 || starts != 1 || reserves != 2 {
 		t.Fatalf("port=%d err=%v starts=%d reserves=%d", gotPort, err, starts, reserves)
 	}
@@ -239,8 +245,9 @@ func TestEmbeddedBootClaimSurvivesRuntimeRemoval(t *testing.T) {
 	if err != nil || ep != want || gotPort != port {
 		t.Fatalf("ep=%p port=%d err=%v", ep, gotPort, err)
 	}
-	if bootClaimHeld(dir) {
-		t.Fatal("boot claim still held after start returned")
+	defer ep.releaseBootClaim()
+	if !bootClaimHeld(dir) {
+		t.Fatal("boot claim released before normal ownership handoff")
 	}
 	if c, err := claimBootDir(dir); c != nil || err != nil {
 		t.Fatalf("contender claimed a booted server's dir: %v %v", c, err)
@@ -259,13 +266,16 @@ func TestEmbeddedBootSkipsClaimedCandidate(t *testing.T) {
 	}
 	defer other.release()
 	reserves, starts := 0, 0
-	_, gotPort, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+	ep, gotPort, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 		reserves++
 		return port + uint32(reserves-1), nil
 	}, dirFor, func(embeddedpostgres.Config) (*Embedded, error) {
 		starts++
 		return &Embedded{}, nil
 	})
+	if ep != nil {
+		defer ep.releaseBootClaim()
+	}
 	if err != nil || gotPort != port+1 || starts != 1 || reserves != 2 {
 		t.Fatalf("port=%d err=%v starts=%d reserves=%d", gotPort, err, starts, reserves)
 	}

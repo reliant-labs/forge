@@ -44,7 +44,7 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 		}
 		// The dependency unconditionally RemoveAlls RuntimePath before
 		// extraction, so a claim INSIDE dir would be deleted mid-boot. The
-		// claim is a sibling lock file held until start returns; a held
+		// claim is a sibling lock file held until ownership handoff; a held
 		// claim or an existing dir (somebody else's, even if the port
 		// currently looks free) means the candidate is skipped.
 		claim, err := claimBootDir(dir)
@@ -57,7 +57,9 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 		}
 		ep, err := start(cfg.Port(port).RuntimePath(dir))
 		if err == nil {
-			claim.release()
+			// Transfer, don't release: post-start checks and normal pool/owner
+			// registration still need protection from every other reaper.
+			ep.bootClaim = claim
 			return ep, port, nil
 		}
 		// No Stop/stopSharedByPort here: the listener that won the race is
@@ -73,8 +75,9 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 	return nil, 0, &portBootError{ports: ports, err: last}
 }
 
-// bootClaim is an exclusive kernel lock on bootClaimPath(dir), held while
-// StartEmbedded populates dir. Kernel locks belong to the open file, so the
+// bootClaim is an exclusive kernel lock on bootClaimPath(dir), held from
+// before extraction through post-start checks and ownership publication.
+// Reapers take the same lock before checking ownership. Kernel locks belong to the open file, so the
 // claim means the same thing across pid namespaces, and a holder that dies
 // releases it.
 type bootClaim struct {
@@ -87,6 +90,21 @@ func bootClaimPath(dir string) string { return dir + ".boot" }
 // claimBootDir takes dir's boot claim. It returns (nil, nil) when another
 // process holds the claim or dir already exists: the candidate is not ours.
 func claimBootDir(dir string) (*bootClaim, error) {
+	claim, err := lockBootDir(dir)
+	if err != nil || claim == nil {
+		return claim, err
+	}
+	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+		claim.release()
+		return nil, nil
+	}
+	return claim, nil
+}
+
+// lockBootDir serializes boot/handoff with a reaper's ownership check and
+// removal. Its inode is persistent: unlinking a lock permits a second inode
+// to be locked while the first is still in use.
+func lockBootDir(dir string) (*bootClaim, error) {
 	path := bootClaimPath(dir)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
@@ -97,27 +115,19 @@ func claimBootDir(dir string) (*bootClaim, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	// A previous holder unlinks the file before unlocking (release). If it
-	// did so between our open and our lock, we locked an orphaned inode
-	// that no contender can see: treat the candidate as taken.
+	// Older versions unlinked on release. Reject an orphaned inode if a
+	// concurrent older holder removed the path between our open and lock.
 	ours, statErr := f.Stat()
 	onDisk, pathErr := os.Stat(path)
 	if statErr != nil || pathErr != nil || !os.SameFile(ours, onDisk) {
 		_ = f.Close()
 		return nil, nil
 	}
-	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
-		(&bootClaim{f: f, path: path}).release()
-		return nil, nil
-	}
 	return &bootClaim{f: f, path: path}, nil
 }
 
-// release unlinks the claim while still holding it, so a contender that
-// opened it meanwhile fails the SameFile check above. Where an open file
-// cannot be unlinked (Windows) the empty file stays, and is reused.
+// release leaves the stable sibling inode in place for future boots/reapers.
 func (c *bootClaim) release() {
-	_ = os.Remove(c.path)
 	_ = c.f.Close()
 }
 

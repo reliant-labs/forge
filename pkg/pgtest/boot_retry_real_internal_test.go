@@ -52,6 +52,7 @@ func TestEmbeddedBootRealCollisionThenStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ep.releaseBootClaim()
 	defer func() {
 		if err := ep.Stop(); err != nil {
 			t.Errorf("stop our postgres: %v", err)

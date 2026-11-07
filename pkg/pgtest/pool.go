@@ -234,9 +234,17 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 		poolLease = nil
 		return "", 0, 0, berr
 	}
+	defer ep.releaseBootClaim()
 	retainEmbedded(ep)
 	pid, _ := postmaster(filepath.Join(runtimeDir(p), "data", "postmaster.pid"))
-	writePoolState(poolState{URL: u, Port: p, PID: pid})
+	if err := writePoolState(poolState{URL: u, Port: p, PID: pid}); err != nil {
+		stopSharedByPort(p) // ours, still protected by ep's boot claim
+		poolLease.release()
+		poolLease = nil
+		return "", 0, 0, fmt.Errorf("pgtest: publish shared server ownership: %w", err)
+	}
+	// The scope lease was taken before boot. Publish its port before giving
+	// up the boot claim, so reapers always see at least one form of ownership.
 	return u, p, poolModePooled, nil
 }
 
@@ -282,6 +290,7 @@ func bootStandalone() (url string, port uint32, mode int, err error) {
 	if berr != nil {
 		return "", 0, 0, berr
 	}
+	defer ep.releaseBootClaim()
 	retainEmbedded(ep)
 	// The owner lock is what keeps every other process's reaper off this
 	// server, in any pid namespace: a standalone server is the fallback when
@@ -516,16 +525,16 @@ func readLegacyPoolState() legacyPoolState {
 	return st
 }
 
-func writePoolState(st poolState) {
+func writePoolState(st poolState) error {
 	b, err := json.Marshal(st)
 	if err != nil {
-		return
+		return err
 	}
 	tmp := poolStatePath() + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(tmp, poolStatePath())
+	return os.Rename(tmp, poolStatePath())
 }
 
 // lockPool takes an exclusive advisory lock on the pool lockfile. The lock is

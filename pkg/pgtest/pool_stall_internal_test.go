@@ -39,8 +39,10 @@ func privatePool(t *testing.T) {
 	})
 }
 
-// sharedPostmaster boots the pool's shared server as a live user (this test
-// process) and returns its port, URL and postmaster pid.
+// sharedPostmaster boots the pool's shared server as a live user and returns
+// its port, URL and postmaster pid. The lease that attach took is handed to
+// that "other user" (held until the test ends), so this process's next attach
+// is a second user's, as it would be in another process.
 func sharedPostmaster(t *testing.T) (uint32, string, int) {
 	t.Helper()
 	url, port, mode, err := attachEmbedded()
@@ -50,6 +52,13 @@ func sharedPostmaster(t *testing.T) (uint32, string, int) {
 	if mode != poolModePooled {
 		t.Fatalf("the first attach is not pooled (mode %d)", mode)
 	}
+	other := poolLease
+	poolLease = nil
+	t.Cleanup(func() {
+		other.release()
+		poolLease.release()
+		poolLease = nil
+	})
 	pid, alive := postmaster(filepath.Join(runtimeDir(port), "data", "postmaster.pid"))
 	if !alive {
 		t.Fatal("the shared server has no live postmaster")

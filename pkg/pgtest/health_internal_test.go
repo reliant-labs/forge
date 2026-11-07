@@ -185,7 +185,7 @@ func TestPooledServerReplaceable_OnlyWhenProvenUnusable(t *testing.T) {
 	}
 	const port = 54999
 	fakeServerDir(t, port)
-	writePoolState(poolState{URL: "postgres://x", Port: port, Users: []int{os.Getpid()}})
+	writePoolState(poolState{URL: "postgres://x", Port: port})
 
 	if pooledServerReplaceable(port) {
 		t.Error("a live, intact recorded server was judged replaceable from one SQL error")

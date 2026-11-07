@@ -18,26 +18,29 @@ package pgtest
 //
 // The pool makes the peak concurrent embedded-instance count 1 instead of N:
 // the first process that needs a database boots the embedded server and
-// records {URL, port, live-user PIDs} in a state file guarded by an advisory
-// file lock (flock); every concurrent process reads that file, verifies the
-// server is alive, and REUSES it — each creating its own scratch database on
-// the one shared server (the NewAtURL pattern). Databases are cheap; the
-// server boot (and its IPC footprint) is paid once.
+// records {URL, port} in a state file guarded by an advisory file lock
+// (flock); every concurrent process reads that file, verifies the server is
+// alive, and REUSES it — each creating its own scratch database on the one
+// shared server (the NewAtURL pattern). Databases are cheap; the server boot
+// (and its IPC footprint) is paid once. There is one pool per pid space
+// (lease.go): a server is shared only inside the pid namespace its postmaster
+// runs in.
 //
-// # Teardown strategy — reference counting via the lockfile
+// # Teardown strategy — reference counting by lease
 //
 // The shared server intentionally OUTLIVES a single invocation, so a bare
 // defer-Stop in the process that booted it would break the siblings still
-// using it. Teardown is therefore reference-counted across processes: the
-// state file holds the set of live user PIDs. Each process removes its PID on
-// exit (pgtest.Shutdown, wired into the forge CLI); the process that removes
-// the LAST live PID performs the actual teardown — a clean `pg_ctl stop`
-// (which releases the semaphore sets and shared-memory segment), removal of
-// the data directory, and deletion of the state file. Dead PIDs (a process
-// that was SIGKILLed before it could detach) are pruned on every attach/
-// detach, so a crashed user never pins the server open; and startup's
+// using it. Teardown is therefore reference-counted across processes: each
+// user holds a lease (a shared flock on a file of its own, lease.go) while it
+// uses the server, and drops it on exit (pgtest.Shutdown, wired into the
+// forge CLI). The process that finds no other live lease performs the actual
+// teardown — a clean `pg_ctl stop` (which releases the semaphore sets and
+// shared-memory segment), removal of the data directory, and deletion of the
+// state file. A process that dies without detaching loses its lock with it,
+// so a crashed user never pins the server open; and startup's
 // reapStaleInstances remains as a belt-and-suspenders backstop for the case
-// where the very last user also crashed (age-based, 30 min).
+// where the very last user also crashed (age-based, 30 min). The data
+// directory of a postmaster that still runs is never removed (serverRunning).
 //
 // The deliberate trade-off: SEQUENTIAL invocations do not reuse across each
 // other (the first tears the server down when it exits, the next boots
@@ -49,6 +52,7 @@ package pgtest
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,22 +62,25 @@ import (
 	"time"
 )
 
-// pool state-file layout, alongside the per-instance runtime dirs under
-// instanceRoot() (os.TempDir()/forge-pgtest for the default version). Both
-// are FILES (not dirs), so reapStaleInstances — which only considers
-// directory entries — skips them.
-const (
-	poolStateFile = "pool.json"
-	poolLockFile  = "pool.lock"
-)
+// legacyPoolStateFile is the state file forge wrote before pools were scoped
+// and users leased (lease.go): one pool for every pid namespace, its users as
+// pids. A forge that old may still run beside this one, so its live server is
+// still spared by reapStaleInstances (portsInUse). The pool's files are FILES
+// (not dirs), so reapStaleInstances — which only considers directory entries
+// — skips them.
+const legacyPoolStateFile = "pool.json"
 
-// poolState is the on-disk registry of the shared embedded server. Users is
-// the set of live process PIDs currently sharing the server; the server is
-// torn down when the last one detaches.
-type poolState struct {
-	URL   string `json:"url"`
+// legacyPoolState is the part of legacyPoolStateFile portsInUse reads.
+type legacyPoolState struct {
 	Port  uint32 `json:"port"`
 	Users []int  `json:"users"`
+}
+
+// poolState is the on-disk registry of a scope's shared embedded server. Who
+// uses it is not recorded here: that is the scope's leases (lease.go).
+type poolState struct {
+	URL  string `json:"url"`
+	Port uint32 `json:"port"`
 	// PID is the postmaster the booting process saw start, recorded so a
 	// server whose data directory (pid file included) was deleted under it
 	// can still be found and stopped (health.go). 0 in a state file an older
@@ -100,6 +107,9 @@ var (
 	// handle, because the LAST user may be a process that only REUSED the
 	// server and never held a handle.
 	retained []*Embedded
+	// poolLease is this process's lease on its scope's shared server while
+	// it is bound to it (poolModePooled).
+	poolLease *lease
 )
 
 // AcquireShared returns the base maintenance DSN of the postgres server this
@@ -154,6 +164,10 @@ func releaseLocal() {
 		detachEmbedded(poolPort)
 	case poolModeStandalone:
 		stopSharedByPort(poolPort)
+		if standaloneOwner != nil {
+			_ = standaloneOwner.Close()
+			standaloneOwner = nil
+		}
 	}
 	poolURL, poolPort, poolMode, retained = "", 0, poolModeExternal, nil
 }
@@ -172,18 +186,31 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 	}
 	defer unlock()
 
+	scope := poolScope()
+	gcScopes(scope)
+	// The lease first: from here on, no other process of this scope can
+	// find itself the last user and stop the server this attach is about to
+	// reuse or boot. Without one this process cannot be counted, so it must
+	// not share: it runs on a server of its own.
+	if poolLease == nil {
+		l, lerr := takeLeaseFn(scope)
+		if lerr != nil {
+			return bootStandalone()
+		}
+		poolLease = l
+	}
+
 	st := readPoolState()
-	st.Users = prunePIDs(st.Users)
 	if st.URL != "" && st.Port != 0 {
-		switch probeShared(st, len(st.Users) > 0) {
+		switch probeShared(st, liveLeases(scope, poolLease.path, true) > 0) {
 		case sharedReady:
 			// Reuse the live shared server.
-			st.Users = addPID(st.Users, os.Getpid())
-			writePoolState(st)
 			return st.URL, st.Port, poolModePooled, nil
 		case sharedBusy:
 			// Alive, in use, and still not answering: leave it to the
 			// processes using it and run on a server of our own.
+			poolLease.release()
+			poolLease = nil
 			return bootStandalone()
 		case sharedBroken:
 			// Alive but unable to create a database (health.go): it fails
@@ -203,43 +230,49 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 	u, p, ep, berr := bootEmbedded()
 	if berr != nil {
 		_ = os.Remove(poolStatePath()) // let the next attach retry cleanly
+		poolLease.release()
+		poolLease = nil
 		return "", 0, 0, berr
 	}
 	retainEmbedded(ep)
 	pid, _ := postmaster(filepath.Join(runtimeDir(p), "data", "postmaster.pid"))
-	writePoolState(poolState{URL: u, Port: p, Users: []int{os.Getpid()}, PID: pid})
+	writePoolState(poolState{URL: u, Port: p, PID: pid})
 	return u, p, poolModePooled, nil
 }
 
-// detachEmbedded removes this process from the shared server's live-user set;
-// the process that empties the set tears the server down.
+// detachEmbedded drops this process's lease on the shared server; the
+// process that then finds no other live lease tears the server down.
 func detachEmbedded(port uint32) {
 	unlock, err := lockPool()
 	if err != nil {
 		// Can't coordinate; do NOT stop — other processes may still be using
 		// the shared server. Leave it for reapStaleInstances.
+		poolLease.release()
+		poolLease = nil
 		return
 	}
 	defer unlock()
 
+	poolLease.release()
+	poolLease = nil
 	st := readPoolState()
-	st.Users = removePID(prunePIDs(st.Users), os.Getpid())
 	if st.Port != 0 && st.Port != port {
 		// The pool records another server: ours was replaced (health.go)
 		// and the recorded one is not this process's to stop.
-		writePoolState(st)
 		return
 	}
-	if len(st.Users) == 0 {
-		p := st.Port
-		if p == 0 {
-			p = port
-		}
-		stopSharedByPort(p)
+	if liveLeases(poolScope(), "", true) > 0 {
+		return
+	}
+	p := st.Port
+	if p == 0 {
+		p = port
+	}
+	// A server that would not stop keeps its state, so the next attach
+	// reuses it rather than booting a second one beside it.
+	if stopSharedByPort(p) {
 		_ = os.Remove(poolStatePath())
-		return
 	}
-	writePoolState(st)
 }
 
 // bootStandalone boots an embedded server for this process alone and marks
@@ -250,14 +283,62 @@ func bootStandalone() (url string, port uint32, mode int, err error) {
 		return "", 0, 0, berr
 	}
 	retainEmbedded(ep)
+	// The owner lock is what keeps every other process's reaper off this
+	// server, in any pid namespace: a standalone server is the fallback when
+	// the pool cannot coordinate (no pool lock, no lease), which is exactly
+	// when a pid-based owner check cannot be trusted. Without the lock the
+	// server is not booted for use: stopped, and the attach fails.
+	f, lerr := holdOwnerLock(runtimeDir(p))
+	if lerr != nil {
+		stopSharedByPort(p)
+		return "", 0, 0, fmt.Errorf("pgtest: cannot hold the standalone server's owner lock: %w", lerr)
+	}
+	standaloneOwner = f
 	_ = os.WriteFile(filepath.Join(runtimeDir(p), ownerFile), []byte(strconv.Itoa(os.Getpid())), 0o644)
 	return u, p, poolModeStandalone, nil
 }
 
 // ownerFile, in a standalone server's runtime dir, holds the pid of the one
-// process using it. While that process lives, reapStaleInstances leaves the
-// server alone however old it is.
+// process using it, for a person reading the directory and for an older
+// forge's reaper. What protects the server is ownerLockFile.
 const ownerFile = "forge-owner.pid"
+
+// ownerLockFile, in a standalone server's runtime dir, is held with a shared
+// flock by the process using the server for as long as it does. Like a pool
+// lease (lease.go), a kernel file lock means the same to every process on the
+// filesystem whatever pid namespace it runs in, and dies with its holder, so
+// portsInUse can tell a live owner from a dead one across namespaces, which
+// the pid in ownerFile cannot.
+const ownerLockFile = "forge-owner.lock"
+
+// standaloneOwner is this process's open owner lock on its standalone server
+// (bootStandalone), closed when the server is stopped (releaseLocal).
+var standaloneOwner *os.File
+
+// holdOwnerLock creates dir's owner lock file and takes its shared lock.
+func holdOwnerLock(dir string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(dir, ownerLockFile), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFileShared(f); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// ownerLockHeld reports whether a process holds dir's owner lock. A lock
+// that cannot be tested counts as held: a server is never reaped on doubt.
+func ownerLockHeld(dir string) bool {
+	f, err := os.Open(filepath.Join(dir, ownerLockFile))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	held, err := tryLockFileExclusive(f)
+	return err != nil || !held
+}
 
 // sharedPatience is how long an attaching process keeps trying to reach a
 // shared server whose postmaster is alive before it stops believing it will
@@ -335,47 +416,62 @@ func probeShared(st poolState, inUse bool) sharedVerdict {
 // last user can stop the server even when it only REUSED one another process
 // booted (the pg_ctl binary the booting process extracted lives beside the
 // data dir in the same runtime dir).
-func stopSharedByPort(port uint32) {
+//
+// It signals only a postmaster it has identified as this runtime dir's own
+// postgres (isPostgresOf). The pid in postmaster.pid is a pid of the
+// namespace the postmaster started in; from another pid namespace it names
+// nothing, or an unrelated process, and pg_ctl would signal whatever it
+// names. And it removes the runtime dir only once no postmaster runs from it
+// (serverRunning): deleting a live server's data directory leaves a
+// postmaster that answers pings and fails every CREATE DATABASE (health.go).
+// It reports whether the server is gone; when it is not (a postmaster this
+// process cannot see or stop), everything is left as it was.
+func stopSharedByPort(port uint32) (gone bool) {
 	if port == 0 {
-		return
+		return true
 	}
 	dir := runtimeDir(port)
 	dataPath := filepath.Join(dir, "data")
 	pidFile := filepath.Join(dataPath, "postmaster.pid")
 	pgCtl := filepath.Join(dir, "bin", pgCtlBinary)
 
-	stopped := false
-	if _, statErr := os.Stat(pgCtl); statErr == nil {
-		// -m fast: roll back open transactions and shut down promptly. These
-		// databases are ephemeral, so a smart (wait-for-clients) shutdown is
-		// unnecessary and could hang on a leaked backend.
-		if runErr := exec.Command(pgCtl, "stop", "-w", "-D", dataPath, "-m", "fast").Run(); runErr == nil {
-			stopped = true
+	if pid, alive := postmaster(pidFile); alive && isPostgresOf(pid, dir) {
+		stopped := false
+		if _, statErr := os.Stat(pgCtl); statErr == nil {
+			// -m fast: roll back open transactions and shut down promptly.
+			// These databases are ephemeral, so a smart (wait-for-clients)
+			// shutdown is unnecessary and could hang on a leaked backend.
+			if runErr := exec.Command(pgCtl, "stop", "-w", "-D", dataPath, "-m", "fast").Run(); runErr == nil {
+				stopped = true
+			}
 		}
-	}
-	if !stopped {
-		// Fallback when pg_ctl is missing or failed: SIGINT (fast shutdown),
-		// grace, then SIGKILL. SIGINT still lets the postmaster release its
-		// IPC on the way out; SIGKILL is the last resort that does not.
-		if pid, alive := postmaster(pidFile); alive && verifyRecordedPid(pid, pidFile, postgresBinary(dir)) == verdictOurs {
+		if !stopped {
+			// Fallback when pg_ctl is missing or failed: SIGINT (fast
+			// shutdown), grace, then SIGKILL. SIGINT still lets the
+			// postmaster release its IPC on the way out; SIGKILL is the
+			// last resort that does not.
 			if gracefulStop(pid) {
-				for i := 0; i < 30; i++ {
-					if _, a := postmaster(pidFile); !a {
-						break
-					}
+				for i := 0; i < 30 && processAlive(pid); i++ {
 					time.Sleep(100 * time.Millisecond)
 				}
 			}
-			if _, a := postmaster(pidFile); a {
+			if processAlive(pid) {
 				forceKill(pid)
+				for i := 0; i < 20 && processAlive(pid); i++ {
+					time.Sleep(100 * time.Millisecond)
+				}
 			}
 		}
+	}
+	if serverRunning(dir) {
+		return false
 	}
 	// Reclaim the SysV shm interlock segment while the pid file that names it
 	// still exists. No-op after a clean stop (postgres already removed both
 	// the segment and the pid file); load-bearing only on the SIGKILL path.
 	reclaimShmSegment(pidFile)
 	_ = os.RemoveAll(dir)
+	return true
 }
 
 // retainEmbedded keeps a booted handle reachable for the process lifetime.
@@ -388,12 +484,31 @@ func retainEmbedded(ep *Embedded) {
 // --- pool state file I/O (all callers hold the pool lock) ---
 
 func poolRoot() string      { return instanceRoot() }
-func poolStatePath() string { return filepath.Join(poolRoot(), poolStateFile) }
-func poolLockPath() string  { return filepath.Join(poolRoot(), poolLockFile) }
+func poolStatePath() string { return poolStatePathOf(poolScope()) }
+func poolLockPath() string  { return filepath.Join(poolRoot(), poolScopesLockFile) }
 
-func readPoolState() poolState {
+// poolStatePathOf is scope's pool state file.
+func poolStatePathOf(scope string) string {
+	return filepath.Join(poolRoot(), poolScopeStatePrefix+scope+".json")
+}
+
+func readPoolState() poolState { return readPoolStateOf(poolScope()) }
+
+func readPoolStateOf(scope string) poolState {
 	var st poolState
-	b, err := os.ReadFile(poolStatePath())
+	b, err := os.ReadFile(poolStatePathOf(scope))
+	if err != nil {
+		return st
+	}
+	_ = json.Unmarshal(b, &st)
+	return st
+}
+
+// readLegacyPoolState reads the pool state an older forge keeps
+// (legacyPoolStateFile).
+func readLegacyPoolState() legacyPoolState {
+	var st legacyPoolState
+	b, err := os.ReadFile(filepath.Join(poolRoot(), legacyPoolStateFile))
 	if err != nil {
 		return st
 	}
@@ -437,7 +552,8 @@ func lockPool() (unlock func(), err error) {
 
 // prunePIDs drops PIDs whose process is no longer alive. A signal-0 probe
 // returning EPERM means the process exists but is owned by another user —
-// still alive — so it is kept.
+// still alive — so it is kept. Only the legacy pool's users are pids
+// (portsInUse); within one pid namespace, as an older forge assumes.
 func prunePIDs(pids []int) []int {
 	var live []int
 	for _, p := range pids {
@@ -449,23 +565,4 @@ func prunePIDs(pids []int) []int {
 		}
 	}
 	return live
-}
-
-func addPID(pids []int, pid int) []int {
-	for _, p := range pids {
-		if p == pid {
-			return pids
-		}
-	}
-	return append(pids, pid)
-}
-
-func removePID(pids []int, pid int) []int {
-	out := make([]int, 0, len(pids))
-	for _, p := range pids {
-		if p != pid {
-			out = append(out, p)
-		}
-	}
-	return out
 }

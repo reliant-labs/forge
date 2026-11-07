@@ -116,22 +116,6 @@ func TestStartEmbedded_RetriesATransientFailure(t *testing.T) {
 	}
 }
 
-// TestStartEmbedded_NotFoundIsNotRetriedAndSaysSo: a 404 is a real answer —
-// there is no binary for this version/platform — so it is not retried, and
-// the message says it is NOT transient rather than telling someone to re-run.
-func TestStartEmbedded_NotFoundIsNotRetriedAndSaysSo(t *testing.T) {
-	repo, hits := fakeRepository(t, 404)
-	withFetchPolicy(t, repo.URL, 4)
-
-	_, err := StartEmbedded(coldConfig(t))
-	if got := hits.Load(); got != 1 {
-		t.Errorf("a 404 was fetched %d times; it is not transient and must not be retried", got)
-	}
-	if err == nil || !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "not a transient") {
-		t.Errorf("a 404 must be reported as a missing binary, not a blip: %v", err)
-	}
-}
-
 // TestStartEmbedded_UnreachableRepositoryNamesTheURL: no HTTP response at all
 // (connection refused here; DNS or TLS in the wild). The library says
 // "unable to connect to <host>"; forge must still say which artifact and

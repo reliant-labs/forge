@@ -437,7 +437,8 @@ func reapStaleInstances() {
 				if f := readProcFacts(pid); !f.exeOK {
 					continue // cannot tell what it is: leave everything alone
 				}
-				// A recycled pid: the postmaster is already gone.
+				// A recycled pid — or a pid of another pid namespace, where
+				// the postmaster may still run: serverRunning decides below.
 			} else {
 				healthy := dataIntactAt(dir) == nil && !cwdDeleted(pid)
 				// A healthy one is reaped only once it is clearly orphaned
@@ -464,6 +465,12 @@ func reapStaleInstances() {
 				continue
 			}
 		}
+		// A postmaster this process cannot see — one started in another pid
+		// namespace, whose pid file names a pid of that namespace — may still
+		// run from this dir. Its data directory is never removed under it.
+		if serverRunning(dir) {
+			continue
+		}
 		// Reclaim the leaked shm segment while the pid file (which names it)
 		// still exists — must precede RemoveAll.
 		reclaimShmSegment(pidFile)
@@ -477,14 +484,29 @@ func reapStaleInstances() {
 // serves a whole fan-out, which on a loaded machine (or across a sleep, which
 // ages every file by the wall clock) easily outlives staleInstanceAge, and
 // SIGKILLing it killed every test still using it.
+//
+// A pooled server is in use while any lease of its scope is held, whichever
+// pid namespace holds it (lease.go). The pool an older forge keeps
+// (legacyPoolStateFile) still names its users by pid.
 func portsInUse() map[string]bool {
 	in := map[string]bool{}
-	if st := readPoolState(); st.Port != 0 && len(prunePIDs(st.Users)) > 0 {
+	for _, scope := range poolScopes() {
+		if st := readPoolStateOf(scope); st.Port != 0 && liveLeases(scope, "", false) > 0 {
+			in[strconv.FormatUint(uint64(st.Port), 10)] = true
+		}
+	}
+	if st := readLegacyPoolState(); st.Port != 0 && len(prunePIDs(st.Users)) > 0 {
 		in[strconv.FormatUint(uint64(st.Port), 10)] = true
 	}
 	entries, _ := os.ReadDir(instanceRoot())
 	for _, e := range entries {
 		if !e.IsDir() {
+			continue
+		}
+		// A standalone server's owner holds its owner lock: in use, from any
+		// pid namespace, whatever ownerFile's pid looks like from here.
+		if ownerLockHeld(filepath.Join(instanceRoot(), e.Name())) {
+			in[e.Name()] = true
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(instanceRoot(), e.Name(), ownerFile))

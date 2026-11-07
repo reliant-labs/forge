@@ -1,9 +1,23 @@
 import { Code, ConnectError } from "@connectrpc/connect";
-// Keep this value import until userMessage ships through /interceptors.
-import { userMessage } from "@reliantlabs/forge-web-runtime";
+// The portable /interceptors entry, never the root barrel: the barrel also
+// re-exports browser-only modules (the web dev-log forwarder, DOM telemetry),
+// and Metro does not tree-shake them out of a native production bundle.
+// normalizeError's message is the server text without "[code] " framing.
+import { normalizeError } from "@reliantlabs/forge-web-runtime/interceptors";
 import { MutationCache, QueryClient, type QueryKey } from "@tanstack/react-query";
 
 import { emitToast } from "@/lib/events";
+
+const FALLBACK_MESSAGE = "Something went wrong. Please try again.";
+
+/**
+ * normalizeError reports "Unknown error" for null / undefined / non-Error
+ * values; the user-facing copy for that case is the generic retry prompt.
+ */
+function userFacingMessage(err: unknown): string {
+  const message = normalizeError(err).message;
+  return !message || message === "Unknown error" ? FALLBACK_MESSAGE : message;
+}
 
 /** Connect codes worth retrying — transient failures only. */
 const RETRYABLE_CODES = new Set<Code>([
@@ -142,6 +156,17 @@ declare module "@tanstack/react-query" {
  * - gcTime: 5m — cached data stays around briefly after no observers.
  * - queries.retry — transient-only, capped at 2 (see isRetryable).
  * - mutations.retry: 0 — writes never retry.
+ * - mutations.networkMode: "always" — a mutation fired while offline runs now
+ *   and fails with the network error. React Query's default ("online") would
+ *   PAUSE it and silently replay it after reconnect: a blind write replay with
+ *   stale intent, possibly after the user navigated away or signed out. Opt a
+ *   mutation that is safe to queue back in with `useMutation({ networkMode:
+ *   "online" })`.
+ * - Queries keep the default networkMode ("online"): while the app is offline
+ *   they do not fetch and report `fetchStatus: "paused"` (not "idle"), then
+ *   resume on reconnect. On web this follows the browser's online/offline
+ *   events; on native it follows the onlineManager the app's query-lifecycle
+ *   adapter drives from expo-network.
  * - refetchOnWindowFocus: false — most RPC responses don't need this; enable
  *   per-query if you want it.
  * - queryKeyHashFn — bigint-safe (see bigintSafeHashKey). Not optional: the
@@ -157,7 +182,10 @@ export const queryClient = new QueryClient({
       // can act on here: the transport emitted `auth:expired` and the app is
       // on its way to sign-in, so a toast would only flash in front of it.
       if (isUnauthenticated(error)) return;
-      emitToast({ message: userMessage(error), variant: "error" });
+      emitToast({
+        message: userFacingMessage(error),
+        variant: "error",
+      });
     },
   }),
   defaultOptions: {
@@ -171,6 +199,9 @@ export const queryClient = new QueryClient({
     },
     mutations: {
       retry: 0,
+      // Write safety: never silently pause-and-replay a write. Applies to web
+      // and native alike; see the header comment above.
+      networkMode: "always",
     },
   },
 });

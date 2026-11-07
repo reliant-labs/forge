@@ -64,9 +64,10 @@ func TestNativeHarnessComposes(t *testing.T) {
 			}
 		}
 		for name, fragments := range map[string][]string{
-			"eslint.config.cjs":        {`require("eslint-config-expo/flat")`, "...expo"},
-			"jest.config.cjs":          {`preset: "jest-expo"`, `require("jest-expo/jest-preset")`, `expo.transformIgnorePatterns.map`, `@reliantlabs/forge-web-runtime/|@connectrpc/(connect|connect-web)/|@bufbuild/protobuf/`, `\\.pnpm/|${esmPackages}`, `testMatch: ["<rootDir>/tests/**/*.test.[jt]s?(x)"]`, "watch: false", "maxWorkers: 2"},
-			"tests/app-config.test.ts": {`from "@jest/globals"`, `from "../app.json"`, `from "../package.json"`, `expect(manifest.main)`, `expect(app.expo.scheme)`},
+			"eslint.config.cjs":         {`require("eslint-config-expo/flat")`, "...expo"},
+			"jest.config.cjs":           {`preset: "jest-expo"`, `require("jest-expo/jest-preset")`, `expo.transformIgnorePatterns.map`, `setupFiles: ["<rootDir>/tests/setup/expo-fetch.ts"]`, `@reliantlabs/forge-web-runtime/|@connectrpc/(connect|connect-web)/|@bufbuild/protobuf/`, `\\.pnpm/|${esmPackages}`, `testMatch: ["<rootDir>/tests/**/*.test.[jt]s?(x)"]`, "watch: false", "maxWorkers: 2"},
+			"tests/setup/expo-fetch.ts": {`jest.mock("expo/fetch"`, `globalThis.fetch(...args)`},
+			"tests/app-config.test.ts":  {`from "@jest/globals"`, `from "../app.json"`, `from "../package.json"`, `expect(manifest.main)`, `expect(app.expo.scheme)`},
 		} {
 			content := rendered[name]
 			for _, fragment := range append(fragments, "Yours to own", "forge will not overwrite this file") {
@@ -87,7 +88,7 @@ func TestNativeHarnessComposes(t *testing.T) {
 				t.Errorf("%s script = %q, want %q", key, got, want)
 			}
 		}
-		for key, want := range map[string]string{"eslint": "^9.25.0", "eslint-config-expo": "~58.0.4", "jest": "^30.0.0", "jest-expo": "~58.0.14", "@jest/globals": "^30.0.0", "@react-native/jest-preset": "~0.88.1", "@types/react": "~19.3.0", "typescript": "~6.0.3", "prettier": PrettierVersion} {
+		for key, want := range map[string]string{"eslint": "^9.25.0", "eslint-config-expo": "~58.0.4", "jest": "^30.0.0", "jest-expo": "~58.0.14", "@jest/globals": "^30.0.0", "@react-native/jest-preset": "~0.88.1", "@types/react": "~19.3.0", "babel-preset-expo": "~58.0.24", "typescript": "~6.0.3", "prettier": PrettierVersion} {
 			if got := manifest.DevDependencies[key]; got != want {
 				t.Errorf("%s = %q, want %q", key, got, want)
 			}

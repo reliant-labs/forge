@@ -75,13 +75,9 @@ func TestNativeSharedHelpersUsePortableRuntime(t *testing.T) {
 			} else {
 				values++
 			}
-			// Published 0.13.1–0.13.5 lack this export. Do not break newly
-			// scaffolded apps before the additive runtime export is published.
-			// This explicit debt allowlist must disappear with that floor bump.
-			if m[3] == "@reliantlabs/forge-web-runtime" && strings.TrimSpace(m[2]) == "{ userMessage }" &&
-				(file == "frontend/shared/src/lib/query-client.ts" || file == "frontend/shared/src/hooks/use-optimistic-mutation.ts") {
-				continue
-			}
+			// No exceptions: a root-barrel value import ships the browser
+			// dev-log forwarder into native production bundles (Metro does not
+			// tree-shake the barrel). The consumer fixture greps for it.
 			if m[3] != "@reliantlabs/forge-web-runtime/interceptors" {
 				t.Errorf("%s: %s import uses %s instead of the portable /interceptors entry", file, kind, m[3])
 			}
@@ -93,14 +89,17 @@ func TestNativeSharedHelpersUsePortableRuntime(t *testing.T) {
 }
 
 // Pin the actual public subpath, rather than accepting a syntactically narrower
-// import that refers to a symbol the package does not export.
+// import that refers to a symbol the package does not export. Shared helpers
+// use normalizeError and ConnectClientError, which every published 0.13.x
+// /interceptors already exports; userMessage there is additive and unpublished,
+// so templates must not depend on it until a release ships it.
 func TestNativeSharedHelpersPortableExports(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "web-runtime/src/interceptors.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	blocks := regexp.MustCompile(`(?s)export\s*\{([^}]+)\}\s*from\s*"\./errors\.js"`).FindAllStringSubmatch(string(raw), -1)
-	for _, symbol := range []string{"userMessage", "ConnectClientError"} {
+	for _, symbol := range []string{"normalizeError", "ConnectClientError", "userMessage"} {
 		found := false
 		for _, block := range blocks {
 			for _, name := range strings.Split(block[1], ",") {

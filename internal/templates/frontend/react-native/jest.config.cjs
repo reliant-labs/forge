@@ -12,8 +12,12 @@ const transformIgnorePatterns = expo.transformIgnorePatterns.map((pattern) =>
   pattern.replace("/node_modules/(?!", `/node_modules/(?!\\.pnpm/|${esmPackages}|`),
 );
 
+// Jest appends a project's setupFiles to the preset's (React Native's and
+// Expo's own, which keep running first), so list only this app's: the
+// expo/fetch -> globalThis.fetch mapping that lets tests stub the network.
 module.exports = {
   preset: "jest-expo",
+  setupFiles: ["<rootDir>/tests/setup/expo-fetch.ts"],
   transformIgnorePatterns,
   testMatch: ["<rootDir>/tests/**/*.test.[jt]s?(x)"],
   watch: false,

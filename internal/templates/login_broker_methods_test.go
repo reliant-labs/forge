@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // The broker's identity-v2 half: the routes a LOGIN_POLICY turns on. Their
@@ -329,7 +331,7 @@ func TestEveryRouteRefusesCrossSite(t *testing.T) {
 `)
 	cmd := exec.Command("go", "test", "-count=1", "./internal/app/")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOPROXY=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOPROXY=off"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("the rendered broker does not build or mount as its policy says:\n%s", out)
 	}

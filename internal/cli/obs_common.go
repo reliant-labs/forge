@@ -70,39 +70,45 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		Stderr:          cmd.ErrOrStderr(),
 	}
 	if o := obsDepsOverride; o != nil {
-		if o.Facts != nil {
-			d.Facts = o.Facts
-		}
-		if o.Local != nil {
-			d.Local = o.Local
-		}
-		if o.Cloud != nil {
-			d.Cloud = o.Cloud
-		}
-		if o.HostedDev != nil {
-			d.HostedDev = o.HostedDev
-		}
-		if o.InstanceRecords != nil {
-			d.InstanceRecords = o.InstanceRecords
-		}
-		if o.Release != nil {
-			d.Release = o.Release
-		}
-		if o.Now != nil {
-			d.Now = o.Now
-		}
-		if o.Stdout != nil {
-			d.Stdout = o.Stdout
-		}
-		if o.Stderr != nil {
-			d.Stderr = o.Stderr
-		}
+		overrideObsDeps(&d, o)
 	}
 	// Every verb's output carries telemetry written by whoever holds the public
 	// ingest key; this is the one place it is made safe for a terminal.
 	d.Stdout = obsout.NewSanitizingWriter(d.Stdout)
 	d.Stderr = obsout.NewSanitizingWriter(d.Stderr)
 	return d
+}
+
+// overrideObsDeps replaces each of d's dependencies that o sets (a test's
+// obsDepsOverride), leaving the rest at their defaults.
+func overrideObsDeps(d *obsDeps, o *obsDeps) {
+	if o.Facts != nil {
+		d.Facts = o.Facts
+	}
+	if o.Local != nil {
+		d.Local = o.Local
+	}
+	if o.Cloud != nil {
+		d.Cloud = o.Cloud
+	}
+	if o.HostedDev != nil {
+		d.HostedDev = o.HostedDev
+	}
+	if o.InstanceRecords != nil {
+		d.InstanceRecords = o.InstanceRecords
+	}
+	if o.Release != nil {
+		d.Release = o.Release
+	}
+	if o.Now != nil {
+		d.Now = o.Now
+	}
+	if o.Stdout != nil {
+		d.Stdout = o.Stdout
+	}
+	if o.Stderr != nil {
+		d.Stderr = o.Stderr
+	}
 }
 
 // localClickstackExec runs a script inside env's ClickStack container, in the

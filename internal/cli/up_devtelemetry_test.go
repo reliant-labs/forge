@@ -831,7 +831,7 @@ func TestDevTelemetrySetupFallbackLeavesNoHostedState(t *testing.T) {
 	setup := func(flag string) (*devTelemetryRun, string, error) {
 		var log, out strings.Builder
 		sess := testUpSession(&fakeSessionReporter{}, &log, time.Hour)
-		run, err := setupDevTelemetry(context.Background(), dir, "dev", flag, entities(), sess, target, &out, devTelNow)
+		run, err := setupDevTelemetry(context.Background(), entities(), devTelemetrySetupIn{ProjectDir: dir, Env: "dev", Flag: flag, Session: sess, Target: target, Out: &out, Now: devTelNow})
 		return run, out.String(), err
 	}
 	noTokens := func(stage string) {
@@ -961,7 +961,7 @@ func TestDevTelemetryLocalDecisionStopsTheRunningKeeper(t *testing.T) {
 			}
 			setup := func(flag string) (*devTelemetryRun, error) {
 				var log, out strings.Builder
-				return setupDevTelemetry(context.Background(), dir, "dev", flag, entities(), testUpSession(&fakeSessionReporter{}, &log, time.Hour), target, &out, devTelNow)
+				return setupDevTelemetry(context.Background(), entities(), devTelemetrySetupIn{ProjectDir: dir, Env: "dev", Flag: flag, Session: testUpSession(&fakeSessionReporter{}, &log, time.Hour), Target: target, Out: &out, Now: devTelNow})
 			}
 
 			// A hosted run, and its keeper (the stack's tracked child).

@@ -123,13 +123,13 @@ func writeAtomic(p string, b []byte) error {
 		return err
 	}
 	name := tmp.Name()
-	defer os.Remove(name) // no-op after the rename
+	defer func() { _ = os.Remove(name) }() // no-op after the rename
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

@@ -1012,7 +1012,10 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// still first reported once the stack is up.
 	sessTarget, sessErr := sessionTargetForEntities(opts.env, entities, projectDir)
 	session := newUpSessionFor(ctx, projectDir, opts.env, sessTarget, sessErr, os.Stdout, time.Now().UTC())
-	devTelemetry, err := setupDevTelemetry(ctx, projectDir, opts.env, opts.telemetry, entities, session, sessTarget, os.Stdout, time.Now().UTC())
+	devTelemetry, err := setupDevTelemetry(ctx, entities, devTelemetrySetupIn{
+		ProjectDir: projectDir, Env: opts.env, Flag: opts.telemetry,
+		Session: session, Target: sessTarget, Out: os.Stdout, Now: time.Now().UTC(),
+	})
 	if err != nil {
 		return err
 	}

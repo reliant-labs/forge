@@ -151,7 +151,7 @@ func devTelemetryRetentionOf(o *ObservabilityEntity) *devTelemetryRetention {
 		BrowserDays: o.Retention.BrowserDays,
 	}
 	for _, ov := range o.Retention.Overrides {
-		r.Overrides = append(r.Overrides, devTelemetryOverrideReq{Service: ov.Service, Signal: ov.Signal, Days: ov.Days})
+		r.Overrides = append(r.Overrides, devTelemetryOverrideReq(ov))
 	}
 	if r.TracesDays == 0 && r.MetricsDays == 0 && r.LogsDays == 0 && r.BrowserDays == 0 && len(r.Overrides) == 0 {
 		return nil
@@ -657,9 +657,21 @@ func devTelemetryStatusLine(projectDir, env string, now time.Time) string {
 	return fmt.Sprintf("telemetry: hosted (org %s, instance %s, %s)", rec.OrgID, emptyAs(rec.InstanceLabel, rec.InstanceID), retentionLabel(st.Retention))
 }
 
+// devTelemetrySetupIn is what runUp hands setupDevTelemetry: the project and
+// env, the --telemetry flag, the run's session and its target, where to say
+// things, and the clock.
+type devTelemetrySetupIn struct {
+	ProjectDir, Env, Flag string
+	Session               *upSession
+	Target                sessionTarget
+	Out                   io.Writer
+	Now                   time.Time
+}
+
 // devTelemetrySetup is runUp's half: gather the facts from the render and the
 // session, decide, record, and rewire the entities for a hosted run.
-func setupDevTelemetry(ctx context.Context, projectDir, env, flag string, e *KCLEntities, session *upSession, target sessionTarget, w io.Writer, now time.Time) (*devTelemetryRun, error) {
+func setupDevTelemetry(ctx context.Context, e *KCLEntities, in devTelemetrySetupIn) (*devTelemetryRun, error) {
+	projectDir, env, flag, session, target, w, now := in.ProjectDir, in.Env, in.Flag, in.Session, in.Target, in.Out, in.Now
 	if e == nil {
 		return nil, nil
 	}

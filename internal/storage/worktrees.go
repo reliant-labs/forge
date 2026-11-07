@@ -67,6 +67,16 @@ var defaultWorktreeRebuildable = []string{
 	".forge/logs", ".forge/workspace-base.tag",
 	// forge's own scratch and its generate fixed-point cache.
 	".forge/tmp", ".forge/generate-cache.json",
+	// What every `forge generate` writes beside its output and the next one
+	// rewrites: each generate hook's log, the frontend fixture markers, the
+	// go-tool memo, the failed run's preserved snapshot (removed by the next
+	// successful run) and the proto descriptor. Holding them held ~25 of the
+	// unregistered worktrees on one machine (2026-11-07).
+	".forge/generate-hooks", ".forge/fixtures", ".forge/generate-memo.json",
+	".forge/failed-generate", "/gen/forge_descriptor",
+	// A frontend's dev runtime document, written per machine by `forge env
+	// up` and never committed (commitpolicy).
+	"/frontends/*/public/config.js",
 	// forge's build/push state records and the temp files its atomic writes
 	// leave behind when interrupted.
 	".forge/state", ".forge/.forge-tmp-*",

@@ -174,7 +174,10 @@ was applied before the failure. Schema `forge-project-upgrade/v1`:
 - `phases[].status` is `done`, `skipped`, `planned` (`--check`) or `failed`.
 - `needs_human[].kind` is `lint-error`, `playbook`, `codemod-blocked`,
   `codemod-skipped`, `lock-drift` or `vendored-contract`. Each carries `fix`:
-  the command or skill that clears it.
+  the command or skill that clears it. One lint finding is one item: the tool
+  output under it (golangci-lint's source snippet, a formatter's diff) is its
+  `context`, and the format lane's finding for a file golangci-lint's
+  gofmt/goimports also flagged folds into that item.
 - `upcoming` is informational and never changes the exit code.
 
 ### Re-vendoring a contract the project copies from another repository

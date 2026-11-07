@@ -233,14 +233,15 @@ func excludeGateFor(ctx context.Context, pkgs []*packages.Package) (*excludeGate
 	if !contract.DeclaresExcludeContract(pkgs) {
 		return nil, nil
 	}
+	cwd, _ := os.Getwd()
 	roots, modules := map[string]bool{}, map[string]bool{}
 	for _, p := range pkgs {
 		if !plainPackage(p) {
 			continue
 		}
 		roots[p.PkgPath] = true
-		if p.Module != nil && p.Module.Main {
-			modules[p.Module.Path+"/..."] = true
+		if p.Module != nil && p.Module.Main && p.Module.Dir != "" {
+			modules[modulePackagesPattern(cwd, p.Module.Dir)] = true
 		}
 	}
 	if len(modules) == 0 {
@@ -268,6 +269,32 @@ func excludeGateFor(ctx context.Context, pkgs []*packages.Package) (*excludeGate
 		return nil, nil
 	}
 	return &excludeGateLoad{roots: sortedSet(roots), search: search}, nil
+}
+
+// modulePackagesPattern is the pattern naming every package of the module
+// rooted at moduleDir and nothing else: the DIRECTORY pattern `<dir>/...`
+// (cwd-relative when moduleDir lies under cwd), never the import-path pattern
+// `<module path>/...`.
+//
+// The two differ. A directory pattern stops at a nested go.mod, as
+// `go list ./...` does. An import-path pattern matches every package in the
+// build list under that prefix, so a nested module the main module requires
+// (control-plane's tools/registry-reliant, replaced to ./tools/registry-reliant)
+// came along — and was loaded under the MAIN module's go.sum, which holds no
+// entries for the nested module's own dependencies: "missing go.sum entry for
+// module providing package github.com/aws/aws-sdk-go/aws". Where -mod=mod was
+// in effect the loader did not fail but wrote those entries into the main
+// module's go.sum instead.
+func modulePackagesPattern(cwd, moduleDir string) string {
+	if cwd != "" {
+		if rel, err := filepath.Rel(cwd, moduleDir); err == nil && !strings.HasPrefix(rel, "..") {
+			if rel == "." {
+				return "./..."
+			}
+			return "./" + filepath.ToSlash(rel) + "/..."
+		}
+	}
+	return filepath.ToSlash(filepath.Join(moduleDir, "..."))
 }
 
 // listPackagePaths names the packages patterns match (go list, no type

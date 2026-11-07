@@ -199,7 +199,84 @@ func TestAnalysisLoadLeavesDependenciesToExportData(t *testing.T) {
 	if got, want := strings.Join(load.roots, ","), "example.com/m/internal/kv"; got != want {
 		t.Errorf("gate roots = %s, want %s", got, want)
 	}
-	if got, want := strings.Join(load.search, ","), "example.com/m/..."; got != want {
-		t.Errorf("gate search = %s, want %s", got, want)
+	if got, want := strings.Join(load.search, ","), "./..."; got != want {
+		t.Errorf("gate search = %s, want %s (a directory pattern, which stops at nested modules)", got, want)
+	}
+}
+
+// writeFiles writes files (slash paths relative to dir) under dir.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestContractLane_ExcludeGateStopsAtNestedModules is control-plane#2164: the
+// exclusion gate's module search named the main module by its import path
+// (`<module>/...`), which also matches a nested module the main module
+// requires — control-plane's tools/registry-reliant, its own module with its
+// own go.sum. Loaded under the main module, the nested module's dependencies
+// had no go.sum entries and every `forge lint` failed with "packages failed to
+// load: ... missing go.sum entry". Here the nested module tools/reg depends on
+// example.com/dep, which only its own go.mod resolves (a replace the main module
+// does not inherit); with module lookup off, loading tools/reg under the main
+// module fails exactly as an unresolvable go.sum entry does.
+func TestContractLane_ExcludeGateStopsAtNestedModules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loads a module with go/packages; runs in task test")
+	}
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"m/go.mod": "module example.com/m\n\ngo 1.24\n\n" +
+			"require example.com/m/tools/reg v0.0.0\n\n" +
+			"replace example.com/m/tools/reg => ./tools/reg\n",
+		"m/internal/kv/kv.go": `// Package kv looks values up.
+//
+//forge:exclude-contract: a tiny lookup helper
+package kv
+
+type Getter interface{ Get(key string) string }
+`,
+		"m/tools/reg/go.mod": "module example.com/m/tools/reg\n\ngo 1.24\n\n" +
+			"require example.com/dep v1.0.0\n\n" +
+			"replace example.com/dep => ../../../dep\n",
+		"m/tools/reg/main.go": "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.X() }\n",
+		"dep/go.mod":          "module example.com/dep\n\ngo 1.24\n",
+		"dep/dep.go":          "package dep\n\nfunc X() {}\n",
+	})
+	t.Chdir(filepath.Join(root, "m"))
+	// Hermetic: nothing may be fetched, so reaching into the nested module's
+	// dependencies is a load error rather than a network round trip.
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	ctx := context.Background()
+
+	for _, paths := range [][]string{{"./..."}, {"./internal/kv"}} {
+		if _, err := runContractAnalysisInProcess(ctx, paths, nil, contract.ExcludeGateOptions{}); err != nil {
+			t.Errorf("contract analysis of %v reached into the nested module tools/reg: %v", paths, err)
+		}
+	}
+	if b, err := os.ReadFile("go.mod"); err != nil || strings.Contains(string(b), "example.com/dep") {
+		t.Errorf("the main module's go.mod gained the nested module's dependency (err %v):\n%s", err, b)
+	}
+	if _, err := os.Stat("go.sum"); err == nil {
+		b, _ := os.ReadFile("go.sum")
+		if strings.Contains(string(b), "example.com/dep") {
+			t.Errorf("the main module's go.sum gained the nested module's dependency:\n%s", b)
+		}
+	}
+
+	if got, want := modulePackagesPattern("/p/m", "/p/m/tools/reg"), "./tools/reg/..."; got != want {
+		t.Errorf("modulePackagesPattern under cwd = %s, want %s", got, want)
+	}
+	if got := modulePackagesPattern("/p/m", "/elsewhere/mod"); got != filepath.ToSlash(filepath.Join("/elsewhere/mod", "...")) {
+		t.Errorf("modulePackagesPattern outside cwd = %s, want an absolute directory pattern", got)
 	}
 }

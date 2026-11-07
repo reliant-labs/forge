@@ -113,19 +113,22 @@ runtime bridge block), chaining any `server.enhanceMiddleware` you already set; 
 `app/_layout.tsx` (with an `@typescript-eslint/no-require-imports` disable comment
 above it); optionally copy `tests/devlog.test.ts`. Production bundles carry no
 forwarder. The device must reach Metro's origin, not the API origin. The
-forwarder takes it from `installNativeDevLogging({ origin })`, then
-`EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN` (an http(s) URL that `forge env up` injects for
+forwarder takes it from `installNativeDevLogging({ origin })`, then the public
+`expo-constants` fields (`expoConfig.hostUri`, `experienceUrl`, `linkingUri`, which
+exist only when the device actually reached Metro, so they are the right address),
+then `EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN` (an http(s) URL that `forge env up` injects for
 native frontends from the Metro port and `--device-host`; a value you set in the
-shell, KCL or `.env.<env>` wins), then the public `expo-constants` fields
-(`expoConfig.hostUri`, `experienceUrl`, `linkingUri`). A plain Debug build without a
+shell, KCL or `.env.<env>` wins over the injected one). A plain Debug build without a
 dev client has none of the `expo-constants` fields, so outside `forge env up` set
 the variable yourself. If nothing resolves it logs one `console.warn` naming the fix
 instead of silently doing nothing. The line `[forge-devlog] native logging attached` confirms
 delivery. The forwarder redacts credential-shaped values (keys ending in token,
-secret or password; credential-ish `*key` names such as `apiKey`, `privateKey`,
-`sessionKey` and a bare `key=`; quoted values; whole array/object values of those
-keys; cookie headers; Bearer/Basic/JWT) and aborts a stalled request after 5 s.
-Identifiers such as `queryKey` are not masked. Grep with `'^\[browser:error\]'`:
+secret, password or credential(s); credential-ish `*key` names such as `apiKey`,
+`privateKey`, `sessionKey` and a bare `key=`; quoted values; whole array/object values
+of those keys; cookie headers; Bearer/Basic/JWT) and aborts a stalled request after
+5 s. Identifiers such as `queryKey` are not masked, and neither is prose such as
+`No credential: this bundle…` (a bare `credential:` followed by an unquoted word).
+Grep with `'^\[browser:error\]'`:
 receivers prefix every line, so a forged prefix inside a message is not at line
 start.
 

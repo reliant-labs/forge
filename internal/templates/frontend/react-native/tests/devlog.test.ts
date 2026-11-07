@@ -366,10 +366,30 @@ describe("native dev log forwarder", () => {
       );
     });
 
-    it("the env var beats hostUri, experienceUrl and linkingUri", async () => {
+    it("hostUri beats the injected env var (dev client or Expo Go on a device)", async () => {
+      process.env.EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN = "http://localhost:8081";
+      mockConstants.expoConfig = { hostUri: "10.0.2.2:8081" };
+      expect(await postedTo()).toBe("http://10.0.2.2:8081/__forge/log");
+    });
+
+    it("experienceUrl beats the env var", async () => {
       process.env.EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN = "http://env.example:1111/";
+      mockConstants.expoConfig = null;
       mockConstants.experienceUrl = "exp://10.0.0.5:8081";
+      expect(await postedTo()).toBe("http://10.0.0.5:8081/__forge/log");
+    });
+
+    it("linkingUri beats the env var", async () => {
+      process.env.EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN = "http://env.example:1111/";
+      mockConstants.expoConfig = null;
       mockConstants.linkingUri = "exp://10.0.0.6:8081/--/";
+      expect(await postedTo()).toBe("http://10.0.0.6:8081/__forge/log");
+    });
+
+    it("the env var is used when no expo-constants field resolves", async () => {
+      process.env.EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN = "http://env.example:1111/";
+      mockConstants.expoConfig = null;
+      mockConstants.linkingUri = "myapp://";
       expect(await postedTo()).toBe("http://env.example:1111/__forge/log");
     });
 
@@ -637,6 +657,16 @@ describe("redact", () => {
     ],
     ["quoted credentials key", '{"credentials":"u:p"}', `{"credentials":"${masked}"}`],
     ["bare credential assignment", "credential=abc", `credential=${masked}`],
+    [
+      "bare credential key with a quoted value",
+      `credentials: "abc def" next credential: 'x'`,
+      `credentials: "${masked}" next credential: '${masked}'`,
+    ],
+    [
+      "unquoted object key with structured values",
+      '{credentials: "abc"} credentials:{"user":"u"} credential: ["a"]',
+      `{credentials: "${masked}"} credentials:${masked} credential: ${masked}`,
+    ],
     [
       "scaffold auth warning is prose, not a credential",
       "[auth] No credential: this bundle is driving a real backend with nothing to present",

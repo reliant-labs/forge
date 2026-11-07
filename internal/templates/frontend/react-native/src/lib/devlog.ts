@@ -30,11 +30,13 @@
 //     only: expoConfig.hostUri (set by the Expo CLI during development, the
 //     address it advertises for the dev server), then the exp:// / exps://
 //     experienceUrl and linkingUri of an Expo Go or dev-client session. No
-//     internal `expo/internal/*` module is imported. A plain Debug build has
-//     none of these, so EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN (injected by `forge env
-//     up`) takes precedence over them; `origin` passed to
-//     installNativeDevLogging() beats everything (a custom proxy). When nothing
-//     resolves, one console.warn names the fix.
+//     internal `expo/internal/*` module is imported. Those fields exist only
+//     when a device actually reached Metro, so they win. A plain Debug build has
+//     none of them and falls back to EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN (injected
+//     by `forge env up` as a localhost origin, which an emulator or phone could
+//     not reach). `origin` passed to installNativeDevLogging() beats
+//     everything (a custom proxy). When nothing resolves, one console.warn
+//     names the fix.
 //   - A circuit breaker. A dead dev server (Metro stopped, device off the LAN)
 //     must not turn every console call into a failing request. After a failure
 //     the forwarder goes quiet for a cool-down, counts what it skipped, and
@@ -68,8 +70,8 @@ export interface NativeDevLogPayload {
 export interface NativeDevLoggingOptions {
   /**
    * Metro origin to post to, e.g. "http://192.168.1.20:8081". Default:
-   * EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN, then derived from expo-constants (see
-   * deriveMetroOrigin).
+   * derived from expo-constants (see deriveMetroOrigin), then
+   * EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN.
    */
   origin?: string;
   /** Also keep writing to the real console. Default true. */
@@ -128,8 +130,9 @@ const REDACTED = "[REDACTED]";
 // `credential` is the other: as an identifier's suffix (`awsCredentials:`,
 // `client_credential=`) it always masks, but bare it is also an English word,
 // and "No credential: this bundle..." is the scaffold's own auth warning. So a
-// bare `credential(s)` masks only as a quoted key (`"credentials":`) or with
-// `=`, never as prose ending in a colon.
+// bare `credential(s)` masks as a quoted key (`"credentials":`), with `=`, or
+// before a quoted/object/array value; a plain word after `credential:` is
+// treated as prose.
 // Group 1 is an Authorization header, 2 a cookie header, 3 a bare `key`,
 // 4 a bare `credential(s)`.
 const KEY_PREFIX =
@@ -204,9 +207,18 @@ export function redact(msg: string): string {
   for (let m = CREDENTIAL_KEY.exec(msg); m !== null; m = CREDENTIAL_KEY.exec(msg)) {
     // A bare `key` right after an identifier word ("query key", "cache-key") is not a credential.
     if (m[3] && IDENTIFIER_KEY.test(msg.slice(Math.max(0, m.index - 24), m.index))) continue;
-    // A bare `credential:` with no quote and no `=` is prose ("No credential: ...").
-    if (m[4] && !/["'=]/.test(m[0].slice(m[4].length))) continue;
     const start = m.index + m[0].length;
+    // A bare `credential:` is prose ("No credential: this bundle...") unless
+    // the key is quoted, it is assigned with `=`, or the value is structured
+    // (quoted, an object or an array). An unquoted word after `credential:` is
+    // the accepted gap: it cannot be told apart from a sentence.
+    if (
+      m[4] &&
+      !/["'=]/.test(m[0].slice(m[4].length)) &&
+      !/^(?:\\?["']|[{[])/.test(msg.slice(start, start + 2))
+    ) {
+      continue;
+    }
     const kind = m[1] ? "authorization" : m[2] ? "cookie" : "bare";
     const end = valueEnd(msg, start, kind);
     const value = msg.slice(start, end);
@@ -356,19 +368,25 @@ const NO_ORIGIN_FIX =
   "run the app through `forge env up`, set EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN to the Metro origin " +
   "(e.g. http://192.168.1.20:8081), or pass { origin } to installNativeDevLogging()";
 
-/** Resolve the Metro origin the device can actually reach, or null. */
+/**
+ * Resolve the Metro origin the device can actually reach, or null. The
+ * expo-constants fields come first: they are the address this device used to
+ * load its bundle. The env var is the bare-build fallback; `forge env up`
+ * injects a localhost origin that a physical device or Android emulator
+ * cannot reach, so it must never shadow a field that is already right.
+ */
 function resolveOrigin(env: { origin: string | null }): string | null {
-  if (env.origin) return env.origin;
   try {
-    return deriveMetroOrigin({
+    const derived = deriveMetroOrigin({
       hostUri: Constants.expoConfig?.hostUri,
       experienceUrl: Constants.experienceUrl,
       linkingUri: Constants.linkingUri,
     });
+    if (derived) return derived;
   } catch {
     // no manifest in this runtime
-    return null;
   }
+  return env.origin;
 }
 
 class DevLogger {

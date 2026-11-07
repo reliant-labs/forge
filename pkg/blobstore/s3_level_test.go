@@ -115,8 +115,10 @@ func TestS3ListLevelHonoursCancellation(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
 	cancelled := make(chan struct{}, 1)
+	started := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		started <- struct{}{}
 		<-r.Context().Done()
 		cancelled <- struct{}{}
 	}))
@@ -125,10 +127,26 @@ func TestS3ListLevelHonoursCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := s.ListLevel(ctx, "", blobstore.LevelOptions{}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ListLevel past its deadline = %v, want context.DeadlineExceeded", err)
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.ListLevel(ctx, "", blobstore.LevelOptions{})
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("listing never reached the server")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled listing = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("underlying listing did not exit after cancellation")
 	}
 	select {
 	case <-cancelled:

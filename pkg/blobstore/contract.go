@@ -32,7 +32,10 @@
 // no empty segments, no backslashes or control characters. A multi-tenant
 // caller wraps the store in Scoped, which joins every key under a fixed
 // prefix, so code holding the scoped store cannot name another tenant's
-// object, whatever key it is handed.
+// object, whatever key it is handed. Privileged bucket readers may opt into
+// S3Config.AllowOpaqueKeys or GCSConfig.AllowOpaqueKeys to read pre-existing
+// provider names without normalizing them. That opt-in never changes upload,
+// delete or Scoped validation; authorize the whole bucket before enabling it.
 //
 // # Bounding upload size
 //
@@ -53,8 +56,9 @@ import (
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
-// Store is object storage addressed by key. Every method validates its key
-// (ValidateKey) before calling out.
+// Store is object storage addressed by key. Methods validate keys before
+// calling out; configured privileged bucket reads may accept opaque provider
+// names, while writes and tenant-scoped access always require ValidateKey.
 type Store interface {
 	// PresignPut returns the request a client sends to upload key: a PUT of
 	// exactly opts.ContentLength bytes of opts.ContentType. An existing

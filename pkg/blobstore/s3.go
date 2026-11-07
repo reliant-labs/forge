@@ -47,6 +47,10 @@ type S3Config struct {
 	Region string
 	// Bucket is the bucket every key lives in. Required.
 	Bucket string
+	// AllowOpaqueKeys permits reads/listing of existing path-like object names
+	// for a privileged caller authorized for the entire bucket. Writes/deletes
+	// and Scoped tenant-relative input remain strict. Default false.
+	AllowOpaqueKeys bool
 	// AccessKeyID and SecretAccessKey are the S3 credentials (an HMAC key
 	// for GCS). Required.
 	AccessKeyID     string
@@ -71,13 +75,14 @@ type S3Config struct {
 
 // S3 is a Store on an S3-compatible service. Build it with NewS3.
 type S3 struct {
-	bucket string
+	bucket          string
+	allowOpaqueKeys bool
 	// api performs Stat, Delete and List against Endpoint; presign signs
 	// URLs for PublicEndpoint. They are the same client when the two match.
 	api, presign *minio.Client
-	// listClient builds a single-attempt client for Endpoint on the given
-	// transport; ListLevel binds the caller's context into it.
-	listClient func(http.RoundTripper) (*minio.Client, error)
+	// listConfig builds a per-call, single-attempt client. Keep a pointer,
+	// not a function field, so S3 retains its v1 comparability contract.
+	listConfig *S3Config
 	transport  http.RoundTripper
 	chain      *observe.ComponentChain
 }
@@ -112,16 +117,14 @@ func NewS3(cfg S3Config) (*S3, error) {
 			return nil, fmt.Errorf("blobstore: S3Config.PublicEndpoint: %w", err)
 		}
 	}
-	listClient := func(rt http.RoundTripper) (*minio.Client, error) {
-		return newMinioClient(cfg, cfg.Endpoint, rt, 1)
-	}
 	return &S3{
-		bucket:     cfg.Bucket,
-		api:        api,
-		presign:    presign,
-		listClient: listClient,
-		transport:  transport,
-		chain:      instrumentation(cfg.Chain, cfg.Logger),
+		bucket:          cfg.Bucket,
+		allowOpaqueKeys: cfg.AllowOpaqueKeys,
+		api:             api,
+		presign:         presign,
+		listConfig:      &cfg,
+		transport:       transport,
+		chain:           instrumentation(cfg.Chain, cfg.Logger),
 	}, nil
 }
 
@@ -198,7 +201,7 @@ func (s *S3) PresignPut(ctx context.Context, key string, opts PutOptions) (Presi
 // PresignGet implements Store.
 func (s *S3) PresignGet(ctx context.Context, key string, opts GetOptions) (PresignedRequest, error) {
 	return s.chain.Around(ctx, "blobstore.PresignGet", func(ctx context.Context) (PresignedRequest, error) {
-		if err := ValidateKey(key); err != nil {
+		if err := validateReadKey(key, s.allowOpaqueKeys); err != nil {
 			return PresignedRequest{}, err
 		}
 		d, err := ttl(opts.TTL)
@@ -221,7 +224,7 @@ func (s *S3) PresignGet(ctx context.Context, key string, opts GetOptions) (Presi
 // Stat implements Store.
 func (s *S3) Stat(ctx context.Context, key string) (Object, error) {
 	return s.chain.Around(ctx, "blobstore.Stat", func(ctx context.Context) (Object, error) {
-		if err := ValidateKey(key); err != nil {
+		if err := validateReadKey(key, s.allowOpaqueKeys); err != nil {
 			return Object{}, err
 		}
 		info, err := s.api.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
@@ -248,7 +251,7 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 // List implements Store.
 func (s *S3) List(ctx context.Context, prefix string, opts ListOptions) (ListPage, error) {
 	return s.chain.Around(ctx, "blobstore.List", func(ctx context.Context) (ListPage, error) {
-		if err := validatePrefix(prefix); err != nil {
+		if err := validateReadPrefix(prefix, s.allowOpaqueKeys); err != nil {
 			return ListPage{}, err
 		}
 		limit := listLimit(opts.Limit)
@@ -292,7 +295,7 @@ func (s *S3) List(ctx context.Context, prefix string, opts ListOptions) (ListPag
 // even when it ended on a common prefix.
 func (s *S3) ListLevel(ctx context.Context, prefix string, opts LevelOptions) (LevelPage, error) {
 	return s.chain.Around(ctx, "blobstore.ListLevel", func(ctx context.Context) (LevelPage, error) {
-		if err := validatePrefix(prefix); err != nil {
+		if err := validateReadPrefix(prefix, s.allowOpaqueKeys); err != nil {
 			return LevelPage{}, err
 		}
 		cont, err := decodePageToken("s3", s.bucket, prefix, opts.PageToken)
@@ -340,7 +343,7 @@ const listAttempts = 3
 // That client makes one attempt, because minio would retry on its own
 // background context; the retries of a transient failure run here, on ctx.
 func (s *S3) listObjectsV2(ctx context.Context, prefix, cont string, maxKeys int) (minio.ListBucketV2Result, error) {
-	client, err := s.listClient(contextTransport{ctx: ctx, base: s.transport})
+	client, err := newMinioClient(*s.listConfig, s.listConfig.Endpoint, contextTransport{ctx: ctx, base: s.transport}, 1)
 	if err != nil {
 		return minio.ListBucketV2Result{}, err
 	}
@@ -382,7 +385,7 @@ func (t contextTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // PresignDownload implements DownloadPresigner.
 func (s *S3) PresignDownload(ctx context.Context, key string, opts DownloadOptions) (PresignedRequest, error) {
 	return s.chain.Around(ctx, "blobstore.PresignDownload", func(ctx context.Context) (PresignedRequest, error) {
-		if err := ValidateKey(key); err != nil {
+		if err := validateReadKey(key, s.allowOpaqueKeys); err != nil {
 			return PresignedRequest{}, err
 		}
 		d, params, err := downloadParams(key, opts)

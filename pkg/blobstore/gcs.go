@@ -4,6 +4,7 @@ package blobstore
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
+	iamcredentials "google.golang.org/api/iamcredentials/v1"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
@@ -25,6 +27,11 @@ import (
 type GCSConfig struct {
 	// Bucket is the bucket every key lives in. Required.
 	Bucket string
+	// AllowOpaqueKeys admits existing object names with path-like segments for
+	// privileged, bucket-authorized readers. It applies only to reads/listing,
+	// never writes or deletes. Scoped still enforces its strict tenant boundary.
+	// Do not enable it for user-supplied tenant-relative keys.
+	AllowOpaqueKeys bool
 	// SignerEmail is the service account presigned URLs are signed as.
 	// Empty means the client credential's own account: read from its JSON,
 	// or under Workload Identity from the metadata server. Set it to sign
@@ -33,8 +40,8 @@ type GCSConfig struct {
 	SignerEmail string
 	// SignBytes signs a URL's string-to-sign as SignerEmail. nil signs
 	// keylessly through the IAM Credentials signBlob API under the client's
-	// credentials (a credential JSON that carries a private key signs
-	// locally instead), so no key or HMAC secret is ever mounted. Set it,
+	// credentials when SignerEmail is explicit. With no explicit account,
+	// the SDK may use its own credential's private key. Set it,
 	// with SignerEmail, to sign without the network: a test, an emulator.
 	SignBytes func([]byte) ([]byte, error)
 	// ClientOptions are passed to storage.NewClient: credentials
@@ -55,11 +62,13 @@ type GCSConfig struct {
 // nothing to close: its client is HTTP (storage.NewClient, never gRPC), whose
 // idle connections the transport reclaims.
 type GCS struct {
-	bucket      *storage.BucketHandle
-	name        string
-	signerEmail string
-	signBytes   func([]byte) ([]byte, error)
-	chain       *observe.ComponentChain
+	bucket          *storage.BucketHandle
+	name            string
+	signerEmail     string
+	signBytes       func([]byte) ([]byte, error)
+	iamSigner       *iamcredentials.Service
+	allowOpaqueKeys bool
+	chain           *observe.ComponentChain
 }
 
 var (
@@ -83,18 +92,44 @@ func NewGCS(ctx context.Context, cfg GCSConfig) (*GCS, error) {
 	if err != nil {
 		return nil, fmt.Errorf("blobstore: building the Cloud Storage client: %w", err)
 	}
+	var iamSigner *iamcredentials.Service
+	if cfg.SignerEmail != "" && cfg.SignBytes == nil {
+		// An explicit principal must use IAM, not a private key belonging to
+		// the client's ADC account. The storage SDK otherwise prefers that key.
+		iamSigner, err = iamcredentials.NewService(ctx, cfg.ClientOptions...)
+		if err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("blobstore: building the IAM signer: %w", err)
+		}
+	}
 	return &GCS{
-		bucket:      client.Bucket(cfg.Bucket),
-		name:        cfg.Bucket,
-		signerEmail: cfg.SignerEmail,
-		signBytes:   cfg.SignBytes,
-		chain:       instrumentation(cfg.Chain, cfg.Logger),
+		bucket:          client.Bucket(cfg.Bucket),
+		iamSigner:       iamSigner,
+		allowOpaqueKeys: cfg.AllowOpaqueKeys,
+		name:            cfg.Bucket,
+		signerEmail:     cfg.SignerEmail,
+		signBytes:       cfg.SignBytes,
+		chain:           instrumentation(cfg.Chain, cfg.Logger),
 	}, nil
 }
 
 // signedURL signs a V4 URL for key. With no signer configured the client
 // detects the account and signs through IAM signBlob.
-func (g *GCS) signedURL(key, method string, d time.Duration, contentType string, headers []string, params url.Values) (PresignedRequest, error) {
+func (g *GCS) signedURL(ctx context.Context, key, method string, d time.Duration, contentType string, headers []string, params url.Values) (PresignedRequest, error) {
+	if err := ctx.Err(); err != nil {
+		return PresignedRequest{}, err
+	}
+	signBytes := g.signBytes
+	if g.iamSigner != nil {
+		signBytes = func(payload []byte) ([]byte, error) {
+			resp, err := g.iamSigner.Projects.ServiceAccounts.SignBlob("projects/-/serviceAccounts/"+g.signerEmail,
+				&iamcredentials.SignBlobRequest{Payload: base64.StdEncoding.EncodeToString(payload)}).Context(ctx).Do()
+			if err != nil {
+				return nil, err
+			}
+			return base64.StdEncoding.DecodeString(resp.SignedBlob)
+		}
+	}
 	now := time.Now()
 	u, err := g.bucket.SignedURL(key, &storage.SignedURLOptions{
 		Scheme: storage.SigningSchemeV4,
@@ -104,7 +139,7 @@ func (g *GCS) signedURL(key, method string, d time.Duration, contentType string,
 		// that exactly d (and still inside V4's 7 days + 1s at MaxTTL).
 		Expires:         now.Add(d + time.Second/2),
 		GoogleAccessID:  g.signerEmail,
-		SignBytes:       g.signBytes,
+		SignBytes:       signBytes,
 		ContentType:     contentType,
 		Headers:         headers,
 		QueryParameters: params,
@@ -138,7 +173,7 @@ func signedExpiry(signed string, fallback time.Time) time.Time {
 // PresignPut implements Store. The URL signs the Content-Type and the exact
 // Content-Length, so the service refuses any other body.
 func (g *GCS) PresignPut(ctx context.Context, key string, opts PutOptions) (PresignedRequest, error) {
-	return g.chain.Around(ctx, "blobstore.PresignPut", func(context.Context) (PresignedRequest, error) {
+	return g.chain.Around(ctx, "blobstore.PresignPut", func(ctx context.Context) (PresignedRequest, error) {
 		if err := ValidateKey(key); err != nil {
 			return PresignedRequest{}, err
 		}
@@ -146,7 +181,7 @@ func (g *GCS) PresignPut(ctx context.Context, key string, opts PutOptions) (Pres
 		if err != nil {
 			return PresignedRequest{}, err
 		}
-		req, err := g.signedURL(key, http.MethodPut, d, opts.ContentType,
+		req, err := g.signedURL(ctx, key, http.MethodPut, d, opts.ContentType,
 			[]string{"Content-Length:" + strconv.FormatInt(opts.ContentLength, 10)}, nil)
 		if err != nil {
 			return PresignedRequest{}, err
@@ -158,8 +193,8 @@ func (g *GCS) PresignPut(ctx context.Context, key string, opts PutOptions) (Pres
 
 // PresignGet implements Store.
 func (g *GCS) PresignGet(ctx context.Context, key string, opts GetOptions) (PresignedRequest, error) {
-	return g.chain.Around(ctx, "blobstore.PresignGet", func(context.Context) (PresignedRequest, error) {
-		if err := ValidateKey(key); err != nil {
+	return g.chain.Around(ctx, "blobstore.PresignGet", func(ctx context.Context) (PresignedRequest, error) {
+		if err := validateReadKey(key, g.allowOpaqueKeys); err != nil {
 			return PresignedRequest{}, err
 		}
 		d, err := ttl(opts.TTL)
@@ -170,28 +205,28 @@ func (g *GCS) PresignGet(ctx context.Context, key string, opts GetOptions) (Pres
 		if opts.DownloadName != "" {
 			params = url.Values{"response-content-disposition": {contentDisposition(opts.DownloadName)}}
 		}
-		return g.signedURL(key, http.MethodGet, d, "", nil, params)
+		return g.signedURL(ctx, key, http.MethodGet, d, "", nil, params)
 	})
 }
 
 // PresignDownload implements DownloadPresigner.
 func (g *GCS) PresignDownload(ctx context.Context, key string, opts DownloadOptions) (PresignedRequest, error) {
-	return g.chain.Around(ctx, "blobstore.PresignDownload", func(context.Context) (PresignedRequest, error) {
-		if err := ValidateKey(key); err != nil {
+	return g.chain.Around(ctx, "blobstore.PresignDownload", func(ctx context.Context) (PresignedRequest, error) {
+		if err := validateReadKey(key, g.allowOpaqueKeys); err != nil {
 			return PresignedRequest{}, err
 		}
 		d, params, err := downloadParams(key, opts)
 		if err != nil {
 			return PresignedRequest{}, err
 		}
-		return g.signedURL(key, http.MethodGet, d, "", nil, params)
+		return g.signedURL(ctx, key, http.MethodGet, d, "", nil, params)
 	})
 }
 
 // Stat implements Store.
 func (g *GCS) Stat(ctx context.Context, key string) (Object, error) {
 	return g.chain.Around(ctx, "blobstore.Stat", func(ctx context.Context) (Object, error) {
-		if err := ValidateKey(key); err != nil {
+		if err := validateReadKey(key, g.allowOpaqueKeys); err != nil {
 			return Object{}, err
 		}
 		attrs, err := g.bucket.Object(key).Attrs(ctx)
@@ -233,7 +268,7 @@ func (g *GCS) query(prefix, delimiter, startOffset string) *storage.Query {
 // itself is skipped when it comes back.
 func (g *GCS) List(ctx context.Context, prefix string, opts ListOptions) (ListPage, error) {
 	return g.chain.Around(ctx, "blobstore.List", func(ctx context.Context) (ListPage, error) {
-		if err := validatePrefix(prefix); err != nil {
+		if err := validateReadPrefix(prefix, g.allowOpaqueKeys); err != nil {
 			return ListPage{}, err
 		}
 		limit := listLimit(opts.Limit)
@@ -266,7 +301,7 @@ func (g *GCS) List(ctx context.Context, prefix string, opts ListOptions) (ListPa
 // "/". Its page token wraps GCS's own pageToken.
 func (g *GCS) ListLevel(ctx context.Context, prefix string, opts LevelOptions) (LevelPage, error) {
 	return g.chain.Around(ctx, "blobstore.ListLevel", func(ctx context.Context) (LevelPage, error) {
-		if err := validatePrefix(prefix); err != nil {
+		if err := validateReadPrefix(prefix, g.allowOpaqueKeys); err != nil {
 			return LevelPage{}, err
 		}
 		token, err := decodePageToken("gcs", g.name, prefix, opts.PageToken)

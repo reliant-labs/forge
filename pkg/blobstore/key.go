@@ -48,6 +48,26 @@ func ValidateKey(key string) error {
 	return nil
 }
 
+// validateReadKey preserves opaque provider names only for an explicitly
+// privileged bucket reader. It never normalizes paths; bucket authorization
+// must already have happened. Empty, oversized and non-UTF-8 keys are refused.
+func validateReadKey(key string, privileged bool) error {
+	if !privileged {
+		return ValidateKey(key)
+	}
+	if key == "" || len(key) > MaxKeyBytes || !utf8.ValidString(key) {
+		return errorf(ErrInvalidKey, "invalid opaque object key")
+	}
+	return nil
+}
+
+func validateReadPrefix(prefix string, privileged bool) error {
+	if privileged && prefix != "" {
+		return validateReadKey(prefix, true)
+	}
+	return validatePrefix(prefix)
+}
+
 // validatePrefix accepts "" (everything) or a prefix whose segments are valid
 // key segments. A trailing "/" is allowed (it lists one "directory"); anything
 // else ValidateKey refuses is refused here too.
@@ -268,6 +288,9 @@ func (s *scoped) unscope(key string) (string, error) {
 	rel, ok := strings.CutPrefix(key, s.prefix)
 	if !ok || rel == "" {
 		return "", fmt.Errorf("blobstore: scope %q: the inner store reported key %q, outside the scope", s.prefix, key)
+	}
+	if err := validatePrefix(rel); err != nil {
+		return "", fmt.Errorf("blobstore: scope %q: unsafe returned key %q: %w", s.prefix, key, err)
 	}
 	return rel, nil
 }

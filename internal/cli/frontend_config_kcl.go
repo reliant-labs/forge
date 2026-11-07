@@ -116,8 +116,9 @@ func renderFrontendRuntimeDocs(projectDir, envName string) (map[string]string, e
 // Every web frontend forge writes the document for is listed, even with no
 // runtime_config: its document still names the environment (ENVIRONMENT, see
 // renderFrontendRuntimeDocsWith), which the generated otel_gen.ts reports as
-// deployment.environment.name and reads from config.js only — a build
-// variable would freeze one environment's name into a promoted bundle.
+// deployment.environment.name and reads from config.js first — a build
+// variable (a deprecated fallback there) would freeze one environment's name
+// into a promoted bundle.
 func frontendRuntimeOverlays(entities *KCLEntities) map[string]map[string]string {
 	if entities == nil {
 		return nil

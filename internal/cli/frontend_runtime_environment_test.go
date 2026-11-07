@@ -7,8 +7,8 @@ import (
 
 // Every web frontend forge writes a runtime config document for gets one that
 // names its environment, because the generated otel_gen.ts reads ENVIRONMENT
-// from config.js only — not from a build variable, which a promoted bundle
-// would carry into every other environment. A hosted frontend is left to the
+// from config.js first — a build variable, which a promoted bundle would carry
+// into every other environment, is only its deprecated fallback. A hosted frontend is left to the
 // control plane, which writes its document; React Native has none.
 func TestFrontendRuntimeOverlaysListEveryWebFrontendForgeWrites(t *testing.T) {
 	entities := &KCLEntities{Frontends: []FrontendEntity{

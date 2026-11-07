@@ -54,8 +54,8 @@ production bundle sends nothing, rather than POSTing to a 404.
 ## Turning it on, and the knobs
 
 A value that differs per environment is read from the runtime config document
-(`config.js`) ONLY, never from a build variable: a build variable is inlined at
-build time and follows that bundle into every environment it is promoted to.
+(`config.js`): a build variable is inlined at build time and follows that bundle
+into every environment it is promoted to.
 
 | Knob | Runtime key (`config.js`) | Declared by | Default |
 |---|---|---|---|
@@ -69,7 +69,10 @@ frontend's KCL `config` block. Every web frontend's `config.js` names its
 environment, so `ENVIRONMENT` needs no declaration. A literal
 `{NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT` / `ENVIRONMENT` / `OTEL_REPLAY` in the
 frontend's `env_vars` is carried into the runtime config as well, so older
-declarations keep working; a shell-exported one at `npm run build` is not read.
+declarations keep working. A build variable only exported in the shell at
+`npm run build` is a **deprecated** fallback: used when `config.js` lacks the
+key, with one `console.warn` per page load naming the KCL field to move it to;
+it is removed in the next major.
 The API origin (`API_URL`) feeds `tracePropagationTargets`, resolved as
 `connect.ts` resolves it, so a cross-origin API still gets a `traceparent`.
 `environment` is emitted as both `deployment.environment.name` and the legacy

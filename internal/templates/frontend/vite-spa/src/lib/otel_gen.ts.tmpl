@@ -8,11 +8,12 @@
 //
 // What stays here is the part that CANNOT move: the reads of this frontend's
 // configuration. A value that differs per environment comes from the runtime
-// config document (config.js, `window.__FORGE_CONFIG__`), never from an
-// `import.meta.env.VITE_*` build variable: Vite inlines those at BUILD time,
-// so the value would follow that build into every environment it is
-// promoted to. Only build facts — the version (VITE_APP_VERSION, forge's
-// build id) and whether this is the dev server — are read from the build.
+// config document (config.js, `window.__FORGE_CONFIG__`), not from an
+// `import.meta.env.VITE_*` build variable (that is a deprecated fallback,
+// below): Vite inlines those at BUILD time, so the value would follow that
+// build into every environment it is promoted to. Otherwise only build facts
+// are read from the build: the version (VITE_APP_VERSION, forge's build id)
+// and whether this is the dev server.
 //
 // ── Where telemetry goes: same-origin `/_otel` ───────────────────────────
 //
@@ -52,9 +53,12 @@
 // that records unmasked.
 //
 // The VITE_OTEL_ENDPOINT / VITE_ENVIRONMENT / VITE_OTEL_REPLAY build
-// variables are not read here. A frontend's KCL that declares one (in
-// `config` or `env_vars`) gets the same value in its runtime config instead,
-// so it keeps working and now varies per environment as it should.
+// variables are DEPRECATED. A frontend's KCL that declares one (in `config`
+// or `env_vars`) already gets the same value in its runtime config, which
+// wins. One that is only exported in the shell at `vite build` is still
+// read when config.js does not set the key, and the page warns once (in the
+// console) naming the variable and the KCL field to move it to. That
+// fallback is removed in the next major version of forge.
 //
 // Distributed tracing itself — the traceparent attached to every RPC, which
 // is what makes browser spans join the backend's trace — is always on, needs
@@ -88,6 +92,43 @@ function rate(value: unknown): number | undefined {
   return text(value) !== "" && Number.isFinite(n) ? n : undefined;
 }
 
+// DEPRECATED (removed in the next major): the build-variable fallback for a
+// per-environment value. The runtime config wins; a build variable is read
+// only when config.js does not set the key, and each one read is recorded in
+// `used` so initTelemetry can say so. `declare` is where the value belongs.
+function runtimeOrBuild(
+  used: string[],
+  runtime: unknown,
+  buildName: string,
+  build: string | undefined,
+  declare: string,
+): string {
+  const value = text(runtime);
+  if (value !== "" || !build) {
+    return value;
+  }
+  used.push(`${buildName} (declare it as ${declare})`);
+  return build;
+}
+
+let warnedBuildFallback = false;
+
+// One warning per page load, however often initTelemetry runs.
+function warnBuildFallback(used: string[]): void {
+  if (warnedBuildFallback || used.length === 0) {
+    return;
+  }
+  warnedBuildFallback = true;
+  console.warn(
+    `[forge] browser telemetry read ${used.join(", ")} from a build variable, ` +
+      "because this environment's runtime config (config.js) does not set it. " +
+      "A build variable is frozen into the bundle and follows it into every " +
+      "environment it is promoted to: move it to this frontend's runtime config " +
+      "in its KCL. The build-variable fallback is deprecated and will be removed " +
+      "in the next major version of forge.",
+  );
+}
+
 /**
  * SERVICE_NAME is the service.name this frontend's telemetry reports:
  * "<project>-<frontend>". The generated dashboards and alert defaults under
@@ -106,16 +147,40 @@ export const SERVICE_NAME = '{{.TelemetryServiceName}}';
  */
 export function initTelemetry(): void {
   const cfg = runtimeConfig();
+  // Each build variable is written out verbatim: Vite inlines only those.
+  const used: string[] = [];
+  const environment = runtimeOrBuild(
+    used,
+    cfg.ENVIRONMENT,
+    "VITE_ENVIRONMENT",
+    import.meta.env.VITE_ENVIRONMENT as string | undefined,
+    "config.environment",
+  );
+  const endpoint = runtimeOrBuild(
+    used,
+    cfg.OTEL_ENDPOINT,
+    "VITE_OTEL_ENDPOINT",
+    import.meta.env.VITE_OTEL_ENDPOINT as string | undefined,
+    "config.otel_endpoint",
+  );
+  const replay = runtimeOrBuild(
+    used,
+    cfg.OTEL_REPLAY,
+    "VITE_OTEL_REPLAY",
+    import.meta.env.VITE_OTEL_REPLAY as string | undefined,
+    'runtime_config.OTEL_REPLAY = "true"',
+  );
+  warnBuildFallback(used);
 
   void initBrowserTelemetry({
     serviceName: SERVICE_NAME,
     serviceVersion: (import.meta.env.VITE_APP_VERSION as string | undefined) || undefined,
-    environment: text(cfg.ENVIRONMENT) || undefined,
+    environment: environment || undefined,
     serviceNamespace: '{{.ProjectName}}',
     frontend: '{{.FrontendName}}',
     consoleCapture: text(cfg.CONSOLE_CAPTURE) !== "false",
     replaySampleRate: rate(cfg.REPLAY_SAMPLE_RATE),
-    endpoint: text(cfg.OTEL_ENDPOINT) || (import.meta.env.DEV ? "/_otel" : ""),
+    endpoint: endpoint || (import.meta.env.DEV ? "/_otel" : ""),
     // The origin RPCs go to, resolved as src/lib/connect.ts resolves it — so
     // the traceparent rides on exactly the requests the transport sends.
     apiOrigins: [
@@ -123,7 +188,7 @@ export function initTelemetry(): void {
         (import.meta.env.VITE_API_URL as string | undefined) ||
         DEV_API_URL,
     ],
-    replay: text(cfg.OTEL_REPLAY) === "true",
+    replay: replay === "true",
   });
 }
 

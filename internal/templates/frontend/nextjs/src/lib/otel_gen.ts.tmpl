@@ -8,13 +8,14 @@
 //
 // What stays here is the part that CANNOT move: the reads of this frontend's
 // configuration. A value that differs per environment comes from the runtime
-// config document (config.js, `window.__FORGE_CONFIG__`), never from a
-// `process.env.NEXT_PUBLIC_*` build variable: Next.js inlines those literals
-// at BUILD time, so the value would follow that build into every environment
-// it is promoted to. Only build facts are read from the build — the version
-// (NEXT_PUBLIC_APP_VERSION, forge's build id) and NODE_ENV — and they stay
-// written out verbatim here because Next.js can inline them nowhere else: a
-// library reading `process.env` at runtime finds nothing in a browser.
+// config document (config.js, `window.__FORGE_CONFIG__`), not from a
+// `process.env.NEXT_PUBLIC_*` build variable (that is a deprecated fallback,
+// below): Next.js inlines those literals at BUILD time, so the value would
+// follow that build into every environment it is promoted to. Otherwise only
+// build facts are read from the build — the version (NEXT_PUBLIC_APP_VERSION,
+// forge's build id) and NODE_ENV — and every build read stays written out
+// verbatim here because Next.js can inline it nowhere else: a library reading
+// `process.env` at runtime finds nothing in a browser.
 //
 // ── Where telemetry goes: same-origin `<basePath>/_otel` ─────────────────
 //
@@ -55,10 +56,12 @@
 // that records unmasked.
 //
 // The NEXT_PUBLIC_OTEL_ENDPOINT / NEXT_PUBLIC_ENVIRONMENT /
-// NEXT_PUBLIC_OTEL_REPLAY build variables are not read here. A frontend's
-// KCL that declares one (in `config` or `env_vars`) gets the same value in
-// its runtime config instead, so it keeps working and now varies per
-// environment as it should.
+// NEXT_PUBLIC_OTEL_REPLAY build variables are DEPRECATED. A frontend's KCL
+// that declares one (in `config` or `env_vars`) already gets the same value
+// in its runtime config, which wins. One that is only exported in the shell
+// at `next build` is still read when config.js does not set the key, and the
+// page warns once (in the console) naming the variable and the KCL field to
+// move it to. That fallback is removed in the next major version of forge.
 //
 // Distributed tracing itself — the traceparent attached to every RPC, which
 // is what makes browser spans join the backend's trace — is always on, needs
@@ -93,6 +96,44 @@ function rate(value: unknown): number | undefined {
   return text(value) !== "" && Number.isFinite(n) ? n : undefined;
 }
 
+// DEPRECATED (removed in the next major): the build-variable fallback for a
+// per-environment value. The runtime config wins; a build variable is read
+// only when config.js does not set the key, and each one read is recorded in
+// `used` so initTelemetry can say so. `declare` is where the value belongs.
+function runtimeOrBuild(
+  used: string[],
+  runtime: unknown,
+  buildName: string,
+  build: string | undefined,
+  declare: string,
+): string {
+  const value = text(runtime);
+  if (value !== "" || !build) {
+    return value;
+  }
+  used.push(`${buildName} (declare it as ${declare})`);
+  return build;
+}
+
+let warnedBuildFallback = false;
+
+// One warning per page load, however often initTelemetry runs (StrictMode's
+// double-mount, Fast Refresh).
+function warnBuildFallback(used: string[]): void {
+  if (warnedBuildFallback || used.length === 0) {
+    return;
+  }
+  warnedBuildFallback = true;
+  console.warn(
+    `[forge] browser telemetry read ${used.join(", ")} from a build variable, ` +
+      "because this environment's runtime config (config.js) does not set it. " +
+      "A build variable is frozen into the bundle and follows it into every " +
+      "environment it is promoted to: move it to this frontend's runtime config " +
+      "in its KCL. The build-variable fallback is deprecated and will be removed " +
+      "in the next major version of forge.",
+  );
+}
+
 /**
  * SERVICE_NAME is the service.name this frontend's telemetry reports:
  * "<project>-<frontend>". The generated dashboards and alert defaults under
@@ -113,22 +154,46 @@ export const SERVICE_NAME = '{{.TelemetryServiceName}}';
 export function initTelemetry(): void {
   const cfg = runtimeConfig();
   const dev = process.env.NODE_ENV === "development";
+  // Each build variable is written out verbatim: Next.js inlines only those.
+  const used: string[] = [];
+  const environment = runtimeOrBuild(
+    used,
+    cfg.ENVIRONMENT,
+    "NEXT_PUBLIC_ENVIRONMENT",
+    process.env.NEXT_PUBLIC_ENVIRONMENT,
+    "config.environment",
+  );
+  const endpoint = runtimeOrBuild(
+    used,
+    cfg.OTEL_ENDPOINT,
+    "NEXT_PUBLIC_OTEL_ENDPOINT",
+    process.env.NEXT_PUBLIC_OTEL_ENDPOINT,
+    "config.otel_endpoint",
+  );
+  const replay = runtimeOrBuild(
+    used,
+    cfg.OTEL_REPLAY,
+    "NEXT_PUBLIC_OTEL_REPLAY",
+    process.env.NEXT_PUBLIC_OTEL_REPLAY,
+    'runtime_config.OTEL_REPLAY = "true"',
+  );
+  warnBuildFallback(used);
 
   void initBrowserTelemetry({
     serviceName: SERVICE_NAME,
     serviceVersion: process.env.NEXT_PUBLIC_APP_VERSION || undefined,
-    environment: text(cfg.ENVIRONMENT) || undefined,
+    environment: environment || undefined,
     serviceNamespace: '{{.ProjectName}}',
     frontend: '{{.FrontendName}}',
     consoleCapture: text(cfg.CONSOLE_CAPTURE) !== "false",
     replaySampleRate: rate(cfg.REPLAY_SAMPLE_RATE),
-    endpoint: text(cfg.OTEL_ENDPOINT) || (dev ? `${BASE_PATH}/_otel` : ""),
+    endpoint: endpoint || (dev ? `${BASE_PATH}/_otel` : ""),
     // The origin RPCs go to, resolved as src/lib/connect.ts resolves it — so
     // the traceparent rides on exactly the requests the transport sends.
     apiOrigins: [
       text(cfg.API_URL) || process.env.NEXT_PUBLIC_API_URL || DEV_API_URL,
     ],
-    replay: text(cfg.OTEL_REPLAY) === "true",
+    replay: replay === "true",
   });
 }
 

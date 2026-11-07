@@ -152,6 +152,8 @@ type FollowUp func(ctx context.Context, it Item, d Decision) (outcome string, er
 // be removed in forge v2. Copy it into your project if you depend on it.
 type Rejection struct{ Reason string }
 
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (r *Rejection) Error() string { return "approval refused on re-check: " + r.Reason }
 
 // HandoffError is the error [HandoffIncomplete] builds.
@@ -160,6 +162,8 @@ func (r *Rejection) Error() string { return "approval refused on re-check: " + r
 // be removed in forge v2. Copy it into your project if you depend on it.
 type HandoffError struct{ Cause error }
 
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (e *HandoffError) Error() string {
 	if e.Cause == nil {
 		return "approval hand-off incomplete"
@@ -167,6 +171,8 @@ func (e *HandoffError) Error() string {
 	return "approval hand-off incomplete: " + e.Cause.Error()
 }
 
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (e *HandoffError) Unwrap() error { return e.Cause }
 
 // HandoffIncomplete is what a [FollowUp] returns when the approval stands
@@ -256,8 +262,14 @@ func NextOr(next, now time.Time, fallback time.Duration) time.Time {
 // Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
 // be removed in forge v2. Copy it into your project if you depend on it.
 type DB interface {
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+	// be removed in forge v2. Copy it into your project if you depend on it.
 	Exec(ctx context.Context, query string, args ...any) (sql.Result, error)
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+	// be removed in forge v2. Copy it into your project if you depend on it.
 	Query(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+	// be removed in forge v2. Copy it into your project if you depend on it.
 	RunTx(ctx context.Context, policy orm.TxPolicy, fn func(ctx context.Context) error) error
 }
 

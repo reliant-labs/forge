@@ -81,6 +81,9 @@ func (s *Store) exec(ctx context.Context, q string, args ...any) error {
 // (Scope, Kind, SubjectRef): proposing a subject that already has an item,
 // in any state, returns that item unchanged, so a retried agent run
 // proposes once.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (s *Store) Propose(ctx context.Context, it Item) (Item, error) {
 	it, err := validateProposal(it)
 	if err != nil {
@@ -111,6 +114,9 @@ func (s *Store) Propose(ctx context.Context, it Item) (Item, error) {
 }
 
 // Get returns one item, or a NotFound error.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (s *Store) Get(ctx context.Context, id string) (Item, error) {
 	if !isUUID(id) {
 		return Item{}, svcerr.NotFound("approval")
@@ -161,6 +167,9 @@ func clauses(f Filter, args []any) ([]string, []any) {
 
 // List returns the items matching f, newest first. Paging is keyset on
 // (created_at, id), so a page never repeats or skips a row as items arrive.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (s *Store) List(ctx context.Context, f Filter) (Page, error) {
 	where, args := clauses(f, nil)
 	if f.PageToken != "" {
@@ -198,6 +207,9 @@ func (s *Store) List(ctx context.Context, f Filter) (Page, error) {
 // now) to expired, in one UPDATE ... RETURNING, and returns them. An empty
 // scope covers every scope. Call it lazily on read paths, or from a sweeper
 // (see the package doc); both are safe at any frequency.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (s *Store) ExpireDue(ctx context.Context, scope string) ([]Item, error) {
 	now := s.cfg.now()
 	args := []any{now}
@@ -214,6 +226,9 @@ func (s *Store) ExpireDue(ctx context.Context, scope string) ([]Item, error) {
 // deleted) and returns how many it withdrew. note is recorded on each. f
 // must name at least one of IDs, Scope, Kind, SubjectRef or RunID; States
 // is ignored, because only a pending item can be withdrawn.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (s *Store) Cancel(ctx context.Context, f Filter, note string) (int, error) {
 	if err := validateCancel(f); err != nil {
 		return 0, err
@@ -254,6 +269,9 @@ func (s *Store) Cancel(ctx context.Context, f Filter, note string) (int, error) 
 //
 // Decide does not check who is calling. The rpc that calls it is declared
 // human_only and passes By.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (s *Store) Decide(ctx context.Context, d Decision, fn FollowUp) (Item, error) {
 	if err := validateDecision(d); err != nil {
 		return Item{}, err
@@ -397,6 +415,9 @@ func (s *Store) settle(ctx context.Context, q string, args ...any) (Item, error)
 // holds waits for it, then re-checks it. So when Redrive returns no error,
 // every item it selected was handed off (by this call or another) or was
 // tried by this call; none is passed over because someone else held it.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (s *Store) Redrive(ctx context.Context, f Filter, fn FollowUp) ([]Item, error) {
 	if fn == nil {
 		return nil, invalid("redrive needs a follow-up")

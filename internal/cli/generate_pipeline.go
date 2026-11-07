@@ -418,6 +418,9 @@ func generateSteps() []GenStep {
 		// AFTER service stubs and CRUD handlers: each hook file's
 		// <service>Implemented table is read off the handler packages, so it
 		// must see the stubs this run writes and the ones CRUD gen excises.
+		// Opt-in descriptor producers run before their frontend consumers.
+		// Legacy hooks remain late: they may compile the complete Go tree.
+		{Name: generateInputHooksStep, Gate: hasGenerateInputHooks, GateReason: "no generate.hooks with phase: input", Run: stepGenerateInputHooks, Tag: "tools", Writes: writesGenerateInputHooks},
 		{Name: "frontend hooks", Gate: gateFrontendHasServices, GateReason: "no services or no frontends, or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
 		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: and(gateContractsEnabled, hasGoModule), GateReason: "features.contracts=false, or " + noGoModuleReason, Run: stepInternalContracts, Tag: "codegen"},
@@ -542,7 +545,7 @@ func generateSteps() []GenStep {
 		// failure was blamed on the user's code. And a hand-edit the
 		// adjudication reports is the root cause, not whatever the hook
 		// tripped over first.
-		{Name: generateHooksStep, Gate: hasGenerateHooks, GateReason: "no generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGenerateHooks},
+		{Name: generateHooksStep, Gate: hasGeneratePostHooks, GateReason: "no post generate.hooks in forge.yaml", Run: stepGenerateHooks, Tag: "tools", Writes: writesGeneratePostHooks},
 		// Before the validation build, so what a hook emits is tidied and
 		// compiled in this same run: into gen/ (a second buf template)…
 		{Name: "go mod tidy (gen/)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyGen, Tag: "tools", Writes: writesGenTidy},

@@ -33,19 +33,25 @@ import (
 // there is none. Every git call is scoped to it, so a lookup never reads a
 // parent repository that happens to sit above an untracked project.
 func RepoRoot(dir string) string {
+	root, _ := repoRoot(dir)
+	return root
+}
+
+// repoRoot is RepoRoot, also saying whether dir is inside a repository at all.
+func repoRoot(dir string) (root string, inRepo bool) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return dir
+		return dir, false
 	}
 	out, ok := runGit(abs, "rev-parse", "--show-toplevel")
 	if !ok {
-		return abs
+		return abs, false
 	}
-	root := strings.TrimSpace(out)
+	root = strings.TrimSpace(out)
 	if root == "" {
-		return abs
+		return abs, false
 	}
-	return root
+	return root, true
 }
 
 // MergeBaseMax returns the highest migration version present in
@@ -95,13 +101,18 @@ func NextN(dir string, n int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	repoRoot := RepoRoot(dir)
-	if max, ok := MergeBaseMax(repoRoot, dir); ok {
-		taken[max] = true
-	}
-	if tip, ok := DefaultBranchVersions(repoRoot, dir); ok {
-		for v := range tip {
-			taken[v] = true
+	// Outside a repository there is no merge base and no default branch:
+	// each lookup below is a handful of git commands that all fail (33 of
+	// them, 1.6s, for three migrations in a temp dir), so they are asked
+	// only when there is a repository to ask.
+	if root, inRepo := repoRoot(dir); inRepo {
+		if max, ok := MergeBaseMax(root, dir); ok {
+			taken[max] = true
+		}
+		if tip, ok := DefaultBranchVersions(root, dir); ok {
+			for v := range tip {
+				taken[v] = true
+			}
 		}
 	}
 	return migrationver.AllocateAfter(taken, n), nil

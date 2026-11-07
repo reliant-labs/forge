@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 )
@@ -151,6 +150,17 @@ func bootClaimHeld(dir string) bool {
 	return err != nil || !held
 }
 
+// addrInUse reports whether err is a bind refused because something still
+// holds the address, in this OS's spelling (addrInUseErrnos).
+func addrInUse(err error) bool {
+	for _, errno := range addrInUseErrnos {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
+}
+
 func embeddedBindCollision(err error, port uint32, dir string) bool {
 	// Do not restart after an uncertain partial boot. Even a pid file whose
 	// process is invisible here could belong to a still-running postmaster.
@@ -165,7 +175,7 @@ func embeddedBindCollision(err error, port uint32, dir string) bool {
 		if listenErr == nil {
 			_ = ln.Close()
 		}
-		return errors.Is(listenErr, syscall.EADDRINUSE)
+		return addrInUse(listenErr)
 	}
 	// The second race is after upstream's precheck, during pg_ctl start.
 	// Require both PostgreSQL's bind diagnostic and its terminal TCP failure,

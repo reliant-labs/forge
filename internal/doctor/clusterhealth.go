@@ -784,10 +784,11 @@ func judgeNoLivePods(t probeTarget, w *clusterWorkload, pods []podView) (workloa
 //     report, and judgeTarget fails the workload if none of them did.
 //   - Job / CronJob. Succeeded is how a Job pod ends well, so it stays. A
 //     Failed pod is superseded only by a NEWER pod of the same workload that
-//     did not fail — the Job controller's retry, or a later CronJob run.
+//     Succeeded — the Job controller's retry, or a later CronJob run.
 //     "Newer" is load-bearing: an older success must never hide the most
-//     recent failure, and a Job that exhausted its retries has no newer
-//     pod, so every attempt is still reported.
+//     recent failure. "Succeeded" is too: a retry still Pending or Running
+//     has not recovered anything yet, and a Job that exhausted its retries
+//     has no successful pod, so every attempt is still reported.
 func currentPods(w *clusterWorkload, pods []podView) (current []podView, replaced int) {
 	if !w.ephemeral {
 		for _, p := range pods {
@@ -818,10 +819,12 @@ func podActive(p podView) bool {
 }
 
 // retriedLater reports whether a pod created after failed — its retry, or a
-// later scheduled run — has not itself failed.
+// later scheduled run — has Succeeded. A newer attempt still Pending or
+// Running has not shown recovery yet and may fail too, so it supersedes
+// nothing: the failure stays reported until a later attempt succeeds.
 func retriedLater(failed podView, pods []podView) bool {
 	for _, q := range pods {
-		if q.Status.Phase != "Failed" && q.Metadata.CreationTimestamp.After(failed.Metadata.CreationTimestamp) {
+		if q.Status.Phase == "Succeeded" && q.Metadata.CreationTimestamp.After(failed.Metadata.CreationTimestamp) {
 			return true
 		}
 	}

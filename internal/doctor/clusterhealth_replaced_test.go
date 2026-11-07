@@ -148,16 +148,31 @@ func TestClusterWorkloadsJudgesCurrentPodsNotReplacedOnes(t *testing.T) {
 			workload: "migrate", invPods: []string{"migrate-b2"},
 		},
 		{
-			name: "a Job attempt superseded by a running retry leaves the retry to be judged",
+			// A retry still in progress has not recovered anything: it may
+			// fail too, so the failed attempt stays reported until a newer
+			// attempt Succeeds.
+			name: "a Job attempt followed by a running retry still fails",
 			objs: []string{cwJob("migrate", ns)},
 			pods: []string{
 				cwPod{name: "migrate-a1", app: "migrate", ownerJob: "migrate", phase: "Failed",
 					term: "Error", termExit: 1, age: 10 * time.Minute}.json(),
 				cwPod{name: "migrate-b2", app: "migrate", ownerJob: "migrate", ready: true, age: 8 * time.Minute}.json(),
 			},
-			want:     StatusPass,
-			absent:   []string{"migrate-a1"},
-			workload: "migrate", invPods: []string{"migrate-b2"},
+			want:     StatusFail,
+			mention:  []string{"migrate-a1", "terminated Error (exit 1)"},
+			workload: "migrate", invPods: []string{"migrate-a1", "migrate-b2"},
+		},
+		{
+			name: "a CronJob's failed run followed by a pending one still fails",
+			objs: []string{cwCronJob("backup", ns)},
+			pods: []string{
+				cwPod{name: "backup-29846520-bad", app: "backup", ownerJob: "backup-29846520", phase: "Failed",
+					term: "Error", termExit: 2, age: 25 * time.Hour}.json(),
+				cwPod{name: "backup-29847960-new", app: "backup", ownerJob: "backup-29847960", phase: "Pending",
+					age: time.Minute}.json(),
+			},
+			want:    StatusFail,
+			mention: []string{"backup-29846520-bad", "terminated Error (exit 2)"},
 		},
 		{
 			name: "a Job that exhausted its retries fails on every attempt",

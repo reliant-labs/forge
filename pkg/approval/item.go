@@ -15,13 +15,26 @@ import (
 // State is where an [Item] is in its life. Pending is the only state that
 // changes: every other state is final, except that an approved item whose
 // hand-off has not completed ([Item.HandedOff] false) is re-run by Redrive.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type State string
 
 const (
-	StatePending   State = "pending"
-	StateApproved  State = "approved"
-	StateRejected  State = "rejected"
-	StateExpired   State = "expired"
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
+	// will be removed in forge v2. Copy it into your project if you depend on it.
+	StatePending State = "pending"
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
+	// will be removed in forge v2. Copy it into your project if you depend on it.
+	StateApproved State = "approved"
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
+	// will be removed in forge v2. Copy it into your project if you depend on it.
+	StateRejected State = "rejected"
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
+	// will be removed in forge v2. Copy it into your project if you depend on it.
+	StateExpired State = "expired"
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
+	// will be removed in forge v2. Copy it into your project if you depend on it.
 	StateCancelled State = "cancelled"
 )
 
@@ -32,6 +45,9 @@ const (
 //
 // expires_at is NOT NULL for every row, so a pending item can never be
 // without a deadline.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 const SchemaSQL = `CREATE TABLE approvals (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     scope       text        NOT NULL DEFAULT '',
@@ -60,6 +76,9 @@ CREATE INDEX approvals_run_idx ON approvals (run_id) WHERE run_id <> '';
 `
 
 // Item is one thing an agent proposed and a person has yet to decide.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type Item struct {
 	ID    string
 	Scope string // tenant, account or whatever partitions the app; "" if none
@@ -91,6 +110,9 @@ type Item struct {
 }
 
 // Decision is a person's verdict on one item.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type Decision struct {
 	ID      string
 	Approve bool
@@ -118,17 +140,30 @@ type Decision struct {
 // A follow-up must be safe to run again: Redrive re-runs it, and a crash
 // after an external effect but before commit does too. Derive any external
 // idempotency key from [Item.ID].
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type FollowUp func(ctx context.Context, it Item, d Decision) (outcome string, err error)
 
 // Rejection is the error a [FollowUp] returns to say "approved, but I
 // refuse it": the item becomes rejected and Reason becomes its Outcome.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type Rejection struct{ Reason string }
 
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (r *Rejection) Error() string { return "approval refused on re-check: " + r.Reason }
 
 // HandoffError is the error [HandoffIncomplete] builds.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type HandoffError struct{ Cause error }
 
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (e *HandoffError) Error() string {
 	if e.Cause == nil {
 		return "approval hand-off incomplete"
@@ -136,6 +171,8 @@ func (e *HandoffError) Error() string {
 	return "approval hand-off incomplete: " + e.Cause.Error()
 }
 
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (e *HandoffError) Unwrap() error { return e.Cause }
 
 // HandoffIncomplete is what a [FollowUp] returns when the approval stands
@@ -143,10 +180,16 @@ func (e *HandoffError) Unwrap() error { return e.Cause }
 // HandedOff false and Decide returns nil; the cause is yours to log, since
 // the follow-up is the code that saw it. An approval only: for a rejection
 // it is an ordinary error.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func HandoffIncomplete(cause error) error { return &HandoffError{Cause: cause} }
 
 // Filter selects items for List, Cancel and Redrive. Set fields are
 // AND-combined; an empty field does not filter.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type Filter struct {
 	IDs        []string
 	Scope      string
@@ -163,27 +206,46 @@ type Filter struct {
 
 // Page sizes for List and Redrive.
 const (
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
+	// will be removed in forge v2. Copy it into your project if you depend on it.
 	DefaultPageSize = 50
-	MaxPageSize     = 500
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it
+	// will be removed in forge v2. Copy it into your project if you depend on it.
+	MaxPageSize = 500
 )
 
 // ErrBadPageToken is returned for a PageToken List did not issue.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 var ErrBadPageToken = errors.New("approval: malformed page token")
 
 // Page is one page of items, newest first.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type Page struct {
 	Items         []Item
 	NextPageToken string
 }
 
 // At returns t. It documents that a deadline is a fixed moment.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func At(t time.Time) time.Time { return t }
 
 // Within returns the deadline d after now.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func Within(now time.Time, d time.Duration) time.Time { return now.Add(d) }
 
 // NextOr returns next, or now+fallback when next is zero: trader's "expire at
 // the next market close, else in eight hours".
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func NextOr(next, now time.Time, fallback time.Duration) time.Time {
 	if next.IsZero() {
 		return now.Add(fallback)
@@ -196,13 +258,25 @@ func NextOr(next, now time.Time, fallback time.Duration) time.Time {
 // statement issued with a ctx carrying that transaction joins it, so the
 // follow-up's own writes (through the same client) commit or roll back with
 // the decision.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type DB interface {
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+	// be removed in forge v2. Copy it into your project if you depend on it.
 	Exec(ctx context.Context, query string, args ...any) (sql.Result, error)
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+	// be removed in forge v2. Copy it into your project if you depend on it.
 	Query(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+	// be removed in forge v2. Copy it into your project if you depend on it.
 	RunTx(ctx context.Context, policy orm.TxPolicy, fn func(ctx context.Context) error) error
 }
 
 // StoreOption configures a [Store] or a [MemoryStore].
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type StoreOption func(*config)
 
 type config struct {
@@ -224,6 +298,9 @@ func newConfig(opts []StoreOption) config {
 // "<schema>".approvals rather than resolving the bare name through the
 // connection's search_path (see audit.WithSchema). Empty leaves it
 // unqualified. A [MemoryStore] ignores it.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func WithSchema(schema string) StoreOption {
 	return func(c *config) {
 		c.table = approvalsTable
@@ -235,6 +312,9 @@ func WithSchema(schema string) StoreOption {
 
 // WithNow sets the clock deadlines and decision times are read from. The
 // default is time.Now; tests pass a fake.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func WithNow(now func() time.Time) StoreOption {
 	return func(c *config) {
 		if now != nil {

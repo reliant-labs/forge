@@ -69,6 +69,42 @@ func TestEvaluateNoBreaksPasses(t *testing.T) {
 	}
 }
 
+// forge #1880: the squash kept an API-BREAK: line from a removal the PR's own
+// later commit undid, and the release refused every cut on it. A marker with
+// no break behind it fails; only the owner's label waives it.
+func TestEvaluateMarkerWithoutBreakFails(t *testing.T) {
+	stale := ParseDeclaration("revert(pkg/approval): remove\n\nAPI-BREAK: playbook=migrations/v1.2.0\n\n* fix: restore it as deprecated\n", nil)
+	if len(stale.Markers) != 1 || stale.Markers[0] != "API-BREAK: playbook=migrations/v1.2.0" {
+		t.Fatalf("Markers = %q, want the one marker line", stale.Markers)
+	}
+	v := Evaluate(nil, stale, []string{"pkg/approval/doc.go"}, t.TempDir())
+	if v.OK {
+		t.Fatal("an API-BREAK: marker with no incompatible change must fail")
+	}
+	for _, want := range []string{"API-BREAK: playbook=migrations/v1.2.0", "has none", "semver-next", "breaking:approved"} {
+		if !strings.Contains(v.Reason, want) {
+			t.Errorf("reason does not mention %q:\n%s", want, v.Reason)
+		}
+	}
+
+	stale.OwnerApproved = true
+	if v := Evaluate(nil, stale, nil, t.TempDir()); !v.OK {
+		t.Fatalf("the owner's breaking:approved waives a marker apidiff cannot back: %s", v.Reason)
+	}
+}
+
+func TestEvaluateNoBreakNoMarkerPasses(t *testing.T) {
+	for name, decl := range map[string]Declaration{
+		"label only (it never reaches the squash commit)": ParseDeclaration("", []string{"api-break"}),
+		"a retraction line is not a marker":               ParseDeclaration("docs: x\n\nAPI-BREAK-RETRACTED: ae488249d3c3 restored\n", nil),
+		"a mid-line mention is not a marker":              ParseDeclaration("see the API-BREAK: convention", nil),
+	} {
+		if v := Evaluate(nil, decl, nil, t.TempDir()); !v.OK {
+			t.Errorf("%s: must pass: %s", name, v.Reason)
+		}
+	}
+}
+
 func TestEvaluateUndeclaredBreakFails(t *testing.T) {
 	v := Evaluate(oneBreak, Declaration{}, nil, t.TempDir())
 	if v.OK {

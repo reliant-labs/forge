@@ -21,6 +21,12 @@
 // reliant-01). An accepted break still carries the cost of its consumers'
 // migration: declared, with its codemod or playbook. See dev-docs/api-breaks.md.
 //
+// The converse fails too: an `API-BREAK:` line in the PR body or a commit body
+// when the diff has no incompatible change. The squash commit keeps the commit
+// bodies, and the release (scripts/semver-next.sh) refuses on that line, so a
+// stale marker (forge #1880: a removal its own later commit undid) blocks every
+// release. The owner's breaking:approved label waives it.
+//
 // WHERE THE DECLARATION COMES FROM. With -pr, the label list and body are read
 // live through `gh api` (GH_TOKEN, GITHUB_REPOSITORY), not from the workflow
 // event: a label added after the run started, then "Re-run failed jobs", is
@@ -43,6 +49,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/forgereach"
 )
+
+var errStaleMarker = errors.New("an API-BREAK: marker with no incompatible change to forge/pkg behind it")
 
 type stringList []string
 
@@ -82,14 +90,22 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if !reach.API() {
-		fmt.Fprintf(stdout, "apigate: ok — the diff touches nothing the API of pkg/ depends on (%s)\n", reach.Summary())
-		return nil
-	}
-
 	text, lbl, approved, err := declarationInputs(root, *base, *pr, *bodyFile, labels)
 	if err != nil {
 		return err
+	}
+	decl := ParseDeclaration(text, lbl)
+	decl.OwnerApproved = approved || *ownerApproved
+
+	if !reach.API() {
+		// No API change is possible, so the one failure left is an API-BREAK:
+		// marker with nothing behind it.
+		if v := Evaluate(nil, decl, changed, root); !v.OK {
+			fmt.Fprintln(stderr, "apigate: FAIL —", v.Reason)
+			return errStaleMarker
+		}
+		fmt.Fprintf(stdout, "apigate: ok — the diff touches nothing the API of pkg/ depends on (%s)\n", reach.Summary())
+		return nil
 	}
 
 	tmp, err := os.MkdirTemp("", "apigate-base-*")
@@ -105,11 +121,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	decl := ParseDeclaration(text, lbl)
-	decl.OwnerApproved = approved || *ownerApproved
 	v := Evaluate(breaks, decl, changed, root)
 	if !v.OK {
 		fmt.Fprintln(stderr, "apigate: FAIL —", v.Reason)
+		if len(breaks) == 0 {
+			return errStaleMarker
+		}
 		return errors.New("incompatible change to forge/pkg is not an owner-accepted break declared with its codemod")
 	}
 	if len(breaks) == 0 {
@@ -123,29 +140,39 @@ func run(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// declarationInputs returns the PR text, its labels, and whether the owner
-// applied ApprovedLabel (only -pr can say so).
-func declarationInputs(root, base, pr, bodyFile string, labels []string) (string, []string, bool, error) {
+// localDeclarationText is the declaration text read without GitHub: the commit
+// bodies of base..HEAD (what the squash commit keeps) and -body-file.
+func localDeclarationText(root, base, bodyFile string) (string, error) {
 	var text strings.Builder
 	if out, err := forgereach.Git(root, "log", "--format=%B", base+"..HEAD"); err == nil {
 		text.Write(out)
 	}
-	switch {
-	case pr != "":
-		body, prLabels, approved, err := prDeclaration(pr)
-		if err != nil {
-			return "", nil, false, err
-		}
-		text.WriteString("\n" + body)
-		return text.String(), append(labels, prLabels...), approved, nil
-	case bodyFile != "":
+	if bodyFile != "" {
 		b, err := os.ReadFile(bodyFile)
 		if err != nil {
-			return "", nil, false, err
+			return "", err
 		}
 		text.WriteString("\n" + string(b))
 	}
-	return text.String(), labels, false, nil
+	return text.String(), nil
+}
+
+// declarationInputs returns the PR text, its labels, and whether the owner
+// applied ApprovedLabel (only -pr can say so).
+func declarationInputs(root, base, pr, bodyFile string, labels []string) (string, []string, bool, error) {
+	if pr == "" {
+		text, err := localDeclarationText(root, base, bodyFile)
+		return text, labels, false, err
+	}
+	text, err := localDeclarationText(root, base, "")
+	if err != nil {
+		return "", nil, false, err
+	}
+	body, prLabels, approved, err := prDeclaration(pr)
+	if err != nil {
+		return "", nil, false, err
+	}
+	return text + "\n" + body, append(labels, prLabels...), approved, nil
 }
 
 // prDeclaration reads pull request pr's body and labels from GitHub, and

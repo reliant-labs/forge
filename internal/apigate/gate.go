@@ -44,6 +44,11 @@ type Remedy struct {
 // Declaration is what a PR said about its incompatible changes.
 type Declaration struct {
 	Declared bool
+	// Markers are the API-BREAK: lines found, trimmed. Unlike the label, a
+	// marker in a commit body lands in the squash commit, where the release's
+	// scripts/semver-next.sh reads it as a break; so a marker with no break
+	// behind it fails (Evaluate).
+	Markers  []string
 	Remedies []Remedy
 	// OwnerApproved: the owner applied ApprovedLabel (read from the PR's label
 	// events, never from a label alone, which anyone with triage can add).
@@ -64,6 +69,7 @@ func ParseDeclaration(text string, labels []string) Declaration {
 	}
 	for _, m := range markerLine.FindAllStringSubmatch(text, -1) {
 		d.Declared = true
+		d.Markers = append(d.Markers, strings.TrimSpace(m[0]))
 		for _, field := range strings.Fields(m[1]) {
 			k, v, ok := strings.Cut(field, "=")
 			if !ok || v == "" {
@@ -84,8 +90,17 @@ type Verdict struct {
 // Evaluate decides whether the incompatible changes may merge. changed is the
 // PR's changed files (slash paths relative to the module root); root is the
 // head checkout, read to confirm a named codemod or playbook really exists.
+//
+// A diff with no incompatible change passes, unless the PR still carries an
+// API-BREAK: marker: the marker is what the release reads as a break (forge
+// #1880's squash kept the marker of a removal its own later commit undid, and
+// every release cut refused). The owner's ApprovedLabel waives that, for a
+// break apidiff cannot see.
 func Evaluate(breaks []Break, decl Declaration, changed []string, root string) Verdict {
 	if len(breaks) == 0 {
+		if len(decl.Markers) > 0 && !decl.OwnerApproved {
+			return Verdict{Reason: staleMarkerReason(decl.Markers)}
+		}
 		return Verdict{OK: true}
 	}
 	var b strings.Builder
@@ -145,6 +160,21 @@ func Evaluate(breaks []Break, decl Declaration, changed []string, root string) V
 		return fail("the declared remedy does not check out:\n  - %s", strings.Join(problems, "\n  - "))
 	}
 	return Verdict{OK: true}
+}
+
+func staleMarkerReason(markers []string) string {
+	var b strings.Builder
+	b.WriteString("this pull request declares an incompatible change to forge/pkg, but its diff has none:\n")
+	for _, m := range markers {
+		fmt.Fprintf(&b, "  - %s\n", m)
+	}
+	fmt.Fprintf(&b, "\n"+
+		"The squash commit keeps every commit message, and the release (scripts/semver-next.sh)\n"+
+		"reads an %s line there as a break and refuses to cut. Remove the line: reword the\n"+
+		"commit that carries it (git rebase -i, then push --force-with-lease) and edit the PR\n"+
+		"body. A break apidiff cannot see is the owner's to accept, with the `%s` label.\n"+
+		"(docs: dev-docs/api-breaks.md)", markerToken, ApprovedLabel)
+	return b.String()
 }
 
 func isCodemodSource(f string) bool {

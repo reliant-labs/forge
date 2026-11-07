@@ -68,6 +68,18 @@ it is what a reviewer reads.
 Neither may be a promise: "the codemod comes in a follow-up" is the failure this
 gate exists to remove. Land them together.
 
+**A marker with no break fails.** The converse holds too: an `API-BREAK:` line in
+the PR body or in a commit body fails the gate when the diff has no incompatible
+change. The squash commit is built from the commit messages, and the release
+(`scripts/semver-next.sh`, and the release train's copy in control-plane)
+refuses to cut on that line. #1880 shows how this happens: its first commit
+removed a package and declared the break, its second restored the package as
+deprecated, and the squash kept the marker, so every cut refused. When a PR
+stops breaking, reword the commit that carries the line (`git rebase -i`, then
+`push --force-with-lease`) and edit the PR body. The `api-break` label alone
+never reaches the squash, so it is not checked. A break apidiff cannot see is
+the owner's to accept, with `breaking:approved`.
+
 ### Running it
 
 ```bash
@@ -77,8 +89,8 @@ task apigate -- -body-file body.md    # read the marker from a file
 ```
 
 It exits in about a second when the diff touches no Go file `pkg/` can see
-(docs, the CLI, linters, tests). A removed package under `pkg/` counts as a
-break.
+(docs, the CLI, linters, tests), after checking that the PR carries no stale
+`API-BREAK:` line. A removed package under `pkg/` counts as a break.
 
 ### What it does not see
 

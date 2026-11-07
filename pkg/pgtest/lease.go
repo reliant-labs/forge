@@ -78,6 +78,9 @@ type lease struct {
 	path string
 }
 
+// takeLeaseFn is takeLease, a var so a test can make lease creation fail.
+var takeLeaseFn = takeLease
+
 // takeLease creates a lease in scope and takes its shared lock. Callers hold
 // the pool lock: liveLeases prunes only under it, so a lease is never seen
 // between its file appearing and its lock being taken.

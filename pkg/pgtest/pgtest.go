@@ -503,6 +503,12 @@ func portsInUse() map[string]bool {
 		if !e.IsDir() {
 			continue
 		}
+		// A standalone server's owner holds its owner lock: in use, from any
+		// pid namespace, whatever ownerFile's pid looks like from here.
+		if ownerLockHeld(filepath.Join(instanceRoot(), e.Name())) {
+			in[e.Name()] = true
+			continue
+		}
 		b, err := os.ReadFile(filepath.Join(instanceRoot(), e.Name(), ownerFile))
 		if err != nil {
 			continue

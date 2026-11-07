@@ -52,6 +52,7 @@ package pgtest
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,6 +164,10 @@ func releaseLocal() {
 		detachEmbedded(poolPort)
 	case poolModeStandalone:
 		stopSharedByPort(poolPort)
+		if standaloneOwner != nil {
+			_ = standaloneOwner.Close()
+			standaloneOwner = nil
+		}
 	}
 	poolURL, poolPort, poolMode, retained = "", 0, poolModeExternal, nil
 }
@@ -188,7 +193,7 @@ func attachEmbedded() (url string, port uint32, mode int, err error) {
 	// reuse or boot. Without one this process cannot be counted, so it must
 	// not share: it runs on a server of its own.
 	if poolLease == nil {
-		l, lerr := takeLease(scope)
+		l, lerr := takeLeaseFn(scope)
 		if lerr != nil {
 			return bootStandalone()
 		}
@@ -278,14 +283,62 @@ func bootStandalone() (url string, port uint32, mode int, err error) {
 		return "", 0, 0, berr
 	}
 	retainEmbedded(ep)
+	// The owner lock is what keeps every other process's reaper off this
+	// server, in any pid namespace: a standalone server is the fallback when
+	// the pool cannot coordinate (no pool lock, no lease), which is exactly
+	// when a pid-based owner check cannot be trusted. Without the lock the
+	// server is not booted for use: stopped, and the attach fails.
+	f, lerr := holdOwnerLock(runtimeDir(p))
+	if lerr != nil {
+		stopSharedByPort(p)
+		return "", 0, 0, fmt.Errorf("pgtest: cannot hold the standalone server's owner lock: %w", lerr)
+	}
+	standaloneOwner = f
 	_ = os.WriteFile(filepath.Join(runtimeDir(p), ownerFile), []byte(strconv.Itoa(os.Getpid())), 0o644)
 	return u, p, poolModeStandalone, nil
 }
 
 // ownerFile, in a standalone server's runtime dir, holds the pid of the one
-// process using it. While that process lives, reapStaleInstances leaves the
-// server alone however old it is.
+// process using it, for a person reading the directory and for an older
+// forge's reaper. What protects the server is ownerLockFile.
 const ownerFile = "forge-owner.pid"
+
+// ownerLockFile, in a standalone server's runtime dir, is held with a shared
+// flock by the process using the server for as long as it does. Like a pool
+// lease (lease.go), a kernel file lock means the same to every process on the
+// filesystem whatever pid namespace it runs in, and dies with its holder, so
+// portsInUse can tell a live owner from a dead one across namespaces, which
+// the pid in ownerFile cannot.
+const ownerLockFile = "forge-owner.lock"
+
+// standaloneOwner is this process's open owner lock on its standalone server
+// (bootStandalone), closed when the server is stopped (releaseLocal).
+var standaloneOwner *os.File
+
+// holdOwnerLock creates dir's owner lock file and takes its shared lock.
+func holdOwnerLock(dir string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(dir, ownerLockFile), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFileShared(f); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// ownerLockHeld reports whether a process holds dir's owner lock. A lock
+// that cannot be tested counts as held: a server is never reaped on doubt.
+func ownerLockHeld(dir string) bool {
+	f, err := os.Open(filepath.Join(dir, ownerLockFile))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	held, err := tryLockFileExclusive(f)
+	return err != nil || !held
+}
 
 // sharedPatience is how long an attaching process keeps trying to reach a
 // shared server whose postmaster is alive before it stops believing it will

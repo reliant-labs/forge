@@ -122,6 +122,8 @@ equivalent, so HyperDX skips them too:
 | `sql` | `sql`: one read-only SELECT; no `series`, `where` or `groupBy`; `signal` optional | the rows; a first `DateTime` column draws a time series |
 | `postgres` | `postgres: {database, sql, draw?, time?, values?, group?}`; no `signal`, `series`, `sql`, `where` or `groupBy` | a live read-only query of one of your Postgres databases (`observability/dashboards/panels`) |
 | `text` | `markdown`; nothing else | prose: a heading, what the dashboard is for, a runbook link |
+| `browse` | `browse: {database, table, columns?, filters?, sort?, size?}`; nothing else | a saved data-browser view of one table |
+| `link` on `table` / `bar` / `postgres` | `{database, table, column, fromField}` or `{database, table, row: true, fromFields}` | each row opens the data browser |
 | `formula` on `line` / `number` | `"A / B * 100"`: series by position (A, B, ... J), numbers, `+ - * /`, parentheses | that one expression instead of the series; `x / 0` is 0, as in `ratio` |
 
 `limit` (1 to 200) also keeps the top rows of a `table`. A `sql` statement runs
@@ -148,8 +150,8 @@ statement may rely on it. Only a reader that knows toggles binds them: do not
 ship a panel that reads one to a control plane older than the forge that added
 them.
 
-Postgres panels (a live read-only query of your own database), `text`
-panels (Markdown) and `display` (area, stacked, bars, pie, donut, gauge and
+Postgres panels (a live read-only query of your own database), `link`,
+`browse`, `text` panels (Markdown) and `display` (area, stacked, bars, pie, donut, gauge and
 funnel pictures of the same query) are in `observability/dashboards/panels`.
 
 A `table` or `number` series may carry `thresholds: {good, poor}`
@@ -305,7 +307,7 @@ They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so 
 
 A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/process-<workload>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
 
-Every file is validated at the cut, and `forge obs dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel, postgres, text`.
+Every file is validated at the cut, and `forge obs dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel, postgres, text, browse`.
 
 The file checks cannot know what your telemetry holds. `forge obs dashboards check --against <env>` also looks up every metrics panel series in that env over `--since` (24h): a `metricType` that is not the kind the metric is stored as fails the check, and a metric with no data is listed (a misspelt name, one the collector drops or renames, such as the filter processor's `otelcol_processor_filter_logs.filtered`, or a counter that only exists once something fails). `--strict` fails on those too. In the console a series with no data draws an empty panel with a `metric_absent` note, never an error.
 

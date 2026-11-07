@@ -329,6 +329,129 @@ func TestEveryRouteRefusesCrossSite(t *testing.T) {
 	}
 }
 `)
+	write("internal/app/login_broker_identity_test.go", `package app
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"example.com/app/pkg/config"
+)
+
+// GET /auth/session fills the name, address and picture an access token
+// does not carry from the issuer's userinfo, asked WITH that token.
+func TestSessionFillsTheProfileFromUserinfo(t *testing.T) {
+	var calls atomic.Int32
+	answers := map[string]string{
+		"at-plain":   `+"`"+`{"sub":"u1","name":"Dev Admin","email":"admin@app.test","email_verified":true,"picture":"https://cdn.app.test/u1.png"}`+"`"+`,
+		"at-split":   `+"`"+`{"sub":"u2","given_name":"Ada","family_name":"Lovelace","email":"ada@app.test"}`+"`"+`,
+		"at-login":   `+"`"+`{"sub":"u3","preferred_username":"ada@app.test","email":"ada@app.test","picture":"javascript:alert(1)"}`+"`"+`,
+		"at-someone": `+"`"+`{"sub":"somebody-else","name":"Not You","email":"not-you@app.test"}`+"`"+`,
+	}
+	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oidc/v1/userinfo" {
+			http.NotFound(w, r)
+			return
+		}
+		calls.Add(1)
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		claims, _ := base64.RawURLEncoding.DecodeString(strings.Split(bearer, ".")[1])
+		var c struct{ Jti string `+"`"+`json:"jti"`+"`"+` }
+		_ = json.Unmarshal(claims, &c)
+		body, ok := answers[c.Jti]
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer issuer.Close()
+
+	mux := http.NewServeMux()
+	RegisterLoginBroker(mux, &config.Config{Environment: "development", IdpBase: issuer.URL,
+		IdpBrokerToken: "t", OidcClientId: "c", OidcRedirectUri: "http://localhost:3000/cb",
+		IdpLoginUri: "http://localhost:3000/auth/sign-in"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	jwt := func(claims string) string {
+		return "e30." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".s"
+	}
+	exp := time.Now().Add(time.Hour).Unix()
+	session := func(token string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/auth/session", nil)
+		req.AddCookie(&http.Cookie{Name: "app_session", Value: token})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		var id map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &id); err != nil {
+			t.Fatalf("GET /auth/session: %v: %s", err, rec.Body)
+		}
+		return id
+	}
+	token := func(sub, jti string) string {
+		return jwt("{\"sub\":\"" + sub + "\",\"jti\":\"" + jti + "\",\"exp\":" + itoa(exp) + "}")
+	}
+
+	plain := token("u1", "at-plain")
+	want := map[string]any{"authenticated": true, "subject": "u1", "name": "Dev Admin", "email": "admin@app.test", "picture": "https://cdn.app.test/u1.png"}
+	for i := 0; i < 2; i++ {
+		if got := session(plain); !same(got, want) {
+			t.Errorf("subject-only token: %v, want %v", got, want)
+		}
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("two reads of one session asked userinfo %d times, want 1 (cached)", n)
+	}
+
+	if got := session(token("u2", "at-split")); got["name"] != "Ada Lovelace" || got["email"] != "ada@app.test" {
+		t.Errorf("given and family name: %v, want name Ada Lovelace", got)
+	}
+	// preferred_username that is only the address again is not a name; a
+	// non-http(s) picture is dropped.
+	if got := session(token("u3", "at-login")); got["name"] != nil || got["email"] != "ada@app.test" || got["picture"] != nil {
+		t.Errorf("login-name only: %v, want the address and no name or picture", got)
+	}
+	// An answer about another subject is not this session's.
+	if got := session(token("u4", "at-someone")); got["name"] != nil || got["email"] != nil || got["subject"] != "u4" {
+		t.Errorf("mismatched subject: %v, want the token's own claims only", got)
+	}
+	// A token the issuer rejects keeps the claims it brought, as before.
+	if got := session(token("u5", "at-forged")); got["authenticated"] != true || got["subject"] != "u5" || got["email"] != nil {
+		t.Errorf("rejected token: %v, want authenticated with its own subject only", got)
+	}
+	// A token that carries the profile itself is not looked up.
+	before := calls.Load()
+	if got := session(jwt(`+"`"+`{"sub":"u6","name":"In Token","email":"in@app.test"}`+"`"+`)); got["name"] != "In Token" {
+		t.Errorf("profile in the token: %v", got)
+	}
+	if calls.Load() != before {
+		t.Error("a token carrying name and email was looked up anyway")
+	}
+}
+
+func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
+
+func same(got, want map[string]any) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for k, v := range want {
+		if got[k] != v {
+			return false
+		}
+	}
+	return true
+}
+`)
 	cmd := exec.Command("go", "test", "-count=1", "./internal/app/")
 	cmd.Dir = dir
 	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOPROXY=off"))

@@ -22,7 +22,6 @@
 import { Link } from "@tanstack/react-router";
 
 import { SessionNav } from "@/components/session_nav";
-import { ThemeToggle } from "@/components/theme-toggle";
 {{if .HasMockAPI}}import { loadConfig } from "@/lib/config_gen";
 {{end}}
 import type { ReactNode } from "react";
@@ -102,8 +101,11 @@ export default function App({ children }: { children: ReactNode }) {
           </span>
           <span className="text-sm font-semibold tracking-tight text-ink">{APP_NAME}</span>
         </Link>
+        {/*
+          The user menu holds the theme too; signed out, it renders the
+          compact theme toggle instead (see session_nav.tsx).
+        */}
         <div className="flex items-center gap-3">
-          <ThemeToggle />
           <SessionNav />
         </div>
       </header>

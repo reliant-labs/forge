@@ -316,10 +316,20 @@ func (c *Client) finish(ctx context.Context, cfg FlowConfig, flow Flow, s Sessio
 
 // UserInfo is the subject of an access token, as the issuer's userinfo
 // endpoint reports it.
+//
+// The profile claims (Name through Picture) are filled when the token's
+// scopes grant them (`profile`); each is empty otherwise. They are for
+// display: what the person, or an administrator, typed.
 type UserInfo struct {
 	Subject       string `json:"sub"`
 	Email         string `json:"email"`
 	EmailVerified bool   `json:"-"`
+
+	Name              string `json:"name,omitempty"`
+	GivenName         string `json:"given_name,omitempty"`
+	FamilyName        string `json:"family_name,omitempty"`
+	PreferredUsername string `json:"preferred_username,omitempty"`
+	Picture           string `json:"picture,omitempty"`
 }
 
 // UserInfo asks the issuer who an access token belongs to. The issuer
@@ -339,9 +349,8 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (UserInfo, er
 		return UserInfo{}, fmt.Errorf("userinfo: %w", err)
 	}
 	var out struct {
-		Subject       string `json:"sub"`
-		Email         string `json:"email"`
-		EmailVerified any    `json:"email_verified"`
+		UserInfo
+		EmailVerified any `json:"email_verified"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return UserInfo{}, fmt.Errorf("decode userinfo: %w", err)
@@ -349,6 +358,7 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (UserInfo, er
 	if out.Subject == "" {
 		return UserInfo{}, fmt.Errorf("the issuer's userinfo named no subject")
 	}
-	verified := out.EmailVerified == true || out.EmailVerified == "true"
-	return UserInfo{Subject: out.Subject, Email: out.Email, EmailVerified: verified}, nil
+	info := out.UserInfo
+	info.EmailVerified = out.EmailVerified == true || out.EmailVerified == "true"
+	return info, nil
 }

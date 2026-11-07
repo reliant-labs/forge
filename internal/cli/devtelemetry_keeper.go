@@ -45,6 +45,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -154,9 +155,17 @@ func (c credentialCaller) Call(ctx context.Context, procedure string, req, out a
 // runDevTelemetryKeeper heartbeats the session and renews the tokens until
 // ctx is done — which is the stack stopping: `forge env down` (or a holding
 // run's teardown) signals the keeper, and its signal context cancels ctx.
-// One beat runs at once, so a keeper started after a long startup reports the
-// session live again before the first renewal asks for a token.
-func runDevTelemetryKeeper(ctx context.Context, spec devTelemetryKeeperSpec, caller cloudCaller, reporter sessionReporter, heartbeat time.Duration, now func() time.Time, log io.Writer) {
+//
+// The two run on separate goroutines and never wait on each other: renewal
+// has its own timer at each half-life (renewUntil), so a presence report that
+// is slow or failing cannot delay it past expiry. The keeper returns once
+// both have stopped, so a report in flight lands before the process exits —
+// and therefore before `forge env down`, which waits for the exit, reports
+// the session stopped.
+func runDevTelemetryKeeper(ctx context.Context, spec devTelemetryKeeperSpec, caller cloudCaller, reporter sessionReporter, heartbeat time.Duration, clock devTelemetryClock, log io.Writer) {
+	if ctx.Err() != nil {
+		return
+	}
 	run := &devTelemetryRun{
 		projectDir: spec.ProjectDir, env: spec.Env, project: spec.Project,
 		client: caller, sessionID: spec.Session.ID, retention: spec.Retention,
@@ -170,16 +179,21 @@ func runDevTelemetryKeeper(ctx context.Context, spec devTelemetryKeeperSpec, cal
 		hosted:         true,
 		heartbeat:      heartbeat,
 		loggedFailures: map[string]bool{},
-		onBeat:         run.renew,
-		now:            now,
 	}
-	if ctx.Err() != nil {
-		return
-	}
-	t := now().UTC()
-	sess.report(t, false)
-	run.renew(t)
-	sess.heartbeatUntil(ctx)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		run.renewUntil(ctx, clock)
+	}()
+	go func() {
+		defer wg.Done()
+		// One beat at once: a keeper started after a long startup makes
+		// the session live again without waiting a minute.
+		sess.report(time.Now().UTC(), false)
+		sess.heartbeatUntil(ctx)
+	}()
+	wg.Wait()
 }
 
 // newEnvTelemetryKeeperCmd is `forge env telemetry-keeper <spec>`. Hidden:
@@ -207,7 +221,7 @@ func newEnvTelemetryKeeperCmd() *cobra.Command {
 			ctx, stop := signalContext(ctx)
 			defer stop()
 			caller := credentialCaller{ep: spec.Endpoint}
-			runDevTelemetryKeeper(ctx, spec, caller, hostedRecordStoreFor(caller, spec.Project), sessionHeartbeat, time.Now, cmd.OutOrStdout())
+			runDevTelemetryKeeper(ctx, spec, caller, hostedRecordStoreFor(caller, spec.Project), sessionHeartbeat, realDevTelemetryClock{}, cmd.OutOrStdout())
 			return nil
 		},
 	}

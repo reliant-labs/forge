@@ -93,8 +93,9 @@ const OTEL_UPSTREAM = OTEL_ENDPOINT.replace(/\/+$/, "");
 // FORGE_OTEL_HEADERS_FILE at the file holding this stack's browser token,
 // which forge renews in place. The proxy reads the file on EVERY request and
 // attaches what it holds (`authorization=Bearer …`) server-side, so the token
-// never reaches the bundle; the browser's cookies for this origin are not
-// forwarded to the edge. Unset (the local ClickStack), nothing is added.
+// never reaches the bundle; the browser's cookies and any authorization
+// header it sent are not forwarded to the edge, even when the file is
+// missing. Unset (the local ClickStack), nothing is added.
 const OTEL_HEADERS_FILE = process.env.FORGE_OTEL_HEADERS_FILE ?? "";
 const readOtelHeaders = (): Array<[string, string]> => {
   let text = "";
@@ -234,7 +235,10 @@ export default defineConfig(({ command, mode }) => {
             ? {
                 configure: (proxy) => {
                   proxy.on("proxyReq", (proxyReq) => {
+                    // Only forge's token reaches the edge: never the page's
+                    // cookies, nor an authorization header the page sent.
                     proxyReq.removeHeader("cookie");
+                    proxyReq.removeHeader("authorization");
                     for (const [name, value] of readOtelHeaders()) proxyReq.setHeader(name, value);
                   });
                 },

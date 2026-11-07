@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -133,4 +134,41 @@ func writeAtomic(p string, b []byte) error {
 		return err
 	}
 	return os.Rename(name, p)
+}
+
+// ClearCredentials removes env's token state, and the headers files unless
+// another env of this project is recorded as shipping to the hosted store
+// (the headers files are per project). Called whenever env's telemetry is
+// decided local, so a local stack never keeps a usable hosted token on disk
+// and `forge env status` never reads a stale grant. A missing file is not an
+// error.
+func ClearCredentials(projectDir, env string) error {
+	var errs []error
+	rm := func(p string) {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	rm(StatePath(projectDir, env))
+	if !otherEnvHosted(projectDir, env) {
+		rm(HeadersPath(projectDir))
+		rm(BrowserHeadersPath(projectDir))
+	}
+	return errors.Join(errs...)
+}
+
+// otherEnvHosted reports whether an env other than env is recorded as
+// shipping to the hosted store.
+func otherEnvHosted(projectDir, env string) bool {
+	matches, _ := filepath.Glob(filepath.Join(projectDir, ".forge", "obs", "backend-*.json"))
+	for _, m := range matches {
+		other := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), "backend-"), ".json")
+		if other == env {
+			continue
+		}
+		if rec, ok, err := Read(projectDir, other); err == nil && ok && rec.Backend == "cloud" {
+			return true
+		}
+	}
+	return false
 }

@@ -324,6 +324,7 @@ func TestTelemetryDevProxyHostedToken(t *testing.T) {
 				"if (!otelHeadersFile) return Promise.resolve(otelUpstream);",
 				"for (const [k, v] of readOtelHeaders()) headers[k] = v;",
 				"delete headers.cookie;",
+				"delete headers.authorization;",
 				"const otel = await devOtelUpstream();",
 				"destination: `${otel}/:path*`",
 			} {
@@ -339,6 +340,7 @@ func TestTelemetryDevProxyHostedToken(t *testing.T) {
 			"process.env.FORGE_OTEL_HEADERS_FILE",
 			`proxy.on("proxyReq", (proxyReq) => {`,
 			`proxyReq.removeHeader("cookie");`,
+			`proxyReq.removeHeader("authorization");`,
 			"for (const [name, value] of readOtelHeaders()) proxyReq.setHeader(name, value);",
 			"...(OTEL_HEADERS_FILE",
 		} {

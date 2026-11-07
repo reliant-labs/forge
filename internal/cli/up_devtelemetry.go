@@ -26,9 +26,15 @@ package cli
 // edge with the process token's headers file, and the frontend dev server's
 // /_otel proxy attaches the browser token server-side.
 //
-// THE APP IS NEVER AFFECTED BY A TOKEN. Renewal runs at half-life on the
-// session's heartbeat and fails silently: an expired token makes exports get
-// 401 and pkg/observe drop the batch; `forge env status` says so.
+// THE APP IS NEVER AFFECTED BY A TOKEN. The stack's telemetry keeper
+// (devtelemetry_keeper.go) renews at each half-life on its own timer,
+// retrying with backoff, and fails silently: an expired token makes exports
+// get 401 and pkg/observe drop the batch; `forge env status` says so.
+//
+// EVERY SETUP RECORDS ITS DECISION FIRST. A run that ends local — by
+// choice, by fallback, or because hosted setup failed — overwrites
+// backend-<env>.json with "local" and its reason and removes any token a
+// previous hosted run left (settleDevTelemetryLocal).
 
 import (
 	"context"
@@ -336,24 +342,37 @@ func (r *devTelemetryRun) write(g devTelemetryGrant, now time.Time) error {
 	return devtelemetry.WriteState(r.projectDir, devtelemetry.State{Env: r.env, ExpiresAt: g.expires, RenewedAt: now, Retention: g.Retention})
 }
 
-// renewDue reports whether the tokens are past their half-life at now.
-func (r *devTelemetryRun) renewDue(now time.Time) bool {
+// devTelemetryClock is the renewal scheduler's clock. A seam so a test can
+// move time past a token's half-life without waiting half an hour.
+type devTelemetryClock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
+
+type realDevTelemetryClock struct{}
+
+func (realDevTelemetryClock) Now() time.Time                         { return time.Now() }
+func (realDevTelemetryClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// The renewal retry backoff: from the first, doubling to the cap.
+const (
+	devTelemetryRetryFirst = 15 * time.Second
+	devTelemetryRetryCap   = 5 * time.Minute
+)
+
+// renewAt is when the current tokens are due for renewal: their half-life.
+func (r *devTelemetryRun) renewAt() time.Time {
 	r.mu.Lock()
 	g := r.grant
 	r.mu.Unlock()
-	half := g.mintedAt.Add(g.expires.Sub(g.mintedAt) / 2)
-	return !now.Before(half)
+	return g.mintedAt.Add(g.expires.Sub(g.mintedAt) / 2)
 }
 
-// renew replaces both tokens once they are past their half-life. SILENT on
-// failure by design: the old token keeps working until it expires, and the
-// failure is recorded for `forge env status`, never printed into the stack's
-// output.
-func (r *devTelemetryRun) renew(now time.Time) {
-	if r == nil || !r.renewDue(now) {
-		return
-	}
-	g, err := mintDevTelemetry(context.Background(), r.client, r.sessionID, r.project, r.env, r.retention, now)
+// renewNow replaces both tokens. On failure the old tokens stay (they work
+// until they expire) and the reason is recorded for `forge env status` —
+// never printed into the stack's output.
+func (r *devTelemetryRun) renewNow(ctx context.Context, now time.Time) error {
+	g, err := mintDevTelemetry(ctx, r.client, r.sessionID, r.project, r.env, r.retention, now)
 	if err == nil {
 		err = r.write(g, now)
 	}
@@ -365,11 +384,49 @@ func (r *devTelemetryRun) renew(now time.Time) {
 			Env: r.env, ExpiresAt: cur.expires, RenewedAt: cur.mintedAt, Retention: cur.Retention,
 			RenewError: firstLine(mintRefusal(err)),
 		})
-		return
+		return err
 	}
 	r.mu.Lock()
 	r.grant = g
 	r.mu.Unlock()
+	return nil
+}
+
+// renewUntil renews the tokens at each half-life until ctx is done, on its
+// OWN timer: it never waits on a presence report, so a slow or failing
+// report cannot push renewal past expiry. The mint needs a live session, and
+// the mint itself is what proves liveness server-side; a refusal is retried
+// with backoff (15s doubling to 5m) like any other failure, while the
+// heartbeat keeps trying to make the session live.
+func (r *devTelemetryRun) renewUntil(ctx context.Context, clock devTelemetryClock) {
+	retry := time.Duration(0)
+	for {
+		wait := retry
+		if wait == 0 {
+			wait = r.renewAt().Sub(clock.Now())
+		}
+		if wait < 0 {
+			wait = 0
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-clock.After(wait):
+		}
+		if err := r.renewNow(ctx, clock.Now()); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			switch {
+			case retry == 0:
+				retry = devTelemetryRetryFirst
+			case retry < devTelemetryRetryCap:
+				retry = min(retry*2, devTelemetryRetryCap)
+			}
+			continue
+		}
+		retry = 0
+	}
 }
 
 // recordDevTelemetryDecision writes .forge/obs/backend-<env>.json.
@@ -590,6 +647,7 @@ func setupDevTelemetry(ctx context.Context, projectDir, env, flag string, e *KCL
 	}
 	mode, err := resolveDevTelemetryMode(flag, os.Getenv(devTelemetryEnvVar), declared)
 	if err != nil {
+		settleDevTelemetryLocal(projectDir, env, "the telemetry mode is invalid: "+err.Error(), now, w)
 		return nil, err
 	}
 	decl := declarationFromEntities(e)
@@ -609,12 +667,13 @@ func setupDevTelemetry(ctx context.Context, projectDir, env, flag string, e *KCL
 	}
 	d, err := decideDevTelemetry(ctx, facts, now)
 	if err != nil {
+		// A hosted setup that failed leaves this env local (the run
+		// stops): no previous grant may survive it on disk.
+		settleDevTelemetryLocal(projectDir, env, "dev_telemetry=hosted failed: "+firstLine(err.Error()), now, w)
 		return nil, err
 	}
-	if rerr := recordDevTelemetryDecision(projectDir, env, d, now); rerr != nil {
-		fmt.Fprintf(w, "[up] note: could not record the telemetry decision in %s: %v\n", devtelemetry.Path(projectDir, env), rerr)
-	}
 	if !d.Hosted {
+		settleDevTelemetryLocal(projectDir, env, d.Reason, now, w)
 		// Said only when there was a hosted path to fall back FROM: a
 		// standalone project with no control plane has nothing to hear.
 		if facts.ControlPlane && facts.TelemetryOn {
@@ -633,12 +692,17 @@ func setupDevTelemetry(ctx context.Context, projectDir, env, flag string, e *KCL
 	if ep, eerr := projectEndpoint(env, decl); eerr == nil {
 		run.endpoint = ep
 	}
+	// Recorded the moment it is decided, before the tokens are written.
+	if rerr := recordDevTelemetryDecision(projectDir, env, d, now); rerr != nil {
+		fmt.Fprintf(w, "[up] note: could not record the telemetry decision in %s: %v\n", devtelemetry.Path(projectDir, env), rerr)
+	}
 	if err := run.write(d.Grant, now); err != nil {
+		reason := "could not write the telemetry tokens: " + err.Error()
+		settleDevTelemetryLocal(projectDir, env, reason, now, w)
 		if mode.Value == devTelemetryHosted {
 			return nil, fmt.Errorf("%s: write the telemetry tokens under %s: %w", mode, devtelemetry.HeadersPath(projectDir), err)
 		}
-		_ = recordDevTelemetryDecision(projectDir, env, devTelemetryDecision{Reason: "could not write the telemetry tokens: " + err.Error()}, now)
-		fmt.Fprintf(w, "[up] telemetry: local (could not write the telemetry tokens: %v)\n", err)
+		fmt.Fprintf(w, "[up] telemetry: local (%s)\n", reason)
 		return nil, nil
 	}
 	if !devtelemetry.NoticeShown(projectDir) {
@@ -654,6 +718,23 @@ func setupDevTelemetry(ctx context.Context, projectDir, env, flag string, e *KCL
 	// The keeper (devtelemetry_keeper.go) heartbeats the session and renews
 	// the tokens from here on; runUp starts it with the stack's processes.
 	return run, nil
+}
+
+// settleDevTelemetryLocal records env's decision as local — first, before
+// anything else can fail — and then removes whatever a previous hosted run
+// left: the token state, the keeper spec, and the headers files. So `forge
+// env status` and `forge obs` read "local" and the reason, and a local stack
+// keeps no usable hosted token on disk.
+func settleDevTelemetryLocal(projectDir, env, reason string, now time.Time, w io.Writer) {
+	if err := recordDevTelemetryDecision(projectDir, env, devTelemetryDecision{Reason: reason}, now); err != nil {
+		fmt.Fprintf(w, "[up] note: could not record the telemetry decision in %s: %v\n", devtelemetry.Path(projectDir, env), err)
+	}
+	if err := devtelemetry.ClearCredentials(projectDir, env); err != nil {
+		fmt.Fprintf(w, "[up] note: could not remove a previous run's telemetry tokens: %v\n", err)
+	}
+	if err := os.Remove(devTelemetryKeeperSpecPath(projectDir, env)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(w, "[up] note: could not remove %s: %v\n", devTelemetryKeeperSpecPath(projectDir, env), err)
+	}
 }
 
 // devTelemetryCredential reports whether a Reliant credential for the env's

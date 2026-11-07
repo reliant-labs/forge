@@ -109,9 +109,10 @@ const otelUpstream = otelEndpoint.replace(/\/+$/, "");
 // which forge renews in place. A rewrite cannot add a header, so the rewrite
 // then goes to a relay on 127.0.0.1 that this dev server starts: it reads the
 // file on EVERY request, attaches what it holds (`authorization=Bearer …`)
-// and forwards to the edge. The token never reaches the bundle, and the
-// browser's cookies for this origin are not forwarded. Unset (the local
-// ClickStack), there is no relay and nothing changes.
+// and forwards to the edge. The token never reaches the bundle, and neither
+// the browser's cookies nor an authorization header it sent are forwarded,
+// even when the file is missing. Unset (the local ClickStack), there is no
+// relay and nothing changes.
 const otelHeadersFile = process.env.FORGE_OTEL_HEADERS_FILE ?? "";
 const readOtelHeaders = (): Array<[string, string]> => {
   let text = "";
@@ -144,6 +145,7 @@ const devOtelUpstream = (): Promise<string> => {
     const server = http.createServer((req, res) => {
       const headers: http.OutgoingHttpHeaders = { ...req.headers, host: target.host };
       delete headers.cookie;
+      delete headers.authorization;
       for (const [k, v] of readOtelHeaders()) headers[k] = v;
       const url = new URL(target.pathname.replace(/\/+$/, "") + (req.url ?? "/"), target);
       const upstream = send(url, { method: req.method, headers }, (up) => {
@@ -492,9 +494,10 @@ const otelUpstream = otelEndpoint.replace(/\/+$/, "");
 // which forge renews in place. A rewrite cannot add a header, so the rewrite
 // then goes to a relay on 127.0.0.1 that this dev server starts: it reads the
 // file on EVERY request, attaches what it holds (`authorization=Bearer …`)
-// and forwards to the edge. The token never reaches the bundle, and the
-// browser's cookies for this origin are not forwarded. Unset (the local
-// ClickStack), there is no relay and nothing changes.
+// and forwards to the edge. The token never reaches the bundle, and neither
+// the browser's cookies nor an authorization header it sent are forwarded,
+// even when the file is missing. Unset (the local ClickStack), there is no
+// relay and nothing changes.
 const otelHeadersFile = process.env.FORGE_OTEL_HEADERS_FILE ?? "";
 const readOtelHeaders = (): Array<[string, string]> => {
   let text = "";
@@ -527,6 +530,7 @@ const devOtelUpstream = (): Promise<string> => {
     const server = http.createServer((req, res) => {
       const headers: http.OutgoingHttpHeaders = { ...req.headers, host: target.host };
       delete headers.cookie;
+      delete headers.authorization;
       for (const [k, v] of readOtelHeaders()) headers[k] = v;
       const url = new URL(target.pathname.replace(/\/+$/, "") + (req.url ?? "/"), target);
       const upstream = send(url, { method: req.method, headers }, (up) => {
@@ -847,9 +851,10 @@ const otelUpstream = otelEndpoint.replace(/\/+$/, "");
 // which forge renews in place. A rewrite cannot add a header, so the rewrite
 // then goes to a relay on 127.0.0.1 that this dev server starts: it reads the
 // file on EVERY request, attaches what it holds (`authorization=Bearer …`)
-// and forwards to the edge. The token never reaches the bundle, and the
-// browser's cookies for this origin are not forwarded. Unset (the local
-// ClickStack), there is no relay and nothing changes.
+// and forwards to the edge. The token never reaches the bundle, and neither
+// the browser's cookies nor an authorization header it sent are forwarded,
+// even when the file is missing. Unset (the local ClickStack), there is no
+// relay and nothing changes.
 const otelHeadersFile = process.env.FORGE_OTEL_HEADERS_FILE ?? "";
 const readOtelHeaders = (): Array<[string, string]> => {
   let text = "";
@@ -882,6 +887,7 @@ const devOtelUpstream = (): Promise<string> => {
     const server = http.createServer((req, res) => {
       const headers: http.OutgoingHttpHeaders = { ...req.headers, host: target.host };
       delete headers.cookie;
+      delete headers.authorization;
       for (const [k, v] of readOtelHeaders()) headers[k] = v;
       const url = new URL(target.pathname.replace(/\/+$/, "") + (req.url ?? "/"), target);
       const upstream = send(url, { method: req.method, headers }, (up) => {

@@ -13,9 +13,16 @@ const (
 	testJWT      = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 	testToken    = "Zt9qK2vXw8LmP4rB7nYc3HdF"
 	testHex64    = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-	testPEM      = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----"
 	testImageRef = "ghcr.io/acme/api@sha256:" + testHex64
 )
+
+// Deliberately invalid, synthetic fixture: exercises the PEM delimiter detector
+// without embedding DER/base64 key material or a usable credential in source.
+var testPEM = strings.Join([]string{
+	strings.Repeat("-", 5) + "BEGIN " + "PRIVATE KEY" + strings.Repeat("-", 5),
+	"not-a-key: synthetic detector fixture",
+	strings.Repeat("-", 5) + "END " + "PRIVATE KEY" + strings.Repeat("-", 5),
+}, "\n")
 
 func TestLooksSecret(t *testing.T) {
 	for _, tc := range []struct {
@@ -215,7 +222,7 @@ func TestRedactObject_WorkloadEnv(t *testing.T) {
 				t.Fatal("RedactObject mutated its input")
 			}
 			encoded, _ := json.Marshal(out)
-			for _, leaked := range []string{"hunter2", "s3cr3t", testToken, "abcdef0123456789", "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"} {
+			for _, leaked := range []string{"hunter2", "s3cr3t", testToken, "abcdef0123456789", "not-a-key: synthetic detector fixture"} {
 				if strings.Contains(string(encoded), leaked) {
 					t.Errorf("%q survived redaction", leaked)
 				}

@@ -272,11 +272,13 @@ func shannonEntropy(s string) float64 {
 // The rendered YAML a viewer shows must be produced from this output, never
 // from the raw layer bytes.
 func RedactObject(doc any) any {
-	body, ok := stringMap(doc)
-	if !ok {
-		return redactTree(doc)
-	}
-	out, _ := redactTree(body).(map[string]any)
+	return redactTree(doc)
+}
+
+// redactObjectFields applies declaration-specific policy to one already-copied
+// object. Every map visits this function, including objects nested inside Lists
+// or extension fields; it never recurses back into the same object.
+func redactObjectFields(body, out map[string]any) map[string]any {
 	switch {
 	case IsSecretObject(body):
 		for _, field := range secretValueFields {
@@ -360,7 +362,7 @@ func redactTree(v any) any {
 				out[key] = redactTree(child)
 			}
 		}
-		return out
+		return redactObjectFields(t, out)
 	case map[string]string:
 		m := make(map[string]any, len(t))
 		for key, value := range t {

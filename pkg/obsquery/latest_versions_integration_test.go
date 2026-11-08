@@ -43,11 +43,14 @@ func TestLatestVersionsOnePerWorkload(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The span time goes in as epoch nanoseconds: clickhouse-go binds a
+	// time.Time `?` argument as toDateTime('<unix seconds>'), which drops the
+	// sub-second part the edge case below depends on.
 	span := func(env, svc, version string, at time.Time) {
 		t.Helper()
 		res := map[string]string{"reliant.env.id": env, "service.version": version}
-		if err := c.Exec(ctx, `INSERT INTO lvdb.otel_traces (Timestamp, ServiceName, ResourceAttributes) VALUES (?, ?, ?)`,
-			at, svc, res); err != nil {
+		if err := c.Exec(ctx, `INSERT INTO lvdb.otel_traces (Timestamp, ServiceName, ResourceAttributes) VALUES (fromUnixTimestamp64Nano(?), ?, ?)`,
+			at.UnixNano(), svc, res); err != nil {
 			t.Fatal(err)
 		}
 	}

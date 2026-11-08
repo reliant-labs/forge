@@ -698,7 +698,8 @@ func newOnShared(template string) (*sql.DB, func(), error) {
 // createOnShared runs stmt (a CREATE DATABASE) on this process's shared
 // server, booting it on first use. When the server fails it for a reason a
 // fresh server fixes (brokenServerError: its data directory lost a file, or
-// it is shutting down), the binding is dropped and the create retried ONCE
+// it is shutting down; lostServerError: it refuses connections, its
+// postmaster dead), the binding is dropped and the create retried ONCE
 // on a re-attached server: the attach replaces a broken shared server under
 // the pool lock (health.go). An external FORGE_TEST_POSTGRES_URL server is
 // never retried; its owner fixes it.
@@ -708,7 +709,7 @@ func createOnShared(stmt string) (*server, error) {
 		return nil, bootError{err}
 	}
 	_, err = s.baseDB.Exec(stmt)
-	if err == nil || !brokenServerError(err) || !healShared() {
+	if err == nil || !(brokenServerError(err) || lostServerError(err)) || !healShared() {
 		return s, err
 	}
 	s, err = boot()

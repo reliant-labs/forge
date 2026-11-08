@@ -136,7 +136,18 @@ func brokenServerError(err error) bool {
 	return false
 }
 
-// healShared runs after a create failed with brokenServerError. It reports
+// lostServerError reports whether err is a failure to reach the server at
+// all (pgconn.ConnectError: refused, reset, timed out, gone socket), as when
+// the shared server's postmaster died under this process. Whether it really
+// is gone is decided under the pool lock (healShared): a server that is only
+// slow to answer keeps every binding, and the retry waits for it.
+func lostServerError(err error) bool {
+	var connErr *pgconn.ConnectError
+	return errors.As(err, &connErr)
+}
+
+// healShared runs after a create failed with brokenServerError or
+// lostServerError. It reports
 // whether a retry is worth making (the server is the pooled embedded one, not
 // an external FORGE_TEST_POSTGRES_URL).
 //

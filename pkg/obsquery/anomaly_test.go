@@ -423,6 +423,25 @@ func TestAnomalyBaselineDropsTheWeekTheServiceStartedIn(t *testing.T) {
 	}
 }
 
+// A ServiceREDInput built the way it was before BaselineWeeks existed leaves
+// it zero: it is judged on its slots, as it was then, not silenced.
+func TestJudgeServiceUncountedWeeksKeepThePreviousContract(t *testing.T) {
+	in := ServiceREDInput{
+		Service: "api", Now: anomalyNow, FirstSeen: anomalyNow.Add(-28 * 24 * time.Hour),
+		Observed: REDSample{Requests: 4000, Errors: 400},
+		Baseline: baselineOf(4000, 20, 0),
+	}
+	got := JudgeService(in, DefaultAnomalyParams())
+	if signals(got) != AnomalySignalErrorRate {
+		t.Fatalf("an input without BaselineWeeks fired %q, want %q as before the field existed", signals(got), AnomalySignalErrorRate)
+	}
+	// Too few slots still judges nothing, counted weeks or not.
+	in.Baseline = in.Baseline[:4]
+	if got := JudgeService(in, DefaultAnomalyParams()); len(got) != 0 {
+		t.Fatalf("a 4-slot baseline fired %+v", got)
+	}
+}
+
 func TestAnomalyParamsZeroBaselineWeeksIsTheDefault(t *testing.T) {
 	p := DefaultAnomalyParams()
 	p.MinBaselineWeeks = 0

@@ -183,7 +183,10 @@ type ServiceREDInput struct {
 	// traffic a zero sample, for the weeks the service already existed in.
 	Baseline []REDSample
 	// BaselineWeeks is how many distinct past weeks Baseline's slots come
-	// from. Fewer than the params' MinBaselineWeeks judges nothing.
+	// from. Fewer than the params' MinBaselineWeeks judges nothing. Zero is
+	// "not counted": an input built before the field existed is judged on
+	// its slots alone (MinBaselineSamples), as it was then. EvalAnomalies
+	// always counts, and a service with no whole week has no slots either.
 	BaselineWeeks int
 	// FirstSeen is when the service's metrics first appeared in the lookback
 	// (zero: never).
@@ -230,7 +233,7 @@ func JudgeService(in ServiceREDInput, p AnomalyParams) []Anomaly {
 	if in.FirstSeen.IsZero() || in.Now.Sub(in.FirstSeen) < p.MinHistory {
 		return nil
 	}
-	if in.BaselineWeeks < p.minBaselineWeeks() {
+	if in.BaselineWeeks != 0 && in.BaselineWeeks < p.minBaselineWeeks() {
 		return nil
 	}
 	var out []Anomaly

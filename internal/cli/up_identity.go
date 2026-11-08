@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -64,17 +66,9 @@ func hostIdentityRefs(e *KCLEntities, id *release.ShapeIdentity) []devidentity.R
 // rendered env. It performs no I/O beyond reading the project's own
 // declaration, so it is testable without an IdP.
 func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir string, prov secrets.Provider) (devidentity.Input, error) {
-	var zitadel *HostInfraEntity
-	for i := range e.Infra {
-		if e.Infra[i].Engine == "zitadel" {
-			if zitadel != nil {
-				return devidentity.Input{}, fmt.Errorf("identity %q runs on the host IdP, but the env declares two zitadel infra entries (%s, %s)", id.Name, zitadel.Name, e.Infra[i].Name)
-			}
-			zitadel = &e.Infra[i]
-		}
-	}
-	if zitadel == nil {
-		return devidentity.Input{}, fmt.Errorf("identity %q runs on the host IdP, but the env declares no forge.HostInfra with engine \"zitadel\"", id.Name)
+	zitadel, err := hostZitadel(e, id)
+	if err != nil {
+		return devidentity.Input{}, err
 	}
 	if e.SecretProvider == nil || e.SecretProvider.Type != "file" {
 		return devidentity.Input{}, fmt.Errorf("identity %q keeps its credentials in the env's local secret store: declare `secret_provider = forge.FileSecrets {path = \"secrets/%s.yaml\"}` on the Bundle", id.Name, e.Env)
@@ -90,12 +84,11 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 		store = filepath.Join(projectDir, store)
 	}
 
-	patSpec := hostinfra.Spec{IDPPATPath: zitadel.IDPPATPath}
 	in := devidentity.Input{
 		Project:         e.Project,
 		Identity:        id,
 		BaseURL:         fmt.Sprintf("http://localhost:%d", zitadel.Port),
-		PATPath:         patSpec.PATPath(projectDir),
+		PATPath:         idpPATLocations(zitadel, projectDir).Checkout,
 		WorkloadOrigins: map[string]string{},
 		Refs:            hostIdentityRefs(e, id),
 		StorePath:       store,
@@ -133,6 +126,127 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 		in.MailpitPort = mail.Port
 	}
 	return in, nil
+}
+
+// hostZitadel is the env's one zitadel HostInfra, which a host-run identity
+// converges on.
+func hostZitadel(e *KCLEntities, id *release.ShapeIdentity) (*HostInfraEntity, error) {
+	var zitadel *HostInfraEntity
+	for i := range e.Infra {
+		if e.Infra[i].Engine == "zitadel" {
+			if zitadel != nil {
+				return nil, fmt.Errorf("identity %q runs on the host IdP, but the env declares two zitadel infra entries (%s, %s)", id.Name, zitadel.Name, e.Infra[i].Name)
+			}
+			zitadel = &e.Infra[i]
+		}
+	}
+	if zitadel == nil {
+		return nil, fmt.Errorf("identity %q runs on the host IdP, but the env declares no forge.HostInfra with engine \"zitadel\"", id.Name)
+	}
+	return zitadel, nil
+}
+
+// idpPATLocations is where the host IdP's bootstrap PAT is written and looked
+// for: the same resolution the IdP's start uses (hostinfra.Spec), from the
+// same declaration.
+func idpPATLocations(zitadel *HostInfraEntity, projectDir string) hostinfra.IDPPATLocations {
+	return hostinfra.Spec{
+		IDPPATPath:      zitadel.IDPPATPath,
+		IDPDatabase:     zitadel.IDPDatabase,
+		IDPDatabasePort: zitadel.IDPDatabasePort,
+	}.IDPPATLocations(projectDir)
+}
+
+// convergeDevIdentityFn is devidentity.Converge, swappable so a test needs no
+// IdP.
+var convergeDevIdentityFn = devidentity.Converge
+
+// convergeWithIDPPAT runs the convergence with the bootstrap PAT it finds,
+// and keeps the PAT's two homes coherent afterwards:
+//
+//   - the shared file (beside the IdP database, where Zitadel writes it) is
+//     tried first. Once it has authenticated, the checkout's copy is
+//     refreshed from it, for anything reading .forge/idp/pat.txt;
+//   - the checkout's copy is the fallback: a database an older forge
+//     initialized has its token only there. Once THAT has authenticated it is
+//     published to the shared file, so the next checkout of this database
+//     finds it. Only a token that authenticated is published: the shared file
+//     is trusted by every checkout.
+//
+// It also retries with the checkout's copy when a shared token is refused
+// and the two differ, which recovers a database an older forge re-initialized
+// after this one wrote the shared file.
+//
+// pat is "" when neither file exists; the caller reports that.
+func convergeWithIDPPAT(ctx context.Context, in devidentity.Input, loc hostinfra.IDPPATLocations) (res *devidentity.Result, notes []string, err error) {
+	in.PATPath = loc.Find()
+	if in.PATPath == "" {
+		return nil, nil, errNoIDPPAT
+	}
+	res, err = convergeDevIdentityFn(ctx, in)
+	if err != nil && in.PATPath == loc.Shared && differentFiles(loc.Shared, loc.Checkout) {
+		in.PATPath = loc.Checkout
+		res, err = convergeDevIdentityFn(ctx, in)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	switch in.PATPath {
+	case loc.Shared:
+		if mErr := loc.MirrorToCheckout(); mErr != nil {
+			notes = append(notes, fmt.Sprintf("could not refresh %s from %s: %v", loc.Checkout, loc.Shared, mErr))
+		}
+	case loc.Checkout:
+		if loc.Shared == "" {
+			break
+		}
+		if pErr := loc.PublishShared(loc.Checkout); pErr != nil {
+			notes = append(notes, fmt.Sprintf("could not publish the IdP token to %s, where other checkouts of this IdP database look: %v", loc.Shared, pErr))
+		} else {
+			notes = append(notes, fmt.Sprintf("published the IdP token to %s, where every checkout whose IdP uses this database finds it", loc.Shared))
+		}
+	}
+	return res, notes, nil
+}
+
+var errNoIDPPAT = errors.New("no IdP personal access token found")
+
+// differentFiles reports whether both files exist and hold different bytes.
+func differentFiles(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ab, aErr := os.ReadFile(a) // #nosec G304 -- forge's own PAT locations
+	bb, bErr := os.ReadFile(b) // #nosec G304 -- forge's own PAT locations
+	return aErr == nil && bErr == nil && len(bb) > 0 && string(ab) != string(bb)
+}
+
+// missingIDPPATMessage explains a host IdP whose bootstrap PAT is nowhere
+// forge looks, and the two ways out. The usual cause: the IdP's database was
+// initialized by another checkout (or by an older forge, which kept the
+// token in that checkout), so this checkout's IdP boot found the instance
+// already there and Zitadel wrote no token.
+func missingIDPPATMessage(id string, zitadel *HostInfraEntity, loc hostinfra.IDPPATLocations, env string) string {
+	var b strings.Builder
+	db := firstNonEmptyStr(zitadel.IDPDatabase, "zitadel")
+	fmt.Fprintf(&b, "[up] identity %s: no personal access token for the dev IdP, so forge cannot authenticate to converge it.\n", id)
+	fmt.Fprintf(&b, "  Zitadel writes that token ONCE, when it initializes its database (%q on localhost:%d), and this checkout's\n", db, zitadel.IDPDatabasePort)
+	b.WriteString("  IdP found that database already initialized: by another checkout, or by an older forge that kept the token\n")
+	b.WriteString("  in that checkout's .forge/idp/pat.txt.\n")
+	fmt.Fprintf(&b, "  Looked in: %s\n", strings.Join(loc.Searched(), ", "))
+	if loc.Shared != "" {
+		b.WriteString("  Fix, either:\n")
+		fmt.Fprintf(&b, "    - run `forge env up %s` once in the checkout that initialized it: this forge publishes its token to\n", env)
+		fmt.Fprintf(&b, "      %s, where every checkout looks (or copy that checkout's .forge/idp/pat.txt there yourself);\n", loc.Shared)
+	} else {
+		b.WriteString("  Fix, either:\n")
+		fmt.Fprintf(&b, "    - copy the token from the checkout that initialized it to %s;\n", loc.Checkout)
+	}
+	b.WriteString("    - or start the IdP over: stop every stack whose IdP uses that database, drop it, and re-run `forge env up`.\n")
+	fmt.Fprintf(&b, "      psql -h localhost -p %d -U %s -d postgres -c 'DROP DATABASE \"%s\"'\n", zitadel.IDPDatabasePort, firstNonEmptyStr(zitadel.User, "postgres"), db)
+	b.WriteString("      This deletes the dev IdP's users and app registrations; forge re-creates what the env declares.\n")
+	b.WriteString("[up] sign-in is unavailable this run; everything else still starts.\n")
+	return b.String()
 }
 
 // devMailInfra is the Mailpit the host-run identity's mail goes to: the
@@ -176,11 +290,20 @@ func convergeHostIdentity(ctx context.Context, e *KCLEntities, projectDir string
 		fmt.Printf("[up] identity %s: %v\n[up] sign-in is unavailable this run; everything else still starts.\n", id.Name, err)
 		return
 	}
-	res, err := devidentity.Converge(ctx, in)
+	zitadel, _ := hostZitadel(e, id) // devIdentityInput just found it
+	loc := idpPATLocations(zitadel, projectDir)
+	res, notes, err := convergeWithIDPPAT(ctx, in, loc)
+	if errors.Is(err, errNoIDPPAT) {
+		fmt.Print(missingIDPPATMessage(id.Name, zitadel, loc, e.Env))
+		return
+	}
 	if err != nil {
 		fmt.Printf("[up] identity %s FAILED — continuing, because sign-in is the only thing that needs it:\n%v\n", id.Name, err)
 		fmt.Printf("[up] the IdP's log is %s\n", filepath.Join(".forge", "hostinfra", "idp", "zitadel.log"))
 		return
+	}
+	for _, n := range notes {
+		fmt.Printf("[up] identity %s: %s\n", id.Name, n)
 	}
 	for _, w := range res.Warnings {
 		fmt.Printf("[up] identity %s: warning: %s\n", id.Name, w)

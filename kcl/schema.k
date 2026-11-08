@@ -1587,7 +1587,10 @@ schema HostInfra:
     idp_steps_file: str = "idp-steps.yaml"
     # Where Zitadel writes that service account's personal access token on
     # first boot. `forge env up` reads it to converge the env's
-    # forge.ManagedIdentity.
+    # forge.ManagedIdentity. At this default the token is stored beside the
+    # IdP DATABASE it belongs to (~/.forge/idp/<host>_<port>_<database>/
+    # pat.txt), so every checkout whose IdP uses that database finds it, and
+    # this path holds a refreshed copy. Any other value is the only location.
     idp_pat_path: str = ".forge/idp/pat.txt"
 
     # ── engine = "nats" only ─────────────────────────────────────────────

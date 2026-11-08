@@ -76,6 +76,9 @@ func newDBQueryCloudClient(ep cloud.Endpoint, cred cloud.Credential, stmtTimeout
 	}
 	client := cloud.NewClient(ep, cred)
 	client.HTTP = &http.Client{Timeout: stmtTimeout + hostedQueryGrace + hostedTransportMargin}
+	// A query needs db:query, which no login carries: elevate before the
+	// call rather than after the control plane refuses (and audits) it.
+	client.DeclareScope("db:query", procQueryDatabase)
 	return client
 }
 

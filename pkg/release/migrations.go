@@ -106,7 +106,12 @@ type MigrationSet struct {
 	// a declared floor on a squashed migration satisfiable by every release
 	// after the squash ([Carries]). Recorded alongside Declarations; empty
 	// on a manifest that predates them.
-	Adopts []uint64 `json:"adopts,omitempty"`
+	//
+	// Canonical decimal STRINGS, not numbers: the hosted ledger's protojson
+	// writes a 64-bit integer as a JSON string, and this is the type its
+	// response is decoded into, so a number here would decode from a cut
+	// and fail to decode from every read.
+	Adopts []string `json:"adopts,omitempty"`
 }
 
 // MigrationVersion is the numeric version a migration file name carries — the
@@ -167,7 +172,12 @@ func sortMigrationFiles(files []string) {
 func (m *MigrationManifest) Normalize() {
 	for i := range m.Sets {
 		sortMigrationFiles(m.Sets[i].Files)
-		sort.Slice(m.Sets[i].Adopts, func(a, b int) bool { return m.Sets[i].Adopts[a] < m.Sets[i].Adopts[b] })
+		adopts := m.Sets[i].Adopts
+		sort.Slice(adopts, func(a, b int) bool {
+			va, _ := strconv.ParseUint(adopts[a], 10, 64)
+			vb, _ := strconv.ParseUint(adopts[b], 10, 64)
+			return va < vb
+		})
 	}
 	sort.Slice(m.Sets, func(i, j int) bool { return m.Sets[i].Source < m.Sets[j].Source })
 	sortDeclarations(m.Declarations)
@@ -250,8 +260,9 @@ func (m MigrationManifest) Validate() error {
 			return fmt.Errorf("%w: migration source %s records %d adopted versions, over the cap of %d", ErrInvalid, s.Source, len(s.Adopts), MaxMigrationFiles)
 		}
 		for _, v := range s.Adopts {
-			if v == 0 {
-				return fmt.Errorf("%w: migration source %s adopts version 0", ErrInvalid, s.Source)
+			n, err := strconv.ParseUint(v, 10, 64)
+			if err != nil || n == 0 || strconv.FormatUint(n, 10) != v {
+				return fmt.Errorf("%w: migration source %s adopts %q, which is not a canonical positive version", ErrInvalid, s.Source, v)
 			}
 		}
 	}

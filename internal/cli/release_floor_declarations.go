@@ -34,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
@@ -50,7 +51,7 @@ var schemaDirectiveNeedles = []string{"forge:breaks-rollback", "forge:adopt"}
 // schemaDeclarationsFrom reads one migration's up SQL into the schema
 // declaration it makes (nil when it makes none) and the forge versions it
 // adopts.
-func schemaDeclarationsFrom(source, file string, upSQL string) (*release.FloorDeclaration, []uint64, error) {
+func schemaDeclarationsFrom(source, file string, upSQL string) (*release.FloorDeclaration, []string, error) {
 	var decl *release.FloorDeclaration
 	if _, breaks := compat.Declarations(upSQL); len(breaks) > 0 {
 		reasons := make([]string, 0, len(breaks))
@@ -68,11 +69,11 @@ func schemaDeclarationsFrom(source, file string, upSQL string) (*release.FloorDe
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", file, err)
 	}
-	var adopts []uint64
+	var adopts []string
 	if adoption != nil && adoption.Tool == compat.ToolForge {
 		for _, v := range adoption.Versions {
 			if v > 0 {
-				adopts = append(adopts, uint64(v))
+				adopts = append(adopts, strconv.FormatInt(v, 10))
 			}
 		}
 	}
@@ -238,9 +239,9 @@ func dedupeDeclarations(ds []release.FloorDeclaration) []release.FloorDeclaratio
 	return out
 }
 
-func dedupeVersions(vs []uint64) []uint64 {
-	seen := map[uint64]bool{}
-	var out []uint64
+func dedupeVersions(vs []string) []string {
+	seen := map[string]bool{}
+	var out []string
 	for _, v := range vs {
 		if !seen[v] {
 			seen[v] = true

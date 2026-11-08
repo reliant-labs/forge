@@ -51,7 +51,7 @@ func TestCaptureRecordsTheProjectsFloorDeclarations(t *testing.T) {
 			t.Errorf("declaration %d = %+v, want %+v", i, m.Declarations[i], want[i])
 		}
 	}
-	if got := m.Sets[0].Adopts; len(got) != 2 || got[0] != 20251201000000 || got[1] != 20251202000000 {
+	if got := m.Sets[0].Adopts; len(got) != 2 || got[0] != "20251201000000" || got[1] != "20251202000000" {
 		t.Errorf("adopts = %v", got)
 	}
 	if err := m.Validate(); err != nil {

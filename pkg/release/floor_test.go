@@ -216,7 +216,7 @@ func TestManifestValidateChecksDeclarations(t *testing.T) {
 		t.Fatal("a declaration recorded twice is refused")
 	}
 	adopt0 := base()
-	adopt0.Sets[0].Adopts = []uint64{0}
+	adopt0.Sets[0].Adopts = []string{"0"}
 	if err := adopt0.Validate(); err == nil {
 		t.Fatal("adopted version 0 is refused")
 	}

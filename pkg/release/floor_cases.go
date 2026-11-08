@@ -49,7 +49,7 @@ func FloorCases() []FloorCase {
 	v2 := rel("v2", 2, []MigrationSet{{Source: mig, Files: []string{m1, m2}}}, schemaM2)
 	v3 := rel("v3", 3, []MigrationSet{{Source: mig, Files: []string{m1, m2, m3}}}, schemaM2, apiHooks)
 	v19 := rel("v1.9.1", 4, []MigrationSet{{Source: mig, Files: []string{m1}}})
-	v4sq := rel("v4", 5, []MigrationSet{{Source: mig, Files: []string{base}, Adopts: []uint64{20260101000001, 20260102000001, 20260103000001}}}, apiHooks)
+	v4sq := rel("v4", 5, []MigrationSet{{Source: mig, Files: []string{base}, Adopts: []string{"20260101000001", "20260102000001", "20260103000001"}}}, apiHooks)
 	unrecorded := Release{Version: "v0.9", CreatedAt: day(6)}
 
 	orderAt := func(r Release) Floor {

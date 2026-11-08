@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -450,7 +451,7 @@ func Carries(target Release, d DeclarationRef, kind DeclarationKind) bool {
 			}
 			if hasVersion {
 				for _, a := range s.Adopts {
-					if a == v {
+					if n, err := strconv.ParseUint(a, 10, 64); err == nil && n == v {
 						return true
 					}
 				}

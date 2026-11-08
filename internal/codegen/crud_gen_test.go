@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -2717,6 +2718,12 @@ type Service struct {
 		if !strings.Contains(ops, want) {
 			t.Errorf("ops file missing %q — multi-word CRUD did not wire real ops; got:\n%s", want, ops)
 		}
+	}
+	// The automatic product events are named module_config_<verb>: the
+	// create, update and delete ops carry the snake_case name, the read ops
+	// emit nothing and so carry none.
+	if got := len(regexp.MustCompile(`EntitySnake:\s+"module_config",`).FindAllString(ops, -1)); got != 3 {
+		t.Errorf("ops file sets EntitySnake %d times, want 3 (create, update, delete); got:\n%s", got, ops)
 	}
 
 	// The shim delegates to the crud lifecycle for every op (no stub markers,

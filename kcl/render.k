@@ -654,6 +654,7 @@ _obs_env = lambda rt: any, b: Bundle, env: {str:} -> {str:str} {
         | ({OTEL_TRACES_EXPORTER = "none"} if _sig and not _sig.traces and not _env_set(env, "OTEL_TRACES_EXPORTER") else {}) \
         | ({OTEL_METRICS_EXPORTER = "none"} if _sig and not _sig.metrics and not _env_set(env, "OTEL_METRICS_EXPORTER") else {}) \
         | ({OTEL_LOGS_EXPORTER = "none"} if _sig and not _sig.logs and not _env_set(env, "OTEL_LOGS_EXPORTER") else {}) \
+        | ({FORGE_PRODUCT_EVENTS = "off"} if _sig and not _sig.product_events and not _env_set(env, "FORGE_PRODUCT_EVENTS") else {}) \
         | _obs_sampler_env(b, env)
 }
 

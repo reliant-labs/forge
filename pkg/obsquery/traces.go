@@ -192,6 +192,70 @@ const (
 	traceClientExpr          = "anyIf(tuple(" + traceBrowserNameExpr + ", ResourceAttributes['user_agent.version'], " + traceOSNameExpr + ", ResourceAttributes['os.version'], ResourceAttributes['reliant.device.type'], " + traceDesktopVersionExpr + "), " + traceBrowserSpan + " AND (" + traceBrowserNameExpr + " != '' OR " + traceDesktopVersionExpr + " != ''))"
 )
 
+// tracePageCols are the page statement's per-trace columns (perTrace's
+// contract below).
+const tracePageCols = "SELECT TraceId AS trace_id,\n" +
+	"       min(Timestamp) AS start,\n" +
+	"       toFloat64(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp))) / 1000000 AS dur_ms,\n" +
+	"       argMin(ServiceName, (ParentSpanId != '', Timestamp)) AS root_service,\n" +
+	"       argMin(SpanName, (ParentSpanId != '', Timestamp)) AS root_name,\n" +
+	"       toFloat64(argMin(Duration, (ParentSpanId != '', Timestamp))) / 1000000 AS root_dur_ms,\n" +
+	"       count() AS span_count,\n" +
+	"       countIf(" + spanErrorExpr + ") AS error_count,\n" +
+	"       max(" + spanWeightExpr + ") AS tw,\n" +
+	"       groupUniqArray(ServiceName) AS services,\n" +
+	"       maxIf(ResourceAttributes['reliant.source'], ResourceAttributes['reliant.source'] != '') AS source,\n" +
+	"       anyIf(" + traceUserExpr + ", " + traceUserExpr + " != '') AS user_id,\n" +
+	"       anyIf(" + traceSessionExpr + ", " + traceSessionExpr + " != '') AS session_id,\n" +
+	"       tupleElement(" + traceGeoExpr + ", 1) AS country,\n" +
+	"       tupleElement(" + traceGeoExpr + ", 2) AS region,\n" +
+	"       tupleElement(" + traceGeoExpr + ", 3) AS city,\n" +
+	"       tupleElement(" + traceClientExpr + ", 1) AS client_name,\n" +
+	"       tupleElement(" + traceClientExpr + ", 2) AS client_version,\n" +
+	"       tupleElement(" + traceClientExpr + ", 3) AS os_name,\n" +
+	"       tupleElement(" + traceClientExpr + ", 4) AS os_version,\n" +
+	"       tupleElement(" + traceClientExpr + ", 5) AS device_type,\n" +
+	"       tupleElement(" + traceClientExpr + ", 6) AS desktop_version,\n" +
+	"       " + traceFrontendVersionExpr + " AS frontend_version,\n" +
+	"       arrayMap(p -> tupleElement(p, 1), " + traceBackendVersionsExpr + ") AS backend_services,\n" +
+	"       arrayMap(p -> tupleElement(p, 2), " + traceBackendVersionsExpr + ") AS backend_versions"
+
+// traceParts are the pieces a per-trace statement is assembled from.
+type traceParts struct {
+	// spans picks the spans a trace's columns aggregate: the range and the
+	// scope's resource-level filters.
+	spans []string
+	// candidates narrow which traces are aggregated at all, each a
+	// `TraceId IN (...)` superset of what having keeps. They test the trace id
+	// alone, so they never change a kept trace's columns.
+	candidates []string
+	// having keeps a trace by its aggregates. Every term reads only trace_id,
+	// start, dur_ms, root_name, error_count or a countIf over the span
+	// columns: the cheap aggregates, never a page-only column.
+	having    []string
+	groupCols string
+}
+
+// conds is the WHERE of a statement that aggregates every candidate trace.
+func (p traceParts) conds() []string {
+	return append(append([]string{}, p.spans...), p.candidates...)
+}
+
+func (p traceParts) havingClause() string {
+	if len(p.having) == 0 {
+		return ""
+	}
+	return "\nHAVING " + strings.Join(p.having, "\n   AND ")
+}
+
+// pageOrder is the page's ORDER BY in q.Order.
+func (q TraceQuery) pageOrder() string {
+	if q.Order == OrderDurationDesc {
+		return traceDurNanoExpr + " DESC, start DESC, trace_id DESC"
+	}
+	return "start DESC, trace_id DESC"
+}
+
 // perTrace is the per-trace summary subquery shared by the page and RED
 // statements. Columns: trace_id, start (DateTime64(9)), dur_ms, root_service,
 // root_name, root_dur_ms, span_count, error_count, tw (how many real traces this
@@ -211,28 +275,82 @@ const (
 // With page false (the RED statements) it returns only trace_id, dur_ms,
 // root_name, error_count and tw, plus the group columns: the summaries read
 // nothing else, and nothing reads that subquery by name.
+//
+// With page true it selects the page in two phases of one statement, already
+// ordered by q.pageOrder and limited to Limit+1 inside (the caller orders and
+// limits the outer rows the same way). Phase 1, the IN subquery, aggregates
+// every candidate trace of the range but only the cheap columns its HAVING,
+// cursor and ORDER BY read, and keeps the page's trace ids. Phase 2 computes
+// the page columns over the spans of those ids alone. Each page column is an
+// aggregate over every span of its trace (map lookups, anyIf,
+// groupUniqArrayIf), and computing them for every trace of the window before
+// the LIMIT kept ~100 of them cost a prod ListTraces 5-10s; in two phases the
+// same rows took 1.2-2.9s and read 145MB instead of 350MB. Phase 2's spans are
+// the same as the one-pass statement's for each kept trace (the candidate
+// filters test only the trace id, which phase 1 has already applied), so every
+// row is unchanged.
 func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) {
-	if err := checkRumValue("user_id", q.UserID); err != nil {
+	p, err := q.traceParts(b, page, withGroups)
+	if err != nil {
 		return "", err
+	}
+	if !page {
+		// A RED summary reads four facts per trace. The page's who/where/client
+		// columns (each an aggregate over every span) cost it most of its time:
+		// over 24h of prod traffic the full row set ran past the gateway's 15s
+		// and the list answered 504, so the summary aggregates only what it
+		// reads (and what its HAVING names).
+		return "SELECT TraceId AS trace_id,\n" +
+			"       toFloat64(" + traceDurNanoExpr + ") / 1000000 AS dur_ms,\n" +
+			"       argMin(SpanName, (ParentSpanId != '', Timestamp)) AS root_name,\n" +
+			"       countIf(" + spanErrorExpr + ") AS error_count,\n" +
+			"       max(" + spanWeightExpr + ") AS tw" + p.groupCols + "\n" +
+			"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(p.conds()) + "\n" +
+			"GROUP BY trace_id" + p.havingClause(), nil
+	}
+	// Phase 1 names every column a having term or the order reads, so each
+	// means here what it meant in the one-pass statement.
+	ids := "SELECT TraceId AS trace_id,\n" +
+		"       min(Timestamp) AS start,\n" +
+		"       toFloat64(" + traceDurNanoExpr + ") / 1000000 AS dur_ms,\n" +
+		"       argMin(SpanName, (ParentSpanId != '', Timestamp)) AS root_name,\n" +
+		"       countIf(" + spanErrorExpr + ") AS error_count\n" +
+		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(p.conds()) + "\n" +
+		"GROUP BY trace_id" + p.havingClause() + "\n" +
+		"ORDER BY " + q.pageOrder() + "\n" +
+		"LIMIT " + strconv.Itoa(q.Limit+1)
+	page1 := "TraceId IN (SELECT trace_id FROM (\n    " + strings.ReplaceAll(ids, "\n", "\n    ") + "\n  ))"
+	return tracePageCols + p.groupCols + "\n" +
+		"FROM " + b.table(q.Scope, "otel_traces") + "\n" +
+		where(append(append([]string{}, p.spans...), page1)) + "\n" +
+		"GROUP BY trace_id", nil
+}
+
+// traceParts validates q and builds the WHERE and HAVING of its per-trace
+// statements, binding their parameters.
+func (q TraceQuery) traceParts(b *builder, page, withGroups bool) (traceParts, error) {
+	if err := checkRumValue("user_id", q.UserID); err != nil {
+		return traceParts{}, err
 	}
 	if q.SessionID != "" {
 		if err := CheckSessionID(q.SessionID); err != nil {
-			return "", err
+			return traceParts{}, err
 		}
 	}
 	for _, f := range [][2]string{{"browser", q.Browser}, {"os", q.OS}, {"frontend_version", q.FrontendVersion}, {"backend_version", q.BackendVersion}} {
 		if err := checkRumValue(f[0], f[1]); err != nil {
-			return "", err
+			return traceParts{}, err
 		}
 	}
-	conds := []string{b.rangeCond("Timestamp", q.Scope), "TraceId != ''"}
+	spans := []string{b.rangeCond("Timestamp", q.Scope), "TraceId != ''"}
 	// Resource-level filters pick the spans counted; span-level ones keep a
 	// trace when ANY of its spans matches.
 	sc, spanHaving, err := b.scopeParts(SigTraces, q.Scope, true)
 	if err != nil {
-		return "", err
+		return traceParts{}, err
 	}
-	conds = append(conds, sc...)
+	spans = append(spans, sc...)
+	var candidates []string
 	// Narrow the traces to aggregate before aggregating them. The per-trace
 	// GROUP BY reads every span in the range, which over days of traffic
 	// outlasts any request budget; a trace with an error, or whose root is
@@ -242,7 +360,7 @@ func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) 
 	// earliest span of an orphaned trace, so the name test is over any span.)
 	prefilter := func(pred string, narrow []string) {
 		sub := append([]string{b.rangeCond("Timestamp", q.Scope), pred}, narrow...)
-		conds = append(conds, "TraceId IN (SELECT TraceId FROM "+b.table(q.Scope, "otel_traces")+" "+where(sub)+")")
+		candidates = append(candidates, "TraceId IN (SELECT TraceId FROM "+b.table(q.Scope, "otel_traces")+" "+where(sub)+")")
 	}
 	if q.ErrorsOnly {
 		prefilter(spanErrorExpr, sc)
@@ -299,7 +417,7 @@ func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) 
 	}
 	if page && q.Cursor != nil {
 		if q.Cursor.Finger != q.Fingerprint() {
-			return "", invalid("page_token does not belong to this query")
+			return traceParts{}, invalid("page_token does not belong to this query")
 		}
 		if q.Order == OrderDurationDesc {
 			having = append(having, "("+traceDurNanoExpr+", start, trace_id) < ("+b.i64(q.Cursor.DurNano)+
@@ -313,60 +431,12 @@ func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) 
 		for i, k := range q.GroupBy {
 			e, _, err := b.groupExpr(SigTraces, k)
 			if err != nil {
-				return "", err
+				return traceParts{}, err
 			}
 			groupCols += ",\n       argMin(toString(" + e + "), (ParentSpanId != '', Timestamp)) AS g" + strconv.Itoa(i)
 		}
 	}
-	if !page {
-		// A RED summary reads four facts per trace. The page's who/where/client
-		// columns (each an aggregate over every span) cost it most of its time:
-		// over 24h of prod traffic the full row set ran past the gateway's 15s
-		// and the list answered 504, so the summary aggregates only what it
-		// reads (and what the HAVING above names).
-		sql := "SELECT TraceId AS trace_id,\n" +
-			"       toFloat64(" + traceDurNanoExpr + ") / 1000000 AS dur_ms,\n" +
-			"       argMin(SpanName, (ParentSpanId != '', Timestamp)) AS root_name,\n" +
-			"       countIf(" + spanErrorExpr + ") AS error_count,\n" +
-			"       max(" + spanWeightExpr + ") AS tw" + groupCols + "\n" +
-			"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
-			"GROUP BY trace_id"
-		if len(having) > 0 {
-			sql += "\nHAVING " + strings.Join(having, "\n   AND ")
-		}
-		return sql, nil
-	}
-	sql := "SELECT TraceId AS trace_id,\n" +
-		"       min(Timestamp) AS start,\n" +
-		"       toFloat64(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp))) / 1000000 AS dur_ms,\n" +
-		"       argMin(ServiceName, (ParentSpanId != '', Timestamp)) AS root_service,\n" +
-		"       argMin(SpanName, (ParentSpanId != '', Timestamp)) AS root_name,\n" +
-		"       toFloat64(argMin(Duration, (ParentSpanId != '', Timestamp))) / 1000000 AS root_dur_ms,\n" +
-		"       count() AS span_count,\n" +
-		"       countIf(" + spanErrorExpr + ") AS error_count,\n" +
-		"       max(" + spanWeightExpr + ") AS tw,\n" +
-		"       groupUniqArray(ServiceName) AS services,\n" +
-		"       maxIf(ResourceAttributes['reliant.source'], ResourceAttributes['reliant.source'] != '') AS source,\n" +
-		"       anyIf(" + traceUserExpr + ", " + traceUserExpr + " != '') AS user_id,\n" +
-		"       anyIf(" + traceSessionExpr + ", " + traceSessionExpr + " != '') AS session_id,\n" +
-		"       tupleElement(" + traceGeoExpr + ", 1) AS country,\n" +
-		"       tupleElement(" + traceGeoExpr + ", 2) AS region,\n" +
-		"       tupleElement(" + traceGeoExpr + ", 3) AS city,\n" +
-		"       tupleElement(" + traceClientExpr + ", 1) AS client_name,\n" +
-		"       tupleElement(" + traceClientExpr + ", 2) AS client_version,\n" +
-		"       tupleElement(" + traceClientExpr + ", 3) AS os_name,\n" +
-		"       tupleElement(" + traceClientExpr + ", 4) AS os_version,\n" +
-		"       tupleElement(" + traceClientExpr + ", 5) AS device_type,\n" +
-		"       tupleElement(" + traceClientExpr + ", 6) AS desktop_version,\n" +
-		"       " + traceFrontendVersionExpr + " AS frontend_version,\n" +
-		"       arrayMap(p -> tupleElement(p, 1), " + traceBackendVersionsExpr + ") AS backend_services,\n" +
-		"       arrayMap(p -> tupleElement(p, 2), " + traceBackendVersionsExpr + ") AS backend_versions" + groupCols + "\n" +
-		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
-		"GROUP BY trace_id"
-	if len(having) > 0 {
-		sql += "\nHAVING " + strings.Join(having, "\n   AND ")
-	}
-	return sql, nil
+	return traceParts{spans: spans, candidates: candidates, having: having, groupCols: groupCols}, nil
 }
 
 // Compile builds the page statement in q.Order (newest first by default), one
@@ -386,11 +456,7 @@ func (q TraceQuery) Compile() (Stmt, error) {
 	if err != nil {
 		return Stmt{}, err
 	}
-	order := "start DESC, trace_id DESC"
-	if q.Order == OrderDurationDesc {
-		order = traceDurNanoExpr + " DESC, start DESC, trace_id DESC"
-	}
-	return b.stmt(inner + "\nORDER BY " + order + "\nLIMIT " + strconv.Itoa(q.Limit+1)), nil
+	return b.stmt(inner + "\nORDER BY " + q.pageOrder() + "\nLIMIT " + strconv.Itoa(q.Limit+1)), nil
 }
 
 // CompileRED builds the RED summary over every trace the filters match.

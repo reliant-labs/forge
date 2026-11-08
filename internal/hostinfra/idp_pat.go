@@ -31,6 +31,9 @@ package hostinfra
 // writing and reading: the declaration is the author's.
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -80,8 +83,21 @@ func (s Spec) sharedPATPath() string {
 		return ""
 	}
 	// The host is the one zitadelEnv dials: localhost.
-	key := "localhost_" + strconv.Itoa(s.IDPDatabasePort) + "_" + unsafePathChars.ReplaceAllString(s.IDPDatabase, "_")
+	key := "localhost_" + strconv.Itoa(s.IDPDatabasePort) + "_" + databaseKey(s.IDPDatabase)
 	return filepath.Join(home, ".forge", "idp", key, "pat.txt")
+}
+
+// databaseKey is a path-safe key that is distinct for distinct database
+// names. A name of only safe characters is its own key; any other name is
+// sanitized and suffixed with a hash of its original bytes, so "a-b/c" and
+// "a-b_c" never share a PAT file (a safe name cannot end in another name's
+// hash suffix without a hash preimage).
+func databaseKey(db string) string {
+	if !unsafePathChars.MatchString(db) {
+		return db
+	}
+	sum := sha256.Sum256([]byte(db))
+	return unsafePathChars.ReplaceAllString(db, "_") + "-" + hex.EncodeToString(sum[:6])
 }
 
 var unsafePathChars = regexp.MustCompile(`[^A-Za-z0-9._-]`)
@@ -144,6 +160,35 @@ func (l IDPPATLocations) MirrorToCheckout() error {
 		return nil
 	}
 	return copyPAT(l.Shared, l.Checkout)
+}
+
+// SharedContent returns the shared file's bytes, or nil when there is none.
+// startZitadel takes it before a boot, to tell whether that boot wrote a
+// new token (MirrorIfRewritten).
+func (l IDPPATLocations) SharedContent() []byte {
+	if l.Shared == "" {
+		return nil
+	}
+	b, err := os.ReadFile(l.Shared) // #nosec G304 -- forge's own PAT locations
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// MirrorIfRewritten refreshes the checkout's copy from the shared file when
+// the shared file now holds a token other than before: Zitadel just wrote it
+// on first-instance setup, so it is the current token for this database.
+// This keeps .forge/idp/pat.txt written on every fresh IdP boot, with or
+// without a managed identity to converge. An unchanged shared file is left
+// alone, so a checkout copy from an older forge's database stays for the
+// identity step's authenticated fallback.
+func (l IDPPATLocations) MirrorIfRewritten(before []byte) error {
+	now := l.SharedContent()
+	if len(now) == 0 || bytes.Equal(now, before) {
+		return nil
+	}
+	return l.MirrorToCheckout()
 }
 
 // copyPAT writes src's content to dst (owner-only, atomically) unless dst

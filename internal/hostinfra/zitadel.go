@@ -236,7 +236,9 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	// `forge env up` then reads: beside the IdP database it belongs to, not
 	// in this checkout (see idp_pat.go). Zitadel does not create the parent
 	// directory.
-	patPath := spec.IDPPATLocations(projectDir).WritePath()
+	patLoc := spec.IDPPATLocations(projectDir)
+	patPath := patLoc.WritePath()
+	sharedBefore := patLoc.SharedContent()
 	if err := os.MkdirAll(filepath.Dir(patPath), 0o700); err != nil {
 		return fmt.Errorf("host-infra %s: create PAT dir: %w", spec.Name, err)
 	}
@@ -306,6 +308,12 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 		return fmt.Errorf("host-infra %s: %w\n  logs: %s", spec.Name, err, shortPath(projectDir, logPath))
 	}
 	fmt.Printf("  %s: ready on :%d (pid %d)\n", spec.Name, spec.Port, pid)
+	// A first-instance boot wrote a new token beside the database: copy it
+	// to the declared checkout path too, which provisioning scripts read
+	// whether or not the env declares a managed identity.
+	if err := patLoc.MirrorIfRewritten(sharedBefore); err != nil {
+		fmt.Printf("  %s: warning: could not copy the new IdP token to %s: %v\n", spec.Name, shortPath(projectDir, patLoc.Checkout), err)
+	}
 	return nil
 }
 

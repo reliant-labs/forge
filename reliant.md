@@ -227,7 +227,7 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
   would replace the head's `CI gate` verdict). `ci:e2e` and `ci:canary` still start their
   own workflows on `labeled`.
 
-**Merge-queue entry** (`merge_group`; the merge tier, 4 jobs):
+**Merge-queue entry** (`merge_group`; the merge tier, 5 jobs):
 
 - **Test** — three entries: the `-short` tier, no `-race`, as 2 package shards
   (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`), and the
@@ -241,12 +241,20 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
   content).
 - **Checks** — `forge ci verify-generated`, `forge ci validate-kcl`, the pre-commit hooks
   (go-vet-mod skipped), and the Go and npm dependency-license allowlists.
+- **golangci-lint (changed packages)** (owner, 2026-11-08; #1947) — its own job, beside
+  Test and Checks so it is never on their critical path: `scripts/ci-golangci-changed.sh
+  HEAD^1`, the pinned golangci-lint (`install-release-tool`) over the packages the entry
+  changed, root `.golangci.yml` and, under `pkg/`, `pkg/.golangci.yml`, reporting the
+  findings in the files it changed (`--new-from-rev --whole-files`). A typical diff lints in
+  well under the tier's other jobs; `internal/cli` is the slow case. Run it locally with
+  `scripts/ci-golangci-changed.sh` (base: the merge base with `origin/main`; `--plan` lists
+  the packages). Packages the diff did not touch stay with **Lint** on main.
 - **Review marker** — every pull request in the group must carry `pr-review`'s pass marker
   for its current head (`scripts/ci-review-marker.sh`), so a head pushed after a pass cannot
   ride an armed auto-merge in.
 - **The same tier, locally: `task ci`.** The merge tier plus the pull request checks in
-  about five minutes (`scripts/ci-premerge.sh`): the whole `-short` tier, the flake gate and
-  the checks above, concurrently, one table, non-zero on any FAIL or unwaived SKIP.
+  about five minutes (`scripts/ci-premerge.sh`): the whole `-short` tier, the flake gate,
+  the checks and the changed-package golangci-lint above, concurrently, one table, non-zero on any FAIL or unwaived SKIP.
   `PR=<n> task ci` also reads the pull request's labels for the pkg/ API gate. It is not a
   pre-merge ritual for contributors (GitHub's merge queue gates every PR): verify your
   change with `task test:short -- <your packages>`. `internal/ciguard` holds it to `ci.yml`.
@@ -287,9 +295,9 @@ reliant-labs/forge`; reliant #1923). Never review, label or merge as `reliant-01
   (every package except `internal/cli` and the guards), full mode.
 - **internal/cli** — `ci.yml` Test (internal/cli): the package alone, `-race -count=1`. Its
   subpackages stay in Unit.
-- **Lint** — golangci-lint over the root and over `pkg/` (under `pkg/.golangci.yml`),
-  `go vet ./...`, and `go vet -tags e2e` over the e2e-tagged packages. Main only: run
-  `forge lint` locally to see a finding first.
+- **Lint** — golangci-lint over the whole root and the whole of `pkg/` (under
+  `pkg/.golangci.yml`), `go vet ./...`, and `go vet -tags e2e` over the e2e-tagged packages.
+  The merge tier lints only the changed packages; this finds what a change broke elsewhere.
 - **Test (-short whole tier, then guards)** — the merge tier's tests in one job, which saves
   the `go-build-short` and `go-mod` caches the merge-tier jobs restore
   (`.github/actions/restore-go-caches`; Checks saves `go-build-tools` on main, which

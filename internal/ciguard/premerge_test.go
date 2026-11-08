@@ -47,6 +47,7 @@ func TestLocalPremergeGateMirrorsThePullRequestTier(t *testing.T) {
 		"SKIP=go-vet-mod,proto-generated",
 		"scripts/check-licenses.sh",
 		"scripts/check-npm-licenses.sh web-runtime",
+		`scripts/ci-golangci-changed.sh "$base"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("%s does not run %q, which ci.yml's pull-request tier does", premergeScript, want)
@@ -62,6 +63,7 @@ func TestLocalPremergeGateMirrorsThePullRequestTier(t *testing.T) {
 		"SKIP: go-vet-mod,proto-generated",
 		"./scripts/check-licenses.sh",
 		"./scripts/check-npm-licenses.sh web-runtime",
+		"scripts/ci-golangci-changed.sh HEAD^1",
 	} {
 		if !strings.Contains(ci, want) {
 			t.Errorf("%s no longer runs %q: update %s to match (and this list)", ciWorkflow, want, premergeScript)

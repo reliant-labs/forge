@@ -455,25 +455,11 @@ func (w *inputWalker) dir(real, rel string) error {
 		childReal := filepath.Join(real, name)
 		childRel := path.Clean(path.Join(rel, name))
 		if e.Type()&fs.ModeSymlink != 0 {
-			st, err := os.Stat(childReal)
-			if err == nil && st.IsDir() {
-				if !w.descends(name, childRel) {
-					continue
-				}
-				target, err := filepath.EvalSymlinks(childReal)
-				if err != nil {
-					return err
-				}
-				if !withinAny(w.b.resolved, target) {
-					return fmt.Errorf("inputs entry %q reaches %s through the directory symlink %s, outside the allowed roots (%s); exclude it with `!%s/**` or keep inputs inside them",
-						w.p.raw, target, childRel, w.b.describe(), childRel)
-				}
-				// The link's own text is an input too: retargeting it between
-				// two equal trees is still a change.
-				w.selected[childRel] = true
-				if err := w.dir(target, childRel); err != nil {
-					return err
-				}
+			walked, err := w.symlinkedDir(name, childReal, childRel)
+			if err != nil {
+				return err
+			}
+			if walked {
 				continue
 			}
 			// A link to a file (or a dangling link) is a file entry below.
@@ -502,6 +488,32 @@ func (w *inputWalker) dir(real, rel string) error {
 		w.n++
 	}
 	return nil
+}
+
+// symlinkedDir handles a symlink entry that resolves to a directory: it is
+// descended under its lexical path when the pattern reaches into it, after
+// its target is checked to lie inside the allowed roots. done is false for a
+// link to a file, or a dangling one, which dir treats as a file entry.
+func (w *inputWalker) symlinkedDir(name, childReal, childRel string) (done bool, err error) {
+	st, err := os.Stat(childReal)
+	if err != nil || !st.IsDir() {
+		return false, nil
+	}
+	if !w.descends(name, childRel) {
+		return true, nil
+	}
+	target, err := filepath.EvalSymlinks(childReal)
+	if err != nil {
+		return true, err
+	}
+	if !withinAny(w.b.resolved, target) {
+		return true, fmt.Errorf("inputs entry %q reaches %s through the directory symlink %s, outside the allowed roots (%s); exclude it with `!%s/**` or keep inputs inside them",
+			w.p.raw, target, childRel, w.b.describe(), childRel)
+	}
+	// The link's own text is an input too: retargeting it between two equal
+	// trees is still a change.
+	w.selected[childRel] = true
+	return true, w.dir(target, childRel)
 }
 
 // descends reports whether the walk enters directory rel: not a pruned

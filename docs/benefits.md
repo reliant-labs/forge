@@ -1182,11 +1182,6 @@ webhook|adapter`. Source: skills `binaries`, `services`.
   `// forge:outbound-io` plus `forgeconv-outbound-io-no-rpc` keep it outbound-only.
   Source: skill `adapter`.
 
-- **Approvals for things an agent proposed.** `pkg/approval` holds proposed items
-  until a person approves or rejects them, expires the undecided at their
-  deadline and hands each decided item to the app's follow-up exactly once.
-  Source: `pkg/approval`.
-
 - **Mobile.** `forge scaffold frontend --kind mobile` produces an Expo React
   Native app with `app/` screens and `app:background`/`app:foreground` events,
   sharing the same generated Connect hooks, with an optional `ui-native` workspace

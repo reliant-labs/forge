@@ -59,10 +59,14 @@ mapfile -t dirs < <(git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.g
 pkgs=()
 if ((${#dirs[@]})); then
   # A directory whose every file a build tag excludes is no package to lint.
-  # go list prints the physical directory; so does pwd -P.
+  # -e reports such a directory as a package with an error and no files, so
+  # the template drops it; anything that still fails go list (a toolchain it
+  # cannot load, a broken go.mod) fails the gate rather than reading as
+  # "nothing to lint". go list prints the physical directory; so does pwd -P.
   top=$(pwd -P)
-  mapfile -t pkgs < <(go list -e -f '{{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}{{.Dir}}{{end}}' "${dirs[@]}" 2>/dev/null |
-    sed "s|^${top}\$|.|; s|^${top}/|./|" | grep . | sort -u || true)
+  listed=$(go list -e -f '{{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}{{.Dir}}{{end}}' "${dirs[@]}") ||
+    { echo "ci-golangci-changed: go list failed over the changed directories; cannot tell what to lint" >&2; exit 2; }
+  mapfile -t pkgs < <(printf '%s\n' "$listed" | sed "s|^${top}\$|.|; s|^${top}/|./|" | awk 'NF' | sort -u)
 fi
 root=() lib=()
 for p in "${pkgs[@]}"; do

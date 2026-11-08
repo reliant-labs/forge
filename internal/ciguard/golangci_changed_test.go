@@ -88,8 +88,10 @@ func TestGolangciJobGatesTheMergeTier(t *testing.T) {
 // TestGolangciChangedPlan runs the script's --plan over a throwaway module:
 // a changed package is linted under the root config and one under pkg/ under
 // pkg/.golangci.yml; a deleted directory, testdata, a nested module, a
-// directory the go tool ignores and a build-tag-only directory are not; and a
-// diff with no Go package is a no-op that never looks for golangci-lint.
+// directory the go tool ignores and a build-tag-only directory are not; the
+// lint (a fake golangci-lint) gets the base and --whole-files, fails on a
+// finding in either pass and runs both; a failing go list fails the gate; and
+// a diff with no Go package is a no-op that never looks for golangci-lint.
 func TestGolangciChangedPlan(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs scripts/ci-golangci-changed.sh with real git and go list over a throwaway module; runs in task test")
@@ -169,6 +171,47 @@ func TestGolangciChangedPlan(t *testing.T) {
 	}
 	if !strings.Contains(out, "1 package(s) under .golangci.yml, 1 under pkg/.golangci.yml") {
 		t.Errorf("plan does not split the configs:\n%s", out)
+	}
+
+	// The lint itself, with a fake golangci-lint that records each run's
+	// directory and arguments and fails the pass FAKE_FAIL names: a clean lint
+	// passes, a finding in either pass fails the gate, and a root failure
+	// still runs the pkg/ pass.
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\n" +
+		"[ \"$1\" = version ] && { echo fake; exit 0; }\n" +
+		"pass=root; case \"$(pwd -P)\" in */pkg) pass=pkg ;; esac\n" +
+		"echo \"$pass $*\" >>" + calls + "\n" +
+		"[ \"$FAKE_FAIL\" = \"$pass\" ] && exit 1\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "golangci-lint"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := "root run --new-from-rev=" + base + " --whole-files ./kept\n" +
+		"pkg run --new-from-rev=" + base + " --whole-files ./lib\n"
+	for _, fail := range []string{"", "root", "pkg"} {
+		_ = os.Remove(calls)
+		out, err := run([]string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_FAIL=" + fail},
+			"bash", "ci-golangci-changed.sh", base)
+		if (err != nil) != (fail != "") {
+			t.Errorf("lint with the %q pass failing: err=%v\n%s", fail, err, out)
+		}
+		got, _ := os.ReadFile(calls)
+		if string(got) != wantCalls {
+			t.Errorf("lint with the %q pass failing ran\n%s\nwant\n%s", fail, got, wantCalls)
+		}
+	}
+
+	// A go list that fails (a toolchain it cannot load) fails the gate; it
+	// never reads as "nothing to lint".
+	badGo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(badGo, "go"), []byte("#!/bin/sh\necho 'go: toolchain not available' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err = run([]string{"PATH=" + badGo + ":" + bin + ":" + os.Getenv("PATH")}, "bash", "ci-golangci-changed.sh", base)
+	if err == nil || strings.Contains(out, "nothing to lint") || !strings.Contains(out, "go list failed") {
+		t.Errorf("a failing go list: err=%v, want the gate to fail:\n%s", err, out)
 	}
 
 	write("README.md", "more docs\n")

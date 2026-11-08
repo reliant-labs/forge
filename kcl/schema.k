@@ -1052,7 +1052,7 @@ schema ManagedDatabase:
         not (runtime and runtime.type == "hosted" and namespace), \
             "ManagedDatabase.namespace must NOT be set on the hosted runtime ('${name}'): the control plane allocates it. Remove it"
 
-_EXTERNAL_DATABASE_SSLMODES = ["require", "disable"]
+_EXTERNAL_DATABASE_SSLMODES = ["require", "disable", "verify-full"]
 _EXTERNAL_DATABASE_REACHES = ["port_forward", "direct"]
 
 schema ExternalDatabase:
@@ -1093,9 +1093,16 @@ schema ExternalDatabase:
 
     WHERE IT IS is its `runtime`: the cluster and namespace of `service`.
     With no `runtime`, the env's primary cluster target, in `namespace` when
-    set. TLS is `sslmode`: `require` (the default: encrypted, not verified,
-    since the tunnel ends at a pod rather than a name a certificate carries)
-    or `disable`.
+    set. TLS is `sslmode`: `require` (the legacy default: encrypted, not
+    authenticated), `disable`, or `verify-full`. For authenticated TLS select
+    exactly one namespace-local `ca_secret` or `ca_configmap`, and an explicit
+    `ca_key` holding a PEM certificate bundle. `tls_server_name` defaults to
+    <service>.<namespace>.svc, independently of the tunnel address. Only this
+    CA bundle is trusted, not system roots. Certificates must carry that DNS
+    SAN. Provisioning and rotation are the operator's responsibility; the CLI
+    reads current trust bytes on each invocation. Long-lived consumers must
+    rebuild connection configs/pools after rotation. References and the resolved
+    DNS name are recorded in the canonical route; PEM bytes and paths are not.
 
     HOW A CONTROL PLANE DIALS IT is its `reach` (the env's recorded shape
     carries it, so the control plane can list and read the database too):
@@ -1127,6 +1134,14 @@ schema ExternalDatabase:
     password_secret: str
     password_key: str = "password"
     sslmode: str = "require"
+    # verify-full uses exactly one namespace-local source and an explicit PEM
+    # bundle key. References only: never inline certificates or local paths.
+    ca_secret: str = ""
+    ca_configmap: str = ""
+    ca_key: str = ""
+    # Empty resolves to <service>.<namespace>.svc in the recorded canonical route.
+    tls_server_name: str = ""
+    _tls_dns_labels = tls_server_name.split(".")
     # How a control plane dials it: "port_forward" (default) or "direct".
     reach: str = "port_forward"
     # The Service port; unset picks 5432 or the Service's only port.
@@ -1143,6 +1158,14 @@ schema ExternalDatabase:
             "ExternalDatabase '${name}' needs service, database, username and password_secret: they are how forge db query reaches it"
         sslmode in _EXTERNAL_DATABASE_SSLMODES, \
             "ExternalDatabase '${name}'.sslmode '${sslmode}' is not one of ${_EXTERNAL_DATABASE_SSLMODES}"
+        (sslmode == "verify-full" and bool(ca_secret) != bool(ca_configmap) and ca_key) or (sslmode != "verify-full" and not ca_secret and not ca_configmap and not ca_key and not tls_server_name), \
+            "ExternalDatabase '${name}': verify-full requires exactly one ca_secret/ca_configmap and ca_key; other sslmodes refuse trust fields"
+        all ref in [ca_secret, ca_configmap] {not ref or (len(ref) <= 253 and regex.match(ref, r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"))}, \
+            "ExternalDatabase '${name}': CA source must name a Secret or ConfigMap, never a value or path"
+        not ca_key or (len(ca_key) <= 253 and regex.match(ca_key, r"^[-._a-zA-Z0-9]+$")), \
+            "ExternalDatabase '${name}': ca_key must name a data key"
+        not tls_server_name or (len(tls_server_name) <= 253 and all label in _tls_dns_labels {len(label) <= 63 and regex.match(label, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")} and not regex.match(tls_server_name, r"^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")), \
+            "ExternalDatabase '${name}': tls_server_name must be a DNS name, not an address, wildcard or path"
 
 # ---------------------------------------------------------------------------
 # Object storage: forge.Bucket, where it lives, and how a workload reaches it.

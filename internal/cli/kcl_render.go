@@ -1190,6 +1190,10 @@ type ExternalDatabaseEntity struct {
 	PasswordSecret string `json:"password_secret"`
 	PasswordKey    string `json:"password_key"`
 	SSLMode        string `json:"sslmode"`
+	CASecret       string `json:"ca_secret,omitempty"`
+	CAConfigMap    string `json:"ca_configmap,omitempty"`
+	CAKey          string `json:"ca_key,omitempty"`
+	TLSServerName  string `json:"tls_server_name,omitempty"`
 	// Reach is how a control plane dials it: "port_forward" (the default,
 	// through the kube API) or "direct" (<service>.<namespace>.svc:<port>
 	// from inside the cluster). forge db query always port-forwards.

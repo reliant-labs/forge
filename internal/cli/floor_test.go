@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +192,12 @@ func TestRunPromote_RefusesBelowAFloorBeforeWriting(t *testing.T) {
 	wantBelowFloor(t, run("v1", ""))
 	if cur, _, _ := b.Current(context.Background(), "staging"); cur.Release != "v2" {
 		t.Fatalf("a refused deploy moved the env to %s", cur.Release)
+	}
+	// `floor check` is the same judgement, alone, for a pipeline to ask
+	// before it tags: exit 1 below the floor, exit 0 at it.
+	wantBelowFloor(t, runFloorCheck(context.Background(), io.Discard, "staging", "v1", false))
+	if err := runFloorCheck(context.Background(), io.Discard, "staging", "v2", false); err != nil {
+		t.Fatalf("check v2 = %v; want admitted", err)
 	}
 }
 

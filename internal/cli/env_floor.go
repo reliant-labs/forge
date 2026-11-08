@@ -14,6 +14,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -76,6 +77,7 @@ Two kinds:
              forge:breaks-rollback migration or a deploy/rollback-floors/<id>.yaml
 
   show  <env> [--all]                         the env's floors (--all: lifted ones too)
+  check <env> <release>                       would they admit <release>? (reads only; exit 0/1/2)
   set   <env> (<release> | --current) --reason  an order floor
   lower <env> <release> --reason              lift every order floor above <release>, set one at it
   clear <env> --reason                        lift every order floor (declared floors are kept)
@@ -87,8 +89,79 @@ A deploy below a floor is refused (exit 1) before anything is built. Anyone who
 may promote may change floors; every change carries its reason and principal on
 the ledger and in the activity stream.`,
 	}
-	cmd.AddCommand(newEnvFloorShowCmd(), newEnvFloorSetCmd(), newEnvFloorLowerCmd(), newEnvFloorClearCmd(), newEnvFloorLiftCmd())
+	cmd.AddCommand(newEnvFloorShowCmd(), newEnvFloorCheckCmd(), newEnvFloorSetCmd(), newEnvFloorLowerCmd(), newEnvFloorClearCmd(), newEnvFloorLiftCmd())
 	return cmdutil.StrictGroup(cmd)
+}
+
+// floorCheckDocument is `forge env floor check --json`.
+type floorCheckDocument struct {
+	Schema  string `json:"schema"`
+	Env     string `json:"env"`
+	Release string `json:"release"`
+	// Verdict is admitted | below_floor | unknown | unsupported.
+	Verdict string               `json:"verdict"`
+	Floor   *promoteFloorVerdict `json:"floor,omitempty"`
+	Refusal *promoteRefusalJSON  `json:"refusal,omitempty"`
+	Detail  string               `json:"detail,omitempty"`
+}
+
+func newEnvFloorCheckCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "check <env> <release>",
+		Short: "Would <env>'s rollback floors admit <release>? Reads only",
+		Long: `The check ` + "`forge env deploy <env> <release>`" + ` makes before its plan, alone: whether
+the env's rollback floors admit the release (with git, an order floor also
+refuses a release whose commit is an ancestor of the floor's). Nothing is
+built, rendered or written — a release pipeline asks it before it tags.
+
+Exit 0 admitted, 1 below a floor (below_rollback_floor), 2 could not tell (the
+ledger or the release could not be read, or the ledger holds no floors).`,
+		Args:         cobra.ExactArgs(2),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runFloorCheck(cmd.Context(), cmd.OutOrStdout(), args[0], args[1], jsonOut)
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print one machine-readable document (forge.env.floor-check/v1)")
+	return cmd
+}
+
+func runFloorCheck(ctx context.Context, out io.Writer, env, version string, jsonOut bool) error {
+	doc := floorCheckDocument{Schema: "forge.env.floor-check/v1", Env: env, Release: version}
+	projectDir := projectDirForKCL()
+	ledger, err := ledgerFor(ctx, projectDir, env)
+	var result error
+	if err != nil {
+		doc.Verdict, doc.Detail = "unknown", err.Error()
+		result = undeterminedf("choose the ledger of %s: %v", env, err)
+	} else {
+		verdict, target, err := checkDeployFloors(ctx, io.Discard, projectDir, env, version, ledger, nil, "")
+		var refused *promoteRefusedError
+		switch {
+		case errors.As(err, &refused):
+			doc.Verdict, doc.Refusal, doc.Detail, result = "below_floor", refused.toJSON(), refused.Error(), refused
+		case err != nil:
+			doc.Verdict, doc.Detail, result = "unknown", err.Error(), undeterminedf("%v", err)
+		case target == nil || verdict.Verdict == "unknown" || verdict.Verdict == "unsupported":
+			doc.Verdict, doc.Floor, doc.Detail = verdict.Verdict, verdict, verdict.Note
+			result = undeterminedf("%s's rollback floors could not judge %s: %s", env, version, verdict.Note)
+		default:
+			doc.Verdict, doc.Floor = "admitted", verdict
+		}
+	}
+	if jsonOut {
+		if err := emitJSONDocument(doc); err != nil {
+			return err
+		}
+		return result
+	}
+	switch doc.Verdict {
+	case "admitted":
+		fmt.Fprintf(out, "%s's rollback floors admit %s.\n", env, version)
+		renderFloorVerdict(out, doc.Floor)
+	}
+	return result
 }
 
 // floorStoreFor resolves env's ledger and its floor seam.

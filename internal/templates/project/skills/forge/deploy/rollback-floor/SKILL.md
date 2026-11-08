@@ -41,6 +41,7 @@ keep carrying it to stay deployable where its floor stands.
 
 ```
 forge env floor show prod [--all] [--json]          # active floors (--all: lifted too)
+forge env floor check prod v1.8.3 [--json]          # would they admit it? reads only: exit 0 / 1 / 2
 forge env floor set prod v1.9.0 --reason "…"        # order floor at a release
 forge env floor set prod --current --reason "…"     # roll forward only from what prod runs now
 forge env deploy prod v2.1.0 --floor "…"            # deploy, and set a floor at it, in one write

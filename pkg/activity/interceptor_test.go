@@ -322,6 +322,36 @@ func TestInterceptor_SkipSuppressesTheEvent(t *testing.T) {
 	}
 }
 
+// RecordAlso adds an event beside the rpc's own: the interceptor still writes
+// the declared one, and the extra takes the caller's identity but none of the
+// declaration's verb, target or detail.
+func TestRecordAlso_KeepsTheDeclaredEvent(t *testing.T) {
+	md := fixtureRPC(t, fixtureMethod{name: "Promote", activity: promoteDecl()})
+	w := &memWriter{}
+	h := newHarness(t, md, Deps{Writer: w}, func(ctx context.Context, _, _ *dynamicpb.Message) error {
+		return RecordAlso(ctx, w, Event{Verb: "set_floor", Target: Target{Kind: "rollback_floor", ID: "flr_1"}})
+	})
+	if err := h.call(map[string]string{"release_id": "v2", "to_env": "prod"},
+		map[string]string{"X-Test-User": "sean", ViaHeader: "ci"}); err != nil {
+		t.Fatal(err)
+	}
+	evs := w.got()
+	if len(evs) != 2 {
+		t.Fatalf("wrote %d events, want the extra and the declared one: %+v", len(evs), evs)
+	}
+	extra, declared := evs[0], evs[1]
+	if extra.Verb != "set_floor" || extra.Target != (Target{Kind: "rollback_floor", ID: "flr_1", Label: "flr_1"}) ||
+		extra.Actor.ID != "sean" || extra.Via != "ci" || extra.Env != "prod" || extra.Procedure == "" || len(extra.Detail) != 0 {
+		t.Errorf("extra event = %+v", extra)
+	}
+	if declared.Verb == "set_floor" || declared.Target.ID != "v2" {
+		t.Errorf("declared event = %+v; want the rpc's own", declared)
+	}
+	if err := RecordAlso(context.Background(), w, Event{Verb: "set_floor"}); err == nil {
+		t.Error("RecordAlso outside an rpc accepted an incomplete event")
+	}
+}
+
 func TestRecord_OutsideAnRPCNeedsACompleteEvent(t *testing.T) {
 	w := &memWriter{}
 	err := Record(context.Background(), w, Event{Verb: "observe"})

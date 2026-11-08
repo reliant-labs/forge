@@ -6,7 +6,7 @@
 #                                     base of HEAD and origin/main (fetched)
 #
 # It runs what ci.yml's merge tier and pull request checks run (`test-short`,
-# `checks` and `pr-checks`),
+# `checks`, `golangci` and `pr-checks`),
 # with the same flags, concurrently, and prints one table:
 #
 #   test-short       go test -short over every package (scripts/ci-test-shard.sh 0 1):
@@ -23,9 +23,12 @@
 #   pre-commit       the pre-commit hooks over the changed files, in a scratch worktree
 #   licenses-go      the Go import graph's licenses (scripts/check-licenses.sh)
 #   licenses-npm     web-runtime's, when its package.json or lock changed
+#   golangci         golangci-lint on the changed packages (scripts/ci-golangci-changed.sh),
+#                    with the golangci-lint release CI pins (SKIP under any other)
 #
 # What it leaves to main, as ci.yml does: -race, full mode, the guards'
-# whole-repo work, golangci-lint and go vet, govulncheck, Windows, e2e.
+# whole-repo work, golangci-lint over unchanged packages and go vet,
+# govulncheck, Windows, e2e.
 #
 # RULES. Every step runs whatever the others concluded. A step that could not
 # run (a missing tool) is SKIP, and a SKIP fails the gate unless CI_SKIP names
@@ -67,7 +70,7 @@ declare -A waived=()
 IFS=',' read -ra skips <<<"${CI_SKIP:-}"
 for s in "${skips[@]}"; do [[ -n "$s" ]] && waived[$s]=1; done
 
-order=(test-short flake-gate changelog apigate verify-generated validate-kcl pre-commit licenses-go licenses-npm)
+order=(test-short flake-gate changelog apigate verify-generated validate-kcl pre-commit licenses-go licenses-npm golangci)
 started=$SECONDS
 echo "forge pre-merge gate: $(git rev-parse --short HEAD) against $(git rev-parse --short "$base"), logs in $logs"
 
@@ -142,6 +145,15 @@ licenses_npm() {
   need npm
   (cd web-runtime && npm install --no-audit --no-fund) && scripts/check-npm-licenses.sh web-runtime
 }
+golangci() {
+  need golangci-lint
+  # The release ci.yml's golangci job installs (install-release-tool's pin):
+  # another release's findings are not the queue's.
+  local pin
+  pin=$(sed -n 's|^ *golangci-lint) set -- golangci/golangci-lint v\([^ ]*\) .*|\1|p' .github/actions/install-release-tool/action.yml)
+  golangci-lint version | grep -qE "version v?${pin//./\\.} " || skip "golangci-lint on PATH is not ${pin}, the release CI pins: forge tools install golangci-lint"
+  scripts/ci-golangci-changed.sh "$base"
+}
 
 step test-short test_short &
 step flake-gate flake_gate &
@@ -163,6 +175,7 @@ step apigate apigate &
 step pre-commit pre_commit &
 step licenses-go licenses_go &
 step licenses-npm licenses_npm &
+step golangci golangci &
 wait
 
 failed=0

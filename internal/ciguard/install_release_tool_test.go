@@ -265,7 +265,7 @@ func (f *releaseToolFixture) fixtureAsset(tool string) string {
 
 func TestInstallReleaseToolDownloadsAndInstallsEachTool(t *testing.T) {
 	t.Parallel()
-	for _, tool := range []string{"task", "buf", "kcl"} {
+	for _, tool := range []string{"task", "buf", "kcl", "golangci-lint"} {
 		t.Run(tool, func(t *testing.T) {
 			t.Parallel()
 			f := newReleaseToolFixture(t)

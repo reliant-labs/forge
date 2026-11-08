@@ -3814,16 +3814,23 @@ schema BrowserTelemetry:
             }
         }
 
-    `console_capture` and `replay_sample_rate` reach the browser through the
-    runtime config document (config.js), so one build promotes across
-    environments and each environment sets its own.
+    `console_capture`, `replay` and `replay_sample_rate` reach the browser
+    through the runtime config document (config.js), so one build promotes
+    across environments and each environment sets its own. `replay` is the
+    per-frontend switch for session replay (masked, off by default).
     """
     # Ship `console.*` output as spans. False for an app whose console is
     # noisy or carries data that must not leave the browser.
     console_capture: bool = True
-    # The share of SESSIONS recorded when session replay is on (the env opts
-    # in with Observability.signals.replay), 0..1. The decision is made once
-    # per session in the browser.
+    # Session replay for THIS frontend in THIS environment: OFF by default.
+    # True renders OTEL_REPLAY = "true" into the frontend's runtime config
+    # (config.js, so a promoted build needs no rebuild) and opts the env's
+    # observability policy in to replay, so the platform keeps the events.
+    # A recording always masks every input and all text; nothing records
+    # unmasked.
+    replay: bool = False
+    # The share of SESSIONS recorded when session replay is on, 0..1. The
+    # decision is made once per session in the browser.
     replay_sample_rate: float = 1.0
     # What happens to the build's source maps. "publish" moves them out of the
     # served tree and keeps them for symbolicating errors; "public" serves
@@ -6230,10 +6237,14 @@ schema ObservabilitySignals:
     # The browser SDK (frontends). `False` renders OTEL_ENDPOINT=off into every
     # frontend's runtime config and the platform's /_otel ingest drops it.
     browser: bool = True
-    # Session replay is OPT-IN (the only category that defaults off). The browser
-    # SDK records DOM events only when the frontend's runtime config carries
-    # OTEL_REPLAY = "true"; the platform drops those events (browser
-    # logs of instrumentation scope `rum.rr-web`) unless this is True.
+    # DEPRECATED (kept working within major 1): the env-wide replay opt-in.
+    # Session replay is OPT-IN (the only category that defaults off) and is
+    # switched on per frontend with `forge.BrowserTelemetry {replay = True}`,
+    # which renders the frontend's OTEL_REPLAY = "true" and opts the env in.
+    # The platform drops replay events (browser logs of instrumentation scope
+    # `rum.rr-web`) unless the env is opted in: this True, or any frontend's
+    # `telemetry.replay`. True here opts the env in without switching any
+    # frontend on (each still needs OTEL_REPLAY in its runtime config).
     replay: bool = False
     # The product events forge emits on the app's behalf: every create, update
     # and delete that lands through a generated CRUD handler records

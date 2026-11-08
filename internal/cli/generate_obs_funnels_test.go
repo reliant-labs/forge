@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/obsdash"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 func funnelFrontend(env string, funnels ...FunnelEntity) renderedEnvFrontend {
@@ -96,6 +97,7 @@ func TestFrontendTelemetry_DecodesFromRealKCL(t *testing.T) {
             runtime = forge.OnHost {}
             telemetry = forge.BrowserTelemetry {
                 console_capture = False
+                replay = True
                 replay_sample_rate = 0.25
                 sourcemaps = "public"
                 errors = forge.FrontendErrors {ignore = ["AbortError", "re:^Failed to fetch"]}
@@ -136,8 +138,17 @@ func TestFrontendTelemetry_DecodesFromRealKCL(t *testing.T) {
 	if got := frontendToStaticSite(by["plain"]).Sourcemaps; got != "" {
 		t.Errorf("an undeclared frontend must stage with the default (empty = publish), got %q", got)
 	}
-	if web.RuntimeConfig["CONSOLE_CAPTURE"] != "false" || web.RuntimeConfig["REPLAY_SAMPLE_RATE"] != "0.25" {
-		t.Errorf("runtime_config = %v, want the two knobs the browser reads", web.RuntimeConfig)
+	if web.RuntimeConfig["CONSOLE_CAPTURE"] != "false" || web.RuntimeConfig["OTEL_REPLAY"] != "true" ||
+		web.RuntimeConfig["REPLAY_SAMPLE_RATE"] != "0.25" {
+		t.Errorf("runtime_config = %v, want the three knobs the browser reads", web.RuntimeConfig)
+	}
+	// The frontend's replay switch opts the env in: the policy the platform
+	// enforces and the signal the shape records agree with the frontend.
+	if !web.Telemetry.Replay || !entities.Observability.Signals.Replay {
+		t.Errorf("replay = %v, signals.replay = %v, want both on", web.Telemetry.Replay, entities.Observability.Signals.Replay)
+	}
+	if p := shapeObservabilityPolicyOf(entities); p == nil || !reflect.DeepEqual(p.OptIn, []string{release.ObsOptInReplay}) {
+		t.Errorf("shape policy = %+v, want opt_in [replay] derived from the frontend", p)
 	}
 	if plain := by["plain"]; plain.Telemetry != nil || plain.Sourcemaps != "" || len(plain.RuntimeConfig) != 0 {
 		t.Errorf("a frontend that declares nothing must render nothing extra: %+v", plain)

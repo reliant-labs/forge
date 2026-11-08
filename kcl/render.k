@@ -596,6 +596,18 @@ _obs_browser_off = lambda b: Bundle -> bool {
     bool(b.observability) and (not b.observability.enabled or not b.observability.signals.browser)
 }
 
+# The env is opted in to session replay, so the platform keeps replay events:
+# observability is on and either the deprecated env-wide signals.replay is
+# set or a frontend switched replay on with telemetry.replay.
+_obs_replay_opted_in = lambda b: Bundle -> bool {
+    _obs_on(b) and (b.observability.signals.replay or any f in b.frontends { _frontend_replay_on(f) })
+}
+
+# The frontend switched session replay on (BrowserTelemetry.replay).
+_frontend_replay_on = lambda f: Frontend -> bool {
+    bool(f.telemetry and f.telemetry.replay)
+}
+
 # The base URL of the collector on this machine, for host processes and
 # frontend dev servers. "" when the env has none.
 _obs_local_endpoint = lambda b: Bundle -> str {
@@ -2042,13 +2054,15 @@ _render_observability = lambda b: Bundle -> any {
             "profiles": _obs_profiles_on(b)
             "metadata": _o.signals.metadata
             "browser": _o.signals.browser
-            "replay": _o.signals.replay
+            # Derived, as policy.opt_in is: the deprecated env-wide switch
+            # or any frontend's telemetry.replay.
+            "replay": _obs_replay_opted_in(b)
         }
         # The opt-out (and the one opt-in), resolved: recorded in the release shape.
         "policy": {
             "enabled": _o.enabled
             "disabled": _obs_disabled(b)
-            "opt_in": ["replay"] if _o.enabled and _o.signals.replay else []
+            "opt_in": ["replay"] if _obs_replay_opted_in(b) else []
         }
         "sampling": {
             "traces_ratio": _o.sampling.traces_ratio
@@ -2645,7 +2659,10 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 #
 #   OTEL_ENDPOINT   config.otel_endpoint, or {NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT
 #   ENVIRONMENT     config.environment, or {NEXT_PUBLIC_,VITE_}ENVIRONMENT
-#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY
+#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY (deprecated: a frontend
+#                   that sets telemetry.replay gets OTEL_REPLAY from
+#                   _telemetry_runtime_config, and the build variable is not
+#                   carried over it)
 #
 # otel_gen.ts reads these from the runtime config first (a build variable is
 # only its deprecated fallback): a build variable is baked into the bundle and
@@ -2659,10 +2676,11 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 # A HOSTED frontend gets OTEL_ENDPOINT alone. Its document is written by the
 # control plane, which sets ENVIRONMENT to the environment it actually serves;
 # a literal published in the StaticSite spec would override that (and a fixed
-# OTEL_REPLAY would apply the same replay choice wherever the spec lands), so
-# those stay out of the spec. The ingest path is the author's explicit choice
-# for that environment, and the spec already carries an author's
-# runtime_config the same way.
+# OTEL_REPLAY carried from a build variable would apply that build's replay
+# choice wherever the spec lands), so those stay out of the spec. A hosted
+# frontend switches replay on per env with telemetry.replay instead. The
+# ingest path is the author's explicit choice for that environment, and the
+# spec already carries an author's runtime_config the same way.
 _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     _c = f.config
     _endpoint = _build_var_literal(f, "OTEL_ENDPOINT", _c.otel_endpoint if _c and _c.otel_endpoint else None)
@@ -2672,7 +2690,7 @@ _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     {} if f.type not in ["nextjs", "vite"] else \
         ({OTEL_ENDPOINT = _endpoint} if _endpoint is not None else {}) \
         | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {}) \
-        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted else {})
+        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted and not _frontend_replay_on(f) else {})
 }
 
 # The value of the last env_vars entry that sets the frontend's build variable
@@ -2704,11 +2722,17 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        unless the author named one (or browser telemetry is
 #                        off, which _runtime_config_declared handles)
 #   CONSOLE_CAPTURE      "false" only; unset means capture
+#   OTEL_REPLAY          "true" when telemetry.replay is on; unset means off.
+#                        Hosted too: it is this frontend's choice in this
+#                        env, which is what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
 _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     _t = f.telemetry
+    assert not _frontend_replay_on(f) or not _frontend_hosted(f) or bundle.observability, \
+        "Frontend '${f.name}' sets telemetry.replay = True, but this environment declares no `observability`: the platform keeps replay events only for an env whose observability policy opts in to replay. Declare `observability = forge.Observability {...}` in this env (telemetry.replay then opts it in)."
     ({OTEL_ENDPOINT = _HOSTED_OTEL_PATH} if _frontend_hosted(f) and not _otel_endpoint_declared(f) and not _obs_browser_off(bundle) else {}) \
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
+        | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) else {}) \
         | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {})
 }
 
@@ -2966,6 +2990,7 @@ _render_frontend_config = lambda c: FrontendConfig -> any {
 _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
     {
         "console_capture": t.console_capture
+        "replay": t.replay
         "replay_sample_rate": t.replay_sample_rate
         "sourcemaps": t.sourcemaps
         "service_name": t.service_name if t.service_name else None

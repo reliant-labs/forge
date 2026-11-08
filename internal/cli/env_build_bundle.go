@@ -168,6 +168,36 @@ type bundleBuildInputs struct {
 	declaredEnvs func() []release.DeclaredEnv
 }
 
+// openBundleLedger opens env's bundle ledger for writeEnvBundle. skip is true,
+// with a warning written, when the ledger is out of reach.
+//
+// #404's rule, applied to the bundle: a build never needs a reachable control
+// plane. Opening a hosted env's ledger needs a credential and a server, and
+// when neither answers there is nowhere to say where the bytes go — so nothing
+// is written, the same outcome as a projection failure, and `forge env deploy`
+// renders one on demand. A control plane that ANSWERS and refuses is a fact
+// about the env and still fails the build.
+func openBundleLedger(ctx context.Context, projectDir, env string, in bundleBuildInputs) (envLedger, bool, error) {
+	ledger, err := bundleLedgerFor(ctx, projectDir, env)
+	if err == nil {
+		return ledger, false, nil
+	}
+	if !declarationUndeliverable(err) {
+		return envLedger{}, false, err
+	}
+	why := err.Error()
+	if errors.Is(err, cloud.ErrNoCredential) {
+		// Signed out: one line, not the resolver's fix list (a signed-out
+		// `forge env up` of a local env lands here every run).
+		why = firstLine(why) + " (`" + Name() + " login` to sign in)"
+	}
+	fmt.Fprintf(in.errWriter(),
+		"[bundle] Warning: env %s's bundle was not written: %s\n"+
+			"[bundle]   The build continues; the next build or deploy that reaches the control plane writes it.\n",
+		env, why)
+	return envLedger{}, true, nil
+}
+
 // writeEnvBundle renders one env, builds its bundle, puts the bytes where that
 // env's ledger says they go, and records it.
 func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildInputs) (bundleWriteOutcome, error) {
@@ -224,30 +254,12 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{}, err
 	}
 
-	ledger, err := bundleLedgerFor(ctx, projectDir, env)
+	ledger, skip, err := openBundleLedger(ctx, projectDir, env, in)
 	if err != nil {
-		// #404's rule, applied to the bundle: a build never needs a
-		// reachable control plane. Opening a hosted env's ledger needs a
-		// credential and a server, and when neither answers there is
-		// nowhere to say where the bytes go — so nothing is written, the
-		// same outcome as a projection failure, and `forge env deploy`
-		// renders one on demand. A control plane that ANSWERS and refuses
-		// is a fact about the env and still fails the build.
-		if declarationUndeliverable(err) {
-			why := err.Error()
-			if errors.Is(err, cloud.ErrNoCredential) {
-				// Signed out: one line, not the resolver's fix list (a
-				// signed-out `forge env up` of a local env lands here
-				// every run).
-				why = firstLine(why) + " (`" + Name() + " login` to sign in)"
-			}
-			fmt.Fprintf(in.errWriter(),
-				"[bundle] Warning: env %s's bundle was not written: %s\n"+
-					"[bundle]   The build continues; the next build or deploy that reaches the control plane writes it.\n",
-				env, why)
-			return bundleWriteOutcome{Env: env, Skipped: true}, nil
-		}
 		return bundleWriteOutcome{}, err
+	}
+	if skip {
+		return bundleWriteOutcome{Env: env, Skipped: true}, nil
 	}
 
 	// WHAT THE RECORDER DECODES, asked before the document is built: the

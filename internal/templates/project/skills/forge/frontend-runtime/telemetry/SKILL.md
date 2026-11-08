@@ -45,10 +45,11 @@ ad-blocker to list.
 | `vite` | the runtime's `forgeOtelProxy()` plugin in `vite.config.ts` | same; the `/_otel` prefix is stripped |
 | deployed | **the ingress** | a collector's OTLP/HTTP port |
 
-Both dev proxies come from `@reliantlabs/forge-web-runtime` and forward only
-`POST /v1/{traces,logs,metrics}` up to 8 MiB (405 for another method, 404 for
-another path, 413 above the cap, none of them sent upstream), never the page's
-cookies or `authorization`.
+Both dev proxies come from `@reliantlabs/forge-web-runtime` and forward only a
+same-origin page's `POST /v1/{traces,logs,metrics}` up to 8 MiB (403 for a
+foreign or missing `Origin`, 405 for another method, 404 for another path, 413
+above the cap, none of them sent upstream), with only its `content-type` and
+`content-encoding`: never its cookies or `authorization`.
 
 A Next.js frontend builds as a **static export** (`output: static`), which has no
 server, so `rewrites` do not exist in the built site; a built Vite SPA is plain

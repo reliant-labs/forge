@@ -367,15 +367,23 @@ In the dev loop the page sends OTLP/HTTP to `/_otel/v1/{traces,logs}` on its
 own origin, and the dev server forwards it to `OTEL_EXPORTER_OTLP_ENDPOINT`.
 On a hosted dev stack it also attaches the stack's token from
 `FORGE_OTEL_HEADERS_FILE`, read on every request. Anything that reaches the
-dev server can reach that proxy, so it forwards only what a browser exporter
-sends:
+dev server can reach that proxy, any website open in the developer's browser
+included, so it forwards only what the page's own exporter sends:
 
+- a same-origin caller: `Origin` must name the host the browser addressed
+  (`Host`; for the Next.js relay, the `X-Forwarded-Host` Next's rewrite sets
+  from it), and `Sec-Fetch-Site`, when sent, must be `same-origin`. A foreign
+  or missing `Origin` is 403, before the body is read. Loopback is not
+  required: a dev server opened through a workspace preview URL, a tunnel or
+  a LAN address works, because same-origin holds there too.
 - `POST` to `/v1/traces`, `/v1/logs` and `/v1/metrics` under the prefix. Any
   other method is 405 and any other path 404, compared byte for byte, so
   traversal and percent-encoded spellings never match.
 - bodies up to 8 MiB, counted as they stream in and buffered before the
   upstream is contacted; above that, 413.
-- never the page's cookies or `authorization`, and never a `set-cookie` back.
+- only the page's `content-type` and `content-encoding`, plus the token:
+  never its cookies, `authorization` or anything else, and never a
+  `set-cookie` back.
 
 None of the refusals reaches the upstream. With no upstream, a valid POST is
 answered 204 and every other request is refused the same way.

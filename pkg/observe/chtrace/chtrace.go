@@ -22,9 +22,11 @@
 //     (progress packets), and db.response.returned_rows;
 //   - on failure: the error recorded as an exception event, the span status
 //     Error with the message, error.type (the ClickHouse exception name such
-//     as TIMEOUT_EXCEEDED, or context_canceled / context_deadline_exceeded —
-//     also when the driver reports the statement's expired context as an
-//     i/o timeout or a broken connection), and db.response.status_code (the
+//     as TIMEOUT_EXCEEDED; connection_unavailable when no connection to the
+//     server could be had — a failed dial or a timed-out wait for a pooled
+//     connection; or context_canceled / context_deadline_exceeded — also
+//     when the driver reports the statement's expired context as an i/o
+//     timeout or a broken connection), and db.response.status_code (the
 //     ClickHouse exception code).
 //
 // A Query span lasts until its rows are closed: streaming the result is part
@@ -279,10 +281,17 @@ func RecordErrorContext(ctx context.Context, span trace.Span, err error) {
 	}
 }
 
+// ErrorTypeConnectionUnavailable is error.type for a statement that never
+// reached the server: dialing it failed (refused, unreachable, DNS, or the
+// dial timed out) or the wait for a pooled connection timed out. It is a
+// ClickHouse outage or an exhausted pool, not a slow statement.
+const ErrorTypeConnectionUnavailable = "connection_unavailable"
+
 // ErrorType is err's low-cardinality class for error.type: context_canceled,
-// context_deadline_exceeded, the ClickHouse exception name (TIMEOUT_EXCEEDED,
-// QUOTA_EXCEEDED, ...), timeout (a network timeout), or _OTHER. It knows
-// only err; ErrorTypeContext also reads the statement's context.
+// context_deadline_exceeded, connection_unavailable, the ClickHouse exception
+// name (TIMEOUT_EXCEEDED, QUOTA_EXCEEDED, ...), timeout (a network timeout),
+// or _OTHER. It knows only err; ErrorTypeContext also reads the statement's
+// context.
 func ErrorType(err error) string {
 	return ErrorTypeContext(context.Background(), err)
 }
@@ -298,21 +307,28 @@ func ErrorTypeContext(ctx context.Context, err error) string {
 // classify returns err's error.type, and ctx's error when the class came
 // from ctx rather than from err. In order:
 //
-//  1. err says it is a context error (errors.Is);
-//  2. a ClickHouse exception: the server's own named verdict, which a
+//  1. no connection could be had (connectionUnavailable). This comes before
+//     the context checks because a dial's i/o timeout satisfies
+//     errors.Is(err, context.DeadlineExceeded), and a dial to a server that
+//     is down outlasts the statement's own deadline: both would make an
+//     outage read as a slow statement;
+//  2. err says it is a context error (errors.Is);
+//  3. a ClickHouse exception: the server's own named verdict, which a
 //     context that expired later — rows closed after the deadline — must not
 //     overwrite;
-//  3. ctx is done or past its deadline. The driver does not always return
+//  4. ctx is done or past its deadline. The driver does not always return
 //     ctx.Err(): clickhouse-go sets the socket deadline to ctx's deadline and
 //     races the read against ctx.Done(), so under load the read's
 //     "i/o timeout" (or a connection broken by the cancel) wins, wrapped in
 //     the driver's own text. Its deadline is the cause whatever the driver
 //     returned. The deadline is compared with the clock, not only read from
 //     ctx.Err(): the socket's timer can fire before ctx's has marked it done;
-//  4. a network timeout with ctx still live: the driver's own read timeout;
-//  5. _OTHER.
+//  5. a network timeout with ctx still live: the driver's own read timeout;
+//  6. _OTHER.
 func classify(ctx context.Context, err error) (string, error) {
 	switch {
+	case connectionUnavailable(err):
+		return ErrorTypeConnectionUnavailable, nil
 	case errors.Is(err, context.Canceled):
 		return "context_canceled", nil
 	case errors.Is(err, context.DeadlineExceeded):
@@ -336,6 +352,21 @@ func classify(ctx context.Context, err error) (string, error) {
 		return "timeout", nil
 	}
 	return "_OTHER", nil
+}
+
+// connectionUnavailable reports whether err says the statement never got a
+// connection: a failed dial (*net.OpError with Op "dial", over the native
+// protocol or wrapped in the HTTP transport's *url.Error), or clickhouse-go's
+// ErrAcquireConnTimeout, its verdict when no pooled connection freed up and
+// none could be dialed within DialTimeout. A dial the caller canceled is the
+// cancel's, not an outage; a bare context error (the statement's deadline
+// passed before any dial) is the context's.
+func connectionUnavailable(err error) bool {
+	if errors.Is(err, clickhouse.ErrAcquireConnTimeout) {
+		return true
+	}
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial" && !errors.Is(err, context.Canceled)
 }
 
 // contextVerdict is ctx's error, or context.DeadlineExceeded when ctx's

@@ -246,8 +246,9 @@ func TestExpandInputs_StaysInsideTheRoots(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, err := ExpandInputs(scopeOf(cwd), []string{"../liblink/pkg/*.go"})
-		if err != nil || len(got) != 2 {
-			t.Fatalf("ExpandInputs through an in-root link = %q, %v; want its two files", got, err)
+		want := []string{"../liblink", "../liblink/pkg/a.go", "../liblink/pkg/a_test.go"}
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("ExpandInputs through an in-root link = %q, %v; want its two files and the link itself", got, err)
 		}
 	})
 }
@@ -387,6 +388,63 @@ func TestFingerprintInputs_DirectorySymlinks(t *testing.T) {
 		}
 		if _, err := ExpandInputs(scopeOf(dir), []string{"*.go"}); err != nil {
 			t.Fatalf("a pattern that cannot reach beneath the link should not refuse: %v", err)
+		}
+	})
+}
+
+// TestFingerprintInputs_SymlinkChains: a symlink input is keyed on its FULLY
+// resolved target, so retargeting a link further down its chain changes the
+// fingerprint even when the selected link's own text and the bytes it reaches
+// are unchanged — for a file link and for a directory link alike. The target
+// is keyed relative to its root, so the same tree checked out elsewhere keeps
+// its fingerprint.
+func TestFingerprintInputs_SymlinkChains(t *testing.T) {
+	relink := func(t *testing.T, link, target string) {
+		t.Helper()
+		if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("file link chain", func(t *testing.T) {
+		cwd := fixture(t)
+		writeTree(t, cwd, map[string]string{"cfg/a.yaml": "same", "cfg/b.yaml": "same"})
+		relink(t, filepath.Join(cwd, "cfg", "mid.yaml"), "a.yaml")
+		relink(t, filepath.Join(cwd, "cfg", "current.yaml"), "mid.yaml")
+		patterns := []string{"cfg/current.yaml"}
+		before := mustFingerprint(t, cwd, patterns, "recipe")
+		relink(t, filepath.Join(cwd, "cfg", "mid.yaml"), "b.yaml")
+		if after := mustFingerprint(t, cwd, patterns, "recipe"); after.Digest == before.Digest {
+			t.Fatal("retargeting the middle of a file-link chain left the fingerprint unchanged")
+		}
+	})
+	t.Run("directory link chain", func(t *testing.T) {
+		cwd := fixture(t)
+		root := filepath.Dir(cwd)
+		writeTree(t, root, map[string]string{"shared/v1/api.go": "same", "shared/v2/api.go": "same"})
+		relink(t, filepath.Join(root, "shared", "mid"), "v1")
+		relink(t, filepath.Join(cwd, "vendored"), filepath.Join("..", "shared", "mid"))
+		patterns := []string{"vendored/**"}
+		before := mustFingerprint(t, cwd, patterns, "recipe")
+		relink(t, filepath.Join(root, "shared", "mid"), "v2")
+		if after := mustFingerprint(t, cwd, patterns, "recipe"); after.Digest == before.Digest {
+			t.Fatal("retargeting the middle of a directory-link chain left the fingerprint unchanged")
+		}
+	})
+	t.Run("independent of the checkout path", func(t *testing.T) {
+		fp := func() string {
+			t.Helper()
+			cwd := fixture(t)
+			writeTree(t, filepath.Dir(cwd), map[string]string{"shared/v1/api.go": "same", "cfg.yaml": "x"})
+			relink(t, filepath.Join(cwd, "vendored"), filepath.Join("..", "shared", "v1"))
+			relink(t, filepath.Join(cwd, "cfg.yaml"), filepath.Join("..", "cfg.yaml"))
+			return mustFingerprint(t, cwd, []string{"vendored/**", "cfg.yaml"}, "recipe").Digest
+		}
+		if a, b := fp(), fp(); a != b {
+			t.Fatalf("the same tree at two paths fingerprints differently: %s vs %s", a, b)
 		}
 	})
 }

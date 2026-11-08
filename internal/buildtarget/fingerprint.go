@@ -184,7 +184,10 @@ type InputScope struct {
 }
 
 // ExpandInputs resolves patterns against scope.Cwd and returns the selected
-// files, each as a slash-separated path relative to it, sorted.
+// files, each as a slash-separated path relative to it, sorted. Every
+// symlink the selection passes through (a directory link walked into, or one
+// on the way to a pattern's start) is listed too, so it is keyed on its own
+// text and resolved target.
 //
 // Patterns are slash-separated and relative to cwd; a leading `../` reaches a
 // sibling checkout inside one of scope.Roots. `*`, `?` and `[...]` match
@@ -199,6 +202,14 @@ type InputScope struct {
 // otherwise silently drop an input, and the build would be skipped when the
 // file it meant changed.
 func ExpandInputs(scope InputScope, patterns []string) ([]string, error) {
+	b, err := newBoundary(scope)
+	if err != nil {
+		return nil, err
+	}
+	return expandInputs(b, patterns)
+}
+
+func expandInputs(b boundary, patterns []string) ([]string, error) {
 	var includes, excludes []inputPattern
 	for _, raw := range patterns {
 		p, err := parseInputPattern(raw)
@@ -213,10 +224,6 @@ func ExpandInputs(scope InputScope, patterns []string) ([]string, error) {
 	}
 	if len(includes) == 0 {
 		return nil, errors.New("inputs declares only exclusions (`!…`); name at least one pattern that selects files")
-	}
-	b, err := newBoundary(scope)
-	if err != nil {
-		return nil, err
 	}
 	selected := map[string]bool{}
 	for _, p := range includes {
@@ -252,7 +259,13 @@ type boundary struct {
 	cwd      string
 	lexical  []string
 	resolved []string
+	// anchors are the resolved roots with a stable label ("cwd", "root1",
+	// …, by position in InputScope), for keying a resolved path relative
+	// to the root it lies in.
+	anchors []anchor
 }
+
+type anchor struct{ label, path string }
 
 func newBoundary(scope InputScope) (boundary, error) {
 	cwd, err := filepath.Abs(scope.Cwd)
@@ -260,7 +273,7 @@ func newBoundary(scope InputScope) (boundary, error) {
 		return boundary{}, err
 	}
 	b := boundary{cwd: cwd}
-	for _, r := range append([]string{cwd}, scope.Roots...) {
+	for i, r := range append([]string{cwd}, scope.Roots...) {
 		if r == "" {
 			continue
 		}
@@ -271,6 +284,11 @@ func newBoundary(scope InputScope) (boundary, error) {
 		b.lexical = append(b.lexical, abs)
 		if real, err := filepath.EvalSymlinks(abs); err == nil {
 			b.resolved = append(b.resolved, real)
+			label := "cwd"
+			if i > 0 {
+				label = fmt.Sprintf("root%d", i)
+			}
+			b.anchors = append(b.anchors, anchor{label, real})
 		}
 	}
 	return b, nil
@@ -289,6 +307,30 @@ func withinAny(roots []string, p string) bool {
 		}
 	}
 	return false
+}
+
+// keyResolved expresses a resolved path relative to the most specific
+// allowed root it lies in ("cwd:sub/a.go", "root1:reliant/go.mod"), so a
+// fingerprint keyed on it does not change when the whole workspace is checked
+// out somewhere else. A path outside every root (a dangling chain's last hop,
+// or a link to a non-regular file, neither of which is ever read) has no root
+// to be relative to and is keyed absolutely: that ties only this entry to the
+// checkout path, which can cost a rebuild but never a stale skip.
+func (b boundary) keyResolved(real string) string {
+	best := anchor{}
+	for _, a := range b.anchors {
+		if within(a.path, real) && len(a.path) > len(best.path) {
+			best = a
+		}
+	}
+	if best.path == "" {
+		return "abs:" + filepath.ToSlash(real)
+	}
+	rel, err := filepath.Rel(best.path, real)
+	if err != nil {
+		return "abs:" + filepath.ToSlash(real)
+	}
+	return best.label + ":" + filepath.ToSlash(rel)
 }
 
 // describe names the allowed roots for a refusal.
@@ -327,6 +369,12 @@ func walkPattern(b boundary, p inputPattern, excludes []inputPattern, selected m
 	if err := b.checkResolved(p.raw, start); err != nil {
 		return 0, err
 	}
+	// A symlink on the way to the walk's start (`vendored/**` where vendored
+	// is a link) is an input like one met inside the walk: retargeting it,
+	// or a link further down its chain, must change the fingerprint.
+	if err := selectRootLinks(b.cwd, p.root, selected); err != nil {
+		return 0, err
+	}
 	if !info.IsDir() {
 		if p.matches(p.root) {
 			selected[p.root] = true
@@ -344,6 +392,29 @@ func walkPattern(b boundary, p inputPattern, excludes []inputPattern, selected m
 	w := &inputWalker{b: b, p: p, excludes: excludes, selected: selected, visited: map[string]bool{}}
 	err = w.dir(real, p.root)
 	return w.n, err
+}
+
+// selectRootLinks selects every symlink among the path components of root
+// (relative to cwd), so hashFile keys each on its text and resolved target.
+func selectRootLinks(cwd, root string, selected map[string]bool) error {
+	if root == "." {
+		return nil
+	}
+	segs := strings.Split(root, "/")
+	for i := range segs {
+		if segs[i] == ".." {
+			continue
+		}
+		rel := strings.Join(segs[:i+1], "/")
+		li, err := os.Lstat(filepath.Join(cwd, filepath.FromSlash(rel)))
+		if err != nil {
+			return err
+		}
+		if li.Mode()&fs.ModeSymlink != 0 {
+			selected[rel] = true
+		}
+	}
+	return nil
 }
 
 // inputWalker walks one including pattern's tree.
@@ -499,11 +570,15 @@ func (p inputPattern) coversDir(rel string) bool {
 // and back rewrites mtimes without changing a byte, and a same-second edit
 // can leave an mtime unchanged.
 func FingerprintInputs(scope InputScope, patterns []string, recipe []byte) (Fingerprint, error) {
-	files, err := ExpandInputs(scope, patterns)
+	b, err := newBoundary(scope)
 	if err != nil {
 		return Fingerprint{}, err
 	}
-	entries, total, err := hashFiles(scope.Cwd, files)
+	files, err := expandInputs(b, patterns)
+	if err != nil {
+		return Fingerprint{}, err
+	}
+	entries, total, err := hashFiles(b, files)
 	if err != nil {
 		return Fingerprint{}, err
 	}
@@ -526,7 +601,7 @@ func FingerprintInputs(scope InputScope, patterns []string, recipe []byte) (Fing
 
 // hashFiles returns one entry per file — "[link <sha256 of link text> ]<size>
 // <x|-> <sha256>" — in the order given, hashing in parallel.
-func hashFiles(cwd string, files []string) ([]string, int64, error) {
+func hashFiles(b boundary, files []string) ([]string, int64, error) {
 	entries := make([]string, len(files))
 	sizes := make([]int64, len(files))
 	workers := runtime.GOMAXPROCS(0)
@@ -547,7 +622,7 @@ func hashFiles(cwd string, files []string) ([]string, int64, error) {
 		go func() {
 			defer wg.Done()
 			for i := range next {
-				entry, size, err := hashFile(filepath.Join(cwd, filepath.FromSlash(files[i])))
+				entry, size, err := hashFile(b, filepath.Join(b.cwd, filepath.FromSlash(files[i])))
 				if err != nil {
 					mu.Lock()
 					if firstErr == nil {
@@ -575,23 +650,30 @@ func hashFiles(cwd string, files []string) ([]string, int64, error) {
 	return entries, total, nil
 }
 
-func hashFile(abs string) (string, int64, error) {
+func hashFile(b boundary, abs string) (string, int64, error) {
 	li, err := os.Lstat(abs)
 	if err != nil {
 		return "", 0, err
 	}
-	// A symlink is always keyed on its link text, so retargeting it is a
-	// change even between two targets with equal content (a command can read
-	// the link itself, or resolve paths relative to its target). A link to a
-	// regular file is its text AND the target's content; anything else (a
-	// link to a directory, a dangling link) is its text alone.
+	// A symlink is keyed on its own link text AND its fully resolved target
+	// (relative to the root it resolves inside), so retargeting it — or any
+	// link further down its chain (`current -> mid -> a`, with mid moved to
+	// an identical `b`) — is a change even between targets with equal
+	// content: a command can read the link, or resolve paths relative to
+	// where it lands. A link to a regular file is that plus the target's
+	// content; anything else (a link to a directory, whose files the walk
+	// keys under the link's path, or a dangling link) is the link alone.
 	link := ""
 	if li.Mode()&fs.ModeSymlink != 0 {
 		target, err := os.Readlink(abs)
 		if err != nil {
 			return "", 0, err
 		}
-		sum := sha256.Sum256([]byte(target))
+		resolved := "dangling"
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			resolved = b.keyResolved(real)
+		}
+		sum := sha256.Sum256([]byte(target + "\x00" + resolved))
 		link = "link " + hex.EncodeToString(sum[:])
 		if st, err := os.Stat(abs); err != nil || !st.Mode().IsRegular() {
 			return link, 0, nil

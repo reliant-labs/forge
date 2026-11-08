@@ -39,7 +39,8 @@
 // mirrors stay in force, and the variable name is an ordinary one, so a CI
 // step can export it. Within a routed scope, a packument for an overlaid
 // package is the upstream one with the local version added (or replacing a
-// published one of the same number); anything else in the scope is proxied
+// published one of the same number) and every published version above it
+// hidden (mergePackument says why); anything else in the scope is proxied
 // unchanged. Upstream tarball URLs stay absolute, so they download from the
 // real registry.
 //
@@ -462,6 +463,24 @@ func mergePackument(upstream []byte, lp *localPackage, base string) ([]byte, err
 		"integrity": lp.integrity,
 		"shasum":    lp.shasum,
 	}
+	// Every published version above the local one is hidden. The local
+	// version can trail the registry: the release train publishes the
+	// runtime at a cut, and forge's release bookkeeping writes that version
+	// back into web-runtime/package.json only later. In between, a `^0.13.0`
+	// range would resolve to the published 0.13.7 over the checkout's 0.13.6,
+	// installing a runtime built from an older commit instead of the one
+	// under test (forge main red, 2026-11-08: the scaffold imported
+	// ./otel-proxy, which 0.13.7 predates). A range the local version does
+	// not satisfy still fails, as it would after the release.
+	t, _ := doc["time"].(map[string]any)
+	for v := range versions {
+		if semver.Compare("v"+v, "v"+lp.version) > 0 {
+			delete(versions, v)
+			if t != nil {
+				delete(t, v)
+			}
+		}
+	}
 	versions[lp.version] = m
 	doc["versions"] = versions
 
@@ -469,16 +488,19 @@ func mergePackument(upstream []byte, lp *localPackage, base string) ([]byte, err
 	if tags == nil {
 		tags = map[string]any{}
 	}
-	// npm prefers `latest` whenever it satisfies the range, so a local
-	// version ahead of the release must become latest, or a `^0.11.0`
-	// range would install the published 0.11.0 over a local 0.11.1.
-	if latest, _ := tags["latest"].(string); latest == "" || semver.Compare("v"+lp.version, "v"+latest) >= 0 {
-		tags["latest"] = lp.version
+	// npm prefers `latest` whenever it satisfies the range, so the local
+	// version must be latest, or a `^0.11.0` range would install a published
+	// 0.11.0 over a local 0.11.1. A tag naming a hidden version is dropped.
+	for k, v := range tags {
+		if s, _ := v.(string); semver.Compare("v"+s, "v"+lp.version) > 0 {
+			delete(tags, k)
+		}
 	}
+	tags["latest"] = lp.version
 	doc["dist-tags"] = tags
 	// A stale `time` map is harmless, but `modified` is what npm's cache
 	// revalidation reads; say the document changed now.
-	if t, ok := doc["time"].(map[string]any); ok {
+	if t != nil {
 		now := time.Now().UTC().Format(time.RFC3339)
 		t[lp.version] = now
 		t["modified"] = now

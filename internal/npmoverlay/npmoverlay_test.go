@@ -176,7 +176,7 @@ func TestMergePackument(t *testing.T) {
 	lp := &localPackage{name: "@acme/lib", version: "1.0.0", file: "acme-lib-1.0.0.tgz",
 		manifest: map[string]any{"name": "@acme/lib", "version": "1.0.0", "description": "local"}}
 	t.Run("replaces a published version of the same number", func(t *testing.T) {
-		up := []byte(`{"dist-tags":{"latest":"2.0.0"},"versions":{"1.0.0":{"description":"published"},"2.0.0":{}}}`)
+		up := []byte(`{"dist-tags":{"latest":"1.0.0"},"versions":{"0.9.0":{},"1.0.0":{"description":"published"}}}`)
 		out, err := mergePackument(up, lp, "http://x/")
 		if err != nil {
 			t.Fatal(err)
@@ -189,8 +189,41 @@ func TestMergePackument(t *testing.T) {
 		if doc.Versions["1.0.0"]["description"] != "local" {
 			t.Errorf("1.0.0 = %v, want the local manifest", doc.Versions["1.0.0"])
 		}
-		if doc.DistTags["latest"] != "2.0.0" {
-			t.Errorf("latest = %q, want the newer published 2.0.0 kept", doc.DistTags["latest"])
+		if _, ok := doc.Versions["0.9.0"]; !ok || doc.DistTags["latest"] != "1.0.0" {
+			t.Errorf("packument = %s, want 0.9.0 kept and latest 1.0.0", out)
+		}
+	})
+	// The release train publishes the runtime at a cut, before forge's
+	// release writes that version back into the checkout: the local version
+	// then trails the registry. Every newer published version is hidden, so
+	// a caret range installs the checkout under test, not an older commit's
+	// build (forge main red, 2026-11-08: 0.13.7 published, checkout 0.13.6).
+	t.Run("hides published versions above the local one", func(t *testing.T) {
+		up := []byte(`{"dist-tags":{"latest":"1.0.1","next":"2.0.0-rc.1"},"versions":{"0.9.0":{},"1.0.1":{},"2.0.0-rc.1":{}},` +
+			`"time":{"0.9.0":"t","1.0.1":"t","2.0.0-rc.1":"t"}}`)
+		out, err := mergePackument(up, lp, "http://x/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			DistTags map[string]string         `json:"dist-tags"`
+			Versions map[string]map[string]any `json:"versions"`
+			Time     map[string]string         `json:"time"`
+		}
+		_ = json.Unmarshal(out, &doc)
+		for _, v := range []string{"1.0.1", "2.0.0-rc.1"} {
+			if _, ok := doc.Versions[v]; ok {
+				t.Errorf("published %s above the local 1.0.0 is still offered: %s", v, out)
+			}
+			if _, ok := doc.Time[v]; ok {
+				t.Errorf("time still dates hidden %s: %s", v, out)
+			}
+		}
+		if _, ok := doc.Versions["0.9.0"]; !ok {
+			t.Errorf("an older published version was hidden: %s", out)
+		}
+		if doc.DistTags["latest"] != "1.0.0" || doc.DistTags["next"] != "" {
+			t.Errorf("dist-tags = %v, want latest 1.0.0 and no tag naming a hidden version", doc.DistTags)
 		}
 	})
 	t.Run("a never-published package", func(t *testing.T) {

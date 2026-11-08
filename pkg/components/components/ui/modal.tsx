@@ -268,25 +268,70 @@ function restoreScroll() {
     else document.body.style.removeProperty(name);
   }
 }
-function unlockScroll(external: HTMLElement | null) {
-  if (--lockCount !== 0) return;
-  if (!external?.isConnected) {
-    restoreScroll();
-    return;
+function externalLockActive(panel: HTMLElement | null): boolean {
+  if (
+    !panel?.isConnected ||
+    !panel.matches('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')
+  )
+    return false;
+  for (
+    let node: HTMLElement | null = panel;
+    node && node !== document.body;
+    node = node.parentElement
+  ) {
+    const saved = isolated.get(node);
+    const style = getComputedStyle(node);
+    if (
+      node.hidden ||
+      (saved ? saved.inert !== null : node.hasAttribute("inert")) ||
+      (saved ? saved.hidden === "true" : node.getAttribute("aria-hidden") === "true") ||
+      style.display === "none" ||
+      style.visibility === "hidden"
+    )
+      return false;
   }
-  // A legacy external overlay restores the overflow it captured while ours
-  // was open. Wait for its passive cleanup before restoring the original page
-  // styles, or that cleanup can re-lock the page after we unlocked it.
-  pendingExternal = external;
+  return true;
+}
+function retainExternalLock(external: HTMLElement) {
+  if (pendingExternal === external && pendingUnlock) return;
   pendingUnlock?.disconnect();
+  pendingExternal = external;
+  // This is a cooperative lease on a *visible modal*, not on a DOM node's
+  // connectivity. Legacy overlays may close in place (hidden, inert, CSS or
+  // aria-modal=false); a no-op callback while still visible does not close it.
   pendingUnlock = new MutationObserver(() => {
-    if (pendingExternal?.isConnected) return;
+    if (externalLockActive(pendingExternal)) return;
     pendingUnlock?.disconnect();
     pendingUnlock = null;
     pendingExternal = null;
+    // MutationObserver receives removal itself, after synchronous React
+    // cleanup. No extra mutation or arbitrary timer is needed to settle it.
     if (lockCount === 0) restoreScroll();
+    else {
+      // A reopened Forge dialog still owns the lock. A legacy cleanup may
+      // just have restored a stale value, so reassert only our two properties.
+      document.body.style.setProperty("overscroll-behavior", "none");
+      document.body.style.setProperty("overflow", "hidden");
+    }
   });
-  pendingUnlock.observe(document.body, { childList: true, subtree: true });
+  pendingUnlock.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["hidden", "inert", "aria-hidden", "aria-modal", "role", "class", "style"],
+  });
+}
+function unlockScroll(external: HTMLElement | null) {
+  // Carry the final page snapshot until both the counted Forge owners and
+  // the cooperative external owner end. Reopening never takes a new snapshot
+  // of "hidden" or creates a second observer for the same external layer.
+  if (external && externalLockActive(external)) retainExternalLock(external);
+  if (--lockCount !== 0) return;
+  if (pendingUnlock && externalLockActive(pendingExternal)) return;
+  pendingUnlock?.disconnect();
+  pendingUnlock = null;
+  pendingExternal = null;
+  restoreScroll();
 }
 
 /** Shared modal lifecycle; use the same stack for custom dialog surfaces. */

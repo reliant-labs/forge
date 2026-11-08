@@ -1,7 +1,7 @@
 import React, { act, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import Modal from "./modal";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -150,6 +150,132 @@ test("removing the underlying Modal leaves an external preview usable and restor
   render(false, false);
   await settle();
   expect(document.body.style.overflow).toBe("scroll");
+});
+
+test.each(["unmount", "hidden", "aria-modal", "aria-hidden", "display", "ancestor hidden"])(
+  "external lock lease ends on %s after no-op close and repeated Forge reopen, restoring exact styles and disconnecting observers",
+  async (end) => {
+    // Count live native observers without replacing their delivery semantics.
+    const NativeObserver = window.MutationObserver;
+    const active = new Set<MutationObserver>();
+    class TrackedObserver extends NativeObserver {
+      override observe(...args: Parameters<MutationObserver["observe"]>) {
+        active.add(this);
+        super.observe(...args);
+      }
+      override disconnect() {
+        active.delete(this);
+        super.disconnect();
+      }
+    }
+    vi.stubGlobal("MutationObserver", TrackedObserver);
+    try {
+      document.body.style.setProperty("overscroll-behavior", "contain", "important");
+      document.body.style.setProperty("padding-right", "7px", "important");
+      document.body.style.setProperty("overflow", "scroll");
+      const original = ["overscroll-behavior", "padding-right", "overflow"].map((name) => [
+        name,
+        document.body.style.getPropertyValue(name),
+        document.body.style.getPropertyPriority(name),
+      ]);
+      const render = (open: boolean) =>
+        act(() =>
+          root.render(
+            <Modal open={open} onClose={() => {}} title="Underlying">
+              <input />
+            </Modal>,
+          ),
+        );
+      render(true);
+      const previousOverflow = document.body.style.overflow;
+      const wrapper = document.createElement("div");
+      const external = document.createElement("div");
+      external.setAttribute("role", "dialog");
+      external.setAttribute("aria-modal", "true");
+      external.setAttribute("data-modal-open", "true");
+      external.style.cssText = "position:fixed;z-index:9999";
+      external.innerHTML = "<button>Close external</button>";
+      // The independent legacy close action can legitimately be a no-op.
+      external.querySelector("button")!.addEventListener("click", () => {});
+      wrapper.appendChild(external);
+      document.body.appendChild(wrapper);
+      document.body.style.overflow = "hidden";
+      await settle();
+      render(false);
+      await settle();
+      expect(active.size).toBe(1); // precisely one cooperative lease
+      external.querySelector<HTMLButtonElement>("button")!.click();
+      await settle();
+      expect(document.body.style.overflow).toBe("hidden");
+      expect(active.size).toBe(1);
+      render(true);
+      render(false);
+      await settle();
+      expect(active.size).toBe(1); // reopening doesn't duplicate the lease
+      // Closing need not remove the node. Model the legacy cleanup restoring
+      // the value saved while Forge was open ("hidden") in the same turn.
+      act(() => {
+        if (end === "unmount") external.remove();
+        else if (end === "hidden") external.hidden = true;
+        else if (end === "aria-modal") external.setAttribute("aria-modal", "false");
+        else if (end === "aria-hidden") external.setAttribute("aria-hidden", "true");
+        else if (end === "display") external.style.display = "none";
+        else wrapper.hidden = true;
+        document.body.style.overflow = previousOverflow;
+      });
+      await settle(); // removal's own event is sufficient: no later DOM writes
+      for (const [name, value, priority] of original) {
+        expect(document.body.style.getPropertyValue(name!)).toBe(value);
+        expect(document.body.style.getPropertyPriority(name!)).toBe(priority);
+      }
+      expect(active.size).toBe(0);
+      render(true);
+      expect(document.body.style.overflow).toBe("hidden");
+      render(false);
+      await settle();
+      expect(active.size).toBe(0);
+      for (const [name, value, priority] of original) {
+        expect(document.body.style.getPropertyValue(name!)).toBe(value);
+        expect(document.body.style.getPropertyPriority(name!)).toBe(priority);
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
+test("external cleanup during a reopened Forge lease keeps the counted lock until the reopened dialog closes", async () => {
+  document.body.style.setProperty("overscroll-behavior", "contain");
+  document.body.style.setProperty("overflow", "scroll");
+  const render = (open: boolean) =>
+    act(() =>
+      root.render(
+        <Modal open={open} onClose={() => {}} title="Reopened">
+          <input />
+        </Modal>,
+      ),
+    );
+  render(true);
+  const external = document.createElement("div");
+  external.setAttribute("role", "dialog");
+  external.setAttribute("aria-modal", "true");
+  external.style.cssText = "position:fixed;z-index:9999";
+  external.innerHTML = "<button>External</button>";
+  document.body.appendChild(external);
+  await settle();
+  render(false);
+  render(true);
+  act(() => {
+    external.setAttribute("aria-modal", "false");
+    document.body.style.overflow = "auto"; // external's independent cleanup
+  });
+  await settle();
+  expect(document.body.style.overflow).toBe("hidden");
+  expect(document.body.style.getPropertyValue("overscroll-behavior")).toBe("none");
+  render(false);
+  await settle();
+  expect(document.body.style.overflow).toBe("scroll");
+  expect(document.body.style.getPropertyValue("overscroll-behavior")).toBe("contain");
 });
 
 test("unrelated lower, hidden or app-inert aria-modal nodes are not exemptions", async () => {

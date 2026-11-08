@@ -27,6 +27,23 @@ func TestFloorCasesAgreeWithAdmits(t *testing.T) {
 	}
 }
 
+// A manifest recorded before declarations existed is judged on what it CAN
+// prove: its files. An api declaration it cannot prove is refused with a
+// clause that says why, distinct from "does not carry".
+func TestLegacyManifestRefusalSaysItCannotBeShown(t *testing.T) {
+	for _, c := range FloorCases() {
+		if c.Name != "declared: a legacy manifest cannot prove an api declaration and is refused" {
+			continue
+		}
+		_, why := c.Floor.Admits(c.Target)
+		if !strings.Contains(why, "cannot be shown to carry") || !strings.Contains(why, "predates rollback-floor declarations") || strings.Contains(why, "does not carry") {
+			t.Fatalf("clause = %q", why)
+		}
+		return
+	}
+	t.Fatal("case not found")
+}
+
 func TestAdmitOverFloorsNamesEveryFailedFloor(t *testing.T) {
 	cases := FloorCases()
 	var order, declared Floor
@@ -198,6 +215,7 @@ func TestManifestValidateChecksDeclarations(t *testing.T) {
 	}
 	for name, d := range map[string]FloorDeclaration{
 		"schema names a file not carried": {Source: "s/db/migrations", ID: "2_b.up.sql", Kind: DeclarationSchema},
+		"schema id is not a file name":    {Source: "s/db/migrations", ID: "../1_a.up.sql", Kind: DeclarationSchema},
 		"non-schema without a reason":     {Source: "s/deploy/rollback-floors", ID: "x", Kind: DeclarationAPI},
 		"unknown kind":                    {Source: "s/deploy/rollback-floors", ID: "x", Kind: "vibes", Reason: "r"},
 		"no source":                       {ID: "x", Kind: DeclarationAPI, Reason: "r"},

@@ -51,6 +51,12 @@ func FloorCases() []FloorCase {
 	v19 := rel("v1.9.1", 4, []MigrationSet{{Source: mig, Files: []string{m1}}})
 	v4sq := rel("v4", 5, []MigrationSet{{Source: mig, Files: []string{base}, Adopts: []string{"20260101000001", "20260102000001", "20260103000001"}}}, apiHooks)
 	unrecorded := Release{Version: "v0.9", CreatedAt: day(6)}
+	// A release cut by a forge that predates declarations: its manifest
+	// records files (so a schema floor is judged exactly) and no
+	// declarations (so an api floor cannot be proved, and refuses).
+	legacy := Release{Version: "v3-legacy", CreatedAt: day(7), Migrations: &MigrationManifest{
+		Sets: []MigrationSet{{Source: mig, Files: []string{m1, m2, m3}}},
+	}}
 
 	orderAt := func(r Release) Floor {
 		return Floor{ID: "flr_order", Env: "prod", Kind: FloorOrder, Source: FloorSourceManual, Release: r.Version, ReleaseCutAt: r.CreatedAt, Reason: "incident 4411"}
@@ -79,5 +85,7 @@ func FloorCases() []FloorCase {
 		{"declared: a release without the api declaration is refused", declared(v3, apiHooks), v2, false},
 		{"declared: every requirement must be carried", declared(v3, schemaM2, apiHooks), v2, false},
 		{"declared: a release with no manifest is refused", declared(v2, schemaM2), unrecorded, false},
+		{"declared: a legacy manifest carrying the migration file is admitted", declared(v2, schemaM2), legacy, true},
+		{"declared: a legacy manifest cannot prove an api declaration and is refused", declared(v3, apiHooks), legacy, false},
 	}
 }

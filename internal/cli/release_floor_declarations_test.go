@@ -8,6 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func writeFloorFile(t *testing.T, path, body string) {
@@ -80,9 +81,7 @@ func TestCaptureRefusesAMalformedDeclaration(t *testing.T) {
 // A sibling's declarations are read from git at the commit the build
 // recorded, not from its working tree.
 func TestCaptureReadsASiblingsDeclarationsAtItsCommit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("execs git over a temp repository; runs in task test")
-	}
+	testkit.Slow(t, "execs git over a temp repository")
 	root := t.TempDir()
 	sib := filepath.Join(root, "reliant")
 	proj := filepath.Join(root, "cp")

@@ -287,6 +287,9 @@ func (m MigrationManifest) validateDeclarations() error {
 		seen[d.Ref()] = true
 		switch {
 		case d.Kind == DeclarationSchema:
+			if !validMigrationFileName(d.ID) {
+				return fmt.Errorf("%w: schema declaration %s does not name a forward migration file", ErrInvalid, d.Ref())
+			}
 			if !files[d.Source][d.ID] {
 				return fmt.Errorf("%w: schema declaration %s names a migration the manifest does not carry", ErrInvalid, d.Ref())
 			}
@@ -305,6 +308,16 @@ func (m MigrationManifest) validateDeclarations() error {
 		}
 	}
 	return nil
+}
+
+// validMigrationFileName is the manifest's file-name rule (Validate's), for a
+// name that arrives as a schema declaration's id.
+func validMigrationFileName(f string) bool {
+	if len(f) > MaxMigrationFileBytes || strings.ContainsAny(f, "/\\") || !strings.HasSuffix(f, ".up.sql") || !utf8.ValidString(f) {
+		return false
+	}
+	_, ok := MigrationVersion(f)
+	return ok
 }
 
 // sortDeclarations orders declarations by (Source, ID).
@@ -481,20 +494,47 @@ func (f Floor) Admits(target Release) (bool, string) {
 		}
 		return true, ""
 	case FloorDeclared:
-		var missing []string
+		// UNKNOWN IS REFUSED HERE, deliberately, and it is the opposite of
+		// the rule for raising (DeclarationsRaisedBy raises nothing from a
+		// manifest that recorded no declarations). A floor is admitted only
+		// on proof the target carries what it requires (owner, 2026-11-08:
+		// "a target release must carry that declaration file to be
+		// admitted"). A schema declaration is proved by the migration
+		// FILE, which every manifest records, so a legacy manifest is
+		// judged exactly. An api/feature/data declaration is proved only by
+		// a manifest that recorded declarations: one cut by a forge that
+		// predates them (DeclarationsRecorded false) cannot show it carries
+		// one, and such a release is, in every case but a hand-made one,
+		// older than the declaration anyway. Admitting it on no evidence
+		// would bind the env to code the floor exists to keep out; the
+		// escape for the rare exception is a lift that acknowledges the
+		// declaration, recorded.
+		var missing, unproven []string
 		for _, d := range f.Requires {
-			if !Carries(target, d.Ref(), d.Kind) {
+			switch {
+			case Carries(target, d.Ref(), d.Kind):
+			case d.Kind != DeclarationSchema && target.Migrations != nil && !target.Migrations.DeclarationsRecorded:
+				unproven = append(unproven, describeDeclaration(d))
+			default:
 				missing = append(missing, describeDeclaration(d))
 			}
 		}
-		if len(missing) == 0 {
+		if len(missing) == 0 && len(unproven) == 0 {
 			return true, ""
 		}
-		why := fmt.Sprintf("%s does not carry %s, declared since %s", target.Version, strings.Join(missing, "; "), f.Release)
-		if target.Migrations == nil {
-			why += " (it records no migration manifest, so it cannot be shown to)"
+		var parts []string
+		if len(missing) > 0 {
+			why := fmt.Sprintf("%s does not carry %s", target.Version, strings.Join(missing, "; "))
+			if target.Migrations == nil {
+				why += " (it records no migration manifest, so it cannot be shown to)"
+			}
+			parts = append(parts, why)
 		}
-		return false, why + ": no release without it can run here, so roll forward"
+		if len(unproven) > 0 {
+			parts = append(parts, fmt.Sprintf("%s cannot be shown to carry %s: it was cut by a forge that predates rollback-floor declarations, so its manifest records none (if it does carry them, lift the floor acknowledging each)",
+				target.Version, strings.Join(unproven, "; ")))
+		}
+		return false, strings.Join(parts, "; ") + fmt.Sprintf(", declared since %s: no release without it can run here, so roll forward", f.Release)
 	}
 	// An unknown kind is a floor this code cannot evaluate: refusing is the
 	// side that never binds an environment to a release it cannot run.

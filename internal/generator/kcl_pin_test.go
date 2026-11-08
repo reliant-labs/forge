@@ -16,7 +16,9 @@ import (
 // TestKCLVersionIsPinnedEverywhere holds forge to ONE KCL release,
 // templates.KCLVersion, in every place that names one: the kcl-lang.io
 // modules in go.mod (the runtime every render goes through), every workflow
-// step that runs KCL's install-cli.sh, and scripts/bootstrap.sh.
+// step that runs KCL's install-cli.sh or installs kcl through
+// .github/actions/install-release-tool (whose pin TestReleaseToolPinsMatchForge
+// holds), and scripts/bootstrap.sh.
 //
 // The drift it prevents had already happened: go.mod embedded the v0.13.0
 // runtime while CI installed a v0.11.2 CLI, so the tests that shell out to
@@ -98,6 +100,8 @@ func checkWorkflowKCLPin(t *testing.T, site string, body []byte, want string) in
 			Steps []struct {
 				Name string            `yaml:"name"`
 				Run  string            `yaml:"run"`
+				Uses string            `yaml:"uses"`
+				With map[string]string `yaml:"with"`
 				Env  map[string]string `yaml:"env"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
@@ -108,6 +112,11 @@ func checkWorkflowKCLPin(t *testing.T, site string, body []byte, want string) in
 	installs := 0
 	for job, j := range wf.Jobs {
 		for _, s := range j.Steps {
+			// Pinned by the action itself (TestReleaseToolPinsMatchForge).
+			if s.Uses == releaseToolAction && s.With["tool"] == "kcl" {
+				installs++
+				continue
+			}
 			if !strings.Contains(s.Run, kclInstaller) {
 				continue
 			}
@@ -138,3 +147,29 @@ func checkScriptKCLInstalls(t *testing.T, site, body string) int {
 }
 
 const kclInstaller = "kcl-lang.io/script/install-cli.sh"
+
+// releaseToolAction is the composite action forge's own CI installs Task, buf
+// and KCL with: cached per version, fetched from GitHub releases with retries
+// and an API fallback on a miss.
+const releaseToolAction = "./.github/actions/install-release-tool"
+
+// TestReleaseToolPinsMatchForge holds install-release-tool's buf and KCL pins
+// to the releases forge itself pins (templates.BufVersion, templates.KCLVersion),
+// so CI runs the buf and kcl forge generates and renders with.
+func TestReleaseToolPinsMatchForge(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(forgeRepoRoot(t), ".github", "actions", "install-release-tool", "action.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for tool, want := range map[string]string{"buf": "v" + templates.BufVersion, "kcl": templates.KCLVersion} {
+		m := regexp.MustCompile(`(?m)^\s*` + tool + `\)\s+set -- \S+ (\S+) `).FindStringSubmatch(body)
+		if m == nil {
+			t.Errorf("install-release-tool: no %s pin", tool)
+			continue
+		}
+		if m[1] != want {
+			t.Errorf("install-release-tool: %s pinned at %s, want %s", tool, m[1], want)
+		}
+	}
+}

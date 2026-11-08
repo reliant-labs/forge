@@ -3,6 +3,7 @@ package devtelemetry
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -45,7 +46,8 @@ func TestWriteThenRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits: every file reads 0666.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("record mode = %v, want 0600", fi.Mode().Perm())
 	}
 	if _, err := os.Stat(p + ".tmp"); !os.IsNotExist(err) {

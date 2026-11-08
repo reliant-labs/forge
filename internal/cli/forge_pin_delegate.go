@@ -420,7 +420,12 @@ func handOff(ctx context.Context, w io.Writer, rel string, machineWide, allow bo
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	handed, err = delegateToPinned(ctx, w, projectRoot, t, args)
+	// Obtaining the pinned forge and running it are two steps with two
+	// failure meanings, kept apart: only the first may fall back to this
+	// forge. Once the delegate has run, its result is the command's result —
+	// re-running a stop under this forge after the pinned one failed part way
+	// would hide that failure behind a second, incompatible attempt.
+	res, err := resolveTarget(ctx, w, projectRoot, t)
 	if err != nil {
 		if mode == handOffPreferred {
 			// Run this forge; checkForgePinSkew prints the skew warning.
@@ -430,7 +435,9 @@ func handOff(ctx context.Context, w io.Writer, rel string, machineWide, allow bo
 		}
 		return false, handOffFailure(projectRoot, t, rel, err)
 	}
-	return handed, nil
+	// handed: the decision was the delegate's, so nothing runs here even
+	// when it failed; its error (and exit code) is returned as is.
+	return true, execPinned(w, t, res, args)
 }
 
 // pinTarget is the forge the command at rel must run under in projectRoot,
@@ -576,22 +583,17 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 	return delegateTarget{pin: pin, binary: binary, devTag: devTag}, true
 }
 
-// delegateToPinned hands the running command to the forge projectRoot wants.
-// With the real Exec it returns only on failure; handed is true when the
-// command was handed over and nothing more is to be done here (a test seam
-// returns instead of replacing the process). args are the forge arguments of
-// this invocation.
-func delegateToPinned(ctx context.Context, w io.Writer, projectRoot string, t delegateTarget, args []string) (handed bool, err error) {
-	res, err := resolveTarget(ctx, w, projectRoot, t)
-	if err != nil {
-		return false, err
-	}
+// execPinned hands the running command to res, the forge t names, with args
+// (the forge arguments of this invocation). It is called only once res has
+// been obtained, so whatever it returns is the delegate's outcome, never "the
+// pin could not be had": on Unix the exec replaces this process, so the
+// delegate's exit status IS this process's, and it returns only when exec(2)
+// itself failed; on Windows it relays the delegate's exit status; a test seam
+// returns the delegate's error. Callers propagate that error unchanged.
+func execPinned(w io.Writer, t delegateTarget, res forgedelegate.Result, args []string) error {
 	_, _ = fmt.Fprintf(w, "forge: this forge is %s, but the project wants %s — running %s instead (%s, or %s=1, to run this one)\n",
 		t.binary, t, res.Source, "--"+allowVersionSkewFlag, allowVersionSkewEnv)
-	if err := pinDelegateExec(res.Path, args, forgedelegate.Env(t.String())); err != nil {
-		return false, err
-	}
-	return true, nil
+	return pinDelegateExec(res.Path, args, forgedelegate.Env(t.String()))
 }
 
 // resolveTarget finds, or builds, the forge t names.

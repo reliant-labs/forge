@@ -2,12 +2,18 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/exitcode"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
 )
 
@@ -254,6 +260,97 @@ func TestPinDecision_ADelegateNeverHandsOffAgain(t *testing.T) {
 		if h.path != "" || len(*installs) != 0 {
 			t.Errorf("%v: a delegate handed off to %q (built %v)", args, h.path, *installs)
 		}
+	}
+}
+
+// Review B1 on #1975: `env down` falls back to this forge only when the pinned
+// forge cannot be OBTAINED. Here it cannot: nothing is exec'd, and the stop
+// runs here with a notice saying why.
+func TestEnvDown_FallsBackOnlyWhenThePinCannotBeObtained(t *testing.T) {
+	skewedProject(t)
+	t.Setenv(forgedelegate.MarkerEnv, "")
+	for _, entry := range []string{"entrypoint", "pre-run"} {
+		h, _ := armPin(t, pinUnobtainable)
+		var handed bool
+		var out string
+		var err error
+		if entry == "entrypoint" {
+			handed, out, err = handOffForTest(t, "env", "down", "dev")
+		} else {
+			out, err = runCheck(t, "env", "down", "dev")
+		}
+		if err != nil || handed || h.path != "" {
+			t.Fatalf("%s: handed %v to %q, err %v; want this forge to stop the stack", entry, handed, h.path, err)
+		}
+		if !strings.Contains(out, "could not be obtained") || !strings.Contains(out, "running this forge instead") {
+			t.Errorf("%s: no notice that the pin could not be had:\n%s", entry, out)
+		}
+	}
+}
+
+// Review B1 on #1975: once the pinned forge has been obtained and run, its
+// result is the command's result. A pinned `env down` that fails part way
+// fails the command with the delegate's own error and exit code; it is never
+// re-run under this forge, which would hide the failure behind a second,
+// incompatible stop.
+func TestEnvDown_PropagatesTheDelegatesFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in delegate is a shell script")
+	}
+	skewedProject(t)
+	t.Setenv(forgedelegate.MarkerEnv, "")
+	ran := filepath.Join(t.TempDir(), "delegate-ran")
+
+	for _, entry := range []string{"entrypoint", "pre-run"} {
+		_ = os.Remove(ran)
+		armDelegation(t)
+		// The pinned forge is obtainable (built by the stand-in install) and
+		// is a program that runs and exits 3, as a failing `env down` would.
+		pinDelegateResolver = func(w io.Writer) *forgedelegate.Resolver {
+			return &forgedelegate.Resolver{
+				Log: w,
+				Install: func(_ context.Context, _, gobin string) error {
+					script := "#!/bin/sh\ntouch '" + ran + "'\necho 'pinned env down: stop failed' >&2\nexit 3\n"
+					return atomicfile.WriteFile(filepath.Join(gobin, forgeExeName()), []byte(script), 0o755)
+				},
+			}
+		}
+		pinDelegateExec = func(path string, args, env []string) error {
+			// What the Windows relay does; Unix replaces the process, so
+			// the delegate's status is the process's by construction.
+			cmd := exec.Command(path, args...)
+			cmd.Env = env
+			return cmd.Run()
+		}
+
+		var handed bool
+		var out string
+		var err error
+		if entry == "entrypoint" {
+			handed, out, err = handOffForTest(t, "env", "down", "dev")
+		} else {
+			out, err = runCheck(t, "env", "down", "dev")
+			handed = true // checkForgePinSkew reports only the error
+		}
+		if _, statErr := os.Stat(ran); statErr != nil {
+			t.Fatalf("%s: the pinned forge never ran", entry)
+		}
+		var exitErr *exec.ExitError
+		if !handed || !errors.As(err, &exitErr) || exitcode.Of(err) != 3 {
+			t.Errorf("%s: handed %v, err %v (exit %d); want the delegate's exit 3, unchanged", entry, handed, err, exitcode.Of(err))
+		}
+		if strings.Contains(out, "running this forge instead") || strings.Contains(out, "a different forge than the project's") {
+			t.Errorf("%s: fell back to this forge after the pinned one ran:\n%s", entry, out)
+		}
+	}
+
+	// exec(2) itself failing is not "the pin could not be had" either: the
+	// pin was obtained, and the error is returned as it is.
+	armPin(t, pinBuildable)
+	execFailed := errors.New("exec /cache/forge: exec format error")
+	pinDelegateExec = func(string, []string, []string) error { return execFailed }
+	if _, out, err := handOffForTest(t, "env", "down", "dev"); !errors.Is(err, execFailed) || strings.Contains(out, "running this forge instead") {
+		t.Errorf("exec failure: err %v, want it unchanged with no fallback\n%s", err, out)
 	}
 }
 

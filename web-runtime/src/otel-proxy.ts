@@ -25,15 +25,19 @@
 //     `Sec-Fetch-Site`, when the browser sends it, must be `same-origin`.
 //     Browsers send `Origin` on every POST, same-origin fetches included, so
 //     the page's exporter always carries it; a foreign page carries its own
-//     origin and cannot forge either header. A missing or foreign `Origin`
-//     is 403, before the body is read. Loopback is deliberately NOT
+//     origin and cannot forge either header. A missing or foreign `Origin`,
+//     any of these headers sent twice, or a host value that is not exactly
+//     one host[:port] is 403, before the method is looked at or the body
+//     read. Loopback is deliberately NOT
 //     required: a dev server is legitimately opened through a workspace
 //     preview URL, a tunnel or a LAN address, and same-origin is the
 //     boundary in all of them.
 //   - `POST <prefix>/v1/traces`, `/v1/logs` and `/v1/metrics`. Any other
 //     method on those paths is 405, any other path (traversal spellings, a
 //     trailing slash and percent-encoding included: the path is compared
-//     byte for byte, never decoded) is 404. Neither contacts the upstream.
+//     byte for byte, never decoded) is 404. Neither contacts the upstream,
+//     and every refusal made before the body is read closes the connection,
+//     so no caller can keep the dev server reading a body it will discard.
 //   - a body of at most 8 MiB, counted while it streams in and buffered
 //     before anything is sent upstream; above that, 413, and the upstream
 //     never sees a byte of it.
@@ -208,6 +212,19 @@ function reply(
   res.end();
 }
 
+/**
+ * refuse answers a request whose body is never read, and closes the
+ * connection: otherwise Node would keep it alive by reading and discarding
+ * whatever body the caller keeps sending, without bound.
+ */
+function refuse(
+  res: ServerResponse,
+  status: number,
+  headers: OutgoingHttpHeaders = {},
+): void {
+  reply(res, status, { ...headers, connection: "close" });
+}
+
 function forwardedHeaders(
   incoming: IncomingHttpHeaders,
   extra: Array<[string, string]>,
@@ -225,25 +242,78 @@ function forwardedHeaders(
   return out;
 }
 
+/** The parts of a request the caller check reads. */
+export type CallerRequest = Pick<IncomingMessage, "headers" | "rawHeaders">;
+
+// One authority, host[:port], and nothing else: a DNS name or an IPv4
+// address, or a bracketed IPv6 address, then an optional decimal port. No
+// userinfo, path, comma, whitespace or second value can match.
+const AUTHORITY =
+  /^(\[[0-9a-f:.]+\]|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)(?::([1-9][0-9]{0,4}))?$/;
+
+interface Authority {
+  hostname: string;
+  /** The port as written, or undefined when none was. */
+  port: number | undefined;
+}
+
+/**
+ * parseAuthority reads one canonical host[:port], lower-cased, or returns
+ * undefined. A host the WHATWG URL parser would rewrite (`0x7f.1`, an
+ * uncompressed IPv6 address, a trailing dot) is refused rather than
+ * normalized, so the value compared is the value every hop forwarded.
+ */
+function parseAuthority(value: string): Authority | undefined {
+  const m = AUTHORITY.exec(value.toLowerCase());
+  if (m === null) return undefined;
+  const hostname = m[1] ?? "";
+  const port = m[2] === undefined ? undefined : Number(m[2]);
+  if (port !== undefined && port > 65535) return undefined;
+  try {
+    if (new URL(`http://${hostname}`).hostname !== hostname) return undefined;
+  } catch {
+    return undefined;
+  }
+  return { hostname, port };
+}
+
+/** How many times the request carried `name` (any case) on the wire. */
+function headerCount(req: CallerRequest, name: string): number {
+  let n = 0;
+  for (let i = 0; i < req.rawHeaders.length; i += 2) {
+    if (req.rawHeaders[i]?.toLowerCase() === name) n++;
+  }
+  return n;
+}
+
 /**
  * sameOriginCaller reports whether the request comes from a page on the very
- * origin it was sent to: `Origin` is a serialized http(s) origin whose
- * host[:port] equals `hostHeader`'s value (a default port on either side is
- * ignored), and `Sec-Fetch-Site`, when present, is `same-origin`. An absent
- * `Origin`, the opaque `null` origin, or a duplicated header is not.
+ * origin it was sent to: `Origin` is a serialized http(s) origin whose host
+ * and port equal those of `hostHeader`'s value (a missing port on either side
+ * is the scheme's default), and `Sec-Fetch-Site`, when present, is
+ * `same-origin`.
+ *
+ * Anything ambiguous is not a caller: an absent `Origin`, the opaque `null`
+ * origin, any of the three headers sent more than once (Node keeps the first
+ * `Host` and comma-joins the rest, and a proxy in between may pick
+ * differently), or a host value that is not exactly one canonical
+ * host[:port] — a comma, userinfo, a path, whitespace or an invalid port.
  *
  * The scheme is not compared, because the dev server cannot know it: a
  * workspace preview URL or tunnel terminates TLS and hands it plain HTTP for
  * an `https://` page, and one host:port cannot serve a second scheme.
  */
 export function sameOriginCaller(
-  headers: IncomingHttpHeaders,
+  req: CallerRequest,
   hostHeader: "host" | "x-forwarded-host" = "host",
 ): boolean {
-  const site = headers["sec-fetch-site"];
+  for (const name of ["origin", hostHeader, "sec-fetch-site"]) {
+    if (headerCount(req, name) > 1) return false;
+  }
+  const site = req.headers["sec-fetch-site"];
   if (site !== undefined && site !== "same-origin") return false;
-  const origin = headers.origin;
-  const host = headers[hostHeader];
+  const origin = req.headers.origin;
+  const host = req.headers[hostHeader];
   if (typeof origin !== "string" || typeof host !== "string") return false;
   let url: URL;
   try {
@@ -254,12 +324,14 @@ export function sameOriginCaller(
   // A serialized origin is scheme://host[:port] and nothing else.
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
   if (url.origin !== origin.toLowerCase()) return false;
-  const defaultPort = url.protocol === "https:" ? ":443" : ":80";
-  let addressed = host.trim().toLowerCase();
-  if (addressed.endsWith(defaultPort)) {
-    addressed = addressed.slice(0, -defaultPort.length);
-  }
-  return addressed !== "" && addressed === url.host;
+  const defaultPort = url.protocol === "https:" ? 443 : 80;
+  const page = parseAuthority(url.host);
+  const addressed = parseAuthority(host);
+  if (page === undefined || addressed === undefined) return false;
+  return (
+    page.hostname === addressed.hostname &&
+    (page.port ?? defaultPort) === (addressed.port ?? defaultPort)
+  );
 }
 
 /**
@@ -338,22 +410,22 @@ export function createOtelProxyHandler(
   return (req, res, rawPath) => {
     const path = pathOnly(rawPath);
     if (!ingest.has(path)) {
-      reply(res, 404);
+      refuse(res, 404);
+      return;
+    }
+    // Before the method and the body: a foreign page never gets a byte
+    // buffered, let alone forwarded with the token, whatever it sends.
+    if (!sameOriginCaller(req, callerHost)) {
+      refuse(res, 403);
       return;
     }
     if (req.method !== "POST") {
-      reply(res, 405, { allow: "POST" });
-      return;
-    }
-    // Before the body is read: a foreign page never gets a byte buffered,
-    // let alone forwarded with the token.
-    if (!sameOriginCaller(req.headers, callerHost)) {
-      reply(res, 403);
+      refuse(res, 405, { allow: "POST" });
       return;
     }
     const declared = Number(req.headers["content-length"]);
     if (Number.isFinite(declared) && declared > max) {
-      reply(res, 413);
+      refuse(res, 413);
       return;
     }
     // Buffer the body under the cap BEFORE contacting the upstream, so an

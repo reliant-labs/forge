@@ -373,7 +373,9 @@ included, so it forwards only what the page's own exporter sends:
 - a same-origin caller: `Origin` must name the host the browser addressed
   (`Host`; for the Next.js relay, the `X-Forwarded-Host` Next's rewrite sets
   from it), and `Sec-Fetch-Site`, when sent, must be `same-origin`. A foreign
-  or missing `Origin` is 403, before the body is read. Loopback is not
+  or missing `Origin`, any of those headers sent twice, or a host value that
+  is not exactly one `host[:port]` is 403, before the method is checked or
+  the body read, and the connection is closed. Loopback is not
   required: a dev server opened through a workspace preview URL, a tunnel or
   a LAN address works, because same-origin holds there too.
 - `POST` to `/v1/traces`, `/v1/logs` and `/v1/metrics` under the prefix. Any

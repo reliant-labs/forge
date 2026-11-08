@@ -106,14 +106,15 @@ func TestLibraryGet(t *testing.T) {
 func TestLibraryDependencies(t *testing.T) {
 	lib := NewLibrary()
 	for name, want := range map[string][]string{
-		"input":         {"form_field_context"},
-		"textarea":      {"form_field_context"},
-		"toggle_switch": {"form_field_context"},
-		"page_header":   {"link"},
-		"dropdown_menu": {"link", "popover"},
-		"context_menu":  {"dropdown_menu", "link", "popover"},
-		"combobox":      {"form_field_context", "popover"},
-		"badge":         nil,
+		"input":          {"form_field_context"},
+		"textarea":       {"form_field_context"},
+		"toggle_switch":  {"form_field_context"},
+		"page_header":    {"link"},
+		"sidebar_layout": {"link", "modal"},
+		"dropdown_menu":  {"link", "popover"},
+		"context_menu":   {"dropdown_menu", "link", "popover"},
+		"combobox":       {"form_field_context", "popover"},
+		"badge":          nil,
 	} {
 		got, err := lib.Dependencies(name)
 		if err != nil {

@@ -74,7 +74,7 @@ func TestComponentBehaviour(t *testing.T) {
 		write("src/"+name+".tsx", body)
 	}
 
-	write("package.json", `{"private":true,"type":"module","devDependencies":{"react":"^19.1.0","react-dom":"^19.1.0","vitest":"^4.1.11","jsdom":"^27.0.0"}}`)
+	write("package.json", `{"private":true,"type":"module","devDependencies":{"react":"^19.1.0","react-dom":"^19.1.0","vitest":"^4.1.11","jsdom":"^27.0.0","@testing-library/user-event":"^14.6.1","@testing-library/dom":"^10.4.1"}}`)
 	write("vitest.config.mjs", `export default { esbuild: { jsx: "automatic" }, test: { environment: "jsdom", include: ["src/**/*.test.tsx"] } };`)
 
 	// --legacy-peer-deps: npm 10 crashes resolving vitest's optional jsdom

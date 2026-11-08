@@ -6,8 +6,8 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,25 +26,47 @@ func externalCA(pem []byte) *corev1.Secret {
 	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "ca"}, Data: map[string][]byte{"ca.crt": pem}}
 }
 
-// In-memory TLS handshakes exercise both chain and SAN verification without a
-// cluster, a socket listener, or a PostgreSQL server.
-func externalHandshake(cfg *tls.Config, cert tls.Certificate) error {
-	a, b := net.Pipe()
-	defer a.Close()
+// Loopback TLS handshakes exercise chain and SAN verification without a
+// cluster or PostgreSQL server. TCP buffering lets a rejection alert and the
+// server's certificate flight cross without net.Pipe's simultaneous-write
+// deadlock. Go's suite timeout bounds a stuck handshake, not a success budget.
+func externalHandshake(t *testing.T, cfg *tls.Config, cert tls.Certificate) error {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		externalLoopbackError(t, err)
+	}
+	defer listener.Close()
+	b, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		externalLoopbackError(t, err)
+	}
 	defer b.Close()
-	deadline := time.Now().Add(time.Second)
-	_ = a.SetDeadline(deadline)
-	_ = b.SetDeadline(deadline)
+	a, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
 	server := tls.Server(a, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
 	done := make(chan error, 1)
 	go func() { done <- server.Handshake() }()
 	client := tls.Client(b, cfg)
-	err := client.Handshake()
+	err = client.Handshake()
 	_ = a.Close()
 	_ = b.Close()
 	<-done
 	return err
 }
+func externalLoopbackError(t *testing.T, err error) {
+	t.Helper()
+	for _, resource := range []error{syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS, syscall.EADDRNOTAVAIL, syscall.EACCES, syscall.EPERM} {
+		if errors.Is(err, resource) {
+			t.Skipf("loopback sockets unavailable on this host: %v", err)
+		}
+	}
+	t.Fatal(err)
+}
+
 func TestExternalVerifiedTLS(t *testing.T) {
 	t.Parallel()
 	ca, other := newCA(t), newCA(t)
@@ -86,7 +108,7 @@ func TestExternalVerifiedTLS(t *testing.T) {
 			if cfg.TLSConfig.InsecureSkipVerify || cfg.TLSConfig.RootCAs == nil || len(cfg.Fallbacks) != 0 {
 				t.Fatal("verification or no-fallback invariant lost")
 			}
-			err = externalHandshake(cfg.TLSConfig, ca.serverCert(t, tc.dns))
+			err = externalHandshake(t, cfg.TLSConfig, ca.serverCert(t, tc.dns))
 			if (err == nil) != tc.ok {
 				t.Fatalf("success=%v err=%v", tc.ok, err)
 			}
@@ -194,10 +216,10 @@ func TestExternalCAReReadAfterRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	cert := second.serverCert(t, "pgbouncer.prod.svc")
-	if externalHandshake(old.TLSConfig, cert) == nil {
+	if externalHandshake(t, old.TLSConfig, cert) == nil {
 		t.Fatal("old config silently mutated")
 	}
-	if err := externalHandshake(current.TLSConfig, cert); err != nil {
+	if err := externalHandshake(t, current.TLSConfig, cert); err != nil {
 		t.Fatal("new invocation did not read rotated CA", err)
 	}
 }

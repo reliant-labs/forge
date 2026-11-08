@@ -208,6 +208,11 @@ var captureReleaseMigrations = func(projectDir string, prov release.Provenance, 
 	if len(m.Sets) == 0 && len(decls) == 0 {
 		return nil, notes, nil
 	}
+	if m.Sets == nil {
+		// "sets": [] rather than null on the wire and in a hosted store's
+		// JSON column, for a project whose only entries are declarations.
+		m.Sets = []release.MigrationSet{}
+	}
 	m.Declarations = dedupeDeclarations(decls)
 	m.DeclarationsRecorded = true
 	for i := range m.Sets {

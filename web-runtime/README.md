@@ -361,6 +361,38 @@ telemetry?.tracer.startActiveSpan("backend.start", (span) => {
   W3C `traceparent` propagator are this runtime's unless `registerGlobal: false`.
   `reportException` from the barrel reports through it once it is running.
 
+## The dev servers' `/_otel` proxy (`/vite`, `/otel-proxy`)
+
+In the dev loop the page sends OTLP/HTTP to `/_otel/v1/{traces,logs}` on its
+own origin, and the dev server forwards it to `OTEL_EXPORTER_OTLP_ENDPOINT`.
+On a hosted dev stack it also attaches the stack's token from
+`FORGE_OTEL_HEADERS_FILE`, read on every request. Anything that reaches the
+dev server can reach that proxy, so it forwards only what a browser exporter
+sends:
+
+- `POST` to `/v1/traces`, `/v1/logs` and `/v1/metrics` under the prefix. Any
+  other method is 405 and any other path 404, compared byte for byte, so
+  traversal and percent-encoded spellings never match.
+- bodies up to 8 MiB, counted as they stream in and buffered before the
+  upstream is contacted; above that, 413.
+- never the page's cookies or `authorization`, and never a `set-cookie` back.
+
+None of the refusals reaches the upstream. With no upstream, a valid POST is
+answered 204 and every other request is refused the same way.
+
+```ts
+// vite.config.ts: a plugin; requests outside /_otel pass through.
+import { forgeOtelProxy } from "@reliantlabs/forge-web-runtime/vite";
+plugins: [react(), forgeOtelProxy({ upstream: "http://127.0.0.1:4318" })];
+
+// next.config.ts: a rewrite cannot filter or add a header, so rewrite
+// /_otel/:path* to a loopback relay.
+import { startOtelRelay } from "@reliantlabs/forge-web-runtime/otel-proxy";
+const relay = await startOtelRelay({ upstream: "http://127.0.0.1:4318" });
+```
+
+`createOtelProxyHandler` is the shared handler, for any other Node server.
+
 ## The DOM-free interceptors entry point
 
 ```ts

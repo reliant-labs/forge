@@ -41,9 +41,14 @@ ad-blocker to list.
 
 | Where | Who routes `/_otel` | Upstream |
 |---|---|---|
-| `next dev` | `rewrites()` in `next.config.ts`, dev-only | `OTEL_EXPORTER_OTLP_ENDPOINT`, default `http://127.0.0.1:4318` |
-| `vite` | `server.proxy` in `vite.config.ts` | same; the `/_otel` prefix is stripped |
+| `next dev` | a dev-only `rewrites()` in `next.config.ts` to the runtime's loopback relay (`startOtelRelay`) | `OTEL_EXPORTER_OTLP_ENDPOINT`, default `http://127.0.0.1:4318` |
+| `vite` | the runtime's `forgeOtelProxy()` plugin in `vite.config.ts` | same; the `/_otel` prefix is stripped |
 | deployed | **the ingress** | a collector's OTLP/HTTP port |
+
+Both dev proxies come from `@reliantlabs/forge-web-runtime` and forward only
+`POST /v1/{traces,logs,metrics}` up to 8 MiB (405 for another method, 404 for
+another path, 413 above the cap, none of them sent upstream), never the page's
+cookies or `authorization`.
 
 A Next.js frontend builds as a **static export** (`output: static`), which has no
 server, so `rewrites` do not exist in the built site; a built Vite SPA is plain

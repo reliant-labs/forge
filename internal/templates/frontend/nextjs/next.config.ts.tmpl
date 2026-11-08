@@ -33,12 +33,11 @@
 */ -}}
 {{- if eq .Output "static" -}}
 import fs from "node:fs";
-import http from "node:http";
-import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 
 import bundleAnalyzer from "@next/bundle-analyzer";
+import { startOtelRelay } from "@reliantlabs/forge-web-runtime/otel-proxy";
 
 import type { NextConfig } from "next";
 
@@ -83,11 +82,18 @@ if (process.env.NODE_ENV === "production" && basePath === "") {
 // The browser sends telemetry to `<basePath>/_otel/v1/{traces,logs}` on ITS
 // OWN origin and holds no collector address and no secret (see
 // src/lib/otel_gen.ts). `next dev` forwards that to the local collector's
-// OTLP/HTTP port; the rewrite below is the whole proxy.
+// OTLP/HTTP port.
 //
 //   upstream: OTEL_EXPORTER_OTLP_ENDPOINT, a collector BASE URL
 //             (default http://127.0.0.1:4318 — the OTLP/HTTP port, not gRPC's 4317)
-//   path:     /_otel/:path*  ->  <upstream>/:path*
+//   path:     POST /_otel/v1/{traces,logs,metrics}  ->  <upstream>/v1/…
+//
+// A rewrite can neither filter a request nor add a header, so the rewrite
+// below goes to a relay on 127.0.0.1 that this dev server starts
+// (startOtelRelay, from the runtime). The relay forwards only those three
+// ingest POSTs, bodies up to 8 MiB: any other method is 405, any other path
+// 404, a bigger body 413, and none of them reaches the collector. The page's
+// cookies and authorization header are never forwarded.
 //
 // `forge env up` sets the variable for the dev server, so this follows the
 // collector that stack started. It is read when the dev server starts.
@@ -106,64 +112,18 @@ const otelUpstream = otelEndpoint.replace(/\/+$/, "");
 // A HOSTED dev stack (observability.dev_telemetry): `forge env up` points
 // OTEL_EXPORTER_OTLP_ENDPOINT at the org's hosted edge and
 // FORGE_OTEL_HEADERS_FILE at the file holding this stack's browser token,
-// which forge renews in place. A rewrite cannot add a header, so the rewrite
-// then goes to a relay on 127.0.0.1 that this dev server starts: it reads the
-// file on EVERY request, attaches what it holds (`authorization=Bearer …`)
-// and forwards to the edge. The token never reaches the bundle, and neither
-// the browser's cookies nor an authorization header it sent are forwarded,
-// even when the file is missing. Unset (the local ClickStack), there is no
-// relay and nothing changes.
-const otelHeadersFile = process.env.FORGE_OTEL_HEADERS_FILE ?? "";
-const readOtelHeaders = (): Array<[string, string]> => {
-  let text = "";
-  try {
-    text = fs.readFileSync(otelHeadersFile, "utf8");
-  } catch {
-    return []; // not written yet, or removed: send nothing extra
-  }
-  const out: Array<[string, string]> = [];
-  for (const pair of text.split(/[\n,]/)) {
-    const i = pair.indexOf("=");
-    if (i <= 0) continue;
-    let value = pair.slice(i + 1).trim();
-    try {
-      value = decodeURIComponent(value);
-    } catch {
-      // Not percent-encoded: use it as written.
-    }
-    out.push([pair.slice(0, i).trim().toLowerCase(), value]);
-  }
-  return out;
-};
+// which forge renews in place. The relay reads that variable itself, reads
+// the file on EVERY request and attaches what it holds (`authorization=Bearer
+// …`), so the token never reaches the bundle. Unset (the local ClickStack),
+// nothing is added. The rules above are why a credentialed relay reachable
+// from a preview URL or the LAN cannot be used for anything else. If the
+// relay cannot start, there is no /_otel route at all, never an unfiltered
+// one.
 let otelRelay: Promise<string> | undefined;
 const devOtelUpstream = (): Promise<string> => {
-  if (!otelHeadersFile) return Promise.resolve(otelUpstream);
-  otelRelay ??= new Promise<string>((resolve) => {
-    const target = new URL(otelUpstream);
-    const send = (url: URL, opts: http.RequestOptions, cb: (r: http.IncomingMessage) => void) =>
-      url.protocol === "https:" ? https.request(url, opts, cb) : http.request(url, opts, cb);
-    const server = http.createServer((req, res) => {
-      const headers: http.OutgoingHttpHeaders = { ...req.headers, host: target.host };
-      delete headers.cookie;
-      delete headers.authorization;
-      for (const [k, v] of readOtelHeaders()) headers[k] = v;
-      const url = new URL(target.pathname.replace(/\/+$/, "") + (req.url ?? "/"), target);
-      const upstream = send(url, { method: req.method, headers }, (up) => {
-        res.writeHead(up.statusCode ?? 502, up.headers);
-        up.pipe(res);
-      });
-      upstream.on("error", () => {
-        if (!res.headersSent) res.writeHead(502);
-        res.end();
-      });
-      req.pipe(upstream);
-    });
-    server.on("error", () => resolve(otelUpstream));
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      resolve(typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}` : otelUpstream);
-    });
-    server.unref();
+  otelRelay ??= startOtelRelay({ upstream: otelUpstream }).catch((err: unknown) => {
+    console.warn(`[forge] /_otel relay did not start (${String(err)}); browser telemetry is off`);
+    return "";
   });
   return otelRelay;
 };
@@ -299,7 +259,7 @@ const nextConfig: NextConfig = {
         async rewrites() {
           const otel = await devOtelUpstream();
           return [
-            { source: "/_otel/:path*", destination: `${otel}/:path*` },
+            ...(otel ? [{ source: "/_otel/:path*", destination: `${otel}/:path*` }] : []),
             ...(devApiProxy
               ? [{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }]
               : []),
@@ -436,12 +396,11 @@ const nextConfig: NextConfig = {
 export default withBundleAnalyzer(nextConfig);
 {{- else if eq .Output "server" -}}
 import fs from "node:fs";
-import http from "node:http";
-import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 
 import bundleAnalyzer from "@next/bundle-analyzer";
+import { startOtelRelay } from "@reliantlabs/forge-web-runtime/otel-proxy";
 
 import type { NextConfig } from "next";
 
@@ -468,11 +427,18 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
 // The browser sends telemetry to `<basePath>/_otel/v1/{traces,logs}` on ITS
 // OWN origin and holds no collector address and no secret (see
 // src/lib/otel_gen.ts). `next dev` forwards that to the local collector's
-// OTLP/HTTP port; the rewrite below is the whole proxy.
+// OTLP/HTTP port.
 //
 //   upstream: OTEL_EXPORTER_OTLP_ENDPOINT, a collector BASE URL
 //             (default http://127.0.0.1:4318 — the OTLP/HTTP port, not gRPC's 4317)
-//   path:     /_otel/:path*  ->  <upstream>/:path*
+//   path:     POST /_otel/v1/{traces,logs,metrics}  ->  <upstream>/v1/…
+//
+// A rewrite can neither filter a request nor add a header, so the rewrite
+// below goes to a relay on 127.0.0.1 that this dev server starts
+// (startOtelRelay, from the runtime). The relay forwards only those three
+// ingest POSTs, bodies up to 8 MiB: any other method is 405, any other path
+// 404, a bigger body 413, and none of them reaches the collector. The page's
+// cookies and authorization header are never forwarded.
 //
 // `forge env up` sets the variable for the dev server, so this follows the
 // collector that stack started. It is read when the dev server starts.
@@ -491,64 +457,18 @@ const otelUpstream = otelEndpoint.replace(/\/+$/, "");
 // A HOSTED dev stack (observability.dev_telemetry): `forge env up` points
 // OTEL_EXPORTER_OTLP_ENDPOINT at the org's hosted edge and
 // FORGE_OTEL_HEADERS_FILE at the file holding this stack's browser token,
-// which forge renews in place. A rewrite cannot add a header, so the rewrite
-// then goes to a relay on 127.0.0.1 that this dev server starts: it reads the
-// file on EVERY request, attaches what it holds (`authorization=Bearer …`)
-// and forwards to the edge. The token never reaches the bundle, and neither
-// the browser's cookies nor an authorization header it sent are forwarded,
-// even when the file is missing. Unset (the local ClickStack), there is no
-// relay and nothing changes.
-const otelHeadersFile = process.env.FORGE_OTEL_HEADERS_FILE ?? "";
-const readOtelHeaders = (): Array<[string, string]> => {
-  let text = "";
-  try {
-    text = fs.readFileSync(otelHeadersFile, "utf8");
-  } catch {
-    return []; // not written yet, or removed: send nothing extra
-  }
-  const out: Array<[string, string]> = [];
-  for (const pair of text.split(/[\n,]/)) {
-    const i = pair.indexOf("=");
-    if (i <= 0) continue;
-    let value = pair.slice(i + 1).trim();
-    try {
-      value = decodeURIComponent(value);
-    } catch {
-      // Not percent-encoded: use it as written.
-    }
-    out.push([pair.slice(0, i).trim().toLowerCase(), value]);
-  }
-  return out;
-};
+// which forge renews in place. The relay reads that variable itself, reads
+// the file on EVERY request and attaches what it holds (`authorization=Bearer
+// …`), so the token never reaches the bundle. Unset (the local ClickStack),
+// nothing is added. The rules above are why a credentialed relay reachable
+// from a preview URL or the LAN cannot be used for anything else. If the
+// relay cannot start, there is no /_otel route at all, never an unfiltered
+// one.
 let otelRelay: Promise<string> | undefined;
 const devOtelUpstream = (): Promise<string> => {
-  if (!otelHeadersFile) return Promise.resolve(otelUpstream);
-  otelRelay ??= new Promise<string>((resolve) => {
-    const target = new URL(otelUpstream);
-    const send = (url: URL, opts: http.RequestOptions, cb: (r: http.IncomingMessage) => void) =>
-      url.protocol === "https:" ? https.request(url, opts, cb) : http.request(url, opts, cb);
-    const server = http.createServer((req, res) => {
-      const headers: http.OutgoingHttpHeaders = { ...req.headers, host: target.host };
-      delete headers.cookie;
-      delete headers.authorization;
-      for (const [k, v] of readOtelHeaders()) headers[k] = v;
-      const url = new URL(target.pathname.replace(/\/+$/, "") + (req.url ?? "/"), target);
-      const upstream = send(url, { method: req.method, headers }, (up) => {
-        res.writeHead(up.statusCode ?? 502, up.headers);
-        up.pipe(res);
-      });
-      upstream.on("error", () => {
-        if (!res.headersSent) res.writeHead(502);
-        res.end();
-      });
-      req.pipe(upstream);
-    });
-    server.on("error", () => resolve(otelUpstream));
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      resolve(typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}` : otelUpstream);
-    });
-    server.unref();
+  otelRelay ??= startOtelRelay({ upstream: otelUpstream }).catch((err: unknown) => {
+    console.warn(`[forge] /_otel relay did not start (${String(err)}); browser telemetry is off`);
+    return "";
   });
   return otelRelay;
 };
@@ -656,7 +576,7 @@ const nextConfig: NextConfig = {
         async rewrites() {
           const otel = await devOtelUpstream();
           return [
-            { source: "/_otel/:path*", destination: `${otel}/:path*` },
+            ...(otel ? [{ source: "/_otel/:path*", destination: `${otel}/:path*` }] : []),
             ...(devApiProxy
               ? [{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }]
               : []),
@@ -793,12 +713,11 @@ const nextConfig: NextConfig = {
 export default withBundleAnalyzer(nextConfig);
 {{- else -}}
 import fs from "node:fs";
-import http from "node:http";
-import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 
 import bundleAnalyzer from "@next/bundle-analyzer";
+import { startOtelRelay } from "@reliantlabs/forge-web-runtime/otel-proxy";
 
 import type { NextConfig } from "next";
 
@@ -825,11 +744,18 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
 // The browser sends telemetry to `<basePath>/_otel/v1/{traces,logs}` on ITS
 // OWN origin and holds no collector address and no secret (see
 // src/lib/otel_gen.ts). `next dev` forwards that to the local collector's
-// OTLP/HTTP port; the rewrite below is the whole proxy.
+// OTLP/HTTP port.
 //
 //   upstream: OTEL_EXPORTER_OTLP_ENDPOINT, a collector BASE URL
 //             (default http://127.0.0.1:4318 — the OTLP/HTTP port, not gRPC's 4317)
-//   path:     /_otel/:path*  ->  <upstream>/:path*
+//   path:     POST /_otel/v1/{traces,logs,metrics}  ->  <upstream>/v1/…
+//
+// A rewrite can neither filter a request nor add a header, so the rewrite
+// below goes to a relay on 127.0.0.1 that this dev server starts
+// (startOtelRelay, from the runtime). The relay forwards only those three
+// ingest POSTs, bodies up to 8 MiB: any other method is 405, any other path
+// 404, a bigger body 413, and none of them reaches the collector. The page's
+// cookies and authorization header are never forwarded.
 //
 // `forge env up` sets the variable for the dev server, so this follows the
 // collector that stack started. It is read when the dev server starts.
@@ -848,64 +774,18 @@ const otelUpstream = otelEndpoint.replace(/\/+$/, "");
 // A HOSTED dev stack (observability.dev_telemetry): `forge env up` points
 // OTEL_EXPORTER_OTLP_ENDPOINT at the org's hosted edge and
 // FORGE_OTEL_HEADERS_FILE at the file holding this stack's browser token,
-// which forge renews in place. A rewrite cannot add a header, so the rewrite
-// then goes to a relay on 127.0.0.1 that this dev server starts: it reads the
-// file on EVERY request, attaches what it holds (`authorization=Bearer …`)
-// and forwards to the edge. The token never reaches the bundle, and neither
-// the browser's cookies nor an authorization header it sent are forwarded,
-// even when the file is missing. Unset (the local ClickStack), there is no
-// relay and nothing changes.
-const otelHeadersFile = process.env.FORGE_OTEL_HEADERS_FILE ?? "";
-const readOtelHeaders = (): Array<[string, string]> => {
-  let text = "";
-  try {
-    text = fs.readFileSync(otelHeadersFile, "utf8");
-  } catch {
-    return []; // not written yet, or removed: send nothing extra
-  }
-  const out: Array<[string, string]> = [];
-  for (const pair of text.split(/[\n,]/)) {
-    const i = pair.indexOf("=");
-    if (i <= 0) continue;
-    let value = pair.slice(i + 1).trim();
-    try {
-      value = decodeURIComponent(value);
-    } catch {
-      // Not percent-encoded: use it as written.
-    }
-    out.push([pair.slice(0, i).trim().toLowerCase(), value]);
-  }
-  return out;
-};
+// which forge renews in place. The relay reads that variable itself, reads
+// the file on EVERY request and attaches what it holds (`authorization=Bearer
+// …`), so the token never reaches the bundle. Unset (the local ClickStack),
+// nothing is added. The rules above are why a credentialed relay reachable
+// from a preview URL or the LAN cannot be used for anything else. If the
+// relay cannot start, there is no /_otel route at all, never an unfiltered
+// one.
 let otelRelay: Promise<string> | undefined;
 const devOtelUpstream = (): Promise<string> => {
-  if (!otelHeadersFile) return Promise.resolve(otelUpstream);
-  otelRelay ??= new Promise<string>((resolve) => {
-    const target = new URL(otelUpstream);
-    const send = (url: URL, opts: http.RequestOptions, cb: (r: http.IncomingMessage) => void) =>
-      url.protocol === "https:" ? https.request(url, opts, cb) : http.request(url, opts, cb);
-    const server = http.createServer((req, res) => {
-      const headers: http.OutgoingHttpHeaders = { ...req.headers, host: target.host };
-      delete headers.cookie;
-      delete headers.authorization;
-      for (const [k, v] of readOtelHeaders()) headers[k] = v;
-      const url = new URL(target.pathname.replace(/\/+$/, "") + (req.url ?? "/"), target);
-      const upstream = send(url, { method: req.method, headers }, (up) => {
-        res.writeHead(up.statusCode ?? 502, up.headers);
-        up.pipe(res);
-      });
-      upstream.on("error", () => {
-        if (!res.headersSent) res.writeHead(502);
-        res.end();
-      });
-      req.pipe(upstream);
-    });
-    server.on("error", () => resolve(otelUpstream));
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      resolve(typeof addr === "object" && addr ? `http://127.0.0.1:${addr.port}` : otelUpstream);
-    });
-    server.unref();
+  otelRelay ??= startOtelRelay({ upstream: otelUpstream }).catch((err: unknown) => {
+    console.warn(`[forge] /_otel relay did not start (${String(err)}); browser telemetry is off`);
+    return "";
   });
   return otelRelay;
 };
@@ -1077,7 +957,7 @@ const nextConfig: NextConfig = {
         async rewrites() {
           const otel = await devOtelUpstream();
           return [
-            { source: "/_otel/:path*", destination: `${otel}/:path*` },
+            ...(otel ? [{ source: "/_otel/:path*", destination: `${otel}/:path*` }] : []),
             ...(devApiProxy
               ? [{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }]
               : []),

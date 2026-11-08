@@ -27,11 +27,22 @@
 // the page a full reload, so an open tab picks it up without a click.
 //
 // Structural types only: this module imports nothing from `vite`, so the
-// package takes no dependency on any Vite major. The plugin object is
+// package takes no dependency on any Vite major. The plugin objects are
 // assignable to Vite's `Plugin` (vite.test.ts pins that).
+//
+// forgeOtelProxy, below, is the second plugin: the dev server's `/_otel`
+// browser-telemetry proxy, mounted over ./otel-proxy.
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
+
+import {
+  createOtelProxyHandler,
+  OTEL_PROXY_PREFIX,
+  type OtelProxyOptions,
+} from "./otel-proxy.js";
+
+export type { OtelProxyOptions } from "./otel-proxy.js";
 
 /**
  * The environment variable `forge env up` sets on a frontend's dev server
@@ -163,5 +174,65 @@ export function forgeRuntimeConfig(
     configurePreviewServer(server) {
       install(server, false);
     },
+  };
+}
+
+/** The part of a Vite dev / preview server forgeOtelProxy uses. */
+export interface OtelProxyServer {
+  middlewares: { use(fn: Middleware): unknown };
+}
+
+export interface ForgeOtelProxyOptions extends OtelProxyOptions {
+  /** The path prefix the browser sends telemetry under. Default "/_otel". */
+  prefix?: string;
+}
+
+/** The plugin object; structurally a Vite `Plugin`. */
+export interface ForgeOtelProxyPlugin {
+  name: string;
+  configureServer(server: OtelProxyServer): void;
+  configurePreviewServer(server: OtelProxyServer): void;
+}
+
+/**
+ * forgeOtelProxy is the dev server's `/_otel` browser-telemetry proxy (see
+ * ./otel-proxy for the rules it enforces): `POST /_otel/v1/{traces,logs,metrics}`
+ * goes to the collector at OTEL_EXPORTER_OTLP_ENDPOINT, with the headers in
+ * FORGE_OTEL_HEADERS_FILE attached and the page's cookies and authorization
+ * dropped; every other request under `/_otel` is refused without contacting
+ * the collector. Requests outside the prefix pass through untouched.
+ *
+ * It replaces a `server.proxy["/_otel"]` entry, which forwards every path
+ * and method and cannot bound a body. Plugin middleware runs before Vite's
+ * proxy, so a leftover entry is shadowed rather than reached.
+ *
+ * ```ts
+ * import { forgeOtelProxy } from "@reliantlabs/forge-web-runtime/vite";
+ * export default defineConfig({
+ *   plugins: [react(), forgeOtelProxy({ upstream: "http://127.0.0.1:4318" })],
+ * });
+ * ```
+ */
+export function forgeOtelProxy(
+  options: ForgeOtelProxyOptions = {},
+): ForgeOtelProxyPlugin {
+  const prefix = (options.prefix ?? OTEL_PROXY_PREFIX).replace(/\/+$/, "");
+  const handle = createOtelProxyHandler(options);
+  const install = (server: OtelProxyServer): void => {
+    server.middlewares.use((req, res, next) => {
+      const url = req.url ?? "";
+      // `/_otel`, `/_otel/…` and `/_otel?…` are the proxy's; `/_otelx` is not.
+      const rest = url.startsWith(prefix) ? url.slice(prefix.length) : null;
+      if (rest === null || (rest !== "" && !/^[/?#]/.test(rest))) {
+        next();
+        return;
+      }
+      handle(req, res, rest);
+    });
+  };
+  return {
+    name: "forge-otel-proxy",
+    configureServer: install,
+    configurePreviewServer: install,
   };
 }

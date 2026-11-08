@@ -163,9 +163,7 @@ func TestTelemetryDevProxyContract(t *testing.T) {
 		for _, want := range []string{
 			"process.env." + upstreamEnv,
 			defaultUpstream,
-			`"/_otel": {`,
-			`p.replace(/^\/_otel/, "")`,
-			"changeOrigin: true",
+			"forgeOtelProxy({ upstream: OTEL_ENDPOINT })",
 		} {
 			if !strings.Contains(s, want) {
 				t.Errorf("vite.config.ts missing %q", want)
@@ -310,43 +308,68 @@ func TestTelemetryHeaderNamesTheHostedDefault(t *testing.T) {
 	}
 }
 
-// TestTelemetryDevProxyHostedToken pins the hosted dev stack's half of the
-// /_otel proxy (forge env up, dev_telemetry): with FORGE_OTEL_HEADERS_FILE set,
-// both dev servers attach that file's headers upstream, re-reading it on every
-// request (forge renews the token in place), and never forward the page's
-// cookies to the hosted edge. Unset, the proxy is the local one.
+// TestTelemetryDevProxyHostedToken pins who does the /_otel proxy's work: the
+// runtime (@reliantlabs/forge-web-runtime's otel-proxy, otel-proxy.test.ts),
+// which forwards only `POST /v1/{traces,logs,metrics}` under 8 MiB, attaches
+// FORGE_OTEL_HEADERS_FILE's token per request and drops the page's cookies
+// and authorization. Both dev servers must route /_otel through it and carry
+// no hand-rolled forwarding of their own: a config-file copy is exactly the
+// unfiltered, unbounded relay that let anything reaching the dev server post
+// arbitrary routes to the hosted edge as the stack.
 func TestTelemetryDevProxyHostedToken(t *testing.T) {
+	handRolled := []string{
+		"readOtelHeaders",
+		"http.createServer",
+		"proxyReq",
+		"node:http",
+		"node:https",
+		"FORGE_OTEL_HEADERS_FILE",
+	}
 	for _, output := range []string{"static", "standalone", "server"} {
 		t.Run("nextjs/"+output, func(t *testing.T) {
 			s := renderTelemetryTmpl(t, "nextjs/next.config.ts.tmpl", telemetryData(output))
 			for _, want := range []string{
-				"process.env.FORGE_OTEL_HEADERS_FILE",
-				"if (!otelHeadersFile) return Promise.resolve(otelUpstream);",
-				"for (const [k, v] of readOtelHeaders()) headers[k] = v;",
-				"delete headers.cookie;",
-				"delete headers.authorization;",
+				`import { startOtelRelay } from "@reliantlabs/forge-web-runtime/otel-proxy";`,
+				"startOtelRelay({ upstream: otelUpstream })",
 				"const otel = await devOtelUpstream();",
-				"destination: `${otel}/:path*`",
+				// No relay, no route: never an unfiltered rewrite to the upstream.
+				"...(otel ? [{ source: \"/_otel/:path*\", destination: `${otel}/:path*` }] : [])",
 			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("next.config.ts (%s) missing %q", output, want)
 				}
+			}
+			code := stripTelemetryComments(s)
+			for _, stale := range handRolled {
+				if strings.Contains(code, stale) {
+					t.Errorf("next.config.ts (%s) still hand-rolls the /_otel relay (%q); it must be the runtime's startOtelRelay", output, stale)
+				}
+			}
+			if strings.Contains(code, "destination: `${otelUpstream}") {
+				t.Errorf("next.config.ts (%s) rewrites /_otel straight to the upstream, past the relay's rules", output)
 			}
 		})
 	}
 	t.Run("vite-spa", func(t *testing.T) {
 		s := renderTelemetryTmpl(t, "vite-spa/vite.config.ts.tmpl", telemetryData("static"))
 		for _, want := range []string{
-			"process.env.FORGE_OTEL_HEADERS_FILE",
-			`proxy.on("proxyReq", (proxyReq) => {`,
-			`proxyReq.removeHeader("cookie");`,
-			`proxyReq.removeHeader("authorization");`,
-			"for (const [name, value] of readOtelHeaders()) proxyReq.setHeader(name, value);",
-			"...(OTEL_HEADERS_FILE",
+			`import { forgeOtelProxy, forgeRuntimeConfig } from "@reliantlabs/forge-web-runtime/vite";`,
+			"forgeOtelProxy({ upstream: OTEL_ENDPOINT }),",
 		} {
 			if !strings.Contains(s, want) {
 				t.Errorf("vite.config.ts missing %q", want)
 			}
+		}
+		code := stripTelemetryComments(s)
+		for _, stale := range handRolled {
+			if strings.Contains(code, stale) {
+				t.Errorf("vite.config.ts still hand-rolls the /_otel proxy (%q); it must be the runtime's forgeOtelProxy", stale)
+			}
+		}
+		// A server.proxy entry would forward every path and method; the
+		// plugin shadows one, but the scaffold must not ship it.
+		if strings.Contains(code, `"/_otel": {`) {
+			t.Errorf("vite.config.ts still declares a server.proxy /_otel entry")
 		}
 	})
 }

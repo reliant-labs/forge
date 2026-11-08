@@ -817,9 +817,26 @@ _cps_volume = lambda w: any, rt: any, bundle: Bundle -> [tiers.Volume] {
     } for s in _cps_token_for(w, rt, bundle)] if _cps_wires(w, rt, bundle) else []
 }
 
-# Host processes need a loopback port to export to.
-_host_without_local_port = lambda workloads: [any], o: any -> [str] {
-    [w.name for w in workloads if o and o.enabled and o.local_port == 0 and w.runtime and w.runtime.type == "host" and w.kind != "tool"]
+# Host processes need a loopback port to export to — when this env can have a
+# local collector at all. The collector (ClickStack, or the forwarder in front
+# of a destination) is a compose service, so an env that runs no container
+# (host processes and forge.HostInfra only) has none. There `dev_telemetry`
+# decides alone: hosted ships to the org's store through a minted token, and
+# local (by choice or by fallback) exports nothing — no endpoint is injected,
+# so nothing retries a dead port; trace context still propagates. Only a
+# destination, which names a forwarder such an env cannot run, still needs
+# the port.
+_env_runs_containers = lambda workloads: [any], frontends: [any] -> bool {
+    any w in workloads { w.runtime and w.runtime.type == "compose" } or any f in frontends { f.runtime and f.runtime.type == "compose" }
+}
+_host_without_local_port = lambda workloads: [any], frontends: [any], o: any -> [str] {
+    _needs = bool(o and o.enabled and o.local_port == 0) and (_env_runs_containers(workloads, frontends) or bool(o.destination))
+    [w.name for w in workloads if w.runtime and w.runtime.type == "host" and w.kind != "tool"] if _needs else []
+}
+_host_without_local_port_msg = lambda workloads: [any], frontends: [any], o: any -> str {
+    _names = _host_without_local_port(workloads, frontends, o)
+    "${_names} run as host processes, which export OTLP to the local collector's loopback port: set Bundle.observability.local_port (the port the env's compose collector publishes)" if _env_runs_containers(workloads, frontends) else \
+    "${_names} run as host processes in an env that runs no container, so it has no local collector, yet Bundle.observability declares a destination, which only a local forwarder (a compose service) sends to. Set Bundle.observability.local_port to a collector you run yourself, or drop the destination: with no destination and no local_port, a container-free env ships to the hosted store under dev_telemetry auto/hosted when signed in, and exports nothing otherwise"
 }
 
 # Table TTL for the local ClickStack: the longest retention hint, in hours.

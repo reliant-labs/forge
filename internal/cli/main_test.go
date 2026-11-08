@@ -80,6 +80,9 @@ func TestMain(m *testing.M) {
 	// A unit test builds images through the (fake) docker on PATH, so the
 	// daemon answers; a test of the no-daemon error sets its own answer.
 	dockerDaemonReachable = func(context.Context) error { return nil }
+	// forge obs's own short-budget engine probe likewise: the ClickStack
+	// queries below it are what the tests stub (doctorCompose).
+	dockerEngineProbeFn = func(context.Context) error { return nil }
 	// Nor does any test ask the host's docker about compose. `forge env
 	// status` / `env up`'s summary run doctor's runtime checks and list
 	// compose publishers; on this box that read the developer's own compose

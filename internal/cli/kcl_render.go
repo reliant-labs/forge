@@ -42,6 +42,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
@@ -2404,6 +2405,23 @@ func (e *KCLEntities) HasLocal() bool {
 	}
 	for _, f := range e.Frontends {
 		if f.Runtime.Type == FrontendRuntimeHost {
+			return true
+		}
+	}
+	return false
+}
+
+// HasLocalStore reports whether the env declares the local ClickStack — the
+// compose service `forge env up` starts and `forge obs` queries on this
+// machine. A container-free env (host processes and forge.HostInfra only)
+// has none: its telemetry is the hosted store's (dev_telemetry auto/hosted,
+// signed in) or nobody's.
+func (e *KCLEntities) HasLocalStore() bool {
+	if e == nil {
+		return false
+	}
+	for _, w := range e.Workloads {
+		if w.OnRuntime(RuntimeCompose) && composeServiceName(w) == clickstack.Service {
 			return true
 		}
 	}

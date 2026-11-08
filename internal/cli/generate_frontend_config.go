@@ -2,9 +2,11 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -40,6 +42,7 @@ func generateFrontendConfigModules(
 	messages []codegen.ConfigMessage,
 	projectDir string,
 	cs *checksums.FileChecksums,
+	renderFailures func() []envRenderFailure,
 ) error {
 	frontendConfigs := codegen.FrontendConfigsFromMessages(messages)
 	if len(frontendConfigs) == 0 {
@@ -77,12 +80,11 @@ func generateFrontendConfigModules(
 			// same rule (forge.v1.binary_config) enforces for a missing
 			// cmd/<name>. Silence here would mean an app reading defaults
 			// forever while its real values sat in a file nothing loads.
-			return fmt.Errorf(
-				"config message %s is annotated (forge.v1.frontend_config) = {frontend: %q}, "+
-					"but forge.yaml declares no frontend named %q%s\n\n"+
-					"Either correct the annotation in proto/<project>/config/v1/config.proto, or add the "+
-					"frontend with `forge scaffold frontend %s`",
-				fc.MessageName, fc.Frontend, fc.Frontend, knownFrontendsSuffix(cfg), fc.Frontend)
+			var failed []envRenderFailure
+			if renderFailures != nil {
+				failed = renderFailures()
+			}
+			return frontendNotInInventoryError(cfg, fc.MessageName, fc.Frontend, failed)
 		}
 
 		feDir, ok := fe.Dir(projectDir)
@@ -293,14 +295,79 @@ func frontendPlatform(feType string) string {
 
 // knownFrontendsSuffix lists the frontends that DO exist, so the refusal
 // above shows the available names rather than only the missing one.
+// frontendNotInInventoryError is the refusal for a (forge.v1.frontend_config)
+// that names a frontend the inventory lacks, with the CAUSE first.
+//
+// The inventory is frontends/<name> on disk overlaid with every
+// environment's KCL declarations (stepDeriveFrontendInventory), so a
+// frontend goes missing for one of three reasons, and only the last is the
+// annotation's fault:
+//
+//   - an environment that declares it did not render, so its declaration
+//     never reached the inventory (generate degrades past a broken render);
+//   - its directory is in the inventory under ANOTHER name, because a KCL
+//     declaration of that directory under that name won the merge;
+//   - it does not exist.
+//
+// Saying only the third — "forge.yaml declares no frontend named web" — sent
+// a developer whose dev env had stopped rendering to a forge.yaml that has
+// had no frontends block for a long time (7edd2e69).
+func frontendNotInInventoryError(cfg *config.ProjectConfig, message, want string, failed []envRenderFailure) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "config message %s is annotated (forge.v1.frontend_config) = {frontend: %q}, but this project's frontend inventory has no frontend named %q%s",
+		message, want, want, knownFrontendsSuffix(cfg))
+	var causes []string
+	for _, f := range failed {
+		causes = append(causes, fmt.Sprintf("deploy/kcl/%s did not render, so no frontend it declares is in the inventory: %s\n    Fix it (`%s env render %s` shows the full error) and re-run `%s generate`.",
+			f.Env, renderFailureCause(f.Err), Name(), f.Env, Name()))
+	}
+	wantDir := "frontends/" + want
+	for _, fe := range cfg.Frontends {
+		if fe.Name != want && fe.DeclaredDir() == wantDir {
+			causes = append(causes, fmt.Sprintf("%s is in the inventory as %q: a deploy/kcl environment declares that directory under that name. Declare it as %q in the env that runs it, or bind the config message to %q.",
+				wantDir, fe.Name, want, fe.Name))
+		}
+	}
+	if len(causes) > 0 {
+		b.WriteString("\n\nLikely cause:\n")
+		for _, c := range causes {
+			b.WriteString("  - " + c + "\n")
+		}
+		b.WriteString("\nOtherwise, ")
+	} else {
+		b.WriteString("\n\nEither ")
+	}
+	fmt.Fprintf(&b, "correct the annotation in proto/<project>/config/v1/config.proto, or add the frontend with `%s scaffold frontend %s`", Name(), want)
+	return errors.New(b.String())
+}
+
+// renderFailureCause is the line of a KCL render failure that says WHY: the
+// failed schema check's message when there is one (kcl prints it after
+// "Check failed on the condition:", or an assert's after "Assertion
+// failure"), with ANSI colour stripped, else the error's first line —
+// which for a KCL failure is only "evaluate KCL in <dir>: exit status 1".
+func renderFailureCause(err error) string {
+	msg := ansiEscapeRE.ReplaceAllString(err.Error(), "")
+	for _, marker := range []string{"Check failed on the condition:", "Assertion failure:", "EvaluationError:"} {
+		if i := strings.Index(msg, marker); i >= 0 {
+			if cause := strings.TrimSpace(firstLine(msg[i+len(marker):])); cause != "" {
+				return cause
+			}
+		}
+	}
+	return firstLine(msg)
+}
+
+var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
 func knownFrontendsSuffix(cfg *config.ProjectConfig) string {
 	if len(cfg.Frontends) == 0 {
-		return " (it declares no frontends at all)"
+		return " (it has no frontends at all: none under frontends/ and none a deploy/kcl environment declares)"
 	}
 	names := make([]string, 0, len(cfg.Frontends))
 	for _, fe := range cfg.Frontends {
 		names = append(names, fe.Name)
 	}
 	sort.Strings(names)
-	return " (it declares: " + strings.Join(names, ", ") + ")"
+	return " (its frontends: " + strings.Join(names, ", ") + ")"
 }

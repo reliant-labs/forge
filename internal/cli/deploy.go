@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -1933,6 +1935,100 @@ type deployTagResolution struct {
 	boundRelease string
 }
 
+// localRunLedgerUndeliverable reports whether `forge env up`
+// (renderToLaunch) may run without its env's hosted ledger: the failure is
+// about REACHING the control plane, not about the ledger — no credential (a
+// signed-out developer), or a transport failure / Unavailable from a control
+// plane that is down — AND the rendered env runs only on this machine
+// (envRunsOnlyOnThisMachine).
+//
+// Such a stack runs what this checkout builds. The ledger contributes only
+// the digests of a release the env is promoted to, so for it the control
+// plane is optional: its absence costs the pins, never the stack — the same
+// rule presence (ReportSessionBestEffort) and the dev telemetry mint (fall
+// back to local) follow.
+//
+// renderToLaunch alone proves nothing about the env: it names why this
+// render runs, not where the env's workloads run. So the env itself is
+// checked, and anything that places work off this machine — a cluster, a
+// hosted workload, a shipped frontend — keeps failing closed: there the pins
+// decide which images ship, and a missing credential or a flaky network must
+// never turn a promoted release into mutable checkout tags. Every other
+// purpose fails closed too.
+func localRunLedgerUndeliverable(ctx context.Context, projectDir, envName string, opts deployOptions, err error) bool {
+	if opts.purpose != renderToLaunch || !controlPlaneUnreachable(err) {
+		return false
+	}
+	entities, rerr := RenderKCL(ctx, projectDir, envName)
+	if rerr != nil {
+		return false
+	}
+	return envRunsOnlyOnThisMachine(entities)
+}
+
+// controlPlaneUnreachable reports whether err is a failure to reach the
+// control plane — no credential, a transport error, Unavailable or
+// DeadlineExceeded — as opposed to an answer from it.
+func controlPlaneUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, cloud.ErrNoCredential) {
+		return true
+	}
+	var cerr *cloud.Error
+	if errors.As(err, &cerr) {
+		return cerr.HasCode(cloud.CodeUnavailable) || cerr.HasCode(cloud.CodeDeadlineExceeded)
+	}
+	var nerr net.Error
+	return errors.As(err, &nerr) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// envRunsOnlyOnThisMachine is the condition under which an env's release
+// pins are not what decides what runs: it declares a scratch lifecycle
+// (lifecycle = "local" or "ephemeral", the KCL's statement that forge
+// creates everything it runs), and every workload is a host process or a
+// compose service — no cluster workload (a local k3d included: it pulls
+// images), nothing hosted, no managed database (hosted, or in a cluster), no
+// helm chart, and no frontend that is hosted or shipped. Host infra and
+// dev-served frontends run here by construction.
+func envRunsOnlyOnThisMachine(e *KCLEntities) bool {
+	if e == nil || (e.Lifecycle != lifecycleLocal && e.Lifecycle != lifecycleEphemeral) {
+		return false
+	}
+	for _, w := range e.Workloads {
+		if !w.OnRuntime(RuntimeHost) && !w.OnRuntime(RuntimeCompose) {
+			return false
+		}
+	}
+	if len(e.Databases) > 0 || len(e.HelmCharts) > 0 {
+		return false
+	}
+	for _, f := range e.Frontends {
+		if frontendIsHosted(f) || f.Runtime.Ships() {
+			return false
+		}
+	}
+	return true
+}
+
+// localRunWithoutLedger finishes resolveDeployTags for a local stack whose
+// control plane could not be reached: this checkout's own build state, no
+// release pins, and one line saying why.
+func localRunWithoutLedger(projectDir, envName string, opts deployOptions, res deployTagResolution, cause error) (deployTagResolution, error) {
+	digests, err := resolveDeployImageDigests(projectDir, envName, opts.noDigest)
+	if err != nil {
+		return deployTagResolution{}, err
+	}
+	why := firstLine(cause.Error())
+	if errors.Is(cause, cloud.ErrNoCredential) {
+		why = "not signed in to the control plane"
+	}
+	fmt.Printf("  Release:     none pinned for local env %q (%s); running this checkout's build\n", envName, why)
+	res.imageDigests = digests
+	return res, nil
+}
+
 // releaseTagFor is the image tag a deploy that NAMES a release renders with:
 // the release version, or "" when the deploy names none, an explicit --tag
 // overrides it, or --no-digest asks for the built image directly.
@@ -1984,11 +2080,17 @@ func resolveDeployTags(ctx context.Context, projectDir, envName string, opts dep
 	res.tagSource = src
 	ledger, lerr := ledgerFor(ctx, projectDir, envName)
 	if lerr != nil {
+		if localRunLedgerUndeliverable(ctx, projectDir, envName, opts, lerr) {
+			return localRunWithoutLedger(projectDir, envName, opts, res, lerr)
+		}
 		return deployTagResolution{}, lerr
 	}
 	bindings := ledger.Bindings
 	digests, boundRel, derr := resolveDeployDigests(ctx, projectDir, envName, opts.noDigest, bindings, ledger.Releases)
 	if derr != nil {
+		if ledger.Hosted && localRunLedgerUndeliverable(ctx, projectDir, envName, opts, derr) {
+			return localRunWithoutLedger(projectDir, envName, opts, res, derr)
+		}
 		return deployTagResolution{}, derr
 	}
 	// Fail closed: a release-bound env whose declared images did not all

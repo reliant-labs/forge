@@ -127,12 +127,28 @@ func renderedFrontends(projectDir string) []renderedEnvFrontend {
 type renderedEnvironments struct {
 	frontends []renderedEnvFrontend
 	workloads []WorkloadEntity
+	// failed is every environment that did not render, in environment
+	// order. The inventory is built without it (a half-written main.k must
+	// not stop generate), but a step that then misses a frontend that env
+	// declares names the failed render as the cause rather than the
+	// symptom (frontendNotInInventoryError).
+	failed []envRenderFailure
+}
+
+// envRenderFailure is one environment whose KCL did not render.
+type envRenderFailure struct {
+	Env string
+	Err error
 }
 
 func renderEnvironments(projectDir string) renderedEnvironments {
 	var out renderedEnvironments
 	for _, r := range renderEnvsPure(context.Background(), projectDir, deployEnvNames(projectDir)) {
-		if r.err != nil || r.entities == nil {
+		if r.err != nil {
+			out.failed = append(out.failed, envRenderFailure{Env: r.env, Err: r.err})
+			continue
+		}
+		if r.entities == nil {
 			continue
 		}
 		for _, fe := range r.entities.Frontends {

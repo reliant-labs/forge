@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -113,11 +114,24 @@ func overrideObsDeps(d *obsDeps, o *obsDeps) {
 
 // localClickstackExec runs a script inside env's ClickStack container, in the
 // compose project `forge env up` started it in.
+//
+// Docker's engine is probed once first, bounded by dockerProbeTimeout: a
+// docker CLI whose engine is absent or wedged otherwise blocks `forge obs`
+// for as long as the caller waits, with nothing on screen.
 func localClickstackExec(env string) obsbackend.ExecFunc {
+	var (
+		probeOnce sync.Once
+		probeErr  error
+	)
 	return func(ctx context.Context, script string, args []string) ([]byte, error) {
 		dir, err := requireProjectDir("obs")
 		if err != nil {
 			return nil, obsbackend.Undetermined("%v", err)
+		}
+		probeOnce.Do(func() { probeErr = dockerEngineProbeFn(ctx) })
+		if probeErr != nil {
+			return nil, obsbackend.Undetermined("the local ClickStack cannot be reached: %v", probeErr).
+				With(obsbackend.Cmd("forge", "env", "up", env))
 		}
 		project := func(ctx context.Context) []string { return localClickstackComposeArgs(ctx, dir, env) }
 		return obsbackend.ComposeExec(obsbackend.ComposeFunc(doctorCompose), dir, project)(ctx, script, args)

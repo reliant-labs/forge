@@ -1955,7 +1955,7 @@ func stepFrontendConfig(ctx *pipelineContext) error {
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return err
 	}
-	return generateFrontendConfigModules(ctx.Cfg, messages, ctx.ProjectDir, ctx.Checksums)
+	return generateFrontendConfigModules(ctx.Cfg, messages, ctx.ProjectDir, ctx.Checksums, func() []envRenderFailure { return ctx.renderedEnvs().failed })
 }
 
 // stepCleanupStale — was Step 3z.

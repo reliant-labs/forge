@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	obsTargetVersion = 3
+	obsTargetVersion = 4
 	// obsTargetMaxAge bounds how long a stamp is trusted even when every input
 	// it names is unchanged: a main.k may read a file outside deploy/kcl, which
 	// the stamp cannot see.
@@ -74,6 +74,10 @@ func obsTargetFromEntities(env string, e *KCLEntities) obsTarget {
 	}
 	if o := e.Observability; o != nil {
 		f.Declared, f.Enabled = true, o.Enabled
+		// Container-free: it runs on this machine, with no cluster, no
+		// ClickStack declared and no collector port, so nothing here can
+		// hold the env's telemetry.
+		f.NoLocalStore = f.HasLocal && !f.HasCluster && !e.HasLocalStore() && o.LocalPort == 0
 		if d := o.Destination; d != nil {
 			f.Destination = &obsbackend.Destination{Endpoint: d.Endpoint, TokenFromControlPlane: d.TokenFromControlPlane}
 		}
@@ -100,6 +104,7 @@ type obsTargetFile struct {
 	HasLocal       bool                        `json:"has_local,omitempty"`
 	HasCluster     bool                        `json:"has_cluster,omitempty"`
 	LocalLifecycle bool                        `json:"local_lifecycle,omitempty"`
+	NoLocalStore   bool                        `json:"no_local_store,omitempty"`
 	ControlPlane   string                      `json:"control_plane,omitempty"`
 	TokenEnv       string                      `json:"token_env,omitempty"`
 	Health         *release.ShapeReleaseHealth `json:"release_health,omitempty"`
@@ -199,7 +204,7 @@ func readObsTarget(projectDir, env, fingerprint string) (obsTarget, bool) {
 		TokenEnv: f.TokenEnv,
 		Facts: obsbackend.Facts{
 			Env: env, Declared: f.Declared, Enabled: f.Enabled, Destination: f.Destination,
-			HasHosted: f.HasHosted, HasLocal: f.HasLocal, HasCluster: f.HasCluster, LocalLifecycle: f.LocalLifecycle, ControlPlane: f.ControlPlane, ReleaseHealth: f.Health,
+			HasHosted: f.HasHosted, HasLocal: f.HasLocal, HasCluster: f.HasCluster, LocalLifecycle: f.LocalLifecycle, NoLocalStore: f.NoLocalStore, ControlPlane: f.ControlPlane, ReleaseHealth: f.Health,
 		},
 	}, true
 }
@@ -213,7 +218,7 @@ func writeObsTarget(projectDir, env, fingerprint string, t obsTarget) {
 	data, err := json.Marshal(obsTargetFile{
 		Version: obsTargetVersion, At: time.Now().UTC(), Fingerprint: fingerprint, Env: env,
 		Declared: t.Facts.Declared, Enabled: t.Facts.Enabled, Destination: t.Facts.Destination,
-		HasHosted: t.Facts.HasHosted, HasLocal: t.Facts.HasLocal, HasCluster: t.Facts.HasCluster, LocalLifecycle: t.Facts.LocalLifecycle, ControlPlane: t.Facts.ControlPlane, TokenEnv: t.TokenEnv,
+		HasHosted: t.Facts.HasHosted, HasLocal: t.Facts.HasLocal, HasCluster: t.Facts.HasCluster, LocalLifecycle: t.Facts.LocalLifecycle, NoLocalStore: t.Facts.NoLocalStore, ControlPlane: t.Facts.ControlPlane, TokenEnv: t.TokenEnv,
 		Health: t.Facts.ReleaseHealth,
 	})
 	if err != nil {

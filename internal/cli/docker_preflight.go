@@ -67,6 +67,9 @@ var dockerDaemonProbeFn = probeDockerDaemon
 // reachable, because the Server section is exactly what's missing then.
 func probeDockerDaemon(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}")
+	// A CLI plugin that inherited the output pipe must not hold the read
+	// open past the deadline: the probe is bounded, not just the process.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

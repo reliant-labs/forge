@@ -44,11 +44,31 @@ func frontendOTLPEnv(e *KCLEntities) map[string]string {
 //     the browser reports as deployment.environment.name exactly as the
 //     backend does. An explicit config.environment already arrives through the
 //     frontend's env_vars and is kept.
+//   - <prefix>OTEL_ENDPOINT=off on a container-free env whose telemetry is
+//     local (envHasNoTelemetryStore): there is no collector for the /_otel
+//     proxy to forward to, so the browser sends nothing instead of a failed
+//     proxy request per batch. A declared endpoint still wins.
 func withFrontendTelemetryEnv(env []string, e *KCLEntities, fe FrontendEntity, envName string) []string {
 	// Only the endpoint is injected, so only the endpoint can be a decision to
 	// respect: a protocol exported for some other process is not one.
 	env = withDefaultEnv(env, frontendOTLPEnv(e))
+	if envHasNoTelemetryStore(e) {
+		env = withDefaultEnv(env, map[string]string{frontendOTELEnvVar(fe.Type): "off"})
+	}
 	return withDefaultEnv(env, map[string]string{frontendEnvironmentEnvVar(fe.Type): envName})
+}
+
+// envHasNoTelemetryStore reports a container-free env (no ClickStack, no
+// collector port) whose telemetry this run keeps local: nothing on this
+// machine can store it, so nothing is exported. A hosted run (dev_telemetry
+// hosted, signed in) has rewired LocalEndpoint to the hosted edge and is
+// not this case.
+func envHasNoTelemetryStore(e *KCLEntities) bool {
+	if e == nil || e.Observability == nil || !e.Observability.Enabled {
+		return false
+	}
+	o := e.Observability
+	return o.LocalEndpoint == "" && o.LocalPort == 0 && o.Destination == nil && !e.HasLocalStore()
 }
 
 // nonEmptyEnvKeys is the set of keys env carries a NON-EMPTY value for. Empty

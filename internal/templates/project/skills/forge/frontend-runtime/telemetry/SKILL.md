@@ -1,6 +1,6 @@
 ---
 name: frontend-runtime/telemetry
-description: Browser telemetry in forge frontends — the HyperDX SDK forge scaffolds and initialises (otel_gen.ts, SERVICE_NAME), the same-origin /_otel route and who forwards it, the env knobs, source maps extracted to a registry sidecar and never served, replay shipped off and always masked, reportException for caught errors, and interaction() spans timing a user operation from click to usable.
+description: Browser telemetry in forge frontends — the HyperDX SDK forge scaffolds and initialises (otel_gen.ts, SERVICE_NAME), the same-origin /_otel route and who forwards it, the env knobs, source maps extracted to a registry sidecar and never served, new-project replay on and always masked, reportException for caught errors, and interaction() spans timing a user operation from click to usable.
 ---
 
 # Browser telemetry (HyperDX SDK)
@@ -67,7 +67,7 @@ into every environment it is promoted to.
 |---|---|---|---|
 | ingest path (`off` or empty disables) | `OTEL_ENDPOINT` | KCL `config.otel_endpoint` or `runtime_config` | `/_otel` in dev and on `forge.OnHosted`, **empty elsewhere** |
 | `deployment.environment` | `ENVIRONMENT` | KCL `config.environment` or `runtime_config` | the forge env name |
-| session replay | `OTEL_REPLAY = "true"` | `runtime_config` | **off** |
+| session replay | `OTEL_REPLAY = "true"` | `runtime_config` | **on in new projects**, off in existing implicit-off envs |
 | `service.version` | — (a build fact: `NEXT_PUBLIC_APP_VERSION` / `VITE_APP_VERSION`) | the deploy | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the
@@ -103,14 +103,49 @@ keeps its maps and trailers, and the maps are still copied to the sidecar and
 filed, so its errors symbolicate too. `"off"` keeps maps nowhere, and its errors
 stay minified.
 
-## Replay is shipped, off, and always masked
+## Replay defaults on for new projects, always masked
 
-The SDK bundles an rrweb recorder. It stays disabled unless the replay knob is
-`true`, and when it is on, **all text and all inputs are masked** and canvas is
-not recorded — a replay records the DOM, which for most apps is their most
-sensitive data. There is no knob that records unmasked. Reliant's own chat UI
-never enables it. Network bodies (`advancedNetworkCapture`) are also off: request
-and response bodies are user data.
+New app and static-site environments declare `_session_replay = True` in
+`deploy/kcl/<env>/main.k`. This one switch sets both the frontend's runtime
+`OTEL_REPLAY` and `observability.signals.replay` (the hosted ingestion opt-in).
+Set it to `False` and restart/redeploy that environment to stop capture and
+remove its ingestion opt-in. Reload open tabs to pick up the new document.
+The choice is **per environment, not baked into a promoted artifact**.
+
+Pin upgrades do not enable replay in existing projects: the SDK and KCL schema
+retain their off default. Adding a frontend to an existing project does not
+rewrite that environment's owned policy either. To opt in deliberately, add
+both declarations above; setting only `OTEL_REPLAY` cannot authorize hosted
+ingestion. An explicit endpoint `off` or browser telemetry off disables capture. Replay
+also respects `navigator.globalPrivacyControl === true`, DNT `1`/`yes` (including
+legacy window/MS DNT), before sampling. Check consent before calling
+`initTelemetry()` if your product requires it: the scaffold does not invent a
+consent policy. On withdrawal call `disableTelemetry()` from the runtime; it
+stops the recorder for this page load (already exported data is not recalled,
+and ordinary SDK network tracing cannot be undone). A changed deployment
+setting requires a page reload.
+
+Dev keeps its normal destination selection. Hosted dev requests a session-bound
+replay grant and enables capture only after the server acknowledges it; older
+servers leave capture off and print an unavailable notice while ordinary
+telemetry continues. Renewal retains the explicit choice; a denied renewal
+publishes capture off for future page loads, never silently enables it later,
+and asks existing tabs to reload. Tokens authorize ingestion, not the SDK's
+capture intent: old grants retain their normal lifetime (currently one hour);
+changing the switch is not an immediate revocation of every old token.
+A container-free site needs no database or Docker: signed-in
+hosted dev provides collection. Offline without a collector, recording is
+unavailable and capture stays off. For local collection, supply an OTLP collector
+and `observability.local_port`; app dev already declares local ClickStack.
+
+The SDK bundles an rrweb recorder. When enabled, **all text and all inputs are
+masked**, canvas/media/fonts are not recorded, and network bodies are off.
+There is no unmasked setting. Sessions are sampled at
+`frontend.telemetry.replay_sample_rate` (0..1, default 1, so every eligible
+session). Sampling does not override a privacy gate. Recording adds browser
+work and telemetry volume/storage; review the environment's retention and
+access policy before shipping sensitive applications. Masking is defense in
+depth, not permission to record without any consent your product requires.
 
 ## Reporting a caught error
 

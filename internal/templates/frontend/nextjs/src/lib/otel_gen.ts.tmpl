@@ -115,6 +115,7 @@ function runtimeOrBuild(
   return build;
 }
 
+{{browserReplayPrivacyGuard}}
 let warnedBuildFallback = false;
 
 // One warning per page load, however often initTelemetry runs (StrictMode's
@@ -193,7 +194,7 @@ export function initTelemetry(): void {
     apiOrigins: [
       text(cfg.API_URL) || process.env.NEXT_PUBLIC_API_URL || DEV_API_URL,
     ],
-    replay: replay === "true",
+    replay: replay === "true" && replayPrivacyAllows(),
   });
 }
 

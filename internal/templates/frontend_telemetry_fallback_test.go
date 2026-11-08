@@ -202,6 +202,7 @@ export function getTracer() { return {}; }
 		"main.mjs": `const build = JSON.parse(process.env.FORGE_TEST_BUILD || "{}");
 globalThis.__viteEnv = { ...build, DEV: process.env.FORGE_TEST_DEV === "1" };
 globalThis.window = { __FORGE_CONFIG__: JSON.parse(process.env.FORGE_TEST_RUNTIME || "null") || {} };
+Object.defineProperty(globalThis, "navigator", {value: JSON.parse(process.env.FORGE_TEST_PRIVACY || "{}"), configurable: true});
 const warns = [];
 console.warn = (...args) => warns.push(args.join(" "));
 const mod = await import("./otel_gen.ts");

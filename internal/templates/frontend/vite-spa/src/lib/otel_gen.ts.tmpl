@@ -111,6 +111,7 @@ function runtimeOrBuild(
   return build;
 }
 
+{{browserReplayPrivacyGuard}}
 let warnedBuildFallback = false;
 
 // One warning per page load, however often initTelemetry runs.
@@ -188,7 +189,7 @@ export function initTelemetry(): void {
         (import.meta.env.VITE_API_URL as string | undefined) ||
         DEV_API_URL,
     ],
-    replay: replay === "true",
+    replay: replay === "true" && replayPrivacyAllows(),
   });
 }
 

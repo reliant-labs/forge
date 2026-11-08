@@ -39,6 +39,7 @@ var siteStarterKinds = map[string]SiteFrontend{
 func SiteStarterFrontend(kind, name string) (SiteFrontend, bool) {
 	fe, ok := siteStarterKinds[kind]
 	fe.Name = name
+	fe.SessionReplay = ok
 	return fe, ok
 }
 
@@ -75,6 +76,7 @@ type siteStarterData struct {
 	Connect  string
 	Protobuf string
 	OTelAPI  string
+	HyperDX  string
 }
 
 // WriteSiteStarter writes the starter app of a greenfield static site into
@@ -97,6 +99,7 @@ func WriteSiteStarter(dir, projectName string, fe SiteFrontend) error {
 		Connect:         webRuntimePeer("@connectrpc/connect"),
 		Protobuf:        webRuntimePeer("@bufbuild/protobuf"),
 		OTelAPI:         webRuntimePeer("@opentelemetry/api"),
+		HyperDX:         webRuntimePeer("@hyperdx/browser"),
 	}
 	for _, rel := range files {
 		content, err := templates.FrontendTemplates().Render(path.Join(root, rel), data)
@@ -106,6 +109,26 @@ func WriteSiteStarter(dir, projectName string, fe SiteFrontend) error {
 		if err := writeSiteFile(dir, strings.TrimSuffix(rel, ".tmpl"), content); err != nil {
 			return err
 		}
+	}
+	// Use exactly the same generated configuration modules as app frontends.
+	// The owned starter calls them; later generate runs may refresh them.
+	kind := "nextjs"
+	modules := []string{"otel_gen.ts", "apiurl_gen.ts", "basepath_gen.ts"}
+	if fe.Type == "vite" {
+		kind = "vite-spa"
+		modules = modules[:2]
+	}
+	for _, module := range modules {
+		content, err := templates.FrontendTemplates().Render(path.Join(kind, "src/lib", module+".tmpl"), templates.FrontendTemplateData{ProjectName: projectName, FrontendName: fe.Name})
+		if err != nil {
+			return err
+		}
+		if err := writeSiteFile(dir, path.Join("src/lib", module), content); err != nil {
+			return err
+		}
+	}
+	if err := writeSiteFile(dir, "public/config.js", []byte("// Replaced by forge for the selected environment.\nwindow.__FORGE_CONFIG__ = {};\n")); err != nil {
+		return err
 	}
 	for _, f := range siteStarterReused[fe.Type] {
 		content, err := templates.FrontendTemplates().Get(f.from)

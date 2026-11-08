@@ -243,7 +243,7 @@ func TestDecideDevTelemetrySendsSessionAndRetention(t *testing.T) {
 func TestDevTelemetryFilesAndRenewal(t *testing.T) {
 	dir := t.TempDir()
 	caller := &fakeMintCaller{now: devTelNow}
-	g, err := mintDevTelemetry(context.Background(), caller, "sess-x", "demo", "dev", nil, devTelNow)
+	g, err := mintDevTelemetry(context.Background(), caller, "sess-x", "demo", "dev", nil, devTelNow, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,11 +337,11 @@ func TestDevTelemetryRecordKeysOnTheServersInstanceID(t *testing.T) {
 		t.Errorf("instance_id = %q, want the server's instance.id (local session id is %q)", rec.InstanceID, f.Session.session.ID)
 	}
 	// An answer with no instance id cannot key anything: not hosted.
-	if _, err := mintDevTelemetry(context.Background(), noInstanceCaller{}, "s", "p", "dev", nil, devTelNow); err == nil {
+	if _, err := mintDevTelemetry(context.Background(), noInstanceCaller{}, "s", "p", "dev", nil, devTelNow, false); err == nil {
 		t.Error("a grant without instance.id was accepted")
 	}
 	// protojson Timestamps carry fractional seconds.
-	if _, err := mintDevTelemetry(context.Background(), noInstanceCaller{instance: "i", expires: "2026-11-07T13:00:00.123456789Z"}, "s", "p", "dev", nil, devTelNow); err != nil {
+	if _, err := mintDevTelemetry(context.Background(), noInstanceCaller{instance: "i", expires: "2026-11-07T13:00:00.123456789Z"}, "s", "p", "dev", nil, devTelNow, false); err != nil {
 		t.Errorf("fractional expiresAt refused: %v", err)
 	}
 }

@@ -146,6 +146,9 @@ const BAD_PATHS = [
   "/v1%2Ftraces",
   "/v1/%74races",
   "/api/v1/orgs",
+  "/v1/traces#",
+  "/v1/traces#admin",
+  "/v1/traces#?x=1",
 ];
 
 describe("the /_otel proxy", () => {

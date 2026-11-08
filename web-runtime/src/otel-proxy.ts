@@ -214,9 +214,13 @@ function forwardedHeaders(
   return out;
 }
 
-/** The request path without its query string or fragment. */
+/**
+ * The request path without its query string. An HTTP request target has no
+ * fragment, so a literal `#` stays part of the path, and `/v1/traces#x`
+ * matches no ingest path.
+ */
 function pathOnly(path: string): string {
-  const q = path.search(/[?#]/);
+  const q = path.indexOf("?");
   return q < 0 ? path : path.slice(0, q);
 }
 

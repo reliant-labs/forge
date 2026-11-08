@@ -6533,6 +6533,10 @@ schema Observability:
     and a Reliant credential exists, else local). `forge env up --telemetry`
     and FORGE_DEV_TELEMETRY override it, and "local" anywhere wins. In hosted
     mode no local collector runs, so the stack needs no Docker for telemetry.
+    A CONTAINER-FREE env (no compose workload: host processes and HostInfra
+    only) has no local collector at all, so it needs no `local_port`: its
+    local mode exports nothing, and only a `destination` (which needs the
+    compose forwarder) still asks for the port.
 
         observability = forge.Observability {dev_telemetry = "local"}   # never send dev telemetry
 
@@ -7905,7 +7909,7 @@ schema Bundle:
         # also exports OTLP logs would store every line twice.
         len(_logs_double_shipped(workloads, observability)) == 0, \
             "${_logs_double_shipped(workloads, observability)} set OTEL_LOGS_EXPORTER=otlp, but this env's collector already ships their logs (Observability.signals.logs), so every line would be stored twice. Unset OTEL_LOGS_EXPORTER, or set signals.logs = False to ship logs from the app instead"
-        len(_host_without_local_port(workloads, observability)) == 0, \
-            "${_host_without_local_port(workloads, observability)} run as host processes, which export OTLP to the local collector's loopback port: set Bundle.observability.local_port (the port the env's compose collector publishes)"
+        len(_host_without_local_port(workloads, frontends, observability)) == 0, \
+            _host_without_local_port_msg(workloads, frontends, observability)
         all w in workloads { not _cloud_build_without_platform(w) }, \
             "ClusterTarget.platform is required for ${[w.name for w in workloads if _cloud_build_without_platform(w)]}: it deploys to a cloud target (a non-local registry) AND has a real external image build (DockerBuild / non-no-op ShellBuild), but its target states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so the build cross-compiles for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

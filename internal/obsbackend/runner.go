@@ -151,6 +151,11 @@ func (d DockerRunner) classify(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return Undetermined("the query was cancelled: %v", ctx.Err())
 	}
+	// Already classified by the exec (the docker engine probe): keep it.
+	var be *Error
+	if errors.As(err, &be) {
+		return be
+	}
 	msg := err.Error()
 	up := "forge env up"
 	if d.Env != "" {

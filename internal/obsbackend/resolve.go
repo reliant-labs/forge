@@ -30,6 +30,11 @@ type Facts struct {
 	// Without local workloads, its services are reached through ControlPlane,
 	// not through this machine's ClickStack. It does not imply hosted runtime.
 	HasCluster bool
+	// NoLocalStore is true for a container-free env: it declares no local
+	// ClickStack and no collector port (host processes and forge.HostInfra
+	// only), so nothing on this machine holds its telemetry. Its local
+	// fallback exports nothing, and a local query has nothing to read.
+	NoLocalStore bool
 	// LocalLifecycle is the env's explicit local/ephemeral lifecycle. Local
 	// host processes may share that scratch env with a developer's cluster.
 	LocalLifecycle bool
@@ -152,6 +157,9 @@ func Resolve(f Facts, override string) (Decision, error) {
 		}
 		return Decision{Backend: BackendCloud, Reason: why + ": telemetry is stored by the control plane"}, nil
 	}
+	if f.HasLocal && f.NoLocalStore && !f.HasCluster {
+		return Decision{}, noLocalStore(f)
+	}
 	if f.HasLocal && f.LocalLifecycle {
 		return Decision{Backend: BackendLocal, Reason: "local lifecycle: host processes feed the env's ClickStack"}, nil
 	}
@@ -170,6 +178,27 @@ func Resolve(f Facts, override string) (Decision, error) {
 		return Decision{}, Undetermined("env %s declares no runtime or telemetry destination forge can query; refusing to guess the local ClickStack", f.Env)
 	}
 	return Decision{Backend: BackendLocal, Reason: "no destination: host processes feed the local ClickStack"}, nil
+}
+
+// noLocalStore is the answer for a container-free env whose telemetry is
+// local: there is nothing to query, and saying "start the ClickStack" would
+// send the developer to a container `forge env up` never starts. So it says
+// why it is local (the recorded reason, when `forge env up` wrote one), how
+// to ship it to the hosted store, and how to opt into a local store instead.
+func noLocalStore(f Facts) *Error {
+	why := ""
+	if r := f.DevTelemetry; r != nil && r.Reason != "" {
+		why = " (" + r.Reason + ")"
+	}
+	hosted := "sign in to Reliant (`forge login`) and re-run `forge env up " + f.Env + "` to ship it to your org's hosted store"
+	if f.ControlPlane == "" {
+		hosted = "declare a `control_plane = forge.ControlPlane {}` on the env, sign in to Reliant (`forge login`) and re-run `forge env up " + f.Env + "` to ship it to your org's hosted store"
+	}
+	return Undetermined("telemetry for %s is local%s, and this env has no local store: it runs no container, so no ClickStack holds it and nothing was collected. "+
+		"To read it, %s. Or opt into a local store where Docker runs: declare the scaffold's `clickstack` compose workload and set observability.local_port "+
+		"(`forge skill load observability`), then `forge env up %s` (with --telemetry=local to keep it local while signed in)",
+		f.Env, why, hosted, f.Env).
+		With(Cmd("forge", "login"), Cmd("forge", "env", "up", f.Env))
 }
 
 // LocalScope is the scope of every local query: the project's own ClickStack

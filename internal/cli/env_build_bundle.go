@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -233,10 +234,17 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		// renders one on demand. A control plane that ANSWERS and refuses
 		// is a fact about the env and still fails the build.
 		if declarationUndeliverable(err) {
+			why := err.Error()
+			if errors.Is(err, cloud.ErrNoCredential) {
+				// Signed out: one line, not the resolver's fix list (a
+				// signed-out `forge env up` of a local env lands here
+				// every run).
+				why = firstLine(why) + " (`" + Name() + " login` to sign in)"
+			}
 			fmt.Fprintf(in.errWriter(),
-				"[bundle] Warning: env %s's bundle was not written: %v\n"+
+				"[bundle] Warning: env %s's bundle was not written: %s\n"+
 					"[bundle]   The build continues; the next build or deploy that reaches the control plane writes it.\n",
-				env, err)
+				env, why)
 			return bundleWriteOutcome{Env: env, Skipped: true}, nil
 		}
 		return bundleWriteOutcome{}, err

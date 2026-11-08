@@ -712,6 +712,13 @@ func setupDevTelemetry(ctx context.Context, e *KCLEntities, in devTelemetrySetup
 		// standalone project with no control plane has nothing to hear.
 		if facts.ControlPlane && facts.TelemetryOn {
 			fmt.Fprintf(w, "[up] telemetry: local (%s)\n", d.Reason)
+			if envHasNoTelemetryStore(e) {
+				hint := ""
+				if mode.Value != devTelemetryLocal {
+					hint = fmt.Sprintf("; sign in to Reliant (`%s login`) to ship it to your org's hosted store", Name())
+				}
+				fmt.Fprintf(w, "[up]   this env runs no local store (no container, no ClickStack), so nothing is exported or kept%s\n", hint)
+			}
 		}
 		return nil, nil
 	}

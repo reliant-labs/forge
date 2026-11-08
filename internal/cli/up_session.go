@@ -27,11 +27,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -110,6 +112,12 @@ type upSession struct {
 // (sessionTargetForEntities), so the env is not rendered a second time.
 func newUpSessionFor(ctx context.Context, projectDir, env string, target sessionTarget, err error, log io.Writer, now time.Time) *upSession {
 	switch {
+	case err != nil && errors.Is(err, cloud.ErrNoCredential):
+		// A signed-out developer on an env that declares a control plane:
+		// the stack runs, it is just not visible in Live. One line, not the
+		// credential resolver's multi-line fix list.
+		fmt.Fprintf(log, "[up] note: not reporting this stack's presence: not signed in to env %q's control plane (`%s login`, or sign in to Reliant, to show it in Live)\n", env, Name())
+		return nil
 	case err != nil:
 		fmt.Fprintf(log, "[up] note: not reporting this stack's presence: %v\n", err)
 		return nil

@@ -43,7 +43,7 @@ observability = forge.Observability {
 | `sampling.errors_always` | `False` | keeping every ERROR trace is a *tail* decision (a head sampler cannot know a trace will fail), which needs the whole trace in one gateway. Forge renders none, so with `traces_ratio < 1` it is refused unless `destination_tail_samples = True` declares that the destination's gateway keeps error traces itself |
 | `sampling.destination_tail_samples` | `False` | the destination's promise (e.g. the hosted platform's gateway), carried in the render; forge does not enforce it |
 | `retention.{traces,metrics,logs}_days` | `0` | hints. The local ClickStack takes one table TTL (the longest); a node agent has no storage and ignores them |
-| `local_port` | `0` | the loopback port the env's collector publishes; host processes export there |
+| `local_port` | `0` | the loopback port the env's collector publishes; host processes export there. Not needed in a container-free env (see below) |
 | `profiles_port` | `0` | the loopback port of the local profiles collector (`otel-profiles`, beside ClickStack only); host processes get `OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT` aimed there |
 | `agent.namespace / image / memory_limit_mib` | `forge-observability`, contrib pinned by digest, 256 | the node agent |
 
@@ -102,6 +102,10 @@ In hosted mode:
 - No local collector, forwarder, profiles collector or Alertmanager starts, so a host-only env needs no Docker.
 - Host processes get `OTEL_EXPORTER_OTLP_ENDPOINT=<hosted edge>`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_EXPORTER_OTLP_HEADERS_FILE=<abs>/.forge/obs/otlp-headers` and `OTEL_LOGS_EXPORTER=otlp` (no collector tails log files). A transport you exported or declared wins whole. Infra processes' logs (postgres, nats) are not collected. Profiles are off.
 - Frontend dev servers get the edge as `OTEL_EXPORTER_OTLP_ENDPOINT` and the browser token file as `FORGE_OTEL_HEADERS_FILE`. The scaffolded `/_otel` proxy attaches it per request, server side (Vite: a `proxyReq` hook; Next.js: a loopback relay behind the rewrite), and drops the page's cookies. A frontend scaffolded before this has no hook: copy the `FORGE_OTEL_HEADERS_FILE` block from a freshly scaffolded `vite.config.ts` / `next.config.ts`, or its browser telemetry is refused.
+
+**A container-free env** (host processes and `forge.HostInfra` only — no compose workload, so no ClickStack) needs no `local_port` and no `destination`: `dev_telemetry` decides alone. Hosted, it ships as above. Local — declared, `--telemetry=local`, or the `auto` fallback of a signed-out developer — exports nothing: host processes get no `OTEL_EXPORTER_OTLP_ENDPOINT` (so nothing retries a dead port; trace context still propagates), frontends get `<prefix>OTEL_ENDPOINT=off`, `env up` says so once, and `forge obs` answers "this env has no local store" at once instead of calling docker. To keep a local store there, declare the scaffold's `clickstack` compose workload and `local_port` (that needs Docker). The control plane is optional for such a stack: signed out or with the control plane down, `env up` still runs it, with no presence row, local telemetry, and no release pins from the hosted ledger.
+
+        observability = forge.Observability {dev_telemetry = "auto"}   # reliant's dev: no Docker, no local_port
 
 Retention is declared on the same `retention` block: `traces_days`, `metrics_days`, `logs_days`, `browser_days`, and per-service `overrides = [forge.RetentionOverride {service = "worker", signal = "logs", days = 1}]` (`signal` is traces, metrics, logs or browser; `days` ≥ 1). The control plane clamps each to [1, the plan cap], and 0 means its dev default (3 days).
 

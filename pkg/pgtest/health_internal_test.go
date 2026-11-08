@@ -144,16 +144,14 @@ func TestNew_SucceedsAfterTheSharedServerDies(t *testing.T) {
 	}
 	s.baseDB.SetMaxIdleConns(0)
 	// A crash, not a stop: nothing gets to tidy the pool state or the pid
-	// file, and its backends exit with it, so the dial is refused.
-	dir := runtimeDir(st.Port)
+	// file. The listening socket is the postmaster's alone (a backend closes
+	// its copy at fork), so once the postmaster has exited the dial is
+	// refused, whenever its orphaned backends notice and follow it.
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 100 && len(postgresesOf(dir)) > 0; i++ {
-		time.Sleep(100 * time.Millisecond)
-	}
-	if left := postgresesOf(dir); len(left) > 0 {
-		t.Fatalf("postgres processes %v survived their postmaster's SIGKILL", left)
+	if err := waitExit(pid); err != nil {
+		t.Fatalf("wait for the postmaster %d to exit: %v", pid, err)
 	}
 
 	db, cleanup, err = New()
@@ -168,19 +166,6 @@ func TestNew_SucceedsAfterTheSharedServerDies(t *testing.T) {
 	if now := readPoolState(); now.Port == st.Port {
 		t.Errorf("the pool still records the dead server on %d", st.Port)
 	}
-}
-
-// postgresesOf lists the live processes running the postgres binary of the
-// runtime dir dir: the postmaster and its backends (Linux; elsewhere none).
-func postgresesOf(dir string) []int {
-	entries, _ := os.ReadDir("/proc")
-	var pids []int
-	for _, e := range entries {
-		if pid, err := strconv.Atoi(e.Name()); err == nil && isPostgresOf(pid, dir) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
 }
 
 // Only a failure to reach the server counts as losing it: an error the

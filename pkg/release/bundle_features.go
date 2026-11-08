@@ -128,6 +128,10 @@ const (
 	// written only to one that names the feature. A shape that declares none
 	// carries no key, so it needs nothing of the reader.
 	BundleFeatureExternalDatabases = "shape-external-databases"
+	// BundleFeatureExternalDatabaseTLS is authenticated external route TLS.
+	// Older readers receive no such route, never a route with trust stripped
+	// or authentication downgraded. Legacy routes remain unchanged.
+	BundleFeatureExternalDatabaseTLS = "shape-external-database-tls"
 	// BundleFeatureStorage is Shape.Buckets and ShapeDataAccess.Storage: the
 	// env's buckets as the storage browser lists them, and the policy it
 	// browses them under. A control plane that predates it browses nothing,
@@ -144,7 +148,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureStorage}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -231,6 +235,11 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureExternalDatabases) {
 		s.ExternalDatabases = nil
+	} else if !r.Supports(BundleFeatureExternalDatabaseTLS) {
+		// Copy before filtering: limiting must not mutate the full declaration.
+		s.ExternalDatabases = slices.DeleteFunc(slices.Clone(s.ExternalDatabases), func(x ShapeExternalDatabase) bool {
+			return x.SSLMode == ExternalDatabaseSSLVerifyFull || x.CASecret != "" || x.CAConfigMap != "" || x.CAKey != "" || x.TLSServerName != ""
+		})
 	}
 	if !r.Supports(BundleFeatureShapePlacement) {
 		s.HostInfra = false

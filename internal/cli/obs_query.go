@@ -89,6 +89,11 @@ dashboards/*.json; kinds line, number, table, bar, heatmap, sql) flattened to a
 table. Panels over the hosted platform's own tables (issues, sessions, funnel)
 need the control plane.
 
+--sql returns the result rows as selected: every column, in SELECT order, for
+any column types. On a hosted env whose control plane predates that, a SELECT
+whose first column is a date or time exits 2 (it would come back folded into
+series); select a non-time column first there.
+
 Raw SQL is counted: the JSON document says "query_mode": "raw", and with
 FORGE_OBS_DEBUG=1 the statement's shape (literals removed) is logged to stderr.
 
@@ -166,8 +171,12 @@ func runObsQuery(ctx context.Context, d obsDeps, env string, o obsQueryOpts) err
 		return fail(err)
 	}
 	doc := obsQueryDoc{Scope: obsScope(b.Info(), n), QueryMode: mode, Columns: res.Columns, Rows: res.Rows}
+	// columns and rows are always arrays: an empty result is [], never null.
 	if doc.Columns == nil {
-		doc.Columns, doc.Rows = []obsbackend.Column{}, [][]any{}
+		doc.Columns = []obsbackend.Column{}
+	}
+	if doc.Rows == nil {
+		doc.Rows = [][]any{}
 	}
 	if n.Explain {
 		doc.Statements = res.Statements

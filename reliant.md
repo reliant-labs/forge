@@ -242,9 +242,9 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
 - **Checks** — `forge ci verify-generated`, `forge ci validate-kcl`, the pre-commit hooks
   (go-vet-mod skipped), and the Go and npm dependency-license allowlists.
 - **golangci-lint (changed packages)** (owner, 2026-11-08; #1947) — its own job, beside
-  Test and Checks so it is never on their critical path: `scripts/ci-golangci-changed.sh
-  HEAD^1`, the pinned golangci-lint (`install-release-tool`) over the packages the entry
-  changed, root `.golangci.yml` and, under `pkg/`, `pkg/.golangci.yml`, reporting the
+  Test and Checks so it is never on their critical path:
+  `scripts/ci-golangci-changed.sh HEAD^1`, the pinned golangci-lint (`install-release-tool`)
+  over the packages the entry changed, root `.golangci.yml` and, under `pkg/`, `pkg/.golangci.yml`, reporting the
   findings in the files it changed (`--new-from-rev --whole-files`). A typical diff lints in
   well under the tier's other jobs; `internal/cli` is the slow case. Run it locally with
   `scripts/ci-golangci-changed.sh` (base: the merge base with `origin/main`; `--plan` lists

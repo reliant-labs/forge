@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 var golangciChangedScript = filepath.Join("..", "..", "scripts", "ci-golangci-changed.sh")
@@ -121,7 +123,7 @@ func TestGolangciChangedPlan(t *testing.T) {
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t",
 			"GIT_COMMITTER_EMAIL=t@t", "GOFLAGS=-mod=mod", "GOWORK=off")
-		cmd.Env = append(cmd.Env, env...)
+		cmd.Env = goexec.WithTrimpath(append(cmd.Env, env...))
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}

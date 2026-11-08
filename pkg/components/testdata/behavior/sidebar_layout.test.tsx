@@ -247,12 +247,61 @@ test("removing a lower drawer while a Modal is open preserves top focus and scro
   expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
   expect(document.querySelector('[role="dialog"]')).toBe(top);
   expect(document.activeElement).toBe(focused);
+  expect(top?.contains(document.activeElement)).toBe(true);
   expect(document.body.style.overflow).toBe("hidden");
   expect(host.hasAttribute("inert")).toBe(true);
   renderStack(false, false);
   expect(host.hasAttribute("inert")).toBe(false);
   expect(document.body.style.overflow).toBe("");
 });
+
+test.each(["remove", "desktop"])(
+  "%s of a lower drawer cannot steal focus from a surviving portaled Modal",
+  async (change) => {
+    const renderStack = (lower: boolean, upper: boolean, replaceFocused = false) =>
+      act(() =>
+        root.render(
+          <>
+            {lower && <Shell key="drawer" />}
+            <Modal key="top" open={upper} onClose={() => {}} title="Top">
+              <button key={replaceFocused ? "replacement" : "original"}>Top action</button>
+            </Modal>
+          </>,
+        ),
+      );
+    renderStack(true, false);
+    await open();
+    renderStack(true, true);
+    const top = document.querySelector<HTMLElement>('[role="dialog"]:not(aside)')!;
+    expect(top.contains(document.activeElement)).toBe(true);
+    if (change === "remove") {
+      // Removal of the active element makes body active without a focusin event
+      // in browsers. Replace it in the same commit as lower-dialog teardown.
+      renderStack(false, true, true);
+    } else {
+      act(() => {
+        media.matches = false;
+        media.dispatchEvent(new Event("change"));
+      });
+    }
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(top.contains(document.activeElement)).toBe(true);
+    expect(document.body.style.overflow).toBe("hidden");
+    // Programmatic/page focus (including a lower responsive transition effect)
+    // is contained immediately, without needing the user to press Tab.
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    act(() => outside.focus());
+    expect(top.contains(document.activeElement)).toBe(true);
+    renderStack(false, false);
+    outside.focus();
+    expect(document.activeElement).toBe(outside); // no leaked focusin listener
+    expect(document.body.style.overflow).toBe("");
+  },
+);
 
 test("empty drawer focuses its close button and restores the explicit trigger after Safari-style activation", async () => {
   act(() =>

@@ -85,7 +85,7 @@ const sizeStyles: Record<NonNullable<ModalProps["size"]>, string> = {
 // Open dialogs, bottom to top. Escape and the focus trap belong to the top
 // one only; a module-level stack because stacked dialogs are usually
 // rendered by unrelated components.
-const openStack: { id: symbol; panel: HTMLElement }[] = [];
+const openStack: { id: symbol; panel: HTMLElement; containFocus: () => void }[] = [];
 const isTop = (id: symbol) => openStack[openStack.length - 1]?.id === id;
 
 // A menu/picker can portal outside the dialog DOM. aria-controls ties it to
@@ -137,6 +137,9 @@ function isolateBackground() {
     }
   };
   visit(document.body);
+  // Removing a focused node need not emit focusin (browsers can leave body
+  // active). Reconcile focus after DOM mutations too, not only on Tab.
+  openStack[openStack.length - 1]?.containFocus();
 }
 
 // Shared by Modal and SidebarLayout, so closing either cannot unlock the other.
@@ -195,7 +198,23 @@ export function useModalDialog({
     const previouslyFocused =
       callbacks.current.returnFocus?.() ??
       (active instanceof HTMLElement && active !== document.body ? active : null);
-    openStack.push({ id, panel });
+    let lastFocused: HTMLElement | null = null;
+    const containsFocus = () =>
+      modalSurfaces(panel).some((surface) => surface.contains(document.activeElement));
+    const containFocus = () => {
+      if (!isTop(id) || !panel.isConnected || containsFocus()) return;
+      const target =
+        lastFocused?.isConnected &&
+        modalSurfaces(panel).some((surface) => surface.contains(lastFocused)) &&
+        !lastFocused.closest('[inert], [hidden], [aria-hidden="true"]') &&
+        !lastFocused.matches(":disabled") &&
+        getComputedStyle(lastFocused).display !== "none" &&
+        getComputedStyle(lastFocused).visibility !== "hidden"
+          ? lastFocused
+          : (focusable()[0] ?? panel);
+      target.focus({ preventScroll: true });
+    };
+    openStack.push({ id, panel, containFocus });
     lockScroll();
     // Release the lower dialog's isolation before focusing a new portal.
     // Its new background is isolated only AFTER focus has moved out of it.
@@ -217,6 +236,16 @@ export function useModalDialog({
     if (!panel.contains(document.activeElement)) {
       (callbacks.current.initialFocus?.() ?? focusable()[0] ?? panel).focus();
     }
+    if (document.activeElement instanceof HTMLElement && containsFocus()) {
+      lastFocused = document.activeElement;
+    }
+    const onFocusIn = () => {
+      if (!isTop(id)) return;
+      if (containsFocus() && document.activeElement instanceof HTMLElement) {
+        lastFocused = document.activeElement;
+      } else containFocus();
+    };
+    document.addEventListener("focusin", onFocusIn);
     isolateBackground();
     // Portals created while open also belong to the background unless they
     // register a new modal above us. Observe child changes, not our attributes.
@@ -253,6 +282,7 @@ export function useModalDialog({
     return () => {
       observer.disconnect();
       document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("focusin", onFocusIn);
       const wasTop = isTop(id);
       openStack.splice(
         openStack.findIndex((entry) => entry.id === id),

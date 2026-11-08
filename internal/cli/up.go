@@ -3202,6 +3202,7 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 			failures++
 			continue
 		}
+		prepareAirDirs(w)
 		if err := procs.start(name, cmd, background); err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++

@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestGoTestDropsOnlyTheAmbientSlotLease(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	body := readText(t, filepath.Join("..", "..", "scripts", "ci-go-test.sh"))
 	root := t.TempDir()
 	for name, content := range map[string]string{

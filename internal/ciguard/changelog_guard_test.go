@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/pkg/testkit"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -130,6 +131,7 @@ func runChangelogGuard(t *testing.T, repo, branch string) (string, error) {
 }
 
 func TestChangelogGuardVerdicts(t *testing.T) {
+	testkit.Slow(t, "execs git and bash")
 	edit := map[string]string{"CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n\n- an entry\n"}
 	for _, tc := range []struct {
 		name    string

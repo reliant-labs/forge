@@ -9,9 +9,11 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/storage"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestStorageReserveBlocksDirectBuildLanes(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	t.Chdir(root)
 	if err := os.WriteFile("Dockerfile", []byte("FROM scratch\n"), 0600); err != nil {

@@ -41,6 +41,7 @@ func readFile(t *testing.T, path string) string {
 // --kind site writes forge.yaml and the deploy envs, declaring the root app,
 // and nothing else: no Go, and not a byte of the app's own files.
 func TestRunNewSiteAdoptsTheRootApp(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := viteApp(t, "export default { build: { outDir: 'public-build' } }\n")
 	if err := runNewSite(t.Context(), newSiteInput{targetPath: root, projectName: "landing", inPlace: true, harness: "reliant"}); err != nil {
 		t.Fatalf("runNewSite: %v", err)
@@ -288,6 +289,7 @@ func TestSiteNextStepsArePasteable(t *testing.T) {
 
 // A harness that reads a memory file gets the SITE memory, not the Go one.
 func TestSiteWritesTheSiteMemoryForAFileHarness(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := viteApp(t, "export default {}\n")
 	if err := runNewSite(t.Context(), newSiteInput{targetPath: root, projectName: "landing", inPlace: true, harness: "claude"}); err != nil {
 		t.Fatal(err)
@@ -320,6 +322,7 @@ func TestProjectNewInPlaceOverARootFrontendPointsAtKindSite(t *testing.T) {
 // the compile check, the contract emitter, workloads.k, the CI workflows
 // that install forge from go.mod) instead of failing on `pattern ./...`.
 func TestGenerateSkipsTheGoStepsForASite(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := viteApp(t, "export default {}\n")
 	if err := runNewSite(t.Context(), newSiteInput{targetPath: root, projectName: "landing", inPlace: true, harness: "reliant"}); err != nil {
 		t.Fatal(err)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // stubEnvShapeStream is stubEnvShape over a stated render, so a test can make
@@ -62,6 +63,7 @@ func bundleRowsFor(t *testing.T, dir, env, version string) []release.BundleRecor
 // source pins and named another forge as the renderer — reuses the recorded
 // bundle instead of recording a second one under the same release.
 func TestWriteEnvBundle_ARelease_ReusesItsRecordedBundle(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-of-record")
 	stream, forge := bundleTestStream, "v0.1.44-d6b5d722"
 	stubEnvShapeStream(t, "bundle-of-record", &stream, &forge)
@@ -101,6 +103,7 @@ func TestWriteEnvBundle_ARelease_ReusesItsRecordedBundle(t *testing.T) {
 // the same release would make the release mean whichever was written last. It
 // is refused, naming the object — unless the caller re-records on purpose.
 func TestWriteEnvBundle_ARelease_RefusesADifferentRender(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-of-record")
 	stream, forge := bundleTestStream, "v0.1.44-d6b5d722"
 	stubEnvShapeStream(t, "bundle-of-record", &stream, &forge)
@@ -141,6 +144,7 @@ func TestWriteEnvBundle_ARelease_RefusesADifferentRender(t *testing.T) {
 // reuses it: the record is re-sent with the RELEASE'S OWN bytes (idempotent on
 // (env, digest)), never with this render's.
 func TestWriteEnvBundle_HostedRelease_ReusesTheTaggedBundle(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-hosted-project")
 	stream, forge := bundleTestStream, "v0.1.44-d6b5d722"
 	stubEnvShapeStream(t, "bundle-hosted-project", &stream, &forge)

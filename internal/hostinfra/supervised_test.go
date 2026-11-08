@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Every platform forge supports has a pinned checksum for every engine, so
@@ -156,6 +158,7 @@ func TestNATSInfoReady(t *testing.T) {
 // The probe reads what a real server sends on connect, and a listener that
 // says nothing (any non-NATS service) is "not ready", promptly.
 func TestNATSReadyProbe(t *testing.T) {
+	testkit.Slow(t, "waits out the probe's 2s read deadline on a silent listener")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func gitDo(t *testing.T, dir, stdin string, args ...string) string {
@@ -133,6 +135,7 @@ func TestCaptureCommitRangeInAShallowCloneIsTruncatedWithAnUnknownTotal(t *testi
 }
 
 func TestCaptureCommitRangeOutsideGitRecordsNothing(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	got, err := CaptureCommitRange(context.Background(), t.TempDir(), strings.Repeat("a", 40), nil)
 	if err != nil || got != nil {
 		t.Fatalf("non-git dir: %+v, %v", got, err)

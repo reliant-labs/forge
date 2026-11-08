@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A finding names the line its statement is on. `forge db migration new`
@@ -11,6 +13,7 @@ import (
 // reported at :1 — and every later one at the line of the previous
 // statement's semicolon.
 func TestFindingsPointAtTheStatementLine(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	header := strings.Repeat("-- header comment\n", 40) + "\n" // lines 1-41
 	body := header +
 		"ALTER TABLE orders ADD COLUMN tracking_number TEXT NOT NULL;\n" + // line 42
@@ -46,6 +49,7 @@ func TestFindingsPointAtTheStatementLine(t *testing.T) {
 // The verdict counts the files the findings are IN. Two findings in one file
 // of two used to read "2 findings across 2 migration files".
 func TestVerdictCountsTheFilesWithFindings(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeMigrationIn(t, dir, "0001_create_orders.up.sql", "CREATE TABLE orders (id uuid PRIMARY KEY);\n")
 	writeMigrationIn(t, dir, "0002_add_tracking.up.sql",

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // fixedPointModule is the module path every corpus project declares —
@@ -31,6 +32,7 @@ const fixedPointModule = "example.com/proj"
 // non-canonical import grouping, so a later goimports pass produced
 // byte drift the guard misread as a hand-edit on 4 files.
 func TestGenerate_MockOutputIsCanonicalFormatterFixedPoint(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	entries, err := os.ReadDir("testdata")
 	if err != nil {
 		t.Fatalf("ReadDir(testdata): %v", err)
@@ -116,6 +118,7 @@ func TestGenerate_MockOutputIsCanonicalFormatterFixedPoint(t *testing.T) {
 // import in its own trailing group — i.e. already in the form
 // `goimports -local <module>` produces, so that pass is a no-op.
 func TestGenerate_LocalImportGrouping(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"),
 		[]byte("module "+fixedPointModule+"\n\ngo 1.24\n"), 0o644); err != nil {

@@ -16,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/projectstore"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeConventionTree lays down the reliant shapes: a contract.go whose
@@ -109,6 +110,7 @@ func findingFor(fs []forgeconv.Finding, rule string) (forgeconv.Finding, bool) {
 // the declaration they name. Red before: collectConventionFindings never
 // applied suppression, so neither rule had any escape.
 func TestConventionLane_HonorsReasonedSuppression(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	writeConventionTree(t, func(rule string) string {
 		return "//forge:lint-disable-next-line " + rule + ": reliant is not a forge project; tracked in #1\n"
 	})
@@ -121,6 +123,7 @@ func TestConventionLane_HonorsReasonedSuppression(t *testing.T) {
 
 // A reasonless suppression of an error-severity rule is itself an error.
 func TestConventionLane_ReasonlessSuppressionGates(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	writeConventionTree(t, func(rule string) string {
 		return "//forge:lint-disable-next-line " + rule + "\n"
 	})
@@ -138,6 +141,7 @@ func TestConventionLane_ReasonlessSuppressionGates(t *testing.T) {
 // testability does not depend on codegen); --strict restores the error.
 // Red before: contract-names gated a tree forge never generates for.
 func TestConventionLane_NoForgeYAMLDowngradesContractNames(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	writeConventionTree(t, noDirective)
 
 	fs := conventionFindings(t, false)
@@ -162,6 +166,7 @@ func TestConventionLane_NoForgeYAMLDowngradesContractNames(t *testing.T) {
 // line number is right and a directive above it can reach it. Red before:
 // it said contract.go with client.go's line number.
 func TestConventionLane_ContractNamesAnchorsOnTheDeclaration(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	writeConventionTree(t, noDirective)
 	names, ok := findingFor(conventionFindings(t, true), "forgeconv-internal-package-contract-names")
 	if !ok {
@@ -179,6 +184,7 @@ func TestConventionLane_ContractNamesAnchorsOnTheDeclaration(t *testing.T) {
 // outcome engine grades every lane now (lint_rules.go); this pins it on the
 // conventions lane's real findings.
 func TestConventionLane_LintRulesRegradesEveryRule(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	writeConventionTree(t, noDirective)
 	rules := config.LintConfig{Rules: map[string]string{
 		"forgeconv-deps-are-interfaces":             "warn",

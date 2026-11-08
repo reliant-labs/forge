@@ -35,6 +35,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestLibraries_PositionalSelectorsPrintSignatures is the reachability
@@ -193,6 +195,7 @@ func TestWriteLibraries_GuidancePrefersTheCommandOverGoDoc(t *testing.T) {
 // methods in the package view, this fails and the guidance we ship should
 // be revisited — which is exactly the signal worth having.
 func TestGoDoc_PackageViewOmitsMethods(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	t.Parallel()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no go toolchain on PATH")

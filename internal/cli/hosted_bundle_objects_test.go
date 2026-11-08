@@ -9,12 +9,14 @@ import (
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A hosted env's bundle must CARRY its hosted tiers: they render no object in
 // the env's own manifests, so without this the bundle is an empty tree that
 // Flux applies as "nothing" and reports Ready.
 func TestHostedBundleObjectsCarryTheTiersUnderTheHostedTree(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	e, _ := loadContract(t, "hosted")
 	objs := hostedObjectsFor(t, e, true)
 	if len(objs) == 0 {

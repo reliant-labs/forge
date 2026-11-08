@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/commitpolicy"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2478,6 +2479,7 @@ func survivingReferences(t *testing.T, root string) map[string][]finding {
 // and the untracked-but-not-ignored one must both still fail. Skipping
 // everything outside the index would hide a straggler until its first commit.
 func TestGuardScansOnlyWhatGitWouldCommit(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	// A developer's global excludes or config must not decide what this
 	// test's repository ignores.
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
@@ -2747,6 +2749,7 @@ func removalNamed(t *testing.T, name string) removal {
 // silently drops one of these, this fails instead of the guard quietly
 // scanning less.
 func TestScanSurfaceReachesEveryForgeSurface(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	surfaces := map[string]struct {
 		why   string
 		match func(rel string) bool

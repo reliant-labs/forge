@@ -8,6 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeManagedRender writes content at dir/rel, optionally stamped with
@@ -59,6 +60,7 @@ func projectWithService(t *testing.T, service string) string {
 }
 
 func TestBuildTemplateData(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	data := buildTemplateData(cfg, projectWithService(t, "api"))
 
@@ -83,6 +85,7 @@ func TestBuildTemplateData(t *testing.T) {
 }
 
 func TestBuildTemplateDataDefaults(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := &config.ProjectConfig{
 		Name:       "myapp",
 		ModulePath: "github.com/example/myapp",
@@ -157,6 +160,7 @@ func TestManagedFiles(t *testing.T) {
 }
 
 func TestRenderManagedFile(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	data := buildTemplateData(cfg, "")
 
@@ -186,6 +190,7 @@ func golangciManagedFile(t *testing.T) managedFile {
 }
 
 func TestGolangciTypedAccessGuard_Variants(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	f := golangciManagedFile(t)
 
 	render := func(mode string) string {
@@ -244,6 +249,7 @@ func TestGolangciTypedAccessGuard_Variants(t *testing.T) {
 }
 
 func TestGolangciTypedAccessGuard_CustomLoaderPackage(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	f := golangciManagedFile(t)
 	cfg := testProjectConfig()
 	cfg.Config.EnforceTypedAccess = config.EnforceTypedAccessError
@@ -263,6 +269,7 @@ func TestGolangciTypedAccessGuard_CustomLoaderPackage(t *testing.T) {
 // guardrail, so it must name the concrete proto path, the regenerate step,
 // and both opt-out levers (per-line nolint and the forge.yaml dial).
 func TestGolangciTypedAccessGuard_TeachingMessage(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	f := golangciManagedFile(t)
 	cfg := testProjectConfig()
 	cfg.Config.EnforceTypedAccess = config.EnforceTypedAccessError
@@ -315,6 +322,7 @@ func TestSimpleDiffIdentical(t *testing.T) {
 }
 
 func TestUpgradeUpToDate(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	data := buildTemplateData(cfg, "")
 
@@ -351,6 +359,7 @@ func TestUpgradeUpToDate(t *testing.T) {
 }
 
 func TestUpgradeDetectsModified(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	data := buildTemplateData(cfg, "")
 
@@ -404,6 +413,7 @@ func TestUpgradeDetectsModified(t *testing.T) {
 }
 
 func TestUpgradeForceOverwrites(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	data := buildTemplateData(cfg, "")
 
@@ -451,6 +461,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 }
 
 func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	data := buildTemplateData(cfg, "")
 
@@ -508,6 +519,7 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 // proving the user never touched it, so upgrade auto-updates it cleanly
 // — no --force, no manual reconciliation required.
 func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	data := buildTemplateData(cfg, "")
 
@@ -567,6 +579,7 @@ func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
 // user-owned — `forge project upgrade` must leave the on-disk file untouched
 // while it exists, reporting it as skipped instead.
 func TestUpgradeSkipsDisownedFiles(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	data := buildTemplateData(cfg, "")
 
@@ -624,6 +637,7 @@ func TestUpgradeSkipsDisownedFiles(t *testing.T) {
 // files declare the same symbols and the package would stop compiling.
 // Adoption is a user-driven hand-migration, never an upgrade side effect.
 func TestUpgrade_SkipsThinMiddlewareInLegacyLayout(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	mwDir := filepath.Join(dir, "pkg", "middleware")
 	if err := os.MkdirAll(mwDir, 0o755); err != nil {
@@ -686,6 +700,7 @@ func materializeManagedProject(t *testing.T, dir string, cfg *config.ProjectConf
 // customized. Two user-modified files, one named — the other must come
 // through byte-identical and still be reported as user-modified.
 func TestUpgradeForcePaths_TouchesOnlyNamedPaths(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	dir := t.TempDir()
 
@@ -733,6 +748,7 @@ func TestUpgradeForcePaths_TouchesOnlyNamedPaths(t *testing.T) {
 // TestUpgradeForceAll_OverwritesEveryUserModifiedFile keeps the whole-project
 // meaning of a bare --force intact alongside the per-path form.
 func TestUpgradeForceAll_OverwritesEveryUserModifiedFile(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	dir := t.TempDir()
 
@@ -759,6 +775,7 @@ func TestUpgradeForceAll_OverwritesEveryUserModifiedFile(t *testing.T) {
 // makes disown the durable answer to "this file is mine now", as opposed to
 // silently editing a frozen file and hoping nobody forces.
 func TestUpgradeDisownedSurvivesForce(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	const disowned = "Dockerfile"
 	userContent := []byte("# user-owned after disown\nFROM scratch\n")
 
@@ -810,6 +827,7 @@ func TestUpgradeDisownedSurvivesForce(t *testing.T) {
 // A drift between the two would reject a legitimate path (or accept one that
 // silently does nothing).
 func TestManagedPathsFor_MatchesUpgradeResults(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	dir := t.TempDir()
 	materializeManagedProject(t, dir, cfg)

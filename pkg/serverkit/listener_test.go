@@ -44,7 +44,7 @@ func TestRun_DrainsInFlightH2CRequests(t *testing.T) {
 					t.Errorf("served over %s, want %s", r.Proto, proto)
 				}
 				close(inHandler)
-				time.Sleep(time.Second)
+				time.Sleep(500 * time.Millisecond)
 				w.WriteHeader(http.StatusOK)
 			})
 			cfg := baseConfig(addr)
@@ -70,7 +70,7 @@ func TestRun_DrainsInFlightH2CRequests(t *testing.T) {
 			if err := shutdownAndWait(t, errCh, 10*time.Second); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if took := time.Since(start); took < 900*time.Millisecond {
+			if took := time.Since(start); took < 450*time.Millisecond {
 				t.Errorf("Run returned after %v, before the in-flight %s request finished", took, proto)
 			}
 			if code := <-done; code != http.StatusOK {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The 2026-10-25 collision: v1.7.57 was cut, never promoted, and a second cut
@@ -17,6 +18,7 @@ import (
 // Mutation that fails it: return nil from checkReleaseVersionFree for a
 // release that has no promotion.
 func TestReleaseVersionFree_RefusesAVersionAlreadyCutFromAnotherCommit(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	ledger := testLedger(t, dir)
 	const cutFrom = "d4f71ded0a08d4f71ded0a08d4f71ded0a08d4f7"

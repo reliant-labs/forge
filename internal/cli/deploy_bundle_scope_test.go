@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // bundleScopeEntities is control-plane prod's shape in miniature: cluster
@@ -34,6 +35,7 @@ func bundleScopeEntities() *KCLEntities {
 // applies no bundle object must not render, record or compare the bundle, and
 // must not plan against it.
 func TestFrontendsOnlyReleaseDeployDoesNotRenderOrCompareTheBundle(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	ledger := testLedger(t, dir)
 	ledger.Hosted = true

@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // fakeKubectl installs a `kubectl` that prints a deprecation warning to STDERR
@@ -61,6 +63,7 @@ func TestProtectedSetScanIgnoresKubectlWarnings(t *testing.T) {
 // TestExecKeepsStderrForErrors: stdout is the only result, but a failing
 // command must still say why.
 func TestExecKeepsStderrForErrors(t *testing.T) {
+	testkit.Slow(t, "execs sh")
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell")
 	}

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestRecordBundle_HostedSeamSendsBytesNotTheDescription is the bundle half.
@@ -99,6 +100,7 @@ func TestRecordBundle_HostedSeamSendsBytesNotTheDescription(t *testing.T) {
 // seam was deleted as dead code. The file semantics still matter — a stale
 // in-flight row must not be able to wedge a reader or a future import.
 func TestMachineLedgerApply_AnAbandonedApplyDoesNotBlockTheNextOne(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "abandoned-apply-project")
 	store := testRecordStore(t, dir).store
 

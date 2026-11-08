@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/pkg/testkit"
 	"gopkg.in/yaml.v3"
 )
 
@@ -260,6 +261,7 @@ func between(t *testing.T, s, from, to string) string {
 // step's script runs that way here, against a fake forge on PATH; then the
 // evidence step runs with the output it wrote.
 func TestForgeDeployAction_FailedDeployKeepsItsEvidence(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not on PATH")
 	}

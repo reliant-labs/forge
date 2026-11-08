@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/pkg/testkit"
 	"golang.org/x/tools/imports"
 )
 
@@ -100,6 +101,7 @@ func fakeCodemod(rel, content string) runFunc {
 }
 
 func TestFormatAfter_LeavesWhatACodemodWroteFormattedToTheProjectsGate(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	const module = "github.com/reliant-labs/control-plane"
 	golangci := func(prefixes string) string {
 		return "version: \"2\"\nformatters:\n  enable:\n    - goimports\n" + prefixes

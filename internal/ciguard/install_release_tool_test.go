@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/pkg/testkit"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -264,6 +265,7 @@ func (f *releaseToolFixture) fixtureAsset(tool string) string {
 }
 
 func TestInstallReleaseToolDownloadsAndInstallsEachTool(t *testing.T) {
+	testkit.Slow(t, "execs bash, curl and tar")
 	t.Parallel()
 	for _, tool := range []string{"task", "buf", "kcl"} {
 		t.Run(tool, func(t *testing.T) {
@@ -296,6 +298,7 @@ func TestInstallReleaseToolDownloadsAndInstallsEachTool(t *testing.T) {
 }
 
 func TestInstallReleaseToolFallsBackToTheAPI(t *testing.T) {
+	testkit.Slow(t, "execs bash and tar")
 	t.Parallel()
 	f := newReleaseToolFixture(t)
 	sum := f.fixtureAsset("kcl")
@@ -318,6 +321,7 @@ func TestInstallReleaseToolFallsBackToTheAPI(t *testing.T) {
 }
 
 func TestInstallReleaseToolFailsWhenEverySourceFails(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	f := newReleaseToolFixture(t)
 	sum := f.fixtureAsset("task")
@@ -330,6 +334,7 @@ func TestInstallReleaseToolFailsWhenEverySourceFails(t *testing.T) {
 }
 
 func TestInstallReleaseToolRefusesAChecksumMismatch(t *testing.T) {
+	testkit.Slow(t, "execs git, bash and tar")
 	t.Parallel()
 	f := newReleaseToolFixture(t)
 	f.fixtureAsset("buf")
@@ -348,6 +353,7 @@ func TestInstallReleaseToolRefusesAChecksumMismatch(t *testing.T) {
 }
 
 func TestFetchReleaseAssetChecksTheAPIDigestWithoutAPin(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	f := newReleaseToolFixture(t)
 	sum := f.fixtureAsset("buf")
@@ -368,6 +374,7 @@ func TestFetchReleaseAssetChecksTheAPIDigestWithoutAPin(t *testing.T) {
 }
 
 func TestInstallReleaseToolCacheHitNeverTouchesTheNetwork(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	f := newReleaseToolFixture(t)
 	dir := f.dir("task")
@@ -386,6 +393,7 @@ func TestInstallReleaseToolCacheHitNeverTouchesTheNetwork(t *testing.T) {
 }
 
 func TestInstallReleaseToolReinstallsACacheEntryWithoutItsBinary(t *testing.T) {
+	testkit.Slow(t, "execs bash and tar")
 	t.Parallel()
 	f := newReleaseToolFixture(t)
 	sum := f.fixtureAsset("kcl")
@@ -407,6 +415,7 @@ func TestInstallReleaseToolReinstallsACacheEntryWithoutItsBinary(t *testing.T) {
 }
 
 func TestInstallReleaseToolPinRefusesUnknownToolsAndRunners(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	f := newReleaseToolFixture(t)
 	if out, err := f.pinErr("rg"); err == nil {

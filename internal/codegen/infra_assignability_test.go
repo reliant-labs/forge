@@ -11,6 +11,8 @@ package codegen
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeInfraMatcherProject scaffolds the minimum go.mod + internal/app +
@@ -29,6 +31,7 @@ func writeInfraMatcherProject(t *testing.T, appSrc, compSrc, role, pkg string) s
 // resolve it by TYPE (MatchAssignable), proving the exact-name workaround is
 // no longer required.
 func TestInfraAssignability_DifferentlyNamedAssignable(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeInfraMatcherProject(t,
 		`package app
 
@@ -63,6 +66,7 @@ type Deps struct {
 // Build), so the matcher must STILL prove the assignable match rather than
 // emit a spurious MissingProvider. This is the generate-ORDERING fix.
 func TestInfraAssignability_MidWriteDifferentlyNamedStillProves(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeInfraMatcherProject(t,
 		`package app
 
@@ -101,6 +105,7 @@ type Deps struct {
 // matcher must degrade to MatchUnprovenBackstop (compile-time backstop on
 // the Deps field name) — NOT a spurious loud MatchNoName.
 func TestInfraAssignability_MidWriteUnprovenBackstop(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeInfraMatcherProject(t,
 		`package app
 
@@ -137,6 +142,7 @@ type Deps struct {
 // the caller raises the loud MissingProvider. Guards against the
 // generate-ordering relaxation swallowing genuine missing providers.
 func TestInfraAssignability_ProvenMissingIsLoud(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeInfraMatcherProject(t,
 		`package app
 
@@ -167,6 +173,7 @@ type Deps struct {
 // provider is GENUINELY missing and must stay loud — the empty AST-parsed
 // infra map is the ground truth, independent of type-checking.
 func TestInfraAssignability_NoSurfaceIsLoud(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "go.mod"), "module example.com/proj\n\ngo 1.23\n")
 	mustWrite(t, filepath.Join(dir, "internal", "handlers", "notify", "contract.go"),

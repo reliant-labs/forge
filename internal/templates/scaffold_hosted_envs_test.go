@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclrender"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // hostedConfigGenStub is the pipeline-generated config projection a fresh
@@ -439,6 +440,7 @@ func devWorkloadJSON(t *testing.T, root string) map[string]string {
 // even a token stored by hand never reached it: /auth/login was a 404 and the
 // README's first sixty seconds ended at a sign-in page nobody could pass.
 func TestDevSignInReachesTheAPI(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
 	w := devWorkloadJSON(t, root)
 
@@ -475,6 +477,7 @@ func TestDevSignInReachesTheAPI(t *testing.T) {
 // (Bundle.observability.local_port, the same variable that is the published
 // port), so the two cannot disagree.
 func TestDevObservabilityIsOnByDefaultAndDeliversTelemetry(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
 	w := devWorkloadJSON(t, root)
 
@@ -539,6 +542,7 @@ func TestDevObservabilityIsOnByDefaultAndDeliversTelemetry(t *testing.T) {
 // and `forge env status` probed whichever process held it and reported THAT
 // process's profiles as this app's.
 func TestDevHostProcessesGetTheirOwnPprofPort(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	w := devWorkloadJSON(t, scaffoldForRender(t, "shop", []string{"orders"}, "web"))
 	if !regexp.MustCompile(`"name":"PPROF_ADDR","value":"127\.0\.0\.1:\d+"`).MatchString(w["api"]) {
 		t.Errorf("the dev API is not given its own loopback PPROF_ADDR:\n%s", w["api"])

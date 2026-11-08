@@ -11,6 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestLoadProjectConfigEnvMap_SensitiveRoutesToSecret is the end-to-end mission
@@ -29,6 +30,7 @@ import (
 // scaffolds — asserted here too, because a Secret reference with nothing
 // behind it is a dev loop that cannot boot.
 func TestLoadProjectConfigEnvMap_SensitiveRoutesToSecret(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping config projection render test")
 	}

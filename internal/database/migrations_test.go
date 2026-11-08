@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestSanitizeMigrationName(t *testing.T) {
@@ -34,6 +36,7 @@ func TestSanitizeMigrationName(t *testing.T) {
 // writer: `forge db migration new` scaffolds a forward migration and nothing
 // that claims to reverse it.
 func TestCreateMigrationCreatesOnlyAnUpFile(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 
 	if err := CreateMigration(context.Background(), "Add Users Table", dir, nil); err != nil {

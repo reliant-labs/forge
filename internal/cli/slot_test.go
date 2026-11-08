@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/hostslot"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // slotEnv points the slot commands at a private slot directory with n slots.
@@ -25,6 +26,7 @@ func slotEnv(t *testing.T, n string) string {
 }
 
 func TestSlotRun_PassesTheSlotAndTheExitStatus(t *testing.T) {
+	testkit.Slow(t, "execs sh")
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh")
 	}
@@ -51,6 +53,7 @@ func TestSlotRun_CommandNotFoundIs127(t *testing.T) {
 }
 
 func TestSlotRun_WaitsForTheHolder(t *testing.T) {
+	testkit.Slow(t, "execs sh")
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh")
 	}

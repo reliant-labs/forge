@@ -30,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ---------------------------------------------------------------------
@@ -598,6 +600,7 @@ func TestWriteLibraries_SignaturesScopeTheGoDocGuidance(t *testing.T) {
 // to the pkg version this project compiles against — not to whatever tree
 // the forge binary was built beside.
 func TestBuildLibrariesSpec_SignaturesResolveInThisRepo(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	spec, err := buildLibrariesSpec(context.Background())
 	if err != nil {
 		t.Fatalf("buildLibrariesSpec: %v", err)

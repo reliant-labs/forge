@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // handOffForTest runs the entrypoint's decision on args, restoring the state
@@ -66,6 +67,7 @@ func TestHandOffToPinned_APinnedProjectRunsThePinnedForge(t *testing.T) {
 // pin". A forge that is a module version is handed over like any other; only
 // a local build keeps the tolerance.
 func TestHandOff_AnEmbeddedPseudoVersionAgainstATagPinIsHandedOver(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	writeForgeYAML(t, dir, "name: control-plane\nmodule_path: github.com/example/cp\nforge_version: v1.0.4\n")
 	t.Chdir(dir)

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The service catalog is a projection forge regenerates whole, so two
@@ -16,6 +18,7 @@ import (
 // sides' disown records stubbed; TestMergeGenerated_ServiceCatalogRealMerge
 // reads them from real merges.
 func TestMergeGeneratedPath_UncertifiedConflictKeepsOursOnlyWhenNoSideDisowns(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	const rel = "gen/forge_service_catalog.json"
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: app\n"), 0o644); err != nil {

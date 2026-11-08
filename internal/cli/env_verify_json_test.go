@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // `forge env status --json` tests.
@@ -52,6 +53,7 @@ var defaultJSONTarget = envTarget{KubeContext: "test-context", Namespace: "test-
 // TestEnvVerifyJSON_Match is the clean path: ok true, exit 0, and the whole
 // declared shape present so a consumer can key off it.
 func TestEnvVerifyJSON_Match(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -154,6 +156,7 @@ func TestEnvVerifyJSON_UnknownStateIsRejected(t *testing.T) {
 // prints both: a consumer that only learns "drift" has to re-run the kubectl
 // query this command already ran.
 func TestEnvVerifyJSON_DriftExits1AndIsMachineReadable(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -194,6 +197,7 @@ func TestEnvVerifyJSON_DriftExits1AndIsMachineReadable(t *testing.T) {
 // invalid JSON) for a healthy env would have to special-case the absence,
 // which is how the unbound state gets miscoded as a failure downstream.
 func TestEnvVerifyJSON_NoBindingExits0WithBoundFalse(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -233,6 +237,7 @@ func TestEnvVerifyJSON_NoBindingExits0WithBoundFalse(t *testing.T) {
 // both stay zero — a consumer alerting on drift must not page anyone for a
 // network failure.
 func TestEnvVerifyJSON_UnreachableDoesNotReadAsDrift(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -276,6 +281,7 @@ func TestEnvVerifyJSON_UnreachableDoesNotReadAsDrift(t *testing.T) {
 // TestEnvVerifyJSON_MissingExits1 — declared but running nowhere fails at the
 // same code as drift: both mean the env is not what the ledger says.
 func TestEnvVerifyJSON_MissingExits1(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -297,6 +303,7 @@ func TestEnvVerifyJSON_MissingExits1(t *testing.T) {
 // but does not fail the command. `ok` is false exactly when text mode exits
 // non-zero, and text mode exits 0 here with a note.
 func TestEnvVerifyJSON_UntaggedDoesNotFlipOK(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -321,6 +328,7 @@ func TestEnvVerifyJSON_UntaggedDoesNotFlipOK(t *testing.T) {
 // report must say "unreachable" and exit 2 — never drift, which would accuse a
 // release on the basis of a question that was never asked.
 func TestEnvVerifyJSON_NoDeclaredClusterIsUnreachable(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 

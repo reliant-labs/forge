@@ -8,6 +8,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeKCLEnvs creates deploy/kcl/<env>/main.k under root so ListEnvs
@@ -51,6 +52,7 @@ func useKCLFixture(t *testing.T, doc string) {
 // admin-web → internal-console rename left `frontends/admin-web` frozen in
 // e2e.yml and broke e2e CI with no way to regenerate out of it.
 func TestDiscoverCIFrontends_DerivedFromKCLWithNoForgeYAMLKey(t *testing.T) {
+	testkit.Slow(t, "execs git and go")
 	root := t.TempDir()
 	writeKCLEnvs(t, root, "dev")
 	useKCLFixture(t, `{
@@ -109,6 +111,7 @@ func ciWorkflowData(root string, cfg *config.ProjectConfig) map[string]any {
 // property whose absence required PR #128's hand-edit: the same project,
 // same forge.yaml, a renamed frontend, and the workflow data must follow.
 func TestDiscoverCIFrontends_RenameReDerives(t *testing.T) {
+	testkit.Slow(t, "execs git and go")
 	root := t.TempDir()
 	writeKCLEnvs(t, root, "prod")
 	useKCLFixture(t, `{
@@ -130,6 +133,7 @@ func TestDiscoverCIFrontends_RenameReDerives(t *testing.T) {
 // npm steps for it would fail every run, so it must be filtered out — while
 // the in-repo frontend beside it survives.
 func TestDiscoverCIFrontends_SkipsOutOfRepoAndCrossRepoSources(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	writeKCLEnvs(t, root, "prod")
 	useKCLFixture(t, `{
@@ -155,6 +159,7 @@ func TestDiscoverCIFrontends_SkipsOutOfRepoAndCrossRepoSources(t *testing.T) {
 // absent from `e2e`, which declares `frontends = []`) must still appear, and
 // a frontend in several envs must appear exactly once.
 func TestDiscoverCIFrontends_UnionsEnvsAndDedupes(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	writeKCLEnvs(t, root, "dev", "prod")
 	useKCLFixture(t, `{
@@ -192,6 +197,7 @@ func TestDiscoverCIFrontends_FallsBackToConfigWhenNoKCL(t *testing.T) {
 // An empty KCL path means the conventional location, the same default the
 // config loader applies to an in-repo frontend.
 func TestDiscoverCIFrontends_EmptyPathDefaultsToConvention(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	writeKCLEnvs(t, root, "dev")
 	useKCLFixture(t, `{"frontends": [{"name": "web", "type": "nextjs", "path": ""}]}`)

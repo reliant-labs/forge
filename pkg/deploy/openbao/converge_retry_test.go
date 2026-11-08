@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // SC7 prod adoption (session SC7P). The converge Job treated one dropped
@@ -94,6 +96,7 @@ func runAgainst(t *testing.T, store *flakyStore, extraEnv ...string) widenRun {
 //
 // Mutation that fails it: remove the retry loop from api() in converge.sh.
 func TestConverge_RetriesADroppedConnection(t *testing.T) {
+	testkit.Slow(t, "execs curl and bash")
 	store := &flakyStore{
 		mounts:  `{"secret/":{}}`,
 		dropFor: map[string]int{"POST /v1/auth/jwt-self/login": 2, "POST /v1/secret/config": 2},
@@ -118,6 +121,7 @@ func TestConverge_RetriesADroppedConnection(t *testing.T) {
 //
 // Mutation that fails it: retry on any non-2xx.
 func TestConverge_FailsFastOnAnAPIError(t *testing.T) {
+	testkit.Slow(t, "execs curl and bash")
 	store := &flakyStore{forbid: map[string]bool{"GET /v1/sys/mounts": true}}
 	got := runAgainst(t, store)
 	if got.code != 1 {
@@ -139,6 +143,7 @@ func TestConverge_FailsFastOnAnAPIError(t *testing.T) {
 //
 // Mutation that fails it: delete the `: >"$TMP/resp"` truncation in api().
 func TestConverge_ExhaustedRetriesDoNotQuoteTheLastResponse(t *testing.T) {
+	testkit.Slow(t, "execs curl and bash")
 	store := &flakyStore{
 		mounts:  `{"secret/":{}}`,
 		dropFor: map[string]int{"GET /v1/sys/mounts": 100},
@@ -164,6 +169,7 @@ func TestConverge_ExhaustedRetriesDoNotQuoteTheLastResponse(t *testing.T) {
 //
 // Mutation that fails it: delete the unreachable() call in jwt_login().
 func TestConverge_AnUnreachableLoginIsNotACredentialVerdict(t *testing.T) {
+	testkit.Slow(t, "execs curl and bash")
 	store := &flakyStore{dropFor: map[string]int{"POST /v1/auth/jwt-self/login": 100}}
 	got := runAgainst(t, store, "OPENBAO_API_RETRIES=1")
 	if got.code != 1 {
@@ -178,6 +184,7 @@ func TestConverge_AnUnreachableLoginIsNotACredentialVerdict(t *testing.T) {
 // answer 400 and hide whether the first one took. The Job fails and its own
 // retry starts from a listing.
 func TestConverge_DoesNotReplayAnAmbiguousMountEnable(t *testing.T) {
+	testkit.Slow(t, "execs curl and bash")
 	store := &flakyStore{
 		mounts:  `{}`,
 		dropFor: map[string]int{"POST /v1/sys/mounts/secret": 100},

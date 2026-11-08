@@ -1183,6 +1183,15 @@ jobs:
   # It restores the -short scope (what golangci's package loads compile is the
   # same non-race linux build), saves nothing, and installs golangci-lint
   # through install-release-tool, so a release-download 504 cannot fail it.
+  #
+  # MEASURED on GitHub runners (2026-11-08), job wall time: 57s (pkg/pgtest,
+  # under pkg/.golangci.yml), 77s (internal/npmoverlay), 136s
+  # (internal/templates); with internal/cli in the diff 165s (#1946, one file),
+  # 179s (#1930) and 185s (#1931), of which the lint was 110-126s: internal/cli
+  # is one very large package and is analysed whole. The other two jobs ran
+  # 152-240s (median ~211s) on the 11 merge groups before it that touched
+  # internal/cli, so on such a diff this job can finish last, by up to ~30s.
+  # Every other diff finishes well before them.
   golangci:
     name: golangci-lint (changed packages)
     if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}

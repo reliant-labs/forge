@@ -22,14 +22,18 @@ import (
 // reader has.
 //
 // The baseline is the same hour of the week: for each past week, every
-// window-wide slot of the hours the observed window falls in (4 to 8 slots of
-// 15 minutes), so a normal Monday peak is its own baseline. Its median is the
-// usual value and its MAD the usual spread, and neither moves for one bad
-// week.
+// window-wide slot of the clock hour the observed window's midpoint falls in
+// (4 slots of 15 minutes), so a normal Monday peak is its own baseline. The
+// width is the same on every evaluation, however the window sits on the hour:
+// a baseline that grew when the window crossed the hour judged a service on
+// that one evaluation alone and not on the others, so a finding fired and
+// resolved every hour (#1920). Its median is the usual value and its MAD the
+// usual spread, and neither moves for one bad week, which takes at least
+// three weeks: so a week counts only when the service existed for all of it,
+// and a baseline of fewer than MinBaselineWeeks weeks judges nothing.
 //
-// Cost: the baseline reads one window of one or two hours per past week, never
-// the whole history, so a query reads a few hours of the three metrics, not
-// four weeks. The one
+// Cost: the baseline reads one hour per past week, never the whole history,
+// so a query reads a few hours of the three metrics, not four weeks. The one
 // statement that spans the history is the first-seen lookup of the history
 // floor, a min() over rpc.server.calls; a caller that evaluates often can
 // cache a service once it has crossed the floor.
@@ -38,7 +42,8 @@ import (
 // testable without a database. A finding fires only when ALL of these hold:
 //
 //   - the service has at least MinHistory of history (it is not new);
-//   - the baseline has at least MinBaselineSamples slots (a real baseline);
+//   - the baseline holds at least MinBaselineWeeks whole past weeks, and at
+//     least MinBaselineSamples slots (a real baseline);
 //   - the observed value is further than K times the baseline's MAD from the
 //     baseline median (it is outside the usual spread);
 //   - the absolute floor of its signal holds: MinRequests in the window, and
@@ -93,17 +98,36 @@ type AnomalyParams struct {
 	MinHistory time.Duration
 	// MinBaselineSamples is the fewest baseline slots a signal needs.
 	MinBaselineSamples int
+	// MinBaselineWeeks is the fewest distinct past weeks the baseline must
+	// hold, each in full (1 to Weeks). Slots count samples, not seasons: four
+	// slots of one week are one week, and a median of one week is that
+	// week's, however unusual it was. Zero is the default, three (or Weeks
+	// when it is fewer), so params built before the field existed keep a
+	// seasonal baseline.
+	MinBaselineWeeks int
+}
+
+// defaultMinBaselineWeeks is the fewest weeks a median outvotes one bad week
+// with.
+const defaultMinBaselineWeeks = 3
+
+// minBaselineWeeks is MinBaselineWeeks with zero read as the default.
+func (p AnomalyParams) minBaselineWeeks() int {
+	if p.MinBaselineWeeks > 0 {
+		return p.MinBaselineWeeks
+	}
+	return min(defaultMinBaselineWeeks, p.Weeks)
 }
 
 // DefaultAnomalyParams are the platform defaults: a 15 minute window against
-// the same hour of the previous 4 weeks, 4 MADs, at least 50 requests, a
-// 1 point (and 5 errors) error-rate rise or a 1.5x (and 50 ms) p95 rise, after
-// 7 days of history.
+// the same hour of the previous 4 weeks (at least 3 of them), 4 MADs, at least
+// 50 requests, a 1 point (and 5 errors) error-rate rise or a 1.5x (and 50 ms)
+// p95 rise, after 7 days of history.
 func DefaultAnomalyParams() AnomalyParams {
 	return AnomalyParams{
 		Window: 15 * time.Minute, Delay: 2 * time.Minute, Weeks: 4, K: 4,
 		MinRequests: 50, MinErrors: 5, MinErrorDelta: 0.01, P95Ratio: 1.5, MinLatencyDelta: 0.05, ThroughputRatio: 2,
-		MinHistory: 7 * 24 * time.Hour, MinBaselineSamples: 8,
+		MinHistory: 7 * 24 * time.Hour, MinBaselineSamples: 8, MinBaselineWeeks: defaultMinBaselineWeeks,
 	}
 }
 
@@ -128,6 +152,8 @@ func (p AnomalyParams) Validate() error {
 		return invalid("anomaly ratios must be at least 1")
 	case p.MinBaselineSamples < 1:
 		return invalid("anomaly needs at least one baseline sample")
+	case p.MinBaselineWeeks < 0 || p.MinBaselineWeeks > p.Weeks:
+		return invalid("anomaly baseline weeks must be 1 to the %d weeks read (0: the default)", p.Weeks)
 	}
 	return nil
 }
@@ -156,6 +182,9 @@ type ServiceREDInput struct {
 	// Baseline is one sample per slot of the previous weeks, a slot with no
 	// traffic a zero sample, for the weeks the service already existed in.
 	Baseline []REDSample
+	// BaselineWeeks is how many distinct past weeks Baseline's slots come
+	// from. Fewer than the params' MinBaselineWeeks judges nothing.
+	BaselineWeeks int
 	// FirstSeen is when the service's metrics first appeared in the lookback
 	// (zero: never).
 	FirstSeen time.Time
@@ -187,23 +216,29 @@ type Anomaly struct {
 	Up bool
 	// Requests is the window's request count.
 	Requests float64
-	// BaselineSamples is how many slots the baseline had.
+	// BaselineSamples is how many slots the baseline had, and BaselineWeeks
+	// how many past weeks they came from.
 	BaselineSamples int
+	BaselineWeeks   int
 	HistoryDays     int
 }
 
 // JudgeService returns the signals of one service that left their baseline,
 // in the order error_rate, p95, throughput; nil when the service is young, has
-// no baseline, or everything is inside it.
+// too few weeks of baseline, or everything is inside it.
 func JudgeService(in ServiceREDInput, p AnomalyParams) []Anomaly {
 	if in.FirstSeen.IsZero() || in.Now.Sub(in.FirstSeen) < p.MinHistory {
+		return nil
+	}
+	if in.BaselineWeeks < p.minBaselineWeeks() {
 		return nil
 	}
 	var out []Anomaly
 	mk := func(signal, unit string, obs, med, mad, limit float64, up bool, samples int) Anomaly {
 		return Anomaly{
 			Service: in.Service, Signal: signal, Observed: obs, Baseline: med, Spread: mad, Unit: unit,
-			Limit: limit, Up: up, Requests: in.Observed.Requests, BaselineSamples: samples, HistoryDays: in.HistoryDays(),
+			Limit: limit, Up: up, Requests: in.Observed.Requests, BaselineSamples: samples,
+			BaselineWeeks: in.BaselineWeeks, HistoryDays: in.HistoryDays(),
 		}
 	}
 	// A slot with too few requests has a noisy ratio and a noisy percentile.
@@ -336,18 +371,15 @@ func alignDown(t time.Time, step time.Duration) time.Time {
 	return time.Unix(t.Unix()-t.Unix()%s, 0).UTC()
 }
 
-func alignUp(t time.Time, step time.Duration) time.Time {
-	d := alignDown(t, step)
-	if d.Equal(t) {
-		return d
-	}
-	return d.Add(step)
-}
-
-// windows resolves the scopes. The baseline range is the observed window
-// rounded out to whole hours, shifted back by whole weeks, so its slots sit on
-// the same grid as the bucketing (toStartOfInterval) and the same hour of the
-// week is compared.
+// windows resolves the scopes. The baseline range is the clock hour the
+// observed window's midpoint falls in, shifted back by whole weeks, so its
+// slots sit on the same grid as the bucketing (toStartOfInterval), the same
+// hour of the week is compared, and every evaluation reads the same number of
+// slots per week (time.Hour / Window) wherever the window sits on the hour.
+//
+// The history lookup starts one window before the oldest baseline week, so a
+// service that already existed then is seen to have existed for all of it,
+// even when its first sample in range lands a little after the range opens.
 func (q AnomalyQuery) windows(now time.Time) anomalyWindows {
 	p := q.Params
 	w := anomalyWindows{step: p.Window}
@@ -355,15 +387,15 @@ func (q AnomalyQuery) windows(now time.Time) anomalyWindows {
 	obsStart := obsEnd.Add(-p.Window)
 	w.observed = q.Scope
 	w.observed.Start, w.observed.End = obsStart, obsEnd
-	from := alignDown(obsStart, time.Hour)
-	to := alignUp(obsEnd, time.Hour)
+	from := alignDown(obsStart.Add(p.Window/2), time.Hour)
 	for k := 1; k <= p.Weeks; k++ {
 		sc := q.Scope
-		sc.Start, sc.End = from.Add(-time.Duration(k)*week), to.Add(-time.Duration(k)*week)
+		sc.Start = from.Add(-time.Duration(k) * week)
+		sc.End = sc.Start.Add(time.Hour)
 		w.baselines = append(w.baselines, sc)
 	}
 	w.history = q.Scope
-	w.history.Start, w.history.End = w.baselines[len(w.baselines)-1].Start, now.UTC().Truncate(time.Second)
+	w.history.Start, w.history.End = w.baselines[len(w.baselines)-1].Start.Add(-p.Window), now.UTC().Truncate(time.Second)
 	return w
 }
 
@@ -491,23 +523,35 @@ func EvalAnomalies(ctx context.Context, run Runner, q AnomalyQuery) (AnomalyResu
 	sort.Strings(services)
 	for _, svc := range services {
 		in := ServiceREDInput{Service: svc, Observed: observed[svc], FirstSeen: first[svc], Now: now}
-		for _, sc := range w.baselines {
-			for t := sc.Start; t.Before(sc.End); t = t.Add(w.step) {
-				// A slot before the service existed is not a quiet slot, it is no slot.
-				if t.Before(first[svc]) {
-					continue
-				}
-				var s REDSample
-				if got := slots[svc][t.Unix()]; got != nil {
-					s = *got
-				}
-				in.Baseline = append(in.Baseline, s)
-			}
-		}
+		in.Baseline, in.BaselineWeeks = w.baseline(first[svc], slots[svc])
 		res.Inputs = append(res.Inputs, in)
 		res.Anomalies = append(res.Anomalies, JudgeService(in, q.Params)...)
 	}
 	return res, nil
+}
+
+// baseline is one service's baseline: a sample per slot of every past week
+// it existed for in full (a slot with no traffic a zero sample), and how many
+// weeks that is. slots are its samples by slot start (unix).
+func (w anomalyWindows) baseline(first time.Time, slots map[int64]*REDSample) (samples []REDSample, weeks int) {
+	for _, sc := range w.baselines {
+		// A week the service did not exist for is no week, and a week it
+		// came into being in is not a whole one: the slots before
+		// first-seen are not quiet slots, they are no slots, and the ones
+		// after are its first hours, not its usual.
+		if sc.Start.Before(first) {
+			continue
+		}
+		weeks++
+		for t := sc.Start; t.Before(sc.End); t = t.Add(w.step) {
+			var s REDSample
+			if got := slots[t.Unix()]; got != nil {
+				s = *got
+			}
+			samples = append(samples, s)
+		}
+	}
+	return samples, weeks
 }
 
 func (q AnomalyQuery) readFirstSeen(ctx context.Context, run Runner) (map[string]time.Time, error) {
@@ -618,8 +662,8 @@ func (a Anomaly) Why(env string, q AnomalyQuery) alerting.Why {
 		Method:     fmt.Sprintf("hour-of-week median/MAD, %dw", p.Weeks),
 		Thresholds: threshold,
 		Window:     p.Window.String(),
-		BaselineWindow: fmt.Sprintf("the same hour of the week over the previous %d weeks, %d samples of %s",
-			p.Weeks, a.BaselineSamples, p.Window),
+		BaselineWindow: fmt.Sprintf("the same hour of the week over %d of the previous %d weeks, %d samples of %s",
+			a.BaselineWeeks, p.Weeks, a.BaselineSamples, p.Window),
 		Since:       w.observed.Start,
 		HistoryDays: a.HistoryDays,
 		Context: alerting.WhyContext{Findings: []alerting.WhyFinding{{

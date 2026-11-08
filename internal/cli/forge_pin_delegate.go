@@ -46,6 +46,8 @@ package cli
 // pinned forge cannot be had — offline, an unpublished version, a checkout
 // that does not build — the command FAILS with the reason. It never falls back
 // to running this forge: that fallback is how a stale forge rewrote a project.
+// The one exception is a command that must work offline and rewrites nothing,
+// `env down` (handOffPreferredCommands): it says why, and runs this forge.
 
 import (
 	"context"
@@ -83,24 +85,89 @@ import (
 //     request run under that forge, past its own pin check (a delegate does
 //     not check). Each request is checked against its own project instead
 //     (serveRequestsUnderTheirOwnPins).
-//   - env ps, env down, env devstack: they list, stop and allocate ports for
-//     the stacks on this machine, across projects, and stopping one must not
-//     need the network.
+//   - env ps, env devstack: they list, and allocate ports for, the stacks on
+//     this machine across projects, from ownership markers and the block
+//     registry, never from one project's KCL.
+//
+// `env down` is NOT here. It used to be, beside `env ps`, and so it ran a
+// stale PATH forge against the project `env up` had handed to its pin: that
+// forge could not render the project's KCL (`Cannot add member
+// 'startup_after' to schema 'OnHost'`) and left the stack half-stopped. Its
+// per-project form renders the project like `env up` does and is handed over
+// like it (handOffPreferredCommands); only `env down --all`, which spans every
+// project, stays here (machineWideFlags).
 var handOffExempt = []string{
 	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
 	"project upgrade", "project new", "report-bug", "storage", "slot", "mcp",
-	"env ps", "env down", "env devstack",
+	"env ps", "env devstack",
+}
+
+// handOffMode is how a command meets the forge its project pins.
+type handOffMode int
+
+const (
+	// runHere: the command is about this forge or this machine, and runs as
+	// this forge in any project.
+	runHere handOffMode = iota
+	// handOffRequired: the command runs only under the pinned forge. When
+	// that forge cannot be had, the command fails and nothing runs.
+	handOffRequired
+	// handOffPreferred: the command runs under the pinned forge whenever it
+	// can be had (the project's .tools/bin/forge, the cache, or a build);
+	// when it cannot, it runs as this forge, with the skew warning, rather
+	// than not at all.
+	handOffPreferred
+)
+
+// handOffPreferredCommands are the project commands that must still run when
+// the pinned forge cannot be had. Stopping a stack is one: it has to work
+// offline, and it writes nothing from the binary's templates, so this forge's
+// best effort is better than leaving the stack running.
+var handOffPreferredCommands = map[string]bool{
+	"env down": true,
+}
+
+// machineWideFlags names, per command, the boolean flag that turns a run from
+// one project's into one across every project on this machine. No single
+// project's pin speaks for such a run, so it runs as this forge.
+var machineWideFlags = map[string]string{
+	"env down": "all",
+}
+
+// handOffModeFor is the hand-off decision for the command at rel (relative to
+// forge's root; "" is the root itself). machineWide is whether the run spans
+// every project on the machine (machineWideRun).
+func handOffModeFor(rel string, machineWide bool) handOffMode {
+	for _, ex := range handOffExempt {
+		if rel == ex || (ex != "" && strings.HasPrefix(rel, ex+" ")) {
+			return runHere
+		}
+	}
+	if _, ok := machineWideFlags[rel]; ok && machineWide {
+		return runHere
+	}
+	if handOffPreferredCommands[rel] {
+		return handOffPreferred
+	}
+	return handOffRequired
 }
 
 // handOffWanted reports whether the command at rel (relative to forge's root)
-// is handed to the forge a project pins. rel "" is the root itself.
+// is handed to the forge a project pins, in its per-project form. rel "" is
+// the root itself.
 func handOffWanted(rel string) bool {
-	for _, ex := range handOffExempt {
-		if rel == ex || (ex != "" && strings.HasPrefix(rel, ex+" ")) {
-			return false
-		}
+	return handOffModeFor(rel, false) != runHere
+}
+
+// machineWideRun reports whether flags, parsed for the command at rel, make
+// the run span every project on this machine (machineWideFlags).
+func machineWideRun(rel string, flags *pflag.FlagSet) bool {
+	name, ok := machineWideFlags[rel]
+	if !ok || flags == nil || flags.Lookup(name) == nil {
+		return false
 	}
-	return true
+	on, _ := flags.GetBool(name)
+	return on
 }
 
 // Seams: the real hand-off builds forge and replaces the process, which no
@@ -166,7 +233,7 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 		return false, nil
 	}
 	inv := parseInvocation(args)
-	if !handOffWanted(inv.rel) {
+	if handOffModeFor(inv.rel, inv.machineWide) == runHere {
 		return false, nil
 	}
 	root, err := projectRootFrom(inv.projectDir)
@@ -174,7 +241,7 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 		// The tree reports a bad -C itself, with its own message.
 		return false, nil
 	}
-	return handOff(ctx, stderr, inv.rel, inv.allow, root, args)
+	return handOff(ctx, stderr, inv.rel, inv.machineWide, inv.allow, root, args)
 }
 
 // invocation is what the hand-off needs from a command line it has not run.
@@ -184,6 +251,9 @@ type invocation struct {
 	rel string
 	// allow is --allow-version-skew.
 	allow bool
+	// machineWide is a run across every project on the machine
+	// (machineWideRun: `env down --all`).
+	machineWide bool
 	// projectDir is -C / --project-dir.
 	projectDir string
 }
@@ -204,6 +274,7 @@ func parseInvocation(args []string) invocation {
 	_ = cmd.ParseFlags(rest)
 	inv := invocation{rel: strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))}
 	inv.allow, _ = cmd.Flags().GetBool(allowVersionSkewFlag)
+	inv.machineWide = machineWideRun(inv.rel, cmd.Flags())
 	inv.projectDir, _ = cmd.Flags().GetString("project-dir")
 	if cmd.HasSubCommands() {
 		// `forge project <a subcommand this forge lacks>`.
@@ -332,9 +403,11 @@ func projectRootFrom(dir string) (string, error) {
 
 // handOff is the decision both entry points share: hand the command at rel to
 // the forge projectRoot wants, run this forge, or fail. args are the forge
-// arguments of this invocation.
-func handOff(ctx context.Context, w io.Writer, rel string, allow bool, projectRoot string, args []string) (handed bool, err error) {
-	if !handOffWanted(rel) {
+// arguments of this invocation; machineWide, whether the run spans every
+// project on the machine (machineWideRun).
+func handOff(ctx context.Context, w io.Writer, rel string, machineWide, allow bool, projectRoot string, args []string) (handed bool, err error) {
+	mode := handOffModeFor(rel, machineWide)
+	if mode == runHere {
 		return false, nil
 	}
 	t, ok, unpinned := pinTarget(rel, allow, projectRoot)
@@ -349,6 +422,12 @@ func handOff(ctx context.Context, w io.Writer, rel string, allow bool, projectRo
 	}
 	handed, err = delegateToPinned(ctx, w, projectRoot, t, args)
 	if err != nil {
+		if mode == handOffPreferred {
+			// Run this forge; checkForgePinSkew prints the skew warning.
+			_, _ = fmt.Fprintf(w, "forge: this forge is %s, but the project wants %s, which could not be obtained (%s) — running this forge instead\n",
+				t.binary, t, strings.Join(strings.Fields(err.Error()), " "))
+			return false, nil
+		}
 		return false, handOffFailure(projectRoot, t, rel, err)
 	}
 	return handed, nil

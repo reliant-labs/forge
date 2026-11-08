@@ -229,10 +229,20 @@ describe("forgeOtelProxy", () => {
     await new Promise((r) => upstream.close(r));
   });
 
-  const status = (path: string, method = "POST"): Promise<number> =>
+  // The page's own exporter: Origin names the host it addressed. The dev
+  // server is reached through a preview host, not loopback, as on a
+  // Reliant workspace.
+  const PAGE_HOST = "5173-ws.workspaces.example";
+  const status = (
+    path: string,
+    method = "POST",
+    origin: string | null = `https://${PAGE_HOST}`,
+  ): Promise<number> =>
     new Promise((resolveStatus, reject) => {
       const [host, port] = devURL.split(":");
-      const req = http.request({ host, port, path, method }, (res) => {
+      const headers: Record<string, string> = { host: PAGE_HOST };
+      if (origin !== null) headers.origin = origin;
+      const req = http.request({ host, port, path, method, headers }, (res) => {
         res.resume();
         res.on("end", () => resolveStatus(res.statusCode ?? 0));
       });
@@ -256,6 +266,14 @@ describe("forgeOtelProxy", () => {
     expect(await status("/_otel/v1/../admin")).toBe(404);
     expect(await status("/_otel/api/v1/orgs")).toBe(404);
     expect(await status("/_otel/v1/logs", "GET")).toBe(405);
+    expect(seen).toEqual([]);
+  });
+
+  it("refuses a foreign or Origin-less caller without contacting the upstream", async () => {
+    expect(
+      await status("/_otel/v1/traces", "POST", "https://evil.example"),
+    ).toBe(403);
+    expect(await status("/_otel/v1/traces", "POST", null)).toBe(403);
     expect(seen).toEqual([]);
   });
 

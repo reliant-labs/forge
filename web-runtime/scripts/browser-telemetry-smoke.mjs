@@ -11,6 +11,8 @@ import { test } from "node:test";
 import { gunzipSync } from "node:zlib";
 import { chromium } from "playwright";
 
+import { createOtelProxyHandler } from "../dist/otel-proxy.js";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const apiDir = resolve(dirname(require.resolve("@opentelemetry/api")), "../..");
@@ -61,6 +63,23 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
   const traces = [];
   const logs = [];
   const requests = [];
+  // The page's /_otel goes through the runtime's real dev proxy (the one
+  // forgeOtelProxy mounts), to a collector behind it. This proves the real
+  // SDK's exports pass the proxy's same-origin caller check: the browser
+  // sends Origin and Sec-Fetch-Site: same-origin on every export.
+  const callers = [];
+  const collector = createServer(async (req, res) => {
+    const url = req.url;
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
+    const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+    const payload = url.endsWith("logs") ? LogsData.decode(decoded) : JSON.parse(decoded.toString());
+    (url.endsWith("traces") ? traces : logs).push(payload);
+    res.setHeader("content-type", "application/json");
+    res.end("{}");
+  });
+  const proxy = createOtelProxyHandler({ upstream: await listen(collector), headersFile: "" });
   const backend = createServer((req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "traceparent,tracestate,baggage,content-type");
@@ -72,14 +91,8 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
     try {
       const url = new URL(req.url, "http://localhost").pathname;
       if (url.startsWith("/_otel/")) {
-        const chunks = [];
-        for await (const chunk of req) chunks.push(chunk);
-        const raw = Buffer.concat(chunks);
-        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
-        const payload = url.endsWith("logs") ? LogsData.decode(decoded) : JSON.parse(decoded.toString());
-        (url.endsWith("traces") ? traces : logs).push(payload);
-        res.setHeader("content-type", "application/json");
-        res.end("{}");
+        callers.push({ host: req.headers.host, origin: req.headers.origin, site: req.headers["sec-fetch-site"] });
+        proxy(req, res, req.url.slice("/_otel".length));
       } else if (url === "/sdk.js") {
         res.setHeader("content-type", "text/javascript");
         res.end(await readFile(sdk));
@@ -153,6 +166,10 @@ document.querySelector('#action').addEventListener('click', () => {
       .flatMap((resource) => resource.scopeSpans ?? [])
       .flatMap((scope) => scope.spans ?? []);
     assert.deepEqual(errors, []);
+    assert.ok(callers.length >= 2, "traces and replay logs both went through the proxy");
+    for (const caller of callers) {
+      assert.deepEqual(caller, { host: new URL(origin).host, origin, site: "same-origin" }, "the SDK's exports are same-origin to the proxy");
+    }
     assert.equal(spans.some((span) => ["mousedown", "mouseup", "click"].includes(span.name)), false);
     const action = spans.find((span) => span.name === "save-record");
     const fetch = spans.find((span) => span.name === "HTTP POST");
@@ -177,6 +194,7 @@ document.querySelector('#action').addEventListener('click', () => {
     await browser?.close();
     await close(server);
     await close(backend);
+    await close(collector);
   }
 });
 

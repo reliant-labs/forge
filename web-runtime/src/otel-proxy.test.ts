@@ -7,7 +7,7 @@
 // the proxy ever saw it.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,7 @@ import {
   OTEL_PROXY_MAX_BODY_BYTES,
   type OtelProxyOptions,
   parseOtelHeaders,
+  sameOriginCaller,
   startOtelRelay,
 } from "./otel-proxy.js";
 
@@ -70,9 +71,23 @@ interface Reply {
   body: string;
 }
 
+// What the page's own exporter sends from a dev server opened through a
+// non-loopback host (a workspace preview URL, a tunnel, a LAN address):
+// `Origin` naming that host, `Sec-Fetch-Site: same-origin`, and the host
+// itself — as `Host` for a server the browser reaches directly (Vite), and as
+// the `X-Forwarded-Host` Next's rewrite proxy hands the relay.
+const PAGE = "http://preview.example:5173";
+const SAME_ORIGIN: http.OutgoingHttpHeaders = {
+  origin: PAGE,
+  host: "preview.example:5173",
+  "x-forwarded-host": "preview.example:5173",
+  "sec-fetch-site": "same-origin",
+};
+
 interface Send {
   method?: string;
-  headers?: http.OutgoingHttpHeaders;
+  /** Merged over SAME_ORIGIN; `undefined` removes a default. */
+  headers?: Record<string, string | undefined>;
   body?: string | Buffer;
   /** Written as separate chunks with no content-length (chunked encoding). */
   chunks?: Buffer[];
@@ -88,7 +103,11 @@ function send(base: string, path: string, opts: Send = {}): Promise<Reply> {
         port,
         path,
         method: opts.method ?? "POST",
-        headers: opts.headers,
+        headers: Object.fromEntries(
+          Object.entries({ ...SAME_ORIGIN, ...opts.headers }).filter(
+            ([, v]) => v !== undefined,
+          ),
+        ),
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -109,6 +128,34 @@ function send(base: string, path: string, opts: Send = {}): Promise<Reply> {
     } else {
       req.end(opts.body);
     }
+  });
+}
+
+/**
+ * sendRaw writes `head` (request line and header lines) and then `body` to a
+ * bare socket, never finishing a chunked body, so a test controls duplicate
+ * headers and can see whether the server keeps reading. It resolves to the
+ * status code and whether the server closed the connection.
+ */
+function sendRaw(
+  base: string,
+  head: string[],
+  body: Buffer = Buffer.alloc(0),
+): Promise<{ status: number; closed: boolean }> {
+  const { hostname, port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(Number(port), hostname);
+    let got = "";
+    sock.on("error", (err: NodeJS.ErrnoException) => {
+      // The server may cut a body it will not read: that is the point.
+      if (err.code !== "EPIPE" && err.code !== "ECONNRESET") reject(err);
+    });
+    sock.on("data", (c: Buffer) => (got += c.toString("latin1")));
+    sock.on("close", () =>
+      resolve({ status: Number(got.split(" ")[1] ?? 0), closed: true }),
+    );
+    sock.write(`${head.join("\r\n")}\r\n\r\n`);
+    if (body.length > 0) sock.write(body);
   });
 }
 
@@ -177,9 +224,12 @@ describe("the /_otel proxy", () => {
         const got = await send(relay, path, {
           headers: {
             "content-type": "application/json",
+            "content-encoding": "identity",
             cookie: "session=page-secret",
             authorization: "Bearer page-supplied",
-            origin: "http://localhost:3000",
+            "x-custom": "page-added",
+            "user-agent": "page-agent",
+            "x-forwarded-for": "10.0.0.9",
           },
           body: '{"resourceSpans":[]}',
         });
@@ -200,8 +250,21 @@ describe("the /_otel proxy", () => {
         expect(s.headers.authorization).toBe("Bearer stack-token-1");
         expect(s.headers.cookie).toBeUndefined();
         expect(s.headers["content-type"]).toBe("application/json");
-        expect(s.headers.origin).toBe("http://localhost:3000");
+        expect(s.headers["content-encoding"]).toBe("identity");
         expect(s.headers.host).toBe(new URL(upstream.url).host);
+        // An allowlist, not a blocklist: nothing else of the page's reaches
+        // the edge (node's client adds only its own `connection`).
+        expect(
+          Object.keys(s.headers)
+            .filter((h) => h !== "connection")
+            .sort(),
+        ).toEqual([
+          "authorization",
+          "content-encoding",
+          "content-length",
+          "content-type",
+          "host",
+        ]);
       }
     });
 
@@ -317,6 +380,201 @@ describe("the /_otel proxy", () => {
     });
   });
 
+  describe("the caller check", () => {
+    const refused = async (
+      base: string,
+      headers: Record<string, string | undefined>,
+    ): Promise<number> =>
+      (await send(base, "/v1/traces", { headers, body: "{}" })).status;
+
+    it("forwards a same-origin page reached through a non-loopback host", async () => {
+      const proxy = await serve({ upstream: upstream.url, headersFile });
+      const relay = await startOtelRelay({
+        upstream: upstream.url,
+        headersFile,
+      });
+      try {
+        // Direct (Vite): Host is what the browser addressed.
+        expect(await refused(proxy.url, {})).toBe(200);
+        // Without Sec-Fetch-Site (an older browser), Origin alone decides.
+        expect(await refused(proxy.url, { "sec-fetch-site": undefined })).toBe(
+          200,
+        );
+        // A default port on either side is the same origin.
+        expect(
+          await refused(proxy.url, {
+            origin: "https://preview.example",
+            host: "preview.example:443",
+          }),
+        ).toBe(200);
+        // Next's relay: X-Forwarded-Host is what the browser addressed;
+        // Host is the relay's own address.
+        expect(await refused(relay, { host: new URL(relay).host })).toBe(200);
+      } finally {
+        await proxy.close();
+      }
+      expect(upstream.seen).toHaveLength(4);
+    });
+
+    it("answers 403 to a cross-origin, Origin-less or cross-site caller, before the body and without contacting the upstream", async () => {
+      const proxy = await serve({ upstream: upstream.url, headersFile });
+      const relay = await startOtelRelay({
+        upstream: upstream.url,
+        headersFile,
+      });
+      try {
+        for (const base of [proxy.url, relay]) {
+          // A foreign page: its own origin, which the browser will not let it forge.
+          expect(await refused(base, { origin: "https://evil.example" })).toBe(
+            403,
+          );
+          // Same host, other port: a different origin. (The scheme is not
+          // compared: a TLS-terminating preview proxy or tunnel hands the
+          // dev server plain HTTP for an https:// page, and one host:port
+          // cannot serve a second scheme.)
+          expect(
+            await refused(base, { origin: "http://preview.example:8080" }),
+          ).toBe(403);
+          // No Origin, the opaque origin, or something that is not one.
+          expect(await refused(base, { origin: undefined })).toBe(403);
+          expect(await refused(base, { origin: "null" })).toBe(403);
+          expect(await refused(base, { origin: `${PAGE}/path` })).toBe(403);
+          expect(
+            await refused(base, { origin: "file://preview.example:5173" }),
+          ).toBe(403);
+          // The browser says the request crossed sites, whatever Origin says.
+          for (const site of ["cross-site", "same-site", "none"]) {
+            expect(await refused(base, { "sec-fetch-site": site })).toBe(403);
+          }
+        }
+        // Vite: no Host to match is no caller.
+        expect(await refused(proxy.url, { host: "other.example:5173" })).toBe(
+          403,
+        );
+        // The relay matches X-Forwarded-Host, never its own Host: a request
+        // that reaches it directly (no Next in front) is refused, even when
+        // its Origin names the relay.
+        expect(
+          await refused(relay, { "x-forwarded-host": "evil.example" }),
+        ).toBe(403);
+        expect(
+          await refused(relay, {
+            "x-forwarded-host": undefined,
+            host: new URL(relay).host,
+            origin: relay,
+          }),
+        ).toBe(403);
+        // Refused before the body is read: a declared oversize body from a
+        // foreign page is 403, not 413.
+        expect(
+          (
+            await send(proxy.url, "/v1/logs", {
+              headers: { origin: "https://evil.example" },
+              body: Buffer.alloc(OTEL_PROXY_MAX_BODY_BYTES + 1),
+            })
+          ).status,
+        ).toBe(403);
+      } finally {
+        await proxy.close();
+      }
+      expect(upstream.seen).toEqual([]);
+    });
+
+    it("refuses a duplicated Host, Origin or X-Forwarded-Host on the wire", async () => {
+      const proxy = await serve({ upstream: upstream.url, headersFile });
+      const relay = await startOtelRelay({
+        upstream: upstream.url,
+        headersFile,
+      });
+      const line = (extra: string[]): string[] => [
+        "POST /v1/traces HTTP/1.1",
+        "Content-Length: 0",
+        "Sec-Fetch-Site: same-origin",
+        ...extra,
+      ];
+      try {
+        for (const [base, extra] of [
+          // Node keeps the first Host; a proxy in front may keep the last.
+          [
+            proxy.url,
+            [
+              "Host: preview.example:5173",
+              "Host: evil.example",
+              `Origin: ${PAGE}`,
+            ],
+          ],
+          [
+            proxy.url,
+            [
+              "Host: preview.example:5173",
+              `Origin: ${PAGE}`,
+              `Origin: ${PAGE}`,
+            ],
+          ],
+          [
+            relay,
+            [
+              `Host: ${new URL(relay).host}`,
+              "X-Forwarded-Host: preview.example:5173",
+              "X-Forwarded-Host: preview.example:5173",
+              `Origin: ${PAGE}`,
+            ],
+          ],
+        ] as const) {
+          const got = await sendRaw(base, line([...extra]));
+          expect(got.status, extra.join(" | ")).toBe(403);
+        }
+        // The same request with each header once is forwarded.
+        const ok = await sendRaw(proxy.url, [
+          ...line(["Host: preview.example:5173", `Origin: ${PAGE}`]),
+          "Connection: close",
+        ]);
+        expect(ok.status).toBe(200);
+      } finally {
+        await proxy.close();
+      }
+      expect(upstream.seen).toHaveLength(1);
+    });
+
+    it("answers 403 to a foreign non-POST before reading its body, and closes the connection", async () => {
+      const proxy = await serve({ upstream: upstream.url, headersFile });
+      try {
+        for (const method of ["PUT", "GET", "PATCH"]) {
+          // A chunked body that never ends: the server must answer and hang
+          // up rather than keep reading it.
+          const got = await sendRaw(
+            proxy.url,
+            [
+              `${method} /v1/traces HTTP/1.1`,
+              "Host: preview.example:5173",
+              "Origin: https://evil.example",
+              "Transfer-Encoding: chunked",
+            ],
+            Buffer.from(`100000\r\n${"a".repeat(0x100000)}\r\n`),
+          );
+          expect(got.status, method).toBe(403);
+          expect(got.closed, method).toBe(true);
+        }
+      } finally {
+        await proxy.close();
+      }
+      expect(upstream.seen).toEqual([]);
+    });
+
+    it("refuses a foreign caller with nowhere to forward too", async () => {
+      const proxy = await serve({ upstream: "" });
+      try {
+        expect(await refused(proxy.url, {})).toBe(204);
+        expect(
+          await refused(proxy.url, { origin: "https://evil.example" }),
+        ).toBe(403);
+        expect(await refused(proxy.url, { origin: undefined })).toBe(403);
+      } finally {
+        await proxy.close();
+      }
+    });
+  });
+
   describe("with nowhere to forward", () => {
     it("answers a valid POST 204 and refuses everything else by the same rules", async () => {
       const proxy = await serve({
@@ -350,6 +608,95 @@ describe("the /_otel proxy", () => {
       }
       expect(upstream.seen).toEqual([]);
     });
+  });
+});
+
+describe("sameOriginCaller", () => {
+  const caller = (
+    headers: Record<string, string>,
+    hostHeader: "host" | "x-forwarded-host" = "host",
+  ): boolean =>
+    sameOriginCaller(
+      { headers, rawHeaders: Object.entries(headers).flat() },
+      hostHeader,
+    );
+
+  it("accepts exactly one matching host[:port]", () => {
+    expect(caller({ origin: PAGE, host: "preview.example:5173" })).toBe(true);
+    expect(caller({ origin: PAGE, host: "PREVIEW.example:5173" })).toBe(true);
+    expect(
+      caller({ origin: "http://preview.example", host: "preview.example:80" }),
+    ).toBe(true);
+    expect(
+      caller({ origin: "http://preview.example:80", host: "preview.example" }),
+    ).toBe(false); // not a serialized origin
+    expect(caller({ origin: "http://[::1]:5173", host: "[::1]:5173" })).toBe(
+      true,
+    );
+    expect(
+      caller({ origin: "http://127.0.0.1:5173", host: "127.0.0.1:5173" }),
+    ).toBe(true);
+    expect(
+      caller(
+        { origin: PAGE, "x-forwarded-host": "preview.example:5173" },
+        "x-forwarded-host",
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses a host value that is not one canonical authority", () => {
+    for (const host of [
+      "preview.example:5173, preview.example:5173",
+      "preview.example:5173,evil.example",
+      "user@preview.example:5173",
+      "preview.example:5173/path",
+      "preview.example:5173?x",
+      "preview.example:5173#x",
+      "preview.example:99999",
+      "preview.example:05173",
+      "preview.example:",
+      "preview.example:0",
+      "preview.example :5173",
+      "preview.example.:5173",
+      "preview..example:5173",
+      "[0:0:0:0:0:0:0:1]:5173",
+      "",
+    ]) {
+      expect(caller({ origin: PAGE, host }), host).toBe(false);
+    }
+    expect(
+      caller(
+        {
+          origin: PAGE,
+          "x-forwarded-host": "preview.example:5173, evil.example",
+        },
+        "x-forwarded-host",
+      ),
+    ).toBe(false);
+  });
+
+  it("refuses a header that appears twice in the raw request", () => {
+    const headers = {
+      origin: PAGE,
+      host: "preview.example:5173",
+      "sec-fetch-site": "same-origin",
+    };
+    expect(
+      sameOriginCaller({ headers, rawHeaders: Object.entries(headers).flat() }),
+    ).toBe(true);
+    for (const dup of [
+      ["Host", "evil.example"],
+      ["Origin", PAGE],
+      ["Sec-Fetch-Site", "same-origin"],
+    ]) {
+      expect(
+        sameOriginCaller({
+          headers,
+          rawHeaders: [...Object.entries(headers).flat(), ...dup],
+        }),
+        dup[0],
+      ).toBe(false);
+    }
   });
 });
 

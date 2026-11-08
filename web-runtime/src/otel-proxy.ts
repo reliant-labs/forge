@@ -13,21 +13,38 @@
 // attaches server-side so the bundle never sees it.
 //
 // That makes the proxy a credentialed relay, and anything that can reach the
-// dev server — another device on the LAN, a workspace preview URL, a tunnel —
-// can use it. A proxy that forwards every path and method would let any of
-// them submit arbitrary routes or unbounded bodies to the edge AS THIS STACK.
-// So it forwards exactly what a browser exporter sends and nothing else:
+// dev server — another device on the LAN, a workspace preview URL, a tunnel,
+// and any website the developer's browser has open — can use it. A proxy that
+// forwards every caller, path and method would let any of them submit
+// arbitrary routes or unbounded bodies to the edge AS THIS STACK. So it
+// forwards exactly what the page's own exporter sends and nothing else:
 //
+//   - only a SAME-ORIGIN caller: the request's `Origin` must name the host
+//     the browser addressed (`Host`, or for the Next.js relay the
+//     `X-Forwarded-Host` Next's rewrite proxy sets from it), and
+//     `Sec-Fetch-Site`, when the browser sends it, must be `same-origin`.
+//     Browsers send `Origin` on every POST, same-origin fetches included, so
+//     the page's exporter always carries it; a foreign page carries its own
+//     origin and cannot forge either header. A missing or foreign `Origin`,
+//     any of these headers sent twice, or a host value that is not exactly
+//     one host[:port] is 403, before the method is looked at or the body
+//     read. Loopback is deliberately NOT
+//     required: a dev server is legitimately opened through a workspace
+//     preview URL, a tunnel or a LAN address, and same-origin is the
+//     boundary in all of them.
 //   - `POST <prefix>/v1/traces`, `/v1/logs` and `/v1/metrics`. Any other
 //     method on those paths is 405, any other path (traversal spellings, a
 //     trailing slash and percent-encoding included: the path is compared
-//     byte for byte, never decoded) is 404. Neither contacts the upstream.
+//     byte for byte, never decoded) is 404. Neither contacts the upstream,
+//     and every refusal made before the body is read closes the connection,
+//     so no caller can keep the dev server reading a body it will discard.
 //   - a body of at most 8 MiB, counted while it streams in and buffered
 //     before anything is sent upstream; above that, 413, and the upstream
 //     never sees a byte of it.
-//   - the page's cookies and its own authorization header are never
-//     forwarded, whether or not there is a token to attach. Neither is a
-//     cookie the upstream tries to set.
+//   - only `content-type` and `content-encoding` of the page's headers are
+//     forwarded, plus the token. Its cookies, its own authorization header
+//     and everything else stay behind, whether or not there is a token to
+//     attach; so does any cookie the upstream tries to set.
 //
 // The same rules hold with no upstream at all (a dev server told there is
 // nowhere to forward): a valid ingest POST is answered 204 and dropped, and
@@ -93,6 +110,16 @@ export interface OtelProxyOptions {
   headersFile?: string;
   /** The body cap in bytes. Defaults to OTEL_PROXY_MAX_BODY_BYTES (8 MiB). */
   maxBodyBytes?: number;
+  /**
+   * The request header naming the host the browser addressed, which the
+   * caller's `Origin` must match. `"host"` (the default) for a server the
+   * browser reaches directly, as Vite's is. `"x-forwarded-host"` behind a
+   * proxy that sets it from the browser's `Host`: startOtelRelay uses it,
+   * because Next's rewrite proxy replaces `Host` with the relay's own address
+   * and writes the original into `X-Forwarded-Host`, overwriting any value
+   * the client sent.
+   */
+  callerHostHeader?: "host" | "x-forwarded-host";
 }
 
 /**
@@ -106,23 +133,11 @@ export type OtelProxyHandler = (
   path: string,
 ) => void;
 
-// Request headers never forwarded: the page's credentials, and everything
-// that frames THIS hop (the proxy sets its own host and content-length).
-const DROPPED_REQUEST_HEADERS = new Set([
-  "authorization",
-  "proxy-authorization",
-  "cookie",
-  "host",
-  "content-length",
-  "transfer-encoding",
-  "connection",
-  "keep-alive",
-  "proxy-connection",
-  "te",
-  "trailer",
-  "upgrade",
-  "expect",
-]);
+// The only request headers forwarded from the page: what the collector needs
+// to decode the body. Everything else — cookies, the page's authorization,
+// whatever a caller added — stays behind; the proxy sets its own host and
+// content-length, and the token comes from the headers file.
+const FORWARDED_REQUEST_HEADERS = ["content-type", "content-encoding"] as const;
 
 // Response headers never passed back: hop framing (Node frames the reply
 // itself) and any cookie the upstream tries to set on the dev origin.
@@ -197,6 +212,19 @@ function reply(
   res.end();
 }
 
+/**
+ * refuse answers a request whose body is never read, and closes the
+ * connection: otherwise Node would keep it alive by reading and discarding
+ * whatever body the caller keeps sending, without bound.
+ */
+function refuse(
+  res: ServerResponse,
+  status: number,
+  headers: OutgoingHttpHeaders = {},
+): void {
+  reply(res, status, { ...headers, connection: "close" });
+}
+
 function forwardedHeaders(
   incoming: IncomingHttpHeaders,
   extra: Array<[string, string]>,
@@ -204,14 +232,106 @@ function forwardedHeaders(
   length: number,
 ): OutgoingHttpHeaders {
   const out: OutgoingHttpHeaders = {};
-  for (const [name, value] of Object.entries(incoming)) {
-    if (value === undefined || DROPPED_REQUEST_HEADERS.has(name)) continue;
-    out[name] = value;
+  for (const name of FORWARDED_REQUEST_HEADERS) {
+    const value = incoming[name];
+    if (value !== undefined) out[name] = value;
   }
   for (const [name, value] of extra) out[name] = value;
   out.host = host;
   out["content-length"] = length;
   return out;
+}
+
+/** The parts of a request the caller check reads. */
+export type CallerRequest = Pick<IncomingMessage, "headers" | "rawHeaders">;
+
+// One authority, host[:port], and nothing else: a DNS name or an IPv4
+// address, or a bracketed IPv6 address, then an optional decimal port. No
+// userinfo, path, comma, whitespace or second value can match.
+const AUTHORITY =
+  /^(\[[0-9a-f:.]+\]|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)(?::([1-9][0-9]{0,4}))?$/;
+
+interface Authority {
+  hostname: string;
+  /** The port as written, or undefined when none was. */
+  port: number | undefined;
+}
+
+/**
+ * parseAuthority reads one canonical host[:port], lower-cased, or returns
+ * undefined. A host the WHATWG URL parser would rewrite (`0x7f.1`, an
+ * uncompressed IPv6 address, a trailing dot) is refused rather than
+ * normalized, so the value compared is the value every hop forwarded.
+ */
+function parseAuthority(value: string): Authority | undefined {
+  const m = AUTHORITY.exec(value.toLowerCase());
+  if (m === null) return undefined;
+  const hostname = m[1] ?? "";
+  const port = m[2] === undefined ? undefined : Number(m[2]);
+  if (port !== undefined && port > 65535) return undefined;
+  try {
+    if (new URL(`http://${hostname}`).hostname !== hostname) return undefined;
+  } catch {
+    return undefined;
+  }
+  return { hostname, port };
+}
+
+/** How many times the request carried `name` (any case) on the wire. */
+function headerCount(req: CallerRequest, name: string): number {
+  let n = 0;
+  for (let i = 0; i < req.rawHeaders.length; i += 2) {
+    if (req.rawHeaders[i]?.toLowerCase() === name) n++;
+  }
+  return n;
+}
+
+/**
+ * sameOriginCaller reports whether the request comes from a page on the very
+ * origin it was sent to: `Origin` is a serialized http(s) origin whose host
+ * and port equal those of `hostHeader`'s value (a missing port on either side
+ * is the scheme's default), and `Sec-Fetch-Site`, when present, is
+ * `same-origin`.
+ *
+ * Anything ambiguous is not a caller: an absent `Origin`, the opaque `null`
+ * origin, any of the three headers sent more than once (Node keeps the first
+ * `Host` and comma-joins the rest, and a proxy in between may pick
+ * differently), or a host value that is not exactly one canonical
+ * host[:port] — a comma, userinfo, a path, whitespace or an invalid port.
+ *
+ * The scheme is not compared, because the dev server cannot know it: a
+ * workspace preview URL or tunnel terminates TLS and hands it plain HTTP for
+ * an `https://` page, and one host:port cannot serve a second scheme.
+ */
+export function sameOriginCaller(
+  req: CallerRequest,
+  hostHeader: "host" | "x-forwarded-host" = "host",
+): boolean {
+  for (const name of ["origin", hostHeader, "sec-fetch-site"]) {
+    if (headerCount(req, name) > 1) return false;
+  }
+  const site = req.headers["sec-fetch-site"];
+  if (site !== undefined && site !== "same-origin") return false;
+  const origin = req.headers.origin;
+  const host = req.headers[hostHeader];
+  if (typeof origin !== "string" || typeof host !== "string") return false;
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  // A serialized origin is scheme://host[:port] and nothing else.
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.origin !== origin.toLowerCase()) return false;
+  const defaultPort = url.protocol === "https:" ? 443 : 80;
+  const page = parseAuthority(url.host);
+  const addressed = parseAuthority(host);
+  if (page === undefined || addressed === undefined) return false;
+  return (
+    page.hostname === addressed.hostname &&
+    (page.port ?? defaultPort) === (addressed.port ?? defaultPort)
+  );
 }
 
 /**
@@ -241,6 +361,7 @@ export function createOtelProxyHandler(
     ""
   ).trim();
   const max = options.maxBodyBytes ?? OTEL_PROXY_MAX_BODY_BYTES;
+  const callerHost = options.callerHostHeader ?? "host";
   const ingest = new Set(OTEL_INGEST_PATHS);
 
   const forward = (
@@ -289,16 +410,22 @@ export function createOtelProxyHandler(
   return (req, res, rawPath) => {
     const path = pathOnly(rawPath);
     if (!ingest.has(path)) {
-      reply(res, 404);
+      refuse(res, 404);
+      return;
+    }
+    // Before the method and the body: a foreign page never gets a byte
+    // buffered, let alone forwarded with the token, whatever it sends.
+    if (!sameOriginCaller(req, callerHost)) {
+      refuse(res, 403);
       return;
     }
     if (req.method !== "POST") {
-      reply(res, 405, { allow: "POST" });
+      refuse(res, 405, { allow: "POST" });
       return;
     }
     const declared = Number(req.headers["content-length"]);
     if (Number.isFinite(declared) && declared > max) {
-      reply(res, 413);
+      refuse(res, 413);
       return;
     }
     // Buffer the body under the cap BEFORE contacting the upstream, so an
@@ -338,11 +465,20 @@ export function createOtelProxyHandler(
  * its root: a Next.js config rewrites `/_otel/:path*` to `<relay>/:path*`,
  * which strips the prefix on the way. The server is unref'd, so it never
  * holds the dev server's process open. Rejects if the port cannot be bound.
+ *
+ * The caller check reads `X-Forwarded-Host` unless `callerHostHeader` says
+ * otherwise: Next's rewrite proxy sets it to the `Host` the browser
+ * addressed (overwriting any the client sent) and points `Host` at the
+ * relay. A request that reaches the relay directly carries none, and is
+ * refused.
  */
 export function startOtelRelay(
   options: OtelProxyOptions = {},
 ): Promise<string> {
-  const handle = createOtelProxyHandler(options);
+  const handle = createOtelProxyHandler({
+    ...options,
+    callerHostHeader: options.callerHostHeader ?? "x-forwarded-host",
+  });
   const server = http.createServer((req, res) =>
     handle(req, res, req.url ?? "/"),
   );

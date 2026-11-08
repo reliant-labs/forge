@@ -196,11 +196,13 @@ export interface ForgeOtelProxyPlugin {
 
 /**
  * forgeOtelProxy is the dev server's `/_otel` browser-telemetry proxy (see
- * ./otel-proxy for the rules it enforces): `POST /_otel/v1/{traces,logs,metrics}`
- * goes to the collector at OTEL_EXPORTER_OTLP_ENDPOINT, with the headers in
- * FORGE_OTEL_HEADERS_FILE attached and the page's cookies and authorization
- * dropped; every other request under `/_otel` is refused without contacting
- * the collector. Requests outside the prefix pass through untouched.
+ * ./otel-proxy for the rules it enforces): a same-origin page's
+ * `POST /_otel/v1/{traces,logs,metrics}` goes to the collector at
+ * OTEL_EXPORTER_OTLP_ENDPOINT with only its content-type and content-encoding
+ * and the headers in FORGE_OTEL_HEADERS_FILE; every other request under
+ * `/_otel` — a foreign or Origin-less caller included — is refused without
+ * contacting the collector. Requests outside the prefix pass through
+ * untouched.
  *
  * It replaces a `server.proxy["/_otel"]` entry, which forwards every path
  * and method and cannot bound a body. Plugin middleware runs before Vite's

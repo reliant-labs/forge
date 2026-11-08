@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cloud"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -76,6 +79,83 @@ func TestReplayScaffoldSitesRenderCaptureAndAdmissionTogether(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestReplayScaffoldOfflineSetupPublishesCaptureOff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders actual scaffold and runtime docs; runs in task test")
+	}
+	kclplugin.Register()
+	oldCredential := devTelemetryCredential
+	devTelemetryCredential = func(string, *cloud.Declaration) error { return errors.New("offline") }
+	t.Cleanup(func() { devTelemetryCredential = oldCredential })
+	for _, tc := range []struct {
+		name                   string
+		cp, enabled, collector bool
+	}{
+		{"default offline", true, true, false}, {"no control plane", false, true, false}, {"observability off", false, false, false}, {"local collector", false, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fe, _ := generator.SiteStarterFrontend("vite-spa", "web")
+			if err := generator.WriteSiteStarter(dir, "shop", fe); err != nil {
+				t.Fatal(err)
+			}
+			if err := generator.WriteSiteScaffold(dir, "shop", generator.HarnessReliant, fe); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "deploy/kcl/dev/main.k")
+			main, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := string(main)
+			if !tc.cp {
+				source = strings.Replace(source, "    control_plane = forge.ControlPlane {}\n", "", 1)
+			}
+			source = strings.Replace(source, "observability = forge.Observability {signals", "observability = forge.Observability {enabled = "+map[bool]string{true: "True", false: "False"}[tc.enabled]+", signals", 1)
+			if tc.collector {
+				source = strings.Replace(source, "enabled = True, signals", "local_port = 14318, enabled = True, signals", 1)
+			}
+			if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := renderKCLRaw(t.Context(), dir, "dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			e, err := parseKCLEntities(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var log strings.Builder
+			if _, err := setupDevTelemetry(t.Context(), e, devTelemetrySetupIn{ProjectDir: dir, Env: "dev", Flag: "auto", Out: &log, Now: devTelNow}); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadProjectDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := refreshFrontendRuntimeConfigs(cfg, dir, "dev", e); err != nil {
+				t.Fatal(err)
+			}
+			doc, err := os.ReadFile(filepath.Join(dir, "public/config.js"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[bool]string{true: "true", false: "false"}[tc.collector]
+			if !strings.Contains(string(doc), `"OTEL_REPLAY": "`+want+`"`) {
+				t.Fatalf("capture config %s log %s", doc, log.String())
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != source {
+				t.Fatal("runtime decision modified owned declaration")
+			}
+		})
 	}
 }
 

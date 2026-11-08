@@ -406,12 +406,21 @@ func (r *devTelemetryRun) renewNow(ctx context.Context, now time.Time) error {
 		if r.superseded() {
 			return errDevTelemetrySuperseded
 		}
-		err = r.write(g, now)
 		r.mu.Lock()
 		wasReplay := r.grant.SessionReplay
 		r.mu.Unlock()
-		if err == nil && wasReplay && !g.SessionReplay {
-			err = r.stopReplayForReloads()
+		err = r.write(g, now)
+		if err == nil {
+			// Persistence is the commit point. Capture withdrawal is a
+			// separate effect: it must not roll an active grant back.
+			r.mu.Lock()
+			r.grant = g
+			r.mu.Unlock()
+			if wasReplay && !g.SessionReplay {
+				if withdrawalErr := r.stopReplayForReloads(); withdrawalErr != nil {
+					return r.replayWithdrawalFailed(withdrawalErr, now)
+				}
+			}
 		}
 	}
 	if err != nil {
@@ -424,9 +433,6 @@ func (r *devTelemetryRun) renewNow(ctx context.Context, now time.Time) error {
 		})
 		return err
 	}
-	r.mu.Lock()
-	r.grant = g
-	r.mu.Unlock()
 	return nil
 }
 
@@ -452,7 +458,7 @@ func (r *devTelemetryRun) renewUntil(ctx context.Context, clock devTelemetryCloc
 		case <-clock.After(wait):
 		}
 		if err := r.renewNow(ctx, clock.Now()); err != nil {
-			if ctx.Err() != nil || errors.Is(err, errDevTelemetrySuperseded) {
+			if ctx.Err() != nil || errors.Is(err, errDevTelemetrySuperseded) || errors.Is(err, errDevReplayWithdrawal) {
 				return
 			}
 			switch {

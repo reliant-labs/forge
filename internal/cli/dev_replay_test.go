@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/devtelemetry"
 )
 
 type replayMintCaller struct {
@@ -136,6 +138,104 @@ func TestDevReplayRenewalLossWithdrawsFutureCaptureWithoutLateEnable(t *testing.
 	}
 	if string(after) != string(b) {
 		t.Fatal("late ack silently enabled capture")
+	}
+}
+
+func TestDevReplayWithdrawalFailureKeepsCommittedGrant(t *testing.T) {
+	prev := stopReplayFrontends
+	var stopped []string
+	stopReplayFrontends = func(_ string, _ string, names []string) error { stopped = names; return nil }
+	t.Cleanup(func() { stopReplayFrontends = prev })
+	dir := t.TempDir()
+	path := filepath.Join(dir, "frontends/web/public/config.js")
+	if err := os.MkdirAll(path, 0700); err != nil {
+		t.Fatal(err)
+	} // deterministic read/write failure, even as root
+	caller := &replayMintCaller{ack: boolPtr(false)}
+	var log strings.Builder
+	old := devTelemetryGrant{SessionReplay: true, mintedAt: devTelNow.Add(-time.Hour), expires: devTelNow.Add(time.Minute)}
+	r := &devTelemetryRun{projectDir: dir, env: "dev", project: "shop", sessionID: "s", client: caller, sessionReplay: true, frontends: []FrontendEntity{{Name: "web", Type: "vite", Path: "frontends/web"}}, grant: old, log: &log}
+	err := r.renewNow(t.Context(), devTelNow)
+	if err == nil {
+		t.Fatal("withdrawal failure must not claim capture disabled")
+	}
+	if r.grant.SessionReplay || !r.grant.expires.Equal(devTelNow.Add(time.Hour)) {
+		t.Fatalf("new token persisted but memory holds old grant: %+v", r.grant)
+	}
+	st, ok, readErr := devtelemetry.ReadState(dir, "dev")
+	if readErr != nil || !ok {
+		t.Fatalf("state: %v %v", ok, readErr)
+	}
+	if !st.ExpiresAt.Equal(r.grant.expires) {
+		t.Fatal("persisted state rolled back to old expiry")
+	}
+	if !strings.Contains(st.RenewError, "capture") || strings.Contains(st.RenewError, "unreachable") {
+		t.Fatalf("misclassified committed renewal: %q", st.RenewError)
+	}
+	if !strings.Contains(log.String(), "cannot confirm capture is off") {
+		t.Fatalf("inaccurate warning: %s", log.String())
+	}
+	if !errors.Is(err, errDevReplayWithdrawal) {
+		t.Fatalf("must be terminal withdrawal error, not retry mint: %v", err)
+	}
+	if strings.Join(stopped, ",") != "frontend:web" {
+		t.Fatalf("failed policy must stop only this stack frontend: %v", stopped)
+	}
+	spec := r.keeperSpec()
+	if spec.GrantedReplay || !spec.ExpiresAt.Equal(r.grant.expires) {
+		t.Fatal("restart snapshot retained old grant")
+	}
+	if caller.requests[0]["sessionReplay"] != true {
+		t.Fatal("renewal changed owned capture intent")
+	}
+}
+
+func TestDevReplayKeeperStopsAfterCommittedWithdrawalFailure(t *testing.T) {
+	prev := stopReplayFrontends
+	stopReplayFrontends = func(string, string, []string) error { return nil }
+	t.Cleanup(func() { stopReplayFrontends = prev })
+	dir := t.TempDir()
+	path := filepath.Join(dir, "frontends/web/public/config.js")
+	if err := os.MkdirAll(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	spec := keeperSpecForTest(dir)
+	spec.SessionReplay = true
+	spec.GrantedReplay = true
+	spec.Frontends = []FrontendEntity{{Name: "web", Type: "vite", Path: "frontends/web"}}
+	clock := newFakeDevClock(devTelNow)
+	caller := &fakeMintCaller{clock: clock.Now, minted: make(chan struct{}, 1)} // absent ack denies replay
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runDevTelemetryKeeper(t.Context(), spec, caller, &fakeSessionReporter{}, time.Hour, clock, &strings.Builder{})
+	}()
+	recv(t, "renewal timer", clock.armed)
+	clock.Advance(30 * time.Minute)
+	recv(t, "mint committed", caller.minted)
+	recv(t, "keeper exits instead of retrying mint", done)
+	if caller.count() != 1 {
+		t.Fatalf("mint retried after commit: %d", caller.count())
+	}
+	st, ok, err := devtelemetry.ReadState(dir, "dev")
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if !st.ExpiresAt.Equal(devTelNow.Add(90 * time.Minute)) {
+		t.Fatalf("wrong committed expiry: %v", st.ExpiresAt)
+	}
+}
+
+func TestDevReplayLocalDecisionDoesNotDependOnNotice(t *testing.T) {
+	for _, cp := range []bool{false, true} {
+		for _, enabled := range []bool{false, true} {
+			e := &KCLEntities{Observability: &ObservabilityEntity{Enabled: enabled, Signals: ObservabilitySignalsEntity{Browser: true, Replay: true}}, Frontends: []FrontendEntity{{Name: "web", Type: "vite", RuntimeConfig: map[string]string{"OTEL_REPLAY": "true"}}}}
+			var log strings.Builder
+			printLocalReplayAvailability(e, devTelemetryFacts{ControlPlane: cp, TelemetryOn: enabled, SessionReplay: enabled}, devTelemetryMode{Value: devTelemetryLocal}, "local", &log)
+			if e.Frontends[0].RuntimeConfig["OTEL_REPLAY"] != "false" {
+				t.Fatalf("no collector but capture remains on cp=%v enabled=%v", cp, enabled)
+			}
+		}
 	}
 }
 

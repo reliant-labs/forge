@@ -49,11 +49,30 @@ func NewClient(dialectName, dsn string) (*Client, error) {
 // NewClientWithDB wraps an existing *sql.DB into an ORM client. This is
 // the seam the generated bootstrap/setup and pkg/testkit use: open a
 // postgres *sql.DB, hand it here. dialectName must be "postgres".
+// Like sql.DB.Ping, this constructor uses a background context; request-bound
+// initialization should use NewClientWithDBContext instead.
 func NewClientWithDB(db *sql.DB, dialectName string) (*Client, error) {
+	return NewClientWithDBContext(context.Background(), db, dialectName)
+}
+
+// NewClientWithDBContext wraps an existing pool, checking its availability with
+// db.PingContext(ctx). Cancellation and deadlines cover waiting for a pool
+// connection and a context-aware driver's ping. A failed initialization leaves
+// the caller's pool open and can be retried. The context is not retained: later
+// operations use their own contexts, with the same binding, ambient transaction
+// resolution and telemetry hooks as NewClientWithDB.
+//
+// dialectName must be "postgres". Callers lazily sharing this handle must also
+// make any wait for their initialization lock cancellable; this function does
+// not coordinate access to a caller's cache.
+func NewClientWithDBContext(ctx context.Context, db *sql.DB, dialectName string) (*Client, error) {
 	if err := requirePostgres(dialectName); err != nil {
 		return nil, err
 	}
-	if err := db.Ping(); err != nil {
+	if ctx == nil {
+		return nil, ErrNilContext
+	}
+	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 	dialect, err := GetDialect(dialectName)

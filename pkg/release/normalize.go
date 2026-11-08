@@ -35,6 +35,8 @@ import (
 const ArtifactPlaceholder = "forge.dev/artifact:"
 
 // secretValueFields are the two places a Kubernetes Secret holds a value.
+// The shared secret rule (secret_rule.go) reads the same list, so the hasher,
+// the bundle writer and the config viewer agree on where a value can be.
 var secretValueFields = []string{"data", "stringData"}
 
 // RedactSecrets replaces every value under a `kind: Secret` document's `data`
@@ -59,10 +61,10 @@ var secretValueFields = []string{"data", "stringData"}
 // Anything that is not a Secret is returned unchanged, and the input is never
 // mutated — the caller still needs it.
 func RedactSecrets(doc any) any {
-	body, ok := doc.(map[string]any)
-	if !ok || body["kind"] != "Secret" {
+	if !IsSecretObject(doc) {
 		return doc
 	}
+	body := doc.(map[string]any)
 	out := make(map[string]any, len(body))
 	for key, value := range body {
 		out[key] = value
@@ -83,7 +85,7 @@ func RedactSecrets(doc any) any {
 
 func redactValue(value any) string {
 	s := fmt.Sprint(value)
-	if strings.HasPrefix(s, RedactedSecretPrefix) {
+	if IsRedacted(s) {
 		return s
 	}
 	sum := sha256.Sum256([]byte(s))

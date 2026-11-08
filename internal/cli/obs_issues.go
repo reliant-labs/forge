@@ -20,7 +20,7 @@ const schemaObsIssues = "forge.obs.issues/v1"
 var obsIssuesSchema = obsout.Schema{
 	Name: schemaObsIssues,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "sort",
 		"issues", "issues.id", "issues.platform", "issues.source", "issues.service", "issues.title", "issues.culprit", "issues.exception_type",
 		"issues.status", "issues.first_seen", "issues.last_seen", "issues.first_version", "issues.last_version",
@@ -288,7 +288,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	}
 	res.NextPageToken = wrapPageToken(n.Range, res.NextPageToken)
 	doc.Page = obsout.Page{Truncated: res.Truncated || res.NextPageToken != "", NextPageToken: res.NextPageToken}
-	doc.Suggested = issuesSuggestions(env, shown)
+	doc.Suggested = o.inst.carrySuggested(issuesSuggestions(env, shown))
 	doc.Stamp(schemaObsIssues, nil)
 	if done, err := o.out.Emit(d.Stdout, obsIssuesSchema, doc, fields); done || err != nil {
 		return err

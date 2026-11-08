@@ -17,7 +17,7 @@ const schemaObsEndpoints = "forge.obs.endpoints/v1"
 var obsEndpointsSchema = obsout.Schema{
 	Name: schemaObsEndpoints,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "sort",
 		"endpoints", "endpoints.service", "endpoints.name", "endpoints.requests", "endpoints.errors", "endpoints.error_ratio",
 		"endpoints.rate_per_second", "endpoints.p50_ms", "endpoints.p95_ms", "endpoints.p99_ms",
@@ -120,6 +120,7 @@ func runObsEndpoints(ctx context.Context, d obsDeps, env string, o obsEndpointsO
 			obsout.Command("forge", "obs", "traces", env, "--service", top.Service, "--route", top.Name, "--slow"),
 			obsout.Command("forge", "obs", "traces", env, "--service", top.Service, "--route", top.Name, "--errors"),
 		)
+		doc.Suggested = o.inst.carrySuggested(doc.Suggested)
 	}
 	doc.Stamp(schemaObsEndpoints, nil)
 	if done, err := o.out.Emit(d.Stdout, obsEndpointsSchema, doc, fields); done || err != nil {

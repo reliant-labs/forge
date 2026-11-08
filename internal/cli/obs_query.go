@@ -23,7 +23,7 @@ const schemaObsQuery = "forge.obs.query/v1"
 var obsQuerySchema = obsout.Schema{
 	Name: schemaObsQuery,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "columns", "columns.name", "columns.type", "rows",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
@@ -174,7 +174,7 @@ func runObsQuery(ctx context.Context, d obsDeps, env string, o obsQueryOpts) err
 	}
 	doc.Page = obsout.Page{Truncated: res.Truncated}
 	if res.Truncated {
-		doc.Suggested = obsout.Suggest(obsout.Command("forge", "obs", "query", env, "--limit", fmt.Sprint(min(o.out.Limit*5, obsquery.MaxSQLRows))))
+		doc.Suggested = o.inst.carrySuggested(obsout.Suggest(obsout.Command("forge", "obs", "query", env, "--limit", fmt.Sprint(min(o.out.Limit*5, obsquery.MaxSQLRows)))))
 	}
 	doc.Stamp(schemaObsQuery, nil)
 	if done, err := o.out.Emit(d.Stdout, obsQuerySchema, doc, fields); done || err != nil {

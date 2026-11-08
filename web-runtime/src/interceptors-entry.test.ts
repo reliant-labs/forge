@@ -117,8 +117,11 @@ describe("the ./interceptors entry point", () => {
 
     // Pin the exact graph. A new module showing up here is a decision that
     // should be made deliberately, not inherited from a stray import.
+    // interaction-context.ts is the open-interaction registry the trace
+    // interceptor parents calls on; it imports @opentelemetry/api alone.
     expect(files.sort()).toEqual([
       "src/errors.ts",
+      "src/interaction-context.ts",
       "src/interceptors.ts",
       "src/telemetry-gate.ts",
       "src/trace.ts",

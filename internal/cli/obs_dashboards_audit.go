@@ -49,7 +49,7 @@ const schemaObsDashboardsAudit = "forge.obs.dashboards_audit/v1"
 var obsDashboardsAuditSchema = obsout.Schema{
 	Name: schemaObsDashboardsAudit,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "project", "window", "window.since", "window.source", "window.from", "window.to", "window.probe_since",
 		"summary", "summary.dashboards", "summary.panels", "summary.ok", "summary.partial", "summary.empty",
 		"summary.error", "summary.not_applicable", "summary.all_zero", "summary.dashboards_unread",

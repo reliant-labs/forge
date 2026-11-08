@@ -110,7 +110,7 @@ func (c Cloud) ListDashboards(ctx context.Context, project string) ([]DashboardI
 	var out struct {
 		Dashboards []wireDashboardSummary `json:"dashboards"`
 	}
-	if err := c.call(ctx, procListDashboards, in, &out); err != nil {
+	if err := c.callEnvWide(ctx, procListDashboards, in, &out); err != nil {
 		return nil, err
 	}
 	res := make([]DashboardInfo, 0, len(out.Dashboards))
@@ -131,7 +131,7 @@ func (c Cloud) GetDashboard(ctx context.Context, ref DashboardRef) (DashboardDoc
 		Spec    json.RawMessage      `json:"spec"`
 		Version int                  `json:"version"`
 	}
-	if err := c.call(ctx, procGetDashboard, in, &out); err != nil {
+	if err := c.callEnvWide(ctx, procGetDashboard, in, &out); err != nil {
 		return DashboardDocument{}, err
 	}
 	info := out.Summary.info()
@@ -209,6 +209,11 @@ type PanelReadoutRequest struct {
 // back as counts. The step is left to the control plane (the console sends 0
 // too), and the answer echoes what it chose.
 func (c Cloud) QueryPanelReadout(ctx context.Context, req PanelReadoutRequest) (PanelReadout, error) {
+	if req.Panel.Kind == "sql" {
+		if err := c.Instances.RefuseSQL("sql panel " + req.Panel.ID); err != nil {
+			return PanelReadout{}, err
+		}
+	}
 	panel, err := panelWireAny(req.Panel)
 	if err != nil {
 		return PanelReadout{}, err

@@ -64,7 +64,7 @@ the env's declared token variable.
 
 ### Scopes for reading what a deployed app is doing
 
-Three scopes belong to the feedback loop (observe, then query). Each is its own
+These scopes belong to the feedback loop (observe, then query). Each is its own
 authority: none implies another product's, and `forge cloud token create
 --scopes` accepts them like any other.
 
@@ -75,6 +75,7 @@ authority: none implies another product's, and `forge cloud token create
 | `obs:write` | authoring the org's observability workspace (dashboards: save, restore, archive, promote) | implies `obs:read` at the point of use; implies nothing else (not `obs:triage`); cannot be bound to one environment |
 | `db:query` | one read-only query against an env's database | implies nothing and is implied by nothing: app data is not telemetry. A real env may restrict it further to people |
 | `storage:read` | reading an env's object storage: list a bucket, read an object's metadata, preview it, mint a short-lived download URL | implies nothing and is implied by nothing, `db:query` included: uploads are not rows. May be bound to one environment; a real env may restrict it further to people (`data_access.storage`) |
+| `deploy:config:read` | a release's config VALUES: a workload's plain env var values and its redacted rendered manifest (`deploy:read` sees names only) | implies nothing and is implied by nothing, `deploy:write` included: shipping a release is not reading what it carries. May be bound to one environment. Secret objects and secret refs never show a value, and a secret-looking plain value shows only as `redacted` (`release.RedactObject`), with no value-derived digest |
 
 `accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK must
 list every member (`db/closed-sets`).

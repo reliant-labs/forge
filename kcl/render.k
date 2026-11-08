@@ -1997,6 +1997,7 @@ _render_observability = lambda b: Bundle -> any {
     {
         "enabled": _o.enabled
         "local_port": _o.local_port
+        "dev_telemetry": _o.dev_telemetry
         "local_endpoint": _obs_local_endpoint(b) or None
         "profiles_endpoint": _obs_profiles_local_endpoint(b) or None
         # The local alerting loop (Alertmanager + evaluator): only beside the
@@ -2040,6 +2041,8 @@ _render_observability = lambda b: Bundle -> any {
             "traces_days": _o.retention.traces_days
             "metrics_days": _o.retention.metrics_days
             "logs_days": _o.retention.logs_days
+            "browser_days": _o.retention.browser_days
+            "overrides": [{"service": o.service, "signal": o.signal, "days": o.days} for o in _o.retention.overrides]
             "replay_days": _o.retention.replay_days
             "errors_days": _o.retention.errors_days
             "product_events_days": _o.retention.product_events_days

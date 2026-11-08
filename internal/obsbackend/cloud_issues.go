@@ -27,6 +27,9 @@ type wireIssueScope struct {
 	EnvIDs    []string      `json:"envIds,omitempty"`
 	Services  []string      `json:"services,omitempty"`
 	TimeRange wireTimeRange `json:"timeRange"`
+	// InstanceIDs and InstanceUsers are IssueScope's instance narrowing.
+	InstanceIDs   []string `json:"instanceIds,omitempty"`
+	InstanceUsers []string `json:"instanceUsers,omitempty"`
 }
 
 func (c Cloud) issueScope(n Narrow) (wireIssueScope, error) {
@@ -34,13 +37,23 @@ func (c Cloud) issueScope(n Narrow) (wireIssueScope, error) {
 		return wireIssueScope{}, Wrong("--filter narrows telemetry attributes and does not apply to issues; use --service")
 	}
 	s := c.scope(n)
-	return wireIssueScope{OrgID: s.OrgID, EnvIDs: s.EnvIDs, Services: s.Services, TimeRange: s.TimeRange}, nil
+	return wireIssueScope{OrgID: s.OrgID, EnvIDs: s.EnvIDs, Services: s.Services, TimeRange: s.TimeRange,
+		InstanceIDs: s.InstanceIDs, InstanceUsers: s.InstanceUsers}, nil
 }
 
 // callIssues is call with the one answer an issues read must not blur: a
 // control plane that does not serve issues yet is "could not look", and says so.
 func (c Cloud) callIssues(ctx context.Context, procedure string, req, out any) error {
-	err := c.call(ctx, procedure, req, out)
+	return c.issuesErr(procedure, c.call(ctx, procedure, req, out))
+}
+
+// callIssuesEnvWide is callIssues for an issue's discussion or a change to
+// it: about the issue, not its telemetry (callEnvWide).
+func (c Cloud) callIssuesEnvWide(ctx context.Context, procedure string, req, out any) error {
+	return c.issuesErr(procedure, c.callEnvWide(ctx, procedure, req, out))
+}
+
+func (c Cloud) issuesErr(procedure string, err error) error {
 	var ce *cloud.Error
 	if errors.As(err, &ce) && ce.HasCode(cloud.CodeUnimplemented) {
 		return Undetermined("the control plane does not serve issues yet (%s is unimplemented there)", procedure).Cause(err)
@@ -236,7 +249,8 @@ func (c Cloud) getIssue(ctx context.Context, id string, n Narrow) (GetIssueResul
 	in := struct {
 		IssueID   string        `json:"issueId"`
 		TimeRange wireTimeRange `json:"timeRange"`
-	}{id, wireTimeRange{Start: n.Range.From.UTC(), End: n.Range.To.UTC()}}
+		wireInstanceNarrowing
+	}{id, wireTimeRange{Start: n.Range.From.UTC(), End: n.Range.To.UTC()}, c.instanceNarrowing()}
 	var out struct {
 		Issue       wireIssue       `json:"issue"`
 		LatestEvent *wireIssueEvent `json:"latestEvent"`
@@ -321,7 +335,8 @@ func (c Cloud) ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) 
 	in := struct {
 		IssueID  string `json:"issueId"`
 		PageSize int    `json:"pageSize,omitempty"`
-	}{req.ID, req.Limit}
+		wireInstanceNarrowing
+	}{req.ID, req.Limit, c.instanceNarrowing()}
 	var out struct {
 		Events        []wireIssueEvent `json:"events"`
 		NextPageToken string           `json:"nextPageToken"`
@@ -373,7 +388,10 @@ func (c Cloud) UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusReque
 		}
 	}
 	now := time.Now().UTC()
-	cur, err := c.getIssue(ctx, req.ID, Narrow{Range: Range{From: now.Add(-triageWindow), To: now}})
+	// The current status is the issue's, not an instance's: read it whole.
+	whole := c
+	whole.Instances = Instances{}
+	cur, err := whole.getIssue(ctx, req.ID, Narrow{Range: Range{From: now.Add(-triageWindow), To: now}})
 	if err != nil {
 		return UpdateIssueStatusResult{}, err
 	}
@@ -400,7 +418,7 @@ func (c Cloud) UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusReque
 	var out struct {
 		Issue wireIssue `json:"issue"`
 	}
-	if err := c.callIssues(ctx, procUpdateIssueStatus, in, &out); err != nil {
+	if err := c.callIssuesEnvWide(ctx, procUpdateIssueStatus, in, &out); err != nil {
 		var ce *cloud.Error
 		if errors.As(err, &ce) && ce.HasCode("aborted") {
 			return UpdateIssueStatusResult{}, Wrong("issue %s changed since it was read; re-read and retry", req.ID).Cause(err)

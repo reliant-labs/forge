@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/devtelemetry"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -37,6 +38,11 @@ type Facts struct {
 	// ReleaseHealth is the env's recorded release-health policy; nil means
 	// every default.
 	ReleaseHealth *release.ShapeReleaseHealth
+	// DevTelemetry is where `forge env up` decided this env's telemetry goes
+	// (.forge/obs/backend-<env>.json); nil when it recorded nothing. A
+	// recorded "cloud" is read back rather than re-derived from whoever is
+	// signed in now.
+	DevTelemetry *devtelemetry.Record
 }
 
 // Destination is Observability.destination.
@@ -53,6 +59,43 @@ type Decision struct {
 	// Reason is one line a human header can show: "no destination: host
 	// processes feed the local ClickStack".
 	Reason string
+	// HostedDev is set when a local env's telemetry goes to the hosted store
+	// (`forge env up` recorded dev_telemetry=hosted): the record names the
+	// org, the environment id and the instance the reads are bound to, so the
+	// cloud backend is built from it rather than from a hosted-env lookup.
+	HostedDev *devtelemetry.Record
+}
+
+// recordedCloud is what devtelemetry.Record.Backend says for the hosted store.
+const recordedCloud = "cloud"
+
+// hostedDevRecord is f's recorded hosted-dev decision, or nil: a record
+// counts only for an env that still runs on this machine.
+func hostedDevRecord(f Facts) *devtelemetry.Record {
+	if r := f.DevTelemetry; r != nil && r.Backend == recordedCloud && f.HasLocal {
+		return r
+	}
+	return nil
+}
+
+// hostedDev resolves an env whose `forge env up` sent its telemetry to the
+// hosted store: the cloud backend, bound to the record's org, environment and
+// instance.
+func hostedDev(f Facts, r *devtelemetry.Record, prefix string) (Decision, error) {
+	if f.ControlPlane == "" {
+		return Decision{}, Undetermined("env %s's telemetry goes to the hosted store (as `forge env up` recorded it) but the env declares no control_plane to query it through", f.Env)
+	}
+	// Every field the reads are bound by is required: a record without its
+	// instance would read every instance of the env instead of this one.
+	if r.OrgID == "" || r.EnvironmentID == "" || r.InstanceID == "" {
+		return Decision{}, Undetermined("the hosted-telemetry record of env %s (%s) names no org, environment or instance", f.Env, ".forge/obs/backend-"+f.Env+".json").
+			With(Cmd("forge", "env", "up", f.Env))
+	}
+	who := r.InstanceLabel
+	if who == "" {
+		who = r.InstanceID
+	}
+	return Decision{Backend: BackendCloud, Reason: prefix + "dev_telemetry=hosted: instance " + who, HostedDev: r}, nil
 }
 
 // Resolve applies the §4.2 table. override is --backend: "", "local" or
@@ -68,6 +111,9 @@ func Resolve(f Facts, override string) (Decision, error) {
 	case BackendLocal:
 		return Decision{Backend: BackendLocal, Reason: "--backend local"}, nil
 	case BackendCloud:
+		if r := hostedDevRecord(f); r != nil {
+			return hostedDev(f, r, "--backend cloud: ")
+		}
 		if f.ControlPlane == "" {
 			return Decision{}, Undetermined("--backend cloud: env %q declares no control_plane, so there is no control plane to query", f.Env)
 		}
@@ -78,8 +124,18 @@ func Resolve(f Facts, override string) (Decision, error) {
 	// telemetry unless the env declares `forge.Observability {enabled =
 	// False}`, and a scaffolded prod/staging declares no block at all. So an
 	// undeclared block means off only for an env nothing hosted runs in.
-	if f.Declared && !f.Enabled || !f.Declared && !f.HasHosted {
-		return Decision{}, Undetermined("telemetry is off for %s: its observability is %s", f.Env, offWhy(f)).
+	if f.Declared && !f.Enabled {
+		return Decision{}, Undetermined("telemetry is off for %s: its observability is disabled", f.Env).
+			With("forge skill load observability")
+	}
+	// `forge env up` sent this env's telemetry to the hosted store.
+	if r := hostedDevRecord(f); r != nil {
+		return hostedDev(f, r, "")
+	}
+	if !f.Declared && !f.HasHosted {
+		return Decision{}, Undetermined("telemetry is off for %s: its observability is not declared; "+
+			"add `observability = forge.Observability {dev_telemetry = \"auto\"}` to the env, with a `control_plane` "+
+			"to send it to the hosted store (without one it goes to a local ClickStack), then run `forge env up %s`", f.Env, f.Env).
 			With("forge skill load observability")
 	}
 	if d := f.Destination; d != nil && !d.TokenFromControlPlane {
@@ -114,13 +170,6 @@ func Resolve(f Facts, override string) (Decision, error) {
 		return Decision{}, Undetermined("env %s declares no runtime or telemetry destination forge can query; refusing to guess the local ClickStack", f.Env)
 	}
 	return Decision{Backend: BackendLocal, Reason: "no destination: host processes feed the local ClickStack"}, nil
-}
-
-func offWhy(f Facts) string {
-	if !f.Declared {
-		return "not declared"
-	}
-	return "disabled"
 }
 
 // LocalScope is the scope of every local query: the project's own ClickStack

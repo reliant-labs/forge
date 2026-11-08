@@ -914,6 +914,18 @@ func TestRebuildablePathRegenerableEntries(t *testing.T) {
 		".forge/tmpx/":                 false,
 		".forge/statex/":               false,
 		"tmpfile":                      false,
+		// forge generate's own outputs and env up's dev runtime document.
+		".forge/generate-hooks/integrations.log":            true,
+		".forge/fixtures/frontends/web/generated-from.json": true,
+		".forge/generate-memo.json":                         true,
+		".forge/failed-generate/error.txt":                  true,
+		".forge/failed-generate/secrets/dev.yaml":           false, // the never-list still wins
+		"gen/forge_descriptor/.generated-from":              true,
+		"sub/gen/forge_descriptor/x.json":                   false, // anchored at the worktree root
+		"frontends/web/public/config.js":                    true,
+		"web/public/config.js":                              false,
+		".forge/audit/prod.jsonl":                           false, // a record, not output
+		".forge/hosted-projects.json":                       false, // a deploy binding
 	} {
 		if got := rebuildablePath(p, DefaultWorktreeRebuildable()); got != want {
 			t.Errorf("rebuildablePath(%q) = %v, want %v", p, got, want)

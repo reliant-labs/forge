@@ -30,6 +30,8 @@ package cli
 import (
 	"context"
 	"fmt"
+
+	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 // sessionTarget is where a stack's presence goes, and whether it goes
@@ -52,6 +54,13 @@ type sessionTarget struct {
 	// Skip is why nothing is reported, for the one-line note. Empty when
 	// Report is true.
 	Skip string
+	// Client, Project and Env address the control plane when Hosted: the
+	// client the selected ledger holds, so the ensure below, the presence
+	// reports and the dev-telemetry mint all reach the SAME control plane
+	// with the same credential. Zero when not Hosted.
+	Client  cloudCaller
+	Project string
+	Env     deploytarget.HostedEnvRef
 }
 
 // sessionTargetFor resolves the target for one env of one checkout.
@@ -101,6 +110,9 @@ func sessionTargetForEntities(env string, entities *KCLEntities, projectDir stri
 		Reporter: hostedRecordStoreFor(hosted.client, hosted.project),
 		Report:   true,
 		Hosted:   true,
+		Client:   hosted.client,
+		Project:  hosted.project,
+		Env:      deploytarget.HostedEnvRef{Project: hosted.project, Name: env, Kind: hostedEnvKindOf(entities)},
 	}, nil
 }
 

@@ -19,7 +19,7 @@ const schemaObsTrace = "forge.obs.trace/v1"
 var obsTraceSchema = obsout.Schema{
 	Name: schemaObsTrace,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.from", "scope.to",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "trace_id", "start", "release", "release.version", "release.promotion_id", "release.promoted_at", "release.unsettled", "duration_ms", "spans_total", "spans_shown", "capped", "orphans",
 		"errors", "errors.span_id", "errors.service", "errors.name", "errors.message", "errors.exception",
 		"tree", "tree.span_id", "tree.service", "tree.name", "tree.kind", "tree.status", "tree.offset_ms", "tree.duration_ms",
@@ -202,7 +202,7 @@ func runObsTrace(ctx context.Context, d obsDeps, traceID, env string, o obsTrace
 			Attributes: obsbackend.LogAttributes(l.Attributes)})
 	}
 	doc.LogsTruncated = res.LogsTruncated
-	doc.Suggested = traceSuggestions(env, res)
+	doc.Suggested = o.inst.carrySuggested(traceSuggestions(env, res))
 	doc.Stamp(schemaObsTrace, nil)
 	if done, err := o.out.Emit(d.Stdout, obsTraceSchema, doc, fields); done || err != nil {
 		return err

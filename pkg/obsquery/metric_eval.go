@@ -429,7 +429,10 @@ func (ev *evaluator) planAbsent(ps PanelSeries, agg Agg, ql float64, want Metric
 		resolved = r
 	}
 	where := "in this time range"
-	if ev.scope.EnvRestricted {
+	switch {
+	case len(ev.scope.InstanceIDs)+len(ev.scope.InstanceUsers) > 0:
+		where = "in the selected instances in this time range"
+	case ev.scope.EnvRestricted:
 		where = "in the selected environments in this time range"
 	}
 	ev.warn(WarnMetricAbsent, fmt.Sprintf("%s has no data %s", ps.Field, where))

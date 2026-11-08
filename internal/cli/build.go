@@ -636,7 +636,13 @@ func refuseUnbuildableRelease(entities *KCLEntities, targets buildTargetSet, opt
 }
 
 func runBuild(ctx context.Context, opts buildOptions) error {
+	// Under `forge env up` each step below is a span of the run's timings
+	// (up_timings.go); standalone, the spans are nil and cost nothing.
+	// "generate" is prepareBuild: the config load is noise beside the
+	// generated-code staleness check and, when stale, the generate itself.
+	_, genSpan := startUpSpan(ctx, "generate")
 	cfg, err := prepareBuild(opts)
+	genSpan.end(err)
 	if err != nil {
 		return err
 	}
@@ -652,7 +658,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// The same step decides where this build pushes (resolvePushPlan: each
 	// workload's declared reference, or a runbook) and writes it back into
 	// opts.pushPlan, so everything below reads one resolution.
+	_, renderSpan := startUpSpan(ctx, "render")
 	entities, push, err := renderBuildInputs(ctx, cfg, &opts)
+	renderSpan.end(err)
 	if err != nil {
 		return err
 	}
@@ -818,11 +826,12 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		memCaps:           memCaps,
 		configCheck:       newProjectConfigCheck(cfg, entities, opts),
 	}
-	if opts.parallel {
-		results = buildParallel(ctx, plan)
-	} else {
-		results = buildSequential(ctx, plan)
-	}
+	results = timedBuildStage(ctx, "go", func(ctx context.Context) []buildResult {
+		if opts.parallel {
+			return buildParallel(ctx, plan)
+		}
+		return buildSequential(ctx, plan)
+	})
 
 	// KCL DockerBuild / ShellBuild dispatch: services whose build.type is
 	// docker or shell are built by their declared mechanism rather than
@@ -830,7 +839,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// shouldn't waste time on an orthogonal docker/shell build) and are
 	// the new home for per-service image builds. See buildKCLDockerShell.
 	if entities != nil {
-		results = append(results, buildKCLDockerShell(ctx, cfg, entities, opts, cfgArchForDocker, resolvedTag)...)
+		results = append(results, timedBuildStage(ctx, "images", func(ctx context.Context) []buildResult {
+			return buildKCLDockerShell(ctx, cfg, entities, opts, cfgArchForDocker, resolvedTag)
+		})...)
 	}
 
 	// Build-only variants from KCL: each declared variant produces one
@@ -838,7 +849,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// tags. No docker build; this is the lane for sidecar binaries
 	// shipped in a release artifact, not container images.
 	if entities != nil {
-		results = append(results, buildKCLBuildOnlyVariants(ctx, entities, opts.outputDir)...)
+		results = append(results, timedBuildStage(ctx, "variants", func(ctx context.Context) []buildResult {
+			return buildKCLBuildOnlyVariants(ctx, entities, opts.outputDir)
+		})...)
 	}
 
 	// External-build dispatcher: services whose KCL declares
@@ -853,7 +866,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// Skip-with-warn semantics live in the runner: a missing build_cwd
 	// produces a "skipped: …" log line and an external-skip result that
 	// the summary surfaces but doesn't count as a failure.
-	externalResults, err := buildExternalServiceResults(ctx, entities, cfg, opts, cfgArchForDocker, resolvedTag)
+	externalResults, err := timedBuildStageErr(ctx, "shell", func(ctx context.Context) ([]buildResult, error) {
+		return buildExternalServiceResults(ctx, entities, cfg, opts, cfgArchForDocker, resolvedTag)
+	})
 	if err != nil {
 		return err
 	}
@@ -870,8 +885,44 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		if opts.buildDocker && len(goTargets) > 0 && !skipProjectDocker {
 			builtArch = resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 		}
+		_, schemaSpan := startUpSpan(ctx, "metrics-schema")
 		emitMetricsSchema(ctx, os.Stdout, opts.outputDir, builtArch, builtTargets(goTargets, succeeded))
+		schemaSpan.end(nil)
 	}
+
+	// Everything from here to the return is bookkeeping: the build→deploy
+	// handoff, the gate document and the release artifacts.
+	recordCtx, recordSpan := startUpSpan(ctx, "record")
+	err = recordBuild(recordCtx, cfg, entities, opts, builtSet{
+		succeeded: succeeded, failed: failed, start: start, skipProjectDocker: skipProjectDocker,
+	})
+	recordSpan.end(err)
+	if err != nil {
+		return err
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("%d of %d builds failed", len(failed), len(results))
+	}
+
+	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
+	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
+	return nil
+}
+
+// builtSet is what runBuild's builds produced, as recordBuild needs it.
+type builtSet struct {
+	succeeded, failed []buildResult
+	start             time.Time
+	skipProjectDocker bool
+}
+
+// recordBuild is runBuild's bookkeeping once every build has run: the
+// build→deploy state handoff, the summary, the gate document and — when
+// every build succeeded — the release artifacts. Extracted from runBuild to
+// keep it inside its statement budget, and so `forge env up` can time it as
+// one span.
+func recordBuild(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEntities, opts buildOptions, b builtSet) error {
+	succeeded, failed, start, skipProjectDocker := b.succeeded, b.failed, b.start, b.skipProjectDocker
 
 	// Persist build state on ANY successful project docker build — not
 	// just --push. The state file is the build→deploy tag handoff, which
@@ -903,8 +954,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return gerr
 	}
 
+	// A failed build cuts no release; runBuild reports the failure.
 	if len(failed) > 0 {
-		return fmt.Errorf("%d of %d builds failed", len(failed), len(results))
+		return nil
 	}
 
 	// Cut the Release ledger when --release is set. This is the build-once →
@@ -919,16 +971,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// forgot --push (or built against a registry that didn't return a
 	// digest). See writeReleaseLedger.
 	if opts.composition != nil {
-		if err := finishComposition(ctx, cfg, entities, opts, succeeded); err != nil {
-			return err
-		}
-	} else if err := finishReleaseArtifacts(ctx, opts, entities, cutPushedRepositories(projectStateImage(cfg, opts, skipProjectDocker), opts, succeeded)); err != nil {
-		return err
+		return finishComposition(ctx, cfg, entities, opts, succeeded)
 	}
-
-	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
-	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
-	return nil
+	return finishReleaseArtifacts(ctx, opts, entities, cutPushedRepositories(projectStateImage(cfg, opts, skipProjectDocker), opts, succeeded))
 }
 
 // preflightRealBuild is everything a real (non-plan) build refuses on before
@@ -1677,7 +1722,10 @@ func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KC
 			return err
 		}
 	}
-	return writeBuildBundle(ctx, opts)
+	_, bundleSpan := startUpSpan(ctx, "bundle")
+	err := writeBuildBundle(ctx, opts)
+	bundleSpan.end(err)
+	return err
 }
 
 // writeBuildBundle is `forge env build`'s bundle step (doc §4.4, §7.2).
@@ -1962,7 +2010,9 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 		wg.Add(1)
 		go func(t goBuildTarget) {
 			defer wg.Done()
-			r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion, plan.memCaps)
+			r := timedBuild(ctx, func() buildResult {
+				return buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion, plan.memCaps)
+			})
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
@@ -1973,7 +2023,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 		wg.Add(1)
 		go func(f config.FrontendConfig) {
 			defer wg.Done()
-			r := buildFrontend(ctx, f, plan.memCaps)
+			r := timedBuild(ctx, func() buildResult { return buildFrontend(ctx, f, plan.memCaps) })
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
@@ -2009,7 +2059,9 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+				r := timedBuild(ctx, func() buildResult {
+					return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+				})
 				r.goTargets = goTargets
 				mu.Lock()
 				results = append(results, r)
@@ -2020,7 +2072,9 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			wg.Add(1)
 			go func(f config.FrontendConfig) {
 				defer wg.Done()
-				r := dockerBuild(ctx, cfg, f.Name, f.DeclaredDir(), opts.imageTags(f.Name, resolvedTag), dockerArch)
+				r := timedBuild(ctx, func() buildResult {
+					return dockerBuild(ctx, cfg, f.Name, f.DeclaredDir(), opts.imageTags(f.Name, resolvedTag), dockerArch)
+				})
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -2052,14 +2106,16 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 		goTargets = withTrimpath(goTargets)
 	}
 	for _, t := range goTargets {
-		r := buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion, plan.memCaps)
+		r := timedBuild(ctx, func() buildResult {
+			return buildGoTarget(ctx, t, opts.outputDir, opts.debug, goArch, resolvedVersion, plan.memCaps)
+		})
 		results = append(results, r)
 		if r.err != nil {
 			return results // Stop on first failure in sequential mode
 		}
 	}
 	for _, fe := range frontends {
-		r := buildFrontend(ctx, fe, plan.memCaps)
+		r := timedBuild(ctx, func() buildResult { return buildFrontend(ctx, fe, plan.memCaps) })
 		results = append(results, r)
 		if r.err != nil {
 			return results
@@ -2073,7 +2129,9 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			// Image platform == the arch the project binaries were built for.
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env, configCheck: plan.configCheck}
-			r := dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+			r := timedBuild(ctx, func() buildResult {
+				return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+			})
 			r.goTargets = goTargets
 			results = append(results, r)
 			if r.err != nil {
@@ -2081,7 +2139,9 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			}
 		}
 		for _, fe := range dockerFrontends {
-			r := dockerBuild(ctx, cfg, fe.Name, fe.DeclaredDir(), opts.imageTags(fe.Name, resolvedTag), dockerArch)
+			r := timedBuild(ctx, func() buildResult {
+				return dockerBuild(ctx, cfg, fe.Name, fe.DeclaredDir(), opts.imageTags(fe.Name, resolvedTag), dockerArch)
+			})
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -3080,7 +3140,7 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 			continue
 		}
 		for _, v := range w.Runtime.BuildOnly.BuildVariants {
-			out = append(out, buildVariant(ctx, w.Name, g.Cmd, v, outputDir))
+			out = append(out, timedBuild(ctx, func() buildResult { return buildVariant(ctx, w.Name, g.Cmd, v, outputDir) }))
 		}
 	}
 	return out
@@ -3181,7 +3241,9 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 			if opts.composition != nil {
 				builder = compositionDockerBuilder
 			}
-			result := builder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+			result := timedBuild(ctx, func() buildResult {
+				return builder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+			})
 			result.workload = w.Name
 			out = append(out, result)
 			for _, alias := range aliases[w.Name] {

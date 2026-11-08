@@ -90,6 +90,10 @@ type upOptions struct {
 	// agent-driven preview flow reaches Vite
 	// (`forge env up dev -- --host 0.0.0.0`). Empty (no `--`) is a no-op.
 	frontendArgs []string
+	// telemetry is --telemetry: where this stack's telemetry is stored
+	// (auto|hosted|local), over FORGE_DEV_TELEMETRY and the env's
+	// observability.dev_telemetry. See up_devtelemetry.go.
+	telemetry string
 }
 
 // inTargetSet reports whether name should run given the --target filter.
@@ -239,7 +243,22 @@ LOCAL SESSIONS (what this reports about itself)
 
   Only LOCAL environments report. An environment whose workloads run on the
   platform or on a cluster has no local presence to describe, and forge says
-  which when it declines.`
+  which when it declines.
+
+TELEMETRY (where this stack's traces, metrics and logs are stored)
+
+  observability.dev_telemetry decides: "local" stores them in the local
+  ClickStack; "auto" (the default) sends them to your org's hosted store when
+  the env declares a control_plane and you are signed in to Reliant, and falls
+  back to local, saying why, when anything on the way fails; "hosted" fails
+  instead of falling back. --telemetry and ` + devTelemetryEnvVar + ` override it,
+  and "local" from any of them wins.
+
+  A hosted stack is keyed by its session (above), which is then reported
+  before the services start. Its tokens live in .forge/obs/; a telemetry
+  keeper, one of the stack's tracked processes in either lifecycle, keeps the
+  session live and renews them until ` + "`forge env down`" + `. No local
+  collector starts, so the stack needs no Docker for telemetry. ` + "`forge env status <env>`" + ` says where telemetry goes.`
 
 func newEnvUpCmd() *cobra.Command {
 	var opts upOptions
@@ -283,6 +302,7 @@ func newEnvUpCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Hold the foreground and tear the stack down on SIGINT/SIGTERM/SIGHUP even without a TTY: the way an agent or daemon runs env up as a tracked background process. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default 'forge env up' runs 'forge generate' when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default 'forge env up' installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
+	cmd.Flags().StringVar(&opts.telemetry, "telemetry", "", "Where this stack's telemetry is stored: auto (hosted when the env declares a control_plane and you are signed in to Reliant, else local), hosted (fail instead of falling back) or local (the local ClickStack). Overrides "+devTelemetryEnvVar+" and observability.dev_telemetry; local anywhere wins.")
 	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default 'forge env up' seeds a dev database once when it is reachable and all seedable tables are empty.")
 	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the whole run — build, deploy, host and frontend phases — to specific services/operators/frontends by name (repeatable). Targeting only host/frontend apps builds no images. An unknown name is an error listing the env's app names. Default: everything.")
 	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
@@ -449,6 +469,9 @@ func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) 
 		probeRowsListening(compose, portInUse)
 		renderUpSummary(os.Stdout, env, append(rows, compose...), "down", true, nil, nil)
 	}
+	if line := devTelemetryStatusLine(read.projectDir, env, time.Now()); line != "" {
+		fmt.Println(line)
+	}
 	// A hosted env's URLs and custom domains. Printed here rather than
 	// folded into a runtime check because neither is a pass/fail signal:
 	// a URL is an answer, and a domain waiting on DNS is waiting on the
@@ -505,6 +528,7 @@ func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServ
 	if !in.headCommit.IsZero() {
 		rep.HeadCommitAt = in.headCommit.UTC().Format(time.RFC3339)
 	}
+	rep.Telemetry = devTelemetryStatusLine(in.projectDir, in.env, time.Now())
 	if in.entities != nil {
 		rep.Lifecycle = in.entities.Lifecycle
 	}
@@ -871,7 +895,16 @@ func preflightProxyReachable(ctx context.Context, env []string) error {
 		from, raw, host, from)
 }
 
-func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `forge env up` lifecycle in order: resolve, render, conflict-check, launch, wait. The sequence is the contract.
+func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen // the `forge env up` lifecycle in order: resolve, render, conflict-check, launch, wait. The sequence is the contract.
+	// Every phase below is a span of this run's timings (up_timings.go). A
+	// run that comes up closes the record just before its summary box; this
+	// defer closes it for every other way out, a failure included — the
+	// failed run is the one whose timings are most worth having.
+	timings := newUpTimings(nil)
+	timingsRun := upTimingsRun{opts: opts, version: runningForgeVersion(), runID: newUpRunID()}
+	ctx = withUpTimings(ctx, timings)
+	defer func() { finishUpTimings(timings, timingsRun, err, os.Stderr) }()
+
 	// PROXY PREFLIGHT, first thing. When the environment routes through an HTTP
 	// proxy that is not actually listening, EVERY outbound call in the run
 	// fails — kubectl against the local cluster, the package-manager install,
@@ -889,6 +922,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	}
 	cfg := store.Config()
 	projectDir := projectDirForKCL()
+	timingsRun.projectDir = projectDir
 	// Host runners and frontend dependency installs can build even with
 	// --no-build. Check physical headroom before rendering or starting work.
 	if err := checkBuildStorageFn(projectDir); err != nil {
@@ -932,7 +966,9 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	setRenderOptions(renderDArgs)
 
 	fmt.Printf("[up] env=%s\n", opts.env)
+	_, renderSpan := startUpSpan(ctx, "render")
 	entities, err := RenderKCL(ctx, projectDir, opts.env)
+	renderSpan.end(err)
 	if err != nil {
 		return fmt.Errorf("render KCL: %w", err)
 	}
@@ -979,6 +1015,22 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// against the SAME name set `forge env deploy --target` validates
 	// against, so a name that works for one command works for the other.
 	if err := validateDeployTargets(entities, opts.targets); err != nil {
+		return err
+	}
+	// WHERE THIS STACK'S TELEMETRY GOES (up_devtelemetry.go). Decided
+	// before the Docker check below: a stack whose telemetry is hosted runs
+	// no local collector, so it needs no Docker for it. The session is
+	// minted here, not after readiness, because the hosted store keys the
+	// telemetry on it and the control plane mints a token only for a live
+	// session; without a control plane it is just constructed early, and
+	// still first reported once the stack is up.
+	sessTarget, sessErr := sessionTargetForEntities(opts.env, entities, projectDir)
+	session := newUpSessionFor(ctx, projectDir, opts.env, sessTarget, sessErr, os.Stdout, time.Now().UTC())
+	devTelemetry, err := setupDevTelemetry(ctx, entities, devTelemetrySetupIn{
+		ProjectDir: projectDir, Env: opts.env, Flag: opts.telemetry,
+		Session: session, Target: sessTarget, Out: os.Stdout, Now: time.Now().UTC(),
+	})
+	if err != nil {
 		return err
 	}
 	// No Docker daemon: drop what the env declares optional (local
@@ -1039,6 +1091,9 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// values on the control plane: pull them NOW, into memory, so the
 	// provider below resolves them like a file store. A failed pull fails
 	// the run — services must not start without their declared secrets.
+	// An early return leaves the span open; the record then closes it as
+	// incomplete, which on a failed run names the phase that failed.
+	_, secretsSpan := startUpSpan(ctx, "secrets")
 	if err := armLocalSecretsForUp(ctx, opts.env, entities, func(f string, a ...any) { fmt.Printf(f, a...) }); err != nil {
 		return err
 	}
@@ -1066,6 +1121,7 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if err := secrets.ValidateDeclaredRefs(prov, withoutHostIdentityRefs(entities, secretRefsForLaunch(entities)), secretStoreLabel(entities)); err != nil {
 		return withEnvInSecretFix(err, opts.env) // already actionable; lists every missing key
 	}
+	secretsSpan.end(nil)
 
 	// Cluster phases — build + deploy. Both are feature-gated: if the
 	// project's forge.yaml turns either off (`features.build: false`
@@ -1094,7 +1150,10 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// pre-empted. No-op when up-to-date or --no-generate. (The non-skipped
 	// path already ran this inside runBuild.)
 	if opts.noBuild {
-		if err := ensureGeneratedCode(projectDirForKCL(), opts.noGenerate); err != nil {
+		_, genSpan := startUpSpan(ctx, "generate")
+		err := ensureGeneratedCode(projectDirForKCL(), opts.noGenerate)
+		genSpan.end(err)
+		if err != nil {
 			return fmt.Errorf("ensure generated code: %w", err)
 		}
 	}
@@ -1102,7 +1161,10 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// Pre-flight. Respects --target (only the services this invocation would
 	// start are considered) and the frontend feature gate.
 	frontendsOn := frontendPhaseEnabled(entities)
-	if err := upPreflight(projectID, opts.env, entities, opts.targets, frontendsOn); err != nil {
+	_, replaceSpan := startUpSpan(ctx, "replace-stack")
+	err = upPreflight(projectID, opts.env, entities, opts.targets, frontendsOn)
+	replaceSpan.end(err)
+	if err != nil {
 		// Undo any resolve_port drift this rejected render persisted, so the
 		// next clean run still gets the canonical port assignments.
 		restorePortStore()
@@ -1153,7 +1215,8 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	}
 
 	// Phase 3: host-mode services.
-	if err := upHostPhase(ctx, hostPhase{
+	hostCtx, hostSpan := startUpSpan(ctx, "host")
+	err = upHostPhase(hostCtx, hostPhase{
 		cfg: cfg, entities: entities, prov: prov, opts: opts,
 		projectDir: projectDir, detach: detach, procs: procs,
 		infraConverged: infraConverged,
@@ -1187,7 +1250,9 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 				return checkStartupDependencies(deps, entities, projectID, opts.env, procs)
 			})
 		},
-	}); err != nil {
+	})
+	hostSpan.end(err)
+	if err != nil {
 		return err
 	}
 
@@ -1198,15 +1263,19 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// backend-only project there is nothing to elide and the line was
 	// pure noise.
 	if !orderedStartup && frontendPhaseEnabled(entities) {
-		feFailures := upFrontends(ctx, frontendLaunch{
+		feCtx, feSpan := startUpSpan(ctx, "frontends")
+		feFailures := upFrontends(feCtx, frontendLaunch{
 			entities: entities, env: opts.env, background: detach,
 			noInstall: opts.noInstall, targets: opts.targets,
 			frontendArgs: opts.frontendArgs, apiBaseURL: apiBaseURL, procs: procs,
 			projectDir: projectDir, secrets: prov.All(),
 		})
+		var feErr error
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
+			feErr = fmt.Errorf("%d frontend(s) failed to start", feFailures)
 		}
+		feSpan.end(feErr)
 	} else if !orderedStartup && len(entities.Frontends) > 0 {
 		fmt.Printf("[up:frontend] feature 'frontend' is disabled in forge.yaml — skipping %d frontend(s)\n",
 			len(entities.Frontends))
@@ -1236,19 +1305,37 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	if readyTimeout == 0 {
 		readyTimeout = hostReadyTimeout
 	}
-	if err := waitHostServicesReady(ctx, entities, projectID, opts.env, opts.targets, readyTimeout, hostReadyPoll, procs); err != nil {
+	readyCtx, readySpan := startUpSpan(ctx, "readiness")
+	err = waitHostServicesReady(readyCtx, entities, projectID, opts.env, opts.targets, readyTimeout, hostReadyPoll, procs)
+	readySpan.end(err)
+	if err != nil {
 		return err
 	}
 	// First-boot dev auto-seed. By this point the app's AUTO_MIGRATE has
 	// run (readiness gate passed), so the schema is current. Warn-never-
 	// fatal: a seed failure never breaks the dev loop.
+	_, seedSpan := startUpSpan(ctx, "seed")
 	maybeAutoSeed(ctx, store, cfg, entities, opts)
+	seedSpan.end(nil)
 
 	// The cluster half of the readiness gate, taken as late as possible: the
 	// deploy phase already waited each rollout out, and the host phase since
 	// then is free settling time. One look, not a poll — see
 	// evalClusterWorkloads.
+	_, healthSpan := startUpSpan(ctx, "cluster-health")
 	clusterHealth := evalClusterWorkloads(ctx, clusterGate, projectDir, opts.env)
+	clusterErr := clusterWorkloadError(opts.env, clusterHealth)
+	if clusterGate {
+		healthSpan.end(clusterErr)
+	} else {
+		healthSpan.discard()
+	}
+
+	// The run is up (or its cluster gate has its verdict): close the
+	// timings record here, BEFORE the summary box, so the URLs stay the last
+	// thing on screen. What follows — the box, storage maintenance, the
+	// foreground hold — is not bring-up.
+	finishUpTimings(timings, timingsRun, clusterErr, os.Stderr)
 
 	// Summary box: what's listening where, and where to find each
 	// service's log. Printed in both the supervise and detach paths so the
@@ -1258,8 +1345,6 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// The cluster verdict rides in the same box: the half of "what came up"
 	// that runs in Kubernetes was missing from it entirely.
 	printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn, clusterHealth, procs)
-
-	clusterErr := clusterWorkloadError(opts.env, clusterHealth)
 
 	// Opportunistic storage maintenance, after the summary so its output never
 	// pushes the URLs off screen, and only on an env that actually came up —
@@ -1276,8 +1361,8 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// written before the readiness gate would say it of a stack that had
 	// not bound its ports yet. Best-effort throughout: a nil session, an
 	// unreachable control plane and a non-local env all cost nothing but a
-	// note — see up_session.go.
-	session := newUpSession(ctx, projectDir, opts.env, os.Stdout, time.Now().UTC())
+	// note — see up_session.go. The session itself was built before the
+	// launch (see the telemetry decision above).
 	session.start(time.Now().UTC())
 
 	if detach {
@@ -1289,6 +1374,9 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 		// server GCs the row after 24 h and a reader greys it out long
 		// before that; `forge env down` reports it stopped. The help
 		// text says so.
+		// A hosted stack's telemetry keeper goes with the stack: a tracked
+		// child, stopped by `forge env down` (devtelemetry_keeper.go).
+		devTelemetry.startKeeper(procs, true, os.Stdout)
 		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
 		if hint := nonTTYWatchHint(opts.env, opts.background); hint != "" {
@@ -1314,19 +1402,24 @@ func runUp(ctx context.Context, opts upOptions) error { //nolint:funlen // the `
 	// Heartbeat for as long as this run holds the foreground. Cancelled by
 	// the defer below, which is what makes "the heartbeat stops when the
 	// stack stops" true on every exit path out of the hold rather than
-	// only on the Ctrl-C one.
+	// only on the Ctrl-C one. A hosted stack's keeper is that heartbeat
+	// (and its token renewal), in this mode as in a detached one, so the
+	// in-process beat runs only without one.
 	beatCtx, stopBeat := context.WithCancel(ctx)
 	defer stopBeat()
-	go session.heartbeatUntil(beatCtx)
+	if !devTelemetry.startKeeper(procs, false, os.Stdout) {
+		go session.heartbeatUntil(beatCtx)
+	}
 
 	<-ctx.Done()
 	fmt.Println("\n[up] shutting down...")
-	// Stop the heartbeat BEFORE the teardown report, so a beat in flight
-	// cannot land after the stopped row and resurrect the session as
-	// running.
+	// Stop every heartbeat BEFORE the teardown report — the in-process one
+	// and the keeper, which procs.shutdown stops with the other children —
+	// so a beat in flight cannot land after the stopped row and resurrect
+	// the session as running.
 	stopBeat()
-	session.stop(time.Now().UTC())
 	procs.shutdown()
+	session.stop(time.Now().UTC())
 	return nil
 }
 
@@ -1425,7 +1518,10 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		// third time (after the deploy phase): nothing between there and
 		// here changes the infrastructure.
 		if !p.infraConverged {
-			if err := prewarmInfra(ctx, opts.env, entities); err != nil {
+			infraCtx, infraSpan := startUpSpan(ctx, "infra")
+			err := prewarmInfra(infraCtx, opts.env, entities)
+			infraSpan.end(err)
+			if err != nil {
 				fmt.Printf("[up] infra: %v (continuing; host services may fail to connect)\n", err)
 			}
 		}
@@ -1438,25 +1534,33 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		// before AUTO_MIGRATE could apply the schema. ensureDevDatabase is a
 		// no-op off dev (seedTargetIsDev gates it) and off a resolved DSN, so
 		// running it unconditionally here costs nothing on staging/prod.
+		_, dbSpan := startUpSpan(ctx, "database")
 		if err := ensureDevDatabase(cfg, entities, opts.env); err != nil {
+			dbSpan.end(err)
 			return err
 		}
+		dbSpan.end(nil)
 		// A managed identity on the env's host-run IdP (forge.IdentityOnHost)
 		// is converged HERE, by the same pkg/identity reconciler the control
 		// plane runs against hosted instances: the IdP is up (infra above),
 		// and the services that read its issuer, audience and broker token
 		// have not started. What it publishes lands in the env's secret
 		// store, re-read below.
+		_, identitySpan := startUpSpan(ctx, "identity")
 		convergeHostIdentity(ctx, entities, p.projectDir, p.prov)
+		identitySpan.end(nil)
 		// One-shot jobs run to completion BEFORE any host service starts —
 		// that is the ordering the `job` component kind declares, and on
 		// the host there is no orchestrator underneath us to enforce it.
 		// Fail-closed: a job that does not exit 0 stops the up rather than
 		// letting its dependents run against a world it was supposed to
 		// have prepared.
-		if err := runHostJobs(ctx, cfg, entities, p.prov.All(), opts.env); err != nil {
+		jobsCtx, jobsSpan := startUpSpan(ctx, "jobs")
+		if err := runHostJobs(jobsCtx, cfg, entities, p.prov.All(), opts.env); err != nil {
+			jobsSpan.end(err)
 			return err
 		}
+		jobsSpan.end(nil)
 		// Re-read the secret store: the identity step above (and any job)
 		// may have PUBLISHED into it. The store was read before they ran, so
 		// without this a fresh project's API would start without the broker
@@ -1485,13 +1589,17 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		} else if changed > 0 {
 			fmt.Printf("[up] frontend runtime config: refreshed %d config.js from converged identity\n", changed)
 		}
+		_, launchSpan := startUpSpan(ctx, "launch")
 		if p.launch != nil {
-			return p.launch(p.prov)
+			err := p.launch(p.prov)
+			launchSpan.end(err)
+			return err
 		}
 		hostFailures := upHostServices(ctx, cfg, entities, p.prov, opts.env, p.detach, opts.targets, p.procs)
 		if hostFailures > 0 {
 			fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
 		}
+		launchSpan.end(nil)
 	}
 	return nil
 }
@@ -1627,7 +1735,13 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	// path — ownership is a reference (Cluster.owner drives the derived
 	// network / registry-inherit), no "primary" cluster.
 	if required.cluster && !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:clusters") {
-		if err := reconcileDeclaredClusters(ctx, entities.Clusters, in.projectDir, opts.env); err != nil {
+		clustersCtx, clustersSpan := startUpSpan(ctx, "clusters")
+		err := reconcileDeclaredClusters(clustersCtx, entities.Clusters, in.projectDir, opts.env)
+		if len(entities.Clusters) == 0 {
+			clustersSpan.discard()
+		}
+		clustersSpan.end(err)
+		if err != nil {
 			return fmt.Errorf("clusters: %w", err)
 		}
 		// Mint cross-cluster kubeconfigs at the cluster→deploy
@@ -1645,7 +1759,13 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 				return err
 			}
 		}
-		if err := mintKubeconfigSecrets(ctx, entities.KubeconfigSecrets, ownerNetwork, deployNS); err != nil {
+		_, kubeconfigSpan := startUpSpan(ctx, "kubeconfigs")
+		err = mintKubeconfigSecrets(ctx, entities.KubeconfigSecrets, ownerNetwork, deployNS)
+		if len(entities.KubeconfigSecrets) == 0 {
+			kubeconfigSpan.discard()
+		}
+		kubeconfigSpan.end(err)
+		if err != nil {
 			return fmt.Errorf("kubeconfig secrets: %w", err)
 		}
 	}
@@ -1673,18 +1793,8 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 	// A stale module graph fails the build partway through — after the images
 	// are already built. Detecting it here costs one `go mod tidy -diff` and
 	// turns four minutes of wasted work into an immediate, actionable message.
-	if err := preflightGoModulesTidy(ctx, entities, in.projectDir); err != nil {
+	if err := upPreflightBuildInputs(ctx, entities, in.projectDir, opts); err != nil {
 		return err
-	}
-	provisionAir(ctx, entities, opts.targets)
-	if err := preflightHostRunners(entities, opts.targets, opts.env); err != nil {
-		return err
-	}
-
-	if frontendPhaseEnabled(entities) && !opts.noInstall {
-		if err := preflightFrontendDeps(ctx, entities, opts.targets); err != nil {
-			return err
-		}
 	}
 
 	var infraWarm chan error
@@ -1692,13 +1802,19 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 		infraWarm = make(chan error, 1)
 		go func() {
 			fmt.Println("\n[up] infra phase (concurrent with build)")
-			infraWarm <- prewarmInfra(ctx, opts.env, entities)
+			infraCtx, infraSpan := startUpSpan(ctx, "infra")
+			err := prewarmInfra(infraCtx, opts.env, entities)
+			infraSpan.end(err)
+			infraWarm <- err
 		}()
 	}
 	if !opts.noBuild {
 		if !skipFeature(store, config.FeatureBuild, "up:build") {
 			fmt.Println("\n[up] build phase")
-			if err := upBuildCluster(ctx, cfg, opts.env, opts.noGenerate, opts.rebuild, opts.targets); err != nil {
+			buildCtx, buildSpan := startUpSpan(ctx, "build")
+			err := upBuildCluster(buildCtx, cfg, opts.env, opts.noGenerate, opts.rebuild, opts.targets)
+			buildSpan.end(err)
+			if err != nil {
 				return fmt.Errorf("build: %w", err)
 			}
 		}
@@ -1745,15 +1861,43 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 			// materialize a static frontend for a shipping frontend
 			// (FirebaseHosting or StaticSite) to reference at DEPLOY time;
 			// it has no place in the dev loop.
-			if err := reconcileCluster(ctx, opts.env, deployOptions{
+			deployCtx, deploySpan := startUpSpan(ctx, "deploy")
+			err := reconcileCluster(deployCtx, opts.env, deployOptions{
 				skipFrontend: true, skipClusterApply: !required.cluster,
 				targets: opts.targets, purpose: renderToLaunch,
 				infraConverged: converged,
 				omitWorkloads:  entities.OptionalSkipped,
-			}); err != nil {
+			})
+			deploySpan.end(err)
+			if err != nil {
 				return fmt.Errorf("deploy: %w", err)
 			}
 		}
+	}
+	return nil
+}
+
+// upPreflightBuildInputs is the cheap checks upBuildDeployPhases runs before
+// anything slow starts, each a child span of "preflight": the Go module
+// graph, the air runner, the host runners, and the frontends' dependencies.
+func upPreflightBuildInputs(ctx context.Context, entities *KCLEntities, projectDir string, opts upOptions) (err error) {
+	ctx, span := startUpSpan(ctx, "preflight")
+	defer func() { span.end(err) }()
+	step := func(name string, fn func() error) error {
+		_, s := startUpSpan(ctx, name)
+		err := fn()
+		s.end(err)
+		return err
+	}
+	if err := step("go-mod-tidy", func() error { return preflightGoModulesTidy(ctx, entities, projectDir) }); err != nil {
+		return err
+	}
+	_ = step("air", func() error { provisionAir(ctx, entities, opts.targets); return nil })
+	if err := step("host-runners", func() error { return preflightHostRunners(entities, opts.targets, opts.env) }); err != nil {
+		return err
+	}
+	if frontendPhaseEnabled(entities) && !opts.noInstall {
+		return step("frontend-deps", func() error { return preflightFrontendDeps(ctx, entities, opts.targets) })
 	}
 	return nil
 }
@@ -1908,6 +2052,11 @@ type servingProc struct {
 // shape keeps working.
 type upServicesReport struct {
 	Env string `json:"env"`
+	// Telemetry is where this env's dev telemetry goes, as the last
+	// `forge env up` of it here decided: "telemetry: hosted (org …,
+	// instance …, 3d)", "telemetry: local (<reason>)" or "telemetry: not
+	// delivering (…)". Omitted when no such decision was recorded.
+	Telemetry string `json:"telemetry,omitempty"`
 	// DatabaseURL is the DSN the live stack's services dial, captured by
 	// `forge env up` at launch (resolveSeedDSN) and persisted alongside the
 	// PID ledger. Empty/omitted when no stack has been brought up for this env
@@ -2642,7 +2791,9 @@ const (
 // so an air re-exec / late fork is picked up. Nothing is killed: detect and
 // report only. A nil return means every declared host port is bound by us
 // (or nothing declared a port).
-func waitHostServicesReady(ctx context.Context, e *KCLEntities, projectID, envName string, targets []string, timeout, poll time.Duration, procs *procRegistry) error {
+func waitHostServicesReady(ctx context.Context, e *KCLEntities, projectID, envName string, targets []string, timeout, poll time.Duration, procs *procRegistry) (err error) {
+	ready := newUpReadyTimer(ctx)
+	defer func() { ready.close(err) }()
 	return waitHostReadiness(ctx, envName, e, timeout, poll, os.Stdout, func() []hostReadyResult {
 		rs := evalHostReadiness(e, projectID, envName, targets, portInUse, portListenerPID, newOSProcFacts())
 		for _, w := range e.WorkloadsOn(RuntimeHost) {
@@ -2659,6 +2810,7 @@ func waitHostServicesReady(ctx context.Context, e *KCLEntities, projectID, envNa
 		for i := range rs {
 			rs[i].exited = procs.exitReason(rs[i].name)
 		}
+		ready.observe(rs)
 		return rs
 	})
 }
@@ -3053,7 +3205,9 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 		if err := procs.start(name, cmd, background); err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++
+			continue
 		}
+		markUpLaunched(ctx, w.Name)
 	}
 	return failures
 }

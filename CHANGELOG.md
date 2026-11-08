@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.2.0] - 2026-11-08
+
+### Added
+
+- **frontend:** generated mocks for every proto service — deterministic, schema-valid defaults per RPC, typed mockService overrides ([#1874](https://github.com/reliant-labs/forge/pull/1874))
+- **data:** add read-only database browsing and external database routes ([#1877](https://github.com/reliant-labs/forge/pull/1877))
+- **skills:** llm skill — workflow vs inline model calls, official Go clients, gateway errors ([#1873](https://github.com/reliant-labs/forge/pull/1873))
+- **hooks:** <svc>Mutations(queryClient).<rpc>(req) — generated writes for code outside React ([#1885](https://github.com/reliant-labs/forge/pull/1885))
+- **dev:** coordinate local startup dependencies and chart prerequisites ([#1886](https://github.com/reliant-labs/forge/pull/1886))
+- **generate:** support input hooks and require compatible web runtime ([#1894](https://github.com/reliant-labs/forge/pull/1894))
+- **templates:** live password checklist and a polished auth UI on every sign-in screen ([#1872](https://github.com/reliant-labs/forge/pull/1872))
+- **console:** identity-subject marker, dashboard row links and saved browse views ([#1900](https://github.com/reliant-labs/forge/pull/1900))
+- **scaffold:** header user menu shows who is signed in — name/email/avatar from userinfo, theme inside a WAI-ARIA menu (stacked on #1821) ([#1871](https://github.com/reliant-labs/forge/pull/1871))
+- **env:** forge env delete --id and a preview of what goes (id, project, deployments, bound domains); forge env list --orphaned ([#1888](https://github.com/reliant-labs/forge/pull/1888))
+
+### Changed
+
+- **deps:** bump the go-minor group across 1 directory with 3 updates ([#1903](https://github.com/reliant-labs/forge/pull/1903))
+- **deps:** bump the go-patch group across 1 directory with 11 updates ([#1902](https://github.com/reliant-labs/forge/pull/1902))
+- **generate:** the harness step reads local interfaces' embeds through its one shared resolver ([#1904](https://github.com/reliant-labs/forge/pull/1904))
+- **generate:** the composition graph reads its packages' dependencies from export data ([#1905](https://github.com/reliant-labs/forge/pull/1905))
+- **pkg/approval:** remove out-of-scope package (#1753) ([#1880](https://github.com/reliant-labs/forge/pull/1880))
+- **skill:** read the embedded skill listing once per process ([#1909](https://github.com/reliant-labs/forge/pull/1909))
+- **migration:** allocate a version without git lookups when the directory is not in a repository ([#1910](https://github.com/reliant-labs/forge/pull/1910))
+- **pkg/approval:** mark every exported identifier deprecated (frozen until v2) ([#1911](https://github.com/reliant-labs/forge/pull/1911))
+
+### Fixed
+
+- three flakes on main — a declared Flux waits for its FluxInstance, an inherited KCL_FILE_SCOPE no longer misses the generate cache, docker picks smoke-test host ports ([#1869](https://github.com/reliant-labs/forge/pull/1869))
+- **env build:** refuse an unpushed hosted site before recording the env on the control plane ([#1876](https://github.com/reliant-labs/forge/pull/1876))
+- **env up:** mint empty generated-secret slots; generate dev seed-user passwords; seed-user failure no longer kills dev identity ([#1875](https://github.com/reliant-labs/forge/pull/1875))
+- **ci:** green forge main after #1874/#1876 — allow protobuf Value's oneof case in the mock generator; split newEnvBuildCmd under funlen ([#1879](https://github.com/reliant-labs/forge/pull/1879))
+- **cli:** version hand-off and render warnings never write stdout; env config --json carries the document alone ([#1881](https://github.com/reliant-labs/forge/pull/1881))
+- **upgrade:** add only scaffold-once files new across the range; offer the rest ([#1882](https://github.com/reliant-labs/forge/pull/1882))
+- **orm:** keep forge libraries' tables off the ORM; refuse an entity-name collision while planning ([#1883](https://github.com/reliant-labs/forge/pull/1883))
+- **upgrade:** report each lint finding as one needs_human item with its file:line and fix ([#1889](https://github.com/reliant-labs/forge/pull/1889))
+- **ci:** the review check reads the bot's evidence re-review as the head's verdict ([#1890](https://github.com/reliant-labs/forge/pull/1890))
+- **frontend:** otel_gen.ts reads per-environment telemetry values from runtime config only ([#1884](https://github.com/reliant-labs/forge/pull/1884))
+- **ci:** the forge-deploy action keeps a failed deploy's evidence ([#1891](https://github.com/reliant-labs/forge/pull/1891))
+- **orm:** keep a library table's existing store, deprecated, until the next major ([#1892](https://github.com/reliant-labs/forge/pull/1892))
+- **ci:** green forge main after #1886 — render-contract goldens carry startup_after; split chart prerequisites out of applyRenderedNoWait; drop a dead assignment; close test files before TempDir cleanup on Windows ([#1893](https://github.com/reliant-labs/forge/pull/1893))
+- **ci:** green forge main after #1892 — the library-table check leaves the entity loop as a helper (nestif) ([#1897](https://github.com/reliant-labs/forge/pull/1897))
+- **pgtest:** replace a shared server whose data directory was deleted under it; the reaper never removes a live postmaster's dir ([#1906](https://github.com/reliant-labs/forge/pull/1906))
+- **web-runtime:** mock defaults keep echoed values and oneof cases within the response's rules; unbuildable patterns throw ([#1878](https://github.com/reliant-labs/forge/pull/1878))
+- **lint:** contract lane stops at nested Go modules (missing go.sum entry from tools/<mod>) ([#1908](https://github.com/reliant-labs/forge/pull/1908))
+- **apigate:** fail a pull request whose API-BREAK: line has no break behind it ([#1912](https://github.com/reliant-labs/forge/pull/1912))
+- **release:** semver-next honours a reviewed API-BREAK-RETRACTED line for one sha (in sync with control-plane #2167) ([#1913](https://github.com/reliant-labs/forge/pull/1913))
+- **crud:** reject ordered list overflow instead of hiding additional rows ([#1914](https://github.com/reliant-labs/forge/pull/1914))
+- **lint:** recognize local inert settings in dependency collections ([#1916](https://github.com/reliant-labs/forge/pull/1916))
+- **scaffold:** include named timezone data in runtime images ([#1915](https://github.com/reliant-labs/forge/pull/1915))
+- **generate:** a failed dependency load aborts generate instead of sweeping emitter outputs as stale ([#1917](https://github.com/reliant-labs/forge/pull/1917))
+
 ## [v1.1.0] - 2026-11-06
 
 ### Added
@@ -8672,7 +8724,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.2.0...HEAD
+[v1.2.0]: https://github.com/reliant-labs/forge/compare/v1.1.0...v1.2.0
 [v1.1.0]: https://github.com/reliant-labs/forge/compare/v1.0.16...v1.1.0
 [v1.0.16]: https://github.com/reliant-labs/forge/compare/v1.0.15...v1.0.16
 [v1.0.15]: https://github.com/reliant-labs/forge/compare/v1.0.14...v1.0.15

@@ -22,7 +22,15 @@ func frontendOTLPEnv(e *KCLEntities) map[string]string {
 	if e == nil || e.Observability == nil || !e.Observability.Enabled || e.Observability.LocalEndpoint == "" {
 		return nil
 	}
-	return map[string]string{clickstack.EnvOTLPEndpoint: e.Observability.LocalEndpoint}
+	out := map[string]string{clickstack.EnvOTLPEndpoint: e.Observability.LocalEndpoint}
+	// A hosted dev stack (up_devtelemetry.go): the endpoint is the hosted
+	// edge, and the proxy attaches the browser token from this file on
+	// each request. One unit with the endpoint, so a developer's own
+	// endpoint never gets forge's token sent to it.
+	if f := e.Observability.DevBrowserHeadersFile; f != "" {
+		out[frontendOTLPHeadersFileEnv] = f
+	}
+	return out
 }
 
 // withFrontendTelemetryEnv gives a frontend dev server what its browser

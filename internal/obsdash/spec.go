@@ -309,6 +309,8 @@ func BuildParts(in Input) (ProjectPart, []ProcessPart) {
 	if len(in.Frontends) > 0 || len(in.FrontendServices) > 0 {
 		project.Dashboards = append(project.Dashboards, buildFrontend(in))
 	}
+	// Every project: a backend with no frontend still emits the CRUD events.
+	project.Dashboards = append(project.Dashboards, BuildProductUsage(in.Project))
 	for i := range project.Dashboards {
 		project.Dashboards[i] = withReleaseMarkers(project.Dashboards[i])
 	}

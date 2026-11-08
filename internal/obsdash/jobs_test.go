@@ -326,7 +326,7 @@ func TestOverviewWithoutRPCsOrLimitsDropsThoseGroupsOfPanels(t *testing.T) {
 func TestEveryGeneratedDashboardHasAGroup(t *testing.T) {
 	want := map[string]Group{
 		"overview": GroupOverview, "process-admin-api": GroupServices, "process-workers": GroupServices, "process-workspace": GroupServices,
-		"jobs": GroupJobs, "workloads": GroupPlatform, "releases": GroupReleases, "frontend": GroupProduct,
+		"jobs": GroupJobs, "workloads": GroupPlatform, "releases": GroupReleases, "frontend": GroupProduct, "usage": GroupProduct,
 	}
 	got := map[string]Group{}
 	for _, d := range Build(fleet()).Dashboards {

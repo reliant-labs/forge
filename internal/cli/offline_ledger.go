@@ -260,7 +260,17 @@ func (b *offlineBindings) Append(_ context.Context, p release.Promotion, guard a
 	if b.snap.Bound {
 		history = []release.Promotion{b.current}
 	}
-	existing, err := admitPromotion(history, p, guard)
+	if guard.RaiseFloorReason != "" {
+		return release.Promotion{}, exitCodeError{code: exitWrong, msg: "--offline-ledger: --floor needs the control plane (a floor set offline would exist only here)"}
+	}
+	// The cached floors, when the copy recorded them. The queued promotion
+	// replays through the control plane's Promote, which judges them again;
+	// this is the check for the local apply that happens before replay.
+	var floors []release.Floor
+	if b.snap.FloorsRecorded {
+		floors = release.ActiveFloors(b.snap.Floors)
+	}
+	existing, err := admitPromotion(history, floors, p, guard)
 	if err != nil {
 		return release.Promotion{}, err
 	}

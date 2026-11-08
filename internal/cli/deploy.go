@@ -448,6 +448,9 @@ type promoteCmdFlags struct {
 	// deploy cuts that carries a migration not on the default branch.
 	allowPassedMigrations   bool
 	allowUnmergedMigrations bool
+	// floorReason is --floor "<why>": also set a roll-forward-only
+	// rollback floor at the deployed release, in the same write.
+	floorReason string
 
 	// --from / --from-promotion, held FLAT rather than as a nested
 	// promoteFromOptions so each is a plain flag target like every field
@@ -513,6 +516,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Deploy even though the current promotion is still rolling out (recorded on the new entry); without it that is exit 4")
 	flags.BoolVar(&f.allowPassedMigrations, allowPassedMigrationsFlag, false,
 		"Deploy a release carrying a migration the env's schema has already passed (exit 4 without it). Only for SQL already applied to the env's database by hand and recorded in schema_migrations_applied — otherwise the env's migrator refuses it at boot")
+	flags.StringVar(&f.floorReason, "floor", "",
+		"Also set a roll-forward-only rollback floor at this release, in the same write, with this reason: no release cut before it can be deployed here until the floor is lowered or lifted (forge env floor). Refused against a control plane that predates floors")
 	flags.BoolVar(&f.allowUnmergedMigrations, allowUnmergedMigrationsFlag, false,
 		"When this deploy cuts the release (no version) for an env on a control plane: cut it even though it carries a migration not on the default branch (exit 4 without it)")
 
@@ -819,6 +824,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		ExpectCurrent:         p.expectCurrent,
 		Supersede:             p.supersede,
 		AllowPassedMigrations: p.allowPassedMigrations,
+		RaiseFloorReason:      p.floorReason,
 		Gates:                 p.gates,
 		From:                  p.fromSource(),
 		Run:                   p.run,

@@ -82,7 +82,7 @@ func (m *memBindingStore) Append(_ context.Context, p release.Promotion, guard a
 	if m.err != nil {
 		return release.Promotion{}, m.err
 	}
-	existing, err := admitPromotion(m.history[p.Env], p, guard)
+	existing, err := admitPromotion(m.history[p.Env], nil, p, guard)
 	if err != nil {
 		return release.Promotion{}, err
 	}

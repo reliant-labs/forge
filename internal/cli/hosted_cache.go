@@ -122,11 +122,44 @@ func (s *hostedStore) remember(ctx context.Context, env string, p release.Promot
 		if prev != nil && prev.Bound && prev.Current != nil && prev.Current.ID == p.ID &&
 			prev.Release != nil && prev.Window == window {
 			snap.Release, snap.History = prev.Release, prev.History
+			snap.Floors, snap.FloorsRecorded = prev.Floors, prev.FloorsRecorded
 		} else {
 			s.fillWindow(ctx, env, p, window, prev, &snap)
+			s.fillFloors(ctx, env, &snap)
 		}
 	}
 	if err := m.store.PutHostedSnapshot(snap); err != nil {
+		m.warnOnce(err)
+	}
+}
+
+// fillFloors records the env's rollback floors in the copy, so an offline
+// deploy can be judged against them before its local apply. Read when the
+// window is refilled (the current promotion moved, which is when a promote
+// raises floors) and after `forge env floor` changes them; a control plane
+// without floors, or a read that fails, leaves FloorsRecorded false —
+// "unknown", which the offline deploy says rather than reading as "none".
+func (s *hostedStore) fillFloors(ctx context.Context, env string, snap *ledgerfile.HostedSnapshot) {
+	floors, err := s.RollbackFloors(ctx, env, true)
+	if err != nil {
+		return
+	}
+	snap.Floors, snap.FloorsRecorded = floors, true
+}
+
+// rememberFloors refreshes only the floors of env's offline copy, after a
+// `forge env floor` change. Best-effort, like every mirror write.
+func (s *hostedStore) rememberFloors(ctx context.Context, env string) {
+	m := s.mirror
+	if m == nil {
+		return
+	}
+	snap, err := m.store.HostedSnapshot(env)
+	if err != nil || snap == nil || snap.Endpoint != m.endpoint {
+		return
+	}
+	s.fillFloors(ctx, env, snap)
+	if err := m.store.PutHostedSnapshot(*snap); err != nil {
 		m.warnOnce(err)
 	}
 }

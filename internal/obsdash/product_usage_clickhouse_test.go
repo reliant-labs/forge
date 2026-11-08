@@ -16,7 +16,8 @@ import (
 // test ends Monday 2026-03-16 12:00 UTC.
 //
 //	u1  active today, 3 days ago and 9 days ago (cohort 2026-03-02)
-//	u2  active today only (cohort 2026-03-16)
+//	u2  active today, and 105 days ago: past the 90-day first-seen window, so
+//	    still new today (cohort 2026-03-16)
 //	u3  active 20 days ago only (cohort 2026-02-23)
 //	anonymous page views count as views, never as users
 const productEventsSeed = `
@@ -38,6 +39,7 @@ INSERT INTO forge_product_usage_test.product_events VALUES
     ('2026-03-13 09:00:00', 'api', 'e1', 's3', 'u1', 'subscription_started', {'plan': 'pro'}),
     ('2026-03-07 09:00:00', 'api', 'e1', 's4', 'u1', 'order_item_created', {}),
     ('2026-02-24 09:00:00', 'api', 'e1', 's5', 'u3', 'order_item_created', {}),
+    ('2025-12-01 09:00:00', 'api', 'e1', 's7', 'u2', 'order_item_created', {}),
     ('2026-03-16 09:00:00', 'api', 'e2', 's6', 'u9', 'order_item_created', {});
 `
 
@@ -109,7 +111,9 @@ func TestProductUsageSQLOnClickHouse(t *testing.T) {
 
 	// Retention: three cohorts. u3's (2026-02-23) never came back; u1's
 	// (2026-03-02) is back in weeks 1 and 2, and week 3 is still to come (NULL);
-	// u2's is this week, so every later week is.
+	// u2's is this week (its event 105 days back is outside the first-seen
+	// window, so it neither moves u2's cohort nor drops it), so every later
+	// week is.
 	ret := strings.Split(run("weekly-retention", "e1"), "\n")
 	if len(ret) != 3 {
 		t.Fatalf("weekly-retention = %q, want 3 cohorts", ret)

@@ -131,6 +131,15 @@ type Scope struct {
 	// with SessionGeo, the session reads select them only then and answer ""
 	// and 0 otherwise. It implies SessionGeo.
 	SessionClient bool
+	// EnvIDColumn says the raw telemetry tables (otel_traces, otel_logs and the
+	// five otel_metrics_*) carry EnvId, the row's reliant.env.id materialized at
+	// insert (control-plane tenant schema v26). The environment predicate then
+	// tests that column instead of looking the key up in ResourceAttributes on
+	// every row, which was most of the cost of an env-narrowed scan. The rows are
+	// the same either way, so it is not part of a cursor's fingerprint. Zero is
+	// the older shape, which every table has: set it only for tables known to
+	// carry the column, or the statement fails on it.
+	EnvIDColumn bool
 }
 
 // Fingerprint identifies the parts of a scope a page cursor belongs to. The
@@ -263,13 +272,17 @@ func (b *builder) envCond(s Scope) string {
 	if !s.EnvRestricted {
 		return ""
 	}
+	id := envIDExpr
+	if s.EnvIDColumn {
+		id = envIDColumn
+	}
 	switch len(s.EnvIDs) {
 	case 0:
 		return "1 = 0"
 	case 1:
-		return envIDExpr + " = " + b.str(s.EnvIDs[0])
+		return id + " = " + b.str(s.EnvIDs[0])
 	}
-	return "has(" + b.strArray(s.EnvIDs) + ", " + envIDExpr + ")"
+	return "has(" + b.strArray(s.EnvIDs) + ", " + id + ")"
 }
 
 // instanceCond restricts to the scope's instances and instance users, or

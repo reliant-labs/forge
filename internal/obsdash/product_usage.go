@@ -18,6 +18,29 @@ const ProductUsageID = "usage"
 // read limit), so the oldest cohort is whole.
 const retentionWeeks = 12
 
+// firstSeenDays bounds how far back a user's first event is looked for: the
+// new-vs-returning and retention panels define "first seen" as the first event
+// in the firstSeenDays before the end of the range, never the oldest row the
+// table still holds. product_events has finite retention (product_events_days,
+// default 90), so "the oldest row" moves as rows expire and would turn a
+// long-time user into a new one, and rebase their cohort, on whatever day their
+// earlier events aged out. A fixed window gives the same answer under any
+// retention of at least firstSeenDays: a user idle for longer than the window
+// counts as new (reactivated) on their return. It equals the default
+// retention, so a default environment holds the whole window.
+const firstSeenDays = 90
+
+// firstSeenWindow is the window retention's first-seen reads: the
+// firstSeenDays before the end of the range, whatever range is selected (the
+// cohorts are the retentionWeeks before its end, inside the window).
+var firstSeenWindow = fmt.Sprintf("Timestamp >= {to:DateTime64(9)} - INTERVAL %d DAY AND Timestamp < {to:DateTime64(9)}", firstSeenDays)
+
+// firstSeenScope is new-vs-returning's first-seen window: firstSeenWindow,
+// reaching back to the start of the range when that is older (a range longer
+// than the window), so every day's active users have a first day.
+var firstSeenScope = fmt.Sprintf("Timestamp >= least({from:DateTime64(9)}, {to:DateTime64(9)} - INTERVAL %d DAY)"+
+	" AND Timestamp < {to:DateTime64(9)}", firstSeenDays)
+
 // productScope restricts a product_events query to the dashboard's range and
 // its environment and service filters. EnvId is the event's reliant.env.id, so
 // the environment scope is {env_ids}.
@@ -72,12 +95,15 @@ func BuildProductUsage(project string) Dashboard {
 			Description: "Distinct signed-in users with any product event, per UTC day.",
 			Kind:        KindSQL, SQL: dailyActiveUsersSQL, MinStep: daily, Width: 12, Height: 8},
 		{ID: "new-vs-returning", Title: "New vs returning users per day",
-			Description: "Each day's active users in exactly one class: new on the day of their first event, returning after it. " +
-				"First-seen reads the whole table, so a user whose earlier events aged out of retention counts as new again.",
+			Description: fmt.Sprintf("Each day's active users in exactly one class: new on the day of their first event, returning after it. "+
+				"First-seen is the first event in the %d days before the end of the range (or since the start of a longer range), "+
+				"so a user idle for longer than that counts as new again on their return.", firstSeenDays),
 			Kind: KindSQL, SQL: newVsReturningSQL, MinStep: daily, Display: stacked, Width: 12, Height: 8},
 		{ID: "weekly-retention", Title: "Weekly retention by cohort",
 			Description: fmt.Sprintf("Users grouped by the week (Monday, UTC) of their first event, over the %d weeks before the end of the range "+
-				"(whatever range is selected), and the percentage active again N weeks later. A week that has not happened yet is empty.", retentionWeeks),
+				"(whatever range is selected), and the percentage active again N weeks later. A week that has not happened yet is empty. "+
+				"A user's first event is their first in the %d days before the end of the range, so one idle for longer joins the cohort of their return.",
+				retentionWeeks, firstSeenDays),
 			Kind: KindSQL, SQL: weeklyRetentionSQL(), Width: 24, Height: 9},
 		{ID: "top-pages", Title: "Top pages",
 			Description: "page_viewed events by route: views, distinct signed-in users and sessions.",
@@ -111,7 +137,7 @@ FROM product_events
 WHERE UserId != '' AND ` + productScope + `
 GROUP BY day ORDER BY day`
 
-const newVsReturningSQL = `SELECT a.day AS day,
+var newVsReturningSQL = `SELECT a.day AS day,
        countIf(a.day = f.first_day) AS new_users,
        countIf(a.day > f.first_day) AS returning_users
 FROM (
@@ -123,7 +149,7 @@ FROM (
 INNER JOIN (
     SELECT UserId, toStartOfDay(min(Timestamp)) AS first_day
     FROM product_events
-    WHERE UserId != '' AND Timestamp < {to:DateTime64(9)} AND ` + productFilterScope + `
+    WHERE UserId != '' AND ` + firstSeenScope + ` AND ` + productFilterScope + `
     GROUP BY UserId
 ) AS f ON a.UserId = f.UserId
 GROUP BY day ORDER BY day`
@@ -144,7 +170,7 @@ FROM (
     FROM (
         SELECT UserId, toMonday(Timestamp) AS week
         FROM product_events
-        WHERE UserId != '' AND Timestamp < {to:DateTime64(9)} AND ` + productFilterScope + `
+        WHERE UserId != '' AND ` + firstSeenWindow + ` AND ` + productFilterScope + `
     )
     GROUP BY UserId
 )

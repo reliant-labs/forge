@@ -123,12 +123,12 @@ func TestSidebarLayoutBecomesADrawerOnPhones(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`aria-label="Open navigation"`,       // the way in, in the top bar
-		`aria-controls="sidebar-layout-nav"`, // which names the drawer
-		"max-md:fixed",                       // the nav leaves the layout
-		"max-md:-translate-x-full",           // and is off-canvas until opened
-		`role="presentation"`,                // the scrim is a mouse convenience, not a control
-		`event.key !== "Escape"`,             // Escape closes it
+		`aria-label="Open navigation"`, // the way in, in the top bar
+		`aria-controls={navId}`,        // instance-specific drawer
+		"max-md:fixed",                 // the nav leaves the layout
+		"max-md:-translate-x-full",     // and is off-canvas until opened
+		`role="presentation"`,          // the scrim is a mouse convenience, not a control
+		"useModalDialog({",             // shared Escape, focus, isolation and scroll lifecycle
 		"[@media(pointer:coarse)]:min-h-[44px]",
 		"env(safe-area-inset-top)",
 	} {

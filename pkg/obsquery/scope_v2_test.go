@@ -1,6 +1,7 @@
 package obsquery
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +145,51 @@ func TestEnvironmentRestriction(t *testing.T) {
 	sp, err := TraceSpans{Scope: scopeWith(func(s *Scope) { s.EnvRestricted, s.EnvIDs = true, []string{"e1"} }), TraceID: "abc"}.Compile()
 	if err != nil || !strings.Contains(sp.SQL, "reliant.env.id") {
 		t.Errorf("GetTrace ignores the env restriction: %v\n%s", err, sp.SQL)
+	}
+}
+
+// With EnvIDColumn the environment predicate tests the materialized EnvId column,
+// on every raw-table statement the predicate reaches, and the map lookup is never
+// the predicate; without it, the lookup, as every table can answer. The flag
+// changes no row, so a cursor minted under one shape continues under the other.
+func TestEnvironmentPredicateUsesTheEnvIdColumnOnlyWhenTheScopeSaysItExists(t *testing.T) {
+	lookup := "ResourceAttributes['reliant.env.id'] = {"
+	for _, ids := range [][]string{{"e1"}, {"e1", "e2"}} {
+		for _, col := range []bool{false, true} {
+			sc := scopeWith(func(s *Scope) { s.EnvRestricted, s.EnvIDs, s.EnvIDColumn = true, ids, col })
+			ov := Overview{Scope: sc}
+			stmts := map[string]func() (Stmt, error){
+				"trace page":   TraceQuery{Scope: sc, Limit: 5}.Compile,
+				"trace wide":   TraceQuery{Scope: sc, Limit: 5, UserID: "u1"}.Compile,
+				"trace RED":    TraceQuery{Scope: sc}.CompileRED,
+				"trace spans":  TraceSpans{Scope: sc, TraceID: "abc"}.Compile,
+				"overview RED": ov.RED,
+				"overview log": ov.Logs,
+				"logs":         LogQuery{Scope: sc, Limit: 5}.Compile,
+				"metric":       MetricLookup{Scope: sc, Name: "m"}.Compile,
+			}
+			for name, f := range stmts {
+				st, err := f()
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				hasCol := strings.Contains(st.SQL, "EnvId = {") || strings.Contains(st.SQL, ", EnvId)")
+				hasLookup := strings.Contains(st.SQL, lookup) || strings.Contains(st.SQL, ", ResourceAttributes['reliant.env.id'])")
+				if col && (!hasCol || hasLookup) {
+					t.Errorf("%s %v with EnvIDColumn: want the column, not the lookup:\n%s", name, ids, st.SQL)
+				}
+				if !col && (hasCol || !hasLookup) {
+					t.Errorf("%s %v without EnvIDColumn: want the lookup, never the column:\n%s", name, ids, st.SQL)
+				}
+				assertParameterized(t, st)
+			}
+		}
+	}
+	a := scopeWith(func(s *Scope) { s.EnvRestricted, s.EnvIDs = true, []string{"e1"} })
+	b := a
+	b.EnvIDColumn = true
+	if !reflect.DeepEqual(a.Fingerprint(), b.Fingerprint()) {
+		t.Error("EnvIDColumn changed the scope's fingerprint: a cursor would not survive a tenant's upgrade")
 	}
 }
 

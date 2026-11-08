@@ -106,3 +106,30 @@ func TestProductUsageRetentionFitsTheDefaultRetention(t *testing.T) {
 		t.Errorf("retention should keep the 12 cohorts before the end of the range:\n%s", sql)
 	}
 }
+
+// First-seen is read from a fixed window before the end of the range, never
+// from whatever the table still holds: product_events expires rows, so the
+// oldest row would make a long-time user new again the day their earlier
+// events aged out. The window fits the default retention, and covers every
+// retention cohort.
+func TestProductUsageFirstSeenIsBoundedToAWindow(t *testing.T) {
+	if firstSeenDays > 90 {
+		t.Fatalf("first-seen window of %d days exceeds the 90-day default retention", firstSeenDays)
+	}
+	if firstSeenDays < retentionWeeks*7 {
+		t.Fatalf("first-seen window of %d days does not cover the %d retention cohorts", firstSeenDays, retentionWeeks)
+	}
+	for name, c := range map[string]struct{ sql, bound string }{
+		"new-vs-returning": {newVsReturningSQL, "Timestamp >= least({from:DateTime64(9)}, {to:DateTime64(9)} - INTERVAL 90 DAY) AND Timestamp < {to:DateTime64(9)}"},
+		// Retention's window ignores the range, as its cohorts do.
+		"weekly-retention": {weeklyRetentionSQL(), "Timestamp >= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp < {to:DateTime64(9)}"},
+	} {
+		sql, bound := c.sql, c.bound
+		if strings.Count(sql, "FROM product_events") != strings.Count(sql, "Timestamp >= ") {
+			t.Errorf("%s: a product_events read has no lower time bound:\n%s", name, sql)
+		}
+		if !strings.Contains(sql, bound) {
+			t.Errorf("%s: first-seen is not bounded to the %d-day window:\n%s", name, firstSeenDays, sql)
+		}
+	}
+}

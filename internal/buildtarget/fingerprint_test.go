@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -179,6 +180,11 @@ func TestFingerprintInputs_StableAndSensitive(t *testing.T) {
 		t.Fatalf("Changed = %q, want the added file", got)
 	}
 
+	// Windows has no executable bit: chmod 0755 changes nothing there to
+	// fingerprint.
+	if runtime.GOOS == "windows" {
+		return
+	}
 	if err := os.Chmod(filepath.Join(cwd, "main.go"), 0o755); err != nil {
 		t.Fatal(err)
 	}

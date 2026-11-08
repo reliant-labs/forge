@@ -36,6 +36,11 @@ func TestTaskfileFrontendTestsHaveTaskInCI(t *testing.T) {
 	if err := yaml.Unmarshal(body, &workflow); err != nil {
 		t.Fatal(err)
 	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "actions", "install-release-tool", "action.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseTool := string(raw)
 	for _, name := range []string{"test-cli", "test-short-warm", "test-short"} {
 		t.Run(name, func(t *testing.T) {
 			job, ok := workflow.Jobs[name]
@@ -49,6 +54,14 @@ func TestTaskfileFrontendTestsHaveTaskInCI(t *testing.T) {
 				if strings.HasPrefix(step.Uses, "arduino/setup-task@") {
 					if step.With["version"] != "3.52.0" || step.If != "" {
 						t.Fatal("Task must be installed unconditionally at the tested pin 3.52.0")
+					}
+					installed = true
+				}
+				// The repository's own installer (cached, retried, sha256-checked):
+				// its task pin is the version this test holds.
+				if step.Uses == "./.github/actions/install-release-tool" && step.With["tool"] == "task" {
+					if step.If != "" || !strings.Contains(releaseTool, "task) set -- go-task/task v3.52.0 ") {
+						t.Fatal("Task must be installed unconditionally at the tested pin 3.52.0 (install-release-tool's task pin)")
 					}
 					installed = true
 				}

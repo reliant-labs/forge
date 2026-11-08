@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { forgeRuntimeConfig } from "@reliantlabs/forge-web-runtime/vite";
+import { forgeOtelProxy, forgeRuntimeConfig } from "@reliantlabs/forge-web-runtime/vite";
 // `vitest/config` re-exports vite's defineConfig with the `test` block typed.
 // Importing it from "vite" instead type-errors on `test`, and this file is in
 // the tsconfig `include` list.
@@ -70,54 +70,37 @@ const webRuntimePeers: string[] = readWebRuntimePeers();
 //
 // The browser sends telemetry to `/_otel/v1/{traces,logs}` on ITS OWN origin
 // and holds no collector address and no secret (see src/lib/otel_gen.ts).
-// `vite` forwards that to the local collector's OTLP/HTTP port.
+// forgeOtelProxy (from the runtime, in `plugins` below) forwards that to the
+// local collector's OTLP/HTTP port.
 //
 //   upstream: OTEL_EXPORTER_OTLP_ENDPOINT, a collector BASE URL
 //             (default http://127.0.0.1:4318 — the OTLP/HTTP port, not gRPC's 4317)
-//   path:     /_otel/*  ->  <upstream>/*   (the /_otel prefix is stripped)
+//   path:     POST /_otel/v1/{traces,logs,metrics}  ->  <upstream>/v1/…
 //
-// `forge env up` sets the variable for the dev server, so this follows the
+// It forwards only those three ingest POSTs, bodies up to 8 MiB: any other
+// method is 405, any other path under /_otel 404, a bigger body 413, and none
+// of them reaches the collector. The page's cookies and authorization header
+// are never forwarded.
+//
+// A HOSTED dev stack (observability.dev_telemetry): `forge env up` points
+// OTEL_EXPORTER_OTLP_ENDPOINT at the org's hosted edge and
+// FORGE_OTEL_HEADERS_FILE at the file holding this stack's browser token,
+// which forge renews in place. The plugin reads that variable itself, reads
+// the file on EVERY request and attaches what it holds (`authorization=Bearer
+// …`) server-side, so the token never reaches the bundle. Unset (the local
+// ClickStack), nothing is added. The rules above are why a credentialed proxy
+// reachable from a preview URL or the LAN cannot be used for anything else.
+//
+// `forge env up` sets both variables for the dev server, so this follows the
 // collector that stack started.
 //
-// `server.proxy` exists only while the dev server runs. A built SPA is plain
-// static files, so there is NO production equivalent in this file, by design:
-// routing `/_otel/*` to the collector in a deployed environment is the
+// The plugin runs only under the dev (and preview) server. A built SPA is
+// plain static files, so there is NO production equivalent in this file, by
+// design: routing `/_otel/*` to the collector in a deployed environment is the
 // ingress's job (the hosted gateway, or your cluster's ingress). Until that
 // route exists, leave the frontend's otel_endpoint unset and the production
 // bundle sends nothing.
 const OTEL_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318";
-const OTEL_UPSTREAM = OTEL_ENDPOINT.replace(/\/+$/, "");
-
-// A HOSTED dev stack (observability.dev_telemetry): `forge env up` points
-// OTEL_EXPORTER_OTLP_ENDPOINT at the org's hosted edge and
-// FORGE_OTEL_HEADERS_FILE at the file holding this stack's browser token,
-// which forge renews in place. The proxy reads the file on EVERY request and
-// attaches what it holds (`authorization=Bearer …`) server-side, so the token
-// never reaches the bundle; the browser's cookies and any authorization
-// header it sent are not forwarded to the edge, even when the file is
-// missing. Unset (the local ClickStack), nothing is added.
-const OTEL_HEADERS_FILE = process.env.FORGE_OTEL_HEADERS_FILE ?? "";
-const readOtelHeaders = (): Array<[string, string]> => {
-  let text = "";
-  try {
-    text = fs.readFileSync(OTEL_HEADERS_FILE, "utf8");
-  } catch {
-    return []; // not written yet, or removed: send nothing extra
-  }
-  const out: Array<[string, string]> = [];
-  for (const pair of text.split(/[\n,]/)) {
-    const i = pair.indexOf("=");
-    if (i <= 0) continue;
-    let value = pair.slice(i + 1).trim();
-    try {
-      value = decodeURIComponent(value);
-    } catch {
-      // Not percent-encoded: use it as written.
-    }
-    out.push([pair.slice(0, i).trim(), value]);
-  }
-  return out;
-};
 
 // ── API proxy (DEV ONLY) ────────────────────────────────────────────────
 //
@@ -194,7 +177,16 @@ export default defineConfig(({ command, mode }) => {
     // project), so the environment's runtime document reaches the page
     // without being written into this tree. Unset, it does nothing and
     // public/config.js is served as usual.
-    plugins: [react(), tailwindcss(), devLogPlugin(), forgeRuntimeConfig()],
+    //
+    // forgeOtelProxy is the /_otel browser-telemetry proxy — see
+    // OTEL_ENDPOINT above.
+    plugins: [
+      react(),
+      tailwindcss(),
+      devLogPlugin(),
+      forgeRuntimeConfig(),
+      forgeOtelProxy({ upstream: OTEL_ENDPOINT }),
+    ],
     resolve: {
       // Resolve every runtime peer from this project root, whatever the
       // importer. A registry install already resolves that way, so this is
@@ -227,24 +219,6 @@ export default defineConfig(({ command, mode }) => {
       // — see devAllowedHosts above. Vite's port, not PORT: this file pins it.
       allowedHosts: devAllowedHosts(5173),
       proxy: {
-        "/_otel": {
-          target: OTEL_UPSTREAM,
-          changeOrigin: true,
-          rewrite: (p: string) => p.replace(/^\/_otel/, ""),
-          ...(OTEL_HEADERS_FILE
-            ? {
-                configure: (proxy) => {
-                  proxy.on("proxyReq", (proxyReq) => {
-                    // Only forge's token reaches the edge: never the page's
-                    // cookies, nor an authorization header the page sent.
-                    proxyReq.removeHeader("cookie");
-                    proxyReq.removeHeader("authorization");
-                    for (const [name, value] of readOtelHeaders()) proxyReq.setHeader(name, value);
-                  });
-                },
-              }
-            : {}),
-        },
         ...(devApiProxy
           ? {
               [devApiProxy]: {

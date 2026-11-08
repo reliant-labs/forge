@@ -290,6 +290,15 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 	if err != nil {
 		return buildResult{name: svc.Name + " (external)", kind: "external", err: err}
 	}
+	// Declared inputs unchanged and the pushed image still in the registry:
+	// the last successful build stands in for this one.
+	inputs := checkShellBuildInputs(ctx, svc, spec, cwd, opts, projectDir)
+	if inputs.reuse != nil {
+		return reuseExternalBuild(svc, opts, projectDir, aliases, inputs)
+	}
+	if inputs.reason != "" {
+		fmt.Printf("[build] %s: running — %s\n", svc.Name, inputs.reason)
+	}
 	if builder := spec.BuildEnv["BUILDX_BUILDER"]; builder != "" {
 		registerDockerBuilderStorage(ctx, builder)
 	}
@@ -352,6 +361,8 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 		fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", pushedRef, derr)
 	}
 
+	warnSelfModifiedInputs(svc, spec, cwd, projectDir, opts, inputs.fp)
+
 	// Success path: persist the per-service state file so
 	// `forge env deploy <env>` reads the exact tag forge build just
 	// pushed. Non-fatal: a failed state write logs a warning but
@@ -369,6 +380,46 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 		Platforms: platforms,
 		Source:    source,
 	}
+	if inputs.fp != nil {
+		state.InputsFingerprint = inputs.fp.Digest
+	}
+	recordExternalBuildState(svc, opts, projectDir, aliases, state)
+	return buildResult{
+		name:     svc.Name + " (external)",
+		kind:     "external",
+		duration: res.Duration,
+		err:      nil,
+		receipt:  res.Receipt, digest: digest, platforms: platforms, repository: externalPushedRepository(svc, opts.pushPlan.pushBase), image: svc.Image, workload: svc.Name,
+	}
+}
+
+// reuseExternalBuild stands the last successful build in for this one: its
+// state is re-recorded for every consumer (so deploy pins the same digest)
+// and its image is what a build FROM it receives.
+func reuseExternalBuild(svc WorkloadEntity, opts buildOptions, projectDir string, aliases map[string][]WorkloadEntity, v shellInputsVerdict) buildResult {
+	prev := *v.reuse
+	fmt.Printf("[build] %s: up to date — inputs unchanged (%s) and %s@%s is still in the registry; not running the command (--rebuild forces it)\n",
+		svc.Name, describeFingerprint(v.fp, v.hashed), prev.Image, prev.Digest)
+	for _, alias := range aliases[svc.Name] {
+		fmt.Printf("[build] %s: sharing ShellBuild artifact with %s\n", alias.Name, svc.Name)
+	}
+	recordExternalBuildState(svc, opts, projectDir, aliases, prev)
+	return buildResult{
+		name:       svc.Name + " (external)",
+		kind:       "external",
+		duration:   v.took,
+		upToDate:   true,
+		digest:     prev.Digest,
+		platforms:  prev.Platforms,
+		repository: prev.Image,
+		image:      svc.Image,
+		workload:   svc.Name,
+	}
+}
+
+// recordExternalBuildState writes a ShellBuild's state for every consumer of
+// its artifact, and the deploy-readable build-<env>.json.
+func recordExternalBuildState(svc WorkloadEntity, opts buildOptions, projectDir string, aliases map[string][]WorkloadEntity, state buildtarget.State) {
 	for _, consumer := range append([]WorkloadEntity{svc}, aliases[svc.Name]...) {
 		state.Service = consumer.Name
 		if werr := buildtarget.WriteState(projectDir, opts.env, state); werr != nil {
@@ -389,31 +440,24 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 	// describe on a missing file. Last successful service wins; this
 	// matches the single-file-per-env shape the --push path uses.
 	deployState := BuildState{
-		Image: externalPushedRepository(svc, opts.pushPlan.pushBase),
-		Tag:   svcTag,
+		Image: state.Image,
+		Tag:   state.Tag,
 		// The user's build_cmd owns build AND push; we record the
 		// registry coordinates but can't prove a push happened, so
 		// Pushed stays false (the deploy-side tag read doesn't gate
 		// on it — see BuildState.Pushed).
-		PushedAt: nowRFC3339(),
+		PushedAt: state.PushedAt,
 		// Carry the digest into the deploy-readable aggregate too — this
 		// is the file resolveDeployImageTag actually reads, so without it
 		// the per-service capture above would never reach deploy and the
 		// reliant/workspace-base images would still pin the mutable tag.
-		Digest:    digest,
-		Platforms: platforms,
+		Digest:    state.Digest,
+		Platforms: state.Platforms,
 	}
 	if werr := WriteBuildState(projectDir, opts.env, deployState); werr != nil {
 		fmt.Printf("[build] %s: warning: failed to write deploy build-state file: %v\n", svc.Name, werr)
 	} else {
 		fmt.Printf("[build] %s: wrote deploy build state: %s\n", svc.Name, buildStatePath(projectDir, opts.env))
-	}
-	return buildResult{
-		name:     svc.Name + " (external)",
-		kind:     "external",
-		duration: res.Duration,
-		err:      nil,
-		receipt:  res.Receipt, digest: digest, platforms: platforms, repository: externalPushedRepository(svc, opts.pushPlan.pushBase), image: svc.Image, workload: svc.Name,
 	}
 }
 

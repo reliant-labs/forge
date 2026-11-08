@@ -3054,6 +3054,57 @@ schema ShellBuild(Build):
     Dependencies form a DAG — a cycle is refused before anything runs —
     and independent builds still run in parallel.
 
+    INPUTS SKIP A BUILD WHOSE SOURCES DID NOT CHANGE. Forge cannot see what
+    a shell command reads, so by default it runs the command on every
+    `forge build` / `forge env build` / `forge env up`. Declare the files it
+    reads and forge runs it only when something it depends on moved:
+
+        build = forge.ShellBuild {
+            cwd = "../reliant"
+            cmd = "docker build -t ${_ref} . && docker push ${_ref}"
+            inputs = ["go.mod", "go.sum", "**/*.go", "Dockerfile", "!**/*_test.go"]
+        }
+
+      * patterns — slash-separated, relative to the resolved cwd; a leading
+        `../` reaches a sibling checkout. `*` `?` `[...]` match within one
+        path segment, a whole `**` segment matches any depth, and a
+        directory named without wildcards selects everything beneath it.
+        `!pattern` excludes from every other pattern, in any order. Walks
+        never enter `.git` or `node_modules` unless a pattern names them.
+        A pattern that selects no file makes the build run (and says so):
+        a typo must not silently drop an input.
+      * reach — a pattern may leave cwd only into the directory that holds
+        the project (the workspace of sibling checkouts a `cwd` like
+        `../reliant` already reaches). Symlinks are followed, directories
+        included (a symlink cycle is walked once), but only inside it: a
+        pattern reaching past it, or a file or directory symlink it could
+        select through that resolves outside both it and cwd, is refused —
+        the build runs and says why (`!` the link to exclude it), and
+        nothing outside is read or keyed on.
+      * fingerprint — sha256 over everything that identifies the build's
+        artifact (the command, the resolved cwd, the declared `source`,
+        `inputs_file` and its content, `unit`, `output_name`), `env`
+        (with every built_images value, so a rebuilt parent rebuilds its
+        children), the platform, the pushed image and tag, the patterns,
+        and every selected file's path, size, executable bit and CONTENT.
+        Contents, not mtimes: a checkout rewrites mtimes without changing
+        a byte. The process environment forge inherits is NOT part of it;
+        anything the command reads from there belongs in `env`.
+      * skip — when the fingerprint equals the one recorded by the last
+        SUCCESSFUL build of this workload in this env (.forge/state), AND
+        the registry still resolves the recorded tag to the recorded
+        digest. The deploy then pins that same digest. Anything else —
+        no record, a changed input, a workload with no `image`, a registry
+        that no longer has it or now serves another digest at that tag, a
+        release build (`--release` always runs: it needs the builder's
+        receipt) — runs the command.
+      * forcing — `--rebuild` on `forge build`, `forge env build` and
+        `forge env up` runs every ShellBuild regardless.
+
+    Keep the command's OUTPUTS out of its inputs (exclude them with `!`):
+    a build that writes into what it reads changes its own fingerprint and
+    never skips — forge warns, naming the files, when that happens.
+
     Forge once substituted a fixed ${IMAGE}/${TAG}/${REGISTRY}/
     ${TARGETARCH}/… vocabulary into `cmd`. It no longer does, and a
     leftover token is refused by `forge lint` and `forge generate` — not
@@ -3085,9 +3136,19 @@ schema ShellBuild(Build):
     # `<repository>@sha256:<digest>` — the exact image it pushed. See the
     # docstring.
     built_images: {str: str} = {}
+    # Files the command reads, as globs relative to the resolved cwd. When
+    # set, forge skips the command while they — and the command, env,
+    # platform, tag and built_images — are unchanged since its last
+    # successful run and the registry still serves the image it pushed.
+    # Empty: the command runs on every build. See the docstring.
+    inputs: [str] = []
 
     check:
         type == "shell", "ShellBuild.type must be 'shell'"
+        all p in inputs { p.strip() != "" and p.strip() != "!" }, \
+            "ShellBuild.inputs entries are globs relative to the build's cwd; an empty entry selects nothing"
+        all p in inputs { not p.lstrip("!").startswith("/") }, \
+            "ShellBuild.inputs entries are relative to the build's cwd (use ../ for a sibling checkout), never absolute"
         cmd, "ShellBuild.cmd is required"
         not (cwd and source), "ShellBuild.cwd and source are mutually exclusive"
         all name in built_images { regex.match(name, r"^[A-Za-z_][A-Za-z0-9_]*$") }, \

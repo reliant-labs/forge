@@ -159,6 +159,9 @@ type buildOptions struct {
 	// deploy.target_arch (default amd64) for docker builds". See
 	// resolveBuildArch.
 	targetArch string
+	// rebuild is --rebuild: run every ShellBuild's command even when its
+	// declared inputs are unchanged since its last successful build.
+	rebuild bool
 	// env, when set, scopes the build to a specific deploy environment.
 	// Reads `deploy/kcl/<env>/` to determine which services run as host
 	// processes (deploy: "host" in the rendered KCL) and excludes them
@@ -325,6 +328,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
+	cmd.Flags().BoolVar(&opts.rebuild, "rebuild", false, rebuildFlagHelp)
 	// --push and --release are REGISTERED but REFUSED here, on purpose.
 	// They moved to `forge env build <env>`, and the two surfaces fail very
 	// differently: an unregistered flag gets cobra's bare "unknown flag:
@@ -494,6 +498,9 @@ type buildResult struct {
 	workload string // runtime consumer that requested this result; never inferred from repository
 	// goTargets are the exact recipes compiled into this invocation's project image.
 	goTargets []goBuildTarget
+	// upToDate marks a ShellBuild whose declared inputs were unchanged and
+	// whose last pushed image still stands, so its command did not run.
+	upToDate bool
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -1045,7 +1052,11 @@ func printBuildSummary(succeeded, failed []buildResult, start time.Time) {
 	fmt.Println(strings.Repeat("-", 50))
 
 	for _, r := range succeeded {
-		fmt.Printf("  OK   %-20s %-8s (%s)\n", r.name, r.kind, r.duration.Truncate(time.Millisecond))
+		note := ""
+		if r.upToDate {
+			note = "up to date, "
+		}
+		fmt.Printf("  OK   %-20s %-8s (%s%s)\n", r.name, r.kind, note, r.duration.Truncate(time.Millisecond))
 	}
 	for _, r := range failed {
 		fmt.Printf("  FAIL %-20s %-8s %v\n", r.name, r.kind, r.err)

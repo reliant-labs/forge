@@ -1100,6 +1100,10 @@ type ShellBuild struct {
 	// sets the var to the `<repository>@sha256:<digest>` it pushed — see
 	// externalBuildGraph.
 	BuiltImages map[string]string `json:"built_images,omitempty"`
+	// Inputs are the globs (relative to the resolved cwd) naming the files
+	// the command reads. Declared, they let a build whose fingerprint and
+	// pushed image are unchanged be skipped — see build_external_inputs.go.
+	Inputs []string `json:"inputs,omitempty"`
 }
 
 // RemoteBuildSource mirrors the kcl/schema.k GitSource as it appears

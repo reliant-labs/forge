@@ -367,6 +367,12 @@ type State struct {
 	// checkout, and on state an older forge wrote. A release cut from this
 	// state checks it against the commit the project pins (see Source).
 	Source *Source `json:"source,omitempty"`
+	// InputsFingerprint is the FingerprintInputs digest of the build's
+	// declared `inputs`, taken before the command ran. A later build whose
+	// fingerprint equals it, and whose registry still serves Digest at Tag,
+	// reuses this build instead of running the command again. Empty when the
+	// ShellBuild declares no inputs, and on state an older forge wrote.
+	InputsFingerprint string `json:"inputs_fingerprint,omitempty"`
 }
 
 // statePath returns the absolute path to the per-service build-state

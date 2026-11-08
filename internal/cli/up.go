@@ -68,6 +68,7 @@ type upOptions struct {
 	background       bool          // detach and write PID files; use `forge env down <env>` to teardown
 	watch            bool          // force supervise (hold + teardown on SIGINT/SIGTERM/SIGHUP) even without a TTY
 	noGenerate       bool          // skip the pre-build "ensure generated code" step (--no-generate)
+	rebuild          bool          // run every ShellBuild even when its declared inputs are unchanged (--rebuild)
 	noInstall        bool          // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
 	noSeed           bool          // skip the first-boot dev auto-seed (--no-seed)
 	hostReadyTimeout time.Duration // zero uses the default for internal callers
@@ -295,6 +296,7 @@ func newEnvUpCmd() *cobra.Command {
 
 	cmd.Flags().DurationVar(&opts.hostReadyTimeout, "host-ready-timeout", hostReadyTimeout, "Maximum wait for host services to bind their ports, including compilation; exited runners fail immediately")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
+	cmd.Flags().BoolVar(&opts.rebuild, "rebuild", false, rebuildFlagHelp)
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with 'forge env down <env>'). Cannot be combined with --watch.")
 	cmd.Flags().BoolVar(&opts.watch, "watch", false, "Hold the foreground and tear the stack down on SIGINT/SIGTERM/SIGHUP even without a TTY: the way an agent or daemon runs env up as a tracked background process. Default without --watch/--background: hold when stdin is a TTY, otherwise return after start (non-TTY agent/CI path).")
@@ -1810,7 +1812,7 @@ func upBuildDeployPhases(ctx context.Context, in upClusterInput) error {
 		if !skipFeature(store, config.FeatureBuild, "up:build") {
 			fmt.Println("\n[up] build phase")
 			buildCtx, buildSpan := startUpSpan(ctx, "build")
-			err := upBuildCluster(buildCtx, cfg, opts.env, opts.noGenerate, opts.targets)
+			err := upBuildCluster(buildCtx, cfg, opts.env, opts.noGenerate, opts.rebuild, opts.targets)
 			buildSpan.end(err)
 			if err != nil {
 				return fmt.Errorf("build: %w", err)
@@ -3006,8 +3008,10 @@ func entitiesEmpty(e *KCLEntities) bool {
 // whose workloads all run on the host has nothing pulling an image, so its
 // images are built locally and nothing is pushed; forge never substitutes a
 // registry of its own.
-func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, noGenerate bool, targets []string) error {
-	return runBuild(ctx, upBuildOptionsFor(env, noGenerate, targets))
+func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, noGenerate, rebuild bool, targets []string) error {
+	opts := upBuildOptionsFor(env, noGenerate, targets)
+	opts.rebuild = rebuild
+	return runBuild(ctx, opts)
 }
 
 // upBuildOptionsFor is the pure construction of `forge env up`'s build-phase

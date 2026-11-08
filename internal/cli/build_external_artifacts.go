@@ -55,31 +55,7 @@ func externalBuildArtifacts(services []WorkloadEntity, opts buildOptions, tag, p
 			return nil, fmt.Errorf("ShellBuild %s: resolve cwd: %w", svc.Name, err)
 		}
 		spec.BuildCwd = cwd
-		platform := opts.targetArch
-		if platform == "" && svc.Runtime.Cluster != nil {
-			platform = svc.Runtime.Cluster.Platform
-		}
-		if platform == "" && svc.Runtime.Type == RuntimeHosted {
-			platform = svc.Runtime.HostedPlatform()
-		}
-		// JSON sorts map keys and preserves recipe bytes. Nil and empty env
-		// overlays have the same execution semantics.
-		env := spec.BuildEnv
-		if env == nil {
-			env = map[string]string{}
-		}
-		// built_images is part of the recipe: the same command built FROM a
-		// different parent is a different image. Nil and empty are one recipe.
-		builtImages := svc.EffectiveBuiltImages()
-		if len(builtImages) == 0 {
-			builtImages = nil
-		}
-		identity, err := json.Marshal(struct {
-			Cmd, Cwd, Platform, InputsFile string
-			Env                            map[string]string
-			BuiltImages                    map[string]string
-			Source                         any
-		}{spec.BuildCmd, cwd, platform, svc.Build.InputsFile, env, builtImages, externalDeclaredSource(svc)})
+		identity, err := json.Marshal(externalBuildIdentity(svc, cwd, opts))
 		if err != nil {
 			return nil, err
 		}
@@ -101,6 +77,56 @@ func externalBuildArtifacts(services []WorkloadEntity, opts buildOptions, tag, p
 		artifacts = append(artifacts, externalBuildArtifact{services: []WorkloadEntity{svc}, spec: spec})
 	}
 	return artifacts, nil
+}
+
+// externalArtifactIdentity is everything DECLARED that makes two ShellBuild
+// artifacts one recipe: the coalescing key of externalBuildArtifacts, and
+// embedded verbatim in the skip fingerprint (shellBuildFingerprint), so a
+// field added here is hashed by both — the fingerprint can never know less
+// about a build than the artifact identity does.
+//
+// Its JSON is the identity: field names and order are load-bearing.
+type externalArtifactIdentity struct {
+	Cmd, Cwd, Platform, InputsFile string
+	Env                            map[string]string
+	BuiltImages                    map[string]string
+	Source                         any
+	Inputs                         []string `json:",omitempty"`
+}
+
+// externalBuildIdentity is svc's artifact identity. cwd must already be the
+// canonical (absolute, symlink-resolved) working directory.
+func externalBuildIdentity(svc WorkloadEntity, cwd string, opts buildOptions) externalArtifactIdentity {
+	// JSON sorts map keys and preserves recipe bytes. Nil and empty env
+	// overlays have the same execution semantics.
+	env := svc.EffectiveBuildEnv()
+	if env == nil {
+		env = map[string]string{}
+	}
+	// built_images is part of the recipe: the same command built FROM a
+	// different parent is a different image. Nil and empty are one recipe.
+	builtImages := svc.EffectiveBuiltImages()
+	if len(builtImages) == 0 {
+		builtImages = nil
+	}
+	return externalArtifactIdentity{
+		Cmd: svc.EffectiveBuildCmd(), Cwd: cwd, Platform: externalBuildPlatform(svc, opts),
+		InputsFile: svc.Build.InputsFile, Env: env, BuiltImages: builtImages,
+		Source: externalDeclaredSource(svc), Inputs: externalBuildInputs(svc),
+	}
+}
+
+// externalBuildPlatform is the platform a ShellBuild builds for: --target-arch,
+// else the cluster runtime's platform, else the hosted runtime's.
+func externalBuildPlatform(svc WorkloadEntity, opts buildOptions) string {
+	platform := opts.targetArch
+	if platform == "" && svc.Runtime.Cluster != nil {
+		platform = svc.Runtime.Cluster.Platform
+	}
+	if platform == "" && svc.Runtime.Type == RuntimeHosted {
+		platform = svc.Runtime.HostedPlatform()
+	}
+	return platform
 }
 
 func externalDeclaredSource(svc WorkloadEntity) any {

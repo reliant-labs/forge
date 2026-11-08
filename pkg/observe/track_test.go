@@ -41,6 +41,17 @@ func TestTrackShape(t *testing.T) {
 	}
 }
 
+func TestProductEventsOn(t *testing.T) {
+	for v, want := range map[string]bool{
+		"": true, "on": true, "true": true, "1": true, "anything": true,
+		"off": false, "OFF": false, " off ": false, "false": false, "0": false,
+	} {
+		if got := productEventsOn(v); got != want {
+			t.Errorf("productEventsOn(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
 func TestTrackAnonymousHasNoUserID(t *testing.T) {
 	m := trackLine(t, context.Background(), "page_viewed")
 	if _, ok := m["user.id"]; ok {

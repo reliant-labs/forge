@@ -6209,6 +6209,13 @@ schema ObservabilitySignals:
     # OTEL_REPLAY = "true"; the platform drops those events (browser
     # logs of instrumentation scope `rum.rr-web`) unless this is True.
     replay: bool = False
+    # The product events forge emits on the app's behalf: every create, update
+    # and delete that lands through a generated CRUD handler records
+    # `<entity>_created|_updated|_deleted` (no ids, no field values). Each event
+    # is one INFO log record, billed as log ingest like any other log line.
+    # `False` renders FORGE_PRODUCT_EVENTS=off on every workload. Events the
+    # app emits itself (observe.Track) are not affected.
+    product_events: bool = True
 
 schema ObservabilitySampling:
     """Trace sampling. The ratio is HEAD sampling in the SDK: every workload

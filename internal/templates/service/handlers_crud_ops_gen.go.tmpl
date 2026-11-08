@@ -74,6 +74,7 @@ func {{.EntityLower}}FromProto(m *pb.{{.EntityPbType}}) (*db.{{.EntityName}}, er
 func (s *Service) crud{{.MethodName}}Op() crud.CreateOp[pb.{{.InputType}}, pb.{{.OutputType}}, *db.{{.EntityName}}] {
 	return crud.CreateOp[pb.{{.InputType}}, pb.{{.OutputType}}, *db.{{.EntityName}}]{
 		EntityLower: "{{.EntityLower}}",
+		EntitySnake: "{{.EntitySnake}}",
 		Entity: func(_ context.Context, req *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
 			e := &db.{{.EntityName}}{}
 {{- range .CreateAssigns}}
@@ -271,6 +272,7 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{.OutputType}}, *db.{{.EntityName}}] {
 	return crud.UpdateOp[pb.{{.InputType}}, pb.{{.OutputType}}, *db.{{.EntityName}}]{
 		EntityLower:    "{{.EntityLower}}",
+		EntitySnake:    "{{.EntitySnake}}",
 		EntityFieldLow: "{{.UpdateEntityField | lower}}",
 {{- if .ReadOnlyColumns}}
 		// The `forge:read-only` / `forge:computed` fields of the entity:
@@ -346,6 +348,7 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 func (s *Service) crud{{.MethodName}}Op() crud.DeleteOp[pb.{{.InputType}}, pb.{{.OutputType}}] {
 	return crud.DeleteOp[pb.{{.InputType}}, pb.{{.OutputType}}]{
 		EntityLower: "{{.EntityLower}}",
+		EntitySnake: "{{.EntitySnake}}",
 		ID: func(req *pb.{{.InputType}}) string { return req.{{.PkField}} },
 		// See the Get op for what opts are. crud.ScopedDelete verifies the
 		// predicate against the STORED row before deleting; with no opts

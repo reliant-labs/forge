@@ -3,6 +3,7 @@ package obsdash
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -122,10 +123,15 @@ type Rendered struct {
 func DashboardName(d Dashboard) string { return d.Title }
 
 // RenderHyperDX renders every dashboard of sp as one provisioner file each,
-// named "<project>-<dashboard id>_gen.json".
+// named "<project>-<dashboard id>_gen.json". A dashboard with no panel HyperDX
+// can draw (Product usage is all sql panels) has no file: HyperDX refuses a
+// dashboard without tiles, and an empty one would only mislead.
 func RenderHyperDX(sp Spec) ([]Rendered, error) {
 	out := make([]Rendered, 0, len(sp.Dashboards))
 	for _, d := range sp.Dashboards {
+		if !slices.ContainsFunc(d.Panels, hyperDXDraws) {
+			continue
+		}
 		hd, err := renderDashboard(d)
 		if err != nil {
 			return nil, fmt.Errorf("dashboard %q: %w", d.ID, err)

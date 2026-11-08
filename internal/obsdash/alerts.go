@@ -334,7 +334,7 @@ var alertDefs = []alertDef{
 			Severity: SeverityWarning, For: "0s", Interval: "5m", Signal: "platform",
 			Params: []AlertParam{},
 		},
-		annotations: map[string]string{"summary": "{{ $labels.service }} left what is usual for this hour of the week ({{ $labels.env }}). What moved, against what, and the evidence are in the alert's why payload: forge obs alerts --json"},
+		annotations: map[string]string{"summary": "{{ $labels.service }} left what is usual for this hour of the week ({{ $labels.env }}). What moved and against what are in the alert's why payload; to look yourself: forge obs status {{ $labels.env }} --service {{ $labels.service }}"},
 		applies:     hasServices,
 		platform:    []platformRule{{PlatformServiceAnomaly, "ServiceAnomaly", SeverityWarning}},
 	},

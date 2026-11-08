@@ -3,7 +3,6 @@ package observe
 import (
 	"context"
 	"log/slog"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -53,8 +52,10 @@ const EnvProductEvents = "FORGE_PRODUCT_EVENTS"
 var eventNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 // autoProductEvents reads EnvProductEvents once: the process's environment
-// does not change under it, and the check sits on every CRUD write.
-var autoProductEvents = sync.OnceValue(func() bool { return productEventsOn(os.Getenv(EnvProductEvents)) })
+// does not change under it, and the check sits on every CRUD write. The read
+// goes through otelenv.go's envValue, the one place this package reads the
+// environment.
+var autoProductEvents = sync.OnceValue(func() bool { return productEventsOn(envValue(EnvProductEvents)) })
 
 // AutoProductEvents reports whether forge's automatic product events are on
 // for this process (see EnvProductEvents). The value is read once.

@@ -682,6 +682,9 @@ troubleshooting.
 from a checkout — service, entity, CRUD, running stack — and explains which
 files are yours.
 [**docs/concepts.md**](docs/concepts.md) covers why Forge is shaped this way.
+[**docs/benefits.md**](docs/benefits.md) is the catalog of what Forge gives a project
+(releases and release health, every lint rule and the bug it prevents,
+observability, auth, secrets, data, the dev loop), each with how to use it.
 
 Run `forge --help` for the full command surface, or `forge <command> --help`
 for any one of them. Four commands print Forge's entire surface:
@@ -744,7 +747,7 @@ forge/
 │   └── components/  # UI component library shipped to scaffolded frontends
 ├── web-runtime/     # @reliantlabs/forge-web-runtime — the web twin of pkg/
 ├── proto/           # Forge's own proto annotations (forge/v1)
-├── docs/            # getting-started, concepts, releasing, pkg + cross-repo sources
+├── docs/            # getting-started, concepts, benefits, releasing, pkg + cross-repo sources
 ├── examples/        # Runnable examples
 ├── forge.yaml       # Project manifest
 └── Taskfile.yml     # Automation entrypoints

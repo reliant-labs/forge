@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -67,14 +68,21 @@ func processAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// killProcessTree signals pid, its process group, AND every transitive
-// descendant. The tree walk is the robust part: a runner like Air re-execs
-// its server in a NEW process group on every rebuild, so signalling only
-// pid's group (signalProcessGroup) leaves the respawned child squatting its
-// port. Walking ppid catches it regardless of group/session games — the
-// parent/child relationship is the one stable handle. Descendants are
-// collected BEFORE signalling so a dying tree's shifting ppids can't hide
-// a child.
+// killProcessTree signals pid, its process group, every transitive
+// descendant, AND every process group a descendant leads. The tree walk is
+// the robust part: a runner like Air starts its server in a NEW process group
+// (Setpgid) on every rebuild, so signalling only pid's group
+// (signalProcessGroup) leaves that server squatting its port. Walking ppid
+// catches it regardless of group/session games — the parent/child
+// relationship is the one stable handle — and signalling the group it leads
+// catches what IT forked (a `sh -c` wrapper's children). Descendants are
+// collected BEFORE signalling so a dying tree's shifting ppids can't hide a
+// child.
+//
+// The walk only sees what is still attached: a runner that has already died
+// left its children with init. Teardown therefore keeps every runner alive
+// until it is signalled here (procRegistry.start) and sweeps the run's
+// ownership markers for what escaped anyway (procRegistry.shutdown).
 //
 // It is also the last line of the lineage guard (procguard): the teardown
 // planners already set aside every root that hosts this command, and this
@@ -89,17 +97,7 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 	if self.Contains(pid) {
 		return &procguard.LineageError{PID: pid, Command: commandLabel(readProcArgv(pid))}
 	}
-	descendants := descendantPIDs(pid)
-	targets := make([]int, 0, len(descendants)+2)
-	if !self.ContainsGroup(pid) {
-		targets = append(targets, -pid)
-	}
-	targets = append(targets, pid)
-	for _, d := range descendants {
-		if !self.Contains(d) {
-			targets = append(targets, d)
-		}
-	}
+	targets := treeSignalTargets(pid, processTable(), self.Contains, self.ContainsGroup)
 	var failures []error
 	// A missing group is normal after its leader exits. Permission failures
 	// are not proof of shutdown, including when a direct leader signal works.
@@ -109,6 +107,96 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// treeSignalTargets is killProcessTree's pure decision: the kill(2) targets
+// for root's tree, read from one process-table snapshot. Negative entries are
+// process groups. It names root's group, root, every descendant, and the group
+// of every descendant that leads one (pgid == pid). A group is only ever
+// signalled when its leader is in the tree, so no group a stranger leads is
+// reached; and nothing in this command's lineage, nor a group it belongs to,
+// is ever a target.
+func treeSignalTargets(root int, table map[int]procRow, inLineage, lineageGroup func(int) bool) []int {
+	descendants := descendantsIn(root, table)
+	targets := make([]int, 0, 2*len(descendants)+2)
+	if !lineageGroup(root) {
+		targets = append(targets, -root)
+	}
+	targets = append(targets, root)
+	for _, d := range descendants {
+		if inLineage(d) {
+			continue
+		}
+		targets = append(targets, d)
+		if row, ok := table[d]; ok && row.pgid == d && !lineageGroup(d) {
+			targets = append(targets, -d)
+		}
+	}
+	return targets
+}
+
+// procRow is one process-table entry: a pid's parent and process group.
+type procRow struct {
+	ppid int
+	pgid int
+}
+
+// processTable returns a pid→(ppid, pgid) snapshot of the whole process table,
+// read from `ps` (works on macOS and Linux without /proc). Nil when ps fails:
+// tree walks then see no descendants, and a caller signals the root alone.
+func processTable() map[int]procRow {
+	out, err := exec.CommandContext(context.Background(), "ps", "-axo", "pid=,ppid=,pgid=").Output()
+	if err != nil {
+		return nil
+	}
+	return parseProcessTable(string(out))
+}
+
+// parseProcessTable parses `ps -axo pid=,ppid=,pgid=` output. Lines that are
+// not three integers are skipped.
+func parseProcessTable(out string) map[int]procRow {
+	m := map[int]procRow{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) != 3 {
+			continue
+		}
+		pid, e1 := strconv.Atoi(f[0])
+		ppid, e2 := strconv.Atoi(f[1])
+		pgid, e3 := strconv.Atoi(f[2])
+		if e1 != nil || e2 != nil || e3 != nil {
+			continue
+		}
+		m[pid] = procRow{ppid: ppid, pgid: pgid}
+	}
+	return m
+}
+
+// descendantsIn returns every transitive child of root in table, breadth
+// first. Cycle-safe.
+func descendantsIn(root int, table map[int]procRow) []int {
+	children := map[int][]int{}
+	for pid, row := range table {
+		children[row.ppid] = append(children[row.ppid], pid)
+	}
+	for _, c := range children {
+		sort.Ints(c)
+	}
+	var result []int
+	seen := map[int]bool{root: true}
+	queue := []int{root}
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		for _, c := range children[p] {
+			if !seen[c] {
+				seen[c] = true
+				result = append(result, c)
+				queue = append(queue, c)
+			}
+		}
+	}
+	return result
 }
 
 // ppidMap returns a pid→ppid snapshot of the whole process table, read
@@ -183,39 +271,8 @@ func procStartTimes(pids []int) map[int]time.Time {
 }
 
 // descendantPIDs returns every transitive child of root, reading the
-// (pid, ppid) table from `ps` so it works on macOS and Linux alike without
+// process table from `ps` so it works on macOS and Linux alike without
 // depending on /proc.
 func descendantPIDs(root int) []int {
-	out, err := exec.CommandContext(context.Background(), "ps", "-axo", "pid=,ppid=").Output()
-	if err != nil {
-		return nil
-	}
-	children := map[int][]int{}
-	for _, line := range strings.Split(string(out), "\n") {
-		f := strings.Fields(line)
-		if len(f) != 2 {
-			continue
-		}
-		pid, e1 := strconv.Atoi(f[0])
-		ppid, e2 := strconv.Atoi(f[1])
-		if e1 != nil || e2 != nil {
-			continue
-		}
-		children[ppid] = append(children[ppid], pid)
-	}
-	var result []int
-	seen := map[int]bool{root: true}
-	queue := []int{root}
-	for len(queue) > 0 {
-		p := queue[0]
-		queue = queue[1:]
-		for _, c := range children[p] {
-			if !seen[c] {
-				seen[c] = true
-				result = append(result, c)
-				queue = append(queue, c)
-			}
-		}
-	}
-	return result
+	return descendantsIn(root, processTable())
 }

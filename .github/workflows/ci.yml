@@ -405,18 +405,16 @@ jobs:
       # missing tool fails under CI=true rather than skipping.
       - uses: ./.github/actions/embedded-postgres-cache
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # Authenticated for the rate limit; see the same step in `test`.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
       # Match test-short-warm's PATH for cache-sound result replay.
       - name: Install Task
-        uses: arduino/setup-task@v3
+        uses: ./.github/actions/install-release-tool
         with:
-          version: 3.52.0
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: task
       - name: Go tests (-short)
         if: ${{ matrix.args != '' }}
         env:
@@ -529,17 +527,9 @@ jobs:
       # — they deliberately fail rather than report an empty inventory as a
       # pass, so this is a hard dependency of the test job, not a nicety.
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # Without a token the action resolves buf's release through an
-          # UNAUTHENTICATED api.github.com call, rate-limited to 60/hour
-          # per runner IP and shared with every other job on that host.
-          # Exhausted, the step dies with "API rate limit exceeded" and
-          # the job fails for a reason that has nothing to do with the
-          # commit. The built-in token lifts that to 1000/hour per
-          # repository; contents: read is all a release lookup needs.
-          # Same failure mode ci.yml already pins KCL_VERSION to avoid.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       # TestDBReset_* shell out to the golang-migrate CLI and carry no e2e
       # tag. They live in internal/cli (test-cli installs it too); this job
       # keeps the install so no package here can lose a tool by moving.
@@ -609,19 +599,17 @@ jobs:
       # TestDBReset_* (internal/cli/db_reset*_test.go).
       - uses: ./.github/actions/embedded-postgres-cache
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # Authenticated for the rate limit; see the same step in `test`.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
       # Full CLI tests execute rendered Taskfiles; do not skip them when a
       # runner lacks Task. Pin the version exercised by these fixtures.
       - name: Install Task
-        uses: arduino/setup-task@v3
+        uses: ./.github/actions/install-release-tool
         with:
-          version: 3.52.0
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: task
       - name: Check the test-job partition
         run: scripts/ci-test-packages.sh check
       - name: Go tests (internal/cli)
@@ -669,17 +657,16 @@ jobs:
           scope: short
       - uses: ./.github/actions/embedded-postgres-cache
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
       # Full-tier changed-test repetition can include the Taskfile fixtures.
       - name: Install Task
-        uses: arduino/setup-task@v3
+        uses: ./.github/actions/install-release-tool
         with:
-          version: 3.52.0
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: task
       # The pull request's command, flags and all: a result is keyed on the
       # test flags, so any other spelling would replay nothing there.
       - name: Go tests (-short, every package)
@@ -1034,10 +1021,9 @@ jobs:
       # reliant and control-plane). Seconds when proto/ is untouched.
       - name: Install buf
         if: ${{ github.event_name == 'pull_request' }}
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # Authenticated for the rate limit; see the same step in `test`.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       - name: proto compatibility (buf breaking; breaks fail unless the owner accepted them)
         if: ${{ github.event_name == 'pull_request' }}
         env:
@@ -1082,19 +1068,16 @@ jobs:
       # (buf.gen.yaml). Without buf on PATH the job dies with
       # `exec: "buf": executable file not found` before checking anything.
       #
-      # Pinned rather than left to the action's default so the version is
-      # visible here and cannot move under a byte-identical check. 1.50.0 is
-      # the version every other buf install in these workflows resolves to
-      # (buf-setup-action@v1's default); Taskfile.yml and the Makefile pin
-      # none. Bump them together. pre-commit runs after failures too, so
-      # its formatter prerequisites must not be skipped after an earlier failure.
+      # Every buf here is .github/actions/install-release-tool's pin,
+      # templates.BufVersion (TestReleaseToolPinsMatchForge), so the version
+      # cannot move under a byte-identical check. pre-commit runs after
+      # failures too, so its formatter prerequisites must not be skipped
+      # after an earlier failure.
       - name: Install buf
         if: ${{ !cancelled() }}
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          version: "1.50.0"
-          # Authenticated for the rate limit; see the same step in `test`.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       # buf.gen.yaml runs protoc-gen-go as a `local:` plugin, and generate
       # formats its Go output with goimports. `forge tools install` puts both
       # on PATH at the versions go.mod resolves, the versions the committed
@@ -1110,30 +1093,18 @@ jobs:
       # Validate KCL used to be a job of its own; it shares this job's forge
       # install and cache scope, and a second runner bought only a second
       # minute of setup.
-      # KCL_VERSION is pinned deliberately. Left unset, the installer
-      # resolves "latest" through an UNAUTHENTICATED api.github.com call,
-      # which is rate-limited to 60/hour per runner IP and shared across
-      # every job on that host — when it is exhausted the script gets an
-      # empty tag and dies with "The KCL version is not found", failing CI
-      # for a reason that has nothing to do with the commit. Pinning also
-      # stops a KCL release from changing this build without a commit.
-      # The pin is templates.KCLVersion; TestKCLVersionIsPinnedEverywhere
-      # holds it equal to the kcl-lang.io modules in go.mod, so the `kcl`
-      # the tests shell out to is the KCL forge embeds.
-      #
-      # Not cached, and no ~/.kcl on PATH: on Linux the installer puts kcl in
-      # /usr/local/bin, which is already on PATH. The cache stored the ~/.kcl
-      # that was never created — an empty 227-byte entry — and a later hit
-      # then SKIPPED the install and left the job with no kcl at all. The
-      # install is ~1s; caching it was never worth a step that can wedge a
-      # whole workflow.
+      # KCL is pinned, never "latest" (which install-cli.sh resolved through
+      # api.github.com's unauthenticated 60/hour budget): the pin is
+      # .github/actions/install-release-tool's, templates.KCLVersion, which
+      # TestKCLVersionIsPinnedEverywhere holds equal to go.mod's kcl-lang.io
+      # modules, so the `kcl` the tests shell out to is the KCL forge embeds.
+      # The action caches the binary alone (never ~/.kcl: a cached EMPTY
+      # ~/.kcl once skipped the install and left jobs with no kcl) and
+      # reinstalls whenever the binary is missing, whatever the cache said.
       - name: Install KCL
-        env:
-          KCL_VERSION: v0.13.2
-        run: |
-          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-          command -v kcl
-          kcl --version
+        uses: ./.github/actions/install-release-tool
+        with:
+          tool: kcl
       - name: Validate KCL manifests
         if: ${{ !cancelled() }}
         run: forge ci validate-kcl

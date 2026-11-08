@@ -65,12 +65,9 @@ jobs:
           node-version: "22"
 
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # See ci.yml: unauthenticated release lookups share a 60/hour
-          # per-runner-IP budget and fail the job for a reason unrelated
-          # to the commit.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
 
       # `forge generate` reads the scaffold's applied schema through an embedded
       # postgres, and the scaffold's own `go test` boots one; both fetch it from

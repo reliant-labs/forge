@@ -1,3 +1,9 @@
+//go:build !windows
+
+// install-release-tool runs only on Linux runners (it pins linux-amd64
+// assets) and these tests run its bash scripts, so the file builds for
+// every OS but Windows rather than skipping there at run time.
+
 package ciguard
 
 import (
@@ -11,7 +17,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -81,9 +86,6 @@ type releaseToolFixture struct {
 
 func newReleaseToolFixture(t *testing.T) *releaseToolFixture {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("install-release-tool pins linux-amd64 assets and runs only on Linux runners")
-	}
 	raw, err := os.ReadFile(filepath.Join(installReleaseToolDir, "action.yml"))
 	if err != nil {
 		t.Fatal(err)

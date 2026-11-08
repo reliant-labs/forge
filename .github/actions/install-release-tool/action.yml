@@ -20,6 +20,15 @@
 # change its version and sha256 together. The sha256 is the release asset's:
 # `gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[] | .name + " " + .digest'`,
 # or the release's own checksum file where GitHub records no digest (buf 1.50.0).
+#
+# CHECK AFTER MERGE, AND ROLLBACK. The first push to main after this lands
+# runs every job on a cache miss (the github.com download, else the API
+# fallback) and saves one cache entry per tool; the second push's jobs log
+# a cache hit on "Restore <tool>". If installs fail there, revert the commit
+# that introduced this action: the workflows go back to
+# arduino/setup-task, bufbuild/buf-setup-action and KCL's install-cli.sh,
+# and the ci-tool-* cache entries it saved are ignored (nothing else reads
+# them) and age out.
 name: Install a pinned release tool
 description: Task, buf or KCL from a cache keyed on its version, else from GitHub releases (retried, API fallback, sha256-checked)
 

@@ -117,6 +117,22 @@ const (
 	// drop-off between steps. It is how a funnel the funnel kind cannot
 	// express (one stitched across identities, say) is still drawn as one.
 	StyleFunnel DisplayStyle = "funnel"
+	// StyleHeatmap draws a sql panel's result as a grid of cells shaded by
+	// value, on one colour scale (Display.Color). What the rows and columns
+	// are follows the result's shape:
+	//
+	//   - rows with one text column, or several, and numeric columns (a wide
+	//     result, like a retention table): each row is a row of cells named
+	//     by its text columns, and each numeric column is a column of cells.
+	//   - rows with exactly two text columns and one numeric column (a long
+	//     result): the first text column names the row, the second the
+	//     column, and the number is the cell.
+	//   - a time series (the first column a date or time): each series is a
+	//     row of cells, one per bucket.
+	//
+	// A NULL is an empty cell, not a zero, so a retention week that has not
+	// happened yet reads as missing rather than as churn.
+	StyleHeatmap DisplayStyle = "heatmap"
 )
 
 // displayStyles lists the styles each kind takes, its default first.
@@ -124,8 +140,39 @@ var displayStyles = map[PanelKind][]DisplayStyle{
 	KindLine:   {StyleLine, StyleArea, StyleBars},
 	KindBar:    {StyleBar, StylePie, StyleDonut},
 	KindNumber: {StyleStat, StyleGauge},
-	KindSQL:    {StyleLine, StyleArea, StyleBars, StyleFunnel},
+	KindSQL:    {StyleLine, StyleArea, StyleBars, StyleFunnel, StyleHeatmap},
 }
+
+// ChartColor is a named colour of the renderer's data-visualisation palette.
+// A spec names a palette key, never a raw colour, so the renderer keeps
+// control of contrast: the Reliant console maps each key to a chart token that
+// is legible on its cards in every colour scheme, light and dark.
+type ChartColor string
+
+// The palette keys. The six hues are categorical: none means good or bad.
+// ColorDanger is for a series that IS a failure (errors, refused requests),
+// so red always means one; a renderer already draws a series whose name says
+// it is an error in it.
+const (
+	ColorBlue    ChartColor = "blue"
+	ColorViolet  ChartColor = "violet"
+	ColorCyan    ChartColor = "cyan"
+	ColorAmber   ChartColor = "amber"
+	ColorFuchsia ChartColor = "fuchsia"
+	ColorSlate   ChartColor = "slate"
+	ColorDanger  ChartColor = "danger"
+)
+
+// ChartColors lists every palette key, in the order a renderer deals the
+// categorical ones to series that name none.
+var ChartColors = []ChartColor{ColorBlue, ColorViolet, ColorCyan, ColorAmber, ColorFuchsia, ColorSlate, ColorDanger}
+
+// MaxColors bounds Display.Colors.
+const MaxColors = MaxTopN
+
+// maxColorKeyBytes bounds a Display.Colors key: a series label, a column name
+// or a group value.
+const maxColorKeyBytes = 200
 
 // DisplayStyles returns the styles kind k takes, its default first; nil for a
 // kind that is drawn one way only and takes no Display.
@@ -160,6 +207,18 @@ type Display struct {
 	// up, left out where they do not. The full list stays a click away. Zero
 	// is the reader's own default; at most MaxTopN.
 	TopN int `json:"topN,omitempty"`
+	// Color is the colour of what the panel draws in one: a heatmap's scale,
+	// a number panel's sparklines, and the series of a chart that draws one.
+	// Empty is the palette's first.
+	Color ChartColor `json:"color,omitempty"`
+	// Colors gives series their colour by name: a series' Label, a sql
+	// panel's value column, or a group value (a bar group, a pie slice, a
+	// line per group). A series it does not name takes the next palette
+	// colour no named series has, in the renderer's usual order, so naming
+	// two series never repaints the rest. At most MaxColors.
+	//
+	//	"colors": {"Signed in": "blue", "Anonymous": "slate"}
+	Colors map[string]ChartColor `json:"colors,omitempty"`
 }
 
 // Row limits of a table or bar panel (Panel.Limit).
@@ -332,6 +391,15 @@ type Panel struct {
 	// telemetry tables, which may use the SQLParam* query parameters. Only
 	// that kind takes it.
 	SQL string `json:"sql,omitempty"`
+	// TrendSQL is a sql panel's sparkline: a second read-only SELECT, under
+	// the same guard and parameters as SQL, that returns a time series (the
+	// first column a date or time, then one numeric column). A renderer draws
+	// it under the figure SQL returns, when SQL returns one row of figures:
+	// each day's active users across the range, under the figure for the
+	// last day. It never changes the figure. Only a sql panel takes it, and not
+	// one drawn as a funnel or a heatmap. Renderers that draw no sparkline
+	// ignore it.
+	TrendSQL string `json:"trendSql,omitempty"`
 	// MinStep is the narrowest bucket a KindSQL panel's statement produces,
 	// in the same form as DefaultRange ("1d"): set it when the statement
 	// groups by a fixed bucket (toDate, toStartOfWeek) rather than by the
@@ -435,10 +503,35 @@ type Annotation struct {
 
 // Section is a named, ordered group of panels. It changes presentation only;
 // filtering remains explicit through Filter.PanelIDs.
+//
+// A renderer that draws sections draws each one's Title as a heading across
+// the grid, with its panels below it: the sections in the order the dashboard
+// declares them, after the panels that name no section, each section's panels
+// in the order they are declared. A viewer can hide a section.
 type Section struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
+	// Description is a line under the heading: what the section answers.
+	Description string `json:"description,omitempty"`
 }
+
+// MaxSectionDescriptionBytes bounds Section.Description.
+const MaxSectionDescriptionBytes = 500
+
+// CompareMode is the comparison a dashboard opens with (Dashboard.DefaultCompare).
+type CompareMode string
+
+// The comparisons. The renderer draws the comparison; the spec only names it.
+const (
+	// ComparePeriod compares every panel with the same panel over the
+	// period before the selected range, of the same length: a figure shows
+	// its change, a chart draws the earlier period beside the current one.
+	ComparePeriod CompareMode = "period"
+	// CompareRelease compares with the window before the environment's last
+	// release. A renderer offers it only when one environment is selected,
+	// and opens without a comparison otherwise.
+	CompareRelease CompareMode = "release"
+)
 
 // Scope says which telemetry a dashboard's panels read. It is one enum: the
 // default and the two wider reads.
@@ -523,8 +616,13 @@ type Dashboard struct {
 	// MaxDefaultRange. A dashboard whose panels bucket by day declares "7d";
 	// without it a renderer opens on its own default (an hour, in the console).
 	// A renderer with fixed presets rounds up to the nearest one.
-	DefaultRange string  `json:"defaultRange,omitempty"`
-	Panels       []Panel `json:"panels"`
+	DefaultRange string `json:"defaultRange,omitempty"`
+	// DefaultCompare is the comparison the dashboard opens with when the
+	// viewer picked none (see CompareMode); empty opens with none. A viewer
+	// can still turn it off. A dashboard of headline figures declares
+	// ComparePeriod, so each figure opens beside its change.
+	DefaultCompare CompareMode `json:"defaultCompare,omitempty"`
+	Panels         []Panel     `json:"panels"`
 }
 
 // MaxDefaultRange bounds Dashboard.DefaultRange: the longest range a

@@ -51,10 +51,15 @@ Process RPC procedure filters target metric RPC panels only; RPC service/method
 filters target trace drilldowns. Runtime and workload panels are unaffected.
 Metrics carry the canonical full `procedure`, not invented RPC attributes.
 
-Optional generic viewer metadata: `sections: [{id, title}]` on a dashboard,
-`section` on panels, and `panelIds` on filters. Empty/absent targets retain the
-original global behavior; every non-empty target and section must be declared.
-Sections are presentation groups, not authorization or implicit filter scope.
+Optional generic viewer metadata: `sections: [{id, title, description}]` on a
+dashboard, `section` on panels, and `panelIds` on filters. Empty/absent targets
+retain the original global behavior; every non-empty target and section must be
+declared. Sections are presentation groups, not authorization or implicit filter
+scope. The console draws each section's `title` as a heading across the grid,
+its `description` (optional, at most 500 bytes) under it, and the section's
+panels below: the unsectioned panels first, then the sections in the order the
+dashboard declares them, each section's panels in their declared order. A
+viewer can hide a section from its heading.
 HyperDX cannot target a filter to a subset of tiles, so it omits those dropdowns
 rather than silently applying them globally.
 
@@ -64,7 +69,11 @@ picked none. A `sql` panel whose statement groups by a fixed bucket
 (`toDate`, `toStartOfWeek`) rather than by `{step}` declares `minStep` (`"1d"`):
 a range shorter than two such buckets draws one point, so the console widens
 that panel's range to hold two and says so. Prefer `{step}` in the statement
-when the panel can follow the range.
+when the panel can follow the range. `defaultCompare` on a dashboard
+(`"period"`, or `"release"`, which needs one selected environment) is the
+comparison it opens with: a dashboard of headline figures declares `"period"`,
+so each figure opens beside its change against the previous period. The viewer
+can turn it off.
 
 `scope` on a dashboard is one of `"project"` (the default), `"org"` or `"platform"`. `project` reads the environments selected within the route's project. `org` reads every project of the organization, still narrowed to the selected environments. `platform` says the signals are platform or infrastructure telemetry that belongs to no environment (a database, a message bus, a collector): it carries no `reliant.env.id`, so an environment filter would match nothing, and a reader drops that one predicate and nothing else. The scope is a statement about the data, not an access grant; who may read it, and from which organization's data, stays the reader's decision. Most projects never set it.
 
@@ -151,8 +160,9 @@ ship a panel that reads one to a control plane older than the forge that added
 them.
 
 Postgres panels (a live read-only query of your own database), `link`,
-`browse`, `text` panels (Markdown) and `display` (area, stacked, bars, pie, donut, gauge and
-funnel pictures of the same query) are in `observability/dashboards/panels`.
+`browse`, `text` panels (Markdown), `display` (area, stacked, bars, pie, donut, gauge,
+funnel and heatmap pictures of the same query), palette colours per series (`color`,
+`colors`) and sparklines on sql figures (`trendSql`) are in `observability/dashboards/panels`.
 
 A `table` or `number` series may carry `thresholds: {good, poor}`
 to grade its value like Core Web Vitals do; renderers that cannot colour ignore

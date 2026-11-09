@@ -70,17 +70,24 @@ func TestProductUsageSQLOnClickHouse(t *testing.T) {
 	}
 
 	end := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
-	run := func(id string, env string) string {
+	statement := func(id string, trend bool) string {
 		t.Helper()
-		var p Panel
 		for _, q := range BuildProductUsage("shop").Panels {
+			if q.ID == id && trend {
+				return q.TrendSQL
+			}
 			if q.ID == id {
-				p = q
+				return q.SQL
 			}
 		}
+		t.Fatalf("no panel %s", id)
+		return ""
+	}
+	runSQL := func(sql string, env string) string {
+		t.Helper()
 		sc := obsquery.Scope{Database: "t_org_a", Start: end.Add(-30 * 24 * time.Hour), End: end,
 			EnvRestricted: true, EnvIDs: []string{env}, Envs: []obsquery.Env{{ID: env, Name: env}}}
-		st, err := obsquery.SQLPanel{Scope: sc, SQL: p.SQL, StepSeconds: 86400}.Compile()
+		st, err := obsquery.SQLPanel{Scope: sc, SQL: sql, StepSeconds: 86400}.Compile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,6 +97,8 @@ func TestProductUsageSQLOnClickHouse(t *testing.T) {
 		}
 		return exec1(st.SQL, args...)
 	}
+	run := func(id, env string) string { t.Helper(); return runSQL(statement(id, false), env) }
+	trend := func(id, env string) string { t.Helper(); return runSQL(statement(id, true), env) }
 
 	for id, want := range map[string]string{
 		// dau = u1, u2; wau adds nobody (u1 again); mau adds u3.
@@ -124,12 +133,13 @@ func TestProductUsageSQLOnClickHouse(t *testing.T) {
 	// u2's is this week (its event 105 days back is outside the first-seen
 	// window, so it neither moves u2's cohort nor drops it), so every later
 	// week is.
+	// Each row is named by its cohort and size, and its cells are fractions.
 	ret := strings.Split(run("weekly-retention", "e1"), "\n")
 	if len(ret) != 3 {
 		t.Fatalf("weekly-retention = %q, want 3 cohorts", ret)
 	}
-	if !strings.HasPrefix(ret[0], "2026-02-23\t1\t0\t0\t0\t") || !strings.HasPrefix(ret[1], "2026-03-02\t1\t100\t100\t\\N\t") ||
-		!strings.HasPrefix(ret[2], "2026-03-16\t1\t\\N\t") {
+	if !strings.HasPrefix(ret[0], "2026-02-23 · 1 user\t0\t0\t0\t") || !strings.HasPrefix(ret[1], "2026-03-02 · 1 user\t1\t1\t\\N\t") ||
+		!strings.HasPrefix(ret[2], "2026-03-16 · 1 user\t\\N\t") || strings.Count(ret[0], "\t") != retentionWeeks-1 {
 		t.Errorf("weekly-retention =\n%s", strings.Join(ret, "\n"))
 	}
 
@@ -149,9 +159,63 @@ func TestProductUsageSQLOnClickHouse(t *testing.T) {
 		t.Errorf("records-by-entity =\n%s", got)
 	}
 
-	// Every other panel runs; another environment sees none of e1's events.
+	// The figures' trends: one row per UTC day with data, the figure's own
+	// measure over that day (or the window ending on it).
+	for id, want := range map[string]string{
+		"dau":             "2026-02-24\t1\n2026-03-07\t1\n2026-03-13\t1\n2026-03-16\t2",
+		"events":          "2026-02-24\t1\n2026-03-07\t1\n2026-03-13\t1\n2026-03-16\t8",
+		"records-written": "2026-02-24\t1\n2026-03-07\t1\n2026-03-16\t5",
+		// u3 on 2026-02-24, u1 on 2026-03-07, u2 today.
+		"new-users": "2026-02-24\t1\n2026-03-07\t1\n2026-03-16\t1",
+	} {
+		if got := trend(id, "e1"); got != want {
+			t.Errorf("%s trend =\n%s\nwant\n%s", id, got, want)
+		}
+	}
+	// The rolling windows: every day of the range a window still holds
+	// someone. On the last day WAU holds u1 and u2; MAU adds u3 (seen
+	// 2026-02-24, inside 30 days); stickiness is today's 2 of those 3.
+	for id, last := range map[string]string{"wau": "2026-03-16\t2", "mau": "2026-03-16\t3", "stickiness": "2026-03-16\t0.6667"} {
+		got := trend(id, "e1")
+		if !strings.HasSuffix(got, last) {
+			t.Errorf("%s trend ends\n%s\nwant it to end %q", id, got, last)
+		}
+		if strings.Contains(got, "2026-02-13") || strings.Contains(got, "2026-03-17") {
+			t.Errorf("%s trend has a day outside the range:\n%s", id, got)
+		}
+	}
+	// The rolling trends' calendar days: over a range from noon on 2026-03-02
+	// to midnight on 2026-03-17, the first day's 7-day window starts at
+	// midnight six days earlier, so u3's 09:00 event on 2026-02-24 counts; and
+	// no point is drawn for 2026-03-17, the day the range ends on.
+	ranged := func(id string, start, stop time.Time) string {
+		t.Helper()
+		sc := obsquery.Scope{Database: "t_org_a", Start: start, End: stop,
+			EnvRestricted: true, EnvIDs: []string{"e1"}, Envs: []obsquery.Env{{ID: "e1", Name: "e1"}}}
+		st, err := obsquery.SQLPanel{Scope: sc, SQL: statement(id, true), StepSeconds: 86400}.Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var args []string
+		for k, v := range st.Params {
+			args = append(args, "--param_"+k+"="+v)
+		}
+		return exec1(st.SQL, args...)
+	}
+	wau := ranged("wau", time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC), time.Date(2026, 3, 17, 0, 0, 0, 0, time.UTC))
+	if !strings.HasPrefix(wau, "2026-03-02\t1\n") || !strings.HasSuffix(wau, "2026-03-16\t2") || strings.Contains(wau, "2026-03-17") {
+		t.Errorf("wau trend over a noon start and a midnight end =\n%s\nwant 2026-03-02 holding u3's early event first, 2026-03-16 last", wau)
+	}
+	if got := trend("events-per-user", "e1"); !strings.HasSuffix(got, "2026-03-16\t4") {
+		t.Errorf("events-per-user trend ends\n%s\nwant 8 events over 2 users today", got)
+	}
+
+	// Every other panel and trend runs; another environment sees none of e1's events.
 	for _, p := range BuildProductUsage("shop").Panels {
 		run(p.ID, "e1")
+		if p.TrendSQL != "" {
+			trend(p.ID, "e1")
+		}
 	}
 	if got := run("events-by-name", "e2"); got != "order_item_created\t1\t0" {
 		t.Errorf("events-by-name in e2 = %q, want only e2's event", got)

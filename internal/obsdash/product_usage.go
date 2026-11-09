@@ -61,13 +61,38 @@ const (
 )
 
 // The sections of the Product usage dashboard, in the order its panels run.
-// They are viewer toggles: a console lets the reader hide one.
+// A console draws each as a heading over its panels, and lets the reader hide
+// one.
 var productUsageSections = []Section{
-	{ID: "glance", Title: "At a glance"},
-	{ID: "users", Title: "Users"},
-	{ID: "activity", Title: "What users do"},
-	{ID: "retention", Title: "Retention"},
+	{ID: "glance", Title: "At a glance",
+		Description: "The headline figures, each beside its change against the previous period and its trend across the range."},
+	{ID: "users", Title: "Users",
+		Description: "Who is active, how many of them are new, and who uses the product most."},
+	{ID: "activity", Title: "What users do",
+		Description: "The records people write through the generated CRUD handlers, the pages they view and the events they send."},
+	{ID: "retention", Title: "Retention",
+		Description: "Whether people come back: each weekly cohort's share active again in the weeks after its first."},
 }
+
+// The colours the dashboard gives each thing it counts, so one concept reads
+// as one colour on every panel: active users blue, the rolling windows cyan
+// and violet, new users amber, events fuchsia, anonymous visitors slate (a
+// neutral), and the CRUD actions three distinct hues (deleting is not an
+// error, so not danger).
+const (
+	colorActive    = dashspec.ColorBlue
+	colorWeekly    = dashspec.ColorCyan
+	colorMonthly   = dashspec.ColorViolet
+	colorNew       = dashspec.ColorAmber
+	colorEvents    = dashspec.ColorFuchsia
+	colorAnonymous = dashspec.ColorSlate
+	colorCreated   = dashspec.ColorCyan
+	colorUpdated   = dashspec.ColorViolet
+	colorDeleted   = dashspec.ColorAmber
+)
+
+// signedInColors colours the charts that split signed-in against anonymous.
+var signedInColors = map[string]dashspec.ChartColor{"Signed in": colorActive, "Anonymous": colorAnonymous}
 
 // BuildProductUsage is the "Product usage" dashboard: who uses the product and
 // what they do, over the hosted product_events table. Every panel is a sql
@@ -94,20 +119,26 @@ func BuildProductUsage(project string) Dashboard {
 		Description: "Who uses the product and what they do, from product events: active users, new against returning, " +
 			"weekly retention, the pages people view and the records they create, update and delete. " +
 			"CRUD events are emitted automatically by the generated handlers (signals.product_events = False turns them off); " +
-			"page_viewed comes from the browser runtime. Turn on Compare to see each headline figure against the previous period. " +
+			"page_viewed comes from the browser runtime. Each headline figure opens beside its change against the previous period. " +
 			"Hosted environments only: a local forge env up has no product_events table.",
 		Group:    GroupProduct,
 		Filters:  commonFilters(),
 		Sections: productUsageSections,
 		// Daily buckets and a 30-day MAU: an hour would draw one point.
 		DefaultRange: "30d",
+		// A dashboard of headline figures: each opens beside its change.
+		DefaultCompare: dashspec.ComparePeriod,
 	}
 	const daily = "1d"
-	stackedBars := &dashspec.Display{Style: dashspec.StyleBars, Stack: true}
-	area := &dashspec.Display{Style: dashspec.StyleArea}
+	stackedBars := func(colors map[string]dashspec.ChartColor) *dashspec.Display {
+		return &dashspec.Display{Style: dashspec.StyleBars, Stack: true, Colors: colors}
+	}
 
-	figure := func(id, title, desc, sql string, unit Unit) Panel {
-		return Panel{Section: "glance", ID: id, Title: title, Description: desc, Kind: KindSQL, SQL: sql, Unit: unit, Width: 6, Height: 4}
+	// A headline figure: one row of one value, its trend across the range
+	// drawn under it as a sparkline, in the colour of what it counts.
+	figure := func(id, title, desc, sql, trend string, unit Unit, color dashspec.ChartColor) Panel {
+		return Panel{Section: "glance", ID: id, Title: title, Description: desc, Kind: KindSQL, SQL: sql, TrendSQL: trend, Unit: unit,
+			Display: &dashspec.Display{Color: color}, Width: 6, Height: 4}
 	}
 	chart := func(section, id, title, desc, sql string, display *dashspec.Display) Panel {
 		return Panel{Section: section, ID: id, Title: title, Description: desc, Kind: KindSQL, SQL: sql, Display: display, Width: 12, Height: 9}
@@ -117,54 +148,69 @@ func BuildProductUsage(project string) Dashboard {
 		fmt.Sprintf("Each day's active users in exactly one class: new on the day of their first event, returning after it. "+
 			"First-seen is the first event in the %d days before the end of the range (or since the start of a longer range), "+
 			"so a user idle for longer than that counts as new again on their return.", firstSeenDays),
-		newVsReturningSQL, stackedBars)
+		newVsReturningSQL, stackedBars(map[string]dashspec.ChartColor{"New": colorNew, "Returning": colorActive}))
 	newVsReturning.MinStep = daily
 	activeOverTime := chart("users", "active-users-over-time", "Active users",
 		"Distinct signed-in users per UTC day, and over the 7 days ending that day (the rolling weekly active users), drawn as areas.",
-		activeUsersOverTimeSQL, area)
+		activeUsersOverTimeSQL, &dashspec.Display{Style: dashspec.StyleArea,
+			Colors: map[string]dashspec.ChartColor{"Weekly active (rolling 7 days)": colorWeekly, "Daily active": colorActive}})
 	activeOverTime.MinStep = daily
 	retentionCurve := chart("retention", "retention-curve", "Retention by cohort: weeks 1, 2, 4 and 8",
 		fmt.Sprintf("For each weekly cohort (users by the Monday, UTC, of their first event, the %d weeks before the end of the range), "+
 			"the share active again 1, 2, 4 and 8 weeks later. A week that has not happened yet is a gap, not a drop.", retentionWeeks),
-		retentionCurveSQL(), nil)
+		retentionCurveSQL(), &dashspec.Display{Colors: map[string]dashspec.ChartColor{
+			"Week 1": dashspec.ColorBlue, "Week 2": dashspec.ColorCyan, "Week 4": dashspec.ColorViolet, "Week 8": dashspec.ColorFuchsia}})
 	retentionCurve.Unit = UnitPercent
 	retentionCurve.MinStep = "7d"
+	retentionCurve.Width, retentionCurve.Height = 24, 8
+	retentionGrid := chart("retention", "weekly-retention", "Weekly retention by cohort",
+		fmt.Sprintf("One row per weekly cohort: users grouped by the week (Monday, UTC) of their first event, over the %d weeks before the end of the range "+
+			"(whatever range is selected), with the cohort's size. Each cell is the share of the cohort active again N weeks later (W1 is the week after the cohort's), "+
+			"darker for more. A week that has not happened yet is empty. A user's first event is their first in the %d days before the end of the range, "+
+			"so one idle for longer joins the cohort of their return.", retentionWeeks, firstSeenDays),
+		weeklyRetentionSQL(), &dashspec.Display{Style: dashspec.StyleHeatmap, Color: colorActive})
+	retentionGrid.Unit = UnitPercent
+	retentionGrid.Width, retentionGrid.Height = 24, 11
+	// Entities are the project's own, so their colours are dealt by rank.
 	entityTimeline := chart("activity", "records-by-entity", "Records written per entity",
 		"The automatic CRUD product events (creates, updates and deletes together), one colour per entity, stacked: the top edge is every write.",
 		recordsByEntitySQL, &dashspec.Display{Style: dashspec.StyleBars, Stack: true, TopN: 12})
 
 	d.Panels = []Panel{
-		figure("dau", "Daily active users", "Distinct signed-in users with any product event in the 24 hours before the end of the range.", dauSQL, UnitCount),
-		figure("wau", "Weekly active users", "Distinct signed-in users with any product event in the 7 days before the end of the range.", wauSQL, UnitCount),
-		figure("mau", "Monthly active users", "Distinct signed-in users with any product event in the 30 days before the end of the range.", mauSQL, UnitCount),
-		figure("stickiness", "Stickiness (DAU / MAU)", "The share of the month's active users who were active in the last day: how habitual the product is.", stickinessSQL, UnitPercent),
-		figure("new-users", "New users", fmt.Sprintf("Signed-in users whose first event (within the %d days before the end of the range) falls in the range.", firstSeenDays), newUsersSQL, UnitCount),
-		figure("events", "Events", "Every product event in the range, automatic or tracked by the app, signed in or anonymous.", eventsSQL, UnitCount),
-		figure("events-per-user", "Events per active user", "Product events in the range over the signed-in users active in it.", eventsPerUserSQL, ""),
-		figure("records-written", "Records written", "Creates, updates and deletes through the generated CRUD handlers in the range.", recordsWrittenSQL, UnitCount),
+		figure("dau", "Daily active users", "Distinct signed-in users with any product event in the 24 hours before the end of the range; the trend is each UTC day's.",
+			dauSQL, dauTrendSQL, UnitCount, colorActive),
+		figure("wau", "Weekly active users", "Distinct signed-in users with any product event in the 7 days before the end of the range; the trend is the 7 days ending each UTC day.",
+			wauSQL, rollingActiveTrendSQL(7, "Weekly active users"), UnitCount, colorWeekly),
+		figure("mau", "Monthly active users", "Distinct signed-in users with any product event in the 30 days before the end of the range; the trend is the 30 days ending each UTC day.",
+			mauSQL, rollingActiveTrendSQL(30, "Monthly active users"), UnitCount, colorMonthly),
+		figure("stickiness", "Stickiness (DAU / MAU)", "The share of the month's active users who were active in the last day: how habitual the product is. The trend is each UTC day's.",
+			stickinessSQL, stickinessTrendSQL, UnitPercent, colorMonthly),
+		figure("new-users", "New users", fmt.Sprintf("Signed-in users whose first event (within the %d days before the end of the range) falls in the range; the trend is each UTC day's.", firstSeenDays),
+			newUsersSQL, newUsersTrendSQL, UnitCount, colorNew),
+		figure("events", "Events", "Every product event in the range, automatic or tracked by the app, signed in or anonymous.",
+			eventsSQL, eventsTrendSQL, UnitCount, colorEvents),
+		figure("events-per-user", "Events per active user", "Product events in the range over the signed-in users active in it; the trend is each UTC day's.",
+			eventsPerUserSQL, eventsPerUserTrendSQL, "", colorEvents),
+		figure("records-written", "Records written", "Creates, updates and deletes through the generated CRUD handlers in the range.",
+			recordsWrittenSQL, recordsWrittenTrendSQL, UnitCount, colorCreated),
 
 		activeOverTime,
 		newVsReturning,
-
-		entityTimeline,
-		chart("activity", "actions-per-entity", "Creates, updates and deletes per entity",
-			"The CRUD mix of each entity in the range: one bar per entity, a colour per action.", actionsPerEntitySQL, stackedBars),
-		chart("activity", "top-pages", "Top pages",
-			"page_viewed events by route, signed-in views against anonymous ones.", topPagesSQL, stackedBars),
-		chart("activity", "events-by-name", "Events by name",
-			"The most frequent product events in the range, automatic or tracked by the app, signed in against anonymous.", eventsByNameSQL, stackedBars),
-
-		retentionCurve,
-		chart("retention", "weekly-retention", "Weekly retention by cohort (% active)",
-			fmt.Sprintf("Users grouped by the week (Monday, UTC) of their first event, over the %d weeks before the end of the range "+
-				"(whatever range is selected), and the percentage active again N weeks later (W1 is the week after the cohort's). "+
-				"A week that has not happened yet is empty. A user's first event is their first in the %d days before the end of the range, "+
-				"so one idle for longer joins the cohort of their return.", retentionWeeks, firstSeenDays),
-			weeklyRetentionSQL(), nil),
-
 		{Section: "users", ID: "most-active-users", Title: "Most active users",
 			Description: "Signed-in users by product events in the range, with the days they were active and when they were last seen.",
 			Kind:        KindSQL, SQL: mostActiveUsersSQL, Width: 24, Height: 9},
+
+		entityTimeline,
+		chart("activity", "actions-per-entity", "Creates, updates and deletes per entity",
+			"The CRUD mix of each entity in the range: one bar per entity, a colour per action.", actionsPerEntitySQL,
+			stackedBars(map[string]dashspec.ChartColor{"Created": colorCreated, "Updated": colorUpdated, "Deleted": colorDeleted})),
+		chart("activity", "top-pages", "Top pages",
+			"page_viewed events by route, signed-in views against anonymous ones.", topPagesSQL, stackedBars(signedInColors)),
+		chart("activity", "events-by-name", "Events by name",
+			"The most frequent product events in the range, automatic or tracked by the app, signed in against anonymous.", eventsByNameSQL, stackedBars(signedInColors)),
+
+		retentionGrid,
+		retentionCurve,
 	}
 	return d
 }
@@ -204,6 +250,71 @@ WHERE ` + productScope
 FROM product_events
 WHERE match(EventName, ` + crudEventRE + `) AND ` + productScope
 )
+
+// The headline figures' trends: one point per UTC day of the range, in the
+// figure's own column name, each the same measure as the figure over that day
+// (or the window ending on it).
+const (
+	dauTrendSQL = `SELECT toDate(Timestamp) AS day, uniqExact(UserId) AS "Daily active users"
+FROM product_events
+WHERE ` + activeUserScope + `
+GROUP BY day ORDER BY day`
+
+	eventsTrendSQL = `SELECT toDate(Timestamp) AS day, count() AS "Events"
+FROM product_events
+WHERE ` + productScope + `
+GROUP BY day ORDER BY day`
+
+	eventsPerUserTrendSQL = `SELECT toDate(Timestamp) AS day, round(count() / nullIf(uniqExactIf(UserId, UserId != ''), 0), 1) AS "Events per active user"
+FROM product_events
+WHERE ` + productScope + `
+GROUP BY day ORDER BY day`
+
+	recordsWrittenTrendSQL = `SELECT toDate(Timestamp) AS day, count() AS "Records written"
+FROM product_events
+WHERE match(EventName, ` + crudEventRE + `) AND ` + productScope + `
+GROUP BY day ORDER BY day`
+)
+
+// rollingSQL is one row per UTC day of the range over each signed-in user's
+// active days in the window of days ending that day: every (user, day seen)
+// counts toward that day and the days-1 after it. The read starts at the
+// start of the day days-1 days before the range's first day (whatever the
+// start's time of day, so the first day's window is whole), and a day is drawn
+// only when it starts before the range's exclusive end (a range ending at
+// midnight draws no point for the day it ends on). offset 0 is the day itself.
+func rollingSQL(days int, columns string) string {
+	return fmt.Sprintf(`SELECT addDays(seen, offset) AS day, %s
+FROM (
+    SELECT DISTINCT UserId, toDate(Timestamp) AS seen
+    FROM product_events
+    WHERE UserId != '' AND Timestamp >= toStartOfDay({from:DateTime64(9)}) - INTERVAL %d DAY AND Timestamp < {to:DateTime64(9)} AND %s
+)
+ARRAY JOIN range(%d) AS offset
+WHERE day >= toDate({from:DateTime64(9)}) AND toDateTime(day) < {to:DateTime64(9)}
+GROUP BY day ORDER BY day`, columns, days-1, productFilterScope, days)
+}
+
+// rollingActiveTrendSQL is the distinct users active in the days ending each
+// day: WAU's trend at 7, MAU's at 30.
+func rollingActiveTrendSQL(days int, column string) string {
+	return rollingSQL(days, fmt.Sprintf("uniqExact(UserId) AS %q", column))
+}
+
+// stickinessTrendSQL is each day's active users over the 30 days ending it.
+var stickinessTrendSQL = rollingSQL(30, `round(uniqExactIf(UserId, offset = 0) / nullIf(uniqExact(UserId), 0), 4) AS "DAU / MAU"`)
+
+// newUsersTrendSQL is each day's users first seen that day, by the same
+// first-seen rule as the figure.
+var newUsersTrendSQL = `SELECT toDate(first_seen) AS day, count() AS "New users"
+FROM (
+    SELECT UserId, min(Timestamp) AS first_seen
+    FROM product_events
+    WHERE UserId != '' AND ` + firstSeenScope + ` AND ` + productFilterScope + `
+    GROUP BY UserId
+)
+WHERE first_seen >= {from:DateTime64(9)}
+GROUP BY day ORDER BY day`
 
 // newUsersSQL counts the users first seen in the range, by the same first-seen
 // rule as new-vs-returning.
@@ -269,15 +380,18 @@ func retained(w, scale, digits int) string {
 	return fmt.Sprintf("if(cohort + INTERVAL %d WEEK <= toMonday({to:DateTime64(9)}), round(%d * countIf(has(weeks, cohort + INTERVAL %d WEEK)) / count(), %d), NULL)", w, scale, w, digits)
 }
 
-// weeklyRetentionSQL is one row per weekly cohort with the cohort's size and,
-// for each later week, the percentage of the cohort active in it.
+// weeklyRetentionSQL is one row per weekly cohort, named by its week and its
+// size, and for each later week the share of the cohort active in it (a
+// fraction; the panel's unit is percent), drawn as a heatmap.
 func weeklyRetentionSQL() string {
 	var weeks strings.Builder
 	for w := 1; w < retentionWeeks; w++ {
-		fmt.Fprintf(&weeks, ",\n       %s AS \"W%d\"", retained(w, 100, 1), w)
+		fmt.Fprintf(&weeks, ",\n       %s AS \"W%d\"", retained(w, 1, 4), w)
 	}
-	// The cohort is text so the rows read as a table, not as a time series.
-	return `SELECT toString(cohort) AS "Cohort (week of)", count() AS "Users"` + weeks.String() + "\n" + cohortsFrom
+	// The cohort is text, so the rows are a heatmap's rows rather than a time
+	// series; its size rides in the label, so every numeric column is a week.
+	return `SELECT concat(toString(cohort), ' · ', toString(count()), if(count() = 1, ' user', ' users')) AS "Cohort (week of)"` +
+		weeks.String() + "\n" + cohortsFrom
 }
 
 // retentionWeeksDrawn are the weeks the retention curve draws.

@@ -12,7 +12,6 @@ import (
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclrender"
-	"github.com/reliant-labs/forge/internal/releasecompose"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -357,23 +356,14 @@ func sealComposition(ctx context.Context, cfg *config.ProjectConfig, entities *K
 	if sealsDeclaredEnvs(opts.release, run.Ledger, reader) {
 		input.DeclaredEnvs = declaredEnvCatalogFn(ctx, projectDirForKCL(), os.Stderr)
 	}
-	candidate, err = bundle.SnapshotInventory(pinned, input, candidate)
-	if err != nil {
-		return err
-	}
-	if err := captureSnapshotFrontends(ctx, &candidate, run.BaseSnapshot, compositionFrontendEntities(run, entities), projectDirForKCL(), opts.env); err != nil {
-		return err
-	}
 	var ref *release.SnapshotBase
 	if run.BaseSnapshot != nil {
 		ref = &release.SnapshotBase{PromotionID: run.Base.ID, SnapshotDigest: run.Base.SnapshotDigest, BundleDigest: run.Base.BundleDigest}
 	}
-	composed, err := releasecompose.Compose(releasecompose.Input{Base: run.BaseSnapshot, Candidate: candidate, BaseRef: ref, Selected: run.Selected})
-	if err != nil {
-		return err
-	}
-	input.Snapshot = &composed
-	built, err := bundle.Build(ctx, input)
+	composed, built, err := buildFullSnapshot(pinned, fullSnapshotInput{
+		Candidate: candidate, Bundle: input, Base: run.BaseSnapshot, BaseRef: ref, Selected: run.Selected,
+		Frontends: compositionFrontendEntities(run, entities), ProjectDir: projectDirForKCL(), Env: opts.env,
+	})
 	if err != nil {
 		return err
 	}

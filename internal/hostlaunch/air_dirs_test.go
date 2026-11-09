@@ -31,7 +31,11 @@ tmp_dir = "tmp/admin-server"
 `)
 	write("defaults.toml", "[build]\n  cmd = \"go build -o ./bin/out/acme ./cmd/acme\"\n  entrypoint = [\"./build/acme\", \"server\"]\n")
 	write("rooted.toml", "root = \"svc\"\ntmp_dir = \"tmp/x\"\n[build]\n  entrypoint = [\"app\"]\n")
-	write("outside.toml", "tmp_dir = \"/elsewhere/tmp\"\n[build]\n  bin = \"../sibling/bin/app\"\n  cmd = \"go build -o=./dist/app . && cp -o x y\"\n")
+	// An absolute path on this OS ("/elsewhere" is drive-relative on
+	// Windows, which air joins under root), as a TOML literal string so a
+	// Windows path's backslashes need no escaping.
+	elsewhere := filepath.Join(filepath.Dir(dir), "elsewhere", "tmp")
+	write("outside.toml", "tmp_dir = '"+elsewhere+"'\n[build]\n  bin = \"../sibling/bin/app\"\n  cmd = \"go build -o=./dist/app . && cp -o x y\"\n")
 	write("broken.toml", "[build\n")
 
 	for _, tc := range []struct {

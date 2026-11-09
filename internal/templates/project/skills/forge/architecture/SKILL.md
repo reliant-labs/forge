@@ -150,25 +150,7 @@ Declaring a root named `server` keeps the `server` command; once any root is dec
 
 ### Checking the whole graph, and what each node knows
 
-`forge lint --graph` fails on a node no root reaches (resolution is scoped by reach, so a project declares its roots one at a time) and on a service whose audience its listener's authenticator does not serve. `forge lint --conventions` reads each component's `Deps` against what it calls (least knowledge), and `forge fix narrow-deps` narrows a field. A pre-graph project keeps `Infra` + `NewComponents` until `forge fix composition-graph`. The rules, severities and the migration path: load `architecture/graph-checks`.
-
-## Construction failure ownership (opt-in)
-
-Generated `app.Graph` exposes `ConstructionRollbackTimeout`. Zero preserves
-legacy `Build` behavior. A positive duration opts into
-`graphkit.Builder.BuildWithRollback`: on construction error/cancellation,
-successfully acquired nodes are Closed in reverse completion order under one
-fresh timeout context, independent of the canceled boot context. Close must
-honor that context, just as under normal supervision. No Run or Drain is called
-before startup. Constructors still clean their own partial resource if they
-return an error; only successful acquisitions are registered.
-
-Rollback preserves the build error and joins cleanup errors. A rolled-back graph
-is terminal; do not retry or use its memoized resources. Success transfers
-ownership to Supervise, whose normal reverse shutdown closes resources once.
-`Builder.Rollback(timeout)` covers errors between successful Build and supervision
-and is a no-op after transfer. The generated root run path uses that seam for
-pre-supervision failures too. Legacy Build callers are unchanged.
+`forge lint --graph` fails on a node no root reaches (resolution is scoped by reach, so a project declares its roots one at a time) and on a service whose audience its listener's authenticator does not serve. `forge lint --conventions` reads each component's `Deps` against what it calls (least knowledge), and `forge fix narrow-deps` narrows a field. A pre-graph project keeps `Infra` + `NewComponents` until `forge fix composition-graph`. The rules, severities, migration path and construction rollback: load `architecture/graph-checks`.
 
 ## Files NOT to Edit
 

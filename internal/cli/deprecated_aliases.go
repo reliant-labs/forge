@@ -352,13 +352,25 @@ func legacyArgs(args []string) (out []string, rewritten bool) {
 	return out, true
 }
 
-// commandWordIndexes are the positions in args of the words that are neither
-// a flag nor the value of one of forge's global flags, up to `--`. A command's
-// own flags come after its path, so the leading words are the path.
+// commandWordIndexes are the positions in args of the command path's words,
+// resolved against this forge's command tree the way cobra resolves it: at
+// each level a flag (the command's own or one it inherits) that takes a value
+// consumes the next argument, and the path ends at `--` or at the first word
+// that is not a subcommand of the command reached so far. So neither a flag's
+// value (`--username alice`) nor an operand is mistaken for a path word, and
+// a path word after a flag (`cloud -C x registry`) is still found. A flag the
+// tree does not know is taken to stand alone: this forge cannot know its
+// arity.
 func commandWordIndexes(args []string) []int {
-	globals := pflag.NewFlagSet("forge", pflag.ContinueOnError)
-	var dir string
-	addGlobalFlags(globals, &dir)
+	c := commandTree()
+	flagsOf := func(c *cobra.Command) *pflag.FlagSet {
+		fs := pflag.NewFlagSet(c.Name(), pflag.ContinueOnError)
+		fs.AddFlagSet(c.Flags())
+		fs.AddFlagSet(c.PersistentFlags())
+		fs.AddFlagSet(c.InheritedFlags())
+		return fs
+	}
+	fs := flagsOf(c)
 	takesValue := func(f *pflag.Flag) bool { return f != nil && f.NoOptDefVal == "" }
 	var idx []int
 	for i := 0; i < len(args); i++ {
@@ -367,18 +379,41 @@ func commandWordIndexes(args []string) []int {
 		case a == "--":
 			return idx
 		case strings.HasPrefix(a, "--"):
-			if !strings.Contains(a, "=") && takesValue(globals.Lookup(strings.TrimPrefix(a, "--"))) {
+			if !strings.Contains(a, "=") && takesValue(fs.Lookup(strings.TrimPrefix(a, "--"))) {
 				i++
 			}
 		case strings.HasPrefix(a, "-") && len(a) > 1:
-			if len(a) == 2 && takesValue(globals.ShorthandLookup(a[1:])) {
+			if len(a) == 2 && takesValue(fs.ShorthandLookup(a[1:])) {
 				i++
 			}
 		default:
+			next := subcommandNamed(c, a)
+			if next == nil {
+				return idx
+			}
 			idx = append(idx, i)
+			c, fs = next, flagsOf(next)
 		}
 	}
 	return idx
+}
+
+// commandTree builds this forge's command tree for commandWordIndexes. It is
+// assigned in init: NewRootCmd reaches commandWordIndexes through the
+// commands' package-level run tables, so a direct reference would be an
+// initialization cycle.
+var commandTree func() *cobra.Command
+
+func init() { commandTree = NewRootCmd }
+
+// subcommandNamed is c's subcommand called, or aliased, name; nil if none.
+func subcommandNamed(c *cobra.Command, name string) *cobra.Command {
+	for _, child := range c.Commands() {
+		if child.Name() == name || child.HasAlias(name) {
+			return child
+		}
+	}
+	return nil
 }
 
 // deprecatedPathFor is the row whose Old path rel is, or lies under, when

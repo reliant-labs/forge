@@ -375,7 +375,7 @@ from an empty directory to authored protos, in one call.`,
 }
 
 // addGlobalFlags registers forge's global flags on fs: the root's persistent
-// flags, and the one definition commandWordIndexes reads their arity from.
+// flags.
 func addGlobalFlags(fs *pflag.FlagSet, projectDir *string) {
 	fs.StringVarP(projectDir, "project-dir", "C", "", "resolve the project from this directory instead of the current one")
 }

@@ -140,9 +140,7 @@ func TestCommandMovesTableIsWellFormed(t *testing.T) {
 
 // Phase 1: every old spelling is still listed, exactly as before.
 func TestOldSpellingsStayVisible(t *testing.T) {
-	if deprecationWarningsEnabled {
-		t.Skip("phase 2: old spellings are hidden on purpose")
-	}
+	setDeprecationPhase(t, false)
 	root := newTestRootCmd(t)
 	for _, m := range commandMoves() {
 		for c := findRel(root, m.Old); c != nil && c != root; c = c.Parent() {
@@ -201,6 +199,13 @@ func TestLegacyArgs(t *testing.T) {
 		rewritten bool
 	}{
 		{"cloud registry login --json", "registry login --json", true},
+		// A command's own flag value is not a path word, wherever it sits.
+		{"cloud registry login --username alice", "registry login --username alice", true},
+		{"cloud registry login --username cloud", "registry login --username cloud", true},
+		{"release list --env prod", "env releases list --env prod", true},
+		{"dev cluster up --name dev", "cluster up --name dev", true},
+		// A group's own persistent flag, between path words.
+		{"machine storage --policy machine gc", "storage --policy machine gc", true},
 		{"-C cloud cloud login", "-C cloud login", true},
 		{"--project-dir=x machine slot status", "--project-dir=x slot status", true},
 		{"cloud -C x registry ref web", "registry -C x ref web", true},
@@ -360,9 +365,7 @@ func TestEnvHelpGroupsEverySubcommand(t *testing.T) {
 // stderr line naming the replacement, silenced by the opt-out, and nothing
 // for the new spelling or a kept alias.
 func TestPhaseTwoDeprecation(t *testing.T) {
-	prev := deprecationWarningsEnabled
-	deprecationWarningsEnabled = true
-	t.Cleanup(func() { deprecationWarningsEnabled = prev })
+	setDeprecationPhase(t, true)
 	t.Setenv(noDeprecationWarningsEnv, "")
 
 	root := newTestRootCmd(t)
@@ -402,13 +405,22 @@ func TestPhaseTwoDeprecation(t *testing.T) {
 
 // Phase 1 prints nothing for an old spelling.
 func TestPhaseOneIsSilent(t *testing.T) {
-	if deprecationWarningsEnabled {
-		t.Skip("phase 2")
-	}
+	setDeprecationPhase(t, false)
+	t.Setenv(noDeprecationWarningsEnv, "")
 	root := newTestRootCmd(t)
 	var buf bytes.Buffer
 	warnDeprecatedPath(findRel(root, "registry login"), root, &buf)
 	if buf.Len() != 0 {
 		t.Errorf("phase 1 warned: %q", buf.String())
 	}
+}
+
+// setDeprecationPhase runs the test in phase 2 (warnings on, old spellings
+// hidden) or phase 1, whichever deprecationWarningsEnabled ships as, so both
+// phases' contracts are checked in every release.
+func setDeprecationPhase(t *testing.T, phaseTwo bool) {
+	t.Helper()
+	prev := deprecationWarningsEnabled
+	deprecationWarningsEnabled = phaseTwo
+	t.Cleanup(func() { deprecationWarningsEnabled = prev })
 }

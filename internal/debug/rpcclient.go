@@ -165,6 +165,18 @@ func (c *rpcClient) detachTimeout(kill bool, d time.Duration) error {
 	return c.callTimeout("Detach", detachIn{kill}, &struct{}{}, d)
 }
 
+// stateNonBlockingTimeout is GetStateNonBlocking with a bound. NonBlocking
+// only spares the wait for Delve's target lock; the transport still waits for
+// a reply, which a wedged server never sends.
+func (c *rpcClient) stateNonBlockingTimeout(d time.Duration) (*api.DebuggerState, error) {
+	var out stateOut
+	if err := c.callTimeout("State", stateIn{NonBlocking: true}, &out, d); err != nil {
+		// A timed-out call may still write out later: never read it.
+		return nil, err
+	}
+	return out.State, nil
+}
+
 // haltTimeout stops a running target; it returns once the target is halted.
 func (c *rpcClient) haltTimeout(d time.Duration) (*api.DebuggerState, error) {
 	var out commandOut

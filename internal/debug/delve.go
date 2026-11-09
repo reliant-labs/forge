@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -424,6 +425,19 @@ var stopSettle = 300 * time.Millisecond
 // resumed again, so a stop already on its way is not skipped. When the
 // timeout elapses it returns ErrStillRunning and the target keeps running.
 func (d *DelveDebugger) ContinueFor(timeout time.Duration) (*StopState, error) {
+	return d.waitForStop(timeout, false)
+}
+
+// WaitForStop is ContinueFor for a target a caller resumed earlier without
+// observing its next stop: it never resumes the target, so a halted target's
+// current stop IS the stop it reports. ContinueFor decides from a state read
+// whether to resume, and a stop landing just before that read would be
+// resumed past.
+func (d *DelveDebugger) WaitForStop(timeout time.Duration) (*StopState, error) {
+	return d.waitForStop(timeout, true)
+}
+
+func (d *DelveDebugger) waitForStop(timeout time.Duration, resumed bool) (*StopState, error) {
 	var deadline <-chan time.Time
 	if timeout > 0 {
 		t := time.NewTimer(timeout)
@@ -433,11 +447,16 @@ func (d *DelveDebugger) ContinueFor(timeout time.Duration) (*StopState, error) {
 	// One client for the whole wait: Stop/Detach on another goroutine nil
 	// d.client, and a closed client fails its calls rather than panicking.
 	c := d.client
-	st, err := c.GetStateNonBlocking()
-	if err != nil {
-		return nil, err
+	// A blocking State returns at once for a halted target, so a resumed
+	// session's wait reads its current stop the same way it waits for one.
+	running := resumed
+	if !running {
+		st, err := c.GetStateNonBlocking()
+		if err != nil {
+			return nil, err
+		}
+		running = st != nil && st.Running
 	}
-	running := st != nil && st.Running
 	for {
 		var (
 			state *api.DebuggerState
@@ -717,9 +736,11 @@ func (d *DelveDebugger) Detach() error {
 	return d.client.detachTimeout(false, rpcTimeout)
 }
 
-// Release hands a dlv server forge did not start back as it found it:
-// every user breakpoint cleared, the target running, the server still up.
-func (d *DelveDebugger) Release() error {
+// Release hands a dlv server forge did not start back as it found it: the
+// breakpoints in ids (the ones this session created) cleared, the target
+// running, the server still up. Every other breakpoint — set before forge
+// connected, or by another client of the multi-client server — is left.
+func (d *DelveDebugger) Release(ids []int) error {
 	if d.client == nil {
 		return errors.New("not connected")
 	}
@@ -732,8 +753,9 @@ func (d *DelveDebugger) Release() error {
 		return fmt.Errorf("listing breakpoints: %w", err)
 	}
 	for _, bp := range bps {
-		// Negative IDs are Delve's own (unrecovered panic, fatal throw).
-		if bp.ID > 0 {
+		// Negative IDs are Delve's own (unrecovered panic, fatal throw). An
+		// id the user already cleared is simply not listed.
+		if bp.ID > 0 && slices.Contains(ids, bp.ID) {
 			if _, err := d.client.ClearBreakpoint(bp.ID); err != nil {
 				return fmt.Errorf("clearing breakpoint %d: %w", bp.ID, err)
 			}
@@ -750,8 +772,11 @@ func (d *DelveDebugger) Disconnect() {
 	}
 }
 
+// haltIfRunning bounds every RPC it makes, the state read included: a dlv
+// that accepts connections but never answers must not hang `forge debug
+// stop` short of its signal fallback.
 func (d *DelveDebugger) haltIfRunning() error {
-	st, err := d.client.GetStateNonBlocking()
+	st, err := d.client.stateNonBlockingTimeout(rpcTimeout)
 	if err != nil {
 		if strings.Contains(err.Error(), "has exited") {
 			return nil

@@ -198,7 +198,7 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 	waitEcho(apiPort)
 
 	// --- attach to env up's api -------------------------------------------
-	out := must(project, "debug", "start", "--attach", strconv.Itoa(apiPID))
+	out := must(project, "debug", "start", "--attach", strconv.Itoa(apiPID), "--run")
 	mustContain(out, "Target is RUNNING", "attach")
 	waitEcho(apiPort) // attached, and still serving
 
@@ -235,7 +235,7 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 
 	// --- start a debug build with env dev's configuration ----------------
 	appPort := freePortE2E(t)
-	out = must(project, "debug", "start", "api", "--app-port", strconv.Itoa(appPort))
+	out = must(project, "debug", "start", "api", "--run", "--app-port", strconv.Itoa(appPort))
 	mustContain(out, `workload "api" of env "dev"`, "start resolves env config")
 	mustContain(out, "Target is RUNNING", "start")
 	mustContain(out, filepath.Join(".forge", "logs", "dev", "debug_api.log"), "start names its program log")

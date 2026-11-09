@@ -48,7 +48,7 @@ Code reading ranks hypotheses; runtime evidence confirms them. The fast forge to
 - **`forge project introspect handlers`** — localize: if the failing RPC isn't in the assembled binary's list, the fault is a downstream/remote hop, not this code. This often kills several hypotheses at once.
 - **`forge api curl <service.method>`** — exercise the endpoint from the shell to confirm the symptom (stops at the auth interceptor — no token minting).
 - **`forge cluster logs --service <name>`** — read the server's actual logs for the request (kubectl-backed; owner cluster only — use `kubectl --context <other>` for a peer in another cluster).
-- **`forge debug start <svc>` / `--attach <pid>`** — Delve when logs aren't enough. The target keeps running; `forge debug break <Rpc>` then `forge debug continue --timeout 60s` waits for the hit without trapping you. `forge debug stop` detaches from an attached process (it keeps running) and kills only what `start` launched.
+- **`forge debug start <svc>` / `--attach <pid>`** — Delve when logs aren't enough. With `--run` the target keeps running (without it, it is left halted); `forge debug break <Rpc>` then `forge debug continue --timeout 60s` waits for the hit without trapping you. `forge debug stop` detaches from an attached process (it keeps running) and kills only what `start` launched.
 
 ## Output Format
 

@@ -26,10 +26,14 @@ type SessionInfo struct {
 	Connected bool `json:"connected,omitempty"`
 	// Resumed reports that a forge command resumed the target and returned
 	// before observing its next stop (start/attach without
-	// --stop-on-start, `continue --no-wait`, a timed-out `continue`). The
+	// --run, `continue --no-wait`, a timed-out `continue`). The
 	// next `continue` then reports a stop it finds the target in instead
 	// of resuming past it.
 	Resumed bool `json:"resumed,omitempty"`
+	// BreakpointIDs are the breakpoints this session's `forge debug break`
+	// created. Stopping a connected session clears these and only these: a
+	// dlv server forge did not start may hold another client's breakpoints.
+	BreakpointIDs []int `json:"breakpoint_ids,omitempty"`
 	// LogPath is where the target's stdout/stderr go, for sessions forge
 	// launched.
 	LogPath string    `json:"log_path,omitempty"`

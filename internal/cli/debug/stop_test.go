@@ -147,7 +147,7 @@ func TestAttachStopLeavesTargetAlive(t *testing.T) {
 
 	// Attach exactly as `forge debug start --attach` does: the target keeps
 	// running.
-	if err := runDebugStartAttach(ctx, startOptions{attachPID: targetPID}); err != nil {
+	if err := runDebugStartAttach(ctx, startOptions{attachPID: targetPID, run: true}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	session, err := debugSvc().LoadSession(".")

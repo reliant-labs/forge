@@ -267,10 +267,11 @@ func (b *Builder) Supervise(ctx context.Context, policy lifecyclekit.Policy, pro
 		}
 	}
 	nodes := append(append([]lifecyclekit.Node(nil), first...), b.Nodes()...)
-	if b.rollbackManaged {
-		if err := lifecyclekit.ValidateNodes(nodes); err != nil {
-			return err // caller still owns acquisitions; Rollback remains available
-		}
+	// Validate on every graph, rollback-managed or not, before ownership
+	// transfers: a rejected node set started nothing, so the caller still
+	// owns the acquisitions and Rollback remains available.
+	if err := lifecyclekit.ValidateNodes(nodes); err != nil {
+		return err
 	}
 	b.supervised = true
 	if probes != nil {

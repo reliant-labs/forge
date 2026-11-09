@@ -166,6 +166,34 @@ func TestRejectedSupervisionKeepsRollbackOwnership(t *testing.T) {
 	}
 }
 
+// A plain Build graph whose node set Supervise rejects has not transferred
+// ownership either: the rejection is returned and Rollback still releases.
+func TestRejectedSupervisionOfPlainBuildKeepsRollbackOwnership(t *testing.T) {
+	var b Builder
+	var a Memo[int]
+	closes := 0
+	if err := b.Build("api", func() {
+		acquire(&b, &a, "db", func(context.Context) error { closes++; return nil })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Supervise(context.Background(), lifecyclekit.Policy{}, nil, lifecyclekit.Node{}); err == nil {
+		t.Fatal("invalid supervision accepted")
+	}
+	if b.supervised {
+		t.Fatal("rejected supervision took ownership")
+	}
+	if closes != 0 {
+		t.Fatalf("rejected supervision closed resources: closes=%d", closes)
+	}
+	if err := b.Rollback(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if closes != 1 {
+		t.Fatalf("closes=%d", closes)
+	}
+}
+
 func TestRollbackAfterBuildBeforeSupervise(t *testing.T) {
 	var b Builder
 	var a Memo[int]

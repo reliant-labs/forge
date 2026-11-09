@@ -162,6 +162,64 @@ func FilesAt(repoRoot, migrationsDir, rev string) ([]string, bool) {
 	return names, true
 }
 
+// ContentAt returns the bytes of the file at path (absolute, or relative to
+// repoRoot) at revision rev, and whether it could be read: false for a
+// revision not in this clone, a path absent at rev, or no git.
+func ContentAt(repoRoot, path, rev string) ([]byte, bool) {
+	rel, err := repoRelative(repoRoot, path)
+	if err != nil {
+		return nil, false
+	}
+	out, ok := runGit(repoRoot, "show", rev+":"+filepath.ToSlash(rel))
+	if !ok {
+		return nil, false
+	}
+	return []byte(out), true
+}
+
+// FilesMatchingAt lists the base names of the files directly in dir, at
+// revision rev, whose content matches any of the fixed, case-insensitive
+// strings in needles — one `git grep` rather than one `git show` per file,
+// which over a 200-file migrations directory is the difference between one
+// process and two hundred. An empty list is a real answer; false means rev
+// could not be read.
+func FilesMatchingAt(repoRoot, dir, rev string, needles ...string) ([]string, bool) {
+	if _, ok := runGit(repoRoot, "rev-parse", "--verify", "--quiet", rev+"^{commit}"); !ok {
+		return nil, false
+	}
+	rel, err := repoRelative(repoRoot, dir)
+	if err != nil {
+		return nil, false
+	}
+	args := []string{"grep", "-l", "-i", "-F", "--full-name"}
+	for _, n := range needles {
+		args = append(args, "-e", n)
+	}
+	args = append(args, rev, "--", filepath.ToSlash(rel))
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoRoot
+	cmd.Env = scrubGitEnv(os.Environ())
+	out, err := cmd.Output()
+	if err != nil {
+		// git grep exits 1 when nothing matched: a real, empty answer.
+		if ee, isExit := err.(*exec.ExitError); isExit && ee.ExitCode() == 1 {
+			return []string{}, true
+		}
+		return nil, false
+	}
+	prefix := rev + ":" + strings.TrimSuffix(filepath.ToSlash(rel), "/") + "/"
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		name, ok := strings.CutPrefix(line, prefix)
+		if !ok || name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, true
+}
+
 // DefaultBranchFiles lists the file names in migrationsDir on the default
 // branch's tip, and names the ref it read. False when there is no default
 // branch to read (a tarball, a repository with no remote and no main).

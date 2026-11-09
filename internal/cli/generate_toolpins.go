@@ -177,7 +177,7 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 				return nil, pinError(t, want, have, fmt.Errorf("installed binary reports %s", got))
 			}
 		}
-		fmt.Printf("📌 %s resolved to %s (%s, go.mod pins %s) → %s\n", t.Binary, want, have, want, dir)
+		fmt.Fprintf(os.Stderr, "📌 %s resolved to %s (%s, go.mod pins %s) → %s\n", t.Binary, want, have, want, dir)
 		res.Dirs = append(res.Dirs, dir)
 		res.paths[t.Binary] = bin
 	}
@@ -201,7 +201,7 @@ func pinBuf(ctx context.Context, projectDir string, res *codegenTools) error {
 			return nil
 		}
 	}
-	dir, err := cigate.NewResolver(projectDir, os.Stdout).Ensure(ctx, cigate.BufTool(projectDir))
+	dir, err := cigate.NewResolver(projectDir, os.Stderr).Ensure(ctx, cigate.BufTool(projectDir))
 	if err != nil {
 		return fmt.Errorf("buf %s, which go.mod pins (%s), could not be installed: %w\n"+
 			"  fix: run `%s tools install buf`, or put a buf %s on PATH", b.Version, toolpin.BufModule, err, Name(), b.Bare())
@@ -209,7 +209,7 @@ func pinBuf(ctx context.Context, projectDir string, res *codegenTools) error {
 	if dir == "" {
 		return nil // the buf on PATH is the pin
 	}
-	fmt.Printf("📌 buf resolved to %s (go.mod pins %s) → %s\n", b.Version, b.Version, dir)
+	fmt.Fprintf(os.Stderr, "📌 buf resolved to %s (go.mod pins %s) → %s\n", b.Version, b.Version, dir)
 	res.Dirs = append(res.Dirs, dir)
 	res.paths["buf"] = filepath.Join(dir, "buf"+exeSuffix())
 	return nil

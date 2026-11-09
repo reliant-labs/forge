@@ -92,7 +92,7 @@ func TestHostReadinessAllowsRealStartupBeyondFifteenSeconds(t *testing.T) {
 	if err := reg.start("api", cmd, true); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(reg.shutdown)
+	t.Cleanup(func() { _ = reg.shutdown() })
 	e := &KCLEntities{Workloads: []WorkloadEntity{hostWL("api", withPorts(int32(port)))}}
 	if err := waitHostServicesReady(t.Context(), e, projectID, env, nil, hostReadyTimeout, hostReadyPoll, reg); err != nil {
 		t.Fatalf("live runner with a cold startup was rejected: %v", err)

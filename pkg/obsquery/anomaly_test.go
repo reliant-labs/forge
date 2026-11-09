@@ -27,6 +27,9 @@ func judge(t *testing.T, in ServiceREDInput) []Anomaly {
 	if in.FirstSeen.IsZero() {
 		in.FirstSeen = anomalyNow.Add(-28 * 24 * time.Hour)
 	}
+	if in.BaselineWeeks == 0 {
+		in.BaselineWeeks = 4
+	}
 	return JudgeService(in, DefaultAnomalyParams())
 }
 
@@ -128,7 +131,7 @@ func baselineOfFlat(requests, errors float64) []REDSample {
 func TestJudgeServiceNeedsSevenDaysOfHistory(t *testing.T) {
 	in := ServiceREDInput{
 		Observed: REDSample{Requests: 4000, Errors: 400},
-		Baseline: baselineOf(4000, 20, 0),
+		Baseline: baselineOf(4000, 20, 0), BaselineWeeks: 4,
 	}
 	for _, c := range []struct {
 		age  time.Duration
@@ -183,14 +186,30 @@ func TestAnomalyWindowsAlignToTheSameHourOfTheWeek(t *testing.T) {
 			t.Errorf("week %d starts on a %s", i+1, sc.Start.Weekday())
 		}
 	}
-	if !w.history.Start.Equal(w.baselines[3].Start) || !w.history.End.Equal(anomalyNow) {
+	// The history lookup opens a window before the oldest week, so a service
+	// that existed then is seen to have existed for all of it.
+	if !w.history.Start.Equal(w.baselines[3].Start.Add(-15*time.Minute)) || !w.history.End.Equal(anomalyNow) {
 		t.Errorf("history = %s - %s", w.history.Start, w.history.End)
 	}
 
-	// A window that crosses the hour reads both hours.
-	w = q.windows(time.Date(2026, 10, 26, 9, 10, 0, 0, time.UTC))
-	if got := w.baselines[0].End.Sub(w.baselines[0].Start); got != 2*time.Hour {
-		t.Errorf("a window across the hour reads %s of baseline, want 2h", got)
+	// A window that crosses the hour reads the one hour its midpoint is in,
+	// never both: the baseline is as wide on every evaluation (#1920).
+	for _, c := range []struct {
+		now  time.Time
+		hour int
+	}{
+		{time.Date(2026, 10, 26, 9, 10, 0, 0, time.UTC), 9},   // 08:53-09:08, midpoint 09:00:30
+		{time.Date(2026, 10, 26, 9, 3, 30, 0, time.UTC), 8},   // 08:46:30-09:01:30, midpoint 08:54
+		{time.Date(2026, 10, 26, 10, 1, 59, 0, time.UTC), 9},  // 09:44:59-09:59:59
+		{time.Date(2026, 10, 26, 10, 2, 0, 0, time.UTC), 9},   // 09:45-10:00, midpoint 09:52:30
+		{time.Date(2026, 10, 26, 10, 9, 30, 0, time.UTC), 10}, // 09:52:30-10:07:30, midpoint 10:00
+	} {
+		w = q.windows(c.now)
+		for i, sc := range w.baselines {
+			if got := sc.End.Sub(sc.Start); got != time.Hour || sc.Start.Hour() != c.hour || sc.Start.Minute() != 0 {
+				t.Errorf("now %s week %d: baseline %s - %s, want the %02d:00 hour", c.now.Format("15:04:05"), i+1, sc.Start, sc.End, c.hour)
+			}
+		}
 	}
 	// Four weeks of history fit the metrics range.
 	if err := w.history.validate(MaxRangeMetrics); err != nil {
@@ -203,13 +222,15 @@ func TestAnomalyParamsValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mut := range map[string]func(*AnomalyParams){
-		"window not dividing the hour": func(p *AnomalyParams) { p.Window = 7 * time.Minute },
-		"sub-minute window":            func(p *AnomalyParams) { p.Window = 30 * time.Second },
-		"five weeks":                   func(p *AnomalyParams) { p.Weeks = 5 },
-		"no weeks":                     func(p *AnomalyParams) { p.Weeks = 0 },
-		"zero k":                       func(p *AnomalyParams) { p.K = 0 },
-		"ratio under one":              func(p *AnomalyParams) { p.P95Ratio = 0.5 },
-		"no baseline samples":          func(p *AnomalyParams) { p.MinBaselineSamples = 0 },
+		"window not dividing the hour":  func(p *AnomalyParams) { p.Window = 7 * time.Minute },
+		"sub-minute window":             func(p *AnomalyParams) { p.Window = 30 * time.Second },
+		"five weeks":                    func(p *AnomalyParams) { p.Weeks = 5 },
+		"no weeks":                      func(p *AnomalyParams) { p.Weeks = 0 },
+		"zero k":                        func(p *AnomalyParams) { p.K = 0 },
+		"ratio under one":               func(p *AnomalyParams) { p.P95Ratio = 0.5 },
+		"no baseline samples":           func(p *AnomalyParams) { p.MinBaselineSamples = 0 },
+		"more baseline weeks than read": func(p *AnomalyParams) { p.MinBaselineWeeks = 5 },
+		"negative baseline weeks":       func(p *AnomalyParams) { p.MinBaselineWeeks = -1 },
 	} {
 		p := DefaultAnomalyParams()
 		mut(&p)
@@ -250,7 +271,7 @@ func TestAnomalyFirstSeenStatement(t *testing.T) {
 func TestAnomalyWhyCarriesTheSharedPayload(t *testing.T) {
 	q := AnomalyQuery{Scope: Scope{Database: "t_org"}, Params: DefaultAnomalyParams(), Now: anomalyNow}
 	in := ServiceREDInput{
-		Observed: REDSample{Requests: 4000, Errors: 100}, Baseline: baselineOf(4000, 20, 0),
+		Observed: REDSample{Requests: 4000, Errors: 100}, Baseline: baselineOf(4000, 20, 0), BaselineWeeks: 4,
 		Service: "api", Now: anomalyNow, FirstSeen: anomalyNow.Add(-28 * 24 * time.Hour),
 	}
 	got := JudgeService(in, q.Params)
@@ -266,6 +287,9 @@ func TestAnomalyWhyCarriesTheSharedPayload(t *testing.T) {
 	}
 	if w.Window != "15m0s" || w.HistoryDays != 28 || w.Since.IsZero() || w.Method == "" || w.BaselineWindow == "" {
 		t.Errorf("window = %q since %v history %d method %q baseline %q", w.Window, w.Since, w.HistoryDays, w.Method, w.BaselineWindow)
+	}
+	if !strings.Contains(w.BaselineWindow, "over 4 of the previous 4 weeks, 16 samples") {
+		t.Errorf("baseline window = %q, want the weeks and samples it was judged on", w.BaselineWindow)
 	}
 	if w.Thresholds["k"] != 4 || w.Thresholds["min_requests"] != 50 || w.Thresholds["min_errors"] != 5 || w.Thresholds["min_error_delta"] != 0.01 {
 		t.Errorf("thresholds = %v", w.Thresholds)
@@ -305,5 +329,130 @@ func TestAnomalyWhyNextPerSignal(t *testing.T) {
 		if !strings.Contains(strings.Join(w.Next, "\n"), want) {
 			t.Errorf("%s next = %v, want one with %q", signal, w.Next, want)
 		}
+	}
+}
+
+// TestServiceAnomalyJudgesWeeksNotSlots is #1920: the baseline once took the
+// window's hours rounded out, so it held 4 slots a week on most evaluations
+// and 8 on the one whose window crossed the hour, and MinBaselineSamples (8)
+// counted slots. A service with one past week was judged on that evaluation
+// alone, against that one week, and fired and resolved every hour. Each case
+// runs the baseline assembly EvalAnomalies runs (windows, then baseline) at
+// several alignments to the hour, then the judge.
+func TestServiceAnomalyJudgesWeeksNotSlots(t *testing.T) {
+	const day = 24 * time.Hour
+	alignments := map[string]time.Time{
+		"window inside the hour":         time.Date(2026, 11, 2, 16, 17, 0, 0, time.UTC), // 16:00-16:15
+		"window across the hour":         time.Date(2026, 11, 2, 16, 3, 30, 0, time.UTC), // 15:46:30-16:01:30
+		"window ending on the hour":      time.Date(2026, 11, 2, 16, 2, 0, 0, time.UTC),  // 15:45-16:00
+		"window centred on the hour":     time.Date(2026, 11, 2, 16, 9, 30, 0, time.UTC), // 15:52:30-16:07:30
+		"window across, a second past":   time.Date(2026, 11, 2, 16, 3, 31, 0, time.UTC),
+		"window across, the hour's last": time.Date(2026, 11, 2, 16, 59, 59, 0, time.UTC),
+	}
+	cases := []struct {
+		name string
+		// age is how long before now the service's metrics start.
+		age time.Duration
+		// past is the requests (and errors) per 15 minutes in every past week.
+		past, pastErrors float64
+		observed         REDSample
+		weeks            int
+		want             string
+	}{
+		// admin-server on 2026-11-02: metrics from 10-29, ~100 calls per 15
+		// minutes the week before, ~2850 now. One week is not a season.
+		{"one past week, throughput up 28x", 8 * day, 100, 0, REDSample{Requests: 2850}, 1, ""},
+		{"one past week, error rate up", 8 * day, 4000, 20, REDSample{Requests: 4000, Errors: 400}, 1, ""},
+		{"two past weeks are still not enough", 15 * day, 100, 0, REDSample{Requests: 2850}, 2, ""},
+		{"three past weeks, a real surge", 22 * day, 100, 0, REDSample{Requests: 2850}, 3, AnomalySignalThroughput},
+		{"four past weeks, a real surge", 29 * day, 100, 0, REDSample{Requests: 2850}, 4, AnomalySignalThroughput},
+		{"four past weeks, a real error spike", 29 * day, 4000, 20, REDSample{Requests: 4000, Errors: 400}, 4, AnomalySignalErrorRate},
+		{"four past weeks, the usual traffic", 29 * day, 100, 0, REDSample{Requests: 104}, 4, ""},
+	}
+	for _, c := range cases {
+		for name, now := range alignments {
+			t.Run(c.name+"/"+name, func(t *testing.T) {
+				q := AnomalyQuery{Scope: Scope{Database: "t_org"}, Params: DefaultAnomalyParams(), Now: now}
+				w := q.windows(now)
+				first := now.Add(-c.age)
+				// What the slot reads return: a sample for every slot the
+				// service existed in, with a little jitter for a real spread.
+				slots := map[int64]*REDSample{}
+				for _, sc := range w.baselines {
+					for ts, i := sc.Start.Add(-time.Hour), 0; ts.Before(sc.End.Add(time.Hour)); ts, i = ts.Add(w.step), i+1 {
+						if !ts.Before(first) {
+							slots[ts.Unix()] = &REDSample{Requests: c.past + float64(i%3), Errors: c.pastErrors + float64(i%2)}
+						}
+					}
+				}
+				in := ServiceREDInput{Service: "admin-server", Observed: c.observed, FirstSeen: first, Now: now}
+				in.Baseline, in.BaselineWeeks = w.baseline(first, slots)
+				if in.BaselineWeeks != c.weeks || len(in.Baseline) != 4*c.weeks {
+					t.Fatalf("baseline of %d slots over %d weeks, want 4 slots in each of %d: the width must not depend on the alignment",
+						len(in.Baseline), in.BaselineWeeks, c.weeks)
+				}
+				got := JudgeService(in, q.Params)
+				if s := signals(got); s != c.want {
+					t.Fatalf("fired %q, want %q (%+v)", s, c.want, got)
+				}
+				for _, a := range got {
+					if a.BaselineWeeks != c.weeks {
+						t.Errorf("finding names %d baseline weeks, want %d", a.BaselineWeeks, c.weeks)
+					}
+				}
+			})
+		}
+	}
+}
+
+// A week the service came into being in is not one of its weeks: its slots
+// before first-seen are no slots, and the ones after are its first hours.
+func TestAnomalyBaselineDropsTheWeekTheServiceStartedIn(t *testing.T) {
+	q := AnomalyQuery{Scope: Scope{Database: "t_org"}, Params: DefaultAnomalyParams(), Now: anomalyNow}
+	w := q.windows(anomalyNow)
+	// First seen 09:30 on the Monday three weeks back: mid-way through that
+	// week's 09:00 hour.
+	first := w.baselines[2].Start.Add(30 * time.Minute)
+	samples, weeks := w.baseline(first, nil)
+	if weeks != 2 || len(samples) != 8 {
+		t.Errorf("baseline = %d slots over %d weeks, want the 2 whole weeks since", len(samples), weeks)
+	}
+	// A service that existed before the lookback has all four.
+	if samples, weeks := w.baseline(w.history.Start, nil); weeks != 4 || len(samples) != 16 {
+		t.Errorf("baseline = %d slots over %d weeks, want 4 weeks of 4", len(samples), weeks)
+	}
+}
+
+// A ServiceREDInput built the way it was before BaselineWeeks existed leaves
+// it zero: it is judged on its slots, as it was then, not silenced.
+func TestJudgeServiceUncountedWeeksKeepThePreviousContract(t *testing.T) {
+	in := ServiceREDInput{
+		Service: "api", Now: anomalyNow, FirstSeen: anomalyNow.Add(-28 * 24 * time.Hour),
+		Observed: REDSample{Requests: 4000, Errors: 400},
+		Baseline: baselineOf(4000, 20, 0),
+	}
+	got := JudgeService(in, DefaultAnomalyParams())
+	if signals(got) != AnomalySignalErrorRate {
+		t.Fatalf("an input without BaselineWeeks fired %q, want %q as before the field existed", signals(got), AnomalySignalErrorRate)
+	}
+	// Too few slots still judges nothing, counted weeks or not.
+	in.Baseline = in.Baseline[:4]
+	if got := JudgeService(in, DefaultAnomalyParams()); len(got) != 0 {
+		t.Fatalf("a 4-slot baseline fired %+v", got)
+	}
+}
+
+func TestAnomalyParamsZeroBaselineWeeksIsTheDefault(t *testing.T) {
+	p := DefaultAnomalyParams()
+	p.MinBaselineWeeks = 0
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.minBaselineWeeks(); got != 3 {
+		t.Errorf("zero reads as %d weeks, want 3", got)
+	}
+	p.Weeks = 2
+	if got := p.minBaselineWeeks(); got != 2 {
+		t.Errorf("zero with 2 weeks read reads as %d, want 2", got)
 	}
 }

@@ -401,6 +401,47 @@ func Record(ctx context.Context, w Writer, ev Event) error {
 	return nil
 }
 
+// RecordAlso writes ev as an ADDITIONAL event of the call: one the handler's
+// change caused beside the rpc's own, such as a promote that also raised a
+// rollback floor. Unlike [Record] it never stands in for the rpc's declared
+// event — the interceptor still writes that one (or the handler still must,
+// for `writer: ACTIVITY_WRITER_HANDLER`) — and it takes nothing from the
+// declaration that describes the rpc's own event: ev states its verb, target
+// and detail itself. Inside a declared rpc it fills only who and how the call
+// came (actor, via, scope, procedure, trace) and the env when ev leaves it
+// empty; outside one, ev must be complete, as for Record.
+func RecordAlso(ctx context.Context, w Writer, ev Event) error {
+	if w == nil {
+		return errors.New("activity: RecordAlso needs a Writer")
+	}
+	if c, _ := ctx.Value(callKey{}).(*call); c != nil {
+		declared := c.event(nil)
+		if ev.Actor == (Actor{}) {
+			ev.Actor = declared.Actor
+		}
+		if ev.Env == "" {
+			ev.Env = declared.Env
+		}
+		if ev.Via == "" {
+			ev.Via = declared.Via
+		}
+		if ev.Scope == "" {
+			ev.Scope = declared.Scope
+		}
+		if ev.Procedure == "" {
+			ev.Procedure = declared.Procedure
+		}
+		if ev.TraceID == "" {
+			ev.TraceID = declared.TraceID
+		}
+	}
+	ev.normalize()
+	if err := ev.validate(); err != nil {
+		return err
+	}
+	return w.Write(ctx, ev)
+}
+
 // Skip records that this call, although it succeeded, changed nothing worth
 // an activity event, so the interceptor writes none for it: an idempotent
 // "ensure" rpc that found its object already there, a dry run, a no-op

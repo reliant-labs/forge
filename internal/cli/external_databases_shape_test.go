@@ -35,7 +35,10 @@ output = forge.render(forge.Bundle {
             username = "ledger_ro"
             password_secret = "ledger-ro"
             password_key = "pw"
-            sslmode = "disable"
+            sslmode = "verify-full"
+            ca_configmap = "pooler-ca"
+            ca_key = "ca.crt"
+            tls_server_name = "pgbouncer.ledger.svc"
             namespace = "ledger"
             reach = "direct"
             port = 6432
@@ -109,7 +112,8 @@ func TestExternalDatabasesReachTheShape(t *testing.T) {
 	got := shapeExternalDatabasesOf(e)
 	want := []release.ShapeExternalDatabase{{
 		Name: "ledger", Cluster: "gke-prod", Namespace: "ledger", Service: "pgbouncer", Database: "ledger_prod",
-		Username: "ledger_ro", PasswordSecret: "ledger-ro", PasswordKey: "pw", SSLMode: release.ExternalDatabaseSSLDisable,
+		Username: "ledger_ro", PasswordSecret: "ledger-ro", PasswordKey: "pw", SSLMode: release.ExternalDatabaseSSLVerifyFull,
+		CAConfigMap: "pooler-ca", CAKey: "ca.crt", TLSServerName: "pgbouncer.ledger.svc",
 		Reach: release.ExternalDatabaseReachDirect, Port: 6432,
 	}, {
 		Name: "billing", Cluster: "gke-billing", Namespace: "billing-prod", Service: "billing-pooler", Database: "billing",

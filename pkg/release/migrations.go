@@ -56,6 +56,27 @@ const (
 type MigrationManifest struct {
 	// Sets is one entry per migrations directory, sorted by Source.
 	Sets []MigrationSet `json:"sets"`
+	// Declarations is every rollback-floor declaration the release carries
+	// ([FloorDeclaration]), sorted by (Source, ID): each migration that
+	// declares `forge:breaks-rollback` (kind schema) and each
+	// deploy/rollback-floors/<id>.yaml file of the project and its sibling
+	// checkouts. A promote of the release raises a declared floor for the
+	// ones no active floor already requires ([DeclarationsRaisedBy]).
+	//
+	// They ride in the migration manifest because they are the same kind of
+	// evidence, read at the same cut from the same checkouts at the same
+	// commits, stored immutably beside it, and judged by the same readers.
+	// Evidence, like Commit: [MigrationManifest.Equal] ignores them, so a
+	// manifest recorded before declarations existed is not contradicted by
+	// one that has them.
+	Declarations []FloorDeclaration `json:"declarations,omitempty"`
+	// DeclarationsRecorded is whether the cut read declarations at all.
+	// False on a manifest a forge that predates floors recorded: there,
+	// "no declarations" means "unknown", and a reader says so rather than
+	// reading it as "none". (lowerCamel on purpose: the control plane's
+	// protojson writes multi-word names that way, and this is the type its
+	// response is decoded into.)
+	DeclarationsRecorded bool `json:"declarationsRecorded,omitempty"`
 }
 
 // MigrationSet is one migrations directory as a release carried it.
@@ -77,6 +98,20 @@ type MigrationSet struct {
 	// version then name. A name, not only a version, because what a database
 	// recorded is one specific file: two branches can claim one version.
 	Files []string `json:"files"`
+	// Adopts is every version of forge's OWN history that a baseline in
+	// this directory declares it replaced (`-- forge:adopts forge <v>…`,
+	// written by `forge db squash`), ascending. A database that applied
+	// those versions has the baseline's schema, so a release carrying the
+	// baseline still carries every adopted migration — which is what keeps
+	// a declared floor on a squashed migration satisfiable by every release
+	// after the squash ([Carries]). Recorded alongside Declarations; empty
+	// on a manifest that predates them.
+	//
+	// Canonical decimal STRINGS, not numbers: the hosted ledger's protojson
+	// writes a 64-bit integer as a JSON string, and this is the type its
+	// response is decoded into, so a number here would decode from a cut
+	// and fail to decode from every read.
+	Adopts []string `json:"adopts,omitempty"`
 }
 
 // MigrationVersion is the numeric version a migration file name carries — the
@@ -137,8 +172,15 @@ func sortMigrationFiles(files []string) {
 func (m *MigrationManifest) Normalize() {
 	for i := range m.Sets {
 		sortMigrationFiles(m.Sets[i].Files)
+		adopts := m.Sets[i].Adopts
+		sort.Slice(adopts, func(a, b int) bool {
+			va, _ := strconv.ParseUint(adopts[a], 10, 64)
+			vb, _ := strconv.ParseUint(adopts[b], 10, 64)
+			return va < vb
+		})
 	}
 	sort.Slice(m.Sets, func(i, j int) bool { return m.Sets[i].Source < m.Sets[j].Source })
+	sortDeclarations(m.Declarations)
 }
 
 // Equal reports whether two manifests record the same files under the same
@@ -214,8 +256,17 @@ func (m MigrationManifest) Validate() error {
 			}
 			files[f] = true
 		}
+		if len(s.Adopts) > MaxMigrationFiles {
+			return fmt.Errorf("%w: migration source %s records %d adopted versions, over the cap of %d", ErrInvalid, s.Source, len(s.Adopts), MaxMigrationFiles)
+		}
+		for _, v := range s.Adopts {
+			n, err := strconv.ParseUint(v, 10, 64)
+			if err != nil || n == 0 || strconv.FormatUint(n, 10) != v {
+				return fmt.Errorf("%w: migration source %s adopts %q, which is not a canonical positive version", ErrInvalid, s.Source, v)
+			}
+		}
 	}
-	return nil
+	return m.validateDeclarations()
 }
 
 // AppliedManifest is one release an environment applied, with the migrations

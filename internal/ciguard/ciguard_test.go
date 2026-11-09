@@ -258,7 +258,7 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 			t.Errorf("job %q runs on every pull request push, before review; only %v may (REVIEW FIRST): gate it with %q", name, reviewFirstJobs, queueTier)
 		}
 	}
-	for _, name := range []string{"test-short", "checks"} {
+	for _, name := range []string{"test-short", "checks", "golangci"} {
 		cond := strings.TrimSpace(wf.Jobs[name].If)
 		if cond != queueTier && cond != notReviewFirst {
 			t.Errorf("job %q has if: %q; the merge tier must run in the merge queue (%q)", name, cond, queueTier)

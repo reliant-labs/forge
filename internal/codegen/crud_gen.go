@@ -186,7 +186,10 @@ type CRUDMethodTemplateData struct {
 	// casing ("Oauth2token" → pb.Oauth2Token, db.Oauth2token).
 	EntityPbType string
 	EntityLower  string // "patient"
-	Operation    string // "create", "get", "list", "update", "delete"
+	// EntitySnake is the entity's snake_case name ("order_item"), which the
+	// automatic product events are named after (crud.CreateOp.EntitySnake).
+	EntitySnake string
+	Operation   string // "create", "get", "list", "update", "delete"
 	// AuthRequired is the RPC's (forge.v1.method).auth_required, true
 	// unless the proto explicitly opts out. It gates nothing — it selects
 	// which sentence the method's comment shows the handler author, so
@@ -1589,6 +1592,7 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		EntityName:         cm.Entity.Name,
 		EntityPbType:       naming.GoCamelCase(cm.Entity.Name),
 		EntityLower:        strings.ToLower(cm.Entity.Name),
+		EntitySnake:        naming.ToSnakeCase(cm.Entity.Name),
 		Operation:          cm.Operation,
 		AuthRequired:       cm.Method.AuthRequired,
 		AuthSeam:           crudAuthSeam,

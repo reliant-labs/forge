@@ -654,6 +654,7 @@ _obs_env = lambda rt: any, b: Bundle, env: {str:} -> {str:str} {
         | ({OTEL_TRACES_EXPORTER = "none"} if _sig and not _sig.traces and not _env_set(env, "OTEL_TRACES_EXPORTER") else {}) \
         | ({OTEL_METRICS_EXPORTER = "none"} if _sig and not _sig.metrics and not _env_set(env, "OTEL_METRICS_EXPORTER") else {}) \
         | ({OTEL_LOGS_EXPORTER = "none"} if _sig and not _sig.logs and not _env_set(env, "OTEL_LOGS_EXPORTER") else {}) \
+        | ({FORGE_PRODUCT_EVENTS = "off"} if _sig and not _sig.product_events and not _env_set(env, "FORGE_PRODUCT_EVENTS") else {}) \
         | _obs_sampler_env(b, env)
 }
 
@@ -2166,16 +2167,26 @@ _render_declared_bucket = lambda b: Bucket -> any {
 # how to sign in. Nothing is deployed for it, so it reaches no manifest.
 _render_external_database = lambda x: any, bundle: Bundle -> any {
     _target = x.runtime.target if x.runtime else _primary_target(bundle)
+    _namespace = (x.namespace if x.namespace else _target.namespace) if _target else None
+    assert x.sslmode != "verify-full" or _namespace, "ExternalDatabase '${x.name}': verify-full needs a namespace for its CA source and Service DNS identity"
     {
         "name": x.name
         "cluster": _target.cluster if _target else None
-        "namespace": (x.namespace if x.namespace else _target.namespace) if _target else None
+        "namespace": _namespace
         "service": x.service
         "database": x.database
         "username": x.username
         "password_secret": x.password_secret
         "password_key": x.password_key
         "sslmode": x.sslmode
+        if x.ca_secret:
+            "ca_secret": x.ca_secret
+        if x.ca_configmap:
+            "ca_configmap": x.ca_configmap
+        if x.ca_key:
+            "ca_key": x.ca_key
+        if x.tls_server_name:
+            "tls_server_name": x.tls_server_name
         "reach": x.reach
         "port": x.port
     }

@@ -162,7 +162,7 @@ func TestReleaseToolPinsMatchForge(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(raw)
-	for tool, want := range map[string]string{"buf": "v" + templates.BufVersion, "kcl": templates.KCLVersion} {
+	for tool, want := range map[string]string{"buf": "v" + templates.BufVersion, "kcl": templates.KCLVersion, "golangci-lint": templates.GolangciLintVersion} {
 		m := regexp.MustCompile(`(?m)^\s*` + tool + `\)\s+set -- \S+ (\S+) `).FindStringSubmatch(body)
 		if m == nil {
 			t.Errorf("install-release-tool: no %s pin", tool)

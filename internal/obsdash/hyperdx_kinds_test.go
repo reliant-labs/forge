@@ -28,3 +28,19 @@ func TestHyperDXLeavesOutThePanelsOnlyTheConsoleDraws(t *testing.T) {
 		t.Fatalf("tiles = %v, want [t-kept t-table]", ids)
 	}
 }
+
+// A dashboard with nothing HyperDX can draw gets no HyperDX file at all: the
+// provisioner refuses a dashboard without tiles.
+func TestHyperDXSkipsADashboardWithNothingToDraw(t *testing.T) {
+	sp := Spec{Project: "shop", Dashboards: []Dashboard{
+		BuildProductUsage("shop"),
+		{ID: "d", Title: "D", Panels: []Panel{{ID: "kept", Title: "Kept", Kind: KindLine, Signal: Traces, Series: []Series{{Label: "n", Agg: AggCount}}}}},
+	}}
+	files, err := RenderHyperDX(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].File != "shop-d_gen.json" {
+		t.Fatalf("files = %+v, want only shop-d_gen.json", files)
+	}
+}

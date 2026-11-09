@@ -188,11 +188,11 @@ func TestProductUsageSQLOnClickHouse(t *testing.T) {
 	// to midnight on 2026-03-17, the first day's 7-day window starts at
 	// midnight six days earlier, so u3's 09:00 event on 2026-02-24 counts; and
 	// no point is drawn for 2026-03-17, the day the range ends on.
-	ranged := func(id string, start, stop time.Time) string {
+	ranged := func(id string, trend bool, start, stop time.Time) string {
 		t.Helper()
 		sc := obsquery.Scope{Database: "t_org_a", Start: start, End: stop,
 			EnvRestricted: true, EnvIDs: []string{"e1"}, Envs: []obsquery.Env{{ID: "e1", Name: "e1"}}}
-		st, err := obsquery.SQLPanel{Scope: sc, SQL: statement(id, true), StepSeconds: 86400}.Compile()
+		st, err := obsquery.SQLPanel{Scope: sc, SQL: statement(id, trend), StepSeconds: 86400}.Compile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -202,9 +202,19 @@ func TestProductUsageSQLOnClickHouse(t *testing.T) {
 		}
 		return exec1(st.SQL, args...)
 	}
-	wau := ranged("wau", time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC), time.Date(2026, 3, 17, 0, 0, 0, 0, time.UTC))
+	noon, midnight := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC), time.Date(2026, 3, 17, 0, 0, 0, 0, time.UTC)
+	wau := ranged("wau", true, noon, midnight)
 	if !strings.HasPrefix(wau, "2026-03-02\t1\n") || !strings.HasSuffix(wau, "2026-03-16\t2") || strings.Contains(wau, "2026-03-17") {
 		t.Errorf("wau trend over a noon start and a midnight end =\n%s\nwant 2026-03-02 holding u3's early event first, 2026-03-16 last", wau)
+	}
+	// The Active users chart itself, over the same noon start and midnight
+	// end: its first day's weekly window holds u3's 09:00 event of 2026-02-24
+	// (day, weekly, daily), its last point is 2026-03-16, and 2026-03-17 (the
+	// day the exclusive end starts) is not drawn.
+	activeRanged := ranged("active-users-over-time", false, noon, midnight)
+	if !strings.HasPrefix(activeRanged, "2026-03-02\t1\t0\n") || !strings.HasSuffix(activeRanged, "2026-03-16\t2\t2") ||
+		strings.Contains(activeRanged, "2026-03-17") || strings.Contains(activeRanged, "2026-03-01") {
+		t.Errorf("active-users-over-time over a noon start and a midnight end =\n%s\nwant 2026-03-02 holding u3's early lookback event first, 2026-03-16 last", activeRanged)
 	}
 	if got := trend("events-per-user", "e1"); !strings.HasSuffix(got, "2026-03-16\t4") {
 		t.Errorf("events-per-user trend ends\n%s\nwant 8 events over 2 users today", got)

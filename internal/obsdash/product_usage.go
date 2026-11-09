@@ -327,19 +327,12 @@ FROM (
 )`
 
 // activeUsersOverTimeSQL is each day's active users and the rolling 7-day
-// active users ending that day: every (user, day seen) counts toward that day
-// and the six after it, so the read starts six days before the range.
-const activeUsersOverTimeSQL = `SELECT addDays(seen, offset) AS day,
-       uniqExact(UserId) AS "Weekly active (rolling 7 days)",
-       uniqExactIf(UserId, offset = 0) AS "Daily active"
-FROM (
-    SELECT DISTINCT UserId, toDate(Timestamp) AS seen
-    FROM product_events
-    WHERE UserId != '' AND Timestamp >= {from:DateTime64(9)} - INTERVAL 6 DAY AND Timestamp < {to:DateTime64(9)} AND ` + productFilterScope + `
-)
-ARRAY JOIN range(7) AS offset
-WHERE day >= toDate({from:DateTime64(9)}) AND day <= toDate({to:DateTime64(9)})
-GROUP BY day ORDER BY day`
+// active users ending that day, over the same calendar-day bounds as the
+// headline trends (rollingSQL): the lookback starts at the start of the day
+// six days before the range's first day, and a day starting at or after the
+// range's exclusive end is not drawn.
+var activeUsersOverTimeSQL = rollingSQL(7, `uniqExact(UserId) AS "Weekly active (rolling 7 days)",
+       uniqExactIf(UserId, offset = 0) AS "Daily active"`)
 
 var newVsReturningSQL = `SELECT a.day AS day,
        countIf(a.day = f.first_day) AS "New",

@@ -3143,7 +3143,7 @@
           "title": "Active users",
           "description": "Distinct signed-in users per UTC day, and over the 7 days ending that day (the rolling weekly active users), drawn as areas.",
           "kind": "sql",
-          "sql": "SELECT addDays(seen, offset) AS day,\n       uniqExact(UserId) AS \"Weekly active (rolling 7 days)\",\n       uniqExactIf(UserId, offset = 0) AS \"Daily active\"\nFROM (\n    SELECT DISTINCT UserId, toDate(Timestamp) AS seen\n    FROM product_events\n    WHERE UserId != '' AND Timestamp \u003e= {from:DateTime64(9)} - INTERVAL 6 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId)) AND (empty({services:Array(String)}) OR has({services:Array(String)}, ServiceName))\n)\nARRAY JOIN range(7) AS offset\nWHERE day \u003e= toDate({from:DateTime64(9)}) AND day \u003c= toDate({to:DateTime64(9)})\nGROUP BY day ORDER BY day",
+          "sql": "SELECT addDays(seen, offset) AS day, uniqExact(UserId) AS \"Weekly active (rolling 7 days)\",\n       uniqExactIf(UserId, offset = 0) AS \"Daily active\"\nFROM (\n    SELECT DISTINCT UserId, toDate(Timestamp) AS seen\n    FROM product_events\n    WHERE UserId != '' AND Timestamp \u003e= toStartOfDay({from:DateTime64(9)}) - INTERVAL 6 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId)) AND (empty({services:Array(String)}) OR has({services:Array(String)}, ServiceName))\n)\nARRAY JOIN range(7) AS offset\nWHERE day \u003e= toDate({from:DateTime64(9)}) AND toDateTime(day) \u003c {to:DateTime64(9)}\nGROUP BY day ORDER BY day",
           "minStep": "1d",
           "display": {
             "style": "area",

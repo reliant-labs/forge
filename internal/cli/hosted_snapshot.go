@@ -42,14 +42,31 @@ func requireSnapshotCapabilities(ctx context.Context, client cloudCaller) error 
 // deploy.SnapshotFeatureEvidenceSeal).
 const snapshotFeatureEvidenceSeal = "evidence-seal"
 
-// evidenceSealSupported reports whether the control plane takes an evidence
-// seal: every capability requireSnapshotCapabilities demands, plus
-// snapshot_features naming evidence-seal. Unlike requireSnapshotCapabilities
-// it is not fail-closed on the deploy: a false (or an error) means the env
-// deploy writes its legacy bundle, exactly as before the feature existed. An
-// older control plane routes a snapshot on an intent-less release down its
-// intent path and refuses it, which is why nothing is sealed unless it says so.
-func evidenceSealSupported(ctx context.Context, client cloudCaller) (bool, error) {
+// snapshotFeatureEvidenceSealServiceCatalog is the control plane accepting an
+// evidence snapshot whose assets include the service catalog
+// (release.BundleServiceCatalogPath). A control plane advertises it beside
+// evidence-seal once it pins a forge whose release.Snapshot.Validate admits
+// that asset. Without it, an env whose bundle carries a catalog is not sealed:
+// sealing must never cost it the catalog (the RPC explorer's routes).
+const snapshotFeatureEvidenceSealServiceCatalog = "evidence-seal-service-catalog"
+
+// evidenceSealFeatures is what a control plane takes of an evidence seal.
+type evidenceSealFeatures struct {
+	// Seal: every capability requireSnapshotCapabilities demands, plus
+	// evidence-seal.
+	Seal bool
+	// ServiceCatalog: evidence-seal-service-catalog, beside Seal.
+	ServiceCatalog bool
+}
+
+// evidenceSealSupported reads what the control plane takes of an evidence
+// seal. Unlike requireSnapshotCapabilities it is not fail-closed on the
+// deploy: no Seal (or an error) means the env deploy writes its legacy bundle,
+// exactly as before the feature existed. An older control plane routes a
+// snapshot on an intent-less release down its intent path and refuses it,
+// which is why nothing is sealed unless it says so. It is read on every
+// deploy, never cached: an operator can withdraw the feature at any time.
+func evidenceSealSupported(ctx context.Context, client cloudCaller) (evidenceSealFeatures, error) {
 	var caps struct {
 		Schemas  []string `json:"snapshotSchemaVersions"`
 		Seals    bool     `json:"immutableSnapshotSeals"`
@@ -57,16 +74,18 @@ func evidenceSealSupported(ctx context.Context, client cloudCaller) (bool, error
 		Features []string `json:"snapshotFeatures"`
 	}
 	if err := client.Call(ctx, procDeployCapabilities, map[string]any{}, &caps); err != nil {
-		return false, err
+		return evidenceSealFeatures{}, err
 	}
-	schema, evidence := false, false
+	schema, evidence, catalog := false, false, false
 	for _, s := range caps.Schemas {
 		schema = schema || s == release.SnapshotSchema
 	}
 	for _, f := range caps.Features {
 		evidence = evidence || f == snapshotFeatureEvidenceSeal
+		catalog = catalog || f == snapshotFeatureEvidenceSealServiceCatalog
 	}
-	return schema && caps.Seals && caps.Frozen && evidence, nil
+	seal := schema && caps.Seals && caps.Frozen && evidence
+	return evidenceSealFeatures{Seal: seal, ServiceCatalog: seal && catalog}, nil
 }
 
 func snapshotReleaseFromJSON(raw json.RawMessage, version string) (release.Release, error) {

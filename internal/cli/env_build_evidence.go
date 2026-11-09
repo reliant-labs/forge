@@ -15,6 +15,13 @@ package cli
 // no change to which bundle ships, and the legacy deploy path, --target,
 // --frontends-only and promotion of one release across envs are untouched.
 //
+// A SEAL NEVER COSTS THE ENV ANYTHING. The snapshot carries every asset the
+// legacy bundle would, the service catalog (the RPC explorer's routes)
+// included, so a bundle with a catalog seals only on a control plane that
+// also advertises evidence-seal-service-catalog, and only when the snapshot
+// with its catalog fits the 1 MiB config bound. Otherwise it is today's
+// legacy bundle, catalog and all.
+//
 // THE BINDINGS ARE READ FROM THE RENDER, never from a pin map: every slot's
 // artifact is the exact image reference its resource carries (a hosted
 // Workload's spec.image, a StaticSite's release, a pod template's container),
@@ -51,9 +58,17 @@ type evidenceSeal struct {
 	Bundle   bundle.Bundle
 	// Layer is the manifests layer RecordBundle carries for a snapshot.
 	Layer []byte
-	// CatalogDropped reports that the service catalog the legacy bundle
-	// would have carried is not in this one (dropServiceCatalog).
-	CatalogDropped bool
+}
+
+// carriesServiceCatalog reports whether a bundle's files include the
+// service catalog.
+func carriesServiceCatalog(files []bundle.ObservabilityFile) bool {
+	for _, f := range files {
+		if f.Path == release.BundleServiceCatalogPath {
+			return true
+		}
+	}
+	return false
 }
 
 // evidenceSkipNoted holds the (env, reason) pairs whose "no snapshot" note
@@ -79,7 +94,8 @@ func sealEvidenceSnapshot(ctx context.Context, projectDir, env string, ledger en
 	if !ok {
 		return nil, ""
 	}
-	if supported, err := evidenceSealSupported(ctx, store.client); err != nil || !supported {
+	features, err := evidenceSealSupported(ctx, store.client)
+	if err != nil || !features.Seal {
 		return nil, ""
 	}
 	rel, err := ledger.Releases.Get(ctx, in.Release)
@@ -90,6 +106,13 @@ func sealEvidenceSnapshot(ctx context.Context, projectDir, env string, ledger en
 	// its env deploys write no bundle here (ensureHostedReleaseBundle).
 	if len(rel.SnapshotIntents) > 0 || len(rel.Catalog) > 0 {
 		return nil, ""
+	}
+	// The snapshot carries exactly the assets the legacy bundle would, the
+	// service catalog included: a seal never costs the env its RPC
+	// explorer's routes. So a bundle with a catalog seals only on a control
+	// plane that takes one in a snapshot.
+	if carriesServiceCatalog(input.Observability) && !features.ServiceCatalog {
+		return nil, "its control plane does not take a service catalog in a snapshot (" + snapshotFeatureEvidenceSealServiceCatalog + ")"
 	}
 	if store.project != "" && store.project != doc.Project {
 		return nil, fmt.Sprintf("the bundle's project %q is not the control plane project %q", doc.Project, store.project)
@@ -115,10 +138,6 @@ func buildEvidenceSnapshot(ctx context.Context, projectDir, env string, doc envS
 	if err != nil {
 		return nil, err
 	}
-	// The snapshot is an inventory of a bundle that carries no catalog;
-	// see sealComposition, which drops it for the same size reason.
-	var dropped bool
-	input.Observability, dropped = dropServiceCatalog(input.Observability)
 	resources, err := bundle.SnapshotResources(ctx, input, consumers)
 	if err != nil {
 		return nil, err
@@ -151,7 +170,7 @@ func buildEvidenceSnapshot(ctx context.Context, projectDir, env string, doc envS
 	if err != nil {
 		var tooLarge *bundle.ConfigTooLargeError
 		if errors.As(err, &tooLarge) {
-			return nil, fmt.Errorf("its snapshot is %d bytes, over the %d-byte bundle bound", tooLarge.Size, bundle.MaxManifestBytes)
+			return nil, fmt.Errorf("its snapshot (with every asset the bundle carries) is %d bytes, over the %d-byte bundle bound", tooLarge.Size, bundle.MaxManifestBytes)
 		}
 		return nil, err
 	}
@@ -163,7 +182,7 @@ func buildEvidenceSnapshot(ctx context.Context, projectDir, env string, doc envS
 	if err != nil {
 		return nil, err
 	}
-	return &evidenceSeal{Snapshot: composed, Digest: digest, Bundle: built, Layer: layer, CatalogDropped: dropped}, nil
+	return &evidenceSeal{Snapshot: composed, Digest: digest, Bundle: built, Layer: layer}, nil
 }
 
 // bindEvidenceSlots binds every consumer slot to the artifact the render

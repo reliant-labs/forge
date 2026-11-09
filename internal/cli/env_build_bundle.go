@@ -390,10 +390,6 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	if seal != nil {
 		out, err := placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, seal.Bundle, seal, in)
 		if err == nil {
-			if out.Sealed && seal.CatalogDropped {
-				fmt.Fprintf(in.errWriter(), "[bundle] Note: env %s's bundle seals a snapshot of the environment, which does not carry the service catalog yet, "+
-					"so the RPC explorer will lack its declared routes. The deploy is unaffected.\n", env)
-			}
 			return out, nil
 		}
 		// Retried ONCE, without the snapshot: a control plane whose operator

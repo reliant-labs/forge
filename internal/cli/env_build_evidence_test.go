@@ -13,6 +13,9 @@ package cli
 //     server's own checks accept, describing the whole env (no base, every
 //     consumer selected), and the deploy stays on the legacy path;
 //   - not capable: today's legacy bundle, untouched;
+//   - a bundle with a service catalog seals it only when the control plane
+//     also takes one (evidence-seal-service-catalog), and never loses it:
+//     without the feature, or over the bound, it is the legacy bundle;
 //   - switched off (snapshot_refused) and an older replica (a plain
 //     InvalidArgument): exactly one retry with the legacy bundle, and the
 //     deploy succeeds;
@@ -28,6 +31,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +40,7 @@ import (
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/servicecatalog"
 )
 
 // fakeEvidenceSeals is the evidence half of a control plane. Its methods run
@@ -47,6 +53,8 @@ type fakeEvidenceSeals struct {
 	disabled bool
 	// plainRefusal is an older replica: a plain InvalidArgument, no reason.
 	plainRefusal bool
+	// catalog names evidence-seal-service-catalog beside evidence-seal.
+	catalog bool
 
 	// attempts counts RecordBundle calls that carried a snapshot; sealed
 	// holds the ones accepted; legacy counts the ones that carried none.
@@ -67,7 +75,11 @@ func (e *fakeEvidenceSeals) capabilities() map[string]any {
 		"frozenPromotionBundles": true,
 	}
 	if e.advertise {
-		caps["snapshotFeatures"] = []string{snapshotFeatureEvidenceSeal}
+		features := []string{snapshotFeatureEvidenceSeal}
+		if e.catalog {
+			features = append(features, snapshotFeatureEvidenceSealServiceCatalog)
+		}
+		caps["snapshotFeatures"] = features
 	}
 	return caps
 }
@@ -187,6 +199,13 @@ type evidenceFixture struct {
 
 func newEvidenceFixture(t *testing.T, ev *fakeEvidenceSeals, apiFields string) *evidenceFixture {
 	t.Helper()
+	return newEvidenceFixtureWithCatalog(t, ev, apiFields, nil)
+}
+
+// newEvidenceFixtureWithCatalog is newEvidenceFixture whose project has
+// generated a service catalog (catalog; nil for none), as a Go service does.
+func newEvidenceFixtureWithCatalog(t *testing.T, ev *fakeEvidenceSeals, apiFields string, catalog []byte) *evidenceFixture {
+	t.Helper()
 	fake := newFakeDeployService(map[string]string{})
 	if ev != nil {
 		ev.fake = fake
@@ -196,6 +215,15 @@ func newEvidenceFixture(t *testing.T, ev *fakeEvidenceSeals, apiFields string) *
 	t.Cleanup(srv.Close)
 	dir := writeHostedProject(t, srv.URL, apiFields)
 	initGitRepo(t, dir, map[string]string{".gitignore": ".forge/\nbin/\ngen/\n**/kcl.mod.lock\n"})
+	if catalog != nil {
+		// gen/ is ignored, as a generated catalog is: the tree stays clean.
+		if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(servicecatalog.GeneratedPath)), catalog, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	gitIn(t, dir, "remote", "add", "origin", "https://github.com/example/acme.git")
 	t.Chdir(dir)
 	t.Setenv("ACME_CP_TOKEN", "rlat_e2e")
@@ -331,6 +359,47 @@ func TestEnvDeployRecordsAnEvidenceSnapshot(t *testing.T) {
 		})
 	}
 
+	t.Run("a bundle with a service catalog seals it when the control plane takes one", func(t *testing.T) {
+		ev := &fakeEvidenceSeals{advertise: true, catalog: true}
+		f := newEvidenceFixtureWithCatalog(t, ev, hostedOnBandSpec, evidenceCatalog(t, 0))
+		f.deploy(t)
+		if len(ev.invalid) != 0 || ev.attempts == 0 || len(ev.sealed) != ev.attempts {
+			t.Fatalf("snapshot records = %d attempted, %d sealed, refused %v; want every one sealed", ev.attempts, len(ev.sealed), ev.invalid)
+		}
+		found := false
+		for _, a := range ev.sealed[0].Snapshot.Assets {
+			found = found || a.Path == release.BundleServiceCatalogPath
+		}
+		if !found {
+			t.Fatal("the sealed snapshot dropped the service catalog")
+		}
+		requireEveryRecordCarriesTheCatalog(t, f.fake)
+	})
+
+	t.Run("a bundle with a service catalog on a control plane without evidence-seal-service-catalog is legacy, catalog intact", func(t *testing.T) {
+		ev := &fakeEvidenceSeals{advertise: true}
+		f := newEvidenceFixtureWithCatalog(t, ev, hostedOnBandSpec, evidenceCatalog(t, 0))
+		f.deploy(t)
+		if ev.attempts != 0 || ev.legacy == 0 {
+			t.Fatalf("snapshot attempts = %d, legacy records = %d; want no seal attempt (so no refusal) and the legacy bundle", ev.attempts, ev.legacy)
+		}
+		requireNoManifestsLayer(t, f.fake)
+		requireEveryRecordCarriesTheCatalog(t, f.fake)
+	})
+
+	t.Run("a snapshot that would exceed the bound with its service catalog is legacy, catalog intact", func(t *testing.T) {
+		ev := &fakeEvidenceSeals{advertise: true, catalog: true}
+		// Under the 1 MiB asset bound raw, over the 1 MiB config bound once
+		// a snapshot inlines it (base64); a legacy bundle carries it in its
+		// layer, which is bounded far higher.
+		f := newEvidenceFixtureWithCatalog(t, ev, hostedOnBandSpec, evidenceCatalog(t, 900<<10))
+		f.deploy(t)
+		if ev.attempts != 0 || ev.legacy == 0 {
+			t.Fatalf("snapshot attempts = %d, legacy records = %d; an oversize snapshot must not be sent", ev.attempts, ev.legacy)
+		}
+		requireEveryRecordCarriesTheCatalog(t, f.fake)
+	})
+
 	t.Run("a snapshot over the bundle bound is not sealed", func(t *testing.T) {
 		ev := &fakeEvidenceSeals{advertise: true}
 		// One resource whose bytes are small in a legacy bundle (the layer)
@@ -383,6 +452,59 @@ func requireAPIBinding(t *testing.T, s release.Snapshot, repository, digest stri
 		return
 	}
 	t.Fatal("the snapshot has no api/container:api binding")
+}
+
+// evidenceCatalog is a valid service catalog of at least size bytes.
+func evidenceCatalog(t *testing.T, size int) []byte {
+	t.Helper()
+	c := servicecatalog.Catalog{Schema: servicecatalog.Schema, Module: "github.com/example/acme",
+		Processes: []servicecatalog.Process{}, Services: []servicecatalog.Service{}, Bindings: []servicecatalog.Binding{},
+		Clients: []servicecatalog.Client{}, Diagnostics: []servicecatalog.Diagnostic{}}
+	for {
+		raw, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) >= size {
+			return raw
+		}
+		c.Components = append(c.Components, servicecatalog.Component{ID: "c", Name: "c", Kind: "service", Type: strings.Repeat("t", 400),
+			Methods: []servicecatalog.CodeMethod{}, ImplementationCandidates: []servicecatalog.Implementation{}})
+	}
+}
+
+// requireEveryRecordCarriesTheCatalog reads each bundle the deploy recorded
+// back from the registry the control plane fetches it from, and requires its
+// layer to carry the service catalog.
+func requireEveryRecordCarriesTheCatalog(t *testing.T, fake *fakeDeployService) {
+	t.Helper()
+	n := 0
+	for _, b := range fake.bodies {
+		if !strings.HasSuffix(b.Path, "/RecordBundle") {
+			continue
+		}
+		n++
+		manifest, _ := base64.StdEncoding.DecodeString(b.Body["manifest"].(string))
+		repository, _ := b.Body["repository"].(string)
+		layer, err := fake.layerFetch(repository, release.SpecDigest(manifest))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assets, err := release.ReadSnapshotAssets(layer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, a := range assets {
+			found = found || a.Path == release.BundleServiceCatalogPath
+		}
+		if !found {
+			t.Errorf("recorded bundle %s does not carry the service catalog", release.SpecDigest(manifest))
+		}
+	}
+	if n == 0 {
+		t.Fatal("the deploy recorded no bundle")
+	}
 }
 
 func requireNoManifestsLayer(t *testing.T, fake *fakeDeployService) {

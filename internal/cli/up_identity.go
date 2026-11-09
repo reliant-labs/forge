@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -218,7 +219,7 @@ func differentFiles(a, b string) bool {
 	}
 	ab, aErr := os.ReadFile(a) // #nosec G304 -- forge's own PAT locations
 	bb, bErr := os.ReadFile(b) // #nosec G304 -- forge's own PAT locations
-	return aErr == nil && bErr == nil && len(bb) > 0 && string(ab) != string(bb)
+	return aErr == nil && bErr == nil && len(bb) > 0 && !bytes.Equal(ab, bb)
 }
 
 // missingIDPPATMessage explains a host IdP whose bootstrap PAT is nowhere

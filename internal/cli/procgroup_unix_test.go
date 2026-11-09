@@ -3,9 +3,10 @@
 package cli
 
 import (
+	"encoding/binary"
+	"strconv"
 	"syscall"
 	"testing"
-	"time"
 )
 
 func TestParseProcessTable(t *testing.T) {
@@ -211,43 +212,122 @@ func TestSignalTreeTargets_Unverifiable(t *testing.T) {
 	}
 }
 
-// TestReadProcStampSelf pins the real reader and mark against this process:
-// its group is its own, and it started before a mark read now.
-func TestReadProcStampSelf(t *testing.T) {
-	mark, ok := startMark()
-	if !ok {
-		t.Skip("no start-time source on this platform: killProcessTree never signals a group here")
-	}
-	st, ok := readProcStamp(syscall.Getpid())
-	if !ok {
-		t.Fatal("cannot read this process's stamp")
-	}
-	pgid, _ := syscall.Getpgid(0)
-	if st.pgid != pgid {
-		t.Errorf("pgid = %d, want %d", st.pgid, pgid)
-	}
-	// On Linux a process younger than linuxMarkSlack cannot yet verify (it is
-	// refused, never wrongly accepted); this one only gets older.
-	if !pollUntil(2*time.Second, func() bool {
-		mark, _ = startMark()
-		return st.start < mark
-	}) {
-		t.Errorf("this process started at %d, not before the mark %d", st.start, mark)
-	}
-}
-
 func TestParseProcStatStamp(t *testing.T) {
 	// pid (comm with ") (" in it) state ppid pgrp ... field 22 = starttime.
 	stat := "4242 (weird ) (name) S 1 4240 4240 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10 18446744073709551615\n"
 	st, ok := parseProcStatStamp([]byte(stat))
-	if !ok || st.pgid != 4240 || st.start != 987654*10_000 {
-		t.Errorf("stamp = %+v ok=%v, want pgid 4240 start %d", st, ok, 987654*10_000)
+	if !ok || st.pgid != 4240 || st.start != 987654 {
+		t.Errorf("stamp = %+v ok=%v, want pgid 4240 start 987654 ticks", st, ok)
 	}
 	if _, ok := parseProcStatStamp([]byte("4242 (short) S 1 2")); ok {
 		t.Error("a truncated stat parsed")
 	}
-	mark, ok := parseUptimeMark([]byte("350735.47 2000000.00\n"))
-	if !ok || mark != 350735470000-linuxMarkSlack {
-		t.Errorf("mark = %d ok=%v", mark, ok)
+}
+
+// TestLinuxStartMark pins the mark in clock ticks at the USER_HZ values Linux
+// ships (100 on x86 and arm64, 250/300/1000 on other configurations), and the
+// property the mark exists for: a process that starts at or after the uptime
+// read — its starttime is floor(start·hz) — never verifies as older than the
+// snapshot, while one started a second earlier does.
+func TestLinuxStartMark(t *testing.T) {
+	const uptime = "350735.47 2000000.00\n"
+	const readCS = 35073547 // the uptime read, in centiseconds since boot
+	for _, hz := range []int64{100, 250, 300, 1000} {
+		t.Run(strconv.FormatInt(hz, 10)+"Hz", func(t *testing.T) {
+			mark, ok := linuxStartMark([]byte(uptime), hz)
+			if want := readCS*hz/100 - 1; !ok || mark != want {
+				t.Fatalf("mark = %d ok=%v, want %d", mark, ok, want)
+			}
+			// starttime of a process started at a time given in microseconds
+			// since boot, as the kernel reports it: floor(seconds·hz).
+			ticksAt := func(us int64) int64 { return us * hz / 1_000_000 }
+			readUS := int64(readCS) * 10_000
+			v := stampVerifier{mark: mark, ok: true}
+			for _, after := range []int64{0, 1, 3_333, 10_000, 1_000_000} {
+				v.read = stampsAt(map[int]procStamp{120: {pgid: 120, start: ticksAt(readUS + after)}})
+				if v.samePID(120) || v.leads(120) {
+					t.Errorf("a process started %dµs after the mark verified as older than the snapshot", after)
+				}
+			}
+			v.read = stampsAt(map[int]procStamp{120: {pgid: 120, start: ticksAt(readUS - 1_000_000)}})
+			if !v.samePID(120) || !v.leads(120) {
+				t.Error("a process started a second before the mark did not verify")
+			}
+		})
+	}
+	if _, ok := linuxStartMark([]byte("garbage"), 100); ok {
+		t.Error("an unparseable uptime produced a mark")
+	}
+	if mark, ok := linuxStartMark([]byte("12.5 1.0"), 100); !ok || mark != 1250-1 {
+		t.Errorf("single-digit centiseconds: mark = %d ok=%v, want 1249", mark, ok)
+	}
+}
+
+// TestLinuxTickRateUnavailable: with no tick rate there is no mark, and with
+// no mark no process group is ever signalled — forge does not guess USER_HZ.
+func TestLinuxTickRateUnavailable(t *testing.T) {
+	mark, ok := linuxStartMark([]byte("350735.47 2000000.00\n"), 0)
+	if ok {
+		t.Fatalf("a mark (%d) without a tick rate", mark)
+	}
+	table := airTree()
+	v := stampVerifier{mark: mark, ok: ok, read: stampsAt(map[int]procStamp{
+		110: {pgid: 110, start: 1}, 120: {pgid: 120, start: 1}, 121: {pgid: 120, start: 1},
+	})}
+	var k killRecorder
+	if err := signalTreeTargets(treeSignalTargets(110, table, noLineage, noLineage), table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range k.sent {
+		if target < 0 {
+			t.Errorf("signalled group %d without a tick rate (sent %v)", -target, k.sent)
+		}
+	}
+}
+
+func TestClockTicksFromAuxv(t *testing.T) {
+	cases := []struct {
+		name string
+		auxv [][2]uintptr
+		hz   int64
+		ok   bool
+	}{
+		{"present", [][2]uintptr{{6, 4096}, {atClkTck, 250}, {25, 0xdead}}, 250, true},
+		{"absent", [][2]uintptr{{6, 4096}}, 0, false},
+		{"zero", [][2]uintptr{{atClkTck, 0}}, 0, false},
+	}
+	for _, tc := range cases {
+		hz, ok := clockTicksFromAuxv(tc.auxv)
+		if hz != tc.hz || ok != tc.ok {
+			t.Errorf("%s: got %d,%v want %d,%v", tc.name, hz, ok, tc.hz, tc.ok)
+		}
+	}
+}
+
+// TestParseAuxv decodes /proc/self/auxv in both word sizes and byte orders,
+// stopping at AT_NULL.
+func TestParseAuxv(t *testing.T) {
+	encode := func(size int, order binary.ByteOrder, words ...uint64) []byte {
+		b := make([]byte, size*len(words))
+		for i, w := range words {
+			if size == 4 {
+				order.PutUint32(b[i*4:], uint32(w))
+			} else {
+				order.PutUint64(b[i*8:], w)
+			}
+		}
+		return b
+	}
+	for _, size := range []int{4, 8} {
+		for _, order := range []binary.ByteOrder{binary.LittleEndian, binary.BigEndian} {
+			raw := encode(size, order, 6, 4096, atClkTck, 1000, 0, 0, atClkTck, 7)
+			got := parseAuxv(raw, size, order)
+			if len(got) != 2 || got[1] != [2]uintptr{atClkTck, 1000} {
+				t.Errorf("size %d %v: auxv = %v", size, order, got)
+			}
+			if hz, ok := clockTicksFromAuxv(got); !ok || hz != 1000 {
+				t.Errorf("size %d %v: hz = %d ok=%v", size, order, hz, ok)
+			}
+		}
 	}
 }

@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -168,7 +169,8 @@ func groupMembers(pgid int, table map[int]procRow) []int {
 }
 
 // procStamp identifies one live process: its process group and its start
-// time, in microseconds on the platform's own clock (startMark's). A pid is
+// time, in the platform's own unit and clock (startMark's: microseconds of
+// wall clock on macOS, clock ticks since boot on Linux). A pid is
 // unique among LIVE processes, so a process alive now whose start precedes a
 // mark is the very process that held that pid at the mark.
 type procStamp struct {
@@ -224,8 +226,9 @@ func (v stampVerifier) leads(pgid int) bool {
 // parseProcStatStamp extracts the process group and start time from a Linux
 // /proc/<pid>/stat. Fields are read after the LAST ')' (comm may contain
 // spaces and parentheses): fields[0] is field 3 (state), fields[2] field 5
-// (pgrp), fields[19] field 22 (starttime, in clock ticks since boot). A clock
-// tick is USER_HZ = 100 on every Linux ABI, so a tick is 10ms.
+// (pgrp), fields[19] field 22 (starttime). starttime is kept as the kernel
+// reports it, in clock ticks since boot, and compared against a mark in the
+// same ticks (linuxStartMark): no conversion, so no rounding to reason about.
 func parseProcStatStamp(data []byte) (procStamp, bool) {
 	end := strings.LastIndexByte(string(data), ')')
 	if end < 0 {
@@ -240,33 +243,88 @@ func parseProcStatStamp(data []byte) (procStamp, bool) {
 		return procStamp{}, false
 	}
 	ticks, err := strconv.ParseInt(fields[19], 10, 64)
-	if err != nil {
+	if err != nil || ticks < 0 {
 		return procStamp{}, false
 	}
-	return procStamp{pgid: pgid, start: ticks * 10_000}, true
+	return procStamp{pgid: pgid, start: ticks}, true
 }
 
-// parseUptimeMark turns /proc/uptime ("12345.67 54321.00") into microseconds
-// since boot, minus linuxMarkSlack: starttime is truncated to a 10ms tick and
-// uptime to 10ms, so a process started just after the mark can read up to
-// two ticks early. Backing the mark off keeps such a process from passing as
-// older than the snapshot; a process started in that slack is refused, never
-// wrongly accepted.
-func parseUptimeMark(data []byte) (int64, bool) {
-	f := strings.Fields(string(data))
+// linuxStartMark turns /proc/uptime ("12345.67 54321.00", seconds since boot
+// to the centisecond) into a mark in clock ticks at hz — the unit of
+// /proc/<pid>/stat's starttime — minus one tick of slack.
+//
+// Why a process started after the uptime read can never pass: its starttime is
+// floor(s·hz) for a start s at or after the read, and the uptime printed is at
+// most the read time, so floor(uptime·hz) <= its starttime. Both are floors of
+// one boot-time clock (starttime counts boot time since Linux 5.3; before, it
+// was the monotonic clock, which stops in suspend, so on such a kernel after a
+// suspend the check is weaker by the time suspended). The one-tick slack keeps
+// that true even if the kernel stamps starttime from a coarser read of that
+// clock than uptime; it refuses a process younger than a tick, never accepts a
+// newer one.
+//
+// hz must be the kernel's real USER_HZ (linuxClockTicks); it is architecture
+// dependent, and a wrong rate makes the two sides incomparable.
+func linuxStartMark(uptime []byte, hz int64) (int64, bool) {
+	if hz <= 0 {
+		return 0, false
+	}
+	f := strings.Fields(string(uptime))
 	if len(f) == 0 {
 		return 0, false
 	}
-	secs, err := strconv.ParseFloat(f[0], 64)
-	if err != nil || secs <= 0 {
+	whole, frac, _ := strings.Cut(f[0], ".")
+	secs, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil || secs < 0 {
 		return 0, false
 	}
-	return int64(secs*1e6) - linuxMarkSlack, true
+	// Centiseconds, read as written: "47" is 47, "5" is 50, "123" is 12.
+	frac = (frac + "00")[:2]
+	cs, err := strconv.ParseInt(frac, 10, 64)
+	if err != nil || cs < 0 {
+		return 0, false
+	}
+	return (secs*100+cs)*hz/100 - 1, true
 }
 
-// linuxMarkSlack is three 10ms ticks: two for the start-time truncation, one
-// for uptime's.
-const linuxMarkSlack = 30_000
+// atClkTck is AT_CLKTCK, the auxiliary-vector key under which the kernel
+// passes USER_HZ to every process (the source sysconf(_SC_CLK_TCK) reads).
+// Its value, 17, is fixed by the ELF ABI on every Linux architecture.
+const atClkTck = 17
+
+// clockTicksFromAuxv returns AT_CLKTCK from an auxiliary vector, or false
+// when it is absent or not a positive rate.
+func clockTicksFromAuxv(auxv [][2]uintptr) (int64, bool) {
+	for _, kv := range auxv {
+		if kv[0] == atClkTck {
+			if hz := int64(kv[1]); hz > 0 {
+				return hz, true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// parseAuxv decodes a raw auxiliary vector (/proc/self/auxv): pairs of
+// native-endian machine words, ending at AT_NULL (0).
+func parseAuxv(data []byte, wordSize int, order binary.ByteOrder) [][2]uintptr {
+	var out [][2]uintptr
+	word := func(b []byte) uintptr {
+		if wordSize == 4 {
+			return uintptr(order.Uint32(b))
+		}
+		return uintptr(order.Uint64(b))
+	}
+	for off := 0; off+2*wordSize <= len(data); off += 2 * wordSize {
+		key := word(data[off:])
+		if key == 0 {
+			break
+		}
+		out = append(out, [2]uintptr{key, word(data[off+wordSize:])})
+	}
+	return out
+}
 
 // treeSignalTargets is killProcessTree's pure decision: the kill(2) targets
 // for root's tree, read from one process-table snapshot. Negative entries are

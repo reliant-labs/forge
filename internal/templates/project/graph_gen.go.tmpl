@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 {{- if .Operators}}
 	"github.com/reliant-labs/forge/pkg/appkit/operatorkit"
@@ -66,6 +67,10 @@ type Graph struct {
 	// /metrics). Every built node that reports Ready joins /readyz when the
 	// root runs. nil for a root that serves no probes.
 	Probes *serverkit.Probes
+	// ConstructionRollbackTimeout opts into reverse Close of acquired nodes
+	// if construction fails. Zero preserves legacy Build behavior. Positive
+	// values bound cleanup independently of a canceled Ctx; Close must honor it.
+	ConstructionRollbackTimeout time.Duration
 {{- range .ConfigInputs}}
 	// {{.Name}} is {{.Doc}}.
 	// A process whose command loads it sets it (roots_gen.go), and it is nil
@@ -120,6 +125,9 @@ func (g *Graph) build(root string, force func()) error {
 	// building, beside every node already built.
 	if bp := serverkit.BootProbesFrom(g.Ctx); bp != nil {
 		g.b.ReportTo(bp)
+	}
+	if g.ConstructionRollbackTimeout != 0 {
+		return g.b.BuildWithRollback(g.Ctx, root, g.ConstructionRollbackTimeout, force)
 	}
 	return g.b.Build(root, force)
 }
@@ -180,9 +188,17 @@ func (g *Graph) Build{{.TypeName}}() (*{{.TypeName}}, error) {
 // No node the root reaches serves g.Probes, so a probe listener on the server
 // address does: started before every node, stopped after them.
 {{- end}}
-func (g *Graph) Run{{.TypeName}}(ctx context.Context, policy lifecyclekit.Policy) error {
+func (g *Graph) Run{{.TypeName}}(ctx context.Context, policy lifecyclekit.Policy) (runErr error) {
 	if _, err := g.Build{{.TypeName}}(); err != nil {
 		return err
+	}
+	if g.ConstructionRollbackTimeout != 0 {
+		// No-op once Supervise takes ownership; covers pre-supervision errors.
+		defer func() {
+			if cleanupErr := g.b.Rollback(g.ConstructionRollbackTimeout); cleanupErr != nil {
+				runErr = fmt.Errorf("%w; rollback: %w", runErr, cleanupErr)
+			}
+		}()
 	}
 {{- if .ServesProbes}}
 	return g.b.Supervise(ctx, policy, g.Probes)

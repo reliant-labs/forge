@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,14 +36,33 @@ func init() { hostToolTripwireSetup = installHostToolTripwire }
 // instead of making its own (see installHostToolTripwire).
 const tripwireDirEnv = "FORGE_CLI_TEST_TRIPWIRE_DIR"
 
-// tripwireOwnerFile records the pid of the process that made a tripwire
-// directory, so a later run can tell a leftover from a live one.
-const tripwireOwnerFile = "owner.pid"
+// tripwireLockFile is the file whose exclusive OS lock (flock(2); LockFileEx on
+// Windows) marks a tripwire directory as owned by a running suite. The suite
+// takes it before the file has its name and holds it for its whole life; the
+// kernel drops it when the suite exits however it exits. A later run reaps a
+// directory only when it can take that lock itself.
+//
+// Ownership used to be a pid in an owner.pid file, probed for liveness. That
+// is wrong on any machine whose sandboxes share /tmp but not a PID namespace:
+// another sandbox's live suite has a pid that is "not running" here, so
+// concurrent internal/cli suites deleted each other's live directories and
+// failed TestHostToolTripwire_ShadowsRealBinaries and the env-parity tests. A
+// file lock is held by the kernel, not named by a pid, so it is seen across
+// namespaces. No owner.pid is written any more either: a forge that still
+// reaps by pid treats a directory without one as legacy and waits out its age
+// floor instead of deleting a live suite's directory.
+const tripwireLockFile = "owner.lock"
 
-// tripwireOrphanAge is how old a tripwire directory with no owner file (made
-// by a forge that predates the file) must be before it is reaped. No run of
-// this package lasts that long: its longest budget is 45 minutes.
-const tripwireOrphanAge = 6 * time.Hour
+// tripwireOrphanAge is how old a tripwire directory with no lock file (made by
+// a forge that predates it, with or without an owner.pid) must be before it is
+// reaped. Its owner cannot be proven gone, so only an age no run of this
+// package approaches (its longest budget is 45 minutes) makes it safe.
+const tripwireOrphanAge = 24 * time.Hour
+
+// tripwireLock holds this suite's tripwire lock open for the life of the
+// process. It must stay reachable: a collected *os.File is closed by its
+// finalizer, which would release the lock mid-run.
+var tripwireLock *os.File
 
 // liveTripwireDir is the directory this process's tripwire runs from.
 var liveTripwireDir string
@@ -90,13 +108,13 @@ func installHostToolTripwire() (func() error, error) {
 		liveTripwireDir = dir
 		return func() error { return nil }, nil
 	}
-	reapStaleTripwires(os.TempDir(), time.Now(), processAlive) // procgroup_*.go
+	reapStaleTripwires(os.TempDir(), time.Now())
 	dir, err := os.MkdirTemp("", "forge-cli-tripwire-")
 	if err != nil {
 		return nil, err
 	}
 	registerSharedTempDir(dir)
-	if err := os.WriteFile(filepath.Join(dir, tripwireOwnerFile), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+	if tripwireLock, err = holdTripwireLock(dir); err != nil {
 		return nil, err
 	}
 	calls := filepath.Join(dir, "calls.log")
@@ -141,13 +159,41 @@ func tripwireLeadsPATH(dir, path string) bool {
 	return err == nil
 }
 
+// holdTripwireLock takes the exclusive lock that marks dir as this suite's and
+// returns the file holding it. The lock is taken on a temporary name and only
+// then renamed to tripwireLockFile (the lock follows the inode), so no reaper
+// can ever find the file under its name and unlocked while its owner is alive.
+func holdTripwireLock(dir string) (*os.File, error) {
+	f, err := os.CreateTemp(dir, tripwireLockFile+".*")
+	if err != nil {
+		return nil, err
+	}
+	locked, err := tryLockFile(f) // lockfile_*.go
+	if err == nil && !locked {
+		err = errors.New("a fresh lock file is already locked")
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), filepath.Join(dir, tripwireLockFile))
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("lock tripwire directory %s: %w", dir, err)
+	}
+	return f, nil
+}
+
 // reapStaleTripwires removes the forge-cli-tripwire-* directories in root
-// whose owner is gone: an owner.pid naming a process that is not running, or,
-// for a directory from a forge that wrote no owner file, an age past
-// tripwireOrphanAge. A directory whose owner is alive, or whose owner cannot be
-// read, is left alone: deleting a live suite's tripwire is the failure this
-// exists to prevent.
-func reapStaleTripwires(root string, now time.Time, alive func(pid int) bool) {
+// whose owner is gone: a lock file nobody holds (this process takes the lock
+// itself to prove it), or, for a directory from a forge that wrote no lock
+// file, an age past tripwireOrphanAge. A directory whose lock is held, or
+// whose lock file cannot be opened, is left alone: deleting a live suite's
+// tripwire is the failure this exists to prevent. This suite's own directory
+// is safe too: a second open file description contends for the lock like any
+// other process would.
+//
+// No pid is consulted. A pid names a process only inside one PID namespace,
+// and sandboxes sharing this /tmp do not share one.
+func reapStaleTripwires(root string, now time.Time) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
@@ -157,11 +203,18 @@ func reapStaleTripwires(root string, now time.Time, alive func(pid int) bool) {
 			continue
 		}
 		dir := filepath.Join(root, e.Name())
-		raw, err := os.ReadFile(filepath.Join(dir, tripwireOwnerFile))
+		f, err := os.OpenFile(filepath.Join(dir, tripwireLockFile), os.O_RDWR, 0)
 		switch {
 		case err == nil:
-			pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw)))
-			if convErr != nil || pid <= 0 || pid == os.Getpid() || alive(pid) {
+			locked, lockErr := tryLockFile(f)
+			if locked {
+				_ = unlockFile(f)
+			}
+			// Close before removing: Windows cannot delete an open file. A
+			// released lock is never retaken (a new suite makes a new
+			// directory), so letting go of it first opens no window.
+			_ = f.Close()
+			if lockErr != nil || !locked {
 				continue
 			}
 		case errors.Is(err, fs.ErrNotExist):
@@ -250,16 +303,46 @@ func TestTripwireHelperProcessReusesTheSuiteDirectory(t *testing.T) {
 }
 
 func TestReapStaleTripwires(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the tripwire, and so its reaper, is not installed on Windows")
+	}
 	root := t.TempDir()
 	now := time.Now()
-	mk := func(name, owner string, age time.Duration) string {
+	// mk makes a tripwire-shaped directory aged by age. lock is "" for a
+	// legacy directory with no lock file, "held" for one whose lock another
+	// owner holds, and "free" for one whose owner has exited. pid, when set,
+	// is written as a legacy owner.pid: one that names no process here, as a
+	// suite in another PID namespace's does.
+	var held []*os.File
+	t.Cleanup(func() {
+		for _, f := range held {
+			_ = f.Close()
+		}
+	})
+	mk := func(name, lock, pid string, age time.Duration) string {
 		t.Helper()
 		dir := filepath.Join(root, name)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if owner != "" {
-			if err := os.WriteFile(filepath.Join(dir, tripwireOwnerFile), []byte(owner), 0o600); err != nil {
+		if pid != "" {
+			if err := os.WriteFile(filepath.Join(dir, "owner.pid"), []byte(pid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		switch lock {
+		case "held":
+			f, err := holdTripwireLock(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			held = append(held, f)
+		case "free":
+			f, err := holdTripwireLock(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -269,20 +352,21 @@ func TestReapStaleTripwires(t *testing.T) {
 		}
 		return dir
 	}
-	alive := func(pid int) bool { return pid == 100 }
+	const deadPID = "2147483646" // running nowhere this test can see
 	gone := []string{
-		mk("forge-cli-tripwire-1", "200", 0),                        // owner exited
-		mk("forge-cli-tripwire-2", "", tripwireOrphanAge+time.Hour), // pre-owner-file leftover, old
+		mk("forge-cli-tripwire-1", "free", "", 0),                            // owner exited
+		mk("forge-cli-tripwire-2", "", "", tripwireOrphanAge+time.Hour),      // pre-lock leftover, old
+		mk("forge-cli-tripwire-3", "", deadPID, tripwireOrphanAge+time.Hour), // pid-era leftover, old
 	}
 	kept := []string{
-		mk("forge-cli-tripwire-3", "100", 48*time.Hour),          // owner alive, however old
-		mk("forge-cli-tripwire-4", strconv.Itoa(os.Getpid()), 0), // this process
-		mk("forge-cli-tripwire-5", "", time.Minute),              // no owner file, recent: maybe a live old-forge suite
-		mk("forge-cli-tripwire-6", "not-a-pid", 48*time.Hour),    // unreadable owner
-		mk("forge-cli-other-1", "200", 48*time.Hour),             // not a tripwire
-		mk("unrelated", "", 48*time.Hour),
+		mk("forge-cli-tripwire-4", "held", deadPID, 48*time.Hour), // live owner whose pid is foreign here, however old
+		mk("forge-cli-tripwire-5", "held", "", 0),                 // live owner
+		mk("forge-cli-tripwire-6", "", deadPID, time.Hour),        // pid-era, recent: maybe a live old-forge suite elsewhere
+		mk("forge-cli-tripwire-7", "", "", time.Minute),           // no owner record, recent
+		mk("forge-cli-other-1", "free", "", 48*time.Hour),         // not a tripwire
+		mk("unrelated", "", "", 48*time.Hour),
 	}
-	reapStaleTripwires(root, now, alive)
+	reapStaleTripwires(root, now)
 	for _, d := range gone {
 		if _, err := os.Stat(d); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("%s survived the reap (%v)", filepath.Base(d), err)
@@ -291,6 +375,20 @@ func TestReapStaleTripwires(t *testing.T) {
 	for _, d := range kept {
 		if _, err := os.Stat(d); err != nil {
 			t.Errorf("%s was reaped: %v", filepath.Base(d), err)
+		}
+	}
+
+	// A held directory goes once its owner lets go.
+	for _, f := range held {
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held = nil
+	reapStaleTripwires(root, now)
+	for _, d := range kept[:2] {
+		if _, err := os.Stat(d); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s survived the reap after its owner released it (%v)", filepath.Base(d), err)
 		}
 	}
 }

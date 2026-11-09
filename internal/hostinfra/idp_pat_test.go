@@ -91,9 +91,7 @@ func TestIDPPATLocations_FindPublishMirror(t *testing.T) {
 	if read(loc.Shared) != "old-forge-token" {
 		t.Fatal("PublishShared did not copy the token")
 	}
-	if st, err := os.Stat(loc.Shared); err != nil || st.Mode().Perm() != 0o600 {
-		t.Errorf("the shared token must be owner-only: %v %v", st.Mode(), err)
-	}
+	// Its mode is asserted where POSIX modes exist: idp_pat_unix_test.go.
 
 	// The shared file is what Zitadel writes: it wins, and the checkout copy follows it.
 	write(loc.Shared, "current-token")

@@ -230,7 +230,7 @@ func TestDecideDevTelemetrySendsSessionAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := json.Marshal(caller.calls[0])
-	want := fmt.Sprintf(`{"environment":"dev","project":"demo","retention":{"browserDays":2,"overrides":[{"days":1,"service":"worker","signal":"logs"}],"tracesDays":3},"sessionId":%q}`, f.Session.session.ID)
+	want := fmt.Sprintf(`{"environment":"dev","project":"demo","retention":{"browserDays":2,"overrides":[{"days":1,"service":"worker","signal":"logs"}],"tracesDays":3},"sessionId":%q,"sessionReplay":false}`, f.Session.session.ID)
 	if string(got) != want {
 		t.Errorf("mint request\n got %s\nwant %s", got, want)
 	}

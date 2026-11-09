@@ -363,6 +363,9 @@ export function useModalDialog({
 }) {
   const ancestors = useContext(DialogAncestors);
   const callbacks = useRef({ onClose, initialFocus, returnFocus, fallbackFocus });
+  // Read when the dialog registers, like callbacks: a nesting change alone
+  // must not re-register (and so re-focus) an open dialog.
+  const ancestorsRef = useRef(ancestors);
   const passiveScrollSettlement = useRef<(() => void) | null>(null);
   // Parent passive cleanup can precede a legacy child's passive cleanup.
   // A microtask from this phase runs after both, unlike layout cleanup (which
@@ -373,6 +376,7 @@ export function useModalDialog({
   }, [open]);
   useLayoutEffect(() => {
     callbacks.current = { onClose, initialFocus, returnFocus, fallbackFocus };
+    ancestorsRef.current = ancestors;
   });
   useLayoutEffect(() => {
     const panel = panelRef.current;
@@ -407,7 +411,7 @@ export function useModalDialog({
       id,
       panel,
       ref: panelRef,
-      ancestors,
+      ancestors: ancestorsRef.current,
       containFocus,
       external: null,
     };

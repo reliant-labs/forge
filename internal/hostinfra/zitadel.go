@@ -232,10 +232,14 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return fmt.Errorf("host-infra %s: create data dir: %w", spec.Name, err)
 	}
-	// The PAT the declarative boot writes, which the idp-provision job then
-	// reads. Zitadel does not create the parent directory.
-	patPath := spec.PATPath(projectDir)
-	if err := os.MkdirAll(filepath.Dir(patPath), 0o755); err != nil {
+	// The PAT the declarative boot writes, which the identity step of
+	// `forge env up` then reads: beside the IdP database it belongs to, not
+	// in this checkout (see idp_pat.go). Zitadel does not create the parent
+	// directory.
+	patLoc := spec.IDPPATLocations(projectDir)
+	patPath := patLoc.WritePath()
+	sharedBefore := patLoc.SharedContent()
+	if err := patLoc.PrepareWriteDir(); err != nil {
 		return fmt.Errorf("host-infra %s: create PAT dir: %w", spec.Name, err)
 	}
 
@@ -304,6 +308,15 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 		return fmt.Errorf("host-infra %s: %w\n  logs: %s", spec.Name, err, shortPath(projectDir, logPath))
 	}
 	fmt.Printf("  %s: ready on :%d (pid %d)\n", spec.Name, spec.Port, pid)
+	// A first-instance boot wrote a new token beside the database: copy it
+	// to the declared checkout path too, which provisioning scripts read
+	// whether or not the env declares a managed identity.
+	if err := patLoc.SecureShared(); err != nil {
+		fmt.Printf("  %s: warning: %v\n", spec.Name, err)
+	}
+	if err := patLoc.MirrorIfRewritten(sharedBefore); err != nil {
+		fmt.Printf("  %s: warning: could not copy the new IdP token to %s: %v\n", spec.Name, shortPath(projectDir, patLoc.Checkout), err)
+	}
 	return nil
 }
 
@@ -739,9 +752,11 @@ func (s Spec) idpStepsPath(projectDir string) string {
 	return filepath.Join(projectDir, p)
 }
 
-// PATPath resolves the service-account token path against the project
-// root. It must match what the identity step of `forge env up` reads (its --pat-file
-// default, .forge/idp/pat.txt) — the two are the same declaration.
+// PATPath resolves the declared service-account token path against the
+// project root. At the default (.forge/idp/pat.txt) it is the checkout's copy
+// and the fallback for a database an older forge initialized; Zitadel writes
+// the token to IDPPATLocations' shared path. A declared non-default path is
+// the only location, for writing and reading.
 func (s Spec) PATPath(projectDir string) string {
 	p := s.IDPPATPath
 	if p == "" {

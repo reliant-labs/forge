@@ -9,12 +9,13 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// Embedded Reliant calls NewRootCmd, not Execute. Do not exec a forge child:
+// Embedded Reliant calls NewRootCmd, not Execute (newTestRootCmd is NewRootCmd
+// plus the route restore every root-building test needs). Do not exec a forge child:
 // the regression is the constructor's registration, before any command runs.
 func TestNewRootCmdRegistersDescriptorRefreshForEmbeddedHosts(t *testing.T) {
 	codegen.RegisterDescriptorBuilder(nil)
 	t.Cleanup(func() { codegen.RegisterDescriptorBuilder(buildDescriptorOnDemand) })
-	_ = NewRootCmd()
+	_ = newTestRootCmd(t)
 	if !codegen.DescriptorBuilderRegistered() {
 		t.Fatal("embedded command tree has no descriptor extractor; stale proto cache will block lint")
 	}

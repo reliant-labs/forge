@@ -190,12 +190,16 @@ func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
 				if len(tc.services) == 0 {
 					// A site with no API names none, but a hosted frontend
 					// ships browser telemetry to the platform's own-origin
-					// ingest by default.
-					if _, hasAPI := spec["API_URL"]; hasAPI || len(spec) != 1 {
-						t.Errorf("%s: a site with no API names one: %#v", env, spec)
+					// ingest by default, with masked session replay on for a
+					// new browser project (#1988). Nothing else.
+					if _, hasAPI := spec["API_URL"]; hasAPI || len(spec) != 2 {
+						t.Errorf("%s: a site with no API names one, or carries more than OTEL_ENDPOINT and OTEL_REPLAY: %#v", env, spec)
 					}
 					if ep, _ := spec["OTEL_ENDPOINT"].(map[string]any); ep["value"] != "/_otel" {
 						t.Errorf("%s: a hosted frontend must default OTEL_ENDPOINT to /_otel, got %#v", env, spec)
+					}
+					if rp, _ := spec["OTEL_REPLAY"].(map[string]any); rp["value"] != "true" {
+						t.Errorf("%s: a new hosted browser project must default OTEL_REPLAY to true, got %#v", env, spec)
 					}
 					continue
 				}

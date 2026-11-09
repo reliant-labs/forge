@@ -1498,9 +1498,10 @@ var removals = []removal{
 	},
 	{
 		Name: "the `forge dev` command group",
-		Why: "The k3d lifecycle and dev-state introspection verbs were promoted flat out of the " +
-			"`dev` namespace onto `forge cluster`: `forge cluster up|down|reset|reload|status|" +
-			"logs|info|urls|instances`. `forge dev` itself is not a command — nothing resolves it. " +
+		Why: "The k3d lifecycle and dev-state introspection verbs left the flat `forge dev <verb>` " +
+			"spelling: they are `forge dev cluster up|down|reset|reload|status|logs|info|urls|" +
+			"instances` since the 14-noun grouping (#1998; `forge cluster …` stays an alias). " +
+			"A verb straight under `forge dev` names nothing. " +
 			"`forge dev port-forward` did not move at all: host port-forwarding was RETIRED in " +
 			"favour of the Gateway API ingress model, where a service is reachable through a " +
 			"declared route or not at all, so a doc that still names it promises a way out that " +
@@ -1516,7 +1517,9 @@ var removals = []removal{
 			// that cries wolf gets weakened, which would defeat this guard for
 			// every removal in the table. Naming a subcommand that cannot be
 			// invoked is the harm; that is what is caught here.
-			regexp.MustCompile(`\bforge\s+dev\s+(?:cluster|status|info|logs|urls|instances|port-forward|up|down|reset|reload)\b`),
+			// `forge dev cluster …`, `forge dev debug` and `forge dev curl` are
+			// live since the 14-noun grouping, so `cluster` is not in the list.
+			regexp.MustCompile(`\bforge\s+dev\s+(?:status|info|logs|urls|instances|port-forward|up|down|reset|reload)\b`),
 		},
 	},
 	{

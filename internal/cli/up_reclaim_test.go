@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // fakeFacts is the map-backed procFacts used by the ownership-resolution
@@ -347,6 +349,7 @@ func TestHelperBlockProcess(t *testing.T) {
 // in its env and asserts osProcFacts reads it back and forgeOwnerOfPID
 // classifies it as ours; a child WITHOUT the marker classifies as foreign.
 func TestForgeOwnership_RealProcess(t *testing.T) {
+	testkit.Slow(t, "execs ps")
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("process-env inspection is implemented for darwin/linux only")
 	}

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestCompositionRenderDoesNotSpendRemoteLookupBudget(t *testing.T) {
@@ -46,6 +48,7 @@ func TestCompositionRenderHonorsCallerCancellation(t *testing.T) {
 }
 
 func TestCompositionCheckoutDoesNotSpendRemoteLookupBudget(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	previousRender, previousCheckout := renderKCLRawHook, compositionCheckoutLedger
 	t.Cleanup(func() { renderKCLRawHook, compositionCheckoutLedger = previousRender, previousCheckout })
 	dir := newLedgerTestProject(t, "composition-local-deadline")
@@ -68,6 +71,7 @@ func TestCompositionCheckoutDoesNotSpendRemoteLookupBudget(t *testing.T) {
 }
 
 func TestCompositionCheckoutHonorsCallerCancellation(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	previousRender, previousCheckout := renderKCLRawHook, compositionCheckoutLedger
 	t.Cleanup(func() { renderKCLRawHook, compositionCheckoutLedger = previousRender, previousCheckout })
 	dir := newLedgerTestProject(t, "composition-local-cancel")

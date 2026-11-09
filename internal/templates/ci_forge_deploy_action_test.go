@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The vendored action's shell, EXECUTED — not just matched as text. Each
@@ -131,6 +133,7 @@ func runActionStepVerbs(t *testing.T, step actionStep, env map[string]string, re
 // The FIRST stage: deploy by version, with gates, and hand the recorded
 // promotion id to the gate step and to the next stage.
 func TestForgeDeployAction_DeployByVersion(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	step := forgeDeploySteps(t)["deploy"]
 	code, argv, ghOut := runActionStep(t, step, map[string]string{
@@ -225,6 +228,7 @@ func TestForgeDeployAction_FailedWaitStillPublishesThePromotionID(t *testing.T) 
 // The gate step reads the SAME document the deploy wrote, names it `rollout`,
 // and pins it to the promotion id rather than to the env's current one.
 func TestForgeDeployAction_GateRecordsTheDeployDocument(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	var gate actionStep
 	for _, s := range forgeDeployAllSteps(t) {

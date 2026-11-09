@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Imports a mock needs are a fact about the packages its signatures
@@ -210,6 +212,7 @@ func TestGenerate_ForeignSignatureImportsPackageTheContractNeverImports(t *testi
 // the contract's OWN interfaces: contract.go imports nats.go unaliased and
 // uses nats.Msg, and the mock must keep that import.
 func TestGenerate_ContractImportNamedUnlikeItsPath(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := natsProject(t)
 	writeTree(t, root, map[string]string{
 		"internal/pipeline/contract.go": `package pipeline

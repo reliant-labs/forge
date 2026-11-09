@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeMatcherProject scaffolds the minimum go.mod + pkg/app +
@@ -43,6 +45,7 @@ func mustWrite(t *testing.T, path, content string) {
 // behavior dropped the wire (different type strings); the matcher
 // should report MatchAssignable so bootstrap emits `Repo: app.Repo`.
 func TestDepsAssignability_NarrowInterfaceWideConcrete(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeMatcherProject(t,
 		`package app
 
@@ -85,6 +88,7 @@ type Deps struct {
 // `app.Foo` blindly → compile error. Expect MatchNameMismatch so the
 // caller emits a typed-zero + loud UNRESOLVED hint instead.
 func TestDepsAssignability_NameCollisionWrongType(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeMatcherProject(t,
 		`package app
 
@@ -144,6 +148,7 @@ func TestDepsAssignability_ExactStringFastPath(t *testing.T) {
 // callers can fall back to the legacy string compare. Codegen on a
 // just-scaffolded project (no pkg/app yet) must still succeed.
 func TestDepsAssignability_UnavailableWhenProjectMissing(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	m := NewDepsAssignabilityMatcher(t.TempDir())
 	// Strings differ AND no pkg/app — matcher must signal Unavailable.
 	kind := m.Match("internal", "audit", "Repo", "Repository", "*PostgresRepo", true)
@@ -158,6 +163,7 @@ func TestDepsAssignability_UnavailableWhenProjectMissing(t *testing.T) {
 // constructs with a nil dep. After: matcher confirms assignability →
 // AppFieldRefs gets the entry → bootstrap emits `Repo: app.Repo`.
 func TestInspectComponentDepsShape_NarrowInterfaceWiresAssignable(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeMatcherProject(t,
 		`package app
 
@@ -201,6 +207,7 @@ type Deps struct {
 // itself must not emit `Repo: app.Repo` with incompatible types,
 // since that would fail the Go build.
 func TestInspectComponentDepsShape_NameCollisionStaysSilent(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeMatcherProject(t,
 		`package app
 
@@ -272,6 +279,7 @@ type Deps struct {
 // MatchNameMismatch because the two loads produced distinct
 // *types.Named. Must be MatchAssignable.
 func TestDepsAssignability_WorkerLocalInterfaceSharedUniverse(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "go.mod"), `module example.com/proj
 
@@ -350,6 +358,7 @@ type App struct {
 // bootstrap output can't diverge from wire_gen's on the same project
 // state. The compiler arbitrates a wrong wire loudly; nil never does.
 func TestMatchedAppField_UnavailableWiresNameMatch(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	m := NewDepsAssignabilityMatcher(t.TempDir())
 	appByName := map[string]string{"Repo": "*PostgresRepo"}
 	if !matchedAppField(m, "internal", "audit", "Repo", "Repository", appByName) {

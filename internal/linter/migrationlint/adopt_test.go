@@ -3,11 +3,14 @@ package migrationlint
 import (
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestAdoptingBaselineIsClean: the shape a goose cutover leaves — a baseline
 // that declares goose's history, then ordinary migrations — is not a finding.
 func TestAdoptingBaselineIsClean(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeMigrationIn(t, dir, "20261011000000_baseline.up.sql",
 		"-- forge:adopts goose 20260211000002 20260211000003\n-- forge:adopts goose 20261011203444\nCREATE TABLE chats (id INT PRIMARY KEY);\n")
@@ -26,6 +29,7 @@ func TestAdoptingBaselineIsClean(t *testing.T) {
 // squashed files are moved out — a baseline declaring forge versions the
 // directory no longer holds, then ordinary migrations — is not a finding.
 func TestSquashedForgeBaselineIsClean(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeMigrationIn(t, dir, "20260201000000_baseline.up.sql",
 		"-- forge:adopts forge 20260101000001 20260101000002\n-- forge:backward-compatible\nCREATE TABLE accounts (id INT PRIMARY KEY);\n")
@@ -43,6 +47,7 @@ func TestSquashedForgeBaselineIsClean(t *testing.T) {
 // TestInvalidAdoptionIsAnError: each declaration the migrator would refuse —
 // on every database, at boot — is an error at review time, on its line.
 func TestInvalidAdoptionIsAnError(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	cases := []struct {
 		name  string
 		files map[string]string

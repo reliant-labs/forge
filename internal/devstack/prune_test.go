@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // pruneGit runs a git command in dir, failing the test on error. Separate
@@ -137,6 +139,7 @@ func TestPruneNeverReclaimsPlainPortBlockKey(t *testing.T) {
 // stored by AllocatePort in the first place, but Prune must not choke on or
 // otherwise disturb the registry when only the default has ever been used.
 func TestPruneNeverTouchesDefaultKey(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -279,6 +282,7 @@ func TestPruneDryRunChangesNothing(t *testing.T) {
 // same path a git-not-installed machine would take), Prune must return an
 // error and touch nothing rather than guess.
 func TestPruneNonGitDirReclaimsNothing(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir() // deliberately not git-init'ed
 
 	// Seed a registry entry the way a stale copy of .forge/blocks.json might

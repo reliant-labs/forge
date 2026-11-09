@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 	"github.com/reliant-labs/forge/pkg/topology"
 )
 
@@ -167,6 +168,7 @@ func realisticTopologyOpts(t *testing.T) envTopologyOptions {
 // intersecting per-env lists would make exactly the image this screen most
 // needs to surface disappear.
 func TestTopology_MultiEnvDifferingReleases(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := realisticTopologyOpts(t)
 	report, code, out := runTopologyJSON(t, []string{"prod", "staging", "preprod"}, opts)
 
@@ -229,6 +231,7 @@ func TestTopology_MultiEnvDifferingReleases(t *testing.T) {
 // questions and can disagree, so both must be right: prod is current, staging
 // is three releases and ~71 days behind.
 func TestTopology_PromotionLag(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := realisticTopologyOpts(t)
 	report, _, _ := runTopologyJSON(t, []string{"prod", "staging"}, opts)
 
@@ -276,6 +279,7 @@ func TestTopology_PromotionLag(t *testing.T) {
 // shares a value with "checked and matching" paints a green screen over
 // environments nobody looked at.
 func TestTopology_UnverifiedIsNotGreen(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := realisticTopologyOpts(t)
 	// A lister that would report a clean MATCH if anything called it. It
 	// must NOT be called: the point is that the default mode reads no
@@ -347,6 +351,7 @@ func (l *recordingLister) ListWorkloadImages(context.Context, string, string) ([
 // verdicts, and drift flips the exit code to 1 exactly as `forge env status`
 // would for the same environment.
 func TestTopology_VerifyReconciles(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := realisticTopologyOpts(t)
 	opts.Verify = true
 	opts.Lister = &recordingLister{images: []cluster.WorkloadImage{
@@ -390,6 +395,7 @@ func TestTopology_VerifyReconciles(t *testing.T) {
 // and "could not check". A VPN drop is not evidence that a release is wrong,
 // and a gate reporting both with the same code gets switched off.
 func TestTopology_VerifyUnreachableExits2(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := realisticTopologyOpts(t)
 	opts.Verify = true
 	opts.Lister = &recordingLister{err: context.DeadlineExceeded}
@@ -407,6 +413,7 @@ func TestTopology_VerifyUnreachableExits2(t *testing.T) {
 // TestTopology_UnboundEnv: an env that was never promoted is a normal state,
 // not a failure and not missing data.
 func TestTopology_UnboundEnv(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := realisticTopologyOpts(t)
 	report, code, _ := runTopologyJSON(t, []string{"prod", "sandbox"}, opts)
 
@@ -444,6 +451,7 @@ func TestTopology_UnboundEnv(t *testing.T) {
 // runs — only the provenance and the lag are unavailable, and those must be
 // omitted rather than guessed.
 func TestTopology_BindingWithMissingReleaseLedger(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := realisticTopologyOpts(t)
 	opts = topologyBindings(t, opts, newMemBindingStore(map[string]release.Promotion{
 		"prod": {
@@ -486,6 +494,7 @@ func TestTopology_BindingWithMissingReleaseLedger(t *testing.T) {
 // the env, inspected from one that does not. It is reported as
 // declared:false with no cluster resolved, rather than dropped or errored.
 func TestTopology_UndeclaredEnvIsReported(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := realisticTopologyOpts(t)
 	opts = topologyBindings(t, opts, newMemBindingStore(map[string]release.Promotion{
 		"hotfix": {
@@ -519,6 +528,7 @@ func TestTopology_UndeclaredEnvIsReported(t *testing.T) {
 // TestTopology_DefaultsToDeclaredEnvs: with no arguments, the env set comes
 // from deploy/kcl/, by the same rule `forge env list` uses.
 func TestTopology_DefaultsToDeclaredEnvs(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := realisticTopologyOpts(t)
 	report, code, _ := runTopologyJSON(t, nil, opts)
 

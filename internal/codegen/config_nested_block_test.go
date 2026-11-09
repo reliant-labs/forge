@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/kcltest"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // nestedBlockMessages is the Bark Social shape: AppConfig composes a
@@ -38,6 +39,7 @@ func nestedBlockMessages() []ConfigMessage {
 // each block's leaf is independently settable by path and lands on its own
 // env var, and the sensitive leaf still routes through the secret channel.
 func TestNestedConfigBlocks_ProjectAsNestedSchemas(t *testing.T) {
+	testkit.Slow(t, "execs kcl")
 	fields := FlattenBlockLeaves(nestedBlockMessages(), "AppConfig")
 	module, err := GenerateConfigKCL(fields, "hounders")
 	if err != nil {

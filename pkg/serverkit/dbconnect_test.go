@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/serverkit"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // dbconnect_test.go — the startup connect used to be one 15s ping whose
@@ -259,6 +260,7 @@ func TestRetryConnect_WarnsOncePerBucket(t *testing.T) {
 }
 
 func TestAutoMigrateContext_RetriesTheConnectThenMigrates(t *testing.T) {
+	testkit.Slow(t, "waits out three rounds of the production connect backoff")
 	t.Parallel()
 	name, d := registerFake(t, 3)
 	var migrated atomic.Bool

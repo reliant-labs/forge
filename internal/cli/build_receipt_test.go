@@ -9,9 +9,11 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestBuildReceiptCommandStrictTypedOutput(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	t.Chdir(dir)
 	d := "sha256:" + strings.Repeat("a", 64)

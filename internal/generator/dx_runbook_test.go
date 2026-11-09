@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A new service project's operations scaffolding must point at the
@@ -14,6 +16,7 @@ import (
 // loads, an SLO doc whose targets nothing measured, and a runbook that sent
 // the reader to "(Grafana dashboard)" and "Grafana: TODO (link)".
 func TestGenerateDXFiles_ObservabilityPointsAtWhatForgeShips(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := t.TempDir()
 	g := NewProjectGenerator("shop", root, "example.com/shop")
 	g.Features = g.Features.With("observability", true)

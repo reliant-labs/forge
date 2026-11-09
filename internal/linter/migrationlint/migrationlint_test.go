@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestLintMigrationsDirDetectsUnsafeAddNotNullColumn(t *testing.T) {
@@ -24,6 +25,7 @@ func TestLintMigrationsDirDetectsUnsafeAddNotNullColumn(t *testing.T) {
 }
 
 func TestLintMigrationsDirAllowsBackfillBeforeSetNotNull(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_backfill.up.sql", `
 ALTER TABLE users ADD COLUMN name text;
 UPDATE users SET name = 'unknown' WHERE name IS NULL;
@@ -40,6 +42,7 @@ ALTER TABLE users ALTER COLUMN name SET NOT NULL;
 }
 
 func TestLintMigrationsDirDetectsSetNotNullWithoutBackfill(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_set_not_null.up.sql", `ALTER TABLE users ALTER COLUMN email SET NOT NULL;`)
 
 	result, err := LintMigrationsDir(dir, DefaultConfig())
@@ -50,6 +53,7 @@ func TestLintMigrationsDirDetectsSetNotNullWithoutBackfill(t *testing.T) {
 }
 
 func TestLintMigrationsDirDetectsDestructiveOperations(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_drop_column.up.sql", `ALTER TABLE users DROP COLUMN legacy_name;`)
 
 	result, err := LintMigrationsDir(dir, DefaultConfig())
@@ -130,6 +134,7 @@ func TestDestructiveRemediationNamesOnlyTheDirective(t *testing.T) {
 // pragma that's too broad — the destructive opt-out must not suppress
 // the unsafe-add-not-null-column or volatile-default findings.
 func TestLintMigrationsDirPragmaDoesNotSilenceOtherRules(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_pragma_plus_unsafe.up.sql",
 		"-- forge:allow-destructive\nDROP TABLE legacy;\nALTER TABLE users ADD COLUMN name text NOT NULL;")
 
@@ -146,6 +151,7 @@ func TestLintMigrationsDirPragmaDoesNotSilenceOtherRules(t *testing.T) {
 }
 
 func TestLintMigrationsDirDetectsVolatileDefault(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_add_token.up.sql", `ALTER TABLE users ADD COLUMN token uuid NOT NULL DEFAULT gen_random_uuid();`)
 
 	result, err := LintMigrationsDir(dir, DefaultConfig())
@@ -254,6 +260,7 @@ func TestConfigFromProjectEnablesRulesAtProjectDefaults(t *testing.T) {
 // end-to-end form of the above: the rule must produce a finding when
 // driven by project config, not just by DefaultConfig().
 func TestLintMigrationsDirVolatileDefaultFiresAtProjectDefaults(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_add_token.up.sql",
 		`ALTER TABLE users ADD COLUMN token uuid NOT NULL DEFAULT gen_random_uuid();`)
 
@@ -268,6 +275,7 @@ func TestLintMigrationsDirVolatileDefaultFiresAtProjectDefaults(t *testing.T) {
 // DROP TABLE body must not ALSO trip destructive-change — the finding is that
 // the file exists, not what it says.
 func TestLintMigrationsDirFlagsDownMigration(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"0001_create_users.up.sql":   `CREATE TABLE users (id TEXT PRIMARY KEY);`,
@@ -297,6 +305,7 @@ func TestLintMigrationsDirFlagsDownMigration(t *testing.T) {
 // An EMPTY .down.sql is still a down migration — it tells golang-migrate there
 // is a way back.
 func TestLintMigrationsDirFlagsEmptyDownFile(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_x.down.sql", "")
 	result, err := LintMigrationsDir(dir, DefaultConfig())
 	if err != nil {

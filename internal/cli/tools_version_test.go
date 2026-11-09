@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The codegen tools are installed at the version go.mod resolves, not
@@ -14,6 +16,7 @@ import (
 // from @latest reports every stub as drifted the day a new plugin release
 // ships — a failure caused by the calendar, not by the code.
 func TestResolveToolVersion_FromGoMod(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not on PATH")
 	}

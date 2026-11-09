@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // HistoryPage lets the in-memory ledger answer "what ran before", newest
@@ -119,6 +120,7 @@ func v1785LedgerFixture() *memBindingStore {
 // --resume-web) shipped v1.7.85's web half against an API still on v1.7.83;
 // `.promotions[0].apply.status` is what it checks now.
 func TestEnvHistory_JSONSaysWhetherEachPromotionWasApplied(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	store := v1785LedgerFixture()
 	store.history["prod"] = append([]release.Promotion{{ID: "p-81", Env: "prod", Release: "v1.7.81"}}, store.history["prod"]...)
 	var err error
@@ -157,6 +159,7 @@ func TestEnvHistory_JSONSaysWhetherEachPromotionWasApplied(t *testing.T) {
 // failed: the newest applied release, and the bound one as NOT APPLIED —
 // before any per-image line, and in --json as `apply`.
 func TestEnvStatus_SaysWhatRunsWhenTheBoundReleaseWasNotApplied(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	opts := envStatusOptions{
 		Bindings: v1785LedgerFixture(),
 		Lister:   &stubLister{images: []cluster.WorkloadImage{runningImage("ghcr.io/acme/api", sha("3"))}},
@@ -195,6 +198,7 @@ func TestEnvStatus_SaysWhatRunsWhenTheBoundReleaseWasNotApplied(t *testing.T) {
 
 // A bound release whose apply passed reads as applied, with no "current" line.
 func TestEnvStatus_AppliedReleaseHasNoNotAppliedLine(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	store := v1785LedgerFixture()
 	h := store.history["prod"]
 	h[len(h)-1].RecordedGates = append(h[len(h)-1].RecordedGates, release.Gate{Name: applyGateName, Status: release.GateStatusPassed})

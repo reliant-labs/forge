@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // fakeClusterKubectl is a kubectl that answers the local stage's pre-apply
@@ -57,6 +59,7 @@ exit 0
 // on the daemon cluster, and only then is a Role written into it; an existing
 // rendered namespace (kata-prepull) is not re-applied.
 func TestApplyLocalPrewritesCreatesTheNamespaceBeforeTheRoleInIt(t *testing.T) {
+	testkit.Slow(t, "execs a recording kubectl 20+ times")
 	log := fakeClusterKubectl(t, "kata-prepull", "kube-system", "control-plane-prod")
 	daemon, hub := "gke_daemon", "gke_hub"
 	e := &KCLEntities{

@@ -15,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeComponentDeps writes a minimal component package (contract.go with a
@@ -114,6 +115,7 @@ func TestGenerateInject_TypeTopoOrder(t *testing.T) {
 // can't prove an Infra field; but the field is also not a producer and not
 // scalar — it must be loud.)
 func TestGenerateInject_MissingProviderIsLoud(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeComponentDeps(t, dir, "internal/handlers", "billing", "billing", "\tStripe StripeClient")
 	appendType(t, dir, "internal/handlers/billing", "type StripeClient interface{ Charge() }")
@@ -147,6 +149,7 @@ func TestGenerateInject_MissingProviderIsLoud(t *testing.T) {
 // TestGenerateInject_OptionalMissingIsSilent: an optional collaborator
 // with no provider takes a typed nil and does NOT raise.
 func TestGenerateInject_OptionalMissingIsSilent(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeComponentDeps(t, dir, "internal/handlers", "billing", "billing",
 		"\t// forge:optional-dep\n\tStripe StripeClient")
@@ -212,6 +215,7 @@ func containsNormalized(haystack, needle string) bool {
 // framework seam) — codegen accepts it without raising, so the escape hatch
 // works end-to-end for func-typed deps too (Fix 1(a)).
 func TestGenerateInject_OptionalFuncDepIsNil(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
 		"\t// forge:optional-dep\n\tNow func() time.Time")
@@ -656,6 +660,7 @@ func TestGenerateProviders_RetrofitsORMOnFirstEntity(t *testing.T) {
 // configuration, not a collaborator — it takes the typed-zero and never
 // raises MissingProvider.
 func TestGenerateInject_ScalarIsConfigNotMissing(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeComponentDeps(t, dir, "internal/handlers", "user", "user", "\tMaxRetries int")
 
@@ -677,6 +682,7 @@ func TestGenerateInject_ScalarIsConfigNotMissing(t *testing.T) {
 // typed-zero. An unmatched scalar still takes the typed-zero. (Regression
 // for kalshi's WTI EIAKey/FREDKey being reset to "" + TODO.)
 func TestGenerateInject_ScalarResolvesFromConfig(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeComponentDeps(t, dir, "internal/handlers", "wti", "wti",
 		"\tEIAKey string\n\tUnmapped string")
@@ -804,6 +810,7 @@ func TestGenerateInject_SameNameInfraFieldOverridesHTTPClientSeam(t *testing.T) 
 // over the seam — the marker's "nil is acceptable" contract is respected
 // (the scaffolds default a nil HTTPClient internally).
 func TestGenerateInject_OptionalHTTPClientIsNil(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeComponentDeps(t, dir, "internal", "stripe", "stripe",
 		"\t// forge:optional-dep\n\tHTTPClient *http.Client")
@@ -1234,6 +1241,7 @@ func TestGenerateCompose_DropSurvivesCustomizedFile(t *testing.T) {
 // kept, and reported, when the package's own marker says the server no
 // longer composes it.
 func TestGenerateCompose_ReconcileDropsStaleKeyOfExternalComponent(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cases := []struct {
 		name string
 		// header is prepended to the package's contract.go once it leaves
@@ -1623,6 +1631,7 @@ func TestGenerateInject_GeneratedStoreSeam(t *testing.T) {
 // provider — emitting db.NewStore(...).Widgets() there would not compile.
 // It falls through to the ordinary loud missing-provider path instead.
 func TestGenerateInject_UnknownStoreTypeIsStillMissing(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeStoreGen(t, dir, [2]string{"Estimate", "Estimates"})
 	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",

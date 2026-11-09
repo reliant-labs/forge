@@ -9,6 +9,7 @@ import (
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // renderResolvePort renders a one-line KCL module that resolves a port for
@@ -75,6 +76,7 @@ func itoa(i int) string {
 // through the real plugin seam returns base unchanged — the byte-identical
 // default.
 func TestAllocatePortDefaultKeyRendersBase(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	proj := t.TempDir()
 	kdir := t.TempDir()
 	kclplugin.UseBlockAllocator(func(base int, key string) (int, error) {
@@ -91,6 +93,7 @@ func TestAllocatePortDefaultKeyRendersBase(t *testing.T) {
 // blocks; both ports for a key share the key's block (same +100 shift); and
 // the SAME key resolves identically across two renders (up == deploy).
 func TestAllocatePortDistinctKeysDisjointBlocks(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	proj := t.TempDir()
 	kdir := t.TempDir()
 	kclplugin.UseBlockAllocator(func(base int, key string) (int, error) {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestGenerateHookHelperProcess is not a test: it is the command the hook
@@ -81,6 +82,7 @@ func helperHook(name, dir string, action ...string) config.GenerateHook {
 }
 
 func TestRunGenerateHooks_InOrderAndInDir(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "sub"), 0o755); err != nil {
@@ -104,6 +106,7 @@ func TestRunGenerateHooks_InOrderAndInDir(t *testing.T) {
 }
 
 func TestRunGenerateHooks_FailureStopsAndNamesTheHook(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
 	root := t.TempDir()
 	hooks := []config.GenerateHook{
@@ -147,6 +150,7 @@ func TestRunGenerateHooks_PinnedToolsOnPath(t *testing.T) {
 }
 
 func TestRunGenerateHooks_MissingCommand(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	hooks := []config.GenerateHook{{Name: "q", Command: []string{"forge-test-no-such-binary-6b1f"}}}
 	var out bytes.Buffer
 	err := runGenerateHooks(t.TempDir(), hooks, &out, &out)
@@ -173,6 +177,7 @@ func TestWritesGenerateHooks(t *testing.T) {
 // The output names every hook before any runs, and confirms each one that
 // ran — "which hooks ran" is answered by the log, not by inference.
 func TestRunGenerateHooks_ReportsWhatRan(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
 	t.Setenv(gitHooksOptOutEnv, "")
 	t.Setenv(legacyGitHooksOptOutEnv, "")
@@ -202,6 +207,7 @@ func TestRunGenerateHooks_ReportsWhatRan(t *testing.T) {
 // and it never did. Under either git-hooks variable the hooks still run, and
 // the step says so where the agent is looking.
 func TestRunGenerateHooks_GitHooksOptOutDoesNotSkipThem(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	for _, env := range []string{gitHooksOptOutEnv, legacyGitHooksOptOutEnv} {
 		t.Run(env, func(t *testing.T) {
 			t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
@@ -300,6 +306,7 @@ func TestGenerateHooksRunAfterEveryForgeWriter(t *testing.T) {
 // of what it printed — stdout and stderr together — while the whole output
 // lands in its log.
 func TestRunGenerateHooks_FailureCarriesTheTailOfItsOutput(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
 	root := t.TempDir()
 	total := hookOutputTailLines + 50
@@ -378,6 +385,7 @@ func TestWriteHookFailureTail(t *testing.T) {
 // byte for byte, and the LAST thing on stderr must be what the hook printed —
 // not `exit status 1` above a list of reverted files.
 func TestGenerate_FailedHookRestoresTheTreeAndEndsWithItsOutput(t *testing.T) {
+	testkit.Slow(t, "execs go and git")
 	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
 	dir := t.TempDir()
 	mockRel := "internal/store/mock_gen.go"

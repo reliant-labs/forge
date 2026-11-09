@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestPlacementPrerequisitesReaderFirst(t *testing.T) {
@@ -107,6 +108,7 @@ func TestPlacementPrerequisitesCompileOnlyNeverNegotiates(t *testing.T) {
 }
 
 func TestPlacementPrerequisitesCompileOnlyBundleSkipsOldReader(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "mixed-compile-project")
 	prevShape := projectEnvShapeFn
 	t.Cleanup(func() { projectEnvShapeFn = prevShape })

@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestShardReportsCommandWallBudget(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	body, err := os.ReadFile(filepath.Join("..", "..", "scripts", "ci-test-shard.sh"))
 	if err != nil {
 		t.Fatal(err)

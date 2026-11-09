@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The child reads only copies of scripts this process opened: the short tier's
@@ -71,6 +73,7 @@ fi
 }
 
 func TestChangedTestsUseOneParallelGoInvocation(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	out, err := changedTestsFixture(t, "short", false)
 	if err != nil {
@@ -96,6 +99,7 @@ func TestChangedTestsUseOneParallelGoInvocation(t *testing.T) {
 }
 
 func TestChangedTestsFullRetainsRaceAndRepetition(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	out, err := changedTestsFixture(t, "full", false)
 	if err != nil {
@@ -109,6 +113,7 @@ func TestChangedTestsFullRetainsRaceAndRepetition(t *testing.T) {
 }
 
 func TestChangedTestsPropagateFailure(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	out, err := changedTestsFixture(t, "short", true)
 	if err == nil {
@@ -117,6 +122,7 @@ func TestChangedTestsPropagateFailure(t *testing.T) {
 }
 
 func TestChangedTestsRejectInvalidMode(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	out, err := changedTestsFixture(t, "typo", false)
 	if err == nil {

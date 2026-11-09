@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestHostReadinessProcessHelper(t *testing.T) {
@@ -37,6 +39,7 @@ func TestHostReadinessProcessHelper(t *testing.T) {
 }
 
 func TestHostReadinessObservesRealRunnerExit(t *testing.T) {
+	testkit.Slow(t, "execs the forge binary as a child process")
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprint("background=", background), func(t *testing.T) {
 			dir, projectID, env := testStack(t)

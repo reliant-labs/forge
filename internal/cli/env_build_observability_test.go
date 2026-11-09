@@ -169,3 +169,50 @@ func TestObserveDashboardsCheckListsWhatWouldShip(t *testing.T) {
 		}
 	}
 }
+
+// TestObserveDashboardsCheckValidatesPresentationFields: an owned dashboard's
+// heatmap, sparkline statement, default comparison and palette colours are
+// checked like the rest of the spec, and a raw colour is refused at its line.
+func TestObserveDashboardsCheckValidatesPresentationFields(t *testing.T) {
+	dir := newLedgerTestProject(t, "obs-present-project")
+	t.Chdir(dir)
+	seedGeneratedDashboards(t, dir, "obs-present-project")
+	owned := filepath.Join(dir, "deploy", "observability", "dashboards")
+	if err := os.MkdirAll(owned, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := func(color string) []byte {
+		return []byte(`{
+  "id": "team",
+  "title": "Team",
+  "defaultCompare": "period",
+  "sections": [{"id": "glance", "title": "At a glance", "description": "The headline figures."}],
+  "panels": [
+    {"id": "dau", "section": "glance", "title": "DAU", "kind": "sql", "sql": "SELECT 1 AS n",
+     "trendSql": "SELECT today() AS day, 1 AS n", "display": {"color": "violet"}},
+    {"id": "retention", "title": "Retention", "kind": "sql", "sql": "SELECT 'w' AS cohort, 0.5 AS w1",
+     "unit": "percent", "display": {"style": "heatmap", "color": "` + color + `"}}
+  ]
+}
+`)
+	}
+	file := filepath.Join(owned, "team.json")
+	if err := os.WriteFile(file, spec("cyan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runObsDashboardsCheck(context.Background(), obsDeps{}, &out, obsDashboardsCheckOpts{outputDir: "bin"}); err != nil {
+		t.Fatalf("check refused valid presentation fields: %v", err)
+	}
+	if !strings.Contains(out.String(), "team.json") {
+		t.Errorf("output does not list the owned dashboard:\n%s", out.String())
+	}
+
+	if err := os.WriteFile(file, spec("#00ff00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := runObsDashboardsCheck(context.Background(), obsDeps{}, &bytes.Buffer{}, obsDashboardsCheckOpts{outputDir: "bin"})
+	if err == nil || !strings.Contains(err.Error(), "team.json:10") || !strings.Contains(err.Error(), `"#00ff00" is not one of`) {
+		t.Fatalf("a raw colour: err = %v, want it refused at team.json:10", err)
+	}
+}

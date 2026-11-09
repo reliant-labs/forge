@@ -40,30 +40,38 @@ func TestProductUsagePanelsPassTheSQLGuard(t *testing.T) {
 			t.Errorf("%s: kind %s, want sql (product_events is read with sql panels)", p.ID, p.Kind)
 			continue
 		}
-		if err := dashspec.CheckSQL(p.SQL); err != nil {
-			t.Errorf("%s: refused by the SQL guard: %v\n%s", p.ID, err, p.SQL)
+		// A figure's trend is run exactly as its statement is, so it is held
+		// to the same rules.
+		stmts := map[string]string{p.ID: p.SQL}
+		if p.TrendSQL != "" {
+			stmts[p.ID+" trendSql"] = p.TrendSQL
 		}
-		st, err := obsquery.SQLPanel{Scope: sc, SQL: p.SQL, StepSeconds: 3600}.Compile()
-		if err != nil {
-			t.Errorf("%s: does not compile: %v", p.ID, err)
-			continue
-		}
-		for _, m := range param.FindAllStringSubmatch(p.SQL, -1) {
-			if _, ok := st.Params[m[1]]; !ok {
-				t.Errorf("%s: uses {%s}, which the console does not bind", p.ID, m[1])
+		for name, sql := range stmts {
+			if err := dashspec.CheckSQL(sql); err != nil {
+				t.Errorf("%s: refused by the SQL guard: %v\n%s", name, err, sql)
 			}
-		}
-		if !strings.Contains(p.SQL, "FROM product_events") {
-			t.Errorf("%s: does not read product_events", p.ID)
-		}
-		// Scoped to the viewer's environments and services, always.
-		if !strings.Contains(p.SQL, "{env_ids:Array(String)}") || !strings.Contains(p.SQL, "{services:Array(String)}") {
-			t.Errorf("%s: ignores the environment or service filter", p.ID)
-		}
-		// Generic: nothing of one product's own vocabulary.
-		for _, word := range []string{"internal_user", "message_sent", "workflow_", "reliant"} {
-			if strings.Contains(p.SQL, word) {
-				t.Errorf("%s: carries %q, which belongs to one product, not every forge project", p.ID, word)
+			st, err := obsquery.SQLPanel{Scope: sc, SQL: sql, StepSeconds: 3600}.Compile()
+			if err != nil {
+				t.Errorf("%s: does not compile: %v", name, err)
+				continue
+			}
+			for _, m := range param.FindAllStringSubmatch(sql, -1) {
+				if _, ok := st.Params[m[1]]; !ok {
+					t.Errorf("%s: uses {%s}, which the console does not bind", name, m[1])
+				}
+			}
+			if !strings.Contains(sql, "FROM product_events") {
+				t.Errorf("%s: does not read product_events", name)
+			}
+			// Scoped to the viewer's environments and services, always.
+			if !strings.Contains(sql, "{env_ids:Array(String)}") || !strings.Contains(sql, "{services:Array(String)}") {
+				t.Errorf("%s: ignores the environment or service filter", name)
+			}
+			// Generic: nothing of one product's own vocabulary.
+			for _, word := range []string{"internal_user", "message_sent", "workflow_", "reliant"} {
+				if strings.Contains(sql, word) {
+					t.Errorf("%s: carries %q, which belongs to one product, not every forge project", name, word)
+				}
 			}
 		}
 	}
@@ -138,22 +146,35 @@ func TestProductUsageFirstSeenIsBoundedToAWindow(t *testing.T) {
 }
 
 // The first screen is a designed layout, not a list: two full rows of four
-// headline figures, then charts in rows that fill the console's four-column
-// grid exactly, every panel in a declared section, and the one wide table last.
+// headline figures, each with a trend and a colour, then charts in rows that
+// fill the console's four-column grid exactly, every panel in a declared and
+// described section, the panels in their sections' order (so every renderer
+// draws the same page), and retention as a full-width heatmap.
 func TestProductUsageLayout(t *testing.T) {
 	d := BuildProductUsage("shop")
 	if n := len(d.Panels); n < 12 || n > 18 {
 		t.Errorf("%d panels: the dashboard should stay a readable 12 to 18", n)
 	}
-	sections := map[string]bool{}
-	for _, s := range d.Sections {
-		sections[s.ID] = true
+	if d.DefaultCompare != dashspec.ComparePeriod {
+		t.Errorf("defaultCompare = %q: the headline figures should open beside their change", d.DefaultCompare)
 	}
-	row := 0
+	sections := map[string]int{}
+	for i, s := range d.Sections {
+		sections[s.ID] = i
+		if s.Description == "" {
+			t.Errorf("section %s has no description under its heading", s.ID)
+		}
+	}
+	row, section := 0, 0
 	for i, p := range d.Panels {
-		if !sections[p.Section] {
+		at, ok := sections[p.Section]
+		if !ok {
 			t.Errorf("%s: section %q is not declared", p.ID, p.Section)
 		}
+		if at < section {
+			t.Errorf("%s: section %q after a later section's panels", p.ID, p.Section)
+		}
+		section = at
 		if p.Width%6 != 0 || p.Width == 0 {
 			t.Errorf("%s: width %d is not a whole column of the console's four-column grid", p.ID, p.Width)
 		}
@@ -165,11 +186,15 @@ func TestProductUsageLayout(t *testing.T) {
 			row = 0
 		}
 		if i < 8 {
-			// A headline figure: one row of one value, drawn as a number.
-			if p.Section != "glance" || p.Width != 6 || p.Display != nil {
-				t.Errorf("%s: panel %d should be a quarter-width headline figure", p.ID, i)
+			// A headline figure: one row of one value, drawn as a number, with
+			// its trend in its colour.
+			if p.Section != "glance" || p.Width != 6 || p.Display == nil || p.Display.Style != "" || p.Display.Color == "" || p.TrendSQL == "" {
+				t.Errorf("%s: panel %d should be a quarter-width headline figure with a trend and a colour", p.ID, i)
 			}
 			continue
+		}
+		if p.TrendSQL != "" {
+			t.Errorf("%s: only a headline figure draws a trend", p.ID)
 		}
 		if p.Section == "glance" {
 			t.Errorf("%s: a headline figure after the headline rows", p.ID)
@@ -178,14 +203,11 @@ func TestProductUsageLayout(t *testing.T) {
 	if row != 0 {
 		t.Errorf("the last row is not full (%d of %d)", row, dashspec.GridColumns)
 	}
-	last := d.Panels[len(d.Panels)-1]
-	if last.ID != "most-active-users" || last.Width != dashspec.GridColumns {
-		t.Errorf("the last panel is %s (width %d), want the full-width most-active-users table", last.ID, last.Width)
-	}
-	// The charts are drawn as charts: an area, stacked bars, a line.
+	// The charts are drawn as charts: an area, stacked bars, a heatmap.
 	want := map[string]string{
 		"active-users-over-time": "area", "new-vs-returning": "bars+stack", "records-by-entity": "bars+stack",
 		"actions-per-entity": "bars+stack", "top-pages": "bars+stack", "events-by-name": "bars+stack",
+		"weekly-retention": "heatmap",
 	}
 	for _, p := range d.Panels {
 		w, ok := want[p.ID]
@@ -202,5 +224,62 @@ func TestProductUsageLayout(t *testing.T) {
 		if got != w {
 			t.Errorf("%s draws as %q, want %q", p.ID, got, w)
 		}
+	}
+}
+
+// Colours are deliberate: every chart of several fixed series names each one,
+// and one concept is one colour across panels (the DAU figure and the daily
+// active area, new users and the "New" bars, signed in on every split).
+func TestProductUsageColours(t *testing.T) {
+	panels := map[string]Panel{}
+	for _, p := range BuildProductUsage("shop").Panels {
+		panels[p.ID] = p
+	}
+	colour := func(id, series string) dashspec.ChartColor {
+		t.Helper()
+		p, ok := panels[id]
+		if !ok || p.Display == nil {
+			t.Fatalf("%s has no display", id)
+		}
+		if series == "" {
+			return p.Display.Color
+		}
+		c, ok := p.Display.Colors[series]
+		if !ok {
+			t.Errorf("%s does not colour %q", id, series)
+		}
+		return c
+	}
+	for _, same := range [][2][2]string{
+		{{"dau", ""}, {"active-users-over-time", "Daily active"}},
+		{{"wau", ""}, {"active-users-over-time", "Weekly active (rolling 7 days)"}},
+		{{"new-users", ""}, {"new-vs-returning", "New"}},
+		{{"top-pages", "Signed in"}, {"events-by-name", "Signed in"}},
+		{{"top-pages", "Anonymous"}, {"events-by-name", "Anonymous"}},
+		{{"records-written", ""}, {"actions-per-entity", "Created"}},
+	} {
+		if a, b := colour(same[0][0], same[0][1]), colour(same[1][0], same[1][1]); a != b || a == "" {
+			t.Errorf("%v is %q but %v is %q: one concept, one colour", same[0], a, same[1], b)
+		}
+	}
+	for id, series := range map[string][]string{
+		"actions-per-entity": {"Created", "Updated", "Deleted"},
+		"new-vs-returning":   {"New", "Returning"},
+		"retention-curve":    {"Week 1", "Week 2", "Week 4", "Week 8"},
+	} {
+		seen := map[dashspec.ChartColor]string{}
+		for _, s := range series {
+			c := colour(id, s)
+			if c == dashspec.ColorDanger {
+				t.Errorf("%s colours %q danger: none of these is a failure", id, s)
+			}
+			if other, dup := seen[c]; dup {
+				t.Errorf("%s colours %q and %q both %s", id, s, other, c)
+			}
+			seen[c] = s
+		}
+	}
+	if c := colour("weekly-retention", ""); c == "" {
+		t.Error("the retention heatmap has no colour scale")
 	}
 }

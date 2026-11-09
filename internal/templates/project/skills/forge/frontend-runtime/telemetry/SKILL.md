@@ -67,7 +67,7 @@ into every environment it is promoted to.
 |---|---|---|---|
 | ingest path (`off` or empty disables) | `OTEL_ENDPOINT` | KCL `config.otel_endpoint` or `runtime_config` | `/_otel` in dev and on `forge.OnHosted`, **empty elsewhere** |
 | `deployment.environment` | `ENVIRONMENT` | KCL `config.environment` or `runtime_config` | the forge env name |
-| session replay | `OTEL_REPLAY = "true"` | `runtime_config` | **on in new projects**, off in existing implicit-off envs |
+| session replay (masked) | `OTEL_REPLAY = "true"` | KCL `telemetry = forge.BrowserTelemetry {replay = True}` (per frontend, per env), or `runtime_config` | **on in new projects**, off in existing implicit-off envs |
 | `service.version` | — (a build fact: `NEXT_PUBLIC_APP_VERSION` / `VITE_APP_VERSION`) | the deploy | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the
@@ -106,17 +106,31 @@ stay minified.
 ## Replay defaults on for new projects, always masked
 
 New app and static-site environments declare `_session_replay = True` in
-`deploy/kcl/<env>/main.k`. This one switch sets both the frontend's runtime
-`OTEL_REPLAY` and `observability.signals.replay` (the hosted ingestion opt-in).
+`deploy/kcl/<env>/main.k`. It sets the frontend's
+`telemetry = forge.BrowserTelemetry {replay = _session_replay}`, which renders
+its runtime `OTEL_REPLAY` and the env's hosted ingestion opt-in.
 Set it to `False` and restart/redeploy that environment to stop capture and
 remove its ingestion opt-in. Reload open tabs to pick up the new document.
 The choice is **per environment, not baked into a promoted artifact**.
 
+Replay belongs to one frontend in one environment, so the switch for it is
+`telemetry = forge.BrowserTelemetry {replay = True}` on that frontend in that
+env's KCL. It renders the frontend's `OTEL_REPLAY = "true"` (a hosted site's
+StaticSite spec too, so the platform reads it live) and opts the env's
+observability policy in, so the platform keeps the events. A hosted frontend
+with it on needs the env to declare `observability`. An author's own
+`runtime_config.OTEL_REPLAY` still wins over it (so `"false"` there keeps that
+frontend off). The env-wide `observability.signals.replay` is a **deprecated**
+opt-in that keeps working but switches no frontend on, and a
+`{NEXT_PUBLIC_,VITE_}OTEL_REPLAY` build variable is a deprecated fallback.
+Envs scaffolded before v1.4.0 declare both: `migrations/v1.4.0` moves them.
+With observability or browser telemetry off, nothing records.
+
 Pin upgrades do not enable replay in existing projects: the SDK and KCL schema
 retain their off default. Adding a frontend to an existing project does not
-rewrite that environment's owned policy either. To opt in deliberately, add
-both declarations above; setting only `OTEL_REPLAY` cannot authorize hosted
-ingestion. An explicit endpoint `off` or browser telemetry off disables capture. Replay
+rewrite that environment's owned policy either. To opt in deliberately, set
+`telemetry.replay = True` on the frontend;
+setting only `OTEL_REPLAY` cannot authorize hosted ingestion. An explicit endpoint `off` or browser telemetry off disables capture. Replay
 also respects `navigator.globalPrivacyControl === true`, DNT `1`/`yes` (including
 legacy window/MS DNT), before sampling. Check consent before calling
 `initTelemetry()` if your product requires it: the scaffold does not invent a

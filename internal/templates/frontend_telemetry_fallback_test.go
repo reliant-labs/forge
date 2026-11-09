@@ -78,7 +78,7 @@ func TestTelemetryBuildVariableFallbackBehaviour(t *testing.T) {
 				for _, part := range []string{
 					prefix + "OTEL_ENDPOINT (declare it as config.otel_endpoint)",
 					prefix + "ENVIRONMENT (declare it as config.environment)",
-					prefix + `OTEL_REPLAY (declare it as runtime_config.OTEL_REPLAY = "true")`,
+					prefix + "OTEL_REPLAY (declare it as telemetry.replay = True)",
 					"runtime config",
 					"deprecated",
 					"next major version of forge",

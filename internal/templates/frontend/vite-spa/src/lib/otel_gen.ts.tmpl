@@ -47,10 +47,11 @@
 // auth must have the proxy in front of it strip that header or replace it
 // with the real key — never the bundle.
 //
-// Session replay is OFF. `OTEL_REPLAY = "true"` in the runtime config (a
-// `runtime_config` entry, so each environment decides without a rebuild)
+// Session replay is OFF. `OTEL_REPLAY = "true"` in the runtime config
 // enables it, and then masks every input and all text; there is no setting
-// that records unmasked.
+// that records unmasked. The frontend's KCL sets it per environment with
+// `telemetry = forge.BrowserTelemetry {replay = True}`, which also opts the
+// environment's observability policy in, so the platform keeps the events.
 //
 // The VITE_OTEL_ENDPOINT / VITE_ENVIRONMENT / VITE_OTEL_REPLAY build
 // variables are DEPRECATED. A frontend's KCL that declares one (in `config`
@@ -169,7 +170,7 @@ export function initTelemetry(): void {
     cfg.OTEL_REPLAY,
     "VITE_OTEL_REPLAY",
     import.meta.env.VITE_OTEL_REPLAY as string | undefined,
-    'runtime_config.OTEL_REPLAY = "true"',
+    "telemetry.replay = True",
   );
   warnBuildFallback(used);
 

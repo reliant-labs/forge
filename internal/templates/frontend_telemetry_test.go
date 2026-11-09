@@ -101,7 +101,7 @@ func TestTelemetryPerEnvValuesPreferRuntimeConfig(t *testing.T) {
 			for key, field := range map[string]string{
 				"OTEL_ENDPOINT": `"config.otel_endpoint"`,
 				"ENVIRONMENT":   `"config.environment"`,
-				"OTEL_REPLAY":   `'runtime_config.OTEL_REPLAY = "true"'`,
+				"OTEL_REPLAY":   `"telemetry.replay = True"`,
 			} {
 				build := tc.prefix + key
 				re := regexp.MustCompile(`runtimeOrBuild\(\s*used,\s*cfg\.` + key + `,\s*"` + build +

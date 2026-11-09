@@ -7,7 +7,7 @@ import (
 
 // The default belongs to NEW owned environment declarations, never the SDK
 // or the schema: upgrading a pin must not start recording existing users.
-func TestNewBrowserEnvironmentsDeclareReplayAtBothEnds(t *testing.T) {
+func TestNewBrowserEnvironmentsDeclareReplayOnTheFrontend(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"vite", "nextjs"} {
 		for _, env := range []string{"dev", "staging", "prod"} {
@@ -21,9 +21,17 @@ func TestNewBrowserEnvironmentsDeclareReplayAtBothEnds(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					for _, want := range []string{"_session_replay = True", "replay = _session_replay", `OTEL_REPLAY = "true" if`, `else "false"`, "DNT/GPC"} {
+					// One switch, on the frontend: telemetry.replay renders
+					// OTEL_REPLAY and opts the env in. Nothing explicit beside
+					// it (a runtime_config OTEL_REPLAY would outrank it).
+					for _, want := range []string{"_session_replay = True", "telemetry = forge.BrowserTelemetry {replay = ", "_session_replay}", "DNT/GPC"} {
 						if !strings.Contains(string(out), want) {
 							t.Errorf("missing %q", want)
+						}
+					}
+					for _, never := range []string{"OTEL_REPLAY = ", "ObservabilitySignals {replay"} {
+						if strings.Contains(string(out), never) {
+							t.Errorf("writes %q beside the per-frontend switch", never)
 						}
 					}
 					if strings.Contains(string(out), "VITE_OTEL_REPLAY") || strings.Contains(string(out), "NEXT_PUBLIC_OTEL_REPLAY") {

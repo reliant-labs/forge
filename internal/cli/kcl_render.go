@@ -1337,7 +1337,11 @@ type FrontendConfigEntity struct {
 
 // FrontendTelemetryEntity mirrors kcl/schema.k BrowserTelemetry.
 type FrontendTelemetryEntity struct {
-	ConsoleCapture   bool    `json:"console_capture"`
+	ConsoleCapture bool `json:"console_capture"`
+	// Replay is the frontend's session replay switch
+	// (BrowserTelemetry.replay). It reaches the browser as runtime config
+	// (OTEL_REPLAY) and the env's policy as the replay opt-in.
+	Replay           bool    `json:"replay"`
 	ReplaySampleRate float64 `json:"replay_sample_rate"`
 	Sourcemaps       string  `json:"sourcemaps,omitempty"`
 	// ServiceName is the service.name a sourced frontend's SDK reports, as

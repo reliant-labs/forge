@@ -294,6 +294,72 @@ func TestTelemetryConfigWiresTheFrontendKnobs(t *testing.T) {
 	}
 }
 
+// TestTelemetryPageViewsAndIdentity pins the product-analytics defaults:
+// page views are on unless the runtime config says PAGE_VIEWS = "false"; the
+// signed-in user is identified only for a frontend with native sign-in, from
+// the /auth/session URL native-login.ts asks (through api-base.ts when the
+// frontend has it), never in mock mode, and off with IDENTIFY_USER = "false".
+// Neither is ever read from a build variable. (Assertions read the raw
+// render: stripTelemetryComments' block-comment pattern also eats code that
+// sits between a "/*" in prose and the next "*/".)
+func TestTelemetryPageViewsAndIdentity(t *testing.T) {
+	for name, tmpl := range map[string]string{
+		"nextjs":   "nextjs/src/lib/otel_gen.ts.tmpl",
+		"vite-spa": "vite-spa/src/lib/otel_gen.ts.tmpl",
+	} {
+		t.Run(name, func(t *testing.T) {
+			bare := renderTelemetryTmpl(t, tmpl, telemetryData("static"))
+			if !strings.Contains(bare, `text(cfg.PAGE_VIEWS) === "false" ? false : { basePath: `) {
+				t.Errorf("page views must be on unless PAGE_VIEWS is \"false\":\n%s", bare)
+			}
+			for _, absent := range []string{"identify: identify(cfg)", "function identify(", "cfg.IDENTIFY_USER", `from "./api-base"`, `from "./config_gen"`} {
+				if strings.Contains(bare, absent) {
+					t.Errorf("a frontend without native sign-in must not render %q:\n%s", absent, bare)
+				}
+			}
+
+			data := telemetryData("static")
+			data.IdentifySession, data.HasAPIBase = true, true
+			s := renderTelemetryTmpl(t, tmpl, data)
+			for _, want := range []string{
+				`import { apiBase } from "./api-base";`,
+				`identify: identify(cfg),`,
+				`if (text(cfg.IDENTIFY_USER) === "false") {`,
+				`if (mock === "true" || mock === "hybrid") {`,
+				"return { sessionUrl: `${apiBase(configured)}/auth/session` };",
+			} {
+				if !strings.Contains(s, want) {
+					t.Errorf("missing %q:\n%s", want, s)
+				}
+			}
+			if strings.Contains(s, `from "./config_gen"`) {
+				t.Errorf("an untyped frontend must not import config_gen:\n%s", s)
+			}
+
+			// A project scaffolded before api-base.ts keeps compiling.
+			data.HasAPIBase = false
+			s = renderTelemetryTmpl(t, tmpl, data)
+			if strings.Contains(s, `from "./api-base"`) || !strings.Contains(s, "return { sessionUrl: `${configured.replace(/\\/+$/, \"\")}/auth/session` };") {
+				t.Errorf("without api-base.ts the session URL is the configured one:\n%s", s)
+			}
+
+			// Typed config: mock mode comes from config_gen, as session-provider.ts reads it.
+			data.HasTypedConfig, data.HasMockAPI = true, true
+			s = renderTelemetryTmpl(t, tmpl, data)
+			if !strings.Contains(s, `import { loadConfig } from "./config_gen";`) ||
+				!strings.Contains(s, `return String(loadConfig().MOCK_API || "");`) {
+				t.Errorf("a typed frontend's mock mode must come from loadConfig():\n%s", s)
+			}
+
+			for _, buildVar := range []string{"PAGE_VIEWS", "IDENTIFY_USER"} {
+				if regexp.MustCompile(`(process\.env|import\.meta\.env)\.[A-Z_]*` + buildVar).MatchString(s) {
+					t.Errorf("%s is read from a build variable; it must come from config.js", buildVar)
+				}
+			}
+		})
+	}
+}
+
 // TestTelemetryHeaderNamesTheHostedDefault keeps the explanation honest: a
 // hosted frontend gets /_otel from forge, and the comment says so.
 func TestTelemetryHeaderNamesTheHostedDefault(t *testing.T) {

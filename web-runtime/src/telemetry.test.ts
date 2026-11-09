@@ -1588,6 +1588,103 @@ describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
   });
 });
 
+describe("page views and the signed-in user", () => {
+  function stubDomWithHistory(pathname: string) {
+    stubDom();
+    const location = (window as unknown as { location: Record<string, string> })
+      .location;
+    location.pathname = pathname;
+    const go = (_s: unknown, _u: string, url?: string | URL | null) => {
+      if (url) location.pathname = new URL(String(url), ORIGIN).pathname;
+    };
+    // The real methods, kept apart from window.history, which gets wrapped.
+    const history = { pushState: vi.fn(go), replaceState: vi.fn(go) };
+    (window as unknown as Record<string, unknown>).history = { ...history };
+    return history;
+  }
+
+  // No fixed waits: a route change is reported synchronously inside
+  // pushState, and the session watch calls fetch() synchronously when it
+  // asks, so a call that did not happen by the next line never will. Only
+  // the applied answer is awaited, by polling for it (vi.waitFor).
+  it("records neither by default, and asks no session endpoint", async () => {
+    const history = stubDomWithHistory("/");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { t } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    window.history.pushState({}, "", "/orders/1");
+
+    expect(window.history.pushState).toBe(history.pushState);
+    expect(addAction).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("records page_viewed per route and stamps the session's subject", async () => {
+    stubDomWithHistory("/admin/auth/sign-in");
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            authenticated: true,
+            subject: "u-42",
+            email: "e@x",
+          }),
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { t } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      pageViews: { basePath: "/admin" },
+      identify: { sessionUrl: "http://api.test/auth/session" },
+    });
+    window.history.pushState({}, "", "/admin/orders/17?tab=items");
+    await vi.waitFor(() =>
+      expect(setGlobalAttributes).toHaveBeenCalledWith({ userId: "u-42" }),
+    );
+
+    expect(
+      addAction.mock.calls.filter(([name]) => name === "page_viewed"),
+    ).toEqual([
+      ["page_viewed", { route: "/auth/sign-in" }],
+      ["page_viewed", { route: "/orders/:id" }],
+    ]);
+    // Once at start, once on leaving the sign-in screen.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(setGlobalAttributes).toHaveBeenCalledWith({ userId: "u-42" });
+    expect(setGlobalAttributes).not.toHaveBeenCalledWith(
+      expect.objectContaining({ email: expect.anything() }),
+    );
+  });
+
+  it("disableTelemetry takes the history hooks and the session watch out", async () => {
+    const history = stubDomWithHistory("/");
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ authenticated: false })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { t, k } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      pageViews: true,
+      identify: { sessionUrl: "/auth/session" },
+    });
+    expect(window.history.pushState).not.toBe(history.pushState);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    k.disableTelemetry();
+    addAction.mockReset();
+    window.history.pushState({}, "", "/auth/sign-in");
+
+    expect(window.history.pushState).toBe(history.pushState);
+    expect(addAction).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("resolveIngestUrl", () => {
   it("resolves a path against the page origin", async () => {
     const { t } = await load();

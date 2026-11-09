@@ -200,6 +200,19 @@ export {
 } from "./auth-events.js";
 
 /**
+ * The route a page view is recorded as: `normalizeRoute(pathname, basePath)`
+ * cuts the query and fragment, strips the basePath and replaces id-looking
+ * segments with `:id` — the same naming the runtime's automatic
+ * `page_viewed` events use, for an app that names routes on its own events.
+ */
+export {
+  MAX_ROUTE_CHARS,
+  PAGE_VIEWED_EVENT,
+  ROUTE_ID_PLACEHOLDER,
+  normalizeRoute,
+} from "./page-views.js";
+
+/**
  * Visitor identity and campaign attribution: `withAttribution(url)` appends
  * this browser's `rid` and captured `utm_*` to an outbound link (a marketing
  * site pointing at the app); the runtime reads them on arrival and emits one

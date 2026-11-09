@@ -105,6 +105,16 @@
 // URL keeps `HTTP <METHOD>`: a free-form path can carry ids and tokens, and
 // the span name is exported unscrubbed.
 //
+// ── Page views and the signed-in user, when asked ────────────────────────
+//
+// `pageViews` records a `page_viewed {route}` product event per route
+// (page-views.ts); `identify` finds the signed-in user from the API's
+// `/auth/session` and stamps their opaque id on every event
+// (session-identity.ts). Both are OFF in this API, so a hand-written caller
+// sees no change; forge's generated otel_gen.ts turns them on, and an env
+// turns them off with PAGE_VIEWS / IDENTIFY_USER = "false" in its runtime
+// config. Both start only once the SDK runs and stop on disableTelemetry().
+//
 // ── Client context ───────────────────────────────────────────────────────
 //
 // The page reports what only it can know about its client — client hints
@@ -144,6 +154,12 @@ import {
 } from "./client-context.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { installFetchContext } from "./interaction-context.js";
+import { installPageViews, type PageViewOptions } from "./page-views.js";
+import {
+  type IdentifyOptions,
+  type SessionIdentity,
+  watchSessionIdentity,
+} from "./session-identity.js";
 import { installSessionCookieFallback } from "./session-cookie-fallback.js";
 import {
   registerRumSession,
@@ -169,6 +185,9 @@ export {
   RUM_SESSION_COOKIE,
   RUM_SESSION_STORAGE_KEY,
 } from "./session-cookie-fallback.js";
+
+export { type PageViewOptions } from "./page-views.js";
+export { type IdentifyOptions } from "./session-identity.js";
 
 export {
   type BenignErrorClassifier,
@@ -287,6 +306,26 @@ export interface BrowserTelemetryConfig {
    * value. Pass `() => null` to record everything.
    */
   classifyBenignError?: BenignErrorClassifier;
+  /**
+   * Record a `page_viewed {route}` product event for each route the user
+   * lands on (page-views.ts): the pathname only, basePath stripped, ids
+   * replaced by `:id`, consecutive repeats dropped. Default false; forge's
+   * generated src/lib/otel_gen.ts turns it on unless the env's runtime
+   * config says `PAGE_VIEWS = "false"`. Pass options to strip a basePath or
+   * name routes yourself.
+   */
+  pageViews?: boolean | PageViewOptions;
+  /**
+   * Find the signed-in user by asking `sessionUrl` (the API's
+   * `/auth/session`, with the cookie) and pass its `subject` to
+   * setTelemetryUser, again on a move into or out of `/auth/*` and when the
+   * tab becomes visible (session-identity.ts). Unset (the default), nothing
+   * is asked; forge's generated src/lib/otel_gen.ts sets it for a frontend
+   * with native sign-in unless the runtime config says
+   * `IDENTIFY_USER = "false"`. An app that calls setTelemetryUser from its
+   * own IdP leaves it unset.
+   */
+  identify?: IdentifyOptions;
 }
 
 /** The slice of the SDK this module calls. Typed here, not imported, so the module loads without it. */
@@ -440,6 +479,8 @@ async function start(
     // every fetch/XHR span (sessionAttribute), joining backend traces to the
     // session that caused them.
     registerRumSession(() => hdx.getSessionId?.());
+    let identity: SessionIdentity | null = null;
+    let stopRoutes = () => {};
     setExceptionReporter((error, attributes) => {
       if (alreadyRecorded(error) || benign.filtered(error, "reportException")) {
         return;
@@ -463,9 +504,15 @@ async function start(
         setExceptionReporter(null);
         registerRumSession(null);
         stopViewport();
+        stopRoutes();
+        identity?.stop();
         hdx.stopSessionRecorder?.();
       },
     });
+    // After the sink, so the first page view and the user go straight to the
+    // SDK. Both are off unless the caller asked (otel_gen.ts does).
+    identity = startIdentity(config);
+    stopRoutes = startRouteWatch(config, identity);
     return true;
   } catch (err) {
     // Blocked chunk, ad-blocker, SDK throw: telemetry must never break the app.
@@ -475,6 +522,42 @@ async function start(
     console.debug("[telemetry] disabled:", err);
     setTelemetrySink(null);
     return false;
+  }
+}
+
+// The session watch, when `identify` names a session endpoint.
+function startIdentity(config: BrowserTelemetryConfig): SessionIdentity | null {
+  const url = config.identify?.sessionUrl;
+  if (typeof url !== "string" || url.trim() === "") {
+    return null;
+  }
+  try {
+    return watchSessionIdentity({ sessionUrl: url });
+  } catch {
+    return null;
+  }
+}
+
+// The route watch, when there are page views to record or a session watch
+// that re-asks on leaving the sign-in screens. Returns its teardown.
+function startRouteWatch(
+  config: BrowserTelemetryConfig,
+  identity: SessionIdentity | null,
+): () => void {
+  const pageViews = config.pageViews ?? false;
+  if (pageViews === false && !identity) {
+    return () => {};
+  }
+  const options = typeof pageViews === "object" ? pageViews : {};
+  try {
+    return installPageViews({
+      basePath: options.basePath,
+      routeName: options.routeName,
+      pageViews: pageViews !== false,
+      onRoute: identity ? identity.onRoute : undefined,
+    });
+  } catch {
+    return () => {};
   }
 }
 

@@ -13,7 +13,8 @@ bundle cannot tell them apart. See `frontend/runtime-config`.
 
 Every `runtime_config` key must be one the bundle reads: a field of the
 frontend's config message, or a forge runtime key (`API_URL`, `ENVIRONMENT`,
-`OTEL_ENDPOINT`, `CONSOLE_CAPTURE`, `OTEL_REPLAY`, `REPLAY_SAMPLE_RATE`). `forge generate`
+`OTEL_ENDPOINT`, `CONSOLE_CAPTURE`, `OTEL_REPLAY`, `REPLAY_SAMPLE_RATE`,
+`PAGE_VIEWS`, `IDENTIFY_USER`). `forge generate`
 lists them in `src/lib/config_schema_gen.json` beside `config_gen.ts`, and every
 render checks the env's `runtime_config` against the frontend directory's copy
 — so a project declaring a frontend from ANOTHER repo gets a did-you-mean on a

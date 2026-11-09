@@ -224,6 +224,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	if output == "" {
 		output = config.FrontendOutputScaffoldDefault
 	}
+	webTree := tmplDir == "nextjs" || tmplDir == "vite-spa"
 	data := templates.FrontendTemplateData{
 		Public:       opts.Public,
 		FrontendName: frontendName,
@@ -243,6 +244,12 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// read a key the generated module's type does not have.
 		HasTypedConfig: opts.TypedConfig.Bound,
 		HasMockAPI:     opts.TypedConfig.HasMockAPI,
+
+		// The web trees ship native-login.ts and api-base.ts beside the
+		// otel_gen.ts that reads these, so the scaffold renders what the
+		// first `forge generate` re-derives from disk.
+		IdentifySession: webTree,
+		HasAPIBase:      webTree,
 	}
 	if opts.Workspaces {
 		data.APIPackage = layout.APIPackage

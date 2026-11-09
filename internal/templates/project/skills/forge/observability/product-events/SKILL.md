@@ -163,6 +163,17 @@ INFO log record with `event.name = product.auth_signed_in`, `user.id = <subject>
 `product.method = password`, `product.provider = <name>`. It lands in the same
 table.
 
+Two browser events need no code. Every generated web frontend (Next.js, Vite)
+records `page_viewed {route}` for each route the user lands on — the pathname
+only, basePath stripped, id-looking segments as `:id` (`/orders/:id`), in the
+event's `route` prop. And with native sign-in it identifies the signed-in user
+by itself: the runtime reads the `subject` of `/auth/session`, the same id
+`observe.Track` writes as `user.id`, so browser and backend events join on
+`UserId` and the first sign-in emits `user_identified`. An environment turns
+either off per frontend with `telemetry = forge.BrowserTelemetry {page_views =
+False}` / `{identify_user = False}` (rendered as `PAGE_VIEWS` / `IDENTIFY_USER =
+"false"` in its runtime config). How both work: `frontend-runtime/telemetry`.
+
 ## Retention
 
 `forge.Observability.retention.product_events_days` (1 to 400, default 90) is

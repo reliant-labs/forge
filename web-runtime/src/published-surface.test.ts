@@ -286,6 +286,29 @@ describe("the published surface", () => {
     expect(imports).toEqual(["./track.js"]);
   });
 
+  it("keeps normalizeRoute IN the barrel, and page views and identity off the SDK", () => {
+    // An app names its own events' routes the way the automatic page_viewed
+    // events do, from the barrel. page-views.ts and session-identity.ts sit
+    // in the barrel's import closure through it, so neither may reach the
+    // SDK: they import only the import-free track.ts and basepath.ts.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of ["normalizeRoute", "PAGE_VIEWED_EVENT"]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    for (const name of ["page-views.js", "session-identity.js"]) {
+      const js = readFileSync(join(pkgDir, "dist", name), "utf8");
+      const imports = [...js.matchAll(/from\s*["']([^"']+)["']/g)].map(
+        (m) => m[1],
+      );
+      expect(
+        imports.filter((i) => i !== "./track.js" && i !== "./basepath.js"),
+        `dist/${name} imports more than track.js and basepath.js`,
+      ).toEqual([]);
+    }
+  });
+
   it("keeps the money helpers IN the barrel, free of imports", () => {
     // The frontend skill tells pages to import these from the barrel rather
     // than hand-roll them. money.ts imports nothing, which is what earns it a

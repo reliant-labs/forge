@@ -316,7 +316,7 @@ func emitNextjsTier1Gen(projectDir, feDir string, fe config.FrontendConfig, data
 	// `tsc --noEmit` failed and no amount of `forge generate` brought it
 	// back. Emitting it here makes the banner true.
 	otelContent, err := templates.FrontendTemplates().Render(
-		filepath.Join("nextjs", "src", "lib", "otel_gen.ts.tmpl"), data)
+		filepath.Join("nextjs", "src", "lib", "otel_gen.ts.tmpl"), withSessionIdentity(projectDir, feDir, data))
 	if err != nil {
 		return fmt.Errorf("render otel_gen.ts for %s: %w", fe.Name, err)
 	}
@@ -378,7 +378,7 @@ func generateViteFrontend(cfg *config.ProjectConfig, projectDir string, fe confi
 	// inlines at build time, handed to the HyperDX SDK wiring in
 	// @reliantlabs/forge-web-runtime/telemetry. Same module the Next.js
 	// loop emits, with the Vite spelling of the env reads.
-	if err := emitOtelGen(projectDir, feDir, "vite-spa", data, cs); err != nil {
+	if err := emitOtelGen(projectDir, feDir, "vite-spa", withSessionIdentity(projectDir, feDir, data), cs); err != nil {
 		return fmt.Errorf("emit otel_gen.ts for %s: %w", fe.Name, err)
 	}
 	// use-query-resource.ts pairs with <Resource>. It ships in the Vite
@@ -488,6 +488,27 @@ func printDependencyNotices(feName, feDir string, notices []string) {
 		fmt.Printf("  ℹ️  frontend %s (%s is disowned, so forge leaves it as is): %s\n",
 			feName, filepath.ToSlash(filepath.Join(feDir, "package.json")), n)
 	}
+}
+
+// withSessionIdentity sets the two fields otel_gen.ts gates its `identify`
+// option on, from the frontend's own owned modules: whether it signs in
+// natively (src/lib/auth/native-login.ts, which asks /auth/session at load)
+// and whether it has src/lib/api-base.ts to resolve that URL through, plus
+// the typed-config facts its mock-mode check follows. Read
+// from disk because both are the app's: an adopted frontend never had them,
+// and an app that deleted native-login.ts decides its user itself.
+func withSessionIdentity(projectDir, feDir string, data templates.FrontendTemplateData) templates.FrontendTemplateData {
+	exists := func(rel string) bool {
+		info, err := os.Stat(filepath.Join(projectDir, feDir, filepath.FromSlash(rel)))
+		return err == nil && !info.IsDir()
+	}
+	data.IdentifySession = exists("src/lib/auth/native-login.ts")
+	data.HasAPIBase = exists("src/lib/api-base.ts")
+	// Mock mode is read where session-provider.ts reads it: the typed
+	// config module when the frontend has one.
+	typed := frontendTypedConfig(projectDir, data.FrontendName)
+	data.HasTypedConfig, data.HasMockAPI = typed.Bound, typed.HasMockAPI
+	return data
 }
 
 // emitOtelGen renders <tmplSubdir>/src/lib/otel_gen.ts.tmpl into the

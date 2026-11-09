@@ -173,6 +173,18 @@ on the server, and calls made while the SDK chunk is still loading are held
   characters or contains `@` (the provider's opaque subject, never an email),
   and send no auth event under Global Privacy Control or Do Not Track.
 
+- Page views and the signed-in user, both off unless passed (forge's generated
+  `otel_gen.ts` passes them): `pageViews: true | { basePath, routeName }`
+  records one `page_viewed {route}` per route, the pathname with the query,
+  fragment and basePath cut and id-looking segments as `:id`
+  (`normalizeRoute` in the barrel); `identify: { sessionUrl }` asks that
+  endpoint (an `/auth/session` answering `{ authenticated, subject }`, with the
+  cookie) at start, on a move into or out of `/auth/*` and when the tab is
+  shown again, and passes `subject` to `setTelemetryUser`. `authenticated:
+false`, a 401 or 403, and any answer naming nobody (another non-2xx, a
+  foreign body, a network error) clear the user it set, once; before it has
+  set one they change nothing. Both stop on `disableTelemetry()`.
+
 - Attribution (`appClient`, `visitorIdStorageKey`, `withAttribution(url)`): init
   stamps `app.client` (`electron` inside Electron, else `web`; pass `"landing"`
   from a marketing site) and `visitor.id` on every event, and reads `rid` and

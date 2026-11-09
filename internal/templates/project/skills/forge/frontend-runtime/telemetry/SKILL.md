@@ -68,6 +68,10 @@ into every environment it is promoted to.
 | ingest path (`off` or empty disables) | `OTEL_ENDPOINT` | KCL `config.otel_endpoint` or `runtime_config` | `/_otel` in dev and on `forge.OnHosted`, **empty elsewhere** |
 | `deployment.environment` | `ENVIRONMENT` | KCL `config.environment` or `runtime_config` | the forge env name |
 | session replay (masked) | `OTEL_REPLAY = "true"` | KCL `telemetry = forge.BrowserTelemetry {replay = True}` (per frontend, per env), or `runtime_config` | **on in new projects**, off in existing implicit-off envs |
+| console capture | `CONSOLE_CAPTURE = "false"` | KCL `telemetry.console_capture = False` | **on** |
+| replay sample rate | `REPLAY_SAMPLE_RATE` | KCL `telemetry.replay_sample_rate` | every session |
+| `page_viewed {route}` product events | `PAGE_VIEWS = "false"` | KCL `telemetry.page_views = False` | **on** |
+| signed-in user id on every event | `IDENTIFY_USER = "false"` | KCL `telemetry.identify_user = False` | **on** with native sign-in |
 | `service.version` | — (a build fact: `NEXT_PUBLIC_APP_VERSION` / `VITE_APP_VERSION`) | the deploy | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the
@@ -84,6 +88,35 @@ The API origin (`API_URL`) feeds `tracePropagationTargets`, resolved as
 `connect.ts` resolves it, so a cross-origin API still gets a `traceparent`.
 `environment` is emitted as both `deployment.environment.name` and the legacy
 `deployment.environment` that HyperDX's default sources key on.
+
+## Page views and the signed-in user, automatically
+
+The generated `otel_gen.ts` turns on two runtime options (both **off** when you
+call `initBrowserTelemetry` yourself):
+
+- `pageViews` — one `page_viewed {route}` product event per route the user
+  lands on (Navigation API where the browser has it, else wrapped
+  `history.pushState`/`replaceState` plus `popstate`). `route` is the pathname
+  only: no query or fragment, the basePath stripped, and every segment that
+  is not a plain route word (lowercase letters joined by `-`/`_`, or `v2`) as
+  `:id`, so no id format leaves the browser; consecutive repeats are one view.
+  `normalizeRoute(pathname, basePath)` from the barrel names your own events'
+  routes the same way. `pageViews: { routeName }` replaces the naming (for an
+  all-letters value like `/users/jane`); its result is scrubbed the same way,
+  with `:param` / `[param]` placeholders allowed.
+- `identify: { sessionUrl }` — for a frontend with native sign-in
+  (`src/lib/auth/native-login.ts`), the runtime asks the same `/auth/session`
+  `fetchIdentity` asks (with the cookie) and passes its `subject` — never
+  `email` or `name` — to `setTelemetryUser`, so browser events carry the
+  backend's `user.id`. It asks again on a move into or out of `/auth/*` and
+  when the tab becomes visible, never per navigation. Signed out (a 401/403
+  included) or an answer naming nobody (404, error, foreign body) clears the
+  user it set, so no event is tied to the wrong account; before it has set
+  one, such answers change nothing. Mock mode never asks. An app with its own IdP calls
+  `setTelemetryUser` and turns this off (`identify_user = False`).
+
+Both start only once the SDK runs and stop on `disableTelemetry()`. The events
+land in `product_events` like any `track()` call (`observability/product-events`).
 
 ## Source maps are extracted, never served
 

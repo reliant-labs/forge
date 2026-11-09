@@ -43,8 +43,10 @@ var FrontendRuntimeKeys = []string{
 	"API_URL",
 	"CONSOLE_CAPTURE",
 	"ENVIRONMENT",
+	"IDENTIFY_USER",
 	"OTEL_ENDPOINT",
 	"OTEL_REPLAY",
+	"PAGE_VIEWS",
 	"REPLAY_SAMPLE_RATE",
 }
 

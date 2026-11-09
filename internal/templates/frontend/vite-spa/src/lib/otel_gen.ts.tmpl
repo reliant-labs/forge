@@ -42,6 +42,15 @@
 // `replay_sample_rate` as REPLAY_SAMPLE_RATE, both read from config.js so one
 // build promotes across environments.
 //
+// Two product-analytics defaults ride on the same switches. Every route the
+// user lands on is a `page_viewed {route}` product event (the pathname only:
+// no query, no fragment, the basePath stripped, ids replaced by `:id`), and a
+// frontend with native sign-in stamps the signed-in user's opaque id (the
+// `subject` of the API's /auth/session) on every event, so browser and
+// backend events join on one user. `page_views = False` arrives as
+// PAGE_VIEWS = "false" and `identify_user = False` as IDENTIFY_USER =
+// "false"; either turns its half off for that environment.
+//
 // The SDK insists on an apiKey. It is sent a public placeholder (see
 // PLACEHOLDER_API_KEY in the runtime); a collector that enforces ingestion
 // auth must have the proxy in front of it strip that header or replace it
@@ -66,7 +75,13 @@
 // no collector, and does NOT depend on this module.
 import { initBrowserTelemetry } from "@reliantlabs/forge-web-runtime/telemetry";
 
+{{ if and .IdentifySession .HasAPIBase -}}
+import { apiBase } from "./api-base";
+{{ end -}}
 import { DEV_API_URL } from "./apiurl_gen";
+{{- if and .IdentifySession .HasTypedConfig .HasMockAPI}}
+import { loadConfig } from "./config_gen";
+{{- end}}
 
 // The runtime config document (config.js) assigns this before any bundle code
 // runs. Read directly, not through config_gen, so this module has no
@@ -111,6 +126,46 @@ function runtimeOrBuild(
   used.push(`${buildName} (declare it as ${declare})`);
   return build;
 }
+{{- if .IdentifySession}}
+
+// The mock mode src/lib/auth/session-provider.ts decides with, read from the
+// same source: "true" or "hybrid" means the signed-in user is a fixture.
+function mockMode(): string {
+{{- if and .HasTypedConfig .HasMockAPI}}
+  try {
+    return String(loadConfig().MOCK_API || "");
+  } catch {
+    // Invalid config is reported where the app reads it, not here.
+    return "";
+  }
+{{- else if .HasTypedConfig}}
+  return "";
+{{- else}}
+  return (import.meta.env.VITE_MOCK_API as string | undefined) || "";
+{{- end}}
+}
+
+// Where native sign-in answers "who is signed in": the same /auth/session URL
+// src/lib/auth/native-login.ts's fetchIdentity asks, resolved the same way.
+// Undefined when this page should not ask: the environment's runtime config
+// says IDENTIFY_USER = "false", or the bundle runs on mock data, whose user is
+// a fixture no server knows.
+function identify(cfg: Record<string, unknown>): { sessionUrl: string } | undefined {
+  if (text(cfg.IDENTIFY_USER) === "false") {
+    return undefined;
+  }
+  const mock = mockMode();
+  if (mock === "true" || mock === "hybrid") {
+    return undefined;
+  }
+  const configured = text(cfg.API_URL);
+{{- if .HasAPIBase}}
+  return { sessionUrl: `${apiBase(configured)}/auth/session` };
+{{- else}}
+  return { sessionUrl: `${configured.replace(/\/+$/, "")}/auth/session` };
+{{- end}}
+}
+{{- end}}
 
 {{browserReplayPrivacyGuard}}
 let warnedBuildFallback = false;
@@ -174,7 +229,12 @@ export function initTelemetry(): void {
   );
   warnBuildFallback(used);
 
-  void initBrowserTelemetry({
+  // Built apart from the call, not as a literal argument: a literal is checked
+  // for excess properties, and a lockfile still holding a runtime older than
+  // pageViews/identify would then fail `tsc` on this regenerated file. As a
+  // value, an older runtime typechecks and ignores them; a current one
+  // checks every key.
+  const options = {
     serviceName: SERVICE_NAME,
     serviceVersion: (import.meta.env.VITE_APP_VERSION as string | undefined) || undefined,
     environment: environment || undefined,
@@ -191,7 +251,17 @@ export function initTelemetry(): void {
         DEV_API_URL,
     ],
     replay: replay === "true" && replayPrivacyAllows(),
-  });
+    // One `page_viewed {route}` per route the user lands on, unless the
+    // runtime config says PAGE_VIEWS = "false".
+    pageViews:
+      text(cfg.PAGE_VIEWS) === "false" ? false : { basePath: import.meta.env.BASE_URL },
+{{- if .IdentifySession}}
+    // The signed-in user's opaque id on every event, unless the runtime
+    // config says IDENTIFY_USER = "false".
+    identify: identify(cfg),
+{{- end}}
+  };
+  void initBrowserTelemetry(options);
 }
 
 export { context, getTracer, propagation, trace } from '@reliantlabs/forge-web-runtime/telemetry';

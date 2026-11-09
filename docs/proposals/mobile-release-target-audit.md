@@ -1,6 +1,6 @@
 # Independent audit: Mobile apps as a Forge release target
 
-**Reviewed:** `mobile-release-target.md`, dated 2026-11-06, complete through §14.  
+**Reviewed:** `mobile-release-target.md`, dated 2026-11-06, complete through §14.
 **Verdict:** **Approve the architectural direction, not yet the production contract.** Resolve the high-priority items below before freezing adapter contracts or claiming production parity. F0 and a clearly experimental, OTA-disabled F1 can proceed with explicit limitations. No implementation, deployment or test suite was run for this audit.
 
 The proposal correctly separates runtime compatibility, binary inputs and output digests; production candidates from staging variants; desired assignments from installed cohorts; and durable partial execution from publication success. Those are substantive strengths, not missing requirements. Provisional KCL names are not a defect. The remaining risks concern how these principles compose with real provider resources and existing Forge semantics.

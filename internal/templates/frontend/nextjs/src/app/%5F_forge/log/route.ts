@@ -91,9 +91,7 @@ interface DevLogResult {
 
 /** Strip ANSI escapes and control characters except \n and \t. Keep identical to the native receiver in metro.config.js. */
 function sanitize(s: string): string {
-  return s
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
-    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+  return s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 }
 
 function formatEntry(entry: DevLogEntry): string {

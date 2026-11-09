@@ -8,12 +8,12 @@ Line numbers are from this worktree.
 
 There are three layers. The control plane is a fourth, outside this repo.
 
-| Layer | Where | Role |
-|---|---|---|
-| IdP | Zitadel, the dev engine `HostInfra.engine = "zitadel"` (`kcl/schema.k:1502,1573-1622`). Hosted: an instance the control plane converges | Issues JWTs. One port serves OIDC, `/v2` and `/management/v1` (`pkg/devidp/zitadel.go` `Client` doc) |
+| Layer       | Where                                                                                                                                                                          | Role                                                                                                                                                                                              |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| IdP         | Zitadel, the dev engine `HostInfra.engine = "zitadel"` (`kcl/schema.k:1502,1573-1622`). Hosted: an instance the control plane converges                                        | Issues JWTs. One port serves OIDC, `/v2` and `/management/v1` (`pkg/devidp/zitadel.go` `Client` doc)                                                                                              |
 | Declaration | `forge.ManagedIdentity` / `IdentityApplication` / `IdentityLogin` (`kcl/schema.k:6701-6760, 6956-7145`) → release shape `ShapeIdentity` (`pkg/release/identity.go:40-41, 590`) | Declares roles and applications. `kind` is only `"native_broker" \| "oidc_web"` (`schema.k:6743`). `IdentityLogin.mode = "hosted"` is "PHASE 2 … nothing converges it yet" (`schema.k:6727-6732`) |
-| Reconciler | `pkg/identity` (`spec.go`, `apps.go`, `reconcile.go`, `store.go`). Dev projection: `internal/devidentity/devidentity.go:407-447` | Converges Zitadel apps and publishes `Output` (issuer, audience=ProjectID, scopes, JWKS, per-app client_id/redirects; `store.go:160-264`) into typed config |
-| Broker | Generated server code `internal/templates/project/app-login-broker.go.tmpl`, built on `pkg/devidp` (`flow.go`, `login.go`) | The product's own sign-in API. The server drives the whole OIDC flow |
+| Reconciler  | `pkg/identity` (`spec.go`, `apps.go`, `reconcile.go`, `store.go`). Dev projection: `internal/devidentity/devidentity.go:407-447`                                               | Converges Zitadel apps and publishes `Output` (issuer, audience=ProjectID, scopes, JWKS, per-app client_id/redirects; `store.go:160-264`) into typed config                                       |
+| Broker      | Generated server code `internal/templates/project/app-login-broker.go.tmpl`, built on `pkg/devidp` (`flow.go`, `login.go`)                                                     | The product's own sign-in API. The server drives the whole OIDC flow                                                                                                                              |
 
 **How the web app signs in today, end to end.** Mode `native` is the default. The name
 means "the app's own form", not a mobile app.
@@ -41,12 +41,14 @@ means "the app's own form", not a mobile app.
 `pkg/identity/client.go:316` already reads `/.well-known/openid-configuration`. Zitadel rotates refresh tokens on each use, and the old token stops working.
 
 **forge's library half-supports it:**
+
 - `identity.AppNative` exists (`spec.go:232`). It maps to `OIDC_APP_TYPE_NATIVE` with auth method NONE, grants
   `AUTHORIZATION_CODE` + `REFRESH_TOKEN`, JWT access tokens and the role assertion (`apps.go:39-63`).
 - Redirect and post-logout URIs are compared literally. `DevMode` turns them into globs and allows http (`spec.go:244-255`).
 - `offline_access` is in the default `oidc_scopes` (`config.proto.tmpl:427-428`).
 
 **What is missing:**
+
 - **No declaration path to `AppNative`.** KCL accepts only `native_broker|oidc_web` (`schema.k:6743`), and so does the release
   validation (`release/identity.go:590`). The dev projection switch has no native case (`devidentity.go:430-445`).
   Nobody constructs `identity.AppNative`. The only uses are the two kinds above (`devidentity.go:432,441`).
@@ -94,10 +96,12 @@ dev `devidentity.applicationsSpec` / hosted control-plane projection → `identi
 `reconcile.go` (apps converge with drift detection, `apps.go:105-135`) → `Output.Apps[name].client_id` →
 consumer config (`IdentityFields`, `schema.k:6756-6810`). The native client converges when
 `kind = "native"` is added at each hop:
+
 ```
 forge.IdentityApplication {name = "prod:mobile", workload = "api", kind = "native",
     redirect_uris = ["com.acme.app:/oauthredirect"], logout_uris = ["com.acme.app:/signedout"]}
 ```
+
 - **Derivation rule:** the redirect comes from the Expo `scheme` / bundle id, not from an http origin. `applicationsSpec` currently
   derives `origin + "/auth/callback"` (`devidentity.go:420-426`).
 - **Publication:** the client_id must reach the **mobile build's runtime config**, not a server workload. That is a new

@@ -9,20 +9,21 @@ Status: research only. Verified 2026 against the npm registry and `expo/expo` br
 Source of truth for `npx expo install`: `packages/expo/bundledNativeModules.json` on sdk-58.
 All five resolve through `expo install`; these match npm `latest` today.
 
-| Package | SDK 58 pin | npm deps / peers (latest) |
-|---|---|---|
-| expo-auth-session | `~58.0.17` | deps: expo-crypto ~58.0.7, expo-linking ~58.0.16, expo-constants ~58.0.15, expo-application ~58.1.2, expo-web-browser ~58.0.7, invariant; peers react, react-native |
-| expo-web-browser | `~58.0.7` | peers expo, react-native |
-| expo-secure-store | `~58.0.2` | peer expo |
-| expo-crypto | `~58.0.7` | peer expo |
-| expo-linking | `~58.0.16` (already in template) | deps expo-constants, invariant |
-| (transitive) expo-application | `~58.1.2` | pulled by auth-session only |
+| Package                       | SDK 58 pin                       | npm deps / peers (latest)                                                                                                                                           |
+| ----------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| expo-auth-session             | `~58.0.17`                       | deps: expo-crypto ~58.0.7, expo-linking ~58.0.16, expo-constants ~58.0.15, expo-application ~58.1.2, expo-web-browser ~58.0.7, invariant; peers react, react-native |
+| expo-web-browser              | `~58.0.7`                        | peers expo, react-native                                                                                                                                            |
+| expo-secure-store             | `~58.0.2`                        | peer expo                                                                                                                                                           |
+| expo-crypto                   | `~58.0.7`                        | peer expo                                                                                                                                                           |
+| expo-linking                  | `~58.0.16` (already in template) | deps expo-constants, invariant                                                                                                                                      |
+| (transitive) expo-application | `~58.1.2`                        | pulled by auth-session only                                                                                                                                         |
 
 Note: expo-auth-session pulls expo-application + expo-constants as hard deps — extra native
 module surface even if we use none of its UI.
 
 `app.json` (template `app.json.tmpl`) already has `"scheme": "{{.FrontendName}}"` — required for
 the redirect URI. Plugins:
+
 - `expo-secure-store`: has a config plugin (`plugin/src/withSecureStore.ts`) — sets
   `NSFaceIDUsageDescription` (prop `faceIDPermission`, `false` to omit) and, by default
   (`configureAndroidBackup: true`), adds Android backup/data-extraction rules excluding the
@@ -52,7 +53,7 @@ Source: `packages/expo-auth-session/src/{AuthRequest,AuthSession,PKCE}.ts`.
   `state` to `this.state` and yields `{type:'error', error:'state_mismatch'}`. Pass our own
   32-byte state if we care.
 - **`makeRedirectUri({ native, scheme, path })`**: on native in `Standalone`/`Bare`
-  execution environment *and* `native` given → returns `native` verbatim. Otherwise
+  execution environment _and_ `native` given → returns `native` verbatim. Otherwise
   `Linking.createURL(path, {scheme})` → dev client / production: `<scheme>://<path>`;
   **Expo Go: `exp://<lan-ip>:8081/--/<path>`** (unregisterable with a real broker; treat Expo
   Go as unsupported for auth, require a dev client). Web: `https://origin/<path>`.
@@ -69,7 +70,7 @@ Source: `packages/expo-auth-session/src/{AuthRequest,AuthSession,PKCE}.ts`.
   the opener); a no-op on native. Call it at module scope of the callback route only if the
   Expo web target does auth.
 - **expo-router pitfall.** On Android (and on iOS if the OS also delivers it) the redirect
-  `myapp://oauth/callback?code=…` is *also* dispatched as a deep link; expo-router will try to
+  `myapp://oauth/callback?code=…` is _also_ dispatched as a deep link; expo-router will try to
   navigate to `app/oauth/callback` → "Unmatched route" screen flashes. Fixes: add a real
   `app/oauth/callback.tsx` that renders nothing/redirects home (and never consumes the code
   itself), or rewrite it in `app/+native-intent.tsx` (`redirectSystemPath`) to `/`. The
@@ -81,9 +82,10 @@ Source: `packages/expo-auth-session/src/{AuthRequest,AuthSession,PKCE}.ts`.
 ## 3. expo-secure-store
 
 Source: `packages/expo-secure-store/src/SecureStore.ts`.
+
 - **Size**: SDK 58 `isValidValue` only checks `typeof value === 'string'` — the historical
-  >2048-byte warning is gone. iOS Keychain has no practical small cap; Android stores AES-GCM
-  ciphertext in SharedPreferences. Still: keep JWTs per key, don't blob the whole session.
+  > 2048-byte warning is gone. iOS Keychain has no practical small cap; Android stores AES-GCM
+  > ciphertext in SharedPreferences. Still: keep JWTs per key, don't blob the whole session.
 - **Keys**: `[A-Za-z0-9._-]` only (`ensureValidKey`) — encode account ids before using in keys.
 - **`keychainAccessible`** (iOS): `AFTER_FIRST_UNLOCK`, `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`,
   `WHEN_UNLOCKED` (**default**), `WHEN_UNLOCKED_THIS_DEVICE_ONLY`,
@@ -138,6 +140,7 @@ Source: `packages/expo-secure-store/src/SecureStore.ts`.
 
 **Thin hand-written flow over `expo-web-browser` + `expo-crypto` + `fetch`; don't depend on
 expo-auth-session.** Reasons:
+
 - Our needs are a single known IdP (forge login broker), not discovery/provider presets. The
   library's value (`AuthRequest` URL builder, state check, PKCE) is ~60 lines we can own and
   test against RFC vectors; its hooks tie the flow to a component lifecycle.
@@ -150,6 +153,6 @@ expo-auth-session.** Reasons:
   persisted pending-login for Android cold starts.
 - Trade-off: we lose web-popup support (`maybeCompleteAuthSession`) and must maintain the
   redirect parsing — acceptable; web auth should use the existing web frontend's cookie flow.
-Mirror `PKCE.ts` and `AuthRequest.parseReturnUrl` semantics as the reference implementation.
-Use `makeRedirectUri`-equivalent `Linking.createURL('oauth/callback')` (expo-linking is already
-a dependency) and refuse to start login when it yields `exp://` (Expo Go).
+  Mirror `PKCE.ts` and `AuthRequest.parseReturnUrl` semantics as the reference implementation.
+  Use `makeRedirectUri`-equivalent `Linking.createURL('oauth/callback')` (expo-linking is already
+  a dependency) and refuse to start login when it yields `exp://` (Expo Go).

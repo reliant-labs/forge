@@ -5,6 +5,7 @@ PKCE via the login broker, expo-secure-store, single-flight refresh, logout, acc
 isolation) must touch. Paths are relative to `internal/templates/frontend/` unless noted.
 
 ## 0. Correction to the brief
+
 There is **no** `react-native/src/lib/auth/` directory. All four auth files live in
 `shared/src/lib/auth/` and branch on `{{.Platform}}`; the RN tree composes `shared/`
 (`internal/templates/frontend_tree.go:46-55`). Native-only files today:
@@ -12,6 +13,7 @@ There is **no** `react-native/src/lib/auth/` directory. All four auth files live
 `react-native/app/{_layout,index}.tsx.tmpl`.
 
 ## 1. The auth abstraction
+
 - `shared/src/lib/auth/provider.ts:38-57` — `AuthUser {id,email?,name?}`;
   `AuthProvider { getToken(): Promise<string|null>; getUser(): AuthUser|null; logout(): Promise<void> }`.
   Header (`:16-36`) documents that `login()`, `onAuthStateChange()`, `isAuthenticated/isLoading`,
@@ -49,6 +51,7 @@ There is **no** `react-native/src/lib/auth/` directory. All four auth files live
   (`internal/templates/frontend_auth_flow_test.go:510-545`) pins absence of route-guard/native-login on RN.
 
 ## 2. `@reliantlabs/forge-web-runtime` (`web-runtime/`)
+
 - Entry points: `.`, `./interceptors`, `./node` (`web-runtime/package.json:36-48`);
   `web-runtime/interceptors/package.json` is a legacy-resolver shim with a `react-native` field.
 - `web-runtime/src/interceptors.ts`: `RuntimeInterceptorConfig {getToken,getBrand,onError,maxRetries,retryBaseMs}` `:53-64`;
@@ -64,6 +67,7 @@ There is **no** `react-native/src/lib/auth/` directory. All four auth files live
   surface ⇒ additive only (semver at v1).
 
 ## 3. React Query
+
 - Created once at module scope: `shared/src/lib/query-client.ts:177-207` (`export const queryClient`),
   provided in `react-native/app/_layout.tsx.tmpl:39`; lifecycle wired `:36`
   (`react-native/src/lib/query-lifecycle.ts`). Mutations `networkMode:"always"` `:200-205`.
@@ -82,6 +86,7 @@ There is **no** `react-native/src/lib/auth/` directory. All four auth files live
   epoch in the interceptor and drop/throw when it no longer matches.
 
 ## 4. Workspace mode
+
 - RN `connect.ts.tmpl:6-8,76-84` calls `setApiTransport(transport)` from the shared hooks package;
   hooks resolve transport at call time (`internal/generator/frontend_workspaces.go:396-421`).
 - Hooks package is DOM-free and frontend-agnostic ⇒ **auth must stay per-frontend**
@@ -90,6 +95,7 @@ There is **no** `react-native/src/lib/auth/` directory. All four auth files live
   those belong in web-runtime, not a workspace package.
 
 ## 5. Tests that pin auth today
+
 - `internal/templates/react_native_test.go:26-35` — RN tree must contain `query-client.ts`,
   `auth/{context.tsx,provider.ts,session-provider.ts}.tmpl`. Adding files: extend the list.
 - `internal/templates/frontend_auth_flow_test.go:510-545` (`TestReactNativeShipsNoBrowserSignIn`:
@@ -107,6 +113,7 @@ There is **no** `react-native/src/lib/auth/` directory. All four auth files live
   connect-transport mention auth). `shared-web/src/lib/auth/context.test.tsx.tmpl` is web-only.
 
 ## 6. Server side gap (blocks the frontend)
+
 `internal/templates/project/app-login-broker.go.tmpl:74-81,149-193` exposes only cookie
 routes (`/auth/login|register|logout|session|password-policy|options|forgot|reset`). There is
 **no** authorize/callback/token/refresh endpoint and no `code_verifier`/refresh-token handling.
@@ -116,18 +123,21 @@ returning bearer + refresh tokens — or PKCE direct against the issuer with the
 out of the loop. That decision precedes the frontend layout below.
 
 ## 7. Recommendation
+
 Smallest public seam (extend `provider.ts`, additively, with optional members so the mock
 and existing user implementations still typecheck):
+
 ```ts
 interface AuthProvider {
-  getToken(): Promise<string|null>;          // existing; must do single-flight refresh internally
-  getUser(): AuthUser|null;                  // existing
-  logout(): Promise<void>;                   // existing; revoke + wipe store
-  restore?(): Promise<AuthUser|null>;        // new: cold-start from secure store
-  signIn?(): Promise<AuthUser|null>;         // new: interactive (system browser)
-  onTokenRejected?(): Promise<boolean>;      // new: 401 → refresh; true = replay once
+  getToken(): Promise<string | null>; // existing; must do single-flight refresh internally
+  getUser(): AuthUser | null; // existing
+  logout(): Promise<void>; // existing; revoke + wipe store
+  restore?(): Promise<AuthUser | null>; // new: cold-start from secure store
+  signIn?(): Promise<AuthUser | null>; // new: interactive (system browser)
+  onTokenRejected?(): Promise<boolean>; // new: 401 → refresh; true = replay once
 }
 ```
+
 Swapping IdPs = implementing this one interface; the context, transport and cache
 isolation never see the IdP.
 

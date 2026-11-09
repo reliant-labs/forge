@@ -40,12 +40,12 @@ func TestTelemetryConfigIsSameOriginAndSecretFree(t *testing.T) {
 		"nextjs": {
 			tmpl:       "nextjs/src/lib/otel_gen.ts.tmpl",
 			devDefault: "`${BASE_PATH}/_otel`",
-			replay:     `replay: replay === "true",`,
+			replay:     `replay: replay === "true" && replayPrivacyAllows(),`,
 		},
 		"vite-spa": {
 			tmpl:       "vite-spa/src/lib/otel_gen.ts.tmpl",
 			devDefault: `"/_otel"`,
-			replay:     `replay: replay === "true",`,
+			replay:     `replay: replay === "true" && replayPrivacyAllows(),`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -119,7 +119,7 @@ func TestTelemetryPerEnvValuesPreferRuntimeConfig(t *testing.T) {
 				"console.warn(",
 				"next major version of forge",
 				"environment: environment || undefined,",
-				`replay: replay === "true",`,
+				`replay: replay === "true" && replayPrivacyAllows(),`,
 			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("missing %q:\n%s", want, s)

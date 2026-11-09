@@ -176,8 +176,12 @@ _profiles_otlp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-pr
 _alertmanager_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-alertmanager", 9093) if _observability and not _destination else 0
 _alerts_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-alerts", 9095) if _observability and not _destination else 0
 
-_observability_decl = forge.Observability {
-    local_port = _otlp_http_port
+{{if .HasFrontend}}# Masked session recording for this environment. False stops capture AND
+# removes the ingestion opt-in. DNT/GPC and the app's consent gate still win.
+_session_replay = True
+{{end}}_observability_decl = forge.Observability {
+{{if .HasFrontend}}    signals = forge.ObservabilitySignals {replay = _session_replay}
+{{end}}    local_port = _otlp_http_port
     alertmanager_port = _alertmanager_port
     alerts_port = _alerts_port
     # Where host processes push profiles. With the local ClickStack, profiles
@@ -407,6 +411,7 @@ _telemetry_workloads = ([fw.Workload {
 {{if .HasFrontend}}_{{.FrontendIdent}}_frontend = forge.Frontend {
     name = "{{.FrontendName}}"
     path = "frontends/{{.FrontendName}}"
+    runtime_config = {OTEL_REPLAY = "true" if _observability and _session_replay else "false"}
 {{if .FrontendRoutes}}    routes = [{{range .FrontendRoutes}}{{printf "%q" .}}, {{end}}]
 {{end}}    port = _frontend_port
 }

@@ -43,10 +43,20 @@ func readFile(t *testing.T, path string) string {
 func TestRunNewSiteAdoptsTheRootApp(t *testing.T) {
 	testkit.Slow(t, "execs git")
 	root := viteApp(t, "export default { build: { outDir: 'public-build' } }\n")
+	before := readFile(t, filepath.Join(root, "vite.config.ts"))
 	if err := runNewSite(t.Context(), newSiteInput{targetPath: root, projectName: "landing", inPlace: true, harness: "reliant"}); err != nil {
 		t.Fatalf("runNewSite: %v", err)
 	}
 
+	if after := readFile(t, filepath.Join(root, "vite.config.ts")); after != before {
+		t.Fatal("adoption rewrote existing application code")
+	}
+	for _, env := range []string{"dev", "staging", "prod"} {
+		main := readFile(t, filepath.Join(root, "deploy/kcl", env, "main.k"))
+		if !strings.Contains(main, "_session_replay = False") {
+			t.Fatalf("adopted %s silently opted into recording", env)
+		}
+	}
 	for _, absent := range []string{"go.mod", "cmd", "proto", "Dockerfile", "internal", "Taskfile.yml"} {
 		if _, err := os.Stat(filepath.Join(root, absent)); err == nil {
 			t.Errorf("a site must not get %s", absent)

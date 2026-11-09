@@ -155,7 +155,7 @@ func TestOldSpellingsStayVisible(t *testing.T) {
 // are hidden (phase 2), and every one of them exists today.
 func TestTheFourteenNounsExist(t *testing.T) {
 	root := newTestRootCmd(t)
-	for _, noun := range []string{"project", "scaffold", "generate", "lint", "ci", "db", "env", "release", "obs", "cloud", "dev", "ui", "machine", "agent", "version"} {
+	for _, noun := range []string{"scaffold", "project", "generate", "lint", "ci", "db", "env", "release", "obs", "cloud", "dev", "ui", "machine", "agent", "version"} {
 		if c := findChildCommand(root, noun); c == nil || c.Hidden {
 			t.Errorf("`forge %s` is missing or hidden", noun)
 		}

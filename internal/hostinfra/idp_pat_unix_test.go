@@ -11,6 +11,26 @@ import (
 	"testing"
 )
 
+// A token published where no shared file existed yet is created owner-only,
+// in an owner-only directory.
+func TestPublishShared_CreatesTheTokenOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	loc := IDPPATLocations{Shared: filepath.Join(dir, "home", "key", "pat.txt"), Checkout: filepath.Join(dir, "clone", "pat.txt")}
+	if err := os.MkdirAll(filepath.Dir(loc.Checkout), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeMode(t, loc.Checkout, "old-forge-token", 0o644)
+	if err := loc.PublishShared(loc.Checkout); err != nil {
+		t.Fatal(err)
+	}
+	if got := mode(t, loc.Shared); got != 0o600 {
+		t.Errorf("shared token mode = %o, want 0600", got)
+	}
+	if got := mode(t, filepath.Dir(loc.Shared)); got != 0o700 {
+		t.Errorf("shared token directory mode = %o, want 0700", got)
+	}
+}
+
 // A PAT is a credential: forge leaves every copy it writes owner-only, even
 // when the file already existed world-readable (atomicfile.WriteFile keeps an
 // existing file's mode) and even when its content did not change.

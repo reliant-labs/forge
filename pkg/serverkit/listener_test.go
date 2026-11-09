@@ -7,7 +7,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -38,13 +40,14 @@ func TestRun_DrainsInFlightH2CRequests(t *testing.T) {
 		t.Run(proto, func(t *testing.T) {
 			addr := freeAddr(t)
 			inHandler := make(chan struct{})
+			release := make(chan struct{})
 			mux := http.NewServeMux()
 			mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
 				if r.ProtoMajor != map[string]int{"http1": 1, "h2c": 2}[proto] {
 					t.Errorf("served over %s, want %s", r.Proto, proto)
 				}
 				close(inHandler)
-				time.Sleep(500 * time.Millisecond)
+				<-release
 				w.WriteHeader(http.StatusOK)
 			})
 			cfg := baseConfig(addr)
@@ -66,12 +69,30 @@ func TestRun_DrainsInFlightH2CRequests(t *testing.T) {
 				done <- resp.StatusCode
 			}()
 			<-inHandler
-			start := time.Now()
-			if err := shutdownAndWait(t, errCh, 10*time.Second); err != nil {
-				t.Fatalf("Run: %v", err)
+			// The handler is blocked until release closes, so Run must not
+			// return before then: the broken drain returned in ~20ms. Waiting
+			// longer can only miss a slower bug, never fail a correct drain.
+			p, err := os.FindProcess(os.Getpid())
+			if err != nil {
+				t.Fatalf("find self: %v", err)
 			}
-			if took := time.Since(start); took < 450*time.Millisecond {
-				t.Errorf("Run returned after %v, before the in-flight %s request finished", took, proto)
+			if err := p.Signal(syscall.SIGTERM); err != nil {
+				t.Fatalf("send SIGTERM: %v", err)
+			}
+			select {
+			case err := <-errCh:
+				close(release)
+				t.Fatalf("Run returned (%v) while the in-flight %s request was still running", err, proto)
+			case <-time.After(200 * time.Millisecond):
+			}
+			close(release)
+			select {
+			case err := <-errCh:
+				if err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("Run did not return within 10s of the request finishing")
 			}
 			if code := <-done; code != http.StatusOK {
 				t.Errorf("in-flight %s request got %d, want 200", proto, code)

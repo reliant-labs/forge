@@ -16,6 +16,29 @@ import React, { createContext, useContext, useEffect, useLayoutEffect, useRef } 
 export const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+// Whether the reader can Tab to (or be put back on) el. A control's own
+// computed display says nothing of its ancestors': a desktop-only button in a
+// `max-md:hidden` wrapper is display:block itself, and counting it as the
+// cycle's last stop is how Tab from the real last stop escaped the dialog.
+// Visibility inherits, so the element's own value already reflects its
+// ancestors (and a visible child of a hidden parent is reachable).
+function reachable(el: HTMLElement): boolean {
+  if (
+    el.matches(":disabled") ||
+    el.closest('[inert], [hidden], [aria-hidden="true"]') ||
+    getComputedStyle(el).visibility === "hidden"
+  )
+    return false;
+  for (
+    let node: HTMLElement | null = el;
+    node && node !== document.body;
+    node = node.parentElement
+  ) {
+    if (getComputedStyle(node).display === "none") return false;
+  }
+  return true;
+}
+
 // Open dialogs, bottom to top. Escape and the focus trap belong to the top
 // one only; a module-level stack because stacked dialogs are usually
 // rendered by unrelated components.
@@ -323,10 +346,7 @@ export function useModalDialog({
       const target =
         lastFocused?.isConnected &&
         modalSurfaces(panel).some((surface) => surface.contains(lastFocused)) &&
-        !lastFocused.closest('[inert], [hidden], [aria-hidden="true"]') &&
-        !lastFocused.matches(":disabled") &&
-        getComputedStyle(lastFocused).display !== "none" &&
-        getComputedStyle(lastFocused).visibility !== "hidden"
+        reachable(lastFocused)
           ? lastFocused
           : (callbacks.current.initialFocus?.() ?? focusable()[0] ?? panel);
       target.focus({ preventScroll: true });
@@ -341,6 +361,12 @@ export function useModalDialog({
     };
     registerDialog(entry);
     lockScroll();
+    // The panel is where focus rests when it has nothing to Tab to (and the
+    // fallback whenever focus must be put back): it has to be focusable. A
+    // panel that declares its own tabIndex keeps it; one the hook made
+    // focusable is put back as it was on close.
+    const madeFocusable = !panel.hasAttribute("tabindex");
+    if (madeFocusable) panel.tabIndex = -1;
     // Release the lower dialog's isolation before focusing a new portal.
     // Its new background is isolated only AFTER focus has moved out of it.
     restoreBackground();
@@ -351,13 +377,7 @@ export function useModalDialog({
           ...(surface !== panel && surface.matches(FOCUSABLE_SELECTOR) ? [surface] : []),
           ...Array.from(surface.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)),
         ])
-        .filter(
-          (el) =>
-            el.tabIndex >= 0 &&
-            !el.closest('[inert], [hidden], [aria-hidden="true"]') &&
-            getComputedStyle(el).display !== "none" &&
-            getComputedStyle(el).visibility !== "hidden",
-        );
+        .filter((el) => el.tabIndex >= 0 && reachable(el));
     if (isTop(id) && !externalAbove(panel) && !panel.contains(document.activeElement)) {
       (callbacks.current.initialFocus?.() ?? focusable()[0] ?? panel).focus();
     }
@@ -389,6 +409,8 @@ export function useModalDialog({
         return;
       }
       if (e.key !== "Tab") return;
+      // Resolved on every keypress: content added, removed or hidden after
+      // opening moves the ends of the cycle.
       const items = focusable();
       const first = items[0];
       const last = items[items.length - 1];
@@ -396,13 +418,15 @@ export function useModalDialog({
       const owner = active instanceof Element ? active.closest('[aria-modal="true"]') : null;
       if (owner && owner !== panel && externalAbove(panel) === owner) return;
       const inside = modalSurfaces(panel).some((surface) => surface.contains(active));
+      // An empty panel keeps focus. Otherwise wrap at both ends; from the
+      // panel itself (or from outside it) Tab enters at the matching end.
       if (!first) {
         e.preventDefault();
         panel.focus();
       } else if (e.shiftKey && (!inside || active === first || active === panel)) {
         e.preventDefault();
         (last ?? first).focus();
-      } else if (!e.shiftKey && (!inside || active === last)) {
+      } else if (!e.shiftKey && (!inside || active === last || active === panel)) {
         e.preventDefault();
         first.focus();
       }
@@ -412,6 +436,7 @@ export function useModalDialog({
       observer.disconnect();
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("focusin", onFocusIn);
+      if (madeFocusable) panel.removeAttribute("tabindex");
       const wasTop = isTop(id);
       const external = wasTop ? (externalAbove(panel) ?? entry.external) : null;
       if (external) {

@@ -27,7 +27,16 @@ func newBreakCmd(_ *factory.Factory) *cobra.Command {
 The positional argument is auto-detected: a "file.go:42" spec sets a
 source-line breakpoint, while anything else (e.g. "main.handleRequest",
 "runtime.gopark", "(*Server).Serve") is resolved as a function breakpoint
-via Delve's location parser. The --func flag forces function resolution.
+via Delve's location parser. The --func flag forces function resolution. A
+bare method name (e.g. "CreateTask") resolves to the *Service method of that
+name under internal/handlers/.
+
+A file path is relative to the project root. It resolves whether the binary
+was built with -trimpath (as air and the Reliant image build) or not, and a
+bare file name matches by suffix when it is unique.
+
+Setting a breakpoint on a running target halts it for the instant it takes,
+then lets it run on.
 
 Examples:
   forge debug break handler.go:42
@@ -94,13 +103,17 @@ func runDebugBreak(args []string, funcName, condition string, jsonOutput bool) e
 		return nil
 	}
 
-	file, line, err := parseFileLine(spec)
+	projectDir, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	bp, err := dbg.SetBreakpoint(file, line, condition)
+	ls, err := parseLineSpec(spec, projectDir, readModulePath(projectDir))
 	if err != nil {
-		return fmt.Errorf("setting breakpoint: %w", err)
+		return err
+	}
+	bp, err := dbg.SetLineBreakpoint(ls.files, ls.locExpr, ls.line, condition)
+	if err != nil {
+		return fmt.Errorf("setting breakpoint at %s: %w", spec, err)
 	}
 	printBreakpoint(*bp, jsonOutput)
 	return nil
@@ -160,13 +173,8 @@ func newClearCmd(_ *factory.Factory) *cobra.Command {
 				return fmt.Errorf("invalid breakpoint ID %q: %w", args[0], err)
 			}
 
-			dbg, err := connectToSession()
-			if err != nil {
+			if err := runDebugClear(id); err != nil {
 				return err
-			}
-
-			if err := dbg.ClearBreakpoint(id); err != nil {
-				return fmt.Errorf("clearing breakpoint: %w", err)
 			}
 
 			if jsonOutput {
@@ -180,4 +188,16 @@ func newClearCmd(_ *factory.Factory) *cobra.Command {
 
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
+}
+
+func runDebugClear(id int) error {
+	dbg, err := connectToSession()
+	if err != nil {
+		return err
+	}
+	defer dbg.Disconnect()
+	if err := dbg.ClearBreakpoint(id); err != nil {
+		return fmt.Errorf("clearing breakpoint: %w", err)
+	}
+	return nil
 }

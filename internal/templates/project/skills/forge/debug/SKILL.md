@@ -60,10 +60,11 @@ On top of the generic triage above, common forge-shaped bug classes:
 forge project introspect handlers      # every RPC path the binary registers — localize the fault
 forge api curl <svc.method>    # build a copy-pasteable Connect curl from the shell
 forge cluster logs --service X # kubectl-backed log tail for one service (single cluster)
-forge debug start <svc>        # build + attach Delve debugger
-forge debug start --attach PID # attach Delve to a live process (don't `stop` it — see below)
-forge debug break/continue/eval# breakpoints, resume, evaluate in the debug session
-forge debug stop               # ends the session AND kills the debugged process
+forge debug start <svc>        # debug-build <svc>, run it under Delve with env dev's config
+forge debug start --attach PID # attach Delve to a live process; it keeps running
+forge debug connect <addr>     # drive a dlv you started (e.g. the delve runner: 127.0.0.1:2345)
+forge debug break/continue/eval# breakpoints, wait for a hit (continue --timeout 60s), evaluate
+forge debug stop               # kills only what start launched; detaches/releases everything else
 task test -- -v ./internal/handlers/<name>/... # verbose isolated test runs
 task test:e2e                 # full-stack reproduction
 task test              # run tests with race detector
@@ -224,11 +225,24 @@ check `--help` before registering.
   file-grepping — but it tails only the **owner cluster** (the one cluster name in
   config). For a multi-cluster app, set the context and run
   `kubectl --context <other> -n <ns> logs <pod>` for the other half.
-- **`forge debug start <svc>` (Delve) — two sharp edges.** In a multi-binary repo
-  `start <service>` can mis-build (it falls back to `./cmd/...`); pass an explicit
-  path/service so it builds the binary you mean. And `forge debug stop` after
-  `--attach` **kills the live process** — detach instead of `stop` when you've
-  attached to something you need to keep running.
+- **`forge debug` (Delve): the target RUNS from the start.** `start <svc>` builds
+  `-gcflags=all=-N -l`, launches it with the workload's configuration from
+  `--env` (default `dev`, resolved like `forge env exec`), and writes its output to
+  `.forge/logs/<env>/debug_<svc>.log`. When `forge env up` already serves the
+  workload's PORT, either pass `--app-port <free>` or attach to the running
+  process: `start --attach <pid>` (`forge env status <env> --json` reports each
+  host service's `pid`). The loop that never blocks an agent:
+  `forge debug break <Rpc>` (a short handler method name, `file.go:42`, or a full
+  Delve function name), trigger the request in the background, then
+  `forge debug continue --timeout 60s` — it returns the hit (or exits non-zero
+  with the target still running). `eval`/`locals`/`stack` inspect;
+  `continue --no-wait` resumes without waiting. `stop` kills only a process
+  `start` launched: an attached process is detached with its breakpoints
+  removed and keeps serving, and a `connect`ed dlv keeps running with the
+  session's breakpoints cleared. A workload on the delve runner
+  (`forge.OnHost {runner = "delve"}`) already runs under dlv on
+  127.0.0.1:2345 (`delve_port`): `forge debug connect 127.0.0.1:2345`.
+  `--stop-on-start` halts at entry (or where attach found it) instead.
 
 **Smoke/status are NOT app-flow proofs.** A green `forge env smoke` / `forge env status <env>`
 checks listeners, local compose, and telemetry — never app-flow invariants. They

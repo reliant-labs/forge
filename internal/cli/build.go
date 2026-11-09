@@ -2183,6 +2183,10 @@ type goBuildTarget struct {
 	// function of the source and not of where it was compiled; the scaffolded
 	// Dockerfile builds with -trimpath for the same reason.
 	trimpath bool
+	// debug builds the target for a debugger (-gcflags=all=-N -l, symbols
+	// kept, no -trimpath) whatever the run's --debug: a host workload run
+	// under the delve runner needs DWARF and source paths dlv can resolve.
+	debug bool
 }
 
 // resolveGoTargets returns the KCL-driven go-build target set for this
@@ -2200,6 +2204,48 @@ func resolveGoTargets(buildBinary bool, entities *KCLEntities, cfg *config.Proje
 	return []goBuildTarget{projectGoBuildTarget(cfg)}
 }
 
+// goBuildArgs is the `go build` argv (after "go") for t. A debug build keeps
+// symbols and source paths and disables optimization; every other build is
+// stripped and version-stamped.
+func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo versionInfo) []string {
+	args := []string{"build", "-o", binaryPath}
+	if debug {
+		// -trimpath=false overrides a -trimpath in GOFLAGS (the Reliant
+		// workspace image makes it the toolchain default): a debugger sets
+		// breakpoints by absolute source path, and a trimmed binary records
+		// only module-relative ones, so every breakpoint would miss.
+		args = append(args, "-gcflags=all=-N -l", "-trimpath=false")
+	} else {
+		// Version stamp first; the KCL ldflags follow so a project that
+		// wants to override main.version (e.g. -X main.version=<tag>) wins
+		// on the same -X key. The stamp covers main AND the scaffold's
+		// cobra-tree package (versionStampPackages), so a server binary's
+		// `version` and its error-report release are the build's, not "dev".
+		ldflags := "-s -w " + versionStampLdflags(buildModulePath(), t.cmd, versionInfo)
+		if len(t.ldflags) > 0 {
+			ldflags += " " + strings.Join(t.ldflags, " ")
+		}
+		args = append(args, "-ldflags", ldflags)
+	}
+	if t.trimpath && !debug {
+		args = append(args, "-trimpath")
+	}
+	if len(t.tags) > 0 {
+		args = append(args, "-tags", strings.Join(t.tags, ","))
+	}
+	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
+	args = append(args, t.flags...)
+	args = append(args, t.cmd)
+	return args
+}
+
+// runsUnderDelve reports whether w is a host workload launched by the
+// delve runner, whose binary must therefore be a debug build: the default
+// build strips symbols (-s -w) and dlv could resolve no breakpoint in it.
+func runsUnderDelve(w WorkloadEntity) bool {
+	return w.OnRuntime(RuntimeHost) && w.Runtime.Host != nil && strings.TrimSpace(w.Runtime.Host.Runner) == "delve"
+}
+
 // goBuildTargetsFromKCL resolves the unique set of go-build targets from
 // the env's workloads — of every runtime, since a host go-run still needs
 // its module to build. Only a declared GoBuild contributes (docker / shell
@@ -2212,7 +2258,7 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 	if entities == nil {
 		return nil
 	}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	var out []goBuildTarget
 	for _, w := range entities.Workloads {
 		g := w.GoBuild()
@@ -2224,11 +2270,15 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 			outName = w.Name
 		}
 		key := g.Cmd + "\x00" + outName
-		if seen[key] {
+		debug := runsUnderDelve(w)
+		if i, ok := seen[key]; ok {
+			// A binary shared with a delve-run workload is built for it.
+			out[i].debug = out[i].debug || debug
 			continue
 		}
-		seen[key] = true
+		seen[key] = len(out)
 		out = append(out, goBuildTarget{
+			debug:      debug,
 			cmd:        g.Cmd,
 			outputName: outName,
 			goos:       g.GOOS,
@@ -2256,6 +2306,7 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 // ldflags for delve gcflags.
 func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug bool, crossArch string, versionInfo versionInfo, memCaps buildMemoryCaps) buildResult {
 	start := time.Now()
+	debug = debug || t.debug
 	// An explicit GoBuild.goarch wins over the build-context arch.
 	arch := crossArch
 	if t.goarch != "" {
@@ -2285,34 +2336,7 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 			targetOS, arch, runtime.GOOS, runtime.GOARCH)
 	}
 
-	args := []string{"build", "-o", binaryPath}
-	if debug {
-		// -trimpath=false overrides a -trimpath in GOFLAGS (the Reliant
-		// workspace image makes it the toolchain default): a debugger sets
-		// breakpoints by absolute source path, and a trimmed binary records
-		// only module-relative ones, so every breakpoint would miss.
-		args = append(args, "-gcflags=all=-N -l", "-trimpath=false")
-	} else {
-		// Version stamp first; the KCL ldflags follow so a project that
-		// wants to override main.version (e.g. -X main.version=<tag>) wins
-		// on the same -X key. The stamp covers main AND the scaffold's
-		// cobra-tree package (versionStampPackages), so a server binary's
-		// `version` and its error-report release are the build's, not "dev".
-		ldflags := "-s -w " + versionStampLdflags(buildModulePath(), t.cmd, versionInfo)
-		if len(t.ldflags) > 0 {
-			ldflags += " " + strings.Join(t.ldflags, " ")
-		}
-		args = append(args, "-ldflags", ldflags)
-	}
-	if t.trimpath && !debug {
-		args = append(args, "-trimpath")
-	}
-	if len(t.tags) > 0 {
-		args = append(args, "-tags", strings.Join(t.tags, ","))
-	}
-	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
-	args = append(args, t.flags...)
-	args = append(args, t.cmd)
+	args := goBuildArgs(t, binaryPath, debug, versionInfo)
 
 	if err := checkBuildStorageFn(outputDir); err != nil {
 		return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}

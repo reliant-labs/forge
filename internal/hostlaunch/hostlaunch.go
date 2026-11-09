@@ -48,7 +48,7 @@ import (
 // Defaults pinned by the runner dispatch. Exported so tests and CLI
 // help text can reference them without re-deriving the magic numbers.
 const (
-	// DefaultDelvePort is the dlv --listen=:<port> default when KCL
+	// DefaultDelvePort is the dlv --listen=127.0.0.1:<port> default when KCL
 	// doesn't pin one explicitly. Matches dlv's own conventional port.
 	DefaultDelvePort = 2345
 
@@ -80,7 +80,7 @@ const (
 type RunnerSpec struct {
 	Runner    string // "" (= go-run) | "go-run" | "air" | "binary" | "delve"
 	AirConfig string // path relative to the working dir; default DefaultAirConfig
-	DelvePort int    // dlv --listen=:<port>; default DefaultDelvePort
+	DelvePort int    // dlv --listen=127.0.0.1:<port>; default DefaultDelvePort
 
 	// GoPkg is the workload's GoBuild.cmd (e.g. "./cmd/acme"): the package
 	// go-run runs and binary/delve were built from. Empty means the
@@ -160,7 +160,7 @@ func (s RunnerSpec) AirRunsArgs() bool {
 //	explicit Command (any runner but air)  Command... Args...
 //	go-run / ""                            go run <GoPkg> Args...
 //	binary                                 ./bin/<OutputName|name> Args...
-//	delve                                  dlv exec --headless --listen=:<port> --api-version=2
+//	delve                                  dlv exec --headless --listen=127.0.0.1:<port> --api-version=2
 //	                                         --accept-multiclient --continue ./bin/<out> [-- Args...]
 //	air                                    air -c <AirConfig|.air.toml>   (Args: see IgnoresArgs)
 //
@@ -222,7 +222,10 @@ func buildCmdFor(ctx context.Context, goos, name string, spec RunnerSpec) (*exec
 			if port <= 0 {
 				port = DefaultDelvePort
 			}
-			argv = []string{"dlv", "exec", "--headless", fmt.Sprintf("--listen=:%d", port),
+			// Loopback only: dlv's API runs arbitrary code in the target,
+			// and --listen=:<port> would serve it to the whole network.
+			// `forge debug connect 127.0.0.1:<port>` drives it.
+			argv = []string{"dlv", "exec", "--headless", fmt.Sprintf("--listen=127.0.0.1:%d", port),
 				"--api-version=2", "--accept-multiclient", "--continue", bin}
 			if len(spec.Args) > 0 {
 				argv = append(append(argv, "--"), spec.Args...)

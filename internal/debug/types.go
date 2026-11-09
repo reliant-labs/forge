@@ -18,7 +18,21 @@ type SessionInfo struct {
 	// not own: `stop` MUST detach the debugger and leave the target alive.
 	// Killing an attached target is a data-loss-class bug — it terminated a
 	// live platform-api in the field.
-	Owned   bool      `json:"owned"`
+	Owned bool `json:"owned"`
+	// Connected reports that forge did not start this dlv server either
+	// (`forge debug connect <addr>`: an env's delve runner, a dlv someone
+	// else launched). `stop` then clears its breakpoints, resumes the
+	// target and disconnects — the server and its target keep running.
+	Connected bool `json:"connected,omitempty"`
+	// Resumed reports that a forge command resumed the target and returned
+	// before observing its next stop (start/attach without
+	// --stop-on-start, `continue --no-wait`, a timed-out `continue`). The
+	// next `continue` then reports a stop it finds the target in instead
+	// of resuming past it.
+	Resumed bool `json:"resumed,omitempty"`
+	// LogPath is where the target's stdout/stderr go, for sessions forge
+	// launched.
+	LogPath string    `json:"log_path,omitempty"`
 	Started time.Time `json:"started"`
 }
 

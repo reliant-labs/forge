@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,9 +24,13 @@ func newStopCmd(_ *factory.Factory) *cobra.Command {
 For sessions forge launched (forge debug start <service> / --docker), stop
 kills the debugged process and reaps the dlv server.
 
-For an ATTACH session (forge debug --attach <pid>), stop DETACHES the
-debugger and leaves the target process running. forge never kills a process
-it did not launch.`,
+For an ATTACH session (forge debug start --attach <pid>), stop DETACHES the
+debugger: Delve removes every breakpoint it inserted and the target keeps
+running. forge never kills a process it did not launch.
+
+For a CONNECTED session (forge debug connect <addr>), stop clears the
+session's breakpoints, resumes the target and disconnects; the dlv server and
+its target keep running.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session, _ := debugSvc().LoadSession(".")
 			return runStop(cmd.Context(), session)
@@ -40,13 +46,16 @@ it did not launch.`,
 type stopAction int
 
 const (
-	// actionDetach: leave the target running, just drop the debugger
-	// connection. The mandatory choice for ATTACH sessions.
+	// actionDetach: Delve detaches — removing its breakpoints — and the
+	// target keeps running. The mandatory choice for ATTACH sessions.
 	actionDetach stopAction = iota
 	// actionKillTarget: terminate the target (forge launched it).
 	actionKillTarget
 	// actionStopDocker: tear down the docker debug container.
 	actionStopDocker
+	// actionRelease: clear breakpoints, resume, disconnect — the dlv server
+	// is someone else's and keeps running.
+	actionRelease
 )
 
 // stopActionFor decides what happens to the target. The cardinal rule: only
@@ -57,6 +66,8 @@ func stopActionFor(s *dbgsvc.SessionInfo) stopAction {
 	switch {
 	case s != nil && s.Docker:
 		return actionStopDocker
+	case s != nil && s.Connected:
+		return actionRelease
 	case owned(s):
 		return actionKillTarget
 	default:
@@ -67,7 +78,8 @@ func stopActionFor(s *dbgsvc.SessionInfo) stopAction {
 // runStop tears down a debug session safely. The cardinal rule: only kill
 // processes forge launched (session.Owned). An attach session is detached,
 // never killed — terminating an attached live process is a data-loss-class
-// bug.
+// bug, and so is leaving its breakpoints behind (the next hit kills it with
+// SIGTRAP).
 func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 	action := stopActionFor(session)
 	// A debugged process can be the one running this command (a server under
@@ -81,7 +93,6 @@ func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 	dbg, connErr := connectToSession()
 
 	if connErr == nil {
-		// Live RPC connection: detach cleanly via the right method.
 		switch action {
 		case actionStopDocker:
 			dbg.Disconnect()
@@ -90,8 +101,17 @@ func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 			if err := dbg.Stop(); err != nil { // Stop detaches+kills the debuggee.
 				fmt.Fprintf(os.Stderr, "Warning: error stopping debugger: %v\n", err)
 			}
+		case actionRelease:
+			if err := dbg.Release(); err != nil {
+				return fmt.Errorf("releasing the dlv server at %s (session kept; retry 'forge debug stop'): %w", session.Addr, err)
+			}
 		default: // actionDetach
-			dbg.Disconnect() // detach WITHOUT killing — target must survive.
+			// Detach — never just close the connection: Delve must remove
+			// the breakpoints it wrote into the live process. If the RPC
+			// fails, reapDlv's SIGTERM makes dlv itself detach the same way.
+			if err := dbg.Detach(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: detach RPC failed (%v); asking dlv to detach on SIGTERM\n", err)
+			}
 		}
 	} else {
 		// Couldn't connect (dlv busy / already gone). Fall back to process
@@ -105,13 +125,18 @@ func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 					_ = p.Kill()
 				}
 			}
-		default: // actionDetach: NEVER kill the target.
+		case actionRelease:
+			return fmt.Errorf("cannot reach the dlv server at %s to clear its breakpoints (session kept): %w", session.Addr, connErr)
+		default: // actionDetach: NEVER kill the target; reapDlv's SIGTERM detaches.
 		}
 	}
 
 	// Reap the dlv server process forge spawned (orphan dlv attach/exec
 	// otherwise survive stop and hold the target halted / the port open).
-	reapDlv(ctx, session)
+	// A connected session's server is not forge's to reap.
+	if action != actionRelease {
+		reapDlv(ctx, session)
+	}
 
 	if err := debugSvc().ClearSession("."); err != nil {
 		return fmt.Errorf("clearing session: %w", err)
@@ -122,8 +147,10 @@ func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 		fmt.Println("Docker debug session stopped.")
 	case actionKillTarget:
 		fmt.Println("Debug session stopped (debugged process killed).")
+	case actionRelease:
+		fmt.Println("Debug session stopped (breakpoints cleared, target resumed; the dlv server keeps running).")
 	default:
-		fmt.Println("Debug session stopped (detached; target process left running).")
+		fmt.Println("Debug session stopped (detached; breakpoints removed, target process left running).")
 	}
 	return nil
 }
@@ -133,14 +160,20 @@ func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 func owned(s *dbgsvc.SessionInfo) bool { return s != nil && s.Owned }
 
 func stopDockerDebug(ctx context.Context) {
-	stopCmd := exec.CommandContext(ctx, "docker", "compose", "--profile", "debug", "stop", "app-debug")
+	stopCmd := exec.CommandContext(ctx, "docker", composeArgs("--profile", "debug", "stop", "app-debug")...)
 	_ = stopCmd.Run()
 }
 
-// reapDlv kills the dlv server process forge spawned for this session and
-// sweeps any stray dlv server bound to the session's listen address. dlv
-// holds the target halted while attached; reaping it both frees the port and
-// lets an attached target resume normal execution.
+// dlvTermGrace is how long reapDlv waits for dlv to exit on SIGTERM before
+// killing it. dlv's SIGTERM handler halts the target and detaches —
+// removing its breakpoints from an attached process — which a SIGKILL
+// skips. A var so tests can shrink it.
+var dlvTermGrace = 5 * time.Second
+
+// reapDlv stops the dlv server process forge spawned for this session and
+// sweeps any stray dlv server bound to the session's listen address. Each is
+// asked to exit with SIGTERM first (dlv then detaches cleanly) and killed
+// only if it does not.
 func reapDlv(ctx context.Context, session *dbgsvc.SessionInfo) {
 	if session == nil {
 		return
@@ -149,13 +182,11 @@ func reapDlv(ctx context.Context, session *dbgsvc.SessionInfo) {
 	// whenever the debuggee is: never reap a process hosting this command.
 	self := procguard.Self()
 	// 1. The dlv PID forge recorded at start.
-	// Only killed if it is still a dlv on this session's addr: the pid may
-	// have been recycled. If it does not verify, the sweep below still finds
-	// the real dlv.
+	// Only signalled if it is still a dlv on this session's addr: the pid
+	// may have been recycled. If it does not verify, the sweep below still
+	// finds the real dlv.
 	if session.DlvPID > 0 && !self.Contains(session.DlvPID) && isDlvForAddr(ctx, session.DlvPID, session.Addr) {
-		if p, err := os.FindProcess(session.DlvPID); err == nil {
-			_ = p.Kill()
-		}
+		terminateDlv(ctx, session, session.DlvPID)
 	}
 	// 2. Sweep any dlv server still listening on the session addr (covers a
 	// dlv whose PID we never captured — e.g. a session reconnected from an
@@ -170,8 +201,31 @@ func reapDlv(ctx context.Context, session *dbgsvc.SessionInfo) {
 		if pid == session.PID || self.Contains(pid) {
 			continue
 		}
-		if p, err := os.FindProcess(pid); err == nil {
-			_ = p.Kill()
+		terminateDlv(ctx, session, pid)
+	}
+}
+
+// terminateDlv sends dlv SIGTERM, waits up to dlvTermGrace for it to exit,
+// then kills it.
+func terminateDlv(ctx context.Context, session *dbgsvc.SessionInfo, pid int) {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	if p.Signal(syscall.SIGTERM) == nil {
+		deadline := time.Now().Add(dlvTermGrace)
+		for time.Now().Before(deadline) {
+			if !isDlvForAddr(ctx, pid, session.Addr) {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
+	}
+	if !isDlvForAddr(ctx, pid, session.Addr) {
+		return
+	}
+	_ = p.Kill()
+	if !owned(session) {
+		fmt.Fprintf(os.Stderr, "Warning: dlv (pid %d) did not exit on SIGTERM and was killed; breakpoints may remain in pid %d\n", pid, session.PID)
 	}
 }

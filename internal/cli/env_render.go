@@ -1206,6 +1206,11 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 	if e.HasHosted() {
 		fmt.Fprintf(w, "\nhosted (published to the control plane, not applied):\n")
 		hosted, err := buildHostedGroup(envName, e)
+		if err == nil && hosted != nil {
+			// Only the push base: a third-party image previews at the
+			// mirror address its release will pin.
+			hosted.Hosted = &deploytarget.HostedTarget{PushBase: platformPushBase(e)}
+		}
 		if err != nil {
 			fmt.Fprintf(w, "  refused: %v\n", err)
 		} else if items, perr := deploytarget.PreflightHosted(*hosted); perr != nil {

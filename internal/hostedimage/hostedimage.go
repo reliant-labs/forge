@@ -98,6 +98,32 @@ func UnderBase(base, image string) bool {
 type Item struct {
 	Owner string
 	Image string
+	// Unbuilt marks a workload forge does NOT build (no `build`): its image
+	// is someone else's — a third-party image or one CI pushed. A host-bearing
+	// unbuilt image outside the push base is not a finding: forge copies it
+	// into the push base at release time (MirrorRepository) and the release
+	// pins the copy by digest. A BUILT image outside the base is: forge would
+	// push its own build somewhere the platform does not pull from.
+	Unbuilt bool
+}
+
+// MirrorRepository is where forge copies a THIRD-PARTY image so the platform
+// can pull it: `<base>/<the source repository's path>` — the repository minus
+// its registry host, so `docker.io/traefik/whoami:v1.10.3` becomes
+// `<base>/traefik/whoami`. The path is kept whole (not just its last segment)
+// so two sources that share a name (`bitnami/redis`, `library/redis`) cannot
+// land in one repository.
+//
+// "" when there is nothing to mirror: no base, a bare image (it already
+// resolves under the base, ResolveBase), or an image already under the base.
+func MirrorRepository(base, image string) string {
+	base = NormalizeBase(base)
+	repo := Repository(image)
+	if base == "" || !HasRegistryHost(repo) || UnderBase(base, repo) {
+		return ""
+	}
+	_, path, _ := strings.Cut(repo, "/")
+	return base + "/" + path
 }
 
 // Finding is one host-bearing image on a hosted item.
@@ -143,6 +169,10 @@ func (f Finding) FixHint() string {
 // OffBase is every host-bearing image among items, judged against base when
 // base is known.
 //
+// An UNBUILT item's image is never a finding either: forge mirrors it into the
+// base at release time (MirrorRepository), so it is pullable whatever registry
+// it names.
+//
 // A BARE image is never a finding: that is the resolved, correct shape. The
 // caller that must refuse an unresolvable bare image does so separately
 // (internal/cli: checkHostedImagesResolve), because the remedy differs —
@@ -152,7 +182,7 @@ func OffBase(items []Item, base string) []Finding {
 	base = NormalizeBase(base)
 	var out []Finding
 	for _, it := range items {
-		if it.Image == "" || !HasRegistryHost(Repository(it.Image)) {
+		if it.Image == "" || it.Unbuilt || !HasRegistryHost(Repository(it.Image)) {
 			continue
 		}
 		if UnderBase(base, it.Image) {

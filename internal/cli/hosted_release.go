@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -15,6 +16,10 @@ import (
 var hostedBackendDigestResolver = func(ctx context.Context, ref string) (string, []string, error) {
 	return externalImageDigestResolver(ctx, ref)
 }
+
+// hostedImageMirror copies a third-party image into the platform registry
+// (deploytarget.MirrorImage). A var so tests state the registry's answer.
+var hostedImageMirror = deploytarget.MirrorImage
 
 // harvestHostedBackendArtifacts records the image every HOSTED workload that
 // forge does not build declares — so a release cut covers the workloads
@@ -29,7 +34,12 @@ var hostedBackendDigestResolver = func(ctx context.Context, ref string) (string,
 //   - a digest-pinned image (`repo@sha256:…`) is recorded as declared;
 //   - a tag-pinned image is resolved to its digest NOW, at cut time. That is
 //     the one moment the tag is allowed to mean something: once recorded, the
-//     release pins the bytes and a later re-push of the tag changes nothing.
+//     release pins the bytes and a later re-push of the tag changes nothing;
+//   - a BARE image is read under the push base, where CI pushed it;
+//   - a third-party image OUTSIDE the push base (docker.io/traefik/whoami) is
+//     MIRRORED into it (hostedimage.MirrorRepository), registry to registry and
+//     by digest, because the platform pulls only from its own registry. The
+//     artifact key is the mirror's address, which is what the deploy pins.
 //
 // An artifact the build-state harvest already recorded (forge built and
 // pushed it) wins: it is the digest of the bytes this very pipeline produced.
@@ -49,17 +59,40 @@ func harvestHostedBackendArtifacts(ctx context.Context, envName string, entities
 			continue
 		}
 		image := svc.Spec.Image
-		if _, have := out[name]; have {
-			// forge built and pushed it: the build state's digest wins.
-			continue
+		var (
+			digest    = deploytarget.HostedImageDigest(image)
+			platforms []string
+			repo      = deploytarget.HostedImageRepository(image)
+			uri       = strings.TrimSuffix(repo, "/"+deploytarget.HostedArtifactName(image))
+		)
+		switch {
+		case hostedimage.HasRegistryHost(name) && !hostedimage.HasRegistryHost(repo):
+			// A BARE image someone pushed under the push base: it is read
+			// THERE, not on Docker Hub, which is where `whoami` alone resolves.
+			image = resolveHostedImageBase(platformPushBase(entities), image)
+			uri = strings.TrimSuffix(name, "/"+deploytarget.HostedArtifactName(name))
+		case hostedimage.HasRegistryHost(name) && repo != name:
+			// A third-party image outside the push base: copy it in, pinned
+			// by digest (hostedImageMirror), so the platform can pull it.
+			m, err := hostedImageMirror(ctx, image, name)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: mirror %s into %s: %v", svc.Name, image, name, err))
+				continue
+			}
+			fmt.Printf("[build] %s: mirrored %s → %s@%s\n", svc.Name, image, name, m.Digest)
+			digest, platforms = m.Digest, m.Platforms
+			uri = strings.TrimSuffix(name, "/"+deploytarget.HostedArtifactName(name))
 		}
-		repo := deploytarget.HostedImageRepository(image)
-		digest := deploytarget.HostedImageDigest(image)
-		var platforms []string
 		if digest == "" {
 			d, p, err := hostedBackendDigestResolver(ctx, image)
 			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s: resolve %s to a digest: %v", svc.Name, image, err))
+				hint := ""
+				if !hostedimage.HasRegistryHost(repo) {
+					hint = fmt.Sprintf(" (a BARE image on a workload forge does not build is read from your push base: push it there, "+
+						"or, for a third-party image, name it in full with its registry, e.g. image = \"docker.io/<owner>/%s:<tag>\", and forge mirrors it into the push base)",
+						deploytarget.HostedArtifactName(repo))
+				}
+				errs = append(errs, fmt.Sprintf("%s: resolve %s to a digest: %v%s", svc.Name, image, err, hint))
 				continue
 			}
 			digest, platforms = d, p
@@ -68,7 +101,7 @@ func harvestHostedBackendArtifacts(ctx context.Context, envName string, entities
 			Kind:      release.KindOCI,
 			Mode:      release.ModeShared,
 			Digests:   map[string]string{release.SharedVariant: digest},
-			URI:       strings.TrimSuffix(repo, "/"+deploytarget.HostedArtifactName(image)),
+			URI:       uri,
 			Platforms: platforms,
 		}
 	}

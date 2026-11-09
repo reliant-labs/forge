@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -25,7 +26,8 @@ var hostedPlatformResolver = imageRegistryPlatforms
 // the artifact is refused, because "unknown" is exactly the state the bad
 // release was in.
 //
-// Only hosted WORKLOAD images are checked. A static-site release (static.v1)
+// Only hosted WORKLOAD images are checked, including an unbuilt one keyed by
+// its address under the push base (a mirrored third-party image). A static-site release (static.v1)
 // is not an executable image and has no platform; it is exempt by never being
 // a hosted workload's artifact. It is a read, so it runs on --plan-only too.
 func checkHostedArtifactPlatforms(ctx context.Context, out io.Writer, e *KCLEntities, artifacts map[string]release.Artifact, env, version string) error {
@@ -35,10 +37,13 @@ func checkHostedArtifactPlatforms(ctx context.Context, out io.Writer, e *KCLEnti
 	var bad []string
 	checked := map[string]bool{}
 	for _, w := range e.WorkloadsOn(RuntimeHosted) {
-		if w.Image == "" {
+		key := hostedArtifactKey(e, w)
+		// An image forge does not build is checked too when its key is an
+		// address under the push base: a mirrored third-party image, or one
+		// CI pushed there. Either can be single-arch for the wrong platform.
+		if w.Image == "" && !hostedimage.HasRegistryHost(key) {
 			continue
 		}
-		key := hostedArtifactKey(e, w)
 		art, ok := artifacts[key]
 		if !ok || art.Kind != release.KindOCI || checked[w.Name] {
 			continue

@@ -4,6 +4,8 @@ package cli
 
 import (
 	"encoding/binary"
+	"fmt"
+	"math/big"
 	"strconv"
 	"syscall"
 	"testing"
@@ -224,42 +226,119 @@ func TestParseProcStatStamp(t *testing.T) {
 	}
 }
 
-// TestLinuxStartMark pins the mark in clock ticks at the USER_HZ values Linux
-// ships (100 on x86 and arm64, 250/300/1000 on other configurations), and the
-// property the mark exists for: a process that starts at or after the uptime
-// read — its starttime is floor(start·hz) — never verifies as older than the
-// snapshot, while one started a second earlier does.
-func TestLinuxStartMark(t *testing.T) {
-	const uptime = "350735.47 2000000.00\n"
-	const readCS = 35073547 // the uptime read, in centiseconds since boot
+// TestLinuxStartMarkBoundaries proves linuxStartMark's two promises against
+// an independent model of the kernel, at every USER_HZ Linux ships and every
+// alignment of the uptime read to the 10ms uptime quantum and the tick:
+//
+//   - SAFE: no process started at or after the read (S >= T) verifies.
+//   - LIVE: a process started linuxVerifiableAge or more before the read does.
+//
+// The model is exact integer arithmetic on nanoseconds (math/big), sharing
+// nothing with the implementation: the kernel prints uptime as
+// floor(T/10ms)·10ms, and reports starttime as floor(S·hz/10^9). (At these
+// four rates nsec_to_clock_t is exactly that floor.) The read instant T is
+// swept in 1µs steps across 40ms — at least two ticks and four uptime quanta
+// at every rate — from several bases with different fractional alignments,
+// one of them the reviewer's example (a read at 1.009s, printed as 1.00).
+func TestLinuxStartMarkBoundaries(t *testing.T) {
+	const (
+		ms     = int64(1_000_000)
+		window = 40 * ms
+		step   = int64(1_000) // 1µs
+	)
+	bases := []int64{
+		1_000_000_000,       // 1.000s — spans the reviewer's 1.009s read
+		350_735_470_000_000, // centisecond- and tick-aligned at every rate
+		350_735_473_333_333, // 1/300 s alignment
+		86_400_009_999_500,  // just before an uptime quantum
+		123_456_789_012_345, // aligned to nothing
+	}
+	billion := big.NewInt(1_000_000_000)
+	starttime := func(sNS, hz int64) int64 { // floor(S·hz/1e9)
+		n := new(big.Int).Mul(big.NewInt(sNS), big.NewInt(hz))
+		return n.Div(n, billion).Int64()
+	}
+	printedUptime := func(tNS int64) string { // floor(T/10ms), as the kernel prints it
+		cs := tNS / (10 * ms)
+		return strconv.FormatInt(cs/100, 10) + "." + fmt.Sprintf("%02d", cs%100) + " 0.00\n"
+	}
 	for _, hz := range []int64{100, 250, 300, 1000} {
 		t.Run(strconv.FormatInt(hz, 10)+"Hz", func(t *testing.T) {
-			mark, ok := linuxStartMark([]byte(uptime), hz)
-			if want := readCS*hz/100 - 1; !ok || mark != want {
-				t.Fatalf("mark = %d ok=%v, want %d", mark, ok, want)
-			}
-			// starttime of a process started at a time given in microseconds
-			// since boot, as the kernel reports it: floor(seconds·hz).
-			ticksAt := func(us int64) int64 { return us * hz / 1_000_000 }
-			readUS := int64(readCS) * 10_000
-			v := stampVerifier{mark: mark, ok: true}
-			for _, after := range []int64{0, 1, 3_333, 10_000, 1_000_000} {
-				v.read = stampsAt(map[int]procStamp{120: {pgid: 120, start: ticksAt(readUS + after)}})
-				if v.samePID(120) || v.leads(120) {
-					t.Errorf("a process started %dµs after the mark verified as older than the snapshot", after)
+			age := linuxVerifiableAge(hz)
+			tick := (int64(1_000_000_000) + hz - 1) / hz
+			failures := 0
+			for _, base := range bases {
+				for tNS := base; tNS <= base+window; tNS += step {
+					mark, ok := linuxStartMark([]byte(printedUptime(tNS)), hz)
+					if !ok {
+						t.Fatalf("no mark for T=%dns", tNS)
+					}
+					// SAFE: the earliest post-read starts, and the last instant
+					// of the next two ticks (the model is monotone, so these are
+					// the worst cases, but each is checked rather than assumed).
+					for _, sNS := range []int64{tNS, tNS + 1, tNS + tick - 1, tNS + 2*tick - 1} {
+						if st := starttime(sNS, hz); st < mark {
+							failures++
+							if failures <= 5 {
+								t.Errorf("SAFE violated: read at T=%dns (printed %q), start S=%dns has starttime %d < mark %d",
+									tNS, printedUptime(tNS), sNS, st, mark)
+							}
+						}
+					}
+					// LIVE: started exactly the stated age before the read.
+					if st := starttime(tNS-age, hz); st >= mark {
+						failures++
+						if failures <= 5 {
+							t.Errorf("LIVE violated: read at T=%dns, start %dns before has starttime %d >= mark %d",
+								tNS, age, st, mark)
+						}
+					}
 				}
 			}
-			v.read = stampsAt(map[int]procStamp{120: {pgid: 120, start: ticksAt(readUS - 1_000_000)}})
-			if !v.samePID(120) || !v.leads(120) {
-				t.Error("a process started a second before the mark did not verify")
+			if failures > 0 {
+				t.Fatalf("%d boundary violations", failures)
 			}
 		})
 	}
+
+	// The reviewer's example, by name: at 100 Hz a read at 1.009s prints
+	// "1.00". A process started at the read has starttime 100; one started at
+	// 1.000s (before the read, but within the unverifiable age) also has 100.
+	// Neither verifies.
+	mark, _ := linuxStartMark([]byte("1.00 0.00\n"), 100)
+	for _, sNS := range []int64{1_009_000_000, 1_000_000_000} {
+		if st := starttime(sNS, 100); st < mark {
+			t.Errorf("reviewer example: S=%dns has starttime %d < mark %d", sNS, st, mark)
+		}
+	}
+}
+
+func TestLinuxStartMarkParsing(t *testing.T) {
 	if _, ok := linuxStartMark([]byte("garbage"), 100); ok {
 		t.Error("an unparseable uptime produced a mark")
 	}
-	if mark, ok := linuxStartMark([]byte("12.5 1.0"), 100); !ok || mark != 1250-1 {
-		t.Errorf("single-digit centiseconds: mark = %d ok=%v, want 1249", mark, ok)
+	// "12.5" is 12.50s: 1250 ticks at 100 Hz, less the margin (2).
+	if mark, ok := linuxStartMark([]byte("12.5 1.0"), 100); !ok || mark != 1250-linuxMarkMargin(100) {
+		t.Errorf("single-digit centiseconds: mark = %d ok=%v, want %d", mark, ok, 1250-linuxMarkMargin(100))
+	}
+}
+
+// TestKernelClockTicks pins each nsec_to_clock_t branch: an exact divisor
+// (100, 250, 1000 Hz), the 512-multiple branch (1024 Hz), and the general one
+// (300 Hz, exact per the kernel's comment; 64 Hz, approximate).
+func TestKernelClockTicks(t *testing.T) {
+	const x = uint64(350_735_473_333_333)
+	for _, tc := range []struct{ hz, want uint64 }{
+		{100, x / 10_000_000},
+		{250, x / 4_000_000},
+		{1000, x / 1_000_000},
+		{1024, x * 2 / 1_953_125},
+		{300, x * 9 / 30_000_000},
+		{64, x * 9 / ((9*1_000_000_000 + 32) / 64)},
+	} {
+		if got := kernelClockTicks(x, tc.hz); got != tc.want {
+			t.Errorf("hz=%d: got %d, want %d", tc.hz, got, tc.want)
+		}
 	}
 }
 

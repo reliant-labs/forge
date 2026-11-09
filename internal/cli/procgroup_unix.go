@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/bits"
 	"os"
 	"os/exec"
 	"sort"
@@ -249,22 +250,37 @@ func parseProcStatStamp(data []byte) (procStamp, bool) {
 	return procStamp{pgid: pgid, start: ticks}, true
 }
 
-// linuxStartMark turns /proc/uptime ("12345.67 54321.00", seconds since boot
-// to the centisecond) into a mark in clock ticks at hz — the unit of
-// /proc/<pid>/stat's starttime — minus one tick of slack.
+// linuxStartMark turns /proc/uptime ("12345.67 54321.00") into a mark in the
+// unit of /proc/<pid>/stat's starttime — clock ticks since boot at hz, the
+// kernel's real USER_HZ (linuxClockTicks) — such that NO process started at
+// or after the uptime read has a starttime below it. stampVerifier accepts a
+// stamp only when start < mark.
 //
-// Why a process started after the uptime read can never pass: its starttime is
-// floor(s·hz) for a start s at or after the read, and the uptime printed is at
-// most the read time, so floor(uptime·hz) <= its starttime. Both are floors of
-// one boot-time clock (starttime counts boot time since Linux 5.3; before, it
-// was the monotonic clock, which stops in suspend, so on such a kernel after a
-// suspend the check is weaker by the time suspended). The one-tick slack keeps
-// that true even if the kernel stamps starttime from a coarser read of that
-// clock than uptime; it refuses a process younger than a tick, never accepts a
-// newer one.
+// Proof. Let T be the boot-time instant, in ns, at which the kernel formatted
+// /proc/uptime, and S >= T the boot-time instant a later process started.
 //
-// hz must be the kernel's real USER_HZ (linuxClockTicks); it is architecture
-// dependent, and a wrong rate makes the two sides incomparable.
+//  1. Uptime truncation: fs/proc/uptime.c prints tv_sec and tv_nsec/10^7 of
+//     ktime_get_boottime, truncated, so U = sec·10^9 + cs·10^7 <= T.
+//  2. Starttime truncation: fs/proc/array.c reports
+//     nsec_to_clock_t(start_boottime), and start_boottime = S (boot time,
+//     ns, taken at fork; boot time on both sides since Linux 5.3 — before,
+//     starttime used the monotonic clock, which stops in suspend, so on such
+//     a kernel after a suspend the check is weaker by the time suspended).
+//     nsec_to_clock_t (kernel/time/time.c) is one of three floors of x times
+//     a positive constant; kernelClockTicks reproduces it branch for branch,
+//     in 128-bit arithmetic so no product overflows and no division precedes
+//     a multiplication. Every branch is non-decreasing in x.
+//  3. So starttime = c(S) >= c(U), as S >= T >= U and c is non-decreasing.
+//  4. mark = c(U) - m with m = ceil(hz/100) + 1 >= 1, so starttime >= mark + m
+//     > mark: the process is refused. QED.
+//
+// Step 4 needs only m >= 1. The rest of m is margin against an input off by a
+// quantum — an uptime rounded rather than truncated (up to 10ms, ceil(hz/100)
+// ticks) — so the bound does not rest on that kernel detail. The cost: a
+// process younger than about 10ms plus m+1 ticks at the read
+// (linuxVerifiableAge) cannot verify. Its pid and group are then not
+// signalled by that pass; the later passes of a stop (the grace sweeps, the
+// SIGKILL pass) re-read the table, by when it is old enough.
 func linuxStartMark(uptime []byte, hz int64) (int64, bool) {
 	if hz <= 0 {
 		return 0, false
@@ -274,17 +290,57 @@ func linuxStartMark(uptime []byte, hz int64) (int64, bool) {
 		return 0, false
 	}
 	whole, frac, _ := strings.Cut(f[0], ".")
-	secs, err := strconv.ParseInt(whole, 10, 64)
-	if err != nil || secs < 0 {
+	secs, err := strconv.ParseUint(whole, 10, 64)
+	if err != nil {
 		return 0, false
 	}
 	// Centiseconds, read as written: "47" is 47, "5" is 50, "123" is 12.
 	frac = (frac + "00")[:2]
-	cs, err := strconv.ParseInt(frac, 10, 64)
-	if err != nil || cs < 0 {
+	cs, err := strconv.ParseUint(frac, 10, 64)
+	if err != nil || secs > (1<<63-1)/1_000_000_000-1 {
 		return 0, false
 	}
-	return (secs*100+cs)*hz/100 - 1, true
+	u := secs*1_000_000_000 + cs*10_000_000
+	return int64(kernelClockTicks(u, uint64(hz))) - linuxMarkMargin(hz), true
+}
+
+// linuxMarkMargin is m in linuxStartMark's proof: one 10ms uptime quantum in
+// ticks, rounded up, plus one tick.
+func linuxMarkMargin(hz int64) int64 {
+	return (hz+99)/100 + 1
+}
+
+// linuxVerifiableAge is how long before the uptime read a process must have
+// started to be sure to verify: the uptime truncation (10ms) plus m+1 ticks
+// (m for the margin, one for the starttime truncation), in ns, rounded up.
+func linuxVerifiableAge(hz int64) int64 {
+	return 10_000_000 + ((linuxMarkMargin(hz)+1)*1_000_000_000+hz-1)/hz
+}
+
+// kernelClockTicks is the kernel's nsec_to_clock_t at USER_HZ hz, branch for
+// branch (kernel/time/time.c):
+//
+//	NSEC_PER_SEC % hz == 0:  x / (NSEC_PER_SEC/hz)
+//	hz % 512 == 0:           x*hz/512 / (NSEC_PER_SEC/512)
+//	otherwise:               x*9 / ((9*NSEC_PER_SEC + hz/2) / hz)
+//
+// The products are taken in 128 bits; the kernel's own 64-bit products only
+// overflow after decades of uptime, where it is the kernel that is wrong.
+func kernelClockTicks(x, hz uint64) uint64 {
+	const nsPerSec = 1_000_000_000
+	mulDiv := func(a, b, d uint64) uint64 {
+		hi, lo := bits.Mul64(a, b)
+		q, _ := bits.Div64(hi%d, lo, d) // hi < d for any x below 2^63
+		return q
+	}
+	switch {
+	case nsPerSec%hz == 0:
+		return x / (nsPerSec / hz)
+	case hz%512 == 0:
+		return mulDiv(x, hz/512, nsPerSec/512)
+	default:
+		return mulDiv(x, 9, (9*nsPerSec+hz/2)/hz)
+	}
 }
 
 // atClkTck is AT_CLKTCK, the auxiliary-vector key under which the kernel

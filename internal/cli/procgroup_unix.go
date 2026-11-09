@@ -4,8 +4,10 @@ package cli
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/bits"
 	"os"
 	"os/exec"
 	"sort"
@@ -98,16 +100,286 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 	if self.Contains(pid) {
 		return &procguard.LineageError{PID: pid, Command: commandLabel(readProcArgv(pid))}
 	}
-	targets := treeSignalTargets(pid, processTable(), self.Contains, self.ContainsGroup)
+	// The mark is read BEFORE the snapshot: everything the snapshot lists
+	// started before it, and a process that took over a listed pid later
+	// started after it.
+	mark, markOK := startMark()
+	table := processTable()
+	targets := treeSignalTargets(pid, table, self.Contains, self.ContainsGroup)
+	v := stampVerifier{mark: mark, ok: markOK, read: readProcStamp}
+	return signalTreeTargets(targets, table, v, self.Contains, syscall.Kill, sig)
+}
+
+// signalTreeTargets sends sig to each of treeSignalTargets' targets, verifying
+// every one against the process table right before its kill (stampVerifier):
+//
+//   - a pid is signalled only if it is still the process the snapshot listed;
+//   - a group (a negative target) is signalled only if its leader still is,
+//     AND still leads it. Otherwise the group is never signalled — its number
+//     may since have been taken by an unrelated group — and each process the
+//     snapshot listed in it is signalled on its own instead, each verified as
+//     still that process and still in that group.
+//
+// Where the platform cannot verify (stampVerifier.ok false), pids are
+// signalled as listed and groups never are.
+func signalTreeTargets(targets []int, table map[int]procRow, v stampVerifier, inLineage func(int) bool, kill func(int, syscall.Signal) error, sig syscall.Signal) error {
 	var failures []error
-	// A missing group is normal after its leader exits. Permission failures
-	// are not proof of shutdown, including when a direct leader signal works.
-	for _, target := range targets {
-		if err := syscall.Kill(target, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+	sent := map[int]bool{}
+	send := func(target int) {
+		if sent[target] {
+			return
+		}
+		sent[target] = true
+		// A missing process or group is normal mid-teardown. Permission
+		// failures are not proof of shutdown.
+		if err := kill(target, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 			failures = append(failures, fmt.Errorf("signal %s to pid/group %d: %w", sig, target, err))
 		}
 	}
+	for _, target := range targets {
+		if target > 0 {
+			if v.samePID(target) {
+				send(target)
+			}
+			continue
+		}
+		group := -target
+		if v.leads(group) {
+			send(target)
+			continue
+		}
+		for _, member := range groupMembers(group, table) {
+			if !inLineage(member) && v.inGroup(member, group) {
+				send(member)
+			}
+		}
+	}
 	return errors.Join(failures...)
+}
+
+// groupMembers is every pid the snapshot lists in process group pgid, sorted.
+func groupMembers(pgid int, table map[int]procRow) []int {
+	var out []int
+	for pid, row := range table {
+		if row.pgid == pgid {
+			out = append(out, pid)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// procStamp identifies one live process: its process group and its start
+// time, in the platform's own unit and clock (startMark's: microseconds of
+// wall clock on macOS, clock ticks since boot on Linux). A pid is
+// unique among LIVE processes, so a process alive now whose start precedes a
+// mark is the very process that held that pid at the mark.
+type procStamp struct {
+	pgid  int
+	start int64
+}
+
+// stampVerifier re-checks, right before a kill, that a pid from the snapshot
+// still names the process the snapshot saw. mark is startMark() read before
+// the snapshot; ok is false where the platform cannot read stamps.
+//
+// The check is not atomic with the kill: no Unix offers a handle on a process
+// GROUP (Linux's pidfd covers one process), so a few syscalls separate the
+// read from kill(2). In that window the leader would have to exit, every
+// member of its group exit, the pid be allocated again and the new process
+// lead a group — a full pid-space wrap in microseconds. Before this check the
+// window was the whole teardown (up to the stop grace).
+type stampVerifier struct {
+	mark int64
+	ok   bool
+	read func(pid int) (procStamp, bool)
+}
+
+// samePID reports whether pid still names the process the snapshot listed.
+// Unverifiable platforms answer true: a pid kill there is what it always was.
+func (v stampVerifier) samePID(pid int) bool {
+	if !v.ok {
+		return true
+	}
+	st, ok := v.read(pid)
+	return ok && st.start < v.mark
+}
+
+// inGroup reports whether pid is still the snapshot's process AND still in
+// process group pgid. Unverifiable platforms answer false.
+func (v stampVerifier) inGroup(pid, pgid int) bool {
+	if !v.ok {
+		return false
+	}
+	st, ok := v.read(pid)
+	return ok && st.pgid == pgid && st.start < v.mark
+}
+
+// leads reports whether process group pgid is still the one the snapshot saw:
+// its leader (pid == pgid) is still the snapshot's process and still leads
+// it. While the leader lives — even as an unreaped zombie — its pid, and so
+// the group number, cannot be reused, so the group signalled is the group
+// verified. Unverifiable platforms answer false.
+func (v stampVerifier) leads(pgid int) bool {
+	return v.inGroup(pgid, pgid)
+}
+
+// parseProcStatStamp extracts the process group and start time from a Linux
+// /proc/<pid>/stat. Fields are read after the LAST ')' (comm may contain
+// spaces and parentheses): fields[0] is field 3 (state), fields[2] field 5
+// (pgrp), fields[19] field 22 (starttime). starttime is kept as the kernel
+// reports it, in clock ticks since boot, and compared against a mark in the
+// same ticks (linuxStartMark): no conversion, so no rounding to reason about.
+func parseProcStatStamp(data []byte) (procStamp, bool) {
+	end := strings.LastIndexByte(string(data), ')')
+	if end < 0 {
+		return procStamp{}, false
+	}
+	fields := strings.Fields(string(data[end+1:]))
+	if len(fields) < 20 {
+		return procStamp{}, false
+	}
+	pgid, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return procStamp{}, false
+	}
+	ticks, err := strconv.ParseInt(fields[19], 10, 64)
+	if err != nil || ticks < 0 {
+		return procStamp{}, false
+	}
+	return procStamp{pgid: pgid, start: ticks}, true
+}
+
+// linuxStartMark turns /proc/uptime ("12345.67 54321.00") into a mark in the
+// unit of /proc/<pid>/stat's starttime — clock ticks since boot at hz, the
+// kernel's real USER_HZ (linuxClockTicks) — such that NO process started at
+// or after the uptime read has a starttime below it. stampVerifier accepts a
+// stamp only when start < mark.
+//
+// Proof. Let T be the boot-time instant, in ns, at which the kernel formatted
+// /proc/uptime, and S >= T the boot-time instant a later process started.
+//
+//  1. Uptime truncation: fs/proc/uptime.c prints tv_sec and tv_nsec/10^7 of
+//     ktime_get_boottime, truncated, so U = sec·10^9 + cs·10^7 <= T.
+//  2. Starttime truncation: fs/proc/array.c reports
+//     nsec_to_clock_t(start_boottime), and start_boottime = S (boot time,
+//     ns, taken at fork; boot time on both sides since Linux 5.3 — before,
+//     starttime used the monotonic clock, which stops in suspend, so on such
+//     a kernel after a suspend the check is weaker by the time suspended).
+//     nsec_to_clock_t (kernel/time/time.c) is one of three floors of x times
+//     a positive constant; kernelClockTicks reproduces it branch for branch,
+//     in 128-bit arithmetic so no product overflows and no division precedes
+//     a multiplication. Every branch is non-decreasing in x.
+//  3. So starttime = c(S) >= c(U), as S >= T >= U and c is non-decreasing.
+//  4. mark = c(U) - m with m = ceil(hz/100) + 1 >= 1, so starttime >= mark + m
+//     > mark: the process is refused. QED.
+//
+// Step 4 needs only m >= 1. The rest of m is margin against an input off by a
+// quantum — an uptime rounded rather than truncated (up to 10ms, ceil(hz/100)
+// ticks) — so the bound does not rest on that kernel detail. The cost: a
+// process younger than about 10ms plus m+1 ticks at the read
+// (linuxVerifiableAge) cannot verify. Its pid and group are then not
+// signalled by that pass; the later passes of a stop (the grace sweeps, the
+// SIGKILL pass) re-read the table, by when it is old enough.
+func linuxStartMark(uptime []byte, hz int64) (int64, bool) {
+	if hz <= 0 {
+		return 0, false
+	}
+	f := strings.Fields(string(uptime))
+	if len(f) == 0 {
+		return 0, false
+	}
+	whole, frac, _ := strings.Cut(f[0], ".")
+	secs, err := strconv.ParseUint(whole, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	// Centiseconds, read as written: "47" is 47, "5" is 50, "123" is 12.
+	frac = (frac + "00")[:2]
+	cs, err := strconv.ParseUint(frac, 10, 64)
+	if err != nil || secs > (1<<63-1)/1_000_000_000-1 {
+		return 0, false
+	}
+	u := secs*1_000_000_000 + cs*10_000_000
+	return int64(kernelClockTicks(u, uint64(hz))) - linuxMarkMargin(hz), true
+}
+
+// linuxMarkMargin is m in linuxStartMark's proof: one 10ms uptime quantum in
+// ticks, rounded up, plus one tick.
+func linuxMarkMargin(hz int64) int64 {
+	return (hz+99)/100 + 1
+}
+
+// linuxVerifiableAge is how long before the uptime read a process must have
+// started to be sure to verify: the uptime truncation (10ms) plus m+1 ticks
+// (m for the margin, one for the starttime truncation), in ns, rounded up.
+func linuxVerifiableAge(hz int64) int64 {
+	return 10_000_000 + ((linuxMarkMargin(hz)+1)*1_000_000_000+hz-1)/hz
+}
+
+// kernelClockTicks is the kernel's nsec_to_clock_t at USER_HZ hz, branch for
+// branch (kernel/time/time.c):
+//
+//	NSEC_PER_SEC % hz == 0:  x / (NSEC_PER_SEC/hz)
+//	hz % 512 == 0:           x*hz/512 / (NSEC_PER_SEC/512)
+//	otherwise:               x*9 / ((9*NSEC_PER_SEC + hz/2) / hz)
+//
+// The products are taken in 128 bits; the kernel's own 64-bit products only
+// overflow after decades of uptime, where it is the kernel that is wrong.
+func kernelClockTicks(x, hz uint64) uint64 {
+	const nsPerSec = 1_000_000_000
+	mulDiv := func(a, b, d uint64) uint64 {
+		hi, lo := bits.Mul64(a, b)
+		q, _ := bits.Div64(hi%d, lo, d) // hi < d for any x below 2^63
+		return q
+	}
+	switch {
+	case nsPerSec%hz == 0:
+		return x / (nsPerSec / hz)
+	case hz%512 == 0:
+		return mulDiv(x, hz/512, nsPerSec/512)
+	default:
+		return mulDiv(x, 9, (9*nsPerSec+hz/2)/hz)
+	}
+}
+
+// atClkTck is AT_CLKTCK, the auxiliary-vector key under which the kernel
+// passes USER_HZ to every process (the source sysconf(_SC_CLK_TCK) reads).
+// Its value, 17, is fixed by the ELF ABI on every Linux architecture.
+const atClkTck = 17
+
+// clockTicksFromAuxv returns AT_CLKTCK from an auxiliary vector, or false
+// when it is absent or not a positive rate.
+func clockTicksFromAuxv(auxv [][2]uintptr) (int64, bool) {
+	for _, kv := range auxv {
+		if kv[0] == atClkTck {
+			if hz := int64(kv[1]); hz > 0 {
+				return hz, true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// parseAuxv decodes a raw auxiliary vector (/proc/self/auxv): pairs of
+// native-endian machine words, ending at AT_NULL (0).
+func parseAuxv(data []byte, wordSize int, order binary.ByteOrder) [][2]uintptr {
+	var out [][2]uintptr
+	word := func(b []byte) uintptr {
+		if wordSize == 4 {
+			return uintptr(order.Uint32(b))
+		}
+		return uintptr(order.Uint64(b))
+	}
+	for off := 0; off+2*wordSize <= len(data); off += 2 * wordSize {
+		key := word(data[off:])
+		if key == 0 {
+			break
+		}
+		out = append(out, [2]uintptr{key, word(data[off+wordSize:])})
+	}
+	return out
 }
 
 // treeSignalTargets is killProcessTree's pure decision: the kill(2) targets
@@ -117,6 +389,9 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 // signalled when its leader is in the tree, so no group a stranger leads is
 // reached; and nothing in this command's lineage, nor a group it belongs to,
 // is ever a target.
+//
+// These are CANDIDATES from a snapshot: signalTreeTargets re-verifies each one
+// at kill time, because a pid or group number can change hands in between.
 func treeSignalTargets(root int, table map[int]procRow, inLineage, lineageGroup func(int) bool) []int {
 	descendants := descendantsIn(root, table)
 	targets := make([]int, 0, 2*len(descendants)+2)

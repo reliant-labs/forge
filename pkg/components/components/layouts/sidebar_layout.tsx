@@ -4,7 +4,7 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import Link from "./link";
-import { useModalDialog } from "./modal";
+import { useModalDialog } from "./modal_dialog";
 
 /**
  * What a nav entry shows after its label. Structured rather than a ReactNode

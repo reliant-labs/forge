@@ -589,11 +589,11 @@ func downloadZitadel(ctx context.Context, asset, dest string) error {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", url, err)
+		return fmt.Errorf("download %s: %w", url, &downloadUnavailableError{err: err})
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
+	if err := downloadStatus(url, resp.StatusCode); err != nil {
+		return err
 	}
 
 	// Staged in a temp file next to the destination: the archive is

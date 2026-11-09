@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,15 +27,14 @@ import (
 // native_dev_origin.go): a value the developer exported, the KCL env_vars, or
 // the frontend's .env.<env> wins over what forge injects, per variable.
 //
-// The issuer is always the IdP's own origin (http://localhost:<port>), and
-// --device-host does NOT change it. Zitadel resolves which instance a request
-// is for from the Host header, matched against the instance's ExternalDomain,
-// which the dev IdP pins to "localhost" (internal/hostinfra/zitadel.go), and it
-// mints tokens whose `iss` is that origin; the services validate that exact
-// `iss`. An issuer on a LAN address or 10.0.2.2 would be a different instance
-// lookup and a different `iss`, so forge does not advertise one. An Android
-// emulator reaches the IdP with `adb reverse tcp:<idp port> tcp:<idp port>`;
-// a physical device is a follow-up of this slice.
+// The issuer is the IdP's origin as published by the identity converge:
+// http://localhost:<idp port> by default (reaches the iOS simulator), and
+// http://<device host>:<idp port> under --device-host, where the IdP serves
+// that address as a second domain of the same instance and every service's
+// jwt_issuer follows (see deviceIdPHost for the design and its alternatives).
+// An Android emulator reaches the localhost form with
+// `adb reverse tcp:<idp port> tcp:<idp port>`, or the device-host form with
+// --device-host 10.0.2.2.
 const (
 	oidcIssuerEnv        = "EXPO_PUBLIC_FORGE_OIDC_ISSUER"
 	oidcClientIDEnv      = "EXPO_PUBLIC_FORGE_OIDC_CLIENT_ID"
@@ -145,8 +145,8 @@ func withNativeOIDCEnv(env []string, n *nativeOIDC) []string {
 }
 
 // describeNativeOIDC is the launch lines for a native frontend's sign-in: the
-// EFFECTIVE values (after shell and KCL overrides), and why --device-host does
-// not move the issuer.
+// EFFECTIVE values (after shell and KCL overrides), and what the issuer does
+// and does not reach.
 func describeNativeOIDC(feName string, n *nativeOIDC, env []string, deviceHost string) []string {
 	if n == nil {
 		return nil
@@ -154,21 +154,26 @@ func describeNativeOIDC(feName string, n *nativeOIDC, env []string, deviceHost s
 	p := "[up] frontend " + feName + ": "
 	issuer := envLookupLastOr(env, oidcIssuerEnv)
 	lines := []string{fmt.Sprintf("%ssign-in: issuer %s, client %s, redirect %s", p, issuer, envLookupLastOr(env, oidcClientIDEnv), envLookupLastOr(env, oidcRedirectURIEnv))}
-	if isLoopbackOrigin(issuer) {
-		port := ""
-		if u, err := url.Parse(issuer); err == nil {
-			port = u.Port()
-		}
-		msg := p + "the issuer is localhost, which reaches the iOS simulator only"
-		if port != "" {
-			msg += "; an Android emulator needs `adb reverse tcp:" + port + " tcp:" + port + "`"
-		}
+	if !isLoopbackOrigin(issuer) {
 		if deviceHost != "" {
-			msg += ". --" + deviceHostFlag + " does not apply to the IdP: Zitadel resolves its instance from the Host header (localhost) and mints tokens under that issuer, so forge does not advertise another one"
+			lines = append(lines, p+"the issuer is the --"+deviceHostFlag+" address: the dev IdP serves it for this run and the API validates that same issuer")
 		}
-		lines = append(lines, msg)
+		return lines
 	}
-	return lines
+	port := ""
+	if u, err := url.Parse(issuer); err == nil {
+		port = u.Port()
+	}
+	msg := p + "the issuer is localhost, which reaches the iOS simulator only"
+	if port != "" {
+		msg += "; an Android emulator needs `adb reverse tcp:" + port + " tcp:" + port + "`"
+	}
+	if deviceHost != "" {
+		msg += ". --" + deviceHostFlag + " did not move it (the issuer was set explicitly, or this frontend has no native application on the env's host-run identity), so a physical device cannot sign in"
+	} else {
+		msg += "; a physical device needs --" + deviceHostFlag + " <this machine's LAN address>, which makes the dev IdP serve that address too"
+	}
+	return append(lines, msg)
 }
 
 func announceNativeOIDC(w io.Writer, feName string, n *nativeOIDC, env []string, deviceHost string) {
@@ -319,4 +324,109 @@ func dynamicAppConfig(dir string) string {
 		}
 	}
 	return ""
+}
+
+// deviceIdPHost is the device host the dev IdP should additionally serve, or
+// "" when this run does not need it.
+//
+// # Design: one issuer per run, and why it moves
+//
+// A device cannot reach the IdP at localhost, and Zitadel decides both which
+// instance serves a request and the `iss` it mints from the request's Host. So
+// the issuer a device signs in at is whatever origin it dialled, and the API
+// must validate exactly that string. Three ways to square that, and why this
+// one:
+//
+//   - Run ONE issuer per run and make it the device origin when a device is
+//     in play (chosen): the IdP serves localhost AND the device host as two
+//     domains of the same instance (hostinfra adds the second on a restart,
+//     no data reset), the converge publishes the device origin as the issuer,
+//     and every consumer reads it from the same outputs: the API's jwt_issuer
+//     and idp_base, the broker, the native app. Web sign-in on this machine
+//     is unaffected because the web app's browser only talks to the app and
+//     the broker dials the IdP itself, now at the LAN origin. Without
+//     --device-host nothing changes, byte for byte.
+//   - Make the API accept both issuers (a multi-issuer validator): widens what
+//     the API trusts, needs an owned auth.go edit in every existing project,
+//     and still leaves jwt_issuer, idp_base and userinfo each naming one.
+//   - Make the device host THE external domain: a first boot then registers
+//     only the LAN address, breaking localhost for the simulator and every
+//     in-machine caller, and the address changes whenever the network does.
+//
+// The cost of the chosen design: the LAN address becomes the issuer for the
+// run, so a network change means re-running `forge env up --device-host`
+// (which converges the new one) and a session minted under another issuer
+// signs in again. Returning to a run without --device-host publishes the
+// localhost issuer again; nothing else needs undoing.
+//
+// Only when a targeted native frontend actually has a native application
+// registered on the host-run identity: a run without native sign-in does not
+// need the IdP on the network, and forge does not put it there.
+func deviceIdPHost(e *KCLEntities, targets []string, deviceHost string) string {
+	id := hostIdentity(e)
+	if id == nil || deviceHost == "" {
+		return ""
+	}
+	for _, fe := range e.Frontends {
+		if !inTargetSet(targets, fe.Name) || !isNativeFrontend(fe.Type) {
+			continue
+		}
+		if _, ok := nativeApplicationFor(id, fe.Name); ok {
+			return deviceHost
+		}
+	}
+	return ""
+}
+
+// deviceHostIsThisMachine reports whether deviceHost names an address of THIS
+// machine: an IP literal on one of its interfaces, or a hostname that resolves
+// to one. The issuer moves to the device host only then, because the API, the
+// broker and forge's own converge run here and must dial that same origin: an
+// emulator alias (10.0.2.2), a tunnel or another machine's name would be an
+// issuer nothing on this machine can reach.
+func deviceHostIsThisMachine(deviceHost string, local []net.Addr, lookup func(string) ([]net.IP, error)) bool {
+	host := strings.Trim(deviceHost, "[]")
+	if ip := net.ParseIP(host); ip != nil {
+		return addrsContainIP(local, ip)
+	}
+	if lookup == nil {
+		return false
+	}
+	ips, err := lookup(host)
+	if err != nil {
+		return false
+	}
+	for _, ip := range ips {
+		if addrsContainIP(local, ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyDeviceHostToIdP records the device host on the env's zitadel infra
+// entry, which is what prewarmInfra (the IdP's domains), the identity
+// converge (the issuer) and the launch announcement all read. It returns the
+// notice to print, "" when this run has nothing to say. The IdP's listener is
+// not changed: Zitadel binds every interface already (it has no listen
+// address setting), so what this run adds is the instance's domain.
+func applyDeviceHostToIdP(e *KCLEntities, targets []string, deviceHost string, local []net.Addr, lookup func(string) ([]net.IP, error)) string {
+	host := deviceIdPHost(e, targets, deviceHost)
+	if host == "" {
+		return ""
+	}
+	zitadel, err := hostZitadel(e, hostIdentity(e))
+	if err != nil {
+		return ""
+	}
+	if !deviceHostIsThisMachine(host, local, lookup) {
+		return fmt.Sprintf("[up] --%s %s is not an address of this machine, so the dev IdP keeps its localhost issuer: the API, the broker and forge dial the issuer from here, and could not reach %s.\n"+
+			"[up] Native sign-in then works only where localhost reaches the IdP: the iOS simulator, or an Android emulator with `adb reverse tcp:%d tcp:%d`. "+
+			"For a physical device pass this machine's own LAN address (or a hostname that resolves to it).",
+			deviceHostFlag, host, host, zitadel.Port, zitadel.Port)
+	}
+	zitadel.DeviceHost = host
+	return fmt.Sprintf("[up] --%s %s: the dev IdP also serves http://%s:%d and signs devices in under that issuer for this run (the API's jwt_issuer follows it).\n"+
+		"[up] security: the dev IdP listens on every network interface of this machine, carries the committed dev credentials from idp-steps.yaml, and is plain HTTP; use a network you trust, not shared Wi-Fi.",
+		deviceHostFlag, host, host, zitadel.Port)
 }

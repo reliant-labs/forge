@@ -33,8 +33,10 @@
 //     internal `expo/internal/*` module is imported. Those fields exist only
 //     when a device actually reached Metro, so they win. A plain Debug build has
 //     none of them and falls back to EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN (injected
-//     by `forge env up` as a localhost origin, which an emulator or phone could
-//     not reach). `origin` passed to installNativeDevLogging() beats
+//     by `forge env up` from Metro's port: the --device-host address when one
+//     is given, which is what a phone or emulator reaches, otherwise
+//     localhost, which only the iOS simulator does). `origin` passed to
+//     installNativeDevLogging() beats
 //     everything (a custom proxy). When nothing resolves, one console.warn
 //     names the fix.
 //   - A circuit breaker. A dead dev server (Metro stopped, device off the LAN)
@@ -372,8 +374,10 @@ const NO_ORIGIN_FIX =
  * Resolve the Metro origin the device can actually reach, or null. The
  * expo-constants fields come first: they are the address this device used to
  * load its bundle. The env var is the bare-build fallback; `forge env up`
- * injects a localhost origin that a physical device or Android emulator
- * cannot reach, so it must never shadow a field that is already right.
+ * injects the --device-host origin when one is given (the only source on a
+ * device Debug build, where none of those fields exist) and localhost
+ * otherwise, which a physical device or Android emulator cannot reach. Either
+ * way it must never shadow a field that is already right.
  */
 function resolveOrigin(env: { origin: string | null }): string | null {
   try {

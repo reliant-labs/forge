@@ -93,10 +93,15 @@ stale global export does not fail web-only runs. Web frontends are unaffected.
 `forge env up` now gives a native frontend with no declared `port` Expo's
 conventional 8081 when it is free, so a Debug build (`expo run:ios` or prebuild)
 finds Metro without extra flags. If 8081 is busy, forge keeps an ephemeral port,
-never touches the holder, and prints how to point a build at it: iOS
+never touches the holder, and prints how to point a build at it: iOS simulator
 `xcrun simctl launch <udid> <bundle-id> -RCT_jsLocation localhost:<port>` (or rebuild
 with `RCT_METRO_PORT=<port>`); Android `adb reverse tcp:<port> tcp:<port>` then Dev
-Menu > Change Bundle Location; dev-client users open the URL Metro prints. A `port`
+Menu > Change Bundle Location; dev-client users open the URL Metro prints. With
+`--device-host` the simulator line is replaced by the physical-device one: rebuild
+with `RCT_METRO_PORT=<port>` (the build then looks for Metro at
+`<device host>:<port>`), and on the first launch allow "Local Network" on the device
+and relaunch (React Native shows `No script URL provided` until the prompt is
+accepted). A `port`
 declared in KCL still wins. Only the first targeted native frontend claims 8081.
 If another process takes 8081 between selection and launch, `forge env up` moves
 Metro to an ephemeral port and says so, instead of failing or touching the holder.
@@ -117,10 +122,11 @@ forwarder takes it from `installNativeDevLogging({ origin })`, then the public
 `expo-constants` fields (`expoConfig.hostUri`, `experienceUrl`, `linkingUri`, which
 exist only when the device actually reached Metro, so they are the right address),
 then `EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN` (an http(s) URL that `forge env up` injects for
-native frontends from the Metro port and `--device-host`; a value you set in the
-shell, KCL or `.env.<env>` wins over the injected one). A plain Debug build without a
-dev client has none of the `expo-constants` fields, so outside `forge env up` set
-the variable yourself. If nothing resolves it logs one `console.warn` naming the fix
+native frontends from the Metro port: `http://<device host>:<port>` under
+`--device-host`, `http://localhost:<port>` otherwise; a value you set in the shell,
+KCL or `.env.<env>` wins over the injected one). A device Debug build without a dev
+client has none of the `expo-constants` fields, so there the injected variable is
+the origin that is used; outside `forge env up` set it yourself. If nothing resolves it logs one `console.warn` naming the fix
 instead of silently doing nothing. The line `[forge-devlog] native logging attached` confirms
 delivery. The forwarder redacts credential-shaped values (keys ending in token,
 secret, password or credential(s); credential-ish `*key` names such as `apiKey`,

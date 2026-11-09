@@ -108,13 +108,13 @@ func TestTCPPortFree_RealListener(t *testing.T) {
 }
 
 func TestDescribeNativeMetroPort(t *testing.T) {
-	if got := describeNativeMetroPort("mobile", 8081); got != nil {
+	if got := describeNativeMetroPort("mobile", 8081, ""); got != nil {
 		t.Errorf("default port must print nothing, got %v", got)
 	}
-	if got := describeNativeMetroPort("mobile", 0); got != nil {
+	if got := describeNativeMetroPort("mobile", 0, ""); got != nil {
 		t.Errorf("no port must print nothing, got %v", got)
 	}
-	lines := describeNativeMetroPort("mobile", 54321)
+	lines := describeNativeMetroPort("mobile", 54321, "")
 	if len(lines) != 1 {
 		t.Fatalf("want exactly one line, got %d: %v", len(lines), lines)
 	}
@@ -128,6 +128,29 @@ func TestDescribeNativeMetroPort(t *testing.T) {
 	}
 	if strings.Contains(lines[0], "\n") {
 		t.Errorf("line must be a single line:\n%s", lines[0])
+	}
+}
+
+// With --device-host the simulator-only `simctl ... localhost` advice reaches
+// nothing; the line names the physical-device rebuild and the Local Network
+// prompt every first launch needs.
+func TestDescribeNativeMetroPort_DeviceHost(t *testing.T) {
+	if got := describeNativeMetroPort("mobile", 8081, "192.168.1.20"); got != nil {
+		t.Errorf("default port must print nothing even with a device host, got %v", got)
+	}
+	lines := describeNativeMetroPort("mobile", 54321, "192.168.1.20")
+	if len(lines) != 1 || strings.Contains(lines[0], "\n") {
+		t.Fatalf("want exactly one single line, got %v", lines)
+	}
+	for _, want := range []string{"physical device", "RCT_METRO_PORT=54321", "192.168.1.20:54321", "Local Network", "relaunch", "No script URL provided"} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("line missing %q:\n%s", want, lines[0])
+		}
+	}
+	for _, banned := range []string{"simctl", "-RCT_jsLocation"} {
+		if strings.Contains(lines[0], banned) {
+			t.Errorf("a device-host line must not carry the simulator-only %q:\n%s", banned, lines[0])
+		}
 	}
 }
 
@@ -306,7 +329,12 @@ func TestMetroPreference_FlowsDownstream(t *testing.T) {
 	}
 	var out bytes.Buffer
 	announceNativeAPIOrigin(&out, fl, fe, cmd.Env)
-	if !strings.Contains(out.String(), "RCT_jsLocation localhost:54001") {
+	// Under --device-host the hint is the physical-device one (the simulator's
+	// `-RCT_jsLocation localhost:<port>` reaches nothing from a device).
+	if !strings.Contains(out.String(), "RCT_METRO_PORT=54001") || !strings.Contains(out.String(), "192.168.1.20:54001") {
 		t.Errorf("port hint missing the new port:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "RCT_jsLocation") {
+		t.Errorf("a device-host run must not print the simulator-only hint:\n%s", out.String())
 	}
 }

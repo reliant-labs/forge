@@ -85,6 +85,43 @@ describe("parseOidcConfig", () => {
     ).toThrow(/loopback/);
   });
 
+  it("allows an http issuer on a private-network address only in development (forge env up --device-host)", () => {
+    const dev = { allowInsecureLoopback: true };
+    for (const host of [
+      "192.168.1.20:8080",
+      "10.0.0.110:8080",
+      "172.16.0.5:8080",
+      "172.31.255.1:8080",
+      "169.254.10.2:8080",
+      "100.64.0.9:8080",
+      "my-mac.local:8080",
+      "[fd12:3456::1]:8080",
+    ]) {
+      expect(parseOidcConfig({ ...base, issuer: `http://${host}` }, dev)?.issuer).toBe(
+        `http://${host}`,
+      );
+    }
+    expect(() =>
+      parseOidcConfig(
+        { ...base, issuer: "http://192.168.1.20:8080" },
+        { allowInsecureLoopback: false },
+      ),
+    ).toThrow(OidcConfigError);
+    for (const host of [
+      "8.8.8.8:8080",
+      "172.32.0.1:8080",
+      "192.169.1.1:8080",
+      "idp.example.com",
+      "300.1.1.1",
+    ]) {
+      expect(() => parseOidcConfig({ ...base, issuer: `http://${host}` }, dev)).toThrow(/https/);
+    }
+    // Only the issuer widens: an http callback still has to be loopback.
+    expect(() =>
+      parseOidcConfig({ ...base, redirectUri: "http://192.168.1.20/oauthredirect" }, dev),
+    ).toThrow(/loopback/);
+  });
+
   it.each([
     ["javascript:alert(1)", /cannot receive an OAuth callback/],
     ["data:text/html,x", /cannot receive an OAuth callback/],

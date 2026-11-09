@@ -125,7 +125,7 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** Per-request timeout; a hung IdP must not wedge single-flight refresh. */
   timeoutMs?: number;
-  /** Allow http:// endpoints on loopback (development). */
+  /** Allow http:// endpoints on loopback or a private-network address (development). */
   allowInsecureLoopback?: boolean;
 }
 
@@ -344,7 +344,7 @@ async function fetchDiscovery(
     const uri = parseUri(v);
     if (!uri || !isSecureEndpoint(uri, allowInsecure)) {
       throw new DiscoveryError(
-        `discovery ${name} must be https (http only to loopback in development)`,
+        `discovery ${name} must be https (http only to loopback or a private-network address in development)`,
       );
     }
     return v;

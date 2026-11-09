@@ -140,6 +140,7 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 				IDPMasterKey:    hi.IDPMasterKey,
 				IDPStepsFile:    hi.IDPStepsFile,
 				IDPPATPath:      hi.IDPPATPath,
+				DeviceHost:      hi.DeviceHost,
 
 				NATSMonitorPort:    hi.NATSMonitorPort,
 				TemporalNamespaces: hi.TemporalNamespaces,

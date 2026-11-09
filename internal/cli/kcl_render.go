@@ -996,6 +996,10 @@ type HostInfraEntity struct {
 	IDPMasterKey    string `json:"idp_masterkey,omitempty"`
 	IDPStepsFile    string `json:"idp_steps_file,omitempty"`
 	IDPPATPath      string `json:"idp_pat_path,omitempty"`
+	// DeviceHost is set by `forge env up --device-host` on the zitadel entry,
+	// never by the KCL render: the host a device reaches this machine at,
+	// which the IdP then serves as a second domain (see applyDeviceHostToIdP).
+	DeviceHost string `json:"-"`
 
 	// engine = "nats" only.
 	NATSMonitorPort int `json:"nats_monitor_port,omitempty"`

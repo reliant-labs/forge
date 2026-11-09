@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -125,23 +127,141 @@ func TestBuildFrontendDevCmd_InjectsNativeOIDC(t *testing.T) {
 		}
 	})
 
-	t.Run("--device-host does not move the issuer", func(t *testing.T) {
-		fl := fl
-		fl.deviceHost = "192.168.1.20"
+	// The issuer is whatever the identity converge published. Under a
+	// --device-host run that is the device origin (the IdP serves it and the
+	// API validates it), and the launch injects it as published.
+	t.Run("--device-host: the published device issuer is injected and announced", func(t *testing.T) {
+		const deviceIssuer = "http://192.168.1.20:8098"
+		out := nativeIdentityOutput()
+		out.Issuer = deviceIssuer
+		dir, e := nativeProject(t, out)
+		mobile := e.Frontends[1]
+		fl := frontendLaunch{entities: e, env: "dev", projectDir: dir, apiBaseURL: "http://localhost:4000", deviceHost: "192.168.1.20"}
 		cmd := buildFrontendDevCmd(context.Background(), fl, mobile, nil)
 		env := nativeOriginEnvMap(cmd.Env)
-		if env[oidcIssuerEnv] != testIssuerBase {
-			t.Errorf("issuer = %q: a LAN issuer is a different Zitadel instance lookup and a different iss", env[oidcIssuerEnv])
+		if env[oidcIssuerEnv] != deviceIssuer {
+			t.Errorf("issuer = %q, want the device origin", env[oidcIssuerEnv])
 		}
 		if env["EXPO_PUBLIC_API_URL"] != "http://192.168.1.20:4000" {
-			t.Errorf("the API origin must still follow the device host, got %q", env["EXPO_PUBLIC_API_URL"])
+			t.Errorf("the API origin must follow the device host too, got %q", env["EXPO_PUBLIC_API_URL"])
 		}
 		var b bytes.Buffer
 		announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, "192.168.1.20")
-		for _, want := range []string{"sign-in: issuer " + testIssuerBase, "client mobile-client", "adb reverse tcp:8098 tcp:8098", "--device-host does not apply to the IdP"} {
+		for _, want := range []string{"sign-in: issuer " + deviceIssuer, "client mobile-client", "serves it for this run"} {
 			if !strings.Contains(b.String(), want) {
 				t.Errorf("announcement missing %q:\n%s", want, b.String())
 			}
+		}
+		if strings.Contains(b.String(), "adb reverse") || strings.Contains(b.String(), "simulator only") {
+			t.Errorf("a device issuer must not carry the localhost advice:\n%s", b.String())
+		}
+	})
+	t.Run("localhost issuer with --device-host says it did not move and why", func(t *testing.T) {
+		fl := fl
+		fl.deviceHost = "192.168.1.20"
+		cmd := buildFrontendDevCmd(context.Background(), fl, mobile, nil)
+		var b bytes.Buffer
+		announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, "192.168.1.20")
+		for _, want := range []string{"sign-in: issuer " + testIssuerBase, "adb reverse tcp:8098 tcp:8098", "did not move it", "cannot sign in"} {
+			if !strings.Contains(b.String(), want) {
+				t.Errorf("announcement missing %q:\n%s", want, b.String())
+			}
+		}
+	})
+	t.Run("localhost issuer without --device-host points at the flag", func(t *testing.T) {
+		cmd := buildFrontendDevCmd(context.Background(), fl, mobile, nil)
+		var b bytes.Buffer
+		announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, "")
+		if !strings.Contains(b.String(), "--device-host <this machine's LAN address>") {
+			t.Errorf("announcement does not name the way to a device:\n%s", b.String())
+		}
+	})
+}
+
+func lanAddrs(ips ...string) []net.Addr {
+	var out []net.Addr
+	for _, s := range ips {
+		out = append(out, &net.IPNet{IP: net.ParseIP(s), Mask: net.CIDRMask(24, 32)})
+	}
+	return out
+}
+
+func TestDeviceHostIsThisMachine(t *testing.T) {
+	local := lanAddrs("127.0.0.1", "192.168.1.20")
+	lookup := func(h string) ([]net.IP, error) {
+		switch h {
+		case "my-mac.local":
+			return []net.IP{net.ParseIP("192.168.1.20")}, nil
+		case "other.local":
+			return []net.IP{net.ParseIP("192.168.1.99")}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	for host, want := range map[string]bool{
+		"192.168.1.20": true, "192.168.1.99": false, "10.0.2.2": false,
+		"my-mac.local": true, "other.local": false, "nowhere.test": false,
+	} {
+		if got := deviceHostIsThisMachine(host, local, lookup); got != want {
+			t.Errorf("%s: got %v, want %v", host, got, want)
+		}
+	}
+	if deviceHostIsThisMachine("my-mac.local", local, nil) {
+		t.Error("with no resolver a name is never concluded to be this machine")
+	}
+}
+
+func TestApplyDeviceHostToIdP(t *testing.T) {
+	local := lanAddrs("192.168.1.20")
+	lookup := func(string) ([]net.IP, error) { return nil, errors.New("no") }
+	zitadelOf := func(e *KCLEntities) *HostInfraEntity {
+		z, err := hostZitadel(e, e.Identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return z
+	}
+
+	t.Run("a native app on a host identity and a local device host: the IdP serves it", func(t *testing.T) {
+		_, e := nativeProject(t, nativeIdentityOutput())
+		notice := applyDeviceHostToIdP(e, nil, "192.168.1.20", local, lookup)
+		if zitadelOf(e).DeviceHost != "192.168.1.20" {
+			t.Fatal("the zitadel entry carries no device host")
+		}
+		for _, want := range []string{"also serves http://192.168.1.20:", "every network interface", "plain HTTP", "not shared Wi-Fi"} {
+			if !strings.Contains(notice, want) {
+				t.Errorf("notice missing %q:\n%s", want, notice)
+			}
+		}
+	})
+	t.Run("no device host: untouched, silent", func(t *testing.T) {
+		_, e := nativeProject(t, nativeIdentityOutput())
+		if n := applyDeviceHostToIdP(e, nil, "", local, lookup); n != "" || zitadelOf(e).DeviceHost != "" {
+			t.Errorf("notice %q, device host %q", n, zitadelOf(e).DeviceHost)
+		}
+	})
+	t.Run("an address of another machine keeps the localhost issuer and says why", func(t *testing.T) {
+		_, e := nativeProject(t, nativeIdentityOutput())
+		n := applyDeviceHostToIdP(e, nil, "10.0.2.2", local, lookup)
+		if zitadelOf(e).DeviceHost != "" {
+			t.Error("a non-local address must not become the issuer: nothing on this machine could dial it")
+		}
+		for _, want := range []string{"not an address of this machine", "adb reverse"} {
+			if !strings.Contains(n, want) {
+				t.Errorf("notice missing %q:\n%s", want, n)
+			}
+		}
+	})
+	t.Run("no native frontend targeted: the IdP is not put on the network", func(t *testing.T) {
+		_, e := nativeProject(t, nativeIdentityOutput())
+		if n := applyDeviceHostToIdP(e, []string{"web"}, "192.168.1.20", local, lookup); n != "" || zitadelOf(e).DeviceHost != "" {
+			t.Errorf("notice %q, device host %q", n, zitadelOf(e).DeviceHost)
+		}
+	})
+	t.Run("a native frontend that opted out of sign-in has no application: nothing to serve", func(t *testing.T) {
+		_, e := nativeProject(t, nativeIdentityOutput())
+		e.Identity.Applications = e.Identity.Applications[:len(e.Identity.Applications)-1]
+		if n := applyDeviceHostToIdP(e, nil, "192.168.1.20", local, lookup); n != "" || zitadelOf(e).DeviceHost != "" {
+			t.Errorf("notice %q, device host %q", n, zitadelOf(e).DeviceHost)
 		}
 	})
 }

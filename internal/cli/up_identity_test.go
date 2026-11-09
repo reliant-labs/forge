@@ -78,6 +78,27 @@ func TestWithoutHostIdentityRefs_KeepsEveryOtherRef(t *testing.T) {
 	}
 }
 
+// The device host reaches the converge through the zitadel entry, and the IdP
+// is still dialled at localhost (the converge sets the Host header itself).
+func TestDevIdentityInput_CarriesTheDeviceHost(t *testing.T) {
+	e := identityEntities()
+	z, err := hostZitadel(e, e.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z.DeviceHost = "192.168.1.20"
+	in, err := devIdentityInput(e, e.Identity, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.DeviceHost != "192.168.1.20" || in.BaseURL != "http://localhost:8080" {
+		t.Errorf("DeviceHost %q, BaseURL %q", in.DeviceHost, in.BaseURL)
+	}
+	if issuer, host := in.IssuerOrigin(); issuer != "http://192.168.1.20:8080" || host != "192.168.1.20:8080" {
+		t.Errorf("issuer %q host %q", issuer, host)
+	}
+}
+
 func TestDevIdentityInput_ResolvesTheEnv(t *testing.T) {
 	e := identityEntities()
 	dir := t.TempDir()

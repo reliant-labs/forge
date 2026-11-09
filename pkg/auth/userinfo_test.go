@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -212,6 +214,7 @@ func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error
 
 // The bearer token never travels to a plain-HTTP, non-loopback userinfo URL.
 func TestUserInfo_RefusesAnInsecureEndpoint(t *testing.T) {
+	stubInterfaceAddrs(t, "192.168.1.20")
 	for _, endpoint := range []string{"http://issuer.example.test/userinfo", "http://10.0.0.1/userinfo", "ftp://issuer.example.test/userinfo"} {
 		rt := &recordingTransport{}
 		a := tokenAuthenticator("u1")
@@ -222,6 +225,43 @@ func TestUserInfo_RefusesAnInsecureEndpoint(t *testing.T) {
 		}
 		if c.Email != "" || len(rt.urls) != 0 {
 			t.Errorf("%s: Email %q, requests %v; want no request sent", endpoint, c.Email, rt.urls)
+		}
+	}
+}
+
+func stubInterfaceAddrs(t *testing.T, ips ...string) {
+	t.Helper()
+	prev := interfaceAddrs
+	interfaceAddrs = func() ([]net.Addr, error) {
+		var out []net.Addr
+		for _, s := range ips {
+			out = append(out, &net.IPNet{IP: net.ParseIP(s), Mask: net.CIDRMask(24, 32)})
+		}
+		return out, nil
+	}
+	t.Cleanup(func() { interfaceAddrs = prev })
+}
+
+// A dev issuer reached at this machine's own LAN address (the issuer moves
+// there under `forge env up --device-host`) is a request that never leaves the
+// machine, so the userinfo lookup is allowed over plain HTTP; any other
+// address, and any hostname but localhost, is still refused.
+func TestSecureEndpoint_AllowsThisMachinesOwnAddress(t *testing.T) {
+	stubInterfaceAddrs(t, "192.168.1.20")
+	for endpoint, want := range map[string]bool{
+		"http://192.168.1.20:8080/oidc/v1/userinfo": true,
+		"http://localhost:8080/userinfo":            true,
+		"http://127.0.0.1:8080/userinfo":            true,
+		"http://192.168.1.21:8080/userinfo":         false, // another machine on the LAN
+		"http://my-mac.local:8080/userinfo":         false, // a name proves nothing
+		"https://issuer.example.test/userinfo":      true,
+	} {
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := secureEndpoint(u) == nil; got != want {
+			t.Errorf("secureEndpoint(%s) allowed = %v, want %v", endpoint, got, want)
 		}
 	}
 }

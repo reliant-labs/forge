@@ -147,6 +147,14 @@ type Spec struct {
 	// access token on first boot. It must match what the identity step of `forge env up`
 	// reads — the two are one declaration.
 	IDPPATPath string
+	// DeviceHost, when set, is a second address this run's IdP serves: the
+	// host a physical device or emulator reaches this machine at (a LAN
+	// address). The instance then answers at BOTH localhost and DeviceHost,
+	// each minting tokens whose `iss` is the origin it was reached at. See
+	// zitadelEnv for why that is one env var and no data reset, and
+	// startZitadel for how a running instance on another domain converges.
+	// Empty (the default) is the localhost-only IdP.
+	DeviceHost string
 
 	// ── EngineNATS only ───────────────────────────────────────────────
 

@@ -65,9 +65,11 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -196,10 +198,14 @@ func zitadelBinaryPathFor(goos, goarch string) string {
 func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	dataDir := spec.dataDir(projectDir)
 
+	running := false
 	switch identifyZitadelHolder(ctx, spec, dataDir) {
 	case holderOurs:
-		fmt.Printf("  %s: already ready on :%d (host process)\n", spec.Name, spec.Port)
-		return nil
+		if spec.DeviceHost == "" {
+			fmt.Printf("  %s: already ready on :%d (host process)\n", spec.Name, spec.Port)
+			return nil
+		}
+		running = true
 	case holderForeign:
 		return fmt.Errorf(
 			"host-infra %s: port %d is held by something this project did not start\n"+
@@ -209,11 +215,133 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 			spec.Name, spec.Port)
 	}
 
-	// A recorded pid that is alive but NOT ready yet means a previous run
-	// left one mid-boot; a recorded pid that is dead is a crash to clean up
-	// after. Either way the pidfile is the handle, so reap before starting.
-	reapDeadZitadel(dataDir)
+	return convergeZitadelDomains(ctx, spec, realDomainOps(projectDir, spec), running)
+}
 
+// zitadelDomainOps are the three effects convergeZitadelDomains drives, so
+// the decision logic is testable without a Zitadel binary.
+type zitadelDomainOps struct {
+	// servesDeviceDomain reports whether the instance already answers at the
+	// device host: the registered domain, not the process's configuration,
+	// is what decides it.
+	servesDeviceDomain func(ctx context.Context) bool
+	stop               func() error
+	boot               func(ctx context.Context, domain string, appendLog bool) error
+}
+
+func realDomainOps(projectDir string, spec Spec) zitadelDomainOps {
+	return zitadelDomainOps{
+		servesDeviceDomain: func(ctx context.Context) bool { return zitadelServesDomain(ctx, spec.Port, spec.DeviceHost) },
+		stop: func() error {
+			_, err := stopZitadel(projectDir, spec)
+			return err
+		},
+		boot: func(ctx context.Context, domain string, appendLog bool) error {
+			return bootZitadel(ctx, projectDir, spec, domain, appendLog)
+		},
+	}
+}
+
+// convergeZitadelDomains brings the IdP to "serving localhost, and spec.
+// DeviceHost when one is set", from whatever state it is in.
+//
+// # Why a restart is sometimes needed, and never a data reset
+//
+// Zitadel resolves a request's instance from its Host header against the
+// instance's registered domains, and mints `iss` from that same host. A
+// physical device dials this machine's LAN address, so the instance must be
+// registered under it. Domains are registered by Zitadel's setup step when
+// the process STARTS: it compares ZITADEL_EXTERNALDOMAIN with the one the
+// previous boot recorded and ADDS the new one (it never removes the old).
+// So the device host is one env var on a restart: the instance, its keys,
+// users and the PAT stay as they are, localhost keeps working, and moving
+// between with and without --device-host needs no wipe in either direction.
+//
+// Alternatives rejected: (b) making the device host THE external domain
+// forces a first boot (a fresh database) to register only the LAN address,
+// breaking the simulator and every in-machine caller, and Zitadel's admin
+// API cannot add an instance domain afterwards. Trusted domains (the
+// x-zitadel-public-host header) do not route requests, so a phone could
+// not use them.
+//
+// The check is the registered domain, not forge's own memory of the last
+// run, so a database that already carries the domain (a previous
+// --device-host run, an `env down`, an `env up`) costs no restart.
+//
+// A domain added once stays: Zitadel offers no removal, so after a run
+// with a device host the instance keeps answering at that address, with
+// tokens whose `iss` is that origin. Nothing accepts them unless a run
+// pins that issuer again.
+func convergeZitadelDomains(ctx context.Context, spec Spec, ops zitadelDomainOps, running bool) error {
+	if !running {
+		if err := ops.boot(ctx, zitadelLocalDomain, false); err != nil {
+			return err
+		}
+	}
+	if spec.DeviceHost == "" {
+		return nil
+	}
+	if ops.servesDeviceDomain(ctx) {
+		if running {
+			fmt.Printf("  %s: already ready on :%d, also serving %s (host process)\n", spec.Name, spec.Port, spec.DeviceHost)
+		} else {
+			fmt.Printf("  %s: also serving %s:%d for devices\n", spec.Name, spec.DeviceHost, spec.Port)
+		}
+		return nil
+	}
+	fmt.Printf("  %s: adding %s as a domain of the IdP instance (restarting it once; no data is reset)\n", spec.Name, spec.DeviceHost)
+	if err := ops.stop(); err != nil {
+		return err
+	}
+	if err := ops.boot(ctx, spec.DeviceHost, true); err != nil {
+		return err
+	}
+	if !ops.servesDeviceDomain(ctx) {
+		return fmt.Errorf("host-infra %s: the IdP restarted with ZITADEL_EXTERNALDOMAIN=%s but still does not answer at http://%s:%d\n"+
+			"  its log (zitadel.log in the IdP's data dir) says why; the device cannot sign in until it does.\n"+
+			"  Without --device-host the IdP serves localhost as before", spec.Name, spec.DeviceHost, spec.DeviceHost, spec.Port)
+	}
+	return nil
+}
+
+// zitadelServesDomain reports whether the instance answers OIDC discovery for
+// host at port with that origin as its issuer. It dials localhost and sets the
+// Host header, which is exactly what a device's own request resolves by.
+func zitadelServesDomain(ctx context.Context, port int, host string) bool {
+	if host == "" {
+		return false
+	}
+	origin := "http://" + net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(port))
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://localhost:%d/.well-known/openid-configuration", port), nil)
+	if err != nil {
+		return false
+	}
+	req.Host = strings.TrimPrefix(origin, "http://")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var doc struct {
+		Issuer string `json:"issuer"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc) != nil {
+		return false
+	}
+	return strings.TrimRight(doc.Issuer, "/") == origin
+}
+
+// bootZitadel starts one zitadel process with ZITADEL_EXTERNALDOMAIN set to
+// domain and returns once it is READY. appendLog keeps the log of an earlier
+// boot of the same run (a device-domain restart) instead of truncating it.
+func bootZitadel(ctx context.Context, projectDir string, spec Spec, domain string, appendLog bool) error {
+	dataDir := spec.dataDir(projectDir)
+	reapDeadZitadel(dataDir)
 	bin, err := ensureZitadelBinary(ctx)
 	if err != nil {
 		return fmt.Errorf("host-infra %s: %w", spec.Name, err)
@@ -254,7 +382,11 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	}
 
 	logPath := filepath.Join(dataDir, "zitadel.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) // #nosec G304 -- path derived from the project's own data dir
+	logFlags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if appendLog {
+		logFlags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	}
+	logFile, err := os.OpenFile(logPath, logFlags, 0o644) // #nosec G304 -- path derived from the project's own data dir
 	if err != nil {
 		return fmt.Errorf("host-infra %s: open log: %w", spec.Name, err)
 	}
@@ -277,7 +409,7 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	cmd.Dir = projectDir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = append(os.Environ(), spec.zitadelEnv(patPath)...)
+	cmd.Env = append(os.Environ(), spec.zitadelEnvFor(patPath, domain)...)
 	// Its OWN session, so it OUTLIVES the `forge env up` that started it — the
 	// same lifecycle postgres has (pg_ctl daemonizes to get there). Without
 	// this it would die with the launching shell's process group, and the
@@ -709,6 +841,23 @@ func extractZitadelFor(archive, dest, goos string) error {
 // suppress the passkey/2FA enrollment interstitials that a local instance
 // has no way to complete.
 func (s Spec) zitadelEnv(patPath string) []string {
+	return s.zitadelEnvFor(patPath, zitadelLocalDomain)
+}
+
+// zitadelLocalDomain is the external domain a cold start runs under, and the
+// one every in-machine caller reaches the IdP at.
+const zitadelLocalDomain = "localhost"
+
+// zitadelEnvFor is zitadelEnv with the external domain explicit.
+//
+// A domain other than localhost is how Zitadel is told about the device
+// host. On boot its setup compares ZITADEL_EXTERNALDOMAIN with the one the
+// previous boot recorded and, when they differ, ADDS the new one to the
+// instance's domains (cmd/setup externalConfigChange; it never removes the
+// old). The instance then answers at both, and each answer's `iss` is the
+// origin the request came in at, so no data is rewritten and nothing has to
+// be wiped to move between the two.
+func (s Spec) zitadelEnvFor(patPath, domain string) []string {
 	return []string{
 		"ZITADEL_DATABASE_POSTGRES_HOST=localhost",
 		fmt.Sprintf("ZITADEL_DATABASE_POSTGRES_PORT=%d", s.IDPDatabasePort),
@@ -721,7 +870,7 @@ func (s Spec) zitadelEnv(patPath string) []string {
 		"ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE=disable",
 		"ZITADEL_EXTERNALSECURE=false",
 		"ZITADEL_TLS_ENABLED=false",
-		"ZITADEL_EXTERNALDOMAIN=localhost",
+		"ZITADEL_EXTERNALDOMAIN=" + domain,
 		fmt.Sprintf("ZITADEL_EXTERNALPORT=%d", s.Port),
 		fmt.Sprintf("ZITADEL_PORT=%d", s.Port),
 		"ZITADEL_FIRSTINSTANCE_PATPATH=" + patPath,

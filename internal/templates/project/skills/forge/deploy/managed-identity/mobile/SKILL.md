@@ -1,13 +1,35 @@
 ---
 name: deploy/managed-identity/mobile
-description: A mobile (Expo `rn`) app signing in as its own managed-identity client, in the dev loop only (forge.IdentityOnHost) — the kind-native IdentityApplication derived for every rn frontend, the callback read from app.json's expo.scheme, only a static app.json is read, the EXPO_PUBLIC_FORGE_OIDC_* env vars `forge env up` injects and their exact precedence against shell, KCL, .env.<env> and Expo's own .env, opting a frontend out (native_sign_in = False), declaring callbacks yourself, why hosted identity refuses kind native for now, and why --device-host does not move the issuer.
+description: A mobile (Expo `rn`) app signing in as its own managed-identity client, in the dev loop only (forge.IdentityOnHost) — the kind-native IdentityApplication derived for every rn frontend, the callback read from app.json's expo.scheme, only a static app.json is read, the EXPO_PUBLIC_FORGE_OIDC_* env vars `forge env up` injects and their exact precedence against shell, KCL, .env.<env> and Expo's own .env, opting a frontend out (native_sign_in = False), declaring callbacks yourself, why hosted identity refuses kind native for now, and how --device-host serves a physical device (the dev IdP answers at the LAN address, the issuer moves there for the run, the API follows).
 ---
 
 # A mobile app signs in as its own client
 
-**Dev loop only today.** An `rn` (Expo) frontend in an env whose identity is `forge.IdentityOnHost` gets a `kind = "native"` application **derived**, named `<env>:<frontend>`: nothing to declare. It is a public PKCE client at the IdP's own hosted pages (no broker, no secret, no `login_uri`); its tokens are accepted unchanged by the env's services (same issuer and audience). `forge env up` registers it and injects `EXPO_PUBLIC_FORGE_OIDC_{ISSUER,CLIENT_ID,SCOPES,REDIRECT_URI,POST_LOGOUT_REDIRECT_URI}` into the frontend. The issuer is localhost, so it reaches the iOS simulator; `--device-host` does not move it (Zitadel resolves its instance from the Host header), and an Android emulator needs `adb reverse`.
+**Dev loop only today.** An `rn` (Expo) frontend in an env whose identity is `forge.IdentityOnHost` gets a `kind = "native"` application **derived**, named `<env>:<frontend>`: nothing to declare. It is a public PKCE client at the IdP's own hosted pages (no broker, no secret, no `login_uri`); its tokens are accepted unchanged by the env's services (same issuer and audience). `forge env up` registers it and injects `EXPO_PUBLIC_FORGE_OIDC_{ISSUER,CLIENT_ID,SCOPES,REDIRECT_URI,POST_LOGOUT_REDIRECT_URI}` into the frontend. The issuer is `http://localhost:<idp port>`, which reaches the iOS simulator; a physical device or an emulator needs `--device-host` (next section).
 
 **A hosted identity refuses `kind = "native"`** ("native identity applications are not yet supported on hosted identity"), in KCL and in the shape: the control plane cannot register a native client yet, and a declaration it never converged would read as converged. A control plane is never sent native applications meanwhile (`forge env build`/`deploy` print a note when one is left out). The refusal lifts together with hosted registration.
+
+## A physical device: `--device-host`
+
+```
+forge env up dev --device-host 192.168.1.20      # this machine's LAN address; or FORGE_DEV_DEVICE_HOST
+```
+
+Zitadel decides which instance serves a request, and the `iss` it mints, from the request's **Host header**. A device cannot reach `localhost`, and the API validates one exact `iss`, so the device origin and the API's `jwt_issuer` have to be the same string. forge makes them so:
+
+- The dev IdP serves **both** `localhost` and the device host as two domains of **one instance**. Zitadel's setup adds a domain when `ZITADEL_EXTERNALDOMAIN` changes between boots and never removes one, so forge cold-starts under `localhost` and, when the instance does not yet answer at the device host, restarts it **once** with the device host. Users, keys, the PAT and every registered app stay; there is no data reset, in either direction.
+- The identity converge publishes `http://<device host>:<idp port>` as the issuer for the run, so the API's `jwt_issuer`/`idp_base`, the login broker, `.forge/identity/<name>.json` and `EXPO_PUBLIC_FORGE_OIDC_ISSUER` all carry **one** issuer. The API is not made to accept two.
+- Web sign-in on this machine keeps working: the browser only talks to the app, and the app's broker dials the IdP at the published origin (this machine's own LAN address). The iOS simulator keeps working too, but it signs in at the device origin for that run, because the app is handed one issuer.
+- Running again **without** `--device-host` publishes `localhost` again and every output follows; nothing is wiped. The device origin keeps answering (Zitadel cannot drop a domain) but nobody is pinned to it.
+- The RN template's OIDC config accepts an `http` issuer on loopback **or a private-network address** (RFC 1918, `.local`, link-local, ULA) in development only; `https` is unchanged and a public host over `http` is still refused. The API's userinfo lookup accepts plain HTTP to an address that belongs to this machine's own interfaces, and still refuses every other host. Existing apps own `config.ts`: copy `isDevNetworkHost` and the `isSecureEndpoint` change (`migrations/v1.4.0/native-auth`).
+
+Rules and limits:
+
+- **The device host must be an address of this machine** (an IP on one of its interfaces, or a name that resolves to one). The API, the broker and forge itself dial the issuer from here. `10.0.2.2` (an Android emulator's alias for the host), a tunnel or another machine is none of those: forge says so and keeps the localhost issuer. For an emulator pass the machine's LAN address, or keep localhost and `adb reverse tcp:<idp port> tcp:<idp port>`.
+- Only a run that targets a native frontend **with a native application** puts the IdP on the device host. A frontend with `native_sign_in = False` does not.
+- **Security: the dev IdP listens on every interface** (Zitadel has no listen-address setting, with or without `--device-host`), is plain HTTP and holds the committed dev credentials from `idp-steps.yaml`. forge prints that notice on a `--device-host` run. Use a network you trust. Do not use it on shared Wi-Fi.
+- The address becomes the issuer, so a network change means re-running `forge env up --device-host <new address>` (a session minted under the old issuer signs in again). A DHCP-stable name (`my-mac.local`) avoids it.
+- iOS App Transport Security: a Debug build allows the `http` issuer; a Release build needs an exception.
 
 ## Where the callback comes from: `expo.scheme`
 

@@ -314,6 +314,9 @@ type HostInfraSpec struct {
 	IDPMasterKey    string
 	IDPStepsFile    string
 	IDPPATPath      string
+	// DeviceHost is the extra domain the dev IdP serves for devices
+	// (hostinfra.Spec.DeviceHost). Empty: localhost only.
+	DeviceHost string
 
 	// engine = "nats" only.
 	NATSMonitorPort int

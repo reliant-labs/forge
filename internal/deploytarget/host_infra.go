@@ -156,6 +156,7 @@ func specOf(name string, spec *HostInfraSpec) hostinfra.Spec {
 		IDPMasterKey:    spec.IDPMasterKey,
 		IDPStepsFile:    spec.IDPStepsFile,
 		IDPPATPath:      spec.IDPPATPath,
+		DeviceHost:      spec.DeviceHost,
 
 		NATSMonitorPort:    spec.NATSMonitorPort,
 		TemporalNamespaces: spec.TemporalNamespaces,

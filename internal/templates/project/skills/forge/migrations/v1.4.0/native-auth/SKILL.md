@@ -1,6 +1,6 @@
 ---
 name: migration-v1.4.0-native-auth
-description: Adopt v1.4.0 native sign-in in an existing Expo app — OAuth public client (authorization code + PKCE) through the system browser, tokens in the OS keystore, the EXPO_PUBLIC_FORGE_OIDC_* variables forge env up injects, the new dependencies and expo-secure-store plugin, the single reverse-DNS scheme, the owned auth files to copy and the provider/context/connect/layout/jest edits, mock fallback and opt-out, what the auth context and transport now do, and what is not yet proven (device, Android, hosted registration).
+description: Adopt v1.4.0 native sign-in in an existing Expo app — OAuth public client (authorization code + PKCE) through the system browser, tokens in the OS keystore, the EXPO_PUBLIC_FORGE_OIDC_* variables forge env up injects, the new dependencies and expo-secure-store plugin, the single reverse-DNS scheme, the owned auth files to copy and the provider/context/connect/layout/jest edits, mock fallback and opt-out, what the auth context and transport now do, and what is not yet proven (Android, hosted registration) and how a physical device signs in with --device-host.
 relevance: migration
 ---
 
@@ -107,11 +107,20 @@ one), so under `forge env up` on a host-run identity either keep the old
 ## What is not proven
 
 Evidence is JS-level (Jest with fakes, typecheck, lint, export) plus a local dev
-identity on the iOS simulator. **Not proven:** a physical device, Android
+identity on the iOS simulator. **Not proven here:** Android
 (emulator included), registering native clients with a hosted control plane
 (forge refuses `kind = "native"` on a hosted identity until it does), and universal links
 (the callback path is identical, so adding one is a redirect-URI change).
-`--device-host` does **not** move the issuer: Zitadel resolves its instance from
-the Host header and tokens carry the localhost issuer, so an Android emulator
-needs `adb reverse tcp:<idp port> tcp:<idp port>`. Production exports must carry
+A physical device signs in with `forge env up --device-host <LAN address>`: the dev IdP
+then also serves that address, the run's one issuer becomes `http://<LAN
+address>:<idp port>` and the API's `jwt_issuer` follows (details, limits and the
+security notice: `forge skill load deploy/managed-identity/mobile`). **Existing
+apps own `src/lib/auth/config.ts`**: without the change below the app refuses that
+issuer ("must be an https:// URL"), because the scaffold of the first v1.4.0
+builds only allowed `http` to loopback. Add the exported `isDevNetworkHost`
+(loopback, RFC 1918, RFC 6598, link-local, IPv6 ULA/link-local, `.local`) and make
+`isSecureEndpoint` call it instead of `isLoopbackHost`; leave the redirect check
+on `isLoopbackHost` (an `http` callback stays loopback-only). Both stay gated on
+`__DEV__`. An Android emulator without `--device-host` still needs
+`adb reverse tcp:<idp port> tcp:<idp port>`. Production exports must carry
 no test fakes: `tests/auth-fakes.ts` is imported only by tests.

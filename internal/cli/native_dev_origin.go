@@ -187,6 +187,9 @@ func describeNativeAPIOrigin(feName, effective, injected, deviceHost string) []s
 	default:
 		lines = append(lines, fmt.Sprintf("%sAPI origin %s (%s)", p, effective, varName))
 	}
+	if deviceHost != "" && !isLoopbackOrigin(effective) {
+		lines = append(lines, fmt.Sprintf("%sa Release build bakes %s at build time, so build it with %s=%s (Debug builds read it from Metro)", p, varName, varName, effective))
+	}
 	if isLoopbackOrigin(effective) {
 		lines = append(lines, p+"localhost reaches the API from the iOS simulator and this machine only; "+
 			"an Android emulator needs 10.0.2.2 and a physical device a LAN address or tunnel — "+
@@ -261,7 +264,7 @@ func announceNativeAPIOrigin(w io.Writer, fl frontendLaunch, fe FrontendEntity, 
 		fmt.Fprintln(w, line)
 	}
 	port, _ := strconv.Atoi(envLookupLastOr(env, "PORT"))
-	for _, line := range describeNativeMetroPort(fe.Name, port) {
+	for _, line := range describeNativeMetroPort(fe.Name, port, fl.deviceHost) {
 		fmt.Fprintln(w, line)
 	}
 }

@@ -156,7 +156,7 @@ env's identity provider. Research and design notes are in
     application (public PKCE, IdP-hosted login). `Frontend.native_sign_in = False`
     opts a frontend out.
   - `forge env up` reads the callback scheme from `app.json`'s `expo.scheme` and
-    injects `EXPO_PUBLIC_FORGE_OIDC_*`. `--device-host` does not move the issuer.
+    injects `EXPO_PUBLIC_FORGE_OIDC_*`. Under `--device-host` the dev IdP also serves that address and the run's issuer moves there (`deploy/managed-identity/mobile`).
   - KCL and `pkg/release` accept private-use or https callbacks, so adding
     universal links later is an additive change.
   - On a hosted identity, native applications are refused for now.

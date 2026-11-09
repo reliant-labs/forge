@@ -89,6 +89,7 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 		Project:         e.Project,
 		Identity:        id,
 		BaseURL:         fmt.Sprintf("http://localhost:%d", zitadel.Port),
+		DeviceHost:      zitadel.DeviceHost,
 		PATPath:         idpPATLocations(zitadel, projectDir).Checkout,
 		WorkloadOrigins: map[string]string{},
 		Refs:            hostIdentityRefs(e, id),

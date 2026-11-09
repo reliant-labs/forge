@@ -103,8 +103,31 @@ func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, erro
 	return &UserInfo{issuer: issuer, endpoint: endpoint, client: &secured, now: time.Now, cache: map[string]userInfoEntry{}}
 }
 
+// interfaceAddrs is net.InterfaceAddrs, swappable by tests.
+var interfaceAddrs = net.InterfaceAddrs
+
+// isOwnAddress reports whether ip is assigned to one of THIS machine's
+// interfaces, so a request to it never leaves the machine.
+func isOwnAddress(ip net.IP) bool {
+	addrs, err := interfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // secureEndpoint reports whether a bearer token may be sent to u: HTTPS, or
-// plain HTTP to a loopback host only.
+// plain HTTP to a host the request cannot leave this machine for: loopback,
+// or an IP literal assigned to one of this machine's own interfaces (a dev
+// issuer reached at the machine's LAN address so a physical device can sign
+// in at the same origin; `forge env up --device-host`). A hostname other than
+// localhost is never trusted on its own, because what it resolves to is not
+// the caller's to vouch for.
 func secureEndpoint(u *url.URL) error {
 	switch u.Scheme {
 	case "https":
@@ -114,10 +137,10 @@ func secureEndpoint(u *url.URL) error {
 		if host == "localhost" {
 			return nil
 		}
-		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || isOwnAddress(ip)) {
 			return nil
 		}
-		return fmt.Errorf("userinfo URL %q is plain HTTP to a non-loopback host", u.Redacted())
+		return fmt.Errorf("userinfo URL %q is plain HTTP to a host that is not loopback or an address of this machine", u.Redacted())
 	}
 	return fmt.Errorf("userinfo URL %q is not HTTPS", u.Redacted())
 }

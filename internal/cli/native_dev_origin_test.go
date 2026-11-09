@@ -198,6 +198,15 @@ func TestAnnounceNativeAPIOrigin(t *testing.T) {
 		if !strings.Contains(out, "API origin http://192.168.1.20:4000") || strings.Contains(out, "simulator") {
 			t.Errorf("unexpected output:\n%s", out)
 		}
+		// A default Release build bakes the localhost API origin: the one-line hint.
+		if !strings.Contains(out, "Release build bakes EXPO_PUBLIC_API_URL") || !strings.Contains(out, "EXPO_PUBLIC_API_URL=http://192.168.1.20:4000") {
+			t.Errorf("missing the Release build hint:\n%s", out)
+		}
+	})
+	t.Run("no device host: no Release hint", func(t *testing.T) {
+		if out := run(frontendLaunch{env: "dev", apiBaseURL: listener}, fe, nil); strings.Contains(out, "Release build") {
+			t.Errorf("unexpected Release hint without a device host:\n%s", out)
+		}
 	})
 	t.Run("explicit override is reported as the effective origin", func(t *testing.T) {
 		out := run(frontendLaunch{env: "dev", apiBaseURL: listener, deviceHost: "192.168.1.20"}, fe,

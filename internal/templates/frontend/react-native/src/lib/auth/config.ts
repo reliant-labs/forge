@@ -3,7 +3,8 @@
 // src/lib/auth/config.ts — the native OIDC client's configuration, read from
 // the EXPO_PUBLIC_FORGE_OIDC_* variables forge delivers.
 //
-//   EXPO_PUBLIC_FORGE_OIDC_ISSUER                  issuer URL the DEVICE can reach
+//   EXPO_PUBLIC_FORGE_OIDC_ISSUER                  issuer URL the DEVICE can reach (under
+//                                                  `forge env up --device-host` the Mac's LAN address)
 //   EXPO_PUBLIC_FORGE_OIDC_CLIENT_ID               the native app's client_id
 //   EXPO_PUBLIC_FORGE_OIDC_SCOPES                  space-separated (optional)
 //   EXPO_PUBLIC_FORGE_OIDC_REDIRECT_URI            where the IdP sends the user back
@@ -91,6 +92,37 @@ export function isLoopbackHost(authority: string | null): boolean {
   );
 }
 
+/**
+ * True for a host a development IdP is reached at from a device: loopback, or a
+ * private-network address (RFC 1918 IPv4, RFC 6598, link-local, IPv6 ULA and
+ * link-local) or a `.local` mDNS name. `forge env up --device-host <LAN address>`
+ * makes the dev IdP's issuer that address, over plain http. Public hosts are never
+ * included, and this is only consulted when `allowInsecureLoopback` (__DEV__) is on.
+ */
+export function isDevNetworkHost(authority: string | null): boolean {
+  if (isLoopbackHost(authority)) return true;
+  if (!authority) return false;
+  const host = authority.replace(/^.*@/, "").replace(/:\d+$/, "");
+  if (host.endsWith(".local")) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const [a, b, c, d] = v4.slice(1).map(Number);
+    if ([a, b, c, d].some((n) => n > 255)) return false;
+    return (
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254) ||
+      (a === 100 && b >= 64 && b <= 127)
+    );
+  }
+  if (host.startsWith("[") && host.endsWith("]")) {
+    const v6 = host.slice(1, -1).toLowerCase();
+    return /^f[cd][0-9a-f]{2}:/.test(v6) || /^fe[89ab][0-9a-f]:/.test(v6);
+  }
+  return false;
+}
+
 // Schemes that can never be an app callback, plus Expo Go's own (`exp://`,
 // which cannot be registered with an IdP — native auth needs a dev client).
 const FORBIDDEN_SCHEMES = new Set([
@@ -107,11 +139,11 @@ const FORBIDDEN_SCHEMES = new Set([
   "exps",
 ]);
 
-/** True for https, or http to loopback when `allowInsecureLoopback`. */
+/** True for https, or http to a dev-network host (loopback or private LAN) when `allowInsecureLoopback`. */
 export function isSecureEndpoint(uri: ParsedUri, allowInsecureLoopback: boolean): boolean {
   if (!uri.authority) return false;
   if (uri.scheme === "https") return true;
-  return uri.scheme === "http" && allowInsecureLoopback && isLoopbackHost(uri.authority);
+  return uri.scheme === "http" && allowInsecureLoopback && isDevNetworkHost(uri.authority);
 }
 
 function isDev(): boolean {
@@ -123,7 +155,7 @@ function parseIssuer(name: string, value: string, allowInsecureLoopback: boolean
   if (!uri || !isSecureEndpoint(uri, allowInsecureLoopback)) {
     throw new OidcConfigError(
       name,
-      `must be an https:// URL (http:// only to localhost in development), got ${JSON.stringify(value)}`,
+      `must be an https:// URL (http:// only to localhost or a private-network address in development), got ${JSON.stringify(value)}`,
     );
   }
   if (uri.query || uri.fragment !== null) {

@@ -190,10 +190,20 @@ func nativeDevlogOrigin(fe FrontendEntity, deviceHost string) string {
 // describeNativeMetroPort is the single launch line for a native frontend
 // whose Metro is NOT on Expo's default port, saying how to point a build at
 // it. Nothing is printed on 8081 (builds find it unaided) or when no port
-// was allocated.
-func describeNativeMetroPort(feName string, port int) []string {
+// was allocated. With a device host the target is a physical device (or an
+// emulator reaching this machine): the simulator's `simctl launch ... localhost`
+// would reach nothing, so the line names the rebuild and the one-time Local
+// Network prompt instead.
+func describeNativeMetroPort(feName string, port int, deviceHost string) []string {
 	if port <= 0 || port == expoMetroDefaultPort {
 		return nil
+	}
+	if deviceHost != "" {
+		return []string{fmt.Sprintf("[up] frontend %s: Metro is on :%d, not %d where a native build looks by default — "+
+			"on a physical device rebuild with RCT_METRO_PORT=%d so the build finds it at %s:%d; "+
+			"the first launch also needs \"Local Network\" allowed on the device (accept the prompt, then relaunch: React Native shows `No script URL provided` until you do); "+
+			"Android emulator: `adb reverse tcp:%d tcp:%d`, then Dev Menu > Change Bundle Location",
+			feName, port, expoMetroDefaultPort, port, strings.Trim(deviceHost, "[]"), port, port, port)}
 	}
 	return []string{fmt.Sprintf("[up] frontend %s: Metro is on :%d, not %d where a native build looks by default — "+
 		"iOS: `xcrun simctl launch <udid> <bundle-id> -RCT_jsLocation localhost:%d` (or rebuild with RCT_METRO_PORT=%d); "+

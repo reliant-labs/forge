@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
@@ -59,8 +60,16 @@ type Input struct {
 	Identity *release.ShapeIdentity
 
 	// BaseURL is the origin the dev IdP is dialled (and registered) at, e.g.
-	// http://localhost:8080. It is also the issuer.
+	// http://localhost:8080. It is also the issuer, unless DeviceHost moves it.
 	BaseURL string
+	// DeviceHost, when set, makes the issuer http://<DeviceHost>:<BaseURL's
+	// port> instead of BaseURL: the origin a physical device (or an emulator
+	// reaching this machine's LAN address) signs in at. The IdP is still
+	// dialled at BaseURL, with that origin as the Host header, which is how
+	// Zitadel picks the instance and the `iss` it mints (see
+	// internal/hostinfra, which registers the domain). Every output, and so
+	// every service's jwt_issuer, carries this one issuer for the whole run.
+	DeviceHost string
 	// PATPath is the bootstrap service account's personal access token file.
 	PATPath string
 
@@ -133,6 +142,25 @@ type SeedPassword struct {
 	Secret string
 }
 
+// IssuerOrigin is the issuer the run publishes and the Host header the IdP is
+// dialled with. Without a DeviceHost the issuer is BaseURL and no Host
+// override is needed (Host follows the dialled address).
+func (in Input) IssuerOrigin() (issuer, host string) {
+	issuer = strings.TrimRight(in.BaseURL, "/")
+	if in.DeviceHost == "" {
+		return issuer, ""
+	}
+	u, err := url.Parse(in.BaseURL)
+	if err != nil || u.Host == "" {
+		return issuer, ""
+	}
+	host = in.DeviceHost
+	if port := u.Port(); port != "" {
+		host = net.JoinHostPort(strings.Trim(in.DeviceHost, "[]"), port)
+	}
+	return u.Scheme + "://" + host, host
+}
+
 // Converge makes the dev instance match the declaration and publishes its
 // outputs.
 func Converge(ctx context.Context, in Input) (*Result, error) {
@@ -145,9 +173,11 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	mail := MailState(in)
 	keys := identity.DirKeyStore{Dir: in.KeysDir}
 	files := identity.FileOutputs{Path: in.OutputsPath}
+	issuer, host := in.IssuerOrigin()
 	rec, err := identity.New(identity.Options{
 		BaseURL:    in.BaseURL,
-		Issuer:     in.BaseURL,
+		Host:       host,
+		Issuer:     issuer,
 		Credential: identity.PATFile(in.PATPath),
 		Keys:       keys,
 		Outputs: identity.OutputsFunc(func(ctx context.Context, out identity.Output) error {
@@ -163,7 +193,7 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	}
 	res := &Result{Warnings: warnings, Mail: mail, SeedPasswords: seedPasswords}
 	if len(spec.IdPs) > 0 {
-		res.SocialCallbackURL = strings.TrimRight(in.BaseURL, "/") + "/idps/callback"
+		res.SocialCallbackURL = issuer + "/idps/callback"
 	}
 	rep, err := rec.Reconcile(ctx, spec)
 	res.Report = rep

@@ -1092,6 +1092,12 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	if err != nil {
 		return err
 	}
+	// Before any infra starts: the IdP's domains and the identity's issuer
+	// both follow the device host (see deviceIdPHost).
+	localAddrs, _ := net.InterfaceAddrs()
+	if notice := applyDeviceHostToIdP(entities, opts.targets, deviceHost, localAddrs, net.LookupIP); notice != "" {
+		fmt.Println(notice)
+	}
 
 	// Build the per-env secret provider ONCE for this run (dotenv reads
 	// the file now; external/none are cheap no-ops). Reused for both the
@@ -4285,6 +4291,7 @@ func stopHostInfra(env string) (int, error) {
 			IDPMasterKey:    hi.IDPMasterKey,
 			IDPStepsFile:    hi.IDPStepsFile,
 			IDPPATPath:      hi.IDPPATPath,
+			DeviceHost:      hi.DeviceHost,
 		}
 		stopped, serr := hostinfra.StopReport(projectDir, spec)
 		if serr != nil {

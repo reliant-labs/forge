@@ -120,7 +120,7 @@ func TestCompose_RefusalNamesAnotherClone(t *testing.T) {
 func TestClassifyOwner_RealGit(t *testing.T) {
 	testkit.Slow(t, "builds real git repositories, clones and worktrees")
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not on PATH (%v): this test classifies real git checkouts", err)
+		t.Fatalf("git not on PATH (%v): forge requires git (`forge doctor` checks it), and this test classifies real git checkouts", err)
 	}
 	initRepo := func(dir string) {
 		for _, args := range [][]string{

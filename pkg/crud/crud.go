@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -135,9 +136,10 @@ const (
 	ReasonInvalidOrderBy = "invalid_order_by"
 
 	// ReasonPageTokenOrderConflict — a page_token was combined with an
-	// order_by that the keyset cursor cannot page. The caller's move is
-	// to drop one of the two, which is neither "bad token" nor "bad
-	// order" — hence its own code. Wire code: InvalidArgument.
+	// order_by that the keyset cursor cannot page, or that order overflowed
+	// a first page. Use primary-key ascending order to fetch all pages;
+	// another order can only be used when all results fit in one page.
+	// Wire code: InvalidArgument.
 	ReasonPageTokenOrderConflict = "page_token_order_conflict"
 
 	// ReasonInternal — the server failed for a reason it did not
@@ -408,8 +410,12 @@ func pgFailureOf(err error) (pgFailure, bool) {
 //   - Persist     — repository call.
 //   - Pack        — internal entity -> connect.Response.
 //   - EntityLower — lowercase entity name used in the error envelope.
+//   - EntitySnake — snake_case entity name the automatic product event is
+//     named after ("order_item" → order_item_created; see events.go).
+//     Empty derives it from Ent's type name.
 type CreateOp[Req, Resp, Ent any] struct {
 	EntityLower string
+	EntitySnake string
 	// Entity projects the request onto the internal entity. It returns an
 	// error for the same reason Pack does, in the opposite direction: a
 	// value the request CARRIED that the projection cannot encode (a
@@ -435,8 +441,10 @@ type CreateOp[Req, Resp, Ent any] struct {
 //
 //	build entity -> persist -> pack response.
 //
-// All error-mapping is fixed; the shim only carries data shape.
+// All error-mapping is fixed; the shim only carries data shape. A persisted
+// row records the <entity>_created product event (see events.go).
 func HandleCreate[Req, Resp, Ent any](op CreateOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
+	event := eventEntity(op.EntitySnake, op.EntityLower, reflect.TypeFor[Ent](), "", "")
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
 		entity, err := op.Entity(ctx, req.Msg)
 		if err != nil {
@@ -445,6 +453,7 @@ func HandleCreate[Req, Resp, Ent any](op CreateOp[Req, Resp, Ent]) func(context.
 		if err := op.Persist(ctx, entity); err != nil {
 			return nil, mapRepoErr("create", op.EntityLower, err)
 		}
+		trackWrite(ctx, event, "created")
 		resp, err := op.Pack(entity)
 		if err != nil {
 			return nil, mapPackErr(err)
@@ -507,6 +516,7 @@ var ErrEntityRequired = errors.New("crud: request carries no entity")
 // entity, returning ErrEntityRequired when the request omitted it.
 type UpdateOp[Req, Resp, Ent any] struct {
 	EntityLower    string
+	EntitySnake    string // the product event's entity name; see CreateOp.EntitySnake
 	EntityFieldLow string // lowercase form of the proto field that holds the entity, e.g. "user"
 	// Entity projects the request onto the internal entity; see
 	// CreateOp.Entity for why it can fail and why it takes ctx, and
@@ -603,7 +613,11 @@ type UpdateOp[Req, Resp, Ent any] struct {
 // Repo.Update), so on both paths the response reports the STORED value of
 // a column the caller could not write — a read-only status, a GENERATED
 // total — rather than echoing whatever the request carried for it.
+//
+// A write that landed, on either path, records the <entity>_updated product
+// event (see events.go).
 func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
+	event := eventEntity(op.EntitySnake, op.EntityLower, reflect.TypeFor[Ent](), "", "")
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
 		var paths []string
 		masked := false
@@ -640,6 +654,7 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 			if err := op.PersistMasked(ctx, entity, paths); err != nil {
 				return nil, mapRepoErr("update", op.EntityLower, err)
 			}
+			trackWrite(ctx, event, "updated")
 			resp, err := op.Pack(entity)
 			if err != nil {
 				return nil, mapPackErr(err)
@@ -649,6 +664,7 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 		if err := op.Persist(ctx, entity); err != nil {
 			return nil, mapRepoErr("update", op.EntityLower, err)
 		}
+		trackWrite(ctx, event, "updated")
 		resp, err := op.Pack(entity)
 		if err != nil {
 			return nil, mapPackErr(err)
@@ -741,6 +757,10 @@ func maskPaths(raw []string) (paths []string, full bool) {
 // DeleteOp wires the per-RPC concerns of a Delete handler.
 type DeleteOp[Req, Resp any] struct {
 	EntityLower string
+	// EntitySnake is the product event's entity name; see
+	// CreateOp.EntitySnake. Empty derives it from Req's type name
+	// (Delete<Entity>Request).
+	EntitySnake string
 	ID          func(req *Req) string
 	// Persist removes the row named by the primary key. See GetOp.Fetch
 	// for why the opts are variadic and what belongs in them: a delete
@@ -760,11 +780,16 @@ type DeleteOp[Req, Resp any] struct {
 // orm.ErrNoRows) and mapRepoErr maps it exactly as it does for Get.
 // See crud.requireRowTouched for the reasoning and for the per-entity opt
 // out of absent-is-an-error.
+//
+// A delete that landed, soft or hard, records the <entity>_deleted product
+// event (see events.go).
 func HandleDelete[Req, Resp any](op DeleteOp[Req, Resp]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
+	event := eventEntity(op.EntitySnake, op.EntityLower, reflect.TypeFor[Req](), "Delete", "Request")
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
 		if err := op.Persist(ctx, op.ID(req.Msg)); err != nil {
 			return nil, mapRepoErr("delete", op.EntityLower, err)
 		}
+		trackWrite(ctx, event, "deleted")
 		var resp *Resp
 		if op.Pack != nil {
 			resp = op.Pack()
@@ -854,7 +879,11 @@ type ListOp[Req, Resp, Ent any] struct {
 }
 
 // HandleList runs page/order/filter assembly ->
-// repository call -> trim -> pack.
+// repository call -> trim -> pack. Cursor pagination requires primary-key
+// ascending order. Other orders are accepted only when the matching rows fit
+// in one page; overflow returns InvalidArgument rather than a partial list
+// with no continuation. Fetch all pages in primary-key order before sorting
+// locally when a different ordering is needed across multiple pages.
 func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
 		// Filter opts (the WHERE clauses) are computed ONCE and shared by the
@@ -923,9 +952,9 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 				// paging a set sorted one way while filtering by `pk >
 				// cursor` duplicates and skips rows across pages. The two
 				// can't both be honored, so reject the combination LOUDLY
-				// rather than silently returning wrong pages. (A composite
-				// cursor would lift this; until then ordered lists are
-				// single-page — see the token-emit guard below.)
+				// rather than silently returning wrong pages. First pages
+				// with this order are allowed only if all results fit;
+				// overflow is rejected below.
 				if !keysetSafe {
 					return nil, clientErr(connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
 						"order_by on a non-primary-key column cannot be combined with a page_token; keyset pagination requires ordering by %q ascending", op.PkColumnName)),
@@ -961,13 +990,16 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 
 		var nextPageToken string
 		if op.HasPagination && len(results) > pageSize {
+			// A successful response with no token would falsely signal the
+			// end of the list. Preserve single-page sorts, but fail explicitly
+			// when the extra row proves this order needs an unsupported cursor.
+			if !keysetSafe {
+				return nil, clientErr(connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
+					"results exceed page_size for the requested order_by; keyset pagination requires ordering by %q ascending; use that order and sort locally after fetching all pages", op.PkColumnName)),
+					ReasonPageTokenOrderConflict)
+			}
 			results = results[:pageSize]
-			// Only mint a next-page cursor when the order is keyset-safe (PK
-			// ASC). For a non-PK / DESC order the cursor would be unusable
-			// (and a client sending it back is rejected above), so ordered
-			// lists are single-page until composite cursors land. The extra
-			// fetched row is still trimmed off either way.
-			if keysetSafe && op.EntityID != nil {
+			if op.EntityID != nil {
 				nextPageToken = orm.EncodeCursor(op.EntityID(results[pageSize-1]))
 			}
 		}

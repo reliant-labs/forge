@@ -27,11 +27,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/devstack"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -56,7 +58,7 @@ type upSession struct {
 	reporter sessionReporter
 	session  release.LocalSession
 	// log is where the one-off failure notes go. Never nil after
-	// newUpSession; a test reads it to assert what was said.
+	// newUpSessionFor; a test reads it to assert what was said.
 	log io.Writer
 	// hosted shapes the failure note only.
 	hosted bool
@@ -79,9 +81,18 @@ type upSession struct {
 	// reported stopped twice would be harmless but the second report would
 	// also spend five seconds of a user's teardown for nothing.
 	stopped bool
+
+	// ensure makes the env's LOCAL control-plane environment exist before
+	// the first report: ReportLocalSession only looks the environment up
+	// and answers NotFound for one nothing created yet, so a fresh project
+	// signed in to Reliant would otherwise never show a session at all.
+	// Nil for a machine-ledger target. Run until it succeeds once
+	// (ensured), best-effort like the report itself.
+	ensure  func(context.Context) error
+	ensured bool
 }
 
-// newUpSession mints the session for this stack, or returns nil when there is
+// newUpSessionFor mints the session for this stack, or returns nil when there is
 // nothing to report.
 //
 // NIL IS A FIRST-CLASS RETURN, not an error. Every method tolerates a nil
@@ -96,9 +107,17 @@ type upSession struct {
 // REPLACES its row rather than leaving a stopped twin beside a running one,
 // on the hosted side too — where the upsert is keyed on the id the client
 // sends.
-func newUpSession(ctx context.Context, projectDir, env string, log io.Writer, now time.Time) *upSession {
-	target, err := sessionTargetFor(ctx, projectDir, env)
+//
+// The target (and its error) come from the caller's own render
+// (sessionTargetForEntities), so the env is not rendered a second time.
+func newUpSessionFor(ctx context.Context, projectDir, env string, target sessionTarget, err error, log io.Writer, now time.Time) *upSession {
 	switch {
+	case err != nil && errors.Is(err, cloud.ErrNoCredential):
+		// A signed-out developer on an env that declares a control plane:
+		// the stack runs, it is just not visible in Live. One line, not the
+		// credential resolver's multi-line fix list.
+		fmt.Fprintf(log, "[up] note: not reporting this stack's presence: not signed in to env %q's control plane (`%s login`, or sign in to Reliant, to show it in Live)\n", env, Name())
+		return nil
 	case err != nil:
 		fmt.Fprintf(log, "[up] note: not reporting this stack's presence: %v\n", err)
 		return nil
@@ -136,7 +155,7 @@ func newUpSession(ctx context.Context, projectDir, env string, log io.Writer, no
 		fmt.Fprintf(log, "[up] note: not reporting this stack's presence: %v\n", err)
 		return nil
 	}
-	return &upSession{
+	s := &upSession{
 		reporter:       target.Reporter,
 		session:        sess,
 		log:            log,
@@ -144,6 +163,16 @@ func newUpSession(ctx context.Context, projectDir, env string, log io.Writer, no
 		heartbeat:      sessionHeartbeat,
 		loggedFailures: map[string]bool{},
 	}
+	if target.Hosted && target.Client != nil {
+		client, ref := target.Client, target.Env
+		s.ensure = func(ctx context.Context) error {
+			if _, err := ensureHostedEnv(ctx, client, ref); err != nil {
+				return fmt.Errorf("ensure the LOCAL environment %q on the control plane: %w", ref.Name, err)
+			}
+			return nil
+		}
+	}
+	return s
 }
 
 // sessionIDFor derives the stable id. Hashed rather than concatenated because
@@ -164,14 +193,33 @@ func sessionIDFor(env, host, worktreeKey string) string {
 // cancelled before it was sent and the session would be left looking like a
 // crash. The timeout bounds it instead.
 func (s *upSession) report(now time.Time, stopped bool) {
+	if err := s.send(now, stopped); err != nil {
+		s.noteFailure(err)
+	}
+}
+
+// reportLive reports the session running, synchronously, and returns the
+// error rather than logging it. The dev-telemetry bootstrap needs it: the
+// control plane mints a stack's telemetry token only for a LIVE session, so
+// the report has to have landed before the mint is asked for.
+func (s *upSession) reportLive(now time.Time) error {
 	if s == nil {
-		return
+		return fmt.Errorf("this stack reports no session")
+	}
+	return s.send(now, false)
+}
+
+// send is one report, bounded by sessionReportTimeout, preceded until it
+// succeeds once by the ensure of the env it reports into.
+func (s *upSession) send(now time.Time, stopped bool) error {
+	if s == nil {
+		return nil
 	}
 	s.mu.Lock()
 	if stopped {
 		if s.stopped {
 			s.mu.Unlock()
-			return
+			return nil
 		}
 		s.stopped = true
 		at := now
@@ -179,13 +227,30 @@ func (s *upSession) report(now time.Time, stopped bool) {
 	}
 	s.session.LastSeenAt = now
 	sess := s.session
+	ensure := s.ensure
+	if s.ensured || stopped {
+		ensure = nil
+	}
 	s.mu.Unlock()
 
+	if ensure != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), sessionReportTimeout)
+		err := ensure(ctx)
+		cancel()
+		if err != nil {
+			// The report still goes: an environment someone else
+			// created is reportable into, and the ensure is retried
+			// on the next beat.
+			s.noteFailure(err)
+		} else {
+			s.mu.Lock()
+			s.ensured = true
+			s.mu.Unlock()
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionReportTimeout)
 	defer cancel()
-	if err := s.reporter.ReportSession(ctx, sess); err != nil {
-		s.noteFailure(err)
-	}
+	return s.reporter.ReportSession(ctx, sess)
 }
 
 // noteFailure logs a failure mode at most once.

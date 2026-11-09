@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -18,7 +17,6 @@ import (
 	"github.com/jinzhu/inflection"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
@@ -541,10 +539,16 @@ func backquoteOrQuote(s string) string {
 //
 // Forge-owned + checksum-tracked, and regenerated on every run from the
 // APPLIED schema. A project with no schema to model writes nothing. A schema
-// that cannot be READ (an unreachable shadow server, a migration that does not
-// apply) also writes nothing — the file on disk is left as it was rather than
-// rewritten from no information — and only an embedded-postgres fetch failure
-// is returned, so the caller can say why. A factory forge cannot derive a valid
+// that cannot be READ (an unreachable shadow server, a database the server
+// refuses to copy, a migration that does not apply) also writes nothing — the
+// file on disk is left as it was rather than rewritten from no information —
+// and that failure is RETURNED, never swallowed. Writing nothing without an
+// error is indistinguishable from "this project has no factories any more",
+// and the stale-file sweep deletes what no emitter wrote: on control-plane a
+// shadow-database failure on one machine was printed as a warning and every
+// committed factories_gen_test.go was then removed as stale (forge bug
+// df26c327). The caller decides how loud the failure is; it must not be
+// silent. A factory forge cannot derive a valid
 // row or request for is still EMITTED, with a body that fails the calling test
 // naming postgres's reason, and that reason is printed here as a warning: the
 // scaffold-once lifecycle test calls these by name, so leaving one out would
@@ -560,11 +564,7 @@ func backquoteOrQuote(s string) string {
 func GenerateEntityFactories(projectDir, modulePath string, services []ServiceDef, cs *checksums.FileChecksums) error {
 	fx, err := loadCRUDTestFixtures(projectDir, nil)
 	if err != nil {
-		var fetchErr *pgtest.FetchError
-		if errors.As(err, &fetchErr) {
-			return err
-		}
-		return nil
+		return fmt.Errorf("read the applied schema from the shadow database: %w", err)
 	}
 	if fx == nil {
 		return nil

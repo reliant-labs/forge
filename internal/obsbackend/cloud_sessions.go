@@ -29,6 +29,9 @@ type wireRumScope struct {
 	EnvIDs    []string       `json:"envIds,omitempty"`
 	Services  []string       `json:"services,omitempty"`
 	TimeRange *wireTimeRange `json:"timeRange,omitempty"`
+	// InstanceIDs and InstanceUsers are RumScope's instance narrowing.
+	InstanceIDs   []string `json:"instanceIds,omitempty"`
+	InstanceUsers []string `json:"instanceUsers,omitempty"`
 }
 
 func (c Cloud) rumScope(n Narrow, withRange bool) (wireRumScope, error) {
@@ -36,7 +39,7 @@ func (c Cloud) rumScope(n Narrow, withRange bool) (wireRumScope, error) {
 		return wireRumScope{}, Wrong("--filter narrows telemetry attributes and does not apply to sessions; use --service")
 	}
 	s := c.scope(n)
-	out := wireRumScope{OrgID: s.OrgID, EnvIDs: s.EnvIDs, Services: s.Services}
+	out := wireRumScope{OrgID: s.OrgID, EnvIDs: s.EnvIDs, Services: s.Services, InstanceIDs: s.InstanceIDs, InstanceUsers: s.InstanceUsers}
 	if withRange {
 		out.TimeRange = &s.TimeRange
 	}

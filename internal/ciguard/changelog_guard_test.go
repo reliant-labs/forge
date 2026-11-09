@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // CHANGELOG.md is written only at release time, by scripts/release-forge.sh,
@@ -130,6 +132,7 @@ func runChangelogGuard(t *testing.T, repo, branch string) (string, error) {
 }
 
 func TestChangelogGuardVerdicts(t *testing.T) {
+	testkit.Slow(t, "execs git and bash")
 	edit := map[string]string{"CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n\n- an entry\n"}
 	for _, tc := range []struct {
 		name    string

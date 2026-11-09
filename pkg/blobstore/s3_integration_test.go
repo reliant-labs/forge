@@ -6,8 +6,10 @@ package blobstore_test
 
 // The S3 backend against a real MinIO: an upload through a presigned PUT,
 // the size and type the signature binds, the public-endpoint override,
-// Stat/List/Delete and the Scoped tenant boundary. Gated by the
-// `integration` tag and by -short.
+// Stat/List/Delete, ListLevel's continuation tokens, PresignDownload's
+// forced headers and the Scoped tenant boundary. Gated by the `integration`
+// tag and by -short (not testkit.Slow, which skips in the integration lane
+// this file only builds in).
 //
 //	go test -tags integration -run S3 ./pkg/blobstore/
 
@@ -19,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +223,90 @@ func TestS3AgainstMinIO(t *testing.T) {
 		}
 		if err := s.Delete(ctx, "t1/a.png"); err != nil {
 			t.Fatalf("deleting a missing object = %v, want nil", err)
+		}
+	})
+
+	t.Run("list one level, paged by continuation token", func(t *testing.T) {
+		tree := []string{"lvl/a.txt", "lvl/b.txt", "lvl/b/1", "lvl/b/2", "lvl/b/c/3", "lvl/b0", "lvl/c/d/e", "lvl/z"}
+		for _, k := range tree {
+			if code, out := send(t, put(k, "text/plain", int64(len(k))), []byte(k)); code != http.StatusOK {
+				t.Fatalf("upload %s: %d %s", k, code, out)
+			}
+		}
+		want := map[string]string{
+			"lvl/":   "lvl/a.txt,lvl/b.txt,lvl/b/,lvl/b0,lvl/c/,lvl/z",
+			"lvl/b/": "lvl/b/1,lvl/b/2,lvl/b/c/",
+			"lvl/b":  "lvl/b.txt,lvl/b/,lvl/b0",
+		}
+		for prefix, w := range want {
+			for limit := 1; limit <= 7; limit++ {
+				var got []string
+				opts := blobstore.LevelOptions{Limit: limit}
+				for pages := 0; ; pages++ {
+					if pages > 10 {
+						t.Fatalf("%q limit %d: paging does not terminate", prefix, limit)
+					}
+					page, err := blobstore.ListLevel(ctx, s, prefix, opts)
+					if err != nil {
+						t.Fatalf("%q limit %d: %v", prefix, limit, err)
+					}
+					if n := len(page.Objects) + len(page.Prefixes); n > limit {
+						t.Fatalf("%q limit %d: page of %d entries", prefix, limit, n)
+					}
+					for _, o := range page.Objects {
+						if o.Size != int64(len(o.Key)) || o.ETag == "" || o.LastModified.IsZero() {
+							t.Fatalf("listed object %+v", o)
+						}
+						got = append(got, o.Key)
+					}
+					got = append(got, page.Prefixes...)
+					if page.Next == "" {
+						break
+					}
+					opts.PageToken = page.Next
+				}
+				sort.Strings(got)
+				if strings.Join(got, ",") != w {
+					t.Fatalf("%q limit %d: %v, want %s", prefix, limit, got, w)
+				}
+			}
+		}
+		page, err := blobstore.ListLevel(ctx, s, "lvl/", blobstore.LevelOptions{Limit: 1})
+		if err != nil || page.Next == "" {
+			t.Fatalf("first page = %+v, %v", page, err)
+		}
+		if _, err := blobstore.ListLevel(ctx, s, "lvl/b/", blobstore.LevelOptions{PageToken: page.Next}); !errors.Is(err, blobstore.ErrInvalidPageToken) {
+			t.Fatalf("another prefix's token = %v, want ErrInvalidPageToken", err)
+		}
+	})
+
+	t.Run("a forced download never renders inline", func(t *testing.T) {
+		html := []byte("<script>alert(1)</script>")
+		if code, out := send(t, put("t3/page.html", "text/html", int64(len(html))), html); code != http.StatusOK {
+			t.Fatalf("upload: %d %s", code, out)
+		}
+		req, err := blobstore.PresignDownload(ctx, s, "t3/page.html", blobstore.DownloadOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		hr, err := http.NewRequest(req.Method, req.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(hr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !bytes.Equal(got, html) {
+			t.Fatalf("download: %d %q", resp.StatusCode, got)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != blobstore.DownloadContentType {
+			t.Fatalf("Content-Type = %q, want %s", ct, blobstore.DownloadContentType)
+		}
+		if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, `attachment; filename="page.html"`) {
+			t.Fatalf("Content-Disposition = %q, want an attachment", cd)
 		}
 	})
 

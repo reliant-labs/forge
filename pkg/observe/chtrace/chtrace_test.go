@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -305,6 +306,76 @@ func TestAnExpiredStatementIsItsContextsVerdict(t *testing.T) {
 	if got := ErrorTypeContext(expired, fmt.Errorf("read: %w", mem)); got != "MEMORY_LIMIT_EXCEEDED" {
 		t.Errorf("an exception under an expired context = %q, want the exception's name", got)
 	}
+}
+
+// A statement that never got a connection — the dial timed out or was
+// refused, or no pooled connection freed up — is connection_unavailable, not
+// the deadline it outlasted: a dial's i/o timeout satisfies
+// errors.Is(context.DeadlineExceeded), and that made a ClickHouse outage read
+// as a slow query. The statement's own deadline, reached after it had a
+// connection, is still context_deadline_exceeded.
+func TestAConnectionFailureIsNotADeadline(t *testing.T) {
+	parent, rec := underSpan(t)
+
+	// A real dial timeout: a 1ns budget expires before the SYN is sent.
+	_, dialTimeout := net.DialTimeout("tcp", "10.255.255.1:9000", time.Nanosecond)
+	if !errors.Is(dialTimeout, context.DeadlineExceeded) {
+		t.Fatalf("dial timeout %v does not satisfy errors.Is(context.DeadlineExceeded): the test no longer pins the confusion", dialTimeout)
+	}
+
+	// A real refused dial, through the driver: a port nothing listens on.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("no loopback listener: %v", err)
+	}
+	closed := ln.Addr().String()
+	_ = ln.Close()
+	ch, err := clickhouse.Open(&clickhouse.Options{Addr: []string{closed}, DialTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ch.Close() })
+	_ = Wrap(ch).Exec(parent, "SELECT 1")
+	ended := rec.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("%d spans, want 1", len(ended))
+	}
+	if got := attrs(ended[0])["error.type"].AsString(); got != "connection_unavailable" {
+		t.Errorf("a refused dial through the driver: error.type = %q, want %q (%s)", got, "connection_unavailable", ended[0].Status().Description)
+	}
+
+	canceled, cancel := context.WithCancel(parent)
+	cancel()
+	_, dialCanceled := (&net.Dialer{}).DialContext(canceled, "tcp", closed)
+
+	for _, tc := range []struct {
+		name    string
+		ctx     func() (context.Context, context.CancelFunc)
+		err     error
+		errType string
+	}{
+		{"dial timeout", live(parent), fmt.Errorf("clickhouse [dial]: %w", dialTimeout), "connection_unavailable"},
+		{"dial timeout under an expired statement", deadline(parent), dialTimeout, "connection_unavailable"},
+		{"dial timeout over HTTP", live(parent), &url.Error{Op: "Post", URL: "http://ch:8123", Err: dialTimeout}, "connection_unavailable"},
+		{"pool wait timed out", live(parent), clickhouse.ErrAcquireConnTimeout, "connection_unavailable"},
+		{"pool wait timed out, wrapped", deadline(parent), fmt.Errorf("query: %w", clickhouse.ErrAcquireConnTimeout), "connection_unavailable"},
+		{"dial the caller canceled", live(parent), dialCanceled, "context_canceled"},
+		{"the statement's own deadline", deadline(parent), context.DeadlineExceeded, "context_deadline_exceeded"},
+		{"a read that hit the statement's deadline", deadline(parent), readTimeout(), "context_deadline_exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := tc.ctx()
+			defer cancel()
+			if got := ErrorTypeContext(ctx, tc.err); got != tc.errType {
+				t.Errorf("error.type of %v = %q, want %q", tc.err, got, tc.errType)
+			}
+		})
+	}
+}
+
+// live returns a ctx factory: parent, still running.
+func live(parent context.Context) func() (context.Context, context.CancelFunc) {
+	return func() (context.Context, context.CancelFunc) { return parent, func() {} }
 }
 
 // deadline returns a ctx factory: parent with a deadline that has passed.

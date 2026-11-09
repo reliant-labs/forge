@@ -156,6 +156,39 @@ func TestAdditiveChangePasses(t *testing.T) {
 	}
 }
 
+// A commit body's API-BREAK: line reaches the squash commit, so a PR whose diff
+// has no break behind it fails, on the type-checked path and the fast one.
+func TestStaleMarkerWithoutBreakFails(t *testing.T) {
+	slow(t)
+	repo := prRepo(t, "additive")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-q", "-m", "fix(pkg/widget): add Open", "-m", "API-BREAK: playbook=migrations/v1.2.0")
+	_, stderr, err := run1(t, repo, "-base", "HEAD~1")
+	if err == nil || !strings.Contains(stderr, "has none") || !strings.Contains(stderr, "API-BREAK: playbook=migrations/v1.2.0") {
+		t.Fatalf("an additive change carrying an API-BREAK: marker must fail naming it: %v\n%s", err, stderr)
+	}
+	if _, stderr, err := run1(t, repo, "-base", "HEAD~1", "-owner-approved"); err != nil {
+		t.Fatalf("the owner's approval waives it: %v\n%s", err, stderr)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-q", "-m", "docs: readme", "-m", "API-BREAK:")
+	stdout, stderr, err := run1(t, repo, "-base", "HEAD~1")
+	if err == nil || strings.Contains(stdout, "touches nothing") {
+		t.Fatalf("a docs-only diff with an API-BREAK: commit must fail too: %v\n%s%s", err, stdout, stderr)
+	}
+}
+
+func run1(t *testing.T, repo string, args ...string) (string, string, error) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	err := run(append([]string{"-dir", repo}, args...), &out, &errb)
+	return out.String(), errb.String(), err
+}
+
 func TestDocsOnlyDiffSkipsTheTypeCheck(t *testing.T) {
 	slow(t)
 	repo := prRepo(t, "additive")

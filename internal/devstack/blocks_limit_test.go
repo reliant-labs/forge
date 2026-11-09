@@ -3,6 +3,8 @@ package devstack
 import (
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The parallel-dev-stack ceiling closes a real incident (see DevStackConfig
@@ -98,6 +100,7 @@ func TestAllocateBlockRefusesPastCeiling(t *testing.T) {
 // TestAllocatePortAvoidingForeignRefusesPastCeiling covers the second entry
 // point, whose stepping loop has its own place a new block gets minted.
 func TestAllocatePortAvoidingForeignRefusesPastCeiling(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setMaxStacksLimit(t, 2) // only blocks 0 and 1 are legal
 
@@ -195,6 +198,7 @@ func TestExistingBlockPastCeilingStillResolves(t *testing.T) {
 // and must never be refused, no matter how low the ceiling — refusing block
 // 0 would mean forge itself cannot render the primary checkout.
 func TestDefaultKeyNeverBlockedByCeiling(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setMaxStacksLimit(t, 1) // the tightest legal ceiling: default stack only
 

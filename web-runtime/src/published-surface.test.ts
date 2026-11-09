@@ -79,6 +79,7 @@ describe("the published surface", () => {
       "./interceptors",
       "./mock-transport",
       "./node",
+      "./otel-proxy",
       "./package.json",
       "./service-hooks",
       "./telemetry",
@@ -109,10 +110,14 @@ describe("the published surface", () => {
     //   - vite is a dev-server plugin. It imports node:fs and node:http,
     //     which a browser bundle cannot resolve; it is loaded by
     //     vite.config.ts, in Node, and nowhere else.
+    //   - otel-proxy is the dev servers' /_otel proxy (Vite mounts it
+    //     through ./vite, Next.js's next.config.ts starts its relay). It
+    //     imports node:http, node:https and node:fs.
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
     for (const forbidden of [
       "./mock-transport",
       "./node",
+      "./otel-proxy",
       "./telemetry",
       "./service-hooks",
       "./vite",

@@ -448,6 +448,11 @@ func (c Cloud) Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 	if req.Panel != nil {
 		p = *req.Panel
 	}
+	if p.Kind == "sql" {
+		if err := c.Instances.RefuseSQL("raw SQL (--sql, a sql panel)"); err != nil {
+			return QueryResult{}, err
+		}
+	}
 	if p.Signal == "metrics" && p.Kind != "sql" {
 		return c.metricsPanelTable(ctx, req, p)
 	}

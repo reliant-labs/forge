@@ -1,6 +1,6 @@
 ---
 name: observability/dashboards
-description: Process/role dashboards derived from deployed executable and composition commands, metric-backed overview, renderer-neutral sections and targeted filters, safe retirement and overrides, and HyperDX delivery.
+description: Process/role dashboards derived from deployed executable and composition commands, metric-backed overview, the generated Product usage dashboard and automatic CRUD product events, renderer-neutral sections and targeted filters, safe retirement and overrides, and HyperDX delivery.
 ---
 
 # Observability: generated dashboards
@@ -122,6 +122,8 @@ equivalent, so HyperDX skips them too:
 | `sql` | `sql`: one read-only SELECT; no `series`, `where` or `groupBy`; `signal` optional | the rows; a first `DateTime` column draws a time series |
 | `postgres` | `postgres: {database, sql, draw?, time?, values?, group?}`; no `signal`, `series`, `sql`, `where` or `groupBy` | a live read-only query of one of your Postgres databases (`observability/dashboards/panels`) |
 | `text` | `markdown`; nothing else | prose: a heading, what the dashboard is for, a runbook link |
+| `browse` | `browse: {database, table, columns?, filters?, sort?, size?}`; nothing else | a saved data-browser view of one table |
+| `link` on `table` / `bar` / `postgres` | `{database, table, column, fromField}` or `{database, table, row: true, fromFields}` | each row opens the data browser |
 | `formula` on `line` / `number` | `"A / B * 100"`: series by position (A, B, ... J), numbers, `+ - * /`, parentheses | that one expression instead of the series; `x / 0` is 0, as in `ratio` |
 
 `limit` (1 to 200) also keeps the top rows of a `table`. A `sql` statement runs
@@ -148,8 +150,8 @@ statement may rely on it. Only a reader that knows toggles binds them: do not
 ship a panel that reads one to a control plane older than the forge that added
 them.
 
-Postgres panels (a live read-only query of your own database), `text`
-panels (Markdown) and `display` (area, stacked, bars, pie, donut, gauge and
+Postgres panels (a live read-only query of your own database), `link`,
+`browse`, `text` panels (Markdown) and `display` (area, stacked, bars, pie, donut, gauge and
 funnel pictures of the same query) are in `observability/dashboards/panels`.
 
 A `table` or `number` series may carry `thresholds: {good, poor}`
@@ -160,129 +162,13 @@ of LCP, INP and CLS, and **JS errors by release** splits the error spans by
 
 ## Product events
 
-A **product event** is a named thing a user did or that happened to them
-(`project_created`, `subscription_started`). On the hosted platform they land in
-the per-environment ClickHouse `product_events` table, which keeps them far
-longer than logs or traces. Dashboards read it with `sql` and `funnel` panels.
-
-### The contract
-
-An event is one OTel **log record** at INFO (never a span: server traces are
-sampled) carrying these attributes. This is the seam between the emitters and the
-table; all of them follow it.
-
-| attribute | meaning |
-|---|---|
-| `event.name` | `product.<snake_name>`; required, and the only thing the table selects on |
-| `user.id` | the authenticated user id (the auth subject); empty when anonymous |
-| `visitor.id` | the anonymous visitor id, when known |
-| `session.id` | the client session id, when known |
-| `app.client` | `backend`, `web`, `electron` or `landing` |
-| `app.version` | the emitting app's version |
-| `product.<key>` | one property per key; stored in `Props` with the `product.` prefix stripped |
-
-Bounds, enforced by both emitters and again by the table's view: at most 32
-properties, each value at most 256 characters (longer is truncated). Product
-events are not a way to keep logs longer. Browser events keep their existing
-path (HyperDX `custom-action` spans into the same table); the web runtime
-stamps `app.client` and `visitor.id` on them.
-
-### Emitting from Go
-
-```go
-observe.Track(ctx, "project_created", slog.String("template", "go"), slog.Int("repos", 2))
-```
-
-`observe.Track(ctx, name, attrs...)` writes the record through the context's
-logger (`observe.FromContext`), sets `app.client="backend"` and `app.version`
-(from `observe.Config.ServiceVersion`, or `observe.SetAppVersion`), and takes
-`user.id` from the claims forge's auth interceptor put in `ctx`: a handler
-needs no extra step, a background job has no user and so emits an anonymous
-event. A name that is not snake_case (`^[a-z][a-z0-9_]{0,63}$`) is dropped with
-a warning. Property values become strings; keep them low-cardinality and
-never put secrets or personal data in them. A `slog.Group` flattens to
-`group.key`.
-
-### Emitting from the browser
-
-```ts
-import { track, setTelemetryUser, withAttribution } from "@reliantlabs/forge-web-runtime";
-
-track("onboarding_completed", { plan: "pro" });   // after initBrowserTelemetry
-setTelemetryUser(session.user.id);                // also emits user_identified, once per user
-```
-
-`initBrowserTelemetry({ appClient })` stamps `app.client` (`electron` inside
-Electron, else `web`; pass `landing` from a marketing site) and `visitor.id` on
-every event, and reads `rid` and `utm_source|medium|campaign|term|content` from
-the URL into storage. The first `setTelemetryUser(id)` for a user emits one
-`user_identified {visitor_id, utm_*}`, which is how a funnel joins a visitor to a
-user. A marketing site wraps its outbound links in `withAttribution(url)` so the
-app sees the `rid` and utm values. All of it is behind the same consent gate as
-`track`: nothing is stored or appended until `initBrowserTelemetry` runs, and
-not after `disableTelemetry()`.
-
-### Retention
-
-`forge.Observability.retention.product_events_days` (1 to 400, default 90) is
-how long the environment asks the platform to keep product events. The platform
-may grant less (a plan can cap it); a new value applies to rows written after
-it, not to rows already stored.
-
-### Panels over `product_events`
-
-Columns: `Timestamp`, `ServiceName`, `EnvId`, `SessionId`, `UserId`, `EventName`
-(the name without the `product.` prefix) and `Props` (a map, `Props['plan']`).
-`DESCRIBE product_events` lists what else the table keeps. A `sql` panel binds
-the dashboard scope (`{from:DateTime64(9)}`, `{to:DateTime64(9)}`,
-`{step:UInt32}`, `{envs:Array(String)}`); a first `DateTime` column draws a time
-series.
-
-Daily active users:
-
-```json
-{
-  "id": "dau",
-  "title": "Daily active users",
-  "kind": "sql",
-  "sql": "SELECT toStartOfDay(Timestamp) AS day, uniqExact(UserId) AS users FROM product_events WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)} AND UserId != '' GROUP BY day ORDER BY day"
-}
-```
-
-Events by name, and a property breakdown (swap in a property you emit):
-
-```json
-{
-  "id": "events-by-name",
-  "title": "Events by name",
-  "kind": "sql",
-  "sql": "SELECT EventName, count() AS events, uniqExact(UserId) AS users FROM product_events WHERE Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)} GROUP BY EventName ORDER BY events DESC LIMIT 50"
-}
-```
-
-```json
-{
-  "id": "subscriptions-by-plan",
-  "title": "Subscriptions started by plan",
-  "kind": "sql",
-  "sql": "SELECT toStartOfDay(Timestamp) AS day, Props['plan'] AS plan, count() AS started FROM product_events WHERE EventName = 'subscription_started' AND Timestamp >= {from:DateTime64(9)} AND Timestamp < {to:DateTime64(9)} GROUP BY day, plan ORDER BY day"
-}
-```
-
-A funnel counted per user:
-
-```json
-{
-  "id": "activation",
-  "title": "Activation funnel",
-  "kind": "funnel",
-  "signal": "traces",
-  "funnel": { "steps": ["user_identified", "project_created", "onboarding_completed"], "window": "7d", "by": "user" }
-}
-```
-
-Put them in a dashboard file you own (`deploy/observability/dashboards/<name>.json`,
-see Overriding); `forge obs dashboards check` validates it.
+A **product event** is a named thing a user did (`project_created`): one INFO log
+record that the hosted platform keeps in the per-environment `product_events`
+table, read with `sql` and `funnel` panels. Generated CRUD emits
+`<entity>_created|_updated|_deleted` automatically (`signals.product_events =
+False` turns them off). The contract, `observe.Track`, the browser API, the
+automatic events and their cost, retention and example panels:
+`observability/product-events`.
 
 ## Overriding
 
@@ -305,13 +191,15 @@ They ride in the manifests layer, outside every `manifests/<cluster>/` tree, so 
 
 A file you own is one dashboard object in the spec vocabulary (an `id`, a `title`, `filters`, `annotations` and a `panels` array; the shape of a `dashboard` in `spec/process-<workload>_gen.json`). Name it like a generated dashboard to replace that one: `shop-overview.json` replaces `shop-overview_gen.json`. A file with `tiles` is HyperDX's format; it is for the local stack, ships nowhere and replaces nothing. Ad-hoc console edits are saved as code by writing the dashboard JSON here and committing it.
 
-Every file is validated at the cut, and `forge obs dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel, postgres, text`.
+Every file is validated at the cut, and `forge obs dashboards check` runs the same checks and lists what would ship. Errors read `deploy/observability/dashboards/x.json:12:7: panels[2].kind: "cube" is not one of: number, line, table, search, bar, heatmap, sql, issues, sessions, funnel, postgres, text, browse`.
 
 The file checks cannot know what your telemetry holds. `forge obs dashboards check --against <env>` also looks up every metrics panel series in that env over `--since` (24h): a `metricType` that is not the kind the metric is stored as fails the check, and a metric with no data is listed (a misspelt name, one the collector drops or renames, such as the filter processor's `otelcol_processor_filter_logs.filtered`, or a counter that only exists once something fails). `--strict` fails on those too. In the console a series with no data draws an empty panel with a `metric_absent` note, never an error.
 
 `annotations: [{"source": "releases"}]` on a dashboard asks the console to draw a marker for every promotion on its time-series panels. Generated dashboards declare it.
 
 The _Workloads_ dashboard (CPU/memory against requests and limits, restarts and exit reason, image versions, Kubernetes events) and the _Releases_ dashboard (request, error and latency by `service.version`) are generated for every project. They read node-derived and release data that a local `forge env up` does not have, so they ship in the spec and the bundle and are not written to `deploy/observability/dashboards/`.
+
+So is the _Product usage_ dashboard (id `usage`, bundle file `<project>-usage_gen.json`), all `sql` panels over `product_events`, which the local ClickStack has no table for: active users (DAU, WAU, MAU and stickiness), daily active users, new against returning users per day, weekly retention by first-event cohort (the 12 weeks before the end of the range, whatever range is selected; first-seen, here and in new against returning, is a user's first event in the 90 days before the end of the range, not the oldest row `product_events` still holds, so expiring rows never make a long-time user new again, and a user idle longer than 90 days counts as new on their return), top pages (`page_viewed` by `route`), records created, updated and deleted per entity (over time and in total), the most active users and every event by name. Where the events come from: `observability/product-events`. Replace it like any generated dashboard, with a `<project>-usage.json` of your own.
 
 ## Alerts
 

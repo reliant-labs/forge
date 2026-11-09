@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestRenderBuildKCL_SurfacesRenderFailure is the F1 regression. An env
@@ -14,6 +16,7 @@ import (
 // then blamed the user for not declaring build_cmd. The render error must
 // be returned, verbatim.
 func TestRenderBuildKCL_SurfacesRenderFailure(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", "")
 	dir := t.TempDir()
 	for rel, body := range map[string]string{

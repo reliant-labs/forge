@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -318,6 +319,9 @@ func TestBuildSpaceChecksScratchAndNewOutputDirectories(t *testing.T) {
 	for _, name := range []string{"GOTMPDIR", "GOCACHE", "GOMODCACHE"} {
 		t.Setenv(name, filepath.Join(root, name, "new"))
 	}
+	// The home directory is always measured too. Point it into the temp dir
+	// so a small home filesystem (a sandboxed gate's tmpfs) is not measured.
+	t.Setenv("HOME", root)
 	output := filepath.Join(root, "new", "bin")
 	// This test asserts WHICH filesystems are measured, not how full the host
 	// is, so the reserve is the policy minimum: a real runner disk below the
@@ -325,6 +329,12 @@ func TestBuildSpaceChecksScratchAndNewOutputDirectories(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.HostReserveGiB = 1
 	got, err := CheckBuildSpace(policy, output)
+	var reserve *ReserveError
+	if errors.As(err, &reserve) {
+		// A host short of the reserve cannot show which filesystems are
+		// measured. That is the host's fault, not the code's.
+		t.Skipf("host resource missing: %s has %.1f GiB free, below the %d GiB reserve this test needs", reserve.Path, float64(reserve.Available)/float64(GiB), reserve.ReserveGiB)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

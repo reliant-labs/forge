@@ -33,19 +33,25 @@ import (
 // there is none. Every git call is scoped to it, so a lookup never reads a
 // parent repository that happens to sit above an untracked project.
 func RepoRoot(dir string) string {
+	root, _ := repoRoot(dir)
+	return root
+}
+
+// repoRoot is RepoRoot, also saying whether dir is inside a repository at all.
+func repoRoot(dir string) (root string, inRepo bool) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return dir
+		return dir, false
 	}
 	out, ok := runGit(abs, "rev-parse", "--show-toplevel")
 	if !ok {
-		return abs
+		return abs, false
 	}
-	root := strings.TrimSpace(out)
+	root = strings.TrimSpace(out)
 	if root == "" {
-		return abs
+		return abs, false
 	}
-	return root
+	return root, true
 }
 
 // MergeBaseMax returns the highest migration version present in
@@ -95,13 +101,18 @@ func NextN(dir string, n int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	repoRoot := RepoRoot(dir)
-	if max, ok := MergeBaseMax(repoRoot, dir); ok {
-		taken[max] = true
-	}
-	if tip, ok := DefaultBranchVersions(repoRoot, dir); ok {
-		for v := range tip {
-			taken[v] = true
+	// Outside a repository there is no merge base and no default branch:
+	// each lookup below is a handful of git commands that all fail (33 of
+	// them, 1.6s, for three migrations in a temp dir), so they are asked
+	// only when there is a repository to ask.
+	if root, inRepo := repoRoot(dir); inRepo {
+		if max, ok := MergeBaseMax(root, dir); ok {
+			taken[max] = true
+		}
+		if tip, ok := DefaultBranchVersions(root, dir); ok {
+			for v := range tip {
+				taken[v] = true
+			}
 		}
 	}
 	return migrationver.AllocateAfter(taken, n), nil
@@ -147,6 +158,64 @@ func FilesAt(repoRoot, migrationsDir, rev string) ([]string, bool) {
 		if name = strings.TrimSpace(name); name != "" {
 			names = append(names, name)
 		}
+	}
+	return names, true
+}
+
+// ContentAt returns the bytes of the file at path (absolute, or relative to
+// repoRoot) at revision rev, and whether it could be read: false for a
+// revision not in this clone, a path absent at rev, or no git.
+func ContentAt(repoRoot, path, rev string) ([]byte, bool) {
+	rel, err := repoRelative(repoRoot, path)
+	if err != nil {
+		return nil, false
+	}
+	out, ok := runGit(repoRoot, "show", rev+":"+filepath.ToSlash(rel))
+	if !ok {
+		return nil, false
+	}
+	return []byte(out), true
+}
+
+// FilesMatchingAt lists the base names of the files directly in dir, at
+// revision rev, whose content matches any of the fixed, case-insensitive
+// strings in needles — one `git grep` rather than one `git show` per file,
+// which over a 200-file migrations directory is the difference between one
+// process and two hundred. An empty list is a real answer; false means rev
+// could not be read.
+func FilesMatchingAt(repoRoot, dir, rev string, needles ...string) ([]string, bool) {
+	if _, ok := runGit(repoRoot, "rev-parse", "--verify", "--quiet", rev+"^{commit}"); !ok {
+		return nil, false
+	}
+	rel, err := repoRelative(repoRoot, dir)
+	if err != nil {
+		return nil, false
+	}
+	args := []string{"grep", "-l", "-i", "-F", "--full-name"}
+	for _, n := range needles {
+		args = append(args, "-e", n)
+	}
+	args = append(args, rev, "--", filepath.ToSlash(rel))
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoRoot
+	cmd.Env = scrubGitEnv(os.Environ())
+	out, err := cmd.Output()
+	if err != nil {
+		// git grep exits 1 when nothing matched: a real, empty answer.
+		if ee, isExit := err.(*exec.ExitError); isExit && ee.ExitCode() == 1 {
+			return []string{}, true
+		}
+		return nil, false
+	}
+	prefix := rev + ":" + strings.TrimSuffix(filepath.ToSlash(rel), "/") + "/"
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		name, ok := strings.CutPrefix(line, prefix)
+		if !ok || name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		names = append(names, name)
 	}
 	return names, true
 }

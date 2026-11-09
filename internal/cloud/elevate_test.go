@@ -293,6 +293,35 @@ func TestCall_HelperCredentialElevatesThroughTheHelper(t *testing.T) {
 	}
 }
 
+// A three-component scope elevates as itself. The bug: the refusal parser kept
+// only the last two components, so a refusal for deploy:config:read asked the
+// helper for config:read, which no session holds, and the call stayed refused
+// though the session behind the helper held the real scope.
+func TestCall_HelperCredentialElevatesForAThreeComponentScope(t *testing.T) {
+	t.Setenv("FORGE_HOME", t.TempDir())
+	useFakeHelper(t, "scoped", "deploy:read", "deploy:write", "deploy:config:read")
+	srv, calls := scopeServer(t, "deploy:config:read")
+	ep, err := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(ep, Credential{Token: "rlat_helper:deploy:read,deploy:write", Source: SourceHelper, From: "test"})
+	var out struct{ OK bool }
+	if err := c.Call(context.Background(), "controlplane.v1.DeployService/GetEnvironmentConfig", map[string]any{}, &out); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !out.OK {
+		t.Fatal("the retried call did not succeed")
+	}
+	want := []string{
+		"controlplane.v1.DeployService/GetEnvironmentConfig rlat_helper:deploy:read,deploy:write",
+		"controlplane.v1.DeployService/GetEnvironmentConfig rlat_helper:deploy:read,deploy:write,deploy:config:read",
+	}
+	if strings.Join(*calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls:\n got %v\nwant %v (the helper asked for exactly deploy:config:read, no exchange)", *calls, want)
+	}
+}
+
 // A helper whose session does not hold the scope either answers without it;
 // forge then tries the exchange and reports why neither helped.
 func TestCall_HelperWithoutTheScopeFallsBackToTheExchange(t *testing.T) {

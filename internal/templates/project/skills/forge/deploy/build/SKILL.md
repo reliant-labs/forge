@@ -33,6 +33,32 @@ One project image carries every binary. Its ENTRYPOINT is the binary and
 its CMD the default subcommand (`server`), so a workload's `args` select
 what the pod runs, the same subcommand the host runtime runs.
 
+## Skip an unchanged ShellBuild with `inputs`
+
+A `forge.ShellBuild` runs its `cmd` on every build, because forge cannot see
+what a shell command reads. Declare it, and forge skips the command when
+nothing it depends on moved:
+
+```
+build = forge.ShellBuild {
+    cwd = "../api"
+    cmd = "docker build -t ${_ref} . && docker push ${_ref}"
+    inputs = ["go.mod", "go.sum", "**/*.go", "Dockerfile", "!**/*_test.go"]
+}
+```
+
+Globs are relative to `cwd` (`../` reaches a sibling; `!` excludes). They
+may reach only into the directory holding the project, where its sibling
+checkouts live; a pattern or symlink that leads further is refused and the
+build runs. It skips
+only when the content fingerprint of the inputs, `cmd`, `env`, platform and
+destination match the last SUCCESSFUL build in this env, and the registry
+still serves that build's digest at the tag; deploy then pins that digest.
+`--rebuild` (on `forge build`, `forge env build`, `forge env up`) forces a
+run. An image-less build, an input glob that matches nothing, and `--release`
+always run. Keep the command's outputs out of its inputs; forge warns when a
+build rewrites its own inputs.
+
 ## The hosted registry takes your control-plane credential
 
 A hosted env's images go to the PLATFORM registry with your control-plane

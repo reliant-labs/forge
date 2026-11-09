@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // forgeModule makes dir a module declaring forge's path, as a checkout is.
@@ -196,6 +198,7 @@ func TestSkewLine(t *testing.T) {
 // TestReadCheckout runs real git: HEAD, cleanliness, and the edit time a dirty
 // tree carries.
 func TestReadCheckout(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -260,6 +263,7 @@ func TestReadCheckout(t *testing.T) {
 // file's mtime moved — a write into another worktree's checkout from a check
 // that only reads. Deterministic: the test moves an mtime, then reads.
 func TestReadCheckout_DoesNotRewriteTheIndex(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -312,6 +316,7 @@ func TestReadCheckout_DoesNotRewriteTheIndex(t *testing.T) {
 // checkout is Dirty but has no SourceEdits — while an untracked template
 // beneath a package directory (go:embed reaches it) does count.
 func TestReadCheckout_OnlySourceEditsAreSkew(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}

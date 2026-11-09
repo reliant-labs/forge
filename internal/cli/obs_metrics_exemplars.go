@@ -18,7 +18,7 @@ const schemaObsMetricExemplars = "forge.obs.metric_exemplars/v1"
 var obsMetricExemplarsSchema = obsout.Schema{
 	Name: schemaObsMetricExemplars,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "metric", "window", "window.from", "window.to",
 		"exemplars", "exemplars.time", "exemplars.value", "exemplars.trace_id", "exemplars.span_id",
 		"exemplars.trace_stored", "exemplars.attributes.*",
@@ -185,7 +185,7 @@ func runObsMetricsExemplars(ctx context.Context, d obsDeps, env, metric string, 
 			suggest = append(suggest, obsout.Command("forge", "obs", "trace", e.TraceID, env))
 		}
 	}
-	doc.Suggested = obsout.Suggest(suggest...)
+	doc.Suggested = o.inst.carrySuggested(obsout.Suggest(suggest...))
 	doc.Stamp(schemaObsMetricExemplars, nil)
 	if done, err := o.out.Emit(d.Stdout, obsMetricExemplarsSchema, doc, fields); done || err != nil {
 		return err

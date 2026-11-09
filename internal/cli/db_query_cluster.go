@@ -215,6 +215,7 @@ func resolveDBQueryExternal(ctx context.Context, o dbQueryOptions, e *KCLEntitie
 	cfg, err := client.ExternalConnConfig(ctx, kubedial.External{
 		Namespace: x.Namespace, Service: x.Service, Database: x.Database, Username: x.Username,
 		PasswordSecret: x.PasswordSecret, PasswordKey: x.PasswordKey, SSLMode: x.SSLMode,
+		CASecret: x.CASecret, CAConfigMap: x.CAConfigMap, CAKey: x.CAKey, TLSServerName: x.TLSServerName,
 	})
 	if err != nil {
 		return dbQueryTarget{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("external database %q in %s: %v", x.Name, o.env, err)}

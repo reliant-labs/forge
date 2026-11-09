@@ -424,6 +424,11 @@ var coreComponents = []string{
 	"select",
 	"chip",
 	"row_actions_menu",
+	// The user menu (src/components/session_nav.tsx) and the theme toggle
+	// beside it; dropdown_menu imports "./popover".
+	"popover",
+	"dropdown_menu",
+	"tooltip",
 	"progress_bar",
 	"status",
 	"tag",
@@ -434,6 +439,8 @@ var coreComponents = []string{
 	"page_header",
 	"badge",
 	"modal",
+	// The dialog lifecycle hook modal and sidebar_layout import ("./modal_dialog").
+	"modal_dialog",
 	"skeleton_loader",
 	"pagination",
 	"search_input",

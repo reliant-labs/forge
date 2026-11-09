@@ -240,6 +240,29 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef, proje
 		entities = append(entities, e)
 		return nil
 	}
+	// skipLibraryTable reports whether a forge library's table that no entity
+	// declares is left off the ORM (noting why). One a previous generate
+	// projected keeps its store, deprecated, until the next major.
+	skipLibraryTable := func(t schemadef.Table) bool {
+		lib, ok := libraryOwning(t)
+		if !ok {
+			return false
+		}
+		if declared, _ := t.DeclaresEntity(); declared {
+			return false
+		}
+		name := TableEntityName(t)
+		file, had := "", false
+		if projected != nil && !other[strings.ToLower(name)] {
+			file, had = projected(t, name)
+		}
+		if !had {
+			notes = append(notes, libraryTableNote(t, lib))
+			return true
+		}
+		deprecations = append(deprecations, libraryTableDeprecation(t, lib, file))
+		return false
+	}
 	sorted := append([]schemadef.Table(nil), tables...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, t := range sorted {
@@ -258,19 +281,8 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef, proje
 		}
 		e, joined := byTable[t.Name]
 		if !joined {
-			if lib, ok := libraryOwning(t); ok {
-				if declared, _ := t.DeclaresEntity(); !declared {
-					name := TableEntityName(t)
-					file, had := "", false
-					if projected != nil && !other[strings.ToLower(name)] {
-						file, had = projected(t, name)
-					}
-					if !had {
-						notes = append(notes, libraryTableNote(t, lib))
-						continue
-					}
-					deprecations = append(deprecations, libraryTableDeprecation(t, lib, file))
-				}
+			if skipLibraryTable(t) {
+				continue
 			}
 			// A composite key projects too: its store addresses a row by
 			// the whole key (Get<E>ByPK / Delete<E>ByPK / Upsert<E>). Only

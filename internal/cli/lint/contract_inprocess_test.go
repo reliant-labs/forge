@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/linter/contract"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestAnalysisEnvKeepsTrimpath: the loader's -mod=mod must not replace the
@@ -80,6 +81,7 @@ func (i *impl) Rogue() {}
 // actually runs inside forge (no separately-installed contractlint
 // binary involved, so no version skew is possible).
 func TestContractAnalysisInProcess_FindsViolations(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeContractFixture(t)
 	t.Chdir(dir)
 
@@ -105,6 +107,7 @@ func TestContractAnalysisInProcess_FindsViolations(t *testing.T) {
 // (the subprocess passed it via -exclude; in-process it reaches
 // contract.SetExcludes directly).
 func TestContractAnalysisInProcess_HonorsExcludes(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := writeContractFixture(t)
 	t.Chdir(dir)
 

@@ -148,6 +148,12 @@ export async function POST(request: Request): Promise<Response> {
     return new Response(null, { status: 404 });
   }
 
+  // The client endpoint is path-only: payloads belong in POST bodies. Next's
+  // own request logger is separately excluded in next.config.ts, since rejecting
+  // a query here alone would still leak it through that upstream logger.
+  if (new URL(request.url).search) {
+    return new Response(null, { status: 400, headers: { "X-Forge-Devlog": "2" } });
+  }
   const { status, lines } = handleDevLogBody(await request.text());
   if (lines.length > 0) {
     // ONE console.log for the whole batch: a second concurrent writer can

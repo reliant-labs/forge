@@ -973,11 +973,19 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 
 	// Emit the typed New<Entity> test factories, one
 	// internal/handlers/<svc>/factories_gen_test.go per handler package that
-	// owns entities. Best-effort contract: a missing/unreachable shadow DB or
-	// an unseedable entity just means the factory isn't emitted this run,
-	// never a failed generate.
+	// owns entities. An unseedable entity still gets its factory (one that
+	// fails the calling test with postgres's reason). A schema that cannot
+	// be read writes nothing, and that is returned as an
+	// *EntityFactoriesError rather than printed as a warning: a run that
+	// wrote no factories and reported success is indistinguishable from a
+	// project that has none, and the stale-file sweep would delete every
+	// committed factories file as stale (forge bug df26c327). The helpers
+	// above are written either way; the caller grades the failure.
+	//
+	// The pre-move internal/testfactory is not retired on that path either:
+	// with no new factories written, it may be the only copy left.
 	if err := GenerateEntityFactories(projectDir, modulePath, services, cs); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: skipped entity factories: %v\n", err)
+		return &EntityFactoriesError{Err: err}
 	}
 
 	// Retire internal/testfactory, where the factories lived before they
@@ -988,6 +996,22 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 	removeRetiredEntityFactories(projectDir, cs)
 	return nil
 }
+
+// EntityFactoriesError is GenerateBootstrapTesting's report that it wrote
+// every per-component test helper but could not emit the entity test
+// factories, because the applied schema could not be read. It is a type of
+// its own so the pipeline can fail that one emitter (keeping its outputs
+// out of the stale-file sweep) without discarding the helpers that were
+// written.
+type EntityFactoriesError struct {
+	Err error
+}
+
+func (e *EntityFactoriesError) Error() string {
+	return "entity test factories: " + e.Err.Error()
+}
+
+func (e *EntityFactoriesError) Unwrap() error { return e.Err }
 
 // removeRetiredEntityFactories deletes the pre-move
 // internal/testfactory/factory_gen.go and, when that leaves the directory
@@ -1608,7 +1632,7 @@ func computeDepsDoubles(handlerDir string, resolver *typesResolver) ([]DepsAutoS
 	if err != nil || len(fields) == 0 {
 		return nil, nil, nil
 	}
-	locals, _ := ParseLocalInterfaces(handlerDir)
+	locals, _ := parseLocalInterfaces(handlerDir, resolver)
 	imports, _ := collectImports(handlerDir)
 	var stubs []DepsAutoStub
 	var mocks []DepsAutoMock

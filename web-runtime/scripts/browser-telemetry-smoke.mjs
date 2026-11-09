@@ -11,6 +11,8 @@ import { test } from "node:test";
 import { gunzipSync } from "node:zlib";
 import { chromium } from "playwright";
 
+import { createOtelProxyHandler } from "../dist/otel-proxy.js";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const apiDir = resolve(dirname(require.resolve("@opentelemetry/api")), "../..");
@@ -61,9 +63,26 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
   const traces = [];
   const logs = [];
   const requests = [];
+  // The page's /_otel goes through the runtime's real dev proxy (the one
+  // forgeOtelProxy mounts), to a collector behind it. This proves the real
+  // SDK's exports pass the proxy's same-origin caller check: the browser
+  // sends Origin and Sec-Fetch-Site: same-origin on every export.
+  const callers = [];
+  const collector = createServer(async (req, res) => {
+    const url = req.url;
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
+    const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+    const payload = url.endsWith("logs") ? LogsData.decode(decoded) : JSON.parse(decoded.toString());
+    (url.endsWith("traces") ? traces : logs).push(payload);
+    res.setHeader("content-type", "application/json");
+    res.end("{}");
+  });
+  const proxy = createOtelProxyHandler({ upstream: await listen(collector), headersFile: "" });
   const backend = createServer((req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "traceparent,tracestate,content-type");
+    res.setHeader("Access-Control-Allow-Headers", "traceparent,tracestate,baggage,content-type");
     if (req.method !== "OPTIONS") requests.push(req.headers.traceparent);
     res.end("{}");
   });
@@ -72,14 +91,8 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
     try {
       const url = new URL(req.url, "http://localhost").pathname;
       if (url.startsWith("/_otel/")) {
-        const chunks = [];
-        for await (const chunk of req) chunks.push(chunk);
-        const raw = Buffer.concat(chunks);
-        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
-        const payload = url.endsWith("logs") ? LogsData.decode(decoded) : JSON.parse(decoded.toString());
-        (url.endsWith("traces") ? traces : logs).push(payload);
-        res.setHeader("content-type", "application/json");
-        res.end("{}");
+        callers.push({ host: req.headers.host, origin: req.headers.origin, site: req.headers["sec-fetch-site"] });
+        proxy(req, res, req.url.slice("/_otel".length));
       } else if (url === "/sdk.js") {
         res.setHeader("content-type", "text/javascript");
         res.end(await readFile(sdk));
@@ -93,6 +106,8 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
 <script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, context, trace } from '/runtime/telemetry.js';
+import { disableTelemetry } from '/runtime/track.js';
+window.withdrawConsent = disableTelemetry;
 import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
 window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', replay: true, apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
 window.tracing = trace;
@@ -142,7 +157,7 @@ document.querySelector('#action').addEventListener('click', () => {
     await page.evaluate(async () => {
       // Both are the REAL SDK's providers, not a test substitute.
       await window.tracing.getTracerProvider().getDelegate().forceFlush();
-      HyperDX.stopSessionRecorder();
+      window.withdrawConsent();
     });
     // Let the real recorder deliver its batch, independently of trace export.
     const replayResponse = page.waitForResponse(response => response.url().endsWith('/_otel/v1/logs') && response.ok(), { timeout: 10000 });
@@ -153,6 +168,10 @@ document.querySelector('#action').addEventListener('click', () => {
       .flatMap((resource) => resource.scopeSpans ?? [])
       .flatMap((scope) => scope.spans ?? []);
     assert.deepEqual(errors, []);
+    assert.ok(callers.length >= 2, "traces and replay logs both went through the proxy");
+    for (const caller of callers) {
+      assert.deepEqual(caller, { host: new URL(origin).host, origin, site: "same-origin" }, "the SDK's exports are same-origin to the proxy");
+    }
     assert.equal(spans.some((span) => ["mousedown", "mouseup", "click"].includes(span.name)), false);
     const action = spans.find((span) => span.name === "save-record");
     const fetch = spans.find((span) => span.name === "HTTP POST");
@@ -169,6 +188,17 @@ document.querySelector('#action').addEventListener('click', () => {
     assert.ok(replay.length > 0, "session replay still exports records");
     const events = replay.map(record => JSON.parse(record.body.stringValue));
     assert.ok(events.some(event => event.type === 3 && event.data.source === 2), "raw mouse interactions remain replay events");
+    // Withdrawal goes through the public runtime API, not an SDK-only test
+    // substitute. Prior queued records may flush, but no post-withdrawal DOM
+    // mutation can become a new replay event.
+    await page.evaluate(() => {
+      const marker = document.createElement('div');
+      marker.id = 'after-consent-withdrawn';
+      document.body.append(marker);
+    });
+    await new Promise(resolve => setTimeout(resolve, 5500));
+    assert.equal(JSON.stringify(logs).includes('after-consent-withdrawn'), false,
+      'consent withdrawal stops the real recorder');
     const exported = JSON.stringify([...traces, ...logs]);
     for (const secret of ["PRIVATE_TEXT_SENTINEL", "PRIVATE_INPUT_SENTINEL", "PRIVATE_EDIT_SENTINEL"]) {
       assert.equal(exported.includes(secret), false, "private text never leaves the browser");
@@ -177,6 +207,7 @@ document.querySelector('#action').addEventListener('click', () => {
     await browser?.close();
     await close(server);
     await close(backend);
+    await close(collector);
   }
 });
 
@@ -392,5 +423,135 @@ window.mark = (name) => trace.getTracer('viewport-proof').startSpan(name).end();
   } finally {
     await browser?.close();
     await close(server);
+  }
+});
+
+// interaction(): RPCs made while it is open — after the click handler has
+// returned, with no span active, as an effect or a stream hook makes them —
+// are children of the interaction in the REAL SDK's export. The two terminal
+// `next`s are connect-web's two shapes: unary calls fetch() synchronously
+// inside next(); a server stream awaits its request body first, which a stack
+// context manager does not survive, so only the runtime's fetch shim carries
+// the interaction to the SDK's fetch span.
+test("interaction(): unary and stream fetch spans made after the click are the children of the interaction they started under, even when a newer one opens while auth waits", { timeout: 30000 }, async () => {
+  const traces = [];
+  const requests = [];
+  const backend = createServer((req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "traceparent,tracestate,baggage,content-type");
+    if (req.method !== "OPTIONS") requests.push(req.headers.traceparent);
+    res.end("{}");
+  });
+  const backendOrigin = await listen(backend);
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (url.startsWith("/_otel/")) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
+        res.setHeader("content-type", "application/json");
+        res.end("{}");
+      } else if (url === "/sdk.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await readFile(sdk));
+      } else if (url === "/hyperdx.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end("export default globalThis.HyperDX;");
+      } else if (url === "/") {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html><button id="open">Open</button>
+<script src="/sdk.js"></script>
+<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
+<script type="module">
+import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
+import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
+import { interaction } from '/runtime/interaction.js';
+window.tracing = trace;
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
+// The token arrives only when the test says so: the calls wait in auth while a
+// second interaction opens, and must still belong to the first.
+let releaseToken;
+const token = new Promise((r) => (releaseToken = r));
+const chain = (terminal) => buildRuntimeInterceptors({ getToken: () => token })
+  .reduceRight((next, interceptor) => interceptor(next), terminal);
+const unary = chain((req) => fetch(${JSON.stringify(`${backendOrigin}/chat.v1.ChatService/GetChat`)}, { method: 'POST', headers: req.header }));
+const stream = chain(async (req) => {
+  await Promise.resolve(); // connect-web: await createRequestBody(...)
+  return fetch(${JSON.stringify(`${backendOrigin}/chat.v1.ChatService/StreamChat`)}, { method: 'POST', headers: req.header });
+});
+document.querySelector('#open').addEventListener('click', () => {
+  const op = interaction('chat.open', { 'chat.id': 'c1' });
+  window.traceId = op.traceId;
+  // Outside the handler: no span is active when these calls are made.
+  setTimeout(() => {
+    const calls = Promise.all([
+      unary({ header: new Headers(), stream: false }),
+      stream({ header: new Headers(), stream: true }),
+    ]);
+    const next = interaction('chat.open', { 'chat.id': 'c2' }); // supersedes op
+    window.nextTraceId = next.traceId;
+    releaseToken(null);
+    window.finished = calls.finally(() => next.end({ outcome: 'ok' }));
+  }, 50);
+});
+</script>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(origin);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    await page.locator("#open").click();
+    await page.waitForFunction(() => window.finished !== undefined, undefined, { timeout: 5000 });
+    await page.evaluate(() => window.finished);
+    await page.waitForFunction(() => {
+      const provider = window.tracing.getTracerProvider().getDelegate();
+      return provider._activeSpanProcessor._spanProcessors.some((processor) =>
+        (processor._finishedSpans ?? []).filter((span) => span.name.includes("chat.v1.ChatService")).length === 2);
+    }, undefined, { timeout: 5000 });
+    await page.evaluate(() => window.tracing.getTracerProvider().getDelegate().forceFlush());
+
+    assert.deepEqual(errors, []);
+    const spans = traces.flatMap((batch) => batch.resourceSpans ?? [])
+      .flatMap((resource) => resource.scopeSpans ?? [])
+      .flatMap((scope) => scope.spans ?? []);
+    const chatId = (span) => span.attributes?.find((a) => a.key === "chat.id")?.value?.stringValue;
+    const root = spans.find((span) => span.name === "chat.open" && chatId(span) === "c1");
+    assert.ok(root, `the interaction is exported: ${JSON.stringify(spans.map((s) => s.name))}`);
+    assert.equal(root.traceId, await page.evaluate(() => window.traceId));
+    assert.ok(!root.parentSpanId, "the interaction is a root span");
+    const superseding = spans.find((span) => span.name === "chat.open" && chatId(span) === "c2");
+    assert.ok(superseding, "the second interaction is exported");
+    assert.equal(superseding.traceId, await page.evaluate(() => window.nextTraceId));
+    const fetches = spans.filter((span) => span.name.includes("chat.v1.ChatService"));
+    assert.equal(fetches.length, 2, JSON.stringify(spans.map((s) => s.name)));
+    for (const fetch of fetches) {
+      assert.equal(fetch.traceId, root.traceId, `${fetch.name} is in the interaction's trace`);
+      assert.equal(fetch.parentSpanId, root.spanId, `${fetch.name} is the child of the interaction it started under, not the one opened while auth waited`);
+    }
+    assert.deepEqual(
+      [...requests].sort(),
+      fetches.map((fetch) => `00-${fetch.traceId}-${fetch.spanId}-01`).sort(),
+      "the server is handed each exported fetch span as its parent",
+    );
+  } finally {
+    await browser?.close();
+    await close(server);
+    await close(backend);
   }
 });

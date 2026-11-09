@@ -114,6 +114,15 @@ const openStack: symbol[] = [];
 // in the browser, so the effect is only needed there.
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
+// Calls a render prop in a component of its own. Popover hands its render
+// props callbacks that touch refs (the trigger's callback ref, close()
+// returning focus to the trigger), and calling them in Popover's own render
+// trips react-hooks/refs, which cannot tell those callbacks only ever run
+// from events. Passed as props, they are just values.
+function RenderProp<A>({ render, arg }: { render: (arg: A) => React.ReactNode; arg: A }) {
+  return <>{render(arg)}</>;
+}
+
 export default function Popover({
   trigger,
   anchor,
@@ -378,7 +387,7 @@ export default function Popover({
 
   const triggerElement =
     trigger === undefined ? null : typeof trigger === "function" ? (
-      trigger(triggerProps)
+      <RenderProp render={trigger} arg={triggerProps} />
     ) : (
       <button
         type="button"
@@ -416,7 +425,11 @@ export default function Popover({
               maxWidth: `calc(100vw - ${VIEWPORT_PADDING * 2}px)`,
             }}
           >
-            {typeof children === "function" ? children({ close: () => close() }) : children}
+            {typeof children === "function" ? (
+              <RenderProp render={children} arg={{ close: () => close() }} />
+            ) : (
+              children
+            )}
           </div>,
           document.body,
         )

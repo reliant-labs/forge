@@ -1,10 +1,10 @@
 ---
-name: migration-v1.2.0-native-dev-loop
-description: Adopt the v1.2.0 native (Expo) dev loop in an existing app — declare babel-preset-expo, stream over expo/fetch with a Jest expo/fetch mapping, bundle generated *_pb clients via a Metro .js→.ts resolver fallback, import only the portable runtime entry, stop tsconfig churn, reach the API and Metro from a device (--device-host, Metro on 8081, EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN), forward device logs to .forge/logs with sanitized receivers, track AppState/network in React Query, and never pause-and-replay mutations.
+name: migration-v1.4.0-native-dev-loop
+description: Adopt the v1.4.0 native (Expo) dev loop in an existing app — declare babel-preset-expo, stream over expo/fetch with a Jest expo/fetch mapping, bundle generated *_pb clients via a Metro .js→.ts resolver fallback, import only the portable runtime entry, stop tsconfig churn, reach the API and Metro from a device (--device-host, Metro on 8081, EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN), forward device logs to .forge/logs with sanitized receivers, track AppState/network in React Query, and never pause-and-replay mutations.
 relevance: migration
 ---
 
-# v1.2.0 — native dev loop
+# v1.4.0 — native dev loop
 
 **Use when** the project has an Expo frontend. New scaffolds include everything
 below; existing apps own these files, so forge never backfills them. Adapt by hand.

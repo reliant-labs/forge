@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclrender"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestScaffoldedIngressEvaluates scaffolds a fresh service-kind
@@ -33,6 +34,7 @@ import (
 // out would test a path no user takes and would fail on a scaffold that
 // is completely correct.
 func TestScaffoldedIngressEvaluates(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	tmp := scaffoldServiceForRender(t)
 
 	// workDir is the project root so the main.k's relative imports

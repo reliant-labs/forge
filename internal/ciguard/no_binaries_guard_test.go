@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // scripts/check-no-binaries.sh refuses a binary file, or a new file over the
@@ -129,6 +131,7 @@ func runNoBinaries(t *testing.T, repo string, env []string, args ...string) (str
 }
 
 func TestNoBinariesGuardVerdicts(t *testing.T) {
+	testkit.Slow(t, "execs bash and git")
 	t.Parallel()
 	t.Run("a text-only change passes", func(t *testing.T) {
 		t.Parallel()

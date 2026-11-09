@@ -16,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/mergeproperty"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // renderHooksForTest renders hooks.ts.tmpl for a 3-RPC CRUD-ish service.
@@ -1094,6 +1095,7 @@ func TestMockTransportTemplate_EntityServedByTwoServices(t *testing.T) {
 // shape a two-service project hits first (orders sorts before users), which
 // conflicted while the section's hash rode on its header.
 func TestMergeProperty_ScenarioRpcs(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	svc := func(name string, rpcs ...string) codegen.ServiceDef {
 		lower := strings.ToLower(strings.TrimSuffix(name, "Service"))
 		d := codegen.ServiceDef{Name: name, Package: "services." + lower + ".v1", ProtoFile: "proto/services/" + lower + "/v1/" + lower + ".proto"}

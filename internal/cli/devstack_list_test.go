@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/devstack"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // `forge env devstack list` PRINTED ONE LINE FOR EIGHT HELD BLOCKS.
@@ -70,6 +71,7 @@ const controlPlaneRegistry = `{
 // TestDevStackListShowsEveryBlockHolder is the regression lock: every held
 // block appears, not just the dev stacks.
 func TestDevStackListShowsEveryBlockHolder(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	out := devstackListIn(t, seedRegistry(t, controlPlaneRegistry))
 
 	for _, want := range []string{"prod", "prod-cp-obs", "my-new-feature-50f77334", "(default stack)"} {
@@ -87,6 +89,7 @@ func TestDevStackListShowsEveryBlockHolder(t *testing.T) {
 // know which holders prune could act on, which is the question the old output
 // could not answer at all.
 func TestDevStackListLabelsReclaimability(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	out := devstackListIn(t, seedRegistry(t, controlPlaneRegistry))
 
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
@@ -112,6 +115,7 @@ func TestDevStackListLabelsReclaimability(t *testing.T) {
 // line, no labels, no default stack — because a per-stack config generator
 // parses it and feeding it a port-block key is a tracked-file corruption bug.
 func TestDevStackListStacksOnlyIsTheUnchangedGeneratorRoster(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	out := devstackListIn(t, seedRegistry(t, controlPlaneRegistry), "--stacks-only")
 
 	if out != "my-new-feature-50f77334\n" {
@@ -124,6 +128,7 @@ func TestDevStackListStacksOnlyIsTheUnchangedGeneratorRoster(t *testing.T) {
 // indistinguishable from the command failing — the exact ambiguity that made
 // "the ceiling says 8, list says nothing" so hard to read.
 func TestDevStackListEmptyRegistrySaysSo(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: listtest\n"), 0o644); err != nil {
 		t.Fatal(err)

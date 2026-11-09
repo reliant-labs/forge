@@ -330,12 +330,13 @@ func TestDockerfile_VersionVarLdflags(t *testing.T) {
 // ServiceName onto skCfg and builds no otel-shutdown closure of its own.
 func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	data := struct {
-		Module         string
-		HasDatabase    bool
-		DatabaseDriver string
-		OrmEnabled     bool
-		ConfigFields   map[string]bool
-		RESTEnabled    bool
+		Module           string
+		HasDatabase      bool
+		DatabaseDriver   string
+		OrmEnabled       bool
+		ConfigFields     map[string]bool
+		RESTEnabled      bool
+		DevSessionCookie bool
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{"OtlpEndpoint": true},

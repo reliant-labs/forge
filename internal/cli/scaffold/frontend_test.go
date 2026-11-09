@@ -24,6 +24,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // skipNpmInstall makes the trailing, non-fatal `npm install` inside
@@ -107,6 +108,7 @@ func TestRunAddFrontend_DerivesTheFrontendAndLeavesForgeYAMLAlone(t *testing.T) 
 // TestRunAddFrontend_TypeFollowsKind: the derived type tracks --kind, read back
 // from the framework's own config file rather than recorded anywhere.
 func TestRunAddFrontend_TypeFollowsKind(t *testing.T) {
+	testkit.Slow(t, "scaffolds four whole frontends")
 	skipNpmInstall(t)
 	cases := []struct {
 		name string

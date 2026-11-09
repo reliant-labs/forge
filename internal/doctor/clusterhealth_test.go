@@ -31,15 +31,20 @@ type cwPod struct {
 	app      string
 	ownerRS  string        // owning ReplicaSet; "" for a bare pod
 	ownerJob string        // owning Job
+	ownerSTS string        // owning StatefulSet
 	phase    string        // default "Running"
 	ready    bool          // the Ready condition AND the container's readiness
 	restarts int           // restartCount on the single container
 	waiting  string        // state.waiting.reason
+	term     string        // state.terminated.reason — a container that is dead right now
+	termExit int           // that termination's exit code
 	lastTerm string        // lastState.terminated.reason (this is where OOMKilled lives)
 	exitCode int           // that termination's exit code
 	age      time.Duration // default 1h; drives the startup grace
 	envTag   string        // forge.dev/env ownership stamp
 	initBad  string        // an init container stuck on this waiting reason
+	reason   string        // status.reason — "Evicted" on a pod the kubelet evicted
+	deleting bool          // metadata.deletionTimestamp set: the pod is Terminating
 }
 
 func (p cwPod) json() string {
@@ -66,11 +71,20 @@ func (p cwPod) json() string {
 		owners = `[{"kind":"ReplicaSet","name":"` + p.ownerRS + `"}]`
 	case p.ownerJob != "":
 		owners = `[{"kind":"Job","name":"` + p.ownerJob + `"}]`
+	case p.ownerSTS != "":
+		owners = `[{"kind":"StatefulSet","name":"` + p.ownerSTS + `"}]`
 	}
 
 	state := `{"running":{"startedAt":"2026-08-24T00:00:00Z"}}`
-	if p.waiting != "" {
+	switch {
+	case p.waiting != "":
 		state = `{"waiting":{"reason":"` + p.waiting + `","message":"back-off restarting failed container"}}`
+	case p.term != "":
+		state = fmt.Sprintf(`{"terminated":{"reason":%q,"exitCode":%d}}`, p.term, p.termExit)
+	}
+	deletion := ""
+	if p.deleting {
+		deletion = fmt.Sprintf(`,"deletionTimestamp":%q`, time.Now().Add(-5*time.Minute).UTC().Format(time.RFC3339))
 	}
 	last := "{}"
 	if p.lastTerm != "" {
@@ -87,12 +101,12 @@ func (p cwPod) json() string {
 	}
 
 	return fmt.Sprintf(`{
-	  "metadata":{"name":%q,"labels":%s,"creationTimestamp":%q,"ownerReferences":%s},
-	  "status":{"phase":%q,
+	  "metadata":{"name":%q,"labels":%s,"creationTimestamp":%q,"ownerReferences":%s%s},
+	  "status":{"phase":%q,"reason":%q,
 	    "conditions":[{"type":"PodScheduled","status":"True"},{"type":"Ready","status":%q}],
 	    %s"containerStatuses":[{"name":"app","ready":%t,"restartCount":%d,"state":%s,"lastState":%s}]}}`,
-		p.name, labelJSON, time.Now().Add(-age).UTC().Format(time.RFC3339), owners,
-		phase, readyCond, initStatuses, p.ready, p.restarts, state, last)
+		p.name, labelJSON, time.Now().Add(-age).UTC().Format(time.RFC3339), owners, deletion,
+		phase, p.reason, readyCond, initStatuses, p.ready, p.restarts, state, last)
 }
 
 // cwPending is the shape a pod takes when the scheduler cannot place it —

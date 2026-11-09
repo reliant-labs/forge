@@ -300,43 +300,21 @@ jobs:
           node-version: "22"
 
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # See ci.yml: unauthenticated release lookups share a 60/hour
-          # per-runner-IP budget and fail the job for a reason unrelated
-          # to the commit. This workflow runs 4 shards, so it spends that
-          # budget faster than any other.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
 
-      # KCL is NOT cached, and there is no ~/.kcl. Both were a
-      # misunderstanding of where the installer puts things: on Linux it
-      # installs to /usr/local/bin, so ~/.kcl was never created, the cache
-      # stored an EMPTY directory (a 227-byte entry, in the logs as
-      # "Cache Size: ~0 MB (227 B)"), and every later run took a cache HIT,
-      # skipped the install, and then failed tool verification with
-      # "e2e suite requires kcl". That took out all four shards before a
-      # single test ran — and re-keying the cache only moved the poison,
-      # because the next run saved the same empty directory under the new key.
-      #
-      # The install is ~1s, so caching it was never worth a step that can
-      # wedge the whole suite. The trailing verification refuses to let a
-      # silently failed install reach the tests as a confusing error later.
-      #
-      # KCL_VERSION is pinned deliberately, matching ci.yml. Left unset, the
-      # installer resolves "latest" through an UNAUTHENTICATED api.github.com
-      # call, rate-limited to 60/hour per runner IP and shared across every
-      # job on that host — when it is exhausted the script gets an empty tag
-      # and dies with "The KCL version is not found", failing CI for a reason
-      # that has nothing to do with the commit. This suite fans out to four
-      # shards, so it burns that budget faster than any other lane. The pin
-      # is templates.KCLVersion (TestKCLVersionIsPinnedEverywhere).
+      # KCL comes from .github/actions/install-release-tool, pinned to
+      # templates.KCLVersion (TestReleaseToolPinsMatchForge), so no shard
+      # resolves "latest" through api.github.com's 60/hour budget. The action
+      # caches the binary alone and reinstalls whenever it is missing. A cached
+      # EMPTY ~/.kcl once took a hit, skipped the install and failed all four
+      # shards with "e2e suite requires kcl"; keying the install on the binary
+      # makes that impossible. The action ends with `kcl --version`.
       - name: Install KCL
-        env:
-          KCL_VERSION: v0.13.2
-        run: |
-          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-          command -v kcl
-          kcl --version
+        uses: ./.github/actions/install-release-tool
+        with:
+          tool: kcl
 
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"

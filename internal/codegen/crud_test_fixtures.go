@@ -116,6 +116,10 @@ func buildCRUDTestFixtures(projectDir string, methods []CRUDMethod) *crudTestFix
 	return fx
 }
 
+// openAppliedSchema is shadowdb.Open, a variable so a test can make the
+// schema unreadable without waiting out a real server's connect retries.
+var openAppliedSchema = shadowdb.Open
+
 // loadCRUDTestFixtures is buildCRUDTestFixtures that reports WHY there is no
 // model: a nil model with a nil error means the project has no schema to model
 // (no migrations, nothing applied), while an error means the schema could not
@@ -124,7 +128,7 @@ func buildCRUDTestFixtures(projectDir string, methods []CRUDMethod) *crudTestFix
 // difference: "nothing to emit" and "could not look" call for different
 // actions on a file that already exists.
 func loadCRUDTestFixtures(projectDir string, methods []CRUDMethod) (*crudTestFixtures, error) {
-	tables, shadow, err := shadowdb.Open(projectDir, filepath.Join(projectDir, "db", "migrations"))
+	tables, shadow, err := openAppliedSchema(projectDir, filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
 		return nil, err
 	}

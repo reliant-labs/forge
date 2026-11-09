@@ -100,27 +100,35 @@ func ensureRunningK3dClusterHealthy(ctx context.Context, c ClusterEntity) error 
 		return err
 	}
 	if k3sRunning {
-		// k3s is alive, so this is a not-yet rather than a failure — but say
-		// WHAT did not answer. The probe reason distinguishes a cluster that
-		// is genuinely still coming up from a transient blip on a warm one
-		// (a k3d node whose Docker IP is churning answers intermittently),
-		// and the two want very different reactions from the operator.
-		fmt.Printf("  cluster %q did not confirm nodes Ready: %v\n", c.Name, probeErr)
-		fmt.Printf("  k3s is running in %s, so this is a not-yet, not a failure — retrying for up to %s...\n",
-			node, nodeReadyWaitBudget)
-		// "Running" is a sample, not a verdict. The node-IP drift failure
-		// kills k3s a few seconds AFTER it logs "k3s is up and running" and
-		// its API starts answering, so a node sampled in that window looks
-		// alive. Keep watching the process while waiting: if it exits, this
-		// is the failure path below, not a timeout to report.
-		waitErr := waitNodeReadyWhile(ctx, c.Name, func(ctx context.Context) (bool, error) {
-			return waitForK3sProcess(ctx, node)
-		})
-		if !errors.Is(waitErr, errK3sExitedDuringWait) {
-			return waitErr
+		if !apiCertificateUntrusted(probeErr) {
+			// k3s is alive, so this is a not-yet rather than a failure — but
+			// say WHAT did not answer. The probe reason distinguishes a
+			// cluster that is genuinely still coming up from a transient blip
+			// on a warm one (a k3d node whose Docker IP is churning answers
+			// intermittently), and the two want very different reactions
+			// from the operator.
+			fmt.Printf("  cluster %q did not confirm nodes Ready: %v\n", c.Name, probeErr)
+			fmt.Printf("  k3s is running in %s, so this is a not-yet, not a failure — retrying for up to %s...\n",
+				node, nodeReadyWaitBudget)
+			// "Running" is a sample, not a verdict. The node-IP drift failure
+			// kills k3s a few seconds AFTER it logs "k3s is up and running"
+			// and its API starts answering, so a node sampled in that window
+			// looks alive. Keep watching the process while waiting: if it
+			// exits, this is the failure path below, not a timeout to report.
+			probeErr = waitNodeReadyWhile(ctx, c.Name, func(ctx context.Context) (bool, error) {
+				return waitForK3sProcess(ctx, node)
+			})
+		}
+		// An API answering with a certificate the kubeconfig does not trust
+		// is the one probe failure that is never a not-yet — whether the
+		// first probe saw it or the wait did.
+		if apiCertificateUntrusted(probeErr) {
+			return healUntrustedAPICertificate(ctx, c, node, probeErr)
+		}
+		if !errors.Is(probeErr, errK3sExitedDuringWait) {
+			return probeErr
 		}
 		fmt.Printf("  k3s in %s exited while forge waited for its API — diagnosing why...\n", node)
-		probeErr = waitErr
 	}
 
 	info, err := inspectDockerK3dNodeFn(ctx, node)
@@ -163,6 +171,110 @@ func ensureRunningK3dClusterHealthy(ctx context.Context, c ClusterEntity) error 
 	fmt.Printf("  detected k3s node-IP drift in %q after Docker reassigned %s to %s — repairing in place...\n",
 		c.Name, node, currentIP)
 	return repairK3sNodeIPDriftFn(ctx, c, node, currentIP, info.Args)
+}
+
+// k3sUntrustedAPICertificate is Go's TLS verdict — which kubectl prints
+// verbatim — when the server's certificate chains to no CA the kubeconfig
+// carries.
+const k3sUntrustedAPICertificate = "x509: certificate signed by unknown authority"
+
+// errAPICertificateUntrusted reports that a cluster's API port ANSWERED, with
+// a certificate the kubeconfig's CA did not sign. That is never a slow start:
+// a booting k3s refuses or drops connections, and a restarted one serves a
+// certificate from the same CA it always had. Something else is answering —
+// in practice another cluster's server, reached through a k3d load balancer
+// that is still forwarding to an address Docker has since handed to it.
+var errAPICertificateUntrusted = errors.New("the Kubernetes API port answered with a certificate the kubeconfig does not trust")
+
+// apiCertificateUntrusted reports whether a readiness probe failed because the
+// API answered with an untrusted certificate. It reads the error text as well
+// as the chain because kubectl's verdict reaches forge only as output.
+func apiCertificateUntrusted(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, errAPICertificateUntrusted) || serverCertificateUntrusted(err.Error())
+}
+
+// serverCertificateUntrusted reports whether kubectl's output says that
+// kubectl ITSELF refused the API server's certificate. The x509 verdict alone
+// is not enough: kubectl prints the same text for TLS failures that say
+// nothing about which server the API port reaches — an HTTPS proxy it could
+// not verify ("proxyconnect tcp: ..."), or an error the API server relayed
+// from one of its own TLS clients, such as a webhook ("Error from server
+// ..."). Restarting the load balancer cures neither, so only a line whose
+// verdict follows kubectl's own connection failure, or Go's server-certificate
+// verification, counts.
+func serverCertificateUntrusted(out string) bool {
+	for line := range strings.SplitSeq(out, "\n") {
+		i := strings.Index(line, k3sUntrustedAPICertificate)
+		if i < 0 {
+			continue
+		}
+		prefix := line[:i]
+		if strings.Contains(prefix, "proxyconnect") || strings.Contains(prefix, "Error from server") {
+			continue
+		}
+		if strings.HasSuffix(prefix, "Unable to connect to the server: ") ||
+			strings.HasSuffix(prefix, "tls: failed to verify certificate: ") {
+			return true
+		}
+	}
+	return false
+}
+
+// untrustedAPICertificateRemedy names both causes of errAPICertificateUntrusted
+// and the command that clears each, most likely first.
+func untrustedAPICertificateRemedy(clusterName string) string {
+	return fmt.Sprintf(
+		"That is not a slow start, so waiting will not fix it: something answered on the API port with a certificate another CA signed.\n"+
+			"  - Most likely k3d's load balancer is forwarding to a server IP Docker has since given another cluster (a Docker restart reshuffles them). Restart it:\n"+
+			"      docker restart k3d-%s-serverlb\n"+
+			"  - Otherwise the kubeconfig holds the CA of an earlier cluster named %q. Re-merge it:\n"+
+			"      %s",
+		clusterName, clusterName, k3dKubeconfigMergeCommand(clusterName))
+}
+
+// k3dKubeconfigMergeCommand is mergeK3dKubeconfig as a command an operator
+// can run.
+func k3dKubeconfigMergeCommand(clusterName string) string {
+	return "k3d kubeconfig merge " + clusterName + " --kubeconfig-merge-default --kubeconfig-switch-context=false"
+}
+
+// healUntrustedAPICertificate handles a running k3s whose API port answers
+// with a certificate the kubeconfig does not trust. k3d's serverlb resolves
+// the server node's name once, when it starts (see
+// ensureClusterLoadBalancerFresh); after a Docker restart reshuffles the IPs
+// on a shared k3d network, the address it cached can belong to ANOTHER
+// cluster's server, which answers TLS with its own CA. The start-order
+// heuristic cannot see that when the load balancer happened to start last, so
+// this is the evidence-driven half of the same repair: restart the load
+// balancer once — only this cluster's, never a node — and probe again.
+//
+// If the API still answers untrusted, the load balancer was not the cause and
+// the kubeconfig's CA is the stale side; that is the operator's file, so forge
+// says how to re-merge it rather than rewriting it.
+func healUntrustedAPICertificate(ctx context.Context, c ClusterEntity, node string, probeErr error) error {
+	lb := "k3d-" + c.Name + "-serverlb"
+	fmt.Printf("  cluster %q API answered with a certificate its kubeconfig does not trust:%s\n",
+		c.Name, formatCommandStderr(probeErr.Error()))
+	fmt.Printf("  k3s is running in %s, so this is not a slow start — %s is most likely forwarding to a server IP Docker has since given another cluster; refreshing it once...\n",
+		node, lb)
+	if err := refreshLoadBalancerFn(ctx, c.Name); err != nil {
+		return fmt.Errorf("%w (context k3d-%s), and restarting %s failed: %v\n%s",
+			errAPICertificateUntrusted, c.Name, lb, err, untrustedAPICertificateRemedy(c.Name))
+	}
+	err := waitNodeReady(ctx, c.Name)
+	if err == nil {
+		fmt.Printf("  cluster %q answers with its own certificate again after refreshing %s\n", c.Name, lb)
+		return nil
+	}
+	if apiCertificateUntrusted(err) {
+		return fmt.Errorf(
+			"%w (context k3d-%s) even after %s was restarted, so the load balancer is not the cause: the kubeconfig most likely holds the CA of an earlier cluster named %q. Re-merge it:\n    %s",
+			errAPICertificateUntrusted, c.Name, lb, c.Name, k3dKubeconfigMergeCommand(c.Name))
+	}
+	return fmt.Errorf("wait for cluster %q after refreshing %s: %w", c.Name, lb, err)
 }
 
 // clusterNodesReadyOnce is a quick healthy-path probe. A healthy warm cluster

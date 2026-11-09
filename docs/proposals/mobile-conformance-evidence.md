@@ -128,7 +128,7 @@ iPhone 18 Pro, Expo 58.0.23 / RN 0.88.1, Debug build) passed:
 The 8081 path itself was substituted: a non-forge process held 8081, so the
 build pinned `RCT_METRO_PORT` to the fallback port. Stack frames from rejections
 are bundle URLs, not symbolicated source. Existing apps adopt the slice through
-the `migrations/v1.2.0/native-dev-loop` playbook; that path was not executed.
+the `migrations/v1.4.0/native-dev-loop` playbook; that path was not executed.
 
 ## Native auth slice
 
@@ -178,7 +178,7 @@ env's identity provider. Research and design notes are in
     out with a visible `configError`.
   - `jest.config.cjs` no longer Babel-transforms `@connectrpc/connect`, which had
     turned every Connect error-path test into `Code.Unknown`.
-- **Existing apps** adopt it through `migrations/v1.2.0/native-auth`. That path
+- **Existing apps** adopt it through `migrations/v1.4.0/native-auth`. That path
   was not executed.
 
 Automated validation on the final tree:

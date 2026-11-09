@@ -115,8 +115,8 @@ var (
 )
 
 // freePort asks the OS for an unused TCP port, in the uint32 shape
-// embedded-postgres's Port option takes. Binding :0 and reading it back
-// avoids collisions when several processes boot instances concurrently.
+// embedded-postgres's Port option takes. The reservation is released before
+// postgres binds; startEmbeddedOnFreshPort handles collisions in that gap.
 func freePort() (uint32, error) {
 	p, err := ReserveLoopbackPort()
 	if err != nil {
@@ -212,6 +212,9 @@ func Shutdown() {
 // DSN, port, and handle. Only the pool (attachEmbedded) calls it, under the
 // pool lock; every other caller shares the instance it boots. It reaps
 // orphaned instances first so a past crash's leftovers do not accumulate.
+// The returned boot claim is still held (startEmbeddedOnFreshPort): the
+// caller releases it once the server is recorded in the pool or owner-locked,
+// so no reaper ever sees the live server unowned.
 // startParameters is the shared server's postgresql.conf overrides for a
 // host running goos.
 //
@@ -245,7 +248,7 @@ func startParameters(goos string) map[string]string {
 	return params
 }
 
-func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
+func bootEmbedded() (baseURL string, port uint32, ep *Embedded, claim *bootClaim, err error) {
 	// Reap instances orphaned by SIGKILLed processes before booting a fresh
 	// one — otherwise they accumulate across runs and exhaust the kernel's
 	// shared-memory/semaphore tables (see reapStaleInstances).
@@ -253,12 +256,7 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 
 	choice := serverVersion()
 	if choice.err != nil {
-		return "", 0, nil, choice.err
-	}
-
-	port, err = freePort()
-	if err != nil {
-		return "", 0, nil, fmt.Errorf("pgtest: reserve port: %w", err)
+		return "", 0, nil, nil, choice.err
 	}
 
 	const (
@@ -280,8 +278,6 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 		// C otherwise defaults to SQL_ASCII. Keep the database encoding aligned
 		// with production and preserve validation of non-ASCII application data.
 		Encoding("UTF8").
-		Port(port).
-		RuntimePath(runtimeDir(port)).
 		StartParameters(startParameters(runtime.GOOS)).
 		// CachePath defaults under the user cache dir; the downloaded
 		// binary is reused across runs. StartTimeout is generous for the
@@ -294,15 +290,16 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 	// StartEmbedded, not NewDatabase+Start: a cold cache downloads the
 	// binary, and the library reports ANY failed download as "no version
 	// found matching X". See fetch.go.
-	ep, err = StartEmbedded(cfg)
+	ep, port, claim, err = startEmbeddedOnFreshPort(cfg, freePort, runtimeDir, StartEmbedded)
 	if err != nil {
-		return "", 0, nil, fmt.Errorf("pgtest: start embedded postgres %s: %w", choice.version, err)
+		return "", 0, nil, nil, fmt.Errorf("pgtest: start embedded postgres %s: %w", choice.version, err)
 	}
 	// Windows: the server pg_ctl just started holds THIS process's working
 	// directory for its whole life. See cwd_windows.go.
 	if err := releaseCallerCwd(runtimeDir(port), port, startParameters(runtime.GOOS)); err != nil {
 		stopSharedByPort(port)
-		return "", 0, nil, fmt.Errorf("pgtest: restart embedded postgres outside the caller's directory: %w", err)
+		claim.release()
+		return "", 0, nil, nil, fmt.Errorf("pgtest: restart embedded postgres outside the caller's directory: %w", err)
 	}
 
 	base := fmt.Sprintf("postgres://%s:%s@localhost:%d/postgres?sslmode=disable", user, pass, port)
@@ -312,7 +309,8 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 	if err != nil {
 		_ = ep.Stop()
 		ep.Detach()
-		return "", 0, nil, fmt.Errorf("pgtest: connect to embedded postgres: %w", err)
+		claim.release()
+		return "", 0, nil, nil, fmt.Errorf("pgtest: connect to embedded postgres: %w", err)
 	}
 	_ = db.Close()
 	// Every database this server creates is copied from template1, so
@@ -326,7 +324,7 @@ func bootEmbedded() (baseURL string, port uint32, ep *Embedded, err error) {
 	// again: release the file now. The running postmaster keeps its own
 	// descriptor.
 	ep.Detach()
-	return base, port, ep, nil
+	return base, port, ep, claim, nil
 }
 
 // revokePublicCreate takes CREATE on the public schema away from PUBLIC, as
@@ -422,45 +420,74 @@ func reapStaleInstances() {
 		if !e.IsDir() || inUse[e.Name()] {
 			continue
 		}
-		dir := filepath.Join(root, e.Name())
-		pidFile := filepath.Join(dir, "data", "postmaster.pid")
-		pid, alive := postmaster(pidFile)
-		if alive {
-			// Only reap a still-running postmaster once it's clearly orphaned
-			// (older than staleInstanceAge). Recently-started ones belong to
-			// live concurrent runs.
-			if info, statErr := os.Stat(pidFile); statErr != nil || time.Since(info.ModTime()) < staleInstanceAge {
-				continue
+		reapStaleInstance(filepath.Join(root, e.Name()), e)
+	}
+}
+
+func reapStaleInstance(dir string, e os.DirEntry) {
+	claim, err := lockBootDir(dir)
+	if err != nil || claim == nil {
+		return // a boot/ownership handoff is in progress; or cannot prove otherwise
+	}
+	defer claim.release()
+	// The earlier snapshot may predate publication. Re-read AFTER taking
+	// the boot lock: owners publish before releasing it. Hold it until the
+	// entire stop/remove decision completes so no new boot can race us.
+	if portsInUseExceptBoot(dir)[e.Name()] {
+		return
+	}
+	pidFile := filepath.Join(dir, "data", "postmaster.pid")
+	pid, alive := postmaster(pidFile)
+	if alive {
+		// NEVER remove the dir of a live postmaster: a postgres whose
+		// data directory is deleted under it keeps answering and fails
+		// every CREATE DATABASE (health.go). So a live one is identified
+		// by its executable alone — the start-time check verifyRecordedPid
+		// adds moves when the wall clock is stepped, and once called this
+		// runtime dir's own server "foreign" — and it is STOPPED before
+		// its dir goes.
+		if !isPostgresOf(pid, dir) {
+			if f := readProcFacts(pid); !f.exeOK {
+				return // cannot tell what it is: leave everything alone
 			}
-			// pid came from a pidfile that may be hours old: only signal it if
-			// it is provably the postgres this runtime dir launched. Foreign
-			// (recycled pid) means the postmaster is already gone, so the dir
-			// is still reaped; unreadable means leave everything alone.
-			switch verifyRecordedPid(pid, pidFile, postgresBinary(dir)) {
-			case verdictUnknown:
-				continue
-			case verdictOurs:
-				forceKill(pid)
-			case verdictForeign:
-			}
+			// A recycled pid — or a pid of another pid namespace, where
+			// the postmaster may still run: serverRunning decides below.
 		} else {
-			// No live postmaster is NOT enough to reap: a sibling process
-			// booting concurrently owns dirs with no postmaster.pid yet —
-			// the embedded-postgres temp_* archive-extraction dir and the
-			// freshly-created runtime dir mid-initdb. Reaping those
-			// mid-boot broke the sibling's extraction ("rename …/temp_…:
-			// no such file or directory") whenever two test binaries
-			// booted pgtest at the same time. Only a dir that has SAT
-			// there past the stale age is genuinely abandoned.
-			if info, statErr := e.Info(); statErr != nil || time.Since(info.ModTime()) < staleInstanceAge {
-				continue
+			healthy := dataIntactAt(dir) == nil && !cwdDeleted(pid)
+			// A healthy one is reaped only once it is clearly orphaned
+			// (older than staleInstanceAge); recently-started ones belong
+			// to live concurrent runs. A broken one is stopped at once:
+			// it can serve nobody.
+			if info, statErr := os.Stat(pidFile); healthy && (statErr != nil || time.Since(info.ModTime()) < staleInstanceAge) {
+				return
+			}
+			if !stopPid(pid) {
+				return
 			}
 		}
-		// Reclaim the leaked shm segment while the pid file (which names it)
-		// still exists — must precede RemoveAll.
-		reclaimShmSegment(pidFile)
-		_ = os.RemoveAll(dir)
+	} else {
+		// No live postmaster is NOT enough to reap: a sibling process
+		// booting concurrently owns dirs with no postmaster.pid yet —
+		// the embedded-postgres temp_* archive-extraction dir and the
+		// freshly-created runtime dir mid-initdb. Reaping those
+		// mid-boot broke the sibling's extraction ("rename …/temp_…:
+		// no such file or directory") whenever two test binaries
+		// booted pgtest at the same time. Only a dir that has SAT
+		// there past the stale age is genuinely abandoned.
+		if info, statErr := e.Info(); statErr != nil || time.Since(info.ModTime()) < staleInstanceAge {
+			return
+		}
 	}
+	// A postmaster this process cannot see — one started in another pid
+	// namespace, whose pid file names a pid of that namespace — may still
+	// run from this dir. Its data directory is never removed under it.
+	if serverRunning(dir) {
+		return
+	}
+	// Reclaim the leaked shm segment while the pid file (which names it)
+	// still exists — must precede RemoveAll.
+	reclaimShmSegment(pidFile)
+	_ = os.RemoveAll(dir)
 }
 
 // portsInUse names the runtime dirs (by port) a live process is still using:
@@ -469,14 +496,37 @@ func reapStaleInstances() {
 // serves a whole fan-out, which on a loaded machine (or across a sleep, which
 // ages every file by the wall clock) easily outlives staleInstanceAge, and
 // SIGKILLing it killed every test still using it.
-func portsInUse() map[string]bool {
+//
+// A pooled server is in use while any lease of its scope is held, whichever
+// pid namespace holds it (lease.go). The pool an older forge keeps
+// (legacyPoolStateFile) still names its users by pid.
+func portsInUse() map[string]bool { return portsInUseExceptBoot("") }
+
+// The reaper holding skipBoot's lock must not count its own lock as a boot.
+func portsInUseExceptBoot(skipBoot string) map[string]bool {
 	in := map[string]bool{}
-	if st := readPoolState(); st.Port != 0 && len(prunePIDs(st.Users)) > 0 {
+	for _, scope := range poolScopes() {
+		if st := readPoolStateOf(scope); st.Port != 0 && liveLeases(scope, "", false) > 0 {
+			in[strconv.FormatUint(uint64(st.Port), 10)] = true
+		}
+	}
+	if st := readLegacyPoolState(); st.Port != 0 && len(prunePIDs(st.Users)) > 0 {
 		in[strconv.FormatUint(uint64(st.Port), 10)] = true
 	}
 	entries, _ := os.ReadDir(instanceRoot())
 	for _, e := range entries {
 		if !e.IsDir() {
+			continue
+		}
+		// A standalone server's owner holds its owner lock: in use, from any
+		// pid namespace, whatever ownerFile's pid looks like from here.
+		if ownerLockHeld(filepath.Join(instanceRoot(), e.Name())) {
+			in[e.Name()] = true
+			continue
+		}
+		// A server mid-boot has neither an owner nor a postmaster yet.
+		if dir := filepath.Join(instanceRoot(), e.Name()); dir != skipBoot && bootClaimHeld(dir) {
+			in[e.Name()] = true
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(instanceRoot(), e.Name(), ownerFile))
@@ -602,13 +652,10 @@ func NewClone(template string) (*sql.DB, func(), error) {
 // newOnShared creates the scratch database on the shared server, empty or as
 // a copy of template.
 func newOnShared(template string) (*sql.DB, func(), error) {
-	s, err := boot()
-	if err != nil {
-		return nil, nil, err
-	}
 	name := scratchName(scratchTestPrefix)
-	if _, err := s.baseDB.Exec(createDatabaseSQL(name, template)); err != nil {
-		return nil, nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
+	s, err := createOnShared(createDatabaseSQL(name, template))
+	if err != nil {
+		return nil, nil, wrapCreate(name, err)
 	}
 
 	dsn := replaceDBName(s.baseURL, name)
@@ -648,6 +695,50 @@ func newOnShared(template string) (*sql.DB, func(), error) {
 	return db, cleanup, nil
 }
 
+// createOnShared runs stmt (a CREATE DATABASE) on this process's shared
+// server, booting it on first use. When the server fails it for a reason a
+// fresh server fixes (brokenServerError: its data directory lost a file, or
+// it is shutting down; lostServerError: it refuses connections, its
+// postmaster dead), the binding is dropped and the create retried ONCE
+// on a re-attached server: the attach replaces a broken shared server under
+// the pool lock (health.go). An external FORGE_TEST_POSTGRES_URL server is
+// never retried; its owner fixes it.
+func createOnShared(stmt string) (*server, error) {
+	s, err := boot()
+	if err != nil {
+		return nil, bootError{err}
+	}
+	_, err = s.baseDB.Exec(stmt)
+	if err == nil || !(brokenServerError(err) || lostServerError(err)) || !healShared() {
+		return s, err
+	}
+	s, err = boot()
+	if err != nil {
+		return nil, bootError{err}
+	}
+	if _, err := s.baseDB.Exec(stmt); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// bootError marks a createOnShared failure that happened before any
+// CREATE DATABASE ran, so callers report it as the boot error it is.
+type bootError struct{ err error }
+
+func (e bootError) Error() string { return e.err.Error() }
+func (e bootError) Unwrap() error { return e.err }
+
+// wrapCreate reports a createOnShared failure: a boot error as itself, as
+// before createOnShared existed; a failed CREATE DATABASE under its name.
+func wrapCreate(name string, err error) error {
+	var be bootError
+	if errors.As(err, &be) {
+		return be.err
+	}
+	return fmt.Errorf("pgtest: create database %s: %w", name, err)
+}
+
 // NewURL creates a fresh, uniquely-named, empty database on the shared
 // server like New, but returns its connection DSN (a postgres:// URL)
 // instead of an open *sql.DB. Use this when the consumer is a separate
@@ -655,13 +746,10 @@ func newOnShared(template string) (*sql.DB, func(), error) {
 // boots a generated server. The returned cleanup drops the database; the
 // caller must not hold connections past it.
 func NewURL() (dsn string, cleanup func(), err error) {
-	s, err := boot()
-	if err != nil {
-		return "", nil, err
-	}
 	name := scratchName(scratchTestPrefix)
-	if _, err := s.baseDB.Exec("CREATE DATABASE " + name); err != nil {
-		return "", nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
+	s, err := createOnShared("CREATE DATABASE " + name)
+	if err != nil {
+		return "", nil, wrapCreate(name, err)
 	}
 	cleanup = func() {
 		_, _ = s.baseDB.Exec(

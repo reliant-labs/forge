@@ -246,6 +246,24 @@ func (b *builder) browserEnvCond(idExpr string, s Scope) string {
 	return "has(" + b.strArray(s.EnvIDs) + ", " + idExpr + ")"
 }
 
+// browserInstanceCond restricts a browser table's SessionId to the sessions
+// the scope's instances sent spans for ("" when the scope names no instance).
+// The browser tables keep no resource attributes, but every span a dev
+// instance's browser sends carries both its instance and its session. The
+// spans are read from a day before the range, as sessionDays reads sessions:
+// a session that began earlier still belongs to the instance. Rows with no
+// session (a server-side product event) are never an instance's.
+func (b *builder) browserInstanceCond(s Scope) string {
+	ic := b.instanceCond(s)
+	if ic == "" {
+		return ""
+	}
+	w := s
+	w.Start = s.Start.Add(-24 * time.Hour)
+	return "SessionId IN (SELECT " + spanSession + " FROM " + b.table(s, "otel_traces") + " " +
+		where([]string{b.rangeCond("Timestamp", w), spanSession + " != ''", ic}) + ")"
+}
+
 // browserConds compiles everything that narrows a read of one browser table:
 // the scope (environments, services, attribute filters), the panel's own
 // predicates and the request's filters. where applies per row; having applies
@@ -261,6 +279,12 @@ func (b *builder) browserConds(table string, q PanelQuery) (where, having []stri
 		}
 	} else if e := b.browserEnvCond("EnvId", sc); e != "" {
 		where = append(where, e)
+	}
+	// error_hourly has no SessionId: compileIssues narrows it by instance.
+	if table != tblIssues {
+		if e := b.browserInstanceCond(sc); e != "" {
+			where = append(where, e)
+		}
 	}
 	preds := make([]PanelPredicate, 0, len(sc.Filters)+len(q.Panel.Where)+len(q.Filters))
 	for _, f := range sc.Filters {
@@ -394,15 +418,24 @@ func (q PanelQuery) compileIssues(b *builder) (Stmt, PanelShape, error) {
 	if err != nil {
 		return Stmt{}, PanelShape{}, err
 	}
-	hourly := append([]string{b.rangeCondSec("Hour", w)}, hw...)
 	// The same conditions read error_events: its columns of those names match.
 	events := append([]string{b.rangeCond("Timestamp", w)}, hw...)
+	// error_hourly keeps no session, so an instance's issues are counted from
+	// its error_events instead: the same counts, over the same hours.
+	var agg string
+	if e := b.browserInstanceCond(w); e != "" {
+		events = append(events, e)
+		agg = "  SELECT ServiceName, RawStackHash, count() AS events, uniq(SessionId) AS sessions,\n" +
+			"         min(Timestamp) AS first_seen, max(Timestamp) AS last_seen\n" +
+			"  FROM " + b.table(q.Scope, "error_events") + "\n  " + where(events) + "\n"
+	} else {
+		agg = "  SELECT ServiceName, RawStackHash, sum(Events) AS events, uniqMerge(Sessions) AS sessions,\n" +
+			"         min(FirstSeen) AS first_seen, max(LastSeen) AS last_seen\n" +
+			"  FROM " + b.table(q.Scope, tblIssues) + "\n  " + where(append([]string{b.rangeCondSec("Hour", w)}, hw...)) + "\n"
+	}
 	events = append(events, "(ServiceName, RawStackHash) IN (SELECT ServiceName, RawStackHash FROM agg)")
 
-	sql := "WITH agg AS (\n" +
-		"  SELECT ServiceName, RawStackHash, sum(Events) AS events, uniqMerge(Sessions) AS sessions,\n" +
-		"         min(FirstSeen) AS first_seen, max(LastSeen) AS last_seen\n" +
-		"  FROM " + b.table(q.Scope, tblIssues) + "\n  " + where(hourly) + "\n" +
+	sql := "WITH agg AS (\n" + agg +
 		"  GROUP BY ServiceName, RawStackHash\n" +
 		"  ORDER BY events DESC, last_seen DESC, ServiceName, RawStackHash\n" +
 		"  LIMIT " + strconv.Itoa(MaxPanelIssues+1) + "\n)\n" +

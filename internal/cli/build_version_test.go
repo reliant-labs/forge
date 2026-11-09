@@ -4,6 +4,8 @@ import (
 	"context"
 	"regexp"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestResolveBuildVersion_OverrideWins confirms a non-empty override
@@ -65,6 +67,7 @@ var devVersionRE = regexp.MustCompile(`^0\.0\.0-dev\.\d+$`)
 // sentinel "0.0.0-dev.<digits>" and commit collapses to "none". This is
 // the path a non-git source checkout (e.g. a tarball) takes.
 func TestResolveBuildVersion_DevTimeFallback(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	withDir(t, dir, func() {
 		info := resolveBuildVersion(context.Background(), "")

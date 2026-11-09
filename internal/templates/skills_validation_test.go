@@ -85,6 +85,7 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ─── shared fixtures ────────────────────────────────────────────────────
@@ -425,6 +426,7 @@ var knownDotForgeEntries = map[string]bool{
 	"ci":                    true, // forge ci gate's per-check logs, .forge/ci/<lane>/<check>.log when git does not ignore tmp/ (cli.gateLogDir)
 	"observability":         true, // forge env up renders the local forwarder's pipeline into .forge/observability/forwarder.yaml (clickstack.ForwarderConfigDir)
 	"identity":              true, // forge env up writes a host-run managed identity's non-secret outputs to .forge/identity/<name>.json (internal/cli/up_identity.go)
+	"obs":                   true, // forge env up writes a hosted dev stack's token files and its telemetry decision to .forge/obs/ (internal/devtelemetry)
 	"runtime-config":        true, // forge env up renders an out-of-tree frontend's config.js into .forge/runtime-config/<frontend>/config.js (internal/cli/frontend_config_refresh.go)
 	"debug":                 true,
 	"debug-session.json":    true,
@@ -1060,6 +1062,7 @@ func TestSkillsAnnotationFieldReferencesExist(t *testing.T) {
 // extraction or validation logic regresses to a no-op, this trips before
 // the suite silently stops catching drift.
 func TestSkillsValidatorsCatchKnownBadClaims(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := cli.NewRootCmd()
 	tree := scaffoldTree(t)
 
@@ -2062,6 +2065,7 @@ func validateProtoPackage(block fencedBlock, c protoPkgClaim) string {
 }
 
 func TestSkillsProtoPackagesMatchEmitter(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	emitted := emittedServiceProtoPackage(t)
 	if !servicePkgFormRE.MatchString(emitted) {
 		t.Fatalf("scaffold emits package %q, which no longer matches %s — update the rule, then the skills",

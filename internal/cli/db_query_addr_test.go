@@ -19,6 +19,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/dbquery/kubedial"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestValidateDBQueryAddr(t *testing.T) {
@@ -75,6 +76,7 @@ func TestDBQueryAddrFlagsAreParsed(t *testing.T) {
 }
 
 func TestDBQueryAddrRefusesAHostedEnv(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	withKCLFixture(t, hostedDBQueryFixture("open"))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	fake := &fakeQueryDatabase{reply: queryDatabaseReply}

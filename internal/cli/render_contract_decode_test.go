@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The render-contract goldens (internal/cli/testdata/render_contract, owned by
@@ -159,6 +160,7 @@ func TestRenderContract_RuntimeFacts(t *testing.T) {
 // SAME deploy — hosting is per workload, never an env mode — plus compose and
 // host-infra. Host and build-only workloads join no group.
 func TestRenderContract_MixedEnvGroupsPerWorkloadRuntime(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	e, _ := loadContract(t, "mixed")
 	rts := runtimesOf(e)
 	for _, want := range []string{RuntimeHost, RuntimeCompose, RuntimeCluster, RuntimeHosted, RuntimeBuildOnly} {

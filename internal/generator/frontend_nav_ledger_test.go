@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestNavScaffoldRecordsBirthHash pins the ledger write that the nav
@@ -23,6 +24,7 @@ import (
 // The bug this pins was silent in exactly that way, which is why the
 // assertion is on the ledger rather than on the rendered file.
 func TestNavScaffoldRecordsBirthHash(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	t.Parallel()
 
 	// nav.tsx and dashboard.tsx exist only in the nextjs template tree —
@@ -56,6 +58,7 @@ func TestNavScaffoldRecordsBirthHash(t *testing.T) {
 // recording a birth hash must not make these files permanently forge-owned.
 // One changed byte transfers ownership to the user for good.
 func TestNavScaffoldStopsRefreshingAfterEdit(t *testing.T) {
+	testkit.Slow(t, "scaffolds a whole project twice")
 	t.Parallel()
 
 	root := t.TempDir()

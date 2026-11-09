@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestMergeGitignore(t *testing.T) {
@@ -56,6 +58,7 @@ func TestMergeGitignore(t *testing.T) {
 }
 
 func TestMergeScaffoldInto(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	for _, overwrite := range []bool{false, true} {
 		name := "keep"
 		if overwrite {

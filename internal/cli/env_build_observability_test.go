@@ -13,6 +13,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/obsdash"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func seedGeneratedDashboards(t *testing.T, dir, project string) {
@@ -56,6 +57,7 @@ func fetchBundleFiles(t *testing.T, dir string, digest string) map[string]string
 }
 
 func TestEnvBuildBundle_CarriesTheDashboardsAndTheMetricsSchema(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "obs-bundle-project")
 	t.Chdir(dir)
 	stubEnvShape(t, "obs-bundle-project")
@@ -112,6 +114,7 @@ func TestEnvBuildBundle_CarriesTheDashboardsAndTheMetricsSchema(t *testing.T) {
 }
 
 func TestEnvBuildBundle_AnInvalidOwnedDashboardFailsTheCutWithItsLocation(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "obs-bad-project")
 	t.Chdir(dir)
 	stubEnvShape(t, "obs-bad-project")

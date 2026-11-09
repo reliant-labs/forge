@@ -433,6 +433,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
 		HostInfra:           len(entities.Infra) > 0,
+		Buckets:             shapeBucketsOf(entities),
 		Store:               store,
 	})
 	if err != nil {
@@ -742,6 +743,17 @@ func shapeDataAccessOf(e *KCLEntities) *release.ShapeDataAccess {
 	return e.DataAccess
 }
 
+// shapeBucketsOf projects every bucket the env declares, as the render
+// resolved it (an S3 bucket's real name and endpoint; a hosted one by name
+// alone): what the control plane's storage browser lists. Nil when the env
+// declares none, so the shape encodes as it did before the field.
+func shapeBucketsOf(e *KCLEntities) []release.ShapeBucket {
+	if e == nil || len(e.DeclaredBuckets) == 0 {
+		return nil
+	}
+	return e.DeclaredBuckets
+}
+
 // shapeDatabasesOf projects what the env declares about its managed databases:
 // the live-dashboard limits of each database that enables them. A database
 // that does not records nothing, and absence reads as disabled, never open.
@@ -782,6 +794,7 @@ func shapeExternalDatabasesOf(e *KCLEntities) []release.ShapeExternalDatabase {
 			Name: x.Name, Cluster: x.Cluster, Namespace: x.Namespace,
 			Service: x.Service, Database: x.Database, Username: x.Username,
 			PasswordSecret: x.PasswordSecret, PasswordKey: x.PasswordKey, SSLMode: x.SSLMode,
+			CASecret: x.CASecret, CAConfigMap: x.CAConfigMap, CAKey: x.CAKey, TLSServerName: x.TLSServerName,
 			Reach: x.Reach, Port: x.Port,
 		})
 	}
@@ -1059,6 +1072,19 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 	}
 	if len(doc.Shape.Domains) > 0 {
 		fmt.Fprintf(w, "  domains:   %s\n", strings.Join(doc.Shape.Domains, ", "))
+	}
+	if len(doc.Shape.Buckets) > 0 {
+		fmt.Fprintf(w, "  buckets:   %d (names only; no credential is ever recorded)\n", len(doc.Shape.Buckets))
+		for _, b := range doc.Shape.Buckets {
+			line := b.Name + " [" + b.RuntimeKind + "]"
+			if b.Bucket != "" {
+				line += " → " + b.Bucket
+			}
+			if b.PublicRead {
+				line += " (public read)"
+			}
+			fmt.Fprintf(w, "    %s\n", line)
+		}
 	}
 	fmt.Fprintf(w, "  objects:   %d\n", len(doc.Shape.Objects))
 	fmt.Fprintf(w, "  rendered from: %s\n", describeShapeProvenance(doc.Provenance))

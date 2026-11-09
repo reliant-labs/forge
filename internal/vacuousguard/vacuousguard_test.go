@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/repowalk"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,6 +120,7 @@ func TestNoVacuousTests(t *testing.T) {
 // TestQuarantineIsTight makes the ledger a ratchet: an entry that matches no
 // finding must be deleted, so fixing a defect forces its removal.
 func TestQuarantineIsTight(t *testing.T) {
+	testkit.Slow(t, "scans every test in the repository")
 	findings := scanRepo(t)
 	live := map[string]bool{}
 	for _, f := range findings {

@@ -22,6 +22,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/migrationver"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const entityTestProto = `syntax = "proto3";
@@ -78,6 +79,7 @@ func scaffoldEntityProject(t *testing.T) string {
 // existing sequential files it never renames — and the roll-forward policy:
 // a birth writes the up migration and nothing that claims to reverse it.
 func TestWriteBirthMigration_TimestampVersionedAfterExistingAndWritesNoDown(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := filepath.Join(t.TempDir(), "db", "migrations")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

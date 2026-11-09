@@ -14,10 +14,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeTestModule lays out a temp Go module with:
@@ -207,6 +209,7 @@ type User struct {
 // struct). The caller falls through to the "field stays nil"
 // behavior, which is correct.
 func TestResolveCrossPkgInterface_NotAnInterface(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": `package repo
 
@@ -246,6 +249,7 @@ func TestResolveCrossPkgInterface_UnknownAlias(t *testing.T) {
 // imported package fails to load (here: import path that doesn't exist
 // in the module), the resolver returns ok=false rather than crashing.
 func TestResolveCrossPkgInterface_UnloadablePackage(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/handlers/billing/service.go": `package billing
 
@@ -510,6 +514,7 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 // selector forge can't resolve produces a visible TODO comment in the
 // generated NewTest<Svc> body.
 func TestGenerateBootstrapTesting_UnresolvedSelectorTODO(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "",
 		"internal/handlers/billing/service.go": `package billing
@@ -647,6 +652,7 @@ type Deps struct {
 // behavior; computeAutoStubs records the field on the unresolved
 // slice so the template can emit a TODO comment.
 func TestComputeAutoStubs_UnresolvedSelector(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "", // remove the would-be target package
 		"internal/handlers/billing/service.go": `package billing
@@ -753,6 +759,11 @@ func TestMergeExtraImports(t *testing.T) {
 // each field's package from source, separately — 72s of reliant's 74s
 // `generate --steps harness`. The stubs must be exactly the ones a
 // per-directory resolution produces.
+//
+// A local interface embedding a cross-package one (invoice's Notifier) is
+// read through the same resolver and prefetched in the same batch: its
+// embeds used to get a private resolver per service, one `go list -export
+// -deps` each — 13 loads and 30s of reliant's harness step.
 func TestTypesResolver_OneLoadForEveryService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("type-checks fixture modules via the go toolchain; runs in task test")
@@ -767,17 +778,32 @@ type Log interface {
 	Record(action string) error
 }
 `,
+		"internal/events/events.go": `package events
+
+// Sink receives domain events.
+type Sink interface {
+	Emit(name string) error
+}
+`,
 		"internal/handlers/invoice/service.go": `package invoice
 
 import (
 	"example.com/proj/internal/audit"
+	"example.com/proj/internal/events"
 	"example.com/proj/internal/repo"
 )
 
+// Notifier is an event sink the invoice service can flush.
+type Notifier interface {
+	events.Sink
+	Flush() error
+}
+
 // Deps is the invoice service's dependency graph.
 type Deps struct {
-	Repo  repo.Repository
-	Audit audit.Log
+	Repo   repo.Repository
+	Audit  audit.Log
+	Notify Notifier
 }
 `,
 	} {
@@ -792,7 +818,7 @@ type Deps struct {
 	invoiceDir := filepath.Join(root, "internal", "handlers", "invoice")
 	dirs := []string{billingDir, invoiceDir}
 
-	if got, want := depsSelectorImports(dirs), []string{"example.com/proj/internal/audit", "example.com/proj/internal/repo"}; !reflect.DeepEqual(got, want) {
+	if got, want := depsSelectorImports(dirs), []string{"example.com/proj/internal/audit", "example.com/proj/internal/events", "example.com/proj/internal/repo"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("depsSelectorImports = %v, want %v", got, want)
 	}
 	shared := newTypesResolver(root, depsSelectorImports(dirs))
@@ -802,6 +828,21 @@ type Deps struct {
 		if len(got) == 0 || !reflect.DeepEqual(got, want) || !reflect.DeepEqual(gotUnresolved, wantUnresolved) {
 			t.Errorf("%s: shared resolver stubs = %+v (unresolved %v), per-directory = %+v (unresolved %v)",
 				filepath.Base(dir), got, gotUnresolved, want, wantUnresolved)
+		}
+		if dir != invoiceDir {
+			continue
+		}
+		var notifier []string
+		for _, s := range got {
+			if s.FieldName == "Notify" {
+				for _, m := range s.Methods {
+					notifier = append(notifier, m.Name)
+				}
+			}
+		}
+		sort.Strings(notifier)
+		if !reflect.DeepEqual(notifier, []string{"Emit", "Flush"}) {
+			t.Errorf("invoice's Notifier stub has methods %v, want [Emit Flush] (Emit is embedded from events.Sink)", notifier)
 		}
 	}
 	if shared.loads != 1 {

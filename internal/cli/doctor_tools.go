@@ -199,6 +199,11 @@ func airToolCheck() toolCheck {
 		//     in-place .exe build needs v1.65.3, which restored stopping
 		//     the app before building on Windows (v1.65.2 builds while
 		//     it runs, and Windows locks a running .exe).
+		// Not a floor: air before v1.63.7 cannot create a nested tmp_dir
+		// (non-recursive mkdir), which `forge env up` covers by creating
+		// the config's directories before it launches air
+		// (hostlaunch.RunnerSpec.PrepareAirDirs). `forge env up` holds the
+		// air on PATH to this same floor (preferPinnedAirOverOld).
 		Name:           "air",
 		Description:    "air — hot-reload host runner for `forge env up` / `task dev` (.air.toml)",
 		Required:       requiredForAirConfig,

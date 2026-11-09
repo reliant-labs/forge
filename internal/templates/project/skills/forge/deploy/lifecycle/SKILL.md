@@ -35,7 +35,15 @@ forge env delete preview [--yes] [--keep-data] # tear the env down, data include
   (`.forge/hosted-projects.json`), or on the one `--endpoint <url>` names when
   the project is bound to none or several. `--endpoint` must be one of those
   bindings or Reliant cloud; any other host is refused before a credential is
-  sent.
+  sent. `--id <environment-id>` names such an env by the control plane's id
+  instead (refused if the env belongs to another project, or is still
+  declared). `forge env list --orphaned` lists the hosted envs this project no
+  longer declares.
+- Before confirming, `delete` shows the env's id, project, control plane,
+  deployment count and bound custom domains. The control plane refuses to
+  delete an env while a custom domain is bound to it: `forge domain unbind`
+  each first. If the bound domains cannot be read, `delete` stops before
+  confirming and deletes nothing.
 - All three refuse an env that is not hosted. `forge env down` only stops local
   host processes and never touches a control plane.
 
@@ -56,7 +64,7 @@ the env's declared token variable.
 
 ### Scopes for reading what a deployed app is doing
 
-Three scopes belong to the feedback loop (observe, then query). Each is its own
+These scopes belong to the feedback loop (observe, then query). Each is its own
 authority: none implies another product's, and `forge cloud token create
 --scopes` accepts them like any other.
 
@@ -66,6 +74,8 @@ authority: none implies another product's, and `forge cloud token create
 | `obs:triage` | changing an issue's triage state (resolve, ignore, unresolve) | implies `obs:read` at the point of use; a read-only token cannot silence an issue |
 | `obs:write` | authoring the org's observability workspace (dashboards: save, restore, archive, promote) | implies `obs:read` at the point of use; implies nothing else (not `obs:triage`); cannot be bound to one environment |
 | `db:query` | one read-only query against an env's database | implies nothing and is implied by nothing: app data is not telemetry. A real env may restrict it further to people |
+| `storage:read` | reading an env's object storage: list a bucket, read an object's metadata, preview it, mint a short-lived download URL | implies nothing and is implied by nothing, `db:query` included: uploads are not rows. May be bound to one environment; a real env may restrict it further to people (`data_access.storage`) |
+| `deploy:config:read` | a release's config VALUES: a workload's plain env var values and its redacted rendered manifest (`deploy:read` sees names only) | implies nothing and is implied by nothing, `deploy:write` included: shipping a release is not reading what it carries. May be bound to one environment. Secret objects and secret refs never show a value, and a secret-looking plain value shows only as `redacted` (`release.RedactObject`), with no value-derived digest |
 
 `accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK must
 list every member (`db/closed-sets`).

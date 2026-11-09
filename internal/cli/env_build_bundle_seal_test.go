@@ -62,7 +62,7 @@ func fullyDeclaredShape() release.Shape {
 			Funnels: []release.ShapeFunnel{{ID: "onboarding", Title: "Onboarding", Steps: []string{"signup", "first_chat"}, Window: "7d", By: "user"}},
 		}},
 		DeliveryPolicy: &policy,
-		DataAccess:     &release.ShapeDataAccess{DBQuery: release.DBQueryDeny},
+		DataAccess:     &release.ShapeDataAccess{DBQuery: release.DBQueryDeny, Storage: release.StorageAudited},
 		Databases: []release.ShapeDatabase{{Name: "app-db", Dashboards: &release.ShapeDatabaseDashboards{
 			Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1,
 		}}},
@@ -102,6 +102,10 @@ func fullyDeclaredShape() release.Shape {
 			{Name: "reliant", Applier: release.UnitApplierHub},
 		},
 		HostInfra: true,
+		Buckets: []release.ShapeBucket{
+			{Name: "media", RuntimeKind: release.BucketRuntimeS3, Bucket: "acme-prod-media", Endpoint: "https://acct.r2.cloudflarestorage.com"},
+			{Name: "uploads", RuntimeKind: release.BucketRuntimeHosted, PublicRead: true},
+		},
 	}
 }
 

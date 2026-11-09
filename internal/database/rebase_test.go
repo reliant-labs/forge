@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/migrationver"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // gitRepo builds a throwaway repository with a main branch, a migrations
@@ -417,6 +418,7 @@ func TestRebasePreservesRelativeOrderOfABatch(t *testing.T) {
 // set the refusal above protects, and offering to rename it would be the
 // same mistake with a flag in front of it.
 func TestPendingMigrationsExcludesMergedHistory(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	_, migDir := gitRepo(t,
 		[]string{"20260101120000_add_users.up.sql"},
 		[]string{"20260501000000_add_sessions.up.sql"},
@@ -439,6 +441,7 @@ func TestPendingMigrationsExcludesMergedHistory(t *testing.T) {
 // which is precisely what must never be renamed — so this errors instead of
 // guessing.
 func TestPendingMigrationsRefusesWithoutGitHistory(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	migDir := filepath.Join(t.TempDir(), "db", "migrations")
 	if err := os.MkdirAll(migDir, 0o755); err != nil {
 		t.Fatal(err)

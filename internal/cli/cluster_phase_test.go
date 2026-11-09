@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const sampleClustersJSON = `{
@@ -109,6 +111,7 @@ func withFreshLoadBalancers(t *testing.T) {
 // the absence of any ingress shell-out is the assertion (the test would not
 // compile if an installClusterIngressFn seam were still referenced).
 func TestReconcileDeclaredClusters_NoImperativeIngress(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	withReachableDocker(t)
 	withFreshLoadBalancers(t)
 	origState := clusterRuntimeStateFn

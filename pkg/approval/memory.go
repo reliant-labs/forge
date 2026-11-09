@@ -17,6 +17,9 @@ import (
 // concurrent use. A follow-up must not call back into the same MemoryStore:
 // Decide and Redrive hold its lock while the follow-up runs, which is what
 // makes the transition and the follow-up one atomic step.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 type MemoryStore struct {
 	mu    sync.Mutex
 	cfg   config
@@ -28,6 +31,9 @@ var _ Approvals = (*MemoryStore)(nil)
 
 // NewMemoryStore returns an empty MemoryStore. [WithNow] applies; [WithSchema]
 // is ignored.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func NewMemoryStore(opts ...StoreOption) *MemoryStore {
 	return &MemoryStore{cfg: newConfig(opts), items: map[string]*Item{}}
 }
@@ -65,6 +71,9 @@ func matches(it *Item, f Filter) bool {
 }
 
 // Propose implements [Approvals].
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (m *MemoryStore) Propose(_ context.Context, it Item) (Item, error) {
 	it, err := validateProposal(it)
 	if err != nil {
@@ -89,6 +98,9 @@ func (m *MemoryStore) Propose(_ context.Context, it Item) (Item, error) {
 }
 
 // Get implements [Approvals].
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (m *MemoryStore) Get(_ context.Context, id string) (Item, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -101,6 +113,9 @@ func (m *MemoryStore) Get(_ context.Context, id string) (Item, error) {
 
 // List implements [Approvals]. Paging is by offset-free token over creation
 // order, newest first.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (m *MemoryStore) List(_ context.Context, f Filter) (Page, error) {
 	var after int
 	if f.PageToken != "" {
@@ -144,6 +159,9 @@ func (m *MemoryStore) List(_ context.Context, f Filter) (Page, error) {
 }
 
 // ExpireDue implements [Approvals].
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (m *MemoryStore) ExpireDue(_ context.Context, scope string) ([]Item, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -162,6 +180,9 @@ func (m *MemoryStore) ExpireDue(_ context.Context, scope string) ([]Item, error)
 }
 
 // Cancel implements [Approvals].
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (m *MemoryStore) Cancel(_ context.Context, f Filter, note string) (int, error) {
 	if err := validateCancel(f); err != nil {
 		return 0, err
@@ -183,6 +204,9 @@ func (m *MemoryStore) Cancel(_ context.Context, f Filter, note string) (int, err
 
 // Decide implements [Approvals]. A follow-up error leaves the item exactly
 // as it was.
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (m *MemoryStore) Decide(ctx context.Context, d Decision, fn FollowUp) (Item, error) {
 	if err := validateDecision(d); err != nil {
 		return Item{}, err
@@ -246,6 +270,9 @@ func runMemoryFollowUp(ctx context.Context, it *Item, d Decision, fn FollowUp) e
 }
 
 // Redrive implements [Approvals].
+//
+// Deprecated: forge/pkg/approval is out of scope for forge and frozen; it will
+// be removed in forge v2. Copy it into your project if you depend on it.
 func (m *MemoryStore) Redrive(ctx context.Context, f Filter, fn FollowUp) ([]Item, error) {
 	if fn == nil {
 		return nil, invalid("redrive needs a follow-up")

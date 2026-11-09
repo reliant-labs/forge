@@ -112,7 +112,7 @@ func TestFrontendConfigJS_CarriesEnvKCLValues(t *testing.T) {
 		Fields:   testWebFrontendConfig().Fields,
 	}}
 
-	if err := generateFrontendConfigModules(cfg, messages, projectDir, &checksums.FileChecksums{}); err != nil {
+	if err := generateFrontendConfigModules(cfg, messages, projectDir, &checksums.FileChecksums{}, nil); err != nil {
 		t.Fatalf("generateFrontendConfigModules: %v", err)
 	}
 
@@ -152,7 +152,7 @@ func TestFrontendConfigJS_FallsBackWithoutEnvKCL(t *testing.T) {
 		Fields:   testWebFrontendConfig().Fields,
 	}}
 
-	if err := generateFrontendConfigModules(cfg, messages, projectDir, &checksums.FileChecksums{}); err != nil {
+	if err := generateFrontendConfigModules(cfg, messages, projectDir, &checksums.FileChecksums{}, nil); err != nil {
 		t.Fatalf("generateFrontendConfigModules with no env KCL: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestGenerateFrontendConfigModules_WritesTheKeySchema(t *testing.T) {
 		Frontends: []config.FrontendConfig{{Name: "web", Type: "nextjs"}},
 	}
 	messages := []codegen.ConfigMessage{{Name: "WebConfig", Frontend: "web", Fields: testWebFrontendConfig().Fields}}
-	if err := generateFrontendConfigModules(cfg, messages, projectDir, &checksums.FileChecksums{}); err != nil {
+	if err := generateFrontendConfigModules(cfg, messages, projectDir, &checksums.FileChecksums{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(projectDir, "frontends", "web", filepath.FromSlash(codegen.FrontendConfigSchemaFile)))

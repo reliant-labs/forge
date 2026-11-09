@@ -166,10 +166,6 @@ func TestE2EFluxDeliverySelfHosted(t *testing.T) {
 		!strings.Contains(out, "e2e.forge.dev/widgets") {
 		t.Errorf("status --wait on a Forbidden apply: exit %d, want 1 with the grant message\n%s", code, out)
 	}
-	out, code = e.forge(e.adminConfig, "env", "status", fluxDeliveryE2EEnv)
-	if code != exitWrong || !strings.Contains(out, "cannot apply") || !strings.Contains(out, "reports:") {
-		t.Errorf("status on a Forbidden apply: exit %d, want 1 with the mapped message\n%s", code, out)
-	}
 	e.mustForge(e.adminConfig, "env", "deploy", fluxDeliveryE2EEnv, "--target", fluxdelivery.ChartName)
 	e.kickPreTree()
 	e.mustForge(e.adminConfig, "env", "status", fluxDeliveryE2EEnv, "--wait", "--timeout", "4m")

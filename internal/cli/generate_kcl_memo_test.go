@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // countKCLEvaluations replaces the render seam with a fake that answers every
@@ -78,6 +80,7 @@ func writeKCLMemoFile(t *testing.T, dir, rel, content string) {
 // while nothing it reads has changed, and a step that rewrites a deploy file
 // or forge.yaml gets a fresh one.
 func TestKCLRenderMemo_OneEvaluationPerInputState(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	evals, _ := countKCLEvaluations(t, 0)
 	dir := writeKCLMemoProject(t, "dev")
 	defer beginKCLRenderMemo()()
@@ -118,6 +121,7 @@ func TestKCLRenderMemo_OneEvaluationPerInputState(t *testing.T) {
 // command: `forge env up` renders an env twice on purpose, with the port
 // allocator in states the key does not see.
 func TestKCLRenderMemo_OffOutsideAGenerateRun(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	evals, _ := countKCLEvaluations(t, 0)
 	dir := writeKCLMemoProject(t, "dev")
 
@@ -147,6 +151,7 @@ func TestKCLRenderMemo_OffOutsideAGenerateRun(t *testing.T) {
 // envs the memo cannot answer are evaluated at the same time, the results come
 // back in the order asked, and a second walk is answered from the memo.
 func TestRenderEnvsPure_EvaluatesTheMissesConcurrentlyInOrder(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	evals, peak := countKCLEvaluations(t, 2)
 	envs := []string{"dev", "prod", "staging"}
 	dir := writeKCLMemoProject(t, envs...)

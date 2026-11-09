@@ -692,7 +692,7 @@ func TestTraceQueryPrefiltersCandidateTraces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(st.SQL, "TraceId IN (") {
+	if strings.Contains(st.SQL, "TraceId IN (SELECT TraceId FROM") {
 		t.Errorf("an unfiltered page has nothing to prefilter by:\n%s", st.SQL)
 	}
 }

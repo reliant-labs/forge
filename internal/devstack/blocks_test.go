@@ -3,11 +3,14 @@ package devstack
 import (
 	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestAllocatePortDefaultKeyIsBase: key "" ⇒ block 0 ⇒ base unchanged, with
 // no registry written (the byte-identical default-stack path).
 func TestAllocatePortDefaultKeyIsBase(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	p, err := AllocatePort(dir, 28080, "")
 	if err != nil {
@@ -24,6 +27,7 @@ func TestAllocatePortDefaultKeyIsBase(t *testing.T) {
 // TestAllocatePortKeyedOffsets: distinct keys get disjoint blocks; the same
 // key always returns the same block (memoized).
 func TestAllocatePortKeyedOffsets(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	// First key → block 1 → base+100.
 	a, err := AllocatePort(dir, 28080, "wt-a")
@@ -54,6 +58,7 @@ func TestAllocatePortKeyedOffsets(t *testing.T) {
 // level: two separate AllocatePort calls (simulating the two commands) for
 // the same (base, key) resolve identically because the block is persisted.
 func TestUpDeployIdenticalPort(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	up, err := AllocatePort(dir, 29190, "wt-x")
 	if err != nil {

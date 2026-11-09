@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/deploystate"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Tests for what a control-plane-ledger env's CONTROL PLANE converges of a
@@ -38,6 +39,7 @@ func apiTier() hostedTier { return hostedTier{Name: "api", Kind: hostedTierWorkl
 // on its own clusters is Mixed (forge applies them) AND binds no tier to its
 // control plane — ledger-only. One hosted workload makes it a two-half env.
 func TestLedgerForEntities_ControlPlaneEnvWithOnlyClusterWorkloadsIsLedgerOnly(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "ledger-only-selection")
 	t.Setenv("FORGE_TEST_CP_TOKEN", "rlat_test")
 
@@ -75,6 +77,7 @@ func TestLedgerForEntities_ControlPlaneEnvWithOnlyClusterWorkloadsIsLedgerOnly(t
 // both shipped, and the command exited 2 claiming "nothing shipped". Here the
 // observable is that the hosted wait ran at all.
 func TestDeployRelease_LedgerOnlyEnvAppliesAndDoesNotWaitOrRefuse(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	var wait capturedWait
 	var apply capturedClientDeploy
 	wait.install(t)
@@ -292,6 +295,7 @@ func installShippingApply(t *testing.T, failFirebase bool) {
 // record says so too, so a later plan does not read the release as never
 // applied.
 func TestDeployRelease_PartlyShippedDeployReportsWhatShipped(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	installShippingApply(t, true)
 	dir, ledger := fileLedgerDeployFixture(t)
 
@@ -328,6 +332,7 @@ func TestDeployRelease_PartlyShippedDeployReportsWhatShipped(t *testing.T) {
 // pre-V3 "SHIPS NOTHING … until you run the deploy below", and the document's
 // ships_nothing is false.
 func TestDeployRelease_SuccessfulDeployReportsWhatShipped(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	installShippingApply(t, false)
 	dir, ledger := fileLedgerDeployFixture(t)
 
@@ -368,6 +373,7 @@ func TestDeployRelease_SuccessfulDeployReportsWhatShipped(t *testing.T) {
 // A pinned env refuses the deploy BEFORE the binding moves. The pin used to be
 // read by the apply, after the promotion had been recorded.
 func TestDeployRelease_PinnedEnvRefusedBeforeRecord(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	var apply capturedClientDeploy
 	apply.install(t)
 	dir, ledger := fileLedgerDeployFixture(t)

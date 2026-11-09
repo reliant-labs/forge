@@ -117,8 +117,10 @@ span's context to configured API origins.
 
 The real Chromium SDK contract test is a separate slow tier:
 `npm run build && npx playwright install chromium && npm run test:browser`.
-It verifies exact action → fetch parent IDs and wire `traceparent`, retains
-mouse events in replay, and checks private text/input sentinels are masked.
+It verifies exact action → fetch parent IDs and wire `traceparent`, that the
+fetch spans of unary and stream calls made while an `interaction()` is open
+are its children, retains mouse events in replay, and checks private
+text/input sentinels are masked.
 
 `initBrowserTelemetry` starts the HyperDX browser SDK once per page load
 (errors, console, fetch/XHR, page loads, web vitals, optional replay) and ships
@@ -221,6 +223,81 @@ object, embed` are blocked, images are not inlined and fonts are not collected.
 fetch/XHR spans have their `http.url` / `url.full` stripped of query string and
 fragment; request and response bodies and headers are not captured.
 
+## Interactions: click to usable
+
+The SDK times each RPC. What the user waits for is usually several RPCs, a
+stream's first frame and a render: "open a chat" is a click, a stream, a
+snapshot, a React commit and a paint. `interaction()` (barrel) is one span for
+that whole operation:
+
+```ts
+import { interaction, useInteractionEnd } from "@reliantlabs/forge-web-runtime";
+
+const op = interaction("chat.open", { "chat.id": chatId }); // on intent
+op.mark("snapshot_received"); // optional phase markers (span events)
+op.endAfterPaint({ outcome: "ok" }); // when the screen is usable
+// or, in the component that knows: useInteractionEnd(op, transcriptLoaded);
+```
+
+The result is one root span `chat.open` (kind INTERNAL, attributes
+`interaction.name`, `interaction.scope`, `interaction.outcome`) whose children
+are the browser fetch spans of every RPC made while it was open, which in turn
+parent the server spans.
+
+```ts
+interaction(name: string, attributes?: InteractionAttributes, options?: { scope?: string; timeoutMs?: number }): Interaction
+currentInteraction(scope?: string): Interaction | undefined
+interactionContextInterceptor(): Interceptor // from the barrel or /interceptors
+useInteractionEnd(op: Interaction | null | undefined, ready: boolean, attributes?: InteractionEndAttributes): void
+
+interface Interaction {
+  readonly name: string; readonly scope: string;
+  readonly traceId: string; readonly ended: boolean;
+  setAttributes(attributes: InteractionAttributes): void;
+  mark(name: string, attributes?: InteractionAttributes): void;
+  end(attributes?: InteractionEndAttributes): void;          // { outcome?: string, ...attrs }
+  endAfterPaint(attributes?: InteractionEndAttributes): void;
+  run<T>(fn: () => T): T;
+}
+```
+
+- **Foreground, not async context.** A browser has no async context:
+  `context.with` holds a span only until the first `await`. The interceptor
+  stack already carries the CALLER's context across its own awaits, so a span
+  the caller had active when it made the call (an explicitly traced action,
+  or `op.run()`) stays the parent. Most RPCs of an operation, though, start in
+  effects, query functions and stream hooks with no span active at all. So the
+  runtime holds the open interactions, at most one per `scope` (default
+  `foreground`), and a call made with no active span joins the most recently
+  started one. Starting an interaction in a busy scope ends the old one with
+  outcome `superseded`.
+- **Chosen at call entry.** The choice is made when the call enters the
+  interceptor chain — connect-es runs the outermost interceptor synchronously
+  inside the client call — never after an await, so a call held by auth's
+  `getToken()` (or any awaiting stage) while the user opens something else
+  stays in the interaction it started under. Every runtime interceptor stamps
+  the call on entry if no earlier one has, so `buildRuntimeInterceptors()` and
+  any chain whose outermost stage is a runtime interceptor (e.g.
+  `errorNormalizeInterceptor`) are correct as they are. A chain whose
+  outermost stages are the app's own and await before any runtime stage runs
+  puts `interactionContextInterceptor()` first.
+- **The fetch span is the child, not just the traceparent.** The SDK opens
+  its fetch span from `context.active()` at the instant `fetch()` is called.
+  The interceptor calls `next()` inside the interaction's context, which
+  covers connect-web's unary path (fetch is synchronous with `next()`); a
+  server stream awaits its request body first, so `initBrowserTelemetry`
+  installs a thin wrapper over the SDK's patched fetch that re-enters the
+  context the interceptor recorded for that request.
+- **Ending.** `end()` ends now; `endAfterPaint()` ends after the next painted
+  frame (two `requestAnimationFrame`s), or at once with
+  `interaction.paint: "skipped"` when the page is hidden or there is no rAF.
+  The first end wins. `outcome` defaults to `ok`; `error` also sets the span
+  status. An interaction nobody ends ends after `timeoutMs` (default 60s) as
+  `timeout`. A page hidden while one is open stamps `page.hidden: true`.
+- **Telemetry off.** With no SDK it records nothing, but carries a real
+  synthesized trace id, so its RPCs still share one trace on the server. After
+  `disableTelemetry()` it records nothing either. Nothing here throws.
+
 ## Node and Electron-main telemetry (`/node`)
 
 `initNodeTelemetry` is the browser entry's twin for a Node process — an
@@ -284,6 +361,48 @@ telemetry?.tracer.startActiveSpan("backend.start", (span) => {
 - The global `@opentelemetry/api` tracer, AsyncLocalStorage context manager and
   W3C `traceparent` propagator are this runtime's unless `registerGlobal: false`.
   `reportException` from the barrel reports through it once it is running.
+
+## The dev servers' `/_otel` proxy (`/vite`, `/otel-proxy`)
+
+In the dev loop the page sends OTLP/HTTP to `/_otel/v1/{traces,logs}` on its
+own origin, and the dev server forwards it to `OTEL_EXPORTER_OTLP_ENDPOINT`.
+On a hosted dev stack it also attaches the stack's token from
+`FORGE_OTEL_HEADERS_FILE`, read on every request. Anything that reaches the
+dev server can reach that proxy, any website open in the developer's browser
+included, so it forwards only what the page's own exporter sends:
+
+- a same-origin caller: `Origin` must name the host the browser addressed
+  (`Host`; for the Next.js relay, the `X-Forwarded-Host` Next's rewrite sets
+  from it), and `Sec-Fetch-Site`, when sent, must be `same-origin`. A foreign
+  or missing `Origin`, any of those headers sent twice, or a host value that
+  is not exactly one `host[:port]` is 403, before the method is checked or
+  the body read, and the connection is closed. Loopback is not
+  required: a dev server opened through a workspace preview URL, a tunnel or
+  a LAN address works, because same-origin holds there too.
+- `POST` to `/v1/traces`, `/v1/logs` and `/v1/metrics` under the prefix. Any
+  other method is 405 and any other path 404, compared byte for byte, so
+  traversal and percent-encoded spellings never match.
+- bodies up to 8 MiB, counted as they stream in and buffered before the
+  upstream is contacted; above that, 413.
+- only the page's `content-type` and `content-encoding`, plus the token:
+  never its cookies, `authorization` or anything else, and never a
+  `set-cookie` back.
+
+None of the refusals reaches the upstream. With no upstream, a valid POST is
+answered 204 and every other request is refused the same way.
+
+```ts
+// vite.config.ts: a plugin; requests outside /_otel pass through.
+import { forgeOtelProxy } from "@reliantlabs/forge-web-runtime/vite";
+plugins: [react(), forgeOtelProxy({ upstream: "http://127.0.0.1:4318" })];
+
+// next.config.ts: a rewrite cannot filter or add a header, so rewrite
+// /_otel/:path* to a loopback relay.
+import { startOtelRelay } from "@reliantlabs/forge-web-runtime/otel-proxy";
+const relay = await startOtelRelay({ upstream: "http://127.0.0.1:4318" });
+```
+
+`createOtelProxyHandler` is the shared handler, for any other Node server.
 
 ## The DOM-free interceptors entry point
 

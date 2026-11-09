@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Every platform forge supports has a pinned checksum for every engine, so
@@ -156,6 +159,7 @@ func TestNATSInfoReady(t *testing.T) {
 // The probe reads what a real server sends on connect, and a listener that
 // says nothing (any non-NATS service) is "not ready", promptly.
 func TestNATSReadyProbe(t *testing.T) {
+	testkit.Slow(t, "waits out the probe's 2s read deadline on a silent listener")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -246,6 +250,7 @@ func TestSupervisedEnginesStartAndStop(t *testing.T) {
 			project := t.TempDir()
 			spec := tc.spec(freeTCPPort(t))
 			if err := Start(ctx, project, spec); err != nil {
+				skipIfDownloadUnavailable(t, err)
 				t.Fatalf("start: %v", err)
 			}
 			t.Cleanup(func() { _, _ = StopReport(project, spec) })
@@ -283,5 +288,32 @@ func TestPostgresVersionResolvesAMajor(t *testing.T) {
 		if got := PostgresMajor(in); got != want {
 			t.Errorf("PostgresMajor(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// skipIfDownloadUnavailable skips a test whose engine release could not be
+// downloaded because the server is down or unreachable: the host's fault, not
+// the code's. A wrong pin (4xx, checksum) still fails.
+func skipIfDownloadUnavailable(t *testing.T, err error) {
+	t.Helper()
+	var unavailable *downloadUnavailableError
+	if errors.As(err, &unavailable) {
+		t.Skipf("host resource missing: the engine release download is unreachable: %v", err)
+	}
+}
+
+func TestDownloadStatusMarksOnlyServerErrorsUnavailable(t *testing.T) {
+	var unavailable *downloadUnavailableError
+	for code, want := range map[int]bool{502: true, 503: true, 504: true, 404: false, 403: false} {
+		err := downloadStatus("https://example.test/x.tar.gz", code)
+		if err == nil || errors.As(err, &unavailable) != want {
+			t.Errorf("HTTP %d: err %v, unavailable want %v", code, err, want)
+		}
+		if err != nil && err.Error() != fmt.Sprintf("download https://example.test/x.tar.gz: HTTP %d", code) {
+			t.Errorf("HTTP %d: message changed: %q", code, err)
+		}
+	}
+	if err := downloadStatus("u", 200); err != nil {
+		t.Errorf("HTTP 200: %v", err)
 	}
 }

@@ -140,6 +140,10 @@ The code is a credential: never print it into a shared log or return it from an 
 
 The scaffolded broker serves `POST /auth/register` in development only, so a deployed app is **invite-only** until the env's config sets `auth_self_signup: true`; invite as above. Opting in lets anyone who can reach the app create an account under an address nobody verified and be signed straight in, so first make every bind-by-email check `devidp.User.EmailVerified` (`auth/authorization`). The sign-in screen offers "Create an account" only when the broker serves it (`GET /auth/options`).
 
+### App rows that belong to a user: `forge:identity-subject`
+
+A column holding the identity user id (the token's `sub`) declares `COMMENT ON COLUMN users.external_id IS 'forge:identity-subject';` (`=email` for a login email), and the console links its rows to that user and back. Mark it only when this identity issued the values; another IdP's ids would open the wrong person. The console reads as `forge_ro`, so `forge lint` flags a subject column that role cannot read. Details: `forge project annotations --kind column`.
+
 ## The issuer
 
 `https://<slug>.reliantidentity.com`. The control plane assigns the slug **once**, when the instance is first provisioned, stores it, and never recomputes it, so renaming an env or project cannot move an issuer. The rule it assigns by is `release.IdentitySlug`:

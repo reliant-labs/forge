@@ -69,6 +69,9 @@ permissions:
 #                     Whole-repo guard scans/renders run only on main/full.
 #   checks            forge generate is a no-op, KCL validates, pre-commit hooks,
 #                     Go and npm dependency licenses
+#   golangci          golangci-lint over the packages the entry changed, findings
+#                     in the files it changed (owner, 2026-11-08; #1947), a job
+#                     of its own so it runs beside the two above, not after them
 #
 # THE RULE FOR THIS TIER: a check that cannot finish inside that budget is not
 # on it. A slow test skips under -short and runs on main; a slow job runs on
@@ -83,8 +86,13 @@ permissions:
 #   the flake gate's -race                                   -> test, test-cli (main)
 #
 # `go test` still runs vet's high-confidence analyzers on every package it
-# tests, so a pull request is not unvetted; golangci-lint's findings and a
-# windows-only compile break are found on main and bisected from there.
+# tests, so a pull request is not unvetted; a windows-only compile break is
+# found on main and bisected from there. golangci-lint came back to the merge
+# tier on 2026-11-08 (owner; #1947), after #1931 and #1930 each turned main's
+# Lint red the moment they merged: the `golangci` job lints only the packages
+# an entry changed, so its cost follows the diff, not the repo, and it is a job
+# of its own beside test-short and checks so it never lengthens them. The
+# whole-repo pass (what a change broke elsewhere) stays in lint, on main.
 #
 # The merge tier runs over main plus the entries ahead of it. The slow tier
 # stays on main: in the queue it would hold every merge behind a 30-minute
@@ -116,8 +124,12 @@ permissions:
 # and `CI gate` queues again behind the last of them, so every job a pull
 # request runs is another place to wait. It ran 8 (13 before the pre-commit,
 # license-gate and Library Lint workflows were folded in, 9 once the guards
-# joined it); it runs 5, gate included: two short shards and an independent
-# changed-test repetition entry. No full guard runs extend those entries.
+# joined it); in the merge queue it runs 4, gate included: test-short (one
+# entry, the flake gate inside it), checks, golangci and the gate. No full
+# guard runs extend those entries. golangci is the one job added back since
+# (owner, 2026-11-08): a lint step at the end of test-short or checks would
+# have lengthened the slower of them by the lint's own time, and the merge
+# queue's budget is wall time, not runner slots.
 #
 # CACHE-SOUND REPLAY. The -short tier is held cache-sound (reliant.md,
 # "Testing tiers"), so a package whose inputs did not change replays main's
@@ -259,6 +271,14 @@ jobs:
       - uses: ./.github/actions/restore-go-caches
         with:
           scope: short
+      # Not used by the step below (the action brings its own copy): this is
+      # what saves the ci-tool-golangci-lint cache entry the merge tier's
+      # `golangci` job restores, because install-release-tool saves only on a
+      # push to main and no other main job installs golangci-lint through it.
+      - name: Install golangci-lint (saves the merge tier's cache)
+        uses: ./.github/actions/install-release-tool
+        with:
+          tool: golangci-lint
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -405,18 +425,16 @@ jobs:
       # missing tool fails under CI=true rather than skipping.
       - uses: ./.github/actions/embedded-postgres-cache
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # Authenticated for the rate limit; see the same step in `test`.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
       # Match test-short-warm's PATH for cache-sound result replay.
       - name: Install Task
-        uses: arduino/setup-task@v3
+        uses: ./.github/actions/install-release-tool
         with:
-          version: 3.52.0
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: task
       - name: Go tests (-short)
         if: ${{ matrix.args != '' }}
         env:
@@ -529,17 +547,9 @@ jobs:
       # — they deliberately fail rather than report an empty inventory as a
       # pass, so this is a hard dependency of the test job, not a nicety.
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # Without a token the action resolves buf's release through an
-          # UNAUTHENTICATED api.github.com call, rate-limited to 60/hour
-          # per runner IP and shared with every other job on that host.
-          # Exhausted, the step dies with "API rate limit exceeded" and
-          # the job fails for a reason that has nothing to do with the
-          # commit. The built-in token lifts that to 1000/hour per
-          # repository; contents: read is all a release lookup needs.
-          # Same failure mode ci.yml already pins KCL_VERSION to avoid.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       # TestDBReset_* shell out to the golang-migrate CLI and carry no e2e
       # tag. They live in internal/cli (test-cli installs it too); this job
       # keeps the install so no package here can lose a tool by moving.
@@ -609,19 +619,17 @@ jobs:
       # TestDBReset_* (internal/cli/db_reset*_test.go).
       - uses: ./.github/actions/embedded-postgres-cache
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # Authenticated for the rate limit; see the same step in `test`.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
       # Full CLI tests execute rendered Taskfiles; do not skip them when a
       # runner lacks Task. Pin the version exercised by these fixtures.
       - name: Install Task
-        uses: arduino/setup-task@v3
+        uses: ./.github/actions/install-release-tool
         with:
-          version: 3.52.0
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: task
       - name: Check the test-job partition
         run: scripts/ci-test-packages.sh check
       - name: Go tests (internal/cli)
@@ -669,17 +677,16 @@ jobs:
           scope: short
       - uses: ./.github/actions/embedded-postgres-cache
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       - name: Install golang-migrate CLI
         uses: ./.github/actions/install-migrate
       # Full-tier changed-test repetition can include the Taskfile fixtures.
       - name: Install Task
-        uses: arduino/setup-task@v3
+        uses: ./.github/actions/install-release-tool
         with:
-          version: 3.52.0
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tool: task
       # The pull request's command, flags and all: a result is keyed on the
       # test flags, so any other spelling would replay nothing there.
       - name: Go tests (-short, every package)
@@ -1017,8 +1024,9 @@ jobs:
       # forge is semver at major 1: an incompatible change to pkg/ fails unless
       # the owner applied `breaking:approved`, and an accepted break must still
       # declare itself (the `api-break` label, or an `API-BREAK:` line in its
-      # body) and ship the codemod or migration playbook in the same diff. A diff that
-      # cannot change pkg/'s API exits in about a second.
+      # body) and ship the codemod or migration playbook in the same diff. An
+      # `API-BREAK:` line with no break behind it fails too (the release refuses
+      # on it). A diff that cannot change pkg/'s API exits in about a second.
       # dev-docs/api-breaks.md. Pull requests only: it reads the pull
       # request's labels and body, and a push to main is already merged.
       - name: pkg/ API compatibility (breaks fail unless the owner accepted them)
@@ -1033,10 +1041,9 @@ jobs:
       # reliant and control-plane). Seconds when proto/ is untouched.
       - name: Install buf
         if: ${{ github.event_name == 'pull_request' }}
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          # Authenticated for the rate limit; see the same step in `test`.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       - name: proto compatibility (buf breaking; breaks fail unless the owner accepted them)
         if: ${{ github.event_name == 'pull_request' }}
         env:
@@ -1081,19 +1088,16 @@ jobs:
       # (buf.gen.yaml). Without buf on PATH the job dies with
       # `exec: "buf": executable file not found` before checking anything.
       #
-      # Pinned rather than left to the action's default so the version is
-      # visible here and cannot move under a byte-identical check. 1.50.0 is
-      # the version every other buf install in these workflows resolves to
-      # (buf-setup-action@v1's default); Taskfile.yml and the Makefile pin
-      # none. Bump them together. pre-commit runs after failures too, so
-      # its formatter prerequisites must not be skipped after an earlier failure.
+      # Every buf here is .github/actions/install-release-tool's pin,
+      # templates.BufVersion (TestReleaseToolPinsMatchForge), so the version
+      # cannot move under a byte-identical check. pre-commit runs after
+      # failures too, so its formatter prerequisites must not be skipped
+      # after an earlier failure.
       - name: Install buf
         if: ${{ !cancelled() }}
-        uses: bufbuild/buf-setup-action@v1
+        uses: ./.github/actions/install-release-tool
         with:
-          version: "1.50.0"
-          # Authenticated for the rate limit; see the same step in `test`.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tool: buf
       # buf.gen.yaml runs protoc-gen-go as a `local:` plugin, and generate
       # formats its Go output with goimports. `forge tools install` puts both
       # on PATH at the versions go.mod resolves, the versions the committed
@@ -1109,30 +1113,18 @@ jobs:
       # Validate KCL used to be a job of its own; it shares this job's forge
       # install and cache scope, and a second runner bought only a second
       # minute of setup.
-      # KCL_VERSION is pinned deliberately. Left unset, the installer
-      # resolves "latest" through an UNAUTHENTICATED api.github.com call,
-      # which is rate-limited to 60/hour per runner IP and shared across
-      # every job on that host — when it is exhausted the script gets an
-      # empty tag and dies with "The KCL version is not found", failing CI
-      # for a reason that has nothing to do with the commit. Pinning also
-      # stops a KCL release from changing this build without a commit.
-      # The pin is templates.KCLVersion; TestKCLVersionIsPinnedEverywhere
-      # holds it equal to the kcl-lang.io modules in go.mod, so the `kcl`
-      # the tests shell out to is the KCL forge embeds.
-      #
-      # Not cached, and no ~/.kcl on PATH: on Linux the installer puts kcl in
-      # /usr/local/bin, which is already on PATH. The cache stored the ~/.kcl
-      # that was never created — an empty 227-byte entry — and a later hit
-      # then SKIPPED the install and left the job with no kcl at all. The
-      # install is ~1s; caching it was never worth a step that can wedge a
-      # whole workflow.
+      # KCL is pinned, never "latest" (which install-cli.sh resolved through
+      # api.github.com's unauthenticated 60/hour budget): the pin is
+      # .github/actions/install-release-tool's, templates.KCLVersion, which
+      # TestKCLVersionIsPinnedEverywhere holds equal to go.mod's kcl-lang.io
+      # modules, so the `kcl` the tests shell out to is the KCL forge embeds.
+      # The action caches the binary alone (never ~/.kcl: a cached EMPTY
+      # ~/.kcl once skipped the install and left jobs with no kcl) and
+      # reinstalls whenever the binary is missing, whatever the cache said.
       - name: Install KCL
-        env:
-          KCL_VERSION: v0.13.2
-        run: |
-          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-          command -v kcl
-          kcl --version
+        uses: ./.github/actions/install-release-tool
+        with:
+          tool: kcl
       - name: Validate KCL manifests
         if: ${{ !cancelled() }}
         run: forge ci validate-kcl
@@ -1182,6 +1174,81 @@ jobs:
           mod-key: ${{ steps.go-caches.outputs.mod-key }}
           mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
+  # golangci-lint on the changed packages, in the merge tier (owner,
+  # 2026-11-08; #1947). The Lint job above stays on main for the whole repo;
+  # this one is the slice a queue entry can be blamed for: the packages its
+  # diff (HEAD^1..HEAD, as the flake gate reads it) changed, findings in the
+  # files it changed (--new-from-rev with --whole-files), root .golangci.yml
+  # and, for pkg/, pkg/.golangci.yml (scripts/ci-golangci-changed.sh).
+  # --whole-files, not changed lines only: #1930's nestif was reported on an
+  # `if` line it never touched (it grew the block inside), and main's Lint is
+  # whole-repo, so a changed file holds no backlog to trip over.
+  #
+  # A JOB OF ITS OWN, beside test-short and checks rather than a step in one
+  # of them: those run 2.5-4 minutes, and the lint (a minute or two on a warm
+  # -short scope, internal/cli the slow case) would go on the end of their
+  # critical path. Here it starts with them and `CI gate` waits on all three.
+  # It restores the -short scope (what golangci's package loads compile is the
+  # same non-race linux build), saves nothing, and installs golangci-lint
+  # through install-release-tool, so a release-download 504 cannot fail it.
+  #
+  # MEASURED on GitHub runners (2026-11-08), job wall time: 57s (pkg/pgtest,
+  # under pkg/.golangci.yml), 77s (internal/npmoverlay), 136s
+  # (internal/templates); with internal/cli in the diff 165s (#1946, one file),
+  # 179s (#1930) and 185s (#1931), of which the lint was 110-126s: internal/cli
+  # is one very large package and is analysed whole. The other two jobs ran
+  # 152-240s (median ~211s) on the 11 merge groups before it that touched
+  # internal/cli, so on such a diff this job can finish last, by up to ~30s.
+  # Every other diff finishes well before them.
+  #
+  # CHECK AFTER MERGE, AND ROLLBACK. On the first merge groups after this
+  # lands, read `CI gate`'s "Job wall times" and "Merge-queue budget" steps:
+  # golangci should finish before test-short and checks except on an
+  # internal/cli diff, and then by no more than ~30s, with the group inside
+  # the tier's budget (five-minute median, ten at worst). If it is the
+  # critical path on ordinary diffs, or groups exceed that budget, revert the
+  # commit that added this job: the job, its `CI gate` dependency and its
+  # merge_group skipped-check entry go together, golangci-lint goes back to
+  # main's Lint alone, and the ci-tool-golangci-lint cache entry ages out.
+  # No ruleset, schema or required-check change is involved (`CI gate` stays
+  # the one required check).
+  golangci:
+    name: golangci-lint (changed packages)
+    if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Depth 2: HEAD^1 is the base the diff is read from (the merge commit's
+      # first parent on a pull request; the entry ahead in the merge queue).
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # No Go file changed: done in seconds, before any toolchain is set up.
+      - name: Changed Go files
+        id: changed
+        run: |
+          set -euo pipefail
+          n=$(git diff --name-only --diff-filter=ACMR HEAD^1 HEAD -- '*.go' | wc -l)
+          echo "${n} changed .go file(s) since HEAD^1"
+          echo "any=$([ "${n}" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v7
+        if: steps.changed.outputs.any == 'true'
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/restore-go-caches
+        if: steps.changed.outputs.any == 'true'
+        with:
+          scope: short
+      - name: Install golangci-lint
+        if: steps.changed.outputs.any == 'true'
+        uses: ./.github/actions/install-release-tool
+        with:
+          tool: golangci-lint
+      - name: golangci-lint (changed packages)
+        if: steps.changed.outputs.any == 'true'
+        run: scripts/ci-golangci-changed.sh HEAD^1
+
   # CI gate: one check that is red exactly when any job above failed or was
   # cancelled (a skipped job — a main-only lane on a pull request — is not a
   # failure). It is the main ruleset's required check and the one the merge
@@ -1197,6 +1264,7 @@ jobs:
       - test-short
       - pr-checks
       - checks
+      - golangci
       - test
       - test-cli
       - test-short-warm
@@ -1243,7 +1311,7 @@ jobs:
           # job that skipped there (a broken `if:`) is a gate that judged
           # nothing, never a pass.
           if [ "$GITHUB_EVENT_NAME" = merge_group ]; then
-            unrun=$(jq -r 'to_entries[] | select(.key == "test-short" or .key == "checks") | select(.value.result == "skipped") | "\(.key): skipped in the merge queue"' <<<"$RESULTS")
+            unrun=$(jq -r 'to_entries[] | select(.key == "test-short" or .key == "checks" or .key == "golangci") | select(.value.result == "skipped") | "\(.key): skipped in the merge queue"' <<<"$RESULTS")
             if [ -n "$unrun" ]; then
               echo "::error::the merge tier did not run:"
               echo "$unrun"

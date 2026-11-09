@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A step that fails through warnOrFail lets the run go on with the steps that
@@ -50,6 +51,7 @@ func laterWriter() GenStep {
 }
 
 func TestGenerate_AFailedStepFailsTheRunItDidNotStop(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "internal", "x.go"), "package internal\n")
 
@@ -77,6 +79,7 @@ func TestGenerate_AFailedStepFailsTheRunItDidNotStop(t *testing.T) {
 
 // --strict keeps its meaning: stop at the failed step (and roll back).
 func TestGenerate_StrictStopsAtTheFailedStep(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "internal", "x.go"), "package internal\n")
 
@@ -104,6 +107,7 @@ func TestGenerate_StrictStopsAtTheFailedStep(t *testing.T) {
 // A step that fails several times (one stale scaffold test per file) is one
 // failed step, and a clean run is no error at all.
 func TestGenerate_StepsFailedCountsSteps(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "internal", "x.go"), "package internal\n")
 

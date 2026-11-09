@@ -28,10 +28,23 @@ type Local struct {
 	// (bin/observability/metrics-schema.json), for `forge obs metrics list`
 	// and `describe`. Nil when the caller has none.
 	Declared func() []metrics.Schema
+	// Instances narrows every read to dev instances. A local ClickStack's
+	// rows carry no instance (nothing stamps one), so it is set only when a
+	// caller asks for one by name.
+	Instances Instances
+}
+
+// scope is LocalScope narrowed to l's instances.
+func (l Local) scope(n Narrow) obsquery.Scope { return l.scopeFor(n, l.Env) }
+
+func (l Local) scopeFor(n Narrow, env string) obsquery.Scope {
+	sc := LocalScope(n, env)
+	l.Instances.apply(&sc)
+	return sc
 }
 
 // Info implements Backend.
-func (l Local) Info() Info { return Info{Env: l.Env, Backend: BackendLocal} }
+func (l Local) Info() Info { return Info{Env: l.Env, Backend: BackendLocal, Instances: l.Instances} }
 
 func (l Local) run(ctx context.Context, st obsquery.Stmt, lim Limits) (Result, error) {
 	return l.Runner.Run(ctx, st, lim)
@@ -58,7 +71,7 @@ func (l Local) Logs(ctx context.Context, req LogsRequest) (LogsResult, error) {
 		return LogsResult{}, compileErr(err)
 	}
 	q := obsquery.LogQuery{
-		Scope:      LocalScope(req.Narrow, l.Env),
+		Scope:      l.scope(req.Narrow),
 		Query:      WithTrace(req.Query, req.TraceID),
 		Severities: req.Severities,
 		Oldest:     req.Oldest,
@@ -137,7 +150,7 @@ func (l Local) Traces(ctx context.Context, req TracesRequest) (TracesResult, err
 		limit = SlowWindow
 	}
 	q := obsquery.TraceQuery{
-		Scope:         LocalScope(req.Narrow, l.Env),
+		Scope:         l.scope(req.Narrow),
 		ErrorsOnly:    req.ErrorsOnly,
 		MinDurationMs: req.MinDurationMs,
 		RootSpanName:  req.Route,
@@ -224,7 +237,9 @@ func (l Local) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 	if err != nil {
 		return TraceResult{}, compileErr(err)
 	}
-	span := obsquery.TraceSpans{Scope: obsquery.Scope{Database: obsquery.LocalDatabase, Local: true, Start: req.Range.From, End: req.Range.To}, TraceID: id}
+	whole := obsquery.Scope{Database: obsquery.LocalDatabase, Local: true, Start: req.Range.From, End: req.Range.To}
+	l.Instances.apply(&whole)
+	span := obsquery.TraceSpans{Scope: whole, TraceID: id}
 	st, err := span.Compile()
 	if err != nil {
 		return TraceResult{}, compileErr(err)
@@ -235,7 +250,7 @@ func (l Local) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 	var lst obsquery.Stmt
 	if logLimit > 0 {
 		lq = obsquery.LogQuery{
-			Scope:  obsquery.Scope{Database: obsquery.LocalDatabase, Local: true, Start: req.Range.From, End: req.Range.To},
+			Scope:  whole,
 			Query:  WithTrace("", id),
 			Oldest: true,
 			Limit:  logLimit,
@@ -344,7 +359,7 @@ func (l Local) Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsRe
 	default:
 		return EndpointsResult{}, Wrong("--sort %q: use requests, p95, errors or rate", req.Sort)
 	}
-	q := obsquery.PanelQuery{Scope: LocalScope(req.Narrow, l.Env), Panel: endpointsPanel()}
+	q := obsquery.PanelQuery{Scope: l.scope(req.Narrow), Panel: endpointsPanel()}
 	st, shape, err := q.Compile()
 	if err != nil {
 		return EndpointsResult{}, compileErr(err)
@@ -433,7 +448,7 @@ func (l Local) MetricsList(ctx context.Context, req MetricsListRequest) (Metrics
 	if req.NoEnv {
 		env = ""
 	}
-	q := obsquery.MetricCatalog{Scope: LocalScope(req.Narrow, env), NameContains: req.NameContains, Limit: req.Limit}
+	q := obsquery.MetricCatalog{Scope: l.scopeFor(req.Narrow, env), NameContains: req.NameContains, Limit: req.Limit}
 	st, err := q.Compile()
 	if err != nil {
 		return MetricsListResult{}, compileErr(err)
@@ -484,7 +499,7 @@ func (l Local) MetricsQuery(ctx context.Context, req MetricsQueryRequest) (Metri
 func (l Local) evalPanel(ctx context.Context, req MetricsQueryRequest) (MetricsQueryResult, error) {
 	p := req.Panel
 	p.Signal = "metrics"
-	scope := LocalScope(req.Narrow, l.Env)
+	scope := l.scope(req.Narrow)
 	o := obsquery.EvalOptions{StepSeconds: int32(min(req.StepSeconds, math.MaxInt32)), Explain: req.Explain, Now: req.Now, MaxSeries: req.MaxSeries}
 	pr, err := obsquery.EvalMetricPanel(ctx, l.evalRunner(), scope, p, o)
 	out := metricsResult(pr)
@@ -504,7 +519,7 @@ func (l Local) evalPanel(ctx context.Context, req MetricsQueryRequest) (MetricsQ
 // MetricsDescribe implements Backend: the catalog entry, the export interval,
 // every attribute key with its distinct-value estimate, and the declared spec.
 func (l Local) MetricsDescribe(ctx context.Context, req MetricsDescribeRequest) (MetricsDescribeResult, error) {
-	scope := LocalScope(req.Narrow, l.Env)
+	scope := l.scope(req.Narrow)
 	cat := obsquery.MetricCatalog{Scope: scope, NameContains: req.Name, Limit: obsquery.ListMetricsMax}
 	cst, err := cat.Compile()
 	if err != nil {
@@ -590,7 +605,7 @@ func (l Local) MetricsDescribe(ctx context.Context, req MetricsDescribeRequest) 
 // MetricsExemplars implements Backend: the sampled observations of a metric,
 // the ones whose trace is stored first.
 func (l Local) MetricsExemplars(ctx context.Context, req MetricsExemplarsRequest) (MetricsExemplarsResult, error) {
-	scope := LocalScope(req.Narrow, l.Env)
+	scope := l.scope(req.Narrow)
 	res := MetricsExemplarsResult{}
 	kind := obsquery.CatalogHistogram
 	if !req.Explain {
@@ -692,6 +707,7 @@ var reservedParams = map[string]bool{
 // written.
 func (l Local) sqlScope(n Narrow) obsquery.Scope {
 	sc := obsquery.Scope{Database: obsquery.LocalDatabase, Local: true, Services: n.Services, Start: n.Range.From, End: n.Range.To}
+	l.Instances.apply(&sc)
 	if l.Env != "" {
 		sc.EnvRestricted = true
 		sc.EnvIDs = []string{""}
@@ -716,6 +732,9 @@ func (l Local) Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 }
 
 func (l Local) querySQL(ctx context.Context, req QueryRequest, step int64) (QueryResult, error) {
+	if err := l.Instances.RefuseSQL("raw SQL (--sql, a sql panel)"); err != nil {
+		return QueryResult{}, err
+	}
 	st, err := obsquery.SQLPanel{Scope: l.sqlScope(req.Narrow), SQL: req.SQL, StepSeconds: step}.Compile()
 	if err != nil {
 		return QueryResult{}, compileErr(err)
@@ -775,7 +794,7 @@ func (l Local) queryPanel(ctx context.Context, req QueryRequest, step int64) (Qu
 		}
 		return res, nil
 	}
-	q := obsquery.PanelQuery{Scope: LocalScope(req.Narrow, l.Env), Panel: p}
+	q := obsquery.PanelQuery{Scope: l.scope(req.Narrow), Panel: p}
 	switch p.Kind {
 	case "line", "heatmap":
 		q.StepSeconds = step

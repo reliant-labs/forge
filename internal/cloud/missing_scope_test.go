@@ -11,6 +11,7 @@ func TestErrorMissingScope(t *testing.T) {
 	}{
 		{403, "this credential does not carry the db:query scope", "db:query", true},
 		{403, "requires the obs:triage scope", "obs:triage", true},
+		{403, "this credential does not carry the deploy:config:read scope", "deploy:config:read", true},
 		{403, "querying this environment's database is disabled by its data_access policy", "", false},
 		{403, "you do not hold the db:query grant in this organization", "", false},
 		{401, "missing the db:query scope", "", false},

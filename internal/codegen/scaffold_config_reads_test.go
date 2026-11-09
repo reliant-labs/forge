@@ -145,3 +145,32 @@ func TestProjectDeclaresClaimsEnricher(t *testing.T) {
 		t.Error("forge's scaffolded middleware.go declares it")
 	}
 }
+
+// In development the session cookie is plain-named, and UserAuth reads
+// Environment from the config SetupAuth takes — a binary_config project's
+// command config as well as the root one. A config that declares no
+// Environment gets no DevSessionCookie line (it would not compile).
+func TestProvidersGraph_DevSessionCookieReadsTheAuthConfigsEnvironment(t *testing.T) {
+	msgs := []ConfigMessage{
+		{Name: "ApiConfig", Fields: append(jwtFields("API_"), ConfigField{Name: "environment", GoName: "Environment", GoType: "string", ProtoType: "string", EnvVar: "API_ENVIRONMENT"})},
+		{Name: "WorkerConfig", Fields: jwtFields("WORKER_")},
+	}
+	for _, tc := range []struct {
+		typ  string
+		root map[string]bool
+		want bool
+	}{
+		{"", map[string]bool{"Environment": true}, true},
+		{"", map[string]bool{}, false},
+		{"ApiConfig", map[string]bool{}, true},
+		{"WorkerConfig", map[string]bool{"Environment": true}, false},
+	} {
+		if got := configTypeDeclares(msgs, tc.typ, tc.root, "Environment"); got != tc.want {
+			t.Errorf("configTypeDeclares(%q, root %v) = %v, want %v", tc.typ, tc.root, got, tc.want)
+		}
+	}
+	providers := renderFormatted(t, "providers-graph.go.tmpl", providersGraphData{Module: "example.com/rbc", ConfigFields: map[string]bool{}, AuthConfigType: "ApiConfig", NoBrokerConfig: true, DevSessionCookie: true})
+	if !strings.Contains(providers, "Config *config.ApiConfig") || !strings.Contains(providers, `authDeps.DevSessionCookie = d.Config.Environment == "development"`) {
+		t.Errorf("UserAuth sets DevSessionCookie from the command config SetupAuth reads:\n%s", providers)
+	}
+}

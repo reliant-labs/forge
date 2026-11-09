@@ -596,6 +596,21 @@ _obs_browser_off = lambda b: Bundle -> bool {
     bool(b.observability) and (not b.observability.enabled or not b.observability.signals.browser)
 }
 
+# The env is opted in to session replay, so the platform keeps replay events:
+# observability is on and either the deprecated env-wide signals.replay is
+# set or a frontend switched replay on with telemetry.replay. A frontend's
+# switch counts only while browser telemetry is on: with it off, nothing
+# records (see _runtime_config_declared), so nothing is opted in for it.
+_obs_replay_opted_in = lambda b: Bundle -> bool {
+    _obs_on(b) and (b.observability.signals.replay \
+        or (not _obs_browser_off(b) and any f in b.frontends { _frontend_replay_on(f) }))
+}
+
+# The frontend switched session replay on (BrowserTelemetry.replay).
+_frontend_replay_on = lambda f: Frontend -> bool {
+    bool(f.telemetry and f.telemetry.replay)
+}
+
 # The base URL of the collector on this machine, for host processes and
 # frontend dev servers. "" when the env has none.
 _obs_local_endpoint = lambda b: Bundle -> str {
@@ -654,6 +669,7 @@ _obs_env = lambda rt: any, b: Bundle, env: {str:} -> {str:str} {
         | ({OTEL_TRACES_EXPORTER = "none"} if _sig and not _sig.traces and not _env_set(env, "OTEL_TRACES_EXPORTER") else {}) \
         | ({OTEL_METRICS_EXPORTER = "none"} if _sig and not _sig.metrics and not _env_set(env, "OTEL_METRICS_EXPORTER") else {}) \
         | ({OTEL_LOGS_EXPORTER = "none"} if _sig and not _sig.logs and not _env_set(env, "OTEL_LOGS_EXPORTER") else {}) \
+        | ({FORGE_PRODUCT_EVENTS = "off"} if _sig and not _sig.product_events and not _env_set(env, "FORGE_PRODUCT_EVENTS") else {}) \
         | _obs_sampler_env(b, env)
 }
 
@@ -817,9 +833,26 @@ _cps_volume = lambda w: any, rt: any, bundle: Bundle -> [tiers.Volume] {
     } for s in _cps_token_for(w, rt, bundle)] if _cps_wires(w, rt, bundle) else []
 }
 
-# Host processes need a loopback port to export to.
-_host_without_local_port = lambda workloads: [any], o: any -> [str] {
-    [w.name for w in workloads if o and o.enabled and o.local_port == 0 and w.runtime and w.runtime.type == "host" and w.kind != "tool"]
+# Host processes need a loopback port to export to — when this env can have a
+# local collector at all. The collector (ClickStack, or the forwarder in front
+# of a destination) is a compose service, so an env that runs no container
+# (host processes and forge.HostInfra only) has none. There `dev_telemetry`
+# decides alone: hosted ships to the org's store through a minted token, and
+# local (by choice or by fallback) exports nothing — no endpoint is injected,
+# so nothing retries a dead port; trace context still propagates. Only a
+# destination, which names a forwarder such an env cannot run, still needs
+# the port.
+_env_runs_containers = lambda workloads: [any], frontends: [any] -> bool {
+    any w in workloads { w.runtime and w.runtime.type == "compose" } or any f in frontends { f.runtime and f.runtime.type == "compose" }
+}
+_host_without_local_port = lambda workloads: [any], frontends: [any], o: any -> [str] {
+    _needs = bool(o and o.enabled and o.local_port == 0) and (_env_runs_containers(workloads, frontends) or bool(o.destination))
+    [w.name for w in workloads if w.runtime and w.runtime.type == "host" and w.kind != "tool"] if _needs else []
+}
+_host_without_local_port_msg = lambda workloads: [any], frontends: [any], o: any -> str {
+    _names = _host_without_local_port(workloads, frontends, o)
+    "${_names} run as host processes, which export OTLP to the local collector's loopback port: set Bundle.observability.local_port (the port the env's compose collector publishes)" if _env_runs_containers(workloads, frontends) else \
+    "${_names} run as host processes in an env that runs no container, so it has no local collector, yet Bundle.observability declares a destination, which only a local forwarder (a compose service) sends to. Set Bundle.observability.local_port to a collector you run yourself, or drop the destination: with no destination and no local_port, a container-free env ships to the hosted store under dev_telemetry auto/hosted when signed in, and exports nothing otherwise"
 }
 
 # Table TTL for the local ClickStack: the longest retention hint, in hours.
@@ -2036,6 +2069,7 @@ _render_observability = lambda b: Bundle -> any {
     {
         "enabled": _o.enabled
         "local_port": _o.local_port
+        "dev_telemetry": _o.dev_telemetry
         "local_endpoint": _obs_local_endpoint(b) or None
         "profiles_endpoint": _obs_profiles_local_endpoint(b) or None
         # The local alerting loop (Alertmanager + evaluator): only beside the
@@ -2062,13 +2096,15 @@ _render_observability = lambda b: Bundle -> any {
             "profiles": _obs_profiles_on(b)
             "metadata": _o.signals.metadata
             "browser": _o.signals.browser
-            "replay": _o.signals.replay
+            # Derived, as policy.opt_in is: the deprecated env-wide switch
+            # or any frontend's telemetry.replay.
+            "replay": _obs_replay_opted_in(b)
         }
         # The opt-out (and the one opt-in), resolved: recorded in the release shape.
         "policy": {
             "enabled": _o.enabled
             "disabled": _obs_disabled(b)
-            "opt_in": ["replay"] if _o.enabled and _o.signals.replay else []
+            "opt_in": ["replay"] if _obs_replay_opted_in(b) else []
         }
         "sampling": {
             "traces_ratio": _o.sampling.traces_ratio
@@ -2079,6 +2115,8 @@ _render_observability = lambda b: Bundle -> any {
             "traces_days": _o.retention.traces_days
             "metrics_days": _o.retention.metrics_days
             "logs_days": _o.retention.logs_days
+            "browser_days": _o.retention.browser_days
+            "overrides": [{"service": o.service, "signal": o.signal, "days": o.days} for o in _o.retention.overrides]
             "replay_days": _o.retention.replay_days
             "errors_days": _o.retention.errors_days
             "product_events_days": _o.retention.product_events_days
@@ -2167,20 +2205,44 @@ _render_bucket = lambda b: Bucket -> any {
     }
 }
 
+# A forge.Bucket as release.ShapeBucket: its name, its runtime kind, and for a
+# BucketOnS3 the real bucket (the declared one, else the name) and endpoint. A
+# MinIO bucket is its name on a loopback server, and a hosted one's cloud name
+# is the platform's (ManagedBucket status), so neither records more.
+_render_declared_bucket = lambda b: Bucket -> any {
+    {k: _v for k, _v in {
+        "name": b.name
+        "runtime_kind": b.runtime.type
+        "public_read": True if b.public_read else Undefined
+        "bucket": (b.runtime.bucket or b.name) if b.runtime.type == "s3" else Undefined
+        "endpoint": b.runtime.endpoint.rstrip("/") if b.runtime.type == "s3" else Undefined
+    } if _v != Undefined}
+}
+
 # An ExternalDatabase as `forge db query` reads it: where its Service is and
 # how to sign in. Nothing is deployed for it, so it reaches no manifest.
 _render_external_database = lambda x: any, bundle: Bundle -> any {
     _target = x.runtime.target if x.runtime else _primary_target(bundle)
+    _namespace = (x.namespace if x.namespace else _target.namespace) if _target else None
+    assert x.sslmode != "verify-full" or _namespace, "ExternalDatabase '${x.name}': verify-full needs a namespace for its CA source and Service DNS identity"
     {
         "name": x.name
         "cluster": _target.cluster if _target else None
-        "namespace": (x.namespace if x.namespace else _target.namespace) if _target else None
+        "namespace": _namespace
         "service": x.service
         "database": x.database
         "username": x.username
         "password_secret": x.password_secret
         "password_key": x.password_key
         "sslmode": x.sslmode
+        if x.ca_secret:
+            "ca_secret": x.ca_secret
+        if x.ca_configmap:
+            "ca_configmap": x.ca_configmap
+        if x.ca_key:
+            "ca_key": x.ca_key
+        if x.tls_server_name:
+            "tls_server_name": x.tls_server_name
         "reach": x.reach
         "port": x.port
     }
@@ -2353,12 +2415,13 @@ render = lambda bundle: Bundle -> any {
         # defaults.
         if bundle.delivery_policy:
             "delivery_policy": _render_delivery_policy(bundle.delivery_policy, bool(bundle.control_plane))
-        # How the env's data may be read (forge db query), resolved: the
-        # declaration, else what the lifecycle implies. Present only when it
-        # is not "audited", the default of an env with no lifecycle: absence
-        # means audited, never open, so a real env's render is unchanged.
-        if _data_access_db_query(bundle.data_access, bundle.lifecycle or "") != "audited":
-            "data_access": {"db_query": _data_access_db_query(bundle.data_access, bundle.lifecycle or "")}
+        # How the env's data may be read (forge db query, the storage
+        # browser), resolved: the declaration, else what the lifecycle
+        # implies. Present only when it is not "audited" for both, the
+        # default of an env with no lifecycle: absence means audited, never
+        # open, so a real env's render is unchanged.
+        if _render_data_access(bundle.data_access, bundle.lifecycle or ""):
+            "data_access": _render_data_access(bundle.data_access, bundle.lifecycle or "")
         # The env's uptime checks, resolved: declared ones plus the ones forge
         # derives for a hosted env. Go records them in the release shape.
         if _render_uptime_checks(bundle):
@@ -2380,6 +2443,12 @@ render = lambda bundle: Bundle -> any {
         # a BucketOnS3 is not forge's, so neither is an entry.
         if any b in bundle.buckets { b.runtime.type == "hosted" }:
             "buckets": [_render_bucket(b) for b in bundle.buckets if b.runtime.type == "hosted"]
+        # EVERY bucket the env declares, whatever its runtime, in the release
+        # shape's vocabulary (release.ShapeBucket): what the control plane's
+        # storage browser lists. Names and where an unmanaged bucket is;
+        # never a credential.
+        if bundle.buckets:
+            "declared_buckets": [_render_declared_bucket(b) for b in bundle.buckets]
         if bundle.external_databases:
             "external_databases": [_render_external_database(x, bundle) for x in bundle.external_databases]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
@@ -2617,13 +2686,15 @@ _frontend_violations = lambda f: Frontend -> [str] {
 }
 
 # A frontend's runtime_config as declared, with the browser opt-out applied:
-# when browser telemetry is off the SDK's ingest path is forced to "off", over
-# anything the author set, because the opt-out is the author's explicit word.
+# when browser telemetry is off the SDK's ingest path is forced to "off", and
+# any OTEL_REPLAY to "false", over anything the author set, because the
+# opt-out is the author's explicit word.
 _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
     # What forge derives from the frontend's own declarations comes FIRST, so
     # an author's runtime_config entry for the same key always wins.
     _merged = _telemetry_runtime_config(f, bundle) | _env_scoped_runtime_config(f) | f.runtime_config
-    (_merged | {OTEL_ENDPOINT = "off"}) if _obs_browser_off(bundle) else _merged
+    (_merged | {OTEL_ENDPOINT = "off"} | ({OTEL_REPLAY = "false"} if "OTEL_REPLAY" in _merged else {})) \
+        if _obs_browser_off(bundle) else _merged
 }
 
 # The keys whose value differs per environment that a web frontend's
@@ -2632,7 +2703,10 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 #
 #   OTEL_ENDPOINT   config.otel_endpoint, or {NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT
 #   ENVIRONMENT     config.environment, or {NEXT_PUBLIC_,VITE_}ENVIRONMENT
-#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY
+#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY (deprecated: a frontend
+#                   that sets telemetry.replay gets OTEL_REPLAY from
+#                   _telemetry_runtime_config, and the build variable is not
+#                   carried over it)
 #
 # otel_gen.ts reads these from the runtime config first (a build variable is
 # only its deprecated fallback): a build variable is baked into the bundle and
@@ -2646,10 +2720,11 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 # A HOSTED frontend gets OTEL_ENDPOINT alone. Its document is written by the
 # control plane, which sets ENVIRONMENT to the environment it actually serves;
 # a literal published in the StaticSite spec would override that (and a fixed
-# OTEL_REPLAY would apply the same replay choice wherever the spec lands), so
-# those stay out of the spec. The ingest path is the author's explicit choice
-# for that environment, and the spec already carries an author's
-# runtime_config the same way.
+# OTEL_REPLAY carried from a build variable would apply that build's replay
+# choice wherever the spec lands), so those stay out of the spec. A hosted
+# frontend switches replay on per env with telemetry.replay instead. The
+# ingest path is the author's explicit choice for that environment, and the
+# spec already carries an author's runtime_config the same way.
 _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     _c = f.config
     _endpoint = _build_var_literal(f, "OTEL_ENDPOINT", _c.otel_endpoint if _c and _c.otel_endpoint else None)
@@ -2659,7 +2734,7 @@ _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     {} if f.type not in ["nextjs", "vite"] else \
         ({OTEL_ENDPOINT = _endpoint} if _endpoint is not None else {}) \
         | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {}) \
-        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted else {})
+        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted and not _frontend_replay_on(f) else {})
 }
 
 # The value of the last env_vars entry that sets the frontend's build variable
@@ -2691,11 +2766,18 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        unless the author named one (or browser telemetry is
 #                        off, which _runtime_config_declared handles)
 #   CONSOLE_CAPTURE      "false" only; unset means capture
+#   OTEL_REPLAY          "true" when telemetry.replay is on and browser
+#                        telemetry is not off; unset means off. Hosted too:
+#                        it is this frontend's choice in this env, which is
+#                        what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
 _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     _t = f.telemetry
+    assert not _frontend_replay_on(f) or not _frontend_hosted(f) or bundle.observability, \
+        "Frontend '${f.name}' sets telemetry.replay = True, but this environment declares no `observability`: the platform keeps replay events only for an env whose observability policy opts in to replay. Declare `observability = forge.Observability {...}` in this env (telemetry.replay then opts it in)."
     ({OTEL_ENDPOINT = _HOSTED_OTEL_PATH} if _frontend_hosted(f) and not _otel_endpoint_declared(f) and not _obs_browser_off(bundle) else {}) \
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
+        | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) and not _obs_browser_off(bundle) else {}) \
         | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {})
 }
 
@@ -2874,6 +2956,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         "env": b.env if b.env else {}
         if b.built_images:
             "built_images": b.built_images
+        if b.inputs:
+            "inputs": b.inputs
     }
 }
 
@@ -2951,6 +3035,7 @@ _render_frontend_config = lambda c: FrontendConfig -> any {
 _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
     {
         "console_capture": t.console_capture
+        "replay": t.replay
         "replay_sample_rate": t.replay_sample_rate
         "sourcemaps": t.sourcemaps
         "service_name": t.service_name if t.service_name else None

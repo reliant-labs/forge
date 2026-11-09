@@ -1955,7 +1955,7 @@ func stepFrontendConfig(ctx *pipelineContext) error {
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return err
 	}
-	return generateFrontendConfigModules(ctx.Cfg, messages, ctx.ProjectDir, ctx.Checksums)
+	return generateFrontendConfigModules(ctx.Cfg, messages, ctx.ProjectDir, ctx.Checksums, func() []envRenderFailure { return ctx.renderedEnvs().failed })
 }
 
 // stepCleanupStale — was Step 3z.
@@ -2415,11 +2415,27 @@ func stepBootstrapTesting(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	if err := generateBootstrapTesting(rows, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums); err != nil {
+	err = generateBootstrapTesting(rows, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums)
+	// The entity test factories could not read the applied schema, so they
+	// wrote nothing. That is a FAILED step, never a warning: the stale-file
+	// sweep deletes what no emitter wrote this run, and a run that let it
+	// read "wrote nothing" as "claims nothing" deleted every committed
+	// factories_gen_test.go (forge bug df26c327). warnOrFail records the
+	// step, which skips the sweep and makes the run exit non-zero naming the
+	// cause; --strict (and a postgres download failure) stops the run here.
+	var factoriesErr *codegen.EntityFactoriesError
+	if errors.As(err, &factoriesErr) {
+		return ctx.warnOrFail(entityFactoriesStep, factoriesErr.Err)
+	}
+	if err != nil {
 		return fmt.Errorf("bootstrap testing generation failed: %w", err)
 	}
 	return nil
 }
+
+// entityFactoriesStep is the name a failed entity-factories emit is recorded
+// under in ctx.SoftFailures.
+const entityFactoriesStep = "entity test factories"
 
 // stepBootstrapMigrate — was Step 6c.
 // Emits db/embed.go (the embedded migration set) when a database driver is

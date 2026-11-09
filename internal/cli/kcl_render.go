@@ -42,6 +42,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
@@ -181,6 +182,11 @@ type KCLEntities struct {
 	// forge.OnHosted), each published as a ManagedBucket. A MinIO or
 	// BucketOnS3 bucket is not one: it reaches its workloads as literals.
 	Buckets []BucketEntity `json:"buckets,omitempty"`
+	// DeclaredBuckets are EVERY bucket the env declares (forge.Bucket on any
+	// runtime), already in release-shape vocabulary: what the shape records
+	// for the control plane's storage browser. Names only. Unlike Buckets,
+	// which drives provisioning, nothing deploys from it.
+	DeclaredBuckets []release.ShapeBucket `json:"declared_buckets,omitempty"`
 	// SecretProvider is the bundle-level secret provider declaration
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider.
@@ -193,8 +199,9 @@ type KCLEntities struct {
 	DeliveryPolicy *release.ShapeDeliveryPolicy `json:"delivery_policy,omitempty"`
 	// DataAccess is Bundle.data_access, resolved: the declared db_query
 	// policy, else the default the env's lifecycle implies (open for a local
-	// or ephemeral env, audited otherwise). Nil when that is audited, the
-	// default: absence means audited, never open.
+	// or ephemeral env, audited otherwise), and the storage policy where it
+	// differs from db_query. Nil when both are audited, the default: absence
+	// means audited, never open.
 	DataAccess *release.ShapeDataAccess `json:"data_access,omitempty"`
 	// ReleaseHealth is Bundle.release_health, resolved. Nil when the env
 	// declares none (the defaults).
@@ -1093,6 +1100,10 @@ type ShellBuild struct {
 	// sets the var to the `<repository>@sha256:<digest>` it pushed — see
 	// externalBuildGraph.
 	BuiltImages map[string]string `json:"built_images,omitempty"`
+	// Inputs are the globs (relative to the resolved cwd) naming the files
+	// the command reads. Declared, they let a build whose fingerprint and
+	// pushed image are unchanged be skipped — see build_external_inputs.go.
+	Inputs []string `json:"inputs,omitempty"`
 }
 
 // RemoteBuildSource mirrors the kcl/schema.k GitSource as it appears
@@ -1179,6 +1190,10 @@ type ExternalDatabaseEntity struct {
 	PasswordSecret string `json:"password_secret"`
 	PasswordKey    string `json:"password_key"`
 	SSLMode        string `json:"sslmode"`
+	CASecret       string `json:"ca_secret,omitempty"`
+	CAConfigMap    string `json:"ca_configmap,omitempty"`
+	CAKey          string `json:"ca_key,omitempty"`
+	TLSServerName  string `json:"tls_server_name,omitempty"`
 	// Reach is how a control plane dials it: "port_forward" (the default,
 	// through the kube API) or "direct" (<service>.<namespace>.svc:<port>
 	// from inside the cluster). forge db query always port-forwards.
@@ -1322,7 +1337,11 @@ type FrontendConfigEntity struct {
 
 // FrontendTelemetryEntity mirrors kcl/schema.k BrowserTelemetry.
 type FrontendTelemetryEntity struct {
-	ConsoleCapture   bool    `json:"console_capture"`
+	ConsoleCapture bool `json:"console_capture"`
+	// Replay is the frontend's session replay switch
+	// (BrowserTelemetry.replay). It reaches the browser as runtime config
+	// (OTEL_REPLAY) and the env's policy as the replay opt-in.
+	Replay           bool    `json:"replay"`
 	ReplaySampleRate float64 `json:"replay_sample_rate"`
 	Sourcemaps       string  `json:"sourcemaps,omitempty"`
 	// ServiceName is the service.name a sourced frontend's SDK reports, as
@@ -1411,6 +1430,14 @@ type ObservabilityEntity struct {
 	Enabled       bool   `json:"enabled"`
 	LocalPort     int    `json:"local_port,omitempty"`
 	LocalEndpoint string `json:"local_endpoint,omitempty"`
+	// DevTelemetry is where a LOCAL stack's telemetry is stored: "auto"
+	// (the schema default), "hosted" or "local". "" from a render that
+	// predates the field, which reads as "auto".
+	DevTelemetry string `json:"dev_telemetry,omitempty"`
+	// DevBrowserHeadersFile is not rendered: `forge env up` sets it when
+	// this run's telemetry goes to the hosted store, naming the file that
+	// holds the browser token the frontend dev server's /_otel proxy sends.
+	DevBrowserHeadersFile string `json:"-"`
 	// ProfilesEndpoint is the full URL of the local profiles collector host
 	// processes push to; "" when profiles are off or go to a destination.
 	ProfilesEndpoint string `json:"profiles_endpoint,omitempty"`
@@ -1433,6 +1460,10 @@ type ObservabilityEntity struct {
 		TracesDays  int `json:"traces_days"`
 		MetricsDays int `json:"metrics_days"`
 		LogsDays    int `json:"logs_days"`
+		// BrowserDays and Overrides are the hosted dev store's: sent with
+		// the dev stack's token request (MintLocalTelemetryToken).
+		BrowserDays int                       `json:"browser_days"`
+		Overrides   []RetentionOverrideEntity `json:"overrides,omitempty"`
 		// The browser-telemetry tables' TTLs, in days (always rendered,
 		// defaulted by the schema).
 		ReplayDays        int `json:"replay_days"`
@@ -1446,6 +1477,13 @@ type ObservabilityEntity struct {
 	} `json:"agent"`
 	// Alerts is Observability.alerts as the author declared it; nil when none.
 	Alerts *AlertsEntity `json:"alerts,omitempty"`
+}
+
+// RetentionOverrideEntity is one forge.RetentionOverride.
+type RetentionOverrideEntity struct {
+	Service string `json:"service"`
+	Signal  string `json:"signal"`
+	Days    int    `json:"days"`
 }
 
 // ObservabilityDestEntity is Observability.destination.
@@ -1521,6 +1559,7 @@ type kclRenderRaw struct {
 	Databases                []DatabaseEntity                          `json:"databases,omitempty"`
 	ExternalDatabases        []ExternalDatabaseEntity                  `json:"external_databases,omitempty"`
 	Buckets                  []BucketEntity                            `json:"buckets,omitempty"`
+	DeclaredBuckets          []release.ShapeBucket                     `json:"declared_buckets,omitempty"`
 	HelmCharts               []HelmChartEntity                         `json:"helm_charts,omitempty"`
 	SecretProvider           *SecretProviderEntity                     `json:"secret_provider,omitempty"`
 	RenderedSecrets          []RenderedSecretEntity                    `json:"rendered_secrets,omitempty"`
@@ -1896,6 +1935,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Databases:                raw.Databases,
 		ExternalDatabases:        raw.ExternalDatabases,
 		Buckets:                  raw.Buckets,
+		DeclaredBuckets:          raw.DeclaredBuckets,
 		SecretProvider:           raw.SecretProvider,
 		Observability:            raw.Observability,
 		DeliveryPolicy:           raw.DeliveryPolicy,
@@ -2377,6 +2417,23 @@ func (e *KCLEntities) HasLocal() bool {
 	}
 	for _, f := range e.Frontends {
 		if f.Runtime.Type == FrontendRuntimeHost {
+			return true
+		}
+	}
+	return false
+}
+
+// HasLocalStore reports whether the env declares the local ClickStack — the
+// compose service `forge env up` starts and `forge obs` queries on this
+// machine. A container-free env (host processes and forge.HostInfra only)
+// has none: its telemetry is the hosted store's (dev_telemetry auto/hosted,
+// signed in) or nobody's.
+func (e *KCLEntities) HasLocalStore() bool {
+	if e == nil {
+		return false
+	}
+	for _, w := range e.Workloads {
+		if w.OnRuntime(RuntimeCompose) && composeServiceName(w) == clickstack.Service {
 			return true
 		}
 	}

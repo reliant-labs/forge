@@ -31,17 +31,37 @@ import {
 {{- end}}
 } from "@tanstack/react-router";
 {{- if not .Public}}
-import { useState } from "react";
+import { useRef, useState } from "react";
 
+import { AcceptInviteForm } from "@/components/accept-invite-form";
+import {
+  AuthAlert,
+  AuthCard,
+  AuthInput,
+  AuthLink,
+  AuthPage,
+  AuthTextButton,
+  PasswordInput,
+} from "@/components/auth-ui";
 import { ForgotPasswordForm } from "@/components/forgot-password-form";
+import { MagicLinkForm } from "@/components/magic-link-form";
 import { PasswordRequirements } from "@/components/password-requirements";
 import { ResetPasswordForm } from "@/components/reset-password-form";
+import { SignInMethods, UnverifiedNotice } from "@/components/sign-in-methods";
+import { SocialCallback } from "@/components/social-callback";
 import Button from "@/components/ui/button";
-import Input from "@/components/ui/input";
 import Label from "@/components/ui/label";
-import { AuthError, signIn, signUp, type PasswordRule } from "@/lib/auth/native-login";
-import { RouteGuard } from "@/lib/auth/route-guard";
+import { VerifyEmailForm } from "@/components/verify-email-form";
+import {
+  AuthError,
+  isVerifySent,
+  signIn,
+  signUp,
+  unmetRules,
+  type PasswordRule,
+} from "@/lib/auth/native-login";
 import { safeReturnTo } from "@/lib/auth/return-to";
+import { RouteGuard } from "@/lib/auth/route-guard";
 import { useAuth } from "@/lib/auth/use-auth";
 import { useAuthOptions } from "@/lib/auth/use-auth-options";
 import { usePasswordPolicy } from "@/lib/auth/use-password-policy";
@@ -154,10 +174,11 @@ const indexRoute = createRoute({
 // Delete this route if your product is gated at the edge and never shows a
 // sign-in page of its own — and delete the broker's routes with it.
 //
-// This is STARTER CODE, deliberately plain: most products restyle sign-in
-// heavily, and an opinionated design here would be harder to replace than a
-// neutral one. It is the same form as the Next.js scaffold's
-// src/app/auth/sign-in/page.tsx; only the routing around it differs.
+// This is STARTER CODE in the theme's neutral tokens. The frame, card, alerts
+// and password field come from src/components/auth-ui.tsx, which every /auth
+// screen shares — restyle sign-in there, once. It is the same form as the
+// Next.js scaffold's src/app/auth/sign-in/page.tsx; only the routing around
+// it differs.
 const signInRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/auth/sign-in",
@@ -180,7 +201,12 @@ const signInRoute = createRoute({
     // unless the server's config sets auth_self_signup (see
     // internal/app/login_broker.go). The screen follows the server, so the
     // two cannot disagree.
-    const { selfSignup } = useAuthOptions();
+    // Which methods this deployment offers — password, passkeys, emailed
+    // links, Google/GitHub — from the identity's LOGIN_POLICY. Legacy
+    // servers say password only.
+    const options = useAuthOptions();
+    const { selfSignup } = options;
+    const offersPassword = options.methods.includes("password");
     const [mode, setMode] = useState<"signIn" | "signUp">("signIn");
     const signingUp = selfSignup && mode === "signUp";
 
@@ -193,17 +219,45 @@ const signInRoute = createRoute({
     // checklist marks exactly those.
     const [serverUnmet, setServerUnmet] = useState<PasswordRule[]>([]);
     const [submitting, setSubmitting] = useState(false);
+    // The password was right but the address is unconfirmed: offer a new link.
+    const [unverified, setUnverified] = useState(false);
+    // "Check your email": an open sign-up mails a link before any session.
+    const [notice, setNotice] = useState<string | null>(null);
+    // The provider round trip came back failed (Google/GitHub sign-in).
+    const socialFailed = new URLSearchParams(window.location.search).get("error") === "social";
     // What a password must contain. Only shown when signing up.
     const policy = usePasswordPolicy();
+    // Whether the typed password misses a rule the policy states. Drawn red
+    // only once the person has tried to submit (`attempted`).
+    const passwordUnmet = policy !== null && unmetRules(policy, password).length > 0;
+    const [attempted, setAttempted] = useState(false);
+    const passwordRef = useRef<HTMLInputElement>(null);
 
     async function onSubmit(event: React.FormEvent) {
       event.preventDefault();
+      // A new password that misses a rule the server's policy states would
+      // only come back refused: say so here, at the checklist, without the
+      // round trip. The server still checks every password it is sent.
+      if (signingUp && offersPassword && passwordUnmet) {
+        setAttempted(true);
+        setError("Your password doesn't meet every requirement yet.");
+        passwordRef.current?.focus();
+        return;
+      }
       setSubmitting(true);
       setError(null);
       setServerUnmet([]);
+      setUnverified(false);
+      setNotice(null);
       try {
         if (signingUp) {
-          await signUp({ email, password });
+          const created = await signUp({ email, ...(offersPassword ? { password } : {}) });
+          if (isVerifySent(created)) {
+            // No session yet: the address is confirmed from the email first.
+            setNotice(created.message);
+            setSubmitting(false);
+            return;
+          }
         } else {
           await signIn({ email, password, ...(totp ? { totp } : {}) });
         }
@@ -220,138 +274,170 @@ const signInRoute = createRoute({
         // the field on the retry turns a dead end into a completable form.
         if (/(totp|factor|otp)/i.test(message)) setNeedsTotp(true);
         setError(message);
+        setUnverified(err instanceof AuthError && err.code === "email_unverified");
         setServerUnmet(err instanceof AuthError ? err.unmet : []);
+        if (err instanceof AuthError && err.unmet.length > 0) setAttempted(true);
         setSubmitting(false);
       }
     }
 
+    // The footer's toggle: sign in and sign up share ONE screen, swapping
+    // behaviour rather than navigating. Both post to the same API and land
+    // in the same place, so a second route would add a page transition and
+    // nothing else.
+    //
+    // Shown only when the server serves /auth/register — a deployed app is
+    // invite-only until its config sets auth_self_signup
+    // (internal/app/login_broker.go explains how an invite-only app gets
+    // its users).
     return (
-      <div className="flex min-h-full flex-col items-center justify-center py-12">
-        <div className="w-full max-w-sm">
-          <form
-            onSubmit={onSubmit}
-            className="rounded-xl border border-border bg-surface p-8 shadow-sm"
-          >
-            <h1 className="text-xl font-semibold tracking-tight text-ink">
-              {signingUp ? "Create your {{.ProjectName}} account" : "Sign in to {{.ProjectName}}"}
-            </h1>
-
-            <Label className="mt-6" htmlFor="email">
-              Email
-            </Label>
-            <Input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="username"
-              required
-              autoFocus
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-
-            <Label className="mt-4" htmlFor="password">
-              Password
-            </Label>
-            <Input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete={signingUp ? "new-password" : "current-password"}
-              required
-              aria-describedby={signingUp ? "password-requirements" : undefined}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-
-            {signingUp ? (
-              <PasswordRequirements
-                id="password-requirements"
-                policy={policy}
-                password={password}
-                serverUnmet={serverUnmet}
-              />
-            ) : (
-              /*
-                Self-serve reset. The link is emailed only if this app's
-                identity has SMTP configured (forge.ManagedIdentity.smtp) —
-                the /auth/forgot screen says so. Delete this link, the two
-                routes below and the broker's /auth/forgot and /auth/reset
-                to turn password reset off.
-              */
-              <p className="mt-1 text-right text-xs">
-                <a className="font-medium text-accent underline" href="/auth/forgot">
-                  Forgot your password?
-                </a>
-              </p>
-            )}
-
-            {!signingUp && needsTotp ? (
-              <>
-                <Label className="mt-4" htmlFor="totp">
-                  Authentication code
-                </Label>
-                <Input
-                  id="totp"
-                  name="totp"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  value={totp}
-                  onChange={(e) => setTotp(e.target.value)}
-                />
-              </>
-            ) : null}
-
-            {error ? (
-              <p
-                role="alert"
-                className="mt-4 break-words rounded-md border border-danger-border bg-danger-surface p-3 text-sm text-danger-ink"
-              >
-                {error}
-              </p>
-            ) : null}
-
-            <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6">
-              {submitting
-                ? signingUp
-                  ? "Creating your account…"
-                  : "Signing in…"
-                : signingUp
-                  ? "Create account"
-                  : "Sign in"}
-            </Button>
-
-            {/*
-              Sign in and sign up on ONE screen, swapping behaviour rather
-              than navigating: both post to the same API and land in the same
-              place, so a second route would add a page transition and
-              nothing else.
-
-              Shown only when the server serves /auth/register — a deployed
-              app is invite-only until its config sets auth_self_signup
-              (internal/app/login_broker.go explains how an invite-only app
-              gets its users).
-            */}
-            {selfSignup ? (
-              <p className="mt-4 text-center text-sm text-ink-muted">
+      <AuthPage>
+        <AuthCard
+          title={signingUp ? "Create your account" : "Sign in"}
+          description={signingUp ? "Get started with {{.ProjectName}}." : "Welcome back."}
+          footer={
+            selfSignup ? (
+              <p>
                 {signingUp ? "Already have an account?" : "New here?"}{" "}
-                <button
-                  type="button"
-                  className="font-medium text-accent underline"
+                <AuthTextButton
                   onClick={() => {
                     setMode(signingUp ? "signIn" : "signUp");
                     setError(null);
                     setServerUnmet([]);
+                    setAttempted(false);
                   }}
                 >
                   {signingUp ? "Sign in" : "Create an account"}
-                </button>
+                </AuthTextButton>
               </p>
+            ) : null
+          }
+        >
+          <form onSubmit={onSubmit} aria-busy={submitting} className="mt-6">
+            {socialFailed && !error ? (
+              <AuthAlert tone="error" className="mb-5">
+                That sign-in did not complete. Please try again.
+              </AuthAlert>
             ) : null}
+
+            <div className="space-y-5">
+              <div>
+                <Label htmlFor="email">Email</Label>
+                <AuthInput
+                  id="email"
+                  name="email"
+                  type="email"
+                  autoComplete="username"
+                  placeholder="you@example.com"
+                  required
+                  autoFocus
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </div>
+
+              {offersPassword ? (
+                <div>
+                  <Label htmlFor="password">Password</Label>
+                  <PasswordInput
+                    ref={passwordRef}
+                    id="password"
+                    name="password"
+                    autoComplete={signingUp ? "new-password" : "current-password"}
+                    required
+                    aria-describedby={signingUp && policy ? "password-requirements" : undefined}
+                    invalid={signingUp && (serverUnmet.length > 0 || (attempted && passwordUnmet))}
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      // A changed password is a new one: the server's verdict
+                      // on the last one no longer applies to it.
+                      if (signingUp && (serverUnmet.length > 0 || attempted)) {
+                        setServerUnmet([]);
+                        setError(null);
+                      }
+                    }}
+                  />
+
+                  {signingUp ? (
+                    <PasswordRequirements
+                      id="password-requirements"
+                      policy={policy}
+                      password={password}
+                      serverUnmet={serverUnmet}
+                      attempted={attempted}
+                    />
+                  ) : (
+                    /*
+                      Self-serve reset. The link is emailed only if this app's
+                      identity has SMTP configured (forge.ManagedIdentity.smtp) —
+                      the /auth/forgot screen says so. Delete this link, the two
+                      routes below and the broker's /auth/forgot and /auth/reset
+                      to turn password reset off.
+                    */
+                    <p className="mt-2 text-right text-sm">
+                      <AuthLink href="/auth/forgot">Forgot your password?</AuthLink>
+                    </p>
+                  )}
+                </div>
+              ) : null}
+
+              {!signingUp && needsTotp ? (
+                <div>
+                  <Label htmlFor="totp">Authentication code</Label>
+                  <AuthInput
+                    id="totp"
+                    name="totp"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    autoFocus
+                    value={totp}
+                    onChange={(e) => setTotp(e.target.value)}
+                  />
+                  <p className="mt-2 text-sm text-ink-muted">
+                    Enter the 6-digit code from your authenticator app.
+                  </p>
+                </div>
+              ) : null}
+            </div>
+
+            {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
+
+            {unverified ? <UnverifiedNotice email={email} /> : null}
+
+            {notice ? <AuthAlert tone="success">{notice}</AuthAlert> : null}
+
+            {offersPassword || signingUp ? (
+              <Button type="submit" size="xl" fullWidth loading={submitting} className="mt-6 h-11">
+                {submitting
+                  ? signingUp
+                    ? "Creating your account…"
+                    : "Signing in…"
+                  : signingUp
+                    ? "Create account"
+                    : "Sign in"}
+              </Button>
+            ) : null}
+
+            {/*
+              Passkeys, an emailed link and Google/GitHub, each shown only when the
+              identity's LOGIN_POLICY offers it (GET /auth/options).
+            */}
+            {signingUp ? null : (
+              <SignInMethods
+                options={options}
+                email={email}
+                returnTo={returnTo}
+                onSignedIn={async () => {
+                  await refresh();
+                  window.location.assign(returnTo);
+                }}
+              />
+            )}
           </form>
-        </div>
-      </div>
+        </AuthCard>
+      </AuthPage>
     );
   },
 });
@@ -375,11 +461,9 @@ const forgotRoute = createRoute({
   path: "/auth/forgot",
   component: function Forgot() {
     return (
-      <div className="flex min-h-full flex-col items-center justify-center py-12">
-        <div className="w-full max-w-sm">
-          <ForgotPasswordForm signInHref="/auth/sign-in" />
-        </div>
-      </div>
+      <AuthPage>
+        <ForgotPasswordForm signInHref="/auth/sign-in" />
+      </AuthPage>
     );
   },
 });
@@ -392,19 +476,107 @@ const resetRoute = createRoute({
     // search schema would reject the bare /auth/reset navigation.
     const params = new URLSearchParams(window.location.search);
     return (
-      <div className="flex min-h-full flex-col items-center justify-center py-12">
-        <div className="w-full max-w-sm">
-          <ResetPasswordForm
-            userID={params.get("userID")}
-            code={params.get("code")}
-            signInHref="/auth/sign-in"
-            forgotHref="/auth/forgot"
-            // A full navigation, as the sign-in screen does. If the
-            // follow-up sign-in failed the password is still set.
-            onDone={(signedIn) => window.location.assign(signedIn ? "/" : "/auth/sign-in")}
-          />
-        </div>
-      </div>
+      <AuthPage>
+        <ResetPasswordForm
+          userID={params.get("userID")}
+          code={params.get("code")}
+          signInHref="/auth/sign-in"
+          forgotHref="/auth/forgot"
+          // A full navigation, as the sign-in screen does. If the
+          // follow-up sign-in failed the password is still set.
+          onDone={(signedIn) => window.location.assign(signedIn ? "/" : "/auth/sign-in")}
+        />
+      </AuthPage>
+    );
+  },
+});
+
+// ── Emailed links and the social return ────────────────────────────────
+//
+// /auth/magic (a sign-in link), /auth/invite (an invitation), /auth/verify (an
+// address confirmation) and /auth/social/callback (where Google or GitHub
+// returns). Public, outside the shell; the forms are shared with the Next.js
+// scaffold. The emailed-link pages do nothing until a button is pressed, so a
+// mail scanner opening the link spends nothing.
+function query(name: string): string | null {
+  return new URLSearchParams(window.location.search).get(name);
+}
+
+async function landSignedIn(refresh: () => Promise<unknown>, to = "/") {
+  // A full navigation, as the sign-in screen does.
+  await refresh();
+  window.location.assign(to);
+}
+
+const magicRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/magic",
+  component: function Magic() {
+    const { refresh } = useAuth();
+    return (
+      <AuthPage>
+        <MagicLinkForm
+          code={query("code")}
+          signInHref="/auth/sign-in"
+          onSignedIn={() => landSignedIn(refresh)}
+        />
+      </AuthPage>
+    );
+  },
+});
+
+const inviteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/invite",
+  component: function Invite() {
+    const { refresh } = useAuth();
+    return (
+      <AuthPage>
+        <AcceptInviteForm
+          userID={query("userID")}
+          code={query("code")}
+          orgID={query("orgID")}
+          signInHref="/auth/sign-in"
+          onSignedIn={() => landSignedIn(refresh)}
+        />
+      </AuthPage>
+    );
+  },
+});
+
+const verifyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/verify",
+  component: function Verify() {
+    const { refresh } = useAuth();
+    return (
+      <AuthPage>
+        <VerifyEmailForm
+          userID={query("userID")}
+          code={query("code")}
+          signInHref="/auth/sign-in"
+          forgotHref="/auth/forgot"
+          onSignedIn={() => landSignedIn(refresh)}
+        />
+      </AuthPage>
+    );
+  },
+});
+
+const socialCallbackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/social/callback",
+  component: function SocialReturn() {
+    const { refresh } = useAuth();
+    return (
+      <AuthPage>
+        <SocialCallback
+          id={query("id")}
+          token={query("token")}
+          signInHref="/auth/sign-in"
+          onSignedIn={(returnTo) => landSignedIn(refresh, returnTo)}
+        />
+      </AuthPage>
     );
   },
 });
@@ -441,6 +613,10 @@ const routeTree = rootRoute.addChildren([
   signInRoute,
   forgotRoute,
   resetRoute,
+  magicRoute,
+  inviteRoute,
+  verifyRoute,
+  socialCallbackRoute,
 {{- end}}
   ...generatedRoutes,
 ]);

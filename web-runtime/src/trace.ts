@@ -15,8 +15,14 @@
 //   - Otherwise we synthesize a fresh, valid W3C traceparent from a CSPRNG.
 //     The backend still roots a trace we can correlate this request to, and
 //     no browser-side collector is required.
-import { context, propagation } from "@opentelemetry/api";
+import {
+  propagation,
+  trace,
+  TraceFlags,
+  type Context,
+} from "@opentelemetry/api";
 
+import { outgoingContext } from "./interaction-context.js";
 import { rumSessionId } from "./telemetry-gate.js";
 
 /** Matches a well-formed W3C traceparent: version-traceid-spanid-flags. */
@@ -68,6 +74,29 @@ function randomHex(bytes: number): string {
   return out;
 }
 
+/** A random, non-zero W3C trace id. Internal: not part of the barrel. */
+export function randomTraceId(): string {
+  let traceId = randomHex(16);
+  while (traceId === ZERO_TRACE_ID) {
+    traceId = randomHex(16);
+  }
+  return traceId;
+}
+
+/** A random, non-zero W3C span id. Internal: not part of the barrel. */
+export function randomSpanId(): string {
+  let spanId = randomHex(8);
+  while (spanId === ZERO_SPAN_ID) {
+    spanId = randomHex(8);
+  }
+  return spanId;
+}
+
+/** The trace flags a synthesized context carries (setTraceSampled). Internal. */
+export function synthesizedTraceFlags(): number {
+  return traceSampled ? TraceFlags.SAMPLED : TraceFlags.NONE;
+}
+
 /**
  * freshTraceparent synthesizes a valid W3C traceparent. The trace-flags byte
  * reflects the configurable sampled flag (setTraceSampled; default 01 =
@@ -75,16 +104,8 @@ function randomHex(bytes: number): string {
  * all-zero draw (the spec forbids all-zero ids).
  */
 export function freshTraceparent(): string {
-  let traceId = randomHex(16);
-  while (traceId === ZERO_TRACE_ID) {
-    traceId = randomHex(16);
-  }
-  let spanId = randomHex(8);
-  while (spanId === ZERO_SPAN_ID) {
-    spanId = randomHex(8);
-  }
   const flags = traceSampled ? "01" : "00";
-  return `00-${traceId}-${spanId}-${flags}`;
+  return `00-${randomTraceId()}-${randomSpanId()}-${flags}`;
 }
 
 /**
@@ -118,19 +139,32 @@ export function traceIdFrom(value: string | null | undefined): string | null {
  * the browser and backend spans into one trace; otherwise falls back to a
  * synthesized traceparent so propagation ALWAYS happens. Idempotent per
  * request — safe to call once per attempt.
+ *
+ * `ctx` defaults to the context the request should join right now: the
+ * active one, or the open interaction (see interaction.ts) when no span is
+ * active. With no SDK registered there is no propagator, so a valid span
+ * context in `ctx` — an interaction's — is written out directly, and every
+ * RPC of the interaction shares its trace id.
  */
-export function injectTraceContext(header: Headers): void {
+export function injectTraceContext(
+  header: Headers,
+  ctx: Context = outgoingContext(),
+): void {
   const carrier: Record<string, string> = {};
-  propagation.inject(context.active(), carrier, {
+  propagation.inject(ctx, carrier, {
     set(c, k, v) {
       c[k] = String(v);
     },
   });
 
+  const sc = trace.getSpanContext(ctx);
   if (carrier.traceparent && TRACEPARENT_RE.test(carrier.traceparent)) {
     for (const [k, v] of Object.entries(carrier)) {
       header.set(k, v);
     }
+  } else if (sc && trace.isSpanContextValid(sc)) {
+    const flags = (sc.traceFlags & 0xff).toString(16).padStart(2, "0");
+    header.set("traceparent", `00-${sc.traceId}-${sc.spanId}-${flags}`);
   } else {
     header.set("traceparent", freshTraceparent());
   }

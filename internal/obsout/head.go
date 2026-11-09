@@ -47,6 +47,18 @@ type Scope struct {
 	From     time.Time `json:"from"`
 	To       time.Time `json:"to"`
 	Services []string  `json:"services,omitempty"`
+	// Instance is the dev instance the read is narrowed to: a `forge env up`
+	// stack whose telemetry went to the hosted store. Absent for a read of
+	// the whole env.
+	Instance *ScopeInstance `json:"instance,omitempty"`
+}
+
+// ScopeInstance names a dev instance: its id (the local session id), its
+// label ("alice/fix-login") and its user. A --user read names only the user.
+type ScopeInstance struct {
+	ID    string `json:"id,omitempty"`
+	Label string `json:"label,omitempty"`
+	User  string `json:"user,omitempty"`
 }
 
 // Failure is the document of a verb that failed before it had a result: the

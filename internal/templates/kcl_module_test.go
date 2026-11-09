@@ -15,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclvendor"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The kcl/tests fixture corpus.
@@ -545,6 +546,7 @@ func firstDiff(got, want string) string {
 // module's own example env: it renders `output` and no top-level
 // `manifests` (a second, bypass-able applyable stream).
 func TestKCLModule_ExampleRendersOneOutput(t *testing.T) {
+	testkit.Slow(t, "execs the test binary to render KCL")
 	t.Parallel()
 	requireKCLRender(t)
 	entry := filepath.Join(kclModuleRoot(t), "example", "dev", "main.k")

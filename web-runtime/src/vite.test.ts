@@ -4,7 +4,8 @@
 // the frontend's tree (see vite.ts). Driven against a fake server: the
 // behaviour under test is the middleware's, not Vite's.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,7 +14,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   FORGE_RUNTIME_CONFIG_FILE_ENV,
+  forgeOtelProxy,
   forgeRuntimeConfig,
+  type OtelProxyServer,
   type RuntimeConfigServer,
 } from "./vite.js";
 
@@ -180,5 +183,104 @@ describe("forgeRuntimeConfig", () => {
     forgeRuntimeConfig({ file }).configurePreviewServer(f.server);
     expect((await request(f.middlewares, "/config.js")).body).toBe(DOC);
     expect(f.watched).toEqual([]);
+  });
+});
+
+// forgeOtelProxy is ./otel-proxy mounted as middleware; otel-proxy.test.ts
+// covers the rules. Here: what the mount claims, and what it passes through.
+describe("forgeOtelProxy", () => {
+  let upstream: http.Server;
+  let upstreamURL: string;
+  let seen: string[];
+  let dev: http.Server;
+  let devURL: string;
+
+  beforeEach(async () => {
+    seen = [];
+    upstream = http.createServer((req, res) => {
+      seen.push(`${req.method} ${req.url} ${req.headers.authorization ?? "-"}`);
+      req.resume();
+      req.on("end", () => res.end("ok"));
+    });
+    await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+    upstreamURL = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+
+    // A dev server whose middleware stack is the plugin's, then a sentinel
+    // answering 418 for whatever the plugin passed on.
+    const f = fakeServer();
+    const headers = join(mkdtempSync(join(tmpdir(), "forge-otel-vite-")), "h");
+    writeFileSync(headers, "authorization=Bearer%20tok");
+    forgeOtelProxy({
+      upstream: upstreamURL,
+      headersFile: headers,
+    }).configureServer(f.server as OtelProxyServer);
+    const mw = f.middlewares[0];
+    dev = http.createServer((req, res) =>
+      mw?.(req, res, () => {
+        res.statusCode = 418;
+        res.end();
+      }),
+    );
+    await new Promise<void>((r) => dev.listen(0, "127.0.0.1", r));
+    devURL = `127.0.0.1:${(dev.address() as AddressInfo).port}`;
+  });
+  afterEach(async () => {
+    await new Promise((r) => dev.close(r));
+    await new Promise((r) => upstream.close(r));
+  });
+
+  // The page's own exporter: Origin names the host it addressed. The dev
+  // server is reached through a preview host, not loopback, as on a
+  // Reliant workspace.
+  const PAGE_HOST = "5173-ws.workspaces.example";
+  const status = (
+    path: string,
+    method = "POST",
+    origin: string | null = `https://${PAGE_HOST}`,
+  ): Promise<number> =>
+    new Promise((resolveStatus, reject) => {
+      const [host, port] = devURL.split(":");
+      const headers: Record<string, string> = { host: PAGE_HOST };
+      if (origin !== null) headers.origin = origin;
+      const req = http.request({ host, port, path, method, headers }, (res) => {
+        res.resume();
+        res.on("end", () => resolveStatus(res.statusCode ?? 0));
+      });
+      req.on("error", reject);
+      req.end(method === "POST" ? "{}" : undefined);
+    });
+
+  it("is a Vite plugin", () => {
+    const plugin: Plugin = forgeOtelProxy({ upstream: "" });
+    expect(plugin.name).toBe("forge-otel-proxy");
+  });
+
+  it("forwards an ingest POST under /_otel, prefix stripped, token attached", async () => {
+    expect(await status("/_otel/v1/traces")).toBe(200);
+    expect(seen).toEqual(["POST /v1/traces Bearer tok"]);
+  });
+
+  it("refuses everything else under /_otel without contacting the upstream", async () => {
+    expect(await status("/_otel")).toBe(404);
+    expect(await status("/_otel/")).toBe(404);
+    expect(await status("/_otel/v1/../admin")).toBe(404);
+    expect(await status("/_otel/api/v1/orgs")).toBe(404);
+    expect(await status("/_otel/v1/logs", "GET")).toBe(405);
+    expect(seen).toEqual([]);
+  });
+
+  it("refuses a foreign or Origin-less caller without contacting the upstream", async () => {
+    expect(
+      await status("/_otel/v1/traces", "POST", "https://evil.example"),
+    ).toBe(403);
+    expect(await status("/_otel/v1/traces", "POST", null)).toBe(403);
+    expect(seen).toEqual([]);
+  });
+
+  it("passes every request outside the prefix through", async () => {
+    expect(await status("/src/main.tsx", "GET")).toBe(418);
+    expect(await status("/_otelx/v1/traces")).toBe(418);
+    expect(await status("/api/_otel/v1/traces")).toBe(418);
+    expect(seen).toEqual([]);
   });
 });

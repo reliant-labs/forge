@@ -11,6 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // forgeCommandRE matches a `forge ` invocation followed by 1-3 lowercase
@@ -189,6 +190,7 @@ func TestSkillTemplatesHaveNoGoTemplateDirectives(t *testing.T) {
 // documentation — it lists servers a user may want to enable but whose
 // dependencies aren't required for basic development.
 func TestProjectGeneratorWritesMCPConfigExample(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "mcp-example-app")
 	g := generator.NewProjectGenerator("mcp-example-app", root, "example.com/mcp-example-app")
 	if err := g.Generate(); err != nil {

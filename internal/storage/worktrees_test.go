@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/openfiles"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // gitRepoWithWorktree builds a real repository whose only commit is 60 days
@@ -736,6 +737,7 @@ func TestWorktreeRecheckCatchesUseAfterBatchClassification(t *testing.T) {
 // Commits made on a detached HEAD, or only in a worktree's reflog, are
 // unreachable once the worktree is removed.
 func TestWorktreeHoldsUnreachableCommits(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	t.Run("detached HEAD commit", func(t *testing.T) {
 		repo, worktree := gitRepoWithWorktree(t)
 		runGit(t, worktree, "checkout", "-q", "--detach")
@@ -793,6 +795,7 @@ func TestWorktreeHoldsUnreachableCommits(t *testing.T) {
 // A file written into the worktree after the batch classification, while the
 // worktree is quarantined, must keep the worktree.
 func TestWorktreeQuarantineCatchesWriteDuringWindow(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	repo, worktree := gitRepoWithWorktree(t)
 	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
 	ageDir(t, worktree)
@@ -822,6 +825,7 @@ func TestWorktreeQuarantineCatchesWriteDuringWindow(t *testing.T) {
 }
 
 func TestWorktreeQuarantineLeftoverIsReportedAndNeverDeleted(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	repo, worktree := gitRepoWithWorktree(t)
 	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
 	ageDir(t, worktree)
@@ -914,6 +918,18 @@ func TestRebuildablePathRegenerableEntries(t *testing.T) {
 		".forge/tmpx/":                 false,
 		".forge/statex/":               false,
 		"tmpfile":                      false,
+		// forge generate's own outputs and env up's dev runtime document.
+		".forge/generate-hooks/integrations.log":            true,
+		".forge/fixtures/frontends/web/generated-from.json": true,
+		".forge/generate-memo.json":                         true,
+		".forge/failed-generate/error.txt":                  true,
+		".forge/failed-generate/secrets/dev.yaml":           false, // the never-list still wins
+		"gen/forge_descriptor/.generated-from":              true,
+		"sub/gen/forge_descriptor/x.json":                   false, // anchored at the worktree root
+		"frontends/web/public/config.js":                    true,
+		"web/public/config.js":                              false,
+		".forge/audit/prod.jsonl":                           false, // a record, not output
+		".forge/hosted-projects.json":                       false, // a deploy binding
 	} {
 		if got := rebuildablePath(p, DefaultWorktreeRebuildable()); got != want {
 			t.Errorf("rebuildablePath(%q) = %v, want %v", p, got, want)

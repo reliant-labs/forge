@@ -3,6 +3,7 @@
 package pgtest
 
 import (
+	"errors"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -38,4 +39,26 @@ func lockFileExclusive(f *os.File) (unlock func(), err error) {
 	return func() {
 		_ = windows.UnlockFileEx(h, 0, 0xFFFFFFFF, 0xFFFFFFFF, ol)
 	}, nil
+}
+
+// lockFileShared takes a shared LockFileEx lock on f, held until the handle
+// closes: the lease's lock (lease.go).
+func lockFileShared(f *os.File) error {
+	return windows.LockFileEx(windows.Handle(f.Fd()), 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, new(windows.Overlapped))
+}
+
+// tryLockFileExclusive reports whether an exclusive lock on f could be taken
+// at once (no other handle holds a lock on it). held is true when it was
+// taken; closing f releases it.
+func tryLockFileExclusive(f *os.File) (held bool, err error) {
+	err = windows.LockFileEx(windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0, 0xFFFFFFFF, 0xFFFFFFFF, new(windows.Overlapped))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+		return false, nil
+	}
+	return false, err
 }

@@ -8,9 +8,11 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestScaffoldIngressWiresKCLForServiceKind(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	tmp := t.TempDir()
 	g := generator.NewProjectGenerator("svc-ingress", tmp, "example.com/svc-ingress")
 	g.Kind = config.ProjectKindService

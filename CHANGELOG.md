@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.3.0] - 2026-11-09
+
+### Added
+
+- **storage:** storage:read scope, bucket shape and blobstore listing for the storage browser ([#1899](https://github.com/reliant-labs/forge/pull/1899))
+- **web-runtime:** interaction() spans for user-perceived operations ([#1926](https://github.com/reliant-labs/forge/pull/1926))
+- **release:** deploy:config:read scope and one shared secret rule ([#1901](https://github.com/reliant-labs/forge/pull/1901))
+- **env:** ship a dev stack's telemetry to the hosted store (dev_telemetry, per-instance tokens) ([#1931](https://github.com/reliant-labs/forge/pull/1931))
+- **env:** record per-phase timings for env up ([#1939](https://github.com/reliant-labs/forge/pull/1939))
+- **obs:** query a dev instance on the hosted store (--instance, scope.instance) ([#1930](https://github.com/reliant-labs/forge/pull/1930))
+- **build:** skip a ShellBuild whose declared inputs are unchanged ([#1935](https://github.com/reliant-labs/forge/pull/1935))
+
+### Changed
+
+- **pgtest:** replace the killed-holder lease test with one that awaits the release (flake #1936) ([#1937](https://github.com/reliant-labs/forge/pull/1937))
+- **e2e:** drop TestE2EFluxDeliverySelfHosted's timing-dependent no-wait status assertion (flake #1944) ([#1945](https://github.com/reliant-labs/forge/pull/1945))
+- install Task, buf and KCL from a per-version cache, with retries and an API fallback on a miss ([#1957](https://github.com/reliant-labs/forge/pull/1957))
+- **obsquery:** select the trace page before computing its per-trace columns ([#1960](https://github.com/reliant-labs/forge/pull/1960))
+
+### Fixed
+
+- **pgtest:** track shared-server users with file leases, not PIDs (they cross PID namespaces) ([#1918](https://github.com/reliant-labs/forge/pull/1918))
+- **pgtest:** the no-lease attach test clears a lease an earlier test left ([#1925](https://github.com/reliant-labs/forge/pull/1925))
+- **components:** popover calls its render props from a child component, so every fresh scaffold lints clean again ([#1924](https://github.com/reliant-labs/forge/pull/1924))
+- **pgtest:** retry embedded boot on confirmed port collisions ([#1922](https://github.com/reliant-labs/forge/pull/1922))
+- **cluster:** diagnose a k3d API answering with another cluster's certificate instead of waiting it out ([#1928](https://github.com/reliant-labs/forge/pull/1928))
+- **up:** judge cluster workload readiness by live pods, not replaced terminal ones ([#1927](https://github.com/reliant-labs/forge/pull/1927))
+- **storage:** forge generate's own output and env up's config.js no longer hold a worktree from the reaper ([#1929](https://github.com/reliant-labs/forge/pull/1929))
+- **pgtest:** the reaper-process snapshot test proves its directory listing is non-empty, so main's vacuous-test guard is green again ([#1933](https://github.com/reliant-labs/forge/pull/1933))
+- **pgtest:** confirm a boot-port collision by Winsock's WSAEADDRINUSE too, so Windows retries instead of failing ([#1934](https://github.com/reliant-labs/forge/pull/1934))
+- **env:** forge main's Lint job is green again after dev_telemetry (#1931) ([#1938](https://github.com/reliant-labs/forge/pull/1938))
+- **env:** the dev_telemetry token-file mode assertions skip Windows, which has no POSIX permission bits ([#1941](https://github.com/reliant-labs/forge/pull/1941))
+- **obs:** forge main's Lint job is green again after #1930 (nestif in defaultObsDeps) ([#1946](https://github.com/reliant-labs/forge/pull/1946))
+- **env:** devtelemetry's record-mode assertion skips Windows, which has no POSIX permission bits ([#1948](https://github.com/reliant-labs/forge/pull/1948))
+- **env:** container-free dev stacks with dev_telemetry and an optional control plane ([#1950](https://github.com/reliant-labs/forge/pull/1950))
+- **cli:** writeEnvBundle under funlen again (main red on Lint at 88cb28c2f) ([#1951](https://github.com/reliant-labs/forge/pull/1951))
+- **buildtarget:** the directory-symlink walk under nestif again (main red on Lint at 9d7a18b2c) ([#1952](https://github.com/reliant-labs/forge/pull/1952))
+- **frontend:** the dev /\_otel token proxy forwards only OTLP ingest POSTs, bounded ([#1953](https://github.com/reliant-labs/forge/pull/1953))
+- **buildtarget:** the fingerprint's executable-bit assertion skips Windows, which has none (main red on Windows) ([#1955](https://github.com/reliant-labs/forge/pull/1955))
+- **pgtest:** a create that cannot connect to a dead shared server re-attaches instead of failing ([#1954](https://github.com/reliant-labs/forge/pull/1954))
+- **npmoverlay:** hide published versions above the checkout's, so the smoke installs the runtime under test (main red on e2e scaffold) ([#1956](https://github.com/reliant-labs/forge/pull/1956))
+- **web-runtime:** the dev /\_otel proxy only forwards same-origin callers, with an allowlisted header set ([#1958](https://github.com/reliant-labs/forge/pull/1958))
+
+## [v1.2.0] - 2026-11-08
+
+### Added
+
+- **frontend:** generated mocks for every proto service — deterministic, schema-valid defaults per RPC, typed mockService overrides ([#1874](https://github.com/reliant-labs/forge/pull/1874))
+- **data:** add read-only database browsing and external database routes ([#1877](https://github.com/reliant-labs/forge/pull/1877))
+- **skills:** llm skill — workflow vs inline model calls, official Go clients, gateway errors ([#1873](https://github.com/reliant-labs/forge/pull/1873))
+- **hooks:** <svc>Mutations(queryClient).<rpc>(req) — generated writes for code outside React ([#1885](https://github.com/reliant-labs/forge/pull/1885))
+- **dev:** coordinate local startup dependencies and chart prerequisites ([#1886](https://github.com/reliant-labs/forge/pull/1886))
+- **generate:** support input hooks and require compatible web runtime ([#1894](https://github.com/reliant-labs/forge/pull/1894))
+- **templates:** live password checklist and a polished auth UI on every sign-in screen ([#1872](https://github.com/reliant-labs/forge/pull/1872))
+- **console:** identity-subject marker, dashboard row links and saved browse views ([#1900](https://github.com/reliant-labs/forge/pull/1900))
+- **scaffold:** header user menu shows who is signed in — name/email/avatar from userinfo, theme inside a WAI-ARIA menu (stacked on #1821) ([#1871](https://github.com/reliant-labs/forge/pull/1871))
+- **env:** forge env delete --id and a preview of what goes (id, project, deployments, bound domains); forge env list --orphaned ([#1888](https://github.com/reliant-labs/forge/pull/1888))
+
+### Changed
+
+- **deps:** bump the go-minor group across 1 directory with 3 updates ([#1903](https://github.com/reliant-labs/forge/pull/1903))
+- **deps:** bump the go-patch group across 1 directory with 11 updates ([#1902](https://github.com/reliant-labs/forge/pull/1902))
+- **generate:** the harness step reads local interfaces' embeds through its one shared resolver ([#1904](https://github.com/reliant-labs/forge/pull/1904))
+- **generate:** the composition graph reads its packages' dependencies from export data ([#1905](https://github.com/reliant-labs/forge/pull/1905))
+- **pkg/approval:** remove out-of-scope package (#1753) ([#1880](https://github.com/reliant-labs/forge/pull/1880))
+- **skill:** read the embedded skill listing once per process ([#1909](https://github.com/reliant-labs/forge/pull/1909))
+- **migration:** allocate a version without git lookups when the directory is not in a repository ([#1910](https://github.com/reliant-labs/forge/pull/1910))
+- **pkg/approval:** mark every exported identifier deprecated (frozen until v2) ([#1911](https://github.com/reliant-labs/forge/pull/1911))
+
+### Fixed
+
+- three flakes on main — a declared Flux waits for its FluxInstance, an inherited KCL_FILE_SCOPE no longer misses the generate cache, docker picks smoke-test host ports ([#1869](https://github.com/reliant-labs/forge/pull/1869))
+- **env build:** refuse an unpushed hosted site before recording the env on the control plane ([#1876](https://github.com/reliant-labs/forge/pull/1876))
+- **env up:** mint empty generated-secret slots; generate dev seed-user passwords; seed-user failure no longer kills dev identity ([#1875](https://github.com/reliant-labs/forge/pull/1875))
+- **ci:** green forge main after #1874/#1876 — allow protobuf Value's oneof case in the mock generator; split newEnvBuildCmd under funlen ([#1879](https://github.com/reliant-labs/forge/pull/1879))
+- **cli:** version hand-off and render warnings never write stdout; env config --json carries the document alone ([#1881](https://github.com/reliant-labs/forge/pull/1881))
+- **upgrade:** add only scaffold-once files new across the range; offer the rest ([#1882](https://github.com/reliant-labs/forge/pull/1882))
+- **orm:** keep forge libraries' tables off the ORM; refuse an entity-name collision while planning ([#1883](https://github.com/reliant-labs/forge/pull/1883))
+- **upgrade:** report each lint finding as one needs_human item with its file:line and fix ([#1889](https://github.com/reliant-labs/forge/pull/1889))
+- **ci:** the review check reads the bot's evidence re-review as the head's verdict ([#1890](https://github.com/reliant-labs/forge/pull/1890))
+- **frontend:** otel_gen.ts reads per-environment telemetry values from runtime config only ([#1884](https://github.com/reliant-labs/forge/pull/1884))
+- **ci:** the forge-deploy action keeps a failed deploy's evidence ([#1891](https://github.com/reliant-labs/forge/pull/1891))
+- **orm:** keep a library table's existing store, deprecated, until the next major ([#1892](https://github.com/reliant-labs/forge/pull/1892))
+- **ci:** green forge main after #1886 — render-contract goldens carry startup_after; split chart prerequisites out of applyRenderedNoWait; drop a dead assignment; close test files before TempDir cleanup on Windows ([#1893](https://github.com/reliant-labs/forge/pull/1893))
+- **ci:** green forge main after #1892 — the library-table check leaves the entity loop as a helper (nestif) ([#1897](https://github.com/reliant-labs/forge/pull/1897))
+- **pgtest:** replace a shared server whose data directory was deleted under it; the reaper never removes a live postmaster's dir ([#1906](https://github.com/reliant-labs/forge/pull/1906))
+- **web-runtime:** mock defaults keep echoed values and oneof cases within the response's rules; unbuildable patterns throw ([#1878](https://github.com/reliant-labs/forge/pull/1878))
+- **lint:** contract lane stops at nested Go modules (missing go.sum entry from tools/<mod>) ([#1908](https://github.com/reliant-labs/forge/pull/1908))
+- **apigate:** fail a pull request whose API-BREAK: line has no break behind it ([#1912](https://github.com/reliant-labs/forge/pull/1912))
+- **release:** semver-next honours a reviewed API-BREAK-RETRACTED line for one sha (in sync with control-plane #2167) ([#1913](https://github.com/reliant-labs/forge/pull/1913))
+- **crud:** reject ordered list overflow instead of hiding additional rows ([#1914](https://github.com/reliant-labs/forge/pull/1914))
+- **lint:** recognize local inert settings in dependency collections ([#1916](https://github.com/reliant-labs/forge/pull/1916))
+- **scaffold:** include named timezone data in runtime images ([#1915](https://github.com/reliant-labs/forge/pull/1915))
+- **generate:** a failed dependency load aborts generate instead of sweeping emitter outputs as stale ([#1917](https://github.com/reliant-labs/forge/pull/1917))
+
 ## [v1.1.0] - 2026-11-06
 
 ### Added
@@ -8672,7 +8767,9 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.3.0...HEAD
+[v1.3.0]: https://github.com/reliant-labs/forge/compare/v1.2.0...v1.3.0
+[v1.2.0]: https://github.com/reliant-labs/forge/compare/v1.1.0...v1.2.0
 [v1.1.0]: https://github.com/reliant-labs/forge/compare/v1.0.16...v1.1.0
 [v1.0.16]: https://github.com/reliant-labs/forge/compare/v1.0.15...v1.0.16
 [v1.0.15]: https://github.com/reliant-labs/forge/compare/v1.0.14...v1.0.15

@@ -1052,7 +1052,7 @@ schema ManagedDatabase:
         not (runtime and runtime.type == "hosted" and namespace), \
             "ManagedDatabase.namespace must NOT be set on the hosted runtime ('${name}'): the control plane allocates it. Remove it"
 
-_EXTERNAL_DATABASE_SSLMODES = ["require", "disable"]
+_EXTERNAL_DATABASE_SSLMODES = ["require", "disable", "verify-full"]
 _EXTERNAL_DATABASE_REACHES = ["port_forward", "direct"]
 
 schema ExternalDatabase:
@@ -1093,9 +1093,16 @@ schema ExternalDatabase:
 
     WHERE IT IS is its `runtime`: the cluster and namespace of `service`.
     With no `runtime`, the env's primary cluster target, in `namespace` when
-    set. TLS is `sslmode`: `require` (the default: encrypted, not verified,
-    since the tunnel ends at a pod rather than a name a certificate carries)
-    or `disable`.
+    set. TLS is `sslmode`: `require` (the legacy default: encrypted, not
+    authenticated), `disable`, or `verify-full`. For authenticated TLS select
+    exactly one namespace-local `ca_secret` or `ca_configmap`, and an explicit
+    `ca_key` holding a PEM certificate bundle. `tls_server_name` defaults to
+    <service>.<namespace>.svc, independently of the tunnel address. Only this
+    CA bundle is trusted, not system roots. Certificates must carry that DNS
+    SAN. Provisioning and rotation are the operator's responsibility; the CLI
+    reads current trust bytes on each invocation. Long-lived consumers must
+    rebuild connection configs/pools after rotation. References and the resolved
+    DNS name are recorded in the canonical route; PEM bytes and paths are not.
 
     HOW A CONTROL PLANE DIALS IT is its `reach` (the env's recorded shape
     carries it, so the control plane can list and read the database too):
@@ -1127,6 +1134,14 @@ schema ExternalDatabase:
     password_secret: str
     password_key: str = "password"
     sslmode: str = "require"
+    # verify-full uses exactly one namespace-local source and an explicit PEM
+    # bundle key. References only: never inline certificates or local paths.
+    ca_secret: str = ""
+    ca_configmap: str = ""
+    ca_key: str = ""
+    # Empty resolves to <service>.<namespace>.svc in the recorded canonical route.
+    tls_server_name: str = ""
+    _tls_dns_labels = tls_server_name.split(".")
     # How a control plane dials it: "port_forward" (default) or "direct".
     reach: str = "port_forward"
     # The Service port; unset picks 5432 or the Service's only port.
@@ -1143,6 +1158,14 @@ schema ExternalDatabase:
             "ExternalDatabase '${name}' needs service, database, username and password_secret: they are how forge db query reaches it"
         sslmode in _EXTERNAL_DATABASE_SSLMODES, \
             "ExternalDatabase '${name}'.sslmode '${sslmode}' is not one of ${_EXTERNAL_DATABASE_SSLMODES}"
+        (sslmode == "verify-full" and bool(ca_secret) != bool(ca_configmap) and ca_key) or (sslmode != "verify-full" and not ca_secret and not ca_configmap and not ca_key and not tls_server_name), \
+            "ExternalDatabase '${name}': verify-full requires exactly one ca_secret/ca_configmap and ca_key; other sslmodes refuse trust fields"
+        all ref in [ca_secret, ca_configmap] {not ref or (len(ref) <= 253 and regex.match(ref, r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"))}, \
+            "ExternalDatabase '${name}': CA source must name a Secret or ConfigMap, never a value or path"
+        not ca_key or (len(ca_key) <= 253 and regex.match(ca_key, r"^[-._a-zA-Z0-9]+$")), \
+            "ExternalDatabase '${name}': ca_key must name a data key"
+        not tls_server_name or (len(tls_server_name) <= 253 and all label in _tls_dns_labels {len(label) <= 63 and regex.match(label, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")} and not regex.match(tls_server_name, r"^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")), \
+            "ExternalDatabase '${name}': tls_server_name must be a DNS name, not an address, wildcard or path"
 
 # ---------------------------------------------------------------------------
 # Object storage: forge.Bucket, where it lives, and how a workload reaches it.
@@ -1587,7 +1610,10 @@ schema HostInfra:
     idp_steps_file: str = "idp-steps.yaml"
     # Where Zitadel writes that service account's personal access token on
     # first boot. `forge env up` reads it to converge the env's
-    # forge.ManagedIdentity.
+    # forge.ManagedIdentity. At this default the token is stored beside the
+    # IdP DATABASE it belongs to (~/.forge/idp/<host>_<port>_<database>/
+    # pat.txt), so every checkout whose IdP uses that database finds it, and
+    # this path holds a refreshed copy. Any other value is the only location.
     idp_pat_path: str = ".forge/idp/pat.txt"
 
     # ── engine = "nats" only ─────────────────────────────────────────────
@@ -3054,6 +3080,57 @@ schema ShellBuild(Build):
     Dependencies form a DAG — a cycle is refused before anything runs —
     and independent builds still run in parallel.
 
+    INPUTS SKIP A BUILD WHOSE SOURCES DID NOT CHANGE. Forge cannot see what
+    a shell command reads, so by default it runs the command on every
+    `forge build` / `forge env build` / `forge env up`. Declare the files it
+    reads and forge runs it only when something it depends on moved:
+
+        build = forge.ShellBuild {
+            cwd = "../reliant"
+            cmd = "docker build -t ${_ref} . && docker push ${_ref}"
+            inputs = ["go.mod", "go.sum", "**/*.go", "Dockerfile", "!**/*_test.go"]
+        }
+
+      * patterns — slash-separated, relative to the resolved cwd; a leading
+        `../` reaches a sibling checkout. `*` `?` `[...]` match within one
+        path segment, a whole `**` segment matches any depth, and a
+        directory named without wildcards selects everything beneath it.
+        `!pattern` excludes from every other pattern, in any order. Walks
+        never enter `.git` or `node_modules` unless a pattern names them.
+        A pattern that selects no file makes the build run (and says so):
+        a typo must not silently drop an input.
+      * reach — a pattern may leave cwd only into the directory that holds
+        the project (the workspace of sibling checkouts a `cwd` like
+        `../reliant` already reaches). Symlinks are followed, directories
+        included (a symlink cycle is walked once), but only inside it: a
+        pattern reaching past it, or a file or directory symlink it could
+        select through that resolves outside both it and cwd, is refused —
+        the build runs and says why (`!` the link to exclude it), and
+        nothing outside is read or keyed on.
+      * fingerprint — sha256 over everything that identifies the build's
+        artifact (the command, the resolved cwd, the declared `source`,
+        `inputs_file` and its content, `unit`, `output_name`), `env`
+        (with every built_images value, so a rebuilt parent rebuilds its
+        children), the platform, the pushed image and tag, the patterns,
+        and every selected file's path, size, executable bit and CONTENT.
+        Contents, not mtimes: a checkout rewrites mtimes without changing
+        a byte. The process environment forge inherits is NOT part of it;
+        anything the command reads from there belongs in `env`.
+      * skip — when the fingerprint equals the one recorded by the last
+        SUCCESSFUL build of this workload in this env (.forge/state), AND
+        the registry still resolves the recorded tag to the recorded
+        digest. The deploy then pins that same digest. Anything else —
+        no record, a changed input, a workload with no `image`, a registry
+        that no longer has it or now serves another digest at that tag, a
+        release build (`--release` always runs: it needs the builder's
+        receipt) — runs the command.
+      * forcing — `--rebuild` on `forge build`, `forge env build` and
+        `forge env up` runs every ShellBuild regardless.
+
+    Keep the command's OUTPUTS out of its inputs (exclude them with `!`):
+    a build that writes into what it reads changes its own fingerprint and
+    never skips — forge warns, naming the files, when that happens.
+
     Forge once substituted a fixed ${IMAGE}/${TAG}/${REGISTRY}/
     ${TARGETARCH}/… vocabulary into `cmd`. It no longer does, and a
     leftover token is refused by `forge lint` and `forge generate` — not
@@ -3085,9 +3162,19 @@ schema ShellBuild(Build):
     # `<repository>@sha256:<digest>` — the exact image it pushed. See the
     # docstring.
     built_images: {str: str} = {}
+    # Files the command reads, as globs relative to the resolved cwd. When
+    # set, forge skips the command while they — and the command, env,
+    # platform, tag and built_images — are unchanged since its last
+    # successful run and the registry still serves the image it pushed.
+    # Empty: the command runs on every build. See the docstring.
+    inputs: [str] = []
 
     check:
         type == "shell", "ShellBuild.type must be 'shell'"
+        all p in inputs { p.strip() != "" and p.strip() != "!" }, \
+            "ShellBuild.inputs entries are globs relative to the build's cwd; an empty entry selects nothing"
+        all p in inputs { not p.lstrip("!").startswith("/") }, \
+            "ShellBuild.inputs entries are relative to the build's cwd (use ../ for a sibling checkout), never absolute"
         cmd, "ShellBuild.cmd is required"
         not (cwd and source), "ShellBuild.cwd and source are mutually exclusive"
         all name in built_images { regex.match(name, r"^[A-Za-z_][A-Za-z0-9_]*$") }, \
@@ -3727,16 +3814,23 @@ schema BrowserTelemetry:
             }
         }
 
-    `console_capture` and `replay_sample_rate` reach the browser through the
-    runtime config document (config.js), so one build promotes across
-    environments and each environment sets its own.
+    `console_capture`, `replay` and `replay_sample_rate` reach the browser
+    through the runtime config document (config.js), so one build promotes
+    across environments and each environment sets its own. `replay` is the
+    per-frontend switch for session replay (masked, off by default).
     """
     # Ship `console.*` output as spans. False for an app whose console is
     # noisy or carries data that must not leave the browser.
     console_capture: bool = True
-    # The share of SESSIONS recorded when session replay is on (the env opts
-    # in with Observability.signals.replay), 0..1. The decision is made once
-    # per session in the browser.
+    # Session replay for THIS frontend in THIS environment: OFF by default.
+    # True renders OTEL_REPLAY = "true" into the frontend's runtime config
+    # (config.js, so a promoted build needs no rebuild) and opts the env's
+    # observability policy in to replay, so the platform keeps the events.
+    # A recording always masks every input and all text; nothing records
+    # unmasked.
+    replay: bool = False
+    # The share of SESSIONS recorded when session replay is on, 0..1. The
+    # decision is made once per session in the browser.
     replay_sample_rate: float = 1.0
     # What happens to the build's source maps. "publish" moves them out of the
     # served tree and keeps them for symbolicating errors; "public" serves
@@ -5854,17 +5948,47 @@ schema DataAccess:
     Whatever the policy, the query runs as a read-only role that Postgres itself
     bars from `forge:secret` columns and from every write; this governs who may
     ask, not what the role can see.
+
+    `storage` is the same policy for browsing the env's buckets (forge.Bucket)
+    from the console: listing, previewing and downloading objects, under the
+    `storage:read` grant instead of `db:query`. The same three values. UNSET
+    IT FOLLOWS `db_query`, declared or defaulted, so an env that denies SQL is
+    not opened to file browsing by leaving this out:
+
+        data_access = forge.DataAccess {db_query = "audited", storage = "deny"}
+
+    Uploads are often more sensitive than rows; set `storage` when they should
+    be treated differently.
     """
     db_query?: str
+    storage?: str
 
     check:
         not db_query or db_query in _DB_QUERY_POLICIES, \
             "DataAccess.db_query '${db_query}' is not one of ${_DB_QUERY_POLICIES}: open (anyone with the env), audited (a person with the db:query grant, naming the env and a reason) or deny (nobody)"
+        not storage or storage in _DB_QUERY_POLICIES, \
+            "DataAccess.storage '${storage}' is not one of ${_DB_QUERY_POLICIES}: open (anyone with the env), audited (a person with the storage:read grant, naming the env and a reason) or deny (nobody); leave it unset to follow db_query"
 
 # The db_query policy an env resolves to: what it declared, else open for a
 # local or ephemeral env and audited for every other one.
 _data_access_db_query = lambda data_access: DataAccess, lifecycle: str -> str {
     data_access.db_query if data_access and data_access.db_query else ("open" if lifecycle in ["local", "ephemeral"] else "audited")
+}
+
+# The storage policy an env resolves to: what it declared, else its db_query
+# policy (declared or defaulted).
+_data_access_storage = lambda data_access: DataAccess, lifecycle: str -> str {
+    data_access.storage if data_access and data_access.storage else _data_access_db_query(data_access, lifecycle)
+}
+
+# Bundle.data_access as the render records it: empty when both policies are
+# audited, the default of an env with no lifecycle, so a real env's render is
+# unchanged; else db_query, plus storage only where it differs from db_query
+# (absence means "the same as db_query", never open).
+_render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str} {
+    _q = _data_access_db_query(data_access, lifecycle)
+    _s = _data_access_storage(data_access, lifecycle)
+    ({"db_query": _q} | ({"storage": _s} if _s != _q else {})) if _q != "audited" or _s != _q else {}
 }
 
 # The release-health finding codes (pkg/release Health*).
@@ -6128,11 +6252,22 @@ schema ObservabilitySignals:
     # The browser SDK (frontends). `False` renders OTEL_ENDPOINT=off into every
     # frontend's runtime config and the platform's /_otel ingest drops it.
     browser: bool = True
-    # Session replay is OPT-IN (the only category that defaults off). The browser
-    # SDK records DOM events only when the frontend's runtime config carries
-    # OTEL_REPLAY = "true"; the platform drops those events (browser
-    # logs of instrumentation scope `rum.rr-web`) unless this is True.
+    # DEPRECATED (kept working within major 1): the env-wide replay opt-in.
+    # Session replay is OPT-IN (the only category that defaults off) and is
+    # switched on per frontend with `forge.BrowserTelemetry {replay = True}`,
+    # which renders the frontend's OTEL_REPLAY = "true" and opts the env in.
+    # The platform drops replay events (browser logs of instrumentation scope
+    # `rum.rr-web`) unless the env is opted in: this True, or any frontend's
+    # `telemetry.replay`. True here opts the env in without switching any
+    # frontend on (each still needs OTEL_REPLAY in its runtime config).
     replay: bool = False
+    # The product events forge emits on the app's behalf: every create, update
+    # and delete that lands through a generated CRUD handler records
+    # `<entity>_created|_updated|_deleted` (no ids, no field values). Each event
+    # is one INFO log record, billed as log ingest like any other log line.
+    # `False` renders FORGE_PRODUCT_EVENTS=off on every workload. Events the
+    # app emits itself (observe.Track) are not affected.
+    product_events: bool = True
 
 schema ObservabilitySampling:
     """Trace sampling. The ratio is HEAD sampling in the SDK: every workload
@@ -6164,15 +6299,41 @@ schema ObservabilitySampling:
             "ObservabilitySampling: traces_ratio < 1 with errors_always = True needs tail sampling, which forge does not render (head sampling in the SDK cannot know a trace will fail). Either set errors_always = False (errors are sampled like everything else), or, if the destination's gateway keeps error traces itself, say so with destination_tail_samples = True"
         not destination_tail_samples or errors_always, "ObservabilitySampling.destination_tail_samples only qualifies errors_always = True"
 
+schema RetentionOverride:
+    """One service's retention for one signal, in days. Honored by the hosted
+    store for a dev stack's telemetry (`dev_telemetry`), where the control
+    plane clamps it to [1, the plan's cap]: a declaration can only lower what
+    the tenant keeps.
+
+        forge.RetentionOverride {service = "worker", signal = "logs", days = 1}
+    """
+    service: str
+    signal: str
+    days: int
+
+    check:
+        service != "", "RetentionOverride.service must name a service"
+        signal in ["traces", "metrics", "logs", "browser"], "RetentionOverride.signal '${signal}' must be traces, metrics, logs or browser"
+        days >= 1, "RetentionOverride.days must be >= 1"
+
 schema ObservabilityRetention:
     """Retention hints in days; 0 = the backend's default. Passed through
     only where the runtime can apply them: local ClickStack takes ONE table
     TTL (the longest hint). A node agent has no storage and ignores them; the
     hint is carried in `output.observability.retention` for whatever runs the
-    backend."""
+    backend.
+
+    A dev stack whose telemetry goes to the hosted store
+    (Observability.dev_telemetry) sends traces/metrics/logs/browser_days and
+    `overrides` when it asks for its token; the control plane clamps each to
+    [1, the plan's cap], and 0 there means its dev default (3 days)."""
     traces_days: int = 0
     metrics_days: int = 0
     logs_days: int = 0
+    # The browser's spans and logs (session replay keeps replay_days).
+    browser_days: int = 0
+    # Per service and signal, for the hosted dev store.
+    overrides: [RetentionOverride] = []
     # Browser telemetry on the hosted platform, in days (the platform's browser
     # telemetry tables' TTLs). Unlike the hints above these are never "backend default": each
     # has a stated default, recorded in the release shape only when it moves.
@@ -6183,7 +6344,9 @@ schema ObservabilityRetention:
     product_events_days: int = 90
 
     check:
-        traces_days >= 0 and metrics_days >= 0 and logs_days >= 0, "ObservabilityRetention days must be >= 0"
+        traces_days >= 0 and metrics_days >= 0 and logs_days >= 0 and browser_days >= 0, "ObservabilityRetention days must be >= 0"
+        len({"${o.service}/${o.signal}": 1 for o in overrides}) == len(overrides), \
+            "ObservabilityRetention.overrides names one service and signal twice: each (service, signal) has one retention"
         replay_days >= 1 and replay_days <= 30, "ObservabilityRetention.replay_days must be 1..30 (session replay is retained at most 30 days)"
         errors_days >= 1 and errors_days <= 365, "ObservabilityRetention.errors_days must be 1..365"
         product_events_days >= 1 and product_events_days <= 400, "ObservabilityRetention.product_events_days must be 1..400"
@@ -6483,6 +6646,20 @@ schema Observability:
 
         observability = forge.Observability {local_port = _otlp_http_port, profiles_port = _profiles_otlp_port}
 
+    `dev_telemetry` says where a LOCAL stack's telemetry (`forge env up`) is
+    stored: "local" (the local ClickStack), "hosted" (the org's hosted store,
+    through a per-stack token the control plane mints; fails instead of falling
+    back) or "auto" (the default: hosted when the env declares a control_plane
+    and a Reliant credential exists, else local). `forge env up --telemetry`
+    and FORGE_DEV_TELEMETRY override it, and "local" anywhere wins. In hosted
+    mode no local collector runs, so the stack needs no Docker for telemetry.
+    A CONTAINER-FREE env (no compose workload: host processes and HostInfra
+    only) has no local collector at all, so it needs no `local_port`: its
+    local mode exports nothing, and only a `destination` (which needs the
+    compose forwarder) still asks for the port.
+
+        observability = forge.Observability {dev_telemetry = "local"}   # never send dev telemetry
+
     `alertmanager_port` and `alerts_port` close the alerting loop locally:
     the loopback port of the local Alertmanager (docker-compose.yml's
     `alertmanager`) and the port of the local evaluator
@@ -6496,6 +6673,7 @@ schema Observability:
     """
     enabled: bool = True
     destination?: ObservabilityDestination
+    dev_telemetry: str = "auto"
     local_port: int = 0
     profiles_port: int = 0
     alertmanager_port: int = 0
@@ -6509,6 +6687,7 @@ schema Observability:
     check:
         enabled or (len(alerts.rules) == 0 and len(alerts.defaults) == 0 and len(alerts.routes) == 0 and len(alerts.receivers) == 0), \
             "Observability.alerts is declared with enabled = False: alerts evaluate the telemetry, and there is none. Drop the alerts or set enabled = True"
+        dev_telemetry in ["auto", "hosted", "local"], "Observability.dev_telemetry '${dev_telemetry}' must be auto, hosted or local"
         local_port >= 0 and local_port < 65536, "Observability.local_port must be 0..65535"
         profiles_port >= 0 and profiles_port < 65536, "Observability.profiles_port must be 0..65535"
         alertmanager_port >= 0 and alertmanager_port < 65536, "Observability.alertmanager_port must be 0..65535"
@@ -7897,7 +8076,7 @@ schema Bundle:
         # also exports OTLP logs would store every line twice.
         len(_logs_double_shipped(workloads, observability)) == 0, \
             "${_logs_double_shipped(workloads, observability)} set OTEL_LOGS_EXPORTER=otlp, but this env's collector already ships their logs (Observability.signals.logs), so every line would be stored twice. Unset OTEL_LOGS_EXPORTER, or set signals.logs = False to ship logs from the app instead"
-        len(_host_without_local_port(workloads, observability)) == 0, \
-            "${_host_without_local_port(workloads, observability)} run as host processes, which export OTLP to the local collector's loopback port: set Bundle.observability.local_port (the port the env's compose collector publishes)"
+        len(_host_without_local_port(workloads, frontends, observability)) == 0, \
+            _host_without_local_port_msg(workloads, frontends, observability)
         all w in workloads { not _cloud_build_without_platform(w) }, \
             "ClusterTarget.platform is required for ${[w.name for w in workloads if _cloud_build_without_platform(w)]}: it deploys to a cloud target (a non-local registry) AND has a real external image build (DockerBuild / non-no-op ShellBuild), but its target states no build platform. Set platform (e.g. 'amd64') on the ClusterTarget so the build cross-compiles for the cloud node arch instead of silently falling through to the dev host arch (the arm64-image-on-amd64-node ImagePullBackOff/exec-format-error class)."

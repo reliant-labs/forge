@@ -1,10 +1,10 @@
 ---
-name: migration-v1.2.0-native-auth
-description: Adopt v1.2.0 native sign-in in an existing Expo app — OAuth public client (authorization code + PKCE) through the system browser, tokens in the OS keystore, the EXPO_PUBLIC_FORGE_OIDC_* variables forge env up injects, the new dependencies and expo-secure-store plugin, the single reverse-DNS scheme, the owned auth files to copy and the provider/context/connect/layout/jest edits, mock fallback and opt-out, what the auth context and transport now do, and what is not yet proven (device, Android, hosted registration).
+name: migration-v1.4.0-native-auth
+description: Adopt v1.4.0 native sign-in in an existing Expo app — OAuth public client (authorization code + PKCE) through the system browser, tokens in the OS keystore, the EXPO_PUBLIC_FORGE_OIDC_* variables forge env up injects, the new dependencies and expo-secure-store plugin, the single reverse-DNS scheme, the owned auth files to copy and the provider/context/connect/layout/jest edits, mock fallback and opt-out, what the auth context and transport now do, and what is not yet proven (device, Android, hosted registration).
 relevance: migration
 ---
 
-# v1.2.0 — native auth
+# v1.4.0 — native auth
 
 **Use when** the project has an Expo frontend. New scaffolds include everything
 below; existing apps own these files, so forge never backfills them. Adapt by

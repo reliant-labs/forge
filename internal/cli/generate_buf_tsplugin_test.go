@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeTSPluginBin creates an executable stub at dir/node_modules/.bin/protoc-gen-es.
@@ -127,6 +128,7 @@ func TestRetargetedTSTemplate_RetargetsInMemory(t *testing.T) {
 // hoisted to the root leaves the committed buf.gen.yaml byte-identical, and
 // hands buf the retargeted template instead.
 func TestRunBufGenerateTypeScript_NeverRewritesCommittedBufGen(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	requirePOSIXFake(t, "buf")
 	projectDir := t.TempDir()
 	feRel := filepath.Join("frontends", "web")

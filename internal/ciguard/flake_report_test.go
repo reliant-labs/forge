@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // scripts/flake-report.sh reads a failed main run's logs, reruns each failing
@@ -112,6 +114,7 @@ func runFlakeReport(t *testing.T, files map[string]string, pkgs []string, args .
 }
 
 func TestFlakeReportAttributesShardFailuresRegardlessOfOrder(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	for _, tool := range []string{"bash", "jq", "awk"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip(tool + " not on PATH")
@@ -144,6 +147,7 @@ func TestFlakeReportAttributesShardFailuresRegardlessOfOrder(t *testing.T) {
 }
 
 func TestFlakeReportNeverRetriesARaceWithoutTheDetector(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	for _, tool := range []string{"bash", "jq", "awk"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip(tool + " not on PATH")
@@ -243,6 +247,7 @@ func runWithFakeGH(t *testing.T, script string, files map[string]string, env []s
 // One issue per test: a later flake reopens a closed one rather than filing a
 // second, and --sweep closes the ones nothing keeps alive.
 func TestFlakeReportReopensAndSweepsItsIssues(t *testing.T) {
+	testkit.Slow(t, "execs bash and git")
 	script := filepath.Join("..", "..", "scripts", "flake-report.sh")
 	logs := "FAIL\t" + flakeModule + "/internal/b\t0.2s\n" +
 		"=== RUN   TestB\n    b_test.go:5: boom\n--- FAIL: TestB (0.00s)\n::error::FAIL internal/b TestB\n"

@@ -1,9 +1,9 @@
 ---
 name: panels
-description: The dashboard panels beyond the basic queries — postgres panels (a live read-only query of your own database), text panels (Markdown), and display options that draw one query as area, stacked, bars, pie, donut, gauge or funnel.
+description: The dashboard panels beyond the basic queries — postgres panels (a live read-only query of your own database), row links into the data browser, saved data-browser views (browse), text panels (Markdown), and display options that draw one query as area, stacked, bars, pie, donut, gauge or funnel.
 ---
 
-# Postgres, text and display
+# Postgres, links, saved views, text and display
 
 The rest of the spec vocabulary (kinds, series, filters, sections) is in
 `observability/dashboards`.
@@ -51,6 +51,61 @@ per hour, rows by state, the size of a queue.
   column, not a table scan.
 
 HyperDX skips a `postgres` panel, as it does the other console kinds.
+
+## Row links: `link`
+
+A `table` or `bar` panel, or a `postgres` panel drawn as `table`, `bar` or
+`auto`, may carry `link`: clicking a row opens the console's data browser.
+HyperDX ignores it. Two forms:
+
+```json
+"link": { "database": "app", "table": "public.users", "column": "id", "fromField": "span.attr.user_id" }
+"link": { "database": "app", "table": "public.orders", "row": true, "fromFields": ["order_id"] }
+```
+
+- The first opens `table` filtered to `column` = the row's `fromField`; the
+  second opens one row, its primary key read from `fromFields` in key order (at
+  most 8).
+- `table` is schema-qualified (`public.users`). `database` is a postgres
+  panel's database name.
+- On a `table` or `bar` panel a field must be one of its `groupBy` fields, the
+  only values its rows carry, so a telemetry panel can link into Postgres (the
+  top `span.attr.user_id` bars, linked to `users` by id). On a `postgres` panel
+  it is a result column, which only the query knows: a row without it is drawn
+  unlinked.
+- The console checks the table exists; a link to one that does not is drawn
+  disabled.
+
+## Saved views: `browse`
+
+A `browse` panel is a saved data-browser view: one table, drawn as the
+browser's grid, with "Open in Data" opening the same view. It takes `browse`
+and nothing else: no `signal`, `series`, `sql`, `where`, `groupBy` or `unit`.
+
+```json
+{ "id": "new-pro-users", "title": "New pro users", "kind": "browse",
+  "browse": { "database": "app", "table": "public.users",
+    "columns": ["id", "email", "created_at"],
+    "filters": [{ "column": "created_at", "op": "gte", "values": ["{from}"] },
+                { "column": "plan", "op": "eq", "values": ["pro"] }],
+    "sort": [{ "column": "created_at", "desc": true }],
+    "size": 50 } }
+```
+
+- `columns` (at most 100; empty is every column the read-only role reads),
+  `filters` (at most 32, ANDed), `sort` (at most 8; the primary key follows as a
+  tiebreak) and `size` (25, 50, 100, 200 or 500; default 50).
+- `op` is the data browser's: `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `like`,
+  `ilike` (one value), `is_null`, `not_null` (none), `in` (1 to 100). A value
+  is text as Postgres reads it for the column, at most 4 KiB.
+- A value that is exactly `{from}` or `{to}` is the dashboard's range, and
+  `{<filter id>}` a dashboard filter's value (a toggle's is `true`/`false`).
+  They are bound, never spliced. A filter whose dashboard filter the viewer has
+  not set is left out. Any other `{name}` is refused.
+- It is not SQL: it reads only what the role may, and cannot be a bad query.
+
+`browse` and `link` are refused by a control plane pinned to an older forge, so
+add them once the control plane runs the forge that ships them.
 
 ## Text panels
 

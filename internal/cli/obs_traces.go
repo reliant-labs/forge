@@ -18,7 +18,7 @@ const schemaObsTraces = "forge.obs.traces/v1"
 var obsTracesSchema = obsout.Schema{
 	Name: schemaObsTraces,
 	Fields: []string{
-		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services",
+		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "summary", "summary.traces", "summary.error_traces", "summary.p50_ms", "summary.p95_ms", "summary.p99_ms",
 		"sorted_from",
 		"traces", "traces.trace_id", "traces.start", "traces.duration_ms", "traces.root_service", "traces.root_name",
@@ -144,7 +144,7 @@ func runObsTraces(ctx context.Context, d obsDeps, env string, o obsTracesOpts) e
 	}
 	res.NextPageToken = wrapPageToken(n.Range, res.NextPageToken)
 	doc.Page = obsout.Page{Truncated: res.NextPageToken != "", NextPageToken: res.NextPageToken}
-	doc.Suggested = tracesSuggestions(env, res)
+	doc.Suggested = o.inst.carrySuggested(tracesSuggestions(env, res))
 	doc.Stamp(schemaObsTraces, nil)
 	if done, err := o.out.Emit(d.Stdout, obsTracesSchema, doc, fields); done || err != nil {
 		return err

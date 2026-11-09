@@ -13,6 +13,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 type capacityFake struct {
@@ -224,6 +225,7 @@ func TestEnvDeploy_NoVersion_RefusedBeforeBuild(t *testing.T) {
 }
 
 func TestEnvDeploy_Promote_RefusedBeforeBundleAndPromotion(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := planProject(t, hostedStaticPlanFixture)
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: pt\nmodule_path: example.com/pt\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -252,6 +254,7 @@ func TestEnvDeploy_Promote_RefusedBeforeBundleAndPromotion(t *testing.T) {
 }
 
 func TestEnvBuildPush_RefusedBeforeBuild(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	planProject(t, hostedStaticPlanFixture)
 	f := &capacityFake{capacity: refusedCapacity}
 	withCapacityFake(t, f)

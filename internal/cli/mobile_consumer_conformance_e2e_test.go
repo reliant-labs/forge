@@ -96,13 +96,13 @@ func newMobileConsumerRunner(t *testing.T) mobileConsumerRunner {
 	for _, kv := range os.Environ() {
 		key, _, _ := strings.Cut(kv, "=")
 		lower := strings.ToLower(key)
-		if strings.HasPrefix(lower, "npm_config_") || key == linkForgeEnv || key == "GOWORK" {
+		if strings.HasPrefix(lower, "npm_config_") || strings.HasPrefix(lower, "pnpm_config_") || key == linkForgeEnv || key == "GOWORK" {
 			continue
 		}
 		env = append(env, kv)
 	}
-	env = append(env, "npm_config_globalconfig="+config, "npm_config_userconfig="+userConfig,
-		"npm_config_registry=https://registry.npmjs.org", "npm_config_lockfile_include_tarball_url=true", "CI=1", "EXPO_NO_TELEMETRY=1")
+	env = append(env, "npm_config_globalconfig="+config, "npm_config_userconfig="+userConfig, "pnpm_config_userconfig="+userConfig,
+		"npm_config_registry=https://registry.npmjs.org", "npm_config_lockfile_include_tarball_url=true", "pnpm_config_lockfile_include_tarball_url=true", "CI=1", "EXPO_NO_TELEMETRY=1")
 	return mobileConsumerRunner{env: env}
 }
 

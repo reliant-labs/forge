@@ -114,6 +114,13 @@ func hasAttrPrefix(k string) bool {
 const (
 	statusExpr = "lower(replaceOne(StatusCode, 'STATUS_CODE_', ''))"
 	envIDExpr  = "ResourceAttributes['reliant.env.id']"
+	// envIDColumn is envIDExpr materialized on the raw telemetry tables
+	// (Scope.EnvIDColumn): the same value, read without the map lookup.
+	envIDColumn = "EnvId"
+	// instanceIDExpr and instanceUserExpr are what the gateway stamps on a dev
+	// token's telemetry (claims sid and uid), dropping any a client sent.
+	instanceIDExpr   = "ResourceAttributes['reliant.instance.id']"
+	instanceUserExpr = "ResourceAttributes['reliant.instance.user']"
 	// workloadNameExpr is a span's or log's workload: k8s.workload.name where
 	// the node agent stamped it, else the kind-specific name the k8sattributes
 	// processor set (see keyExpr).

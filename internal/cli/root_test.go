@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // execRoot runs the assembled root command with args, capturing combined
@@ -26,6 +28,7 @@ func execRoot(t *testing.T, args ...string) (string, error) {
 // prints the error itself, so the error must be the last thing the user
 // sees.
 func TestRootCmd_RuntimeErrorDoesNotDumpUsage(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	// `forge scaffold entity 9bad` fails validation inside RunE — a runtime
 	// error, not a cobra arg/flag error — without touching the project.
 	out, err := execRoot(t, "scaffold", "entity", "9bad")

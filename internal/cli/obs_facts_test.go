@@ -36,16 +36,28 @@ func TestObsFactsFromRenderedDeclaration(t *testing.T) {
 			errHas: "disabled",
 		},
 		{
+			// A real render of this env carries the port its ClickStack
+			// publishes: KCL refuses host processes without one unless the
+			// env runs no container at all (the case below).
 			name:    "local stack",
-			output:  `{"observability": {"enabled": true}, ` + host + `}`,
+			output:  `{"observability": {"enabled": true, "local_port": 4318}, ` + host + `}`,
 			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, HasLocal: true},
 			backend: "local",
 		},
 		{
 			name:    "a control plane alone does not move telemetry off the machine",
-			output:  `{"observability": {"enabled": true}, ` + cp + `, ` + host + `}`,
+			output:  `{"observability": {"enabled": true, "local_port": 4318}, ` + cp + `, ` + host + `}`,
 			want:    obsbackend.Facts{Env: "e", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com", HasLocal: true},
 			backend: "local",
+		},
+		{
+			// reliant's dev: host processes only, no ClickStack, no
+			// local_port. Local telemetry there was never stored, so the
+			// answer is that, not a docker query (4dfe2b53).
+			name:   "a container-free local env has no store to query",
+			output: `{"lifecycle":"local","observability": {"enabled": true, "dev_telemetry": "auto"}, ` + cp + `, ` + host + `}`,
+			want:   obsbackend.Facts{Env: "e", Declared: true, Enabled: true, ControlPlane: "https://cp.example.com", HasLocal: true, LocalLifecycle: true, NoLocalStore: true},
+			errHas: "this env has no local store",
 		},
 		{
 			// control-plane prod: every workload on a cluster, no destination.
@@ -94,7 +106,7 @@ func TestObsFactsFromRenderedDeclaration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Env != c.want.Env || got.Declared != c.want.Declared || got.Enabled != c.want.Enabled || got.ControlPlane != c.want.ControlPlane || got.HasLocal != c.want.HasLocal || got.HasCluster != c.want.HasCluster || got.LocalLifecycle != c.want.LocalLifecycle ||
+			if got.Env != c.want.Env || got.Declared != c.want.Declared || got.Enabled != c.want.Enabled || got.ControlPlane != c.want.ControlPlane || got.HasLocal != c.want.HasLocal || got.HasCluster != c.want.HasCluster || got.LocalLifecycle != c.want.LocalLifecycle || got.NoLocalStore != c.want.NoLocalStore ||
 				(got.Destination == nil) != (c.want.Destination == nil) || (got.Destination != nil && *got.Destination != *c.want.Destination) {
 				t.Errorf("facts = %+v (destination %+v), want %+v (destination %+v)", got, got.Destination, c.want, c.want.Destination)
 			}

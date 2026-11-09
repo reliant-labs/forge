@@ -143,6 +143,7 @@ import {
   watchViewport,
 } from "./client-context.js";
 import { setExceptionReporter } from "./error-reporter.js";
+import { installFetchContext } from "./interaction-context.js";
 import { installSessionCookieFallback } from "./session-cookie-fallback.js";
 import {
   registerRumSession,
@@ -398,6 +399,10 @@ async function start(
         pageClientResourceAttributes(),
       ),
     );
+    // Over the SDK's patched fetch, so an RPC whose fetch() runs after an
+    // await (a server stream) still opens its span under the context the
+    // trace interceptor chose. See interaction-context.ts.
+    installFetchContext();
     // From here web-vitals watches visibility itself.
     hidden.stop();
     dropBackgroundPaintVitals(hidden.at());
@@ -986,7 +991,7 @@ export function buildSdkOptions(
 ): Record<string, unknown> {
   // `config.replay` is the FINAL decision here. initBrowserTelemetry resolves
   // replaySampleRate into it (decideReplay) before calling this.
-  const replay = config.replay === true;
+  const replay = config.replay === true && !replayPrivacyOptOut();
   const resourceAttributes: Record<string, string> = { ...clientAttributes };
   if (config.serviceVersion) {
     resourceAttributes["service.version"] = config.serviceVersion;
@@ -1069,15 +1074,15 @@ interface DecisionStore {
  * Whether this session records a replay: config.replay, then the sample rate,
  * drawn once and remembered in `store` so a reload (or a route change that
  * re-runs init) never re-rolls into a session that only half-recorded. With no
- * usable store the draw is made each load. Pure given its inputs; exported for
- * tests.
+ * usable store the draw is made each load. Browser DNT/GPC preferences always
+ * win over an opt-in or a stored draw; exported for tests.
  */
 export function decideReplay(
   config: Pick<BrowserTelemetryConfig, "replay" | "replaySampleRate">,
   store: DecisionStore | null,
   random: () => number,
 ): boolean {
-  if (config.replay !== true) {
+  if (config.replay !== true || replayPrivacyOptOut()) {
     return false;
   }
   const rate = clampRate(config.replaySampleRate);
@@ -1102,6 +1107,30 @@ export function decideReplay(
     // Not persisted: the next load draws again.
   }
   return sampled;
+}
+
+// Replay is sensitive even when masked. These browser preferences outrank
+// the author's opt-in AND a previously stored sampling decision. They do not
+// change ordinary error/trace telemetry. An unreadable preference fails closed.
+function replayPrivacyOptOut(): boolean {
+  try {
+    if (typeof navigator === "undefined") return false;
+    const nav = navigator as Navigator & {
+      globalPrivacyControl?: boolean;
+      msDoNotTrack?: string;
+    };
+    const legacy =
+      typeof window === "undefined"
+        ? undefined
+        : (window as Window & { doNotTrack?: string }).doNotTrack;
+    const dnt = [nav.doNotTrack, nav.msDoNotTrack, legacy];
+    return (
+      nav.globalPrivacyControl === true ||
+      dnt.some((value) => value === "1" || value === "yes")
+    );
+  } catch {
+    return true;
+  }
 }
 
 // Unset is "every session"; anything that is not a number is a bug, and a bug

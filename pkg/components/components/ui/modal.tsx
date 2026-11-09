@@ -1,5 +1,7 @@
-import React, { useEffect, useId, useLayoutEffect, useRef } from "react";
+import React, { useContext, useId, useLayoutEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
+
+import { DialogAncestors, FOCUSABLE_SELECTOR, useModalDialog } from "./modal_dialog";
 
 /**
  * Modal — a dialog over the page: header (title, description, header
@@ -14,7 +16,11 @@ import { createPortal } from "react-dom";
  *   - Escape closes it, unless something inside already handled the key (an
  *     open menu calls preventDefault). Only the TOP dialog responds when
  *     dialogs stack; the one underneath keeps its focus trap off until the
- *     top one closes.
+ *     top one closes. Existing external `role="dialog"` / `alertdialog`
+ *     surfaces with `aria-modal="true"` painted above it retain their own
+ *     focus/Tab/Escape policy; a lower, hidden or app-inert dialog does not.
+ *     New custom surfaces can use `useModalDialog` (./modal_dialog) for the
+ *     shared lifecycle.
  *   - Closing returns focus to whatever had it before the dialog opened. If
  *     that element is gone (the menu item that opened the dialog unmounted),
  *     `fallbackFocus` decides where focus goes instead.
@@ -42,9 +48,6 @@ import { createPortal } from "react-dom";
  * `viewport-fit=cover`. `overlayClassName` is the seam for anything else
  * about the overlay's geometry.
  */
-
-const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export interface ModalProps {
   open: boolean;
@@ -81,25 +84,6 @@ const sizeStyles: Record<NonNullable<ModalProps["size"]>, string> = {
   xl: "max-w-4xl",
   full: "max-w-6xl",
 };
-
-// Open dialogs, bottom to top. Escape and the focus trap belong to the top
-// one only; a module-level stack because stacked dialogs are usually
-// rendered by unrelated components.
-const openStack: symbol[] = [];
-const isTop = (id: symbol) => openStack[openStack.length - 1] === id;
-
-// The body scroll lock, counted across stacked dialogs.
-let lockCount = 0;
-let savedOverflow = "";
-function lockScroll() {
-  if (lockCount++ === 0) {
-    savedOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-  }
-}
-function unlockScroll() {
-  if (--lockCount === 0) document.body.style.overflow = savedOverflow;
-}
 
 // Pins `el` to the visual viewport: the custom properties the overlay's
 // classes read, kept current as the keyboard opens, closes or pans the page.
@@ -141,6 +125,8 @@ export default function Modal({
   const sheet = sheetOnMobile ?? (size === "lg" || size === "xl" || size === "full");
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const ancestors = useContext(DialogAncestors);
+  const childAncestors = useMemo(() => [...ancestors, panelRef], [ancestors]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
   // useId-based labelling: multiple modals on one page never collide the
@@ -154,10 +140,8 @@ export default function Modal({
   // forbids touching refs there); layout effects run before the effect
   // below and before any event the committed dialog can receive.
   const onCloseRef = useRef(onClose);
-  const fallbackFocusRef = useRef(fallbackFocus);
   useLayoutEffect(() => {
     onCloseRef.current = onClose;
-    fallbackFocusRef.current = fallbackFocus;
   });
 
   // A layout effect, so the overlay has its visible size before first paint.
@@ -166,70 +150,16 @@ export default function Modal({
     return trackVisualViewport(overlayRef.current);
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const id = Symbol("modal");
-    openStack.push(id);
-    lockScroll();
-
-    // <body> is not an opener: focus falls back to it when the focused
-    // element unmounts in the same render that opens the dialog (a menu
-    // item that closes its menu), so treat it as "the opener is gone".
-    const active = document.activeElement;
-    const previouslyFocused =
-      active instanceof HTMLElement && active !== document.body ? active : null;
-    const panel = panelRef.current;
-    if (panel && !panel.contains(document.activeElement)) {
-      const initial =
-        bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ??
-        footerRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ??
-        panel;
-      initial.focus();
-    }
-
-    function onKeyDown(e: KeyboardEvent) {
-      if (!isTop(id) || !panelRef.current) return;
-      if (e.key === "Escape") {
-        if (e.defaultPrevented) return;
-        e.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const focusable = Array.from(
-        panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-      );
-      if (focusable.length === 0) {
-        e.preventDefault();
-        panelRef.current.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      // A dialog stacked above this one that is not a forge Modal (an image
-      // viewer, a command palette) owns its own Tab order.
-      const owner = active instanceof Element ? active.closest('[aria-modal="true"]') : null;
-      if (owner && owner !== panelRef.current) return;
-      const inside = panelRef.current.contains(active);
-      if (e.shiftKey && (!inside || active === first || active === panelRef.current)) {
-        e.preventDefault();
-        last?.focus();
-      } else if (!e.shiftKey && (!inside || active === last)) {
-        e.preventDefault();
-        first?.focus();
-      }
-    }
-    document.addEventListener("keydown", onKeyDown);
-
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      openStack.splice(openStack.indexOf(id), 1);
-      unlockScroll();
-      if (previouslyFocused?.isConnected) previouslyFocused.focus();
-      else fallbackFocusRef.current?.();
-    };
-  }, [open]);
+  useModalDialog({
+    open,
+    panelRef,
+    onClose,
+    initialFocus: () =>
+      bodyRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ??
+      footerRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ??
+      panelRef.current,
+    fallbackFocus,
+  });
 
   if (!open) return null;
 
@@ -250,6 +180,9 @@ export default function Modal({
     <div
       ref={overlayRef}
       role="presentation"
+      // React portals keep context but not DOM order: a child portal can be
+      // inserted before its parent on first mount. Give nested layers depth.
+      style={ancestors.length ? { zIndex: 50 + ancestors.length } : undefined}
       className={`fixed inset-x-0 top-[var(--modal-vv-top,0px)] z-50 flex h-[var(--modal-vv-height,100dvh)] items-center justify-center bg-black/50 px-[max(1rem,env(safe-area-inset-left),env(safe-area-inset-right))] pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-sm sm:p-6 ${
         sheet ? "max-sm:p-0" : ""
       } ${overlayClassName ?? ""}`}
@@ -332,5 +265,8 @@ export default function Modal({
     </div>
   );
 
-  return portal && typeof document !== "undefined" ? createPortal(dialog, document.body) : dialog;
+  const content = (
+    <DialogAncestors.Provider value={childAncestors}>{dialog}</DialogAncestors.Provider>
+  );
+  return portal && typeof document !== "undefined" ? createPortal(content, document.body) : content;
 }

@@ -3,6 +3,8 @@ package cli
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ensureGitHooksActivated may point core.hooksPath at .githooks only when the
@@ -57,6 +59,7 @@ func TestEnsureGitHooksActivated(t *testing.T) {
 // with FORGE_NO_GIT_HOOKS=1 (TestE2EMergeProperty) got the scaffold's
 // pre-commit run on its own commits when it did not.
 func TestActivateGitHooks_HonoursOptOut(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	for _, tc := range []struct {
 		name   string
 		optOut string
@@ -87,6 +90,7 @@ func TestActivateGitHooks_HonoursOptOut(t *testing.T) {
 
 // A core.hooksPath the user already set is never replaced, forge hook or not.
 func TestEnsureGitHooksActivated_KeepsExistingSetting(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	isolateGit(t)
 	repo := t.TempDir()
 	gitOut(t, repo, "init", "-q")

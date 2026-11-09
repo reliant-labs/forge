@@ -18,6 +18,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/dbquery/kubedial"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestSelectExternalDatabase(t *testing.T) {
@@ -58,6 +59,7 @@ const externalFixture = `{"output":{
 // An audited env refuses a query that does not name the env and a reason, and
 // refuses it before the password Secret is read.
 func TestDBQueryExternalJudgesThePolicyBeforeReadingTheSecret(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	cs := fake.NewClientset()
 	prevClient := newDBQueryClient
 	newDBQueryClient = func(string) (*kubedial.Client, error) { return kubedial.NewWithClientset(cs, &fakeDBPods{}), nil }
@@ -78,6 +80,7 @@ func TestDBQueryExternalJudgesThePolicyBeforeReadingTheSecret(t *testing.T) {
 
 // A missing password Secret says which one, exit 2.
 func TestDBQueryExternalWithoutItsSecret(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	prevClient := newDBQueryClient
 	newDBQueryClient = func(string) (*kubedial.Client, error) {
 		return kubedial.NewWithClientset(fake.NewClientset(), &fakeDBPods{}), nil

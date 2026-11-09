@@ -19,10 +19,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/devtelemetry"
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/obsout"
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
@@ -37,6 +39,13 @@ type obsDeps struct {
 	Local func(env string) obsbackend.Backend
 	// Cloud builds the backend over the env's control plane.
 	Cloud func(ctx context.Context, env string) (obsbackend.Cloud, error)
+	// HostedDev builds the cloud backend of a local env whose telemetry
+	// `forge env up` sent to the hosted store, from its record.
+	HostedDev func(ctx context.Context, env string, rec devtelemetry.Record) (obsbackend.Cloud, error)
+	// InstanceRecords reads the hosted-dev records `forge env up` wrote for
+	// env on this machine (this checkout and its sibling worktrees), to
+	// resolve an --instance label.
+	InstanceRecords instanceRecords
 	// Release looks up the release live in env at a moment.
 	Release func(ctx context.Context, env string, at time.Time) (*liveRelease, error)
 	// Now is the clock.
@@ -53,34 +62,16 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 		Local: func(env string) obsbackend.Backend {
 			return obsbackend.Local{Env: env, Runner: obsbackend.DockerRunner{Exec: localClickstackExec(env), Env: env}, Ledger: openObsLedger, Declared: declaredMetricSchemas}
 		},
-		Cloud:   openObsCloud,
-		Release: liveReleaseAt,
-		Now:     time.Now,
-		Stdout:  cmd.OutOrStdout(),
-		Stderr:  cmd.ErrOrStderr(),
+		Cloud:           openObsCloud,
+		HostedDev:       openObsHostedDev,
+		InstanceRecords: machineInstanceRecords,
+		Release:         liveReleaseAt,
+		Now:             time.Now,
+		Stdout:          cmd.OutOrStdout(),
+		Stderr:          cmd.ErrOrStderr(),
 	}
 	if o := obsDepsOverride; o != nil {
-		if o.Facts != nil {
-			d.Facts = o.Facts
-		}
-		if o.Local != nil {
-			d.Local = o.Local
-		}
-		if o.Cloud != nil {
-			d.Cloud = o.Cloud
-		}
-		if o.Release != nil {
-			d.Release = o.Release
-		}
-		if o.Now != nil {
-			d.Now = o.Now
-		}
-		if o.Stdout != nil {
-			d.Stdout = o.Stdout
-		}
-		if o.Stderr != nil {
-			d.Stderr = o.Stderr
-		}
+		overrideObsDeps(&d, o)
 	}
 	// Every verb's output carries telemetry written by whoever holds the public
 	// ingest key; this is the one place it is made safe for a terminal.
@@ -89,13 +80,58 @@ func defaultObsDeps(cmd *cobra.Command) obsDeps {
 	return d
 }
 
+// overrideObsDeps replaces each of d's dependencies that o sets (a test's
+// obsDepsOverride), leaving the rest at their defaults.
+func overrideObsDeps(d *obsDeps, o *obsDeps) {
+	if o.Facts != nil {
+		d.Facts = o.Facts
+	}
+	if o.Local != nil {
+		d.Local = o.Local
+	}
+	if o.Cloud != nil {
+		d.Cloud = o.Cloud
+	}
+	if o.HostedDev != nil {
+		d.HostedDev = o.HostedDev
+	}
+	if o.InstanceRecords != nil {
+		d.InstanceRecords = o.InstanceRecords
+	}
+	if o.Release != nil {
+		d.Release = o.Release
+	}
+	if o.Now != nil {
+		d.Now = o.Now
+	}
+	if o.Stdout != nil {
+		d.Stdout = o.Stdout
+	}
+	if o.Stderr != nil {
+		d.Stderr = o.Stderr
+	}
+}
+
 // localClickstackExec runs a script inside env's ClickStack container, in the
 // compose project `forge env up` started it in.
+//
+// Docker's engine is probed once first, bounded by dockerProbeTimeout: a
+// docker CLI whose engine is absent or wedged otherwise blocks `forge obs`
+// for as long as the caller waits, with nothing on screen.
 func localClickstackExec(env string) obsbackend.ExecFunc {
+	var (
+		probeOnce sync.Once
+		probeErr  error
+	)
 	return func(ctx context.Context, script string, args []string) ([]byte, error) {
 		dir, err := requireProjectDir("obs")
 		if err != nil {
 			return nil, obsbackend.Undetermined("%v", err)
+		}
+		probeOnce.Do(func() { probeErr = dockerEngineProbeFn(ctx) })
+		if probeErr != nil {
+			return nil, obsbackend.Undetermined("the local ClickStack cannot be reached: %v", probeErr).
+				With(obsbackend.Cmd("forge", "env", "up", env))
 		}
 		project := func(ctx context.Context) []string { return localClickstackComposeArgs(ctx, dir, env) }
 		return obsbackend.ComposeExec(obsbackend.ComposeFunc(doctorCompose), dir, project)(ctx, script, args)
@@ -112,7 +148,9 @@ func obsFactsFromKCL(ctx context.Context, errOut io.Writer, env string) (obsback
 		return obsbackend.Facts{}, obsbackend.Undetermined("cannot read env %q's declaration: %v", env, err).
 			With(obsbackend.Cmd("forge", "env", "list"))
 	}
-	return t.Facts, nil
+	f := t.Facts
+	f.DevTelemetry = readDevTelemetry(projectDirForKCL(), env, func(w string) { fmt.Fprintf(errOut, "warning: %s\n", w) })
+	return f, nil
 }
 
 // obsCommon are the flags and state every telemetry verb shares.
@@ -127,6 +165,9 @@ type obsCommon struct {
 	// explain compiles the statements without running them (--explain);
 	// printSQL is its alias for the SQL-first habit (--print-sql).
 	explain, printSQL bool
+
+	// inst picks the dev instance of a hosted-dev env (obs_instance.go).
+	inst obsInstanceFlags
 }
 
 // register adds the flags. sinceDefault is the verb's own window (logs 15m,
@@ -142,6 +183,7 @@ func (c *obsCommon) register(cmd *cobra.Command, sinceDefault time.Duration, lim
 	f.StringArrayVar(&c.filters, "filter", nil, "attribute predicate key=value or key!=value (repeatable): an allowlisted key, or any attribute as span.attr.<k> (traces), log.attr.<k> (logs) or resource.attr.<k>")
 	f.BoolVar(&c.explain, "explain", false, "print the compiled SQL and its parameters instead of running it (a starting point for obs query --sql)")
 	f.BoolVar(&c.printSQL, "print-sql", false, "alias of --explain")
+	c.inst.register(f)
 }
 
 func (c *obsCommon) wantExplain() bool { return c.explain || c.printSQL }
@@ -209,11 +251,35 @@ func (c *obsCommon) open(ctx context.Context, d obsDeps, env, _ string) (obsback
 		return nil, dec, err
 	}
 	if dec.Backend == obsbackend.BackendLocal {
-		return d.Local(env), dec, nil
+		b := d.Local(env)
+		inst, err := c.inst.resolve(ctx, env, nil, d.InstanceRecords)
+		if err != nil {
+			return nil, dec, err
+		}
+		if l, ok := b.(obsbackend.Local); ok {
+			l.Instances = inst
+			b = l
+		}
+		return b, dec, nil
 	}
-	cb, err := d.Cloud(ctx, env)
+	var cb obsbackend.Cloud
+	if rec := dec.HostedDev; rec != nil {
+		cb, err = d.HostedDev(ctx, env, *rec)
+	} else {
+		cb, err = d.Cloud(ctx, env)
+	}
 	if err != nil {
 		return nil, dec, err
+	}
+	if cb.Instances, err = c.inst.resolve(ctx, env, dec.HostedDev, d.InstanceRecords); err != nil {
+		return nil, dec, err
+	}
+	if dec.HostedDev != nil {
+		var ledger obsbackend.ChangesReader
+		if d.Local != nil {
+			ledger, _ = d.Local(env).(obsbackend.ChangesReader)
+		}
+		return hostedDevBackend{Cloud: cb, ledger: ledger}, dec, nil
 	}
 	return cb, dec, nil
 }
@@ -222,7 +288,8 @@ func (c *obsCommon) open(ctx context.Context, d obsDeps, env, _ string) (obsback
 
 // obsScope builds the scope echo of a document.
 func obsScope(info obsbackend.Info, n obsbackend.Narrow) obsout.Scope {
-	return obsout.Scope{Env: info.Env, Backend: info.Backend, EnvID: info.EnvID, From: n.Range.From, To: n.Range.To, Services: n.Services}
+	return obsout.Scope{Env: info.Env, Backend: info.Backend, EnvID: info.EnvID, From: n.Range.From, To: n.Range.To, Services: n.Services,
+		Instance: obsScopeInstance(info.Instances)}
 }
 
 // obsFail renders a verb's failure for --json (a failure document on stdout)

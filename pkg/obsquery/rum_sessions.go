@@ -424,6 +424,9 @@ func (q SessionLookup) Compile() (Stmt, error) {
 	if sv := b.serviceIn(q.Scope.Services); sv != "" {
 		where = append(where, sv)
 	}
+	if e := b.browserInstanceCond(q.Scope); e != "" {
+		where = append(where, e)
+	}
 	sql := "SELECT " + sessionCols(q.Scope) + "\nFROM " + b.table(q.Scope, tblSessions) + "\n" + where2(where) + "\nGROUP BY ServiceName, SessionId\n"
 	if e := b.browserEnvCond("max(EnvId)", q.Scope); e != "" {
 		sql += "HAVING " + e + "\n"
@@ -606,6 +609,9 @@ func (q SessionTimeline) Compile() (Stmt, error) {
 	}
 	errConds := []string{b.rangeCond("Timestamp", q.Scope), "SessionId = " + sid}
 	if e := b.browserEnvCond("EnvId", q.Scope); e != "" {
+		errConds = append(errConds, e)
+	}
+	if e := b.browserInstanceCond(q.Scope); e != "" {
 		errConds = append(errConds, e)
 	}
 	if sv := b.serviceIn(q.Scope.Services); sv != "" {

@@ -64,17 +64,26 @@ const FORGOT_PATH = "/auth/forgot";
 const RESET_PATH = "/auth/reset";
 
 /**
+ * The pages an emailed link opens (a magic link, an invitation, an address
+ * confirmation) and the page a Google or GitHub sign-in returns to. Public
+ * for the same reason: whoever opens them has no session yet.
+ */
+const EMAIL_LINK_PATHS = ["/auth/magic", "/auth/invite", "/auth/verify", "/auth/social/callback"];
+
+/**
  * Paths that render without a session.
  *
  * The sign-in route MUST be here: sending an anonymous visitor from the
  * sign-in page to the sign-in page is a redirect loop.
  *
- * There is no `/auth/callback` in this list because there is no callback in
- * this architecture. The browser never receives an authorization code to
+ * There is no `/auth/callback` in this list because there is no OIDC callback
+ * in this architecture. The browser never receives an authorization code to
  * trade — it posts credentials to this app's own API and the server does the
  * exchange — so a callback path would be a public hole guarding nothing.
+ * (/auth/social/callback is not one: it receives no code, only a handle the
+ * server checks against the sign-in this browser started.)
  */
-const publicPaths = [SIGN_IN_PATH, FORGOT_PATH, RESET_PATH];
+const publicPaths = [SIGN_IN_PATH, FORGOT_PATH, RESET_PATH, ...EMAIL_LINK_PATHS];
 
 function isPublicPath(pathname: string): boolean {
   return publicPaths.some((p) => pathname === p || pathname.startsWith(`${p}/`));

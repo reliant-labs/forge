@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // txBlockCase is one migration file and what the transaction-block rules must
@@ -239,6 +240,7 @@ func TestLexStatements(t *testing.T) {
 // failed at `migrate up` with SQLSTATE 25001, leaving the schema dirty. It is
 // now refused at review time, at file:line, with the fix.
 func TestLintMigrationsDirRefusesConcurrentlyBesideAnotherStatement(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "20260101000000_index_users.up.sql",
 		"-- forge db migration new index_users\n\nCREATE INDEX CONCURRENTLY idx_users_email ON users (email);\nCREATE INDEX CONCURRENTLY idx_users_org ON users (org_id);\n")
 	result, err := LintMigrationsDir(dir, DefaultConfig())

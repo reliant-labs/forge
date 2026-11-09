@@ -46,3 +46,29 @@ func TestPopoverTreatsPortalledDescendantsAsInside(t *testing.T) {
 		}
 	}
 }
+
+// TestPopoverCallsRenderPropsOutsideItsOwnRender: since #1871 the popover
+// ships in every scaffold (the header user menu), whose eslint must report
+// nothing as emitted (TestE2EFreshScaffoldFrontendLintClean). Its render props
+// receive callbacks that touch refs, and calling them in Popover's own render
+// is a react-hooks/refs warning, so they are called from RenderProp instead.
+func TestPopoverCallsRenderPropsOutsideItsOwnRender(t *testing.T) {
+	t.Parallel()
+	src, err := NewLibrary().Get("popover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`<RenderProp render={trigger} arg={triggerProps} />`,
+		`<RenderProp render={children} arg={{ close: () => close() }} />`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("popover.tsx no longer contains %q", want)
+		}
+	}
+	for _, banned := range []string{`trigger(triggerProps)`, `children({ close`} {
+		if strings.Contains(src, banned) {
+			t.Errorf("popover.tsx calls a render prop during its own render (%q): react-hooks/refs warns on it in every scaffold", banned)
+		}
+	}
+}

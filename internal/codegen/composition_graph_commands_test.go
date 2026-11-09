@@ -24,6 +24,10 @@ func TestRootCommandPath_NameOrCommandOption(t *testing.T) {
 	}{
 		{name: "worker", want: "worker"},
 		{name: "api", opts: []string{"command=server,api"}, want: "server api"},
+		{name: "daemon_billing", opts: []string{"command=daemon_billing"}, want: "daemon_billing"},
+		{name: "legacy", opts: []string{"command=worker_group,daemon_billing"}, want: "worker_group daemon_billing"},
+		{name: "bad", opts: []string{"command=worker/daemon"}, err: "not a cobra command name"},
+		{name: "bad", opts: []string{"command=worker daemon"}, err: "not a cobra command name"},
 		{name: "gw", opts: []string{"bogus"}, err: "unknown //forge:root option"},
 		{name: "gw", opts: []string{"command=Server"}, err: "not a cobra command name"},
 		{name: "gw", opts: []string{"command="}, err: "not a cobra command name"},

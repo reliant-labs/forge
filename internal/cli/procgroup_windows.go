@@ -365,3 +365,30 @@ func procStartTimes(pids []int) map[int]time.Time {
 	}
 	return out
 }
+
+// readOSStopTable reads the process table the shutdown sweep needs from a
+// Toolhelp32 snapshot. A process in another Windows session is foreign: no
+// child of this run can be in one. An empty snapshot is an error, never an
+// empty table.
+func readOSStopTable() (*stopTable, error) {
+	entries := snapshotProcesses()
+	if len(entries) == 0 {
+		return nil, errors.New("the process snapshot is empty")
+	}
+	links := resolveParentLinks(entries)
+	var mine uint32
+	mineOK := windows.ProcessIdToSessionId(uint32(os.Getpid()), &mine) == nil
+	procs := make(map[int]stopProc, len(entries))
+	for _, e := range entries {
+		row := stopProc{ppid: links[e.PID], exited: !e.Alive}
+		if e.CreatedOK {
+			row.started = e.Created
+		}
+		var sess uint32
+		if mineOK && windows.ProcessIdToSessionId(uint32(e.PID), &sess) == nil && sess != mine {
+			row.foreign = true
+		}
+		procs[e.PID] = row
+	}
+	return &stopTable{procs: procs, readEnv: readProcEnviron, readArgv: readProcArgv, isAlive: processAlive}, nil
+}

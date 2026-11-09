@@ -55,3 +55,30 @@ func TestTreeSignalTargets(t *testing.T) {
 		t.Errorf("without a table: targets = %v, want %v", got, want)
 	}
 }
+
+func TestParseStopTable(t *testing.T) {
+	out := "    1     0     0 Ss   Thu Nov  5 09:35:21 2026\n" +
+		"  500     1   501 S+   Sun Nov  8 16:20:17 2026\n" +
+		"  501   500   501 Z    Sun Nov  8 16:20:18 2026\n" +
+		"  502     1   501 S    garbage\n" +
+		"not a row\n"
+	got := parseStopTable(out, 501)
+	if len(got) != 4 {
+		t.Fatalf("rows = %v, want 4", got)
+	}
+	if !got[1].foreign || got[500].foreign {
+		t.Errorf("foreign: init = %v (want true), own process = %v (want false)", got[1].foreign, got[500].foreign)
+	}
+	if !got[501].exited || got[500].exited {
+		t.Errorf("exited: zombie = %v (want true), running = %v (want false)", got[501].exited, got[500].exited)
+	}
+	if got[500].started.IsZero() || !got[502].started.IsZero() {
+		t.Errorf("started: parsed = %v, unparseable = %v (want zero)", got[500].started, got[502].started)
+	}
+	if got[501].ppid != 500 {
+		t.Errorf("ppid = %d, want 500", got[501].ppid)
+	}
+	if root := parseStopTable(out, 0); root[500].foreign || root[1].foreign {
+		t.Error("nothing is foreign to root")
+	}
+}

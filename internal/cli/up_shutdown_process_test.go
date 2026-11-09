@@ -1,5 +1,9 @@
 //go:build !windows
 
+// Unix only: the fake runner detaches its server with Setsid, and the
+// assertions read process state from ps. procgroup_windows_test.go covers the
+// Windows tree kill.
+
 package cli
 
 import (
@@ -14,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestShutdownFakeRunnerHelper is not a test: it is the fake runner and server
@@ -24,7 +30,8 @@ import (
 //     the server holds the pipe forge reads. With FORGE_SHUTDOWN_DETACH set it
 //     starts the server through a spawner that exits at once, so the server is
 //     reparented to init before any shutdown begins. It exits on SIGTERM
-//     without stopping the server: the runner that gives up.
+//     without stopping the server: the runner that gives up. Until then it
+//     answers a ping file with a pong file.
 //   - spawner: starts the server the same way and exits.
 //   - server: writes its pid, then ignores SIGTERM and SIGINT. Only SIGKILL
 //     stops it.
@@ -38,8 +45,20 @@ func TestShutdownFakeRunnerHelper(t *testing.T) {
 		}
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGTERM)
-		<-sigs
-		os.Exit(0)
+		// Answer a ping (a file appearing) with a pong, so the test can ask
+		// whether this runner is still alive without a fixed wait.
+		ping := os.Getenv("FORGE_SHUTDOWN_PIDFILE") + ".ping"
+		tick := time.NewTicker(5 * time.Millisecond)
+		for {
+			select {
+			case <-sigs:
+				os.Exit(0)
+			case <-tick.C:
+				if _, err := os.Stat(ping); err == nil {
+					_ = os.WriteFile(ping+".pong", nil, 0o600)
+				}
+			}
+		}
 	case "spawner":
 		spawnShutdownHelper("server")
 		os.Exit(0)
@@ -82,9 +101,7 @@ func spawnShutdownHelper(mode string) {
 //   - detached before stop: the server has already left the runner's tree
 //     when shutdown begins, so only the run's marker can find it.
 func TestShutdownStopsWhatARunnerDetached(t *testing.T) {
-	if testing.Short() {
-		t.Skip("starts real runner and server processes and waits out a stop grace; runs in task test")
-	}
+	testkit.Slow(t, "starts real runner and server processes and waits out a one-second stop grace")
 	requireProcInspection(t)
 	for _, tc := range []struct {
 		name   string
@@ -120,19 +137,23 @@ func TestShutdownStopsWhatARunnerDetached(t *testing.T) {
 			t.Cleanup(func() { _ = syscall.Kill(server, syscall.SIGKILL) })
 
 			if tc.detach {
-				waitUntil(t, "the server is reparented away from the runner", func() bool {
+				if !pollUntil(10*time.Second, func() bool {
 					ppid, ok := ppidMap()[server]
 					return ok && ppid != runner
-				})
+				}) {
+					t.Fatal("the server was never reparented away from the runner")
+				}
 			}
 			cancel()
 			// The cancelled context must not have killed the runner: shutdown
 			// owns that, and a runner killed early is what orphaned the server.
-			// (A killed runner lingers as a zombie until the server releases
-			// its pipe, so ask ps for its state rather than probing the pid.)
-			time.Sleep(200 * time.Millisecond)
-			if state := processState(runner); state == "" || strings.HasPrefix(state, "Z") {
-				t.Fatalf("cancelling the run's context killed the runner before shutdown (state %q)", state)
+			// The runner answers a ping only while it lives. (A killed runner
+			// would linger as a zombie, which a signal-0 probe calls alive.)
+			if err := os.WriteFile(pidFile+".ping", nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !pollUntil(5*time.Second, func() bool { return fileExists(pidFile + ".ping.pong") }) {
+				t.Fatalf("the runner stopped answering once the run's context was cancelled (state %q): the context killed it before shutdown", processState(runner))
 			}
 			if !tc.detach {
 				if ppid := ppidMap()[server]; ppid != runner {
@@ -140,17 +161,28 @@ func TestShutdownStopsWhatARunnerDetached(t *testing.T) {
 				}
 			}
 
-			start := time.Now()
-			out := captureStdout(t, reg.shutdown)
-			if took := time.Since(start); took > reg.stopGrace+stopReapWait+3*time.Second {
-				t.Errorf("shutdown took %s", took)
+			// shutdown must return on its own — before, it waited forever on
+			// the pipe the orphaned server held.
+			var out string
+			var stopErr error
+			returned := make(chan struct{})
+			go func() {
+				defer close(returned)
+				out = captureStdout(t, func() { stopErr = reg.shutdown() })
+			}()
+			select {
+			case <-returned:
+			case <-time.After(30 * time.Second):
+				t.Fatal("shutdown did not return")
 			}
-			waitUntil(t, "the server is gone", func() bool { return !processAlive(server) })
-			if processAlive(runner) {
-				t.Errorf("runner pid %d survived shutdown", runner)
+			if stopErr != nil {
+				t.Errorf("shutdown: %v\n%s", stopErr, out)
 			}
-			if strings.Contains(out, "still running after SIGKILL") {
-				t.Errorf("shutdown reported survivors:\n%s", out)
+			if !pollUntil(10*time.Second, func() bool { return !processAlive(server) }) {
+				t.Fatalf("server pid %d survived shutdown (state %q)\n%s", server, processState(server), out)
+			}
+			if state := processState(runner); state != "" && !strings.HasPrefix(state, "Z") {
+				t.Errorf("runner pid %d survived shutdown (state %q)", runner, state)
 			}
 		})
 	}
@@ -168,24 +200,32 @@ func processState(pid int) string {
 func waitForPIDFile(t *testing.T, path string) int {
 	t.Helper()
 	var pid int
-	waitUntil(t, "the server writes its pid", func() bool {
+	if !pollUntil(10*time.Second, func() bool {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return false
 		}
 		pid, err = strconv.Atoi(strings.TrimSpace(string(data)))
 		return err == nil && pid > 0
-	})
+	}) {
+		t.Fatal("the server never wrote its pid")
+	}
 	return pid
 }
 
-func waitUntil(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+// pollUntil checks cond every 20ms until it holds or timeout elapses, and
+// reports whether it held. The deadline is a timer, not a clock reading.
+func pollUntil(timeout time.Duration, cond func() bool) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
 	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting until %s", what)
+		select {
+		case <-deadline.C:
+			return cond()
+		case <-tick.C:
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
+	return true
 }

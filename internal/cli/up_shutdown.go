@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,9 +34,12 @@ const (
 // children's exit to be observed after SIGKILL, so a process holding one of
 // their output pipes can never hang the command. stopSweepInterval is how often
 // the grace period looks for processes of this run that left the tree.
+// stopStragglerWait is how long the final check keeps re-sweeping while it
+// still finds a process of this run, or one it cannot inspect.
 var (
 	stopReapWait      = 5 * time.Second
 	stopSweepInterval = time.Second
+	stopStragglerWait = time.Second
 )
 
 // requireStopGrace extends the shutdown grace so a runner that declares its
@@ -77,13 +81,25 @@ func (p *procRegistry) requireStopGrace(who string, drain time.Duration) {
 // the marker however it was started. The sweep never selects a process in
 // this command's own lineage (procguard), and the marker is unique to this
 // run, so a stack another run started is never touched.
-func (p *procRegistry) shutdown() {
+//
+// The stack's records are removed only when the stack is PROVEN down. A
+// process table that cannot be read, or a process started during this run
+// whose environment cannot be read (so whether it carries the marker is
+// unknown), is not proof of absence: shutdown then keeps the records, so
+// `forge env down` and `forge env ps` still reach the stack, and returns an
+// error naming what it could not check.
+func (p *procRegistry) shutdown() error {
 	p.mu.Lock()
 	p.isStopped = true
 	procs := make([]*managedProcess, len(p.processes))
 	copy(procs, p.processes)
 	grace, graceFor := p.stopGrace, p.graceFor
 	p.mu.Unlock()
+	if len(procs) == 0 {
+		// Nothing was started, so nothing can carry this run's marker.
+		removeStackRecords(p.projectID, p.env)
+		return nil
+	}
 	if grace <= 0 {
 		grace = defaultStopGrace
 	}
@@ -155,58 +171,83 @@ func (p *procRegistry) shutdown() {
 				_ = killProcessTree(pid, syscall.SIGKILL)
 			}
 		}
-		for _, pid := range p.runRoots(managed) {
-			if escaped[pid] {
-				continue
+		if sw, table, err := p.sweep(managed); err == nil {
+			for _, pid := range sw.roots {
+				if escaped[pid] {
+					continue
+				}
+				fmt.Printf("[up] pid %d (%s) did not exit, killing.\n", pid, serviceOfPID(pid, table))
+				_ = killProcessTree(pid, syscall.SIGKILL)
 			}
-			fmt.Printf("[up] pid %d (%s) did not exit, killing.\n", pid, serviceOfPID(pid, newOSProcFacts()))
-			_ = killProcessTree(pid, syscall.SIGKILL)
 		}
 	}
 
-	left := p.awaitStopped(procs, managed)
-	if len(left) > 0 {
+	left, unverified := p.awaitStopped(procs, managed)
+	switch {
+	case len(left) > 0:
 		fmt.Printf("[up] warning: still running after SIGKILL: %s — the stack's records are kept; `forge env down %s` retries\n",
 			strings.Join(left, ", "), p.env)
-		return
+		return fmt.Errorf("environment shutdown incomplete; stack records preserved: still running after SIGKILL: %s — run `forge env down %s` to retry",
+			strings.Join(left, ", "), p.env)
+	case unverified != "":
+		fmt.Printf("[up] warning: could not verify the stack stopped: %s — the stack's records are kept; `forge env down %s` retries\n",
+			unverified, p.env)
+		return fmt.Errorf("environment shutdown unverified; stack records preserved: %s — run `forge env down %s` to retry",
+			unverified, p.env)
 	}
 	removeStackRecords(p.projectID, p.env)
+	return nil
 }
 
 // awaitStopped waits (bounded by stopReapWait) for every managed process's
-// exit to be observed, then lists what is still alive: a managed process whose
-// exit never came, or a process carrying this run's marker. Empty means the
-// stack is down.
-func (p *procRegistry) awaitStopped(procs []*managedProcess, managed map[int]bool) []string {
+// exit to be observed, then reports what is still alive — a managed process
+// whose exit never came, or a process carrying this run's marker — and, when
+// it cannot tell, why not. Both empty means the stack is proven down.
+func (p *procRegistry) awaitStopped(procs []*managedProcess, managed map[int]bool) (left []string, unverified string) {
 	select {
 	case <-allExited(procs):
 	case <-time.After(stopReapWait):
 	}
-	var left []string
 	for _, mp := range procs {
 		if pid := procPID(mp); pid > 0 && !managedProcessExited(mp) && processAlive(pid) {
 			left = append(left, fmt.Sprintf("%s (pid %d)", mp.name, pid))
 		}
 	}
-	// A process SIGKILLed a moment ago can still be on its way out.
-	stragglers := p.runRoots(managed)
-	for until := time.Now().Add(time.Second); len(stragglers) > 0 && time.Now().Before(until); {
+	// A process SIGKILLed a moment ago can still be on its way out, and an
+	// unreadable one may be a process that is just exiting.
+	sw, table, err := p.sweep(managed)
+	for until := time.Now().Add(stopStragglerWait); (err != nil || !sw.empty()) && time.Now().Before(until); {
 		time.Sleep(100 * time.Millisecond)
-		stragglers = p.runRoots(managed)
+		sw, table, err = p.sweep(managed)
 	}
-	for _, pid := range stragglers {
-		left = append(left, fmt.Sprintf("pid %d", pid))
+	if err != nil {
+		return left, fmt.Sprintf("the process table could not be read (%v), so processes this run's runners left behind cannot be ruled out", err)
 	}
-	return left
+	for _, pid := range sw.roots {
+		left = append(left, fmt.Sprintf("%s (pid %d)", serviceOfPID(pid, table), pid))
+	}
+	if len(sw.unknown) > 0 {
+		labels := make([]string, 0, len(sw.unknown))
+		for _, pid := range sw.unknown {
+			labels = append(labels, fmt.Sprintf("pid %d (%s)", pid, commandLabel(table.argv(pid))))
+		}
+		unverified = fmt.Sprintf("the environment of %s, started during this run, could not be read, so whether it belongs to this stack is unknown",
+			strings.Join(labels, ", "))
+	}
+	return left, unverified
 }
 
 // signalEscaped records in escaped every process of this run that is outside
 // the runners' trees, so the grace waits for it and its deadline kills it, and
 // sends sig to the tree of each one newly found — unless the tree pass already
-// signalled it (termed) before it left.
+// signalled it (termed) before it left. A sweep that cannot read the process
+// table signals nothing; the final check in awaitStopped reports it.
 func (p *procRegistry) signalEscaped(managed, escaped, termed map[int]bool, sig syscall.Signal) {
-	var facts procFacts
-	for _, pid := range p.runRoots(managed) {
+	sw, table, err := p.sweep(managed)
+	if err != nil {
+		return
+	}
+	for _, pid := range sw.roots {
 		if escaped[pid] {
 			continue
 		}
@@ -214,54 +255,142 @@ func (p *procRegistry) signalEscaped(managed, escaped, termed map[int]bool, sig 
 		if termed[pid] {
 			continue
 		}
-		if facts == nil {
-			facts = newOSProcFacts()
-		}
-		fmt.Printf("[up] stopping %s's detached process (pid=%d)...\n", serviceOfPID(pid, facts), pid)
+		fmt.Printf("[up] stopping %s's detached process (pid=%d)...\n", serviceOfPID(pid, table), pid)
 		_ = killProcessTree(pid, sig)
 	}
 }
 
-// runRoots is every live process tree carrying this run's markers that is NOT
-// one of the runners this registry launched — the processes a runner left
-// behind. Empty when the process table cannot be read.
-func (p *procRegistry) runRoots(managed map[int]bool) []int {
-	facts := newOSProcFacts()
-	if len(facts.ppids) == 0 {
-		return nil
+// sweep reads the process table once and selects this run's processes that
+// left the runners' trees (sweepRun), dropping the runners themselves and
+// anything no longer alive. An error means the table could not be read: an
+// absence of roots then proves nothing.
+func (p *procRegistry) sweep(managed map[int]bool) (runSweep, *stopTable, error) {
+	read := p.readStopTable
+	if read == nil {
+		read = readOSStopTable
 	}
-	roots := runMarkedRoots(p.projectID, p.env, p.runID, facts.pidList(), facts, procguard.Self())
-	out := roots[:0]
-	for _, pid := range roots {
-		if !managed[pid] && processAlive(pid) {
-			out = append(out, pid)
+	table, err := read()
+	if err != nil {
+		return runSweep{}, nil, err
+	}
+	if p.runID == "" || p.projectID == "" {
+		return runSweep{}, nil, errors.New("this run has no ownership marker to sweep for")
+	}
+	sw := sweepRun(p.projectID, p.env, p.runID, p.startedAt, table, procguard.Self())
+	roots := sw.roots[:0]
+	for _, pid := range sw.roots {
+		if !managed[pid] && table.alive(pid) {
+			roots = append(roots, pid)
 		}
 	}
-	return out
+	unknown := sw.unknown[:0]
+	if len(sw.unknown) > 0 {
+		// An environment also reads as unreadable for the instant a process
+		// is exiting. Re-read the table and keep only what is still there,
+		// still not a zombie, and still unreadable.
+		again, err := read()
+		if err != nil {
+			return runSweep{}, nil, err
+		}
+		for _, pid := range sw.unknown {
+			if row, ok := again.procs[pid]; ok && !row.exited && again.alive(pid) {
+				if _, readable := again.environ(pid); !readable {
+					unknown = append(unknown, pid)
+				}
+			}
+		}
+	}
+	return runSweep{roots: roots, unknown: unknown}, table, nil
 }
 
-// runMarkedRoots is the pure selection core of the shutdown sweep: of pids,
-// the subtree roots of every process stamped with this run's FORGE_UP_RUN AND
-// this stack's (project, env) markers. A process in this command's lineage is
-// never selected, and an empty runID or projectID selects nothing.
-func runMarkedRoots(projectID, env, runID string, pids []int, f procFacts, lineage procguard.Lineage) []int {
-	if runID == "" || projectID == "" {
-		return nil
+// runSweep is one sweep's outcome. roots are the subtree roots of this run's
+// marked processes. unknown are processes that could be this run's — alive,
+// not provably another user's, started during the run — whose environment
+// could not be read, so whether they carry the marker is undetermined.
+type runSweep struct {
+	roots   []int
+	unknown []int
+}
+
+func (s runSweep) empty() bool { return len(s.roots) == 0 && len(s.unknown) == 0 }
+
+// stopTable is one read of the process table, as the shutdown sweep needs it.
+// It is a procFacts, so the ownership helpers (subtreeRoots, serviceOfPID)
+// read it directly. Readers are injected so a test can model a table, an
+// unreadable environment or a dead pid without real processes.
+type stopTable struct {
+	procs    map[int]stopProc
+	readEnv  func(pid int) ([]string, bool)
+	readArgv func(pid int) ([]string, bool)
+	isAlive  func(pid int) bool
+}
+
+// stopProc is one process-table row.
+type stopProc struct {
+	ppid    int
+	started time.Time // zero when unknown
+	// foreign: provably another user's (or, on Windows, another session's)
+	// process, which no child of this run can be.
+	foreign bool
+	// exited: a zombie — dead, holding nothing, awaiting its parent's reap.
+	exited bool
+}
+
+func (t *stopTable) environ(pid int) ([]string, bool) { return t.readEnv(pid) }
+
+func (t *stopTable) parent(pid int) (int, bool) {
+	row, ok := t.procs[pid]
+	return row.ppid, ok
+}
+
+func (t *stopTable) argv(pid int) ([]string, bool) {
+	if t.readArgv == nil {
+		return nil, false
 	}
+	return t.readArgv(pid)
+}
+
+func (t *stopTable) alive(pid int) bool {
+	if row, ok := t.procs[pid]; ok && row.exited {
+		return false
+	}
+	return t.isAlive(pid)
+}
+
+// sweepRun is the pure selection core of the shutdown sweep. Of every process
+// in the table it selects the subtree roots of those stamped with this run's
+// FORGE_UP_RUN AND this stack's (project, env) markers, and lists as unknown
+// every process whose environment cannot be read but which could be this
+// run's: alive, not provably another user's, and not started before the run
+// (since). A process in this command's lineage is never selected.
+func sweepRun(projectID, env, runID string, since time.Time, t *stopTable, lineage procguard.Lineage) runSweep {
+	pids := make([]int, 0, len(t.procs))
+	for pid := range t.procs {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
 	marked := map[int]bool{}
+	var unknown []int
 	for _, pid := range pids {
-		if pid <= 1 || lineage.Contains(pid) {
+		row := t.procs[pid]
+		if pid <= 1 || lineage.Contains(pid) || row.exited {
 			continue
 		}
-		environ, ok := f.environ(pid)
-		if !ok || markerValue(environ, forgeUpRunVar) != runID {
+		environ, ok := t.environ(pid)
+		if !ok {
+			if !row.foreign && (row.started.IsZero() || !row.started.Before(since)) {
+				unknown = append(unknown, pid)
+			}
+			continue
+		}
+		if markerValue(environ, forgeUpRunVar) != runID {
 			continue
 		}
 		if _, matched := markerMatches(environ, projectID, env); matched {
 			marked[pid] = true
 		}
 	}
-	return subtreeRoots(marked, f)
+	return runSweep{roots: subtreeRoots(marked, t), unknown: unknown}
 }
 
 // markerValue is the last value of key in a KEY=VALUE environment (exec's

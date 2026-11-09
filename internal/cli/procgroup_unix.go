@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -275,4 +276,48 @@ func procStartTimes(pids []int) map[int]time.Time {
 // depending on /proc.
 func descendantPIDs(root int) []int {
 	return descendantsIn(root, processTable())
+}
+
+// readOSStopTable reads the process table the shutdown sweep needs — parent,
+// owner, state and start time of every process — in one `ps` call. An error
+// (ps failed, or printed nothing parseable) means the table is unknown, which
+// the sweep must never read as empty.
+func readOSStopTable() (*stopTable, error) {
+	out, err := exec.CommandContext(context.Background(), "ps", "-axo", "pid=,ppid=,uid=,stat=,lstart=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("ps: %w", err)
+	}
+	procs := parseStopTable(string(out), os.Getuid())
+	if len(procs) == 0 {
+		return nil, errors.New("ps printed no processes")
+	}
+	return &stopTable{procs: procs, readEnv: readProcEnviron, readArgv: readProcArgv, isAlive: processAlive}, nil
+}
+
+// parseStopTable parses `ps -axo pid=,ppid=,uid=,stat=,lstart=`. A process
+// owned by another uid is foreign (root, uid 0, may own anything it started,
+// so nothing is foreign to it). A state starting with Z is a zombie. An
+// unparseable start time is left zero: unknown, never "before the run".
+func parseStopTable(out string, uid int) map[int]stopProc {
+	procs := map[int]stopProc{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		pid, e1 := strconv.Atoi(f[0])
+		ppid, e2 := strconv.Atoi(f[1])
+		owner, e3 := strconv.Atoi(f[2])
+		if e1 != nil || e2 != nil || e3 != nil {
+			continue
+		}
+		row := stopProc{ppid: ppid, foreign: uid != 0 && owner != uid, exited: strings.HasPrefix(f[3], "Z")}
+		if len(f) >= 9 {
+			if t, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(f[4:9], " "), time.Local); err == nil {
+				row.started = t
+			}
+		}
+		procs[pid] = row
+	}
+	return procs
 }

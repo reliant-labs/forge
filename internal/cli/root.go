@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
@@ -210,7 +211,15 @@ from an empty directory to authored protos, in one call.`,
 			// project command; refused for the ones that build, release
 			// or deploy. See forge_pin_skew.go.
 			allow, _ := cmd.Flags().GetBool(allowVersionSkewFlag)
-			return checkForgePinSkew(cmd, rootCmd, cmd.ErrOrStderr(), allow)
+			if err := checkForgePinSkew(cmd, rootCmd, cmd.ErrOrStderr(), allow); err != nil {
+				return err
+			}
+			// An old spelling of a moved command says so, once, on stderr
+			// (phase 2 of deprecated_aliases.go; silent until then). After
+			// the skew check: a command handed to the pinned forge is that
+			// forge's to warn about.
+			warnDeprecatedPath(cmd, rootCmd, cmd.ErrOrStderr())
+			return nil
 		},
 	}
 
@@ -230,7 +239,7 @@ from an empty directory to authored protos, in one call.`,
 	// support (see NewRootCmd's doc and cmdutil.SetProjectDir) — os.Chdir is
 	// process-global and unsafe under concurrency. Short form -C matches
 	// make and git.
-	rootCmd.PersistentFlags().StringVarP(&projectDir, "project-dir", "C", "", "resolve the project from this directory instead of the current one")
+	addGlobalFlags(rootCmd.PersistentFlags(), &projectDir)
 
 	// Add all commands
 	// `forge start` prints the greenfield brief. It is a top-level verb
@@ -342,8 +351,10 @@ from an empty directory to authored protos, in one call.`,
 	// top-level verb. The factory carries the shared I/O surface; group
 	// commands still call package-level helpers in internal/cli directly.
 	f := factory.New()
+	groups := map[string]factory.CmdFactory{}
 	for _, makeCmd := range factory.Registered() {
 		c := makeCmd(f)
+		groups[c.Name()] = makeCmd
 		switch c.Name() {
 		case "audit":
 			projectCmd.AddCommand(c)
@@ -352,8 +363,21 @@ from an empty directory to authored protos, in one call.`,
 		}
 	}
 
+	// The 14 nouns (deprecated_aliases.go): each moved command is mounted
+	// at its new path from the same constructor as its old one. Old paths
+	// stay exactly where they are.
+	mountMovedCommands(rootCmd, &moveBuilder{f: f, groups: groups})
+	groupEnvCommands(findChildCommand(rootCmd, "env"))
+	hideDeprecatedPaths(rootCmd)
+
 	registerVersionSkewFlags(rootCmd)
 	return rootCmd
+}
+
+// addGlobalFlags registers forge's global flags on fs: the root's persistent
+// flags.
+func addGlobalFlags(fs *pflag.FlagSet, projectDir *string) {
+	fs.StringVarP(projectDir, "project-dir", "C", "", "resolve the project from this directory instead of the current one")
 }
 
 // newVersionCmd creates the version subcommand so both `forge version` and

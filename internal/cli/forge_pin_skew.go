@@ -127,7 +127,7 @@ const allowVersionSkewFlag = "allow-version-skew"
 func registerVersionSkewFlags(root *cobra.Command) {
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
-		rel := strings.TrimSpace(strings.TrimPrefix(c.CommandPath(), root.CommandPath()))
+		rel := commandRel(c, root)
 		_, gated := pinGateFor(rel)
 		if (gated || handOffWanted(rel)) && c.Flags().Lookup(allowVersionSkewFlag) == nil {
 			c.Flags().Bool(allowVersionSkewFlag, false,
@@ -304,7 +304,7 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 	if isDelegate() || internalReentry(cmd) {
 		return nil
 	}
-	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))
+	rel := commandRel(cmd, root)
 	projectRoot, err := cmdutil.FindProjectRoot()
 	if err != nil {
 		projectRoot = ""

@@ -6,8 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestMintServiceAccountKubeconfig_Live exercises the whole mint against a

@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The vendored action's shell, EXECUTED — not just matched as text. Each

@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The hosted release pipeline, as rendered (ADR docs/adr/env-verbs.md, task V6).

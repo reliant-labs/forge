@@ -20,8 +20,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // .github/actions/install-release-tool installs Task, buf and KCL for every

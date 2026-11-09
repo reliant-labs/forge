@@ -12,8 +12,9 @@ import (
 	"testing"
 	"text/template"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestBufTemplatesRunEachPluginOnce holds every buf template forge writes — the

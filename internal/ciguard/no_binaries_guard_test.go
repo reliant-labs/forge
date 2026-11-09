@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // scripts/check-no-binaries.sh refuses a binary file, or a new file over the

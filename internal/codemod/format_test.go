@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"golang.org/x/tools/imports"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The shared post-codemod step (format.go). These tests drive it with a fake

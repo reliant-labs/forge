@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // CHANGELOG.md is written only at release time, by scripts/release-forge.sh,

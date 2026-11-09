@@ -29,8 +29,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"golang.org/x/tools/go/packages"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // namedTypeFixture writes a module whose `orgpolicy` package declares one

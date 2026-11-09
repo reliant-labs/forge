@@ -7,9 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestNextPatch(t *testing.T) {

@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.3.0] - 2026-11-09
+
+### Added
+
+- **storage:** storage:read scope, bucket shape and blobstore listing for the storage browser ([#1899](https://github.com/reliant-labs/forge/pull/1899))
+- **web-runtime:** interaction() spans for user-perceived operations ([#1926](https://github.com/reliant-labs/forge/pull/1926))
+- **release:** deploy:config:read scope and one shared secret rule ([#1901](https://github.com/reliant-labs/forge/pull/1901))
+- **env:** ship a dev stack's telemetry to the hosted store (dev_telemetry, per-instance tokens) ([#1931](https://github.com/reliant-labs/forge/pull/1931))
+- **env:** record per-phase timings for env up ([#1939](https://github.com/reliant-labs/forge/pull/1939))
+- **obs:** query a dev instance on the hosted store (--instance, scope.instance) ([#1930](https://github.com/reliant-labs/forge/pull/1930))
+- **build:** skip a ShellBuild whose declared inputs are unchanged ([#1935](https://github.com/reliant-labs/forge/pull/1935))
+
+### Changed
+
+- **pgtest:** replace the killed-holder lease test with one that awaits the release (flake #1936) ([#1937](https://github.com/reliant-labs/forge/pull/1937))
+- **e2e:** drop TestE2EFluxDeliverySelfHosted's timing-dependent no-wait status assertion (flake #1944) ([#1945](https://github.com/reliant-labs/forge/pull/1945))
+- install Task, buf and KCL from a per-version cache, with retries and an API fallback on a miss ([#1957](https://github.com/reliant-labs/forge/pull/1957))
+- **obsquery:** select the trace page before computing its per-trace columns ([#1960](https://github.com/reliant-labs/forge/pull/1960))
+
+### Fixed
+
+- **pgtest:** track shared-server users with file leases, not PIDs (they cross PID namespaces) ([#1918](https://github.com/reliant-labs/forge/pull/1918))
+- **pgtest:** the no-lease attach test clears a lease an earlier test left ([#1925](https://github.com/reliant-labs/forge/pull/1925))
+- **components:** popover calls its render props from a child component, so every fresh scaffold lints clean again ([#1924](https://github.com/reliant-labs/forge/pull/1924))
+- **pgtest:** retry embedded boot on confirmed port collisions ([#1922](https://github.com/reliant-labs/forge/pull/1922))
+- **cluster:** diagnose a k3d API answering with another cluster's certificate instead of waiting it out ([#1928](https://github.com/reliant-labs/forge/pull/1928))
+- **up:** judge cluster workload readiness by live pods, not replaced terminal ones ([#1927](https://github.com/reliant-labs/forge/pull/1927))
+- **storage:** forge generate's own output and env up's config.js no longer hold a worktree from the reaper ([#1929](https://github.com/reliant-labs/forge/pull/1929))
+- **pgtest:** the reaper-process snapshot test proves its directory listing is non-empty, so main's vacuous-test guard is green again ([#1933](https://github.com/reliant-labs/forge/pull/1933))
+- **pgtest:** confirm a boot-port collision by Winsock's WSAEADDRINUSE too, so Windows retries instead of failing ([#1934](https://github.com/reliant-labs/forge/pull/1934))
+- **env:** forge main's Lint job is green again after dev_telemetry (#1931) ([#1938](https://github.com/reliant-labs/forge/pull/1938))
+- **env:** the dev_telemetry token-file mode assertions skip Windows, which has no POSIX permission bits ([#1941](https://github.com/reliant-labs/forge/pull/1941))
+- **obs:** forge main's Lint job is green again after #1930 (nestif in defaultObsDeps) ([#1946](https://github.com/reliant-labs/forge/pull/1946))
+- **env:** devtelemetry's record-mode assertion skips Windows, which has no POSIX permission bits ([#1948](https://github.com/reliant-labs/forge/pull/1948))
+- **env:** container-free dev stacks with dev_telemetry and an optional control plane ([#1950](https://github.com/reliant-labs/forge/pull/1950))
+- **cli:** writeEnvBundle under funlen again (main red on Lint at 88cb28c2f) ([#1951](https://github.com/reliant-labs/forge/pull/1951))
+- **buildtarget:** the directory-symlink walk under nestif again (main red on Lint at 9d7a18b2c) ([#1952](https://github.com/reliant-labs/forge/pull/1952))
+- **frontend:** the dev /\_otel token proxy forwards only OTLP ingest POSTs, bounded ([#1953](https://github.com/reliant-labs/forge/pull/1953))
+- **buildtarget:** the fingerprint's executable-bit assertion skips Windows, which has none (main red on Windows) ([#1955](https://github.com/reliant-labs/forge/pull/1955))
+- **pgtest:** a create that cannot connect to a dead shared server re-attaches instead of failing ([#1954](https://github.com/reliant-labs/forge/pull/1954))
+- **npmoverlay:** hide published versions above the checkout's, so the smoke installs the runtime under test (main red on e2e scaffold) ([#1956](https://github.com/reliant-labs/forge/pull/1956))
+- **web-runtime:** the dev /\_otel proxy only forwards same-origin callers, with an allowlisted header set ([#1958](https://github.com/reliant-labs/forge/pull/1958))
+
 ## [v1.2.0] - 2026-11-08
 
 ### Added
@@ -8724,7 +8767,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.3.0...HEAD
+[v1.3.0]: https://github.com/reliant-labs/forge/compare/v1.2.0...v1.3.0
 [v1.2.0]: https://github.com/reliant-labs/forge/compare/v1.1.0...v1.2.0
 [v1.1.0]: https://github.com/reliant-labs/forge/compare/v1.0.16...v1.1.0
 [v1.0.16]: https://github.com/reliant-labs/forge/compare/v1.0.15...v1.0.16

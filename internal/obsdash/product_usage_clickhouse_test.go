@@ -93,16 +93,26 @@ func TestProductUsageSQLOnClickHouse(t *testing.T) {
 
 	for id, want := range map[string]string{
 		// dau = u1, u2; wau adds nobody (u1 again); mau adds u3.
-		"active-users": "2\t2\t3\t0.67",
-		"entity-actions-by-entity": "order_item\t4\t1\t1\t3\n" +
-			"invoice\t1\t0\t0\t1",
-		"top-pages": "/orders\t2\t1\t2\n" +
-			"/\t1\t0\t1",
+		"dau": "2", "wau": "2", "mau": "3", "stickiness": "0.6667",
+		// u1, u2 and u3 are all first seen in the range (u2's December event is
+		// outside the first-seen window).
+		"new-users": "3",
+		// e1's events in the range, over its 3 signed-in users.
+		"events": "11", "events-per-user": "3.7",
+		"records-written": "7",
+		"actions-per-entity": "order_item\t4\t1\t1\n" +
+			"invoice\t1\t0\t0",
+		"top-pages": "/orders\t1\t1\n" +
+			"/\t0\t1",
 		// u1's first event (2026-03-07 in range) is new; 13th and 16th returning.
 		"new-vs-returning": "2026-02-24 00:00:00\t1\t0\n" +
 			"2026-03-07 00:00:00\t1\t0\n" +
 			"2026-03-13 00:00:00\t0\t1\n" +
 			"2026-03-16 00:00:00\t1\t1",
+		// Week 1 and 2 after each cohort; weeks 4 and 8 are still to come.
+		"retention-curve": "2026-02-23\t0\t0\t\\N\t\\N\n" +
+			"2026-03-02\t1\t1\t\\N\t\\N\n" +
+			"2026-03-16\t\\N\t\\N\t\\N\t\\N",
 	} {
 		if got := run(id, "e1"); got != want {
 			t.Errorf("%s =\n%s\nwant\n%s", id, got, want)
@@ -123,11 +133,27 @@ func TestProductUsageSQLOnClickHouse(t *testing.T) {
 		t.Errorf("weekly-retention =\n%s", strings.Join(ret, "\n"))
 	}
 
+	// Active users: each day's users, and the rolling seven days ending that
+	// day (u3, seen 2026-02-24, counts through 2026-03-02), never past the end
+	// of the range.
+	active := run("active-users-over-time", "e1")
+	for _, line := range []string{"2026-02-24\t1\t1", "2026-02-25\t1\t0", "2026-03-02\t1\t0", "2026-03-13\t1\t1", "2026-03-16\t2\t2"} {
+		if !strings.Contains(active, line+"\n") && !strings.HasSuffix(active, line) {
+			t.Errorf("active-users-over-time lacks %q:\n%s", line, active)
+		}
+	}
+	if strings.Contains(active, "2026-03-03\t") || strings.Contains(active, "2026-03-17") || strings.Contains(active, "2026-02-23") {
+		t.Errorf("active-users-over-time has a day outside the range or the rolling window:\n%s", active)
+	}
+	if got := run("records-by-entity", "e1"); !strings.Contains(got, "2026-03-16 00:00:00\tinvoice\t1") || !strings.Contains(got, "2026-03-16 00:00:00\torder_item\t4") {
+		t.Errorf("records-by-entity =\n%s", got)
+	}
+
 	// Every other panel runs; another environment sees none of e1's events.
 	for _, p := range BuildProductUsage("shop").Panels {
 		run(p.ID, "e1")
 	}
-	if got := run("events-by-name", "e2"); got != "order_item_created\t1\t1" {
+	if got := run("events-by-name", "e2"); got != "order_item_created\t1\t0" {
 		t.Errorf("events-by-name in e2 = %q, want only e2's event", got)
 	}
 	if got := run("most-active-users", "e1"); !strings.HasPrefix(got, "u1\t5\t3\t4\t") {

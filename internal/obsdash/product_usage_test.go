@@ -77,7 +77,7 @@ func TestProductUsageReadsTheAutomaticEvents(t *testing.T) {
 	for _, p := range BuildProductUsage("shop").Panels {
 		panels[p.ID] = p
 	}
-	for _, id := range []string{"entity-actions", "entity-actions-by-entity"} {
+	for _, id := range []string{"records-by-entity", "actions-per-entity", "records-written"} {
 		if !strings.Contains(panels[id].SQL, "match(EventName, '_(created|updated|deleted)$')") {
 			t.Errorf("%s does not select the CRUD events by suffix:\n%s", id, panels[id].SQL)
 		}
@@ -85,7 +85,8 @@ func TestProductUsageReadsTheAutomaticEvents(t *testing.T) {
 	if sql := panels["top-pages"].SQL; !strings.Contains(sql, "EventName = 'page_viewed'") || !strings.Contains(sql, "Props['route']") {
 		t.Errorf("top-pages does not read page_viewed by route:\n%s", sql)
 	}
-	for _, id := range []string{"active-users", "daily-active-users", "new-vs-returning", "weekly-retention", "most-active-users", "events-by-name"} {
+	for _, id := range []string{"dau", "wau", "mau", "stickiness", "new-users", "events", "active-users-over-time", "new-vs-returning",
+		"retention-curve", "weekly-retention", "most-active-users", "events-by-name"} {
 		if _, ok := panels[id]; !ok {
 			t.Errorf("missing panel %s", id)
 		}
@@ -99,7 +100,7 @@ func TestProductUsageRetentionFitsTheDefaultRetention(t *testing.T) {
 	if retentionWeeks*7 > 90 {
 		t.Fatalf("%d weeks exceed the 90-day default retention", retentionWeeks)
 	}
-	if !strings.Contains(sql, "AS week_11") || strings.Contains(sql, "week_12") {
+	if !strings.Contains(sql, `AS "W11"`) || strings.Contains(sql, `"W12"`) {
 		t.Errorf("retention should report weeks 1..11 after the cohort week:\n%s", sql)
 	}
 	if !strings.Contains(sql, "toMonday({to:DateTime64(9)}) - INTERVAL 11 WEEK") {
@@ -121,8 +122,10 @@ func TestProductUsageFirstSeenIsBoundedToAWindow(t *testing.T) {
 	}
 	for name, c := range map[string]struct{ sql, bound string }{
 		"new-vs-returning": {newVsReturningSQL, "Timestamp >= least({from:DateTime64(9)}, {to:DateTime64(9)} - INTERVAL 90 DAY) AND Timestamp < {to:DateTime64(9)}"},
+		"new-users":        {newUsersSQL, "Timestamp >= least({from:DateTime64(9)}, {to:DateTime64(9)} - INTERVAL 90 DAY) AND Timestamp < {to:DateTime64(9)}"},
 		// Retention's window ignores the range, as its cohorts do.
 		"weekly-retention": {weeklyRetentionSQL(), "Timestamp >= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp < {to:DateTime64(9)}"},
+		"retention-curve":  {retentionCurveSQL(), "Timestamp >= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp < {to:DateTime64(9)}"},
 	} {
 		sql, bound := c.sql, c.bound
 		if strings.Count(sql, "FROM product_events") != strings.Count(sql, "Timestamp >= ") {
@@ -130,6 +133,74 @@ func TestProductUsageFirstSeenIsBoundedToAWindow(t *testing.T) {
 		}
 		if !strings.Contains(sql, bound) {
 			t.Errorf("%s: first-seen is not bounded to the %d-day window:\n%s", name, firstSeenDays, sql)
+		}
+	}
+}
+
+// The first screen is a designed layout, not a list: two full rows of four
+// headline figures, then charts in rows that fill the console's four-column
+// grid exactly, every panel in a declared section, and the one wide table last.
+func TestProductUsageLayout(t *testing.T) {
+	d := BuildProductUsage("shop")
+	if n := len(d.Panels); n < 12 || n > 18 {
+		t.Errorf("%d panels: the dashboard should stay a readable 12 to 18", n)
+	}
+	sections := map[string]bool{}
+	for _, s := range d.Sections {
+		sections[s.ID] = true
+	}
+	row := 0
+	for i, p := range d.Panels {
+		if !sections[p.Section] {
+			t.Errorf("%s: section %q is not declared", p.ID, p.Section)
+		}
+		if p.Width%6 != 0 || p.Width == 0 {
+			t.Errorf("%s: width %d is not a whole column of the console's four-column grid", p.ID, p.Width)
+		}
+		row += p.Width
+		if row > dashspec.GridColumns {
+			t.Errorf("%s: overflows its row (%d of %d)", p.ID, row, dashspec.GridColumns)
+		}
+		if row == dashspec.GridColumns {
+			row = 0
+		}
+		if i < 8 {
+			// A headline figure: one row of one value, drawn as a number.
+			if p.Section != "glance" || p.Width != 6 || p.Display != nil {
+				t.Errorf("%s: panel %d should be a quarter-width headline figure", p.ID, i)
+			}
+			continue
+		}
+		if p.Section == "glance" {
+			t.Errorf("%s: a headline figure after the headline rows", p.ID)
+		}
+	}
+	if row != 0 {
+		t.Errorf("the last row is not full (%d of %d)", row, dashspec.GridColumns)
+	}
+	last := d.Panels[len(d.Panels)-1]
+	if last.ID != "most-active-users" || last.Width != dashspec.GridColumns {
+		t.Errorf("the last panel is %s (width %d), want the full-width most-active-users table", last.ID, last.Width)
+	}
+	// The charts are drawn as charts: an area, stacked bars, a line.
+	want := map[string]string{
+		"active-users-over-time": "area", "new-vs-returning": "bars+stack", "records-by-entity": "bars+stack",
+		"actions-per-entity": "bars+stack", "top-pages": "bars+stack", "events-by-name": "bars+stack",
+	}
+	for _, p := range d.Panels {
+		w, ok := want[p.ID]
+		if !ok {
+			continue
+		}
+		got := ""
+		if p.Display != nil {
+			got = string(p.Display.Style)
+			if p.Display.Stack {
+				got += "+stack"
+			}
+		}
+		if got != w {
+			t.Errorf("%s draws as %q, want %q", p.ID, got, w)
 		}
 	}
 }

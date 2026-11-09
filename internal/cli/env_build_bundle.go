@@ -371,7 +371,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 				// render's objects are the recorded bundle's, so record
 				// them without the snapshot rather than fail the deploy.
 				fmt.Fprintf(in.errWriter(), "[bundle] Note: env %s's recorded snapshot bundle was not re-recorded (%v); recording it without a snapshot instead.\n", env, err)
-				return placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, built, nil, in)
+				return placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, bundleToPlace{built: built}, in)
 			}
 			return out, err
 		}
@@ -388,7 +388,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		fmt.Fprintf(in.errWriter(), "[bundle] Note: env %s's bundle records no snapshot of the environment: %s. The deploy is unaffected.\n", env, why)
 	}
 	if seal != nil {
-		out, err := placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, seal.Bundle, seal, in)
+		out, err := placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, bundleToPlace{built: seal.Bundle, seal: seal}, in)
 		if err == nil {
 			return out, nil
 		}
@@ -399,13 +399,13 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		// bundle, and any failure that is not about the seal recurs there.
 		fmt.Fprintf(in.errWriter(), "[bundle] Note: env %s's snapshot bundle was not recorded (%v); recording it without a snapshot instead.\n", env, err)
 	}
-	return placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, built, nil, in)
+	return placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, bundleToPlace{built: built}, in)
 }
 
 // placeAndRecordBundle puts built where env's ledger says and records it: the
 // tail of writeEnvBundle, for the legacy bundle and an evidence bundle alike.
-// seal is non-nil exactly when built is seal.Bundle.
-func placeAndRecordBundle(ctx context.Context, projectDir, env string, ledger envLedger, doc envShapeDoc, createdAt time.Time, built bundle.Bundle, seal *evidenceSeal, in bundleBuildInputs) (bundleWriteOutcome, error) {
+func placeAndRecordBundle(ctx context.Context, projectDir, env string, ledger envLedger, doc envShapeDoc, createdAt time.Time, p bundleToPlace, in bundleBuildInputs) (bundleWriteOutcome, error) {
+	built, seal := p.built, p.seal
 	placed, err := placeBundleBytes(ctx, projectDir, env, built, ledger, in)
 	if err != nil {
 		return bundleWriteOutcome{}, err
@@ -450,6 +450,14 @@ func placeAndRecordBundle(ctx context.Context, projectDir, env string, ledger en
 		tagReleaseBundle(ctx, projectDir, env, placed.repository, built.Manifest, in.Release, in)
 	}
 	return out, err
+}
+
+// bundleToPlace is the bundle placeAndRecordBundle writes: the legacy bundle,
+// or an evidence bundle with its seal. seal is non-nil exactly when built is
+// seal.Bundle.
+type bundleToPlace struct {
+	built bundle.Bundle
+	seal  *evidenceSeal
 }
 
 // bundleCreatedAt is the creation time sealed into a bundle: the RELEASE's, so

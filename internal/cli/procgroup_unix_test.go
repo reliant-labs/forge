@@ -3,7 +3,9 @@
 package cli
 
 import (
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestParseProcessTable(t *testing.T) {
@@ -80,5 +82,172 @@ func TestParseStopTable(t *testing.T) {
 	}
 	if root := parseStopTable(out, 0); root[500].foreign || root[1].foreign {
 		t.Error("nothing is foreign to root")
+	}
+}
+
+// killRecorder is a fake kill(2) that records each target.
+type killRecorder struct{ sent []int }
+
+func (k *killRecorder) kill(target int, _ syscall.Signal) error {
+	k.sent = append(k.sent, target)
+	return nil
+}
+
+// stampsAt is a stamp reader over a fixed table: a pid absent from it is gone.
+func stampsAt(stamps map[int]procStamp) func(int) (procStamp, bool) {
+	return func(pid int) (procStamp, bool) {
+		st, ok := stamps[pid]
+		return st, ok
+	}
+}
+
+// airTree is the snapshot of Air's shape, every process started before the
+// mark (1000): the runner 110 leads group 110; its server 120 leads group 120,
+// with the server's child 121 in it.
+func airTree() map[int]procRow {
+	return map[int]procRow{
+		100: {1, 100},
+		110: {100, 110},
+		120: {110, 120},
+		121: {120, 120},
+	}
+}
+
+func noLineage(int) bool { return false }
+
+func TestSignalTreeTargets_SignalsGroupsWhoseLeadersReverify(t *testing.T) {
+	table := airTree()
+	v := stampVerifier{mark: 1000, ok: true, read: stampsAt(map[int]procStamp{
+		110: {pgid: 110, start: 10},
+		120: {pgid: 120, start: 20},
+		121: {pgid: 120, start: 30},
+	})}
+	var k killRecorder
+	targets := treeSignalTargets(110, table, noLineage, noLineage)
+	if err := signalTreeTargets(targets, table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{-110, 110, 120, -120, 121}; !equalInts(k.sent, want) {
+		t.Errorf("sent = %v, want %v", k.sent, want)
+	}
+}
+
+// TestSignalTreeTargets_LeaderExitedAndGroupNumberReused is the #1979 review
+// risk: between the snapshot and the kill, the server (120) and its child
+// exited, its group emptied, and pid 120 now belongs to an unrelated process
+// that leads its own group 120. Neither the stranger nor its group may be
+// signalled.
+func TestSignalTreeTargets_LeaderExitedAndGroupNumberReused(t *testing.T) {
+	table := airTree()
+	v := stampVerifier{mark: 1000, ok: true, read: stampsAt(map[int]procStamp{
+		110: {pgid: 110, start: 10},
+		120: {pgid: 120, start: 1500}, // a stranger: same pid and group, started after the mark
+	})}
+	var k killRecorder
+	targets := treeSignalTargets(110, table, noLineage, noLineage)
+	if err := signalTreeTargets(targets, table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range k.sent {
+		if target == 120 || target == -120 || target == 121 {
+			t.Errorf("signalled %d: pid 120 and group 120 now belong to an unrelated process (sent %v)", target, k.sent)
+		}
+	}
+	if want := []int{-110, 110}; !equalInts(k.sent, want) {
+		t.Errorf("sent = %v, want only the still-verified runner and its group %v", k.sent, want)
+	}
+}
+
+// TestSignalTreeTargets_LeaderGoneMembersRemain: the server (120) exited but
+// its child (121), still in group 120, lives on. The group is not signalled —
+// its leader cannot vouch for it — but the child is, as itself.
+func TestSignalTreeTargets_LeaderGoneMembersRemain(t *testing.T) {
+	table := airTree()
+	table[130] = procRow{1, 120} // an orphan of the group, outside the tree
+	v := stampVerifier{mark: 1000, ok: true, read: stampsAt(map[int]procStamp{
+		110: {pgid: 110, start: 10},
+		121: {pgid: 120, start: 30},
+		130: {pgid: 120, start: 40},
+	})}
+	var k killRecorder
+	targets := treeSignalTargets(110, table, noLineage, noLineage)
+	if err := signalTreeTargets(targets, table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{-110, 110, 121, 130}; !equalInts(k.sent, want) {
+		t.Errorf("sent = %v, want %v", k.sent, want)
+	}
+}
+
+// TestSignalTreeTargets_MemberLeftOrReplaced: in the leader-gone fallback a
+// member is signalled only while it is the snapshot's process AND still in
+// the group.
+func TestSignalTreeTargets_MemberLeftOrReplaced(t *testing.T) {
+	table := map[int]procRow{120: {1, 120}, 121: {120, 120}, 122: {120, 120}}
+	v := stampVerifier{mark: 1000, ok: true, read: stampsAt(map[int]procStamp{
+		121: {pgid: 777, start: 30},   // moved to another group
+		122: {pgid: 120, start: 1200}, // pid reused after the snapshot
+	})}
+	var k killRecorder
+	if err := signalTreeTargets([]int{-120}, table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.sent) != 0 {
+		t.Errorf("sent %v, want nothing", k.sent)
+	}
+}
+
+// TestSignalTreeTargets_Unverifiable: where no stamp can be read, pids are
+// signalled as listed (what a pid kill always was) and no group ever is.
+func TestSignalTreeTargets_Unverifiable(t *testing.T) {
+	table := airTree()
+	var k killRecorder
+	targets := treeSignalTargets(110, table, noLineage, noLineage)
+	if err := signalTreeTargets(targets, table, stampVerifier{}, noLineage, k.kill, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{110, 120, 121}; !equalInts(k.sent, want) {
+		t.Errorf("sent = %v, want %v", k.sent, want)
+	}
+}
+
+// TestReadProcStampSelf pins the real reader and mark against this process:
+// its group is its own, and it started before a mark read now.
+func TestReadProcStampSelf(t *testing.T) {
+	mark, ok := startMark()
+	if !ok {
+		t.Skip("no start-time source on this platform: killProcessTree never signals a group here")
+	}
+	st, ok := readProcStamp(syscall.Getpid())
+	if !ok {
+		t.Fatal("cannot read this process's stamp")
+	}
+	pgid, _ := syscall.Getpgid(0)
+	if st.pgid != pgid {
+		t.Errorf("pgid = %d, want %d", st.pgid, pgid)
+	}
+	// On Linux a process younger than linuxMarkSlack cannot yet verify (it is
+	// refused, never wrongly accepted); this one only gets older.
+	if !pollUntil(2*time.Second, func() bool {
+		mark, _ = startMark()
+		return st.start < mark
+	}) {
+		t.Errorf("this process started at %d, not before the mark %d", st.start, mark)
+	}
+}
+
+func TestParseProcStatStamp(t *testing.T) {
+	// pid (comm with ") (" in it) state ppid pgrp ... field 22 = starttime.
+	stat := "4242 (weird ) (name) S 1 4240 4240 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10 18446744073709551615\n"
+	st, ok := parseProcStatStamp([]byte(stat))
+	if !ok || st.pgid != 4240 || st.start != 987654*10_000 {
+		t.Errorf("stamp = %+v ok=%v, want pgid 4240 start %d", st, ok, 987654*10_000)
+	}
+	if _, ok := parseProcStatStamp([]byte("4242 (short) S 1 2")); ok {
+		t.Error("a truncated stat parsed")
+	}
+	mark, ok := parseUptimeMark([]byte("350735.47 2000000.00\n"))
+	if !ok || mark != 350735470000-linuxMarkSlack {
+		t.Errorf("mark = %d ok=%v", mark, ok)
 	}
 }

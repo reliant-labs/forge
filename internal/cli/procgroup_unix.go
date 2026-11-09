@@ -98,17 +98,175 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 	if self.Contains(pid) {
 		return &procguard.LineageError{PID: pid, Command: commandLabel(readProcArgv(pid))}
 	}
-	targets := treeSignalTargets(pid, processTable(), self.Contains, self.ContainsGroup)
+	// The mark is read BEFORE the snapshot: everything the snapshot lists
+	// started before it, and a process that took over a listed pid later
+	// started after it.
+	mark, markOK := startMark()
+	table := processTable()
+	targets := treeSignalTargets(pid, table, self.Contains, self.ContainsGroup)
+	v := stampVerifier{mark: mark, ok: markOK, read: readProcStamp}
+	return signalTreeTargets(targets, table, v, self.Contains, syscall.Kill, sig)
+}
+
+// signalTreeTargets sends sig to each of treeSignalTargets' targets, verifying
+// every one against the process table right before its kill (stampVerifier):
+//
+//   - a pid is signalled only if it is still the process the snapshot listed;
+//   - a group (a negative target) is signalled only if its leader still is,
+//     AND still leads it. Otherwise the group is never signalled — its number
+//     may since have been taken by an unrelated group — and each process the
+//     snapshot listed in it is signalled on its own instead, each verified as
+//     still that process and still in that group.
+//
+// Where the platform cannot verify (stampVerifier.ok false), pids are
+// signalled as listed and groups never are.
+func signalTreeTargets(targets []int, table map[int]procRow, v stampVerifier, inLineage func(int) bool, kill func(int, syscall.Signal) error, sig syscall.Signal) error {
 	var failures []error
-	// A missing group is normal after its leader exits. Permission failures
-	// are not proof of shutdown, including when a direct leader signal works.
-	for _, target := range targets {
-		if err := syscall.Kill(target, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+	sent := map[int]bool{}
+	send := func(target int) {
+		if sent[target] {
+			return
+		}
+		sent[target] = true
+		// A missing process or group is normal mid-teardown. Permission
+		// failures are not proof of shutdown.
+		if err := kill(target, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 			failures = append(failures, fmt.Errorf("signal %s to pid/group %d: %w", sig, target, err))
+		}
+	}
+	for _, target := range targets {
+		if target > 0 {
+			if v.samePID(target) {
+				send(target)
+			}
+			continue
+		}
+		group := -target
+		if v.leads(group) {
+			send(target)
+			continue
+		}
+		for _, member := range groupMembers(group, table) {
+			if !inLineage(member) && v.inGroup(member, group) {
+				send(member)
+			}
 		}
 	}
 	return errors.Join(failures...)
 }
+
+// groupMembers is every pid the snapshot lists in process group pgid, sorted.
+func groupMembers(pgid int, table map[int]procRow) []int {
+	var out []int
+	for pid, row := range table {
+		if row.pgid == pgid {
+			out = append(out, pid)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// procStamp identifies one live process: its process group and its start
+// time, in microseconds on the platform's own clock (startMark's). A pid is
+// unique among LIVE processes, so a process alive now whose start precedes a
+// mark is the very process that held that pid at the mark.
+type procStamp struct {
+	pgid  int
+	start int64
+}
+
+// stampVerifier re-checks, right before a kill, that a pid from the snapshot
+// still names the process the snapshot saw. mark is startMark() read before
+// the snapshot; ok is false where the platform cannot read stamps.
+//
+// The check is not atomic with the kill: no Unix offers a handle on a process
+// GROUP (Linux's pidfd covers one process), so a few syscalls separate the
+// read from kill(2). In that window the leader would have to exit, every
+// member of its group exit, the pid be allocated again and the new process
+// lead a group — a full pid-space wrap in microseconds. Before this check the
+// window was the whole teardown (up to the stop grace).
+type stampVerifier struct {
+	mark int64
+	ok   bool
+	read func(pid int) (procStamp, bool)
+}
+
+// samePID reports whether pid still names the process the snapshot listed.
+// Unverifiable platforms answer true: a pid kill there is what it always was.
+func (v stampVerifier) samePID(pid int) bool {
+	if !v.ok {
+		return true
+	}
+	st, ok := v.read(pid)
+	return ok && st.start < v.mark
+}
+
+// inGroup reports whether pid is still the snapshot's process AND still in
+// process group pgid. Unverifiable platforms answer false.
+func (v stampVerifier) inGroup(pid, pgid int) bool {
+	if !v.ok {
+		return false
+	}
+	st, ok := v.read(pid)
+	return ok && st.pgid == pgid && st.start < v.mark
+}
+
+// leads reports whether process group pgid is still the one the snapshot saw:
+// its leader (pid == pgid) is still the snapshot's process and still leads
+// it. While the leader lives — even as an unreaped zombie — its pid, and so
+// the group number, cannot be reused, so the group signalled is the group
+// verified. Unverifiable platforms answer false.
+func (v stampVerifier) leads(pgid int) bool {
+	return v.inGroup(pgid, pgid)
+}
+
+// parseProcStatStamp extracts the process group and start time from a Linux
+// /proc/<pid>/stat. Fields are read after the LAST ')' (comm may contain
+// spaces and parentheses): fields[0] is field 3 (state), fields[2] field 5
+// (pgrp), fields[19] field 22 (starttime, in clock ticks since boot). A clock
+// tick is USER_HZ = 100 on every Linux ABI, so a tick is 10ms.
+func parseProcStatStamp(data []byte) (procStamp, bool) {
+	end := strings.LastIndexByte(string(data), ')')
+	if end < 0 {
+		return procStamp{}, false
+	}
+	fields := strings.Fields(string(data[end+1:]))
+	if len(fields) < 20 {
+		return procStamp{}, false
+	}
+	pgid, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return procStamp{}, false
+	}
+	ticks, err := strconv.ParseInt(fields[19], 10, 64)
+	if err != nil {
+		return procStamp{}, false
+	}
+	return procStamp{pgid: pgid, start: ticks * 10_000}, true
+}
+
+// parseUptimeMark turns /proc/uptime ("12345.67 54321.00") into microseconds
+// since boot, minus linuxMarkSlack: starttime is truncated to a 10ms tick and
+// uptime to 10ms, so a process started just after the mark can read up to
+// two ticks early. Backing the mark off keeps such a process from passing as
+// older than the snapshot; a process started in that slack is refused, never
+// wrongly accepted.
+func parseUptimeMark(data []byte) (int64, bool) {
+	f := strings.Fields(string(data))
+	if len(f) == 0 {
+		return 0, false
+	}
+	secs, err := strconv.ParseFloat(f[0], 64)
+	if err != nil || secs <= 0 {
+		return 0, false
+	}
+	return int64(secs*1e6) - linuxMarkSlack, true
+}
+
+// linuxMarkSlack is three 10ms ticks: two for the start-time truncation, one
+// for uptime's.
+const linuxMarkSlack = 30_000
 
 // treeSignalTargets is killProcessTree's pure decision: the kill(2) targets
 // for root's tree, read from one process-table snapshot. Negative entries are
@@ -117,6 +275,9 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 // signalled when its leader is in the tree, so no group a stranger leads is
 // reached; and nothing in this command's lineage, nor a group it belongs to,
 // is ever a target.
+//
+// These are CANDIDATES from a snapshot: signalTreeTargets re-verifies each one
+// at kill time, because a pid or group number can change hands in between.
 func treeSignalTargets(root int, table map[int]procRow, inLineage, lineageGroup func(int) bool) []int {
 	descendants := descendantsIn(root, table)
 	targets := make([]int, 0, 2*len(descendants)+2)

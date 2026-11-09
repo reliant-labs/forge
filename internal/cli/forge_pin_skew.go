@@ -127,7 +127,7 @@ const allowVersionSkewFlag = "allow-version-skew"
 func registerVersionSkewFlags(root *cobra.Command) {
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
-		rel := strings.TrimSpace(strings.TrimPrefix(c.CommandPath(), root.CommandPath()))
+		rel := commandRel(c, root)
 		_, gated := pinGateFor(rel)
 		if (gated || handOffWanted(rel)) && c.Flags().Lookup(allowVersionSkewFlag) == nil {
 			c.Flags().Bool(allowVersionSkewFlag, false,
@@ -301,10 +301,10 @@ func pinSkewRefusal(projectRoot, pin, binary, what string) error {
 // development forge against a tag pin, an in-process run with the hand-off
 // disabled — warns on w, and a pin-gated command is refused unless allowed.
 func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error {
-	if isDelegate() {
+	if isDelegate() || internalReentry(cmd) {
 		return nil
 	}
-	rel := strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))
+	rel := commandRel(cmd, root)
 	projectRoot, err := cmdutil.FindProjectRoot()
 	if err != nil {
 		projectRoot = ""
@@ -314,7 +314,7 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		handed, err := handOff(ctx, w, rel, allow, projectRoot, forgeInvocationArgs())
+		handed, err := handOff(ctx, w, rel, machineWideRun(rel, cmd.Flags()), allow, projectRoot, forgeInvocationArgs())
 		if err != nil || handed {
 			return err
 		}
@@ -335,6 +335,16 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 	}
 	_, _ = fmt.Fprint(w, pinSkewWarning(projectRoot, pin, binary, buildinfo.Current()))
 	return nil
+}
+
+// internalReentry reports whether cmd is a child forge started by this binary
+// for its own use (`kcl eval --process-rooted`, evalKCLCommand). The child
+// runs this binary by design, and the parent made the pin decision and gave
+// any warning: one `env down` under --allow-version-skew printed the skew
+// warning once per KCL render on top of its own.
+func internalReentry(cmd *cobra.Command) bool {
+	f := cmd.Flags().Lookup("process-rooted")
+	return f != nil && f.Value.String() == "true"
 }
 
 // pinSkewWarning is what a command that is not refused prints under skew. It

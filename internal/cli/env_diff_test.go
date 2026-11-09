@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // stubRender points renderEnvShapeForDiff at a fixed answer per env.
@@ -74,6 +75,7 @@ func runDiffEntry(t *testing.T, env string, live liveSide, answers map[string]st
 // Objects added, removed and changed, from a set diff over per-object
 // hashes.
 func TestEnvDiff_ReportsAddedRemovedAndChangedObjects(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	liveShape := diffShape(obj("Deployment", "api", "a"), obj("Service", "gone", "b"))
 	candidate := diffShape(obj("Deployment", "api", "c"), obj("Deployment", "new", "d"))
 
@@ -100,6 +102,7 @@ func TestEnvDiff_ReportsAddedRemovedAndChangedObjects(t *testing.T) {
 // is "not verifiable" rather than "missing" — the forge#398 rule, and the
 // difference decides whether the user has something to do.
 func TestEnvDiff_SecretPresenceDistinguishesMissingFromUnverifiable(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	liveShape := release.Shape{Kind: release.EnvSelfManaged}
 	candidate := release.Shape{
 		Kind: release.EnvSelfManaged,
@@ -154,6 +157,7 @@ func TestEnvDiff_SecretPresenceDistinguishesMissingFromUnverifiable(t *testing.T
 // Domains added and removed, with the removal labelled: a domain leaving the
 // declaration does not delete anything.
 func TestEnvDiff_ReportsDomainChanges(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	liveShape := release.Shape{Kind: release.EnvSelfManaged, Domains: []string{"old.example.com"}}
 	candidate := release.Shape{Kind: release.EnvSelfManaged, Domains: []string{"new.example.com"}}
 
@@ -172,6 +176,7 @@ func TestEnvDiff_ReportsDomainChanges(t *testing.T) {
 // A workload moving runtime or cluster is its own category, not an object
 // change — "web: hosted → bucket" is the sentence a user needs.
 func TestEnvDiff_ReportsRuntimeMoves(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	liveShape := release.Shape{
 		Kind:      release.EnvSelfManaged,
 		Workloads: []release.ShapeWorkload{{Name: "web", Runtime: "hosted", Cluster: "c1"}},
@@ -204,6 +209,7 @@ func TestEnvDiff_ReportsRuntimeMoves(t *testing.T) {
 // different env: placement is per workload, so the diff lists the new part and
 // nothing else — no kind error (docs/design/per-workload-placement.md).
 func TestEnvDiff_GainingAHostedPartIsAChangeNotAnError(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	liveShape := release.Shape{Kind: release.EnvSelfManaged, Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster"}}}
 	candidate := release.Shape{Kind: release.EnvPersistent, Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster"}, {Name: "web", Runtime: "hosted"}}}
 
@@ -236,6 +242,7 @@ func TestEnvDiff_GainingAHostedPartIsAChangeNotAnError(t *testing.T) {
 
 // An env the control plane has no row for "would be created" (§8.2).
 func TestEnvDiff_UnknownEnvWouldBeCreated(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	entry := runDiffEntry(t, "brand-new",
 		liveSide{Known: false, Source: "none"},
 		map[string]stubbedRender{"brand-new": {shape: diffShape(obj("Deployment", "api", "a"))}})
@@ -255,6 +262,7 @@ func TestEnvDiff_UnknownEnvWouldBeCreated(t *testing.T) {
 // added". Presenting a first-ever render as a change set invites someone to
 // read a 149-object list as 149 changes.
 func TestEnvDiff_NoRecordedConfigIsNotEverythingAdded(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	entry := runDiffEntry(t, "prod",
 		// Known to the control plane, but nothing recorded for it.
 		liveSide{Known: true, Source: "none"},
@@ -284,6 +292,7 @@ func TestEnvDiff_NoRecordedConfigIsNotEverythingAdded(t *testing.T) {
 // fallback — labelled as weaker evidence, because `forge env build`
 // refreshes declared_shape from the very render being deployed.
 func TestEnvDiff_DeclaredShapeFallbackIsLabelled(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	declared := diffShape(obj("Deployment", "api", "a"))
 	entry := runDiffEntry(t, "prod",
 		liveSide{Known: true, Source: "declared_shape", Shape: &declared},
@@ -303,6 +312,7 @@ func TestEnvDiff_DeclaredShapeFallbackIsLabelled(t *testing.T) {
 // implementation) so the digest a bundle recorded and the digest this render
 // produces cannot disagree.
 func TestEnvDiff_ConfigIdenticalShortCircuit(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	shape := diffShape(obj("Deployment", "api", "a"))
 	digest, err := release.ConfigDigest(shape)
 	if err != nil {
@@ -330,6 +340,7 @@ func TestEnvDiff_ConfigIdenticalShortCircuit(t *testing.T) {
 // Image changes are split out from config changes, which is §8.2's
 // "admin-server: config changed" versus "would run a new build".
 func TestEnvDiff_SplitsImageChangesFromConfigChanges(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	live := obj("Deployment", "api", "a")
 	live.Images = map[string]string{"api": "sha256:" + strings.Repeat("1", 64)}
 	candidate := obj("Deployment", "api", "b")
@@ -365,6 +376,7 @@ func TestEnvDiff_SplitsImageChangesFromConfigChanges(t *testing.T) {
 // What-if must never modify a worktree, and a diff from a render nobody can
 // reproduce is not evidence.
 func TestEnvDiff_ImpureRenderIsDiscardedWithThePaths(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	entry := runDiffEntry(t, "prod",
 		liveSide{Known: true, Source: "bundle"},
 		map[string]stubbedRender{"prod": {
@@ -395,6 +407,7 @@ func TestEnvDiff_ImpureRenderIsDiscardedWithThePaths(t *testing.T) {
 // every other env still diffs (F-8). A partial diff that hid a failure would
 // read as "no changes".
 func TestEnvDiff_ARenderFailureDoesNotHideTheOtherEnvs(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	stubRender(t, map[string]stubbedRender{
 		"broken": {err: fmt.Errorf("render deploy/kcl/broken: EvaluationError: undefined name")},
 		"fine":   {shape: diffShape(obj("Deployment", "api", "a"))},
@@ -425,6 +438,7 @@ func TestEnvDiff_ARenderFailureDoesNotHideTheOtherEnvs(t *testing.T) {
 // renders run concurrently, and a report whose rows moved between runs would
 // be unreadable.
 func TestEnvDiff_EntryOrderFollowsTheEnvListNotScheduling(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	answers := map[string]stubbedRender{}
 	envs := []string{"alpha", "beta", "gamma", "delta"}
 	for _, env := range envs {

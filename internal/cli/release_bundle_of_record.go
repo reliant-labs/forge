@@ -123,11 +123,17 @@ func findReleaseBundle(ctx context.Context, projectDir, env, version string, led
 		if err != nil {
 			return releaseBundle{}, false, err
 		}
+		blobs := bundleBlobs{Repository: repo, Manifest: manifest, Config: config}
+		if fetched.Doc.Snapshot != nil {
+			// A snapshot bundle is recorded with its manifests layer inline
+			// (an env deploy's evidence snapshot, env_build_evidence.go).
+			blobs.ManifestsLayer = fetched.Manifests
+		}
 		return releaseBundle{
 			Digest: fetched.Digest, Reference: repo + "@" + fetched.Digest, Pushed: true,
 			Objects:    fetched.Doc.Shape.Objects,
 			RenderedBy: fetched.Doc.Provenance.ForgeVersion, Commit: fetched.Doc.Provenance.Commit,
-			blobs: bundleBlobs{Repository: repo, Manifest: manifest, Config: config},
+			blobs: blobs,
 		}, true, nil
 	}
 	if ledger.Hosted {

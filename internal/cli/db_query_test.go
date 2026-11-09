@@ -17,6 +17,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/dbquery"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // dbQueryFixture is a one-workload render of an open, local env whose api
@@ -167,6 +168,7 @@ func TestDBQueryTableAndCSV(t *testing.T) {
 }
 
 func TestDBQueryRefusesTransportsItCannotReach(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	for _, tc := range []struct{ runtime, dsn string }{
 		{RuntimeCluster, ""},
 		{RuntimeHost, ""}, // no DATABASE_URL declared

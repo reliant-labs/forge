@@ -160,23 +160,63 @@ var captureReleaseMigrations = func(projectDir string, prov release.Provenance, 
 	if err != nil {
 		return nil, nil, err
 	}
+	// Declarations are read beside the sets they describe (see
+	// release_floor_declarations.go). A sibling whose commit cannot be read
+	// is already a note above and records no set, so it can record no
+	// declarations either; that is the one gap, and it is the same one.
+	decls, err := projectSchemaDeclarations(own, projectDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	fileDecls, err := projectFileDeclarations(projectDir, prov)
+	if err != nil {
+		return nil, nil, err
+	}
+	decls = append(decls, fileDecls...)
 	if own != nil {
 		m.Sets = append(m.Sets, *own)
 		seen[own.Source] = true
 	}
+	seenDeclDirs := map[string]bool{}
 	for _, use := range uses {
 		s, note := siblingMigrationSet(use.src)
 		if note != "" {
 			notes = append(notes, note)
 		}
+		if siblingReadable(use.src) && !seenDeclDirs[use.src.Dir] {
+			seenDeclDirs[use.src.Dir] = true
+			fd, note, err := siblingFileDeclarations(use.src)
+			if err != nil {
+				return nil, nil, err
+			}
+			if note != "" {
+				notes = append(notes, note)
+			}
+			decls = append(decls, fd...)
+		}
 		if s == nil || seen[s.Source] {
 			continue
 		}
+		sd, err := siblingSchemaDeclarations(s, use.src, filepath.Join(use.src.Dir, config.DefaultMigrationsDir))
+		if err != nil {
+			return nil, nil, err
+		}
+		decls = append(decls, sd...)
 		seen[s.Source] = true
 		m.Sets = append(m.Sets, *s)
 	}
-	if len(m.Sets) == 0 {
+	if len(m.Sets) == 0 && len(decls) == 0 {
 		return nil, notes, nil
+	}
+	if m.Sets == nil {
+		// "sets": [] rather than null on the wire and in a hosted store's
+		// JSON column, for a project whose only entries are declarations.
+		m.Sets = []release.MigrationSet{}
+	}
+	m.Declarations = dedupeDeclarations(decls)
+	m.DeclarationsRecorded = true
+	for i := range m.Sets {
+		m.Sets[i].Adopts = dedupeVersions(m.Sets[i].Adopts)
 	}
 	m.Normalize()
 	if err := m.Validate(); err != nil {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // 2026-10-07: ~/go/bin/forge was 3b4499b3 while every repo pinned d6b5d722,
@@ -130,6 +131,7 @@ func TestForgePinSkew_ReadOnlyCommandsAreNotRefused(t *testing.T) {
 }
 
 func TestForgePinSkew_EscapeHatches(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	skewedProject(t)
 	t.Run("flag", func(t *testing.T) {
 		if err := guardVerdict(t, "generate", "--allow-version-skew"); err != nil {

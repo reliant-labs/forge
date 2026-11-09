@@ -104,7 +104,7 @@ func helmChartSpecsFromEntities(ctx context.Context, charts []HelmChartEntity, d
 		if err := validateChartCluster(c, declaredClusters); err != nil {
 			return nil, err
 		}
-		crds, err := fetchHelmChartCRDs(ctx, c, owner)
+		crds, err := fetchHelmChartCRDsFn(ctx, c, owner)
 		if err != nil {
 			return nil, fmt.Errorf("platform dependency %q: %w", c.Name, err)
 		}
@@ -197,6 +197,10 @@ func validateChartCluster(c HelmChartEntity, declaredClusters []ClusterEntity) e
 	return fmt.Errorf("platform dependency %q targets cluster %q, which this env does not declare "+
 		"(declared: %s)", c.Name, c.Cluster, strings.Join(known, ", "))
 }
+
+// fetchHelmChartCRDsFn is the seam a unit test stubs, so it never downloads
+// the upstream CRD bundles.
+var fetchHelmChartCRDsFn = fetchHelmChartCRDs
 
 // fetchHelmChartCRDs returns the forge-supplied CRD manifest YAML for a
 // chart, per its declared CRD bundle. Empty string when the chart needs no

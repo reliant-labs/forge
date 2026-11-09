@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"regexp"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 
@@ -39,7 +41,33 @@ const (
 	MaxProductPropValueLen = 256
 )
 
+// EnvProductEvents switches off the product events forge emits on the app's
+// behalf (the generated CRUD handlers' <entity>_created|_updated|_deleted).
+// "off" (or "false", "0") turns them off; anything else, or unset, leaves them
+// on. KCL renders FORGE_PRODUCT_EVENTS=off when the env declares
+// forge.ObservabilitySignals{product_events = False}. Track itself is never
+// gated: an event the app's own code emits is a decision that code made.
+const EnvProductEvents = "FORGE_PRODUCT_EVENTS"
+
 var eventNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// autoProductEvents reads EnvProductEvents once: the process's environment
+// does not change under it, and the check sits on every CRUD write. The read
+// goes through otelenv.go's envValue, the one place this package reads the
+// environment.
+var autoProductEvents = sync.OnceValue(func() bool { return productEventsOn(envValue(EnvProductEvents)) })
+
+// AutoProductEvents reports whether forge's automatic product events are on
+// for this process (see EnvProductEvents). The value is read once.
+func AutoProductEvents() bool { return autoProductEvents() }
+
+func productEventsOn(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "off", "false", "0":
+		return false
+	}
+	return true
+}
 
 var appVersion atomic.Pointer[string]
 

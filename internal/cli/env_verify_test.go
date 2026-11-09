@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 
 	releasepkg "github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Environment verification tests run entirely against a stubbed cluster read.
@@ -378,6 +379,7 @@ func exitCodeOf(t *testing.T, err error) int {
 // TestRunEnvVerify_DriftExits1 is the headline case end to end: the command
 // must FAIL, and the failure must be exit 1 specifically.
 func TestRunEnvVerify_DriftExits1(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -400,6 +402,7 @@ func TestRunEnvVerify_DriftExits1(t *testing.T) {
 
 // TestRunEnvVerify_MatchExits0 pins the clean path at 0.
 func TestRunEnvVerify_MatchExits0(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -415,6 +418,7 @@ func TestRunEnvVerify_MatchExits0(t *testing.T) {
 // TestRunEnvVerify_MissingExits1 — declared but not running is a failure, at
 // the same exit code as drift. Both mean "the env is not what the ledger says".
 func TestRunEnvVerify_MissingExits1(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -428,6 +432,7 @@ func TestRunEnvVerify_MissingExits1(t *testing.T) {
 // usable in CI. A cluster that cannot be read is exit 2, NOT exit 1 — a
 // network failure is not evidence against a release.
 func TestRunEnvVerify_UnreachableExits2(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -447,6 +452,7 @@ func TestRunEnvVerify_UnreachableExits2(t *testing.T) {
 // here would make the command permanently red for a healthy env that does not
 // use releases, and a permanently-red gate is a deleted gate.
 func TestRunEnvVerify_NoBindingExits0(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -465,6 +471,7 @@ func TestRunEnvVerify_NoBindingExits0(t *testing.T) {
 // so it is UNREACHABLE and exit 2 — never drift, which would accuse a release
 // on the basis of a question that was never asked.
 func TestRunEnvVerify_NoDeclaredClusterExits2(t *testing.T) {
+	testkit.Slow(t, "execs git and ps")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1.5.15", map[string]string{"control-plane": digestDeclared})
 
@@ -510,6 +517,7 @@ func TestRunEnvVerify_NoDeclaredClusterExits2(t *testing.T) {
 // distinguishes them. Pointing this reader at deploy/kcl/<env>/main.k would
 // name a file they will not find.
 func TestRunEnvVerify_UndeclaredEnvSaysSo(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "preprod", "v1.3.0", map[string]string{"control-plane": digestDeclared})
 

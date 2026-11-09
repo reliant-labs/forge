@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The rule these tests pin: an image registry is DECLARED on a WORKLOAD, as
@@ -125,6 +127,7 @@ func TestBuildCmd_PushIsABooleanSwitch(t *testing.T) {
 // --push` pushes to the reference the workload declares, and says which
 // workload it came from.
 func TestBuildCmd_PushResolvesTheWorkloadDeclaredReference(t *testing.T) {
+	testkit.Slow(t, "execs git and go")
 	planProject(t, declaredRegistryFixture)
 
 	for name, args := range map[string][]string{
@@ -272,6 +275,7 @@ func TestBuildCmd_PushWithoutEnvFails(t *testing.T) {
 // declares its own reference, exactly as a cluster one does — the runtime does
 // not change where a registry is declared.
 func TestBuildCmd_HostedEnvPushesToTheWorkloadReference(t *testing.T) {
+	testkit.Slow(t, "execs git and go")
 	planProject(t, hostedPushFixture("registry.example/org-7"))
 
 	out, err := runBuildCommand(t, "prod", "--push", "--plan", "--no-generate", "--tag", "t1")
@@ -443,6 +447,7 @@ func TestImageTagSet_TagsTheDeclaredRepositoryVerbatim(t *testing.T) {
 // (no push) tags the image under the reference its workload declares — so a
 // later --push of the same build is a push, not a rebuild — and pushes nothing.
 func TestBuildCmd_LocalBuildTagsTheDeclaredReference(t *testing.T) {
+	testkit.Slow(t, "execs git and go")
 	planProject(t, declaredRegistryFixture)
 	out, err := runBuildCommand(t, "prod", "--docker", "--plan", "--no-generate", "--tag", "t1")
 	if err != nil {

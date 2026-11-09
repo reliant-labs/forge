@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // entityFromProtoDescriptor builds the fixture descriptor: TasksService
@@ -135,6 +136,7 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 }
 
 func TestAddEntityFromProto_SingleBirthsOwnedMigration(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := setupEntityFromProtoProject(t)
 
 	out, err := captureStdout(t, func() error {
@@ -193,6 +195,7 @@ func TestAddEntityFromProto_SingleBirthsOwnedMigration(t *testing.T) {
 }
 
 func TestAddEntityFromProto_DotFormDerivesName(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := setupEntityFromProtoProject(t)
 	if err := runEntityFromProto(nil, "tasks.Invoice", entityOpts{}); err != nil {
 		t.Fatalf("runEntityFromProto: %v", err)
@@ -278,6 +281,7 @@ message CreateDraftResponse { string id = 1; }
 `
 
 func TestAddEntityFromProto_ExplicitListCompletesQuintet(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := setupEntityFromProtoProject(t)
 	protoRel := filepath.Join("proto", "services", "tasks", "v1", "tasks.proto")
 	writeFixtureFile(t, dir, protoRel, entityFromProtoRawProto)
@@ -326,6 +330,7 @@ func TestAddEntityFromProto_ExplicitListCompletesQuintet(t *testing.T) {
 }
 
 func TestAddEntityFromProto_BatchUnionsMarkedMessages(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := setupEntityFromProtoProject(t)
 	protoRel := filepath.Join("proto", "services", "tasks", "v1", "tasks.proto")
 	writeFixtureFile(t, dir, protoRel, entityFromProtoRawProto)
@@ -405,6 +410,7 @@ message CreateDraftResponse { string id = 1; }
 // request — exactly what the author's `forge:server-set` comment says it is
 // not. Birth must now refuse, name the replacement, and write nothing.
 func TestAddEntityFromProto_RetiredMarkerRefusesBirth(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := setupEntityFromProtoProject(t)
 	protoRel := filepath.Join("proto", "services", "tasks", "v1", "tasks.proto")
 	writeFixtureFile(t, dir, protoRel, entityFromProtoRetiredMarkerProto)
@@ -438,6 +444,7 @@ func TestAddEntityFromProto_RetiredMarkerRefusesBirth(t *testing.T) {
 // forge:mutation (frontend hooks) and prose containing `forge:` must all
 // birth exactly as before.
 func TestAddEntityFromProto_OtherPassMarkersAndProseDoNotRefuse(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := setupEntityFromProtoProject(t)
 	protoRel := filepath.Join("proto", "services", "tasks", "v1", "tasks.proto")
 	writeFixtureFile(t, dir, protoRel, `syntax = "proto3";
@@ -514,6 +521,7 @@ func TestAddEntityFromProto_BatchDryRunWritesNothing(t *testing.T) {
 }
 
 func TestAddEntityFromProto_BatchSelectsQuintetsWithoutTables(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := setupEntityFromProtoProject(t)
 	// Order's table is already applied → the sweep must skip it.
 	writeFixtureFile(t, dir, filepath.Join("db", "migrations", "00001_create_orders.up.sql"),

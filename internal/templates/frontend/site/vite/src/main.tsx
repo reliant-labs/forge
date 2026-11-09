@@ -4,7 +4,10 @@ import { createRoot } from "react-dom/client";
 import { installDevLogging } from "@reliantlabs/forge-web-runtime";
 
 import { App } from "./App";
+import { initTelemetry } from "./lib/otel_gen";
 import "./index.css";
+
+initTelemetry();
 
 // Mirror console output and uncaught errors to the dev server, which writes
 // them to .forge/logs/<env>/frontend_<name>.log — so a browser-side failure is

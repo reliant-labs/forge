@@ -2,9 +2,11 @@ package release
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // ShapeExternalDatabase is one database the env's workloads use but forge does
@@ -45,8 +47,17 @@ type ShapeExternalDatabase struct {
 	// ([DefaultExternalDatabasePasswordKey] when empty).
 	PasswordKey string `json:"password_key,omitempty"`
 	// SSLMode is the libpq sslmode: [ExternalDatabaseSSLRequire] (the default
-	// when empty) or [ExternalDatabaseSSLDisable].
+	// when empty), [ExternalDatabaseSSLDisable], or [ExternalDatabaseSSLVerifyFull].
 	SSLMode string `json:"sslmode,omitempty"`
+	// CASecret or CAConfigMap names exactly one namespace-local trust source
+	// for verify-full. CAKey explicitly selects its PEM certificate bundle.
+	// These are references only, never certificate bytes or filesystem paths.
+	CASecret    string `json:"ca_secret,omitempty"`
+	CAConfigMap string `json:"ca_configmap,omitempty"`
+	CAKey       string `json:"ca_key,omitempty"`
+	// TLSServerName is the DNS identity verified by verify-full. Empty resolves
+	// to <service>.<namespace>.svc. Trust fields are refused for other modes.
+	TLSServerName string `json:"tls_server_name,omitempty"`
 	// Reach is how a control plane dials the database:
 	// [ExternalDatabaseReachPortForward] (the default when empty) through the
 	// kube API under the env's cluster credential, or
@@ -67,6 +78,9 @@ const (
 	DefaultExternalDatabasePasswordKey = "password"
 	ExternalDatabaseSSLRequire         = "require"
 	ExternalDatabaseSSLDisable         = "disable"
+	// ExternalDatabaseSSLVerifyFull authenticates the DNS identity using only
+	// the explicitly selected CA bundle (never ambient system roots).
+	ExternalDatabaseSSLVerifyFull = "verify-full"
 	// ExternalDatabaseReachPortForward: the control plane tunnels to a ready
 	// pod behind the Service through the kube API (pods/portforward), under
 	// the env's cluster credential. The default.
@@ -145,6 +159,9 @@ func (x ShapeExternalDatabase) resolved() ShapeExternalDatabase {
 	if x.Reach == "" {
 		x.Reach = ExternalDatabaseReachPortForward
 	}
+	if x.SSLMode == ExternalDatabaseSSLVerifyFull && x.TLSServerName == "" {
+		x.TLSServerName = fmt.Sprintf("%s.%s.svc", x.Service, x.Namespace)
+	}
 	return x
 }
 
@@ -172,7 +189,9 @@ var (
 	externalDatabaseKeyRE = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
 )
 
-func (x ShapeExternalDatabase) validate() error {
+// Validate checks a complete external route without reading credentials or trust
+// material. Callers must still authorize the full resolved route before dialing.
+func (x ShapeExternalDatabase) Validate() error {
 	label := func(field, v string) error {
 		if len(v) > 63 || !externalDatabaseLabelRE.MatchString(v) {
 			return fmt.Errorf("%w: shape external database %q: %s %q is not an RFC-1123 label of at most 63 characters", ErrInvalid, x.Name, field, v)
@@ -203,8 +222,26 @@ func (x ShapeExternalDatabase) validate() error {
 	}
 	switch x.SSLMode {
 	case "", ExternalDatabaseSSLRequire, ExternalDatabaseSSLDisable:
+		if x.CASecret != "" || x.CAConfigMap != "" || x.CAKey != "" || x.TLSServerName != "" {
+			return fmt.Errorf("%w: shape external database %q: TLS trust fields require sslmode verify-full", ErrInvalid, x.Name)
+		}
+	case ExternalDatabaseSSLVerifyFull:
+		if x.Namespace == "" || (x.CASecret == "") == (x.CAConfigMap == "") || x.CAKey == "" {
+			return fmt.Errorf("%w: shape external database %q: sslmode verify-full needs namespace, exactly one of ca_secret/ca_configmap, and ca_key", ErrInvalid, x.Name)
+		}
+		for _, ref := range []string{x.CASecret, x.CAConfigMap} {
+			if ref != "" && (len(ref) > 253 || !externalDatabaseSecretRE.MatchString(ref)) {
+				return fmt.Errorf("%w: shape external database %q: CA source must name a Secret or ConfigMap, never a value or path", ErrInvalid, x.Name)
+			}
+		}
+		if len(x.CAKey) > 253 || !externalDatabaseKeyRE.MatchString(x.CAKey) {
+			return fmt.Errorf("%w: shape external database %q: ca_key must name a data key", ErrInvalid, x.Name)
+		}
+		if x.TLSServerName != "" && !validExternalDatabaseDNSName(x.TLSServerName) {
+			return fmt.Errorf("%w: shape external database %q: tls_server_name must be a DNS name, not an address, wildcard or path", ErrInvalid, x.Name)
+		}
 	default:
-		return fmt.Errorf("%w: shape external database %q: sslmode %q (expected %q or %q)", ErrInvalid, x.Name, x.SSLMode, ExternalDatabaseSSLRequire, ExternalDatabaseSSLDisable)
+		return fmt.Errorf("%w: shape external database %q: sslmode %q (expected %q, %q or %q)", ErrInvalid, x.Name, x.SSLMode, ExternalDatabaseSSLRequire, ExternalDatabaseSSLDisable, ExternalDatabaseSSLVerifyFull)
 	}
 	switch x.Reach {
 	case "", ExternalDatabaseReachPortForward:
@@ -221,10 +258,22 @@ func (x ShapeExternalDatabase) validate() error {
 	return nil
 }
 
+func validExternalDatabaseDNSName(name string) bool {
+	if len(name) > 253 || net.ParseIP(name) != nil {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if len(label) > 63 || !externalDatabaseLabelRE.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
 func (s Shape) validateExternalDatabases() error {
 	seen := map[string]bool{}
 	for _, x := range s.ExternalDatabases {
-		if err := x.validate(); err != nil {
+		if err := x.Validate(); err != nil {
 			return err
 		}
 		if seen[x.Name] {

@@ -1211,7 +1211,13 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 		// of a supervising run — a signal that cut a phase short, and an
 		// ordinary error (a failed readiness or cluster gate) after children
 		// started. Only --background leaves a stack running.
-		defer func() { teardownSupervisedExit(ctx, procs) }()
+		defer func() {
+			// A teardown that could not prove the stack down fails the run,
+			// so its exit code says the records were kept for a retry.
+			if terr := teardownSupervisedExit(ctx, procs); terr != nil && err == nil {
+				err = terr
+			}
+		}()
 	}
 
 	// Phase 3: host-mode services.
@@ -1418,18 +1424,20 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// so a beat in flight cannot land after the stopped row and resurrect
 	// the session as running.
 	stopBeat()
-	procs.shutdown()
+	stopErr := procs.shutdown()
 	session.stop(time.Now().UTC())
-	return nil
+	return stopErr
 }
 
 // teardownSupervisedExit stops a supervising run's children on any return
 // that did not already tear them down: a signal before the hold, or an error
 // returned after the first child started. The children run in process groups
 // of their own, so without it they would outlive the command that owns them.
-func teardownSupervisedExit(ctx context.Context, procs *procRegistry) {
+//
+// It returns shutdown's error: a stack it could not prove stopped.
+func teardownSupervisedExit(ctx context.Context, procs *procRegistry) error {
 	if procs.stopped() {
-		return
+		return nil
 	}
 	switch {
 	case ctx.Err() != nil:
@@ -1439,9 +1447,9 @@ func teardownSupervisedExit(ctx context.Context, procs *procRegistry) {
 	default:
 		// Nothing started and nothing interrupted: no stack of this run's
 		// to stop, and its records are not this run's to remove.
-		return
+		return nil
 	}
-	procs.shutdown()
+	return procs.shutdown()
 }
 
 // nonTTYWatchHint is the one line the non-TTY default prints after it
@@ -3202,11 +3210,13 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 			failures++
 			continue
 		}
+		prepareAirDirs(w)
 		if err := procs.start(name, cmd, background); err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++
 			continue
 		}
+		procs.requireStopGrace(name, airStopDrain(hostRunnerSpec(w), cmd.Dir))
 		markUpLaunched(ctx, w.Name)
 	}
 	return failures
@@ -3677,9 +3687,22 @@ type procRegistry struct {
 	projectID  string
 	projectDir string
 	env        string
-	mu         sync.Mutex
-	processes  []*managedProcess
-	isStopped  bool // shutdown has run
+	// runID is stamped on every child as FORGE_UP_RUN, so shutdown can find
+	// what this run started even after it left the process tree.
+	runID     string
+	mu        sync.Mutex
+	processes []*managedProcess
+	isStopped bool // shutdown has run
+	// stopGrace is how long shutdown waits after SIGTERM before SIGKILL;
+	// zero means defaultStopGrace. graceFor names who asked for more.
+	stopGrace time.Duration
+	graceFor  string
+	// startedAt bounds the shutdown sweep's "could this be ours" question: a
+	// process started before it cannot be this run's child.
+	startedAt time.Time
+	// readStopTable reads the process table for the shutdown sweep; nil is
+	// the OS table. A test injects a failing or modelled one.
+	readStopTable func() (*stopTable, error)
 }
 
 // stopped reports whether shutdown has run, so a second teardown path (a
@@ -3691,7 +3714,12 @@ func (p *procRegistry) stopped() bool {
 }
 
 func newProcRegistry(projectID, projectDir, env string) *procRegistry {
-	return &procRegistry{projectID: projectID, projectDir: projectDir, env: env}
+	return &procRegistry{
+		projectID: projectID, projectDir: projectDir, env: env, runID: newUpRunID(),
+		// ps reports start times to the second: back off one so a child
+		// started in this second is never ruled out.
+		startedAt: time.Now().Add(-time.Second),
+	}
 }
 
 // start launches a child command, captures stdout/stderr with a
@@ -3707,6 +3735,19 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	// The project marker is what keeps a different project's reclaim off this
 	// child.
 	stampForgeOwnership(cmd, p.projectID, p.env, name)
+	cmd.Env = withForcedEnv(cmd.Env, forgeUpRunVar, p.runID)
+	// The registry, not the command's context, ends the child's life. A
+	// command built with exec.CommandContext is SIGKILLed — the runner alone —
+	// the moment its context is cancelled, which on a supervising run is the
+	// Ctrl-C itself. That kill landed before shutdown could signal anything:
+	// the runner died without its own graceful stop, its server (in a process
+	// group of its own, as Air starts it) was reparented to init, and the
+	// tree walk that should have reached it started from a dead process.
+	// Every path that cancels the context runs shutdown (the hold, and
+	// teardownSupervisedExit), and a detached child must outlive it anyway.
+	if cmd.Cancel != nil {
+		cmd.Cancel = func() error { return nil }
+	}
 	if background {
 		logPath, err := upLogPath(p.env, name)
 		if err != nil {
@@ -4038,68 +4079,6 @@ func procPID(mp *managedProcess) int {
 		return mp.cmd.Process.Pid
 	}
 	return 0
-}
-
-// shutdown sends SIGTERM to every registered process group and waits up
-// to 10s for them to exit. Anything still alive after the budget is
-// SIGKILLed. State file is removed on success.
-func (p *procRegistry) shutdown() {
-	p.mu.Lock()
-	p.isStopped = true
-	procs := make([]*managedProcess, len(p.processes))
-	copy(procs, p.processes)
-	p.mu.Unlock()
-
-	// Reverse order so later-started frontends die before the host
-	// services they may have spoken to — keeps the user's last log
-	// lines clean.
-	for i := len(procs) - 1; i >= 0; i-- {
-		mp := procs[i]
-		pid := procPID(mp)
-		if pid <= 0 {
-			continue
-		}
-		fmt.Printf("[up] stopping %s (pid=%d)...\n", mp.name, pid)
-		// Kill the whole process TREE so `go run`/Air's execed child — which
-		// may have moved into its own process group — dies with the parent
-		// instead of orphaning and squatting its port.
-		_ = killProcessTree(pid, syscall.SIGTERM)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		var wg sync.WaitGroup
-		for _, mp := range procs {
-			mp := mp
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if mp.done != nil {
-					<-mp.done
-				} else {
-					_ = mp.cmd.Wait()
-				}
-			}()
-		}
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		for _, mp := range procs {
-			pid := procPID(mp)
-			if pid <= 0 || managedProcessExited(mp) {
-				continue
-			}
-			fmt.Printf("[up] %s: did not exit, killing.\n", mp.name)
-			_ = killProcessTree(pid, syscall.SIGKILL)
-		}
-		<-done
-	}
-
-	removeStackRecords(p.projectID, p.env)
 }
 
 // trackedProc is one (name, pid) entry parsed from a stack's PID ledger.

@@ -794,6 +794,7 @@ func shapeExternalDatabasesOf(e *KCLEntities) []release.ShapeExternalDatabase {
 			Name: x.Name, Cluster: x.Cluster, Namespace: x.Namespace,
 			Service: x.Service, Database: x.Database, Username: x.Username,
 			PasswordSecret: x.PasswordSecret, PasswordKey: x.PasswordKey, SSLMode: x.SSLMode,
+			CASecret: x.CASecret, CAConfigMap: x.CAConfigMap, CAKey: x.CAKey, TLSServerName: x.TLSServerName,
 			Reach: x.Reach, Port: x.Port,
 		})
 	}

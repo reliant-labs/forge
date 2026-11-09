@@ -148,6 +148,25 @@ neither (`migration-compat-undeclared`) or gives no reason
 to replace. A file declaring both is refused everywhere
 (`migration-compat-conflict`), and the migrator reads it as not compatible.
 
+A release cut with a `forge:breaks-rollback` migration records it as a
+**rollback-floor declaration** (kind `schema`) in its migration manifest. Other
+changes older releases cannot survive — an API, a feature, a data rewrite — are
+declared by a checked-in file, `deploy/rollback-floors/<id>.yaml`, which the cut
+records the same way (the project's from disk, a sibling checkout's at its
+recorded commit; a malformed file refuses the cut):
+
+```yaml
+kind: api        # api | feature | data   (schema is the migration line above)
+reason: "v2 webhook payloads; the v1 receivers were removed"
+```
+
+The id is the file's base name; never delete a released declaration — a later
+release must keep carrying it. Promoting a release that carries a declaration no
+floor already requires raises a **declared floor** on that environment: from
+then on, only releases that carry every declaration it requires can be deployed
+there (`pkg/release` `Floor`; a hotfix cut from before the declaration is
+refused even if it was cut later).
+
 The migrator (`forge/pkg/migratekit`: the scaffolded `db migrate up` and
 `AutoMigrate`) records each version's declaration in `schema_migrations_compat`
 as it applies. A binary that meets a schema AHEAD of it — an old pod booting

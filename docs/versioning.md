@@ -154,13 +154,19 @@ pinned forge. `-C`/`--project-dir` names the project, and so the pin.
 The commands about THIS forge or this machine always run here: `version`,
 `help`, `completion`, `project upgrade` (it moves the pin, and must work when
 the old pin cannot be built), `project new`, `report-bug`, `storage`, `slot`,
-`env ps|down|devstack`, and `mcp`: a server whose every tool call names its own
-project, so each call is checked against that project's pin instead.
+`env ps`, `env devstack`, `env down --all` (they span every project on the
+machine), and `mcp`: a server whose every tool call names its own project, so
+each call is checked against that project's pin instead. `env down <env>` is
+handed over like `env up`: it renders the same project KCL, and an older forge
+cannot (`Cannot add member 'startup_after' to schema 'OnHost'`) and leaves the
+stack half-stopped.
 
 **When the pinned forge cannot be had** — offline, a version nobody published,
 a linked checkout that does not build — the command fails with the reason and
 nothing runs. It never falls back to the forge you ran: that fallback is how a
-stale forge rewrites a project.
+stale forge rewrites a project. The one exception is `env down <env>`: a stop
+must work offline and rewrites nothing, so it says the pin could not be had and
+stops the stack with the forge you ran.
 
 **A development forge against a published pin.** A forge built from a local
 checkout, run in a project pinned to a release tag (forge's own e2e lanes, every

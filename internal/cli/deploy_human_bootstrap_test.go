@@ -12,6 +12,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/credentials"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestRealDeployWritePathsBindBeforeTargetReads(t *testing.T) {
@@ -96,6 +97,7 @@ func TestRealDeployWritePathsBindBeforeTargetReads(t *testing.T) {
 }
 
 func TestRealDeployPreviewsDoNotCreateProjectBinding(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	for _, mode := range []string{"dry-run", "explain", "version-plan"} {
 		t.Run(mode, func(t *testing.T) {
 			path := isolatedCredentials(t)

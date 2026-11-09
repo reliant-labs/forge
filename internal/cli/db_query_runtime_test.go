@@ -4,11 +4,14 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A mixed env's selected workload, not its name or another workload's runtime,
 // determines the database route. No network or database connection is opened.
 func TestDBQueryRouteFollowsSelectedRuntimeNotEnvName(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	for _, env := range []string{"dev", "prod", "canary-blue"} {
 		t.Run(env, func(t *testing.T) {
 			withKCLFixture(t, `{"output":{"data_access":{"db_query":"open"},"workloads":[

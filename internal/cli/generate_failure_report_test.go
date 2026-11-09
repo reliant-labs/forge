@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestRollbackGeneratedTree_PreservesFailedSourcesAndRepeatsCompilerOutput(t *testing.T) {
@@ -156,6 +157,7 @@ func TestReprintCompilerOutput_TruncatesLongOutput(t *testing.T) {
 // the returned error carries the full compiler stderr for the failure
 // report to repeat.
 func TestRunGoBuildValidate_CarriesCompilerOutput(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/brokenapp\n\ngo 1.22\n"), 0o644); err != nil {
 		t.Fatal(err)

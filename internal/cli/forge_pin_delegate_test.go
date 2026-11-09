@@ -156,7 +156,7 @@ func TestDelegation_RenderCommandsAreHandedOver(t *testing.T) {
 func TestDelegation_ReadsAreHandedOverAndExemptCommandsStayLocal(t *testing.T) {
 	skewedProject(t)
 	t.Setenv(forgedelegate.MarkerEnv, "")
-	for _, args := range [][]string{{"generate", "--dry-run"}, {"generate", "--check"}, {"scaffold", "--dry-run"}, {"env", "list"}, {"project", "audit"}, {"skill", "list"}} {
+	for _, args := range [][]string{{"generate", "--dry-run"}, {"generate", "--check"}, {"scaffold", "--dry-run"}, {"env", "list"}, {"project", "audit"}, {"skill", "list"}, {"env", "down", "dev"}} {
 		h, _ := armDelegation(t)
 		if _, err := runCheck(t, args...); err != nil {
 			t.Errorf("forge %v: %v", args, err)
@@ -165,7 +165,7 @@ func TestDelegation_ReadsAreHandedOverAndExemptCommandsStayLocal(t *testing.T) {
 			t.Errorf("forge %v ran under a forge the project does not pin", args)
 		}
 	}
-	for _, args := range [][]string{{"version"}, {"env", "ps"}, {"env", "down"}, {"project", "upgrade"}, {"report-bug"}, {"slot", "status"}} {
+	for _, args := range [][]string{{"version"}, {"env", "ps"}, {"env", "down", "--all"}, {"project", "upgrade"}, {"report-bug"}, {"slot", "status"}} {
 		h, installs := armDelegation(t)
 		_, _ = runCheck(t, args...)
 		if h.path != "" || len(*installs) != 0 {
@@ -268,7 +268,7 @@ func TestHandOffWanted(t *testing.T) {
 		"lint": true, "ci gate": true, "ci summarize": true, "generate": true, "skill load": true, "mcp": false,
 		"a-command-this-forge-lacks": true, "project a-subcommand-this-forge-lacks": true,
 		"": false, "version": false, "help": false, "help generate": false, "completion bash": false, "__complete": false,
-		"env down": false, "env ps": false, "env devstack": false,
+		"env down": true, "env ps": false, "env devstack": false,
 		"project upgrade": false, "project new": false, "report-bug": false,
 		"storage gc": false, "slot run": false,
 	} {

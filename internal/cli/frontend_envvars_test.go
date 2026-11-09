@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestFrontendEnvVarsRoundTrip exercises the whole #2 path at once: the
@@ -15,6 +17,7 @@ import (
 // renders a minimal bundle against the in-tree forge KCL module via the
 // real render seam (kpm + plugin).
 func TestFrontendEnvVarsRoundTrip(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	forgeKcl, err := filepath.Abs("../../kcl")
 	if err != nil {
 		t.Fatal(err)

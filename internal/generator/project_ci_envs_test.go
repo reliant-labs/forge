@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func writeEnvMain(t *testing.T, dir string, envs ...string) {
@@ -29,6 +30,7 @@ func writeEnvMain(t *testing.T, dir string, envs ...string) {
 // deploy-staging job wired to workflow_run after every image build on main: a
 // job for an env with no deploy/kcl/staging/main.k, red on every merge.
 func TestCIFiles_DeployTargetsDeclaredEnvsOnly(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	g, dir := ciGenerator(t, config.FeaturesConfig{})
 	writeEnvMain(t, dir, "dev", "prod")
 	if err := g.generateCIFiles(); err != nil {

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // part is one section of a mock-shaped render: a name and a version.
@@ -216,6 +218,7 @@ func insertEdit(name string, base []part) edit {
 // insertions at one point, and a deletion beside another change to its
 // boundary.
 func TestStampSections_EveryIndependentPairMergesWithPlainGit(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	const rel = "mock_gen.go"
 	base := parts("B", "D", "F")
 	var edits []edit
@@ -279,6 +282,7 @@ func TestStampSections_EveryIndependentPairMergesWithPlainGit(t *testing.T) {
 // directly before one the other branch changed). If this ever merges, the
 // matrix above is no longer testing what it claims to.
 func TestStampSections_LegacyFormConflictsOnNeighbours(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	const rel = "mock_gen.go"
 	legacy := func(ps ...part) []byte {
 		var b strings.Builder

@@ -69,6 +69,9 @@ permissions:
 #                     Whole-repo guard scans/renders run only on main/full.
 #   checks            forge generate is a no-op, KCL validates, pre-commit hooks,
 #                     Go and npm dependency licenses
+#   golangci          golangci-lint over the packages the entry changed, findings
+#                     in the files it changed (owner, 2026-11-08; #1947), a job
+#                     of its own so it runs beside the two above, not after them
 #
 # THE RULE FOR THIS TIER: a check that cannot finish inside that budget is not
 # on it. A slow test skips under -short and runs on main; a slow job runs on
@@ -83,8 +86,13 @@ permissions:
 #   the flake gate's -race                                   -> test, test-cli (main)
 #
 # `go test` still runs vet's high-confidence analyzers on every package it
-# tests, so a pull request is not unvetted; golangci-lint's findings and a
-# windows-only compile break are found on main and bisected from there.
+# tests, so a pull request is not unvetted; a windows-only compile break is
+# found on main and bisected from there. golangci-lint came back to the merge
+# tier on 2026-11-08 (owner; #1947), after #1931 and #1930 each turned main's
+# Lint red the moment they merged: the `golangci` job lints only the packages
+# an entry changed, so its cost follows the diff, not the repo, and it is a job
+# of its own beside test-short and checks so it never lengthens them. The
+# whole-repo pass (what a change broke elsewhere) stays in lint, on main.
 #
 # The merge tier runs over main plus the entries ahead of it. The slow tier
 # stays on main: in the queue it would hold every merge behind a 30-minute
@@ -116,8 +124,12 @@ permissions:
 # and `CI gate` queues again behind the last of them, so every job a pull
 # request runs is another place to wait. It ran 8 (13 before the pre-commit,
 # license-gate and Library Lint workflows were folded in, 9 once the guards
-# joined it); it runs 5, gate included: two short shards and an independent
-# changed-test repetition entry. No full guard runs extend those entries.
+# joined it); in the merge queue it runs 4, gate included: test-short (one
+# entry, the flake gate inside it), checks, golangci and the gate. No full
+# guard runs extend those entries. golangci is the one job added back since
+# (owner, 2026-11-08): a lint step at the end of test-short or checks would
+# have lengthened the slower of them by the lint's own time, and the merge
+# queue's budget is wall time, not runner slots.
 #
 # CACHE-SOUND REPLAY. The -short tier is held cache-sound (reliant.md,
 # "Testing tiers"), so a package whose inputs did not change replays main's
@@ -259,6 +271,14 @@ jobs:
       - uses: ./.github/actions/restore-go-caches
         with:
           scope: short
+      # Not used by the step below (the action brings its own copy): this is
+      # what saves the ci-tool-golangci-lint cache entry the merge tier's
+      # `golangci` job restores, because install-release-tool saves only on a
+      # push to main and no other main job installs golangci-lint through it.
+      - name: Install golangci-lint (saves the merge tier's cache)
+        uses: ./.github/actions/install-release-tool
+        with:
+          tool: golangci-lint
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -1154,6 +1174,81 @@ jobs:
           mod-key: ${{ steps.go-caches.outputs.mod-key }}
           mod-hit: ${{ steps.go-caches.outputs.mod-hit }}
 
+  # golangci-lint on the changed packages, in the merge tier (owner,
+  # 2026-11-08; #1947). The Lint job above stays on main for the whole repo;
+  # this one is the slice a queue entry can be blamed for: the packages its
+  # diff (HEAD^1..HEAD, as the flake gate reads it) changed, findings in the
+  # files it changed (--new-from-rev with --whole-files), root .golangci.yml
+  # and, for pkg/, pkg/.golangci.yml (scripts/ci-golangci-changed.sh).
+  # --whole-files, not changed lines only: #1930's nestif was reported on an
+  # `if` line it never touched (it grew the block inside), and main's Lint is
+  # whole-repo, so a changed file holds no backlog to trip over.
+  #
+  # A JOB OF ITS OWN, beside test-short and checks rather than a step in one
+  # of them: those run 2.5-4 minutes, and the lint (a minute or two on a warm
+  # -short scope, internal/cli the slow case) would go on the end of their
+  # critical path. Here it starts with them and `CI gate` waits on all three.
+  # It restores the -short scope (what golangci's package loads compile is the
+  # same non-race linux build), saves nothing, and installs golangci-lint
+  # through install-release-tool, so a release-download 504 cannot fail it.
+  #
+  # MEASURED on GitHub runners (2026-11-08), job wall time: 57s (pkg/pgtest,
+  # under pkg/.golangci.yml), 77s (internal/npmoverlay), 136s
+  # (internal/templates); with internal/cli in the diff 165s (#1946, one file),
+  # 179s (#1930) and 185s (#1931), of which the lint was 110-126s: internal/cli
+  # is one very large package and is analysed whole. The other two jobs ran
+  # 152-240s (median ~211s) on the 11 merge groups before it that touched
+  # internal/cli, so on such a diff this job can finish last, by up to ~30s.
+  # Every other diff finishes well before them.
+  #
+  # CHECK AFTER MERGE, AND ROLLBACK. On the first merge groups after this
+  # lands, read `CI gate`'s "Job wall times" and "Merge-queue budget" steps:
+  # golangci should finish before test-short and checks except on an
+  # internal/cli diff, and then by no more than ~30s, with the group inside
+  # the tier's budget (five-minute median, ten at worst). If it is the
+  # critical path on ordinary diffs, or groups exceed that budget, revert the
+  # commit that added this job: the job, its `CI gate` dependency and its
+  # merge_group skipped-check entry go together, golangci-lint goes back to
+  # main's Lint alone, and the ci-tool-golangci-lint cache entry ages out.
+  # No ruleset, schema or required-check change is involved (`CI gate` stays
+  # the one required check).
+  golangci:
+    name: golangci-lint (changed packages)
+    if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Depth 2: HEAD^1 is the base the diff is read from (the merge commit's
+      # first parent on a pull request; the entry ahead in the merge queue).
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # No Go file changed: done in seconds, before any toolchain is set up.
+      - name: Changed Go files
+        id: changed
+        run: |
+          set -euo pipefail
+          n=$(git diff --name-only --diff-filter=ACMR HEAD^1 HEAD -- '*.go' | wc -l)
+          echo "${n} changed .go file(s) since HEAD^1"
+          echo "any=$([ "${n}" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v7
+        if: steps.changed.outputs.any == 'true'
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/restore-go-caches
+        if: steps.changed.outputs.any == 'true'
+        with:
+          scope: short
+      - name: Install golangci-lint
+        if: steps.changed.outputs.any == 'true'
+        uses: ./.github/actions/install-release-tool
+        with:
+          tool: golangci-lint
+      - name: golangci-lint (changed packages)
+        if: steps.changed.outputs.any == 'true'
+        run: scripts/ci-golangci-changed.sh HEAD^1
+
   # CI gate: one check that is red exactly when any job above failed or was
   # cancelled (a skipped job — a main-only lane on a pull request — is not a
   # failure). It is the main ruleset's required check and the one the merge
@@ -1169,6 +1264,7 @@ jobs:
       - test-short
       - pr-checks
       - checks
+      - golangci
       - test
       - test-cli
       - test-short-warm
@@ -1215,7 +1311,7 @@ jobs:
           # job that skipped there (a broken `if:`) is a gate that judged
           # nothing, never a pass.
           if [ "$GITHUB_EVENT_NAME" = merge_group ]; then
-            unrun=$(jq -r 'to_entries[] | select(.key == "test-short" or .key == "checks") | select(.value.result == "skipped") | "\(.key): skipped in the merge queue"' <<<"$RESULTS")
+            unrun=$(jq -r 'to_entries[] | select(.key == "test-short" or .key == "checks" or .key == "golangci") | select(.value.result == "skipped") | "\(.key): skipped in the merge queue"' <<<"$RESULTS")
             if [ -n "$unrun" ]; then
               echo "::error::the merge tier did not run:"
               echo "$unrun"

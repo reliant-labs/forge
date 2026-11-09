@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // buildSandboxGoMod returns a go.mod body for a temp-dir test project
@@ -358,6 +360,7 @@ func TestGenerate_Empty(t *testing.T) {
 // types) actually compiles — not just parses. Regression test for the bug
 // where `zeroValue()` returned "nil" for non-pointer named struct returns.
 func TestGenerate_ZeroValues(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := copyTestdata(t, "testdata/zerovalues")
 	contractPath := filepath.Join(dir, "contract.go")
 
@@ -398,6 +401,7 @@ func TestGenerate_ZeroValues(t *testing.T) {
 // from the allow-list (io.Reader). Also confirms struct returns still
 // produce "Result{}" — bug #15's fix must not regress.
 func TestGenerate_InterfaceReturns(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := copyTestdata(t, "testdata/interfaces")
 	contractPath := filepath.Join(dir, "contract.go")
 
@@ -445,6 +449,7 @@ func TestGenerate_InterfaceReturns(t *testing.T) {
 // signature, infinite recursion. The template must qualify the call
 // as `m.Recorder.Record(...)`.
 func TestGenerate_RecordMethodShadowsRecorder(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := copyTestdata(t, "testdata/recordshadow")
 	contractPath := filepath.Join(dir, "contract.go")
 
@@ -545,6 +550,7 @@ func TestGenerate_SiblingFileInterface(t *testing.T) {
 // Enabled / Score) and sibling-file aliases (SiblingTag declared in
 // aliases.go).
 func TestGenerate_PrimitiveAlias(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := copyTestdata(t, "testdata/primitive_alias")
 	contractPath := filepath.Join(dir, "contract.go")
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The regression these tests pin, found by control-plane's hosted e2e:
@@ -208,6 +209,7 @@ func TestBuildTag_ExplicitTagWinsForDockerBuild(t *testing.T) {
 // nothing deploys, so the build is refused before anything runs, naming the
 // workload and both tags.
 func TestBuildTag_ExplicitTagOnPinnedWorkloadIsRefused(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := planProject(t, tagPrecedenceFixture)
 	fakeRegistry(t)
 	fakeDocker(t)

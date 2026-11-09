@@ -202,6 +202,10 @@ const devOrigins = (): string[] => {
 };
 
 const nextConfig: NextConfig = {
+  // Next's access logger prints raw URLs before/independently of the handler.
+  // Browser logs are POST bodies only; exclude this endpoint even when a
+  // malformed caller adds query secrets. Preserve unrelated request logging.
+  logging: { incomingRequests: { ignore: [/(?:^|\/)__forge\/log(?:\?|$)/] } },
   // basePath prefixes routes and <Link>/router URLs; assetPrefix (same
   // value) prefixes /_next/* asset and RSC chunk URLs. Omitting
   // assetPrefix lets some chunk URLs skip the prefix — the JS 404s
@@ -547,6 +551,10 @@ const devOrigins = (): string[] => {
 };
 
 const nextConfig: NextConfig = {
+  // Next's access logger prints raw URLs before/independently of the handler.
+  // Browser logs are POST bodies only; exclude this endpoint even when a
+  // malformed caller adds query secrets. Preserve unrelated request logging.
+  logging: { incomingRequests: { ignore: [/(?:^|\/)__forge\/log(?:\?|$)/] } },
   // No `output:` field — full Next.js for both dev and prod. Production
   // builds are served via `next start` (or a managed host like Vercel).
   // Use this when you need server components, server actions, ISR, or
@@ -864,6 +872,10 @@ const devOrigins = (): string[] => {
 };
 
 const nextConfig: NextConfig = {
+  // Next's access logger prints raw URLs before/independently of the handler.
+  // Browser logs are POST bodies only; exclude this endpoint even when a
+  // malformed caller adds query secrets. Preserve unrelated request logging.
+  logging: { incomingRequests: { ignore: [/(?:^|\/)__forge\/log(?:\?|$)/] } },
   // basePath prefixes routes and <Link>/router URLs; assetPrefix (same
   // value) prefixes /_next/* asset and RSC chunk URLs. Omitting
   // assetPrefix lets some chunk URLs skip the prefix — the JS 404s

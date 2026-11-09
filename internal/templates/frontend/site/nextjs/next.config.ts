@@ -1,6 +1,20 @@
 import os from "node:os";
 
 import type { NextConfig } from "next";
+import { startOtelRelay } from "@reliantlabs/forge-web-runtime/otel-proxy";
+
+// The runtime relay forwards only bounded OTLP POSTs and reads renewed
+// credentials server-side on every request; no token enters the bundle.
+let otelRelay: Promise<string> | undefined;
+async function devOtelUpstream(): Promise<string> {
+  otelRelay ??= startOtelRelay({
+    upstream: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0.1:4318",
+  }).catch((err: unknown) => {
+    console.warn(`[forge] /_otel relay unavailable: ${String(err)}`);
+    return "";
+  });
+  return otelRelay;
+}
 
 // Hosts besides localhost that may load `next dev`: a Reliant workspace
 // preview host (RELIANT_PREVIEW_URL_TEMPLATE), this machine's own addresses,
@@ -46,7 +60,15 @@ const nextConfig: NextConfig = {
   // next/image's default loader is an optimizing server route, which an
   // export does not have. Size images for the web before they go in public/.
   images: { unoptimized: true },
-  ...(process.env.NODE_ENV === "development" ? { allowedDevOrigins: devOrigins() } : {}),
+  ...(process.env.NODE_ENV === "development"
+    ? {
+        allowedDevOrigins: devOrigins(),
+        async rewrites() {
+          const otel = await devOtelUpstream();
+          return otel ? [{ source: "/_otel/:path*", destination: `${otel}/:path*` }] : [];
+        },
+      }
+    : {}),
 };
 
 export default nextConfig;

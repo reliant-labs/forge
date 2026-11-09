@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // hostTools are the binaries whose real invocation reads or mutates state
@@ -214,6 +216,7 @@ func TestTripwireHelperProbe(t *testing.T) {
 // A helper process runs under the suite's tripwire and leaves nothing behind;
 // one started with a PATH of its own gets a tripwire of its own.
 func TestTripwireHelperProcessReusesTheSuiteDirectory(t *testing.T) {
+	testkit.Slow(t, "execs the forge binary as a child process")
 	if runtime.GOOS == "windows" {
 		t.Skip("tripwire stand-ins are shell scripts")
 	}

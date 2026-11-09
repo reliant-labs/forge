@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // actAsDelegate makes this process the forge a hand-off exec'd.
@@ -260,6 +261,7 @@ func TestScanProjectDir(t *testing.T) {
 // mcp is never handed off, and each request is checked against its own pin
 // even in a process that was.
 func TestMCP_EachRequestIsCheckedAgainstItsOwnProjectsPin(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	prevVersion, prevCommit := buildinfo.Version(), buildinfo.GitCommit()
 	buildinfo.Set(skewTestBinary, "", "6c0c3edb1322")
 	t.Cleanup(func() { buildinfo.Set(prevVersion, "", prevCommit) })

@@ -7,9 +7,11 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestFrontendOnlyDeployHasNoUnusedInfrastructure(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := t.TempDir()
 	g := NewProjectGenerator("landing", root, "example.com/landing")
 	g.FrontendName = "web"

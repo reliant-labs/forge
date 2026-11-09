@@ -14,6 +14,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/obsbackend"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // obsTargetProject writes a project whose prod env declares a control plane at
@@ -271,6 +272,7 @@ func TestObsTargetIsNotTrustedPastItsAgeOrWithAPathDependency(t *testing.T) {
 // rendered twice per lookup (ledger selection, then the control plane),
 // inside a 10s budget a large env's render alone could exceed.
 func TestReleasesBackendReadsTheStampedTarget(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	srv, _ := obsCloudForbidden(t)
 	obsTargetProject(t, srv.URL)
 	fresh := func() {

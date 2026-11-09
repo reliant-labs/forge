@@ -191,21 +191,74 @@ func (l IDPPATLocations) MirrorIfRewritten(before []byte) error {
 	return l.MirrorToCheckout()
 }
 
-// copyPAT writes src's content to dst (owner-only, atomically) unless dst
-// already holds it.
+// copyPAT writes src's content to dst, atomically, and leaves dst owner-only
+// (0600, in a 0700 directory) whether or not its content changed:
+// atomicfile.WriteFile keeps an existing file's mode, so a PAT an older forge
+// or Zitadel left world-readable would otherwise stay that way.
 func copyPAT(src, dst string) error {
 	b, err := os.ReadFile(src) // #nosec G304 -- forge's own PAT locations
 	if err != nil {
 		return fmt.Errorf("read %s: %w", src, err)
 	}
-	if cur, err := os.ReadFile(dst); err == nil && string(cur) == string(b) { // #nosec G304 -- forge's own PAT locations
-		return nil
+	if err := securePATDir(filepath.Dir(dst)); err != nil {
+		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(dst), err)
+	if cur, err := os.ReadFile(dst); err != nil || !bytes.Equal(cur, b) { // #nosec G304 -- forge's own PAT locations
+		if err := atomicfile.WriteFile(dst, b, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", dst, err)
+		}
 	}
-	if err := atomicfile.WriteFile(dst, b, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", dst, err)
+	return securePATFile(dst)
+}
+
+// securePATDir creates dir as 0700, and tightens an existing one that grants
+// its group or others anything. It holds nothing but the PAT.
+func securePATDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", dir, err)
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("restrict %s to its owner: %w", dir, err)
+		}
 	}
 	return nil
+}
+
+// securePATFile sets the PAT file to 0600, whoever wrote it.
+func securePATFile(path string) error {
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("restrict %s to its owner: %w", path, err)
+	}
+	return nil
+}
+
+// PrepareWriteDir creates the directory Zitadel writes the PAT into (it does
+// not create it itself). The shared directory, forge's own, is held to 0700;
+// a directory a declared idp_pat_path names is the author's and only created.
+func (l IDPPATLocations) PrepareWriteDir() error {
+	dir := filepath.Dir(l.WritePath())
+	if l.Shared != "" {
+		return securePATDir(dir)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	return nil
+}
+
+// SecureShared sets the shared PAT, as Zitadel wrote it, to 0600. A no-op
+// when there is none.
+func (l IDPPATLocations) SecureShared() error {
+	if l.Shared == "" {
+		return nil
+	}
+	if _, err := os.Stat(l.Shared); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return securePATFile(l.Shared)
 }

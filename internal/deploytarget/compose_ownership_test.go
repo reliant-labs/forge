@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The refusal names a different cause, and a different fix, for each kind
@@ -116,11 +118,9 @@ func TestCompose_RefusalNamesAnotherClone(t *testing.T) {
 // Two clones of one repo are told apart from a worktree of this clone and
 // from an unrelated repo, by real git.
 func TestClassifyOwner_RealGit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds real git repositories, clones and worktrees; runs in task test")
-	}
+	testkit.Slow(t, "builds real git repositories, clones and worktrees")
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
+		t.Skipf("git not on PATH (%v): this test classifies real git checkouts", err)
 	}
 	initRepo := func(dir string) {
 		for _, args := range [][]string{

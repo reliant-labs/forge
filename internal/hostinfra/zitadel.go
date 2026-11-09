@@ -239,7 +239,7 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	patLoc := spec.IDPPATLocations(projectDir)
 	patPath := patLoc.WritePath()
 	sharedBefore := patLoc.SharedContent()
-	if err := os.MkdirAll(filepath.Dir(patPath), 0o700); err != nil {
+	if err := patLoc.PrepareWriteDir(); err != nil {
 		return fmt.Errorf("host-infra %s: create PAT dir: %w", spec.Name, err)
 	}
 
@@ -311,6 +311,9 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	// A first-instance boot wrote a new token beside the database: copy it
 	// to the declared checkout path too, which provisioning scripts read
 	// whether or not the env declares a managed identity.
+	if err := patLoc.SecureShared(); err != nil {
+		fmt.Printf("  %s: warning: %v\n", spec.Name, err)
+	}
 	if err := patLoc.MirrorIfRewritten(sharedBefore); err != nil {
 		fmt.Printf("  %s: warning: could not copy the new IdP token to %s: %v\n", spec.Name, shortPath(projectDir, patLoc.Checkout), err)
 	}

@@ -253,12 +253,13 @@ observability = forge.Observability {                        # per category
 | `metadata` | **customer metadata**, collected by the platform's node agent without the app's help: pod CPU/memory against limits, restarts and last exit reason, Kubernetes events, image and version |
 | `browser` | the frontend SDK: `OTEL_ENDPOINT=off` in every frontend's runtime config (and its build variable), over anything you set |
 
-**Session replay is the one opt-IN category**, switched on per frontend:
-`telemetry = forge.BrowserTelemetry {replay = True}` renders that frontend's
-`OTEL_REPLAY = "true"` (runtime config) and opts the env in, so the platform
-keeps its events (browser logs of scope `rum.rr-web`); recorded in the shape as
-`observability_policy.opt_in = ["replay"]`. `signals.replay` is the
-**deprecated** env-wide opt-in: it still opts in, but switches no frontend on.
+**Session replay is the one opt-IN category**, per frontend:
+`telemetry = forge.BrowserTelemetry {replay = True}` renders its
+`OTEL_REPLAY = "true"` and opts the env in, so the platform keeps the events
+(browser logs of scope `rum.rr-web`); the shape records
+`observability_policy.opt_in = ["replay"]`. `signals.replay` is a
+**deprecated** env-wide opt-in (`_session_replay` uses it) that switches no
+frontend on.
 
 `enabled = False` renders `OTEL_SDK_DISABLED=true` on every workload plus the
 browser switch. Author-set `OTEL_*` values still win.

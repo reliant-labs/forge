@@ -222,7 +222,8 @@ func LoadDescriptor(projectDir string) (*ForgeDescriptor, error) {
 		return nil, fmt.Errorf(
 			DescriptorDir+"/ is stale: it was extracted from different .proto files than the ones on disk (%s).\n"+
 				"  It is a DERIVED cache — the protos are the source of truth — so forge refuses to answer from it.\n"+
-				"  Fix: reliant forge generate", drift)
+				"  Descriptor refresh was unavailable or did not converge; use a current forge CLI (embedded hosts must install the descriptor extractor).\n"+
+				"  Fix: reliant forge generate (also refreshes metadata; no stale generated-code stamp is accepted)", drift)
 	}
 	return desc, nil
 }

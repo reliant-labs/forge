@@ -775,7 +775,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		if err != nil {
 			return err
 		}
-		isSnapshot = r != nil && len(r.SnapshotIntents) > 0
+		isSnapshot = sealedSnapshotRelease(r)
 	}
 	if isSnapshot && (len(f.targets) > 0 || f.frontendsOnly) {
 		return fmt.Errorf("sealed snapshot is a complete desired decision; --target repair cannot promote it")

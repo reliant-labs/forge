@@ -95,7 +95,7 @@ func prepareComposition(ctx context.Context, opts *buildOptions, base string, bo
 	}
 	// Conservative policy identity is a versioned fixed policy, not a claimed
 	// compatibility proof. All partial dependency validation remains hard-fail.
-	run.Declaration = release.Snapshot{Schema: release.SnapshotSchema, Project: store.project, Environment: opts.env, Source: release.Source{Repo: provenance.Repo, Commit: provenance.Commit}, PolicyDigest: release.SpecDigest([]byte("forge.conservative-composition-policy/v1")), Consumers: consumers, Artifacts: map[release.ArtifactID]release.SnapshotArtifact{}}
+	run.Declaration = release.Snapshot{Schema: release.SnapshotSchema, Project: store.project, Environment: opts.env, Source: release.Source{Repo: provenance.Repo, Commit: provenance.Commit}, PolicyDigest: compositionPolicyDigest(), Consumers: consumers, Artifacts: map[release.ArtifactID]release.SnapshotArtifact{}}
 	if bootstrap && current != nil {
 		run.Declaration.BootstrapFromPromotionID = current.ID
 	}

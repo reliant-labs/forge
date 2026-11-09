@@ -34,6 +34,16 @@ func validateSnapshotBundleLayout(d BundleDoc) error {
 	if err != nil {
 		return err
 	}
+	// An env with no per-unit trees (a hosted-only one) has none on either
+	// side, and the document's omitempty field decodes as nil: compare the
+	// empty sets as equal, not by their spelling.
+	if len(trees) == 0 {
+		trees = nil
+	}
+	actualTrees := d.Trees
+	if len(actualTrees) == 0 {
+		actualTrees = nil
+	}
 	wantDelivery, _ := semanticDigest("forge.delivery/v1", struct {
 		Clusters []BundleClusterTree
 		Trees    []BundleTree
@@ -43,7 +53,7 @@ func validateSnapshotBundleLayout(d BundleDoc) error {
 	actualDelivery, _ := semanticDigest("forge.delivery/v1", struct {
 		Clusters []BundleClusterTree
 		Trees    []BundleTree
-	}{actualClusters, d.Trees})
+	}{actualClusters, actualTrees})
 	if wantDelivery != actualDelivery {
 		return snapshotBad("bundle delivery health/dependency metadata differs from exact snapshot")
 	}

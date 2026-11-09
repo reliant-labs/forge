@@ -35,6 +35,40 @@ func requireSnapshotCapabilities(ctx context.Context, client cloudCaller) error 
 	return nil
 }
 
+// snapshotFeatureEvidenceSeal is the control plane's snapshot feature for an
+// evidence seal: a snapshot recorded on a bundle of a release cut WITHOUT
+// snapshot intents, which the promotion shipping that bundle freezes
+// (GetDeployCapabilitiesResponse.snapshot_features; control-plane
+// deploy.SnapshotFeatureEvidenceSeal).
+const snapshotFeatureEvidenceSeal = "evidence-seal"
+
+// evidenceSealSupported reports whether the control plane takes an evidence
+// seal: every capability requireSnapshotCapabilities demands, plus
+// snapshot_features naming evidence-seal. Unlike requireSnapshotCapabilities
+// it is not fail-closed on the deploy: a false (or an error) means the env
+// deploy writes its legacy bundle, exactly as before the feature existed. An
+// older control plane routes a snapshot on an intent-less release down its
+// intent path and refuses it, which is why nothing is sealed unless it says so.
+func evidenceSealSupported(ctx context.Context, client cloudCaller) (bool, error) {
+	var caps struct {
+		Schemas  []string `json:"snapshotSchemaVersions"`
+		Seals    bool     `json:"immutableSnapshotSeals"`
+		Frozen   bool     `json:"frozenPromotionBundles"`
+		Features []string `json:"snapshotFeatures"`
+	}
+	if err := client.Call(ctx, procDeployCapabilities, map[string]any{}, &caps); err != nil {
+		return false, err
+	}
+	schema, evidence := false, false
+	for _, s := range caps.Schemas {
+		schema = schema || s == release.SnapshotSchema
+	}
+	for _, f := range caps.Features {
+		evidence = evidence || f == snapshotFeatureEvidenceSeal
+	}
+	return schema && caps.Seals && caps.Frozen && evidence, nil
+}
+
 func snapshotReleaseFromJSON(raw json.RawMessage, version string) (release.Release, error) {
 	var r release.Release
 	d := json.NewDecoder(bytes.NewReader(raw))

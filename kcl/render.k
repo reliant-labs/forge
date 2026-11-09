@@ -598,9 +598,12 @@ _obs_browser_off = lambda b: Bundle -> bool {
 
 # The env is opted in to session replay, so the platform keeps replay events:
 # observability is on and either the deprecated env-wide signals.replay is
-# set or a frontend switched replay on with telemetry.replay.
+# set or a frontend switched replay on with telemetry.replay. A frontend's
+# switch counts only while browser telemetry is on: with it off, nothing
+# records (see _runtime_config_declared), so nothing is opted in for it.
 _obs_replay_opted_in = lambda b: Bundle -> bool {
-    _obs_on(b) and (b.observability.signals.replay or any f in b.frontends { _frontend_replay_on(f) })
+    _obs_on(b) and (b.observability.signals.replay \
+        or (not _obs_browser_off(b) and any f in b.frontends { _frontend_replay_on(f) }))
 }
 
 # The frontend switched session replay on (BrowserTelemetry.replay).
@@ -2644,13 +2647,15 @@ _frontend_violations = lambda f: Frontend -> [str] {
 }
 
 # A frontend's runtime_config as declared, with the browser opt-out applied:
-# when browser telemetry is off the SDK's ingest path is forced to "off", over
-# anything the author set, because the opt-out is the author's explicit word.
+# when browser telemetry is off the SDK's ingest path is forced to "off", and
+# any OTEL_REPLAY to "false", over anything the author set, because the
+# opt-out is the author's explicit word.
 _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
     # What forge derives from the frontend's own declarations comes FIRST, so
     # an author's runtime_config entry for the same key always wins.
     _merged = _telemetry_runtime_config(f, bundle) | _env_scoped_runtime_config(f) | f.runtime_config
-    (_merged | {OTEL_ENDPOINT = "off"}) if _obs_browser_off(bundle) else _merged
+    (_merged | {OTEL_ENDPOINT = "off"} | ({OTEL_REPLAY = "false"} if "OTEL_REPLAY" in _merged else {})) \
+        if _obs_browser_off(bundle) else _merged
 }
 
 # The keys whose value differs per environment that a web frontend's
@@ -2722,9 +2727,10 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        unless the author named one (or browser telemetry is
 #                        off, which _runtime_config_declared handles)
 #   CONSOLE_CAPTURE      "false" only; unset means capture
-#   OTEL_REPLAY          "true" when telemetry.replay is on; unset means off.
-#                        Hosted too: it is this frontend's choice in this
-#                        env, which is what the platform reads back live.
+#   OTEL_REPLAY          "true" when telemetry.replay is on and browser
+#                        telemetry is not off; unset means off. Hosted too:
+#                        it is this frontend's choice in this env, which is
+#                        what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
 _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     _t = f.telemetry
@@ -2732,7 +2738,7 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
         "Frontend '${f.name}' sets telemetry.replay = True, but this environment declares no `observability`: the platform keeps replay events only for an env whose observability policy opts in to replay. Declare `observability = forge.Observability {...}` in this env (telemetry.replay then opts it in)."
     ({OTEL_ENDPOINT = _HOSTED_OTEL_PATH} if _frontend_hosted(f) and not _otel_endpoint_declared(f) and not _obs_browser_off(bundle) else {}) \
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
-        | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) else {}) \
+        | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) and not _obs_browser_off(bundle) else {}) \
         | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {})
 }
 

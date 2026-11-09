@@ -57,13 +57,19 @@ func TestReplayScaffoldSitesRenderCaptureAndAdmissionTogether(t *testing.T) {
 						t.Fatalf("frontends: %v", e.Frontends)
 					}
 					f := e.Frontends[0]
-					want := map[bool]string{true: "true", false: "false"}[enabled]
+					// The scaffold's switch is the frontend's telemetry.replay:
+					// on renders OTEL_REPLAY = "true", off renders no key
+					// (unset = off), so nothing explicit outranks the switch.
+					if f.Telemetry == nil || f.Telemetry.Replay != enabled {
+						t.Fatalf("telemetry.replay: %+v, want %v", f.Telemetry, enabled)
+					}
 					if env == "dev" {
-						if f.RuntimeConfig["OTEL_REPLAY"] != want {
+						if v, ok := f.RuntimeConfig["OTEL_REPLAY"]; ok != enabled || (enabled && v != "true") {
 							t.Fatalf("dev replay: %v", f.RuntimeConfig)
 						}
 					} else {
-						if v := f.RuntimeConfigSpec["OTEL_REPLAY"].Value; v == nil || *v != want {
+						v, ok := f.RuntimeConfigSpec["OTEL_REPLAY"]
+						if ok != enabled || (enabled && (v.Value == nil || *v.Value != "true")) {
 							t.Fatalf("hosted replay: %v", f.RuntimeConfigSpec)
 						}
 					}
@@ -114,9 +120,9 @@ func TestReplayScaffoldOfflineSetupPublishesCaptureOff(t *testing.T) {
 			if !tc.cp {
 				source = strings.Replace(source, "    control_plane = forge.ControlPlane {}\n", "", 1)
 			}
-			source = strings.Replace(source, "observability = forge.Observability {signals", "observability = forge.Observability {enabled = "+map[bool]string{true: "True", false: "False"}[tc.enabled]+", signals", 1)
+			source = strings.Replace(source, "observability = forge.Observability {}", "observability = forge.Observability {enabled = "+map[bool]string{true: "True", false: "False"}[tc.enabled]+"}", 1)
 			if tc.collector {
-				source = strings.Replace(source, "enabled = True, signals", "local_port = 14318, enabled = True, signals", 1)
+				source = strings.Replace(source, "enabled = True}", "local_port = 14318, enabled = True}", 1)
 			}
 			if err := os.WriteFile(path, []byte(source), 0600); err != nil {
 				t.Fatal(err)

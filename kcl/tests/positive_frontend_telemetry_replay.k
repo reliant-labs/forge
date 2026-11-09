@@ -11,7 +11,10 @@ with `forge.BrowserTelemetry {replay = True}`:
   * the deprecated env-wide `signals.replay` alone still opts the env in, and
     switches no frontend on;
   * neither: no OTEL_REPLAY, no opt-in;
-  * disabling observability cancels the opt-in;
+  * disabling observability, or browser telemetry, cancels the opt-in and
+    keeps the hosted frontend from recording: no OTEL_REPLAY = "true" renders,
+    the ingest path is "off", and an author's own OTEL_REPLAY is forced to
+    "false";
   * telemetry.replay outranks a carried {VITE_,NEXT_PUBLIC_}OTEL_REPLAY build
     variable, and an author's runtime_config entry still outranks both.
 """
@@ -59,6 +62,10 @@ _legacy = _bundle([_hosted("web", False)], forge.Observability {
 })
 _neither = _bundle([_hosted("web", False)], forge.Observability {destination = _dest})
 _disabled = _bundle([_hosted("web", True)], forge.Observability {enabled = False})
+_browser_off = _bundle([
+    _hosted("web", True)
+    _hosted("own", True) | {runtime_config = {OTEL_REPLAY = "true"}}
+], forge.Observability {destination = _dest, signals = forge.ObservabilitySignals {browser = False}})
 
 output = _on
 
@@ -80,3 +87,11 @@ assert_neither_opts_in = _neither.observability.policy.opt_in == [] and _neither
 assert_neither_renders_replay = "OTEL_REPLAY" not in _neither.frontends[0].runtime_config_spec
 
 assert_disabled_cancels_opt_in = _disabled.observability.policy.opt_in == []
+assert_disabled_renders_no_replay = "OTEL_REPLAY" not in _disabled.frontends[0].runtime_config_spec
+assert_disabled_ingest_off = _disabled.frontends[0].runtime_config_spec.OTEL_ENDPOINT.value == "off"
+
+_boff = {f.name: f for f in _browser_off.frontends}
+assert_browser_off_cancels_opt_in = _browser_off.observability.policy.opt_in == [] and _browser_off.observability.signals.replay == False
+assert_browser_off_renders_no_replay = "OTEL_REPLAY" not in _boff.web.runtime_config_spec
+assert_browser_off_forces_author_replay_off = _boff.own.runtime_config_spec.OTEL_REPLAY.value == "false"
+assert_browser_off_ingest_off = _boff.web.runtime_config_spec.OTEL_ENDPOINT.value == "off"

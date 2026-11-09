@@ -258,8 +258,7 @@ observability = forge.Observability {                        # per category
 `OTEL_REPLAY = "true"` and opts the env in, so the platform keeps the events
 (browser logs of scope `rum.rr-web`); the shape records
 `observability_policy.opt_in = ["replay"]`. `signals.replay` is a
-**deprecated** env-wide opt-in (`_session_replay` uses it) that switches no
-frontend on.
+**deprecated** env-wide opt-in that switches no frontend on.
 
 `enabled = False` renders `OTEL_SDK_DISABLED=true` on every workload plus the
 browser switch. Author-set `OTEL_*` values still win.

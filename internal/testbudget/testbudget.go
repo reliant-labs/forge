@@ -16,6 +16,13 @@
 // long in the blocking tier. A t.Parallel test's paused time is excluded by
 // the testing package itself.
 //
+// Except for a parent whose subtests call t.Parallel: the testing package
+// reports its Elapsed when its own function returns, before those subtests
+// run (`--- PASS: TestTable (0.00s)` over seven 0.5s cases). So a test is
+// judged by its wall time as well — from its run (or, for a paused t.Parallel
+// test, its last cont) event to its own pass/fail event, which comes after
+// its last subtest's — and the larger of the two counts.
+//
 //forge:exclude-contract: pure computation over a go test -json stream; a function and its data, no behaviour to substitute
 package testbudget
 
@@ -76,12 +83,17 @@ type event struct {
 	ImportPath string  `json:"ImportPath"`
 	Test       string  `json:"Test"`
 	Elapsed    float64 `json:"Elapsed"`
+	// Time is when the event happened; zero in a stream that omits it.
+	Time time.Time `json:"Time"`
 }
 
 // Check reads a `go test -json` stream and judges it against budget.
 func Check(r io.Reader, budget time.Duration) (Report, error) {
 	rep := Report{Budget: budget}
 	failed := map[string]bool{}
+	// started is when each top-level test last began running: its run
+	// event, or its last cont after a t.Parallel pause.
+	started := map[string]time.Time{}
 	events := 0
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -100,9 +112,18 @@ func Check(r io.Reader, budget time.Duration) (Report, error) {
 			failed[ev.ImportPath] = true
 		case ev.Test == "" && ev.Action == "fail":
 			failed[ev.Package] = true
+		case ev.Test != "" && !strings.Contains(ev.Test, "/") && (ev.Action == "run" || ev.Action == "cont"):
+			if !ev.Time.IsZero() {
+				started[ev.Package+"\x00"+ev.Test] = ev.Time
+			}
 		case ev.Test != "" && !strings.Contains(ev.Test, "/") && (ev.Action == "pass" || ev.Action == "fail"):
 			rep.Ran++
 			elapsed := time.Duration(ev.Elapsed * float64(time.Second))
+			if start, ok := started[ev.Package+"\x00"+ev.Test]; ok && !ev.Time.IsZero() {
+				if wall := ev.Time.Sub(start); wall > elapsed {
+					elapsed = wall // its t.Parallel subtests ran after Elapsed was taken
+				}
+			}
 			if elapsed > budget {
 				rep.Overruns = append(rep.Overruns, Overrun{Package: ev.Package, Test: ev.Test, Elapsed: elapsed})
 			}

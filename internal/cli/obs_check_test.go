@@ -267,6 +267,29 @@ func TestObsCheckWaitPollsUntilTheWindowFinishes(t *testing.T) {
 	}
 }
 
+// The control plane stops an open after window at now, so its end moves with
+// every poll. The progress line names the window's real end, P + window, the
+// same on every poll (forge_cli_report 9fe4605f).
+func TestObsCheckWaitNamesTheWindowsEndNotTheReadTime(t *testing.T) {
+	open := func(readAt string) string {
+		r := healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, "", "")
+		r = strings.Replace(r, `"end":"2026-10-22T11:55:00Z"`, `"end":"`+readAt+`"`, 1)
+		return strings.Replace(r, `"thresholds":[`, `"thresholds":[{"name":"window","value":"15m","source":"default"},`, 1)
+	}
+	done := healthReply("RELEASE_VERDICT_PASS", true, "", "")
+	caller := &seqCaller{replies: map[string][]string{procHealth: {open("2026-10-22T11:47:40Z"), open("2026-10-22T11:47:55Z"), done}}}
+	_, errOut, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--wait", "--json")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, errOut)
+	}
+	if n := strings.Count(errOut, "(ends 2026-10-22T11:55:00Z)"); n != 2 {
+		t.Errorf("both polls name the window's end 11:55: %q", errOut)
+	}
+	if strings.Contains(errOut, "11:47") {
+		t.Errorf("progress names the read time as the end: %q", errOut)
+	}
+}
+
 // --early-pass: an open window that is clean, rolled out and busy enough passes
 // at once; anything found, or too little of the window, keeps the wait going.
 func TestObsCheckEarlyPass(t *testing.T) {

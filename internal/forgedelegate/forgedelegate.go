@@ -21,6 +21,17 @@
 //     process builds an entry at a time, in a heavy slot, with its scratch
 //     inside the temp dir (stage).
 //
+// A pin carrying +dirty (a forge built from a modified working tree, which
+// `forge project new` stamps as it is) is the exception to 2 and 3: it names
+// no commit, so no build can be it and no cache keyed by its spelling can hold
+// it. `go install …@<pin>+dirty` drops the metadata and builds the clean
+// commit, WITHOUT the edits, and a cache entry of that build was served for
+// every later rebuild of the dirty forge — a fix made in the working tree
+// "did not work" until FORGE_ALLOW_VERSION_SKEW=1 ran the forge actually
+// built. Such a pin resolves only to a project .tools/bin/forge reporting it
+// exactly (a file, read fresh each time), and otherwise fails, saying why
+// (dirtyPinError).
+//
 // A project whose go.mod or go.work points forge at a local checkout (the
 // dev link) is a different case: the forge it runs is that checkout, built
 // where it stands (Bridge).
@@ -46,6 +57,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/hostslot"
 )
@@ -184,7 +196,14 @@ func (r *Resolver) LocalPinned(ctx context.Context, projectRoot, pin string) (st
 	if st, err := os.Stat(local); err != nil || st.IsDir() {
 		return "", false
 	}
-	if got, err := r.Version(ctx, local); err != nil || !r.Same(pin, got) {
+	got, err := r.Version(ctx, local)
+	if err != nil || !r.Same(pin, got) {
+		return "", false
+	}
+	// A +dirty pin is matched by its exact spelling only. Same compares
+	// commits, and a clean build of the pin's commit — what `task tools`
+	// installs for it — lacks the very edits the pin names.
+	if forgecompat.DirtyVersion(pin) && strings.TrimSpace(got) != strings.TrimSpace(pin) {
 		return "", false
 	}
 	return local, true
@@ -206,6 +225,11 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	}
 	entry := filepath.Join(dir, safeName(pin), runtime.GOOS+"-"+runtime.GOARCH)
 	bin := filepath.Join(entry, exeName())
+	if forgecompat.DirtyVersion(pin) {
+		// Checked before the cache: an older forge built and cached the
+		// clean commit under this spelling, and that entry is not this pin.
+		return Result{}, dirtyPinError(pin, bin)
+	}
 	if st, err := os.Stat(bin); err == nil && !st.IsDir() {
 		touch(entry)
 		return Result{Path: bin, Source: "the cached build of " + pin}, nil
@@ -241,6 +265,26 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	touch(entry)
 	r.prune(dir, safeName(pin))
 	return Result{Path: bin, Source: "forge " + pin + " (just built)"}, nil
+}
+
+// dirtyPinError says why the +dirty pin cannot be obtained, naming the clean
+// build an older forge cached under its spelling (cached) when there is one,
+// so a reader who saw it run before knows what it was.
+func dirtyPinError(pin, cached string) error {
+	base, _, _ := strings.Cut(strings.TrimSpace(pin), "+")
+	commit := "its commit"
+	if c := forgecompat.VersionCommit(base); c != "" {
+		commit = "commit " + c
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "forge_version %s names a forge built from a modified working tree (+dirty), which nothing can fetch or rebuild:\n", pin)
+	fmt.Fprintf(&b, "`go install` of it builds the clean %s without the edits, so no build, and no cached one, is that forge", commit)
+	if st, err := os.Stat(cached); err == nil && !st.IsDir() {
+		fmt.Fprintf(&b, ".\nNot running %s (built %s): it is that clean build, cached by an older forge",
+			cached, st.ModTime().UTC().Format(time.RFC3339))
+	}
+	b.WriteString(".\nRun the forge binary you built (it reports this version), or pin a version that names a commit")
+	return errors.New(b.String())
 }
 
 // Bridge returns a forge built from the checkout at dir, the forge a project

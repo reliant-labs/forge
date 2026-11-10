@@ -112,6 +112,9 @@ func TestMain(m *testing.M) {
 	}
 	if dir, err := os.MkdirTemp("", "forge-cli-state-"); err == nil {
 		connectStateDir = func() string { return dir }
+		// Removed after the suite like every process-wide fixture; one was
+		// left behind per run (806 on one machine).
+		registerSharedTempDir(dir)
 	}
 	// Nor does any test reach a deployed site: status probes a cloud env's
 	// shipped frontends at their real URLs.

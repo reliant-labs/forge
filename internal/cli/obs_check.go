@@ -281,9 +281,11 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 			doc.Waited = o.timeout.String()
 			return doc, exitCodeError{code: exitTimedOut, msg: fmt.Sprintf(
 				"the after window of %s had not finished after %s (it ends %s); run again to keep waiting",
-				subjectName(res.Report), o.timeout, res.Report.After.To.UTC().Format(time.RFC3339))}
+				subjectName(res.Report), o.timeout, res.Report.AfterEnds().UTC().Format(time.RFC3339))}
 		}
-		fmt.Fprintf(d.Stderr, "waiting for the after window of %s (ends %s)\n", subjectName(res.Report), res.Report.After.To.UTC().Format(time.RFC3339))
+		// AfterEnds, not After.To: an open window's After.To is the moment
+		// it was read, so naming it made every poll report a later end.
+		fmt.Fprintf(d.Stderr, "waiting for the after window of %s (ends %s)\n", subjectName(res.Report), res.Report.AfterEnds().UTC().Format(time.RFC3339))
 		if err := obsCheckSleep(ctx, obsCheckPollEvery); err != nil {
 			return bad(obsbackend.Undetermined("interrupted while waiting").Cause(err))
 		}

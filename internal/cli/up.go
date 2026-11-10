@@ -3216,7 +3216,8 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 			failures++
 			continue
 		}
-		procs.requireStopGrace(name, airStopDrain(hostRunnerSpec(w), cmd.Dir))
+		procs.requireStopGrace(name, airStopDrain(hostRunnerSpec(w), cmd.Dir), "runner's kill_delay")
+		procs.requireStopGrace(name, hostPreStop(w), "preStopSeconds")
 		markUpLaunched(ctx, w.Name)
 	}
 	return failures

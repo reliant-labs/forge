@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 func runMarker(proj, env, svc, run string) []string {
@@ -237,25 +239,48 @@ func TestParseAirStopDrain(t *testing.T) {
 func TestRequireStopGrace(t *testing.T) {
 	p := newProcRegistry(testProj, t.TempDir(), "dev")
 	out := captureStdout(t, func() {
-		p.requireStopGrace("api", 5*time.Second)
+		p.requireStopGrace("api", 5*time.Second, "runner's kill_delay")
 	})
 	if p.stopGrace != 0 || out != "" {
 		t.Errorf("a drain inside the default grace changed it to %s (output %q)", p.stopGrace, out)
 	}
 
-	p.requireStopGrace("api", 12*time.Second)
-	p.requireStopGrace("worker", 8*time.Second)
+	p.requireStopGrace("api", 12*time.Second, "runner's kill_delay")
+	p.requireStopGrace("worker", 8*time.Second, "preStopSeconds")
 	if want := 12*time.Second + stopGraceMargin; p.stopGrace != want || !strings.Contains(p.graceFor, "api") {
 		t.Errorf("grace = %s for %q, want %s for api", p.stopGrace, p.graceFor, want)
 	}
 
 	out = captureStdout(t, func() {
-		p.requireStopGrace("admin", time.Minute)
+		p.requireStopGrace("admin", time.Minute, "preStopSeconds")
 	})
 	if p.stopGrace != maxStopGrace {
 		t.Errorf("grace = %s, want the cap %s", p.stopGrace, maxStopGrace)
 	}
 	if !strings.Contains(out, "admin") || !strings.Contains(out, "SIGKILL") {
 		t.Errorf("a drain past the cap was not reported: %q", out)
+	}
+}
+
+// TestHostPreStopExtendsTheStopGrace pins what preStopSeconds means on the
+// host runtime: nothing pauses before SIGTERM (no load balancer to leave), and
+// forge waits the declared time before SIGKILL.
+func TestHostPreStopExtendsTheStopGrace(t *testing.T) {
+	if got := hostPreStop(WorkloadEntity{}); got != 0 {
+		t.Errorf("unset preStopSeconds = %s, want 0", got)
+	}
+	zero := int32(0)
+	if got := hostPreStop(WorkloadEntity{Spec: deployv1alpha1.WorkloadSpec{PreStopSeconds: &zero}}); got != 0 {
+		t.Errorf("preStopSeconds 0 = %s, want 0", got)
+	}
+	n := int32(20)
+	w := WorkloadEntity{Name: "proxy", Spec: deployv1alpha1.WorkloadSpec{PreStopSeconds: &n}}
+	if got := hostPreStop(w); got != 20*time.Second {
+		t.Fatalf("preStopSeconds 20 = %s, want 20s", got)
+	}
+	p := newProcRegistry(testProj, t.TempDir(), "dev")
+	captureStdout(t, func() { p.requireStopGrace(w.Name, hostPreStop(w), "preStopSeconds") })
+	if want := 20*time.Second + stopGraceMargin; p.stopGrace != want || !strings.Contains(p.graceFor, "preStopSeconds") {
+		t.Errorf("grace = %s for %q, want %s for preStopSeconds", p.stopGrace, p.graceFor, want)
 	}
 }

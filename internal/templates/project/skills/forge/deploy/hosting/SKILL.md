@@ -133,7 +133,7 @@ older control plane (no holds) still refuses with the billing reason.
 
 | Provides | Refuses (bind to a cluster you operate) |
 |---|---|
-| kinds `service`, `worker`, `job`; `replicas`, `resources`, `command`/`args`, `probes`, `storageGiB`, `activeDeadlineSeconds`, `strategy` | kind `cron` (a CronJob, not metered yet; a worker running its own scheduler IS fine) |
+| kinds `service`, `worker`, `job`; `replicas`, `resources`, `command`/`args`, `probes`, `storageGiB`, `activeDeadlineSeconds`, `strategy`, `preStopSeconds` | kind `cron` (a CronJob, not metered yet; a worker running its own scheduler IS fine) |
 | `ports` (the `expose = True` one is routed) | `operator`, `namespacedRBAC`, `clusterRBAC`, `crds`, ServiceAccount fields: no Kubernetes API on shared nodes |
 | env from a literal, `forge.ManagedSecret`, `forge.DatabaseRef`, `forge.WorkloadURL`; a config-projected `forge.SecretRef` lowers to a ManagedSecret | `sidecars`, `volumes`, `securityContext`, `terminationGracePeriodSeconds`, `podAnnotations`: the platform composes the pod |
 | a managed Postgres (`forge.ManagedDatabase`) | `nodeSelector`, `tolerations`, `priorityClassName`: the platform decides placement |

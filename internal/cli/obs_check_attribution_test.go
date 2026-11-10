@@ -151,6 +151,9 @@ func TestObsCheckAttribution(t *testing.T) {
 			want: []string{`"rollout_incomplete": "the judged release served 0.1%`, `"message": "alert SlowQueries opened after the promotion and is still firing"`},
 		},
 		{
+			// The alert comes from the alert read, so this pins obsCheck's
+			// second Attribute AFTER that read: without it, or before it,
+			// the alert fails the release (exit 1).
 			name: "a critical alert in a window from before the release went live is INCONCLUSIVE, not a PASS",
 			replies: map[string][]string{procHealth: {retriedPromotionReply(1)},
 				procListGatesCheck: {retriedGates}, procGetIssueCheck: {newVersionIssue}, procListAlertsCheck: {criticalAlertAt("2026-11-10T03:50:00Z")}},

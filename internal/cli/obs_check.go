@@ -278,25 +278,25 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 
 	deadline := d.Now().Add(o.timeout)
 	var res obsbackend.HealthResult
-	var live checkLive
+	var liveWin checkLive
 	for {
 		req.Now = d.Now()
 		if res, err = reader.ReleaseHealth(ctx, req); err != nil {
 			return bad(err)
 		}
-		// When the release went live, from the promotion's deploy gates. A
+		// When the release went liveWin, from the promotion's deploy gates. A
 		// promotion none of whose attempts has shipped has no window of its
 		// own yet, so --wait waits for one to ship.
-		live = readCheckLive(ctx, b, res.Report)
-		unshipped := live.read && live.state == releasehealth.LiveNotShipped
+		liveWin = readCheckLive(ctx, b, res.Report)
+		unshipped := liveWin.read && liveWin.state == releasehealth.LiveNotShipped
 		if (res.Report.AfterComplete && !unshipped) || !o.wait {
 			break
 		}
-		if o.earlyPass > 0 && earlyPassWhy(live.attribute(res.Report), o.earlyPass) != "" {
+		if o.earlyPass > 0 && earlyPassWhy(liveWin.attribute(res.Report), o.earlyPass) != "" {
 			break
 		}
 		if !d.Now().Add(obsCheckPollEvery).Before(deadline) {
-			res.Report = attributeCheck(ctx, d, b, res.Report, live)
+			res.Report = attributeCheck(ctx, d, b, res.Report, liveWin)
 			fillCheckDoc(&doc, b.Info(), env, res, o)
 			doc.Waited = o.timeout.String()
 			if unshipped {
@@ -328,10 +328,10 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 		res.Report = releasehealth.Rejudge(res.Report, opts.FailOn)
 	}
 	// Attribution: a finding the after window cannot pin on the release (a
-	// window that ended before it went live, a rollout the window barely saw,
+	// window that ended before it went liveWin, a rollout the window barely saw,
 	// an issue whose events are another version's) never fails it. Before the
 	// alert read, which a FAIL skips (obs_check_attribution.go).
-	res.Report = attributeCheck(ctx, d, b, res.Report, live)
+	res.Report = attributeCheck(ctx, d, b, res.Report, liveWin)
 	// A release promoted into a firing critical alert is not proven good, and
 	// one that opened a critical alert fails. The alert state is read here
 	// rather than trusted to the control plane's answer, which lists only the

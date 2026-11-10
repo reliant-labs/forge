@@ -362,6 +362,19 @@ func pinSkewWarning(projectRoot, pin, binary string, cur buildinfo.Build) string
 // installing it helps only a standalone forge, so an embedded one is told to
 // upgrade its host instead.
 func writePinSkewRemedy(b *strings.Builder, indent, projectRoot, pin string, cur buildinfo.Build) {
+	if forgecompat.DirtyVersion(pin) {
+		// `go run`/`go install …@<pin>` would build the clean commit, not
+		// the working tree the pin names (forgedelegate.dirtyPinError).
+		if local, ok := pinDelegateResolver(io.Discard).LocalPinned(context.Background(), projectRoot, pin); ok {
+			fmt.Fprintf(b, "%sRun it with the project's forge, which reports that version:\n", indent)
+			fmt.Fprintf(b, "%s    %s\n", indent, forgecompat.RunBinaryCommand(local, forgeInvocationArgs()))
+			return
+		}
+		fmt.Fprintf(b, "%sThe pin names a forge built from a modified working tree (+dirty): nothing can fetch or rebuild it,\n", indent)
+		fmt.Fprintf(b, "%sand `go install` of it builds the clean commit without the edits. Run the forge binary you built\n", indent)
+		fmt.Fprintf(b, "%s(it reports %s), or move the pin to this forge: `%s project upgrade`.\n", indent, pin, Name())
+		return
+	}
 	fmt.Fprintf(b, "%sRun it with the pinned forge, installing nothing:\n", indent)
 	fmt.Fprintf(b, "%s    %s\n", indent, pinnedRunLine(projectRoot, pin, forgeInvocationArgs()))
 	if !cur.Embedded {

@@ -36,7 +36,9 @@ import (
 	"github.com/reliant-labs/forge/pkg/alerting/pgstore"
 )
 
-const chImage = "clickhouse/clickhouse-server:26.8.24-alpine"
+// chImage is pinned by digest (the multi-arch index), so a re-pushed tag
+// cannot change the server these tests judge; pkg/obsquery pins the same one.
+const chImage = "clickhouse/clickhouse-server:26.8.24-alpine@sha256:b200d774984e092bf35bec8dbe41aebf2cd875bdc6a0cbb093cebc543730012d"
 
 func startClickHouse(t *testing.T) (addr string) {
 	t.Helper()
@@ -44,11 +46,11 @@ func startClickHouse(t *testing.T) (addr string) {
 		t.Skip("-short: starts a ClickHouse container")
 	}
 	if exec.Command("docker", "version").Run() != nil {
-		t.Skip("docker is not available")
+		testdocker.Unavailable(t, "docker is not available")
 	}
 	if exec.Command("docker", "image", "inspect", chImage).Run() != nil {
 		if out, err := exec.Command("docker", "pull", chImage).CombinedOutput(); err != nil {
-			t.Skipf("cannot pull %s: %v\n%s", chImage, err, out)
+			testdocker.Unavailable(t, "cannot pull %s: %v\n%s", chImage, err, out)
 		}
 	}
 	name := fmt.Sprintf("alerting-it-ch-%d", time.Now().UnixNano())

@@ -145,21 +145,34 @@ func compositeNullableMember(t schemadef.Table, fk schemadef.ForeignKey, colByNa
 // declineCompositeFKs turns off the composite keys BuildPlan declined — a
 // cycle broken through one, or one referencing a table forge does not seed —
 // by rewriting their tables in byName (and the returned slice), so every pass
-// after ordering sees one consistent schema. The member set NULL stays a
-// single-column foreign key, which forceNull keeps NULL on every row; the
-// other members are no longer references at all: with the key off they take
-// their own placement (the primary key, their own single-column reference),
-// never a value read off a parent row the plan may not even hold yet.
-func declineCompositeFKs(tables []schemadef.Table, byName map[string]schemadef.Table, declined, forceNull map[string]map[string]bool) []schemadef.Table {
+// after ordering sees one consistent schema. declined maps each table's
+// declined constraints to the member BuildPlan chose to set NULL for that
+// constraint. That member alone stays, as a single-column foreign key that
+// forceNull keeps NULL on every row — unless the column already carries a
+// single-column reference (its own, or one an earlier declined key kept),
+// which then stands for it. The other members are no longer references at
+// all, even when forceNull holds them NULL for an unrelated reason: with the
+// key off they take their own placement (the primary key, their own
+// single-column reference), never a value read off a parent row the plan
+// may not even hold yet.
+func declineCompositeFKs(tables []schemadef.Table, byName map[string]schemadef.Table, declined map[string]map[string]string) []schemadef.Table {
 	for name, constraints := range declined {
 		t := byName[name]
+		scalar := map[string]bool{}
+		for _, fk := range t.ForeignKeys {
+			if len(fk.KeyColumns) < 2 {
+				scalar[fk.Column] = true
+			}
+		}
 		fks := make([]schemadef.ForeignKey, 0, len(t.ForeignKeys))
 		for _, fk := range t.ForeignKeys {
-			if len(fk.KeyColumns) < 2 || !constraints[fk.Name] {
+			nullCol, off := constraints[fk.Name]
+			if len(fk.KeyColumns) < 2 || !off {
 				fks = append(fks, fk)
 				continue
 			}
-			if forceNull[name][fk.Column] {
+			if fk.Column == nullCol && !scalar[fk.Column] {
+				scalar[fk.Column] = true
 				fk.KeyColumns, fk.RefKeyColumns = nil, nil
 				fks = append(fks, fk)
 			}

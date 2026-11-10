@@ -210,20 +210,26 @@ func workloadBuildSources(projectDir string, e *KCLEntities) []buildSourceRef {
 				out = append(out, buildSourceRef{workload: w.Name, path: b.Shell.Cwd})
 			}
 		case b.Docker != nil:
+			// Docker sends BOTH: the primary context (the application source
+			// the Dockerfile's plain COPYs read) and every named context.
+			// The primary one is read whatever the named ones are; empty is
+			// this project's root, whose inventory is already its own.
 			if b.Docker.Context != "" {
 				out = append(out, buildSourceRef{workload: w.Name, path: b.Docker.Context})
 			}
-			if len(b.Docker.BuildContexts) > 0 {
-				addContexts(w.Name, b.Docker.BuildContexts)
-				continue
-			}
-			if !cfgLoaded {
-				cfgLoaded = true
-				if cfg, err := config.LoadProjectDir(projectDir); err == nil && cfg != nil {
-					cfgContexts = cfg.Docker.BuildContexts
+			// The named contexts: the workload's own, else forge.yaml's,
+			// which DockerBuild falls back to only when it declares none.
+			named := b.Docker.BuildContexts
+			if len(named) == 0 {
+				if !cfgLoaded {
+					cfgLoaded = true
+					if cfg, err := config.LoadProjectDir(projectDir); err == nil && cfg != nil {
+						cfgContexts = cfg.Docker.BuildContexts
+					}
 				}
+				named = cfgContexts
 			}
-			addContexts(w.Name, cfgContexts)
+			addContexts(w.Name, named)
 		case b.Remote != nil && b.Remote.Source.Repo != "":
 			s := gitsource.Source{Repo: b.Remote.Source.Repo, Ref: b.Remote.Source.Ref, Subdir: b.Remote.Source.Subdir}
 			out = append(out, buildSourceRef{workload: w.Name, source: &s})

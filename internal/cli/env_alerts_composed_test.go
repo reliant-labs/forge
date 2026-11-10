@@ -207,3 +207,70 @@ func TestResolveShapeAlerts_ADockerBuildContextComposesItsProject(t *testing.T) 
 		t.Fatalf("watched %v, want the project's own and the build context's", w)
 	}
 }
+
+// dockerWorkload is a workload docker-built from the primary context ctx with
+// the given named build contexts.
+func dockerWorkload(name, ctx string, named map[string]string) WorkloadEntity {
+	bc := map[string]config.BuildContext{}
+	for k, p := range named {
+		bc[k] = config.BuildContext{Path: p}
+	}
+	return WorkloadEntity{Name: name, Kind: "service", Build: BuildConfigEntity{Type: "docker", Docker: &DockerBuild{
+		Dockerfile: "Dockerfile", Context: ctx, BuildContexts: bc,
+	}}}
+}
+
+// Docker sends the primary context as well as every named one, so a project
+// that is only the primary context is composed — with or without named
+// contexts beside it (review B1 on #2057).
+func TestResolveShapeAlerts_ADockerPrimaryContextComposesItsProject(t *testing.T) {
+	all := "billing.v1.BillingService,up.v1.ChatService,up.v1.DraftService,up.v1.ProjectService"
+	for name, named := range map[string]map[string]string{
+		"no named contexts": nil,
+		// The named context is a base project with no services of its own.
+		"beside a named base context": {"base": "../base"},
+		// And beside one that is a plain directory, not a forge project.
+		"beside a named non-forge context": {"tools": "../plain"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			app, root := composedFixture(t, "")
+			writeFiles(t, filepath.Join(root, "base"), map[string]string{"forge.yaml": "name: base\n", "go.mod": "module example.com/base\n\ngo 1.22\n"})
+			writeFiles(t, filepath.Join(root, "plain"), map[string]string{"Makefile": "all:\n"})
+			e := obsEntities(nil)
+			e.Workloads = []WorkloadEntity{dockerWorkload("api", "../upstream", named)}
+			got, _, err := resolveShapeAlerts(context.Background(), io.Discard, app, "prod", e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w := strings.Join(watched(t, got), ","); w != all {
+				t.Fatalf("watched %s, want the primary context's project composed: %s", w, all)
+			}
+		})
+	}
+}
+
+// A named context and the primary one are both read: each composes its own
+// project.
+func TestResolveShapeAlerts_ADockerBuildComposesPrimaryAndNamedContexts(t *testing.T) {
+	app, root := composedFixture(t, "")
+	other := filepath.Join(root, "other")
+	writeFiles(t, other, map[string]string{"forge.yaml": "name: other\n", "go.mod": "module example.com/other\n\ngo 1.22\n"})
+	writeAlertDefaultsAt(t, other, obsdash.AlertInput{Project: "other", Services: []obsdash.AlertService{{Name: "ledger", RPCService: "other.v1.LedgerService"}}})
+	e := obsEntities(nil)
+	e.Workloads = []WorkloadEntity{dockerWorkload("api", "../upstream", map[string]string{"other": "../other"})}
+	got, _, err := resolveShapeAlerts(context.Background(), io.Discard, app, "prod", e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expr string
+	for _, a := range got {
+		if a.Alert == "ServiceErrorRateHigh" {
+			expr = a.Expr
+		}
+	}
+	for _, s := range []string{"'up.v1.ChatService'", "'other.v1.LedgerService'", "'billing.v1.BillingService'"} {
+		if !strings.Contains(expr, s) {
+			t.Errorf("ServiceErrorRateHigh does not watch %s", s)
+		}
+	}
+}

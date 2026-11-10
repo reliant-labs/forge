@@ -266,6 +266,43 @@ func TestEmitRootCommands_RootConfigFlagsHomedOnTheBinaryRoot(t *testing.T) {
 	}
 }
 
+// A root whose reach was computed (HasConfig) and holds no config field gets
+// no root-config flags; a root with no computed reach keeps them, because its
+// nil Config means "demand every field" (config.LoadReach).
+func TestEmitRootCommands_RootReachingNoConfigRegistersNoFlags(t *testing.T) {
+	serve := "package cmd\n\nfunc runRoot(ctx context.Context, deps Deps, root rootSpec) error { return nil }\n"
+	root := "package cmd\n\nfunc newRootCmd(deps Deps) { _ = rootCommands(deps) }\n"
+	for _, tc := range []struct {
+		name      string
+		hasConfig bool
+		config    []ConfigLeaf
+		want      bool
+	}{
+		{"reach computed, no config field", true, nil, false},
+		{"reach not computed", false, nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := cmdTreeFixture(t, serve)
+			if err := os.WriteFile(filepath.Join(dir, "cmd", "demo", "cmd", "root.go"), []byte(root), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			roots := []graphRootView{{Name: "worker", TypeName: "Worker", Command: []string{"worker"}, Fields: []graphRootFieldView{{Accessor: "Tick"}}, Plan: "tick",
+				HasConfig: tc.hasConfig, Config: tc.config}}
+			var warn bytes.Buffer
+			if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, "DemoConfig", nil, &warn); err != nil {
+				t.Fatal(err)
+			}
+			src, err := os.ReadFile(filepath.Join(dir, "cmd", "demo", "cmd", "roots_gen.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(src), "config.RegisterFlags(workerCmd)"); got != tc.want {
+				t.Errorf("roots_gen.go registers the root config's flags: %v, want %v:\n%s", got, tc.want, src)
+			}
+		})
+	}
+}
+
 func TestEmitRootCommands_ATreeWithoutRunRootKeepsCompiling(t *testing.T) {
 	// A serve.go from before the per-root commands: `server` runs Serve.
 	dir := cmdTreeFixture(t, "package cmd\n\nfunc Serve(ctx context.Context, deps Deps) error { return nil }\n")

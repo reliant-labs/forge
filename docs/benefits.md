@@ -3528,7 +3528,8 @@ _Enforced · Reliant hosting_
 
 - command `forge obs query`
 - `internal/obstenant` in the control-plane repo
-- `internal/obsquota` in the control-plane repo
+- `internal/obspolicy` in the control-plane repo
+- `internal/obsqueryquota` in the control-plane repo
 - `docs/observability/query-service.md` in the control-plane repo
 
 <a id="managed-postgres-backup-status-alert"></a>

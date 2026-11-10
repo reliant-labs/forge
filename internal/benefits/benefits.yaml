@@ -3945,7 +3945,8 @@ benefits:
     evidence:
       - command: obs query
       - external: control-plane:internal/obstenant
-      - external: control-plane:internal/obsquota
+      - external: control-plane:internal/obspolicy
+      - external: control-plane:internal/obsqueryquota
       - external: control-plane:docs/observability/query-service.md
 
   - id: managed-postgres-backup-status-alert

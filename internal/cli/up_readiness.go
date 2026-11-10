@@ -114,16 +114,22 @@ func (p *procRegistry) exitReason(name string) string {
 	return ""
 }
 
-// observeExit reaps each child exactly once while Forge is alive. When Forge
-// detaches and exits, running children keep their own process groups and log
-// files; a Wait goroutine neither cancels nor kills them.
-func (mp *managedProcess) observeExit(beforeWait func()) {
+// observeExit reaps each child exactly once, the moment it exits, while Forge
+// is alive. When Forge detaches and exits, running children keep their own
+// process groups and log files; a Wait goroutine neither cancels nor kills
+// them.
+//
+// The reap must never wait on the child's OUTPUT. A pipe stays open while any
+// process holds its write end, and a runner's descendants inherit it: Air's
+// server, reparented to init when Air exits, kept the pipes of the runner that
+// started it. Reaping only after the streams hit EOF left every such runner a
+// zombie for as long as its orphan lived — and a zombie is what macOS answers
+// kill(-pgid) with EPERM for, and what made a stopping `forge env up` wait
+// forever. So the caller hands the child *os.File output (cmd.Wait then
+// copies nothing and closes nothing of ours) and drains it on its own.
+func (mp *managedProcess) observeExit() {
 	mp.done = make(chan struct{})
 	go func() {
-		// StdoutPipe/StderrPipe must be drained before Wait closes them.
-		if beforeWait != nil {
-			beforeWait()
-		}
 		mp.waitErr = mp.cmd.Wait()
 		close(mp.done)
 	}()

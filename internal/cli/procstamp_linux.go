@@ -22,6 +22,18 @@ func readProcStamp(pid int) (procStamp, bool) {
 	return parseProcStatStamp(data)
 }
 
+// processExited reports whether pid is a zombie (or already being torn down):
+// it has exited and holds nothing, but its parent has not reaped it, so
+// kill(2) still finds it. False when /proc/<pid>/stat cannot be read.
+func processExited(pid int) bool {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	state, ok := parseProcStatState(data)
+	return ok && (state == "Z" || state == "X")
+}
+
 // startMark is now in the unit and clock of /proc/<pid>/stat's starttime —
 // clock ticks since boot — from /proc/uptime at the kernel's real tick rate.
 // It is unavailable when the tick rate cannot be read: forge never guesses

@@ -147,6 +147,11 @@ type pipelineContext struct {
 	// SoftFailures names each step that failed as a warning (warnOrFail
 	// without --strict), for the closing summary.
 	SoftFailures []string
+	// softFailureCauses holds each soft-failed step's first error and how
+	// often it failed, so the closing summary and the returned error carry
+	// the cause, not only the step's name: a log kept to its tail (a CI
+	// wrapper's) would otherwise lose it.
+	softFailureCauses map[string]softFailureCause
 
 	// ORMFailure is set when the ORM step failed, including when it was a
 	// warning (no --strict) and the run went on. Steps that consume the ORM

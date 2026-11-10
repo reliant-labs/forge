@@ -709,7 +709,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// unless a step failed soft, in which case its outputs were not
 	// produced, let alone checked.
 	cache.record(os.Stdout, ctx, ran, summary)
-	return softFailureOutcome(os.Stdout, ctx.SoftFailures)
+	return softFailureOutcome(os.Stdout, ctx.SoftFailures, ctx.softFailureCauses)
 }
 
 // runPipelineSteps runs, in order, every step whose gate passes and returns
@@ -836,12 +836,22 @@ func (e *generateInterruptedError) Unwrap() error { return e.stepErr }
 // them as the last thing the run prints, and fails the run with them. The
 // run's other writes stand, but exit 0 is read as success by every agent,
 // script and CI gate, and this run did not produce everything it should.
-func softFailureOutcome(w io.Writer, failed []string) error {
+//
+// Each step's cause rides along in both, so a log kept only to its tail
+// still says why the step failed.
+func softFailureOutcome(w io.Writer, failed []string, causes map[string]softFailureCause) error {
 	if len(failed) == 0 {
 		return nil
 	}
 	printSoftFailures(w, failed)
-	return &factory.StepsFailedError{Steps: slices.Clone(failed)}
+	texts := make([]string, len(failed))
+	for i, step := range failed {
+		texts[i] = causes[step].text()
+		if texts[i] != "" {
+			fmt.Fprintf(w, "   • %s: %s\n", step, texts[i])
+		}
+	}
+	return &factory.StepsFailedError{Steps: slices.Clone(failed), Causes: texts}
 }
 
 // beginGenerateRun opens the per-run process state a pipeline run owns and

@@ -128,15 +128,15 @@ It changes nothing on the server: an RPC that requires a caller still answers
 `forge scaffold frontend <tmp> --auth-mode native` in a scratch checkout shows
 the exact files.
 
-## React Native is different, and ships a mock
+## React Native is different: system-browser sign-in, keystore tokens
 
-RN has neither half of what makes native sign-in work: no automatic cookie jar on `fetch`, and no same-origin. Shipping the web flow there produces code that **typechecks** (RN's tsconfig includes the DOM lib) and silently never authenticates — every call returns 200 and the next one is anonymous. So `native-login.ts` and `route-guard.tsx` are deliberately not emitted into an RN tree.
+RN has neither half of what makes the web flow work: no automatic cookie jar on `fetch`, and no same-origin. Shipping the web flow there produces code that **typechecks** (RN's tsconfig includes the DOM lib) and silently never authenticates, so `native-login.ts` and `route-guard.tsx` are deliberately not emitted into an RN tree.
 
-What RN gets instead is the credential seam: `AuthProvider` in `src/lib/auth/provider.ts` — `getToken` / `getUser` / `logout` — with `createSessionAuthProvider()` in `src/lib/auth/session-provider.ts` as the scaffolded implementation. It holds no real credential: in mock mode the session is a **fixture** so scaffolded UI has a user to render; against a real backend it is signed out and warns on first use.
+What RN ships instead is a **real OIDC provider**, not a mock. The app is an OAuth public client (authorization code + PKCE) that signs in through the system browser, keeps its tokens in the OS keystore, refreshes them once on expiry, and ends the session (revoke, wipe, clear the query cache) on sign-out or a refused refresh. `forge env up` registers it as the env's `kind = "native"` application and injects `EXPO_PUBLIC_FORGE_OIDC_*`; the credential seam is `AuthProvider` in `src/lib/auth/provider.ts` (`getToken` / `getUser` / `logout`, plus optional `restore` / `signIn` / `onTokenRejected`), chosen once in `src/lib/auth/context.tsx`, and `connect.ts` attaches the token and replays an idempotent call once after a 401. **One credential, one source**: the UI and the requests read the same provider.
 
-To give an RN app real sign-in, implement `AuthProvider` over your IdP's **native SDK** (or a token you obtain and store yourself), use it in `src/lib/auth/context.tsx`, and feed the same object's `getToken` to the transport in `app/_layout.tsx` via `setAuthTokenGetter`. **One credential, one source** — the UI and the requests must read the same object, or they can disagree about who is signed in. The scaffold wires no token bridge by default, on purpose: attaching the fixture token would send an `Authorization` header every real backend rejects, making a 401 look like a server fault rather than an unwired app.
+Without the OIDC variables the app runs on `createSessionAuthProvider()` in `src/lib/auth/session-provider.ts`, a **fixture** session with no credential (it sends no `Authorization` header, warns once, and `requiresSignIn` is false). That is the mock fallback and the opt-out (`native_sign_in = False`), not the default path. To use a vendor SDK instead, implement `AuthProvider` over it in `context.tsx`.
 
-`useAuth()`'s value is identical on every platform, so a component written against it moves between the mobile and browser trees unchanged.
+The whole design (variables, scheme, device host, limits) is `deploy/managed-identity/mobile`; an existing app adopts it with `migrations/v1.4.0/native-auth`. `useAuth()`'s value is identical on every platform, so a component written against it moves between the mobile and browser trees unchanged.
 
 ## Using a hosted IdP's own sign-in UI instead
 

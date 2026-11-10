@@ -3,6 +3,7 @@ package templates
 import (
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -103,6 +104,39 @@ func TestWebDevLogReceiversSanitizeClientText(t *testing.T) {
 			out, err := exec.Command(node, filepath.Join(root, "check.mjs"), filepath.Join(root, "receiver.ts")).CombinedOutput()
 			if err != nil {
 				t.Fatalf("receiver behaviour: %v\n%s", err, out)
+			}
+		})
+	}
+}
+
+// The web receivers' sanitize() matches control characters on purpose, and
+// js.configs.recommended (loaded by the Next.js and Vite configs) enables the
+// core no-control-regex rule, so without a directive a FRESH scaffold fails
+// `npm run lint`. No Go test runs eslint over a scaffold (that needs npm
+// install), so this pins the directive directly above the regex line; the rule
+// is a core one, so the directive resolves under every kind's config.
+func TestWebDevLogReceiversSilenceNoControlRegexOnTheirSanitizer(t *testing.T) {
+	for name, tmpl := range map[string]string{
+		"vite":   "vite-spa/src/lib/devlog-plugin.ts",
+		"nextjs": "nextjs/src/app/%5F_forge/log/route.ts",
+	} {
+		t.Run(name, func(t *testing.T) {
+			src, err := FrontendTemplates().Get(tmpl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(string(src), "\n")
+			found := false
+			for i, l := range lines {
+				if strings.Contains(l, `\x00-\x08`) && strings.Contains(l, "s.replace(") {
+					found = true
+					if i == 0 || strings.TrimSpace(lines[i-1]) != "// eslint-disable-next-line no-control-regex" {
+						t.Errorf("%s: the control-character regex on line %d needs `// eslint-disable-next-line no-control-regex` directly above it (js.configs.recommended errors on it)", tmpl, i+1)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("%s: sanitize()'s control-character regex moved; update this test", tmpl)
 			}
 		})
 	}

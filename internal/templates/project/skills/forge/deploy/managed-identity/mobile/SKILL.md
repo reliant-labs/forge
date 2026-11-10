@@ -9,6 +9,8 @@ description: A mobile (Expo `rn`) app signing in as its own managed-identity cli
 
 **A hosted identity refuses `kind = "native"`** ("native identity applications are not yet supported on hosted identity"), in KCL and in the shape: the control plane cannot register a native client yet, and a declaration it never converged would read as converged. A control plane is never sent native applications meanwhile (`forge env build`/`deploy` print a note when one is left out). The refusal lifts together with hosted registration.
 
+**Scaffolding the first frontend edits the dev env only.** It declares the dev identity provider and `identity` in `deploy/kcl/dev/main.k`, and leaves staging and prod alone (a hosted identity is a managed, billable instance, so it is your call) and prints the exact edit instead. To give a hosted env sign-in, in `deploy/kcl/<env>/main.k` add `import ..identity as idn` after `import ..workloads as wl`, and `identity = idn.IDENTITY` in the `forge.Bundle` before `secret_provider =`, then `forge env deploy <env>`.
+
 ## A physical device: `--device-host`
 
 ```
@@ -36,13 +38,13 @@ Rules and limits:
 
 ## Where the callback comes from: `expo.scheme`
 
-The callback is `<scheme>:/oauthredirect` (post-logout `<scheme>:/signedout`), RFC 8252 7.1. `<scheme>` is the entry of `app.json`'s `expo.scheme` that is a valid private-use scheme: **lowercase letters, digits and `-`, joined by at least one `.`** (`com.myapp.mobile`). It is not the bundle id. A bundle id may differ on purpose (iOS and Android allow uppercase and `_`; a project named `MyApp` or `my_app` is valid), and `expo.scheme` is also what registers the link with the OS, so the scheme the app answers and the scheme the IdP trusts are one fact. `expo.scheme` is a string or a list; with a list the first valid entry wins (a plain `mobile` link scheme beside it is ignored).
+The callback is `<scheme>:/oauthredirect` (post-logout `<scheme>:/signedout`), RFC 8252 7.1. `<scheme>` is the entry of `app.json`'s `expo.scheme` that is a valid private-use scheme: **lowercase letters, digits and `-`, joined by at least one `.`** (`com.myapp.mobile`). It is not the bundle id: forge reads **only** `expo.scheme`, never `ios.bundleIdentifier` or `android.package`. New scaffolds set `expo.scheme` to the sanitised reverse-DNS id `com.<project>.<frontend>` (lowercase, no separators), one string, and use the same spelling as the bundle id and package. An existing app keeps whatever bundle id it shipped with: **never change `bundleIdentifier` or `package` to match the scheme**, because that renames a published app to the OS and the stores. Set `expo.scheme` alone. It is also what registers the link with the OS, so the scheme the app answers and the scheme the IdP trusts are one fact. `expo.scheme` is a string or a list; with a list the first valid entry wins (a plain `mobile` link scheme beside it is ignored by forge, but expo-linking warns on every launch when more than one is registered, so a single string is the scaffold's shape).
 
 ```json
 { "expo": { "scheme": "com.myapp.mobile", "ios": { "bundleIdentifier": "com.MyApp.mobile" } } }
 ```
 
-If no entry qualifies, **no client is registered** and the app runs on its mock provider; `forge env up` says so loudly, with the exact `app.json` edit.
+If no entry qualifies, **no client is registered** and the app runs on its mock provider; `forge env up` says so loudly, with the exact `app.json` edit. Three ways out, each leaving the bundle id and package as they are: set `"scheme": "<reverse.dns.id>"` (one string); or declare `redirect_uris` on a `kind = "native"` application (below); or set `native_sign_in = False` on the frontend.
 
 **Only a static `app.json` is read.** forge does not run Node to evaluate `app.config.js` / `app.config.ts`. A project that has only those gets a warning and no client; declare the callback instead (below) and keep the same scheme in `expo.scheme`.
 
@@ -57,6 +59,10 @@ Highest first, per variable (each OIDC variable is resolved on its own):
 5. **Expo's own `.env` / `.env.local` / `.env.development`**: lowest, because Expo's loader never replaces a variable already present in the dev server's environment, and every layer above is already there
 
 So a value written in KCL or `.env.<env>` always beats the injected one, and Expo's own dotenv files never do. `FORGE_ENV_OVERRIDE=A,B` hands those keys back to the shell, above KCL and `.env.<env>`. Only `EXPO_PUBLIC_` names are inlined into the bundle, as static `process.env.X` reads.
+
+**The five are one unit.** Their scopes and redirects belong to the client forge registered, so when any layer sets `EXPO_PUBLIC_FORGE_OIDC_ISSUER` or `_CLIENT_ID` forge injects **none** of the five and prints one line saying why (the app is then pointed at another provider; set the rest yourself). Otherwise it fills each variable no layer set, so one can still be overridden alone.
+
+**`EXPO_PUBLIC_API_URL`** (the API origin) follows the same layers for a native frontend: a value in KCL, or in the frontend's `.env.<env>`, beats forge's injected one, and a value exported in your shell beats the injected one too (the origin is a per-device choice: LAN address, emulator alias, tunnel). Declared values still outrank the shell, as above; `FORGE_ENV_OVERRIDE=EXPO_PUBLIC_API_URL` hands the key back to the shell. Web frontends are unchanged: forge's origin wins.
 
 ## Opting a frontend out
 

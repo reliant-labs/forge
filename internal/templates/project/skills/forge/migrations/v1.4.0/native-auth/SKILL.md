@@ -17,7 +17,12 @@ Nothing changes until `EXPO_PUBLIC_FORGE_OIDC_ISSUER` and
 `EXPO_PUBLIC_FORGE_OIDC_CLIENT_ID` are set in the bundle. `forge env up` injects
 them (with `_SCOPES`, `_REDIRECT_URI`, `_POST_LOGOUT_REDIRECT_URI`) for a native
 frontend on a host-run identity; Expo inlines only static `process.env.NAME`
-reads, so restart Metro after they change. Apps with their **own** `AuthProvider`
+reads, so restart Metro after they change. The five are injected as **one unit**:
+if any layer (your shell, KCL `env_vars`, the frontend's `.env.<env>`) sets
+`_ISSUER` or `_CLIENT_ID`, forge injects none of them and prints one line saying
+so (the scopes and redirects belong to its dev client, not to the provider you
+chose); otherwise each variable no layer has set is filled, so one can still be
+overridden alone. Apps with their **own** `AuthProvider`
 keep working: `restore`, `signIn` and `onTokenRejected` are optional members, and
 the context calls them only when present. **Opt out** by leaving the
 `EXPO_PUBLIC_FORGE_OIDC_*` variables unset: the app stays on the mock session
@@ -69,29 +74,53 @@ one), so under `forge env up` on a host-run identity either keep the old
    "~58.0.2"`, `"expo-web-browser": "~58.0.7"` and devDependency
    `"test-renderer": "1.3.0"` (the context tests render with it); reinstall.
 2. **`app.json`.** Add the plugin `["expo-secure-store", { "faceIDPermission":
-   false }]` to `expo.plugins`, and make `scheme` the single string
-   `"com.<project>.<frontend>"`, equal to `ios.bundleIdentifier` and
-   `android.package`: the redirect is `<id>:/oauthredirect` and the OS only
-   returns to the app for a registered scheme. Spell the id lowercase `[a-z0-9]`
-   segments, each starting with a letter, no `-` or `_` (`my_app` → `myapp`):
-   Android packages forbid `-`, URI schemes forbid `_`. A string, not an array:
-   a second entry makes expo-linking warn on every launch. **Existing
-   `<frontend>://` deep links stop working**: update them. `forge env up` warns
-   when the id is not registered. Rebuild the dev
-   client: plugins and schemes are native config, and Expo Go cannot register an
-   OAuth redirect.
-3. **Copy the owned files** from the current scaffold (do not overwrite edits):
-   `src/lib/auth/{config,oidc,token-store,oidc-provider,session,native,transport,sign-in-error}.ts`,
+   false }]` to `expo.plugins`, and set `expo.scheme` to **one string**, a valid
+   reverse-DNS id: lowercase letters, digits and `-`, at least one `.`
+   (`com.<project>.<frontend>`, lowercase, no separators, in new scaffolds). The
+   redirect is `<scheme>:/oauthredirect` and the OS only returns to the app for
+   a registered scheme. **Never change an existing `ios.bundleIdentifier` or
+   `android.package`**: changing either makes the OS treat the app as a
+   different one, so a published app would be renamed. forge reads only
+   `expo.scheme`; the bundle id and package stay as they are, whatever they
+   spell. A string, not an array: a second entry makes expo-linking warn on
+   every launch (it uses the first and ignores the rest). **A custom scheme you
+   already have** (say `["taskapp", "mobile"]`) is not lost by this: either list
+   the reverse-DNS id first and keep yours after it (forge takes the first valid
+   entry; expect the expo-linking warning), or keep your scheme alone and
+   declare the callback yourself, `redirect_uris = ["com.acme.mobile:/oauthredirect"]`
+   on a `kind = "native"` `forge.IdentityApplication` (the callback scheme must
+   still be registered in `expo.scheme`), or set `native_sign_in = False` on the
+   frontend. Existing `<frontend>://` deep links keep working only while their
+   scheme stays registered. `forge env up` warns when no scheme qualifies.
+   Rebuild the dev client: plugins and schemes are native config, and Expo Go
+   cannot register an OAuth redirect.
+3. **Copy the owned files** from the current scaffold (do not overwrite edits;
+   how to get them: next paragraph): `src/lib/auth/{config,oidc,token-store,oidc-provider,session,native,transport,sign-in-error}.ts`,
    `app/{sign-in,oauthredirect,signedout}.tsx` (the sign-in screen is a plain
    placeholder: replace it), and the tests `tests/auth-fakes.ts` (a shared helper, not a test), `tests/auth-{config,oidc,
-   store-session,provider,sign-in-error}.test.ts` and `tests/auth-context.test.tsx`.
-   Update `tests/app-config.test.ts` (one reverse-DNS scheme equal to the bundle id) and `tests/connect-transport.test.ts`.
+   store-session,provider,sign-in-error}.test.ts`, `tests/auth-context.test.tsx`
+   and `tests/connect-transport.test.ts` (it exercises the `connect.ts` edits of
+   step 4, so it belongs here, not in the dev-loop playbook).
+   `tests/app-config.test.ts` asserts this step's contract (one string scheme;
+   the scaffold's version also expects it to equal the bundle id, which is only
+   true of apps scaffolded at v1.4.0): replace it after the owned-files copy
+   (if you keep a bundle id that differs, drop that assertion). With the
+   project at the pinned forge, `forge project rescaffold <path>...` writes any
+   file that is absent (the old `tests/app-config.test.ts`: delete it first), and
+   `forge project upgrade --force <path>` replaces one that exists, untouched or
+   not (`forge project upgrade --check <path>` prints its diff first).
 4. **Edit** `src/lib/auth/provider.ts` (optional members), `use-auth.ts` (three
    new members), `context.tsx` (`chooseAuth`, restore effect, layout effect
    wiring the transport, ended-listener effect, `logout`, `signIn`) and
    `src/lib/connect.ts` (`setTokenRejectedHandler`, the three interceptors and
    the epoch helpers). `session-provider.ts` is unchanged. Merge by hand if any of
    these were customized; the scaffold's comments in each file explain the seams.
+   `forge project upgrade --check <path>` prints each file's diff against the
+   template; one you never edited is `forge project upgrade --force <path>`.
+   Web frontends carry the same `src/lib/auth/provider.ts` (the optional
+   members are in the shared template): adopt it there too, or the next
+   `forge generate` leaves web and native typed differently. The edits are
+   additive and break nothing.
 5. **`app/_layout.tsx`.** Replace the bare `<Stack>` with the `AuthStack` guard
    from the scaffold (restoring spinner while `isLoading && requiresSignIn`).
    Put your own signed-in screens inside the first `<Stack.Protected>`.
@@ -121,18 +150,51 @@ builds only allowed `http` to loopback. Add the exported `isDevNetworkHost`
 (loopback, RFC 1918, RFC 6598, link-local, IPv6 ULA/link-local, `.local`) and make
 `isSecureEndpoint` call it instead of `isLoopbackHost`; leave the redirect check
 on `isLoopbackHost` (an `http` callback stays loopback-only). Both stay gated on
-`__DEV__`. **Three more owned-file edits for the API half**: add `bool
+`__DEV__`. **Owned-file edits for the API half**: add `bool
 jwt_userinfo_allow_local_http` (any free field number; 51 in new scaffolds; env
 `JWT_USERINFO_ALLOW_LOCAL_HTTP`, default `false`) to your config proto and
-regenerate; in `internal/app/auth.go` build the userinfo lookup as `userInfo :=
-auth.NewUserInfo(...)`, then `if cfg.JwtUserinfoAllowLocalHttp {
-userInfo.AllowLocalPlainHTTP() }`, then `authenticator.UseUserInfo(userInfo)`; and in
-`internal/app/login_broker.go` add `LocalOnly: cfg.JwtUserinfoAllowLocalHttp,` to the
-`devidp.Client{...}` literal (`Base: cfg.IdpBase`). `forge env up --device-host` sets
+regenerate. Then, in `internal/app/auth.go`:
+
+1. Build the userinfo lookup as `userInfo := auth.NewUserInfo(...)`, then
+   `if cfg.JwtUserinfoAllowLocalHttp { userInfo.AllowLocalPlainHTTP() }`, then
+   `authenticator.UseUserInfo(userInfo)`.
+2. Confine the JWKS and discovery fetches to this machine too (the same
+   threat: a proxy variable or a changed network must not put someone else's
+   keys in front of the validator). Import `"net/http"` and add, before
+   `SetupAuth`:
+
+   ```go
+   func issuerClient(cfg *config.Config) *http.Client {
+       if !cfg.JwtUserinfoAllowLocalHttp { return nil }
+       return auth.LocalIssuerHTTPClient(cfg.JwtIssuer)
+   }
+
+   func discoveryDoer(c *http.Client) oauth2.HTTPDoer {
+       if c == nil { return nil } // a nil *http.Client must not become a non-nil interface
+       return c
+   }
+   ```
+
+   Put `httpClient := issuerClient(cfg)` at the top of `SetupAuth`, pass
+   `discoveryDoer(httpClient)` instead of `nil` as the second argument of both
+   `oauth2.Discover(...)` calls (the JWKS `discover` closure and the userinfo
+   endpoint closure), and add `HTTPClient: httpClient,` to the `auth.JWTConfig{...}`
+   literal. `config.Config` is your config type (the scaffold uses the name its
+   config package declares). `LocalIssuerHTTPClient` returns nil unless the
+   issuer is plain HTTP at this machine's IPv4 address, so every other run is
+   unchanged.
+
+`internal/app/auth.go` is not on `forge project upgrade --check`'s list. To see
+the scaffold's version, move yours aside and run `forge project rescaffold
+internal/app/auth.go` at the pinned forge (it writes the helpers above once the
+config declares the field), then diff the two; if you never edited it, keep the
+new one. And in `internal/app/login_broker.go` add `LocalOnly:
+cfg.JwtUserinfoAllowLocalHttp,` to the `devidp.Client{...}` literal (`Base:
+cfg.IdpBase`). `forge env up --device-host` sets
 that variable for the identity's host workloads unless the workload declares it itself
 (a declared value, true or false, is left as declared); it is off everywhere else, and
 without these edits a device-host run signs in but `Claims.Email` stays empty and the
-broker's IdP traffic is not confined to this machine. The device host must be
+broker's and the validator's IdP traffic is not confined to this machine. The device host must be
 this machine's LAN **IPv4** address (not a name or IPv6). An Android emulator without `--device-host` still needs
 `adb reverse tcp:<idp port> tcp:<idp port>`. Production exports must carry
 no test fakes: `tests/auth-fakes.ts` is imported only by tests.

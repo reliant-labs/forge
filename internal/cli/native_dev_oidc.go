@@ -25,7 +25,9 @@ import (
 //
 // Precedence, the same as EXPO_PUBLIC_API_URL and the dev-log origin (see
 // native_dev_origin.go): a value the developer exported, the KCL env_vars, or
-// the frontend's .env.<env> wins over what forge injects, per variable.
+// the frontend's .env.<env> wins over what forge injects. For these five it is
+// per variable, except that naming the issuer or the client id takes the whole
+// set (see withNativeOIDCEnv).
 //
 // The issuer is the IdP's origin as published by the identity converge:
 // http://localhost:<idp port> by default (reaches the iOS simulator), and
@@ -131,18 +133,45 @@ func nativeOIDCFromOutput(out identity.Output, appName string) *nativeOIDC {
 	return n
 }
 
-// withNativeOIDCEnv fills each OIDC variable the developer, the KCL or the
-// frontend's .env file has not already set.
+// withNativeOIDCEnv injects the dev client's five OIDC variables as ONE unit.
+// They only make sense together (a scope list and redirect URIs belong to the
+// client they were registered for), so when any layer (the developer's shell,
+// the KCL env_vars, the frontend's .env.<env>) names an ISSUER or a CLIENT_ID,
+// the app is pointed at another identity provider and forge injects none of
+// them and says so. Otherwise it fills each variable no layer has set, which
+// lets a developer still override the scopes or a redirect alone.
 func withNativeOIDCEnv(env []string, n *nativeOIDC) []string {
+	env, _ = withNativeOIDCEnvNote(env, n)
+	return env
+}
+
+// withNativeOIDCEnvNote is withNativeOIDCEnv plus the one line to print when
+// forge stood down, "" otherwise.
+func withNativeOIDCEnvNote(env []string, n *nativeOIDC) ([]string, string) {
 	if n == nil {
-		return env
+		return env, ""
+	}
+	var own []string
+	for _, name := range []string{oidcIssuerEnv, oidcClientIDEnv} {
+		if envLookupLastOr(env, name) != "" {
+			own = append(own, name)
+		}
+	}
+	if len(own) > 0 {
+		return env, fmt.Sprintf("%s is set outside forge, so forge injects none of the dev sign-in client's %s variables "+
+			"(the scopes and redirects belong to the dev IdP's client, not to the provider you configured); set the rest yourself, or unset it to use the dev IdP",
+			strings.Join(own, " and "), "EXPO_PUBLIC_FORGE_OIDC_*")
 	}
 	for _, kv := range n.vars() {
 		if kv[1] != "" && envLookupLastOr(env, kv[0]) == "" {
 			env = withForcedEnv(env, kv[0], kv[1])
 		}
 	}
-	return env
+	return env, ""
+}
+
+func oidcEnvNames() []string {
+	return []string{oidcIssuerEnv, oidcClientIDEnv, oidcScopesEnv, oidcRedirectURIEnv, oidcPostLogoutURIEnv}
 }
 
 // describeNativeOIDC is the launch lines for a native frontend's sign-in: the
@@ -157,6 +186,11 @@ func describeNativeOIDC(feName string, n *nativeOIDC, env []string, dh deviceHos
 	}
 	p := "[up] frontend " + feName + ": "
 	issuer := envLookupLastOr(env, oidcIssuerEnv)
+	if issuer != n.Issuer || envLookupLastOr(env, oidcClientIDEnv) != n.ClientID {
+		// The app is on another provider; withNativeOIDCEnvNote said so, and
+		// forge's dev IdP lines would describe a client it is not using.
+		return nil
+	}
 	lines := []string{fmt.Sprintf("%ssign-in: issuer %s, client %s, redirect %s", p, issuer, envLookupLastOr(env, oidcClientIDEnv), envLookupLastOr(env, oidcRedirectURIEnv))}
 	if !isLoopbackOrigin(issuer) {
 		if dh.Requested != "" {
@@ -279,7 +313,11 @@ func (a expoApp) noSchemeWarning(frontend string) string {
 	if got := a.schemes(); len(got) > 0 {
 		have = fmt.Sprintf("has expo.scheme %q, and none of it is a valid private-use scheme (RFC 8252 section 7.1: lowercase letters, digits and '-', joined by at least one '.', e.g. com.acme.app)", got)
 	}
-	return fmt.Sprintf("frontend %s: NO native sign-in client was registered, so the app will run on its mock provider: its app.json %s. Add the reverse-DNS scheme to app.json: \"scheme\": [%q, %q] (the bundle id may stay as it is). Or declare the callback yourself: redirect_uris = [\"%s:/oauthredirect\"] on a kind = \"native\" forge.IdentityApplication", frontend, have, frontend, suggest, suggest)
+	return fmt.Sprintf("frontend %s: NO native sign-in client was registered, so the app will run on its mock provider: its app.json %s. "+
+		"Set the reverse-DNS scheme in app.json: \"scheme\": %q (your bundleIdentifier/package can stay as they are). "+
+		"Or declare the callback yourself: redirect_uris = [\"%s:/oauthredirect\"] on a kind = \"native\" forge.IdentityApplication. "+
+		"Or opt out of the derived client with native_sign_in = False on this frontend. Background: the migrations/v1.4.0/native-auth playbook (`forge skill load migrations/v1.4.0/native-auth`)",
+		frontend, have, suggest, suggest)
 }
 
 // suggestedScheme turns the first available bundle id into a valid scheme:

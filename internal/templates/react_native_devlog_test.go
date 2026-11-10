@@ -32,11 +32,13 @@ const mw = config.server.enhanceMiddleware(
   {},
 );
 
-function post(url, method, chunks) {
+function post(url, method, chunks, contentType = "application/json") {
   return new Promise((resolve) => {
     const req = new EventEmitter();
     req.url = url;
     req.method = method;
+    req.headers = contentType === null ? {} : { "content-type": contentType };
+    req.resume = () => {};
     const res = {
       headers: {},
       statusCode: 200,
@@ -62,7 +64,7 @@ function post(url, method, chunks) {
   assert.equal(lines[lines.length - 1],
     ["[browser:error] boom", "[browser:warn] w", "[browser:info] i", "[browser:debug] d", "[browser:log] l"].join("\n"));
 
-  // The body arrives in chunks and is parsed with no Content-Type consulted.
+  // The body arrives in chunks and is parsed as JSON text.
   r = await post("/__forge/log", "POST", ['{"entries":[{"level":"er', 'ror","msg":"split"}]}']);
   assert.equal(r.statusCode, 204);
   assert.equal(lines[lines.length - 1], "[browser:error] split");
@@ -116,6 +118,22 @@ function post(url, method, chunks) {
   assert.equal(r.statusCode, 413);
   assert.equal(r.headers["X-Forge-Devlog"], "2");
   assert.equal(lines[lines.length - 1], "[browser:warn] [forge-devlog] dropped oversized post (1048586 bytes)");
+
+  // Only application/json is accepted: a cross-site <form> can send none of
+  // its simple types as JSON, so a page in the developer's browser cannot
+  // write into the log. A rejected request prints nothing and sets no protocol
+  // header. A charset parameter and any case are fine.
+  before = lines.length;
+  for (const ct of ["text/plain", "text/plain;charset=UTF-8", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", "application/jsonx", "", null]) {
+    r = await post("/__forge/log", "POST", ['{"level":"error","msg":"cross-site"}'], ct);
+    assert.equal(r.statusCode, 415, String(ct));
+    assert.equal(r.headers["X-Forge-Devlog"], undefined, String(ct));
+  }
+  assert.equal(lines.length, before, "a rejected content type must print nothing");
+  for (const ct of ["application/json", "Application/JSON", "application/json; charset=utf-8"]) {
+    r = await post("/__forge/log", "POST", ['{"level":"warn","msg":"ok"}'], ct);
+    assert.equal(r.statusCode, 204, ct);
+  }
 
   // Only POST is accepted, and a rejected method prints nothing.
   before = lines.length;

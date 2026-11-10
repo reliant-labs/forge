@@ -1,9 +1,12 @@
 # Mobile consumer conformance slice: evidence
 
-**Status:** draft stacked slice, not production readiness or main integration.
-**Base:** `feat/mobile-foundation-integration` (PR #1887).
-**SDK:** retained Expo 52 baseline. The coordinated SDK upgrade is the next
-stacked slice; this baseline is not the intended final mobile foundation version.
+**Status:** evidence record for the mobile foundation milestone, updated at
+integration head `027bb4237` plus the gates pass in `feat/mobile-gates`. It is
+not a production-readiness claim; the acceptance checklist and the items awaiting
+an owner decision are in [mobile-integration-stack.md](mobile-integration-stack.md).
+**History:** the sections below are in the order the slices landed. The first
+sections describe the Expo 52 baseline slice as it was validated then; the SDK 58
+slice supersedes it, and fresh scaffolds are on SDK 58.
 
 ## What the fixture exercises
 
@@ -60,8 +63,9 @@ workspace bundles; those failed attempts are not represented as passing.
 
 Scoped codegen/generator/template short suites, focused full/race regressions and
 `go build ./...` are recorded with the PR. The full repository test gate was not
-rerun for this slice; the preceding foundation attempt was not green and cannot
-be claimed as a pass. Independent source review found no remaining concrete
+rerun for this slice, and no full `task test` has been run on the integrated head
+(pending owner decision; see the integration checklist). The preceding foundation
+attempt was not green and cannot be claimed as a pass. Independent source review found no remaining concrete
 blockers after its request-assertion, export-alias and packed-workspace findings
 were addressed.
 
@@ -81,9 +85,10 @@ apps still on SDK 52.
 On final SDK 58 source all five consumer cases passed (146.246 seconds), with the
 scoped config/codegen/generator/template/component suites and `go build ./...`.
 A one-off scaffolded standalone app reported `expo install --check` up to date and
-`expo-doctor` 20/20; those Expo checks are not yet part of the automated fixture.
-The SDK 52-to-58 migration path for existing apps was not executed: guidance
-requires one SDK at a time and does not claim a validated direct jump.
+`expo-doctor` 20/20. Those two Expo checks are now part of the automated fixture
+(see "Expo Doctor and `expo install --check` in the fixture" below). The SDK
+52-to-58 path for existing apps has since been executed; see "Executed upgrade of
+an existing v1.3.0 app". It was run one SDK at a time, not as a direct jump.
 
 ## Native dev-loop slice
 
@@ -128,7 +133,8 @@ iPhone 18 Pro, Expo 58.0.23 / RN 0.88.1, Debug build) passed:
 The 8081 path itself was substituted: a non-forge process held 8081, so the
 build pinned `RCT_METRO_PORT` to the fallback port. Stack frames from rejections
 are bundle URLs, not symbolicated source. Existing apps adopt the slice through
-the `migrations/v1.4.0/native-dev-loop` playbook; that path was not executed.
+the `migrations/v1.4.0/native-dev-loop` playbook, which has been executed (see
+"Executed upgrade of an existing v1.3.0 app").
 
 ## Native auth slice
 
@@ -156,7 +162,9 @@ env's identity provider. Research and design notes are in
     application (public PKCE, IdP-hosted login). `Frontend.native_sign_in = False`
     opts a frontend out.
   - `forge env up` reads the callback scheme from `app.json`'s `expo.scheme` and
-    injects `EXPO_PUBLIC_FORGE_OIDC_*`. Under `--device-host` the dev IdP also serves that address and the run's issuer moves there (`deploy/managed-identity/mobile`).
+    injects `EXPO_PUBLIC_FORGE_OIDC_*`. Under `--device-host` the run's issuer
+    moves to the LAN address (see the device-reachable issuer section below and
+    `deploy/managed-identity/mobile`).
   - KCL and `pkg/release` accept private-use or https callbacks, so adding
     universal links later is an additive change.
   - On a hosted identity, native applications are refused for now.
@@ -178,8 +186,9 @@ env's identity provider. Research and design notes are in
     out with a visible `configError`.
   - `jest.config.cjs` no longer Babel-transforms `@connectrpc/connect`, which had
     turned every Connect error-path test into `Code.Unknown`.
-- **Existing apps** adopt it through `migrations/v1.4.0/native-auth`. That path
-  was not executed.
+- **Existing apps** adopt it through `migrations/v1.4.0/native-auth`, which has
+  been executed on a real v1.3.0 app (see "Executed upgrade of an existing v1.3.0
+  app"). That run did not include a simulator sign-in on the upgraded app.
 
 Automated validation on the final tree:
 
@@ -222,8 +231,252 @@ tree, with a mobile-only project. All checks passed with no substitutions:
 - **Mock and production:** with no OIDC variables the app ran on the mock
   provider with one warning, and the production export contains no dev-log code.
 
-Physical devices, Android, hosted (control-plane) registration and universal
-links were not exercised.
+That run was on the simulator only. Physical-device runs are recorded in the two
+sections below. Android, hosted (control-plane) registration and universal links
+were not exercised anywhere; each is pending an owner decision (see the integration
+checklist).
+
+## Device-reachable dev identity issuer
+
+A physical device cannot reach `localhost`, and the dev IdP's issuer is the one
+address the API, the login broker and the native app must all agree on. So
+`forge env up --device-host <LAN IPv4>` now moves the whole run's issuer to the
+LAN address, rather than only changing where the API is dialled.
+
+- **What `--device-host` does for the IdP.** Forge restarts the dev Zitadel once
+  with the LAN address added as an extra instance domain (no data is reset) and
+  publishes `http://<LAN IP>:<idp port>` as the run's single issuer. The API's
+  `jwt_issuer`, the broker and the native app's injected
+  `EXPO_PUBLIC_FORGE_OIDC_ISSUER` all use it. A run without the flag publishes
+  `localhost` again and wipes nothing.
+- **When it applies.** Only for an IPv4 address that belongs to this machine, and
+  only when a native frontend has a native application. A hostname, an IPv6
+  address or `10.0.2.2` keeps the localhost issuer and prints a notice asking for
+  the LAN IPv4.
+- **Fallback.** If the IdP cannot serve the device host, forge falls back to the
+  localhost issuer instead of failing `env up`.
+- **Plain-HTTP userinfo, opt-in.** The API enriches claims such as email from the
+  issuer's userinfo endpoint, which is plain HTTP on a dev LAN issuer. That is off
+  by default (`jwt_userinfo_allow_local_http`); forge sets it only for
+  identity-consuming host workloads in a `--device-host` run, so production
+  behaviour is unchanged.
+  - When enabled, the request goes through the new `pkg/netguard.LocalOnly`
+    transport. It ignores proxies and checks at dial time that the remote IP is on
+    this machine. The userinfo URL must have the issuer's origin, redirects
+    included.
+  - The broker's IdP client uses the same transport, behind an explicit
+    `devidp.Client.LocalOnly` flag.
+- **LAN notice.** The IdP's start line now says it listens on all interfaces and
+  is reachable from the LAN over plain HTTP with the dev credentials.
+- **Owned files.** `auth.go`, `config.proto` and `login_broker.go` change; the
+  `migrations/v1.4.0/native-auth` playbook lists the edits (and, since the
+  executed upgrade run, the matching `LocalIssuerHTTPClient` edit that confines
+  the JWKS and discovery fetch to this machine under the same opt-in).
+- **Review.** An independent review requested changes (one high, five medium,
+  plus lows). All were fixed and a re-review approved. The fixes include
+  connect-time confinement (`f9946a513`) and the explicit broker signal
+  (`451ee050a`). A later test-only commit (`1ce0a15fc`) fixed the full-mode
+  `TestNativeJestTransformGuards`, which still required `@connectrpc/connect` to
+  be Jest-transformed after the native config deliberately stopped doing so.
+- **Real-Zitadel coverage.** `TestConverge_DeviceHostAgainstTheRealHostZitadel`
+  (six subtests) and `TestConverge_NativeApplicationAgainstTheRealHostZitadel`
+  pass against a real host-run Zitadel.
+- **Not exercised on the device runs:** the broker path (the device project had no
+  web frontend) and the fallback to localhost (the IdP could always serve the
+  device host on that machine).
+
+## Physical device (iPad)
+
+Hardware: an iPad Pro 12.9" 6th generation on iPadOS 27.2, over Wi-Fi to the
+development Mac, built with Xcode 27.3 beta and signed with the Reliant Labs
+development team (automatic signing, development certificate only). Each run used
+a fresh scaffolded project (`forge project new`, then `forge scaffold frontend
+mobile --kind mobile`) with scratch-only additions: a `Ping` unary and a `Ticks`
+server stream, a `WhoAmI` rpc that logs the caller's claims, and a probe screen
+instrumented to log (never a token). The Metro port fell back to 3000 because
+another process held 8081, as in the simulator run. The evidence set (build logs,
+Metro and API logs, screenshots, XCUITest result bundles) is kept with the
+acceptance run, not in this repository.
+
+### Dev loop
+
+Run on integration head `cf809a8f9`, Debug build, `forge env up dev --device-host`
+with the Mac's LAN address. All seven checks passed, one with a note and one only
+with explicit configuration:
+
+| #   | Check                                                                                                                                     | Result                                                                                                                                                                                                                                                                                                        |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Debug build installs and loads JS from Metro over Wi-Fi, no redbox                                                                        | Pass. The first launch after install redboxed (`No script URL provided`) while the Local Network prompt was pending; every launch after allowing it was clean.                                                                                                                                                |
+| 2   | Generated client reaches the API over the LAN                                                                                             | Pass. The API logged the iPad's IP through `connectClient` and `expo/fetch`.                                                                                                                                                                                                                                  |
+| 3   | Server stream is incremental; cancel surfaces `Canceled` on the client and `context canceled` on the server                               | Pass. Some adjacent messages coalesced within about 1 ms, consistent with Wi-Fi power-save batching.                                                                                                                                                                                                          |
+| 4   | Dev logs reach `.forge/logs`: forwarder attached, multi-line errors arrive as prefixed lines, an unhandled rejection arrives with a stack | Pass. The origin came from the injected `EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN`; a plain Debug build has no Expo manifest to read it from.                                                                                                                                                                          |
+| 5   | Backgrounding toggles React Query focus; Airplane Mode flips the online manager and paused queries resume                                 | Pass. Lines logged while offline reached Metro through the in-app replay buffer once back online.                                                                                                                                                                                                             |
+| 6   | Release build: embedded Hermes bundle launches, carries no dev-log code, reaches the API                                                  | Pass with explicit config. The bundle had no `installNativeDevLogging`, `forge-devlog` or `__forge/log` (a positive control confirmed the grep sees string literals). The default Release dialled `localhost` and failed; with `EXPO_PUBLIC_API_URL` set to the LAN API it connected, streamed and cancelled. |
+| 7   | `expo-doctor` and `expo install --check`                                                                                                  | Pass. 20/20 checks, and dependencies up to date.                                                                                                                                                                                                                                                              |
+
+A frontend with `native_sign_in = False` also kept the mock provider on the
+device, with its one warning and no sign-in screen.
+
+### Native sign-in
+
+Driven by an XCUITest runner on the iPad against the local Zitadel, with seeded
+users alice and bob. Two runs, both on Debug builds.
+
+**First run, `88cb950de`: 8 of 8 passed.**
+
+- The injected issuer, client id and redirect used the LAN address and the single
+  sanitised scheme, and a fresh launch showed the sign-in screen.
+- Alice signed in through the system sheet and returned via
+  `<scheme>:/oauthredirect`; the code exchange returned 200 and `WhoAmI` returned
+  200 from the iPad's IP, with the email filled in through the userinfo opt-in.
+- Cancel in the sheet, twice in a row, left a usable sign-in screen.
+- Kill and relaunch restored the session from the device keychain with no IdP
+  call and no browser.
+- A forced expired token produced exactly one refresh, and concurrent calls
+  succeeded.
+- Logout revoked the refresh token (reuse got `400 invalid_request`), cleared the
+  query cache, and the next sign-in sent `prompt=login`. Bob then saw none of
+  alice's data.
+- The scaffold's Jest suites passed (294 of 294, including `auth-config`).
+- Localhost discovery kept working during the device-host run, and switching back
+  to a run without the flag restored the localhost issuer and wiped nothing.
+
+**Re-run on the fixed commit, `f9946a513`: 4 of 4 passed, plus 2
+confirmations.** The binary was built from that commit's tree, because the
+worktree head had moved on to a test-only commit, and the project was fresh and
+carried the new owned files.
+
+- The injected environment, the LAN issuer and the `JWT_USERINFO_ALLOW_LOCAL_HTTP`
+  opt-in were present, and the sign-in screen showed.
+- Alice signed in with an authenticated `WhoAmI` carrying her email, which
+  Zitadel's own log shows came from a userinfo request to the LAN address.
+- Kill and relaunch restored the session.
+- Logout and then bob's sign-in showed no data from alice.
+- Confirmed: the IdP start line carries the LAN-reachability notice.
+- Confirmed: `--device-host` with a hostname kept the localhost issuer, left the
+  userinfo opt-in off and asked for the LAN IPv4.
+
+### Known limits
+
+- **Release builds.** A Release build made outside forge bakes the dev API default
+  (`http://localhost:8080`), which a device cannot reach. Pointing it at the dev
+  stack needs an explicit `EXPO_PUBLIC_API_URL` at build time. Deployable builds
+  take it from KCL.
+- **First Debug launch.** The first launch of a Debug device build shows `No
+script URL provided` until Local Network access is allowed, then works after
+  relaunching. React Native's bundle-URL check fails while the prompt is pending
+  and a Debug build has no embedded bundle. The prebuilt Info.plist has no
+  `NSLocalNetworkUsageDescription`, so the prompt shows generic text. The current
+  Metro-port hint describes this.
+- **LAN domain persists.** After switching back to a run without `--device-host`,
+  the dev IdP still answers at the LAN address with that issuer, because Zitadel
+  offers no way to remove an instance domain. The API pins the localhost issuer
+  again, so tokens from the LAN issuer are not accepted.
+- **Observed wording defect.** On `f9946a513`, the per-frontend sign-in line for a
+  hostname `--device-host` gave the wrong reason for the localhost issuer; the
+  run-level notice was correct. It was a message defect only, fixed in `451ee050a`
+  (the line now names the refused device host and asks for the LAN IPv4 address),
+  with unit tests for hostname, IPv6 and `10.0.2.2`; it was not re-run on a device.
+- **Harness notes.** The runner needed Local Network allowed and Settings ›
+  Developer › Enable UI Automation turned on, and submitting the Zitadel login
+  fields with Return was reliable where tapping Next during the keyboard animation
+  was not. Every device console line also appears twice in the frontend log, once
+  as Metro's own line and once as `[browser:…]`.
+
+### What this does not prove
+
+- **Android:** neither an emulator nor a device was run.
+- **iPhone hardware:** only an iPad was used.
+- **Hosted registration:** the device runs used the host-run dev IdP; native
+  applications on a hosted identity are still refused.
+- **Release-mode sign-in:** sign-in was run on Debug builds only.
+
+## Expo Doctor and `expo install --check` in the fixture
+
+Each of the five consumer cases now also runs `expo-doctor` and `expo install
+--check` in the app directory, with the case's package manager. `expo-doctor` is
+pinned (1.21.6, via `pnpm dlx`; it is not an app dependency and the SDK 58 CLI does
+not bundle it), because a new release adds checks and would fail a green scaffold
+with no change on our side. A real finding fails the case. If Expo's own service
+is unreachable (a host or network outage, classified from the command output and
+exit code, with one real failed check among network ones still a failure), the case
+runs its remaining checks and then skips, so a host outage costs only that verdict.
+On the final tree all five cases reported **20/20 checks passed** and
+**dependencies up to date**.
+
+## Executed upgrade of an existing v1.3.0 app
+
+The existing-app path was executed end to end, by an agent following the shipped
+playbooks, on a real app: a v1.3.0 scaffold (Task entity, Expo 52 mobile frontend,
+Next.js web frontend) that was then customized as a user would (a task-list home
+screen using the generated hooks, a settings screen, a header interceptor,
+`date-fns`, an edited `app.json` with a two-entry `scheme`). The project was
+upgraded to this head with `forge project upgrade`, then one commit per playbook
+step: section 2 (foundation), section 3 one SDK at a time (53, 54, 55, 56, 57, 58),
+section 4 (dev loop), section 5 (native auth). Each SDK step was gated on
+`typecheck`, `lint --max-warnings 0`, `test`, an iOS and an Android `expo export`,
+`expo-doctor` and `expo install --check`.
+
+**Result.** It ends green on SDK 58: typecheck, lint, 293 Jest tests (10 suites;
+a fresh scaffold has 294 in 11, the difference being `tests/fetch-stub.test.ts`,
+which the playbook did not list; it does now), iOS and Android export, the Expo web
+export, `expo-doctor` 20/20, `expo install --check` up to date, and
+`forge generate` at a fixed point on a second run. Per step, `expo-doctor` was clean
+on 53 (18/18), 54 (18/18) and 57 (21/21); on 55 it flagged `newArchEnabled`, which
+that step's commit removed; on 56 it fails by design (below). Jest was red on 53
+to 57 for one case only, the `app-config` scheme assertion of section 5 (below). `forge env up dev` started the
+stack, Metro, the dev IdP and the native sign-in client, and printed the
+sign-in line with the injected issuer, client id and `com.taskapp.mobile` redirect.
+
+**What was skipped.** A simulator sign-in on the upgraded app was not run (nothing
+was launched in a simulator); sign-in is evidenced on the fresh scaffold only. The
+web frontend's `forge lint` lane failed once on the dev-log receiver's
+`no-control-regex` (a template defect, since fixed in the Next.js and Vite
+templates and added to the playbook as an edit); the upgraded app was not
+re-linted after that edit was applied to it.
+
+**Playbook defects the run found, fixed in this pass** (each was a step the playbook
+described that did not work as written):
+
+- Nothing said how to obtain a "current scaffold" file. The playbooks now name
+  `forge project rescaffold <path>` (absent file), `forge project upgrade --check
+<path>` (diff) and `forge project upgrade --force <path>` (replace).
+- Section 2 added `jest.config.cjs` without `tests/setup/expo-fetch.ts`, which it
+  loads, so every test suite failed until it was added; `tests/fetch-stub.test.ts`
+  was never listed.
+- `tests/app-config.test.ts` asserts section 5's scheme contract but was added in
+  section 2, so Jest was red on every SDK step; it is now added without that case
+  and completed in section 5.
+- The Metro `.js` to `.ts` resolver was in section 4 but `expo export` needs it
+  from SDK 53 (the run pulled it forward); section 2 now requires it first.
+- SDK 56's `expo-doctor` fails on a Hermes V1 regression that only SDK 57 clears;
+  the playbook now says to continue rather than look for a fix.
+- SDK 58's `expo install --fix` fails with `ERR_PNPM_IGNORED_BUILDS` for Jest 30's
+  `@parcel/watcher` unless `allowBuilds` names it first; the playbook says so, and
+  uses `npx expo install expo@~N.0.0 --fix`.
+- `connect-transport.test.ts` was in the dev-loop playbook but exercises auth
+  interceptors; it moved to native auth.
+- Paths read `shared/src/...`; a project's are `frontends/<name>/src/...`, in every
+  frontend including web.
+- A pre-v1.4.0 `deploy/kcl/dev/main.k` declares a native `port`, which defeats
+  Metro's preference for 8081; the playbook says to delete it (the scaffold no
+  longer writes one).
+- Section 5 told apps to rewrite `ios.bundleIdentifier` and `android.package` to
+  match `expo.scheme`, which renames a published app; it now says to set
+  `expo.scheme` alone and never to touch either, and offers ways to keep a custom
+  scheme.
+- A "generated-hook test" was required but the scaffold ships none; the
+  requirement is dropped.
+- Four shared hook files' `ConnectClientError` type import moves to
+  `/interceptors`; they were not listed. Also newly listed: the staging and prod
+  `runtime_config = f.runtime_config | _api_config` line, the web `next.config.ts`
+  request-log rule and `route.ts` query-string rejection, the web `provider.ts`
+  optional members, and the `internal/app/auth.go` JWKS and discovery
+  confinement edit.
+
+Upgrade tooling findings from the same run were reported to engineering
+separately: the web lint failure, the KCL native `port` defeating 8081, and
+`forge project upgrade` with a `+dev` build.
 
 ## Explicit remaining gates
 
@@ -234,16 +487,22 @@ links were not exercised.
 - Backend-only `project new --frontend-workspaces` does not persist a complete
   workspace before a frontend exists; this fixture initializes the canonical
   workspace emitter explicitly. It does not certify that CLI onboarding path.
-- Executed existing-app SDK and dev-loop migrations, automated Expo Doctor,
-  Android/Gradle builds, and Hermes, streaming/cancellation and network/lifecycle
-  behavior on a physical device (the iOS simulator is covered above).
-- Real native identity is partly covered: the client, token storage and account
-  isolation are tested against fakes, and the iOS simulator run is pending (above).
-  Still open: registering native clients with a hosted control plane, Android
-  (the emulator needs `adb reverse` for the issuer), a physical device, and
-  universal links.
-- Device logs/crashes, store publication, signed OTA and health/recovery evidence.
+- Android: Gradle builds, and Hermes, streaming/cancellation, network/lifecycle
+  and sign-in behavior on an emulator and a physical device. The emulator needs
+  `adb reverse` for the issuer.
+- Registering native clients with a hosted control plane, and universal links
+  (pending owner decision, as is Android above).
+- Real native identity on iOS is covered on the simulator and on one iPad (above).
+  iPhone hardware and Release-mode sign-in are not.
+- Device crashes, store publication, signed OTA and health/recovery evidence.
+- A full `task test` result on the integrated head, or an authorized scope
+  statement for the known host failures (pending owner decision).
 
-No scenario above certifies physical-device compatibility or production readiness.
-The integration PR remains draft until the foundation milestone's broader gates
-are met; this slice must not merge independently into main.
+Covered since the earlier revision of this list: the iOS physical device (dev
+loop and native sign-in, on one iPad Pro). No scenario above certifies Android,
+iPhone or production readiness.
+The integration PR remains draft until the checklist in
+[mobile-integration-stack.md](mobile-integration-stack.md) is resolved or each
+remaining item has a recorded owner decision. Only the integration branch merges
+to main: every slice is already an ancestor of its head, so there is no separate
+slice merge.

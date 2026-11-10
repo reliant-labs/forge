@@ -56,7 +56,7 @@ resolve = lambda name: str, bundle: any, from_host: str = "localhost" -> str {
     _route_urls[0] if _route_urls else \
         ("https://" + _domains[0] if _domains else \
         ("http://" + from_host + ":" + str(_host_ports[0]) if _host_ports else \
-        ("http://" + from_host + ":" + str(_frontends[0].port) + _frontend_base(_frontends[0]) if _frontends else "")))
+        ("http://" + from_host + ":" + str(_frontends[0].port) + _frontend_base(_frontends[0]) if _frontends and _frontends[0].port != Undefined else "")))
 }
 
 # The public URL of a route, or "" when nothing names a host for it: a listener

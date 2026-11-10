@@ -28,7 +28,12 @@ import (
 //   - dev/main.k: the `idn` import, the IdP and mail ports, the idp and mail
 //     HostInfra entries, the CORS-credentials env piece, and the `identity`
 //     declaration on the host IdP;
-//   - each hosted env's main.k: the `idn` import and `identity = idn.IDENTITY`.
+//
+// Hosted envs (staging, prod) are NOT edited: a hosted identity is a managed
+// instance the control plane bills for and that changes the env's shape, so
+// adding the first frontend, a web one included, to an API-only project must
+// not opt a deployed env into it. The scaffold prints the exact edit instead
+// (hostedIdentityHint).
 //
 // It never fights the user. A project that already declares an identity, that
 // already has a frontend, or that has identity.k but no wiring in its env (the
@@ -207,36 +212,43 @@ func reconcileFirstFrontendIdentity(root, projectName string, firstFrontend bool
 	fmt.Printf("   - %s (dev identity provider, mail catcher and identity declared)\n   - %s\n",
 		devIdentityMainRel, codegen.IdentityKCLRelPath)
 
+	if hint := hostedIdentityHint(root); hint != "" {
+		fmt.Print(hint)
+	}
+}
+
+// hostedIdentityHint names the KCL edit that gives a hosted env the identity,
+// for each hosted env whose main.k declares none yet, or "" when there is no
+// such env. Hosted identity is managed (billable) and changes the env's shape,
+// so it is the author's call and never applied by the scaffold.
+func hostedIdentityHint(root string) string {
 	envs, err := os.ReadDir(filepath.Join(root, "deploy", "kcl"))
 	if err != nil {
-		return
+		return ""
 	}
+	var names []string
 	for _, env := range envs {
 		if !env.IsDir() || env.Name() == codegen.DevEnvName {
 			continue
 		}
-		rel := filepath.Join("deploy", "kcl", env.Name(), "main.k")
-		content, err := os.ReadFile(filepath.Join(root, rel))
+		content, err := os.ReadFile(filepath.Join(root, "deploy", "kcl", env.Name(), "main.k"))
 		if err != nil {
 			continue // not an env directory
 		}
-		if !hostedControlPlaneRE.MatchString(codegen.StripKCLProse(string(content))) {
-			continue // not a hosted env: where its identity runs is the author's call
+		stripped := codegen.StripKCLProse(string(content))
+		if hostedControlPlaneRE.MatchString(stripped) && classifyEnvIdentity(string(content)) == identityFresh {
+			names = append(names, env.Name())
 		}
-		if classifyEnvIdentity(string(content)) != identityFresh {
-			continue
-		}
-		out, err := spliceHostedIdentity(string(content))
-		if err != nil {
-			fmt.Printf("   ℹ identity not added to %s (%v)\n", rel, err)
-			continue
-		}
-		if err := atomicfile.WriteFile(filepath.Join(root, rel), []byte(out), 0o644); err != nil {
-			fmt.Printf("   ℹ identity not added: could not update %s: %v\n", rel, err)
-			continue
-		}
-		fmt.Printf("   - %s (identity declared)\n", rel)
 	}
+	if len(names) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("   ℹ identity added to %s only. Hosted env(s) %s declare none: a hosted identity is a managed (billable) instance, so it is your call.\n"+
+		"     To give a hosted env sign-in, edit deploy/kcl/<env>/main.k, then `forge env deploy <env>`:\n"+
+		"     1. after `import ..workloads as wl`, add:%s"+
+		"     2. in the forge.Environment, before `secret_provider =`, add:\n%s",
+		devIdentityMainRel, strings.Join(names, ", "),
+		indentLines(identityImportSnippet, "         "), indentLines(hostedIdentitySnippet, "       "))
 }
 
 // beforeLeadingComments moves an insertion point at the start of a line up
@@ -327,21 +339,14 @@ func spliceDevIdentity(content, projectName string) (string, error) {
 	return out, nil
 }
 
-// spliceHostedIdentity adds the `idn` import and `identity = idn.IDENTITY` to a
-// hosted env's main.k.
-func spliceHostedIdentity(content string) (string, error) {
-	imp, err := uniqueMatch(workloadsImportRE, content, "`import ..workloads as wl`")
-	if err != nil {
-		return "", err
+// indentLines prefixes every non-empty line of s with prefix.
+func indentLines(s, prefix string) string {
+	var b strings.Builder
+	for _, l := range strings.SplitAfter(s, "\n") {
+		if strings.TrimSpace(l) != "" {
+			b.WriteString(prefix)
+		}
+		b.WriteString(l)
 	}
-	sp, err := uniqueMatch(secretProviderRE, content, "`secret_provider =`")
-	if err != nil {
-		return "", err
-	}
-	if imp[1] > sp[0] {
-		return "", fmt.Errorf("the file's sections are not in the scaffolded order")
-	}
-	at := beforeLeadingComments(content, sp[0])
-	out := content[:at] + hostedIdentitySnippet + content[at:]
-	return out[:imp[1]] + identityImportSnippet + out[imp[1]:], nil
+	return b.String()
 }

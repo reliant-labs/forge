@@ -52,6 +52,14 @@ In each env that uses `_session_replay` (or replay at all):
    `observability` (leave `observability = forge.Observability {}` if it was
    the only field). The frontend's switch now opts the env in.
 
+4. In each **hosted** env (`deploy/kcl/staging/main.k`, `prod/main.k`), change
+   `_hosted_frontend`'s `runtime_config = _api_config` to
+   `runtime_config = f.runtime_config | _api_config`. The old line replaces the
+   frontend's whole `runtime_config` with the API URL, so any entry the frontend
+   declares (a `OTEL_REPLAY` you kept, a feature flag) never reaches the hosted
+   site. New scaffolds merge; this is a one-line owned-file edit with no effect
+   on a frontend that declares none.
+
 Then `forge env render <env>` and check the frontend's `runtime_config` (or
 `runtime_config_spec` when hosted) carries `OTEL_REPLAY = "true"` exactly when
 `_session_replay` is True, and `observability.policy.opt_in` lists `replay`.
@@ -62,7 +70,10 @@ Then `forge env render <env>` and check the frontend's `runtime_config` (or
 These repairs are independent of the Expo SDK version (section 3 covers the SDK
 upgrade) and do not add native authentication, signing,
 store publication or OTA support. Existing owned code is preserved by generation;
-review the following adaptations rather than deleting customized files.
+review the following adaptations rather than deleting customized files. Do this
+section **before** the SDK upgrade, and in order: the lint and test harness below
+needs `tests/setup/expo-fetch.ts` and the Metro resolver before the first
+`expo export` or Jest run passes on any SDK.
 
 ### Shared workspace transport
 
@@ -92,8 +103,9 @@ Verify both unary and server-streaming behavior in your consumer before shipping
 
 New native scaffolds include an owned `expo-dev.cjs` wrapper and `dev` script. The
 wrapper forwards Forge's allocated `PORT` as Expo's `--port`; Expo's default CLI
-does not consume `PORT` itself. Existing apps should add the wrapper from the
-current scaffold only when absent, reviewing any custom dev entrypoint. Preserve
+does not consume `PORT` itself. Existing apps should add the wrapper only when absent
+(`forge project rescaffold frontends/<name>/expo-dev.cjs`, then set the `dev`
+script to `node expo-dev.cjs`), reviewing any custom dev entrypoint. Preserve
 `start`, `ios`, `android` and `web` scripts. Do not overwrite custom package scripts.
 
 The native `build` script is an **Expo web static export** into `dist`, not an IPA
@@ -124,14 +136,41 @@ errors should name the native build configuration, not a missing browser config.
 Discovery also recognizes Expo `app.config.ts`/`app.config.js` with package evidence;
 existing app.json discovery remains supported.
 
-### Portable runtime imports and publication boundary
+### Portable runtime imports
 
-Portable error type imports now use the existing `/interceptors` entry point.
-The runtime source also adds `userMessage` there. Shared templates intentionally
-retain their two existing root value imports until that additive export is
-published and the consumer dependency floor is raised. Do not manually switch
-those value imports while using an older runtime that lacks the export. This
-publication gate is not evidence that native bundle isolation is already complete.
+The shared helpers import only the runtime's portable `/interceptors` entry, never
+the root barrel: the barrel also re-exports the browser dev-log forwarder and DOM
+telemetry, and Metro does not tree-shake them out of a native production bundle.
+Two edits, in **every** frontend that has these files (web included: they exist in
+every frontend, and a project's paths are `frontends/<name>/src/...`, not
+`shared/src/...`):
+
+- `src/lib/query-client.ts` and `src/hooks/use-optimistic-mutation.ts` imported
+  `userMessage` from the root. Replace it with
+  `import { normalizeError } from "@reliantlabs/forge-web-runtime/interceptors"`
+  and use `normalizeError(err).message` (the server text without its `[code] `
+  prefix) through a local `userFacingMessage` that maps an empty message or
+  `"Unknown error"` to "Something went wrong. Please try again.", matching the old
+  copy. These two files also carry the mutation `networkMode` default of the
+  dev-loop playbook; `forge project upgrade --check <path>` prints each diff.
+- `src/hooks/use-api-query.ts`, `use-api-mutation.ts`, `use-join.ts` and
+  `use-query-resource.ts` import the `ConnectClientError` **type** from the root;
+  move that one import to `@reliantlabs/forge-web-runtime/interceptors`.
+
+`normalizeError` and `ConnectClientError` are exported from `/interceptors` by the
+published runtime (checked against 0.13.1 and 0.13.9), so neither edit needs a
+runtime upgrade. The runtime source also exports `userMessage` there, but no
+published release does and no template imports it.
+
+### Metro must resolve generated clients before the first export
+
+Do this in this section, not at section 4: any screen that imports a generated
+client (`*_pb.ts` files import siblings as `./x_pb.js`, from buf's
+`import_extension=.js`) fails `expo export` with `Unable to resolve "…_pb.js"`
+because Metro does not map `.js` to `.ts`, and that happens on SDK 53 already.
+Add the `resolver.resolveRequest` block described in
+`forge skill load migrations/v1.4.0/native-dev-loop` (heading "Generated clients
+bundle in Metro") to `metro.config.js` first.
 
 ### Acceptance for existing apps
 
@@ -143,11 +182,31 @@ foundation gates; these repairs alone do not establish production readiness.
 
 ### Native lint and unit-test harness
 
-New Expo scaffolds include owned `eslint.config.cjs`, `jest.config.cjs` and
+New Expo scaffolds include owned `eslint.config.cjs`, `jest.config.cjs`,
+`tests/setup/expo-fetch.ts`, `tests/fetch-stub.test.ts` and
 `tests/app-config.test.ts`. Existing apps may add missing files from the current
 scaffold, but must preserve customized lint/test configurations and app config
-formats. The test is a Router/identity configuration smoke test, not native UI,
-secure-storage or device coverage; adapt it if moving to dynamic Expo config.
+formats.
+
+**How to get a scaffold file** (this applies everywhere a playbook says "from the
+current scaffold"; run it at the project's pinned forge): `forge project rescaffold
+<path>...` writes a file that is absent, as forge would scaffold it today (it
+refuses a path that exists); `forge project upgrade --check <path>` prints one
+existing file's diff against the template; `forge project upgrade --force <path>`
+replaces one that exists (use it for a file you never edited). `forge project
+upgrade --check --all` lists every file with how far behind it is.
+
+The set belongs together: `jest.config.cjs` lists `tests/setup/expo-fetch.ts` in
+`setupFiles` (the `expo/fetch` to `globalThis.fetch` mapping the tests rely on),
+so adding the config without that file fails every test suite with `Module
+<rootDir>/tests/setup/expo-fetch.ts in the setupFiles option was not found`. Add
+both, and `tests/fetch-stub.test.ts` (the pattern for an app test that stubs the
+network; it passes on any SDK). `tests/app-config.test.ts` is a Router/identity
+configuration smoke test, not native UI, secure-storage or device coverage. Its
+second case, "declares native identifiers and a valid deep-link scheme", asserts
+the section 5 scheme contract (one string equal to the bundle id), so an app that
+has not done section 5 fails it: add the file now **without that case**, and
+section 5 adds it back. Adapt the file if moving to dynamic Expo config.
 
 If you stay on SDK 52, use React/React DOM 18.3.1, Jest/jest-expo 29/52,
 `@jest/globals` 29 and the tested ESLint 9 flat configuration dependency
@@ -190,92 +249,33 @@ config-only smoke tests do not expose this module-loading requirement.
 ## 3. Expo SDK 52 to 58
 
 **Use when** an Expo frontend's `package.json` declares `expo` below `~58`. New
-scaffolds are generated on SDK 58 (`expo ~58.0.23`, React and React DOM 19.3.0,
-React Native 0.88.1, Router `~58.0.30`); forge never rewrites an existing app's
-`package.json`, `app.json`, `metro.config.js`, `tsconfig.json`, Jest or ESLint files.
-The SDK versions below are Expo's `bundledNativeModules.json` (sdk-58 branch), not
-`npm latest`.
-
-### Upgrade one SDK at a time
-
-Expo recommends upgrading **one SDK at a time** so a breakage has one cause. Do not
-jump 52 to 58 blindly: no direct 52-to-58 path is validated here, only a fresh SDK 58
-scaffold. For each of 53, 54, 55, 56, 57 and 58, read that release's changelog
-(expo.dev/changelog/sdk-N), then:
-
-```bash
-pnpm add expo@^N.0.0        # N = the next SDK
-npx expo install --fix      # aligns every Expo-managed dependency to that SDK
-npx expo-doctor             # must be clean before moving on
-```
-
-then run `typecheck`, `lint`, `test` and an `expo export` for each platform. Delete
-generated `ios/` and `android/` directories (or run `npx pod-install` and apply the
-native upgrade helper if you keep them) and rebuild any development build.
-
-What each step changes for the forge starter:
-
-| SDK | Template-relevant change |
-| --- | --- |
-| 53 | React 19 and React Native 0.79. Metro enables package.json `exports` by default, so `unstable_enablePackageExports` is no longer needed. New Architecture on by default. `eslint-config-expo` flat config. Node 18 dropped. |
-| 54 | React Native 0.81, React 19.1. Last SDK with the Legacy Architecture. Isolated pnpm installs and monorepos are supported, so `nodeLinker: hoisted` is no longer required. `SafeAreaView` from react-native deprecated (the starter uses `react-native-safe-area-context`). |
-| 55 | Legacy Architecture removed: delete `newArchEnabled` from `app.json` (expo-doctor fails the schema otherwise). `edgeToEdgeEnabled` removed. Node 20.19.4+. |
-| 56 | React Native 0.85, React 19.2. `expo/fetch` becomes `globalThis.fetch` (opt out: `EXPO_PUBLIC_USE_RN_FETCH=1`). TypeScript 6.0.3 is pulled in by `expo install --fix`; `baseUrl` then fails with TS5101, so use `paths` alone. Expo Router drops its React Navigation dependency. On-demand file system: `watchFolders` no longer load-bearing. |
-| 57 | React Native 0.86, no breaking changes. |
-| 58 | React Native 0.88, React 19.3. Node `^22.13 \|\| ^24.3 \|\| ^26 \|\| >=27`. Router defaults `web.output` to `server` (set `"static"` to keep a static export, which the starter does). `jest-expo` needs `@react-native/jest-preset` and Jest 30. Strict TypeScript API for React Native. Safe-area handling on web moves to CSS `env()`. |
-
-### Owned files to adapt by hand
-
-- `package.json`: let `expo install --fix` move Expo-managed packages. Add
-  `@react-native/jest-preset` (`~0.88.1`) and move `jest`/`@jest/globals` to `^30` when
-  you adopt `jest-expo ~58`. Raise `@types/react` to `~19.3.0` and `typescript` to
-  `~6.0.3`; add `engines.node` if you want the Expo range enforced. Remove
-  `query-string` if it was only there for Router's SDK 52 hoisting failure.
-  Keep `@babel/runtime`: Expo declares it only as a dependency of its own packages,
-  and under isolated pnpm it is not importable from the app.
-- `app.json`: delete `newArchEnabled`; run `npx expo-doctor` to catch other removed
-  fields. Router's `web.output` stays `"static"` if you export a static site.
-- `tsconfig.json`: delete `baseUrl` (TypeScript 6) and, once `expo/tsconfig.base` is
-  SDK 58's, the explicit `moduleResolution`; keep `paths`.
-- `metro.config.js`: remove `unstable_enablePackageExports` and the workspace-root
-  `nodeModulesPaths` / `watchFolders` additions only after a bundle passes without
-  them. Keep the local runtime bridge block (`watchFolders` for a symlinked
-  `@reliantlabs/forge-web-runtime`): it is a forge dev-build concern, not an SDK one.
-- `pnpm-workspace.yaml`: `nodeLinker: hoisted` may be removed after SDK 54; in a
-  workspace layout the project root file is shared with the web frontends, so
-  validate the native bundle in that layout before changing it. Add
-  `"@parcel/watcher": false` to `allowBuilds` (Jest 30's watcher; its install script
-  only builds from source when asked).
-- `jest.config.cjs`: `jest-expo ~58` rewrites `transformIgnorePatterns`; re-check
-  that the runtime/Connect/protobuf allowance still matches.
-- Shared `ui-native` package: newly generated packages declare `@types/react ~19.3.0`.
-  Existing owned packages are unchanged; align them with the native app's React
-  type major when upgrading so one `@types/react` major is installed. A new
-  ui-native package beside an SDK 52 app should use `~18.3.0` until that app is
-  upgraded. Generated hooks/api packages declare no React types.
-- `ui-native` Input now types its ref as `React.ComponentRef<typeof TextInput>`
-  (`InputRef`), which works with React Native's legacy and SDK 58 strict APIs.
-
-Verify with `expo install --check`, `expo-doctor`, the app and shared-package
-typechecks, one executed generated-hook test, and iOS and Android `expo export`. These
-checks are JS-level evidence only: a device build, Hermes streaming and native auth
-are separate gates.
+scaffolds are generated on SDK 58; forge never rewrites an existing app's
+`package.json`, `app.json`, `metro.config.js`, `tsconfig.json`, Jest or ESLint
+files. Upgrade one SDK at a time with `npx expo install expo@~N.0.0 --fix`, after
+sections 2 (the foundation, which must be in place first) and before 4 and 5.
+The per-SDK table, the SDK 56 `expo-doctor` regression, the pnpm `allowBuilds`
+entry SDK 58 needs first and the owned files to adapt are in
+`forge skill load migrations/v1.4.0/native-sdk`.
 
 ## 4. Native dev loop
 
 **Use when** the project has an Expo frontend. New scaffolds include all of it;
 existing apps own the affected files and adapt them by hand: the
 `babel-preset-expo` dependency, the `expo/fetch` streaming transport and Jest
-mapping, the Metro `.js`→`.ts` resolver fallback for generated clients, portable
-runtime imports in shared helpers, device-reachable API and Metro origins, native
-dev-log forwarding, focus/connectivity adapters and the mutation `networkMode`
-default. Load `forge skill load migrations/v1.4.0/native-dev-loop`.
+mapping, the Metro `.js`→`.ts` resolver fallback for generated clients (already
+required by section 2), device-reachable API and Metro origins, the Metro port
+(delete the mobile `port` line from `deploy/kcl/dev/main.k`), native dev-log
+forwarding, the web receivers' `no-control-regex` lint line, focus/connectivity
+adapters and the mutation `networkMode` default. Load
+`forge skill load migrations/v1.4.0/native-dev-loop`.
 
 ## 5. Native auth
 
 **Use when** the project has an Expo frontend and wants system-browser sign-in
 (OAuth code + PKCE, keystore tokens). Owned files, so adapt by hand: new
-dependencies, the `expo-secure-store` plugin, the `scheme` array, `src/lib/auth/*`,
-the context, transport and layout edits and the Jest config. Existing apps keep
-working until `EXPO_PUBLIC_FORGE_OIDC_*` is set. Load
-`forge skill load migrations/v1.4.0/native-auth`.
+dependencies, the `expo-secure-store` plugin, `expo.scheme` (one reverse-DNS
+string; never change `bundleIdentifier` or `package`), `src/lib/auth/*`, the
+context, transport and layout edits, `tests/connect-transport.test.ts` and the
+Jest config, plus the API half (`internal/app/auth.go`, `login_broker.go`, the
+config proto). Existing apps keep working until `EXPO_PUBLIC_FORGE_OIDC_*` is
+set. Load `forge skill load migrations/v1.4.0/native-auth`.

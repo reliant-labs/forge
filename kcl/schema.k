@@ -3925,7 +3925,11 @@ schema Frontend:
     # bytes on every machine. See GitSource.
     source?: GitSource
     dev_runner: str = "npm"
-    port: int = 3000
+    # The dev server's port. A browser frontend that declares none gets 3000. A
+    # native ('rn') frontend that declares none gets NO port, so `forge env up`
+    # prefers Expo's 8081, which is where a native Debug build looks for Metro,
+    # and falls back to a free one; declare a port only to pin Metro elsewhere.
+    port?: int = 3000 if type != "rn" else Undefined
     env_file?: str
     # KCL-declared per-env vars, layered on top of env_file at dev launch
     # (same EnvVar shape services use). Values may be composed
@@ -4075,7 +4079,7 @@ schema Frontend:
             "Frontend.type must be 'nextjs' | 'vite' | 'rn'"
         dev_runner in ["npm", "pnpm", "yarn"], \
             "Frontend.dev_runner must be 'npm' | 'pnpm' | 'yarn'"
-        port > 0 and port < 65536, "Frontend.port must be 1..65535"
+        port == Undefined or (port > 0 and port < 65536), "Frontend.port must be 1..65535"
         telemetry == Undefined or type != "rn", \
             "Frontend '${name}'.telemetry is for a browser frontend; a 'rn' frontend runs no browser SDK"
         native_sign_in or type == "rn", \

@@ -133,11 +133,7 @@ func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, erro
 // the thing being replaced); its timeout and redirect policy are kept. If the
 // issuer is anything else (HTTPS, loopback, a name), this does nothing.
 func (u *UserInfo) AllowLocalPlainHTTP() *UserInfo {
-	parsed, err := url.Parse(u.issuer)
-	if err != nil || parsed.Scheme != "http" {
-		return u
-	}
-	if ip := net.ParseIP(parsed.Hostname()); ip == nil || ip.To4() == nil || ip.IsLoopback() {
+	if !isLocalPlainHTTPIssuer(u.issuer) {
 		return u
 	}
 	u.localHTTP = true
@@ -145,6 +141,49 @@ func (u *UserInfo) AllowLocalPlainHTTP() *UserInfo {
 	u.client.Transport = guard.Transport()
 	return u
 }
+
+// isLocalPlainHTTPIssuer reports whether issuer is plain HTTP at a
+// non-loopback IPv4 literal: the one shape a --device-host dev issuer has.
+func isLocalPlainHTTPIssuer(issuer string) bool {
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Scheme != "http" {
+		return false
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	return ip != nil && ip.To4() != nil && !ip.IsLoopback()
+}
+
+// LocalIssuerHTTPClient is the client to reach a DEVELOPMENT issuer that is
+// plain HTTP at this machine's own LAN IPv4 address: for [JWTConfig.HTTPClient]
+// (the JWKS fetch) and for the OIDC discovery request that finds the JWKS URL,
+// the same two hops [UserInfo.AllowLocalPlainHTTP] confines for userinfo.
+// Without it those requests go through [http.DefaultTransport], which honours
+// HTTP_PROXY and would send the fetch to a proxy, or to whoever holds the
+// address after a network change, and so accept keys that sign forged tokens.
+//
+// The client's transport ignores proxy variables and refuses, at connect time
+// and against the interfaces as they are then, any address that is not
+// loopback or this machine's (see [netguard.LocalOnly]); a redirect or a
+// document naming another host is refused the same way.
+//
+// It returns nil, which every consumer reads as "the default client", when
+// issuer is anything else (HTTPS, loopback, a name), so callers can gate it on
+// their dev opt-in and pass the result unconditionally. Call it only for a dev
+// issuer, never from a deployed configuration.
+func LocalIssuerHTTPClient(issuer string) *http.Client {
+	return localIssuerHTTPClient(issuer, nil)
+}
+
+func localIssuerHTTPClient(issuer string, interfaces func() ([]net.Addr, error)) *http.Client {
+	if !isLocalPlainHTTPIssuer(issuer) {
+		return nil
+	}
+	guard := netguard.LocalOnly{Interfaces: interfaces}
+	return &http.Client{Transport: guard.Transport(), Timeout: localIssuerTimeout}
+}
+
+// localIssuerTimeout bounds one request to a local dev issuer.
+const localIssuerTimeout = 10 * time.Second
 
 // secureEndpoint reports whether a bearer token may be sent to u: HTTPS, or
 // plain HTTP to loopback.

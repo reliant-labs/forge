@@ -190,6 +190,20 @@ func TestAuthScaffold_UserInfoLocalHTTPIsOptInAndDeclared(t *testing.T) {
 	if !strings.Contains(with, "if cfg.JwtUserinfoAllowLocalHttp {\n\t\t\tuserInfo.AllowLocalPlainHTTP()") {
 		t.Errorf("the declared field gates the opt-in:\n%s", with)
 	}
+	// The issuer's discovery and JWKS requests take the local-only client under
+	// the same opt-in, and a config without the field leaves them on the default.
+	for _, want := range []string{
+		"auth.LocalIssuerHTTPClient(cfg.JwtIssuer)",
+		"HTTPClient:    httpClient,",
+		"oauth2.Discover(ctx, discoveryDoer(httpClient), cfg.JwtIssuer)",
+	} {
+		if !strings.Contains(with, want) {
+			t.Errorf("the declared field must route discovery and the JWKS fetch through the local-only client; missing %q:\n%s", want, with)
+		}
+	}
+	if strings.Contains(without, "HTTPClient") || !strings.Contains(without, "oauth2.Discover(ctx, nil, cfg.JwtIssuer)") {
+		t.Errorf("a config without the field keeps the default client for discovery and the JWKS fetch:\n%s", without)
+	}
 }
 
 // The broker confines its IdP client to this machine only when the config it

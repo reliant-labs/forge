@@ -183,9 +183,29 @@ function handleDevLogBody(body, byteLength) {
   return { status: 204, lines: entries.map(formatDevLogEntry) };
 }
 
+// Only `application/json` is accepted. The native forwarder always sends it,
+// and a cross-site <form> cannot (its simple content types are
+// application/x-www-form-urlencoded, multipart/form-data and text/plain),
+// so a page open in the developer's browser cannot write lines into this
+// log. The web receivers cannot make the same demand: their unload flush is
+// a sendBeacon, which can only send text/plain without a preflight.
+function isJsonRequest(req) {
+  const type = String(req.headers?.["content-type"] ?? "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  return type === "application/json";
+}
+
 function devLogRequest(req, res) {
   if (req.method !== "POST") {
     res.statusCode = 405;
+    res.end();
+    return;
+  }
+  if (!isJsonRequest(req)) {
+    req.resume();
+    res.statusCode = 415;
     res.end();
     return;
   }

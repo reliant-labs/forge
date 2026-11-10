@@ -123,14 +123,34 @@ shim:
 ```typescript
 // packages/hooks/src/transport.ts
 import { createClient, type Transport } from "@connectrpc/connect";
+import type { DescService } from "@bufbuild/protobuf";
 
 let _transport: Transport | null = null;
 
 export function setApiTransport(t: Transport) { _transport = t; }
-export function connectClient<S>(service: S) {
-  return createClient(service, _transport ?? throwIfNull());
+export function getApiTransport(): Transport {
+  if (!_transport) throw new Error("ApiTransport not initialized — call setApiTransport(transport)");
+  return _transport;
+}
+
+// Resolve at RPC invocation, not client construction: generated service modules
+// create their clients while the barrel is still loading, before any frontend
+// has registered. Swaps affect later calls, not operations already started.
+const forwardingTransport: Transport = {
+  unary: (...args) => getApiTransport().unary(...args),
+  stream: (...args) => getApiTransport().stream(...args),
+};
+
+export function connectClient<S extends DescService>(service: S) {
+  return createClient(service, forwardingTransport);
 }
 ```
+
+A client built eagerly from the registered transport (`createClient(service,
+_transport ?? throwIfNull())`) throws at import time, before the frontend's
+`connect.ts` has run; a project scaffolded before v1.4.0 may still have that form.
+`migrations/v1.4.0` (section 2, "Shared workspace transport") adapts it, and
+`frontend` / `ui-native-package` cover the native side.
 
 Each frontend builds its Transport (browser fetch in Next.js, custom
 fetch in React Native) once at startup and hands it over:

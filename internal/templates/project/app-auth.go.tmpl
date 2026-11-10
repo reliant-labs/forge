@@ -29,6 +29,9 @@ import (
 {{- if not .NoJWTConfig}}
 	"context"
 	"fmt"
+{{- if .UserInfoLocalHTTPField}}
+	"net/http"
+{{- end}}
 	"time"
 {{- end}}
 
@@ -44,6 +47,31 @@ import (
 // discoveryTimeout bounds the one OIDC discovery request SetupAuth makes at
 // boot when the JWKS URL is derived from jwt_issuer rather than configured.
 const discoveryTimeout = 10 * time.Second
+{{- if .UserInfoLocalHTTPField}}
+
+// issuerClient is the client the issuer's OIDC discovery and JWKS requests go
+// out through. It is nil, the default client, except under the development
+// opt-in jwt_userinfo_allow_local_http (`forge env up --device-host` sets it)
+// with a plain-HTTP issuer at this machine's LAN IPv4 address: there it is
+// the connect-time local-only client, so a proxy variable or a changed network
+// cannot put someone else's keys in front of the validator. Never set the
+// opt-in in a deployed environment.
+func issuerClient(cfg *config.{{or .AuthConfigType "Config"}}) *http.Client {
+	if !cfg.JwtUserinfoAllowLocalHttp {
+		return nil
+	}
+	return auth.LocalIssuerHTTPClient(cfg.JwtIssuer)
+}
+
+// discoveryDoer is issuerClient as the oauth2.Discover argument; a nil
+// *http.Client must not become a non-nil interface.
+func discoveryDoer(c *http.Client) oauth2.HTTPDoer {
+	if c == nil {
+		return nil
+	}
+	return c
+}
+{{- end}}
 {{- end}}
 
 {{- if .NoJWTConfig}}
@@ -153,6 +181,9 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 // anonymous caller.
 func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator, error) {
 	jwksURL := cfg.JwtJwksUrl
+{{- if .UserInfoLocalHTTPField}}
+	httpClient := issuerClient(cfg)
+{{- end}}
 	snapshot := auth.JWKSSnapshot{
 		File:   cfg.JwtJwksSnapshotFile,
 		Inline: cfg.JwtJwksSnapshot,
@@ -176,7 +207,7 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 			ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 			defer cancel()
 
-			meta, err := oauth2.Discover(ctx, nil, cfg.JwtIssuer)
+			meta, err := oauth2.Discover(ctx, {{if .UserInfoLocalHTTPField}}discoveryDoer(httpClient){{else}}nil{{end}}, cfg.JwtIssuer)
 			if err != nil {
 				return "", fmt.Errorf("discover OIDC issuer %q: %w", cfg.JwtIssuer, err)
 			}
@@ -208,6 +239,9 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 			Audience:      cfg.JwtAudience,
 			JWKSURL:       jwksURL,
 			JWKSDiscover:  discover,
+{{- if .UserInfoLocalHTTPField}}
+			HTTPClient:    httpClient,
+{{- end}}
 			JWKSSnapshot:  snapshot,
 			Secret:        cfg.JwtSecret,
 			RolesClaim:    cfg.JwtRolesClaim,
@@ -238,7 +272,7 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 		userInfo := auth.NewUserInfo(cfg.JwtIssuer, func(ctx context.Context) (string, error) {
 			ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 			defer cancel()
-			meta, err := oauth2.Discover(ctx, nil, cfg.JwtIssuer)
+			meta, err := oauth2.Discover(ctx, {{if .UserInfoLocalHTTPField}}discoveryDoer(httpClient){{else}}nil{{end}}, cfg.JwtIssuer)
 			if err != nil {
 				return "", err
 			}

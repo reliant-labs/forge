@@ -527,8 +527,6 @@ func (i ShapeIdentity) canonical() ShapeIdentity {
 	return out
 }
 
-// sortedNonEmpty is [sortedStrings] that returns nil for an empty list, so a
-// field tagged omitempty omits it and a round trip compares equal.
 // orderedNonEmpty keeps the declared order (it is meaningful) and drops
 // repeats and blanks; nil when nothing is left.
 func orderedNonEmpty(in []string) []string {
@@ -544,6 +542,8 @@ func orderedNonEmpty(in []string) []string {
 	return out
 }
 
+// sortedNonEmpty is [sortedStrings] that returns nil for an empty list, so a
+// field tagged omitempty omits it and a round trip compares equal.
 func sortedNonEmpty(in []string) []string {
 	if len(in) == 0 {
 		return nil

@@ -179,12 +179,18 @@ func TestConverge_DeviceHostAgainstTheRealHostZitadel(t *testing.T) {
 	// lookup is installed over the same issuer, with the dev opt-in when asked.
 	apiAuthenticator := func(t *testing.T, issuer, audience string, allowLocalHTTP bool) *auth.Authenticator {
 		t.Helper()
-		meta, err := oauth2.Discover(ctx, nil, issuer)
+		var client *http.Client
+		var doer oauth2.HTTPDoer
+		if allowLocalHTTP {
+			client = auth.LocalIssuerHTTPClient(issuer)
+			doer = client
+		}
+		meta, err := oauth2.Discover(ctx, doer, issuer)
 		if err != nil {
 			t.Fatalf("discover %s: %v", issuer, err)
 		}
 		v, err := auth.NewValidator(auth.Config{Provider: "jwt", JWT: auth.JWTConfig{
-			Issuer: issuer, Audience: audience, JWKSURL: meta.JWKSURI,
+			Issuer: issuer, Audience: audience, JWKSURL: meta.JWKSURI, HTTPClient: client,
 		}})
 		if err != nil {
 			t.Fatalf("API validator: %v", err)

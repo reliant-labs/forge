@@ -83,6 +83,13 @@ test('generated service query reaches the bootstrapped transport', async () => {
 });
 `
 
+// expoDoctorVersion pins expo-doctor, which is not an app dependency and is not
+// bundled by the SDK 58 CLI (`expo doctor` there only says "use npx expo-doctor").
+// Never float it: a new release adds checks and would fail a green scaffold
+// with no change on our side. Bump it deliberately, with the Expo SDK pin in
+// the mobile package.json template, after a hand run reports N/N checks passed.
+const expoDoctorVersion = "1.21.6"
+
 type mobileConsumerRunner struct{ env []string }
 
 func newMobileConsumerRunner(t *testing.T) mobileConsumerRunner {
@@ -108,6 +115,19 @@ func newMobileConsumerRunner(t *testing.T) mobileConsumerRunner {
 
 func (r mobileConsumerRunner) run(t *testing.T, dir, command string, args ...string) string {
 	t.Helper()
+	out, _, err := r.runExit(t, dir, command, args...)
+	if err != nil {
+		t.Fatalf("%s %v in %s: %v\n%s", command, args, dir, err, out)
+	}
+	t.Logf("%s %v: %s", command, args, out)
+	return out
+}
+
+// runExit runs a command and returns its output and exit code without failing
+// the test on a nonzero exit; err is set for any failure, including a command
+// that never started.
+func (r mobileConsumerRunner) runExit(t *testing.T, dir, command string, args ...string) (string, int, error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	t.Logf("running %s %v in %s", command, args, dir)
@@ -117,11 +137,34 @@ func (r mobileConsumerRunner) run(t *testing.T, dir, command string, args ...str
 	cmd.Cancel = func() error { return killProcessTree(cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 10 * time.Second
 	out, err := cmd.CombinedOutput()
+	exit := 0
 	if err != nil {
-		t.Fatalf("%s %v in %s: %v\n%s", command, args, dir, err, out)
+		exit = -1
+		if ee, ok := err.(*exec.ExitError); ok {
+			exit = ee.ExitCode()
+		}
 	}
-	t.Logf("%s %v: %s", command, args, out)
-	return string(out)
+	return string(out), exit, err
+}
+
+// runExpoCheck runs one Expo project check and fails the test on a real
+// problem. It returns a non-empty reason when the check could not run because
+// Expo's service was unreachable; the caller skips once the rest of the case
+// has run, so a host outage costs only this check's verdict.
+func (r mobileConsumerRunner) runExpoCheck(t *testing.T, dir string, classify func(string, int) expoCheckVerdict, command string, args ...string) string {
+	t.Helper()
+	out, exit, err := r.runExit(t, dir, command, args...)
+	switch classify(out, exit) {
+	case expoCheckPassed:
+		t.Logf("%s %v: %s", command, args, out)
+		return ""
+	case expoCheckUnreachable:
+		t.Logf("%s %v: Expo service unreachable (exit %d):\n%s", command, args, exit, out)
+		return fmt.Sprintf("Expo API (api.expo.dev / exp.host) unreachable: %s %v could not complete", command, args)
+	default:
+		t.Fatalf("%s %v in %s failed (exit %d, err %v):\n%s", command, args, dir, exit, err, out)
+		return ""
+	}
 }
 
 func mobileConsumerFixture(t *testing.T, bin, shape, source string) {
@@ -208,6 +251,18 @@ func mobileConsumerFixture(t *testing.T, bin, shape, source string) {
 	}
 	// Node resolves the installed artifact, never a source checkout or dev link.
 	r.run(t, mobile, "node", "-e", `const fs=require('fs'),path=require('path'); const root=fs.realpathSync(process.argv[1])+path.sep; const p=fs.realpathSync(require.resolve('@reliantlabs/forge-web-runtime/interceptors')); if(!p.startsWith(root)||!p.includes('node_modules')||p.includes('.forge-link')) throw Error(p); const pkg=require('@reliantlabs/forge-web-runtime/package.json'); console.log('runtime provenance: '+pkg.version+' '+p);`, project)
+	// Expo's own project checks, in the frontend dir with the case's package
+	// manager. Both reach Expo's API; an unreachable API skips at the end of the
+	// case (see runExpoCheck), a real finding fails now.
+	var expoSkip string
+	for _, reason := range []string{
+		r.runExpoCheck(t, mobile, classifyExpoDoctor, "pnpm", "dlx", "expo-doctor@"+expoDoctorVersion),
+		r.runExpoCheck(t, mobile, classifyExpoInstallCheck, "pnpm", "exec", "expo", "install", "--check"),
+	} {
+		if reason != "" {
+			expoSkip = reason
+		}
+	}
 	hooksImport := "../src/hooks/widget-service-hooks_gen"
 	if shape == "workspace" {
 		hooksImport = "@consumer/hooks"
@@ -288,6 +343,9 @@ export default function GeneratedClient() {
 		}
 	}
 	r.run(t, mobile, "pnpm", "run", "typecheck")
+	if expoSkip != "" {
+		t.Skip(expoSkip + " (every other step of this case passed)")
+	}
 }
 
 // nativeAuthSuites are the Jest suites the native-auth slice scaffolds; the

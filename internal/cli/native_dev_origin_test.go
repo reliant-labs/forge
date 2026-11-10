@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +173,40 @@ func TestBuildFrontendDevCmd_NativeAPIOriginPrecedence(t *testing.T) {
 				t.Fatalf("%s = %q, want %q", tc.varKey, got, tc.want)
 			}
 		})
+	}
+}
+
+// A native frontend's API origin follows shell > KCL > .env.<env> > injected:
+// a value in the frontend's own .env.<env> beats forge's injection, and the
+// shell and KCL beat the file.
+func TestBuildFrontendDevCmd_NativeAPIURLPrecedence(t *testing.T) {
+	const listener = "http://localhost:4000"
+	envFile := filepath.Join(t.TempDir(), ".env.dev")
+	if err := os.WriteFile(envFile, []byte("EXPO_PUBLIC_API_URL=http://env-file.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	native := FrontendEntity{Name: "mobile", Type: "react-native", Path: "mobile", Port: 8081, EnvFile: envFile}
+	web := FrontendEntity{Name: "web", Type: "vite-spa", Path: "web", Port: 5173, EnvFile: envFile}
+	withKCL := native
+	withKCL.EnvVars = []KCLEnvVar{{Name: "EXPO_PUBLIC_API_URL", Value: "http://kcl.test"}}
+	get := func(fe FrontendEntity, key, host string, parent []string) string {
+		fl := frontendLaunch{env: "dev", apiBaseURL: listener, deviceHost: host}
+		return nativeOriginEnvMap(buildFrontendDevCmd(context.Background(), fl, fe, parent).Env)[key]
+	}
+	if got := get(native, "EXPO_PUBLIC_API_URL", "", nil); got != "http://env-file.test" {
+		t.Errorf(".env.<env> must beat forge's injection, got %q", got)
+	}
+	if got := get(native, "EXPO_PUBLIC_API_URL", "192.168.1.20", nil); got != "http://env-file.test" {
+		t.Errorf(".env.<env> must beat the device-host origin too, got %q", got)
+	}
+	if got := get(native, "EXPO_PUBLIC_API_URL", "", []string{"EXPO_PUBLIC_API_URL=http://shell.test"}); got != "http://env-file.test" {
+		t.Errorf("a value in .env.<env> still beats the shell (declared wins), got %q", got)
+	}
+	if got := get(withKCL, "EXPO_PUBLIC_API_URL", "", nil); got != "http://kcl.test" {
+		t.Errorf("KCL must beat .env.<env>, got %q", got)
+	}
+	if got := get(web, "VITE_API_URL", "", nil); got != listener {
+		t.Errorf("a web frontend is unchanged: forge's origin wins, got %q", got)
 	}
 }
 

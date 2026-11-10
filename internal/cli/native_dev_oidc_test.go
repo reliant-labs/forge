@@ -376,22 +376,22 @@ func TestBuildFrontendDevCmd_NativeOIDCPrecedence(t *testing.T) {
 	mobile := e.Frontends[1]
 	fl := frontendLaunch{entities: e, env: "dev", projectDir: dir}
 
-	t.Run("shell beats injected, per variable", func(t *testing.T) {
-		cmd := buildFrontendDevCmd(context.Background(), fl, mobile, []string{oidcIssuerEnv + "=http://tunnel.test:8098"})
+	t.Run("shell beats injected, per variable (scopes alone)", func(t *testing.T) {
+		cmd := buildFrontendDevCmd(context.Background(), fl, mobile, []string{oidcScopesEnv + "=openid"})
 		env := nativeOriginEnvMap(cmd.Env)
-		if env[oidcIssuerEnv] != "http://tunnel.test:8098" {
-			t.Errorf("issuer = %q", env[oidcIssuerEnv])
+		if env[oidcScopesEnv] != "openid" {
+			t.Errorf("scopes = %q", env[oidcScopesEnv])
 		}
-		if env[oidcClientIDEnv] != "mobile-client" {
-			t.Errorf("an unset variable is still injected, got %q", env[oidcClientIDEnv])
+		if env[oidcIssuerEnv] != testIssuerBase || env[oidcClientIDEnv] != "mobile-client" {
+			t.Errorf("the other variables are still injected, got issuer %q client %q", env[oidcIssuerEnv], env[oidcClientIDEnv])
 		}
 	})
 	t.Run("KCL env_vars beat injected", func(t *testing.T) {
 		fe := mobile
-		fe.EnvVars = []KCLEnvVar{{Name: oidcClientIDEnv, Value: "declared-client"}}
+		fe.EnvVars = []KCLEnvVar{{Name: oidcRedirectURIEnv, Value: "custom:/cb"}}
 		cmd := buildFrontendDevCmd(context.Background(), fl, fe, nil)
-		if got := nativeOriginEnvMap(cmd.Env)[oidcClientIDEnv]; got != "declared-client" {
-			t.Errorf("client = %q", got)
+		if got := nativeOriginEnvMap(cmd.Env)[oidcRedirectURIEnv]; got != "custom:/cb" {
+			t.Errorf("redirect = %q", got)
 		}
 	})
 	t.Run(".env.<env> beats injected", func(t *testing.T) {
@@ -483,7 +483,7 @@ func TestNativeAppSchemes(t *testing.T) {
 		{"an acme-style single scheme", `{"expo":{"scheme":"com.acme.mobile","ios":{"bundleIdentifier":"com.acme.mobile"}}}`, "com.acme.mobile", nil},
 		{"the link scheme is not the callback", `{"expo":{"scheme":["mobile","com.acme.mobile"]}}`, "com.acme.mobile", nil},
 		{"bundle id only, no usable scheme", `{"expo":{"scheme":"mobile","ios":{"bundleIdentifier":"com.MyApp.mobile"},"android":{"package":"com.my_app.mobile"}}}`,
-			"", []string{"NO native sign-in client was registered", `"scheme": ["mobile", "com.myapp.mobile"]`, "may stay as it is"}},
+			"", []string{"NO native sign-in client was registered", `"scheme": "com.myapp.mobile"`, "can stay as they are", "native_sign_in = False", "migrations/v1.4.0/native-auth"}},
 		{"an invalid scheme is not accepted", `{"expo":{"scheme":["mobile","com.my_app.mobile","Com.Acme.App"]}}`,
 			"", []string{"has expo.scheme", "none of it is a valid private-use scheme", `"com.my-app.mobile"`}},
 		{"no scheme and no ids", `{"expo":{}}`, "", []string{"has no expo.scheme", "com.example.mobile"}},
@@ -605,28 +605,93 @@ func TestBuildFrontendDevCmd_NativeOIDCFullPrecedence(t *testing.T) {
 	mobile := e.Frontends[1]
 	fl := frontendLaunch{entities: e, env: "dev", projectDir: dir}
 	envFile := filepath.Join(t.TempDir(), ".env.dev")
-	if err := os.WriteFile(envFile, []byte(oidcScopesEnv+"=from-env-file\n"+oidcIssuerEnv+"=http://env-file.test\n"), 0o600); err != nil {
+	if err := os.WriteFile(envFile, []byte(oidcScopesEnv+"=from-env-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fe := mobile
 	fe.EnvFile = envFile
-	fe.EnvVars = []KCLEnvVar{{Name: oidcIssuerEnv, Value: "http://kcl.test"}}
-	shell := []string{oidcIssuerEnv + "=http://shell.test", oidcScopesEnv + "=from-shell", oidcClientIDEnv + "=shell-client"}
+	fe.EnvVars = []KCLEnvVar{{Name: oidcRedirectURIEnv, Value: "kcl:/cb"}}
+	shell := []string{oidcRedirectURIEnv + "=shell:/cb", oidcScopesEnv + "=from-shell", oidcPostLogoutURIEnv + "=shell:/out"}
 
 	got := nativeOriginEnvMap(buildFrontendDevCmd(context.Background(), fl, fe, shell).Env)
 	for k, want := range map[string]string{
-		oidcIssuerEnv:      "http://kcl.test",                // KCL > .env.<env> > shell
-		oidcScopesEnv:      "from-env-file",                  // .env.<env> > shell
-		oidcClientIDEnv:    "shell-client",                   // shell > injected
-		oidcRedirectURIEnv: "com.acme.mobile:/oauthredirect", // nothing above it: injected
+		oidcRedirectURIEnv:   "kcl:/cb",       // KCL > shell
+		oidcScopesEnv:        "from-env-file", // .env.<env> > shell
+		oidcPostLogoutURIEnv: "shell:/out",    // shell > injected
+		oidcClientIDEnv:      "mobile-client", // nothing above it: injected
 	} {
 		if got[k] != want {
 			t.Errorf("%s = %q, want %q", k, got[k], want)
 		}
 	}
 
-	override := append(slices.Clone(shell), "FORGE_ENV_OVERRIDE="+oidcIssuerEnv)
-	if got := nativeOriginEnvMap(buildFrontendDevCmd(context.Background(), fl, fe, override).Env); got[oidcIssuerEnv] != "http://shell.test" {
-		t.Errorf("FORGE_ENV_OVERRIDE: issuer = %q, want the shell's", got[oidcIssuerEnv])
+	override := append(slices.Clone(shell), "FORGE_ENV_OVERRIDE="+oidcRedirectURIEnv)
+	if got := nativeOriginEnvMap(buildFrontendDevCmd(context.Background(), fl, fe, override).Env); got[oidcRedirectURIEnv] != "shell:/cb" {
+		t.Errorf("FORGE_ENV_OVERRIDE: redirect = %q, want the shell's", got[oidcRedirectURIEnv])
 	}
+}
+
+// The five variables are one unit: an issuer or a client id set by ANY layer
+// (shell, KCL env_vars, .env.<env>) means the app is configured for another
+// identity provider, so forge injects none of its dev client's scopes or
+// redirects and prints one line saying why.
+func TestBuildFrontendDevCmd_NativeOIDCIsInjectedAsOneUnit(t *testing.T) {
+	dir, e := nativeProject(t, nativeIdentityOutput())
+	mobile := e.Frontends[1]
+	fl := frontendLaunch{entities: e, env: "dev", projectDir: dir}
+	envFile := func(body string) string {
+		p := filepath.Join(t.TempDir(), ".env.dev")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cases := []struct {
+		name  string
+		fe    func(FrontendEntity) FrontendEntity
+		shell []string
+		set   string
+	}{
+		{"shell issuer", func(f FrontendEntity) FrontendEntity { return f }, []string{oidcIssuerEnv + "=https://other.idp"}, oidcIssuerEnv},
+		{"shell client id", func(f FrontendEntity) FrontendEntity { return f }, []string{oidcClientIDEnv + "=other"}, oidcClientIDEnv},
+		{"KCL issuer", func(f FrontendEntity) FrontendEntity {
+			f.EnvVars = []KCLEnvVar{{Name: oidcIssuerEnv, Value: "https://other.idp"}}
+			return f
+		}, nil, oidcIssuerEnv},
+		{".env.<env> client id", func(f FrontendEntity) FrontendEntity {
+			f.EnvFile = envFile(oidcClientIDEnv + "=other\n")
+			return f
+		}, nil, oidcClientIDEnv},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := tc.fe(mobile)
+			cmd := buildFrontendDevCmd(context.Background(), fl, fe, tc.shell)
+			env := nativeOriginEnvMap(cmd.Env)
+			for _, n := range []string{oidcScopesEnv, oidcRedirectURIEnv, oidcPostLogoutURIEnv} {
+				if env[n] != "" {
+					t.Errorf("%s = %q: forge's dev scopes and redirects must not mix with another provider's %s", n, env[n], tc.set)
+				}
+			}
+			if tc.set == oidcIssuerEnv && env[oidcClientIDEnv] != "" || tc.set == oidcClientIDEnv && env[oidcIssuerEnv] != "" {
+				t.Errorf("forge filled the sibling of %s: %v", tc.set, env)
+			}
+			_, note := withNativeOIDCEnvNote(cmd.Env, readNativeOIDC(dir, e, fe))
+			if !strings.Contains(note, tc.set) || !strings.Contains(note, "injects none") {
+				t.Errorf("note = %q, want one line naming %s and that forge injects none", note, tc.set)
+			}
+		})
+	}
+	t.Run("nothing set outside forge: all five injected, no note", func(t *testing.T) {
+		cmd := buildFrontendDevCmd(context.Background(), fl, mobile, nil)
+		env := nativeOriginEnvMap(cmd.Env)
+		for _, n := range oidcEnvNames() {
+			if env[n] == "" {
+				t.Errorf("%s not injected", n)
+			}
+		}
+		if _, note := withNativeOIDCEnvNote(nil, readNativeOIDC(dir, e, mobile)); note != "" {
+			t.Errorf("unexpected note %q", note)
+		}
+	})
 }

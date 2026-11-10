@@ -133,25 +133,35 @@ func readEnv(t *testing.T, root, env string) string {
 	return string(b)
 }
 
-func TestReconcileFirstFrontendIdentity_AddsToEveryEnvOnce(t *testing.T) {
+func TestReconcileFirstFrontendIdentity_EditsOnlyDevAndPrintsTheHostedEdit(t *testing.T) {
 	root := t.TempDir()
-	writeNoFrontendEnvs(t, root)
-	reconcileFirstFrontendIdentity(root, "acme", true)
+	envs := writeNoFrontendEnvs(t, root)
+	out, _ := captureStdout(t, func() error {
+		reconcileFirstFrontendIdentity(root, "acme", true)
+		return nil
+	})
 
-	for env, wants := range map[string][]string{
-		"dev":     {identityImportSnippet, devIdentityInfraSnippet, devIdentitySnippet, devSignInEnvSnippet, devIdentityPortsSnippet("acme")},
-		"staging": {identityImportSnippet, hostedIdentitySnippet},
-		"prod":    {identityImportSnippet, hostedIdentitySnippet},
-	} {
-		got := readEnv(t, root, env)
-		for _, want := range wants {
-			if !strings.Contains(got, want) {
-				t.Errorf("%s/main.k is missing:\n%s", env, want)
-			}
+	got := readEnv(t, root, "dev")
+	for _, want := range []string{identityImportSnippet, devIdentityInfraSnippet, devIdentitySnippet, devSignInEnvSnippet, devIdentityPortsSnippet("acme")} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dev/main.k is missing:\n%s", want)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(root, codegen.IdentityKCLRelPath)); err != nil {
 		t.Errorf("identity.k not written: %v", err)
+	}
+	// A hosted identity is managed and billable: the first frontend, even a web
+	// one, must not opt a deployed env into it.
+	for _, env := range []string{"staging", "prod"} {
+		if now := readEnv(t, root, env); now != envs[env] {
+			t.Errorf("%s/main.k was edited; hosted envs are the author's call:\n%s", env, now)
+		}
+	}
+	// ...and the output names the exact edit to add it.
+	for _, want := range []string{"prod, staging", "billable", "import ..identity as idn", "identity = idn.IDENTITY", "before `secret_provider =`", "forge env deploy <env>"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not mention %q:\n%s", want, out)
+		}
 	}
 
 	before := map[string]string{}
@@ -163,6 +173,26 @@ func TestReconcileFirstFrontendIdentity_AddsToEveryEnvOnce(t *testing.T) {
 		if got := readEnv(t, root, env); got != want {
 			t.Errorf("%s/main.k changed on the second run (not idempotent)", env)
 		}
+	}
+}
+
+// The hint is for hosted envs that declare none: one that already has an
+// identity, or is not hosted at all, is not mentioned.
+func TestHostedIdentityHint(t *testing.T) {
+	root := t.TempDir()
+	envs := writeNoFrontendEnvs(t, root)
+	if got := hostedIdentityHint(root); !strings.Contains(got, "prod, staging") {
+		t.Errorf("hint = %q, want both hosted envs", got)
+	}
+	declared := strings.Replace(envs["prod"], "    secret_provider = ", "    identity = my_own_identity\n    secret_provider = ", 1)
+	if err := os.WriteFile(filepath.Join(root, "deploy", "kcl", "prod", "main.k"), []byte(declared), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := hostedIdentityHint(root); !strings.Contains(got, "Hosted env(s) staging declare none") {
+		t.Errorf("a prod that declares an identity must drop out of the hint, got %q", got)
+	}
+	if got := hostedIdentityHint(t.TempDir()); got != "" {
+		t.Errorf("no hosted envs: hint = %q", got)
 	}
 }
 
@@ -257,6 +287,7 @@ var (
 	devFrontendBlocks = []*regexp.Regexp{
 		regexp.MustCompile(`(?ms)^# The (?:\w+ )?frontend's dev-server port\..*?^_\w*frontend_origin = [^\n]*\n\n`),
 		regexp.MustCompile(`(?ms)^# The \w+ frontend's dev-server port\..*?^_\w+_frontend_port = [^\n]*\n\n`),
+		regexp.MustCompile(`(?ms)^# Masked session recording for this environment\..*?^_session_replay = [^\n]*\n`),
 		regexp.MustCompile(`(?ms)^_\w+_frontend = forge\.Frontend \{.*?^}\n`),
 		regexp.MustCompile(`(?ms)^_on_host_frontend = lambda.*?^}\n`),
 		regexp.MustCompile(`(?ms)^    # The frontend's dev server .*?^    frontends = \[\n.*?^    \]\n`),
@@ -323,9 +354,20 @@ func TestFirstFrontendMatchesProjectNewWithFrontend(t *testing.T) {
 		t.Fatal("precondition: a project born without a frontend has no identity.k")
 	}
 
+	hostedBefore := map[string]string{}
+	for _, env := range []string{"staging", "prod"} {
+		hostedBefore[env] = withoutFrontendDeclaration(readEnv(t, root, env), "acme")
+	}
+
 	t.Chdir(root)
-	if err := runFrontend(context.Background(), testFactory(), frontendArgs{name: "app", kind: "mobile"}); err != nil {
+	scaffoldOut, err := captureStdout(t, func() error {
+		return runFrontend(context.Background(), testFactory(), frontendArgs{name: "app", kind: "mobile"})
+	})
+	if err != nil {
 		t.Fatalf("runFrontend: %v", err)
+	}
+	if !strings.Contains(scaffoldOut, "identity = idn.IDENTITY") || !strings.Contains(scaffoldOut, "prod, staging") {
+		t.Errorf("the scaffold must print the hosted-env edit:\n%s", scaffoldOut)
 	}
 
 	// Identity file: byte-identical.
@@ -347,18 +389,23 @@ func TestFirstFrontendMatchesProjectNewWithFrontend(t *testing.T) {
 	if got != want {
 		t.Errorf("dev/main.k differs from project new --frontend beyond the frontend declaration.\n--- want\n%s\n--- got\n%s", want, got)
 	}
-	// Hosted envs carry the same import and identity line.
+	// Hosted envs are untouched (a hosted identity is billable and changes the
+	// env's shape, so it is never added as a side effect of a frontend): they
+	// stay exactly what the no-frontend project had.
 	for _, env := range []string{"staging", "prod"} {
-		got := readEnv(t, root, env)
+		got := withoutFrontendDeclaration(readEnv(t, root, env), "acme")
+		if got != hostedBefore[env] {
+			t.Errorf("%s/main.k was edited by the first frontend (beyond its own frontend declaration):\n%s", env, got)
+		}
 		for _, snippet := range []string{identityImportSnippet, hostedIdentitySnippet} {
-			if !strings.Contains(got, snippet) {
-				t.Errorf("%s/main.k is missing %q", env, snippet)
+			if strings.Contains(got, snippet) {
+				t.Errorf("%s/main.k carries %q: a hosted identity must be opted into by hand", env, snippet)
 			}
 		}
 	}
 
 	// Under KCL: dev runs the IdP and mail catcher, and derives a native OIDC
-	// client for the mobile frontend; hosted envs declare the identity.
+	// client for the mobile frontend; hosted envs declare none.
 	render := func(env string) map[string]any {
 		out, err := kclrender.Run(root, filepath.Join(root, "deploy", "kcl", env), []string{"env=" + env})
 		if err != nil {
@@ -367,6 +414,15 @@ func TestFirstFrontendMatchesProjectNewWithFrontend(t *testing.T) {
 		return decodeRenderOutput(t, out)
 	}
 	dev := render("dev")
+	// A native frontend declares no dev port, so Metro prefers 8081.
+	if strings.Contains(readEnv(t, root, "dev"), "_app_frontend_port") {
+		t.Error("the mobile frontend must not declare a resolve_port (a declared port beats Metro's 8081 preference)")
+	}
+	for _, f := range dev["frontends"].([]any) {
+		if m := f.(map[string]any); m["name"] == "app" && m["port"] != nil {
+			t.Errorf("the mobile frontend renders port %v, want none", m["port"])
+		}
+	}
 	infra := map[string]string{}
 	for _, i := range dev["infra"].([]any) {
 		m := i.(map[string]any)
@@ -390,9 +446,8 @@ func TestFirstFrontendMatchesProjectNewWithFrontend(t *testing.T) {
 		t.Errorf("dev identity derives no native client for the mobile frontend: %v", idn["applications"])
 	}
 	for _, env := range []string{"staging", "prod"} {
-		id, _ := render(env)["identity"].(map[string]any)
-		if id == nil || id["runtime"] != "hosted" {
-			t.Errorf("%s identity = %v, want a hosted one", env, id)
+		if id := render(env)["identity"]; id != nil {
+			t.Errorf("%s identity = %v, want none: hosted envs are not opted in", env, id)
 		}
 	}
 

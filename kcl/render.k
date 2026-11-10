@@ -2872,7 +2872,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "path": f.path if f.path else None
         "source": _render_git_source(f.source) if f.source else None
         "dev_runner": f.dev_runner
-        "port": f.port
+        "port": f.port if f.port != Undefined else None
         "env_file": f.env_file if f.env_file else None
         "env_vars": [_render_env_var(e) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
             + ([_render_env_var(EnvVar {name = _otel_endpoint_var(f), value = "off"})] if _obs_browser_off(bundle) else [])

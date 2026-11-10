@@ -8,6 +8,13 @@ relevance: migration
 
 **Use when** the project has an Expo frontend. New scaffolds include everything
 below; existing apps own these files, so forge never backfills them. Adapt by hand.
+Do section 2 of `forge skill load migrations/v1.4.0` first (it carries the Metro
+resolver and `tests/setup/expo-fetch.ts` this page also touches).
+
+**Getting a scaffold file** (this page says "from the current scaffold" often): at
+the project's pinned forge, `forge project rescaffold <path>...` writes a file that
+is absent, `forge project upgrade --check <path>` prints one file's diff against the
+template, and `forge project upgrade --force <path>` replaces one you never edited.
 
 ### `babel-preset-expo` is a declared dependency
 
@@ -26,12 +33,16 @@ dependency) and pass `fetch: expoFetch` to `createConnectTransport`. On SDK 58 t
 global fetch is already `expo/fetch` unless `EXPO_PUBLIC_USE_RN_FETCH` is set, but
 React Native's own fetch buffers whole responses, so server-streaming RPCs depend
 on that default; passing it explicitly removes the dependency. Optionally export
-`createTransport(fetchImpl = expoFetch)` so tests can inject a fake network, and
-copy `tests/connect-transport.test.ts`.
+`createTransport(fetchImpl = expoFetch)` so tests can inject a fake network.
+(`tests/connect-transport.test.ts` exercises the auth interceptors, so it belongs
+to `migrations/v1.4.0/native-auth`, not here.)
 
 jest-expo stubs the native fetch module, so with an explicit `expo/fetch` import a
 test that stubs `globalThis.fetch` (or uses MSW) would never see the app's
-requests. Add `tests/setup/expo-fetch.ts` from the current scaffold
+requests. Add `tests/setup/expo-fetch.ts` (`forge project rescaffold
+frontends/<name>/tests/setup/expo-fetch.ts`; section 2 of the main playbook adds it
+first, because `jest.config.cjs` loads it) and `tests/fetch-stub.test.ts`, the
+pattern for a test that stubs the network
 (`jest.mock("expo/fetch", () => ({ fetch: (...a) => globalThis.fetch(...a) }))`)
 and set `setupFiles: ["<rootDir>/tests/setup/expo-fetch.ts"]` in `jest.config.cjs`.
 jest-expo appends project setup files to its own, so do not spread the preset's
@@ -44,11 +55,16 @@ is created); an import mid-file fails `eslint --max-warnings 0` (`import/first`)
 
 ### Generated clients bundle in Metro (`metro.config.js`)
 
+Required before the first `expo export`, so section 2 of the main playbook sends
+you here early; it is not optional on any SDK from 53 on.
+
 Generated `*_pb.ts` files import siblings with a `.js` extension
 (`import_extension=.js`, which the web toolchains need), and Metro does not map
 `.js` to `.ts`: any screen that imports a generated client failed with
 `Unable to resolve "…forge_pb.js"`. Copy the `resolver.resolveRequest` block from
-the new scaffold's `metro.config.js`. It resolves exactly as before first and,
+the new scaffold's `metro.config.js` (`forge project upgrade --check
+frontends/<name>/metro.config.js` shows it as added lines; it needs
+`const path = require("node:path")` at the top of the file). It resolves exactly as before first and,
 only after a "could not resolve" error, retries the TypeScript source extension
 (`.js` → `.ts`/`.tsx`, `.mjs` → `.mts`, `.cjs` → `.cts`); it never rewrites a
 successful resolution or an import made from inside `node_modules`, and chains any
@@ -56,7 +72,11 @@ successful resolution or an import made from inside `node_modules`, and chains a
 
 ### Shared helpers import only the portable runtime entry
 
-`shared/src/lib/query-client.ts` and `shared/src/hooks/use-optimistic-mutation.ts`
+Already done by section 2 of the main playbook (the paths are
+`frontends/<name>/src/lib/query-client.ts` and
+`frontends/<name>/src/hooks/use-optimistic-mutation.ts`, in every frontend, web
+included, plus the `ConnectClientError` type import in four hook files). In short:
+`src/lib/query-client.ts` and `src/hooks/use-optimistic-mutation.ts`
 imported `userMessage` from the runtime's root barrel. The barrel also re-exports
 the browser dev-log forwarder, and Metro does not tree-shake it, so it shipped in
 native production bundles. Both now use
@@ -83,8 +103,11 @@ never picks an interface or starts a tunnel, and warns if the API answers only o
 loopback. Pin a fixed URL (a tunnel) in KCL `env_vars` or `config.api_url`; to
 override a pinned value from the shell, set `FORGE_ENV_OVERRIDE=EXPO_PUBLIC_API_URL`.
 New for native frontends: an `EXPO_PUBLIC_API_URL` exported in your shell now wins
-over the injected localhost value (previously it was ignored); a value written in
-the frontend's own `.env.<env>` file still wins over the shell.
+over the injected localhost value (previously it was ignored), and so does one
+written in the frontend's own `.env.<env>` or in KCL `env_vars`: forge's own value
+is the lowest layer. Between the declared layers, KCL and `.env.<env>` still
+outrank the shell (a declared value is a statement about how the process runs;
+`FORGE_ENV_OVERRIDE=EXPO_PUBLIC_API_URL` hands the key back to the shell).
 `FORGE_DEV_DEVICE_HOST` is only read when a native frontend is targeted, so a
 stale global export does not fail web-only runs. Web frontends are unaffected.
 
@@ -102,7 +125,16 @@ with `RCT_METRO_PORT=<port>` (the build then looks for Metro at
 `<device host>:<port>`), and on the first launch allow "Local Network" on the device
 and relaunch (React Native shows `No script URL provided` until the prompt is
 accepted). A `port`
-declared in KCL still wins. Only the first targeted native frontend claims 8081.
+declared in KCL still wins, and **an app scaffolded before v1.4.0 declares one**:
+its `deploy/kcl/dev/main.k` has `port = _<name>_frontend_port` on the native
+frontend and a `_<name>_frontend_port = plugin.resolve_port("<project>-dev-<name>",
+3000)` block above it (with its `# The <name> frontend's dev-server port…`
+comment). That port wins over 8081, so Metro runs on 3000 or 3001 and a Debug build
+cannot find it. Delete the `port = …` line **and** the `_<name>_frontend_port`
+block (no other line of the frontend declaration changes; the `rn` frontend's
+`port` is optional) unless you want Metro pinned. New scaffolds declare no port for
+an `rn` frontend, and `forge scaffold frontend` stops adding one. Only the first
+targeted native frontend claims 8081.
 If another process takes 8081 between selection and launch, `forge env up` moves
 Metro to an ephemeral port and says so, instead of failing or touching the holder.
 
@@ -148,6 +180,39 @@ with its own `[browser:<level>] ` prefix. A client can no longer forge `[up]` or
 per line. These files are owned: copy the new `sanitize()`/`formatEntry()` (or the
 receiver block) into existing apps. Wire protocol and clients are unchanged; tools
 that grep for unprefixed continuation lines will no longer match them.
+
+**Web receivers, three more edits** (they were found by running this on a real
+v1.3.0 app; `forge project upgrade --check <path>` shows each as template lines
+you lack):
+
+- **`// eslint-disable-next-line no-control-regex`** goes on its own line directly
+  above the `return s.replace(/\x1b…/g, "")…` statement inside `sanitize()`, in
+  the Next.js `src/app/%5F_forge/log/route.ts` and the Vite
+  `src/lib/devlog-plugin.ts` (the scaffold adds two comment lines above it saying
+  why). Without it the sanitizer's control-character regexes fail the frontend's
+  `eslint .` (`no-control-regex`, in `js.configs.recommended`), and `forge lint`
+  with it. Add it when you copy `sanitize()`. The Metro receiver's copy passed the
+  native `eslint .` unchanged in the executed run.
+- **Next.js `src/app/%5F_forge/log/route.ts` rejects a query string.** After the
+  production guard in `POST`, `if (new URL(request.url).search) { return new
+  Response(null, { status: 400, headers: { "X-Forge-Devlog": "2" } }); }`: browser
+  logs are POST bodies, never URL parameters, so a query is a malformed or
+  hostile caller.
+- **Next.js `next.config.ts`** needs the matching rule, because Next's own access
+  logger prints the raw URL before the handler runs: add
+  `logging: { incomingRequests: { ignore: [/(?:^|\/)__forge\/log(?:\?|$)/] } },`
+  at the top of the `nextConfig` object (all three of its output-mode variants
+  carry it in the template). An unrelated `logging` block you already have: merge
+  the `ignore` entry into it.
+
+**Native receiver (`metro.config.js`) accepts only `application/json`.** A request
+with any other content type gets `415` and is not logged. The native forwarder
+always sends JSON, and a page open in the developer's browser cannot (its simple
+cross-site content types are form-encoded, multipart or `text/plain`), so it cannot
+write lines into the log. Copy `isJsonRequest` and the early return from the
+scaffold's `devLogRequest`. The web receivers are unchanged: the browser's unload
+flush is `navigator.sendBeacon`, which can only send `text/plain` without a
+preflight, so they accept it.
 
 ### Focus and connectivity (`src/lib/query-lifecycle.ts`)
 

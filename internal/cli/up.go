@@ -3555,7 +3555,11 @@ func buildFrontendDevCmd(ctx context.Context, fl frontendLaunch, fe FrontendEnti
 	}
 	// A native frontend of a managed-identity env signs in at the env's IdP:
 	// hand it the converged client (shell, KCL and .env win, per variable).
-	cmd.Env = withNativeOIDCEnv(cmd.Env, readNativeOIDC(fl.projectDir, fl.entities, fe))
+	var oidcNote string
+	cmd.Env, oidcNote = withNativeOIDCEnvNote(cmd.Env, readNativeOIDC(fl.projectDir, fl.entities, fe))
+	if oidcNote != "" {
+		fmt.Printf("[up] frontend %s: %s\n", fe.Name, oidcNote)
+	}
 	// Declared secrets, scoped to this frontend's own secret_ref
 	// declarations, layered over the dev server's env. In memory:
 	// the value reaches the child process environment only.
@@ -3700,7 +3704,12 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	// address, emulator alias, tunnel), so when the shell sets one forge skips
 	// its injection and the shell value is used (a value written in the
 	// frontend's own .env.<env> still wins). Web frontends are unchanged.
-	if shellAPI, _ := envLookupLast(parentEnv, frontendAPIURLEnvVar(fe.Type)); apiBaseURL != "" && !(isNativeFrontend(fe.Type) && shellAPI != "") {
+	// Native precedence is therefore shell > KCL > .env.<env> > forge's own
+	// value, the same as the OIDC and dev-log variables.
+	apiURLVar := frontendAPIURLEnvVar(fe.Type)
+	shellAPI, _ := envLookupLast(parentEnv, apiURLVar)
+	fileAPI := envFileMap[apiURLVar] != ""
+	if apiBaseURL != "" && !(isNativeFrontend(fe.Type) && (shellAPI != "" || fileAPI)) {
 		if envFileMap == nil {
 			envFileMap = map[string]string{}
 		}

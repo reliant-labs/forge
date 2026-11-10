@@ -318,11 +318,12 @@ benefits:
 
   - id: lib-cron-lease
     category: build
-    title: Exactly-once cron and singletons
+    title: Coordinated cron and singletons
     claim: >-
-      `pkg/cronkit` fires each scheduled tick on exactly one replica with the
-      same scheduled time on every replica, and `pkg/lease` gives a named
-      singleton over Postgres advisory locks with hot standby.
+      `pkg/cronkit` runs each scheduled tick at most once across replicas that
+      share its claim store (a missed tick is not retried), with the same
+      scheduled time on every replica, and `pkg/lease` gives a named singleton
+      over Postgres advisory locks with hot standby.
     availability: forge
     use: '`forge scaffold worker <name> --kind cron --schedule "*/5 * * * *"`'
     why: >-
@@ -540,12 +541,11 @@ benefits:
     category: data
     title: Backups and point-in-time restore
     claim: >-
-      A hosted database gets continuous WAL archiving and a daily base backup to
-      object storage (7 days retained in prod), and restoring is a declaration:
+      A hosted database is built for continuous WAL archiving and a daily base
+      backup to object storage, and restoring is a declaration:
       a new `ManagedDatabase` with `restore = {sourceDatabase, pointInTime}`
       boots from the source's backups replayed to that moment.
     availability: hosted
-    headline: true
     use: >-
       `forge.ManagedDatabase { spec.restore = forge.DatabaseRestore {
       sourceDatabase = "db", pointInTime = "2026-11-10T14:05:00Z" } }`, then
@@ -556,7 +556,8 @@ benefits:
       command. Each database's archive is written by its own workload identity
       with access to its own stream only. Claimable (unclaimed) databases are
       not backed up, and a database reports that its backups are not active
-      until the environment's backup store is ready.
+      until the environment's backup store is ready: read deploy status to see
+      whether yours are.
     evidence:
       - external: control-plane:internal/operators/manageddatabase/backup.go
       - external: control-plane:internal/operators/manageddatabase/backup_streams.go
@@ -3381,14 +3382,12 @@ benefits:
     category: host
     title: One static site free
     claim: >-
-      One hosted static site is free per owning person, counted across every env
-      and every org they own without a plan, with metered egress above the free
-      tier.
+      One hosted static site is free, counted across environments (each env's
+      deployed site is one); anything beyond it needs billing, and until billing
+      is set up the deploy is queued, not refused.
     availability: hosted
-    why: >-
-      The allowance is per person, not per org, because a per-org allowance
-      would multiply free sites (owner decision, 2026-10-26).
     evidence:
+      - path: internal/templates/project/reliant.md.tmpl
       - external: control-plane:internal/freesite
       - external: control-plane:internal/staticfreetier
 

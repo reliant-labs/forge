@@ -275,9 +275,9 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="lib-cron-lease"></a>
 
-### Exactly-once cron and singletons
+### Coordinated cron and singletons
 
-`pkg/cronkit` fires each scheduled tick on exactly one replica with the same scheduled time on every replica, and `pkg/lease` gives a named singleton over Postgres advisory locks with hot standby.
+`pkg/cronkit` runs each scheduled tick at most once across replicas that share its claim store (a missed tick is not retried), with the same scheduled time on every replica, and `pkg/lease` gives a named singleton over Postgres advisory locks with hot standby.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -452,13 +452,13 @@ _Enforced · Forge, on any infrastructure_
 
 ### Backups and point-in-time restore
 
-A hosted database gets continuous WAL archiving and a daily base backup to object storage (7 days retained in prod), and restoring is a declaration: a new `ManagedDatabase` with `restore = {sourceDatabase, pointInTime}` boots from the source's backups replayed to that moment.
+A hosted database is built for continuous WAL archiving and a daily base backup to object storage, and restoring is a declaration: a new `ManagedDatabase` with `restore = {sourceDatabase, pointInTime}` boots from the source's backups replayed to that moment.
 
 _Enforced · Reliant hosting_
 
 **Use:** `forge.ManagedDatabase { spec.restore = forge.DatabaseRestore { sourceDatabase = "db", pointInTime = "2026-11-10T14:05:00Z" } }`, then `forge env deploy <env>`.
 
-**Why:** A restore applies once, at creation, and never overwrites the source, so a mistaken one cannot destroy the original; there is no restore button or command. Each database's archive is written by its own workload identity with access to its own stream only. Claimable (unclaimed) databases are not backed up, and a database reports that its backups are not active until the environment's backup store is ready.
+**Why:** A restore applies once, at creation, and never overwrites the source, so a mistaken one cannot destroy the original; there is no restore button or command. Each database's archive is written by its own workload identity with access to its own stream only. Claimable (unclaimed) databases are not backed up, and a database reports that its backups are not active until the environment's backup store is ready: read deploy status to see whether yours are.
 
 **Evidence:**
 
@@ -2955,14 +2955,13 @@ _Enforced · Reliant hosting_
 
 ### One static site free
 
-One hosted static site is free per owning person, counted across every env and every org they own without a plan, with metered egress above the free tier.
+One hosted static site is free, counted across environments (each env's deployed site is one); anything beyond it needs billing, and until billing is set up the deploy is queued, not refused.
 
 _Enforced · Reliant hosting_
 
-**Why:** The allowance is per person, not per org, because a per-org allowance would multiply free sites (owner decision, 2026-10-26).
-
 **Evidence:**
 
+- source [`internal/templates/project/reliant.md.tmpl`](../internal/templates/project/reliant.md.tmpl)
 - `internal/freesite` in the control-plane repo
 - `internal/staticfreetier` in the control-plane repo
 

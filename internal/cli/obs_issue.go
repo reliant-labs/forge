@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +45,8 @@ var obsIssueSchema = obsout.Schema{
 		"latest_event", "latest_event.time", "latest_event.trace_id", "latest_event.span_id", "latest_event.version",
 		"latest_event.message", "latest_event.attributes.*", "latest_event.session_id", "latest_event.url_path",
 		"events", "events.time", "events.trace_id", "events.span_id", "events.version", "events.message", "events.attributes.*",
+		"bug_reports", "bug_reports.id", "bug_reports.time", "bug_reports.product", "bug_reports.severity", "bug_reports.title",
+		"bug_reports.summary", "bug_reports.expected", "bug_reports.actual", "bug_reports.evidence",
 		"frames", "frames.function", "frames.file", "frames.line", "frames.in_app",
 		"by_version", "by_version.version", "by_version.events", "by_version.affected", "by_version.affected_unit", "by_version.first_seen", "by_version.last_seen",
 		"co_occurring_issue_ids", "incident_issue_ids",
@@ -70,6 +73,52 @@ type obsIssueEventDoc struct {
 func issueEventDoc(e obsbackend.IssueEvent) obsIssueEventDoc {
 	return obsIssueEventDoc{Time: e.Time, TraceID: e.TraceID, SpanID: e.SpanID, Version: e.Version, Message: e.Message,
 		Attributes: e.Attributes, SessionID: e.SessionID, URLPath: e.URLPath}
+}
+
+// obsBugReportDoc is one bug report (`forge report-bug`, an agent's
+// report_bug) an issue of a bug-report source groups: its body, which rides
+// on the event as bug_report.* attributes. The issue's title is normalized
+// (<n>, <str>), so the body is the only place the report itself is readable.
+type obsBugReportDoc struct {
+	ID       string    `json:"id,omitempty"`
+	Time     time.Time `json:"time"`
+	Product  string    `json:"product,omitempty"`
+	Severity string    `json:"severity,omitempty"`
+	Title    string    `json:"title,omitempty"`
+	Summary  string    `json:"summary,omitempty"`
+	Expected string    `json:"expected,omitempty"`
+	Actual   string    `json:"actual,omitempty"`
+	Evidence string    `json:"evidence,omitempty"`
+}
+
+// bugReportAttr is the attribute prefix a bug report's fields ride under.
+const bugReportAttr = "bug_report."
+
+// bugReportsOf collects the bug reports the events carry, newest first, one
+// per report id (the latest event is usually also the newest of the events).
+func bugReportsOf(events ...obsIssueEventDoc) []obsBugReportDoc {
+	var out []obsBugReportDoc
+	seen := map[string]bool{}
+	for _, e := range events {
+		a := e.Attributes
+		r := obsBugReportDoc{ID: a[bugReportAttr+"id"], Time: e.Time, Product: a[bugReportAttr+"product"],
+			Severity: a[bugReportAttr+"severity"], Title: a[bugReportAttr+"title"], Summary: a[bugReportAttr+"summary"],
+			Expected: a[bugReportAttr+"expected"], Actual: a[bugReportAttr+"actual"], Evidence: a[bugReportAttr+"evidence"]}
+		if r.Title == "" && r.Summary == "" && r.Actual == "" && r.Evidence == "" {
+			continue // not a bug report's event
+		}
+		key := r.ID
+		if key == "" {
+			key = e.Time.String() + "\x00" + r.Title
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, r)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.After(out[j].Time) })
+	return out
 }
 
 type obsIssueFrameDoc struct {
@@ -106,11 +155,13 @@ type obsSuspectDoc struct {
 
 type obsIssueDoc struct {
 	obsout.Head
-	Scope       obsout.Scope         `json:"scope"`
-	QueryMode   string               `json:"query_mode"`
-	Issue       obsIssueRowDoc       `json:"issue"`
-	LatestEvent *obsIssueEventDoc    `json:"latest_event,omitempty"`
-	Events      []obsIssueEventDoc   `json:"events,omitempty"`
+	Scope       obsout.Scope       `json:"scope"`
+	QueryMode   string             `json:"query_mode"`
+	Issue       obsIssueRowDoc     `json:"issue"`
+	LatestEvent *obsIssueEventDoc  `json:"latest_event,omitempty"`
+	Events      []obsIssueEventDoc `json:"events,omitempty"`
+	// BugReports are the bodies of the bug reports the shown events carry.
+	BugReports  []obsBugReportDoc    `json:"bug_reports,omitempty"`
 	Frames      []obsIssueFrameDoc   `json:"frames,omitempty"`
 	ByVersion   []obsIssueVersionDoc `json:"by_version,omitempty"`
 	CoOccurring []string             `json:"co_occurring_issue_ids,omitempty"`
@@ -151,7 +202,10 @@ range known, the last 20) that touched the files the error was raised from,
 read from this checkout with git. A hosted env also shows who it is assigned to,
 the incident it belongs to (the other issues with the same cause, first seen
 close together: related_count and incident_key), and the newest
---timeline-limit timeline entries, oldest first. [env] defaults to dev.
+--timeline-limit timeline entries, oldest first. An issue that groups bug
+reports (forge report-bug, an agent's report_bug) shows the body of each report
+its latest event and --events carry: id, severity, title, summary, expected,
+actual and evidence. [env] defaults to dev.
 
   ` + Name() + ` obs issue ISS-7f3a prod
   ` + Name() + ` obs issue sfp1-0123456789abcdef dev --events 10
@@ -245,6 +299,11 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 			doc.Events = append(doc.Events, issueEventDoc(e))
 		}
 	}
+	var shown []obsIssueEventDoc
+	if doc.LatestEvent != nil {
+		shown = append(shown, *doc.LatestEvent)
+	}
+	doc.BugReports = bugReportsOf(append(shown, doc.Events...)...)
 	if !res.Issue.LastSeen.IsZero() {
 		doc.Release = stampRelease(ctx, d.Release, d.Stderr, env, res.Issue.LastSeen)
 	}
@@ -335,6 +394,21 @@ func renderIssue(w io.Writer, doc obsIssueDoc) {
 	}
 	if e := doc.LatestEvent; e != nil {
 		fmt.Fprintf(w, "\nlatest event %s  trace %s\n  %s\n", e.Time.UTC().Format(time.RFC3339), orDash(e.TraceID), e.Message)
+	}
+	for _, r := range doc.BugReports {
+		fmt.Fprintf(w, "\nbug report %s  %s", orDash(r.ID), r.Time.UTC().Format(time.RFC3339))
+		if r.Severity != "" {
+			fmt.Fprintf(w, "  %s", r.Severity)
+		}
+		if r.Product != "" {
+			fmt.Fprintf(w, "  %s", r.Product)
+		}
+		fmt.Fprintln(w)
+		for _, f := range [][2]string{{"title", r.Title}, {"summary", r.Summary}, {"expected", r.Expected}, {"actual", r.Actual}, {"evidence", r.Evidence}} {
+			if f[1] != "" {
+				fmt.Fprintf(w, "  %-9s %s\n", f[0]+":", strings.ReplaceAll(f[1], "\n", "\n            "))
+			}
+		}
 	}
 	if len(doc.Frames) > 0 {
 		fmt.Fprintln(w, "\nframes:")

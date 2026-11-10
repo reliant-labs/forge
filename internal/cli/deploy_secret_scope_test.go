@@ -253,6 +253,63 @@ func TestPreflightTargetedDeployStillChecksTheSecretsItWrites(t *testing.T) {
 	}
 }
 
+// TestPreflightHonoursDeclaredSecretClusters is forge bug report d42b621f, as
+// control-plane v1.9.0-rc.21 hit it: a cert-manager HelmChart on the daemon
+// cluster too (namespace cert-manager) made the namespace inference require
+// the hub's DNS-01 cloudflare-api-token there, though the daemon cluster has
+// no ACME issuer and never reads it. ExternalSecret.clusters scopes it; before
+// the field the only workaround was an inert placeholder Secret.
+func TestPreflightHonoursDeclaredSecretClusters(t *testing.T) {
+	gets := scopeFakeKubectl(t, scopePrimary) // the token exists on the hub only
+	in, report := scopeProdInput(t, "", ExternalSecretEntity{
+		Name: "cloudflare-api-token", Namespace: "cert-manager", Keys: []string{"api-token"},
+		Clusters: []string{scopePrimary},
+	})
+	in.entities.HelmCharts = append(in.entities.HelmCharts,
+		HelmChartEntity{Name: "cert-manager-daemon", Namespace: "cert-manager", Cluster: scopeDaemon})
+
+	if err := runDeployPreflightForEnv(context.Background(), in); err != nil {
+		t.Fatalf("preflight required a Secret on a cluster its declaration excludes:\n%v", err)
+	}
+	asked := strings.Join(gets(), " ")
+	if !strings.Contains(asked, scopePrimary+" cert-manager/cloudflare-api-token") {
+		t.Errorf("the declared cluster was never checked; lookups: %v", gets())
+	}
+	if strings.Contains(asked, scopeDaemon) {
+		t.Errorf("asked the daemon cluster for a Secret declared hub-only: %v", gets())
+	}
+	if doc := report.document(); doc.Preflight.Blocking != 0 {
+		t.Errorf("preflight = %+v, want 0 blocking", doc.Preflight)
+	}
+}
+
+// TestScopeRequiredSecretsKeepsDeclaredContexts: attribution never overrides a
+// declared placement, and still places the undeclared Secret beside it.
+func TestScopeRequiredSecretsKeepsDeclaredContexts(t *testing.T) {
+	groups := []deploytarget.ServiceGroup{
+		{ProviderID: "k8s-cluster", Cluster: "hub"},
+		{ProviderID: "k8s-cluster", Cluster: "daemon"},
+	}
+	entities := &KCLEntities{HelmCharts: []HelmChartEntity{
+		{Name: "cm-hub", Namespace: "cert-manager", Cluster: "hub"},
+		{Name: "cm-daemon", Namespace: "cert-manager", Cluster: "daemon"},
+	}}
+	in := requiredSecretsForPreflight(&KCLEntities{RequiredSecrets: []ExternalSecretEntity{
+		{Name: "declared", Namespace: "cert-manager", Keys: []string{"k"}, Clusters: []string{"hub"}},
+		{Name: "inferred", Namespace: "cert-manager", Keys: []string{"k"}},
+	}})
+	got, unattributed := scopeRequiredSecretsToClusters(in, "", groups, entities, "app")
+	if len(got) != 2 || len(unattributed) != 0 {
+		t.Fatalf("scoped %+v, unattributed %+v", got, unattributed)
+	}
+	if strings.Join(got[0].Contexts, ",") != "hub" {
+		t.Errorf("declared Secret contexts = %v, want [hub]", got[0].Contexts)
+	}
+	if strings.Join(got[1].Contexts, ",") != "daemon,hub" {
+		t.Errorf("undeclared Secret contexts = %v, want the namespace's consumers [daemon hub]", got[1].Contexts)
+	}
+}
+
 // TestScopeRequiredSecretsSingleClusterUntouched: one cluster, nothing to scope.
 func TestScopeRequiredSecretsSingleClusterUntouched(t *testing.T) {
 	in := []cluster.RequiredSecret{{Name: "s", Namespace: "ns"}}

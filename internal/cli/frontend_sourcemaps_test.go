@@ -75,7 +75,7 @@ func TestSourcemapsPushBaseIsTheNamedProjects(t *testing.T) {
 		"":         "localhost:5000/org-1/app",
 		"platform": "localhost:5000/org-1/platform",
 	} {
-		pub, ok := sourcemapPublisherForProject(t.TempDir(), "prod", project, e).(deploytarget.RegistrySourcemaps)
+		pub, ok := sourcemapPublisherForProject(t.TempDir(), "prod", project, "", e).(deploytarget.RegistrySourcemaps)
 		if !ok {
 			t.Fatalf("project %q: not a registry publisher", project)
 		}
@@ -87,6 +87,35 @@ func TestSourcemapsPushBaseIsTheNamedProjects(t *testing.T) {
 	pub := sourcemapPublisherFor(t.TempDir(), "prod", e).(deploytarget.RegistrySourcemaps)
 	if base, _ := pub.Base(context.Background()); base != "localhost:5000/org-1/app" {
 		t.Errorf("sourcemapPublisherFor base = %q, want this checkout's project", base)
+	}
+}
+
+// `--org` files under the named organization WITHOUT asking the control plane:
+// a registry-only credential (sourcemaps:write) is refused on every RPC, the
+// org lookup included, so this is the only way it can file maps.
+func TestSourcemapsPushBaseUsesTheGivenOrgWithoutALookup(t *testing.T) {
+	prev := resolveControlPlaneOrg
+	resolveControlPlaneOrg = func(context.Context, string, *ControlPlaneEntity) (string, error) {
+		t.Error("the org was looked up although --org named it")
+		return "", errors.New("must not be called")
+	}
+	t.Cleanup(func() { resolveControlPlaneOrg = prev })
+	cp := &ControlPlaneEntity{Endpoint: "https://cp.example", RegistryHost: "localhost:5000"} // local: no login
+	cp.bindOrgLookup("prod")
+	e := &KCLEntities{ControlPlane: cp}
+
+	pub := sourcemapPublisherForProject(t.TempDir(), "prod", "platform", "org-9", e).(deploytarget.RegistrySourcemaps)
+	base, err := pub.Base(context.Background())
+	if err != nil || base != "localhost:5000/org-9/platform" {
+		t.Errorf("base = %q, %v; want localhost:5000/org-9/platform", base, err)
+	}
+	for _, bad := range []string{"Org-9", "org/9", "-org", "org_9", strings.Repeat("a", 64)} {
+		if sourcemapsOrgRe.MatchString(bad) {
+			t.Errorf("--org %q was accepted", bad)
+		}
+	}
+	if !sourcemapsOrgRe.MatchString("55949942-3ee9-4cfc-bb7c-817bdba75186") {
+		t.Error("a UUID org id was refused")
 	}
 }
 

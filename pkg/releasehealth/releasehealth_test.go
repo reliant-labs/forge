@@ -353,6 +353,49 @@ func TestInconclusiveWhy(t *testing.T) {
 	if got := InconclusiveWhy(thin); got == "" || thin.Verdict != Inconclusive {
 		t.Errorf("thin: %s %q", thin.Verdict, got)
 	}
+	if got := InconclusiveCode(thin); got != ReasonLowTraffic {
+		t.Errorf("thin code = %q, want %q", got, ReasonLowTraffic)
+	}
+	if got := InconclusiveCode(open); got != ReasonWindowOpen {
+		t.Errorf("open code = %q, want %q", got, ReasonWindowOpen)
+	}
+}
+
+// An app that exports no OpenTelemetry has no request data at all, however
+// much traffic it serves. That is not "not enough traffic": measured on an
+// adopted Express app, 120 real requests got exactly that reason. The reason
+// says what is missing, names the services whose telemetry is their own, and
+// what was judged without it.
+func TestInconclusiveWhyNoRequestTelemetry(t *testing.T) {
+	for _, services := range [][]ServiceHealth{nil, {svc("app", 0, 0, 0, 0, 0, 0)}} {
+		r := WithUninstrumented(Evaluate(input(t, true, services...)), []string{"app"})
+		if r.Verdict != Inconclusive || !r.NoRequestTelemetry() {
+			t.Fatalf("verdict %s, no telemetry %v; want INCONCLUSIVE with no request telemetry", r.Verdict, r.NoRequestTelemetry())
+		}
+		if got := InconclusiveCode(r); got != ReasonNoRequestTelemetry {
+			t.Errorf("code = %q, want %q", got, ReasonNoRequestTelemetry)
+		}
+		why := InconclusiveWhy(r)
+		for _, want := range []string{"no request telemetry", "app exports none unless it is instrumented", "OTEL_EXPORTER_OTLP_ENDPOINT", "workload restarts, alerts and issues", "found nothing"} {
+			if !strings.Contains(why, want) {
+				t.Errorf("why does not say %q:\n%s", want, why)
+			}
+		}
+		if strings.Contains(why, "not enough traffic") {
+			t.Errorf("why blames traffic for missing telemetry:\n%s", why)
+		}
+	}
+	// Some request data, however little, is low traffic.
+	if r := Evaluate(input(t, true, svc("app", 0, 3, 0, 0, 10, 10))); r.NoRequestTelemetry() || InconclusiveCode(r) != ReasonLowTraffic {
+		t.Errorf("3 requests: no telemetry %v, code %q; want low_traffic", r.NoRequestTelemetry(), InconclusiveCode(r))
+	}
+	// A restart is still a finding, and the reason points at it.
+	in := input(t, true)
+	in.Workloads = []Workload{{Workload: "app", Restarts: 2}}
+	in.Thresholds.FailOn = nil
+	if why := InconclusiveWhy(Evaluate(in)); !strings.Contains(why, "1 warning(s)") {
+		t.Errorf("why with a warn finding = %q", why)
+	}
 }
 
 // An env with no request telemetry at all (a static site, a workload that

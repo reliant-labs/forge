@@ -26,12 +26,15 @@ const sandbox = {module:{exports:{}}, require:()=>({transformIgnorePatterns:orig
 vm.runInNewContext(process.argv[1], sandbox);
 const patterns = sandbox.module.exports.transformIgnorePatterns;
 assert.equal(patterns[1], original[1]);
-for (const pkg of ['@reliantlabs/forge-web-runtime/dist/service-hooks.js', '@connectrpc/connect/dist/esm/index.js', '@connectrpc/connect-web/dist/esm/index.js', '@bufbuild/protobuf/dist/esm/index.js', 'react-native/index.js', 'expo/src/Expo.ts']) {
+for (const pkg of ['@reliantlabs/forge-web-runtime/dist/service-hooks.js', '@connectrpc/connect-web/dist/esm/index.js', '@bufbuild/protobuf/dist/esm/index.js', 'react-native/index.js', 'expo/src/Expo.ts']) {
  for (const prefix of ['/fixture/node_modules/', '/fixture/node_modules/.pnpm/pkg@1/node_modules/']) {
   assert(!patterns.some(p=>new RegExp(p).test(prefix+pkg)), prefix+pkg);
  }
 }
-for (const path of ['/fixture/node_modules/lodash/index.js', '/fixture/node_modules/.pnpm/lodash@1/node_modules/lodash/index.js', '/fixture/node_modules/react-native-reanimated/plugin/index.js']) {
+// @connectrpc/connect ships CJS and must NOT be transformed: Babel-transforming
+// it breaks the runtime's ConnectClientError subclass ("Cannot call a class as a
+// function"), turning every error-path test into Code.Unknown.
+for (const path of ['/fixture/node_modules/lodash/index.js', '/fixture/node_modules/.pnpm/lodash@1/node_modules/lodash/index.js', '/fixture/node_modules/react-native-reanimated/plugin/index.js', '/fixture/node_modules/@connectrpc/connect/dist/cjs/index.js', '/fixture/node_modules/.pnpm/pkg@1/node_modules/@connectrpc/connect/dist/cjs/index.js']) {
  assert(patterns.some(p=>new RegExp(p).test(path)), path);
 }
 `

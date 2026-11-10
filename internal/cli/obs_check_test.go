@@ -819,3 +819,35 @@ func TestObsCheckExcludedAlertJudgesNoRelease(t *testing.T) {
 		t.Errorf("doc = %v", doc)
 	}
 }
+
+// An answer that FAILs on an alert_firing finding but lists no alert for it (an
+// older control plane's) is reconciled against the live alert state: an
+// excluded live alert of the rule drops the finding, a counted one keeps it.
+func TestObsCheckFindingOnlyAnswerIsJudgedByLiveAlerts(t *testing.T) {
+	const machine = `{"state":"firing","rule":"MachineLoadHigh","fingerprint":"m1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"critical","machine":"ws-1","release_health":"exclude"}}`
+	finding := `{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","ref":"MachineLoadHigh","value":1,"threshold":1,"policy":"fail","message":"alert MachineLoadHigh opened after the promotion and is still firing"}`
+	reply := healthReply("RELEASE_VERDICT_FAIL", true, finding, "")
+	caller := &seqCaller{replies: map[string][]string{
+		procHealth:          {reply},
+		procListAlertsCheck: {`{"alerts":[` + machine + `]}`},
+	}}
+	out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+	if err != nil {
+		t.Fatalf("exit = %d (%v), want 0; out = %s", exitCodeForError(err), err, out)
+	}
+	if doc := decode(t, out); doc["verdict"] != "PASS" || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") {
+		t.Errorf("doc = %v", doc)
+	} else if ex, _ := doc["excluded_alerts"].([]any); len(ex) != 1 {
+		t.Errorf("excluded_alerts = %v", doc["excluded_alerts"])
+	}
+
+	counted := `{"state":"firing","rule":"MachineLoadHigh","fingerprint":"m2","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"critical"}}`
+	caller = &seqCaller{replies: map[string][]string{
+		procHealth:          {reply},
+		procListAlertsCheck: {`{"alerts":[` + machine + `,` + counted + `]}`},
+	}}
+	out, _, err = newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+	if exitCodeForError(err) != exitWrong {
+		t.Fatalf("a counted live alert of the rule: exit = %d (%v), want 1; out = %s", exitCodeForError(err), err, out)
+	}
+}

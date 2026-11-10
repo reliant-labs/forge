@@ -680,47 +680,93 @@ func failAlert(fs []Finding, rule string) []Finding {
 
 // WithoutExcludedAlerts takes the alerts whose rule keeps them out of release
 // health ([LabelReleaseHealth]) out of a judged report: from FiringAlerts and
-// StandingCritical into ExcludedAlerts, with the alert_firing finding of each
-// rule left with no counted alert. The verdict is recomputed from what is left,
-// so it can improve: the excluded alerts were never the release's evidence. It is
-// how the rule reaches a control plane's answer judged without it (`forge obs
-// check` applies it before its own alert read).
-func WithoutExcludedAlerts(r Report) Report {
+// StandingCritical into ExcludedAlerts (one entry per alert), with the
+// alert_firing finding of each excluded rule that has no counted alert. The
+// verdict is recomputed from what is left, so it can improve: the excluded
+// alerts were never the release's evidence. It is how the rule reaches a
+// control plane's answer judged without it (`forge obs check` applies it
+// before its own alert read).
+//
+// live is the alert state read beside the report, or nil. It names the rule
+// of a finding the report carries no alert for (an answer judged by an older
+// control plane, or one whose alert lists were omitted): an excluded live
+// alert of that rule drops the finding and is listed, and a counted live
+// alert of it keeps the finding. Applying it again changes nothing.
+func WithoutExcludedAlerts(r Report, live []Alert) Report {
 	out := r
+	changed := false
+	out.ExcludedAlerts = nil
+	addExcluded := func(a Alert) {
+		if slices.ContainsFunc(out.ExcludedAlerts, func(b Alert) bool { return alertKey(b) == alertKey(a) }) {
+			changed = true // a duplicate entry
+			return
+		}
+		out.ExcludedAlerts = append(out.ExcludedAlerts, a)
+	}
+	for _, a := range r.ExcludedAlerts {
+		addExcluded(a)
+	}
 	keep := func(as []Alert) []Alert {
 		var kept []Alert
 		for _, a := range as {
 			if a.Excluded() {
-				if !slices.ContainsFunc(out.ExcludedAlerts, func(b Alert) bool { return alertKey(b) == alertKey(a) }) {
-					out.ExcludedAlerts = append(out.ExcludedAlerts, a)
-				}
+				addExcluded(a)
+				changed = true
 				continue
 			}
 			kept = append(kept, a)
 		}
 		return kept
 	}
-	out.ExcludedAlerts = slices.Clone(r.ExcludedAlerts)
 	out.FiringAlerts = keep(r.FiringAlerts)
 	out.StandingCritical = keep(r.StandingCritical)
-	if len(out.ExcludedAlerts) == len(r.ExcludedAlerts) {
-		return r // nothing excluded here: the report as judged
-	}
-	counted := map[string]bool{}
+
+	counted, excluded := map[string]bool{}, map[string]bool{}
 	for _, a := range out.FiringAlerts {
 		counted[a.Rule] = true
 	}
-	excludedRule := func(f Finding) bool {
-		for _, a := range out.ExcludedAlerts {
-			if f.Ref == a.Rule || (f.Ref == "" && strings.Contains(f.Message, "alert "+a.Rule+" ")) {
-				return !counted[a.Rule]
+	for _, a := range out.ExcludedAlerts {
+		excluded[a.Rule] = true
+	}
+	for _, a := range live {
+		if a.Excluded() {
+			excluded[a.Rule] = true
+		} else {
+			counted[a.Rule] = true
+		}
+	}
+	ruleOf := func(f Finding) string {
+		if f.Ref != "" {
+			return f.Ref
+		}
+		for rule := range excluded {
+			if strings.Contains(f.Message, "alert "+rule+" ") {
+				return rule
 			}
 		}
-		return false
+		return ""
 	}
+	dropped := map[string]bool{}
 	out.Findings = slices.DeleteFunc(slices.Clone(r.Findings), func(f Finding) bool {
-		return f.Code == release.HealthAlertFiring && excludedRule(f)
+		if f.Code != release.HealthAlertFiring {
+			return false
+		}
+		rule := ruleOf(f)
+		if rule == "" || !excluded[rule] || counted[rule] {
+			return false
+		}
+		dropped[rule] = true
+		return true
 	})
+	// A finding dropped on the live state's word lists the alert that dropped it.
+	for _, a := range live {
+		if a.Excluded() && dropped[a.Rule] {
+			addExcluded(a)
+		}
+	}
+	if !changed && len(dropped) == 0 && len(out.ExcludedAlerts) == len(r.ExcludedAlerts) {
+		return r // nothing excluded here: the report as judged
+	}
 	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
 	return out
 }

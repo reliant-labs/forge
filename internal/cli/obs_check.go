@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -307,14 +308,22 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	// An alert whose rule says it is not about the env's workloads (a build
 	// machine's load, a fleet the env watches: label release_health=exclude)
 	// judges no release, whichever side judged the report.
-	res.Report = releasehealth.WithoutExcludedAlerts(res.Report)
+	// The live alert state is read once, and also when the answer FAILs on an
+	// alert_firing finding: an answer that names no alert for it (an older
+	// control plane's) learns from the live state whether its rule is excluded.
+	res.Report = releasehealth.WithoutExcludedAlerts(res.Report, nil)
 	res.Report = releasehealth.WithStandingAlerts(res.Report, nil)
-	if ar, ok := b.(obsbackend.AlertReader); ok && res.Report.Verdict != releasehealth.Fail {
+	if ar, ok := b.(obsbackend.AlertReader); ok && (res.Report.Verdict != releasehealth.Fail || hasAlertFinding(res.Report)) {
 		alerts, aerr := ar.Alerts(ctx)
-		if aerr != nil {
+		if aerr == nil {
+			live := firingHealthAlerts(alerts)
+			res.Report = releasehealth.WithoutExcludedAlerts(res.Report, live)
+			res.Report = releasehealth.WithStandingAlerts(res.Report, nil)
+			if res.Report.Verdict != releasehealth.Fail {
+				res.Report = releasehealth.WithStandingAlerts(res.Report, live)
+			}
+		} else if res.Report.Verdict != releasehealth.Fail {
 			res.Report = releasehealth.WithAlertStateUnread(res.Report, aerr.Error())
-		} else {
-			res.Report = releasehealth.WithStandingAlerts(res.Report, firingHealthAlerts(alerts))
 		}
 	}
 	// --early-pass: the open window is judged as far as it goes, after every
@@ -374,6 +383,11 @@ func earlyPassWhy(r releasehealth.Report, min time.Duration) string {
 }
 
 // firingHealthAlerts maps the firing alerts onto the rule's vocabulary.
+// hasAlertFinding reports whether r carries an alert_firing finding.
+func hasAlertFinding(r releasehealth.Report) bool {
+	return slices.ContainsFunc(r.Findings, func(f releasehealth.Finding) bool { return f.Code == release.HealthAlertFiring })
+}
+
 func firingHealthAlerts(alerts []obsbackend.Alert) []releasehealth.Alert {
 	var out []releasehealth.Alert
 	for _, a := range alerts {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // The API-only sign-in flow: how an app authenticates a user WITHOUT ever
@@ -425,6 +427,8 @@ func (c *Client) Register(ctx context.Context, reg Registration) (string, error)
 	if out.UserID == "" {
 		return "", fmt.Errorf("the issuer accepted the registration for %q but returned no user id", email)
 	}
+	// Register is public sign-up with a password, always.
+	reportSignUp(ctx, out.UserID, observe.AuthMethodPassword, reg.EmailVerified)
 	return out.UserID, nil
 }
 

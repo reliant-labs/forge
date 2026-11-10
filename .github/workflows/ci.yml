@@ -114,7 +114,8 @@ permissions:
 #   test-short-warm   the whole -short tier, then the guards (full mode, -p 1);
 #                     saves the build cache test-short restores and the
 #                     module cache
-#   build             the release build, go-licenses, govulncheck
+#   build             the release build, go-licenses, govulncheck, and the
+#                     ClickHouse integration tests (pkg/obsquery, pkg/alerting)
 #   windows           native Windows: build, vet, -short tests, smoke
 #
 # FEWER JOBS. The org runs at most 20 jobs at once across every repository,
@@ -933,6 +934,23 @@ jobs:
       - name: Go vulnerability check
         if: ${{ !cancelled() }}
         run: forge ci vuln-scan --go
+      # pkg/obsquery's SQL and pkg/alerting's rules evaluated by a real
+      # ClickHouse (the `integration` build tag). No lane ran them until
+      # forge#1870: one was red on main for days and nobody saw it. They start
+      # one throwaway ClickHouse container per test (the runner's docker; the
+      # image pinned by digest in the tests), ~22 of them one after another,
+      # about 8 minutes: too slow for the pull-request tier, and the reason
+      # they are here rather than in `test`. This job ran ~4.5 minutes beside
+      # `test`'s ~19, so it adds a step, not a job and not wall time.
+      # Under CI a missing docker or an image that will not pull FAILS these
+      # tests (testdocker.Unavailable) instead of skipping them green. No
+      # -race: both packages' unit tests run under it in `test`, and this job's
+      # cache scope holds no -race artifacts to start from.
+      # internal/ciguard's TestIntegrationPackagesRunOnMain holds this step to
+      # the push-to-main tier.
+      - name: ClickHouse integration (pkg/obsquery, pkg/alerting)
+        if: ${{ !cancelled() }}
+        run: go test -tags=integration -count=1 -timeout=20m ./pkg/obsquery ./pkg/alerting
 
   # Every check that is not a Go test, in one job (they were the Verify
   # Generated Code and Quick checks jobs, and before those the pre-commit and

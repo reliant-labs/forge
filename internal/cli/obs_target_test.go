@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -215,10 +216,11 @@ func TestObsTargetUnstampableProjectHasNoFingerprint(t *testing.T) {
 func TestObsTargetCachePreservesClusterLocation(t *testing.T) {
 	dir := obsTargetProject(t, "https://cp.example.com")
 	fp := obsTargetFingerprint(dir, "prod")
-	facts := obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasCluster: true, ControlPlane: "https://cp.example.com"}
+	facts := obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasCluster: true, ControlPlane: "https://cp.example.com",
+		SelfInstrumented: []string{"app"}}
 	writeObsTarget(dir, "prod", fp, obsTarget{Facts: facts})
 	got, ok := readObsTarget(dir, "prod", fp)
-	if !ok || got.Facts != facts {
+	if !ok || !reflect.DeepEqual(got.Facts, facts) {
 		t.Fatalf("cached facts = %+v, hit %v; want %+v", got.Facts, ok, facts)
 	}
 	dec, err := obsbackend.Resolve(got.Facts, "")

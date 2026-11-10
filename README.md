@@ -71,6 +71,13 @@ or adopt an existing Vite or Next.js app in place with `forge project new
 --in-place --kind site` (`forge skill load deploy/static-site`). When it grows a
 waitlist or a checkout, the API is its own forge project beside it.
 
+An app that already exists, in any language, keeps its code. Your agent
+declares its Dockerfile in `forge.yaml` and `deploy/kcl/`, from the
+templates in `forge skill load adopt`. That skill then works in tiers you can
+stop after: ship it on Reliant hosting with managed Postgres, see it with
+OpenTelemetry, harden it with gated promotion and CI, and move pieces onto
+forge's Go stack only when that pays.
+
 ## Built for your agent
 
 When an agent writes most of the code, the bottleneck stops being how fast you

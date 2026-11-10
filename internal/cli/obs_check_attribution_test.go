@@ -79,7 +79,7 @@ func TestObsCheckAttribution(t *testing.T) {
 			replies: map[string][]string{procHealth: {retriedPromotionReply(0.0005473453749315818)},
 				procListGatesCheck: {retriedGates}, procGetIssueCheck: {oldVersionIssue}},
 			exit: 2, verdict: "INCONCLUSIVE",
-			want: []string{`"live_at": "2026-11-10T04:48:49.154721Z"`,
+			want: []string{`"live_at": "2026-11-10T04:48:49.154721Z"`, `"reason_code": "window_not_live"`,
 				`"window_not_live": "the judged after window [2026-11-10T03:47:30Z, 2026-11-10T04:02:30Z) ended before the release went live at 2026-11-10T04:48:49Z`,
 				`"unattributed": "the after window is not the live release's"`, `"policy": "warn"`, `"version_share": 0.0005473453749315818`},
 		},
@@ -89,7 +89,7 @@ func TestObsCheckAttribution(t *testing.T) {
 				procGetIssueCheck: {oldVersionIssue}},
 			errs: map[string]error{procListGatesCheck: &cloud.Error{Code: cloud.CodeUnavailable}},
 			exit: 2, verdict: "INCONCLUSIVE",
-			want:   []string{`"rollout_incomplete": "the judged release served 0.1% of the after window's measured traffic`, `"unattributed": "its 3 after-window event(s) are all tagged v1.12.0-rc.12, not v1.13.0-rc.1.b2"`},
+			want:   []string{`"reason_code": "rollout_incomplete"`, `"rollout_incomplete": "the judged release served 0.1% of the after window's measured traffic`, `"unattributed": "its 3 after-window event(s) are all tagged v1.12.0-rc.12, not v1.13.0-rc.1.b2"`},
 			stderr: "could not read the deploy gates of promotion 94bf7fc8",
 		},
 		{

@@ -315,6 +315,10 @@ func TestAttribution(t *testing.T) {
 				if w := InconclusiveWhy(r); w != r.WindowNotLive && w != r.RolloutIncomplete {
 					t.Errorf("InconclusiveWhy = %q, want the attribution reason", w)
 				}
+				code := map[bool]string{true: ReasonWindowNotLive, false: ReasonRolloutIncomplete}[r.WindowNotLive != ""]
+				if got := InconclusiveCode(r); got != code {
+					t.Errorf("InconclusiveCode = %q, want %q (the code of the reason InconclusiveWhy gives)", got, code)
+				}
 			}
 			if again := Attribute(r); again.Verdict != r.Verdict || len(failing(again)) != len(failing(r)) || again.RolloutIncomplete != r.RolloutIncomplete {
 				t.Errorf("Attribute is not idempotent: %s -> %s", r.Verdict, again.Verdict)

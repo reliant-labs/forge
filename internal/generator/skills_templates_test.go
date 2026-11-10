@@ -106,6 +106,9 @@ func TestSkillTemplatesReferOnlyToRealCommands(t *testing.T) {
 		// quoted verbatim in skill code examples; "forge will not ..." is
 		// prose inside that fixed sentence, not a command reference.
 		fenced = strings.ReplaceAll(fenced, "forge will not overwrite this file", "")
+		// `import kcl_plugin.forge as plugin` is KCL's import of forge's
+		// render plugin (plugin.resolve_port), not a command.
+		fenced = strings.ReplaceAll(fenced, "kcl_plugin.forge as plugin", "")
 		matches := forgeCommandRE.FindAllStringSubmatch(fenced, -1)
 		for _, m := range matches {
 			tokens := strings.Fields(m[1])

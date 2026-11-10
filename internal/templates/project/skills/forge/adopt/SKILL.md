@@ -181,10 +181,6 @@ secrets/
 !.forge/disowned.json
 !.forge/hashes/
 !.forge/scaffolded/
-!.forge/releases/
-!.forge/releases/*.json
-!.forge/promotions/
-!.forge/promotions/*.jsonl
 ```
 
 **Credentials.** The app reads them from env vars, so deliver each one in its

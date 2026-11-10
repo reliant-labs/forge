@@ -92,7 +92,10 @@ func (f *cloudIdentityFlags) target(ctx context.Context, env string) (cloudCalle
 
 // declareIdentityScopes tells the client which identity scope each procedure
 // needs, so a login or session credential is elevated for it before the call
-// instead of after a refusal. Neither scope is one a login carries.
+// instead of after a refusal. Neither scope is one a login carries. The
+// control plane's identity.scopeFor maps the read level (GetIdentityStatus,
+// ListUsers) to identity:read and manage, codes and exports (every other
+// procedure here) to identity:manage.
 func declareIdentityScopes(c *cloud.Client) {
 	c.DeclareScope("identity:read", procIdentityStatus, procIdentityUsers)
 	c.DeclareScope("identity:manage", procIdentityInvite, procIdentityExport,

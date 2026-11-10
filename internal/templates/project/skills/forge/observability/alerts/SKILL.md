@@ -42,6 +42,7 @@ Rules follow the Prometheus shape, with the condition **inside** `expr`: `alert`
 - `for` holds the condition before it fires (default `5m`). It is a KCL keyword, so write it quoted: `"for" = "10m"`.
 - `interval` is the evaluation period, floor `1m`. `keep_firing_for` holds a cleared alert.
 - `severity` is a label: `critical | warning | info`, default `warning`. Add any other labels you route on.
+- `release_health = "exclude"` (a label) says the rule watches something other than the env's own workloads: the machines that build it, a fleet the env monitors. Its alerts still page, but they never judge a release: `forge obs check` and the release-health verdict list them as `excluded_alerts` and count them as no `alert_firing` finding and no standing critical alert. Leave it off any rule about what the env serves.
 - `annotations` are Go templates in the Prometheus convention: `{{ $labels.<col> }}` (or `.Labels.<col>`) and `{{ $value }}` (or `.Value`, six significant digits). Functions: `printf` (`{{ printf "%.0f" $value }}`; a numeric verb also formats a label holding a number), `humanize`, `humanize1024`, `humanizeDuration`, `humanizePercentage`, `toUpper`, `toLower`, the float arithmetic `addf` / `subf` / `mulf` / `divf` (`{{ printf "%.0f" (mulf $value 100.0) }}%`), and text/template's builtins (`if`, `with`, `eq`, `gt`, …). `range`, `define` / `block` / `template`, a printf width or precision over 64, `*` and `%[n]` are refused. A template that fails at evaluation is sent as its raw text and logged; it never stops the alert.
 
 ## What render refuses

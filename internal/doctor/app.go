@@ -14,7 +14,7 @@ import (
 
 // CheckAppHealth verifies the application answers its probes: the ones its
 // workload declares (RuntimeTarget.Probe — a TCP connect, or its own HTTP
-// paths), else forge's /healthz ("ok") and /readyz.
+// paths, startup first), else forge's /healthz ("ok") and /readyz.
 //
 // The address is the one the CALLER resolved (RuntimeTarget.HTTP) — this
 // check never guesses a port. When nothing resolved one, the answer is
@@ -39,6 +39,16 @@ func CheckAppHealth(ctx context.Context, env *Environment) CheckResult {
 	}
 
 	probe := env.Target.Probe
+	var started []string
+	if probe.StartupPath != "" {
+		// A startup probe gates the others, as the kubelet runs it: until it
+		// answers, the app has not started, and its readiness and liveness
+		// endpoints say nothing yet.
+		if _, err := httpGetBody(ctx, client, fmt.Sprintf("http://%s%s", addr, probe.StartupPath)); err != nil {
+			return CheckResult{Status: StatusFail, Message: fmt.Sprintf("%s: has not started: %s failed (its declared startup probe): %v", subject, probe.StartupPath, err)}
+		}
+		started = append(started, probe.StartupPath+"=200")
+	}
 	if probe.TCP {
 		conn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", addr)
 		if err != nil {
@@ -47,10 +57,11 @@ func CheckAppHealth(ctx context.Context, env *Environment) CheckResult {
 		_ = conn.Close()
 		return CheckResult{Status: StatusPass, Message: subject + ": accepts connections (its declared tcp probe)"}
 	}
-	if probe.ReadinessPath != "" || probe.LivenessPath != "" {
+	if probe.ReadinessPath != "" || probe.LivenessPath != "" || probe.StartupPath != "" {
 		// The app's own endpoints: any 200 is up. Only forge's /healthz
-		// promises the "ok" body.
-		var answered []string
+		// promises the "ok" body. A declared startup path makes the whole
+		// contract the app's own, so the defaulted paths are held to 200 too.
+		answered := started
 		for _, path := range []string{orPath(probe.LivenessPath, "/healthz"), orPath(probe.ReadinessPath, "/readyz")} {
 			if _, err := httpGetBody(ctx, client, fmt.Sprintf("http://%s%s", addr, path)); err != nil {
 				return CheckResult{Status: StatusFail, Message: fmt.Sprintf("%s: %s failed (its declared probe): %v", subject, path, err)}

@@ -155,7 +155,7 @@ type RuntimeTarget struct {
 	// Pprof is "host:port" of its pprof side-listener (PPROF_ADDR), which
 	// serverkit binds separately from the main mux.
 	Pprof string
-	// Probe is the readiness/liveness contract that service DECLARES
+	// Probe is the startup/readiness/liveness contract that service DECLARES
 	// (its workload's `probes`), which the app health check holds it to.
 	// The zero value is forge's own: /healthz answering "ok" and /readyz.
 	// An app forge did not write (adopted by its Dockerfile) serves
@@ -174,12 +174,17 @@ type RuntimeTarget struct {
 }
 
 // AppProbe is a service's declared probe contract (deploy/v1alpha1.Probes):
-// a TCP connect, or the HTTP paths it serves. Empty paths are forge's own
-// /readyz and /healthz.
+// a TCP connect, or the HTTP paths it serves. Empty readiness and liveness
+// paths are forge's own /readyz and /healthz; an empty StartupPath means no
+// startup probe.
 type AppProbe struct {
 	TCP           bool
 	ReadinessPath string
 	LivenessPath  string
+	// StartupPath is the declared startup probe. The kubelet holds off
+	// readiness and liveness until it passes, so the check does too: an app
+	// whose startup probe fails has not started, whatever the others say.
+	StartupPath string
 }
 
 // machineLocalChecks are the runtime checks whose only subject is the

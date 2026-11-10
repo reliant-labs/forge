@@ -57,6 +57,10 @@ func TestRuntimeTargetCarriesTheDeclaredProbe(t *testing.T) {
 	if got := runtimeTargetFor(entities, rows).Probe; !got.TCP {
 		t.Errorf("Probe = %+v, want the declared tcp probe", got)
 	}
+	entities.Workloads[0].Spec.Probes = &deployv1alpha1.Probes{ReadinessPath: "/up", StartupPath: "/booted"}
+	if got := runtimeTargetFor(entities, rows).Probe; got.StartupPath != "/booted" || got.ReadinessPath != "/up" {
+		t.Errorf("Probe = %+v, want the declared startup and readiness paths", got)
+	}
 	entities.Workloads[0].Spec.Probes = nil
 	if got := runtimeTargetFor(entities, rows).Probe; got.TCP || got.ReadinessPath != "" {
 		t.Errorf("Probe = %+v, want forge's own (zero) contract when none is declared", got)

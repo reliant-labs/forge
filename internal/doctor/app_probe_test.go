@@ -37,6 +37,14 @@ func TestCheckAppHealthHonoursTheDeclaredProbe(t *testing.T) {
 		t.Errorf("readiness /up with liveness defaulted = %q (%s), want fail on the defaulted /healthz", got.Status, got.Message)
 	}
 
+	// A declared startup probe gates the others, as the kubelet runs it.
+	if got := check(AppProbe{ReadinessPath: "/up", LivenessPath: "/up", StartupPath: "/up"}); got.Status != StatusPass || !strings.Contains(got.Message, "/up=200 /up=200 /up=200") {
+		t.Errorf("declared startup /up = %q (%s), want pass naming all three probes", got.Status, got.Message)
+	}
+	if got := check(AppProbe{ReadinessPath: "/up", LivenessPath: "/up", StartupPath: "/booted"}); got.Status != StatusFail || !strings.Contains(got.Message, "startup probe") {
+		t.Errorf("failing startup probe = %q (%s), want fail naming the startup probe though readiness and liveness answer", got.Status, got.Message)
+	}
+
 	// A tcp probe against a port nothing listens on fails, naming it.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

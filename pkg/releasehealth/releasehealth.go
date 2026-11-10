@@ -726,6 +726,29 @@ func Rejudge(r Report, failOn []string) Report {
 	return out
 }
 
+// AfterEnds is when the after window finishes: After.To once the window is
+// complete, else the promotion plus the window the report was judged with.
+// While the window is open After.To is the moment it was read (Plan stops the
+// window at now), so it advances with every read and is not the end to wait
+// for.
+func (r Report) AfterEnds() time.Time {
+	if r.AfterComplete || r.Subject.PromotedAt.IsZero() {
+		return r.After.To
+	}
+	return r.Subject.PromotedAt.Add(windowOf(r.Thresholds))
+}
+
+func windowOf(ths []Threshold) time.Duration {
+	for _, th := range ths {
+		if th.Name == ThresholdWindow {
+			if d, err := time.ParseDuration(th.Value); err == nil && d > 0 {
+				return d
+			}
+		}
+	}
+	return release.DefaultReleaseHealth().Window()
+}
+
 func minRequestsOf(ths []Threshold) int {
 	for _, th := range ths {
 		if th.Name == ThresholdMinRequests {
@@ -776,9 +799,25 @@ func InconclusiveWhy(r Report) string {
 		return fmt.Sprintf("promoted into %d firing critical alert(s) (%s) that opened before the promotion; resolve them, then check again", n, strings.Join(rules, ", "))
 	}
 	if !r.AfterComplete {
-		return fmt.Sprintf("the after window has not finished (it ends %s)", r.After.To.UTC().Format(time.RFC3339))
+		return fmt.Sprintf("the after window has not finished (it ends %s)", r.AfterEnds().UTC().Format(time.RFC3339))
+	}
+	if !hasRequests(r.Services) {
+		// Nothing at all is not "too little": no service recorded a server
+		// span in either window, so the env has no request telemetry to judge.
+		return "no service recorded a server span in either window, so there is no request telemetry to judge: " +
+			"a workload that exports no OpenTelemetry spans, or a static site, has none"
 	}
 	return fmt.Sprintf("no service had at least %d requests after the promotion, so there is not enough traffic to judge", minRequestsOf(r.Thresholds))
+}
+
+// hasRequests reports whether any service had a request in either window.
+func hasRequests(services []ServiceHealth) bool {
+	for _, s := range services {
+		if s.Before.Requests > 0 || s.After.Requests > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func sortFindings(fs []Finding) {

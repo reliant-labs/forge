@@ -25,6 +25,21 @@ type AuthSetupTemplateData struct {
 	// SetupAuth then builds no validator, and a root that reaches the user
 	// authenticator refuses to start until one is written.
 	NoJWTConfig bool
+	// UserInfoLocalHTTPField is true when the config SetupAuth reads declares
+	// jwt_userinfo_allow_local_http, the dev-only opt-in for a plain-HTTP
+	// issuer at this machine's LAN address. A config that predates it gets a
+	// SetupAuth that does not read it, and still compiles.
+	UserInfoLocalHTTPField bool
+}
+
+// userInfoLocalHTTPConfigField is the Go name of that opt-in.
+const userInfoLocalHTTPConfigField = "JwtUserinfoAllowLocalHttp"
+
+// authDeclaresUserInfoLocalHTTP reports whether the config SetupAuth reads
+// (configType) also declares the opt-in.
+func authDeclaresUserInfoLocalHTTP(projectDir, configType string) bool {
+	in, ok := configDeclaring(projectDir, append(append([]string{}, jwtConfigFields...), userInfoLocalHTTPConfigField))
+	return ok && in == configType
 }
 
 // GenerateAuthSetup scaffolds internal/app/auth.go ONCE — the OWNED,
@@ -39,7 +54,7 @@ type AuthSetupTemplateData struct {
 // user owns the bytes. The generated cmd serve wiring calls app.SetupAuth
 // and threads the returned validator into the auth interceptor.
 func GenerateAuthSetup(modulePath, projectDir string) error {
-	return GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath})
+	return GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath, UserInfoLocalHTTPField: authDeclaresUserInfoLocalHTTP(projectDir, "")})
 }
 
 // GenerateAuthSetupData is GenerateAuthSetup with the whole template input:

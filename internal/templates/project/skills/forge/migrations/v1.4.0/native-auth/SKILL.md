@@ -121,6 +121,14 @@ builds only allowed `http` to loopback. Add the exported `isDevNetworkHost`
 (loopback, RFC 1918, RFC 6598, link-local, IPv6 ULA/link-local, `.local`) and make
 `isSecureEndpoint` call it instead of `isLoopbackHost`; leave the redirect check
 on `isLoopbackHost` (an `http` callback stays loopback-only). Both stay gated on
-`__DEV__`. An Android emulator without `--device-host` still needs
+`__DEV__`. **Two more owned-file edits for the API half**: add `bool
+jwt_userinfo_allow_local_http = 51` (env `JWT_USERINFO_ALLOW_LOCAL_HTTP`, default
+`false`) to your config proto and regenerate, and in `internal/app/auth.go` build the
+userinfo lookup as `userInfo := auth.NewUserInfo(...)`, then `if
+cfg.JwtUserinfoAllowLocalHttp { userInfo.AllowLocalPlainHTTP() }`, then
+`authenticator.UseUserInfo(userInfo)`. `forge env up --device-host` sets that variable
+for the identity's host workloads; it is off everywhere else, and without these edits
+a device-host run signs in but `Claims.Email` stays empty. The device host must be
+this machine's LAN **IPv4** address (not a name or IPv6). An Android emulator without `--device-host` still needs
 `adb reverse tcp:<idp port> tcp:<idp port>`. Production exports must carry
 no test fakes: `tests/auth-fakes.ts` is imported only by tests.

@@ -202,7 +202,7 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 	switch identifyZitadelHolder(ctx, spec, dataDir) {
 	case holderOurs:
 		if spec.DeviceHost == "" {
-			fmt.Printf("  %s: already ready on :%d (host process)\n", spec.Name, spec.Port)
+			fmt.Printf("  %s: already ready on :%d (host process; %s)\n", spec.Name, spec.Port, zitadelLANNotice)
 			return nil
 		}
 		running = true
@@ -225,13 +225,20 @@ type zitadelDomainOps struct {
 	// device host: the registered domain, not the process's configuration,
 	// is what decides it.
 	servesDeviceDomain func(ctx context.Context) bool
-	stop               func() error
-	boot               func(ctx context.Context, domain string, appendLog bool) error
+	// waitServesDeviceDomain polls servesDeviceDomain for a bounded time: a
+	// server that reports ready can still need a moment before its instance
+	// cache answers for a domain the restart just added.
+	waitServesDeviceDomain func(ctx context.Context) bool
+	stop                   func() error
+	boot                   func(ctx context.Context, domain string, appendLog bool) error
 }
 
 func realDomainOps(projectDir string, spec Spec) zitadelDomainOps {
 	return zitadelDomainOps{
 		servesDeviceDomain: func(ctx context.Context) bool { return zitadelServesDomain(ctx, spec.Port, spec.DeviceHost) },
+		waitServesDeviceDomain: func(ctx context.Context) bool {
+			return pollUntil(ctx, deviceDomainWait, 500*time.Millisecond, func() bool { return zitadelServesDomain(ctx, spec.Port, spec.DeviceHost) })
+		},
 		stop: func() error {
 			_, err := stopZitadel(projectDir, spec)
 			return err
@@ -293,15 +300,56 @@ func convergeZitadelDomains(ctx context.Context, spec Spec, ops zitadelDomainOps
 	if err := ops.stop(); err != nil {
 		return err
 	}
-	if err := ops.boot(ctx, spec.DeviceHost, true); err != nil {
+	bootErr := ops.boot(ctx, spec.DeviceHost, true)
+	if bootErr == nil && ops.waitServesDeviceDomain(ctx) {
+		return nil
+	}
+	reason := "it restarted but still does not answer at that address"
+	if bootErr != nil {
+		reason = bootErr.Error()
+	}
+	// DEGRADE, never leave the IdP down: the device host is an extra, and the
+	// run is still worth having on localhost (the simulator, the browser,
+	// every host process). Put the IdP back under localhost, which is the
+	// domain the instance already has, and say that the device host is off.
+	// The identity step re-checks what the instance answers, so it publishes
+	// the localhost issuer rather than one nobody serves.
+	fmt.Printf("  %s: could not serve %s (%s); falling back to localhost only for this run — devices cannot sign in. Its log (zitadel.log in the IdP's data dir) says why.\n", spec.Name, spec.DeviceHost, reason)
+	if err := ops.stop(); err != nil {
 		return err
 	}
-	if !ops.servesDeviceDomain(ctx) {
-		return fmt.Errorf("host-infra %s: the IdP restarted with ZITADEL_EXTERNALDOMAIN=%s but still does not answer at http://%s:%d\n"+
-			"  its log (zitadel.log in the IdP's data dir) says why; the device cannot sign in until it does.\n"+
-			"  Without --device-host the IdP serves localhost as before", spec.Name, spec.DeviceHost, spec.DeviceHost, spec.Port)
+	return ops.boot(ctx, zitadelLocalDomain, true)
+}
+
+// deviceDomainWait bounds the wait for a restarted instance to answer at the
+// device host.
+const deviceDomainWait = 15 * time.Second
+
+// pollUntil calls ok every interval until it is true, ctx ends or total has
+// passed.
+func pollUntil(ctx context.Context, total, interval time.Duration, ok func() bool) bool {
+	deadline := time.Now().Add(total)
+	for {
+		if ok() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(interval):
+		}
 	}
-	return nil
+}
+
+// ServesDomain reports whether the dev IdP on port answers OIDC discovery for
+// host with that origin as its issuer: what the identity step checks before it
+// publishes a device origin, so a run whose device host could not be served
+// (see convergeZitadelDomains) publishes localhost instead.
+func ServesDomain(ctx context.Context, port int, host string) bool {
+	return zitadelServesDomain(ctx, port, host)
 }
 
 // zitadelServesDomain reports whether the instance answers OIDC discovery for
@@ -433,8 +481,8 @@ func bootZitadel(ctx context.Context, projectDir string, spec Spec, domain strin
 	// supervisor, the pidfile is.
 	_ = cmd.Process.Release()
 
-	fmt.Printf("  %s: zitadel %s starting on :%d (host process, data %s)\n",
-		spec.Name, ZitadelVersion, spec.Port, shortPath(projectDir, dataDir))
+	fmt.Printf("  %s: zitadel %s starting on :%d (host process; %s; data %s)\n",
+		spec.Name, ZitadelVersion, spec.Port, zitadelLANNotice, shortPath(projectDir, dataDir))
 
 	if err := waitZitadelReady(ctx, spec, pid, zitadelReadyTimeout); err != nil {
 		return fmt.Errorf("host-infra %s: %w\n  logs: %s", spec.Name, err, shortPath(projectDir, logPath))
@@ -843,6 +891,14 @@ func extractZitadelFor(archive, dest, goos string) error {
 func (s Spec) zitadelEnv(patPath string) []string {
 	return s.zitadelEnvFor(patPath, zitadelLocalDomain)
 }
+
+// zitadelLANNotice is said on every start, with or without a device host.
+// Zitadel has no listen-address setting: it binds every interface, so the dev
+// IdP, its committed dev credentials and its plain-HTTP sign-in pages are
+// reachable by anyone on the same network. One clause on a line that is
+// already printed costs nothing, and it is the only place a developer who
+// never passes --device-host would learn it.
+const zitadelLANNotice = "listens on all interfaces: reachable from your LAN over plain HTTP with the dev credentials"
 
 // zitadelLocalDomain is the external domain a cold start runs under, and the
 // one every in-machine caller reaches the IdP at.

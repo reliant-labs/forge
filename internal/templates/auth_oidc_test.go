@@ -541,10 +541,11 @@ func TestConfigProto_NoEnvVarCanDisableAuthentication(t *testing.T) {
 func parseSetupAuth(t *testing.T) (*ast.FuncDecl, string) {
 	t.Helper()
 	out, err := ProjectTemplates().Render("app-auth.go.tmpl", struct {
-		Module             string
-		Graph, HasDatabase bool
-		NoJWTConfig        bool
-		AuthConfigType     string
+		Module                 string
+		Graph, HasDatabase     bool
+		NoJWTConfig            bool
+		AuthConfigType         string
+		UserInfoLocalHTTPField bool
 	}{Module: "example.com/proj"})
 	if err != nil {
 		t.Fatalf("render app-auth.go.tmpl: %v", err)

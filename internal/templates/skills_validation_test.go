@@ -1496,10 +1496,11 @@ func TestSkillsAuthSymbolReferencesExist(t *testing.T) {
 // one the scaffolded file actually sets.
 func TestAuthSkillsProviderClaimsMatchTheScaffold(t *testing.T) {
 	authGo, err := templates.ProjectTemplates().Render("app-auth.go.tmpl", struct {
-		Module             string
-		Graph, HasDatabase bool
-		NoJWTConfig        bool
-		AuthConfigType     string
+		Module                 string
+		Graph, HasDatabase     bool
+		NoJWTConfig            bool
+		AuthConfigType         string
+		UserInfoLocalHTTPField bool
 	}{Module: "example.com/demo"})
 	if err != nil {
 		t.Fatalf("render app-auth.go.tmpl: %v", err)

@@ -33,8 +33,9 @@ import (
 // that address as a second domain of the same instance and every service's
 // jwt_issuer follows (see deviceIdPHost for the design and its alternatives).
 // An Android emulator reaches the localhost form with
-// `adb reverse tcp:<idp port> tcp:<idp port>`, or the device-host form with
-// --device-host 10.0.2.2.
+// `adb reverse tcp:<idp port> tcp:<idp port>`. The device-host form needs this
+// machine's own LAN IPv4 address; an emulator's 10.0.2.2 alias is not one, so
+// it leaves the issuer on localhost (see applyDeviceHostToIdP).
 const (
 	oidcIssuerEnv        = "EXPO_PUBLIC_FORGE_OIDC_ISSUER"
 	oidcClientIDEnv      = "EXPO_PUBLIC_FORGE_OIDC_CLIENT_ID"
@@ -378,30 +379,18 @@ func deviceIdPHost(e *KCLEntities, targets []string, deviceHost string) string {
 	return ""
 }
 
-// deviceHostIsThisMachine reports whether deviceHost names an address of THIS
-// machine: an IP literal on one of its interfaces, or a hostname that resolves
-// to one. The issuer moves to the device host only then, because the API, the
-// broker and forge's own converge run here and must dial that same origin: an
-// emulator alias (10.0.2.2), a tunnel or another machine's name would be an
-// issuer nothing on this machine can reach.
-func deviceHostIsThisMachine(deviceHost string, local []net.Addr, lookup func(string) ([]net.IP, error)) bool {
-	host := strings.Trim(deviceHost, "[]")
-	if ip := net.ParseIP(host); ip != nil {
-		return addrsContainIP(local, ip)
-	}
-	if lookup == nil {
-		return false
-	}
-	ips, err := lookup(host)
-	if err != nil {
-		return false
-	}
-	for _, ip := range ips {
-		if addrsContainIP(local, ip) {
-			return true
-		}
-	}
-	return false
+// deviceHostIsThisMachineIPv4 reports whether deviceHost is an IPv4 literal
+// assigned to one of THIS machine's interfaces. The issuer moves to the device
+// host only then, and only for an IPv4 literal, because everything that dials
+// the issuer from here has to be able to vouch for where it goes: the API's
+// userinfo lookup and the broker's IdP client accept plain HTTP only to an
+// IPv4 address that is this machine's, checked at connect time. A hostname
+// (what it resolves to is not ours to vouch for, and changes with the
+// network), an IPv6 literal, an emulator alias (10.0.2.2), a tunnel or another
+// machine's address would be an issuer those paths refuse.
+func deviceHostIsThisMachineIPv4(deviceHost string, local []net.Addr) bool {
+	ip := net.ParseIP(strings.Trim(deviceHost, "[]"))
+	return ip != nil && ip.To4() != nil && addrsContainIP(local, ip)
 }
 
 // applyDeviceHostToIdP records the device host on the env's zitadel infra
@@ -410,7 +399,7 @@ func deviceHostIsThisMachine(deviceHost string, local []net.Addr, lookup func(st
 // notice to print, "" when this run has nothing to say. The IdP's listener is
 // not changed: Zitadel binds every interface already (it has no listen
 // address setting), so what this run adds is the instance's domain.
-func applyDeviceHostToIdP(e *KCLEntities, targets []string, deviceHost string, local []net.Addr, lookup func(string) ([]net.IP, error)) string {
+func applyDeviceHostToIdP(e *KCLEntities, targets []string, deviceHost string, local []net.Addr) string {
 	host := deviceIdPHost(e, targets, deviceHost)
 	if host == "" {
 		return ""
@@ -419,14 +408,61 @@ func applyDeviceHostToIdP(e *KCLEntities, targets []string, deviceHost string, l
 	if err != nil {
 		return ""
 	}
-	if !deviceHostIsThisMachine(host, local, lookup) {
-		return fmt.Sprintf("[up] --%s %s is not an address of this machine, so the dev IdP keeps its localhost issuer: the API, the broker and forge dial the issuer from here, and could not reach %s.\n"+
-			"[up] Native sign-in then works only where localhost reaches the IdP: the iOS simulator, or an Android emulator with `adb reverse tcp:%d tcp:%d`. "+
-			"For a physical device pass this machine's own LAN address (or a hostname that resolves to it).",
-			deviceHostFlag, host, host, zitadel.Port, zitadel.Port)
+	if !deviceHostIsThisMachineIPv4(host, local) {
+		return fmt.Sprintf("[up] --%s %s is not an IPv4 address of this machine, so the dev IdP keeps its localhost issuer. "+
+			"The issuer moves only for this machine's own LAN IPv4 address (not a hostname such as my-mac.local, an IPv6 address, 10.0.2.2 or a tunnel): "+
+			"the API and the login broker send tokens and credentials to it over plain HTTP and accept that only for an address they can confirm is this machine's at connect time. "+
+			"Pass the LAN IPv4 address of this machine, e.g. --%s 192.168.1.20.\n"+
+			"[up] Native sign-in then works only where localhost reaches the IdP: the iOS simulator, or an Android emulator with `adb reverse tcp:%d tcp:%d`.",
+			deviceHostFlag, host, deviceHostFlag, zitadel.Port, zitadel.Port)
 	}
 	zitadel.DeviceHost = host
-	return fmt.Sprintf("[up] --%s %s: the dev IdP also serves http://%s:%d and signs devices in under that issuer for this run (the API's jwt_issuer follows it).\n"+
-		"[up] security: the dev IdP listens on every network interface of this machine, carries the committed dev credentials from idp-steps.yaml, and is plain HTTP; use a network you trust, not shared Wi-Fi.",
+	enableLocalUserInfo(e)
+	notice := fmt.Sprintf("[up] --%s %s: the dev IdP also serves http://%s:%d and signs devices in under that issuer for this run (the API's jwt_issuer follows it).\n"+
+		"[up] security: the dev IdP listens on every network interface of this machine, carries the committed dev credentials from idp-steps.yaml, and is plain HTTP; use a network you trust, not shared Wi-Fi.\n"+
+		"[up] stop the stack (`forge env down`) before changing networks: the address is the issuer, and a new network means a new run with the new address.",
 		deviceHostFlag, host, host, zitadel.Port)
+	if len(hostIdentity(e).Social) > 0 {
+		notice += fmt.Sprintf("\n[up] warning: this identity declares social sign-in, and its callback moves to http://%s:%d/idps/callback for this run. "+
+			"Google refuses plain-HTTP private-IP redirect URIs and a provider app registered for the localhost callback will not match, so social sign-in on this machine does not work during a --%s run (password sign-in does).",
+			host, zitadel.Port, deviceHostFlag)
+	}
+	return notice
+}
+
+// userInfoLocalHTTPEnv is the config knob (jwt_userinfo_allow_local_http) that
+// lets the API's userinfo lookup reach the dev issuer at this machine's LAN
+// address over plain HTTP. It is OFF everywhere except a host workload of the
+// host-run identity in a --device-host run, where forge sets it here.
+const userInfoLocalHTTPEnv = "JWT_USERINFO_ALLOW_LOCAL_HTTP"
+
+// enableLocalUserInfo sets that knob on the launch env of every host workload
+// that consumes the host-run identity, and on no other. A value the developer
+// exported or declared still wins (the launch env layers beneath both).
+func enableLocalUserInfo(e *KCLEntities) {
+	id := hostIdentity(e)
+	if id == nil {
+		return
+	}
+	owned := release.IdentitySecretPrefix + id.Name
+	for i := range e.Workloads {
+		w := &e.Workloads[i]
+		if !w.OnRuntime(RuntimeHost) || w.Runtime.Host == nil {
+			continue
+		}
+		consumes := false
+		for _, r := range secretRefsForService(w) {
+			if r.SecretName == owned {
+				consumes = true
+				break
+			}
+		}
+		if !consumes {
+			continue
+		}
+		if w.Runtime.Host.LaunchEnv == nil {
+			w.Runtime.Host.LaunchEnv = map[string]string{}
+		}
+		w.Runtime.Host.LaunchEnv[userInfoLocalHTTPEnv] = "true"
+	}
 }

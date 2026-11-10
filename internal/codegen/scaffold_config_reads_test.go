@@ -174,3 +174,20 @@ func TestProvidersGraph_DevSessionCookieReadsTheAuthConfigsEnvironment(t *testin
 		t.Errorf("UserAuth sets DevSessionCookie from the command config SetupAuth reads:\n%s", providers)
 	}
 }
+
+// The userinfo dev opt-in is read only when the config SetupAuth reads declares
+// jwt_userinfo_allow_local_http, so a project whose config predates it still
+// compiles, and the default (off) render never calls AllowLocalPlainHTTP.
+func TestAuthScaffold_UserInfoLocalHTTPIsOptInAndDeclared(t *testing.T) {
+	without := renderFormatted(t, "app-auth.go.tmpl", AuthSetupTemplateData{Module: "example.com/rbc", Graph: true})
+	if strings.Contains(without, "AllowLocalPlainHTTP") || strings.Contains(without, "JwtUserinfoAllowLocalHttp") {
+		t.Errorf("a config without the field must not read it:\n%s", without)
+	}
+	if !strings.Contains(without, "authenticator.UseUserInfo(userInfo)") {
+		t.Errorf("the userinfo lookup is still installed:\n%s", without)
+	}
+	with := renderFormatted(t, "app-auth.go.tmpl", AuthSetupTemplateData{Module: "example.com/rbc", Graph: true, UserInfoLocalHTTPField: true})
+	if !strings.Contains(with, "if cfg.JwtUserinfoAllowLocalHttp {\n\t\t\tuserInfo.AllowLocalPlainHTTP()") {
+		t.Errorf("the declared field gates the opt-in:\n%s", with)
+	}
+}

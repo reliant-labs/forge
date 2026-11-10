@@ -3,9 +3,12 @@ package devidentity
 // --device-host against the real host Zitadel: the IdP serves this machine's
 // LAN address as a second domain of ONE instance, the converge publishes that
 // origin as the run's issuer, and a token minted at it carries an `iss` the
-// API's validator (pkg/auth, pinned to the published issuer, keys fetched from
-// it) accepts. Then the way back: the same database, a run without a device
-// host, publishes localhost again and a localhost token validates.
+// API's validator (pkg/auth, pinned to the published issuer, keys found
+// through discovery exactly as the scaffolded SetupAuth does) accepts. The
+// API's userinfo lookup, with the dev-only AllowLocalPlainHTTP opt-in, fills
+// the user's verified address from that LAN-address issuer, and without the
+// opt-in it does not. Then the way back, twice: a run without a device host
+// against the still-running process (the real CLI path), and a stop/start.
 //
 // Skipped under -short: it boots host postgres and the pinned Zitadel, and
 // needs an address of this machine other than loopback.
@@ -29,6 +32,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/devidp"
 	"github.com/reliant-labs/forge/pkg/identity"
+	"github.com/reliant-labs/forge/pkg/oauth2"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -69,7 +73,9 @@ func TestConverge_DeviceHostAgainstTheRealHostZitadel(t *testing.T) {
 	idpSpec := hostinfra.Spec{
 		Name: "idp", Engine: hostinfra.EngineZitadel, Port: freeLoopbackPort(t),
 		IDPDatabase: "zitadel", IDPDatabasePort: pgSpec.Port, IDPMasterKey: "MasterkeyNeedsToHave32Characters",
-		IDPStepsFile: "idp-steps.yaml", IDPPATPath: ".forge/idp/pat.txt",
+		// An ABSOLUTE, non-default PAT path: the default one is also published
+		// to ~/.forge/idp/localhost_<port>_zitadel, which a test must not litter.
+		IDPStepsFile: "idp-steps.yaml", IDPPATPath: filepath.Join(dir, "pat", "pat.txt"),
 		Database: "postgres", User: "postgres", Password: "postgres",
 	}
 	t.Cleanup(func() {
@@ -79,12 +85,17 @@ func TestConverge_DeviceHostAgainstTheRealHostZitadel(t *testing.T) {
 	if err := hostinfra.Start(ctx, dir, pgSpec); err != nil {
 		t.Skipf("host postgres is unavailable here: %v", err)
 	}
+	// A localhost-only IdP first. Only THIS may skip the test (no binary, no
+	// network): from here on a failure is a failure of the device-host code.
+	if err := hostinfra.Start(ctx, dir, idpSpec); err != nil {
+		t.Skipf("host Zitadel is unavailable here: %v", err)
+	}
 	withDevice := idpSpec
 	withDevice.DeviceHost = lan
-	// A cold start with a device host: localhost first (the instance's first
-	// domain), then ONE restart that adds the device host.
+	// The running instance gains the device host: ONE restart that adds the
+	// domain, no data reset.
 	if err := hostinfra.Start(ctx, dir, withDevice); err != nil {
-		t.Skipf("host Zitadel is unavailable here: %v", err)
+		t.Fatalf("adding the device host to a running IdP: %v", err)
 	}
 
 	port := itoa(idpSpec.Port)
@@ -142,11 +153,9 @@ func TestConverge_DeviceHostAgainstTheRealHostZitadel(t *testing.T) {
 		return out
 	}
 
-	// signInAndValidate is the API's real path: the broker dials IDP_BASE (the
-	// published issuer) with the broker token and signs the seed user in; the
-	// API validates the access token against jwt_issuer, taking its keys from
-	// that issuer's discovery.
-	signInAndValidate := func(t *testing.T, issuer string) (*auth.Claims, error) {
+	// signIn is the broker's real path: it dials IDP_BASE (the published
+	// issuer) with the broker token and signs the seed user in.
+	signIn := func(t *testing.T, issuer string) (string, map[string]string) {
 		t.Helper()
 		out := readOutput()
 		if out.Issuer != issuer {
@@ -163,14 +172,36 @@ func TestConverge_DeviceHostAgainstTheRealHostZitadel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("sign in through %s: %v", issuer, err)
 		}
+		return toks.AccessToken, vals
+	}
+	// apiAuthenticator is the scaffolded SetupAuth: the key source is found
+	// through the issuer's OIDC discovery (jwt_jwks_url empty), and the userinfo
+	// lookup is installed over the same issuer, with the dev opt-in when asked.
+	apiAuthenticator := func(t *testing.T, issuer, audience string, allowLocalHTTP bool) *auth.Authenticator {
+		t.Helper()
+		meta, err := oauth2.Discover(ctx, nil, issuer)
+		if err != nil {
+			t.Fatalf("discover %s: %v", issuer, err)
+		}
 		v, err := auth.NewValidator(auth.Config{Provider: "jwt", JWT: auth.JWTConfig{
-			Issuer: vals["JWT_ISSUER"], Audience: vals["JWT_AUDIENCE"], JWKSURL: issuer + "/oauth/v2/keys",
+			Issuer: issuer, Audience: audience, JWKSURL: meta.JWKSURI,
 		}})
 		if err != nil {
 			t.Fatalf("API validator: %v", err)
 		}
 		t.Cleanup(func() { _ = v.Close() })
-		return v.Validate(toks.AccessToken)
+		a := auth.NewAuthenticator(v.Validate)
+		userInfo := auth.NewUserInfo(issuer, func(context.Context) (string, error) { return meta.UserinfoEndpoint, nil }, nil)
+		if allowLocalHTTP {
+			userInfo.AllowLocalPlainHTTP()
+		}
+		a.UseUserInfo(userInfo)
+		return a
+	}
+	signInAndValidate := func(t *testing.T, issuer string) (*auth.Claims, error) {
+		t.Helper()
+		token, vals := signIn(t, issuer)
+		return apiAuthenticator(t, vals["JWT_ISSUER"], vals["JWT_AUDIENCE"], false).Authenticate(ctx, token)
 	}
 
 	first, err := Converge(ctx, in)
@@ -194,6 +225,23 @@ func TestConverge_DeviceHostAgainstTheRealHostZitadel(t *testing.T) {
 		}
 		if n := nativeOIDCIssuer(out); n != deviceOrigin {
 			t.Errorf("the issuer a device is handed = %q, want %q", n, deviceOrigin)
+		}
+	})
+	t.Run("userinfo at the LAN-address issuer: filled with the opt-in, refused by default", func(t *testing.T) {
+		token, vals := signIn(t, deviceOrigin)
+		withOptIn, err := apiAuthenticator(t, vals["JWT_ISSUER"], vals["JWT_AUDIENCE"], true).Authenticate(ctx, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if withOptIn.Email != "dev@acme.test" || !withOptIn.EmailVerified {
+			t.Errorf("with AllowLocalPlainHTTP: Email %q verified %v, want the seed user's verified address", withOptIn.Email, withOptIn.EmailVerified)
+		}
+		byDefault, err := apiAuthenticator(t, vals["JWT_ISSUER"], vals["JWT_AUDIENCE"], false).Authenticate(ctx, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if byDefault.Email != "" {
+			t.Errorf("by default Email = %q: a plain-HTTP LAN issuer must not be sent a token unless opted in", byDefault.Email)
 		}
 	})
 	t.Run("the localhost origin still serves the instance, under its own issuer", func(t *testing.T) {
@@ -231,9 +279,29 @@ func TestConverge_DeviceHostAgainstTheRealHostZitadel(t *testing.T) {
 		}
 	})
 
-	// The way back, on the same database and without wiping anything: stop,
-	// start with no device host, converge with none. The issuer is localhost
-	// again, every output follows it, and a localhost token validates.
+	// The way back, on the same database and without wiping anything. First
+	// the real CLI path: a run without --device-host finds the IdP still
+	// running (it was started with the device host and keeps serving both
+	// domains), starts nothing, and converges with no device host. The issuer
+	// is localhost again, every output follows it, and a localhost token
+	// validates.
+	if err := hostinfra.Start(ctx, dir, idpSpec); err != nil {
+		t.Fatalf("a run without a device host against the running IdP: %v", err)
+	}
+	in.DeviceHost = ""
+	if _, err := Converge(ctx, in); err != nil {
+		t.Fatalf("converge without a device host against the running IdP: %v", err)
+	}
+	t.Run("back without a device host, IdP still running: localhost issuer, accepted by the API", func(t *testing.T) {
+		if _, err := signInAndValidate(t, localOrigin); err != nil {
+			t.Fatalf("a localhost token was rejected after moving back: %v", err)
+		}
+	})
+	// And after a stop and a fresh start.
+	in.DeviceHost = lan
+	if _, err := Converge(ctx, in); err != nil {
+		t.Fatalf("converge with the device host again: %v", err)
+	}
 	if err := hostinfra.Stop(dir, idpSpec); err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +312,7 @@ func TestConverge_DeviceHostAgainstTheRealHostZitadel(t *testing.T) {
 	if _, err := Converge(ctx, in); err != nil {
 		t.Fatalf("converge without a device host: %v", err)
 	}
-	t.Run("back without a device host: localhost issuer, accepted by the API", func(t *testing.T) {
+	t.Run("back after a stop and start: localhost issuer, accepted by the API", func(t *testing.T) {
 		if _, err := signInAndValidate(t, localOrigin); err != nil {
 			t.Fatalf("a localhost token was rejected after moving back: %v", err)
 		}

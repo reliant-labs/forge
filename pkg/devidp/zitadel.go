@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/pkg/netguard"
 	"github.com/reliant-labs/forge/pkg/observe"
 )
 
@@ -62,11 +65,40 @@ type Client struct {
 const requestTimeout = 15 * time.Second
 
 // httpClient returns the HTTP client, building the default on first use.
+//
+// A Base that is plain HTTP at a non-loopback IPv4 address of THIS machine is
+// the dev IdP reached at the machine's LAN address (`forge env up
+// --device-host`): the broker sends the issuer's service token and users'
+// credentials there in the clear. That client gets a transport that ignores
+// proxy variables (HTTP_PROXY would otherwise carry them to the proxy, because
+// only loopback is exempt) and refuses at connect time any address that is not
+// loopback or on one of this machine's interfaces at that moment, so a network
+// change cannot hand them to whoever now holds the address. Any other Base (a
+// remote service, a name, loopback, HTTPS) keeps the shared default transport.
 func (c *Client) httpClient() *http.Client {
 	if c.http == nil {
-		c.http = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: requestTimeout})
+		opts := observe.HTTPClientOptions{Timeout: requestTimeout}
+		if localPlainHTTPBase(c.Base) {
+			opts.Base = netguard.LocalOnly{}.Transport()
+		}
+		c.http = observe.NewHTTPClient(opts)
 	}
 	return c.http
+}
+
+// localPlainHTTPBase reports whether base is plain HTTP at an IPv4 literal
+// assigned to one of this machine's interfaces right now (loopback excluded:
+// the default transport already treats loopback as local).
+func localPlainHTTPBase(base string) bool {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	ip := net.ParseIP(u.Hostname())
+	if ip == nil || ip.To4() == nil || ip.IsLoopback() {
+		return false
+	}
+	return netguard.LocalOnly{}.Allowed(ip)
 }
 
 // Org is a Zitadel organization — the container a project and its users

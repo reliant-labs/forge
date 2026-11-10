@@ -52,10 +52,11 @@ func TestMiddlewareTemplate_EnrichIsAComponentSeam(t *testing.T) {
 // does real auth out of the box (no dev-auth bypass).
 func TestRenderAppAuthTemplate(t *testing.T) {
 	data := struct {
-		Module             string
-		Graph, HasDatabase bool
-		NoJWTConfig        bool
-		AuthConfigType     string
+		Module                 string
+		Graph, HasDatabase     bool
+		NoJWTConfig            bool
+		AuthConfigType         string
+		UserInfoLocalHTTPField bool
 	}{Module: "example.com/myproject"}
 
 	content, err := ProjectTemplates().Render("app-auth.go.tmpl", data)
@@ -84,7 +85,7 @@ func TestRenderAppAuthTemplate(t *testing.T) {
 		{"SetupAuth wraps the JWT validator", "authenticator := auth.NewAuthenticator(validator.Validate)", true},
 		// A managed identity's access token carries no email; userinfo
 		// fills a verified one for the enrich seam.
-		{"SetupAuth fills Claims.Email from userinfo", "authenticator.UseUserInfo(auth.NewUserInfo(", true},
+		{"SetupAuth fills Claims.Email from userinfo", "authenticator.UseUserInfo(userInfo)", true},
 		{"userinfo endpoint from discovery", "meta.UserinfoEndpoint", true},
 		{"APIKeyValidator seam", "func APIKeyValidator(_ *Infra) auth.KeyValidator {", true},
 		{"module config import", "example.com/myproject/pkg/config", true},
@@ -432,10 +433,11 @@ func TestAPIKeysSkillDescribesTheScaffold(t *testing.T) {
 	files := map[string]string{
 		"pkg/middleware/middleware.go": render("middleware.go.tmpl", struct{ Name string }{Name: "demo"}),
 		"internal/app/auth.go": render("app-auth.go.tmpl", struct {
-			Module             string
-			Graph, HasDatabase bool
-			NoJWTConfig        bool
-			AuthConfigType     string
+			Module                 string
+			Graph, HasDatabase     bool
+			NoJWTConfig            bool
+			AuthConfigType         string
+			UserInfoLocalHTTPField bool
 		}{Module: "example.com/demo"}),
 		"cmd/<bin>/cmd/serve.go": render("cmd-tree-serve.go.tmpl", struct {
 			Module           string

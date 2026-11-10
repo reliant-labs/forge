@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/secrets"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/identity"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -304,4 +305,60 @@ func TestMissingIDPPATMessage(t *testing.T) {
 	if !strings.Contains(custom, "copy the token from the checkout that initialized it to /src/clone/secrets/pat.txt") {
 		t.Errorf("a declared path is the only location, so the fix names it:\n%s", custom)
 	}
+}
+
+// A device origin is published as the issuer only when the IdP answers there.
+// When the restart that adds the domain failed (and the IdP fell back to
+// localhost) the run drops the device host: the converge gets none, so nothing
+// is pinned to an origin nobody serves, and the printed issuer is localhost.
+func TestConvergeHostIdentity_DeviceHostDegradesWhenTheIdPDoesNotServeIt(t *testing.T) {
+	prevConverge, prevServes := convergeDevIdentityFn, idpServesDomain
+	t.Cleanup(func() { convergeDevIdentityFn, idpServesDomain = prevConverge, prevServes })
+	var got []devidentity.Input
+	convergeDevIdentityFn = func(_ context.Context, in devidentity.Input) (*devidentity.Result, error) {
+		got = append(got, in)
+		return &devidentity.Result{Report: &identity.Report{}}, nil
+	}
+
+	run := func(t *testing.T, serves bool) (devidentity.Input, string) {
+		t.Helper()
+		got = nil
+		idpServesDomain = func(context.Context, int, string) bool { return serves }
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, ".forge", "idp"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".forge", "idp", "pat.txt"), []byte("pat"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		e := identityEntities()
+		z, _ := hostZitadel(e, e.Identity)
+		z.DeviceHost = "192.168.1.20"
+		out := captureStdout(t, func() { convergeHostIdentity(t.Context(), e, dir, nil) })
+		if len(got) != 1 {
+			t.Fatalf("converge ran %d times\n%s", len(got), out)
+		}
+		return got[0], out
+	}
+
+	t.Run("served: the device host reaches the converge and the issuer line", func(t *testing.T) {
+		in, out := run(t, true)
+		if in.DeviceHost != "192.168.1.20" {
+			t.Errorf("DeviceHost = %q", in.DeviceHost)
+		}
+		if !strings.Contains(out, "already converged at http://192.168.1.20:8080") {
+			t.Errorf("the identity line must name the issuer, not the dialled localhost origin:\n%s", out)
+		}
+	})
+	t.Run("not served: localhost issuer, and it says so", func(t *testing.T) {
+		in, out := run(t, false)
+		if in.DeviceHost != "" {
+			t.Errorf("DeviceHost = %q: an origin the IdP does not answer must not become the issuer", in.DeviceHost)
+		}
+		for _, want := range []string{"does not answer at 192.168.1.20", "localhost issuer", "already converged at http://localhost:8080"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q:\n%s", want, out)
+			}
+		}
+	})
 }

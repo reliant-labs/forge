@@ -23,18 +23,23 @@ import (
 // runs 20 jobs at once), so a new one either joins a push-to-main step or
 // says here why not.
 var integrationNotInCI = map[string]string{
-	"./internal/cli":         "docker/envtest end-to-end smokes (db squash, OpenBao, reproducible docker build); not yet in a lane (found 2026-11-10)",
-	"./internal/templates":   "docker builds and compose smokes of rendered templates; not yet in a lane (found 2026-11-10)",
-	"./pkg/alerting/pgstore": "needs a real Postgres; not yet in a lane (found 2026-11-10)",
-	"./pkg/blobstore":        "needs a MinIO container; not yet in a lane (found 2026-11-10)",
-	"./pkg/migratekit":       "Postgres behind PgBouncer in containers; not yet in a lane (found 2026-11-10)",
-	"./pkg/observe":          "opt-in (RUN_HEADERS_FILE_SMOKE=1): boots two collector containers",
-	"./pkg/orm":              "SQLite differ; not yet in a lane (found 2026-11-10)",
-	"./pkg/testkit":          "proves testkit.Slow skips in the integration lane; meaningful only inside a lane that runs other tests",
+	"./pkg/observe": "its headers-file smoke did not compile (an import cycle through pkg/deploy) until forge#2053; it then joins the container step with RUN_HEADERS_FILE_SMOKE=1 (boots two collector containers)",
+	"./pkg/orm":     "TestDiffDatabase needs a sqlite dialect the ORM never registers, so it always skips: a lane would run nothing (forge#2054)",
 }
 
 // integrationTags matches a `go test` invocation's -tags naming integration.
 var integrationTags = regexp.MustCompile(`-tags[= ]\S*\bintegration\b`)
+
+// integrationTestFunc matches a top-level test function's declaration.
+var integrationTestFunc = regexp.MustCompile(`(?m)^func (Test\w*)\(`)
+
+// integrationStep is the packages one ci.yml integration step names (./a/b
+// or ./a/...), and its -run filter; nil when it has none and runs every test.
+type integrationStep struct {
+	name     string
+	patterns []string
+	run      *regexp.Regexp
+}
 
 type stepsJob struct {
 	If    string `yaml:"if"`
@@ -48,7 +53,10 @@ type stepsJob struct {
 // `integration`-tagged tests is run by a ci.yml step in the push-to-main tier,
 // or is named in integrationNotInCI with a reason; and that no such step runs
 // on a pull request or a merge-queue entry, whose five-minute budget a
-// container-backed test does not fit.
+// container-backed test does not fit. A step that narrows its run with -run
+// (so a package's unit suite, which another job runs, is not run twice) must
+// select every integration test of every package it names: a test added
+// beside them would otherwise sit in a lane that never runs it.
 func TestIntegrationPackagesRunOnMain(t *testing.T) {
 	raw, err := os.ReadFile(ciWorkflow)
 	if err != nil {
@@ -61,7 +69,7 @@ func TestIntegrationPackagesRunOnMain(t *testing.T) {
 		t.Fatalf("parse %s: %v", ciWorkflow, err)
 	}
 
-	var patterns []string // the packages integration steps name: ./a/b or ./a/...
+	var steps []integrationStep
 	for name, j := range wf.Jobs {
 		for _, s := range j.Steps {
 			if !integrationTags.MatchString(s.Run) {
@@ -71,39 +79,73 @@ func TestIntegrationPackagesRunOnMain(t *testing.T) {
 				strings.Contains(j.If, "pull_request") || strings.Contains(j.If, "merge_group") {
 				t.Errorf("job %s step %q runs integration tests but the job is not push-to-main only (if: %q): they do not fit the pull-request tier's budget", name, s.Name, j.If)
 			}
-			for _, f := range strings.Fields(s.Run) {
-				if strings.HasPrefix(f, "./") {
-					patterns = append(patterns, strings.TrimSuffix(f, "/"))
+			step := integrationStep{name: s.Name}
+			fields := strings.Fields(s.Run)
+			for i, f := range fields {
+				switch {
+				case strings.HasPrefix(f, "./"):
+					step.patterns = append(step.patterns, strings.TrimSuffix(f, "/"))
+				case f == "-run" && i+1 < len(fields), strings.HasPrefix(f, "-run="):
+					expr := strings.TrimPrefix(f, "-run=")
+					if f == "-run" {
+						expr = fields[i+1]
+					}
+					re, err := regexp.Compile(strings.Trim(expr, `'"`))
+					if err != nil {
+						t.Fatalf("job %s step %q: -run %s: %v", name, s.Name, expr, err)
+					}
+					step.run = re
 				}
 			}
+			steps = append(steps, step)
 		}
 	}
-	if len(patterns) == 0 {
+	if len(steps) == 0 {
 		t.Fatalf("no ci.yml step runs `go test -tags=integration ./<pkg>` — this guard would inspect nothing")
 	}
 
-	pkgs := integrationPackages(t, filepath.Join("..", ".."))
-	if len(pkgs) == 0 {
+	tests := integrationTests(t, filepath.Join("..", ".."))
+	if len(tests) == 0 {
 		t.Fatal("found no integration-tagged test files — this guard would inspect nothing")
 	}
-	runs := func(pkg string) bool {
-		for _, p := range patterns {
-			if base, tree := strings.CutSuffix(p, "/..."); tree && (pkg == base || strings.HasPrefix(pkg, base+"/")) {
-				return true
-			}
-			if p == pkg {
-				return true
+	pkgs := make([]string, 0, len(tests))
+	for pkg := range tests {
+		pkgs = append(pkgs, pkg)
+	}
+	sort.Strings(pkgs)
+	// covering is every step that names pkg.
+	covering := func(pkg string) []integrationStep {
+		var out []integrationStep
+		for _, s := range steps {
+			for _, p := range s.patterns {
+				base, tree := strings.CutSuffix(p, "/...")
+				if p == pkg || tree && (pkg == base || strings.HasPrefix(pkg, base+"/")) {
+					out = append(out, s)
+					break
+				}
 			}
 		}
-		return false
+		return out
 	}
 	for _, pkg := range pkgs {
 		_, listed := integrationNotInCI[pkg]
+		by := covering(pkg)
 		switch {
-		case runs(pkg) && listed:
+		case len(by) > 0 && listed:
 			t.Errorf("%s is run by a ci.yml integration step and still listed in integrationNotInCI: delete the entry", pkg)
-		case !runs(pkg) && !listed:
+		case len(by) == 0 && !listed:
 			t.Errorf("%s has integration-tagged tests that no ci.yml step runs: add it to a push-to-main step (go test -tags=integration %s), or to integrationNotInCI with the reason it stays out", pkg, pkg)
+		}
+		for _, name := range tests[pkg] {
+			selected := len(by) == 0 // a package no step runs is reported above
+			for _, s := range by {
+				if s.run == nil || s.run.MatchString(name) {
+					selected = true
+				}
+			}
+			if !selected {
+				t.Errorf("%s's integration test %s is not selected by the -run of the ci.yml step that names the package (%q): add it to the step's -run", pkg, name, by[0].name)
+			}
 		}
 	}
 	for pkg := range integrationNotInCI {
@@ -113,12 +155,13 @@ func TestIntegrationPackagesRunOnMain(t *testing.T) {
 	}
 }
 
-// integrationPackages lists, as ./dir, every directory under root holding a
-// _test.go file that builds only with the integration tag. Read by this
-// process, so the test cache sees an added or retagged file.
-func integrationPackages(t *testing.T, root string) []string {
+// integrationTests maps, as ./dir, every directory under root holding a
+// _test.go file that builds only with the integration tag to the top-level
+// tests those files declare. Read by this process, so the test cache sees an
+// added or retagged file.
+func integrationTests(t *testing.T, root string) map[string][]string {
 	t.Helper()
-	seen := map[string]bool{}
+	seen := map[string][]string{}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -138,20 +181,27 @@ func integrationPackages(t *testing.T, root string) []string {
 			return err
 		}
 		if only {
+			src, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
 			rel, _ := filepath.Rel(root, filepath.Dir(p))
-			seen["./"+path.Clean(filepath.ToSlash(rel))] = true
+			pkg := "./" + path.Clean(filepath.ToSlash(rel))
+			names := seen[pkg]
+			for _, m := range integrationTestFunc.FindAllSubmatch(src, -1) {
+				names = append(names, string(m[1]))
+			}
+			seen[pkg] = names
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []string
-	for p := range seen {
-		out = append(out, p)
+	for pkg := range seen {
+		sort.Strings(seen[pkg])
 	}
-	sort.Strings(out)
-	return out
+	return seen
 }
 
 // integrationOnly reports whether the file's //go:build line (before its

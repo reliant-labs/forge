@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pprofile/pprofileotlp"
 
 	"github.com/reliant-labs/forge/internal/clickstack"
+	"github.com/reliant-labs/forge/internal/testdocker"
 	"github.com/reliant-labs/forge/pkg/profilequery"
 
 	collectorlogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
@@ -59,7 +60,7 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 		t.Skip("pulls ~2 GB of images and boots a database; set RUN_CLICKSTACK_CONTRACT=1 outside -short")
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker unavailable: " + err.Error())
+		testdocker.Unavailable(t, "docker unavailable: %v", err)
 	}
 
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")

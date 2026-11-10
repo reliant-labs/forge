@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/releasetimeline"
+	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
 
@@ -180,6 +181,37 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 		r.Thresholds = append(r.Thresholds, releasehealth.Threshold{Name: t.Name, Value: t.Value, Source: t.Source})
 	}
 	return r, nil
+}
+
+const procListGates = "controlplane.v1.DeployService/ListGates"
+
+type wirePromotionGate struct {
+	Name       string     `json:"name"`
+	Status     string     `json:"status"`
+	StartedAt  *time.Time `json:"startedAt"`
+	FinishedAt *time.Time `json:"finishedAt"`
+	RunID      string     `json:"runId"`
+	RecordedAt *time.Time `json:"recordedAt"`
+}
+
+// PromotionGates reads every gate recorded on a promotion, the pre-promote
+// ones and those appended after it: what says when an attempt of it shipped
+// (releasehealth.LiveAt). The read is about the promotion, not the env's
+// telemetry, so an instance narrowing does not apply to it.
+func (c Cloud) PromotionGates(ctx context.Context, promotionID string) ([]release.Gate, error) {
+	var out struct {
+		Gates []wirePromotionGate `json:"gates"`
+	}
+	if err := c.callEnvWide(ctx, procListGates, map[string]any{"promotionId": promotionID}, &out); err != nil {
+		return nil, err
+	}
+	gates := make([]release.Gate, 0, len(out.Gates))
+	for _, w := range out.Gates {
+		status, raw := release.GateStatusFromStored(w.Status)
+		gates = append(gates, release.Gate{Name: w.Name, Status: status, RawStatus: raw,
+			StartedAt: w.StartedAt, FinishedAt: w.FinishedAt, RunID: w.RunID, RecordedAt: w.RecordedAt})
+	}
+	return gates, nil
 }
 
 type wireActivityEvent struct {

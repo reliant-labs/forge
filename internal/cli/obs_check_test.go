@@ -25,6 +25,11 @@ const procHealth = "controlplane.v1.ObservabilityService/GetReleaseHealth"
 
 const procListAlertsCheck = "controlplane.v1.AlertingService/ListAlerts"
 
+const (
+	procListGatesCheck = "controlplane.v1.DeployService/ListGates"
+	procGetIssueCheck  = "controlplane.v1.IssuesService/GetIssue"
+)
+
 func cloudFacts() obsbackend.Facts {
 	return obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true, ControlPlane: "https://cp"}
 }
@@ -180,8 +185,15 @@ func TestObsCheckCloudRequestShapeAndDocument(t *testing.T) {
 	if exitCodeForError(err) != 1 {
 		t.Fatalf("err = %v", err)
 	}
-	if len(caller.calls) != 1 || caller.calls[0].procedure != procHealth {
+	// The judgement is one GetReleaseHealth; the rest are its attribution
+	// reads (the promotion's gates, each issue's events by version).
+	if len(caller.calls) == 0 || caller.calls[0].procedure != procHealth {
 		t.Fatalf("calls = %+v", caller.calls)
+	}
+	for _, c := range caller.calls[1:] {
+		if c.procedure != procListGatesCheck && c.procedure != procGetIssueCheck {
+			t.Errorf("unexpected call %s", c.procedure)
+		}
 	}
 	body := caller.calls[0].body
 	for _, want := range []string{`"envIds":["env-prod"]`, `"orgId":"org-1"`, `"releaseVersion":"v2"`, `"window":"1800s"`,

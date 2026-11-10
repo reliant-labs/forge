@@ -34,6 +34,12 @@
 //     still firing (the release was promoted into it, so nothing proves it
 //     good); else PASS. A clear failure is a failure even while the window is
 //     still open.
+//   - Attribution (attribution.go): P is when the release went live, which a
+//     retried promotion reaches after its first promoted_at ([LiveAt]); a
+//     finding the after window cannot pin on the judged release (its version
+//     served too little of the traffic, the issue's events are all another
+//     version's) never fails it, and a window that is not the live release's
+//     is INCONCLUSIVE.
 package releasehealth
 
 import (
@@ -400,6 +406,10 @@ type Issue struct {
 	FirstSeenAt  time.Time `json:"first_seen_at,omitzero"`
 	FirstVersion string    `json:"first_version,omitempty"`
 	RegressedAt  time.Time `json:"regressed_at,omitzero"`
+	// WindowVersions are the issue's after-window events by service.version,
+	// when the judge read them: what attributes the issue to the judged
+	// release or to another ([Attribute]). Nil when unread.
+	WindowVersions map[string]int64 `json:"window_versions,omitempty"`
 }
 
 // Alert is an alert instance that opened at or after the promotion.
@@ -427,6 +437,10 @@ type Subject struct {
 	GitCommit       string    `json:"git_commit,omitempty"`
 	PromotedAt      time.Time `json:"promoted_at"`
 	PreviousRelease string    `json:"previous_release,omitempty"`
+	// LiveAt is when an attempt of the promotion shipped its release
+	// ([LiveAt]), when its deploy gates say so: later than PromotedAt for a
+	// promotion whose first attempt failed.
+	LiveAt time.Time `json:"live_at,omitzero"`
 }
 
 // Input is everything [Evaluate] reads, already fetched.
@@ -466,6 +480,9 @@ type Finding struct {
 	// Policy is PolicyFail or PolicyWarn.
 	Policy  string `json:"policy"`
 	Message string `json:"message"`
+	// Unattributed says why the finding is not the judged release's doing
+	// ([Attribute]); such a finding is a warn whatever fail_on says.
+	Unattributed string `json:"unattributed,omitempty"`
 }
 
 // Report is a judged release: the facts and the verdict.
@@ -492,6 +509,15 @@ type Report struct {
 	Findings         []Finding   `json:"findings"`
 	Thresholds       []Threshold `json:"thresholds"`
 	NotEvaluated     []string    `json:"not_evaluated,omitempty"`
+	// VersionShare is the judged release's share (0..1) of the after
+	// window's traffic, over the services whose share was measured; nil when
+	// none was.
+	VersionShare *float64 `json:"version_share,omitempty"`
+	// WindowNotLive says why the after window is not the live release's
+	// ([WithLiveAt]); RolloutIncomplete why the release served too little
+	// of it ([MinVersionShare]). Either makes a PASS INCONCLUSIVE.
+	WindowNotLive     string `json:"window_not_live,omitempty"`
+	RolloutIncomplete string `json:"rollout_incomplete,omitempty"`
 }
 
 // ── evaluation ──────────────────────────────────────────────────────────
@@ -581,12 +607,15 @@ func Evaluate(in Input) Report {
 
 	sortFindings(r.Findings)
 	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.MinRequests, r.unproven())
-	return r
+	return Attribute(r)
 }
 
 // unproven reports whether something outside the findings keeps a PASS from
-// being proven: a standing critical alert, or alert state that was not read.
-func (r Report) unproven() bool { return len(r.StandingCritical) > 0 || r.AlertStateUnread != "" }
+// being proven: a standing critical alert, alert state that was not read, or
+// an after window that is not the live release's or that it barely served.
+func (r Report) unproven() bool {
+	return len(r.StandingCritical) > 0 || r.AlertStateUnread != "" || r.WindowNotLive != "" || r.RolloutIncomplete != ""
+}
 
 // WithStandingAlerts applies the critical-alert rule to a judged report from
 // the alerts firing now, read by the caller (`forge obs check` reads them
@@ -643,6 +672,9 @@ func worse(a, b Verdict) Verdict {
 func failAlert(fs []Finding, rule string) []Finding {
 	for i, f := range fs {
 		if f.Code == release.HealthAlertFiring && (f.Ref == rule || (f.Ref == "" && strings.Contains(f.Message, "alert "+rule+" "))) {
+			if f.Unattributed != "" {
+				return fs // not the release's doing (Attribute): critical or not
+			}
 			fs[i].Ref, fs[i].Policy = rule, PolicyFail
 			return fs
 		}
@@ -708,7 +740,9 @@ func Rejudge(r Report, failOn []string) Report {
 	out.Findings = make([]Finding, len(r.Findings))
 	critical := criticalRules(r.FiringAlerts, r.Subject.PromotedAt, r.After.To)
 	for i, f := range r.Findings {
-		f.Policy = findingPolicy(f, failOn, critical)
+		if f.Unattributed == "" {
+			f.Policy = findingPolicy(f, failOn, critical)
+		}
 		out.Findings[i] = f
 	}
 	out.Thresholds = slices.Clone(r.Thresholds)
@@ -727,15 +761,23 @@ func Rejudge(r Report, failOn []string) Report {
 }
 
 // AfterEnds is when the after window finishes: After.To once the window is
-// complete, else the promotion plus the window the report was judged with.
-// While the window is open After.To is the moment it was read (Plan stops the
-// window at now), so it advances with every read and is not the end to wait
-// for.
+// complete, else the window's start plus the window the report was judged
+// with. While the window is open After.To is the moment it was read (Plan
+// stops the window at now), so it advances with every read and is not the end
+// to wait for. The start is After.From, which a judge anchoring at the live
+// time ([LiveAt]) puts after the promotion's promoted_at.
 func (r Report) AfterEnds() time.Time {
-	if r.AfterComplete || r.Subject.PromotedAt.IsZero() {
+	if r.AfterComplete {
 		return r.After.To
 	}
-	return r.Subject.PromotedAt.Add(windowOf(r.Thresholds))
+	from := r.After.From
+	if from.IsZero() {
+		from = r.Subject.PromotedAt
+	}
+	if from.IsZero() {
+		return r.After.To
+	}
+	return from.Add(windowOf(r.Thresholds))
 }
 
 func windowOf(ths []Threshold) time.Duration {
@@ -786,6 +828,12 @@ func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth,
 
 // InconclusiveWhy says why a report is INCONCLUSIVE, in one line.
 func InconclusiveWhy(r Report) string {
+	if r.WindowNotLive != "" {
+		return r.WindowNotLive
+	}
+	if r.RolloutIncomplete != "" {
+		return r.RolloutIncomplete
+	}
 	if r.AlertStateUnread != "" {
 		return "the env's alert state could not be read, so a firing critical alert cannot be ruled out: " + r.AlertStateUnread
 	}

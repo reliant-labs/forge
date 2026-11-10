@@ -38,10 +38,17 @@ const (
 	testRenderPushBase     = testRenderRegistryHost + "/" + testRenderOrg + "/hostedrender"
 )
 
-// writeHostedRenderProject is a hosted env with one OnHosted workload whose
-// image is `image`. The control plane declares its registry host and nothing
-// about an org: that comes from the credential, stubbed by the caller.
+// writeHostedRenderProject is a hosted env with one OnHosted workload forge
+// BUILDS, whose image is `image`. The control plane declares its registry host
+// and nothing about an org: that comes from the credential, stubbed by the
+// caller. (A workload forge does not build is mirrored rather than judged:
+// writeHostedRenderProjectBuild with build "".)
 func writeHostedRenderProject(t *testing.T, image string) string {
+	return writeHostedRenderProjectBuild(t, image, `
+        build = forge.DockerBuild {dockerfile = "Dockerfile"}`)
+}
+
+func writeHostedRenderProjectBuild(t *testing.T, image, build string) string {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(rel, content string) {
@@ -68,7 +75,7 @@ _bundle = forge.Bundle {
     }
     workloads = [fw.Workload {
         name = "api"
-        image = "`+image+`"
+        image = "`+image+`"`+build+`
         ports = [fw.Port {name = "http", port = 8080, expose = True}]
         runtime = forge.OnHosted {}
     }]
@@ -162,5 +169,26 @@ func TestEnvRender_ImageUnderThePushBaseIsClean(t *testing.T) {
 	}
 	if strings.Contains(stderr, "would refuse to publish") {
 		t.Errorf("an image under the base was refused:\n%s", stderr)
+	}
+}
+
+// A third-party image on a workload forge does NOT build renders clean with a
+// base known (report 2af7cf85): it is mirrored into the push base at release
+// time, and the render previews it at that address.
+func TestEnvRender_UnbuiltThirdPartyImagePreviewsAtItsMirror(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL; skipped in -short")
+	}
+	kclplugin.Register()
+	stubControlPlaneOrg(t, testRenderOrg)
+	dir := writeHostedRenderProjectBuild(t, "docker.io/traefik/whoami:v1.10.3", "")
+	t.Setenv("HOSTEDRENDER_CP_TOKEN", "rlat_test")
+
+	stdout, stderr, err := runRenderCapturingProcessStdout(t, dir, "prod")
+	if err != nil {
+		t.Fatalf("an unbuilt third-party hosted image must render: %v\nstderr:\n%s", err, stderr)
+	}
+	if want := testRenderPushBase + "/traefik/whoami@"; !strings.Contains(stdout+stderr, want) {
+		t.Errorf("the render does not preview the mirror address %s:\nstdout:\n%s\nstderr:\n%s", want, stdout, stderr)
 	}
 }

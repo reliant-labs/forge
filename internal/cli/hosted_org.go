@@ -107,10 +107,15 @@ func requireOrg(ctx context.Context, e *KCLEntities) error {
 }
 
 // hostedNeedsPushBase reports whether any hosted item declares a BARE image —
-// one with no registry host, which only resolves under the platform's push base.
+// one with no registry host, which only resolves under the platform's push base
+// — or an UNBUILT one on another registry, which forge mirrors into the push
+// base (hostedimage.MirrorRepository). An unbuilt image already on the
+// platform's own registry host needs no base: it is pulled where it is.
 func hostedNeedsPushBase(e *KCLEntities) bool {
+	platform := platformRegistryHost(e)
 	for _, it := range hostedImageItems(e) {
-		if !hostedimage.HasRegistryHost(hostedimage.Repository(it.Image)) {
+		repo := hostedimage.Repository(it.Image)
+		if !hostedimage.HasRegistryHost(repo) || (it.Unbuilt && registryHost(repo) != platform) {
 			return true
 		}
 	}

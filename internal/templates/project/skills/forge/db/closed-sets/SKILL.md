@@ -33,3 +33,10 @@ you. The lane needs no database, so it runs on every tier.
   comment along with the constraint. A migration that replaces the CHECK with
   DROP + ADD must therefore re-issue the COMMENT, and the fix migration does.
   The lane reports a declaration that was lost this way.
+- **A widening never scans under its lock.** Every existing row satisfied the
+  narrower CHECK, so the fix adds the widened one `NOT VALID`: the DROP + ADD
+  holds ACCESS EXCLUSIVE for the catalog change alone. A second migration,
+  `<name>_validate`, runs `VALIDATE CONSTRAINT` in its own transaction, under
+  SHARE UPDATE EXCLUSIVE, which blocks neither reads nor writes. A narrowing
+  stays one validated ALTER: the rows it refuses must be rewritten first, in
+  the same migration, and the ALTER proves none was missed.

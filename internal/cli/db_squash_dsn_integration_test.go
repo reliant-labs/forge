@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 // gooseBuiltDatabase is the schema a goose history built, and goose's table as
@@ -49,7 +51,7 @@ func TestDBSquash_FromDSN_AdoptsTheGooseDatabaseItWasCutFrom(t *testing.T) {
 		t.Skip("boots a postgres container and squash's pg_dump container")
 	}
 	if err := exec.Command("docker", "info").Run(); err != nil {
-		t.Skipf("no docker daemon: %v", err)
+		testdocker.Unavailable(t, "no docker daemon: %v", err)
 	}
 	ctx := context.Background()
 	server := startPostgresContainer(t)

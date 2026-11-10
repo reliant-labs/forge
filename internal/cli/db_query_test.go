@@ -155,8 +155,8 @@ func TestDBQueryTableAndCSV(t *testing.T) {
 		t.Errorf("table:\n%s\nwant:\n%s", table.String(), wantTable)
 	}
 
-	var csvOut bytes.Buffer
-	if err := writeDBQueryCSV(&csvOut, fixtureResult()); err != nil {
+	var csvOut, csvErr bytes.Buffer
+	if err := writeDBQueryCSV(&csvOut, &csvErr, fixtureResult()); err != nil {
 		t.Fatal(err)
 	}
 	wantCSV := "id,name,meta,ok\n" +
@@ -164,6 +164,54 @@ func TestDBQueryTableAndCSV(t *testing.T) {
 		"2,\"multi\nline, \"\"quoted\"\"\",,false\n"
 	if csvOut.String() != wantCSV {
 		t.Errorf("csv:\n%s\nwant:\n%s", csvOut.String(), wantCSV)
+	}
+}
+
+// A CSV has no footer, so a result the cap cut must say so on stderr: a file
+// of exactly 200 rows (the default cap) read as the whole answer otherwise.
+// stdout stays pure CSV, so `> out.csv` is still a valid file.
+func TestDBQueryCSVSaysOnStderrWhenTheCapCutTheResult(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		res   func() *dbquery.Result
+		wants []string
+	}{
+		{"rows cap", fixtureResult, []string{"only the first 2 rows", "the rows cap", "--max-rows"}},
+		{"bytes cap", func() *dbquery.Result {
+			r := fixtureResult()
+			r.TruncatedBy = "bytes"
+			return r
+		}, []string{"only the first 2 rows", "the bytes cap", "narrow the query"}},
+		{"cells cut", func() *dbquery.Result {
+			r := fixtureResult()
+			r.Truncated, r.TruncatedBy, r.CellsTruncated = false, "", 3
+			return r
+		}, []string{"3 cells", "4096 bytes"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			if err := writeDBQueryCSV(&out, &errOut, tc.res()); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(errOut.String(), want) {
+					t.Errorf("stderr %q lacks %q", errOut.String(), want)
+				}
+			}
+			if strings.Contains(out.String(), "truncated") || strings.Contains(out.String(), "cells") {
+				t.Errorf("the notice leaked into the CSV on stdout:\n%s", out.String())
+			}
+		})
+	}
+
+	var out, errOut bytes.Buffer
+	whole := fixtureResult()
+	whole.Truncated, whole.TruncatedBy = false, ""
+	if err := writeDBQueryCSV(&out, &errOut, whole); err != nil {
+		t.Fatal(err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("a whole result printed a notice: %q", errOut.String())
 	}
 }
 

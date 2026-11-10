@@ -154,6 +154,8 @@ carries ok, exit_code and error like every other forge --json verb, plus
 schema "` + dbQuerySchema + `", scope, columns[{name,pg_type}], rows, row_count,
 truncated, truncated_by, cells_truncated, duration_ms, bytes and audit{id,
 sql_sha256}: a hosted query's adds replica, a local one's record (the file).
+The table's footer says when a cap cut the result; csv keeps stdout pure and
+says it on stderr.
 
 Exit codes: 0 rows returned; 1 the statement or the request is wrong (refused
 by the guard or the read-only transaction, a SQL error, a permission error, a
@@ -356,7 +358,7 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 		return err
 	}
 	if o.format == "csv" {
-		return writeDBQueryCSV(out, res)
+		return writeDBQueryCSV(out, errOut, res)
 	}
 	return writeDBQueryTable(out, res, release, audit)
 }
@@ -583,7 +585,30 @@ func cellText(v any, null string) string {
 	}
 }
 
-func writeDBQueryCSV(out io.Writer, res *dbquery.Result) error {
+// writeDBQueryCSV writes the result as CSV to out and, when a cap cut it,
+// says so on errOut. A CSV has no footer to carry the table format's
+// "truncated by" note, and a file of exactly --max-rows rows reads as the
+// whole answer; stdout stays pure CSV, so `> out.csv` is still a valid file.
+func writeDBQueryCSV(out, errOut io.Writer, res *dbquery.Result) error {
+	if err := writeDBQueryCSVRows(out, res); err != nil {
+		return err
+	}
+	if res.Truncated {
+		fix := fmt.Sprintf("raise --max-rows (at most %d) or narrow the query", dbquery.MaxRowsLimit)
+		if res.TruncatedBy == "bytes" {
+			fix = "narrow the query (fewer columns or rows); --max-rows does not lift the response-size cap"
+		}
+		fmt.Fprintf(errOut, "⚠ the CSV holds only the first %d rows: the result was truncated by the %s cap; %s\n",
+			res.RowCount, res.TruncatedBy, fix)
+	}
+	if res.CellsTruncated > 0 {
+		fmt.Fprintf(errOut, "⚠ %d cells were cut to %d bytes; their text ends with a [truncated: …] marker\n",
+			res.CellsTruncated, dbquery.MaxCellBytes)
+	}
+	return nil
+}
+
+func writeDBQueryCSVRows(out io.Writer, res *dbquery.Result) error {
 	w := csv.NewWriter(out)
 	header := make([]string, len(res.Columns))
 	for i, c := range res.Columns {

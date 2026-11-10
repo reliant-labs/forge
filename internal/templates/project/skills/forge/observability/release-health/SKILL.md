@@ -9,6 +9,10 @@ description: How `forge obs check` judges a release in depth — when the after 
 promotion with the window before it. This is the detail behind two of its
 rules: how latency is compared, and which findings are the release's.
 
+## Signals: spans, then ingress, plus the browser
+
+Each service's requests, error rate and p95 come from its own OpenTelemetry server spans. A service that sent none in either window is judged instead on what the hosting platform's ingress measured for it (per-workload request counts, 5xx share and time to headers; Reliant hosting writes them into the env's tenant, unbilled), so a static site or an app without OpenTelemetry on Reliant hosting is still judged. A frontend that sends forge's browser telemetry is judged on it too, beside either or alone: `browser_errors` (JavaScript errors per page view), `browser_failed_requests` (its fetch/XHR requests that got a 5xx or no answer) and `browser_page_load` (p95 page load), against `max_error_rate_increase` and `max_p95_ratio`, and judged once it has `min_requests` page views. They warn unless `fail_on` lists them. Each service in the document says which it was judged on (`signal`: `spans`, `ingress` or `browser`; its browser figures are under `browser`). CDN cache hits never reach the ingress, so a cache-heavy site's ingress counts are low; its error rate is unaffected.
+
 ## Latency, per endpoint
 
 Where the backend supplies endpoint figures, `max_p95_ratio` applies to the

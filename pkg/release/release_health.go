@@ -25,10 +25,21 @@ const (
 	HealthAlertFiring = "alert_firing"
 	// HealthWorkloadRestarts: restarts or OOM kills after the promotion.
 	HealthWorkloadRestarts = "workload_restarts"
+	// HealthBrowserErrors: a frontend's JavaScript errors per page view rose
+	// by more than MaxErrorRateIncrease (browser telemetry).
+	HealthBrowserErrors = "browser_errors"
+	// HealthBrowserFailedRequests: the share of a frontend's own fetch and XHR
+	// requests that failed (5xx, or no response) rose by more than
+	// MaxErrorRateIncrease.
+	HealthBrowserFailedRequests = "browser_failed_requests"
+	// HealthBrowserPageLoad: a frontend's p95 page load grew by more than
+	// MaxP95Ratio.
+	HealthBrowserPageLoad = "browser_page_load"
 )
 
 // HealthFindings is every finding code, in a stable order.
-var HealthFindings = []string{HealthErrorRate, HealthLatency, HealthNewIssue, HealthRegressedIssue, HealthAlertFiring, HealthWorkloadRestarts}
+var HealthFindings = []string{HealthErrorRate, HealthLatency, HealthNewIssue, HealthRegressedIssue, HealthAlertFiring, HealthWorkloadRestarts,
+	HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad}
 
 // Release-health window bounds.
 const (

@@ -12,7 +12,9 @@ import (
 )
 
 // newClosedSetMigration writes the fix `forge lint --closed-sets` prints for
-// the forge:closed-set CHECK named constraint, as a new migration in dir.
+// the forge:closed-set CHECK named constraint, as a new migration in dir —
+// two for a widening, which adds the CHECK NOT VALID and validates it in
+// <name>_validate, outside the first one's ACCESS EXCLUSIVE lock.
 func newClosedSetMigration(ctx context.Context, constraint, name, dir, dsn string, withContext bool) error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -49,5 +51,14 @@ func newClosedSetMigration(ctx context.Context, constraint, name, dir, dsn strin
 		fmt.Fprintf(os.Stderr, "⚠️  this fix NARROWS %s (drops %s): rows holding those values fail it — rewrite or delete them first, in the same migration\n",
 			match[0].Constraint, strings.Join(match[0].Extra, ", "))
 	}
-	return database.CreateMigration(ctx, name, dir, opts)
+	if err := database.CreateMigration(ctx, name, dir, opts); err != nil {
+		return err
+	}
+	if v := fix.Validate; v != nil {
+		// Allocated after the first, so it sorts (and applies) after it.
+		return database.CreateMigration(ctx, name+"_validate", dir, &database.MigrationOptions{
+			DSN: dsn, Context: withContext, Body: v.SQL, BackwardCompatible: v.Reason,
+		})
+	}
+	return nil
 }

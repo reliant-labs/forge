@@ -132,3 +132,45 @@ func TestCheckEmptyInputIsNotAPass(t *testing.T) {
 		}
 	}
 }
+
+// A parent whose subtests call t.Parallel reports Elapsed 0: the testing
+// package takes it when the parent's function returns, before the subtests
+// run. Its wall time — run event to its own pass, after the last subtest's —
+// is what it costs the blocking tier, and what is judged. The stream is a
+// real `go test -json` run's shape (reliant #2459's TestMergeGatePgtestPhase:
+// "--- PASS (0.00s)" over seven ~0.5s parallel cases), stretched past 2s.
+func TestCheckJudgesParallelSubtestsByWallTime(t *testing.T) {
+	t.Parallel()
+	stream := strings.Join([]string{
+		`{"Time":"2026-11-10T02:52:01.309Z","Action":"run","Package":"example.com/p","Test":"TestPar"}`,
+		`{"Time":"2026-11-10T02:52:01.311Z","Action":"run","Package":"example.com/p","Test":"TestPar/a"}`,
+		`{"Time":"2026-11-10T02:52:01.312Z","Action":"pause","Package":"example.com/p","Test":"TestPar/a"}`,
+		`{"Time":"2026-11-10T02:52:01.312Z","Action":"run","Package":"example.com/p","Test":"TestPar/b"}`,
+		`{"Time":"2026-11-10T02:52:01.312Z","Action":"pause","Package":"example.com/p","Test":"TestPar/b"}`,
+		`{"Time":"2026-11-10T02:52:01.312Z","Action":"cont","Package":"example.com/p","Test":"TestPar/a"}`,
+		`{"Time":"2026-11-10T02:52:01.312Z","Action":"cont","Package":"example.com/p","Test":"TestPar/b"}`,
+		`{"Time":"2026-11-10T02:52:04.513Z","Action":"pass","Package":"example.com/p","Test":"TestPar/b","Elapsed":3.2}`,
+		`{"Time":"2026-11-10T02:52:04.513Z","Action":"pass","Package":"example.com/p","Test":"TestPar/a","Elapsed":3.2}`,
+		`{"Time":"2026-11-10T02:52:04.514Z","Action":"pass","Package":"example.com/p","Test":"TestPar","Elapsed":0}`,
+		// A top-level t.Parallel test: paused 5s behind the others, ran 0.1s.
+		// Its wait is not its cost: it is judged from its cont.
+		`{"Time":"2026-11-10T02:52:00.000Z","Action":"run","Package":"example.com/p","Test":"TestWaits"}`,
+		`{"Time":"2026-11-10T02:52:00.001Z","Action":"pause","Package":"example.com/p","Test":"TestWaits"}`,
+		`{"Time":"2026-11-10T02:52:05.000Z","Action":"cont","Package":"example.com/p","Test":"TestWaits"}`,
+		`{"Time":"2026-11-10T02:52:05.100Z","Action":"pass","Package":"example.com/p","Test":"TestWaits","Elapsed":0.1}`,
+		`{"Time":"2026-11-10T02:52:05.200Z","Action":"pass","Package":"example.com/p","Elapsed":5.2}`,
+	}, "\n")
+	rep, err := Check(strings.NewReader(stream), DefaultBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Ran != 2 {
+		t.Errorf("Ran = %d, want 2 top-level tests", rep.Ran)
+	}
+	if len(rep.Overruns) != 1 || rep.Overruns[0].Test != "TestPar" {
+		t.Fatalf("overruns = %+v, want TestPar alone: its parallel subtests took 3.2s of wall time", rep.Overruns)
+	}
+	if got := rep.Overruns[0].Elapsed; got < 3200*time.Millisecond || got > 3300*time.Millisecond {
+		t.Errorf("TestPar judged at %v, want its ~3.2s wall time", got)
+	}
+}

@@ -46,10 +46,16 @@ var bundleTestNow = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 // the bytes where the ledger says, record what was written.
 func stubEnvShape(t *testing.T, project string) {
 	t.Helper()
+	stubEnvShapeOfKind(t, project, release.EnvSelfManaged)
+}
+
+// stubEnvShapeOfKind is stubEnvShape for an env of the given kind.
+func stubEnvShapeOfKind(t *testing.T, project string, kind release.EnvKind) {
+	t.Helper()
 	prev := projectEnvShapeFn
 	projectEnvShapeFn = func(_ context.Context, _ io.Writer, env string) (envShapeDoc, error) {
 		shape, err := bundle.ProjectShape(bundle.ShapeInput{
-			Kind:      release.EnvSelfManaged,
+			Kind:      kind,
 			Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster", Cluster: "prod-ctx"}},
 			Clusters:  []string{"prod-ctx"},
 			Manifests: bundleTestStream,
@@ -257,6 +263,52 @@ func TestEnvBuildBundle_HostedEnvPushesAndRecordsTheBytes(t *testing.T) {
 		{"a control plane that predates GetCapabilities", false},
 	} {
 		t.Run(server.name, func(t *testing.T) { hostedEnvPushesAndRecordsTheBytes(t, server.decodes) })
+	}
+}
+
+// TestEnvBuildBundle_LocalEnvOnAControlPlaneStaysOnThisMachine: a LOCAL env
+// that declares a control plane (dev_telemetry=auto) keeps its records there,
+// but its bundle goes to this machine's ledger and is never pushed or sent to
+// RecordBundle, which refuses a LOCAL env. Sending it failed every `forge env
+// up dev` of such an env at the end of its build (agents' bug reports
+// 7aea24fa, 17301bb0, 2026-11-08/09).
+func TestEnvBuildBundle_LocalEnvOnAControlPlaneStaysOnThisMachine(t *testing.T) {
+	testkit.Slow(t, "execs git")
+	dir := newLedgerTestProject(t, "bundle-local-project")
+	stubEnvShapeOfKind(t, "bundle-local-project", release.EnvLocal)
+
+	prevLedger := bundleLedgerFor
+	bundleLedgerFor = func(context.Context, string, string) (envLedger, error) {
+		return envLedger{Bindings: hostedBindingsStub{}, Releases: hostedReleasesStub{}, Hosted: true}, nil
+	}
+	t.Cleanup(func() { bundleLedgerFor = prevLedger })
+	prevRecorder := bundleRecorderForEnv
+	bundleRecorderForEnv = func(ctx context.Context, projectDir, env string, ledger envLedger) (bundleRecorder, error) {
+		if ledger.Hosted {
+			t.Error("a LOCAL env's bundle must never reach the control plane's RecordBundle")
+		}
+		return prevRecorder(ctx, projectDir, env, ledger)
+	}
+	t.Cleanup(func() { bundleRecorderForEnv = prevRecorder })
+	prevTarget := bundlePushTarget
+	bundlePushTarget = func(context.Context, string, string, string) (bundle.Pusher, error) {
+		t.Error("a LOCAL env's bundle is not shipped, so it is never pushed")
+		return memory.New(), nil
+	}
+	t.Cleanup(func() { bundlePushTarget = prevTarget })
+
+	written, err := writeEnvBundles(context.Background(), dir, []string{"dev"}, bundleBuildInputs{
+		Now: bundleTestNow, Pushed: true, errOut: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("writeEnvBundles: %v", err)
+	}
+	got := written[0]
+	if got.Skipped || got.Pushed || !got.Recorded || !strings.HasPrefix(got.Reference, "oci-layout:") {
+		t.Errorf("want a bundle written and recorded in this machine's ledger, got %+v", got)
+	}
+	if bundles, err := testStore(t, dir).Bundles("dev"); err != nil || len(bundles) != 1 {
+		t.Errorf("the machine ledger holds %d bundles for dev (%v), want 1", len(bundles), err)
 	}
 }
 

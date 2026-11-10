@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"helper"
 	"prod"
@@ -122,6 +123,43 @@ func TestLoopbackAndReservedHosts(t *testing.T) {
 	_, _ = http.Get("http://localhost/x")
 	_, _ = http.Get("https://api.example/x")
 	_, _ = net.Dial("tcp", "[::1]:5432")
+}
+
+// A production file that imports "testing" only for testing.Testing() is not
+// a test helper: its runtime branches are the timing guard's to measure.
+func TestCallsTestingGuardedProduction(t *testing.T) {
+	prod.TrimCache()
+}
+
+// A command built and inspected but never started spawns nothing.
+func TestUnstartedCommand(t *testing.T) {
+	cmd := exec.Command("buf", "generate")
+	cmd.Dir = t.TempDir()
+	if cmd.Args[0] != "buf" || cmd.Path == "" {
+		t.Fatal(cmd.Args)
+	}
+}
+
+// A dial whose deadline has passed before it starts fails at once.
+func TestDialAlreadyExpired(t *testing.T) {
+	_, _ = net.DialTimeout("tcp", "10.255.255.1:9000", time.Nanosecond)
+}
+
+// ...but a command that is started, handed on, or returned still counts,
+// and so does a dial given time to reach its host.
+func TestStartedLater(t *testing.T) { // want `execs .go.`
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = t.TempDir()
+	_ = cmd.Run()
+}
+
+func TestCommandHandedOn(t *testing.T) { // want `execs .npm.`
+	cmd := exec.Command("npm", "ci")
+	runIt(cmd)
+}
+
+func TestDialWithTime(t *testing.T) { // want `dials the external host "10.255.255.1:9000"`
+	_, _ = net.DialTimeout("tcp", "10.255.255.1:9000", 5*time.Second)
 }
 
 // ---- git: against a temp dir it is not slow work -----------------------------
@@ -281,6 +319,8 @@ func newRepo(t *testing.T) string {
 	gitIn(repo, "init")
 	return repo
 }
+
+func runIt(cmd *exec.Cmd) { _ = cmd.Run() }
 
 func npmInstall(t *testing.T) {
 	_ = exec.Command("npm", "ci").Run()

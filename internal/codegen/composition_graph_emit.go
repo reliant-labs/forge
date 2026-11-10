@@ -293,6 +293,9 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	if m.configs != nil {
 		// What the owned process policy reads is every root's reach too.
 		m.configs.process = runRootConfigReads(in.ProjectDir, m.configs.configInputs())
+		m.configs.processForRoot = func(name string) nodeConfigReads {
+			return runRootConfigReadsFor(in.ProjectDir, m.configs.configInputs(), name)
+		}
 	}
 	for name := range m.configs.configInputs() {
 		if n := m.byName[name]; n != nil {

@@ -5,7 +5,7 @@ description: Migrate an existing project to forge — pre-flight, project shape,
 
 # Migrating an Existing Project to Forge
 
-Use this skill when porting an existing Go codebase onto a forge-generated scaffold. For greenfield work see `forge`.
+Use this skill when porting an existing Go codebase onto a forge-generated scaffold. For greenfield work see `forge`. An app in another language (Express, Django, Rails, …) is not ported: it is adopted as it is, by its own Dockerfile, in tiers — load `adopt`.
 
 ## Pre-flight
 

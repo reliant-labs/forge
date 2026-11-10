@@ -392,9 +392,18 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 
 	// Build FK edges (parent -> child) for ordering, plus per-(table,col)
 	// force-null decisions for broken cycle edges and dangling references.
+	//
+	// A composite foreign key is ONE edge, not one per member: under MATCH
+	// SIMPLE (postgres's default) a key with any NULL member is not checked,
+	// so the edge is optional when ANY member is nullable — even beside a NOT
+	// NULL member such as the primary key in (billing_org_id, id) ->
+	// org_memberships (org_id, user_id). Breaking it sets one nullable member
+	// NULL (nullCol) and turns the whole composite off for the table
+	// (declined), so its NOT NULL members keep their own placement.
 	type edge struct {
 		parent, child, col string
 		nullable           bool
+		composite          string // the multi-column constraint this edge stands for
 	}
 	var edges []edge
 	forceNull := map[string]map[string]bool{}
@@ -404,6 +413,15 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 		}
 		forceNull[table][col] = true
 	}
+	// table -> composite constraint turned off -> the member it set NULL
+	declined := map[string]map[string]string{}
+	declineComposite := func(table, constraint, nullCol string) {
+		markNull(table, nullCol)
+		if declined[table] == nil {
+			declined[table] = map[string]string{}
+		}
+		declined[table][constraint] = nullCol
+	}
 
 	for _, n := range names {
 		t := byName[n]
@@ -411,9 +429,26 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 		for _, c := range t.Columns {
 			colByName[c.Name] = c
 		}
+		seenComposite := map[string]bool{}
 		for _, fk := range t.ForeignKeys {
 			if fk.RefTable == n {
 				continue // self-reference: handled per-row, not an ordering edge
+			}
+			if len(fk.KeyColumns) > 1 && fk.Name != "" {
+				if seenComposite[fk.Name] {
+					continue
+				}
+				seenComposite[fk.Name] = true
+				nullCol := compositeNullableMember(t, fk, colByName)
+				if _, refSeeded := byName[fk.RefTable]; !refSeeded {
+					if nullCol == "" {
+						return nil, fmt.Errorf("seeddata: %s (%s) is a NOT NULL composite foreign key to un-seedable table %q", n, strings.Join(fk.KeyColumns, ", "), fk.RefTable)
+					}
+					declineComposite(n, fk.Name, nullCol)
+					continue
+				}
+				edges = append(edges, edge{parent: fk.RefTable, child: n, col: nullCol, nullable: nullCol != "", composite: fk.Name})
+				continue
 			}
 			c := colByName[fk.Column]
 			_, refSeeded := byName[fk.RefTable]
@@ -478,7 +513,11 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 		var kept []edge
 		for _, e := range remaining {
 			if !broke && e.nullable && !placed[e.parent] && !placed[e.child] {
-				markNull(e.child, e.col)
+				if e.composite != "" {
+					declineComposite(e.child, e.composite, e.col)
+				} else {
+					markNull(e.child, e.col)
+				}
 				broke = true
 				continue // drop this edge
 			}
@@ -494,6 +533,9 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 			return nil, fmt.Errorf("seeddata: NOT NULL foreign-key cycle among tables: %s — the schema is unsatisfiable without deferred constraints", strings.Join(cyc, " -> "))
 		}
 		remaining = kept
+	}
+	if len(declined) > 0 {
+		tables = declineCompositeFKs(tables, byName, declined)
 	}
 
 	// Assemble the ordered table plans. Row counts (the 1-1 foreign-key cap and

@@ -12,7 +12,7 @@ interface SearchInputProps {
 
 const sizeStyles: Record<NonNullable<SearchInputProps["size"]>, { input: string; icon: string }> = {
   sm: { input: "h-8 pl-8 pr-8 text-sm", icon: "h-3.5 w-3.5 left-2.5" },
-  md: { input: "h-10 pl-10 pr-10 text-sm", icon: "h-4 w-4 left-3" },
+  md: { input: "h-10 pl-9 pr-10 text-sm", icon: "h-3.5 w-3.5 left-3" },
   lg: { input: "h-12 pl-12 pr-12 text-base", icon: "h-5 w-5 left-3.5" },
 };
 
@@ -63,7 +63,7 @@ export default function SearchInput({
         onKeyDown={(e) => e.key === "Enter" && onSubmit?.()}
         placeholder={placeholder}
         autoFocus={autoFocus}
-        className={`w-full rounded-lg border border-border-strong bg-surface focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent ${s.input}`}
+        className={`w-full rounded-md border border-border-strong bg-surface text-ink placeholder:text-ink-subtle transition-colors hover:border-ink-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${s.input}`}
       />
       {value && (
         // Icon-only control: aria-label is the only name it can have, and

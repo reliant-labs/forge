@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,11 +39,12 @@ var obsCheckSchema = obsout.Schema{
 	Name: schemaObsCheck,
 	Fields: []string{
 		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to",
-		"query_mode", "verdict", "reason",
-		"subject", "subject.promotion_id", "subject.release", "subject.git_commit", "subject.promoted_at", "subject.previous_release",
+		"query_mode", "verdict", "reason", "reason_code",
+		"subject", "subject.promotion_id", "subject.release", "subject.git_commit", "subject.promoted_at", "subject.previous_release", "subject.live_at",
 		"windows", "windows.before", "windows.before.from", "windows.before.to", "windows.after", "windows.after.from", "windows.after.to", "windows.after_complete",
 		"services", "services.service", "services.before", "services.after", "services.version_share",
-		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message",
+		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message", "findings.unattributed",
+		"version_share", "window_not_live", "rollout_incomplete",
 		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "workload_findings",
 		"thresholds", "thresholds.name", "thresholds.value", "thresholds.source",
 		"not_evaluated", "waited", "early_pass", "statements", "statements.purpose", "statements.sql", "statements.params.*",
@@ -66,18 +68,23 @@ type obsCheckDoc struct {
 	Scope     obsout.Scope `json:"scope"`
 	QueryMode string       `json:"query_mode"`
 	Verdict   string       `json:"verdict,omitempty"`
-	// Reason says why the verdict is INCONCLUSIVE.
+	// Reason says why the verdict is INCONCLUSIVE; ReasonCode says it as
+	// one of releasehealth's Reason* codes, for a gate to branch on.
 	Reason          string                        `json:"reason,omitempty"`
+	ReasonCode      string                        `json:"reason_code,omitempty"`
 	Subject         *releasehealth.Subject        `json:"subject,omitempty"`
 	Windows         *obsCheckWindows              `json:"windows,omitempty"`
 	Services        []releasehealth.ServiceHealth `json:"services,omitempty"`
 	Findings        []releasehealth.Finding       `json:"findings"`
-	NewIssues       []releasehealth.Issue         `json:"new_issues,omitempty"`
-	RegressedIssues []releasehealth.Issue         `json:"regressed_issues,omitempty"`
+	NewIssues       []checkIssue                  `json:"new_issues,omitempty"`
+	RegressedIssues []checkIssue                  `json:"regressed_issues,omitempty"`
 	FiringAlerts    []releasehealth.Alert         `json:"firing_alerts,omitempty"`
 	// StandingCritical are critical alerts that opened before the promotion
 	// and still fire: not findings, but they keep the verdict from PASS.
-	StandingCritical []releasehealth.Alert     `json:"standing_critical_alerts,omitempty"`
+	StandingCritical []releasehealth.Alert `json:"standing_critical_alerts,omitempty"`
+	// ExcludedAlerts fired, but their rule says they are not about the env's
+	// workloads (label release_health=exclude), so they judged nothing.
+	ExcludedAlerts   []releasehealth.Alert     `json:"excluded_alerts,omitempty"`
 	WorkloadFindings []releasehealth.Workload  `json:"workload_findings,omitempty"`
 	Thresholds       []releasehealth.Threshold `json:"thresholds,omitempty"`
 	NotEvaluated     []string                  `json:"not_evaluated,omitempty"`
@@ -88,6 +95,14 @@ type obsCheckDoc struct {
 	EarlyPass  string                 `json:"early_pass,omitempty"`
 	Statements []obsbackend.Statement `json:"statements,omitempty"`
 	Suggested  []string               `json:"suggested,omitempty"`
+
+	// VersionShare is the judged release's share of the after window's
+	// measured traffic. WindowNotLive says why the after window is not the
+	// live release's, RolloutIncomplete why the release served too little of
+	// it: either is INCONCLUSIVE, and leaves its findings unattributed.
+	VersionShare      *float64 `json:"version_share,omitempty"`
+	WindowNotLive     string   `json:"window_not_live,omitempty"`
+	RolloutIncomplete string   `json:"rollout_incomplete,omitempty"`
 }
 
 type obsCheckOpts struct {
@@ -242,7 +257,8 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	if err != nil {
 		return bad(err)
 	}
-	b, _, err := (&obsCommon{backend: o.backend}).open(ctx, d, env, "check")
+	common := &obsCommon{backend: o.backend}
+	b, _, err := common.open(ctx, d, env, "check")
 	if err != nil {
 		return bad(err)
 	}
@@ -262,25 +278,42 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 
 	deadline := d.Now().Add(o.timeout)
 	var res obsbackend.HealthResult
+	var liveWin checkLive
 	for {
 		req.Now = d.Now()
 		if res, err = reader.ReleaseHealth(ctx, req); err != nil {
 			return bad(err)
 		}
-		if res.Report.AfterComplete || !o.wait {
+		// When the release went liveWin, from the promotion's deploy gates. A
+		// promotion none of whose attempts has shipped has no window of its
+		// own yet, so --wait waits for one to ship.
+		liveWin = readCheckLive(ctx, b, res.Report)
+		unshipped := liveWin.read && liveWin.state == releasehealth.LiveNotShipped
+		if (res.Report.AfterComplete && !unshipped) || !o.wait {
 			break
 		}
-		if o.earlyPass > 0 && earlyPassWhy(res.Report, o.earlyPass) != "" {
+		if o.earlyPass > 0 && earlyPassWhy(liveWin.attribute(res.Report), o.earlyPass) != "" {
 			break
 		}
 		if !d.Now().Add(obsCheckPollEvery).Before(deadline) {
+			res.Report = attributeCheck(ctx, d, b, res.Report, liveWin)
 			fillCheckDoc(&doc, b.Info(), env, res, o)
 			doc.Waited = o.timeout.String()
+			if unshipped {
+				return doc, exitCodeError{code: exitTimedOut, msg: fmt.Sprintf(
+					"no attempt of %s had shipped its release after %s; run again to keep waiting", subjectName(res.Report), o.timeout)}
+			}
 			return doc, exitCodeError{code: exitTimedOut, msg: fmt.Sprintf(
 				"the after window of %s had not finished after %s (it ends %s); run again to keep waiting",
-				subjectName(res.Report), o.timeout, res.Report.After.To.UTC().Format(time.RFC3339))}
+				subjectName(res.Report), o.timeout, res.Report.AfterEnds().UTC().Format(time.RFC3339))}
 		}
-		fmt.Fprintf(d.Stderr, "waiting for the after window of %s (ends %s)\n", subjectName(res.Report), res.Report.After.To.UTC().Format(time.RFC3339))
+		// AfterEnds, not After.To: an open window's After.To is the moment
+		// it was read, so naming it made every poll report a later end.
+		if unshipped {
+			fmt.Fprintf(d.Stderr, "waiting for an attempt of %s to ship its release\n", subjectName(res.Report))
+		} else {
+			fmt.Fprintf(d.Stderr, "waiting for the after window of %s (ends %s)\n", subjectName(res.Report), res.Report.AfterEnds().UTC().Format(time.RFC3339))
+		}
 		if err := obsCheckSleep(ctx, obsCheckPollEvery); err != nil {
 			return bad(obsbackend.Undetermined("interrupted while waiting").Cause(err))
 		}
@@ -294,6 +327,11 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	if b.Info().Backend == obsbackend.BackendCloud && opts.FailOn != nil {
 		res.Report = releasehealth.Rejudge(res.Report, opts.FailOn)
 	}
+	// Attribution: a finding the after window cannot pin on the release (a
+	// window that ended before it went liveWin, a rollout the window barely saw,
+	// an issue whose events are another version's) never fails it. Before the
+	// alert read, which a FAIL skips (obs_check_attribution.go).
+	res.Report = attributeCheck(ctx, d, b, res.Report, liveWin)
 	// A release promoted into a firing critical alert is not proven good, and
 	// one that opened a critical alert fails. The alert state is read here
 	// rather than trusted to the control plane's answer, which lists only the
@@ -301,15 +339,40 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	// policy; a check that cannot read it is INCONCLUSIVE, never a PASS.
 	// The answer's own firing alerts are judged first, so a critical alert it
 	// already proves cannot be softened by a failed second read.
+	// An alert whose rule says it is not about the env's workloads (a build
+	// machine's load, a fleet the env watches: label release_health=exclude)
+	// judges no release, whichever side judged the report. The alert state,
+	// read once, names such a rule when an alert_firing finding's answer
+	// lists no alert of it.
+	ar, readable := b.(obsbackend.AlertReader)
+	var live []releasehealth.Alert
+	var aerr error
+	read := false
+	readLive := func() {
+		if read {
+			return
+		}
+		read = true
+		var alerts []obsbackend.Alert
+		if alerts, aerr = ar.Alerts(ctx); aerr == nil {
+			live = firingHealthAlerts(alerts)
+		}
+	}
+	if readable && slices.ContainsFunc(res.Report.Findings, func(f releasehealth.Finding) bool { return f.Code == release.HealthAlertFiring }) {
+		readLive()
+	}
+	res.Report = releasehealth.WithoutExcludedAlerts(res.Report, live)
 	res.Report = releasehealth.WithStandingAlerts(res.Report, nil)
-	if ar, ok := b.(obsbackend.AlertReader); ok && res.Report.Verdict != releasehealth.Fail {
-		alerts, aerr := ar.Alerts(ctx)
+	if readable && res.Report.Verdict != releasehealth.Fail {
+		readLive()
 		if aerr != nil {
 			res.Report = releasehealth.WithAlertStateUnread(res.Report, aerr.Error())
 		} else {
-			res.Report = releasehealth.WithStandingAlerts(res.Report, firingHealthAlerts(alerts))
+			res.Report = releasehealth.WithStandingAlerts(res.Report, live)
 		}
 	}
+	// Attribution again, over the alerts that read added: idempotent.
+	res.Report = releasehealth.Attribute(res.Report)
 	// --early-pass: the open window is judged as far as it goes, after every
 	// rule above had its say (a re-judged finding or a critical alert, standing
 	// or unread, keeps it from passing early).
@@ -318,6 +381,11 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 		if early = earlyPassWhy(res.Report, o.earlyPass); early != "" {
 			res.Report.Verdict = releasehealth.Pass
 		}
+	}
+	// No request data at all is explained by the services whose telemetry
+	// is their own to export (an app adopted by its Dockerfile).
+	if res.Report.NoRequestTelemetry() {
+		res.Report = releasehealth.WithUninstrumented(res.Report, common.facts.SelfInstrumented)
 	}
 	fillCheckDoc(&doc, b.Info(), env, res, o)
 	doc.EarlyPass = early
@@ -340,7 +408,8 @@ func earlyPassWhy(r releasehealth.Report, min time.Duration) string {
 		return ""
 	}
 	if len(r.Findings) > 0 || len(r.NewIssues) > 0 || len(r.RegressedIssues) > 0 || len(r.FiringAlerts) > 0 ||
-		len(r.Workloads) > 0 || len(r.StandingCritical) > 0 || r.AlertStateUnread != "" {
+		len(r.Workloads) > 0 || len(r.StandingCritical) > 0 || r.AlertStateUnread != "" ||
+		r.WindowNotLive != "" || r.RolloutIncomplete != "" {
 		return ""
 	}
 	minReq := release.DefaultReleaseHealth().MinRequests
@@ -488,6 +557,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	doc.Verdict = string(r.Verdict)
 	if r.Verdict == releasehealth.Inconclusive {
 		doc.Reason = releasehealth.InconclusiveWhy(r)
+		doc.ReasonCode = releasehealth.InconclusiveCode(r)
 	}
 	sub := r.Subject
 	doc.Subject = &sub
@@ -500,18 +570,23 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	if r.Findings != nil {
 		doc.Findings = r.Findings
 	}
-	doc.NewIssues, doc.RegressedIssues = r.NewIssues, r.RegressedIssues
+	doc.NewIssues, doc.RegressedIssues = checkIssues(r.NewIssues, r.IssueWindowVersions), checkIssues(r.RegressedIssues, r.IssueWindowVersions)
 	doc.FiringAlerts, doc.WorkloadFindings = r.FiringAlerts, r.Workloads
-	doc.StandingCritical = r.StandingCritical
+	doc.StandingCritical, doc.ExcludedAlerts = r.StandingCritical, r.ExcludedAlerts
 	doc.Thresholds, doc.NotEvaluated = r.Thresholds, r.NotEvaluated
 	doc.Statements = res.Statements
 	if !o.explain {
 		doc.Statements = nil
 	}
+	doc.VersionShare, doc.WindowNotLive, doc.RolloutIncomplete = r.VersionShare, r.WindowNotLive, r.RolloutIncomplete
 	if r.Verdict == releasehealth.Fail {
 		doc.Suggested = checkSuggestions(env, r)
 	} else if len(r.StandingCritical) > 0 {
 		doc.Suggested = obsout.Suggest(obsout.Command("forge", "obs", "status", env), obsout.Command("forge", "obs", "workloads", env))
+	} else if r.Verdict == releasehealth.Inconclusive && releasehealth.InconclusiveCode(r) == releasehealth.ReasonNoRequestTelemetry {
+		// What forge can see of an uninstrumented app: its logs and its
+		// workloads' health.
+		doc.Suggested = obsout.Suggest(obsout.Command("forge", "obs", "workloads", env), obsout.Command("forge", "obs", "logs", env), obsout.Command("forge", "skill", "load", "observability"))
 	}
 }
 
@@ -609,16 +684,30 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 		fmt.Fprintln(w)
 		obsout.Table(w, []string{"SERVICE", "REQUESTS", "ERRORS", "P95", "ON RELEASE"}, rows, 40)
 	}
+	if doc.Subject.LiveAt.After(doc.Subject.PromotedAt) {
+		fmt.Fprintf(w, "live   %s (promoted %s; its deploy gates say when it shipped)\n",
+			doc.Subject.LiveAt.Format(time.RFC3339), doc.Subject.PromotedAt.Format(time.RFC3339))
+	}
 	if len(doc.Findings) > 0 {
 		fmt.Fprintln(w)
 		for _, f := range doc.Findings {
 			fmt.Fprintf(w, "%-4s %-17s %s\n", f.Policy, f.Code, f.Message)
+			if f.Unattributed != "" {
+				fmt.Fprintf(w, "     %-17s not this release's: %s\n", "", f.Unattributed)
+			}
 		}
 	}
 	if len(doc.StandingCritical) > 0 {
 		fmt.Fprintln(w)
 		for _, a := range doc.StandingCritical {
 			fmt.Fprintf(w, "critical alert %s firing since %s (before the promotion)%s\n", a.Rule, a.FiringAt.UTC().Format(time.RFC3339), alertSubject(a.Labels))
+		}
+	}
+	if len(doc.ExcludedAlerts) > 0 {
+		fmt.Fprintln(w)
+		for _, a := range doc.ExcludedAlerts {
+			fmt.Fprintf(w, "alert %s firing%s: not counted (its rule says %s=%s: not about this env's workloads)\n",
+				a.Rule, alertSubject(a.Labels), releasehealth.LabelReleaseHealth, releasehealth.ReleaseHealthExclude)
 		}
 	}
 	if len(doc.NotEvaluated) > 0 {
@@ -634,7 +723,7 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 // alertSubject names what an alert is about, from its namespace/name labels.
 func alertSubject(labels map[string]string) string {
 	var parts []string
-	for _, k := range []string{"namespace", "name", "workload", "job", "pod"} {
+	for _, k := range []string{"namespace", "name", "workload", "job", "pod", "machine"} {
 		if v := labels[k]; v != "" {
 			parts = append(parts, k+"="+v)
 		}

@@ -43,6 +43,11 @@ type Facts struct {
 	// ReleaseHealth is the env's recorded release-health policy; nil means
 	// every default.
 	ReleaseHealth *release.ShapeReleaseHealth
+	// SelfInstrumented names the env's services forge did not build (a
+	// DockerBuild or ShellBuild of an app in any language, a third-party
+	// image): their traces, logs and metrics exist only if the app exports
+	// them. `forge obs check` names them when it saw no request telemetry.
+	SelfInstrumented []string
 	// DevTelemetry is where `forge env up` decided this env's telemetry goes
 	// (.forge/obs/backend-<env>.json); nil when it recorded nothing. A
 	// recorded "cloud" is read back rather than re-derived from whoever is

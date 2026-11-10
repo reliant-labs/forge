@@ -168,6 +168,11 @@ type obsCommon struct {
 
 	// inst picks the dev instance of a hosted-dev env (obs_instance.go).
 	inst obsInstanceFlags
+
+	// facts is what open read about the env's declaration, for a verb that
+	// explains its answer with it (obs check names the self-instrumented
+	// services when it saw no request telemetry).
+	facts obsbackend.Facts
 }
 
 // register adds the flags. sinceDefault is the verb's own window (logs 15m,
@@ -246,6 +251,7 @@ func (c *obsCommon) open(ctx context.Context, d obsDeps, env, _ string) (obsback
 	if err != nil {
 		return nil, obsbackend.Decision{}, err
 	}
+	c.facts = facts
 	dec, err := obsbackend.Resolve(facts, c.backend)
 	if err != nil {
 		return nil, dec, err

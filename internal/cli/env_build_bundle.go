@@ -181,9 +181,21 @@ type bundleBuildInputs struct {
 // is written, the same outcome as a projection failure, and `forge env deploy`
 // renders one on demand. A control plane that ANSWERS and refuses is a fact
 // about the env and still fails the build.
-func openBundleLedger(ctx context.Context, projectDir, env string, in bundleBuildInputs) (envLedger, bool, error) {
+//
+// A LOCAL ENV'S BUNDLE STAYS ON THIS MACHINE, as the header says, even when
+// the env declares a control plane and so keeps its other records there
+// (ledgerForEntities: declaration decides the store). The platform places
+// nothing of a LOCAL env and RecordBundle refuses one (FailedPrecondition:
+// "`forge env up` reports a session instead"), so sending it there failed
+// every `forge env up dev` of a dev env with dev_telemetry=auto, at the end of
+// its build. kind is the env's, from its projected shape.
+func openBundleLedger(ctx context.Context, projectDir, env string, kind release.EnvKind, in bundleBuildInputs) (envLedger, bool, error) {
 	ledger, err := bundleLedgerFor(ctx, projectDir, env)
 	if err == nil {
+		if ledger.Hosted && kind == release.EnvLocal {
+			ledger, err = machineLedger(projectDir)
+			return ledger, false, err
+		}
 		return ledger, false, nil
 	}
 	if !declarationUndeliverable(err) {
@@ -258,7 +270,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{}, err
 	}
 
-	ledger, skip, err := openBundleLedger(ctx, projectDir, env, in)
+	ledger, skip, err := openBundleLedger(ctx, projectDir, env, doc.Shape.Kind, in)
 	if err != nil {
 		return bundleWriteOutcome{}, err
 	}

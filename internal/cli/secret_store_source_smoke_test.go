@@ -55,11 +55,11 @@ type smokeBao struct {
 func startSmokeBao(t *testing.T) *smokeBao {
 	t.Helper()
 	if exec.Command("docker", "version").Run() != nil {
-		t.Skip("docker is not available")
+		testdocker.Unavailable(t, "docker is not available")
 	}
 	if exec.Command("docker", "image", "inspect", smokeOpenBaoImage).Run() != nil {
 		if out, err := exec.Command("docker", "pull", smokeOpenBaoImage).CombinedOutput(); err != nil {
-			t.Skipf("cannot pull %s: %v\n%s", smokeOpenBaoImage, err, out)
+			testdocker.Unavailable(t, "cannot pull %s: %v\n%s", smokeOpenBaoImage, err, out)
 		}
 	}
 	out, err := exec.Command("docker", append(append([]string{"run", "-d", "--rm"}, testdocker.Publish(8200)...),

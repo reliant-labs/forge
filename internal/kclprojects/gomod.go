@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -85,6 +86,69 @@ func activeGoWork(dir string) string {
 	}
 	return ""
 }
+
+// Location is where the go command reads a module's files from, and the
+// declaration that decided it.
+type Location struct {
+	// Dir is the module's root directory: a go.work `use` or directory
+	// `replace` read in place, else the module cache at the pinned version.
+	Dir string
+	// Version is the module version Dir holds; "" for a directory.
+	Version string
+	// Via names the declaration, e.g. "go.mod require github.com/x/y v1.2.3".
+	Via string
+}
+
+// LocateModule finds the directory the go command builds modulePath from,
+// for the Go module whose go.mod is at or above dir, by the rules [Resolve]
+// applies to a [forge_projects] import (go.work use, then replace, then the
+// module cache at the required version, verified against go.sum). It is how
+// a consumer reads another project's files at the revision this project
+// pins it to, without a second pin.
+//
+// ok is false, with no error, when nothing pins the module: there is no
+// go.mod, or neither it nor an active go.work names the module. who names
+// the consumer in an error ("the alert inventory of ../reliant").
+func LocateModule(dir, modulePath, who string) (loc Location, ok bool, err error) {
+	goModDir := findUp(dir, "go.mod")
+	if goModDir == "" || modulePath == "" {
+		return Location{}, false, nil
+	}
+	g, err := loadGoModules(goModDir)
+	if err != nil {
+		return Location{}, false, err
+	}
+	if !g.pins(modulePath) {
+		return Location{}, false, nil
+	}
+	l, err := g.locate(Import{Name: path.Base(modulePath), Module: modulePath, DeclaredIn: who})
+	if err != nil {
+		return Location{}, false, err
+	}
+	return Location{Dir: l.dir, Version: l.version, Via: l.via}, true, nil
+}
+
+// pins reports whether the go command resolves modulePath from a
+// declaration of this project's: a go.work `use` of it, or a require.
+func (g *goModules) pins(modulePath string) bool {
+	if g.work != nil {
+		base := filepath.Dir(g.workPath)
+		for _, u := range g.work.Use {
+			if moduleAt(resolveDir(base, u.Path)) == modulePath {
+				return true
+			}
+		}
+	}
+	for _, r := range g.file.Require {
+		if r != nil && r.Mod.Path == modulePath {
+			return true
+		}
+	}
+	return false
+}
+
+// ModuleAt is the module path the go.mod at exactly dir declares, or "".
+func ModuleAt(dir string) string { return moduleAt(dir) }
 
 // locate finds the directory the go command builds imp.Module from.
 func (g *goModules) locate(imp Import) (location, error) {

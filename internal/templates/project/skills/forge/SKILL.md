@@ -10,23 +10,28 @@ would need it — load it then, not before.
 
 pnpm: `migrations/v1.0.0/pnpm`.
 
-## Two paths, both first-class
+## Three ways in, all first-class
 
 **A frontend with no backend of its own** — a landing page, marketing site,
 docs site, SPA or PWA — is a **static site**, and it is a complete forge
 project, not a stripped-down one. It gets dev/staging/prod envs from day 0,
 `forge env up dev` with no database or cluster, build-once releases promoted by
 digest, hosted static hosting (the platform owns the bucket, the CDN and the hostname;
-one static site per org is free, and each env's site counts), custom
-domains, per-env runtime
-config without a rebuild, and the component library. Adopt an existing Vite or
-Next.js app in place with `forge project new --in-place --kind site`. Either
+one static site per person is free across the orgs they own without a plan, and
+each env's site counts), custom domains, per-env runtime config without a
+rebuild, and the component library. Adopt an existing Vite or Next.js app in
+place with `forge project new --in-place --kind site`. Either
 way, **load `deploy/static-site` now** — it is the whole path, and the service
 sequence in `greenfield` does not apply. (For a PWA, forge builds, hosts and ships it;
 the service worker and manifest are yours to add.)
 
 **An app with an API** — services, a database, a frontend over generated
 Connect RPC hooks — follows the sequence in `greenfield`.
+
+**An app that already exists, in any language** — Express, Django, Rails,
+Spring, with its own Dockerfile — is adopted as it is: you write `forge.yaml`
+and `deploy/kcl/` declaring its Dockerfile, and none of its files change.
+**Load `adopt`**: copy-paste templates, then tiers you can stop after.
 
 ## The scaffolded frontend is starter code
 
@@ -96,6 +101,7 @@ hand-wrote and then deleted.
 | **see what a generated store offers** | `go doc ./internal/db <Entity>Store` (interfaces render in full), or `forge project shapes --kind store` for the list. Never forge's generator source | `db`, `service-layer` |
 | accept **file uploads** | `forge/pkg/blobstore` presigns them into a `forge.Bucket` (MinIO in dev) | `storage/blobstore` |
 | call an **LLM** from the backend | declare `forge.LLM` + `forge.llm_env()`, use the official anthropic-go / openai-go clients unmodified; agentic work goes to a Reliant workflow instead | `llm`, `deploy/llm` |
+| bring an **existing app in another language** onto forge | nothing to scaffold: `adopt` has the `forge.yaml` + `deploy/kcl` templates (DockerBuild, managed Postgres, migrations job, secrets) and the tiers after them; `forge project new --in-place` refuses such a directory | `adopt` |
 | need **dev data** | `forge db seed apply` derives FK-coherent rows from the applied schema; teach it your domain nouns in `db/seeds/vocab.yaml` | `db/seeding` |
 
 `forge scaffold` also births a `worker`, `operator`, `crd`, `binary`, `adapter`,

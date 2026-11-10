@@ -4439,6 +4439,17 @@ schema ExternalSecret:
                         value under (possibly) different name/key. Drives the
                         cross-secret byte-match audit + preflight. Unset =>
                         a standalone prereq (no byte-match group).
+      * `clusters`    — OPTIONAL. In a multi-cluster env, the clusters this
+                        Secret must exist on: forge.Cluster references (the
+                        render denormalizes each `.context`) or
+                        forge.ClusterTarget values (their `cluster` IS the
+                        kubectl context). Unset => the deploy preflight
+                        infers them from the clusters that receive objects
+                        in `namespace` (or a HelmChart rendered into it).
+                        Declare it when that inference is too wide: a
+                        second cluster that also installs cert-manager, but
+                        has no ACME issuer, never reads the hub's DNS-01
+                        token and must not be required to hold it.
     """
     type: str = "secret"
     name: str
@@ -4446,6 +4457,7 @@ schema ExternalSecret:
     keys: [str]
     reason: str = ""
     value_group: str = ""
+    clusters?: [Cluster | ClusterTarget]
     # Where the values come from. UNSET keeps the original meaning above: a
     # Secret something else provisions, which forge only checks for. A
     # `forge.StoreSource` makes it a Secret ESO syncs from a store; see
@@ -6418,6 +6430,9 @@ schema AlertRule:
       * `keep_firing_for` — hold the alert this long after it clears.
       * `labels`          — `severity` is one of critical | warning | info
         (default warning). `reliant_*` and `alertname` are reserved.
+        `release_health = "exclude"` marks a rule about something other than
+        the env's workloads (a build machine, a fleet): its alerts never judge
+        a release (`forge obs check` lists them as excluded_alerts).
       * `annotations`     — summary, description, runbook_url: Prometheus-style
         Go templates (`{{ $labels.x }}`, `{{ printf "%.0f" $value }}`,
         `humanize`, `mulf`, ...; the `observability/alerts` skill lists them).

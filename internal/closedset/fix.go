@@ -20,6 +20,14 @@ type Fix struct {
 	// Migration is the whole file, compatibility declaration first, ready to
 	// paste into a new `forge db migration new` file.
 	Migration string
+	// Validate is the migration that must follow this one, nil when none
+	// must. A widening adds its CHECK NOT VALID, so the ACCESS EXCLUSIVE lock
+	// the DROP + ADD takes is held for the catalog change alone, never for a
+	// scan of the table; Validate then checks the existing rows in its own
+	// transaction (each migration file is one), under SHARE UPDATE
+	// EXCLUSIVE, which blocks neither reads nor writes. Run in one
+	// transaction, the scan would hold the ACCESS EXCLUSIVE lock to commit.
+	Validate *Fix
 }
 
 func newFix(compatible bool, reason, sql string) *Fix {
@@ -54,10 +62,34 @@ func buildFix(c *constraint, d declaration, list List, want, missing, extra []st
 	if len(extra) > 0 {
 		fmt.Fprintf(&b, "-- A row holding %s fails the ADD CONSTRAINT, and with it this migration:\n", quoteAll(extra))
 		b.WriteString("-- rewrite or delete those rows first, above the ALTER TABLE.\n")
+		fmt.Fprintf(&b, "ALTER TABLE %s\n    DROP CONSTRAINT %s,\n    ADD CONSTRAINT %s CHECK (%s);\n", c.table, c.name, c.name, expr)
+		b.WriteString(commentStatement(c, d))
+		return newFix(compatible, reason, b.String())
 	}
-	fmt.Fprintf(&b, "ALTER TABLE %s\n    DROP CONSTRAINT %s,\n    ADD CONSTRAINT %s CHECK (%s);\n", c.table, c.name, c.name, expr)
+	// A widening cannot fail on an existing row: each one satisfied the
+	// narrower CHECK this replaces. So it skips the scan here (NOT VALID) and
+	// validates in the next migration, outside this ACCESS EXCLUSIVE lock.
+	b.WriteString("-- The CHECK is added NOT VALID, so this ACCESS EXCLUSIVE lock is held for the\n")
+	b.WriteString("-- catalog change alone, not for a scan of the table; new and updated rows are\n")
+	b.WriteString("-- checked from this commit on. The next migration validates the existing rows.\n")
+	fmt.Fprintf(&b, "ALTER TABLE %s\n    DROP CONSTRAINT %s,\n    ADD CONSTRAINT %s CHECK (%s) NOT VALID;\n", c.table, c.name, c.name, expr)
 	b.WriteString(commentStatement(c, d))
-	return newFix(compatible, reason, b.String())
+	fix := newFix(compatible, reason, b.String())
+	fix.Validate = validateFix(c)
+	return fix
+}
+
+// validateFix is the migration after a widening: it validates the CHECK the
+// widening added NOT VALID.
+func validateFix(c *constraint) *Fix {
+	var b strings.Builder
+	fmt.Fprintf(&b, "-- The previous migration added the widened %s NOT VALID. Validate it here,\n", c.name)
+	b.WriteString("-- in its own transaction: VALIDATE CONSTRAINT holds SHARE UPDATE EXCLUSIVE, which\n")
+	fmt.Fprintf(&b, "-- blocks neither reads nor writes of %s while it scans.\n", c.table)
+	fmt.Fprintf(&b, "ALTER TABLE %s VALIDATE CONSTRAINT %s;\n", c.table, c.name)
+	return newFix(true,
+		fmt.Sprintf("validates existing rows against the widened %s; every row already satisfied the narrower CHECK it replaced, and nothing is written.", c.name),
+		b.String())
 }
 
 // commentOnlyFix re-issues a declaration a re-created constraint lost.

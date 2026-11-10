@@ -540,7 +540,10 @@ Examples:
 CHECK declared 'forge:closed-set <set>' whose value list differs from the set:
 the CHECK replaced whole with the set's values, the declaration re-issued, and
 the compatibility line (a widening is backward-compatible, a narrowing breaks
-rollback). The name defaults to <constraint>_closed_set.`,
+rollback). A widening adds the CHECK NOT VALID, so its ACCESS EXCLUSIVE lock is
+never held for a scan of the table, and writes a second migration,
+<name>_validate, that validates the existing rows under a lock that blocks
+neither reads nor writes. The name defaults to <constraint>_closed_set.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if closedSet != "" {
 				return cobra.MaximumNArgs(1)(cmd, args)

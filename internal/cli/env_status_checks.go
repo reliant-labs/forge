@@ -76,7 +76,7 @@ func runtimeTargetFor(e *KCLEntities, rows []upServiceRow) doctor.RuntimeTarget 
 		// The probes it declares are the ones it serves: an app adopted
 		// by its Dockerfile declares a tcp probe, not forge's /healthz.
 		if p := w.Spec.Probes; p != nil {
-			t.Probe = doctor.AppProbe{TCP: p.TCP, ReadinessPath: p.ReadinessPath, LivenessPath: p.LivenessPath}
+			t.Probe = doctor.AppProbe{TCP: p.TCP, ReadinessPath: p.ReadinessPath, LivenessPath: p.LivenessPath, StartupPath: p.StartupPath}
 		}
 	}
 	return t

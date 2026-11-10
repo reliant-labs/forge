@@ -174,12 +174,14 @@ type RuntimeTarget struct {
 }
 
 // AppProbe is a service's declared probe contract (deploy/v1alpha1.Probes):
-// a TCP connect, or the HTTP paths it serves. Empty paths are forge's own
-// /readyz and /healthz.
+// a TCP connect, or the HTTP paths it serves. Empty readiness and liveness
+// paths are forge's own /readyz and /healthz; an empty startup path means the
+// workload declares no startup probe.
 type AppProbe struct {
 	TCP           bool
 	ReadinessPath string
 	LivenessPath  string
+	StartupPath   string
 }
 
 // machineLocalChecks are the runtime checks whose only subject is the

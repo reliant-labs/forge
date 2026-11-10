@@ -36,6 +36,22 @@ func TestCheckAppHealthHonoursTheDeclaredProbe(t *testing.T) {
 	if got := check(AppProbe{ReadinessPath: "/up"}); got.Status != StatusFail || !strings.Contains(got.Message, "/healthz") {
 		t.Errorf("readiness /up with liveness defaulted = %q (%s), want fail on the defaulted /healthz", got.Status, got.Message)
 	}
+	// A declared startup probe is checked first: while it fails the workload
+	// has not started, even though readiness and liveness answer.
+	if got := check(AppProbe{ReadinessPath: "/up", LivenessPath: "/up", StartupPath: "/started"}); got.Status != StatusFail || !strings.Contains(got.Message, "/started") {
+		t.Errorf("failing startup probe = %q (%s), want fail naming /started", got.Status, got.Message)
+	}
+	if got := check(AppProbe{ReadinessPath: "/up", LivenessPath: "/up", StartupPath: "/up"}); got.Status != StatusPass || !strings.HasPrefix(got.Message, "app "+addr+": /up=200 /up=200 /up=200") {
+		t.Errorf("answering startup probe = %q (%s), want pass checking all three", got.Status, got.Message)
+	}
+	// Startup alone is a declared probe: it is checked, and the unset
+	// readiness and liveness fall back to forge's own paths.
+	if got := check(AppProbe{StartupPath: "/up"}); got.Status != StatusFail || !strings.Contains(got.Message, "/healthz") {
+		t.Errorf("startup-only /up = %q (%s), want fail on the defaulted /healthz after /up answered", got.Status, got.Message)
+	}
+	if got := check(AppProbe{StartupPath: "/started"}); got.Status != StatusFail || !strings.Contains(got.Message, "/started") {
+		t.Errorf("startup-only failing = %q (%s), want fail naming /started", got.Status, got.Message)
+	}
 
 	// A tcp probe against a port nothing listens on fails, naming it.
 	l, err := net.Listen("tcp", "127.0.0.1:0")

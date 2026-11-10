@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/doctor"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -56,6 +57,10 @@ func TestRuntimeTargetCarriesTheDeclaredProbe(t *testing.T) {
 	}}
 	if got := runtimeTargetFor(entities, rows).Probe; !got.TCP {
 		t.Errorf("Probe = %+v, want the declared tcp probe", got)
+	}
+	entities.Workloads[0].Spec.Probes = &deployv1alpha1.Probes{ReadinessPath: "/ready", LivenessPath: "/live", StartupPath: "/started"}
+	if got := runtimeTargetFor(entities, rows).Probe; got != (doctor.AppProbe{ReadinessPath: "/ready", LivenessPath: "/live", StartupPath: "/started"}) {
+		t.Errorf("Probe = %+v, want every declared path, the startup path included", got)
 	}
 	entities.Workloads[0].Spec.Probes = nil
 	if got := runtimeTargetFor(entities, rows).Probe; got.TCP || got.ReadinessPath != "" {

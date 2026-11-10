@@ -47,11 +47,17 @@ func CheckAppHealth(ctx context.Context, env *Environment) CheckResult {
 		_ = conn.Close()
 		return CheckResult{Status: StatusPass, Message: subject + ": accepts connections (its declared tcp probe)"}
 	}
-	if probe.ReadinessPath != "" || probe.LivenessPath != "" {
+	if probe.ReadinessPath != "" || probe.LivenessPath != "" || probe.StartupPath != "" {
 		// The app's own endpoints: any 200 is up. Only forge's /healthz
-		// promises the "ok" body.
+		// promises the "ok" body. A declared startup probe goes first: until
+		// it answers, the workload has not started, whatever the others say.
+		var paths []string
+		if probe.StartupPath != "" {
+			paths = append(paths, probe.StartupPath)
+		}
+		paths = append(paths, orPath(probe.LivenessPath, "/healthz"), orPath(probe.ReadinessPath, "/readyz"))
 		var answered []string
-		for _, path := range []string{orPath(probe.LivenessPath, "/healthz"), orPath(probe.ReadinessPath, "/readyz")} {
+		for _, path := range paths {
 			if _, err := httpGetBody(ctx, client, fmt.Sprintf("http://%s%s", addr, path)); err != nil {
 				return CheckResult{Status: StatusFail, Message: fmt.Sprintf("%s: %s failed (its declared probe): %v", subject, path, err)}
 			}

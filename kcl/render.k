@@ -879,6 +879,10 @@ _profiling_env = lambda w: any, env: {str:} -> {str:str} {
 }
 
 # The keys forge derives for w on rt (only those the author left unset).
+# FORGE_TRUSTED_EDGE tells forge/pkg/observe that Reliant's hosted proxy fronts
+# the workload, so the edge headers it stamps (the visitor's daily hash, the
+# browser's privacy signal) are the platform's and not a client's: only there
+# does observe read them (EdgeContextMiddleware).
 _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     _env = w.env if w.env else {}
     _runs = rt.type in _RUNS_A_PROCESS and w.kind != "tool"
@@ -888,6 +892,7 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
         | (_obs_env(rt, bundle, _env) if _runs else {}) \
         | (_profiling_env(w, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
+        | ({FORGE_TRUSTED_EDGE = "reliant"} if _runs and rt.type == "hosted" and not _env_set(_env, "FORGE_TRUSTED_EDGE") else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})
 }
 

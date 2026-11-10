@@ -264,6 +264,8 @@ type Deps struct {
 //     server span and sets the browser's session.id on it (span_identity.go).
 //  1. RecoveryInterceptor   — observes panics from everything below.
 //  2. RequestIDInterceptor — mints/propagates the correlation id early.
+//     EdgeContextInterceptor follows it behind a trusted edge
+//     (FORGE_TRUSTED_EDGE=reliant): the visitor's daily hash Track records.
 //  3. LoggingInterceptor   — every failure; every success, or a sample
 //     of them when sampling is turned on.
 //  4. TracingInterceptor   — one OTel span per RPC.
@@ -304,6 +306,13 @@ func Chain(deps Deps) []connect.Interceptor {
 	chain = append(chain,
 		RecoveryInterceptor(deps.Logger),
 		RequestIDInterceptor(),
+	)
+	// Only behind a trusted edge (Reliant hosting): elsewhere the headers are
+	// a client's, and the chain stays as it was.
+	if edgeTrusted() {
+		chain = append(chain, EdgeContextInterceptor())
+	}
+	chain = append(chain,
 		LoggingInterceptor(deps.Logger, deps.LogOptions...),
 		TracingInterceptor(deps.Tracer),
 		MetricsInterceptor(meter),

@@ -123,6 +123,11 @@ func trackAs(ctx context.Context, name, userID string, attrs []slog.Attr) {
 	if userID != "" {
 		out = append(out, slog.String(AttrUserID, userID))
 	}
+	// The visitor's daily hash, when the trusted edge stamped this request
+	// (edge_context.go): it links a server-side event to the anonymous visit.
+	if vd := EdgeContextFrom(ctx).VisitorDay; vd != "" {
+		out = append(out, slog.String(AttrVisitorDay, vd))
+	}
 	out = append(out, slog.String(AttrAppClient, AppClientBackend))
 	if v := appVersion.Load(); v != nil && *v != "" {
 		out = append(out, slog.String(AttrAppVersion, *v))

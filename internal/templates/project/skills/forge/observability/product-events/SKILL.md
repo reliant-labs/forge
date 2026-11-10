@@ -147,6 +147,16 @@ else `jwt`; name yours with `observe.Deps{AuthProvider: "auth0"}`. It is one
 of forge's automatic events (`product_events = False` switches it off), and
 costs at most one log record per user per replica per day.
 
+**On Reliant hosting, server events carry the visitor's daily hash.** The
+hosted proxy stamps `X-Reliant-Visitor-Day` (and `X-Reliant-Privacy` under
+GPC/DNT, then no hash) on every request it forwards, after stripping any copy
+a client sent. forge renders `FORGE_TRUSTED_EDGE=reliant` for `forge.OnHosted`
+workloads, and only then does `observe.EdgeContextMiddleware` (on every
+serverkit listener) or `observe.EdgeContextInterceptor` (in `observe.Chain`)
+read them; `Track` and `TrackAuth` then record `visitor.day`. That links a
+server-side sign-up to the anonymous visit that produced it, with no browser
+code. Anywhere else the headers are ignored, so a client cannot spoof them.
+
 From the browser, `identifyUser` is the one call every app should make, wherever
 it learns who is signed in (Clerk's `useUser`, Auth0's `useAuth0`, a session
 refresh). It attaches the id to every span and replay (`setTelemetryUser`) and

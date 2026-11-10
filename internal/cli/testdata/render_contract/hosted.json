@@ -160,6 +160,10 @@
               "value": "deployment.environment.name=prod,service.namespace=acme"
             },
             {
+              "name": "FORGE_TRUSTED_EDGE",
+              "value": "reliant"
+            },
+            {
               "name": "GOMEMLIMIT",
               "value": "921MiB"
             }
@@ -237,6 +241,10 @@
             {
               "name": "OTEL_RESOURCE_ATTRIBUTES",
               "value": "deployment.environment.name=prod,service.namespace=acme"
+            },
+            {
+              "name": "FORGE_TRUSTED_EDGE",
+              "value": "reliant"
             },
             {
               "name": "GOMEMLIMIT",

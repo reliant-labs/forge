@@ -128,7 +128,7 @@ release_health = forge.ReleaseHealth {
 | 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests`), or forge could not look |
 | 8 | `--wait` timed out (`--timeout`, default 30m) before the after window finished |
 
-An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_open`, `low_traffic`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
+An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_open`, `low_traffic`, `no_request_telemetry`, `no_service_data`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence. `no_service_data` is an empty report with no service forge knows of to blame: no service row and none that exports its own telemetry (a static site has none).
 
 **`no_request_telemetry`: the app exports no traces.** Requests, error rate and latency come from each service's own OpenTelemetry server spans, never from the ingress, so a service that exports none has no request data however much traffic it serves. forge instruments what it builds; an app built from its own Dockerfile or command, or a third-party image, exports traces only if it is instrumented, and the reason names those services (`uninstrumented_services`). Add an OpenTelemetry SDK that exports OTLP to `$OTEL_EXPORTER_OTLP_ENDPOINT` (hosting sets it and `OTEL_SERVICE_NAME` on every workload), then check again. Until then the verdict stays INCONCLUSIVE — not proven good — and what forge sees without telemetry still counts: a restart, a firing alert or a new issue is a finding, and `forge obs workloads <env>` and `forge obs logs <env>` show the app's health and output.
 

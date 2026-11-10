@@ -20,9 +20,20 @@ import (
 type StepsFailedError struct {
 	// Steps names each failed step, in the order they failed.
 	Steps []string
+	// Causes is each step's error on one line, aligned with Steps ("" when
+	// unknown, and nil from a caller that names steps alone), so the error
+	// says why even where only it, or the log's tail, survives.
+	Causes []string
 }
 
 func (e *StepsFailedError) Error() string {
-	return fmt.Sprintf("%d generate step(s) failed: %s (the other steps ran and their output stands; the errors are above)",
-		len(e.Steps), strings.Join(e.Steps, ", "))
+	named := make([]string, len(e.Steps))
+	for i, s := range e.Steps {
+		named[i] = s
+		if i < len(e.Causes) && e.Causes[i] != "" {
+			named[i] = s + ": " + e.Causes[i]
+		}
+	}
+	return fmt.Sprintf("%d generate step(s) failed: %s (the other steps ran and their output stands; the full errors are above)",
+		len(e.Steps), strings.Join(named, "; "))
 }

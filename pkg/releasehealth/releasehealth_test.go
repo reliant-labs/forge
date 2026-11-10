@@ -385,6 +385,17 @@ func TestInconclusiveWhyNoRequestTelemetry(t *testing.T) {
 			t.Errorf("why blames traffic for missing telemetry:\n%s", why)
 		}
 	}
+	// No service row and no service known to export its own telemetry is
+	// missing service data, not an app to instrument.
+	if r := Evaluate(input(t, true)); r.NoRequestTelemetry() || InconclusiveCode(r) != ReasonNoServiceData ||
+		strings.Contains(InconclusiveWhy(r), "OTEL_EXPORTER_OTLP_ENDPOINT") {
+		t.Errorf("no services: no telemetry %v, code %q, why %q; want no_service_data without instrumentation advice",
+			r.NoRequestTelemetry(), InconclusiveCode(r), InconclusiveWhy(r))
+	}
+	// An open window stays window_open, whatever the request data.
+	if r := WithUninstrumented(Evaluate(input(t, false)), []string{"app"}); InconclusiveCode(r) != ReasonWindowOpen {
+		t.Errorf("open window with no request data: code %q, want %q", InconclusiveCode(r), ReasonWindowOpen)
+	}
 	// Some request data, however little, is low traffic.
 	if r := Evaluate(input(t, true, svc("app", 0, 3, 0, 0, 10, 10))); r.NoRequestTelemetry() || InconclusiveCode(r) != ReasonLowTraffic {
 		t.Errorf("3 requests: no telemetry %v, code %q; want low_traffic", r.NoRequestTelemetry(), InconclusiveCode(r))
@@ -393,8 +404,40 @@ func TestInconclusiveWhyNoRequestTelemetry(t *testing.T) {
 	in := input(t, true)
 	in.Workloads = []Workload{{Workload: "app", Restarts: 2}}
 	in.Thresholds.FailOn = nil
-	if why := InconclusiveWhy(Evaluate(in)); !strings.Contains(why, "1 warning(s)") {
+	if why := InconclusiveWhy(WithUninstrumented(Evaluate(in), []string{"app"})); !strings.Contains(why, "1 warning(s)") {
 		t.Errorf("why with a warn finding = %q", why)
+	}
+}
+
+// An env with no request telemetry at all (a static site, a workload that
+// exports no spans) is not "low traffic": the reason says what is missing.
+func TestInconclusiveWhyNamesMissingRequestTelemetry(t *testing.T) {
+	none := Evaluate(input(t, true))
+	if why := InconclusiveWhy(none); none.Verdict != Inconclusive || !strings.Contains(why, "no request telemetry") {
+		t.Errorf("no services: %s %q", none.Verdict, why)
+	}
+	thin := Evaluate(input(t, true, svc("api", 10, 3, 0, 0, 100, 100)))
+	if why := InconclusiveWhy(thin); !strings.Contains(why, "not enough traffic") {
+		t.Errorf("thin traffic keeps its reason: %q", why)
+	}
+}
+
+// While the after window is open, After.To is the moment it was read; the
+// window ends at the promotion plus the judged window (forge_cli_report
+// 9fe4605f: `--wait` reported an end that moved forward with every poll).
+func TestAfterEndsIsTheWindowsEndNotTheReadTime(t *testing.T) {
+	in := input(t, false, svc("api", 1000, 1000, 0, 0, 100, 100))
+	in.Windows = Plan(t0, 15*time.Minute, nil, nil, t0.Add(4*time.Minute))
+	open := Evaluate(in)
+	if got, want := open.AfterEnds(), t0.Add(15*time.Minute); !got.Equal(want) {
+		t.Errorf("open AfterEnds = %s, want %s (After.To = %s)", got, want, open.After.To)
+	}
+	if why := InconclusiveWhy(open); !strings.Contains(why, t0.Add(15*time.Minute).Format(time.RFC3339)) {
+		t.Errorf("why names the window's end: %q", why)
+	}
+	in.Windows = Plan(t0, 15*time.Minute, nil, tp(t0.Add(5*time.Minute)), t0.Add(20*time.Minute))
+	if got := Evaluate(in).AfterEnds(); !got.Equal(t0.Add(5 * time.Minute)) {
+		t.Errorf("a window cut by the next promotion ends there: %s", got)
 	}
 }
 

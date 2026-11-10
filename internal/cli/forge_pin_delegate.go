@@ -477,7 +477,9 @@ type PinnedForge struct {
 	// Path is the executable.
 	Path string
 	// Key identifies exactly which forge it is, for a cache of what it
-	// prints: the pinned version, or a linked checkout and its contents.
+	// prints: the pinned version ("pin:", a module version that never
+	// changes), a linked checkout and its contents, or for a +dirty pin the
+	// binary file that reports it and that file's size and mtime.
 	Key string
 	// Want says which forge the project wants, for a message.
 	Want string
@@ -501,7 +503,7 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 	if err != nil {
 		return PinnedForge{}, false, handOffFailure(projectRoot, t, command, err)
 	}
-	return PinnedForge{Path: res.Path, Key: t.key(), Want: t.String()}, true, nil
+	return PinnedForge{Path: res.Path, Key: t.resultKey(res.Path), Want: t.String()}, true, nil
 }
 
 // noteUnpinned says which forge runs when no project pin decides it. Only an
@@ -560,6 +562,22 @@ func (t delegateTarget) key() string {
 		return "checkout:" + t.checkout + "@" + t.stamp
 	}
 	return "pin:" + t.pin
+}
+
+// resultKey is key for the forge t resolved to at path. A +dirty pin names a
+// working tree, not a commit: the binary that reports it (the project's
+// .tools/bin/forge) can be rebuilt with new code and the same version, so its
+// key is that file's identity, never the pin alone — and never "pin:", which
+// a host treats as a module version whose output can be kept for good.
+func (t delegateTarget) resultKey(path string) string {
+	if t.checkout != "" || !forgecompat.DirtyVersion(t.pin) {
+		return t.key()
+	}
+	stamp := "unknown"
+	if st, err := os.Stat(path); err == nil {
+		stamp = strconv.FormatInt(st.Size(), 10) + "@" + strconv.FormatInt(st.ModTime().UnixNano(), 10)
+	}
+	return "build:" + t.pin + "@" + path + "@" + stamp
 }
 
 func (t delegateTarget) String() string {

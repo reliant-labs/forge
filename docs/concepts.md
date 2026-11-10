@@ -677,7 +677,7 @@ The details:
   the tag, arch and environment are read in KCL (`forge.image_tag()`,
   `forge.target_arch()`, `forge.env()`) where the command is composed.
 - **KCL is still KCL.** Forge models _your_ workloads — Application,
-  Environment, ConfigMap, Ingress, RBAC. It deliberately does not model
+  Environment, ConfigMap, Ingress, Kubernetes RBAC. It deliberately does not model
   third-party in-cluster infra, so when you need NATS, Temporal, or a Postgres
   operator, you emit raw manifests (or run Helm) and they compose into the same
   rendered stream. No fork, no fight with the schema. That's how our control

@@ -3534,7 +3534,8 @@ func upFrontends(ctx context.Context, fl frontendLaunch) int {
 		}
 		cmd := buildFrontendDevCmd(ctx, fl, fe, os.Environ())
 		announceNativeAPIOrigin(os.Stdout, fl, fe, cmd.Env)
-		announceNativeOIDC(os.Stdout, fe.Name, readNativeOIDC(fl.projectDir, fl.entities, fe), cmd.Env, fl.deviceHost)
+		localAddrs, _ := net.InterfaceAddrs()
+		announceNativeOIDC(os.Stdout, fe.Name, readNativeOIDC(fl.projectDir, fl.entities, fe), cmd.Env, deviceHostStateFor(fl.entities, fl.deviceHost, localAddrs))
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++

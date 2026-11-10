@@ -191,3 +191,18 @@ func TestAuthScaffold_UserInfoLocalHTTPIsOptInAndDeclared(t *testing.T) {
 		t.Errorf("the declared field gates the opt-in:\n%s", with)
 	}
 }
+
+// The broker confines its IdP client to this machine only when the config it
+// reads declares the dev knob; the default render never sets LocalOnly.
+func TestLoginBrokerScaffold_LocalOnlyIsDeclaredAndGated(t *testing.T) {
+	data := LoginBrokerTemplateData{Module: "example.com/rbc", Name: "rbc"}
+	without := renderFormatted(t, "app-login-broker.go.tmpl", data)
+	if strings.Contains(without, "LocalOnly") || strings.Contains(without, "JwtUserinfoAllowLocalHttp") {
+		t.Errorf("a config without the field must not read it:\n%s", without)
+	}
+	data.LocalOnlyField = true
+	with := renderFormatted(t, "app-login-broker.go.tmpl", data)
+	if !strings.Contains(with, "LocalOnly: cfg.JwtUserinfoAllowLocalHttp,") {
+		t.Errorf("the declared field must set devidp.Client.LocalOnly:\n%s", with)
+	}
+}

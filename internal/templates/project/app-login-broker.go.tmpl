@@ -199,6 +199,14 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 			// restart; idp_broker_token is the fallback.
 			Token:     cfg.IdpBrokerToken,
 			TokenFile: cfg.IdpBrokerTokenFile,
+{{- if .LocalOnlyField}}
+			// Development only. `forge env up --device-host` makes the issuer
+			// this machine's own LAN address over plain HTTP and sets this
+			// knob; the client then ignores proxy variables and checks at
+			// connect time that it is still talking to this machine. Never
+			// set it in a deployed environment.
+			LocalOnly: cfg.JwtUserinfoAllowLocalHttp,
+{{- end}}
 		},
 		flow: devidp.FlowConfig{
 			ClientID:    cfg.OidcClientId,

@@ -43,6 +43,15 @@ type Client struct {
 	// request.
 	Host string
 
+	// LocalOnly is the DEVELOPMENT signal that Base is this machine's own
+	// address reached over plain HTTP (the dev IdP at the LAN address under
+	// `forge env up --device-host`): the client then dials through
+	// netguard.LocalOnly (no proxy, connect-time check) for a plain-HTTP,
+	// non-loopback Base. Set it from the same knob that opts the API's userinfo
+	// lookup in (jwt_userinfo_allow_local_http); never in a deployed
+	// environment. Default false: the default transport, as before.
+	LocalOnly bool
+
 	// Token is the personal access token of the service account declared
 	// in idp-steps.yaml, which Zitadel writes to disk on first boot.
 	Token string
@@ -66,39 +75,48 @@ const requestTimeout = 15 * time.Second
 
 // httpClient returns the HTTP client, building the default on first use.
 //
-// A Base that is plain HTTP at a non-loopback IPv4 address of THIS machine is
-// the dev IdP reached at the machine's LAN address (`forge env up
-// --device-host`): the broker sends the issuer's service token and users'
-// credentials there in the clear. That client gets a transport that ignores
-// proxy variables (HTTP_PROXY would otherwise carry them to the proxy, because
-// only loopback is exempt) and refuses at connect time any address that is not
+// With LocalOnly set, a Base that is plain HTTP to a non-loopback host gets a
+// transport that ignores proxy variables (HTTP_PROXY would otherwise carry the
+// issuer's service token and users' credentials to the proxy, because only
+// loopback is exempt) and refuses at connect time any address that is not
 // loopback or on one of this machine's interfaces at that moment, so a network
-// change cannot hand them to whoever now holds the address. Any other Base (a
-// remote service, a name, loopback, HTTPS) keeps the shared default transport.
+// change cannot hand them to whoever now holds the address. The choice is the
+// caller's explicit signal, never a look at the interfaces here: an interface
+// check at first use would be a decision about one moment, and the transport
+// is built once. Without LocalOnly, and for every other Base (HTTPS,
+// loopback), the shared default transport is used, exactly as before.
 func (c *Client) httpClient() *http.Client {
 	if c.http == nil {
-		opts := observe.HTTPClientOptions{Timeout: requestTimeout}
-		if localPlainHTTPBase(c.Base) {
-			opts.Base = netguard.LocalOnly{}.Transport()
-		}
-		c.http = observe.NewHTTPClient(opts)
+		c.http = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: requestTimeout, Base: c.baseTransport()})
 	}
 	return c.http
 }
 
-// localPlainHTTPBase reports whether base is plain HTTP at an IPv4 literal
-// assigned to one of this machine's interfaces right now (loopback excluded:
-// the default transport already treats loopback as local).
-func localPlainHTTPBase(base string) bool {
+// baseTransport is the transport under the instrumentation: the LocalOnly one
+// when the caller signalled it and Base is plain HTTP to a non-loopback host,
+// else nil (the shared default).
+func (c *Client) baseTransport() http.RoundTripper {
+	if c.LocalOnly && plainHTTPNonLoopback(c.Base) {
+		return netguard.LocalOnly{}.Transport()
+	}
+	return nil
+}
+
+// plainHTTPNonLoopback reports, from the URL alone, whether base is plain HTTP
+// to a host that is not localhost or a loopback literal.
+func plainHTTPNonLoopback(base string) bool {
 	u, err := url.Parse(strings.TrimSpace(base))
 	if err != nil || u.Scheme != "http" {
 		return false
 	}
-	ip := net.ParseIP(u.Hostname())
-	if ip == nil || ip.To4() == nil || ip.IsLoopback() {
+	host := u.Hostname()
+	if host == "" || strings.EqualFold(host, "localhost") {
 		return false
 	}
-	return netguard.LocalOnly{}.Allowed(ip)
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
 }
 
 // Org is a Zitadel organization — the container a project and its users

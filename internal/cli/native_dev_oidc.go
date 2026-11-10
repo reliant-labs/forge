@@ -148,7 +148,10 @@ func withNativeOIDCEnv(env []string, n *nativeOIDC) []string {
 // describeNativeOIDC is the launch lines for a native frontend's sign-in: the
 // EFFECTIVE values (after shell and KCL overrides), and what the issuer does
 // and does not reach.
-func describeNativeOIDC(feName string, n *nativeOIDC, env []string, deviceHost string) []string {
+//
+// dh says what became of --device-host in this run, so a localhost issuer is
+// explained by the real reason (see deviceHostState).
+func describeNativeOIDC(feName string, n *nativeOIDC, env []string, dh deviceHostState) []string {
 	if n == nil {
 		return nil
 	}
@@ -156,7 +159,7 @@ func describeNativeOIDC(feName string, n *nativeOIDC, env []string, deviceHost s
 	issuer := envLookupLastOr(env, oidcIssuerEnv)
 	lines := []string{fmt.Sprintf("%ssign-in: issuer %s, client %s, redirect %s", p, issuer, envLookupLastOr(env, oidcClientIDEnv), envLookupLastOr(env, oidcRedirectURIEnv))}
 	if !isLoopbackOrigin(issuer) {
-		if deviceHost != "" {
+		if dh.Requested != "" {
 			lines = append(lines, p+"the issuer is the --"+deviceHostFlag+" address: the dev IdP serves it for this run and the API validates that same issuer")
 		}
 		return lines
@@ -169,16 +172,21 @@ func describeNativeOIDC(feName string, n *nativeOIDC, env []string, deviceHost s
 	if port != "" {
 		msg += "; an Android emulator needs `adb reverse tcp:" + port + " tcp:" + port + "`"
 	}
-	if deviceHost != "" {
-		msg += ". --" + deviceHostFlag + " did not move it (the issuer was set explicitly, or this frontend has no native application on the env's host-run identity), so a physical device cannot sign in"
-	} else {
-		msg += "; a physical device needs --" + deviceHostFlag + " <this machine's LAN address>, which makes the dev IdP serve that address too"
+	switch {
+	case dh.Refused:
+		msg += fmt.Sprintf(". --%s %s is not this machine's LAN IPv4 address, so the issuer stayed on localhost and a physical device cannot sign in; pass e.g. --%s 192.168.1.20", deviceHostFlag, strings.Trim(dh.Requested, "[]"), deviceHostFlag)
+	case dh.Accepted != "":
+		msg += ". --" + deviceHostFlag + " did not move it (the issuer was set explicitly, or the IdP could not serve " + dh.Accepted + " this run), so a physical device cannot sign in"
+	case dh.Requested != "":
+		msg += ". --" + deviceHostFlag + " did not move it (this frontend has no native application on the env's host-run identity, or the IdP could not serve " + strings.Trim(dh.Requested, "[]") + " this run), so a physical device cannot sign in"
+	default:
+		msg += "; a physical device needs --" + deviceHostFlag + " <this machine's LAN IPv4 address>, which makes the dev IdP serve that address too"
 	}
 	return append(lines, msg)
 }
 
-func announceNativeOIDC(w io.Writer, feName string, n *nativeOIDC, env []string, deviceHost string) {
-	for _, l := range describeNativeOIDC(feName, n, env, deviceHost) {
+func announceNativeOIDC(w io.Writer, feName string, n *nativeOIDC, env []string, dh deviceHostState) {
+	for _, l := range describeNativeOIDC(feName, n, env, dh) {
 		fmt.Fprintln(w, l)
 	}
 }
@@ -437,8 +445,16 @@ func applyDeviceHostToIdP(e *KCLEntities, targets []string, deviceHost string, l
 const userInfoLocalHTTPEnv = "JWT_USERINFO_ALLOW_LOCAL_HTTP"
 
 // enableLocalUserInfo sets that knob on the launch env of every host workload
-// that consumes the host-run identity, and on no other. A value the developer
-// exported or declared still wins (the launch env layers beneath both).
+// that consumes the host-run identity, and on no other.
+//
+// PRECEDENCE, as the code stands: WorkloadEntity.HostEnv layers LaunchEnv OVER
+// the values the workload declares in KCL, so setting it here would silently
+// override a declared value, and a declared value (LaunchEnv included) beats
+// the developer's shell unless FORGE_ENV_OVERRIDE names the key
+// (hostlaunch.LayerHostEnvConflicts). This knob widens what the API will
+// trust, so the safe reading of "the developer decided" is chosen: a workload
+// that DECLARES the variable (true or false) is left exactly as declared, and
+// forge sets it only where nothing was said.
 func enableLocalUserInfo(e *KCLEntities) {
 	id := hostIdentity(e)
 	if id == nil {
@@ -457,7 +473,7 @@ func enableLocalUserInfo(e *KCLEntities) {
 				break
 			}
 		}
-		if !consumes {
+		if !consumes || declaresEnv(w, userInfoLocalHTTPEnv) {
 			continue
 		}
 		if w.Runtime.Host.LaunchEnv == nil {
@@ -465,4 +481,45 @@ func enableLocalUserInfo(e *KCLEntities) {
 		}
 		w.Runtime.Host.LaunchEnv[userInfoLocalHTTPEnv] = "true"
 	}
+}
+
+// declaresEnv reports whether the workload declares an env var by that name
+// (any value or reference), so forge does not overwrite a decision.
+func declaresEnv(w *WorkloadEntity, name string) bool {
+	for _, ev := range w.EnvVars() {
+		if ev.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// deviceHostState is what became of --device-host in this run.
+type deviceHostState struct {
+	// Requested is what --device-host (or FORGE_DEV_DEVICE_HOST) said.
+	Requested string
+	// Accepted is the device host the IdP was told to serve: Requested when it
+	// is an IPv4 address of this machine and a native application needs it,
+	// else "".
+	Accepted string
+	// Refused is true when Requested was given and is not an IPv4 address of
+	// this machine, the one reason forge refuses to move the issuer.
+	Refused bool
+}
+
+// deviceHostStateFor derives that from the run's own decision
+// (applyDeviceHostToIdP records an accepted host on the zitadel entry; the
+// identity step clears it when the IdP could not serve it).
+func deviceHostStateFor(e *KCLEntities, requested string, local []net.Addr) deviceHostState {
+	st := deviceHostState{Requested: requested}
+	if requested == "" {
+		return st
+	}
+	if id := hostIdentity(e); id != nil {
+		if z, err := hostZitadel(e, id); err == nil {
+			st.Accepted = z.DeviceHost
+		}
+	}
+	st.Refused = st.Accepted == "" && !deviceHostIsThisMachineIPv4(requested, local)
+	return st
 }

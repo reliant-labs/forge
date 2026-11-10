@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/identity"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -145,7 +146,7 @@ func TestBuildFrontendDevCmd_InjectsNativeOIDC(t *testing.T) {
 			t.Errorf("the API origin must follow the device host too, got %q", env["EXPO_PUBLIC_API_URL"])
 		}
 		var b bytes.Buffer
-		announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, "192.168.1.20")
+		announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, deviceHostState{Requested: "192.168.1.20", Accepted: "192.168.1.20"})
 		for _, want := range []string{"sign-in: issuer " + deviceIssuer, "client mobile-client", "serves it for this run"} {
 			if !strings.Contains(b.String(), want) {
 				t.Errorf("announcement missing %q:\n%s", want, b.String())
@@ -160,18 +161,56 @@ func TestBuildFrontendDevCmd_InjectsNativeOIDC(t *testing.T) {
 		fl.deviceHost = "192.168.1.20"
 		cmd := buildFrontendDevCmd(context.Background(), fl, mobile, nil)
 		var b bytes.Buffer
-		announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, "192.168.1.20")
+		announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, deviceHostState{Requested: "192.168.1.20", Accepted: "192.168.1.20"})
 		for _, want := range []string{"sign-in: issuer " + testIssuerBase, "adb reverse tcp:8098 tcp:8098", "did not move it", "cannot sign in"} {
 			if !strings.Contains(b.String(), want) {
 				t.Errorf("announcement missing %q:\n%s", want, b.String())
 			}
 		}
 	})
+	// A refused device host is explained by the real reason, the one the run's
+	// top notice gives, not by "set explicitly / no native application".
+	t.Run("a refused device host: the sign-in line names the real reason", func(t *testing.T) {
+		local := lanAddrs("192.168.1.20", "fd00::20")
+		for _, host := range []string{"my-mac.local", "fd00::20", "10.0.2.2"} {
+			e := e
+			st := deviceHostStateFor(e, host, local)
+			if !st.Refused || st.Accepted != "" {
+				t.Fatalf("%s: state = %+v, want refused", host, st)
+			}
+			cmd := buildFrontendDevCmd(context.Background(), frontendLaunch{entities: e, env: "dev", projectDir: dir, deviceHost: host}, mobile, nil)
+			var b bytes.Buffer
+			announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, st)
+			for _, want := range []string{"sign-in: issuer " + testIssuerBase, "--device-host " + host + " is not this machine's LAN IPv4 address", "pass e.g. --device-host 192.168.1.20"} {
+				if !strings.Contains(b.String(), want) {
+					t.Errorf("%s: line missing %q:\n%s", host, want, b.String())
+				}
+			}
+			if strings.Contains(b.String(), "set explicitly") || strings.Contains(b.String(), "no native application") {
+				t.Errorf("%s: the line gives a reason the run did not have:\n%s", host, b.String())
+			}
+		}
+	})
+	t.Run("an accepted device host is not reported as refused", func(t *testing.T) {
+		local := lanAddrs("192.168.1.20")
+		_, e2 := nativeProject(t, nativeIdentityOutput())
+		applyDeviceHostToIdP(e2, nil, "192.168.1.20", local)
+		st := deviceHostStateFor(e2, "192.168.1.20", local)
+		if st.Refused || st.Accepted != "192.168.1.20" {
+			t.Errorf("state = %+v, want accepted", st)
+		}
+		// A valid host that no native application needed is neither accepted nor refused.
+		_, e3 := nativeProject(t, nativeIdentityOutput())
+		applyDeviceHostToIdP(e3, []string{"web"}, "192.168.1.20", local)
+		if st := deviceHostStateFor(e3, "192.168.1.20", local); st.Refused || st.Accepted != "" {
+			t.Errorf("no native frontend targeted: state = %+v", st)
+		}
+	})
 	t.Run("localhost issuer without --device-host points at the flag", func(t *testing.T) {
 		cmd := buildFrontendDevCmd(context.Background(), fl, mobile, nil)
 		var b bytes.Buffer
-		announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, "")
-		if !strings.Contains(b.String(), "--device-host <this machine's LAN address>") {
+		announceNativeOIDC(&b, "mobile", readNativeOIDC(dir, e, mobile), cmd.Env, deviceHostState{})
+		if !strings.Contains(b.String(), "--device-host <this machine's LAN IPv4 address>") {
 			t.Errorf("announcement does not name the way to a device:\n%s", b.String())
 		}
 	})
@@ -196,6 +235,30 @@ func TestDeviceHostIsThisMachineIPv4(t *testing.T) {
 	} {
 		if got := deviceHostIsThisMachineIPv4(host, local); got != want {
 			t.Errorf("%s: got %v, want %v", host, got, want)
+		}
+	}
+}
+
+// The opt-in knob is forge's default where nothing was said and is never forced
+// over a decision the workload declared (HostEnv layers LaunchEnv over declared
+// values, so setting it would otherwise override them).
+func TestEnableLocalUserInfo_NeverOverridesADeclaredValue(t *testing.T) {
+	_, e := nativeProject(t, nativeIdentityOutput())
+	for i := range e.Workloads {
+		if e.Workloads[i].Name == "api" {
+			e.Workloads[i].Spec.Env = append(e.Workloads[i].Spec.Env, deployv1alpha1.EnvVar{Name: userInfoLocalHTTPEnv, Value: "false"})
+		}
+	}
+	enableLocalUserInfo(e)
+	for _, w := range e.Workloads {
+		if w.Name != "api" || w.Runtime.Host == nil {
+			continue
+		}
+		if v, set := w.Runtime.Host.LaunchEnv[userInfoLocalHTTPEnv]; set {
+			t.Errorf("forge set %s=%q over a value the workload declared", userInfoLocalHTTPEnv, v)
+		}
+		if got := w.HostEnv()[userInfoLocalHTTPEnv]; got != "false" {
+			t.Errorf("effective host env = %q, want the declared false", got)
 		}
 	}
 }
@@ -357,7 +420,7 @@ func TestBuildFrontendDevCmd_NoNativeOIDCWithoutManagedIdentity(t *testing.T) {
 				t.Errorf("injected %s", k)
 			}
 		}
-		if len(describeNativeOIDC("mobile", readNativeOIDC(projectDir, e, mobile), cmd.Env, "")) != 0 {
+		if len(describeNativeOIDC("mobile", readNativeOIDC(projectDir, e, mobile), cmd.Env, deviceHostState{})) != 0 {
 			t.Error("nothing to announce")
 		}
 	}

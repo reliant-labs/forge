@@ -121,14 +121,18 @@ builds only allowed `http` to loopback. Add the exported `isDevNetworkHost`
 (loopback, RFC 1918, RFC 6598, link-local, IPv6 ULA/link-local, `.local`) and make
 `isSecureEndpoint` call it instead of `isLoopbackHost`; leave the redirect check
 on `isLoopbackHost` (an `http` callback stays loopback-only). Both stay gated on
-`__DEV__`. **Two more owned-file edits for the API half**: add `bool
-jwt_userinfo_allow_local_http = 51` (env `JWT_USERINFO_ALLOW_LOCAL_HTTP`, default
-`false`) to your config proto and regenerate, and in `internal/app/auth.go` build the
-userinfo lookup as `userInfo := auth.NewUserInfo(...)`, then `if
-cfg.JwtUserinfoAllowLocalHttp { userInfo.AllowLocalPlainHTTP() }`, then
-`authenticator.UseUserInfo(userInfo)`. `forge env up --device-host` sets that variable
-for the identity's host workloads; it is off everywhere else, and without these edits
-a device-host run signs in but `Claims.Email` stays empty. The device host must be
+`__DEV__`. **Three more owned-file edits for the API half**: add `bool
+jwt_userinfo_allow_local_http` (any free field number; 51 in new scaffolds; env
+`JWT_USERINFO_ALLOW_LOCAL_HTTP`, default `false`) to your config proto and
+regenerate; in `internal/app/auth.go` build the userinfo lookup as `userInfo :=
+auth.NewUserInfo(...)`, then `if cfg.JwtUserinfoAllowLocalHttp {
+userInfo.AllowLocalPlainHTTP() }`, then `authenticator.UseUserInfo(userInfo)`; and in
+`internal/app/login_broker.go` add `LocalOnly: cfg.JwtUserinfoAllowLocalHttp,` to the
+`devidp.Client{...}` literal (`Base: cfg.IdpBase`). `forge env up --device-host` sets
+that variable for the identity's host workloads unless the workload declares it itself
+(a declared value, true or false, is left as declared); it is off everywhere else, and
+without these edits a device-host run signs in but `Claims.Email` stays empty and the
+broker's IdP traffic is not confined to this machine. The device host must be
 this machine's LAN **IPv4** address (not a name or IPv6). An Android emulator without `--device-host` still needs
 `adb reverse tcp:<idp port> tcp:<idp port>`. Production exports must carry
 no test fakes: `tests/auth-fakes.ts` is imported only by tests.

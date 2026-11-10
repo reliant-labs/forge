@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/netguard"
 )
 
 // userInfoServer answers the userinfo endpoint with body for the bearer token
@@ -291,25 +293,32 @@ func TestUserInfo_LANAddressIsRefusedByDefault(t *testing.T) {
 	}
 }
 
-// With the opt-in the lookup works against the LAN address, and a proxy in the
-// environment is not used: ProxyFromEnvironment would send this request to the
-// proxy because only loopback is exempt.
-func TestUserInfo_AllowLocalPlainHTTP_WorksAndBypassesAProxy(t *testing.T) {
+// With the opt-in the lookup works against the LAN address, and the client is
+// wired to netguard.LocalOnly: a transport with no Proxy (so HTTP_PROXY, which
+// would capture a LAN-address request because only loopback is exempt, is never
+// consulted) and the connect-time guard. That LocalOnly's transport really
+// bypasses a proxy is proven in pkg/netguard; ProxyFromEnvironment caches the
+// environment per process, so a behavioural proxy check here would prove nothing.
+func TestUserInfo_AllowLocalPlainHTTP_WorksAndUsesTheLocalOnlyTransport(t *testing.T) {
 	lan := lanIPv4()
 	if lan == "" {
 		t.Skip("no non-loopback IPv4 address")
 	}
-	var proxied atomic.Bool
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { proxied.Store(true) }))
-	t.Cleanup(proxy.Close)
-	t.Setenv("HTTP_PROXY", proxy.URL)
-	t.Setenv("http_proxy", proxy.URL)
-	t.Setenv("NO_PROXY", "")
-	t.Setenv("no_proxy", "")
-
 	var hits atomic.Int64
 	srv := lanUserInfoServer(t, lan, &hits)
-	a, _ := lanAuthenticator(srv.URL, srv.URL+"/userinfo", func(u *UserInfo) { u.AllowLocalPlainHTTP() })
+	a, ui := lanAuthenticator(srv.URL, srv.URL+"/userinfo", func(u *UserInfo) { u.AllowLocalPlainHTTP() })
+
+	tr, ok := ui.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want netguard.LocalOnly's *http.Transport", ui.client.Transport)
+	}
+	if tr.Proxy != nil {
+		t.Error("the opted-in transport must not consult proxy variables")
+	}
+	if _, err := tr.DialContext(context.Background(), "tcp", "192.0.2.1:80"); !errors.Is(err, netguard.ErrNotLocal) {
+		t.Errorf("dialing a non-local address: err = %v, want netguard.ErrNotLocal (the connect-time guard)", err)
+	}
+
 	c, err := a.Authenticate(context.Background(), "good")
 	if err != nil {
 		t.Fatal(err)
@@ -317,11 +326,18 @@ func TestUserInfo_AllowLocalPlainHTTP_WorksAndBypassesAProxy(t *testing.T) {
 	if c.Email != "a@b.c" || !c.EmailVerified {
 		t.Errorf("Email %q verified %v, want the verified address", c.Email, c.EmailVerified)
 	}
-	if proxied.Load() {
-		t.Error("the token went to the proxy in the clear")
-	}
 	if hits.Load() != 1 {
 		t.Errorf("%d requests reached the LAN listener, want 1", hits.Load())
+	}
+}
+
+// Without the opt-in the client keeps the transport it was given: nothing in
+// the default path is replaced.
+func TestUserInfo_DefaultKeepsTheGivenTransport(t *testing.T) {
+	rt := &recordingTransport{}
+	ui := NewUserInfo("http://192.168.1.20:8080", fixedEndpoint(""), &http.Client{Transport: rt})
+	if ui.client.Transport != rt {
+		t.Errorf("transport = %T: the default must not replace the caller's transport", ui.client.Transport)
 	}
 }
 

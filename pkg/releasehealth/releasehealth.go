@@ -406,10 +406,6 @@ type Issue struct {
 	FirstSeenAt  time.Time `json:"first_seen_at,omitzero"`
 	FirstVersion string    `json:"first_version,omitempty"`
 	RegressedAt  time.Time `json:"regressed_at,omitzero"`
-	// WindowVersions are the issue's after-window events by service.version,
-	// when the judge read them: what attributes the issue to the judged
-	// release or to another ([Attribute]). Nil when unread.
-	WindowVersions map[string]int64 `json:"window_versions,omitempty"`
 }
 
 // Alert is an alert instance that opened at or after the promotion.
@@ -547,6 +543,12 @@ type Report struct {
 	// of it ([MinVersionShare]). Either makes a PASS INCONCLUSIVE.
 	WindowNotLive     string `json:"window_not_live,omitempty"`
 	RolloutIncomplete string `json:"rollout_incomplete,omitempty"`
+	// IssueWindowVersions are each issue's after-window events by
+	// service.version, keyed by issue id, for the issues the judge read them
+	// for: what attributes an issue to the judged release or to another
+	// ([Attribute]). An issue with no entry was not read. It lives here, not
+	// on [Issue], so Issue stays a comparable value.
+	IssueWindowVersions map[string]map[string]int64 `json:"issue_window_versions,omitempty"`
 }
 
 // ── evaluation ──────────────────────────────────────────────────────────

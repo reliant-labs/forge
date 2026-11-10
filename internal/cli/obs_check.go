@@ -76,8 +76,8 @@ type obsCheckDoc struct {
 	Windows         *obsCheckWindows              `json:"windows,omitempty"`
 	Services        []releasehealth.ServiceHealth `json:"services,omitempty"`
 	Findings        []releasehealth.Finding       `json:"findings"`
-	NewIssues       []releasehealth.Issue         `json:"new_issues,omitempty"`
-	RegressedIssues []releasehealth.Issue         `json:"regressed_issues,omitempty"`
+	NewIssues       []checkIssue                  `json:"new_issues,omitempty"`
+	RegressedIssues []checkIssue                  `json:"regressed_issues,omitempty"`
 	FiringAlerts    []releasehealth.Alert         `json:"firing_alerts,omitempty"`
 	// StandingCritical are critical alerts that opened before the promotion
 	// and still fire: not findings, but they keep the verdict from PASS.
@@ -570,7 +570,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	if r.Findings != nil {
 		doc.Findings = r.Findings
 	}
-	doc.NewIssues, doc.RegressedIssues = r.NewIssues, r.RegressedIssues
+	doc.NewIssues, doc.RegressedIssues = checkIssues(r.NewIssues, r.IssueWindowVersions), checkIssues(r.RegressedIssues, r.IssueWindowVersions)
 	doc.FiringAlerts, doc.WorkloadFindings = r.FiringAlerts, r.Workloads
 	doc.StandingCritical, doc.ExcludedAlerts = r.StandingCritical, r.ExcludedAlerts
 	doc.Thresholds, doc.NotEvaluated = r.Thresholds, r.NotEvaluated

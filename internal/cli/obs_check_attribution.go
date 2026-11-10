@@ -11,6 +11,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/obsbackend"
@@ -68,30 +70,33 @@ func attributeCheck(ctx context.Context, d obsDeps, b obsbackend.Backend, r rele
 	// attribute an issue's events to.
 	ir, ok := b.(issueVersionReader)
 	if ok && b.Info().Backend == obsbackend.BackendCloud && r.Subject.Release != "" && !r.After.From.IsZero() && r.After.To.After(r.After.From) {
-		r.NewIssues, r.RegressedIssues = cloneIssues(r.NewIssues), cloneIssues(r.RegressedIssues)
+		read := maps.Clone(r.IssueWindowVersions)
 		n := 0
-		for _, list := range [][]releasehealth.Issue{r.NewIssues, r.RegressedIssues} {
-			for i := range list {
-				if list[i].WindowVersions != nil || list[i].ID == "" || n >= maxAttributedIssues {
-					continue
-				}
-				n++
-				res, err := ir.GetIssue(ctx, obsbackend.GetIssueRequest{
-					Narrow: obsbackend.Narrow{Range: obsbackend.Range{From: r.After.From, To: r.After.To}}, ID: list[i].ID,
-				})
-				if err != nil {
-					fmt.Fprintf(d.Stderr, "could not read issue %s's after-window events by version, so it is attributed to the release: %v\n", list[i].ID, err)
-					continue
-				}
-				if len(res.ByVersion) == 0 {
-					continue
-				}
-				list[i].WindowVersions = map[string]int64{}
-				for _, v := range res.ByVersion {
-					list[i].WindowVersions[v.Version] += v.Events
-				}
+		for _, is := range slices.Concat(r.NewIssues, r.RegressedIssues) {
+			if _, done := read[is.ID]; done || is.ID == "" || n >= maxAttributedIssues {
+				continue
 			}
+			n++
+			res, err := ir.GetIssue(ctx, obsbackend.GetIssueRequest{
+				Narrow: obsbackend.Narrow{Range: obsbackend.Range{From: r.After.From, To: r.After.To}}, ID: is.ID,
+			})
+			if err != nil {
+				fmt.Fprintf(d.Stderr, "could not read issue %s's after-window events by version, so it is attributed to the release: %v\n", is.ID, err)
+				continue
+			}
+			if len(res.ByVersion) == 0 {
+				continue
+			}
+			versions := map[string]int64{}
+			for _, v := range res.ByVersion {
+				versions[v.Version] += v.Events
+			}
+			if read == nil {
+				read = map[string]map[string]int64{}
+			}
+			read[is.ID] = versions
 		}
+		r.IssueWindowVersions = read
 	}
 	return live.attribute(r)
 }
@@ -105,9 +110,21 @@ func (l checkLive) attribute(r releasehealth.Report) releasehealth.Report {
 	return releasehealth.Attribute(r)
 }
 
-func cloneIssues(in []releasehealth.Issue) []releasehealth.Issue {
+// checkIssue is an issue as the check document shows it: the issue, and its
+// after-window events by version when they were read (the report keeps them
+// by issue id, so releasehealth.Issue stays a comparable value).
+type checkIssue struct {
+	releasehealth.Issue
+	WindowVersions map[string]int64 `json:"window_versions,omitempty"`
+}
+
+func checkIssues(in []releasehealth.Issue, versions map[string]map[string]int64) []checkIssue {
 	if in == nil {
 		return nil
 	}
-	return append([]releasehealth.Issue(nil), in...)
+	out := make([]checkIssue, len(in))
+	for i, is := range in {
+		out[i] = checkIssue{Issue: is, WindowVersions: versions[is.ID]}
+	}
+	return out
 }

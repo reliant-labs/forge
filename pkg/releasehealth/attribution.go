@@ -15,7 +15,7 @@ package releasehealth
 //     finding off the release: a service's figures are not its when that
 //     service's own traffic was mostly another version's; an issue is not
 //     its when every one of its after-window events is tagged another
-//     version ([Issue.WindowVersions]). A low aggregate share alone moves no
+//     version ([Report.IssueWindowVersions]). A low aggregate share alone moves no
 //     finding: an alert or a restart carries no version, and a release on a
 //     tenth of the traffic can still take the env down, so they stay the
 //     release's (a critical alert keeps failing it).
@@ -223,11 +223,11 @@ func (r Report) unattributed(f Finding) (why string, otherVersion bool) {
 		if !ok || rel == "" {
 			return "", false
 		}
-		if len(is.WindowVersions) > 0 {
-			if is.WindowVersions[rel] > 0 {
+		if versions := r.IssueWindowVersions[is.ID]; len(versions) > 0 {
+			if versions[rel] > 0 {
 				return "", false // an event of the release is among them: its own
 			}
-			return fmt.Sprintf("its %d after-window event(s) are all tagged %s, not %s", sumEvents(is.WindowVersions), strings.Join(versionsOf(is.WindowVersions), ", "), rel), true
+			return fmt.Sprintf("its %d after-window event(s) are all tagged %s, not %s", sumEvents(versions), strings.Join(versionsOf(versions), ", "), rel), true
 		}
 		if f.Code == release.HealthNewIssue && is.FirstVersion != "" && is.FirstVersion != rel {
 			return fmt.Sprintf("first seen in %s, not %s", is.FirstVersion, rel), true

@@ -115,7 +115,7 @@ func fullRollout() Report {
 }
 
 func withWindowVersions(r Report, v map[string]int64) Report {
-	r.RegressedIssues[0].WindowVersions = v
+	r.IssueWindowVersions = map[string]map[string]int64{r.RegressedIssues[0].ID: v}
 	return r
 }
 
@@ -392,3 +392,8 @@ func TestAfterEndsFollowsTheWindowsStart(t *testing.T) {
 		t.Errorf("AfterEnds = %s, want %s: a window anchored at the live time ends a window after it", got, want)
 	}
 }
+
+// Issue is part of forge/pkg's semver-1 API, and it was comparable: per-issue
+// version counts live on the Report (IssueWindowVersions), never on Issue.
+// This does not compile if Issue gains a field that makes it not comparable.
+var _ = Issue{} == Issue{}

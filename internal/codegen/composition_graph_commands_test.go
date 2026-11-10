@@ -266,6 +266,29 @@ func TestEmitRootCommands_RootConfigFlagsHomedOnTheBinaryRoot(t *testing.T) {
 	}
 }
 
+// A root whose computed reach holds no field of the root config demands none
+// of it (config.LoadReach), so its command registers none of its flags; a
+// root with no reach computed (HasConfig false) demands every field and keeps
+// them (the not-homed case above).
+func TestEmitRootCommands_RootReachingNoConfigRegistersNoFlags(t *testing.T) {
+	roots := []graphRootView{{Name: "worker", TypeName: "Worker", Command: []string{"worker"}, Fields: []graphRootFieldView{{Accessor: "Tick"}}, Plan: "tick", HasConfig: true}}
+	dir := cmdTreeFixture(t, "package cmd\n\nfunc runRoot(ctx context.Context, deps Deps, root rootSpec) error { return nil }\n")
+	if err := os.WriteFile(filepath.Join(dir, "cmd", "demo", "cmd", "root.go"), []byte("package cmd\n\nfunc newRootCmd(deps Deps) { _ = rootCommands(deps) }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var warn bytes.Buffer
+	if err := emitRootCommands(dir, "example.com/demo", roots, nil, nil, "DemoConfig", nil, &warn); err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile(filepath.Join(dir, "cmd", "demo", "cmd", "roots_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "config.RegisterFlags(workerCmd)") {
+		t.Errorf("roots_gen.go registers flags for a root that reaches no config field:\n%s", src)
+	}
+}
+
 func TestEmitRootCommands_ATreeWithoutRunRootKeepsCompiling(t *testing.T) {
 	// A serve.go from before the per-root commands: `server` runs Serve.
 	dir := cmdTreeFixture(t, "package cmd\n\nfunc Serve(ctx context.Context, deps Deps) error { return nil }\n")

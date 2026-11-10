@@ -416,26 +416,8 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	// and never declare the app; say so instead, unless --kind or --service
 	// asked for a backend explicitly.
 	if inPlace && strings.TrimSpace(kindFlag) == "" && len(serviceNames) == 0 && len(frontendNames) == 0 {
-		if _, statErr := os.Stat(filepath.Join(targetPath, "go.mod")); os.IsNotExist(statErr) {
-			if apps := detectExistingFrontendAppsIn(targetPath, []string{"."}); len(apps) > 0 {
-				return cliutil.UserErr("forge project new --in-place",
-					fmt.Sprintf("%s is a %s app at its root, with no Go module", targetPath, apps[0].framework()),
-					"",
-					"adopt it as a static site: forge project new --in-place --kind site --name <name>. "+
-						"To scaffold a Go backend beside it instead, pass --kind service (or --service <entity>)")
-			}
-			// A Dockerfile and no Go module is an app in another language.
-			// The Go scaffold would write ~40 files into it (and a
-			// .dockerignore its own image build trips over). Adopting it is
-			// a handful of declarations an agent writes from the `adopt`
-			// skill, not a scaffold; say so before anything is written.
-			if _, err := os.Stat(filepath.Join(targetPath, "Dockerfile")); err == nil {
-				return cliutil.UserErr("forge project new --in-place",
-					fmt.Sprintf("%s has a Dockerfile and no Go module: an app in another language, which the Go service scaffold would write a Go server into. Nothing was written", targetPath),
-					"",
-					"adopt it as it is — forge.yaml and deploy/kcl declaring its Dockerfile, none of its files touched — by following "+Name()+" skill load adopt. "+
-						"To scaffold a Go backend into it instead, pass --kind service (or --service <entity>)")
-			}
+		if err := refuseNonGoInPlaceTarget(targetPath); err != nil {
+			return err
 		}
 	}
 	// An in-place target may be a module that already requires forge. Its
@@ -571,6 +553,34 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	printNewProjectNotes(targetPath, existingRepo, merged, existingApps)
 	if genErr != nil {
 		return newBootstrapFailedErr(projectName, targetPath, inPlace, genErr)
+	}
+	return nil
+}
+
+// refuseNonGoInPlaceTarget refuses an in-place target with no Go module that
+// is a frontend app at its root or an app in another language: the service
+// scaffold would write a Go server into it.
+func refuseNonGoInPlaceTarget(targetPath string) error {
+	if _, statErr := os.Stat(filepath.Join(targetPath, "go.mod")); os.IsNotExist(statErr) {
+		if apps := detectExistingFrontendAppsIn(targetPath, []string{"."}); len(apps) > 0 {
+			return cliutil.UserErr("forge project new --in-place",
+				fmt.Sprintf("%s is a %s app at its root, with no Go module", targetPath, apps[0].framework()),
+				"",
+				"adopt it as a static site: forge project new --in-place --kind site --name <name>. "+
+					"To scaffold a Go backend beside it instead, pass --kind service (or --service <entity>)")
+		}
+		// A Dockerfile and no Go module is an app in another language.
+		// The Go scaffold would write ~40 files into it (and a
+		// .dockerignore its own image build trips over). Adopting it is
+		// a handful of declarations an agent writes from the `adopt`
+		// skill, not a scaffold; say so before anything is written.
+		if _, err := os.Stat(filepath.Join(targetPath, "Dockerfile")); err == nil {
+			return cliutil.UserErr("forge project new --in-place",
+				fmt.Sprintf("%s has a Dockerfile and no Go module: an app in another language, which the Go service scaffold would write a Go server into. Nothing was written", targetPath),
+				"",
+				"adopt it as it is — forge.yaml and deploy/kcl declaring its Dockerfile, none of its files touched — by following "+Name()+" skill load adopt. "+
+					"To scaffold a Go backend into it instead, pass --kind service (or --service <entity>)")
+		}
 	}
 	return nil
 }
@@ -1507,14 +1517,9 @@ func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot strin
 }
 
 // initGitRepository initializes a git repository, activates forge's
-// committed hooks, and makes the initial commit.
-func initGitRepository(ctx context.Context, path string) error {
-	return initGitRepositoryWith(ctx, path, true)
-}
-
-// initGitRepositoryWith is initGitRepository with the hook activation
-// optional: a static site ships no .githooks/ to point core.hooksPath at.
-func initGitRepositoryWith(ctx context.Context, path string, activateHooks bool) error {
+// committed hooks unless activateHooks is false (a static site ships no
+// .githooks/ to point core.hooksPath at), and makes the initial commit.
+func initGitRepository(ctx context.Context, path string, activateHooks bool) error {
 	cmd := exec.CommandContext(ctx, "git", "init")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {

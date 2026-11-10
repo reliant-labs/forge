@@ -249,7 +249,7 @@ func (r *StepRunner) readFrom(offset int64) string {
 
 // ansiEscape matches the terminal escape sequences a child colours or moves
 // the cursor with.
-var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[\x20-\x2f]*[\x40-\x7e]`)
 
 // TailLines returns the last n non-blank lines of output as a terminal would
 // have left them: colour codes dropped, and of a line a progress bar redrew

@@ -89,7 +89,7 @@ func initGitStep(ctx context.Context, steps *cliutil.StepRunner, path string, ac
 			return "initial commit made"
 		},
 		Run: func() error {
-			gitErr = initGitRepositoryWith(ctx, path, activateHooks)
+			gitErr = initGitRepository(ctx, path, activateHooks)
 			var idErr *gitIdentityError
 			if errors.As(gitErr, &idErr) {
 				return nil

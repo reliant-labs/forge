@@ -37,7 +37,8 @@ import (
 //     in the KCL stream, so cert-manager's cloudflare-api-token would otherwise
 //     look unconsumed.
 //
-// A Secret neither rule places is UNATTRIBUTABLE and keeps the conservative
+// A Secret that declares `clusters` skips both rules: those contexts are the
+// answer. A Secret neither rule places is UNATTRIBUTABLE and keeps the conservative
 // every-cluster check; it is returned separately so the caller can say so.
 // Single-cluster envs are returned untouched — there is nothing to scope.
 //
@@ -94,6 +95,14 @@ func scopeRequiredSecretsToClusters(
 
 	scoped = make([]cluster.RequiredSecret, 0, len(required))
 	for _, rs := range required {
+		// DECLARED PLACEMENT WINS (ExternalSecret.clusters). The namespace is
+		// a proxy for "who reads it", and a proxy can be too wide: a second
+		// cluster that installs cert-manager with no ACME issuer receives the
+		// namespace and never reads the hub's DNS-01 token.
+		if len(rs.Contexts) > 0 {
+			scoped = append(scoped, rs)
+			continue
+		}
 		placed := consumers[rs.Namespace]
 		if len(placed) == 0 {
 			unattributed = append(unattributed, rs)
@@ -147,7 +156,8 @@ func unattributedSecretsNote(unattributed []cluster.RequiredSecret) string {
 	}
 	sort.Strings(names)
 	return fmt.Sprintf("preflight: no rendered object or forge.HelmChart in the namespace of %s, "+
-		"so forge cannot tell which cluster consumes it and requires it on every cluster this env deploys to",
+		"so forge cannot tell which cluster consumes it and requires it on every cluster this env deploys to; "+
+		"declare `clusters` on its forge.ExternalSecret to name them",
 		strings.Join(names, ", "))
 }
 

@@ -4571,6 +4571,9 @@ func requiredSecretsForPreflight(entities *KCLEntities) []cluster.RequiredSecret
 			Namespace:  s.Namespace,
 			Keys:       s.Keys,
 			ValueGroup: s.ValueGroup,
+			// A declared placement is the author's answer and is never
+			// re-inferred (scopeRequiredSecretsToClusters keeps it).
+			Contexts: append([]string(nil), s.Clusters...),
 		})
 	}
 	return out

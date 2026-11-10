@@ -743,9 +743,18 @@ func runPipelineSteps(ctx *pipelineContext, flags pipelineFlags, steps []GenStep
 		stepStart := time.Now()
 		// A step that outlives the 15s heartbeat interval says which one it is, on
 		// stderr, so a caller with a no-output cut-off sees the run is alive.
-		stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
-		err = step.Run(ctx)
-		stopBeat()
+		// On a terminal that is one status line redrawn in place, so the
+		// step's own lines are held until it ends and the line is erased —
+		// printed meanwhile, they would be glued onto it.
+		err = func() error {
+			// The beat takes the terminal before the hold, and stops
+			// (erasing its line) before the held lines are printed.
+			stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
+			release := cliutil.HoldOutputOnTerminal()
+			defer release()
+			defer stopBeat()
+			return step.Run(ctx)
+		}()
 		if timer != nil {
 			timer.record(step.Name, time.Since(stepStart))
 		}

@@ -195,7 +195,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
 	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream every step's raw output — the package manager's install, the bootstrap generate, go mod tidy, git — instead of one line per step with the output kept in .forge/logs/project-new.log (also: git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
 }
@@ -495,31 +495,46 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	}
 	defer scaffold.undoUnlessFinished()
 
-	merged, err := writeScaffoldFiles(scaffoldFilesInput{
-		gen: newGeneratorConfig{
-			projectName:        projectName,
-			targetPath:         targetPath,
-			modulePath:         modulePath,
-			kind:               kindNormalized,
-			binary:             binaryNormalized,
-			serviceNames:       serviceNames,
-			frontendNames:      frontendNames,
-			frontendOutput:     frontend.output,
-			frontendRoutes:     frontend.routes,
-			goVersion:          goVersion,
-			frontendWorkspaces: frontendWorkspaces,
-			harness:            harness,
-			disableFeatures:    disableFeatures,
-			forgePin:           forgePin,
-			genInRootModule:    genInRootModule,
-			adopting:           adopting,
+	steps := cliutil.NewStepRunner(Name()+" project new", verbose)
+	defer steps.Close() //nolint:errcheck // the log is best-effort
+	var merged inPlaceMergeResult
+	err = steps.Run(cliutil.Step{
+		Title: "project files",
+		Run: func() error {
+			var werr error
+			merged, werr = writeScaffoldFiles(scaffoldFilesInput{
+				gen: newGeneratorConfig{
+					projectName:        projectName,
+					targetPath:         targetPath,
+					modulePath:         modulePath,
+					kind:               kindNormalized,
+					binary:             binaryNormalized,
+					serviceNames:       serviceNames,
+					frontendNames:      frontendNames,
+					frontendOutput:     frontend.output,
+					frontendRoutes:     frontend.routes,
+					goVersion:          goVersion,
+					frontendWorkspaces: frontendWorkspaces,
+					harness:            harness,
+					disableFeatures:    disableFeatures,
+					forgePin:           forgePin,
+					genInRootModule:    genInRootModule,
+					adopting:           adopting,
+				},
+				bufPlugins: bufPluginsNormalized,
+				inPlace:    inPlace,
+				force:      force,
+			})
+			return werr
 		},
-		bufPlugins: bufPluginsNormalized,
-		inPlace:    inPlace,
-		force:      force,
 	})
 	if err != nil {
 		return err
+	}
+	// The project's directory now stays whatever happens next (the steps
+	// below only warn), so its log can live in it.
+	if err := steps.MoveLog(filepath.Join(targetPath, newProjectLog)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not move the step log into the project: %v\n", err)
 	}
 
 	// Local-forge bridge, only with --link-forge: a gitignored go.work
@@ -543,7 +558,9 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		markerPath:    scaffold.markerPath,
 		verbose:       verbose,
 		verify:        verify,
+		steps:         steps,
 	})
+	printStepLog(steps)
 
 	// Finished either way: a failed bootstrap generate keeps the files.
 	scaffold.finish()
@@ -938,6 +955,9 @@ type newFinalizeInput struct {
 	verbose bool
 	// verify keeps the bootstrap generate's compile check (--verify).
 	verify bool
+	// steps reports each step as one line and captures its output; nil
+	// makes one (a test calling finalizeNewProject alone).
+	steps *cliutil.StepRunner
 }
 
 // finalizeNewProject runs the post-generation phase: install proto codegen
@@ -962,11 +982,16 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// Auto-install required proto plugins for the default local-plugin
 	// workflow. Skipped for --skip-tools, remote plugins (no local binaries),
 	// and non-service kinds.
+	steps := in.steps
+	if steps == nil {
+		steps = cliutil.NewStepRunner(Name()+" project new", in.verbose)
+	}
 	if !in.skipTools && in.bufPlugins == "local" && in.kind == config.ProjectKindService {
-		fmt.Println("\n🔧 Ensuring proto codegen plugins are installed (use --skip-tools to skip)...")
-		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: installing proto codegen plugins")
-		err := runToolsInstall(ctx, "latest", false)
-		stopBeat()
+		err := steps.Run(cliutil.Step{
+			Title:  "proto codegen plugins",
+			Header: "\n🔧 Ensuring proto codegen plugins are installed (use --skip-tools to skip)...",
+			Run:    func() error { return runToolsInstall(ctx, "latest", false) },
+		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Plugin install incomplete: %v\n", err)
 			fmt.Fprintf(os.Stderr, "    Run '%s tools install' manually before '%s generate'.\n", Name(), Name())
@@ -977,24 +1002,30 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// runs, because the scaffolded buf.gen.yaml uses a `local:` plugin path
 	// pointing at frontends/<name>/node_modules/.bin/protoc-gen-es.
 	if len(in.frontendNames) > 0 {
-		fmt.Println("🔧 Installing frontend dependencies (this writes each frontend's lockfile)...")
-		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: frontend install")
-		err := runFrontendInstalls(ctx, in.targetPath, in.frontendNames)
-		stopBeat()
+		err := steps.Run(cliutil.Step{
+			Title:   "frontend dependencies",
+			Header:  "🔧 Installing frontend dependencies (this writes each frontend's lockfile)...",
+			Summary: installSummary,
+			Run: func() error {
+				err := runFrontendInstalls(ctx, in.targetPath, in.frontendNames)
+				// The install just decided the node_modules layout AND made
+				// each pinned package's manifest readable, so this is the one
+				// moment the tsconfig peer pins can be aimed at real
+				// declaration files. Until then the template could only name
+				// package DIRECTORIES, which Next's webpack resolver honours
+				// for app code, splitting every pinned package with an
+				// exports/module mismatch into two module instances
+				// (prerender: "No QueryClient set"). `forge scaffold frontend`
+				// runs the same pass after its install.
+				generator.ReconcileFrontendTsconfigPeers(in.targetPath)
+				return err
+			},
+		})
 		if err != nil {
 			fmt.Printf("Warning: frontend install failed: %v\n", err)
 			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'pnpm install' in each frontends/<name>/ before 'forge generate'.")
 			fmt.Println("    CI also requires each frontend's pnpm-lock.yaml to exist.")
 		}
-		// The install just decided the node_modules layout AND made each
-		// pinned package's manifest readable, so this is the one moment the
-		// tsconfig peer pins can be aimed at real declaration files. Until
-		// then the template could only name package DIRECTORIES, which
-		// Next's webpack resolver honours for app code, splitting every
-		// pinned package with an exports/module mismatch into two module
-		// instances (prerender: "No QueryClient set"). `forge scaffold
-		// frontend` runs the same pass after its install.
-		generator.ReconcileFrontendTsconfigPeers(in.targetPath)
 	}
 
 	// Service projects bootstrap proto/Connect codegen immediately so the
@@ -1009,10 +1040,12 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// not stop the steps below (git init, go mod tidy): the project they
 	// leave is the one the re-run completes. It is reported, not swallowed.
 	if in.kind == config.ProjectKindService {
-		fmt.Println("\n🔧 Bootstrapping generated proto code...")
-		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: bootstrap generate")
-		genErr = bootstrapGenerate(in.targetPath, in.verify)
-		stopBeat()
+		genErr = steps.Run(cliutil.Step{
+			Title:   "generate code",
+			Header:  "\n🔧 Bootstrapping generated proto code...",
+			Summary: generateSummary,
+			Run:     func() error { return bootstrapGenerate(in.targetPath, in.verify) },
+		})
 	}
 
 	// Re-record frozen-file checksums after bootstrap (goimports -w reformats
@@ -1028,17 +1061,14 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	if top, inRepo := gitWorkTreeRoot(ctx, in.targetPath); inRepo {
 		existingRepo = top
 	} else {
-		fmt.Println("\n🔧 Initializing git repository...")
-		if err := initGitRepository(ctx, in.targetPath); err != nil {
-			reportGitInitError(os.Stdout, err, in.verbose)
-		}
+		initGitStep(ctx, steps, in.targetPath, true, in.verbose)
 	}
 
-	fmt.Println("🔧 Running go mod tidy...")
-	stopTidyBeat := cliutil.Heartbeat(os.Stderr, "project new: go mod tidy")
-	tidyErr := runGoModTidy(ctx, in.targetPath)
-	stopTidyBeat()
-	if err := tidyErr; err != nil {
+	if err := steps.Run(cliutil.Step{
+		Title:  "go mod tidy",
+		Header: "🔧 Running go mod tidy...",
+		Run:    func() error { return runGoModTidy(ctx, in.targetPath) },
+	}); err != nil {
 		fmt.Printf("Warning: go mod tidy failed: %v\n", err)
 		fmt.Println("You can run 'go mod tidy' manually later")
 	}

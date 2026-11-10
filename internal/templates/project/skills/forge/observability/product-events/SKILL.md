@@ -136,6 +136,17 @@ observe.TrackAuth(ctx, observe.AuthSignedIn, sub,
 anonymous. Like `Track` it is never switched off by `product_events = False`:
 an event your code records is your code's decision.
 
+**Active users need no code at all behind forge's auth middleware.** When
+`observe.Chain` has an `Auth` interceptor (every scaffolded server), the first
+authenticated call of each user per UTC day records one `auth_signed_in
+{kind: resumed}` from that process (`observe.AuthHeartbeatInterceptor`), for
+any JWT provider. That counts a user with a 30-day session or a refresh token
+as active, server-side, where no ad blocker reaches. API-key callers and
+anonymous calls record nothing. `provider` is `forge` under managed identity,
+else `jwt`; name yours with `observe.Deps{AuthProvider: "auth0"}`. It is one
+of forge's automatic events (`product_events = False` switches it off), and
+costs at most one log record per user per replica per day.
+
 From the browser, `identifyUser` is the one call every app should make, wherever
 it learns who is signed in (Clerk's `useUser`, Auth0's `useAuth0`, a session
 refresh). It attaches the id to every span and replay (`setTelemetryUser`) and

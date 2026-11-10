@@ -219,6 +219,12 @@ type Deps struct {
 	// own claims (authn.ClaimsFromContext). Unused when Auth is nil.
 	Caller CallerLookup
 
+	// AuthProvider names the auth provider in the daily sign-in heartbeat
+	// (AuthHeartbeatInterceptor): "auth0", "clerk", "supabase", …. Empty is
+	// "forge" for forge's managed identity, else "jwt". Unused when Auth is
+	// nil.
+	AuthProvider string
+
 	// Audit is the project's audit interceptor — the value returned by
 	// middleware.AuditInterceptor(sink, ...), with the durable audit sink
 	// already bound. This retires middleware.SetAuditStore: the
@@ -268,7 +274,8 @@ type Deps struct {
 //  7. Auth                 — authenticate (when non-nil). Inner to
 //     observability so auth failures are still logged / traced / counted.
 //     IdentitySpanInterceptor follows it, stamping the caller's user.id on
-//     the server span.
+//     the server span, then AuthHeartbeatInterceptor, recording one
+//     auth_signed_in {kind: resumed} per user per UTC day.
 //  8. Audit                — durable audit record (when non-nil); runs
 //     after auth so it sees the authenticated principal.
 //  9. RateLimit            — throttle (when non-nil); keyed off the
@@ -305,7 +312,7 @@ func Chain(deps Deps) []connect.Interceptor {
 		chain = append(chain, deadline)
 	}
 	if deps.Auth != nil {
-		chain = append(chain, deps.Auth, IdentitySpanInterceptor(deps.Caller))
+		chain = append(chain, deps.Auth, IdentitySpanInterceptor(deps.Caller), AuthHeartbeatInterceptor(deps.Caller, deps.AuthProvider))
 	}
 	if deps.Audit != nil {
 		chain = append(chain, deps.Audit)

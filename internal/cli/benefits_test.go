@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -179,8 +177,6 @@ func TestResolveCommandEvidence(t *testing.T) {
 		"lint":                      true,
 		"lint --migration-safety":   true,
 		"env deploy --from":         true,
-		"project benefits":          true,
-		"project benefits --json":   true,
 		"lint --no-such-lane":       false,
 		"env no-such-verb":          false,
 		"lint --scope --quiet":      false,
@@ -194,121 +190,4 @@ func TestResolveCommandEvidence(t *testing.T) {
 			t.Errorf("resolveCommandEvidence(%q) = %q, want ok=%v", spec, msg, wantOK)
 		}
 	}
-}
-
-func runBenefitsOut(t *testing.T, args ...string) (string, error) {
-	t.Helper()
-	cmd := newBenefitsCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	cmd.SetArgs(args)
-	err := cmd.Execute()
-	return buf.String(), err
-}
-
-func TestBenefitsCommand(t *testing.T) {
-	reg, err := benefits.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	first := reg.Benefits[0]
-
-	t.Run("text", func(t *testing.T) {
-		out, err := runBenefitsOut(t)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, b := range reg.Benefits {
-			if !strings.Contains(out, "  "+b.Title+" — ") {
-				t.Errorf("text output has no line for %q:\n%s", b.ID, out)
-			}
-		}
-	})
-
-	t.Run("json", func(t *testing.T) {
-		out, err := runBenefitsOut(t, "--json")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var got benefits.Registry
-		if err := json.Unmarshal([]byte(out), &got); err != nil {
-			t.Fatalf("not JSON: %v\n%s", err, out)
-		}
-		if len(got.Benefits) != len(reg.Benefits) || len(got.Categories) != len(reg.Categories) {
-			t.Errorf("json has %d benefits / %d categories, want %d / %d",
-				len(got.Benefits), len(got.Categories), len(reg.Benefits), len(reg.Categories))
-		}
-		if len(got.Benefits) > 0 && len(got.Benefits[0].Evidence) == 0 {
-			t.Error("json dropped the evidence")
-		}
-	})
-
-	t.Run("category filter", func(t *testing.T) {
-		out, err := runBenefitsOut(t, "--format", "json", "--category", first.Category)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var got benefits.Registry
-		if err := json.Unmarshal([]byte(out), &got); err != nil {
-			t.Fatal(err)
-		}
-		for _, b := range got.Benefits {
-			if b.Category != first.Category {
-				t.Errorf("--category %s returned %q from %s", first.Category, b.ID, b.Category)
-			}
-		}
-		if len(got.Benefits) == 0 {
-			t.Errorf("--category %s returned nothing", first.Category)
-		}
-	})
-
-	t.Run("headline filter", func(t *testing.T) {
-		out, err := runBenefitsOut(t, "--json", "--headline")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var got benefits.Registry
-		if err := json.Unmarshal([]byte(out), &got); err != nil {
-			t.Fatal(err)
-		}
-		for _, b := range got.Benefits {
-			if !b.Headline {
-				t.Errorf("--headline returned %q, which is not a headline", b.ID)
-			}
-		}
-	})
-
-	t.Run("markdown is the page render", func(t *testing.T) {
-		out, err := runBenefitsOut(t, "--format", "markdown")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if out != string(benefits.RenderMarkdown(reg)) {
-			t.Error("--format markdown differs from benefits.RenderMarkdown")
-		}
-	})
-
-	for name, args := range map[string][]string{
-		"unknown category":      {"--category", "nope"},
-		"unknown format":        {"--format", "yaml"},
-		"json and other format": {"--json", "--format", "text"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := runBenefitsOut(t, args...); err == nil {
-				t.Errorf("%v succeeded; want an error", args)
-			}
-		})
-	}
-}
-
-// The command reaches agents through `forge project capabilities` with no
-// edit there: the dump walks the real tree.
-func TestCapabilities_ListsBenefits(t *testing.T) {
-	for _, c := range capabilitiesJSON(t).Commands {
-		if c.Path == "forge project benefits" {
-			return
-		}
-	}
-	t.Error("`forge project capabilities` does not list `forge project benefits`")
 }

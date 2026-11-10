@@ -2,7 +2,6 @@ package benefits
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -42,15 +41,6 @@ var availabilityLabel = map[Availability]string{
 	AvailabilityForge:   "Forge, on any infrastructure",
 	AvailabilityHosted:  "Reliant hosting",
 	AvailabilityReliant: "Reliant harness",
-}
-
-// JSON is the registry as `forge project benefits --json` prints it.
-func JSON(r *Registry) ([]byte, error) {
-	b, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(b, '\n'), nil
 }
 
 // RenderReadmeTable renders the README's "Everything included" block: one
@@ -154,10 +144,8 @@ func RenderMarkdown(r *Registry) []byte {
 		"instead of going stale. It is not a tutorial:\n" +
 		"[getting-started](getting-started.md) walks the first project and\n" +
 		"[concepts](concepts.md) explains why Forge is shaped the way it is.\n\n")
-	p("The same list prints from the binary: `forge project benefits` (`--json`,\n" +
-		"`--category <id>`, `--headline`). This page is generated from\n" +
-		"`internal/benefits/benefits.yaml`: to change it, edit the YAML and run\n" +
-		"`task docs:benefits`.\n\n")
+	p("This page is generated from `internal/benefits/benefits.yaml`: to change\n" +
+		"it, edit the YAML and run `task docs:benefits`.\n\n")
 	p("**Status words.** \"Enforced\" means something refuses the action.\n" +
 		"\"Recorded\" means Forge writes the declaration down and nothing refuses\n" +
 		"yet. \"In progress\" means designed but not shipped. The page uses these\n" +

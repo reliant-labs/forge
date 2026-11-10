@@ -37,7 +37,6 @@ func newProjectCmd() *cobra.Command {
 	cmd.AddCommand(newFeaturesCmd())
 	cmd.AddCommand(newAnnotationsCmd())
 	cmd.AddCommand(newCapabilitiesCmd())
-	cmd.AddCommand(newBenefitsCmd())
 	cmd.AddCommand(newLibrariesCmd())
 	cmd.AddCommand(newProjectFrontendsCmd())
 	// `checkouts` is a project-STRUCTURE read: which copies of this

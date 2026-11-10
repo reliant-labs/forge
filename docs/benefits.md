@@ -28,10 +28,8 @@ instead of going stale. It is not a tutorial:
 [getting-started](getting-started.md) walks the first project and
 [concepts](concepts.md) explains why Forge is shaped the way it is.
 
-The same list prints from the binary: `forge project benefits` (`--json`,
-`--category <id>`, `--headline`). This page is generated from
-`internal/benefits/benefits.yaml`: to change it, edit the YAML and run
-`task docs:benefits`.
+This page is generated from `internal/benefits/benefits.yaml`: to change
+it, edit the YAML and run `task docs:benefits`.
 
 **Status words.** "Enforced" means something refuses the action.
 "Recorded" means Forge writes the declaration down and nothing refuses

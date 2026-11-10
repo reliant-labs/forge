@@ -1,6 +1,7 @@
 # The registry of every benefit forge gives a project — the one source of
-# docs/benefits.md, the README's "Everything included" table and
-# `forge project benefits`. Edit this file, then run `task docs:benefits`.
+# docs/benefits.md and the README's "Everything included" table (and the
+# landing page, which snapshots this file). Edit it, then run
+# `task docs:benefits`.
 #
 # Schema (internal/benefits/benefits.go is authoritative; Validate enforces it):
 #

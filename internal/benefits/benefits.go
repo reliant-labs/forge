@@ -11,7 +11,8 @@
 //   - docs/benefits.md          RenderMarkdown, the whole page
 //   - README.md                 RenderReadmeTable, spliced between the
 //     `<!-- benefits:start -->` / `<!-- benefits:end -->` markers
-//   - `forge project benefits`  JSON / the text view, for agents
+//
+// Other sites (the landing page) read benefits.yaml itself.
 //
 // `task docs:benefits` rewrites the two files; TestRenderedFilesAreCurrent
 // fails when either is stale.

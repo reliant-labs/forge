@@ -121,6 +121,8 @@ release_health = forge.ReleaseHealth {
 }
 ```
 
+An alert whose rule carries the label `release_health = "exclude"` (a rule about a build machine or a fleet, not the env's workloads) is never an `alert_firing` finding or a standing critical alert: the check lists it under `excluded_alerts` and judges without it (`observability/alerts`).
+
 | Exit | Verdict |
 |---|---|
 | 0 | PASS (also INCONCLUSIVE with `--allow-inconclusive`) |

@@ -77,7 +77,10 @@ type obsCheckDoc struct {
 	FiringAlerts    []releasehealth.Alert         `json:"firing_alerts,omitempty"`
 	// StandingCritical are critical alerts that opened before the promotion
 	// and still fire: not findings, but they keep the verdict from PASS.
-	StandingCritical []releasehealth.Alert     `json:"standing_critical_alerts,omitempty"`
+	StandingCritical []releasehealth.Alert `json:"standing_critical_alerts,omitempty"`
+	// ExcludedAlerts fired, but their rule says they are not about the env's
+	// workloads (label release_health=exclude), so they judged nothing.
+	ExcludedAlerts   []releasehealth.Alert     `json:"excluded_alerts,omitempty"`
 	WorkloadFindings []releasehealth.Workload  `json:"workload_findings,omitempty"`
 	Thresholds       []releasehealth.Threshold `json:"thresholds,omitempty"`
 	NotEvaluated     []string                  `json:"not_evaluated,omitempty"`
@@ -301,6 +304,10 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	// policy; a check that cannot read it is INCONCLUSIVE, never a PASS.
 	// The answer's own firing alerts are judged first, so a critical alert it
 	// already proves cannot be softened by a failed second read.
+	// An alert whose rule says it is not about the env's workloads (a build
+	// machine's load, a fleet the env watches: label release_health=exclude)
+	// judges no release, whichever side judged the report.
+	res.Report = releasehealth.WithoutExcludedAlerts(res.Report)
 	res.Report = releasehealth.WithStandingAlerts(res.Report, nil)
 	if ar, ok := b.(obsbackend.AlertReader); ok && res.Report.Verdict != releasehealth.Fail {
 		alerts, aerr := ar.Alerts(ctx)
@@ -502,7 +509,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	}
 	doc.NewIssues, doc.RegressedIssues = r.NewIssues, r.RegressedIssues
 	doc.FiringAlerts, doc.WorkloadFindings = r.FiringAlerts, r.Workloads
-	doc.StandingCritical = r.StandingCritical
+	doc.StandingCritical, doc.ExcludedAlerts = r.StandingCritical, r.ExcludedAlerts
 	doc.Thresholds, doc.NotEvaluated = r.Thresholds, r.NotEvaluated
 	doc.Statements = res.Statements
 	if !o.explain {
@@ -621,6 +628,13 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 			fmt.Fprintf(w, "critical alert %s firing since %s (before the promotion)%s\n", a.Rule, a.FiringAt.UTC().Format(time.RFC3339), alertSubject(a.Labels))
 		}
 	}
+	if len(doc.ExcludedAlerts) > 0 {
+		fmt.Fprintln(w)
+		for _, a := range doc.ExcludedAlerts {
+			fmt.Fprintf(w, "alert %s firing%s: not counted (its rule says %s=%s: not about this env's workloads)\n",
+				a.Rule, alertSubject(a.Labels), releasehealth.LabelReleaseHealth, releasehealth.ReleaseHealthExclude)
+		}
+	}
 	if len(doc.NotEvaluated) > 0 {
 		fmt.Fprintf(w, "\nnot evaluated on this backend: %s\n", strings.Join(doc.NotEvaluated, ", "))
 	}
@@ -634,7 +648,7 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 // alertSubject names what an alert is about, from its namespace/name labels.
 func alertSubject(labels map[string]string) string {
 	var parts []string
-	for _, k := range []string{"namespace", "name", "workload", "job", "pod"} {
+	for _, k := range []string{"namespace", "name", "workload", "job", "pod", "machine"} {
 		if v := labels[k]; v != "" {
 			parts = append(parts, k+"="+v)
 		}

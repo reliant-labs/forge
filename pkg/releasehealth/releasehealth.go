@@ -413,6 +413,26 @@ type Alert struct {
 // Critical reports whether the alert is labelled severity=critical.
 func (a Alert) Critical() bool { return strings.EqualFold(a.Labels["severity"], "critical") }
 
+// LabelReleaseHealth is the alert label that says whether a rule's alerts judge
+// the env's releases. Set to [ReleaseHealthExclude] (`labels = {release_health =
+// "exclude"}` on the forge.AlertRule), it says the rule watches something other
+// than the env's own workloads: the machines that build it, a fleet the env
+// monitors. Such an alert is the env's to page on, never a release's doing: it
+// is not a finding, not a standing critical alert, and it never fails or holds
+// a promotion. It is listed as ExcludedAlerts instead, so the report still
+// says it was firing. Any other value, or none, counts as before.
+const LabelReleaseHealth = "release_health"
+
+// ReleaseHealthExclude is the [LabelReleaseHealth] value that keeps an alert
+// out of release health.
+const ReleaseHealthExclude = "exclude"
+
+// Excluded reports whether the alert's rule keeps it out of release health
+// ([LabelReleaseHealth]).
+func (a Alert) Excluded() bool {
+	return strings.EqualFold(strings.TrimSpace(a.Labels[LabelReleaseHealth]), ReleaseHealthExclude)
+}
+
 // Workload is a restart or OOM kill during the after window.
 type Workload struct {
 	Workload             string `json:"workload"`
@@ -483,6 +503,9 @@ type Report struct {
 	// findings, but a release promoted into one is not proven good: they make
 	// a PASS INCONCLUSIVE.
 	StandingCritical []Alert `json:"standing_critical_alerts,omitempty"`
+	// ExcludedAlerts were firing, but their rule says they are not about the
+	// env's workloads ([LabelReleaseHealth]), so they judged nothing.
+	ExcludedAlerts []Alert `json:"excluded_alerts,omitempty"`
 	// AlertStateUnread says why a caller that applies the critical-alert rule
 	// itself could not read the alert state (WithAlertStateUnread): a PASS
 	// that could not look at it is not proven good.
@@ -556,6 +579,10 @@ func Evaluate(in Input) Report {
 		if afterWindow(a, in.Windows.After.To) {
 			continue // a later promotion's, or later still: not this release's
 		}
+		if a.Excluded() {
+			r.ExcludedAlerts = append(r.ExcludedAlerts, a)
+			continue
+		}
 		if !a.FiringAt.IsZero() && a.FiringAt.Before(p) {
 			if a.Critical() {
 				r.StandingCritical = append(r.StandingCritical, a)
@@ -609,7 +636,7 @@ func WithStandingAlerts(r Report, firing []Alert) Report {
 		// An alert with no opening time cannot be placed against the
 		// promotion, and one that opened after the judged after window (a
 		// later promotion's, or later still) is not this release's.
-		if !a.Critical() || a.FiringAt.IsZero() || !a.FiringAt.Before(r.After.To) || seen[alertKey(a)] {
+		if !a.Critical() || a.Excluded() || a.FiringAt.IsZero() || !a.FiringAt.Before(r.After.To) || seen[alertKey(a)] {
 			continue
 		}
 		seen[alertKey(a)] = true
@@ -651,6 +678,53 @@ func failAlert(fs []Finding, rule string) []Finding {
 		Message: fmt.Sprintf("critical alert %s opened after the promotion and is still firing", rule)})
 }
 
+// WithoutExcludedAlerts takes the alerts whose rule keeps them out of release
+// health ([LabelReleaseHealth]) out of a judged report: from FiringAlerts and
+// StandingCritical into ExcludedAlerts, with the alert_firing finding of each
+// rule left with no counted alert. The verdict is recomputed from what is left,
+// so it can improve: the excluded alerts were never the release's evidence. It is
+// how the rule reaches a control plane's answer judged without it (`forge obs
+// check` applies it before its own alert read).
+func WithoutExcludedAlerts(r Report) Report {
+	out := r
+	keep := func(as []Alert) []Alert {
+		var kept []Alert
+		for _, a := range as {
+			if a.Excluded() {
+				if !slices.ContainsFunc(out.ExcludedAlerts, func(b Alert) bool { return alertKey(b) == alertKey(a) }) {
+					out.ExcludedAlerts = append(out.ExcludedAlerts, a)
+				}
+				continue
+			}
+			kept = append(kept, a)
+		}
+		return kept
+	}
+	out.ExcludedAlerts = slices.Clone(r.ExcludedAlerts)
+	out.FiringAlerts = keep(r.FiringAlerts)
+	out.StandingCritical = keep(r.StandingCritical)
+	if len(out.ExcludedAlerts) == len(r.ExcludedAlerts) {
+		return r // nothing excluded here: the report as judged
+	}
+	counted := map[string]bool{}
+	for _, a := range out.FiringAlerts {
+		counted[a.Rule] = true
+	}
+	excludedRule := func(f Finding) bool {
+		for _, a := range out.ExcludedAlerts {
+			if f.Ref == a.Rule || (f.Ref == "" && strings.Contains(f.Message, "alert "+a.Rule+" ")) {
+				return !counted[a.Rule]
+			}
+		}
+		return false
+	}
+	out.Findings = slices.DeleteFunc(slices.Clone(r.Findings), func(f Finding) bool {
+		return f.Code == release.HealthAlertFiring && excludedRule(f)
+	})
+	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
+	return out
+}
+
 // WithAlertStateUnread records that the alert state could not be read, so a
 // PASS is not proven: the verdict becomes INCONCLUSIVE, naming why. A FAIL
 // stays a FAIL.
@@ -683,7 +757,7 @@ func afterWindow(a Alert, end time.Time) bool {
 func criticalRules(alerts []Alert, p, end time.Time) map[string]bool {
 	out := map[string]bool{}
 	for _, a := range alerts {
-		if a.Critical() && !afterWindow(a, end) && (a.FiringAt.IsZero() || !a.FiringAt.Before(p)) {
+		if a.Critical() && !a.Excluded() && !afterWindow(a, end) && (a.FiringAt.IsZero() || !a.FiringAt.Before(p)) {
 			out[a.Rule] = true
 		}
 	}

@@ -138,6 +138,11 @@ func checkWorkflowGolangciPin(t *testing.T, site string, body []byte, want strin
 						"passing its own linter stays green until an unrelated PR touches the file", site, job)
 				}
 			}
+			// forge's own install action; its pin is checked by
+			// TestReleaseToolPinsMatchForge.
+			if strings.HasSuffix(s.Uses, "/install-release-tool") && s.With["tool"] == "golangci-lint" {
+				installs++
+			}
 			for _, m := range golangciInstallRE.FindAllStringSubmatch(s.Run, -1) {
 				installs++
 				if m[1] != want {

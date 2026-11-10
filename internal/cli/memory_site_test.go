@@ -57,19 +57,19 @@ func TestProjectMemoryForASiteIsFrontendOnly(t *testing.T) {
 	}
 	for _, want := range []string{
 		"static site",
-		"env up dev",                             // run it
-		"lint --static-export",                   // the export's constraints
-		"env build prod --release",               // build once
-		"env deploy prod",                        // ship it
-		"domain add",                             // custom domains
-		".forge/logs/",                           // frontend logs on disk
-		"frontend/design",                        // design brief first
-		"deploy/static-site",                     // the skill
-		"One hosted static site per org is free", // the free tier …
-		"counted across environments",            // … per env, precisely
-		"exits 7",                                // beyond it: queued for billing
-		"Adding an API later",                    // the path to a backend
-		"When forge itself is wrong",             // shared sections survive
+		"env up dev",               // run it
+		"lint --static-export",     // the export's constraints
+		"env build prod --release", // build once
+		"env deploy prod",          // ship it
+		"domain add",               // custom domains
+		".forge/logs/",             // frontend logs on disk
+		"frontend/design",          // design brief first
+		"deploy/static-site",       // the skill
+		"One hosted static site per person is free", // the free tier …
+		"counted across environments",               // … per env, precisely
+		"exits 7",                                   // beyond it: queued for billing
+		"Adding an API later",                       // the path to a backend
+		"When forge itself is wrong",                // shared sections survive
 		"## Engineering disposition",
 		"report-bug --severity high",             // main's reporting guidance survives
 		"Never put credentials or file contents", // including its privacy boundary
@@ -84,10 +84,10 @@ func TestProjectMemoryForASiteIsFrontendOnly(t *testing.T) {
 }
 
 // A Go project keeps the Go memory, and its billing line is the precise one:
-// one free static site per org, everything else needs billing and queues.
+// one free static site per person, everything else needs billing and queues.
 func TestProjectMemoryForAGoProjectKeepsTheGoGuide(t *testing.T) {
 	memory := memoryFor(t, true)
-	for _, want := range []string{"This is a Go project", "## Architecture in one screen", "One hosted static site per org is free", "counted across environments", "exits 7"} {
+	for _, want := range []string{"This is a Go project", "## Architecture in one screen", "One hosted static site per person is free", "counted across environments", "exits 7"} {
 		if !strings.Contains(memory, want) {
 			t.Errorf("Go project memory lacks %q", want)
 		}

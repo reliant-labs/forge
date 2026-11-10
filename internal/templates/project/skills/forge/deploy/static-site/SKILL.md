@@ -1,6 +1,6 @@
 ---
 name: deploy/static-site
-description: Ship a landing page, marketing/docs site, SPA or PWA — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; one hosted site per org free, counted across envs) or your own bucket, custom domains, and the build-once → promote release flow.
+description: Ship a landing page, marketing/docs site, SPA or PWA — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; one hosted site per person free across their unplanned orgs, counted across envs) or your own bucket, custom domains, and the build-once → promote release flow.
 ---
 
 # Static sites
@@ -102,12 +102,12 @@ A frontend states where it runs in each env's `deploy/kcl/<env>/main.k`:
 | `forge.OnFirebase {project, site}` | `firebase deploy` |
 
 Hosted static hosting accepts only a static export. **One hosted static site
-per org is free** (no billing, 1 GiB storage cap), and it is counted across
-environments: each env's deployed site is a site. A new site binds both
-`staging` and `prod` to hosting, so without billing one of them deploys free
-(deploy `prod` first if that is the one that must be live) and the other is
-queued with `STATIC_FREE_TIER_EXCEEDED`. Past the free site — a second env or
-site, or any hosted workload or managed database beside it — the deploy needs
+per person is free**, across every org they own without a plan (no billing,
+1 GiB storage cap), and it is counted across environments: each env's deployed
+site is a site. A new site binds both `staging` and `prod` to hosting, so
+without billing one of them deploys free (deploy `prod` first if that is the
+one that must be live) and the other is queued with
+`STATIC_FREE_TIER_EXCEEDED`. Past the free site — a second env or site, or any hosted workload or managed database beside it — the deploy needs
 billing and is queued, not refused, until it is set up (exit 7, with the
 billing link; `deploy/hosting`).
 

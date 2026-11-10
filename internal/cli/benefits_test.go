@@ -33,7 +33,7 @@ func TestBenefitsEvidenceExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	lintCmd := findChildCommand(root, "lint")
 	if lintCmd == nil {
 		t.Fatal("no `forge lint` in the command tree")
@@ -172,7 +172,7 @@ func TestEveryGradableRuleIsABenefit(t *testing.T) {
 // The resolver itself: a test that only ever sees passing evidence would pass
 // with a resolver that accepts everything.
 func TestResolveCommandEvidence(t *testing.T) {
-	root := NewRootCmd()
+	root := newTestRootCmd(t)
 	for spec, wantOK := range map[string]bool{
 		"lint":                      true,
 		"lint --migration-safety":   true,

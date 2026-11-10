@@ -382,7 +382,7 @@ func TestRenderedFilesAreCurrent(t *testing.T) {
 		}
 		want, found := SpliceReadme(readme, r)
 		if !found {
-			t.Skipf("%s has no %s … %s block yet; nothing to keep current", ReadmePath, ReadmeStart, ReadmeEnd)
+			t.Fatalf("%s has no %s … %s block; the README benefits table renders there", ReadmePath, ReadmeStart, ReadmeEnd)
 		}
 		if bytes.Equal(readme, want) {
 			return

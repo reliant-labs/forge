@@ -289,13 +289,16 @@ func (a *processReadAnalyzer) rootCondition(e ast.Expr, b map[string]cfgBinding)
 		}
 	case *ast.BinaryExpr:
 		if x.Op == token.LAND || x.Op == token.LOR {
+			// A known operand that decides the predicate alone (false
+			// for &&, true for ||) makes it known, whatever the other.
+			decisive := x.Op == token.LOR
 			l, lk := a.rootCondition(x.X, b)
 			r, rk := a.rootCondition(x.Y, b)
+			if (lk && l == decisive) || (rk && r == decisive) {
+				return decisive, true
+			}
 			if lk && rk {
-				if x.Op == token.LAND {
-					return l && r, true
-				}
-				return l || r, true
+				return !decisive, true
 			}
 			return false, false
 		}
@@ -345,6 +348,9 @@ func (a *processReadAnalyzer) walk(n ast.Node, b map[string]cfgBinding) {
 		case *ast.IfStmt:
 			if value, known := a.rootCondition(x.Cond, b); known {
 				a.walk(x.Init, b)
+				// An operand the root name did not decide is still
+				// evaluated: its reads count.
+				a.walk(x.Cond, b)
 				if value {
 					a.walk(x.Body, b)
 				} else {

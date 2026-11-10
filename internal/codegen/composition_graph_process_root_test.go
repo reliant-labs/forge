@@ -41,3 +41,23 @@ func runRoot(ctx any,deps any,root rootSpec)error{
 		t.Fatalf("unknown branch lost reads: %v", got)
 	}
 }
+
+func TestProcessReadsDecisiveRootOperandIgnoresUnknownOperand(t *testing.T) {
+	files := parseGoFiles(t, `package cmd
+func runRoot(ctx any,deps any,root rootSpec)error{
+ cfg,err:=config.Load(nil)
+ if root.Name=="api" || featureEnabled(cfg.GetFlags()) {use(cfg.GetSecretStore())} else {use(cfg.GetLog())}
+ if root.Name!="api" && unknown() {use(cfg.GetDebug())}
+ return err
+}`)
+	got := topLevelReads(runRootConfigReadsOfFor(files, nil, "api")[rootConfigInput])
+	want := map[string]bool{"Flags": true, "SecretStore": true}
+	if len(got) != len(want) {
+		t.Fatalf("api reads = %v, want the condition's operand and the taken branch only", got)
+	}
+	for _, f := range got {
+		if !want[f] {
+			t.Fatalf("api reads = %v, want the condition's operand and the taken branch only", got)
+		}
+	}
+}

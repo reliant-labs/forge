@@ -114,6 +114,66 @@ func selfCircularMember(fk schemadef.ForeignKey, table string) bool {
 
 func (c compositeFK) column(k int) string { return c.members[k].Column }
 
+// compositeNullableMember is the member of composite key fk that BuildPlan
+// sets NULL to turn the key off, "" when every member is NOT NULL (the key
+// is then a required edge). Under MATCH SIMPLE one NULL member is enough. It
+// prefers a member no other foreign key of the table references, so the
+// NULL declines only this key; else the first nullable member.
+func compositeNullableMember(t schemadef.Table, fk schemadef.ForeignKey, colByName map[string]schemadef.Column) string {
+	first := ""
+	for _, kc := range fk.KeyColumns {
+		if colByName[kc].NotNull {
+			continue
+		}
+		if first == "" {
+			first = kc
+		}
+		shared := false
+		for _, other := range t.ForeignKeys {
+			if other.Column == kc && other.Name != fk.Name {
+				shared = true
+				break
+			}
+		}
+		if !shared {
+			return kc
+		}
+	}
+	return first
+}
+
+// declineCompositeFKs turns off the composite keys BuildPlan declined — a
+// cycle broken through one, or one referencing a table forge does not seed —
+// by rewriting their tables in byName (and the returned slice), so every pass
+// after ordering sees one consistent schema. The member set NULL stays a
+// single-column foreign key, which forceNull keeps NULL on every row; the
+// other members are no longer references at all: with the key off they take
+// their own placement (the primary key, their own single-column reference),
+// never a value read off a parent row the plan may not even hold yet.
+func declineCompositeFKs(tables []schemadef.Table, byName map[string]schemadef.Table, declined, forceNull map[string]map[string]bool) []schemadef.Table {
+	for name, constraints := range declined {
+		t := byName[name]
+		fks := make([]schemadef.ForeignKey, 0, len(t.ForeignKeys))
+		for _, fk := range t.ForeignKeys {
+			if len(fk.KeyColumns) < 2 || !constraints[fk.Name] {
+				fks = append(fks, fk)
+				continue
+			}
+			if forceNull[name][fk.Column] {
+				fk.KeyColumns, fk.RefKeyColumns = nil, nil
+				fks = append(fks, fk)
+			}
+		}
+		t.ForeignKeys = fks
+		byName[name] = t
+	}
+	out := make([]schemadef.Table, len(tables))
+	for i, t := range tables {
+		out[i] = byName[t.Name]
+	}
+	return out
+}
+
 // buildCompositeFKs groups a table's composite constraints, in constraint-name
 // order, and resolves which one places each member column. owner maps a column
 // to the index of the composite that places it.

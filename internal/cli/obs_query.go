@@ -91,8 +91,8 @@ need the control plane.
 
 --sql returns the result rows as selected: every column, in SELECT order, for
 any column types. On a hosted env whose control plane predates that, a SELECT
-whose first column is a date or time exits 2 (it would come back folded into
-series); select a non-time column first there.
+with a date or time column exits 2 when the answer may have been folded into
+series (rows would be lost); select the time column as toString(...) there.
 
 Raw SQL is counted: the JSON document says "query_mode": "raw", and with
 FORGE_OBS_DEBUG=1 the statement's shape (literals removed) is logged to stderr.

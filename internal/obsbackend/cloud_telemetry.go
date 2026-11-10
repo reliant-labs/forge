@@ -510,24 +510,36 @@ func (c Cloud) metricsPanelTable(ctx context.Context, req QueryRequest, p obsque
 // in SELECT order.
 const drawTable = "table"
 
-// foldedAsRows refuses a raw-SQL result the control plane folded into series
-// instead of rows. A control plane that predates Panel.draw ignores it (and
-// echoes no draw) and folds a SELECT whose first column is a date or time
-// into one series per numeric column: the rows are lost (all of them, when no
-// column is numeric), so printing that as the rows would be wrong.
+// foldedAsRows refuses a raw-SQL result the control plane may have folded
+// into series instead of rows. A control plane that predates Panel.draw
+// ignores it (and echoes no draw) and may fold a result that has a date or
+// time column into series: the rows are lost (all of them, when no column is
+// numeric), so printing that as the rows would be wrong.
+//
+// It judges the response by its shape alone, never by which server rule
+// produced it: a legacy answer is the rows only when it carries no series and
+// either carries rows or has no time column at all. An empty legacy answer
+// with a time column cannot be told apart from an empty fold, so it is refused
+// too: the cost is a false refusal from a server too old to say, never wrong rows.
 func foldedAsRows(r wirePanelResponse) error {
 	if r.Draw != "" {
 		return nil
 	}
-	timeFirst := len(r.SQLColumns) > 1 && r.SQLColumns[0].Time
-	if len(r.Series) == 0 && !timeFirst {
+	timeCol := ""
+	for _, c := range r.SQLColumns {
+		if c.Time {
+			timeCol = c.Name
+			break
+		}
+	}
+	if len(r.Series) == 0 && (len(r.Rows) > 0 || timeCol == "") {
 		return nil // an older server's table: already the rows as selected
 	}
-	first := "first column"
-	if len(r.SQLColumns) > 0 {
-		first = fmt.Sprintf("first column (%s)", r.SQLColumns[0].Name)
+	col := "a date or time column"
+	if timeCol != "" {
+		col = fmt.Sprintf("a date or time column (%s)", timeCol)
 	}
-	return Undetermined("this control plane cannot return a SELECT whose %s is a date or time as rows: it predates QueryPanel's draw and folds such a result into series, losing the rows; select a non-time column first until it is upgraded", first)
+	return Undetermined("this control plane cannot be trusted to return a SELECT with %s as rows: it predates QueryPanel's draw and folds such a result into series, losing the rows; select the time column as a string (toString(...)) until it is upgraded", col)
 }
 
 // flattenCloudPanel turns a QueryPanel response into a table: a sql panel

@@ -173,11 +173,37 @@ func TestCloudSQLFromAnOlderControlPlaneIsRefusedNotReshaped(t *testing.T) {
 	for name, reply := range map[string]string{
 		"series":                        `{"sqlColumns":[{"name":"Timestamp","time":true},{"name":"svc"},{"name":"n","numeric":true}],"series":[{"label":"n","group":{"svc":"api"},"points":[{"time":"2026-10-22T11:00:00Z","value":3}]}]}`,
 		"no numeric column, so nothing": `{"sqlColumns":[{"name":"Timestamp","time":true},{"name":"TraceId"}]}`,
+		// pr-review B1: one column, a time, folded into a series.
+		"one time column, folded": `{"sqlColumns":[{"name":"Timestamp","time":true}],"series":[{"label":"Timestamp","points":[{"time":"2026-10-22T11:00:00Z","value":1}]}]}`,
+		"one time column, empty":  `{"sqlColumns":[{"name":"Timestamp","time":true}]}`,
+		// pr-review B2: the time column is not the first one.
+		"later time column, folded": `{"sqlColumns":[{"name":"svc"},{"name":"Timestamp","time":true},{"name":"n","numeric":true}],"series":[{"label":"n","group":{"svc":"api"},"points":[{"time":"2026-10-22T11:00:00Z","value":3}]}]}`,
+		"later time column, empty":  `{"sqlColumns":[{"name":"svc"},{"name":"Timestamp","time":true}]}`,
 	} {
 		f := &fakeCaller{replies: map[string]string{procQueryPanel: reply}}
 		_, err := cloudWith(f).Query(context.Background(), QueryRequest{Narrow: narrowC(), SQL: "SELECT Timestamp, TraceId FROM otel_traces"})
-		if exitOf(err) != ExitUndetermined || !strings.Contains(err.Error(), "Timestamp") || !strings.Contains(err.Error(), "non-time column first") {
+		if exitOf(err) != ExitUndetermined || !strings.Contains(err.Error(), "Timestamp") || !strings.Contains(err.Error(), "toString") {
 			t.Errorf("%s: err = %v, want exit 2 naming the time column and the workaround", name, err)
+		}
+	}
+}
+
+// A legacy answer that carries rows and no series is a table whatever its
+// column types, and one with no time column is a table even when empty: both
+// are the rows as selected and pass through.
+func TestCloudSQLFromAnOlderControlPlaneKeepsItsTables(t *testing.T) {
+	for name, c := range map[string]struct{ reply, want string }{
+		"one time column, rows":   {`{"sqlColumns":[{"name":"Timestamp","time":true}],"rows":[{"group":{"Timestamp":"2026-10-22T11:00:00Z"}}]}`, "[[2026-10-22T11:00:00Z]]"},
+		"later time column, rows": {`{"sqlColumns":[{"name":"svc"},{"name":"Timestamp","time":true}],"rows":[{"group":{"svc":"api","Timestamp":"2026-10-22T11:00:00Z"}}]}`, "[[api 2026-10-22T11:00:00Z]]"},
+		"no time column, empty":   {`{"sqlColumns":[{"name":"svc"},{"name":"n","numeric":true}]}`, "[]"},
+	} {
+		f := &fakeCaller{replies: map[string]string{procQueryPanel: c.reply}}
+		res, err := cloudWith(f).Query(context.Background(), QueryRequest{Narrow: narrowC(), SQL: "SELECT 1"})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := fmt.Sprint(res.Rows); got != c.want {
+			t.Errorf("%s: rows = %s, want %s", name, got, c.want)
 		}
 	}
 }

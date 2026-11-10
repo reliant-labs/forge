@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -40,9 +41,6 @@ func Execute() error {
 	if handed, err := HandOffToPinned(context.Background(), os.Args[1:], os.Stderr); err != nil || handed {
 		return err
 	}
-	// The descriptor is never committed: whichever command first reads it
-	// in a checkout extracts it from proto/ (codegen.LoadDescriptor).
-	codegen.RegisterDescriptorBuilder(buildDescriptorOnDemand)
 	return NewRootCmd().Execute()
 }
 
@@ -95,6 +93,22 @@ func forgeExecCommand() ([]string, error) {
 	return []string{exePath, "forge"}, nil
 }
 
+// testBinaryServesForge is set by a test binary whose TestMain dispatches
+// `forge protoc-gen-forge` to the real root (internal/cli's main_test.go).
+var testBinaryServesForge bool
+
+// descriptorSelfExecAllowed reports whether the descriptor extractor may be
+// registered: it runs os.Executable() as the protoc-gen-forge plugin
+// (forgeExecCommand). In a test binary without internal/cli's TestMain, that
+// executable reruns its whole suite, whose tests build the root and load a
+// descriptor again: an unbounded fork. internal/generator and
+// internal/templates build the root to inspect the command tree, and forge
+// main's unit 2/2 lane hung until the runner died (2026-11-10, after #2017).
+// Such a binary keeps the behaviour it had before #2017: no extractor.
+func descriptorSelfExecAllowed() bool {
+	return !testing.Testing() || testBinaryServesForge
+}
+
 // SetVersion stamps the version/date/commit metadata used by the
 // `version` subcommand and the rendered Cobra Version string. Called
 // once from main() with ldflags-injected values.
@@ -106,6 +120,12 @@ func SetVersion(v, date, commit string) {
 
 // NewRootCmd builds and returns the fully assembled root command.
 func NewRootCmd() *cobra.Command {
+	// Embedded hosts (reliant forge) construct this tree without Execute.
+	// They need the same descriptor-only cache refresh as standalone forge;
+	// otherwise a merged proto edit makes lint demand a full regeneration.
+	if descriptorSelfExecAllowed() {
+		codegen.RegisterDescriptorBuilder(buildDescriptorOnDemand)
+	}
 	var projectDir string
 
 	var rootCmd *cobra.Command

@@ -3784,7 +3784,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		// Keep observing the child while startup is pending. Releasing its
 		// handle here loses its exit status and turns compiler failures into
 		// readiness timeouts. Closing our copy does not close the child's fd.
-		mp.observeExit(nil)
+		mp.observeExit()
 		_ = logFile.Close()
 		p.mu.Lock()
 		p.processes = append(p.processes, mp)
@@ -3795,13 +3795,9 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	}
 
 	prefix := fmt.Sprintf("[%s] ", name)
-	stdout, err := cmd.StdoutPipe()
+	stdout, stderr, closeWriters, err := childOutputPipes(cmd, name)
 	if err != nil {
-		return fmt.Errorf("stdout pipe %s: %w", name, err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe %s: %w", name, err)
+		return err
 	}
 	// Tee a raw copy of the child's output to its well-known log file so
 	// it stays greppable after the fact, even in foreground mode where
@@ -3829,18 +3825,25 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	}
 
 	startInOwnProcessGroup(cmd)
-	if err := cmd.Start(); err != nil {
+	startErr := cmd.Start()
+	// The child has its own copies of the write ends; forge's must go, or the
+	// streams could never reach EOF.
+	closeWriters()
+	if startErr != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
 		if logFile != nil {
 			_ = logFile.Close()
 		}
-		return fmt.Errorf("start %s: %w", name, err)
+		return fmt.Errorf("start %s: %w", name, startErr)
 	}
+	mp := &managedProcess{name: name, cmd: cmd, pid: cmd.Process.Pid, drained: make(chan struct{})}
+	mp.observeExit()
 	var streams sync.WaitGroup
 	streams.Add(2)
-	go func() { defer streams.Done(); streamUpOutput(prefix, stdout, sink) }()
-	go func() { defer streams.Done(); streamUpOutput(prefix, stderr, sink) }()
-	mp := &managedProcess{name: name, cmd: cmd, pid: cmd.Process.Pid}
-	mp.observeExit(func() {
+	go func() { defer streams.Done(); streamUpOutput(prefix, stdout, sink); _ = stdout.Close() }()
+	go func() { defer streams.Done(); streamUpOutput(prefix, stderr, sink); _ = stderr.Close() }()
+	go func() {
 		streams.Wait()
 		// Both streams are at EOF, so nothing writes the tee again: close it.
 		// It used to stay open for the rest of forge's life — one leaked
@@ -3849,7 +3852,8 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		if logFile != nil {
 			_ = logFile.Close()
 		}
-	})
+		close(mp.drained)
+	}()
 
 	p.mu.Lock()
 	p.processes = append(p.processes, mp)
@@ -3857,6 +3861,28 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	p.persist()
 	fmt.Printf("[up] %s: started (pid=%d)\n", name, cmd.Process.Pid)
 	return nil
+}
+
+// childOutputPipes points cmd's stdout and stderr at pipes forge owns, not
+// exec's StdoutPipe: with *os.File output, Wait copies and closes nothing, so
+// the child is reaped the moment it exits while its output drains on its own
+// (see observeExit). It returns the read ends, and closeWriters, which the
+// caller runs once cmd.Start returned: after it the pipes reach EOF when the
+// child and every descendant holding them are gone.
+func childOutputPipes(cmd *exec.Cmd, name string) (stdout, stderr *os.File, closeWriters func(), err error) {
+	stdout, stdoutW, err := os.Pipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("stdout pipe %s: %w", name, err)
+	}
+	stderr, stderrW, err := os.Pipe()
+	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutW.Close()
+		return nil, nil, nil, fmt.Errorf("stderr pipe %s: %w", name, err)
+	}
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
+	return stdout, stderr, func() { _ = stdoutW.Close(); _ = stderrW.Close() }, nil
 }
 
 // streamUpOutput tags each child line with [<name>] and writes it to the
@@ -4136,24 +4162,63 @@ func runUpStop(env string) error {
 		return err
 	}
 	projectID := projectIDForDir(projectDir)
-	res, err := stopStack(projectID, env)
-	if err != nil {
-		return err
+	return stopEnv(env, projectDir, envDownSteps{
+		hosts: func() (stackStop, error) { return stopStack(projectID, env) },
+		reportStopped: func() {
+			reportStoppedSession(context.Background(), projectDir, env, os.Stdout, time.Now().UTC())
+		},
+		infra: func() (int, error) {
+			activateDevStack(context.Background(), projectDir, env, renderToLaunch, inspectBlocks)
+			composeErr := (deploytarget.ComposeProvider{ProjectDir: projectDir}).StopOwned(context.Background(), env)
+			if composeErr != nil {
+				composeErr = fmt.Errorf("compose containers: %w", composeErr)
+			}
+			infraStopped, err := stopHostInfra(env)
+			if err != nil {
+				err = fmt.Errorf("host infrastructure: %w", err)
+			}
+			return infraStopped, errors.Join(err, composeErr)
+		},
+	})
+}
+
+// envDownSteps are `forge env down`'s three steps, injected so the order and
+// the error policy between them are testable without a machine's processes:
+// stop the stack's host processes, mark its presence row stopped, and stop
+// its compose containers and host infrastructure (reporting how many host
+// infrastructure servers were running).
+type envDownSteps struct {
+	hosts         func() (stackStop, error)
+	reportStopped func()
+	infra         func() (int, error)
+}
+
+// stopEnv runs envDownSteps in order and reports the teardown.
+func stopEnv(env, projectDir string, s envDownSteps) error {
+	res, hostErr := s.hosts()
+	if hostErr != nil && !res.planned {
+		// The process table could not be read, so whether the stack hosts
+		// this command is unknown too: stopping its infrastructure could
+		// pull the database out from under this very session.
+		return hostErr
 	}
 	if len(res.skipped) > 0 {
 		// The stack hosts this command, so it is still running: its presence
 		// row stays live, and its host infrastructure stays up. Stopping the
 		// database under the server running this command ends the session
 		// as surely as signalling the server would.
-		return reportUpStop(env, projectDir, res, 0, nil)
+		return errors.Join(hostErr, reportUpStop(env, projectDir, res, 0, nil))
 	}
 
 	// Mark the presence row stopped. This is the teardown report for a
 	// DETACHED stack (`forge env up --background`), which has no
 	// supervising process of its own to report it — see up_session.go.
 	// Best-effort: the stack is already stopped above, and a cosmetic row
-	// must not turn a successful teardown into a failure.
-	reportStoppedSession(context.Background(), projectDir, env, os.Stdout, time.Now().UTC())
+	// must not turn a successful teardown into a failure. Not when a host
+	// process could not be proven stopped: the row would claim it was.
+	if hostErr == nil {
+		s.reportStopped()
+	}
 
 	// Host infrastructure is stopped SEPARATELY, because it is not one of
 	// the child processes the ledger tracks. A host-run postgres is started
@@ -4168,24 +4233,24 @@ func runUpStop(env string) error {
 	// Its DATA survives; this stops the server, it does not reset the
 	// database. All declared servers are attempted, and a failure is returned
 	// rather than reporting a successful empty teardown.
-	activateDevStack(context.Background(), projectDir, env, renderToLaunch, inspectBlocks)
-	composeErr := (deploytarget.ComposeProvider{ProjectDir: projectDir}).StopOwned(context.Background(), env)
-	if composeErr != nil {
-		composeErr = fmt.Errorf("compose containers: %w", composeErr)
-	}
-	infraStopped, err := stopHostInfra(env)
-	if err != nil {
-		err = fmt.Errorf("host infrastructure: %w", err)
-	}
-	return reportUpStop(env, projectDir, res, infraStopped, errors.Join(err, composeErr))
+	//
+	// It runs even when a host process could not be proven stopped: stop
+	// everything, then report. Returning first left the IdP and databases of
+	// a stack whose runners had already exited holding their ports, and the
+	// next `forge env up` refused to start against them.
+	infraStopped, infraErr := s.infra()
+	return errors.Join(hostErr, reportUpStop(env, projectDir, res, infraStopped, infraErr))
 }
 
 func reportUpStop(env, projectDir string, res stackStop, infraStopped int, infraErr error) error {
-	if res.stopped == 0 && len(res.skipped) == 0 {
+	if res.stopped == 0 && res.unproven == 0 && len(res.skipped) == 0 {
 		fmt.Printf("[down] no owned Forge host processes found for env=%s in %s.\n", env, projectDir)
 	}
 	if res.stopped > 0 {
 		fmt.Printf("[down] signalled %d host process tree(s) for env=%s.\n", res.stopped, env)
+	}
+	if res.unproven > 0 {
+		fmt.Printf("[down] signalled %d host process tree(s) for env=%s but could not prove them stopped; the stack's records are kept for a retry.\n", res.unproven, env)
 	}
 	if len(res.skipped) > 0 {
 		fmt.Printf("[down] left %d process tree(s) and the host infrastructure for env=%s running: they host this command. "+

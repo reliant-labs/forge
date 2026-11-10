@@ -36,6 +36,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -421,11 +422,17 @@ func TestRescaffold_EveryScaffoldedFileIsReemittable(t *testing.T) {
 	//   proto/services/<svc>/v1/<svc>.proto  IS the service — deleting it
 	//                      deletes the service; `forge scaffold service`
 	//                      re-creates one (TestRescaffold_ServiceProtoNamesScaffoldService)
+	//   gen/forge_descriptor/  the derived proto descriptor cache (never
+	//                      committed): any command that reads the descriptor
+	//                      extracts it from proto/ once the root command has
+	//                      registered the extractor, which NewRootCmd now does
+	//                      (#2017), so a test in this package may leave it here
 	skip := func(rel string) bool {
 		if _, ok := serviceProtoOf(rel); ok {
 			return true
 		}
-		return strings.HasPrefix(rel, ".forge/") || rel == ".reliant/project.json"
+		return strings.HasPrefix(rel, ".forge/") || rel == ".reliant/project.json" ||
+			strings.HasPrefix(rel, codegen.DescriptorDir+"/")
 	}
 	for name, shape := range map[string]func(*generator.ProjectGenerator){
 		"default service": nil,

@@ -681,46 +681,95 @@ func failAlert(fs []Finding, rule string) []Finding {
 // WithoutExcludedAlerts takes the alerts whose rule keeps them out of release
 // health ([LabelReleaseHealth]) out of a judged report: from FiringAlerts and
 // StandingCritical into ExcludedAlerts, with the alert_firing finding of each
-// rule left with no counted alert. The verdict is recomputed from what is left,
-// so it can improve: the excluded alerts were never the release's evidence. It is
-// how the rule reaches a control plane's answer judged without it (`forge obs
-// check` applies it before its own alert read).
-func WithoutExcludedAlerts(r Report) Report {
+// excluded rule that has no counted alert left. The verdict is recomputed from
+// what is left, so it can improve: the excluded alerts were never the release's
+// evidence. It is how the rule reaches a control plane's answer judged without
+// it (`forge obs check` applies it before its own alert read).
+//
+// firing is the env's live alert state, when the caller read it: it names the
+// excluded rules of a report that carries an alert_firing finding but not the
+// alert itself (an older control plane's answer). A live alert that is not
+// excluded keeps its rule's finding. It is idempotent: a report whose
+// ExcludedAlerts already list a rule still loses that rule's finding.
+func WithoutExcludedAlerts(r Report, firing ...Alert) Report {
 	out := r
+	out.ExcludedAlerts = nil
+	seen := map[string]bool{}
+	exclude := func(a Alert) {
+		if !seen[alertKey(a)] {
+			seen[alertKey(a)] = true
+			out.ExcludedAlerts = append(out.ExcludedAlerts, a)
+		}
+	}
+	for _, a := range r.ExcludedAlerts {
+		exclude(a)
+	}
+	moved := false
 	keep := func(as []Alert) []Alert {
 		var kept []Alert
 		for _, a := range as {
 			if a.Excluded() {
-				if !slices.ContainsFunc(out.ExcludedAlerts, func(b Alert) bool { return alertKey(b) == alertKey(a) }) {
-					out.ExcludedAlerts = append(out.ExcludedAlerts, a)
-				}
+				exclude(a)
+				moved = true
 				continue
 			}
 			kept = append(kept, a)
 		}
 		return kept
 	}
-	out.ExcludedAlerts = slices.Clone(r.ExcludedAlerts)
 	out.FiringAlerts = keep(r.FiringAlerts)
 	out.StandingCritical = keep(r.StandingCritical)
-	if len(out.ExcludedAlerts) == len(r.ExcludedAlerts) {
-		return r // nothing excluded here: the report as judged
-	}
+
+	// A rule is counted while any alert of it, in the report or live, is not
+	// excluded: its finding is that alert's.
 	counted := map[string]bool{}
 	for _, a := range out.FiringAlerts {
 		counted[a.Rule] = true
 	}
-	excludedRule := func(f Finding) bool {
-		for _, a := range out.ExcludedAlerts {
-			if f.Ref == a.Rule || (f.Ref == "" && strings.Contains(f.Message, "alert "+a.Rule+" ")) {
-				return !counted[a.Rule]
+	excludedRules := map[string]bool{}
+	for _, a := range out.ExcludedAlerts {
+		excludedRules[a.Rule] = true
+	}
+	for _, a := range firing {
+		if a.Excluded() {
+			excludedRules[a.Rule] = true
+		} else {
+			counted[a.Rule] = true
+		}
+	}
+	ruleOf := func(f Finding) string {
+		if f.Ref != "" {
+			return f.Ref
+		}
+		// The ref lost on the wire: the rule is named in the message.
+		for rule := range excludedRules {
+			if strings.Contains(f.Message, "alert "+rule+" ") {
+				return rule
 			}
 		}
-		return false
+		return ""
 	}
-	out.Findings = slices.DeleteFunc(slices.Clone(r.Findings), func(f Finding) bool {
-		return f.Code == release.HealthAlertFiring && excludedRule(f)
-	})
+	removable := func(f Finding) bool {
+		if f.Code != release.HealthAlertFiring {
+			return false
+		}
+		rule := ruleOf(f)
+		return rule != "" && excludedRules[rule] && !counted[rule]
+	}
+	if !moved && !slices.ContainsFunc(r.Findings, removable) {
+		if len(out.ExcludedAlerts) == len(r.ExcludedAlerts) {
+			return r // nothing excluded here: the report as judged
+		}
+		return out // only duplicate excluded alerts dropped
+	}
+	// A live excluded alert whose rule's finding goes is listed, so the
+	// report still says what was firing.
+	for _, a := range firing {
+		if a.Excluded() && !counted[a.Rule] && slices.ContainsFunc(r.Findings, func(f Finding) bool { return removable(f) && ruleOf(f) == a.Rule }) {
+			exclude(a)
+		}
+	}
+	out.Findings = slices.DeleteFunc(slices.Clone(r.Findings), removable)
 	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
 	return out
 }

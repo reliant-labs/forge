@@ -86,79 +86,113 @@ func composedAlertSources(ctx context.Context, projectDir string, e *KCLEntities
 	if err != nil {
 		return nil, nil, err
 	}
-	var resolver *gitsource.Resolver
+	c := &alertComposer{ctx: ctx, projectDir: projectDir, own: own}
 	byDir := map[string]*composedAlertSource{}
 	var notes []string
 	for _, r := range refs {
-		var (
-			checkout, repoRoot string
-			pinnedBy           string
-		)
-		if r.source != nil {
-			if resolver == nil {
-				// No logger: `forge env shape --json` writes its document to
-				// stdout, which the build's resolver logs to.
-				if resolver, err = gitsource.NewResolver(projectDir); err != nil {
-					return nil, nil, err
-				}
-			}
-			res, rerr := resolver.Resolve(ctx, *r.source)
-			if rerr != nil {
-				notes = append(notes, fmt.Sprintf("the alert inventory of %s (built by %s) was not read: %v", r.source, r.workload, rerr))
-				continue
-			}
-			checkout = res.Dir
-			repoRoot = strings.TrimSuffix(res.Dir, string(filepath.Separator)+filepath.FromSlash(r.source.Subdir))
-			pinnedBy = "GitSource " + r.source.String()
-		} else {
-			checkout = r.path
-			if !filepath.IsAbs(checkout) {
-				checkout = filepath.Join(own, checkout)
-			}
-			checkout = filepath.Clean(checkout)
-			if isWithin(own, checkout) {
-				continue
-			}
-			if st, serr := os.Stat(checkout); serr != nil || !st.IsDir() {
-				// A build context may name an image (docker-image://...)
-				// rather than a directory; only a missing directory is news.
-				if !strings.Contains(r.path, "://") {
-					notes = append(notes, fmt.Sprintf("the alert inventory of %s (built by %s) was not read: the directory is not checked out here, so this shape omits the default alerts of any services it serves", r.path, r.workload))
-				}
-				continue
-			}
+		loc, note, ok, err := c.locate(r)
+		if err != nil {
+			return nil, nil, err
 		}
-		root := forgeProjectRoot(checkout, repoRoot)
-		if root == "" || isWithin(own, root) {
+		if note != "" {
+			notes = append(notes, note)
+		}
+		if !ok {
 			continue
 		}
-		dir, via := root, pinnedBy
-		if via == "" {
-			loc, ok, lerr := pinnedProjectDir(own, root, r.workload)
-			if lerr != nil {
-				notes = append(notes, fmt.Sprintf("the alert inventory of %s (built by %s) was not read: %v", relOrAbs(own, root), r.workload, lerr))
-				continue
-			}
-			if ok {
-				dir, via = loc.Dir, loc.Via
-			} else {
-				via = "checkout " + relOrAbs(own, root) + " (nothing pins it)"
-			}
+		src := byDir[loc.dir]
+		if src == nil {
+			src = &composedAlertSource{Dir: loc.dir, Via: loc.via}
+			byDir[loc.dir] = src
 		}
-		c := byDir[dir]
-		if c == nil {
-			c = &composedAlertSource{Dir: dir, Via: via}
-			byDir[dir] = c
-		}
-		c.Workloads = appendUnique(c.Workloads, r.workload)
+		src.Workloads = appendUnique(src.Workloads, r.workload)
 	}
 	out := make([]composedAlertSource, 0, len(byDir))
-	for _, c := range byDir {
-		sort.Strings(c.Workloads)
-		out = append(out, *c)
+	for _, src := range byDir {
+		sort.Strings(src.Workloads)
+		out = append(out, *src)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Dir < out[j].Dir })
 	return out, notes, nil
+}
+
+// alertComposer locates the forge project each build source belongs to.
+type alertComposer struct {
+	ctx        context.Context
+	projectDir string
+	own        string // projectDir, absolute
+	// resolver is built on the first GitSource, so a project with none
+	// touches no source cache.
+	resolver *gitsource.Resolver
+}
+
+// projectLoc is a composed project's directory and what decided it.
+type projectLoc struct{ dir, via string }
+
+// locate is the other forge project r builds from, at its pinned revision.
+// ok is false when r composes nothing; note, when set, says why a source
+// that should have been read was not.
+func (c *alertComposer) locate(r buildSourceRef) (loc projectLoc, note string, ok bool, err error) {
+	if r.source != nil {
+		return c.locateSource(r)
+	}
+	return c.locatePath(r)
+}
+
+// locateSource resolves a GitSource pin: its tree IS the pinned revision.
+func (c *alertComposer) locateSource(r buildSourceRef) (projectLoc, string, bool, error) {
+	if c.resolver == nil {
+		// No logger: `forge env shape --json` writes its document to
+		// stdout, which the build's resolver logs to.
+		res, err := gitsource.NewResolver(c.projectDir)
+		if err != nil {
+			return projectLoc{}, "", false, err
+		}
+		c.resolver = res
+	}
+	res, err := c.resolver.Resolve(c.ctx, *r.source)
+	if err != nil {
+		return projectLoc{}, fmt.Sprintf("the alert inventory of %s (built by %s) was not read: %v", r.source, r.workload, err), false, nil
+	}
+	repoRoot := strings.TrimSuffix(res.Dir, string(filepath.Separator)+filepath.FromSlash(r.source.Subdir))
+	root := forgeProjectRoot(res.Dir, repoRoot)
+	if root == "" || isWithin(c.own, root) {
+		return projectLoc{}, "", false, nil
+	}
+	return projectLoc{dir: root, via: "GitSource " + r.source.String()}, "", true, nil
+}
+
+// locatePath resolves a directory: the project it sits in, at the version
+// this project's go.mod pins that project's module to, else as checked out.
+func (c *alertComposer) locatePath(r buildSourceRef) (projectLoc, string, bool, error) {
+	checkout := r.path
+	if !filepath.IsAbs(checkout) {
+		checkout = filepath.Join(c.own, checkout)
+	}
+	checkout = filepath.Clean(checkout)
+	if isWithin(c.own, checkout) {
+		return projectLoc{}, "", false, nil
+	}
+	if st, err := os.Stat(checkout); err != nil || !st.IsDir() {
+		// A build context may name an image (docker-image://...) rather
+		// than a directory; only a missing directory is news.
+		if strings.Contains(r.path, "://") {
+			return projectLoc{}, "", false, nil
+		}
+		return projectLoc{}, fmt.Sprintf("the alert inventory of %s (built by %s) was not read: the directory is not checked out here, so this shape omits the default alerts of any services it serves", r.path, r.workload), false, nil
+	}
+	root := forgeProjectRoot(checkout, "")
+	if root == "" || isWithin(c.own, root) {
+		return projectLoc{}, "", false, nil
+	}
+	pinned, ok, err := pinnedProjectDir(c.own, root, r.workload)
+	if err != nil {
+		return projectLoc{}, fmt.Sprintf("the alert inventory of %s (built by %s) was not read: %v", relOrAbs(c.own, root), r.workload, err), false, nil
+	}
+	if !ok {
+		return projectLoc{dir: root, via: "checkout " + relOrAbs(c.own, root) + " (nothing pins it)"}, "", true, nil
+	}
+	return projectLoc{dir: pinned.Dir, via: pinned.Via}, "", true, nil
 }
 
 // composedAlertServices reads each composed project's alert inventory.

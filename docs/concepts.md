@@ -413,6 +413,32 @@ Tests run against a **real ephemeral Postgres**: one server per process, a
 fresh uniquely-named database per caller. It downloads and caches its own
 Postgres, so no Docker is required.
 
+### What "secure by default" does and doesn't mean
+
+Two different things ship under that heading, and one is load-bearing while the
+other is a starting point.
+
+**The runtime posture above is real and tested.** It is the core of Forge, it is
+covered by the same gates as everything else, and it is what stops the
+incidents above from recurring.
+
+**The scanning is generated into your CI, and it is yours to verify.** A new
+project gets a `ci.yml` that runs `govulncheck` and `npm audit` through
+`forge ci vuln-scan` — a gate built to refuse a pass it didn't actually verify,
+so a missing scanner fails the job instead of exiting green over an empty scan.
+Container images get Trivy scans that block on HIGH/CRITICAL, and pushed images
+get an SPDX SBOM, a keyless cosign signature, and a build-provenance
+attestation, all bound to the immutable digest rather than a mutable tag.
+Dependabot ships too. A generated project's `forge ci gate` also runs
+`go-licenses` over its Go dependencies and fails on one whose license type is
+forbidden or restricted; there is no license check for npm dependencies.
+
+What is **not** there today: secret scanning, SAST, IaC/manifest scanning, and
+an npm license check. The generated workflows are among the less-exercised
+surfaces in Forge — treat them as a strong default to review and adapt, not as a
+compliance story you can point an auditor at. `forge lint` itself does no
+security scanning at all; it enforces architecture and migration safety.
+
 ---
 
 ## 5. Config and secrets
@@ -609,3 +635,129 @@ everything, prints a summary, and returns. It does not hang waiting for an
 interaction that will never come. That is what makes Forge drivable by an
 agent unattended. An agent that wants the stack tied to a process it tracks
 runs `forge env up <env> --watch` in the background; SIGTERM stops the stack.
+
+---
+
+## 8. Opinions with an exit
+
+Forge's philosophy is **primitives, not modes**: every default is overridable,
+every generated file has an owned seam beside it, and no convenience is
+implemented as a wall. An opinion is only safe if you know how to leave it, so
+they come in pairs:
+
+- We give you **an ORM** — and you can drop to raw SQL whenever you want.
+- We give you **a middleware chain** — in a `serve.go` you own and can reorder.
+- We give you **`pkg/`** — as a library you import, not a framework you're
+  trapped inside.
+- We give you **Kubernetes deploys** — and every workload binds its own
+  runtime, so the same declaration runs as a host process in dev, on a cluster
+  you operate, or on hosted infrastructure we run. A runtime that hands a
+  workload to your platform's own CLI (Fly.io, Cloud Run, ECS, Vercel) is
+  [planned](https://github.com/reliant-labs/forge/issues/400), not shipped.
+- **And you don't have to write Go.** KCL declares the workloads; `ShellBuild`
+  builds anything Forge doesn't compile.
+
+The receipt for that last one: our own control plane uses `ShellBuild` to build
+three services out of a **separate Go repository**, cross-compiling and pushing
+images Forge never compiles in-tree — plus one fat image built by shelling out
+to GCP Cloud Build, because its toolchain steps can't be cross-compiled on a
+laptop.
+
+The details:
+
+- **Deploy is target-agnostic.** Workloads are declared once as a KCL
+  `fw.Workload`, and each env binds every one to its own runtime —
+  `forge.OnHost`, `OnCompose`, `OnCluster` or `OnHosted`. Frontends bind the
+  same way, to a dev server or a static runtime (`OnHosted`, `OnBucket`,
+  `OnFirebase`). There is no env-wide mode flag.
+- **`ShellBuild` is the shell escape hatch** for a workload forge does not build
+  itself: a sibling repo, a third-party binary, a language runtime. `cmd` is a
+  plain KCL string and forge runs it byte-for-byte via `sh -c`, from the
+  declared `cwd`, with the declared `env` merged on. Forge substitutes nothing —
+  the tag, arch and environment are read in KCL (`forge.image_tag()`,
+  `forge.target_arch()`, `forge.env()`) where the command is composed.
+- **KCL is still KCL.** Forge models _your_ workloads — Application,
+  Environment, ConfigMap, Ingress, RBAC. It deliberately does not model
+  third-party in-cluster infra, so when you need NATS, Temporal, or a Postgres
+  operator, you emit raw manifests (or run Helm) and they compose into the same
+  rendered stream. No fork, no fight with the schema. That's how our control
+  plane runs all three today.
+- **`pkg/` is a library you import.** `serverkit`, `svcerr`, `orm`, `auth`,
+  `apikey`, `oauth2`, `obs`, `middleware`, `crud`, `tdd`, `testkit`, `pgtest`,
+  `config`, `money`, `controller`, `migratekit`, `schemadef`, `seedplan`,
+  `audit`, `validate`, and more — `forge project libraries` lists them all with
+  their doc summaries. `@reliantlabs/forge-web-runtime` is the TypeScript twin.
+
+---
+
+## 9. Predictability: one known place for everything
+
+An LLM's failure mode isn't writing bad code — it's _guessing_. Guessing which
+port the API bound, where the logs went, how to reach the database, whether the
+thing it just changed is even running. Every guess is a plausible-looking answer
+that might be wrong, and wrong answers compound silently.
+
+Forge's structural advantage is that these questions all have a command, and the
+command reads the same rendered KCL the running stack was built from — so the
+answer can't drift from reality:
+
+| The question                                      | The command                                                   |
+| ------------------------------------------------- | ------------------------------------------------------------- |
+| What is running, on what port, and is it healthy? | `forge env status <env>` (`--json`)                           |
+| Where are the logs for this service?              | `forge env status` — a log path per service                   |
+| What are the ingress URLs?                        | `forge cluster urls` (`--json`)                               |
+| What does the schema actually look like?          | `forge db introspect --dsn "$DATABASE_URL"` (`--format json`) |
+| How do I call this RPC?                           | `forge api curl <service.method>`                             |
+| What is this project, structurally?               | `forge project audit --json`, `map --json`                    |
+| Is the project well-formed?                       | `forge doctor`                                                |
+| What can Forge even do?                           | `forge project capabilities`, `annotations`, `libraries`      |
+
+Two properties make this usable by a model rather than just available to one.
+**Every answer is machine-readable**, so an agent parses instead of scraping
+scrollback. And **the surface is enumerated from Forge's own command tree and
+descriptors**, so it cannot drift the way a document can — the agent asks the
+binary rather than trusting a stale README.
+
+`forge env status` is the sharpest example. It reports the port a service bound
+_right now_, which process holds it, whether that binary is **stale versus your
+repo HEAD**, and a loud DUPLICATE flag when two vintages of the same service are
+serving at once — the classic "hot reload spawned a new worker and didn't reap
+the old one" failure that otherwise reads as "my fix didn't work."
+
+We'll also tell you what these checks _don't_ cover. They verify the telemetry
+pipeline is healthy — containers up, signals ingesting, probes green. They do
+**not** certify your app logic is correct. A stack can be fully green while a
+cross-cluster dial is failing. Proving an app-flow invariant is what tests are
+for.
+
+---
+
+## 10. Scales with you, and meets the code you already have
+
+A frontend on a hosted database is a fine place to start and a hard place to
+stay. Forge's starting point is the one you'd grow into: multi-service backends,
+background workers, jobs, operators and CRDs, CLIs and mobile apps, over a real
+Postgres you manage with migrations that are safety-checked before they run
+(every migration declares whether the previous release survives it).
+Environments multiply without a rewrite: `forge env new` derives staging, prod
+or a customer's environment from one you already have, and `forge env diff`
+shows how each differs from what is deployed. Our own control plane runs `dev`,
+`dev-k8s`, `e2e` and `prod` across local k3d clusters and two GKE clusters, from
+one definition.
+
+It covers the whole range, from the small end up. A landing page, docs site, SPA
+or PWA with no backend is a first-class project: one static frontend, the same
+environments and build-once releases, a dev loop with no database or cluster,
+and hosted static hosting with a CDN (one static site per person is free,
+counted across their orgs; each environment's site counts). Start one with `forge project new <name> --kind
+site`, or adopt an existing Vite or Next.js app in place with `forge project new
+--in-place --kind site` (`forge skill load deploy/static-site`). When it grows a
+waitlist or a checkout, the API is its own forge project beside it.
+
+**Greenfield, or bring your own app.** Forge is best from an empty directory,
+where the whole structure is yours from the first commit. An existing app
+doesn't have to wait for that. Forge builds and deploys code it never compiled,
+so a service in any language gets environments, secrets, release promotion and
+some monitoring as it is, and a Vite or Next.js app is adopted in place. Move
+code onto Forge's structure over time as it earns it: `forge skill load
+migration` is the playbook.

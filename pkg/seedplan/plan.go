@@ -413,13 +413,13 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 		}
 		forceNull[table][col] = true
 	}
-	declined := map[string]map[string]bool{} // table -> composite constraint turned off
+	declined := map[string]map[string]string{} // table -> composite constraint turned off -> the member set NULL
 	declineComposite := func(table, constraint, nullCol string) {
 		markNull(table, nullCol)
 		if declined[table] == nil {
-			declined[table] = map[string]bool{}
+			declined[table] = map[string]string{}
 		}
-		declined[table][constraint] = true
+		declined[table][constraint] = nullCol
 	}
 
 	for _, n := range names {
@@ -534,7 +534,7 @@ func BuildPlan(tables []schemadef.Table, pools EnumPools, cfg Config) (*Plan, er
 		remaining = kept
 	}
 	if len(declined) > 0 {
-		tables = declineCompositeFKs(tables, byName, declined, forceNull)
+		tables = declineCompositeFKs(tables, byName, declined)
 	}
 
 	// Assemble the ordered table plans. Row counts (the 1-1 foreign-key cap and

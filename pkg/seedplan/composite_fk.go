@@ -145,21 +145,37 @@ func compositeNullableMember(t schemadef.Table, fk schemadef.ForeignKey, colByNa
 // declineCompositeFKs turns off the composite keys BuildPlan declined — a
 // cycle broken through one, or one referencing a table forge does not seed —
 // by rewriting their tables in byName (and the returned slice), so every pass
-// after ordering sees one consistent schema. The member set NULL stays a
-// single-column foreign key, which forceNull keeps NULL on every row; the
-// other members are no longer references at all: with the key off they take
-// their own placement (the primary key, their own single-column reference),
-// never a value read off a parent row the plan may not even hold yet.
-func declineCompositeFKs(tables []schemadef.Table, byName map[string]schemadef.Table, declined, forceNull map[string]map[string]bool) []schemadef.Table {
+// after ordering sees one consistent schema. declined maps each table's
+// declined constraint to the member BuildPlan set NULL.
+//
+// Every entry of a declined composite goes, as a group: no member is
+// reinterpreted as a standalone reference to the composite's parent. The one
+// exception is the member set NULL when nothing else references it — it stays
+// a single-column foreign key so forceNull, which applies to referencing
+// columns, keeps it NULL on every row. Separately declared foreign keys,
+// single-column or another composite, are untouched: with the key off a
+// sibling member takes its own placement (the primary key, its own
+// reference), never a value read off a parent row the plan may not hold.
+func declineCompositeFKs(tables []schemadef.Table, byName map[string]schemadef.Table, declined map[string]map[string]string) []schemadef.Table {
 	for name, constraints := range declined {
 		t := byName[name]
-		fks := make([]schemadef.ForeignKey, 0, len(t.ForeignKeys))
+		// Columns some foreign key other than a declined composite references.
+		otherRef := map[string]bool{}
 		for _, fk := range t.ForeignKeys {
-			if len(fk.KeyColumns) < 2 || !constraints[fk.Name] {
+			if _, off := constraints[fk.Name]; len(fk.KeyColumns) < 2 || !off {
+				otherRef[fk.Column] = true
+			}
+		}
+		fks := make([]schemadef.ForeignKey, 0, len(t.ForeignKeys))
+		kept := map[string]bool{} // a NULL member stays once, whichever composites declined it
+		for _, fk := range t.ForeignKeys {
+			nullCol, off := constraints[fk.Name]
+			if len(fk.KeyColumns) < 2 || !off {
 				fks = append(fks, fk)
 				continue
 			}
-			if forceNull[name][fk.Column] {
+			if fk.Column == nullCol && !otherRef[nullCol] && !kept[nullCol] {
+				kept[nullCol] = true
 				fk.KeyColumns, fk.RefKeyColumns = nil, nil
 				fks = append(fks, fk)
 			}

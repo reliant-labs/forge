@@ -91,3 +91,113 @@ func TestNullableCompositeFK_FactoryClosuresPlanAndInsert(t *testing.T) {
 		})
 	}
 }
+
+// A declined composite whose NOT NULL sibling member has a foreign key of its
+// own: accounts (billing_org_id, owner_id) references memberships (org_id,
+// person_id), and owner_id also references people. The cycle accounts ->
+// memberships -> accounts breaks at the composite, which turns it off as a
+// group: owner_id keeps its own reference to people and must not be read as
+// a standalone reference to memberships.person_id.
+const declinedCompositeSiblingFKDDL = `
+CREATE TABLE orgs (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE people (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
+CREATE TABLE accounts (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES people (id),
+    billing_org_id TEXT
+);
+
+CREATE TABLE memberships (
+    org_id TEXT NOT NULL REFERENCES orgs (id),
+    person_id TEXT NOT NULL REFERENCES people (id),
+    created_by TEXT NOT NULL REFERENCES accounts (id),
+    PRIMARY KEY (org_id, person_id)
+);
+
+ALTER TABLE accounts ADD CONSTRAINT fk_accounts_billing_membership
+    FOREIGN KEY (billing_org_id, owner_id) REFERENCES memberships (org_id, person_id);
+`
+
+func TestDeclinedCompositeFK_SiblingKeepsItsOwnReference(t *testing.T) {
+	requirePG(t)
+	tables := applyDDL(t, declinedCompositeSiblingFKDDL)
+	db := minimalHarness(t, declinedCompositeSiblingFKDDL)
+	p, err := BuildPlan(tables, PoolsFromTables(tables), Config{Rows: 3})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	p.SetBounds(BoundsFromTables(tables))
+	for _, tp := range p.tables {
+		if tp.table.Name != "accounts" {
+			continue
+		}
+		for _, cp := range tp.cols {
+			switch cp.col.Name {
+			case "owner_id":
+				if cp.fk == nil || cp.fk.RefTable != "people" || len(cp.fk.KeyColumns) != 0 {
+					t.Errorf("owner_id placed by %+v, want its own reference to people", cp.fk)
+				}
+			case "billing_org_id":
+				if !cp.forceNull {
+					t.Errorf("billing_org_id is not forced NULL: the declined composite would be checked")
+				}
+			}
+		}
+	}
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmts := p.Statements()
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			t.Fatalf("postgres refused the plan:\n%s\n%v", strings.Join(stmts, "\n"), err)
+		}
+	}
+}
+
+// TestDeclineCompositeFKs_RemovesTheGroupKeepsIndependentKeys pins the
+// rewrite itself: every entry of the declined composite goes, a sibling's
+// separately declared key stays, and the NULL member keeps one stripped
+// entry only when nothing else references it.
+func TestDeclineCompositeFKs_RemovesTheGroupKeepsIndependentKeys(t *testing.T) {
+	keys, refs := []string{"a", "b", "c"}, []string{"x", "y", "z"}
+	comp := func(col, ref string) schemadef.ForeignKey {
+		return schemadef.ForeignKey{Column: col, RefTable: "parent", RefColumn: ref, Name: "fk_abc", KeyColumns: keys, RefKeyColumns: refs}
+	}
+	child := schemadef.Table{
+		Name: "child",
+		ForeignKeys: []schemadef.ForeignKey{
+			comp("a", "x"), comp("b", "y"), comp("c", "z"),
+			{Column: "b", RefTable: "other", RefColumn: "id", Name: "fk_b"},
+		},
+	}
+	for _, tc := range []struct {
+		nullCol string
+		want    []string // Name/Column/RefTable of the surviving entries
+	}{
+		{"a", []string{"fk_abc/a/parent", "fk_b/b/other"}},
+		{"b", []string{"fk_b/b/other"}}, // b has its own key, which forceNull reaches
+	} {
+		byName := map[string]schemadef.Table{"child": child}
+		out := declineCompositeFKs([]schemadef.Table{child}, byName, map[string]map[string]string{"child": {"fk_abc": tc.nullCol}})
+		var got []string
+		for _, fk := range out[0].ForeignKeys {
+			if fk.KeyColumns != nil || fk.RefKeyColumns != nil {
+				t.Errorf("null member %s: entry %s/%s still carries the composite key", tc.nullCol, fk.Name, fk.Column)
+			}
+			got = append(got, fk.Name+"/"+fk.Column+"/"+fk.RefTable)
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("null member %s: entries %v, want %v", tc.nullCol, got, tc.want)
+		}
+	}
+}

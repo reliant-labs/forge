@@ -44,6 +44,9 @@ const defaultTestOrg = "4f3c2b1a-0000-4000-8000-000000000001"
 func TestMain(m *testing.M) {
 	// No test hands its command to another forge: see pinDelegationDisabled.
 	pinDelegationDisabled = true
+	// This binary serves `forge protoc-gen-forge` (below), so the root may
+	// register the self-exec descriptor extractor (descriptorSelfExecAllowed).
+	testBinaryServesForge = true
 	// No test reaches a control plane for its organization: the credential's
 	// org is stated, by default here and per-test by stubControlPlaneOrg.
 	// hosted_org_test.go pins the real call separately.

@@ -110,12 +110,18 @@ fw.Workload {
 The platform pulls only from its own registry, so at release time
 (`forge env deploy`, or `forge env build <env> --release <v> --push`) forge
 copies the image, registry to registry, to
-`<registry_host>/<org>/<project>/<its path>` (`.../traefik/whoami`), tagged
+`<registry_host>/<org>/<project>/<its path>` (`.../traefik/whoami`; Docker
+Hub's implicit namespace is written out, so `docker.io/nginx` lands in
+`.../library/nginx`), tagged
 `sha256-<digest>`, and the release pins the copy BY DIGEST. The digest is the
 upstream one (the manifest is copied verbatim, every platform included), and a
 later re-push of the upstream tag changes nothing until the next release. A
 private source is read with the credentials `docker login` stored for its
-registry. An image CI already pushed under the push base is not copied: name it
+registry. The cut refuses, before copying anything, a destination the
+registry cannot name (a path component outside the repository grammar, or past
+255 characters) and two different references that would share one destination
+(`ghcr.io/acme/api` and `docker.io/acme/api`, or `redis:6` and `redis:7`).
+An image CI already pushed under the push base is not copied: name it
 bare (`image = "api:v2"`) and the release records its digest there.
 
 An env that pushes to the platform registry AND one of your own logs in to both

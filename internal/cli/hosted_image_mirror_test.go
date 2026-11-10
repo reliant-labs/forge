@@ -110,3 +110,57 @@ func TestHostedPlatformGuard_ChecksMirroredImages(t *testing.T) {
 		t.Fatalf("a mirrored arm64-only image must be refused, got %v", err)
 	}
 }
+
+// The cut refuses, before copying anything, a mirror destination the registry
+// cannot hold and two different sources that would share one destination
+// (review B1 on #2016). Two spellings of one Docker Hub reference are one
+// source and mirror fine.
+func TestHarvestHostedBackendArtifacts_RefusesUnrepresentableMirrors(t *testing.T) {
+	prevName := hostedProjectName
+	hostedProjectName = func() string { return "shop" }
+	t.Cleanup(func() { hostedProjectName = prevName })
+	var mirrored []string
+	prevMirror := hostedImageMirror
+	hostedImageMirror = func(_ context.Context, source, destination string) (deploytarget.MirroredImage, error) {
+		mirrored = append(mirrored, source+" -> "+destination)
+		return deploytarget.MirroredImage{Digest: "sha256:aaa"}, nil
+	}
+	t.Cleanup(func() { hostedImageMirror = prevMirror })
+	harvest := func(images ...string) error {
+		t.Helper()
+		mirrored = nil
+		ents := &KCLEntities{ControlPlane: testControlPlane("org-7", "registry.reliant.dev")}
+		for i, img := range images {
+			img := img
+			ents.Workloads = append(ents.Workloads, hostedWL(fmt.Sprintf("w%d", i), func(w *WorkloadEntity) { w.Spec.Image = img }))
+		}
+		return harvestHostedBackendArtifacts(context.Background(), "staging", ents, map[string]release.Artifact{})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		images []string
+		want   string
+	}{
+		{"two registries, one path", []string{"ghcr.io/acme/api:v1", "docker.io/acme/api:v1"}, "would both be mirrored to registry.reliant.dev/org-7/shop/acme/api"},
+		{"one repository, two tags", []string{"docker.io/library/redis:6", "docker.io/redis:7"}, "would both be mirrored"},
+		{"a destination past the length limit", []string{"ghcr.io/acme/" + strings.Repeat("a", 250)}, "over the 255"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := harvest(tc.images...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "nothing was copied") {
+				t.Fatalf("harvest(%v) = %v, want a refusal containing %q", tc.images, err, tc.want)
+			}
+			if len(mirrored) != 0 {
+				t.Errorf("a refused cut copied %v", mirrored)
+			}
+		})
+	}
+
+	if err := harvest("docker.io/nginx:1.27", "index.docker.io/library/nginx:1.27"); err != nil {
+		t.Fatalf("two spellings of one Docker Hub reference must mirror: %v", err)
+	}
+	if len(mirrored) != 1 || !strings.HasSuffix(mirrored[0], " -> registry.reliant.dev/org-7/shop/library/nginx") {
+		t.Errorf("mirrored = %v, want one copy into .../library/nginx", mirrored)
+	}
+}

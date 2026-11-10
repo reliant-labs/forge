@@ -311,7 +311,7 @@ func siteNextSteps(cd string) []string {
 		{cli + " env up dev", "the dev server (browser console mirrored to .forge/logs/dev/)"},
 		{cli + " lint --static-export", "what a static export cannot serve, with file:line"},
 		{cli + " env build prod --release v0.1.0", "build once, push, record the release"},
-		{cli + " env deploy prod v0.1.0", "publish to hosted static hosting (one env's site per org is free)"},
+		{cli + " env deploy prod v0.1.0", "publish to hosted static hosting (one env's site per person is free)"},
 		{cli + " domain add <host> --env prod", "your own hostname"},
 	}
 	for _, s := range steps {

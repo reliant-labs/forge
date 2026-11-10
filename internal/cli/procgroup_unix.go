@@ -63,12 +63,21 @@ func signalProcessGroup(pid int, sig syscall.Signal) error {
 }
 
 // processAlive reports whether pid is a live process, via a signal-0 probe.
+//
+// A zombie is not alive. kill(2) still finds a process that has exited and
+// not been reaped — on Linux and macOS alike signal 0 succeeds on it — but it
+// runs nothing, holds no port and no file, and no signal can change that. A
+// stop that waited for one to "exit" waited for its parent's wait(2) instead:
+// forever, when the parent is a hung `forge env up` that never reaps, and then
+// reported a stopped stack as still running.
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	if err := syscall.Kill(pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	return !processExited(pid)
 }
 
 // killProcessTree signals pid, its process group, every transitive
@@ -107,7 +116,7 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 	table := processTable()
 	targets := treeSignalTargets(pid, table, self.Contains, self.ContainsGroup)
 	v := stampVerifier{mark: mark, ok: markOK, read: readProcStamp}
-	return signalTreeTargets(targets, table, v, self.Contains, syscall.Kill, sig)
+	return signalTreeTargets(targets, table, v, self.Contains, syscall.Kill, nothingLiveAt, sig)
 }
 
 // signalTreeTargets sends sig to each of treeSignalTargets' targets, verifying
@@ -122,7 +131,16 @@ func killProcessTree(pid int, sig syscall.Signal) error {
 //
 // Where the platform cannot verify (stampVerifier.ok false), pids are
 // signalled as listed and groups never are.
-func signalTreeTargets(targets []int, table map[int]procRow, v stampVerifier, inLineage func(int) bool, kill func(int, syscall.Signal) error, sig syscall.Signal) error {
+//
+// A kill that fails is a failure, except ESRCH (the target is already gone,
+// normal mid-teardown) and an EPERM after which settled reports that nothing
+// live remains at the target. macOS answers kill(-pgid) with EPERM when every
+// member of the group is a zombie — exited, not yet reaped — so a runner that
+// exited unreaped turned its own process group into a permanent "permission"
+// failure and `forge env down` kept the records of a stack that was already
+// gone. EPERM on anything still running (another user's process) stays a
+// failure: permission failures are not proof of shutdown.
+func signalTreeTargets(targets []int, table map[int]procRow, v stampVerifier, inLineage func(int) bool, kill func(int, syscall.Signal) error, settled func(target int) bool, sig syscall.Signal) error {
 	var failures []error
 	sent := map[int]bool{}
 	send := func(target int) {
@@ -130,9 +148,11 @@ func signalTreeTargets(targets []int, table map[int]procRow, v stampVerifier, in
 			return
 		}
 		sent[target] = true
-		// A missing process or group is normal mid-teardown. Permission
-		// failures are not proof of shutdown.
-		if err := kill(target, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		err := kill(target, sig)
+		switch {
+		case err == nil, errors.Is(err, syscall.ESRCH):
+		case errors.Is(err, syscall.EPERM) && settled(target):
+		default:
 			failures = append(failures, fmt.Errorf("signal %s to pid/group %d: %w", sig, target, err))
 		}
 	}
@@ -167,6 +187,75 @@ func groupMembers(pgid int, table map[int]procRow) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+// nothingLiveAt reports whether a kill(2) target has nothing left running —
+// a pid that is gone or a zombie, a group (negative) with no member that is
+// not a zombie — read from a fresh `ps`. An unreadable table is not proof:
+// false.
+func nothingLiveAt(target int) bool {
+	out, err := exec.CommandContext(context.Background(), "ps", "-axo", "pid=,pgid=,stat=").Output()
+	if err != nil {
+		return false
+	}
+	states := parseProcStates(string(out))
+	if len(states) == 0 {
+		return false
+	}
+	return nothingLiveIn(target, states)
+}
+
+// procState is one `ps -axo pid=,pgid=,stat=` row.
+type procState struct {
+	pgid   int
+	exited bool // a zombie
+}
+
+// parseProcStates parses `ps -axo pid=,pgid=,stat=`. Lines that are not two
+// integers and a state are skipped. A state starting with Z is a zombie.
+func parseProcStates(out string) map[int]procState {
+	m := map[int]procState{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) != 3 {
+			continue
+		}
+		pid, e1 := strconv.Atoi(f[0])
+		pgid, e2 := strconv.Atoi(f[1])
+		if e1 != nil || e2 != nil {
+			continue
+		}
+		m[pid] = procState{pgid: pgid, exited: strings.HasPrefix(f[2], "Z")}
+	}
+	return m
+}
+
+// nothingLiveIn is nothingLiveAt's decision over a read table.
+func nothingLiveIn(target int, states map[int]procState) bool {
+	if target > 0 {
+		st, ok := states[target]
+		return !ok || st.exited
+	}
+	for _, st := range states {
+		if st.pgid == -target && !st.exited {
+			return false
+		}
+	}
+	return true
+}
+
+// parseProcStatState extracts the state letter (field 3) from a Linux
+// /proc/<pid>/stat, read after the LAST ')' as parseProcStatStamp does.
+func parseProcStatState(data []byte) (string, bool) {
+	end := strings.LastIndexByte(string(data), ')')
+	if end < 0 {
+		return "", false
+	}
+	fields := strings.Fields(string(data[end+1:]))
+	if len(fields) == 0 {
+		return "", false
+	}
+	return fields[0], true
 }
 
 // procStamp identifies one live process: its process group and its start

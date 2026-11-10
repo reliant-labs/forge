@@ -424,6 +424,18 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 					"adopt it as a static site: forge project new --in-place --kind site --name <name>. "+
 						"To scaffold a Go backend beside it instead, pass --kind service (or --service <entity>)")
 			}
+			// A Dockerfile and no Go module is an app in another language.
+			// The Go scaffold would write ~40 files into it (and a
+			// .dockerignore its own image build trips over). Adopting it is
+			// a handful of declarations an agent writes from the `adopt`
+			// skill, not a scaffold; say so before anything is written.
+			if _, err := os.Stat(filepath.Join(targetPath, "Dockerfile")); err == nil {
+				return cliutil.UserErr("forge project new --in-place",
+					fmt.Sprintf("%s has a Dockerfile and no Go module: an app in another language, which the Go service scaffold would write a Go server into. Nothing was written", targetPath),
+					"",
+					"adopt it as it is — forge.yaml and deploy/kcl declaring its Dockerfile, none of its files touched — by following "+Name()+" skill load adopt. "+
+						"To scaffold a Go backend into it instead, pass --kind service (or --service <entity>)")
+			}
 		}
 	}
 	// An in-place target may be a module that already requires forge. Its

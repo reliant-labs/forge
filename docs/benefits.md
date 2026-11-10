@@ -150,7 +150,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Adopt an existing app
 
-`forge project new --in-place` and `forge project migrate import` bring an existing repository onto forge without a rewrite, with migration skills for service, CLI and library projects.
+An app that already exists, in any language, keeps its code: your agent declares its Dockerfile in `forge.yaml` and `deploy/kcl/` from the `adopt` skill's templates, then works in tiers you can stop after (ship it, see it with OpenTelemetry, harden it with gated promotion and CI, and move pieces onto forge's Go stack only when that pays). `forge project new --in-place` and `forge project migrate import` bring an existing repository onto forge without a rewrite, with migration skills for service, CLI and library projects.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -158,6 +158,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge project new`
 - command `forge project migrate import`
+- skill `adopt` (`forge skill load adopt`)
 - skill `migration` (`forge skill load migration`)
 - skill `migration-service` (`forge skill load migration-service`)
 - skill `migration-cli` (`forge skill load migration-cli`)

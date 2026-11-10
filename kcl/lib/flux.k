@@ -323,6 +323,16 @@ _ALLOWED_CONTROLLER_ROLES = [
 #   instance_patches           FluxInstance `kustomize.patches` entries, appended
 #                              AFTER forge's (so they win where they overlap).
 #   extra_objects              objects appended to the riding manifests.
+#   resources                  the controllers' container resources, keyed
+#                              "kustomize" | "source" | "kustomize_connected"
+#                              (the last only with connected_shard = True).
+#                              Each is {requests?, limits?}, merged per field
+#                              over forge's sizing: kustomize (and the shard)
+#                              500m/512Mi requested, 2/2Gi limit; source
+#                              250m/256Mi, 1/1Gi. So
+#                              {kustomize = {requests.cpu = "100m"}} lowers one
+#                              request and keeps the rest. The operator's own
+#                              pod is sized through `values` (its Helm chart).
 #
 # THE CONNECTED SHARD. A Kustomization with `spec.kubeConfig` (apply to a
 # customer's cluster) must never be applied by a controller that can also act
@@ -384,7 +394,8 @@ flux_chart = lambda values: {str: any} = {}, \
         connected_shard: bool = False, \
         distribution: {str: str} = {}, \
         instance_patches: [{str: any}] = [], \
-        extra_objects: [any] = [] -> any {
+        extra_objects: [any] = [], \
+        resources: {str: {str: {str: str}}} = {} -> any {
     assert regex.match(impersonate_service_account, _LABEL_RE), "flux_chart: impersonate_service_account '${impersonate_service_account}' is not an RFC-1123 label"
     assert all sa in impersonable_service_accounts { regex.match(sa, _LABEL_RE) }, "flux_chart: impersonable_service_accounts ${impersonable_service_accounts} must all be RFC-1123 labels (ServiceAccount names); a wildcard would let the controller impersonate any ServiceAccount in a bound namespace"
     assert resourceset_service_account == "" or regex.match(resourceset_service_account, _LABEL_RE), "flux_chart: resourceset_service_account '${resourceset_service_account}' is not an RFC-1123 label"
@@ -398,6 +409,9 @@ flux_chart = lambda values: {str: any} = {}, \
     assert not ("runtime_class_name" in placement and placement.runtime_class_name != "" and not regex.match(placement.runtime_class_name, _SUBDOMAIN_RE)), "flux_chart: placement.runtime_class_name is not a valid RuntimeClass name"
     assert all k in distribution { k in _DISTRIBUTION_KEYS }, "flux_chart: distribution keys must be ${_DISTRIBUTION_KEYS}; the Flux version is forge's (FLUX_VERSION), not a consumer's"
 
+    assert all k in resources { k in _RESOURCE_KEYS }, "flux_chart: resources keys must be ${_RESOURCE_KEYS}, got ${[k for k in resources]}"
+    assert connected_shard or "kustomize_connected" not in resources, "flux_chart: resources['kustomize_connected'] sizes a controller that only exists with connected_shard = True"
+    assert all k, r in resources { all f in r { f in ["requests", "limits"] } }, "flux_chart: each resources entry takes only requests and limits"
     assert all k in egress { k in _EGRESS_KEYS }, "flux_chart: egress keys must be ${_EGRESS_KEYS}, got ${[k for k in egress]}"
     assert connected_shard or "kustomize_connected" not in egress, "flux_chart: egress['kustomize_connected'] names a controller that only exists with connected_shard = True"
     assert not connected_shard or rbac == "namespaced", "flux_chart: connected_shard needs rbac = \"namespaced\": the shard holds no cluster-wide Secret read, so it only works where Secret reads come from per-namespace RoleBindings (flux_namespace_bindings(ns, connected_shard = True))"
@@ -437,6 +451,9 @@ flux_chart = lambda values: {str: any} = {}, \
             node_selector = _node_selector
             tolerations = _tolerations
             runtime_class = _runtime_class
+            kustomize_resources = _sized(_KC_RESOURCES, resources?.kustomize)
+            source_resources = _sized(_SC_RESOURCES, resources?.source)
+            connected_resources = _sized(_KC_RESOURCES, resources?.kustomize_connected)
         }) + instance_patches
     })
     _impersonable = [impersonate_service_account] + [sa for sa in impersonable_service_accounts if sa != impersonate_service_account]
@@ -557,6 +574,12 @@ _source_args = lambda concurrency: int -> [str] {
 
 _KC_RESOURCES = {requests = {cpu = "500m", memory = "512Mi"}, limits = {cpu = "2", memory = "2Gi"}}
 _SC_RESOURCES = {requests = {cpu = "250m", memory = "256Mi"}, limits = {cpu = "1", memory = "1Gi"}}
+_RESOURCE_KEYS = ["kustomize", "source", "kustomize_connected"]
+
+# _sized merges a consumer's {requests?, limits?} over a default, per field.
+_sized = lambda base: {str: {str: str}}, over: any -> {str: {str: str}} {
+    {requests = base.requests | (over?.requests or {}), limits = base.limits | (over?.limits or {})}
+}
 
 _target = lambda kind: str, name: str -> {str: str} { {kind = kind, name = "^${name}$"} }
 _json_patch = lambda kind: str, name: str, ops: [any] -> any { {target = _target(kind, name), patch = yaml.encode(ops)} }
@@ -586,14 +609,14 @@ _instance_patches = lambda o: {str: any} -> [any] {
     + [
         _json_patch("Deployment", "kustomize-controller", [{op = "replace", path = "/spec/template/spec/containers/0/args", value = o.kustomize_args}])
         _json_patch("Deployment", "source-controller", [{op = "replace", path = "/spec/template/spec/containers/0/args", value = o.source_args}])
-        _pod_patch("kustomize-controller", _KC_RESOURCES, o)
-        _pod_patch("source-controller", _SC_RESOURCES, o)
+        _pod_patch("kustomize-controller", o.kustomize_resources, o)
+        _pod_patch("source-controller", o.source_resources, o)
     ] + ([
         _json_patch("Deployment", FLUX_CONNECTED_CONTROLLER, [
             {op = "replace", path = "/spec/template/spec/containers/0/args", value = o.connected_args}
             {op = "replace", path = "/spec/template/spec/serviceAccountName", value = FLUX_CONNECTED_CONTROLLER}
         ])
-        _pod_patch(FLUX_CONNECTED_CONTROLLER, _KC_RESOURCES, o)
+        _pod_patch(FLUX_CONNECTED_CONTROLLER, o.connected_resources, o)
         _delete_patch("apps/v1", "Deployment", "^source-controller-${FLUX_CONNECTED_SHARD}$")
         _delete_patch("v1", "Service", "^source-controller-${FLUX_CONNECTED_SHARD}$")
     ] if o.connected else []) + ([

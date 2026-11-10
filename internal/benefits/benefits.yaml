@@ -202,13 +202,19 @@ benefits:
     category: build
     title: Adopt an existing app
     claim: >-
+      An app that already exists, in any language, keeps its code: your agent
+      declares its Dockerfile in `forge.yaml` and `deploy/kcl/` from the
+      `adopt` skill's templates, then works in tiers you can stop after (ship
+      it, see it with OpenTelemetry, harden it with gated promotion and CI, and
+      move pieces onto forge's Go stack only when that pays).
       `forge project new --in-place` and `forge project migrate import` bring an
-      existing repository onto forge without a rewrite, with migration skills
-      for service, CLI and library projects.
+      existing repository onto forge without a rewrite, with migration skills for
+      service, CLI and library projects.
     availability: forge
     evidence:
       - command: project new
       - command: project migrate import
+      - skill: adopt
       - skill: migration
       - skill: migration-service
       - skill: migration-cli

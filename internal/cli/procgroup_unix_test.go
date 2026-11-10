@@ -4,6 +4,7 @@ package cli
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -118,6 +119,85 @@ func airTree() map[int]procRow {
 
 func noLineage(int) bool { return false }
 
+// unsettled is a settled check that never finds a target stopped.
+func unsettled(int) bool { return false }
+
+// TestSignalTreeTargets_ZombieGroupEPERMIsStopped is the macOS shape of a
+// runner that exited unreaped: kill(-pgid) answers EPERM because every member
+// of the group is a zombie. That group is stopped, not a failure — while an
+// EPERM on a group that still has a live member (another user's process)
+// stays one.
+func TestSignalTreeTargets_ZombieGroupEPERMIsStopped(t *testing.T) {
+	table := map[int]procRow{110: {1, 110}}
+	v := stampVerifier{mark: 1000, ok: true, read: stampsAt(map[int]procStamp{110: {pgid: 110, start: 10}})}
+	eperm := func(target int, _ syscall.Signal) error {
+		if target < 0 {
+			return syscall.EPERM
+		}
+		return nil
+	}
+	targets := treeSignalTargets(110, table, noLineage, noLineage)
+
+	zombies := map[int]procState{110: {pgid: 110, exited: true}, 1: {pgid: 1}}
+	settled := func(target int) bool { return nothingLiveIn(target, zombies) }
+	if err := signalTreeTargets(targets, table, v, noLineage, eperm, settled, syscall.SIGTERM); err != nil {
+		t.Fatalf("a group of zombies reported as a failure: %v", err)
+	}
+
+	live := map[int]procState{110: {pgid: 110, exited: true}, 111: {pgid: 110}}
+	settled = func(target int) bool { return nothingLiveIn(target, live) }
+	err := signalTreeTargets(targets, table, v, noLineage, eperm, settled, syscall.SIGTERM)
+	if !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("EPERM on a group with a live member was hidden: %v", err)
+	}
+}
+
+func TestNothingLiveIn(t *testing.T) {
+	states := map[int]procState{
+		110: {pgid: 110, exited: true},
+		111: {pgid: 110, exited: true},
+		120: {pgid: 120},
+		121: {pgid: 120, exited: true},
+	}
+	for _, tc := range []struct {
+		target int
+		want   bool
+	}{
+		{110, true},  // a zombie
+		{999, true},  // gone
+		{120, false}, // running
+		{-110, true}, // every member a zombie
+		{-120, false},
+		{-999, true}, // an empty group
+	} {
+		if got := nothingLiveIn(tc.target, states); got != tc.want {
+			t.Errorf("nothingLiveIn(%d) = %v, want %v", tc.target, got, tc.want)
+		}
+	}
+}
+
+func TestParseProcStates(t *testing.T) {
+	got := parseProcStates("    1     1 Ss\n  110   110 Z\n  111   110 ZN\n  112   110 S+\nbogus\n")
+	want := map[int]procState{1: {1, false}, 110: {110, true}, 111: {110, true}, 112: {110, false}}
+	if len(got) != len(want) {
+		t.Fatalf("states = %v, want %v", got, want)
+	}
+	for pid, st := range want {
+		if got[pid] != st {
+			t.Errorf("pid %d = %+v, want %+v", pid, got[pid], st)
+		}
+	}
+}
+
+func TestParseProcStatState(t *testing.T) {
+	if st, ok := parseProcStatState([]byte("4242 (weird ) (name) Z 1 4240 4240 0")); !ok || st != "Z" {
+		t.Errorf("state = %q ok=%v, want Z", st, ok)
+	}
+	if _, ok := parseProcStatState([]byte("4242 (name)")); ok {
+		t.Error("a stat with no fields after comm parsed")
+	}
+}
+
 func TestSignalTreeTargets_SignalsGroupsWhoseLeadersReverify(t *testing.T) {
 	table := airTree()
 	v := stampVerifier{mark: 1000, ok: true, read: stampsAt(map[int]procStamp{
@@ -127,7 +207,7 @@ func TestSignalTreeTargets_SignalsGroupsWhoseLeadersReverify(t *testing.T) {
 	})}
 	var k killRecorder
 	targets := treeSignalTargets(110, table, noLineage, noLineage)
-	if err := signalTreeTargets(targets, table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+	if err := signalTreeTargets(targets, table, v, noLineage, k.kill, unsettled, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	if want := []int{-110, 110, 120, -120, 121}; !equalInts(k.sent, want) {
@@ -148,7 +228,7 @@ func TestSignalTreeTargets_LeaderExitedAndGroupNumberReused(t *testing.T) {
 	})}
 	var k killRecorder
 	targets := treeSignalTargets(110, table, noLineage, noLineage)
-	if err := signalTreeTargets(targets, table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+	if err := signalTreeTargets(targets, table, v, noLineage, k.kill, unsettled, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	for _, target := range k.sent {
@@ -174,7 +254,7 @@ func TestSignalTreeTargets_LeaderGoneMembersRemain(t *testing.T) {
 	})}
 	var k killRecorder
 	targets := treeSignalTargets(110, table, noLineage, noLineage)
-	if err := signalTreeTargets(targets, table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+	if err := signalTreeTargets(targets, table, v, noLineage, k.kill, unsettled, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	if want := []int{-110, 110, 121, 130}; !equalInts(k.sent, want) {
@@ -192,7 +272,7 @@ func TestSignalTreeTargets_MemberLeftOrReplaced(t *testing.T) {
 		122: {pgid: 120, start: 1200}, // pid reused after the snapshot
 	})}
 	var k killRecorder
-	if err := signalTreeTargets([]int{-120}, table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+	if err := signalTreeTargets([]int{-120}, table, v, noLineage, k.kill, unsettled, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	if len(k.sent) != 0 {
@@ -206,7 +286,7 @@ func TestSignalTreeTargets_Unverifiable(t *testing.T) {
 	table := airTree()
 	var k killRecorder
 	targets := treeSignalTargets(110, table, noLineage, noLineage)
-	if err := signalTreeTargets(targets, table, stampVerifier{}, noLineage, k.kill, syscall.SIGTERM); err != nil {
+	if err := signalTreeTargets(targets, table, stampVerifier{}, noLineage, k.kill, unsettled, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	if want := []int{110, 120, 121}; !equalInts(k.sent, want) {
@@ -354,7 +434,7 @@ func TestLinuxTickRateUnavailable(t *testing.T) {
 		110: {pgid: 110, start: 1}, 120: {pgid: 120, start: 1}, 121: {pgid: 120, start: 1},
 	})}
 	var k killRecorder
-	if err := signalTreeTargets(treeSignalTargets(110, table, noLineage, noLineage), table, v, noLineage, k.kill, syscall.SIGTERM); err != nil {
+	if err := signalTreeTargets(treeSignalTargets(110, table, noLineage, noLineage), table, v, noLineage, k.kill, unsettled, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	for _, target := range k.sent {

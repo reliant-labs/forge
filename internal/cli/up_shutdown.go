@@ -204,9 +204,18 @@ func (p *procRegistry) shutdown() error {
 // whose exit never came, or a process carrying this run's marker — and, when
 // it cannot tell, why not. Both empty means the stack is proven down.
 func (p *procRegistry) awaitStopped(procs []*managedProcess, managed map[int]bool) (left []string, unverified string) {
+	budget := time.NewTimer(stopReapWait)
+	defer budget.Stop()
 	select {
 	case <-allExited(procs):
-	case <-time.After(stopReapWait):
+		// Reaped; give their last lines, on their way through the pipes, the
+		// rest of the same budget to reach the terminal and the log files.
+		// A descendant still holding a pipe can never hold the command.
+		select {
+		case <-allDrained(procs):
+		case <-budget.C:
+		}
+	case <-budget.C:
 	}
 	for _, mp := range procs {
 		if pid := procPID(mp); pid > 0 && !managedProcessExited(mp) && processAlive(pid) {
@@ -425,6 +434,21 @@ func allExited(procs []*managedProcess) chan struct{} {
 			}()
 		}
 		wg.Wait()
+		close(ch)
+	}()
+	return ch
+}
+
+// allDrained returns a channel closed once every managed process's output
+// streams reached EOF (those with no streams of forge's count as drained).
+func allDrained(procs []*managedProcess) chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		for _, mp := range procs {
+			if mp.drained != nil {
+				<-mp.drained
+			}
+		}
 		close(ch)
 	}()
 	return ch

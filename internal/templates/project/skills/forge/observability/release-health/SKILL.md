@@ -40,13 +40,17 @@ waiting while no attempt has shipped, and exits 8 if none ships before
 **Did the release serve the window?** `version_share` is the judged release's
 share of the after window's measured traffic, weighted by requests, over the
 services whose share was measured. Under 50%, `rollout_incomplete` says the
-rollout had not happened, or had not finished, in that window. The verdict is
-INCONCLUSIVE, and the alerts, restarts and unversioned figures in it are not
-pinned on the release.
+rollout had not happened, or had not finished, in that window, so the window
+cannot prove the release good: a verdict that would be PASS is INCONCLUSIVE.
+A low share takes no finding off the release by itself. A failing finding
+still fails it: an alert or a restart carries no version, and a release on a
+tenth of the traffic can still take the env down, so a critical alert opened
+in the window fails it whatever the share.
 
-**Is the finding the release's?** A service's error rate or latency is the
-release's when the release served at least half of that service's traffic.
-Below that, the finding is unattributed and the release is unproven. Each issue
+**Is the finding the release's?** Only version-specific evidence says no. A
+service's error rate or latency is not the release's when the release served
+under half of that service's own traffic; the finding is unattributed and the
+release is unproven. Each issue
 finding is checked against the issue's after-window events by version
 (`window_versions` on each of `new_issues` and `regressed_issues`). An issue with an event of the release
 is the release's. An issue whose events are all another version's belongs to

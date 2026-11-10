@@ -54,6 +54,14 @@ func criticalAlertAt(at string) string {
 	return `{"alerts":[{"rule":"Down","state":"firing","fingerprint":"f2","firingAt":"` + at + `","labels":{"severity":"critical"}}]}`
 }
 
+// withWarningAlert adds to a reply a non-critical alert that opened in the
+// after window, and its (warn) finding.
+func withWarningAlert(reply string) string {
+	return strings.Replace(reply, `"findings":[`,
+		`"firingAlerts":[{"rule":"SlowQueries","fingerprint":"f9","firingAt":"2026-11-10T03:50:00Z","labels":{"severity":"warning"}}],
+ "findings":[{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","value":1,"threshold":1,"policy":"warn","message":"alert SlowQueries opened after the promotion and is still firing"},`, 1)
+}
+
 func TestObsCheckAttribution(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -105,6 +113,13 @@ func TestObsCheckAttribution(t *testing.T) {
 			stderr: "could not read issue 55ada191's after-window events",
 		},
 		{
+			name:    "a low share with no version evidence leaves the issue the release's",
+			replies: map[string][]string{procHealth: {retriedPromotionReply(0.0005473453749315818)}},
+			errs:    map[string]error{procListGatesCheck: &cloud.Error{Code: cloud.CodeUnavailable}, procGetIssueCheck: &cloud.Error{Code: cloud.CodeUnavailable}},
+			exit:    1, verdict: "FAIL",
+			want: []string{`"rollout_incomplete": "the judged release served 0.1%`},
+		},
+		{
 			name: "--wait waits for an attempt to ship, then judges",
 			replies: map[string][]string{procHealth: {retriedPromotionReply(0.0005473453749315818)},
 				procListGatesCheck: {unshippedGates, unshippedGates, retriedGates}, procGetIssueCheck: {oldVersionIssue}},
@@ -120,12 +135,27 @@ func TestObsCheckAttribution(t *testing.T) {
 			want: []string{`"window_not_live": "no attempt of this promotion has shipped its release yet`, `had shipped its release after 1m0s`},
 		},
 		{
-			name: "a critical alert in a window the release barely served is not its doing",
+			name: "a critical alert opened in a window the release barely served fails it: share alone moves no alert",
 			replies: map[string][]string{procHealth: {retriedPromotionReply(0.0005473453749315818)},
 				procGetIssueCheck: {oldVersionIssue}, procListAlertsCheck: {criticalAlertAt("2026-11-10T03:50:00Z")}},
 			errs: map[string]error{procListGatesCheck: &cloud.Error{Code: cloud.CodeUnavailable}},
+			exit: 1, verdict: "FAIL",
+			want: []string{`"rollout_incomplete": "the judged release served 0.1%`, `"code": "alert_firing"`},
+		},
+		{
+			name: "a non-critical alert in a window the release barely served is never a PASS",
+			replies: map[string][]string{procHealth: {withWarningAlert(retriedPromotionReply(0.0005473453749315818))},
+				procGetIssueCheck: {oldVersionIssue}},
+			errs: map[string]error{procListGatesCheck: &cloud.Error{Code: cloud.CodeUnavailable}},
 			exit: 2, verdict: "INCONCLUSIVE",
-			want: []string{`"unattributed": "the rollout was incomplete, so the release cannot be told from the version still serving"`},
+			want: []string{`"rollout_incomplete": "the judged release served 0.1%`, `"message": "alert SlowQueries opened after the promotion and is still firing"`},
+		},
+		{
+			name: "a critical alert in a window from before the release went live is INCONCLUSIVE, not a PASS",
+			replies: map[string][]string{procHealth: {retriedPromotionReply(1)},
+				procListGatesCheck: {retriedGates}, procGetIssueCheck: {newVersionIssue}, procListAlertsCheck: {criticalAlertAt("2026-11-10T03:50:00Z")}},
+			exit: 2, verdict: "INCONCLUSIVE",
+			want: []string{`"window_not_live": "the judged after window`, `"code": "alert_firing"`},
 		},
 		{
 			name: "a critical alert in the live release's window fails it",

@@ -673,7 +673,7 @@ func failAlert(fs []Finding, rule string) []Finding {
 	for i, f := range fs {
 		if f.Code == release.HealthAlertFiring && (f.Ref == rule || (f.Ref == "" && strings.Contains(f.Message, "alert "+rule+" "))) {
 			if f.Unattributed != "" {
-				return fs // not the release's doing (Attribute): critical or not
+				return fs // not the live release's window (Attribute): INCONCLUSIVE, critical or not
 			}
 			fs[i].Ref, fs[i].Policy = rule, PolicyFail
 			return fs

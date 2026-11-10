@@ -156,9 +156,9 @@ func TestAttribution(t *testing.T) {
 			rollout: "served 0.1% of the after window", unattributed: "not the live release's",
 		},
 		{
-			name:    "without its gates, the window's version share alone keeps the old release's issue from failing it",
+			name:    "a low share alone takes no finding off the release: the issue with no version evidence stands",
 			apply:   func() Report { return Attribute(prodReport()) },
-			verdict: Inconclusive, rollout: "served 0.1%", unattributed: "rollout was incomplete",
+			verdict: Fail, failing: []string{release.HealthRegressedIssue}, rollout: "served 0.1%",
 		},
 		{
 			name: "an issue whose after-window events are all another version's never fails the release",
@@ -223,12 +223,41 @@ func TestAttribution(t *testing.T) {
 			verdict: Fail, failing: []string{release.HealthErrorRate},
 		},
 		{
-			name: "a critical alert in a window the release barely served is not its doing",
+			name: "a critical alert opened in a window the release barely served still fails it",
 			apply: func() Report {
-				r := WithStandingAlerts(Attribute(prodReport()), []Alert{criticalAlert})
+				r := withWindowVersions(prodReport(), map[string]int64{"v1.12.0-rc.12": 3})
+				return Attribute(WithStandingAlerts(Attribute(r), []Alert{criticalAlert}))
+			},
+			verdict: Fail, failing: []string{release.HealthAlertFiring}, rollout: "served 0.1%", unattributed: "all tagged v1.12.0-rc.12",
+		},
+		{
+			name: "a non-critical alert in a window the release barely served is never a PASS",
+			apply: func() Report {
+				r := withWindowVersions(prodReport(), map[string]int64{"v1.12.0-rc.12": 3})
+				r.FiringAlerts = []Alert{{Rule: "SlowQueries", Labels: map[string]string{"severity": "warning"}, FiringAt: prodPromoted.Add(5 * time.Minute)}}
+				r = withFinding(r, Finding{Code: release.HealthAlertFiring, Ref: "SlowQueries", Value: 1, Threshold: 1, Policy: PolicyWarn,
+					Message: "alert SlowQueries opened after the promotion and is still firing"})
+				return Attribute(WithStandingAlerts(Attribute(r), nil))
+			},
+			verdict: Inconclusive, rollout: "served 0.1%", unattributed: "all tagged v1.12.0-rc.12",
+		},
+		{
+			name: "a restart in a window the release barely served stays the release's",
+			apply: func() Report {
+				r := withWindowVersions(prodReport(), map[string]int64{"v1.12.0-rc.12": 3})
+				r.Workloads = []Workload{{Workload: "api", Restarts: 3, LastTerminatedReason: "OOMKilled"}}
+				r = withFinding(r, Finding{Code: release.HealthWorkloadRestarts, Ref: "api", Value: 3, Threshold: 1, Policy: PolicyFail, Message: "api restarted 3 time(s)"})
 				return Attribute(r)
 			},
-			verdict: Inconclusive, rollout: "served 0.1%", unattributed: "rollout was incomplete",
+			verdict: Fail, failing: []string{release.HealthWorkloadRestarts}, rollout: "served 0.1%", unattributed: "all tagged v1.12.0-rc.12",
+		},
+		{
+			name: "a critical alert in a window from before the release went live is INCONCLUSIVE, never a PASS",
+			apply: func() Report {
+				r := WithLiveAt(prodReport(), prodLive, LiveShipped)
+				return Attribute(WithStandingAlerts(r, []Alert{criticalAlert}))
+			},
+			verdict: Inconclusive, notLive: "ended before the release went live", rollout: "served 0.1%", unattributed: "not the live release's",
 		},
 		{
 			name: "a critical alert in a window the release served fails it",
@@ -241,9 +270,10 @@ func TestAttribution(t *testing.T) {
 		{
 			name: "--fail-on cannot re-fail an unattributed finding",
 			apply: func() Report {
-				return Rejudge(Attribute(prodReport()), []string{release.HealthRegressedIssue, release.HealthLatency})
+				r := withWindowVersions(prodReport(), map[string]int64{"v1.12.0-rc.12": 3})
+				return Rejudge(Attribute(r), []string{release.HealthRegressedIssue})
 			},
-			verdict: Inconclusive, rollout: "served 0.1%", unattributed: "rollout was incomplete",
+			verdict: Inconclusive, rollout: "served 0.1%", unattributed: "all tagged v1.12.0-rc.12",
 		},
 		{
 			name: "a local report (no version share, no release) is as judged",
@@ -293,21 +323,39 @@ func TestAttribution(t *testing.T) {
 	}
 }
 
-// A critical alert's finding that attribution already found not the
-// release's stays a warn when the alert state is folded in after it.
-func TestWithStandingAlertsKeepsAnUnattributedAlertAWarn(t *testing.T) {
+// A critical alert opened in a window from before the release went live is
+// not the release's: folded in after attribution it stays a warn, and the
+// check is INCONCLUSIVE, not FAIL and never PASS. Opened in a window the
+// release barely served, it fails the release: share alone moves no alert.
+func TestWithStandingAlertsAndAttribution(t *testing.T) {
 	alert := Alert{Rule: "Down", Labels: map[string]string{"severity": "critical"}, FiringAt: prodPromoted.Add(5 * time.Minute)}
-	r := withFinding(prodReport(), Finding{Code: release.HealthAlertFiring, Ref: "Down", Value: 1, Threshold: 1, Policy: PolicyFail,
-		Message: "alert Down opened after the promotion and is still firing"})
-	r.FiringAlerts = []Alert{alert}
-	r = WithStandingAlerts(Attribute(r), []Alert{alert})
-	for _, f := range r.Findings {
-		if f.Code == release.HealthAlertFiring && (f.Policy != PolicyWarn || f.Unattributed == "") {
-			t.Errorf("alert finding re-failed: %+v", f)
+	base := withWindowVersions(withFinding(prodReport(), Finding{Code: release.HealthAlertFiring, Ref: "Down", Value: 1, Threshold: 1, Policy: PolicyFail,
+		Message: "alert Down opened after the promotion and is still firing"}), map[string]int64{"v1.12.0-rc.12": 3})
+	base.FiringAlerts = []Alert{alert}
+	alertFinding := func(r Report) Finding {
+		for _, f := range r.Findings {
+			if f.Code == release.HealthAlertFiring {
+				return f
+			}
 		}
+		t.Fatalf("no alert finding: %+v", r.Findings)
+		return Finding{}
 	}
-	if r.Verdict == Fail {
-		t.Errorf("verdict = FAIL over a window the release barely served")
+
+	notLive := WithStandingAlerts(WithLiveAt(base, prodLive, LiveShipped), []Alert{alert})
+	if f := alertFinding(notLive); f.Policy != PolicyWarn || f.Unattributed == "" {
+		t.Errorf("window not live: alert finding = %+v, want a warn with a reason", f)
+	}
+	if notLive.Verdict != Inconclusive {
+		t.Errorf("window not live: verdict = %s, want INCONCLUSIVE", notLive.Verdict)
+	}
+
+	lowShare := WithStandingAlerts(Attribute(base), []Alert{alert})
+	if f := alertFinding(lowShare); f.Policy != PolicyFail || f.Unattributed != "" {
+		t.Errorf("low share: alert finding = %+v, want a fail", f)
+	}
+	if lowShare.Verdict != Fail {
+		t.Errorf("low share: verdict = %s, want FAIL", lowShare.Verdict)
 	}
 }
 

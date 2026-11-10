@@ -11,9 +11,14 @@ package releasehealth
 //   - The release served the window. Below [MinVersionShare] of the after
 //     window's measured traffic, the rollout had not happened, or had not
 //     finished, there ([Report.RolloutIncomplete]).
-//   - The finding is the release's. A service's figures are its when the
-//     release served most of its traffic; an issue is its when an event of
-//     the release is among its after-window events ([Issue.WindowVersions]).
+//   - The finding is the release's. Only VERSION-SPECIFIC evidence takes a
+//     finding off the release: a service's figures are not its when that
+//     service's own traffic was mostly another version's; an issue is not
+//     its when every one of its after-window events is tagged another
+//     version ([Issue.WindowVersions]). A low aggregate share alone moves no
+//     finding: an alert or a restart carries no version, and a release on a
+//     tenth of the traffic can still take the env down, so they stay the
+//     release's (a critical alert keeps failing it).
 //
 // A finding that fails none of these keeps its policy. One that fails any is
 // kept in the report with policy warn and says why in [Finding.Unattributed],
@@ -168,27 +173,23 @@ func Attribute(r Report) Report {
 		}
 	}
 	changed := out.RolloutIncomplete != r.RolloutIncomplete
-	// Two passes: a finding the first pass finds the rollout incomplete by
-	// changes what the findings before it can be pinned on.
-	for pass := 0; pass < 2; pass++ {
-		for i, f := range out.Findings {
-			if f.Unattributed != "" {
-				continue
-			}
-			why, otherVersion := out.unattributed(f)
-			if why == "" {
-				continue
-			}
-			// A failing finding pinned on another version is that version's:
-			// it neither fails nor holds the release. One the window merely
-			// cannot pin on it (a service its rollout had not reached) leaves
-			// the release unproven.
-			if f.Policy == PolicyFail && !otherVersion && out.RolloutIncomplete == "" && out.WindowNotLive == "" {
-				out.RolloutIncomplete = fmt.Sprintf("the rollout was incomplete in the after window: %s", why)
-			}
-			out.Findings[i].Policy, out.Findings[i].Unattributed = PolicyWarn, why
-			changed = true
+	for i, f := range out.Findings {
+		if f.Unattributed != "" {
+			continue
 		}
+		why, otherVersion := out.unattributed(f)
+		if why == "" {
+			continue
+		}
+		// A failing finding pinned on another version is that version's: it
+		// neither fails nor holds the release. One the window merely cannot
+		// pin on it (a service its rollout had not reached) leaves the
+		// release unproven.
+		if f.Policy == PolicyFail && !otherVersion && out.RolloutIncomplete == "" && out.WindowNotLive == "" {
+			out.RolloutIncomplete = fmt.Sprintf("the rollout was incomplete in the after window: %s", why)
+		}
+		out.Findings[i].Policy, out.Findings[i].Unattributed = PolicyWarn, why
+		changed = true
 	}
 	if !changed && r.WindowNotLive == "" {
 		out.Verdict = r.Verdict
@@ -200,7 +201,9 @@ func Attribute(r Report) Report {
 
 // unattributed says why f is not the judged release's doing, or "" when it
 // is; otherVersion is true when the evidence pins it on another version (the
-// issue's events), not merely off this one.
+// issue's events), not merely off this one. Every reason but a window that
+// is not the live release's is evidence about f's own version: the release's
+// aggregate share never moves a finding on its own.
 func (r Report) unattributed(f Finding) (why string, otherVersion bool) {
 	if r.WindowNotLive != "" {
 		return "the after window is not the live release's", false
@@ -214,9 +217,6 @@ func (r Report) unattributed(f Finding) (why string, otherVersion bool) {
 		}
 		if s.VersionShare != nil && *s.VersionShare < MinVersionShare {
 			return fmt.Sprintf("%s served only %s of %s's after-window traffic", nameOr(rel, "the judged release"), pct(*s.VersionShare), f.Service), false
-		}
-		if s.VersionShare == nil && r.RolloutIncomplete != "" {
-			return fmt.Sprintf("the rollout was incomplete, and %s's traffic carries no version to tell the release from the one before", f.Service), false
 		}
 	case release.HealthNewIssue, release.HealthRegressedIssue:
 		is, ok := r.issue(f.Code, f.Ref, f.Message)
@@ -232,13 +232,12 @@ func (r Report) unattributed(f Finding) (why string, otherVersion bool) {
 		if f.Code == release.HealthNewIssue && is.FirstVersion != "" && is.FirstVersion != rel {
 			return fmt.Sprintf("first seen in %s, not %s", is.FirstVersion, rel), true
 		}
-		if r.RolloutIncomplete != "" {
-			return "the rollout was incomplete, and no event of the issue is known to be the release's", false
-		}
+		// No version-specific evidence: the issue stays the release's.
 	case release.HealthAlertFiring, release.HealthWorkloadRestarts:
-		if r.RolloutIncomplete != "" {
-			return "the rollout was incomplete, so the release cannot be told from the version still serving", false
-		}
+		// An alert carries no version, and a restart is not tied to the
+		// version its workload ran, so neither is ever taken off the
+		// release by share: a critical alert keeps failing it. Only a window
+		// that is not the live release's (above) moves them.
 	}
 	return "", false
 }

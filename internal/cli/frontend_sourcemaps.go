@@ -68,13 +68,24 @@ func sourcemapsHosted(e *KCLEntities) bool {
 // sourcemapPublisherFor picks where env's maps go: the platform registry when
 // its observability is hosted, a local directory otherwise.
 func sourcemapPublisherFor(projectDir, env string, e *KCLEntities) deploytarget.SourcemapPublisher {
+	return sourcemapPublisherForProject(projectDir, env, "", e)
+}
+
+// sourcemapPublisherForProject is sourcemapPublisherFor filing under the
+// registry subtree of project instead of this checkout's own (forge.yaml's
+// name, when project is empty): `forge frontend sourcemaps push --project`.
+// The symbolicator looks maps up under the project of the env the bundle
+// reports into, which for a bundle another project serves (the Electron
+// renderer, built by the app repo but reporting into the platform's env) is
+// not the project of the checkout that built it.
+func sourcemapPublisherForProject(projectDir, env, project string, e *KCLEntities) deploytarget.SourcemapPublisher {
 	if !sourcemapsHosted(e) {
 		return deploytarget.LocalSourcemaps{ProjectDir: projectDir, Env: env}
 	}
 	return deploytarget.RegistrySourcemaps{
 		ProjectDir: projectDir,
 		Env:        env,
-		Base:       func(ctx context.Context) (string, error) { return sourcemapsPushBase(ctx, env, e) },
+		Base:       func(ctx context.Context) (string, error) { return sourcemapsPushBase(ctx, env, project, e) },
 		Push:       sourcemapsRegistryPush,
 	}
 }
@@ -95,12 +106,15 @@ func sourcemapPublisherForEnv(ctx context.Context, env string) deploytarget.Sour
 // sourcemapsPushBase is the project's subtree in the platform registry, with
 // docker logged in to it. It is resolved at the first publish rather than up
 // front: a deploy whose build extracts no map never needs the credential.
-func sourcemapsPushBase(ctx context.Context, env string, e *KCLEntities) (string, error) {
+// project empty is this checkout's own (forge.yaml's name).
+func sourcemapsPushBase(ctx context.Context, env, project string, e *KCLEntities) (string, error) {
 	org, err := e.ControlPlane.organization(ctx)
 	if err != nil {
 		return "", err
 	}
-	project := hostedProjectName()
+	if project == "" {
+		project = hostedProjectName()
+	}
 	base := hostedimage.PushBase(e.ControlPlane.RegistryHost, org, project)
 	if base == "" {
 		return "", fmt.Errorf("cannot compose the registry subtree for env %q (organization %q, project %q)", env, org, project)
@@ -204,7 +218,9 @@ platform registry:
   <registry>/<org>/<project>/<frontend>-sourcemaps:<build id>
 
 and otherwise they are kept in .forge/sourcemaps/<env>/<frontend>/<build id>/
-and nothing is uploaded. The artifact format is documented in
+and nothing is uploaded. <project> is --project, or forge.yaml's name: name the
+project of the env the bundle reports its errors into, which is where they are
+looked up. The artifact format is documented in
 internal/deploytarget/sourcemaps_oci.go.
 
 THE BUILD ID must be the version the bundle reports to telemetry
@@ -234,7 +250,7 @@ Examples:
 	f.StringVar(&opts.frontend, "frontend", "", "The frontend the maps belong to (required)")
 	f.StringVar(&opts.buildID, "build-id", "", "The build id the bundle reports as service.version (required)")
 	f.StringVar(&opts.env, "env", "", "The env whose control plane and observability decide where the maps go (required)")
-	f.StringVar(&opts.project, "project", "", "The forge project the frontend belongs to (default: forge.yaml's name)")
+	f.StringVar(&opts.project, "project", "", "The forge project the frontend belongs to: its maps are filed under this project's registry subtree (default: forge.yaml's name)")
 	f.StringVar(&opts.basePath, "base-path", "", "Where <dist> is mounted in the served site (default: the root)")
 	f.BoolVar(&opts.dryRun, "dry-run", false, "Extract and report; push and keep nothing")
 	for _, name := range []string{"frontend", "build-id", "env"} {
@@ -280,7 +296,7 @@ func runSourcemapsPush(ctx context.Context, opts sourcemapsPushOptions) error {
 		fmt.Println("[sourcemaps] --dry-run: nothing pushed or kept")
 		return nil
 	}
-	rec, err := sourcemapPublisherFor(projectDir, opts.env, entities).PublishSourcemaps(ctx, build)
+	rec, err := sourcemapPublisherForProject(projectDir, opts.env, project, entities).PublishSourcemaps(ctx, build)
 	if err != nil {
 		return fmt.Errorf("file source maps for %s: %w", opts.frontend, err)
 	}

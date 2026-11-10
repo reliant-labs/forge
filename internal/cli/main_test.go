@@ -44,6 +44,9 @@ const defaultTestOrg = "4f3c2b1a-0000-4000-8000-000000000001"
 func TestMain(m *testing.M) {
 	// No test hands its command to another forge: see pinDelegationDisabled.
 	pinDelegationDisabled = true
+	// This binary serves `forge protoc-gen-forge` (below), so the root may
+	// register the self-exec descriptor extractor (descriptorSelfExecAllowed).
+	testBinaryServesForge = true
 	// No test reaches a control plane for its organization: the credential's
 	// org is stated, by default here and per-test by stubControlPlaneOrg.
 	// hosted_org_test.go pins the real call separately.
@@ -109,6 +112,9 @@ func TestMain(m *testing.M) {
 	}
 	if dir, err := os.MkdirTemp("", "forge-cli-state-"); err == nil {
 		connectStateDir = func() string { return dir }
+		// Removed after the suite like every process-wide fixture; one was
+		// left behind per run (806 on one machine).
+		registerSharedTempDir(dir)
 	}
 	// Nor does any test reach a deployed site: status probes a cloud env's
 	// shipped frontends at their real URLs.

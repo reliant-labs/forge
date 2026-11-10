@@ -3,6 +3,7 @@ package obsbackend
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"hash/fnv"
 	"math"
 	"sort"
@@ -251,6 +252,9 @@ type wirePanel struct {
 	SQL      string            `json:"sql,omitempty"`
 	HasError bool              `json:"hasError,omitempty"`
 	Funnel   *wireFunnel       `json:"funnel,omitempty"`
+	// Draw is how a sql panel's result is folded (Panel.draw): "table" asks
+	// for rows whatever the column types. Empty is the server's default.
+	Draw string `json:"draw,omitempty"`
 }
 
 type wireFunnel struct {
@@ -348,6 +352,9 @@ type wirePanelResponse struct {
 	SeriesMeta  []wireSeriesMeta `json:"seriesMeta"`
 	SeriesTotal int              `json:"seriesTotal"`
 	Warnings    []string         `json:"warnings"`
+	// Draw is what a sql panel's result was folded as ("line", "table", ...);
+	// empty from a control plane that predates Panel.draw.
+	Draw string `json:"draw"`
 	// Sent by control planes that report a sql panel's bucket; absent on older
 	// ones, and never required.
 	BucketSeconds  jsonInt `json:"bucketSeconds"`
@@ -444,9 +451,11 @@ func (c Cloud) Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 	if len(req.Params) > 0 {
 		return QueryResult{}, Wrong("--param binds a parameter on the local backend only; the control plane binds only the scope parameters (%s)", ReservedParamList())
 	}
-	p := obsquery.Panel{ID: "cli", Kind: "sql", SQL: req.SQL}
+	// Raw SQL asks for its rows as selected; a panel file keeps the fold its
+	// kind draws (a sql panel's time series included).
+	p, draw := obsquery.Panel{ID: "cli", Kind: "sql", SQL: req.SQL}, drawTable
 	if req.Panel != nil {
-		p = *req.Panel
+		p, draw = *req.Panel, ""
 	}
 	if p.Kind == "sql" {
 		if err := c.Instances.RefuseSQL("raw SQL (--sql, a sql panel)"); err != nil {
@@ -456,13 +465,23 @@ func (c Cloud) Query(ctx context.Context, req QueryRequest) (QueryResult, error)
 	if p.Signal == "metrics" && p.Kind != "sql" {
 		return c.metricsPanelTable(ctx, req, p)
 	}
-	r, err := c.queryPanel(ctx, req.Narrow, p, req.StepSeconds)
+	wp, err := panelWire(p)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	wp.Draw = draw
+	r, err := c.queryPanelScoped(ctx, c.scope(req.Narrow), wp, req.StepSeconds, req.Explain)
 	if err != nil {
 		return QueryResult{}, err
 	}
 	res := QueryResult{Statements: compiledStatements("panel "+p.Kind, r), Truncated: r.Truncated}
 	if req.Explain {
 		return res, nil
+	}
+	if draw != "" {
+		if err := foldedAsRows(r); err != nil {
+			return QueryResult{}, err
+		}
 	}
 	res.Columns, res.Rows = flattenCloudPanel(r)
 	if req.Limit > 0 && len(res.Rows) > req.Limit {
@@ -485,6 +504,42 @@ func (c Cloud) metricsPanelTable(ctx context.Context, req QueryRequest, p obsque
 		res.Rows, res.Truncated = res.Rows[:req.Limit], true
 	}
 	return res, nil
+}
+
+// drawTable is the Panel.draw that folds a sql result to rows, every column
+// in SELECT order.
+const drawTable = "table"
+
+// foldedAsRows refuses a raw-SQL result the control plane may have folded
+// into series instead of rows. A control plane that predates Panel.draw
+// ignores it (and echoes no draw) and may fold a result that has a date or
+// time column into series: the rows are lost (all of them, when no column is
+// numeric), so printing that as the rows would be wrong.
+//
+// It judges the response by its shape alone, never by which server rule
+// produced it: a legacy answer is the rows only when it carries no series and
+// either carries rows or has no time column at all. An empty legacy answer
+// with a time column cannot be told apart from an empty fold, so it is refused
+// too: the cost is a false refusal from a server too old to say, never wrong rows.
+func foldedAsRows(r wirePanelResponse) error {
+	if r.Draw != "" {
+		return nil
+	}
+	timeCol := ""
+	for _, c := range r.SQLColumns {
+		if c.Time {
+			timeCol = c.Name
+			break
+		}
+	}
+	if len(r.Series) == 0 && (len(r.Rows) > 0 || timeCol == "") {
+		return nil // an older server's table: already the rows as selected
+	}
+	col := "a date or time column"
+	if timeCol != "" {
+		col = fmt.Sprintf("a date or time column (%s)", timeCol)
+	}
+	return Undetermined("this control plane cannot be trusted to return a SELECT with %s as rows: it predates QueryPanel's draw and folds such a result into series, losing the rows; select the time column as a string (toString(...)) until it is upgraded", col)
 }
 
 // flattenCloudPanel turns a QueryPanel response into a table: a sql panel

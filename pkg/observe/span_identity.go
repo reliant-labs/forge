@@ -31,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/reliant-labs/forge/pkg/authn"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // AttrSessionID is the browser RUM session id on a backend span, and the baggage
@@ -77,6 +78,20 @@ func SessionIDFromBaggage(header http.Header) string {
 // RequestSpanInterceptor records the request's server span (the one the Trace
 // slot opened) for identitySpanInterceptor, and sets session.id on it from the
 // request's baggage. Chain installs it directly inside Trace.
+//
+// It also classifies how the call ended, on that span. The Trace slot is
+// otelconnect, which knows only the wire code: it marks a server span Error for
+// Unavailable, whoever was at fault. But Unavailable is also the code of an
+// ending nobody has to act on: a replica draining for a rollout
+// (svcerr.ErrServerDraining, which a redialing peer needs as Unavailable), or a
+// peer that went quiet and was cut so it redials. svcerr classes those
+// canceled, and logging and metrics already honour that; the server span did
+// not, so every drained or reaped stream was a server error in every error rate
+// (a daemon gateway, whose only rpc is one such stream, read 100% errors). So a
+// call that ends with a canceled-class error gets RecordSpanError on its server
+// span: error_class=canceled, which is what obsquery's error expressions exclude,
+// and the error as an exception event. The status otelconnect then sets is left
+// as it is: it describes the wire code, and the class says who must act.
 func RequestSpanInterceptor() connect.Interceptor { return requestSpan{} }
 
 type requestSpan struct{}
@@ -89,12 +104,24 @@ func (requestSpan) enter(ctx context.Context, header http.Header) context.Contex
 	return context.WithValue(ctx, serverSpanKey{}, span)
 }
 
+// settle classifies a canceled-class ending on the server span (see
+// RequestSpanInterceptor). Any other failure is left to the Trace slot, which
+// already marks a server fault Error and a user error unset.
+func (requestSpan) settle(ctx context.Context, err error) {
+	if err != nil && svcerr.Classify(err) == svcerr.ClassCanceled {
+		RecordSpanError(serverSpanOf(ctx), err)
+	}
+}
+
 func (r requestSpan) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		if req.Spec().IsClient {
 			return next(ctx, req)
 		}
-		return next(r.enter(ctx, req.Header()), req)
+		ctx = r.enter(ctx, req.Header())
+		resp, err := next(ctx, req)
+		r.settle(ctx, err)
+		return resp, err
 	}
 }
 
@@ -104,7 +131,10 @@ func (requestSpan) WrapStreamingClient(next connect.StreamingClientFunc) connect
 
 func (r requestSpan) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		return next(r.enter(ctx, conn.RequestHeader()), conn)
+		ctx = r.enter(ctx, conn.RequestHeader())
+		err := next(ctx, conn)
+		r.settle(ctx, err)
+		return err
 	}
 }
 

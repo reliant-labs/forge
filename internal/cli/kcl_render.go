@@ -736,6 +736,10 @@ type ExternalSecretEntity struct {
 	// that must carry the same logical value (cross-secret byte-match).
 	// Empty => a standalone prereq (no byte-match group).
 	ValueGroup string `json:"value_group,omitempty"`
+	// Clusters are the kubectl contexts the Secret is declared to be required
+	// on (ExternalSecret.clusters). Empty => the preflight infers them from
+	// the clusters that consume its namespace (scopeRequiredSecretsToClusters).
+	Clusters []string `json:"clusters,omitempty"`
 	// Source is the rendered forge.StoreSource: nil for a Secret something
 	// else provisions, set for one ESO syncs from a store.
 	Source *StoreSourceEntity `json:"source,omitempty"`

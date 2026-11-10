@@ -42,11 +42,11 @@ var registryYAML []byte
 type Status string
 
 const (
-	// StatusEnforced: something refuses the action (a lint, a gate, a guard).
+	// StatusEnforced means something refuses the action (a lint, a gate, a guard).
 	StatusEnforced Status = "enforced"
-	// StatusRecorded: forge writes the declaration down; nothing refuses yet.
+	// StatusRecorded means forge writes the declaration down; nothing refuses yet.
 	StatusRecorded Status = "recorded"
-	// StatusInProgress: designed but not shipped. Never a headline.
+	// StatusInProgress means designed but not shipped; it is never a headline.
 	StatusInProgress Status = "in-progress"
 )
 
@@ -54,11 +54,11 @@ const (
 type Availability string
 
 const (
-	// AvailabilityForge: open-source forge, on any infrastructure.
+	// AvailabilityForge means open-source forge, on any infrastructure.
 	AvailabilityForge Availability = "forge"
-	// AvailabilityHosted: needs Reliant hosting.
+	// AvailabilityHosted needs Reliant hosting.
 	AvailabilityHosted Availability = "hosted"
-	// AvailabilityReliant: needs the Reliant agent harness.
+	// AvailabilityReliant needs the Reliant agent harness.
 	AvailabilityReliant Availability = "reliant"
 )
 

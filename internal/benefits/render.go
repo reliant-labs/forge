@@ -221,14 +221,14 @@ func evidenceLine(e Evidence) string {
 	case KindMarker:
 		return fmt.Sprintf("marker `// %s`", v)
 	case KindSkill:
-		return fmt.Sprintf("skill `%s` (`forge skill load %s`)", v, v)
+		return "skill `" + v + "` (`forge skill load " + v + "`)"
 	case KindLibrary:
-		return fmt.Sprintf("library [`%s`](../%s)", v, v)
+		return "library [`" + v + "`](../" + v + ")"
 	case KindPath:
-		return fmt.Sprintf("source [`%s`](../%s)", v, v)
+		return "source [`" + v + "`](../" + v + ")"
 	case KindExternal:
 		repo, p, _ := strings.Cut(v, ":")
-		return fmt.Sprintf("`%s` in the %s repo", p, repo)
+		return "`" + p + "` in the " + repo + " repo"
 	}
 	return v
 }

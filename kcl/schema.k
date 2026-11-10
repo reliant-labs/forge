@@ -6411,6 +6411,9 @@ schema AlertRule:
       * `keep_firing_for` — hold the alert this long after it clears.
       * `labels`          — `severity` is one of critical | warning | info
         (default warning). `reliant_*` and `alertname` are reserved.
+        `release_health = "exclude"` marks a rule about something other than
+        the env's workloads (a build machine, a fleet): its alerts never judge
+        a release (`forge obs check` lists them as excluded_alerts).
       * `annotations`     — summary, description, runbook_url: Prometheus-style
         Go templates (`{{ $labels.x }}`, `{{ printf "%.0f" $value }}`,
         `humanize`, `mulf`, ...; the `observability/alerts` skill lists them).

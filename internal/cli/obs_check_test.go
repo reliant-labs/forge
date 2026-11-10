@@ -806,6 +806,58 @@ func TestObsCheckCriticalAlertInTheAnswerFailsWhenListAlertsFails(t *testing.T) 
 	}
 }
 
+// An alert whose rule says it is not about the env's workloads (v1.12.0,
+// 2026-11-09: MachineLoadHigh on the build host failed prod's check) judges
+// nothing, whichever side judged it: the control plane's FAIL on its
+// alert_firing finding becomes the PASS the rest of the answer earns, and the
+// alert is listed as excluded. A counted alert of another rule still fails.
+func TestObsCheckExcludedAlertJudgesNoRelease(t *testing.T) {
+	const machine = `{"rule":"MachineLoadHigh","fingerprint":"m1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"critical","machine":"ws-ws-e164d47d","release_health":"exclude"}}`
+	finding := `{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","ref":"MachineLoadHigh","value":1,"threshold":1,"policy":"fail","message":"alert MachineLoadHigh opened after the promotion and is still firing"}`
+	reply := strings.Replace(healthReply("RELEASE_VERDICT_FAIL", true, finding, ""), `"verdict"`, `"firingAlerts":[`+machine+`],"verdict"`, 1)
+	caller := &seqCaller{replies: map[string][]string{
+		procHealth:          {reply},
+		procListAlertsCheck: {`{"alerts":[` + strings.Replace(machine, `"rule"`, `"state":"firing","rule"`, 1) + `]}`},
+	}}
+	out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+	if err != nil {
+		t.Fatalf("exit = %d (%v), want 0; out = %s", exitCodeForError(err), err, out)
+	}
+	doc := decode(t, out)
+	if doc["verdict"] != "PASS" || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") || doc["firing_alerts"] != nil {
+		t.Errorf("doc = %v", doc)
+	}
+	if ex, _ := doc["excluded_alerts"].([]any); len(ex) != 1 || !strings.Contains(fmt.Sprint(ex), "ws-ws-e164d47d") {
+		t.Errorf("excluded_alerts = %v", doc["excluded_alerts"])
+	}
+
+	// An answer with no alert arrays (an older control plane): the alert
+	// state read here names the rule excluded.
+	reply = healthReply("RELEASE_VERDICT_FAIL", true, finding, "")
+	caller = &seqCaller{replies: map[string][]string{
+		procHealth:          {reply},
+		procListAlertsCheck: {`{"alerts":[` + strings.Replace(machine, `"rule"`, `"state":"firing","rule"`, 1) + `]}`},
+	}}
+	out, _, err = newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+	if err != nil {
+		t.Fatalf("no alert arrays: exit = %d (%v), want 0; out = %s", exitCodeForError(err), err, out)
+	}
+	if doc := decode(t, out); doc["verdict"] != "PASS" || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") {
+		t.Errorf("no alert arrays: doc = %v", doc)
+	}
+
+	down := `{"rule":"Down","fingerprint":"d1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"critical"}}`
+	reply = strings.Replace(healthReply("RELEASE_VERDICT_PASS", true, "", ""), `"verdict"`, `"firingAlerts":[`+machine+`,`+down+`],"verdict"`, 1)
+	caller = &seqCaller{replies: map[string][]string{procHealth: {reply}}}
+	out, _, err = newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+	if exitCodeForError(err) != exitWrong {
+		t.Fatalf("a counted critical alert beside it: exit = %d (%v), want 1", exitCodeForError(err), err)
+	}
+	if doc := decode(t, out); doc["verdict"] != "FAIL" || !strings.Contains(fmt.Sprint(doc["findings"]), "Down") || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") {
+		t.Errorf("doc = %v", doc)
+	}
+}
+
 // An app adopted by its Dockerfile exports no OpenTelemetry unless it was
 // instrumented, so the control plane answers with no service at all however
 // much traffic it served. Measured: 120 real requests to an adopted Express

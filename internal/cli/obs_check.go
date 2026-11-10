@@ -38,7 +38,7 @@ var obsCheckSchema = obsout.Schema{
 	Name: schemaObsCheck,
 	Fields: []string{
 		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to",
-		"query_mode", "verdict", "reason",
+		"query_mode", "verdict", "reason", "reason_code",
 		"subject", "subject.promotion_id", "subject.release", "subject.git_commit", "subject.promoted_at", "subject.previous_release",
 		"windows", "windows.before", "windows.before.from", "windows.before.to", "windows.after", "windows.after.from", "windows.after.to", "windows.after_complete",
 		"services", "services.service", "services.before", "services.after", "services.version_share",
@@ -66,8 +66,10 @@ type obsCheckDoc struct {
 	Scope     obsout.Scope `json:"scope"`
 	QueryMode string       `json:"query_mode"`
 	Verdict   string       `json:"verdict,omitempty"`
-	// Reason says why the verdict is INCONCLUSIVE.
+	// Reason says why the verdict is INCONCLUSIVE; ReasonCode says it as
+	// one of releasehealth's Reason* codes, for a gate to branch on.
 	Reason          string                        `json:"reason,omitempty"`
+	ReasonCode      string                        `json:"reason_code,omitempty"`
 	Subject         *releasehealth.Subject        `json:"subject,omitempty"`
 	Windows         *obsCheckWindows              `json:"windows,omitempty"`
 	Services        []releasehealth.ServiceHealth `json:"services,omitempty"`
@@ -242,7 +244,8 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	if err != nil {
 		return bad(err)
 	}
-	b, _, err := (&obsCommon{backend: o.backend}).open(ctx, d, env, "check")
+	common := &obsCommon{backend: o.backend}
+	b, _, err := common.open(ctx, d, env, "check")
 	if err != nil {
 		return bad(err)
 	}
@@ -318,6 +321,11 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 		if early = earlyPassWhy(res.Report, o.earlyPass); early != "" {
 			res.Report.Verdict = releasehealth.Pass
 		}
+	}
+	// No request data at all is explained by the services whose telemetry
+	// is their own to export (an app adopted by its Dockerfile).
+	if res.Report.NoRequestTelemetry() {
+		res.Report = releasehealth.WithUninstrumented(res.Report, common.facts.SelfInstrumented)
 	}
 	fillCheckDoc(&doc, b.Info(), env, res, o)
 	doc.EarlyPass = early
@@ -488,6 +496,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	doc.Verdict = string(r.Verdict)
 	if r.Verdict == releasehealth.Inconclusive {
 		doc.Reason = releasehealth.InconclusiveWhy(r)
+		doc.ReasonCode = releasehealth.InconclusiveCode(r)
 	}
 	sub := r.Subject
 	doc.Subject = &sub
@@ -512,6 +521,10 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 		doc.Suggested = checkSuggestions(env, r)
 	} else if len(r.StandingCritical) > 0 {
 		doc.Suggested = obsout.Suggest(obsout.Command("forge", "obs", "status", env), obsout.Command("forge", "obs", "workloads", env))
+	} else if r.Verdict == releasehealth.Inconclusive && releasehealth.InconclusiveCode(r) == releasehealth.ReasonNoRequestTelemetry {
+		// What forge can see of an uninstrumented app: its logs and its
+		// workloads' health.
+		doc.Suggested = obsout.Suggest(obsout.Command("forge", "obs", "workloads", env), obsout.Command("forge", "obs", "logs", env), obsout.Command("forge", "skill", "load", "observability"))
 	}
 }
 

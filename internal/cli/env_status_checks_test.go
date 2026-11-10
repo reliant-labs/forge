@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // The runtime checks probe the port `forge env status` RESOLVED, not a
@@ -43,6 +44,22 @@ func TestRuntimeTargetComesFromTheResolvedRows(t *testing.T) {
 	// would be the same class of guess.
 	if got.Pprof != "localhost:6061" {
 		t.Errorf("Pprof = %q, want localhost:6061 from the service's declared PPROF_ADDR", got.Pprof)
+	}
+}
+
+// The app health check holds a service to the probes it DECLARES: an app
+// adopted by its Dockerfile declares a tcp probe and serves no /healthz.
+func TestRuntimeTargetCarriesTheDeclaredProbe(t *testing.T) {
+	rows := []upServiceRow{{Name: "app", Kind: "host", Port: 3000, Listening: true}}
+	entities := &KCLEntities{Workloads: []WorkloadEntity{
+		hostWL("app", func(w *WorkloadEntity) { w.Spec.Probes = &deployv1alpha1.Probes{TCP: true} }),
+	}}
+	if got := runtimeTargetFor(entities, rows).Probe; !got.TCP {
+		t.Errorf("Probe = %+v, want the declared tcp probe", got)
+	}
+	entities.Workloads[0].Spec.Probes = nil
+	if got := runtimeTargetFor(entities, rows).Probe; got.TCP || got.ReadinessPath != "" {
+		t.Errorf("Probe = %+v, want forge's own (zero) contract when none is declared", got)
 	}
 }
 

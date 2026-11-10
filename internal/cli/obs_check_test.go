@@ -782,3 +782,38 @@ func TestObsCheckCriticalAlertInTheAnswerFailsWhenListAlertsFails(t *testing.T) 
 		t.Errorf("doc = %v", doc)
 	}
 }
+
+// An app adopted by its Dockerfile exports no OpenTelemetry unless it was
+// instrumented, so the control plane answers with no service at all however
+// much traffic it served. Measured: 120 real requests to an adopted Express
+// app were reported as "no service had at least 50 requests". The verdict
+// stays INCONCLUSIVE (exit 2: not proven good), and the document now says
+// why in a code a gate can branch on and a reason that names the app.
+func TestObsCheckNoRequestTelemetryNamesTheSelfInstrumentedService(t *testing.T) {
+	reply := strings.Replace(healthReply("RELEASE_VERDICT_INCONCLUSIVE", true, "", ""),
+		`"services":[{"service":"api","before":{"requests":"900","errorRate":0.001,"p95Ms":100},"after":{"requests":"1000","errorRate":0.05,"p95Ms":110},"versionShare":1}],`,
+		`"services":[],`, 1)
+	facts := cloudFacts()
+	facts.SelfInstrumented = []string{"app"}
+	caller := &seqCaller{replies: map[string][]string{procHealth: {reply}}}
+	out, _, err := newObsCheckHarness().run(t, facts, caller, nil, "check", "prod", "--json")
+	if got := exitCodeForError(err); got != 2 {
+		t.Fatalf("exit = %d, want 2 (not proven good): %v", got, err)
+	}
+	doc := decode(t, out)
+	if doc["verdict"] != "INCONCLUSIVE" || doc["reason_code"] != "no_request_telemetry" {
+		t.Errorf("verdict %v, reason_code %v; want INCONCLUSIVE / no_request_telemetry", doc["verdict"], doc["reason_code"])
+	}
+	reason := fmt.Sprint(doc["reason"])
+	for _, want := range []string{"no request telemetry", "app exports none unless it is instrumented", "OTEL_EXPORTER_OTLP_ENDPOINT"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("reason does not say %q: %s", want, reason)
+		}
+	}
+	if !strings.Contains(fmt.Sprint(doc["suggested"]), "obs workloads prod") {
+		t.Errorf("suggested = %v, want what forge sees without telemetry (obs workloads)", doc["suggested"])
+	}
+	if !strings.Contains(err.Error(), "no request telemetry") {
+		t.Errorf("the exit message does not carry the reason: %v", err)
+	}
+}

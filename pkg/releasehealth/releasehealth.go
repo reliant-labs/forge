@@ -486,12 +486,18 @@ type Report struct {
 	// AlertStateUnread says why a caller that applies the critical-alert rule
 	// itself could not read the alert state (WithAlertStateUnread): a PASS
 	// that could not look at it is not proven good.
-	AlertStateUnread string      `json:"alert_state_unread,omitempty"`
-	Workloads        []Workload  `json:"workload_findings,omitempty"`
-	Verdict          Verdict     `json:"verdict"`
-	Findings         []Finding   `json:"findings"`
-	Thresholds       []Threshold `json:"thresholds"`
-	NotEvaluated     []string    `json:"not_evaluated,omitempty"`
+	AlertStateUnread string     `json:"alert_state_unread,omitempty"`
+	Workloads        []Workload `json:"workload_findings,omitempty"`
+	// Uninstrumented names the env's services whose request telemetry is
+	// their own to export — built from their own Dockerfile or command, or a
+	// third-party image, not by forge, which instruments what it builds
+	// (WithUninstrumented). Read only to say why a report with no request
+	// telemetry could not be judged; it never changes a verdict.
+	Uninstrumented []string    `json:"uninstrumented_services,omitempty"`
+	Verdict        Verdict     `json:"verdict"`
+	Findings       []Finding   `json:"findings"`
+	Thresholds     []Threshold `json:"thresholds"`
+	NotEvaluated   []string    `json:"not_evaluated,omitempty"`
 }
 
 // ── evaluation ──────────────────────────────────────────────────────────
@@ -761,6 +767,55 @@ func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth,
 	return Inconclusive
 }
 
+// Why a report is INCONCLUSIVE, as a stable code (InconclusiveCode) a gate
+// or an agent can branch on; InconclusiveWhy is the same in a sentence.
+const (
+	ReasonAlertStateUnread   = "alert_state_unread"
+	ReasonStandingCritical   = "standing_critical_alert"
+	ReasonWindowOpen         = "window_open"
+	ReasonNoRequestTelemetry = "no_request_telemetry"
+	ReasonLowTraffic         = "low_traffic"
+)
+
+// NoRequestTelemetry reports whether not one service sent a request in
+// either window: there is no request data at all, which is not the same as
+// too little of it. Release health measures requests from each service's
+// own OpenTelemetry server spans, so an app that exports none looks like
+// this however much traffic it serves — as does an instrumented one nobody
+// called.
+func (r Report) NoRequestTelemetry() bool {
+	for _, s := range r.Services {
+		if s.Before.Requests > 0 || s.After.Requests > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// WithUninstrumented records the env's services whose telemetry is their
+// own to export (Report.Uninstrumented), sorted. The verdict is unchanged.
+func WithUninstrumented(r Report, services []string) Report {
+	out := r
+	out.Uninstrumented = normalizeCodes(services)
+	return out
+}
+
+// InconclusiveCode is why a report is INCONCLUSIVE, as one of the Reason*
+// codes, in the precedence InconclusiveWhy explains it.
+func InconclusiveCode(r Report) string {
+	switch {
+	case r.AlertStateUnread != "":
+		return ReasonAlertStateUnread
+	case len(r.StandingCritical) > 0:
+		return ReasonStandingCritical
+	case !r.AfterComplete:
+		return ReasonWindowOpen
+	case r.NoRequestTelemetry():
+		return ReasonNoRequestTelemetry
+	}
+	return ReasonLowTraffic
+}
+
 // InconclusiveWhy says why a report is INCONCLUSIVE, in one line.
 func InconclusiveWhy(r Report) string {
 	if r.AlertStateUnread != "" {
@@ -778,7 +833,39 @@ func InconclusiveWhy(r Report) string {
 	if !r.AfterComplete {
 		return fmt.Sprintf("the after window has not finished (it ends %s)", r.After.To.UTC().Format(time.RFC3339))
 	}
+	if r.NoRequestTelemetry() {
+		return noRequestTelemetryWhy(r)
+	}
 	return fmt.Sprintf("no service had at least %d requests after the promotion, so there is not enough traffic to judge", minRequestsOf(r.Thresholds))
+}
+
+// noRequestTelemetryWhy is InconclusiveWhy for a report with no request data
+// at all. It says what is missing and how to supply it, and what WAS judged
+// without it, rather than reading as "not enough traffic" to someone whose
+// app served plenty.
+func noRequestTelemetryWhy(r Report) string {
+	var b strings.Builder
+	b.WriteString("no request telemetry: no service sent a single server span in either window, so error rate and latency could not be judged. ")
+	b.WriteString("Release health measures requests from each service's own OpenTelemetry traces")
+	if n := len(r.Uninstrumented); n > 0 {
+		verb := "exports"
+		if n > 1 {
+			verb = "export"
+		}
+		fmt.Fprintf(&b, ", and %s %s none unless it is instrumented: forge did not build it, so it did not instrument it", strings.Join(r.Uninstrumented, ", "), verb)
+	}
+	b.WriteString(". Add an OpenTelemetry SDK that exports traces over OTLP to $OTEL_EXPORTER_OTLP_ENDPOINT (hosting sets it, and OTEL_SERVICE_NAME, on every workload); ")
+	b.WriteString("if the app already does, send it traffic and check again. ")
+	checked := "workload restarts, alerts and issues"
+	if len(r.NotEvaluated) > 0 {
+		checked += " (not evaluated here: " + strings.Join(r.NotEvaluated, ", ") + ")"
+	}
+	if len(r.Findings) == 0 {
+		b.WriteString("What forge sees without it — " + checked + " — found nothing against the release")
+	} else {
+		fmt.Fprintf(&b, "What forge sees without it — %s — found %d warning(s), listed in findings", checked, len(r.Findings))
+	}
+	return b.String()
 }
 
 func sortFindings(fs []Finding) {

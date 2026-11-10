@@ -376,7 +376,7 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 
 	// ── What #603 got wrong ──────────────────────────────────────────────
 	// ClickHouse is not published, and its passwordless `default` user is gone.
-	if out, err := compose("port", clickstack.Service, "8123"); err == nil && strings.TrimSpace(string(out)) != "" && !strings.HasPrefix(strings.TrimSpace(string(out)), ":0") {
+	if out, err := compose("port", clickstack.Service, "8123"); err == nil && composePortPublished(string(out)) {
 		t.Errorf("ClickHouse 8123 is published to the host: %s", out)
 	}
 	// clickhouse-client inside the container reads CLICKHOUSE_USER/PASSWORD from

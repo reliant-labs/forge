@@ -1,6 +1,6 @@
 ---
 name: observability/product-events
-description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, retention, and sql/funnel panels over the hosted product_events table.
+description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the standard auth events the console counts users from (observe.TrackAuth, trackAuthEvent, identifyUser; the record for any other language), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, retention, and sql/funnel panels over the hosted product_events table.
 ---
 
 # Product events
@@ -94,6 +94,74 @@ user. A marketing site wraps its outbound links in `withAttribution(url)` so the
 app sees the `rid` and utm values. All of it is behind the same consent gate as
 `track`: nothing is stored or appended until `initBrowserTelemetry` runs, and
 not after `disableTelemetry()`.
+
+## Auth events: who signed up, signed in, signed out
+
+Three product event names are reserved for a fixed auth vocabulary, the same
+whatever the auth provider. The console counts users from them, over a range:
+**active** = distinct users with `auth_signed_in`; **new** = distinct users
+with `auth_signed_up`; **returning** = active users with no `auth_signed_up`
+in the range. Every count is distinct by `user.id`, so the same sign-in
+reported twice (server and browser, two replicas, a retry) counts once.
+
+| event | when | props |
+|---|---|---|
+| `auth_signed_up` | an account created by the person: self sign-up, or an accepted invitation (an admin's invite is not a sign-up until accepted) | `method`, `provider`, `verified` |
+| `auth_signed_in` | a session established: `kind=credential` (a credential was just verified) or `kind=resumed` (an existing session seen; at most once per user per UTC day per emitter) | `kind`, `method` (credential only), `provider` |
+| `auth_signed_out` | the person ended the session. No count depends on it | `provider` |
+
+Bounded values (anything else is recorded as `other`): `method` is `password`,
+`passkey`, `magic_link`, `social`, `invite`, `verify`, `reset`, `sso`;
+`social_provider` (with `method=social`) is `google`, `github`, `microsoft`,
+`apple`; `provider` is `forge`, `auth0`, `clerk`, `supabase`, `firebase`,
+`cognito`, `jwt`, `custom`, or any name matching `^[a-z][a-z0-9_]{0,31}$`.
+
+`user.id` is the provider's **opaque subject** (`auth0|abc`, a Clerk `user_…`,
+a Zitadel id), never an email: every emitter refuses an id that is empty,
+longer than 128 characters or contains `@`, and warns once.
+
+**Emit them from the server wherever a server sees the auth.** It is the
+authoritative emitter: browser events are lost to ad blockers, consent banners
+and the redirect right after a sign-in, and anyone can post one.
+
+```go
+// at your own sign-up / sign-in handlers (Auth0, Clerk, your own):
+observe.TrackAuth(ctx, observe.AuthSignedUp, sub,
+    observe.WithMethod(observe.AuthMethodPassword), observe.WithProvider("auth0"), observe.WithVerified(false))
+observe.TrackAuth(ctx, observe.AuthSignedIn, sub,
+    observe.WithMethod(observe.AuthMethodSocial), observe.WithSocialProvider("google"), observe.WithProvider("auth0"))
+```
+
+`TrackAuth` takes the id explicitly, because at sign-in the request is still
+anonymous. Like `Track` it is never switched off by `product_events = False`:
+an event your code records is your code's decision.
+
+From the browser, `identifyUser` is the one call every app should make, wherever
+it learns who is signed in (Clerk's `useUser`, Auth0's `useAuth0`, a session
+refresh). It attaches the id to every span and replay (`setTelemetryUser`) and
+sends one `auth_signed_in {kind: "resumed"}` per user per UTC day per browser,
+which is what counts a user with a long-lived session as active.
+`trackAuthEvent` is for an app whose auth never touches a server of its own:
+
+```ts
+import { identifyUser, trackAuthEvent } from "@reliantlabs/forge-web-runtime";
+
+identifyUser(user?.id ?? null, { provider: "clerk" });   // on every "who is signed in" change
+trackAuthEvent("signed_up", { userId: user.id, method: "magic_link", provider: "clerk" });
+trackAuthEvent("signed_out", { userId: user.id, provider: "clerk" });   // before the session is gone
+```
+
+Browser auth events honour Global Privacy Control and Do Not Track (the id is
+still attached to telemetry; no auth event is sent), and sit behind the same
+consent gate as `track`. A Node server (a Next.js route handler, an Express
+backend) uses `trackAuthEvent` from `@reliantlabs/forge-web-runtime/node`,
+which writes the same log record as `TrackAuth`.
+
+**Any other language** writes the record itself with its own OTel logger: one
+INFO log record with `event.name = product.auth_signed_in`, `user.id = <subject>`,
+`app.client = backend`, and the props as `product.kind = credential`,
+`product.method = password`, `product.provider = <name>`. It lands in the same
+table.
 
 ## Retention
 

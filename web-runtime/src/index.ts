@@ -181,6 +181,25 @@ export {
 } from "./track.js";
 
 /**
+ * The standard auth events (`auth_signed_up`, `auth_signed_in`,
+ * `auth_signed_out`) the console counts users from. `identifyUser(id)` is what
+ * an app calls wherever it learns who is signed in: it attaches the id to
+ * telemetry and sends one `resumed` sign-in per user per day.
+ * `trackAuthEvent` is for an app whose auth never touches a forge server
+ * (forge's managed auth reports these from the server). Same guarantees as
+ * track(), and nothing is sent under GPC or DNT.
+ */
+export {
+  AUTH_SEEN_STORAGE_KEY,
+  identifyUser,
+  trackAuthEvent,
+  type AuthEventKind,
+  type AuthEventProps,
+  type AuthMethod,
+  type IdentifyUserOptions,
+} from "./auth-events.js";
+
+/**
  * Visitor identity and campaign attribution: `withAttribution(url)` appends
  * this browser's `rid` and captured `utm_*` to an outbound link (a marketing
  * site pointing at the app); the runtime reads them on arrival and emits one

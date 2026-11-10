@@ -151,6 +151,7 @@ import {
   rumSessionId,
 } from "./telemetry-gate.js";
 import {
+  browserPrivacyOptOut,
   isTelemetryDisabled,
   setTelemetrySink,
   type TrackValue,
@@ -1109,28 +1110,12 @@ export function decideReplay(
   return sampled;
 }
 
-// Replay is sensitive even when masked. These browser preferences outrank
-// the author's opt-in AND a previously stored sampling decision. They do not
-// change ordinary error/trace telemetry. An unreadable preference fails closed.
+// Replay is sensitive even when masked. The browser's DNT/GPC preferences
+// (browserPrivacyOptOut, shared with the auth events) outrank the author's
+// opt-in AND a previously stored sampling decision. They do not change
+// ordinary error/trace telemetry. An unreadable preference fails closed.
 function replayPrivacyOptOut(): boolean {
-  try {
-    if (typeof navigator === "undefined") return false;
-    const nav = navigator as Navigator & {
-      globalPrivacyControl?: boolean;
-      msDoNotTrack?: string;
-    };
-    const legacy =
-      typeof window === "undefined"
-        ? undefined
-        : (window as Window & { doNotTrack?: string }).doNotTrack;
-    const dnt = [nav.doNotTrack, nav.msDoNotTrack, legacy];
-    return (
-      nav.globalPrivacyControl === true ||
-      dnt.some((value) => value === "1" || value === "yes")
-    );
-  } catch {
-    return true;
-  }
+  return browserPrivacyOptOut();
 }
 
 // Unset is "every session"; anything that is not a number is a bug, and a bug

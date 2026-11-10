@@ -182,6 +182,19 @@ try {
 }
 ```
 
+## Who is signed in
+
+Call `identifyUser(subject)` from the barrel wherever the app learns who is
+signed in (the scaffolded auth context, Clerk's `useUser`, Auth0's
+`useAuth0`), and `identifyUser(null)` on sign-out. It attaches the opaque id to
+every span and replay (so the Sessions view and `forge obs sessions --user`
+work) and sends one `auth_signed_in {kind: "resumed"}` per user per UTC day,
+which is how the console counts active users. `trackAuthEvent("signed_in" |
+"signed_up" | "signed_out", { userId, … })` reports the auth outcome itself, for
+an app whose auth never touches a forge server. Both refuse an email-shaped id
+and send no auth event under GPC or DNT. The contract and the server-side
+emitters: `observability/product-events`, "Auth events".
+
 ## Interactions: click to usable
 
 A fetch span times one RPC. To time what the user waits for — several RPCs,

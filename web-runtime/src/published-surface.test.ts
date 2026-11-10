@@ -265,6 +265,27 @@ describe("the published surface", () => {
     expect(trackJs).not.toMatch(/^\s*import\s/m);
   });
 
+  it("keeps trackAuthEvent and identifyUser IN the barrel, importing only track.js", () => {
+    // Same rule as track(): an app's auth context calls identifyUser whether
+    // or not @hyperdx/browser is installed, so auth-events.ts may reach
+    // nothing but the dependency-free track.ts.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "trackAuthEvent",
+      "identifyUser",
+      "AUTH_SEEN_STORAGE_KEY",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    const authJs = readFileSync(join(pkgDir, "dist", "auth-events.js"), "utf8");
+    const imports = [
+      ...authJs.matchAll(/^\s*import[^"']*["']([^"']+)["']/gm),
+    ].map((m) => m[1]);
+    expect(imports).toEqual(["./track.js"]);
+  });
+
   it("keeps the money helpers IN the barrel, free of imports", () => {
     // The frontend skill tells pages to import these from the barrel rather
     // than hand-roll them. money.ts imports nothing, which is what earns it a

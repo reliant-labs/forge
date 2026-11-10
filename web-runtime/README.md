@@ -162,6 +162,16 @@ on the server, and calls made while the SDK chunk is still loading are held
   recall spans already batched, and the SDK's auto-instrumentation has no off
   switch once running: an app that must send nothing without consent should not
   call `initBrowserTelemetry` before it has it.
+- `identifyUser(id | null, { provider? })` — `setTelemetryUser(id)` plus one
+  `auth_signed_in {kind: "resumed"}` per user per UTC day per browser (deduped
+  in localStorage under `forge.auth.seen`). Call it wherever the app learns who
+  is signed in; it is what counts a user with a long-lived session as active.
+- `trackAuthEvent("signed_up" | "signed_in" | "signed_out", { userId, method?,
+  provider?, socialProvider?, verified? })` — the standard auth events, for an
+  app whose auth never touches a forge server (forge's managed auth reports
+  them from the server). Both refuse an id that is empty, longer than 128
+  characters or contains `@` (the provider's opaque subject, never an email),
+  and send no auth event under Global Privacy Control or Do Not Track.
 
 - Attribution (`appClient`, `visitorIdStorageKey`, `withAttribution(url)`): init
   stamps `app.client` (`electron` inside Electron, else `web`; pass `"landing"`
@@ -357,6 +367,12 @@ telemetry?.tracer.startActiveSpan("backend.start", (span) => {
   bodies are redacted and bounded, and object-valued attributes are dropped.
   `setUser(id)` stamps the opaque `userId` the browser entry stamps. Nothing
   else about the machine is sent: no host name, IP, argv or environment.
+- **Auth events:** `trackAuthEvent(kind, { userId, method?, provider? … })`
+  from `/node` writes the standard `auth_signed_up` / `auth_signed_in` /
+  `auth_signed_out` product event as the INFO log record forge/pkg/observe's
+  `TrackAuth` writes (`app.client` is `backend` unless `appClient` is set), for
+  a Next.js route handler or an Express backend completing an Auth0 or Clerk
+  callback. A no-op before init.
 - The global `@opentelemetry/api` tracer, AsyncLocalStorage context manager and
   W3C `traceparent` propagator are this runtime's unless `registerGlobal: false`.
   `reportException` from the barrel reports through it once it is running.

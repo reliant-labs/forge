@@ -259,6 +259,33 @@ export function setTelemetrySink(next: TelemetrySink | null): void {
   }
 }
 
+/**
+ * Whether this browser asks not to be tracked: Global Privacy Control, or Do
+ * Not Track in any of its spellings. Session replay and the browser's auth
+ * events honour it; ordinary error and trace telemetry does not. An
+ * unreadable preference fails closed (true).
+ */
+export function browserPrivacyOptOut(): boolean {
+  try {
+    if (typeof navigator === "undefined") return false;
+    const nav = navigator as Navigator & {
+      globalPrivacyControl?: boolean;
+      msDoNotTrack?: string;
+    };
+    const legacy =
+      typeof window === "undefined"
+        ? undefined
+        : (window as Window & { doNotTrack?: string }).doNotTrack;
+    const dnt = [nav.doNotTrack, nav.msDoNotTrack, legacy];
+    return (
+      nav.globalPrivacyControl === true ||
+      dnt.some((value) => value === "1" || value === "yes")
+    );
+  } catch {
+    return true;
+  }
+}
+
 /** Test seam. */
 export function resetTrackState(): void {
   sink = null;

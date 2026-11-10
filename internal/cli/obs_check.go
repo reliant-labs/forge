@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -306,15 +307,34 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	// already proves cannot be softened by a failed second read.
 	// An alert whose rule says it is not about the env's workloads (a build
 	// machine's load, a fleet the env watches: label release_health=exclude)
-	// judges no release, whichever side judged the report.
-	res.Report = releasehealth.WithoutExcludedAlerts(res.Report)
+	// judges no release, whichever side judged the report. The alert state,
+	// read once, names such a rule when an alert_firing finding's answer
+	// lists no alert of it.
+	ar, readable := b.(obsbackend.AlertReader)
+	var live []releasehealth.Alert
+	var aerr error
+	read := false
+	readLive := func() {
+		if read {
+			return
+		}
+		read = true
+		var alerts []obsbackend.Alert
+		if alerts, aerr = ar.Alerts(ctx); aerr == nil {
+			live = firingHealthAlerts(alerts)
+		}
+	}
+	if readable && slices.ContainsFunc(res.Report.Findings, func(f releasehealth.Finding) bool { return f.Code == release.HealthAlertFiring }) {
+		readLive()
+	}
+	res.Report = releasehealth.WithoutExcludedAlerts(res.Report, live)
 	res.Report = releasehealth.WithStandingAlerts(res.Report, nil)
-	if ar, ok := b.(obsbackend.AlertReader); ok && res.Report.Verdict != releasehealth.Fail {
-		alerts, aerr := ar.Alerts(ctx)
+	if readable && res.Report.Verdict != releasehealth.Fail {
+		readLive()
 		if aerr != nil {
 			res.Report = releasehealth.WithAlertStateUnread(res.Report, aerr.Error())
 		} else {
-			res.Report = releasehealth.WithStandingAlerts(res.Report, firingHealthAlerts(alerts))
+			res.Report = releasehealth.WithStandingAlerts(res.Report, live)
 		}
 	}
 	// --early-pass: the open window is judged as far as it goes, after every

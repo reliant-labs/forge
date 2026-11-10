@@ -680,47 +680,83 @@ func failAlert(fs []Finding, rule string) []Finding {
 
 // WithoutExcludedAlerts takes the alerts whose rule keeps them out of release
 // health ([LabelReleaseHealth]) out of a judged report: from FiringAlerts and
-// StandingCritical into ExcludedAlerts, with the alert_firing finding of each
-// rule left with no counted alert. The verdict is recomputed from what is left,
-// so it can improve: the excluded alerts were never the release's evidence. It is
-// how the rule reaches a control plane's answer judged without it (`forge obs
-// check` applies it before its own alert read).
-func WithoutExcludedAlerts(r Report) Report {
+// StandingCritical into ExcludedAlerts (listed once each), with the
+// alert_firing finding of each such rule that has no counted alert left. live
+// is the env's alert state read now, or nil: it names an excluded rule the
+// report itself does not list (a control plane that omits its alert arrays),
+// and a counted alert of that rule in it keeps the finding. A finding is
+// removed only when its rule is known to be excluded and no counted alert of
+// it remains. The verdict is recomputed from what is left, so it can improve:
+// the excluded alerts were never the release's evidence. It is how the rule
+// reaches a control plane's answer judged without it (`forge obs check`
+// applies it before its own alert read).
+func WithoutExcludedAlerts(r Report, live []Alert) Report {
 	out := r
+	out.ExcludedAlerts = nil
+	seen := map[string]bool{}
+	excluded := map[string]bool{}
+	counted := map[string]bool{}
+	exclude := func(a Alert) {
+		excluded[a.Rule] = true
+		if !seen[alertKey(a)] {
+			seen[alertKey(a)] = true
+			out.ExcludedAlerts = append(out.ExcludedAlerts, a)
+		}
+	}
 	keep := func(as []Alert) []Alert {
 		var kept []Alert
 		for _, a := range as {
 			if a.Excluded() {
-				if !slices.ContainsFunc(out.ExcludedAlerts, func(b Alert) bool { return alertKey(b) == alertKey(a) }) {
-					out.ExcludedAlerts = append(out.ExcludedAlerts, a)
-				}
+				exclude(a)
 				continue
 			}
 			kept = append(kept, a)
 		}
 		return kept
 	}
-	out.ExcludedAlerts = slices.Clone(r.ExcludedAlerts)
+	for _, a := range r.ExcludedAlerts {
+		exclude(a)
+	}
 	out.FiringAlerts = keep(r.FiringAlerts)
 	out.StandingCritical = keep(r.StandingCritical)
-	if len(out.ExcludedAlerts) == len(r.ExcludedAlerts) {
-		return r // nothing excluded here: the report as judged
-	}
-	counted := map[string]bool{}
 	for _, a := range out.FiringAlerts {
 		counted[a.Rule] = true
 	}
-	excludedRule := func(f Finding) bool {
-		for _, a := range out.ExcludedAlerts {
-			if f.Ref == a.Rule || (f.Ref == "" && strings.Contains(f.Message, "alert "+a.Rule+" ")) {
-				return !counted[a.Rule]
+	for _, a := range live {
+		switch {
+		case afterWindow(a, r.After.To):
+			// a later promotion's, or later still: not this release's
+		case a.Excluded():
+			exclude(a)
+		default:
+			counted[a.Rule] = true
+		}
+	}
+	findingRule := func(f Finding) string {
+		if f.Ref != "" {
+			return f.Ref
+		}
+		for rule := range excluded {
+			if strings.Contains(f.Message, "alert "+rule+" ") {
+				return rule
 			}
 		}
-		return false
+		return ""
 	}
 	out.Findings = slices.DeleteFunc(slices.Clone(r.Findings), func(f Finding) bool {
-		return f.Code == release.HealthAlertFiring && excludedRule(f)
+		if f.Code != release.HealthAlertFiring {
+			return false
+		}
+		rule := findingRule(f)
+		return excluded[rule] && !counted[rule]
 	})
+	if len(out.Findings) == len(r.Findings) && len(out.StandingCritical) == len(r.StandingCritical) {
+		// Nothing the verdict rests on changed: the verdict as judged.
+		if len(out.FiringAlerts) == len(r.FiringAlerts) && len(out.ExcludedAlerts) == len(r.ExcludedAlerts) {
+			return r // nothing excluded here: the report as judged
+		}
+		return out
+	}
 	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
 	return out
 }

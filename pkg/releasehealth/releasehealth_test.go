@@ -492,7 +492,7 @@ func TestExcludedAlertsJudgeNoRelease(t *testing.T) {
 		// The ref lost on the wire: matched by its message.
 		r.Findings = []Finding{{Code: release.HealthAlertFiring, Policy: PolicyFail, Message: "alert MachineLoadHigh opened after the promotion and is still firing"}}
 		r.Verdict = Fail
-		w := WithoutExcludedAlerts(r)
+		w := WithoutExcludedAlerts(r, nil)
 		if w.Verdict != Pass || len(w.Findings) != 0 || len(w.FiringAlerts) != 0 || len(w.StandingCritical) != 0 || len(w.ExcludedAlerts) != 2 {
 			t.Fatalf("verdict %s findings %+v firing %+v standing %+v excluded %+v", w.Verdict, w.Findings, w.FiringAlerts, w.StandingCritical, w.ExcludedAlerts)
 		}
@@ -508,14 +508,40 @@ func TestExcludedAlertsJudgeNoRelease(t *testing.T) {
 		}
 		r.Findings = []Finding{{Code: release.HealthAlertFiring, Ref: "Down", Policy: PolicyFail, Message: "alert Down opened after the promotion and is still firing"}}
 		r.Verdict = Fail
-		if w := WithoutExcludedAlerts(r); w.Verdict != Fail || len(w.Findings) != 1 || len(w.FiringAlerts) != 1 || len(w.ExcludedAlerts) != 1 {
+		if w := WithoutExcludedAlerts(r, nil); w.Verdict != Fail || len(w.Findings) != 1 || len(w.FiringAlerts) != 1 || len(w.ExcludedAlerts) != 1 {
 			t.Errorf("verdict %s findings %+v firing %+v excluded %+v", w.Verdict, w.Findings, w.FiringAlerts, w.ExcludedAlerts)
+		}
+	})
+	t.Run("an alert already listed as excluded still takes its finding out", func(t *testing.T) {
+		r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
+		a := Alert{Rule: "MachineLoadHigh", Fingerprint: "a", FiringAt: t0.Add(time.Minute), Labels: excl}
+		r.ExcludedAlerts = []Alert{a, a}
+		r.Findings = []Finding{{Code: release.HealthAlertFiring, Ref: "MachineLoadHigh", Policy: PolicyFail, Message: "alert MachineLoadHigh opened after the promotion and is still firing"}}
+		r.Verdict = Fail
+		if w := WithoutExcludedAlerts(r, nil); w.Verdict != Pass || len(w.Findings) != 0 || len(w.ExcludedAlerts) != 1 {
+			t.Errorf("verdict %s findings %+v excluded %+v", w.Verdict, w.Findings, w.ExcludedAlerts)
+		}
+	})
+	t.Run("the live alert state names a rule the report does not list", func(t *testing.T) {
+		r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
+		r.Findings = []Finding{{Code: release.HealthAlertFiring, Policy: PolicyFail, Message: "alert MachineLoadHigh opened after the promotion and is still firing"}}
+		r.Verdict = Fail
+		if w := WithoutExcludedAlerts(r, nil); w.Verdict != Fail || len(w.Findings) != 1 {
+			t.Errorf("no alert names the rule excluded, yet: verdict %s findings %+v", w.Verdict, w.Findings)
+		}
+		live := []Alert{{Rule: "MachineLoadHigh", Fingerprint: "a", FiringAt: t0.Add(time.Minute), Labels: excl}}
+		if w := WithoutExcludedAlerts(r, live); w.Verdict != Pass || len(w.Findings) != 0 || len(w.ExcludedAlerts) != 1 {
+			t.Errorf("verdict %s findings %+v excluded %+v", w.Verdict, w.Findings, w.ExcludedAlerts)
+		}
+		live = append(live, Alert{Rule: "MachineLoadHigh", Fingerprint: "b", FiringAt: t0.Add(time.Minute), Labels: map[string]string{"severity": "critical"}})
+		if w := WithoutExcludedAlerts(r, live); w.Verdict != Fail || len(w.Findings) != 1 {
+			t.Errorf("a counted live alert of the rule: verdict %s findings %+v", w.Verdict, w.Findings)
 		}
 	})
 	t.Run("nothing excluded leaves the report as judged", func(t *testing.T) {
 		r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
 		r.Verdict = Inconclusive
-		if w := WithoutExcludedAlerts(r); w.Verdict != Inconclusive {
+		if w := WithoutExcludedAlerts(r, nil); w.Verdict != Inconclusive {
 			t.Errorf("verdict %s", w.Verdict)
 		}
 	})

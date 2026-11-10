@@ -808,6 +808,21 @@ func TestObsCheckExcludedAlertJudgesNoRelease(t *testing.T) {
 		t.Errorf("excluded_alerts = %v", doc["excluded_alerts"])
 	}
 
+	// An answer with no alert arrays (an older control plane): the alert
+	// state read here names the rule excluded.
+	reply = healthReply("RELEASE_VERDICT_FAIL", true, finding, "")
+	caller = &seqCaller{replies: map[string][]string{
+		procHealth:          {reply},
+		procListAlertsCheck: {`{"alerts":[` + strings.Replace(machine, `"rule"`, `"state":"firing","rule"`, 1) + `]}`},
+	}}
+	out, _, err = newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+	if err != nil {
+		t.Fatalf("no alert arrays: exit = %d (%v), want 0; out = %s", exitCodeForError(err), err, out)
+	}
+	if doc := decode(t, out); doc["verdict"] != "PASS" || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") {
+		t.Errorf("no alert arrays: doc = %v", doc)
+	}
+
 	down := `{"rule":"Down","fingerprint":"d1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"critical"}}`
 	reply = strings.Replace(healthReply("RELEASE_VERDICT_PASS", true, "", ""), `"verdict"`, `"firingAlerts":[`+machine+`,`+down+`],"verdict"`, 1)
 	caller = &seqCaller{replies: map[string][]string{procHealth: {reply}}}

@@ -487,6 +487,9 @@ schema Workload:
     # feature's missing Secret key cannot stall every pod in the namespace
     # (CreateContainerConfigError, no application log). Non-sensitive
     # config needs no entry: it projects to every workload as a value.
+    # Nothing renders FROM this list: a name the final `env` does not carry
+    # fails the render (an app in another language delivers it itself:
+    # `env = {JWT_SECRET = forge.ManagedSecret {name = "JWT_SECRET"}}`).
     config_secrets: [str] = []
     # App-flow health checks `forge env smoke` runs against this workload.
     # See FlowCheck.

@@ -1636,6 +1636,32 @@ _check_requires = lambda workloads: [any] -> bool {
     True
 }
 
+# `config_secrets` names the credentials a workload reads, and nothing renders
+# FROM it: forge's generated config projection (config_gen's
+# `<x>ConfigEnvMap(cfg, config_secrets)` / `workloadEnvMap`) is what turns each
+# name into an env value. A name the final env does not carry is a credential
+# the process never receives — and an app with a hard-coded fallback then runs
+# on that fallback in production, silently (report d864fe2c: a Node app's
+# JWT_SECRET). Refused at render, naming the line that delivers it. A family
+# pattern (`APP_OAUTH_<KEY>_CLIENT_SECRET`) projects zero or more names, so it
+# is not judged here.
+_config_secrets_undelivered = lambda workloads: [any] -> [str] {
+    ["${w.name}: ${n}" for w in workloads for n in (w.config_secrets or []) if "<" not in n and n not in (w.env or {})]
+}
+
+_check_config_secrets = lambda workloads: [any] -> bool {
+    _missing = _config_secrets_undelivered(workloads)
+    assert len(_missing) == 0, \
+        "Workload.config_secrets names a credential its env never delivers (" + ", ".join(_missing) + "): " \
+        + "config_secrets only SELECTS which sensitive fields forge's generated config projection puts in env, " \
+        + "so without one the process starts without the value and falls back to whatever default it has. " \
+        + "Deliver each in the workload's env from the env's secret store, e.g. " \
+        + "`env.JWT_SECRET = forge.ManagedSecret {name = \"JWT_SECRET\"}` (set it with `forge secret set --env <env> JWT_SECRET`), " \
+        + "or, in a forge Go project, project the env with `config_gen.<x>ConfigEnvMap(cfg, w.config_secrets) | w.env`; " \
+        + "or drop the name from config_secrets if the workload does not read it."
+    True
+}
+
 # ShellBuild.built_images names a workload forge can build an image for in
 # THIS environment: another ShellBuild workload that declares an image. The
 # build resolves the edge to the digest that workload pushed, so an edge to a
@@ -2357,6 +2383,7 @@ render = lambda bundle: Bundle -> any {
     _ok = _check_before(bundle.workloads)
     _requires_ok = _check_requires(bundle.workloads)
     _built_images_ok = _check_built_images(bundle.workloads)
+    _config_secrets_ok = _check_config_secrets(bundle.workloads)
     _entities = [_lower(w, bundle) for w in bundle.workloads]
     _pt = _primary_target(bundle)
     {

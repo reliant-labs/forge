@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
@@ -816,6 +817,23 @@ func hostedArtifactKey(e *KCLEntities, w WorkloadEntity) string {
 	if w.Image != "" {
 		// The declared REPOSITORY, host included: the release ledger's key.
 		return hostedImageForDecl(e, imageRepository(w.Image))
+	}
+	// An image forge does not build. When the push base is known, two shapes
+	// are keyed by the ADDRESS the platform pulls, which is what makes the key
+	// usable as the repository (deploytarget.hostedWorkloadRepository):
+	//   - a BARE one CI pushed under the base resolves there;
+	//   - a third-party one outside the base is mirrored into it at release
+	//     time (harvestHostedBackendArtifacts).
+	// Neither could be deployed before, so no recorded release used another
+	// key for them. An image already under the base keeps its name key.
+	if base := platformPushBase(e); base != "" {
+		repo := imageRepository(w.Spec.Image)
+		if !hostedimage.HasRegistryHost(repo) {
+			return resolveHostedImageBase(base, repo)
+		}
+		if mirror := hostedimage.MirrorRepository(base, repo); mirror != "" {
+			return mirror
+		}
 	}
 	return deploytarget.HostedArtifactName(w.Spec.Image)
 }

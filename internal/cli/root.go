@@ -40,9 +40,6 @@ func Execute() error {
 	if handed, err := HandOffToPinned(context.Background(), os.Args[1:], os.Stderr); err != nil || handed {
 		return err
 	}
-	// The descriptor is never committed: whichever command first reads it
-	// in a checkout extracts it from proto/ (codegen.LoadDescriptor).
-	codegen.RegisterDescriptorBuilder(buildDescriptorOnDemand)
 	return NewRootCmd().Execute()
 }
 
@@ -106,6 +103,10 @@ func SetVersion(v, date, commit string) {
 
 // NewRootCmd builds and returns the fully assembled root command.
 func NewRootCmd() *cobra.Command {
+	// Embedded hosts (reliant forge) construct this tree without Execute.
+	// They need the same descriptor-only cache refresh as standalone forge;
+	// otherwise a merged proto edit makes lint demand a full regeneration.
+	codegen.RegisterDescriptorBuilder(buildDescriptorOnDemand)
 	var projectDir string
 
 	var rootCmd *cobra.Command

@@ -68,7 +68,6 @@
       "message": "api: p95 doubled"
     }
   ],
-  "version_share": 1,
   "new_issues": [
     {
       "id": "ISS-7f3a",
@@ -103,5 +102,6 @@
     "forge obs issue ISS-7f3a prod",
     "forge obs issue ISS-1 prod",
     "forge obs endpoints prod --sort errors"
-  ]
+  ],
+  "version_share": 1
 }

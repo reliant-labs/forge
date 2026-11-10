@@ -68,21 +68,14 @@ type obsCheckDoc struct {
 	QueryMode string       `json:"query_mode"`
 	Verdict   string       `json:"verdict,omitempty"`
 	// Reason says why the verdict is INCONCLUSIVE.
-	Reason   string                        `json:"reason,omitempty"`
-	Subject  *releasehealth.Subject        `json:"subject,omitempty"`
-	Windows  *obsCheckWindows              `json:"windows,omitempty"`
-	Services []releasehealth.ServiceHealth `json:"services,omitempty"`
-	Findings []releasehealth.Finding       `json:"findings"`
-	// VersionShare is the judged release's share of the after window's
-	// measured traffic. WindowNotLive says why the after window is not the
-	// live release's, RolloutIncomplete why the release served too little of
-	// it: either is INCONCLUSIVE, and leaves its findings unattributed.
-	VersionShare      *float64              `json:"version_share,omitempty"`
-	WindowNotLive     string                `json:"window_not_live,omitempty"`
-	RolloutIncomplete string                `json:"rollout_incomplete,omitempty"`
-	NewIssues         []releasehealth.Issue `json:"new_issues,omitempty"`
-	RegressedIssues   []releasehealth.Issue `json:"regressed_issues,omitempty"`
-	FiringAlerts      []releasehealth.Alert `json:"firing_alerts,omitempty"`
+	Reason          string                        `json:"reason,omitempty"`
+	Subject         *releasehealth.Subject        `json:"subject,omitempty"`
+	Windows         *obsCheckWindows              `json:"windows,omitempty"`
+	Services        []releasehealth.ServiceHealth `json:"services,omitempty"`
+	Findings        []releasehealth.Finding       `json:"findings"`
+	NewIssues       []releasehealth.Issue         `json:"new_issues,omitempty"`
+	RegressedIssues []releasehealth.Issue         `json:"regressed_issues,omitempty"`
+	FiringAlerts    []releasehealth.Alert         `json:"firing_alerts,omitempty"`
 	// StandingCritical are critical alerts that opened before the promotion
 	// and still fire: not findings, but they keep the verdict from PASS.
 	StandingCritical []releasehealth.Alert     `json:"standing_critical_alerts,omitempty"`
@@ -96,6 +89,14 @@ type obsCheckDoc struct {
 	EarlyPass  string                 `json:"early_pass,omitempty"`
 	Statements []obsbackend.Statement `json:"statements,omitempty"`
 	Suggested  []string               `json:"suggested,omitempty"`
+
+	// VersionShare is the judged release's share of the after window's
+	// measured traffic. WindowNotLive says why the after window is not the
+	// live release's, RolloutIncomplete why the release served too little of
+	// it: either is INCONCLUSIVE, and leaves its findings unattributed.
+	VersionShare      *float64 `json:"version_share,omitempty"`
+	WindowNotLive     string   `json:"window_not_live,omitempty"`
+	RolloutIncomplete string   `json:"rollout_incomplete,omitempty"`
 }
 
 type obsCheckOpts struct {
@@ -533,7 +534,6 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	if r.Findings != nil {
 		doc.Findings = r.Findings
 	}
-	doc.VersionShare, doc.WindowNotLive, doc.RolloutIncomplete = r.VersionShare, r.WindowNotLive, r.RolloutIncomplete
 	doc.NewIssues, doc.RegressedIssues = r.NewIssues, r.RegressedIssues
 	doc.FiringAlerts, doc.WorkloadFindings = r.FiringAlerts, r.Workloads
 	doc.StandingCritical = r.StandingCritical
@@ -542,6 +542,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	if !o.explain {
 		doc.Statements = nil
 	}
+	doc.VersionShare, doc.WindowNotLive, doc.RolloutIncomplete = r.VersionShare, r.WindowNotLive, r.RolloutIncomplete
 	if r.Verdict == releasehealth.Fail {
 		doc.Suggested = checkSuggestions(env, r)
 	} else if len(r.StandingCritical) > 0 {

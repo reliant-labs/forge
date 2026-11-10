@@ -188,6 +188,71 @@ func TestShutdownStopsWhatARunnerDetached(t *testing.T) {
 	}
 }
 
+// TestRegistryReapsARunnerWhoseOutputOutlivesIt is the regression test for
+// the zombie runners a stopped `forge env up` left behind: a runner that hands
+// its stdout to a server in a session of its own (as Air does) and exits must
+// be reaped at once, although the server still holds the pipe forge reads.
+// Reaping only after that pipe reached EOF left the runner a zombie for as
+// long as the server lived — and on macOS kill(-pgid) of a group of zombies
+// is EPERM, which `forge env down` reported as a failed stop.
+func TestRegistryReapsARunnerWhoseOutputOutlivesIt(t *testing.T) {
+	dir, projectID, env := testStack(t)
+	t.Chdir(dir)
+	pidFile := filepath.Join(t.TempDir(), "server.pid")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestShutdownFakeRunnerHelper$")
+	cmd.Env = append(os.Environ(), "FORGE_SHUTDOWN_HELPER=spawner", "FORGE_SHUTDOWN_PIDFILE="+pidFile)
+
+	reg := newProcRegistry(projectID, dir, env)
+	// Not under captureStdout: the stream goroutines outlive it and print to
+	// whatever os.Stdout is then.
+	if err := reg.start("api", cmd, false); err != nil {
+		t.Fatal(err)
+	}
+	runner := reg.processes[0]
+	server := waitForPIDFile(t, pidFile)
+	t.Cleanup(func() { _ = syscall.Kill(server, syscall.SIGKILL) })
+
+	select {
+	case <-runner.done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("runner pid %d exited but was never reaped (state %q): its reap waited on the pipe its server still holds",
+			runner.pid, processState(runner.pid))
+	}
+	if !managedProcessExited(runner) {
+		t.Error("the reaped runner does not read as exited")
+	}
+	if !processAlive(server) {
+		t.Fatalf("server pid %d is gone: the test no longer holds the runner's pipe open past its exit", server)
+	}
+}
+
+// TestKillProcessTreeTreatsAZombieGroupAsStopped stops a runner that exited
+// and was not reaped yet. Nothing of it is running, so the stop succeeds and
+// the process is not alive — whatever kill(2) answers for it (macOS: EPERM
+// for its group; Linux and macOS: success for the zombie pid itself).
+func TestKillProcessTreeTreatsAZombieGroupAsStopped(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	startInOwnProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	// Reaped when the test ends, never before: unreaped, the pid cannot be
+	// reused, so no signal below can reach a stranger.
+	t.Cleanup(func() { _ = cmd.Wait() })
+	if !pollUntil(10*time.Second, func() bool { return strings.HasPrefix(processState(pid), "Z") }) {
+		t.Fatalf("pid %d never became a zombie (state %q)", pid, processState(pid))
+	}
+
+	if processAlive(pid) {
+		t.Errorf("zombie pid %d reads as alive", pid)
+	}
+	// Signal 0: the decision is the point, not a delivery.
+	if err := killProcessTree(pid, syscall.Signal(0)); err != nil {
+		t.Errorf("stopping a group of zombies failed: %v", err)
+	}
+}
+
 // processState is pid's ps STAT column ("" when ps knows no such pid).
 func processState(pid int) string {
 	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()

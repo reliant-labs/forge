@@ -242,6 +242,15 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		s.UptimeChecks = nil
 	}
 	if !r.Supports(BundleFeatureReleaseProbes) {
+		// A probed env that keeps the default policy records none, and the
+		// default now fails on probe_failed. A reader of release health is
+		// sent that policy stated, without the probe codes, so what it judges
+		// by is the producer's policy rather than its own default. An env
+		// without probes is sent as before.
+		if s.ReleaseHealth == nil && len(s.ReleaseProbes) > 0 && r.Supports(BundleFeatureReleaseHealth) {
+			def := DefaultReleaseHealth()
+			s.ReleaseHealth = &def
+		}
 		s.ReleaseProbes = nil
 		s.ReleaseHealth = withoutProbeFindings(s.ReleaseHealth)
 	}

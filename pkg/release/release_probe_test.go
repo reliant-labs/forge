@@ -223,6 +223,51 @@ func TestLimitShapeWithholdsReleaseProbesFromAnOldReader(t *testing.T) {
 	}
 }
 
+// A probed env that keeps the default policy records none: the default,
+// which now fails on probe_failed, is implicit. A reader that predates probes
+// but reads release health is sent that default explicitly, without the
+// probe codes, so the policy it judges by is the producer's, stated, not its
+// own default by coincidence. That explicit policy is exactly the default
+// every release-health reader has had since F4a.
+func TestLimitShapeStatesTheImplicitPolicyForAnOldReader(t *testing.T) {
+	full := Shape{Kind: EnvSelfManaged, ReleaseProbes: []ShapeReleaseProbe{releaseProbe("web")}}
+	preProbeDefault := ShapeReleaseHealth{
+		WindowSeconds: 900, MinRequests: 50, MaxErrorRateIncrease: 0.01, MaxP95Ratio: 1.5, NewIssueMinEvents: 3,
+		FailOn: []string{HealthAlertFiring, HealthErrorRate, HealthNewIssue, HealthRegressedIssue},
+	}
+
+	old := (&BundleReader{Features: []string{BundleFeatureReleaseHealth}}).LimitShape(full)
+	if old.ReleaseProbes != nil {
+		t.Errorf("probes sent to a reader without %s", BundleFeatureReleaseProbes)
+	}
+	if old.ReleaseHealth == nil || !reflect.DeepEqual(*old.ReleaseHealth, preProbeDefault) {
+		t.Fatalf("old reader's policy = %+v, want the pre-probe default %+v", old.ReleaseHealth, preProbeDefault)
+	}
+	c := old.Canonical()
+	if c.ReleaseHealth == nil || !reflect.DeepEqual(c.ReleaseHealth.FailOn, preProbeDefault.FailOn) {
+		t.Errorf("Canonical dropped or changed the stated policy: %+v", c.ReleaseHealth)
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("the limited shape does not validate: %v", err)
+	}
+	if full.ReleaseHealth != nil {
+		t.Fatal("LimitShape modified the shape it was given")
+	}
+
+	// A reader that does not read release health is sent none, as before.
+	if none := (&BundleReader{}).LimitShape(full); none.ReleaseHealth != nil || none.ReleaseProbes != nil {
+		t.Errorf("a reader with no features: policy %+v, probes %+v", none.ReleaseHealth, none.ReleaseProbes)
+	}
+	// A reader of probes keeps the implicit default.
+	if cur := (&BundleReader{Features: []string{BundleFeatureReleaseHealth, BundleFeatureReleaseProbes}}).LimitShape(full); cur.ReleaseHealth != nil || len(cur.ReleaseProbes) != 1 {
+		t.Errorf("a current reader: policy %+v, probes %+v", cur.ReleaseHealth, cur.ReleaseProbes)
+	}
+	// An env without probes is sent to an old reader exactly as before.
+	if plain := (&BundleReader{Features: []string{BundleFeatureReleaseHealth}}).LimitShape(Shape{Kind: EnvSelfManaged}); plain.ReleaseHealth != nil {
+		t.Errorf("an unprobed env gained a policy: %+v", plain.ReleaseHealth)
+	}
+}
+
 // The release-probe codes are release-health findings; the default policy
 // fails on a probe failure and warns on probe latency, as it warns on latency.
 func TestReleaseProbeFindings(t *testing.T) {

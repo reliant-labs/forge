@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -480,6 +482,9 @@ func TestAuthWithCaller_DefaultsRecordTheProjectsCaller(t *testing.T) {
 // heartbeat reads the caller through Auth's Caller: an app whose auth keeps
 // its caller in a context of its own (AuthWithCaller) still records its
 // signed-in users, under the provider it names.
+// heartbeatRuns numbers the runs of the heartbeat test in this process.
+var heartbeatRuns atomic.Int64
+
 func TestNewChain_HeartbeatNamesTheProviderAndReadsAuthsCaller(t *testing.T) {
 	// Product events write through the request's logger, which is the
 	// process default here: capture it for this (sequential) test.
@@ -503,8 +508,10 @@ func TestNewChain_HeartbeatNamesTheProviderAndReadsAuthsCaller(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// The heartbeat's memory is the process's, so the id is this test's own.
-	const user = "u_chain_heartbeat_provider"
+	// The heartbeat's memory is the process's and remembers a user for the
+	// day, so each run (go test -count=N repeats this in one process) signs
+	// in as a user of its own.
+	user := fmt.Sprintf("u_chain_heartbeat_provider_%d", heartbeatRuns.Add(1))
 	req := connect.NewRequest(&emptypb.Empty{})
 	req.Header().Set("X-User", user)
 	if _, err := connect.NewClient[emptypb.Empty, emptypb.Empty](srv.Client(), srv.URL+procedure).CallUnary(context.Background(), req); err != nil {

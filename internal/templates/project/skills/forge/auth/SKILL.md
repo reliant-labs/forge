@@ -11,7 +11,7 @@ Authentication is a **middleware, nothing more**: an interceptor validates the r
 
 Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/api-keys`**.
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/api-keys`**, **`auth/chain`** (audiences, public rpcs).
 
 ## The default: managed identity
 
@@ -120,64 +120,7 @@ Mode resolution happens ONCE at construction: a validator → enforce; `External
 
 The chain is a component, `serverkit.NewChain(serverkit.ChainDeps{Auth: …})`, built once in `serve.go`. Order: **trace** (otelconnect, `ChainDeps.Trace`) **→ recovery → request-id → logging → tracing → metrics**, then **deadline → auth → audit → rate-limit → your `Extras` → activity → stream-drain → protovalidate → svcerr**, the last one installed by `NewChain` and `observe.Chain` themselves (`api`). Auth after observability is deliberate — operators see auth failures in the same dashboards as successful traffic, and a rejected call has a span and logs carrying its `trace_id`. The **deadline** (`ChainDeps.Deadline`, a `serverkit.Deadline`) precedes auth, so a stalled credential lookup ends as `DeadlineExceeded`: 30s per unary RPC by default, per rpc from `(forge.v1.method).timeout` (`middleware.ProcedureDeadlines`). What must wrap auth goes there, never in `Extras`. Every slot is defaulted except **`Auth`, which is required: a nil `Auth` is a `NewChain` error, so a server without an authenticator fails at boot**. A slot you set replaces its default; `serverkit.NoAudit`, `NoTrace`, `NoDeadline`, `NoActivity`, `NoStreamDrain` and `NoValidate` drop one, and nothing drops `Auth`. Payload caps ride the chain too (`ReadMaxBytes`/`SendMaxBytes`; zero is 4 MiB).
 
-### Audiences: one listener per kind of caller
-
-`ChainDeps.Auth` is a `serverkit.Authenticator` — the auth interceptor plus the **audience** it admits: `serverkit.AuthFor(serverkit.AudienceUser, authInterceptor)` for your signed-in users. A service declares the audience it serves in its proto, defaulting to `user`:
-
-```proto
-service ToolsDaemonService {
-  option (forge.v1.service) = { audience: "daemon" };  // not reachable with a user token
-  rpc Attach(stream AttachRequest) returns (stream AttachResponse);
-}
-```
-
-A `serverkit.Listener` refuses to start when it mounts a service whose audience differs from its chain's `Auth.Audience()` — and `serverkit.Run` checks the same over a `Server.Chain`. So a daemon credential can never reach a user RPC, even through a hand-written route set. Serving a second kind of caller is a second chain and a second listener, never a second token type inside one chain:
-
-```go
-daemonChain, err := serverkit.NewChain(serverkit.ChainDeps{Auth: serverkit.AuthFor("daemon", daemonAuth)})
-daemon, err := serverkit.NewListener(serverkit.ListenerDeps{
-    Config: serverkit.ListenerConfig{Addr: ":9090", ReadTimeout: -1}, // long bidi streams
-    Chain:  daemonChain,
-    Routes: serverkit.RoutesFunc(func(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
-        return components.MountToolsDaemon(mux, cfg, logger, opts...)
-    }),
-})
-```
-
-Run the listeners under `lifecyclekit.Supervise` (`services/shutdown`, "Without `serverkit.Run`").
-
-### Publishing one RPC (per-RPC allow-list)
-
-`auth_required: false` publishes ONE rpc to unauthenticated callers. It is
-per-rpc, not a service posture, and the default is closed.
-
-```proto
-service Status {
-  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse) {
-    option (forge.v1.method) = { auth_required: false };  // published deliberately
-  }
-  rpc GetDetail(GetDetailRequest) returns (GetDetailResponse) {}  // no annotation = closed
-}
-```
-
-Opening an rpc is not the only way to serve a second audience: forge declares
-multiple frontends and multiple services in `forge.yaml`, so separate audiences
-can have separate applications against separate rpcs.
-
-Each lands in the generated set as connect's own `…Procedure` constant, matched EXACTLY — never by substring, so a `HealthReport` rpc cannot ride along with the health probes. An unannotated rpc defaults to `auth_required: true`: silence never publishes an endpoint. The gRPC probes are always allowed; they run before anything can authenticate.
-
-**A public handler gets NO claims — not even from a caller who presented a valid token.** The allow-list is checked BEFORE the Authorization header is read, so the validator is not consulted at all. Handle the anonymous case explicitly:
-
-```go
-if claims, ok := middleware.ClaimsFromContext(ctx); ok {
-    return s.listFor(ctx, claims.UserID) // personalized
-}
-return s.listPublic(ctx)                 // anonymous — the normal case here
-```
-
-Two ways to get this wrong. `middleware.GetUser(ctx)` returns a `CodeUnauthenticated` **error** (it does not panic), so calling it here 401s every anonymous caller and defeats the annotation. And `claims, _ := ClaimsFromContext(ctx)` followed by `claims.UserID` **nil-panics** on every anonymous call — check `ok`.
-
-To personalize for callers who DO present a token, validate it in the handler, or keep the RPC authenticated and add a separate public one. Not `AnonymousOK: true`: that makes auth non-gating service-wide, so `auth_required: true` gates nothing.
+Two parts of this live in the sub-skill **`auth/chain`**: **audiences** (one chain and one `serverkit.Listener` per kind of caller; a listener refuses to mount a service whose proto `audience` differs, so a daemon credential never reaches a user RPC) and **publishing one RPC** with `auth_required: false`. In short: a public handler gets NO claims, even from a caller with a valid token. Check `ClaimsFromContext`'s `ok` (a blind `claims.UserID` nil-panics on every anonymous call), never call `GetUser` there (it 401s every anonymous caller), and never reach for `AnonymousOK: true`.
 
 ## Forge authenticates; it does not authorize
 

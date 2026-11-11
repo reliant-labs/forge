@@ -53,8 +53,8 @@ func TestEmbeddedBootRetriesOccupiedCandidate(t *testing.T) {
 	}, dirFor, func(got embeddedpostgres.Config) (*Embedded, error) {
 		starts++
 		p := port + uint32(starts-1)
-		if !reflect.DeepEqual(got, cfg.Port(p).RuntimePath(dirFor(p))) {
-			t.Fatal("boot changed configuration beyond port/runtime path")
+		if !reflect.DeepEqual(got, cfg.Port(p).RuntimePath(dirFor(p)).Logger(bootLog{path: bootLogPath(dirFor(p))})) {
+			t.Fatal("boot changed configuration beyond port/runtime path/boot log")
 		}
 		if starts == 1 {
 			return nil, collision

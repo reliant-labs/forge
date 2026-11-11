@@ -17,7 +17,7 @@ func TestFindingsPointAtTheStatementLine(t *testing.T) {
 	header := strings.Repeat("-- header comment\n", 40) + "\n" // lines 1-41
 	body := header +
 		"ALTER TABLE orders ADD COLUMN tracking_number TEXT NOT NULL;\n" + // line 42
-		"ALTER TABLE orders ADD COLUMN shipped_at TIMESTAMPTZ DEFAULT now();\n" + // line 43
+		"ALTER TABLE orders ADD COLUMN shipped_at TIMESTAMPTZ DEFAULT clock_timestamp();\n" + // line 43
 		"\n" +
 		"/* a block\n   comment */\n" + // lines 45-46
 		"ALTER TABLE orders\n" + // line 47
@@ -54,7 +54,7 @@ func TestVerdictCountsTheFilesWithFindings(t *testing.T) {
 	writeMigrationIn(t, dir, "0001_create_orders.up.sql", "CREATE TABLE orders (id uuid PRIMARY KEY);\n")
 	writeMigrationIn(t, dir, "0002_add_tracking.up.sql",
 		"ALTER TABLE orders ADD COLUMN tracking_number TEXT NOT NULL;\n"+
-			"ALTER TABLE orders ADD COLUMN shipped_at TIMESTAMPTZ DEFAULT now();\n")
+			"ALTER TABLE orders ADD COLUMN shipped_at TIMESTAMPTZ DEFAULT clock_timestamp();\n")
 
 	result, err := LintMigrationsDir(dir, DefaultConfig())
 	if err != nil {

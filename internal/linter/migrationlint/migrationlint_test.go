@@ -161,37 +161,55 @@ func TestLintMigrationsDirDetectsVolatileDefault(t *testing.T) {
 	assertFinding(t, result, "volatile-default", SeverityWarn)
 }
 
-// TestLintMigrationsDirDetectsVolatileDefaultVariants pins the full set
-// of non-deterministic DEFAULT expressions the rule must catch on an
-// ADD COLUMN. Each of these assigns an unpredictable (or uniformly
-// identical) value to every pre-existing row at backfill time, which is
-// the correctness trap the rule exists to flag.
-func TestLintMigrationsDirDetectsVolatileDefaultVariants(t *testing.T) {
-	if testing.Short() {
-		t.Skip("LintMigrationsDir shells out to git for every fixture; runs in task test")
+// Volatile defaults require per-row evaluation and a table rewrite. Exercise
+// the pure file lint so these checks run under -short without invoking git.
+func TestLintMigrationFileDetectsVolatileDefaultVariants(t *testing.T) {
+	for _, expr := range []string{
+		"clock_timestamp()",
+		"CLOCK_TIMESTAMP ()",
+		"gen_random_uuid()",
+		"GEN_RANDOM_UUID ()",
+		"uuid_generate_v4()",
+		"UUID_GENERATE_V4 ()",
+		"random()",
+		"RANDOM ()",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			findings := lintMigrationFile("20261106000001_add_col.up.sql",
+				"ALTER TABLE users ADD COLUMN c text DEFAULT "+expr+";", DefaultConfig())
+			if len(findings) != 1 {
+				t.Fatalf("want exactly one volatile-default warning, got %#v", findings)
+			}
+			assertFinding(t, Result{Findings: findings}, "volatile-default", SeverityWarn)
+			if !strings.Contains(findings[0].Message, "can rewrite/lock populated tables") {
+				t.Fatalf("warning must retain the rewrite/lock hazard: %q", findings[0].Message)
+			}
+		})
 	}
+}
+
+// PostgreSQL 11+ evaluates a non-volatile ADD COLUMN default once and stores
+// the result as metadata. Stable timestamps qualify, even with NOT NULL.
+// See https://www.postgresql.org/docs/11/sql-altertable.html#SQL-ALTERTABLE-NOTES
+// and https://www.postgresql.org/docs/current/xfunc-volatility.html.
+func TestLintMigrationFileAllowsStableTimestampDefaults(t *testing.T) {
 	for _, expr := range []string{
 		"now()",
 		"NOW ()",
 		"current_timestamp",
 		"CURRENT_TIMESTAMP",
-		"clock_timestamp()",
+		"CURRENT_TIMESTAMP(3)",
 		"statement_timestamp()",
+		"STATEMENT_TIMESTAMP ()",
 		"transaction_timestamp()",
-		"gen_random_uuid()",
-		"uuid_generate_v4()",
-		"random()",
-		"RANDOM()",
+		"TRANSACTION_TIMESTAMP ()",
 	} {
 		t.Run(expr, func(t *testing.T) {
-			dir := writeMigration(t, "0001_add_col.up.sql",
-				"ALTER TABLE users ADD COLUMN c text DEFAULT "+expr+";")
-
-			result, err := LintMigrationsDir(dir, DefaultConfig())
-			if err != nil {
-				t.Fatalf("LintMigrationsDir() error = %v", err)
+			findings := lintMigrationFile("20261106000001_add_col.up.sql",
+				"ALTER TABLE users ADD COLUMN created_at timestamptz NOT NULL DEFAULT "+expr+";", DefaultConfig())
+			if len(findings) != 0 {
+				t.Fatalf("stable DEFAULT %s must not be flagged; got %#v", expr, findings)
 			}
-			assertFinding(t, result, "volatile-default", SeverityWarn)
 		})
 	}
 }

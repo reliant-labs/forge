@@ -1,6 +1,6 @@
 ---
 name: observability/product-events
-description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the browser's cookieless analytics tiers (off < aggregate < identified < full, identified by default; grantAnalyticsConsent, optOutOfAnalytics, GPC/DNT), automatic page_viewed with its referrer/utm/click_id props, flag exposures (trackExposure, forgeExposureHook), the reserved event-name prefixes, the standard auth events the console counts users from (observe.TrackAuth, trackAuthEvent, identifyUser; the record for any other language), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, retention, and sql/funnel panels over the hosted product_events table.
+description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the browser's cookieless analytics tiers (off < aggregate < identified < full, identified by default; grantAnalyticsConsent, optOutOfAnalytics, GPC/DNT), automatic page_viewed with its referrer/utm/click_id props, flag exposures (trackExposure, forgeExposureHook), the reserved event-name prefixes, the standard auth events the console counts users from (observe.TrackAuth, trackAuthEvent, identifyUser; the record for any other language), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, the KCL forge.Analytics block (ANALYTICS_MODE, goals, activation, channel rules, Funnel.by visitor/person), retention, and sql/funnel panels over the hosted product_events table.
 ---
 
 # Product events
@@ -183,116 +183,69 @@ rename it so the console's built-in panels stay exact.
 
 ## Auth events: who signed up, signed in, signed out
 
-Three product event names are reserved for a fixed auth vocabulary, the same
-whatever the auth provider. The console counts users over a range from them
-and the rest of the table: **active** = distinct users with any user-attributed
-event (`obsquery.ActiveEvidence`: every row with a `UserId` except
-`auth_signed_out` and the platform's `auth_accounts`; a sign-in or the auth
-middleware's daily heartbeat is enough); **new** = distinct users with
-`auth_signed_up` in the range, or, in an env that reported no sign-up in the
-90 days before the range's end, the users first seen in the range
-(`obsquery.NewUsersSource`); **returning** = active users who are not new.
-Every count is distinct by `user.id`, so the same sign-in reported twice
-(server and browser, two replicas, a retry) counts once. `forge obs users
-<env> [--series 30] [--json]` prints them; the console's Users card and the
-generated dashboards compile from the same two fragments.
+`auth_signed_up`, `auth_signed_in` and `auth_signed_out` are reserved for a
+fixed auth vocabulary the console counts new and active users from. Load
+`observability/product-events/auth-events` for the emitters (`observe.TrackAuth`,
+the auth middleware's daily heartbeat, `identifyUser`, `trackAuthEvent`, any
+other language) and the edge visitor-day hash.
 
-| event | when | props |
+## Declaring product analytics in KCL: `forge.Analytics`
+
+Nothing needs declaring: a frontend with no `analytics` block runs in the
+cookieless `identified` mode: nothing is stored on the device, and a signed-in
+user's events carry their opaque id. The block sets the browser's mode and adds goals,
+an activation event and channel rules to the project's built-in product
+dashboards. It is per frontend and per environment, beside the frontend's
+other telemetry:
+
+```kcl
+forge.Frontend {
+    name = "web"
+    telemetry = forge.BrowserTelemetry {
+        analytics = forge.Analytics {
+            mode = "identified"                # "off" | "aggregate" | "identified" (default) | "full"
+            goals = [
+                forge.Goal {id = "checkout", event = "purchase"},
+                forge.Goal {id = "pricing", title = "Saw pricing", route = "/pricing"},
+            ]
+            activation = "order_created"       # unset: the user's first <entity>_created
+            activation_window = "7d"           # unset: 7d; at most 90d
+            channels = [forge.Channel {host = "news.ycombinator.com", channel = "Organic social"}]
+            # dashboards = False               # drop the built-in product dashboards
+        }
+        funnels = [forge.Funnel {id = "buy", steps = ["view_product", "purchase"], by = "person", window = "7d"}]
+    }
+}
+```
+
+| Field | Meaning | Checked at render |
 |---|---|---|
-| `auth_signed_up` | an account created by the person: self sign-up, or an accepted invitation (an admin's invite is not a sign-up until accepted) | `method`, `provider`, `verified` |
-| `auth_signed_in` | a session established: `kind=credential` (a credential was just verified) or `kind=resumed` (an existing session seen; at most once per user per UTC day per emitter) | `kind`, `method` (credential only), `provider` |
-| `auth_signed_out` | the person ended the session. No count depends on it | `provider` |
+| `mode` | the MOST the app allows a browser. A browser runs in the lowest of it, the consent the app signalled and its privacy signals (GPC/DNT caps it at `aggregate`: counted, never identified). `off`: no browser product events. `aggregate`: strictly anonymous, an opt-down: nothing stored on the device, a visitor counted only by the platform's daily edge hash, no user id on browser events. `identified` (the default): also cookieless, nothing stored on the device, and a signed-in user's browser events carry their opaque user id. `full`: once the app calls `grantAnalyticsConsent()`, a persistent visitor id and multi-day attribution too. Server events (`observe.Track`, CRUD, sign-ins) are never gated by it | one of the four |
+| `goals` | conversions the Product dashboard counts: persons, total, and conversion over visitors. Exactly one of `event` (a product event) and `route` (a `page_viewed` route, id segments as `:id`) | unique ids; at most 50; a route is a path with no query or fragment |
+| `activation` | the event that marks a user activated | a product event name |
+| `activation_window` | how long after signing up a user has to activate | `30m`, `1h`, `7d`…, at most `90d` |
+| `channels` | rules tried in order **ahead of** the built-in channel table; a visit whose first page view matches every condition a rule sets (`host`: the referrer host or a subdomain of it; `source`/`medium`: `utm_source`/`utm_medium`, case-insensitive) is credited to `channel`, a built-in name or a new one | at least one condition; a host name, not a URL; no two rules with the same conditions |
+| `dashboards` | `False` drops the built-in Overview, Users, Product and Acquisition dashboards; collection still follows `mode` | |
 
-Bounded values (anything else is recorded as `other`): `method` is `password`,
-`passkey`, `magic_link`, `social`, `invite`, `verify`, `reset`, `sso`;
-`social_provider` (with `method=social`) is `google`, `github`, `microsoft`,
-`apple`; `provider` is `forge`, `auth0`, `clerk`, `supabase`, `firebase`,
-`cognito`, `jwt`, `custom`, or any name matching `^[a-z][a-z0-9_]{0,31}$`.
+`mode` reaches the browser as `ANALYTICS_MODE` in the runtime config document
+(`config.js`, or a hosted site's StaticSite spec), so one build promotes across
+environments and each sets its own. Only a non-default mode renders the key:
+absent means `identified`. When the environment switches browser telemetry off
+(`signals.browser = False`), no mode is derived and any `ANALYTICS_MODE` you set
+in `runtime_config` is forced to `off`; otherwise your own `runtime_config`
+entry outranks the derived one.
 
-`user.id` is the provider's **opaque subject** (`auth0|abc`, a Clerk `user_…`,
-a Zitadel id), never an email: every emitter refuses an id that is empty,
-longer than 128 characters or contains `@`, and warns once.
+`forge.Funnel.by` counts a journey by browser `session` or `user` (a `funnel`
+panel on the frontend dashboard, over browser spans), or by `visitor` (the
+cookieless daily visitor, so a window of at most `1d`) or `person` (the
+signed-in user, or the same-day visitor one sign-in links to them). The last two
+read `product_events` and belong to the built-in Product dashboard.
 
-**On forge's managed auth they come for free**, from `forge/pkg/devidp` (the
-library every login broker calls), so an existing project gets them with a
-forge upgrade and no edit: every completed sign-in records `auth_signed_in
-{kind: credential, provider: forge}` with its method (password, passkey,
-magic link, social with its `social_provider`), every self sign-up records
-`auth_signed_up` with `verified`, and an accepted invitation records
-`auth_signed_up {method: invite}` (an admin's invite records nothing). A new
-project's broker also records `auth_signed_out` on logout and marks the
-sign-in after a password reset `method: reset`
-(`devidp.WithAuthMethod(ctx, observe.AuthMethodReset)`); its auth context calls
-`identifyUser`. These are forge's automatic events: `product_events = False`
-switches them off with the CRUD ones.
-
-**Emit them from the server wherever a server sees the auth.** It is the
-authoritative emitter: browser events are lost to ad blockers, consent banners
-and the redirect right after a sign-in, and anyone can post one.
-
-```go
-// at your own sign-up / sign-in handlers (Auth0, Clerk, your own):
-observe.TrackAuth(ctx, observe.AuthSignedUp, sub,
-    observe.WithMethod(observe.AuthMethodPassword), observe.WithProvider("auth0"), observe.WithVerified(false))
-observe.TrackAuth(ctx, observe.AuthSignedIn, sub,
-    observe.WithMethod(observe.AuthMethodSocial), observe.WithSocialProvider("google"), observe.WithProvider("auth0"))
-```
-
-`TrackAuth` takes the id explicitly, because at sign-in the request is still
-anonymous. Like `Track` it is never switched off by `product_events = False`:
-an event your code records is your code's decision.
-
-**Active users need no code at all behind forge's auth middleware.** When
-`observe.Chain` has an `Auth` interceptor (every scaffolded server), the first
-authenticated call of each user per UTC day records one `auth_signed_in
-{kind: resumed}` from that process (`observe.AuthHeartbeatInterceptor`), for
-any JWT provider. That counts a user with a 30-day session or a refresh token
-as active, server-side, where no ad blocker reaches. API-key callers and
-anonymous calls record nothing. `provider` is `forge` under managed identity,
-else `jwt`; name yours with `observe.Deps{AuthProvider: "auth0"}`. It is one
-of forge's automatic events (`product_events = False` switches it off), and
-costs at most one log record per user per replica per day.
-
-**Server events can carry the visitor's daily hash.** Reliant hosting's proxy
-stamps `X-Reliant-Visitor-Day` (and `X-Reliant-Privacy` under GPC/DNT, then no
-hash) on every request it forwards, and strips any copy a client sent once
-control-plane #2517 is deployed. `observe.EdgeContextMiddleware` (on every
-serverkit listener) and `observe.EdgeContextInterceptor` (in `observe.Chain`)
-read them only when the process sets `FORGE_TRUSTED_EDGE=reliant`; then
-`Track` and `TrackAuth` record `visitor.day`, linking a server-side sign-up to
-the anonymous visit that produced it. forge does not render that variable for
-hosted workloads yet, so until it does the headers are ignored and nothing
-carries `visitor.day`. Never set it on a workload a client can reach without
-that proxy: the headers would be the client's.
-
-From the browser, `identifyUser` is the one call every app should make, wherever
-it learns who is signed in (Clerk's `useUser`, Auth0's `useAuth0`, a session
-refresh). It attaches the id to every span and replay (`setTelemetryUser`) and
-sends one `auth_signed_in {kind: "resumed"}` per user per UTC day per browser,
-which is what counts a user with a long-lived session as active.
-`trackAuthEvent` is for an app whose auth never touches a server of its own:
-
-```ts
-import { identifyUser, trackAuthEvent } from "@reliantlabs/forge-web-runtime";
-
-identifyUser(user?.id ?? null, { provider: "clerk" });   // on every "who is signed in" change
-trackAuthEvent("signed_up", { userId: user.id, method: "magic_link", provider: "clerk" });
-trackAuthEvent("signed_out", { userId: user.id, provider: "clerk" });   // before the session is gone
-```
-
-Browser auth events honour Global Privacy Control and Do Not Track (no auth
-event is sent and no id is attached: the browser is capped at `aggregate`),
-send nothing in the `off` tier, and store nothing below `full` (the daily
-`resumed` marker is kept in memory there, so a reload can send one more; the
-counts are distinct by user). A Node server (a Next.js route handler, an Express
-backend) uses `trackAuthEvent` from `@reliantlabs/forge-web-runtime/node`,
-which writes the same log record as `TrackAuth`.
-
-**Any other language** writes the record itself with its own OTel logger: one
-INFO log record with `event.name = product.auth_signed_in`, `user.id = <subject>`,
-`app.client = backend`, and the props as `product.kind = credential`,
-`product.method = password`, `product.provider = <name>`. It lands in the same
-table.
+The dashboards are the project's, while each env declares its frontends, so
+`forge generate` merges every env's and frontend's declaration: an equal goal or
+channel rule collapses, a goal id or channel conditions declared two different
+ways is refused naming both, `activation` and `activation_window` must agree
+wherever they are set (unset defers), and any `dashboards = False` drops them.
 
 ## Retention
 

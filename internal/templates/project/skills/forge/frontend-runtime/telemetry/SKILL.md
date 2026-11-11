@@ -67,7 +67,7 @@ into every environment it is promoted to.
 |---|---|---|---|
 | ingest path (`off` or empty disables) | `OTEL_ENDPOINT` | KCL `config.otel_endpoint` or `runtime_config` | `/_otel` in dev and on `forge.OnHosted`, **empty elsewhere** |
 | `deployment.environment` | `ENVIRONMENT` | KCL `config.environment` or `runtime_config` | the forge env name |
-| analytics tier ceiling (`off` / `aggregate` / `identified` / `full`) | `ANALYTICS_MODE` | `runtime_config` | absent = `identified` (cookieless) |
+| product analytics mode, the tier ceiling (`off` / `aggregate` / `identified` / `full`) | `ANALYTICS_MODE` | KCL `telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "full"}}` (per frontend, per env), or `runtime_config`; forced to `off` when the env switches browser telemetry off | `identified`: cookieless, a signed-in user's events carry their opaque id (rendered only when it differs; see `observability/product-events`) |
 | session replay (masked; `full` tier only) | `OTEL_REPLAY = "true"` | KCL `telemetry = forge.BrowserTelemetry {replay = True}` (per frontend, per env), or `runtime_config` | **on in new projects**, off in existing implicit-off envs |
 | console capture | `CONSOLE_CAPTURE = "false"` | KCL `telemetry.console_capture = False` | **on** |
 | replay sample rate | `REPLAY_SAMPLE_RATE` | KCL `telemetry.replay_sample_rate` | every session |
@@ -286,7 +286,7 @@ which is how the console counts active users. `trackAuthEvent("signed_in" |
 an app whose auth never touches a forge server. Both refuse an email-shaped id;
 under GPC or DNT they send no auth event and attach no id. Below the `full`
 tier the daily marker is kept in memory, never stored. The contract and the server-side
-emitters: `observability/product-events`, "Auth events".
+emitters: `observability/product-events/auth-events`.
 
 ## Interactions: click to usable
 

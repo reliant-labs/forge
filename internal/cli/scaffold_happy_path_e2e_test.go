@@ -156,8 +156,17 @@ func TestE2EProjectNewScaffoldCompilesWithoutVerify(t *testing.T) {
 	runCmd(t, projectDir, "go", "build", "./...")
 	runCmd(t, projectDir, "go", "vet", "./...")
 
+	// The bootstrap generate is one step line; what it printed is in the
+	// step log `project new` keeps in the project.
 	verified := runCmdOutput(t, dir, forgeBin, "project", "new", "verifiedapp", "--mod", "example.com/verifiedapp", "--service", "notes", "--verify")
-	if !strings.Contains(verified, "Validating generated code") {
-		t.Errorf("`project new --verify` did not run the validate build:\n%s", verified)
+	if strings.Contains(verified, "compile check skipped") {
+		t.Errorf("`project new --verify` says it skipped the compile check:\n%s", verified)
+	}
+	stepLog := readFileE2E(t, filepath.Join(dir, "verifiedapp", ".forge", "logs", "project-new.log"))
+	if !strings.Contains(stepLog, "Validating generated code") {
+		t.Errorf("`project new --verify` did not run the validate build:\n%s", stepLog)
+	}
+	if strings.Contains(out, "Running go mod tidy") || strings.Contains(out, "Running buf generate") {
+		t.Errorf("default `project new` printed its steps' raw output:\n%s", out)
 	}
 }

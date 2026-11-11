@@ -3090,7 +3090,7 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		if err != nil {
 			return fmt.Errorf("prepare the local Alertmanager: secret provider: %w", err)
 		}
-		la, err := prepareLocalAlerting(projectDir, env, entities, prov.All())
+		la, err := prepareLocalAlerting(ctx, projectDir, env, entities, prov.All())
 		if err != nil {
 			return fmt.Errorf("prepare the local Alertmanager: %w", err)
 		}

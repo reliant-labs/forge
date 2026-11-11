@@ -253,6 +253,7 @@ func runObsStatus(ctx context.Context, d obsDeps, env string, o obsStatusOpts) e
 		return partial
 	}
 	writeStatusText(d.Stdout, d.Now(), doc)
+	printConsoleLink(d.Stdout, doc.Scope.Backend, obsConsole().Home(env))
 	for _, w := range doc.Warnings {
 		fmt.Fprintf(d.Stderr, "warning: %s\n", w)
 	}
@@ -336,7 +337,7 @@ func statusSections(b obsbackend.Backend, env string, n obsbackend.Narrow, issue
 		secs = append(secs, statusSection{statusChanges, func(ctx context.Context, doc *obsStatusDoc) error {
 			res, err := r.Changes(ctx, obsbackend.ChangesRequest{
 				Env: env, Range: obsbackend.Range{From: n.Range.To.Add(-statusChangesLookback), To: n.Range.To},
-				Limit: statusChangesLimit, Project: hostedProjectName(),
+				Limit: statusChangesLimit, Project: obsProjectName(),
 			})
 			if err != nil {
 				return err

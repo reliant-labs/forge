@@ -335,6 +335,7 @@ func runObsIssues(ctx context.Context, d obsDeps, env string, o obsIssuesOpts) e
 	if res.NextPageToken != "" {
 		fmt.Fprintf(d.Stdout, "\n(more: --page-token %s)\n", res.NextPageToken)
 	}
+	printConsoleLink(d.Stdout, doc.Scope.Backend, obsConsole().View("errors", env))
 	return nil
 }
 

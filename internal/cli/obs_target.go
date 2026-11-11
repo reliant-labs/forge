@@ -254,6 +254,11 @@ var (
 // Within a process the answer is shared, so a verb that asks twice — backend
 // resolution, then opening the backend — renders at most once.
 func resolveObsTarget(ctx context.Context, env string) (obsTarget, error) {
+	// An env forge.yaml (or --project, in a repo with no forge files)
+	// declares has no KCL to render: the seam lowers it into the same target.
+	if t, ok, err := declaredObsTarget(env); err != nil || ok {
+		return t, err
+	}
 	projectDir := projectDirForKCL()
 	fp := obsTargetFingerprint(projectDir, env)
 	key := obsTargetKeyOf(projectDir, env, fp)
@@ -285,4 +290,27 @@ func remember(key string, t obsTarget) {
 	obsTargetMu.Lock()
 	obsTargetLast[key] = t
 	obsTargetMu.Unlock()
+}
+
+// declaredObsTarget answers env from the env-declaration seam
+// (env_declaration.go) when forge.yaml `envs:` or `forge obs --project`
+// declares it; ok=false leaves it to the KCL render. A forge.yaml that does not
+// load is left to the render too, which reports it the way it always has.
+func declaredObsTarget(env string) (obsTarget, bool, error) {
+	dir, cfg, err := loadDeclarationConfig()
+	if err != nil && strings.TrimSpace(obsProjectFlag) == "" {
+		return obsTarget{}, false, nil
+	}
+	if err != nil {
+		return obsTarget{}, false, err
+	}
+	d, err := declareEnv(dir, cfg, env)
+	if err != nil {
+		return obsTarget{}, false, err
+	}
+	switch d.Source {
+	case envDeclYAML, envDeclFlags:
+		return yamlObsTarget(d), true, nil
+	}
+	return obsTarget{}, false, nil
 }

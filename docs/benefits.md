@@ -3517,6 +3517,28 @@ _Enforced · Reliant hosting_
 - `internal/operators/workload/otelinject.go` in the control-plane repo
 - `internal/telemetrytoken` in the control-plane repo
 
+<a id="monitoring-any-language"></a>
+
+### Monitoring for any app
+
+An app forge never built — any language, any CI, any infrastructure — sends its traces, logs and metrics to Reliant with the standard `OTEL_*` variables, and `forge obs` reads its issues, logs and release health.
+
+_Enforced · Reliant hosting_
+
+**Use:** `forge login`, then `forge obs init prod`: it registers the env, mints an ingest token and prints the `OTEL_*` variables.
+
+**Why:** Adopting a platform usually starts with a rewrite. Monitoring needs none: one command, three environment variables, and the app's errors and deploy regressions are in front of the team and its agents.
+
+**Evidence:**
+
+- command `forge obs init`
+- command `forge obs tokens`
+- command `forge obs receivers`
+- skill `observability/monitoring-only` (`forge skill load observability/monitoring-only`)
+- source [`internal/cli/env_declaration.go`](../internal/cli/env_declaration.go)
+- `proto/services/telemetry_token/v1/telemetry_token.proto` in the control-plane repo
+- `internal/releasehealth/infer.go` in the control-plane repo
+
 <a id="hosted-observability-store"></a>
 
 ### Hosted observability store

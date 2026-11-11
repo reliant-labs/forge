@@ -62,6 +62,18 @@ const (
 	AvailabilityReliant Availability = "reliant"
 )
 
+// Scope says which repos a benefit applies to: any repo, in any language
+// (monitoring, the migration-safety lint, a release hook), or a forge
+// project only (codegen, scaffolding). Empty is ScopeForgeProject.
+type Scope string
+
+const (
+	// ScopeAny applies to any repo forge is pointed at, forge project or not.
+	ScopeAny Scope = "any"
+	// ScopeForgeProject needs a forge project.
+	ScopeForgeProject Scope = "forge-project"
+)
+
 // externalRepos are the sibling repositories an `external:` evidence item may
 // name. Their files are not in this checkout, so the item is format-checked
 // only.
@@ -92,6 +104,8 @@ type Benefit struct {
 	Claim        string       `yaml:"claim" json:"claim"`
 	Status       Status       `yaml:"status" json:"status"`
 	Availability Availability `yaml:"availability" json:"availability"`
+	// Scope is which repos it applies to; "" is a forge project.
+	Scope Scope `yaml:"scope,omitempty" json:"scope,omitempty"`
 	// Headline puts the entry in the README table. An in-progress entry
 	// never is one.
 	Headline bool `yaml:"headline" json:"headline"`
@@ -271,6 +285,11 @@ func (r *Registry) Validate() error {
 		case AvailabilityForge, AvailabilityHosted, AvailabilityReliant:
 		default:
 			fail("%s: availability %q is not one of forge, hosted, reliant", where, b.Availability)
+		}
+		switch b.Scope {
+		case "", ScopeAny, ScopeForgeProject:
+		default:
+			fail("%s: scope %q is not one of any, forge-project", where, b.Scope)
 		}
 		if b.Status == StatusInProgress && b.Headline {
 			fail("%s: an in-progress entry may not be a headline (the README states only what ships)", where)

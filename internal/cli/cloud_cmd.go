@@ -134,6 +134,16 @@ var declaredControlPlanes = func(ctx context.Context) (planes []declaredControlP
 		}
 		decls = append(decls, envDeclaration{Env: env, Decl: declarationFromEntities(entities)})
 	}
+	// Envs forge.yaml declares for monitoring (env_declaration.go) live on
+	// its monitoring control plane: `forge login` covers them too.
+	if cfg, cerr := loadProjectConfigFrom(cfgPath); cerr == nil && cfg.MonitoringOn() && monitoringEndpoint(cfg.Monitoring) == "" {
+		cp := &cloud.Declaration{Endpoint: monitoringControlPlane(cfg.Monitoring)}
+		for _, env := range cfg.Envs {
+			if !fileExists(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")) {
+				decls = append(decls, envDeclaration{Env: env, Decl: cp})
+			}
+		}
+	}
 	return distinctControlPlanes(decls), skipped, nil
 }
 

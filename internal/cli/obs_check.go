@@ -240,6 +240,9 @@ func runObsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) err
 	}
 	if doc.Verdict != "" || o.explain {
 		writeCheckText(d.Stdout, doc)
+		if doc.Subject != nil && doc.Subject.Release != "" {
+			printConsoleLink(d.Stdout, doc.Scope.Backend, obsConsole().Release(doc.Subject.Release, env))
+		}
 	}
 	return err
 }
@@ -543,6 +546,8 @@ func failSummary(r releasehealth.Report) string {
 
 func subjectName(r releasehealth.Report) string {
 	switch {
+	case r.Subject.Release != "" && r.Subject.Inferred:
+		return "release " + r.Subject.Release + " (inferred marker: first seen in telemetry)"
 	case r.Subject.Release != "":
 		return "release " + r.Subject.Release
 	case r.Subject.PromotionID != "":
@@ -657,6 +662,11 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 		return
 	}
 	fmt.Fprintf(w, "%s  %s on %s (%s backend)\n", doc.Verdict, doc.Subject.Release, doc.Scope.Env, doc.Scope.Backend)
+	if doc.Subject.Inferred {
+		fmt.Fprintf(w, "marker INFERRED: no deploy of %s was recorded; %s is the first time its telemetry showed service.version=%s "+
+			"(a recorded deploy gives an exact marker)\n",
+			doc.Subject.Release, doc.Subject.PromotedAt.Format(time.RFC3339), doc.Subject.Release)
+	}
 	if doc.Windows != nil {
 		fmt.Fprintf(w, "before %s .. %s\nafter  %s .. %s%s\n",
 			doc.Windows.Before.From.Format(time.RFC3339), doc.Windows.Before.To.Format(time.RFC3339),

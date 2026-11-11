@@ -40,6 +40,11 @@ func newObsCmd() *cobra.Command {
 	cmd.AddCommand(newObsStatusCmd(), newObsWorkloadsCmd())
 	cmd.AddCommand(newObsMetricsGroupCmd())
 	cmd.AddCommand(newObsDashboardsCmd())
+	cmd.AddCommand(newObsInitCmd(), newObsTokensCmd(), newObsReceiversCmd())
+	cmd.PersistentFlags().StringVar(&obsProjectFlag, "project", "",
+		"the forge project name, for a repo with no forge.yaml (default: forge.yaml `name`)")
+	cmd.PersistentFlags().StringVar(&obsControlPlaneFlag, "control-plane", "",
+		"the control plane of a monitoring-only env (default: forge.yaml monitoring.control_plane, else Reliant's)")
 	return cmdutil.StrictGroup(cmd)
 }
 

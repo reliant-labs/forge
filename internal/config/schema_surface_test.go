@@ -34,11 +34,14 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[ProjectConfig](),
 			// features: read by FeaturesConfig.resolve through every
 			// XxxEnabled accessor, and by followPinnedRequirements.
+			// envs / monitoring: read by the env-declaration seam
+			// (internal/cli/env_declaration.go) every `forge obs` verb
+			// resolves through, and by `forge obs init`.
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
-				"deploy", "dev_stack", "docker", "features",
+				"deploy", "dev_stack", "docker", "envs", "features",
 				"forge_version", "generate", "harness", "k8s",
-				"lint", "module_path", "name", "observability", "upgrade",
+				"lint", "module_path", "monitoring", "name", "observability", "upgrade",
 			},
 		},
 		{

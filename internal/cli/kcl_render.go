@@ -1364,8 +1364,9 @@ type FrontendTelemetryEntity struct {
 // always set (the schema defaults them); Activation and ActivationWindow are
 // empty when the frontend left them to forge's defaults.
 type AnalyticsEntity struct {
-	// Mode is "off" | "aggregate" | "identified" | "full"; it reaches the
-	// browser as the runtime config's ANALYTICS_MODE.
+	// Mode is "off" | "aggregate" | "identified" (the default) | "full"; a
+	// non-default one reaches the browser as the runtime config's
+	// ANALYTICS_MODE.
 	Mode             string                   `json:"mode"`
 	Goals            []AnalyticsGoalEntity    `json:"goals,omitempty"`
 	Activation       string                   `json:"activation,omitempty"`

@@ -2761,8 +2761,8 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
 #   ANALYTICS_MODE       telemetry.analytics.mode, only when it is not the
-#                        default "aggregate" and browser telemetry is not off;
-#                        unset means aggregate
+#                        default "identified" and browser telemetry is not
+#                        off; unset means identified
 _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     _t = f.telemetry
     assert not _frontend_replay_on(f) or not _frontend_hosted(f) or bundle.observability, \
@@ -2771,7 +2771,7 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
         | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) and not _obs_browser_off(bundle) else {}) \
         | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
-        | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "aggregate" and not _obs_browser_off(bundle) else {})
+        | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "identified" and not _obs_browser_off(bundle) else {})
 }
 
 # The framework's build/dev variable for the browser ingest path.

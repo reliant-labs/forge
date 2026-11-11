@@ -68,7 +68,7 @@ into every environment it is promoted to.
 | ingest path (`off` or empty disables) | `OTEL_ENDPOINT` | KCL `config.otel_endpoint` or `runtime_config` | `/_otel` in dev and on `forge.OnHosted`, **empty elsewhere** |
 | `deployment.environment` | `ENVIRONMENT` | KCL `config.environment` or `runtime_config` | the forge env name |
 | session replay (masked) | `OTEL_REPLAY = "true"` | KCL `telemetry = forge.BrowserTelemetry {replay = True}` (per frontend, per env), or `runtime_config` | **on in new projects**, off in existing implicit-off envs |
-| product analytics mode (`off` / `aggregate` / `identified` / `full`) | `ANALYTICS_MODE` | KCL `telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "full"}}` (per frontend, per env), or `runtime_config`; forced to `off` when the env switches browser telemetry off | `aggregate` (rendered only when it differs; see `observability/product-events`) |
+| product analytics mode (`off` / `aggregate` / `identified` / `full`) | `ANALYTICS_MODE` | KCL `telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "full"}}` (per frontend, per env), or `runtime_config`; forced to `off` when the env switches browser telemetry off | `identified`: cookieless, a signed-in user's events carry their opaque id (rendered only when it differs; see `observability/product-events`) |
 | `service.version` | — (a build fact: `NEXT_PUBLIC_APP_VERSION` / `VITE_APP_VERSION`) | the deploy | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the

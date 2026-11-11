@@ -2,13 +2,13 @@
 Positive test — `forge.BrowserTelemetry {analytics = forge.Analytics {...}}`
 declares a frontend's built-in product analytics:
 
-  * the mode reaches the browser as ANALYTICS_MODE in the runtime config, in
-    a hosted frontend's StaticSite spec too; the default "aggregate" renders
-    no key (unset means aggregate), and neither does a frontend with no
-    `analytics`;
+  * a non-default mode reaches the browser as ANALYTICS_MODE in the runtime
+    config, in a hosted frontend's StaticSite spec too, and so does the
+    `aggregate` opt-down; the default "identified" renders no key (unset
+    means identified), and neither does a frontend with no `analytics`;
   * goals, the activation event and window, channel rules and the dashboards
-    switch render under `telemetry.analytics` with every default spelled out
-    and channel conditions lowercased, for forge generate's built-in
+    switch render under `telemetry.analytics` with the mode and dashboards
+    defaults spelled out and channel conditions lowercased, for forge generate's built-in
     dashboards to read;
   * a frontend with no `analytics` renders no `analytics` key;
   * browser telemetry switched off renders no derived ANALYTICS_MODE, and an
@@ -62,6 +62,11 @@ _on = _bundle([
         telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {}}
     }
     forge.Frontend {
+        name = "anon", path = "anon", type = "vite", port = 5175
+        runtime = forge.OnHost {}
+        telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "aggregate"}}
+    }
+    forge.Frontend {
         name = "plain", path = "plain", type = "nextjs", port = 3000
         runtime = forge.OnHost {}
         telemetry = forge.BrowserTelemetry {console_capture = False}
@@ -78,7 +83,7 @@ _browser_off = _bundle([
     forge.Frontend {
         name = "web", image = "ghcr.io/acme/web", path = "web", type = "vite"
         runtime = forge.OnHosted {}
-        telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "identified"}}
+        telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "full"}}
     }
     forge.Frontend {
         name = "own", path = "own", type = "vite", port = 5174
@@ -96,6 +101,7 @@ _off_by = {f.name: f for f in _browser_off.frontends}
 assert_hosted_spec_carries_mode = _by.web.runtime_config_spec.ANALYTICS_MODE.value == "full"
 assert_default_mode_renders_no_key = "ANALYTICS_MODE" not in _by.defaults.runtime_config
 assert_no_analytics_renders_no_key = "ANALYTICS_MODE" not in _by.plain.runtime_config
+assert_aggregate_opt_down_renders = _by.anon.runtime_config.ANALYTICS_MODE == "aggregate"
 assert_author_runtime_config_wins = _by.own.runtime_config.ANALYTICS_MODE == "identified"
 
 assert_mode_rendered = _a.mode == "full"
@@ -110,7 +116,7 @@ assert_channels_lowercased_in_order = _a.channels == [
 ]
 assert_dashboards_default_on = _a.dashboards == True
 assert_defaults_spelled_out = _by.defaults.telemetry.analytics == {
-    mode = "aggregate", goals = [], activation = None, activation_window = None, channels = [], dashboards = True
+    mode = "identified", goals = [], activation = None, activation_window = None, channels = [], dashboards = True
 }
 assert_no_analytics_renders_no_block = "analytics" not in _by.plain.telemetry
 

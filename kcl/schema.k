@@ -3883,7 +3883,7 @@ schema Analytics:
         }
 
     Nothing here is required: a frontend that declares no `analytics` gets the
-    `aggregate` mode and the built-in dashboards. Declaring goals, an
+    `identified` mode and the built-in dashboards. Declaring goals, an
     activation event and channel rules adds to those dashboards; funnels stay
     on `BrowserTelemetry.funnels` (`by = "visitor"` or `"person"` for the
     dashboards' product funnels).
@@ -3893,11 +3893,13 @@ schema Analytics:
     DNT always caps it at `aggregate`):
 
       * "off"        — the browser sends no product events.
-      * "aggregate"  — the default. Cookieless: nothing is stored on the
-                       device, and a visitor is counted only by the
-                       platform's daily edge hash. Browser events carry no
-                       user id.
-      * "identified" — as aggregate, and a signed-in user's browser events
+      * "aggregate"  — strictly anonymous (an opt-down): nothing is stored on
+                       the device, a visitor is counted only by the
+                       platform's daily edge hash, and browser events carry
+                       no user id. GPC/DNT caps a browser here: it is
+                       counted, never identified.
+      * "identified" — the default. Cookieless as aggregate (nothing stored
+                       on the device), and a signed-in user's browser events
                        carry their opaque user id.
       * "full"       — as identified, and once the app calls
                        grantAnalyticsConsent(), a persistent visitor id and
@@ -3909,7 +3911,7 @@ schema Analytics:
     """
     # The most the app allows a browser: "off" | "aggregate" | "identified" |
     # "full".
-    mode: str = "aggregate"
+    mode: str = "identified"
     # Conversions the Product dashboard counts. A goal id is unique within
     # the frontend's analytics.
     goals: [Goal] = []
@@ -4009,7 +4011,7 @@ schema BrowserTelemetry:
     funnels: [Funnel] = []
     # Built-in product analytics: the mode (ANALYTICS_MODE in the runtime
     # config), goals, the activation event and channel rules. Unset is the
-    # `aggregate` mode with no declarations, and renders nothing.
+    # `identified` mode with no declarations, and renders nothing.
     analytics?: Analytics
     # The service.name the frontend's browser SDK reports. ONLY for a frontend
     # built from another repository (`source`): that repository's own

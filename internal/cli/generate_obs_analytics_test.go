@@ -154,7 +154,7 @@ func TestFrontendAnalytics_FromRealKCL(t *testing.T) {
             runtime = forge.OnHost {}
             telemetry = forge.BrowserTelemetry {
                 analytics = forge.Analytics {
-                    mode = "identified"
+                    mode = "aggregate"
                     goals = [forge.Goal {id = "pricing", route = "/pricing"}, forge.Goal {id = "checkout", event = "purchase"}]
                     activation = "order_created"
                     channels = [forge.Channel {host = "News.YCombinator.com", channel = "Organic social"}]
@@ -179,7 +179,7 @@ func TestFrontendAnalytics_FromRealKCL(t *testing.T) {
 	}
 	web := by["web"]
 	wantEntity := &AnalyticsEntity{
-		Mode:       "identified",
+		Mode:       "aggregate",
 		Goals:      []AnalyticsGoalEntity{{ID: "pricing", Route: "/pricing"}, {ID: "checkout", Event: "purchase"}},
 		Activation: "order_created",
 		Channels:   []AnalyticsChannelEntity{{Host: "news.ycombinator.com", Channel: "Organic social"}},
@@ -188,8 +188,8 @@ func TestFrontendAnalytics_FromRealKCL(t *testing.T) {
 	if web.Telemetry == nil || !reflect.DeepEqual(web.Telemetry.Analytics, wantEntity) {
 		t.Fatalf("analytics = %+v, want %+v", web.Telemetry, wantEntity)
 	}
-	if web.RuntimeConfig["ANALYTICS_MODE"] != "identified" {
-		t.Errorf("runtime_config = %v, want ANALYTICS_MODE identified", web.RuntimeConfig)
+	if web.RuntimeConfig["ANALYTICS_MODE"] != "aggregate" {
+		t.Errorf("runtime_config = %v, want ANALYTICS_MODE aggregate (the opt-down renders; the default identified does not)", web.RuntimeConfig)
 	}
 	if plain := by["plain"]; plain.Telemetry != nil || len(plain.RuntimeConfig) != 0 {
 		t.Errorf("a frontend that declares nothing must render nothing extra: %+v", plain)

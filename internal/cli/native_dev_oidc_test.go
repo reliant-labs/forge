@@ -736,3 +736,70 @@ func TestBuildFrontendDevCmd_NativeOIDCIsInjectedAsOneUnit(t *testing.T) {
 		}
 	})
 }
+
+// An https first redirect is injected as the unit's redirect, and the private-use
+// entry that follows it as the fallback: the app picks by platform from the pair
+// the IdP registered, with no other config.
+func TestNativeOIDCFromOutput_HTTPSFirstInjectsTheFallback(t *testing.T) {
+	out := nativeIdentityOutput()
+	app := out.Apps["dev:mobile"]
+	app.RedirectURIs = []string{"https://app.acme.example/oauthredirect", "com.acme.mobile:/oauthredirect"}
+	app.PostLogoutURIs = []string{"https://app.acme.example/signedout", "com.acme.mobile:/signedout"}
+	out.Apps["dev:mobile"] = app
+	got := nativeOIDCFromOutput(out, "dev:mobile")
+	if got.RedirectURI != "https://app.acme.example/oauthredirect" || got.PostLogoutRedirectURI != "https://app.acme.example/signedout" {
+		t.Fatalf("first redirects = %q / %q", got.RedirectURI, got.PostLogoutRedirectURI)
+	}
+	if got.FallbackRedirectURI != "com.acme.mobile:/oauthredirect" || got.FallbackPostLogoutRedirectURI != "com.acme.mobile:/signedout" {
+		t.Errorf("fallbacks = %q / %q", got.FallbackRedirectURI, got.FallbackPostLogoutRedirectURI)
+	}
+
+	// Private-use first: nothing to fall back from, so the env is the old five.
+	plain := nativeOIDCFromOutput(nativeIdentityOutput(), "dev:mobile")
+	if plain.FallbackRedirectURI != "" || plain.FallbackPostLogoutRedirectURI != "" {
+		t.Errorf("a private-use first redirect grew a fallback: %+v", plain)
+	}
+
+	// https only, with no private-use entry: no fallback, no invented one.
+	app.RedirectURIs = []string{"https://app.acme.example/oauthredirect"}
+	app.PostLogoutURIs = []string{"https://app.acme.example/signedout"}
+	out.Apps["dev:mobile"] = app
+	if only := nativeOIDCFromOutput(out, "dev:mobile"); only.FallbackRedirectURI != "" {
+		t.Errorf("fallback = %q with no private-use entry", only.FallbackRedirectURI)
+	}
+}
+
+// The fallback is part of the one OIDC unit: when the developer points the app
+// at another provider, forge injects none of it; otherwise a variable already
+// set is kept and the rest are filled.
+func TestWithNativeOIDCEnv_FallbackBelongsToTheUnit(t *testing.T) {
+	n := &nativeOIDC{
+		Issuer: "http://localhost:8098", ClientID: "c", Scopes: "openid",
+		RedirectURI: "https://app.acme.example/oauthredirect", PostLogoutRedirectURI: "https://app.acme.example/signedout",
+		FallbackRedirectURI: "com.acme.mobile:/oauthredirect", FallbackPostLogoutRedirectURI: "com.acme.mobile:/signedout",
+	}
+	env := nativeOriginEnvMap(withNativeOIDCEnv(nil, n))
+	for _, name := range append(oidcEnvNames(), oidcFallbackEnvNames()...) {
+		if env[name] == "" {
+			t.Errorf("%s not injected", name)
+		}
+	}
+	other := nativeOriginEnvMap(withNativeOIDCEnv([]string{oidcIssuerEnv + "=https://other.idp"}, n))
+	for _, name := range oidcFallbackEnvNames() {
+		if other[name] != "" {
+			t.Errorf("%s injected beside another provider's issuer", name)
+		}
+	}
+	// A developer-set redirect is kept; the fallback is still filled.
+	kept := nativeOriginEnvMap(withNativeOIDCEnv([]string{oidcRedirectURIEnv + "=custom:/cb"}, n))
+	if kept[oidcRedirectURIEnv] != "custom:/cb" || kept[oidcFallbackRedirectURIEnv] == "" {
+		t.Errorf("per-variable precedence broken: %v", kept)
+	}
+	// A private-use-only client sets neither fallback variable.
+	plain := nativeOriginEnvMap(withNativeOIDCEnv(nil, &nativeOIDC{Issuer: "http://localhost:8098", ClientID: "c", RedirectURI: "com.acme.mobile:/oauthredirect"}))
+	for _, name := range oidcFallbackEnvNames() {
+		if _, set := plain[name]; set {
+			t.Errorf("%s set for a private-use-only client", name)
+		}
+	}
+}

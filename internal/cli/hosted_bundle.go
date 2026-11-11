@@ -296,6 +296,9 @@ func (c hostedBundleClient) RecordBundle(ctx context.Context, env, environmentID
 		return release.BundleRecord{}, false, err
 	}
 	if doc.Snapshot != nil {
+		if err := requireSnapshotResourceFeatures(ctx, c.client, doc.Snapshot.Resources); err != nil {
+			return release.BundleRecord{}, false, err
+		}
 		if err := requireSnapshotCapabilities(ctx, c.client); err != nil {
 			return release.BundleRecord{}, false, err
 		}

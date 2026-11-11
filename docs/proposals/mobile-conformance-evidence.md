@@ -506,6 +506,108 @@ read as optional although section 2 runs before the SDK upgrade; and the
 `expo-asset` and `expo-status-bar` plugins that `expo install --fix` adds are
 optional (a fresh scaffold has neither), not "keep".
 
+## https universal links / App Links (pending device acceptance)
+
+Design: [mobile-native-auth/universal-links.md](mobile-native-auth/universal-links.md).
+Owner-confirmed defaults, built as final: the test domain is a Reliant-hosted dev
+static site hostname; Android dev uses the per-machine debug keystore declared per
+env in KCL and release uses Play App Signing; iOS keeps the private-use fallback
+below 17.4; Associated Domains come from Xcode automatic signing on team
+`23P64LQTZD`; one bundle id per app.
+
+**Status: implemented and unit-tested; device acceptance has not been run.** Nothing
+below claims a signed build signed in through an https link.
+
+### What is built, and the unit evidence
+
+| Part | Evidence |
+|---|---|
+| KCL `associated_domains` (kind native), `apple_team_id`, per-env `android_cert_fingerprints`, `associated_site`; the first https host must be in the domains | `kcl/tests/{positive,negative}_*associated_domain*`, `negative_frontend_{apple_team_id,android_fingerprint}_*`, `TestKCLModule_*` |
+| Shape and validation; one https-prepend helper (`release.PrependAppLinkRedirect`) | `pkg/release/applinks_test.go`; the field is part of `shape-identity-native-app`, which is not advertised, so no control plane is sent it |
+| Rendered `apple-app-site-association` and `assetlinks.json` (exact contents, sorted, byte-stable, `debug` via `keytool`) | `internal/applinks/applinks_test.go` |
+| Per-env resolution, site choice, refusals | `internal/cli/app_links_test.go` |
+| Serving: staging overlay, OnBucket upload as `application/json`, OnFirebase `headers`, hosted spec `wellKnown` | `internal/deploytarget/wellknown_test.go`, `pkg/deploy/v1alpha1/wellknown_test.go`, `internal/cli/frontend_custom_domains_test.go` |
+| Dev env: https first redirect, `EXPO_PUBLIC_FORGE_OIDC_FALLBACK_*` inside the one OIDC unit, plugin variables, developer mode for a local env only | `internal/cli/native_dev_oidc_test.go`, `internal/cli/app_links_env_test.go` |
+| Expo plugin (`ios.associatedDomains` with both services, `android.intentFilters` with `autoVerify`, inert without a domain) | `tests/with-forge-links.test.js` (Jest) |
+| Client: https on Android and iOS 17.4+, fallback below; one URI for authorize, match and token; `preferUniversalLinks`; logout pair | `tests/auth-redirect.test.ts`, `tests/auth-config.test.ts`, `tests/auth-provider.test.ts` (Jest, inside `TestE2EMobileConsumerConformance`) |
+
+### Control-plane requirement (separate work; forge does not touch the control plane)
+
+For a **hosted** site, forge publishes the files as the StaticSite spec's `wellKnown`
+map, a sibling of `runtimeConfig`: lowerCamelCase field, `map[string]string`, keyed by
+file name (`apple-app-site-association`, `assetlinks.json`), each value the file's
+exact contents as a raw JSON string (not base64), at most 8 entries and 128 KiB each.
+The release artifact does not carry them: they are per-environment, because the
+Android fingerprints differ between environments. After every sync (a sync prunes
+files the release lacks) the platform must serve:
+
+- `GET https://<host>/.well-known/apple-app-site-association` and
+  `GET https://<host>/.well-known/assetlinks.json` at the **host root**, not under
+  `basePath`;
+- **200**, **`Content-Type: application/json`** (the extensionless file cannot be
+  inferred, and `_headers` refuses `Content-Type` today), body byte-for-byte the
+  spec's value;
+- **no redirect of any kind** (no apex/www, trailing-slash or `.html` rewrite) and
+  **no SPA fallback**; a missing file is a 404, never `index.html`;
+- over https with a certificate valid for the host, with no cookies.
+
+A hosted control plane must advertise `GetCapabilities.resourceFeatures` containing
+`static-site-well-known` before forge publishes a nonempty `spec.wellKnown`.
+An absent field, an old RPC, or a missing feature fails closed with upgrade guidance;
+forge never silently drops required verification files. This check runs before hosted
+records enter a bundle, at snapshot sealing and promotion, and at the hosted provider
+boundary. The platform strict-decodes CR specs and older CRDs prune unknown fields,
+so decode/serve support must land together. Fetching the files still remains acceptance
+row 1.
+
+### Validation record (2026-11-11)
+
+- `go build ./...`, `go vet ./...`, changed Go files' `gofmt`, and `git diff --check`: passed.
+- Requested `TMPDIR=/private/tmp/forge-devloop-tmp task test:short -- ./pkg/... ./internal/cli/... ./internal/templates/... ./internal/deploytarget/... ./internal/applinks/... ./internal/devidentity/...`: passed.
+- Full-mode `go test -count=1 ./internal/templates/`: passed (99s).
+- `TestE2EMobileConsumerConformance`: all five cases passed (650s), including the
+  new Jest suites, Doctor 19/19, typecheck, zero-warning lint, native exports and
+  Metro. The final rerun after the app-owned intent-filter preservation regression
+  test also passed all five cases (225s) on clean, stable HEAD `ab76860f7`.
+  The later factory-codegen fix was cherry-picked separately and validated with
+  focused codegen/generator checks; it does not alter the client templates.
+- `go run ./internal/apigate -base origin/main`: fails because main advanced
+  beyond this mobile branch (51 identifiers added on main are absent here, in
+  accesstoken, dashspec, obsquery, releasehealth and release). This is branch
+  drift, not this slice deleting APIs. Against the actual slice base
+  `00a561e04`, apigate passes with eight compatible additions.
+
+The SDK patch cohort moved during validation: Expo 58.0.24 was published on
+2026-11-11. Doctor reads current SDK metadata, while pnpm 12 prefers aged versions
+within a compatible tilde range. Fresh fixtures (no lockfile) therefore resolved
+58.0.23 while Doctor required 58.0.24. The scaffold floors now match the official
+`expo-58.0.24.tgz` bundledNativeModules.json and Babel dependency: Expo .24, asset
+.21, constants .16, crypto .8, linking .17, network .5, router .31, secure-store .3,
+status-bar .5, web-browser .8, babel-preset-expo .25. No Doctor assertion or
+supply-chain policy was bypassed. External SDK metadata is a moving gate input,
+not a test flake.
+
+### Acceptance (pending)
+
+Rows 1-8 of the design's test plan need a signed build and the public host and are a
+manual or Maestro lane, not CI:
+
+| # | Where | Pass |
+|---|---|---|
+| 1 | files | `curl -sI` both URLs: 200, `application/json`, no 3xx, valid JSON |
+| 2 | iOS Sim 17.4+ | session closes, tokens stored, host log shows no `/oauthredirect` GET. Run once with only `applinks:` to settle the `webcredentials` question |
+| 3 | iOS Sim 17.0 | client picks the private-use entry; sign-in succeeds |
+| 4 | iOS | `/signedout` closes the session |
+| 5 | Android emulator (API 34+, Chrome) | `pm get-app-links` is `verified` without manual approval |
+| 6 | Android | Custom Tab hands off, `Linking` reports `success`, tokens stored |
+| 7 | Android | unverified link: the fallback page appears and "Open in app" completes sign-in |
+| 8 | both | kill the app mid-login, then complete |
+
+**Known gap, not built:** the `/oauthredirect` and `/signedout` web fallback pages
+(row 7) are not scaffolded. Until they are, an unverified Android link loads the
+site's own page for that path and sign-in fails there; the private-use entry is the
+fallback only on iOS below 17.4 and in a domain-less build.
+
 ## Explicit remaining gates
 
 - True adopted-app ingress: a customized scaffold is preservation coverage, not
@@ -515,6 +617,8 @@ optional (a fresh scaffold has neither), not "keep".
 - Backend-only `project new --frontend-workspaces` does not persist a complete
   workspace before a frontend exists; this fixture initializes the canonical
   workspace emitter explicitly. It does not certify that CLI onboarding path.
+- https universal links / App Links on a signed iOS build and an Android emulator
+  (acceptance rows above), and the hosted control plane serving the files.
 - Android: Gradle builds, and Hermes, streaming/cancellation, network/lifecycle
   and sign-in behavior on an emulator and a physical device. The emulator needs
   `adb reverse` for the issuer.

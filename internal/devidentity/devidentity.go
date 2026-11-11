@@ -533,7 +533,10 @@ func nativeApplication(in Input, a release.ShapeIdentityApplication) (identity.A
 		if scheme == "" {
 			return identity.Application{}, fmt.Sprintf("application %q was NOT registered: frontend %q has no callback scheme (a reverse-DNS entry such as \"com.acme.app\" in its app.json expo.scheme). Add one, or declare redirect_uris = [\"com.acme.app:/oauthredirect\"]", a.Name, a.Frontend)
 		}
-		app.RedirectURIs = []string{release.NativePrivateRedirectURI(scheme)}
+		app.RedirectURIs = release.PrependAppLinkRedirect(a.AssociatedDomains, []string{release.NativePrivateRedirectURI(scheme)})
+	}
+	if err := release.ValidateAssociatedDomains(a.AssociatedDomains, app.RedirectURIs); err != nil {
+		return identity.Application{}, fmt.Sprintf("application %q was NOT registered: %v", a.Name, err)
 	}
 	if len(app.PostLogoutURIs) == 0 {
 		for _, r := range app.RedirectURIs {

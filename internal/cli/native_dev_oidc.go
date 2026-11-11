@@ -51,6 +51,9 @@ const (
 // nativeOIDC is the sign-in configuration of one native frontend.
 type nativeOIDC struct {
 	Issuer, ClientID, Scopes, RedirectURI, PostLogoutRedirectURI string
+	// FallbackRedirectURI and FallbackPostLogoutRedirectURI are the private-use
+	// entries that follow an https first redirect (see app_links_env.go).
+	FallbackRedirectURI, FallbackPostLogoutRedirectURI string
 }
 
 func (n nativeOIDC) vars() [][2]string {
@@ -148,6 +151,7 @@ func nativeOIDCFromOutput(out identity.Output, appName string) *nativeOIDC {
 	if len(app.PostLogoutURIs) > 0 {
 		n.PostLogoutRedirectURI = app.PostLogoutURIs[0]
 	}
+	n.setAppLinkFallback(app.RedirectURIs, app.PostLogoutURIs)
 	return n
 }
 
@@ -180,7 +184,7 @@ func withNativeOIDCEnvNote(env []string, n *nativeOIDC) ([]string, string) {
 			"(the scopes and redirects belong to the dev IdP's client, not to the provider you configured); set the rest yourself, or unset it to use the dev IdP",
 			strings.Join(own, " and "), "EXPO_PUBLIC_FORGE_OIDC_*")
 	}
-	for _, kv := range n.vars() {
+	for _, kv := range n.allVars() {
 		if kv[1] != "" && envLookupLastOr(env, kv[0]) == "" {
 			env = withForcedEnv(env, kv[0], kv[1])
 		}
@@ -190,6 +194,12 @@ func withNativeOIDCEnvNote(env []string, n *nativeOIDC) ([]string, string) {
 
 func oidcEnvNames() []string {
 	return []string{oidcIssuerEnv, oidcClientIDEnv, oidcScopesEnv, oidcRedirectURIEnv, oidcPostLogoutURIEnv}
+}
+
+// oidcFallbackEnvNames are the unit's optional members: present only when the
+// first redirect is an https link.
+func oidcFallbackEnvNames() []string {
+	return []string{oidcFallbackRedirectURIEnv, oidcFallbackPostLogoutURIEnv}
 }
 
 // describeNativeOIDC is the launch lines for a native frontend's sign-in: the

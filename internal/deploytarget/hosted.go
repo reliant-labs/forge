@@ -1300,6 +1300,9 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	if err != nil {
 		return err
 	}
+	if err := RequireHostedResourceFeatures(ctx, c, RequiredHostedResourceFeatures(group)); err != nil {
+		return err
+	}
 	// The env's kind is the CLI's derivation over the WHOLE env, carried on
 	// the group. Never assumed from the fact that this group is hosted: a
 	// hosted group is one placement of an env that may also hold cluster

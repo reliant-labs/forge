@@ -48,6 +48,26 @@ func TestSpec_NativeApplicationProjection(t *testing.T) {
 			logouts:   []string{"com.acme.mobile:/signedout"},
 		},
 		{
+			name:      "associated domains put the https redirect first, the private-use pair stays as the fallback",
+			app:       release.ShapeIdentityApplication{Name: derived, Kind: release.IdentityAppNative, Frontend: "mobile", AssociatedDomains: []string{"app.acme.example"}},
+			ids:       map[string]string{"mobile": "com.acme.mobile"},
+			redirects: []string{"https://app.acme.example/oauthredirect", "com.acme.mobile:/oauthredirect"},
+			logouts:   []string{"https://app.acme.example/signedout", "com.acme.mobile:/signedout"},
+		},
+		{
+			name:      "associated domains never reorder a declared list",
+			app:       release.ShapeIdentityApplication{Name: derived, Kind: release.IdentityAppNative, Frontend: "mobile", AssociatedDomains: []string{"app.acme.example"}, RedirectURIs: []string{"com.acme.mobile:/oauthredirect", "https://app.acme.example/oauthredirect"}},
+			ids:       map[string]string{"mobile": "com.acme.mobile"},
+			redirects: []string{"com.acme.mobile:/oauthredirect", "https://app.acme.example/oauthredirect"},
+			logouts:   []string{"com.acme.mobile:/signedout", "https://app.acme.example/signedout"},
+		},
+		{
+			name:    "an https redirect outside the associated domains is refused",
+			app:     release.ShapeIdentityApplication{Name: derived, Kind: release.IdentityAppNative, Frontend: "mobile", AssociatedDomains: []string{"app.acme.example"}, RedirectURIs: []string{"https://other.example/oauthredirect"}},
+			ids:     map[string]string{"mobile": "com.acme.mobile"},
+			missing: "not in associated_domains",
+		},
+		{
 			name:      "declared literals win, order kept, signedout paired per redirect",
 			app:       release.ShapeIdentityApplication{Name: derived, Kind: release.IdentityAppNative, Frontend: "mobile", RedirectURIs: []string{"https://acme.example/oauthredirect", "com.acme.mobile:/oauthredirect"}},
 			ids:       map[string]string{"mobile": "com.other.id"},

@@ -91,7 +91,7 @@ func TestNativeHarnessComposes(t *testing.T) {
 				t.Errorf("%s script = %q, want %q", key, got, want)
 			}
 		}
-		for key, want := range map[string]string{"eslint": "^9.25.0", "eslint-config-expo": "~58.0.4", "jest": "^30.0.0", "jest-expo": "~58.0.14", "@jest/globals": "^30.0.0", "@react-native/jest-preset": "~0.88.1", "@types/react": "~19.3.0", "babel-preset-expo": "~58.0.24", "typescript": "~6.0.3", "prettier": PrettierVersion} {
+		for key, want := range map[string]string{"eslint": "^9.25.0", "eslint-config-expo": "~58.0.4", "jest": "^30.0.0", "jest-expo": "~58.0.14", "@jest/globals": "^30.0.0", "@react-native/jest-preset": "~0.88.1", "@types/react": "~19.3.0", "babel-preset-expo": "~58.0.25", "typescript": "~6.0.3", "prettier": PrettierVersion} {
 			if got := manifest.DevDependencies[key]; got != want {
 				t.Errorf("%s = %q, want %q", key, got, want)
 			}
@@ -99,7 +99,7 @@ func TestNativeHarnessComposes(t *testing.T) {
 		if manifest.Dependencies["@babel/runtime"] != "^7.25.0" {
 			t.Error("native Babel-generated helpers require a direct runtime dependency under isolated pnpm")
 		}
-		if manifest.Dependencies["react"] != "19.3.0" || manifest.Dependencies["expo"] != "~58.0.23" {
+		if manifest.Dependencies["react"] != "19.3.0" || manifest.Dependencies["expo"] != "~58.0.24" {
 			t.Error("native SDK58 matrix changed")
 		}
 	}

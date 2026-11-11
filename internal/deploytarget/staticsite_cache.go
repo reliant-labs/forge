@@ -50,7 +50,9 @@ func (s StaticSiteSpec) cacheRules() []CacheRuleSpec {
 // rule matched: they are uploaded without one.
 type cacheUploadGroup struct {
 	CacheControl string
-	Files        []string // site-relative slash paths, sorted
+	// ContentType is set only for the well-known association files.
+	ContentType string
+	Files       []string // site-relative slash paths, sorted
 }
 
 // cacheUploadGroups assigns each file the header of the first rule that
@@ -164,11 +166,28 @@ func stagedFiles(stagingDir string) ([]string, error) {
 // uploadCmd is the one upload pass for a tree whose every file takes the
 // same header: a recursive copy of the cwd into the release prefix.
 func uploadCmd(cacheControl, dst string) []string {
+	return uploadCmdTyped(cacheControl, "", dst)
+}
+
+// uploadCmdTyped is uploadCmd with an explicit Content-Type, for the objects
+// whose type cannot be inferred from a file extension (see wellKnownFiles).
+func uploadCmdTyped(cacheControl, contentType, dst string) []string {
 	argv := []string{"gcloud", "storage", "cp", "--recursive"}
 	if cacheControl != "" {
 		argv = append(argv, "--cache-control="+cacheControl)
 	}
+	if contentType != "" {
+		argv = append(argv, "--content-type="+contentType)
+	}
 	return append(argv, ".", dst)
+}
+
+// isWellKnownFile reports whether a site-relative path is an association file:
+// directly under the root's .well-known/. Those are uploaded with an explicit
+// Content-Type because the extensionless apple-app-site-association would
+// otherwise be stored as binary/octet-stream, which Apple refuses.
+func isWellKnownFile(rel string) bool {
+	return strings.HasPrefix(rel, WellKnownDir+"/") && !strings.Contains(strings.TrimPrefix(rel, WellKnownDir+"/"), "/")
 }
 
 // uploadRelease uploads the assembled tree into its immutable release
@@ -184,12 +203,32 @@ func uploadRelease(ctx context.Context, runner commandRunner, spec StaticSiteSpe
 	if len(files) == 0 {
 		return fmt.Errorf("the assembled tree %s is empty", stagingDir)
 	}
-	groups, err := cacheUploadGroups(spec.cacheRules(), files)
+	var wellKnown, rest []string
+	for _, f := range files {
+		if isWellKnownFile(f) {
+			wellKnown = append(wellKnown, f)
+		} else {
+			rest = append(rest, f)
+		}
+	}
+	dst := spec.releaseURI(digest)
+	if len(wellKnown) > 0 {
+		// Association files are no-cache like every non-asset document, and
+		// typed. They are uploaded on their own, so the rest of the tree
+		// keeps the single recursive pass when it needs only one header.
+		g := cacheUploadGroup{CacheControl: cacheRevalidate, ContentType: WellKnownContentType, Files: wellKnown}
+		if err := uploadGroup(ctx, runner, stagingDir, g, dst); err != nil {
+			return err
+		}
+		if len(rest) == 0 {
+			return nil
+		}
+	}
+	groups, err := cacheUploadGroups(spec.cacheRules(), rest)
 	if err != nil {
 		return err
 	}
-	dst := spec.releaseURI(digest)
-	if len(groups) == 1 {
+	if len(groups) == 1 && len(wellKnown) == 0 {
 		return runInDir(ctx, runner, stagingDir, nil, uploadCmd(groups[0].CacheControl, dst))
 	}
 	for _, g := range groups {
@@ -223,7 +262,7 @@ func uploadGroup(ctx context.Context, runner commandRunner, stagingDir string, g
 			return fmt.Errorf("upload tree: %w", err)
 		}
 	}
-	return runInDir(ctx, runner, dir, nil, uploadCmd(g.CacheControl, dst))
+	return runInDir(ctx, runner, dir, nil, uploadCmdTyped(g.CacheControl, g.ContentType, dst))
 }
 
 // printCachePlan renders the dry-run's upload lines. The files are not

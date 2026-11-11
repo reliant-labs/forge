@@ -36,6 +36,8 @@ coverage/
 
 # env files
 .env*.local
+# Per-env Expo plugin inputs written by forge env up (never part of a release).
+.forge-app-links.json
 
 # typescript
 *.tsbuildinfo

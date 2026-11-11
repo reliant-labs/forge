@@ -70,8 +70,8 @@ one), so under `forge env up` on a host-run identity either keep the old
 
 ## Migrate
 
-1. **Dependencies.** Add `"expo-crypto": "~58.0.7"`, `"expo-secure-store":
-   "~58.0.2"`, `"expo-web-browser": "~58.0.7"` and devDependency
+1. **Dependencies.** Add `"expo-crypto": "~58.0.8"`, `"expo-secure-store":
+   "~58.0.3"`, `"expo-web-browser": "~58.0.8"` and devDependency
    `"test-renderer": "1.3.0"` (the context tests render with it); reinstall.
 2. **`app.json`.** Add the plugin `["expo-secure-store", { "faceIDPermission":
    false }]` to `expo.plugins`, and set `expo.scheme` to **one string**, a valid
@@ -152,6 +152,62 @@ one), so under `forge env up` on a host-run identity either keep the old
    `pnpm run test`, and `expo export` for both platforms. The auth suites run
    under the existing `tests/**` match.
 
+## Opt in to https universal links / App Links
+
+**Optional, and off until you declare a domain.** An existing app keeps its
+private-use `<scheme>:/oauthredirect` sign-in exactly as it is; nothing below
+changes it. Move to an https callback (`https://<host>/oauthredirect`) when you
+want the redirect bound to your signed app instead of to whichever app on the
+device claims the scheme (RFC 8252 §8.6). New scaffolds include the plugin and
+the client changes; an existing app owns these files, so adopt them by hand.
+Design and the open evidence: `docs/proposals/mobile-native-auth/universal-links.md`;
+server side and the files: `forge skill load deploy/managed-identity/mobile`.
+
+1. **Declare the domain and who signs the binary (KCL).** On the env's
+   `kind = "native"` `forge.IdentityApplication` add `associated_domains =
+   ["app.acme.example"]` (bare lowercase hostnames, no scheme, port, path or
+   wildcard). On the native `forge.Frontend` add `apple_team_id = "<10 chars>"`
+   and `android_cert_fingerprints = {dev = ["debug"], prod = ["AA:BB:…"]}`: the
+   SHA-256 fingerprints of every certificate that signs an installable build of
+   that env (`"debug"` is this machine's `android/app/debug.keystore`; release is
+   the **Play App Signing** key from Play Console → App integrity, not the upload
+   key). With `associated_domains` set and no `redirect_uris`, forge registers
+   `https://<first domain>/oauthredirect` (and `/signedout`) **ahead of** the
+   private-use pair; a `redirect_uris` you declare keeps your order, and its https
+   hosts must be in `associated_domains`.
+2. **Serve the files.** The host's site must serve
+   `/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json`
+   as `application/json` with no redirect. forge renders both per env at
+   `forge env deploy` and serves them as a `/.well-known/` overlay on the project's
+   static site (the env's only `OnHosted` / `OnBucket` / `OnFirebase` site, else
+   name it with `associated_site` on the native frontend): a promoted release stays
+   byte-identical and each env serves its own fingerprints.
+3. **Add the plugin.** Copy `plugins/with-forge-links.js` from the scaffold
+   (`forge project rescaffold frontends/<name>/plugins/with-forge-links.js`) and add
+   `"./plugins/with-forge-links"` to `expo.plugins`. It reads
+   `FORGE_ASSOCIATED_DOMAINS` and `FORGE_APP_LINK_MODE` (from the environment, else
+   from `.forge-app-links.json`, which `forge env up` writes beside the app; add it
+   to `.gitignore`) and with no domain does nothing. Rebuild the dev client:
+   entitlements and intent filters are native config. On iOS enable **Associated
+   Domains** for the App ID (Xcode automatic signing does this for the team).
+4. **Adopt the client files.** Copy `src/lib/auth/redirect.ts` and the changes to
+   `config.ts` (the two optional `EXPO_PUBLIC_FORGE_OIDC_FALLBACK_*` variables and
+   `fallbackRedirectUri` / `fallbackPostLogoutRedirectUri` on `OidcConfig`),
+   `oidc-provider.ts` (`platform` dependency, **one** redirect chosen per attempt and
+   used for the authorize request, the callback match and the token exchange,
+   `preferUniversalLinks` in `BrowserLike.openAuthSession`, the matching
+   post-logout URI) and `native.ts` (forwards `preferUniversalLinks`, passes
+   `platform: { os: Platform.OS, version: Platform.Version }`), plus the tests
+   `tests/auth-redirect.test.ts` and `tests/with-forge-links.test.js`, and the new
+   `fallbackRedirectUri: null, fallbackPostLogoutRedirectUri: null` fields in
+   `tests/auth-fakes.ts`. An app that never passes `platform` behaves as before.
+5. **iOS below 17.4 keeps the private-use fallback.** `ASWebAuthenticationSession`
+   intercepts an https callback only from 17.4; on older iOS the client uses the
+   fallback redirect (the second registered entry), so keep `expo.scheme` set.
+6. **Verify.** `pnpm run typecheck`, `pnpm run lint --max-warnings 0`,
+   `pnpm run test`. Device acceptance (a signed build on a real host) is the
+   remaining evidence: see `docs/proposals/mobile-conformance-evidence.md`.
+
 ## What is not proven
 
 Evidence is JS-level (Jest with fakes, typecheck, lint, export) plus a local dev
@@ -161,8 +217,9 @@ expo-secure-store). **Not proven here:** a physical Android device, a browser
 other than Chrome as the Custom Tabs provider, or a real hosted control plane
 registering the client end to end (forge derives and sends a hosted native
 application's callbacks from `app.json`; registration requires control-plane
-support, and one without it is sent none with a note), and universal links
-(the callback path is identical, so adding one is a redirect-URI change).
+support, and one without it is sent none with a note), and HTTPS universal links
+on a device (code, plugin and files are unit-tested; signed-build acceptance
+is pending, see the section above).
 A physical device signs in with `forge env up --device-host <LAN address>`: the dev IdP
 then also serves that address, the run's one issuer becomes `http://<LAN
 address>:<idp port>` and the API's `jwt_issuer` follows (details, limits and the

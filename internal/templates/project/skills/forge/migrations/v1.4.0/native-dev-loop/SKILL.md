@@ -18,7 +18,7 @@ template, and `forge project upgrade --force <path>` replaces one you never edit
 
 ### `babel-preset-expo` is a declared dependency
 
-Add `"babel-preset-expo": "~58.0.24"` (the version `expo@58.0.23` depends on) to
+Add `"babel-preset-expo": "~58.0.25"` (the version `expo@58.0.24` depends on) to
 `devDependencies` and reinstall. Your owned `babel.config.js` names that preset,
 and under pnpm's isolated `node_modules` it is not resolvable from the app root.
 Without it, `pnpm run dev` (the command `forge env up` runs) answers HTTP 500 for

@@ -723,3 +723,85 @@ describe("getUser", () => {
     expect(setup().provider.getUser()).toBeNull();
   });
 });
+
+describe("https universal link redirect", () => {
+  const HTTPS = "https://app.acme.example/oauthredirect";
+  const FALLBACK = "com.acme.app:/oauthredirect";
+  const linked = {
+    ...config,
+    redirectUri: HTTPS,
+    postLogoutRedirectUri: "https://app.acme.example/signedout",
+    fallbackRedirectUri: FALLBACK,
+    fallbackPostLogoutRedirectUri: "com.acme.app:/signedout",
+  };
+
+  it("android: the https redirect is used for authorize, callback and token, with universal links preferred", async () => {
+    const { provider, idp, browser } = setup({ platform: { os: "android", version: 34 } }, linked);
+    await provider.signIn();
+    const [opened] = browser.opened;
+    expect(opened.redirectUri).toBe(HTTPS);
+    expect(opened.universal).toBe(true);
+    expect(opened.url.searchParams.get("redirect_uri")).toBe(HTTPS);
+    // RFC 6749 §4.1.3: the token request carries the SAME redirect_uri.
+    expect(idp.tokenRequests()[0].form.redirect_uri).toBe(HTTPS);
+  });
+
+  it("ios 17.4: https with preferUniversalLinks", async () => {
+    const { provider, browser } = setup({ platform: { os: "ios", version: "17.4" } }, linked);
+    await provider.signIn();
+    expect(browser.opened[0].redirectUri).toBe(HTTPS);
+    expect(browser.opened[0].universal).toBe(true);
+  });
+
+  it("ios 17.3: the private-use fallback for authorize AND token, no universal links", async () => {
+    const { provider, idp, browser } = setup(
+      { platform: { os: "ios", version: "17.3.1" } },
+      linked,
+    );
+    await provider.signIn();
+    const [opened] = browser.opened;
+    expect(opened.redirectUri).toBe(FALLBACK);
+    expect(opened.universal).toBe(false);
+    expect(opened.url.searchParams.get("redirect_uri")).toBe(FALLBACK);
+    expect(idp.tokenRequests()[0].form.redirect_uri).toBe(FALLBACK);
+  });
+
+  it("rejects a callback on the other form: one attempt, one redirect", async () => {
+    const { provider, browser } = setup({ platform: { os: "android", version: 34 } }, linked);
+    browser.script = (u) => ({
+      type: "success",
+      url: `${FALLBACK}?code=the-code&state=${encodeURIComponent(u.searchParams.get("state") ?? "")}`,
+    });
+    await expect(provider.signIn()).rejects.toThrow(/does not match/);
+  });
+
+  it("no platform injected: the configured redirect, never universal links (unchanged behaviour)", async () => {
+    const { provider, browser } = setup({}, linked);
+    await provider.signIn();
+    expect(browser.opened[0].redirectUri).toBe(HTTPS);
+    expect(browser.opened[0].universal).toBe(false);
+  });
+
+  it("a private-use-only config is unaffected by the platform", async () => {
+    const { provider, browser } = setup({ platform: { os: "ios", version: "16.0" } });
+    await provider.signIn();
+    expect(browser.opened[0].redirectUri).toBe(REDIRECT);
+    expect(browser.opened[0].universal).toBe(false);
+  });
+
+  it("sign-out asks the IdP to return to the post-logout URI that matches the platform", async () => {
+    const droid = setup({ platform: { os: "android", version: 34 } }, linked);
+    await droid.provider.signIn();
+    const a = await droid.provider.signOut();
+    expect(new URL(a.endSessionUrl ?? "").searchParams.get("post_logout_redirect_uri")).toBe(
+      "https://app.acme.example/signedout",
+    );
+
+    const old = setup({ platform: { os: "ios", version: "16.0" } }, linked);
+    await old.provider.signIn();
+    const b = await old.provider.signOut();
+    expect(new URL(b.endSessionUrl ?? "").searchParams.get("post_logout_redirect_uri")).toBe(
+      "com.acme.app:/signedout",
+    );
+  });
+});

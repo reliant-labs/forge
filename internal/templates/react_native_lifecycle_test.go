@@ -45,11 +45,11 @@ func TestNativeLifecycleManifest(t *testing.T) {
 				t.Errorf("runtime range %s != %s %s", got, web, want)
 			}
 		}
-		// Expo SDK 58 bundledNativeModules.json (sdk-58 branch, expo@58.0.23).
+		// Expo SDK 58 bundledNativeModules.json from the published expo@58.0.24 tarball.
 		// react-dom stays direct: expo declares it only as an optional peer.
 		for name, want := range map[string]string{
-			"expo": "~58.0.23", "expo-asset": "~58.0.20", "expo-constants": "~58.0.15", "expo-linking": "~58.0.16",
-			"expo-router": "~58.0.30", "expo-status-bar": "~58.0.4", "react": "19.3.0", "react-dom": "19.3.0",
+			"expo": "~58.0.24", "expo-asset": "~58.0.21", "expo-constants": "~58.0.16", "expo-linking": "~58.0.17",
+			"expo-router": "~58.0.31", "expo-status-bar": "~58.0.5", "react": "19.3.0", "react-dom": "19.3.0",
 			"react-native": "0.88.1", "react-native-web": "~0.21.4", "react-native-safe-area-context": "~5.11.1",
 			"react-native-screens": "~4.30.1",
 		} {

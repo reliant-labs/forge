@@ -226,3 +226,21 @@ func cacheControlHeader(source, value string) map[string]any {
 		"headers": []map[string]string{{"key": "Cache-Control", "value": value}},
 	}
 }
+
+// firebaseWellKnownHeaders pins `Content-Type: application/json` on each
+// association file. Firebase would otherwise serve the extensionless
+// apple-app-site-association as octet-stream, which Apple refuses. Rendered
+// AFTER the cache rules: Firebase keeps the last match for a header set twice,
+// and these set a different header, so both apply. A file under /.well-known/
+// is never rewritten by the SPA fallback because it exists, but a rewrite that
+// would catch it is a redirect-free rewrite, which both platforms accept.
+func firebaseWellKnownHeaders(names []string) []map[string]any {
+	out := make([]map[string]any, 0, len(names))
+	for _, n := range names {
+		out = append(out, map[string]any{
+			"source":  "/" + WellKnownDir + "/" + n,
+			"headers": []map[string]string{{"key": "Content-Type", "value": WellKnownContentType}},
+		})
+	}
+	return out
+}

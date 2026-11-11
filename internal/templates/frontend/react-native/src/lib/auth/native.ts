@@ -12,6 +12,7 @@
 
 import * as Crypto from "expo-crypto";
 import * as WebBrowser from "expo-web-browser";
+import { Platform } from "react-native";
 
 import type { OidcConfig } from "./config";
 import type { CryptoLike, FetchLike } from "./oidc";
@@ -29,8 +30,10 @@ export const nativeCrypto: CryptoLike = {
 
 export const nativeBrowser: BrowserLike = {
   // The redirect URI is passed through as-is. For an https universal/app link
-  // on iOS 17.4+ also pass `preferUniversalLinks: true` here (SDK 58) and
-  // configure the Associated Domains entitlement for the redirect host.
+  // `preferUniversalLinks` makes iOS 17.4+ intercept it with
+  // ASWebAuthenticationSession's .https callback (it needs the Associated
+  // Domains entitlement, plugins/with-forge-links.js); Android ignores it and a
+  // verified App Link is delivered to the app instead.
   //
   // `createTask: false` (Android only; iOS ignores it) opens the Custom Tab in
   // the app's OWN task. expo-web-browser's default puts it in a separate task
@@ -47,6 +50,7 @@ export const nativeBrowser: BrowserLike = {
     WebBrowser.openAuthSessionAsync(url, redirectUri, {
       preferEphemeralSession: options.preferEphemeralSession,
       createTask: false,
+      preferUniversalLinks: options.preferUniversalLinks,
     }),
 };
 
@@ -69,6 +73,7 @@ export function createNativeAuthProvider(
     store: createNativeTokenStore(config),
     session,
     allowInsecureLoopback: typeof __DEV__ !== "undefined" && __DEV__,
+    platform: { os: Platform.OS, version: Platform.Version },
     ...overrides,
   });
 }

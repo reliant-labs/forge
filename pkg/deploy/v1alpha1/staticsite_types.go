@@ -229,7 +229,36 @@ type StaticSiteSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxProperties=128
 	RuntimeConfig map[string]RuntimeConfigValue `json:"runtimeConfig,omitempty"`
+
+	// WellKnown are files served under the HOST ROOT's /.well-known/, by
+	// file name: the association files of a mobile app's https universal
+	// links (apple-app-site-association, assetlinks.json). Like RuntimeConfig
+	// they are per-environment SPEC, not part of the release, so a promoted
+	// release stays byte-identical while each environment serves its own
+	// (the Android certificate fingerprints differ between environments).
+	//
+	// Whoever executes the spec writes `live/.well-known/<name>` after every
+	// sync (a sync prunes files the release does not contain). The path is the
+	// host root, NOT under BasePath: both platforms fetch it from the root.
+	//
+	// Each file MUST be served exactly as stored, with `Content-Type:
+	// application/json` (the extensionless apple-app-site-association is the
+	// reason this cannot be left to extension sniffing) and WITHOUT any
+	// redirect: no apex/www, trailing-slash or .html rewrite. Apple and
+	// Google both refuse a redirected association file.
+	//
+	// The value is the file's exact contents, at most MaxWellKnownFileBytes.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=8
+	WellKnown map[string]string `json:"wellKnown,omitempty"`
 }
+
+// MaxWellKnownFiles and MaxWellKnownFileBytes bound StaticSiteSpec.WellKnown.
+// 128 KiB is Apple's own limit for an apple-app-site-association file.
+const (
+	MaxWellKnownFiles     = 8
+	MaxWellKnownFileBytes = 128 << 10
+)
 
 // MinKeepReleases is the retention floor: the live release plus its
 // predecessor.

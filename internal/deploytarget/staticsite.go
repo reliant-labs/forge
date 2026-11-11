@@ -128,6 +128,11 @@ type StaticSiteFrontend struct {
 	// (the maps are still extracted, and never served).
 	SourcemapPublisher SourcemapPublisher
 
+	// WellKnown are this ENVIRONMENT's files for the host root's
+	// /.well-known/ (a mobile app's association files), written into the
+	// assembled tree and uploaded as application/json. See wellknown.go.
+	WellKnown map[string]string
+
 	// Spec is the StaticSite deploy config.
 	Spec StaticSiteSpec
 }
@@ -301,6 +306,7 @@ func (p StaticSiteProvider) stageInput(fe StaticSiteFrontend) StageInput {
 		Bundle:             fe.Spec.Bundle,
 		RuntimeConfigJS:    fe.RuntimeConfigJS,
 		StripRuntimeConfig: fe.StripRuntimeConfig,
+		WellKnown:          fe.WellKnown,
 		ProjectDir:         p.ProjectDir,
 		StagingRoot:        staging,
 		Project:            fe.Project,

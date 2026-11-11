@@ -43,6 +43,12 @@ type Analytics struct {
 	// Channels are the custom channel rules, in the order they are tried,
 	// ahead of the built-in channel table.
 	Channels []ChannelRule `json:",omitempty"`
+	// ContentRoutes are the route patterns the Product dashboard's Content
+	// section reports on (a blog, docs, marketing pages), sorted: a route as
+	// page_viewed records it ("/pricing", "/orders/:id"), where `*` matches
+	// any run of characters, slashes included ("/blog/*"). Empty: every
+	// route.
+	ContentRoutes []string `json:",omitempty"`
 	// NoDashboards drops the built-in Overview sections and the Users,
 	// Product and Acquisition dashboards (a frontend declared
 	// Analytics.dashboards = False).
@@ -83,6 +89,14 @@ func (a *Analytics) EffectiveActivationWindow() string {
 		return DefaultActivationWindow
 	}
 	return a.ActivationWindow
+}
+
+// contentRoutes are the declared content route patterns; nil is every route.
+func (a *Analytics) contentRoutes() []string {
+	if a == nil {
+		return nil
+	}
+	return a.ContentRoutes
 }
 
 // DashboardsEnabled reports whether the built-in product dashboards are drawn.

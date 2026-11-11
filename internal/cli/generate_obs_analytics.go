@@ -25,6 +25,9 @@ import (
 //   - channels: concatenated in render order (env, then frontend), an equal
 //     rule kept once; the same conditions credited to two channels are
 //     refused;
+//   - content_routes: the union of every frontend's patterns, sorted; a
+//     frontend that declares none defers to the others (none anywhere is
+//     every route);
 //   - dashboards: any declaration of False drops them, because an opt-out is
 //     the author's explicit word.
 //
@@ -44,6 +47,7 @@ func declaredAnalytics(rendered []renderedEnvFrontend) (*obsdash.ProductAnalytic
 		window     origin
 		channels   = map[obsdash.ChannelRule]bool{}
 		conditions = map[string]origin{}
+		content    = map[string]bool{}
 	)
 	for _, r := range rendered {
 		if r.Frontend.Telemetry == nil || r.Frontend.Telemetry.Analytics == nil {
@@ -90,6 +94,9 @@ func declaredAnalytics(rendered []renderedEnvFrontend) (*obsdash.ProductAnalytic
 			channels[rule] = true
 			out.Channels = append(out.Channels, rule)
 		}
+		for _, r := range a.ContentRoutes {
+			content[r] = true
+		}
 		if !a.Dashboards {
 			out.NoDashboards = true
 		}
@@ -101,6 +108,10 @@ func declaredAnalytics(rendered []renderedEnvFrontend) (*obsdash.ProductAnalytic
 		out.Goals = append(out.Goals, g.goal)
 	}
 	sort.Slice(out.Goals, func(i, j int) bool { return out.Goals[i].ID < out.Goals[j].ID })
+	for r := range content {
+		out.ContentRoutes = append(out.ContentRoutes, r)
+	}
+	sort.Strings(out.ContentRoutes)
 	out.Activation, out.ActivationWindow = activation.value, window.value
 	return &out, nil
 }

@@ -293,9 +293,11 @@ func TestBuiltinDashboardsOnAPopulation(t *testing.T) {
 		"chatgpt.com\t\t1\t1", "news.ycombinator.com\t/item\t1\t1", "partner.example\t\t1\t1", "t.co\t\t1\t1", "www.google.com\t\t1\t1"))
 	check("acquisition", "campaigns", false, "e1", rows(
 		"google\tcpc\t\t\t\t1\t1\t100\t0", "newsletter\temail\tspring\t\t\t1\t0\t0\t\\N", "partner\treferral\t\t\t\t1\t1\t100\t100"))
+	// No view here reported page_engaged, so no landing page has a median
+	// engaged time (the engagement population checks one).
 	check("acquisition", "landing-pages", false, "e1", rows(
-		"/\tEmail\t2\t0", "/\tAI assistants\t1\t0", "/\tDirect\t1\t0", "/\tHacker News\t1\t1", "/\tOrganic search\t1\t0",
-		"/\tOrganic social\t1\t0", "/\tPaid search\t1\t1", "/\tPartners\t1\t1", "/orders\tDirect\t1\t0", "Unattributed\t\t0\t2"))
+		"/\tEmail\t2\t0\t\\N", "/\tAI assistants\t1\t0\t\\N", "/\tDirect\t1\t0\t\\N", "/\tHacker News\t1\t1\t\\N", "/\tOrganic search\t1\t0\t\\N",
+		"/\tOrganic social\t1\t0\t\\N", "/\tPaid search\t1\t1\t\\N", "/\tPartners\t1\t1\t\\N", "/orders\tDirect\t1\t0\t\\N", "Unattributed\t\t0\t2\t\\N"))
 	check("acquisition", "countries", false, "e1", rows("US\t5\t2\t40", "CA\t1\t1\t100", "DE\t1\t0\t0", "FR\t1\t0\t0", "GB\t1\t0\t0", "Unattributed\t0\t2\t\\N"))
 	check("acquisition", "devices", false, "e1", rows("desktop\t6\t2\t33.33", "mobile\t2\t0\t0", "tablet\t1\t1\t100", "Unattributed\t0\t2\t\\N"))
 	check("acquisition", "browsers", false, "e1", rows("Chrome\t5", "Safari\t2", "Edge\t1", "Firefox\t1"))

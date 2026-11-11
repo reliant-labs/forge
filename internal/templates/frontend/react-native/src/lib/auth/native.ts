@@ -31,9 +31,22 @@ export const nativeBrowser: BrowserLike = {
   // The redirect URI is passed through as-is. For an https universal/app link
   // on iOS 17.4+ also pass `preferUniversalLinks: true` here (SDK 58) and
   // configure the Associated Domains entitlement for the redirect host.
+  //
+  // `createTask: false` (Android only; iOS ignores it) opens the Custom Tab in
+  // the app's OWN task. expo-web-browser's default puts it in a separate task
+  // that nothing can close from JS (Android has no dismissBrowser), so a tab
+  // abandoned mid-sign-in (app reopened from the launcher, or killed while the
+  // tab was up) survived, and the NEXT sign-in brought that task back to the
+  // front instead of loading the new URL: the user finished a stale request
+  // and got "authorization state mismatch" on every retry until they closed
+  // the tab by hand. In the app's task, the redirect (MainActivity is
+  // singleTask) clears the tab, and each sign-in opens a fresh one. Trade-off:
+  // reopening the app from its launcher icon mid-sign-in closes the tab and
+  // the sign-in reports cancelled (recents keeps it open).
   openAuthSession: (url, redirectUri, options) =>
     WebBrowser.openAuthSessionAsync(url, redirectUri, {
       preferEphemeralSession: options.preferEphemeralSession,
+      createTask: false,
     }),
 };
 

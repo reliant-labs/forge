@@ -1,6 +1,6 @@
 ---
 name: migration-v1.4.0-native-auth
-description: Adopt v1.4.0 native sign-in in an existing Expo app — OAuth public client (authorization code + PKCE) through the system browser, tokens in the OS keystore, the EXPO_PUBLIC_FORGE_OIDC_* variables forge env up injects, the new dependencies and expo-secure-store plugin, the single reverse-DNS scheme, the owned auth files to copy and the provider/context/connect/layout/jest edits, mock fallback and opt-out, what the auth context and transport now do, and what is not yet proven (Android, a real hosted control plane) and how a physical device signs in with --device-host.
+description: Adopt v1.4.0 native sign-in in an existing Expo app — OAuth public client (authorization code + PKCE) through the system browser, tokens in the OS keystore, the EXPO_PUBLIC_FORGE_OIDC_* variables forge env up injects, the new dependencies and expo-secure-store plugin, the single reverse-DNS scheme, the owned auth files to copy and the provider/context/connect/layout/jest edits, mock fallback and opt-out, what the auth context and transport now do, and what is not yet proven (a physical Android device, hosted registration) and how a physical device signs in with --device-host.
 relevance: migration
 ---
 
@@ -98,7 +98,7 @@ one), so under `forge env up` on a host-run identity either keep the old
    how to get them: next paragraph): `src/lib/auth/{config,oidc,token-store,oidc-provider,session,native,transport,sign-in-error}.ts`,
    `app/{sign-in,oauthredirect,signedout}.tsx` (the sign-in screen is a plain
    placeholder: replace it), and the tests `tests/auth-fakes.ts` (a shared helper, not a test), `tests/auth-{config,oidc,
-   store-session,provider,sign-in-error}.test.ts`, `tests/auth-context.test.tsx`
+   store-session,provider,sign-in-error,native}.test.ts`, `tests/auth-context.test.tsx`
    and `tests/connect-transport.test.ts` (it exercises the `connect.ts` edits of
    step 4, so it belongs here, not in the dev-loop playbook).
    `tests/app-config.test.ts` asserts this step's contract (one string scheme;
@@ -135,18 +135,33 @@ one), so under `forge env up` on a host-run identity either keep the old
    transforming it makes `ConnectError` a class the runtime's `ConnectClientError`
    cannot extend, so every Connect error-path test became `Code.Unknown`. If you
    customized the pattern, keep your changes and drop only that package.
-7. **Verify.** `pnpm run typecheck`, `pnpm run lint --max-warnings 0`,
+7. **Android: open the Custom Tab in the app's task.** If you copied
+   `src/lib/auth/native.ts` before this note, add `createTask: false` to the
+   options `nativeBrowser.openAuthSession` passes to
+   `WebBrowser.openAuthSessionAsync` (iOS ignores it). expo-web-browser's default
+   opens the tab in a separate task that JS cannot close on Android; a tab left
+   behind (the app reopened from its launcher icon mid-sign-in, or killed while
+   the tab was up) was brought back by the NEXT sign-in instead of the new URL,
+   and finishing it failed with `authorization state mismatch` on every retry
+   until the tab was closed by hand. In the app's task the redirect clears the
+   tab (`MainActivity` is `singleTask`, as Expo prebuilds it) and each sign-in
+   gets a fresh one. Reopening the app from its launcher icon mid-sign-in now
+   closes the tab and the sign-in reports cancelled; returning through recents
+   keeps it. `tests/auth-native.test.ts` pins the option.
+8. **Verify.** `pnpm run typecheck`, `pnpm run lint --max-warnings 0`,
    `pnpm run test`, and `expo export` for both platforms. The auth suites run
    under the existing `tests/**` match.
 
 ## What is not proven
 
 Evidence is JS-level (Jest with fakes, typecheck, lint, export) plus a local dev
-identity on the iOS simulator. **Not proven here:** Android
-(emulator included), a real hosted control plane registering the client end to
-end (forge derives and sends a hosted native application's callbacks from
-`app.json`, and registration happens when the control plane supports it; one
-that does not is sent none and a note says so), and universal links
+identity on the iOS simulator, an iPad and an Android emulator (API 36, Chrome
+Custom Tabs, `--device-host` LAN issuer, keys in the Android keystore through
+expo-secure-store). **Not proven here:** a physical Android device, a browser
+other than Chrome as the Custom Tabs provider, or a real hosted control plane
+registering the client end to end (forge derives and sends a hosted native
+application's callbacks from `app.json`; registration requires control-plane
+support, and one without it is sent none with a note), and universal links
 (the callback path is identical, so adding one is a redirect-URI change).
 A physical device signs in with `forge env up --device-host <LAN address>`: the dev IdP
 then also serves that address, the run's one issuer becomes `http://<LAN
@@ -199,8 +214,10 @@ config declares the field), then diff the two; if you never edited it, keep the
 new one. And in `internal/app/login_broker.go` add `LocalOnly:
 cfg.JwtUserinfoAllowLocalHttp,` to the `devidp.Client{...}` literal (`Base:
 cfg.IdpBase`). `forge env up --device-host` sets
-that variable for the identity's host workloads unless the workload declares it itself
-(a declared value, true or false, is left as declared); it is off everywhere else, and
+that variable for the identity's host workloads, over the default `false` that the
+generated config projects onto every workload (any other declared value, `true` or a
+reference, is left as declared; to refuse it in such a run, export
+`JWT_USERINFO_ALLOW_LOCAL_HTTP=false` with `FORGE_ENV_OVERRIDE=JWT_USERINFO_ALLOW_LOCAL_HTTP`); it is off everywhere else, and
 without these edits a device-host run signs in but `Claims.Email` stays empty and the
 broker's and the validator's IdP traffic is not confined to this machine. The device host must be
 this machine's LAN **IPv4** address (not a name or IPv6). An Android emulator without `--device-host` still needs

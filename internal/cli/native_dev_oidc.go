@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/pkg/identity"
@@ -503,13 +504,18 @@ const userInfoLocalHTTPEnv = "JWT_USERINFO_ALLOW_LOCAL_HTTP"
 // that consumes the host-run identity, and on no other.
 //
 // PRECEDENCE, as the code stands: WorkloadEntity.HostEnv layers LaunchEnv OVER
-// the values the workload declares in KCL, so setting it here would silently
-// override a declared value, and a declared value (LaunchEnv included) beats
-// the developer's shell unless FORGE_ENV_OVERRIDE names the key
-// (hostlaunch.LayerHostEnvConflicts). This knob widens what the API will
-// trust, so the safe reading of "the developer decided" is chosen: a workload
-// that DECLARES the variable (true or false) is left exactly as declared, and
-// forge sets it only where nothing was said.
+// the values the workload declares in KCL, and a declared value (LaunchEnv
+// included) beats the developer's shell unless FORGE_ENV_OVERRIDE names the
+// key (hostlaunch.LayerHostEnvConflicts).
+//
+// A declared literal "false" is NOT a decision, and is overridden: it is the
+// config field's default, which config_gen.workloadEnvMap projects onto EVERY
+// workload of a scaffolded project, so it is indistinguishable from "nothing
+// was said". Skipping it (as an earlier revision did) left the knob off in
+// every real project and Claims.Email empty on every device. Any other
+// declaration (a literal true, a secret or config-map reference) is left
+// exactly as declared. To refuse the opt-in in a --device-host run, export
+// JWT_USERINFO_ALLOW_LOCAL_HTTP=false with FORGE_ENV_OVERRIDE naming it.
 func enableLocalUserInfo(e *KCLEntities) {
 	id := hostIdentity(e)
 	if id == nil {
@@ -528,7 +534,7 @@ func enableLocalUserInfo(e *KCLEntities) {
 				break
 			}
 		}
-		if !consumes || declaresEnv(w, userInfoLocalHTTPEnv) {
+		if !consumes || declaresUserInfoDecision(w) {
 			continue
 		}
 		if w.Runtime.Host.LaunchEnv == nil {
@@ -538,11 +544,19 @@ func enableLocalUserInfo(e *KCLEntities) {
 	}
 }
 
-// declaresEnv reports whether the workload declares an env var by that name
-// (any value or reference), so forge does not overwrite a decision.
-func declaresEnv(w *WorkloadEntity, name string) bool {
+// declaresUserInfoDecision reports whether the workload declares the userinfo
+// knob as something other than the projected default: a literal that parses
+// as true, an unparseable literal, or a reference. Forge never overwrites
+// those (see enableLocalUserInfo for why a literal false does not count).
+func declaresUserInfoDecision(w *WorkloadEntity) bool {
 	for _, ev := range w.EnvVars() {
-		if ev.Name == name {
+		if ev.Name != userInfoLocalHTTPEnv {
+			continue
+		}
+		if ev.SecretRef != "" || ev.ConfigMapRef != "" {
+			return true
+		}
+		if v, err := strconv.ParseBool(strings.TrimSpace(ev.Value)); err != nil || v {
 			return true
 		}
 	}

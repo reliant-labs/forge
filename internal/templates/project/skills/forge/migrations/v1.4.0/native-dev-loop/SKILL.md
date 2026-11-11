@@ -97,8 +97,15 @@ The template no longer lists them. Remove them from an existing owned
 
 `forge env up` still injects `EXPO_PUBLIC_API_URL=http://localhost:<port>`, which
 reaches the iOS simulator and this machine only. Use
-`forge env up dev --device-host 10.0.2.2` for the Android emulator and
-`--device-host <LAN IP>` (or `FORGE_DEV_DEVICE_HOST`) for a physical device. forge
+`--device-host <this machine's LAN IPv4>` (or `FORGE_DEV_DEVICE_HOST`) for a
+physical device and for the Android emulator, which reaches the LAN address too:
+it moves the API origin, the dev-log origin and (with native sign-in) the dev
+IdP's issuer to one address. `--device-host 10.0.2.2` (the emulator's alias for
+this machine) moves only the API and dev-log origins; the issuer stays on
+localhost, so sign-in on the emulator then also needs
+`adb reverse tcp:<idp port> tcp:<idp port>`. A Debug build may use plain `http://`
+(the prebuilt `usesCleartextTraffic` is debug-only); an Android **Release** build
+refuses cleartext, so point one at an `https://` origin. forge
 never picks an interface or starts a tunnel, and warns if the API answers only on
 loopback. Pin a fixed URL (a tunnel) in KCL `env_vars` or `config.api_url`; to
 override a pinned value from the shell, set `FORGE_ENV_OVERRIDE=EXPO_PUBLIC_API_URL`.

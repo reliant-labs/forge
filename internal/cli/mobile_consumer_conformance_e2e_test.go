@@ -357,7 +357,7 @@ export default function GeneratedClient() {
 // consumer's `pnpm run test` must run every one of them.
 var nativeAuthSuites = []string{
 	"auth-config", "auth-oidc", "auth-store-session", "auth-provider",
-	"auth-context", "auth-sign-in-error", "connect-transport",
+	"auth-context", "auth-sign-in-error", "auth-native", "connect-transport",
 }
 
 // assertNativeAuthScaffold fails when a native-auth file is missing, so a

@@ -140,7 +140,7 @@ func CheckFile(file string, src []byte) []finding.Finding {
 	if err != nil || ast.IsGenerated(f) {
 		return nil
 	}
-	c := &checker{fset: fset, file: file, imp: resolveImports(f), consts: map[string]ast.Expr{}, seen: map[string]bool{}, bubbles: map[*ast.FuncLit]bool{}}
+	c := &checker{fset: fset, file: file, imp: resolveImports(f), consts: map[string]ast.Expr{}, seen: map[string]bool{}, bubbles: map[*ast.FuncLit]bool{}, litRole: map[*ast.FuncLit]litRole{}}
 	if c.imp.time == "" && c.imp.testify == "" {
 		return nil // nothing it reads can appear
 	}
@@ -155,7 +155,7 @@ func CheckFile(file string, src []byte) []finding.Finding {
 		if suiteTest && len(fd.Recv.List) == 1 && len(fd.Recv.List[0].Names) == 1 {
 			recv = fd.Recv.List[0].Names[0].Name
 		}
-		c.function(fd.Type, fd.Body, nil, suiteTest, recv)
+		c.function(fd.Type, fd.Body, nil, suiteTest, recv, 0)
 	}
 	return c.out
 }
@@ -221,8 +221,22 @@ type checker struct {
 	// bubbles are the function literals run by synctest.Test / Run: time
 	// inside them is fake, so nothing in them waits on the wall clock.
 	bubbles map[*ast.FuncLit]bool
+	// litRole is how each function literal runs, read from its call site
+	// before the literal is analyzed: litInline (called where it is
+	// written, so it runs inside the enclosing function) or litAsync
+	// (started with go, so it runs beside the test). A literal assigned or
+	// passed on has no entry: what calls it is unknown.
+	litRole map[*ast.FuncLit]litRole
 	out     []finding.Finding
 }
+
+// litRole is how a function literal runs; see checker.litRole.
+type litRole int
+
+const (
+	litInline litRole = iota + 1
+	litAsync
+)
 
 // varKind is what a variable holds, when it was assigned from a timing
 // source the analyzer reads.
@@ -290,7 +304,15 @@ func (s *scope) lookup(name string) (varInfo, bool) {
 
 // function analyzes one function body, then every function literal in it
 // (each in its own scope, closing over this one).
-func (c *checker) function(ft *ast.FuncType, body *ast.BlockStmt, parent *scope, suiteTest bool, recv string) {
+//
+// A literal's test-body status comes from how it runs as well as from its
+// parameters: one called inline (`func() { … }()`, a deferred call) runs
+// inside the enclosing function and is a test body exactly when that is;
+// one started with go runs beside the test and never is, whatever it
+// takes — its sleeps are triggers and its loops are simulated work, the
+// shapes the analyzer exempts. Select deadlines that fail the test are
+// still read in either: a failing deadline flakes wherever it runs.
+func (c *checker) function(ft *ast.FuncType, body *ast.BlockStmt, parent *scope, suiteTest bool, recv string, role litRole) {
 	sc := &scope{parent: parent, tNames: map[string]bool{}, vars: map[string]varInfo{}}
 	if suiteTest {
 		sc.suite = recv
@@ -309,6 +331,12 @@ func (c *checker) function(ft *ast.FuncType, body *ast.BlockStmt, parent *scope,
 				testBody = true
 			}
 		}
+	}
+	switch role {
+	case litInline:
+		testBody = testBody || (parent != nil && parent.testBody)
+	case litAsync:
+		testBody = false
 	}
 	sc.testBody = testBody
 	c.collectVars(body, sc)
@@ -588,9 +616,14 @@ func (c *checker) waits(body *ast.BlockStmt, sc *scope) {
 		switch x := n.(type) {
 		case *ast.FuncLit:
 			if !c.bubbles[x] {
-				c.function(x.Type, x.Body, sc, false, "")
+				c.function(x.Type, x.Body, sc, false, "", c.litRole[x])
 			}
 			return false
+		case *ast.GoStmt:
+			// Visited before its call, so the call below sees it.
+			if lit, ok := ast.Unparen(x.Call.Fun).(*ast.FuncLit); ok {
+				c.litRole[lit] = litAsync
+			}
 		case *ast.SelectStmt:
 			c.selectDeadlines(x, sc)
 		case *ast.ForStmt:
@@ -608,6 +641,9 @@ func (c *checker) waits(body *ast.BlockStmt, sc *scope) {
 				}
 			}
 		case *ast.CallExpr:
+			if lit, ok := ast.Unparen(x.Fun).(*ast.FuncLit); ok && c.litRole[lit] == 0 {
+				c.litRole[lit] = litInline // func() { … }(), deferred or not
+			}
 			if c.isCall(x, c.imp.synctest, "Test") || c.isCall(x, c.imp.synctest, "Run") {
 				for _, a := range x.Args {
 					if lit, ok := a.(*ast.FuncLit); ok {

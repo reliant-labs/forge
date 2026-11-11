@@ -348,6 +348,49 @@ func TestX(t *testing.T) {
 	}
 	serve(h)
 }`, nil},
+		{"a poll in an inline closure runs in the test", `func TestX(t *testing.T) {
+	ok := func() bool {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if done() { return true }
+			time.Sleep(10 * time.Millisecond)
+		}
+		return false
+	}()
+	if !ok { t.Fatal("never") }
+}`, []string{"tight-deadline@3"}},
+		{"a sleep in a deferred inline closure runs in the test", `func TestX(t *testing.T) {
+	defer func() {
+		time.Sleep(100 * time.Millisecond)
+		check(t)
+	}()
+	run()
+}`, []string{"fixed-sleep@3"}},
+		{"a goroutine taking t is not a test body", `func TestX(t *testing.T) {
+	go func(t *testing.T) {
+		time.Sleep(50 * time.Millisecond)
+		close(ch)
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) { ping() }
+	}(t)
+	<-ch
+}`, nil},
+		{"a goroutine's failing select deadline still flakes", `func TestX(t *testing.T) {
+	go func() {
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Error("timed out")
+		}
+	}()
+}`, []string{"tight-deadline@5"}},
+		{"a closure assigned and passed on is not judged", `func TestX(t *testing.T) {
+	sample := func() {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) { ping() }
+	}
+	serve(sample)
+}`, nil},
 		{"a deadline used as data", `func TestX(t *testing.T) {
 	exp := time.Now().Add(time.Second)
 	for _, c := range cases { mint(c, exp) }

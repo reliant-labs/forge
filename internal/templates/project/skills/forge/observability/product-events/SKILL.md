@@ -1,6 +1,6 @@
 ---
 name: observability/product-events
-description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the browser's cookieless analytics tiers (off < aggregate < identified < full, identified by default; grantAnalyticsConsent, optOutOfAnalytics, GPC/DNT), automatic page_viewed with its referrer/utm/click_id props, flag exposures (trackExposure, forgeExposureHook), the reserved event-name prefixes, the standard auth events the console counts users from (observe.TrackAuth, trackAuthEvent, identifyUser; the record for any other language), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, the KCL forge.Analytics block (ANALYTICS_MODE, goals, activation, channel rules, Funnel.by visitor/person), retention, and sql/funnel panels over the hosted product_events table.
+description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the browser's cookieless analytics tiers (off < aggregate < identified < full, identified by default; grantAnalyticsConsent, optOutOfAnalytics, GPC/DNT), automatic page_viewed with its referrer/utm/click_id props, page_engaged (engaged time and scroll depth per view), flag exposures (trackExposure, forgeExposureHook), the reserved event-name prefixes, the standard auth events the console counts users from (observe.TrackAuth, trackAuthEvent, identifyUser; the record for any other language), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, the KCL forge.Analytics block (ANALYTICS_MODE, goals, activation, channel rules, Funnel.by visitor/person), retention, and sql/funnel panels over the hosted product_events table.
 ---
 
 # Product events
@@ -157,6 +157,48 @@ and backend events join on `UserId`. An environment turns either off per
 frontend with `telemetry = forge.BrowserTelemetry {page_views = False}` /
 `{identify_user = False}` (rendered as `PAGE_VIEWS` / `IDENTIFY_USER = "false"`
 in its runtime config). How both work: `frontend-runtime/telemetry`.
+
+### Engaged time
+
+Each page view also ends in one `page_engaged`, in every tier above `off`. It
+carries no identifier of its own:
+
+| prop | value |
+|---|---|
+| `route` | the view's route, named as its `page_viewed` was |
+| `engaged_ms` | the milliseconds the page was **visible**, the window **focused** (or in use anyway: a wheel over a background window) and the person **active**: a pointer, key, wheel, touch or scroll in the last 30 s. Past that idle cutoff the clock stops until the next input. Capped at 1,800,000 (30 minutes) |
+| `scroll_pct` | the deepest the bottom of the viewport reached in the document during the view, 0-100: `(scrollY + innerHeight) / scrollHeight`. A page that fits the viewport is 100. Content scrolling inside an app's own element is not the document's depth |
+| `entry` | `"true"` when the view was the first of its page load, as on `page_viewed` |
+| `resumed` | `"true"` on a later report of the same view (below) |
+
+It is reported once per view, at the first of a route change (SPAs), the tab
+being hidden, or `pagehide` (unload or the back/forward cache: a static
+multi-page site's only report). On hide and unload the runtime then asks the
+SDK to export at once; the exporter posts with `fetch(…, {keepalive: true})`,
+which the browser completes after the page is gone. A view shorter than 500 ms
+of engagement (a redirect) is not reported.
+
+A reader who comes back to a view (the tab shown again, a back/forward-cache
+restore) keeps adding to it: the next report has `resumed: "true"` and the
+view's **cumulative** `engaged_ms` and `scroll_pct`. So per view, take the
+**last** report: a `resumed` row replaces the row before it for the same
+visitor and route. In SQL, a running count of non-`resumed` rows per
+`(EnvId, DayVisitor, route)` numbers the views (the daily hash alone keys a
+visitor-day; never pair it with the event's date):
+
+```sql
+SELECT EnvId, h, route, vix,
+       max(toFloat64OrZero(Props['engaged_ms'])) AS engaged_ms,
+       max(toFloat64OrZero(Props['scroll_pct'])) AS scroll_pct
+FROM (SELECT EnvId, DayVisitor AS h, Props['route'] AS route, Props,
+             sum(Props['resumed'] != 'true') OVER (PARTITION BY EnvId, h, route ORDER BY Timestamp
+                                                   ROWS UNBOUNDED PRECEDING) AS vix
+      FROM product_events WHERE EventName = 'page_engaged' AND DayVisitor != '' AND …)
+GROUP BY EnvId, h, route, vix
+```
+
+`page_engaged` is not an interactive event: it neither starts nor extends a
+visit, and a view with only `page_engaged` after it is still a bounce.
 
 ### Flag exposures
 

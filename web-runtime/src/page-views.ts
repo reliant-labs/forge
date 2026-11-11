@@ -74,10 +74,18 @@
 //
 // Country, device, browser and OS are derived at the ingest edge, not here.
 //
+// ── How long the view held the reader ────────────────────────────────────
+//
+// With `engagement` (on wherever initBrowserTelemetry records page views),
+// each view also ends in one `page_engaged {route, engaged_ms, scroll_pct}`:
+// the visible, focused, active time and the scroll depth of that view,
+// reported at the next route change, hide or unload (page-engagement.ts).
+//
 // Dependency-free like track.ts: nothing here imports the SDK, and nothing
 // runs until initBrowserTelemetry installs it (the consent gate), which also
 // removes it again on disableTelemetry().
 import { normalizeBasePath } from "./basepath.js";
+import { installPageEngagement } from "./page-engagement.js";
 import { isTelemetryDisabled, recordProductEvent } from "./track.js";
 
 /** The product event a page view is recorded as. */
@@ -286,6 +294,12 @@ export interface PageViewOptions {
    * acquisition source. `www.` is ignored either way.
    */
   siteHosts?: string[];
+  /**
+   * Record `page_engaged {route, engaged_ms, scroll_pct}` once per page view
+   * (page-engagement.ts): visible, focused, active time and scroll depth.
+   * Default true wherever page views are recorded; false turns it off alone.
+   */
+  engagement?: boolean;
 }
 
 /** What telemetry.ts installs: the route watch, with or without the events. */
@@ -322,6 +336,13 @@ export function installPageViews(options: RouteWatchOptions): () => void {
   const basePath = options.basePath ?? "";
   let last: string | null = null;
   let active = true;
+  // Engaged time rides with page views; RouteWatchOptions leaves it off
+  // unless asked, so a route watch kept only for the session identity
+  // reports nothing.
+  const engagement =
+    options.pageViews && options.engagement === true
+      ? installPageEngagement()
+      : null;
 
   const routeOf = (pathname: string): string | null => {
     if (options.routeName) {
@@ -353,6 +374,7 @@ export function installPageViews(options: RouteWatchOptions): () => void {
           viewProps(route, previous === null),
         );
       }
+      engagement?.view(route, previous === null);
       options.onRoute?.(route, previous);
     } catch {
       // Telemetry must never break the app.
@@ -409,6 +431,10 @@ export function installPageViews(options: RouteWatchOptions): () => void {
       window.addEventListener("popstate", onPop);
       stops.push(() => window.removeEventListener?.("popstate", onPop));
     }
+  }
+
+  if (engagement) {
+    stops.push(() => engagement.stop());
   }
 
   report(currentPathname());

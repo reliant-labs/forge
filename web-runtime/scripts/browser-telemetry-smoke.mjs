@@ -669,3 +669,111 @@ document.querySelector('#open').addEventListener('click', () => {
     await close(backend);
   }
 });
+
+// page_engaged (src/page-engagement.ts) with the REAL SDK in a real browser:
+// a route change reports the view that ended, and leaving the page reports
+// the last one through the SDK's own exporter (fetch keepalive) before the
+// document is gone. Exactly once per view, with the visible, active time and
+// the deepest scroll.
+test("page_engaged reports each view once: on a route change, and on leaving the page through a keepalive export", { timeout: 30000 }, async () => {
+  const traces = [];
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (url.startsWith("/_otel/")) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
+        res.setHeader("content-type", "application/json");
+        res.end("{}");
+      } else if (url === "/sdk.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await readFile(sdk));
+      } else if (url === "/hyperdx.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end("export default globalThis.HyperDX;");
+      } else if (url === "/elsewhere") {
+        res.setHeader("content-type", "text/html");
+        res.end("<!doctype html><p>another document</p>");
+      } else if (url.startsWith("/blog/")) {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html><body style="margin:0"><div style="height:4000px">a long post</div>
+<script src="/sdk.js"></script>
+<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="module">
+import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
+window.tracing = trace;
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', consoleCapture: false, pageViews: true });
+</script></body>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 800, height: 1000 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${origin}/blog/first-post`);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    // Read for ~1.2 s, moving the mouse, and scroll half way:
+    // (1500 + 1000) / 4000 = 62.5%, reported as 63.
+    for (let i = 0; i < 6; i++) {
+      await page.mouse.move(100 + i * 10, 100);
+      await new Promise((done) => setTimeout(done, 200));
+    }
+    // Resolved by the scroll event itself, so the depth is seen before the
+    // route changes.
+    await page.evaluate(() => new Promise((done) => {
+      document.addEventListener("scroll", () => done(), { once: true });
+      window.scrollTo(0, 1500);
+    }));
+    await page.evaluate(() => history.pushState({}, "", "/blog/second-post"));
+    await page.evaluate(() => window.scrollTo(0, 0));
+    for (let i = 0; i < 4; i++) {
+      await page.mouse.move(200 + i * 10, 100);
+      await new Promise((done) => setTimeout(done, 200));
+    }
+    // Leave: a new document. No flush is called from the test: the runtime's
+    // own hide/unload handling must get the last view out.
+    await page.goto(`${origin}/elsewhere`);
+    const spans = () => traces.flatMap((batch) => batch.resourceSpans ?? [])
+      .flatMap((resource) => resource.scopeSpans ?? [])
+      .flatMap((scope) => scope.spans ?? []);
+    const value = (v) => v?.stringValue ?? (v?.intValue !== undefined ? Number(v.intValue) : v?.doubleValue);
+    const engaged = () => spans().filter((s) => s.name === "page_engaged")
+      .map((s) => Object.fromEntries((s.attributes ?? []).map((a) => [a.key, value(a.value)])));
+    const deadline = Date.now() + 10000;
+    while (engaged().length < 2 && Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    // Room for a duplicate to arrive, if there were one.
+    await new Promise((done) => setTimeout(done, 500));
+
+    assert.deepEqual(errors, []);
+    const views = engaged();
+    assert.deepEqual(views.map((v) => v.route), ["/blog/first-post", "/blog/second-post"],
+      `one page_engaged per view: ${JSON.stringify(views)}`);
+    const [first, second] = views;
+    assert.equal(first.entry, "true");
+    assert.equal(second.entry, undefined);
+    assert.equal(first.scroll_pct, 63);
+    assert.ok(first.engaged_ms >= 1000 && first.engaged_ms < 10000, `first view engaged ${first.engaged_ms} ms`);
+    assert.ok(second.engaged_ms >= 500 && second.engaged_ms < 10000, `second view engaged ${second.engaged_ms} ms`);
+    for (const v of views) {
+      assert.equal(v.resumed, undefined);
+    }
+  } finally {
+    await browser?.close();
+    await close(server);
+  }
+});

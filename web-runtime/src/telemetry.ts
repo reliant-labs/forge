@@ -128,7 +128,9 @@
 // ── Page views and the signed-in user, when asked ────────────────────────
 //
 // `pageViews` records a `page_viewed {route}` product event per route
-// (page-views.ts); `identify` finds the signed-in user from the API's
+// (page-views.ts) and, unless `pageViews.engagement` is false, one
+// `page_engaged {route, engaged_ms, scroll_pct}` per page view when it ends
+// (page-engagement.ts); `identify` finds the signed-in user from the API's
 // `/auth/session` and stamps their opaque id on every event
 // (session-identity.ts). Both are OFF in this API, so a hand-written caller
 // sees no change; forge's generated otel_gen.ts turns them on, and an env
@@ -620,6 +622,9 @@ async function start(
           hdx.addAction?.("user_identified", identify);
         }
       },
+      // The page is being hidden or unloaded: export the batch now. The
+      // SDK's exporter posts with fetch keepalive, which outlives the page.
+      flush: () => flushSdk(),
       disable: () => {
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
@@ -645,6 +650,28 @@ async function start(
     console.debug("[telemetry] disabled:", err);
     setTelemetrySink(null);
     return false;
+  }
+}
+
+/** The slice of the SDK's tracer provider flushSdk calls. */
+interface FlushableProvider {
+  getDelegate?(): unknown;
+  forceFlush?(): Promise<void> | void;
+}
+
+// Export every finished span the SDK holds, now. The SDK registers its
+// provider globally, behind the API's proxy; the delegate is the provider
+// whose span processors hold the batch.
+function flushSdk(): void {
+  try {
+    const proxy = trace.getTracerProvider() as FlushableProvider;
+    const provider = (proxy.getDelegate?.() ?? proxy) as FlushableProvider;
+    const done = provider.forceFlush?.();
+    if (done && typeof done.catch === "function") {
+      done.catch(() => {});
+    }
+  } catch {
+    // Telemetry must never break the app.
   }
 }
 
@@ -678,6 +705,7 @@ function startRouteWatch(
       routeName: options.routeName,
       siteHosts: options.siteHosts,
       pageViews: pageViews !== false,
+      engagement: pageViews !== false && options.engagement !== false,
       onRoute: identity ? identity.onRoute : undefined,
     });
   } catch {

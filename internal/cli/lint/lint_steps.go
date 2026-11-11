@@ -145,9 +145,15 @@ func lintPipeline() []linterStep {
 			// static site, config.ProjectConfig.HasGoModule): there is no
 			// package to lint, and golangci-lint fails on `./...`. That is a
 			// lane that does not apply, so it skips silently.
+			// Without forge.yaml (forge lint in any repo) the same holds for
+			// a directory with no go.mod at or above it: a Node or Python
+			// repo has nothing for golangci-lint either.
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.cfg != nil && !rc.cfg.HasGoModule() {
 					return false, ""
+				}
+				if rc.cfg == nil && !rc.inGoModule() {
+					return false, noGoModuleSkip("golangci-lint")
 				}
 				return true, ""
 			},
@@ -206,6 +212,9 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.cfg != nil && !rc.cfg.Features.ContractsEnabled() {
 					return false, "contracts feature disabled — skipping contract linter"
+				}
+				if rc.cfg == nil && !rc.inGoModule() {
+					return false, noGoModuleSkip("contract linter")
 				}
 				// No availability gate: the analysis runs in-process
 				// (contract_inprocess.go) — there is no separate
@@ -644,13 +653,23 @@ func lintPipeline() []linterStep {
 		// 13d-ter-bis. DB-grants — a credential-shaped column nobody declared
 		// forge:secret or forge:readable. Gates: the read-only role is built
 		// to be safe by construction, and an undecided column is a decision
-		// somebody skipped (see lint_db_grants.go).
+		// somebody skipped (see lint_db_grants.go). It judges the grants
+		// `forge generate` writes for forge_ro, so in a repo with no
+		// forge.yaml there is no role to judge: the lane skips, naming why,
+		// rather than failing on migrations it was never meant to apply
+		// (an existing app's may not apply from an empty database at all).
 		{
 			name:  "db-grants lint",
 			gates: true,
 			scope: scopeByFile,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				return rc.cwd != "" && dirExists(migrationsDirFor(rc.cfg)), ""
+				if rc.cwd == "" || !dirExists(migrationsDirFor(rc.cfg)) {
+					return false, ""
+				}
+				if rc.cfg == nil {
+					return false, "no forge.yaml — skipping db-grants lint: it judges the read-only role (forge_ro) a forge project generates; migration safety still runs"
+				}
+				return true, ""
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectDBGrantsJSON(rc.cwd, rc.cfg)

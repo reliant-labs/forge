@@ -28,7 +28,12 @@
 //     of the user's goes with them. A file whose marker fails
 //     verification was hand-edited — the bytes are the user's now, so
 //     it is reported and kept unless --force-cleanup asks for it too.
-//   - Disowned paths are never candidates.
+//   - Disowned paths, and paths under forge.yaml's scaffold.exclude, are
+//     never candidates.
+//
+// A candidate whose owning step is gated off is not stale but ORPHANED —
+// its feature was switched off — and is reported rather than swept
+// (generate_orphans.go).
 //
 // Deletion is the default because a report nobody acts on leaves a
 // stale file in the build: a factories test for an entity forge no
@@ -75,19 +80,24 @@ type staleSweep struct {
 	HandEdited []string
 }
 
-// cleanupStaleArtifacts deletes the forge-certified files the current
-// pipeline run did not re-emit, subject to the guardrails in the file
-// comment: pristine ones always, hand-edited ones only under
-// ctx.ForceCleanup. A removal that fails (permission denied and the
-// like) is warned about and left out of Removed rather than aborting
-// the sweep.
-func cleanupStaleArtifacts(ctx *pipelineContext) (staleSweep, error) {
-	var sweep staleSweep
-	if ctx == nil {
-		return sweep, nil
-	}
-	cs := ctx.Checksums
+// staleCandidate is one forge-certified file the current run did not
+// re-emit and that no guardrail claims (see the file comment).
+type staleCandidate struct {
+	rel string
+	// pristine: the bytes are exactly what forge rendered (marker or
+	// recorded certificate verifies).
+	pristine bool
+	// gatedOff: the step that emits it did not run this time, so its
+	// absence from this run's writes says nothing about staleness.
+	gatedOff bool
+}
 
+// staleCandidates lists the certified files no emitter wrote this run,
+// minus every path the guardrails keep: written or targeted, disowned,
+// excluded (scaffold.exclude), upgrade-managed, frontend-managed, or
+// scaffold-once. Sorted by path.
+func staleCandidates(ctx *pipelineContext) []staleCandidate {
+	cs := ctx.Checksums
 	markers := checksums.ScanMarkers(ctx.AbsPath)
 	rels := make([]string, 0, len(markers))
 	for rel := range markers {
@@ -102,6 +112,7 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (staleSweep, error) {
 	}
 	sort.Strings(rels)
 
+	var out []staleCandidate
 	for _, rel := range rels {
 		// This run wrote this path — definitely not stale. Nor is one an
 		// emitter targeted but did not write: the stomp guard parks a
@@ -114,6 +125,11 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (staleSweep, error) {
 		// Disowned: user-owned by recorded intent (markers are stripped
 		// at disown time; this is a belt-and-braces check).
 		if cs.IsDisowned(rel) {
+			continue
+		}
+		// scaffold.exclude: the project's area. Forge neither rewrites nor
+		// deletes anything there.
+		if _, excluded := checksums.ExcludedBy(ctx.ProjectDir, rel); excluded {
 			continue
 		}
 		// Upgrade-managed paths: certified, but `forge generate` is not
@@ -140,27 +156,50 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (staleSweep, error) {
 		if checksums.ScaffoldRecorded(ctx.ProjectDir, rel) {
 			continue
 		}
-		// Owner-step gate. If the owning emitter step is gated off this
-		// run, we can't conclude the path is stale.
+		c := staleCandidate{rel: rel}
 		if gate := tier1OwnerGate(rel); gate != nil && !gate(ctx) {
-			continue
+			c.gatedOff = true
 		}
-
-		full := filepath.Join(ctx.ProjectDir, rel)
-
 		// Pristineness decides delete-vs-report. For marker files the
 		// scan already classified them; fallback entries compare the
 		// recorded hash.
-		pristine := false
 		if info, ok := markers[rel]; ok {
-			pristine = info.Status == checksums.Pristine
+			c.pristine = info.Status == checksums.Pristine
 		} else if cs != nil {
-			content, rerr := os.ReadFile(full)
+			content, rerr := os.ReadFile(filepath.Join(ctx.ProjectDir, rel))
 			if rerr != nil {
 				continue // gone or unreadable — nothing to clean
 			}
-			pristine = checksums.BodyHash(content) == cs.Unstampable[rel]
+			c.pristine = checksums.BodyHash(content) == cs.Unstampable[rel]
 		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// cleanupStaleArtifacts deletes the forge-certified files the current
+// pipeline run did not re-emit, subject to the guardrails in the file
+// comment: pristine ones always, hand-edited ones only under
+// ctx.ForceCleanup. A removal that fails (permission denied and the
+// like) is warned about and left out of Removed rather than aborting
+// the sweep.
+func cleanupStaleArtifacts(ctx *pipelineContext) (staleSweep, error) {
+	var sweep staleSweep
+	if ctx == nil {
+		return sweep, nil
+	}
+	cs := ctx.Checksums
+	for _, c := range staleCandidates(ctx) {
+		// Owner-step gate. If the owning emitter step is gated off this
+		// run, we can't conclude the path is stale — it is an ORPHAN of a
+		// switched-off feature, which generate reports and `forge project
+		// prune --orphans` removes on request (generate_orphans.go).
+		if c.gatedOff {
+			continue
+		}
+		rel, pristine := c.rel, c.pristine
+		full := filepath.Join(ctx.ProjectDir, rel)
+
 		if !pristine {
 			// Stale AND hand-edited: the bytes are the user's now, so
 			// they go only when --force-cleanup asks for them.

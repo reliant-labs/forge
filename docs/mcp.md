@@ -108,7 +108,9 @@ Any harness config takes the same command:
 The official MCP registry listing is `npm/server.json` (name
 `io.github.reliant-labs/forge`, verified by `mcpName` in `npm/package.json`) and
 the Smithery config is `npm/smithery.yaml`; `scripts/release-forge.sh` keeps the
-listing's version equal to the npm package's.
+listing's version equal to the npm package's, and every release's
+`.github/workflows/release-npm.yml` run publishes the listing to the registry
+once npm serves the new version (`docs/releasing.md`, "Installers").
 
 ### With forge installed
 

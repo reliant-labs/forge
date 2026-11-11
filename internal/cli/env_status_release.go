@@ -309,6 +309,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	// into the document (collectEnvRecords) is what keeps this read off the
 	// verdict path.
 	records := collectEnvRecords(ctx, opts.Records, projectDir, envName, time.Now().UTC())
+	records.RollbackFloors, records.RollbackFloorsSupported = statusFloors(ctx, opts.Bindings, envName)
 	offline := collectOfflineCache(opts.Bindings, envName)
 
 	if !bound {

@@ -83,8 +83,11 @@ func RenderReadmeTable(r *Registry) []byte {
 	if len(legend) > 0 {
 		fmt.Fprintf(&buf, "\n%s; everything else is open-source Forge on any infrastructure.\n", strings.Join(legend, ", "))
 	}
-	fmt.Fprintf(&buf, "\nEvery benefit, with how to use it and the code that backs it: [%s](%s) (%d entries, %d lint rules)\n",
-		DocsPath, DocsPath, len(r.Benefits), r.RuleCount())
+	// No entry or rule count here: every PR that adds a benefit changed the
+	// same line, so any two of them conflicted and a merge group of two went
+	// red on TestRenderedFilesAreCurrent (forge's queue, 2026-11-11).
+	fmt.Fprintf(&buf, "\nEvery benefit, with how to use it and the code that backs it: [%s](%s)\n",
+		DocsPath, DocsPath)
 	return buf.Bytes()
 }
 

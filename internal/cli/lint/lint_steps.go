@@ -148,15 +148,7 @@ func lintPipeline() []linterStep {
 			// Without forge.yaml (forge lint in any repo) the same holds for
 			// a directory with no go.mod at or above it: a Node or Python
 			// repo has nothing for golangci-lint either.
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if rc.cfg != nil && !rc.cfg.HasGoModule() {
-					return false, ""
-				}
-				if rc.cfg == nil && !rc.inGoModule() {
-					return false, noGoModuleSkip("golangci-lint")
-				}
-				return true, ""
-			},
+			shouldRun: golangciShouldRun,
 			// The binary is chosen per module (golangci_toolchain.go): the
 			// one on PATH may be missing, built with a Go older than the
 			// module's go directive, or unable to read the export data the
@@ -659,18 +651,10 @@ func lintPipeline() []linterStep {
 		// rather than failing on migrations it was never meant to apply
 		// (an existing app's may not apply from an empty database at all).
 		{
-			name:  "db-grants lint",
-			gates: true,
-			scope: scopeByFile,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if rc.cwd == "" || !dirExists(migrationsDirFor(rc.cfg)) {
-					return false, ""
-				}
-				if rc.cfg == nil {
-					return false, "no forge.yaml — skipping db-grants lint: it judges the read-only role (forge_ro) a forge project generates; migration safety still runs"
-				}
-				return true, ""
-			},
+			name:      "db-grants lint",
+			gates:     true,
+			scope:     scopeByFile,
+			shouldRun: dbGrantsShouldRun,
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectDBGrantsJSON(rc.cwd, rc.cfg)
 				return fs, len(fs) > 0, err
@@ -1035,4 +1019,30 @@ func lintPipeline() []linterStep {
 			},
 		},
 	}
+}
+
+// golangciShouldRun skips golangci-lint where there is no Go package to lint:
+// a forge project without a Go module, or (no forge.yaml) a directory with no
+// go.mod at or above it. Named rather than inline to keep lintPipeline's
+// cognitive complexity under the gocognit bound.
+func golangciShouldRun(rc *lintRunCtx) (bool, string) {
+	if rc.cfg != nil && !rc.cfg.HasGoModule() {
+		return false, ""
+	}
+	if rc.cfg == nil && !rc.inGoModule() {
+		return false, noGoModuleSkip("golangci-lint")
+	}
+	return true, ""
+}
+
+// dbGrantsShouldRun runs the db-grants lane where there are migrations and a
+// forge.yaml: without one there is no forge_ro role to judge.
+func dbGrantsShouldRun(rc *lintRunCtx) (bool, string) {
+	if rc.cwd == "" || !dirExists(migrationsDirFor(rc.cfg)) {
+		return false, ""
+	}
+	if rc.cfg == nil {
+		return false, "no forge.yaml — skipping db-grants lint: it judges the read-only role (forge_ro) a forge project generates; migration safety still runs"
+	}
+	return true, ""
 }

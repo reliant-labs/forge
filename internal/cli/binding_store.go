@@ -32,6 +32,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
@@ -626,9 +627,20 @@ func (s machineBindingStore) Append(_ context.Context, p release.Promotion, guar
 			"%s records promotions in %s, which cannot resolve a release from a source promotion: promote by version",
 			p.Env, s.Location())
 	}
-	return s.store.AppendPromotion(p, func(history []release.Promotion, req release.Promotion) (*release.Promotion, error) {
-		return admitPromotion(history, req, guard)
-	})
+	return s.store.AppendPromotionWithFloors(p,
+		func(history []release.Promotion, floors []release.Floor, req release.Promotion) (*release.Promotion, error) {
+			return admitPromotion(history, release.ActiveFloors(floors), req, guard)
+		},
+		// The floors this promote raises, in the same lock hold as the
+		// append — the server's rule (release.PromoteRaises), so a machine
+		// ledger raises exactly what a control plane would.
+		func(floors []release.Floor, promoted release.Promotion) []release.Floor {
+			if guard.Target == nil {
+				return nil
+			}
+			return release.PromoteRaises(release.ActiveFloors(floors), promoted.Env, *guard.Target, guard.RaiseFloorReason,
+				promoted.PromotedBy, time.Time{}, promoted.ID)
+		})
 }
 
 // Location is the ledger directory.

@@ -74,7 +74,7 @@ func TestBuildHostServiceCmd(t *testing.T) {
 			svc: hostWL("api", sharedBinary, withRunner("delve"), withArgs("api"), func(w *WorkloadEntity) {
 				w.Runtime.Host.DelvePort = 3030
 			}),
-			want: []string{"dlv", "exec", "--headless", "--listen=:3030", "--api-version=2", "--accept-multiclient", "--continue", myprojBin, "--", "api"},
+			want: []string{"dlv", "exec", "--headless", "--listen=127.0.0.1:3030", "--api-version=2", "--accept-multiclient", "--continue", myprojBin, "--", "api"},
 		},
 		{
 			name: "an explicit spec.command runs verbatim with args",

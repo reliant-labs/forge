@@ -69,6 +69,7 @@ recovery is a new release that rolls forward. The whole procedure: `deploy/relea
 | users and sign-in declared in KCL | `deploy/managed-identity` |
 | PDBs, priority classes, StatefulSet volume growth | `deploy/pdb`, `deploy/pod-priority`, `deploy/statefulset-volumes` |
 | a KCL value from a script; another project's `workloads.k` | `deploy/kcl-eval`, `deploy/kcl-imports` |
+| "never deploy older than X"; a `below_rollback_floor` refusal; declaring an API/feature/data change that cannot be rolled back past | `deploy/rollback-floor` |
 | a cut that died mid-push; control plane unreachable; the k3d registry mirror | `deploy/interrupted-cut`, `deploy/offline-ledger`, `deploy/k3d-registry` |
 
 ## Rules

@@ -2,10 +2,12 @@ package debug
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -47,6 +49,12 @@ func main() {
 // skipped when go or dlv is unavailable.
 func buildFixture(t *testing.T) (binary, source string) {
 	t.Helper()
+	return buildFixtureFlags(t)
+}
+
+// buildFixtureFlags is buildFixture with extra `go build` flags.
+func buildFixtureFlags(t *testing.T, flags ...string) (binary, source string) {
+	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not on PATH")
 	}
@@ -63,7 +71,8 @@ func buildFixture(t *testing.T) (binary, source string) {
 		t.Fatalf("write go.mod: %v", err)
 	}
 	binary = filepath.Join(dir, "fixture")
-	build := exec.CommandContext(context.Background(), "go", "build", "-gcflags=all=-N -l", "-o", binary, ".")
+	args := append([]string{"build", "-gcflags=all=-N -l"}, flags...)
+	build := exec.CommandContext(context.Background(), "go", append(args, "-o", binary, ".")...)
 	build.Dir = dir
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building fixture: %v\n%s", err, out)
@@ -242,6 +251,174 @@ func TestLive_GoroutinesOnRunningTarget(t *testing.T) {
 	// A recognizable user/runtime goroutine should be present.
 	if !goroutineRunning(gs, "main.") && !goroutineRunning(gs, "runtime.") && !goroutineRunning(gs, "time.") {
 		t.Fatalf("expected a recognizable goroutine function, got %v", goroutineFns(gs))
+	}
+}
+
+// computeLine is the line of `a := i * 2` in fixtureProgram.
+const computeLine = 9
+
+// launchRunning launches binary under dlv the way `forge debug start` does
+// by default — running — and connects to it.
+func launchRunning(t *testing.T, binary, output string) *DelveDebugger {
+	t.Helper()
+	d := NewDelveDebugger()
+	if err := d.Launch(context.Background(), LaunchOptions{Binary: binary, OutputPath: output}); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	// Registered before anything can fail: dlv outlives the test otherwise.
+	t.Cleanup(func() {
+		_ = d.Stop()
+		if pid := d.DlvPID(); pid > 0 {
+			if p, err := os.FindProcess(pid); err == nil {
+				_ = p.Signal(syscall.SIGTERM) // dlv exec kills its target on SIGTERM
+			}
+		}
+	})
+	if err := d.Connect(d.Addr()); err != nil {
+		t.Fatalf("connecting: %v", err)
+	}
+	return d
+}
+
+// waitRunning polls until the target is running (dlv --continue resumes it
+// just after the server starts listening).
+func waitRunning(t *testing.T, d *DelveDebugger) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st, err := d.State()
+		if err == nil && st == TargetRunning {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("target never ran: state=%v err=%v", st, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestLive_LaunchRunsAndBreaksWhileRunning: a launched target runs by
+// default (its output reaches OutputPath), a breakpoint can be set while it
+// runs — Delve's breakpoint RPCs would otherwise block until the next stop —
+// the target keeps running afterwards, and ContinueFor delivers the hit.
+func TestLive_LaunchRunsAndBreaksWhileRunning(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a real delve debugger against a built target; runs in task test")
+	}
+	binary, _ := buildFixture(t)
+	output := filepath.Join(t.TempDir(), "logs", "out.log")
+	d := launchRunning(t, binary, output)
+	waitRunning(t, d)
+	// It runs: its output reaches OutputPath.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, _ := os.ReadFile(output)
+		if strings.Contains(string(data), "computed") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("program output never reached %s: %q", output, data)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if _, err := d.SetFunctionBreakpoint("main.compute", ""); err != nil {
+		t.Fatalf("SetFunctionBreakpoint on a running target: %v", err)
+	}
+	// The breakpoint set resumed the target, which may hit it at once:
+	// wait without resuming, so a hit already reached is the one reported.
+	hit, err := d.WaitForStop(10 * time.Second)
+	if err != nil {
+		t.Fatalf("WaitForStop: %v", err)
+	}
+	if hit.Reason != "breakpoint" || hit.Function != "main.compute" {
+		t.Fatalf("stopped at %+v, want a breakpoint in main.compute", hit)
+	}
+}
+
+// TestLive_ContinueForTimesOut: with nothing to stop it, ContinueFor returns
+// ErrStillRunning at its deadline and the target is still running.
+func TestLive_ContinueForTimesOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a real delve debugger against a built target; runs in task test")
+	}
+	binary, _ := buildFixture(t)
+	d := launchRunning(t, binary, "")
+	waitRunning(t, d)
+	start := time.Now()
+	if _, err := d.ContinueFor(300 * time.Millisecond); !errors.Is(err, ErrStillRunning) {
+		t.Fatalf("ContinueFor with no breakpoint = %v, want ErrStillRunning", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("ContinueFor overran its timeout: %s", time.Since(start))
+	}
+	// A fresh connection still sees it running: the timeout left it alone.
+	d2 := NewDelveDebugger()
+	if err := d2.Connect(d.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Disconnect()
+	if st, err := d2.State(); st != TargetRunning {
+		t.Fatalf("after timeout state = %v (%v), want running", st, err)
+	}
+}
+
+// TestLive_TrimpathLineBreakpoint: a binary built with -trimpath records
+// `<module>/main.go`, not the absolute path, so the absolute spelling
+// fails; SetLineBreakpoint falls through to the module-relative one.
+func TestLive_TrimpathLineBreakpoint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a real delve debugger against a built target; runs in task test")
+	}
+	binary, source := buildFixtureFlags(t, "-trimpath")
+	d := launchRunning(t, binary, "")
+	waitRunning(t, d)
+	bp, err := d.SetLineBreakpoint([]string{source, "dbgfixture/main.go"}, "main.go", computeLine, "")
+	if err != nil {
+		t.Fatalf("SetLineBreakpoint on a -trimpath binary: %v", err)
+	}
+	if bp.Line != computeLine {
+		t.Fatalf("breakpoint at line %d, want %d", bp.Line, computeLine)
+	}
+	// The suffix-matching location expression alone resolves it too.
+	bp2, err := d.SetLineBreakpoint([]string{"/nonexistent/main.go"}, "main.go", computeLine+1, "")
+	if err != nil {
+		t.Fatalf("SetLineBreakpoint via location expression: %v", err)
+	}
+	if bp2.Line != computeLine+1 {
+		t.Fatalf("breakpoint at line %d, want %d", bp2.Line, computeLine+1)
+	}
+}
+
+// TestLive_StopEndsRunningTarget: Stop on a running owned target halts it
+// first (Detach waits for Delve's target lock) and returns promptly.
+func TestLive_StopEndsRunningTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drives a real delve debugger against a built target; runs in task test")
+	}
+	binary, _ := buildFixture(t)
+	d := launchRunning(t, binary, "")
+	waitRunning(t, d)
+	pid := d.PID()
+	done := make(chan error, 1)
+	go func() { done <- d.Stop() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Stop hung on a running target")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if p, err := os.FindProcess(pid); err != nil || p.Signal(syscall.Signal(0)) != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("target pid %d survived Stop", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

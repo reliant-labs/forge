@@ -1004,7 +1004,7 @@ func applyEarlyBatch(ctx context.Context, kctx, namespace, crds, namespaces stri
 		return nil
 	}
 	if err := KubectlApplyNamespaced(ctx, kctx, namespace, early); err != nil {
-		return fmt.Errorf("apply CRDs/Namespaces: %w", err)
+		return fmt.Errorf("apply cluster-scoped prerequisites: %w", err)
 	}
 	names := crdNames(crds)
 	if len(names) == 0 {

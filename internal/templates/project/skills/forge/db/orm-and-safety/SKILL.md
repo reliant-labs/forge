@@ -1,6 +1,6 @@
 ---
 name: db/orm-and-safety
-description: Where the generated ORM lands (database.orm.package), and the two per-project database opt-outs that live next to the code they affect, not in forge.yaml — `//forge:no-orm` in internal/db to skip the generated ORM, and `-- forge:allow-destructive` in a migration to allow one destructive change — plus how the database itself is derived, and the lint rules for a migration file that cannot run as one transaction (CONCURRENTLY, enum values).
+description: Where the generated ORM lands (database.orm.package), and the per-project database opt-outs — `//forge:no-orm` in internal/db (or `features: {orm: false}` in forge.yaml) to skip the generated ORM, and `-- forge:allow-destructive` in a migration to allow one destructive change — plus how the database itself is derived, and the lint rules for a migration file that cannot run as one transaction (CONCURRENTLY, enum values).
 ---
 
 # ORM opt-out and migration-safety directives
@@ -26,10 +26,11 @@ Put the marker in the doc comment of `internal/db`, with the reason:
 package db
 ```
 
-**Why a marker, not a forge.yaml key.** The exemption describes a property of `internal/db`,
-so a reader of that package sees it, with its reason, where `//forge:exclude-contract: <why>`
-already works. It opts out of the ORM projection only — migrations, codegen and the database
-stay on.
+**Or in forge.yaml.** `features: {orm: false}` says the same thing beside every other feature
+switch — the spelling a repository adopting forge reaches for first. The marker documents the
+decision where a reader of `internal/db` sees it, with its reason; use either, or both. Pinning
+`orm: true` while the marker is present is a load error: the two would contradict each other.
+Either opts out of the ORM projection only — migrations, codegen and the database stay on.
 
 With no ORM there is no generic CRUD to wire, so every rpc is custom on the server: a
 CRUD-named one (`CreateTask` over a `tasks` table) gets a pb-through stub and a scaffold test
@@ -38,7 +39,8 @@ mark it `// forge:custom` instead (`forge project annotations --kind method`).
 
 forge reads it from non-test, non-generated `.go` files **directly in** `internal/db/`. A line
 that merely mentions it in prose, a `_gen.go` file, a `_test.go` file, or another package does
-not count. `forge project features` shows `orm` off with `(//forge:no-orm in internal/db)`.
+not count. `forge project features` shows `orm` off with `(//forge:no-orm in internal/db)`, or
+`(pinned in forge.yaml features:)`.
 With `database.orm.package` set, the marker is read in THAT directory instead.
 
 ## Placing the ORM: `database.orm.package`

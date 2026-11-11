@@ -145,6 +145,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		ExpectCurrent:         p.expectCurrent,
 		Supersede:             p.supersede,
 		AllowPassedMigrations: p.allowPassedMigrations,
+		RaiseFloorReason:      p.floorReason,
 		Gates:                 p.gates,
 		Run:                   p.run,
 		Claim:                 f.claim,

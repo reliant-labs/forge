@@ -239,28 +239,69 @@ func TestDeviceHostIsThisMachineIPv4(t *testing.T) {
 	}
 }
 
-// The opt-in knob is forge's default where nothing was said and is never forced
-// over a decision the workload declared (HostEnv layers LaunchEnv over declared
-// values, so setting it would otherwise override them).
-func TestEnableLocalUserInfo_NeverOverridesADeclaredValue(t *testing.T) {
-	_, e := nativeProject(t, nativeIdentityOutput())
-	for i := range e.Workloads {
-		if e.Workloads[i].Name == "api" {
-			e.Workloads[i].Spec.Env = append(e.Workloads[i].Spec.Env, deployv1alpha1.EnvVar{Name: userInfoLocalHTTPEnv, Value: "false"})
-		}
+// The opt-in knob is forge's default where nothing was said, and is never
+// forced over a decision the workload declared (HostEnv layers LaunchEnv over
+// declared values, so setting it would otherwise override them). A declared
+// literal false is the config default that config_gen.workloadEnvMap projects
+// onto every workload of a scaffolded project, so it is not a decision: the
+// Android emulator acceptance found the knob off (and Claims.Email empty) in
+// every real project while a fixture without that projection passed.
+func TestEnableLocalUserInfo_DeclaredValues(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		declared *deployv1alpha1.EnvVar
+		want     string // effective host env value
+		forced   bool   // forge set LaunchEnv
+	}{
+		{name: "nothing declared", want: "true", forced: true},
+		{name: "the projected config default false", declared: &deployv1alpha1.EnvVar{Name: userInfoLocalHTTPEnv, Value: "false"}, want: "true", forced: true},
+		{name: "a declared true", declared: &deployv1alpha1.EnvVar{Name: userInfoLocalHTTPEnv, Value: "true"}, want: "true"},
+		{name: "an unparseable literal", declared: &deployv1alpha1.EnvVar{Name: userInfoLocalHTTPEnv, Value: "maybe"}, want: "maybe"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, e := nativeProject(t, nativeIdentityOutput())
+			for i := range e.Workloads {
+				if e.Workloads[i].Name == "api" && tc.declared != nil {
+					e.Workloads[i].Spec.Env = append(e.Workloads[i].Spec.Env, *tc.declared)
+				}
+			}
+			enableLocalUserInfo(e)
+			seen := false
+			for _, w := range e.Workloads {
+				if w.Name != "api" || w.Runtime.Host == nil {
+					continue
+				}
+				seen = true
+				if _, set := w.Runtime.Host.LaunchEnv[userInfoLocalHTTPEnv]; set != tc.forced {
+					t.Errorf("forge set LaunchEnv = %v, want %v", set, tc.forced)
+				}
+				if got := w.HostEnv()[userInfoLocalHTTPEnv]; got != tc.want {
+					t.Errorf("effective host env = %q, want %q", got, tc.want)
+				}
+			}
+			if !seen {
+				t.Fatal("fixture has no host api workload")
+			}
+		})
 	}
-	enableLocalUserInfo(e)
-	for _, w := range e.Workloads {
-		if w.Name != "api" || w.Runtime.Host == nil {
-			continue
+	t.Run("a secret reference", func(t *testing.T) {
+		_, e := nativeProject(t, nativeIdentityOutput())
+		for i := range e.Workloads {
+			if e.Workloads[i].Name == "api" {
+				e.Workloads[i].Spec.Env = append(e.Workloads[i].Spec.Env, deployv1alpha1.EnvVar{
+					Name: userInfoLocalHTTPEnv, SecretRef: &deployv1alpha1.SecretKeyRef{Name: "s", Key: "k"},
+				})
+			}
 		}
-		if v, set := w.Runtime.Host.LaunchEnv[userInfoLocalHTTPEnv]; set {
-			t.Errorf("forge set %s=%q over a value the workload declared", userInfoLocalHTTPEnv, v)
+		enableLocalUserInfo(e)
+		for _, w := range e.Workloads {
+			if w.Name == "api" && w.Runtime.Host != nil {
+				if v, set := w.Runtime.Host.LaunchEnv[userInfoLocalHTTPEnv]; set {
+					t.Errorf("forge set %s=%q over a declared reference", userInfoLocalHTTPEnv, v)
+				}
+			}
 		}
-		if got := w.HostEnv()[userInfoLocalHTTPEnv]; got != "false" {
-			t.Errorf("effective host env = %q, want the declared false", got)
-		}
-	}
+	})
 }
 
 func TestApplyDeviceHostToIdP(t *testing.T) {

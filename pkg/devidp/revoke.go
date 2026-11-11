@@ -39,6 +39,12 @@ const (
 	// failed proof; a lock with no marker (the issuer's, or one a failed
 	// revocation left) is never lifted by a proof. See proveAddress.
 	MetaProofLock = "forge.proof_lock"
+	// MetaProofWindowPrefix starts the key a proof writes before it takes
+	// an unverified account's credentials back ahead of its proof: one key
+	// per proof (the prefix and a nonce), its value the window's start in
+	// unix milliseconds. A successful proof waits out every such window
+	// before it hands the account back. See proveAddress.
+	MetaProofWindowPrefix = "forge.proof_window."
 )
 
 // RevokeCredentials removes every credential on an account: the password is
@@ -254,6 +260,35 @@ func (c *Client) Metadata(ctx context.Context, userID, key string) (string, bool
 		}
 	}
 	return "", false, nil
+}
+
+// MetadataWithPrefix reads every metadata key of an account that starts
+// with prefix, keyed by name.
+func (c *Client) MetadataWithPrefix(ctx context.Context, userID, prefix string) (map[string]string, error) {
+	body, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/metadata/search", map[string]any{
+		"filters": []any{map[string]any{"keyFilter": map[string]any{"key": prefix, "method": "TEXT_FILTER_METHOD_STARTS_WITH"}}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read account metadata: %w", err)
+	}
+	var out struct {
+		Metadata []struct {
+			Key   string `json:"key"`
+			Value []byte `json:"value"` // the API's bytes: standard base64 in JSON
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode account metadata: %w", err)
+	}
+	got := map[string]string{}
+	for _, m := range out.Metadata {
+		// The filter is the issuer's; the prefix is checked here too, so a
+		// filter it ignored never makes an unrelated key read as a window.
+		if strings.HasPrefix(m.Key, prefix) {
+			got[m.Key] = string(m.Value)
+		}
+	}
+	return got, nil
 }
 
 // DeleteMetadata removes one metadata key from an account.

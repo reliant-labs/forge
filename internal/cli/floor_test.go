@@ -225,6 +225,90 @@ func TestOfflineAppendJudgesCachedFloors(t *testing.T) {
 	}
 }
 
+// A copy whose floors are unknown (it predates them, or their read failed)
+// refuses the local apply with exit 2 before anything is queued: unknown is
+// never read as "no floors" (review R1.B1).
+func TestOfflineAppendRefusesUnknownFloors(t *testing.T) {
+	v1 := floorRelease("v1", 1, nil)
+	// No store: reaching the queue would panic, so a pass also proves nothing
+	// was queued.
+	b := &offlineBindings{snap: ledgerfile.HostedSnapshot{RefreshedAt: time.Unix(1, 0)}, releases: map[string]release.Release{"v1": v1}}
+	target := v1
+	_, err := b.Append(context.Background(), release.NewPromotion("prod", v1, release.KindPromote), appendGuard{Target: &target})
+	var coded exitCodeError
+	if !errors.As(err, &coded) || coded.code != exitUndetermined {
+		t.Fatalf("Append from a copy without floors = %v; want exit %d (undetermined)", err, exitUndetermined)
+	}
+	if !strings.Contains(err.Error(), "forge env status prod") {
+		t.Fatalf("the refusal does not say how to refresh the copy: %v", err)
+	}
+}
+
+// fillFloors records a control plane that has no floors as "none" (its own
+// Promote, which a queued promotion replays through, judges none either),
+// and leaves a failed read "unknown".
+func TestFillFloorsRecordsNoneOnlyFromAFloorlessControlPlane(t *testing.T) {
+	for name, tc := range map[string]struct {
+		caller       cloudCaller
+		wantRecorded bool
+	}{
+		"no field": {&capsCaller{floors: false}, true},
+		"no rpc":   {&capsCaller{unimpl: true}, true},
+		"failed":   {failingCaller{}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &hostedStore{client: tc.caller, endpoint: "https://cp.test"}
+			var snap ledgerfile.HostedSnapshot
+			s.fillFloors(context.Background(), "prod", &snap)
+			if snap.FloorsRecorded != tc.wantRecorded || len(snap.Floors) != 0 {
+				t.Fatalf("snapshot = recorded %v floors %v; want recorded %v, none", snap.FloorsRecorded, snap.Floors, tc.wantRecorded)
+			}
+		})
+	}
+}
+
+// A refresh that finds the current promotion unchanged still reads the
+// floors while the copy has them as unknown, so `forge env status` is enough
+// to unblock an offline deploy; once recorded, they are carried as they are.
+func TestRememberRereadsUnknownFloors(t *testing.T) {
+	store, err := ledgerfile.Open(t.TempDir(), "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const endpoint = "https://cp.test"
+	v1 := floorRelease("v1", 1, nil)
+	p := release.NewPromotion("prod", v1, release.KindPromote)
+	p.ID = "prm-1"
+	prev := ledgerfile.HostedSnapshot{Env: "prod", Endpoint: endpoint, Bound: true, Current: &p, Release: &v1, Window: offlineWindow()}
+	if err := store.PutHostedSnapshot(prev); err != nil {
+		t.Fatal(err)
+	}
+	caller := &capsCaller{floors: false}
+	s := &hostedStore{client: caller, endpoint: endpoint, mirror: &hostedMirror{store: store, endpoint: endpoint}}
+	s.remember(context.Background(), "prod", p, true)
+	got, err := store.HostedSnapshot("prod")
+	if err != nil || got == nil || !got.FloorsRecorded {
+		t.Fatalf("after a refresh the floors are still unknown: %+v %v", got, err)
+	}
+	if len(caller.calls) != 1 {
+		t.Fatalf("calls = %v; want one capability probe", caller.calls)
+	}
+	// A fresh process (no cached capability answer) carries them.
+	again := &capsCaller{floors: false}
+	s2 := &hostedStore{client: again, endpoint: endpoint, mirror: &hostedMirror{store: store, endpoint: endpoint}}
+	s2.remember(context.Background(), "prod", p, true)
+	if len(again.calls) != 0 {
+		t.Fatalf("recorded floors were read again: %v", again.calls)
+	}
+}
+
+// failingCaller fails every call, as an unreachable control plane does.
+type failingCaller struct{}
+
+func (failingCaller) Call(context.Context, string, any, any) error {
+	return errors.New("connection refused")
+}
+
 // floorFakeGit answers ancestry from a table.
 type floorFakeGit struct{ ancestors map[[2]string]bool }
 

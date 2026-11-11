@@ -25,10 +25,9 @@ import (
 // that led to it, with no browser code. A client can send these headers
 // wherever no proxy strips them, so they are read only when the process
 // declares the edge trusted (EnvTrustedEdge=reliant); otherwise they are
-// ignored. forge does not render that variable for any workload yet, so they
-// are ignored everywhere unless an author sets it by hand; a later forge
-// renders it for forge.OnHosted workloads once the stripping proxy is
-// deployed.
+// ignored. forge renders it for forge.OnHosted workloads, behind the proxy
+// that strips client copies (control-plane #2517); a workload's own
+// FORGE_TRUSTED_EDGE=none turns it off.
 
 // Edge headers and the attribute the visitor hash is recorded as.
 const (

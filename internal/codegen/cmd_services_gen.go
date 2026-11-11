@@ -231,6 +231,9 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 	// per-operator subcommands (design §9.5): a process is a ROOT, and
 	// `server` runs the default one. main.go is the bare composition root.
 	if GraphComposition(targetDir) {
+		if err := retireRemovedComponentAccessors(targetDir, in.Bin, cs); err != nil {
+			return err
+		}
 		if err := generateCmdMain(targetDir, modulePath, in.Bin, nil); err != nil {
 			return err
 		}

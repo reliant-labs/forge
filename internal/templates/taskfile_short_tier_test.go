@@ -139,12 +139,7 @@ var memoryTaskSpan = regexp.MustCompile("`task ([a-z][a-z0-9:-]*)")
 // a real task in the scaffolded service Taskfile.
 func TestMemoryTemplateTeachesShortTier(t *testing.T) {
 	t.Parallel()
-	memory, err := ProjectTemplates().Render("reliant.md.tmpl", struct {
-		Name      string
-		CLI       string
-		Site      bool
-		Container bool
-	}{Name: "demo", CLI: "forge"})
+	memory, err := ProjectTemplates().Render("reliant.md.tmpl", ProjectMemoryData{Name: "demo", CLI: "forge"})
 	if err != nil {
 		t.Fatalf("render reliant.md.tmpl: %v", err)
 	}

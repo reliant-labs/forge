@@ -35,6 +35,7 @@ func TestAgentSurfacesPerHarness(t *testing.T) {
 		HarnessCursor:  {".cursor/rules/forge.mdc", ".cursorrules", "AGENTS.md"},
 		HarnessCopilot: {".github/copilot-instructions.md", "AGENTS.md"},
 		"":             {"AGENTS.md"},
+		HarnessNone:    nil,
 	}
 	for h, files := range want {
 		t.Run(string(h), func(t *testing.T) {
@@ -63,6 +64,9 @@ func TestAgentsMDIsTheSingleRenderedGuide(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, h := range ValidHarnesses() {
+			if h == HarnessNone {
+				continue // writes no guide at all (TestAgentSurfacesPerHarness)
+			}
 			root := t.TempDir()
 			if err := writeAgentSurfaces(root, "demo", h, site); err != nil {
 				t.Fatal(err)
@@ -152,17 +156,61 @@ func TestAgentSurfacesNameReliantForge(t *testing.T) {
 	}
 }
 
+// Every agent file is the user's once it exists: a rerun — a second `forge
+// project new --in-place`, an adoption over a repo that already has its own
+// CLAUDE.md — never touches an edited copy, for any harness. The memory a
+// harness injects live (reliant) is rendered beside the user's file, never
+// into it.
 func TestAgentSurfacesKeepExistingFiles(t *testing.T) {
+	t.Parallel()
+	for _, h := range ValidHarnesses() {
+		t.Run(string(h), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			mine := []byte("# mine\n\nnotes the user wrote\n")
+			for _, f := range h.agentFiles() {
+				dest := filepath.Join(root, f.path)
+				if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(dest, mine, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, site := range []bool{false, true} {
+				if err := writeAgentSurfaces(root, "demo", h, site); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, f := range h.agentFiles() {
+				got, _ := os.ReadFile(filepath.Join(root, f.path))
+				if string(got) != string(mine) {
+					t.Errorf("existing %s was overwritten:\n%s", f.path, got)
+				}
+			}
+		})
+	}
+}
+
+// harness: none is the brownfield promise that adopting forge adds no agent
+// file: no guide, no pointer, no MCP config — through `forge project new`
+// as well as writeAgentSurfaces.
+func TestHarnessNoneWritesNoAgentSurface(t *testing.T) {
+	if h, err := ParseHarness("none"); err != nil || h != HarnessNone {
+		t.Fatalf("ParseHarness(none) = %q, %v", h, err)
+	}
+	if HarnessNone.MemoryFilePath() != "" {
+		t.Fatalf("none has a memory file: %q", HarnessNone.MemoryFilePath())
+	}
 	root := t.TempDir()
-	mine := []byte("# mine\n")
-	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), mine, 0o644); err != nil {
+	g := NewProjectGenerator("demo", root, "example.com/demo")
+	g.Harness = HarnessNone
+	if err := g.writeProjectMetadata(); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeAgentSurfaces(root, "demo", HarnessClaude, false); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := os.ReadFile(filepath.Join(root, "AGENTS.md"))
-	if string(got) != string(mine) {
-		t.Fatalf("existing AGENTS.md was overwritten:\n%s", got)
+	for _, f := range writtenFiles(t, root) {
+		if !strings.HasPrefix(f, ".reliant/") {
+			t.Errorf("harness none wrote %s", f)
+		}
 	}
 }

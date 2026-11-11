@@ -492,6 +492,9 @@ type wirePromoteRefusal struct {
 	// refusal carries the plan the server judged against, which is the only
 	// plan the operator's next decision should be based on.
 	CurrentPlan *wirePlan `json:"currentPlan,omitempty"`
+	// Floors are the rollback floors the target fails, sent with
+	// below_rollback_floor (DeployPromoteRefusal tag 9).
+	Floors []wireRollbackFloor `json:"floors,omitempty"`
 }
 
 // promoteRefusalType is the protobuf full name under which a refusal rides
@@ -775,6 +778,9 @@ type hostedStore struct {
 	// Nil when the project has none (a test, an unnamed project).
 	mirror   *hostedMirror
 	replayed map[string]bool // env → queue already replayed by this process
+	// floorsCap is GetCapabilities.rollback_floors, asked once per process
+	// (floor.go); nil until asked.
+	floorsCap *bool
 }
 
 // hostedLedger binds both halves of an env's ledger to one client. project
@@ -1025,6 +1031,13 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 		req["acknowledgedFindings"] = p.AcknowledgedFindings
 	}
 	guardWireFields(guard, req)
+	// `deploy --floor` (PromoteReleaseRequest tag 17). Sent only when set,
+	// and only to a server that holds floors: checkDeployFloors asked
+	// GetCapabilities first, because an older server would discard the
+	// field and the deploy would report a floor nobody set.
+	if guard.RaiseFloorReason != "" {
+		req["raiseFloorReason"] = guard.RaiseFloorReason
+	}
 	var resp struct {
 		Promotion wirePromotion `json:"promotion"`
 		// Holds is non-empty when the control plane ACCEPTED and RECORDED

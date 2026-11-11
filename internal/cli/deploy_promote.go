@@ -59,6 +59,9 @@ type promoteOptions struct {
 	// AllowPassedMigrations admits a release carrying a migration the env's
 	// schema has already passed (release_migrations.go).
 	AllowPassedMigrations bool
+	// RaiseFloorReason is `--floor "<why>"`: also set a roll-forward-only
+	// rollback floor at the promoted release, in the same write (floor.go).
+	RaiseFloorReason string
 
 	// Follow is the apply-and-gate stage that runs after the ledger write
 	// (deploy_promote_follow.go). NIL MEANS LEDGER-WRITE ONLY: nothing is
@@ -214,6 +217,14 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if err := checkDeployMigrations(ctx, progressWriter(opts.JSON), projectDir, env, version, ledger, opts.AllowPassedMigrations); err != nil {
 		return err
 	}
+	// The rollback floors, beside the migration guard and for the same
+	// reason: ahead of both promotion paths and of any plan shown as
+	// approvable. The writing backend judges again under its lock; this is
+	// the refusal before anything is built or confirmed (floor.go).
+	floorVerdict, floorTarget, err := checkDeployFloors(ctx, progressWriter(opts.JSON), projectDir, env, version, ledger, opts.Git, opts.RaiseFloorReason)
+	if err != nil {
+		return err
+	}
 	if handled, err := dispatchSnapshotPromotion(ctx, env, version, ledger, opts); handled || err != nil {
 		return err
 	}
@@ -247,7 +258,9 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	// --acknowledge-destructive.
 	plan.DeployPlan = opts.DeployPlan
 	plan.Capacity = opts.Capacity
+	plan.Floor = floorVerdict
 	guard := guardFor(plan, opts.ExpectCurrent, opts.Supersede)
+	guard.Target, guard.RaiseFloorReason = floorTarget, opts.RaiseFloorReason
 	if guard.ExpectUnbound {
 		plan.Expected = expectUnboundLiteral
 	} else {
@@ -365,6 +378,9 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 			PlanDigest:           serverPlanDigest(opts.DeployPlan, ledger),
 			AcknowledgedFindings: opts.Approval.AcknowledgedFindings,
 		})
+		if writeErr == nil {
+			plan.FloorsRaised = floorsRaisedBy(ctx, ledger, env, plan.Recorded)
+		}
 		if writeErr == nil && opts.Follow != nil {
 			writeErr = followRecordedPromotion(ctx, env, projectDir, &plan, ledger, opts)
 		}

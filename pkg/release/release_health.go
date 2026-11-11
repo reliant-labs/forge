@@ -41,6 +41,27 @@ const (
 var HealthFindings = []string{HealthErrorRate, HealthLatency, HealthNewIssue, HealthRegressedIssue, HealthAlertFiring, HealthWorkloadRestarts,
 	HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad}
 
+// How many services a release needs a baseline for
+// (ShapeReleaseHealth.RequireBaseline). A service's baseline is its before
+// window; it is too thin to compare error rate and latency against below
+// MinRequests requests.
+const (
+	// BaselineAny, the default: a release is proven good by any service it
+	// can compare; a service with a thin baseline is not compared, and is
+	// named in not_evaluated. With no comparable service it is inconclusive.
+	BaselineAny = "any"
+	// BaselineEvery: every service with enough after-window traffic needs a
+	// baseline; one with a thin baseline holds the release inconclusive.
+	BaselineEvery = "every"
+	// BaselineNone: compare against whatever the before window held, however
+	// thin, as forge did before the baseline rule. For a low-traffic env that
+	// accepts the noise.
+	BaselineNone = "none"
+)
+
+// BaselinePolicies are the RequireBaseline values, default first.
+var BaselinePolicies = []string{BaselineAny, BaselineEvery, BaselineNone}
+
 // Release-health window bounds.
 const (
 	MinHealthWindow = time.Minute
@@ -73,6 +94,20 @@ type ShapeReleaseHealth struct {
 	// FailOn are the finding codes that fail a release; the rest warn.
 	// Sorted, no duplicates.
 	FailOn []string `json:"fail_on"`
+	// RequireBaseline is how many services the release needs a before window
+	// of MinRequests for: BaselineAny, BaselineEvery or BaselineNone. Empty
+	// means BaselineAny, and is how the default is recorded, so a shape that
+	// keeps it encodes as it did before the field (a reader that predates it
+	// is sent none: BundleFeatureReleaseHealthBaseline).
+	RequireBaseline string `json:"require_baseline,omitempty"`
+}
+
+// Baseline is RequireBaseline with the default filled in.
+func (h ShapeReleaseHealth) Baseline() string {
+	if h.RequireBaseline == "" {
+		return BaselineAny
+	}
+	return h.RequireBaseline
 }
 
 // DefaultReleaseHealth is the policy of an env that declares none. Latency and
@@ -111,6 +146,9 @@ func (h ShapeReleaseHealth) canonical() ShapeReleaseHealth {
 	out.FailOn = append([]string{}, h.FailOn...)
 	sort.Strings(out.FailOn)
 	out.FailOn = slices.Compact(out.FailOn)
+	if out.RequireBaseline == BaselineAny {
+		out.RequireBaseline = ""
+	}
 	return out
 }
 
@@ -129,6 +167,9 @@ func (h ShapeReleaseHealth) validate() error {
 	}
 	if h.NewIssueMinEvents < 1 {
 		return fmt.Errorf("%w: shape release_health new_issue_min_events must be at least 1", ErrInvalid)
+	}
+	if h.RequireBaseline != "" && !slices.Contains(BaselinePolicies, h.RequireBaseline) {
+		return fmt.Errorf("%w: shape release_health require_baseline %q (expected one of %v)", ErrInvalid, h.RequireBaseline, BaselinePolicies)
 	}
 	for _, c := range h.FailOn {
 		if !slices.Contains(HealthFindings, c) {

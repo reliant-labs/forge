@@ -85,6 +85,7 @@ type wireReleaseHealth struct {
 		Value  string `json:"value"`
 		Source string `json:"source"`
 	} `json:"thresholds"`
+	NotEvaluated []string `json:"notEvaluated"`
 }
 
 // ReleaseHealth implements HealthReader: GetReleaseHealth for the env and
@@ -180,6 +181,7 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 	for _, t := range w.Thresholds {
 		r.Thresholds = append(r.Thresholds, releasehealth.Threshold{Name: t.Name, Value: t.Value, Source: t.Source})
 	}
+	r.NotEvaluated = w.NotEvaluated
 	return r, nil
 }
 

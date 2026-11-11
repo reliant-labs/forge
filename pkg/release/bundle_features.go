@@ -78,6 +78,11 @@ const (
 	// env's promotions are judged by (forge.ReleaseHealth). A control plane
 	// that predates it judges with the defaults.
 	BundleFeatureReleaseHealth = "shape-release-health"
+	// BundleFeatureReleaseHealthBaseline is ShapeReleaseHealth.RequireBaseline:
+	// how many services a release needs a before window to compare against
+	// (forge.ReleaseHealth.require_baseline). A control plane that predates it
+	// is sent the policy without it, and judges by the default (any).
+	BundleFeatureReleaseHealthBaseline = "shape-release-health-baseline"
 	// BundleFeatureUptimeChecks is Shape.UptimeChecks: the outside-in checks
 	// the control plane's prober runs. A control plane that predates it
 	// probes nothing for the env.
@@ -153,7 +158,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseHealthBaseline}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -228,6 +233,14 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureReleaseHealth) {
 		s.ReleaseHealth = nil
+	} else if !r.Supports(BundleFeatureReleaseHealthBaseline) && s.ReleaseHealth != nil && s.ReleaseHealth.RequireBaseline != "" {
+		h := *s.ReleaseHealth
+		h.RequireBaseline = ""
+		if h.IsDefault() {
+			s.ReleaseHealth = nil // all that differed from the default was the baseline
+		} else {
+			s.ReleaseHealth = &h
+		}
 	}
 	if !r.Supports(BundleFeatureDataAccess) {
 		s.DataAccess = nil

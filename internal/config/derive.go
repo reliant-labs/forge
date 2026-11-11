@@ -224,9 +224,12 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 	// has no contract.go to check. HasGoModule.
 	goModule := c.HasGoModule()
 	return map[FeatureName]bool{
-		FeatureORM:           hasDB && codegen && !hasNoORMMarker(c.projectDir, c.Database.ORM.PackageDir()),
-		FeatureCodegen:       codegen,
-		FeatureMigrations:    hasDB && codegen,
+		FeatureORM:     hasDB && codegen && !hasNoORMMarker(c.projectDir, c.Database.ORM.PackageDir()),
+		FeatureCodegen: codegen,
+		// A migrations hook (database.migrations.tool) is a project that
+		// wants forge for its SQL — migration safety, the applied schema —
+		// with or without protos.
+		FeatureMigrations:    hasDB && (codegen || c.Database.UsesMigrationHook()),
 		FeatureCI:            !isLibrary,
 		FeatureBuild:         !isLibrary,
 		FeatureContracts:     goModule,
@@ -359,7 +362,7 @@ func ApplyDerivedDefaultsFromNode(c *ProjectConfig, root *yaml.Node) {
 	// layout, then the features that read both.
 	DeriveDatabase(c)
 	DeriveFrontendWorkspaces(c)
-	c.Features.derived = followPinnedRequirements(DeriveFeatureDefaults(c), c.Features)
+	c.Features.derived = followPinnedRequirements(DeriveFeatureDefaults(c), c.Features, c)
 }
 
 // FollowingRequirements returns f with the feature graph applied to its
@@ -376,7 +379,7 @@ func (f FeaturesConfig) FollowingRequirements() FeaturesConfig {
 	for _, name := range allFeatureNames {
 		current[name] = f.resolve(name)
 	}
-	f.derived = followPinnedRequirements(current, f)
+	f.derived = followPinnedRequirements(current, f, nil)
 	return f
 }
 
@@ -388,7 +391,7 @@ func (f FeaturesConfig) FollowingRequirements() FeaturesConfig {
 // wrote. A PINNED dependent is left alone — pinning a feature on while its
 // requirement is off is a contradiction the user wrote, and the graph
 // validator reports it naming both sides.
-func followPinnedRequirements(derived map[FeatureName]bool, f FeaturesConfig) map[FeatureName]bool {
+func followPinnedRequirements(derived map[FeatureName]bool, f FeaturesConfig, c *ProjectConfig) map[FeatureName]bool {
 	out := make(map[FeatureName]bool, len(derived))
 	for name, on := range derived {
 		out[name] = on
@@ -407,7 +410,7 @@ func followPinnedRequirements(derived map[FeatureName]bool, f FeaturesConfig) ma
 				continue
 			}
 			for _, req := range reqs {
-				if req.Feature != "" && !out[req.Feature] {
+				if req.Feature != "" && !out[req.Feature] && !req.waived(c) {
 					out[name] = false
 					changed = true
 					break

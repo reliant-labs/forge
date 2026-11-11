@@ -42,6 +42,9 @@ type featureRequirement struct {
 	// the validation error when Shape returns false. Empty for Feature
 	// edges (the feature name carries its own label).
 	label string
+	// waivedBy, when non-nil and true for the project, lifts the
+	// requirement: the dependent feature is coherent without it.
+	waivedBy func(*ProjectConfig) bool
 	// fix is the imperative remediation appended to the validation error.
 	// Names both sides of the edge so the user can fix it from either
 	// direction.
@@ -83,7 +86,12 @@ var featureDeps = map[FeatureName][]featureRequirement{
 		{Shape: hasDatabaseDriver, label: "a database driver", fix: "add db/migrations — the ORM projects the applied schema"},
 	},
 	FeatureMigrations: {
-		{Feature: FeatureCodegen, fix: "codegen derives from .proto files existing; migrations need it"},
+		// Waived by a migrations hook: a project whose own tool applies its
+		// migrations wants forge for migration safety and the applied
+		// schema, which read SQL and need no protos. Entity-aware generation
+		// still needs codegen, and every step of it is gated on codegen too.
+		{Feature: FeatureCodegen, waivedBy: usesMigrationHook,
+			fix: "codegen derives from .proto files existing; migrations need it (or declare your migration tool: database.migrations.tool)"},
 		{Shape: hasDatabaseDriver, label: "a database driver", fix: "add db/migrations"},
 	},
 	FeatureDeploy: {
@@ -92,6 +100,15 @@ var featureDeps = map[FeatureName][]featureRequirement{
 	FeatureIngress: {
 		{Feature: FeatureDeploy, fix: "deploy derives from deploy/kcl existing; ingress is a deploy-time overlay"},
 	},
+}
+
+// usesMigrationHook reports whether another tool applies the project's
+// migrations (database.migrations.tool).
+func usesMigrationHook(c *ProjectConfig) bool { return c != nil && c.Database.UsesMigrationHook() }
+
+// waived reports whether req is lifted for c.
+func (req featureRequirement) waived(c *ProjectConfig) bool {
+	return req.waivedBy != nil && c != nil && req.waivedBy(c)
 }
 
 // hasDatabaseDriver reports whether a concrete database driver is
@@ -129,6 +146,9 @@ func validateFeatureGraph(cfg *ProjectConfig) []validationIssue {
 			continue
 		}
 		for _, req := range featureDeps[name] {
+			if req.waived(cfg) {
+				continue
+			}
 			if req.Feature != "" {
 				if !enabled[req.Feature] {
 					out = append(out, validationIssue{

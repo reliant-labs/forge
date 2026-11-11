@@ -355,7 +355,7 @@ func autoSeedFirstBoot(ctx context.Context, db *sql.DB, migDir, shadow string, s
 			"`forge db seed apply` applies db/seeds/custom/")
 		return
 	}
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, shadow, seedCfg)
+	plan, err := buildLiveSeedPlan(ctx, db, dbProjectRoot(), migDir, shadow, seedCfg)
 	if err != nil {
 		fmt.Printf("[up] auto-seed skipped: %v\n", err)
 		return

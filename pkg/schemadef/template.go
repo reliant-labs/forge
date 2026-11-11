@@ -29,6 +29,25 @@ import (
 type MigrationSet struct {
 	files  []migrationFile
 	digest string
+	// command, when set, applies the set instead of forge's statement
+	// replay: a project's own migration tool, run against the shadow
+	// database's DSN (NewCommandMigrationSet). count is then the number of
+	// files the caller hashed into digest.
+	command func(dsn string) error
+	count   int
+}
+
+// NewCommandMigrationSet returns a set that a COMMAND applies — a project's
+// own migration tool (goose, atlas, flyway, …) — rather than forge's replay of
+// *.up.sql files. apply receives the DSN of the empty shadow database and
+// must leave it at the schema; the shadow is introspected exactly as after a
+// replay, so every reader of the applied schema works unchanged.
+//
+// digest must name everything apply reads (the caller hashes the tool's
+// files and command), because templates are cached under it; n is how many
+// files that is, and a set with n == 0 has nothing to apply.
+func NewCommandMigrationSet(digest string, n int, apply func(dsn string) error) *MigrationSet {
+	return &MigrationSet{digest: digest, command: apply, count: n}
 }
 
 type migrationFile struct {
@@ -88,12 +107,63 @@ func newMigrationSet(files []migrationFile) *MigrationSet {
 }
 
 // Len is the number of migration files in the set.
-func (m *MigrationSet) Len() int { return len(m.files) }
+func (m *MigrationSet) Len() int {
+	if m.command != nil {
+		return m.count
+	}
+	return len(m.files)
+}
 
 // Digest names the set's content: every file's name and bytes, in apply
 // order. Two sets with the same digest apply the same statements in the same
 // order, wherever their directories are.
 func (m *MigrationSet) Digest() string { return m.digest }
+
+// openApplied opens a fresh shadow database on the server at baseURL and
+// applies the set to it: forge's replay, or the set's command against the
+// database's DSN. On error nothing is left open.
+func (m *MigrationSet) openApplied(baseURL string) (*sql.DB, func(), error) {
+	if m.command == nil {
+		db, cleanup, err := openShadow(baseURL)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open postgres shadow db: %w", err)
+		}
+		if err := m.apply(db); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		return db, cleanup, nil
+	}
+	dsn, cleanup, err := openShadowURL(baseURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open postgres shadow db: %w", err)
+	}
+	if err := m.command(dsn); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("apply migrations to shadow schema: %w", err)
+	}
+	db, err := sql.Open(pgtest.DriverName, dsn)
+	if err == nil {
+		err = db.Ping()
+	}
+	if err != nil {
+		if db != nil {
+			_ = db.Close()
+		}
+		cleanup()
+		return nil, nil, fmt.Errorf("open the migrated shadow db: %w", err)
+	}
+	return db, func() { _ = db.Close(); cleanup() }, nil
+}
+
+// openShadowURL creates an empty shadow database a separate process connects
+// to: on the server at baseURL, else pkg/pgtest's default ephemeral server.
+func openShadowURL(baseURL string) (string, func(), error) {
+	if baseURL != "" {
+		return pgtest.NewURLAtURL(baseURL)
+	}
+	return pgtest.NewURL()
+}
 
 // apply replays the set, in order, onto db.
 func (m *MigrationSet) apply(db *sql.DB) error {
@@ -148,9 +218,9 @@ func (m *MigrationSet) ApplyTemplateAt(baseURL string) (*Template, error) {
 	if m.Len() == 0 {
 		return nil, errors.New("schemadef: no migrations to apply to a template")
 	}
-	db, cleanup, err := openShadow(baseURL)
+	db, cleanup, err := m.openApplied(baseURL)
 	if err != nil {
-		return nil, fmt.Errorf("open postgres shadow db: %w", err)
+		return nil, err
 	}
 	fail := func(err error) (*Template, error) {
 		cleanup()
@@ -159,9 +229,6 @@ func (m *MigrationSet) ApplyTemplateAt(baseURL string) (*Template, error) {
 	var name string
 	if err := db.QueryRow("SELECT current_database()").Scan(&name); err != nil {
 		return fail(fmt.Errorf("name the shadow template database: %w", err))
-	}
-	if err := m.apply(db); err != nil {
-		return fail(err)
 	}
 	tables, err := introspect(db)
 	if err != nil {

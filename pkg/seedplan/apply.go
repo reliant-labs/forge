@@ -79,6 +79,16 @@ func BuildLivePlan(ctx context.Context, db *sql.DB, migDir, shadowBaseURL string
 	if err != nil {
 		return nil, fmt.Errorf("introspect applied schema: %w", err)
 	}
+	return BuildLivePlanFromTables(ctx, db, tables, migDir, cfg)
+}
+
+// BuildLivePlanFromTables is BuildLivePlan for a caller that has already read
+// the applied schema — tables is what ApplyAndIntrospectAt would have
+// returned. forge's CLI uses it because its shadow is not always migrated by
+// a replay of *.up.sql: a project that keeps its own migration tool has the
+// shadow migrated by that tool. migDir still locates the vocabulary overlay
+// (VocabPath).
+func BuildLivePlanFromTables(ctx context.Context, db *sql.DB, tables []schemadef.Table, migDir string, cfg Config) (*Plan, error) {
 	plan, err := planFromTables(ctx, db, tables, cfg)
 	if err != nil {
 		return nil, err

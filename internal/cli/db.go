@@ -13,6 +13,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/database"
+	"github.com/reliant-labs/forge/internal/migrationhook"
 	"github.com/reliant-labs/forge/internal/migrationver"
 	"github.com/reliant-labs/forge/pkg/migratekit"
 
@@ -184,6 +185,10 @@ Examples:
   forge db squash --to 20260506_baseline --out-dir db/baselines/
   forge db squash --from-dsn 'postgres://postgres:pw@localhost:5432/goose_built?sslmode=disable'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if h, ok := projectMigrationHook(""); ok {
+				return refuseUnderMigrationHook("squash", h,
+					"a squash writes a forge baseline. To move the project onto forge's migrator, set database.migrations.tool to forge (or delete it) first; to squash "+h.Tool+"'s history, use "+h.Tool)
+			}
 			if outDir != "" {
 				outDir = dbProjectPath(outDir)
 			}
@@ -551,6 +556,14 @@ neither reads nor writes. The name defaults to <constraint>_closed_set.`,
 			return cobra.ExactArgs(1)(cmd, args)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if h, ok := projectMigrationHook(resolveMigrationsDir(migDir)); ok {
+				name := closedSet + "_closed_set"
+				if len(args) == 1 {
+					name = args[0]
+				}
+				return refuseUnderMigrationHook("migration new", h,
+					"forge's file shape is not "+h.Tool+"'s. Create it with: "+migrationhook.NewMigrationHint(h, name))
+			}
 			if closedSet != "" {
 				if cmd.Flags().Changed("backward-compatible") || cmd.Flags().Changed("breaks-rollback") {
 					return fmt.Errorf("--closed-set writes its own compatibility line (a widening is backward-compatible, a narrowing breaks rollback); drop --backward-compatible / --breaks-rollback")
@@ -653,6 +666,9 @@ Examples:
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := resolveMigrationsDir(migDir)
+			if h, ok := projectMigrationHook(dir); ok {
+				return refuseUnderMigrationHook("migration rebase", h, "re-number the file the way "+h.Tool+" orders migrations")
+			}
 			paths := make([]string, len(args))
 			for i, arg := range args {
 				paths[i] = resolveMigrationFileArg(dir, arg)
@@ -725,8 +741,14 @@ verdicts:
 There is no "down": forge rolls forward only. A bad migration is repaired by a
 new forward migration written against the state the database is actually in.
 
-Migrations are read from db/migrations/ by default. Nothing else needs to be
-installed.
+Migrations are read from db/migrations/ by default (forge.yaml
+database.migrations.dir moves them). Nothing else needs to be installed.
+
+A project that keeps its own migration tool (forge.yaml
+database.migrations.tool: goose, atlas, flyway, dbmate, golang-migrate or
+custom) gets 'up', 'status' and 'version' run by that tool, with
+DATABASE_URL set to the database below; 'force' refuses, because the tool
+keeps its own state.
 
 The connection string can be provided via --dsn or, if the flag is omitted,
 the DATABASE_URL environment variable.

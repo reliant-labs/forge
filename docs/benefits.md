@@ -1181,6 +1181,20 @@ _Enforced · Forge, on any infrastructure_
 - command `forge gate record`
 - skill `ci/gate` (`forge skill load ci/gate`)
 
+<a id="ci-workflow-opt-out"></a>
+
+### Keep your own workflows
+
+`ci.workflows` in forge.yaml switches single forge workflows off (deploy, build-images, e2e, ...), and a same-named workflow the repo wrote itself is never overwritten or silently adopted: forge warns until forge.yaml says so.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- skill `ci/extending` (`forge skill load ci/extending`)
+- source [`internal/config/ci_workflows.go`](../internal/config/ci_workflows.go)
+- source [`internal/generator/ci_workflows.go`](../internal/generator/ci_workflows.go)
+
 <a id="generated-drift"></a>
 
 ### Stale codegen can't merge

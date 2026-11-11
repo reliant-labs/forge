@@ -82,6 +82,10 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		// every sanctioned edit as `user_edited_gen_files` drift and
 		// pushed users to `forge project disown`. This mirrors the PR template /
 		// CODEOWNERS starters written just below.
+		if ForeignCIWorkflow(g.Path, f.Dest) {
+			fmt.Println(ForeignCIWorkflowNotice(f.Dest))
+			continue
+		}
 		if _, err := checksums.WriteScaffoldIfMissing(g.Path, f.Dest, content); err != nil {
 			return fmt.Errorf("write %s: %w", f.Dest, err)
 		}

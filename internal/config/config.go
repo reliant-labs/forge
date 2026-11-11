@@ -902,6 +902,8 @@ type CIConfig struct {
 	// Gate extends `forge ci gate` — the local gate behind `task ci` and
 	// `task ci:checks` — with the project's own checks.
 	Gate CIGateConfig `yaml:"gate,omitempty"`
+
+	Workflows map[string]bool `yaml:"workflows,omitempty"` // per-workflow opt-out; see ci_workflows.go
 }
 
 // CIGateConfig is what a project adds to the checks forge owns in

@@ -263,3 +263,49 @@ func TestRecordOrphans_ListsWhatAFeaturePinnedOffLeftBehind(t *testing.T) {
 		t.Fatalf("nothing pinned off: report %q, record %q", out.String(), readOrEmpty(root, orphansRel))
 	}
 }
+
+// The guard cannot tell forge's writes from anyone else's, so it never
+// destroys what it undoes: a file a person or another agent edits or creates
+// under an excluded glob while a run holds the lock is kept, byte for byte,
+// under .forge/exclude-guard/, and the run says where.
+func TestExcludeGuard_KeepsWhatItUndoes(t *testing.T) {
+	root := excludeTestProject(t, "name: x\nscaffold:\n  exclude: [frontends/web/]\n",
+		map[string]string{"frontends/web/src/app.tsx": "mine\n"})
+	g := armExcludeGuard(root)
+	if g == nil {
+		t.Fatal("no guard armed for a project with scaffold.exclude")
+	}
+	// Not forge: an editor save and a new file, mid-run.
+	writeRel(t, root, "frontends/web/src/app.tsx", "my edit, saved mid-run\n")
+	writeRel(t, root, "frontends/web/src/new-page.tsx", "a page I just wrote\n")
+
+	var out strings.Builder
+	releaseExcludeGuard(g, &out)
+
+	report := out.String()
+	kept := map[string]string{}
+	for _, line := range strings.Split(report, "\n") {
+		if rel, backup, ok := strings.Cut(strings.TrimSpace(line), " ← "); ok {
+			kept[rel] = backup
+		}
+	}
+	for rel, want := range map[string]string{
+		"frontends/web/src/app.tsx":      "my edit, saved mid-run\n",
+		"frontends/web/src/new-page.tsx": "a page I just wrote\n",
+	} {
+		backup, ok := kept[rel]
+		if !ok {
+			t.Errorf("report does not say where %s was kept:\n%s", rel, report)
+			continue
+		}
+		if !strings.HasPrefix(backup, ".forge/exclude-guard/") {
+			t.Errorf("%s kept at %s, want under .forge/exclude-guard/", rel, backup)
+		}
+		if got := readOrEmpty(root, backup); got != want {
+			t.Errorf("%s's backup = %q, want what was found, %q", rel, got, want)
+		}
+	}
+	if strings.Count(report, " ← ") != 2 {
+		t.Errorf("each kept path is named once:\n%s", report)
+	}
+}

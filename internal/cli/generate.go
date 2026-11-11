@@ -709,6 +709,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	printLeftAlone(os.Stdout, checksums.LeftAloneThisRun())
 	printExcludedSkips(os.Stdout, checksums.TakeExcludedSkips(), generateVerbose)
 	printUnrestoredExcluded(os.Stdout, excludeUnrestored)
+	printKeptExcluded(os.Stdout, takeActiveExcludeKept())
 	// Orphans of a feature pinned off: only a full run's writes say which
 	// files no step produces any more (generate_orphans.go).
 	if flags.Steps == "" && !flags.TemplatesOnly && len(ctx.SoftFailures) == 0 {

@@ -17,6 +17,12 @@ package cli
 //     changed there is put back before the lock is released and reported as
 //     a skipped write. "forge never writes there" is then a property of the
 //     run, not of each writer remembering to ask.
+//
+// The guard cannot tell forge's writes from anyone else's: a person, an
+// editor or another agent may edit an excluded file while a run holds the
+// lock. So it never destroys what it finds. Before a created file is removed
+// or a changed one is put back, the bytes found are copied under
+// .forge/exclude-guard/<run>/ (gitignored), and the run names each one.
 
 import (
 	"fmt"
@@ -27,6 +33,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
@@ -113,6 +120,11 @@ type excludeGuard struct {
 	exempt []string // generate.hooks writes: the project's own commands
 	pre    map[string]excludedFile
 	mu     sync.Mutex
+	// run names this run's backup directory under .forge/exclude-guard.
+	run string
+	// kept maps each excluded path the run found changed or created to where
+	// the bytes it found there were kept.
+	kept map[string]string
 }
 
 var (
@@ -128,7 +140,8 @@ func armExcludeGuard(root string) *excludeGuard {
 		return nil
 	}
 	g := &excludeGuard{root: root, globs: globs, exempt: config.ReadGenerateHookWrites(root),
-		pre: map[string]excludedFile{}}
+		pre: map[string]excludedFile{}, kept: map[string]string{},
+		run: fmt.Sprintf("%s-%d", time.Now().UTC().Format("20060102T150405Z"), os.Getpid())}
 	g.walk(func(rel, glob string, full string, fi fs.FileInfo) {
 		f := excludedFile{mode: fi.Mode().Perm(), glob: glob}
 		data, err := os.ReadFile(full)
@@ -215,7 +228,12 @@ func (g *excludeGuard) settle() (unrestored []string) {
 		now[rel] = true
 		before, had := g.pre[rel]
 		if !had {
-			// Created by the run under an excluded glob: forge's write.
+			// Created under an excluded glob while the run held the lock:
+			// forge's write, or someone else's. Kept, then removed.
+			if !g.keep(rel, full) {
+				unrestored = append(unrestored, rel)
+				return
+			}
 			if err := os.Remove(full); err != nil {
 				unrestored = append(unrestored, rel)
 				return
@@ -228,7 +246,7 @@ func (g *excludeGuard) settle() (unrestored []string) {
 		if err != nil || checksums.Hash(data) == before.hash {
 			return
 		}
-		if !g.restore(rel, full, before) {
+		if before.data == nil || !g.keep(rel, full) || !g.restore(rel, full, before) {
 			unrestored = append(unrestored, rel)
 			return
 		}
@@ -248,6 +266,33 @@ func (g *excludeGuard) settle() (unrestored []string) {
 	}
 	sort.Strings(unrestored)
 	return unrestored
+}
+
+// keep copies the file at full, as the run found it, under the run's backup
+// directory, and records where. Nothing the guard undoes is lost: what it
+// found may be a person's or another agent's edit, not forge's write.
+func (g *excludeGuard) keep(rel, full string) bool {
+	if _, done := g.kept[rel]; done {
+		return true
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		return false
+	}
+	backupRel := filepath.ToSlash(filepath.Join(".forge", "exclude-guard", g.run, filepath.FromSlash(rel)))
+	backup := filepath.Join(g.root, filepath.FromSlash(backupRel))
+	if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
+		return false
+	}
+	if err := os.WriteFile(backup, data, info.Mode().Perm()); err != nil {
+		return false
+	}
+	g.kept[rel] = backupRel
+	return true
 }
 
 func (g *excludeGuard) restore(rel, full string, f excludedFile) bool {
@@ -275,9 +320,52 @@ func pruneEmptyDirsUpTo(dir, root string) {
 // writes under scaffold.exclude: one line per path, at most
 // excludeReportPerGlob per glob unless the run is verbose.
 func reportExcludedWrites(w io.Writer) {
-	unrestored := settleActiveExcludeGuard()
+	activeExcludeGuardMu.Lock()
+	g := activeExcludeGuard
+	activeExcludeGuardMu.Unlock()
+	unrestored := g.settle()
 	printExcludedSkips(w, checksums.TakeExcludedSkips(), generateVerbose)
 	printUnrestoredExcluded(w, unrestored)
+	printKeptExcluded(w, g.takeKept())
+}
+
+// takeKept returns the guard's backups not yet reported, as "path ->
+// backup" sorted by path, and forgets them, so a run that settles twice
+// names each once.
+func (g *excludeGuard) takeKept() [][2]string {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([][2]string, 0, len(g.kept))
+	for rel, backup := range g.kept {
+		out = append(out, [2]string{rel, backup})
+	}
+	clear(g.kept)
+	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	return out
+}
+
+// takeActiveExcludeKept is takeKept of the locked run in progress, if any.
+func takeActiveExcludeKept() [][2]string {
+	activeExcludeGuardMu.Lock()
+	g := activeExcludeGuard
+	activeExcludeGuardMu.Unlock()
+	return g.takeKept()
+}
+
+// printKeptExcluded names the backups once, with what to do when the change
+// was not forge's.
+func printKeptExcluded(w io.Writer, kept [][2]string) {
+	if len(kept) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  ↷ what this run found at %d excluded path(s) was kept before forge undid it; "+
+		"if a change there was yours, or another agent's, copy it back:\n", len(kept))
+	for _, k := range kept {
+		fmt.Fprintf(w, "      %s ← %s\n", k[0], k[1])
+	}
 }
 
 // settleActiveExcludeGuard settles the guard of the locked run in progress,

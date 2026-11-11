@@ -318,7 +318,7 @@ func DiffDatabase(ctx context.Context, db Context, dialect Dialect, expectedSche
 //  3. DROP old column (in a separate migration after verification)
 //
 // This approach:
-//   - Works on all databases (SQLite, PostgreSQL, MySQL, etc.)
+//   - Never asks the database to rewrite a column in place
 //   - Forces explicit thinking about data transformations
 //   - Prevents accidental data loss
 //   - Follows protobuf's additive-only philosophy

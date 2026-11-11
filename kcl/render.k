@@ -1493,6 +1493,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         strategy = w.strategy
         securityContext = w.securityContext
         terminationGracePeriodSeconds = w.terminationGracePeriodSeconds
+        preStopSeconds = w.preStopSeconds
         activeDeadlineSeconds = w.activeDeadlineSeconds
         successfulJobsHistoryLimit = w.successfulJobsHistoryLimit
         failedJobsHistoryLimit = w.failedJobsHistoryLimit
@@ -1674,6 +1675,7 @@ _LOCAL_REFUSED: {str:str} = {
 }
 
 _COMPOSE_REFUSED: {str:str} = _LOCAL_REFUSED | {
+    "preStopSeconds": "the compose file owns how its service stops; set stop_grace_period there"
     "build": "compose builds its own image from the compose file; drop `build`, or bind a runtime forge builds for"
     "ports": "the compose file owns the published ports; declare them there"
     "probes": "the compose file owns the healthcheck; declare it there"

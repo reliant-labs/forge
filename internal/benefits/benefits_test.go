@@ -370,7 +370,7 @@ func TestRenderReadmeTable(t *testing.T) {
 		"| --------- | ------------------------------------------------------------ |\n" +
 		"| **Build** | [Alpha](docs/benefits.md#a) · [Beta two](docs/benefits.md#b) |\n" +
 		"\n" +
-		"Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md) (3 entries, 1 lint rules)\n"
+		"Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md)\n"
 	if got != want {
 		t.Errorf("RenderReadmeTable:\n%s\nwant:\n%s", got, want)
 	}

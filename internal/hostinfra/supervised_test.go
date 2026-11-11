@@ -189,7 +189,8 @@ func TestNATSReadyProbe(t *testing.T) {
 	if natsReady(context.Background(), silent.Addr().(*net.TCPAddr).Port) {
 		t.Fatal("a silent listener read as ready")
 	}
-	if d := time.Since(start); d > 4*time.Second {
+	// natsReady's own read deadline is 2s; an unbounded read never returns.
+	if d := time.Since(start); d > 10*time.Second {
 		t.Fatalf("probing a silent listener took %s", d)
 	}
 }

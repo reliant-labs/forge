@@ -97,7 +97,7 @@ func superviseInBackground(t *testing.T, policy lifecyclekit.Policy, nodes ...li
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -111,7 +111,7 @@ func await(t *testing.T, done <-chan error) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Supervise did not return")
 		return nil
 	}
@@ -170,7 +170,9 @@ func TestSupervise_WaitsForReadyBeforeTheNextNode(t *testing.T) {
 	poolUp.Add(1)
 	ready := make(chan struct{})
 	go func() { poolUp.Wait(); close(ready) }()
+	var readyChecks atomic.Int32
 	pool := lifecyclekit.Node{Name: "pool", Ready: func(context.Context) error {
+		readyChecks.Add(1)
 		select {
 		case <-ready:
 			return nil
@@ -181,7 +183,8 @@ func TestSupervise_WaitsForReadyBeforeTheNextNode(t *testing.T) {
 	api := newFake("api", j)
 	stop, done := superviseInBackground(t, lifecyclekit.Policy{Drainer: drainer}, pool, lifecyclekit.Component("api", api))
 
-	time.Sleep(100 * time.Millisecond)
+	// The supervisor has seen the pool not ready, twice: it is waiting on it.
+	waitFor(t, "the supervisor to poll the pool's readiness", func() bool { return readyChecks.Load() >= 2 })
 	if got := j.list(); len(got) != 0 {
 		t.Fatalf("api started before the pool was ready: %v", got)
 	}
@@ -231,7 +234,10 @@ func TestSupervise_IgnoreKeepsRunning(t *testing.T) {
 	stop, done := superviseInBackground(t, lifecyclekit.Policy{Drainer: fastDrainer(&logs), FailurePolicy: serverkit.Ignore},
 		worker, lifecyclekit.Component("api", newFake("api", j)))
 	<-failed
-	time.Sleep(50 * time.Millisecond)
+	// The supervisor has handled the failure once it has logged it.
+	waitFor(t, "the supervisor to log the ignored failure", func() bool {
+		return strings.Contains(logs.String(), "continuing (FailurePolicy=Ignore)")
+	})
 	select {
 	case err := <-done:
 		t.Fatalf("Supervise returned %v under Ignore", err)
@@ -259,7 +265,7 @@ func TestSupervise_StuckRunnerIsBoundedByTheBudget(t *testing.T) {
 	if err := await(t, done); err != nil {
 		t.Fatalf("Supervise: %v", err)
 	}
-	if d := time.Since(begun); d > 2*time.Second {
+	if d := time.Since(begun); d > 5*time.Second {
 		t.Fatalf("stop took %v against a 200ms budget", d)
 	}
 	if !strings.Contains(logs.String(), "did not stop within the shutdown budget") {

@@ -24,7 +24,6 @@ import (
 // says here why not.
 var integrationNotInCI = map[string]string{
 	"./pkg/observe": "its headers-file smoke did not compile (an import cycle through pkg/deploy) until forge#2053; it then joins the container step with RUN_HEADERS_FILE_SMOKE=1 (boots two collector containers)",
-	"./pkg/orm":     "TestDiffDatabase needs a sqlite dialect the ORM never registers, so it always skips: a lane would run nothing (forge#2054)",
 }
 
 // integrationTags matches a `go test` invocation's -tags naming integration.

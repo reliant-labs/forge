@@ -127,6 +127,19 @@ Bounded values (anything else is recorded as `other`): `method` is `password`,
 a Zitadel id), never an email: every emitter refuses an id that is empty,
 longer than 128 characters or contains `@`, and warns once.
 
+**On forge's managed auth they come for free**, from `forge/pkg/devidp` (the
+library every login broker calls), so an existing project gets them with a
+forge upgrade and no edit: every completed sign-in records `auth_signed_in
+{kind: credential, provider: forge}` with its method (password, passkey,
+magic link, social with its `social_provider`), every self sign-up records
+`auth_signed_up` with `verified`, and an accepted invitation records
+`auth_signed_up {method: invite}` (an admin's invite records nothing). A new
+project's broker also records `auth_signed_out` on logout and marks the
+sign-in after a password reset `method: reset`
+(`devidp.WithAuthMethod(ctx, observe.AuthMethodReset)`); its auth context calls
+`identifyUser`. These are forge's automatic events: `product_events = False`
+switches them off with the CRUD ones.
+
 **Emit them from the server wherever a server sees the auth.** It is the
 authoritative emitter: browser events are lost to ad blockers, consent banners
 and the redirect right after a sign-in, and anyone can post one.

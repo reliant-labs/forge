@@ -42,3 +42,52 @@ func TestReleaseProbeBoundsMatchGo(t *testing.T) {
 		}
 	}
 }
+
+// ReleaseProbePathCases are paths lists forge.Probe and pkg/release must judge
+// alike: every path rule (prefix, length, query, fragment, '..', '//', '.'
+// segment, percent-encoding, the character set) and every list rule (1 to 5
+// paths, no repeats). Exported for release_probe_eval_test.go, which renders
+// each through KCL.
+var ReleaseProbePathCases = [][]string{
+	{"/"}, {"/flow-health"}, {"/a/b.c"}, {"/.well-known/health"}, {"/~u/x_y"}, {"/a:b@c;d=e,f+g"},
+	{"/a!$&'()*"}, {"/" + strings.Repeat("a", release.MaxReleaseProbePathLen-1)},
+	{"/" + strings.Repeat("a", release.MaxReleaseProbePathLen)},
+	{""}, {"a"}, {"/a?b=1"}, {"/a#top"}, {"/a/../b"}, {"/.."}, {"/a..b"},
+	{"//evil.example"}, {"/a//b"}, {"/./a"}, {"/a/."}, {"/a/./b"}, {"/a%20b"}, {"/%2e%2e"},
+	{"/a b"}, {"/a\\b"}, {"/a\tb"}, {"/a\n"}, {"/é"}, {"/a\"b"}, {"/a<b>"}, {"/a|b"}, {"/a^b"}, {"/a`b"}, {"/a{b}"}, {"/a[b]"},
+	{}, {"/a", "/b", "/c", "/d", "/e"}, {"/a", "/b", "/c", "/d", "/e", "/f"}, {"/a", "/a"}, {"/", "/a b"},
+}
+
+// ReleaseProbePathsOK is pkg/release's verdict on a probe declaring paths.
+func ReleaseProbePathsOK(paths []string) bool {
+	return release.Shape{Kind: release.EnvSelfManaged, ReleaseProbes: []release.ShapeReleaseProbe{{
+		Target: "web", Kind: release.ReleaseProbeKindFrontend, Paths: paths, Method: "GET",
+		RatePerMin: 4, TimeoutSeconds: 10, Source: release.ReleaseProbeSourceUser,
+	}}}.Validate() == nil
+}
+
+// TestReleaseProbePathCharsMatchGo is the short-tier half of the path rule's
+// agreement: forge.Probe's character-set regex (_RELEASE_PROBE_PATH_RE) must
+// accept a single path exactly when pkg/release accepts it, apart from the
+// rules KCL checks beside the regex (length and the segment rules), which
+// TestReleaseProbePathsAgreeWithGo proves through a real KCL evaluation.
+func TestReleaseProbePathCharsMatchGo(t *testing.T) {
+	src := readFile(t, "workload.k")
+	m := regexp.MustCompile(`(?m)^_RELEASE_PROBE_PATH_RE = r"(.*)"$`).FindStringSubmatch(src)
+	if m == nil {
+		t.Fatal("kcl/workload.k declares no _RELEASE_PROBE_PATH_RE")
+	}
+	re := regexp.MustCompile(m[1])
+	segmentRule := func(p string) bool {
+		return len(p) > release.MaxReleaseProbePathLen || strings.Contains(p, "..") || strings.Contains(p, "//") ||
+			strings.Contains(p, "/./") || strings.HasSuffix(p, "/.")
+	}
+	for _, paths := range ReleaseProbePathCases {
+		if len(paths) != 1 || segmentRule(paths[0]) {
+			continue
+		}
+		if got, want := re.MatchString(paths[0]), ReleaseProbePathsOK(paths); got != want {
+			t.Errorf("path %q: KCL regex accepts = %v, Go accepts = %v", paths[0], got, want)
+		}
+	}
+}

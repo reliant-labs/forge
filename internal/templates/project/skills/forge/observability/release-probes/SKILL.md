@@ -56,7 +56,7 @@ release_probe = forge.Probe {enabled = False}
 | field | default | bounds |
 |---|---|---|
 | `enabled` | `True` | `False` renders nothing for the target |
-| `paths` | `["/"]` | 1 to 5, each starting with `/`, at most 256 characters, no query, fragment or `..`; requested in turn, in this order. A frontend's `base_path` is not prepended |
+| `paths` | `["/"]` | 1 to 5, each starting with `/`, at most 256 characters, no query, fragment, `..`, `//`, `.` segment or percent-encoding, only RFC 3986 path characters (`A-Z a-z 0-9 -._~!$&'()*+,;=:@/`); requested in turn, in this order. A frontend's `base_path` is not prepended |
 | `method` | `GET` | `GET` or `HEAD` only |
 | `rate_per_min` | `4` | 1 to 12 requests a minute across all paths. The control plane may lower it (its per-target cap, 4 today); the verdict reports the rate it used |
 | `timeout` | `10s` | 1s to 30s, and shorter than one interval (60s / `rate_per_min`) |

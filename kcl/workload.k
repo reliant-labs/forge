@@ -407,10 +407,16 @@ _RELEASE_PROBE_MAX_RATE = 12
 _RELEASE_PROBE_MIN_TIMEOUT_SECONDS = 1
 _RELEASE_PROBE_MAX_TIMEOUT_SECONDS = 30
 
-# A release-probe path the prober can request as written: absolute, with no
-# query, fragment or '..', and not too long.
+# A release-probe path the prober can request as written: a plain
+# origin-relative path, the same rule as pkg/release (ShapeReleaseProbe):
+# it starts with '/', is not too long, has no query, fragment, '..', empty
+# ('//') or '.' segment and no percent-encoding, and holds only RFC 3986
+# path characters (so no backslash, space, control or non-ASCII character).
+# Held equal to Go by kcl/release_probe_test.go.
+_RELEASE_PROBE_PATH_RE = r"^/[A-Za-z0-9._~!$&'()*+,;=:@/-]*$"
 _release_probe_path_ok = lambda p: str -> bool {
-    p.startswith("/") and len(p) <= _RELEASE_PROBE_MAX_PATH_LEN and "?" not in p and "#" not in p and ".." not in p
+    regex.match(p, _RELEASE_PROBE_PATH_RE) and len(p) <= _RELEASE_PROBE_MAX_PATH_LEN \
+        and ".." not in p and "//" not in p and "/./" not in p and not p.endswith("/.")
 }
 
 schema Probe:
@@ -461,7 +467,7 @@ schema Probe:
             "Probe.paths: name 1 to ${_RELEASE_PROBE_MAX_PATHS} paths, not ${len(paths)}"
         isunique(paths), "Probe.paths ${paths} names a path twice"
         all p in paths {_release_probe_path_ok(p)}, \
-            "Probe.paths ${[p for p in paths if not _release_probe_path_ok(p)]}: each path starts with '/', has no query, fragment or '..', and is at most ${_RELEASE_PROBE_MAX_PATH_LEN} characters"
+            "Probe.paths ${[p for p in paths if not _release_probe_path_ok(p)]}: each path starts with '/', is at most ${_RELEASE_PROBE_MAX_PATH_LEN} characters, has no query, fragment, '..', '//', '.' segment or percent-encoding, and uses only A-Z a-z 0-9 and -._~!$&'()*+,;=:@/"
         _RELEASE_PROBE_MIN_RATE <= rate_per_min <= _RELEASE_PROBE_MAX_RATE, \
             "Probe.rate_per_min ${rate_per_min} must be ${_RELEASE_PROBE_MIN_RATE} to ${_RELEASE_PROBE_MAX_RATE}"
         _RELEASE_PROBE_MIN_TIMEOUT_SECONDS <= _uptime_seconds(timeout) <= _RELEASE_PROBE_MAX_TIMEOUT_SECONDS and _uptime_seconds(timeout) * rate_per_min < 60, \

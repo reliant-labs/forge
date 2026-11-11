@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/repowalk"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,6 +120,7 @@ func TestNoVacuousTests(t *testing.T) {
 // TestQuarantineIsTight makes the ledger a ratchet: an entry that matches no
 // finding must be deleted, so fixing a defect forces its removal.
 func TestQuarantineIsTight(t *testing.T) {
+	testkit.Slow(t, "scans every test in the repository")
 	findings := scanRepo(t)
 	live := map[string]bool{}
 	for _, f := range findings {
@@ -265,6 +267,7 @@ func TestLegitimateShapesAreNeverFlagged(t *testing.T) {
 		{"TestSkipOnMissingHome", "a container may genuinely have no home directory"},
 		{"TestProbeThenSkip", "the tool probe SKIPS, so the machine's gap is reported instead of swallowed"},
 		{"TestProbeThenFail", "the tool probe FAILS, which is the CI-side answer to the same question"},
+		{"TestProbeThenUnavailable", "the tool probe calls testdocker.Unavailable: a skip on a laptop, a failure under CI"},
 		{"TestProbeIsBookkeeping", "both outcomes verify equally (not at all); it builds a list before judging it"},
 		{"TestProbeChoosesBetweenTwoRealPaths", "both branches verify the same claim, one per package manager"},
 		{"TestNonProbeConditional", "asserts a bad substring is absent — the commonest shape in the repo"},

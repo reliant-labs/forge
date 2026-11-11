@@ -16,11 +16,28 @@
 package testdocker
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+// Unavailable is how a smoke test says it cannot get the docker it needs (no
+// daemon, an image that will not pull): a skip on a developer machine, a
+// failure under CI (CI set, as every GitHub Actions runner sets it). A CI lane
+// exists to run its smoke tests, and a skip there turns the lane green while
+// it ran nothing — how pkg/obsquery's ClickHouse tests went unrun for days
+// (forge#1870).
+func Unavailable(t testing.TB, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if os.Getenv("CI") != "" {
+		t.Fatalf("%s (CI is set, so this is a failure, not a skip: the lane must run this test)", msg)
+	}
+	t.Skip(msg)
+}
 
 // Publish is the `docker run` flag pair that publishes containerPort on a
 // loopback port docker picks. PublishedPort reads which one it picked.

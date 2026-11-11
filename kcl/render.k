@@ -596,6 +596,21 @@ _obs_browser_off = lambda b: Bundle -> bool {
     bool(b.observability) and (not b.observability.enabled or not b.observability.signals.browser)
 }
 
+# The env is opted in to session replay, so the platform keeps replay events:
+# observability is on and either the deprecated env-wide signals.replay is
+# set or a frontend switched replay on with telemetry.replay. A frontend's
+# switch counts only while browser telemetry is on: with it off, nothing
+# records (see _runtime_config_declared), so nothing is opted in for it.
+_obs_replay_opted_in = lambda b: Bundle -> bool {
+    _obs_on(b) and (b.observability.signals.replay \
+        or (not _obs_browser_off(b) and any f in b.frontends { _frontend_replay_on(f) }))
+}
+
+# The frontend switched session replay on (BrowserTelemetry.replay).
+_frontend_replay_on = lambda f: Frontend -> bool {
+    bool(f.telemetry and f.telemetry.replay)
+}
+
 # The base URL of the collector on this machine, for host processes and
 # frontend dev servers. "" when the env has none.
 _obs_local_endpoint = lambda b: Bundle -> str {
@@ -1582,6 +1597,32 @@ _check_requires = lambda workloads: [any] -> bool {
     True
 }
 
+# `config_secrets` names the credentials a workload reads, and nothing renders
+# FROM it: forge's generated config projection (config_gen's
+# `<x>ConfigEnvMap(cfg, config_secrets)` / `workloadEnvMap`) is what turns each
+# name into an env value. A name the final env does not carry is a credential
+# the process never receives — and an app with a hard-coded fallback then runs
+# on that fallback in production, silently (report d864fe2c: a Node app's
+# JWT_SECRET). Refused at render, naming the line that delivers it. A family
+# pattern (`APP_OAUTH_<KEY>_CLIENT_SECRET`) projects zero or more names, so it
+# is not judged here.
+_config_secrets_undelivered = lambda workloads: [any] -> [str] {
+    ["${w.name}: ${n}" for w in workloads for n in (w.config_secrets or []) if "<" not in n and n not in (w.env or {})]
+}
+
+_check_config_secrets = lambda workloads: [any] -> bool {
+    _missing = _config_secrets_undelivered(workloads)
+    assert len(_missing) == 0, \
+        "Workload.config_secrets names a credential its env never delivers (" + ", ".join(_missing) + "): " \
+        + "config_secrets only SELECTS which sensitive fields forge's generated config projection puts in env, " \
+        + "so without one the process starts without the value and falls back to whatever default it has. " \
+        + "Deliver each in the workload's env from the env's secret store, e.g. " \
+        + "`env.JWT_SECRET = forge.ManagedSecret {name = \"JWT_SECRET\"}` (set it with `forge secret set --env <env> JWT_SECRET`), " \
+        + "or, in a forge Go project, project the env with `config_gen.<x>ConfigEnvMap(cfg, w.config_secrets) | w.env`; " \
+        + "or drop the name from config_secrets if the workload does not read it."
+    True
+}
+
 # ShellBuild.built_images names a workload forge can build an image for in
 # THIS environment: another ShellBuild workload that declares an image. The
 # build resolves the edge to the digest that workload pushed, so an edge to a
@@ -2042,13 +2083,15 @@ _render_observability = lambda b: Bundle -> any {
             "profiles": _obs_profiles_on(b)
             "metadata": _o.signals.metadata
             "browser": _o.signals.browser
-            "replay": _o.signals.replay
+            # Derived, as policy.opt_in is: the deprecated env-wide switch
+            # or any frontend's telemetry.replay.
+            "replay": _obs_replay_opted_in(b)
         }
         # The opt-out (and the one opt-in), resolved: recorded in the release shape.
         "policy": {
             "enabled": _o.enabled
             "disabled": _obs_disabled(b)
-            "opt_in": ["replay"] if _o.enabled and _o.signals.replay else []
+            "opt_in": ["replay"] if _obs_replay_opted_in(b) else []
         }
         "sampling": {
             "traces_ratio": _o.sampling.traces_ratio
@@ -2301,6 +2344,7 @@ render = lambda bundle: Bundle -> any {
     _ok = _check_before(bundle.workloads)
     _requires_ok = _check_requires(bundle.workloads)
     _built_images_ok = _check_built_images(bundle.workloads)
+    _config_secrets_ok = _check_config_secrets(bundle.workloads)
     _entities = [_lower(w, bundle) for w in bundle.workloads]
     _pt = _primary_target(bundle)
     {
@@ -2630,13 +2674,16 @@ _frontend_violations = lambda f: Frontend -> [str] {
 }
 
 # A frontend's runtime_config as declared, with the browser opt-out applied:
-# when browser telemetry is off the SDK's ingest path is forced to "off", over
-# anything the author set, because the opt-out is the author's explicit word.
+# when browser telemetry is off the SDK's ingest path is forced to "off", any
+# OTEL_REPLAY to "false" and any ANALYTICS_MODE to "off", over anything the
+# author set, because the opt-out is the author's explicit word.
 _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
     # What forge derives from the frontend's own declarations comes FIRST, so
     # an author's runtime_config entry for the same key always wins.
     _merged = _telemetry_runtime_config(f, bundle) | _env_scoped_runtime_config(f) | f.runtime_config
-    (_merged | {OTEL_ENDPOINT = "off"}) if _obs_browser_off(bundle) else _merged
+    (_merged | {OTEL_ENDPOINT = "off"} | ({OTEL_REPLAY = "false"} if "OTEL_REPLAY" in _merged else {}) \
+        | ({ANALYTICS_MODE = "off"} if "ANALYTICS_MODE" in _merged else {})) \
+        if _obs_browser_off(bundle) else _merged
 }
 
 # The keys whose value differs per environment that a web frontend's
@@ -2645,7 +2692,10 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 #
 #   OTEL_ENDPOINT   config.otel_endpoint, or {NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT
 #   ENVIRONMENT     config.environment, or {NEXT_PUBLIC_,VITE_}ENVIRONMENT
-#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY
+#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY (deprecated: a frontend
+#                   that sets telemetry.replay gets OTEL_REPLAY from
+#                   _telemetry_runtime_config, and the build variable is not
+#                   carried over it)
 #
 # otel_gen.ts reads these from the runtime config first (a build variable is
 # only its deprecated fallback): a build variable is baked into the bundle and
@@ -2659,10 +2709,11 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 # A HOSTED frontend gets OTEL_ENDPOINT alone. Its document is written by the
 # control plane, which sets ENVIRONMENT to the environment it actually serves;
 # a literal published in the StaticSite spec would override that (and a fixed
-# OTEL_REPLAY would apply the same replay choice wherever the spec lands), so
-# those stay out of the spec. The ingest path is the author's explicit choice
-# for that environment, and the spec already carries an author's
-# runtime_config the same way.
+# OTEL_REPLAY carried from a build variable would apply that build's replay
+# choice wherever the spec lands), so those stay out of the spec. A hosted
+# frontend switches replay on per env with telemetry.replay instead. The
+# ingest path is the author's explicit choice for that environment, and the
+# spec already carries an author's runtime_config the same way.
 _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     _c = f.config
     _endpoint = _build_var_literal(f, "OTEL_ENDPOINT", _c.otel_endpoint if _c and _c.otel_endpoint else None)
@@ -2672,7 +2723,7 @@ _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     {} if f.type not in ["nextjs", "vite"] else \
         ({OTEL_ENDPOINT = _endpoint} if _endpoint is not None else {}) \
         | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {}) \
-        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted else {})
+        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted and not _frontend_replay_on(f) else {})
 }
 
 # The value of the last env_vars entry that sets the frontend's build variable
@@ -2704,12 +2755,23 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        unless the author named one (or browser telemetry is
 #                        off, which _runtime_config_declared handles)
 #   CONSOLE_CAPTURE      "false" only; unset means capture
+#   OTEL_REPLAY          "true" when telemetry.replay is on and browser
+#                        telemetry is not off; unset means off. Hosted too:
+#                        it is this frontend's choice in this env, which is
+#                        what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
+#   ANALYTICS_MODE       telemetry.analytics.mode, only when it is not the
+#                        default "identified" and browser telemetry is not
+#                        off; unset means identified
 _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     _t = f.telemetry
+    assert not _frontend_replay_on(f) or not _frontend_hosted(f) or bundle.observability, \
+        "Frontend '${f.name}' sets telemetry.replay = True, but this environment declares no `observability`: the platform keeps replay events only for an env whose observability policy opts in to replay. Declare `observability = forge.Observability {...}` in this env (telemetry.replay then opts it in)."
     ({OTEL_ENDPOINT = _HOSTED_OTEL_PATH} if _frontend_hosted(f) and not _otel_endpoint_declared(f) and not _obs_browser_off(bundle) else {}) \
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
-        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {})
+        | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) and not _obs_browser_off(bundle) else {}) \
+        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
+        | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "identified" and not _obs_browser_off(bundle) else {})
 }
 
 # The framework's build/dev variable for the browser ingest path.
@@ -2966,6 +3028,7 @@ _render_frontend_config = lambda c: FrontendConfig -> any {
 _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
     {
         "console_capture": t.console_capture
+        "replay": t.replay
         "replay_sample_rate": t.replay_sample_rate
         "sourcemaps": t.sourcemaps
         "service_name": t.service_name if t.service_name else None
@@ -2977,6 +3040,34 @@ _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
             "window": f.window
             "by": f.by
         } for f in t.funnels]
+    } | ({"analytics": _render_analytics(t.analytics)} if t.analytics else {})
+}
+
+# Render an Analytics to its stable dict form. `activation` and
+# `activation_window` render null when unset, so forge generate, which merges
+# every frontend's declaration into the project's dashboards, can tell a
+# declaration from a default (the defaults are the dashboards'). An unset
+# `analytics` is omitted from the telemetry (above), so a frontend that
+# declares none renders exactly as it did before the field. Channel
+# conditions are lowercased: they are matched case-insensitively.
+_render_analytics = lambda a: Analytics -> any {
+    {
+        "mode": a.mode
+        "goals": [{
+            "id": g.id
+            "title": g.title if g.title else None
+            "event": g.event if g.event else None
+            "route": g.route if g.route else None
+        } for g in a.goals]
+        "activation": a.activation if a.activation else None
+        "activation_window": a.activation_window if a.activation_window else None
+        "channels": [{
+            "host": c.host.lower() if c.host else None
+            "source": c.source.lower() if c.source else None
+            "medium": c.medium.lower() if c.medium else None
+            "channel": c.channel
+        } for c in a.channels]
+        "dashboards": a.dashboards
     }
 }
 
@@ -3296,6 +3387,11 @@ _render_external_secret = lambda s: ExternalSecret -> any {
         "keys": s.keys
         "reason": s.reason if s.reason else None
         "value_group": s.value_group if s.value_group else None
+        # The declared clusters, as kubectl contexts. Absent when undeclared,
+        # so the preflight's namespace inference and every existing render
+        # are unchanged.
+        if s.clusters:
+            "clusters": [c.context if typeof(c) == "Cluster" else c.cluster for c in s.clusters]
         # Why a Secret is still provisioned out of band in an env that has
         # store-backed ones: `forge lint --secrets` holds it to a standard.
         if s.out_of_band_reason:

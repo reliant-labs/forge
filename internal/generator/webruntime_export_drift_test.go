@@ -1,11 +1,13 @@
 package generator
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -133,8 +135,27 @@ func TestHookRuntimeExportFloor(t *testing.T) {
 			t.Errorf("old consumer %s remains incompatible after reconciliation: %s", old, got)
 		}
 	}
-	if got := reconcileSpec("0.13.6", decision); got != "0.13.6" {
-		t.Errorf("newer consumer was rewritten: %s", got)
+	// A consumer at or above the floor is kept as it is. Derived from the
+	// floor, not a literal: each forge release that publishes web-runtime moves
+	// webRuntimePublishedRange (forge#2002 moved it to ^0.13.9, past the
+	// literal 0.13.6 this used to name, and failed the release PR).
+	minV, ok := minimumVersion(webRuntimePublishedRange)
+	if !ok {
+		t.Fatalf("runtime floor %q is not a comparable range", webRuntimePublishedRange)
+	}
+	parts := strings.SplitN(strings.TrimPrefix(minV, "v"), ".", 3)
+	patch, err := strconv.Atoi(parts[2])
+	if err != nil {
+		t.Fatalf("runtime floor %q: patch %q: %v", webRuntimePublishedRange, parts[2], err)
+	}
+	for _, newer := range []string{
+		strings.TrimPrefix(minV, "v"),
+		fmt.Sprintf("%s.%s.%d", parts[0], parts[1], patch+1),
+		fmt.Sprintf("^%s.%s.%d", parts[0], parts[1], patch+1),
+	} {
+		if got := reconcileSpec(newer, decision); got != newer {
+			t.Errorf("newer consumer %s was rewritten: %s", newer, got)
+		}
 	}
 }
 

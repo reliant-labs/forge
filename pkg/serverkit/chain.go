@@ -24,6 +24,7 @@ import (
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/reliant-labs/forge/pkg/activity"
 	"github.com/reliant-labs/forge/pkg/authn"
@@ -167,7 +168,20 @@ type ChainDeps struct {
 	// is slog.Default().
 	Logger *slog.Logger
 
-	// Trace opens the server span; it runs OUTERMOST, so a request auth
+	// Outer runs in declared order before Trace and the rest of the chain.
+	// Use for owned request-context preparation that must precede tracing/auth.
+	// It is outside recovery, logging and metrics too: it must not panic or
+	// implement authentication itself. Auth remains required and audience-checked.
+	// No forwarded-header/proxy trust policy is inferred here. Nil adds nothing.
+	Outer []connect.Interceptor
+
+	// Meter feeds the chain's ONE RPC metrics interceptor. Nil keeps observe's
+	// global-provider default and instrumentation scope. Pass provider.Meter(scope)
+	// to preserve a project's explicit provider/scope, or a noop meter to opt out.
+	// This does not install or own an SDK; setup/flush stays process policy.
+	Meter metric.Meter
+
+	// Trace opens the server span; it runs outermost after any Outer, so a request auth
 	// rejects still has a span and every log line carries its trace_id. nil
 	// is otelconnect with WithTrustRemote — an inbound traceparent (the
 	// browser's) becomes the span's parent. A chain facing callers that
@@ -250,7 +264,7 @@ type Chain struct {
 	options      []connect.HandlerOption
 }
 
-// NewChain builds the chain, outermost first: trace → recovery → request-id →
+// NewChain builds the chain, outermost first: optional Outer → trace → recovery → request-id →
 // logging → tracing → metrics → deadline → auth → audit → rate-limit → extras
 // → activity → stream-drain → protovalidate → svcerr (the handler's errors
 // become their Connect codes). Every slot but Auth is defaulted;
@@ -314,6 +328,7 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 	interceptors := observe.Chain(observe.Deps{
 		Logger: logger,
 		Trace:  trace,
+		Meter:  deps.Meter,
 		// As given: observe.Chain applies the slot's one rule (nil is
 		// Deadline{} on the chain's logger, NoDeadline drops it).
 		Deadline:   deps.Deadline,
@@ -324,6 +339,7 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 		LogOptions: deps.LogOptions,
 		Extras:     extras,
 	})
+	interceptors = append(append([]connect.Interceptor(nil), deps.Outer...), interceptors...)
 	return &Chain{
 		audience:     deps.Auth.Audience(),
 		interceptors: interceptors,
@@ -381,6 +397,13 @@ func validateChainDeps(deps ChainDeps) error {
 			errs = append(errs, errors.New("ChainDeps.Deadline is a nil *serverkit.Deadline: leave the field nil for the default"))
 		} else if err := d.Validate(); err != nil {
 			errs = append(errs, err)
+		}
+	}
+	for i, x := range deps.Outer {
+		if x == nil {
+			errs = append(errs, fmt.Errorf("ChainDeps.Outer[%d] is nil", i))
+		} else if _, ok := x.(Omit); ok {
+			errs = append(errs, fmt.Errorf("ChainDeps.Outer[%d] is an Omit, which only drops a defaulted slot", i))
 		}
 	}
 	for i, x := range deps.Extras {

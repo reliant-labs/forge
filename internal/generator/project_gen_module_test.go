@@ -9,6 +9,7 @@ import (
 	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A fresh scaffold makes gen/ its own module (gen/go.mod + `use gen`). An
@@ -25,6 +26,7 @@ import (
 // go.work's `use gen` follow one predicate; go.work itself exists for every
 // kind that imports forge.
 func TestProjectGenerator_GenModuleLayout(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	for _, tc := range []struct {
 		name            string
 		genInRootModule bool
@@ -118,6 +120,7 @@ func TestProjectGenerator_GenModuleLayout(t *testing.T) {
 // registers — or the tree fails `go build` (undefined: rootCommands) and lint
 // (registerCommand unused).
 func TestProjectGenerator_NoCodegenCommandTreeIsComplete(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "proj")
 	g := NewProjectGenerator("proj", root, "example.com/proj")
 	g.Features = g.Features.With(config.FeatureCodegen, false)
@@ -154,6 +157,7 @@ func TestProjectGenerator_NoCodegenCommandTreeIsComplete(t *testing.T) {
 // frontend APP is what --frontend asked for, frontend CODEGEN is the feature
 // that follows codegen.
 func TestProjectGenerator_FollowsTheFeatureGraph(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "proj")
 	g := NewProjectGenerator("proj", root, "example.com/proj")
 	g.FrontendName = "web"

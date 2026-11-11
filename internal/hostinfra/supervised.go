@@ -153,6 +153,27 @@ func (r binaryRelease) verify(p string) error {
 	return nil
 }
 
+// downloadUnavailableError is a release download the host could not
+// complete: no connection, or a 5xx from the server. A 4xx or a checksum
+// mismatch is not one; those are wrong pins, not outages.
+type downloadUnavailableError struct{ err error }
+
+func (e *downloadUnavailableError) Error() string { return e.err.Error() }
+func (e *downloadUnavailableError) Unwrap() error { return e.err }
+
+// downloadStatus turns a non-200 release response into an error, marking a
+// 5xx as unavailable.
+func downloadStatus(url string, code int) error {
+	switch {
+	case code == http.StatusOK:
+		return nil
+	case code >= 500:
+		return &downloadUnavailableError{err: fmt.Errorf("download %s: HTTP %d", url, code)}
+	default:
+		return fmt.Errorf("download %s: HTTP %d", url, code)
+	}
+}
+
 // download fetches asset, verifies its checksum against the pinned table and
 // extracts the binary to dest.
 func (r binaryRelease) download(ctx context.Context, asset, dest string) error {
@@ -168,11 +189,11 @@ func (r binaryRelease) download(ctx context.Context, asset, dest string) error {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", url, err)
+		return fmt.Errorf("download %s: %w", url, &downloadUnavailableError{err: err})
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
+	if err := downloadStatus(url, resp.StatusCode); err != nil {
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(dest), r.engine+"-download-*")
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestGoarchToELFMachine locks the GOARCH→e_machine mapping the guard pins the
@@ -41,6 +42,7 @@ func TestGoarchToELFMachine(t *testing.T) {
 // CrashLoopBackOff on the node. We build a tiny binary for the HOST (no GOOS
 // override); on a non-linux host this is a Mach-O/PE that elf.Open rejects.
 func TestAssertLinuxELFBinary_RejectsDarwinHostBuild(t *testing.T) {
+	testkit.Slow(t, "builds a binary with go build")
 	if runtime.GOOS == "linux" {
 		t.Skip("host is linux: a native host build IS a Linux ELF, so there's no Mach-O to reject here")
 	}
@@ -92,6 +94,7 @@ func TestAssertLinuxELFBinary_AcceptsCorrectLinuxArch(t *testing.T) {
 // Linux ELF of the expected arch — the exact `file bin/control-plane` check the
 // release verify step runs.
 func TestReleasePathBuildsLinuxBinary(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	writeTinyGoModule(t, dir)
 	t.Chdir(dir)

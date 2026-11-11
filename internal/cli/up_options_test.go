@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestParseRenderOptions(t *testing.T) {
@@ -129,6 +131,7 @@ func TestParseRenderOptionsRelaysAProjectRegistryOption(t *testing.T) {
 // asserting on the dArgs slice, so a break anywhere in flag → parse → global →
 // dArgs → kcl is caught.
 func TestRenderOptionsReachTheKCL(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	t.Cleanup(func() { setRenderOptions(nil) })
 	// The fixture short-circuit would bypass the render entirely.
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", "")
@@ -240,6 +243,7 @@ func TestBuildRenderOptionsRequireEnv(t *testing.T) {
 // desktop_channel=local` ran the RELEASE packaging target and died on missing
 // Apple notarization credentials, instead of the local one.
 func TestBuildDoesNotClobberOrchestratorRenderOptions(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	t.Cleanup(func() { setRenderOptions(nil) })
 
 	// What `forge env up` does before delegating.

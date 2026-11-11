@@ -3,9 +3,12 @@ package cli
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestStatusRecognizesExactWorktreeOwnershipWithoutSessionHeartbeat(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	ours, sibling := filepath.Join(root, "ours"), filepath.Join(root, "sibling")
 	f := fakeFacts{env: map[int][]string{

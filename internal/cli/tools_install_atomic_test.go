@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // `forge tools install --force` replaces a binary in GOBIN that another
@@ -14,6 +16,7 @@ import (
 // protoc-gen-go). A reader must see the old binary or the new one, never a
 // half-written file: `go install` straight into GOBIN rewrote it in place.
 func TestGoInstallTool_ReplacesTheGOBINBinaryAtomically(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	gobin := t.TempDir()
 	t.Setenv("GOBIN", gobin)
 	t.Setenv("PATH", gobin+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestGenerateInputHooksPhaseSelection(t *testing.T) {
@@ -45,6 +46,7 @@ func TestGenerateInputHooksPhaseSelection(t *testing.T) {
 }
 
 func TestGenerateInputHooksFailureRestoresDeclaredWrites(t *testing.T) {
+	testkit.Slow(t, "execs go and git")
 	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "descriptor.txt"), "original")
@@ -72,6 +74,7 @@ func TestGenerateInputHooksFailureRestoresDeclaredWrites(t *testing.T) {
 // The input hook replaces a vendored descriptor BEFORE the mock projection.
 // Use the real emitter and global sweep, without git tracking or manual cleanup.
 func TestGenerateInputHooksRemovedServiceConverges(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
 	for _, ownership := range []string{"pristine", "edited", "disowned"} {
 		t.Run(ownership, func(t *testing.T) {

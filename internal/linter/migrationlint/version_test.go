@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func writeMigrationIn(t *testing.T, dir, name, body string) {
@@ -33,6 +35,7 @@ func findingsForRule(result Result, rule string) []Finding {
 // applied, and whichever reached a database first leaves the other
 // permanently unapplied.
 func TestDuplicateVersionIsAnError(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeMigrationIn(t, dir, "20260101120000_add_orgs.up.sql", "CREATE TABLE orgs (id INT);")
 	writeMigrationIn(t, dir, "20260101120000_add_teams.up.sql", "CREATE TABLE teams (id INT);")
@@ -67,6 +70,7 @@ func TestDuplicateVersionIsAnError(t *testing.T) {
 // versions, sequential and timestamp mixed, reports nothing. A rule that
 // fires on healthy input is worse than no rule.
 func TestDistinctVersionsAreClean(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeMigrationIn(t, dir, "00001_init.up.sql", "CREATE TABLE a (id INT);")
 	writeMigrationIn(t, dir, "00002_more.up.sql", "CREATE TABLE b (id INT);")
@@ -89,6 +93,7 @@ func TestDistinctVersionsAreClean(t *testing.T) {
 // NEW migrations, and asking anyone to renumber history would make it
 // unadoptable.
 func TestExistingSequentialMigrationsAreNotFlagged(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	for _, name := range []string{"00001_a.up.sql", "00002_b.up.sql", "00111_c.up.sql"} {
 		writeMigrationIn(t, dir, name, "CREATE TABLE t (id INT);")
@@ -113,6 +118,7 @@ func TestExistingSequentialMigrationsAreNotFlagged(t *testing.T) {
 // which is a false positive on every migration. The merge-base test below
 // covers the case properly.
 func TestNoGitLeavesSequentialHistoryAlone(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeMigrationIn(t, dir, "00111_existing.up.sql", "CREATE TABLE a (id INT);")
 	writeMigrationIn(t, dir, "00112_hand_typed.up.sql", "CREATE TABLE b (id INT);")
@@ -136,6 +142,7 @@ func TestNoGitLeavesSequentialHistoryAlone(t *testing.T) {
 // ahead of every genuine timestamp forever. That is wrong regardless of when
 // it was added, which is why the no-git fallback still reports it.
 func TestFourteenDigitNonDateIsFlaggedWithoutGit(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeMigrationIn(t, dir, "00111_existing.up.sql", "CREATE TABLE a (id INT);")
 	writeMigrationIn(t, dir, "99999999999999_not_a_date.up.sql", "CREATE TABLE b (id INT);")
@@ -386,6 +393,7 @@ func TestMergedHistoryIsNeverFlaggedBelowTheHead(t *testing.T) {
 // file in the directory looks identical. Guessing would flag history, so the
 // rule goes silent, exactly as the timestamp rule does.
 func TestVersionBelowHeadNeedsGit(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeMigrationIn(t, dir, "21000101000000_future.up.sql", "CREATE TABLE a (id INT);")
 	writeMigrationIn(t, dir, "20260101120000_below_it.up.sql", "CREATE TABLE b (id INT);")
@@ -404,6 +412,7 @@ func TestVersionBelowHeadNeedsGit(t *testing.T) {
 // with no git at all — and a version rule that errored there is a rule people
 // turn off.
 func TestLintOutsideAGitRepoStillWorks(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeMigrationIn(t, dir, "00001_a.up.sql", "CREATE TABLE a (id INT);")
 	writeMigrationIn(t, dir, "00001_b.up.sql", "CREATE TABLE b (id INT);")

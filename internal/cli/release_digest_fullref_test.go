@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The two defects this file pins, both surfaced by adopting the
@@ -89,6 +90,7 @@ func TestExpandLegacyLedgerKeys_ModernAndUnplaceableKeysSurvive(t *testing.T) {
 // with bare-name artifacts (URI recorded separately) that an env is promoted to
 // must pin the repositories the KCL declares.
 func TestResolveDeployDigests_LegacyLedgerResolvesDeclaredRepositories(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	const gar = "us-central1-docker.pkg.dev/reliant-labs-475814/reliant-prod"
 

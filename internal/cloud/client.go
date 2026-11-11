@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -45,6 +47,10 @@ type Client struct {
 	// written to the credentials file.
 	elevated elevationCache
 
+	// scopes maps a procedure to the scope it is called with an elevated
+	// token for: declared by the caller, or learned from a refusal.
+	scopes scopeTable
+
 	// credMu guards Credential, which a refresh from the credential helper
 	// replaces.
 	credMu sync.Mutex
@@ -70,7 +76,21 @@ func NewClient(ep Endpoint, cred Credential) *Client {
 // the domain reason and the server's error details as DATA. Callers branch
 // on those fields — never on the message text, which is display copy the
 // server is free to improve.
+//
+// A procedure with a declared scope (DeclareScope), or one this client already
+// saw refused for want of one, is called with a credential elevated for that
+// scope from the start. Any other is called with the base credential, and a
+// refusal naming a missing scope is elevated for and retried once (elevate.go).
 func (c *Client) Call(ctx context.Context, procedure string, req, out any) error {
+	if scope, ok := c.upfrontScope(procedure); ok {
+		return c.callDeclared(ctx, procedure, req, out, scope)
+	}
+	return c.elevateAndRetry(ctx, procedure, req, out, c.callBase(ctx, procedure, req, out))
+}
+
+// callBase calls procedure with the base credential, refreshing it once when
+// the control plane refuses it outright.
+func (c *Client) callBase(ctx context.Context, procedure string, req, out any) error {
 	err := c.call(ctx, procedure, req, out, c.credential().Token)
 	if rejectedAsUnauthenticated(err) {
 		// The credential itself was refused (expired, revoked, ...), before any
@@ -80,15 +100,13 @@ func (c *Client) Call(ctx context.Context, procedure string, req, out any) error
 			err = c.call(ctx, procedure, req, out, fresh.Token)
 		}
 	}
-	scope, ok := c.elevationScope(err)
-	if !ok {
-		return err
-	}
-	token, elevErr := c.elevatedToken(ctx, scope)
-	if elevErr != nil {
-		return c.loginLacksScope(annotateElevation(err, scope, elevErr), scope)
-	}
-	err = c.call(ctx, procedure, req, out, token)
+	return err
+}
+
+// callElevated calls procedure with token, an elevated token for scope, and
+// trades for a new one once when the control plane refuses it outright.
+func (c *Client) callElevated(ctx context.Context, procedure string, req, out any, scope, token string) error {
+	err := c.call(ctx, procedure, req, out, token)
 	if rejectedAsUnauthenticated(err) {
 		// The elevated token we held was refused (revoked, or expired by a
 		// skewed clock). Trade for a new one, once.
@@ -135,10 +153,71 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 		return fmt.Errorf("encode %s request: %w", procedure, err)
 	}
 
+	resp, err := c.send(ctx, procedure, body, projectID, token)
+	if err != nil {
+		return err
+	}
+	// Nothing was written, so a close error carries no data loss — it can
+	// only report a connection this call is already finished with.
+	defer func() { _ = resp.Body.Close() }()
+
+	// Bounded read: a misconfigured endpoint that returns a huge HTML
+	// error page should not be streamed into memory in full.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return fmt.Errorf("read %s response: %w", procedure, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return c.connectError(procedure, resp, raw)
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decode %s response: %w", procedure, err)
+	}
+	return nil
+}
+
+// connectAttempts is how many times send tries a request whose connection
+// could not be set up (dial, DNS, TLS handshake), and connectBackoff the wait
+// before each retry. Package vars so a test needs no real waits.
+var (
+	connectAttempts = 3
+	connectBackoff  = func(attempt int) time.Duration { return time.Duration(attempt) * 500 * time.Millisecond }
+)
+
+// send is one request, retried only while it never left this machine: a
+// failure before the request's headers were written (a refused dial, a DNS
+// failure, a TLS handshake timeout on a loaded host) reached no handler, so a
+// second attempt cannot double an effect, whatever the procedure. A failure
+// after the headers went out is returned as it is: the server may have acted.
+func (c *Client) send(ctx context.Context, procedure string, body []byte, projectID, token string) (*http.Response, error) {
+	var err error
+	for attempt := 1; ; attempt++ {
+		// The transport reports the write from its own goroutine.
+		var wrote atomic.Bool
+		trace := &httptrace.ClientTrace{WroteHeaders: func() { wrote.Store(true) }}
+		var resp *http.Response
+		resp, err = c.sendOnce(httptrace.WithClientTrace(ctx, trace), procedure, body, projectID, token)
+		if err == nil || wrote.Load() || ctx.Err() != nil || attempt >= connectAttempts {
+			return resp, err
+		}
+		t := time.NewTimer(connectBackoff(attempt))
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, err
+		case <-t.C:
+		}
+	}
+}
+
+func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, projectID, token string) (*http.Response, error) {
 	url := c.Endpoint.URL + "/" + strings.TrimPrefix(procedure, "/")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build %s request: %w", procedure, err)
+		return nil, fmt.Errorf("build %s request: %w", procedure, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if token != "" && projectID != "" && !strings.HasSuffix(procedure, "/ResolveHostedProject") {
@@ -166,28 +245,9 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 
 	resp, err := c.httpClientFor(procedure).Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("call %s at %s: %w", procedure, c.Endpoint.URL, err)
+		return nil, fmt.Errorf("call %s at %s: %w", procedure, c.Endpoint.URL, err)
 	}
-	// Nothing was written, so a close error carries no data loss — it can
-	// only report a connection this call is already finished with.
-	defer func() { _ = resp.Body.Close() }()
-
-	// Bounded read: a misconfigured endpoint that returns a huge HTML
-	// error page should not be streamed into memory in full.
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return fmt.Errorf("read %s response: %w", procedure, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return c.connectError(procedure, resp, raw)
-	}
-	if out == nil {
-		return nil
-	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("decode %s response: %w", procedure, err)
-	}
-	return nil
+	return resp, nil
 }
 
 func (c *Client) httpClient() *http.Client {

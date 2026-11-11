@@ -22,6 +22,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // runLedgerVerb drives one `forge ledger <verb>` with the project pinned.
@@ -187,6 +188,7 @@ func TestLedgerExport_PreservesTheImportProvenance(t *testing.T) {
 // would omit it and make the import look lossy against the very files it
 // read.
 func TestLedgerExport_IncludesAnEnvWithNoRecord(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	fx := newImportFixture(t, func(dir string) {
 		plantRetiredLedger(t, dir,
 			[]release.Promotion{importablePromotion("id-a", "retired-env", "v1.0.0", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))},
@@ -212,6 +214,7 @@ func TestLedgerExport_IncludesAnEnvWithNoRecord(t *testing.T) {
 // --dir has no default, because a default is a location people start to rely
 // on — and this is a verification aid, not a backup.
 func TestLedgerExport_RequiresADirectory(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newImportProject(t, "export-project")
 
 	_, err := runLedgerVerb(t, dir, newLedgerExportCmd)
@@ -257,6 +260,7 @@ func (fakeHostedBindings) Location() string { return "https://api.example.com" }
 // the answer says WHY — which is the question the command exists for, since
 // selection is declarative and otherwise invisible.
 func TestLedgerWhere_MachineLedgerNamesTheReason(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newImportProject(t, "where-project")
 
 	doc, err := ledgerWhereFor(context.Background(), dir, "prod")
@@ -318,6 +322,7 @@ func TestLedgerWhere_JSONUsesTheSameBackendNames(t *testing.T) {
 // §7.4's view. The current binding is the env's LAST promotion, the history
 // reads newest first, and the two orderings must not contradict each other.
 func TestLedgerShow_CurrentIsTheLastPromotionAndHistoryIsNewestFirst(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newImportProject(t, "show-project")
 	store := testStore(t, dir)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -351,6 +356,7 @@ func TestLedgerShow_CurrentIsTheLastPromotionAndHistoryIsNewestFirst(t *testing.
 // "Never promoted" is a normal state a reader must render, so Current is nil
 // rather than the field being omitted.
 func TestLedgerShow_NeverPromotedIsANormalState(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newImportProject(t, "show-empty-project")
 	store := testStore(t, dir)
 	if err := store.PutEnv(release.EnvRecord{Name: "dev", Kind: release.EnvLocal}); err != nil {
@@ -370,6 +376,7 @@ func TestLedgerShow_NeverPromotedIsANormalState(t *testing.T) {
 // nothing for it, with empty lists. Returning no environments at all would
 // read as "I do not know about this env", which is a different fact.
 func TestLedgerShow_AnEnvWithNoRecordsStillAnswers(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newImportProject(t, "show-unknown-project")
 	store := testStore(t, dir)
 
@@ -390,6 +397,7 @@ func TestLedgerShow_AnEnvWithNoRecordsStillAnswers(t *testing.T) {
 // that may be missing is the whole document — which means the daemon could
 // not be reached.
 func TestLedgerShow_JSONListsAreNeverNull(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newImportProject(t, "show-json-project")
 	store := testStore(t, dir)
 
@@ -413,6 +421,7 @@ func TestLedgerShow_JSONListsAreNeverNull(t *testing.T) {
 // it was last seen rather than as a failure, because forge cannot tell a
 // dead stack from a daemon that stopped heartbeating.
 func TestLedgerShow_SessionVerdictsComeFromOneInstant(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newImportProject(t, "show-session-project")
 	store := testStore(t, dir)
 	started := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -457,6 +466,7 @@ func TestLedgerShow_SessionVerdictsComeFromOneInstant(t *testing.T) {
 // one implementation of that rule — so a UI reading this cannot disagree
 // with what forge prints in a terminal about whether an apply was abandoned.
 func TestLedgerShow_ApplyStateIsDerivedNotStored(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newImportProject(t, "show-apply-project")
 	store := testStore(t, dir)
 	// CreatedAt is set explicitly: the store stamps it from the clock when

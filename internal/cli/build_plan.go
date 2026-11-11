@@ -282,6 +282,7 @@ func planFrontendBuild(dir string) string {
 func planKCLDockerRemote(in planInputs) []buildPlanStep {
 	var out []buildPlanStep
 	workloads := in.entities.Workloads
+	aliases := map[string][]WorkloadEntity{}
 	if in.opts.composition != nil {
 		units, err := compositionBuildUnits(in.entities)
 		if err != nil {
@@ -290,12 +291,18 @@ func planKCLDockerRemote(in planInputs) []buildPlanStep {
 		workloads = nil
 		for _, unit := range units {
 			workloads = append(workloads, unit[0])
+			aliases[unit[0].Name] = unit[1:]
 		}
 	}
 	for _, svc := range workloads {
 		b := svc.Build
 		switch b.Type {
 		case "docker":
+			if hostBoundUnit(svc, aliases[svc.Name]) {
+				// The real build skips it too (buildKCLDockerShell).
+				out = append(out, buildPlanStep{kind: "docker", name: svc.Name, what: "skipped: bound to forge.OnHost"})
+				continue
+			}
 			dockerfile := "Dockerfile"
 			if b.Docker != nil && b.Docker.Dockerfile != "" {
 				dockerfile = b.Docker.Dockerfile

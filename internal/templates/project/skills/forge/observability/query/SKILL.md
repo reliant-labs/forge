@@ -106,7 +106,7 @@ Each section is read on its own and concurrently. A section the backend cannot a
 
 ## Release health: `forge obs check`
 
-The subject is a promotion: the env's current one, or `--release v` / `--promotion id`. Two equal windows are compared, before and after it. Each window stops at the neighbouring promotion and at now. Error rate is weighted for tail sampling, so it is not inflated by dropped OK spans. A request the client walked away from is not a server error: a span with `error_class=canceled`, Connect code `canceled` or HTTP 499 counts as a request and never as an error, here or in any error count `obs` reports. Latency is judged per endpoint where the backend supplies endpoint figures: `max_p95_ratio` applies to the after-window request-weighted mean of each endpoint's after/before p95, over the endpoints called in the after window; one with no before p95 (new since the promotion) is judged against the service-level before p95, never skipped. So a window filled with one client's fast calls (a deploy polling its own release) and then emptied of them does not read as the service getting slower. When a window holds more endpoints than the query returns (1000), the endpoint set is incomplete and latency is judged on the service-level p95 instead. A local env has no promotions: `--since 20m` (or the start of the last `forge env up`) names the instant to judge from, and regressed issues, alerts and restarts are listed under `not_evaluated`.
+The subject is a promotion: the env's current one, or `--release v` / `--promotion id`. Two equal windows are compared, before and after it. Each window stops at the neighbouring promotion and at now. Error rate is weighted for tail sampling, so it is not inflated by dropped OK spans. A request the client walked away from is not a server error: a span with `error_class=canceled`, Connect code `canceled` or HTTP 499 counts as a request and never as an error, here or in any error count `obs` reports. Latency is judged per endpoint where the backend supplies endpoint figures. A finding the after window cannot pin on the release (a retried promotion's window from before it went live, a rollout under 50%, an issue whose events are another version's) never fails it. How latency and attribution are judged: `observability/release-health`. A local env has no promotions: `--since 20m` (or the start of the last `forge env up`) names the instant to judge from, and regressed issues, alerts and restarts are listed under `not_evaluated`.
 
 The env's KCL declares the thresholds and which findings fail (`forge.ReleaseHealth` on the Bundle; the defaults are below). They are recorded in the release shape, so the console, the CLI and alerting judge alike. `--threshold k=v` overrides one for one call, `--fail-on` the failing set, `--window` the width, and the document says where each threshold came from.
 
@@ -128,6 +128,10 @@ release_health = forge.ReleaseHealth {
 | 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests`), or forge could not look |
 | 8 | `--wait` timed out (`--timeout`, default 30m) before the after window finished |
 
+An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_not_live`, `rollout_incomplete` (`observability/release-health`), `window_open`, `low_traffic`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
+
+**`no_request_telemetry`: the app exports no traces.** Requests, error rate and latency come from each service's own OpenTelemetry server spans, never from the ingress, so a service that exports none has no request data however much traffic it serves. forge instruments what it builds; an app built from its own Dockerfile or command, or a third-party image, exports traces only if it is instrumented, and the reason names those services (`uninstrumented_services`). Add an OpenTelemetry SDK that exports OTLP to `$OTEL_EXPORTER_OTLP_ENDPOINT` (hosting sets it and `OTEL_SERVICE_NAME` on every workload), then check again. Until then the verdict stays INCONCLUSIVE — not proven good — and what forge sees without telemetry still counts: a restart, a firing alert or a new issue is a finding, and `forge obs workloads <env>` and `forge obs logs <env>` show the app's health and output.
+
 `--gate-json FILE` writes the evidence `forge gate record --from` attaches to the promotion.
 
 `--wait --early-pass 8m` ends the wait with a PASS before the after window finishes. It passes only once at least 8m of the window has been observed and all of these hold: every judged service has a measured version share of ≥99% for the judged version (the rollout is over) and has reached `min_requests` on its own (a quiet or unmeasured service waits for the window), and there is no finding of any policy, no new or regressed issue, no firing alert, no restart and no critical alert. Anything found, or a rollout still in progress, keeps the wait going to the end of the window. The document's `early_pass` says why it passed. The control plane's own stored verdict still comes after the full window.
@@ -136,26 +140,7 @@ release_health = forge.ReleaseHealth {
 
 ## Investigate a user session
 
-"A user hit a bug" is a reproduction, not a stack trace. The session timeline is what they did, in order.
-
-```bash
-forge obs sessions prod --has-error --since 24h          # which sessions raised errors (add --user, --path /checkout)
-forge obs session 91b955b313a1a86644ea53730a92deab prod # the timeline
-```
-
-```
-+00:12.4  click     button //*[@id="save"] on /jobs/new
-+00:12.5  request   POST /api.v1.JobService/CreateJob → 500 (230ms)  trace 0af7651916cd43dd8448eb211c80319c
-+00:12.6  error     TypeError: Cannot read properties of undefined on /jobs/new → issue ISS-ab12  trace 0af7…
-```
-
-Read it top to bottom; the steps before the failure are the repro steps for the fix PR. Then follow the ids, which `suggested:` names:
-
-1. `forge obs issue ISS-ab12 prod`: the error entry's `→ issue <id>`: culprit, frames, suspect commits. An error with a fingerprint and no issue id has not been folded into an issue yet.
-2. `forge obs trace <trace-id> prod`: the server side of a failed request: which span failed and why.
-3. `forge obs logs prod --trace <trace-id>`: the log lines of that request.
-
-What the timeline never holds: element text, query strings, fragments and input values (paths are cut, clicks are a tag and an xpath, the recorder masks text). A session with `has_replay` has a recording; watch it in the console. Sessions come from the control plane's browser tables, so a local env exits 2 and says so. Exit 1: a malformed id, or a session the env does not have (or older than 30 days). `--json` is `forge.obs.sessions/v1` and `forge.obs.session/v1`; each timeline entry has `offset_ms` since the session started, `kind` (`navigation`, `click`, `request_failed`, `error`, `event`), `trace_id`, `issue_id`.
+"A user hit a bug": `forge obs sessions <env> --has-error`, then `forge obs session <id> <env>` for what they did, in order. Reading the timeline and following its ids is `observability/sessions`.
 
 ## What was live when: `forge env releases`
 

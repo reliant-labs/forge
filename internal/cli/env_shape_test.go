@@ -26,6 +26,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const procEnsureEnv = "controlplane.v1.DeployService/EnsureEnvironment"
@@ -735,6 +736,7 @@ func TestEnvBuildRecordsTheDeclarationBeforeCuttingAnything(t *testing.T) {
 // did. Verified by removing the --plan guard: the test then fails, which it
 // did not before the project was written.
 func TestEnvBuildPlanRecordsNothing(t *testing.T) {
+	testkit.Slow(t, "execs git and go")
 	fake := withDeclarationRecorder(t, declarationFixtureShape())
 	withProjectName(t, "acme")
 	withDeclaredEntities(t, &KCLEntities{

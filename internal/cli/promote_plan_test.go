@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Tests for the release change set: `forge env deploy <env> <version> --plan` / `--json`.
@@ -714,6 +715,7 @@ func TestRunPromotePlan_WritesNothing(t *testing.T) {
 // binding really moves. Without this, a runPromote that never wrote anything
 // would pass the test above.
 func TestRunPromote_AppliesAndSaysSo(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	t.Chdir(dir)
 

@@ -736,6 +736,10 @@ type ExternalSecretEntity struct {
 	// that must carry the same logical value (cross-secret byte-match).
 	// Empty => a standalone prereq (no byte-match group).
 	ValueGroup string `json:"value_group,omitempty"`
+	// Clusters are the kubectl contexts the Secret is declared to be required
+	// on (ExternalSecret.clusters). Empty => the preflight infers them from
+	// the clusters that consume its namespace (scopeRequiredSecretsToClusters).
+	Clusters []string `json:"clusters,omitempty"`
 	// Source is the rendered forge.StoreSource: nil for a Secret something
 	// else provisions, set for one ESO syncs from a store.
 	Source *StoreSourceEntity `json:"source,omitempty"`
@@ -1337,7 +1341,11 @@ type FrontendConfigEntity struct {
 
 // FrontendTelemetryEntity mirrors kcl/schema.k BrowserTelemetry.
 type FrontendTelemetryEntity struct {
-	ConsoleCapture   bool    `json:"console_capture"`
+	ConsoleCapture bool `json:"console_capture"`
+	// Replay is the frontend's session replay switch
+	// (BrowserTelemetry.replay). It reaches the browser as runtime config
+	// (OTEL_REPLAY) and the env's policy as the replay opt-in.
+	Replay           bool    `json:"replay"`
 	ReplaySampleRate float64 `json:"replay_sample_rate"`
 	Sourcemaps       string  `json:"sourcemaps,omitempty"`
 	// ServiceName is the service.name a sourced frontend's SDK reports, as
@@ -1347,6 +1355,42 @@ type FrontendTelemetryEntity struct {
 		Ignore []string `json:"ignore,omitempty"`
 	} `json:"errors"`
 	Funnels []FunnelEntity `json:"funnels,omitempty"`
+	// Analytics is the frontend's declared product analytics
+	// (BrowserTelemetry.analytics); nil when it declares none.
+	Analytics *AnalyticsEntity `json:"analytics,omitempty"`
+}
+
+// AnalyticsEntity mirrors kcl/schema.k Analytics. Mode and Dashboards are
+// always set (the schema defaults them); Activation and ActivationWindow are
+// empty when the frontend left them to forge's defaults.
+type AnalyticsEntity struct {
+	// Mode is "off" | "aggregate" | "identified" (the default) | "full"; a
+	// non-default one reaches the browser as the runtime config's
+	// ANALYTICS_MODE.
+	Mode             string                   `json:"mode"`
+	Goals            []AnalyticsGoalEntity    `json:"goals,omitempty"`
+	Activation       string                   `json:"activation,omitempty"`
+	ActivationWindow string                   `json:"activation_window,omitempty"`
+	Channels         []AnalyticsChannelEntity `json:"channels,omitempty"`
+	Dashboards       bool                     `json:"dashboards"`
+}
+
+// AnalyticsGoalEntity mirrors kcl/schema.k Goal: exactly one of Event and
+// Route is set.
+type AnalyticsGoalEntity struct {
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+	Event string `json:"event,omitempty"`
+	Route string `json:"route,omitempty"`
+}
+
+// AnalyticsChannelEntity mirrors kcl/schema.k Channel, conditions already
+// lowercased; at least one of Host, Source and Medium is set.
+type AnalyticsChannelEntity struct {
+	Host    string `json:"host,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Medium  string `json:"medium,omitempty"`
+	Channel string `json:"channel"`
 }
 
 // FunnelEntity mirrors kcl/schema.k Funnel, window and by already defaulted.

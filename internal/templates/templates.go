@@ -27,7 +27,8 @@ var templateFS embed.FS
 func FuncMap() template.FuncMap {
 	caser := cases.Title(language.English)
 	return template.FuncMap{
-		"lower": strings.ToLower,
+		"lower":                     strings.ToLower,
+		"browserReplayPrivacyGuard": func() string { return browserReplayPrivacyGuard },
 		// pnpmVersion is the pnpm a scaffolded frontend pins (PnpmVersion).
 		"pnpmVersion": func() string { return PnpmVersion },
 		"humanize": func(s string) string {

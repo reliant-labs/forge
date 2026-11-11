@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // fileLedgerDeployFixture is a real machine ledger holding two cut releases for
@@ -116,6 +117,7 @@ func TestFailedApply_ReApplyOfTheSameReleaseIsNotRefused(t *testing.T) {
 }
 
 func TestSuccessfulApply_PrintsThePromotedLineAndRecordsSuccess(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir, ledger := fileLedgerDeployFixture(t)
 	ok := capturedClientDeploy{}
 	ok.install(t)

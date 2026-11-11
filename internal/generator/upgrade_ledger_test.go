@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // reliant's cmd/reliant/cmd/metrics.go and commands.go were recorded deleted
@@ -17,6 +18,7 @@ import (
 // The subject is derived from the manifest, not named: every Tier-2 path the
 // upgrade manages, recorded as deleted, must stay absent.
 func TestUpgrade_NeverRecreatesScaffoldOnceFilesTheLedgerRecordsDeleted(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	cfg := testProjectConfig()
 	dir := t.TempDir()
 	checksums.ResetScaffoldLedgerCache()
@@ -57,6 +59,7 @@ func TestUpgrade_NeverRecreatesScaffoldOnceFilesTheLedgerRecordsDeleted(t *testi
 
 // A disowned scaffold-once path that is absent is the project's too.
 func TestUpgrade_NeverRecreatesADisownedAbsentScaffoldOnceFile(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	cfg := testProjectConfig()
 	dir := t.TempDir()
 	checksums.ResetScaffoldLedgerCache()
@@ -80,6 +83,7 @@ func TestUpgrade_NeverRecreatesADisownedAbsentScaffoldOnceFile(t *testing.T) {
 // is how an older project gains a newer scaffold), and the birth is recorded
 // so deleting it afterwards sticks.
 func TestUpgrade_BirthsAnUnrecordedScaffoldOnceFileAndRecordsIt(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	cfg := testProjectConfig()
 	dir := t.TempDir()
 	checksums.ResetScaffoldLedgerCache()

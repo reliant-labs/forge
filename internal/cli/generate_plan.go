@@ -240,5 +240,41 @@ func (ctx *pipelineContext) warnOrFail(stepName string, err error) error {
 	if !slices.Contains(ctx.SoftFailures, stepName) {
 		ctx.SoftFailures = append(ctx.SoftFailures, stepName)
 	}
+	if ctx.softFailureCauses == nil {
+		ctx.softFailureCauses = map[string]softFailureCause{}
+	}
+	c, seen := ctx.softFailureCauses[stepName]
+	if !seen {
+		c.first = err
+	}
+	c.count++
+	ctx.softFailureCauses[stepName] = c
 	return nil
+}
+
+// softFailureCause is a soft-failed step's first error and how many times
+// the step failed in the run.
+type softFailureCause struct {
+	first error
+	count int
+}
+
+// maxSoftFailureCause bounds one step's cause in the closing summary; the
+// whole error was printed where the step failed.
+const maxSoftFailureCause = 600
+
+// text is the cause on one line, bounded, with how many more failures the
+// step had.
+func (c softFailureCause) text() string {
+	if c.first == nil {
+		return ""
+	}
+	s := strings.Join(strings.Fields(c.first.Error()), " ")
+	if len(s) > maxSoftFailureCause {
+		s = s[:maxSoftFailureCause] + "…"
+	}
+	if c.count > 1 {
+		s += fmt.Sprintf(" (+%d more failure(s) of this step above)", c.count-1)
+	}
+	return s
 }

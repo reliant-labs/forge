@@ -228,7 +228,7 @@ _hosted_frontend = lambda f: forge.Frontend -> forge.Frontend {
     f | {
         image = f.name
         runtime = forge.OnHosted {}
-        runtime_config = _api_config
+        runtime_config = f.runtime_config | _api_config
     }
 }
 
@@ -244,14 +244,21 @@ _on_bucket = lambda f: forge.Frontend -> forge.Frontend {
     f | {runtime = _bucket}
 }
 
+# Masked session recording for this environment. It sets the frontend's
+# `telemetry.replay` (forge.BrowserTelemetry), which renders its OTEL_REPLAY
+# and opts the env in to replay ingestion; False stops both. DNT/GPC and the
+# app's consent gate still win.
+_session_replay = True
 _web_frontend = forge.Frontend {
     name = "web"
     path = "frontends/web"
+    telemetry = forge.BrowserTelemetry {replay = _session_replay}
     public_dir = "out"
 }
 
 _bundle = forge.Bundle {
     project = "shop"
+    observability = forge.Observability {}
     # Where hosted workloads, the database and the site are published:
     # Reliant cloud (set `endpoint` for another control plane).
     # `claimable = True`: an anonymous deploy (`forge env deploy prod

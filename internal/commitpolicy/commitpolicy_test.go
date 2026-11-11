@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // preFixScaffoldGitignore is the generated-code section of the scaffold
@@ -83,6 +84,7 @@ func seedGenerated(t *testing.T, dir string) {
 // could not catch it. Check must name every ignored generated file with the
 // rule that ignores it.
 func TestCheck_FlagsGeneratedCodeTheOldScaffoldIgnored(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newRepo(t)
 	write(t, dir, ".gitignore", preFixScaffoldGitignore)
 	write(t, dir, "frontends/web/.gitignore", "node_modules/\nsrc/gen/\n") // the pre-fix frontend rule
@@ -141,6 +143,7 @@ func TestCheck_FlagsGeneratedCodeTheOldScaffoldIgnored(t *testing.T) {
 // .gitignore, with everything generated committed, has no violations — the
 // check must not cry wolf on the state forge itself produces.
 func TestCheck_CurrentScaffoldGitignoreIsClean(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	body, err := templates.ProjectTemplates().Get(".gitignore")
 	if err != nil {
 		t.Fatal(err)
@@ -171,6 +174,7 @@ func TestCheck_CurrentScaffoldGitignoreIsClean(t *testing.T) {
 // TestCheck_FlagsTrackedMachineLocalState: a committed .forge-kcl/ or dev
 // config.js is reported once each, with the literal git rm --cached fix.
 func TestCheck_FlagsTrackedMachineLocalState(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newRepo(t)
 	write(t, dir, ".forge-kcl/schema.k", "schema X:\n    a: int\n")
 	write(t, dir, ".forge-kcl/.forge-version", "v0.1.17\n")
@@ -204,6 +208,7 @@ func TestCheck_FlagsTrackedMachineLocalState(t *testing.T) {
 // it is never a generated-code-ignored finding. The legacy aggregate file
 // that `forge generate` already deleted is a pending deletion, not a finding.
 func TestCheck_ToolDerivedFilesAreNotCommitted(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newRepo(t)
 	write(t, dir, "gen/forge_descriptor/services/a/v1/a.json", "{}\n")
 	write(t, dir, "gen/forge_descriptor/services/b/v1/b.json", "{}\n")
@@ -395,6 +400,7 @@ func TestCheck_ForeignProjectTreesAreNotJudged(t *testing.T) {
 
 // TestCheck_OutsideAGitRepoIsSilent: no commit state, no verdict.
 func TestCheck_OutsideAGitRepoIsSilent(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	seedGenerated(t, dir)
 	if vs, err := Check(dir); err != nil || len(vs) != 0 {

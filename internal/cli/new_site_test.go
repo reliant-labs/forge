@@ -41,11 +41,22 @@ func readFile(t *testing.T, path string) string {
 // --kind site writes forge.yaml and the deploy envs, declaring the root app,
 // and nothing else: no Go, and not a byte of the app's own files.
 func TestRunNewSiteAdoptsTheRootApp(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := viteApp(t, "export default { build: { outDir: 'public-build' } }\n")
+	before := readFile(t, filepath.Join(root, "vite.config.ts"))
 	if err := runNewSite(t.Context(), newSiteInput{targetPath: root, projectName: "landing", inPlace: true, harness: "reliant"}); err != nil {
 		t.Fatalf("runNewSite: %v", err)
 	}
 
+	if after := readFile(t, filepath.Join(root, "vite.config.ts")); after != before {
+		t.Fatal("adoption rewrote existing application code")
+	}
+	for _, env := range []string{"dev", "staging", "prod"} {
+		main := readFile(t, filepath.Join(root, "deploy/kcl", env, "main.k"))
+		if !strings.Contains(main, "_session_replay = False") {
+			t.Fatalf("adopted %s silently opted into recording", env)
+		}
+	}
 	for _, absent := range []string{"go.mod", "cmd", "proto", "Dockerfile", "internal", "Taskfile.yml"} {
 		if _, err := os.Stat(filepath.Join(root, absent)); err == nil {
 			t.Errorf("a site must not get %s", absent)
@@ -288,6 +299,7 @@ func TestSiteNextStepsArePasteable(t *testing.T) {
 
 // A harness that reads a memory file gets the SITE memory, not the Go one.
 func TestSiteWritesTheSiteMemoryForAFileHarness(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := viteApp(t, "export default {}\n")
 	if err := runNewSite(t.Context(), newSiteInput{targetPath: root, projectName: "landing", inPlace: true, harness: "claude"}); err != nil {
 		t.Fatal(err)
@@ -320,6 +332,7 @@ func TestProjectNewInPlaceOverARootFrontendPointsAtKindSite(t *testing.T) {
 // the compile check, the contract emitter, workloads.k, the CI workflows
 // that install forge from go.mod) instead of failing on `pattern ./...`.
 func TestGenerateSkipsTheGoStepsForASite(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := viteApp(t, "export default {}\n")
 	if err := runNewSite(t.Context(), newSiteInput{targetPath: root, projectName: "landing", inPlace: true, harness: "reliant"}); err != nil {
 		t.Fatal(err)

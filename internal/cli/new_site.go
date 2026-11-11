@@ -197,6 +197,7 @@ func adoptSite(in newSiteInput, fe generator.SiteFrontend) error {
 	fmt.Printf("✅ Static site '%s' adopted at %s\n", in.projectName, in.targetPath)
 	fmt.Printf("   frontend %q: the %s app at the root (path \".\", builds into %s/)\n", fe.Name, fe.Type, fe.PublicDir)
 	fmt.Println("   wrote forge.yaml, deploy/kcl/kcl.mod, deploy/kcl/{dev,staging,prod}/main.k — no Go, no server")
+	fmt.Println("   Existing app: session recording remains off. To opt in, initialize browser telemetry and enable _session_replay in each env (forge skill load frontend-runtime/telemetry).")
 	for _, line := range inPlaceMergeSummary(merged) {
 		fmt.Println(line)
 	}
@@ -253,19 +254,27 @@ func greenfieldSite(ctx context.Context, in newSiteInput) error {
 	// handed over and package-lock.json is in the first commit. Best-effort,
 	// like every frontend install `project new` runs; FORGE_SKIP_NPM_INSTALL
 	// is the same testing seam `forge scaffold frontend` honours.
+	steps := cliutil.NewStepRunner(Name()+" project new", in.verbose)
+	defer steps.Close() //nolint:errcheck // the log is best-effort
+	if err := steps.MoveLog(filepath.Join(in.targetPath, newProjectLog)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not keep the step log in the project: %v\n", err)
+	}
 	if os.Getenv("FORGE_SKIP_NPM_INSTALL") == "" {
-		fmt.Println("🔧 Installing the site's dependencies (this generates package-lock.json)...")
-		if err := npmInstallIn(ctx, in.targetPath, "the site"); err != nil {
+		err := steps.Run(cliutil.Step{
+			Title:   "site dependencies",
+			Header:  "🔧 Installing the site's dependencies (this generates package-lock.json)...",
+			Summary: installSummary,
+			Run:     func() error { return npmInstallIn(ctx, in.targetPath, "the site") },
+		})
+		if err != nil {
 			fmt.Printf("Warning: %v\n    Run 'npm install' in %s before 'forge env up dev'.\n", err, in.targetPath)
 		}
 	}
 
 	if _, inRepo := gitWorkTreeRoot(ctx, in.targetPath); !inRepo {
-		fmt.Println("🔧 Initializing git repository...")
-		if err := initGitRepositoryWith(ctx, in.targetPath, false); err != nil {
-			reportGitInitError(os.Stdout, err, in.verbose)
-		}
+		initGitStep(ctx, steps, in.targetPath, false, in.verbose)
 	}
+	printStepLog(steps)
 
 	if err := os.Remove(scaffold.markerPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "warning: failed to remove scaffold marker: %v\n", err)
@@ -310,7 +319,7 @@ func siteNextSteps(cd string) []string {
 		{cli + " env up dev", "the dev server (browser console mirrored to .forge/logs/dev/)"},
 		{cli + " lint --static-export", "what a static export cannot serve, with file:line"},
 		{cli + " env build prod --release v0.1.0", "build once, push, record the release"},
-		{cli + " env deploy prod v0.1.0", "publish to hosted static hosting (one env's site per org is free)"},
+		{cli + " env deploy prod v0.1.0", "publish to hosted static hosting (one env's site per person is free)"},
 		{cli + " domain add <host> --env prod", "your own hostname"},
 	}
 	for _, s := range steps {

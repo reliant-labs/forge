@@ -12,6 +12,15 @@ import { FormFieldContext } from "./form_field_context";
  * When used inside a <FormField>, Input auto-picks-up the FormField's
  * generated id so a sibling <Label> can wire `htmlFor` to it without
  * the caller writing any id/htmlFor boilerplate.
+ *
+ * Input is the library's one field, and Textarea, Select, SearchInput and
+ * FilterBar draw the same object: one radius (`rounded-md`), the strong
+ * border with a hover step (`border-border-strong`, `hover:border-ink-muted`),
+ * the card's own fill (`bg-surface`, so a field reads the same on the page
+ * and inside a card), `text-ink` with an `ink-subtle` placeholder, and the
+ * one focus ring (`focus-visible:ring-2 ring-accent`). `sm` is the 32px
+ * toolbar row (h-8, text-sm) — the size FilterBar uses — with a 14px leading
+ * icon 10px in and the text 32px in (`pl-8`).
  */
 export type InputSize = "sm" | "md" | "lg";
 
@@ -23,7 +32,7 @@ export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElem
 }
 
 const sizeStyles: Record<InputSize, string> = {
-  sm: "h-8 px-2.5 text-xs",
+  sm: "h-8 px-2.5 text-sm",
   md: "h-9 px-3 text-sm",
   lg: "h-12 px-3.5 text-base",
 };
@@ -40,12 +49,12 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
 
   const composed = [
     "block w-full rounded-md border bg-surface",
-    "placeholder:text-ink-subtle",
-    "focus:outline-none focus:ring-1",
+    "text-ink placeholder:text-ink-subtle transition-colors",
+    "focus:outline-none focus-visible:ring-2",
     "disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-ink-muted",
     invalid
-      ? "border-danger focus:border-danger focus:ring-danger"
-      : "border-border-strong focus:border-accent focus:ring-accent",
+      ? "border-danger focus-visible:ring-danger"
+      : "border-border-strong hover:border-ink-muted focus-visible:ring-accent",
     sizeStyles[inputSize],
     className ?? "",
   ]

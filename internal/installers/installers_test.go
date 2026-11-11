@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // repoFile returns the repo-relative path's absolute form and reads it in the
@@ -168,6 +170,7 @@ func requireUnix(t *testing.T) {
 }
 
 func TestInstallSh_LatestInstallsVerifiedBinary(t *testing.T) {
+	testkit.Slow(t, "execs curl, sh and tar")
 	requireUnix(t)
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
@@ -196,6 +199,7 @@ func TestInstallSh_LatestInstallsVerifiedBinary(t *testing.T) {
 }
 
 func TestInstallSh_NoPathHintWhenDirOnPath(t *testing.T) {
+	testkit.Slow(t, "execs curl, sh and tar")
 	requireUnix(t)
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
@@ -211,6 +215,7 @@ func TestInstallSh_NoPathHintWhenDirOnPath(t *testing.T) {
 }
 
 func TestInstallSh_PinnedVersion(t *testing.T) {
+	testkit.Slow(t, "execs curl, sh and tar")
 	requireUnix(t)
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
@@ -230,6 +235,7 @@ func TestInstallSh_PinnedVersion(t *testing.T) {
 }
 
 func TestInstallSh_UnknownVersionFailsAndInstallsNothing(t *testing.T) {
+	testkit.Slow(t, "execs sh and curl")
 	requireUnix(t)
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
@@ -247,6 +253,7 @@ func TestInstallSh_UnknownVersionFailsAndInstallsNothing(t *testing.T) {
 }
 
 func TestInstallSh_ChecksumMismatchInstallsNothing(t *testing.T) {
+	testkit.Slow(t, "execs curl and sh")
 	requireUnix(t)
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, func(string, []byte) string { return strings.Repeat("ab", 32) })
@@ -264,6 +271,7 @@ func TestInstallSh_ChecksumMismatchInstallsNothing(t *testing.T) {
 }
 
 func TestInstallSh_MissingChecksumEntryFails(t *testing.T) {
+	testkit.Slow(t, "execs curl and sh")
 	requireUnix(t)
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
@@ -278,6 +286,7 @@ func TestInstallSh_MissingChecksumEntryFails(t *testing.T) {
 }
 
 func TestInstallSh_ReplacesExistingBinary(t *testing.T) {
+	testkit.Slow(t, "execs curl, sh and tar")
 	requireUnix(t)
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
@@ -299,6 +308,7 @@ func TestInstallSh_ReplacesExistingBinary(t *testing.T) {
 }
 
 func TestInstallSh_DefaultsToHomeLocalBin(t *testing.T) {
+	testkit.Slow(t, "execs curl, sh and tar")
 	requireUnix(t)
 	rel := newRelease(t)
 	rel.publish(t, "v0.9.0", true, goodSum)
@@ -315,6 +325,7 @@ func TestInstallSh_DefaultsToHomeLocalBin(t *testing.T) {
 }
 
 func TestInstallSh_RejectsBadVersion(t *testing.T) {
+	testkit.Slow(t, "execs sh")
 	requireUnix(t)
 	rel := newRelease(t)
 	res := runInstall(t, "sh", rel, "", "FORGE_VERSION=v1.2.3/../../x")
@@ -329,6 +340,7 @@ func TestInstallSh_RejectsBadVersion(t *testing.T) {
 // install.sh is documented as POSIX sh; prove it under dash, which is stricter
 // than bash about bashisms.
 func TestInstallSh_RunsUnderDash(t *testing.T) {
+	testkit.Slow(t, "execs curl and tar")
 	requireUnix(t)
 	dash, err := exec.LookPath("dash")
 	if err != nil {

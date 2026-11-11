@@ -121,7 +121,9 @@ func TestBareGroupStillPrintsHelp(t *testing.T) {
 			t.Errorf("bare `forge %s` failed (%v) — it must print help and succeed", group, err)
 			continue
 		}
-		if !strings.Contains(out, "Available Commands:") {
+		// env's help is grouped (envCommandGroups), so it heads its list
+		// with the group titles instead of "Available Commands:".
+		if !strings.Contains(out, "Available Commands:") && !strings.Contains(out, "\nLifecycle:\n") {
 			t.Errorf("bare `forge %s` printed no command list:\n%s", group, out)
 		}
 	}

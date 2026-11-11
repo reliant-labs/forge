@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const modLineOut = `/x/protoc-gen-go: go1.24.0
@@ -97,6 +99,7 @@ func TestToolMatchesRealBinary(t *testing.T) {
 // "installed binary reports unknown", and a fresh project's bootstrap
 // generate failed in CI (TestE2EFixtureCorpusKalshiShaped).
 func TestInstallPinnedTool_ReadersNeverSeeAPartialBinary(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	full := strings.Repeat("x", 64)
 	prev := goInstallPinned
 	t.Cleanup(func() { goInstallPinned = prev })

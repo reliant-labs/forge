@@ -13,6 +13,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/dbquery"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // fakeQueryDatabase is a control plane that answers QueryDatabase with reply
@@ -132,6 +133,7 @@ func TestDBQueryHostedRunsThroughTheControlPlane(t *testing.T) {
 // the control plane judges from the recorded shape. A declared deny does not
 // stop the call; a confirmation for another env is not passed on.
 func TestDBQueryHostedLeavesThePolicyToTheControlPlane(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	withKCLFixture(t, hostedDBQueryFixture("deny"))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	fake := &fakeQueryDatabase{reply: queryDatabaseReply}
@@ -248,6 +250,7 @@ func TestDBQueryHostedTruncatedByFollowsTheRowCap(t *testing.T) {
 // said to have run: no release lookup (which would ask the same dead
 // endpoint again, and warn a second time for the same cause).
 func TestDBQueryHostedUnreachableDoesNotLookUpTheRelease(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	withKCLFixture(t, hostedDBQueryFixture("open"))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	prevOpen := dbQueryCloudOpen
@@ -278,6 +281,7 @@ func TestDBQueryHostedUnreachableDoesNotLookUpTheRelease(t *testing.T) {
 // A refused credential keeps forge's remedy: which credential was used and how
 // to get the missing scope, not only the control plane's one line.
 func TestDBQueryHostedForbiddenKeepsTheRemedy(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	withKCLFixture(t, hostedDBQueryFixture("open"))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -309,6 +313,7 @@ func TestDBQueryHostedForbiddenKeepsTheRemedy(t *testing.T) {
 // into "could not be reached" (and holds cp's in-flight slot until the server
 // notices). The open is handed the statement timeout to size it.
 func TestDBQueryHostedHTTPClientOutlastsTheStatement(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	ep := cloud.Endpoint{Env: "prod", URL: "http://cp.invalid"}
 	for _, stmt := range []time.Duration{0, time.Second, dbquery.MaxTimeout} {
 		eff := stmt
@@ -341,6 +346,7 @@ func TestDBQueryHostedHTTPClientOutlastsTheStatement(t *testing.T) {
 // A 403 that is not about a scope (the env's policy, a missing grant) is the
 // control plane's refusal of the request: its message, not "sign in again".
 func TestDBQueryHostedPolicyRefusalIsNotACredentialProblem(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	withKCLFixture(t, hostedDBQueryFixture("open"))
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

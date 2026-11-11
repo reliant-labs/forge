@@ -40,6 +40,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const (
@@ -180,6 +182,7 @@ func TestWaitForGoProxy_RaceUnwaitedResolutionFails(t *testing.T) {
 // TestWaitForGoProxy_ServedImmediatelyIsFast is the common case: a version
 // already ingested costs one probe and no sleep.
 func TestWaitForGoProxy_ServedImmediatelyIsFast(t *testing.T) {
+	testkit.Slow(t, "execs curl and bash")
 	ip := newIngestingProxy(t, 1, 1)
 	out, err := runWaitForGoProxy(t, ip.url, "600", "5", "30", "--tag-pushed")
 	if err != nil {
@@ -237,6 +240,7 @@ func TestWaitForGoProxy_WaitsForTheChecksumDatabaseToo(t *testing.T) {
 // module the checksum database never sees (a GOPRIVATE module). It must not
 // probe the sumdb at all.
 func TestWaitForGoProxy_SkipSumdbStopsAtTheProxy(t *testing.T) {
+	testkit.Slow(t, "execs bash and curl")
 	ip := newIngestingProxy(t, 1, 0) // sumdb NEVER serves
 	out, err := runWaitForGoProxy(t, ip.url, "10", "1", "1", "--tag-pushed", "--skip-sumdb")
 	if err != nil {
@@ -319,6 +323,7 @@ func TestWaitForGoProxy_UnreachableEndpointIsNotMistakenForUningested(t *testing
 // TestWaitForGoProxy_RequiresModuleAndVersion pins the argument contract: a
 // missing argument must be a usage error, never a vacuous pass.
 func TestWaitForGoProxy_RequiresModuleAndVersion(t *testing.T) {
+	testkit.Slow(t, "execs bash")
 	for _, args := range [][]string{
 		{"--module", waitTestModule},
 		{"--version", waitTestVersion},

@@ -138,6 +138,12 @@ var machineWideFlags = map[string]string{
 // forge's root; "" is the root itself). machineWide is whether the run spans
 // every project on the machine (machineWideRun).
 func handOffModeFor(rel string, machineWide bool) handOffMode {
+	if isMovedNounGroup(rel) {
+		// A noun that only holds moved commands (`dev`, `machine`): alone,
+		// it prints its help, and a forge older than the nouns has no such
+		// command to hand it to.
+		return runHere
+	}
 	for _, ex := range handOffExempt {
 		if rel == ex || (ex != "" && strings.HasPrefix(rel, ex+" ")) {
 			return runHere
@@ -272,7 +278,7 @@ func parseInvocation(args []string) invocation {
 	}
 	cmd.FParseErrWhitelist.UnknownFlags = true
 	_ = cmd.ParseFlags(rest)
-	inv := invocation{rel: strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath()))}
+	inv := invocation{rel: commandRel(cmd, root)}
 	inv.allow, _ = cmd.Flags().GetBool(allowVersionSkewFlag)
 	inv.machineWide = machineWideRun(inv.rel, cmd.Flags())
 	inv.projectDir, _ = cmd.Flags().GetString("project-dir")
@@ -437,7 +443,10 @@ func handOff(ctx context.Context, w io.Writer, rel string, machineWide, allow bo
 	}
 	// handed: the decision was the delegate's, so nothing runs here even
 	// when it failed; its error (and exit code) is returned as is.
-	return true, execPinned(w, t, res, args)
+	// The pinned forge may predate the 14 nouns: it is given the spelling
+	// every forge has (legacyArgs), and told not to warn about it.
+	args, rewritten := legacyArgs(args)
+	return true, execPinned(w, t, res, args, rewritten)
 }
 
 // pinTarget is the forge the command at rel must run under in projectRoot,
@@ -468,7 +477,9 @@ type PinnedForge struct {
 	// Path is the executable.
 	Path string
 	// Key identifies exactly which forge it is, for a cache of what it
-	// prints: the pinned version, or a linked checkout and its contents.
+	// prints: the pinned version ("pin:", a module version that never
+	// changes), a linked checkout and its contents, or for a +dirty pin the
+	// binary file that reports it and that file's size and mtime.
 	Key string
 	// Want says which forge the project wants, for a message.
 	Want string
@@ -492,7 +503,7 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 	if err != nil {
 		return PinnedForge{}, false, handOffFailure(projectRoot, t, command, err)
 	}
-	return PinnedForge{Path: res.Path, Key: t.key(), Want: t.String()}, true, nil
+	return PinnedForge{Path: res.Path, Key: t.resultKey(res.Path), Want: t.String()}, true, nil
 }
 
 // noteUnpinned says which forge runs when no project pin decides it. Only an
@@ -553,6 +564,22 @@ func (t delegateTarget) key() string {
 	return "pin:" + t.pin
 }
 
+// resultKey is key for the forge t resolved to at path. A +dirty pin names a
+// working tree, not a commit: the binary that reports it (the project's
+// .tools/bin/forge) can be rebuilt with new code and the same version, so its
+// key is that file's identity, never the pin alone — and never "pin:", which
+// a host treats as a module version whose output can be kept for good.
+func (t delegateTarget) resultKey(path string) string {
+	if t.checkout != "" || !forgecompat.DirtyVersion(t.pin) {
+		return t.key()
+	}
+	stamp := "unknown"
+	if st, err := os.Stat(path); err == nil {
+		stamp = strconv.FormatInt(st.Size(), 10) + "@" + strconv.FormatInt(st.ModTime().UnixNano(), 10)
+	}
+	return "build:" + t.pin + "@" + path + "@" + stamp
+}
+
 func (t delegateTarget) String() string {
 	if t.checkout != "" {
 		return "the checkout " + t.checkout + " this project is linked to"
@@ -590,10 +617,14 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 // delegate's exit status IS this process's, and it returns only when exec(2)
 // itself failed; on Windows it relays the delegate's exit status; a test seam
 // returns the delegate's error. Callers propagate that error unchanged.
-func execPinned(w io.Writer, t delegateTarget, res forgedelegate.Result, args []string) error {
+func execPinned(w io.Writer, t delegateTarget, res forgedelegate.Result, args []string, respelled bool) error {
 	_, _ = fmt.Fprintf(w, "forge: this forge is %s, but the project wants %s — running %s instead (%s, or %s=1, to run this one)\n",
 		t.binary, t, res.Source, "--"+allowVersionSkewFlag, allowVersionSkewEnv)
-	return pinDelegateExec(res.Path, args, forgedelegate.Env(t.String()))
+	env := forgedelegate.Env(t.String())
+	if respelled {
+		env = append(env, noDeprecationWarningsEnv+"=1")
+	}
+	return pinDelegateExec(res.Path, args, env)
 }
 
 // resolveTarget finds, or builds, the forge t names.
@@ -610,6 +641,8 @@ func resolveTarget(ctx context.Context, w io.Writer, projectRoot string, t deleg
 // named when it reports the pin (nothing to download or build); otherwise the
 // `go run` form, which fetches and builds the pin into Go's cache.
 func pinnedRunLine(projectRoot, pin string, args []string) string {
+	// The pinned forge may predate the 14 nouns (deprecated_aliases.go).
+	args, _ = legacyArgs(args)
 	if local, ok := pinDelegateResolver(io.Discard).LocalPinned(context.Background(), projectRoot, pin); ok {
 		if abs, err := filepath.Abs(local); err == nil {
 			local = abs

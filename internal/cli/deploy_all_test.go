@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // O-15: `forge env deploy <env>` with no version does ALL the deployment
@@ -248,6 +249,7 @@ func chooseFor(t *testing.T, dir string, prov release.Provenance) deployReleaseC
 // script cut as `<date>-<commit>` is found by its tree, its forge and its
 // coverage of the env — the 2026-10-09 prod shape.
 func TestChooseDeployRelease_ReusesAReleaseOfThisCheckoutWhateverItIsNamed(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := deployAllProject(t)
 	stubDeployCheckout(t, deployTestProvenance(), deployTestEnvRender)
 	cutTestRelease(t, dir, "20261009.205925-d29da50b", deployTestProvenance(), map[string]string{deployTestImage: sha("1")})
@@ -273,6 +275,7 @@ func TestChooseDeployRelease_ReusesAReleaseOfThisCheckoutWhateverItIsNamed(t *te
 // go.mod pinned (forge reports fca68889, a68a8644); the release that commit
 // cut is still this forge's, so it is reused rather than cut again.
 func TestChooseDeployRelease_ReusesAReleaseBuiltByTheSameForgeCommitUnderAnotherName(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := deployAllProject(t)
 	recorded := deployTestProvenance()
 	recorded.ForgeVersion = "v0.1.43-0.20261009203931-bc24a9963fd6" // deployTestForge's commit, an older base
@@ -442,6 +445,7 @@ func TestAutoVersion(t *testing.T) {
 // An unknown version's fix is `forge env deploy <env>`, NEVER --no-build.
 // This is the exact text the owner was given on hounders prod.
 func TestDeployUnknownVersion_FixIsTheDeployVerbNotNoBuild(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := deployAllProject(t)
 	t.Chdir(dir)
 	err := runPromote(context.Background(), "v9.9.9", "prod", promoteOptions{

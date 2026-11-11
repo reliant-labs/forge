@@ -3,6 +3,8 @@ package devstack
 import (
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A PRE-MAPPED PORT THAT ANSWERS IS NOT A TAKEN BLOCK.
@@ -35,6 +37,7 @@ import (
 // failure. Every port in the block range answers, exactly as a live k3d
 // cluster makes them, and the allocation must still succeed at block 1.
 func TestNamedKeyIgnoresPreMappedPorts(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setMaxStacksLimit(t, 8)
 	setActiveWorktree(t, "wt-new")
@@ -95,6 +98,7 @@ func TestNamedKeyBlockIsDeterministicNotProbed(t *testing.T) {
 // one — forge refuses to adopt an identity provider it did not start — so the
 // default key must still step past a foreign holder.
 func TestDefaultKeyStillAvoidsForeignPort(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setMaxStacksLimit(t, 8)
 	setActiveWorktree(t, "")
@@ -115,6 +119,7 @@ func TestDefaultKeyStillAvoidsForeignPort(t *testing.T) {
 // `prune` only helps if a listed stack is stale; if every stack is live the
 // only path forward is a wider ceiling AND a regenerated cluster pre-map.
 func TestCeilingMessageNamesTheRealRemedy(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setMaxStacksLimit(t, 2)
 	setActiveWorktree(t, "")

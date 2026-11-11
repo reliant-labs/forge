@@ -15,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgecompat"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func upgradeWrite(t *testing.T, path, body string) {
@@ -122,6 +123,7 @@ func TestUpgradeModulesOfflineCompatibility(t *testing.T) {
 // Fake runner tests stay fast/cache-sound and force failures AFTER writes,
 // including a later module failing after an earlier module succeeded.
 func TestUpgradeModuleFailureRestoresProject(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	for _, failAt := range []int{1, 2, 3, 4} {
 		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
 			root := newTestProjectWithVersion(t, "v0.1.0")
@@ -324,6 +326,7 @@ func TestUpgradeModulesPseudoVersionRecovery(t *testing.T) {
 }
 
 func TestUpgradeCheckReportsModuleDriftReadOnly(t *testing.T) {
+	testkit.Slow(t, "execs git and go")
 	root := newTestProjectWithVersion(t, "v0.1.1-issue762.fixture1") // YAML already current: modules still need repair.
 	old := "module example.com/app\n\ngo 1.24\n\nrequire " + forgecompat.ModulePath + " v0.1.0-issue762.fixture1\n"
 	for _, dir := range []string{".", "gen", "tools/worker"} {

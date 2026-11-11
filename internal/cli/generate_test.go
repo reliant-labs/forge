@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // addforgeReplaceMain points the project's go.mod at the in-repo forge with a
@@ -200,6 +201,7 @@ func TestWriteDefaultBufGenYaml(t *testing.T) {
 }
 
 func TestRunBufGenerateTypeScriptWritesWorkspaceRelativeConfig(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	requirePOSIXFake(t, "buf")
 	dir := t.TempDir()
 

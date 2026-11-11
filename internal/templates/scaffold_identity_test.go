@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A project with a frontend is born with ONE identity declaration that every
@@ -12,6 +14,7 @@ import (
 // plane in staging and prod. Asserted on the render, which is what every
 // forge command reads.
 func TestScaffoldDeclaresManagedIdentityForEveryEnv(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
 
 	src, err := os.ReadFile(filepath.Join(root, "deploy/kcl/identity.k"))
@@ -50,6 +53,7 @@ func TestScaffoldDeclaresManagedIdentityForEveryEnv(t *testing.T) {
 // No frontend, no one to sign in: no identity.k and no identity on any env,
 // and the envs still render.
 func TestScaffoldWithoutFrontendDeclaresNoIdentity(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "")
 	if _, err := os.Stat(filepath.Join(root, "deploy/kcl/identity.k")); err == nil {
 		t.Error("a project with no frontend was handed an identity.k")

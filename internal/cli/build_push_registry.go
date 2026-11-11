@@ -32,6 +32,11 @@ type imageDestination struct {
 	repository string
 	// workload names the declaration it came from.
 	workload string
+	// mirror marks a third-party image forge COPIES into the platform
+	// registry at release time rather than builds (hostedimage.MirrorRepository).
+	// It is a push destination — the build logs in to its host — but no
+	// build artifact is ever tagged for it, so repositoryFor skips it.
+	mirror bool
 }
 
 // host is the registry host `docker login` authenticates against for this
@@ -84,7 +89,7 @@ func (p pushPlan) printHeader() {
 // render is what refuses a bare image on a runtime that must pull one.
 func (p pushPlan) repositoryFor(name string) string {
 	for _, d := range p.destinations {
-		if repositoryName(d.repository) == name {
+		if !d.mirror && repositoryName(d.repository) == name {
 			return d.repository
 		}
 	}
@@ -284,7 +289,10 @@ func resolveHostedImageBase(base, image string) string {
 //
 //  1. Only a workload forge BUILDS contributes. A third-party image
 //     (`docker.io/library/nats:2.10`) is pulled, never pushed, so including it
-//     would have `forge registry login` demand docker.io credentials.
+//     would have `forge registry login` demand docker.io credentials. The one
+//     exception is a third-party image on a HOSTED workload outside the push
+//     base: forge copies it INTO the platform registry at release time, so
+//     its mirror address (never the source) is a destination.
 //  2. Only a workload on a runtime that involves a REGISTRY contributes. A
 //     workload bound OnHost or OnCompose runs from the local filesystem or a
 //     compose file — nothing pulls an image for it, so its declared reference
@@ -314,6 +322,7 @@ func declaredImageDestinationsWithBase(e *KCLEntities, pushBase string) []imageD
 		return nil
 	}
 	seen := map[string]string{}
+	mirrors := map[string]bool{}
 	add := func(repo, owner string) {
 		if registryHost(repo) == "" {
 			// No host: not a pushable destination. The render refuses a
@@ -326,6 +335,13 @@ func declaredImageDestinationsWithBase(e *KCLEntities, pushBase string) []imageD
 		}
 	}
 	for _, w := range e.Workloads {
+		if w.Build.Type == "" && w.Runtime.Type == RuntimeHosted {
+			if mirror := hostedimage.MirrorRepository(pushBase, imageRepository(w.Spec.Image)); mirror != "" {
+				add(mirror, w.Name)
+				mirrors[mirror] = true
+			}
+			continue
+		}
 		if w.Build.Type == "" || w.Image == "" {
 			continue
 		}
@@ -350,7 +366,7 @@ func declaredImageDestinationsWithBase(e *KCLEntities, pushBase string) []imageD
 	}
 	out := make([]imageDestination, 0, len(seen))
 	for repo, workload := range seen {
-		out = append(out, imageDestination{repository: repo, workload: workload})
+		out = append(out, imageDestination{repository: repo, workload: workload, mirror: mirrors[repo]})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].repository < out[j].repository })
 	return out

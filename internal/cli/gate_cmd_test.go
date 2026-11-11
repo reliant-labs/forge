@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // gateFixture is a promoted env with a gate store bound to the same fake
@@ -380,6 +381,7 @@ func TestGateRecord_UnpromotedEnvIsRefused(t *testing.T) {
 // A FILE-BACKED env cannot hold post-promote evidence: its entries are lines
 // already written. Said plainly, with the promote-time alternative.
 func TestGateRecord_FileLedgerSaysWhyAndWhatToDoInstead(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	ledger := testLedger(t, dir)
 	if _, err := ledger.Bindings.Append(context.Background(),

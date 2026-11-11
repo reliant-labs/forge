@@ -19,6 +19,8 @@ Every frontend ships low-level primitives under `src/components/ui/`. Compose th
 | `select` | Options array, sizes, invalid state |
 | `toast_notification` | The toast STACK, rendered once by the owned `providers.tsx`. Never call it directly — fire `emitToast({ message, variant })` from `@/lib/events` |
 
+**One field.** `input`, `textarea`, `select`, `search_input` and `filter_bar` draw the same control: `rounded-md`, `border-border-strong` (hover `border-ink-muted`), `bg-surface`, `text-ink` with an `ink-subtle` placeholder, and the one focus ring (`focus-visible:ring-2 ring-accent`). `sm` is the 32px toolbar row (`h-8`, `text-sm`, a 14px leading icon); `FilterBar` renders its search and selects at `sm`, so pass `inputSize="sm"` / `selectSize="sm"` to controls you add in its `children`. Restyle a field by editing `input.tsx` and its siblings, not per call site.
+
 Plus auto-installed: `sidebar_layout`, `page_header`, `badge`, `modal`, `skeleton_loader`, `pagination`, `search_input`, `alert_banner`, `key_value_list`, `login_form`. All `overwrite: once` — yours after install.
 
 Two carry aliases; write against canonical. **`Badge`** — `error`/`success`/`warning`/`info`/`neutral`, aliases `danger→error`, `default→neutral`. **`Modal`** — canonical footer is the **`footer` slot prop**; rewrite footer-in-`children` when you next touch it. (`Button`'s destructive variant is `danger`, not `error`.)

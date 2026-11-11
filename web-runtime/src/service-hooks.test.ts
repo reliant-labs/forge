@@ -982,6 +982,81 @@ describe("createMutationCall + createServiceMutations", () => {
     }
   });
 
+  it("replaces broad invalidation with the app's exact scope after success", async () => {
+    const { client, orderKey, otherKey } = seeded();
+    const response = { id: "written" };
+    let completed = false;
+    const call = vi.fn(async () => {
+      completed = true;
+      return response;
+    });
+    const invalidate = vi.fn((qc: QueryClient) => {
+      expect(completed).toBe(true);
+      expect(qc).toBe(client);
+      void qc.invalidateQueries({ queryKey: orderKey });
+    });
+    const write = createServiceMutations({
+      write: createMutationCall(keys.all, call),
+    })(client).write;
+
+    expect(await write({}, { invalidate })).toBe(response);
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(client.getQueryState(orderKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(otherKey)?.isInvalidated).toBe(false);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(client.getMutationCache().getAll()).toEqual([]);
+
+    // Overrides belong to one call, not to the bound table or later writes.
+    await write({});
+    expect(client.getQueryState(otherKey)?.isInvalidated).toBe(true);
+  });
+
+  it("does not call the override on RPC rejection or aborted rejection", async () => {
+    for (const aborted of [false, true]) {
+      const { client, orderKey, otherKey } = seeded();
+      const controller = new AbortController();
+      if (aborted) controller.abort();
+      const error = new Error(aborted ? "aborted" : "failed");
+      const invalidate = vi.fn();
+      const call = vi.fn(async () => {
+        throw error;
+      });
+      const write = createServiceMutations({
+        write: createMutationCall(keys.all, call),
+      })(client).write;
+      await expect(
+        write({}, { signal: controller.signal, invalidate }),
+      ).rejects.toBe(error);
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(client.getQueryState(orderKey)?.isInvalidated).toBe(false);
+      expect(client.getQueryState(otherKey)?.isInvalidated).toBe(false);
+    }
+  });
+
+  it("does not await refetches or retry a callback failure after a successful write", async () => {
+    const call = vi.fn(async () => ({ id: "written" }));
+    const write = createServiceMutations({
+      write: createMutationCall(keys.all, call),
+    })(new QueryClient()).write;
+    const pending = new Promise<void>(() => {});
+    expect(await write({}, { invalidate: () => pending })).toEqual({
+      id: "written",
+    });
+    const error = new Error("local invalidation failed after write");
+    await expect(
+      write(
+        {},
+        {
+          invalidate: () => {
+            throw error;
+          },
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(call).toHaveBeenCalledTimes(2); // one RPC per invocation, never retry
+  });
+
   it("rejects with the rpc's error and invalidates nothing", async () => {
     const { client, orderKey } = seeded();
     const boom = new Error("denied");

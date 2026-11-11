@@ -13,6 +13,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const reliantMigrations = "github.com/reliant-labs/reliant/db/migrations"
@@ -207,6 +208,7 @@ func (n noHistoryBindings) Location() string { return n.s.Location() }
 // The cut records the project's own directory from disk — including a file
 // no commit holds yet, because go:embed embeds the working tree.
 func TestCaptureReleaseMigrationsReadsTheProjectFromDisk(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	mig := filepath.Join(dir, "db", "migrations")
 	if err := os.MkdirAll(mig, 0o755); err != nil {

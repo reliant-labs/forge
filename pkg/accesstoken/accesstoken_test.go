@@ -585,7 +585,7 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	got := daemon.Admissible()
 	for _, s := range AllScopes {
 		rule, bound := scopeResourceRules[s]
-		elsewhere := (bound && rule.required && rule.kind != ResourceDaemon) || personOnly(s)
+		elsewhere := (bound && rule.required && rule.kind != ResourceDaemon) || personOnly(s) || RegistryOnly(s)
 		if got.Has(s) == elsewhere {
 			t.Errorf("daemon wildcard holds %s = %v; it must hold every scope that does not require a %s binding",
 				s, got.Has(s), rule.kind)
@@ -606,7 +606,7 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	unbound := Grant{ActingUserID: "user"}.Admissible()
 	for _, s := range AllScopes {
 		rule, bound := scopeResourceRules[s]
-		if unbound.Has(s) == ((bound && rule.required) || personOnly(s)) {
+		if unbound.Has(s) == ((bound && rule.required) || personOnly(s) || RegistryOnly(s)) {
 			t.Errorf("unbound wildcard holds %s = %v", s, unbound.Has(s))
 		}
 	}
@@ -827,3 +827,95 @@ func TestDaemonManage_IsAPersonsOwnUnboundAuthority(t *testing.T) {
 		t.Fatal("a daemon credential could mint daemon:manage")
 	}
 }
+
+// TestSourcemapsWrite_IsARegistryOnlyCredential pins sourcemaps:write: a whole
+// credential, not one authority among others. Every way to widen it is refused
+// (another scope beside it, a person behind it, a binding, an ephemeral session,
+// a wildcard resolving to it), it implies nothing and nothing implies it, and
+// deploy:write is unchanged by it.
+func TestSourcemapsWrite_IsARegistryOnlyCredential(t *testing.T) {
+	now := time.Now()
+	got, ok := ParseScope("sourcemaps:write")
+	if !ok || got != ScopeSourcemapsWrite {
+		t.Fatalf("ParseScope(sourcemaps:write) = %q, %v", got, ok)
+	}
+	if !RegistryOnly(ScopeSourcemapsWrite) || !SetOf(ScopeSourcemapsWrite).RegistryOnly() {
+		t.Fatal("sourcemaps:write must be registry-only")
+	}
+
+	// ── deny paths ──
+	refused := map[string]Grant{
+		"beside deploy:write": {OrgID: "o", Name: "ci", Scopes: SetOf(ScopeSourcemapsWrite, ScopeDeployWrite)},
+		"beside deploy:read":  {OrgID: "o", Name: "ci", Scopes: SetOf(ScopeSourcemapsWrite, ScopeDeployRead)},
+		"acting as a person":  {OrgID: "o", Name: "ci", Scopes: SetOf(ScopeSourcemapsWrite), ActingUserID: "u"},
+		"bound to a daemon": {OrgID: "o", Name: "ci", Scopes: SetOf(ScopeSourcemapsWrite), ActingUserID: "u",
+			Resource: &Resource{Kind: ResourceDaemon, ID: "d1"}},
+		"bound to an env": {OrgID: "o", Name: "ci", Scopes: SetOf(ScopeSourcemapsWrite),
+			Resource: &Resource{Kind: ResourceEnvironment, ID: "e1"}},
+		"ephemeral": {OrgID: "o", Name: "ci", Scopes: SetOf(ScopeSourcemapsWrite), Ephemeral: true,
+			Resource: &Resource{Kind: ResourceDaemon, ID: "d1"}, ExpiresAt: ptrTime(now.Add(time.Hour))},
+	}
+	for _, other := range AllScopes {
+		if other == ScopeSourcemapsWrite {
+			continue
+		}
+		g := Grant{OrgID: "o", Name: "ci", Scopes: SetOf(ScopeSourcemapsWrite, other), ActingUserID: "u"}
+		refused["beside "+string(other)+" acting as a person"] = g
+		g.ActingUserID = ""
+		refused["beside "+string(other)] = g
+	}
+	for name, g := range refused {
+		if err := g.Validate(now); err == nil || !errors.Is(err, ErrInvalidGrant) {
+			t.Errorf("%s: Validate = %v, want ErrInvalidGrant", name, err)
+		}
+	}
+	// No wildcard resolves to it: daemon-bound, unbound person, org automation.
+	for name, g := range map[string]Grant{
+		"daemon":          {ActingUserID: "u", Resource: &Resource{Kind: ResourceDaemon, ID: "d1"}},
+		"unbound person":  {ActingUserID: "u"},
+		"org automation":  {},
+		"env-bound token": {Resource: &Resource{Kind: ResourceEnvironment, ID: "e1"}},
+	} {
+		if g.Admissible().Has(ScopeSourcemapsWrite) || g.Admissible().RegistryOnly() {
+			t.Errorf("a %s wildcard resolved to a registry-only scope", name)
+		}
+	}
+	// It implies nothing, nothing implies it, and nothing else may mint it.
+	for _, other := range AllScopes {
+		if other == ScopeSourcemapsWrite {
+			continue
+		}
+		if SetOf(ScopeSourcemapsWrite).Permits(other) {
+			t.Errorf("sourcemaps:write permitted %s", other)
+		}
+		if SetOf(other).Permits(ScopeSourcemapsWrite) {
+			t.Errorf("%s permitted sourcemaps:write", other)
+		}
+		if SetOf(other).RegistryOnly() {
+			t.Errorf("%s is registry-only", other)
+		}
+	}
+	if SetOf(ScopeTokenWrite, ScopeDeployWrite).Covers(SetOf(ScopeSourcemapsWrite)) {
+		t.Error("a deploy:write + token:write holder could mint sourcemaps:write without holding it")
+	}
+	// A registry-only token cannot mint either (it holds no token:write).
+	if err := (Grant{OrgID: "o", Name: "x", Scopes: SetOf(ScopeSourcemapsWrite), GrantorScopes: SetOf(ScopeSourcemapsWrite)}).Validate(now); err != nil {
+		t.Errorf("re-granting exactly its own scope is the Covers rule's business, got %v", err)
+	}
+
+	// ── the one admitted shape: an unbound, non-ephemeral org automation token ──
+	ok1 := Grant{OrgID: "o", Name: "desktop-sourcemaps", Scopes: SetOf(ScopeSourcemapsWrite), ExpiresAt: ptrTime(now.Add(90 * 24 * time.Hour))}
+	if err := ok1.Validate(now); err != nil {
+		t.Fatalf("an org automation sourcemaps:write token was refused: %v", err)
+	}
+	if RequiresActingUser(ScopeSourcemapsWrite) {
+		t.Error("sourcemaps:write must not require an acting user")
+	}
+
+	// deploy:write is unchanged: still valid alone, still not registry-only.
+	if err := (Grant{OrgID: "o", Name: "ci", Scopes: SetOf(ScopeDeployWrite)}).Validate(now); err != nil || SetOf(ScopeDeployWrite).RegistryOnly() {
+		t.Errorf("deploy:write changed: %v", err)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }

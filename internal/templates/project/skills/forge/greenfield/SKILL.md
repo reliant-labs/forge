@@ -50,8 +50,9 @@ deployment unit, not a domain entity, so forge never invents a service from its 
 | `--path <dir>` | parent directory for the project (default `.`) |
 
 Everything else has a working default — `--kind` (`service` / `cli` / `library`,
-each with its own `features:` block), `--harness`, `--disable`, `--go-version`,
-`--force`: `forge project new --help`.
+each with its own `features:` block), `--harness` (`none` writes no agent file at
+all — no AGENTS.md, pointers or .mcp.json — for a repo that keeps its own),
+`--disable`, `--go-version`, `--force`: `forge project new --help`.
 
 ## Evolving the schema
 

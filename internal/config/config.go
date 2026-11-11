@@ -116,6 +116,8 @@ type ProjectConfig struct {
 	// which every harness gets. Forge never writes skill bodies for any
 	// harness. Empty means reliant.
 	Harness string `yaml:"harness,omitempty"`
+
+	Scaffold ScaffoldConfig `yaml:"scaffold,omitempty"` // paths forge never writes; see scaffold.go
 	// NOTE: there is intentionally NO project-level `hot_reload:` field.
 	// The single hot-reload switch is `features.hot_reload`, which the dev
 	// loop and the air-config codegen actually read; a second top-level key

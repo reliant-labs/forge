@@ -556,7 +556,7 @@ func TestFlamegraphUsesForgesSQLOnTheOrgDatabase(t *testing.T) {
 }
 
 func TestOperatorSource(t *testing.T) {
-	for s, want := range map[string]bool{"daemon": true, "platform": true, "gateway": true, "env": false, "": false, "other": false} {
+	for s, want := range map[string]bool{"daemon": true, "platform": true, "gateway": true, "ingress": true, "env": false, "": false, "other": false} {
 		if OperatorSource(s) != want {
 			t.Errorf("OperatorSource(%q) != %v", s, want)
 		}

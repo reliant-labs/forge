@@ -408,6 +408,20 @@ _Enforced · Forge, on any infrastructure_
 - skill `db/store` (`forge skill load db/store`)
 - skill `db` (`forge skill load db`)
 
+<a id="orm-opt-out"></a>
+
+### Keep your own data layer
+
+A project with a hand-written repository layer keeps forge's migrations and codegen without the generated ORM, by pinning `features: {orm: false}` in forge.yaml or marking the package `//forge:no-orm`.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- marker `// forge:no-orm`
+- command `forge project features`
+- skill `db/orm-and-safety` (`forge skill load db/orm-and-safety`)
+
 <a id="migration-safety"></a>
 
 ### Migration safety checks
@@ -3731,14 +3745,18 @@ _Enforced · Forge, on any infrastructure_
 
 ### Agent memory file generated
 
-`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge.
+`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge, and describes the project as it is: an adopted app gets the forge pieces it uses and its own test commands, never forge's greenfield layout.
 
 _Enforced · Forge, on any infrastructure_
+
+**Why:** Read off the tree and forge.yaml: a forge Go service gets the full Go guide; an adopted app keeps its language and layout, with sections only for what it opted into (deploy envs, monitoring, its migration tool, frontends) and the gate taken from its Taskfile, package.json scripts or Makefile; a static site gets the frontend guide.
 
 **Evidence:**
 
 - command `forge project memory`
 - source [`internal/templates/project/reliant.md.tmpl`](../internal/templates/project/reliant.md.tmpl)
+- source [`internal/cli/memory_surface.go`](../internal/cli/memory_surface.go)
+- source [`internal/cli/testdata/memory`](../internal/cli/testdata/memory)
 
 <a id="harness-pointers"></a>
 
@@ -3751,6 +3769,20 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge skill list`
+
+<a id="harness-none"></a>
+
+### No agent files when unwanted
+
+`harness: none` (`forge project new --harness none`) adopts forge without adding an agent memory file, harness pointer or MCP config to a repository that keeps its own.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project new --harness`
+- source [`internal/generator/harness.go`](../internal/generator/harness.go)
+- skill `forge/greenfield` (`forge skill load forge/greenfield`)
 
 <a id="predictable-layout"></a>
 

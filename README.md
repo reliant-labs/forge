@@ -77,7 +77,7 @@ What a new app would otherwise stitch together from separate tools:
 | **Run**        | [Observability stack included](docs/benefits.md#local-clickstack) · [Production alerts out of the box](docs/benefits.md#default-alerts) · [Prove each deploy is good](docs/benefits.md#obs-check)                                                                                                                                 |
 | **Agents**     | [Skills that match your forge](docs/benefits.md#skills-in-the-binary) · [Built-in MCP server](docs/benefits.md#mcp-server)                                                                                                                                                                                                        |
 
-Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md) (235 entries, 123 lint rules)
+Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md) (237 entries, 123 lint rules)
 
 <!-- benefits:end -->
 
@@ -152,6 +152,26 @@ Or commit a `.mcp.json` to the project (Cursor reads the same shape from
 }
 ```
 
+For Codex (CLI, IDE extension and desktop app share the config):
+
+```bash
+codex mcp add forge -- npx -y @reliantlabs/forge mcp
+```
+
+or in `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`):
+
+```toml
+[mcp_servers.forge]
+command = "npx"
+args = ["-y", "@reliantlabs/forge", "mcp"]
+```
+
+For Gemini CLI, this repository is an extension (`gemini-extension.json`):
+
+```bash
+gemini extensions install https://github.com/reliant-labs/forge
+```
+
 `deploy_claimable` puts a Vite app or a Next.js static export live with no
 account and returns its URL plus a claim link that is good for 72 hours. The
 other tools introspect the project, read the skill catalog, and run `lint` and
@@ -224,6 +244,8 @@ npx @reliantlabs/forge version
 # Go toolchain
 go install github.com/reliant-labs/forge/cmd/forge@latest
 ```
+
+To install forge's agent skill with [skills.sh](https://skills.sh): `npx skills add reliant-labs/forge --skill forge`
 
 Pinning a version for CI, verifying a release's signature, and building from a
 clone: [docs/install.md](docs/install.md).

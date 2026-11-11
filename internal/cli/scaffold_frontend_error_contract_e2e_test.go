@@ -50,21 +50,14 @@ func TestE2EGeneratedHooksExposeTheTypedErrorContract(t *testing.T) {
 	requireTool(t, "node", "npm")
 
 	forgeBin := buildforgeBinary(t)
-	dir := t.TempDir()
-
-	runCmdTimeout(t, dir, 10*time.Minute, forgeBin,
-		"project", "new", "errapp",
-		"--mod", "example.com/errapp",
-		"--frontend", "web",
-	)
-	projectDir := filepath.Join(dir, "errapp")
-	addCorpusForgePkgReplace(t, projectDir)
 
 	// The service comes FIRST. An entity births its CRUD messages + RPCs
 	// into an existing service proto; against a project with zero services
 	// there is no proto to birth into, and everything downstream — the
-	// proto, the hooks, this whole gate — then quietly does not exist.
-	runCmd(t, projectDir, forgeBin, "scaffold", "service", "item")
+	// proto, the hooks, this whole gate — then quietly does not exist. The
+	// shared start is `project new feapp --frontend web` + `scaffold service
+	// item` (shared_project_e2e_test.go).
+	projectDir := newProjectFromSharedE2E(t, forgeBin, webItemProjectE2E)
 
 	// A CRUD entity gives the generator both a query and a mutation hook,
 	// which are separately typed (UseQueryOptions vs UseMutationOptions) and

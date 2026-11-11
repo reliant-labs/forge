@@ -188,7 +188,14 @@ func describeNativeAPIOrigin(feName, effective, injected, deviceHost string) []s
 		lines = append(lines, fmt.Sprintf("%sAPI origin %s (%s)", p, effective, varName))
 	}
 	if deviceHost != "" && !isLoopbackOrigin(effective) {
-		lines = append(lines, fmt.Sprintf("%sa Release build bakes %s at build time, so build it with %s=%s (Debug builds read it from Metro)", p, varName, varName, effective))
+		line := fmt.Sprintf("%sa Release build bakes %s at build time, so build it with %s=%s (Debug builds read it from Metro)", p, varName, varName, effective)
+		if strings.HasPrefix(strings.ToLower(effective), "http://") {
+			// Android blocks cleartext HTTP outside a Debug build (the prebuilt
+			// usesCleartextTraffic is debug-only, and must stay so), so this
+			// origin works for an iOS Release build but not an Android one.
+			line += "; an Android Release build refuses plain http:// (cleartext is allowed only in Debug), so on Android use a Debug build against this stack, or an https:// origin such as a tunnel"
+		}
+		lines = append(lines, line)
 	}
 	if isLoopbackOrigin(effective) {
 		lines = append(lines, p+"localhost reaches the API from the iOS simulator and this machine only; "+

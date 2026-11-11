@@ -238,6 +238,17 @@ func TestAnnounceNativeAPIOrigin(t *testing.T) {
 		if !strings.Contains(out, "Release build bakes EXPO_PUBLIC_API_URL") || !strings.Contains(out, "EXPO_PUBLIC_API_URL=http://192.168.1.20:4000") {
 			t.Errorf("missing the Release build hint:\n%s", out)
 		}
+		// Android Release refuses cleartext: the hint must not promise it works there.
+		if !strings.Contains(out, "an Android Release build refuses plain http://") {
+			t.Errorf("the Release hint does not warn that Android Release blocks cleartext:\n%s", out)
+		}
+	})
+	t.Run("https device origin: no cleartext caveat", func(t *testing.T) {
+		out := run(frontendLaunch{env: "dev", apiBaseURL: listener, deviceHost: "192.168.1.20"}, fe,
+			[]string{"EXPO_PUBLIC_API_URL=https://tunnel.test"})
+		if strings.Contains(out, "refuses plain http://") {
+			t.Errorf("cleartext caveat printed for an https origin:\n%s", out)
+		}
 	})
 	t.Run("no device host: no Release hint", func(t *testing.T) {
 		if out := run(frontendLaunch{env: "dev", apiBaseURL: listener}, fe, nil); strings.Contains(out, "Release build") {

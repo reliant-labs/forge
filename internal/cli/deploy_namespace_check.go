@@ -91,11 +91,12 @@ func checkNamespaceReferences(entities *KCLEntities, projectName, resolvedNamesp
 	// A workload's env is its spec.env, the same on every runtime. Host
 	// workloads are in scope too: a host process dialing
 	// `*.svc.cluster.local` is the same mistake from the other side.
-	// Hosted and build-only workloads are out of scope — the platform owns
-	// a hosted workload's namespace, and a build-only one never runs.
+	// Hosted, build-only and external workloads are out of scope — the
+	// platform owns a hosted workload's namespace, a build-only one never
+	// runs, and forge cannot know where an external one's tooling puts it.
 	for _, w := range entities.Workloads {
 		switch w.Runtime.Type {
-		case RuntimeHosted, RuntimeBuildOnly:
+		case RuntimeHosted, RuntimeBuildOnly, RuntimeExternal:
 			continue
 		}
 		collect(fmt.Sprintf("%s %q (%s)", w.Kind, w.Name, w.Runtime.Type), w.EnvVars())

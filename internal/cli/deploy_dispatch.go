@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -115,6 +116,14 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 				Name:    w.Name,
 				Compose: spec,
 				Secrets: svcSecrets,
+			})
+		case RuntimeExternal:
+			// forge.OnExternal: the author's hooks deploy it. One group per
+			// env (deploytarget.GroupServices); a binding with no deploy
+			// hook is record-only and the provider says so.
+			raw = append(raw, deploytarget.RawService{
+				Name:     w.Name,
+				External: externalSpecFor(envName, w, entities, prov, os.Stderr),
 			})
 		default:
 			// host, build-only — no deploy group; hosted — below.

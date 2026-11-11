@@ -2380,11 +2380,11 @@ _Enforced · Forge, on any infrastructure_
 
 ### Deploy anywhere, declare once
 
-A `fw.Workload` is declared once in `workloads.k` and each env binds it to host processes, Docker Compose, a Kubernetes cluster you run, Reliant hosting or build-only, so no env file restates a command or build that could drift.
+A `fw.Workload` is declared once in `workloads.k` and each env binds it to host processes, Docker Compose, a Kubernetes cluster you run, Reliant hosting, your own deploy tooling or build-only, so no env file restates a command or build that could drift.
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `OnHost`, `OnCompose`, `OnCluster`, `OnHosted` or `BuildOnly` per env; `forge env render|shape|diff` show the result.
+**Use:** `OnHost`, `OnCompose`, `OnCluster`, `OnHosted`, `OnExternal` or `BuildOnly` per env; `forge env render|shape|diff` show the result.
 
 **Evidence:**
 
@@ -2394,6 +2394,45 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/deploytarget/firebase.go`](../internal/deploytarget/firebase.go)
 - skill `deploy/model` (`forge skill load deploy/model`)
 - command `forge env render`
+
+<a id="external-deploy-tooling"></a>
+
+### Keep your deploy tool
+
+A workload bound to `forge.OnExternal` is built, released and promoted by forge and then shipped by your own Helm, Fly.io, Cloud Run, ECS or Argo CD through four optional argv hooks, so adopting forge does not mean replacing the pipeline that deploys today.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `wl.api | {runtime = forge.OnExternal {status = [...], plan = [...], deploy = [...], health = [...]}}`; no hooks at all is record-only.
+
+**Why:** Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release recorded. The deploy lands in the same ledger and deploy markers as every other runtime, and `forge env status` reads the running digest through the `status` hook.
+
+**Evidence:**
+
+- source [`kcl/workload.k`](../kcl/workload.k)
+- source [`internal/deploytarget/external.go`](../internal/deploytarget/external.go)
+- command `forge env deploy`
+- command `forge env status`
+- skill `deploy/external` (`forge skill load deploy/external`)
+
+<a id="env-verify-parity"></a>
+
+### Prove parity before deploying
+
+`forge env verify <env>` compares, per workload, the digest the env's promotion pins against the digest running and runs your tool's own dry run, while building, recording and deploying nothing, so forge's first deploy of an existing project is known to change nothing.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `forge env verify prod`, or `--image api=repo@sha256:…` before any forge release exists; `--json` for CI. Exit 0 match, 1 drift, 2 not verified.
+
+**Why:** A missing `status` or `plan` hook is reported unverified, never as "no diff". Cluster workloads are checked off the cluster and against the release's recorded bundle with a client-side live diff.
+
+**Evidence:**
+
+- command `forge env verify`
+- command `forge env verify --image`
+- source [`internal/cli/env_verify_cmd.go`](../internal/cli/env_verify_cmd.go)
+- skill `deploy/external` (`forge skill load deploy/external`)
 
 <a id="prod-from-day-0"></a>
 

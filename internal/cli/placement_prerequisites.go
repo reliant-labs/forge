@@ -226,6 +226,10 @@ func placementDeclarations(e *KCLEntities) ([]bundle.PlacementDeclaration, error
 			if containsUnit(split.Hub, workloadUnit(w)) {
 				actuator = "hub"
 			}
+		case RuntimeExternal:
+			// The author's tooling runs it: no cluster or platform
+			// placement for the control plane to gate on.
+			continue
 		default:
 			if stageOfWorkload(w) == "" {
 				continue

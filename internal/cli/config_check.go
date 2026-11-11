@@ -145,6 +145,9 @@ func planConfigCheck(e *KCLEntities, outputDir string) ([]configCheckTarget, []c
 		}
 		switch w.Runtime.Type {
 		case RuntimeCluster, RuntimeHosted, RuntimeCompose:
+		case RuntimeExternal:
+			skips = append(skips, configCheckSkip{w.Name, "forge.OnExternal: your own deploy tooling runs the image, with config forge does not see"})
+			continue
 		default:
 			skips = append(skips, configCheckSkip{w.Name, fmt.Sprintf("its %s runtime does not run the image", w.Runtime.Type)})
 			continue

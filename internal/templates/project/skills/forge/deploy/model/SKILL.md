@@ -1,6 +1,6 @@
 ---
 name: deploy/model
-description: The deploy model — every workload declared once in workloads.k and bound per env to a runtime (OnHost, OnCluster, OnHosted, OnCompose, BuildOnly); the scaffolded envs and their binders, `forge env new --from`, who applies an env, what forge writes into every spec (probes, grace, PDB, strategy, hardening), the hosted restricted profile, per-env config, cross-references, and derived features.
+description: The deploy model — every workload declared once in workloads.k and bound per env to a runtime (OnHost, OnCluster, OnHosted, OnCompose, BuildOnly, OnExternal); the scaffolded envs and their binders, `forge env new --from`, who applies an env, what forge writes into every spec (probes, grace, PDB, strategy, hardening), the hosted restricted profile, per-env config, cross-references, and derived features.
 ---
 
 # The model: declare once, bind per env
@@ -31,6 +31,7 @@ of bindings.
 | `forge.OnHosted {}` | the forge control plane | publishes the spec as a Workload CR; the platform renders it (Restricted profile) |
 | `forge.OnCompose {service}` | a docker-compose service | `docker compose up` of that service (`shared = True`: from the primary checkout; `optional = True`: `forge env up` skips it with one warning when no Docker daemon answers, instead of failing — a workload that only makes sense beside it says `requires = ["<name>"]`) |
 | `forge.BuildOnly {}` | nowhere | builds and ships it (a CLI, an image others pull) |
+| `forge.OnExternal {status, plan, deploy, health}` | wherever YOUR deploy tool puts it (Helm, Fly.io, Cloud Run, ECS, Argo CD) | builds, cuts and promotes, then runs your argv hooks with the frozen digest; no hooks = record-only (`deploy/external`) |
 
 A binding is the same `|` an env uses for any refinement. Env NAMES mean
 nothing to forge — any env may bind any workload to any runtime, and one env

@@ -221,8 +221,8 @@ type Deps struct {
 
 	// AuthProvider names the auth provider in the daily sign-in heartbeat
 	// (AuthHeartbeatInterceptor): "auth0", "clerk", "supabase", …. Empty is
-	// AuthProviderFromEnv: FORGE_AUTH_PROVIDER, else "forge" for forge's
-	// managed identity, else "jwt". Unused when Auth is nil.
+	// "forge" for forge's managed identity, else "jwt". Unused when Auth is
+	// nil.
 	AuthProvider string
 
 	// Audit is the project's audit interceptor — the value returned by

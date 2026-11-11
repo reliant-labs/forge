@@ -69,24 +69,24 @@ What an existing app gets from forge before it is a forge project: no
 forge.yaml, no generated code, any language. `forge project benefits`
 prints this list for the directory you run it in.
 
-| Benefit                                                       | Start with                                                                                                                                       | Agent time |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
-| [Migration safety checks](#migration-safety)                  | Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` (golang-migrate naming) and no other layout yet.         | ~5 min     |
-| [Real Postgres in every test](#pgtest-real-postgres)          | `go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker.                   | ~15 min    |
-| [Fast test tier stays fast](#slow-test-enforcement)           | In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).        | ~15 min    |
-| [Test time budgets](#test-budget)                             | In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`.                                                                   | ~5 min     |
-| [A skipped suite isn't green](#skipped-pass-detector)         | In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`.                                                                      | ~5 min     |
-| [Bug-class linters, one verdict](#one-lint-gate)              | Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why.                                      | ~10 min    |
-| [Timezone-safe date bucketing](#time-bucketing-lint)          | Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).            | ~5 min     |
-| [Traces that never break](#lint-rules-tracing)                | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                               | ~10 min    |
-| [Errors never leak internals](#svcerr-redaction)              | In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers.         | ~30 min    |
-| [Static sites are full projects](#static-site-first-class)    | In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.  | ~10 min    |
-| [Telemetry for any Node process](#node-telemetry)             | `npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start. | ~15 min    |
-| [Skills that match your forge](#skills-in-the-binary)         | `forge skill load adopt`: what forge can do for this repo, with estimates to quote.                                                              | ~2 min     |
-| [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.                                      | ~2 min     |
-| [Whole surface in one call](#capabilities-introspection)      | `forge project capabilities` in any directory.                                                                                                   | ~2 min     |
-| [Library API without source diving](#libraries-introspection) | In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.                                                   | ~2 min     |
-| [Agents report framework bugs](#report-bug)                   | `forge report-bug --dry-run …` prints exactly what would be sent.                                                                                | ~2 min     |
+| Benefit                                                       | Start with                                                                                                                                                        | Agent time |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| [Migration safety checks](#migration-safety)                  | Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`. | ~5 min     |
+| [Real Postgres in every test](#pgtest-real-postgres)          | `go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker.                                    | ~15 min    |
+| [Fast test tier stays fast](#slow-test-enforcement)           | In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).                         | ~15 min    |
+| [Test time budgets](#test-budget)                             | In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`.                                                                                    | ~5 min     |
+| [A skipped suite isn't green](#skipped-pass-detector)         | In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`.                                                                                       | ~5 min     |
+| [Bug-class linters, one verdict](#one-lint-gate)              | Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why.                                                       | ~10 min    |
+| [Timezone-safe date bucketing](#time-bucketing-lint)          | Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).                             | ~5 min     |
+| [Traces that never break](#lint-rules-tracing)                | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                                                | ~10 min    |
+| [Errors never leak internals](#svcerr-redaction)              | In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers.                          | ~30 min    |
+| [Static sites are full projects](#static-site-first-class)    | In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.                   | ~10 min    |
+| [Telemetry for any Node process](#node-telemetry)             | `npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start.                  | ~15 min    |
+| [Skills that match your forge](#skills-in-the-binary)         | `forge skill load adopt`: what forge can do for this repo, with estimates to quote.                                                                               | ~2 min     |
+| [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.                                                       | ~2 min     |
+| [Whole surface in one call](#capabilities-introspection)      | `forge project capabilities` in any directory.                                                                                                                    | ~2 min     |
+| [Library API without source diving](#libraries-introspection) | In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.                                                                    | ~2 min     |
+| [Agents report framework bugs](#report-bug)                   | `forge report-bug --dry-run …` prints exactly what would be sent.                                                                                                 | ~2 min     |
 
 ---
 
@@ -451,7 +451,7 @@ Every migration declares whether the previous release survives it, and `forge li
 
 _Enforced · Forge, on any infrastructure_
 
-**Works in any repo** (no forge.yaml). **Start:** Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` (golang-migrate naming) and no other layout yet. **Agent time:** ~5 min.
+**Works in any repo** (no forge.yaml). **Start:** Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`. **Agent time:** ~5 min.
 
 **Use:** Start each migration with `-- forge:backward-compatible — <why>` or `-- forge:breaks-rollback <why>`; run `forge lint --migration-safety`, or `forge ci migration-safety` in CI. A pragma in the migration file suppresses one rule beside the SQL it is about.
 

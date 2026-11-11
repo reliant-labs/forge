@@ -472,7 +472,7 @@ benefits:
       A migration that a populated table or the previous release cannot survive
       passes every test on a fresh database and fails on the first real one.
     scope: any
-    adopt: 'Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` (golang-migrate naming) and no other layout yet.'
+    adopt: 'Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`.'
     estimate: '~5 min'
     evidence:
       - command: lint --migration-safety

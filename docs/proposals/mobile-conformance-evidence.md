@@ -567,8 +567,10 @@ row 1.
 - Full-mode `go test -count=1 ./internal/templates/`: passed (99s).
 - `TestE2EMobileConsumerConformance`: all five cases passed (650s), including the
   new Jest suites, Doctor 19/19, typecheck, zero-warning lint, native exports and
-  Metro. A final rerun after the app-owned intent-filter preservation regression
-  test is still pending.
+  Metro. The final rerun after the app-owned intent-filter preservation regression
+  test also passed all five cases (225s) on clean, stable HEAD `ab76860f7`.
+  The later factory-codegen fix was cherry-picked separately and validated with
+  focused codegen/generator checks; it does not alter the client templates.
 - `go run ./internal/apigate -base origin/main`: fails because main advanced
   beyond this mobile branch (51 identifiers added on main are absent here, in
   accesstoken, dashspec, obsquery, releasehealth and release). This is branch

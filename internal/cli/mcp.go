@@ -18,18 +18,31 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
-// mcpInstructions is what an MCP client shows the model when it connects. The
-// disambiguation is the point: "forge" collides with Atlassian Forge and
-// Foundry's forge, and a model that guesses wrong calls the wrong tools.
-const mcpInstructions = "This is Reliant Forge (github.com/reliant-labs/forge): a framework and CLI that builds, " +
-	"runs and ships static sites, SPAs, web/mobile apps and Go APIs from proto and SQL migrations — it is not " +
-	"Atlassian Forge and not Foundry's forge. Call skill_load with name \"forge\" first: it is the entry point " +
-	"and names everything else. Then use capabilities, annotations, libraries, audit and shapes to find out what " +
-	"forge already does before hand-writing it, skill_search and skill_load for the playbooks, and lint and " +
-	"generate to verify and regenerate. To put an app live with no account, call deploy_claimable: it adopts an " +
-	"existing Vite or Next.js app in place, deploys it, and returns a URL and a claim link to give your user; " +
-	"deploy_status shows the claim again and explain_error turns any forge failure into the next command. Every " +
-	"tool takes an optional dir: the forge project to act on (default: the directory the server was started in)."
+// mcpInstructions is what an MCP client shows the model when it connects.
+//
+// Two jobs. The disambiguation: "forge" collides with Atlassian Forge and
+// Foundry's forge, and a model that guesses wrong calls the wrong tools. And
+// the front door: this server is usually where an agent working in some
+// existing repo first meets forge, so it leads with what forge does for THAT
+// repo — the pieces that work with no forge.yaml — and routes to the
+// `benefits` tool and the `adopt` skill. The tools that need a forge project
+// come last, as what codegen adds. Every claim here ships: the benefits
+// registry (scope: any) is where each is checked.
+const mcpInstructions = "This is Reliant Forge (github.com/reliant-labs/forge) — not Atlassian Forge and not " +
+	"Foundry's forge. Forge helps the repo you are in today, in any language, without a rewrite or a forge.yaml: " +
+	"lint catches unsafe SQL migrations (db/migrations/*.up.sql) and, in a Go module, runs golangci-lint and flags " +
+	"cut traces and timezone-dependent date buckets; skills are playbooks for debugging, testing, migrations, " +
+	"observability and deploys; forge/pkg (Go) and @reliantlabs/forge-web-runtime (its /node entry ships a Node " +
+	"process's logs, errors and spans over OTLP) are runtime libraries you can import as they are; deploy_claimable " +
+	"puts an existing Vite or Next.js app live with no account and returns a URL plus a claim link for your user. " +
+	"Monitoring (dashboards at https://forge.reliantlabs.io, sign-in required) and a recorded history of every " +
+	"deploy come once forge deploys the app, which the adopt skill walks without rewriting it. Start with benefits: " +
+	"what applies to this repo, each with its first step and the agent time to first value to quote to your user. " +
+	"Then skill_load name=adopt: the survey, the estimate rubric and every entry point. Once the repo adopts " +
+	"forge's codegen (a forge.yaml with services), skill_load name=forge is the entry point, and capabilities, " +
+	"annotations, libraries, audit, shapes and generate work on the project. deploy_status shows a claimable " +
+	"deploy again and explain_error turns any forge failure into the next command. Every tool takes an optional " +
+	"dir: the repo to act on (default: the directory the server was started in)."
 
 // maxMCPOutput bounds one tool result. Head and tail are both kept because
 // the verdict of lint and generate is the last line.
@@ -45,14 +58,17 @@ func newMCPCmd() *cobra.Command {
 		Long: `Run forge as a Model Context Protocol server on stdio.
 
 Any MCP-capable harness (Claude Code, Codex, Cursor, ...) can then call forge's
-introspection, skill and lint/generate verbs as tools, with no memory file in
-the project telling it how. The server says what forge is, and tells the model to
-load the 'forge' skill first.
+benefits, skill, lint and introspection verbs as tools, in ANY repo, with no
+memory file telling it how. The server says what forge is and what it does for
+the repo the agent is in, forge project or not, and sends the model to the
+benefits tool and the 'adopt' skill (the 'forge' skill in a forge project).
 
-Tools (each but explain_error takes an optional "dir": the project to act on;
+Tools (each but explain_error takes an optional "dir": the repo to act on;
 default is the directory the server was started in, or -C):
 
-  read-only   capabilities   every verb, lint analyzer and marker
+  read-only   benefits       what forge does for this repo, with the first step
+                             and the agent time to each; any repo
+              capabilities   every verb, lint analyzer and marker
               annotations    the entity-authoring vocabulary
               libraries      forge/pkg and web-runtime APIs
               audit          what THIS project currently is

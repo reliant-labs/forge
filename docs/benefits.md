@@ -3618,6 +3618,24 @@ _Enforced · Forge, on any infrastructure_
 - skill `observability/dashboards` (`forge skill load observability/dashboards`)
 - skill `debug/dashboards` (`forge skill load debug/dashboards`)
 
+<a id="builtin-product-analytics"></a>
+
+### Built-in product analytics dashboards
+
+A hosted app gets Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections with no code: visitors, channels, sign-ups and their attribution, active and new users, retention, goals and funnels.
+
+_In progress · Reliant hosting_
+
+**Use:** `forge.Analytics` adds goals, an activation event and channel rules; a `<project>-users.json` replaces a dashboard; `dashboards = False` drops them.
+
+**Why:** Visitors are counted by the platform's cookieless daily hash at the ingest edge, which ships with the control plane's edge columns and hash.
+
+**Evidence:**
+
+- library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
+- source [`pkg/obsbuiltin/population_clickhouse_test.go`](../pkg/obsbuiltin/population_clickhouse_test.go)
+- skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
+
 <a id="release-markers"></a>
 
 ### Release markers on dashboards

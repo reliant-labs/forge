@@ -1,6 +1,10 @@
 package obsdash
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/reliant-labs/forge/pkg/obsbuiltin"
+)
 
 // HyperDX has no top-N bar over groups, no value-bucketed heatmap of a field,
 // no raw SQL panel and no arithmetic across series. A dashboard that holds them
@@ -33,7 +37,7 @@ func TestHyperDXLeavesOutThePanelsOnlyTheConsoleDraws(t *testing.T) {
 // provisioner refuses a dashboard without tiles.
 func TestHyperDXSkipsADashboardWithNothingToDraw(t *testing.T) {
 	sp := Spec{Project: "shop", Dashboards: []Dashboard{
-		BuildProductUsage("shop"),
+		obsbuiltin.Product(obsbuiltin.Input{Project: "shop"}),
 		{ID: "d", Title: "D", Panels: []Panel{{ID: "kept", Title: "Kept", Kind: KindLine, Signal: Traces, Series: []Series{{Label: "n", Agg: AggCount}}}}},
 	}}
 	files, err := RenderHyperDX(sp)

@@ -96,8 +96,16 @@ func TestResolvedBundleSetExcludesStalePartsAndKeepsOwnedOverride(t *testing.T) 
 
 func TestOverviewHealthIsMetricBackedAndBounded(t *testing.T) {
 	d := Build(fixture()).Dashboards[0]
-	if len(d.Panels) > 15 {
-		t.Fatalf("overview has %d panels", len(d.Panels))
+	// The health section is bounded; the built-in Traffic and Users
+	// sections (pkg/obsbuiltin) follow it.
+	health := 0
+	for _, p := range d.Panels {
+		if p.Section == "health" {
+			health++
+		}
+	}
+	if health == 0 || health > 15 {
+		t.Fatalf("overview's health section has %d panels", health)
 	}
 	for _, id := range []string{"requests", "errors", "p95", "request-rate", "error-rate", "latency"} {
 		p, ok := findPanel(d, id)

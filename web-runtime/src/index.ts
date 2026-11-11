@@ -181,6 +181,42 @@ export {
 } from "./track.js";
 
 /**
+ * The analytics tiers (off / aggregate / identified / full): cookieless
+ * `aggregate` by default, which stores nothing on the device. An app in
+ * `analytics: "full"` calls grantAnalyticsConsent() once its consent manager
+ * says yes (the persistent visitor id, the session cookie, multi-day
+ * attribution and replay follow) and revokeAnalyticsConsent() when it is
+ * withdrawn; optOutOfAnalytics() is a person's objection to analytics at all.
+ * GPC / DNT cap a browser at aggregate with no user id.
+ */
+export {
+  ANALYTICS_OPT_OUT_STORAGE_KEY,
+  RESERVED_EVENT_PREFIXES,
+  analyticsOptedOut,
+  analyticsTier,
+  grantAnalyticsConsent,
+  optOutOfAnalytics,
+  revokeAnalyticsConsent,
+  type AnalyticsMode,
+  type AnalyticsTier,
+} from "./track.js";
+
+/**
+ * Feature-flag exposures: `trackExposure(flag, variant)` records one
+ * `flag_evaluated` per person, flag and variant per day, and
+ * `forgeExposureHook` does it for every OpenFeature evaluation
+ * (`OpenFeature.addHooks(forgeExposureHook)`).
+ */
+export {
+  FLAG_EVALUATED_EVENT,
+  forgeExposureHook,
+  trackExposure,
+  type ExposureEvaluationDetails,
+  type ExposureHookContext,
+  type ExposureOptions,
+} from "./exposure.js";
+
+/**
  * The standard auth events (`auth_signed_up`, `auth_signed_in`,
  * `auth_signed_out`) the console counts users from. `identifyUser(id)` is what
  * an app calls wherever it learns who is signed in: it attaches the id to

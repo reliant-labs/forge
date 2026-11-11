@@ -109,9 +109,11 @@ func TestGenerateFrontendNav_OtelSelfHealsAfterDeletion(t *testing.T) {
 
 // TestGenerateFrontendNav_OtelIdentifiesOnlyWithNativeSignIn: otel_gen.ts
 // passes `identify` only to a frontend that has src/lib/auth/native-login.ts
-// (the module that asks /auth/session), and resolves the URL through
-// src/lib/api-base.ts only when that exists, so a project from before either
-// module keeps compiling. Page views are on for both.
+// (the module that asks /auth/session) AND src/lib/api-base.ts (the module
+// native-login.ts resolves that URL through). With native sign-in but no
+// api-base.ts there is no shared resolution, so the page asks nothing rather
+// than build the URL from the raw configured origin (which misses the dev
+// proxy and can miss the session cookie). Page views are on throughout.
 func TestGenerateFrontendNav_OtelIdentifiesOnlyWithNativeSignIn(t *testing.T) {
 	for _, kind := range []string{"nextjs", "vite-spa"} {
 		t.Run(kind, func(t *testing.T) {
@@ -154,13 +156,19 @@ func TestGenerateFrontendNav_OtelIdentifiesOnlyWithNativeSignIn(t *testing.T) {
 			}
 			write("auth/native-login.ts")
 			s = read()
-			if !strings.Contains(s, "identify: identify(cfg)") || strings.Contains(s, `from "./api-base"`) {
-				t.Errorf("native-login.ts without api-base.ts: identify, through the configured URL:\n%s", s)
+			for _, absent := range []string{"identify: identify(cfg)", `from "./api-base"`, "/auth/session`"} {
+				if strings.Contains(s, absent) {
+					t.Errorf("native-login.ts without api-base.ts must not identify (found %q):\n%s", absent, s)
+				}
+			}
+			if !strings.Contains(s, "pageViews:") {
+				t.Errorf("page views stay on without identity:\n%s", s)
 			}
 
 			write("api-base.ts")
 			s = read()
-			if !strings.Contains(s, `import { apiBase } from "./api-base";`) ||
+			if !strings.Contains(s, "identify: identify(cfg)") ||
+				!strings.Contains(s, `import { apiBase } from "./api-base";`) ||
 				!strings.Contains(s, "${apiBase(configured)}/auth/session") {
 				t.Errorf("with api-base.ts the session URL goes through apiBase:\n%s", s)
 			}

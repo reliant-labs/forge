@@ -13,7 +13,10 @@ import {
 } from "./auth-events.js";
 import {
   disableTelemetry,
+  grantAnalyticsConsent,
+  optOutOfAnalytics,
   resetTrackState,
+  setAnalyticsMode,
   setTelemetrySink,
   type TelemetrySink,
 } from "./track.js";
@@ -133,10 +136,11 @@ describe("trackAuthEvent", () => {
     expect(String(warn.mock.calls[0]?.[0])).not.toContain("ada@example.com");
   });
 
-  it("sends nothing under Global Privacy Control, but still attaches the id", () => {
+  it("sends nothing and attaches no id under Global Privacy Control", () => {
+    // GPC caps the browser at the cookieless aggregate tier: no user id.
     nav.globalPrivacyControl = true;
     trackAuthEvent("signed_in", { userId: "u1" });
-    expect(ops).toEqual([["user", "u1"]]);
+    expect(ops).toEqual([["user", ""]]);
   });
 
   it("sends nothing under Do Not Track", () => {
@@ -162,7 +166,8 @@ describe("identifyUser", () => {
       ["track", "auth_signed_in", { kind: "resumed", provider: "clerk" }],
       ["user", "u1"],
     ]);
-    expect(store.get(AUTH_SEEN_STORAGE_KEY)).toBe("u1:2026-11-10");
+    // Below the full tier nothing is stored: the marker is in memory.
+    expect(store.size).toBe(0);
 
     ops = [];
     vi.setSystemTime(new Date("2026-11-11T00:00:01Z"));
@@ -206,11 +211,32 @@ describe("identifyUser", () => {
     expect(ops).toEqual([["user", ""]]);
   });
 
-  it("attaches the id but sends no heartbeat under GPC", () => {
+  it("keeps the daily marker in localStorage only in the full tier", () => {
+    setAnalyticsMode("full");
+    grantAnalyticsConsent();
+    identifyUser("u1");
+    expect(store.get(AUTH_SEEN_STORAGE_KEY)).toBe("u1:2026-11-10");
+    // A new page load in the full tier remembers it.
+    resetAuthEventState();
+    ops = [];
+    identifyUser("u1");
+    expect(ops.filter((o) => o[0] === "track")).toEqual([]);
+  });
+
+  it("attaches no id and sends no heartbeat under GPC", () => {
     nav.globalPrivacyControl = true;
     identifyUser("u1");
-    expect(ops).toEqual([["user", "u1"]]);
+    expect(ops).toEqual([["user", ""]]);
     expect(store.has(AUTH_SEEN_STORAGE_KEY)).toBe(false);
+  });
+
+  it("sends nothing and attaches no id after optOutOfAnalytics", () => {
+    optOutOfAnalytics();
+    ops = [];
+    identifyUser("u1");
+    trackAuthEvent("signed_up", { userId: "u1" });
+    expect(ops.filter((o) => o[0] === "track")).toEqual([]);
+    expect(ops.filter((o) => o[0] === "user" && o[1] !== "")).toEqual([]);
   });
 
   it("is a no-op on the server", () => {

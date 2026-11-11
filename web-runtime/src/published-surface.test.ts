@@ -286,22 +286,38 @@ describe("the published surface", () => {
     expect(imports).toEqual(["./track.js"]);
   });
 
-  it("keeps normalizeRoute IN the barrel, and page views and identity off the SDK", () => {
+  it("keeps normalizeRoute, the analytics tiers and exposures IN the barrel, and off the SDK", () => {
     // An app names its own events' routes the way the automatic page_viewed
-    // events do, from the barrel. page-views.ts and session-identity.ts sit
-    // in the barrel's import closure through it, so neither may reach the
-    // SDK: they import only the import-free track.ts and basepath.ts.
+    // events do, sets its consent tier and records flag exposures, all from
+    // the barrel. page-views.ts, session-identity.ts and exposure.ts sit in
+    // the barrel's import closure, so none may reach the SDK: they import
+    // only the import-free track.ts and basepath.ts.
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
-    for (const symbol of ["normalizeRoute", "PAGE_VIEWED_EVENT"]) {
+    for (const symbol of [
+      "normalizeRoute",
+      "PAGE_VIEWED_EVENT",
+      "analyticsTier",
+      "grantAnalyticsConsent",
+      "revokeAnalyticsConsent",
+      "optOutOfAnalytics",
+      "trackExposure",
+      "forgeExposureHook",
+    ]) {
       expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
         true,
       );
     }
-    for (const name of ["page-views.js", "session-identity.js"]) {
+    for (const name of [
+      "page-views.js",
+      "session-identity.js",
+      "exposure.js",
+    ]) {
       const js = readFileSync(join(pkgDir, "dist", name), "utf8");
-      const imports = [...js.matchAll(/from\s*["']([^"']+)["']/g)].map(
-        (m) => m[1],
-      );
+      const imports = [
+        ...js.matchAll(
+          /^\s*(?:import|export)\b[^;]*?from\s*["']([^"']+)["']/gm,
+        ),
+      ].map((m) => m[1]);
       expect(
         imports.filter((i) => i !== "./track.js" && i !== "./basepath.js"),
         `dist/${name} imports more than track.js and basepath.js`,

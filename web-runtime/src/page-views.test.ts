@@ -5,10 +5,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  campaignProps,
   installPageViews,
+  MAX_CAMPAIGN_VALUE_CHARS,
   MAX_ROUTE_CHARS,
   normalizeRoute,
   PAGE_VIEWED_EVENT,
+  referrerProps,
 } from "./page-views.js";
 import {
   disableTelemetry,
@@ -294,5 +297,78 @@ describe("installPageViews", () => {
 
   it("is a no-op without a DOM", () => {
     expect(() => installPageViews({ pageViews: true })()).not.toThrow();
+  });
+});
+
+describe("campaignProps", () => {
+  it("carries utm_*, ref and the ad network, only when present", () => {
+    expect(campaignProps("")).toEqual({});
+    expect(
+      campaignProps(
+        "?utm_source=news&utm_medium=email&utm_campaign=launch&utm_term=t&utm_content=c&ref=ph",
+      ),
+    ).toEqual({
+      utm_source: "news",
+      utm_medium: "email",
+      utm_campaign: "launch",
+      utm_term: "t",
+      utm_content: "c",
+      ref: "ph",
+    });
+    expect(campaignProps("?source=newsletter")).toEqual({ ref: "newsletter" });
+  });
+
+  it("names the ad network of a click id and never sends the id", () => {
+    for (const [param, network] of [
+      ["gclid", "google"],
+      ["wbraid", "google"],
+      ["msclkid", "microsoft"],
+      ["fbclid", "meta"],
+      ["ttclid", "tiktok"],
+      ["li_fat_id", "linkedin"],
+      ["twclid", "other"],
+    ]) {
+      const props = campaignProps(`?${param}=SECRET-CLICK-ID`);
+      expect(props).toEqual({ click_id: network });
+      expect(JSON.stringify(props)).not.toContain("SECRET");
+    }
+  });
+
+  it("drops a value carrying an email address, and caps the rest", () => {
+    expect(campaignProps("?utm_content=jane%40example.com")).toEqual({});
+    const long = "x".repeat(MAX_CAMPAIGN_VALUE_CHARS + 50);
+    expect(campaignProps(`?utm_source=${long}`).utm_source).toHaveLength(
+      MAX_CAMPAIGN_VALUE_CHARS,
+    );
+  });
+});
+
+describe("referrerProps", () => {
+  it("keeps the host and a scrubbed path, never the query", () => {
+    expect(
+      referrerProps(
+        "https://news.ycombinator.com/item/12345?id=1",
+        "shop.example.com",
+      ),
+    ).toEqual({
+      referrer_host: "news.ycombinator.com",
+      referrer_path: "/item/:id",
+    });
+  });
+
+  it("records nothing for this site, its www twin or a declared site host", () => {
+    expect(
+      referrerProps("https://shop.example.com/a", "shop.example.com"),
+    ).toEqual({});
+    expect(referrerProps("https://www.example.com/", "example.com")).toEqual(
+      {},
+    );
+    expect(
+      referrerProps("https://auth.example.com/cb", "shop.example.com", [
+        "auth.example.com",
+      ]),
+    ).toEqual({});
+    expect(referrerProps("", "shop.example.com")).toEqual({});
+    expect(referrerProps("android-app://x", "shop.example.com")).toEqual({});
   });
 });

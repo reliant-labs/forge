@@ -97,6 +97,14 @@ describe("watchSessionIdentity", () => {
     expect(s.setUser.mock.calls).toEqual([["2834719"]]);
   });
 
+  it("never sets a subject that looks like an email", async () => {
+    const s = sink();
+    setTelemetrySink(s);
+    answer({ body: { authenticated: true, subject: "jane@example.com" } });
+    await watchSessionIdentity({ sessionUrl: SESSION_URL }).settled();
+    expect(s.setUser).not.toHaveBeenCalled();
+  });
+
   it("changes nothing on any non-answer or revoke before it has set a user", async () => {
     for (const reply of [
       { status: 404, body: { error: "not found" } },

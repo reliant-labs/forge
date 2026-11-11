@@ -17,8 +17,17 @@ import {
   setTelemetrySink,
   setTelemetryUser,
   track,
+  recordProductEvent,
+  eraseAnalyticsDeviceState,
   type TelemetrySink,
 } from "./track.js";
+import {
+  ATTRIBUTION_STORAGE_KEY,
+  IDENTIFIED_USER_STORAGE_KEY,
+  VISITOR_ID_STORAGE_KEY,
+} from "./attribution.js";
+import { AUTH_SEEN_STORAGE_KEY } from "./auth-events.js";
+import { RUM_SESSION_STORAGE_KEY } from "./session-cookie-fallback.js";
 
 function sink() {
   const track = vi.fn<TelemetrySink["track"]>();
@@ -306,5 +315,62 @@ describe("disableTelemetry", () => {
     setTelemetrySink(s);
 
     expect(() => disableTelemetry()).not.toThrow();
+  });
+});
+
+describe("reserved event names", () => {
+  it("track() sends an app event with a reserved prefix, and warns once", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = sink();
+    setTelemetrySink(s);
+    track("page_scrolled");
+    track("auth_custom");
+    expect(s.track.mock.calls.map(([name]) => name)).toEqual([
+      "page_scrolled",
+      "auth_custom",
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("the runtime's own emitters record them without a warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setTelemetrySink(sink());
+    recordProductEvent("page_viewed", { route: "/" });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe("eraseAnalyticsDeviceState", () => {
+  it("erases every key the full tier writes, by each module's own constant", () => {
+    const local = new Map<string, string>();
+    const session = new Map<string, string>();
+    const storage = (m: Map<string, string>) => ({
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => void m.set(k, v),
+      removeItem: (k: string) => void m.delete(k),
+    });
+    vi.stubGlobal("window", {
+      localStorage: storage(local),
+      sessionStorage: storage(session),
+    });
+    for (const key of [
+      ATTRIBUTION_STORAGE_KEY,
+      VISITOR_ID_STORAGE_KEY,
+      IDENTIFIED_USER_STORAGE_KEY,
+      AUTH_SEEN_STORAGE_KEY,
+      RUM_SESSION_STORAGE_KEY,
+      "forge.analytics_opt_out",
+    ]) {
+      local.set(key, "x");
+    }
+    // REPLAY_SAMPLE_KEY lives in telemetry.ts, which imports the SDK types.
+    session.set("forge.replay.sampled", "1");
+
+    eraseAnalyticsDeviceState();
+
+    expect([...local.keys()]).toEqual(["forge.analytics_opt_out"]);
+    expect(session.size).toBe(0);
   });
 });

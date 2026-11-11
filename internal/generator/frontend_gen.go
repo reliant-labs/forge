@@ -249,7 +249,6 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// otel_gen.ts that reads these, so the scaffold renders what the
 		// first `forge generate` re-derives from disk.
 		IdentifySession: webTree,
-		HasAPIBase:      webTree,
 	}
 	if opts.Workspaces {
 		data.APIPackage = layout.APIPackage

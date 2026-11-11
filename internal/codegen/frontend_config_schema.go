@@ -40,6 +40,7 @@ const (
 // templates that read them, so a reader added there without a key added here
 // fails a test rather than a user's render.
 var FrontendRuntimeKeys = []string{
+	"ANALYTICS_MODE",
 	"API_URL",
 	"CONSOLE_CAPTURE",
 	"ENVIRONMENT",

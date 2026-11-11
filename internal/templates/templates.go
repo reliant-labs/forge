@@ -671,19 +671,16 @@ type FrontendTemplateData struct {
 	// Handing the browser those values is what would let a browser-side
 	// PKCE flow — and a script-readable token — come back.
 	HasMockAPI bool
-	// IdentifySession reports that this frontend signs in natively: it has
-	// src/lib/auth/native-login.ts, whose fetchIdentity asks the API's
-	// /auth/session at load. src/lib/otel_gen.ts then hands the runtime the
-	// same URL (`identify`), so browser telemetry carries the signed-in
-	// user's id. False for an adopted frontend, or one whose app deleted the
-	// module: its own auth decides who the user is (setTelemetryUser).
+	// IdentifySession reports that this frontend signs in natively AND can
+	// resolve the session URL the way sign-in does: it has
+	// src/lib/auth/native-login.ts (whose fetchIdentity asks the API's
+	// /auth/session at load) and src/lib/api-base.ts (which native-login.ts
+	// resolves that URL through). src/lib/otel_gen.ts then hands the runtime
+	// the same URL (`identify`), so browser telemetry carries the signed-in
+	// user's id. False for an adopted frontend, one whose app deleted either
+	// module, or one scaffolded before api-base.ts existed: its own auth
+	// decides who the user is (identifyUser / setTelemetryUser).
 	IdentifySession bool
-	// HasAPIBase reports that the frontend has src/lib/api-base.ts (the
-	// owned module that answers this page's own origin while the dev server
-	// proxies the API). otel_gen.ts resolves the session URL through it, as
-	// native-login.ts does, and only imports it when it exists, so a project
-	// scaffolded before the module was keeps compiling.
-	HasAPIBase bool
 	// NavHookImports is the per-module aggregation of the list hooks the
 	// dashboard tiles consume. Derived from Pages by the nav generator.
 	NavHookImports []NavHookImport

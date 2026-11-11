@@ -29,10 +29,12 @@
 // email: an id that is empty, longer than MAX_AUTH_USER_ID_CHARS or contains
 // '@' is refused, with one console warning per page load. The events honour
 // the browser's Global Privacy Control and Do Not Track (browserPrivacyOptOut):
-// with either set, no auth event is sent (the user id is still attached to
-// telemetry, as setTelemetryUser always does). They inherit track()'s consent
-// gate: nothing before initBrowserTelemetry starts, nothing after
-// disableTelemetry().
+// with either set, no auth event is sent and the user id is not attached
+// either (setTelemetryUser carries no id under GPC / DNT: the browser is
+// capped at the cookieless `aggregate` analytics tier). They inherit track()'s
+// gates: nothing before initBrowserTelemetry starts, nothing after
+// disableTelemetry() or optOutOfAnalytics(). Nothing is stored on the device
+// below the `full` tier (the daily `resumed` marker is kept in memory).
 //
 // The vocabulary (event names, prop keys, bounded values) is declared once
 // below and mirrored once in forge/pkg/observe/auth_events.go; the Node entry
@@ -40,10 +42,11 @@
 //
 // Dependency-free apart from track.ts, like attribution.ts.
 import {
+  analyticsTier,
   browserPrivacyOptOut,
   isTelemetryDisabled,
+  recordProductEvent as track,
   setTelemetryUser,
-  track,
   type TrackValue,
 } from "./track.js";
 
@@ -89,7 +92,10 @@ export interface IdentifyUserOptions {
 export const MAX_AUTH_USER_ID_CHARS = 128;
 /**
  * localStorage key of the last daily `resumed` sign-in sent from this
- * browser, as `<userId>:<YYYY-MM-DD>` (UTC).
+ * browser, as `<userId>:<YYYY-MM-DD>` (UTC). Kept there only in the `full`
+ * analytics tier; below it nothing is stored, so the marker lives for the
+ * page load and a reload may send one more `resumed` that day (every count
+ * is distinct by user, so it counts once).
  */
 export const AUTH_SEEN_STORAGE_KEY = "forge.auth.seen";
 
@@ -240,8 +246,8 @@ export function trackAuthEvent(
  * out. It attaches the id to every span and replay from here on
  * (setTelemetryUser), and sends one `auth_signed_in {kind: "resumed"}` per
  * user per UTC day per browser, which is what counts a user with a
- * long-lived session as active. Never throws; under GPC or DNT it only
- * attaches the id.
+ * long-lived session as active. Never throws; under GPC or DNT it sends
+ * nothing and attaches no id.
  */
 export function identifyUser(
   id: string | null | undefined,
@@ -282,8 +288,12 @@ function seenValue(userId: string): string {
   return `${userId}:${new Date().toISOString().slice(0, 10)}`;
 }
 
+// The device store, in the full tier only (track.ts, "Analytics tiers").
 function storage(): Storage | null {
   try {
+    if (analyticsTier() !== "full") {
+      return null;
+    }
     return typeof localStorage === "undefined" ? null : localStorage;
   } catch {
     return null;

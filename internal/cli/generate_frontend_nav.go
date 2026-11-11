@@ -490,20 +490,23 @@ func printDependencyNotices(feName, feDir string, notices []string) {
 	}
 }
 
-// withSessionIdentity sets the two fields otel_gen.ts gates its `identify`
-// option on, from the frontend's own owned modules: whether it signs in
-// natively (src/lib/auth/native-login.ts, which asks /auth/session at load)
-// and whether it has src/lib/api-base.ts to resolve that URL through, plus
-// the typed-config facts its mock-mode check follows. Read
-// from disk because both are the app's: an adopted frontend never had them,
-// and an app that deleted native-login.ts decides its user itself.
+// withSessionIdentity sets the fields otel_gen.ts gates its `identify`
+// option on, from the frontend's own owned modules. Identity is on only when
+// the frontend signs in natively (src/lib/auth/native-login.ts, which asks
+// /auth/session at load) AND has src/lib/api-base.ts, the module
+// native-login.ts resolves that URL through: telemetry then asks exactly the
+// origin sign-in asks, dev proxy and runtime config included. Without
+// api-base.ts there is no resolution to share, so the page asks nothing
+// rather than guess an origin that may miss the session cookie. Also sets
+// the typed-config facts its mock-mode check follows. Read from disk because
+// these are the app's files: an adopted frontend never had them, and an app
+// that deleted native-login.ts decides its user itself.
 func withSessionIdentity(projectDir, feDir string, data templates.FrontendTemplateData) templates.FrontendTemplateData {
 	exists := func(rel string) bool {
 		info, err := os.Stat(filepath.Join(projectDir, feDir, filepath.FromSlash(rel)))
 		return err == nil && !info.IsDir()
 	}
-	data.IdentifySession = exists("src/lib/auth/native-login.ts")
-	data.HasAPIBase = exists("src/lib/api-base.ts")
+	data.IdentifySession = exists("src/lib/auth/native-login.ts") && exists("src/lib/api-base.ts")
 	// Mock mode is read where session-provider.ts reads it: the typed
 	// config module when the frontend has one.
 	typed := frontendTypedConfig(projectDir, data.FrontendName)

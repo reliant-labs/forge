@@ -14,7 +14,9 @@
 // with the cookie (`credentials: "include"`, for an API on another origin),
 // and hands the answer's `subject` to setTelemetryUser. Only `subject` is
 // read: the IdP's opaque user id. `email` and `name` in the same answer never
-// leave this function.
+// leave this function, and a subject that looks like an email (contains `@`)
+// or is over 128 characters names nobody. Whether the id is then carried is
+// the analytics tier's call (track.ts): not under GPC / DNT or in `off`.
 //
 // ── When it asks ─────────────────────────────────────────────────────────
 //
@@ -169,8 +171,12 @@ async function ask(url: string): Promise<string | null> {
       return "";
     }
     if (authenticated === true && typeof subject === "string") {
+      // An opaque subject only: never an email (the product-event contract's
+      // id guard, as identifyUser applies it).
       const trimmed = subject.trim();
-      return trimmed === "" ? null : trimmed;
+      return trimmed === "" || trimmed.includes("@") || trimmed.length > 128
+        ? null
+        : trimmed;
     }
     return null;
   } catch {

@@ -50,11 +50,35 @@
 // the query, the hash or scroll state, or a re-render that pushes the same
 // path, reports nothing.
 //
+// ── Where the visit came from, without storing anything ──────────────────
+//
+// Acquisition panels need the source of a visit, and the cookieless tiers
+// store nothing to remember it by, so the page view itself carries it:
+//
+//   entry          "true" on the first view of a page load (absent after).
+//   referrer_host  the host of document.referrer, on the entry view only
+//                  (a client-side navigation keeps the page's ORIGINAL
+//                  referrer, which is not where this view came from); absent
+//                  when it is this site (its own host, a `www.` twin, or one
+//                  of `siteHosts`).
+//   referrer_path  that referrer's path, scrubbed like a route.
+//   utm_source … utm_content, ref
+//                  from the URL's query, only when present, each at most
+//                  MAX_CAMPAIGN_VALUE_CHARS; `ref` is Plausible's `?ref=` or
+//                  `?source=`. A value containing `@` is dropped (email
+//                  tools put addresses in utm_content).
+//   click_id       WHICH ad network's click id the URL carries (`google`,
+//                  `microsoft`, `meta`, `tiktok`, `linkedin`, `other`) —
+//                  never the id: a click id is a persistent cross-site
+//                  identifier.
+//
+// Country, device, browser and OS are derived at the ingest edge, not here.
+//
 // Dependency-free like track.ts: nothing here imports the SDK, and nothing
 // runs until initBrowserTelemetry installs it (the consent gate), which also
 // removes it again on disableTelemetry().
 import { normalizeBasePath } from "./basepath.js";
-import { isTelemetryDisabled, track } from "./track.js";
+import { isTelemetryDisabled, recordProductEvent } from "./track.js";
 
 /** The product event a page view is recorded as. */
 export const PAGE_VIEWED_EVENT = "page_viewed";
@@ -67,6 +91,35 @@ export const MAX_ROUTE_CHARS = 200;
 
 /** Longest path segment kept as a route word. */
 export const MAX_ROUTE_WORD_CHARS = 32;
+
+/** Longest campaign value (utm_*, ref) a page view carries. */
+export const MAX_CAMPAIGN_VALUE_CHARS = 128;
+
+/** The campaign parameters a page view carries when the URL has them. */
+export const CAMPAIGN_PARAMS = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+] as const;
+
+// Ad click ids by network. Only the network name is ever sent.
+const CLICK_IDS: ReadonlyArray<readonly [string, string]> = [
+  ["gclid", "google"],
+  ["gbraid", "google"],
+  ["wbraid", "google"],
+  ["dclid", "google"],
+  ["msclkid", "microsoft"],
+  ["fbclid", "meta"],
+  ["ttclid", "tiktok"],
+  ["li_fat_id", "linkedin"],
+  ["twclid", "other"],
+  ["epik", "other"],
+  ["rdt_cid", "other"],
+  ["sccid", "other"],
+  ["yclid", "other"],
+];
 
 // A route word: lowercase letters, single `-` / `_` joins. No digits: a digit
 // is the commonest mark of an id.
@@ -124,6 +177,92 @@ export function normalizeRoute(pathname: string, basePath = ""): string {
   return scrubRoute(path, false);
 }
 
+function campaignValue(value: string | null): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  // eslint-disable-next-line no-control-regex
+  const v = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (v === "" || v.includes("@")) {
+    return undefined;
+  }
+  return v.slice(0, MAX_CAMPAIGN_VALUE_CHARS);
+}
+
+/**
+ * The campaign props of a page view from the URL's query string: utm_*,
+ * `ref` (`?ref=` or `?source=`) and `click_id` (the ad network, never the
+ * id). Only what is present. Pure; exported for tests.
+ */
+export function campaignProps(search: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(search);
+  } catch {
+    return out;
+  }
+  for (const key of CAMPAIGN_PARAMS) {
+    const v = campaignValue(params.get(key));
+    if (v) {
+      out[key] = v;
+    }
+  }
+  const ref =
+    campaignValue(params.get("ref")) ?? campaignValue(params.get("source"));
+  if (ref) {
+    out.ref = ref;
+  }
+  const lower = new Set([...params.keys()].map((k) => k.toLowerCase()));
+  for (const [param, network] of CLICK_IDS) {
+    if (lower.has(param)) {
+      out.click_id = network;
+      break;
+    }
+  }
+  return out;
+}
+
+// A host without a leading `www.`, lowercased: `www.example.com` and
+// `example.com` are one site.
+function bareHost(host: string): string {
+  const h = host.toLowerCase();
+  return h.startsWith("www.") ? h.slice(4) : h;
+}
+
+/**
+ * The referrer props of an entry page view: the referrer's host and scrubbed
+ * path, or nothing when there is no referrer or it is this site (`ownHost`
+ * or one of `siteHosts`, `www.` ignored). Pure; exported for tests.
+ */
+export function referrerProps(
+  referrer: string,
+  ownHost: string,
+  siteHosts: readonly string[] = [],
+): Record<string, string> {
+  if (typeof referrer !== "string" || referrer === "") {
+    return {};
+  }
+  let url: URL;
+  try {
+    url = new URL(referrer);
+  } catch {
+    return {};
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return {};
+  }
+  const host = bareHost(url.host);
+  const own = [ownHost, ...siteHosts].map(bareHost);
+  if (host === "" || own.includes(host)) {
+    return {};
+  }
+  return {
+    referrer_host: url.host.toLowerCase(),
+    referrer_path: scrubRoute(url.pathname, false),
+  };
+}
+
 /** How installPageViews names and reports routes. */
 export interface PageViewOptions {
   /**
@@ -141,6 +280,12 @@ export interface PageViewOptions {
    * pathname cannot carry an id out.
    */
   routeName?: (pathname: string) => string | null | undefined;
+  /**
+   * Hosts that are this site besides the page's own (another frontend of the
+   * same app, an auth domain): a referrer from one of them is not an
+   * acquisition source. `www.` is ignored either way.
+   */
+  siteHosts?: string[];
 }
 
 /** What telemetry.ts installs: the route watch, with or without the events. */
@@ -203,12 +348,33 @@ export function installPageViews(options: RouteWatchOptions): () => void {
       const previous = last;
       last = route;
       if (options.pageViews) {
-        track(PAGE_VIEWED_EVENT, { route });
+        recordProductEvent(
+          PAGE_VIEWED_EVENT,
+          viewProps(route, previous === null),
+        );
       }
       options.onRoute?.(route, previous);
     } catch {
       // Telemetry must never break the app.
     }
+  };
+
+  // The view's props: the route, plus the visit's source (see the header).
+  const viewProps = (route: string, entry: boolean): Record<string, string> => {
+    const props: Record<string, string> = { route };
+    if (entry) {
+      props.entry = "true";
+      Object.assign(
+        props,
+        referrerProps(
+          typeof document !== "undefined" ? document.referrer : "",
+          window.location?.host ?? "",
+          options.siteHosts,
+        ),
+      );
+    }
+    Object.assign(props, campaignProps(window.location?.search ?? ""));
+    return props;
   };
 
   const nav = navigationApi();

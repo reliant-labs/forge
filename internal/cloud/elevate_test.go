@@ -285,11 +285,10 @@ func TestCall_HelperCredentialElevatesThroughTheHelper(t *testing.T) {
 	want := []string{
 		"controlplane.v1.ObservabilityService/GetServiceOverview rlat_helper:deploy:read,deploy:write",
 		"controlplane.v1.ObservabilityService/GetServiceOverview rlat_helper:deploy:read,deploy:write,obs:read",
-		"controlplane.v1.ObservabilityService/GetServiceOverview rlat_helper:deploy:read,deploy:write",
 		"controlplane.v1.ObservabilityService/GetServiceOverview rlat_helper:deploy:read,deploy:write,obs:read",
 	}
 	if strings.Join(*calls, "|") != strings.Join(want, "|") {
-		t.Fatalf("calls:\n got %v\nwant %v (no exchange; the helper's token reused)", *calls, want)
+		t.Fatalf("calls:\n got %v\nwant %v (no exchange; the helper's token reused, and the second call not refused first)", *calls, want)
 	}
 }
 
@@ -339,5 +338,227 @@ func TestCall_HelperWithoutTheScopeFallsBackToTheExchange(t *testing.T) {
 	}
 	if len(*calls) != 2 || !strings.Contains((*calls)[1], "ExchangeToken") {
 		t.Fatalf("calls %v: want the refused call and one exchange", *calls)
+	}
+}
+
+// needServer plays a control plane whose procedures need one scope `need`:
+// a bearer elevated for it is admitted, any other refused for want of it (and
+// counted, as the control plane's audit log would). ".../Open" admits any
+// bearer. The exchange answers exchangeStatus; on 200 it mints
+// "rlat_elevated:<scope>" for the one scope asked.
+type needServer struct {
+	*httptest.Server
+	mu     sync.Mutex
+	calls  []string // "<procedure> <bearer>"
+	denied int
+}
+
+const procOverview = "controlplane.v1.ObservabilityService/GetServiceOverview"
+
+func newNeedServer(t *testing.T, need string, exchangeStatus int) *needServer {
+	t.Helper()
+	s := &needServer{}
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.calls = append(s.calls, strings.TrimPrefix(r.URL.Path, "/")+" "+bearer)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "AccessTokenService/ExchangeToken"):
+			var req struct {
+				Scopes []string `json:"scopes"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if exchangeStatus != http.StatusOK || len(req.Scopes) != 1 {
+				s.denied++
+				w.WriteHeader(exchangeStatus)
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": "permission_denied",
+					"message": "your organization permissions do not include " + need})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"secret": "rlat_elevated:" + req.Scopes[0],
+				"token":  map[string]any{"expiresAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+			})
+		case strings.HasSuffix(r.URL.Path, "/Open"), bearer == "rlat_elevated:"+need:
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			s.denied++
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "permission_denied",
+				"message": "this credential does not carry the " + need + " scope"})
+		}
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func (s *needServer) client(t *testing.T, cred Credential) *Client {
+	t.Helper()
+	ep, err := ResolveEndpoint("prod", &Declaration{Endpoint: s.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Token == "" {
+		cred.Token = "rlat_narrow"
+	}
+	return NewClient(ep, cred)
+}
+
+func (s *needServer) seen() ([]string, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.calls...), s.denied
+}
+
+// The bug: every `forge obs` run sent its first read with the narrow stored
+// credential, was refused for want of obs:read, then elevated and retried —
+// one permission denial in the control plane per run (846 in a week). A
+// declared scope is elevated for before the first call: one exchange, then
+// the reads, and nothing refused.
+func TestCall_DeclaredScopeElevatesBeforeTheFirstCall(t *testing.T) {
+	t.Setenv(cloudcred.HelperEnv, "")
+	for _, src := range []CredentialSource{SourceLogin, SourceHelper} {
+		t.Run(string(src), func(t *testing.T) {
+			srv := newNeedServer(t, "obs:read", http.StatusOK)
+			c := srv.client(t, Credential{Source: src, From: "test"})
+			c.DeclareScope("obs:read", procOverview)
+			for i := 0; i < 3; i++ {
+				var out struct{ OK bool }
+				if err := c.Call(context.Background(), procOverview, map[string]any{}, &out); err != nil || !out.OK {
+					t.Fatalf("Call %d: ok=%v err=%v", i, out.OK, err)
+				}
+			}
+			calls, denied := srv.seen()
+			want := []string{
+				"controlplane.v1.AccessTokenService/ExchangeToken rlat_narrow",
+				procOverview + " rlat_elevated:obs:read",
+				procOverview + " rlat_elevated:obs:read",
+				procOverview + " rlat_elevated:obs:read",
+			}
+			if denied != 0 || strings.Join(calls, "|") != strings.Join(want, "|") {
+				t.Fatalf("denied %d, calls:\n got %v\nwant %v", denied, calls, want)
+			}
+		})
+	}
+}
+
+// A procedure with no declaration still learns its scope from the refusal,
+// once: the client's later calls to it elevate up front.
+func TestCall_UndeclaredScopeIsLearnedFromOneRefusal(t *testing.T) {
+	t.Setenv(cloudcred.HelperEnv, "")
+	srv := newNeedServer(t, "obs:read", http.StatusOK)
+	c := srv.client(t, Credential{Source: SourceLogin, From: "test"})
+	for i := 0; i < 3; i++ {
+		if err := c.Call(context.Background(), procOverview, map[string]any{}, nil); err != nil {
+			t.Fatalf("Call %d: %v", i, err)
+		}
+	}
+	calls, denied := srv.seen()
+	want := []string{
+		procOverview + " rlat_narrow",
+		"controlplane.v1.AccessTokenService/ExchangeToken rlat_narrow",
+		procOverview + " rlat_elevated:obs:read",
+		procOverview + " rlat_elevated:obs:read",
+		procOverview + " rlat_elevated:obs:read",
+	}
+	if denied != 1 || strings.Join(calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("denied %d (want the one that taught it), calls:\n got %v\nwant %v", denied, calls, want)
+	}
+}
+
+// --token and the token env var are never elevated, declared or not, and a
+// human session is authorized as itself.
+func TestCall_DeclaredScopeIsIgnoredForCredentialsThatAreNotElevated(t *testing.T) {
+	for _, cred := range []Credential{{Source: SourceFlag}, {Source: SourceEnv}, {Source: SourceLogin, Kind: "human"}} {
+		t.Run(string(cred.Source)+cred.Kind, func(t *testing.T) {
+			srv := newNeedServer(t, "obs:read", http.StatusOK)
+			c := srv.client(t, cred)
+			c.DeclareScope("obs:read", procOverview)
+			if err := c.Call(context.Background(), procOverview, map[string]any{}, nil); err == nil {
+				t.Fatal("the credential was elevated")
+			}
+			if calls, _ := srv.seen(); len(calls) != 1 || strings.Contains(calls[0], "ExchangeToken") {
+				t.Fatalf("calls %v: want the one refused call and no exchange", calls)
+			}
+		})
+	}
+}
+
+// A credential that already carries the declared scope is presented as is:
+// the issuer's reported scopes, else the ones forge asks a login for.
+func TestCall_DeclaredScopeTheCredentialCarriesIsNotExchanged(t *testing.T) {
+	for _, cred := range []Credential{
+		{Source: SourceLogin, Scopes: []string{"deploy:read", "obs:read"}},
+		{Source: SourceHelper}, // reports nothing: LoginScopes, which hold deploy:read
+	} {
+		srv := newNeedServer(t, "obs:read", http.StatusOK)
+		c := srv.client(t, cred)
+		scope := "deploy:read"
+		if len(cred.Scopes) > 0 {
+			scope = "obs:read"
+		}
+		c.DeclareScope(scope, "controlplane.v1.DeployService/Open")
+		if err := c.Call(context.Background(), "controlplane.v1.DeployService/Open", map[string]any{}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if calls, _ := srv.seen(); len(calls) != 1 || strings.Contains(calls[0], "ExchangeToken") {
+			t.Fatalf("%s: calls %v: want the call alone, no exchange", scope, calls)
+		}
+	}
+}
+
+// An up-front elevation the control plane refuses is not the end: the base
+// credential is presented (a declaration is not proof it lacks the scope), and
+// its refusal says why elevation did not help. The exchange is asked once per
+// client, not once per call.
+func TestCall_RefusedUpfrontElevationFallsBackToTheBaseCredential(t *testing.T) {
+	t.Setenv(cloudcred.HelperEnv, "")
+	srv := newNeedServer(t, "obs:read", http.StatusForbidden)
+	c := srv.client(t, Credential{Source: SourceLogin, From: "test"})
+	c.DeclareScope("obs:read", procOverview, "controlplane.v1.ObservabilityService/Open")
+	for i := 0; i < 2; i++ {
+		err := c.Call(context.Background(), procOverview, map[string]any{}, nil)
+		if err == nil || !strings.Contains(err.Error(), "elevation:") || !strings.Contains(err.Error(), "do not include obs:read") {
+			t.Fatalf("Call %d: err = %v, want the refusal with why elevation did not help", i, err)
+		}
+	}
+	calls, _ := srv.seen()
+	want := []string{
+		"controlplane.v1.AccessTokenService/ExchangeToken rlat_narrow",
+		procOverview + " rlat_narrow",
+		procOverview + " rlat_narrow",
+	}
+	if strings.Join(calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls:\n got %v\nwant %v", calls, want)
+	}
+	// The base credential is still presented, and admitted where it may be.
+	if err := c.Call(context.Background(), "controlplane.v1.ObservabilityService/Open", map[string]any{}, nil); err != nil {
+		t.Fatalf("a procedure the base credential may call: %v", err)
+	}
+}
+
+// A wrong declaration costs calls, never the command: an elevated token
+// refused for another scope falls back to the base credential and elevates
+// for the scope the control plane named.
+func TestCall_WrongDeclarationFallsBackToTheReactivePath(t *testing.T) {
+	t.Setenv(cloudcred.HelperEnv, "")
+	srv := newNeedServer(t, "obs:read", http.StatusOK)
+	c := srv.client(t, Credential{Source: SourceLogin, From: "test"})
+	c.DeclareScope("obs:triage", procOverview)
+	if err := c.Call(context.Background(), procOverview, map[string]any{}, nil); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	calls, _ := srv.seen()
+	want := []string{
+		"controlplane.v1.AccessTokenService/ExchangeToken rlat_narrow",
+		procOverview + " rlat_elevated:obs:triage",
+		procOverview + " rlat_narrow",
+		"controlplane.v1.AccessTokenService/ExchangeToken rlat_narrow",
+		procOverview + " rlat_elevated:obs:read",
+	}
+	if strings.Join(calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls:\n got %v\nwant %v", calls, want)
 	}
 }

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   cookiesPersist,
+  installRumSessionStore,
   installSessionCookieFallback,
   RUM_SESSION_COOKIE,
   RUM_SESSION_STORAGE_KEY,
@@ -288,5 +289,95 @@ describe("installSessionCookieFallback", () => {
     expect((doc as unknown as { cookie: string }).cookie).toBe(
       `${RUM_SESSION_COOKIE}=x`,
     );
+  });
+});
+
+/** A document whose cookie jar works, logging writes, with event listeners. */
+class ListeningKeepingDocument extends KeepingDocument {
+  readonly listeners = new Map<string, Listener[]>();
+  readonly written: string[] = [];
+  override get cookie(): string {
+    return super.cookie;
+  }
+  override set cookie(value: string) {
+    this.written.push(value);
+    super.cookie = value;
+  }
+  addEventListener(type: string, fn: Listener) {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+  }
+  dispatch(type: string) {
+    for (const fn of this.listeners.get(type) ?? []) fn();
+  }
+  /** What the browser's jar holds, past any accessor installed on the instance. */
+  jarText(): string {
+    return Object.getOwnPropertyDescriptor(
+      KeepingDocument.prototype,
+      "cookie",
+    )!.get!.call(this) as string;
+  }
+}
+
+describe("the SDK session kept in memory (installRumSessionStore)", () => {
+  it("keeps one id across checks and never writes the browser's jar", () => {
+    const doc = new ListeningKeepingDocument();
+    doc.cookie = `${RUM_SESSION_COOKIE}=left-by-an-earlier-load; path=/; max-age=900`;
+    const rum = installRumSessionStore(doc as unknown as Document);
+    expect(rum?.backend()).toBe("memory");
+    // A session an earlier (consented) page load left is erased at once.
+    expect(doc.jarText()).toBe("");
+    doc.written.length = 0;
+
+    const sdk = loadSdkSession(doc);
+    deinit = sdk.initSessionTracking("instance").deinit;
+    const id = sdk.getRumSessionId();
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    for (let minute = 1; minute <= 30; minute++) {
+      if (minute % 10 === 0) doc.dispatch("click");
+      vi.advanceTimersByTime(MINUTE);
+      expect(sdk.getRumSessionId()).toBe(id);
+    }
+    expect(doc.jarText()).toBe("");
+    expect(doc.written).toEqual([]);
+  });
+
+  it("moves the running session to the cookie and back without a new id", () => {
+    const doc = new ListeningKeepingDocument();
+    const rum = installRumSessionStore(doc as unknown as Document)!;
+    const sdk = loadSdkSession(doc);
+    deinit = sdk.initSessionTracking("instance").deinit;
+    const id = sdk.getRumSessionId()!;
+
+    rum.moveToDevice(memoryStore());
+    expect(rum.backend()).toBe("cookie");
+    expect(decodeURIComponent(doc.jarText())).toContain(id);
+    vi.advanceTimersByTime(MINUTE);
+    expect(sdk.getRumSessionId()).toBe(id);
+
+    rum.moveToMemory();
+    expect(rum.backend()).toBe("memory");
+    expect(doc.jarText()).toBe("");
+    vi.advanceTimersByTime(MINUTE);
+    expect(sdk.getRumSessionId()).toBe(id);
+  });
+
+  it("moves to localStorage where the jar drops cookies, and erases it on the way back", () => {
+    const doc = new DroppingDocument();
+    const rum = installRumSessionStore(doc as unknown as Document)!;
+    const sdk = loadSdkSession(doc);
+    deinit = sdk.initSessionTracking("instance").deinit;
+    const id = sdk.getRumSessionId()!;
+    const store = memoryStore();
+
+    rum.moveToDevice(store);
+    expect(rum.backend()).toBe("storage");
+    expect(store.map.get(RUM_SESSION_STORAGE_KEY)).toContain(id);
+    vi.advanceTimersByTime(MINUTE);
+    expect(sdk.getRumSessionId()).toBe(id);
+
+    rum.moveToMemory();
+    expect(store.map.size).toBe(0);
+    vi.advanceTimersByTime(MINUTE);
+    expect(sdk.getRumSessionId()).toBe(id);
   });
 });

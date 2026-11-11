@@ -1,6 +1,6 @@
 ---
 name: observability/product-events
-description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the standard auth events the console counts users from (observe.TrackAuth, trackAuthEvent, identifyUser; the record for any other language), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, retention, and sql/funnel panels over the hosted product_events table.
+description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the browser's cookieless analytics tiers (off < aggregate < identified < full, identified by default; grantAnalyticsConsent, optOutOfAnalytics, GPC/DNT), automatic page_viewed with its referrer/utm/click_id props, flag exposures (trackExposure, forgeExposureHook), the reserved event-name prefixes, the standard auth events the console counts users from (observe.TrackAuth, trackAuthEvent, identifyUser; the record for any other language), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, retention, and sql/funnel panels over the hosted product_events table.
 ---
 
 # Product events
@@ -30,7 +30,8 @@ Bounds, enforced by both emitters and again by the table's view: at most 32
 properties, each value at most 256 characters (longer is truncated). Product
 events are not a way to keep logs longer. Browser events keep their existing
 path (HyperDX `custom-action` spans into the same table); the web runtime
-stamps `app.client` and `visitor.id` on them.
+stamps `app.client` on them, and `visitor.id` only in the consented `full`
+analytics tier (below).
 
 ## Emitting from Go
 
@@ -79,21 +80,106 @@ result). Events your own code emits with `observe.Track` are never switched off.
 ## Emitting from the browser
 
 ```ts
-import { track, setTelemetryUser, withAttribution } from "@reliantlabs/forge-web-runtime";
+import { track, setTelemetryUser } from "@reliantlabs/forge-web-runtime";
 
 track("onboarding_completed", { plan: "pro" });   // after initBrowserTelemetry
-setTelemetryUser(session.user.id);                // also emits user_identified, once per user
+setTelemetryUser(session.user.id);                // the opaque subject, never an email
 ```
 
 `initBrowserTelemetry({ appClient })` stamps `app.client` (`electron` inside
-Electron, else `web`; pass `landing` from a marketing site) and `visitor.id` on
-every event, and reads `rid` and `utm_source|medium|campaign|term|content` from
-the URL into storage. The first `setTelemetryUser(id)` for a user emits one
-`user_identified {visitor_id, utm_*}`, which is how a funnel joins a visitor to a
-user. A marketing site wraps its outbound links in `withAttribution(url)` so the
-app sees the `rid` and utm values. All of it is behind the same consent gate as
-`track`: nothing is stored or appended until `initBrowserTelemetry` runs, and
-not after `disableTelemetry()`.
+Electron, else `web`; pass `landing` from a marketing site) on every event.
+Everything is behind one gate: nothing is sent until `initBrowserTelemetry`
+runs, and nothing after `disableTelemetry()`.
+
+### Analytics tiers: cookieless by default
+
+What the browser sends and keeps is decided by its **tier**, ordered `off` <
+`aggregate` < `identified` < `full`: the lowest of the app's `analytics` mode
+(the runtime config's `ANALYTICS_MODE`; absent means `identified`), the
+consent the app signalled, and the browser's own privacy signals:
+
+| tier | when | stored on the device | ids on browser events |
+|---|---|---|---|
+| `off` | `analytics: "off"`, or the person called `optOutOfAnalytics()` | only the opt-out flag (`forge.analytics_opt_out`) | none: no product events, no user id (errors and traces still flow) |
+| `aggregate` | mode `aggregate`, and always under Global Privacy Control / Do Not Track | **nothing**: no cookie, no localStorage, no sessionStorage (the RUM session id is kept in memory) | none, even when signed in; the platform's ingest edge counts visitors with a daily-salted hash it forgets |
+| `identified` | **the default** mode, once a user is named (`identifyUser` / `setTelemetryUser`, or the generated session identity), no GPC/DNT | **nothing**, as aggregate | the opaque user id |
+| `full` | `analytics: "full"` **and** `grantAnalyticsConsent()` | `forge.visitor_id`, `forge.attribution`, the `__rum_sid` session cookie | user id + persistent `visitor.id`; `user_identified`; replay when configured |
+
+```ts
+import {
+  grantAnalyticsConsent, revokeAnalyticsConsent, optOutOfAnalytics, analyticsTier,
+} from "@reliantlabs/forge-web-runtime";
+
+// analytics: "full" (runtime config ANALYTICS_MODE = "full"), then, from your
+// consent manager, on every page load once the person said yes:
+grantAnalyticsConsent();   // the session moves to the cookie, visitor.id starts
+revokeAnalyticsConsent();  // back to identified; what full stored is erased
+optOutOfAnalytics();       // the person objects to analytics at all: tier off, remembered
+```
+
+The runtime never remembers consent; your consent manager does, and calls
+`grantAnalyticsConsent()` each page load. Consent given mid-page keeps the
+running session (it moves from memory to the cookie) and starts replay on the
+next load. A start in a mode that can never reach `full` erases the ids an
+earlier page load stored. GPC / DNT cap any mode at `aggregate` **with no user
+id**: such a browser is counted, never identified and never stitched. Server
+events (CRUD, `Track`, `TrackAuth`) are not gated by any of this.
+
+In the `full` tier only, the runtime reads `rid` and `utm_*` from the landing
+URL into storage, and the first `setTelemetryUser(id)` for a user emits one
+`user_identified {visitor_id, utm_*}`, which is how a funnel joins a visitor
+to a user across days. A marketing site wraps its outbound links in
+`withAttribution(url)` (a no-op below `full`) so the app sees the `rid` and
+utm values. `initBrowserTelemetry({ attribution })` and `enableAttribution()`
+are deprecated spellings that keep working: passing `attribution` at all means
+mode `full`, `true` also grants consent, and `enableAttribution()` raises the
+default mode to `full` and grants.
+
+### Page views, with where the visit came from
+
+Every generated web frontend (Next.js, Vite) records `page_viewed` for each
+route the user lands on, in every tier above `off`:
+
+| prop | value |
+|---|---|
+| `route` | the pathname only: basePath stripped, id-looking segments as `:id` (`/orders/:id`) |
+| `entry` | `"true"` on the first view of a page load (absent after) |
+| `referrer_host`, `referrer_path` | the referrer's host and scrubbed path, on the entry view only, and only when it is another site (not this host, its `www.` twin or a `pageViews.siteHosts` entry) |
+| `utm_source` … `utm_content`, `ref` | from the URL's query, only when present, at most 128 characters; `ref` is `?ref=` or `?source=`; a value containing `@` is dropped |
+| `click_id` | which ad network's click id the URL carries: `google` (gclid, gbraid, wbraid, dclid), `microsoft`, `meta`, `tiktok`, `linkedin` or `other`. **Never the id itself**: it is a persistent cross-site identifier |
+
+So a campaign reaches the console with nothing stored. Country, device,
+browser and OS are derived at the ingest edge, not sent by the page. With
+native sign-in the frontend also identifies the signed-in user by itself: the
+runtime reads the `subject` of `/auth/session` (through `src/lib/api-base.ts`,
+as sign-in does), the same id `observe.Track` writes as `user.id`, so browser
+and backend events join on `UserId`. An environment turns either off per
+frontend with `telemetry = forge.BrowserTelemetry {page_views = False}` /
+`{identify_user = False}` (rendered as `PAGE_VIEWS` / `IDENTIFY_USER = "false"`
+in its runtime config). How both work: `frontend-runtime/telemetry`.
+
+### Flag exposures
+
+`trackExposure(flag, variant, { provider })` records one
+`flag_evaluated {flag, variant, provider}` per person, flag and variant per UTC
+day (deduped in memory). An app on any OpenFeature provider registers the hook
+once and needs no other code:
+
+```ts
+import { OpenFeature } from "@openfeature/web-sdk";
+import { forgeExposureHook } from "@reliantlabs/forge-web-runtime";
+
+OpenFeature.addHooks(forgeExposureHook);
+```
+
+A failed evaluation is no exposure; an object-valued flag with no variant name
+is recorded as `object`, never its contents.
+
+### Reserved event names
+
+The prefixes `auth_`, `page_`, `flag_` and `web_` are forge's own events.
+`track()` still sends an app event that uses one, and warns once per page load:
+rename it so the console's built-in panels stay exact.
 
 ## Auth events: who signed up, signed in, signed out
 
@@ -171,9 +257,11 @@ trackAuthEvent("signed_up", { userId: user.id, method: "magic_link", provider: "
 trackAuthEvent("signed_out", { userId: user.id, provider: "clerk" });   // before the session is gone
 ```
 
-Browser auth events honour Global Privacy Control and Do Not Track (the id is
-still attached to telemetry; no auth event is sent), and sit behind the same
-consent gate as `track`. A Node server (a Next.js route handler, an Express
+Browser auth events honour Global Privacy Control and Do Not Track (no auth
+event is sent and no id is attached: the browser is capped at `aggregate`),
+send nothing in the `off` tier, and store nothing below `full` (the daily
+`resumed` marker is kept in memory there, so a reload can send one more; the
+counts are distinct by user). A Node server (a Next.js route handler, an Express
 backend) uses `trackAuthEvent` from `@reliantlabs/forge-web-runtime/node`,
 which writes the same log record as `TrackAuth`.
 

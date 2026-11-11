@@ -4,7 +4,9 @@
 //
 // Captures errors (uncaught, unhandled rejections, boundary-caught), console
 // output, fetch/XHR spans, document load, long tasks and web vitals, and
-// ships them to ClickStack through a SAME-ORIGIN `/_otel` route.
+// ships them to ClickStack through a SAME-ORIGIN `/_otel` route. Product
+// analytics ride on it in a tier the app and the person choose, cookieless
+// by default (see "Analytics tiers" below).
 //
 // ── Why HyperDX REPLACES the old OTel web wiring, not joins it ───────────
 //
@@ -50,13 +52,16 @@
 //
 // `replaySampleRate` (0..1, default 1) records only that share of SESSIONS. The
 // SDK has no session sampler, so the decision is made here, once, and held in
-// sessionStorage for the tab's session.
+// sessionStorage for the tab's session. Replay runs only in the `full`
+// analytics tier (below): it is per-person recording, which the cookieless
+// tiers never do.
 //
 // ── One session per visit, even where cookies are dropped ────────────────
 //
 // The SDK keeps its session id only in the `__rum_sid` cookie and mints a new
 // one whenever it cannot read that cookie back, which it checks every minute.
-// An origin that drops cookies (an Electron renderer on a custom scheme such
+// Below the `full` analytics tier the cookie is answered from memory instead
+// (see "Analytics tiers"); in `full`, an origin that drops cookies (an Electron renderer on a custom scheme such
 // as `app://`) therefore got a new session every minute. Before init, the
 // runtime probes whether cookies persist and, when they do not, keeps that one
 // cookie in localStorage with the same 15-minute inactivity and 4-hour limits
@@ -105,6 +110,31 @@
 // URL keeps `HTTP <METHOD>`: a free-form path can carry ids and tokens, and
 // the span name is exported unscrubbed.
 //
+// ── Analytics tiers: cookieless by default ───────────────────────────────
+//
+// `analytics` is the app's ceiling: "off", "aggregate", "identified" (the
+// default) or "full". The tier the browser actually runs in is decided in track.ts
+// ("Analytics tiers"): below `full` NOTHING is stored on the device. The SDK's
+// `__rum_sid` session cookie is answered from memory
+// (session-cookie-fallback.ts, installRumSessionStore), there is no visitor
+// id, no campaign is stored, no replay runs and no sampling decision is kept.
+// Visitors are counted by the platform's ingest edge (a daily-salted hash it
+// computes and forgets), never by anything the page computes. `full` needs
+// mode "full" AND grantAnalyticsConsent(): then the session cookie, the
+// visitor id, attribution and (from the next page load) replay come back,
+// and revokeAnalyticsConsent() / optOutOfAnalytics() take them away again
+// and erase what was stored. GPC / DNT cap the browser at `aggregate`.
+//
+// ── Page views and the signed-in user, when asked ────────────────────────
+//
+// `pageViews` records a `page_viewed {route}` product event per route
+// (page-views.ts); `identify` finds the signed-in user from the API's
+// `/auth/session` and stamps their opaque id on every event
+// (session-identity.ts). Both are OFF in this API, so a hand-written caller
+// sees no change; forge's generated otel_gen.ts turns them on, and an env
+// turns them off with PAGE_VIEWS / IDENTIFY_USER = "false" in its runtime
+// config. Both start only once the SDK runs and stop on disableTelemetry().
+//
 // ── Client context ───────────────────────────────────────────────────────
 //
 // The page reports what only it can know about its client — client hints
@@ -130,6 +160,7 @@ import {
   captureAttribution,
   type AttributionTouch,
   detectAppClient,
+  stopAttribution,
   takeIdentifyProps,
 } from "./attribution.js";
 import {
@@ -144,16 +175,33 @@ import {
 } from "./client-context.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { installFetchContext } from "./interaction-context.js";
-import { installSessionCookieFallback } from "./session-cookie-fallback.js";
+import { installPageViews, type PageViewOptions } from "./page-views.js";
+import {
+  type IdentifyOptions,
+  type SessionIdentity,
+  watchSessionIdentity,
+} from "./session-identity.js";
+import {
+  installRumSessionStore,
+  type RumSessionStore,
+} from "./session-cookie-fallback.js";
 import {
   registerRumSession,
   registerTelemetryStartup,
   rumSessionId,
 } from "./telemetry-gate.js";
 import {
+  type AnalyticsMode,
+  analyticsTier,
   browserPrivacyOptOut,
+  currentAnalyticsMode,
+  eraseAnalyticsDeviceState,
+  grantAnalyticsConsent,
   isTelemetryDisabled,
+  onAnalyticsTierChange,
+  setAnalyticsMode,
   setTelemetrySink,
+  stampedTelemetryUser,
   type TrackValue,
 } from "./track.js";
 
@@ -165,10 +213,16 @@ export {
 
 export {
   cookiesPersist,
+  installRumSessionStore,
   installSessionCookieFallback,
   RUM_SESSION_COOKIE,
   RUM_SESSION_STORAGE_KEY,
+  type RumSessionBackend,
+  type RumSessionStore,
 } from "./session-cookie-fallback.js";
+
+export { type PageViewOptions } from "./page-views.js";
+export { type IdentifyOptions } from "./session-identity.js";
 
 export {
   type BenignErrorClassifier,
@@ -235,6 +289,10 @@ export interface BrowserTelemetryConfig {
   /**
    * Session replay (rrweb). Default false. When true, all text and inputs are
    * masked, media is blocked and canvas is not recorded (see the header).
+   * It runs only in the `full` analytics tier (`analytics: "full"` and
+   * grantAnalyticsConsent() before this call): replay records a person, which
+   * the cookieless tiers never do. Consent granted later in the page load
+   * starts it on the next one.
    */
   replay?: boolean;
   /**
@@ -254,19 +312,41 @@ export interface BrowserTelemetryConfig {
    */
   appClient?: string;
   /**
+   * The app's analytics ceiling (track.ts, "Analytics tiers"), ordered
+   * off < aggregate < identified < full:
+   *
+   *   "identified" (default) cookieless: product events with no persistent
+   *                          id and nothing stored on the device; the
+   *                          signed-in user's opaque id rides along once one
+   *                          is named.
+   *   "aggregate"            as identified, but strictly anonymous: no user
+   *                          id on browser events, even when signed in.
+   *   "full"                 as identified until the app calls
+   *                          grantAnalyticsConsent(); then a persistent
+   *                          visitor id, the RUM session cookie, campaign
+   *                          attribution across days and replay.
+   *   "off"                  no product events and no user id; errors and
+   *                          traces still flow.
+   *
+   * GPC / DNT cap any mode at aggregate, with no user id. forge's generated
+   * otel_gen.ts passes the runtime config's ANALYTICS_MODE (absent means
+   * "identified").
+   */
+  analytics?: AnalyticsMode;
+  /**
    * localStorage key holding this browser's anonymous visitor id (stamped as
-   * `visitor.id`). Set it to adopt an id a site already keeps, e.g. a landing
-   * page's `reliant.visitor_id`. Default `forge.visitor_id`. A `rid` in the
-   * landing URL wins over it.
+   * `visitor.id`) in the `full` tier. Set it to adopt an id a site already
+   * keeps, e.g. a landing page's `reliant.visitor_id`. Default
+   * `forge.visitor_id`. A `rid` in the landing URL wins over it.
    */
   visitorIdStorageKey?: string;
   /**
-   * Start visitor attribution with the SDK. Default true. Pass false when the
-   * visitor id needs a consent the page does not have yet (error telemetry for
-   * everyone, a visitor id only with analytics consent): no visitor id is
-   * created, read or stamped, nothing is captured from the URL, withAttribution
-   * returns URLs untouched and `user_identified` never fires, until the app
-   * calls enableAttribution().
+   * @deprecated Use `analytics` and grantAnalyticsConsent(). Kept working:
+   * with `analytics` unset, passing `attribution` at all sets the mode to
+   * "full" (it was always a choice about a persistent visitor id); `true`
+   * also grants consent at start, as `attribution: true` started attribution
+   * before; `false` waits for enableAttribution() / grantAnalyticsConsent().
+   * Unset, there is no visitor id below the `full` tier.
    */
   attribution?: boolean;
   /**
@@ -287,6 +367,26 @@ export interface BrowserTelemetryConfig {
    * value. Pass `() => null` to record everything.
    */
   classifyBenignError?: BenignErrorClassifier;
+  /**
+   * Record a `page_viewed {route}` product event for each route the user
+   * lands on (page-views.ts): the pathname only, basePath stripped, ids
+   * replaced by `:id`, consecutive repeats dropped. Default false; forge's
+   * generated src/lib/otel_gen.ts turns it on unless the env's runtime
+   * config says `PAGE_VIEWS = "false"`. Pass options to strip a basePath or
+   * name routes yourself.
+   */
+  pageViews?: boolean | PageViewOptions;
+  /**
+   * Find the signed-in user by asking `sessionUrl` (the API's
+   * `/auth/session`, with the cookie) and pass its `subject` to
+   * setTelemetryUser, again on a move into or out of `/auth/*` and when the
+   * tab becomes visible (session-identity.ts). Unset (the default), nothing
+   * is asked; forge's generated src/lib/otel_gen.ts sets it for a frontend
+   * with native sign-in unless the runtime config says
+   * `IDENTIFY_USER = "false"`. An app that calls setTelemetryUser from its
+   * own IdP leaves it unset.
+   */
+  identify?: IdentifyOptions;
 }
 
 /** The slice of the SDK this module calls. Typed here, not imported, so the module loads without it. */
@@ -317,13 +417,16 @@ function captureVisitor(config: BrowserTelemetryConfig): string {
 }
 
 /**
- * Turn on visitor attribution for a page that started telemetry with
- * `attribution: false`, once the consent it needs is granted: from here on
- * every event carries `visitor.id`, withAttribution stamps links and the first
- * sign-in emits `user_identified`. Pass `search` (the landing URL's query
- * string, kept from page load) when a client-side navigation may have dropped
- * it since. Safe to call before init resolves, more than once, and on the
- * server; a no-op after disableTelemetry().
+ * @deprecated Use grantAnalyticsConsent(). Kept working: it raises the
+ * default "identified" mode to "full" (a caller asking for attribution has said it
+ * wants the persistent visitor id) and grants consent, so from here on every
+ * event carries `visitor.id`, withAttribution stamps links and the first
+ * sign-in emits `user_identified`. A mode of "off" or "aggregate" (an app's
+ * explicit choice) stays as it is, and GPC / DNT
+ * still cap the browser at aggregate. Pass `search` (the landing URL's query
+ * string, kept from page load) when a client-side navigation may have
+ * dropped it since. Safe to call before init resolves, more than once, and
+ * on the server; a no-op after disableTelemetry().
  */
 export function enableAttribution(options?: { search?: string }): void {
   if (typeof window === "undefined" || isTelemetryDisabled()) {
@@ -332,17 +435,57 @@ export function enableAttribution(options?: { search?: string }): void {
   if (options?.search !== undefined) {
     attributionOptions = { search: options.search };
   }
-  if (attributionWanted) {
+  if (currentAnalyticsMode() === "identified") {
+    setAnalyticsMode("full");
+  }
+  grantAnalyticsConsent();
+}
+
+// The mode a config asks for: `analytics`, else the legacy `attribution`
+// (any explicit value meant a persistent visitor id: "full"), else the
+// cookieless default, "identified".
+function configuredMode(config: BrowserTelemetryConfig): AnalyticsMode {
+  const mode = config.analytics;
+  if (
+    mode === "off" ||
+    mode === "aggregate" ||
+    mode === "identified" ||
+    mode === "full"
+  ) {
+    return mode;
+  }
+  return config.attribution === undefined ? "identified" : "full";
+}
+
+// Start or stop the full tier's device state on a running SDK as the tier
+// moves: the session moves to the device and back, the visitor id is
+// stamped or blanked, and the first sign-in is identified.
+function applyTier(
+  tier: string,
+  previous: string,
+  hdx: HyperDXClient,
+  config: BrowserTelemetryConfig,
+  rum: RumSessionStore | null,
+): void {
+  if (tier === "full" && previous !== "full") {
+    rum?.moveToDevice(localStorageOrNull());
+    attributionWanted = true;
+    hdx.setGlobalAttributes?.({ "visitor.id": captureVisitor(config) });
+    const user = stampedTelemetryUser();
+    const identify = user ? takeIdentifyProps(user) : null;
+    if (identify) {
+      hdx.addAction?.("user_identified", identify);
+    }
     return;
   }
-  attributionWanted = true;
-  if (runningClient && runningConfig) {
-    try {
-      runningClient.setGlobalAttributes?.({
-        "visitor.id": captureVisitor(runningConfig),
-      });
-    } catch {
-      // Telemetry must never break the app.
+  if (tier !== "full") {
+    rum?.moveToMemory();
+    if (attributionWanted || previous === "full") {
+      attributionWanted = false;
+      stopAttribution();
+      hdx.setGlobalAttributes?.({ "visitor.id": "" });
+      // Replay records a person: it never outlives the full tier.
+      hdx.stopSessionRecorder?.();
     }
   }
 }
@@ -362,6 +505,18 @@ export function initBrowserTelemetry(
   }
   if (isTelemetryDisabled()) {
     return Promise.resolve(false);
+  }
+  // Before anything is held or replayed: the tier decides what track() and
+  // setTelemetryUser may send.
+  setAnalyticsMode(configuredMode(config));
+  if (config.analytics === undefined && config.attribution === true) {
+    grantAnalyticsConsent();
+  }
+  if (currentAnalyticsMode() !== "full") {
+    // Ids an earlier page load stored (before analytics were cookieless by
+    // default, or under a mode since lowered) are not kept by a mode that
+    // can never reach `full`.
+    eraseAnalyticsDeviceState();
   }
   const ingest = resolveIngestUrl(config.endpoint, window.location.origin);
   if (!ingest) {
@@ -389,9 +544,14 @@ async function start(
       setTelemetrySink(null);
       return false;
     }
-    const replay = decideReplay(config, sessionStorageOrNull(), Math.random);
-    // Before init: the SDK reads its session cookie as it starts.
-    keepSessionWithoutCookies();
+    // Replay records a person: only in the full tier, which is also the only
+    // one allowed to keep the sampling decision in sessionStorage.
+    const replay =
+      analyticsTier() === "full" &&
+      decideReplay(config, sessionStorageOrNull(), Math.random);
+    // Before init: the SDK reads its session cookie as it starts. In memory
+    // below the full tier; on the device in it.
+    const rum = keepRumSession();
     hdx.init(
       buildSdkOptions(
         { ...config, replay },
@@ -411,13 +571,11 @@ async function start(
     const benign = benignFilter(config, hdx);
     filterSdkErrorSpans(benign);
     tapSdkInputs(benign);
-    // Every span carries where it came from and which visitor made it; the
-    // product-event view reads these as app.client and visitor.id.
-    // With attribution deferred (attribution: false), visitor.id joins them
-    // when enableAttribution() runs.
-    if (config.attribution !== false) {
-      attributionWanted = true;
-    }
+    // Every span carries where it came from and, in the full tier, which
+    // visitor made it; the product-event view reads these as app.client and
+    // visitor.id. Below the full tier there is no visitor id: visitor.id
+    // joins when grantAnalyticsConsent() raises the tier.
+    attributionWanted = analyticsTier() === "full";
     const globals: Record<string, string> = {
       "app.client": detectAppClient(config.appClient),
     };
@@ -440,6 +598,11 @@ async function start(
     // every fetch/XHR span (sessionAttribute), joining backend traces to the
     // session that caused them.
     registerRumSession(() => hdx.getSessionId?.());
+    const stopTier = onAnalyticsTierChange((tier, previous) =>
+      applyTier(tier, previous, hdx, config, rum),
+    );
+    let identity: SessionIdentity | null = null;
+    let stopRoutes = () => {};
     setExceptionReporter((error, attributes) => {
       if (alreadyRecorded(error) || benign.filtered(error, "reportException")) {
         return;
@@ -463,9 +626,16 @@ async function start(
         setExceptionReporter(null);
         registerRumSession(null);
         stopViewport();
+        stopTier();
+        stopRoutes();
+        identity?.stop();
         hdx.stopSessionRecorder?.();
       },
     });
+    // After the sink, so the first page view and the user go straight to the
+    // SDK. Both are off unless the caller asked (otel_gen.ts does).
+    identity = startIdentity(config);
+    stopRoutes = startRouteWatch(config, identity);
     return true;
   } catch (err) {
     // Blocked chunk, ad-blocker, SDK throw: telemetry must never break the app.
@@ -475,6 +645,43 @@ async function start(
     console.debug("[telemetry] disabled:", err);
     setTelemetrySink(null);
     return false;
+  }
+}
+
+// The session watch, when `identify` names a session endpoint.
+function startIdentity(config: BrowserTelemetryConfig): SessionIdentity | null {
+  const url = config.identify?.sessionUrl;
+  if (typeof url !== "string" || url.trim() === "") {
+    return null;
+  }
+  try {
+    return watchSessionIdentity({ sessionUrl: url });
+  } catch {
+    return null;
+  }
+}
+
+// The route watch, when there are page views to record or a session watch
+// that re-asks on leaving the sign-in screens. Returns its teardown.
+function startRouteWatch(
+  config: BrowserTelemetryConfig,
+  identity: SessionIdentity | null,
+): () => void {
+  const pageViews = config.pageViews ?? false;
+  if (pageViews === false && !identity) {
+    return () => {};
+  }
+  const options = typeof pageViews === "object" ? pageViews : {};
+  try {
+    return installPageViews({
+      basePath: options.basePath,
+      routeName: options.routeName,
+      siteHosts: options.siteHosts,
+      pageViews: pageViews !== false,
+      onRoute: identity ? identity.onRoute : undefined,
+    });
+  } catch {
+    return () => {};
   }
 }
 
@@ -1130,15 +1337,32 @@ function clampRate(rate: number | undefined): number {
   return Math.min(1, Math.max(0, rate));
 }
 
-/** See "One session per visit" in the header. Never throws. */
-function keepSessionWithoutCookies(): void {
+/**
+ * See "One session per visit" and "Analytics tiers" in the header: the SDK's
+ * session cookie, answered from memory below the full tier and kept on the
+ * device (cookie, else localStorage) in it. Never throws.
+ */
+function keepRumSession(): RumSessionStore | null {
   try {
     if (typeof document === "undefined") {
-      return;
+      return null;
     }
-    installSessionCookieFallback(document, window.localStorage ?? null);
+    const rum = installRumSessionStore(document);
+    if (analyticsTier() === "full") {
+      rum?.moveToDevice(localStorageOrNull());
+    }
+    return rum;
   } catch {
-    // localStorage access can throw (blocked storage): keep the SDK default.
+    return null;
+  }
+}
+
+function localStorageOrNull(): Storage | null {
+  try {
+    return window.localStorage ?? null;
+  } catch {
+    // Blocked storage throws on access.
+    return null;
   }
 }
 

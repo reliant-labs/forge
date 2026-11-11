@@ -113,14 +113,10 @@ commands, so there is nothing an agent can do that you can't check by hand.
   UNDETERMINED, never green, never skipped.
 - **The project tells the agent all of this.** `forge project new` writes
   `AGENTS.md` and a pointer for the agent it detects (Claude Code, Cursor,
-  Copilot). Any MCP-capable harness can run `forge mcp` instead:
+  Copilot). Any MCP-capable harness can run `forge mcp` instead: see
+  [Use as an MCP server](#use-as-an-mcp-server).
 
-```bash
-claude mcp add forge -- npx -y @reliantlabs/forge mcp   # no install
-```
-
-Config for Claude Code, Codex and Cursor: [docs/mcp.md](docs/mcp.md). To use
-Forge from any agent, put this in the prompt or its instructions file:
+To use Forge from any agent, put this in the prompt or its instructions file:
 
 ```text
 Use Forge (github.com/reliant-labs/forge) for this project.
@@ -128,6 +124,38 @@ Run `forge start` first and follow it. Load depth with
 `forge skill search <topic>` and `forge skill load <name>`.
 A change is done when `forge lint`, `go build ./...` and `task test` pass.
 ```
+
+## Use as an MCP server
+
+<a href="https://cursor.com/en/install-mcp?name=forge&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkByZWxpYW50bGFicy9mb3JnZSIsIm1jcCJdfQ=="><img alt="Add forge to Cursor" src="https://cursor.com/deeplink/mcp-install-dark.svg" height="32" /></a>
+<a href="https://insiders.vscode.dev/redirect/mcp/install?name=forge&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40reliantlabs%2Fforge%22%2C%22mcp%22%5D%7D"><img alt="Install forge in VS Code" src="https://img.shields.io/badge/VS_Code-Install_forge-0098FF?logo=visualstudiocode&logoColor=white" height="32" /></a>
+
+`forge mcp` serves forge over the Model Context Protocol on stdio. It is in the
+official MCP registry as `io.github.reliant-labs/forge`, and `npx` runs it with
+nothing to install, no API key and no config. For Claude Code:
+
+```bash
+claude mcp add forge -- npx -y @reliantlabs/forge mcp
+```
+
+Or commit a `.mcp.json` to the project (Cursor reads the same shape from
+`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "forge": {
+      "command": "npx",
+      "args": ["-y", "@reliantlabs/forge", "mcp"]
+    }
+  }
+}
+```
+
+`deploy_claimable` puts a Vite app or a Next.js static export live with no
+account and returns its URL plus a claim link that is good for 72 hours. The
+other tools introspect the project, read the skill catalog, and run `lint` and
+`generate`. Every tool, and the config for Codex: [docs/mcp.md](docs/mcp.md).
 
 ## Opinionated, never a wall
 

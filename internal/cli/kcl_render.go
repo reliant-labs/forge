@@ -1355,6 +1355,41 @@ type FrontendTelemetryEntity struct {
 		Ignore []string `json:"ignore,omitempty"`
 	} `json:"errors"`
 	Funnels []FunnelEntity `json:"funnels,omitempty"`
+	// Analytics is the frontend's declared product analytics
+	// (BrowserTelemetry.analytics); nil when it declares none.
+	Analytics *AnalyticsEntity `json:"analytics,omitempty"`
+}
+
+// AnalyticsEntity mirrors kcl/schema.k Analytics. Mode and Dashboards are
+// always set (the schema defaults them); Activation and ActivationWindow are
+// empty when the frontend left them to forge's defaults.
+type AnalyticsEntity struct {
+	// Mode is "off" | "aggregate" | "identified" | "full"; it reaches the
+	// browser as the runtime config's ANALYTICS_MODE.
+	Mode             string                   `json:"mode"`
+	Goals            []AnalyticsGoalEntity    `json:"goals,omitempty"`
+	Activation       string                   `json:"activation,omitempty"`
+	ActivationWindow string                   `json:"activation_window,omitempty"`
+	Channels         []AnalyticsChannelEntity `json:"channels,omitempty"`
+	Dashboards       bool                     `json:"dashboards"`
+}
+
+// AnalyticsGoalEntity mirrors kcl/schema.k Goal: exactly one of Event and
+// Route is set.
+type AnalyticsGoalEntity struct {
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+	Event string `json:"event,omitempty"`
+	Route string `json:"route,omitempty"`
+}
+
+// AnalyticsChannelEntity mirrors kcl/schema.k Channel, conditions already
+// lowercased; at least one of Host, Source and Medium is set.
+type AnalyticsChannelEntity struct {
+	Host    string `json:"host,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Medium  string `json:"medium,omitempty"`
+	Channel string `json:"channel"`
 }
 
 // FunnelEntity mirrors kcl/schema.k Funnel, window and by already defaulted.

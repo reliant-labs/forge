@@ -68,12 +68,7 @@ func renderStarterCodeSource(t *testing.T, path string) string {
 		}
 		return string(content)
 	}
-	content, err := ProjectTemplates().Render(memoryTemplate, struct {
-		Name      string
-		CLI       string
-		Site      bool
-		Container bool
-	}{Name: "testproject", CLI: "forge"})
+	content, err := ProjectTemplates().Render(memoryTemplate, ProjectMemoryData{Name: "testproject", CLI: "forge"})
 	if err != nil {
 		t.Fatalf("render %s: %v", memoryTemplate, err)
 	}

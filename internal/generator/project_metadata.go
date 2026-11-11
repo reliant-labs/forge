@@ -65,28 +65,9 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 }
 
 // ProjectMemoryData is what the framework memory template
-// (project/reliant.md.tmpl) renders from — on disk for a harness that reads a
-// file, and live for reliant (cli.RenderProjectMemory).
-type ProjectMemoryData struct {
-	// Name is the project's name (forge.yaml `name:`).
-	Name string
-	// CLI is how the user invokes forge: "forge", or "reliant forge" when
-	// embedded.
-	CLI string
-	// Site reports a static site: a project with no Go module, made of the
-	// app at its root and its deploy envs (`forge project new --kind site`).
-	// Its memory is the frontend-only quick reference; every other project's
-	// is the Go one. Derived from the tree (config.DiscoverRootFrontend),
-	// like every other fact about a project's shape, so no flag can disagree
-	// with what is on disk.
-	Site bool
-	// Container reports an adopted app forge did not write: workloads in
-	// deploy/kcl/workloads.k and no Go module (no go.mod, no module_path)
-	// or root frontend — a server in any language deployed from its own
-	// Dockerfile (the `adopt` skill). Its memory is the any-language quick
-	// reference. Derived from the tree like Site (cli.RenderProjectMemory).
-	Container bool
-}
+// (project/reliant.md.tmpl) renders from. It lives beside the template in
+// internal/templates, so the template's own tests render the real shape.
+type ProjectMemoryData = templates.ProjectMemoryData
 
 // writeProjectJSON writes the immutable project metadata JSON under .reliant/.
 func (g *ProjectGenerator) writeProjectJSON(reliantDir string) error {

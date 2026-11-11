@@ -3717,14 +3717,18 @@ _Enforced · Forge, on any infrastructure_
 
 ### Agent memory file generated
 
-`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge.
+`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge, and describes the project as it is: an adopted app gets the forge pieces it uses and its own test commands, never forge's greenfield layout.
 
 _Enforced · Forge, on any infrastructure_
+
+**Why:** Read off the tree and forge.yaml: a forge Go service gets the full Go guide; an adopted app keeps its language and layout, with sections only for what it opted into (deploy envs, monitoring, its migration tool, frontends) and the gate taken from its Taskfile, package.json scripts or Makefile; a static site gets the frontend guide.
 
 **Evidence:**
 
 - command `forge project memory`
 - source [`internal/templates/project/reliant.md.tmpl`](../internal/templates/project/reliant.md.tmpl)
+- source [`internal/cli/memory_surface.go`](../internal/cli/memory_surface.go)
+- source [`internal/cli/testdata/memory`](../internal/cli/testdata/memory)
 
 <a id="harness-pointers"></a>
 

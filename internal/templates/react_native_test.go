@@ -46,6 +46,7 @@ func TestReactNativeTemplatesList(t *testing.T) {
 		"app/signedout.tsx",
 		"tests/auth-context.test.tsx",
 		"tests/auth-sign-in-error.test.ts",
+		"tests/auth-native.test.ts",
 		"tests/auth-config.test.ts",
 		"tests/auth-oidc.test.ts",
 		"tests/auth-provider.test.ts",

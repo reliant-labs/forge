@@ -379,6 +379,14 @@ jobs:
             | TAG="$K3D_VERSION" bash
           k3d version
 
+      # dlv: TestE2EDebugEnvUpAttachAndStart drives `forge debug` against a
+      # live env. Pinned to the delve module forge itself builds against
+      # (go.mod), so the server speaks the API the client mirrors.
+      - name: Install delve
+        run: |
+          go install github.com/go-delve/delve/cmd/dlv@v1.27.2
+          dlv version
+
       # What prepare built: the e2e test binary, forge and the codegen
       # plugins (bin/), and the shard plan (plan/).
       - uses: actions/download-artifact@v8
@@ -401,7 +409,7 @@ jobs:
           # docker: TestE2ENextjsDockerfileStaticImageBuilds builds a real
           # frontend image. ubuntu-latest ships the engine; the `docker info`
           # below proves the daemon answers, which `command -v` cannot.
-          for tool in go node npm npx pnpm kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go goimports pre-commit forge git migrate docker k3d kubectl helm; do
+          for tool in go node npm npx pnpm kcl golangci-lint buf protoc-gen-go protoc-gen-connect-go goimports pre-commit forge git migrate docker k3d kubectl helm dlv; do
             if command -v "$tool" >/dev/null 2>&1; then
               printf '  ok       %-24s %s\n' "$tool" "$(command -v "$tool")"
             else

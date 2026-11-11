@@ -299,8 +299,10 @@ func TestFrontendIdentitiesFollowWhatTheEnvironmentServes(t *testing.T) {
 
 // An environment with no deployed process (a static site) gets no overview,
 // workloads or releases dashboard: the overview would filter on the
-// no-deployed-process sentinel and everything would read "No data".
-func TestProcessLessEnvironmentGetsOnlyItsFrontendDashboard(t *testing.T) {
+// no-deployed-process sentinel and everything would read "No data". It keeps
+// its frontend dashboard and the built-in product dashboards, which read the
+// site's own page views.
+func TestProcessLessEnvironmentGetsItsFrontendAndProductDashboards(t *testing.T) {
 	dir := t.TempDir()
 	for rel, body := range map[string]string{
 		"forge.yaml": "name: sample\nmodule_path: example.com/sample\n",
@@ -322,8 +324,8 @@ func TestProcessLessEnvironmentGetsOnlyItsFrontendDashboard(t *testing.T) {
 	for _, d := range sp.Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if !reflect.DeepEqual(ids, []string{"frontend"}) {
-		t.Fatalf("a process-less env has dashboards %v, want only the frontend", ids)
+	if !reflect.DeepEqual(ids, []string{"frontend", "users", "product", "acquisition"}) {
+		t.Fatalf("a process-less env has dashboards %v, want the frontend and the built-in product dashboards", ids)
 	}
 	b, err := json.Marshal(sp)
 	if err != nil {

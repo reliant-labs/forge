@@ -307,7 +307,7 @@ forge.Frontend {
 | `activation` | the event that marks a user activated | a product event name |
 | `activation_window` | how long after signing up a user has to activate | `30m`, `1h`, `7d`…, at most `90d` |
 | `channels` | rules tried in order **ahead of** the built-in channel table; a visit whose first page view matches every condition a rule sets (`host`: the referrer host or a subdomain of it; `source`/`medium`: `utm_source`/`utm_medium`, case-insensitive) is credited to `channel`, a built-in name or a new one | at least one condition; a host name, not a URL; no two rules with the same conditions |
-| `dashboards` | `False` drops the built-in Overview, Users, Product and Acquisition dashboards; collection still follows `mode` | |
+| `dashboards` | `False` drops the built-in Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections; collection still follows `mode` | |
 
 `mode` reaches the browser as `ANALYTICS_MODE` in the runtime config document
 (`config.js`, or a hosted site's StaticSite spec), so one build promotes across
@@ -329,6 +329,10 @@ channel rule collapses, a goal id or channel conditions declared two different
 ways is refused naming both, `activation` and `activation_window` must agree
 wherever they are set (unset defers), and any `dashboards = False` drops them.
 
+What the dashboards draw from these declarations, and every definition they
+count by (visitor-day, visit, channel table, same-day stitch, person, sign-up
+attribution, activation): `observability/product-analytics`.
+
 ## Retention
 
 `forge.Observability.retention.product_events_days` (1 to 400, default 90) is
@@ -346,7 +350,8 @@ the dashboard scope (`{from:DateTime64(9)}`, `{to:DateTime64(9)}`,
 `{services:Array(String)}`); a first `DateTime` column draws a time series. The
 table's environment column is `EnvId`, so scope by environment with
 `(empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))`, as
-the generated Product usage panels do.
+the built-in product dashboards do (`observability/product-analytics`, which
+also lists the edge columns `DayVisitor`, `Country`, `DeviceType` …).
 
 Daily active users:
 

@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/pkg/obsbuiltin"
 )
 
 // PartsVersion identifies the shape of the files the Spec is written to
@@ -132,13 +133,6 @@ type Identities struct {
 	MemoryLimitWorkloads []string
 }
 
-// FrontendFunnel is one declared funnel (forge.Funnel in KCL).
-type FrontendFunnel struct {
-	ID    string
-	Title string
-	Funnel
-}
-
 // frontendServices are the service.names the project's web frontends report,
 // in declaration order: naming.FrontendServiceName per frontend, the same
 // derivation that bakes SERVICE_NAME into each frontend's otel_gen.ts.
@@ -158,14 +152,21 @@ func (in Input) frontendServiceNames() []string {
 	return frontendServices(in.Project, in.Frontends)
 }
 
+// builtin is what the built-in product dashboards read from in.
+func (in Input) builtin() obsbuiltin.Input {
+	return obsbuiltin.Input{Project: in.Project, Web: len(in.Frontends) > 0 || len(in.FrontendServices) > 0,
+		Analytics: in.Analytics, Funnels: in.Funnels}
+}
+
 // WithoutProcessDashboards is sp for an environment that deploys no process: a
 // static site has nothing for the overview, workloads and releases dashboards
 // to measure (the overview would filter on the no-deployed-process sentinel),
-// so only the dashboards that do not need a process remain.
+// so only the dashboards that do not need a process remain: the frontend's,
+// and the built-in product dashboards, which read the site's own page views.
 func WithoutProcessDashboards(sp Spec) Spec {
 	kept := sp.Dashboards[:0:0]
 	for _, d := range sp.Dashboards {
-		if d.ID == "frontend" {
+		if d.ID == "frontend" || obsbuiltin.IsDashboard(d.ID) {
 			kept = append(kept, d)
 		}
 	}
@@ -282,7 +283,7 @@ func BuildParts(in Input) (ProjectPart, []ProcessPart) {
 		Input:    &fragments,
 		Version:  PartsVersion,
 		Project:  in.Project,
-		Overview: withReleaseMarkers(buildOverview(in)),
+		Overview: withReleaseMarkers(obsbuiltin.ExtendOverview(buildOverview(in), in.builtin())),
 	}
 
 	processes := append([]Process(nil), in.Processes...)
@@ -315,8 +316,9 @@ func BuildParts(in Input) (ProjectPart, []ProcessPart) {
 	if len(in.Frontends) > 0 || len(in.FrontendServices) > 0 {
 		project.Dashboards = append(project.Dashboards, buildFrontend(in))
 	}
-	// Every project: a backend with no frontend still emits the CRUD events.
-	project.Dashboards = append(project.Dashboards, BuildProductUsage(in.Project))
+	// Every project: a backend with no frontend still has users and emits
+	// the CRUD events; Acquisition when it has a frontend.
+	project.Dashboards = append(project.Dashboards, obsbuiltin.Dashboards(in.builtin())...)
 	for i := range project.Dashboards {
 		project.Dashboards[i] = withReleaseMarkers(project.Dashboards[i])
 	}

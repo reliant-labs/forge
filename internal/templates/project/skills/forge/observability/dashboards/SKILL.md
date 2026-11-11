@@ -1,6 +1,6 @@
 ---
 name: observability/dashboards
-description: Process/role dashboards derived from deployed executable and composition commands, metric-backed overview, the generated Product usage dashboard and automatic CRUD product events, renderer-neutral sections and targeted filters, safe retirement and overrides, and HyperDX delivery.
+description: Process/role dashboards derived from deployed executable and composition commands, metric-backed overview, the built-in Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections (pkg/obsbuiltin), renderer-neutral sections and targeted filters, safe retirement and overrides, and HyperDX delivery.
 ---
 
 # Observability: generated dashboards
@@ -209,7 +209,7 @@ The file checks cannot know what your telemetry holds. `forge obs dashboards che
 
 The _Workloads_ dashboard (CPU/memory against requests and limits, restarts and exit reason, image versions, Kubernetes events) and the _Releases_ dashboard (request, error and latency by `service.version`) are generated for every project. They read node-derived and release data that a local `forge env up` does not have, so they ship in the spec and the bundle and are not written to `deploy/observability/dashboards/`.
 
-So is the _Product usage_ dashboard (id `usage`, bundle file `<project>-usage_gen.json`), all `sql` panels over `product_events`, which the local ClickStack has no table for. Its sections: _At a glance_, eight headline figures (DAU, WAU and MAU ending at the end of the range, stickiness DAU/MAU, new users, events, events per active user, records written; turn on Compare for each against the previous period); _Users_, daily and rolling 7-day active users as areas, new against returning as stacked bars, and the most active users table last; _What users do_, records written per entity and the create/update/delete mix per entity, top pages (`page_viewed` by `route`) and events by name, each split signed-in against anonymous; _Retention_, weeks 1, 2, 4 and 8 per weekly cohort as lines and the full 12-cohort table. First-seen (new users, new against returning, cohorts) is a user's first event in the 90 days before the end of the range, not the oldest row `product_events` still holds, so expiring rows never make a long-time user new again, and a user idle longer than 90 days counts as new on their return. Where the events come from: `observability/product-events`. Replace it like any generated dashboard, with a `<project>-usage.json` of your own.
+So are the built-in product dashboards, _Users_, _Product_ and _Acquisition_ (ids `users`, `product`, `acquisition`; bundle files `<project>-users_gen.json` …), all `sql` panels over `product_events`, which the local ClickStack has no table for, and the Overview's _Traffic_ and _Users_ sections, which HyperDX leaves out (the existing overview panels form its first section, _Health_). _Product_ declares `replaces: ["usage"]`: it supersedes the generated _Product usage_ dashboard of earlier forge releases, whose stars and copies move to it. What each panel counts and how to extend (`forge.Analytics`), override (`<project>-users.json`) or drop them (`dashboards = False`): `observability/product-analytics`. Where the events come from: `observability/product-events`.
 
 ## Alerts
 

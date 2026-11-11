@@ -427,6 +427,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		DataAccess:          shapeDataAccessOf(entities),
 		ReleaseHealth:       shapeReleaseHealthOf(entities),
 		UptimeChecks:        shapeUptimeChecksOf(entities),
+		ReleaseProbes:       shapeReleaseProbesOf(entities),
 		Identity:            shapeIdentityOf(entities),
 		Databases:           shapeDatabasesOf(entities),
 		ExternalDatabases:   shapeExternalDatabasesOf(entities),
@@ -818,6 +819,16 @@ func shapeUptimeChecksOf(e *KCLEntities) []release.ShapeUptimeCheck {
 		return nil
 	}
 	return e.UptimeChecks
+}
+
+// shapeReleaseProbesOf projects the env's release probes, resolved by the
+// render. Nil when the env has none, so the shape encodes as it did before the
+// field.
+func shapeReleaseProbesOf(e *KCLEntities) []release.ShapeReleaseProbe {
+	if e == nil || len(e.ReleaseProbes) == 0 {
+		return nil
+	}
+	return e.ReleaseProbes
 }
 
 // shapeIdentityOf projects the env's managed identity. The render already

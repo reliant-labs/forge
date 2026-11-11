@@ -282,7 +282,7 @@ func resetSeed(ctx context.Context, dsn, migDir, projectDir string) error {
 	defer func() { _ = db.Close() }()
 
 	cfg := liveSeedConfig()
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(projectDir), cfg)
+	plan, err := buildLiveSeedPlan(ctx, db, projectDir, migDir, seedShadowServer(projectDir), cfg)
 	if err != nil {
 		return fmt.Errorf("reset: migrated the database but could not plan seeds: %w", err)
 	}

@@ -517,13 +517,23 @@ func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, b
 	migrationsDir := migrationsDirFor(cfg)
 	ruleConfig := migrationlint.DefaultConfig()
 	if cfg != nil {
-		ruleConfig = migrationlint.ConfigFromProject(cfg.Database.MigrationSafety)
+		ruleConfig = migrationlint.ConfigFromProject(cfg.Database.MigrationSafety).ForTool(cfg.Database.MigrationTool())
 	}
 	result, err := migrationlint.LintMigrationsDir(migrationsDir, ruleConfig)
 	if err != nil {
 		return nil, false, fmt.Errorf("migration safety lint failed: %w", err)
 	}
 	out := findingsToJSON(result.Findings)
+	// A pass that read nothing, and every rule that did not run under the
+	// project's migration tool, is said — a lane that checked nothing must
+	// not read as a clean one (forge bug c8b8c6e9).
+	var skipped []lintJSONFinding
+	if result.Skipped != "" {
+		skipped = append(skipped, skippedFinding("migration safety: nothing was checked — "+result.Skipped))
+	}
+	for _, sk := range result.RuleSkips {
+		skipped = append(skipped, skippedFinding("migration safety: "+sk.String()))
+	}
 	// Per-RULE remediation. These findings carry no Remediation of their
 	// own, and stamping every one with the destructive text told an author
 	// whose NOT NULL add was rejected to reach for an allowlist that does
@@ -531,7 +541,7 @@ func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, b
 	for i := range out {
 		out[i].FixHint = migrationlint.RemediationFor(result.Findings[i].Rule)
 	}
-	return out, result.HasErrors(), nil
+	return append(skipped, out...), result.HasErrors(), nil
 }
 
 func collectFrontendStoresJSON(cwd string) ([]lintJSONFinding, error) {

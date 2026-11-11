@@ -787,6 +787,33 @@ func NewAtURL(baseURL string) (*sql.DB, func(), error) {
 	return newAtURL(baseURL, "")
 }
 
+// NewURLAtURL is NewAtURL returning the scratch database's DSN (a postgres://
+// URL) instead of an open *sql.DB — NewURL's counterpart for a caller-resolved
+// server. Use it when the consumer is a separate process that connects
+// itself, such as a project's own migration tool applying its migrations to a
+// shadow database. The returned cleanup terminates the database's sessions
+// and drops it; the server's other databases are never touched.
+func NewURLAtURL(baseURL string) (dsn string, cleanup func(), err error) {
+	base, err := openBase(baseURL)
+	if err != nil {
+		return "", nil, fmt.Errorf("pgtest: connect to %s: %w", redactDSN(baseURL), err)
+	}
+	sweepScratchOnce(base, baseURL)
+	name := scratchName(scratchShadowPrefix)
+	_, _ = base.Exec("DROP DATABASE IF EXISTS " + name)
+	if _, err := base.Exec(createDatabaseSQL(name, "")); err != nil {
+		_ = base.Close()
+		return "", nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
+	}
+	cleanup = func() {
+		_, _ = base.Exec(
+			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name)
+		_, _ = base.Exec("DROP DATABASE IF EXISTS " + name)
+		_ = base.Close()
+	}
+	return replaceDBName(baseURL, name), cleanup, nil
+}
+
 // NewCloneAtURL is NewAtURL with the scratch database created as a COPY of
 // the database named template on the same server — NewClone's counterpart
 // for a caller-resolved server, with the same contract: the caller holds no

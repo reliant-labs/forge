@@ -31,7 +31,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -54,7 +53,7 @@ func generatedPreflight(migDir string, spec entityscaffold.EntityFromProtoSpec, 
 	if !hasGeneratedField(spec.Fields) {
 		return nil
 	}
-	projectDir := filepath.Dir(filepath.Dir(migDir))
+	projectDir := projectDirOfMigrations(migDir)
 	shadow, err := schemadef.OpenShadowAt(migDir, shadowdb.Resolve(projectDir))
 	if err != nil {
 		// Not a verdict on the expression: postgres was never asked. The

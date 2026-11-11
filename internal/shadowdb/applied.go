@@ -106,7 +106,11 @@ func endRun() {
 func Tables(projectDir, migDir string) ([]schemadef.Table, error) {
 	tpl, done, err := runTemplate(projectDir, migDir)
 	if errors.Is(err, errOutsideRun) {
-		return schemadef.ApplyAndIntrospectAt(migDir, Resolve(projectDir))
+		set, err := migrationSet(projectDir, migDir)
+		if err != nil {
+			return nil, err
+		}
+		return schemadef.ApplyAndIntrospectSetAt(set, Resolve(projectDir))
 	}
 	if err != nil || tpl == nil {
 		return nil, err
@@ -120,7 +124,11 @@ func Tables(projectDir, migDir string) ([]schemadef.Table, error) {
 func Views(projectDir, migDir string) ([]schemadef.Table, error) {
 	tpl, done, err := runTemplate(projectDir, migDir)
 	if errors.Is(err, errOutsideRun) {
-		_, shadow, err := schemadef.ApplyAndIntrospectShadowAt(migDir, Resolve(projectDir))
+		set, err := migrationSet(projectDir, migDir)
+		if err != nil {
+			return nil, err
+		}
+		_, shadow, err := schemadef.ApplyAndIntrospectSetShadowAt(set, Resolve(projectDir))
 		defer shadow.Close()
 		if err != nil || shadow == nil {
 			return nil, err
@@ -144,7 +152,7 @@ func Views(projectDir, migDir string) ([]schemadef.Table, error) {
 func Open(projectDir, migDir string) ([]schemadef.Table, *schemadef.Shadow, error) {
 	tpl, done, err := runTemplate(projectDir, migDir)
 	if errors.Is(err, errOutsideRun) {
-		return applyPrivate(migDir, Resolve(projectDir))
+		return applyPrivate(projectDir, migDir, Resolve(projectDir))
 	}
 	if err != nil || tpl == nil {
 		return nil, nil, err
@@ -156,14 +164,18 @@ func Open(projectDir, migDir string) ([]schemadef.Table, *schemadef.Shadow, erro
 		// not copy this one, a stray session on the template) costs this
 		// reader its shortcut, not its answer: replay into a fresh
 		// database, as an Open outside a run does.
-		return applyPrivate(migDir, serverOf(projectDir))
+		return applyPrivate(projectDir, migDir, serverOf(projectDir))
 	}
 	return tpl.Tables(), shadow, nil
 }
 
-// applyPrivate replays migDir into a database of the caller's own.
-func applyPrivate(migDir, server string) ([]schemadef.Table, *schemadef.Shadow, error) {
-	tables, shadow, err := schemadef.ApplyAndIntrospectShadowAt(migDir, server)
+// applyPrivate applies migDir to a database of the caller's own.
+func applyPrivate(projectDir, migDir, server string) ([]schemadef.Table, *schemadef.Shadow, error) {
+	set, err := migrationSet(projectDir, migDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	tables, shadow, err := schemadef.ApplyAndIntrospectSetShadowAt(set, server)
 	if err != nil {
 		shadow.Close()
 		return nil, nil, err
@@ -184,7 +196,7 @@ func runTemplate(projectDir, migDir string) (tpl *schemadef.Template, done func(
 	}
 	// The set first: a project with no migrations has no schema, and must
 	// not cost a server resolution (a network probe) to say so.
-	set, err := schemadef.ReadMigrationSet(migDir)
+	set, err := migrationSet(projectDir, migDir)
 	if err != nil || set.Len() == 0 {
 		return nil, nil, err
 	}

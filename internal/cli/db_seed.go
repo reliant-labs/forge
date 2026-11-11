@@ -16,6 +16,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/database"
+	"github.com/reliant-labs/forge/internal/migrationhook"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
@@ -192,6 +193,21 @@ your application created are left in place.`,
 // grandparent of an arbitrary directory is not its project.
 func seedShadowServer(projectDir string) string {
 	return shadowdb.Resolve(projectDir)
+}
+
+// buildLiveSeedPlan is seedplan.BuildLivePlan on the shadow server, except
+// in a project that keeps its own migration tool (the `database.migrations`
+// hook): a replay of *.up.sql there reads no schema at all, so the applied
+// schema comes from internal/shadowdb, whose shadow that tool migrates.
+func buildLiveSeedPlan(ctx context.Context, db *sql.DB, projectDir, migDir, shadowServer string, cfg seedplan.Config) (*seedplan.Plan, error) {
+	if _, hooked := migrationhook.ResolveIn(projectDir); !hooked {
+		return seedplan.BuildLivePlan(ctx, db, migDir, shadowServer, cfg)
+	}
+	tables, err := shadowdb.Tables(projectDir, migDir)
+	if err != nil {
+		return nil, fmt.Errorf("introspect applied schema: %w", err)
+	}
+	return seedplan.BuildLivePlanFromTables(ctx, db, tables, migDir, cfg)
 }
 
 // seedConfigFromProject is the project's dev dataset configuration: the
@@ -420,7 +436,7 @@ func runDBSeedApply(ctx context.Context, o seedOptions) error {
 	defer func() { _ = db.Close() }()
 
 	cfg := liveSeedConfig()
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), cfg)
+	plan, err := buildLiveSeedPlan(ctx, db, dbProjectRoot(), migDir, seedShadowServer(dbProjectRoot()), cfg)
 	if err != nil {
 		return err
 	}
@@ -603,7 +619,7 @@ func runDBSeedStatus(ctx context.Context, dsn, flagDir string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), liveSeedConfig())
+	plan, err := buildLiveSeedPlan(ctx, db, dbProjectRoot(), migDir, seedShadowServer(dbProjectRoot()), liveSeedConfig())
 	if err != nil {
 		return err
 	}
@@ -638,7 +654,7 @@ func runDBSeedReset(ctx context.Context, o seedOptions) error {
 	defer func() { _ = db.Close() }()
 
 	cfg := liveSeedConfig()
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), cfg)
+	plan, err := buildLiveSeedPlan(ctx, db, dbProjectRoot(), migDir, seedShadowServer(dbProjectRoot()), cfg)
 	if err != nil {
 		return err
 	}

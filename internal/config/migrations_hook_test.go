@@ -93,3 +93,30 @@ func TestMigrations_DatabaseIn(t *testing.T) {
 		t.Errorf("MigrationToolIn without forge.yaml = %q, want forge", got)
 	}
 }
+
+// forge bug 17e2831a: a repo that keeps its own migration tool wants forge for
+// migration safety, which reads SQL and needs no protos. With the hook
+// declared, migrations derive on without codegen, and pinning them on loads.
+func TestMigrations_HookNeedsNoCodegen(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "migrations/00001_init.sql", "-- +goose Up\nCREATE TABLE t (id int);\n")
+	write(t, root, "forge.yaml", "name: demo\ndatabase:\n  migrations: {dir: migrations, tool: goose}\n")
+	cfg, err := LoadProjectDir(root)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Features.CodegenEnabled() || !cfg.Features.MigrationsEnabled() {
+		t.Errorf("codegen = %v, migrations = %v; want migrations on without codegen", cfg.Features.CodegenEnabled(), cfg.Features.MigrationsEnabled())
+	}
+	write(t, root, "forge.yaml", "name: demo\nfeatures:\n  migrations: true\ndatabase:\n  migrations: {dir: migrations, tool: goose}\n")
+	if _, err := LoadProjectDir(root); err != nil {
+		t.Errorf("pinning migrations on under a hook must load without protos: %v", err)
+	}
+
+	// Without a hook the edge holds: forge's migrations feature drives
+	// entity-aware generation, which needs codegen.
+	write(t, root, "forge.yaml", "name: demo\nfeatures:\n  migrations: true\ndatabase:\n  migrations: {dir: migrations}\n")
+	if _, err := LoadProjectDir(root); err == nil || !strings.Contains(err.Error(), `requires "codegen"`) {
+		t.Errorf("without a hook, migrations still require codegen: %v", err)
+	}
+}

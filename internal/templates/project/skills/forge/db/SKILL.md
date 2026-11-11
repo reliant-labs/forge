@@ -8,7 +8,7 @@ emit: both
 
 ## The key principle
 
-**Migrations are the source of truth for your database schema.** Not API types, not ORM structs — the SQL files in `db/migrations/`. The API describes what crosses the wire; the schema describes what the domain stores. Different concerns, different clocks, so they evolve independently:
+**Migrations are the source of truth for your database schema.** Not API types, not ORM structs — the SQL files in `db/migrations/` (forge.yaml `database.migrations.dir` moves them; a team keeping goose, atlas, flyway, dbmate or its own command declares `database.migrations.tool` — load `db/own-migration-tool`). The API describes what crosses the wire; the schema describes what the domain stores. Different concerns, different clocks, so they evolve independently:
 
 - **DB-only fields** — audit trails, internal state, denormalized caches, tombstones. Add via migration; no API change.
 - **DB-only tables** — bookkeeping, junction tables, event logs, queue state. Create with a migration, query by hand; no API contract, no cross-stack change.
@@ -129,6 +129,7 @@ To read an env's rows, `forge db query <env> "<sql>"` (read-only, no `forge:secr
 
 | You need… | Load |
 |---|---|
+| **keeping goose / atlas / flyway / dbmate / golang-migrate / your own command** and your directory (`database.migrations`) | `db/own-migration-tool` |
 | birthing one named entity, the birth markers, the proto → SQL column mapping | `db/birth` |
 | write policy (ownership, `forge:immutable`, `forge:version`), append-only tables, two FK routes to one parent, CHECKs mirroring a Go set, derived values, status-lifecycle CHECKs | `db/constraints` |
 | what the generated ORM does, overriding generated CRUD, where custom queries go | `db/generated-orm` |

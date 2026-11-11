@@ -171,7 +171,14 @@ func resolveDockerBuildSources(ctx context.Context, projectDir, workload string,
 		if filepath.IsAbs(rel) || strings.HasPrefix(filepath.ToSlash(filepath.Clean(rel)), "../") {
 			return fmt.Errorf("DockerBuild.dockerfile %q must be relative to the GitSource context %s", rel, toGitSource(d.ContextSource))
 		}
-		d.DockerfilePath = filepath.Join(d.ContextDir, filepath.FromSlash(rel))
+		path := filepath.Join(d.ContextDir, filepath.FromSlash(rel))
+		// A pinned build never skips: a Dockerfile missing from the pinned
+		// tree is a typo or a moved file, and building nothing would leave
+		// an old image (or none) deployed under this workload.
+		if st, err := os.Stat(path); err != nil || st.IsDir() {
+			return fmt.Errorf("DockerBuild.dockerfile %q is not a file in the GitSource context %s (resolved to %s)", rel, toGitSource(d.ContextSource), d.ContextDir)
+		}
+		d.DockerfilePath = path
 	}
 	return nil
 }

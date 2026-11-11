@@ -118,6 +118,19 @@ func TestDockerBuildGitSourceContextBuildsTheResolvedTree(t *testing.T) {
 			t.Fatalf("a dockerfile pin without the file's path must say so: %v", err)
 		}
 	})
+	t.Run("a dockerfile missing from the pinned context fails, never skips", func(t *testing.T) {
+		d := &DockerBuild{Dockerfile: "docker/typo.Dockerfile", ContextSource: &config.GitSource{Repo: "github.com/acme/billing", Ref: "v2.3.1"}}
+		err := resolveDockerBuildSources(ctx, project, "billing", d)
+		if err == nil || !strings.Contains(err.Error(), "docker/typo.Dockerfile") || d.DockerfilePath != "" {
+			t.Fatalf("a missing pinned Dockerfile must be refused naming it: %v (path %q)", err, d.DockerfilePath)
+		}
+		// And should a pinned build reach the build with no Dockerfile, it
+		// fails rather than taking the optional project-Dockerfile skip.
+		gone := &DockerBuild{ContextSource: d.ContextSource, ContextDir: billing, DockerfilePath: filepath.Join(billing, "nope.Dockerfile")}
+		if res := buildServiceDocker(ctx, cfg, "billing", "billing", gone, buildOptions{}, "", ""); res.err == nil {
+			t.Fatal("a pinned build with no Dockerfile was skipped as successful")
+		}
+	})
 	t.Run("unresolved is refused, never the project root", func(t *testing.T) {
 		d := &DockerBuild{ContextSource: &config.GitSource{Repo: "github.com/acme/billing", Ref: "v2.3.1"}}
 		if err := checkServiceDockerContext(project, "billing", d); err == nil || !strings.Contains(err.Error(), "github.com/acme/billing@v2.3.1") {
@@ -196,18 +209,7 @@ func TestDockerBuildGitSourceRecordsProvenance(t *testing.T) {
 	}
 }
 
-func writeTree(t *testing.T, root string, files map[string]string) {
-	t.Helper()
-	for rel, body := range files {
-		p := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
+// writeTree is memory_golden_test.go's.
 
 func writeOverrides(t *testing.T, project string, m map[string]string) {
 	t.Helper()

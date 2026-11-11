@@ -3529,6 +3529,12 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 
 	if _, err := os.Stat(dockerfile); os.IsNotExist(err) {
+		// A pinned build never skips: its Dockerfile was named in another
+		// repository, so a missing one is an error, not an optional image.
+		if d != nil && d.HasGitSource() {
+			return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
+				err: fmt.Errorf("service %q: Dockerfile %s does not exist in its pinned source", svcName, dockerfile)}
+		}
 		// No image was built, so the result carries no image: nothing is
 		// recorded for a build that did not happen.
 		fmt.Printf("[build] %s: skipping docker (no %s)\n", svcName, dockerfile)

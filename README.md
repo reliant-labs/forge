@@ -152,6 +152,26 @@ Or commit a `.mcp.json` to the project (Cursor reads the same shape from
 }
 ```
 
+For Codex (CLI, IDE extension and desktop app share the config):
+
+```bash
+codex mcp add forge -- npx -y @reliantlabs/forge mcp
+```
+
+or in `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`):
+
+```toml
+[mcp_servers.forge]
+command = "npx"
+args = ["-y", "@reliantlabs/forge", "mcp"]
+```
+
+For Gemini CLI, this repository is an extension (`gemini-extension.json`):
+
+```bash
+gemini extensions install https://github.com/reliant-labs/forge
+```
+
 `deploy_claimable` puts a Vite app or a Next.js static export live with no
 account and returns its URL plus a claim link that is good for 72 hours. The
 other tools introspect the project, read the skill catalog, and run `lint` and

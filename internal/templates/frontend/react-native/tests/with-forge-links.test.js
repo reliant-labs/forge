@@ -4,7 +4,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 const withForgeLinks = require("../plugins/with-forge-links");
 const { applyAppLinks, resolveSettings, CONFIG_FILE } = withForgeLinks;
 
@@ -59,6 +58,18 @@ describe("with-forge-links: applyAppLinks", () => {
     );
     expect(out.ios.associatedDomains).toContain("applinks:other.example");
     expect(out.android.intentFilters).toContainEqual(own);
+  });
+
+  it("keeps an app-owned autoVerify filter on the same host for another path", () => {
+    const own = {
+      action: "VIEW",
+      autoVerify: true,
+      data: [{ scheme: "https", host: HOST, pathPrefix: "/documents" }],
+      category: ["BROWSABLE", "DEFAULT"],
+    };
+    const out = applyAppLinks({ android: { intentFilters: [own] } }, settings());
+    expect(out.android.intentFilters).toContainEqual(own);
+    expect(out.android.intentFilters).toHaveLength(2);
   });
 
   it("is idempotent, and a mode change replaces rather than duplicates", () => {

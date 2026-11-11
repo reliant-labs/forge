@@ -102,13 +102,10 @@ function applyAppLinks(config, settings) {
 
   const android = config.android ?? {};
   const filter = intentFilter(settings.domains);
-  const filters = (android.intentFilters ?? []).filter(
-    (existing) =>
-      !(
-        existing.autoVerify &&
-        existing.data?.every((d) => d.scheme === "https" && settings.domains.includes(d.host))
-      ),
-  );
+  // Do not remove an app-owned filter merely because it shares our host:
+  // it may route unrelated paths. The plugin's addition is idempotent by its
+  // complete structure, not by the authority alone.
+  const filters = [...(android.intentFilters ?? [])];
   if (!filters.some((existing) => sameFilter(existing, filter))) filters.push(filter);
 
   return {

@@ -39,8 +39,10 @@
 // ProjectSpec.AdoptID / Application.AdoptClientID: a pin turns "the match
 // diverged from what is deployed" into an error instead of a silent outage, and
 // finds the object under another name (a console rename) and renames it back.
-// Options.Adopt additionally forbids creating the project or an application at
-// all. Options.DryRun reports the writes a pass would make, so an adoption can
+// Options.Adopt additionally forbids creating the project or a required
+// application at all; an Optional application that is missing is created (or
+// skipped when the instance refuses it), since nothing deployed holds its id.
+// Options.DryRun reports the writes a pass would make, so an adoption can
 // be reviewed before it runs.
 //
 // # Seams

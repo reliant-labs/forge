@@ -169,12 +169,23 @@ func (p *run) loadApps(ctx context.Context) error {
 // (or be found by its pinned client id), and a pinned id that does not match
 // is an error. Failing here, rather than at the application step, is what
 // keeps a refused adoption from having already minted keys and tokens.
+//
+// An Optional application is exempt: it is an addition to the product's
+// sign-in (a mobile app beside the web app), so no deployed server holds an
+// id for it that creating it could orphan, which is the only thing the
+// no-create rule of Adopt protects. A missing one is therefore created like
+// a new application, and if the instance refuses it (or its pin does not
+// resolve) ensureApplications skips it into Report.Skipped. Failing the whole
+// pass here would let an optional client wedge the required ones' sign-in.
 func (p *run) preflightAdoption(ctx context.Context) error {
 	if err := p.loadApps(ctx); err != nil {
 		return err
 	}
 	var errs []error
 	for _, a := range p.spec.Applications {
+		if a.Optional {
+			continue
+		}
 		cur, err := matchApp(a, p.apps0)
 		switch {
 		case err != nil:
@@ -247,7 +258,7 @@ func (p *run) ensureApplication(ctx context.Context, a Application, existing []a
 	out := AppOutput{RedirectURIs: a.RedirectURIs, PostLogoutURIs: a.PostLogoutURIs, LoginURI: a.LoginURI}
 	created := false
 	if cur == nil {
-		if p.o.Adopt {
+		if p.o.Adopt && !a.Optional {
 			return objErr("application", a.Name, errors.New("not found, and Options.Adopt forbids creating it"))
 		}
 		p.rep.change(Created, "application", a.Name, string(a.Kind))

@@ -42,7 +42,9 @@ type Options struct {
 	Rotation Rotation
 
 	// Adopt converges an instance that already holds content: the project and
-	// every application must already exist and are never created. Objects are
+	// every Required application must already exist and are never created
+	// (a missing Optional application is created, or skipped if the instance
+	// refuses it). Objects are
 	// matched by natural key (or by a pinned id) and kept whatever their
 	// internal ids.
 	Adopt bool

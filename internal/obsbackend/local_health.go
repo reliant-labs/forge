@@ -84,6 +84,14 @@ func (l Local) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 	if err != nil {
 		return out, err
 	}
+	browserBefore, err := l.browserStats(ctx, win.Before, &out)
+	if err != nil {
+		return out, err
+	}
+	browserAfter, err := l.browserStats(ctx, win.After, &out)
+	if err != nil {
+		return out, err
+	}
 
 	names := map[string]bool{}
 	for s := range before {
@@ -98,6 +106,19 @@ func (l Local) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 			Endpoints: endpointHealth(beforeEP[s], afterEP[s])})
 	}
 	sort.Slice(services, func(i, j int) bool { return services[i].Service < services[j].Service })
+	// A frontend's own browser telemetry is judged beside the server spans.
+	// There is no platform ingress locally, so a service with no spans is
+	// judged on its browser figures alone, or not at all.
+	browser := map[string]releasehealth.BrowserHealth{}
+	for s, b := range browserBefore {
+		browser[s] = releasehealth.BrowserHealth{Before: b, After: browserAfter[s]}
+	}
+	for s, a := range browserAfter {
+		if _, ok := browser[s]; !ok {
+			browser[s] = releasehealth.BrowserHealth{After: a}
+		}
+	}
+	services = releasehealth.Combine(services, nil, browser)
 
 	out.Report = releasehealth.Evaluate(releasehealth.Input{
 		Subject:      releasehealth.Subject{PromotedAt: req.PromotedAt.UTC()},
@@ -139,6 +160,36 @@ func (l Local) windowStats(ctx context.Context, r releasehealth.Range, out *Heal
 			ws.ErrorRate = float64(AsInt(row[2])) / float64(ws.Requests)
 		}
 		stats[AsString(row[0])] = ws
+	}
+	return stats, nil
+}
+
+// browserStats is each frontend's browser figures over one window
+// (obsquery Overview.BrowserRED).
+func (l Local) browserStats(ctx context.Context, r releasehealth.Range, out *HealthResult) (map[string]releasehealth.BrowserStats, error) {
+	stats := map[string]releasehealth.BrowserStats{}
+	if r.To.Sub(r.From) < time.Second {
+		return stats, nil
+	}
+	st, err := obsquery.Overview{Scope: l.scope(Narrow{Range: Range{From: r.From, To: r.To}})}.BrowserRED()
+	if err != nil {
+		return nil, compileErr(err)
+	}
+	out.Statements = append(out.Statements, stmt("browser red "+r.From.UTC().Format(time.RFC3339), st))
+	res, err := l.run(ctx, st, DefaultLimits())
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range res.Rows {
+		if len(row) < 7 {
+			return nil, Undetermined("the local ClickStack returned %d columns for browser release health, want 7", len(row))
+		}
+		b := releasehealth.BrowserStats{PageViews: AsInt(row[1]), PageLoads: AsInt(row[2]), JSErrors: AsInt(row[3]),
+			Requests: AsInt(row[4]), FailedRequests: AsInt(row[5])}
+		if q := AsFloats(row[6]); len(q) == 3 {
+			b.PageLoadP95Ms = finite(q[1])
+		}
+		stats[AsString(row[0])] = b
 	}
 	return stats, nil
 }

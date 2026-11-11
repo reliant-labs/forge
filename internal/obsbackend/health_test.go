@@ -140,13 +140,37 @@ func TestLocalReleaseHealthNeedsAnInstantAndLabelsWhatItSkipped(t *testing.T) {
 			t.Errorf("not_evaluated lacks %s: %v", want, res.Report.NotEvaluated)
 		}
 	}
-	if len(res.Statements) != 5 {
-		t.Errorf("statements = %d, want RED and RED by endpoint per window, plus issues", len(res.Statements))
+	if len(res.Statements) != 7 {
+		t.Errorf("statements = %d, want RED, RED by endpoint and browser RED per window, plus issues", len(res.Statements))
 	}
 	if bad := (releasehealth.Options{Overrides: map[string]string{"min_requests": "x"}}); true {
 		if _, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c, Options: bad}); err == nil || err.(*Error).Code != ExitWrong {
 			t.Errorf("bad threshold: %v", err)
 		}
+	}
+}
+
+// A frontend with no server spans is judged on its browser telemetry: enough
+// page views prove it, and a JavaScript error spike is a (warning) finding.
+func TestLocalReleaseHealthJudgesAFrontendOnBrowserTelemetry(t *testing.T) {
+	browser := func(errs string) Result {
+		return Result{Rows: [][]any{{"web", num64("500"), num64("200"), num64(errs), num64("1000"), num64("1"), []any{num64("300"), num64("900"), num64("1200")}}}}
+	}
+	// RED, RED by endpoint (both windows), issues, then browser RED before and after.
+	l := Local{Env: "dev", Runner: &seqRunner{results: []Result{{}, {}, {}, {}, {}, browser("5"), browser("200")}}}
+	res, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := res.Report
+	if r.Verdict != releasehealth.Pass || r.NoRequestTelemetry() || len(r.Services) != 1 || r.Services[0].Signal != releasehealth.SignalBrowser {
+		t.Fatalf("verdict %s services %+v", r.Verdict, r.Services)
+	}
+	if b := r.Services[0].Browser; b == nil || b.After.JSErrors != 200 || b.Before.PageLoadP95Ms != 900 {
+		t.Fatalf("browser figures = %+v", b)
+	}
+	if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthBrowserErrors || r.Findings[0].Policy != releasehealth.PolicyWarn {
+		t.Fatalf("findings = %+v, want one browser_errors warning", r.Findings)
 	}
 }
 

@@ -77,6 +77,39 @@ func TestCheckFile(t *testing.T) {
 	}
 	check(t)
 }`, []string{"fixed-sleep@3"}},
+		{"sleep in a final if branch, then an outer assertion", `func TestX(t *testing.T) {
+	start()
+	if cond {
+		time.Sleep(time.Second)
+	}
+	check(t)
+}`, []string{"fixed-sleep@4"}},
+		{"sleep in a final switch case, then an outer assertion", `func TestX(t *testing.T) {
+	switch mode {
+	case "a":
+		go work()
+		time.Sleep(time.Second)
+	}
+	check(t)
+}`, []string{"fixed-sleep@5"}},
+		{"sleep in a final select case, then an outer assertion", `func TestX(t *testing.T) {
+	select {
+	case <-ch:
+		time.Sleep(time.Second)
+	default:
+	}
+	check(t)
+}`, []string{"fixed-sleep@4"}},
+		{"sleep in an else branch nested two deep, then an outer assertion", `func TestX(t *testing.T) {
+	if a {
+		start()
+	} else {
+		if b {
+			time.Sleep(time.Second)
+		}
+	}
+	check(t)
+}`, []string{"fixed-sleep@6"}},
 		{"suite test method", `func (s *Suite) TestX() {
 	time.Sleep(time.Second)
 	s.check()
@@ -182,6 +215,49 @@ func TestX(t *testing.T) {
 	case <-ch:
 	case <-time.After(100 * time.Millisecond):
 		s.Fail("timed out")
+	}
+}`, []string{"tight-deadline@4"}},
+		{"a sampling tick in a loop is not a deadline", `func TestX(t *testing.T) {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	for {
+		select {
+		case <-done:
+			return
+		case <-time.After(time.Millisecond):
+			if got, _ := os.Getwd(); got != cwd {
+				t.Fatalf("concurrent child leaked cwd: %s", got)
+			}
+		}
+	}
+}`, nil},
+		{"a timer case that only logs is not a deadline", `func TestX(t *testing.T) {
+	for {
+		select {
+		case v := <-ch:
+			use(v)
+		case <-time.After(100 * time.Millisecond):
+			t.Logf("still waiting")
+		}
+	}
+}`, nil},
+		{"a per-message deadline in a loop still is", `func TestX(t *testing.T) {
+	for i := 0; i < n; i++ {
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatalf("message %d never arrived", i)
+		}
+	}
+}`, []string{"tight-deadline@5"}},
+		{"a deadline that fails inside a plain block still is", `func TestX(t *testing.T) {
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		{
+			t.Error("timed out")
+			return
+		}
 	}
 }`, []string{"tight-deadline@4"}},
 		{"a generous deadline", `func TestX(t *testing.T) {

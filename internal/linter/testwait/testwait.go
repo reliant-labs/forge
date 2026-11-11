@@ -45,6 +45,10 @@
 //   - A helper-process Test func (one that calls os.Exit): its sleeps
 //     simulate the child's work. Code inside a synctest bubble, whose clock
 //     is fake.
+//   - A select case on a timer that fails the test only under a condition
+//     it checks: `for { select { case <-done: return; case
+//     <-time.After(1ms): if sample() != want { t.Fatal() } } }` is a
+//     sampling tick, not a deadline.
 //   - A deadline whose expiry does not fail the test — the negative
 //     assertion `select { case <-ch: t.Fatal("unexpected"); case
 //     <-time.After(50ms): }` is how "nothing happens" is tested, and load
@@ -618,7 +622,11 @@ func (c *checker) waits(body *ast.BlockStmt, sc *scope) {
 }
 
 // selectDeadlines reports a select case on a short timer whose body fails
-// the test.
+// the test unconditionally: the timer firing IS the failure. A case that
+// fails only under a condition it checks — `case <-time.After(1ms): if
+// got := sample(); got != want { t.Fatal() }`, a sampling tick in a loop —
+// is a periodic check, not a deadline: load makes it sample less often, and
+// never makes it fail.
 func (c *checker) selectDeadlines(sel *ast.SelectStmt, sc *scope) {
 	for _, cl := range sel.Body.List {
 		cc, ok := cl.(*ast.CommClause)
@@ -639,7 +647,7 @@ func (c *checker) selectDeadlines(sel *ast.SelectStmt, sc *scope) {
 			continue
 		}
 		d, what, ok := c.timerOf(u.X, sc)
-		if !ok || d >= LoadTolerantDeadline || !c.fails(&ast.BlockStmt{List: cc.Body}, sc) {
+		if !ok || d >= LoadTolerantDeadline || !c.failsUnconditionally(cc.Body, sc) {
 			continue
 		}
 		c.report(RuleTightDeadline, cc.Pos(), fmt.Sprintf(
@@ -1037,51 +1045,74 @@ func (c *checker) testifyCall(call *ast.CallExpr, sc *scope) {
 func (c *checker) fails(body *ast.BlockStmt, sc *scope) bool {
 	found := false
 	inspectOwn(body, func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "panic" {
+		if call, ok := n.(*ast.CallExpr); ok && c.failCall(call, sc) {
 			found = true
-			return false
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		name := sel.Sel.Name
-		switch recv := ast.Unparen(sel.X).(type) {
-		case *ast.Ident:
-			switch {
-			case sc.isT(recv.Name):
-				switch name {
-				case "Fatal", "Fatalf", "FailNow", "Fail":
-					found = true
-				case "Error", "Errorf":
-					found = true
-				}
-			case sc.isSuite(recv.Name):
-				found = name == "Fail" || name == "FailNow" || name == "Failf" || name == "FailNowf"
-			case c.isPkg(recv, c.imp.assert), c.isPkg(recv, c.imp.require):
-				found = name == "Fail" || name == "FailNow" || name == "Failf" || name == "FailNowf"
-			}
-		case *ast.CallExpr:
-			// s.T().Fatal(…)
-			if inner, ok := recv.Fun.(*ast.SelectorExpr); ok && inner.Sel.Name == "T" && len(recv.Args) == 0 {
-				if id, ok := inner.X.(*ast.Ident); ok && sc.isSuite(id.Name) {
-					switch name {
-					case "Fatal", "Fatalf", "FailNow", "Fail", "Error", "Errorf":
-						found = true
-					}
-				}
-			}
 		}
 		return !found
 	})
 	return found
+}
+
+// failsUnconditionally reports whether stmts fail the test whenever they
+// run: a fail call (see fails) among the list's own statements, or in a
+// plain block nested in it — not one behind an if, a loop, a switch or a
+// function literal.
+func (c *checker) failsUnconditionally(stmts []ast.Stmt, sc *scope) bool {
+	for _, st := range stmts {
+		switch x := st.(type) {
+		case *ast.ExprStmt:
+			if call, ok := ast.Unparen(x.X).(*ast.CallExpr); ok && c.failCall(call, sc) {
+				return true
+			}
+		case *ast.BlockStmt:
+			if c.failsUnconditionally(x.List, sc) {
+				return true
+			}
+		case *ast.LabeledStmt:
+			if c.failsUnconditionally([]ast.Stmt{x.Stmt}, sc) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// failCall reports whether call fails the test: t.Fatal / Fatalf / Error /
+// Errorf / Fail / FailNow on a testing handle in scope, a suite's
+// s.Fail / s.FailNow / s.T().X, testify's assert.Fail / require.Fail /
+// FailNow, or a panic.
+func (c *checker) failCall(call *ast.CallExpr, sc *scope) bool {
+	if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "panic" {
+		return true
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	name := sel.Sel.Name
+	switch recv := ast.Unparen(sel.X).(type) {
+	case *ast.Ident:
+		switch {
+		case sc.isT(recv.Name):
+			switch name {
+			case "Fatal", "Fatalf", "FailNow", "Fail", "Error", "Errorf":
+				return true
+			}
+		case sc.isSuite(recv.Name), c.isPkg(recv, c.imp.assert), c.isPkg(recv, c.imp.require):
+			return name == "Fail" || name == "FailNow" || name == "Failf" || name == "FailNowf"
+		}
+	case *ast.CallExpr:
+		// s.T().Fatal(…)
+		if inner, ok := recv.Fun.(*ast.SelectorExpr); ok && inner.Sel.Name == "T" && len(recv.Args) == 0 {
+			if id, ok := inner.X.(*ast.Ident); ok && sc.isSuite(id.Name) {
+				switch name {
+				case "Fatal", "Fatalf", "FailNow", "Fail", "Error", "Errorf":
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────

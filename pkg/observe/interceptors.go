@@ -195,7 +195,8 @@ var defaultPolicy = newLogPolicy(slog.LevelInfo, nil)
 // TracingInterceptor returns a Connect interceptor that creates one
 // OpenTelemetry span per RPC. The span name is the full procedure
 // ("/service.v1.Foo/Bar"); errors are recorded via span.RecordError +
-// span.SetStatus(codes.Error, …).
+// span.SetStatus(codes.Error, …). A platform release probe's span carries
+// forge.probe=true (probe.go).
 //
 // A nil tracer disables tracing (interceptor is a pass-through). This
 // keeps DefaultMiddlewares safe to wire in test harnesses that don't
@@ -215,6 +216,7 @@ func (i *tracingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		ctx, span := i.tracer.Start(ctx, req.Spec().Procedure)
 		defer span.End()
+		markProbeSpan(ctx, span)
 		var resp connect.AnyResponse
 		var err error
 		withSpanProfileLabels(ctx, func(ctx context.Context) { resp, err = next(ctx, req) })
@@ -231,6 +233,7 @@ func (i *tracingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 	return connect.StreamingHandlerFunc(func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		ctx, span := i.tracer.Start(ctx, conn.Spec().Procedure)
 		defer span.End()
+		markProbeSpan(ctx, span)
 		var err error
 		withSpanProfileLabels(ctx, func(ctx context.Context) { err = next(ctx, conn) })
 		RecordSpanError(span, err)
@@ -245,7 +248,9 @@ func (i *tracingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 //   - rpc.server.errors   (counter, attribute: procedure)
 //   - rpc.server.duration (histogram seconds, attribute: procedure)
 //
-// Streaming handlers record one duration sample per stream end. A nil
+// Streaming handlers record one duration sample per stream end. A platform
+// release probe (probe.go) records nothing: the metric alerts and the RED a
+// release is judged on count real traffic only. A nil
 // meter disables metrics (interceptor is a pass-through), matching
 // TracingInterceptor's behaviour for tracer == nil.
 func MetricsInterceptor(meter metric.Meter) connect.Interceptor {
@@ -272,6 +277,9 @@ type metricsInterceptor struct {
 
 func (i *metricsInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if IsProbe(ctx) {
+			return next(ctx, req)
+		}
 		start := time.Now()
 		attr := metric.WithAttributes(attribute.String("procedure", req.Spec().Procedure))
 		if i.calls != nil {
@@ -307,6 +315,9 @@ func (i *metricsInterceptor) WrapStreamingClient(next connect.StreamingClientFun
 
 func (i *metricsInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return connect.StreamingHandlerFunc(func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if IsProbe(ctx) {
+			return next(ctx, conn)
+		}
 		start := time.Now()
 		attr := metric.WithAttributes(attribute.String("procedure", conn.Spec().Procedure))
 		if i.calls != nil {

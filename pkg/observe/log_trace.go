@@ -60,12 +60,15 @@ func NewTraceHandler(next slog.Handler) slog.Handler { return &traceHandler{next
 // environment) before. Pass the Config you pass Setup. The collector reading
 // stdout lifts them into the record's resource; the OTLP bridge needs no
 // stamp, because its provider carries the resource itself.
+//
+// A record logged with the context of a platform release probe carries
+// forge.probe=true (AttrProbe) on both paths (probe.go).
 func NewLogHandler(next slog.Handler, cfg Config) slog.Handler {
 	h := NewTraceHandler(newResourceHandler(next, cfg))
 	if !exportEnabled(signalLogs, cfg) {
-		return errorInputsHandler{next: h}
+		return probeLogHandler{next: errorInputsHandler{next: h}}
 	}
-	return errorInputsHandler{next: slog.NewMultiHandler(h, otelslog.NewHandler(logScopeName(cfg)))}
+	return probeLogHandler{next: errorInputsHandler{next: slog.NewMultiHandler(h, otelslog.NewHandler(logScopeName(cfg)))}}
 }
 
 func logScopeName(cfg Config) string {

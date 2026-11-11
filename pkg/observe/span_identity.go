@@ -77,7 +77,8 @@ func SessionIDFromBaggage(header http.Header) string {
 
 // RequestSpanInterceptor records the request's server span (the one the Trace
 // slot opened) for identitySpanInterceptor, and sets session.id on it from the
-// request's baggage. Chain installs it directly inside Trace.
+// request's baggage, and forge.probe=true when the request is a platform
+// release probe (probe.go). Chain installs it directly inside Trace.
 //
 // It also classifies how the call ended, on that span. The Trace slot is
 // otelconnect, which knows only the wire code: it marks a server span Error for
@@ -98,6 +99,7 @@ type requestSpan struct{}
 
 func (requestSpan) enter(ctx context.Context, header http.Header) context.Context {
 	span := trace.SpanFromContext(ctx)
+	markProbeSpan(ctx, span)
 	if id := SessionIDFromBaggage(header); id != "" {
 		span.SetAttributes(attribute.String(AttrSessionID, id))
 	}

@@ -3,6 +3,8 @@ package serverkit
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // Edge is the HTTP layers a listener puts in front of its routes: CORS,
@@ -19,7 +21,8 @@ type Edge struct {
 }
 
 // Wrap returns the edge for cfg: CORS when cfg.CORSEnabled, security headers
-// when cfg.SecurityHeaders, then the request id outermost, inside Outer.
+// when cfg.SecurityHeaders, then the request id outermost, inside Outer, and
+// observe.ProbeFromEdge outside everything.
 // CORS and security headers are security controls, so one cfg turns on but
 // whose factory is nil is an error — never a listener serving with the layer
 // silently absent.
@@ -46,6 +49,11 @@ func (e Edge) Wrap(cfg Config) (func(http.Handler) http.Handler, error) {
 		if e.Outer != nil {
 			handler = e.Outer(handler)
 		}
-		return handler
+		// Outermost of all: a platform release probe is marked before any
+		// layer logs or traces it, and X-Reliant-Probe is deleted before any
+		// layer (the project's own included) or handler can read it. Honoured
+		// only behind a trusted edge (observe.TrustedEdge); the header is
+		// deleted either way.
+		return observe.ProbeFromEdge(handler)
 	}, nil
 }

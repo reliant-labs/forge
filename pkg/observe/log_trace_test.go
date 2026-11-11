@@ -245,6 +245,9 @@ func TestLoweredUserErrorAddsNoSpanEvent(t *testing.T) {
 }
 
 func unwrapErrorInputs(h slog.Handler) slog.Handler {
+	if p, ok := h.(probeLogHandler); ok {
+		h = p.next
+	}
 	if e, ok := h.(errorInputsHandler); ok {
 		return e.next
 	}

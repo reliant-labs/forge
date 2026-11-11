@@ -1,6 +1,6 @@
 ---
 name: observability/product-analytics
-description: The built-in product analytics dashboards every hosted forge app gets with no code — the Overview's Traffic and Users sections, and the Users, Product and Acquisition dashboards (pkg/obsbuiltin) — with every definition they count by (cookieless visitor-day, visit, bounce, channel table, source, same-day stitch, person, active/new/returning, sign-up attribution, activation), how to extend them (forge.Analytics goals, activation, channels; forge.Funnel by visitor/person), override one by a same-named file, or opt out (dashboards = False).
+description: The built-in product analytics dashboards every hosted forge app gets with no code — the Overview's Traffic and Users sections, and the Users, Product and Acquisition dashboards (pkg/obsbuiltin) — with every definition they count by (cookieless visitor-day, visit, bounce, channel table, source, same-day stitch, person, active/new/returning, sign-up attribution, activation), engaged time and the Content section (page_engaged), how to extend them (the KCL forge.Analytics block: goals, activation, channels, content_routes, and its merge rules; forge.Funnel by visitor/person), override one by a same-named file, or opt out (dashboards = False).
 ---
 
 # Built-in product analytics
@@ -122,6 +122,26 @@ typed the URL to sign up on Wednesday is credited to Wednesday's source.
 `<entity>_created` (the automatic CRUD event, so it needs no code), within
 `activation_window` (default `7d`) of signing up.
 
+**Page view's engaged time.** The web runtime ends each page view with one
+`page_engaged {route, engaged_ms, scroll_pct}`: the time the page was visible,
+focused and in use (a 30-second idle cutoff, at most 30 minutes) and the deepest
+the reader scrolled (`observability/product-events`, "Engaged time"). A view the
+reader returned to reports again, `resumed` and cumulative, so a **view** is a
+run of one visitor-day's reports of one route starting at a report that is not
+`resumed`, and its figures are the run's largest. Medians are exact and
+interpolated (`quantileExactInclusive`): the median of 10 s and 20 s is 15 s.
+A view of less than half a second reports nothing, so it is in no median.
+
+**Content route.** A route matching one of `forge.Analytics.content_routes`
+(`*` matches any run of characters, slashes included, so `"/blog/*"` is every
+post and not `/blog` itself); every route when none is declared.
+
+**Onward conversion.** A visit that, after viewing a content route, reached a
+declared goal or signed up: a row carrying the visitor's hash (the browser's,
+or a hosted backend's request the edge stamped) that is an `auth_signed_up`, a
+goal's event or a page view of a goal's route, later than the view and no more
+than 30 minutes after the visit's last browser event.
+
 ## What each dashboard shows
 
 **Overview.** The existing panels form its _Health_ section, first. _Traffic_:
@@ -145,7 +165,12 @@ clients report auth events. _People_: the most active users by opaque id.
 **Product.** _At a glance_: page views, visits, views per visit, bounce rate,
 visit duration, every product event. _Pages_: each route's views, visitors,
 signed-in users, entries and exits; entry pages with bounce and same-day
-sign-up rates; exit pages with exit rate. _Goals and events_: one row per
+sign-up rates; exit pages with exit rate; the median and 75th-percentile engaged
+time per route. _Content_: per content route, views, visitor-days, the median
+engaged time, the shares of views read to 50% and 90%, entries, exits, and
+onward conversions (count and share of the visits that viewed it). The answer
+to "how many read the post, for how long, and did they sign up" is its row; where
+its readers came from is Acquisition's landing pages. _Goals and events_: one row per
 declared goal (persons, total, conversion over visitor-days), every other event
 with its persons and last seen, and the CRUD writes per entity. _Funnels_:
 the built-in visit → sign-up → activation funnel (the first step counts
@@ -160,17 +185,85 @@ after their first exposure; descriptive, not a significance test.
 the channel table (visitors, visits, bounce, sign-ups, conversion, and the share
 of the sign-ups that activated: channel quality, not just volume), sign-ups by
 channel per week. _Sources_: sources, referrers (host and path), campaigns
-(`utm_*`), landing pages by channel. _Audience_: countries (ISO codes),
+(`utm_*`), landing pages by channel with the median engaged time of the landing
+view itself. _Audience_: countries (ISO codes),
 devices, browsers, operating systems. _Quality_: the share of each channel's
 sign-ups active in their fourth week, over the sign-ups of 35 to 90 days before
 the end of the range; a channel with fewer than 20 shows none.
 
+## Declaring product analytics in KCL: `forge.Analytics`
+
+Nothing needs declaring: a frontend with no `analytics` block runs in the
+cookieless `identified` mode: nothing is stored on the device, and a signed-in
+user's events carry their opaque id. The block sets the browser's mode and adds goals,
+an activation event and channel rules to the project's built-in product
+dashboards. It is per frontend and per environment, beside the frontend's
+other telemetry:
+
+```kcl
+forge.Frontend {
+    name = "web"
+    telemetry = forge.BrowserTelemetry {
+        analytics = forge.Analytics {
+            mode = "identified"                # "off" | "aggregate" | "identified" (default) | "full"
+            goals = [
+                forge.Goal {id = "checkout", event = "purchase"},
+                forge.Goal {id = "pricing", title = "Saw pricing", route = "/pricing"},
+            ]
+            activation = "order_created"       # unset: the user's first <entity>_created
+            activation_window = "7d"           # unset: 7d; at most 90d
+            channels = [forge.Channel {host = "news.ycombinator.com", channel = "Organic social"}]
+            content_routes = ["/blog/*"]       # unset: every route
+            # dashboards = False               # drop the built-in product dashboards
+        }
+        funnels = [forge.Funnel {id = "buy", steps = ["view_product", "purchase"], by = "person", window = "7d"}]
+    }
+}
+```
+
+| Field | Meaning | Checked at render |
+|---|---|---|
+| `mode` | the MOST the app allows a browser. A browser runs in the lowest of it, the consent the app signalled and its privacy signals (GPC/DNT caps it at `aggregate`: counted, never identified). `off`: no browser product events. `aggregate`: strictly anonymous, an opt-down: nothing stored on the device, a visitor counted only by the platform's daily edge hash, no user id on browser events. `identified` (the default): also cookieless, nothing stored on the device, and a signed-in user's browser events carry their opaque user id. `full`: once the app calls `grantAnalyticsConsent()`, a persistent visitor id and multi-day attribution too. Server events (`observe.Track`, CRUD, sign-ins) are never gated by it | one of the four |
+| `goals` | conversions the Product dashboard counts: persons, total, and conversion over visitors. Exactly one of `event` (a product event) and `route` (a `page_viewed` route, id segments as `:id`) | unique ids; at most 50; a route is a path with no query or fragment |
+| `activation` | the event that marks a user activated | a product event name |
+| `activation_window` | how long after signing up a user has to activate | `30m`, `1h`, `7d`…, at most `90d` |
+| `channels` | rules tried in order **ahead of** the built-in channel table; a visit whose first page view matches every condition a rule sets (`host`: the referrer host or a subdomain of it; `source`/`medium`: `utm_source`/`utm_medium`, case-insensitive) is credited to `channel`, a built-in name or a new one | at least one condition; a host name, not a URL; no two rules with the same conditions |
+| `content_routes` | the routes the Product dashboard's _Content_ section reports on (a blog, docs, marketing pages): a route as `page_viewed` records it, `*` matching any run of characters, slashes included (`"/blog/*"` is every post, not `/blog` itself). Unset: every route | at most 50; each starts with `/`, no query, fragment or whitespace |
+| `dashboards` | `False` drops the built-in Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections; collection still follows `mode` | |
+
+`mode` reaches the browser as `ANALYTICS_MODE` in the runtime config document
+(`config.js`, or a hosted site's StaticSite spec), so one build promotes across
+environments and each sets its own. Only a non-default mode renders the key:
+absent means `identified`. When the environment switches browser telemetry off
+(`signals.browser = False`), no mode is derived and any `ANALYTICS_MODE` you set
+in `runtime_config` is forced to `off`; otherwise your own `runtime_config`
+entry outranks the derived one.
+
+`forge.Funnel.by` counts a journey by browser `session` or `user` (a `funnel`
+panel on the frontend dashboard, over browser spans), or by `visitor` (the
+cookieless daily visitor, so a window of at most `1d`) or `person` (the
+signed-in user, or the same-day visitor one sign-in links to them). The last two
+read `product_events` and belong to the built-in Product dashboard.
+
+The dashboards are the project's, while each env declares its frontends, so
+`forge generate` merges every env's and frontend's declaration: an equal goal or
+channel rule collapses, a goal id or channel conditions declared two different
+ways is refused naming both, `activation` and `activation_window` must agree
+wherever they are set (unset defers), `content_routes` is the union of every
+declaration (none anywhere is every route), and any `dashboards = False` drops
+them.
+
+What the dashboards draw from these declarations, and every definition they
+count by, are the sections above. The tiers `mode` caps:
+`observability/product-events`.
+
 ## Extend, override, opt out
 
 - **Extend by declaration**, no JSON: `forge.Analytics {goals, activation,
-  activation_window, channels}` and `forge.Funnel {by = "visitor" | "person"}`
+  activation_window, channels, content_routes}` and `forge.Funnel {by = "visitor" | "person"}`
   regenerate the panels on the next `forge generate`. Syntax and the merge
-  rules across frontends and environments: `observability/product-events`.
+  rules across frontends and environments: "Declaring product analytics in
+  KCL" above.
 - **Override one dashboard** with a spec-form file of the same name:
   `deploy/observability/dashboards/<project>-users.json` replaces
   `<project>-users_gen.json` in the bundle (the same for `-product`,

@@ -6,8 +6,8 @@ declares a frontend's built-in product analytics:
     config, in a hosted frontend's StaticSite spec too, and so does the
     `aggregate` opt-down; the default "identified" renders no key (unset
     means identified), and neither does a frontend with no `analytics`;
-  * goals, the activation event and window, channel rules and the dashboards
-    switch render under `telemetry.analytics` with the mode and dashboards
+  * goals, the activation event and window, channel rules, content routes
+    (only when declared) and the dashboards switch render under `telemetry.analytics` with the mode and dashboards
     defaults spelled out and channel conditions lowercased, for forge generate's built-in
     dashboards to read;
   * a frontend with no `analytics` renders no `analytics` key;
@@ -33,6 +33,7 @@ _analytics = forge.Analytics {
         forge.Channel {host = "News.YCombinator.com", channel = "Organic social"}
         forge.Channel {source = "Partner-X", medium = "referral", channel = "Partners"}
     ]
+    content_routes = ["/blog/*", "/pricing"]
 }
 
 _bundle = lambda frontends: [forge.Frontend], observability: forge.Observability -> any {
@@ -115,6 +116,7 @@ assert_channels_lowercased_in_order = _a.channels == [
     {host = None, source = "partner-x", medium = "referral", channel = "Partners"}
 ]
 assert_dashboards_default_on = _a.dashboards == True
+assert_content_routes_rendered = _a.content_routes == ["/blog/*", "/pricing"]
 assert_defaults_spelled_out = _by.defaults.telemetry.analytics == {
     mode = "identified", goals = [], activation = None, activation_window = None, channels = [], dashboards = True
 }

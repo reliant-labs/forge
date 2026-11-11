@@ -3878,6 +3878,7 @@ schema Analytics:
                     goals = [forge.Goal {id = "checkout", event = "purchase"}]
                     activation = "order_created"
                     channels = [forge.Channel {host = "news.ycombinator.com", channel = "Organic social"}]
+                    content_routes = ["/blog/*"]
                 }
             }
         }
@@ -3923,6 +3924,13 @@ schema Analytics:
     activation_window?: str
     # Custom channel rules, tried in order ahead of the built-in table.
     channels: [Channel] = []
+    # The routes the Product dashboard's Content section reports on (a blog,
+    # docs, marketing pages): views, readers, engaged time, scroll depth,
+    # entries, exits and onward conversions. A route as page_viewed records
+    # it ("/pricing", "/orders/:id"); `*` matches any run of characters,
+    # slashes included, so "/blog/*" is every post (and not "/blog" itself).
+    # Unset: every route.
+    content_routes: [str] = []
     # The built-in Overview, Users, Product and Acquisition dashboards. False
     # drops them; collection still follows `mode`.
     dashboards: bool = True
@@ -3942,6 +3950,10 @@ schema Analytics:
             "Analytics.channels declares ${len(channels)} rules: at most 100"
         len({((c.host or "") + "|" + (c.source or "") + "|" + (c.medium or "")).lower(): True for c in channels}) == len(channels), \
             "Analytics.channels repeats a rule's conditions: the second could never match, so drop it or change its conditions"
+        len(content_routes) <= 50, \
+            "Analytics.content_routes declares ${len(content_routes)} routes: at most 50"
+        all r in content_routes { r.startswith("/") and len(r) <= 256 and not regex.match(r, r".*[?#\s].*") }, \
+            "Analytics.content_routes has an entry that is not a route pattern: each starts with \"/\", is at most 256 characters, and has no query, fragment or whitespace (`*` matches any run of characters): ${content_routes}"
 
 schema FrontendErrors:
     """Which browser errors a frontend does not want as issues.

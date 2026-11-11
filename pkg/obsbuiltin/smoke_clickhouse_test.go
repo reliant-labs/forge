@@ -12,7 +12,8 @@ func fullInput() Input {
 		Analytics: &Analytics{
 			Goals:      []Goal{{ID: "checkout", Title: "Checkout", Event: "purchase"}, {ID: "pricing", Route: "/pricing"}},
 			Activation: "order_created", ActivationWindow: "7d",
-			Channels: []ChannelRule{{Host: "news.ycombinator.com", Channel: "Hacker News"}, {Source: "partner", Medium: "referral", Channel: "Partners"}},
+			Channels:      []ChannelRule{{Host: "news.ycombinator.com", Channel: "Hacker News"}, {Source: "partner", Medium: "referral", Channel: "Partners"}},
+			ContentRoutes: []string{"/blog/*", "/pricing"},
 		},
 		Funnels: []Funnel{
 			{ID: "buy", Title: "Buy", Funnel: dashspec.Funnel{Steps: []string{"page_viewed", "add_to_cart", "purchase"}, By: FunnelByPerson, Window: "1d"}},

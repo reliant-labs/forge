@@ -11,7 +11,10 @@ var productSections = []dashspec.Section{
 	{ID: "glance", Title: "At a glance",
 		Description: "Visits and how deep they go: page views, visits, views per visit, bounce rate, visit duration and every product event. Each figure opens beside its change against the previous period."},
 	{ID: "pages", Title: "Pages",
-		Description: "The routes people view, the ones visits start on and the ones they leave from."},
+		Description: "The routes people view, the ones visits start on and the ones they leave from, and how long a view holds them."},
+	{ID: "content", Title: "Content",
+		Description: "The content routes (forge.Analytics.content_routes, e.g. \"/blog/*\"; every route when none is declared): who reads them, for how long, how far down, " +
+			"whether visits start and end on them, and whether the visit goes on to a goal or a sign-up."},
 	{ID: "events", Title: "Goals and events",
 		Description: "The conversions declared in forge.Analytics, every product event by name, and the records people write through the generated CRUD handlers."},
 	{ID: "funnels", Title: "Funnels",
@@ -44,7 +47,7 @@ func Product(in Input) dashspec.Dashboard {
 		ID:    ProductID,
 		Title: in.Project + ": product",
 		Description: "What people do in the product: visits and page views (cookieless, by the platform's daily visitor hash), the pages visits start " +
-			"and end on, declared goals, every product event, the records written through the generated CRUD handlers, the built-in visit → sign-up → " +
+			"and end on, how long a view holds them, the content routes' readers, depth and onward conversions, declared goals, every product event, the records written through the generated CRUD handlers, the built-in visit → sign-up → " +
 			"activation funnel, declared funnels and flag exposures. Hosted environments only: a local forge env up has no product_events table.",
 		Group:          dashspec.GroupProduct,
 		Replaces:       []string{SupersededUsageID},
@@ -69,6 +72,15 @@ SELECT round(avg(dateDiff('second', start, stop))) AS "Visit duration" FROM visi
 		dashspec.UnitCount, dashspec.ColorFuchsia)
 	events.Width = 12
 	window := a.EffectiveActivationWindow()
+	engagedTime := chart("pages", "engaged-time", "Engaged time per route",
+		"The median and 75th-percentile engaged time of a page view, per route (the 15 with the most views reported): the time the page was visible, focused and in use, "+
+			"with a 30-second idle cutoff and a 30-minute cap per view, from the web runtime's page_engaged.",
+		with(engCTE(inRange, ""))+`
+SELECT route, round(quantileExactInclusive(0.5)(engaged_ms) / 1000, 1) AS "Median",
+       round(quantileExactInclusive(0.75)(engaged_ms) / 1000, 1) AS "75th percentile"
+FROM eng GROUP BY route ORDER BY count() DESC, route LIMIT 15`,
+		bars(false, dashspec.SeriesColors{"Median": colorVisitors, "75th percentile": colorMonthly}), 24, 8)
+	engagedTime.Unit = dashspec.UnitSeconds
 	activation := chart("funnels", "funnel-activation", "Visit → sign-up → activation",
 		"Visitor-days in the range, the sign-ups of the range (persons; a sign-up with no visit, an API sign-up or one on another device, counts too), "+
 			"and those that reached "+activationTitle(a)+" within "+window+" of signing up. The first step counts visitor-days, the others persons.",
@@ -116,6 +128,13 @@ p AS (SELECT Props['route'] AS route, count() AS views FROM web WHERE EventName 
 SELECT ex.route AS "Exit page", ex.exits AS "Exits", round(100 * ex.exits / nullIf(p.views, 0), 1) AS "Exit rate %"
 FROM ex LEFT JOIN p ON p.route = ex.route
 ORDER BY "Exits" DESC, "Exit page" LIMIT 50`, 12, 9),
+		engagedTime,
+
+		table("content", "content", "Content",
+			"Each content route: page views, distinct visitor-days, the median engaged time of a view, the share of views read to 50% and 90% of the page, "+
+				"the visits that started (Entries) and ended (Exits) on it, and onward conversions: the visits that, after viewing it, reached a declared goal "+
+				"or signed up (a sign-up up to 30 minutes after the visit's last event counts). Engaged time and depth come from the web runtime's page_engaged.",
+			contentSQL(a), 24, 9),
 	}
 	if a != nil && len(a.Goals) > 0 {
 		d.Panels = append(d.Panels, table("events", "goals", "Goals",
@@ -125,8 +144,8 @@ ORDER BY "Exits" DESC, "Exit page" LIMIT 50`, 12, 9),
 	}
 	d.Panels = append(d.Panels,
 		table("events", "events-by-name", "Events by name",
-			"Every product event in the range but page views: how often, by how many persons, and when it was last seen.",
-			with(stitchCTE(inRange), personsCTE(inRange, "EventName NOT IN ('page_viewed', 'auth_accounts')"))+`
+			"Every product event in the range but page views and their engagement reports: how often, by how many persons, and when it was last seen.",
+			with(stitchCTE(inRange), personsCTE(inRange, "EventName NOT IN ('page_viewed', 'page_engaged', 'auth_accounts')"))+`
 SELECT EventName AS "Event", count() AS "Events", uniqExactIf((EnvId, person), person != '') AS "Persons",
        toDateTime(max(ts), 'UTC') AS "Last seen"
 FROM persons GROUP BY EventName ORDER BY "Events" DESC, "Event" LIMIT 50`, 24, 9),
@@ -167,6 +186,47 @@ SELECT round(countIf(h != '') / nullIf(count(), 0), 4) AS "From a visit" FROM su
 	return d
 }
 
+// contentSQL is the Content table: per content route, its views and
+// visitor-days, the median engaged time and the shares of views read to 50%
+// and 90% (page_engaged), its entries and exits, and the visits that, after
+// viewing it, reached a declared goal or signed up within the visit (a
+// conversion up to 30 minutes after the visit's last browser event extends
+// it, as an event would).
+func contentSQL(a *Analytics) string {
+	var goals []Goal
+	if a != nil {
+		goals = a.Goals
+	}
+	routes := a.contentRoutes()
+	page := "EventName = 'page_viewed'"
+	if pred := contentRoutePredicate(routes, "Props['route']"); pred != "" {
+		page += " AND " + pred
+	}
+	return with(webCTE(inRange), visitsCTE, engCTE(inRange, contentRoutePredicate(routes, "route")),
+		convCTE("Timestamp >= "+from+" AND Timestamp < "+to+" + INTERVAL 30 MINUTE", goals)) + `,
+p AS (SELECT Props['route'] AS route, count() AS views, uniqExact(` + visitor + `) AS visitors
+      FROM web WHERE ` + page + ` GROUP BY route),
+e AS (SELECT route, toNullable(quantileExactInclusive(0.5)(engaged_ms)) AS median_ms,
+             toNullable(avg(scroll_pct >= 50)) AS read50, toNullable(avg(scroll_pct >= 90)) AS read90
+      FROM eng GROUP BY route),
+en AS (SELECT entry_route AS route, count() AS entries FROM visits GROUP BY route),
+ex AS (SELECT exit_route AS route, count() AS exits FROM visits GROUP BY route),
+cv AS (SELECT EnvId, h, vix, Props['route'] AS route, min(ts) AS seen FROM wv WHERE ` + page + ` GROUP BY EnvId, h, vix, route),
+o AS (SELECT cv.route AS route, count() AS visits,
+             countIf(arrayExists(x -> x > cv.seen AND x <= v.stop + INTERVAL 30 MINUTE, c.at)) AS onward
+      FROM cv INNER JOIN visits AS v ON v.EnvId = cv.EnvId AND v.h = cv.h AND v.vix = cv.vix
+      LEFT JOIN conv AS c ON c.EnvId = cv.EnvId AND c.h = cv.h
+      GROUP BY cv.route)
+SELECT p.route AS "Route", p.views AS "Views", p.visitors AS "Visitors",
+       round(e.median_ms / 1000, 1) AS "Median engaged (s)",
+       round(100 * e.read50, 1) AS "Read 50% (%)", round(100 * e.read90, 1) AS "Read 90% (%)",
+       en.entries AS "Entries", ex.exits AS "Exits",
+       o.onward AS "Onward conversions", round(100 * o.onward / nullIf(o.visits, 0), 1) AS "Onward %"
+FROM p LEFT JOIN e ON e.route = p.route LEFT JOIN en ON en.route = p.route
+LEFT JOIN ex ON ex.route = p.route LEFT JOIN o ON o.route = p.route
+ORDER BY "Views" DESC, "Route" LIMIT 50`
+}
+
 // activationFunnelSQL is the built-in funnel: visitor-days, the range's
 // sign-ups, and the sign-ups activated within the activation window (read
 // past the end of the range, so a past range's late activations count).
@@ -189,10 +249,7 @@ ORDER BY i`
 func goalsSQL(goals []Goal) string {
 	var ids, titles, matches, either []string
 	for _, g := range goals {
-		pred := "EventName = " + lit(g.Event)
-		if g.Route != "" {
-			pred = "EventName = 'page_viewed' AND Props['route'] = " + lit(g.Route)
-		}
+		pred := goalPredicate(g)
 		title := g.Title
 		if title == "" {
 			title = g.ID

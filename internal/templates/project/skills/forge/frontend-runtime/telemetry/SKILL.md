@@ -68,7 +68,7 @@ into every environment it is promoted to.
 | ingest path (`off` or empty disables) | `OTEL_ENDPOINT` | KCL `config.otel_endpoint` or `runtime_config` | `/_otel` in dev and on `forge.OnHosted`, **empty elsewhere** |
 | `deployment.environment` | `ENVIRONMENT` | KCL `config.environment` or `runtime_config` | the forge env name |
 | session replay (masked; `full` tier only) | `OTEL_REPLAY = "true"` | KCL `telemetry = forge.BrowserTelemetry {replay = True}` (per frontend, per env), or `runtime_config` | **on in new projects**, off in existing implicit-off envs |
-| product analytics mode (`off` / `aggregate` / `identified` / `full`) | `ANALYTICS_MODE` | KCL `telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "full"}}` (per frontend, per env), or `runtime_config`; forced to `off` when the env switches browser telemetry off | `identified`: cookieless, a signed-in user's events carry their opaque id (rendered only when it differs; see `observability/product-events`) |
+| product analytics mode (`off` / `aggregate` / `identified` / `full`) | `ANALYTICS_MODE` | KCL `telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "full"}}` (per frontend, per env), or `runtime_config`; forced to `off` when the env switches browser telemetry off | `identified`: cookieless, a signed-in user's events carry their opaque id (rendered only when it differs; see `observability/product-analytics`) |
 | console capture | `CONSOLE_CAPTURE = "false"` | KCL `telemetry.console_capture = False` | **on** |
 | replay sample rate | `REPLAY_SAMPLE_RATE` | KCL `telemetry.replay_sample_rate` | every session |
 | `page_viewed {route}` product events | `PAGE_VIEWS = "false"` | KCL `telemetry.page_views = False` | **on** |

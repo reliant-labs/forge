@@ -110,8 +110,9 @@ GROUP BY ref, ref_path ORDER BY "Visits" DESC, "Referrer", "Path" LIMIT 50`, 12,
 				[]string{"Visitors", "Sign-ups", "Conversion %", "Activated %"},
 				`"Source" NOT IN ('', 'Unattributed') OR "Medium" != '' OR "Campaign" != ''`, 50), 24, 9),
 		table("sources", "landing-pages", "Landing pages",
-			"The route each visitor-day's first visit started on, by channel: visits and sign-ups.",
-			b.sql([]dim{{"landing", "Landing page"}, {"channel", "Channel"}}, []string{"Visits", "Sign-ups"}, "", 50), 24, 9),
+			"The route each visitor-day's first visit started on, by channel: visits, sign-ups, and the median engaged time of the landing view itself "+
+				"(visible, focused, active time, from the web runtime's page_engaged; empty when no view reported one).",
+			b.sql([]dim{{"landing", "Landing page"}, {"channel", "Channel"}}, []string{"Visits", "Sign-ups", engagedMetric}, "", 50), 24, 9),
 
 		table("audience", "countries", "Countries",
 			"Visitor-days by ISO country code (from the visitor's address at the ingest edge, which keeps no address), with sign-ups and conversion.",
@@ -156,6 +157,7 @@ type breakdown struct{ in Input }
 // breakdownMetrics are the columns a breakdown can show, over v (visitor-day
 // counts per key) and s (sign-up counts per key).
 var breakdownMetrics = map[string]string{
+	engagedMetric:  "v.engaged",
 	"Visitors":     "v.visitors",
 	"Visits":       "v.visits",
 	"Bounce %":     "round(100 * v.bounces / nullIf(v.visits, 0), 1)",
@@ -164,9 +166,25 @@ var breakdownMetrics = map[string]string{
 	"Activated %":  "round(100 * s.activated / nullIf(s.signups, 0), 1)",
 }
 
+// engagedMetric is the median engaged time, in seconds, of the landing views
+// of a breakdown's visitor-days: each visitor-day's first report of its
+// landing route (page_engaged). A breakdown that shows it joins first to it.
+const engagedMetric = "Median engaged (s)"
+
 func (b breakdown) sql(dims []dim, metrics []string, where string, limit int) string {
 	a := b.in.Analytics
 	w := activationWindow(a)
+	ctes := []string{webCTE(inRange), visitsCTE, firstCTE(b.in.channelRules()), stitchCTE(inRange), suCTE(from, to), suhCTE, actCTE(a, from, to+" + "+w)}
+	source, engaged := "first", ""
+	for _, m := range metrics {
+		if m == engagedMetric {
+			ctes = append(ctes, engCTE(inRange, ""), `le AS (SELECT EnvId, h, route, argMin(engaged_ms, at) AS ms, 1 AS has FROM eng GROUP BY EnvId, h, route)`)
+			source = `(SELECT f.*, l.ms AS landing_ms, l.has AS landing_has
+            FROM first AS f LEFT JOIN le AS l ON l.EnvId = f.EnvId AND l.h = f.h AND l.route = f.landing)`
+			engaged = `,
+             if(countIf(landing_has = 1) = 0, NULL, round(quantileExactInclusiveIf(0.5)(landing_ms, landing_has = 1) / 1000, 1)) AS engaged`
+		}
+	}
 	var vk, sk, keys, on, sel []string
 	for i, d := range dims {
 		k := fmt.Sprintf("k%d", i)
@@ -191,9 +209,9 @@ func (b breakdown) sql(dims []dim, metrics []string, where string, limit int) st
 		where = "\nWHERE " + where
 	}
 	group := strings.Join(keys, ", ")
-	return with(webCTE(inRange), visitsCTE, firstCTE(b.in.channelRules()), stitchCTE(inRange), suCTE(from, to), suhCTE, actCTE(a, from, to+" + "+w)) + `,
-v AS (SELECT ` + strings.Join(vk, ", ") + `, uniqExact(` + visitor + `) AS visitors, sum(n_visits) AS visits, sum(bounces) AS bounces
-      FROM first GROUP BY ` + group + `),
+	return with(ctes...) + `,
+v AS (SELECT ` + strings.Join(vk, ", ") + `, uniqExact(` + visitor + `) AS visitors, sum(n_visits) AS visits, sum(bounces) AS bounces` + engaged + `
+      FROM ` + source + ` GROUP BY ` + group + `),
 s AS (SELECT ` + strings.Join(sk, ", ") + `, count() AS signups, countIf(x.UserId != '' AND x.at >= u.at AND x.at < u.at + ` + w + `) AS activated
       FROM su_h AS u LEFT JOIN first AS f ON f.EnvId = u.EnvId AND f.h = u.h
       LEFT JOIN act AS x ON x.EnvId = u.EnvId AND x.UserId = u.UserId

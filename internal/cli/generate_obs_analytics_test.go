@@ -62,6 +62,29 @@ func TestDeclaredAnalytics_MergesAcrossEnvsAndFrontends(t *testing.T) {
 	}
 }
 
+// Content routes are the union of every frontend's, sorted; a frontend that
+// declares none defers to the others.
+func TestDeclaredAnalytics_ContentRoutesAreTheUnion(t *testing.T) {
+	got, err := declaredAnalytics([]renderedEnvFrontend{
+		analyticsFrontend("dev", "landing", &AnalyticsEntity{Mode: "identified", ContentRoutes: []string{"/blog/*", "/pricing"}, Dashboards: true}),
+		analyticsFrontend("prod", "landing", &AnalyticsEntity{Mode: "identified", ContentRoutes: []string{"/pricing", "/docs/*"}, Dashboards: true}),
+		analyticsFrontend("prod", "web", &AnalyticsEntity{Mode: "identified", Dashboards: true}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/blog/*", "/docs/*", "/pricing"}; !reflect.DeepEqual(got.ContentRoutes, want) {
+		t.Errorf("content routes = %v, want %v", got.ContentRoutes, want)
+	}
+	none, err := declaredAnalytics([]renderedEnvFrontend{analyticsFrontend("dev", "web", &AnalyticsEntity{Mode: "identified", Dashboards: true})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.ContentRoutes != nil {
+		t.Errorf("no declaration must leave every route: %v", none.ContentRoutes)
+	}
+}
+
 func TestDeclaredAnalytics_DashboardsOptOutWins(t *testing.T) {
 	got, err := declaredAnalytics([]renderedEnvFrontend{
 		analyticsFrontend("dev", "web", &AnalyticsEntity{Mode: "aggregate", Dashboards: true}),
@@ -163,6 +186,7 @@ func TestFrontendAnalytics_FromRealKCL(t *testing.T) {
                     goals = [forge.Goal {id = "pricing", route = "/pricing"}, forge.Goal {id = "checkout", event = "purchase"}]
                     activation = "order_created"
                     channels = [forge.Channel {host = "News.YCombinator.com", channel = "Organic social"}]
+                    content_routes = ["/blog/*", "/pricing"]
                 }
                 funnels = [forge.Funnel {id = "buy", steps = ["view_product", "purchase"], by = "person", window = "7d"}]
             }
@@ -184,11 +208,12 @@ func TestFrontendAnalytics_FromRealKCL(t *testing.T) {
 	}
 	web := by["web"]
 	wantEntity := &AnalyticsEntity{
-		Mode:       "aggregate",
-		Goals:      []AnalyticsGoalEntity{{ID: "pricing", Route: "/pricing"}, {ID: "checkout", Event: "purchase"}},
-		Activation: "order_created",
-		Channels:   []AnalyticsChannelEntity{{Host: "news.ycombinator.com", Channel: "Organic social"}},
-		Dashboards: true,
+		Mode:          "aggregate",
+		Goals:         []AnalyticsGoalEntity{{ID: "pricing", Route: "/pricing"}, {ID: "checkout", Event: "purchase"}},
+		Activation:    "order_created",
+		Channels:      []AnalyticsChannelEntity{{Host: "news.ycombinator.com", Channel: "Organic social"}},
+		Dashboards:    true,
+		ContentRoutes: []string{"/blog/*", "/pricing"},
 	}
 	if web.Telemetry == nil || !reflect.DeepEqual(web.Telemetry.Analytics, wantEntity) {
 		t.Fatalf("analytics = %+v, want %+v", web.Telemetry, wantEntity)
@@ -206,7 +231,8 @@ func TestFrontendAnalytics_FromRealKCL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a == nil || len(a.Goals) != 2 || a.Goals[0].ID != "checkout" || a.Activation != "order_created" || a.EffectiveActivationWindow() != "7d" || len(a.Channels) != 1 {
+	if a == nil || len(a.Goals) != 2 || a.Goals[0].ID != "checkout" || a.Activation != "order_created" || a.EffectiveActivationWindow() != "7d" || len(a.Channels) != 1 ||
+		!reflect.DeepEqual(a.ContentRoutes, []string{"/blog/*", "/pricing"}) {
 		t.Errorf("declaredAnalytics = %+v", a)
 	}
 	project, _ := obsdash.BuildParts(obsdash.Input{Project: "acme", Frontends: []string{"web"}, Analytics: a})

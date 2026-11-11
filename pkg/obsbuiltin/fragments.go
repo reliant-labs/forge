@@ -2,6 +2,7 @@ package obsbuiltin
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -68,10 +69,19 @@ func webCTE(rng string) string {
 }
 
 // visitsCTE sessionises web into visits: one visitor's events in time order,
-// a new visit after a gap of more than 30 minutes. Each visit carries where it
-// came from (its first page view's referrer, campaign and ad-network flag),
-// its entry and exit routes, and what the edge saw.
-const visitsCTE = `visits AS (
+// a new visit after a gap of more than 30 minutes. wv is web's rows, each
+// with its visit's index (vix) among the visitor's; visits is one row per
+// visit, carrying where it came from (its first page view's referrer,
+// campaign and ad-network flag), its entry and exit routes, and what the
+// edge saw.
+const visitsCTE = `wv AS (
+  SELECT *, sum(brk) OVER (PARTITION BY EnvId, h ORDER BY ts ROWS UNBOUNDED PRECEDING) AS vix
+  FROM (
+    SELECT *, dateDiff('second',
+             lagInFrame(ts, 1, ts - INTERVAL 1 HOUR) OVER (PARTITION BY EnvId, h ORDER BY ts
+                                                       ROWS BETWEEN 1 PRECEDING AND CURRENT ROW), ts) > 1800 AS brk
+    FROM web)),
+visits AS (
   SELECT EnvId, h, vix, min(ts) AS start, max(ts) AS stop,
          countIf(EventName = 'page_viewed') AS views,
          countIf(EventName != 'page_viewed') AS actions,
@@ -87,14 +97,72 @@ const visitsCTE = `visits AS (
          argMinIf(Props['click_id'], ts, EventName = 'page_viewed') AS click,
          anyIf(Country, Country != '') AS country, anyIf(DeviceType, DeviceType != '') AS device,
          anyIf(Browser, Browser != '') AS browser, anyIf(OS, OS != '') AS os
-  FROM (
-    SELECT *, sum(brk) OVER (PARTITION BY EnvId, h ORDER BY ts ROWS UNBOUNDED PRECEDING) AS vix
-    FROM (
-      SELECT *, dateDiff('second',
-               lagInFrame(ts, 1, ts - INTERVAL 1 HOUR) OVER (PARTITION BY EnvId, h ORDER BY ts
-                                                         ROWS BETWEEN 1 PRECEDING AND CURRENT ROW), ts) > 1800 AS brk
-      FROM web))
+  FROM wv
   GROUP BY EnvId, h, vix)`
+
+// engCTE is one row per page view's engagement (the runtime's page_engaged)
+// of a route matching routePred (a condition on the column route; "" is
+// every route): the
+// engaged milliseconds and the deepest scroll of the view. A view the reader
+// came back to is reported again, `resumed` and cumulative, so a view is a
+// run of one visitor's reports of one route that starts at a report that is
+// not resumed, and its figures are the run's largest. at is the view's
+// first report.
+func engCTE(rng, routePred string) string {
+	if routePred != "" {
+		routePred = " AND " + routePred
+	}
+	return `eng AS (
+  SELECT EnvId, h, route, vix, min(ts) AS at, max(ms) AS engaged_ms, max(sp) AS scroll_pct
+  FROM (
+    SELECT *, sum(NOT resumed) OVER (PARTITION BY EnvId, h, route ORDER BY ts ROWS UNBOUNDED PRECEDING) AS vix
+    FROM (
+      SELECT Timestamp AS ts, EnvId, DayVisitor AS h, Props['route'] AS route,
+             toFloat64OrZero(Props['engaged_ms']) AS ms, toFloat64OrZero(Props['scroll_pct']) AS sp,
+             Props['resumed'] = 'true' AS resumed
+      FROM product_events
+      WHERE ` + rng + ` AND ` + envScope + ` AND EventName = 'page_engaged' AND Client IN ('web', 'landing')
+        AND DayVisitor != '' AND DeviceType != 'bot'` + routePred + `))
+  GROUP BY EnvId, h, route, vix)`
+}
+
+// contentRoutePredicate is the condition on col that a route is one of the
+// declared content routes (Analytics.ContentRoutes): a pattern is the route
+// itself, `*` any run of characters. "" when none is declared: every route.
+func contentRoutePredicate(patterns []string, col string) string {
+	if len(patterns) == 0 {
+		return ""
+	}
+	alts := make([]string, len(patterns))
+	for i, p := range patterns {
+		alts[i] = strings.ReplaceAll(regexp.QuoteMeta(p), `\*`, ".*")
+	}
+	return "match(" + col + ", " + lit("^(?:"+strings.Join(alts, "|")+")$") + ")"
+}
+
+// goalPredicate is the condition a product_events row completes g: its event,
+// or a page view of its route.
+func goalPredicate(g Goal) string {
+	if g.Route != "" {
+		return "EventName = 'page_viewed' AND Props['route'] = " + lit(g.Route)
+	}
+	return "EventName = " + lit(g.Event)
+}
+
+// convCTE is each visitor's conversions in rng: the rows carrying the
+// visitor's hash (the browser's own, and a hosted backend's request the edge
+// stamped) that sign up (auth_signed_up) or complete a declared goal.
+func convCTE(rng string, goals []Goal) string {
+	preds := []string{"EventName = 'auth_signed_up'"}
+	for _, g := range goals {
+		preds = append(preds, "("+goalPredicate(g)+")")
+	}
+	return `conv AS (
+  SELECT EnvId, DayVisitor AS h, groupArray(Timestamp) AS at
+  FROM product_events
+  WHERE ` + rng + ` AND ` + envScope + ` AND DayVisitor != '' AND (` + strings.Join(preds, " OR ") + `)
+  GROUP BY EnvId, h)`
+}
 
 // firstCTE is each visitor-day's first touch: the channel and source of its
 // first visit, its landing page, campaign and audience, its visits and

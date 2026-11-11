@@ -1373,6 +1373,10 @@ type AnalyticsEntity struct {
 	ActivationWindow string                   `json:"activation_window,omitempty"`
 	Channels         []AnalyticsChannelEntity `json:"channels,omitempty"`
 	Dashboards       bool                     `json:"dashboards"`
+	// ContentRoutes are the route patterns of the Product dashboard's Content
+	// section; empty (and not rendered) when the frontend leaves it to the
+	// default, every route.
+	ContentRoutes []string `json:"content_routes,omitempty"`
 }
 
 // AnalyticsGoalEntity mirrors kcl/schema.k Goal: exactly one of Event and

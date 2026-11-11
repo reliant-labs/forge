@@ -1,6 +1,6 @@
 ---
 name: auth
-description: Authentication — managed identity as the default (forge.ManagedIdentity fills the validator's issuer, audience and the login broker's credentials; bring-your-own issuer is the escape hatch), the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, shared-issuer, api-keys.
+description: Authentication — managed identity as the default (forge.ManagedIdentity fills the validator's issuer, audience and the login broker's credentials; bring-your-own issuer is the escape hatch), the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, shared-issuer, external-provider, api-keys.
 ---
 
 # Authentication
@@ -11,7 +11,7 @@ Authentication is a **middleware, nothing more**: an interceptor validates the r
 
 Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/api-keys`**.
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/external-provider`** (Supabase, Auth0, Clerk, Firebase: the validator, the provider name, the caller), **`auth/api-keys`**.
 
 ## The default: managed identity
 
@@ -71,23 +71,7 @@ func SetupAuth(cfg *config.Config) (*auth.Authenticator, error) {
 
 ### Swapping the IdP (bring your own issuer)
 
-The escape hatch from managed identity: an env that declares no `identity` takes its issuer from `config.k`.
-
-**Most swaps are a CONFIG change, not a code change.** Any standards-compliant issuer — Auth0, Keycloak, Zitadel, Okta, Supabase, a local dev IdP — needs no constructor: point `jwt_issuer` (plus `jwt_jwks_url` if discovery cannot describe it) at the new issuer and the default validator validates against its keys.
-
-Only a NON-STANDARD claim shape needs code — edit `internal/app/auth.go` and wrap a different validator's `.Validate` in `auth.NewAuthenticator`:
-
-```go
-// Clerk — JWKS + Clerk's org/session claim shape (sub / org_id / org_role → Claims).
-// Email isn't in a Clerk token by default; sync it via webhook.
-validator, err := auth.Clerk(auth.ClerkOpts{JWKSURL: cfg.JwtJwksUrl, Issuer: cfg.JwtIssuer})
-
-// Firebase — Google's JWKS + Firebase shape (sub = uid); token must match a project's
-// aud AND issuer. Add a `firebase_project_ids` config field for the list.
-validator, err := auth.Firebase(auth.FirebaseOpts{ProjectIDs: strings.Split(cfg.FirebaseProjectIds, ",")})
-```
-
-A constructor needing a value the config lacks gets a config field, never an `os.Getenv`. Other non-standard shapes ride `UserResolver`. Point the login broker at the same issuer — both halves must name it, or a session minted by one is rejected by the other.
+The escape hatch from managed identity: an env that declares no `identity` takes its issuer from `config.k`. Most swaps (Auth0, Keycloak, Okta, Supabase, a local dev IdP) are a CONFIG change: point `jwt_issuer` at the new issuer. A non-standard claim shape (Clerk, Firebase) swaps the validator in `internal/app/auth.go`. Name the provider (`FORGE_AUTH_PROVIDER`) so the chain's sign-in heartbeat labels its events, and if your auth does not stash forge's `authn` claims, pass `Caller` (`serverkit.AuthWithCaller`) or the heartbeat sees nobody. Load **`auth/external-provider`** for the validators, the provider name and the caller.
 
 ## Shared-issuer runtime (sub-skill `auth/shared-issuer`)
 

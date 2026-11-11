@@ -168,6 +168,15 @@ type ChainDeps struct {
 	// is slog.Default().
 	Logger *slog.Logger
 
+	// AuthProvider names the auth provider in the daily sign-in heartbeat
+	// (observe.AuthHeartbeatInterceptor): "supabase", "auth0", "clerk", ….
+	// Empty is observe.AuthProviderFromEnv — FORGE_AUTH_PROVIDER, else
+	// "forge" for forge's managed identity, else "jwt". The heartbeat reads
+	// the caller through Auth's Caller, so an authenticator that keeps its
+	// caller in a context of its own is built with AuthWithCaller, or the
+	// heartbeat sees nobody.
+	AuthProvider string
+
 	// Outer runs in declared order before Trace and the rest of the chain.
 	// Use for owned request-context preparation that must precede tracing/auth.
 	// It is outside recovery, logging and metrics too: it must not panic or
@@ -331,13 +340,14 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 		Meter:  deps.Meter,
 		// As given: observe.Chain applies the slot's one rule (nil is
 		// Deadline{} on the chain's logger, NoDeadline drops it).
-		Deadline:   deps.Deadline,
-		Auth:       deps.Auth,
-		Caller:     caller,
-		Audit:      audit,
-		RateLimit:  deps.RateLimit,
-		LogOptions: deps.LogOptions,
-		Extras:     extras,
+		Deadline:     deps.Deadline,
+		Auth:         deps.Auth,
+		Caller:       caller,
+		AuthProvider: deps.AuthProvider,
+		Audit:        audit,
+		RateLimit:    deps.RateLimit,
+		LogOptions:   deps.LogOptions,
+		Extras:       extras,
 	})
 	interceptors = append(append([]connect.Interceptor(nil), deps.Outer...), interceptors...)
 	return &Chain{

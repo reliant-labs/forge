@@ -1,6 +1,6 @@
 ---
 name: observability/product-events
-description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, retention, and sql/funnel panels over the hosted product_events table.
+description: Product events — the contract (one INFO log record, event.name product.<name>), emitting from Go (observe.Track) and the browser (track, setTelemetryUser), the automatic <entity>_created|_updated|_deleted events generated CRUD emits, their off switch (signals.product_events) and log-ingest cost, the KCL forge.Analytics block (ANALYTICS_MODE, goals, activation, channel rules, Funnel.by visitor/person), retention, and sql/funnel panels over the hosted product_events table.
 ---
 
 # Product events
@@ -94,6 +94,64 @@ user. A marketing site wraps its outbound links in `withAttribution(url)` so the
 app sees the `rid` and utm values. All of it is behind the same consent gate as
 `track`: nothing is stored or appended until `initBrowserTelemetry` runs, and
 not after `disableTelemetry()`.
+
+## Declaring product analytics in KCL: `forge.Analytics`
+
+Nothing needs declaring: a frontend with no `analytics` block runs in the
+cookieless `identified` mode: nothing is stored on the device, and a signed-in
+user's events carry their opaque id. The block sets the browser's mode and adds goals,
+an activation event and channel rules to the project's built-in product
+dashboards. It is per frontend and per environment, beside the frontend's
+other telemetry:
+
+```kcl
+forge.Frontend {
+    name = "web"
+    telemetry = forge.BrowserTelemetry {
+        analytics = forge.Analytics {
+            mode = "identified"                # "off" | "aggregate" | "identified" (default) | "full"
+            goals = [
+                forge.Goal {id = "checkout", event = "purchase"},
+                forge.Goal {id = "pricing", title = "Saw pricing", route = "/pricing"},
+            ]
+            activation = "order_created"       # unset: the user's first <entity>_created
+            activation_window = "7d"           # unset: 7d; at most 90d
+            channels = [forge.Channel {host = "news.ycombinator.com", channel = "Organic social"}]
+            # dashboards = False               # drop the built-in product dashboards
+        }
+        funnels = [forge.Funnel {id = "buy", steps = ["view_product", "purchase"], by = "person", window = "7d"}]
+    }
+}
+```
+
+| Field | Meaning | Checked at render |
+|---|---|---|
+| `mode` | the MOST the app allows a browser. A browser runs in the lowest of it, the consent the app signalled and its privacy signals (GPC/DNT caps it at `aggregate`: counted, never identified). `off`: no browser product events. `aggregate`: strictly anonymous, an opt-down: nothing stored on the device, a visitor counted only by the platform's daily edge hash, no user id on browser events. `identified` (the default): also cookieless, nothing stored on the device, and a signed-in user's browser events carry their opaque user id. `full`: once the app calls `grantAnalyticsConsent()`, a persistent visitor id and multi-day attribution too. Server events (`observe.Track`, CRUD, sign-ins) are never gated by it | one of the four |
+| `goals` | conversions the Product dashboard counts: persons, total, and conversion over visitors. Exactly one of `event` (a product event) and `route` (a `page_viewed` route, id segments as `:id`) | unique ids; at most 50; a route is a path with no query or fragment |
+| `activation` | the event that marks a user activated | a product event name |
+| `activation_window` | how long after signing up a user has to activate | `30m`, `1h`, `7d`…, at most `90d` |
+| `channels` | rules tried in order **ahead of** the built-in channel table; a visit whose first page view matches every condition a rule sets (`host`: the referrer host or a subdomain of it; `source`/`medium`: `utm_source`/`utm_medium`, case-insensitive) is credited to `channel`, a built-in name or a new one | at least one condition; a host name, not a URL; no two rules with the same conditions |
+| `dashboards` | `False` drops the built-in Overview, Users, Product and Acquisition dashboards; collection still follows `mode` | |
+
+`mode` reaches the browser as `ANALYTICS_MODE` in the runtime config document
+(`config.js`, or a hosted site's StaticSite spec), so one build promotes across
+environments and each sets its own. Only a non-default mode renders the key:
+absent means `identified`. When the environment switches browser telemetry off
+(`signals.browser = False`), no mode is derived and any `ANALYTICS_MODE` you set
+in `runtime_config` is forced to `off`; otherwise your own `runtime_config`
+entry outranks the derived one.
+
+`forge.Funnel.by` counts a journey by browser `session` or `user` (a `funnel`
+panel on the frontend dashboard, over browser spans), or by `visitor` (the
+cookieless daily visitor, so a window of at most `1d`) or `person` (the
+signed-in user, or the same-day visitor one sign-in links to them). The last two
+read `product_events` and belong to the built-in Product dashboard.
+
+The dashboards are the project's, while each env declares its frontends, so
+`forge generate` merges every env's and frontend's declaration: an equal goal or
+channel rule collapses, a goal id or channel conditions declared two different
+ways is refused naming both, `activation` and `activation_window` must agree
+wherever they are set (unset defers), and any `dashboards = False` drops them.
 
 ## Retention
 

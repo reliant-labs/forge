@@ -2649,6 +2649,9 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 			return err
 		}
 		in.Funnels = funnels
+		if in.Analytics, err = declaredAnalytics(ctx.renderedFrontends()); err != nil {
+			return err
+		}
 		// The frontends the environments serve, when any declares one: a
 		// frontends/ directory that is only run as a container (an operator
 		// console) is not a served frontend and reports no browser telemetry.

@@ -16,6 +16,11 @@ import (
 func TestFragmentsContainOnlyProjectInputs(t *testing.T) {
 	in := fixture()
 	in.Funnels = []FrontendFunnel{{ID: "checkout", Funnel: Funnel{Steps: []string{"cart", "paid"}, Window: "7d"}}}
+	in.Analytics = &ProductAnalytics{
+		Goals:      []Goal{{ID: "pricing", Route: "/pricing"}},
+		Activation: "order_created",
+		Channels:   []ChannelRule{{Host: "news.ycombinator.com", Channel: "Organic social"}},
+	}
 	project, _ := BuildParts(in)
 	more := in
 	more.Services = append(append([]Service(nil), in.Services...), Service{
@@ -34,7 +39,7 @@ func TestFragmentsContainOnlyProjectInputs(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ReadFragments: ok=%v err=%v", ok, err)
 	}
-	want := Input{Project: in.Project, Frontends: in.Frontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels}
+	want := Input{Project: in.Project, Frontends: in.Frontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels, Analytics: in.Analytics}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("project fragments did not round-trip: got %+v, want %+v", got, want)
 	}
@@ -73,7 +78,7 @@ func TestFragmentsReadPreviouslyWrittenInput(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ReadFragments: ok=%v err=%v", ok, err)
 	}
-	want := Input{Project: in.Project, Frontends: in.Frontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels}
+	want := Input{Project: in.Project, Frontends: in.Frontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels, Analytics: in.Analytics}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("legacy project fragments: got %+v, want %+v", got, want)
 	}

@@ -380,4 +380,33 @@ describe("the SDK session kept in memory (installRumSessionStore)", () => {
     vi.advanceTimersByTime(MINUTE);
     expect(sdk.getRumSessionId()).toBe(id);
   });
+
+  it("continues a session an earlier load kept on the device, when asked to keep it", () => {
+    // The first page load, in the full tier: the session goes to the cookie.
+    const doc = new ListeningKeepingDocument();
+    const first = installRumSessionStore(doc as unknown as Document)!;
+    const sdk = loadSdkSession(doc);
+    deinit = sdk.initSessionTracking("instance").deinit;
+    const id = sdk.getRumSessionId()!;
+    first.moveToDevice(memoryStore());
+    deinit();
+    deinit = undefined;
+    const kept = doc.jarText();
+    expect(decodeURIComponent(kept)).toContain(id);
+
+    // The next load: a new document over the same cookie jar.
+    const reload = new ListeningKeepingDocument();
+    reload.cookie = `${kept}; path=/; max-age=900`;
+    const next = installRumSessionStore(
+      reload as unknown as Document,
+      Date.now,
+      {
+        keepDeviceSession: true,
+      },
+    )!;
+    next.moveToDevice(memoryStore());
+    const again = loadSdkSession(reload);
+    deinit = again.initSessionTracking("instance").deinit;
+    expect(again.getRumSessionId()).toBe(id);
+  });
 });

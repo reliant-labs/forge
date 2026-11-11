@@ -1347,8 +1347,13 @@ function keepRumSession(): RumSessionStore | null {
     if (typeof document === "undefined") {
       return null;
     }
-    const rum = installRumSessionStore(document);
-    if (analyticsTier() === "full") {
+    // In the full tier the session an earlier load kept on the device
+    // continues; below it, any such session is erased at install.
+    const full = analyticsTier() === "full";
+    const rum = installRumSessionStore(document, Date.now, {
+      keepDeviceSession: full,
+    });
+    if (full) {
       rum?.moveToDevice(localStorageOrNull());
     }
     return rum;

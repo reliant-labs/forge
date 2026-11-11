@@ -56,7 +56,7 @@ Then `forge env render <env>` and check the frontend's `runtime_config` (or
 `runtime_config_spec` when hosted) carries `OTEL_REPLAY = "true"` exactly when
 `_session_replay` is True, and `observability.policy.opt_in` lists `replay`.
 
-## 2. Browser analytics are cookieless by default
+## 2. Browser analytics are cookieless by default (a behavioural break)
 
 **Use when** a web frontend has browser telemetry: a generated
 `src/lib/otel_gen.ts`, or your own code calling `initBrowserTelemetry`,
@@ -65,50 +65,77 @@ Then `forge env render <env>` and check the frontend's `runtime_config` (or
 ### What changed
 
 The web runtime runs product analytics in a tier (`off` < `aggregate` <
-`identified` < `full`; `frontend-runtime/telemetry`, "Analytics tiers"). The
-default is now **`identified`**: a signed-in user's events carry their opaque
-id, as before, but **nothing** is stored on the device:
+`identified` < `full`; `frontend-runtime/telemetry`, "Analytics tiers"). A
+frontend that sets no mode (no `ANALYTICS_MODE` in its runtime config, no
+`analytics` option) now runs in **`identified`**: product events, page views
+and a signed-in user's opaque id still flow, but **nothing is stored on the
+device**. No API changed signature and server events are not affected, but
+three behaviours of v1.3.0 are gone unless you restore them (below):
 
-- no `forge.visitor_id`, no `forge.attribution`, no `user_identified` event,
-  and `withAttribution(url)` returns the URL unchanged;
-- the HyperDX `__rum_sid` session cookie is kept in memory (one session per
-  page load), and no replay sampling decision is kept;
-- **session replay does not record**, even with `telemetry.replay = True`:
-  replay records a person, which needs consent;
-- the ids an earlier page load stored under the old default are erased at
-  startup.
+1. **No visitor id and no visitor→user join.** `initBrowserTelemetry` no
+   longer creates, stores or stamps `visitor.id`, no longer captures
+   `rid`/`utm_*` into storage, never emits `user_identified`, and
+   `withAttribution(url)` returns the URL unchanged. A funnel or dashboard
+   that joined anonymous visits to users through `user_identified` /
+   `visitor.id` stops getting new rows. (Campaign source still arrives
+   without storage: the first `page_viewed` of a page load carries the URL's
+   `utm_*`, `ref` and referrer host.)
+2. **The first page load after upgrading erases what v1.3.0 stored.**
+   Starting below `full`, the runtime deletes `forge.visitor_id`,
+   `forge.attribution`, `forge.identified_user`, `forge.auth.seen` and
+   `forge.rum.session` from localStorage, `forge.replay.sampled` from
+   sessionStorage, and the `__rum_sid` cookie. A returning visitor gets no
+   continuity with their pre-upgrade id. The RUM session is then kept in
+   memory: one session per page load.
+3. **Session replay records only in `full`.** `replay: true` and KCL
+   `telemetry = forge.BrowserTelemetry {replay = True}` (OTEL_REPLAY) record
+   nothing unless the mode is `full` AND the app called
+   `grantAnalyticsConsent()` before telemetry started (consent granted later
+   starts replay on the next page load). This includes `forge env up dev`.
 
-Product events, page views and the signed-in user's id still flow, so the
-console's counts keep working: the platform's ingest edge counts anonymous
-visitors. `ANALYTICS_MODE = "aggregate"` makes browser events strictly
-anonymous (no user id even when signed in); `"off"` stops product analytics. Under GPC / DNT a browser's events now carry **no user
-id** either. Before v1.4.0 the runtime created a persistent visitor id and the
-session cookie with no consent at all; this reduces what is stored, never
-increases it. No API changed signature, and server events are not affected.
+Also new: under GPC / Do Not Track a browser's events carry **no user id**
+(not even from `setTelemetryUser` / `identifyUser`), and `ANALYTICS_MODE =
+"aggregate"` makes browser events strictly anonymous.
 
 ### What to do
 
-Nothing, if cookieless analytics are what you want (no visitor id, no replay
-without consent).
+Nothing, if cookieless analytics without replay are what you want.
 
-To keep the persistent visitor id, multi-day campaign attribution and replay:
+To restore all three (persistent visitor id, `user_identified`, multi-day
+attribution, the session cookie and replay):
 
-1. Set the frontend's `runtime_config = {ANALYTICS_MODE = "full"}` in each
-   env's KCL that should have them.
-2. Call `grantAnalyticsConsent()` (from `@reliantlabs/forge-web-runtime`) on
-   every page load once your consent manager says yes, before
-   `initTelemetry()` runs if replay should start on that load; call
-   `revokeAnalyticsConsent()` when consent is withdrawn. An internal tool whose
-   users have agreed to recording grants at startup.
-3. Offer the person a way to object: `optOutOfAnalytics()` stops product
-   events from that browser and is remembered.
+1. Raise the frontend's mode to `full` in each env's KCL that should have
+   them:
 
-Hand-written callers: `initBrowserTelemetry({ attribution: true })` keeps its
-old meaning (mode `full`, consent granted at start) and `{ attribution: false }`
-plus `enableAttribution()` keeps working; both are deprecated in favour of
-`analytics: "full"` plus `grantAnalyticsConsent()`. A caller that passed
-neither now gets the cookieless default.
+   ```kcl
+   telemetry = forge.BrowserTelemetry {
+       replay = _session_replay                     # as before
+       analytics = forge.Analytics {mode = "full"}
+   }
+   ```
 
-Then reload a page of the frontend and check, in the browser's devtools, that
-Application → Cookies and Local/Session Storage hold nothing of forge's (in
-`full`, after `grantAnalyticsConsent()`: `__rum_sid` and `forge.visitor_id`).
+   or, equivalently, `runtime_config = {ANALYTICS_MODE = "full"}` on the
+   frontend.
+2. Grant consent in the app on every page load, BEFORE `initTelemetry()` runs
+   (so replay starts on that load): with a consent manager, once it says yes;
+   for an internal tool whose users agreed to recording, unconditionally:
+
+   ```ts
+   import { grantAnalyticsConsent } from "@reliantlabs/forge-web-runtime";
+
+   grantAnalyticsConsent();   // then initTelemetry(), as providers.tsx / main.tsx already call it
+   ```
+
+   Call `revokeAnalyticsConsent()` when consent is withdrawn (it erases what
+   `full` stored), and offer `optOutOfAnalytics()` to a person who objects.
+3. Hand-written callers of `initBrowserTelemetry`: pass `analytics: "full"`
+   and call `grantAnalyticsConsent()`, or keep passing `attribution: true`,
+   which still means exactly that (mode `full`, consent granted at start).
+   `{ attribution: false }` plus `enableAttribution()` also keeps working.
+   Both spellings are deprecated in favour of `analytics` +
+   `grantAnalyticsConsent()`.
+
+Then reload a page of the frontend and check, in the browser's devtools,
+Application → Cookies and Local/Session Storage: below `full` nothing of
+forge's is there; in `full` after `grantAnalyticsConsent()`, `__rum_sid` and
+`forge.visitor_id` are, and a replay records.

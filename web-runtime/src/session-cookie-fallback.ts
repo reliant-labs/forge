@@ -169,6 +169,14 @@ export interface RumSessionStore {
 export function installRumSessionStore(
   doc: Document,
   now: () => number = Date.now,
+  options?: {
+    /**
+     * Keep a session an earlier page load left on the device (the caller
+     * moves the store there at once, in the `full` tier): it is not erased,
+     * so a reload continues the session instead of starting a new one.
+     */
+    keepDeviceSession?: boolean;
+  },
 ): RumSessionStore | null {
   try {
     const native = findCookieDescriptor(doc);
@@ -191,7 +199,10 @@ export function installRumSessionStore(
     // The store the accessor reads in "memory" and "storage".
     const held = () => (backend === "storage" && device ? device : memory);
 
-    if (nativeSessionValue(jar.cookie) !== null) {
+    if (
+      !options?.keepDeviceSession &&
+      nativeSessionValue(jar.cookie) !== null
+    ) {
       jar.cookie = `${RUM_SESSION_COOKIE}=; path=/; max-age=0`;
     }
     Object.defineProperty(doc, "cookie", {

@@ -628,14 +628,6 @@ func pathClean(s string) string {
 	return path.Clean(s)
 }
 
-func importNames(imps []Import) string {
-	names := make([]string, 0, len(imps))
-	for _, i := range imps {
-		names = append(names, i.Name)
-	}
-	return strings.Join(names, ", ")
-}
-
 // readForgePin reads forge_version from the forge.yaml at exactly dir (no
 // walking up: a module cache directory's ancestors are not the project).
 // isForge is false when there is no forge.yaml.

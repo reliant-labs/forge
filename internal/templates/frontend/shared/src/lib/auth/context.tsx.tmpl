@@ -95,6 +95,16 @@ import { fetchIdentity, signOut as apiSignOut, type Identity } from "./native-lo
 import { createSessionAuthProvider, isMockMode } from "./session-provider";
 import { AuthContext, type AuthContextValue } from "./use-auth";{{end}}
 
+{{- if ne .Platform "react-native"}}
+// The runtime config's IDENTIFY_USER (config.js, window.__FORGE_CONFIG__):
+// anything but "false" lets the signed-in user be named to telemetry.
+function identifyUserAllowed(): boolean {
+  if (typeof window === "undefined") return false;
+  const cfg = (window as unknown as { __FORGE_CONFIG__?: Record<string, unknown> }).__FORGE_CONFIG__;
+  return cfg?.IDENTIFY_USER !== "false";
+}
+
+{{- end}}
 export function AuthContextProvider({ children }: { children: ReactNode }) {
   const [identity, setIdentity] = useState<Identity>({ authenticated: false });
   const [isLoading, setIsLoading] = useState(true);
@@ -166,9 +176,16 @@ export function AuthContextProvider({ children }: { children: ReactNode }) {
   // subject to every span and replay (the Sessions view, `forge obs sessions
   // --user`) and sends one daily `auth_signed_in {kind: "resumed"}`. The
   // server already counted the sign-in itself; this joins sessions to users.
-  // Not in mock mode, whose user is a fixture.
+  // Not in mock mode, whose user is a fixture, and not when the runtime
+  // config says IDENTIFY_USER = "false" (telemetry.identify_user = False),
+  // which turns off this path as it does otel_gen.ts's session watcher: then
+  // any id attached earlier is cleared and no auth event is sent.
   useEffect(() => {
     if (mockSession || isLoading) return;
+    if (!identifyUserAllowed()) {
+      identifyUser(null);
+      return;
+    }
     identifyUser(identity.authenticated ? (identity.subject ?? null) : null);
   }, [mockSession, isLoading, identity.authenticated, identity.subject]);
 

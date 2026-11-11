@@ -98,7 +98,7 @@ Needs the local ClickStack running (` + "`forge env up`" + `).`,
 	f.StringVar(&o.service, "service", "", "service.name to export (default: the only service that sent profiles)")
 	f.StringVar(&o.sampleType, "type", "cpu", "sample type: cpu, alloc_space, inuse_space, alloc_objects, inuse_objects, goroutine")
 	f.StringVar(&o.env, "env", "", "only samples from this deployment.environment.name")
-	f.DurationVar(&o.since, "since", time.Hour, "how far back to read (ignored with --from)")
+	obsDurationVar(f, &o.since, "since", time.Hour, "how far back to read (ignored with --from)")
 	f.StringVar(&o.from, "from", "", "range start, RFC 3339")
 	f.StringVar(&o.to, "to", "", "range end, RFC 3339 (default now)")
 	f.StringVar(&o.trace, "trace", "", "export only samples linked to this trace id (raw tier, last 24h)")

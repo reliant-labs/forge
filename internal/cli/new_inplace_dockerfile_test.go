@@ -55,9 +55,14 @@ func TestProjectMemoryForAnAdoptedApp(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte("name: realworld\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Without workloads it is not yet anything forge can tell apart.
-	if out, err := RenderProjectMemory(root); err != nil || strings.Contains(string(out), "adopted app") {
-		t.Fatalf("a bare forge.yaml read as an adopted app (%v)", err)
+	// Without workloads it is an adopted project that uses nothing of forge
+	// yet: never the Go guide, never an app forge deploys.
+	bare, err := RenderProjectMemory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := string(bare); strings.Contains(b, "adopted app") || strings.Contains(b, "This is a Go project") || !strings.Contains(b, "adopted project") {
+		t.Fatalf("a bare forge.yaml in a Node app must read as an adopted project, not the Go guide or a deployed app:\n%s", b)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "deploy", "kcl"), 0o755); err != nil {
 		t.Fatal(err)

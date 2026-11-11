@@ -7,16 +7,13 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // RenderProjectMemory reads forge.yaml at projectRoot, renders the
-// project memory template with the project name + invoking CLI name —
-// as a static site's memory for a site (no go.mod, the app at the root) —
-// and returns
-// the bytes. Used by out-of-process consumers (the reliant
+// project memory template for the project as it is — its name, the invoking
+// CLI name, and which of forge's pieces and which of its own commands it
+// uses (projectMemoryData) — and returns the bytes. Used by out-of-process consumers (the reliant
 // CLI) to inject framework context in-memory rather than reading a
 // possibly-stale on-disk reliant.md.
 //
@@ -38,8 +35,7 @@ func RenderProjectMemory(projectRoot string) ([]byte, error) {
 	// Deliberately avoid LoadProject here so reliant doesn't transitively
 	// reject projects with config issues that don't affect memory.
 	var head struct {
-		Name       string `yaml:"name"`
-		ModulePath string `yaml:"module_path"`
+		Name string `yaml:"name"`
 	}
 	if err := yaml.Unmarshal(data, &head); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", cfgPath, err)
@@ -47,18 +43,12 @@ func RenderProjectMemory(projectRoot string) ([]byte, error) {
 	if head.Name == "" {
 		return nil, fmt.Errorf("%s: missing required field `name`", cfgPath)
 	}
-	// A static site — no Go module, a Vite or Next.js app at the root —
-	// gets the frontend-only memory. The same shape test the frontend
-	// inventory (config.DiscoverRootFrontend) and the scaffolds use, read
-	// straight off the tree.
-	_, site := config.DiscoverRootFrontend(projectRoot)
-	// An adopted app (the `adopt` skill) — workloads declared in
-	// deploy/kcl/workloads.k, no Go module, no module_path, no root
-	// frontend — gets the any-language memory: the Go one would send an
-	// agent after handlers and protos this project does not have.
-	container := !site && head.ModulePath == "" &&
-		!fileExists(filepath.Join(projectRoot, "go.mod")) &&
-		fileExists(filepath.Join(projectRoot, "deploy", "kcl", "workloads.k"))
-	tmplData := generator.ProjectMemoryData{Name: head.Name, CLI: Name(), Site: site, Container: container}
+	// The guide describes the project as it is: a static site gets the
+	// frontend-only memory, an adopted app one composed of the forge pieces
+	// it uses, and a forge Go service the Go guide (projectMemoryData).
+	tmplData, err := projectMemoryData(projectRoot, head.Name)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", projectRoot, err)
+	}
 	return templates.ProjectTemplates().Render("reliant.md.tmpl", tmplData)
 }

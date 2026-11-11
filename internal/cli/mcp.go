@@ -4,13 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
+	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 
@@ -113,10 +117,111 @@ func runMCP(ctx context.Context, in io.Reader, protocolOut *os.File) error {
 	}
 	srv := newMCPServer(r)
 	fmt.Fprintf(os.Stderr, "forge mcp: serving on stdio (project %s)\n", r.defaultDir)
-	return srv.Run(ctx, &mcp.IOTransport{
+	return srv.Run(ctx, newDrainingTransport(&mcp.IOTransport{
 		Reader: io.NopCloser(in),
 		Writer: nopWriteCloser{protocolOut},
-	})
+	}, maxMCPEOFDrain))
+}
+
+// maxMCPEOFDrain bounds how long the server keeps answering requests it has
+// already read once stdin has closed. Tools have no deadline of their own (a
+// deploy waits on its rollout), so this is the cap that keeps a stuck call
+// from holding the process open forever.
+const maxMCPEOFDrain = 10 * time.Minute
+
+// drainingTransport makes stdin EOF a graceful end of input instead of an
+// abort. The SDK's read loop answers EOF by cancelling every request still in
+// flight and refusing to write their responses, so a client that pipes
+// initialize, initialized and tools/list and closes stdin got no output at
+// all. Here EOF is held back until every call already read has been answered.
+type drainingTransport struct {
+	mcp.Transport
+	maxDrain time.Duration
+}
+
+func newDrainingTransport(inner mcp.Transport, maxDrain time.Duration) mcp.Transport {
+	return &drainingTransport{Transport: inner, maxDrain: maxDrain}
+}
+
+func (t *drainingTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	conn, err := t.Transport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &drainingConn{Connection: conn, maxDrain: t.maxDrain, idle: make(chan struct{}), closed: make(chan struct{})}, nil
+}
+
+type drainingConn struct {
+	mcp.Connection
+	maxDrain time.Duration
+
+	mu      sync.Mutex
+	pending int           // calls read whose response has not been written
+	idle    chan struct{} // closed-and-replaced each time pending reaches 0
+
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func (c *drainingConn) Read(ctx context.Context) (jsonrpc.Message, error) {
+	msg, err := c.Connection.Read(ctx)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			c.drain(ctx)
+		}
+		return nil, err
+	}
+	if req, ok := msg.(*jsonrpc.Request); ok && req.IsCall() {
+		c.mu.Lock()
+		c.pending++
+		c.mu.Unlock()
+	}
+	return msg, nil
+}
+
+func (c *drainingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
+	err := c.Connection.Write(ctx, msg)
+	if _, ok := msg.(*jsonrpc.Response); ok {
+		c.mu.Lock()
+		if c.pending > 0 {
+			c.pending--
+		}
+		if c.pending == 0 {
+			close(c.idle)
+			c.idle = make(chan struct{})
+		}
+		c.mu.Unlock()
+	}
+	return err
+}
+
+func (c *drainingConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return c.Connection.Close()
+}
+
+// drain blocks until every call read so far has been answered, the bound
+// passes, the context ends or the connection is closed.
+func (c *drainingConn) drain(ctx context.Context) {
+	timer := time.NewTimer(c.maxDrain)
+	defer timer.Stop()
+	for {
+		c.mu.Lock()
+		pending, idle := c.pending, c.idle
+		c.mu.Unlock()
+		if pending == 0 {
+			return
+		}
+		select {
+		case <-idle:
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		case <-c.closed:
+			return
+		}
+	}
 }
 
 type nopWriteCloser struct{ io.Writer }

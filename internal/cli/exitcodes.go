@@ -190,6 +190,14 @@ const (
 	// reasonHealthGatePending: it runs there, and its verdict is not in yet.
 	// exitRefused: the one health-gate refusal waiting fixes.
 	reasonHealthGatePending = "health_gate_pending"
+	// reasonBelowRollbackFloor: the target fails one of the env's active
+	// rollback floors — cut before an order floor's release, or missing a
+	// declaration a declared floor requires. exitWrong: we looked, and this
+	// release must not run here. Waiting fixes nothing and nobody moved
+	// anything (so neither 3 nor 4); the remedy is to roll forward, or to
+	// lower or lift the floor on purpose. A forge that predates the reason
+	// maps it to 1 through the default branch, so old and new CLIs agree.
+	reasonBelowRollbackFloor = "below_rollback_floor"
 )
 
 // exitCodeForRefusal maps a refusal REASON to its exit code — the one table
@@ -215,7 +223,7 @@ func exitCodeForRefusal(reason string) int {
 	case reasonRolloutInFlight, reasonEnvironmentPinned, reasonPlanUnacknowledged,
 		reasonHealthGateUnproven, reasonHealthGatePending:
 		return exitRefused
-	case reasonBundleMissing, reasonHealthGateRegressed:
+	case reasonBundleMissing, reasonHealthGateRegressed, reasonBelowRollbackFloor:
 		return exitWrong
 	default:
 		return exitWrong

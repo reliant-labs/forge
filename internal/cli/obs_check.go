@@ -686,7 +686,11 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 			if s.VersionShare != nil {
 				share = fmt.Sprintf("%.0f%%", *s.VersionShare*100)
 			}
-			rows[i] = []string{s.Service,
+			name := s.Service
+			if s.Signal == releasehealth.SignalIngress || s.Signal == releasehealth.SignalBrowser {
+				name += " (" + s.Signal + ")" // judged without server spans of its own
+			}
+			rows[i] = []string{name,
 				fmt.Sprintf("%d -> %d", s.Before.Requests, s.After.Requests),
 				fmt.Sprintf("%.1f%% -> %.1f%%", s.Before.ErrorRate*100, s.After.ErrorRate*100),
 				fmt.Sprintf("%.0fms -> %.0fms", s.Before.P95Ms, s.After.P95Ms), share}

@@ -12,8 +12,10 @@ import (
 // openObsCloud builds the cloud backend for env: the control plane the env
 // declares, the caller's credential (flag, env var, login, or the host's
 // credential helper; never a prompt), and the org and environment the reads
-// are bound to. A read the credential lacks a scope for (obs:read, obs:triage)
-// is elevated by the client itself, once, for the person behind it.
+// are bound to. The backend declares the scope each of its procedures needs
+// (obs:read, obs:triage), so the client elevates a narrow login or helper
+// credential for it, for the person behind it, before the first read rather
+// than after a refusal.
 //
 // The endpoint and credential env var come from the env's stamped target
 // (obs_target.go), so nothing here renders KCL when the declaration is
@@ -32,6 +34,7 @@ func openObsCloud(ctx context.Context, env string) (obsbackend.Cloud, error) {
 		return obsbackend.Cloud{}, obsbackend.Undetermined("env %s: cannot reach its control plane", env).Cause(err)
 	}
 	client := cloud.NewClient(ep, cred)
+	obsbackend.DeclareCloudScopes(client)
 	org, err := cloud.ResolveOrganization(ctx, client)
 	if err != nil {
 		return obsbackend.Cloud{}, obsbackend.MapCloudError(err)

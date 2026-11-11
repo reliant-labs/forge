@@ -16,6 +16,9 @@ import { FormFieldContext } from "./form_field_context";
  * <FormField>, Select auto-picks-up the FormField's generated id so a
  * sibling <Label> can wire `htmlFor` to it without the caller writing
  * any id/htmlFor boilerplate.
+ *
+ * It is drawn as the library's one field (see input.tsx): same radius,
+ * border, fill, focus ring and heights as Input, so the two sit in one row.
  */
 export type SelectSize = "sm" | "md" | "lg";
 
@@ -35,7 +38,7 @@ export interface SelectProps extends Omit<React.SelectHTMLAttributes<HTMLSelectE
 }
 
 const sizeStyles: Record<SelectSize, string> = {
-  sm: "h-8 pl-2.5 pr-8 text-xs",
+  sm: "h-8 pl-2.5 pr-8 text-sm",
   md: "h-9 pl-3 pr-9 text-sm",
   lg: "h-12 pl-3.5 pr-10 text-base",
 };
@@ -50,11 +53,12 @@ const Select = React.forwardRef<HTMLSelectElement, SelectProps>(function Select(
 
   const composed = [
     "block w-full appearance-none rounded-md border bg-surface",
-    "focus:outline-none focus:ring-1",
+    "text-ink transition-colors",
+    "focus:outline-none focus-visible:ring-2",
     "disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-ink-muted",
     invalid
-      ? "border-danger focus:border-danger focus:ring-danger"
-      : "border-border-strong focus:border-accent focus:ring-accent",
+      ? "border-danger focus-visible:ring-danger"
+      : "border-border-strong hover:border-ink-muted focus-visible:ring-accent",
     sizeStyles[selectSize],
     className ?? "",
   ]

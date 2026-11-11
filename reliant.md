@@ -307,9 +307,12 @@ reliant-labs/forge`; reliant #1923). Never review, label or merge as `reliant-01
   merge tier skips.
 - **Build (-trimpath) + go-licenses + govulncheck** — the release build flags, the second
   license opinion (Checks covers dependency licenses on every merge-queue entry),
-  `forge ci vuln-scan --go`, and the ClickHouse integration tests of `pkg/obsquery` and
-  `pkg/alerting` (`-tags=integration`, a throwaway container per test; under `CI` a
-  missing docker fails them, `testdocker.Unavailable`). `internal/ciguard` fails a
+  `forge ci vuln-scan --go`, the ClickHouse integration tests of `pkg/obsquery` and
+  `pkg/alerting`, and every other package's integration tests (db squash, OpenBao with
+  envtest, docker builds, the scaffolded MinIO and ClickStack, pgstore, blobstore,
+  migratekit; `-tags=integration`, throwaway containers; under `CI` a missing docker
+  fails them, `testdocker.Unavailable`). A step that narrows with `-run` must select
+  every integration test of the packages it names. `internal/ciguard` fails a
   package with integration-tagged tests that no push-to-main step runs, unless
   `integrationNotInCI` says why.
 - **Windows** — native: build, vet, the `-short` tier of Unit + internal/cli, and a

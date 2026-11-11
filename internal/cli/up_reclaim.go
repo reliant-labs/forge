@@ -291,20 +291,14 @@ func hasMarkedAncestor(pid int, marked map[int]bool, f procFacts) bool {
 	return false
 }
 
-// killTreesAndWait SIGTERMs each pid's process tree, polls for exit up to a
-// bounded grace, then SIGKILLs any straggler. It WAITS, so the `up`/`run`
-// pre-flight that calls it knows the predecessor's ports are released before it
-// launches the replacement. No-op on an empty list.
-func killTreesAndWait(pids []int) error {
-	return killTreesAndWaitWithin(pids, treeStopGrace)
-}
-
-// treeStopGrace is how long killTreesAndWait waits between SIGTERM and
+// treeStopGrace is how long killTreesAndWaitWithin waits between SIGTERM and
 // SIGKILL, unless the stack recorded that it needs longer (stackTreeStop).
 const treeStopGrace = 8 * time.Second
 
-// killTreesAndWaitWithin is killTreesAndWait with the wait before SIGKILL
-// given.
+// killTreesAndWaitWithin SIGTERMs each pid's process tree, polls for exit up
+// to grace, then SIGKILLs any straggler. It WAITS, so the `up`/`run`
+// pre-flight that calls it knows the predecessor's ports are released before
+// it launches the replacement. No-op on an empty list.
 func killTreesAndWaitWithin(pids []int, grace time.Duration) error {
 	return killTreesAndWaitGraceWith(pids, grace, killProcessTree, processAlive)
 }

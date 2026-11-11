@@ -33,9 +33,9 @@ func newCloudIdentityCmd() *cobra.Command {
 Reads (status, users) need identity:read; every verb that changes a user
 (invite, set-roles, reset, lock, unlock, delete, revoke-sessions) and export
 need identity:manage and an org admin. Under Reliant, or after forge login, nothing
-extra is needed: when the control plane answers that the credential lacks one of
-those scopes, forge trades it for the scope on demand (an hour, and only while
-the person behind the session holds the grant), as deploy does for deploy:read.
+extra is needed: forge trades the credential for the scope a verb needs before
+calling it (an hour, and only while the person behind the session holds the
+grant), as obs does for obs:read.
 A --token or the token env var is used exactly as given and must carry the scope.
 The organization is resolved from the authenticated server, not a token claim or
 a flag. The environment must already exist in this project.
@@ -78,6 +78,7 @@ func (f *cloudIdentityFlags) target(ctx context.Context, env string) (cloudCalle
 		return nil, nil, err
 	}
 	client := cloud.NewClient(ep, cred)
+	declareIdentityScopes(client)
 	org, err := cloud.ResolveOrganization(ctx, client)
 	if err != nil {
 		return nil, nil, err
@@ -87,6 +88,19 @@ func (f *cloudIdentityFlags) target(ctx context.Context, env string) (cloudCalle
 		return nil, nil, err
 	}
 	return client, map[string]any{"orgId": org, "environmentId": id}, nil
+}
+
+// declareIdentityScopes tells the client which identity scope each procedure
+// needs, so a login or session credential is elevated for it before the call
+// instead of after a refusal. Neither scope is one a login carries. The
+// control plane's identity.scopeFor maps the read level (GetIdentityStatus,
+// ListUsers) to identity:read and manage, codes and exports (every other
+// procedure here) to identity:manage.
+func declareIdentityScopes(c *cloud.Client) {
+	c.DeclareScope("identity:read", procIdentityStatus, procIdentityUsers)
+	c.DeclareScope("identity:manage", procIdentityInvite, procIdentityExport,
+		procIdentitySetRoles, procIdentityResetPassword, procIdentityLockUser,
+		procIdentityUnlockUser, procIdentityDeleteUser, procIdentityRevokeSessions)
 }
 
 // Narrow proto3 JSON projections of controlplane.v1's identity messages.

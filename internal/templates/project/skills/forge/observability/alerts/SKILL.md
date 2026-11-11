@@ -109,7 +109,9 @@ Check: `curl -s localhost:<alertmanager port>/api/v2/alerts` shows what is activ
 
 ## The built-in alerts
 
-`forge generate` writes `deploy/observability/alert-defaults_gen.json` (the project and frontend the defaults are derived from, and the catalog) and each service's entry in `deploy/observability/spec/service-<svc>_gen.json` — the same input as the dashboards, one file per service so parallel branches never conflict. `forge env shape <env>` renders them per env and records them with `source: default`. Every built-in has an id; **one `forge.Alerts.defaults` map tunes or disables all of them**, whichever signal they read.
+`forge generate` writes `deploy/observability/alert-defaults_gen.json` (the project and frontend the defaults are derived from, and the catalog) and each service's entry in `deploy/observability/spec/alert-service-<svc>_gen.json` — the same input as the dashboards, one file per service so parallel branches never conflict. `forge env shape <env>` renders them per env and records them with `source: default`. Every built-in has an id; **one `forge.Alerts.defaults` map tunes or disables all of them**, whichever signal they read.
+
+**An env that runs another forge project's workloads watches that project's services too.** Each non-tool workload built from another forge project's source (a ShellBuild `cwd` or `source`, a DockerBuild build context, a RemoteBuild `source`) adds that project's `alert-service-*` parts. They are read at the revision this project pins: the GitSource ref, or the go.mod require (go.work and replace honoured, as for a `[forge_projects]` import), else the checkout. Each project owns its own services' alerts, and none keeps a copy of another's. A service both declare is watched once, and this env's `defaults` tune it. If the source can't be read, `env shape` warns and omits it.
 
 | id | alert | signal | fires when (default) | disable |
 |---|---|---|---|---|

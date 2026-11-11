@@ -224,6 +224,15 @@ func IsCIMapperPath(relPath string) bool {
 	return false
 }
 
+// CIWorkflowAbsenceReasonFor is CIWorkflowAbsenceReason for a project whose
+// forge.yaml may switch the workflow off (`ci.workflows`).
+func CIWorkflowAbsenceReasonFor(cfg *config.ProjectConfig, relPath string) string {
+	if name := CIWorkflowName(relPath); cfg != nil && name != "" && !cfg.CI.WorkflowEnabled(name) {
+		return fmt.Sprintf("forge.yaml switches it off (ci.workflows: {%s: false}); delete that key to have forge scaffold it", name)
+	}
+	return CIWorkflowAbsenceReason(relPath)
+}
+
 // CIWorkflowAbsenceReason explains why a project has no file at a CI-mapper
 // path, in the terms of the switch that would give it one.
 func CIWorkflowAbsenceReason(relPath string) string {

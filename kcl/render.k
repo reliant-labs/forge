@@ -2676,14 +2676,15 @@ _frontend_violations = lambda f: Frontend -> [str] {
 }
 
 # A frontend's runtime_config as declared, with the browser opt-out applied:
-# when browser telemetry is off the SDK's ingest path is forced to "off", and
-# any OTEL_REPLAY to "false", over anything the author set, because the
-# opt-out is the author's explicit word.
+# when browser telemetry is off the SDK's ingest path is forced to "off", any
+# OTEL_REPLAY to "false" and any ANALYTICS_MODE to "off", over anything the
+# author set, because the opt-out is the author's explicit word.
 _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
     # What forge derives from the frontend's own declarations comes FIRST, so
     # an author's runtime_config entry for the same key always wins.
     _merged = _telemetry_runtime_config(f, bundle) | _env_scoped_runtime_config(f) | f.runtime_config
-    (_merged | {OTEL_ENDPOINT = "off"} | ({OTEL_REPLAY = "false"} if "OTEL_REPLAY" in _merged else {})) \
+    (_merged | {OTEL_ENDPOINT = "off"} | ({OTEL_REPLAY = "false"} if "OTEL_REPLAY" in _merged else {}) \
+        | ({ANALYTICS_MODE = "off"} if "ANALYTICS_MODE" in _merged else {})) \
         if _obs_browser_off(bundle) else _merged
 }
 
@@ -2761,6 +2762,9 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        it is this frontend's choice in this env, which is
 #                        what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
+#   ANALYTICS_MODE       telemetry.analytics.mode, only when it is not the
+#                        default "identified" and browser telemetry is not
+#                        off; unset means identified
 _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     _t = f.telemetry
     assert not _frontend_replay_on(f) or not _frontend_hosted(f) or bundle.observability, \
@@ -2768,7 +2772,8 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     ({OTEL_ENDPOINT = _HOSTED_OTEL_PATH} if _frontend_hosted(f) and not _otel_endpoint_declared(f) and not _obs_browser_off(bundle) else {}) \
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
         | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) and not _obs_browser_off(bundle) else {}) \
-        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {})
+        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
+        | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "identified" and not _obs_browser_off(bundle) else {})
 }
 
 # The framework's build/dev variable for the browser ingest path.
@@ -3037,6 +3042,34 @@ _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
             "window": f.window
             "by": f.by
         } for f in t.funnels]
+    } | ({"analytics": _render_analytics(t.analytics)} if t.analytics else {})
+}
+
+# Render an Analytics to its stable dict form. `activation` and
+# `activation_window` render null when unset, so forge generate, which merges
+# every frontend's declaration into the project's dashboards, can tell a
+# declaration from a default (the defaults are the dashboards'). An unset
+# `analytics` is omitted from the telemetry (above), so a frontend that
+# declares none renders exactly as it did before the field. Channel
+# conditions are lowercased: they are matched case-insensitively.
+_render_analytics = lambda a: Analytics -> any {
+    {
+        "mode": a.mode
+        "goals": [{
+            "id": g.id
+            "title": g.title if g.title else None
+            "event": g.event if g.event else None
+            "route": g.route if g.route else None
+        } for g in a.goals]
+        "activation": a.activation if a.activation else None
+        "activation_window": a.activation_window if a.activation_window else None
+        "channels": [{
+            "host": c.host.lower() if c.host else None
+            "source": c.source.lower() if c.source else None
+            "medium": c.medium.lower() if c.medium else None
+            "channel": c.channel
+        } for c in a.channels]
+        "dashboards": a.dashboards
     }
 }
 

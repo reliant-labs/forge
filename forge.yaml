@@ -96,6 +96,7 @@ contracts:
     - "internal/linter/forgeconv" # Same — convention analyzer over proto files; entry point is exported func.
     - "internal/linter/scaffolds" # Same — scaffold-ownership analyzer; entry point is exported funcs (LintRoot/Result).
     - "internal/cli" # Cobra command boundary; CLI is the seam, not internals.
+    - "internal/cliutil" # Terminal presentation for the CLI (user errors, heartbeats, the step runner); a concrete StepRunner, so a contract.go would be one-implementation indirection.
     - "internal/cutjournal" # A value type (the cut journal) and its OCI codec; the registry seam is the consumer-side Target / content.Resolver, as for internal/bundle.
     - "internal/database" # Multi-interface contract.go (SchemaIntrospector + MigrationService + ProtoGenerator); used by the forge CLI, not bootstrap codegen.
     - "internal/cigate" # Concrete gate runner; its seams (Exec, Resolver.Probe/Install) are injectable fields, so a one-implementation interface would add indirection and no substitution point.

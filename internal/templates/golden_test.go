@@ -354,6 +354,22 @@ func TestGoldenSnapshots(t *testing.T) {
 				})
 			},
 		},
+		// The shared base every deployed env binds through
+		// (deploy/kcl/base/env.k): with a frontend and a database, and bare.
+		{
+			name: "env_base.k",
+			render: func(t *testing.T) []byte {
+				return renderDeployTemplate(t, "kcl/base/env.k.tmpl", EnvTemplateData{
+					ProjectName: "shop", Roots: true, HasFrontend: true, FrontendName: "web",
+				})
+			},
+		},
+		{
+			name: "env_base_bare.k",
+			render: func(t *testing.T) []byte {
+				return renderDeployTemplate(t, "kcl/base/env.k.tmpl", EnvTemplateData{ProjectName: "shop"})
+			},
+		},
 		{
 			name: "env_cloud_staging_bare.k",
 			render: func(t *testing.T) []byte {

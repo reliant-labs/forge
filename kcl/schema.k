@@ -3736,6 +3736,19 @@ schema WorkloadURL(tiers.WorkloadURLRef):
     check:
         name == workload, "WorkloadURL: set `workload` only; `name` is derived from it"
 
+# A funnel or activation window ("30m", "7d") in seconds. Only call it on a
+# value that matched _WINDOW_RE.
+_WINDOW_RE = r"^[1-9][0-9]{0,3}[smhd]$"
+_window_seconds = lambda w: str -> int {
+    int(w[:-1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[w[-1]]
+}
+
+# A product event name as an analytics declaration names it: what `track()`
+# and observe.Track accept, and what the product_events table stores.
+_ANALYTICS_EVENT_RE = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+_ANALYTICS_ID_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+_ANALYTICS_MODES = ["off", "aggregate", "identified", "full"]
+
 schema Funnel:
     """A product funnel: the ordered events a user journey passes through.
 
@@ -3748,9 +3761,16 @@ schema Funnel:
         }
 
     `steps` are the event names the app passes to `track()` (forge-web-runtime),
-    in order. forge renders each declared funnel as one `funnel` panel on the
-    project's frontend dashboard: how many journeys reached each step within
-    `window` of their first one, counted per browser `session` or per `user`.
+    in order. A funnel counted per browser `session` or per `user` is one
+    `funnel` panel on the project's frontend dashboard: how many journeys
+    reached each step within `window` of their first one.
+
+    `by = "visitor"` and `by = "person"` count over the hosted product_events
+    table instead, so they belong to the built-in Product dashboard, not the
+    frontend one: `visitor` is the cookieless daily visitor (one visitor per
+    UTC day, so its `window` is at most a day), and `person` is the signed-in
+    user, or the anonymous visitor of the same day that one sign-in links to
+    them (forge.Analytics).
     """
     # The panel's stable id (the panel is `funnel-<id>`).
     id: str
@@ -3761,7 +3781,8 @@ schema Funnel:
     # How long a journey may take from its first step to its last: a number
     # and a unit of s, m, h or d ("30m", "1h", "7d").
     window: str = "1h"
-    # What identifies one journey: the browser "session" or the "user".
+    # What identifies one journey: the browser "session", the "user", the
+    # cookieless daily "visitor", or the "person" (forge.Analytics).
     by: str = "session"
 
     check:
@@ -3775,8 +3796,152 @@ schema Funnel:
             "Funnel '${id}'.steps repeats a step: each event name may appear once"
         regex.match(window, r"^[1-9][0-9]{0,3}[smhd]$"), \
             "Funnel '${id}'.window '${window}' is not a window: a number and a unit of s, m, h or d, like \"1h\" or \"7d\""
-        by in ["session", "user"], \
-            "Funnel '${id}'.by must be 'session' | 'user'"
+        by in ["session", "user", "visitor", "person"], \
+            "Funnel '${id}'.by must be 'session' | 'user' | 'visitor' | 'person'"
+        by != "visitor" or not regex.match(window, _WINDOW_RE) or _window_seconds(window) <= 86400, \
+            "Funnel '${id}' is counted by visitor, whose id changes every UTC day, so its window '${window}' must be at most 1d; count by \"person\" to follow a signed-in user across days"
+
+schema Goal:
+    """A conversion the built-in Product dashboard counts: one product event,
+    or a route a visitor reaches. Exactly one of `event` and `route`.
+
+        forge.Goal {id = "checkout", event = "purchase"}
+        forge.Goal {id = "pricing", title = "Saw pricing", route = "/pricing"}
+
+    A goal is not an event: it names one. Its row on the dashboard shows the
+    persons who reached it, the total, and the conversion rate (goal persons
+    over visitors). A route goal matches the automatic `page_viewed` event's
+    normalised `route`, where an id segment reads `:id` ("/orders/:id").
+    """
+    # The goal's stable id, unique within a frontend's analytics.
+    id: str
+    # The row's label. Unset: the id.
+    title?: str
+    # The product event that completes the goal.
+    event?: str
+    # The page route that completes the goal: a path starting with "/".
+    route?: str
+
+    check:
+        regex.match(id, _ANALYTICS_ID_RE), \
+            "Goal.id '${id}' is not a valid id: up to 64 letters, digits, '-', '_' and '.', starting with a letter or digit"
+        bool(event) != bool(route), \
+            "Goal '${id}' must set exactly one of `event` (a product event name) and `route` (a page path)"
+        not event or regex.match(event, _ANALYTICS_EVENT_RE), \
+            "Goal '${id}'.event '${event}' is not a product event name: up to 128 letters, digits, '_', '.', ':' and '-', starting with a letter or digit"
+        not route or (route.startswith("/") and len(route) <= 256 and not regex.match(route, r".*[?#\s].*")), \
+            "Goal '${id}'.route '${route}' is not a route: a path starting with \"/\", at most 256 characters, with no query, fragment or whitespace"
+
+schema Channel:
+    """A custom acquisition channel rule. A visit whose first page view
+    matches every condition the rule sets is credited to `channel`.
+
+        forge.Channel {host = "news.ycombinator.com", channel = "Organic social"}
+        forge.Channel {medium = "podcast", channel = "Podcasts"}
+        forge.Channel {source = "partner-x", medium = "referral", channel = "Partners"}
+
+    A project's rules are tried in order AHEAD of forge's built-in channel
+    table (Paid search, Paid social, Display, Email, Affiliate, AI assistants,
+    Organic social, Organic search, Other campaign, Direct, Referral), so the
+    first rule that matches wins and anything no rule matches falls through to
+    the built-in table. `channel` may be one of those names or a new one.
+    Every value is matched case-insensitively.
+    """
+    # The referrer host: matches that host and every subdomain of it.
+    host?: str
+    # The utm_source the visit arrived with.
+    source?: str
+    # The utm_medium the visit arrived with.
+    medium?: str
+    # The channel the visit is credited to.
+    channel: str
+
+    check:
+        bool(host) or bool(source) or bool(medium), \
+            "Channel '${channel}' sets no condition: set `host`, `source` or `medium`"
+        not host or regex.match(host, r"^[A-Za-z0-9]([A-Za-z0-9-]{0,62}\.)*[A-Za-z0-9-]{1,63}$") and len(host) <= 253, \
+            "Channel '${channel}'.host '${host}' is not a host name: no scheme, port or path (\"news.ycombinator.com\")"
+        not source or (source.strip() == source and len(source) <= 128), \
+            "Channel '${channel}'.source must be a utm_source value of at most 128 characters, with no surrounding whitespace"
+        not medium or (medium.strip() == medium and len(medium) <= 128), \
+            "Channel '${channel}'.medium must be a utm_medium value of at most 128 characters, with no surrounding whitespace"
+        channel.strip() != "" and channel.strip() == channel and len(channel) <= 64, \
+            "Channel.channel must be a non-empty name of at most 64 characters, with no surrounding whitespace"
+
+schema Analytics:
+    """Built-in product analytics for one frontend in one environment.
+
+        forge.Frontend {
+            name = "web"
+            telemetry = forge.BrowserTelemetry {
+                analytics = forge.Analytics {
+                    goals = [forge.Goal {id = "checkout", event = "purchase"}]
+                    activation = "order_created"
+                    channels = [forge.Channel {host = "news.ycombinator.com", channel = "Organic social"}]
+                }
+            }
+        }
+
+    Nothing here is required: a frontend that declares no `analytics` gets the
+    `identified` mode and the built-in dashboards. Declaring goals, an
+    activation event and channel rules adds to those dashboards; funnels stay
+    on `BrowserTelemetry.funnels` (`by = "visitor"` or `"person"` for the
+    dashboards' product funnels).
+
+    `mode` is the MOST the app allows a browser; a browser runs in the lowest
+    of it, the consent the app signalled, and its own privacy signals (GPC or
+    DNT always caps it at `aggregate`):
+
+      * "off"        — the browser sends no product events.
+      * "aggregate"  — strictly anonymous (an opt-down): nothing is stored on
+                       the device, a visitor is counted only by the
+                       platform's daily edge hash, and browser events carry
+                       no user id. GPC/DNT caps a browser here: it is
+                       counted, never identified.
+      * "identified" — the default. Cookieless as aggregate (nothing stored
+                       on the device), and a signed-in user's browser events
+                       carry their opaque user id.
+      * "full"       — as identified, and once the app calls
+                       grantAnalyticsConsent(), a persistent visitor id and
+                       multi-day attribution.
+
+    `mode` reaches the browser as ANALYTICS_MODE in the runtime config
+    document, so one build promotes across environments and each sets its
+    own. Server events (observe.Track, CRUD, sign-ins) are never gated by it.
+    """
+    # The most the app allows a browser: "off" | "aggregate" | "identified" |
+    # "full".
+    mode: str = "identified"
+    # Conversions the Product dashboard counts. A goal id is unique within
+    # the frontend's analytics.
+    goals: [Goal] = []
+    # The product event that marks a user activated. Unset: the user's first
+    # <entity>_created event, which generated CRUD emits on its own.
+    activation?: str
+    # How long after signing up a user has to activate: a number and a unit
+    # of s, m, h or d, at most 90d. Unset: 7d.
+    activation_window?: str
+    # Custom channel rules, tried in order ahead of the built-in table.
+    channels: [Channel] = []
+    # The built-in Overview, Users, Product and Acquisition dashboards. False
+    # drops them; collection still follows `mode`.
+    dashboards: bool = True
+
+    check:
+        mode in _ANALYTICS_MODES, \
+            "Analytics.mode '${mode}' must be 'off' | 'aggregate' | 'identified' | 'full'"
+        len(goals) <= 50, \
+            "Analytics.goals declares ${len(goals)} goals: at most 50"
+        len({g.id: True for g in goals}) == len(goals), \
+            "Analytics.goals declares a goal id twice: each goal needs its own id"
+        not activation or regex.match(activation, _ANALYTICS_EVENT_RE), \
+            "Analytics.activation '${activation}' is not a product event name: up to 128 letters, digits, '_', '.', ':' and '-', starting with a letter or digit"
+        not activation_window or (regex.match(activation_window, _WINDOW_RE) and _window_seconds(activation_window) <= 90 * 86400), \
+            "Analytics.activation_window '${activation_window}' is not a window of at most 90d: a number and a unit of s, m, h or d, like \"7d\""
+        len(channels) <= 100, \
+            "Analytics.channels declares ${len(channels)} rules: at most 100"
+        len({((c.host or "") + "|" + (c.source or "") + "|" + (c.medium or "")).lower(): True for c in channels}) == len(channels), \
+            "Analytics.channels repeats a rule's conditions: the second could never match, so drop it or change its conditions"
 
 schema FrontendErrors:
     """Which browser errors a frontend does not want as issues.
@@ -3814,10 +3979,11 @@ schema BrowserTelemetry:
             }
         }
 
-    `console_capture`, `replay` and `replay_sample_rate` reach the browser
-    through the runtime config document (config.js), so one build promotes
-    across environments and each environment sets its own. `replay` is the
-    per-frontend switch for session replay (masked, off by default).
+    `console_capture`, `replay`, `replay_sample_rate` and `analytics.mode`
+    reach the browser through the runtime config document (config.js), so one
+    build promotes across environments and each environment sets its own.
+    `replay` is the per-frontend switch for session replay (masked, off by
+    default).
     """
     # Ship `console.*` output as spans. False for an app whose console is
     # noisy or carries data that must not leave the browser.
@@ -3839,9 +4005,14 @@ schema BrowserTelemetry:
     sourcemaps: str = "publish"
     # Errors that are not issues.
     errors: FrontendErrors = FrontendErrors {}
-    # Product funnels rendered as `funnel` panels on the project's frontend
-    # dashboard. A funnel id is unique within a frontend.
+    # Product funnels. `session` and `user` funnels are `funnel` panels on the
+    # project's frontend dashboard; `visitor` and `person` funnels belong to
+    # the built-in Product dashboard. A funnel id is unique within a frontend.
     funnels: [Funnel] = []
+    # Built-in product analytics: the mode (ANALYTICS_MODE in the runtime
+    # config), goals, the activation event and channel rules. Unset is the
+    # `identified` mode with no declarations, and renders nothing.
+    analytics?: Analytics
     # The service.name the frontend's browser SDK reports. ONLY for a frontend
     # built from another repository (`source`): that repository's own
     # `forge generate` baked the name into src/lib/otel_gen.ts as
@@ -5989,7 +6160,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -6014,8 +6185,13 @@ schema ReleaseHealth:
     `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
     latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
     seen in this release with `new_issue_min_events` events), regressed_issue,
-    alert_firing (an alert opened after the promotion still fires) and
-    workload_restarts.
+    alert_firing (an alert opened after the promotion still fires),
+    workload_restarts, and, for a frontend that sends browser telemetry,
+    browser_errors (JavaScript errors per page view rose by more than
+    `max_error_rate_increase`), browser_failed_requests (the share of its
+    fetch/XHR requests that failed rose by as much) and browser_page_load (p95
+    page load grew by more than `max_p95_ratio`). The browser findings warn
+    unless listed in `fail_on`.
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.

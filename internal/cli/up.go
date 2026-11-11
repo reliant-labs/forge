@@ -1647,7 +1647,7 @@ func upPreflight(projectID, env string, e *KCLEntities, targets []string, fronte
 	// A teardown does not free ports synchronously, so a port still bound
 	// THIS instant is not yet evidence of anything.
 	//
-	// killTreesAndWait waits only on the tree ROOTS it signalled. The process
+	// killTreesAndWaitWithin waits only on the tree ROOTS it signalled. The process
 	// actually holding the port is usually a DESCENDANT — `go run` execs the
 	// binary it compiled, air re-execs the server — which is never in that
 	// list and so is never waited on. The final SIGKILL pass is not waited on
@@ -3090,7 +3090,7 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		if err != nil {
 			return fmt.Errorf("prepare the local Alertmanager: secret provider: %w", err)
 		}
-		la, err := prepareLocalAlerting(projectDir, env, entities, prov.All())
+		la, err := prepareLocalAlerting(ctx, projectDir, env, entities, prov.All())
 		if err != nil {
 			return fmt.Errorf("prepare the local Alertmanager: %w", err)
 		}

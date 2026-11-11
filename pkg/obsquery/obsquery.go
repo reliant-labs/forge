@@ -36,6 +36,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Per-RPC maximum time ranges.
@@ -395,10 +397,11 @@ func where(conds []string) string {
 // OperatorSource reports whether a reliant.source value marks Reliant operator
 // data: the platform's own telemetry, or what the platform measured about a
 // customer's workload and wrote into its tenant (gateway service-graph edges,
-// IngressSource ingress RED). Never billed.
+// IngressSource ingress RED, the release prober's release.ProbeSource
+// metrics). Never billed.
 func OperatorSource(source string) bool {
 	switch source {
-	case "daemon", "platform", "gateway", IngressSource:
+	case "daemon", "platform", "gateway", IngressSource, release.ProbeSource:
 		return true
 	}
 	return false

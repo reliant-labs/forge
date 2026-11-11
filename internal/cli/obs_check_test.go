@@ -415,8 +415,8 @@ func TestObsCheckGateJSONRoundTrip(t *testing.T) {
 
 // healthRunner answers a local check: the per-service RED statement is run
 // once per window (before, then after), then RED by endpoint per window
-// (answered with no rows, so latency is judged per service), and the issues
-// statement last.
+// (answered with no rows, so latency is judged per service), the issues
+// statement, and browser RED per window (no rows: no frontend).
 type healthRunner struct {
 	before, after, issues obsbackend.Result
 	ran                   []obsquery.Stmt
@@ -477,7 +477,12 @@ func TestObsCheckLocalOverScriptedRunner(t *testing.T) {
 		t.Errorf("suggested = %v", doc["suggested"])
 	}
 	// The sfp1 statement is parameterized: no literal from the request in SQL.
-	last := hr.ran[len(hr.ran)-1]
+	var last obsquery.Stmt
+	for _, st := range hr.ran {
+		if strings.Contains(st.SQL, "first_seen") {
+			last = st
+		}
+	}
 	if !strings.Contains(last.SQL, obsquery.ServerFingerprintSQL) || strings.Contains(last.SQL, "'dev'") || last.Params["env"] != "dev" {
 		t.Errorf("issues statement:\n%s\n%v", last.SQL, last.Params)
 	}

@@ -1,9 +1,37 @@
 ---
 name: ci/extending
-description: How to extend the scaffolded CI — add a check to the gate (ci.gate.extra_checks), add a job that needs its own runner, or add a parallel Tier-2 workflow (release, deploy previews, notifications, coverage upload, extra scanners). Use before adding a job to ci.yml or a new file under .github/workflows/.
+description: How to extend the scaffolded CI — add a check to the gate (ci.gate.extra_checks), add a job that needs its own runner, add a parallel Tier-2 workflow (release, deploy previews, notifications, coverage upload, extra scanners), or switch one of forge's workflows off when the repo has its own (ci.workflows). Use before adding a job to ci.yml or a new file under .github/workflows/.
 ---
 
 # Extending CI
+
+## Keeping your own workflow instead of forge's
+
+A repository adopting forge often already has a `deploy.yml` or `ci.yml`.
+Switch forge's workflow of that name off, one at a time:
+
+```yaml
+ci:
+  workflows:
+    deploy: false # the repo deploys with its own workflow
+    build-images: false
+    e2e: false
+    proto-breaking: false
+```
+
+The names are the files under `.github/workflows/` without `.yml` (`ci`,
+`build-images`, `deploy`, `release` — with its vendored forge-deploy action —
+`e2e`, `proto-breaking`), plus `dependabot`; any other key is a forge.yaml
+load error. A switched-off workflow is one forge never writes: not in
+`forge project new`, `forge generate` or `forge project rescaffold` (which
+says why), and the upgrade advisory stops offering it. `ci: false` still leaves
+`forge ci gate` planning from what ci.yml would run. `features: {ci: false}`
+turns every workflow off at once.
+
+Forge never overwrites a workflow either way — CI files are scaffold-once.
+When a file forge would scaffold already exists with no forge banner and no
+birth record (your own `deploy.yml`), forge leaves it alone and warns on every
+generate until forge.yaml says so: `ci.workflows: {deploy: false}`.
 
 ## Adding a custom workflow
 

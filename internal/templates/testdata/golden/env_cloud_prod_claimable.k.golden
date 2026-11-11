@@ -54,6 +54,10 @@ import forge.workloads as fw
 # What this project RUNS — declared once, shared by every env.
 import ..workloads as wl
 
+# How any env binds a workload or frontend — shared by every deployed env.
+# This file keeps only what is this env's own (deploy/kcl/base/env.k).
+import ..base.env as envbase
+
 # The users — declared once, shared by every env; only where they run differs.
 import ..identity as idn
 
@@ -62,8 +66,8 @@ import config_gen
 import .config as appcfg
 
 # The database. RETAIN (the default deletionPolicy): removing this
-# declaration never drops the data. Your own Postgres instead? Delete `_db`,
-# `databases` and the DATABASE_URL line in `_hosted`, then
+# declaration never drops the data. Your own Postgres instead? Delete `_db`
+# and `databases`, pass "" for the database in `_hosted`, then
 # `forge secret set --env prod DATABASE_URL`.
 _db = forge.ManagedDatabase {
     name = "shop"
@@ -73,31 +77,13 @@ _db = forge.ManagedDatabase {
     spec = {storageGiB = 1}
 }
 
-# This env's layer over a workload: the typed config projected into its env
-# (a credential only into the workloads that list it in `config_secrets`).
-# OTEL_SERVICE_NAME is not set here: forge.render gives every workload its
-# own name unless its env sets one.
-_configured = lambda w: fw.Workload -> fw.Workload {
-    w | {env = config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets) | w.env}
-}
-
 # ---------------------------------------------------------------------------
 # THE BINDINGS: where each workload runs in this env.
 # ---------------------------------------------------------------------------
 # There is no env-wide runtime: each line in `_workloads` names its binder,
-# and rebinding a workload is editing that one line.
+# and rebinding a workload is editing that one line. The binders are the
+# shared ones in deploy/kcl/base/env.k, given this env's values.
 
-# HOSTED: a Workload on the forge control plane. Its image is the declared
-# one minus the registry host: the platform pulls only from its own
-# registry, and forge composes that address (<registry>/<org>/shop/<name>)
-# from your credential. DATABASE_URL is the managed database's. The
-# hosted frontend calls the API on its OWN origin, at /_api (see
-# _hosted_frontend below), so sign-in's session cookie is first-party and
-# CORS is not involved. A service's CORS_ORIGINS (the frontend's URL, which
-# the platform allocates) and CORS_ALLOW_CREDENTIALS serve a frontend that
-# calls the API's own host instead — a literal API_URL — where the site and
-# the API are different origins: without them sign-in answers 200 and every
-# call after it 401s.
 # The claimable plan's largest shape (the control plane's published caps): what
 # an anonymous service or job may ask for, request and limit, no burst.
 # Its database allows 10 connections, three of them reserved for the
@@ -109,83 +95,47 @@ _claimable_resources = fw.Resources {
     memoryRequestBytes = forge.mib(128)
     memoryLimitBytes = forge.mib(128)
 }
+
+# HOSTED, on the forge control plane, reading `_db` (envbase.hosted).
 _hosted = lambda w: fw.Workload -> fw.Workload {
-    _c = _configured(w)
-    _c | {
-        image = w.image[w.image.rfind("/") + 1:] if w.image else w.image
-        env = _c.env \
-            | ({DATABASE_URL = forge.DatabaseRef {name = _db.name}} if "DATABASE_URL" in w.config_secrets else {}) \
-            | ({CORS_ORIGINS = forge.WorkloadURL {workload = "web"}, CORS_ALLOW_CREDENTIALS = "true"} if w.kind == "service" else {}) \
-            | ({DB_MAX_OPEN_CONNS = "5", DB_MAX_IDLE_CONNS = "2"} if "DATABASE_URL" in w.config_secrets else {})
+    _h = envbase.hosted(w, appcfg.app_config, _db.name)
+    _h | {
+        env = _h.env | ({DB_MAX_OPEN_CONNS = "5", DB_MAX_IDLE_CONNS = "2"} if "DATABASE_URL" in w.config_secrets else {})
         if w.kind in ["service", "job"]:
             resources = _claimable_resources
-        runtime = forge.OnHosted {}
     }
 }
 
-# A CLUSTER YOU OPERATE, for what hosting refuses — an operator (no
-# Kubernetes API on shared nodes), a `kind = "cron"` CronJob (not metered
-# yet) — or what you would rather run yourself. Declare the cluster, then
-# rebind the workload's line: `_hosted(_api)` → `_on_cluster(_api)`.
+# A CLUSTER YOU OPERATE (envbase.on_cluster explains): declare it here, e.g.
 #
 #     _cluster = forge.ClusterTarget {
 #         cluster = "gke_acme_us-central1_prod"   # its kubectl context
-#         connected_cluster = "shop-prod"     # see below
-#         namespace = "shop-prod"
+#         connected_cluster = "shop-prod"     # `forge cluster connect`
+#         namespace = "shop-" + option("env")
 #         platform = "amd64"                       # the nodes' arch
 #     }
 #
-# This env's deploys go through the control plane, so it must reach the
-# cluster too: register it once with `forge cluster connect shop-prod
-# --context <kubectl context> --env prod`. Until `_cluster` is declared, a
-# workload bound here fails the render, naming itself. A cluster workload
-# pulls the image workloads.k declares (`forge env build prod --push`), gets
-# the capacity floor below, and reads DATABASE_URL from the
-# `shop-secrets` Secret you provision in its namespace.
+# then rebind a line `_hosted(...)` → `_on_cluster(...)`. This env's capacity
+# floor on it is `_cluster_resources` and `_cluster_replicas`.
 _cluster = None
-_on_cluster = lambda w: fw.Workload -> fw.Workload {
-    assert _cluster, "workload '${w.name}' is bound to _on_cluster, but deploy/kcl/prod/main.k declares no `_cluster`: declare the cluster you operate there" \
-        + (" — the hosted platform refuses ${w.kind}s, so it cannot be rebound `_hosted`; drop the line to not run it here" if w.kind in ["cron", "operator"] else ", or rebind the line `_hosted`")
-    _configured(w) | {
-        resources = fw.Resources {
-            cpuRequestMillicores = forge.cpu(0.5)
-            memoryRequestBytes = forge.mib(512)
-            cpuLimitMillicores = forge.cpu(2.0)
-            memoryLimitBytes = forge.mib(1024)
-        }
-        # A replica FLOOR for the long-running kinds; above one, forge adds a
-        # PodDisruptionBudget and spreads the pods across nodes.
-        if w.kind in ["service", "worker", "operator"]:
-            replicas = w.replicas if w.replicas > 3 else 3
-        runtime = forge.OnCluster {target = _cluster}
-    }
+_cluster_resources = fw.Resources {
+    cpuRequestMillicores = forge.cpu(0.5)
+    memoryRequestBytes = forge.mib(512)
+    cpuLimitMillicores = forge.cpu(2.0)
+    memoryLimitBytes = forge.mib(1024)
 }
-# Elsewhere again: `wl.<name> | {runtime = forge.OnCompose {}}` runs a
-# workload as a docker-compose service on the machine that deploys.
+_cluster_replicas = 3
+_on_cluster = lambda w: fw.Workload -> fw.Workload {
+    envbase.on_cluster(w, appcfg.app_config, _cluster, "prod", _cluster_resources, _cluster_replicas)
+}
 
 # Built, never run.
 _build_only = lambda w: fw.Workload -> fw.Workload {
-    w | {runtime = forge.BuildOnly {}}
+    envbase.build_only(w)
 }
 
-# THE API, as ONE workload: the binary's `server` command, which mounts
-# every service on one Connect mux and supervises every worker beside it.
-#
-# A browser reaches the API at one origin. Its Connect transport has one
-# base URL (a call is `/<package>.<Service>/<Method>`, so one origin serves
-# every service), and sign-in answers with an HttpOnly session cookie the
-# browser sends back to that origin only. The platform gives each workload
-# its own hostname and routes no paths between them, so a workload per
-# service would leave the frontend reaching one of them, signed in to none
-# of the others.
-#
-# workloads.k still declares each service and worker; here `server` runs
-# them (dev runs the same `_api`, under air). So `forge scaffold
-# service|worker` adds no line below for one. Splitting one out — a service
-# no browser calls, a worker that needs its own capacity — is its own line,
-# `_hosted(wl.<name>)`, and taking it out of `server`'s mount or worker list:
-# cmd/shop/cmd/server.go. (`server` runs no operator here — with
-# no Kubernetes API it logs that operators are disabled and serves on.)
+# THE API, as ONE workload: the binary's `server` command, every service at
+# the one origin a browser calls (deploy/kcl/base/env.k says why).
 _api = fw.Workload {
     name = "api"
     kind = "service"
@@ -205,43 +155,17 @@ _workloads = [
     _hosted(_api)
 ]
 
-# ---------------------------------------------------------------------------
-# FRONTENDS bind a runtime the same way, through these binders. A frontend
-# is a static export (`output: static` in forge.yaml), published from its
-# `public_dir`.
-# ---------------------------------------------------------------------------
-
-# The API the browser calls: `_api`, once this env runs it — every
-# service, at one origin.
-_api_config = {API_URL = forge.WorkloadURL {workload = _api.name}} if any w in _workloads {w.name == _api.name} else {}
-
-# HOSTED: the platform's static hosting. Like a workload, its image
-# names no registry host. The release carries no config.js: the control
-# plane writes one after every sync, so one release promotes between envs
-# unchanged. An API_URL that references a workload becomes "/_api": the
-# platform serves that workload on every host of the site (custom domains
-# too) at /_api/*, the path the dev loop proxies, so the session cookie is
-# first-party to the site. The API's own URL keeps working for CLIs, mobile
-# apps and servers. To have the browser call that URL instead, write it as a
-# literal: `API_URL = "https://<api host>"` is never rewritten.
+# FRONTENDS bind the same way (envbase.hosted_frontend, envbase.on_bucket). The
+# browser calls `_api`, once this env runs it — every service, at one origin.
+_api_config = envbase.api_config(_api, _workloads)
 _hosted_frontend = lambda f: forge.Frontend -> forge.Frontend {
-    f | {
-        image = f.name
-        runtime = forge.OnHosted {}
-        runtime_config = f.runtime_config | _api_config
-    }
+    envbase.hosted_frontend(f, _api_config)
 }
-
-# YOUR OWN BUCKET (and a CDN you operate): each deploy uploads an immutable
-# `releases/<digest>/` and syncs `live/` from it. Bucket names are global,
-# so forge does not guess one: declare it, then rebind the frontend's line
-# to `_on_bucket(...)`.
-#
-#     _bucket = forge.OnBucket {bucket = "shop-prod-site"}   # cdn = forge.StaticSiteCDN {...}
+# Your own bucket instead: declare it (`_bucket = forge.OnBucket {bucket =
+# "shop-prod-site"}`), then rebind the frontend's line.
 _bucket = None
 _on_bucket = lambda f: forge.Frontend -> forge.Frontend {
-    assert _bucket, "frontend '${f.name}' is bound to _on_bucket, but deploy/kcl/prod/main.k declares no `_bucket`: declare it there, or rebind the line `_hosted_frontend`"
-    f | {runtime = _bucket}
+    envbase.on_bucket(f, _bucket, "prod")
 }
 
 # Masked session recording for this environment. It sets the frontend's

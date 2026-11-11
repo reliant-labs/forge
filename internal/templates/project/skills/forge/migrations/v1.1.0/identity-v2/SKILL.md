@@ -292,7 +292,8 @@ declaration turns on, in that environment, right after the deploy:
      the broker takes unproven credentials back before the proof as well as
      after it, so no moment exists in which the address is verified and the
      planted password still holds;
-   - the user ends unlocked, with no `forge.proof_lock` metadata.
+   - the user ends unlocked, with no `forge.proof_lock` metadata and no
+     `forge.proof_window.*` key.
 6. **Alerts.** The server logs no `alert=identity.revoke_failed` line. Each
    one names a `user_id` left locked (below).
 
@@ -306,13 +307,14 @@ declaration turns on, in that environment, right after the deploy:
   document (an empty `IDP_LOGIN_POLICY`).
 - **Revert the broker:** redeploy the previous release. The new code wrote
   only account metadata (`forge.self_signup`, `forge.signup_role_granted`,
-  `forge.proof_lock`), which the old broker ignores. Signed-in users sign in
+  `forge.proof_lock`, `forge.proof_window.*`), which the old broker ignores. Signed-in users sign in
   once more, because the session cookie name changed (step 2.11).
 - **Recover an account left locked.** An `identity.revoke_failed` alert means
   a proof could not finish taking credentials back, so the account was left
   locked on purpose. In the Zitadel console, for that `user_id`: remove every
   password, identity-provider link, passkey and second factor the owner did
-  not set; delete the `forge.proof_lock` metadata; unlock the user. The owner
+  not set; delete the `forge.proof_lock` metadata (and any `forge.proof_window.*`
+  key: a successful proof waits out a live one); unlock the user. The owner
   then signs in with a magic link or resets the password. A lock no proof
   owns (no fresh `forge.proof_lock`) is never lifted by the broker, so it
   stays until someone does this.

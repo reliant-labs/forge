@@ -23,12 +23,15 @@ import (
 
 // fakeSessionReporter records what it was told and does what it was asked.
 type fakeSessionReporter struct {
-	mu       sync.Mutex
-	reports  []release.LocalSession
-	err      error
-	block    chan struct{} // non-nil: every call waits on it or on ctx
-	calls    atomic.Int64
-	blocking atomic.Int64
+	mu      sync.Mutex
+	reports []release.LocalSession
+	err     error
+	block   chan struct{} // non-nil: every call waits on it or on ctx
+	// ignoreCtx makes a blocked call wait on block alone, as a reporter
+	// that ignores its deadline would: it never returns on its own.
+	ignoreCtx bool
+	calls     atomic.Int64
+	blocking  atomic.Int64
 }
 
 func (f *fakeSessionReporter) ReportSession(ctx context.Context, s release.LocalSession) error {
@@ -36,10 +39,14 @@ func (f *fakeSessionReporter) ReportSession(ctx context.Context, s release.Local
 	if f.block != nil {
 		f.blocking.Add(1)
 		defer f.blocking.Add(-1)
-		select {
-		case <-f.block:
-		case <-ctx.Done():
-			return ctx.Err()
+		if f.ignoreCtx {
+			<-f.block
+		} else {
+			select {
+			case <-f.block:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 	f.mu.Lock()
@@ -78,10 +85,9 @@ func testUpSession(reporter sessionReporter, log *strings.Builder, heartbeat tim
 // assertion: a reporter that never returns must not hold up `forge env up`.
 //
 // MUTATION: make start() call s.report synchronously instead of in a
-// goroutine, and this test hangs until the 5s report timeout — well past the
-// budget below.
+// goroutine, and start() never returns: the reporter ignores its deadline.
 func TestUpSessionStartDoesNotBlockOnABlockingReporter(t *testing.T) {
-	reporter := &fakeSessionReporter{block: make(chan struct{})}
+	reporter := &fakeSessionReporter{block: make(chan struct{}), ignoreCtx: true}
 	defer close(reporter.block)
 	var log strings.Builder
 	session := testUpSession(reporter, &log, time.Hour)
@@ -91,21 +97,17 @@ func TestUpSessionStartDoesNotBlockOnABlockingReporter(t *testing.T) {
 		session.start(time.Now().UTC())
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("start() blocked on a reporter that never returns; `forge env up` must never wait on presence (§7.4)")
-	}
+	// start() returns at once when it reports in the background; a
+	// synchronous report never returns at all (the reporter ignores its
+	// deadline and blocks until the test ends), so this wait fails rather
+	// than guessing a budget.
+	awaitRecv(t, "start() to return despite a reporter that never returns — `forge env up` must never wait on presence (§7.4)", done)
 
 	// And prove the call was actually attempted — otherwise this test would
 	// also pass against a start() that reports nothing at all.
-	deadline := time.Now().Add(2 * time.Second)
-	for reporter.blocking.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if reporter.blocking.Load() == 0 {
-		t.Fatal("start() never called the reporter: the test would pass against a no-op")
-	}
+	awaitCond(t, "start() to call the reporter (the test would pass against a no-op)", func() bool {
+		return reporter.blocking.Load() != 0
+	})
 }
 
 // TestUpSessionReportSurvivesAnErroringReporter proves an error is absorbed,
@@ -185,20 +187,10 @@ func TestUpSessionHeartbeatExitsWhenTheStackStops(t *testing.T) {
 	// Let it beat at least twice, so the test also proves the heartbeat
 	// RUNS — a goroutine that exits immediately would pass the exit
 	// assertion on its own.
-	deadline := time.Now().Add(2 * time.Second)
-	for reporter.calls.Load() < 2 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := reporter.calls.Load(); got < 2 {
-		t.Fatalf("heartbeat fired %d times in 2s at a 5ms interval, want >= 2", got)
-	}
+	awaitCond(t, "the heartbeat to fire twice at a 5ms interval", func() bool { return reporter.calls.Load() >= 2 })
 
 	cancel()
-	select {
-	case <-exited:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the heartbeat goroutine outlived the stack: it must exit on ctx.Done()")
-	}
+	awaitRecv(t, "the heartbeat goroutine to exit on ctx.Done() (it must not outlive the stack)", exited)
 }
 
 // TestUpSessionHeartbeatRefreshesLastSeen proves a heartbeat is a REFRESH

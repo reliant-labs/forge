@@ -28,7 +28,7 @@
 //     the fields it needs — config stays the single typed source, cmdkit
 //     stays reusable across every project.
 //   - Driver-agnostic. OpenDB takes the database/sql driver name; cmdkit
-//     never imports a driver, so a project picks pgx / sqlite / etc. and
+//     never imports a driver, so a project picks pgx / lib/pq / etc. and
 //     blank-imports it as it already does.
 //   - stdout is for data, stderr is for diagnostics. Logger writes to
 //     stderr; PrintJSON writes machine-consumable output to stdout. A

@@ -343,3 +343,17 @@ func TestNewEnv_NeutralizesLiteralNamespace(t *testing.T) {
 		t.Errorf("derived env lacks the namespace placeholder:\n%s", out)
 	}
 }
+
+func TestImportsEnvBase(t *testing.T) {
+	for body, want := range map[string]bool{
+		"import ..base.env as envbase\n":   true,
+		"  import ..base as b\n":           true,
+		"import ..workloads as wl\n":       false,
+		"import ..baseline.env as b\n":     false,
+		"# import ..base.env as envbase\n": false,
+	} {
+		if got := importsEnvBase(body); got != want {
+			t.Errorf("importsEnvBase(%q) = %v, want %v", body, got, want)
+		}
+	}
+}

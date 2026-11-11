@@ -132,6 +132,38 @@ _Enforced · Forge, on any infrastructure_
 - command `forge project rescaffold`
 - command `forge project scaffolded`
 
+<a id="scaffold-exclude"></a>
+
+### Areas forge never writes
+
+`scaffold.exclude` in forge.yaml names the parts of an existing repo forge must never write, and every generate, scaffold, upgrade and rescaffold leaves them exactly as they are and says which writes it skipped.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `scaffold: {exclude: [frontends/web/, .github/workflows/deploy.yml]}`.
+
+**Why:** A team adopting forge keeps its own frontend, workflows or docs without disowning file by file. A locked run puts back anything written under an excluded glob, and a glob over generated code other generated code imports is refused with the dependent named.
+
+**Evidence:**
+
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/checksums/exclude.go`](../internal/checksums/exclude.go)
+- source [`internal/cli/generate_exclude.go`](../internal/cli/generate_exclude.go)
+
+<a id="prune-orphans"></a>
+
+### Clean up after a feature
+
+When a feature is pinned off, `forge generate` lists the files it left behind and `forge project prune --orphans` deletes the ones still exactly as forge wrote them, never an edited one.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project prune`
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/cli/generate_orphans.go`](../internal/cli/generate_orphans.go)
+
 <a id="project-upgrade"></a>
 
 ### Guided forge upgrades
@@ -2730,6 +2762,24 @@ _Enforced · Reliant hosting_
 
 - library [`pkg/releasehealth`](../pkg/releasehealth)
 - skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
+
+<a id="shared-env-base"></a>
+
+### One env base, per-env deltas
+
+Every deployed env binds its workloads through one shared base, so an env file holds only what is its own and a new env starts as its deltas.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `deploy/kcl/base/env.k` (scaffolded by `forge project new`), imported by each env as `import ..base.env as envbase`; `forge env new <name> --from <env>` copies only the source env's own values
+
+**Why:** It is plain KCL, so `forge env render`, `env diff` and `env shape` read it like any import, and an env overrides a shared binder by wrapping it. The scaffold tools keep editing each env's one binding line per workload.
+
+**Evidence:**
+
+- source [`internal/templates/deploy/kcl/base/env.k.tmpl`](../internal/templates/deploy/kcl/base/env.k.tmpl)
+- command `forge env new`
+- skill `deploy/model` (`forge skill load deploy/model`)
 
 <a id="release-health-policy"></a>
 

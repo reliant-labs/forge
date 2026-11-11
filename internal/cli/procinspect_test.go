@@ -32,7 +32,7 @@ func TestReadProcArgvRealProcess(t *testing.T) {
 	// rather than racing it.
 	var argv []string
 	var ok bool
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testWaitTimeout)
 	for time.Now().Before(deadline) {
 		if argv, ok = readProcArgv(cmd.Process.Pid); ok {
 			break

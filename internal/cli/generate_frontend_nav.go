@@ -872,7 +872,7 @@ func unlinkedRouteWarnings(cfg *config.ProjectConfig, projectDir string, service
 // timestamps, so a file rewritten with identical content, or touched by a
 // formatter that changed nothing, is still forge's; one changed byte is not.
 func emitScaffoldUntilTouched(projectDir, relPath, tmplPath string, data templates.FrontendTemplateData, cs *checksums.FileChecksums) error {
-	if cs != nil && cs.IsDisowned(relPath) {
+	if (cs != nil && cs.IsDisowned(relPath)) || checksums.SkipExcluded(projectDir, relPath) {
 		return nil
 	}
 	full := filepath.Join(projectDir, relPath)

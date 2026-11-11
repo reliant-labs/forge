@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,7 +38,14 @@ func TestResolveShortFuncName(t *testing.T) {
 // -trimpath, as air builds under GOFLAGS), then the spec as typed for
 // Delve's suffix match.
 func TestParseLineSpec(t *testing.T) {
-	root := filepath.Join(string(filepath.Separator), "proj")
+	// An absolute path needs a volume on Windows: there `\elsewhere\x.go` is
+	// relative to the current drive, so filepath.IsAbs is false and it would
+	// resolve inside the project (forge main's Windows lane, 2026-11-11).
+	top := string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		top = `C:\`
+	}
+	root := filepath.Join(top, "proj")
 	cases := []struct {
 		spec      string
 		wantFiles []string
@@ -52,9 +60,9 @@ func TestParseLineSpec(t *testing.T) {
 		},
 		{
 			// Outside the project: no module-relative spelling.
-			spec:      filepath.Join(string(filepath.Separator), "elsewhere", "x.go") + ":7",
-			wantFiles: []string{filepath.Join(string(filepath.Separator), "elsewhere", "x.go")},
-			wantLoc:   filepath.ToSlash(filepath.Join(string(filepath.Separator), "elsewhere", "x.go")),
+			spec:      filepath.Join(top, "elsewhere", "x.go") + ":7",
+			wantFiles: []string{filepath.Join(top, "elsewhere", "x.go")},
+			wantLoc:   filepath.ToSlash(filepath.Join(top, "elsewhere", "x.go")),
 			wantLine:  7,
 		},
 	}

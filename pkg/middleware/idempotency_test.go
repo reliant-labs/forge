@@ -75,6 +75,7 @@ func TestIdempotencyMiddleware_TTLExpiry(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
+	// forge:lint-disable-next-line forge-test-fixed-sleep: advances the wall clock past the 1ms TTL; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(5 * time.Millisecond) // Wait for TTL expiry.
 
 	req2 := httptest.NewRequest(http.MethodPost, "/", nil)

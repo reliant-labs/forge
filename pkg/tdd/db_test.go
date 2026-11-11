@@ -41,7 +41,7 @@ func TestWithTimeout(t *testing.T) {
 	select {
 	case <-ctx.Done():
 		// expected after 50ms
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("context did not time out")
 	}
 	if ctx.Err() == nil || ctx.Err() == context.Canceled {

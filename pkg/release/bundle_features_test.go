@@ -21,6 +21,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureReleaseHealth:          {"shape.release_health"},
 	BundleFeatureReleaseHealthBaseline:  {"shape.release_health.require_baseline"},
 	BundleFeatureUptimeChecks:           {"shape.uptime_checks"},
+	BundleFeatureReleaseProbes:          {"shape.release_probes"},
 	BundleFeatureDataAccess:             {"shape.data_access"},
 	BundleFeatureDatabaseDashboards:     {"shape.databases"},
 	BundleFeatureHealthGate:             {"shape.delivery_policy.health_gate"},
@@ -149,6 +150,7 @@ func fullBundleDoc() BundleDoc {
 			DataAccess:               &ShapeDataAccess{DBQuery: DBQueryDeny, Storage: StorageAudited},
 			ReleaseHealth:            &ShapeReleaseHealth{WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2, NewIssueMinEvents: 5, FailOn: []string{HealthErrorRate}},
 			UptimeChecks:             []ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: UptimeSourceDefault}},
+			ReleaseProbes:            []ShapeReleaseProbe{{Target: "web", Kind: ReleaseProbeKindFrontend, Paths: []string{"/"}, Method: "GET", RatePerMin: 4, TimeoutSeconds: 10, Source: ReleaseProbeSourceDefault}},
 			Databases:                []ShapeDatabase{{Name: "orders", Dashboards: &ShapeDatabaseDashboards{Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1}}},
 			ExternalDatabases:        []ShapeExternalDatabase{{Name: "ledger", Cluster: "ctx", Namespace: "app", Service: "pgbouncer", Database: "ledger", Username: "ledger_ro", PasswordSecret: "ledger-ro", PasswordKey: "password", SSLMode: ExternalDatabaseSSLRequire}},
 			DeliveryPolicy:           healthGatedPolicy(),
@@ -185,7 +187,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	for _, p := range strays {
 		strayRoots[p] = true
 	}
-	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.databases", "shape.external_databases", "shape.delivery_policy.health_gate", "declared_envs", "shape.workloads[].unit", "shape.host_infra", "shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods", "shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email"} {
+	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.release_probes", "shape.databases", "shape.external_databases", "shape.delivery_policy.health_gate", "declared_envs", "shape.workloads[].unit", "shape.host_infra", "shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods", "shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email"} {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
@@ -225,6 +227,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.StoreSecrets, wantShape.GeneratedSecrets, wantShape.OpenBao, wantShape.ExternalSecretsOperators = nil, nil, nil, nil
 	wantShape.ReleaseHealth = nil
 	wantShape.UptimeChecks = nil
+	wantShape.ReleaseProbes = nil
 	wantShape.DataAccess = nil
 	wantShape.Databases = nil
 	wantShape.ExternalDatabases = nil
@@ -281,8 +284,12 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	if len(uptime.Shape.UptimeChecks) != 1 || uptime.Shape.ReleaseHealth != nil || uptime.Shape.StoreSecrets != nil || uptime.Shape.FrontendTelemetry != nil {
 		t.Errorf("a reader of uptime checks only: %+v", uptime)
 	}
+	probes := (&BundleReader{Features: []string{BundleFeatureReleaseProbes}}).Limit(full)
+	if len(probes.Shape.ReleaseProbes) != 1 || probes.Shape.UptimeChecks != nil || probes.Shape.ReleaseHealth != nil {
+		t.Errorf("a reader of release probes only: %+v", probes.Shape)
+	}
 	dashboards := (&BundleReader{Features: []string{BundleFeatureDatabaseDashboards}}).Limit(full)
-	if len(dashboards.Shape.Databases) != 1 || dashboards.Shape.UptimeChecks != nil || dashboards.Shape.StoreSecrets != nil || dashboards.Shape.DataAccess != nil {
+	if len(dashboards.Shape.Databases) != 1 || dashboards.Shape.UptimeChecks != nil || dashboards.Shape.ReleaseProbes != nil || dashboards.Shape.StoreSecrets != nil || dashboards.Shape.DataAccess != nil {
 		t.Errorf("a reader of database dashboards only: %+v", dashboards)
 	}
 	external := (&BundleReader{Features: []string{BundleFeatureExternalDatabases}}).Limit(full)

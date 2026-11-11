@@ -35,11 +35,19 @@ const (
 	// HealthBrowserPageLoad: a frontend's p95 page load grew by more than
 	// MaxP95Ratio.
 	HealthBrowserPageLoad = "browser_page_load"
+	// HealthProbeFailed: a release probe (forge.Probe) failed in the window
+	// after the promotion. It fails a release by default, whatever the real
+	// traffic says.
+	HealthProbeFailed = "probe_failed"
+	// HealthProbeLatency: a release probe's p95 grew by more than MaxP95Ratio,
+	// and by at least the probe latency floor. It warns by default, as
+	// latency does.
+	HealthProbeLatency = "probe_latency"
 )
 
 // HealthFindings is every finding code, in a stable order.
 var HealthFindings = []string{HealthErrorRate, HealthLatency, HealthNewIssue, HealthRegressedIssue, HealthAlertFiring, HealthWorkloadRestarts,
-	HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad}
+	HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad, HealthProbeFailed, HealthProbeLatency}
 
 // How many services a release needs a baseline for
 // (ShapeReleaseHealth.RequireBaseline). A service's baseline is its before
@@ -111,10 +119,12 @@ func (h ShapeReleaseHealth) Baseline() string {
 }
 
 // DefaultReleaseHealth is the policy of an env that declares none. Latency and
-// restarts warn: both are noisy on a fresh rollout.
+// restarts warn: both are noisy on a fresh rollout. A release-probe failure
+// fails: an env has probe findings only when it is probed.
 //
 // It must agree with the defaults of forge.ReleaseHealth in kcl/schema.k;
-// TestReleaseHealthDefaultsAgreeWithKCL fails if they drift.
+// TestReleaseHealthDefaultsAgreeWithKCL and TestDefaultFailOnMatchesKCL fail
+// if they drift.
 func DefaultReleaseHealth() ShapeReleaseHealth {
 	return ShapeReleaseHealth{
 		WindowSeconds:        int((15 * time.Minute).Seconds()),
@@ -122,7 +132,7 @@ func DefaultReleaseHealth() ShapeReleaseHealth {
 		MaxErrorRateIncrease: 0.01,
 		MaxP95Ratio:          1.5,
 		NewIssueMinEvents:    3,
-		FailOn:               []string{HealthAlertFiring, HealthErrorRate, HealthNewIssue, HealthRegressedIssue},
+		FailOn:               []string{HealthAlertFiring, HealthErrorRate, HealthNewIssue, HealthProbeFailed, HealthRegressedIssue},
 	}
 }
 

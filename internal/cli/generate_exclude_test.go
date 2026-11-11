@@ -346,3 +346,43 @@ func TestExcludeGuard_LeavesUnguardedDirsAlone(t *testing.T) {
 		t.Errorf("the report names a path the guard does not guard:\n%s", out.String())
 	}
 }
+
+// Nothing the guard does can lose a write it races with: it moves what it
+// finds (one rename, so the bytes are always in one place) and writes the
+// pre-run version back only into a free path. A file someone writes at the
+// path after the move is left exactly as they wrote it, and reported.
+func TestExcludeGuard_NeverOverwritesAConcurrentWrite(t *testing.T) {
+	root := excludeTestProject(t, "name: x\nscaffold:\n  exclude: [frontends/web/]\n",
+		map[string]string{"frontends/web/src/app.tsx": "mine\n"})
+	g := armExcludeGuard(root)
+	if g == nil {
+		t.Fatal("no guard armed for a project with scaffold.exclude")
+	}
+	full := filepath.Join(root, "frontends/web/src/app.tsx")
+	writeRel(t, root, "frontends/web/src/app.tsx", "changed during the run\n")
+	if !g.keep("frontends/web/src/app.tsx", full) {
+		t.Fatal("keep refused a changed file")
+	}
+	if _, err := os.Stat(full); !os.IsNotExist(err) {
+		t.Fatalf("keep left the file in place (a copy, not a move): %v", err)
+	}
+	backup := g.kept["frontends/web/src/app.tsx"]
+	if got := readOrEmpty(root, backup); got != "changed during the run\n" {
+		t.Fatalf("backup = %q, want what was found", got)
+	}
+	// Someone writes the path again between the move and the put-back.
+	writeRel(t, root, "frontends/web/src/app.tsx", "a save after the move\n")
+	if g.restore("frontends/web/src/app.tsx", full, g.pre["frontends/web/src/app.tsx"]) {
+		t.Fatal("restore overwrote a file written after the move")
+	}
+	if got := readOrEmpty(root, "frontends/web/src/app.tsx"); got != "a save after the move\n" {
+		t.Fatalf("the concurrent write was lost: %q", got)
+	}
+	// Into a free path, the pre-run bytes go back.
+	if err := os.Remove(full); err != nil {
+		t.Fatal(err)
+	}
+	if !g.restore("frontends/web/src/app.tsx", full, g.pre["frontends/web/src/app.tsx"]) || readOrEmpty(root, "frontends/web/src/app.tsx") != "mine\n" {
+		t.Fatal("restore into a free path did not put the pre-run bytes back")
+	}
+}

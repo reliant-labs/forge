@@ -20,9 +20,12 @@ package cli
 //
 // The guard cannot tell forge's writes from anyone else's: a person, an
 // editor or another agent may edit an excluded file while a run holds the
-// lock. So it never destroys what it finds. Before a created file is removed
-// or a changed one is put back, the bytes found are copied under
-// .forge/exclude-guard/<run>/ (gitignored), and the run names each one.
+// lock, and the lock does not stop them. So it never deletes or overwrites
+// anything. A created or changed file is MOVED (one rename) under
+// .forge/exclude-guard/<run>/ (gitignored), and the run names each one; a
+// changed or deleted file's pre-run bytes are then written back only if the
+// path is still free (O_EXCL). A path someone writes again in between is
+// left exactly as they wrote it, and reported as not put back.
 
 import (
 	"fmt"
@@ -230,12 +233,8 @@ func (g *excludeGuard) settle() (unrestored []string) {
 		before, had := g.pre[rel]
 		if !had {
 			// Created under an excluded glob while the run held the lock:
-			// forge's write, or someone else's. Kept, then removed.
+			// forge's write, or someone else's. Moved aside, never deleted.
 			if !g.keep(rel, full) {
-				unrestored = append(unrestored, rel)
-				return
-			}
-			if err := os.Remove(full); err != nil {
 				unrestored = append(unrestored, rel)
 				return
 			}
@@ -269,33 +268,29 @@ func (g *excludeGuard) settle() (unrestored []string) {
 	return unrestored
 }
 
-// keep copies the file at full, as the run found it, under the run's backup
-// directory, and records where. Nothing the guard undoes is lost: what it
-// found may be a person's or another agent's edit, not forge's write.
+// keep moves the file at full, as the run left it, under the run's backup
+// directory with one rename, and records where. A rename is atomic: the
+// bytes are never in neither place, and a writer still holding the file open
+// writes on into the backup. What the guard moves may be a person's or
+// another agent's edit, not forge's write, so it is moved, never deleted.
 func (g *excludeGuard) keep(rel, full string) bool {
 	if _, done := g.kept[rel]; done {
-		return true
-	}
-	data, err := os.ReadFile(full)
-	if err != nil {
-		return false
-	}
-	info, err := os.Stat(full)
-	if err != nil {
-		return false
+		return false // a second change in one run: left where it is, reported
 	}
 	backupRel := filepath.ToSlash(filepath.Join(".forge", "exclude-guard", g.run, filepath.FromSlash(rel)))
 	backup := filepath.Join(g.root, filepath.FromSlash(backupRel))
 	if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
 		return false
 	}
-	if err := os.WriteFile(backup, data, info.Mode().Perm()); err != nil {
+	if err := os.Rename(full, backup); err != nil {
 		return false
 	}
 	g.kept[rel] = backupRel
 	return true
 }
 
+// restore writes the captured pre-run bytes back at full only if nothing is
+// there: a file someone wrote at the path since is theirs, and is left alone.
 func (g *excludeGuard) restore(rel, full string, f excludedFile) bool {
 	if f.data == nil {
 		return false
@@ -303,7 +298,15 @@ func (g *excludeGuard) restore(rel, full string, f excludedFile) bool {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return false
 	}
-	return os.WriteFile(full, f.data, f.mode) == nil
+	out, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_EXCL, f.mode)
+	if err != nil {
+		return false
+	}
+	if _, err := out.Write(f.data); err != nil {
+		_ = out.Close()
+		return false
+	}
+	return out.Close() == nil
 }
 
 // pruneEmptyDirsUpTo removes dir and its parents while they are empty,
@@ -362,8 +365,8 @@ func printKeptExcluded(w io.Writer, kept [][2]string) {
 	if len(kept) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "  ↷ what this run found at %d excluded path(s) was kept before forge undid it; "+
-		"if a change there was yours, or another agent's, copy it back:\n", len(kept))
+	fmt.Fprintf(w, "  ↷ what this run found at %d excluded path(s) was moved aside, never deleted; "+
+		"if a change there was yours, or another agent's, move it back:\n", len(kept))
 	for _, k := range kept {
 		fmt.Fprintf(w, "      %s ← %s\n", k[0], k[1])
 	}
@@ -380,7 +383,8 @@ func settleActiveExcludeGuard() []string {
 
 func printUnrestoredExcluded(w io.Writer, unrestored []string) {
 	for _, rel := range unrestored {
-		fmt.Fprintf(w, "⚠️  %s is excluded by scaffold.exclude, and this run changed it; forge could not put it back (git restore it)\n", rel)
+		fmt.Fprintf(w, "⚠️  %s is excluded by scaffold.exclude and changed during this run; forge left it as it is now rather than overwrite it "+
+			"(what it found earlier, if anything, is kept under .forge/exclude-guard/; git diff it before restoring)\n", rel)
 	}
 }
 

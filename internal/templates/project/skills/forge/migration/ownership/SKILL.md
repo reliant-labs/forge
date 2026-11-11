@@ -57,9 +57,11 @@ scaffold:
   tool. Paths a `generate.hooks` entry declares in `writes:` are the project's
   own output and exempt.
 - Nothing it undoes is lost: the guard cannot tell forge's write from yours or
-  another agent's made while the run held the lock, so before it removes or
-  puts back a file it keeps what it found under `.forge/exclude-guard/<run>/`
-  and names each path and its copy.
+  another agent's made while the run held the lock, so it never deletes or
+  overwrites. A created or changed file is moved (one rename) under
+  `.forge/exclude-guard/<run>/`, named in the output, and a pre-run version is
+  written back only into a free path: a file saved there again meanwhile is
+  left as it is and reported.
 - `.git/`, `.forge/`, `node_modules/` and `.next/` are outside the guarantee:
   the guard never descends them (it neither captures nor undoes anything
   there). An entry naming a path inside one fails the load; exclude the source

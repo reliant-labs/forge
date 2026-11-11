@@ -350,13 +350,14 @@ var removals = []removal{
 					"AuthorizeFunc / AuthorizeOptions — a POLICY callback deciding what a caller " +
 					"may do. Scoped by path to the OAuth clients (the Go pkg/oauth2, forge " +
 					"login's driver of it in internal/cloud/login.go, and the scaffolded " +
-					"browser flow) and by token to the endpoint spellings, so an " +
+					"browser and native flows) and by token to the endpoint spellings, so an " +
 					"`AuthorizeHook` or a role check appearing in these same files still fails.",
-				Token: regexp.MustCompile(`Authorize(?:Request|Url|URL|Endpoint|Params?)\b`),
+				Token: regexp.MustCompile(`Authorize(?:Request|Url|URL|Endpoint|Params?)(?:Input)?\b`),
 				Paths: []string{
 					"pkg/oauth2/",
 					"internal/cloud/login.go",
 					"internal/templates/frontend/shared-web/src/lib/auth/",
+					"internal/templates/frontend/react-native/src/lib/auth/",
 				},
 			},
 			{
@@ -2707,6 +2708,13 @@ func TestExternalProtocolAndReplacementAllowancesStayNarrow(t *testing.T) {
 		{"tenancy", "internal/templates/project/skills/forge/db/SKILL.md", "X-Tenant-Id: acme", true},
 		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "Kubernetes RBAC", false},
 		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "AuthorizeHook", true},
+		{"authorization", "internal/templates/frontend/react-native/src/lib/auth/oidc.ts", "AuthorizeRequest", false},
+		{"authorization", "internal/templates/frontend/react-native/src/lib/auth/oidc.ts", "AuthorizeRequestInput", false},
+		{"authorization", "internal/templates/frontend/react-native/src/lib/auth/oidc.ts", "buildAuthorizeUrl", false},
+		{"authorization", "internal/templates/frontend/react-native/src/lib/auth/oidc.ts", "AuthorizeHook", true},
+		{"authorization", "internal/templates/frontend/react-native/src/lib/auth/oidc.ts", "AuthorizeRequestInputPolicy", true},
+		{"authorization", "internal/templates/frontend/react-native/src/lib/auth/oidc.ts", "RBAC", true},
+		{"authorization", "internal/templates/frontend/react-native/src/lib/other.ts", "AuthorizeRequestInput", true},
 		{"the raw-curl cut-release CI job and `forge reconcile`", "docs/design/per-workload-placement.md", "cut-release.sh", false},
 		{"the raw-curl cut-release CI job and `forge reconcile`", "docs/design/per-workload-placement.md", "DEPLOY_TOKEN", true},
 		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "stringValue", false},

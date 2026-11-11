@@ -116,13 +116,14 @@ var (
 
 	hostedControlPlaneRE = regexp.MustCompile(`(?m)^\s*control_plane\s*=\s*forge\.ControlPlane`)
 	workloadsImportRE    = regexp.MustCompile(`(?m)^import \.\.workloads as wl\n`)
-	pprofPortLambdaRE    = regexp.MustCompile(`(?ms)^_pprof_port_of = lambda[^\n]*\n.*?^}\n`)
-	postgresPortRE       = regexp.MustCompile(`(?m)^_postgres_port\s*=`)
-	infraOpenRE          = regexp.MustCompile(`(?m)^    infra = \[\n`)
-	infraCloseRE         = regexp.MustCompile(`(?m)^    \]\n`)
-	envFinalExprRE       = regexp.MustCompile(`(?m)^(    config_gen\.[^\n]*\| w\.env \| _machine \| _port)\n`)
-	envLambdaRE          = regexp.MustCompile(`(?m)^_env = lambda`)
-	secretProviderRE     = regexp.MustCompile(`(?m)^    secret_provider = `)
+	//nolint:gocritic // badRegexp misreads the second `^`: under (?m) it anchors the closing `}` at a line start.
+	pprofPortLambdaRE = regexp.MustCompile(`(?ms)^_pprof_port_of = lambda[^\n]*\n.*?^}\n`)
+	postgresPortRE    = regexp.MustCompile(`(?m)^_postgres_port\s*=`)
+	infraOpenRE       = regexp.MustCompile(`(?m)^    infra = \[\n`)
+	infraCloseRE      = regexp.MustCompile(`(?m)^    \]\n`)
+	envFinalExprRE    = regexp.MustCompile(`(?m)^(    config_gen\.[^\n]*\| w\.env \| _machine \| _port)\n`)
+	envLambdaRE       = regexp.MustCompile(`(?m)^_env = lambda`)
+	secretProviderRE  = regexp.MustCompile(`(?m)^    secret_provider = `)
 )
 
 type identityState int

@@ -366,12 +366,6 @@ func BuildScenarioRPCDataWithImportBase(services []ServiceDef, importBase string
 	return data
 }
 
-// tsInlineImport is the TypeScript type expression naming sym in the
-// generated module of protoFile, imported inline.
-func tsInlineImport(protoFile, sym string) string {
-	return `import("@/gen/` + ProtoFileToTSImportPath(protoFile) + `").` + sym
-}
-
 // ──────────────────────────────────────────────────────────────────────
 // Where the frontend's demo data comes from
 // ──────────────────────────────────────────────────────────────────────

@@ -505,9 +505,9 @@ func captureBanner(t *testing.T, root string) string {
 	return string(b[:n])
 }
 
-// The banner promises only what the project will do: `forge env up dev` (there
-// is no `forge run`) starts the IdP the dev env declares, and a project with no
-// IdP and no issuer is told so instead of being promised one.
+// The banner promises only what the project will do: `forge env up dev` starts
+// the IdP the dev env declares, and a project with no IdP and no issuer is told
+// so instead of being promised one.
 func TestReportFrontendAuthNextStep_IsTrue(t *testing.T) {
 	root := t.TempDir()
 	writeNoFrontendEnvs(t, root)

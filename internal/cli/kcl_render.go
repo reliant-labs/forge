@@ -1002,7 +1002,7 @@ type HostInfraEntity struct {
 	IDPPATPath      string `json:"idp_pat_path,omitempty"`
 	// DeviceHost is set by `forge env up --device-host` on the zitadel entry,
 	// never by the KCL render: the host a device reaches this machine at,
-	// which the IdP then serves as a second domain (see applyDeviceHostToIdP).
+	// which the IdP then serves as a second domain (see applyDeviceHostToIDP).
 	DeviceHost string `json:"-"`
 
 	// engine = "nats" only.

@@ -119,15 +119,17 @@ func TestIsolatedKCLConcurrentProjectsDoNotChangeParentCwd(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
+	// Sample the cwd until both renders finish.
 	for {
 		select {
 		case <-done:
 			return
-		case <-time.After(time.Millisecond):
-			if got, _ := os.Getwd(); got != cwd {
-				t.Fatalf("concurrent child leaked cwd: %s", got)
-			}
+		default:
 		}
+		if got, _ := os.Getwd(); got != cwd {
+			t.Fatalf("concurrent child leaked cwd: %s", got)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

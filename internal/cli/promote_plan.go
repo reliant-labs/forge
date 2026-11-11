@@ -568,6 +568,13 @@ type promotePlan struct {
 	// apply: the new entry, or — for a retry of the env's current state —
 	// the existing one, unchanged. Nil under --plan and on a refusal.
 	Recorded *release.Promotion `json:"recorded,omitempty"`
+	// Floor is the rollback-floor verdict for this target (floor.go):
+	// admitted, raises, unknown or unsupported. A target below a floor is
+	// refused before a plan exists, so it never appears here.
+	Floor *promoteFloorVerdict `json:"floor,omitempty"`
+	// FloorsRaised are the rollback floors the recorded promotion raised,
+	// read back from the ledger after the write.
+	FloorsRaised []release.Floor `json:"floors_raised,omitempty"`
 	// Expected is the compare-and-set the write asserts: the promotion id
 	// it requires to be current, or "unbound". Present under --plan too —
 	// it is what the real promote WOULD send — so a reviewer sees an
@@ -1441,6 +1448,10 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	// as a symbol: a reader skimming for "am I going forwards" must not
 	// have to decode an arrow.
 	fmt.Fprintf(out, "  direction %s  %s\n", plan.Direction, plan.DirectionDetail)
+	renderFloorVerdict(out, plan.Floor)
+	for _, f := range plan.FloorsRaised {
+		fmt.Fprintf(out, "  floor     RAISED %s %s floor %s: %s\n", f.Kind, f.Source, f.ID, describeFloor(f))
+	}
 	if plan.Direction == promoteDirectionBehind {
 		// A backwards promote is not a rollback and cannot be one: the
 		// newer release's migrations stay applied and the rows it wrote stay

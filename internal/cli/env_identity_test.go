@@ -173,6 +173,44 @@ func TestEnvWait_AnUnreadableIdentityIsReportedNotWaitedOn(t *testing.T) {
 	}
 }
 
+// An anonymous --claimable deploy holds only deploy scopes, so the control
+// plane always refuses the identity read: the wait must not make it, and must
+// not print an "identity: unknown ... 403" line under a deploy that worked.
+func TestEnvWait_AnonymousClaimableDeployDoesNotReadIdentity(t *testing.T) {
+	restore := cloud.UseClaimableCredential(cloud.Endpoint{URL: "https://cp.example.test"}, "rlat_anon", nil)
+	defer restore()
+	fake := identityRollout()
+	fake.identityErr = &cloud.Error{Code: cloud.CodePermissionDenied, Procedure: procIdentityStatus, Message: "this machine credential does not carry the identity:read scope"}
+	fake.phases = []string{wireRolloutPhaseProgressing, wireRolloutPhaseSucceeded}
+	var (
+		report envWaitReport
+		err    error
+		out    string
+	)
+	out = captureStdout(t, func() { report, err = waitForRollout(context.Background(), "prod", waitOpts(fake)) })
+	if err != nil {
+		t.Fatalf("an anonymous claimable wait failed: %v", err)
+	}
+	if fake.identityCalls != 0 {
+		t.Errorf("identity was read %d times under an anonymous claimable credential, want 0", fake.identityCalls)
+	}
+	if report.Identity != nil || strings.Contains(out, "identity") {
+		t.Errorf("no identity line is expected, got report %+v and output %q", report.Identity, out)
+	}
+}
+
+// A signed-in caller's refused identity read is still reported.
+func TestEnvWait_SignedInIdentityRefusalIsStillReported(t *testing.T) {
+	fake := identityRollout()
+	fake.identityErr = &cloud.Error{Code: cloud.CodePermissionDenied, Procedure: procIdentityStatus, Message: "no identity:read"}
+	fake.phases = []string{wireRolloutPhaseSucceeded}
+	var report envWaitReport
+	captureStdout(t, func() { report, _ = waitForRollout(context.Background(), "prod", waitOpts(fake)) })
+	if report.Identity == nil || report.Identity.State != identityUnknown {
+		t.Fatalf("a signed-in refusal must be reported, got %+v", report.Identity)
+	}
+}
+
 // Once the env is known to declare an identity, a failed read does not release
 // the wait: the last state still holds it.
 func TestEnvWait_AFailedReadOfADeclaredIdentityKeepsWaiting(t *testing.T) {

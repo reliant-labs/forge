@@ -221,8 +221,8 @@ tasks:
   test:integration:
     desc: Run integration tests (build tag `integration`, real dependencies expected)
     cmds:
-      # Integration tests rely on out-of-process state (postgres, sqlite tmp
-      # dir, etc.) so they're gated behind the `integration` build tag and
+      # Integration tests rely on out-of-process state (postgres, containers,
+      # etc.) so they're gated behind the `integration` build tag and
       # excluded from `task test`. Run this in an environment that satisfies
       # the per-test setup contract; see the testing-integration skill.
       - go test {{.GOTESTRACE}} -count=1 -timeout 600s -tags=integration {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}

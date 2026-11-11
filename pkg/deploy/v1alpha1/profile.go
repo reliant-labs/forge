@@ -165,6 +165,11 @@ var FieldProfiles = map[string]Profile{
 	// identity is the platform's to set.
 	"terminationGracePeriodSeconds": ProfileFull,
 	"securityContext":               ProfileFull,
+	// The preStop pause keeps the author's OWN pod routed while it leaves its
+	// Service. It lengthens the grace by at most MaxPreStopSeconds, the same
+	// kind of hold SHUTDOWN_TIMEOUT already gives a hosted pod, so a hosted
+	// user decides it: it is how a server forge did not build drains there.
+	"preStopSeconds": ProfileRestricted,
 }
 
 // fullOnlyReasons is WHY each ProfileFull field is refused under

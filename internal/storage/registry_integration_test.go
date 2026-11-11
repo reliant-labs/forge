@@ -56,7 +56,7 @@ func TestRegistryMaintenanceEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 300; i++ { // up to 30s: returns as soon as the registry answers
 		if _, err = registryRequest(ctx, base, "/v2/", http.MethodGet); err == nil {
 			break
 		}

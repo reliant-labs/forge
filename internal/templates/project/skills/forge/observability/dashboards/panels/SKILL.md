@@ -107,6 +107,33 @@ and nothing else: no `signal`, `series`, `sql`, `where`, `groupBy` or `unit`.
 `browse` and `link` are refused by a control plane pinned to an older forge, so
 add them once the control plane runs the forge that ships them.
 
+## Releases and delivery: `release_health`, `promotions`, `delivery`
+
+Three kinds draw what the team ships rather than what its services emit. The
+data is the control plane's (the release ledger and the release-health
+verdict), so a panel carries no query: no `signal`, `series`, `sql`, `where`,
+`groupBy`, `unit` or `display`.
+
+```json
+{ "id": "release-health", "title": "Latest release by environment", "kind": "release_health", "width": 24, "height": 10 }
+{ "id": "delivery", "title": "Delivery performance", "kind": "delivery", "width": 24, "height": 5 }
+{ "id": "promotions", "title": "Promotions", "kind": "promotions", "limit": 25 }
+```
+
+- `release_health` judges each environment's running release against the one
+  it replaced with release health (`GetReleaseHealth`, the rule and the env's
+  thresholds `forge obs check` uses), so it can never disagree with the
+  release's Health tab or the CLI. It ignores the range: the rule plans its own
+  windows around the promotion.
+- `promotions` lists the promotions and rollbacks in the range, newest first
+  (`limit` 1 to 200, default 50); `delivery` is the four DORA figures over the
+  range, each with its definition.
+- They follow the viewer's environments (every environment of the project when
+  none is selected); a service selection does not narrow them.
+
+A control plane pinned to a forge older than the one that added them still
+shows a release's dashboard that uses them, but refuses to save a copy of it.
+
 ## Text panels
 
 A `text` panel is prose, not data: `markdown` (CommonMark with GFM tables and

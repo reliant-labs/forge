@@ -1493,6 +1493,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         strategy = w.strategy
         securityContext = w.securityContext
         terminationGracePeriodSeconds = w.terminationGracePeriodSeconds
+        preStopSeconds = w.preStopSeconds
         activeDeadlineSeconds = w.activeDeadlineSeconds
         successfulJobsHistoryLimit = w.successfulJobsHistoryLimit
         failedJobsHistoryLimit = w.failedJobsHistoryLimit
@@ -1674,6 +1675,7 @@ _LOCAL_REFUSED: {str:str} = {
 }
 
 _COMPOSE_REFUSED: {str:str} = _LOCAL_REFUSED | {
+    "preStopSeconds": "the compose file owns how its service stops; set stop_grace_period there"
     "build": "compose builds its own image from the compose file; drop `build`, or bind a runtime forge builds for"
     "ports": "the compose file owns the published ports; declare them there"
     "probes": "the compose file owns the healthcheck; declare it there"
@@ -2926,10 +2928,12 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
-        "dockerfile": b.dockerfile
-        # The MAIN build context (a project-root-relative dir). None is the
-        # project root, which is how every build behaved before this existed.
-        "context": b.context if b.context else None
+        # A path string, or a GitSource pin projected in its stable dict form.
+        "dockerfile": _render_git_source_member(b.dockerfile) if typeof(b.dockerfile) == "GitSource" else b.dockerfile
+        # The MAIN build context (a project-root-relative dir, or a GitSource
+        # pin). None is the project root, which is how every build behaved
+        # before this existed.
+        "context": _render_git_source_member(b.context) if typeof(b.context) == "GitSource" else (b.context if b.context else None)
         "platform": b.platform if b.platform else None
         "target": b.target if b.target else None
         "build_args": b.build_args if b.build_args else {}
@@ -3086,6 +3090,17 @@ _render_git_source = lambda s: GitSource -> any {
     }
 }
 
+
+# _render_git_source for the GitSource member of a `str | GitSource` union
+# (DockerBuild.context / dockerfile): untyped, because KCL types the union
+# value as the union even after the typeof() guard selects the member.
+_render_git_source_member = lambda s -> any {
+    {
+        "repo": s.repo
+        "ref": s.ref
+        "subdir": s.subdir if s.subdir else None
+    }
+}
 
 _render_gateway_listener = lambda l: GatewayListener -> any {
     {

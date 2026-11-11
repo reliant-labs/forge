@@ -23,10 +23,11 @@ type workflow struct {
 }
 
 type job struct {
-	Name     string   `yaml:"name"`
-	If       string   `yaml:"if"`
-	Needs    []string `yaml:"needs"`
-	Strategy struct {
+	Name           string   `yaml:"name"`
+	If             string   `yaml:"if"`
+	Needs          []string `yaml:"needs"`
+	TimeoutMinutes int      `yaml:"timeout-minutes"`
+	Strategy       struct {
 		Matrix struct {
 			Include []map[string]string `yaml:"include"`
 		} `yaml:"matrix"`

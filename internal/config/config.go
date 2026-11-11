@@ -114,7 +114,7 @@ type ProjectConfig struct {
 	// every later `forge generate` has to guess. It selects the harness
 	// pointer files (CLAUDE.md, .cursorrules, ...) written beside AGENTS.md,
 	// which every harness gets. Forge never writes skill bodies for any
-	// harness. Empty means reliant.
+	// harness. Empty means reliant; `none` writes no agent file at all.
 	Harness string `yaml:"harness,omitempty"`
 	// NOTE: there is intentionally NO project-level `hot_reload:` field.
 	// The single hot-reload switch is `features.hot_reload`, which the dev
@@ -902,6 +902,8 @@ type CIConfig struct {
 	// Gate extends `forge ci gate` — the local gate behind `task ci` and
 	// `task ci:checks` — with the project's own checks.
 	Gate CIGateConfig `yaml:"gate,omitempty"`
+
+	Workflows map[string]bool `yaml:"workflows,omitempty"` // per-workflow opt-out; see ci_workflows.go
 }
 
 // CIGateConfig is what a project adds to the checks forge owns in
@@ -1636,14 +1638,17 @@ func (c ContractsConfig) InterfaceTypeSet() map[string]bool {
 // pinned off follows it off (ingress with deploy, orm with codegen); a
 // pinned feature whose requirement is off is a load error.
 //
-// The ORM is the one feature with no key: its switch is `//forge:no-orm` in
-// internal/db's doc comment, beside the code it affects, and a second
-// spelling here would be a second source of truth.
+// The ORM has two switches that say the same thing: `//forge:no-orm` in the
+// ORM package's doc comment, beside the code it affects, and `orm: false`
+// here, beside every other feature — the one a repository adopting forge
+// reaches for first. Either turns it off; `orm: true` beside the marker is a
+// contradiction, and a load error (ormPinIssues).
 //
 // A FeaturesConfig not produced by the config loader (the zero value, or one
 // hand-built in a test) resolves every feature to "enabled" except the
 // default-off ones; With overrides a single feature on such a value.
 type FeaturesConfig struct {
+	ORM           *bool `yaml:"orm,omitempty"` // or //forge:no-orm in the ORM package; see ormPinIssues
 	Codegen       *bool `yaml:"codegen,omitempty"`
 	Migrations    *bool `yaml:"migrations,omitempty"`
 	CI            *bool `yaml:"ci,omitempty"`
@@ -1666,6 +1671,8 @@ type FeaturesConfig struct {
 func (f FeaturesConfig) pinned(name FeatureName) (on, ok bool) {
 	var p *bool
 	switch name {
+	case FeatureORM:
+		p = f.ORM
 	case FeatureCodegen:
 		p = f.Codegen
 	case FeatureMigrations:
@@ -1696,11 +1703,13 @@ func (f FeaturesConfig) pinned(name FeatureName) (on, ok bool) {
 }
 
 // Pin returns a copy with name pinned on or off, as a `features:` entry in
-// forge.yaml would. ok is false for a feature with no key (orm, whose switch
-// is //forge:no-orm) or an unknown name; the copy is then unchanged.
+// forge.yaml would. ok is false for an unknown name; the copy is then
+// unchanged.
 func (f FeaturesConfig) Pin(name FeatureName, on bool) (_ FeaturesConfig, ok bool) {
 	v := on
 	switch name {
+	case FeatureORM:
+		f.ORM = &v
 	case FeatureCodegen:
 		f.Codegen = &v
 	case FeatureMigrations:

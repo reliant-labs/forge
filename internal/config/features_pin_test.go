@@ -137,10 +137,10 @@ func TestFeatures_PinSurvivesNormalizeForWrite(t *testing.T) {
 	}
 }
 
-func TestFeatures_PinRefusesOrm(t *testing.T) {
+func TestFeatures_PinOrm(t *testing.T) {
 	var f FeaturesConfig
-	if _, ok := f.Pin(FeatureORM, false); ok {
-		t.Error("orm has no key — its switch is //forge:no-orm")
+	if g, ok := f.Pin(FeatureORM, false); !ok || !g.Pinned(FeatureORM) || g.ORMEnabled() {
+		t.Error("orm pins like every other feature")
 	}
 	if g, ok := f.Pin(FeatureObservability, false); !ok || !g.Pinned(FeatureObservability) || g.ObservabilityEnabled() {
 		t.Error("Pin must pin")

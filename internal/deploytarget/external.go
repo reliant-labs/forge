@@ -449,9 +449,9 @@ func (x ExternalHooks) Status(ctx context.Context, s ExternalSpec) (ExternalStat
 type PlanOutcome int
 
 const (
-	// PlanNoChange: exit 0.
+	// PlanNoChange is the hook exiting 0.
 	PlanNoChange PlanOutcome = iota
-	// PlanChanges: exit 2.
+	// PlanChanges is the hook exiting 2.
 	PlanChanges
 )
 

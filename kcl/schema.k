@@ -6160,7 +6160,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -6185,8 +6185,13 @@ schema ReleaseHealth:
     `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
     latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
     seen in this release with `new_issue_min_events` events), regressed_issue,
-    alert_firing (an alert opened after the promotion still fires) and
-    workload_restarts.
+    alert_firing (an alert opened after the promotion still fires),
+    workload_restarts, and, for a frontend that sends browser telemetry,
+    browser_errors (JavaScript errors per page view rose by more than
+    `max_error_rate_increase`), browser_failed_requests (the share of its
+    fetch/XHR requests that failed rose by as much) and browser_page_load (p95
+    page load grew by more than `max_p95_ratio`). The browser findings warn
+    unless listed in `fail_on`.
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.

@@ -403,12 +403,3 @@ func (r *Registry) InCategory(id string) []Benefit {
 	}
 	return out
 }
-
-// RuleCount is the number of lint rule ids across every entry.
-func (r *Registry) RuleCount() int {
-	n := 0
-	for _, b := range r.Benefits {
-		n += len(b.Rules)
-	}
-	return n
-}

@@ -1,6 +1,6 @@
 ---
 name: deploy/model
-description: The deploy model — every workload declared once in workloads.k and bound per env to a runtime (OnHost, OnCluster, OnHosted, OnCompose, BuildOnly, OnExternal); the scaffolded envs and their binders, `forge env new --from`, who applies an env, what forge writes into every spec (probes, grace, PDB, strategy, hardening), the hosted restricted profile, per-env config, cross-references, and derived features.
+description: The deploy model — every workload declared once in workloads.k and bound per env to a runtime (OnHost, OnCluster, OnHosted, OnCompose, BuildOnly, OnExternal); the scaffolded envs, their binders and the shared env base (deploy/kcl/base) they delegate to, `forge env new --from`, who applies an env, what forge writes into every spec (probes, grace, PDB, strategy, hardening), the hosted restricted profile, per-env config, cross-references, and derived features.
 ---
 
 # The model: declare once, bind per env
@@ -80,7 +80,7 @@ _workloads = [
 | Env | Binders | Notes |
 |---|---|---|
 | `dev` | `_on_host` / `_on_host_job` (services, workers, jobs), `_on_k3d` (operators, crons: a host process cannot be one) | host-run postgres (and dev IdP, NATS, a Temporal dev server) via `forge.HostInfra` |
-| `staging`, `prod` | `_hosted`, `_hosted_frontend`; `_on_cluster`, `_on_bucket` unused | **hosted on Reliant**: a `forge.ManagedDatabase`, `forge.HostedSecrets` |
+| `staging`, `prod` | `_hosted`, `_hosted_frontend`; `_on_cluster`, `_on_bucket` unused — each delegating to `deploy/kcl/base/env.k` | **hosted on Reliant**: a `forge.ManagedDatabase`, `forge.HostedSecrets` |
 
 **Hosting elsewhere is a one-line rebind**: declare `_cluster` / `_bucket`
 as the env shows, then edit the line to `_on_cluster(...)` /
@@ -88,8 +88,25 @@ as the env shows, then edit the line to `_on_cluster(...)` /
 `_on_cluster`. One-workload API, billing, adopting in an older project:
 `deploy/hosting`.
 
-Derive another env — each binding is copied; a declared cluster's context,
-platform and namespace become REPLACE_ME placeholders:
+### A shared base, per-env deltas
+
+The binders' bodies live ONCE, in `deploy/kcl/base/env.k` (`forge project new`
+scaffolds it; yours). Each env imports it, `import ..base.env as envbase`, and
+keeps only what is its own: its database, the cluster or bucket it declares,
+its capacity (`_cluster_resources`, `_cluster_replicas`), and its binding
+lines. Its binders are one-liners (`_hosted = lambda w ... {
+envbase.hosted(w, appcfg.app_config, _db.name) }`), so a change in the base
+reaches every env, and an env still overrides one by wrapping it. It is plain
+KCL: `env render`, `env diff` and `env shape` read it like any import.
+
+An older project adopts it by moving its binders' bodies into
+`deploy/kcl/base/env.k` and leaving the one-liners. Anything else several
+envs share goes in a module beside it (`deploy/kcl/base/<name>.k`); a large
+project's library of such modules is the same idea at scale.
+
+Derive another env — each binding is copied (an env on the base is copied as
+just its deltas); a declared cluster's context, platform and namespace become
+REPLACE_ME placeholders:
 
 ```
 forge env new preview --from staging                        # same bindings as staging

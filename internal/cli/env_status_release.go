@@ -277,12 +277,26 @@ type envStatusOptions struct {
 	HostedIdentity func(ctx context.Context, env string) (identityStatusDocument, error)
 }
 
-// runEnvStatusRelease resolves the binding, reads the cluster, prints a per-image
-// report, and returns an error carrying the right exit code.
-func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOptions) error {
-	if ctx == nil {
-		ctx = context.Background()
+// verifyExternalThenCluster reads forge.OnExternal workloads through their
+// status hook, and only what is left off the cluster (env_status_external.go).
+// source is set when any workload is external.
+func verifyExternalThenCluster(ctx context.Context, projectDir, envName string, resolved map[string]string, opts envStatusOptions) (results []imageVerification, kubeContext, namespace, source string) {
+	external, rest := splitExternalImages(ctx, projectDir, envName, resolved, opts)
+	if len(external) > 0 {
+		source = "forge.OnExternal status hooks"
 	}
+	results = external
+	if len(rest) > 0 || len(external) == 0 {
+		var clusterResults []imageVerification
+		clusterResults, kubeContext, namespace = verifyCluster(ctx, projectDir, envName, rest, opts)
+		results = append(results, clusterResults...)
+	}
+	return results, kubeContext, namespace, source
+}
+
+// withDefaults fills the collaborators a caller (a test) left unset with the
+// real ones.
+func (opts envStatusOptions) withDefaults() envStatusOptions {
 	if opts.Timeout <= 0 {
 		opts.Timeout = defaultEnvStatusReleaseTimeout
 	}
@@ -297,6 +311,16 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		// command prints, so the log stays out of it.
 		opts.ExternalHooks = deploytarget.ExternalHooks{Runner: deploytarget.ExecHookRunner{}, Stderr: io.Discard}
 	}
+	return opts
+}
+
+// runEnvStatusRelease resolves the binding, reads the cluster, prints a per-image
+// report, and returns an error carrying the right exit code.
+func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	opts = opts.withDefaults()
 
 	projectDir := projectDirForKCL()
 	if opts.Bindings == nil {
@@ -387,18 +411,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		}
 		results, queued, identity = verifyHostedWithIdentity(ctx, envName, binding, opts)
 	} else {
-		// forge.OnExternal workloads are read through their status hook;
-		// only what is left is read off the cluster (env_status_external.go).
-		external, rest := splitExternalImages(ctx, projectDir, envName, binding.Resolved, opts)
-		if len(external) > 0 {
-			source = "forge.OnExternal status hooks"
-		}
-		results = external
-		if len(rest) > 0 || len(external) == 0 {
-			var clusterResults []imageVerification
-			clusterResults, kubeContext, namespace = verifyCluster(ctx, projectDir, envName, rest, opts)
-			results = append(results, clusterResults...)
-		}
+		results, kubeContext, namespace, source = verifyExternalThenCluster(ctx, projectDir, envName, binding.Resolved, opts)
 	}
 	// An `applier = "flux"` env's reconciler is the env's own Flux: what it
 	// reports about the pointer is part of the verdict, and a Forbidden for

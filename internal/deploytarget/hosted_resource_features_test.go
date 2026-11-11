@@ -60,6 +60,22 @@ func TestRequireHostedResourceFeatures(t *testing.T) {
 	}
 }
 
+func TestHostedProvider_OldServerRefusedBeforeAnyWrite(t *testing.T) {
+	g := staticGroup("v2", map[string]string{staticSiteArtifact: digestB})
+	g.Services[0].Hosted.Static.WellKnown = map[string]string{"assetlinks.json": "[]"}
+	c := &resourceCapsCaller{doc: `{}`}
+	p := HostedProvider{Client: c, RecordBundle: func(context.Context, string) (string, error) {
+		t.Fatal("recorded a bundle before capabilities were checked")
+		return "", nil
+	}}
+	if err := p.Deploy(context.Background(), g); err == nil || !strings.Contains(err.Error(), "upgrade") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(c.calls) != 1 || c.calls[0] != ProcDeployCapabilities {
+		t.Fatalf("wrote before refusal: %v", c.calls)
+	}
+}
+
 func TestRequiredHostedResourceFeatures(t *testing.T) {
 	g := ServiceGroup{Services: []ResolvedService{{Name: "web", Hosted: &HostedWorkload{Tier: HostedTierStatic, Static: &v1alpha1.StaticSiteSpec{}}}}}
 	if len(RequiredHostedResourceFeatures(g)) != 0 {

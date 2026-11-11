@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,7 +13,7 @@ import (
 )
 
 // writeTree lays files down under a fresh directory and returns it.
-func writeTree(t *testing.T, files map[string]string) string {
+func writeAppTree(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	for rel, body := range files {
@@ -30,7 +31,7 @@ func writeTree(t *testing.T, files map[string]string) string {
 // nodeExpressApp is an Express API with its own Dockerfile and no compose
 // file, no database and no Go.
 func nodeExpressApp(t *testing.T) string {
-	return writeTree(t, map[string]string{
+	return writeAppTree(t, map[string]string{
 		"package.json":  `{"name":"todo-api","scripts":{"dev":"node --watch src/server.js","start":"node src/server.js"},"dependencies":{"express":"^4.19.0"}}`,
 		"src/server.js": "const express = require('express');\nconst app = express();\napp.get('/health', (req, res) => res.json({ok: true}));\napp.listen(process.env.PORT || 3000);\n",
 		"Dockerfile":    "FROM node:20-slim\nWORKDIR /app\nCOPY package.json ./\nRUN npm install --omit=dev\nCOPY src ./src\nEXPOSE 3000\nCMD [\"node\", \"src/server.js\"]\n",
@@ -41,7 +42,7 @@ func nodeExpressApp(t *testing.T) string {
 // pythonComposeApp is a FastAPI app with its own Dockerfile and a compose
 // file running it beside Postgres and Redis, migrating with alembic.
 func pythonComposeApp(t *testing.T) string {
-	return writeTree(t, map[string]string{
+	return writeAppTree(t, map[string]string{
 		"requirements.txt": "fastapi==0.115.0\nuvicorn[standard]==0.30.0\npsycopg[binary]==3.2.1\nalembic==1.13.2\n",
 		"app/main.py":      "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get(\"/health\")\ndef health():\n    return {\"ok\": True}\n",
 		"alembic.ini":      "[alembic]\nscript_location = migrations\n",
@@ -223,7 +224,7 @@ func TestNewApp_Refusals(t *testing.T) {
 	if err := runNewApp(newAppInput{projectName: "todo", projectPath: root}); err == nil || !strings.Contains(err.Error(), "--in-place") {
 		t.Errorf("without --in-place: %v, want a refusal naming --in-place", err)
 	}
-	empty := writeTree(t, map[string]string{"main.py": "print('hi')\n"})
+	empty := writeAppTree(t, map[string]string{"main.py": "print('hi')\n"})
 	if err := adoptApp(t, empty, "x", false, false); err == nil || !strings.Contains(err.Error(), "no Dockerfile") {
 		t.Errorf("no Dockerfile: %v, want a refusal naming the Dockerfile", err)
 	}
@@ -348,7 +349,7 @@ func TestNewApp_PolyglotAppsAdoptAndRender(t *testing.T) {
 	}
 
 	// --claimable: prod fits the anonymous plan, with no secret values.
-	claim := writeTree(t, map[string]string{
+	claim := writeAppTree(t, map[string]string{
 		"Dockerfile":       "FROM python:3.12-slim\nCOPY . .\nCMD [\"uvicorn\", \"app.main:app\", \"--port\", \"8000\"]\n",
 		"requirements.txt": "fastapi\npsycopg2-binary\n",
 		"manage.py":        "",
@@ -365,5 +366,50 @@ func TestNewApp_PolyglotAppsAdoptAndRender(t *testing.T) {
 	}
 	if reasons := claimableIneligibility(prod, deploy.ClaimableLimitsFallback()); len(reasons) > 0 {
 		t.Errorf("claimable prod does not fit the plan: %v", reasons)
+	}
+}
+
+// A compose build.target naming a stage that is not the last reads that stage
+// alone: a later stage's EXPOSE, CMD and ENV PORT are not the target's.
+func TestParseDockerfile_TargetStageIsReadAlone(t *testing.T) {
+	root := writeAppTree(t, map[string]string{
+		"Dockerfile": "FROM node:20 AS dev\nENV PORT=5173\nEXPOSE 5173\nCMD [\"npm\", \"run\", \"dev\"]\n\n" +
+			"FROM node:20-slim AS prod\nENV PORT=3000\nEXPOSE 3000\nCMD [\"node\", \"server.js\"]\n",
+	})
+	path := filepath.Join(root, "Dockerfile")
+	dev, err := parseDockerfile(path, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(dev.expose) != "[5173]" || dev.envPort != 5173 || strings.Join(dev.cmd, " ") != "npm run dev" || dev.base != "node:20" {
+		t.Errorf("target dev = %+v, want only the dev stage: EXPOSE 5173, PORT 5173, npm run dev, node:20", dev)
+	}
+	last, err := parseDockerfile(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(last.expose) != "[3000]" || strings.Join(last.cmd, " ") != "node server.js" {
+		t.Errorf("no target = %+v, want the final stage: EXPOSE 3000, node server.js", last)
+	}
+}
+
+// detectApp follows compose's build.target to the first of two stages.
+func TestDetectApp_ComposeTargetIsAnEarlierStage(t *testing.T) {
+	root := writeAppTree(t, map[string]string{
+		"package.json": `{"name":"shop","scripts":{"start":"node server.js"}}`,
+		"Dockerfile": "FROM node:20 AS dev\nEXPOSE 5173\nCMD [\"npm\", \"run\", \"dev\"]\n\n" +
+			"FROM node:20-slim AS prod\nENV PORT=3000\nEXPOSE 3000\nCMD [\"node\", \"server.js\"]\n",
+		"docker-compose.yml": "services:\n  web:\n    build:\n      context: .\n      target: dev\n",
+	})
+	det, err := detectApp(root, "shop", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(det.spec.Workloads) != 1 {
+		t.Fatalf("workloads = %+v, want one", det.spec.Workloads)
+	}
+	w := det.spec.Workloads[0]
+	if w.Port != 5173 {
+		t.Errorf("web port = %d, want 5173 from the dev stage the compose target names", w.Port)
 	}
 }

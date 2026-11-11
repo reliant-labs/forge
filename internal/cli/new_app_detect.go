@@ -383,7 +383,8 @@ func parseDockerfile(path, target string) (dockerfileFacts, error) {
 		switch strings.ToUpper(instr) {
 		case "FROM":
 			if found {
-				break
+				// The target stage ended: nothing after it is the target's.
+				return chosen, nil
 			}
 			fields := strings.Fields(rest)
 			facts = dockerfileFacts{}

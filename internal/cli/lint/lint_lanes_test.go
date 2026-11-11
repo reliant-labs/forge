@@ -92,3 +92,37 @@ func TestLanesOff_OffLaneIsNamedNeverSilent(t *testing.T) {
 		t.Errorf("gate tally skipped = %v", tally.skipped)
 	}
 }
+
+// `frontend-lint: off` switches the eslint/stylelint lane off and nothing
+// else: the gating `frontend typecheck` lane still runs, in text mode and in
+// --json alike (both drivers take their skips from frontendSkips), and only
+// the format lane also leaves that frontend alone. --skip-frontends still
+// drops the whole frontend lane in both.
+func TestLanesOff_FrontendLintOffKeepsTypecheckInBothDrivers(t *testing.T) {
+	off, err := lanesOff(lanesCfg(map[string]string{"frontend-lint": "off"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !off["frontend lint"] || off["frontend typecheck"] {
+		t.Fatalf("lanes off = %v, want frontend lint alone", off)
+	}
+	run, format := frontendSkips(false, off)
+	if run || !format {
+		t.Fatalf("frontendSkips = run %v, format %v; want typecheck kept (run=false) and format skipped", run, format)
+	}
+	opts := jsonRunOptions(lintFlags{}, skipAllowances{}, off, nil, nil, nil)
+	if opts.skipFrontends || !opts.formatSkipFrontends {
+		t.Fatalf("--json run: skipFrontends %v, formatSkipFrontends %v; want typecheck kept, format skipped", opts.skipFrontends, opts.formatSkipFrontends)
+	}
+	if !off[formatLaneName] && opts.lanesOff["frontend typecheck"] {
+		t.Fatal("--json run turned the typecheck lane off")
+	}
+
+	run, format = frontendSkips(true, nil)
+	if !run || !format {
+		t.Fatalf("--skip-frontends: run %v, format %v; want both skipped", run, format)
+	}
+	if opts := jsonRunOptions(lintFlags{skipFrontends: true}, skipAllowances{}, nil, nil, nil, nil); !opts.skipFrontends {
+		t.Fatal("--json with --skip-frontends kept the frontend lane")
+	}
+}

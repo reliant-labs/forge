@@ -422,6 +422,10 @@ type lintRunOptions struct {
 	reportFormat  bool
 	strict        bool
 	skipFrontends bool
+	// formatSkipFrontends keeps the format lane off the frontends without
+	// dropping their typecheck: a frontend whose lint lane is off
+	// (frontendSkips).
+	formatSkipFrontends bool
 	// allowSkip is the parsed --allow-skip + lint.allow_skip (lint_skip.go).
 	allowSkip skipAllowances
 	// lanesOff is the resolved lint.lanes (lint_lanes.go).

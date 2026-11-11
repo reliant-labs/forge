@@ -513,7 +513,7 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	default:
 		fix := resolveFixMode(flags)
 		// A frontend whose lint lane is off is not forge's to format either.
-		skipFrontends := flags.skipFrontends || off["frontend lint"]
+		runSkip, skipFrontends := frontendSkips(flags.skipFrontends, off)
 		if fix && !off[formatLaneName] {
 			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, skipFrontends)
 		}
@@ -521,7 +521,7 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 			ctx:           ctx,
 			fix:           fix,
 			strict:        flags.strict,
-			skipFrontends: flags.skipFrontends,
+			skipFrontends: runSkip,
 			paths:         paths,
 			cfg:           cfg,
 			cwd:           cwd,

@@ -292,16 +292,24 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	if err != nil {
 		return nil, err
 	}
-	return collectAllLintersJSON(ctx, lintRunOptions{
-		reportFormat:  !flags.autoFix(),
-		strict:        flags.strict,
-		skipFrontends: flags.skipFrontends || off["frontend lint"],
-		allowSkip:     allow,
-		lanesOff:      off,
-		paths:         paths,
-		cfg:           cfg,
-		scope:         scope,
-	}, cwd)
+	return collectAllLintersJSON(ctx, jsonRunOptions(flags, allow, off, paths, cfg, scope), cwd)
+}
+
+// jsonRunOptions is --json's run: the same frontend skips as text mode
+// (frontendSkips), so `frontend-lint: off` still runs and gates on typecheck.
+func jsonRunOptions(flags lintFlags, allow skipAllowances, off map[string]bool, paths []string, cfg *config.ProjectConfig, scope *lintScope) lintRunOptions {
+	run, format := frontendSkips(flags.skipFrontends, off)
+	return lintRunOptions{
+		reportFormat:        !flags.autoFix(),
+		strict:              flags.strict,
+		skipFrontends:       run,
+		formatSkipFrontends: format,
+		allowSkip:           allow,
+		lanesOff:            off,
+		paths:               paths,
+		cfg:                 cfg,
+		scope:               scope,
+	}
 }
 
 // collectSingleLinterJSON runs the ONE linter flags select — callers narrow
@@ -448,7 +456,7 @@ func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string)
 	case opts.lanesOff[formatLaneName]:
 		outcomes = append(outcomes, offOutcome(formatLaneName, true))
 	case opts.reportFormat:
-		outcomes = append(outcomes, formatOutcome(ctx, cwd, opts.cfg, opts.scope, opts.paths, opts.skipFrontends))
+		outcomes = append(outcomes, formatOutcome(ctx, cwd, opts.cfg, opts.scope, opts.paths, opts.skipFrontends || opts.formatSkipFrontends))
 	}
 	findings, gated := flattenLintOutcomes(outcomes)
 	return buildLintJSONReport(findings, gated), nil

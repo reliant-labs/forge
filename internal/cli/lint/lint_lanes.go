@@ -112,3 +112,13 @@ func lanesOff(cfg *config.ProjectConfig) (map[string]bool, error) {
 func offOutcome(name string, gates bool) lintStepOutcome {
 	return lintStepOutcome{name: name, gates: gates, off: true}
 }
+
+// frontendSkips is what --skip-frontends and lint.lanes mean for the two
+// frontend consumers, the same in text and --json mode. The run context's
+// skip drops the whole frontend lane (eslint/stylelint AND the gating
+// typecheck), so only --skip-frontends sets it; `frontend-lint: off` turns off
+// the lint lane alone, through lanesOff. Formatting (the fix pre-pass and the
+// format lane) also leaves a frontend whose lint lane is off alone.
+func frontendSkips(flagSkip bool, off map[string]bool) (run, format bool) {
+	return flagSkip, flagSkip || off["frontend lint"]
+}

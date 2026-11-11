@@ -85,14 +85,6 @@ lint:
   frontend:
     no_important: warn
     no_inline_styles: warn
-  rules:
-    # forge's own tree gates every rule the day it lands (no rollout grace),
-    # and the test-waits lane found 98 sleeps, tight deadlines and
-    # wall-clock bounds in forge's suites when it shipped. Warn until they
-    # are cleaned up; then delete these three lines so the lane gates here.
-    forge-test-fixed-sleep: warn
-    forge-test-tight-deadline: warn
-    forge-test-wall-clock-bound: warn
 contracts:
   exclude:
     - "internal/naming" # Pure stateless string-case utilities; mocking adds no value.

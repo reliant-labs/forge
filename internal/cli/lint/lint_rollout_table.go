@@ -227,7 +227,7 @@ var newRules = []rolloutGroup{
 	{IntroducedIn: "v1.2.0", GatesFrom: "v1.2.1", Rules: []string{ruleIdentitySubjectUnreadable}},
 	// forge lint --test-waits: a test that waits on the wall clock where it
 	// should wait on an event — the shapes that flake on a loaded machine.
-	{IntroducedIn: "v1.4.0", GatesFrom: "v1.4.1", Rules: []string{
+	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{
 		testwait.RuleFixedSleep, testwait.RuleTightDeadline, testwait.RuleWallClockBound,
 	}},
 }

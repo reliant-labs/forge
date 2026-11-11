@@ -41,7 +41,7 @@ func (e Edge) Wrap(cfg Config) (func(http.Handler) http.Handler, error) {
 			handler = e.SecurityHeaders(!cfg.IsDevelopment())(handler)
 		}
 		// The trusted edge's visitor context (observe.EdgeContextMiddleware), for
-		// every route the listener serves; a no-op off Reliant hosting.
+		// every route the listener serves; a no-op unless FORGE_TRUSTED_EDGE=reliant.
 		handler = observe.EdgeContextMiddleware(handler)
 		// Outermost of serverkit's own layers, so CORS, security headers and
 		// logging all see the correlation id.

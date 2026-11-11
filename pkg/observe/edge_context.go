@@ -11,8 +11,8 @@ import (
 )
 
 // The edge visitor context. On Reliant hosting every request reaches a
-// workload through the platform's proxy, which stamps two headers (and strips
-// any copy a client sent):
+// workload through the platform's proxy, which stamps two headers and, once
+// control-plane #2517 is deployed, strips any copy a client sent:
 //
 //   - X-Reliant-Visitor-Day: the visitor's cookieless daily hash, the same one
 //     it stamps on that browser's own telemetry;
@@ -22,10 +22,13 @@ import (
 // EdgeContextMiddleware (HTTP) and EdgeContextInterceptor (Connect) read them
 // into the request's context, and Track and TrackAuth record the hash as
 // visitor.day: that is what links a server-side sign-up to the anonymous visit
-// that led to it, with no browser code. Off the platform a client could send
-// these headers, so they are read only when the process declares the edge
-// trusted (EnvTrustedEdge=reliant, which forge renders for forge.OnHosted
-// workloads); otherwise they are ignored.
+// that led to it, with no browser code. A client can send these headers
+// wherever no proxy strips them, so they are read only when the process
+// declares the edge trusted (EnvTrustedEdge=reliant); otherwise they are
+// ignored. forge does not render that variable for any workload yet, so they
+// are ignored everywhere unless an author sets it by hand; a later forge
+// renders it for forge.OnHosted workloads once the stripping proxy is
+// deployed.
 
 // Edge headers and the attribute the visitor hash is recorded as.
 const (

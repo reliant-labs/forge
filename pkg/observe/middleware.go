@@ -307,8 +307,8 @@ func Chain(deps Deps) []connect.Interceptor {
 		RecoveryInterceptor(deps.Logger),
 		RequestIDInterceptor(),
 	)
-	// Only behind a trusted edge (Reliant hosting): elsewhere the headers are
-	// a client's, and the chain stays as it was.
+	// Only behind a trusted edge (FORGE_TRUSTED_EDGE=reliant): elsewhere the
+	// headers are a client's, and the chain stays as it was.
 	if edgeTrusted() {
 		chain = append(chain, EdgeContextInterceptor())
 	}

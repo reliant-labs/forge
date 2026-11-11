@@ -489,10 +489,6 @@
               "value": "deployment.environment.name=dev,service.namespace=acme"
             },
             {
-              "name": "FORGE_TRUSTED_EDGE",
-              "value": "reliant"
-            },
-            {
               "name": "GOMEMLIMIT",
               "value": "921MiB"
             }

@@ -114,10 +114,6 @@
               "value": "deployment.environment.name=preview-142,service.namespace=acme"
             },
             {
-              "name": "FORGE_TRUSTED_EDGE",
-              "value": "reliant"
-            },
-            {
               "managedSecret": {
                 "name": "RELIANT_IDENTITY_IDENTITY_AUDIENCE"
               },

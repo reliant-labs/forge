@@ -175,6 +175,15 @@ func parseTokenScopes(raw string) ([]string, error) {
 	if len(out) == 0 {
 		return nil, fmt.Errorf("--scopes is empty: name at least one, e.g. deploy:read,deploy:write")
 	}
+	// A registry-only scope is a whole credential (accesstoken.RegistryOnly):
+	// refused here, with why, rather than by the server after the round trip.
+	if set := accesstoken.KnownScopes(out); set.RegistryOnly() {
+		for _, s := range out {
+			if !accesstoken.RegistryOnly(accesstoken.Scope(s)) {
+				return nil, fmt.Errorf("--scopes mixes a registry-only scope with %s: a sourcemaps:write token carries nothing else, so mint a separate token for %s", s, s)
+			}
+		}
+	}
 	return out, nil
 }
 

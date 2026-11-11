@@ -1,14 +1,17 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -248,5 +251,85 @@ func TestTruncateMCPOutputKeepsTheVerdict(t *testing.T) {
 	}
 	if small := "short\n"; truncateMCPOutput(small) != small {
 		t.Error("small output must pass through unchanged")
+	}
+}
+
+// A client that writes initialize, initialized and tools/list and closes stdin
+// (a registry's build check, `printf ... | forge mcp`) must still get both
+// responses: EOF ends input, it does not abort the calls already read.
+func TestMCP_AnswersEveryRequestReadBeforeStdinCloses(t *testing.T) {
+	resetCmdRoute(t)
+	t.Chdir(t.TempDir())
+
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outR.Close()
+	prevStdout := os.Stdout
+	t.Cleanup(func() { os.Stdout = prevStdout })
+
+	in := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"pipe","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+`
+	done := make(chan error, 1)
+	go func() {
+		err := runMCP(context.Background(), strings.NewReader(in), outW)
+		outW.Close()
+		done <- err
+	}()
+
+	got := map[int]json.RawMessage{}
+	sc := bufio.NewScanner(outR)
+	sc.Buffer(make([]byte, 1<<20), 16<<20)
+	for sc.Scan() {
+		var m struct {
+			ID     *int            `json:"id"`
+			Result json.RawMessage `json:"result"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+			t.Fatalf("bad frame %q: %v", sc.Text(), err)
+		}
+		if m.ID != nil {
+			got[*m.ID] = m.Result
+		}
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("runMCP: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("runMCP did not return after stdin closed")
+	}
+
+	if len(got[1]) == 0 {
+		t.Fatal("no initialize response before exit")
+	}
+	var list struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 14 {
+		t.Fatalf("tools/list response = %s (err %v), want 14 tools", got[2], err)
+	}
+}
+
+type eofConn struct{ mcp.Connection }
+
+func (eofConn) Read(context.Context) (jsonrpc.Message, error) { return nil, io.EOF }
+
+func TestDrainingConnGivesUpAfterTheBound(t *testing.T) {
+	conn := &drainingConn{Connection: eofConn{}, maxDrain: 50 * time.Millisecond, pending: 1,
+		idle: make(chan struct{}), closed: make(chan struct{})}
+
+	start := time.Now()
+	if _, err := conn.Read(context.Background()); err != io.EOF {
+		t.Fatalf("err = %v, want io.EOF", err)
+	}
+	if d := time.Since(start); d < 40*time.Millisecond || d > 5*time.Second {
+		t.Errorf("drain took %v, want about the 50ms bound", d)
 	}
 }

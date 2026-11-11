@@ -72,7 +72,7 @@ a counter that only exists once something fails; --strict fails on it too.
 	f.StringVarP(&o.outputDir, "output", "o", "bin", "build output directory holding observability/metrics-schema.json")
 	f.StringVar(&o.against, "against", "", "also check every metrics panel against this env's telemetry")
 	f.StringVar(&o.backend, "backend", "", "with --against: local | cloud (default: from the env's declaration)")
-	f.DurationVar(&o.since, "since", 24*time.Hour, "with --against: the window a metric must have data in")
+	obsDurationVar(f, &o.since, "since", 24*time.Hour, "with --against: the window a metric must have data in")
 	f.BoolVar(&o.strict, "strict", false, "with --against: a metric with no data in the window fails the check too")
 	cmd.AddCommand(check, newObsDashboardsAuditCmd(), newObsDashboardsAddPanelCmd())
 	return cmdutil.StrictGroup(cmd)

@@ -1,9 +1,11 @@
 package debug
 
 import (
+	"errors"
 	"fmt"
 	"net/rpc"
 	"net/rpc/jsonrpc"
+	"time"
 
 	"github.com/go-delve/delve/service/api"
 )
@@ -127,10 +129,112 @@ func (c *rpcClient) ProcessPid() int {
 	return out.Pid
 }
 
-// Detach detaches (optionally killing the target) and closes the connection.
-func (c *rpcClient) Detach(kill bool) error {
+// errRPCTimeout is a bounded call that did not return in time.
+var errRPCTimeout = errors.New("timed out waiting for delve")
+
+// await waits for an in-flight call until deadline (nil = forever). On
+// deadline it returns ErrStillRunning; the call stays pending on the
+// connection, and the server finishes it regardless.
+func await(call *rpc.Call, deadline <-chan time.Time) error {
+	select {
+	case <-call.Done:
+		return call.Error
+	case <-deadline:
+		return ErrStillRunning
+	}
+}
+
+// callTimeout is call with a bound: lifecycle RPCs must not hang stop.
+func (c *rpcClient) callTimeout(method string, args, reply any, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	err := await(c.client.Go("RPCServer."+method, args, reply, nil), t.C)
+	if errors.Is(err, ErrStillRunning) {
+		return fmt.Errorf("%s: %w after %s", method, errRPCTimeout, d)
+	}
+	return err
+}
+
+// Close closes the connection.
+func (c *rpcClient) Close() error { return c.client.Close() }
+
+// detachTimeout detaches (optionally killing the target) and closes the
+// connection. With kill false Delve removes its breakpoints first.
+func (c *rpcClient) detachTimeout(kill bool, d time.Duration) error {
 	defer func() { _ = c.client.Close() }()
-	return c.call("Detach", detachIn{kill}, &struct{}{})
+	return c.callTimeout("Detach", detachIn{kill}, &struct{}{}, d)
+}
+
+// stateNonBlockingTimeout is GetStateNonBlocking with a bound. NonBlocking
+// only spares the wait for Delve's target lock; the transport still waits for
+// a reply, which a wedged server never sends.
+func (c *rpcClient) stateNonBlockingTimeout(d time.Duration) (*api.DebuggerState, error) {
+	var out stateOut
+	if err := c.callTimeout("State", stateIn{NonBlocking: true}, &out, d); err != nil {
+		// A timed-out call may still write out later: never read it.
+		return nil, err
+	}
+	return out.State, nil
+}
+
+// haltTimeout stops a running target; it returns once the target is halted.
+func (c *rpcClient) haltTimeout(d time.Duration) (*api.DebuggerState, error) {
+	var out commandOut
+	err := c.callTimeout("Command", api.DebuggerCommand{Name: api.Halt}, &out, d)
+	return &out.State, err
+}
+
+// listBreakpointsTimeout is ListBreakpoints with a bound: release's cleanup
+// must not hang on a server that answered State and then stalled.
+func (c *rpcClient) listBreakpointsTimeout(d time.Duration) ([]*api.Breakpoint, error) {
+	var out listBreakpointsOut
+	if err := c.callTimeout("ListBreakpoints", listBreakpointsIn{false}, &out, d); err != nil {
+		// A timed-out call may still write out later: never read it.
+		return nil, err
+	}
+	return out.Breakpoints, nil
+}
+
+// clearBreakpointTimeout is ClearBreakpoint with a bound, for release.
+func (c *rpcClient) clearBreakpointTimeout(id int, d time.Duration) error {
+	return c.callTimeout("ClearBreakpoint", clearBreakpointIn{Id: id}, new(clearBreakpointOut), d)
+}
+
+// resume sends a Continue without waiting for its reply: the request is
+// written before Go returns, and a multi-client dlv keeps running the target
+// after this connection closes (dlv's own --continue does the same).
+func (c *rpcClient) resume() error {
+	call := c.client.Go("RPCServer.Command", &api.DebuggerCommand{Name: api.Continue}, new(commandOut), make(chan *rpc.Call, 1))
+	select {
+	case <-call.Done:
+		// Only a send failure completes this fast; a real Continue returns
+		// at the next stop.
+		return call.Error
+	default:
+		return nil
+	}
+}
+
+// continueCmd resumes the target and waits, until deadline, for it to stop.
+func (c *rpcClient) continueCmd(deadline <-chan time.Time) (*api.DebuggerState, error) {
+	var out commandOut
+	if err := await(c.client.Go("RPCServer.Command", &api.DebuggerCommand{Name: api.Continue}, &out, nil), deadline); err != nil {
+		return nil, err
+	}
+	return &out.State, nil
+}
+
+// waitState waits, until deadline, for a running target to stop: a blocking
+// State call returns only once Delve's target lock is free.
+func (c *rpcClient) waitState(deadline <-chan time.Time) (*api.DebuggerState, error) {
+	var out stateOut
+	if err := await(c.client.Go("RPCServer.State", stateIn{NonBlocking: false}, &out, nil), deadline); err != nil {
+		return nil, err
+	}
+	if out.State == nil {
+		return nil, errors.New("delve returned no state")
+	}
+	return out.State, nil
 }
 
 // Disconnect closes the connection; with cont it first fires an async Continue.
@@ -163,49 +267,16 @@ func (c *rpcClient) command(name string) (*api.DebuggerState, error) {
 func (c *rpcClient) Next() (*api.DebuggerState, error)    { return c.command(api.Next) }
 func (c *rpcClient) Step() (*api.DebuggerState, error)    { return c.command(api.Step) }
 func (c *rpcClient) StepOut() (*api.DebuggerState, error) { return c.command(api.StepOut) }
-func (c *rpcClient) Halt() (*api.DebuggerState, error)    { return c.command(api.Halt) }
-
-// Continue resumes the target, delivering each stop on the returned channel.
-// Like delve's client it keeps resuming through tracepoint-only stops and
-// closes the channel at the first real stop, exit, or error.
-func (c *rpcClient) Continue() <-chan *api.DebuggerState {
-	ch := make(chan *api.DebuggerState)
-	go func() {
-		for {
-			var out commandOut
-			err := c.call("Command", &api.DebuggerCommand{Name: api.Continue}, &out)
-			state := out.State
-			if err != nil {
-				state.Err = err
-			}
-			if state.Exited {
-				state.Err = fmt.Errorf("process %d has exited with status %d", c.ProcessPid(), state.ExitStatus)
-			}
-			ch <- &state
-			if err != nil || state.Exited {
-				close(ch)
-				return
-			}
-
-			isBreakpoint, isTracepoint := false, true
-			for i := range state.Threads {
-				if bp := state.Threads[i].Breakpoint; bp != nil {
-					isBreakpoint = true
-					isTracepoint = isTracepoint && (bp.Tracepoint || bp.TraceReturn)
-				}
-			}
-			if !isBreakpoint || !isTracepoint {
-				close(ch)
-				return
-			}
-		}
-	}()
-	return ch
-}
 
 func (c *rpcClient) CreateBreakpoint(bp *api.Breakpoint) (*api.Breakpoint, error) {
+	return c.createBreakpoint(createBreakpointIn{Breakpoint: *bp})
+}
+
+// createBreakpoint is CreateBreakpoint with the full request: LocExpr lets
+// Delve resolve a location expression (`file.go:42` by path suffix).
+func (c *rpcClient) createBreakpoint(in createBreakpointIn) (*api.Breakpoint, error) {
 	var out createBreakpointOut
-	err := c.call("CreateBreakpoint", createBreakpointIn{Breakpoint: *bp}, &out)
+	err := c.call("CreateBreakpoint", in, &out)
 	return &out.Breakpoint, err
 }
 

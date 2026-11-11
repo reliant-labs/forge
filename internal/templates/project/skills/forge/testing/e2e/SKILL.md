@@ -51,10 +51,15 @@ E2E tests are the most flake-prone level. Follow these rules strictly:
 
 ## Debugging Failures
 
-When an e2e test fails, the stack is still running. You can attach a debugger:
+When an e2e test fails, the stack is still running. You can attach a debugger
+to a host process (`forge env status <env> --json` reports each host service's
+`pid` under `runtime.services`):
 
 ```bash
-forge debug start
+forge debug start --attach <pid> --run    # the process keeps running
+forge debug break <Rpc>                   # e.g. CreateTask
+forge debug continue --timeout 60s        # after re-sending the request
+forge debug stop                          # detaches; the process keeps running
 ```
 
 Inspect logs, database state, and service health while the failure is reproducible.

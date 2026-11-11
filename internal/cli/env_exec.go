@@ -50,43 +50,9 @@ arguments are logged by Forge.
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			projectDir := projectDirForKCL()
-			e, err := readEnvConfigEntities(cmd.Context(), projectDir, args[0])
+			childEnv, err := localWorkloadChildEnv(cmd.Context(), projectDirForKCL(), args[0], workload, os.Environ())
 			if err != nil {
 				return err
-			}
-			w, err := selectExecWorkload(e, workload)
-			if err != nil {
-				return err
-			}
-			// Placement is checked BEFORE resolving the report or any secret store.
-			if w.Runtime.Type != RuntimeHost && w.Runtime.Type != RuntimeCompose {
-				return fmt.Errorf("workload %q uses %s: env exec only supports OnHost/OnCompose; use your hosting provider's exec tool or kubectl exec for remote workloads", w.Name, w.Runtime.Type)
-			}
-			// Strict: the child would run without a secret it declares.
-			report, err := resolvedEnvConfigReport(cmd.Context(), projectDir, args[0], e, w.Name, secretsRequired)
-			if err != nil {
-				return err
-			}
-			if len(report.Workloads) != 1 {
-				return fmt.Errorf("workload %q is ambiguous", w.Name)
-			}
-			values := report.Workloads[0].Env
-			var childEnv []string
-			if w.Runtime.Type == RuntimeHost {
-				childEnv = hostlaunch.LayerHostEnv(os.Environ(), nil, nil, values)
-				// Bind ports cannot be overridden (same contract as env up), but do
-				// not log their old or new values: arbitrary port-like keys can be secrets.
-				for key, value := range values {
-					if key == "PORT" || strings.HasSuffix(key, "_PORT") {
-						childEnv = withForcedEnv(childEnv, key, value)
-					}
-				}
-			} else {
-				childEnv = append([]string(nil), os.Environ()...)
-				for key, value := range values {
-					childEnv = withForcedEnv(childEnv, key, value)
-				}
 			}
 			c := exec.Command(args[1], args[2:]...)
 			c.Env = childEnv
@@ -96,6 +62,52 @@ arguments are logged by Forge.
 	}
 	cmd.Flags().StringVar(&workload, "workload", "api", "Workload name (default: exactly api, the scaffold's _api.name)")
 	return cmd
+}
+
+// localWorkloadChildEnv is the environment a local child of workload runs
+// with: base (the inherited environment) with the workload's declared
+// configuration for env layered on top. Shared by env exec and
+// `forge debug start`, so a debugged process sees exactly what env exec's
+// child would.
+func localWorkloadChildEnv(ctx context.Context, projectDir, env, workload string, base []string) ([]string, error) {
+	e, err := readEnvConfigEntities(ctx, projectDir, env)
+	if err != nil {
+		return nil, err
+	}
+	w, err := selectExecWorkload(e, workload)
+	if err != nil {
+		return nil, err
+	}
+	// Placement is checked BEFORE resolving the report or any secret store.
+	if w.Runtime.Type != RuntimeHost && w.Runtime.Type != RuntimeCompose {
+		return nil, fmt.Errorf("workload %q uses %s: env exec only supports OnHost/OnCompose; use your hosting provider's exec tool or kubectl exec for remote workloads", w.Name, w.Runtime.Type)
+	}
+	// Strict: the child would run without a secret it declares.
+	report, err := resolvedEnvConfigReport(ctx, projectDir, env, e, w.Name, secretsRequired)
+	if err != nil {
+		return nil, err
+	}
+	if len(report.Workloads) != 1 {
+		return nil, fmt.Errorf("workload %q is ambiguous", w.Name)
+	}
+	values := report.Workloads[0].Env
+	var childEnv []string
+	if w.Runtime.Type == RuntimeHost {
+		childEnv = hostlaunch.LayerHostEnv(base, nil, nil, values)
+		// Bind ports cannot be overridden (same contract as env up), but do
+		// not log their old or new values: arbitrary port-like keys can be secrets.
+		for key, value := range values {
+			if key == "PORT" || strings.HasSuffix(key, "_PORT") {
+				childEnv = withForcedEnv(childEnv, key, value)
+			}
+		}
+	} else {
+		childEnv = append([]string(nil), base...)
+		for key, value := range values {
+			childEnv = withForcedEnv(childEnv, key, value)
+		}
+	}
+	return childEnv, nil
 }
 
 func selectExecWorkload(e *KCLEntities, name string) (WorkloadEntity, error) {

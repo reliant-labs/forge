@@ -93,7 +93,7 @@ func TestPresentationFieldsRoundTripAndStayOutWhenUnset(t *testing.T) {
 	}
 	p := d.Panels[0]
 	if d.DefaultCompare != ComparePeriod || d.Sections[0].Description != "D" || p.TrendSQL != "SELECT 2" ||
-		p.Display == nil || p.Display.Color != ColorViolet || p.Display.Colors["a"] != ColorBlue {
+		p.Display == nil || p.Display.Color != ColorViolet || p.Display.Colors == nil || (*p.Display.Colors)["a"] != ColorBlue {
 		t.Fatalf("decoded %+v / %+v", d, p)
 	}
 	out, err := json.Marshal(d)
@@ -114,6 +114,22 @@ func TestPresentationFieldsRoundTripAndStayOutWhenUnset(t *testing.T) {
 		if strings.Contains(string(plain), field) {
 			t.Errorf("a dashboard that sets no %s marshals one: %s", field, plain)
 		}
+	}
+}
+
+// TestDisplayStaysComparable pins the compatibility Display.Colors is a
+// pointer for: Display was comparable before it had colours, and forge/pkg is
+// semver at major 1, so a consumer's == on it must keep compiling.
+func TestDisplayStaysComparable(t *testing.T) {
+	if (Display{Style: StyleArea}) == (Display{}) {
+		t.Fatal("Displays of different styles compare equal")
+	}
+	var none *SeriesColors
+	if c, ok := none.Color("a"); ok || c != "" {
+		t.Errorf("nil SeriesColors named %q", c)
+	}
+	if c, ok := (&SeriesColors{"a": ColorAmber}).Color("a"); !ok || c != ColorAmber {
+		t.Errorf("SeriesColors{a: amber}.Color(a) = %q, %v", c, ok)
 	}
 }
 

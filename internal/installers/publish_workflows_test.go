@@ -96,6 +96,16 @@ func TestNpmPublishWorkflowUsesTrustedPublishing(t *testing.T) {
 	if npm, mcp := strings.Index(body, "npm publish --provenance"), strings.Index(body, "mcp-publisher publish"); npm < 0 || mcp < npm {
 		t.Errorf("release-npm.yml must publish the MCP registry listing after the npm package")
 	}
+	// Nothing of the listing's may gate the npm publish: installing
+	// mcp-publisher downloads from github.com and validating calls the
+	// registry, so either failing before npm's publish would keep the package
+	// off npm for a listing problem.
+	npm := strings.Index(body, "npm publish --provenance")
+	for _, step := range []string{"mcp-publisher_linux_amd64.tar.gz", "mcp-publisher validate"} {
+		if i := strings.Index(body, step); i < 0 || i < npm {
+			t.Errorf("release-npm.yml runs %q before the npm publish; the MCP listing must not gate it", step)
+		}
+	}
 	// A token would take precedence over the OIDC exchange and silently turn
 	// this back into token auth.
 	for _, banned := range []string{"NODE_AUTH_TOKEN", "NPM_TOKEN"} {

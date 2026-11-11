@@ -198,23 +198,6 @@ jobs:
           echo "listing $(jq -r .name server.json)@$VERSION"
           echo "present=true" >> "$GITHUB_OUTPUT"
 
-      - name: Install mcp-publisher
-        # Pinned by version AND digest: this job holds an id-token: write
-        # credential, and a moved release asset must fail here, not run with it.
-        if: ${{ steps.listing.outputs.present == 'true' }}
-        run: |
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/mcp-publisher.tar.gz" \
-            "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
-          echo "${MCP_PUBLISHER_SHA256}  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --strict -c -
-          mkdir -p "$RUNNER_TEMP/mcp-publisher"
-          tar -xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP/mcp-publisher" mcp-publisher
-          echo "$RUNNER_TEMP/mcp-publisher" >> "$GITHUB_PATH"
-
-      - name: Validate the MCP registry listing
-        if: ${{ steps.listing.outputs.present == 'true' }}
-        working-directory: npm
-        run: mcp-publisher validate server.json
-
       - name: Verify provenance metadata
         # --provenance rejects (422, AFTER signing) a package whose
         # repository.url does not name the repository that built it.
@@ -324,6 +307,29 @@ jobs:
         run: |
           scripts/verify-npm-published.sh --name @reliantlabs/forge --version "$VERSION" \
             ${{ steps.publish.outcome == 'success' && '--publish-reported-success' || '' }}
+
+      - name: Install mcp-publisher
+        # After npm's publish, never before it: installing it (a download from
+        # github.com) and validating the listing (a call to the registry) are
+        # the MCP listing's business, and a failure in either must never keep
+        # @reliantlabs/forge off npm. A failure here turns the job red after
+        # npm has the version; a workflow_dispatch retry skips the npm publish
+        # and lists it.
+        # Pinned by version AND digest: this job holds an id-token: write
+        # credential, and a moved release asset must fail here, not run with it.
+        if: ${{ steps.listing.outputs.present == 'true' }}
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/mcp-publisher.tar.gz" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --strict -c -
+          mkdir -p "$RUNNER_TEMP/mcp-publisher"
+          tar -xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP/mcp-publisher" mcp-publisher
+          echo "$RUNNER_TEMP/mcp-publisher" >> "$GITHUB_PATH"
+
+      - name: Validate the MCP registry listing
+        if: ${{ steps.listing.outputs.present == 'true' }}
+        working-directory: npm
+        run: mcp-publisher validate server.json
 
       - name: Publish to the MCP registry
         # After npm serves the version, never before: the registry verifies

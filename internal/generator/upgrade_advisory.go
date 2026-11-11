@@ -461,7 +461,7 @@ func templateRootOf(templatePath string) string {
 func InspectAdvisories(projectDir string, cs *FileChecksums, files []AdvisoryFile, force ForceSelection, checkOnly bool) ([]AdvisoryResult, error) {
 	var out []AdvisoryResult
 	for _, f := range files {
-		if cs.IsDisowned(f.Path) {
+		if cs.IsDisowned(f.Path) || checksums.SkipExcluded(projectDir, f.Path) {
 			continue
 		}
 		expected, err := f.Render()

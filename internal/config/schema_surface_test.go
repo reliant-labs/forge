@@ -34,11 +34,13 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[ProjectConfig](),
 			// features: read by FeaturesConfig.resolve through every
 			// XxxEnabled accessor, and by followPinnedRequirements.
+			// scaffold: read by checksums.ExcludeGlobs at every write
+			// chokepoint (scaffold.exclude).
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "features",
 				"forge_version", "generate", "harness", "k8s",
-				"lint", "module_path", "name", "observability", "upgrade",
+				"lint", "module_path", "name", "observability", "scaffold", "upgrade",
 			},
 		},
 		{
@@ -132,7 +134,8 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			name: "LintConfig",
 			typ:  reflect.TypeFor[LintConfig](),
 			// allow_skip: read by the lint command (internal/cli/lint/lint_skip.go).
-			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "rules", "tracing"},
+			// lanes: read by the lint command (internal/cli/lint/lint_lanes.go).
+			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "lanes", "rules", "tracing"},
 		},
 		{
 			name: "LintSkipAllowance",

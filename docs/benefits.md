@@ -167,6 +167,38 @@ _Enforced · Forge, on any infrastructure_
 - command `forge project rescaffold`
 - command `forge project scaffolded`
 
+<a id="scaffold-exclude"></a>
+
+### Areas forge never writes
+
+`scaffold.exclude` in forge.yaml names the parts of an existing repo forge must never write, and every generate, scaffold, upgrade and rescaffold leaves them exactly as they are and says which writes it skipped.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `scaffold: {exclude: [frontends/web/, .github/workflows/deploy.yml]}`.
+
+**Why:** A team adopting forge keeps its own frontend, workflows or docs without disowning file by file. A locked run puts back anything written under an excluded glob, and a glob over generated code other generated code imports is refused with the dependent named.
+
+**Evidence:**
+
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/checksums/exclude.go`](../internal/checksums/exclude.go)
+- source [`internal/cli/generate_exclude.go`](../internal/cli/generate_exclude.go)
+
+<a id="prune-orphans"></a>
+
+### Clean up after a feature
+
+When a feature is pinned off, `forge generate` lists the files it left behind and `forge project prune --orphans` deletes the ones still exactly as forge wrote them, never an edited one.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project prune`
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/cli/generate_orphans.go`](../internal/cli/generate_orphans.go)
+
 <a id="project-upgrade"></a>
 
 ### Guided forge upgrades
@@ -1301,6 +1333,21 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge lint --allow-skip`
 - command `forge lint --strict`
+
+<a id="lint-lanes-off"></a>
+
+### Switch a lint lane off
+
+`lint.lanes` in forge.yaml switches whole `forge lint` lanes off (frontend, migration safety, db grants, ...) for a repo that checks them another way, and the verdict still names every lane that is off.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `lint: {lanes: {frontend: off, migration-safety: off}}`
+
+**Evidence:**
+
+- skill `ci/lint-rollout` (`forge skill load ci/lint-rollout`)
+- source [`internal/cli/lint/lint_lanes.go`](../internal/cli/lint/lint_lanes.go)
 
 <a id="lint-autofix"></a>
 

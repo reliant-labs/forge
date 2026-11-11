@@ -24,6 +24,7 @@ func instanceStatements(sc Scope) map[string]func() (Stmt, error) {
 		"traces/red":    TraceQuery{Scope: sc, GroupBy: []string{"service.name"}}.CompileREDGroups,
 		"trace":         TraceSpans{Scope: sc, TraceID: "abc"}.Compile,
 		"logs":          LogQuery{Scope: sc, Limit: 5}.Compile,
+		"logs/trace":    TraceExtent{Scope: sc, TraceID: "abc"}.Compile,
 		"overview":      Overview{Scope: sc}.RED,
 		"overview/logs": Overview{Scope: sc}.Logs,
 		"metric":        MetricQuery{Scope: sc, Name: "m", Info: gauge, Agg: AggAvg, StepSeconds: 60}.Compile,

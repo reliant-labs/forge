@@ -75,9 +75,14 @@ func acquireGenerateLock(projectDir string) (release func(), err error) {
 
 	recordGenerateLockHolder(f)
 	generateLockHeldHere.Add(1)
+	// Every run that may write the project is bracketed by the
+	// scaffold.exclude guard (generate_exclude.go): nothing it writes under
+	// an excluded glob survives the release.
+	guard := armExcludeGuard(projectDir)
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			releaseExcludeGuard(guard, os.Stdout)
 			generateLockHeldHere.Add(-1)
 			_ = unlockFile(f)
 			_ = f.Close()

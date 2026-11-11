@@ -2710,6 +2710,24 @@ _Enforced · Reliant hosting_
 - library [`pkg/releasehealth`](../pkg/releasehealth)
 - skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
 
+<a id="shared-env-base"></a>
+
+### One env base, per-env deltas
+
+Every deployed env binds its workloads through one shared base, so an env file holds only what is its own and a new env starts as its deltas.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `deploy/kcl/base/env.k` (scaffolded by `forge project new`), imported by each env as `import ..base.env as envbase`; `forge env new <name> --from <env>` copies only the source env's own values
+
+**Why:** It is plain KCL, so `forge env render`, `env diff` and `env shape` read it like any import, and an env overrides a shared binder by wrapping it. The scaffold tools keep editing each env's one binding line per workload.
+
+**Evidence:**
+
+- source [`internal/templates/deploy/kcl/base/env.k.tmpl`](../internal/templates/deploy/kcl/base/env.k.tmpl)
+- command `forge env new`
+- skill `deploy/model` (`forge skill load deploy/model`)
+
 <a id="release-health-policy"></a>
 
 ### Release health policy as code

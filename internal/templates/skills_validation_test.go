@@ -431,6 +431,8 @@ var knownDotForgeEntries = map[string]bool{
 	"debug":                 true,
 	"debug-session.json":    true,
 	"migrations.json":       true,
+	"exclude-guard":         true, // generate_exclude.go backs up excluded paths touched by generators here
+	"orphans.json":          true, // generate_orphans.go records unmodified outputs eligible for project prune --orphans
 	"forge.lock":            true,
 	".scaffold-in-progress": true,
 	".next":                 true,

@@ -3963,6 +3963,26 @@ schema Frontend:
     # decision, and is honoured. Refused on a frontend that is not `rn`,
     # where it would mean nothing.
     native_sign_in: bool = True
+    # https universal links / App Links for a native ('rn') frontend: WHO signs
+    # the binary. The hosts come from the kind = "native" IdentityApplication's
+    # `associated_domains`; these two are what the association files need to
+    # bind the app to them. forge renders both files per env at deploy.
+    #
+    # `apple_team_id` is the Apple Developer team the app is signed by (ten
+    # characters). The bundle id comes from app.json.
+    #
+    # `android_cert_fingerprints` is keyed by env, because a debug and a release
+    # build are signed by different keys: SHA-256 fingerprints of EVERY
+    # certificate that signs an installable build for that env. Release is the
+    # Play App Signing key (Play Console > App integrity), not the upload key.
+    # The value "debug" stands for this machine's debug keystore
+    # (frontends/<name>/android/app/debug.keystore), read when the files are
+    # rendered. Only the current env's entry is rendered.
+    apple_team_id: str = ""
+    android_cert_fingerprints: {str: [str]} = {}
+    # The static-site frontend whose host serves /.well-known/ for this app's
+    # associated domains. Unset: the env's only static-site frontend.
+    associated_site: str = ""
     # Which entities this frontend gets generated CRUD pages for: route
     # SLUGS as they appear on disk and in the URL — the plural, kebab-cased
     # entity name ("llm-keys", "usage-events"). Empty (the default) means
@@ -4084,6 +4104,12 @@ schema Frontend:
             "Frontend '${name}'.telemetry is for a browser frontend; a 'rn' frontend runs no browser SDK"
         native_sign_in or type == "rn", \
             "Frontend '${name}'.native_sign_in applies only to a 'rn' frontend (it turns off the derived mobile OIDC client); remove it"
+        type == "rn" or not (apple_team_id or android_cert_fingerprints or associated_site), \
+            "Frontend '${name}'.apple_team_id, android_cert_fingerprints and associated_site apply only to a 'rn' frontend (they bind a mobile app to its https universal links)"
+        not apple_team_id or regex.match(apple_team_id, r"^[A-Z0-9]{10}$"), \
+            "Frontend '${name}'.apple_team_id '${apple_team_id}' must be the ten-character Apple Developer team id (e.g. 23P64LQTZD)"
+        all _env, _fps in android_cert_fingerprints { all _fp in _fps { _fp == "debug" or regex.match(_fp, r"^([0-9A-F]{2}:){31}[0-9A-F]{2}$") } }, \
+            "Frontend '${name}'.android_cert_fingerprints entries must be SHA-256 certificate fingerprints, 32 upper-case hex bytes joined by ':' (keytool -list -v prints them), or \"debug\" for this machine's debug keystore"
         telemetry == Undefined or not telemetry.service_name or source, \
             "Frontend '${name}'.telemetry.service_name is for a frontend built from another repository (`source`): an in-repo frontend reports <project>-<name> and declares nothing"
         "none" not in routes or len(routes) == 1, \
@@ -6957,6 +6983,15 @@ _native_uri_ok = lambda u: str -> bool {
     regex.match(u, _NATIVE_PRIVATE_URI_RE) or regex.match(u, _NATIVE_HTTPS_URI_RE) or regex.match(u, _NATIVE_HTTP_URI_RE)
 }
 
+# A mobile app's associated domain: a bare lowercase hostname, two or more
+# labels and an alphabetic TLD (the release package's ValidateAssociatedDomain).
+_ASSOCIATED_DOMAIN_RE = r"^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
+# The authority of an https URL, without a port: the host an association file
+# is fetched from.
+_native_https_host = lambda u: str -> str {
+    u[8:].split("/")[0].split(":")[0]
+}
+
 schema IdentityApplication:
     """One OIDC application registered in the instance. Omit
     `ManagedIdentity.applications` and one is derived: a `native_broker`
@@ -6985,6 +7020,17 @@ schema IdentityApplication:
     frontend: str = ""
     redirect_uris: [str] = []
     logout_uris: [str] = []
+    # https universal-link / App Link callbacks (kind "native" only): the bare
+    # hostnames the app is associated with, in order. With them set and no
+    # `redirect_uris`, forge derives `https://<first>/oauthredirect` (and the
+    # `/signedout` logout) AHEAD of the private-use `<scheme>:/oauthredirect`
+    # pair, which stays registered as the fallback (iOS below 17.4, an
+    # unverified Android link). The host of every https redirect must be one of
+    # these, and the app only claims the hosts listed. The files that bind the
+    # app to the hosts are rendered at deploy from the frontend's
+    # `apple_team_id` and `android_cert_fingerprints`; see
+    # `forge skill load deploy/managed-identity/mobile`.
+    associated_domains: [str] = []
     login_uri: str = ""
 
     check:
@@ -7001,6 +7047,16 @@ schema IdentityApplication:
             "IdentityApplication '${name}': login_uri is the native sign-in route, so it applies only to kind 'native_broker'"
         kind != "native" or len([u for u in (redirect_uris + logout_uris) if not _native_uri_ok(u)]) == 0, \
             "IdentityApplication '${name}': a native callback must be a private-use reverse-DNS scheme written with one slash (com.acme.app:/oauthredirect, RFC 8252 section 7.1) or an https URL (a universal or app link), with no wildcard, query or fragment. Got ${[u for u in (redirect_uris + logout_uris) if not _native_uri_ok(u)]}"
+        not associated_domains or kind == "native", \
+            "IdentityApplication '${name}': associated_domains are the hosts a mobile app is associated with, so they apply only to kind 'native'"
+        all d in associated_domains { regex.match(d, _ASSOCIATED_DOMAIN_RE) }, \
+            "IdentityApplication '${name}': associated_domains must be bare lowercase hostnames such as app.acme.example (no scheme, port, path, wildcard or IP address; a wildcard cannot serve webcredentials). Got ${[d for d in associated_domains if not regex.match(d, _ASSOCIATED_DOMAIN_RE)]}"
+        len({d: 0 for d in associated_domains}) == len(associated_domains), \
+            "IdentityApplication '${name}': an associated domain is listed twice: ${associated_domains}"
+        all u in [u for u in (redirect_uris + logout_uris) if regex.match(u, _NATIVE_HTTPS_URI_RE)] { not associated_domains or _native_https_host(u) in associated_domains }, \
+            "IdentityApplication '${name}': an https callback must be on one of associated_domains ${associated_domains}: the app is associated with those hosts only. Got ${[_native_https_host(u) for u in (redirect_uris + logout_uris) if regex.match(u, _NATIVE_HTTPS_URI_RE)]}"
+        not associated_domains or not redirect_uris or any u in redirect_uris { regex.match(u, _NATIVE_HTTPS_URI_RE) }, \
+            "IdentityApplication '${name}': associated_domains ${associated_domains} are set but no redirect_uris entry is an https URL on one of them. Add https://<first domain>/oauthredirect, or omit redirect_uris to have it derived"
 
 schema IdentityFields:
     """Which typed-config field each identity OUTPUT fills, when it is not the

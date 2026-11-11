@@ -1853,6 +1853,7 @@ type CRUDTestEntityData struct {
 	// skipped; the masked write itself is still exercised).
 	SecondStringField     string
 	SecondStringFieldPath string
+	CreateFactoryName     string // collision-resolved request factory, chosen with the emitter
 	CreateMethod          CRUDMethodTemplateData
 	GetMethod             CRUDMethodTemplateData
 	ListMethod            CRUDMethodTemplateData
@@ -1983,6 +1984,13 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	data.UnfilledDeps = UnfilledDepsFor(targetDir)
 	// relDir is internal/handlers/<leaf>; the import needs the leaf.
 	data.ServiceImportPath = filepath.ToSlash(filepath.Base(relDir))
+	declared, _, err := factoryDeclarations(targetDir, pkg)
+	if err != nil {
+		return CRUDResult{}, err
+	}
+	for i := range data.Entities {
+		data.Entities[i].CreateFactoryName = factoryName("New"+data.Entities[i].CreateMethod.InputType, declared)
+	}
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
 	if err != nil {

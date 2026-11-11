@@ -29,7 +29,7 @@ func TestEntityFactories_OwnedDeclarations(t *testing.T) {
 		{name: "override type conflict", file: "override_test.go", source: "package orders\ntype DeploymentOverride string\n", conflict: true},
 		{name: "shared helper conflict", file: "helper_test.go", source: "package orders\nfunc seedFactoryParents() {}\n", conflict: true},
 		{name: "SQL constant conflict", file: "sql_test.go", source: "package orders\nconst deploymentFactoryRootSQL = \"owned\"\n", conflict: true},
-		{name: "factory variable conflict", file: "var_test.go", source: "package orders\nvar NewDeployment = 1\n", conflict: true},
+		{name: "factory variable conflict", file: "var_test.go", source: "package orders\nvar NewDeployment = 1\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			project, dir := writeHandlerFiles(t, map[string]string{"service.go": "package orders\n", tc.file: tc.source})
@@ -55,8 +55,8 @@ func TestEntityFactories_OwnedDeclarations(t *testing.T) {
 			if !strings.Contains(string(out), "func NewWidget(") {
 				t.Error("unrelated factory was suppressed")
 			}
-			if !tc.wantFactory && strings.Contains(string(out), "DeploymentOverride") {
-				t.Error("skipped factory left orphan declarations")
+			if !tc.wantFactory && !strings.Contains(string(out), "func ForgeNewDeployment(") {
+				t.Error("occupied factory name must get a deterministic fallback, not be omitted")
 			}
 			// Generation must converge, not mistake its own previous output for ownership.
 			if err := GenerateEntityFactories(project, "example.com/test", []ServiceDef{svc}, nil); err != nil {
@@ -99,26 +99,6 @@ func stubFactorySchema(t *testing.T, project string) {
 	}
 }
 
-func TestEntityFactories_AllFactoriesOwned(t *testing.T) {
-	project, dir := writeHandlerFiles(t, map[string]string{
-		"service.go":     "package orders\nfunc NewDeployment() {}\n",
-		"helper_test.go": "package orders\nfunc seedFactoryParents() {}\n",
-	})
-	stubFactorySchema(t, project)
-	svc := ServiceDef{Name: "OrdersService", Methods: []Method{{Name: "GetDeployment"}}}
-	if err := GenerateEntityFactories(project, "example.com/test", []ServiceDef{svc}, nil); err != nil {
-		t.Fatal(err)
-	}
-	out, err := os.ReadFile(filepath.Join(dir, entityFactoryFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(out), "func ") {
-		t.Fatal("no generated factories remain, but helpers were still emitted")
-	}
-	checkFactoryTypes(t, out) // empty output must not import unused dependencies
-}
-
 func TestEntityFactories_OwnedRequestFactory(t *testing.T) {
 	mine := "package orders\nfunc NewCreateWidgetRequest() {}\n"
 	project, dir := writeHandlerFiles(t, map[string]string{"service.go": "package orders\n", "factory_test.go": mine})
@@ -134,14 +114,14 @@ func TestEntityFactories_OwnedRequestFactory(t *testing.T) {
 	if strings.Contains(string(out), "func NewCreateWidgetRequest(") {
 		t.Error("generated request factory redeclares user-owned test helper")
 	}
-	if !strings.Contains(string(out), "func NewWidget(") {
-		t.Error("request ownership suppressed row factory")
+	if !strings.Contains(string(out), "func NewWidget(") || !strings.Contains(string(out), "func ForgeNewCreateWidgetRequest(") {
+		t.Error("occupied request name must not suppress either factory")
 	}
 }
 
 // Type-check the actual rendered file without a subprocess, network or live DB.
 // Minimal dependency packages expose only the APIs these factories consume.
-func checkFactoryTypes(t *testing.T, out []byte) {
+func checkFactoryTypes(t *testing.T, out []byte, owned ...string) {
 	t.Helper()
 	fset := token.NewFileSet()
 	pkgs := map[string]*types.Package{}
@@ -153,7 +133,7 @@ func checkFactoryTypes(t *testing.T, out []byte) {
 		{"github.com/reliant-labs/forge/pkg/orm", "package orm; import \"context\"; type Context interface { Exec(context.Context,string,...any)(any,error) }"},
 		{"github.com/oklog/ulid/v2", "package ulid; type ULID struct{}; func Make() ULID{return ULID{}}; func (ULID) String()string{return \"id\"}"},
 		{"example.com/test/pb", "package pb; type CreateWidgetRequest struct{}; type CreateTenantRequest struct{}"},
-		{"example.com/test/internal/db", "package db; type Widget struct{}"},
+		{"example.com/test/internal/db", "package db; import \"context\"; import \"github.com/reliant-labs/forge/pkg/orm\"; type Widget struct{}; type Deployment struct{}; func GetDeploymentByID(context.Context,orm.Context,string)(*Deployment,error){return nil,nil}; func UpdateDeployment(context.Context,orm.Context,*Deployment)error{return nil}; func GetWidgetByID(context.Context,orm.Context,string)(*Widget,error){return nil,nil}; func UpdateWidget(context.Context,orm.Context,*Widget)error{return nil}"},
 	} {
 		f, err := parser.ParseFile(fset, stub.path, stub.src, 0)
 		if err != nil {
@@ -169,7 +149,15 @@ func checkFactoryTypes(t *testing.T, out []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&types.Config{Importer: imp}).Check("example.com/test/internal/handlers/orders", fset, []*ast.File{f}, nil); err != nil {
+	files := []*ast.File{f}
+	for _, src := range owned {
+		file, err := parser.ParseFile(fset, "owned.go", src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, file)
+	}
+	if _, err := (&types.Config{Importer: imp}).Check("example.com/test/internal/handlers/orders", fset, files, nil); err != nil {
 		t.Fatalf("rendered factory does not type-check: %v\n%s", err, out)
 	}
 }

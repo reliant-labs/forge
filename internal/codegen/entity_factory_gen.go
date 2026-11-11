@@ -71,6 +71,7 @@ import (
 // each call inserts a fresh row), and the identifiers the emitted Go references.
 type entityFactorySpec struct {
 	goName    string // "Order" — the db.<GoName> struct / db.Get<GoName>ByID / db.Update<GoName>
+	funcName  string // resolved factory name; empty means New<GoName>
 	lower     string // "order" — const/var name stem (camelCase for multi-word)
 	parentSQL string // FK-ancestor INSERTs (root excluded), each ON CONFLICT DO NOTHING
 	rootSQL   string // single root INSERT with the PK literal replaced by $1
@@ -451,9 +452,13 @@ func renderEntityFactoryFile(dbImportPath string, g factoryGroup) []byte {
 
 // renderRowFactory writes one entity's New<Entity> row factory into b.
 func renderRowFactory(b *strings.Builder, s entityFactorySpec) {
+	name := s.funcName
+	if name == "" {
+		name = "New" + s.goName
+	}
 	fmt.Fprintf(b, "\n// --- %s ---\n\n", s.goName)
 	if !s.appendOnly {
-		fmt.Fprintf(b, "// %sOverride mutates the *db.%s New%s is about to insert.\n", s.goName, s.goName, s.goName)
+		fmt.Fprintf(b, "// %sOverride mutates the *db.%s %s is about to insert.\n", s.goName, s.goName, name)
 		fmt.Fprintf(b, "type %sOverride func(*db.%s)\n\n", s.goName, s.goName)
 	}
 
@@ -464,7 +469,7 @@ func renderRowFactory(b *strings.Builder, s entityFactorySpec) {
 		fmt.Fprintf(b, "const %sFactoryRootSQL = %s\n\n", s.lower, backquoteOrQuote(s.rootSQL))
 	}
 
-	fmt.Fprintf(b, "// New%s inserts one MINIMAL %s row and returns it: every NOT NULL\n", s.goName, s.goName)
+	fmt.Fprintf(b, "// %s inserts one MINIMAL %s row and returns it: every NOT NULL\n", name, s.goName)
 	b.WriteString("// column without a DEFAULT and every FK parent satisfied (forge's seed\n")
 	b.WriteString("// planner), every other column left to its DEFAULT or NULL, every CHECK\n")
 	b.WriteString("// honoured. Each call gets a fresh primary key, so call it once per row.\n")
@@ -475,22 +480,22 @@ func renderRowFactory(b *strings.Builder, s entityFactorySpec) {
 		fmt.Fprintf(b, "// %s is APPEND-ONLY, so this factory takes no overrides — applying\n", s.goName)
 		b.WriteString("// one would mean UPDATEing the row it just inserted, which the table's\n")
 		b.WriteString("// guard rejects. A test needing particular values inserts the row itself.\n")
-		fmt.Fprintf(b, "func New%s(t testing.TB, database orm.Context) *db.%s {\n", s.goName, s.goName)
+		fmt.Fprintf(b, "func %s(t testing.TB, database orm.Context) *db.%s {\n", name, s.goName)
 	} else {
 		b.WriteString("// Override the columns your test asserts on; leave the rest to the schema:\n")
 		b.WriteString("//\n")
-		fmt.Fprintf(b, "//\t%s := New%s(t, database, func(x *db.%s) { /* x.Field = … */ })\n", s.lower, s.goName, s.goName)
+		fmt.Fprintf(b, "//\t%s := %s(t, database, func(x *db.%s) { /* x.Field = … */ })\n", s.lower, name, s.goName)
 		b.WriteString("//\n")
 		b.WriteString("// A single-column-unique NOT-NULL field other than the primary key keeps its\n")
 		b.WriteString("// seeded value across calls — override such a field yourself to insert more\n")
 		b.WriteString("// than one row.\n")
-		fmt.Fprintf(b, "func New%s(t testing.TB, database orm.Context, overrides ...%sOverride) *db.%s {\n", s.goName, s.goName, s.goName)
+		fmt.Fprintf(b, "func %s(t testing.TB, database orm.Context, overrides ...%sOverride) *db.%s {\n", name, s.goName, s.goName)
 	}
 	b.WriteString("\tt.Helper()\n")
 	if s.failure != "" {
 		// The signature stays, so callers compile; there is no row to insert.
-		fmt.Fprintf(b, "\tt.Fatalf(\"New%s: postgres rejects every row forge could plan for this table (seen at `forge generate`): %%s\", %s)\n",
-			s.goName, backquoteOrQuote(s.failure))
+		fmt.Fprintf(b, "\tt.Fatalf(\"%s: postgres rejects every row forge could plan for this table (seen at `forge generate`): %%s\", %s)\n",
+			name, backquoteOrQuote(s.failure))
 		b.WriteString("\treturn nil\n")
 		b.WriteString("}\n")
 		return
@@ -500,11 +505,11 @@ func renderRowFactory(b *strings.Builder, s entityFactorySpec) {
 	}
 	b.WriteString("\tid := ulid.Make().String()\n")
 	fmt.Fprintf(b, "\tif _, err := database.Exec(context.Background(), %sFactoryRootSQL, id); err != nil {\n", s.lower)
-	fmt.Fprintf(b, "\t\tt.Fatalf(\"New%s: insert row: %%v\", err)\n", s.goName)
+	fmt.Fprintf(b, "\t\tt.Fatalf(\"%s: insert row: %%v\", err)\n", name)
 	b.WriteString("\t}\n")
 	fmt.Fprintf(b, "\trow, err := db.Get%sByID(context.Background(), database, id)\n", s.goName)
 	b.WriteString("\tif err != nil {\n")
-	fmt.Fprintf(b, "\t\tt.Fatalf(\"New%s: load inserted row: %%v\", err)\n", s.goName)
+	fmt.Fprintf(b, "\t\tt.Fatalf(\"%s: load inserted row: %%v\", err)\n", name)
 	b.WriteString("\t}\n")
 	if !s.appendOnly {
 		b.WriteString("\tif len(overrides) > 0 {\n")
@@ -512,7 +517,7 @@ func renderRowFactory(b *strings.Builder, s entityFactorySpec) {
 		b.WriteString("\t\t\to(row)\n")
 		b.WriteString("\t\t}\n")
 		fmt.Fprintf(b, "\t\tif err := db.Update%s(context.Background(), database, row); err != nil {\n", s.goName)
-		fmt.Fprintf(b, "\t\t\tt.Fatalf(\"New%s: apply overrides: %%v\", err)\n", s.goName)
+		fmt.Fprintf(b, "\t\t\tt.Fatalf(\"%s: apply overrides: %%v\", err)\n", name)
 		b.WriteString("\t\t}\n")
 		b.WriteString("\t}\n")
 	}
@@ -548,10 +553,10 @@ func backquoteOrQuote(s string) string {
 // GenerateEntityFactories writes one forge-owned factories_gen_test.go per
 // handler package, holding the typed New<Entity> row factories for the entities
 // that package's CRUD RPCs own, and the New<CreateRequest> request factories
-// for its create RPCs (create_request_factory.go). An existing same-package
-// function (production or test) with a factory's name takes precedence: forge
-// emits neither that factory nor its private declarations. Other declaration
-// conflicts are returned as errors rather than writing an uncompilable file.
+// for its create RPCs (create_request_factory.go). An occupied factory name
+// (production or test, any declaration kind) selects ForgeNew<Entity> instead,
+// with a numeric suffix if needed. Free historical names remain unchanged.
+// Supporting declaration conflicts are errors rather than invalid Go.
 //
 // Forge-owned + checksum-tracked, and regenerated on every run from the
 // APPLIED schema. A project with no schema to model writes nothing. A schema

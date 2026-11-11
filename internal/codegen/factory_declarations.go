@@ -71,29 +71,35 @@ func factoryDeclNames(decl ast.Decl) []string {
 	return nil
 }
 
-// prepareFactoryGroup preserves the existing New<Entity>/New<Request> API.
-// A user-owned function takes precedence; renaming the generated one would
-// silently change the API callers were scaffolded against. Supporting helpers
-// cannot safely be substituted (their contracts may differ), so those conflicts
-// are explicit errors rather than invalid Go or silently dropped failure specs.
+// factoryName keeps the historical API when free. Its fallback begins ForgeNew,
+// never New, so it cannot steal another generated factory's default name. The
+// selection depends only on owned declarations, not previous generated output
+// or emission order, and is shared by factory emitters and scaffolded callers.
+func factoryName(base string, declared map[string]string) string {
+	if declared[base] == "" {
+		return base
+	}
+	candidate := "Forge" + base
+	for n := 2; declared[candidate] != ""; n++ {
+		candidate = fmt.Sprintf("Forge%s%d", base, n)
+	}
+	return candidate
+}
+
 func prepareFactoryGroup(dir string, g factoryGroup) (factoryGroup, map[string]string, error) {
-	declared, funcs, err := factoryDeclarations(dir, g.pkg)
+	declared, _, err := factoryDeclarations(dir, g.pkg)
 	if err != nil {
 		return g, nil, err
 	}
-	rows := make([]entityFactorySpec, 0, len(g.specs))
-	for _, s := range g.specs {
-		if !funcs["New"+s.goName] {
-			rows = append(rows, s)
-		}
+	// Clone before choosing names: other emitters may reuse these specs.
+	g.specs = append([]entityFactorySpec(nil), g.specs...)
+	for i := range g.specs {
+		g.specs[i].funcName = factoryName("New"+g.specs[i].goName, declared)
 	}
-	creates := make([]createRequestSpec, 0, len(g.creates))
-	for _, s := range g.creates {
-		if !funcs[s.funcName] {
-			creates = append(creates, s)
-		}
+	g.creates = append([]createRequestSpec(nil), g.creates...)
+	for i := range g.creates {
+		g.creates[i].funcName = factoryName(g.creates[i].funcName, declared)
 	}
-	g.specs, g.creates = rows, creates
 	return g, declared, nil
 }
 

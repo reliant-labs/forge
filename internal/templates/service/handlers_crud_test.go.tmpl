@@ -128,7 +128,7 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 
 	// Two creates must produce two rows with distinct, non-empty IDs.
 	//
-	// The requests come from New{{.CreateMethod.InputType}}, which forge
+	// The requests come from {{if .CreateFactoryName}}{{.CreateFactoryName}}{{else}}New{{.CreateMethod.InputType}}{{end}}, which forge
 	// REGENERATES from the applied schema on every `forge generate`
 	// (factories_gen_test.go, beside this file): it seeds the foreign-key
 	// parents the request references and fills every field with a value the
@@ -143,11 +143,11 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	// handlers_crud.go keeps its claims.UserID placeholder. FactoryOwner seeds
 	// the parents under that same owner; change both together.
 {{- end}}
-	first, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.New{{.CreateMethod.InputType}}(t, db, 0{{if .CreateMethod.Scoped}}, {{$.Package}}.FactoryOwner("test-user"){{end}})))
+	first, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.{{if .CreateFactoryName}}{{.CreateFactoryName}}{{else}}New{{.CreateMethod.InputType}}{{end}}(t, db, 0{{if .CreateMethod.Scoped}}, {{$.Package}}.FactoryOwner("test-user"){{end}})))
 	if err != nil {
 		t.Fatalf("create #1: %v", err)
 	}
-	second, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.New{{.CreateMethod.InputType}}(t, db, 1{{if .CreateMethod.Scoped}}, {{$.Package}}.FactoryOwner("test-user"){{end}})))
+	second, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest({{$.Package}}.{{if .CreateFactoryName}}{{.CreateFactoryName}}{{else}}New{{.CreateMethod.InputType}}{{end}}(t, db, 1{{if .CreateMethod.Scoped}}, {{$.Package}}.FactoryOwner("test-user"){{end}})))
 	if err != nil {
 		t.Fatalf("create #2: %v", err)
 	}

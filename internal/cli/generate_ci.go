@@ -53,6 +53,12 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, _ *generator.Fi
 	const provider = "github"
 
 	for _, f := range generator.CIWorkflowsFor(root, cfg, ciInputs(root, cfg)) {
+		// A same-named workflow the project wrote itself: never adopt it
+		// silently (generator.ForeignCIWorkflow).
+		if generator.ForeignCIWorkflow(root, f.Dest) {
+			fmt.Println(generator.ForeignCIWorkflowNotice(f.Dest))
+			continue
+		}
 		content, err := templates.CITemplates(provider).Render(f.Template, f.Data)
 		if err != nil {
 			return fmt.Errorf("render %s: %w", f.Dest, err)

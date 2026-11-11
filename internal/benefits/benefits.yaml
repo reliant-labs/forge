@@ -1224,6 +1224,20 @@ benefits:
       - command: gate record
       - skill: ci/gate
 
+  - id: ci-workflow-opt-out
+    category: guardrails
+    title: Keep your own workflows
+    claim: >-
+      `ci.workflows` in forge.yaml switches single forge workflows off (deploy,
+      build-images, e2e, ...), and a same-named workflow the repo wrote itself
+      is never overwritten or silently adopted: forge warns until forge.yaml
+      says so.
+    availability: forge
+    evidence:
+      - skill: ci/extending
+      - path: internal/config/ci_workflows.go
+      - path: internal/generator/ci_workflows.go
+
   - id: generated-drift
     category: guardrails
     title: Stale codegen can't merge

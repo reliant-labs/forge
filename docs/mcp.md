@@ -112,6 +112,32 @@ listing's version equal to the npm package's, and every release's
 `.github/workflows/release-npm.yml` run publishes the listing to the registry
 once npm serves the new version (`docs/releasing.md`, "Installers").
 
+### With Docker
+
+`Dockerfile.mcp` builds the forge binary from source into a small image whose
+entrypoint is `forge mcp`. Mount the project at `/workspace`, where the server
+starts:
+
+```bash
+docker build -f Dockerfile.mcp -t forge-mcp https://github.com/reliant-labs/forge.git
+docker run -i --rm -v "$PWD:/workspace" forge-mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "forge": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "${PWD}:/workspace", "forge-mcp"]
+    }
+  }
+}
+```
+
+The image carries git and CA certificates only. `lint` and `generate` run the
+project's own toolchain (Go, buf, ...), so for those use the npx or installed
+forge; introspection, the skill catalog and `deploy_claimable` work as is.
+
 ### With forge installed
 
 Put `forge` on your `PATH` (`go install github.com/reliant-labs/forge/cmd/forge@<version>`),

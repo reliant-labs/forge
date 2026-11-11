@@ -1,10 +1,9 @@
 """
-Negative test — a native application with every callback declared is still
-refused on a hosted identity: hosted registration of a native client is not
-built, so it would be recorded as if converged.
+Negative test — an http POST-LOGOUT callback is refused on a hosted identity
+too, not only the redirect: both lists reach the identity provider literally.
 """
 
-# expect: not yet supported on hosted identity
+# expect: accepted only by a host-run identity
 
 import forge
 import forge.workloads as fw
@@ -16,7 +15,7 @@ output = forge.render(forge.Bundle {
     env = "prod"
     control_plane = forge.ControlPlane {}
     cluster_target = _prod
-    identity = forge.ManagedIdentity {applications = [forge.IdentityApplication {name = "m", kind = "native", frontend = "mobile", redirect_uris = ["com.acme.mobile:/oauthredirect"], logout_uris = ["com.acme.mobile:/signedout"]}]}
+    identity = forge.ManagedIdentity {applications = [forge.IdentityApplication {name = "m", kind = "native", frontend = "mobile", redirect_uris = ["com.acme.mobile:/oauthredirect"], logout_uris = ["http://localhost:8081/signedout"]}]}
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _prod}}]
     frontends = [forge.Frontend {name = "mobile", path = "frontends/mobile", type = "rn", port = 8081, runtime = forge.OnHost {}}]
 })

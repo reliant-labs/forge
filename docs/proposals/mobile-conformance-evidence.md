@@ -518,8 +518,9 @@ optional (a fresh scaffold has neither), not "keep".
 - Android: Gradle builds, and Hermes, streaming/cancellation, network/lifecycle
   and sign-in behavior on an emulator and a physical device. The emulator needs
   `adb reverse` for the issuer.
-- Registering native clients with a hosted control plane, and universal links
-  (pending owner decision, as is Android above).
+- A hosted control plane registering the native client end to end (forge sends it
+  once the control plane advertises `shape-identity-native-app`), and universal
+  links (pending owner decision, as is Android above).
 - Real native identity on iOS is covered on the simulator and on one iPad (above).
   iPhone hardware and Release-mode sign-in are not.
 - Device crashes, store publication, signed OTA and health/recovery evidence.

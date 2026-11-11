@@ -5,8 +5,7 @@ callback side by side, in the author's order (the first is the one the app
 signs in with). It replaces nothing: the `api` broker application is still
 derived, and the frontend gets no second, derived native application.
 
-(Hosted identity refuses kind native until hosted registration lands; see
-negative_identity_native_hosted_declared.k.)
+(The same declaration on a hosted identity is positive_identity_native_hosted_declared.k.)
 """
 # kcl-args: env="dev"
 

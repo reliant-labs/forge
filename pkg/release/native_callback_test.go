@@ -1,6 +1,7 @@
 package release
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -84,9 +85,21 @@ func TestShape_IdentityNativeApplicationValidate(t *testing.T) {
 		{"host runtime accepts http", host, func(a *ShapeIdentityApplication) {
 			a.RedirectURIs = []string{"http://localhost:8081/oauthredirect"}
 		}, ""},
-		{"hosted identity is refused, however complete the declaration", hosted, nil, "not yet supported on hosted identity"},
-		{"hosted identity is refused with no callbacks too", hosted, func(a *ShapeIdentityApplication) { a.RedirectURIs, a.LogoutURIs = nil, nil }, "not yet supported on hosted identity"},
-		{"the refusal names the skill", hosted, nil, "deploy/managed-identity/mobile"},
+		{"hosted identity accepts a complete declaration", hosted, nil, ""},
+		{"hosted identity accepts https beside the scheme, in order", hosted, func(a *ShapeIdentityApplication) {
+			a.RedirectURIs = []string{"https://acme.example/oauthredirect", "com.acme.mobile:/oauthredirect"}
+			a.LogoutURIs = []string{"https://acme.example/signedout", "com.acme.mobile:/signedout"}
+		}, ""},
+		{"hosted identity needs redirects resolved", hosted, func(a *ShapeIdentityApplication) { a.RedirectURIs = nil }, "needs both redirect_uris and logout_uris resolved"},
+		{"hosted identity needs logouts resolved", hosted, func(a *ShapeIdentityApplication) { a.LogoutURIs = nil }, "needs both redirect_uris and logout_uris resolved"},
+		{"hosted identity needs both resolved, never defaulted", hosted, func(a *ShapeIdentityApplication) { a.RedirectURIs, a.LogoutURIs = nil, nil }, "needs both redirect_uris and logout_uris resolved"},
+		{"hosted identity refuses http redirect", hosted, func(a *ShapeIdentityApplication) {
+			a.RedirectURIs = []string{"http://localhost:8081/oauthredirect"}
+		}, "http is accepted only"},
+		{"hosted identity refuses http logout", hosted, func(a *ShapeIdentityApplication) {
+			a.LogoutURIs = []string{"http://localhost:8081/signedout"}
+		}, "http is accepted only"},
+		{"hosted identity refuses a single-label scheme", hosted, func(a *ShapeIdentityApplication) { a.RedirectURIs = []string{"myapp:/oauthredirect"} }, "reverse-DNS"},
 		{"needs a frontend", host, func(a *ShapeIdentityApplication) { a.Frontend = "" }, "needs the native frontend"},
 		{"no workload", host, func(a *ShapeIdentityApplication) { a.Workload = "api" }, "no broker workload"},
 		{"no login uri", host, func(a *ShapeIdentityApplication) { a.LoginURI = "https://acme.example/auth/sign-in" }, "no login_uri"},
@@ -128,50 +141,78 @@ func TestShape_IdentityNativeCanonicalKeepsRedirectOrder(t *testing.T) {
 	}
 }
 
-// Native applications reach no control plane until one registers them: the
-// feature is defined and gates the field, but BundleDocFeatures does not
-// advertise it, so a control plane that merely decodes the field is not sent a
-// client it cannot register.
-func TestLimitShape_NativeApplicationsAreWithheldFromEveryAdvertisedReader(t *testing.T) {
-	id := nativeShape(IdentityRuntimeHost, nil)
-	full := Shape{Kind: EnvLocal, Identity: &id}
-
-	if slices.Contains(BundleDocFeatures(), BundleFeatureIdentityNativeApp) {
-		t.Fatalf("%s is advertised: a control plane would claim to register native clients it cannot", BundleFeatureIdentityNativeApp)
+// The capability gate. This forge advertises the feature (a control plane
+// built from it names it), but a reader that does not name it (an older control
+// plane built from a forge without it, or one that withholds it) is NEVER sent
+// a native application: LimitShape removes it, for a hosted identity and a
+// host-run one alike, and WithheldNativeApplications names what it removed.
+func TestLimitShape_NativeApplicationsReachOnlyAReaderThatNamesTheFeature(t *testing.T) {
+	if !slices.Contains(BundleDocFeatures(), BundleFeatureIdentityNativeApp) {
+		t.Fatalf("%s is not advertised by BundleDocFeatures", BundleFeatureIdentityNativeApp)
 	}
-	for name, r := range map[string]*BundleReader{
-		"names no feature":           {Features: []string{}},
-		"names every advertised one": {Features: BundleDocFeatures()},
-	} {
-		got := r.LimitShape(full)
-		if len(got.Identity.Applications) != 1 || got.Identity.Applications[0].Kind != IdentityAppNativeBroker {
-			t.Errorf("%s: a native application was sent: %+v", name, got.Identity.Applications)
-		}
-		if names := r.WithheldNativeApplications(full); len(names) != 1 || names[0] != "prod:mobile" {
-			t.Errorf("%s: withheld = %v, want [prod:mobile] so the caller can say so", name, names)
+	var withoutIt []string
+	for _, f := range BundleDocFeatures() {
+		if f != BundleFeatureIdentityNativeApp {
+			withoutIt = append(withoutIt, f)
 		}
 	}
-	if len(id.Applications) != 2 {
-		t.Error("LimitShape modified its input")
-	}
+	for _, rt := range []string{IdentityRuntimeHosted, IdentityRuntimeHost} {
+		id := nativeShape(rt, nil)
+		full := Shape{Kind: EnvLocal, Identity: &id}
+		for name, r := range map[string]*BundleReader{
+			"names no feature (an old control plane)":                  {Features: []string{}},
+			"names every feature this forge has except the native one": {Features: withoutIt},
+			"a nil Features list":                                      {},
+		} {
+			got := r.LimitShape(full)
+			if len(got.Identity.Applications) != 1 || got.Identity.Applications[0].Kind != IdentityAppNativeBroker {
+				t.Errorf("%s/%s: a native application was sent: %+v", rt, name, got.Identity.Applications)
+			}
+			raw, err := json.Marshal(got.Canonical())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, leak := range []string{"prod:mobile", `"frontend"`, "oauthredirect", "signedout"} {
+				if strings.Contains(string(raw), leak) {
+					t.Errorf("%s/%s: the encoded shape still carries %q: %s", rt, name, leak, raw)
+				}
+			}
+			if names := r.WithheldNativeApplications(full); len(names) != 1 || names[0] != "prod:mobile" {
+				t.Errorf("%s/%s: withheld = %v, want [prod:mobile] so the caller can say so", rt, name, names)
+			}
+		}
+		if len(id.Applications) != 2 {
+			t.Error("LimitShape modified its input")
+		}
 
-	// The day a control plane names the feature (it registers native clients),
-	// it is sent them: the gate is the feature, not a hard-coded refusal.
-	named := &BundleReader{Features: append(BundleDocFeatures(), BundleFeatureIdentityNativeApp)}
-	if got := named.LimitShape(full); len(got.Identity.Applications) != 2 {
-		t.Errorf("a reader naming the feature lost an application: %+v", got.Identity.Applications)
-	}
-	if names := named.WithheldNativeApplications(full); len(names) != 0 {
-		t.Errorf("withheld = %v for a reader that registers them", names)
-	}
-	if got := (*BundleReader)(nil).LimitShape(full); len(got.Identity.Applications) != 2 {
-		t.Error("the machine ledger (nil reader) decodes every feature and keeps them")
-	}
-	if !full.HasOptionalParts() {
-		t.Error("a native application is an optional part: sending it needs the reader's feature list first")
+		// A control plane that names the feature is sent them: the gate is the
+		// feature, not a hard-coded refusal.
+		advertised := &BundleReader{Features: BundleDocFeatures()}
+		if got := advertised.LimitShape(full); len(got.Identity.Applications) != 2 {
+			t.Errorf("%s: a reader naming every advertised feature lost an application: %+v", rt, got.Identity.Applications)
+		}
+		if names := advertised.WithheldNativeApplications(full); len(names) != 0 {
+			t.Errorf("%s: withheld = %v for a reader that registers them", rt, names)
+		}
+		if got := (*BundleReader)(nil).LimitShape(full); len(got.Identity.Applications) != 2 {
+			t.Error("the machine ledger (nil reader) decodes every feature and keeps them")
+		}
+		if !full.HasOptionalParts() {
+			t.Error("a native application is an optional part: sending it needs the reader's feature list first")
+		}
 	}
 	if names := (&BundleReader{}).WithheldNativeApplications(Shape{Kind: EnvLocal}); names != nil {
 		t.Errorf("no identity, nothing withheld, got %v", names)
+	}
+}
+
+// A shape with only native applications and no broker still limits cleanly.
+func TestLimitShape_OnlyNativeApplicationsLeavesNone(t *testing.T) {
+	id := nativeShape(IdentityRuntimeHosted, nil)
+	id.Applications = id.Applications[1:]
+	got := (&BundleReader{Features: []string{}}).LimitShape(Shape{Kind: EnvLocal, Identity: &id})
+	if got.Identity.Applications != nil {
+		t.Errorf("applications = %+v, want none", got.Identity.Applications)
 	}
 }
 
@@ -186,6 +227,24 @@ func TestIsNativePrivateScheme(t *testing.T) {
 		// The predicate and the callback validator are one rule.
 		if (ValidateNativeCallbackURI(s+":/oauthredirect", false) == nil) != want {
 			t.Errorf("ValidateNativeCallbackURI disagrees on %q", s)
+		}
+	}
+}
+
+func TestNativeCallbackDerivation(t *testing.T) {
+	if got := NativePrivateRedirectURI("com.acme.app"); got != "com.acme.app:/oauthredirect" {
+		t.Errorf("NativePrivateRedirectURI = %q", got)
+	}
+	for in, want := range map[string]string{
+		"com.acme.app:/oauthredirect":        "com.acme.app:/signedout",
+		"https://acme.example/oauthredirect": "https://acme.example/signedout",
+		"https://acme.example/app/cb":        "https://acme.example/app/signedout",
+	} {
+		if got := NativeSignedOutBeside(in); got != want {
+			t.Errorf("NativeSignedOutBeside(%q) = %q, want %q", in, got, want)
+		}
+		if err := ValidateNativeCallbackURI(NativeSignedOutBeside(in), false); err != nil {
+			t.Errorf("the derived post-logout URI of %q is refused: %v", in, err)
 		}
 	}
 }

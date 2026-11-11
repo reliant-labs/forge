@@ -151,30 +151,50 @@ func nativeAppShape() *release.Shape {
 	return &release.Shape{
 		Kind: release.EnvLocal,
 		Identity: &release.ShapeIdentity{
-			Name: "identity", Runtime: release.IdentityRuntimeHost, Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative},
+			Name: "identity", Runtime: release.IdentityRuntimeHosted, Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative},
 			Applications: []release.ShapeIdentityApplication{
 				{Name: "dev:api", Workload: "api", Kind: release.IdentityAppNativeBroker},
-				{Name: "dev:mobile", Kind: release.IdentityAppNative, Frontend: "mobile"},
+				{Name: "dev:mobile", Kind: release.IdentityAppNative, Frontend: "mobile",
+					RedirectURIs: []string{"com.acme.mobile:/oauthredirect"}, LogoutURIs: []string{"com.acme.mobile:/signedout"}},
 			},
 		},
 	}
 }
 
-// A control plane that decodes every feature this forge ADVERTISES still is not
-// sent a native application: hosted registration is not built, and the feature
-// that would say it is is not advertised.
-func TestEnsureHostedEnvironment_NeverSendsNativeApplications(t *testing.T) {
-	c := &capsCaller{features: release.BundleDocFeatures()}
-	ref := HostedEnvRef{Project: "p", Name: "dev", Kind: HostedEnvSelfManaged, Shape: nativeAppShape()}
-	if _, _, err := EnsureHostedEnvironment(context.Background(), c, ref); err != nil {
-		t.Fatal(err)
+// A control plane is sent a native application only when it names the feature.
+// An old one (it names none, or every feature but this) gets the identity
+// without it; the broker application is sent either way.
+func TestEnsureHostedEnvironment_SendsNativeApplicationsOnlyToAControlPlaneThatNamesTheFeature(t *testing.T) {
+	var without []string
+	for _, f := range release.BundleDocFeatures() {
+		if f != release.BundleFeatureIdentityNativeApp {
+			without = append(without, f)
+		}
 	}
-	got := sentShape(t, c)
-	if strings.Contains(got, "dev:mobile") || strings.Contains(got, `"frontend"`) {
-		t.Errorf("a native application reached a control plane that cannot register it:\n%s", got)
-	}
-	if !strings.Contains(got, "dev:api") {
-		t.Errorf("the broker application was dropped with it:\n%s", got)
+	for name, tc := range map[string]struct {
+		c    *capsCaller
+		sent bool
+	}{
+		"names no feature":                          {&capsCaller{}, false},
+		"does not serve GetCapabilities":            {&capsCaller{capsErr: &cloud.Error{HTTPStatus: 404}}, false},
+		"names every feature but the native one":    {&capsCaller{features: without}, false},
+		"names every feature this forge advertises": {&capsCaller{features: release.BundleDocFeatures()}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ref := HostedEnvRef{Project: "p", Name: "dev", Kind: HostedEnvSelfManaged, Shape: nativeAppShape()}
+			if _, _, err := EnsureHostedEnvironment(context.Background(), tc.c, ref); err != nil {
+				t.Fatal(err)
+			}
+			got := sentShape(t, tc.c)
+			for _, leak := range []string{"dev:mobile", `"frontend"`, "oauthredirect"} {
+				if has := strings.Contains(got, leak); has != tc.sent {
+					t.Errorf("shape carries %q = %v, want %v:\n%s", leak, has, tc.sent, got)
+				}
+			}
+			if !strings.Contains(got, "dev:api") {
+				t.Errorf("the broker application was dropped with it:\n%s", got)
+			}
+		})
 	}
 }
 
@@ -185,7 +205,7 @@ func TestNoteNativeAppsWithheld(t *testing.T) {
 		t.Fatalf("printed for nothing withheld: %q", b.String())
 	}
 	NoteNativeAppsWithheld(&b, "note-env-a", []string{"dev:mobile"})
-	for _, want := range []string{"note-env-a", "dev:mobile", "not yet supported on hosted identity", "deploy/managed-identity/mobile"} {
+	for _, want := range []string{"note-env-a", "dev:mobile", "does not register yet", release.BundleFeatureIdentityNativeApp, "deploy/managed-identity/mobile"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("note missing %q: %q", want, b.String())
 		}

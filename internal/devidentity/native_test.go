@@ -138,18 +138,6 @@ func TestSpec_NativeAppWarningsReachThePass(t *testing.T) {
 	}
 }
 
-func TestSignedOutBeside(t *testing.T) {
-	for in, want := range map[string]string{
-		"com.acme.app:/oauthredirect":        "com.acme.app:/signedout",
-		"https://acme.example/oauthredirect": "https://acme.example/signedout",
-		"https://acme.example/app/cb":        "https://acme.example/app/signedout",
-	} {
-		if got := signedOutBeside(in); got != want {
-			t.Errorf("signedOutBeside(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 // The IdP itself may refuse the native client (a locally valid callback it
 // still dislikes); only an Optional application survives that without taking
 // the web app's output down with it.

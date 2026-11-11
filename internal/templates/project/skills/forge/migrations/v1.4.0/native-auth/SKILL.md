@@ -1,6 +1,6 @@
 ---
 name: migration-v1.4.0-native-auth
-description: Adopt v1.4.0 native sign-in in an existing Expo app — OAuth public client (authorization code + PKCE) through the system browser, tokens in the OS keystore, the EXPO_PUBLIC_FORGE_OIDC_* variables forge env up injects, the new dependencies and expo-secure-store plugin, the single reverse-DNS scheme, the owned auth files to copy and the provider/context/connect/layout/jest edits, mock fallback and opt-out, what the auth context and transport now do, and what is not yet proven (Android, hosted registration) and how a physical device signs in with --device-host.
+description: Adopt v1.4.0 native sign-in in an existing Expo app — OAuth public client (authorization code + PKCE) through the system browser, tokens in the OS keystore, the EXPO_PUBLIC_FORGE_OIDC_* variables forge env up injects, the new dependencies and expo-secure-store plugin, the single reverse-DNS scheme, the owned auth files to copy and the provider/context/connect/layout/jest edits, mock fallback and opt-out, what the auth context and transport now do, and what is not yet proven (Android, a real hosted control plane) and how a physical device signs in with --device-host.
 relevance: migration
 ---
 
@@ -143,8 +143,10 @@ one), so under `forge env up` on a host-run identity either keep the old
 
 Evidence is JS-level (Jest with fakes, typecheck, lint, export) plus a local dev
 identity on the iOS simulator. **Not proven here:** Android
-(emulator included), registering native clients with a hosted control plane
-(forge refuses `kind = "native"` on a hosted identity until it does), and universal links
+(emulator included), a real hosted control plane registering the client end to
+end (forge derives and sends a hosted native application's callbacks from
+`app.json`, and registration happens when the control plane supports it; one
+that does not is sent none and a note says so), and universal links
 (the callback path is identical, so adding one is a redirect-URI change).
 A physical device signs in with `forge env up --device-host <LAN address>`: the dev IdP
 then also serves that address, the run's one issuer becomes `http://<LAN

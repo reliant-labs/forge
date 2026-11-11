@@ -95,6 +95,12 @@ type identityAppWire struct {
 	Name            string `json:"name"`
 	ClientID        string `json:"clientId"`
 	BrokerExpiresAt string `json:"brokerExpiresAt,omitempty"`
+	// Kind, RedirectURIs and PostLogoutURIs are what a control plane that
+	// registers native (mobile) clients reports for an app, as registered and
+	// ordered. A control plane that predates them leaves all three empty.
+	Kind           string   `json:"kind,omitempty"`
+	RedirectURIs   []string `json:"redirectUris,omitempty"`
+	PostLogoutURIs []string `json:"postLogoutUris,omitempty"`
 }
 
 type identityDeliveryWire struct {
@@ -130,13 +136,17 @@ func (e identityEnvironmentWire) label() string {
 
 type identityStatusDocument struct {
 	jsonEnvelope
-	HasInstance          bool                   `json:"hasInstance"`
-	State                string                 `json:"state"`
-	Issuer               string                 `json:"issuer"`
-	Domain               string                 `json:"domain"`
-	Public               bool                   `json:"public"`
-	Adopted              bool                   `json:"adopted"`
-	Apps                 []identityAppWire      `json:"apps"`
+	HasInstance bool              `json:"hasInstance"`
+	State       string            `json:"state"`
+	Issuer      string            `json:"issuer"`
+	Domain      string            `json:"domain"`
+	Public      bool              `json:"public"`
+	Adopted     bool              `json:"adopted"`
+	Apps        []identityAppWire `json:"apps"`
+	// Scopes is what a client requests for a token the env's services accept
+	// (the project audience scope included). Empty from a control plane that
+	// predates it.
+	Scopes               []string               `json:"scopes,omitempty"`
 	Deliveries           []identityDeliveryWire `json:"deliveries"`
 	OwnerEnvironmentID   string                 `json:"ownerEnvironmentId"`
 	SharerEnvironmentIDs []string               `json:"sharerEnvironmentIds"`
@@ -250,6 +260,13 @@ func newCloudIdentityStatusCmd() *cobra.Command {
 				}
 				for _, app := range doc.Apps {
 					fmt.Fprintf(out, "App: %s (client %s)\n", app.Name, app.ClientID)
+					if n := nativeOIDCFromStatus(doc, app); n != nil {
+						for _, kv := range n.vars() {
+							if kv[1] != "" {
+								fmt.Fprintf(out, "  %s=%s\n", kv[0], kv[1])
+							}
+						}
+					}
 				}
 				for _, d := range doc.Deliveries {
 					written := ""
